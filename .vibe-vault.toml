@@ -1,0 +1,12 @@
+# vibe-vault project identity
+# Uncomment and set values to override automatic detection.
+# When commented out, vv uses heuristics (git remote name, directory basename).
+
+[project]
+name = "vibe-palace"
+domain = "personal"          # e.g. "work", "personal", "opensource", or custom
+tags = ["go", "cli", "AI", "MCP"]            # e.g. ["go", "cli", "obsidian"]
+
+[meta]
+author = "John Suykerbuyk, john@syketech.com"
+company = "SykeTech.com"
