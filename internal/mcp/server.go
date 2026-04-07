@@ -28,8 +28,9 @@ func VaultFromContext(ctx context.Context) *storage.Vault {
 
 // Server wraps an MCP server with vault context injection.
 type Server struct {
-	mcp   *server.MCPServer
-	vault *storage.Vault
+	mcp      *server.MCPServer
+	vault    *storage.Vault
+	registry *Registry
 }
 
 // NewServer creates an MCP server backed by the given vault.
@@ -40,7 +41,14 @@ func NewServer(vault *storage.Vault) *Server {
 		server.WithToolCapabilities(true),
 		server.WithRecovery(),
 	)
-	return &Server{mcp: s, vault: vault}
+	srv := &Server{mcp: s, vault: vault}
+	srv.registry = NewRegistry(s)
+	return srv
+}
+
+// Registry returns the tool registry for registering and managing tools.
+func (s *Server) Registry() *Registry {
+	return s.registry
 }
 
 // Serve starts the stdio transport on os.Stdin/os.Stdout. It blocks until
