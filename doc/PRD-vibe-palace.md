@@ -501,7 +501,7 @@ flowchart TD
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `vp_bootstrap_context` | project?, max_tokens? | Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot. Precedence-aware. |
+| `vp_bootstrap_context` | project?, max_tokens? | Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands. Precedence-aware. |
 | `vp_get_workflow` | project? | Workflow rules with precedence resolution (project > vault > embedded) |
 | `vp_get_resume` | project? | Current project state and open threads |
 | `vp_update_resume` | project?, section, content | Update a section of resume.md |
@@ -510,6 +510,8 @@ flowchart TD
 | `vp_get_skill` | skill, project? | Retrieve a skill definition with precedence resolution |
 | `vp_list_commands` | project? | List available commands for current project |
 | `vp_list_skills` | project? | List available skills for current project |
+| `vp_cmd` | name?, project? | Execute a command by name (with LLM-agnostic execution framing), or list available commands when called with no arguments. Portable across all MCP clients. |
+| `vp_skill` | name?, project? | Activate a skill by name (with behavioral framing), or list available skills when called with no arguments. Portable across all MCP clients. |
 
 ### 6.2 Session Tools (from VibeVault, model-agnostic)
 
@@ -567,7 +569,7 @@ flowchart TD
 | `vp_vault_sync` | — | Pull/push vault git remotes |
 | `vp_refresh_index` | project? | Rebuild session index and re-embed if needed |
 
-**Total: 32 tools** (vs VibeVault's 16 + MemPalace's 19 = 35, with dedup and consolidation)
+**Total: 34 tools** (vs VibeVault's 16 + MemPalace's 19 = 35, with dedup and consolidation)
 
 ---
 
@@ -949,6 +951,54 @@ When a project is initialized for the first time:
 This means a new project has **zero vault template files by default**. Everything
 comes from embedded defaults until the user explicitly overrides something.
 
+### 8.4 Command Graduation Lifecycle
+
+Commands follow a natural promotion path through the precedence tiers:
+
+1. **Project-local** (`source: "project"`): Created in
+   `{vault}/Projects/{proj}/agentctx/commands/{name}.md`. Only available for
+   that project. This is where new commands are born — developed, tested, and
+   iterated in the context of a single project.
+
+2. **Vault template** (`source: "vault"`): Promoted to
+   `{vault}/Templates/commands/{name}.md`. Available to all projects (unless
+   overridden at project level). Commands graduate here when they prove useful
+   across multiple projects.
+
+3. **Embedded default** (`source: "embedded"`): Compiled into the binary in
+   `internal/context/templates/commands/{name}.md`. Ships with every vibe-palace
+   installation. Commands graduate here when they are universally useful.
+
+The `source` field in `vp_cmd` discovery mode and `vp_bootstrap_context`
+response makes this lifecycle visible. Users can see which project-local
+commands are candidates for graduation. Promotion is manual: copy the file
+from the project directory to the vault Templates directory, or submit a PR
+to add it to embedded defaults.
+
+### 8.5 Portable Command Execution
+
+Commands and skills must be executable from any MCP client, not just Claude
+Code's slash command convention. The `vp_cmd` and `vp_skill` tools provide
+LLM-agnostic execution framing that works with any model:
+
+- **`vp_cmd`** returns command content wrapped in explicit execution framing
+  (`=== EXECUTE COMMAND: {name} ===`) with instructions to follow each step.
+  The framing uses universally-recognized delimiters and explicit "perform,
+  don't summarize" phrasing that works across Claude, GPT, Gemini, Llama, etc.
+
+- **`vp_skill`** returns skill content with behavioral framing
+  (`=== ACTIVATE SKILL: {name} ===`) instructing the AI to internalize and
+  apply the guidelines during the session.
+
+- Both tools support **discovery mode**: called with no name, they return a
+  formatted list of available commands/skills with sources and brief
+  descriptions. This replaces IDE-specific autocomplete with protocol-level
+  discoverability.
+
+- **`vp_get_command`** and **`vp_get_skill`** remain as read-only inspection
+  tools (returning JSON with name, content, source metadata). `vp_cmd` and
+  `vp_skill` are the execution-oriented counterparts.
+
 ---
 
 ## Phase 1: Storage Engine
@@ -1210,7 +1260,8 @@ JSON-RPC 2.0 requests. HTTP REST server on localhost with identical handlers.
 - Load recent sessions (last 5)
 - Load KG snapshot (current entities for project)
 - Assemble into single JSON response with token budget awareness
-- Return: `{project, workflow, resume, active_tasks, recent_sessions, kg_snapshot}`
+- Return: `{project, workflow, resume, active_tasks, recent_sessions, kg_snapshot, available_commands}`
+- `available_commands` added by Task 3.5: `[{name, source, brief}]` array
 
 **Acceptance criteria:**
 - Returns valid context in <100ms for typical project
@@ -1235,6 +1286,249 @@ JSON-RPC 2.0 requests. HTTP REST server on localhost with identical handlers.
 - Project-level overrides take precedence over vault
 - List tools return commands from all precedence levels (merged, no duplicates)
 - 80%+ test coverage
+
+### Task 3.5: Portable Command Execution
+
+**Deliverables:**
+- `internal/tools/cmd_tools.go` — `vp_cmd`, `vp_skill` handlers and helpers
+- `internal/tools/cmd_tools_test.go` — tests for both tools
+- `internal/tools/context_tools.go` — add `AvailableCommands` to bootstrap
+- `internal/tools/context_tools_test.go` — bootstrap command tests
+- `internal/tools/register.go` — register 2 new tools (7 total)
+- `internal/tools/register_test.go` — update expected tool count
+
+#### Design rationale
+
+`vp_cmd` coexists with `vp_get_command`. They serve different purposes:
+`vp_get_command` is read-only inspection (returns JSON struct with `name`,
+`content`, `source` metadata for debugging overrides). `vp_cmd` is
+execution-oriented (returns plain text with execution framing so any LLM
+follows the instructions). The `string` vs `struct` return type distinction
+naturally separates them via `marshalResult` in `internal/mcp/tools.go` —
+strings produce `NewToolResultText`, structs produce `NewToolResultJSON`.
+
+Commands are imperative ("do this now"); skills are behavioral ("apply these
+guidelines when relevant"). `vp_skill` is a separate tool from `vp_cmd` with
+different framing language. A combined tool with a `type` parameter would add
+complexity for zero benefit.
+
+#### `vp_cmd` tool specification
+
+**Tool identity:**
+
+| Field | Value |
+|-------|-------|
+| Name | `vp_cmd` |
+| Description | `Execute a command by name, or list available commands when called with no arguments. Commands are instructions for you to follow immediately.` |
+
+**Input schema** (no required fields — both optional):
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Command name (e.g. 'vp-restart'). Omit to list available commands."
+    },
+    "project": {
+      "type": "string",
+      "description": "Project slug for project-level resolution."
+    }
+  }
+}
+```
+
+**Execute mode** (name provided):
+1. Resolve via `resolver.Resolve("command:"+name, project)` — 3-tier precedence
+2. Build LLM-agnostic execution frame (no Claude XML, no GPT tokens)
+3. Return as `string` → `NewToolResultText` (text content, not JSON)
+
+Execution frame format (uses `===` delimiters universally recognized by LLMs,
+`---` separators prevent command markdown headers from breaking the envelope):
+
+```
+=== EXECUTE COMMAND: {name} ===
+Project: {project} | Source: {source}
+
+The following are instructions for you to execute now. Follow each step.
+Do not merely summarize or describe these instructions — perform them.
+
+---
+
+{resolved command content}
+
+---
+
+End of command: {name}
+```
+
+When `project` is empty: `Project: (none)`.
+
+**Discovery mode** (no name, empty name, or whitespace-only name):
+1. Call `resolver.ListResources("command", project)` to get merged list
+2. For each command, resolve content and extract a brief description via
+   `extractBrief(content, 60)` — first non-blank, non-heading line, truncated
+3. Format as readable text:
+
+```
+Available commands for project "my-project":
+
+  vp-restart       [embedded]  Context restoration and session bootstrap
+  vp-wrap          [embedded]  Session capture and wrap-up
+  vp-review-plan   [embedded]  Architecture review before implementation
+  vp-cancel-plan   [embedded]  Cancel a planned task
+  deploy           [vault]     Deploy workflow
+  custom-check     [project]   Project-specific validation
+
+Call vp_cmd with a command name to execute it.
+```
+
+When `project` is empty: header reads `Available commands:` (no project name).
+
+#### `vp_skill` tool specification
+
+Mirrors `vp_cmd` with behavioral framing. Same schema (name?, project?).
+
+Execute mode frame:
+
+```
+=== ACTIVATE SKILL: {name} ===
+Project: {project} | Source: {source}
+
+The following describes a skill you should apply during this session.
+Internalize these guidelines and apply them when relevant.
+
+---
+
+{resolved skill content}
+
+---
+
+End of skill: {name}
+```
+
+Discovery mode lists skills instead of commands, same format.
+
+#### Bootstrap enhancement
+
+Add `AvailableCommands` field to `BootstrapResult`:
+
+```go
+type BootstrapResult struct {
+    Project           string             `json:"project"`
+    Workflow          string             `json:"workflow"`
+    Resume            string             `json:"resume"`
+    ActiveTasks       []storage.TaskMeta `json:"active_tasks"`
+    RecentSessions    []sessionSummary   `json:"recent_sessions,omitempty"`
+    KGSnapshot        *storage.KGStats   `json:"kg_snapshot,omitempty"`
+    AvailableCommands []commandSummary   `json:"available_commands,omitempty"`
+}
+
+type commandSummary struct {
+    Name   string `json:"name"`
+    Source string `json:"source"`
+    Brief  string `json:"brief,omitempty"`
+}
+```
+
+Bootstrap handler resolves command list after KG snapshot, before truncation:
+
+```go
+if commands, err := resolver.ListResources("command", p.Project); err == nil {
+    for _, cmd := range commands {
+        cs := commandSummary{Name: cmd.Name, Source: cmd.Source}
+        if content, _, err := resolver.Resolve("command:"+cmd.Name, p.Project); err == nil {
+            cs.Brief = extractBrief(content, 60)
+        }
+        result.AvailableCommands = append(result.AvailableCommands, cs)
+    }
+}
+```
+
+Token budget truncation order (updated):
+1. Shed `RecentSessions` (oldest first) — existing behavior
+2. Shed `KGSnapshot` (nil) — existing behavior
+3. Shed `AvailableCommands` (nil) — new, last resort (cheapest context)
+
+#### Implementation types and functions
+
+New file `internal/tools/cmd_tools.go`:
+
+```go
+type cmdParams struct {
+    Name    string `json:"name,omitempty"`
+    Project string `json:"project,omitempty"`
+}
+
+type commandSummary struct {
+    Name   string `json:"name"`
+    Source string `json:"source"`
+    Brief  string `json:"brief,omitempty"`
+}
+
+// Factory functions returning mcp.Tool (close over resolver)
+func CmdTool(resolver *vpctx.Resolver) mcp.Tool
+func SkillCmdTool(resolver *vpctx.Resolver) mcp.Tool
+
+// Shared handler parameterized by resource type ("command" or "skill")
+func cmdExecHandler(resolver *vpctx.Resolver, resourceType string) mcp.HandlerFunc
+
+// Helpers
+func buildExecutionFrame(name, project, source, content, resourceType string) string
+func buildDiscoveryList(resolver *vpctx.Resolver, project, resourceType string) (string, error)
+func extractBrief(content string, maxLen int) string
+```
+
+`extractBrief`: scans lines, skips blanks and lines starting with `#`, returns
+first substantive line truncated to `maxLen`. Returns `"(no description)"` if
+no substantive line found.
+
+Registration in `internal/tools/register.go`:
+
+```go
+func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vault) {
+    reg.MustRegister(BootstrapContextTool(resolver, vault))
+    reg.MustRegister(GetCommandTool(resolver))
+    reg.MustRegister(GetSkillTool(resolver))
+    reg.MustRegister(ListCommandsTool(resolver))
+    reg.MustRegister(ListSkillsTool(resolver))
+    reg.MustRegister(CmdTool(resolver))       // NEW
+    reg.MustRegister(SkillCmdTool(resolver))   // NEW
+}
+```
+
+#### Test inventory
+
+`internal/tools/cmd_tools_test.go`:
+- Execute mode: embedded command, vault override, project override, not found
+- Discovery mode: empty name, whitespace-only name, with project commands
+- Skill execute mode + skill discovery mode
+- `extractBrief`: table-driven (normal, empty content, long line, heading-only,
+  no substantive line)
+- Execution frame: contains delimiters, project, source, content; command with
+  its own markdown headers doesn't break framing
+- Tool schema validation for both `vp_cmd` and `vp_skill`
+
+`internal/tools/context_tools_test.go` (additions):
+- `TestBootstrapIncludesCommands`: result contains `available_commands`
+- `TestBootstrapCommandsTruncationOrder`: commands shed last under budget
+
+`internal/tools/register_test.go` (modification):
+- Update expected tool count from 5 to 7, add `"vp_cmd"` and `"vp_skill"`
+
+**Acceptance criteria:**
+- `vp_cmd` with name returns text with execution framing and resolved content
+- `vp_cmd` with no name returns formatted command list with briefs
+- `vp_skill` mirrors `vp_cmd` with `=== ACTIVATE SKILL` framing
+- All three precedence tiers work for both tools
+- `vp_bootstrap_context` response includes `available_commands` array
+- Token budget truncation: sessions → KG → commands (commands last)
+- Commands with their own markdown headers don't break execution framing
+- `RegisterAll` registers 7 tools (was 5)
+- 80%+ test coverage on new code
+- Copyright/SPDX headers on new files
+- `make test` passes clean
 
 ---
 
