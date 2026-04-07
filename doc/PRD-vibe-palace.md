@@ -57,8 +57,9 @@ from any specific AI provider's file system expectations.
 16. [Phase 8: Migration & Import](#phase-8-migration--import)
 17. [Phase 9: CLI & Distribution](#phase-9-cli--distribution)
 18. [Phase 10: Documentation & Human Interface](#phase-10-documentation--human-interface)
-19. [Cross-Cutting Concerns](#cross-cutting-concerns)
-20. [Validation Framework](#validation-framework)
+19. [Phase 11: Pluggable Embedding Backends](#phase-11-pluggable-embedding-backends)
+20. [Cross-Cutting Concerns](#cross-cutting-concerns)
+21. [Validation Framework](#validation-framework)
 21. [Appendix A: Glossary](#appendix-a-glossary)
 22. [Appendix B: File Inventory](#appendix-b-file-inventory)
 23. [Appendix C: Implementation Supplement](#appendix-c-implementation-supplement)
@@ -2085,6 +2086,92 @@ levels (embedded defaults → vault-level → project-level).
 - Every config key in `config/defaults.toml` is documented
 - Precedence resolution is explained with before/after examples
 - Example configs are valid TOML that can be copied directly
+
+---
+
+## Phase 11: Pluggable Embedding Backends
+
+**Goal:** Allow users to swap the default pure-Go ONNX embedder for
+higher-quality models served by external backends (Ollama, llama.cpp, or
+future providers) while preserving the zero-dependency default. The `Embedder`
+interface (Appendix C.3) already abstracts the embedding contract — this phase
+adds concrete alternative implementations and the configuration to select them.
+
+**Motivation:** The default `all-MiniLM-L6-v2` (384-dim, MTEB ~49) is adequate
+for high-intent personal queries, but models like EmbeddingGemma (768-dim,
+MTEB ~70) and nomic-embed-text-v1.5 (768-dim, MTEB ~62) offer meaningfully
+better retrieval quality. These larger models cannot run in the pure-Go ONNX
+backend but are readily available through Ollama. Users who already run Ollama
+(or a compatible server) should be able to opt in without recompiling.
+
+**Design constraints:**
+- The default must remain zero-dependency: `hugot` pure-Go ONNX, no external
+  services required, single binary
+- Alternative backends are opt-in via configuration, never required
+- Switching backends triggers a full re-index (different dimensions/model =
+  incompatible vectors); `vp check` must detect and warn about mismatches
+- The `Embedder` interface contract (Embed, EmbedBatch, Dimensions, Close)
+  does not change — backends implement it
+- HNSW index, hybrid search, and MCP tools are backend-agnostic by design
+  (they depend on the interface, not the implementation)
+
+### Task 11.1: Ollama Embedding Backend
+
+**Deliverable:** `internal/embedder/ollama.go`
+
+- Implements the `Embedder` interface using Ollama's `/api/embed` REST endpoint
+- Configuration via `[embedder]` section in TOML:
+  ```toml
+  [embedder]
+  backend = "ollama"           # "onnx" (default) | "ollama"
+  model = "embeddinggemma"     # any Ollama-supported embedding model
+  ollama_url = "http://localhost:11434"  # default Ollama endpoint
+  ```
+- Auto-detects Ollama availability at startup; falls back to ONNX with a
+  warning if configured backend is unreachable
+- Queries model metadata (`/api/show`) to determine embedding dimensions
+  dynamically — no hardcoded dimension assumptions
+- Batch embedding via concurrent requests (Ollama's embed endpoint handles
+  one text at a time as of 2026-Q2; batch by parallelism)
+
+**Acceptance criteria:**
+- Ollama backend produces valid embeddings that work with HNSW index
+- `vp check` validates backend availability and model compatibility
+- Graceful degradation: if Ollama is down, error messages guide the user
+- Switching `backend` in config and running `vp reindex` rebuilds cleanly
+- 80%+ test coverage (mock HTTP server for Ollama API)
+
+### Task 11.2: Backend Selection & Re-index Safety
+
+**Deliverable:** Changes to `internal/embedder/`, `internal/storage/config.go`,
+`cmd/vp/`
+
+- Factory function: `NewEmbedder(cfg Config) (Embedder, error)` dispatches to
+  ONNX or Ollama based on `cfg.EmbedderBackend`
+- Index metadata file records which backend+model produced the current index
+- On startup, compare current config against index metadata; if mismatched,
+  refuse to search and prompt for `vp reindex`
+- `vp reindex` command: drops existing HNSW index and rebuilds from drawer
+  files using the configured backend
+- `vp check` reports: backend type, model name, dimensions, index
+  backend/model, and whether they match
+
+**Acceptance criteria:**
+- Switching backends without re-indexing produces a clear error, not wrong results
+- `vp reindex` rebuilds the index end-to-end with the configured backend
+- Index metadata survives restarts and is gitignored (machine-local)
+
+### Task 11.3: Additional Backend Support (Future)
+
+**Not scheduled.** Placeholder for potential future backends:
+- **llama.cpp server** — similar REST pattern to Ollama, different API shape
+- **Remote API** — OpenAI-compatible `/v1/embeddings` endpoint for hosted
+  models (requires network, opt-in only)
+- **Custom ONNX models** — user-supplied ONNX files loaded by hugot (larger
+  models that the user has converted themselves)
+
+These would follow the same pattern: implement `Embedder`, add a config
+variant, ensure re-index safety.
 
 ---
 
