@@ -56,11 +56,12 @@ from any specific AI provider's file system expectations.
 15. [Phase 7: Knowledge Graph](#phase-7-knowledge-graph)
 16. [Phase 8: Migration & Import](#phase-8-migration--import)
 17. [Phase 9: CLI & Distribution](#phase-9-cli--distribution)
-18. [Cross-Cutting Concerns](#cross-cutting-concerns)
-19. [Validation Framework](#validation-framework)
-20. [Appendix A: Glossary](#appendix-a-glossary)
-21. [Appendix B: File Inventory](#appendix-b-file-inventory)
-22. [Appendix C: Implementation Supplement](#appendix-c-implementation-supplement)
+18. [Phase 10: Documentation & Human Interface](#phase-10-documentation--human-interface)
+19. [Cross-Cutting Concerns](#cross-cutting-concerns)
+20. [Validation Framework](#validation-framework)
+21. [Appendix A: Glossary](#appendix-a-glossary)
+22. [Appendix B: File Inventory](#appendix-b-file-inventory)
+23. [Appendix C: Implementation Supplement](#appendix-c-implementation-supplement)
     - [C.1 Decisions Register](#c1-decisions-register)
     - [C.2 Project Skeleton](#c2-project-skeleton)
     - [C.3 Interface Contracts](#c3-interface-contracts)
@@ -1631,9 +1632,17 @@ Vibe-Palace.
 - `vp version` — version and build info
 - `vp check` — validate config, vault structure, JSONL integrity
 
+Each command's help text must be defined as a structured Go data type (not
+ad-hoc strings) containing: command name, one-line synopsis, detailed
+description, flag definitions, and usage examples. `--help` output is
+rendered from these structs at runtime. This is the **single source of truth**
+for all human-facing documentation — man pages (Phase 10) are generated
+from the same data at build time.
+
 **Acceptance criteria:**
 - All commands functional with clear help text
 - `--help` works for every command and subcommand
+- Help text rendered from structured metadata, not ad-hoc strings
 - Exit codes: 0 for success, 1 for user error, 2 for system error
 - 80%+ test coverage for command parsing and dispatch
 
@@ -1666,6 +1675,122 @@ Vibe-Palace.
 - GitHub Release assets include all platform binaries
 - Install script detects platform and downloads correct binary
 - SHA256 checksums published with each release
+
+---
+
+## Phase 10: Documentation & Human Interface
+
+**Goal:** Ensure the human half of the human–AI pair can confidently set up,
+operate, and maintain Vibe-Palace without trial-and-error. Lessons from
+VibeVault deployment showed that the biggest friction source was not missing
+features but missing guidance — users didn't know what to do, when, or why.
+This phase treats documentation as a first-class deliverable, not an
+afterthought.
+
+### Task 10.1: Man Page Generation from Code
+
+**Deliverable:** `cmd/gen-man/main.go`, `man/` directory, Makefile integration
+
+Man pages are generated at build time from the structured help metadata
+defined in Task 9.1 — **no separate authoring step**. This guarantees that
+man pages are always in sync with the running binary.
+
+- `cmd/gen-man/main.go` — reads the same help data structs used by `--help`
+  and emits roff-formatted man pages (one per command and subcommand)
+- Output: `man/vp.1` (overview), `man/vp-init.1`, `man/vp-search.1`,
+  `man/vp-mcp.1`, etc.
+- Makefile target: `make man` generates all pages; `make build` includes
+  man page generation; `make install` copies to `$(PREFIX)/share/man/man1/`
+- Each man page includes: NAME, SYNOPSIS, DESCRIPTION, OPTIONS, EXAMPLES,
+  EXIT STATUS, SEE ALSO (cross-references to related subcommands)
+- Version and build date embedded deterministically from git metadata
+
+**Acceptance criteria:**
+- `make man` generates roff man pages for every registered command
+- `man vp` and `man vp-<subcommand>` render correctly
+- Adding a new command to the help registry automatically produces its man page
+- No manual man page authoring required — code is the single source of truth
+- Man pages include version, date, and cross-references
+- 80%+ test coverage for the generation logic
+
+### Task 10.2: Getting Started Tutorial
+
+**Deliverable:** `doc/tutorial.md`
+
+A step-by-step walkthrough that takes a novice user from zero to a fully
+operational Vibe-Palace setup. Written for someone who has never used MCP,
+may not know what a vault is, and needs to understand both the concepts and
+the concrete commands.
+
+The tutorial covers the complete lifecycle:
+
+1. **Installation** — install the binary, verify with `vp version`
+2. **First-time setup** — create a vault, understand the vault directory
+   structure, configure `~/.config/vibe-palace/config.toml`
+3. **Project initialization** — `vp init` in a project directory, what
+   `.vibe-palace.toml` does, how projects map to vault directories
+4. **MCP integration** — configure Claude Code (or other MCP clients) to
+   use `vp mcp`, verify the connection works, understand what happens when
+   the AI calls tools
+5. **Daily workflow** — how sessions are captured, how context is bootstrapped,
+   what the AI sees vs. what the human manages
+6. **Vault maintenance** — `vp vault sync`, `vp check`, managing multiple
+   machines, resolving sync conflicts
+7. **Search and knowledge** — `vp search`, `vp sessions`, `vp tasks`,
+   understanding wings/halls/rooms, browsing the knowledge graph
+8. **Troubleshooting** — common problems (missing config, stale vault,
+   model download failures), how to diagnose with `vp check`
+
+**Acceptance criteria:**
+- A new user can follow the tutorial end-to-end without external help
+- Every command shown in the tutorial works as documented
+- Concepts are explained before they are used (no forward references)
+- Includes concrete terminal output examples (not just command names)
+- Reviewed by at least one person unfamiliar with the project
+
+### Task 10.3: MCP Tool Reference
+
+**Deliverable:** `doc/mcp-tools.md`
+
+A reference document listing every MCP tool exposed by Vibe-Palace with its
+purpose, parameters, return format, and usage examples. This serves both
+human operators (who need to understand what their AI assistant can do) and
+AI assistant developers (who may write prompts referencing these tools).
+
+- One section per tool: name, description, parameters (with types and
+  defaults), response format, example request/response
+- Organized by domain: context tools, session tools, search tools, task
+  tools, knowledge graph tools, palace tools
+- Includes a quick-reference table at the top with tool name and one-line
+  description
+- Notes on error handling: what triggers `isError: true` vs. protocol errors
+
+**Acceptance criteria:**
+- Every registered MCP tool is documented
+- Parameter descriptions match the JSON Schema definitions in code
+- At least one example per tool
+- Kept in sync with tool registration code (review checklist item: "did you
+  update mcp-tools.md?")
+
+### Task 10.4: Configuration Reference
+
+**Deliverable:** `doc/configuration.md`
+
+Complete reference for all configuration options across the three precedence
+levels (embedded defaults → vault-level → project-level).
+
+- Every config key documented with: name, type, default value, description,
+  which precedence levels can override it
+- Example config files for common scenarios (single machine, multi-machine
+  sync, custom embedding model)
+- Explanation of the precedence system with concrete examples showing how
+  values are resolved
+- Environment variable overrides (if any)
+
+**Acceptance criteria:**
+- Every config key in `config/defaults.toml` is documented
+- Precedence resolution is explained with before/after examples
+- Example configs are valid TOML that can be copied directly
 
 ---
 
@@ -1894,6 +2019,7 @@ decisions — they are final.
 | D10 | TOML library | `BurntSushi/toml`, `pelletier/go-toml` | **`BurntSushi/toml`** | De facto standard. MIT license. Zero dependencies. Stable. |
 | D11 | YAML frontmatter parsing | `go-yaml/yaml`, custom parser | **`go-yaml/yaml` v3** | Session markdown files use YAML frontmatter. yaml.v3 is the standard choice. MIT license. |
 | D12 | CLI framework | cobra, urfave/cli, stdlib `flag` | **stdlib `flag`** with subcommand dispatch | Zero dependencies. Vibe-Palace has ~15 commands — `flag` with a manual subcommand switch is sufficient. Avoids cobra's 5+ transitive deps. |
+| D13 | Man page generation | Hand-written roff, cobra doc generation, build-time codegen from help structs | **Build-time codegen from help structs** | Man pages generated by `cmd/gen-man/main.go` from the same structured help metadata used by `--help`. Single source of truth — no manual authoring, no drift. Follows VibeVault's proven pattern (`cmd/gen-man` + `help.FormatRoff()`). Zero new dependencies. |
 
 **Dependency summary (8 external modules):**
 
@@ -1922,8 +2048,10 @@ vibe-palace/
 ├── go.sum
 ├── Makefile                       # build, test, lint, release
 ├── cmd/
-│   └── vp/
-│       └── main.go                # CLI entry point, subcommand dispatch
+│   ├── vp/
+│   │   └── main.go                # CLI entry point, subcommand dispatch
+│   └── gen-man/
+│       └── main.go                # Man page generator (reads help structs, emits roff)
 ├── internal/
 │   ├── interfaces/
 │   │   └── interfaces.go          # All cross-phase interface contracts (C.3)
@@ -1984,8 +2112,14 @@ vibe-palace/
 │       ├── triples/
 │       ├── sessions/
 │       └── README.md
+├── man/                               # Generated man pages (build artifact)
+│   ├── vp.1
+│   └── vp-*.1                     # One per subcommand
 └── doc/
-    └── PRD-vibe-palace.md         # This document
+    ├── PRD-vibe-palace.md         # This document
+    ├── tutorial.md                # Getting started guide (Task 10.2)
+    ├── mcp-tools.md               # MCP tool reference (Task 10.3)
+    └── configuration.md           # Configuration reference (Task 10.4)
 ```
 
 **Build commands:**
