@@ -16,4 +16,6 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	reg.MustRegister(GetSkillTool(resolver))
 	reg.MustRegister(ListCommandsTool(resolver))
 	reg.MustRegister(ListSkillsTool(resolver))
+	reg.MustRegister(CmdTool(resolver))
+	reg.MustRegister(SkillCmdTool(resolver))
 }

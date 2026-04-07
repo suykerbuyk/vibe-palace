@@ -172,6 +172,85 @@ func TestBootstrapDefaultTokenBudget(t *testing.T) {
 	}
 }
 
+func TestBootstrapIncludesCommands(t *testing.T) {
+	vault, resolver := testSetup(t)
+	tool := BootstrapContextTool(resolver, vault)
+
+	params := json.RawMessage(`{"project":"test-proj"}`)
+	result, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+
+	br := result.(BootstrapResult)
+	// Should have at least the 4 embedded commands.
+	if len(br.AvailableCommands) < 4 {
+		t.Fatalf("AvailableCommands = %d, want >= 4", len(br.AvailableCommands))
+	}
+
+	found := false
+	for _, cmd := range br.AvailableCommands {
+		if cmd.Name == "vp-restart" {
+			found = true
+			if cmd.Source != "embedded" {
+				t.Errorf("vp-restart source = %q, want embedded", cmd.Source)
+			}
+			if cmd.Brief == "" {
+				t.Error("vp-restart brief should not be empty")
+			}
+		}
+	}
+	if !found {
+		t.Error("expected vp-restart in AvailableCommands")
+	}
+}
+
+func TestBootstrapCommandsTruncationOrder(t *testing.T) {
+	vault, resolver := testSetup(t)
+
+	// Create sessions to inflate size.
+	for i := 0; i < 5; i++ {
+		_, err := vault.WriteSession("test-proj", storage.SessionMeta{
+			Date:    "2026-04-07",
+			Title:   "session with a long title to inflate size",
+			Summary: strings.Repeat("detail ", 50),
+			Tag:     "implementation",
+		}, "body")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tool := BootstrapContextTool(resolver, vault)
+
+	// Get full result, then compute a budget that excludes sessions
+	// but keeps workflow + resume + tasks + commands.
+	fullResult, _ := tool.Handler(context.Background(), json.RawMessage(`{"project":"test-proj"}`))
+	fullBR := fullResult.(BootstrapResult)
+
+	// Compute size without sessions to find a budget that forces session shedding.
+	withoutSessions := fullBR
+	withoutSessions.RecentSessions = nil
+	noSessionJSON, _ := json.Marshal(withoutSessions)
+	// Budget slightly above no-sessions size keeps commands but sheds sessions.
+	budget := len(noSessionJSON)/4 + 10
+	params, _ := json.Marshal(bootstrapParams{Project: "test-proj", MaxTokens: budget})
+	result, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+
+	br := result.(BootstrapResult)
+	// Sessions should be truncated.
+	if len(br.RecentSessions) >= 5 {
+		t.Errorf("expected sessions to be truncated, got %d", len(br.RecentSessions))
+	}
+	// Commands should survive (shed last).
+	if len(br.AvailableCommands) == 0 {
+		t.Error("commands should survive truncation before sessions")
+	}
+}
+
 func TestBootstrapToolSchema(t *testing.T) {
 	vault, resolver := testSetup(t)
 	tool := BootstrapContextTool(resolver, vault)

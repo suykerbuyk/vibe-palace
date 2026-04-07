@@ -6,6 +6,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
@@ -14,12 +15,13 @@ import (
 
 // BootstrapResult is the response from vp_bootstrap_context.
 type BootstrapResult struct {
-	Project        string               `json:"project"`
-	Workflow       string               `json:"workflow"`
-	Resume         string               `json:"resume"`
-	ActiveTasks    []storage.TaskMeta   `json:"active_tasks"`
-	RecentSessions []sessionSummary     `json:"recent_sessions,omitempty"`
-	KGSnapshot     *storage.KGStats     `json:"kg_snapshot,omitempty"`
+	Project           string               `json:"project"`
+	Workflow          string               `json:"workflow"`
+	Resume            string               `json:"resume"`
+	ActiveTasks       []storage.TaskMeta   `json:"active_tasks"`
+	RecentSessions    []sessionSummary     `json:"recent_sessions,omitempty"`
+	KGSnapshot        *storage.KGStats     `json:"kg_snapshot,omitempty"`
+	AvailableCommands []commandSummary     `json:"available_commands,omitempty"`
 }
 
 // sessionSummary is a lightweight view of SessionMeta for the bootstrap response.
@@ -113,8 +115,19 @@ func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Handle
 			result.KGSnapshot = &stats
 		}
 
+		// Available commands for discovery.
+		if commands, err := resolver.ListResources("command", p.Project); err == nil {
+			for _, cmd := range commands {
+				cs := commandSummary{Name: cmd.Name, Source: cmd.Source}
+				if content, _, err := resolver.Resolve(fmt.Sprintf("command:%s", cmd.Name), p.Project); err == nil {
+					cs.Brief = extractBrief(content, 60)
+				}
+				result.AvailableCommands = append(result.AvailableCommands, cs)
+			}
+		}
+
 		// Token budget truncation: rough estimate 4 chars per token.
-		// Truncate sessions first, then KG.
+		// Truncate sessions first, then KG, then commands.
 		raw, err := json.Marshal(result)
 		if err == nil {
 			estimatedTokens := len(raw) / 4
@@ -125,6 +138,11 @@ func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Handle
 			}
 			if estimatedTokens > p.MaxTokens && result.KGSnapshot != nil {
 				result.KGSnapshot = nil
+				raw, _ = json.Marshal(result)
+				estimatedTokens = len(raw) / 4
+			}
+			if estimatedTokens > p.MaxTokens && len(result.AvailableCommands) > 0 {
+				result.AvailableCommands = nil
 			}
 		}
 

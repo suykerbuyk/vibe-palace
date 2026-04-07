@@ -19,8 +19,8 @@ func TestRegisterAll(t *testing.T) {
 	RegisterAll(srv.Registry(), resolver, vault)
 
 	tools := srv.Registry().List()
-	if len(tools) != 5 {
-		t.Fatalf("registered %d tools, want 5", len(tools))
+	if len(tools) != 7 {
+		t.Fatalf("registered %d tools, want 7", len(tools))
 	}
 
 	wantNames := map[string]bool{
@@ -29,6 +29,8 @@ func TestRegisterAll(t *testing.T) {
 		"vp_get_skill":        true,
 		"vp_list_commands":     true,
 		"vp_list_skills":       true,
+		"vp_cmd":               true,
+		"vp_skill":             true,
 	}
 	for _, tool := range tools {
 		if !wantNames[tool.Name] {
