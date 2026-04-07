@@ -30,8 +30,9 @@ type Tool struct {
 
 // ToolInfo is a read-only summary returned by Registry.List.
 type ToolInfo struct {
-	Name        string
-	Description string
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Schema      json.RawMessage `json:"schema,omitempty"`
 }
 
 // registeredTool holds a tool definition alongside its compiled schema.
@@ -112,6 +113,7 @@ func (r *Registry) List() []ToolInfo {
 		out = append(out, ToolInfo{
 			Name:        rt.tool.Name,
 			Description: rt.tool.Description,
+			Schema:      rt.tool.Schema,
 		})
 	}
 	return out
