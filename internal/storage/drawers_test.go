@@ -266,6 +266,106 @@ func TestGetDrawerNotFound(t *testing.T) {
 	}
 }
 
+func TestListWings(t *testing.T) {
+	v := testVault(t)
+	d := Drawer{Content: "c1", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}
+
+	if err := v.AppendDrawer("proj", "alpha", "room-1", d); err != nil {
+		t.Fatal(err)
+	}
+	d.Content = "c2"
+	if err := v.AppendDrawer("proj", "beta", "room-1", d); err != nil {
+		t.Fatal(err)
+	}
+
+	wings, err := v.ListWings("proj")
+	if err != nil {
+		t.Fatalf("ListWings: %v", err)
+	}
+	if len(wings) != 2 {
+		t.Fatalf("got %d wings, want 2", len(wings))
+	}
+
+	// Wings should include both alpha and beta (order from ReadDir).
+	found := map[string]bool{}
+	for _, w := range wings {
+		found[w] = true
+	}
+	if !found["alpha"] || !found["beta"] {
+		t.Errorf("wings = %v, want alpha and beta", wings)
+	}
+}
+
+func TestListWingsEmpty(t *testing.T) {
+	v := testVault(t)
+	wings, err := v.ListWings("proj")
+	if err != nil {
+		t.Fatalf("ListWings: %v", err)
+	}
+	if wings != nil {
+		t.Errorf("expected nil for nonexistent project, got %v", wings)
+	}
+}
+
+func TestListProjects(t *testing.T) {
+	v := testVault(t)
+	d := Drawer{Content: "c1", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}
+
+	if err := v.AppendDrawer("proj-a", "wing-1", "room-1", d); err != nil {
+		t.Fatal(err)
+	}
+	d.Content = "c2"
+	if err := v.AppendDrawer("proj-b", "wing-1", "room-1", d); err != nil {
+		t.Fatal(err)
+	}
+
+	projects, err := v.ListProjects()
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if len(projects) != 2 {
+		t.Fatalf("got %d projects, want 2", len(projects))
+	}
+	found := map[string]bool{}
+	for _, p := range projects {
+		found[p] = true
+	}
+	if !found["proj-a"] || !found["proj-b"] {
+		t.Errorf("projects = %v, want proj-a and proj-b", projects)
+	}
+}
+
+func TestListProjectsSkipsLocal(t *testing.T) {
+	v := testVault(t)
+	// Create palace/.local directory — should be skipped.
+	if err := os.MkdirAll(filepath.Join(v.Root, "palace", ".local"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	d := Drawer{Content: "c1", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}
+	if err := v.AppendDrawer("real-proj", "wing-1", "room-1", d); err != nil {
+		t.Fatal(err)
+	}
+
+	projects, err := v.ListProjects()
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if len(projects) != 1 || projects[0] != "real-proj" {
+		t.Errorf("projects = %v, want [real-proj]", projects)
+	}
+}
+
+func TestListProjectsEmpty(t *testing.T) {
+	v := testVault(t)
+	projects, err := v.ListProjects()
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if projects != nil {
+		t.Errorf("expected nil for empty palace, got %v", projects)
+	}
+}
+
 // splitNonEmpty splits s by newline and returns non-empty lines.
 func splitNonEmpty(s string) []string {
 	var lines []string

@@ -217,6 +217,60 @@ func (v *Vault) DrawerExists(project, wing, room, id string) (bool, error) {
 	return false, scanner.Err()
 }
 
+// ListWings returns all wing slugs for a project by reading the drawers directory.
+func (v *Vault) ListWings(project string) ([]string, error) {
+	if err := ValidateSlug(project); err != nil {
+		return nil, fmt.Errorf("project: %w", err)
+	}
+
+	drawersDir := filepath.Join(v.Root, "palace", project, "drawers")
+	entries, err := os.ReadDir(drawersDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read drawers dir: %w", err)
+	}
+
+	var wings []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if ValidateSlug(e.Name()) == nil {
+			wings = append(wings, e.Name())
+		}
+	}
+	return wings, nil
+}
+
+// ListProjects returns all project slugs by reading the palace directory.
+func (v *Vault) ListProjects() ([]string, error) {
+	palaceDir := filepath.Join(v.Root, "palace")
+	entries, err := os.ReadDir(palaceDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read palace dir: %w", err)
+	}
+
+	var projects []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if name == ".local" {
+			continue
+		}
+		if ValidateSlug(name) == nil {
+			projects = append(projects, name)
+		}
+	}
+	return projects, nil
+}
+
 // readDrawerFile reads and parses all drawers from a room's JSONL file.
 func (v *Vault) readDrawerFile(project, wing, room string) ([]Drawer, error) {
 	path, err := v.DrawerFile(project, wing, room)

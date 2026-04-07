@@ -1,2 +1,6 @@
 /CLAUDE.md
 /commit.msg
+/.cache/
+/.claude/
+/coverage.out
+/coverage.html

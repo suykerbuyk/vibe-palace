@@ -25,16 +25,26 @@ vet: ## Run go vet
 
 ##@ Test
 .PHONY: test
-test: build vet ## Run unit tests (with race detector)
-	go test -race -cover ./...
+test: build vet ## Run unit tests — fast, no model download
+	go test -race -short -cover ./...
+
+.PHONY: test-full
+test-full: build vet ## Run full test suite including ONNX integration tests
+	go test -count=1 -cover ./...
 
 .PHONY: integration
-integration: build ## Run integration tests
-	go test -race -tags=integration ./...
+integration: build ## Run integration tests only (requires ONNX model)
+	go test -count=1 -run TestIntegration -v ./...
 
 .PHONY: cover
-cover: ## Generate HTML coverage report
-	go test -race -coverprofile=coverage.out ./...
+cover: ## Generate HTML coverage report (short mode)
+	go test -race -short -coverprofile=coverage.out ./...
+	go tool cover -html=coverage.out -o coverage.html
+	@echo "Coverage report: coverage.html"
+
+.PHONY: cover-full
+cover-full: ## Generate HTML coverage report (full suite)
+	go test -count=1 -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
 
@@ -45,6 +55,10 @@ install: build ## Build and install to PREFIX (default: ~/.local)
 
 ##@ Clean
 .PHONY: clean
-clean: ## Remove build artifacts
+clean: ## Remove build artifacts (preserves model cache)
 	go clean ./...
 	rm -f coverage.out coverage.html
+
+.PHONY: dist-clean
+dist-clean: clean ## Remove all artifacts including model cache
+	rm -rf .cache/
