@@ -1,0 +1,71 @@
+// Copyright (c) 2026 John Suykerbuyk and SykeTech LTD
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+
+	mcplib "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
+)
+
+// contextKey is an unexported type for context keys in this package.
+type contextKey string
+
+const vaultKey contextKey = "vault"
+
+// VaultFromContext extracts the Vault from a handler context.
+// Returns nil if no vault is present.
+func VaultFromContext(ctx context.Context) *storage.Vault {
+	v, _ := ctx.Value(vaultKey).(*storage.Vault)
+	return v
+}
+
+// Server wraps an MCP server with vault context injection.
+type Server struct {
+	mcp   *server.MCPServer
+	vault *storage.Vault
+}
+
+// NewServer creates an MCP server backed by the given vault.
+func NewServer(vault *storage.Vault) *Server {
+	s := server.NewMCPServer(
+		"vibe-palace",
+		"0.1.0",
+		server.WithToolCapabilities(true),
+		server.WithRecovery(),
+	)
+	return &Server{mcp: s, vault: vault}
+}
+
+// Serve starts the stdio transport on os.Stdin/os.Stdout. It blocks until
+// stdin closes or a termination signal is received.
+func (s *Server) Serve(ctx context.Context) error {
+	return server.ServeStdio(s.mcp,
+		server.WithStdioContextFunc(s.contextFunc),
+	)
+}
+
+// Listen starts the MCP server on the provided reader/writer pair. It blocks
+// until the reader is closed or ctx is cancelled.
+func (s *Server) Listen(ctx context.Context, r io.Reader, w io.Writer) error {
+	stdio := server.NewStdioServer(s.mcp)
+	stdio.SetContextFunc(s.contextFunc)
+	return stdio.Listen(ctx, r, w)
+}
+
+// contextFunc returns a context enriched with the vault reference.
+func (s *Server) contextFunc(ctx context.Context) context.Context {
+	return context.WithValue(ctx, vaultKey, s.vault)
+}
+
+// HandleMessage exposes the protocol layer for unit testing without stdio
+// plumbing. It delegates directly to the underlying MCPServer.
+func (s *Server) HandleMessage(ctx context.Context, msg json.RawMessage) mcplib.JSONRPCMessage {
+	return s.mcp.HandleMessage(ctx, msg)
+}
