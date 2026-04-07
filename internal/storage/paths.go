@@ -133,6 +133,88 @@ func EnsureDir(path string) error {
 	return os.MkdirAll(path, 0755)
 }
 
+// KGTriplesDir returns the path to the knowledge graph triples directory:
+// {vault}/palace/{project}/kg/triples
+func (v *Vault) KGTriplesDir(project string) (string, error) {
+	if err := ValidateSlug(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.Root, "palace", project, "kg", "triples"), nil
+}
+
+// SessionDir returns the path to a project's sessions directory:
+// {vault}/Projects/{project}/sessions
+func (v *Vault) SessionDir(project string) (string, error) {
+	if err := ValidateSlug(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.Root, "Projects", project, "sessions"), nil
+}
+
+// datePattern matches YYYY-MM-DD date strings.
+var datePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
+// SessionFile returns the path to a session markdown file:
+// {vault}/Projects/{project}/sessions/YYYY-MM-DD-NN.md
+func (v *Vault) SessionFile(project, date string, iteration int) (string, error) {
+	if err := ValidateSlug(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	if !datePattern.MatchString(date) {
+		return "", fmt.Errorf("date %q must be in YYYY-MM-DD format", date)
+	}
+	if iteration < 1 {
+		return "", fmt.Errorf("iteration must be >= 1, got %d", iteration)
+	}
+	filename := fmt.Sprintf("%s-%02d.md", date, iteration)
+	return filepath.Join(v.Root, "Projects", project, "sessions", filename), nil
+}
+
+// TasksDir returns the path to a project's tasks directory:
+// {vault}/Projects/{project}/agentctx/tasks
+func (v *Vault) TasksDir(project string) (string, error) {
+	if err := ValidateSlug(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.Root, "Projects", project, "agentctx", "tasks"), nil
+}
+
+// TaskFile returns the path to a task markdown file:
+// {vault}/Projects/{project}/agentctx/tasks/{slug}.md
+func (v *Vault) TaskFile(project, slug string) (string, error) {
+	if err := validateSlugs(project, slug); err != nil {
+		return "", err
+	}
+	return filepath.Join(v.Root, "Projects", project, "agentctx", "tasks", slug+".md"), nil
+}
+
+// TaskDoneDir returns the path to a project's completed tasks directory:
+// {vault}/Projects/{project}/agentctx/tasks/done
+func (v *Vault) TaskDoneDir(project string) (string, error) {
+	if err := ValidateSlug(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.Root, "Projects", project, "agentctx", "tasks", "done"), nil
+}
+
+// TaskCancelledDir returns the path to a project's cancelled tasks directory:
+// {vault}/Projects/{project}/agentctx/tasks/cancelled
+func (v *Vault) TaskCancelledDir(project string) (string, error) {
+	if err := ValidateSlug(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.Root, "Projects", project, "agentctx", "tasks", "cancelled"), nil
+}
+
+// ProjectConfigFile returns the path to a project's config file:
+// {vault}/Projects/{project}/agentctx/config.toml
+func (v *Vault) ProjectConfigFile(project string) (string, error) {
+	if err := ValidateSlug(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.Root, "Projects", project, "agentctx", "config.toml"), nil
+}
+
 // encodeTripleComponent lowercases the input and replaces spaces with underscores.
 func encodeTripleComponent(s string) string {
 	return strings.ReplaceAll(strings.ToLower(s), " ", "_")

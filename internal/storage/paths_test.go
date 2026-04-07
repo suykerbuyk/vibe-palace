@@ -233,6 +233,153 @@ func TestEnsureDir(t *testing.T) {
 	}
 }
 
+func TestKGTriplesDir(t *testing.T) {
+	v := NewVault("/vault")
+	got, err := v.KGTriplesDir("recmeet")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := filepath.Join("/vault", "palace", "recmeet", "kg", "triples")
+	if got != want {
+		t.Errorf("KGTriplesDir = %q, want %q", got, want)
+	}
+
+	_, err = v.KGTriplesDir("BAD")
+	if err == nil {
+		t.Error("KGTriplesDir with invalid project should return error")
+	}
+}
+
+func TestSessionDir(t *testing.T) {
+	v := NewVault("/vault")
+	got, err := v.SessionDir("recmeet")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := filepath.Join("/vault", "Projects", "recmeet", "sessions")
+	if got != want {
+		t.Errorf("SessionDir = %q, want %q", got, want)
+	}
+
+	_, err = v.SessionDir("BAD")
+	if err == nil {
+		t.Error("SessionDir with invalid project should return error")
+	}
+}
+
+func TestSessionFile(t *testing.T) {
+	v := NewVault("/vault")
+	tests := []struct {
+		name      string
+		project   string
+		date      string
+		iteration int
+		want      string
+		wantErr   bool
+	}{
+		{
+			"valid", "recmeet", "2026-03-15", 2,
+			filepath.Join("/vault", "Projects", "recmeet", "sessions", "2026-03-15-02.md"),
+			false,
+		},
+		{"invalid project", "BAD", "2026-03-15", 1, "", true},
+		{"invalid date format", "recmeet", "March 15", 1, "", true},
+		{"zero iteration", "recmeet", "2026-03-15", 0, "", true},
+		{"negative iteration", "recmeet", "2026-03-15", -1, "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := v.SessionFile(tt.project, tt.date, tt.iteration)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SessionFile error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("SessionFile = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTasksDir(t *testing.T) {
+	v := NewVault("/vault")
+	got, err := v.TasksDir("recmeet")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := filepath.Join("/vault", "Projects", "recmeet", "agentctx", "tasks")
+	if got != want {
+		t.Errorf("TasksDir = %q, want %q", got, want)
+	}
+
+	_, err = v.TasksDir("BAD")
+	if err == nil {
+		t.Error("TasksDir with invalid project should return error")
+	}
+}
+
+func TestTaskFile(t *testing.T) {
+	v := NewVault("/vault")
+	got, err := v.TaskFile("recmeet", "my-task")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := filepath.Join("/vault", "Projects", "recmeet", "agentctx", "tasks", "my-task.md")
+	if got != want {
+		t.Errorf("TaskFile = %q, want %q", got, want)
+	}
+
+	_, err = v.TaskFile("BAD", "my-task")
+	if err == nil {
+		t.Error("TaskFile with invalid project should return error")
+	}
+	_, err = v.TaskFile("recmeet", "BAD SLUG")
+	if err == nil {
+		t.Error("TaskFile with invalid slug should return error")
+	}
+}
+
+func TestTaskDoneDir(t *testing.T) {
+	v := NewVault("/vault")
+	got, err := v.TaskDoneDir("recmeet")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := filepath.Join("/vault", "Projects", "recmeet", "agentctx", "tasks", "done")
+	if got != want {
+		t.Errorf("TaskDoneDir = %q, want %q", got, want)
+	}
+}
+
+func TestTaskCancelledDir(t *testing.T) {
+	v := NewVault("/vault")
+	got, err := v.TaskCancelledDir("recmeet")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := filepath.Join("/vault", "Projects", "recmeet", "agentctx", "tasks", "cancelled")
+	if got != want {
+		t.Errorf("TaskCancelledDir = %q, want %q", got, want)
+	}
+}
+
+func TestProjectConfigFile(t *testing.T) {
+	v := NewVault("/vault")
+	got, err := v.ProjectConfigFile("recmeet")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := filepath.Join("/vault", "Projects", "recmeet", "agentctx", "config.toml")
+	if got != want {
+		t.Errorf("ProjectConfigFile = %q, want %q", got, want)
+	}
+
+	_, err = v.ProjectConfigFile("BAD")
+	if err == nil {
+		t.Error("ProjectConfigFile with invalid project should return error")
+	}
+}
+
 func TestEncodeTripleComponent(t *testing.T) {
 	tests := []struct {
 		input, want string

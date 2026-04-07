@@ -1,0 +1,14 @@
+vault_path = ""
+http_port = 7423
+log_level = "info"
+
+[embedder]
+model = "all-MiniLM-L6-v2"
+max_sequence_length = 256
+batch_size = 32
+
+[search]
+default_limit = 10
+structural_boost_wing = 0.12
+structural_boost_hall = 0.24
+structural_boost_room = 0.34
