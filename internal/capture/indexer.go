@@ -1,0 +1,179 @@
+// Copyright (c) 2026 John Suykerbuyk and SykeTech LTD
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+package capture
+
+import (
+	"context"
+	"crypto/md5"
+	"encoding/hex"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/suykerbuyk/vibe-palace/internal/embedder"
+	"github.com/suykerbuyk/vibe-palace/internal/search"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
+)
+
+// Indexer orchestrates transcript chunking, classification, embedding, and storage.
+type Indexer struct {
+	vault    *storage.Vault
+	engine   *search.Engine
+	embedder embedder.Embedder
+	config   storage.Config
+}
+
+// NewIndexer creates a transcript indexer.
+// Chunk settings are read from config (chunker.max_chars, chunker.overlap).
+func NewIndexer(vault *storage.Vault, engine *search.Engine, emb embedder.Embedder, cfg storage.Config) *Indexer {
+	return &Indexer{
+		vault:    vault,
+		engine:   engine,
+		embedder: emb,
+		config:   cfg,
+	}
+}
+
+// IndexTranscript chunks a raw transcript, classifies each chunk, embeds them
+// in batch, stores drawers, indexes vectors, and optionally extracts entities.
+func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, transcript string) error {
+	if strings.TrimSpace(transcript) == "" {
+		return nil
+	}
+
+	chunks := Chunk(transcript, idx.chunkConfig())
+	if len(chunks) == 0 {
+		return nil
+	}
+
+	wing := DetectWing(project)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Build drawers and collect texts for batch embedding.
+	type drawerLoc struct {
+		drawer storage.Drawer
+		room   string
+	}
+	locs := make([]drawerLoc, len(chunks))
+
+	for i, chunk := range chunks {
+		room := DetectRoom(chunk)
+		hall := DetectHall(chunk)
+
+		d := storage.Drawer{
+			Hall:       hall,
+			Content:    chunk,
+			SourceType: "session",
+			SourceRef:  sessionID,
+			ChunkIndex: i,
+			FiledAt:    now,
+			AddedBy:    "capture",
+		}
+		// Pre-compute the ID the same way storage does, so we can use it
+		// for vector indexing even before AppendDrawer fills it in.
+		d.ID = drawerID(wing, room, chunk)
+
+		locs[i] = drawerLoc{drawer: d, room: room}
+	}
+
+	// Store drawers in the vault (JSONL).
+	for i := range locs {
+		err := idx.vault.AppendDrawer(project, wing, locs[i].room, locs[i].drawer)
+		if err != nil {
+			// Duplicate drawers are expected on re-index — skip silently.
+			if strings.Contains(err.Error(), "already exists") {
+				continue
+			}
+			return fmt.Errorf("append drawer %d: %w", i, err)
+		}
+	}
+
+	// Batch embed all chunks.
+	if idx.embedder != nil && idx.engine != nil {
+		vecs, err := idx.embedder.EmbedBatch(ctx, chunks)
+		if err != nil {
+			return fmt.Errorf("batch embed: %w", err)
+		}
+
+		for i, loc := range locs {
+			if err := idx.engine.IndexDrawerWithVec(project, wing, loc.room, loc.drawer, vecs[i]); err != nil {
+				return fmt.Errorf("index drawer %d: %w", i, err)
+			}
+		}
+	}
+
+	// Best-effort entity extraction and KG population.
+	idx.extractEntities(project, sessionID, transcript, now)
+
+	return nil
+}
+
+// extractEntities runs regex-based entity extraction and writes to the KG.
+// All errors are silently ignored (best-effort per PRD).
+func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp string) {
+	entities := ExtractEntities(transcript)
+	for _, ent := range entities {
+		_ = idx.vault.AddEntity(project, storage.Entity{
+			ID:        slugify(ent.Type + "-" + ent.Name),
+			Name:      ent.Name,
+			Type:      ent.Type,
+			CreatedAt: timestamp,
+		})
+		_ = idx.vault.AddTriple(project, storage.Triple{
+			Subject:       ent.Name,
+			Predicate:     "mentioned_in",
+			Object:        sessionID,
+			SourceSession: sessionID,
+			ExtractedAt:   timestamp,
+			Confidence:    0.8,
+		})
+	}
+}
+
+// chunkConfig returns a ChunkConfig from the indexer's config, falling back to defaults.
+func (idx *Indexer) chunkConfig() ChunkConfig {
+	cfg := DefaultChunkConfig()
+	if idx.config.ChunkMaxChars > 0 {
+		cfg.MaxChars = idx.config.ChunkMaxChars
+	}
+	if idx.config.ChunkOverlap > 0 {
+		cfg.Overlap = idx.config.ChunkOverlap
+	}
+	return cfg
+}
+
+// drawerID mirrors storage.drawerID: first 8 hex chars of MD5(wing+room+content).
+func drawerID(wing, room, content string) string {
+	h := md5.Sum([]byte(wing + room + content))
+	return hex.EncodeToString(h[:])[:8]
+}
+
+// slugify produces a slug from an arbitrary string.
+func slugify(s string) string {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == ' ' || r == '_' || r == '/' || r == '.' || r == ':':
+			b.WriteByte('-')
+		}
+	}
+	// Collapse consecutive hyphens.
+	result := b.String()
+	for strings.Contains(result, "--") {
+		result = strings.ReplaceAll(result, "--", "-")
+	}
+	result = strings.Trim(result, "-")
+	if len(result) > 60 {
+		// Truncate at hyphen boundary.
+		if idx := strings.LastIndex(result[:60], "-"); idx > 0 {
+			result = result[:idx]
+		} else {
+			result = result[:60]
+		}
+	}
+	return result
+}

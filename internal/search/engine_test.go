@@ -283,3 +283,44 @@ func TestSearchDefaultLimit(t *testing.T) {
 		t.Errorf("expected at most 10 results with default limit, got %d", len(results))
 	}
 }
+
+func TestEmbedderGetter(t *testing.T) {
+	eng, _ := testEngine(t)
+	emb := eng.Embedder()
+	if emb == nil {
+		t.Fatal("Embedder() returned nil")
+	}
+	if emb.Dimensions() != 384 {
+		t.Errorf("Dimensions() = %d, want 384", emb.Dimensions())
+	}
+}
+
+func TestIndexDrawerWithVec(t *testing.T) {
+	eng, v := testEngine(t)
+	ctx := context.Background()
+
+	d := addDrawer(t, v, "proj", "wing-a", "room-1", "pre-computed vector content", "facts")
+
+	// Generate a vector manually.
+	vec, err := eng.Embedder().Embed(ctx, d.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Index with pre-computed vector.
+	if err := eng.IndexDrawerWithVec("proj", "wing-a", "room-1", d, vec); err != nil {
+		t.Fatalf("IndexDrawerWithVec: %v", err)
+	}
+
+	// Should be searchable.
+	results, err := eng.Search(ctx, "pre-computed", SearchFilters{Project: "proj"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	if results[0].DrawerID != d.ID {
+		t.Errorf("got drawer %q, want %q", results[0].DrawerID, d.ID)
+	}
+}

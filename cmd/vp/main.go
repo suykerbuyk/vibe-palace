@@ -52,7 +52,7 @@ func main() {
 
 	resolver := vpctx.NewResolver(v.Root)
 	srv := mcpkg.NewServer(v)
-	tools.RegisterAll(srv.Registry(), resolver, v, eng)
+	tools.RegisterAll(srv.Registry(), resolver, v, eng, cfg)
 
 	if err := srv.Serve(context.Background()); err != nil {
 		fmt.Fprintf(os.Stderr, "vp: %v\n", err)

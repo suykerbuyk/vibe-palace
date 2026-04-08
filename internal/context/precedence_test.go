@@ -274,11 +274,11 @@ func TestListCommandsEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListResources(command): %v", err)
 	}
-	// Embedded commands: vp-cancel-plan, vp-restart, vp-review-plan, vp-wrap (sorted).
-	if len(resources) != 4 {
-		t.Fatalf("got %d commands, want 4: %v", len(resources), resources)
+	// Embedded commands: vp-cancel-plan, vp-capture, vp-restart, vp-review-plan, vp-wrap (sorted).
+	if len(resources) != 5 {
+		t.Fatalf("got %d commands, want 5: %v", len(resources), resources)
 	}
-	wantNames := []string{"vp-cancel-plan", "vp-restart", "vp-review-plan", "vp-wrap"}
+	wantNames := []string{"vp-cancel-plan", "vp-capture", "vp-restart", "vp-review-plan", "vp-wrap"}
 	for i, want := range wantNames {
 		if resources[i].Name != want {
 			t.Errorf("resources[%d].Name = %q, want %q", i, resources[i].Name, want)
@@ -304,10 +304,10 @@ func TestListCommandsMergedNoDuplicates(t *testing.T) {
 		t.Fatalf("ListResources: %v", err)
 	}
 
-	// Expect: custom(project), deploy(vault), vp-cancel-plan(embedded),
+	// Expect: custom(project), deploy(vault), vp-cancel-plan(embedded), vp-capture(embedded),
 	//         vp-restart(vault — shadows embedded), vp-review-plan(embedded), vp-wrap(embedded)
-	if len(resources) != 6 {
-		t.Fatalf("got %d resources, want 6: %v", len(resources), resources)
+	if len(resources) != 7 {
+		t.Fatalf("got %d resources, want 7: %v", len(resources), resources)
 	}
 
 	// Check vp-restart comes from vault (override), not embedded.

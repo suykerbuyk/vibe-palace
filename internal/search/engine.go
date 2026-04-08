@@ -244,6 +244,35 @@ func (e *Engine) Rebuild(ctx context.Context, project string) error {
 	return nil
 }
 
+// Embedder returns the engine's embedder for external batch use.
+func (e *Engine) Embedder() embedder.Embedder {
+	return e.embedder
+}
+
+// IndexDrawerWithVec adds a drawer to the search index using a pre-computed
+// embedding vector. This avoids re-embedding when the caller has already
+// batch-embedded the content (e.g., the ingest pipeline).
+func (e *Engine) IndexDrawerWithVec(project, wing, room string, d storage.Drawer, vec []float32) error {
+	// Cache the embedding (non-fatal on failure).
+	_ = e.cache.Put(project, d.ID, vec)
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	idx, ok := e.indexes[project]
+	if !ok {
+		idx = NewVectorIndex(e.embedder.Dimensions())
+		e.indexes[project] = idx
+	}
+
+	if err := idx.Insert(d.ID, vec); err != nil {
+		return err
+	}
+
+	e.metadata[d.ID] = makeDrawerMeta(project, wing, room, d)
+	return nil
+}
+
 // Close releases resources.
 func (e *Engine) Close() error {
 	return e.embedder.Close()

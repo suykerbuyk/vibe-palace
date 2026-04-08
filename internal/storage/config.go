@@ -26,6 +26,8 @@ type Config struct {
 	BoostWing          float64 `json:"boost_wing"`
 	BoostHall          float64 `json:"boost_hall"`
 	BoostRoom          float64 `json:"boost_room"`
+	ChunkMaxChars      int     `json:"chunk_max_chars"`
+	ChunkOverlap       int     `json:"chunk_overlap"`
 }
 
 // tomlConfig is the intermediate struct matching the TOML file structure.
@@ -39,11 +41,15 @@ type tomlConfig struct {
 		BatchSize         int    `toml:"batch_size"`
 	} `toml:"embedder"`
 	Search struct {
-		DefaultLimit       int     `toml:"default_limit"`
+		DefaultLimit        int     `toml:"default_limit"`
 		StructuralBoostWing float64 `toml:"structural_boost_wing"`
 		StructuralBoostHall float64 `toml:"structural_boost_hall"`
 		StructuralBoostRoom float64 `toml:"structural_boost_room"`
 	} `toml:"search"`
+	Chunker struct {
+		MaxChars int `toml:"max_chars"`
+		Overlap  int `toml:"overlap"`
+	} `toml:"chunker"`
 }
 
 // flatten converts a tomlConfig into a Config.
@@ -59,6 +65,8 @@ func (tc *tomlConfig) flatten() Config {
 		BoostWing:          tc.Search.StructuralBoostWing,
 		BoostHall:          tc.Search.StructuralBoostHall,
 		BoostRoom:          tc.Search.StructuralBoostRoom,
+		ChunkMaxChars:      tc.Chunker.MaxChars,
+		ChunkOverlap:       tc.Chunker.Overlap,
 	}
 }
 

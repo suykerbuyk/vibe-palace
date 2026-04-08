@@ -4,6 +4,7 @@
 package tools
 
 import (
+	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
@@ -11,8 +12,8 @@ import (
 )
 
 // RegisterAll registers all tools with the MCP registry.
-// If engine is nil, search tools are not registered.
-func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vault, engine *search.Engine) {
+// If engine is nil, search tools and capture tools are not registered.
+func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vault, engine *search.Engine, cfg ...storage.Config) {
 	reg.MustRegister(BootstrapContextTool(resolver, vault))
 	reg.MustRegister(GetCommandTool(resolver))
 	reg.MustRegister(GetSkillTool(resolver))
@@ -23,5 +24,11 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	if engine != nil {
 		reg.MustRegister(SearchTool(engine))
 		reg.MustRegister(SearchCrossProjectTool(engine))
+		var c storage.Config
+		if len(cfg) > 0 {
+			c = cfg[0]
+		}
+		indexer := capture.NewIndexer(vault, engine, engine.Embedder(), c)
+		reg.MustRegister(CaptureSessionTool(vault, indexer))
 	}
 }
