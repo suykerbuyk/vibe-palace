@@ -29,11 +29,12 @@ type captureSessionParams struct {
 }
 
 type captureSessionResult struct {
-	Status    string `json:"status"`
-	Project   string `json:"project"`
-	NotePath  string `json:"note_path"`
-	Iteration int    `json:"iteration"`
-	SessionID string `json:"session_id"`
+	Status        string `json:"status"`
+	Project       string `json:"project"`
+	NotePath      string `json:"note_path"`
+	Iteration     int    `json:"iteration"`
+	SessionID     string `json:"session_id"`
+	FrictionScore int    `json:"friction_score,omitempty"`
 }
 
 var captureSessionSchema = json.RawMessage(`{
@@ -127,6 +128,13 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 			OpenThreads:  p.OpenThreads,
 		}
 
+		// Score transcript friction before writing session.
+		if p.Transcript != "" {
+			if score, err := capture.AnalyzeFriction(p.Transcript); err == nil {
+				meta.FrictionScore = score
+			}
+		}
+
 		body := buildSessionBody(p)
 
 		sessionID, err := vault.WriteSession(p.Project, meta, body)
@@ -149,21 +157,23 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 			if err := indexer.IndexTranscript(ctx, sessionID, p.Project, p.Transcript); err != nil {
 				// Non-fatal: session was captured, indexing failed.
 				return captureSessionResult{
-					Status:    "partial",
-					Project:   p.Project,
-					NotePath:  notePath,
-					Iteration: iteration,
-					SessionID: sessionID,
+					Status:        "partial",
+					Project:       p.Project,
+					NotePath:      notePath,
+					Iteration:     iteration,
+					SessionID:     sessionID,
+					FrictionScore: meta.FrictionScore,
 				}, nil
 			}
 		}
 
 		return captureSessionResult{
-			Status:    "ok",
-			Project:   p.Project,
-			NotePath:  notePath,
-			Iteration: iteration,
-			SessionID: sessionID,
+			Status:        "ok",
+			Project:       p.Project,
+			NotePath:      notePath,
+			Iteration:     iteration,
+			SessionID:     sessionID,
+			FrictionScore: meta.FrictionScore,
 		}, nil
 	}
 }
