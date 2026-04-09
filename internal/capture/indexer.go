@@ -8,10 +8,12 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
+	"github.com/suykerbuyk/vibe-palace/internal/kg"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -115,20 +117,73 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp string) {
 	entities := ExtractEntities(transcript)
 	for _, ent := range entities {
-		_ = idx.vault.AddEntity(project, storage.Entity{
+		if err := idx.vault.AddEntity(project, storage.Entity{
 			ID:        slugify(ent.Type + "-" + ent.Name),
 			Name:      ent.Name,
 			Type:      ent.Type,
 			CreatedAt: timestamp,
-		})
-		_ = idx.vault.AddTriple(project, storage.Triple{
+		}); err != nil {
+			if strings.Contains(err.Error(), "already exists") {
+				slog.Debug("entity extraction: duplicate entity skipped", "entity", ent.Name)
+			} else {
+				slog.Warn("entity extraction: add entity failed", "entity", ent.Name, "err", err)
+			}
+		}
+		if err := idx.vault.AddTriple(project, storage.Triple{
 			Subject:       ent.Name,
 			Predicate:     "mentioned_in",
 			Object:        sessionID,
 			SourceSession: sessionID,
 			ExtractedAt:   timestamp,
 			Confidence:    0.8,
-		})
+		}); err != nil {
+			slog.Warn("entity extraction: add triple failed", "entity", ent.Name, "err", err)
+		}
+	}
+
+	// Phase 7: person/project/concept/tool detection.
+	detected := kg.DetectEntities(transcript)
+	for _, d := range detected {
+		if err := idx.vault.AddEntity(project, storage.Entity{
+			ID:        slugify(string(d.Type) + "-" + d.Name),
+			Name:      d.Name,
+			Type:      string(d.Type),
+			CreatedAt: timestamp,
+		}); err != nil {
+			if strings.Contains(err.Error(), "already exists") {
+				slog.Debug("kg: duplicate entity skipped", "entity", d.Name)
+			} else {
+				slog.Warn("kg: add detected entity failed", "entity", d.Name, "err", err)
+			}
+		}
+		if err := idx.vault.AddTriple(project, storage.Triple{
+			Subject:       d.Name,
+			Predicate:     "mentioned_in",
+			Object:        sessionID,
+			SourceSession: sessionID,
+			ExtractedAt:   timestamp,
+			Confidence:    d.Confidence,
+		}); err != nil {
+			slog.Warn("kg: add mentioned_in triple failed", "entity", d.Name, "err", err)
+		}
+	}
+
+	// Phase 7: relationship extraction.
+	today := timestamp[:10] // extract YYYY-MM-DD from RFC3339
+	triples := kg.ExtractTriples(transcript, detected, today)
+	for _, tr := range triples {
+		if err := idx.vault.AddTriple(project, storage.Triple{
+			Subject:       tr.Subject,
+			Predicate:     tr.Predicate,
+			Object:        tr.Object,
+			Confidence:    tr.Confidence,
+			SourceSession: sessionID,
+			ValidFrom:     tr.ValidFrom,
+			ExtractedAt:   timestamp,
+		}); err != nil {
+			slog.Warn("kg: add relationship triple failed",
+				"subject", tr.Subject, "predicate", tr.Predicate, "err", err)
+		}
 	}
 }
 

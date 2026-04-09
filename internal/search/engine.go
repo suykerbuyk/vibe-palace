@@ -6,6 +6,7 @@ package search
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -151,7 +152,9 @@ func (e *Engine) IndexDrawer(ctx context.Context, project, wing, room string, d 
 	}
 
 	// Cache the embedding (non-fatal on failure).
-	_ = e.cache.Put(project, d.ID, vec)
+	if err := e.cache.Put(project, d.ID, vec); err != nil {
+		slog.Warn("embed cache write failed", "project", project, "drawer", d.ID, "err", err)
+	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -216,7 +219,9 @@ func (e *Engine) Rebuild(ctx context.Context, project string) error {
 					if err != nil {
 						return fmt.Errorf("embed drawer %s: %w", d.ID, err)
 					}
-					_ = e.cache.Put(project, d.ID, vec)
+					if err := e.cache.Put(project, d.ID, vec); err != nil {
+						slog.Warn("embed cache write failed", "project", project, "drawer", d.ID, "err", err)
+					}
 				}
 
 				ids = append(ids, d.ID)
@@ -254,7 +259,9 @@ func (e *Engine) Embedder() embedder.Embedder {
 // batch-embedded the content (e.g., the ingest pipeline).
 func (e *Engine) IndexDrawerWithVec(project, wing, room string, d storage.Drawer, vec []float32) error {
 	// Cache the embedding (non-fatal on failure).
-	_ = e.cache.Put(project, d.ID, vec)
+	if err := e.cache.Put(project, d.ID, vec); err != nil {
+		slog.Warn("embed cache write failed", "project", project, "drawer", d.ID, "err", err)
+	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()

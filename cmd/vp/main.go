@@ -6,7 +6,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
@@ -15,6 +17,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/tools"
+	"github.com/suykerbuyk/vibe-palace/internal/vplog"
 )
 
 var version = "0.1.0-dev"
@@ -107,6 +110,9 @@ func runServe() {
 		os.Exit(1)
 	}
 
+	vplog.Init(v.VaultLocalDir()+"/vp.log", parseLogLevel(cfg.LogLevel))
+	defer vplog.Close()
+
 	modelDir := v.VaultLocalDir() + "/models"
 	emb, err := embedder.NewONNX(
 		cfg.EmbedderModel, modelDir,
@@ -123,9 +129,15 @@ func runServe() {
 
 	// Rebuild indexes for known projects in the background.
 	go func() {
-		projects, _ := v.ListProjects()
+		projects, err := v.ListProjects()
+		if err != nil {
+			slog.Warn("background rebuild: list projects failed", "err", err)
+			return
+		}
 		for _, p := range projects {
-			_ = eng.Rebuild(context.Background(), p)
+			if err := eng.Rebuild(context.Background(), p); err != nil {
+				slog.Warn("background rebuild failed", "project", p, "err", err)
+			}
 		}
 	}()
 
@@ -136,5 +148,18 @@ func runServe() {
 	if err := srv.Serve(context.Background()); err != nil {
 		fmt.Fprintf(os.Stderr, "vp: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+func parseLogLevel(s string) slog.Level {
+	switch strings.ToLower(s) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
 	}
 }

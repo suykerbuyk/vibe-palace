@@ -56,18 +56,20 @@ and we also updated internal/search/engine.go with the new API.`
 		t.Error("expected URL entity")
 	}
 
-	// Verify triples: each entity should have a "mentioned_in" triple.
+	// Verify triples: file/URL entities should have "mentioned_in" triples
+	// with confidence 0.8 (from the original entity extraction).
 	for _, e := range entities {
+		if e.Type != "file" && e.Type != "url" {
+			continue // Phase 7 entities have varying confidence
+		}
 		triples, err := h.Vault.QueryEntity("proj", e.Name, "", "out")
 		if err != nil {
-			// Some entities may not produce triples if naming differs.
 			continue
 		}
 		for _, tr := range triples {
 			if tr.Predicate == "mentioned_in" && tr.Object == sessionID {
-				// Found the expected triple.
 				if tr.Confidence != 0.8 {
-					t.Errorf("triple confidence = %f, want 0.8", tr.Confidence)
+					t.Errorf("triple confidence for %s = %f, want 0.8", e.Name, tr.Confidence)
 				}
 				if tr.SourceSession != sessionID {
 					t.Errorf("triple source_session = %q, want %q", tr.SourceSession, sessionID)

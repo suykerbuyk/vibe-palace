@@ -5,7 +5,7 @@
 Vibe-palace is a compiled Go binary that serves as an MCP (Model Context
 Protocol) server for AI-assisted development. It provides context injection,
 session capture, semantic search, and palace-based knowledge navigation through
-20 MCP tools over stdio JSON-RPC 2.0.
+26 MCP tools over stdio JSON-RPC 2.0.
 
 **Design principles:**
 - Single binary, zero-CGo, no external services
@@ -23,13 +23,14 @@ session capture, semantic search, and palace-based knowledge navigation through
 | `internal/storage` | Vault layout, CRUD, config | `Vault`, `Config`, `Drawer`, `SessionMeta` |
 | `internal/mcp` | JSON-RPC server, tool registry | `Server`, `Registry`, `Tool` |
 | `internal/context` | Precedence-aware template resolution | `Resolver`, `ResourceInfo` |
-| `internal/tools` | 20 MCP tool implementations | (see tool table below) |
+| `internal/tools` | 26 MCP tool implementations | (see tool table below) |
 | `internal/embedder` | ONNX text embedding | `Embedder` interface, `ONNXEmbedder` |
 | `internal/search` | Hybrid semantic + structural search | `Engine`, `VectorIndex`, `SearchResult` |
 | `internal/capture` | Session ingest, chunking, friction | `Indexer`, `ChunkConfig` |
 | `internal/palace` | Wing/room/hall classification, graph | `PalaceGraph`, `GraphNode`, `AAKResult` |
 | `internal/project` | Project detection from working dir | `ProjectConfig` |
-| `internal/kg` | Knowledge graph entities and triples | (types in `storage`) |
+| `internal/kg` | Entity detection + triple extraction | `DetectedEntity`, `ExtractedTriple` |
+| `internal/vplog` | Structured logging (slog to file) | `Init()`, `Close()` |
 
 ---
 
@@ -163,7 +164,7 @@ On dispatch, the registry validates incoming params against the compiled
 schema before calling the handler. Handlers extract the vault from context
 and operate on storage directly.
 
-### 20 MCP Tools
+### 26 MCP Tools
 
 | Tool | Source File | Category |
 |------|-----------|----------|
@@ -174,22 +175,28 @@ and operate on storage directly.
 | `vp_list_skills` | command_tools.go | Context |
 | `vp_cmd` | cmd_tools.go | Context |
 | `vp_skill` | cmd_tools.go | Context |
+| `vp_palace_status` | palace_tools.go | Palace |
+| `vp_list_wings` | palace_tools.go | Palace |
+| `vp_list_rooms` | palace_tools.go | Palace |
+| `vp_traverse` | palace_tools.go | Palace |
+| `vp_find_tunnels` | palace_tools.go | Palace |
+| `vp_health` | health_tools.go | Health |
+| `vp_kg_query` | kg_tools.go | Knowledge Graph |
+| `vp_kg_add` | kg_tools.go | Knowledge Graph |
+| `vp_kg_invalidate` | kg_tools.go | Knowledge Graph |
+| `vp_kg_timeline` | kg_tools.go | Knowledge Graph |
+| `vp_kg_stats` | kg_tools.go | Knowledge Graph |
+| `vp_search` | search_tools.go | Search |
+| `vp_search_cross_project` | search_tools.go | Search |
 | `vp_capture_session` | session_tools.go | Session |
 | `vp_get_project_context` | session_query_tools.go | Session |
 | `vp_search_sessions` | session_query_tools.go | Session |
 | `vp_get_session_detail` | session_query_tools.go | Session |
 | `vp_get_effectiveness` | session_query_tools.go | Session |
 | `vp_get_friction_trends` | friction_tools.go | Session |
-| `vp_search` | search_tools.go | Search |
-| `vp_search_cross_project` | search_tools.go | Search |
-| `vp_palace_status` | palace_tools.go | Palace |
-| `vp_list_wings` | palace_tools.go | Palace |
-| `vp_list_rooms` | palace_tools.go | Palace |
-| `vp_traverse` | palace_tools.go | Palace |
-| `vp_find_tunnels` | palace_tools.go | Palace |
 
-Tools 1–7 (context) are always registered. Tools 8–20 require a search
-engine (embedder must initialize successfully).
+Tools 1–18 (context, palace, health, KG) are always registered. Tools 19–26
+require a search engine (embedder must initialize successfully).
 
 ### HTTP Transport
 
@@ -527,6 +534,101 @@ rooms appearing in 2+ wings — these are cross-domain connections.
 
 ---
 
+## Structured Logging (Phase 7)
+
+### Two Logging Domains
+
+The system distinguishes between **startup crashes** (stderr + exit) and
+**runtime degradation** (slog + continue). Five `fmt.Fprintf(os.Stderr, ...)`
+calls in `main.go` handle fatal startup errors before the logger is even
+initialized. The structured logger handles runtime best-effort failures.
+
+### Log Infrastructure (`internal/vplog`)
+
+`vplog.Init(path, level)` opens a JSON log file with `O_APPEND` for POSIX
+atomic writes (safe for concurrent vp instances without advisory locking).
+Entries are typically 200–500 bytes, well under PIPE_BUF (4096 bytes).
+
+- **Location:** `{vault}/palace/.local/vp.log`
+- **Format:** JSON via `slog.NewJSONHandler`, leveled (DEBUG/INFO/WARN/ERROR)
+- **Rotation:** Rename to `.log.1` at 1MB (single backup)
+- **Fallback:** Discard handler on init failure (never blocks startup)
+- **Level:** Configured via `log_level` in config.toml (default: "info")
+
+After init, all packages use `slog.Info/Warn/Error` directly (no vplog import
+needed). Expected "already exists" entity duplicates log at DEBUG to avoid
+flooding WARN during re-index (~1000 duplicates per startup).
+
+### Health Tool (`vp_health`)
+
+Reads the last 24 hours of WARN/ERROR entries from `vp.log`, groups by
+message prefix, and returns a structured summary. Does NOT duplicate
+`vp check` (which validates installation and config). The health tool
+answers "what failed at runtime?" while `vp check` answers "is the system
+installed correctly?"
+
+---
+
+## Knowledge Graph (Phase 7)
+
+### Existing Storage Layer
+
+The storage layer (`internal/storage/knowledge_graph.go`) provides full KG
+CRUD: `AddEntity`, `GetEntity`, `ListEntities`, `AddTriple`, `QueryEntity`,
+`InvalidateTriple`, `Timeline`, `KGStats`. Entities are stored in JSONL,
+triples as individual JSON files keyed by `{subj}--{pred}--{obj}`.
+
+### Entity Detection (`internal/kg/entity_detector.go`)
+
+`DetectEntities(text)` finds person, project, tool, and concept entities
+using compiled regex patterns:
+
+- **Person:** Verb patterns (`Name said/thinks/mentioned`), capitalized
+  multi-word names. Confidence stacking (0.3 base + 0.4 verb signal).
+- **Tool:** Curated known-tool list (40+ entries) + `using/with/via X`.
+- **Project:** Hyphenated lowercase names near project-context words,
+  version references (`X v1.2`).
+- **Concept:** Capitalized terms near conceptual signals (architecture,
+  pattern, strategy).
+
+Dedup by normalized name, false positive rejection via 100+ common word list.
+
+### Triple Extraction (`internal/kg/extractor.go`)
+
+`ExtractTriples(text, entities, validFrom)` matches 6 relationship patterns:
+
+| Pattern | Predicate | Confidence |
+|---------|-----------|------------|
+| `X works on Y` | `works_on` | 0.7 |
+| `X decided to use Y` | `decided` | 0.8 (+ DECISION flag) |
+| `X started/joined Y` | `member_of` | 0.7 (+ ValidFrom) |
+| `X depends on Y` | `depends_on` | 0.6 |
+| `X created/built Y` | `created` | 0.7 |
+| `X uses Y` | `uses` | 0.6 |
+
+Subjects/objects are filtered against detected entities to reduce noise.
+Dedup by (subject, predicate, object), keep highest confidence.
+
+### Capture Pipeline Integration
+
+`IndexTranscript` runs entity detection and triple extraction after chunking.
+Detected entities get `mentioned_in` triples linking them to the source
+session. All KG operations are best-effort with slog logging.
+
+### 5 KG MCP Tools
+
+| Tool | Purpose |
+|------|---------|
+| `vp_kg_query` | Query facts about an entity (direction, temporal filter) |
+| `vp_kg_add` | Add a fact, auto-creating entities if needed |
+| `vp_kg_invalidate` | Set end date on a fact (temporal invalidation) |
+| `vp_kg_timeline` | Chronological fact history for an entity |
+| `vp_kg_stats` | Entity/triple counts, predicate types, type breakdown |
+
+All registered unconditionally (no embedder needed).
+
+---
+
 ## Build System
 
 ```
@@ -544,11 +646,10 @@ Binary: `vp` installed to `${PREFIX}/bin/vp` (default `~/.local/bin/vp`).
 
 ---
 
-## Roadmap (Phases 7–11)
+## Roadmap (Phases 8–11)
 
 | Phase | Goal |
 |-------|------|
-| 7. Knowledge Graph | Temporal entity-relationship graph with time-travel queries |
 | 8. Migration & Import | Import existing VibeVault sessions and MemPalace ChromaDB data |
 | 9. CLI & Distribution | Human-facing CLI, cross-platform builds, package distribution |
 | 10. Documentation & Human Interface | Tutorials, onboarding, and human-facing documentation |
