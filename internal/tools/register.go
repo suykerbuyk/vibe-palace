@@ -21,6 +21,11 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	reg.MustRegister(ListSkillsTool(resolver))
 	reg.MustRegister(CmdTool(resolver))
 	reg.MustRegister(SkillCmdTool(resolver))
+	reg.MustRegister(PalaceStatusTool(vault))
+	reg.MustRegister(ListWingsTool(vault))
+	reg.MustRegister(ListRoomsTool(vault))
+	reg.MustRegister(TraverseTool(vault))
+	reg.MustRegister(FindTunnelsTool(vault))
 	if engine != nil {
 		reg.MustRegister(SearchTool(engine))
 		reg.MustRegister(SearchCrossProjectTool(engine))

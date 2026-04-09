@@ -244,6 +244,33 @@ func (v *Vault) ListWings(project string) ([]string, error) {
 	return wings, nil
 }
 
+// ListRooms returns all room slugs for a wing by reading the wing directory.
+func (v *Vault) ListRooms(project, wing string) ([]string, error) {
+	if err := validateSlugs(project, wing); err != nil {
+		return nil, err
+	}
+
+	wingDir := filepath.Join(v.Root, "palace", project, "drawers", wing)
+	entries, err := os.ReadDir(wingDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read wing dir: %w", err)
+	}
+
+	var rooms []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if ValidateSlug(e.Name()) == nil {
+			rooms = append(rooms, e.Name())
+		}
+	}
+	return rooms, nil
+}
+
 // ListProjects returns all project slugs by reading the palace directory.
 func (v *Vault) ListProjects() ([]string, error) {
 	palaceDir := filepath.Join(v.Root, "palace")

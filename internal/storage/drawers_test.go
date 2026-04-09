@@ -307,6 +307,49 @@ func TestListWingsEmpty(t *testing.T) {
 	}
 }
 
+func TestListRooms(t *testing.T) {
+	v := testVault(t)
+	d := Drawer{Content: "c1", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}
+
+	if err := v.AppendDrawer("proj", "wing-a", "room-1", d); err != nil {
+		t.Fatal(err)
+	}
+	d.Content = "c2"
+	if err := v.AppendDrawer("proj", "wing-a", "room-2", d); err != nil {
+		t.Fatal(err)
+	}
+	d.Content = "c3"
+	if err := v.AppendDrawer("proj", "wing-a", "room-3", d); err != nil {
+		t.Fatal(err)
+	}
+
+	rooms, err := v.ListRooms("proj", "wing-a")
+	if err != nil {
+		t.Fatalf("ListRooms: %v", err)
+	}
+	if len(rooms) != 3 {
+		t.Fatalf("got %d rooms, want 3", len(rooms))
+	}
+	found := map[string]bool{}
+	for _, r := range rooms {
+		found[r] = true
+	}
+	if !found["room-1"] || !found["room-2"] || !found["room-3"] {
+		t.Errorf("rooms = %v, want room-1, room-2, room-3", rooms)
+	}
+}
+
+func TestListRoomsEmpty(t *testing.T) {
+	v := testVault(t)
+	rooms, err := v.ListRooms("proj", "nonexistent")
+	if err != nil {
+		t.Fatalf("ListRooms: %v", err)
+	}
+	if rooms != nil {
+		t.Errorf("expected nil for nonexistent wing, got %v", rooms)
+	}
+}
+
 func TestListProjects(t *testing.T) {
 	v := testVault(t)
 	d := Drawer{Content: "c1", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}
