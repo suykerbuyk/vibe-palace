@@ -31,5 +31,9 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 		indexer := capture.NewIndexer(vault, engine, engine.Embedder(), c)
 		reg.MustRegister(CaptureSessionTool(vault, indexer))
 		reg.MustRegister(FrictionTrendsTool(vault))
+		reg.MustRegister(SearchSessionsTool(vault))
+		reg.MustRegister(GetSessionDetailTool(vault))
+		reg.MustRegister(GetProjectContextTool(vault, resolver))
+		reg.MustRegister(GetEffectivenessTool(vault))
 	}
 }
