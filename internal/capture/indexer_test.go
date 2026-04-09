@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
+	"github.com/suykerbuyk/vibe-palace/internal/palace"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -48,7 +49,7 @@ func TestIndexTranscriptBasic(t *testing.T) {
 	}
 
 	// Verify drawers were written.
-	wing := DetectWing("test-proj")
+	wing := palace.DetectWing("test-proj", "")
 	rooms := []string{"general", "testing", "debugging", "decisions", "discoveries"}
 	var totalDrawers int
 	for _, room := range rooms {
@@ -88,7 +89,7 @@ func TestIndexTranscriptNoEngine(t *testing.T) {
 	}
 
 	// Drawers should still be stored.
-	wing := DetectWing("test-proj")
+	wing := palace.DetectWing("test-proj", "")
 	drawers, _ := v.ListDrawers("test-proj", wing, "general")
 	if len(drawers) == 0 {
 		t.Error("expected drawers to be written even without engine")

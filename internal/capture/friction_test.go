@@ -90,7 +90,7 @@ func TestAnalyzeFriction_HighFrictionErrors(t *testing.T) {
 	errorWords := []string{
 		"error", "error", "error", "error", "error",
 		"exception", "exception", "failed", "failed", "failure",
-		"traceback", "traceback", "panic", "panic", "panic",
+		"traceback", "traceback", "fatal", "fatal", "fatal",
 		"error", "exception", "failed", "failure", "stack trace",
 	}
 	transcript := strings.Join(append(words, errorWords...), " ")

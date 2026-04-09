@@ -16,3 +16,10 @@ structural_boost_room = 0.34
 [chunker]
 max_chars = 800
 overlap = 100
+
+[palace]
+# Room keywords are configurable per project.
+# Project-level [palace.rooms] fully replaces vault-level rooms.
+# Example:
+# [palace.rooms.audio]
+# keywords = ["wav", "mp3", "codec", "ffmpeg"]

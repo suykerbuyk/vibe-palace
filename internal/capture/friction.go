@@ -110,7 +110,7 @@ func countRetries(lower string) int {
 	return sub
 }
 
-// errorKeywords are terms indicating errors in transcripts.
+// errorKeywords are language-agnostic terms indicating errors in transcripts.
 var errorKeywords = []string{
 	"error",
 	"exception",
@@ -118,7 +118,10 @@ var errorKeywords = []string{
 	"failure",
 	"traceback",
 	"stack trace",
-	"panic",
+	"segfault",
+	"core dump",
+	"unhandled",
+	"fatal",
 }
 
 // countErrorDensity measures error keyword density per 1000 tokens.

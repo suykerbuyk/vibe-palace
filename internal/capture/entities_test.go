@@ -73,6 +73,58 @@ func TestExtractEntitiesShortPathsSkipped(t *testing.T) {
 	}
 }
 
+func TestExtractEntitiesDependencyFilesSkipped(t *testing.T) {
+	// Dependency manifests and lock files across languages should be skipped.
+	depFiles := []string{
+		"go.mod", "go.sum",
+		"package.json", "package-lock.json",
+		"requirements.txt",
+		"cargo.toml", "cargo.lock",
+		"gemfile", "gemfile.lock",
+		"pom.xml",
+		"composer.json", "composer.lock",
+		"pubspec.yaml", "pubspec.lock",
+		"mix.exs", "mix.lock",
+		"conanfile.txt", "conanfile.py", "conan.lock",
+		"vcpkg.json",
+	}
+	for _, dep := range depFiles {
+		text := "Check " + dep + " for the dependency."
+		entities := ExtractEntities(text)
+		files := filterByType(entities, "file")
+		for _, e := range files {
+			if e.Name == dep {
+				t.Errorf("expected dependency file %q to be skipped", dep)
+			}
+		}
+	}
+}
+
+func TestExtractEntitiesSourceFilesKept(t *testing.T) {
+	// Real source files should NOT be skipped regardless of language.
+	sourceFiles := []string{
+		"internal/capture/chunker.go",
+		"src/components/App.tsx",
+		"lib/parser.py",
+		"src/main.rs",
+		"app/models/user.rb",
+	}
+	for _, src := range sourceFiles {
+		text := "Modified " + src + " for the feature."
+		entities := ExtractEntities(text)
+		files := filterByType(entities, "file")
+		found := false
+		for _, e := range files {
+			if e.Name == src {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected source file %q to be extracted", src)
+		}
+	}
+}
+
 func filterByType(entities []ExtractedEntity, typ string) []ExtractedEntity {
 	var result []ExtractedEntity
 	for _, e := range entities {

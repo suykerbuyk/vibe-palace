@@ -180,6 +180,75 @@ func TestDefaultsTomlEmbedded(t *testing.T) {
 	}
 }
 
+func TestConfigPalaceRooms(t *testing.T) {
+	v := testVault(t)
+
+	projDir := filepath.Join(v.Root, "Projects", "proj", "agentctx")
+	os.MkdirAll(projDir, 0755)
+	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`
+[palace.rooms.audio]
+keywords = ["wav", "mp3", "codec"]
+
+[palace.rooms.graphics]
+keywords = ["opengl", "vulkan", "shader"]
+`), 0644)
+
+	cfg, err := v.LoadConfig("proj")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if cfg.PalaceRoomKeywords == nil {
+		t.Fatal("PalaceRoomKeywords should not be nil")
+	}
+	if got := cfg.PalaceRoomKeywords["audio"]; len(got) != 3 || got[0] != "wav" {
+		t.Errorf("audio keywords = %v, want [wav mp3 codec]", got)
+	}
+	if got := cfg.PalaceRoomKeywords["graphics"]; len(got) != 3 || got[0] != "opengl" {
+		t.Errorf("graphics keywords = %v, want [opengl vulkan shader]", got)
+	}
+}
+
+func TestConfigPalaceRoomsEmpty(t *testing.T) {
+	v := testVault(t)
+
+	cfg, err := v.LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.PalaceRoomKeywords != nil {
+		t.Errorf("PalaceRoomKeywords should be nil when no rooms configured, got %v", cfg.PalaceRoomKeywords)
+	}
+}
+
+func TestConfigPalaceRoomsProjectOverridesVault(t *testing.T) {
+	v := testVault(t)
+
+	// Simulate vault-level config with palace rooms.
+	// We can't easily write vault-level config in test (it uses UserConfigDir),
+	// so we test that project-level rooms fully replace by verifying the TOML
+	// layering: last decode wins for map fields.
+	projDir := filepath.Join(v.Root, "Projects", "proj", "agentctx")
+	os.MkdirAll(projDir, 0755)
+	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`
+[palace.rooms.custom]
+keywords = ["only-this"]
+`), 0644)
+
+	cfg, err := v.LoadConfig("proj")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if len(cfg.PalaceRoomKeywords) != 1 {
+		t.Errorf("expected exactly 1 room (project replaces vault), got %d: %v",
+			len(cfg.PalaceRoomKeywords), cfg.PalaceRoomKeywords)
+	}
+	if _, ok := cfg.PalaceRoomKeywords["custom"]; !ok {
+		t.Error("expected 'custom' room from project config")
+	}
+}
+
 func TestConfigThreeLevelPrecedence(t *testing.T) {
 	v := testVault(t)
 

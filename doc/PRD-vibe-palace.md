@@ -144,6 +144,30 @@ The compiled Go binary contains:
 
 No Python. No Docker. No pip. No node_modules. Download, run, done.
 
+### 1.7 Language-Agnostic Classification
+
+All content classification — room detection, filename pattern matching, entity
+extraction, friction analysis — must be language-agnostic. No single programming
+language, framework, or build system receives preferential treatment in default
+keyword lists or pattern tables. Specifically:
+
+- **Filename rules** cover test file conventions across Go, Python, TypeScript,
+  JavaScript, Java, Rust, Ruby, Elixir, and Dart (suffix, prefix, and contains
+  patterns).
+- **Content keywords** use only terms that are universal across development
+  contexts (e.g., "test", "assert", "coverage") — not language-specific tokens
+  (e.g., `_test.go`, `panic`).
+- **Entity extraction** skips dependency manifests and lock files from all major
+  ecosystems (Go, Node, Python, Rust, Ruby, Java, PHP, .NET, Dart, Elixir, Swift).
+- **Error/friction detection** uses cross-language error indicators (e.g., "error",
+  "exception", "fatal", "segfault") — not language-specific ones (e.g., `panic`).
+- **Custom keywords** (per-project `[palace.rooms]` config) allow users to extend
+  classification for domain-specific or language-specific needs without polluting
+  the defaults.
+
+While vibe-palace itself is written in Go, it serves developers working in any
+language. The defaults must reflect that.
+
 ---
 
 ## 2. Architecture Overview
@@ -1712,16 +1736,25 @@ compression dialect.
 - Wing/hall/room taxonomy definition
 - `DetectWing(project, sourcePath string) string` — auto-assign wing
 - `DetectRoom(content string, sourcePath string, keywords map[string][]string) string`
+  — 4-tier cascade: custom keywords → filename match → content keywords → fallback
 - `DetectHall(content string) string` — classify memory type
-- 5 hall types: facts, events, discoveries, preferences, advice
-- Room detection: path keyword match → filename match → content scoring → fallback
-- Room keyword configuration per project (stored in config table)
+- 6 hall types: facts, events, discoveries, preferences, advice, decisions
+- Language-agnostic filename rules: suffix, prefix, and contains patterns covering
+  Go, Python, TypeScript, JavaScript, Java, Rust, Ruby, Elixir, Dart, plus
+  multi-platform CI/CD configs (GitHub, GitLab, CircleCI, Travis, Azure, Jenkins)
+- Language-agnostic content keywords: no single-language tokens in defaults
+- Room keyword configuration per project via `[palace.rooms]` in TOML config
+  (project-level fully replaces vault-level — no merge)
+- Entity extraction skips dependency manifests/lock files across all major ecosystems
+- Friction/error detection uses cross-language error indicators
 
 **Acceptance criteria:**
 - Wing detection defaults to project name (sensible default)
 - Room detection matches MemPalace's accuracy on test content
-- Hall classification covers all 5 types with keyword sets
+- Hall classification covers all 6 types with keyword sets
 - Custom room keywords configurable per project
+- All classification defaults are language-agnostic (principle 1.7)
+- Filename rules cover test file conventions for 10+ languages
 - 80%+ test coverage
 
 ### Task 6.2: Palace Graph

@@ -44,8 +44,9 @@ func ExtractEntities(text string) []ExtractedEntity {
 		if len(path) < 5 {
 			continue
 		}
-		// Skip common false positives.
-		if path == "go.mod" || path == "go.sum" {
+		// Skip dependency manifests and lock files across languages —
+		// these are rarely meaningful entities in session transcripts.
+		if dependencyFile(path) {
 			continue
 		}
 		add(path, "file")
@@ -59,4 +60,32 @@ func ExtractEntities(text string) []ExtractedEntity {
 	}
 
 	return entities
+}
+
+// dependencyFiles are manifest and lock files that produce false-positive
+// entity matches. Language-agnostic: covers Go, Node, Python, Rust, Ruby,
+// Java, PHP, .NET, Dart, Elixir, and Swift.
+var dependencyFiles = map[string]bool{
+	"go.mod": true, "go.sum": true,
+	"package.json": true, "package-lock.json": true, "yarn.lock": true, "pnpm-lock.yaml": true,
+	"requirements.txt": true, "pipfile": true, "pipfile.lock": true, "poetry.lock": true,
+	"cargo.toml": true, "cargo.lock": true,
+	"gemfile": true, "gemfile.lock": true,
+	"pom.xml": true, "build.gradle": true, "build.gradle.kts": true,
+	"composer.json": true, "composer.lock": true,
+	"pubspec.yaml": true, "pubspec.lock": true,
+	"mix.exs": true, "mix.lock": true,
+	"package.swift": true, "package.resolved": true,
+	"nuget.config": true, "packages.config": true,
+	"conanfile.txt": true, "conanfile.py": true, "conan.lock": true,
+	"vcpkg.json": true,
+}
+
+// dependencyFile reports whether path is a known dependency manifest or lock file.
+func dependencyFile(path string) bool {
+	base := strings.ToLower(path)
+	if idx := strings.LastIndex(base, "/"); idx >= 0 {
+		base = base[idx+1:]
+	}
+	return dependencyFiles[base]
 }

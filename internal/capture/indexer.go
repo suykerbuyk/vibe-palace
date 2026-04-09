@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
+	"github.com/suykerbuyk/vibe-palace/internal/palace"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -47,7 +48,7 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 		return nil
 	}
 
-	wing := DetectWing(project)
+	wing := palace.DetectWing(project, "")
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	// Build drawers and collect texts for batch embedding.
@@ -58,8 +59,8 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 	locs := make([]drawerLoc, len(chunks))
 
 	for i, chunk := range chunks {
-		room := DetectRoom(chunk)
-		hall := DetectHall(chunk)
+		room := palace.DetectRoom(chunk, "", idx.config.PalaceRoomKeywords)
+		hall := palace.DetectHall(chunk)
 
 		d := storage.Drawer{
 			Hall:       hall,

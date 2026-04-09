@@ -26,8 +26,9 @@ type Config struct {
 	BoostWing          float64 `json:"boost_wing"`
 	BoostHall          float64 `json:"boost_hall"`
 	BoostRoom          float64 `json:"boost_room"`
-	ChunkMaxChars      int     `json:"chunk_max_chars"`
-	ChunkOverlap       int     `json:"chunk_overlap"`
+	ChunkMaxChars      int                 `json:"chunk_max_chars"`
+	ChunkOverlap       int                 `json:"chunk_overlap"`
+	PalaceRoomKeywords map[string][]string `json:"palace_room_keywords,omitempty"`
 }
 
 // tomlConfig is the intermediate struct matching the TOML file structure.
@@ -50,6 +51,13 @@ type tomlConfig struct {
 		MaxChars int `toml:"max_chars"`
 		Overlap  int `toml:"overlap"`
 	} `toml:"chunker"`
+	Palace struct {
+		Rooms map[string]tomlRoomConfig `toml:"rooms"`
+	} `toml:"palace"`
+}
+
+type tomlRoomConfig struct {
+	Keywords []string `toml:"keywords"`
 }
 
 // flatten converts a tomlConfig into a Config.
@@ -67,7 +75,21 @@ func (tc *tomlConfig) flatten() Config {
 		BoostRoom:          tc.Search.StructuralBoostRoom,
 		ChunkMaxChars:      tc.Chunker.MaxChars,
 		ChunkOverlap:       tc.Chunker.Overlap,
+		PalaceRoomKeywords: flattenPalaceRooms(tc.Palace.Rooms),
 	}
+}
+
+// flattenPalaceRooms converts the TOML palace rooms config to a plain map.
+// Returns nil if no rooms are configured.
+func flattenPalaceRooms(rooms map[string]tomlRoomConfig) map[string][]string {
+	if len(rooms) == 0 {
+		return nil
+	}
+	m := make(map[string][]string, len(rooms))
+	for room, cfg := range rooms {
+		m[room] = cfg.Keywords
+	}
+	return m
 }
 
 // LoadConfig loads configuration with precedence: embedded < vault < project.
