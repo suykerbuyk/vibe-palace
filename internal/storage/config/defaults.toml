@@ -3,7 +3,7 @@ http_port = 7423
 log_level = "info"
 
 [embedder]
-model = "all-MiniLM-L6-v2"
+model = "sentence-transformers/all-MiniLM-L6-v2"
 max_sequence_length = 256
 batch_size = 32
 

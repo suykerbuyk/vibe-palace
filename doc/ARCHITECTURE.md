@@ -1,50 +1,262 @@
-# Architecture: Semantic Search
+# Architecture: Vibe-Palace
 
-**Last updated:** 2026-04-08
+**Last updated:** 2026-04-09
 
-This document describes the semantic search architecture in vibe-palace —
-how text is converted to vectors, stored, indexed, and retrieved. Future
-revisions will expand to cover the full system architecture including vault
-layout, palace directory structures, session capture, and knowledge graphs.
+Vibe-palace is a compiled Go binary that serves as an MCP (Model Context
+Protocol) server for AI-assisted development. It provides context injection,
+session capture, semantic search, and palace-based knowledge navigation through
+20 MCP tools over stdio JSON-RPC 2.0.
 
----
-
-## Overview
-
-Vibe-palace implements semantic search as a pipeline:
-
-```
-Text → Embed → Vector → Index → Search
-```
-
-Unlike keyword search, semantic search understands meaning. The query
-"how do goroutines work" finds content about "lightweight concurrency
-with channels" even though no words overlap. This is possible because
-both texts produce nearby vectors in embedding space.
+**Design principles:**
+- Single binary, zero-CGo, no external services
+- Filesystem-native storage (JSONL, markdown, JSON) — all data human-readable
+  and git-mergeable
+- 3-tier precedence everywhere (embedded < vault < project)
+- LLM-agnostic: works with any editor that speaks MCP
 
 ---
 
-## Embedding Pipeline
+## System Components
 
-### The Model: all-MiniLM-L6-v2
+| Package | Responsibility | Key Types |
+|---------|---------------|-----------|
+| `internal/storage` | Vault layout, CRUD, config | `Vault`, `Config`, `Drawer`, `SessionMeta` |
+| `internal/mcp` | JSON-RPC server, tool registry | `Server`, `Registry`, `Tool` |
+| `internal/context` | Precedence-aware template resolution | `Resolver`, `ResourceInfo` |
+| `internal/tools` | 20 MCP tool implementations | (see tool table below) |
+| `internal/embedder` | ONNX text embedding | `Embedder` interface, `ONNXEmbedder` |
+| `internal/search` | Hybrid semantic + structural search | `Engine`, `VectorIndex`, `SearchResult` |
+| `internal/capture` | Session ingest, chunking, friction | `Indexer`, `ChunkConfig` |
+| `internal/palace` | Wing/room/hall classification, graph | `PalaceGraph`, `GraphNode`, `AAKResult` |
+| `internal/project` | Project detection from working dir | `ProjectConfig` |
+| `internal/kg` | Knowledge graph entities and triples | (types in `storage`) |
 
-Vibe-palace uses `all-MiniLM-L6-v2` from Sentence Transformers, a
-compact text embedding model trained on over 1 billion sentence pairs.
-It produces 384-dimensional vectors from input text up to 256 tokens
-(~200 words).
+---
 
-Key properties:
-- **384 dimensions** — each text becomes a float32[384] vector
-- **L2-normalized** — all vectors have unit length, so cosine similarity
-  reduces to a dot product
-- **Semantic** — texts with similar meaning produce geometrically close
-  vectors (high cosine similarity)
-- **Model size** — ~90MB on disk (ONNX format)
+## Storage Engine (Phase 1)
 
-### The Runtime: hugot (Pure-Go ONNX)
+### Vault Concept
 
-The model runs via `knights-analytics/hugot`, a pure-Go ONNX inference
-library. This preserves vibe-palace's single-binary, zero-CGo architecture.
+The vault is an out-of-band directory separate from source repositories. A
+single vault holds knowledge and workflow state for all projects. The vault
+path is configured in `~/.config/vibe-palace/config.toml`:
+
+```toml
+vault_path = "/home/you/your-vault"
+```
+
+### Two Directory Trees
+
+The vault contains two top-level trees with different purposes:
+
+```
+{vault}/
+├── palace/                         # Knowledge (content, vectors, models)
+│   ├── .local/
+│   │   └── models/                 # ONNX model cache (vault-wide)
+│   └── {project}/
+│       ├── drawers/{wing}/{room}/drawers.jsonl
+│       ├── kg/
+│       │   ├── entities.jsonl
+│       │   └── triples/{subj}--{pred}--{obj}.json
+│       └── .local/                 # Machine-local state (embed cache)
+└── Projects/                       # Workflow (sessions, tasks, config)
+    └── {project}/
+        ├── sessions/YYYY-MM-DD-NN.md
+        └── agentctx/
+            ├── config.toml         # Project-level config overrides
+            └── tasks/
+                ├── {slug}.md
+                ├── done/{slug}.md
+                └── cancelled/{slug}.md
+```
+
+**palace/** stores knowledge artifacts — content chunks in JSONL drawers,
+knowledge graph entities/triples, and machine-local caches. This data grows
+with captured sessions and can be rebuilt from source.
+
+**Projects/** stores workflow artifacts — session markdown files, task
+plans, and per-project configuration overrides. This is the collaboration
+layer between human and AI.
+
+### Storage Formats
+
+- **Drawers**: JSONL (one JSON object per line) — append-only, deduped by ID
+- **Sessions**: Markdown with YAML frontmatter (date, tag, friction, decisions)
+- **KG Triples**: Individual JSON files keyed by `{subj}--{pred}--{obj}`
+- **KG Entities**: JSONL (append-only, name + type + properties)
+- **Config**: TOML at all three precedence levels
+
+### Configuration: 3-Tier TOML Precedence
+
+Configuration follows a 3-tier override chain:
+
+1. **Embedded defaults** — compiled into the binary via `//go:embed config/defaults.toml`
+2. **Vault-level** — `~/.config/vibe-palace/config.toml`
+3. **Project-level** — `{vault}/Projects/{project}/agentctx/config.toml`
+
+Each level overlays the previous. Key sections:
+
+```toml
+vault_path = "/path/to/vault"
+http_port = 7423
+log_level = "info"
+
+[embedder]
+model = "sentence-transformers/all-MiniLM-L6-v2"
+max_sequence_length = 256
+batch_size = 32
+
+[search]
+default_limit = 10
+structural_boost_wing = 0.12
+structural_boost_hall = 0.24
+structural_boost_room = 0.34
+
+[chunker]
+max_chars = 800
+overlap = 100
+
+[palace.rooms.custom]          # project-level only
+keywords = ["keyword1", "keyword2"]
+```
+
+Key type: `storage.Config` — a flat struct populated by decoding TOML at each
+level in sequence. `GetConfigValue(project, key)` returns value + source level.
+
+---
+
+## MCP Server (Phase 2)
+
+### Protocol Layer
+
+Vibe-palace communicates via stdio JSON-RPC 2.0, using `mark3labs/mcp-go` as
+the protocol implementation. The `Server` wraps `mcp-go`'s `MCPServer` and
+injects the vault reference into every request context.
+
+```
+cmd/vp/main.go
+├── storage.OpenVault("")         # read config, resolve vault path
+├── embedder.NewONNX(...)         # load ONNX model
+├── search.NewEngine(emb, v, cfg) # create search engine
+├── context.NewResolver(v.Root)   # template resolver
+├── mcp.NewServer(v)              # create MCP server
+├── tools.RegisterAll(...)        # register all 20 tools
+└── srv.Serve(ctx)                # start stdio transport
+```
+
+### Tool Registration
+
+`tools.RegisterAll` registers all tools with the `Registry`. Each tool
+provides a JSON Schema for parameter validation:
+
+```go
+Registry.Register(Tool{
+    Name:        "vp_search",
+    Description: "Semantic search within a project's knowledge base.",
+    Schema:      searchSchema,       // JSON Schema for params
+    Handler:     searchHandler,      // func(ctx, params) → (any, error)
+})
+```
+
+On dispatch, the registry validates incoming params against the compiled
+schema before calling the handler. Handlers extract the vault from context
+and operate on storage directly.
+
+### 20 MCP Tools
+
+| Tool | Source File | Category |
+|------|-----------|----------|
+| `vp_bootstrap_context` | context_tools.go | Context |
+| `vp_get_command` | command_tools.go | Context |
+| `vp_get_skill` | command_tools.go | Context |
+| `vp_list_commands` | command_tools.go | Context |
+| `vp_list_skills` | command_tools.go | Context |
+| `vp_cmd` | cmd_tools.go | Context |
+| `vp_skill` | cmd_tools.go | Context |
+| `vp_capture_session` | session_tools.go | Session |
+| `vp_get_project_context` | session_query_tools.go | Session |
+| `vp_search_sessions` | session_query_tools.go | Session |
+| `vp_get_session_detail` | session_query_tools.go | Session |
+| `vp_get_effectiveness` | session_query_tools.go | Session |
+| `vp_get_friction_trends` | friction_tools.go | Session |
+| `vp_search` | search_tools.go | Search |
+| `vp_search_cross_project` | search_tools.go | Search |
+| `vp_palace_status` | palace_tools.go | Palace |
+| `vp_list_wings` | palace_tools.go | Palace |
+| `vp_list_rooms` | palace_tools.go | Palace |
+| `vp_traverse` | palace_tools.go | Palace |
+| `vp_find_tunnels` | palace_tools.go | Palace |
+
+Tools 1–7 (context) are always registered. Tools 8–20 require a search
+engine (embedder must initialize successfully).
+
+### HTTP Transport
+
+An HTTP transport (`internal/mcp/transport_http.go`) is implemented but not
+wired into the main binary. It provides REST endpoints:
+
+- `GET /health` — server status
+- `GET /tools` — list registered tools
+- `POST /tools/{name}` — invoke a tool
+
+CORS middleware is included for browser-based clients.
+
+---
+
+## Context Injection (Phase 3)
+
+### 3-Tier Precedence Resolution
+
+Templates and resources follow the same override pattern as configuration:
+
+1. **Project override**: `{vault}/Projects/{project}/agentctx/{path}`
+2. **Vault template**: `{vault}/Templates/{path}`
+3. **Embedded default**: Compiled-in `templates/{path}`
+
+The `Resolver` walks these levels in reverse priority order. The highest
+priority match wins.
+
+### Embedded Templates
+
+Templates are compiled into the binary via `//go:embed templates`:
+
+```
+templates/
+├── workflow.md                    # Pair programming workflow rules
+├── resume.md                      # Project state template
+└── commands/
+    ├── vp-capture.md              # Session capture instructions
+    ├── vp-restart.md              # Context restoration instructions
+    ├── vp-review-plan.md          # Plan review instructions
+    ├── vp-cancel-plan.md          # Plan cancellation instructions
+    └── vp-wrap.md                 # Session wrap-up instructions
+```
+
+Templates support `{{PROJECT}}` and `{{DATE}}` variable expansion.
+
+### Bootstrap Context
+
+`vp_bootstrap_context` is the primary entry point for AI context restoration.
+A single call assembles: workflow rules, project resume, active tasks, recent
+sessions, KG snapshot, and available commands/skills. This replaces the
+multi-file CLAUDE.md pattern used by legacy systems.
+
+### Commands and Skills
+
+**Commands** are instructions for the AI to execute immediately (e.g.,
+"capture this session"). **Skills** are behavioral guidelines applied
+throughout a session (e.g., "pair programming mode"). Both resolve via
+the same 3-tier precedence system and can be listed or invoked by name.
+
+---
+
+## Semantic Search (Phase 4)
+
+### Embedding Pipeline
+
+Vibe-palace uses `all-MiniLM-L6-v2` (Sentence Transformers) via
+`knights-analytics/hugot`, a pure-Go ONNX inference library.
 
 ```
 internal/embedder/embedder.go    ← Embedder interface
@@ -63,88 +275,40 @@ type Embedder interface {
 }
 ```
 
-`EmbedBatch` processes multiple texts in a single call, chunking them
-into configurable batch sizes (default 32) for memory efficiency. The
-ingest pipeline uses `EmbedBatch` to embed all chunks from a transcript
-in one call rather than N individual `Embed` calls.
+Properties:
+- 384-dimensional vectors, L2-normalized (cosine = dot product)
+- ~90MB model, downloaded on first use, cached at `{vault}/palace/.local/models/`
+- Single embed: ~66ms; batch of 32: ~290ms; 17MB binary contribution
 
-### Performance Characteristics
-
-From the hugot spike (see `doc/spike-hugot-pure-go-embedding.md`):
-
-| Metric | Measured |
-|--------|----------|
-| Single embed latency | 66ms |
-| Batch 32 throughput | 290ms |
-| Peak memory (1024 embeds) | 306 MB heap |
-| Binary size (stripped) | 17 MB |
-
----
-
-## Vector Index
-
-### Brute-Force Cosine Search
+### Vector Index: Brute-Force Cosine
 
 ```
 internal/search/vector_index.go
 ```
 
-Vibe-palace uses brute-force nearest-neighbor search with cosine distance.
-Every search compares the query vector against all stored vectors and
-returns the top-N closest.
+Search uses brute-force nearest-neighbor with cosine distance. Every query
+compares against all stored vectors and returns top-N.
 
-Properties:
-- **100% recall** — guaranteed to find the true nearest neighbors
-- **~1-5ms latency** at 10K vectors — fast enough for the personal
-  knowledge management use case
-- **Thread-safe** — `sync.RWMutex` allows concurrent reads with
-  exclusive writes
+- **100% recall** — guaranteed correct results
+- **~1-5ms** at 10K vectors — sufficient for personal knowledge management
+- **Thread-safe** — `sync.RWMutex` for concurrent reads
 
-The PRD originally specified HNSW (Hierarchical Navigable Small World)
-for approximate nearest-neighbor search. During Phase 4 implementation,
-`coder/hnsw` was found to have a critical recall bug: `replenish()` in
-`graph.go` hardcodes `CosineDistance` regardless of the configured
-distance function, corrupting graph topology. Measured recall was 0-2/10
-across all parameter combinations. HNSW is deferred to the roadmap
-pending a reliable pure-Go implementation.
+The PRD specified HNSW (Hierarchical Navigable Small World), but `coder/hnsw`
+had critical recall bugs (Heap.Max/PopLast returning wrong elements, 0–2/10
+recall). A hardened fork is in progress; brute-force is the correct choice at
+current scale.
 
-Brute-force is the correct choice at current scale. At 10K vectors with
-384 dimensions, the search computation is:
-- 10K dot products × 384 multiplications = ~3.8M FLOPs
-- Modern CPUs handle this in <5ms with SIMD
-
-### Index Operations
-
-```go
-// Build creates the index from a batch of vectors (used by Rebuild).
-func (idx *VectorIndex) Build(vectors [][]float32, ids []string) error
-
-// Insert adds or replaces a single vector (used by incremental indexing).
-func (idx *VectorIndex) Insert(id string, vec []float32) error
-
-// Search returns the top-k nearest vectors to the query.
-func (idx *VectorIndex) Search(query []float32, k int) ([]VectorResult, error)
-
-// Delete removes a vector by ID.
-func (idx *VectorIndex) Delete(id string)
-```
-
----
-
-## Search Engine
-
-### Hybrid Semantic + Structural Search
+### Hybrid Search Engine
 
 ```
 internal/search/engine.go
 ```
 
-The search engine combines vector similarity with structural metadata
-to produce ranked results. The pipeline:
+The search pipeline combines vector similarity with structural metadata:
 
 ```
 1. Embed query text → query vector
-2. Vector search → top limit*3 candidates (over-fetch for filtering)
+2. Vector search → top limit×3 candidates (over-fetch for filtering)
 3. Metadata filter → remove non-matching wing/room/hall/date
 4. Score conversion → 1 / (1 + cosine_distance)
 5. Structural boost → multiply score for matching filters
@@ -152,100 +316,169 @@ to produce ranked results. The pipeline:
 7. Return top-N
 ```
 
-### Structural Boosts
+Structural boosts (configurable):
 
-When a search includes filters, matching results get a score multiplier:
+| Filter | Default | Effect |
+|--------|---------|--------|
+| Wing match | +12% | Results in searched wing score higher |
+| Hall match | +24% | Results in searched hall score higher |
+| Room match | +34% | Results in searched room score higher |
 
-| Filter | Default Boost | Effect |
-|--------|--------------|--------|
-| Wing match | +12% | Results in the searched wing score higher |
-| Hall match | +24% | Results in the searched hall score higher |
-| Room match | +34% | Results in the searched room score higher |
+Boosts stack multiplicatively. A result matching all three gets
+`score × 1.12 × 1.24 × 1.34 ≈ score × 1.86`.
 
-Boosts are configurable via the `[search]` TOML config section and stack
-multiplicatively. A result matching all three filters gets:
-`score × 1.12 × 1.24 × 1.34 = score × 1.85`
-
-This means structural metadata isn't just a filter — it's a ranking signal.
-A result that is semantically relevant AND in the right structural location
-ranks significantly higher than one that is only semantically relevant.
-
-### Deduplication
-
-When content from the same source (e.g., a session transcript) is chunked
-into multiple drawers, the search engine deduplicates by `SourceRef`.
-Only the highest-scored chunk from each source is returned. This prevents
-a single verbose session from dominating search results.
-
----
-
-## Embed Cache
+### Embed Cache
 
 ```
 internal/search/cache.go
 ```
 
-The embed cache stores pre-computed vectors on disk to avoid redundant
-ONNX inference:
-
-```
-palace/{project}/.local/embed-cache/
-  {drawer_id}.vec     ← raw little-endian float32 (1536 bytes for 384 dims)
-```
-
-The cache is checked during `Engine.Rebuild()`: for each drawer, if a
-cached vector exists, it's used directly; otherwise the embedder is called
-and the result is cached. `IndexDrawer` (incremental) always embeds and
-caches. `IndexDrawerWithVec` (batch pipeline) caches the pre-computed
-vector without calling the embedder.
-
-The cache is a pure performance optimization. It is never authoritative —
-deleting it forces re-embedding on next rebuild but doesn't lose data.
+Pre-computed vectors are cached on disk at
+`palace/{project}/.local/embed-cache/{drawer_id}.vec` (raw little-endian
+float32). The cache avoids redundant ONNX inference during `Rebuild()`.
+Deleting the cache forces re-embedding but loses no data.
 
 ---
 
-## Ingest Pipeline (Capture → Search)
+## Session Capture (Phase 5)
 
-### How Content Gets Indexed
+### Capture Flow
+
+When `vp_capture_session` is called:
 
 ```
-internal/capture/indexer.go
+1. Write session markdown to {vault}/Projects/{project}/sessions/
+   - YAML frontmatter: date, tag, friction, decisions, files_changed
+   - Auto-increments iteration number per day
+2. If transcript provided:
+   a. Detect format (plain text, markdown transcript, JSON-RPC chat)
+   b. Chunk transcript (sliding window, sentence-boundary aware)
+   c. Classify each chunk: wing (project), room (keyword), hall (memory type)
+   d. Batch embed all chunks (one EmbedBatch call)
+   e. Store each chunk as a Drawer in JSONL
+   f. Index each chunk+vector in the search engine
+   g. Extract entities (file paths, URLs) → knowledge graph
+3. Compute friction score (0–100) from transcript
+```
+
+### Chunking Engine
+
+```
 internal/capture/chunker.go
 internal/capture/detector.go
 ```
 
-When a session is captured with a transcript, the ingest pipeline:
+Format detection inspects the first 500 bytes:
+- **JSON-RPC**: starts with `[` or `{` and contains `"role"` — split on exchange boundaries
+- **Markdown**: contains turn markers (`## Human`, `## Assistant`) — split on turns
+- **Plain text**: default — split on paragraph boundaries
+
+Chunks are built with a sliding window:
+- Target size: 800 chars (configurable)
+- Overlap: 100 chars between consecutive chunks
+- Never splits mid-sentence
+- Keeps exchange pairs together when possible
+- Overlap snapped to word boundaries
+
+Defaults tuned for all-MiniLM-L6-v2's 256-token input limit (~200 words ≈ 800 chars).
+
+### Friction Analysis
 
 ```
-1. Detect format (plain text, markdown transcript, JSON-RPC chat)
-2. Split into segments (paragraphs, turn boundaries, or role markers)
-3. Build chunks (sliding window, 800 chars, 100 overlap)
-   - Never split mid-sentence
-   - Keep exchange pairs together when possible
-   - Overlap snapped to word boundaries
-4. Classify each chunk:
-   - Wing ← project slug (default)
-   - Room ← keyword heuristics (testing, api, devops, debugging, ...)
-   - Hall ← memory type heuristics (facts, decisions, discoveries, ...)
-5. Store each chunk as a Drawer in vault JSONL
-6. Batch embed all chunks via EmbedBatch (one call, not N calls)
-7. Index each chunk+vector via IndexDrawerWithVec
-8. Extract entities (file paths, URLs) → write to knowledge graph
+internal/capture/friction.go
 ```
 
-### Chunk Configuration
+Friction score (0–100) measures session difficulty via four signals:
 
-Chunk size and overlap are configurable via TOML:
+| Signal | Weight | Keywords |
+|--------|--------|----------|
+| Corrections | ×8 (max 25) | wrong, undo, revert, actually, mistake |
+| Retries | ×10 (max 25) | Same tool called ≥3 times |
+| Error density | ×5 (max 25) | error, failed, exception per 1000 tokens |
+| Rework | ×10 (max 25) | go back, start over, scratch that |
 
-```toml
-[chunker]
-max_chars = 800    # target chunk size
-overlap = 100      # overlap between consecutive chunks
+`GetFrictionTrends` aggregates weekly averages and maximums, grouped by
+ISO week (Monday start).
+
+### Session Query Tools
+
+- `vp_search_sessions` — filter by date range, friction score, tag, text query
+- `vp_get_session_detail` — full session markdown + metadata
+- `vp_get_effectiveness` — compares friction for sessions with/without rich context
+- `vp_get_friction_trends` — weekly friction averages and maximums
+
+---
+
+## Palace Architecture (Phase 6)
+
+### Memory Palace Metaphor
+
+Content is organized using a spatial metaphor:
+
+- **Wing** — project-level dimension (defaults to project slug)
+- **Room** — functional area (testing, api, devops, debugging, etc.)
+- **Hall** — memory type (facts, decisions, discoveries, preferences, advice, events)
+- **Drawer** — individual content chunk (the atomic storage unit)
+
+### Classification
+
+```
+internal/palace/metadata.go
 ```
 
-Defaults are tuned for the `all-MiniLM-L6-v2` model's 256-token input
-limit. At ~4 characters per token, 800 characters ≈ 200 tokens, leaving
-headroom for tokenization variance.
+**Wing detection**: Returns project slug if available, else first path component,
+else "unknown".
+
+**Room detection** (4-tier cascade, first match wins):
+1. Custom keywords from `[palace.rooms]` config
+2. Filename pattern matching (test files, configs, CI/CD, etc.)
+3. Built-in content keywords (10 room types: testing, devops, api, data,
+   config, debugging, refactoring, architecture, performance, security)
+4. Fallback: "general"
+
+**Hall detection**: Classifies content into memory type by keyword presence
+(decided → decisions, found → discoveries, prefer → preferences, should →
+advice, happened → events, default → facts).
+
+### AAAK Compression
+
+```
+internal/palace/aaak.go
+```
+
+AAAK (Autonomous Adaptive Associative Knowledge) is a lossy compression
+format for token-efficient context loading:
+
+```
+ZID:ENTITIES|topics|"key_quote"|WEIGHT|EMOTIONS|FLAGS
+```
+
+Components: entity detection (capitalized multi-word → 3-letter codes),
+topic extraction (top-3 frequent non-stopwords), key quote (longest
+entity-relevant sentence), weight (density score), emotion/flag detection.
+
+### Graph Traversal
+
+```
+internal/palace/graph.go
+```
+
+`BuildGraph` constructs an in-memory graph from vault drawers:
+- **Nodes**: each unique wing/room combination
+- **Intra-wing edges**: all rooms in the same wing are adjacent
+- **Cross-wing edges** (tunnels): same room slug across different wings
+
+`Traverse(startKey, maxHops)` performs BFS from a starting room,
+returning reachable nodes with hop distances. `FindTunnels()` returns
+rooms appearing in 2+ wings — these are cross-domain connections.
+
+### Palace Tools
+
+- `vp_palace_status` — overview: wing/room/drawer counts, tunnel count
+- `vp_list_wings` — all wings with room and drawer counts
+- `vp_list_rooms` — rooms in a wing with drawer counts and hall distribution
+- `vp_traverse` — BFS graph walk from a starting room
+- `vp_find_tunnels` — cross-wing room connections
 
 ---
 
@@ -256,7 +489,7 @@ headroom for tokenization variance.
                      │  MCP Client  │
                      │ (AI / human) │
                      └──────┬───────┘
-                            │ JSON-RPC
+                            │ JSON-RPC (stdio)
                      ┌──────▼───────┐
                      │  MCP Server   │
                      │  (mcp pkg)    │
@@ -294,16 +527,29 @@ headroom for tokenization variance.
 
 ---
 
-## Future Expansion
+## Build System
 
-This document currently covers semantic search only. Planned additions:
+```
+make build      # go build ./...
+make test       # fast unit tests (-race -short, no model download)
+make test-full  # full suite including ONNX integration
+make integration # integration tests only
+make install    # build + install to ~/.local/bin/vp
+make cover      # HTML coverage report (short mode)
+make clean      # remove build artifacts (preserves model cache)
+make dist-clean # remove everything including model cache
+```
 
-- **Vault layout**: directory conventions, palace hierarchy (project →
-  wing → room), JSONL storage format, session file structure
-- **Knowledge graph**: entity detection, triple storage, temporal validity,
-  query patterns
-- **Context injection**: 3-tier precedence, template expansion, bootstrap
-  assembly
-- **Configuration**: 3-tier TOML precedence (embedded → vault → project),
-  all configurable parameters
-- **MCP protocol**: tool registry, JSON-RPC dispatch, HTTP transport
+Binary: `vp` installed to `${PREFIX}/bin/vp` (default `~/.local/bin/vp`).
+
+---
+
+## Roadmap (Phases 7–11)
+
+| Phase | Goal |
+|-------|------|
+| 7. Knowledge Graph | Temporal entity-relationship graph with time-travel queries |
+| 8. Migration & Import | Import existing VibeVault sessions and MemPalace ChromaDB data |
+| 9. CLI & Distribution | Human-facing CLI, cross-platform builds, package distribution |
+| 10. Documentation & Human Interface | Tutorials, onboarding, and human-facing documentation |
+| 11. Pluggable Embedding Backends | Swap ONNX embedder for API-based alternatives |

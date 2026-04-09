@@ -3,7 +3,11 @@
 **Version:** 0.1.0-draft
 **Date:** 2026-04-06
 **Authors:** John Suykerbuyk, Claude Opus 4.6
-**Status:** Design Review
+**Status:** Phases 1–6 Implemented | Phases 7–11 Planned
+
+> **Implementation notes** are marked with blockquotes throughout. HNSW
+> references in diagrams reflect the design; actual search uses brute-force
+> cosine similarity (see Task 4.2 annotation).
 
 ---
 
@@ -524,6 +528,8 @@ flowchart TD
 
 ### 6.1 Context Tools (from VibeVault, enhanced)
 
+> **7 of 11 implemented.** Planned: vp_get_workflow, vp_get_resume, vp_update_resume, vp_get_knowledge.
+
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `vp_bootstrap_context` | project?, max_tokens? | Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands. Precedence-aware. |
@@ -540,6 +546,8 @@ flowchart TD
 
 ### 6.2 Session Tools (from VibeVault, model-agnostic)
 
+> **6 of 8 implemented.** Planned: vp_list_projects, vp_append_iteration.
+
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `vp_capture_session` | summary (req), title?, tag?, model?, decisions?, files_changed?, open_threads?, transcript? | Record a session. Auto-chunks and indexes transcript if provided. |
@@ -553,12 +561,16 @@ flowchart TD
 
 ### 6.3 Search Tools (from MemPalace, new)
 
+> **2 of 2 implemented.**
+
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `vp_search` | query (req), project?, wing?, room?, hall?, date_from?, date_to?, limit? | Semantic + structural hybrid search across all stored content |
 | `vp_search_cross_project` | query (req), limit? | Search across all projects (read-only) |
 
 ### 6.4 Task Tools (from VibeVault)
+
+> **0 of 3 implemented.** Planned for Phase 8 (Migration & Import).
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
@@ -567,6 +579,8 @@ flowchart TD
 | `vp_manage_task` | task (req), action (req: create/update_status/retire/cancel), status?, content? | Task lifecycle management |
 
 ### 6.5 Knowledge Graph Tools (from MemPalace, new)
+
+> **0 of 5 implemented.** Planned for Phase 7 (Knowledge Graph).
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
@@ -578,6 +592,8 @@ flowchart TD
 
 ### 6.6 Palace Navigation Tools (from MemPalace, new)
 
+> **5 of 5 implemented.**
+
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `vp_palace_status` | project? | Palace overview: wings, rooms, drawer counts |
@@ -588,13 +604,15 @@ flowchart TD
 
 ### 6.7 System Tools
 
+> **0 of 3 implemented.** Planned for Phase 9 (CLI & Distribution).
+
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `vp_init` | project?, domain?, tags? | Initialize project (create .vibe-palace.toml + vault dir) |
 | `vp_vault_sync` | — | Pull/push vault git remotes |
 | `vp_refresh_index` | project? | Rebuild session index and re-embed if needed |
 
-**Total: 34 tools** (vs VibeVault's 16 + MemPalace's 19 = 35, with dedup and consolidation)
+**Total: 34 designed, 20 implemented (Phases 1–6)** (vs VibeVault's 16 + MemPalace's 19 = 35, with dedup and consolidation)
 
 ---
 
@@ -1028,6 +1046,8 @@ LLM-agnostic execution framing that works with any model:
 
 ## Phase 1: Storage Engine
 
+> **Status: COMPLETE**
+
 **Goal:** Filesystem-native storage layer with CRUD operations for all entity
 types. All data stored as human-readable, git-mergeable files.
 
@@ -1163,6 +1183,8 @@ else builds on.
 
 ## Phase 2: MCP Server Core
 
+> **Status: COMPLETE**
+
 **Goal:** A working MCP server over stdio that can register tools and handle
 JSON-RPC 2.0 requests. HTTP REST server on localhost with identical handlers.
 
@@ -1236,6 +1258,8 @@ JSON-RPC 2.0 requests. HTTP REST server on localhost with identical handlers.
 ---
 
 ## Phase 3: Context Injection Engine
+
+> **Status: COMPLETE**
 
 **Goal:** Precedence-aware context assembly and delivery via MCP tools.
 
@@ -1559,6 +1583,8 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 
 ## Phase 4: Semantic Search
 
+> **Status: COMPLETE** (brute-force cosine; HNSW deferred — see Task 4.2)
+
 **Goal:** HNSW vector index with ONNX embeddings, hybrid search with structural
 metadata filtering.
 
@@ -1587,6 +1613,11 @@ embed, 290ms batch-32 (9ms/item), 17MB binary, no CGO, ~306MB peak heap over
 should follow the patterns established in `spike/hugot-embed/embed.go`.
 
 ### Task 4.2: HNSW Index
+
+> **Implementation note:** HNSW deferred. Search uses brute-force cosine
+> similarity (`internal/search/index.go`). The `coder/hnsw` library had
+> critical recall bugs (0–2/10 recall due to Heap.Max/PopLast errors). A
+> hardened fork is in progress; brute-force is sufficient at current scale.
 
 **Deliverable:** `internal/search/hnsw.go`
 
@@ -1644,6 +1675,8 @@ should follow the patterns established in `spike/hugot-embed/embed.go`.
 ---
 
 ## Phase 5: Session Capture
+
+> **Status: COMPLETE**
 
 **Goal:** Model-agnostic session recording with automatic semantic indexing.
 
@@ -1725,6 +1758,8 @@ should follow the patterns established in `spike/hugot-embed/embed.go`.
 ---
 
 ## Phase 6: Palace Architecture
+
+> **Status: COMPLETE**
 
 **Goal:** Wing/hall/room structural metadata, palace graph navigation, AAAK
 compression dialect.
@@ -1818,6 +1853,8 @@ token-efficient summaries for context loading. Both representations coexist.
 
 ## Phase 7: Knowledge Graph
 
+> **Status: PLANNED**
+
 **Goal:** Temporal entity-relationship graph with time-travel queries, integrated
 with session capture pipeline.
 
@@ -1876,6 +1913,8 @@ with session capture pipeline.
 ---
 
 ## Phase 8: Migration & Import
+
+> **Status: PLANNED**
 
 **Goal:** Import existing VibeVault sessions and MemPalace ChromaDB data into
 Vibe-Palace.
@@ -1939,6 +1978,8 @@ Vibe-Palace.
 ---
 
 ## Phase 9: CLI & Distribution
+
+> **Status: PLANNED**
 
 **Goal:** Human-facing CLI, cross-platform builds, package distribution.
 
@@ -2007,6 +2048,8 @@ from the same data at build time.
 ---
 
 ## Phase 10: Documentation & Human Interface
+
+> **Status: PLANNED**
 
 **Goal:** Ensure the human half of the human–AI pair can confidently set up,
 operate, and maintain Vibe-Palace without trial-and-error. Lessons from
@@ -2123,6 +2166,8 @@ levels (embedded defaults → vault-level → project-level).
 ---
 
 ## Phase 11: Pluggable Embedding Backends
+
+> **Status: PLANNED**
 
 **Goal:** Allow users to swap the default pure-Go ONNX embedder for
 higher-quality models served by external backends (Ollama, llama.cpp, or

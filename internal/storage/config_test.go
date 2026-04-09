@@ -23,8 +23,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.LogLevel != "info" {
 		t.Errorf("LogLevel = %q, want %q", cfg.LogLevel, "info")
 	}
-	if cfg.EmbedderModel != "all-MiniLM-L6-v2" {
-		t.Errorf("EmbedderModel = %q, want %q", cfg.EmbedderModel, "all-MiniLM-L6-v2")
+	if cfg.EmbedderModel != "sentence-transformers/all-MiniLM-L6-v2" {
+		t.Errorf("EmbedderModel = %q, want %q", cfg.EmbedderModel, "sentence-transformers/all-MiniLM-L6-v2")
 	}
 	if cfg.EmbedderMaxSeqLen != 256 {
 		t.Errorf("EmbedderMaxSeqLen = %d, want 256", cfg.EmbedderMaxSeqLen)
@@ -83,7 +83,7 @@ default_limit = 50
 	}
 
 	// Non-overridden defaults preserved.
-	if cfg.EmbedderModel != "all-MiniLM-L6-v2" {
+	if cfg.EmbedderModel != "sentence-transformers/all-MiniLM-L6-v2" {
 		t.Errorf("EmbedderModel = %q, want default", cfg.EmbedderModel)
 	}
 	if cfg.BoostWing != 0.12 {
@@ -126,8 +126,8 @@ func TestGetConfigValueNested(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetConfigValue: %v", err)
 	}
-	if val != "all-MiniLM-L6-v2" {
-		t.Errorf("value = %q, want %q", val, "all-MiniLM-L6-v2")
+	if val != "sentence-transformers/all-MiniLM-L6-v2" {
+		t.Errorf("value = %q, want %q", val, "sentence-transformers/all-MiniLM-L6-v2")
 	}
 	if source != "embedded" {
 		t.Errorf("source = %q, want %q", source, "embedded")
@@ -270,7 +270,7 @@ batch_size = 64
 		t.Errorf("EmbedderBatchSize = %d, want 64 (project override)", cfg.EmbedderBatchSize)
 	}
 	// Embedded default for embedder.model still present.
-	if cfg.EmbedderModel != "all-MiniLM-L6-v2" {
+	if cfg.EmbedderModel != "sentence-transformers/all-MiniLM-L6-v2" {
 		t.Errorf("EmbedderModel = %q, want default", cfg.EmbedderModel)
 	}
 }
