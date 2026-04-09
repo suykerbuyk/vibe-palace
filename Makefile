@@ -5,6 +5,9 @@ BINARY  := vp
 CMD     := ./cmd/$(BINARY)
 PREFIX  ?= $(HOME)/.local
 
+BASE_VERSION := 0.1.0
+VERSION      ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
 .DEFAULT_GOAL := help
 
 ##@ General
@@ -51,7 +54,7 @@ cover-full: ## Generate HTML coverage report (full suite)
 ##@ Install
 .PHONY: install
 install: build ## Build and install to PREFIX (default: ~/.local)
-	go build -o $(PREFIX)/bin/$(BINARY) $(CMD)
+	go build -ldflags "-X 'main.version=$(BASE_VERSION) ($(VERSION))'" -o $(PREFIX)/bin/$(BINARY) $(CMD)
 
 ##@ Clean
 .PHONY: clean

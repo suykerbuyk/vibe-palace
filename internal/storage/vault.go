@@ -28,11 +28,11 @@ type config struct {
 // $XDG_CONFIG_HOME/vibe-palace/config.toml (typically ~/.config/vibe-palace/config.toml).
 func VaultRoot(configPath string) (string, error) {
 	if configPath == "" {
-		configDir, err := os.UserConfigDir()
+		var err error
+		configPath, err = VaultConfigFilePath()
 		if err != nil {
 			return "", fmt.Errorf("resolve config dir: %w", err)
 		}
-		configPath = filepath.Join(configDir, "vibe-palace", "config.toml")
 	} else {
 		expanded, err := expandTilde(configPath)
 		if err != nil {

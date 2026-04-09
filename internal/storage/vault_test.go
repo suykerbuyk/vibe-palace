@@ -116,6 +116,20 @@ func TestVaultRoot(t *testing.T) {
 	})
 }
 
+func TestVaultConfigFilePath(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	got, err := VaultConfigFilePath()
+	if err != nil {
+		t.Fatalf("VaultConfigFilePath() error = %v", err)
+	}
+	want := filepath.Join(tmp, "vibe-palace", "config.toml")
+	if got != want {
+		t.Errorf("VaultConfigFilePath() = %q, want %q", got, want)
+	}
+}
+
 func TestNewVault(t *testing.T) {
 	v := NewVault("/my/vault")
 	if v.Root != "/my/vault" {

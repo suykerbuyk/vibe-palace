@@ -103,7 +103,7 @@ func (v *Vault) LoadConfig(project string) (Config, error) {
 	}
 
 	// Layer 2: vault-level config (~/.config/vibe-palace/config.toml).
-	vaultConfigPath, err := vaultConfigFilePath()
+	vaultConfigPath, err := VaultConfigFilePath()
 	if err == nil {
 		if _, err := os.Stat(vaultConfigPath); err == nil {
 			if _, err := toml.DecodeFile(vaultConfigPath, &tc); err != nil {
@@ -141,7 +141,7 @@ func (v *Vault) GetConfigValue(project, key string) (string, string, error) {
 	}
 
 	// Vault level.
-	vaultConfigPath, err := vaultConfigFilePath()
+	vaultConfigPath, err := VaultConfigFilePath()
 	if err == nil {
 		if data, err := os.ReadFile(vaultConfigPath); err == nil {
 			levels = append(levels, struct {
@@ -213,8 +213,8 @@ func splitDot(s string) []string {
 	return parts
 }
 
-// vaultConfigFilePath returns the path to the vault-level config file.
-func vaultConfigFilePath() (string, error) {
+// VaultConfigFilePath returns the path to the vault-level config file.
+func VaultConfigFilePath() (string, error) {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err

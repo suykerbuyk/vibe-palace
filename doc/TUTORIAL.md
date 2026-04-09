@@ -52,33 +52,41 @@ vault_path = "/home/you/your-vault"
 - The directory is created automatically on first use
 - This is the only required configuration — all other settings have defaults
 
-### First Run: Model Download
+### Verify Installation
 
-On first startup, vibe-palace downloads `all-MiniLM-L6-v2` (~90MB) from
-HuggingFace for semantic search. The model is cached at
-`{vault}/palace/.local/models/` — subsequent runs use the cache.
-
-If the download fails, `vp` prints the error to **stderr** and exits.
-Editors typically don't surface stderr, so a failed download looks like the
-MCP server silently failing to start. To diagnose, run vp directly:
+Run the built-in diagnostic to verify everything works:
 
 ```bash
-echo '{}' | vp 2>&1 >/dev/null
+vp check
 ```
 
-See the [Troubleshooting](#model-download-fails) section for common fixes.
+Expected output:
 
-### Smoke Test
+```
+vp check — vibe-palace installation diagnostic (0.1.0-dev)
 
-Start `vp` and send a JSON-RPC initialize message:
+[pass] Config:    /home/you/.config/vibe-palace/config.toml
+                  vault_path = /home/you/your-vault
+[pass] Vault:     /home/you/your-vault (exists)
+[pass] Settings:  model=sentence-transformers/all-MiniLM-L6-v2  search_limit=10
+[pass] Embedder:  ONNX loaded, 384 dimensions
+[info] Project:   my-project (from .vibe-palace.toml)
+
+All checks passed.
+```
+
+The first run downloads `all-MiniLM-L6-v2` (~90MB) from HuggingFace for
+semantic search. The model is cached at `{vault}/palace/.local/models/` —
+subsequent runs use the cache.
+
+If the embedder step fails, see [Troubleshooting](#model-download-fails).
+
+Other useful commands:
 
 ```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}' \
-  | timeout 30 vp
+vp version   # print version
+vp help      # show all commands
 ```
-
-You should see a JSON response containing `"serverInfo":{"name":"vibe-palace"}`.
-If it hangs, the model may still be downloading (first run only).
 
 ---
 
@@ -351,13 +359,14 @@ absolute path.
 ### Model download fails
 
 Editors don't show stderr, so a download failure looks like "no tools
-available" with no explanation. To see the actual error, run vp manually:
+available" with no explanation. Run `vp check` from a terminal to see the
+actual error:
 
 ```bash
-echo '{}' | vp 2>&1 >/dev/null
+vp check
 ```
 
-This surfaces the stderr message (e.g., `vp: embedder: download model ...: bad status code 401`).
+The embedder step will show the failure (e.g., `[FAIL] Embedder: load model: download ... bad status code 401`).
 
 Common fixes:
 - Check network connectivity to huggingface.co
@@ -369,10 +378,15 @@ Common fixes:
 
 ### "no tools available" in editor
 
-1. Check: `which vp` shows the binary in PATH
-2. Check: `~/.config/vibe-palace/config.toml` exists with valid `vault_path`
-3. Check: editor MCP config points to `"vp"` (not a full path)
-4. Check: model downloaded successfully (look for `models/` in vault)
+Run `vp check` from a terminal — it verifies all prerequisites in order:
+
+1. Config file found and parsed
+2. Vault directory exists
+3. Settings load successfully
+4. Embedding model loads
+
+If all checks pass, verify your editor's MCP config points to `"vp"` (not a
+full path) and that `which vp` shows the binary in PATH.
 
 ### "project not detected"
 
