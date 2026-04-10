@@ -25,9 +25,11 @@ var version = "0.1.0-dev"
 const usage = `vp — vibe-palace MCP server
 
 Usage:
-  vp              Start the MCP server (stdio JSON-RPC)
-  vp check        Verify installation, config, and model
-  vp version      Print version
+  vp                          Start the MCP server (stdio JSON-RPC)
+  vp check                    Verify installation, config, and model
+  vp migrate vibevault        Import VibeVault sessions into palace
+  vp migrate mempalace        Import MemPalace export into palace
+  vp version                  Print version
 
 First run of 'vp check' downloads the embedding model (~90MB).
 See https://github.com/suykerbuyk/vibe-palace for documentation.
@@ -41,6 +43,8 @@ func main() {
 			return
 		case "check":
 			os.Exit(runCheck())
+		case "migrate":
+			os.Exit(runMigrate())
 		case "version":
 			fmt.Printf("vp %s\n", version)
 			return

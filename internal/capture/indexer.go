@@ -14,6 +14,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/kg"
+	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -118,7 +119,7 @@ func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp st
 	entities := ExtractEntities(transcript)
 	for _, ent := range entities {
 		if err := idx.vault.AddEntity(project, storage.Entity{
-			ID:        slugify(ent.Type + "-" + ent.Name),
+			ID:        slug.Slugify(ent.Type + "-" + ent.Name),
 			Name:      ent.Name,
 			Type:      ent.Type,
 			CreatedAt: timestamp,
@@ -145,7 +146,7 @@ func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp st
 	detected := kg.DetectEntities(transcript)
 	for _, d := range detected {
 		if err := idx.vault.AddEntity(project, storage.Entity{
-			ID:        slugify(string(d.Type) + "-" + d.Name),
+			ID:        slug.Slugify(string(d.Type) + "-" + d.Name),
 			Name:      d.Name,
 			Type:      string(d.Type),
 			CreatedAt: timestamp,
@@ -203,33 +204,4 @@ func (idx *Indexer) chunkConfig() ChunkConfig {
 func drawerID(wing, room, content string) string {
 	h := md5.Sum([]byte(wing + room + content))
 	return hex.EncodeToString(h[:])[:8]
-}
-
-// slugify produces a slug from an arbitrary string.
-func slugify(s string) string {
-	s = strings.ToLower(s)
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			b.WriteRune(r)
-		case r == '-' || r == ' ' || r == '_' || r == '/' || r == '.' || r == ':':
-			b.WriteByte('-')
-		}
-	}
-	// Collapse consecutive hyphens.
-	result := b.String()
-	for strings.Contains(result, "--") {
-		result = strings.ReplaceAll(result, "--", "-")
-	}
-	result = strings.Trim(result, "-")
-	if len(result) > 60 {
-		// Truncate at hyphen boundary.
-		if idx := strings.LastIndex(result[:60], "-"); idx > 0 {
-			result = result[:idx]
-		} else {
-			result = result[:60]
-		}
-	}
-	return result
 }

@@ -234,9 +234,9 @@ func TestReadSessionNotFound(t *testing.T) {
 
 func TestParseFrontmatterEmptyBody(t *testing.T) {
 	data := []byte("---\ntitle: Test\n---\n")
-	meta, body, err := parseFrontmatter(data)
+	meta, body, err := ParseFrontmatter(data)
 	if err != nil {
-		t.Fatalf("parseFrontmatter: %v", err)
+		t.Fatalf("ParseFrontmatter: %v", err)
 	}
 	if meta.Title != "Test" {
 		t.Errorf("Title = %q, want %q", meta.Title, "Test")
@@ -247,9 +247,9 @@ func TestParseFrontmatterEmptyBody(t *testing.T) {
 }
 
 func TestParseFrontmatterMissingDelimiter(t *testing.T) {
-	_, _, err := parseFrontmatter([]byte("no frontmatter here"))
+	_, _, err := ParseFrontmatter([]byte("no frontmatter here"))
 	if err == nil {
-		t.Error("parseFrontmatter without delimiters should return error")
+		t.Error("ParseFrontmatter without delimiters should return error")
 	}
 }
 

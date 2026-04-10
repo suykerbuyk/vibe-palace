@@ -99,7 +99,7 @@ func (v *Vault) ReadSession(project, date string, iteration int) (SessionMeta, s
 		return SessionMeta{}, "", fmt.Errorf("read session file: %w", err)
 	}
 
-	return parseFrontmatter(data)
+	return ParseFrontmatter(data)
 }
 
 // ListSessions returns session metadata filtered by date range and limited
@@ -136,7 +136,7 @@ func (v *Vault) ListSessions(project, dateFrom, dateTo string, limit int) ([]Ses
 		if err != nil {
 			return nil, fmt.Errorf("read session %s: %w", m, err)
 		}
-		meta, _, err := parseFrontmatter(data)
+		meta, _, err := ParseFrontmatter(data)
 		if err != nil {
 			return nil, fmt.Errorf("parse session %s: %w", m, err)
 		}
@@ -190,9 +190,9 @@ func (v *Vault) NextIteration(project, date string) (int, error) {
 	return len(matches) + 1, nil
 }
 
-// parseFrontmatter splits a markdown file with YAML frontmatter into
+// ParseFrontmatter splits a markdown file with YAML frontmatter into
 // metadata and body. The frontmatter is delimited by "---" on its own lines.
-func parseFrontmatter(data []byte) (SessionMeta, string, error) {
+func ParseFrontmatter(data []byte) (SessionMeta, string, error) {
 	content := string(data)
 
 	if !strings.HasPrefix(content, "---\n") {

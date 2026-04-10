@@ -10,6 +10,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
+	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -193,9 +194,9 @@ func TestSlugify(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got := slugify(tt.input)
+			got := slug.Slugify(tt.input)
 			if got != tt.want {
-				t.Errorf("slugify(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("Slugify(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

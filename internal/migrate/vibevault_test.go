@@ -1,0 +1,575 @@
+// Copyright (c) 2026 John Suykerbuyk and SykeTech LTD
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+package migrate
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/embedder"
+	"github.com/suykerbuyk/vibe-palace/internal/search"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
+)
+
+const testSession1 = `---
+session_id: "2026-04-01-01"
+project: test-project
+date: "2026-04-01"
+title: "Test Session One"
+summary: "Did some testing"
+tag: implementation
+---
+## Transcript
+
+This is a test session about implementing authentication middleware.
+It covers JWT token validation and role-based access control.
+`
+
+const testSession2 = `---
+session_id: "2026-04-01-02"
+project: test-project
+date: "2026-04-01"
+title: "Test Session Two"
+summary: "Refactored storage layer"
+tag: refactor
+---
+## Transcript
+
+This session focused on refactoring the storage layer to use interfaces.
+We introduced the Repository pattern for better testability.
+`
+
+const testSession3 = `---
+session_id: "2026-04-02-01"
+project: test-project
+date: "2026-04-02"
+title: "Test Session Three"
+summary: "Added search functionality"
+tag: implementation
+---
+## Transcript
+
+Implemented full-text search using an inverted index approach.
+The search engine supports fuzzy matching and ranking.
+`
+
+const testSessionBadFrontmatter = `---
+session_id: [invalid yaml
+project: test-project
+---
+Some body text here.
+`
+
+const testSessionEmptyBody = `---
+session_id: "2026-04-03-01"
+project: test-project
+date: "2026-04-03"
+title: "Empty Body Session"
+summary: ""
+tag: exploration
+---
+`
+
+const testSessionWithSummaryOnly = `---
+session_id: "2026-04-03-02"
+project: test-project
+date: "2026-04-03"
+title: "Summary Only"
+summary: "This session only has a summary, no body"
+tag: planning
+---
+`
+
+func setupTestVault(t *testing.T) (*storage.Vault, *search.Engine, embedder.Embedder, storage.Config) {
+	t.Helper()
+	tmpDir := t.TempDir()
+
+	// Create project directory structure.
+	sessDir := filepath.Join(tmpDir, "Projects", "test-project", "sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write test session files.
+	for name, content := range map[string]string{
+		"2026-04-01-01.md": testSession1,
+		"2026-04-01-02.md": testSession2,
+		"2026-04-02-01.md": testSession3,
+	} {
+		if err := os.WriteFile(filepath.Join(sessDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	vault := storage.NewVault(tmpDir)
+	emb := embedder.NewMock(384)
+	cfg := storage.Config{}
+	engine := search.NewEngine(emb, vault, cfg)
+
+	return vault, engine, emb, cfg
+}
+
+func TestImportVibeVault_Basic(t *testing.T) {
+	vault, engine, emb, cfg := setupTestVault(t)
+
+	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.ProjectsScanned != 1 {
+		t.Errorf("ProjectsScanned = %d, want 1", result.ProjectsScanned)
+	}
+	if result.SessionsImported != 3 {
+		t.Errorf("SessionsImported = %d, want 3", result.SessionsImported)
+	}
+	if len(result.Errors) != 0 {
+		t.Errorf("unexpected errors: %v", result.Errors)
+	}
+}
+
+func TestImportVibeVault_Idempotent(t *testing.T) {
+	vault, engine, emb, cfg := setupTestVault(t)
+	ctx := context.Background()
+
+	// First import.
+	r1, err := ImportVibeVault(ctx, vault, engine, emb, cfg, ImportOptions{})
+	if err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+	if r1.SessionsImported != 3 {
+		t.Fatalf("first run: SessionsImported = %d, want 3", r1.SessionsImported)
+	}
+
+	// Second import — everything should be skipped.
+	r2, err := ImportVibeVault(ctx, vault, engine, emb, cfg, ImportOptions{})
+	if err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+	if r2.SessionsSkipped != 3 {
+		t.Errorf("second run: SessionsSkipped = %d, want 3", r2.SessionsSkipped)
+	}
+	if r2.SessionsImported != 0 {
+		t.Errorf("second run: SessionsImported = %d, want 0", r2.SessionsImported)
+	}
+}
+
+func TestImportVibeVault_DryRun(t *testing.T) {
+	vault, engine, emb, cfg := setupTestVault(t)
+
+	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{
+		DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.SessionsImported != 3 {
+		t.Errorf("SessionsImported = %d, want 3", result.SessionsImported)
+	}
+
+	// Verify nothing was actually written — marker file should not exist.
+	markerFile := filepath.Join(vault.Root, "palace", "test-project", ".local", "imported-sessions.jsonl")
+	if _, err := os.Stat(markerFile); !os.IsNotExist(err) {
+		t.Errorf("marker file should not exist after dry run, got err: %v", err)
+	}
+}
+
+func TestImportVibeVault_BadFrontmatter(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessDir := filepath.Join(tmpDir, "Projects", "bad-project", "sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(sessDir, "bad.md"),
+		[]byte(testSessionBadFrontmatter),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	vault := storage.NewVault(tmpDir)
+	emb := embedder.NewMock(384)
+	cfg := storage.Config{}
+	engine := search.NewEngine(emb, vault, cfg)
+
+	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result.Errors) == 0 {
+		t.Error("expected at least one error for bad frontmatter")
+	}
+	if result.SessionsImported != 0 {
+		t.Errorf("SessionsImported = %d, want 0", result.SessionsImported)
+	}
+}
+
+func TestImportVibeVault_EmptyTranscript(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessDir := filepath.Join(tmpDir, "Projects", "empty-project", "sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(sessDir, "empty.md"),
+		[]byte(testSessionEmptyBody),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	vault := storage.NewVault(tmpDir)
+	emb := embedder.NewMock(384)
+	cfg := storage.Config{}
+	engine := search.NewEngine(emb, vault, cfg)
+
+	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should not crash — session with empty body and empty summary.
+	if result.SessionsImported != 1 {
+		t.Errorf("SessionsImported = %d, want 1", result.SessionsImported)
+	}
+}
+
+func TestImportVibeVault_SlugMapping(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessDir := filepath.Join(tmpDir, "Projects", "00_Test Project", "sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(sessDir, "session.md"),
+		[]byte(testSession1),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	vault := storage.NewVault(tmpDir)
+	emb := embedder.NewMock(384)
+	cfg := storage.Config{}
+	engine := search.NewEngine(emb, vault, cfg)
+
+	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.ProjectsScanned != 1 {
+		t.Fatalf("ProjectsScanned = %d, want 1", result.ProjectsScanned)
+	}
+	if result.SessionsImported != 1 {
+		t.Errorf("SessionsImported = %d, want 1", result.SessionsImported)
+	}
+
+	// Verify the marker was written under the slugified name.
+	markerFile := filepath.Join(vault.Root, "palace", "00-test-project", ".local", "imported-sessions.jsonl")
+	if _, err := os.Stat(markerFile); err != nil {
+		t.Errorf("expected marker file at slugified path: %v", err)
+	}
+}
+
+func TestImportVibeVault_SlugCollision(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create two directories that will collide when slugified.
+	for _, name := range []string{"Test_Project", "Test Project"} {
+		sessDir := filepath.Join(tmpDir, "Projects", name, "sessions")
+		if err := os.MkdirAll(sessDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	vault := storage.NewVault(tmpDir)
+	emb := embedder.NewMock(384)
+	cfg := storage.Config{}
+	engine := search.NewEngine(emb, vault, cfg)
+
+	_, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	if err == nil {
+		t.Fatal("expected slug collision error, got nil")
+	}
+	if !strings.Contains(err.Error(), "slug collision") {
+		t.Errorf("error should mention slug collision, got: %v", err)
+	}
+}
+
+func TestImportVibeVault_Progress(t *testing.T) {
+	vault, engine, emb, cfg := setupTestVault(t)
+
+	var mu sync.Mutex
+	var events []ProgressEvent
+
+	opts := ImportOptions{
+		Progress: func(evt ProgressEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, evt)
+		},
+	}
+
+	_, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Check that we received expected event types.
+	types := make(map[ProgressType]int)
+	for _, e := range events {
+		types[e.Type]++
+	}
+
+	if types[ProgressProjectStart] < 1 {
+		t.Error("expected at least one ProgressProjectStart event")
+	}
+	if types[ProgressSessionDone] < 3 {
+		t.Errorf("expected at least 3 ProgressSessionDone events, got %d", types[ProgressSessionDone])
+	}
+	if types[ProgressProjectDone] < 1 {
+		t.Error("expected at least one ProgressProjectDone event")
+	}
+}
+
+func TestImportVibeVault_CancelledContext(t *testing.T) {
+	vault, engine, emb, cfg := setupTestVault(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := ImportVibeVault(ctx, vault, engine, emb, cfg, ImportOptions{})
+	if err == nil {
+		t.Fatal("expected context cancellation error, got nil")
+	}
+	if err != context.Canceled {
+		t.Errorf("expected context.Canceled, got: %v", err)
+	}
+}
+
+func TestImportVibeVault_KnowledgeMD(t *testing.T) {
+	vault, engine, emb, cfg := setupTestVault(t)
+
+	// Write a knowledge.md file in the project directory.
+	knowledgePath := filepath.Join(vault.Root, "Projects", "test-project", "knowledge.md")
+	if err := os.WriteFile(knowledgePath, []byte("# Project Knowledge\n\nImportant domain facts."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// All 3 sessions should import; knowledge.md is a bonus, not counted as a session.
+	if result.SessionsImported != 3 {
+		t.Errorf("SessionsImported = %d, want 3", result.SessionsImported)
+	}
+	if len(result.Errors) != 0 {
+		t.Errorf("unexpected errors: %v", result.Errors)
+	}
+}
+
+func TestImportVibeVault_MissingSessionID(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessDir := filepath.Join(tmpDir, "Projects", "noid-project", "sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Session file with empty session_id — should fall back to filename.
+	content := `---
+session_id: ""
+project: noid-project
+date: "2026-04-01"
+title: "No ID Session"
+summary: "This session has no session_id"
+tag: exploration
+---
+## Transcript
+
+Content without a session ID.
+`
+	if err := os.WriteFile(filepath.Join(sessDir, "fallback-name.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	vault := storage.NewVault(tmpDir)
+	emb := embedder.NewMock(384)
+	cfg := storage.Config{}
+	engine := search.NewEngine(emb, vault, cfg)
+
+	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.SessionsImported != 1 {
+		t.Errorf("SessionsImported = %d, want 1", result.SessionsImported)
+	}
+
+	// Verify the marker was written using the filename fallback.
+	imported, checkErr := isSessionImported(vault, "noid-project", "fallback-name")
+	if checkErr != nil {
+		t.Fatalf("isSessionImported: %v", checkErr)
+	}
+	if !imported {
+		t.Error("session should be marked as imported under filename fallback ID")
+	}
+}
+
+func TestImportVibeVault_NoProjectsDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Do NOT create a Projects/ directory.
+	vault := storage.NewVault(tmpDir)
+	emb := embedder.NewMock(384)
+	cfg := storage.Config{}
+	engine := search.NewEngine(emb, vault, cfg)
+
+	_, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	if err == nil {
+		t.Fatal("expected error for missing Projects dir, got nil")
+	}
+	if !strings.Contains(err.Error(), "scan projects") {
+		t.Errorf("error should mention scan projects, got: %v", err)
+	}
+}
+
+func TestImportVibeVault_EmptySlugSkip(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a project dir that slugifies to empty string.
+	emptySlugDir := filepath.Join(tmpDir, "Projects", "---")
+	if err := os.MkdirAll(emptySlugDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Also create a valid project so we can verify normal processing still works.
+	sessDir := filepath.Join(tmpDir, "Projects", "valid-project", "sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessDir, "s1.md"), []byte(testSession1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	vault := storage.NewVault(tmpDir)
+	emb := embedder.NewMock(384)
+	cfg := storage.Config{}
+	engine := search.NewEngine(emb, vault, cfg)
+
+	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Only the valid project should be scanned; "---" should be skipped.
+	if result.ProjectsScanned != 1 {
+		t.Errorf("ProjectsScanned = %d, want 1", result.ProjectsScanned)
+	}
+	if result.SessionsImported != 1 {
+		t.Errorf("SessionsImported = %d, want 1", result.SessionsImported)
+	}
+}
+
+func TestImportVibeVault_UnreadableFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessDir := filepath.Join(tmpDir, "Projects", "unreadable-project", "sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a session file, then make it unreadable.
+	unreadable := filepath.Join(sessDir, "noperm.md")
+	if err := os.WriteFile(unreadable, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(unreadable, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(unreadable, 0o644) })
+
+	vault := storage.NewVault(tmpDir)
+	emb := embedder.NewMock(384)
+	cfg := storage.Config{}
+	engine := search.NewEngine(emb, vault, cfg)
+
+	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result.Errors) == 0 {
+		t.Error("expected at least one error for unreadable file")
+	}
+	if result.SessionsImported != 0 {
+		t.Errorf("SessionsImported = %d, want 0", result.SessionsImported)
+	}
+}
+
+func TestImportVibeVault_ContentDedup(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessDir := filepath.Join(tmpDir, "Projects", "dedup-project", "sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two sessions with identical body text but different IDs.
+	body := `---
+session_id: "%s"
+project: dedup-project
+date: "2026-04-01"
+title: "Dedup Session"
+summary: "Same content"
+---
+## Transcript
+
+Identical body text for deduplication testing purposes.
+`
+	for _, id := range []string{"dedup-01", "dedup-02"} {
+		content := strings.Replace(body, "%s", id, 1)
+		if err := os.WriteFile(
+			filepath.Join(sessDir, id+".md"),
+			[]byte(content),
+			0o644,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	vault := storage.NewVault(tmpDir)
+	emb := embedder.NewMock(384)
+	cfg := storage.Config{}
+	engine := search.NewEngine(emb, vault, cfg)
+
+	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.SessionsImported != 2 {
+		t.Errorf("SessionsImported = %d, want 2 (both should import)", result.SessionsImported)
+	}
+
+	// Both should have idempotency markers.
+	for _, id := range []string{"dedup-01", "dedup-02"} {
+		imported, err := isSessionImported(vault, "dedup-project", id)
+		if err != nil {
+			t.Errorf("isSessionImported(%q): %v", id, err)
+		}
+		if !imported {
+			t.Errorf("session %q should be marked as imported", id)
+		}
+	}
+}
