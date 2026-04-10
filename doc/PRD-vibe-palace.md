@@ -3,7 +3,7 @@
 **Version:** 0.1.0-draft
 **Date:** 2026-04-06
 **Authors:** John Suykerbuyk, Claude Opus 4.6
-**Status:** Phases 1–6 Implemented | Phases 7–11 Planned
+**Status:** Phases 1–10 Implemented | Phase 11 Planned
 
 > **Implementation notes** are marked with blockquotes throughout. HNSW
 > references in diagrams reflect the design; actual search uses brute-force
@@ -580,7 +580,7 @@ flowchart TD
 
 ### 6.5 Knowledge Graph Tools (from MemPalace, new)
 
-> **0 of 5 implemented.** Planned for Phase 7 (Knowledge Graph).
+> **5 of 5 implemented.**
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
@@ -612,7 +612,7 @@ flowchart TD
 | `vp_vault_sync` | — | Pull/push vault git remotes |
 | `vp_refresh_index` | project? | Rebuild session index and re-embed if needed |
 
-**Total: 34 designed, 20 implemented (Phases 1–6)** (vs VibeVault's 16 + MemPalace's 19 = 35, with dedup and consolidation)
+**Total: 35 designed, 26 implemented (Phases 1–10)** (vs VibeVault's 16 + MemPalace's 19 = 35, with dedup and consolidation)
 
 ---
 
@@ -1853,7 +1853,7 @@ token-efficient summaries for context loading. Both representations coexist.
 
 ## Phase 7: Knowledge Graph
 
-> **Status: PLANNED**
+> **Status: COMPLETE**
 
 **Goal:** Temporal entity-relationship graph with time-travel queries, integrated
 with session capture pipeline.
@@ -1914,7 +1914,7 @@ with session capture pipeline.
 
 ## Phase 8: Migration & Import
 
-> **Status: PLANNED**
+> **Status: COMPLETE**
 
 **Goal:** Import existing VibeVault sessions and MemPalace ChromaDB data into
 Vibe-Palace.
@@ -1979,7 +1979,7 @@ Vibe-Palace.
 
 ## Phase 9: CLI & Distribution
 
-> **Status: PLANNED**
+> **Status: COMPLETE**
 
 **Goal:** Human-facing CLI, cross-platform builds, package distribution.
 
@@ -2049,7 +2049,7 @@ from the same data at build time.
 
 ## Phase 10: Documentation & Human Interface
 
-> **Status: PLANNED**
+> **Status: COMPLETE**
 
 **Goal:** Ensure the human half of the human–AI pair can confidently set up,
 operate, and maintain Vibe-Palace without trial-and-error. Lessons from

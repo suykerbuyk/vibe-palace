@@ -163,7 +163,7 @@ Add to `.mcp.json` in your project root (project-scope) or `~/.claude.json`
 ```
 
 Verify: start Claude Code and check the MCP server list shows `vibe-palace`
-with 20 tools available.
+with 26 tools available.
 
 **Note:** Vibe-palace replaces CLAUDE.md-based context injection —
 `vp_bootstrap_context` delivers workflow, resume, tasks, and sessions via MCP.
@@ -224,7 +224,78 @@ Add to `opencode.json` in your project root or `~/.config/opencode/`:
 
 ---
 
-## Part 4: Daily Workflow
+## Part 4: CLI Commands
+
+The `vp` binary includes commands for human use alongside the MCP server.
+Run `vp help` for the full list, or `vp <command> --help` for details.
+
+### Project Status
+
+```bash
+vp status                   # palace overview: sessions, tasks, recent activity
+vp sessions                 # list recent sessions with dates and tags
+vp tasks                    # list active tasks with priority and status
+vp tasks --done             # include completed and cancelled tasks
+```
+
+### Search
+
+```bash
+vp search "authentication"  # semantic search across palace content
+```
+
+### Project Initialization
+
+```bash
+vp init                     # create .vibe-palace.toml in the current directory
+vp init --name my-project --domain work
+```
+
+### Vault Sync
+
+For multi-machine setups where the vault is a git repository:
+
+```bash
+vp vault pull               # pull vault state from remote
+vp vault push               # push vault state to remote
+vp vault sync               # bidirectional sync
+```
+
+### Context Injection
+
+```bash
+vp inject                   # output bootstrap context as JSON (for scripting)
+vp check                    # verify installation, config, vault, embedder
+```
+
+Man pages are available for all commands: `man vp`, `man vp-search`, etc.
+Install with `make man`.
+
+---
+
+## Part 5: Migration
+
+If you are migrating from VibeVault or MemPalace, vibe-palace can import
+your existing data. See [doc/MIGRATION.md](MIGRATION.md) for the full
+migration guide, architecture details, and risk assessment.
+
+### Quick Start
+
+```bash
+# Preview what would be imported (no changes written)
+vp migrate vibevault --dry-run
+vp migrate mempalace --export-path ~/mempalace-export.json --dry-run
+
+# Run the actual import
+vp migrate vibevault
+vp migrate mempalace --export-path ~/mempalace-export.json
+```
+
+After import, restart the MCP server to rebuild search indexes.
+
+---
+
+## Part 6: Daily Workflow
 
 ### Starting a Session
 
@@ -276,7 +347,7 @@ The next session sees all of this via `vp_bootstrap_context`.
 
 ---
 
-## Part 5: LLM Provider Notes
+## Part 7: LLM Provider Notes
 
 ### Model-Agnostic Design
 
@@ -301,7 +372,7 @@ tools work identically.
 
 ---
 
-## Part 6: Advanced Configuration
+## Part 8: Advanced Configuration
 
 All configuration is optional — defaults work out of the box. Override in
 `~/.config/vibe-palace/config.toml` (vault-level) or
@@ -349,7 +420,7 @@ keywords = ["tcp", "udp", "socket", "http"]
 
 ---
 
-## Part 7: Troubleshooting
+## Part 9: Troubleshooting
 
 ### "vp: read config ... no such file or directory"
 

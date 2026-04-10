@@ -37,11 +37,16 @@ Connect your editor — see the [Tutorial](doc/TUTORIAL.md) for setup.
   and traversing stored knowledge
 - **Friction tracking** — automated session difficulty scoring with weekly
   trend analysis
+- **Knowledge graph** — temporal entity-relationship graph with time-travel
+  queries, integrated with session capture
+- **Migration** — import existing VibeVault sessions and MemPalace data
+- **CLI** — `vp` binary with 16 commands, man pages, and shell completions
 
 ## Documentation
 
 - [Tutorial](doc/TUTORIAL.md) — installation, editor setup, daily workflow
 - [Architecture](doc/ARCHITECTURE.md) — system design and package reference
 - [Testing](doc/TESTING.md) — test strategy and integration test inventory
-- [PRD](doc/PRD-vibe-palace.md) — full product requirements (Phases 1–6
-  implemented, 7–11 planned)
+- [Migration](doc/MIGRATION.md) — migrating from VibeVault and MemPalace
+- [PRD](doc/PRD-vibe-palace.md) — full product requirements (Phases 1–10
+  implemented, Phase 11 planned)

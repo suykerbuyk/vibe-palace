@@ -142,7 +142,7 @@ cmd/vp/main.go
 ├── search.NewEngine(emb, v, cfg) # create search engine
 ├── context.NewResolver(v.Root)   # template resolver
 ├── mcp.NewServer(v)              # create MCP server
-├── tools.RegisterAll(...)        # register all 20 tools
+├── tools.RegisterAll(...)        # register all 26 tools
 └── srv.Serve(ctx)                # start stdio transport
 ```
 
@@ -646,11 +646,10 @@ Binary: `vp` installed to `${PREFIX}/bin/vp` (default `~/.local/bin/vp`).
 
 ---
 
-## Roadmap (Phases 8–11)
+## Roadmap
+
+Phases 7–10 are complete (knowledge graph, migration, CLI, documentation).
 
 | Phase | Goal |
 |-------|------|
-| 8. Migration & Import | Import existing VibeVault sessions and MemPalace ChromaDB data |
-| 9. CLI & Distribution | Human-facing CLI, cross-platform builds, package distribution |
-| 10. Documentation & Human Interface | Tutorials, onboarding, and human-facing documentation |
 | 11. Pluggable Embedding Backends | Swap ONNX embedder for API-based alternatives |
