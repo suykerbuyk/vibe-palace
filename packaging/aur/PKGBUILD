@@ -1,0 +1,24 @@
+# Maintainer: John Suykerbuyk <john@syketech.com>
+pkgname=vibe-palace
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="vibe-palace AI context engine"
+arch=('x86_64' 'aarch64')
+url="https://github.com/suykerbuyk/vibe-palace"
+license=('MIT' 'Apache-2.0')
+makedepends=('go>=1.25')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/suykerbuyk/vibe-palace/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    export CGO_ENABLED=0
+    go build -ldflags "-s -w -X main.version=$pkgver" -o vp ./cmd/vp
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm755 vp "$pkgdir/usr/bin/vp"
+    install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+    install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+}

@@ -7,6 +7,9 @@ PREFIX  ?= $(HOME)/.local
 
 BASE_VERSION := 0.1.0
 VERSION      ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS      := -X main.version=$(BASE_VERSION) \
+                -X main.commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown) \
+                -X main.buildDate=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 .DEFAULT_GOAL := help
 
@@ -54,7 +57,16 @@ cover-full: ## Generate HTML coverage report (full suite)
 ##@ Install
 .PHONY: install
 install: build ## Build and install to PREFIX (default: ~/.local)
-	go build -ldflags "-X 'main.version=$(BASE_VERSION) ($(VERSION))'" -o $(PREFIX)/bin/$(BINARY) $(CMD)
+	go build -ldflags "$(LDFLAGS)" -o $(PREFIX)/bin/$(BINARY) $(CMD)
+
+##@ Release
+.PHONY: release
+release: ## Build release with goreleaser
+	goreleaser release --clean
+
+.PHONY: snapshot
+snapshot: ## Build snapshot (local test, no publish)
+	goreleaser release --snapshot --clean
 
 ##@ Clean
 .PHONY: clean

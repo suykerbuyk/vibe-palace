@@ -63,89 +63,95 @@ func BootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault) mcp.To
 	}
 }
 
+// AssembleBootstrap builds context restoration payload.
+// Used by both the MCP tool handler and the CLI inject command.
+func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, maxTokens int) BootstrapResult {
+	if maxTokens == 0 {
+		maxTokens = 8000
+	}
+
+	result := BootstrapResult{Project: project}
+
+	// Workflow — graceful on error.
+	if wf, _, err := resolver.Resolve("workflow", project); err == nil {
+		result.Workflow = wf
+	}
+
+	// Resume — graceful on error.
+	if resume, _, err := resolver.Resolve("resume", project); err == nil {
+		result.Resume = resume
+	}
+
+	// Active tasks — graceful on error.
+	if tasks, err := vault.ListTasks(project, false); err == nil {
+		result.ActiveTasks = tasks
+	}
+
+	// Recent sessions (last 5, most-recent-first) — graceful on error.
+	if sessions, err := vault.ListSessions(project, "", "", 0); err == nil {
+		if len(sessions) > 5 {
+			sessions = sessions[len(sessions)-5:]
+		}
+		// Reverse for most-recent-first.
+		for i, j := 0, len(sessions)-1; i < j; i, j = i+1, j-1 {
+			sessions[i], sessions[j] = sessions[j], sessions[i]
+		}
+		for _, s := range sessions {
+			result.RecentSessions = append(result.RecentSessions, sessionSummary{
+				Date:      s.Date,
+				Iteration: s.Iteration,
+				Title:     s.Title,
+				Summary:   s.Summary,
+				Tag:       s.Tag,
+			})
+		}
+	}
+
+	// KG snapshot — Phase 7 may not exist yet, graceful.
+	if stats, err := vault.KGStats(project); err == nil {
+		result.KGSnapshot = &stats
+	}
+
+	// Available commands for discovery.
+	if commands, err := resolver.ListResources("command", project); err == nil {
+		for _, cmd := range commands {
+			cs := commandSummary{Name: cmd.Name, Source: cmd.Source}
+			if content, _, err := resolver.Resolve(fmt.Sprintf("command:%s", cmd.Name), project); err == nil {
+				cs.Brief = extractBrief(content, 60)
+			}
+			result.AvailableCommands = append(result.AvailableCommands, cs)
+		}
+	}
+
+	// Token budget truncation: rough estimate 4 chars per token.
+	// Truncate sessions first, then KG, then commands.
+	raw, err := json.Marshal(result)
+	if err == nil {
+		estimatedTokens := len(raw) / 4
+		for estimatedTokens > maxTokens && len(result.RecentSessions) > 0 {
+			result.RecentSessions = result.RecentSessions[:len(result.RecentSessions)-1]
+			raw, _ = json.Marshal(result)
+			estimatedTokens = len(raw) / 4
+		}
+		if estimatedTokens > maxTokens && result.KGSnapshot != nil {
+			result.KGSnapshot = nil
+			raw, _ = json.Marshal(result)
+			estimatedTokens = len(raw) / 4
+		}
+		if estimatedTokens > maxTokens && len(result.AvailableCommands) > 0 {
+			result.AvailableCommands = nil
+		}
+	}
+
+	return result
+}
+
 func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault) mcp.HandlerFunc {
 	return func(_ context.Context, params json.RawMessage) (any, error) {
 		var p bootstrapParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, err
 		}
-		if p.MaxTokens == 0 {
-			p.MaxTokens = 8000
-		}
-
-		result := BootstrapResult{Project: p.Project}
-
-		// Workflow — graceful on error.
-		if wf, _, err := resolver.Resolve("workflow", p.Project); err == nil {
-			result.Workflow = wf
-		}
-
-		// Resume — graceful on error.
-		if resume, _, err := resolver.Resolve("resume", p.Project); err == nil {
-			result.Resume = resume
-		}
-
-		// Active tasks — graceful on error.
-		if tasks, err := vault.ListTasks(p.Project, false); err == nil {
-			result.ActiveTasks = tasks
-		}
-
-		// Recent sessions (last 5, most-recent-first) — graceful on error.
-		if sessions, err := vault.ListSessions(p.Project, "", "", 0); err == nil {
-			if len(sessions) > 5 {
-				sessions = sessions[len(sessions)-5:]
-			}
-			// Reverse for most-recent-first.
-			for i, j := 0, len(sessions)-1; i < j; i, j = i+1, j-1 {
-				sessions[i], sessions[j] = sessions[j], sessions[i]
-			}
-			for _, s := range sessions {
-				result.RecentSessions = append(result.RecentSessions, sessionSummary{
-					Date:      s.Date,
-					Iteration: s.Iteration,
-					Title:     s.Title,
-					Summary:   s.Summary,
-					Tag:       s.Tag,
-				})
-			}
-		}
-
-		// KG snapshot — Phase 7 may not exist yet, graceful.
-		if stats, err := vault.KGStats(p.Project); err == nil {
-			result.KGSnapshot = &stats
-		}
-
-		// Available commands for discovery.
-		if commands, err := resolver.ListResources("command", p.Project); err == nil {
-			for _, cmd := range commands {
-				cs := commandSummary{Name: cmd.Name, Source: cmd.Source}
-				if content, _, err := resolver.Resolve(fmt.Sprintf("command:%s", cmd.Name), p.Project); err == nil {
-					cs.Brief = extractBrief(content, 60)
-				}
-				result.AvailableCommands = append(result.AvailableCommands, cs)
-			}
-		}
-
-		// Token budget truncation: rough estimate 4 chars per token.
-		// Truncate sessions first, then KG, then commands.
-		raw, err := json.Marshal(result)
-		if err == nil {
-			estimatedTokens := len(raw) / 4
-			for estimatedTokens > p.MaxTokens && len(result.RecentSessions) > 0 {
-				result.RecentSessions = result.RecentSessions[:len(result.RecentSessions)-1]
-				raw, _ = json.Marshal(result)
-				estimatedTokens = len(raw) / 4
-			}
-			if estimatedTokens > p.MaxTokens && result.KGSnapshot != nil {
-				result.KGSnapshot = nil
-				raw, _ = json.Marshal(result)
-				estimatedTokens = len(raw) / 4
-			}
-			if estimatedTokens > p.MaxTokens && len(result.AvailableCommands) > 0 {
-				result.AvailableCommands = nil
-			}
-		}
-
-		return result, nil
+		return AssembleBootstrap(resolver, vault, p.Project, p.MaxTokens), nil
 	}
 }
