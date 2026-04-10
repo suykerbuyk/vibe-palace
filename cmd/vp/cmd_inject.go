@@ -25,8 +25,12 @@ func cmdInject() *cli.Command {
 	return &cli.Command{
 		Name:        "inject",
 		Synopsis:    "vp inject [--project P] [--max-tokens N]",
-		Description: "Output bootstrap context as JSON for AI consumption.",
+		Description: "Output bootstrap context as JSON for AI consumption. Provides sessions, tasks, decisions, and friction data in a structured format.",
 		Flags:       injectFlags,
+		Examples: []cli.Example{
+			{Cmd: "vp inject", Comment: "Output context for the current project"},
+			{Cmd: "vp inject -p myapp --max-tokens 4000", Comment: "Output with a smaller token budget"},
+		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(injectFlags, args)
 			if err != nil {

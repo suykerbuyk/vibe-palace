@@ -24,8 +24,12 @@ func cmdTasks() *cli.Command {
 	return &cli.Command{
 		Name:        "tasks",
 		Synopsis:    "vp tasks [--project P] [--done] [--json]",
-		Description: "List tasks for a project.",
+		Description: "List tasks for a project. Shows active tasks by default; use --done to include completed and cancelled tasks.",
 		Flags:       tasksFlags,
+		Examples: []cli.Example{
+			{Cmd: "vp tasks", Comment: "List active tasks for the current project"},
+			{Cmd: "vp tasks -p myapp --done --json", Comment: "List all tasks including completed as JSON"},
+		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(tasksFlags, args)
 			if err != nil {

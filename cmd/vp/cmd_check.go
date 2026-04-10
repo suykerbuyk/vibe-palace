@@ -15,7 +15,10 @@ func cmdCheck(info cli.BuildInfo) *cli.Command {
 	return &cli.Command{
 		Name:        "check",
 		Synopsis:    "vp check",
-		Description: "Verify installation, config, vault, embedder, and project detection.",
+		Description: "Verify installation, config, vault, embedder, and project detection. Reports pass/fail status for each component.",
+		Examples: []cli.Example{
+			{Cmd: "vp check", Comment: "Run all installation checks"},
+		},
 		Run: func(args []string) int {
 			return runCheck(info.Version)
 		},

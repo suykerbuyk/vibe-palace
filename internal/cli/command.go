@@ -34,6 +34,7 @@ type Command struct {
 	Description string    // paragraph description
 	Flags       []FlagDef // supported flags
 	Examples    []Example // usage examples
+	Subcommands []string  // registered names of child commands (e.g. "vault pull")
 	Run         func(args []string) int
 	Hidden      bool // exclude from top-level help
 }

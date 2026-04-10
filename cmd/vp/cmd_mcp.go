@@ -18,7 +18,10 @@ func cmdMCP() *cli.Command {
 	return &cli.Command{
 		Name:        "mcp",
 		Synopsis:    "vp mcp",
-		Description: "Start the MCP server on stdio (JSON-RPC).",
+		Description: "Start the MCP server on stdio (JSON-RPC). Used by AI assistants to access palace tools via the Model Context Protocol.",
+		Examples: []cli.Example{
+			{Cmd: "vp mcp", Comment: "Start MCP server on stdin/stdout"},
+		},
 		Run: func(args []string) int {
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()

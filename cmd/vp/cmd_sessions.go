@@ -24,8 +24,12 @@ func cmdSessions() *cli.Command {
 	return &cli.Command{
 		Name:        "sessions",
 		Synopsis:    "vp sessions [--project P] [--last N] [--json]",
-		Description: "List recent sessions for a project.",
+		Description: "List recent sessions for a project. Sessions are captured work units with summaries, tags, and friction scores.",
 		Flags:       sessionsFlags,
+		Examples: []cli.Example{
+			{Cmd: "vp sessions", Comment: "List recent sessions for the current project"},
+			{Cmd: "vp sessions -p myapp --last 5 --json", Comment: "Show last 5 sessions as JSON"},
+		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(sessionsFlags, args)
 			if err != nil {

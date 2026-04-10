@@ -22,8 +22,12 @@ func cmdServe() *cli.Command {
 	return &cli.Command{
 		Name:        "serve",
 		Synopsis:    "vp serve [--port N]",
-		Description: "Start the HTTP REST server for tool access.",
+		Description: "Start the HTTP REST server for tool access. Exposes MCP tools over HTTP for integration with editors and other clients.",
 		Flags:       serveFlags,
+		Examples: []cli.Example{
+			{Cmd: "vp serve", Comment: "Start on default port 7423"},
+			{Cmd: "vp serve --port 9000", Comment: "Start on a custom port"},
+		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(serveFlags, args)
 			if err != nil {

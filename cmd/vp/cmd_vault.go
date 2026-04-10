@@ -22,9 +22,10 @@ func cmdVault() *cli.Command {
 	return &cli.Command{
 		Name:        "vault",
 		Synopsis:    "vp vault <command> [flags]",
-		Description: "Manage the vault git repository.",
+		Description: "Manage the vault git repository. The vault stores all palace data in a git-tracked directory for versioning and multi-machine sync.",
+		Subcommands: []string{"vault pull", "vault push", "vault sync"},
 		Run: func(args []string) int {
-			fmt.Fprint(os.Stderr, "Usage: vp vault <command> [flags]\n\nCommands:\n  pull    Pull from all remotes\n  push    Push to all remotes (requires clean state)\n  sync    Pull then push\n\nRun 'vp help vault pull' for details.\n")
+			fmt.Fprintln(os.Stderr, "Usage: vp vault <command> [flags]\n\nRun 'vp vault --help' for details.")
 			return cli.ExitOK
 		},
 	}
@@ -36,6 +37,10 @@ func cmdVaultPull() *cli.Command {
 		Synopsis:    "vp vault pull [--dry-run]",
 		Description: "Pull from all configured vault remotes.",
 		Flags:       vaultDryRunFlag,
+		Examples: []cli.Example{
+			{Cmd: "vp vault pull", Comment: "Pull from all remotes"},
+			{Cmd: "vp vault pull --dry-run", Comment: "Preview pull commands without executing"},
+		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(vaultDryRunFlag, args)
 			if err != nil {
@@ -63,6 +68,10 @@ func cmdVaultPush() *cli.Command {
 		Synopsis:    "vp vault push [--dry-run]",
 		Description: "Push to all configured vault remotes. Requires clean vault state.",
 		Flags:       vaultDryRunFlag,
+		Examples: []cli.Example{
+			{Cmd: "vp vault push", Comment: "Push to all remotes"},
+			{Cmd: "vp vault push --dry-run", Comment: "Preview push commands without executing"},
+		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(vaultDryRunFlag, args)
 			if err != nil {
@@ -90,6 +99,10 @@ func cmdVaultSync() *cli.Command {
 		Synopsis:    "vp vault sync [--dry-run]",
 		Description: "Pull then push all configured vault remotes.",
 		Flags:       vaultDryRunFlag,
+		Examples: []cli.Example{
+			{Cmd: "vp vault sync", Comment: "Pull then push all remotes"},
+			{Cmd: "vp vault sync --dry-run", Comment: "Preview sync commands without executing"},
+		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(vaultDryRunFlag, args)
 			if err != nil {

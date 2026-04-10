@@ -45,14 +45,23 @@ func (r *Registry) Lookup(name string) (*Command, bool) {
 	return cmd, ok
 }
 
-// All returns all non-hidden commands sorted by name.
+// All returns all non-hidden commands sorted by name. Two-word commands
+// (e.g. "vault pull") are excluded when their parent (e.g. "vault") is
+// also registered, since the parent's help now lists them.
 func (r *Registry) All() []*Command {
 	var cmds []*Command
 	for _, name := range r.order {
 		cmd := r.commands[name]
-		if !cmd.Hidden {
-			cmds = append(cmds, cmd)
+		if cmd.Hidden {
+			continue
 		}
+		// Skip subcommands whose parent is registered.
+		if parent, _, ok := strings.Cut(name, " "); ok {
+			if _, hasParent := r.commands[parent]; hasParent {
+				continue
+			}
+		}
+		cmds = append(cmds, cmd)
 	}
 	sort.Slice(cmds, func(i, j int) bool {
 		return cmds[i].Name < cmds[j].Name
@@ -85,7 +94,7 @@ func (r *Registry) Dispatch(args []string) int {
 		if cmd, ok := r.commands[twoWord]; ok {
 			remaining := args[2:]
 			if hasHelpFlag(remaining) {
-				fmt.Fprint(r.out, FormatHelp(cmd))
+				fmt.Fprint(r.out, r.formatHelp(cmd))
 				return ExitOK
 			}
 			return cmd.Run(remaining)
@@ -96,7 +105,7 @@ func (r *Registry) Dispatch(args []string) int {
 	if cmd, ok := r.commands[args[0]]; ok {
 		remaining := args[1:]
 		if hasHelpFlag(remaining) {
-			fmt.Fprint(r.out, FormatHelp(cmd))
+			fmt.Fprint(r.out, r.formatHelp(cmd))
 			return ExitOK
 		}
 		return cmd.Run(remaining)
@@ -121,18 +130,27 @@ func (r *Registry) RegisterHelp() {
 			if len(args) >= 2 {
 				twoWord := args[0] + " " + args[1]
 				if cmd, ok := r.commands[twoWord]; ok {
-					fmt.Fprint(r.out, FormatHelp(cmd))
+					fmt.Fprint(r.out, r.formatHelp(cmd))
 					return ExitOK
 				}
 			}
 			// Single-word lookup.
 			if cmd, ok := r.commands[args[0]]; ok {
-				fmt.Fprint(r.out, FormatHelp(cmd))
+				fmt.Fprint(r.out, r.formatHelp(cmd))
 				return ExitOK
 			}
 			fmt.Fprintf(r.errOut, "vp help: unknown command %q\n", strings.Join(args, " "))
 			return ExitUser
 		},
+	})
+}
+
+// formatHelp renders help for a command, using parent-aware rendering
+// when the command has subcommands.
+func (r *Registry) formatHelp(cmd *Command) string {
+	return FormatHelpWithSubs(cmd, func(name string) *Command {
+		c, _ := r.commands[name]
+		return c
 	})
 }
 

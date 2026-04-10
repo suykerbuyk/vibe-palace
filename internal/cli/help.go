@@ -69,6 +69,75 @@ func formatFlag(f FlagDef) string {
 	return line + "\n"
 }
 
+// FormatHelpWithSubs renders help for a parent command, showing its
+// subcommands in a compact layout. The resolver looks up child commands
+// by name. If cmd has no Subcommands, it delegates to FormatHelp.
+func FormatHelpWithSubs(cmd *Command, resolver func(string) *Command) string {
+	if len(cmd.Subcommands) == 0 || resolver == nil {
+		return FormatHelp(cmd)
+	}
+
+	var b strings.Builder
+
+	if cmd.Synopsis != "" {
+		fmt.Fprintf(&b, "Usage: %s\n", cmd.Synopsis)
+	} else {
+		fmt.Fprintf(&b, "Usage: vp %s\n", cmd.Name)
+	}
+
+	if cmd.Description != "" {
+		b.WriteString("\n")
+		b.WriteString(cmd.Description)
+		if !strings.HasSuffix(cmd.Description, "\n") {
+			b.WriteString("\n")
+		}
+	}
+
+	b.WriteString("\nCommands:\n")
+	for _, name := range cmd.Subcommands {
+		child := resolver(name)
+		if child == nil {
+			continue
+		}
+		// Show synopsis with flags inline.
+		synopsis := child.Synopsis
+		if synopsis == "" {
+			synopsis = "vp " + child.Name
+		}
+		fmt.Fprintf(&b, "  %s\n", synopsis)
+		if child.Description != "" {
+			// First sentence only for the compact listing.
+			desc := child.Description
+			if idx := strings.IndexByte(desc, '.'); idx >= 0 {
+				desc = desc[:idx+1]
+			}
+			fmt.Fprintf(&b, "      %s\n", desc)
+		}
+		b.WriteString("\n")
+	}
+
+	// Collect examples: parent first, then children.
+	var examples []Example
+	examples = append(examples, cmd.Examples...)
+	for _, name := range cmd.Subcommands {
+		child := resolver(name)
+		if child != nil {
+			examples = append(examples, child.Examples...)
+		}
+	}
+	if len(examples) > 0 {
+		b.WriteString("Examples:\n")
+		for _, e := range examples {
+			fmt.Fprintf(&b, "  %s\n", e.Cmd)
+			if e.Comment != "" {
+				fmt.Fprintf(&b, "      %s\n", e.Comment)
+			}
+		}
+	}
+
+	return b.String()
+}
+
 // FormatUsage renders the top-level usage listing all commands.
 func FormatUsage(cmds []*Command, info BuildInfo) string {
 	var b strings.Builder

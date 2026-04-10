@@ -22,7 +22,7 @@ help: ## Show this help
 
 ##@ Build
 .PHONY: build
-build: ## Build all packages
+build: man ## Build all packages and generate man pages
 	go build ./...
 
 .PHONY: vet
@@ -56,23 +56,32 @@ cover-full: ## Generate HTML coverage report (full suite)
 
 ##@ Install
 .PHONY: install
-install: build ## Build and install to PREFIX (default: ~/.local)
+install: build ## Build and install binary + man pages to PREFIX (default: ~/.local)
 	go build -ldflags "$(LDFLAGS)" -o $(PREFIX)/bin/$(BINARY) $(CMD)
+	@mkdir -p $(PREFIX)/share/man/man1
+	@cp doc/man/man1/*.1 $(PREFIX)/share/man/man1/
 
 ##@ Release
 .PHONY: release
-release: ## Build release with goreleaser
+release: ## Tag-based release — build and publish to GitHub Releases
 	goreleaser release --clean
 
 .PHONY: snapshot
-snapshot: ## Build snapshot (local test, no publish)
+snapshot: ## Local release dry-run — build release binaries without publishing
 	goreleaser release --snapshot --clean
+
+##@ Documentation
+.PHONY: man
+man: ## Generate man pages from command metadata
+	@mkdir -p doc/man/man1
+	VP_GEN_MAN=1 go test -run TestGenerateManPages ./cmd/vp/
 
 ##@ Clean
 .PHONY: clean
 clean: ## Remove build artifacts (preserves model cache)
 	go clean ./...
 	rm -f coverage.out coverage.html
+	rm -rf doc/man/
 
 .PHONY: dist-clean
 dist-clean: clean ## Remove all artifacts including model cache

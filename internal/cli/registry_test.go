@@ -271,3 +271,93 @@ func TestRegisterHelpNoArgs(t *testing.T) {
 		t.Error("expected usage output")
 	}
 }
+
+func TestAllFiltersSubcommands(t *testing.T) {
+	reg, _, _ := newTestRegistry()
+	reg.Register(&Command{Name: "vault", Description: "Manage vault.", Subcommands: []string{"vault pull", "vault push"}})
+	reg.Register(&Command{Name: "vault pull", Description: "Pull."})
+	reg.Register(&Command{Name: "vault push", Description: "Push."})
+	reg.Register(&Command{Name: "check", Description: "Check."})
+
+	cmds := reg.All()
+	names := make([]string, len(cmds))
+	for i, c := range cmds {
+		names[i] = c.Name
+	}
+
+	// vault pull and vault push should be filtered out.
+	for _, name := range names {
+		if name == "vault pull" || name == "vault push" {
+			t.Errorf("All() should not include subcommand %q when parent is registered", name)
+		}
+	}
+	// vault and check should remain.
+	if len(cmds) != 2 {
+		t.Errorf("All() returned %d commands, want 2: %v", len(cmds), names)
+	}
+}
+
+func TestAllKeepsOrphans(t *testing.T) {
+	reg, _, _ := newTestRegistry()
+	// "vault pull" without a "vault" parent should NOT be filtered.
+	reg.Register(&Command{Name: "vault pull", Description: "Pull."})
+
+	cmds := reg.All()
+	if len(cmds) != 1 || cmds[0].Name != "vault pull" {
+		t.Errorf("All() should keep two-word command when parent is not registered, got %v", cmds)
+	}
+}
+
+func TestDispatchParentHelp(t *testing.T) {
+	reg, out, _ := newTestRegistry()
+	reg.Register(&Command{
+		Name:        "vault",
+		Synopsis:    "vp vault <command>",
+		Description: "Manage vault.",
+		Subcommands: []string{"vault pull"},
+		Run:         func([]string) int { return ExitOK },
+	})
+	reg.Register(&Command{
+		Name:        "vault pull",
+		Synopsis:    "vp vault pull [--dry-run]",
+		Description: "Pull from remotes.",
+	})
+
+	code := reg.Dispatch([]string{"vault", "--help"})
+	if code != ExitOK {
+		t.Errorf("exit code = %d", code)
+	}
+	output := out.String()
+	if !strings.Contains(output, "Commands:") {
+		t.Errorf("parent --help should include Commands section\nGot:\n%s", output)
+	}
+	if !strings.Contains(output, "vault pull") {
+		t.Errorf("parent --help should list subcommands\nGot:\n%s", output)
+	}
+}
+
+func TestRegisterHelpParent(t *testing.T) {
+	reg, out, _ := newTestRegistry()
+	reg.Register(&Command{
+		Name:        "vault",
+		Synopsis:    "vp vault <command>",
+		Description: "Manage vault.",
+		Subcommands: []string{"vault pull"},
+		Run:         func([]string) int { return ExitOK },
+	})
+	reg.Register(&Command{
+		Name:        "vault pull",
+		Synopsis:    "vp vault pull",
+		Description: "Pull from remotes.",
+	})
+	reg.RegisterHelp()
+
+	code := reg.Dispatch([]string{"help", "vault"})
+	if code != ExitOK {
+		t.Errorf("exit code = %d", code)
+	}
+	output := out.String()
+	if !strings.Contains(output, "Commands:") {
+		t.Errorf("help vault should include Commands section\nGot:\n%s", output)
+	}
+}

@@ -20,9 +20,9 @@ func cmdMigrate() *cli.Command {
 		Name:        "migrate",
 		Synopsis:    "vp migrate <command> [flags]",
 		Description: "Import data into vibe-palace from external sources.",
+		Subcommands: []string{"migrate vibevault", "migrate mempalace"},
 		Run: func(args []string) int {
-			// Parent command: show help.
-			fmt.Fprint(os.Stderr, "Usage: vp migrate <command> [flags]\n\nCommands:\n  vibevault   Import sessions from a VibeVault directory\n  mempalace   Import data from a MemPalace JSON export\n\nRun 'vp help migrate vibevault' or 'vp help migrate mempalace' for details.\n")
+			fmt.Fprintln(os.Stderr, "Usage: vp migrate <command> [flags]\n\nRun 'vp migrate --help' for details.")
 			return cli.ExitOK
 		},
 	}
@@ -39,6 +39,10 @@ func cmdMigrateVibeVault() *cli.Command {
 		Synopsis:    "vp migrate vibevault [--vault-path PATH] [--dry-run]",
 		Description: "Import sessions from a VibeVault directory into the palace.",
 		Flags:       migrateVibeVaultFlags,
+		Examples: []cli.Example{
+			{Cmd: "vp migrate vibevault", Comment: "Import from default vault path"},
+			{Cmd: "vp migrate vibevault --vault-path ~/old-vault --dry-run", Comment: "Preview import from a specific directory"},
+		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(migrateVibeVaultFlags, args)
 			if err != nil {
@@ -95,6 +99,10 @@ func cmdMigrateMemPalace() *cli.Command {
 		Synopsis:    "vp migrate mempalace --export-path PATH [--dry-run]",
 		Description: "Import data from a MemPalace JSON export into the palace.",
 		Flags:       migrateMemPalaceFlags,
+		Examples: []cli.Example{
+			{Cmd: "vp migrate mempalace --export-path ~/export.json", Comment: "Import from MemPalace export"},
+			{Cmd: "vp migrate mempalace --export-path ~/export.json --dry-run", Comment: "Preview import without writing"},
+		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(migrateMemPalaceFlags, args)
 			if err != nil {

@@ -92,6 +92,99 @@ func TestFormatUsageTruncatesLongDescriptions(t *testing.T) {
 	}
 }
 
+func TestFormatHelpWithSubsNil(t *testing.T) {
+	cmd := &Command{
+		Name:        "search",
+		Synopsis:    "vp search <query>",
+		Description: "Search the palace.",
+	}
+	// No subcommands → should match FormatHelp exactly.
+	withSubs := FormatHelpWithSubs(cmd, nil)
+	plain := FormatHelp(cmd)
+	if withSubs != plain {
+		t.Errorf("FormatHelpWithSubs with no subs should match FormatHelp\nGot:\n%s\nWant:\n%s", withSubs, plain)
+	}
+}
+
+func TestFormatHelpWithSubsParent(t *testing.T) {
+	parent := &Command{
+		Name:        "vault",
+		Synopsis:    "vp vault <command> [flags]",
+		Description: "Manage the vault git repository.",
+		Subcommands: []string{"vault pull", "vault push"},
+	}
+	children := map[string]*Command{
+		"vault pull": {
+			Name:        "vault pull",
+			Synopsis:    "vp vault pull [--dry-run]",
+			Description: "Pull from all configured vault remotes.",
+			Examples: []Example{
+				{Cmd: "vp vault pull", Comment: "Pull from all remotes"},
+			},
+		},
+		"vault push": {
+			Name:        "vault push",
+			Synopsis:    "vp vault push [--dry-run]",
+			Description: "Push to all configured vault remotes.",
+			Examples: []Example{
+				{Cmd: "vp vault push", Comment: "Push to all remotes"},
+			},
+		},
+	}
+
+	out := FormatHelpWithSubs(parent, func(name string) *Command {
+		return children[name]
+	})
+
+	checks := []string{
+		"Usage: vp vault <command> [flags]",
+		"Manage the vault",
+		"Commands:",
+		"vp vault pull [--dry-run]",
+		"Pull from all configured vault remotes.",
+		"vp vault push [--dry-run]",
+		"Push to all configured vault remotes.",
+		"Examples:",
+		"vp vault pull",
+		"Pull from all remotes",
+		"vp vault push",
+		"Push to all remotes",
+	}
+	for _, c := range checks {
+		if !strings.Contains(out, c) {
+			t.Errorf("FormatHelpWithSubs missing %q\nGot:\n%s", c, out)
+		}
+	}
+
+	// Should NOT have a Flags section (parent has no flags).
+	if strings.Contains(out, "Flags:") {
+		t.Error("unexpected Flags section in parent help")
+	}
+}
+
+func TestFormatHelpWithSubsMissingChild(t *testing.T) {
+	parent := &Command{
+		Name:        "vault",
+		Synopsis:    "vp vault <command>",
+		Description: "Manage vault.",
+		Subcommands: []string{"vault pull", "vault missing"},
+	}
+
+	out := FormatHelpWithSubs(parent, func(name string) *Command {
+		if name == "vault pull" {
+			return &Command{Name: "vault pull", Synopsis: "vp vault pull", Description: "Pull."}
+		}
+		return nil // missing child
+	})
+
+	if !strings.Contains(out, "vault pull") {
+		t.Error("expected vault pull in output")
+	}
+	if strings.Contains(out, "vault missing") {
+		t.Error("missing child should be skipped, not shown")
+	}
+}
+
 func TestFormatFlagAlignment(t *testing.T) {
 	cmd := &Command{
 		Name: "test",

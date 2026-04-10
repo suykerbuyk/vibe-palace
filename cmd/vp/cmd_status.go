@@ -24,8 +24,12 @@ func cmdStatus() *cli.Command {
 	return &cli.Command{
 		Name:        "status",
 		Synopsis:    "vp status [--project P] [--json]",
-		Description: "Show palace overview for a project.",
+		Description: "Show palace overview for a project. Displays session count, task summary, and recent activity.",
 		Flags:       statusFlags,
+		Examples: []cli.Example{
+			{Cmd: "vp status", Comment: "Show status for the current project"},
+			{Cmd: "vp status -p myapp --json", Comment: "Show status as JSON for a specific project"},
+		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(statusFlags, args)
 			if err != nil {

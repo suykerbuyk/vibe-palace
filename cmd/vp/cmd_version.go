@@ -14,6 +14,9 @@ func cmdVersion(info cli.BuildInfo) *cli.Command {
 		Name:        "version",
 		Synopsis:    "vp version",
 		Description: "Print version, commit, and build date.",
+		Examples: []cli.Example{
+			{Cmd: "vp version", Comment: "Show version information"},
+		},
 		Run: func(args []string) int {
 			fmt.Println(info)
 			return cli.ExitOK
