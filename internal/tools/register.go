@@ -32,6 +32,17 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	reg.MustRegister(KGInvalidateTool(vault))
 	reg.MustRegister(KGTimelineTool(vault))
 	reg.MustRegister(KGStatsTool(vault))
+	reg.MustRegister(GetWorkflowTool(resolver))
+	reg.MustRegister(GetResumeTool(resolver))
+	reg.MustRegister(UpdateResumeTool(vault))
+	reg.MustRegister(GetKnowledgeTool(vault))
+	reg.MustRegister(ListProjectsTool(vault))
+	reg.MustRegister(AppendIterationTool(vault))
+	reg.MustRegister(ListTasksTool(vault))
+	reg.MustRegister(GetTaskTool(vault))
+	reg.MustRegister(ManageTaskTool(vault))
+	reg.MustRegister(InitProjectTool(vault))
+	reg.MustRegister(VaultSyncTool(vault))
 	if engine != nil {
 		reg.MustRegister(SearchTool(engine))
 		reg.MustRegister(SearchCrossProjectTool(engine))
@@ -46,5 +57,6 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 		reg.MustRegister(GetSessionDetailTool(vault))
 		reg.MustRegister(GetProjectContextTool(vault, resolver))
 		reg.MustRegister(GetEffectivenessTool(vault))
+		reg.MustRegister(RefreshIndexTool(engine))
 	}
 }

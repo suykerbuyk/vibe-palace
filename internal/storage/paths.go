@@ -215,6 +215,24 @@ func (v *Vault) ProjectConfigFile(project string) (string, error) {
 	return filepath.Join(v.Root, "Projects", project, "agentctx", "config.toml"), nil
 }
 
+// ResumeFile returns the path to a project's resume file:
+// {vault}/Projects/{project}/agentctx/resume.md
+func (v *Vault) ResumeFile(project string) (string, error) {
+	if err := ValidateSlug(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.Root, "Projects", project, "agentctx", "resume.md"), nil
+}
+
+// IterationsFile returns the path to a project's iterations file:
+// {vault}/Projects/{project}/agentctx/iterations.md
+func (v *Vault) IterationsFile(project string) (string, error) {
+	if err := ValidateSlug(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.Root, "Projects", project, "agentctx", "iterations.md"), nil
+}
+
 // encodeTripleComponent lowercases the input and replaces spaces with underscores.
 func encodeTripleComponent(s string) string {
 	return strings.ReplaceAll(strings.ToLower(s), " ", "_")
