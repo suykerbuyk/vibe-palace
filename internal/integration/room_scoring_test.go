@@ -1,0 +1,136 @@
+// Copyright (c) 2026 John Suykerbuyk and SykeTech LTD
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+package integration
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+// TestIntegrationWeightedRoomScoring proves that the weighted keyword scoring
+// system correctly classifies session transcripts end-to-end through the
+// capture pipeline. It verifies:
+//   - Ambiguous content (lone low-weight keywords) falls to "general"
+//   - Domain-specific content classifies to the correct room
+//   - Dominant topic wins when multiple rooms compete
+func TestIntegrationWeightedRoomScoring(t *testing.T) {
+	h := newHarness(t, false) // mock embedder — scoring doesn't need real vectors
+	h.registerAllTools(t)
+
+	tests := []struct {
+		name       string
+		transcript string
+		wantRooms  map[string]bool // rooms that MUST appear
+		denyRooms  map[string]bool // rooms that MUST NOT appear (from ambiguous content)
+	}{
+		{
+			name: "kubernetes devops content",
+			transcript: `## Human
+
+We need to set up the kubernetes cluster with terraform.
+Deploy the docker containers to the staging environment.
+
+## Assistant
+
+I'll configure the terraform modules for the kubernetes deployment.
+The docker images should be built in the CI/CD pipeline first.`,
+			wantRooms: map[string]bool{"devops": true},
+		},
+		{
+			name: "ambiguous lone test keyword",
+			transcript: `## Human
+
+Just test it and see what happens.
+
+## Assistant
+
+Sure, let me test that quickly.`,
+			// "test" alone (0.3) is below minRoomScore (0.6), should fall to general
+			wantRooms: map[string]bool{"general": true},
+			denyRooms: map[string]bool{"testing": true},
+		},
+		{
+			name: "strong testing signal",
+			transcript: `## Human
+
+We need to write a test spec with full assertion coverage.
+Add mock objects for the external service dependencies.
+
+## Assistant
+
+I'll create the test spec with comprehensive assertions and mock the
+HTTP client. Coverage should reach 90% with these fixtures.`,
+			wantRooms: map[string]bool{"testing": true},
+		},
+		{
+			name: "security with mixed signals",
+			transcript: `## Human
+
+There's a vulnerability in the auth token validation.
+Check the credential storage and fix the CVE.
+
+## Assistant
+
+The CVE affects the access token refresh flow. I'll patch the
+credential validation and add permission checks.`,
+			wantRooms: map[string]bool{"security": true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h2 := newHarness(t, false)
+			h2.registerAllTools(t)
+
+			result := h2.callTool(t, "vp_capture_session", map[string]any{
+				"project":    "score-test",
+				"summary":    "Testing room scoring: " + tt.name,
+				"tag":        "implementation",
+				"transcript": tt.transcript,
+			})
+
+			var captureResult struct {
+				Status string `json:"status"`
+			}
+			if err := json.Unmarshal([]byte(result), &captureResult); err != nil {
+				t.Fatalf("parse capture result: %v", err)
+			}
+			if captureResult.Status != "ok" {
+				t.Fatalf("capture status = %q, want ok", captureResult.Status)
+			}
+
+			// Collect rooms that drawers were filed into.
+			gotRooms := make(map[string]bool)
+			wings, _ := h2.Vault.ListWings("score-test")
+			for _, wing := range wings {
+				rooms, _ := h2.Vault.ListRooms("score-test", wing)
+				for _, room := range rooms {
+					drawers, _ := h2.Vault.ListDrawers("score-test", wing, room)
+					if len(drawers) > 0 {
+						gotRooms[room] = true
+					}
+				}
+			}
+
+			for room := range tt.wantRooms {
+				if !gotRooms[room] {
+					t.Errorf("expected room %q in results, got rooms: %v", room, keys(gotRooms))
+				}
+			}
+			for room := range tt.denyRooms {
+				if gotRooms[room] {
+					t.Errorf("room %q should NOT appear (ambiguous content), got rooms: %v", room, keys(gotRooms))
+				}
+			}
+		})
+	}
+}
+
+func keys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}

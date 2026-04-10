@@ -5,6 +5,8 @@ package palace
 
 import (
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -37,27 +39,150 @@ func DetectWing(project, sourcePath string) string {
 	return "unknown"
 }
 
+// keyword holds a keyword string and an optional pre-compiled regex for
+// word-boundary matching. Single-word keywords use a leading \b to prevent
+// substring false positives while preserving stem matching. Multi-word
+// phrases use strings.Contains (spaces provide natural boundaries).
+type keyword struct {
+	raw    string
+	re     *regexp.Regexp // nil for multi-word phrases
+	weight float64
+}
+
+// buildKeyword creates a keyword with an optional pre-compiled leading word
+// boundary regex. No (?i) flag — callers lowercase content before matching.
+// Default weight is 1.0.
+func buildKeyword(s string) keyword {
+	if strings.Contains(s, " ") {
+		return keyword{raw: s, weight: 1.0}
+	}
+	return keyword{raw: s, re: regexp.MustCompile(`\b` + regexp.QuoteMeta(s)), weight: 1.0}
+}
+
+// buildWeightedKeyword creates a keyword with a specific weight.
+func buildWeightedKeyword(s string, w float64) keyword {
+	kw := buildKeyword(s)
+	kw.weight = w
+	return kw
+}
+
+// wkws builds a []keyword slice where all words share the same weight.
+func wkws(weight float64, words ...string) []keyword {
+	out := make([]keyword, len(words))
+	for i, w := range words {
+		out[i] = buildWeightedKeyword(w, weight)
+	}
+	return out
+}
+
+// mergeKws concatenates multiple keyword slices into one.
+func mergeKws(slices ...[]keyword) []keyword {
+	var out []keyword
+	for _, s := range slices {
+		out = append(out, s...)
+	}
+	return out
+}
+
+func (kw keyword) matches(lower string) bool {
+	if kw.re != nil {
+		return kw.re.MatchString(lower)
+	}
+	return strings.Contains(lower, kw.raw)
+}
+
+// kws is a helper to build a []keyword slice from raw strings.
+func kws(words ...string) []keyword {
+	out := make([]keyword, len(words))
+	for i, w := range words {
+		out[i] = buildKeyword(w)
+	}
+	return out
+}
+
 // roomEntry maps a room slug to its keywords, preserving order for
 // deterministic first-match-wins.
 type roomEntry struct {
 	room     string
-	keywords []string
+	keywords []keyword
+}
+
+// minRoomScore is the minimum accumulated weight for a room to classify.
+// A single medium-weight (0.6) keyword classifies; a single low-weight (0.3)
+// keyword does not. Two low-weight hits from the same room (0.6) do classify.
+const minRoomScore = 0.6
+
+// scoreRooms accumulates weighted keyword scores across all room entries.
+// Each keyword contributes at most once (presence, not count).
+// Returns the best room and its score. Ties break by room table order
+// (first room with the highest score wins, via strict > comparison).
+func scoreRooms(lower string, entries []roomEntry) (string, float64) {
+	var best string
+	var bestScore float64
+	for _, entry := range entries {
+		var score float64
+		for _, kw := range entry.keywords {
+			if kw.matches(lower) {
+				score += kw.weight
+			}
+		}
+		if score > bestScore {
+			bestScore = score
+			best = entry.room
+		}
+	}
+	return best, bestScore
 }
 
 // defaultRoomKeywords is the built-in room classification table.
-// Checked in order; first keyword match wins.
+// Uses weighted scoring: high (1.0) = domain-specific, medium (0.6) =
+// moderately specific, low (0.3) = common/ambiguous.
+// Multi-word phrases automatically get 1.0 via buildKeyword.
 // Keywords are language-agnostic — no single programming language is favored.
 var defaultRoomKeywords = []roomEntry{
-	{"testing", []string{"test", "assert", "coverage", "spec", "fixture", "mock"}},
-	{"devops", []string{"deploy", "ci", "pipeline", "github actions", "docker", "kubernetes", "terraform", "ansible"}},
-	{"api", []string{"api", "endpoint", "handler", "route", "http", "grpc", "restful", "graphql"}},
-	{"data", []string{"database", "sql", "migration", "schema", "table", "query", "orm"}},
-	{"config", []string{"config", "toml", "yaml", "environment", "settings", "dotenv"}},
-	{"debugging", []string{"bug", "fix", "error", "crash", "stack trace", "traceback", "segfault", "core dump"}},
-	{"refactoring", []string{"refactor", "rename", "cleanup", "reorganize", "restructure"}},
-	{"architecture", []string{"design", "architecture", "pattern", "interface", "abstraction"}},
-	{"performance", []string{"performance", "benchmark", "latency", "throughput", "profile", "optimization"}},
-	{"security", []string{"security", "auth", "token", "permission", "credential", "vulnerability", "cve"}},
+	{"testing", mergeKws(
+		wkws(1.0, "test spec", "fixture"),
+		wkws(0.6, "assert", "coverage", "mock"),
+		wkws(0.3, "test"),
+	)},
+	{"devops", mergeKws(
+		wkws(1.0, "kubernetes", "terraform", "ansible", "github actions"),
+		wkws(0.6, "deploy", "ci/cd", "pipeline", "docker"),
+	)},
+	{"api", mergeKws(
+		wkws(1.0, "grpc", "graphql", "restful", "endpoint"),
+		wkws(0.6, "api", "handler", "route"),
+	)},
+	{"data", mergeKws(
+		wkws(1.0, "sql", "orm", "database table", "migration"),
+		wkws(0.6, "database", "schema", "query"),
+	)},
+	{"config", mergeKws(
+		wkws(1.0, "toml", "yaml", "dotenv", "environment"),
+		wkws(0.6, "config", "settings"),
+	)},
+	{"debugging", mergeKws(
+		wkws(1.0, "segfault", "core dump", "stack trace", "traceback"),
+		wkws(0.6, "crash", "bug"),
+		wkws(0.3, "fix", "error"),
+	)},
+	{"refactoring", mergeKws(
+		wkws(1.0, "reorganize", "restructure"),
+		wkws(0.6, "refactor", "rename", "cleanup"),
+	)},
+	{"architecture", mergeKws(
+		wkws(1.0, "system design", "software design", "design pattern", "interface design", "abstraction layer"),
+		wkws(0.6, "architecture", "abstraction"),
+	)},
+	{"performance", mergeKws(
+		wkws(1.0, "cpu profile", "memory profile", "latency", "throughput", "profiling"),
+		wkws(0.6, "benchmark", "performance", "optimization"),
+	)},
+	{"security", mergeKws(
+		wkws(1.0, "vulnerability", "cve", "auth token", "access token", "credential"),
+		wkws(0.6, "security", "permission"),
+		wkws(0.3, "auth"),
+	)},
 }
 
 // filenameRule maps a filename pattern to a room.
@@ -121,18 +246,25 @@ var filenameRules = []filenameRule{
 
 // DetectRoom inspects content, source path, and optional custom keywords to
 // classify into a room. Uses a single 4-tier cascade (first match wins):
-//  1. Custom keywords (if keywords != nil)
+//  1. Custom keywords (if keywords != nil, sorted by room for determinism)
 //  2. Filename match (if sourcePath != "")
 //  3. Content keywords (built-in defaults)
 //  4. Fallback → "general"
 func DetectRoom(content, sourcePath string, keywords map[string][]string) string {
 	lower := strings.ToLower(content)
 
-	// Tier 1: custom keywords.
-	for room, kws := range keywords {
-		for _, kw := range kws {
-			if strings.Contains(lower, strings.ToLower(kw)) {
-				return room
+	// Tier 1: custom keywords — sorted for deterministic ordering.
+	if len(keywords) > 0 {
+		rooms := make([]string, 0, len(keywords))
+		for room := range keywords {
+			rooms = append(rooms, room)
+		}
+		sort.Strings(rooms)
+		for _, room := range rooms {
+			for _, kw := range keywords[room] {
+				if buildKeyword(strings.ToLower(kw)).matches(lower) {
+					return room
+				}
 			}
 		}
 	}
@@ -156,13 +288,9 @@ func DetectRoom(content, sourcePath string, keywords map[string][]string) string
 		}
 	}
 
-	// Tier 3: content keywords (built-in defaults).
-	for _, entry := range defaultRoomKeywords {
-		for _, kw := range entry.keywords {
-			if strings.Contains(lower, kw) {
-				return entry.room
-			}
-		}
+	// Tier 3: weighted content scoring (built-in defaults).
+	if best, score := scoreRooms(lower, defaultRoomKeywords); score >= minRoomScore {
+		return best
 	}
 
 	// Tier 4: fallback.
@@ -172,15 +300,15 @@ func DetectRoom(content, sourcePath string, keywords map[string][]string) string
 // hallEntry maps a hall type to its keywords.
 type hallEntry struct {
 	hall     string
-	keywords []string
+	keywords []keyword
 }
 
 var defaultHallKeywords = []hallEntry{
-	{HallDecisions, []string{"decided", "decision", "chose", "will use", "agreed", "we should"}},
-	{HallDiscoveries, []string{"discovered", "found that", "realized", "til", "learned", "turns out"}},
-	{HallPreferences, []string{"prefer", "preference", "like to", "rather", "style"}},
-	{HallAdvice, []string{"should", "recommend", "advice", "best practice", "tip", "warning"}},
-	{HallEvents, []string{"happened", "occurred", "event", "released", "shipped", "deployed"}},
+	{HallDecisions, kws("decided", "decision", "chose", "will use", "agreed", "we should")},
+	{HallDiscoveries, kws("discovered", "found that", "realized", "til", "learned", "turns out")},
+	{HallPreferences, kws("prefer", "preference", "like to", "rather", "style")},
+	{HallAdvice, kws("should", "recommend", "advice", "best practice", "tip", "warning")},
+	{HallEvents, kws("happened", "occurred", "release event", "launch event", "released", "shipped", "deployed")},
 }
 
 // DetectHall classifies content into a memory-type hall.
@@ -189,7 +317,7 @@ func DetectHall(content string) string {
 	lower := strings.ToLower(content)
 	for _, entry := range defaultHallKeywords {
 		for _, kw := range entry.keywords {
-			if strings.Contains(lower, kw) {
+			if kw.matches(lower) {
 				return entry.hall
 			}
 		}
@@ -201,9 +329,11 @@ func DetectHall(content string) string {
 func DefaultRoomKeywords() map[string][]string {
 	m := make(map[string][]string, len(defaultRoomKeywords))
 	for _, entry := range defaultRoomKeywords {
-		kws := make([]string, len(entry.keywords))
-		copy(kws, entry.keywords)
-		m[entry.room] = kws
+		raw := make([]string, len(entry.keywords))
+		for i, kw := range entry.keywords {
+			raw[i] = kw.raw
+		}
+		m[entry.room] = raw
 	}
 	return m
 }
