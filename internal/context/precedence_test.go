@@ -117,9 +117,9 @@ func TestResolveEmptyProject(t *testing.T) {
 func TestResolveCommand(t *testing.T) {
 	r, _ := testResolver(t)
 
-	content, source, err := r.Resolve("command:vp-restart", "test-proj")
+	content, source, err := r.Resolve("command:restart", "test-proj")
 	if err != nil {
-		t.Fatalf("Resolve(command:vp-restart): %v", err)
+		t.Fatalf("Resolve(command:restart): %v", err)
 	}
 	if source != "embedded" {
 		t.Errorf("source = %q, want %q", source, "embedded")
@@ -132,11 +132,11 @@ func TestResolveCommand(t *testing.T) {
 func TestResolveCommandVaultOverride(t *testing.T) {
 	r, root := testResolver(t)
 
-	writeFile(t, filepath.Join(root, "Templates", "commands", "vp-restart.md"), "custom restart")
+	writeFile(t, filepath.Join(root, "Templates", "commands", "restart.md"), "custom restart")
 
-	content, source, err := r.Resolve("command:vp-restart", "test-proj")
+	content, source, err := r.Resolve("command:restart", "test-proj")
 	if err != nil {
-		t.Fatalf("Resolve(command:vp-restart): %v", err)
+		t.Fatalf("Resolve(command:restart): %v", err)
 	}
 	if source != "vault" {
 		t.Errorf("source = %q, want %q", source, "vault")
@@ -243,7 +243,7 @@ func TestResourceToPath(t *testing.T) {
 	}{
 		{"workflow", "workflow.md", false},
 		{"resume", "resume.md", false},
-		{"command:vp-restart", filepath.Join("commands", "vp-restart.md"), false},
+		{"command:restart", filepath.Join("commands", "restart.md"), false},
 		{"command:review-plan", filepath.Join("commands", "review-plan.md"), false},
 		{"skill:analyze", filepath.Join("skills", "analyze.md"), false},
 		{"command:", "", true},
@@ -274,11 +274,11 @@ func TestListCommandsEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListResources(command): %v", err)
 	}
-	// Embedded commands: vp-cancel-plan, vp-capture, vp-restart, vp-review-plan, vp-wrap (sorted).
+	// Embedded commands: cancel-plan, capture, restart, review-plan, wrap (sorted).
 	if len(resources) != 5 {
 		t.Fatalf("got %d commands, want 5: %v", len(resources), resources)
 	}
-	wantNames := []string{"vp-cancel-plan", "vp-capture", "vp-restart", "vp-review-plan", "vp-wrap"}
+	wantNames := []string{"cancel-plan", "capture", "restart", "review-plan", "wrap"}
 	for i, want := range wantNames {
 		if resources[i].Name != want {
 			t.Errorf("resources[%d].Name = %q, want %q", i, resources[i].Name, want)
@@ -292,8 +292,8 @@ func TestListCommandsEmbedded(t *testing.T) {
 func TestListCommandsMergedNoDuplicates(t *testing.T) {
 	r, root := testResolver(t)
 
-	// Add a vault-level vp-restart override and a new vault command.
-	writeFile(t, filepath.Join(root, "Templates", "commands", "vp-restart.md"), "override")
+	// Add a vault-level restart override and a new vault command.
+	writeFile(t, filepath.Join(root, "Templates", "commands", "restart.md"), "override")
 	writeFile(t, filepath.Join(root, "Templates", "commands", "deploy.md"), "deploy cmd")
 
 	// Add a project-level command.
@@ -304,16 +304,16 @@ func TestListCommandsMergedNoDuplicates(t *testing.T) {
 		t.Fatalf("ListResources: %v", err)
 	}
 
-	// Expect: custom(project), deploy(vault), vp-cancel-plan(embedded), vp-capture(embedded),
-	//         vp-restart(vault — shadows embedded), vp-review-plan(embedded), vp-wrap(embedded)
+	// Expect: cancel-plan(embedded), capture(embedded), custom(project), deploy(vault),
+	//         restart(vault — shadows embedded), review-plan(embedded), wrap(embedded)
 	if len(resources) != 7 {
 		t.Fatalf("got %d resources, want 7: %v", len(resources), resources)
 	}
 
-	// Check vp-restart comes from vault (override), not embedded.
+	// Check restart comes from vault (override), not embedded.
 	for _, ri := range resources {
-		if ri.Name == "vp-restart" && ri.Source != "vault" {
-			t.Errorf("vp-restart source = %q, want %q (vault should shadow embedded)", ri.Source, "vault")
+		if ri.Name == "restart" && ri.Source != "vault" {
+			t.Errorf("restart source = %q, want %q (vault should shadow embedded)", ri.Source, "vault")
 		}
 		if ri.Name == "custom" && ri.Source != "project" {
 			t.Errorf("custom source = %q, want %q", ri.Source, "project")

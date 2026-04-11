@@ -88,11 +88,11 @@ A vault-level custom command for testing.
 	for _, cmd := range bootstrap.AvailableCommands {
 		cmdNames[cmd.Name] = true
 	}
-	if !cmdNames["vp-restart"] {
-		t.Error("available_commands should include embedded 'vp-restart'")
+	if !cmdNames["restart"] {
+		t.Error("available_commands should include embedded 'restart'")
 	}
-	if !cmdNames["vp-capture"] {
-		t.Error("available_commands should include embedded 'vp-capture'")
+	if !cmdNames["capture"] {
+		t.Error("available_commands should include embedded 'capture'")
 	}
 	if !cmdNames["custom-cmd"] {
 		t.Error("available_commands should include vault 'custom-cmd'")

@@ -190,18 +190,18 @@ func TestBootstrapIncludesCommands(t *testing.T) {
 
 	found := false
 	for _, cmd := range br.AvailableCommands {
-		if cmd.Name == "vp-restart" {
+		if cmd.Name == "restart" {
 			found = true
 			if cmd.Source != "embedded" {
-				t.Errorf("vp-restart source = %q, want embedded", cmd.Source)
+				t.Errorf("restart source = %q, want embedded", cmd.Source)
 			}
 			if cmd.Brief == "" {
-				t.Error("vp-restart brief should not be empty")
+				t.Error("restart brief should not be empty")
 			}
 		}
 	}
 	if !found {
-		t.Error("expected vp-restart in AvailableCommands")
+		t.Error("expected restart in AvailableCommands")
 	}
 }
 
