@@ -16,9 +16,16 @@ import (
 //go:embed config/defaults.toml
 var defaultsToml string
 
+//go:embed config/template.toml
+var templateToml string
+
+// TemplateTomlContent returns the embedded template.toml content.
+func TemplateTomlContent() string { return templateToml }
+
 // Config holds resolved configuration values.
 type Config struct {
 	VaultPath               string                            `json:"vault_path"`
+	GitEnabled              bool                              `json:"git_enabled"`
 	HTTPPort                int                               `json:"http_port"`
 	LogLevel                string                            `json:"log_level"`
 	EmbedderModel           string                            `json:"embedder_model"`
@@ -55,8 +62,9 @@ type ScoringRoomOverride struct {
 
 // tomlConfig is the intermediate struct matching the TOML file structure.
 type tomlConfig struct {
-	VaultPath string `toml:"vault_path"`
-	HTTPPort  int    `toml:"http_port"`
+	VaultPath  string `toml:"vault_path"`
+	GitEnabled bool   `toml:"git_enabled"`
+	HTTPPort   int    `toml:"http_port"`
 	LogLevel  string `toml:"log_level"`
 	Embedder  struct {
 		Model             string `toml:"model"`
@@ -106,6 +114,7 @@ type tomlLLMConfig struct {
 func (tc *tomlConfig) flatten() Config {
 	return Config{
 		VaultPath:          tc.VaultPath,
+		GitEnabled:         tc.GitEnabled,
 		HTTPPort:           tc.HTTPPort,
 		LogLevel:           tc.LogLevel,
 		EmbedderModel:      tc.Embedder.Model,

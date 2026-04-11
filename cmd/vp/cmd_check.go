@@ -36,6 +36,8 @@ func runCheck(version string) int {
 			check.Result{Name: "Vault", Status: check.Skip},
 			check.Result{Name: "Settings", Status: check.Skip},
 			check.Result{Name: "Embedder", Status: check.Skip},
+			check.Result{Name: "Git", Status: check.Skip},
+			check.Result{Name: "Config Staleness", Status: check.Skip},
 		)
 		results = append(results, check.CheckProject())
 		n := check.Print(os.Stdout, version, results)
@@ -51,6 +53,8 @@ func runCheck(version string) int {
 		results = append(results,
 			check.Result{Name: "Settings", Status: check.Skip},
 			check.Result{Name: "Embedder", Status: check.Skip},
+			check.Result{Name: "Git", Status: check.Skip},
+			check.Result{Name: "Config Staleness", Status: check.Skip},
 		)
 		results = append(results, check.CheckProject())
 		n := check.Print(os.Stdout, version, results)
@@ -65,7 +69,11 @@ func runCheck(version string) int {
 	cfg, r := check.CheckSettings(v)
 	results = append(results, r)
 	if r.Status == check.Fail {
-		results = append(results, check.Result{Name: "Embedder", Status: check.Skip})
+		results = append(results,
+			check.Result{Name: "Embedder", Status: check.Skip},
+			check.Result{Name: "Git", Status: check.Skip},
+			check.Result{Name: "Config Staleness", Status: check.Skip},
+		)
 		results = append(results, check.CheckProject())
 		n := check.Print(os.Stdout, version, results)
 		if n > 0 {
@@ -76,6 +84,8 @@ func runCheck(version string) int {
 
 	check.ProgressLine(os.Stderr, "Embedder", "loading model (first run downloads ~90MB)...")
 	results = append(results, check.CheckEmbedder(cfg, v, configPath))
+	results = append(results, check.CheckGit(vaultPath, cfg.GitEnabled))
+	results = append(results, check.CheckConfigStaleness(configPath))
 	results = append(results, check.CheckProject())
 
 	n := check.Print(os.Stdout, version, results)

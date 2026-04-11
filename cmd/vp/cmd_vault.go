@@ -47,7 +47,7 @@ func cmdVaultPull() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault pull: %v\n", err)
 				return cli.ExitUser
 			}
-			root, err := vaultRoot()
+			root, err := gitEnabledGuard()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault pull: %v\n", err)
 				return cli.ExitUser
@@ -78,7 +78,7 @@ func cmdVaultPush() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault push: %v\n", err)
 				return cli.ExitUser
 			}
-			root, err := vaultRoot()
+			root, err := gitEnabledGuard()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault push: %v\n", err)
 				return cli.ExitUser
@@ -109,7 +109,7 @@ func cmdVaultSync() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault sync: %v\n", err)
 				return cli.ExitUser
 			}
-			root, err := vaultRoot()
+			root, err := gitEnabledGuard()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault sync: %v\n", err)
 				return cli.ExitUser
@@ -134,6 +134,24 @@ func vaultRoot() (string, error) {
 		return "", err
 	}
 	return v.Root, nil
+}
+
+// gitEnabledGuard wraps vaultRoot and checks that git_enabled is true.
+// Returns the vault root path or an error if git is disabled.
+func gitEnabledGuard() (string, error) {
+	root, err := vaultRoot()
+	if err != nil {
+		return "", err
+	}
+	v := storage.NewVault(root)
+	cfg, err := v.LoadConfig("")
+	if err != nil {
+		return "", fmt.Errorf("load config: %w", err)
+	}
+	if !cfg.GitEnabled {
+		return "", fmt.Errorf("git is disabled (git_enabled = false in config)")
+	}
+	return root, nil
 }
 
 func gitRemotes(root string) ([]string, error) {

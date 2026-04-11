@@ -11,6 +11,7 @@ editor, and using it in daily development.
 
 - **Go 1.25+** — check with `go version`
 - **`~/.local/bin` in PATH** — or set a custom `PREFIX` when installing
+- **git** (recommended) — for vault version tracking and multi-machine sync
 
 ### Build and Install
 
@@ -36,21 +37,34 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-### Create the Vault Config
+### Set Up Config and Vault
 
-Vibe-palace requires a configuration file with the vault path. Without it,
-`vp` will exit immediately with: `vp: read config ... no such file or directory`
+Run `vp init` to create the global configuration and vault directory:
 
-Create `~/.config/vibe-palace/config.toml`:
-
-```toml
-vault_path = "/home/you/your-vault"
+```bash
+vp init
 ```
 
-**Important:**
-- `vault_path` can be absolute or use `~/` (tilde is expanded to your home directory)
-- The directory is created automatically on first use
-- This is the only required configuration — all other settings have defaults
+This creates:
+- `~/.config/vibe-palace/config.toml` — global configuration with commented
+  documentation for every setting
+- `~/vibe-palace-vault/` — vault directory for palace data
+- A git repository in the vault (if git is installed)
+
+**Custom vault location:**
+
+```bash
+vp init --vault-path ~/my-vault
+```
+
+**Disable git tracking:**
+
+```bash
+vp init --no-git
+```
+
+If you already have a config file, `vp init` skips global setup and proceeds
+to project initialization (if you're in a project directory).
 
 ### Verify Installation
 
@@ -65,12 +79,14 @@ Expected output:
 ```
 vp check — vibe-palace installation diagnostic (0.1.0-dev)
 
-[pass] Config:    /home/you/.config/vibe-palace/config.toml
-                  vault_path = /home/you/your-vault
-[pass] Vault:     /home/you/your-vault (exists)
-[pass] Settings:  model=sentence-transformers/all-MiniLM-L6-v2  search_limit=10
-[pass] Embedder:  ONNX loaded, 384 dimensions
-[info] Project:   my-project (from .vibe-palace.toml)
+[pass] Config:           /home/you/.config/vibe-palace/config.toml
+                         vault_path = /home/you/vibe-palace-vault
+[pass] Vault:            /home/you/vibe-palace-vault (exists)
+[pass] Settings:         model=sentence-transformers/all-MiniLM-L6-v2  search_limit=10
+[pass] Embedder:         ONNX loaded, 384 dimensions
+[pass] Git:              remotes: github, vault
+[pass] Config Staleness: config is up to date
+[info] Project:          my-project (from .vibe-palace.toml)
 
 All checks passed.
 ```
@@ -94,13 +110,17 @@ vp help      # show all commands
 
 ### Initialize a Project
 
-Create `.vibe-palace.toml` in your project root:
+From your project directory, run `vp init` to create `.vibe-palace.toml`:
 
-```toml
-[project]
-name = "my-project"
-domain = "personal"
-tags = ["go", "api"]
+```bash
+cd ~/code/myapp
+vp init --name myapp --domain work
+```
+
+Or let vibe-palace auto-detect the project name from the directory or git remote:
+
+```bash
+vp init
 ```
 
 **Rules:**
@@ -258,19 +278,46 @@ vp discover rooms           # discover new keywords from unclassified content
 ### Project Initialization
 
 ```bash
-vp init                     # create .vibe-palace.toml in the current directory
+vp init                     # create global config (if needed) + project config
 vp init --name my-project --domain work
+vp init --vault-path ~/my-vault --no-git
 ```
 
-### Vault Sync
+### Git Version Tracking
 
-For multi-machine setups where the vault is a git repository:
+When `git_enabled = true` (the default), `vp init` initializes a git
+repository in the vault directory. This enables multi-machine sync:
 
 ```bash
-vp vault pull               # pull vault state from remote
-vp vault push               # push vault state to remote
-vp vault sync               # bidirectional sync
+vp vault pull               # pull vault state from all remotes
+vp vault push               # push vault state to all remotes
+vp vault sync               # bidirectional sync (pull then push)
 ```
+
+To disable git tracking, pass `--no-git` during init or set
+`git_enabled = false` in your config file.
+
+### Keeping Config Current
+
+As vibe-palace evolves, new settings are added. Check if your config has
+missing settings:
+
+```bash
+vp check                    # shows "N new setting(s) available" if outdated
+```
+
+Add missing settings as commented-out defaults:
+
+```bash
+vp config upgrade --dry-run # preview what would be added
+vp config upgrade           # add missing settings, create .bak backup
+```
+
+The upgrade system:
+- Never changes your existing values
+- Inserts new settings as `# key = default_value` (commented out)
+- Creates a `.bak` backup only when changes are written
+- Is idempotent — running twice produces identical output
 
 ### Context Injection
 
@@ -462,10 +509,16 @@ max_tokens = 4096
 
 ## Part 9: Troubleshooting
 
-### "vp: read config ... no such file or directory"
+### "config not found" or "no such file or directory"
 
-Create `~/.config/vibe-palace/config.toml` with `vault_path` set to an
-absolute path.
+Run `vp init` to create the global config and vault:
+
+```bash
+vp init
+```
+
+On Linux, the config file is created at `~/.config/vibe-palace/config.toml`.
+The resolved path respects `XDG_CONFIG_HOME` if set.
 
 ### Model download fails
 
@@ -501,8 +554,14 @@ full path) and that `which vp` shows the binary in PATH.
 
 ### "project not detected"
 
-Create `.vibe-palace.toml` in your project root with a valid `[project]`
-section. The `name` field must be a slug (lowercase, hyphens, max 64 chars).
+Create `.vibe-palace.toml` in your project root with `vp init`:
+
+```bash
+cd ~/code/myapp
+vp init --name myapp
+```
+
+The `name` field must be a slug (lowercase, hyphens, max 64 chars).
 
 ### vp hangs on startup
 

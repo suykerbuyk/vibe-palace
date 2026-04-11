@@ -6,7 +6,9 @@ package check
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
@@ -92,7 +94,8 @@ func CheckConfig() (configPath, vaultPath string, r Result) {
 	vaultPath, err = storage.VaultRoot("")
 	if err != nil {
 		r.Status = Fail
-		r.Summary = fmt.Sprintf("%s: %v", configPath, err)
+		r.Summary = fmt.Sprintf("not found at %s", configPath)
+		r.Details = []string{"Run 'vp init' to create config and vault."}
 		r.Err = err
 		return
 	}
@@ -111,6 +114,7 @@ func CheckVault(vaultPath string) Result {
 	if err != nil {
 		r.Status = Fail
 		r.Summary = fmt.Sprintf("%s does not exist", vaultPath)
+		r.Details = []string{"Run 'vp init' to create vault."}
 		r.Err = err
 		return r
 	}
@@ -164,6 +168,83 @@ func CheckEmbedder(cfg storage.Config, v *storage.Vault, configPath string) Resu
 
 	r.Status = Pass
 	r.Summary = fmt.Sprintf("ONNX loaded, %d dimensions", emb.Dimensions())
+	return r
+}
+
+// CheckGit checks git availability and vault repo status.
+// This always returns Info or Pass — git is optional, never Fail.
+func CheckGit(vaultPath string, gitEnabled bool) Result {
+	r := Result{Name: "Git"}
+
+	if !gitEnabled {
+		r.Status = Info
+		r.Summary = "disabled (git_enabled = false)"
+		return r
+	}
+
+	if !storage.GitAvailable() {
+		r.Status = Info
+		r.Summary = "git not found in PATH"
+		return r
+	}
+
+	if !storage.GitIsRepo(vaultPath) {
+		r.Status = Info
+		r.Summary = "vault is not a git repository"
+		return r
+	}
+
+	// Check for configured remotes.
+	cmd := exec.Command("git", "-C", vaultPath, "remote")
+	out, err := cmd.Output()
+	if err != nil {
+		r.Status = Info
+		r.Summary = "no remotes configured"
+		return r
+	}
+
+	var remotes []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			remotes = append(remotes, line)
+		}
+	}
+	if len(remotes) == 0 {
+		r.Status = Info
+		r.Summary = "no remotes configured"
+		return r
+	}
+
+	r.Status = Pass
+	r.Summary = fmt.Sprintf("remotes: %s", strings.Join(remotes, ", "))
+	return r
+}
+
+// CheckConfigStaleness checks whether the user's config is missing keys
+// present in the canonical defaults. Returns Info with a list of missing
+// settings, or Skip if the config is up to date.
+func CheckConfigStaleness(configPath string) Result {
+	r := Result{Name: "Config Staleness"}
+
+	missing, err := storage.DetectMissingKeys(configPath)
+	if err != nil {
+		r.Status = Skip
+		r.Summary = fmt.Sprintf("cannot check: %v", err)
+		return r
+	}
+
+	if len(missing) == 0 {
+		r.Status = Pass
+		r.Summary = "config is up to date"
+		return r
+	}
+
+	r.Status = Info
+	r.Summary = fmt.Sprintf("%d new setting(s) available", len(missing))
+	r.Details = append(r.Details, "Run 'vp config upgrade' to add them.")
+	for _, k := range missing {
+		r.Details = append(r.Details, "  "+k)
+	}
 	return r
 }
 

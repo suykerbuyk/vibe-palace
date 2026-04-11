@@ -6,6 +6,7 @@ package check
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -131,6 +132,165 @@ func TestCheckEmbedder(t *testing.T) {
 	}
 	if !strings.Contains(r.Summary, "dimensions") {
 		t.Errorf("summary should mention dimensions, got %q", r.Summary)
+	}
+}
+
+func TestCheckConfigMissing_ActionableMessage(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	_, _, r := CheckConfig()
+	if r.Status != Fail {
+		t.Fatalf("expected Fail, got %v", r.Status)
+	}
+	found := false
+	for _, d := range r.Details {
+		if strings.Contains(d, "vp init") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Details should contain 'vp init', got %v", r.Details)
+	}
+}
+
+func TestCheckVaultMissing_ActionableMessage(t *testing.T) {
+	r := CheckVault("/nonexistent/path")
+	if r.Status != Fail {
+		t.Fatalf("expected Fail, got %v", r.Status)
+	}
+	found := false
+	for _, d := range r.Details {
+		if strings.Contains(d, "vp init") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Details should contain 'vp init', got %v", r.Details)
+	}
+}
+
+func TestCheckGit_Disabled(t *testing.T) {
+	r := CheckGit(t.TempDir(), false)
+	if r.Status != Info {
+		t.Errorf("expected Info, got %v", r.Status)
+	}
+	if !strings.Contains(r.Summary, "disabled") {
+		t.Errorf("summary should mention disabled, got %q", r.Summary)
+	}
+}
+
+func TestCheckGit_NotARepo(t *testing.T) {
+	r := CheckGit(t.TempDir(), true)
+	if r.Status != Info {
+		t.Errorf("expected Info, got %v", r.Status)
+	}
+	if !strings.Contains(r.Summary, "not a git repository") {
+		t.Errorf("summary should mention not a repo, got %q", r.Summary)
+	}
+}
+
+func TestCheckGit_ValidRepo(t *testing.T) {
+	dir := t.TempDir()
+	if err := storage.GitInit(dir); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	r := CheckGit(dir, true)
+	// No remotes → should be Info "no remotes configured"
+	if r.Status != Info {
+		t.Errorf("expected Info for repo with no remotes, got %v: %s", r.Status, r.Summary)
+	}
+}
+
+func TestCheckGit_WithRemotes(t *testing.T) {
+	dir := t.TempDir()
+	if err := storage.GitInit(dir); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	// Add a fake remote.
+	cmd := exec.Command("git", "-C", dir, "remote", "add", "origin", "https://example.com/repo.git")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git remote add: %v", err)
+	}
+
+	r := CheckGit(dir, true)
+	if r.Status != Pass {
+		t.Errorf("expected Pass with remote, got %v: %s", r.Status, r.Summary)
+	}
+	if !strings.Contains(r.Summary, "origin") {
+		t.Errorf("summary should list remote name, got %q", r.Summary)
+	}
+}
+
+func TestCheckConfigStaleness_UpToDate(t *testing.T) {
+	tmp := t.TempDir()
+	configDir := filepath.Join(tmp, "vibe-palace")
+	os.MkdirAll(configDir, 0o755)
+	configPath := filepath.Join(configDir, "config.toml")
+
+	// Write a full config with all canonical keys.
+	content := `vault_path = "/tmp"
+git_enabled = true
+http_port = 7423
+log_level = "info"
+
+[embedder]
+model = "test"
+max_sequence_length = 256
+batch_size = 32
+
+[search]
+default_limit = 10
+structural_boost_wing = 0.12
+structural_boost_hall = 0.24
+structural_boost_room = 0.34
+
+[chunker]
+max_chars = 800
+overlap = 100
+`
+	os.WriteFile(configPath, []byte(content), 0o644)
+
+	r := CheckConfigStaleness(configPath)
+	if r.Status != Pass {
+		t.Errorf("expected Pass for up-to-date config, got %v: %s", r.Status, r.Summary)
+	}
+}
+
+func TestCheckConfigStaleness_Missing(t *testing.T) {
+	tmp := t.TempDir()
+	configDir := filepath.Join(tmp, "vibe-palace")
+	os.MkdirAll(configDir, 0o755)
+	configPath := filepath.Join(configDir, "config.toml")
+
+	// Write config missing git_enabled.
+	content := `vault_path = "/tmp"
+http_port = 7423
+`
+	os.WriteFile(configPath, []byte(content), 0o644)
+
+	r := CheckConfigStaleness(configPath)
+	if r.Status != Info {
+		t.Errorf("expected Info for outdated config, got %v: %s", r.Status, r.Summary)
+	}
+	found := false
+	for _, d := range r.Details {
+		if strings.Contains(d, "vp config upgrade") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("details should mention 'vp config upgrade'")
+	}
+}
+
+func TestCheckConfigStaleness_FileNotFound(t *testing.T) {
+	r := CheckConfigStaleness("/nonexistent/config.toml")
+	if r.Status != Skip {
+		t.Errorf("expected Skip for missing file, got %v: %s", r.Status, r.Summary)
 	}
 }
 
