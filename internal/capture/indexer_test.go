@@ -182,6 +182,55 @@ func TestChunkConfigFromConfig(t *testing.T) {
 	}
 }
 
+func TestNewIndexerWithScoringOverrides(t *testing.T) {
+	v := testVault(t)
+	cfg := storage.Config{
+		PalaceScoringOverrides: map[string]storage.ScoringRoomOverride{
+			"ml": {
+				High:   []string{"neural network"},
+				Medium: []string{"training"},
+				Low:    []string{"epoch"},
+			},
+		},
+		PalaceMinScore: 0.3,
+	}
+	idx := NewIndexer(v, nil, nil, cfg)
+
+	// Verify the classifier was constructed with overrides.
+	// Neural network content should classify to "ml" via the override.
+	transcript := "Train the neural network on the transformer architecture dataset."
+	err := idx.IndexTranscript(context.Background(), "ml-session", "test-proj", transcript)
+	if err != nil {
+		t.Fatalf("IndexTranscript: %v", err)
+	}
+
+	wing := palace.DetectWing("test-proj", "")
+	drawers, _ := v.ListDrawers("test-proj", wing, "ml")
+	if len(drawers) == 0 {
+		t.Error("expected drawers in 'ml' room via scoring override, got none")
+	}
+}
+
+func TestNewIndexerWithLoweredThreshold(t *testing.T) {
+	v := testVault(t)
+	cfg := storage.Config{
+		PalaceMinScore: 0.3, // Lower threshold: lone "test" (0.3) should now classify
+	}
+	idx := NewIndexer(v, nil, nil, cfg)
+
+	transcript := "Just test it quickly."
+	err := idx.IndexTranscript(context.Background(), "threshold-session", "test-proj", transcript)
+	if err != nil {
+		t.Fatalf("IndexTranscript: %v", err)
+	}
+
+	wing := palace.DetectWing("test-proj", "")
+	drawers, _ := v.ListDrawers("test-proj", wing, "testing")
+	if len(drawers) == 0 {
+		t.Error("expected drawers in 'testing' room with lowered threshold, got none")
+	}
+}
+
 func TestSlugify(t *testing.T) {
 	tests := []struct {
 		input string

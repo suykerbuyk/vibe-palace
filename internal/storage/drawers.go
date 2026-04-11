@@ -25,9 +25,10 @@ type Drawer struct {
 	AddedBy    string `json:"added_by,omitempty"`
 }
 
-// drawerID generates a deterministic ID: first 8 hex chars of md5(wing+room+content).
-func drawerID(wing, room, content string) string {
-	h := md5.Sum([]byte(wing + room + content))
+// drawerID generates a deterministic ID: first 8 hex chars of md5(wing+content).
+// Room is excluded so drawer identity is stable across reclassification.
+func drawerID(wing, content string) string {
+	h := md5.Sum([]byte(wing + content))
 	return hex.EncodeToString(h[:])[:8]
 }
 
@@ -38,7 +39,7 @@ func (v *Vault) AppendDrawer(project, wing, room string, d Drawer) error {
 		return err
 	}
 
-	d.ID = drawerID(wing, room, d.Content)
+	d.ID = drawerID(wing, d.Content)
 
 	path, err := v.DrawerFile(project, wing, room)
 	if err != nil {
@@ -136,6 +137,7 @@ func (v *Vault) ListDrawersByWing(project, wing string) ([]Drawer, error) {
 }
 
 // DeleteDrawer removes a drawer by ID, rewriting the JSONL file without it.
+// Uses atomic temp-file + rename to prevent data loss on crash.
 func (v *Vault) DeleteDrawer(project, wing, room, id string) error {
 	path, err := v.DrawerFile(project, wing, room)
 	if err != nil {
@@ -174,16 +176,29 @@ func (v *Vault) DeleteDrawer(project, wing, room, id string) error {
 		return fmt.Errorf("drawer %q not found in %s/%s", id, wing, room)
 	}
 
-	if err := f.Truncate(0); err != nil {
-		return fmt.Errorf("truncate drawer file: %w", err)
+	// Atomic write: temp file in same directory, then rename.
+	dir := filepath.Dir(path)
+	tmpPath := filepath.Join(dir, ".tmp-"+filepath.Base(path))
+	tmp, err := os.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
 	}
-	if _, err := f.Seek(0, 0); err != nil {
-		return fmt.Errorf("seek drawer file: %w", err)
-	}
+
 	for _, line := range kept {
-		if _, err := f.Write(append(line, '\n')); err != nil {
-			return fmt.Errorf("rewrite drawer file: %w", err)
+		if _, err := tmp.Write(append(line, '\n')); err != nil {
+			tmp.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("write temp file: %w", err)
 		}
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("close temp file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("rename temp file: %w", err)
 	}
 	return nil
 }

@@ -353,3 +353,113 @@ func TestDefaultRoomKeywordsReturnsCopy(t *testing.T) {
 		}
 	}
 }
+
+// --- RoomClassifier tests ---
+
+func TestRoomClassifier_DefaultMatchesDetectRoom(t *testing.T) {
+	rc := NewRoomClassifier(nil, 0)
+	tests := []string{
+		"We need to write a test with full coverage.",
+		"Deploy the Docker container to production.",
+		"The API endpoint returns 404.",
+		"Run the SQL migration on the database.",
+		"The sky is blue and water is wet.",
+		"Set up the kubernetes cluster.",
+		"Got a segfault on line 42.",
+	}
+	for _, content := range tests {
+		want := DetectRoom(content, "", nil)
+		got := rc.Classify(content, "", nil)
+		if got != want {
+			t.Errorf("Classify(%q) = %q, want %q (DetectRoom result)", content, got, want)
+		}
+	}
+}
+
+func TestRoomClassifier_OverrideExistingRoom(t *testing.T) {
+	overrides := map[string]WeightedOverride{
+		"testing": {
+			High: []string{"integration test", "e2e test"},
+		},
+	}
+	rc := NewRoomClassifier(overrides, 0)
+
+	// "integration test" is a high-weight override → should classify as testing.
+	got := rc.Classify("run the integration test suite", "", nil)
+	if got != "testing" {
+		t.Errorf("override keyword should classify: got %q, want %q", got, "testing")
+	}
+}
+
+func TestRoomClassifier_AddNewRoom(t *testing.T) {
+	overrides := map[string]WeightedOverride{
+		"ml": {
+			High:   []string{"neural network", "transformer"},
+			Medium: []string{"training"},
+			Low:    []string{"epoch"},
+		},
+	}
+	rc := NewRoomClassifier(overrides, 0)
+
+	got := rc.Classify("train the neural network model", "", nil)
+	if got != "ml" {
+		t.Errorf("new room should classify: got %q, want %q", got, "ml")
+	}
+
+	// Single low-weight keyword should not classify (below threshold).
+	got = rc.Classify("we completed one epoch", "", nil)
+	if got != "general" {
+		t.Errorf("lone low-weight in new room should be general: got %q, want %q", got, "general")
+	}
+
+	// Two medium keywords should classify.
+	got = rc.Classify("transformer training pipeline", "", nil)
+	if got != "ml" {
+		t.Errorf("high+medium should classify: got %q, want %q", got, "ml")
+	}
+}
+
+func TestRoomClassifier_CustomMinScore(t *testing.T) {
+	// Lower threshold so a single low-weight keyword (0.3) classifies.
+	rc := NewRoomClassifier(nil, 0.3)
+
+	// With default threshold (0.6), lone "test" → general.
+	// With threshold 0.3, lone "test" → testing.
+	got := rc.Classify("We need to write a test.", "", nil)
+	if got != "testing" {
+		t.Errorf("lowered min_score should classify lone low keyword: got %q, want %q", got, "testing")
+	}
+}
+
+func TestRoomClassifier_OverrideDoesNotMutateDefaults(t *testing.T) {
+	overrides := map[string]WeightedOverride{
+		"testing": {High: []string{"canary-keyword"}},
+	}
+	_ = NewRoomClassifier(overrides, 0)
+
+	// The default classifier should NOT have the override keyword.
+	got := DetectRoom("canary-keyword is here", "", nil)
+	if got != "general" {
+		t.Errorf("override leaked into defaults: got %q, want general", got)
+	}
+}
+
+func TestRoomClassifier_FilenameStillWorks(t *testing.T) {
+	rc := NewRoomClassifier(nil, 0)
+	got := rc.Classify("nothing interesting", "foo_test.go", nil)
+	if got != "testing" {
+		t.Errorf("filename match should still work: got %q, want %q", got, "testing")
+	}
+}
+
+func TestRoomClassifier_CustomKeywordsPriority(t *testing.T) {
+	rc := NewRoomClassifier(nil, 0)
+	custom := map[string][]string{
+		"audio": {"test"},
+	}
+	// Custom keywords (tier 1) should beat filename (tier 2) and scoring (tier 3).
+	got := rc.Classify("test content", "foo_test.go", custom)
+	if got != "audio" {
+		t.Errorf("custom keywords should take priority: got %q, want %q", got, "audio")
+	}
+}

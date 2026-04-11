@@ -16,19 +16,28 @@ var defaultsToml string
 
 // Config holds resolved configuration values.
 type Config struct {
-	VaultPath          string  `json:"vault_path"`
-	HTTPPort           int     `json:"http_port"`
-	LogLevel           string  `json:"log_level"`
-	EmbedderModel      string  `json:"embedder_model"`
-	EmbedderMaxSeqLen  int     `json:"embedder_max_seq_len"`
-	EmbedderBatchSize  int     `json:"embedder_batch_size"`
-	SearchDefaultLimit int     `json:"search_default_limit"`
-	BoostWing          float64 `json:"boost_wing"`
-	BoostHall          float64 `json:"boost_hall"`
-	BoostRoom          float64 `json:"boost_room"`
-	ChunkMaxChars      int                 `json:"chunk_max_chars"`
-	ChunkOverlap       int                 `json:"chunk_overlap"`
-	PalaceRoomKeywords map[string][]string `json:"palace_room_keywords,omitempty"`
+	VaultPath               string                            `json:"vault_path"`
+	HTTPPort                int                               `json:"http_port"`
+	LogLevel                string                            `json:"log_level"`
+	EmbedderModel           string                            `json:"embedder_model"`
+	EmbedderMaxSeqLen       int                               `json:"embedder_max_seq_len"`
+	EmbedderBatchSize       int                               `json:"embedder_batch_size"`
+	SearchDefaultLimit      int                               `json:"search_default_limit"`
+	BoostWing               float64                           `json:"boost_wing"`
+	BoostHall               float64                           `json:"boost_hall"`
+	BoostRoom               float64                           `json:"boost_room"`
+	ChunkMaxChars           int                               `json:"chunk_max_chars"`
+	ChunkOverlap            int                               `json:"chunk_overlap"`
+	PalaceRoomKeywords      map[string][]string               `json:"palace_room_keywords,omitempty"`
+	PalaceScoringOverrides  map[string]ScoringRoomOverride    `json:"palace_scoring_overrides,omitempty"`
+	PalaceMinScore          float64                           `json:"palace_min_score,omitempty"`
+}
+
+// ScoringRoomOverride holds weighted keyword overrides for a single room.
+type ScoringRoomOverride struct {
+	High   []string `json:"high,omitempty"`
+	Medium []string `json:"medium,omitempty"`
+	Low    []string `json:"low,omitempty"`
 }
 
 // tomlConfig is the intermediate struct matching the TOML file structure.
@@ -52,12 +61,24 @@ type tomlConfig struct {
 		Overlap  int `toml:"overlap"`
 	} `toml:"chunker"`
 	Palace struct {
-		Rooms map[string]tomlRoomConfig `toml:"rooms"`
+		Rooms   map[string]tomlRoomConfig   `toml:"rooms"`
+		Scoring tomlScoringConfig           `toml:"scoring"`
 	} `toml:"palace"`
 }
 
 type tomlRoomConfig struct {
 	Keywords []string `toml:"keywords"`
+}
+
+type tomlScoringConfig struct {
+	MinScore float64                        `toml:"min_score"`
+	Rooms    map[string]tomlRoomScoring     `toml:"rooms"`
+}
+
+type tomlRoomScoring struct {
+	High   []string `toml:"high"`
+	Medium []string `toml:"medium"`
+	Low    []string `toml:"low"`
 }
 
 // flatten converts a tomlConfig into a Config.
@@ -75,7 +96,9 @@ func (tc *tomlConfig) flatten() Config {
 		BoostRoom:          tc.Search.StructuralBoostRoom,
 		ChunkMaxChars:      tc.Chunker.MaxChars,
 		ChunkOverlap:       tc.Chunker.Overlap,
-		PalaceRoomKeywords: flattenPalaceRooms(tc.Palace.Rooms),
+		PalaceRoomKeywords:     flattenPalaceRooms(tc.Palace.Rooms),
+		PalaceScoringOverrides: flattenScoringRooms(tc.Palace.Scoring.Rooms),
+		PalaceMinScore:         tc.Palace.Scoring.MinScore,
 	}
 }
 
@@ -88,6 +111,22 @@ func flattenPalaceRooms(rooms map[string]tomlRoomConfig) map[string][]string {
 	m := make(map[string][]string, len(rooms))
 	for room, cfg := range rooms {
 		m[room] = cfg.Keywords
+	}
+	return m
+}
+
+// flattenScoringRooms converts TOML scoring room overrides to the Config format.
+func flattenScoringRooms(rooms map[string]tomlRoomScoring) map[string]ScoringRoomOverride {
+	if len(rooms) == 0 {
+		return nil
+	}
+	m := make(map[string]ScoringRoomOverride, len(rooms))
+	for room, cfg := range rooms {
+		m[room] = ScoringRoomOverride{
+			High:   cfg.High,
+			Medium: cfg.Medium,
+			Low:    cfg.Low,
+		}
 	}
 	return m
 }

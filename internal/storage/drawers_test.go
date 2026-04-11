@@ -16,18 +16,37 @@ func testVault(t *testing.T) *Vault {
 }
 
 func TestDrawerID(t *testing.T) {
-	id1 := drawerID("wing-a", "room-1", "hello world")
-	id2 := drawerID("wing-a", "room-1", "hello world")
-	id3 := drawerID("wing-a", "room-2", "hello world")
+	id1 := drawerID("wing-a", "hello world")
+	id2 := drawerID("wing-a", "hello world")
+	id3 := drawerID("wing-b", "hello world")
+	id4 := drawerID("wing-a", "different content")
 
 	if id1 != id2 {
 		t.Errorf("same inputs produced different IDs: %q vs %q", id1, id2)
 	}
 	if id1 == id3 {
-		t.Error("different inputs produced same ID")
+		t.Error("different wings should produce different IDs")
+	}
+	if id1 == id4 {
+		t.Error("different content should produce different IDs")
 	}
 	if len(id1) != 8 {
 		t.Errorf("ID length = %d, want 8", len(id1))
+	}
+}
+
+func TestDrawerIDRoomIndependent(t *testing.T) {
+	// Drawer ID must be stable across room reclassification.
+	// Same wing+content should produce identical IDs regardless of room.
+	id := drawerID("wing-a", "hello world")
+	if len(id) != 8 {
+		t.Fatalf("ID length = %d, want 8", len(id))
+	}
+	// Verify determinism across multiple calls.
+	for i := 0; i < 10; i++ {
+		if got := drawerID("wing-a", "hello world"); got != id {
+			t.Errorf("call %d: got %q, want %q", i, got, id)
+		}
 	}
 }
 
@@ -44,7 +63,7 @@ func TestAppendAndGetDrawer(t *testing.T) {
 		t.Fatalf("AppendDrawer: %v", err)
 	}
 
-	expectedID := drawerID("wing-a", "room-1", d.Content)
+	expectedID := drawerID("wing-a", d.Content)
 	got, err := v.GetDrawer("proj", "wing-a", "room-1", expectedID)
 	if err != nil {
 		t.Fatalf("GetDrawer: %v", err)
@@ -139,7 +158,7 @@ func TestDeleteDrawer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deleteID := drawerID("wing-a", "room-1", "delete-me")
+	deleteID := drawerID("wing-a", "delete-me")
 	if err := v.DeleteDrawer("proj", "wing-a", "room-1", deleteID); err != nil {
 		t.Fatalf("DeleteDrawer: %v", err)
 	}
@@ -156,6 +175,49 @@ func TestDeleteDrawer(t *testing.T) {
 	}
 }
 
+func TestDeleteDrawerAtomicWrite(t *testing.T) {
+	v := testVault(t)
+	contents := []string{"alpha", "bravo", "charlie"}
+	for _, c := range contents {
+		d := Drawer{Content: c, Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}
+		if err := v.AppendDrawer("proj", "wing-a", "room-1", d); err != nil {
+			t.Fatalf("AppendDrawer(%q): %v", c, err)
+		}
+	}
+
+	// Delete the middle entry.
+	deleteID := drawerID("wing-a", "bravo")
+	if err := v.DeleteDrawer("proj", "wing-a", "room-1", deleteID); err != nil {
+		t.Fatalf("DeleteDrawer: %v", err)
+	}
+
+	// Verify raw file content: exactly 2 valid JSONL lines, no temp files left.
+	path, _ := v.DrawerFile("proj", "wing-a", "room-1")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	lines := splitNonEmpty(string(data))
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 JSONL lines, got %d", len(lines))
+	}
+	for _, line := range lines {
+		var d Drawer
+		if err := json.Unmarshal([]byte(line), &d); err != nil {
+			t.Fatalf("invalid JSONL line: %v", err)
+		}
+		if d.Content == "bravo" {
+			t.Error("deleted drawer still present in file")
+		}
+	}
+
+	// Verify no temp file remains.
+	tmpPath := filepath.Join(filepath.Dir(path), ".tmp-"+filepath.Base(path))
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Error("temp file was not cleaned up after atomic rename")
+	}
+}
+
 func TestDeleteDrawerNotFound(t *testing.T) {
 	v := testVault(t)
 	d := Drawer{Content: "hello", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}
@@ -169,6 +231,37 @@ func TestDeleteDrawerNotFound(t *testing.T) {
 	}
 }
 
+func TestDeleteDrawerNoFile(t *testing.T) {
+	v := testVault(t)
+	err := v.DeleteDrawer("proj", "wing-a", "room-1", "anyid")
+	if err == nil {
+		t.Error("deleting from nonexistent file should return error")
+	}
+}
+
+func TestDeleteDrawerAllEntries(t *testing.T) {
+	v := testVault(t)
+	d := Drawer{Content: "only-one", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}
+	if err := v.AppendDrawer("proj", "wing-a", "room-1", d); err != nil {
+		t.Fatal(err)
+	}
+
+	id := drawerID("wing-a", "only-one")
+	if err := v.DeleteDrawer("proj", "wing-a", "room-1", id); err != nil {
+		t.Fatalf("DeleteDrawer: %v", err)
+	}
+
+	// File should exist but be empty.
+	path, _ := v.DrawerFile("proj", "wing-a", "room-1")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if len(data) != 0 {
+		t.Errorf("expected empty file after deleting all entries, got %d bytes", len(data))
+	}
+}
+
 func TestDrawerExists(t *testing.T) {
 	v := testVault(t)
 	d := Drawer{Content: "test", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}
@@ -176,7 +269,7 @@ func TestDrawerExists(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	id := drawerID("wing-a", "room-1", "test")
+	id := drawerID("wing-a", "test")
 	exists, err := v.DrawerExists("proj", "wing-a", "room-1", id)
 	if err != nil {
 		t.Fatalf("DrawerExists: %v", err)

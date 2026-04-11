@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"strings"
 	"time"
@@ -498,6 +499,7 @@ func getEffectivenessHandler(vault *storage.Vault) mcp.HandlerFunc {
 		for _, s := range sessions {
 			t, err := time.Parse("2006-01-02", s.Date)
 			if err != nil {
+				slog.Warn("effectiveness: unparseable session date", "date", s.Date, "err", err)
 				continue
 			}
 			// ISO week start (Monday).

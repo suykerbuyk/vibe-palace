@@ -6,6 +6,8 @@ package integration
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 // TestIntegrationWeightedRoomScoring proves that the weighted keyword scoring
@@ -124,6 +126,123 @@ credential validation and add permission checks.`,
 				}
 			}
 		})
+	}
+}
+
+// TestIntegrationScoringOverrides proves that [palace.scoring] config overrides
+// flow through the full capture pipeline: config → NewIndexer → RoomClassifier →
+// drawer classification.
+func TestIntegrationScoringOverrides(t *testing.T) {
+	// Add a new "ml" room via scoring overrides and lower the threshold.
+	h := newHarness(t, false, func(cfg *storage.Config) {
+		cfg.PalaceScoringOverrides = map[string]storage.ScoringRoomOverride{
+			"ml": {
+				High:   []string{"neural network", "transformer"},
+				Medium: []string{"training"},
+				Low:    []string{"epoch"},
+			},
+		}
+		cfg.PalaceMinScore = 0.3
+	})
+	h.registerAllTools(t)
+
+	tests := []struct {
+		name       string
+		transcript string
+		wantRooms  map[string]bool
+	}{
+		{
+			name: "new ml room via override",
+			transcript: `## Human
+
+Train the neural network on the dataset.
+Set transformer attention heads to 8.
+
+## Assistant
+
+I'll configure the transformer architecture and start training.
+The neural network should converge within 50 epochs.`,
+			wantRooms: map[string]bool{"ml": true},
+		},
+		{
+			name: "lowered threshold classifies lone low keyword",
+			transcript: `## Human
+
+Just test the output.
+
+## Assistant
+
+Testing the output now.`,
+			// With default threshold 0.6, lone "test" (0.3) → general.
+			// With threshold 0.3, "test" classifies as testing.
+			wantRooms: map[string]bool{"testing": true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h2 := newHarness(t, false, func(cfg *storage.Config) {
+				cfg.PalaceScoringOverrides = map[string]storage.ScoringRoomOverride{
+					"ml": {
+						High:   []string{"neural network", "transformer"},
+						Medium: []string{"training"},
+						Low:    []string{"epoch"},
+					},
+				}
+				cfg.PalaceMinScore = 0.3
+			})
+			h2.registerAllTools(t)
+
+			result := h2.callTool(t, "vp_capture_session", map[string]any{
+				"project":    "override-test",
+				"summary":    "Testing scoring overrides: " + tt.name,
+				"tag":        "implementation",
+				"transcript": tt.transcript,
+			})
+
+			var captureResult struct {
+				Status string `json:"status"`
+			}
+			if err := json.Unmarshal([]byte(result), &captureResult); err != nil {
+				t.Fatalf("parse capture result: %v", err)
+			}
+			if captureResult.Status != "ok" {
+				t.Fatalf("capture status = %q, want ok", captureResult.Status)
+			}
+
+			gotRooms := make(map[string]bool)
+			wings, _ := h2.Vault.ListWings("override-test")
+			for _, wing := range wings {
+				rooms, _ := h2.Vault.ListRooms("override-test", wing)
+				for _, room := range rooms {
+					drawers, _ := h2.Vault.ListDrawers("override-test", wing, room)
+					if len(drawers) > 0 {
+						gotRooms[room] = true
+					}
+				}
+			}
+
+			for room := range tt.wantRooms {
+				if !gotRooms[room] {
+					t.Errorf("expected room %q in results, got rooms: %v", room, keys(gotRooms))
+				}
+			}
+		})
+	}
+}
+
+// TestIntegrationDrawerIDStableAcrossRooms proves that drawer IDs are
+// independent of room classification — the same content in different rooms
+// produces the same drawer ID (Task 12.0a).
+func TestIntegrationDrawerIDStableAcrossRooms(t *testing.T) {
+	h := newHarness(t, false)
+
+	// Add the same content to two different rooms.
+	d1 := h.addDrawer(t, "proj", "wing-a", "testing", "shared content here", "facts", "2026-01-01")
+	d2 := h.addDrawer(t, "proj", "wing-a", "debugging", "shared content here", "facts", "2026-01-01")
+
+	if d1.ID != d2.ID {
+		t.Errorf("drawer IDs should be identical across rooms: %q vs %q", d1.ID, d2.ID)
 	}
 }
 

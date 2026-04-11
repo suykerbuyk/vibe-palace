@@ -204,6 +204,7 @@ func (e *Engine) Rebuild(ctx context.Context, project string) error {
 		for _, room := range rooms {
 			drawers, err := e.vault.ListDrawers(project, wing, room)
 			if err != nil {
+				slog.Warn("rebuild: list drawers failed", "project", project, "wing", wing, "room", room, "err", err)
 				continue
 			}
 

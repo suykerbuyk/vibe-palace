@@ -249,6 +249,61 @@ keywords = ["only-this"]
 	}
 }
 
+func TestConfigPalaceScoring(t *testing.T) {
+	v := testVault(t)
+
+	projDir := filepath.Join(v.Root, "Projects", "proj", "agentctx")
+	os.MkdirAll(projDir, 0755)
+	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`
+[palace.scoring]
+min_score = 0.4
+
+[palace.scoring.rooms.testing]
+high = ["integration test", "e2e test"]
+medium = ["spec"]
+
+[palace.scoring.rooms.ml]
+high = ["neural network"]
+medium = ["training"]
+low = ["epoch"]
+`), 0644)
+
+	cfg, err := v.LoadConfig("proj")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if cfg.PalaceMinScore != 0.4 {
+		t.Errorf("PalaceMinScore = %f, want 0.4", cfg.PalaceMinScore)
+	}
+	if cfg.PalaceScoringOverrides == nil {
+		t.Fatal("PalaceScoringOverrides should not be nil")
+	}
+	if got := cfg.PalaceScoringOverrides["testing"]; len(got.High) != 2 || got.High[0] != "integration test" {
+		t.Errorf("testing overrides = %+v, want high=[integration test, e2e test]", got)
+	}
+	if got := cfg.PalaceScoringOverrides["ml"]; len(got.High) != 1 || got.High[0] != "neural network" {
+		t.Errorf("ml overrides = %+v", got)
+	}
+	if got := cfg.PalaceScoringOverrides["ml"]; len(got.Low) != 1 || got.Low[0] != "epoch" {
+		t.Errorf("ml low = %+v, want [epoch]", got)
+	}
+}
+
+func TestConfigPalaceScoringEmpty(t *testing.T) {
+	v := testVault(t)
+	cfg, err := v.LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.PalaceScoringOverrides != nil {
+		t.Errorf("PalaceScoringOverrides should be nil when not configured, got %v", cfg.PalaceScoringOverrides)
+	}
+	if cfg.PalaceMinScore != 0 {
+		t.Errorf("PalaceMinScore should be 0 when not configured, got %f", cfg.PalaceMinScore)
+	}
+}
+
 func TestConfigThreeLevelPrecedence(t *testing.T) {
 	v := testVault(t)
 

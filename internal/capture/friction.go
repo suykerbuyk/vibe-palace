@@ -4,6 +4,7 @@
 package capture
 
 import (
+	"log/slog"
 	"regexp"
 	"sort"
 	"strings"
@@ -212,7 +213,8 @@ func GetFrictionTrends(vault *storage.Vault, project string, weeks int) ([]Weekl
 	for _, s := range sessions {
 		t, err := time.Parse("2006-01-02", s.Date)
 		if err != nil {
-			continue // skip sessions with unparseable dates
+			slog.Warn("friction: unparseable session date", "date", s.Date, "err", err)
+			continue
 		}
 
 		// Compute the Monday of this session's week.

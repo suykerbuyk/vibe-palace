@@ -22,20 +22,34 @@ import (
 
 // Indexer orchestrates transcript chunking, classification, embedding, and storage.
 type Indexer struct {
-	vault    *storage.Vault
-	engine   *search.Engine
-	embedder embedder.Embedder
-	config   storage.Config
+	vault      *storage.Vault
+	engine     *search.Engine
+	embedder   embedder.Embedder
+	config     storage.Config
+	classifier *palace.RoomClassifier
 }
 
 // NewIndexer creates a transcript indexer.
 // Chunk settings are read from config (chunker.max_chars, chunker.overlap).
 func NewIndexer(vault *storage.Vault, engine *search.Engine, emb embedder.Embedder, cfg storage.Config) *Indexer {
+	// Build a RoomClassifier from scoring overrides in config.
+	var overrides map[string]palace.WeightedOverride
+	if len(cfg.PalaceScoringOverrides) > 0 {
+		overrides = make(map[string]palace.WeightedOverride, len(cfg.PalaceScoringOverrides))
+		for room, ov := range cfg.PalaceScoringOverrides {
+			overrides[room] = palace.WeightedOverride{
+				High:   ov.High,
+				Medium: ov.Medium,
+				Low:    ov.Low,
+			}
+		}
+	}
 	return &Indexer{
-		vault:    vault,
-		engine:   engine,
-		embedder: emb,
-		config:   cfg,
+		vault:      vault,
+		engine:     engine,
+		embedder:   emb,
+		config:     cfg,
+		classifier: palace.NewRoomClassifier(overrides, cfg.PalaceMinScore),
 	}
 }
 
@@ -62,7 +76,7 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 	locs := make([]drawerLoc, len(chunks))
 
 	for i, chunk := range chunks {
-		room := palace.DetectRoom(chunk, "", idx.config.PalaceRoomKeywords)
+		room := idx.classifier.Classify(chunk, "", idx.config.PalaceRoomKeywords)
 		hall := palace.DetectHall(chunk)
 
 		d := storage.Drawer{
@@ -76,7 +90,7 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 		}
 		// Pre-compute the ID the same way storage does, so we can use it
 		// for vector indexing even before AppendDrawer fills it in.
-		d.ID = drawerID(wing, room, chunk)
+		d.ID = drawerID(wing, chunk)
 
 		locs[i] = drawerLoc{drawer: d, room: room}
 	}
@@ -200,8 +214,9 @@ func (idx *Indexer) chunkConfig() ChunkConfig {
 	return cfg
 }
 
-// drawerID mirrors storage.drawerID: first 8 hex chars of MD5(wing+room+content).
-func drawerID(wing, room, content string) string {
-	h := md5.Sum([]byte(wing + room + content))
+// drawerID mirrors storage.drawerID: first 8 hex chars of MD5(wing+content).
+// Room is excluded so drawer identity is stable across reclassification.
+func drawerID(wing, content string) string {
+	h := md5.Sum([]byte(wing + content))
 	return hex.EncodeToString(h[:])[:8]
 }

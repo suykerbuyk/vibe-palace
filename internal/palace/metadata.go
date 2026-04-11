@@ -244,13 +244,82 @@ var filenameRules = []filenameRule{
 	{exact: "vcpkg.json", room: "config"},
 }
 
-// DetectRoom inspects content, source path, and optional custom keywords to
+// WeightedOverride holds keyword overrides at three weight tiers for a room.
+type WeightedOverride struct {
+	High   []string // weight 1.0
+	Medium []string // weight 0.6
+	Low    []string // weight 0.3
+}
+
+// RoomClassifier holds a merged room keyword table and scoring threshold.
+// Use NewRoomClassifier to create one with custom overrides; the zero value
+// uses compiled defaults.
+type RoomClassifier struct {
+	entries  []roomEntry
+	minScore float64
+}
+
+// NewRoomClassifier creates a classifier by deep-copying the built-in keyword
+// table and merging overrides. For existing rooms, override keywords are
+// appended. New rooms are added at the end (preserving tie-break order for
+// existing rooms). If minScore <= 0, the compiled default (0.6) is used.
+func NewRoomClassifier(overrides map[string]WeightedOverride, minScore float64) *RoomClassifier {
+	if minScore <= 0 {
+		minScore = minRoomScore
+	}
+
+	// Deep-copy defaults.
+	entries := make([]roomEntry, len(defaultRoomKeywords))
+	for i, e := range defaultRoomKeywords {
+		kws := make([]keyword, len(e.keywords))
+		copy(kws, e.keywords)
+		entries[i] = roomEntry{room: e.room, keywords: kws}
+	}
+
+	// Merge overrides.
+	for room, ov := range overrides {
+		extra := buildOverrideKeywords(ov)
+		if len(extra) == 0 {
+			continue
+		}
+		found := false
+		for i := range entries {
+			if entries[i].room == room {
+				entries[i].keywords = append(entries[i].keywords, extra...)
+				found = true
+				break
+			}
+		}
+		if !found {
+			entries = append(entries, roomEntry{room: room, keywords: extra})
+		}
+	}
+
+	return &RoomClassifier{entries: entries, minScore: minScore}
+}
+
+// buildOverrideKeywords converts a WeightedOverride into keyword structs.
+func buildOverrideKeywords(ov WeightedOverride) []keyword {
+	var out []keyword
+	for _, s := range ov.High {
+		out = append(out, buildWeightedKeyword(s, 1.0))
+	}
+	for _, s := range ov.Medium {
+		out = append(out, buildWeightedKeyword(s, 0.6))
+	}
+	for _, s := range ov.Low {
+		out = append(out, buildWeightedKeyword(s, 0.3))
+	}
+	return out
+}
+
+// Classify inspects content, source path, and optional custom keywords to
 // classify into a room. Uses a single 4-tier cascade (first match wins):
 //  1. Custom keywords (if keywords != nil, sorted by room for determinism)
 //  2. Filename match (if sourcePath != "")
-//  3. Content keywords (built-in defaults)
+//  3. Content keywords (merged defaults + overrides)
 //  4. Fallback → "general"
-func DetectRoom(content, sourcePath string, keywords map[string][]string) string {
+func (rc *RoomClassifier) Classify(content, sourcePath string, keywords map[string][]string) string {
 	lower := strings.ToLower(content)
 
 	// Tier 1: custom keywords — sorted for deterministic ordering.
@@ -288,13 +357,28 @@ func DetectRoom(content, sourcePath string, keywords map[string][]string) string
 		}
 	}
 
-	// Tier 3: weighted content scoring (built-in defaults).
-	if best, score := scoreRooms(lower, defaultRoomKeywords); score >= minRoomScore {
+	// Tier 3: weighted content scoring.
+	entries := rc.entries
+	threshold := rc.minScore
+	if len(entries) == 0 {
+		entries = defaultRoomKeywords
+		threshold = minRoomScore
+	}
+	if best, score := scoreRooms(lower, entries); score >= threshold {
 		return best
 	}
 
 	// Tier 4: fallback.
 	return "general"
+}
+
+// defaultClassifier is the package-level classifier using compiled defaults.
+var defaultClassifier = NewRoomClassifier(nil, 0)
+
+// DetectRoom inspects content, source path, and optional custom keywords to
+// classify into a room. Delegates to the default RoomClassifier.
+func DetectRoom(content, sourcePath string, keywords map[string][]string) string {
+	return defaultClassifier.Classify(content, sourcePath, keywords)
 }
 
 // hallEntry maps a hall type to its keywords.

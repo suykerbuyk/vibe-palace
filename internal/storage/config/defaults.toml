@@ -23,3 +23,20 @@ overlap = 100
 # Example:
 # [palace.rooms.audio]
 # keywords = ["wav", "mp3", "codec", "ffmpeg"]
+
+# Weighted scoring overrides for room classification.
+# Override the minimum score threshold (default 0.6):
+# [palace.scoring]
+# min_score = 0.5
+#
+# Override or add weighted keywords for existing or new rooms:
+# [palace.scoring.rooms.testing]
+# high = ["integration test", "e2e test"]    # weight 1.0
+# medium = ["spec"]                          # weight 0.6
+# low = ["check"]                            # weight 0.3
+#
+# Define entirely new rooms with weighted keywords:
+# [palace.scoring.rooms.ml]
+# high = ["neural network", "transformer", "fine-tune"]
+# medium = ["model", "training", "inference"]
+# low = ["weight", "epoch"]
