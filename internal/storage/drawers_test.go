@@ -502,6 +502,87 @@ func TestListProjectsEmpty(t *testing.T) {
 	}
 }
 
+// --- MoveDrawer tests ---
+
+func TestMoveDrawer(t *testing.T) {
+	v := testVault(t)
+	d := Drawer{Content: "move me", Hall: "facts", SourceType: "manual", FiledAt: "2026-04-10T10:00:00Z"}
+	if err := v.AppendDrawer("proj", "wing", "api", d); err != nil {
+		t.Fatalf("AppendDrawer: %v", err)
+	}
+	drawers, _ := v.ListDrawers("proj", "wing", "api")
+	id := drawers[0].ID
+
+	if err := v.MoveDrawer("proj", "wing", "api", "testing", id); err != nil {
+		t.Fatalf("MoveDrawer: %v", err)
+	}
+
+	// Should be gone from source.
+	_, err := v.GetDrawer("proj", "wing", "api", id)
+	if err == nil {
+		t.Error("expected drawer to be removed from source room")
+	}
+
+	// Should be in destination.
+	got, err := v.GetDrawer("proj", "wing", "testing", id)
+	if err != nil {
+		t.Fatalf("drawer not found in destination: %v", err)
+	}
+	if got.Content != "move me" {
+		t.Errorf("content = %q, want %q", got.Content, "move me")
+	}
+}
+
+func TestMoveDrawer_SameRoom(t *testing.T) {
+	v := testVault(t)
+	d := Drawer{Content: "stay here", Hall: "facts", SourceType: "manual", FiledAt: "2026-04-10T10:00:00Z"}
+	if err := v.AppendDrawer("proj", "wing", "api", d); err != nil {
+		t.Fatalf("AppendDrawer: %v", err)
+	}
+	drawers, _ := v.ListDrawers("proj", "wing", "api")
+	id := drawers[0].ID
+
+	// Same room should be a no-op.
+	if err := v.MoveDrawer("proj", "wing", "api", "api", id); err != nil {
+		t.Fatalf("MoveDrawer same room: %v", err)
+	}
+
+	// Should still be in original room.
+	if _, err := v.GetDrawer("proj", "wing", "api", id); err != nil {
+		t.Errorf("drawer should still be in room: %v", err)
+	}
+}
+
+func TestMoveDrawer_NotFound(t *testing.T) {
+	v := testVault(t)
+	err := v.MoveDrawer("proj", "wing", "api", "testing", "nonexistent")
+	if err == nil {
+		t.Error("expected error for nonexistent drawer")
+	}
+}
+
+func TestMoveDrawer_PreservesID(t *testing.T) {
+	v := testVault(t)
+	d := Drawer{Content: "same id check", Hall: "facts", SourceType: "manual", FiledAt: "2026-04-10T10:00:00Z"}
+	if err := v.AppendDrawer("proj", "wing", "api", d); err != nil {
+		t.Fatalf("AppendDrawer: %v", err)
+	}
+	drawers, _ := v.ListDrawers("proj", "wing", "api")
+	originalID := drawers[0].ID
+
+	if err := v.MoveDrawer("proj", "wing", "api", "data", originalID); err != nil {
+		t.Fatalf("MoveDrawer: %v", err)
+	}
+
+	got, err := v.GetDrawer("proj", "wing", "data", originalID)
+	if err != nil {
+		t.Fatalf("GetDrawer after move: %v", err)
+	}
+	if got.ID != originalID {
+		t.Errorf("ID changed after move: %q → %q", originalID, got.ID)
+	}
+}
+
 // splitNonEmpty splits s by newline and returns non-empty lines.
 func splitNonEmpty(s string) []string {
 	var lines []string

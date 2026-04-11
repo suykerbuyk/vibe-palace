@@ -112,13 +112,10 @@ type roomEntry struct {
 // keyword does not. Two low-weight hits from the same room (0.6) do classify.
 const minRoomScore = 0.6
 
-// scoreRooms accumulates weighted keyword scores across all room entries.
+// scoreAllRooms accumulates weighted keyword scores for every room.
 // Each keyword contributes at most once (presence, not count).
-// Returns the best room and its score. Ties break by room table order
-// (first room with the highest score wins, via strict > comparison).
-func scoreRooms(lower string, entries []roomEntry) (string, float64) {
-	var best string
-	var bestScore float64
+func scoreAllRooms(lower string, entries []roomEntry) map[string]float64 {
+	scores := make(map[string]float64, len(entries))
 	for _, entry := range entries {
 		var score float64
 		for _, kw := range entry.keywords {
@@ -126,8 +123,20 @@ func scoreRooms(lower string, entries []roomEntry) (string, float64) {
 				score += kw.weight
 			}
 		}
-		if score > bestScore {
-			bestScore = score
+		scores[entry.room] = score
+	}
+	return scores
+}
+
+// scoreRooms returns the best room and its score. Ties break by room table
+// order (first room with the highest score wins, via strict > comparison).
+func scoreRooms(lower string, entries []roomEntry) (string, float64) {
+	scores := scoreAllRooms(lower, entries)
+	var best string
+	var bestScore float64
+	for _, entry := range entries {
+		if s := scores[entry.room]; s > bestScore {
+			bestScore = s
 			best = entry.room
 		}
 	}
@@ -407,6 +416,130 @@ func DetectHall(content string) string {
 		}
 	}
 	return HallFacts
+}
+
+// ClassifyResult holds the full scoring breakdown for a drawer classification.
+type ClassifyResult struct {
+	Room       string             `json:"room"`
+	Score      float64            `json:"score"`
+	Scores     map[string]float64 `json:"scores"`
+	MinScore   float64            `json:"min_score"`
+	Tier       string             `json:"tier"`       // "custom-keyword", "filename", "content", "fallback"
+	Borderline bool               `json:"borderline"` // true only when Tier=="content" and score within 0.2 of MinScore
+}
+
+// ClassifyWithScores performs classification like Classify but returns the
+// full scoring breakdown for audit purposes. Content scores (tier 3) are
+// always computed regardless of which tier wins the classification.
+func (rc *RoomClassifier) ClassifyWithScores(content, sourcePath string, keywords map[string][]string) ClassifyResult {
+	lower := strings.ToLower(content)
+
+	entries := rc.entries
+	threshold := rc.minScore
+	if len(entries) == 0 {
+		entries = defaultRoomKeywords
+		threshold = minRoomScore
+	}
+
+	// Always compute tier-3 content scores for audit visibility.
+	allScores := scoreAllRooms(lower, entries)
+	bestRoom, bestScore := scoreRooms(lower, entries)
+
+	// Tier 1: custom keywords.
+	if len(keywords) > 0 {
+		rooms := make([]string, 0, len(keywords))
+		for room := range keywords {
+			rooms = append(rooms, room)
+		}
+		sort.Strings(rooms)
+		for _, room := range rooms {
+			for _, kw := range keywords[room] {
+				if buildKeyword(strings.ToLower(kw)).matches(lower) {
+					return ClassifyResult{
+						Room:     room,
+						Score:    bestScore,
+						Scores:   allScores,
+						MinScore: threshold,
+						Tier:     "custom-keyword",
+					}
+				}
+			}
+		}
+	}
+
+	// Tier 2: filename match.
+	if sourcePath != "" {
+		base := strings.ToLower(filepath.Base(sourcePath))
+		for _, rule := range filenameRules {
+			matched := (rule.suffix != "" && strings.HasSuffix(base, rule.suffix)) ||
+				(rule.prefix != "" && strings.HasPrefix(base, rule.prefix)) ||
+				(rule.contains != "" && strings.Contains(base, rule.contains)) ||
+				(rule.exact != "" && base == rule.exact)
+			if matched {
+				return ClassifyResult{
+					Room:     rule.room,
+					Score:    allScores[rule.room],
+					Scores:   allScores,
+					MinScore: threshold,
+					Tier:     "filename",
+				}
+			}
+		}
+	}
+
+	// Tier 3: weighted content scoring.
+	if bestScore >= threshold {
+		borderline := bestScore < threshold+0.2
+		return ClassifyResult{
+			Room:       bestRoom,
+			Score:      bestScore,
+			Scores:     allScores,
+			MinScore:   threshold,
+			Tier:       "content",
+			Borderline: borderline,
+		}
+	}
+
+	// Tier 4: fallback.
+	return ClassifyResult{
+		Room:     "general",
+		Score:    0,
+		Scores:   allScores,
+		MinScore: threshold,
+		Tier:     "fallback",
+	}
+}
+
+// RoomKeywordReport describes keyword firing for one room.
+type RoomKeywordReport struct {
+	Room  string   `json:"room"`
+	Fired []string `json:"fired"`
+	Dead  []string `json:"dead"`
+}
+
+// KeywordCoverage returns per-room keyword firing analysis for the given content.
+// Callers should join multiple drawer contents with "\n\n" separators to reduce
+// false positives from multi-word phrases spanning content boundaries.
+func (rc *RoomClassifier) KeywordCoverage(content string) []RoomKeywordReport {
+	lower := strings.ToLower(content)
+	entries := rc.entries
+	if len(entries) == 0 {
+		entries = defaultRoomKeywords
+	}
+
+	reports := make([]RoomKeywordReport, 0, len(entries))
+	for _, entry := range entries {
+		r := RoomKeywordReport{Room: entry.room}
+		for _, kw := range entry.keywords {
+			if kw.matches(lower) {
+				r.Fired = append(r.Fired, kw.raw)
+			} else {
+				r.Dead = append(r.Dead, kw.raw)
+			}
+		}
+		reports = append(reports, r)
+	}
+	return reports
 }
 
 // DefaultRoomKeywords returns a copy of the built-in room keyword map.

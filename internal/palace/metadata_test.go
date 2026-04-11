@@ -463,3 +463,167 @@ func TestRoomClassifier_CustomKeywordsPriority(t *testing.T) {
 		t.Errorf("custom keywords should take priority: got %q, want %q", got, "audio")
 	}
 }
+
+// --- ClassifyWithScores tests ---
+
+func TestClassifyWithScores_ContentTier(t *testing.T) {
+	rc := NewRoomClassifier(nil, 0)
+	res := rc.ClassifyWithScores("Set up the kubernetes cluster for deployment.", "", nil)
+	if res.Room != "devops" {
+		t.Errorf("Room = %q, want devops", res.Room)
+	}
+	if res.Tier != "content" {
+		t.Errorf("Tier = %q, want content", res.Tier)
+	}
+	if res.Score <= 0 {
+		t.Errorf("Score = %f, want > 0", res.Score)
+	}
+	if len(res.Scores) == 0 {
+		t.Error("Scores map should be populated")
+	}
+	// devops score should be the highest.
+	for room, score := range res.Scores {
+		if score > res.Score && room != res.Room {
+			t.Errorf("room %q has higher score %f than winner %q (%f)", room, score, res.Room, res.Score)
+		}
+	}
+}
+
+func TestClassifyWithScores_FilenameTier(t *testing.T) {
+	rc := NewRoomClassifier(nil, 0)
+	res := rc.ClassifyWithScores("nothing interesting here", "foo_test.go", nil)
+	if res.Room != "testing" {
+		t.Errorf("Room = %q, want testing", res.Room)
+	}
+	if res.Tier != "filename" {
+		t.Errorf("Tier = %q, want filename", res.Tier)
+	}
+	if res.Borderline {
+		t.Error("Borderline should be false for filename tier")
+	}
+	// Scores should still be populated even though filename won.
+	if len(res.Scores) == 0 {
+		t.Error("Scores map should be populated even for filename tier")
+	}
+}
+
+func TestClassifyWithScores_CustomKeywordTier(t *testing.T) {
+	rc := NewRoomClassifier(nil, 0)
+	custom := map[string][]string{"audio": {"wav", "codec"}}
+	res := rc.ClassifyWithScores("convert the wav file", "", custom)
+	if res.Room != "audio" {
+		t.Errorf("Room = %q, want audio", res.Room)
+	}
+	if res.Tier != "custom-keyword" {
+		t.Errorf("Tier = %q, want custom-keyword", res.Tier)
+	}
+	if res.Borderline {
+		t.Error("Borderline should be false for custom-keyword tier")
+	}
+	if len(res.Scores) == 0 {
+		t.Error("Scores map should be populated even for custom-keyword tier")
+	}
+}
+
+func TestClassifyWithScores_Fallback(t *testing.T) {
+	rc := NewRoomClassifier(nil, 0)
+	res := rc.ClassifyWithScores("The sky is blue and water is wet.", "", nil)
+	if res.Room != "general" {
+		t.Errorf("Room = %q, want general", res.Room)
+	}
+	if res.Tier != "fallback" {
+		t.Errorf("Tier = %q, want fallback", res.Tier)
+	}
+	if res.Score != 0 {
+		t.Errorf("Score = %f, want 0 for fallback", res.Score)
+	}
+	if res.Borderline {
+		t.Error("Borderline should be false for fallback tier")
+	}
+}
+
+func TestClassifyWithScores_Borderline(t *testing.T) {
+	// Use default threshold 0.6. A single medium keyword (0.6) is exactly at
+	// the threshold, which is within 0.2 of minScore → borderline.
+	rc := NewRoomClassifier(nil, 0)
+	// "api" alone is a medium keyword (0.6) — exactly at threshold.
+	res := rc.ClassifyWithScores("check the api for errors", "", nil)
+	if res.Tier != "content" {
+		t.Fatalf("Tier = %q, want content", res.Tier)
+	}
+	if res.Score >= res.MinScore+0.2 {
+		t.Fatalf("Score %f is too high to be borderline (threshold %f)", res.Score, res.MinScore)
+	}
+	if !res.Borderline {
+		t.Errorf("Score %f with threshold %f should be borderline", res.Score, res.MinScore)
+	}
+}
+
+func TestClassifyWithScores_NotBorderlineForFilename(t *testing.T) {
+	rc := NewRoomClassifier(nil, 0)
+	res := rc.ClassifyWithScores("nothing", "Dockerfile", nil)
+	if res.Tier != "filename" {
+		t.Fatalf("Tier = %q, want filename", res.Tier)
+	}
+	if res.Borderline {
+		t.Error("Borderline must be false for non-content tiers")
+	}
+}
+
+func TestClassifyWithScores_MatchesClassify(t *testing.T) {
+	rc := NewRoomClassifier(nil, 0)
+	inputs := []struct {
+		content    string
+		sourcePath string
+	}{
+		{"We need to write a test with full coverage.", ""},
+		{"Deploy the Docker container to production.", ""},
+		{"The API endpoint returns 404.", ""},
+		{"Run the SQL migration on the database.", ""},
+		{"The sky is blue and water is wet.", ""},
+		{"Set up the kubernetes cluster.", ""},
+		{"Got a segfault on line 42.", ""},
+		{"nothing interesting", "foo_test.go"},
+		{"nothing interesting", "Dockerfile"},
+		{"nothing interesting", "config.toml"},
+	}
+	for _, tt := range inputs {
+		want := rc.Classify(tt.content, tt.sourcePath, nil)
+		got := rc.ClassifyWithScores(tt.content, tt.sourcePath, nil)
+		if got.Room != want {
+			t.Errorf("ClassifyWithScores(%q, %q).Room = %q, Classify = %q",
+				tt.content, tt.sourcePath, got.Room, want)
+		}
+	}
+}
+
+func TestKeywordCoverage(t *testing.T) {
+	rc := NewRoomClassifier(nil, 0)
+	// Content that should fire kubernetes (devops, high) and deploy (devops, medium).
+	reports := rc.KeywordCoverage("deploy the kubernetes cluster")
+	var devops RoomKeywordReport
+	for _, r := range reports {
+		if r.Room == "devops" {
+			devops = r
+			break
+		}
+	}
+	if len(devops.Fired) == 0 {
+		t.Fatal("expected fired keywords for devops")
+	}
+	// kubernetes and deploy should be fired.
+	firedSet := make(map[string]bool)
+	for _, kw := range devops.Fired {
+		firedSet[kw] = true
+	}
+	if !firedSet["kubernetes"] {
+		t.Error("expected 'kubernetes' in fired")
+	}
+	if !firedSet["deploy"] {
+		t.Error("expected 'deploy' in fired")
+	}
+	// Dead keywords should exist (e.g., terraform, ansible).
+	if len(devops.Dead) == 0 {
+		t.Error("expected dead keywords for devops")
+	}
+}

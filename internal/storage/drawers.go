@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 )
@@ -200,6 +201,40 @@ func (v *Vault) DeleteDrawer(project, wing, room, id string) error {
 		os.Remove(tmpPath)
 		return fmt.Errorf("rename temp file: %w", err)
 	}
+	return nil
+}
+
+// MoveDrawer atomically moves a drawer from one room to another within the
+// same wing. Uses append-before-delete ordering to prevent data loss: if a
+// crash occurs after append but before delete, the drawer exists in both rooms
+// (recoverable by the next audit run) rather than being lost.
+func (v *Vault) MoveDrawer(project, wing, fromRoom, toRoom, id string) error {
+	if err := validateSlugs(project, wing, fromRoom); err != nil {
+		return err
+	}
+	if err := validateSlugs(project, wing, toRoom); err != nil {
+		return err
+	}
+	if fromRoom == toRoom {
+		return nil
+	}
+
+	d, err := v.GetDrawer(project, wing, fromRoom, id)
+	if err != nil {
+		return fmt.Errorf("read source drawer: %w", err)
+	}
+
+	if err := v.AppendDrawer(project, wing, toRoom, d); err != nil {
+		return fmt.Errorf("append to %s: %w", toRoom, err)
+	}
+
+	if err := v.DeleteDrawer(project, wing, fromRoom, id); err != nil {
+		slog.Error("MoveDrawer: delete from source failed after successful append",
+			"project", project, "wing", wing, "from", fromRoom, "to", toRoom,
+			"drawer", id, "err", err)
+		return fmt.Errorf("delete from %s (drawer already copied to %s): %w", fromRoom, toRoom, err)
+	}
+
 	return nil
 }
 
