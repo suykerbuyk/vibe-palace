@@ -50,3 +50,58 @@ func TestSlugifyTruncation(t *testing.T) {
 		t.Errorf("Slugify(%q) = %q ends with hyphen", long, got)
 	}
 }
+
+func TestValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		// Valid slugs
+		{name: "simple word", input: "hello", wantErr: false},
+		{name: "hyphenated", input: "hello-world", wantErr: false},
+		{name: "alphanumeric segments", input: "a1-b2", wantErr: false},
+		{name: "single char", input: "a", wantErr: false},
+		{name: "numeric", input: "123", wantErr: false},
+
+		// Boundary lengths
+		{name: "60 chars", input: strings.Repeat("a", 60), wantErr: false},
+		{name: "64 chars", input: strings.Repeat("a", 64), wantErr: false},
+		{name: "65 chars", input: strings.Repeat("a", 65), wantErr: true},
+
+		// Empty
+		{name: "empty string", input: "", wantErr: true},
+
+		// Path traversal
+		{name: "double dot", input: "..", wantErr: true},
+		{name: "embedded double dot", input: "foo..bar", wantErr: true},
+
+		// Path separators
+		{name: "forward slash", input: "/", wantErr: true},
+		{name: "backslash", input: "\\", wantErr: true},
+		{name: "embedded slash", input: "foo/bar", wantErr: true},
+
+		// Uppercase
+		{name: "leading uppercase", input: "Hello", wantErr: true},
+		{name: "all uppercase", input: "HELLO", wantErr: true},
+
+		// Special characters
+		{name: "underscore", input: "hello_world", wantErr: true},
+		{name: "space", input: "hello world", wantErr: true},
+		{name: "dot", input: "hello.world", wantErr: true},
+
+		// Hyphen placement
+		{name: "leading hyphen", input: "-hello", wantErr: true},
+		{name: "trailing hyphen", input: "hello-", wantErr: true},
+		{name: "consecutive hyphens", input: "hello--world", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := Validate(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+		})
+	}
+}
