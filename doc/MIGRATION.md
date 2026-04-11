@@ -49,8 +49,8 @@ files there; vibe-palace reads them for import and context injection.
 - **715 sessions** in the vibe-vault index across **29 projects**
 - **691 session markdown files** in `Projects/*/sessions/`
 - **palace/ directory** contains only the ONNX model cache — no imported data yet
-- vibe-palace Phases 1–10 complete (storage, MCP, context, search, capture, palace, KG, migration, CLI, docs)
-- vibe-palace serves 26 MCP tools via stdio JSON-RPC
+- vibe-palace Phases 1–10, 12 complete (storage, MCP, context, search, capture, palace, KG, migration, CLI, docs, adaptive room classification)
+- vibe-palace serves 38 MCP tools via stdio JSON-RPC
 - vibe-vault remains the active session capture system (Claude Code hook)
 
 ---
@@ -73,8 +73,8 @@ injection and semantic search over any content captured through its own
 
 **What doesn't work yet:**
 - Historical vibe-vault sessions are not searchable via vibe-palace
+  (import via `vp migrate vibevault` is implemented but not yet run)
 - vibe-palace has no Claude Code hook equivalent
-- No CLI commands beyond check/help/version
 
 ### Phase 1: Data Import (PRD Phase 8)
 

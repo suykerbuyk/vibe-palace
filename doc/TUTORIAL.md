@@ -163,7 +163,7 @@ Add to `.mcp.json` in your project root (project-scope) or `~/.claude.json`
 ```
 
 Verify: start Claude Code and check the MCP server list shows `vibe-palace`
-with 26 tools available.
+with 38 tools available.
 
 **Note:** Vibe-palace replaces CLAUDE.md-based context injection —
 `vp_bootstrap_context` delivers workflow, resume, tasks, and sessions via MCP.
@@ -242,6 +242,17 @@ vp tasks --done             # include completed and cancelled tasks
 
 ```bash
 vp search "authentication"  # semantic search across palace content
+```
+
+### Room Classification Management
+
+```bash
+vp audit rooms              # report on classification quality
+vp audit rooms --apply      # reclassify mismatched drawers
+vp tune rooms --estimate    # estimate LLM cost for weight tuning
+vp tune rooms               # propose keyword weight adjustments via LLM
+vp discover rooms --estimate  # estimate LLM cost for keyword discovery
+vp discover rooms           # discover new keywords from unclassified content
 ```
 
 ### Project Initialization
@@ -416,6 +427,35 @@ keywords = ["wav", "mp3", "codec", "ffmpeg"]
 
 [palace.rooms.networking]
 keywords = ["tcp", "udp", "socket", "http"]
+```
+
+### Weighted Scoring Overrides
+
+Fine-tune room classification with weighted keyword tiers (high=1.0,
+medium=0.6, low=0.3). These merge with the built-in defaults:
+
+```toml
+[palace.scoring]
+min_score = 0.5              # lower threshold → fewer "general" fallbacks
+
+[palace.scoring.rooms.testing]
+high = ["integration test", "e2e test"]
+medium = ["spec"]
+low = ["check"]
+```
+
+### LLM Configuration (for `vp tune` and `vp discover`)
+
+Configure an OpenAI-compatible endpoint for offline classification analysis.
+The LLM is never used at runtime — only for `vp tune rooms` and
+`vp discover rooms` commands:
+
+```toml
+[palace.llm]
+endpoint = "https://api.x.ai/v1"
+model = "grok-3-mini"
+api_key_env = "XAI_API_KEY"
+max_tokens = 4096
 ```
 
 ---

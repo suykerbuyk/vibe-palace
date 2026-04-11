@@ -1,6 +1,6 @@
 # Testing Strategy
 
-**Last updated:** 2026-04-08
+**Last updated:** 2026-04-10
 
 This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
@@ -171,6 +171,25 @@ context resolver, and config into a single test fixture.
 | `FrictionTrendsEndToEnd` | tools → capture → storage | No | `vp_get_friction_trends` returns correctly aggregated weekly metrics from stored sessions |
 | `FrictionTrendsEmpty` | tools → capture → storage | No | Trends for project with no sessions returns empty result |
 | `FrictionSearchByMinScore` | storage | No | `SearchSessions` with minFriction filter returns only sessions above threshold |
+
+### `internal/integration/` — Phase 12 Tests (Room Classification)
+
+| Test | Layers | ONNX? | What it proves |
+|------|--------|-------|----------------|
+| `WeightedRoomScoring` | palace → storage | No | Weighted keyword scoring ranks rooms correctly; high/medium/low tiers produce expected scores |
+| `ScoringOverrides` | config → palace → storage | No | `[palace.scoring]` config overrides merge with defaults and change classification outcomes |
+| `DrawerIDStableAcrossRooms` | storage | No | Drawer IDs are deterministic from wing + content only; room changes don't break identity |
+| `AuditDetectsMismatches` | palace → storage | No | Audit correctly identifies drawers classified into the wrong room |
+| `AuditApplyFixes` | palace → storage | No | `--apply` reclassifies mismatched drawers and search index reflects moves |
+| `AuditWithScoringOverrides` | config → palace → storage | No | Audit respects scoring overrides when re-scoring drawers |
+| `AuditKeywordCoverage` | palace → storage | No | Audit reports which keywords fired vs dead weight per room |
+| `TuneDetectsAndProposes` | palace → llm → storage | No | Tune workflow samples drawers, queries mock LLM, proposes weight changes |
+| `TuneApplyImproves` | palace → llm → config | No | `--apply` writes proposals to config; subsequent audit shows improvement |
+| `TuneEstimate` | palace | No | `--estimate` reports token count without making API calls |
+| `DiscoverDetectsAndProposes` | palace → llm → storage | No | Discovery finds new keywords from unclassified content via mock LLM |
+| `DiscoverApplyReducesGeneral` | palace → llm → config | No | `--apply` reduces "general" fallback rate in subsequent audit |
+| `DiscoverEstimate` | palace | No | `--estimate` reports token count without making API calls |
+| `DiscoverRejectsRegressions` | palace → storage | No | Proposals causing regressions (negative score) are filtered out |
 
 ### `internal/capture/` — Capture Pipeline Tests
 

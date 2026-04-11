@@ -3,7 +3,7 @@
 **Version:** 0.1.0-draft
 **Date:** 2026-04-06
 **Authors:** John Suykerbuyk, Claude Opus 4.6
-**Status:** Phases 1–10 Implemented | Phase 11 Planned
+**Status:** Phases 1–10, 12 Implemented | Phase 11 Planned
 
 > **Implementation notes** are marked with blockquotes throughout. HNSW
 > references in diagrams reflect the design; actual search uses brute-force
@@ -62,6 +62,7 @@ from any specific AI provider's file system expectations.
 17. [Phase 9: CLI & Distribution](#phase-9-cli--distribution)
 18. [Phase 10: Documentation & Human Interface](#phase-10-documentation--human-interface)
 19. [Phase 11: Pluggable Embedding Backends](#phase-11-pluggable-embedding-backends)
+20. [Phase 12: Adaptive Room Classification](#phase-12-adaptive-room-classification)
 20. [Cross-Cutting Concerns](#cross-cutting-concerns)
 21. [Validation Framework](#validation-framework)
 21. [Appendix A: Glossary](#appendix-a-glossary)
@@ -612,7 +613,7 @@ flowchart TD
 | `vp_vault_sync` | — | Pull/push vault git remotes |
 | `vp_refresh_index` | project? | Rebuild session index and re-embed if needed |
 
-**Total: 35 designed, 26 implemented (Phases 1–10)** (vs VibeVault's 16 + MemPalace's 19 = 35, with dedup and consolidation)
+**Total: 38 implemented (Phases 1–10, 12)** (vs VibeVault's 16 + MemPalace's 19 = 35, with dedup, consolidation, and Phase 12 additions)
 
 ---
 
@@ -2253,6 +2254,181 @@ variant, ensure re-index safety.
 
 ---
 
+## Phase 12: Adaptive Room Classification
+
+> **Status: IMPLEMENTED**
+
+**Goal:** Build a self-improving room classification system where users can
+tune keyword weights via configuration, audit classification quality
+algorithmically, and use LLM-assisted offline analysis to discover new
+keywords and refine weights — without recompiling and never at runtime
+classification time.
+
+**Motivation:** Room classification uses a hardcoded keyword weight table.
+Weights can only be changed by recompiling, there is no way to audit whether
+existing classifications are correct, and drawers that fall to "general" stay
+there permanently even when the keyword table could be improved.
+
+**Dependency chain:** 12.0 → 12.1 → 12.2 → 12.3 → 12.4 (each task is
+independently useful but builds on prior infrastructure).
+
+### Task 12.0: Storage Foundation — Stable Drawer IDs and Atomic Writes
+
+**Deliverable:** Changes to `internal/storage/drawers.go`,
+`internal/capture/indexer.go`
+
+Two prerequisite fixes that enable safe reclassification in later tasks:
+
+**12.0a: Remove room from drawer ID computation.** `drawerID(wing, room,
+content)` baked room into drawer identity, making any room change break the
+search index, embed cache, and dedup checks. Changed to `drawerID(wing,
+content) = md5(wing+content)[:8]`.
+
+**12.0b: Atomic JSONL writes in DeleteDrawer.** Replaced truncate-and-rewrite
+with write-to-temp-file + `os.Rename` (atomic on POSIX). Same pattern applied
+to `MoveDrawer` in Task 12.2.
+
+**Acceptance criteria:**
+- Drawer ID is deterministic from wing + content only (room excluded)
+- `DeleteDrawer` uses temp-file + rename (crash-safe)
+- All existing tests pass with updated expected ID values
+- 80%+ test coverage maintained
+
+### Task 12.1: Configurable Weight Overrides
+
+**Deliverable:** Changes to `internal/storage/config.go`,
+`internal/palace/metadata.go`
+
+Extends the config schema so users can override keyword weights, add new
+weighted keywords, or define entirely new rooms via TOML config.
+
+**Config schema** — new `[palace.scoring]` section:
+
+```toml
+[palace.scoring]
+min_score = 0.5
+
+[palace.scoring.rooms.testing]
+high = ["integration test", "e2e test"]
+medium = ["spec"]
+low = ["check"]
+
+[palace.scoring.rooms.ml]
+high = ["neural network", "transformer", "fine-tune"]
+medium = ["model", "training", "inference"]
+low = ["weight", "epoch"]
+```
+
+**Implementation:** New exported `RoomClassifier` struct with
+`NewRoomClassifier(overrides, minScore)` constructor and `Classify(content,
+sourcePath, customKeywords)` method. Existing `DetectRoom()` preserved for
+backward compatibility, delegates to a package-level default instance.
+Precedence: project config > vault config > compiled defaults.
+
+**Acceptance criteria:**
+- Existing tests pass unchanged (default classifier = current behavior)
+- User can add new rooms, override keyword weights, and adjust `min_score`
+- Project-level overrides take precedence over vault-level
+- 80%+ test coverage for merge logic
+
+### Task 12.2: Classification Audit Command
+
+**Deliverable:** `cmd/vp/cmd_audit.go`, `internal/palace/audit.go`
+
+`vp audit rooms` — scans all classified drawers and reports on classification
+quality. Pure algorithmic analysis, no LLM required.
+
+**CLI:** `vp audit rooms [--project P] [--export FILE] [--dry-run] [--apply] [--verbose]`
+
+**Audit logic:**
+1. Re-score every drawer against the current merged weight table
+2. Flag borderline: winning score within 0.2 of `minScore`
+3. Flag mismatches: drawer in room X but scores highest for room Y
+4. Room distribution: drawer counts per room, "general" fallback rate
+5. Keyword coverage: per room, which keywords fired vs dead weight
+
+**Reclassification (`--apply`):** `MoveDrawer(project, wing, fromRoom,
+toRoom, drawerID)` added to the storage layer using atomic temp-file + rename
+pattern. After all moves, rebuilds the search index.
+
+**Acceptance criteria:**
+- Correct report for a project with known distribution
+- `--dry-run` safe; `--apply` moves drawers and rebuilds index
+- `--export` produces valid JSON; `MoveDrawer` uses atomic writes
+- 80%+ test coverage
+
+### Task 12.3: LLM-Assisted Weight Tuning
+
+**Deliverable:** `cmd/vp/cmd_tune.go`, `internal/palace/tune.go`,
+`internal/llm/client.go`
+
+`vp tune rooms` — uses an LLM offline to evaluate classification quality and
+propose keyword weight adjustments. LLM is used for evaluation/suggestion
+only — never at runtime classification time.
+
+**CLI:** `vp tune rooms [--project P] [--max-samples N] [--export FILE] [--apply] [--estimate]`
+
+**LLM configuration** — new `[palace.llm]` section (independent of
+vibe-vault's enrichment config):
+
+```toml
+[palace.llm]
+endpoint = "https://api.x.ai/v1"
+model = "grok-3-mini"
+api_key_env = "XAI_API_KEY"
+max_tokens = 4096
+```
+
+**LLM client** (`internal/llm/client.go`): Thin OpenAI-compatible HTTP client
+with rate limiting (429) and exponential backoff. No external dependencies
+beyond stdlib. Reused by Task 12.4.
+
+**Tuning workflow:**
+1. Sample selection: borderline, mismatched, and "general" drawers (cap at
+   `--max-samples`, default 50, deterministic by drawer ID)
+2. Few-shot prompt construction with room definitions and examples
+3. Batching: groups of 5–10 per LLM call
+4. Weight adjustment via heuristic rules (raise/lower weights based on LLM
+   agreement patterns across 3+ drawers)
+5. Output: TOML diff for review
+
+**`--estimate`:** Token count and cost estimate without API calls.
+
+**Acceptance criteria:**
+- `--estimate` works without API calls
+- Valid TOML diff output; `--apply` writes to vault config
+- Deterministic batching; graceful rate-limit handling
+- 80%+ test coverage (mock LLM server)
+
+### Task 12.4: Keyword Discovery
+
+**Deliverable:** `cmd/vp/cmd_discover.go`, `internal/palace/discover.go`
+
+`vp discover rooms` — uses LLM to identify new keywords from unclassified
+content and validates them algorithmically before proposing.
+
+**CLI:** `vp discover rooms [--project P] [--max-samples N] [--export FILE] [--apply] [--estimate]`
+
+**Discovery workflow:**
+1. Candidate collection: "general" fallback drawers + audit-flagged
+   misclassifications (prioritize longer chunks, cap at `--max-samples`)
+2. LLM analysis: prompt with room definitions and keyword lists, ask for
+   target room + 1–3 new keywords + weight tier per keyword
+3. Cross-validation (O(proposals × drawers), pure keyword matching only — no
+   embedding or LLM in this loop): score each proposal as
+   `(correct captures) - (regressions × 3)`, filter negative scores
+4. Deduplication and ranking across batches
+5. Output: TOML diff with impact annotations (expected captures, regressions)
+
+**Acceptance criteria:**
+- `--estimate` works without API calls
+- No negative-score proposals in output
+- `--apply` reduces fallback rate in subsequent audit
+- Excludes already-existing keywords; pure keyword cross-validation
+- 80%+ test coverage (mock LLM, cross-validation logic)
+
+---
+
 ## Cross-Cutting Concerns
 
 ### Error Handling
@@ -2302,6 +2478,21 @@ structural_boost_room = 0.34
 [archive]
 compress = true
 dormant_days = 90
+
+# Room classification scoring overrides (Phase 12):
+# [palace.scoring]
+# min_score = 0.5
+# [palace.scoring.rooms.testing]
+# high = ["integration test", "e2e test"]
+# medium = ["spec"]
+# low = ["check"]
+
+# LLM endpoint for offline classification tuning (Phase 12):
+# [palace.llm]
+# endpoint = "https://api.x.ai/v1"
+# model = "grok-3-mini"
+# api_key_env = "XAI_API_KEY"
+# max_tokens = 4096
 ```
 
 ### Security

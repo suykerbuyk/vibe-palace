@@ -1,11 +1,11 @@
 # Architecture: Vibe-Palace
 
-**Last updated:** 2026-04-09
+**Last updated:** 2026-04-10
 
 Vibe-palace is a compiled Go binary that serves as an MCP (Model Context
 Protocol) server for AI-assisted development. It provides context injection,
 session capture, semantic search, and palace-based knowledge navigation through
-26 MCP tools over stdio JSON-RPC 2.0.
+38 MCP tools over stdio JSON-RPC 2.0.
 
 **Design principles:**
 - Single binary, zero-CGo, no external services
@@ -23,11 +23,12 @@ session capture, semantic search, and palace-based knowledge navigation through
 | `internal/storage` | Vault layout, CRUD, config | `Vault`, `Config`, `Drawer`, `SessionMeta` |
 | `internal/mcp` | JSON-RPC server, tool registry | `Server`, `Registry`, `Tool` |
 | `internal/context` | Precedence-aware template resolution | `Resolver`, `ResourceInfo` |
-| `internal/tools` | 26 MCP tool implementations | (see tool table below) |
+| `internal/tools` | 38 MCP tool implementations | (see tool table below) |
 | `internal/embedder` | ONNX text embedding | `Embedder` interface, `ONNXEmbedder` |
 | `internal/search` | Hybrid semantic + structural search | `Engine`, `VectorIndex`, `SearchResult` |
 | `internal/capture` | Session ingest, chunking, friction | `Indexer`, `ChunkConfig` |
-| `internal/palace` | Wing/room/hall classification, graph | `PalaceGraph`, `GraphNode`, `AAKResult` |
+| `internal/palace` | Wing/room/hall classification, graph, audit/tune/discover | `PalaceGraph`, `RoomClassifier`, `AAKResult` |
+| `internal/llm` | OpenAI-compatible LLM client for offline analysis | `Client`, `Response` |
 | `internal/project` | Project detection from working dir | `ProjectConfig` |
 | `internal/kg` | Entity detection + triple extraction | `DetectedEntity`, `ExtractedTriple` |
 | `internal/vplog` | Structured logging (slog to file) | `Init()`, `Close()` |
@@ -118,8 +119,21 @@ structural_boost_room = 0.34
 max_chars = 800
 overlap = 100
 
-[palace.rooms.custom]          # project-level only
+[palace.rooms.custom]          # project-level only (Tier 1, unweighted)
 keywords = ["keyword1", "keyword2"]
+
+[palace.scoring]               # weighted scoring overrides (Phase 12)
+min_score = 0.5
+[palace.scoring.rooms.testing]
+high = ["integration test", "e2e test"]
+medium = ["spec"]
+low = ["check"]
+
+[palace.llm]                   # offline LLM for tune/discover (Phase 12)
+endpoint = "https://api.x.ai/v1"
+model = "grok-3-mini"
+api_key_env = "XAI_API_KEY"
+max_tokens = 4096
 ```
 
 Key type: `storage.Config` — a flat struct populated by decoding TOML at each
@@ -142,7 +156,7 @@ cmd/vp/main.go
 ├── search.NewEngine(emb, v, cfg) # create search engine
 ├── context.NewResolver(v.Root)   # template resolver
 ├── mcp.NewServer(v)              # create MCP server
-├── tools.RegisterAll(...)        # register all 26 tools
+├── tools.RegisterAll(...)        # register all 38 tools
 └── srv.Serve(ctx)                # start stdio transport
 ```
 
@@ -164,7 +178,7 @@ On dispatch, the registry validates incoming params against the compiled
 schema before calling the handler. Handlers extract the vault from context
 and operate on storage directly.
 
-### 26 MCP Tools
+### 38 MCP Tools
 
 | Tool | Source File | Category |
 |------|-----------|----------|
@@ -186,6 +200,17 @@ and operate on storage directly.
 | `vp_kg_invalidate` | kg_tools.go | Knowledge Graph |
 | `vp_kg_timeline` | kg_tools.go | Knowledge Graph |
 | `vp_kg_stats` | kg_tools.go | Knowledge Graph |
+| `vp_get_workflow` | workflow_tools.go | Workflow |
+| `vp_get_resume` | workflow_tools.go | Workflow |
+| `vp_update_resume` | workflow_tools.go | Workflow |
+| `vp_get_knowledge` | workflow_tools.go | Workflow |
+| `vp_list_projects` | workflow_tools.go | Workflow |
+| `vp_append_iteration` | workflow_tools.go | Workflow |
+| `vp_list_tasks` | task_tools.go | Tasks |
+| `vp_get_task` | task_tools.go | Tasks |
+| `vp_manage_task` | task_tools.go | Tasks |
+| `vp_init_project` | project_tools.go | Project |
+| `vp_vault_sync` | vault_tools.go | Vault |
 | `vp_search` | search_tools.go | Search |
 | `vp_search_cross_project` | search_tools.go | Search |
 | `vp_capture_session` | session_tools.go | Session |
@@ -194,9 +219,11 @@ and operate on storage directly.
 | `vp_get_session_detail` | session_query_tools.go | Session |
 | `vp_get_effectiveness` | session_query_tools.go | Session |
 | `vp_get_friction_trends` | friction_tools.go | Session |
+| `vp_refresh_index` | search_tools.go | Search |
 
-Tools 1–18 (context, palace, health, KG) are always registered. Tools 19–26
-require a search engine (embedder must initialize successfully).
+Tools 1–29 (context, palace, health, KG, workflow, tasks, project, vault) are
+always registered. Tools 30–38 require a search engine (embedder must
+initialize successfully).
 
 ### HTTP Transport
 
@@ -436,12 +463,17 @@ internal/palace/metadata.go
 **Wing detection**: Returns project slug if available, else first path component,
 else "unknown".
 
-**Room detection** (4-tier cascade, first match wins):
-1. Custom keywords from `[palace.rooms]` config
+**Room detection** via `RoomClassifier` (weighted keyword scoring):
+1. Custom keywords from `[palace.rooms]` config (Tier 1, unweighted)
 2. Filename pattern matching (test files, configs, CI/CD, etc.)
-3. Built-in content keywords (10 room types: testing, devops, api, data,
-   config, debugging, refactoring, architecture, performance, security)
-4. Fallback: "general"
+3. Weighted keyword scoring: each room has keywords in three tiers
+   (high=1.0, medium=0.6, low=0.3). Content is scored against all rooms;
+   the highest-scoring room wins if it exceeds `min_score` (default 0.6).
+   Word-boundary matching prevents false positives.
+4. Configurable overrides: `[palace.scoring.rooms.*]` in TOML config lets
+   users add rooms, override keyword weights, or adjust `min_score`
+   without recompiling.
+5. Fallback: "general" (when no room scores above threshold)
 
 **Hall detection**: Classifies content into memory type by keyword presence
 (decided → decisions, found → discoveries, prefer → preferences, should →
@@ -646,9 +678,45 @@ Binary: `vp` installed to `${PREFIX}/bin/vp` (default `~/.local/bin/vp`).
 
 ---
 
+## Adaptive Room Classification (Phase 12)
+
+Phase 12 adds a self-improving classification system built on the
+`RoomClassifier` and a thin OpenAI-compatible LLM client.
+
+### Audit (`internal/palace/audit.go`)
+
+`vp audit rooms` re-scores every drawer against the current weight table,
+flags mismatches and borderline classifications, and reports keyword coverage.
+`--apply` uses `MoveDrawer` (atomic temp-file + rename) to reclassify and
+rebuild the search index.
+
+### LLM-Assisted Tuning (`internal/palace/tune.go`)
+
+`vp tune rooms` samples borderline/mismatched/"general" drawers, sends them
+to an LLM for classification judgment, and proposes keyword weight adjustments
+via heuristic rules. Output is a TOML diff. `--estimate` reports token cost
+without calling the LLM.
+
+### Keyword Discovery (`internal/palace/discover.go`)
+
+`vp discover rooms` uses an LLM to identify new keywords from unclassified
+content, then cross-validates each proposal by scanning all drawers
+(O(proposals × drawers), pure keyword matching). Proposals with negative
+scores (regressions outweigh captures) are filtered out.
+
+### LLM Client (`internal/llm/client.go`)
+
+Thin OpenAI-compatible HTTP client (`POST {endpoint}/chat/completions`).
+Handles 429 rate limiting with exponential backoff. No external dependencies
+beyond stdlib. Used by both tune and discover workflows. Configured via
+`[palace.llm]` in TOML (independent of vibe-vault's enrichment config).
+
+---
+
 ## Roadmap
 
-Phases 7–10 are complete (knowledge graph, migration, CLI, documentation).
+Phases 7–10, 12 are complete (knowledge graph, migration, CLI, documentation,
+adaptive room classification).
 
 | Phase | Goal |
 |-------|------|

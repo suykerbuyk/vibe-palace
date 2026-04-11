@@ -40,7 +40,9 @@ Connect your editor — see the [Tutorial](doc/TUTORIAL.md) for setup.
 - **Knowledge graph** — temporal entity-relationship graph with time-travel
   queries, integrated with session capture
 - **Migration** — import existing VibeVault sessions and MemPalace data
-- **CLI** — `vp` binary with 16 commands, man pages, and shell completions
+- **Room classification tuning** — configurable keyword weights, algorithmic
+  audit, LLM-assisted weight tuning and keyword discovery (offline only)
+- **CLI** — `vp` binary with 20+ commands, man pages, and shell completions
 
 ## Documentation
 
@@ -48,5 +50,5 @@ Connect your editor — see the [Tutorial](doc/TUTORIAL.md) for setup.
 - [Architecture](doc/ARCHITECTURE.md) — system design and package reference
 - [Testing](doc/TESTING.md) — test strategy and integration test inventory
 - [Migration](doc/MIGRATION.md) — migrating from VibeVault and MemPalace
-- [PRD](doc/PRD-vibe-palace.md) — full product requirements (Phases 1–10
+- [PRD](doc/PRD-vibe-palace.md) — full product requirements (Phases 1–10, 12
   implemented, Phase 11 planned)
