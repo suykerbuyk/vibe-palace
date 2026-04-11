@@ -32,7 +32,7 @@ var cmdSchema = json.RawMessage(`{
 	"properties": {
 		"name": {
 			"type": "string",
-			"description": "Command name (e.g. 'vp-restart'). Omit to list available commands."
+			"description": "Command name (e.g. 'restart'). Omit to list available commands."
 		},
 		"project": {
 			"type": "string",

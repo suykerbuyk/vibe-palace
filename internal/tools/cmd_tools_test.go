@@ -18,7 +18,7 @@ func TestCmdExecuteEmbedded(t *testing.T) {
 	resolver, _ := testResolverOnly(t)
 	tool := CmdTool(resolver)
 
-	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"vp-restart"}`))
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"restart"}`))
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
@@ -27,13 +27,13 @@ func TestCmdExecuteEmbedded(t *testing.T) {
 	if !ok {
 		t.Fatalf("result type = %T, want string", result)
 	}
-	if !strings.Contains(s, "=== EXECUTE COMMAND: vp-restart ===") {
+	if !strings.Contains(s, "=== EXECUTE COMMAND: restart ===") {
 		t.Error("missing execution frame header")
 	}
 	if !strings.Contains(s, "Source: embedded") {
 		t.Error("missing source in frame")
 	}
-	if !strings.Contains(s, "End of command: vp-restart") {
+	if !strings.Contains(s, "End of command: restart") {
 		t.Error("missing frame footer")
 	}
 	if !strings.Contains(s, "Context Restoration") {
@@ -43,10 +43,10 @@ func TestCmdExecuteEmbedded(t *testing.T) {
 
 func TestCmdExecuteVaultOverride(t *testing.T) {
 	resolver, root := testResolverOnly(t)
-	writeVaultFile(t, root, "Templates/commands/vp-restart.md", "custom vault restart")
+	writeVaultFile(t, root, "Templates/commands/restart.md", "custom vault restart")
 
 	tool := CmdTool(resolver)
-	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"vp-restart","project":"proj"}`))
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"restart","project":"proj"}`))
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
@@ -62,11 +62,11 @@ func TestCmdExecuteVaultOverride(t *testing.T) {
 
 func TestCmdExecuteProjectOverride(t *testing.T) {
 	resolver, root := testResolverOnly(t)
-	writeVaultFile(t, root, "Templates/commands/vp-restart.md", "vault version")
-	writeVaultFile(t, root, "Projects/proj/commands/vp-restart.md", "project version")
+	writeVaultFile(t, root, "Templates/commands/restart.md", "vault version")
+	writeVaultFile(t, root, "Projects/proj/commands/restart.md", "project version")
 
 	tool := CmdTool(resolver)
-	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"vp-restart","project":"proj"}`))
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"restart","project":"proj"}`))
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestCmdExecuteProjectNone(t *testing.T) {
 	resolver, _ := testResolverOnly(t)
 	tool := CmdTool(resolver)
 
-	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"vp-restart"}`))
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"restart"}`))
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestCmdDiscoveryEmptyName(t *testing.T) {
 	if !strings.Contains(s, "Available commands:") {
 		t.Error("missing discovery header")
 	}
-	if !strings.Contains(s, "vp-restart") {
+	if !strings.Contains(s, "restart") {
 		t.Error("missing embedded command in listing")
 	}
 	if !strings.Contains(s, "[embedded]") {

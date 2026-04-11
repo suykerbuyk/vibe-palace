@@ -38,7 +38,7 @@ func TestGetCommandEmbedded(t *testing.T) {
 	resolver, _ := testResolverOnly(t)
 	tool := GetCommandTool(resolver)
 
-	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"vp-restart"}`))
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"restart"}`))
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
@@ -47,8 +47,8 @@ func TestGetCommandEmbedded(t *testing.T) {
 	if !ok {
 		t.Fatalf("result type = %T, want getResourceResult", result)
 	}
-	if r.Name != "vp-restart" {
-		t.Errorf("Name = %q, want %q", r.Name, "vp-restart")
+	if r.Name != "restart" {
+		t.Errorf("Name = %q, want %q", r.Name, "restart")
 	}
 	if r.Source != "embedded" {
 		t.Errorf("Source = %q, want %q", r.Source, "embedded")
@@ -61,10 +61,10 @@ func TestGetCommandEmbedded(t *testing.T) {
 func TestGetCommandVaultOverride(t *testing.T) {
 	resolver, root := testResolverOnly(t)
 
-	writeVaultFile(t, root, "Templates/commands/vp-restart.md", "custom restart command")
+	writeVaultFile(t, root, "Templates/commands/restart.md", "custom restart command")
 
 	tool := GetCommandTool(resolver)
-	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"vp-restart","project":"proj"}`))
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"restart","project":"proj"}`))
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
@@ -81,11 +81,11 @@ func TestGetCommandVaultOverride(t *testing.T) {
 func TestGetCommandProjectOverride(t *testing.T) {
 	resolver, root := testResolverOnly(t)
 
-	writeVaultFile(t, root, "Templates/commands/vp-restart.md", "vault version")
-	writeVaultFile(t, root, "Projects/proj/commands/vp-restart.md", "project version")
+	writeVaultFile(t, root, "Templates/commands/restart.md", "vault version")
+	writeVaultFile(t, root, "Projects/proj/commands/restart.md", "project version")
 
 	tool := GetCommandTool(resolver)
-	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"vp-restart","project":"proj"}`))
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"restart","project":"proj"}`))
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestListCommandsEmbedded(t *testing.T) {
 		t.Fatalf("result type = %T, want listResourceResult", result)
 	}
 
-	// 5 embedded commands: vp-cancel-plan, vp-capture, vp-restart, vp-review-plan, vp-wrap.
+	// 5 embedded commands: cancel-plan, capture, restart, review-plan, wrap.
 	if len(r.Resources) != 5 {
 		t.Fatalf("got %d commands, want 5: %v", len(r.Resources), r.Resources)
 	}
@@ -175,7 +175,7 @@ func TestListCommandsMerged(t *testing.T) {
 	resolver, root := testResolverOnly(t)
 
 	// Add vault override and new vault command.
-	writeVaultFile(t, root, "Templates/commands/vp-restart.md", "vault restart")
+	writeVaultFile(t, root, "Templates/commands/restart.md", "vault restart")
 	writeVaultFile(t, root, "Templates/commands/deploy.md", "deploy")
 
 	// Add project command.
@@ -188,7 +188,7 @@ func TestListCommandsMerged(t *testing.T) {
 	}
 
 	r := result.(listResourceResult)
-	// 7 total: custom, deploy, vp-cancel-plan, vp-capture, vp-restart, vp-review-plan, vp-wrap.
+	// 7 total: cancel-plan, capture, custom, deploy, restart, review-plan, wrap.
 	if len(r.Resources) != 7 {
 		t.Fatalf("got %d commands, want 7: %v", len(r.Resources), r.Resources)
 	}
@@ -204,7 +204,7 @@ func TestListCommandsMerged(t *testing.T) {
 
 	// restart should come from vault (overrides embedded).
 	for _, ri := range r.Resources {
-		if ri.Name == "vp-restart" && ri.Source != "vault" {
+		if ri.Name == "restart" && ri.Source != "vault" {
 			t.Errorf("restart source = %q, want vault", ri.Source)
 		}
 	}
