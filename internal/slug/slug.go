@@ -3,7 +3,39 @@
 
 package slug
 
-import "strings"
+import (
+	"fmt"
+	"regexp"
+	"strings"
+)
+
+// slugPattern matches valid slugs: lowercase alphanumeric segments separated
+// by single hyphens. No leading, trailing, or consecutive hyphens.
+var slugPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+const maxSlugLength = 64
+
+// Validate checks whether s is a valid slug.
+// Valid slugs are non-empty, contain only lowercase alphanumeric characters
+// and hyphens, and are at most 64 characters long.
+func Validate(s string) error {
+	if s == "" {
+		return fmt.Errorf("slug must not be empty")
+	}
+	if len(s) > maxSlugLength {
+		return fmt.Errorf("slug %q exceeds maximum length of %d characters", s, maxSlugLength)
+	}
+	if strings.Contains(s, "..") {
+		return fmt.Errorf("slug %q contains path traversal", s)
+	}
+	if strings.Contains(s, "/") || strings.Contains(s, "\\") {
+		return fmt.Errorf("slug %q contains path separator", s)
+	}
+	if !slugPattern.MatchString(s) {
+		return fmt.Errorf("slug %q must contain only lowercase alphanumeric characters and hyphens", s)
+	}
+	return nil
+}
 
 // Slugify produces a URL-safe slug from an arbitrary string.
 // It lowercases, replaces separator characters with hyphens, collapses
