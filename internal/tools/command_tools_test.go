@@ -82,7 +82,7 @@ func TestGetCommandProjectOverride(t *testing.T) {
 	resolver, root := testResolverOnly(t)
 
 	writeVaultFile(t, root, "Templates/commands/vp-restart.md", "vault version")
-	writeVaultFile(t, root, "Projects/proj/agentctx/commands/vp-restart.md", "project version")
+	writeVaultFile(t, root, "Projects/proj/commands/vp-restart.md", "project version")
 
 	tool := GetCommandTool(resolver)
 	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"vp-restart","project":"proj"}`))
@@ -179,7 +179,7 @@ func TestListCommandsMerged(t *testing.T) {
 	writeVaultFile(t, root, "Templates/commands/deploy.md", "deploy")
 
 	// Add project command.
-	writeVaultFile(t, root, "Projects/proj/agentctx/commands/custom.md", "custom")
+	writeVaultFile(t, root, "Projects/proj/commands/custom.md", "custom")
 
 	tool := ListCommandsTool(resolver)
 	result, err := tool.Handler(context.Background(), json.RawMessage(`{"project":"proj"}`))

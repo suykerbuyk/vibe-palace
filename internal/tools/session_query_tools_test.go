@@ -377,7 +377,7 @@ func TestGetProjectContextMaxSessions(t *testing.T) {
 func TestGetProjectContextWithResume(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
 	// Create a resume file for the project.
-	resumeDir := filepath.Join(vault.Root, "Projects", "test-proj", "agentctx")
+	resumeDir := filepath.Join(vault.Root, "Projects", "test-proj")
 	os.MkdirAll(resumeDir, 0755)
 	os.WriteFile(filepath.Join(resumeDir, "resume.md"), []byte("# test-proj — Working Context\n\nPhase 5 in progress."), 0644)
 

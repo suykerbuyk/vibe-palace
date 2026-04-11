@@ -63,7 +63,7 @@ func TestCmdExecuteVaultOverride(t *testing.T) {
 func TestCmdExecuteProjectOverride(t *testing.T) {
 	resolver, root := testResolverOnly(t)
 	writeVaultFile(t, root, "Templates/commands/vp-restart.md", "vault version")
-	writeVaultFile(t, root, "Projects/proj/agentctx/commands/vp-restart.md", "project version")
+	writeVaultFile(t, root, "Projects/proj/commands/vp-restart.md", "project version")
 
 	tool := CmdTool(resolver)
 	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"vp-restart","project":"proj"}`))
@@ -154,7 +154,7 @@ func TestCmdDiscoveryWhitespaceName(t *testing.T) {
 
 func TestCmdDiscoveryWithProject(t *testing.T) {
 	resolver, root := testResolverOnly(t)
-	writeVaultFile(t, root, "Projects/proj/agentctx/commands/deploy.md", "# Deploy\n\nRun the deploy pipeline.")
+	writeVaultFile(t, root, "Projects/proj/commands/deploy.md", "# Deploy\n\nRun the deploy pipeline.")
 
 	tool := CmdTool(resolver)
 	result, err := tool.Handler(context.Background(), json.RawMessage(`{"project":"proj"}`))

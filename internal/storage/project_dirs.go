@@ -19,7 +19,7 @@ func (v *Vault) WriteResume(project, content string) error {
 		return err
 	}
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("ensure agentctx dir: %w", err)
+		return fmt.Errorf("ensure project dir: %w", err)
 	}
 	return os.WriteFile(path, []byte(content), 0644)
 }
@@ -32,7 +32,7 @@ func (v *Vault) AppendIteration(project, content string) error {
 		return err
 	}
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("ensure agentctx dir: %w", err)
+		return fmt.Errorf("ensure project dir: %w", err)
 	}
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)

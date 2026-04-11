@@ -56,7 +56,7 @@ func (r *Resolver) Resolve(resource, project string) (string, string, error) {
 
 	// Tier 1: Project override.
 	if project != "" {
-		projPath := filepath.Join(r.vaultRoot, "Projects", project, "agentctx", relPath)
+		projPath := filepath.Join(r.vaultRoot, "Projects", project, relPath)
 		if data, err := os.ReadFile(projPath); err == nil {
 			return r.expand(string(data), project), "project", nil
 		}
@@ -97,7 +97,7 @@ func (r *Resolver) ListResources(resourceType, project string) ([]ResourceInfo, 
 
 	// Tier 1: Project overrides (highest precedence).
 	if project != "" {
-		projDir := filepath.Join(r.vaultRoot, "Projects", project, "agentctx", dir)
+		projDir := filepath.Join(r.vaultRoot, "Projects", project, dir)
 		for _, name := range listMDFiles(projDir) {
 			if !seen[name] {
 				seen[name] = true

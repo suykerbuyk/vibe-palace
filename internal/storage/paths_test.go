@@ -307,7 +307,7 @@ func TestTasksDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := filepath.Join("/vault", "Projects", "recmeet", "agentctx", "tasks")
+	want := filepath.Join("/vault", "Projects", "recmeet", "tasks")
 	if got != want {
 		t.Errorf("TasksDir = %q, want %q", got, want)
 	}
@@ -324,7 +324,7 @@ func TestTaskFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := filepath.Join("/vault", "Projects", "recmeet", "agentctx", "tasks", "my-task.md")
+	want := filepath.Join("/vault", "Projects", "recmeet", "tasks", "my-task.md")
 	if got != want {
 		t.Errorf("TaskFile = %q, want %q", got, want)
 	}
@@ -345,7 +345,7 @@ func TestTaskDoneDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := filepath.Join("/vault", "Projects", "recmeet", "agentctx", "tasks", "done")
+	want := filepath.Join("/vault", "Projects", "recmeet", "tasks", "done")
 	if got != want {
 		t.Errorf("TaskDoneDir = %q, want %q", got, want)
 	}
@@ -357,7 +357,7 @@ func TestTaskCancelledDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := filepath.Join("/vault", "Projects", "recmeet", "agentctx", "tasks", "cancelled")
+	want := filepath.Join("/vault", "Projects", "recmeet", "tasks", "cancelled")
 	if got != want {
 		t.Errorf("TaskCancelledDir = %q, want %q", got, want)
 	}
@@ -369,7 +369,7 @@ func TestProjectConfigFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := filepath.Join("/vault", "Projects", "recmeet", "agentctx", "config.toml")
+	want := filepath.Join("/vault", "Projects", "recmeet", "config.toml")
 	if got != want {
 		t.Errorf("ProjectConfigFile = %q, want %q", got, want)
 	}

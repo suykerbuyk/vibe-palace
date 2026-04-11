@@ -47,7 +47,7 @@ Added the search engine.
 `)
 
 	// Write task files.
-	writeVaultFile(t, root, "Projects/test-proj/agentctx/tasks/active-task.md", `# Active Task
+	writeVaultFile(t, root, "Projects/test-proj/tasks/active-task.md", `# Active Task
 ## Status: In Progress
 Implement the chunking engine.
 `)

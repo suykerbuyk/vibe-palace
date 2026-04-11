@@ -69,7 +69,7 @@ func TestResolveProjectOverride(t *testing.T) {
 
 	// Write both vault and project — project should win.
 	writeFile(t, filepath.Join(root, "Templates", "workflow.md"), "vault")
-	writeFile(t, filepath.Join(root, "Projects", "myproj", "agentctx", "workflow.md"), "project")
+	writeFile(t, filepath.Join(root, "Projects", "myproj", "workflow.md"), "project")
 
 	content, source, err := r.Resolve("workflow", "myproj")
 	if err != nil {
@@ -297,7 +297,7 @@ func TestListCommandsMergedNoDuplicates(t *testing.T) {
 	writeFile(t, filepath.Join(root, "Templates", "commands", "deploy.md"), "deploy cmd")
 
 	// Add a project-level command.
-	writeFile(t, filepath.Join(root, "Projects", "proj", "agentctx", "commands", "custom.md"), "custom cmd")
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "custom.md"), "custom cmd")
 
 	resources, err := r.ListResources("command", "proj")
 	if err != nil {

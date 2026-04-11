@@ -50,7 +50,7 @@ func TestLoadConfigProjectOverride(t *testing.T) {
 	v := testVault(t)
 
 	// Create project config that overrides some values.
-	projDir := filepath.Join(v.Root, "Projects", "proj", "agentctx")
+	projDir := filepath.Join(v.Root, "Projects", "proj")
 	if err := os.MkdirAll(projDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestGetConfigValueNested(t *testing.T) {
 func TestGetConfigValueProjectOverride(t *testing.T) {
 	v := testVault(t)
 
-	projDir := filepath.Join(v.Root, "Projects", "proj", "agentctx")
+	projDir := filepath.Join(v.Root, "Projects", "proj")
 	os.MkdirAll(projDir, 0755)
 	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`log_level = "trace"`), 0644)
 
@@ -183,7 +183,7 @@ func TestDefaultsTomlEmbedded(t *testing.T) {
 func TestConfigPalaceRooms(t *testing.T) {
 	v := testVault(t)
 
-	projDir := filepath.Join(v.Root, "Projects", "proj", "agentctx")
+	projDir := filepath.Join(v.Root, "Projects", "proj")
 	os.MkdirAll(projDir, 0755)
 	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`
 [palace.rooms.audio]
@@ -228,7 +228,7 @@ func TestConfigPalaceRoomsProjectOverridesVault(t *testing.T) {
 	// We can't easily write vault-level config in test (it uses UserConfigDir),
 	// so we test that project-level rooms fully replace by verifying the TOML
 	// layering: last decode wins for map fields.
-	projDir := filepath.Join(v.Root, "Projects", "proj", "agentctx")
+	projDir := filepath.Join(v.Root, "Projects", "proj")
 	os.MkdirAll(projDir, 0755)
 	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`
 [palace.rooms.custom]
@@ -252,7 +252,7 @@ keywords = ["only-this"]
 func TestConfigPalaceScoring(t *testing.T) {
 	v := testVault(t)
 
-	projDir := filepath.Join(v.Root, "Projects", "proj", "agentctx")
+	projDir := filepath.Join(v.Root, "Projects", "proj")
 	os.MkdirAll(projDir, 0755)
 	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`
 [palace.scoring]
@@ -307,7 +307,7 @@ func TestConfigPalaceScoringEmpty(t *testing.T) {
 func TestConfigPalaceLLM(t *testing.T) {
 	v := testVault(t)
 
-	projDir := filepath.Join(v.Root, "Projects", "proj", "agentctx")
+	projDir := filepath.Join(v.Root, "Projects", "proj")
 	os.MkdirAll(projDir, 0755)
 	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`
 [palace.llm]
@@ -382,7 +382,7 @@ func TestWriteScoringConfig_MergeExisting(t *testing.T) {
 	v := testVault(t)
 
 	// Write initial config.
-	projDir := filepath.Join(v.Root, "Projects", "proj", "agentctx")
+	projDir := filepath.Join(v.Root, "Projects", "proj")
 	os.MkdirAll(projDir, 0755)
 	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`
 log_level = "debug"
@@ -485,7 +485,7 @@ func TestWriteScoringConfig_EmptyRooms(t *testing.T) {
 func TestWriteScoringConfig_PreservesOtherConfig(t *testing.T) {
 	v := testVault(t)
 
-	projDir := filepath.Join(v.Root, "Projects", "proj", "agentctx")
+	projDir := filepath.Join(v.Root, "Projects", "proj")
 	os.MkdirAll(projDir, 0755)
 	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`
 log_level = "trace"
@@ -530,7 +530,7 @@ func TestWriteScoringConfig_InvalidProject(t *testing.T) {
 
 func TestWriteScoringConfig_CorruptExisting(t *testing.T) {
 	v := testVault(t)
-	projDir := filepath.Join(v.Root, "Projects", "proj", "agentctx")
+	projDir := filepath.Join(v.Root, "Projects", "proj")
 	os.MkdirAll(projDir, 0755)
 	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte("not valid toml [[["), 0644)
 
@@ -547,7 +547,7 @@ func TestConfigThreeLevelPrecedence(t *testing.T) {
 	v := testVault(t)
 
 	// Create project config.
-	projDir := filepath.Join(v.Root, "Projects", "proj", "agentctx")
+	projDir := filepath.Join(v.Root, "Projects", "proj")
 	os.MkdirAll(projDir, 0755)
 	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`
 [embedder]

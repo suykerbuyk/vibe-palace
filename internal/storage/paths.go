@@ -171,66 +171,66 @@ func (v *Vault) SessionFile(project, date string, iteration int) (string, error)
 }
 
 // TasksDir returns the path to a project's tasks directory:
-// {vault}/Projects/{project}/agentctx/tasks
+// {vault}/Projects/{project}/tasks
 func (v *Vault) TasksDir(project string) (string, error) {
 	if err := ValidateSlug(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
-	return filepath.Join(v.Root, "Projects", project, "agentctx", "tasks"), nil
+	return filepath.Join(v.Root, "Projects", project, "tasks"), nil
 }
 
 // TaskFile returns the path to a task markdown file:
-// {vault}/Projects/{project}/agentctx/tasks/{slug}.md
+// {vault}/Projects/{project}/tasks/{slug}.md
 func (v *Vault) TaskFile(project, slug string) (string, error) {
 	if err := validateSlugs(project, slug); err != nil {
 		return "", err
 	}
-	return filepath.Join(v.Root, "Projects", project, "agentctx", "tasks", slug+".md"), nil
+	return filepath.Join(v.Root, "Projects", project, "tasks", slug+".md"), nil
 }
 
 // TaskDoneDir returns the path to a project's completed tasks directory:
-// {vault}/Projects/{project}/agentctx/tasks/done
+// {vault}/Projects/{project}/tasks/done
 func (v *Vault) TaskDoneDir(project string) (string, error) {
 	if err := ValidateSlug(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
-	return filepath.Join(v.Root, "Projects", project, "agentctx", "tasks", "done"), nil
+	return filepath.Join(v.Root, "Projects", project, "tasks", "done"), nil
 }
 
 // TaskCancelledDir returns the path to a project's cancelled tasks directory:
-// {vault}/Projects/{project}/agentctx/tasks/cancelled
+// {vault}/Projects/{project}/tasks/cancelled
 func (v *Vault) TaskCancelledDir(project string) (string, error) {
 	if err := ValidateSlug(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
-	return filepath.Join(v.Root, "Projects", project, "agentctx", "tasks", "cancelled"), nil
+	return filepath.Join(v.Root, "Projects", project, "tasks", "cancelled"), nil
 }
 
 // ProjectConfigFile returns the path to a project's config file:
-// {vault}/Projects/{project}/agentctx/config.toml
+// {vault}/Projects/{project}/config.toml
 func (v *Vault) ProjectConfigFile(project string) (string, error) {
 	if err := ValidateSlug(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
-	return filepath.Join(v.Root, "Projects", project, "agentctx", "config.toml"), nil
+	return filepath.Join(v.Root, "Projects", project, "config.toml"), nil
 }
 
 // ResumeFile returns the path to a project's resume file:
-// {vault}/Projects/{project}/agentctx/resume.md
+// {vault}/Projects/{project}/resume.md
 func (v *Vault) ResumeFile(project string) (string, error) {
 	if err := ValidateSlug(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
-	return filepath.Join(v.Root, "Projects", project, "agentctx", "resume.md"), nil
+	return filepath.Join(v.Root, "Projects", project, "resume.md"), nil
 }
 
 // IterationsFile returns the path to a project's iterations file:
-// {vault}/Projects/{project}/agentctx/iterations.md
+// {vault}/Projects/{project}/iterations.md
 func (v *Vault) IterationsFile(project string) (string, error) {
 	if err := ValidateSlug(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
-	return filepath.Join(v.Root, "Projects", project, "agentctx", "iterations.md"), nil
+	return filepath.Join(v.Root, "Projects", project, "iterations.md"), nil
 }
 
 // encodeTripleComponent lowercases the input and replaces spaces with underscores.
