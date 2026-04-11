@@ -6,6 +6,8 @@ package palace
 import (
 	"slices"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 func TestDetectWing(t *testing.T) {
@@ -625,5 +627,122 @@ func TestKeywordCoverage(t *testing.T) {
 	// Dead keywords should exist (e.g., terraform, ansible).
 	if len(devops.Dead) == 0 {
 		t.Error("expected dead keywords for devops")
+	}
+}
+
+func TestRoomDefinitions(t *testing.T) {
+	rc := NewRoomClassifier(nil, 0)
+	defs := rc.RoomDefinitions()
+
+	if len(defs) == 0 {
+		t.Fatal("expected room definitions")
+	}
+
+	// Check that testing room exists with keywords.
+	found := false
+	for _, d := range defs {
+		if d.Name == "testing" {
+			found = true
+			if len(d.Keywords) == 0 {
+				t.Error("testing room should have keywords")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected 'testing' room in definitions")
+	}
+}
+
+func TestRoomDefinitions_WithOverrides(t *testing.T) {
+	overrides := map[string]WeightedOverride{
+		"ml": {High: []string{"neural network"}, Medium: []string{"training"}},
+	}
+	rc := NewRoomClassifier(overrides, 0)
+	defs := rc.RoomDefinitions()
+
+	found := false
+	for _, d := range defs {
+		if d.Name == "ml" {
+			found = true
+			if !slices.Contains(d.Keywords, "neural network") {
+				t.Error("expected 'neural network' in ml keywords")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected 'ml' room from overrides")
+	}
+}
+
+func TestMatchingKeywords(t *testing.T) {
+	rc := NewRoomClassifier(nil, 0)
+
+	// Content with testing keywords ("test", "assert", "mock" are in the testing room).
+	matches := rc.MatchingKeywords("running the test with assert and mock", "testing")
+	if len(matches) == 0 {
+		t.Fatal("expected matching keywords for testing room")
+	}
+
+	foundAssert := false
+	for _, m := range matches {
+		if m.Raw == "assert" {
+			foundAssert = true
+			if m.Weight != 0.6 {
+				t.Errorf("assert weight = %f, want 0.6", m.Weight)
+			}
+		}
+	}
+	if !foundAssert {
+		t.Error("expected 'assert' to match")
+	}
+}
+
+func TestMatchingKeywords_NoMatch(t *testing.T) {
+	rc := NewRoomClassifier(nil, 0)
+
+	matches := rc.MatchingKeywords("nothing relevant here", "testing")
+	if len(matches) != 0 {
+		t.Errorf("expected no matches, got %d", len(matches))
+	}
+}
+
+func TestMatchingKeywords_UnknownRoom(t *testing.T) {
+	rc := NewRoomClassifier(nil, 0)
+
+	matches := rc.MatchingKeywords("test content", "nonexistent")
+	if matches != nil {
+		t.Errorf("expected nil for unknown room, got %v", matches)
+	}
+}
+
+func TestBuildClassifierFromConfig(t *testing.T) {
+	cfg := storage.Config{
+		PalaceScoringOverrides: map[string]storage.ScoringRoomOverride{
+			"ml": {High: []string{"neural network"}, Medium: []string{"training"}},
+		},
+		PalaceMinScore: 0.4,
+	}
+	rc := BuildClassifierFromConfig(cfg)
+	// Verify the override room classifies correctly.
+	res := rc.ClassifyWithScores("neural network training deep learning", "", nil)
+	if res.Room != "ml" {
+		t.Errorf("room = %q, want ml", res.Room)
+	}
+}
+
+func TestBuildClassifierFromConfig_Empty(t *testing.T) {
+	rc := BuildClassifierFromConfig(storage.Config{})
+	// Should use defaults — testing room should exist.
+	defs := rc.RoomDefinitions()
+	found := false
+	for _, d := range defs {
+		if d.Name == "testing" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected default rooms with empty config")
 	}
 }

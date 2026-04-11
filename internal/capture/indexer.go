@@ -32,24 +32,12 @@ type Indexer struct {
 // NewIndexer creates a transcript indexer.
 // Chunk settings are read from config (chunker.max_chars, chunker.overlap).
 func NewIndexer(vault *storage.Vault, engine *search.Engine, emb embedder.Embedder, cfg storage.Config) *Indexer {
-	// Build a RoomClassifier from scoring overrides in config.
-	var overrides map[string]palace.WeightedOverride
-	if len(cfg.PalaceScoringOverrides) > 0 {
-		overrides = make(map[string]palace.WeightedOverride, len(cfg.PalaceScoringOverrides))
-		for room, ov := range cfg.PalaceScoringOverrides {
-			overrides[room] = palace.WeightedOverride{
-				High:   ov.High,
-				Medium: ov.Medium,
-				Low:    ov.Low,
-			}
-		}
-	}
 	return &Indexer{
 		vault:      vault,
 		engine:     engine,
 		embedder:   emb,
 		config:     cfg,
-		classifier: palace.NewRoomClassifier(overrides, cfg.PalaceMinScore),
+		classifier: palace.BuildClassifierFromConfig(cfg),
 	}
 }
 

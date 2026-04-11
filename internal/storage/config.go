@@ -6,7 +6,9 @@ package storage
 import (
 	_ "embed"
 	"fmt"
+	"log/slog"
 	"os"
+	"path/filepath"
 
 	"github.com/BurntSushi/toml"
 )
@@ -31,6 +33,17 @@ type Config struct {
 	PalaceRoomKeywords      map[string][]string               `json:"palace_room_keywords,omitempty"`
 	PalaceScoringOverrides  map[string]ScoringRoomOverride    `json:"palace_scoring_overrides,omitempty"`
 	PalaceMinScore          float64                           `json:"palace_min_score,omitempty"`
+	PalaceLLM               LLMConfig                         `json:"palace_llm,omitempty"`
+}
+
+// LLMConfig holds TOML-level LLM endpoint settings.
+// APIKeyEnv is the name of the environment variable holding the API key,
+// not the key itself. Compare with llm.Config which holds the resolved key.
+type LLMConfig struct {
+	Endpoint  string `json:"endpoint"`
+	Model     string `json:"model"`
+	APIKeyEnv string `json:"api_key_env"`
+	MaxTokens int    `json:"max_tokens"`
 }
 
 // ScoringRoomOverride holds weighted keyword overrides for a single room.
@@ -63,6 +76,7 @@ type tomlConfig struct {
 	Palace struct {
 		Rooms   map[string]tomlRoomConfig   `toml:"rooms"`
 		Scoring tomlScoringConfig           `toml:"scoring"`
+		LLM     tomlLLMConfig               `toml:"llm"`
 	} `toml:"palace"`
 }
 
@@ -79,6 +93,13 @@ type tomlRoomScoring struct {
 	High   []string `toml:"high"`
 	Medium []string `toml:"medium"`
 	Low    []string `toml:"low"`
+}
+
+type tomlLLMConfig struct {
+	Endpoint  string `toml:"endpoint"`
+	Model     string `toml:"model"`
+	APIKeyEnv string `toml:"api_key_env"`
+	MaxTokens int    `toml:"max_tokens"`
 }
 
 // flatten converts a tomlConfig into a Config.
@@ -99,6 +120,12 @@ func (tc *tomlConfig) flatten() Config {
 		PalaceRoomKeywords:     flattenPalaceRooms(tc.Palace.Rooms),
 		PalaceScoringOverrides: flattenScoringRooms(tc.Palace.Scoring.Rooms),
 		PalaceMinScore:         tc.Palace.Scoring.MinScore,
+		PalaceLLM: LLMConfig{
+			Endpoint:  tc.Palace.LLM.Endpoint,
+			Model:     tc.Palace.LLM.Model,
+			APIKeyEnv: tc.Palace.LLM.APIKeyEnv,
+			MaxTokens: tc.Palace.LLM.MaxTokens,
+		},
 	}
 }
 
@@ -259,4 +286,85 @@ func VaultConfigFilePath() (string, error) {
 		return "", err
 	}
 	return configDir + "/vibe-palace/config.toml", nil
+}
+
+// WriteScoringConfig merges scoring overrides into the project config file.
+// Creates the file and parent directories if they don't exist. Uses atomic
+// temp-file + os.Rename. Idempotent: skips keywords already present at the
+// same weight tier.
+func (v *Vault) WriteScoringConfig(project string, rooms map[string]ScoringRoomOverride, minScore float64) error {
+	cfgPath, err := v.ProjectConfigFile(project)
+	if err != nil {
+		return fmt.Errorf("project config path: %w", err)
+	}
+
+	// Ensure parent directory exists.
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+
+	// Load existing config if present.
+	var tc tomlConfig
+	if _, statErr := os.Stat(cfgPath); statErr == nil {
+		if _, err := toml.DecodeFile(cfgPath, &tc); err != nil {
+			return fmt.Errorf("decode existing config %s: %w", cfgPath, err)
+		}
+	}
+
+	// Merge scoring overrides.
+	if tc.Palace.Scoring.Rooms == nil {
+		tc.Palace.Scoring.Rooms = make(map[string]tomlRoomScoring)
+	}
+	for room, ov := range rooms {
+		existing := tc.Palace.Scoring.Rooms[room]
+		existing.High = mergeKeywordTier(existing.High, ov.High)
+		existing.Medium = mergeKeywordTier(existing.Medium, ov.Medium)
+		existing.Low = mergeKeywordTier(existing.Low, ov.Low)
+		tc.Palace.Scoring.Rooms[room] = existing
+	}
+	if minScore > 0 {
+		tc.Palace.Scoring.MinScore = minScore
+	}
+
+	// Atomic write: temp file + rename.
+	tmpPath := cfgPath + ".tmp"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("create temp config: %w", err)
+	}
+
+	if err := toml.NewEncoder(f).Encode(tc); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("encode config: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("close temp config: %w", err)
+	}
+	if err := os.Rename(tmpPath, cfgPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("rename config: %w", err)
+	}
+
+	slog.Info("wrote scoring config", "path", cfgPath, "rooms", len(rooms))
+	return nil
+}
+
+// mergeKeywordTier adds new keywords to an existing tier, skipping duplicates.
+func mergeKeywordTier(existing, additions []string) []string {
+	if len(additions) == 0 {
+		return existing
+	}
+	seen := make(map[string]bool, len(existing))
+	for _, kw := range existing {
+		seen[kw] = true
+	}
+	for _, kw := range additions {
+		if !seen[kw] {
+			existing = append(existing, kw)
+			seen[kw] = true
+		}
+	}
+	return existing
 }

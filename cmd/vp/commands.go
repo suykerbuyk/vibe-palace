@@ -9,6 +9,8 @@ import "github.com/suykerbuyk/vibe-palace/internal/cli"
 func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(cmdAudit())
 	reg.Register(cmdAuditRooms())
+	reg.Register(cmdTune())
+	reg.Register(cmdTuneRooms())
 	reg.Register(cmdMCP())
 	reg.Register(cmdCheck(info))
 	reg.Register(cmdInit())

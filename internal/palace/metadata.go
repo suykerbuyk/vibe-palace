@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 // Hall type constants.
@@ -307,6 +309,24 @@ func NewRoomClassifier(overrides map[string]WeightedOverride, minScore float64) 
 	return &RoomClassifier{entries: entries, minScore: minScore}
 }
 
+// BuildClassifierFromConfig creates a RoomClassifier from a storage.Config.
+// This is the canonical conversion from config to classifier, eliminating
+// the repeated ScoringRoomOverride → WeightedOverride boilerplate.
+func BuildClassifierFromConfig(cfg storage.Config) *RoomClassifier {
+	var overrides map[string]WeightedOverride
+	if len(cfg.PalaceScoringOverrides) > 0 {
+		overrides = make(map[string]WeightedOverride, len(cfg.PalaceScoringOverrides))
+		for room, ov := range cfg.PalaceScoringOverrides {
+			overrides[room] = WeightedOverride{
+				High:   ov.High,
+				Medium: ov.Medium,
+				Low:    ov.Low,
+			}
+		}
+	}
+	return NewRoomClassifier(overrides, cfg.PalaceMinScore)
+}
+
 // buildOverrideKeywords converts a WeightedOverride into keyword structs.
 func buildOverrideKeywords(ov WeightedOverride) []keyword {
 	var out []keyword
@@ -540,6 +560,59 @@ func (rc *RoomClassifier) KeywordCoverage(content string) []RoomKeywordReport {
 		reports = append(reports, r)
 	}
 	return reports
+}
+
+// RoomDefinition describes a room for LLM prompt construction.
+type RoomDefinition struct {
+	Name     string   `json:"name"`
+	Keywords []string `json:"keywords"`
+}
+
+// RoomDefinitions returns a summary of all rooms and their keywords.
+// Includes both built-in and override rooms.
+func (rc *RoomClassifier) RoomDefinitions() []RoomDefinition {
+	entries := rc.entries
+	if len(entries) == 0 {
+		entries = defaultRoomKeywords
+	}
+	defs := make([]RoomDefinition, 0, len(entries))
+	for _, entry := range entries {
+		kws := make([]string, len(entry.keywords))
+		for i, kw := range entry.keywords {
+			kws[i] = kw.raw
+		}
+		defs = append(defs, RoomDefinition{Name: entry.room, Keywords: kws})
+	}
+	return defs
+}
+
+// KeywordMatch describes a keyword that matched content.
+type KeywordMatch struct {
+	Raw    string
+	Weight float64
+}
+
+// MatchingKeywords returns keywords from the specified room that fire on content.
+// Used by the tuning engine to identify which keywords contribute to classification.
+func (rc *RoomClassifier) MatchingKeywords(content, room string) []KeywordMatch {
+	lower := strings.ToLower(content)
+	entries := rc.entries
+	if len(entries) == 0 {
+		entries = defaultRoomKeywords
+	}
+	for _, entry := range entries {
+		if entry.room != room {
+			continue
+		}
+		var matches []KeywordMatch
+		for _, kw := range entry.keywords {
+			if kw.matches(lower) {
+				matches = append(matches, KeywordMatch{Raw: kw.raw, Weight: kw.weight})
+			}
+		}
+		return matches
+	}
+	return nil
 }
 
 // DefaultRoomKeywords returns a copy of the built-in room keyword map.

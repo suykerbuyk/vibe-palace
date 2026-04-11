@@ -89,19 +89,7 @@ func runAuditRooms(vault *storage.Vault, proj string, cfg storage.Config, apply,
 		return cli.ExitUser
 	}
 
-	// Build RoomClassifier from config (same pattern as capture/indexer.go).
-	var overrides map[string]palace.WeightedOverride
-	if len(cfg.PalaceScoringOverrides) > 0 {
-		overrides = make(map[string]palace.WeightedOverride, len(cfg.PalaceScoringOverrides))
-		for room, ov := range cfg.PalaceScoringOverrides {
-			overrides[room] = palace.WeightedOverride{
-				High:   ov.High,
-				Medium: ov.Medium,
-				Low:    ov.Low,
-			}
-		}
-	}
-	classifier := palace.NewRoomClassifier(overrides, cfg.PalaceMinScore)
+	classifier := palace.BuildClassifierFromConfig(cfg)
 
 	opts := palace.AuditOptions{
 		Project:  proj,

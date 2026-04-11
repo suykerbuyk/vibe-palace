@@ -304,6 +304,245 @@ func TestConfigPalaceScoringEmpty(t *testing.T) {
 	}
 }
 
+func TestConfigPalaceLLM(t *testing.T) {
+	v := testVault(t)
+
+	projDir := filepath.Join(v.Root, "Projects", "proj", "agentctx")
+	os.MkdirAll(projDir, 0755)
+	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`
+[palace.llm]
+endpoint = "https://api.x.ai/v1"
+model = "grok-3-mini"
+api_key_env = "XAI_API_KEY"
+max_tokens = 4096
+`), 0644)
+
+	cfg, err := v.LoadConfig("proj")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if cfg.PalaceLLM.Endpoint != "https://api.x.ai/v1" {
+		t.Errorf("Endpoint = %q, want %q", cfg.PalaceLLM.Endpoint, "https://api.x.ai/v1")
+	}
+	if cfg.PalaceLLM.Model != "grok-3-mini" {
+		t.Errorf("Model = %q, want %q", cfg.PalaceLLM.Model, "grok-3-mini")
+	}
+	if cfg.PalaceLLM.APIKeyEnv != "XAI_API_KEY" {
+		t.Errorf("APIKeyEnv = %q, want %q", cfg.PalaceLLM.APIKeyEnv, "XAI_API_KEY")
+	}
+	if cfg.PalaceLLM.MaxTokens != 4096 {
+		t.Errorf("MaxTokens = %d, want 4096", cfg.PalaceLLM.MaxTokens)
+	}
+}
+
+func TestConfigPalaceLLMEmpty(t *testing.T) {
+	v := testVault(t)
+
+	cfg, err := v.LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.PalaceLLM.Endpoint != "" {
+		t.Errorf("PalaceLLM.Endpoint should be empty, got %q", cfg.PalaceLLM.Endpoint)
+	}
+}
+
+func TestWriteScoringConfig_NewFile(t *testing.T) {
+	v := testVault(t)
+
+	rooms := map[string]ScoringRoomOverride{
+		"testing": {High: []string{"integration test"}, Medium: []string{"spec"}},
+		"ml":      {High: []string{"neural network"}, Low: []string{"epoch"}},
+	}
+	if err := v.WriteScoringConfig("proj", rooms, 0.5); err != nil {
+		t.Fatalf("WriteScoringConfig: %v", err)
+	}
+
+	// Reload and verify.
+	cfg, err := v.LoadConfig("proj")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.PalaceMinScore != 0.5 {
+		t.Errorf("PalaceMinScore = %f, want 0.5", cfg.PalaceMinScore)
+	}
+	if cfg.PalaceScoringOverrides == nil {
+		t.Fatal("PalaceScoringOverrides should not be nil")
+	}
+	if got := cfg.PalaceScoringOverrides["testing"]; len(got.High) != 1 || got.High[0] != "integration test" {
+		t.Errorf("testing.High = %v, want [integration test]", got.High)
+	}
+	if got := cfg.PalaceScoringOverrides["ml"]; len(got.Low) != 1 || got.Low[0] != "epoch" {
+		t.Errorf("ml.Low = %v, want [epoch]", got.Low)
+	}
+}
+
+func TestWriteScoringConfig_MergeExisting(t *testing.T) {
+	v := testVault(t)
+
+	// Write initial config.
+	projDir := filepath.Join(v.Root, "Projects", "proj", "agentctx")
+	os.MkdirAll(projDir, 0755)
+	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`
+log_level = "debug"
+
+[palace.scoring]
+min_score = 0.4
+
+[palace.scoring.rooms.testing]
+high = ["e2e test"]
+`), 0644)
+
+	// Merge new scoring.
+	rooms := map[string]ScoringRoomOverride{
+		"testing": {High: []string{"integration test"}},
+		"ml":      {High: []string{"neural network"}},
+	}
+	if err := v.WriteScoringConfig("proj", rooms, 0); err != nil {
+		t.Fatalf("WriteScoringConfig: %v", err)
+	}
+
+	cfg, err := v.LoadConfig("proj")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	// Existing testing.high should have both keywords.
+	got := cfg.PalaceScoringOverrides["testing"]
+	if len(got.High) != 2 {
+		t.Fatalf("testing.High = %v, want 2 entries", got.High)
+	}
+	// New room should be added.
+	if _, ok := cfg.PalaceScoringOverrides["ml"]; !ok {
+		t.Error("expected ml room")
+	}
+	// min_score preserved (we passed 0, so it shouldn't change).
+	if cfg.PalaceMinScore != 0.4 {
+		t.Errorf("PalaceMinScore = %f, want 0.4 (preserved)", cfg.PalaceMinScore)
+	}
+}
+
+func TestWriteScoringConfig_Idempotent(t *testing.T) {
+	v := testVault(t)
+
+	rooms := map[string]ScoringRoomOverride{
+		"testing": {High: []string{"integration test"}},
+	}
+	if err := v.WriteScoringConfig("proj", rooms, 0.5); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	// Write same data again.
+	if err := v.WriteScoringConfig("proj", rooms, 0.5); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+
+	cfg, err := v.LoadConfig("proj")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	got := cfg.PalaceScoringOverrides["testing"]
+	if len(got.High) != 1 {
+		t.Errorf("testing.High = %v, want exactly 1 entry (no duplicates)", got.High)
+	}
+}
+
+func TestWriteScoringConfig_NoMinScoreOverride(t *testing.T) {
+	v := testVault(t)
+
+	// Write with minScore = 0 should not set min_score in config.
+	rooms := map[string]ScoringRoomOverride{
+		"testing": {High: []string{"test"}},
+	}
+	if err := v.WriteScoringConfig("proj", rooms, 0); err != nil {
+		t.Fatalf("WriteScoringConfig: %v", err)
+	}
+
+	cfg, err := v.LoadConfig("proj")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.PalaceMinScore != 0 {
+		t.Errorf("PalaceMinScore = %f, want 0 (should not be set)", cfg.PalaceMinScore)
+	}
+}
+
+func TestWriteScoringConfig_EmptyRooms(t *testing.T) {
+	v := testVault(t)
+	// Writing with empty rooms map should still create the file.
+	if err := v.WriteScoringConfig("proj", map[string]ScoringRoomOverride{}, 0.5); err != nil {
+		t.Fatalf("WriteScoringConfig: %v", err)
+	}
+	cfg, err := v.LoadConfig("proj")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.PalaceMinScore != 0.5 {
+		t.Errorf("PalaceMinScore = %f, want 0.5", cfg.PalaceMinScore)
+	}
+}
+
+func TestWriteScoringConfig_PreservesOtherConfig(t *testing.T) {
+	v := testVault(t)
+
+	projDir := filepath.Join(v.Root, "Projects", "proj", "agentctx")
+	os.MkdirAll(projDir, 0755)
+	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`
+log_level = "trace"
+http_port = 8888
+
+[embedder]
+batch_size = 64
+`), 0644)
+
+	rooms := map[string]ScoringRoomOverride{
+		"ml": {High: []string{"transformer"}},
+	}
+	if err := v.WriteScoringConfig("proj", rooms, 0); err != nil {
+		t.Fatalf("WriteScoringConfig: %v", err)
+	}
+
+	cfg, err := v.LoadConfig("proj")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.LogLevel != "trace" {
+		t.Errorf("LogLevel = %q, want %q (preserved)", cfg.LogLevel, "trace")
+	}
+	if cfg.HTTPPort != 8888 {
+		t.Errorf("HTTPPort = %d, want 8888 (preserved)", cfg.HTTPPort)
+	}
+	if cfg.EmbedderBatchSize != 64 {
+		t.Errorf("EmbedderBatchSize = %d, want 64 (preserved)", cfg.EmbedderBatchSize)
+	}
+}
+
+func TestWriteScoringConfig_InvalidProject(t *testing.T) {
+	v := testVault(t)
+	rooms := map[string]ScoringRoomOverride{
+		"testing": {High: []string{"test"}},
+	}
+	err := v.WriteScoringConfig("INVALID SLUG!", rooms, 0)
+	if err == nil {
+		t.Error("expected error for invalid project slug")
+	}
+}
+
+func TestWriteScoringConfig_CorruptExisting(t *testing.T) {
+	v := testVault(t)
+	projDir := filepath.Join(v.Root, "Projects", "proj", "agentctx")
+	os.MkdirAll(projDir, 0755)
+	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte("not valid toml [[["), 0644)
+
+	rooms := map[string]ScoringRoomOverride{
+		"testing": {High: []string{"test"}},
+	}
+	err := v.WriteScoringConfig("proj", rooms, 0)
+	if err == nil {
+		t.Error("expected error for corrupt TOML")
+	}
+}
+
 func TestConfigThreeLevelPrecedence(t *testing.T) {
 	v := testVault(t)
 

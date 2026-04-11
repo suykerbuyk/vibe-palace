@@ -164,19 +164,7 @@ func TestIntegrationAuditKeywordCoverage(t *testing.T) {
 	}
 }
 
-// buildClassifier creates a RoomClassifier from test config, mirroring the
-// CLI pattern in cmd/vp/cmd_audit.go and the capture indexer pattern.
+// buildClassifier creates a RoomClassifier from test config.
 func buildClassifier(cfg storage.Config) *palace.RoomClassifier {
-	var overrides map[string]palace.WeightedOverride
-	if len(cfg.PalaceScoringOverrides) > 0 {
-		overrides = make(map[string]palace.WeightedOverride, len(cfg.PalaceScoringOverrides))
-		for room, ov := range cfg.PalaceScoringOverrides {
-			overrides[room] = palace.WeightedOverride{
-				High:   ov.High,
-				Medium: ov.Medium,
-				Low:    ov.Low,
-			}
-		}
-	}
-	return palace.NewRoomClassifier(overrides, cfg.PalaceMinScore)
+	return palace.BuildClassifierFromConfig(cfg)
 }
