@@ -16,6 +16,8 @@ import (
 type getResourceParams struct {
 	Name    string `json:"name"`
 	Project string `json:"project,omitempty"`
+	Wing    string `json:"wing,omitempty"`
+	Room    string `json:"room,omitempty"`
 }
 
 // getResourceResult is the response from vp_get_command and vp_get_skill.
@@ -40,6 +42,14 @@ var getCommandSchema = json.RawMessage(`{
 		"project": {
 			"type": "string",
 			"description": "Project slug for project-level overrides."
+		},
+		"wing": {
+			"type": "string",
+			"description": "Wing slug for wing/room-scoped resolution."
+		},
+		"room": {
+			"type": "string",
+			"description": "Room slug for room-scoped resolution (requires wing)."
 		}
 	},
 	"required": ["name"]
@@ -55,6 +65,14 @@ var getSkillSchema = json.RawMessage(`{
 		"project": {
 			"type": "string",
 			"description": "Project slug for project-level overrides."
+		},
+		"wing": {
+			"type": "string",
+			"description": "Wing slug for wing/room-scoped resolution."
+		},
+		"room": {
+			"type": "string",
+			"description": "Room slug for room-scoped resolution (requires wing)."
 		}
 	},
 	"required": ["name"]
@@ -66,6 +84,14 @@ var listCommandsSchema = json.RawMessage(`{
 		"project": {
 			"type": "string",
 			"description": "Project slug for project-level commands."
+		},
+		"wing": {
+			"type": "string",
+			"description": "Wing slug for wing/room-scoped commands."
+		},
+		"room": {
+			"type": "string",
+			"description": "Room slug for room-scoped commands (requires wing)."
 		}
 	}
 }`)
@@ -76,6 +102,14 @@ var listSkillsSchema = json.RawMessage(`{
 		"project": {
 			"type": "string",
 			"description": "Project slug for project-level skills."
+		},
+		"wing": {
+			"type": "string",
+			"description": "Wing slug for wing/room-scoped skills."
+		},
+		"room": {
+			"type": "string",
+			"description": "Room slug for room-scoped skills (requires wing)."
 		}
 	}
 }`)
@@ -128,7 +162,7 @@ func getResourceHandler(resolver *vpctx.Resolver, resourceType string) mcp.Handl
 		}
 
 		resource := fmt.Sprintf("%s:%s", resourceType, p.Name)
-		content, source, err := resolver.Resolve(resource, p.Project)
+		content, source, err := resolver.ResolveScoped(resource, p.Project, p.Wing, p.Room)
 		if err != nil {
 			return nil, err
 		}
@@ -141,16 +175,21 @@ func getResourceHandler(resolver *vpctx.Resolver, resourceType string) mcp.Handl
 	}
 }
 
+// listParams is shared by list commands/skills handlers.
+type listParams struct {
+	Project string `json:"project,omitempty"`
+	Wing    string `json:"wing,omitempty"`
+	Room    string `json:"room,omitempty"`
+}
+
 func listResourceHandler(resolver *vpctx.Resolver, resourceType string) mcp.HandlerFunc {
 	return func(_ context.Context, params json.RawMessage) (any, error) {
-		var p struct {
-			Project string `json:"project,omitempty"`
-		}
+		var p listParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, err
 		}
 
-		resources, err := resolver.ListResources(resourceType, p.Project)
+		resources, err := resolver.ListResourcesScoped(resourceType, p.Project, p.Wing, p.Room)
 		if err != nil {
 			return nil, err
 		}

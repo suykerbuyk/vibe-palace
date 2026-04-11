@@ -11,7 +11,7 @@ session capture, semantic search, and palace-based knowledge navigation through
 - Single binary, zero-CGo, no external services
 - Filesystem-native storage (JSONL, markdown, JSON) — all data human-readable
   and git-mergeable
-- 3-tier precedence everywhere (embedded < vault < project)
+- 5-tier precedence for commands/skills (embedded < vault < project < wing < room)
 - LLM-agnostic: works with any editor that speaks MCP
 
 ---
@@ -64,13 +64,20 @@ The vault contains two top-level trees with different purposes:
 │       └── .local/                 # Machine-local state (embed cache)
 └── Projects/                       # Workflow (sessions, tasks, config)
     └── {project}/
+        ├── config.toml             # Project-level config overrides
+        ├── resume.md               # Project state
+        ├── iterations.md           # Append-only archive
         ├── sessions/YYYY-MM-DD-NN.md
-        └── agentctx/
-            ├── config.toml         # Project-level config overrides
-            └── tasks/
-                ├── {slug}.md
-                ├── done/{slug}.md
-                └── cancelled/{slug}.md
+        ├── tasks/
+        │   ├── {slug}.md
+        │   ├── done/{slug}.md
+        │   └── cancelled/{slug}.md
+        ├── commands/               # Project/wing/room commands
+        │   ├── {name}.md          # Project scope
+        │   └── {wing}/
+        │       ├── .wing/{name}.md   # Wing scope
+        │       └── {room}/{name}.md  # Room scope
+        └── skills/                 # Same layout as commands/
 ```
 
 **palace/** stores knowledge artifacts — content chunks in JSONL drawers,
@@ -95,7 +102,7 @@ Configuration follows a 3-tier override chain:
 
 1. **Embedded defaults** — compiled into the binary via `//go:embed config/defaults.toml`
 2. **Vault-level** — `~/.config/vibe-palace/config.toml`
-3. **Project-level** — `{vault}/Projects/{project}/agentctx/config.toml`
+3. **Project-level** — `{vault}/Projects/{project}/config.toml`
 
 Each level overlays the previous. Key sections:
 
@@ -240,16 +247,25 @@ CORS middleware is included for browser-based clients.
 
 ## Context Injection (Phase 3)
 
-### 3-Tier Precedence Resolution
+### 5-Tier Palace-Scoped Resolution
 
-Templates and resources follow the same override pattern as configuration:
+Commands and skills support palace-scoped resolution with 5 tiers. First
+match wins — no merging across tiers:
 
-1. **Project override**: `{vault}/Projects/{project}/agentctx/{path}`
-2. **Vault template**: `{vault}/Templates/{path}`
-3. **Embedded default**: Compiled-in `templates/{path}`
+1. **Room override**: `{vault}/Projects/{project}/commands/{wing}/{room}/{name}.md`
+2. **Wing override**: `{vault}/Projects/{project}/commands/{wing}/.wing/{name}.md`
+3. **Project override**: `{vault}/Projects/{project}/commands/{name}.md`
+4. **Vault template**: `{vault}/Templates/commands/{name}.md`
+5. **Embedded default**: Compiled-in `templates/commands/{name}.md`
 
-The `Resolver` walks these levels in reverse priority order. The highest
-priority match wins.
+The `.wing/` sentinel directory distinguishes wing-level resources from room
+subdirectories. The `Resolver` exposes `ResolveScoped(resource, project,
+wing, room)` for full palace-scoped lookup, while the legacy
+`Resolve(resource, project)` delegates with empty wing/room.
+
+Other templates (workflow.md, resume.md, config) use 3-tier resolution
+(project > vault > embedded) with project files at
+`{vault}/Projects/{project}/{path}`.
 
 ### Embedded Templates
 
@@ -260,14 +276,15 @@ templates/
 ├── workflow.md                    # Pair programming workflow rules
 ├── resume.md                      # Project state template
 └── commands/
-    ├── vp-capture.md              # Session capture instructions
-    ├── vp-restart.md              # Context restoration instructions
-    ├── vp-review-plan.md          # Plan review instructions
-    ├── vp-cancel-plan.md          # Plan cancellation instructions
-    └── vp-wrap.md                 # Session wrap-up instructions
+    ├── capture.md                 # Session capture instructions
+    ├── restart.md                 # Context restoration instructions
+    ├── review-plan.md             # Plan review instructions
+    ├── cancel-plan.md             # Plan cancellation instructions
+    └── wrap.md                    # Session wrap-up instructions
 ```
 
-Templates support `{{PROJECT}}` and `{{DATE}}` variable expansion.
+Templates support `{{PROJECT}}`, `{{DATE}}`, `{{WING}}`, and `{{ROOM}}`
+variable expansion.
 
 ### Bootstrap Context
 
@@ -281,7 +298,10 @@ multi-file CLAUDE.md pattern used by legacy systems.
 **Commands** are instructions for the AI to execute immediately (e.g.,
 "capture this session"). **Skills** are behavioral guidelines applied
 throughout a session (e.g., "pair programming mode"). Both resolve via
-the same 3-tier precedence system and can be listed or invoked by name.
+the 5-tier palace-scoped precedence system (room > wing > project > vault >
+embedded) and can be listed or invoked by name. When wing/room are not
+specified, resolution falls back to the 3-tier project > vault > embedded
+chain.
 
 ---
 
@@ -715,8 +735,9 @@ beyond stdlib. Used by both tune and discover workflows. Configured via
 
 ## Roadmap
 
-Phases 7–10, 12 are complete (knowledge graph, migration, CLI, documentation,
-adaptive room classification).
+Phases 7–10, 12–14 are complete (knowledge graph, migration, CLI,
+documentation, adaptive room classification, guided onboarding,
+palace-scoped resolution).
 
 | Phase | Goal |
 |-------|------|

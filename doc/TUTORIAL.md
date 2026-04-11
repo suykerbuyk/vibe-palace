@@ -141,8 +141,7 @@ After the first session capture, your vault will contain:
 └── Projects/
     └── my-project/
         ├── sessions/2026-04-09-01.md                   # session record
-        └── agentctx/
-            └── tasks/                                   # task plans
+        └── tasks/                                       # task plans
 ```
 
 **palace/** holds knowledge (content chunks, vectors, KG). This is the
@@ -434,7 +433,7 @@ tools work identically.
 
 All configuration is optional — defaults work out of the box. Override in
 `~/.config/vibe-palace/config.toml` (vault-level) or
-`{vault}/Projects/{project}/agentctx/config.toml` (project-level).
+`{vault}/Projects/{project}/config.toml` (project-level).
 
 ### Embedder Settings
 

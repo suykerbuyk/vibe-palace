@@ -318,7 +318,13 @@ func TestExtractBrief(t *testing.T) {
 
 func TestExecutionFrameMarkdownHeaders(t *testing.T) {
 	content := "# Step 1\n\nDo something.\n\n## Step 2\n\nDo more."
-	frame := buildExecutionFrame("test-cmd", "proj", "vault", content, "command")
+	frame := buildExecutionFrame(frameParams{
+		Name:         "test-cmd",
+		Project:      "proj",
+		Source:       "vault",
+		Content:      content,
+		ResourceType: "command",
+	})
 
 	if !strings.Contains(frame, "=== EXECUTE COMMAND: test-cmd ===") {
 		t.Error("frame header missing")
@@ -328,6 +334,45 @@ func TestExecutionFrameMarkdownHeaders(t *testing.T) {
 	}
 	if !strings.Contains(frame, "End of command: test-cmd") {
 		t.Error("frame footer missing")
+	}
+}
+
+func TestExecutionFrameWithWingRoom(t *testing.T) {
+	frame := buildExecutionFrame(frameParams{
+		Name:         "lint",
+		Project:      "proj",
+		Wing:         "backend",
+		Room:         "api",
+		Source:       "room",
+		Content:      "Run linter.",
+		ResourceType: "command",
+	})
+
+	if !strings.Contains(frame, "Wing: backend") {
+		t.Error("wing missing from frame header")
+	}
+	if !strings.Contains(frame, "Room: api") {
+		t.Error("room missing from frame header")
+	}
+	if !strings.Contains(frame, "Source: room") {
+		t.Error("room source missing from frame header")
+	}
+}
+
+func TestExecutionFrameOmitsEmptyWingRoom(t *testing.T) {
+	frame := buildExecutionFrame(frameParams{
+		Name:         "restart",
+		Project:      "proj",
+		Source:       "embedded",
+		Content:      "Restart.",
+		ResourceType: "command",
+	})
+
+	if strings.Contains(frame, "Wing:") {
+		t.Error("empty wing should not appear in frame")
+	}
+	if strings.Contains(frame, "Room:") {
+		t.Error("empty room should not appear in frame")
 	}
 }
 

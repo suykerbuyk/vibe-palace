@@ -17,6 +17,8 @@ import (
 type cmdParams struct {
 	Name    string `json:"name,omitempty"`
 	Project string `json:"project,omitempty"`
+	Wing    string `json:"wing,omitempty"`
+	Room    string `json:"room,omitempty"`
 }
 
 // commandSummary is a brief description of a command or skill for discovery
@@ -37,6 +39,14 @@ var cmdSchema = json.RawMessage(`{
 		"project": {
 			"type": "string",
 			"description": "Project slug for project-level resolution."
+		},
+		"wing": {
+			"type": "string",
+			"description": "Wing slug for wing/room-scoped resolution."
+		},
+		"room": {
+			"type": "string",
+			"description": "Room slug for room-scoped resolution (requires wing)."
 		}
 	}
 }`)
@@ -51,6 +61,14 @@ var skillCmdSchema = json.RawMessage(`{
 		"project": {
 			"type": "string",
 			"description": "Project slug for project-level resolution."
+		},
+		"wing": {
+			"type": "string",
+			"description": "Wing slug for wing/room-scoped resolution."
+		},
+		"room": {
+			"type": "string",
+			"description": "Room slug for room-scoped resolution (requires wing)."
 		}
 	}
 }`)
@@ -84,27 +102,46 @@ func cmdExecHandler(resolver *vpctx.Resolver, resourceType string) mcp.HandlerFu
 
 		name := strings.TrimSpace(p.Name)
 		if name == "" {
-			return buildDiscoveryList(resolver, p.Project, resourceType)
+			return buildDiscoveryList(resolver, p.Project, p.Wing, p.Room, resourceType)
 		}
 
 		resource := fmt.Sprintf("%s:%s", resourceType, name)
-		content, source, err := resolver.Resolve(resource, p.Project)
+		content, source, err := resolver.ResolveScoped(resource, p.Project, p.Wing, p.Room)
 		if err != nil {
 			return nil, err
 		}
 
-		return buildExecutionFrame(name, p.Project, source, content, resourceType), nil
+		return buildExecutionFrame(frameParams{
+			Name:         name,
+			Project:      p.Project,
+			Wing:         p.Wing,
+			Room:         p.Room,
+			Source:       source,
+			Content:      content,
+			ResourceType: resourceType,
+		}), nil
 	}
 }
 
-func buildExecutionFrame(name, project, source, content, resourceType string) string {
-	proj := project
+// frameParams groups the arguments for buildExecutionFrame.
+type frameParams struct {
+	Name         string
+	Project      string
+	Wing         string
+	Room         string
+	Source       string
+	Content      string
+	ResourceType string
+}
+
+func buildExecutionFrame(p frameParams) string {
+	proj := p.Project
 	if proj == "" {
 		proj = "(none)"
 	}
 
 	var label, verb, instructions string
-	if resourceType == "skill" {
+	if p.ResourceType == "skill" {
 		label = "ACTIVATE SKILL"
 		verb = "skill"
 		instructions = "The following describes a skill you should apply during this session.\nInternalize these guidelines and apply them when relevant."
@@ -115,19 +152,29 @@ func buildExecutionFrame(name, project, source, content, resourceType string) st
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "=== %s: %s ===\n", label, name)
-	fmt.Fprintf(&b, "Project: %s | Source: %s\n\n", proj, source)
+	fmt.Fprintf(&b, "=== %s: %s ===\n", label, p.Name)
+
+	// Build context line with optional wing/room.
+	fmt.Fprintf(&b, "Project: %s", proj)
+	if p.Wing != "" {
+		fmt.Fprintf(&b, " | Wing: %s", p.Wing)
+	}
+	if p.Room != "" {
+		fmt.Fprintf(&b, " | Room: %s", p.Room)
+	}
+	fmt.Fprintf(&b, " | Source: %s\n\n", p.Source)
+
 	b.WriteString(instructions)
 	b.WriteString("\n\n---\n\n")
-	b.WriteString(content)
+	b.WriteString(p.Content)
 	b.WriteString("\n\n---\n\n")
-	fmt.Fprintf(&b, "End of %s: %s\n", verb, name)
+	fmt.Fprintf(&b, "End of %s: %s\n", verb, p.Name)
 
 	return b.String()
 }
 
-func buildDiscoveryList(resolver *vpctx.Resolver, project, resourceType string) (string, error) {
-	resources, err := resolver.ListResources(resourceType, project)
+func buildDiscoveryList(resolver *vpctx.Resolver, project, wing, room, resourceType string) (string, error) {
+	resources, err := resolver.ListResourcesScoped(resourceType, project, wing, room)
 	if err != nil {
 		return "", err
 	}
@@ -143,7 +190,7 @@ func buildDiscoveryList(resolver *vpctx.Resolver, project, resourceType string) 
 	maxNameLen := 0
 	for _, ri := range resources {
 		cs := commandSummary{Name: ri.Name, Source: ri.Source}
-		if content, _, err := resolver.Resolve(fmt.Sprintf("%s:%s", resourceType, ri.Name), project); err == nil {
+		if content, _, err := resolver.ResolveScoped(fmt.Sprintf("%s:%s", resourceType, ri.Name), project, wing, room); err == nil {
 			cs.Brief = extractBrief(content, 60)
 		}
 		summaries = append(summaries, cs)

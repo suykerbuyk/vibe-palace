@@ -36,6 +36,8 @@ type sessionSummary struct {
 type bootstrapParams struct {
 	Project   string `json:"project"`
 	MaxTokens int    `json:"max_tokens,omitempty"`
+	Wing      string `json:"wing,omitempty"`
+	Room      string `json:"room,omitempty"`
 }
 
 var bootstrapSchema = json.RawMessage(`{
@@ -48,6 +50,14 @@ var bootstrapSchema = json.RawMessage(`{
 		"max_tokens": {
 			"type": "integer",
 			"description": "Token budget for response. Default: 8000."
+		},
+		"wing": {
+			"type": "string",
+			"description": "Wing slug for palace-scoped command discovery."
+		},
+		"room": {
+			"type": "string",
+			"description": "Room slug for palace-scoped command discovery (requires wing)."
 		}
 	},
 	"required": ["project"]
@@ -65,7 +75,8 @@ func BootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault) mcp.To
 
 // AssembleBootstrap builds context restoration payload.
 // Used by both the MCP tool handler and the CLI inject command.
-func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, maxTokens int) BootstrapResult {
+// When wing/room are provided, palace-scoped commands are included in discovery.
+func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, maxTokens int, wing, room string) BootstrapResult {
 	if maxTokens == 0 {
 		maxTokens = 8000
 	}
@@ -112,11 +123,11 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		result.KGSnapshot = &stats
 	}
 
-	// Available commands for discovery.
-	if commands, err := resolver.ListResources("command", project); err == nil {
+	// Available commands for discovery (palace-scoped when wing/room provided).
+	if commands, err := resolver.ListResourcesScoped("command", project, wing, room); err == nil {
 		for _, cmd := range commands {
 			cs := commandSummary{Name: cmd.Name, Source: cmd.Source}
-			if content, _, err := resolver.Resolve(fmt.Sprintf("command:%s", cmd.Name), project); err == nil {
+			if content, _, err := resolver.ResolveScoped(fmt.Sprintf("command:%s", cmd.Name), project, wing, room); err == nil {
 				cs.Brief = extractBrief(content, 60)
 			}
 			result.AvailableCommands = append(result.AvailableCommands, cs)
@@ -152,6 +163,6 @@ func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Handle
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, err
 		}
-		return AssembleBootstrap(resolver, vault, p.Project, p.MaxTokens), nil
+		return AssembleBootstrap(resolver, vault, p.Project, p.MaxTokens, p.Wing, p.Room), nil
 	}
 }

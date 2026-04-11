@@ -28,11 +28,10 @@ Within the vault, each system owns distinct subtrees:
 ├── Projects/                       # shared (vibe-vault writes, both read)
 │   └── {project}/
 │       ├── sessions/*.md           # session records (YAML frontmatter + transcript)
-│       └── agentctx/               # tasks, iterations, resume, config
-│           ├── tasks/
-│           ├── iterations.md
-│           ├── resume.md
-│           └── config.toml
+│       ├── tasks/                   # task plans
+│       ├── iterations.md           # iteration records
+│       ├── resume.md               # project state
+│       └── config.toml             # project config overrides
 └── .vibe-vault/                    # vibe-vault exclusive
     └── session-index.json          # session metadata index
 ```
@@ -118,7 +117,7 @@ tags: [implementation]
 summary: "feat: restart (5+9 files, tests pass)"
 ```
 
-Also import from each project's `agentctx/`:
+Also import from each project's directory:
 - `iterations.md` → iteration records
 - `tasks/` and `tasks/done/` → task records
 - `knowledge.md` → knowledge entries (if present)

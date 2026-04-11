@@ -341,3 +341,281 @@ func TestListResourcesInvalidType(t *testing.T) {
 		t.Fatal("expected error for unsupported resource type, got nil")
 	}
 }
+
+// --- Scoped Resolution tests ---
+
+func TestResolveScopedRoomOverridesWing(t *testing.T) {
+	r, root := testResolver(t)
+
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "backend", ".wing", "lint.md"), "wing lint")
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "backend", "api", "lint.md"), "room lint")
+
+	content, source, err := r.ResolveScoped("command:lint", "proj", "backend", "api")
+	if err != nil {
+		t.Fatalf("ResolveScoped: %v", err)
+	}
+	if source != "room" {
+		t.Errorf("source = %q, want %q", source, "room")
+	}
+	if content != "room lint" {
+		t.Errorf("content = %q, want %q", content, "room lint")
+	}
+}
+
+func TestResolveScopedWingOverridesProject(t *testing.T) {
+	r, root := testResolver(t)
+
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "lint.md"), "project lint")
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "backend", ".wing", "lint.md"), "wing lint")
+
+	content, source, err := r.ResolveScoped("command:lint", "proj", "backend", "")
+	if err != nil {
+		t.Fatalf("ResolveScoped: %v", err)
+	}
+	if source != "wing" {
+		t.Errorf("source = %q, want %q", source, "wing")
+	}
+	if content != "wing lint" {
+		t.Errorf("content = %q, want %q", content, "wing lint")
+	}
+}
+
+func TestResolveScopedWingOnly(t *testing.T) {
+	r, root := testResolver(t)
+
+	// Wing without room: 4-tier resolution (wing > project > vault > embedded).
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "backend", ".wing", "deploy.md"), "wing deploy")
+
+	content, source, err := r.ResolveScoped("command:deploy", "proj", "backend", "")
+	if err != nil {
+		t.Fatalf("ResolveScoped: %v", err)
+	}
+	if source != "wing" {
+		t.Errorf("source = %q, want %q", source, "wing")
+	}
+	if content != "wing deploy" {
+		t.Errorf("content = %q, want %q", content, "wing deploy")
+	}
+}
+
+func TestResolveScopedNoScope(t *testing.T) {
+	r, _ := testResolver(t)
+
+	// Empty wing/room: existing 3-tier behavior unchanged.
+	content, source, err := r.ResolveScoped("command:restart", "proj", "", "")
+	if err != nil {
+		t.Fatalf("ResolveScoped: %v", err)
+	}
+	if source != "embedded" {
+		t.Errorf("source = %q, want %q", source, "embedded")
+	}
+	if !strings.Contains(content, "Context Restoration") {
+		t.Error("expected embedded restart content")
+	}
+}
+
+func TestResolveScopedRoomWithoutWingErrors(t *testing.T) {
+	r, _ := testResolver(t)
+
+	_, _, err := r.ResolveScoped("command:lint", "proj", "", "api")
+	if err == nil {
+		t.Fatal("expected error when room is set without wing")
+	}
+	if !strings.Contains(err.Error(), "requires a wing") {
+		t.Errorf("error = %q, want 'requires a wing' message", err.Error())
+	}
+}
+
+func TestResolveScopedInvalidSlug(t *testing.T) {
+	r, _ := testResolver(t)
+
+	_, _, err := r.ResolveScoped("command:lint", "proj", "Bad Wing", "")
+	if err == nil {
+		t.Fatal("expected error for invalid wing slug")
+	}
+	if !strings.Contains(err.Error(), "invalid wing") {
+		t.Errorf("error = %q, want 'invalid wing' message", err.Error())
+	}
+
+	_, _, err = r.ResolveScoped("command:lint", "proj", "backend", "Bad Room")
+	if err == nil {
+		t.Fatal("expected error for invalid room slug")
+	}
+	if !strings.Contains(err.Error(), "invalid room") {
+		t.Errorf("error = %q, want 'invalid room' message", err.Error())
+	}
+}
+
+func TestResolveScopedFallthroughToEmbedded(t *testing.T) {
+	r, _ := testResolver(t)
+
+	// Even with wing/room set, should fall through to embedded if no overrides exist.
+	content, source, err := r.ResolveScoped("command:restart", "proj", "backend", "api")
+	if err != nil {
+		t.Fatalf("ResolveScoped: %v", err)
+	}
+	if source != "embedded" {
+		t.Errorf("source = %q, want %q", source, "embedded")
+	}
+	if !strings.Contains(content, "Context Restoration") {
+		t.Error("expected embedded restart content")
+	}
+}
+
+func TestListResourcesScopedFullMerge(t *testing.T) {
+	r, root := testResolver(t)
+
+	// Create commands at all 5 tiers.
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "backend", "api", "gen.md"), "room gen")
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "backend", ".wing", "lint.md"), "wing lint")
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "custom.md"), "project custom")
+	writeFile(t, filepath.Join(root, "Templates", "commands", "deploy.md"), "vault deploy")
+	// Embedded: cancel-plan, capture, restart, review-plan, wrap
+
+	resources, err := r.ListResourcesScoped("command", "proj", "backend", "api")
+	if err != nil {
+		t.Fatalf("ListResourcesScoped: %v", err)
+	}
+
+	// Expect: cancel-plan(embedded), capture(embedded), custom(project),
+	//         deploy(vault), gen(room), lint(wing), restart(embedded),
+	//         review-plan(embedded), wrap(embedded) = 9 total
+	if len(resources) != 9 {
+		names := make([]string, len(resources))
+		for i, ri := range resources {
+			names[i] = ri.Name + "(" + ri.Source + ")"
+		}
+		t.Fatalf("got %d resources %v, want 9", len(resources), names)
+	}
+
+	// Verify specific sources.
+	sourceMap := make(map[string]string)
+	for _, ri := range resources {
+		sourceMap[ri.Name] = ri.Source
+	}
+	checks := map[string]string{
+		"gen":    "room",
+		"lint":   "wing",
+		"custom": "project",
+		"deploy": "vault",
+		"restart": "embedded",
+	}
+	for name, wantSource := range checks {
+		if got := sourceMap[name]; got != wantSource {
+			t.Errorf("%s source = %q, want %q", name, got, wantSource)
+		}
+	}
+}
+
+func TestListResourcesScopedWingOnly(t *testing.T) {
+	r, root := testResolver(t)
+
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "backend", ".wing", "lint.md"), "wing lint")
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "custom.md"), "project custom")
+
+	resources, err := r.ListResourcesScoped("command", "proj", "backend", "")
+	if err != nil {
+		t.Fatalf("ListResourcesScoped: %v", err)
+	}
+
+	// Wing + project + embedded (5 embedded commands) = 7
+	if len(resources) != 7 {
+		names := make([]string, len(resources))
+		for i, ri := range resources {
+			names[i] = ri.Name + "(" + ri.Source + ")"
+		}
+		t.Fatalf("got %d resources %v, want 7", len(resources), names)
+	}
+
+	sourceMap := make(map[string]string)
+	for _, ri := range resources {
+		sourceMap[ri.Name] = ri.Source
+	}
+	if sourceMap["lint"] != "wing" {
+		t.Errorf("lint source = %q, want %q", sourceMap["lint"], "wing")
+	}
+	if sourceMap["custom"] != "project" {
+		t.Errorf("custom source = %q, want %q", sourceMap["custom"], "project")
+	}
+}
+
+func TestListResourcesScopedProjectDirSkipsSubdirs(t *testing.T) {
+	r, root := testResolver(t)
+
+	// Wing subdirectories under commands/ must not appear as project-level commands.
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "custom.md"), "project cmd")
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "backend", ".wing", "lint.md"), "wing cmd")
+
+	// List without scope — should only see project-level "custom" plus embedded.
+	resources, err := r.ListResources("command", "proj")
+	if err != nil {
+		t.Fatalf("ListResources: %v", err)
+	}
+
+	for _, ri := range resources {
+		if ri.Name == "lint" {
+			t.Error("wing-scoped 'lint' leaked into unscoped listing")
+		}
+		if ri.Name == "backend" {
+			t.Error("wing directory 'backend' appeared as a command")
+		}
+	}
+}
+
+func TestExpandWingAndRoom(t *testing.T) {
+	r, root := testResolver(t)
+
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "backend", "api", "info.md"),
+		"Project: {{PROJECT}}, Wing: {{WING}}, Room: {{ROOM}}")
+
+	content, source, err := r.ResolveScoped("command:info", "proj", "backend", "api")
+	if err != nil {
+		t.Fatalf("ResolveScoped: %v", err)
+	}
+	if source != "room" {
+		t.Errorf("source = %q, want %q", source, "room")
+	}
+	if content != "Project: proj, Wing: backend, Room: api" {
+		t.Errorf("content = %q, want expanded placeholders", content)
+	}
+}
+
+func TestListResourcesScopedShadowing(t *testing.T) {
+	r, root := testResolver(t)
+
+	// Same command at room and wing level — room should shadow.
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "backend", ".wing", "lint.md"), "wing")
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "backend", "api", "lint.md"), "room")
+
+	resources, err := r.ListResourcesScoped("command", "proj", "backend", "api")
+	if err != nil {
+		t.Fatalf("ListResourcesScoped: %v", err)
+	}
+
+	for _, ri := range resources {
+		if ri.Name == "lint" {
+			if ri.Source != "room" {
+				t.Errorf("lint source = %q, want %q (room should shadow wing)", ri.Source, "room")
+			}
+			return
+		}
+	}
+	t.Error("lint not found in resource list")
+}
+
+func TestResolveScopedSkill(t *testing.T) {
+	r, root := testResolver(t)
+
+	writeFile(t, filepath.Join(root, "Projects", "proj", "skills", "backend", "api", "owasp.md"), "room owasp skill")
+
+	content, source, err := r.ResolveScoped("skill:owasp", "proj", "backend", "api")
+	if err != nil {
+		t.Fatalf("ResolveScoped: %v", err)
+	}
+	if source != "room" {
+		t.Errorf("source = %q, want %q", source, "room")
+	}
+	if content != "room owasp skill" {
+		t.Errorf("content = %q, want %q", content, "room owasp skill")
+	}
+}

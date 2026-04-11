@@ -3,7 +3,7 @@
 **Version:** 0.1.0-draft
 **Date:** 2026-04-06
 **Authors:** John Suykerbuyk, Claude Opus 4.6
-**Status:** Phases 1–10, 12 Implemented | Phase 11 Planned
+**Status:** Phases 1–10, 12–14 Implemented | Phase 11 Planned
 
 > **Implementation notes** are marked with blockquotes throughout. HNSW
 > references in diagrams reflect the design; actual search uses brute-force
@@ -29,7 +29,7 @@ from any specific AI provider's file system expectations.
 - VibeVault's dependency on Claude Code's JSON-RPC protocol and `.claude/` directory
   conventions
 - MemPalace's dependency on Python, ChromaDB, and pip-based distribution
-- The symlink/dual-git complexity of maintaining vault agentctx alongside source code
+- The symlink/dual-git complexity of maintaining vault project context alongside source code
 - The CLAUDE.md sprawl problem across multiple AI providers and IDEs
 
 **What this preserves:**
@@ -63,7 +63,9 @@ from any specific AI provider's file system expectations.
 18. [Phase 10: Documentation & Human Interface](#phase-10-documentation--human-interface)
 19. [Phase 11: Pluggable Embedding Backends](#phase-11-pluggable-embedding-backends)
 20. [Phase 12: Adaptive Room Classification](#phase-12-adaptive-room-classification)
-20. [Cross-Cutting Concerns](#cross-cutting-concerns)
+21. [Phase 13: Guided Onboarding & Config Lifecycle](#phase-13-guided-onboarding--config-lifecycle)
+22. [Phase 14: Palace-Scoped Command & Skill Resolution](#phase-14-palace-scoped-command--skill-resolution)
+23. [Cross-Cutting Concerns](#cross-cutting-concerns)
 21. [Validation Framework](#validation-framework)
 21. [Appendix A: Glossary](#appendix-a-glossary)
 22. [Appendix B: File Inventory](#appendix-b-file-inventory)
@@ -613,7 +615,7 @@ flowchart TD
 | `vp_vault_sync` | — | Pull/push vault git remotes |
 | `vp_refresh_index` | project? | Rebuild session index and re-embed if needed |
 
-**Total: 38 implemented (Phases 1–10, 12)** (vs VibeVault's 16 + MemPalace's 19 = 35, with dedup, consolidation, and Phase 12 additions)
+**Total: 38 implemented (Phases 1–10, 12–14)** (vs VibeVault's 16 + MemPalace's 19 = 35, with dedup, consolidation, and Phase 12–14 additions)
 
 ---
 
@@ -676,15 +678,21 @@ vault/
 │
 ├── Projects/                          ← unchanged from VibeVault
 │   └── {project}/
-│       ├── agentctx/
-│       │   ├── resume.md
-│       │   ├── workflow.md            (project override, optional)
-│       │   ├── iterations.md
-│       │   ├── config.toml            (project config override)
-│       │   └── tasks/
-│       │       ├── {slug}.md
-│       │       ├── done/
-│       │       └── cancelled/
+│       ├── resume.md
+│       ├── workflow.md                (project override, optional)
+│       ├── iterations.md
+│       ├── config.toml                (project config override)
+│       ├── tasks/
+│       │   ├── {slug}.md
+│       │   ├── done/
+│       │   └── cancelled/
+│       ├── commands/                  (project-level commands)
+│       │   ├── {name}.md             (project scope)
+│       │   └── {wing}/
+│       │       ├── .wing/{name}.md   (wing scope)
+│       │       └── {room}/{name}.md  (room scope)
+│       ├── skills/                    (project-level skills)
+│       │   └── (same layout as commands/)
 │       ├── sessions/
 │       │   └── YYYY-MM-DD-NN.md
 │       └── knowledge.md
@@ -839,9 +847,9 @@ machine-local cache can be built on startup (gitignored, in `.local/`).
 
 Tasks continue to be stored as markdown files:
 
-**Path:** `Projects/{project}/agentctx/tasks/{slug}.md`
-**Done:** `Projects/{project}/agentctx/tasks/done/{slug}.md`
-**Cancelled:** `Projects/{project}/agentctx/tasks/cancelled/{slug}.md`
+**Path:** `Projects/{project}/tasks/{slug}.md`
+**Done:** `Projects/{project}/tasks/done/{slug}.md`
+**Cancelled:** `Projects/{project}/tasks/cancelled/{slug}.md`
 
 No change from current VibeVault format.
 
@@ -851,7 +859,7 @@ Configuration continues to use TOML files in the existing precedence chain:
 
 - **Embedded defaults:** compiled into the binary
 - **Vault-level:** `~/.config/vibe-palace/config.toml`
-- **Project-level:** `Projects/{project}/agentctx/config.toml`
+- **Project-level:** `Projects/{project}/config.toml`
 
 No database table needed.
 
@@ -975,18 +983,18 @@ func (r *PrecedenceResolver) Resolve(resource string, project string) string {
 
 | Resource | Embedded Default | Vault Override | Project Override |
 |----------|-----------------|----------------|------------------|
-| workflow.md | Yes (compiled in) | Templates/workflow.md | Projects/{p}/agentctx/workflow.md |
-| resume.md template | Yes | Templates/resume.md | Projects/{p}/agentctx/resume.md |
-| commands/* | Yes | Templates/commands/* | Projects/{p}/agentctx/commands/* |
-| skills/* | Yes | Templates/skills/* | Projects/{p}/agentctx/skills/* |
-| config values | Yes (code defaults) | Global config.toml | Projects/{p}/agentctx/config.toml |
+| workflow.md | Yes (compiled in) | Templates/workflow.md | Projects/{p}/workflow.md |
+| resume.md template | Yes | Templates/resume.md | Projects/{p}/resume.md |
+| commands/* | Yes | Templates/commands/* | Projects/{p}/commands/* |
+| skills/* | Yes | Templates/skills/* | Projects/{p}/skills/* |
+| config values | Yes (code defaults) | Global config.toml | Projects/{p}/config.toml |
 
 ### 8.3 Precedence for First-Time Projects
 
 When a project is initialized for the first time:
 
 1. `.vibe-palace.toml` is created in the source tree (only file that touches it)
-2. `Projects/{project}/agentctx/` directory is created in the vault
+2. `Projects/{project}/` directory is created in the vault
 3. `resume.md` is expanded from the highest-precedence template (embedded or vault)
 4. `iterations.md` is initialized with metadata frontmatter
 5. No workflow.md, commands/, or skills/ are written — they will be resolved at
@@ -1000,7 +1008,7 @@ comes from embedded defaults until the user explicitly overrides something.
 Commands follow a natural promotion path through the precedence tiers:
 
 1. **Project-local** (`source: "project"`): Created in
-   `{vault}/Projects/{proj}/agentctx/commands/{name}.md`. Only available for
+   `{vault}/Projects/{proj}/commands/{name}.md`. Only available for
    that project. This is where new commands are born — developed, tested, and
    iterated in the context of a single project.
 
@@ -1170,7 +1178,7 @@ else builds on.
 - `GetConfigValue(project, key string) (string, string, error)` — value + source level
 - Embedded defaults compiled via `//go:embed config/defaults.toml`
 - Vault config at `~/.config/vibe-palace/config.toml`
-- Project config at `Projects/{project}/agentctx/config.toml`
+- Project config at `Projects/{project}/config.toml`
 - Merge strategy: project keys override vault keys override embedded keys
 
 **Acceptance criteria:**
@@ -1272,7 +1280,7 @@ JSON-RPC 2.0 requests. HTTP REST server on localhost with identical handlers.
 - `Resolve(resource, project string) (string, string, error)` — returns content + source
 - Resource types: `workflow`, `resume`, `command:{name}`, `skill:{name}`, `config:{key}`
 - Vault template location: `{vault_path}/Templates/{resource}`
-- Project override location: `{vault_path}/Projects/{project}/agentctx/{resource}`
+- Project override location: `{vault_path}/Projects/{project}/{resource}`
 - Embedded defaults compiled via `//go:embed templates/*`
 
 **Acceptance criteria:**
@@ -1379,7 +1387,7 @@ complexity for zero benefit.
   "properties": {
     "name": {
       "type": "string",
-      "description": "Command name (e.g. 'vp-restart'). Omit to list available commands."
+      "description": "Command name (e.g. 'restart'). Omit to list available commands."
     },
     "project": {
       "type": "string",
@@ -1424,10 +1432,10 @@ When `project` is empty: `Project: (none)`.
 ```
 Available commands for project "my-project":
 
-  vp-restart       [embedded]  Context restoration and session bootstrap
-  vp-wrap          [embedded]  Session capture and wrap-up
-  vp-review-plan   [embedded]  Architecture review before implementation
-  vp-cancel-plan   [embedded]  Cancel a planned task
+  restart          [embedded]  Context restoration and session bootstrap
+  wrap             [embedded]  Session capture and wrap-up
+  review-plan      [embedded]  Architecture review before implementation
+  cancel-plan      [embedded]  Cancel a planned task
   deploy           [vault]     Deploy workflow
   custom-check     [project]   Project-specific validation
 
@@ -2429,6 +2437,63 @@ content and validates them algorithmically before proposing.
 
 ---
 
+## Phase 13: Guided Onboarding & Config Lifecycle
+
+> **Status: IMPLEMENTED**
+
+**Goal:** Provide guided initialization (`vp init`) and config lifecycle
+management (`vp config upgrade`, `vp check` staleness detection) so that
+new users get a working setup in one command and existing users stay current
+as new settings are added across releases.
+
+---
+
+## Phase 14: Palace-Scoped Command & Skill Resolution
+
+> **Status: IMPLEMENTED**
+
+**Goal:** Extend the 3-tier precedence system (embedded < vault < project) to
+a 5-tier palace-scoped resolution: Room > Wing > Project > Vault > Embedded.
+Commands and skills can now be scoped to specific wings and rooms within a
+project, enabling context-sensitive behavior in multi-module codebases.
+
+**Key changes:**
+
+- **agentctx eliminated**: All paths that used `Projects/{project}/agentctx/`
+  now use `Projects/{project}/` directly. Tasks, config.toml, resume.md,
+  iterations.md, sessions, commands, and skills all live directly under the
+  project directory.
+
+- **vp- prefix dropped**: Embedded command templates were renamed from
+  `vp-restart.md`, `vp-wrap.md`, etc. to `restart.md`, `wrap.md`, etc.
+  Commands are invoked by their bare name.
+
+- **5-tier palace-scoped resolution**: The resolver supports
+  Room > Wing > Project > Vault > Embedded precedence via
+  `ResolveScoped(resource, project, wing, room)` and
+  `ListResourcesScoped(resourceType, project, wing, room)`. The old 3-tier
+  `Resolve` and `ListResources` delegate with empty wing/room.
+
+- **Wing/room directory layout**:
+  - Room: `Projects/{project}/commands/{wing}/{room}/{name}.md`
+  - Wing: `Projects/{project}/commands/{wing}/.wing/{name}.md`
+  - Project: `Projects/{project}/commands/{name}.md`
+  - `.wing/` is a sentinel directory distinguishing wing-level from room
+    subdirectories. Same pattern applies to `skills/`.
+
+- **MCP tool schemas updated**: All 6 command/skill tools (`vp_get_command`,
+  `vp_get_skill`, `vp_list_commands`, `vp_list_skills`, `vp_cmd`, `vp_skill`)
+  now accept optional `wing` and `room` parameters. `vp_bootstrap_context`
+  also accepts wing/room for scoped command discovery.
+
+- **Template expansion**: `{{WING}}` and `{{ROOM}}` placeholders now work
+  alongside `{{PROJECT}}` and `{{DATE}}`.
+
+- **buildExecutionFrame** uses a `frameParams` struct and shows Wing/Room in
+  the header when present.
+
+---
+
 ## Cross-Cutting Concerns
 
 ### Error Handling
@@ -2593,17 +2658,21 @@ That's it. One file. Everything else is served via MCP.
 vault/
 ├── Projects/
 │   └── {project}/
-│       ├── agentctx/
-│       │   ├── resume.md          # Project state (editable)
-│       │   ├── workflow.md        # Project-specific override (optional)
-│       │   ├── iterations.md      # Append-only archive
-│       │   ├── config.toml        # Project config override (optional)
-│       │   ├── commands/          # Project-specific commands (optional)
-│       │   ├── skills/            # Project-specific skills (optional)
-│       │   └── tasks/
-│       │       ├── {slug}.md
-│       │       ├── done/
-│       │       └── cancelled/
+│       ├── resume.md              # Project state (editable)
+│       ├── workflow.md            # Project-specific override (optional)
+│       ├── iterations.md          # Append-only archive
+│       ├── config.toml            # Project config override (optional)
+│       ├── commands/              # Project-specific commands (optional)
+│       │   ├── {name}.md         # Project scope
+│       │   └── {wing}/
+│       │       ├── .wing/{name}.md   # Wing scope
+│       │       └── {room}/{name}.md  # Room scope
+│       ├── skills/                # Project-specific skills (optional)
+│       │   └── (same layout as commands/)
+│       ├── tasks/
+│       │   ├── {slug}.md
+│       │   ├── done/
+│       │   └── cancelled/
 │       ├── sessions/
 │       │   └── YYYY-MM-DD-NN.md
 │       └── knowledge.md
