@@ -53,3 +53,8 @@ func blockOpenDelim() string {
 func managedBlock() string {
 	return blockOpenDelim() + "\n" + blockBody + "\n" + blockCloseDelim
 }
+
+// ExpectedSha returns the current content-hash the wire layer would embed.
+// Callers comparing existing agent files against the embedded source of truth
+// should compare their sha=... token to this value.
+func ExpectedSha() string { return blockContentHash() }

@@ -407,8 +407,55 @@ vp inject                   # output bootstrap context as JSON (for scripting)
 vp check                    # verify installation, config, vault, embedder
 ```
 
-Man pages are available for all commands: `man vp`, `man vp-search`, etc.
-Install with `make man`.
+### Managing Commands
+
+Vibe-palace ships a small catalog of built-in commands (`restart`, `wrap`,
+`review-plan`, `cancel-plan`, `capture`) embedded in the `vp` binary. Users
+and projects can override or extend the catalog via the 5-tier resolver
+(see `doc/COMMANDS-AND-SKILLS.md`).
+
+List every command visible from your current project, with the tier that
+provides it:
+
+```bash
+vp commands list                      # human-readable table
+vp commands list --json               # machine-readable (for scripting)
+vp commands list --project myapp      # include project-tier overrides
+```
+
+When vibe-palace releases update the embedded templates, `vp commands
+upgrade` reconciles them against your vault-level copies (tier 4 —
+`{vault}/Templates/commands/`). Project/wing/room overrides are never
+touched.
+
+```bash
+vp commands upgrade --dry-run         # preview the plan; non-zero exit if work is pending
+vp commands upgrade                   # interactive: unified diff + accept/skip per file
+vp commands upgrade --overwrite       # accept every change (required in non-TTY)
+vp commands upgrade --only restart    # target a single template
+```
+
+In interactive mode you'll be prompted per template:
+
+- `a` — accept this change
+- `s` — skip it
+- `A` — accept this and every remaining change
+- `q` — abort without applying further changes
+
+The vault is git-managed. After an upgrade, review with `git -C <vault>
+diff` and commit as you prefer — the upgrader never commits on your
+behalf. If the vault has uncommitted changes under `Templates/commands/`
+or `Projects/*/commands/` when you run upgrade, a warning lists them so
+you can stash or commit first.
+
+`vp commands upgrade` also surfaces stale vibe-palace managed blocks in
+agent files (CLAUDE.md, AGENTS.md, …). When the block template's sha
+changes, the upgrader offers to re-wire each file using the same atomic
+path as `vp init`.
+
+Man pages are available for all commands: `man vp`, `man vp-search`,
+`man vp-commands`, `man vp-commands-upgrade`, etc. Install with
+`make man`.
 
 ---
 

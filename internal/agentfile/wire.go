@@ -32,6 +32,28 @@ type Result struct {
 	PrevSha string
 }
 
+// ScanBlock reads path and reports whether a managed block is present and,
+// if so, what sha the opening delimiter carries. Returns (sha, true, nil) on
+// a present block, ("", false, nil) when no block exists, and ("", false,
+// err) only on IO errors other than NotExist.
+func ScanBlock(path string) (string, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	existing := blockRegexp.Find(data)
+	if existing == nil {
+		return "", false, nil
+	}
+	if m := shaRegexp.FindSubmatch(existing); m != nil {
+		return string(m[1]), true, nil
+	}
+	return "", true, nil
+}
+
 // blockRegexp matches the full managed block, including both delimiters.
 // Non-greedy `.*?` under (?s) keeps us from swallowing a second block if one
 // is somehow present.

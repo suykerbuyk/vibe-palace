@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 )
@@ -21,19 +22,13 @@ type cmdParams struct {
 	Room    string `json:"room,omitempty"`
 }
 
-// commandSummary is a brief description of a command or skill for discovery
-// and bootstrap responses. Alias is a "vpc-<name>" trigger token the human
-// or AI can type; Name remains the canonical key for vp_get_command lookup.
-type commandSummary struct {
-	Name   string `json:"name"`
-	Alias  string `json:"alias,omitempty"`
-	Source string `json:"source"`
-	Brief  string `json:"brief,omitempty"`
-}
+// commandSummary is re-exported from internal/commands so MCP responses and
+// the `vp commands list` CLI share one shape.
+type commandSummary = commands.Summary
 
 // commandAlias returns the "vpc-<name>" trigger token for a command.
 func commandAlias(name string) string {
-	return "vpc-" + name
+	return commands.Alias(name)
 }
 
 var cmdSchema = json.RawMessage(`{
@@ -229,25 +224,8 @@ func buildDiscoveryList(resolver *vpctx.Resolver, project, wing, room, resourceT
 	return b.String(), nil
 }
 
-// extractBrief returns the first non-blank, non-heading line from content,
-// truncated to maxLen characters. When truncation is needed, the cut snaps
-// to the last whitespace before maxLen (unless that would leave less than
-// half of maxLen, in which case a mid-word cut is accepted) and an ellipsis
-// is appended so the truncation is visible.
+// extractBrief delegates to the shared helper in internal/commands so both
+// MCP and CLI produce identical briefs.
 func extractBrief(content string, maxLen int) string {
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if len(line) > maxLen {
-			cut := strings.LastIndex(line[:maxLen], " ")
-			if cut <= maxLen/2 {
-				cut = maxLen
-			}
-			return strings.TrimRight(line[:cut], " ") + "…"
-		}
-		return line
-	}
-	return "(no description)"
+	return commands.ExtractBrief(content, maxLen)
 }

@@ -213,6 +213,81 @@ func (r *Resolver) ListResourcesScoped(resourceType, project, wing, room string)
 	return result, nil
 }
 
+// EmbeddedContent returns the raw embedded (tier-5) content for a resource,
+// without placeholder expansion. Returns an error if no embedded copy exists.
+func (r *Resolver) EmbeddedContent(resource string) (string, error) {
+	relPath, err := resourceToPath(resource)
+	if err != nil {
+		return "", err
+	}
+	data, err := fs.ReadFile(r.defaults, path.Join("templates", relPath))
+	if err != nil {
+		return "", fmt.Errorf("no embedded copy for %q: %w", resource, err)
+	}
+	return string(data), nil
+}
+
+// VaultContent returns the raw vault (tier-4) content for a resource, without
+// placeholder expansion. Returns (content, true, nil) if present, ("", false,
+// nil) if absent, and ("", false, err) only on read errors other than NotExist.
+func (r *Resolver) VaultContent(resource string) (string, bool, error) {
+	relPath, err := resourceToPath(resource)
+	if err != nil {
+		return "", false, err
+	}
+	p := filepath.Join(r.vaultRoot, "Templates", relPath)
+	data, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return string(data), true, nil
+}
+
+// VaultPath returns the filesystem path where the vault (tier-4) copy of the
+// given resource would live. The file may or may not exist.
+func (r *Resolver) VaultPath(resource string) (string, error) {
+	relPath, err := resourceToPath(resource)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(r.vaultRoot, "Templates", relPath), nil
+}
+
+// VaultRoot returns the vault root this resolver was configured with.
+func (r *Resolver) VaultRoot() string {
+	return r.vaultRoot
+}
+
+// ListEmbedded returns the names of embedded resources of the given type
+// ("command" or "skill"), without checking vault or project tiers.
+func (r *Resolver) ListEmbedded(resourceType string) ([]string, error) {
+	var dir string
+	switch resourceType {
+	case "command":
+		dir = "commands"
+	case "skill":
+		dir = "skills"
+	default:
+		return nil, fmt.Errorf("unsupported resource type for listing: %q", resourceType)
+	}
+	entries, err := fs.ReadDir(r.defaults, path.Join("templates", dir))
+	if err != nil {
+		return nil, nil
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		names = append(names, strings.TrimSuffix(e.Name(), ".md"))
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
 // expand replaces template placeholders (3-tier compat).
 func (r *Resolver) expand(content, project string) string {
 	return r.expandScoped(content, project, "", "")

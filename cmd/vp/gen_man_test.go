@@ -79,7 +79,8 @@ func TestGenerateManPages(t *testing.T) {
 // knownCommands returns the full list of registered command names.
 func knownCommands() []string {
 	return []string{
-		"check", "init", "inject", "mcp",
+		"check", "commands", "commands list", "commands upgrade",
+		"init", "inject", "mcp",
 		"migrate", "migrate mempalace", "migrate vibevault",
 		"search", "serve", "sessions", "status", "tasks",
 		"vault", "vault pull", "vault push", "vault sync",
