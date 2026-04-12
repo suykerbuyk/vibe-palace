@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
@@ -49,18 +50,23 @@ func cmdInit(info cli.BuildInfo) *cli.Command {
 			globalResults, globalCode := initGlobal(fv)
 			results = append(results, globalResults...)
 			if globalCode != cli.ExitOK {
-				// Render what we have; agent-wiring row is still informative.
-				results = append(results, agentWiringStub())
+				// Global init failed; agent wiring is meaningless without
+				// a working install, so surface a single skip row and bail.
+				results = append(results, check.Result{
+					Name:    "Agent wiring",
+					Status:  check.Skip,
+					Summary: "skipped — global init failed",
+				})
 				printInitStatus(os.Stdout, info.Version, results)
 				return globalCode
 			}
 
 			// --- Phase 2: Project init (if appropriate) ---
-			projectResults, projectCode := initProject(fv)
+			projectDir, projectReady, projectResults, projectCode := initProject(fv)
 			results = append(results, projectResults...)
 
-			// Agent-wiring stub — Phase 2 of the plan replaces this.
-			results = append(results, agentWiringStub())
+			// --- Phase 2: Agent-file wiring ---
+			results = append(results, initAgentWiring(projectDir, projectReady)...)
 
 			printInitStatus(os.Stdout, info.Version, results)
 			return projectCode
@@ -145,8 +151,10 @@ func initGlobal(fv *cli.FlagValues) ([]check.Result, int) {
 }
 
 // initProject creates a .vibe-palace.toml in the target directory if project
-// signals are present. Returns one or more status rows and an exit code.
-func initProject(fv *cli.FlagValues) ([]check.Result, int) {
+// signals are present. Returns the resolved project dir, whether the project
+// is ready for downstream wiring (config present or just created), one or
+// more status rows, and an exit code.
+func initProject(fv *cli.FlagValues) (string, bool, []check.Result, int) {
 	var results []check.Result
 
 	dir := "."
@@ -156,7 +164,7 @@ func initProject(fv *cli.FlagValues) ([]check.Result, int) {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		results = append(results, check.Result{Name: "Project config", Status: check.Fail, Summary: err.Error()})
-		return results, cli.ExitSystem
+		return dir, false, results, cli.ExitSystem
 	}
 
 	signal := project.DetectSignal(dir)
@@ -166,7 +174,7 @@ func initProject(fv *cli.FlagValues) ([]check.Result, int) {
 			Status:  check.Skip,
 			Summary: "not a project directory (no .git, .vibe-palace.toml, or known manifest)",
 		})
-		return results, cli.ExitOK
+		return dir, false, results, cli.ExitOK
 	}
 
 	configPath := filepath.Join(dir, project.ConfigFileName)
@@ -176,7 +184,8 @@ func initProject(fv *cli.FlagValues) ([]check.Result, int) {
 			Status:  check.Info,
 			Summary: configPath + " (already exists, skipped)",
 		})
-		return results, cli.ExitOK
+		// Config already exists — the project is ready for agent wiring.
+		return dir, true, results, cli.ExitOK
 	}
 
 	name := fv.Get("--name")
@@ -192,7 +201,7 @@ func initProject(fv *cli.FlagValues) ([]check.Result, int) {
 			Status:  check.Fail,
 			Summary: fmt.Sprintf("invalid project name %q: %v", name, err),
 		})
-		return results, cli.ExitUser
+		return dir, false, results, cli.ExitUser
 	}
 
 	var vaultPathOverride string
@@ -204,7 +213,7 @@ func initProject(fv *cli.FlagValues) ([]check.Result, int) {
 				Status:  check.Fail,
 				Summary: "resolve --vault-path: " + err.Error(),
 			})
-			return results, cli.ExitUser
+			return dir, false, results, cli.ExitUser
 		}
 		vaultPathOverride = expanded
 	}
@@ -220,7 +229,7 @@ func initProject(fv *cli.FlagValues) ([]check.Result, int) {
 
 	if _, err := storage.WriteCwdProjectConfig(dir, name, fv.Get("--domain"), tagsList, vaultPathOverride); err != nil {
 		results = append(results, check.Result{Name: "Project config", Status: check.Fail, Summary: err.Error()})
-		return results, cli.ExitSystem
+		return dir, false, results, cli.ExitSystem
 	}
 
 	row := check.Result{
@@ -245,18 +254,82 @@ func initProject(fv *cli.FlagValues) ([]check.Result, int) {
 	}
 
 	results = append(results, row)
-	return results, cli.ExitOK
+	return dir, true, results, cli.ExitOK
 }
 
-// agentWiringStub is the Phase-1 placeholder row for agent-file wiring.
-// Phase 2 replaces this with a real result from initAgentWiring.
-func agentWiringStub() check.Result {
-	return check.Result{
-		Name:    "Agent wiring",
-		Status:  check.Skip,
-		Summary: "Phase 2 — CLAUDE.md / AGENTS.md bootstrap snippet not yet written",
-		Details: []string{"re-run `vp init` after Phase 2 lands to wire detected agent files"},
+// initAgentWiring detects agent instruction files in projectRoot, writes the
+// vibe-palace managed block into each, and returns one status row per
+// (canonical) target plus one row per deliberate skip. When the project
+// itself is not ready (no config was written and none pre-existed), a single
+// skip row directs the user to set up the project first.
+func initAgentWiring(projectRoot string, projectReady bool) []check.Result {
+	if !projectReady {
+		return []check.Result{{
+			Name:    "Agent wiring",
+			Status:  check.Skip,
+			Summary: "skipped — no project config; run `vp init` inside a project directory",
+		}}
 	}
+
+	targets, skips := agentfile.Detect(projectRoot)
+	var rows []check.Result
+
+	if len(targets) == 0 {
+		rows = append(rows, check.Result{
+			Name:    "Agent wiring",
+			Status:  check.Skip,
+			Summary: "no agent file found; create CLAUDE.md/AGENTS.md and re-run `vp init`",
+		})
+	}
+
+	for _, t := range targets {
+		display := t.DisplayName
+		if len(t.Aliases) > 0 {
+			display += " (→ " + strings.Join(t.Aliases, ", ") + ")"
+		}
+		res, err := agentfile.Wire(t)
+		if err != nil {
+			rows = append(rows, check.Result{
+				Name:    "Agent wiring",
+				Status:  check.Fail,
+				Summary: display + ": " + err.Error(),
+			})
+			continue
+		}
+		switch res.Kind {
+		case agentfile.Added:
+			rows = append(rows, check.Result{
+				Name:    "Agent wiring",
+				Status:  check.Pass,
+				Summary: display + " — block added",
+			})
+		case agentfile.Updated:
+			summary := display + " — block updated"
+			if res.PrevSha != "" {
+				summary += " (was " + res.PrevSha + ")"
+			}
+			rows = append(rows, check.Result{
+				Name:    "Agent wiring",
+				Status:  check.Pass,
+				Summary: summary,
+			})
+		case agentfile.Unchanged:
+			rows = append(rows, check.Result{
+				Name:    "Agent wiring",
+				Status:  check.Info,
+				Summary: display + " — block unchanged",
+			})
+		}
+	}
+
+	for _, s := range skips {
+		rows = append(rows, check.Result{
+			Name:    "Agent wiring",
+			Status:  check.Skip,
+			Summary: s.DisplayName + " — " + s.Reason,
+		})
+	}
+	return rows
 }
 
 // printInitStatus renders the end-of-run status table. Mirrors check.Print's

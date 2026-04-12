@@ -217,6 +217,58 @@ with 38 tools available.
 **Note:** Vibe-palace replaces CLAUDE.md-based context injection —
 `vp_bootstrap_context` delivers workflow, resume, tasks, and sessions via MCP.
 
+### Agent-file wiring (CLAUDE.md, AGENTS.md, .cursorrules, .rules, copilot)
+
+When an AI starts a session in a fresh project, it needs one concrete pointer
+to call `vp_bootstrap_context` and to interpret `vpc-<name>` command
+triggers. `vp init` handles this by appending a delimited managed block to
+any agent instruction file you already have. The detected files are:
+
+| File | Where |
+| --- | --- |
+| `CLAUDE.md` | project root |
+| `AGENTS.md` | project root |
+| `.cursorrules` | project root |
+| `.rules` | project root (Zed convention) |
+| `.github/copilot-instructions.md` | `.github/` (only if the dir exists) |
+
+`vp init` never creates these files and never creates `.github/`. If none of
+them exist, init reports `[skip] Agent wiring — no agent file found` and
+tells you to create one (even an empty `CLAUDE.md` works) and re-run.
+
+The block looks like this:
+
+```markdown
+<!-- vibe-palace:begin v=1 sha=abc1234 -->
+## Vibe-Palace Integration
+
+- Call `vp_bootstrap_context` at session start to load project context,
+  resume, active tasks, recent sessions, and the command manifest.
+- When the user types `vpc-<name>` (for example `vpc-wrap`,
+  `vpc-restart`, `vpc-review-plan`), call `vp_get_command("<name>")`
+  and follow the returned instructions.
+- Use `vp_list_commands` to see all commands currently available for
+  this project.
+<!-- vibe-palace:end -->
+```
+
+**Idempotency.** Re-running `vp init` is safe — if the block is already
+present and the content hash (`sha=...`) matches the current template, it
+reports `[info] block unchanged` and doesn't touch the file. If the block is
+missing it's appended; if it's stale (hash differs, or the body was
+hand-edited), it's replaced in place without touching anything outside the
+delimiters.
+
+**Symlinks.** If `CLAUDE.md` and `AGENTS.md` are symlinked to the same
+underlying file, vibe-palace canonicalizes via realpath and writes once.
+The status row shows both names: `CLAUDE.md (→ AGENTS.md)`.
+
+**Removing the block.** Delete the lines between (and including) the
+`<!-- vibe-palace:begin ... -->` and `<!-- vibe-palace:end -->` markers.
+`vp init` will re-add the block on next run; to prevent that, delete the
+agent file entirely (or add a `.vibe-palace.toml` key in a future release
+once opt-out is wired up).
+
 ### Zed
 
 Add to `~/.config/zed/settings.json` or `.zed/settings.json` in your project:

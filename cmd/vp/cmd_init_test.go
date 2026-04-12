@@ -400,7 +400,11 @@ func TestInitStatusTableRendered(t *testing.T) {
 		"[pass] Vault",
 		"[pass] Project config",
 		"go.mod detected",
+		// No agent files in this fresh tmpdir — agent wiring reports skip
+		// with the "create CLAUDE.md/AGENTS.md" hint (plus the .github/
+		// copilot skip line).
 		"[skip] Agent wiring",
+		"no agent file found",
 		"Summary:",
 		"it is idempotent",
 	}
