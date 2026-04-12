@@ -5,6 +5,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
@@ -96,6 +98,111 @@ func TestOpenMigrateVaultFromConfig(t *testing.T) {
 		t.Fatal("vault is nil")
 	}
 	_ = cfg
+}
+
+func TestBuildSlugResolver_YesAuto(t *testing.T) {
+	dir := t.TempDir()
+	r, err := buildSlugResolver(dir, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.(*migrate.AutoResolver); !ok {
+		t.Errorf("expected AutoResolver, got %T", r)
+	}
+}
+
+func TestBuildSlugResolver_SlugMapWrapsBase(t *testing.T) {
+	dir := t.TempDir()
+	r, err := buildSlugResolver(dir, true, "foo=bar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.(*migrate.MapResolver); !ok {
+		t.Errorf("expected MapResolver, got %T", r)
+	}
+}
+
+func TestBuildSlugResolver_InvalidMap(t *testing.T) {
+	dir := t.TempDir()
+	_, err := buildSlugResolver(dir, true, "bogus")
+	if err == nil {
+		t.Fatal("expected error on malformed slug-map")
+	}
+}
+
+func TestBuildSlugResolver_NonTTYSelectsAuto(t *testing.T) {
+	// In `go test`, stdin is typically /dev/null or pipe, not a TTY —
+	// so !isStdinTTY() → AutoResolver path.
+	dir := t.TempDir()
+	r, err := buildSlugResolver(dir, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// May be AutoResolver or InteractiveResolver depending on test env;
+	// either is acceptable but for `go test` it should be AutoResolver.
+	switch r.(type) {
+	case *migrate.AutoResolver, *migrate.InteractiveResolver:
+		// ok
+	default:
+		t.Errorf("unexpected resolver type %T", r)
+	}
+}
+
+func TestScanOnDiskSlugsForResolver(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "A_B"), 0o755)
+	os.WriteFile(filepath.Join(root, "skipfile"), []byte("x"), 0o644)
+	got, err := scanOnDiskSlugsForResolver(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got["a-b"] {
+		t.Errorf("missing a-b in %v", got)
+	}
+	if got["skipfile"] {
+		t.Errorf("file should not appear: %v", got)
+	}
+}
+
+func TestScanOnDiskSlugsForResolver_MissingDir(t *testing.T) {
+	got, err := scanOnDiskSlugsForResolver(filepath.Join(t.TempDir(), "nope"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty, got %v", got)
+	}
+}
+
+func TestPrintMigrateResult_WithSlugRemap(t *testing.T) {
+	result := migrate.ImportResult{
+		ProjectsScanned: 2,
+		SlugRemap:       map[string]string{"foo": "foo-vp", "bar": "bar-vp"},
+	}
+	printMigrateResult(result, true)
+}
+
+func TestMigrateProgressFuncDeferred(t *testing.T) {
+	fn := migrateProgressFuncDeferred()
+	// First event triggers banner.
+	fn(migrate.ProgressEvent{Type: migrate.ProgressProjectStart, Project: "p"})
+	fn(migrate.ProgressEvent{Type: migrate.ProgressSessionDone, SessionID: "s", Current: 1, Total: 1})
+	fn(migrate.ProgressEvent{Type: migrate.ProgressProjectDone})
+}
+
+func TestIsStdinTTY_Runs(t *testing.T) {
+	// Just prove it doesn't panic.
+	_ = isStdinTTY()
+}
+
+func TestMigrateMemPalaceDryRun(t *testing.T) {
+	setupTestVaultEnv(t)
+	cmd := cmdMigrateMemPalace()
+	code := cmd.Run([]string{"--export-path", "/nonexistent/export.json", "--dry-run"})
+	// Should get past flag parsing + vault open; fails at embedder or import.
+	if code == cli.ExitUser {
+		t.Errorf("should not be ExitUser (flags valid)")
+	}
 }
 
 func TestMigrateVibeVaultDryRun(t *testing.T) {

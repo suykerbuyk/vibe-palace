@@ -29,6 +29,10 @@ type importMarker struct {
 
 // ImportVibeVault migrates session data from a VibeVault-style Projects/
 // directory tree into the palace vault, using the capture indexer pipeline.
+//
+// opts.Resolver controls how slug collisions between sibling project
+// directories are resolved. If nil, ImportVibeVault installs a default
+// AutoResolver (same behavior as passing --yes).
 func ImportVibeVault(
 	ctx context.Context,
 	vault *storage.Vault,
@@ -40,11 +44,21 @@ func ImportVibeVault(
 	var result ImportResult
 
 	// Step 1: scan projects and build slug map.
-	projects, err := scanProjects(vault.Root)
+	resolver := opts.Resolver
+	if resolver == nil {
+		onDisk, err := scanOnDiskSlugs(filepath.Join(vault.Root, "Projects"))
+		if err != nil {
+			return result, fmt.Errorf("scan existing slugs: %w", err)
+		}
+		resolver = &AutoResolver{OnDisk: onDisk}
+	}
+
+	projects, remap, err := scanProjects(vault.Root, resolver)
 	if err != nil {
 		return result, fmt.Errorf("scan projects: %w", err)
 	}
 	result.ProjectsScanned = len(projects)
+	result.SlugRemap = remap
 
 	// Step 2: create a single indexer for the entire run.
 	indexer := capture.NewIndexer(vault, engine, emb, cfg)
@@ -209,17 +223,29 @@ func ImportVibeVault(
 }
 
 // scanProjects scans {vaultRoot}/Projects/ and returns a map of
-// original directory path to slugified project name. It detects slug
-// collisions and returns an error before any writes occur.
-func scanProjects(vaultRoot string) (map[string]string, error) {
+// original directory path to slugified project name. Slug collisions
+// are delegated to the SlugResolver. The second return value is a map
+// of originalSlug → finalSlug for every directory whose slug was
+// renamed; unchanged entries are omitted.
+//
+// Processing order is os.ReadDir order (sorted by name). The first
+// directory to claim a slug keeps it; later colliders are renamed.
+func scanProjects(vaultRoot string, resolver SlugResolver) (map[string]string, map[string]string, error) {
 	projectsDir := filepath.Join(vaultRoot, "Projects")
 	entries, err := os.ReadDir(projectsDir)
 	if err != nil {
-		return nil, fmt.Errorf("read Projects dir: %w", err)
+		return nil, nil, fmt.Errorf("read Projects dir: %w", err)
+	}
+
+	onDisk, err := scanOnDiskSlugs(projectsDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("scan on-disk slugs: %w", err)
 	}
 
 	result := make(map[string]string, len(entries))
 	slugToDir := make(map[string]string, len(entries))
+	taken := make(map[string]bool, len(entries))
+	remap := make(map[string]string)
 
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -235,16 +261,34 @@ func scanProjects(vaultRoot string) (map[string]string, error) {
 		dirPath := filepath.Join(projectsDir, name)
 
 		if prev, ok := slugToDir[s]; ok {
-			return nil, fmt.Errorf(
-				"slug collision: directories %q and %q both map to slug %q",
-				prev, dirPath, s,
-			)
+			if resolver == nil {
+				return nil, nil, fmt.Errorf(
+					"slug collision: directories %q and %q both map to slug %q (no resolver configured)",
+					prev, dirPath, s,
+				)
+			}
+			newSlug, rerr := resolver.Resolve(dirPath, prev, s, taken)
+			if rerr != nil {
+				return nil, nil, rerr
+			}
+			if verr := slug.Validate(newSlug); verr != nil {
+				return nil, nil, fmt.Errorf("resolver returned invalid slug %q: %w", newSlug, verr)
+			}
+			if taken[newSlug] {
+				return nil, nil, fmt.Errorf("resolver returned slug %q that is already in use this scan", newSlug)
+			}
+			if onDisk[newSlug] {
+				return nil, nil, fmt.Errorf("resolver returned slug %q that already exists on disk", newSlug)
+			}
+			remap[s] = newSlug
+			s = newSlug
 		}
 		slugToDir[s] = dirPath
+		taken[s] = true
 		result[dirPath] = s
 	}
 
-	return result, nil
+	return result, remap, nil
 }
 
 // markerPath returns the path to the idempotency marker file for a project.

@@ -296,12 +296,20 @@ func TestImportVibeVault_SlugCollision(t *testing.T) {
 	cfg := storage.Config{}
 	engine := search.NewEngine(emb, vault, cfg)
 
-	_, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
-	if err == nil {
-		t.Fatal("expected slug collision error, got nil")
+	// Default resolver (AutoResolver) should auto-rename the later-sorted dir,
+	// not fatally abort.
+	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error with default resolver: %v", err)
 	}
-	if !strings.Contains(err.Error(), "slug collision") {
-		t.Errorf("error should mention slug collision, got: %v", err)
+	if result.ProjectsScanned != 2 {
+		t.Errorf("ProjectsScanned = %d, want 2", result.ProjectsScanned)
+	}
+	if len(result.SlugRemap) != 1 {
+		t.Errorf("SlugRemap = %v, want 1 entry", result.SlugRemap)
+	}
+	if got, want := result.SlugRemap["test-project"], "test-project-vp"; got != want {
+		t.Errorf("SlugRemap[test-project] = %q, want %q", got, want)
 	}
 }
 

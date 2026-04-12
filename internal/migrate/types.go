@@ -36,6 +36,9 @@ type ImportResult struct {
 	EntitiesCreated  int
 	TriplesCreated   int
 	Errors           []ImportError
+	// SlugRemap records collision-resolved renames (originalSlug → finalSlug).
+	// Empty when no collisions occurred.
+	SlugRemap map[string]string
 }
 
 // ImportError records a single failure during migration.
@@ -50,4 +53,7 @@ type ImportError struct {
 type ImportOptions struct {
 	DryRun   bool
 	Progress ProgressFunc
+	// Resolver decides slug collisions during the scan phase.
+	// If nil, ImportVibeVault uses an AutoResolver.
+	Resolver SlugResolver
 }

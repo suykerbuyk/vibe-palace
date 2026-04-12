@@ -131,14 +131,36 @@ Re-embeds all content with ONNX to ensure consistent embeddings.
 #### Import CLI (Task 8.3)
 
 ```bash
-vp migrate vibevault [--vault-path PATH] [--dry-run]
+vp migrate vibevault [--vault-path PATH] [--dry-run] [--yes] [--slug-map OLD=NEW,...]
 vp migrate mempalace [--palace-path PATH] [--kg-path PATH] [--dry-run]
 ```
 
 - Progress reporting: session count, drawer count, entity count
-- `--dry-run` reports what would be imported without writing
+- `--dry-run` reports what would be imported without writing. It
+  prompts for slug-collision resolution just like a real run; use
+  `--yes` to auto-accept default rename suggestions.
 - Individual item failures are reported but don't abort the import
 - Safe to re-run (idempotent by session ID)
+
+#### Slug collision resolution
+
+When two `Projects/*` directories slugify to the same value (e.g. a
+directory renamed during an earlier workflow), `vp migrate vibevault`
+resolves the collision without losing data:
+
+- The first directory (by `os.ReadDir` sorted name order) keeps the
+  original slug.
+- Later colliders are renamed to `{slug}-vp`, escalating to
+  `{slug}-vp2`, `{slug}-vp3`, … past any already-taken or already-on-disk
+  slugs from prior migrations.
+- **Interactive (default with a TTY):** the command proposes the
+  default rename and accepts Enter to confirm, a custom slug to
+  override, or Ctrl-D / EOF to abort cleanly (no writes).
+- **`--yes`:** silently accept every default rename.
+- **`--slug-map OLD=NEW[,OLD=NEW…]`:** pre-specify renames; any
+  collisions not covered by the map fall back to interactive or
+  auto mode.
+- The final remap is printed in the summary (dry-run and real).
 
 ### Phase 2: Hook Replacement (PRD Phase 9)
 

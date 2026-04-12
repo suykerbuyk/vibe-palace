@@ -5,13 +5,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/migrate"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
+	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -30,7 +34,9 @@ func cmdMigrate() *cli.Command {
 
 var migrateVibeVaultFlags = []cli.FlagDef{
 	{Name: "--vault-path", Arg: "PATH", Help: "VibeVault root (default: from config)"},
-	{Name: "--dry-run", Help: "Show what would be imported without writing"},
+	{Name: "--dry-run", Help: "Preview import; prompts for conflict resolution like a real run. Use --yes to auto-accept defaults."},
+	{Name: "--yes", Short: "-y", Help: "Accept default slug-rename suggestions without prompting"},
+	{Name: "--slug-map", Arg: "OLD=NEW[,OLD=NEW...]", Help: "Pre-specify slug renames; uncovered collisions fall back to interactive or auto"},
 }
 
 func cmdMigrateVibeVault() *cli.Command {
@@ -51,8 +57,16 @@ func cmdMigrateVibeVault() *cli.Command {
 			}
 			vaultPath := fv.Get("--vault-path")
 			dryRun := fv.Bool("--dry-run")
+			yes := fv.Bool("--yes")
+			slugMapArg := fv.Get("--slug-map")
 
 			vault, cfg, err := openMigrateVault(vaultPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
+				return cli.ExitUser
+			}
+
+			resolver, err := buildSlugResolver(vault.Root, yes, slugMapArg)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
 				return cli.ExitUser
@@ -68,16 +82,21 @@ func cmdMigrateVibeVault() *cli.Command {
 			if dryRun {
 				fmt.Fprintln(os.Stderr, "Dry run — no data will be written.")
 			}
-			fmt.Fprintln(os.Stderr, "Importing VibeVault sessions...")
+			fmt.Fprintln(os.Stderr, "Scanning projects...")
 
 			result, err := migrate.ImportVibeVault(
 				context.Background(), vault, eng, emb, cfg,
 				migrate.ImportOptions{
 					DryRun:   dryRun,
-					Progress: migrateProgressFunc(),
+					Progress: migrateProgressFuncDeferred(),
+					Resolver: resolver,
 				},
 			)
 			if err != nil {
+				if errors.Is(err, migrate.ErrResolverAbort) {
+					fmt.Fprintf(os.Stderr, "\nAborted: %v\n", err)
+					return cli.ExitUser
+				}
 				fmt.Fprintf(os.Stderr, "\nError: %v\n", err)
 				return cli.ExitSystem
 			}
@@ -86,6 +105,69 @@ func cmdMigrateVibeVault() *cli.Command {
 			return cli.ExitOK
 		},
 	}
+}
+
+// buildSlugResolver constructs a SlugResolver from CLI flags.
+// Selection rules:
+//   - --slug-map (optional) pre-resolves listed collisions.
+//   - --yes → AutoResolver for anything not covered.
+//   - Else (stdin TTY) → InteractiveResolver; (non-TTY) → AutoResolver.
+func buildSlugResolver(vaultRoot string, yes bool, slugMapArg string) (migrate.SlugResolver, error) {
+	onDisk, err := scanOnDiskSlugsForResolver(filepath.Join(vaultRoot, "Projects"))
+	if err != nil {
+		return nil, fmt.Errorf("scan existing slugs: %w", err)
+	}
+
+	var base migrate.SlugResolver
+	if yes || !isStdinTTY() {
+		base = &migrate.AutoResolver{OnDisk: onDisk}
+	} else {
+		base = &migrate.InteractiveResolver{OnDisk: onDisk}
+	}
+
+	parsed, err := migrate.ParseSlugMap(slugMapArg)
+	if err != nil {
+		return nil, fmt.Errorf("--slug-map: %w", err)
+	}
+	if len(parsed) == 0 {
+		return base, nil
+	}
+	return &migrate.MapResolver{Map: parsed, Fallback: base}, nil
+}
+
+// scanOnDiskSlugsForResolver returns the set of slugs already present
+// as directories under {vault}/Projects/ so the resolver can avoid
+// proposing rename targets that would collide with prior migrations.
+func scanOnDiskSlugsForResolver(projectsDir string) (map[string]bool, error) {
+	out := make(map[string]bool)
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return out, nil
+		}
+		return nil, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		s := slug.Slugify(e.Name())
+		if s != "" {
+			out[s] = true
+		}
+	}
+	return out, nil
+}
+
+// isStdinTTY reports whether stdin is a terminal. Non-terminal stdin
+// (pipe, file, /dev/null) means interactive prompts would block or
+// loop on EOF; the resolver builder falls back to AutoResolver.
+func isStdinTTY() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
 var migrateMemPalaceFlags = []cli.FlagDef{
@@ -215,6 +297,21 @@ func migrateProgressFunc() migrate.ProgressFunc {
 	}
 }
 
+// migrateProgressFuncDeferred wraps migrateProgressFunc with a one-shot
+// "Importing VibeVault sessions..." banner emitted on the first
+// project-start event — so the scan/prompt phase can complete first.
+func migrateProgressFuncDeferred() migrate.ProgressFunc {
+	inner := migrateProgressFunc()
+	var banner bool
+	return func(evt migrate.ProgressEvent) {
+		if !banner && evt.Type == migrate.ProgressProjectStart {
+			fmt.Fprintln(os.Stderr, "Importing VibeVault sessions...")
+			banner = true
+		}
+		inner(evt)
+	}
+}
+
 // printMigrateResult prints the migration summary to stderr.
 func printMigrateResult(result migrate.ImportResult, dryRun bool) {
 	prefix := "Done"
@@ -234,6 +331,18 @@ func printMigrateResult(result migrate.ImportResult, dryRun bool) {
 		fmt.Fprintf(os.Stderr, " (%d errors)", len(result.Errors))
 	}
 	fmt.Fprintln(os.Stderr)
+
+	if len(result.SlugRemap) > 0 {
+		fmt.Fprintln(os.Stderr, "\nSlug remap (collisions resolved):")
+		keys := make([]string, 0, len(result.SlugRemap))
+		for k := range result.SlugRemap {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Fprintf(os.Stderr, "  %s → %s\n", k, result.SlugRemap[k])
+		}
+	}
 
 	if !dryRun && (result.SessionsImported > 0 || result.DrawersCreated > 0) {
 		fmt.Fprintln(os.Stderr, "\nRestart the MCP server to rebuild search indexes.")
