@@ -61,6 +61,11 @@ install: build ## Build and install binary + man pages to PREFIX (default: ~/.lo
 	@mkdir -p $(PREFIX)/share/man/man1
 	@cp doc/man/man1/*.1 $(PREFIX)/share/man/man1/
 
+.PHONY: uninstall
+uninstall: ## Remove installed binary and man pages from PREFIX
+	rm -f $(PREFIX)/bin/$(BINARY)
+	rm -f $(PREFIX)/share/man/man1/vp*.1
+
 ##@ Release
 .PHONY: release
 release: ## Tag-based release — build and publish to GitHub Releases
