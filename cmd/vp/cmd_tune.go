@@ -68,7 +68,7 @@ func cmdTuneRooms() *cli.Command {
 				return cli.ExitUser
 			}
 
-			vault, err := storage.OpenVault("")
+			vault, err := openProjectVault()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp tune rooms: %v\n", err)
 				return cli.ExitSystem

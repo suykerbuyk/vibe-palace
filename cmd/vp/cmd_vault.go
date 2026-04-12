@@ -129,7 +129,7 @@ func cmdVaultSync() *cli.Command {
 }
 
 func vaultRoot() (string, error) {
-	v, err := storage.OpenVault("")
+	v, err := storage.OpenVaultGlobal()
 	if err != nil {
 		return "", err
 	}

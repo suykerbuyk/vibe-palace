@@ -153,7 +153,18 @@ func initProject(fv *cli.FlagValues) int {
 	}
 
 	// Write .vibe-palace.toml.
-	content := fmt.Sprintf("[project]\nname = %q\n", name)
+	// If --vault-path was passed, record it as a cwd-local override so this
+	// source directory binds to that vault regardless of the global config.
+	var header string
+	if vp := fv.Get("--vault-path"); vp != "" {
+		expanded, err := expandAndAbsPath(vp)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "vp init: resolve --vault-path: %v\n", err)
+			return cli.ExitUser
+		}
+		header = fmt.Sprintf("vault_path = %q\n\n", expanded)
+	}
+	content := header + fmt.Sprintf("[project]\nname = %q\n", name)
 	if d := fv.Get("--domain"); d != "" {
 		content += fmt.Sprintf("domain = %q\n", d)
 	}
@@ -171,7 +182,7 @@ func initProject(fv *cli.FlagValues) int {
 	}
 
 	// Create vault task directories if vault is available.
-	vault, err := storage.OpenVault("")
+	vault, err := storage.OpenVaultFromCwd(dir)
 	if err == nil {
 		tasksDir, err := vault.TasksDir(name)
 		if err == nil {
@@ -186,6 +197,22 @@ func initProject(fv *cli.FlagValues) int {
 
 	fmt.Fprintf(os.Stderr, "Initialized project %q in %s\n", name, dir)
 	return cli.ExitOK
+}
+
+// expandAndAbsPath expands a leading tilde and resolves to an absolute path.
+func expandAndAbsPath(p string) (string, error) {
+	if len(p) > 0 && p[0] == '~' {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		if p == "~" {
+			p = home
+		} else if len(p) > 1 && p[1] == '/' {
+			p = filepath.Join(home, p[2:])
+		}
+	}
+	return filepath.Abs(p)
 }
 
 // hasProjectSignals returns true if the directory looks like a project:

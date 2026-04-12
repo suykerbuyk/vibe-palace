@@ -58,6 +58,82 @@ func TestCheckConfig(t *testing.T) {
 			t.Error("expected non-nil error")
 		}
 	})
+
+	t.Run("reports global source by default", func(t *testing.T) {
+		tmp := t.TempDir()
+		home := filepath.Join(tmp, "home")
+		os.MkdirAll(home, 0o755)
+		configDir := filepath.Join(home, ".config", "vibe-palace")
+		os.MkdirAll(configDir, 0o755)
+		vaultDir := filepath.Join(tmp, "vault")
+		os.MkdirAll(vaultDir, 0o755)
+		os.WriteFile(filepath.Join(configDir, "config.toml"),
+			[]byte(`vault_path = "`+vaultDir+`"`+"\n"), 0o644)
+
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+		projectDir := filepath.Join(home, "code", "proj")
+		os.MkdirAll(projectDir, 0o755)
+		t.Chdir(projectDir)
+
+		_, vaultPath, r := CheckConfig()
+		if r.Status != Pass {
+			t.Fatalf("expected Pass, got %v: %s", r.Status, r.Summary)
+		}
+		if vaultPath != vaultDir {
+			t.Errorf("vaultPath = %q, want %q", vaultPath, vaultDir)
+		}
+		foundSource := false
+		for _, d := range r.Details {
+			if strings.HasPrefix(d, "vault_path source = global:") {
+				foundSource = true
+			}
+		}
+		if !foundSource {
+			t.Errorf("details missing global source line: %v", r.Details)
+		}
+	})
+
+	t.Run("reports cwd source when cwd override present", func(t *testing.T) {
+		tmp := t.TempDir()
+		home := filepath.Join(tmp, "home")
+		os.MkdirAll(home, 0o755)
+		configDir := filepath.Join(home, ".config", "vibe-palace")
+		os.MkdirAll(configDir, 0o755)
+		globalVault := filepath.Join(tmp, "global-vault")
+		os.MkdirAll(globalVault, 0o755)
+		os.WriteFile(filepath.Join(configDir, "config.toml"),
+			[]byte(`vault_path = "`+globalVault+`"`+"\n"), 0o644)
+
+		altVault := filepath.Join(tmp, "alt-vault")
+		os.MkdirAll(altVault, 0o755)
+		projectDir := filepath.Join(home, "code", "proj")
+		os.MkdirAll(projectDir, 0o755)
+		os.WriteFile(filepath.Join(projectDir, ".vibe-palace.toml"),
+			[]byte(`vault_path = "`+altVault+`"`+"\n"), 0o644)
+
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		t.Chdir(projectDir)
+
+		_, vaultPath, r := CheckConfig()
+		if r.Status != Pass {
+			t.Fatalf("expected Pass, got %v: %s", r.Status, r.Summary)
+		}
+		if vaultPath != altVault {
+			t.Errorf("vaultPath = %q, want %q", vaultPath, altVault)
+		}
+		foundSource := false
+		for _, d := range r.Details {
+			if strings.HasPrefix(d, "vault_path source = cwd:") {
+				foundSource = true
+			}
+		}
+		if !foundSource {
+			t.Errorf("details missing cwd source line: %v", r.Details)
+		}
+	})
 }
 
 func TestCheckVault(t *testing.T) {

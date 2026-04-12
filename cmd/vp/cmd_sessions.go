@@ -51,7 +51,7 @@ func cmdSessions() *cli.Command {
 				limit = 10
 			}
 
-			vault, err := storage.OpenVault("")
+			vault, err := openProjectVault()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp sessions: %v\n", err)
 				return cli.ExitUser

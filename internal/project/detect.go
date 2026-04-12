@@ -25,9 +25,12 @@ type ProjectConfig struct {
 	Tags   []string `toml:"tags"`
 }
 
-// projectFile is the top-level TOML structure for .vibe-palace.toml.
-type projectFile struct {
-	Project ProjectConfig `toml:"project"`
+// ProjectFile is the top-level TOML structure for .vibe-palace.toml.
+// It carries the [project] block and an optional top-level vault_path
+// override. Other top-level keys are ignored.
+type ProjectFile struct {
+	Project   ProjectConfig `toml:"project"`
+	VaultPath string        `toml:"vault_path"`
 }
 
 // DetectProject determines the project name for the given working directory.
@@ -76,17 +79,29 @@ func DetectProject(cwd string) (string, error) {
 
 // ParseProjectConfig parses a .vibe-palace.toml file and returns the project
 // configuration. Returns an error if the file cannot be read or is invalid TOML.
+// Unknown top-level keys are tolerated.
 func ParseProjectConfig(path string) (ProjectConfig, error) {
-	data, err := os.ReadFile(path)
+	pf, err := ParseProjectFile(path)
 	if err != nil {
-		return ProjectConfig{}, fmt.Errorf("read config: %w", err)
-	}
-
-	var pf projectFile
-	if err := toml.Unmarshal(data, &pf); err != nil {
-		return ProjectConfig{}, fmt.Errorf("parse config: %w", err)
+		return ProjectConfig{}, err
 	}
 	return pf.Project, nil
+}
+
+// ParseProjectFile parses a .vibe-palace.toml file and returns the full
+// file contents, including any top-level vault_path override. Unknown
+// top-level keys are tolerated.
+func ParseProjectFile(path string) (ProjectFile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ProjectFile{}, fmt.Errorf("read config: %w", err)
+	}
+
+	var pf ProjectFile
+	if err := toml.Unmarshal(data, &pf); err != nil {
+		return ProjectFile{}, fmt.Errorf("parse config: %w", err)
+	}
+	return pf, nil
 }
 
 // findFileUpward walks from dir toward the filesystem root looking for a file

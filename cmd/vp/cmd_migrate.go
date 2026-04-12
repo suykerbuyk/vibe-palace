@@ -243,7 +243,7 @@ func openMigrateVault(vaultPath string) (*storage.Vault, storage.Config, error) 
 	if vaultPath != "" {
 		vault = storage.NewVault(vaultPath)
 	} else {
-		vault, err = storage.OpenVault("")
+		vault, err = openProjectVault()
 		if err != nil {
 			return nil, storage.Config{}, fmt.Errorf("open vault: %w", err)
 		}

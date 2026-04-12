@@ -10,7 +10,8 @@ import (
 )
 
 // setupTestVaultEnv creates a temp vault and configures XDG_CONFIG_HOME
-// so that storage.OpenVault("") finds a valid config pointing to the temp vault.
+// so that storage.OpenVaultGlobal (and OpenVaultFromCwd, absent any cwd
+// override) find a valid config pointing to the temp vault.
 // Returns the vault root path and a cleanup function that restores the env.
 func setupTestVaultEnv(t *testing.T) string {
 	t.Helper()

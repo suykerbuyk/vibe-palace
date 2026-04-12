@@ -14,7 +14,6 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
-	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 var searchFlags = []cli.FlagDef{
@@ -58,7 +57,7 @@ func cmdSearch() *cli.Command {
 				return cli.ExitUser
 			}
 
-			vault, err := storage.OpenVault("")
+			vault, err := openProjectVault()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp search: %v\n", err)
 				return cli.ExitUser

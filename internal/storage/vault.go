@@ -69,13 +69,34 @@ func NewVault(root string) *Vault {
 	return &Vault{Root: root}
 }
 
-// OpenVault is a convenience that reads the config and returns a ready Vault.
+// OpenVault is a convenience that reads the config at the given explicit
+// path (or the global default when empty) and returns a ready Vault.
+// Prefer OpenVaultFromCwd for commands that run in a source-dir context
+// and OpenVaultGlobal for commands that manage the vault itself.
 func OpenVault(configPath string) (*Vault, error) {
 	root, err := VaultRoot(configPath)
 	if err != nil {
 		return nil, err
 	}
 	return NewVault(root), nil
+}
+
+// OpenVaultFromCwd resolves the vault via ResolveVaultPath(cwd), honoring
+// any cwd-local vault_path override and falling back to the global
+// config. Intended for commands that run in a user source directory.
+func OpenVaultFromCwd(cwd string) (*Vault, error) {
+	root, _, err := ResolveVaultPath(cwd)
+	if err != nil {
+		return nil, err
+	}
+	return NewVault(root), nil
+}
+
+// OpenVaultGlobal reads the global config only, ignoring any cwd-local
+// .vibe-palace.toml override. Intended for commands that manage the
+// vault itself, where a cwd override would be confusing.
+func OpenVaultGlobal() (*Vault, error) {
+	return OpenVault("")
 }
 
 // expandTilde replaces a leading ~ with the user's home directory.

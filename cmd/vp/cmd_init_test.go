@@ -11,6 +11,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 // initTestEnv sets up an isolated XDG_CONFIG_HOME so init tests don't
@@ -203,6 +204,58 @@ func TestInitVaultPathFlag(t *testing.T) {
 	// Vault directory must have been created.
 	if _, err := os.Stat(vaultDir); err != nil {
 		t.Errorf("vault directory not created: %v", err)
+	}
+
+	// The cwd .vibe-palace.toml must also carry the vault_path override.
+	cwdFile := filepath.Join(projDir, project.ConfigFileName)
+	cwdData, err := os.ReadFile(cwdFile)
+	if err != nil {
+		t.Fatalf("cwd config not created: %v", err)
+	}
+	if !strings.Contains(string(cwdData), "vault_path = \""+vaultDir+"\"") {
+		t.Errorf("cwd config missing vault_path override:\n%s", cwdData)
+	}
+}
+
+// When the global config already exists, passing --vault-path to vp init
+// records the override only in the cwd .vibe-palace.toml, leaving global
+// untouched (matching the work/personal split use case).
+func TestInitVaultPathWritesCwdOverride(t *testing.T) {
+	configDir := initTestEnv(t, true) // global config already exists
+	altVault := filepath.Join(t.TempDir(), "alt-vault")
+
+	projDir := t.TempDir()
+	cmd := cmdInit()
+	code := cmd.Run([]string{projDir, "--vault-path", altVault, "--name", "alt-proj"})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+
+	// Global config must NOT have been rewritten to the new path.
+	globalData, _ := os.ReadFile(filepath.Join(configDir, "vibe-palace", "config.toml"))
+	if strings.Contains(string(globalData), altVault) {
+		t.Errorf("global config unexpectedly contains override path: %s", globalData)
+	}
+
+	// Cwd file must carry the override.
+	cwdData, err := os.ReadFile(filepath.Join(projDir, project.ConfigFileName))
+	if err != nil {
+		t.Fatalf("cwd config not created: %v", err)
+	}
+	if !strings.Contains(string(cwdData), "vault_path = \""+altVault+"\"") {
+		t.Errorf("cwd config missing vault_path override:\n%s", cwdData)
+	}
+
+	// And resolving from the project dir picks up the override.
+	path, source, err := storage.ResolveVaultPath(projDir)
+	if err != nil {
+		t.Fatalf("ResolveVaultPath: %v", err)
+	}
+	if path != altVault {
+		t.Errorf("resolved path = %q, want %q", path, altVault)
+	}
+	if !strings.HasPrefix(source, "cwd:") {
+		t.Errorf("source = %q, want cwd: prefix", source)
 	}
 }
 

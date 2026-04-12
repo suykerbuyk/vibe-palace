@@ -244,6 +244,77 @@ func TestParseProjectConfig_EmptyFile(t *testing.T) {
 	}
 }
 
+func TestParseProjectFile_VaultPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ConfigFileName)
+	content := `vault_path = "/tmp/alt-vault"
+
+[project]
+name = "test-proj"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	pf, err := ParseProjectFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pf.VaultPath != "/tmp/alt-vault" {
+		t.Errorf("VaultPath = %q, want %q", pf.VaultPath, "/tmp/alt-vault")
+	}
+	if pf.Project.Name != "test-proj" {
+		t.Errorf("Project.Name = %q, want %q", pf.Project.Name, "test-proj")
+	}
+}
+
+func TestParseProjectFile_UnknownKeysTolerated(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ConfigFileName)
+	content := `vault_path = "/tmp/v"
+future_field = "ignored"
+
+[project]
+name = "p"
+
+[future_section]
+key = "value"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	pf, err := ParseProjectFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pf.VaultPath != "/tmp/v" {
+		t.Errorf("VaultPath = %q, want %q", pf.VaultPath, "/tmp/v")
+	}
+	if pf.Project.Name != "p" {
+		t.Errorf("Project.Name = %q, want %q", pf.Project.Name, "p")
+	}
+}
+
+func TestParseProjectFile_NoVaultPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ConfigFileName)
+	content := `[project]
+name = "p"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	pf, err := ParseProjectFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pf.VaultPath != "" {
+		t.Errorf("VaultPath = %q, want empty", pf.VaultPath)
+	}
+}
+
 // --- extractRepoName tests ---
 
 func TestExtractRepoName(t *testing.T) {

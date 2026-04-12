@@ -46,7 +46,7 @@ func cmdStatus() *cli.Command {
 				return cli.ExitUser
 			}
 
-			vault, err := storage.OpenVault("")
+			vault, err := openProjectVault()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp status: %v\n", err)
 				return cli.ExitUser

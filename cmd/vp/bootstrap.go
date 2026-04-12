@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
@@ -17,6 +18,16 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/tools"
 	"github.com/suykerbuyk/vibe-palace/internal/vplog"
 )
+
+// openProjectVault opens the vault honoring any cwd-local vault_path
+// override from .vibe-palace.toml, walking up from os.Getwd().
+func openProjectVault() (*storage.Vault, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("get working directory: %w", err)
+	}
+	return storage.OpenVaultFromCwd(cwd)
+}
 
 // serverStack holds the full MCP server stack. Callers must defer close().
 type serverStack struct {
@@ -30,7 +41,7 @@ type serverStack struct {
 
 // bootstrap opens the vault and initializes the full MCP server stack.
 func bootstrap() (*serverStack, error) {
-	v, err := storage.OpenVault("")
+	v, err := openProjectVault()
 	if err != nil {
 		return nil, fmt.Errorf("open vault: %w", err)
 	}

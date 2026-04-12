@@ -52,7 +52,7 @@ func cmdInject() *cli.Command {
 				maxTokens = 8000
 			}
 
-			vault, err := storage.OpenVault("")
+			vault, err := openProjectVault()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp inject: %v\n", err)
 				return cli.ExitUser

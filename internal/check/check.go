@@ -79,7 +79,8 @@ func Run() []Result {
 }
 
 // CheckConfig verifies the config file can be found and parsed.
-// Returns the config file path, resolved vault path, and the check result.
+// Returns the global config file path, the resolved vault path (honoring
+// any cwd-local .vibe-palace.toml override), and the check result.
 func CheckConfig() (configPath, vaultPath string, r Result) {
 	r.Name = "Config"
 
@@ -91,7 +92,9 @@ func CheckConfig() (configPath, vaultPath string, r Result) {
 		return
 	}
 
-	vaultPath, err = storage.VaultRoot("")
+	cwd, _ := os.Getwd()
+	var source string
+	vaultPath, source, err = storage.ResolveVaultPath(cwd)
 	if err != nil {
 		r.Status = Fail
 		r.Summary = fmt.Sprintf("not found at %s", configPath)
@@ -102,7 +105,10 @@ func CheckConfig() (configPath, vaultPath string, r Result) {
 
 	r.Status = Pass
 	r.Summary = configPath
-	r.Details = []string{fmt.Sprintf("vault_path = %s", vaultPath)}
+	r.Details = []string{
+		fmt.Sprintf("vault_path = %s", vaultPath),
+		fmt.Sprintf("vault_path source = %s", source),
+	}
 	return
 }
 
