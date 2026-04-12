@@ -175,7 +175,8 @@ Add to `.mcp.json` in your project root (project-scope) or `~/.claude.json`
   "mcpServers": {
     "vibe-palace": {
       "type": "stdio",
-      "command": "vp"
+      "command": "vp",
+      "args": ["mcp"]
     }
   }
 }
@@ -195,7 +196,7 @@ Add to `~/.config/zed/settings.json` or `.zed/settings.json` in your project:
 {
   "context_servers": {
     "vibe-palace": {
-      "command": { "path": "vp", "args": [] }
+      "command": { "path": "vp", "args": ["mcp"] }
     }
   }
 }
@@ -214,7 +215,7 @@ MCP server config (typically `~/.config/mcphub/servers.json`):
   "mcpServers": {
     "vibe-palace": {
       "command": "vp",
-      "args": []
+      "args": ["mcp"]
     }
   }
 }
@@ -232,7 +233,7 @@ Add to `opencode.json` in your project root or `~/.config/opencode/`:
   "mcp": {
     "vibe-palace": {
       "type": "local",
-      "command": ["vp"],
+      "command": ["vp", "mcp"],
       "enabled": true
     }
   }

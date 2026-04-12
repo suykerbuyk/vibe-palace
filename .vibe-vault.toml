@@ -5,7 +5,7 @@
 [project]
 name = "vibe-palace"
 domain = "personal"          # e.g. "work", "personal", "opensource", or custom
-tags = ["go", "cli", "AI", "MCP"]            # e.g. ["go", "cli", "obsidian"]
+tags = ["go", "cli", "AI", "MCP", "game", "checkers"]            # e.g. ["go", "cli", "obsidian"]
 
 [meta]
 author = "John Suykerbuyk, john@syketech.com"
