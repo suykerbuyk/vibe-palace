@@ -105,6 +105,10 @@ func TestLoadConfigMissingProject(t *testing.T) {
 }
 
 func TestGetConfigValueEmbedded(t *testing.T) {
+	// Redirect UserConfigDir to a temp dir so the user's real global config
+	// (which would register as "vault" layer) doesn't leak into the test.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 	v := testVault(t)
 
 	val, source, err := v.GetConfigValue("", "http_port")
@@ -120,6 +124,8 @@ func TestGetConfigValueEmbedded(t *testing.T) {
 }
 
 func TestGetConfigValueNested(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 	v := testVault(t)
 
 	val, source, err := v.GetConfigValue("", "embedder.model")

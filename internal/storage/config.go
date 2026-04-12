@@ -9,9 +9,30 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/BurntSushi/toml"
 )
+
+// CurrentVersionMajor and CurrentVersionMinor are the schema version that
+// this binary understands. A config file whose version_major exceeds
+// CurrentVersionMajor is rejected. Minor bumps are additive-only and
+// forward-compatible. See the [meta] block in defaults.toml.
+const (
+	CurrentVersionMajor = 1
+	CurrentVersionMinor = 0
+)
+
+// MetaKind values identify which config-file schema a [meta] block belongs to.
+const (
+	MetaKindGlobal       = "global"
+	MetaKindCwdProject   = "cwd-project"
+	MetaKindVaultProject = "vault-project"
+)
+
+// missingMetaWarnOnce suppresses the "config has no [meta] block" warning
+// to one emission per process, keyed by file path.
+var missingMetaWarnOnce sync.Map // map[string]*sync.Once
 
 //go:embed config/defaults.toml
 var defaultsToml string
@@ -24,6 +45,9 @@ func TemplateTomlContent() string { return templateToml }
 
 // Config holds resolved configuration values.
 type Config struct {
+	MetaVersionMajor        int                               `json:"meta_version_major"`
+	MetaVersionMinor        int                               `json:"meta_version_minor"`
+	MetaKind                string                            `json:"meta_kind"`
 	VaultPath               string                            `json:"vault_path"`
 	GitEnabled              bool                              `json:"git_enabled"`
 	HTTPPort                int                               `json:"http_port"`
@@ -60,8 +84,16 @@ type ScoringRoomOverride struct {
 	Low    []string `json:"low,omitempty"`
 }
 
+// tomlMeta captures the [meta] section that every managed config file carries.
+type tomlMeta struct {
+	VersionMajor int    `toml:"version_major"`
+	VersionMinor int    `toml:"version_minor"`
+	Kind         string `toml:"kind"`
+}
+
 // tomlConfig is the intermediate struct matching the TOML file structure.
 type tomlConfig struct {
+	Meta       tomlMeta `toml:"meta"`
 	VaultPath  string `toml:"vault_path"`
 	GitEnabled bool   `toml:"git_enabled"`
 	HTTPPort   int    `toml:"http_port"`
@@ -113,6 +145,9 @@ type tomlLLMConfig struct {
 // flatten converts a tomlConfig into a Config.
 func (tc *tomlConfig) flatten() Config {
 	return Config{
+		MetaVersionMajor:   tc.Meta.VersionMajor,
+		MetaVersionMinor:   tc.Meta.VersionMinor,
+		MetaKind:           tc.Meta.Kind,
 		VaultPath:          tc.VaultPath,
 		GitEnabled:         tc.GitEnabled,
 		HTTPPort:           tc.HTTPPort,
@@ -169,20 +204,35 @@ func flattenScoringRooms(rooms map[string]tomlRoomScoring) map[string]ScoringRoo
 
 // LoadConfig loads configuration with precedence: embedded < vault < project.
 // Missing config files at any level are silently skipped.
+//
+// After each on-disk layer decode, the resulting [meta] block is validated:
+//   - version_major > CurrentVersionMajor is a hard error (binary is too old).
+//   - version_major == 0 (missing [meta]) triggers one slog.Warn per path,
+//     recommending `vp config upgrade`.
+//
+// Decodes use per-layer tomlConfig instances so layer-2's version check sees
+// layer-2's values, not the embedded defaults.
 func (v *Vault) LoadConfig(project string) (Config, error) {
 	var tc tomlConfig
 
-	// Layer 1: embedded defaults.
+	// Layer 1: embedded defaults (never missing, never version-mismatched
+	// by construction — the build pins its own defaults).
 	if _, err := toml.Decode(defaultsToml, &tc); err != nil {
 		return Config{}, fmt.Errorf("decode embedded defaults: %w", err)
 	}
 
 	// Layer 2: vault-level config (~/.config/vibe-palace/config.toml).
+	// Meta is file-local, not inherited: zero it before each on-disk decode
+	// so Config.Meta* reflects the actual on-disk file (or zero if absent).
 	vaultConfigPath, err := VaultConfigFilePath()
 	if err == nil {
 		if _, err := os.Stat(vaultConfigPath); err == nil {
+			tc.Meta = tomlMeta{}
 			if _, err := toml.DecodeFile(vaultConfigPath, &tc); err != nil {
 				return Config{}, fmt.Errorf("decode vault config %s: %w", vaultConfigPath, err)
+			}
+			if err := checkConfigVersion(vaultConfigPath, tc.Meta); err != nil {
+				return Config{}, err
 			}
 		}
 	}
@@ -194,13 +244,35 @@ func (v *Vault) LoadConfig(project string) (Config, error) {
 			return Config{}, err
 		}
 		if _, err := os.Stat(projPath); err == nil {
+			tc.Meta = tomlMeta{}
 			if _, err := toml.DecodeFile(projPath, &tc); err != nil {
 				return Config{}, fmt.Errorf("decode project config %s: %w", projPath, err)
+			}
+			if err := checkConfigVersion(projPath, tc.Meta); err != nil {
+				return Config{}, err
 			}
 		}
 	}
 
 	return tc.flatten(), nil
+}
+
+// checkConfigVersion rejects configs from a future major version and warns
+// once per path when [meta] is missing (version_major == 0).
+func checkConfigVersion(path string, m tomlMeta) error {
+	if m.VersionMajor > CurrentVersionMajor {
+		return fmt.Errorf(
+			"config at %s is version %d.%d, this vp supports up to %d.%d — upgrade vp or downgrade the config",
+			path, m.VersionMajor, m.VersionMinor, CurrentVersionMajor, CurrentVersionMinor,
+		)
+	}
+	if m.VersionMajor == 0 {
+		oncePtr, _ := missingMetaWarnOnce.LoadOrStore(path, &sync.Once{})
+		oncePtr.(*sync.Once).Do(func() {
+			slog.Warn("config has no [meta] block; run 'vp config upgrade' to add schema version markers", "path", path)
+		})
+	}
+	return nil
 }
 
 // GetConfigValue returns the value for a given key and which config level

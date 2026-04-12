@@ -15,8 +15,11 @@ import (
 // declare the same set of TOML keys. This catches drift when a field is added
 // to one file but not the other.
 func TestTemplateSyncWithDefaults(t *testing.T) {
-	defaultKeys := extractKeys(t, defaultsToml, "defaults.toml")
-	templateKeys := extractKeys(t, templateToml, "template.toml")
+	// Use PresentKeys (active + commented) for both so that keys carried
+	// as commented-out documentation (e.g., [meta].kind, [palace.llm]) are
+	// counted equally in both files. This matches the upgrade pipeline's view.
+	defaultKeys := PresentKeys(defaultsToml)
+	templateKeys := PresentKeys(templateToml)
 
 	// Every default key must appear in the template.
 	for k := range defaultKeys {

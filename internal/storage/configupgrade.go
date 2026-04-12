@@ -271,6 +271,18 @@ func ParseTemplateBlocks(templateText string) map[string]string {
 // from a template section block, with the key line commented out if it isn't
 // already. Returns empty string if the key is not found.
 func ExtractKeySnippet(sectionBlock string, key string) string {
+	return extractKeySnippet(sectionBlock, key, false)
+}
+
+// ExtractKeySnippetActive is like ExtractKeySnippet but preserves active keys
+// as active (unmodified) rather than commenting them out. Used for sections
+// where the template intends its active values to be adopted verbatim, such
+// as the [meta] schema-version block.
+func ExtractKeySnippetActive(sectionBlock string, key string) string {
+	return extractKeySnippet(sectionBlock, key, true)
+}
+
+func extractKeySnippet(sectionBlock string, key string, keepActive bool) string {
 	lines := splitLines(sectionBlock)
 	var snippet []string
 	var commentBuffer []string
@@ -294,8 +306,12 @@ func ExtractKeySnippet(sectionBlock string, key string) string {
 		if k, ok := parseKeyAssignment(trimmed, false); ok {
 			if k == key {
 				snippet = append(snippet, commentBuffer...)
-				// Comment it out for insertion.
-				snippet = append(snippet, "# "+line)
+				if keepActive {
+					snippet = append(snippet, line)
+				} else {
+					// Comment it out for insertion.
+					snippet = append(snippet, "# "+line)
+				}
 				return joinLines(snippet)
 			}
 		}
@@ -305,6 +321,13 @@ func ExtractKeySnippet(sectionBlock string, key string) string {
 	}
 
 	return ""
+}
+
+// sectionKeepsActive reports whether a TOML section's keys should be injected
+// as active values rather than commented-out defaults. Only the [meta] block
+// (schema version markers) qualifies today.
+func sectionKeepsActive(section string) bool {
+	return section == "meta"
 }
 
 // UpgradeConfig inserts missing key snippets into the user's config text.
@@ -353,7 +376,12 @@ func UpgradeConfig(userText string, missing map[string][]string, templateBlocks 
 				if i := lastDot(key); i >= 0 {
 					shortKey = key[i+1:]
 				}
-				snippet := ExtractKeySnippet(templateBlocks[section], shortKey)
+				var snippet string
+			if sectionKeepsActive(section) {
+				snippet = ExtractKeySnippetActive(templateBlocks[section], shortKey)
+			} else {
+				snippet = ExtractKeySnippet(templateBlocks[section], shortKey)
+			}
 				if snippet != "" {
 					block += snippet + "\n"
 				} else {
@@ -381,7 +409,12 @@ func UpgradeConfig(userText string, missing map[string][]string, templateBlocks 
 			if i := lastDot(key); i >= 0 {
 				shortKey = key[i+1:]
 			}
-			snippet := ExtractKeySnippet(templateBlocks[section], shortKey)
+			var snippet string
+			if sectionKeepsActive(section) {
+				snippet = ExtractKeySnippetActive(templateBlocks[section], shortKey)
+			} else {
+				snippet = ExtractKeySnippet(templateBlocks[section], shortKey)
+			}
 			if snippet != "" {
 				block += snippet + "\n"
 			} else {

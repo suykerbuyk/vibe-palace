@@ -153,6 +153,11 @@ git_enabled = true
 http_port = 7423
 log_level = "info"
 
+[meta]
+version_major = 1
+version_minor = 0
+kind = "global"
+
 [embedder]
 model = "sentence-transformers/all-MiniLM-L6-v2"
 max_sequence_length = 256
@@ -365,6 +370,11 @@ func TestDetectMissingKeys_UpToDate(t *testing.T) {
 git_enabled = true
 http_port = 7423
 log_level = "info"
+
+[meta]
+version_major = 1
+version_minor = 0
+kind = "global"
 
 [embedder]
 model = "test"
