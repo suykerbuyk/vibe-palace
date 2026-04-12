@@ -70,6 +70,17 @@ func ImportVibeVault(
 			Project: projSlug,
 		})
 
+		// Seed the vault-project config.toml with a commented template so
+		// users see what's per-project tunable. Write-only-if-absent —
+		// does not clobber any config a user (or a prior migration) put
+		// in place. Skipped in dry-run.
+		if !opts.DryRun {
+			if _, _, err := vault.WriteVaultProjectConfig(projSlug); err != nil {
+				log.Printf("migrate: write vault-project config %s: %v", projSlug, err)
+				// Non-fatal: continue importing sessions.
+			}
+		}
+
 		// Gather session files.
 		sessionsDir := filepath.Join(dirPath, "sessions")
 		sessionFiles, _ := filepath.Glob(filepath.Join(sessionsDir, "*.md"))

@@ -38,8 +38,17 @@ func DetectMissingKeys(configPath string) ([]string, error) {
 
 // CanonicalKeys extracts dot-notation keys from the embedded defaults.toml.
 func CanonicalKeys() (map[string]bool, error) {
+	return CanonicalKeysFrom(defaultsToml)
+}
+
+// CanonicalKeysFrom extracts dot-notation keys from an arbitrary TOML
+// source. Only active (uncommented) keys are returned — pedagogical
+// commented examples in a template are not treated as canonical schema.
+// Callers pass the appropriate schema source (defaults.toml for global,
+// the project templates for cwd/vault-project upgrade paths).
+func CanonicalKeysFrom(text string) (map[string]bool, error) {
 	var raw map[string]any
-	if _, err := toml.Decode(defaultsToml, &raw); err != nil {
+	if _, err := toml.Decode(text, &raw); err != nil {
 		return nil, err
 	}
 	keys := make(map[string]bool)

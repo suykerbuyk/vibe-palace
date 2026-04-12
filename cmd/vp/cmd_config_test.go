@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 func TestConfigUpgradeDryRun(t *testing.T) {
@@ -226,5 +227,125 @@ func TestInitGlobalNoGitSkipsRepo(t *testing.T) {
 	// Vault should NOT have .git directory.
 	if _, err := os.Stat(filepath.Join(vaultDir, ".git")); err == nil {
 		t.Error("vault should NOT have .git when --no-git is used")
+	}
+}
+
+// --- Fix 1e: --cwd and --project flag tests ---
+
+func TestConfigUpgradeCwd_AddsMissingMeta(t *testing.T) {
+	// Start from a minimal hand-written cwd file — no [meta], no
+	// vault_path comment. Upgrade should add [meta] as active keys.
+	dir := t.TempDir()
+	cwdFile := filepath.Join(dir, ".vibe-palace.toml")
+	os.WriteFile(cwdFile, []byte(`[project]
+name = "p"
+`), 0o644)
+
+	cmd := cmdConfigUpgrade()
+	code := cmd.Run([]string{"--cwd", dir})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+
+	data, err := os.ReadFile(cwdFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "[meta]") {
+		t.Errorf("upgrade did not add [meta]: %s", content)
+	}
+	if !strings.Contains(content, "version_major = 1") {
+		t.Errorf("upgrade did not add active version_major: %s", content)
+	}
+
+	// Backup must be present.
+	if _, err := os.Stat(cwdFile + ".bak"); err != nil {
+		t.Errorf("backup not created: %v", err)
+	}
+}
+
+func TestConfigUpgradeCwd_UpToDate(t *testing.T) {
+	dir := t.TempDir()
+	cwdFile := filepath.Join(dir, ".vibe-palace.toml")
+	// Write a cwd file that already has all canonical keys (generated
+	// from the template).
+	content := storage.GenerateCwdProjectTOML("p", "", nil, "")
+	os.WriteFile(cwdFile, []byte(content), 0o644)
+
+	cmd := cmdConfigUpgrade()
+	code := cmd.Run([]string{"--cwd", dir})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+	if _, err := os.Stat(cwdFile + ".bak"); err == nil {
+		t.Error("no backup should be created when up to date")
+	}
+}
+
+func TestConfigUpgradeCwd_DryRun(t *testing.T) {
+	dir := t.TempDir()
+	cwdFile := filepath.Join(dir, ".vibe-palace.toml")
+	os.WriteFile(cwdFile, []byte("[project]\nname = \"p\"\n"), 0o644)
+
+	cmd := cmdConfigUpgrade()
+	code := cmd.Run([]string{"--cwd", dir, "--dry-run"})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+	// File must not have been modified.
+	data, _ := os.ReadFile(cwdFile)
+	if strings.Contains(string(data), "[meta]") {
+		t.Error("dry-run should not modify file")
+	}
+}
+
+func TestConfigUpgradeProject_AddsMissingMeta(t *testing.T) {
+	// Set up XDG + vault pointing at temp dirs.
+	configDir := t.TempDir()
+	vaultDir := filepath.Join(t.TempDir(), "vault")
+	os.MkdirAll(filepath.Join(configDir, "vibe-palace"), 0o755)
+	os.WriteFile(filepath.Join(configDir, "vibe-palace", "config.toml"),
+		[]byte(`vault_path = "`+vaultDir+`"`+"\n"), 0o644)
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+
+	// Sparse vault-project config: just a [palace.scoring] block a user
+	// might have written via `vp tune rooms`.
+	projectDir := filepath.Join(vaultDir, "Projects", "alpha")
+	os.MkdirAll(projectDir, 0o755)
+	projectCfg := filepath.Join(projectDir, "config.toml")
+	os.WriteFile(projectCfg, []byte(`[palace.scoring]
+min_score = 0.5
+`), 0o644)
+
+	cmd := cmdConfigUpgrade()
+	code := cmd.Run([]string{"--project", "alpha"})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+	data, _ := os.ReadFile(projectCfg)
+	content := string(data)
+	if !strings.Contains(content, "[meta]") {
+		t.Errorf("upgrade did not add [meta]: %s", content)
+	}
+	// User's existing scoring override must be preserved.
+	if !strings.Contains(content, "min_score = 0.5") {
+		t.Errorf("upgrade clobbered user's scoring override: %s", content)
+	}
+}
+
+func TestConfigUpgradeMutuallyExclusiveFlags(t *testing.T) {
+	cmd := cmdConfigUpgrade()
+	code := cmd.Run([]string{"--cwd", ".", "--project", "foo"})
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser", code)
+	}
+}
+
+func TestConfigUpgradeProject_InvalidSlug(t *testing.T) {
+	cmd := cmdConfigUpgrade()
+	code := cmd.Run([]string{"--project", "Bad Slug"})
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser", code)
 	}
 }

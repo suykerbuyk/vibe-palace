@@ -43,6 +43,11 @@ var templateToml string
 // TemplateTomlContent returns the embedded template.toml content.
 func TemplateTomlContent() string { return templateToml }
 
+// DefaultsTomlContent returns the embedded defaults.toml content. Used
+// by config-upgrade to derive canonical schema keys for the global
+// config.
+func DefaultsTomlContent() (string, error) { return defaultsToml, nil }
+
 // Config holds resolved configuration values.
 type Config struct {
 	MetaVersionMajor        int                               `json:"meta_version_major"`

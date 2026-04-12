@@ -34,6 +34,17 @@ func (f *FlagValues) Args() []string {
 	return f.args
 }
 
+// IsSet reports whether the flag was explicitly present on the command
+// line (regardless of its value). Distinguishes "unset" from "set to
+// empty string". For bool flags, equivalent to Bool(name).
+func (f *FlagValues) IsSet(name string) bool {
+	if _, ok := f.flags[name]; ok {
+		return true
+	}
+	_, ok := f.bools[name]
+	return ok
+}
+
 // ParseFlags parses command-line arguments against a set of flag definitions.
 // It supports --flag value, --flag=value, and -f value (short form).
 // Unknown flags return an error.

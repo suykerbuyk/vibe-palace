@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -27,17 +28,31 @@ func cmdConfig() *cli.Command {
 
 var configUpgradeFlags = []cli.FlagDef{
 	{Name: "--dry-run", Help: "Show what would be added without writing"},
+	{Name: "--cwd", Arg: "DIR", Help: "Upgrade the cwd project config (default: current directory). Mutually exclusive with --project."},
+	{Name: "--project", Arg: "SLUG", Help: "Upgrade the vault-project config for SLUG. Mutually exclusive with --cwd."},
+}
+
+// upgradeTarget captures the inputs needed to upgrade a specific config
+// file against its canonical schema template.
+type upgradeTarget struct {
+	configPath    string
+	canonicalText string
+	templateText  string
+	notFoundHint  string
 }
 
 func cmdConfigUpgrade() *cli.Command {
 	return &cli.Command{
 		Name:        "config upgrade",
-		Synopsis:    "vp config upgrade [--dry-run]",
-		Description: "Add missing settings to the global config as commented-out defaults. Existing values are never changed.",
+		Synopsis:    "vp config upgrade [--dry-run] [--cwd [DIR] | --project SLUG]",
+		Description: "Add missing settings to a config file as commented-out defaults. Existing values are never changed. Default target is the global config; use --cwd for a project directory's .vibe-palace.toml or --project SLUG for a vault-project config.",
 		Flags:       configUpgradeFlags,
 		Examples: []cli.Example{
-			{Cmd: "vp config upgrade", Comment: "Add missing settings to config"},
+			{Cmd: "vp config upgrade", Comment: "Upgrade the global config"},
 			{Cmd: "vp config upgrade --dry-run", Comment: "Preview changes without writing"},
+			{Cmd: "vp config upgrade --cwd", Comment: "Upgrade .vibe-palace.toml in the current directory"},
+			{Cmd: "vp config upgrade --cwd ~/code/myapp", Comment: "Upgrade .vibe-palace.toml in a specific directory"},
+			{Cmd: "vp config upgrade --project myapp", Comment: "Upgrade vault-project config for myapp"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(configUpgradeFlags, args)
@@ -47,26 +62,35 @@ func cmdConfigUpgrade() *cli.Command {
 			}
 			dryRun := fv.Bool("--dry-run")
 
-			configPath, err := storage.VaultConfigFilePath()
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "vp config upgrade: %v\n", err)
-				return cli.ExitSystem
+			// --cwd and --project are mutually exclusive.
+			cwdFlag := fv.Get("--cwd")
+			projectFlag := fv.Get("--project")
+			cwdSet := fv.IsSet("--cwd")
+			if cwdSet && projectFlag != "" {
+				fmt.Fprintln(os.Stderr, "vp config upgrade: --cwd and --project are mutually exclusive")
+				return cli.ExitUser
 			}
 
-			data, err := os.ReadFile(configPath)
+			target, code := resolveUpgradeTarget(cwdSet, cwdFlag, projectFlag)
+			if code != cli.ExitOK {
+				return code
+			}
+
+			data, err := os.ReadFile(target.configPath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp config upgrade: %v\n", err)
-				fmt.Fprintln(os.Stderr, "Run 'vp init' to create a config file first.")
+				if target.notFoundHint != "" {
+					fmt.Fprintln(os.Stderr, target.notFoundHint)
+				}
 				return cli.ExitUser
 			}
 			userText := string(data)
 
-			canonical, err := storage.CanonicalKeys()
+			canonical, err := storage.CanonicalKeysFrom(target.canonicalText)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "vp config upgrade: %v\n", err)
+				fmt.Fprintf(os.Stderr, "vp config upgrade: parse schema: %v\n", err)
 				return cli.ExitSystem
 			}
-
 			present := storage.PresentKeys(userText)
 			missing := storage.MissingKeys(canonical, present)
 
@@ -75,38 +99,31 @@ func cmdConfigUpgrade() *cli.Command {
 				return cli.ExitOK
 			}
 
-			// Count total missing keys.
 			total := 0
 			for _, keys := range missing {
 				total += len(keys)
 			}
 
-			templateBlocks := storage.ParseTemplateBlocks(storage.TemplateTomlContent())
+			templateBlocks := storage.ParseTemplateBlocks(target.templateText)
 			upgraded := storage.UpgradeConfig(userText, missing, templateBlocks)
 
 			if dryRun {
 				fmt.Fprintf(os.Stderr, "%d setting(s) would be added:\n", total)
-				for section, keys := range missing {
+				for _, keys := range missing {
 					for _, k := range keys {
-						if section != "" {
-							fmt.Fprintf(os.Stderr, "  %s\n", k)
-						} else {
-							fmt.Fprintf(os.Stderr, "  %s\n", k)
-						}
+						fmt.Fprintf(os.Stderr, "  %s\n", k)
 					}
 				}
 				return cli.ExitOK
 			}
 
-			// Create backup only when actual changes are being written.
-			backupPath := configPath + ".bak"
+			backupPath := target.configPath + ".bak"
 			if err := os.WriteFile(backupPath, data, 0o644); err != nil {
 				fmt.Fprintf(os.Stderr, "vp config upgrade: create backup: %v\n", err)
 				return cli.ExitSystem
 			}
 
-			// Atomic write: temp file + rename.
-			tmpPath := configPath + ".tmp"
+			tmpPath := target.configPath + ".tmp"
 			if err := os.WriteFile(tmpPath, []byte(upgraded), 0o644); err != nil {
 				fmt.Fprintf(os.Stderr, "vp config upgrade: write temp: %v\n", err)
 				if rmErr := os.Remove(tmpPath); rmErr != nil {
@@ -114,7 +131,7 @@ func cmdConfigUpgrade() *cli.Command {
 				}
 				return cli.ExitSystem
 			}
-			if err := os.Rename(tmpPath, configPath); err != nil {
+			if err := os.Rename(tmpPath, target.configPath); err != nil {
 				fmt.Fprintf(os.Stderr, "vp config upgrade: rename: %v\n", err)
 				if rmErr := os.Remove(tmpPath); rmErr != nil {
 					slog.Error("cleanup temp config file", "path", tmpPath, "err", rmErr)
@@ -125,5 +142,80 @@ func cmdConfigUpgrade() *cli.Command {
 			fmt.Fprintf(os.Stderr, "Added %d setting(s). Backup at %s\n", total, backupPath)
 			return cli.ExitOK
 		},
+	}
+}
+
+// resolveUpgradeTarget selects the config file, canonical schema source,
+// and template based on the --cwd / --project flags.
+func resolveUpgradeTarget(cwdSet bool, cwdFlag, projectFlag string) (upgradeTarget, int) {
+	switch {
+	case projectFlag != "":
+		if err := storage.ValidateSlug(projectFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "vp config upgrade: invalid --project slug %q: %v\n", projectFlag, err)
+			return upgradeTarget{}, cli.ExitUser
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "vp config upgrade: %v\n", err)
+			return upgradeTarget{}, cli.ExitSystem
+		}
+		vault, err := storage.OpenVaultFromCwd(cwd)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "vp config upgrade: open vault: %v\n", err)
+			return upgradeTarget{}, cli.ExitUser
+		}
+		cfgPath, err := vault.ProjectConfigFile(projectFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "vp config upgrade: %v\n", err)
+			return upgradeTarget{}, cli.ExitUser
+		}
+		// Canonical schema for vault-project = active keys in the
+		// vault-project template ([meta] only today). Snippets are
+		// drawn from the same template.
+		return upgradeTarget{
+			configPath:    cfgPath,
+			canonicalText: storage.VaultProjectTemplateContent(),
+			templateText:  storage.VaultProjectTemplateContent(),
+			notFoundHint:  fmt.Sprintf("Run 'vp migrate' or initialize the project to create %s first.", cfgPath),
+		}, cli.ExitOK
+
+	case cwdSet:
+		dir := cwdFlag
+		if dir == "" {
+			var err error
+			dir, err = os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp config upgrade: %v\n", err)
+				return upgradeTarget{}, cli.ExitSystem
+			}
+		}
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "vp config upgrade: %v\n", err)
+			return upgradeTarget{}, cli.ExitSystem
+		}
+		cfgPath := filepath.Join(abs, ".vibe-palace.toml")
+		return upgradeTarget{
+			configPath:    cfgPath,
+			canonicalText: storage.CwdProjectTemplateContent(),
+			templateText:  storage.CwdProjectTemplateContent(),
+			notFoundHint:  fmt.Sprintf("Run 'vp init' in %s to create a project config first.", abs),
+		}, cli.ExitOK
+
+	default:
+		cfgPath, err := storage.VaultConfigFilePath()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "vp config upgrade: %v\n", err)
+			return upgradeTarget{}, cli.ExitSystem
+		}
+		// Global config retains the original behavior: defaults.toml as
+		// canonical schema, template.toml for snippets.
+		defaultsText, _ := storage.DefaultsTomlContent()
+		return upgradeTarget{
+			configPath:    cfgPath,
+			canonicalText: defaultsText,
+			templateText:  storage.TemplateTomlContent(),
+			notFoundHint:  "Run 'vp init' to create a config file first.",
+		}, cli.ExitOK
 	}
 }

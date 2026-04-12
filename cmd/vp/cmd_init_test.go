@@ -50,6 +50,59 @@ func TestInitCreatesConfig(t *testing.T) {
 	if !strings.Contains(content, `name = "test-proj"`) {
 		t.Errorf("config missing project name: %s", content)
 	}
+	// The richer template carries a [meta] schema-version block.
+	if !strings.Contains(content, "[meta]") {
+		t.Errorf("cwd config missing [meta] block: %s", content)
+	}
+	if !strings.Contains(content, "version_major = 1") {
+		t.Errorf("cwd config missing version_major: %s", content)
+	}
+	// vault_path example line must remain commented when flag not passed.
+	if !strings.Contains(content, `# vault_path = "~/work-palace-vault"`) {
+		t.Errorf("cwd config missing commented vault_path example: %s", content)
+	}
+}
+
+// After a successful init, the vault-project config.toml exists and
+// carries the [meta] block. This covers the Fix 1b wiring in cmd_init.
+func TestInitWritesVaultProjectConfig(t *testing.T) {
+	configDir := initTestEnv(t, true)
+	// Read the vault path set by initTestEnv.
+	globalData, err := os.ReadFile(filepath.Join(configDir, "vibe-palace", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Crude extract — the helper wrote: vault_path = "<path>"
+	vaultDir := ""
+	for _, line := range strings.Split(string(globalData), "\n") {
+		if strings.HasPrefix(line, "vault_path = ") {
+			vaultDir = strings.Trim(strings.TrimPrefix(line, "vault_path = "), `"`)
+			break
+		}
+	}
+	if vaultDir == "" {
+		t.Fatal("could not determine vault path from global config")
+	}
+
+	dir := t.TempDir()
+	cmd := cmdInit()
+	code := cmd.Run([]string{dir, "--name", "vp-init-proj"})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+
+	vpCfg := filepath.Join(vaultDir, "Projects", "vp-init-proj", "config.toml")
+	data, err := os.ReadFile(vpCfg)
+	if err != nil {
+		t.Fatalf("vault-project config not created at %s: %v", vpCfg, err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "[meta]") {
+		t.Errorf("vault-project config missing [meta]: %s", content)
+	}
+	if !strings.Contains(content, `kind = "vault-project"`) && !strings.Contains(content, `# kind = "vault-project"`) {
+		t.Errorf("vault-project config missing kind marker: %s", content)
+	}
 }
 
 func TestInitWithDomainAndTags(t *testing.T) {

@@ -1,0 +1,51 @@
+# Per-project overrides for this vault project.
+# Uncomment any key to override the global config for this project only.
+#
+# Embedder settings, vault_path, git_enabled, http_port, and log_level
+# are deliberately not overridable here — they are vault-wide or
+# system-wide and per-project overrides would break shared resources
+# (e.g. the ONNX model cache).
+
+# Managed by vp. The version fields drive schema migration — do not
+# hand-edit unless you know what you're doing. Run 'vp config upgrade
+# --project SLUG' to add missing keys when vp is updated.
+[meta]
+version_major = 1
+version_minor = 0
+# kind identifies this schema — do not change.
+# kind = "vault-project"
+
+# Search defaults for this project.
+# [search]
+# default_limit = 10
+# structural_boost_wing = 0.12
+# structural_boost_hall = 0.24
+# structural_boost_room = 0.34
+
+# Session transcript chunking.
+# [chunker]
+# max_chars = 800
+# overlap = 100
+
+# Per-project room keyword overrides. When set, replaces the vault-
+# level rooms entirely for this project.
+# [palace.rooms.audio]
+# keywords = ["wav", "mp3", "codec", "ffmpeg"]
+
+# Weighted scoring overrides for room classification.
+# [palace.scoring]
+# min_score = 0.5
+#
+# [palace.scoring.rooms.testing]
+# high = ["integration test", "e2e test"]
+# medium = ["spec"]
+# low = ["check"]
+
+# Per-project LLM endpoint (used by 'vp tune rooms').
+# api_key_env names the environment variable holding the API key,
+# not the key itself.
+# [palace.llm]
+# endpoint = "https://api.x.ai/v1"
+# model = "grok-3-mini"
+# api_key_env = "XAI_API_KEY"
+# max_tokens = 4096

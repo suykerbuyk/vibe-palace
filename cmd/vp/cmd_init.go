@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
@@ -152,36 +153,35 @@ func initProject(fv *cli.FlagValues) int {
 		return cli.ExitUser
 	}
 
-	// Write .vibe-palace.toml.
-	// If --vault-path was passed, record it as a cwd-local override so this
-	// source directory binds to that vault regardless of the global config.
-	var header string
+	// Resolve optional --vault-path for the cwd-local override.
+	var vaultPathOverride string
 	if vp := fv.Get("--vault-path"); vp != "" {
 		expanded, err := expandAndAbsPath(vp)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "vp init: resolve --vault-path: %v\n", err)
 			return cli.ExitUser
 		}
-		header = fmt.Sprintf("vault_path = %q\n\n", expanded)
+		vaultPathOverride = expanded
 	}
-	content := header + fmt.Sprintf("[project]\nname = %q\n", name)
-	if d := fv.Get("--domain"); d != "" {
-		content += fmt.Sprintf("domain = %q\n", d)
-	}
+
+	// Parse comma-separated tags.
+	var tagsList []string
 	if t := fv.Get("--tags"); t != "" {
-		content += fmt.Sprintf("tags = [%q]\n", t)
+		for _, tag := range strings.Split(t, ",") {
+			if trimmed := strings.TrimSpace(tag); trimmed != "" {
+				tagsList = append(tagsList, trimmed)
+			}
+		}
 	}
 
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// Write .vibe-palace.toml via the embedded cwd-project template.
+	if _, err := storage.WriteCwdProjectConfig(dir, name, fv.Get("--domain"), tagsList, vaultPathOverride); err != nil {
 		fmt.Fprintf(os.Stderr, "vp init: %v\n", err)
 		return cli.ExitSystem
 	}
-	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "vp init: %v\n", err)
-		return cli.ExitSystem
-	}
 
-	// Create vault task directories if vault is available.
+	// Create vault task directories and write the vault-project config
+	// if the vault is available.
 	vault, err := storage.OpenVaultFromCwd(dir)
 	if err == nil {
 		tasksDir, err := vault.TasksDir(name)
@@ -192,6 +192,9 @@ func initProject(fv *cli.FlagValues) int {
 			if mkErr := os.MkdirAll(filepath.Join(tasksDir, "cancelled"), 0o755); mkErr != nil {
 				slog.Error("create tasks/cancelled dir", "path", tasksDir, "err", mkErr)
 			}
+		}
+		if _, _, wErr := vault.WriteVaultProjectConfig(name); wErr != nil {
+			slog.Error("write vault-project config", "project", name, "err", wErr)
 		}
 	}
 
