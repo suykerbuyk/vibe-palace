@@ -1255,7 +1255,8 @@ JSON-RPC 2.0 requests. HTTP REST server on localhost with identical handlers.
   1. `.vibe-palace.toml` in cwd or parent directories
   2. Git remote name heuristics
   3. Directory basename
-- `ParseProjectConfig(path string) (ProjectConfig, error)` — parse .vibe-palace.toml
+- `ParseProjectConfig(path string) (ProjectConfig, error)` — parse `[project]` block of .vibe-palace.toml
+- `ParseProjectFile(path string) (ProjectFile, error)` — parse full file including top-level `vault_path` override
 
 **Acceptance criteria:**
 - Detects project from .vibe-palace.toml in cwd

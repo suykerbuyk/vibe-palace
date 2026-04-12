@@ -158,7 +158,7 @@ injects the vault reference into every request context.
 
 ```
 cmd/vp/main.go
-├── storage.OpenVault("")         # read config, resolve vault path
+├── storage.OpenVaultFromCwd(cwd) # resolve vault (honors cwd .vibe-palace.toml vault_path override)
 ├── embedder.NewONNX(...)         # load ONNX model
 ├── search.NewEngine(emb, v, cfg) # create search engine
 ├── context.NewResolver(v.Root)   # template resolver
