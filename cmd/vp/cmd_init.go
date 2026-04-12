@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -23,7 +24,7 @@ var initFlags = []cli.FlagDef{
 	{Name: "--no-git", Help: "Disable git version tracking for the vault"},
 }
 
-func cmdInit() *cli.Command {
+func cmdInit(info cli.BuildInfo) *cli.Command {
 	return &cli.Command{
 		Name:        "init",
 		Synopsis:    "vp init [path] [flags]",
@@ -42,105 +43,142 @@ func cmdInit() *cli.Command {
 				return cli.ExitUser
 			}
 
+			var results []check.Result
+
 			// --- Phase 1: Global init (config + vault directory) ---
-			if code := initGlobal(fv); code != cli.ExitOK {
-				return code
+			globalResults, globalCode := initGlobal(fv)
+			results = append(results, globalResults...)
+			if globalCode != cli.ExitOK {
+				// Render what we have; agent-wiring row is still informative.
+				results = append(results, agentWiringStub())
+				printInitStatus(os.Stdout, info.Version, results)
+				return globalCode
 			}
 
 			// --- Phase 2: Project init (if appropriate) ---
-			return initProject(fv)
+			projectResults, projectCode := initProject(fv)
+			results = append(results, projectResults...)
+
+			// Agent-wiring stub — Phase 2 of the plan replaces this.
+			results = append(results, agentWiringStub())
+
+			printInitStatus(os.Stdout, info.Version, results)
+			return projectCode
 		},
 	}
 }
 
-// initGlobal creates the global config and vault directory if they don't exist.
-func initGlobal(fv *cli.FlagValues) int {
+// initGlobal creates the global config and vault directory if they don't
+// exist, returning a result row for each logical step plus an exit code.
+func initGlobal(fv *cli.FlagValues) ([]check.Result, int) {
+	var results []check.Result
+
 	configPath, err := storage.VaultConfigFilePath()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "vp init: %v\n", err)
-		return cli.ExitSystem
+		results = append(results, check.Result{
+			Name:    "Global config",
+			Status:  check.Fail,
+			Summary: err.Error(),
+		})
+		results = append(results, check.Result{Name: "Vault", Status: check.Skip, Summary: "skipped — global config error"})
+		return results, cli.ExitSystem
 	}
 
 	if _, err := os.Stat(configPath); err == nil {
-		fmt.Fprintf(os.Stderr, "Global config exists at %s, skipping.\n", configPath)
-		return cli.ExitOK
+		results = append(results, check.Result{
+			Name:    "Global config",
+			Status:  check.Info,
+			Summary: configPath + " (already exists, skipped)",
+		})
+		// Vault existence is not re-checked here — the existing global
+		// config is authoritative. Surface a single [info] row.
+		results = append(results, check.Result{Name: "Vault", Status: check.Info, Summary: "already configured"})
+		return results, cli.ExitOK
 	}
 
-	// Determine vault path.
 	vaultPath := fv.Get("--vault-path")
 	if vaultPath == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "vp init: %v\n", err)
-			return cli.ExitSystem
+			results = append(results, check.Result{
+				Name:    "Global config",
+				Status:  check.Fail,
+				Summary: err.Error(),
+			})
+			return results, cli.ExitSystem
 		}
 		vaultPath = filepath.Join(home, "vibe-palace-vault")
 	}
 
 	gitEnabled := !fv.Bool("--no-git")
 
-	// Write global config.
 	writtenPath, err := storage.WriteGlobalConfig(vaultPath, gitEnabled)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "vp init: %v\n", err)
-		return cli.ExitSystem
+		results = append(results, check.Result{Name: "Global config", Status: check.Fail, Summary: err.Error()})
+		return results, cli.ExitSystem
 	}
-	fmt.Fprintf(os.Stderr, "Created config at %s\n", writtenPath)
+	results = append(results, check.Result{Name: "Global config", Status: check.Pass, Summary: writtenPath})
 
-	// Create vault directory.
+	vaultRow := check.Result{Name: "Vault", Status: check.Pass, Summary: vaultPath}
 	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "vp init: create vault: %v\n", err)
-		return cli.ExitSystem
+		results = append(results, check.Result{Name: "Vault", Status: check.Fail, Summary: fmt.Sprintf("create vault: %v", err)})
+		return results, cli.ExitSystem
 	}
-	fmt.Fprintf(os.Stderr, "Created vault at %s\n", vaultPath)
 
-	// Initialize git repo in vault if git is enabled.
 	if gitEnabled {
-		if !storage.GitAvailable() {
-			fmt.Fprintln(os.Stderr, "Warning: git not found in PATH. Install git for vault version tracking.")
-		} else if !storage.GitIsRepo(vaultPath) {
+		switch {
+		case !storage.GitAvailable():
+			vaultRow.Details = append(vaultRow.Details, "git not found in PATH — vault version tracking disabled")
+		case !storage.GitIsRepo(vaultPath):
 			if err := storage.GitInit(vaultPath); err != nil {
-				fmt.Fprintf(os.Stderr, "vp init: %v\n", err)
-				// Non-fatal — vault works without git.
+				vaultRow.Details = append(vaultRow.Details, "git init failed: "+err.Error())
 			} else {
 				if err := storage.WriteVaultGitignore(vaultPath); err != nil {
 					slog.Error("write vault .gitignore", "path", vaultPath, "err", err)
 				}
-				fmt.Fprintln(os.Stderr, "Initialized git repository in vault.")
+				vaultRow.Details = append(vaultRow.Details, "git repository initialized")
 			}
 		}
 	}
-
-	return cli.ExitOK
+	results = append(results, vaultRow)
+	return results, cli.ExitOK
 }
 
 // initProject creates a .vibe-palace.toml in the target directory if project
-// signals are present. Skips if cwd is $HOME or no project signals detected.
-func initProject(fv *cli.FlagValues) int {
+// signals are present. Returns one or more status rows and an exit code.
+func initProject(fv *cli.FlagValues) ([]check.Result, int) {
+	var results []check.Result
+
 	dir := "."
 	if positional := fv.Args(); len(positional) > 0 {
 		dir = positional[0]
 	}
 	dir, err := filepath.Abs(dir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "vp init: %v\n", err)
-		return cli.ExitSystem
+		results = append(results, check.Result{Name: "Project config", Status: check.Fail, Summary: err.Error()})
+		return results, cli.ExitSystem
 	}
 
-	// Skip project init if we're in $HOME or no project signals.
-	if !hasProjectSignals(dir) {
-		fmt.Fprintln(os.Stderr, "No project detected. Run 'vp init' inside a project directory to set up a project.")
-		return cli.ExitOK
+	signal := project.DetectSignal(dir)
+	if signal == project.SignalNone {
+		results = append(results, check.Result{
+			Name:    "Project config",
+			Status:  check.Skip,
+			Summary: "not a project directory (no .git, .vibe-palace.toml, or known manifest)",
+		})
+		return results, cli.ExitOK
 	}
 
-	// Check for existing project config.
 	configPath := filepath.Join(dir, project.ConfigFileName)
 	if _, err := os.Stat(configPath); err == nil {
-		fmt.Fprintf(os.Stderr, "Project already initialized: %s\n", configPath)
-		return cli.ExitOK
+		results = append(results, check.Result{
+			Name:    "Project config",
+			Status:  check.Info,
+			Summary: configPath + " (already exists, skipped)",
+		})
+		return results, cli.ExitOK
 	}
 
-	// Determine project name.
 	name := fv.Get("--name")
 	if name == "" {
 		name, _ = project.DetectProject(dir)
@@ -149,22 +187,28 @@ func initProject(fv *cli.FlagValues) int {
 		name = filepath.Base(dir)
 	}
 	if err := storage.ValidateSlug(name); err != nil {
-		fmt.Fprintf(os.Stderr, "vp init: invalid project name %q: %v\n", name, err)
-		return cli.ExitUser
+		results = append(results, check.Result{
+			Name:    "Project config",
+			Status:  check.Fail,
+			Summary: fmt.Sprintf("invalid project name %q: %v", name, err),
+		})
+		return results, cli.ExitUser
 	}
 
-	// Resolve optional --vault-path for the cwd-local override.
 	var vaultPathOverride string
 	if vp := fv.Get("--vault-path"); vp != "" {
 		expanded, err := expandAndAbsPath(vp)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "vp init: resolve --vault-path: %v\n", err)
-			return cli.ExitUser
+			results = append(results, check.Result{
+				Name:    "Project config",
+				Status:  check.Fail,
+				Summary: "resolve --vault-path: " + err.Error(),
+			})
+			return results, cli.ExitUser
 		}
 		vaultPathOverride = expanded
 	}
 
-	// Parse comma-separated tags.
 	var tagsList []string
 	if t := fv.Get("--tags"); t != "" {
 		for _, tag := range strings.Split(t, ",") {
@@ -174,18 +218,19 @@ func initProject(fv *cli.FlagValues) int {
 		}
 	}
 
-	// Write .vibe-palace.toml via the embedded cwd-project template.
 	if _, err := storage.WriteCwdProjectConfig(dir, name, fv.Get("--domain"), tagsList, vaultPathOverride); err != nil {
-		fmt.Fprintf(os.Stderr, "vp init: %v\n", err)
-		return cli.ExitSystem
+		results = append(results, check.Result{Name: "Project config", Status: check.Fail, Summary: err.Error()})
+		return results, cli.ExitSystem
 	}
 
-	// Create vault task directories and write the vault-project config
-	// if the vault is available.
-	vault, err := storage.OpenVaultFromCwd(dir)
-	if err == nil {
-		tasksDir, err := vault.TasksDir(name)
-		if err == nil {
+	row := check.Result{
+		Name:    "Project config",
+		Status:  check.Pass,
+		Summary: fmt.Sprintf("%s (%s, %s detected)", configPath, name, signal),
+	}
+
+	if vault, err := storage.OpenVaultFromCwd(dir); err == nil {
+		if tasksDir, err := vault.TasksDir(name); err == nil {
 			if mkErr := os.MkdirAll(filepath.Join(tasksDir, "done"), 0o755); mkErr != nil {
 				slog.Error("create tasks/done dir", "path", tasksDir, "err", mkErr)
 			}
@@ -195,11 +240,57 @@ func initProject(fv *cli.FlagValues) int {
 		}
 		if _, _, wErr := vault.WriteVaultProjectConfig(name); wErr != nil {
 			slog.Error("write vault-project config", "project", name, "err", wErr)
+			row.Details = append(row.Details, "vault-project config write failed — see logs")
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "Initialized project %q in %s\n", name, dir)
-	return cli.ExitOK
+	results = append(results, row)
+	return results, cli.ExitOK
+}
+
+// agentWiringStub is the Phase-1 placeholder row for agent-file wiring.
+// Phase 2 replaces this with a real result from initAgentWiring.
+func agentWiringStub() check.Result {
+	return check.Result{
+		Name:    "Agent wiring",
+		Status:  check.Skip,
+		Summary: "Phase 2 — CLAUDE.md / AGENTS.md bootstrap snippet not yet written",
+		Details: []string{"re-run `vp init` after Phase 2 lands to wire detected agent files"},
+	}
+}
+
+// printInitStatus renders the end-of-run status table. Mirrors check.Print's
+// vocabulary but carries the init-specific header and summary line.
+func printInitStatus(w *os.File, version string, results []check.Result) {
+	fmt.Fprintf(w, "\nvp init — vibe-palace %s\n\n", version)
+	check.PrintRows(w, results)
+
+	var pass, fail, skip, info int
+	for _, r := range results {
+		switch r.Status {
+		case check.Pass:
+			pass++
+		case check.Fail:
+			fail++
+		case check.Skip:
+			skip++
+		case check.Info:
+			info++
+		}
+	}
+	fmt.Fprintln(w)
+	parts := []string{}
+	ok := pass + info
+	if ok > 0 {
+		parts = append(parts, fmt.Sprintf("%d ok", ok))
+	}
+	if skip > 0 {
+		parts = append(parts, fmt.Sprintf("%d skip", skip))
+	}
+	if fail > 0 {
+		parts = append(parts, fmt.Sprintf("%d FAIL", fail))
+	}
+	fmt.Fprintf(w, "Summary: %s. Re-run `vp init` anytime — it is idempotent.\n", strings.Join(parts, ", "))
 }
 
 // expandAndAbsPath expands a leading tilde and resolves to an absolute path.
@@ -216,34 +307,4 @@ func expandAndAbsPath(p string) (string, error) {
 		}
 	}
 	return filepath.Abs(p)
-}
-
-// hasProjectSignals returns true if the directory looks like a project:
-// has a .git directory or is not the user's home directory.
-func hasProjectSignals(dir string) bool {
-	home, err := os.UserHomeDir()
-	if err == nil && dir == home {
-		return false
-	}
-
-	// Check for .git directory.
-	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-		return true
-	}
-
-	// Check for existing .vibe-palace.toml anywhere in tree.
-	for d := dir; ; {
-		if _, err := os.Stat(filepath.Join(d, project.ConfigFileName)); err == nil {
-			return true
-		}
-		parent := filepath.Dir(d)
-		if parent == d {
-			break
-		}
-		d = parent
-	}
-
-	// Not home, but no git or config — still a valid project dir.
-	// The user explicitly navigated here and ran init.
-	return true
 }

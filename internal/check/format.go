@@ -30,6 +30,26 @@ func statusTag(s Status) string {
 func Print(w io.Writer, version string, results []Result) int {
 	fmt.Fprintf(w, "vp check — vibe-palace installation diagnostic (%s)\n\n", version)
 
+	failures := PrintRows(w, results)
+
+	fmt.Fprintln(w)
+	switch failures {
+	case 0:
+		fmt.Fprintln(w, "All checks passed.")
+	case 1:
+		fmt.Fprintln(w, "1 check failed.")
+	default:
+		fmt.Fprintf(w, "%d checks failed.\n", failures)
+	}
+
+	return failures
+}
+
+// PrintRows writes the status rows for the given results (without the
+// surrounding diagnostic header or failure summary). It is the shared
+// primitive used by both `vp check` and `vp init`'s end-of-run table.
+// Returns the number of Fail rows emitted.
+func PrintRows(w io.Writer, results []Result) int {
 	failures := 0
 	for _, r := range results {
 		tag := statusTag(r.Status)
@@ -45,17 +65,6 @@ func Print(w io.Writer, version string, results []Result) int {
 			failures++
 		}
 	}
-
-	fmt.Fprintln(w)
-	switch failures {
-	case 0:
-		fmt.Fprintln(w, "All checks passed.")
-	case 1:
-		fmt.Fprintln(w, "1 check failed.")
-	default:
-		fmt.Fprintf(w, "%d checks failed.\n", failures)
-	}
-
 	return failures
 }
 

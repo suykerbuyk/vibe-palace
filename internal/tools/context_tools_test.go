@@ -198,10 +198,30 @@ func TestBootstrapIncludesCommands(t *testing.T) {
 			if cmd.Brief == "" {
 				t.Error("restart brief should not be empty")
 			}
+			if cmd.Alias != "vpc-restart" {
+				t.Errorf("restart alias = %q, want %q", cmd.Alias, "vpc-restart")
+			}
+			// Brief must not be truncated mid-word: ellipsis-terminated briefs
+			// are allowed, but a raw mid-word slice is the regression we care
+			// about. The word-boundary snap guarantees the last char is
+			// either a full letter or the ellipsis.
+			if strings.HasSuffix(cmd.Brief, " ") {
+				t.Errorf("restart brief has trailing space: %q", cmd.Brief)
+			}
+		}
+		// Every command must carry a vpc- alias.
+		if cmd.Alias != "vpc-"+cmd.Name {
+			t.Errorf("alias for %q = %q, want %q", cmd.Name, cmd.Alias, "vpc-"+cmd.Name)
 		}
 	}
 	if !found {
 		t.Error("expected restart in AvailableCommands")
+	}
+	if br.CommandInvocation == "" {
+		t.Error("CommandInvocation should be populated when commands are present")
+	}
+	if !strings.Contains(br.CommandInvocation, "vpc-") {
+		t.Errorf("CommandInvocation missing vpc- reference: %q", br.CommandInvocation)
 	}
 }
 

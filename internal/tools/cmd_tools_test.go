@@ -279,10 +279,28 @@ func TestExtractBrief(t *testing.T) {
 			want:    "(no description)",
 		},
 		{
-			name:    "long line truncated",
+			name:    "long line snaps to word boundary",
 			content: "This is a very long line that exceeds the maximum length allowed",
 			maxLen:  20,
-			want:    "This is a very long ",
+			want:    "This is a very long…",
+		},
+		{
+			name:    "long single word cuts mid-word",
+			content: "Supercalifragilisticexpialidocious is a very long word",
+			maxLen:  20,
+			want:    "Supercalifragilistic…",
+		},
+		{
+			name:    "trailing whitespace near boundary is trimmed",
+			content: "word alpha beta      gamma delta epsilon",
+			maxLen:  20,
+			want:    "word alpha beta…",
+		},
+		{
+			name:    "clean boundary right at maxLen",
+			content: "alpha beta gamma delta epsilon zeta",
+			maxLen:  23,
+			want:    "alpha beta gamma delta…",
 		},
 		{
 			name:    "heading only",

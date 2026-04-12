@@ -18,6 +18,92 @@ import (
 // ConfigFileName is the name of the per-project configuration file.
 const ConfigFileName = ".vibe-palace.toml"
 
+// manifestFiles are ecosystem manifest files that mark a directory as a
+// project even without a `.git` directory. Order is stable/alphabetical;
+// detection picks the first one found.
+var manifestFiles = []string{
+	"Cargo.toml",
+	"go.mod",
+	"package.json",
+	"pom.xml",
+	"pyproject.toml",
+}
+
+// ProjectSignal identifies which evidence marked a directory as a project.
+// Empty string means "no signal"; forceSkip callers should test that first.
+type ProjectSignal string
+
+const (
+	SignalNone            ProjectSignal = ""
+	SignalVibeConfig      ProjectSignal = ".vibe-palace.toml"
+	SignalGit             ProjectSignal = ".git"
+	SignalCargoToml       ProjectSignal = "Cargo.toml"
+	SignalGoMod           ProjectSignal = "go.mod"
+	SignalPackageJSON     ProjectSignal = "package.json"
+	SignalPomXML          ProjectSignal = "pom.xml"
+	SignalPyprojectToml   ProjectSignal = "pyproject.toml"
+)
+
+// DetectSignal returns the first project signal found in dir (non-recursive
+// for manifest files; walking upward for .vibe-palace.toml). If dir resolves
+// to $HOME or the filesystem root, returns SignalNone regardless — those
+// directories are force-skipped because running project-init there would
+// pollute unrelated state.
+//
+// Precedence (first match wins):
+//  1. .vibe-palace.toml (cwd or any parent — re-init case)
+//  2. .git/ in cwd
+//  3. Manifest files in cwd, in the order given by manifestFiles
+func DetectSignal(dir string) ProjectSignal {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return SignalNone
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		resolved = abs
+	}
+	resolved = filepath.Clean(resolved)
+
+	if isForceSkipDir(resolved) {
+		return SignalNone
+	}
+
+	if _, err := findFileUpward(resolved, ConfigFileName); err == nil {
+		return SignalVibeConfig
+	}
+
+	if _, err := os.Stat(filepath.Join(resolved, ".git")); err == nil {
+		return SignalGit
+	}
+
+	for _, name := range manifestFiles {
+		if _, err := os.Stat(filepath.Join(resolved, name)); err == nil {
+			return ProjectSignal(name)
+		}
+	}
+
+	return SignalNone
+}
+
+// isForceSkipDir reports whether dir is a directory where project-init
+// must never run regardless of signals present (user's $HOME or fs root).
+func isForceSkipDir(dir string) bool {
+	if dir == "/" {
+		return true
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		homeResolved, err := filepath.EvalSymlinks(home)
+		if err != nil {
+			homeResolved = home
+		}
+		if filepath.Clean(homeResolved) == dir {
+			return true
+		}
+	}
+	return false
+}
+
 // ProjectConfig holds project identity parsed from a .vibe-palace.toml file.
 type ProjectConfig struct {
 	Name   string   `toml:"name"`

@@ -22,11 +22,18 @@ type cmdParams struct {
 }
 
 // commandSummary is a brief description of a command or skill for discovery
-// and bootstrap responses.
+// and bootstrap responses. Alias is a "vpc-<name>" trigger token the human
+// or AI can type; Name remains the canonical key for vp_get_command lookup.
 type commandSummary struct {
 	Name   string `json:"name"`
+	Alias  string `json:"alias,omitempty"`
 	Source string `json:"source"`
 	Brief  string `json:"brief,omitempty"`
+}
+
+// commandAlias returns the "vpc-<name>" trigger token for a command.
+func commandAlias(name string) string {
+	return "vpc-" + name
 }
 
 var cmdSchema = json.RawMessage(`{
@@ -190,6 +197,9 @@ func buildDiscoveryList(resolver *vpctx.Resolver, project, wing, room, resourceT
 	maxNameLen := 0
 	for _, ri := range resources {
 		cs := commandSummary{Name: ri.Name, Source: ri.Source}
+		if resourceType == "command" {
+			cs.Alias = commandAlias(ri.Name)
+		}
 		if content, _, err := resolver.ResolveScoped(fmt.Sprintf("%s:%s", resourceType, ri.Name), project, wing, room); err == nil {
 			cs.Brief = extractBrief(content, 60)
 		}
@@ -220,7 +230,10 @@ func buildDiscoveryList(resolver *vpctx.Resolver, project, wing, room, resourceT
 }
 
 // extractBrief returns the first non-blank, non-heading line from content,
-// truncated to maxLen characters.
+// truncated to maxLen characters. When truncation is needed, the cut snaps
+// to the last whitespace before maxLen (unless that would leave less than
+// half of maxLen, in which case a mid-word cut is accepted) and an ellipsis
+// is appended so the truncation is visible.
 func extractBrief(content string, maxLen int) string {
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
@@ -228,7 +241,11 @@ func extractBrief(content string, maxLen int) string {
 			continue
 		}
 		if len(line) > maxLen {
-			return line[:maxLen]
+			cut := strings.LastIndex(line[:maxLen], " ")
+			if cut <= maxLen/2 {
+				cut = maxLen
+			}
+			return strings.TrimRight(line[:cut], " ") + "…"
 		}
 		return line
 	}

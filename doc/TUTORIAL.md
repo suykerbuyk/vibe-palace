@@ -66,6 +66,35 @@ vp init --no-git
 If you already have a config file, `vp init` skips global setup and proceeds
 to project initialization (if you're in a project directory).
 
+### Init Status Output
+
+Each `vp init` run ends with a status table that tells you exactly what
+was done, skipped, or still needs attention. It uses the same vocabulary
+as `vp check` — `[pass]`, `[info]`, `[skip]`, `[FAIL]`.
+
+Fresh install inside a Go project:
+
+```
+vp init — vibe-palace 0.1.0-dev
+
+[pass] Global config: /home/you/.config/vibe-palace/config.toml
+[pass] Vault:     /home/you/vibe-palace-vault
+                  git repository initialized
+[pass] Project config: /home/you/code/myapp/.vibe-palace.toml (myapp, go.mod detected)
+[skip] Agent wiring: Phase 2 — CLAUDE.md / AGENTS.md bootstrap snippet not yet written
+
+Summary: 3 ok, 1 skip. Re-run `vp init` anytime — it is idempotent.
+```
+
+The `Project config` row reports which signal marked the directory as a
+project: `.git`, `.vibe-palace.toml`, or one of the supported ecosystem
+manifests (`go.mod`, `package.json`, `Cargo.toml`, `pyproject.toml`,
+`pom.xml`). Directories without any of these — including your `$HOME`
+and the filesystem root — are force-skipped with a clear reason.
+
+Re-running `vp init` in the same directory is safe: already-present
+files report `[info]` and nothing is overwritten.
+
 ### Verify Installation
 
 Run the built-in diagnostic to verify everything works:
@@ -373,6 +402,31 @@ The AI transparently calls tools as needed:
 - `vp_traverse` — walk the knowledge graph
 
 You don't need to invoke these manually.
+
+### Invoking Commands: the `vpc-` Alias Convention
+
+Every command returned by `vp_bootstrap_context` (or `vp_list_commands`)
+carries an `alias` field of the form `vpc-<name>` — mnemonic: *vp
+command*. Type `vpc-<name>` in chat as an unambiguous trigger and the
+AI will call `vp_cmd` with `name=<name>` and follow the returned
+instructions.
+
+Example:
+
+```
+you: vpc-restart
+AI: (calls vp_cmd name=restart, follows the restart workflow)
+```
+
+The canonical lookup key is still the bare command name — `vpc-` is
+purely a *display and recognition* convenience so humans and AIs have a
+single unambiguous trigger. The bootstrap response also includes a
+`command_invocation` string stating this rule explicitly; new models
+see it on every session start.
+
+To discover what commands are available in the current project, call
+`vp_list_commands` or look at the `available_commands` array in the
+bootstrap response.
 
 ### Ending a Session
 

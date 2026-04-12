@@ -15,14 +15,19 @@ import (
 
 // BootstrapResult is the response from vp_bootstrap_context.
 type BootstrapResult struct {
-	Project           string               `json:"project"`
-	Workflow          string               `json:"workflow"`
-	Resume            string               `json:"resume"`
-	ActiveTasks       []storage.TaskMeta   `json:"active_tasks"`
-	RecentSessions    []sessionSummary     `json:"recent_sessions,omitempty"`
-	KGSnapshot        *storage.KGStats     `json:"kg_snapshot,omitempty"`
-	AvailableCommands []commandSummary     `json:"available_commands,omitempty"`
+	Project            string             `json:"project"`
+	Workflow           string             `json:"workflow"`
+	Resume             string             `json:"resume"`
+	ActiveTasks        []storage.TaskMeta `json:"active_tasks"`
+	RecentSessions     []sessionSummary   `json:"recent_sessions,omitempty"`
+	KGSnapshot         *storage.KGStats   `json:"kg_snapshot,omitempty"`
+	AvailableCommands  []commandSummary   `json:"available_commands,omitempty"`
+	CommandInvocation  string             `json:"command_invocation,omitempty"`
 }
+
+// commandInvocationDirective is the single-line instruction telling the AI
+// how to interpret a "vpc-<name>" alias typed by the user.
+const commandInvocationDirective = "When the user types `vpc-<name>`, call `vp_cmd` with `name=<name>` and follow the returned instructions."
 
 // sessionSummary is a lightweight view of SessionMeta for the bootstrap response.
 type sessionSummary struct {
@@ -126,11 +131,14 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// Available commands for discovery (palace-scoped when wing/room provided).
 	if commands, err := resolver.ListResourcesScoped("command", project, wing, room); err == nil {
 		for _, cmd := range commands {
-			cs := commandSummary{Name: cmd.Name, Source: cmd.Source}
+			cs := commandSummary{Name: cmd.Name, Alias: commandAlias(cmd.Name), Source: cmd.Source}
 			if content, _, err := resolver.ResolveScoped(fmt.Sprintf("command:%s", cmd.Name), project, wing, room); err == nil {
 				cs.Brief = extractBrief(content, 60)
 			}
 			result.AvailableCommands = append(result.AvailableCommands, cs)
+		}
+		if len(result.AvailableCommands) > 0 {
+			result.CommandInvocation = commandInvocationDirective
 		}
 	}
 
@@ -151,6 +159,7 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		}
 		if estimatedTokens > maxTokens && len(result.AvailableCommands) > 0 {
 			result.AvailableCommands = nil
+			result.CommandInvocation = ""
 		}
 	}
 

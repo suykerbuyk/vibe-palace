@@ -14,6 +14,16 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
+// markProjectDir writes a minimal go.mod in dir so DetectSignal classifies
+// it as a project. Use this for tests that work with fresh tmpdirs and
+// expect vp init to create .vibe-palace.toml.
+func markProjectDir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test\n"), 0o644); err != nil {
+		t.Fatalf("mark project dir: %v", err)
+	}
+}
+
 // initTestEnv sets up an isolated XDG_CONFIG_HOME so init tests don't
 // touch the real config. If preCreateConfig is true, writes a minimal
 // config so global init is skipped (tests that focus on project init).
@@ -35,7 +45,8 @@ func initTestEnv(t *testing.T, preCreateConfig bool) string {
 func TestInitCreatesConfig(t *testing.T) {
 	initTestEnv(t, true) // skip global init
 	dir := t.TempDir()
-	cmd := cmdInit()
+	markProjectDir(t, dir)
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
 	code := cmd.Run([]string{dir, "--name", "test-proj"})
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
@@ -85,7 +96,8 @@ func TestInitWritesVaultProjectConfig(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	cmd := cmdInit()
+	markProjectDir(t, dir)
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
 	code := cmd.Run([]string{dir, "--name", "vp-init-proj"})
 	if code != cli.ExitOK {
 		t.Fatalf("exit code = %d", code)
@@ -108,7 +120,8 @@ func TestInitWritesVaultProjectConfig(t *testing.T) {
 func TestInitWithDomainAndTags(t *testing.T) {
 	initTestEnv(t, true)
 	dir := t.TempDir()
-	cmd := cmdInit()
+	markProjectDir(t, dir)
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
 	code := cmd.Run([]string{dir, "--name", "myapp", "--domain", "work", "--tags", "go,cli"})
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
@@ -130,7 +143,7 @@ func TestInitRefusesOverwrite(t *testing.T) {
 	// Create existing project config.
 	os.WriteFile(filepath.Join(dir, project.ConfigFileName), []byte("exists"), 0o644)
 
-	cmd := cmdInit()
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
 	code := cmd.Run([]string{dir, "--name", "test"})
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d, want %d (should skip existing project)", code, cli.ExitOK)
@@ -140,7 +153,8 @@ func TestInitRefusesOverwrite(t *testing.T) {
 func TestInitInvalidName(t *testing.T) {
 	initTestEnv(t, true)
 	dir := t.TempDir()
-	cmd := cmdInit()
+	markProjectDir(t, dir)
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
 	code := cmd.Run([]string{dir, "--name", "INVALID NAME!"})
 	if code != cli.ExitUser {
 		t.Errorf("exit code = %d, want %d (invalid name)", code, cli.ExitUser)
@@ -151,8 +165,9 @@ func TestInitAutoDetectsName(t *testing.T) {
 	initTestEnv(t, true)
 	dir := filepath.Join(t.TempDir(), "my-project")
 	os.MkdirAll(dir, 0o755)
+	markProjectDir(t, dir)
 
-	cmd := cmdInit()
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
 	code := cmd.Run([]string{dir})
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
@@ -165,7 +180,7 @@ func TestInitAutoDetectsName(t *testing.T) {
 }
 
 func TestInitBadFlags(t *testing.T) {
-	cmd := cmdInit()
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
 	code := cmd.Run([]string{"--unknown-flag"})
 	if code != cli.ExitUser {
 		t.Errorf("exit code = %d, want %d (bad flags)", code, cli.ExitUser)
@@ -175,9 +190,10 @@ func TestInitBadFlags(t *testing.T) {
 func TestInitGlobalAndProject(t *testing.T) {
 	configDir := initTestEnv(t, false) // no pre-created config
 	projDir := t.TempDir()
+	markProjectDir(t, projDir)
 	vaultDir := filepath.Join(t.TempDir(), "vault")
 
-	cmd := cmdInit()
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
 	code := cmd.Run([]string{projDir, "--name", "myapp", "--vault-path", vaultDir})
 	if code != cli.ExitOK {
 		t.Fatalf("exit code = %d", code)
@@ -204,7 +220,7 @@ func TestInitSkipsExistingConfig(t *testing.T) {
 	before, _ := os.ReadFile(globalConfig)
 
 	projDir := t.TempDir()
-	cmd := cmdInit()
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
 	cmd.Run([]string{projDir, "--name", "test"})
 
 	// Config must not have been overwritten.
@@ -222,7 +238,7 @@ func TestInitSkipsProjectInHomeDir(t *testing.T) {
 		t.Skip("cannot determine home dir")
 	}
 
-	cmd := cmdInit()
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
 	code := cmd.Run([]string{home, "--name", "test"})
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
@@ -240,9 +256,10 @@ func TestInitVaultPathFlag(t *testing.T) {
 	configDir := initTestEnv(t, false)
 	vaultDir := filepath.Join(t.TempDir(), "custom-vault")
 
-	cmd := cmdInit()
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
 	// Run from a temp dir (not home) so project init is attempted but fails gracefully.
 	projDir := t.TempDir()
+	markProjectDir(t, projDir)
 	code := cmd.Run([]string{projDir, "--vault-path", vaultDir, "--name", "test"})
 	if code != cli.ExitOK {
 		t.Fatalf("exit code = %d", code)
@@ -278,7 +295,8 @@ func TestInitVaultPathWritesCwdOverride(t *testing.T) {
 	altVault := filepath.Join(t.TempDir(), "alt-vault")
 
 	projDir := t.TempDir()
-	cmd := cmdInit()
+	markProjectDir(t, projDir)
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
 	code := cmd.Run([]string{projDir, "--vault-path", altVault, "--name", "alt-proj"})
 	if code != cli.ExitOK {
 		t.Fatalf("exit code = %d", code)
@@ -317,7 +335,7 @@ func TestInitNoGitFlag(t *testing.T) {
 	projDir := t.TempDir()
 	vaultDir := filepath.Join(t.TempDir(), "vault")
 
-	cmd := cmdInit()
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
 	code := cmd.Run([]string{projDir, "--no-git", "--name", "test", "--vault-path", vaultDir})
 	if code != cli.ExitOK {
 		t.Fatalf("exit code = %d", code)
@@ -326,5 +344,167 @@ func TestInitNoGitFlag(t *testing.T) {
 	data, _ := os.ReadFile(filepath.Join(configDir, "vibe-palace", "config.toml"))
 	if !strings.Contains(string(data), "git_enabled = false") {
 		t.Errorf("config should have git_enabled = false: %s", data)
+	}
+}
+
+// captureStdout runs fn while redirecting os.Stdout to a pipe and returns
+// the captured bytes. It is the minimum plumbing needed to assert on the
+// status table that `vp init` renders at end-of-run.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	done := make(chan string)
+	go func() {
+		buf := make([]byte, 0, 4096)
+		tmp := make([]byte, 4096)
+		for {
+			n, err := r.Read(tmp)
+			if n > 0 {
+				buf = append(buf, tmp[:n]...)
+			}
+			if err != nil {
+				break
+			}
+		}
+		done <- string(buf)
+	}()
+	fn()
+	_ = w.Close()
+	os.Stdout = orig
+	return <-done
+}
+
+// TestInitStatusTableRendered verifies that vp init writes a status table
+// with the expected [pass|skip] rows and summary line to stdout.
+func TestInitStatusTableRendered(t *testing.T) {
+	initTestEnv(t, false)
+	projDir := t.TempDir()
+	markProjectDir(t, projDir)
+	vaultDir := filepath.Join(t.TempDir(), "vault")
+
+	out := captureStdout(t, func() {
+		cmd := cmdInit(cli.BuildInfo{Version: "test"})
+		if code := cmd.Run([]string{projDir, "--name", "alpha", "--vault-path", vaultDir, "--no-git"}); code != cli.ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	wantFragments := []string{
+		"vp init — vibe-palace test",
+		"[pass] Global config",
+		"[pass] Vault",
+		"[pass] Project config",
+		"go.mod detected",
+		"[skip] Agent wiring",
+		"Summary:",
+		"it is idempotent",
+	}
+	for _, frag := range wantFragments {
+		if !strings.Contains(out, frag) {
+			t.Errorf("missing %q in output:\n%s", frag, out)
+		}
+	}
+}
+
+// TestInitFreshThenIdempotent proves the three-stage sequence from the
+// Phase 1 plan: a fresh init creates all artifacts, a re-run on the same
+// directory is idempotent (no overwrites, still ExitOK), and the status
+// table on the second run reports [info] for the already-present rows.
+func TestInitFreshThenIdempotent(t *testing.T) {
+	initTestEnv(t, false)
+	projDir := t.TempDir()
+	markProjectDir(t, projDir)
+	vaultDir := filepath.Join(t.TempDir(), "vault")
+	args := []string{projDir, "--name", "alpha", "--vault-path", vaultDir, "--no-git"}
+
+	// Stage 1: fresh run creates the full fileset.
+	out1 := captureStdout(t, func() {
+		cmd := cmdInit(cli.BuildInfo{Version: "test"})
+		if code := cmd.Run(args); code != cli.ExitOK {
+			t.Fatalf("stage 1 exit = %d", code)
+		}
+	})
+	if !strings.Contains(out1, "[pass] Project config") {
+		t.Errorf("stage 1 missing [pass] Project config row:\n%s", out1)
+	}
+
+	cwdCfg := filepath.Join(projDir, project.ConfigFileName)
+	before, err := os.ReadFile(cwdCfg)
+	if err != nil {
+		t.Fatalf("stage 1 did not create %s: %v", cwdCfg, err)
+	}
+
+	// Stage 2: idempotent re-run — exit OK, no overwrite, both global and
+	// project configs report [info] (already exists).
+	out2 := captureStdout(t, func() {
+		cmd := cmdInit(cli.BuildInfo{Version: "test"})
+		if code := cmd.Run(args); code != cli.ExitOK {
+			t.Fatalf("stage 2 exit = %d", code)
+		}
+	})
+	after, _ := os.ReadFile(cwdCfg)
+	if string(before) != string(after) {
+		t.Error("stage 2 overwrote existing project config")
+	}
+	if !strings.Contains(out2, "[info] Global config") {
+		t.Errorf("stage 2 missing [info] Global config row:\n%s", out2)
+	}
+	if !strings.Contains(out2, "[info] Project config") {
+		t.Errorf("stage 2 missing [info] Project config row:\n%s", out2)
+	}
+}
+
+// TestInitDetectsManifestOnlyProject confirms that vp init treats a
+// directory with only a go.mod (no .git) as a project — the multi-manifest
+// heuristic added in Phase 1.
+func TestInitDetectsManifestOnlyProject(t *testing.T) {
+	initTestEnv(t, true)
+	projDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projDir, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Explicitly no .git dir.
+
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
+	if code := cmd.Run([]string{projDir, "--name", "manifest-only"}); code != cli.ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+
+	if _, err := os.Stat(filepath.Join(projDir, project.ConfigFileName)); err != nil {
+		t.Errorf("project config not created on manifest-only dir: %v", err)
+	}
+}
+
+// TestInitForceSkipInSandboxedHome verifies that when cwd resolves to
+// the user's $HOME, project init is force-skipped regardless of any
+// project signals present. We sandbox $HOME to a tmpdir so the test
+// does not touch the developer's real home.
+func TestInitForceSkipInSandboxedHome(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	initTestEnv(t, true)
+
+	// Even with a go.mod present, running init *at* $HOME must skip.
+	if err := os.WriteFile(filepath.Join(fakeHome, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmd := cmdInit(cli.BuildInfo{Version: "test"})
+		if code := cmd.Run([]string{fakeHome, "--name", "should-not-exist"}); code != cli.ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	if _, err := os.Stat(filepath.Join(fakeHome, project.ConfigFileName)); err == nil {
+		t.Error("project config should not be created at $HOME")
+	}
+	if !strings.Contains(out, "[skip] Project config") {
+		t.Errorf("expected [skip] Project config row for $HOME, got:\n%s", out)
 	}
 }

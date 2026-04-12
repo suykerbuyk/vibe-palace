@@ -68,8 +68,11 @@ A vault-level custom command for testing.
 	var bootstrap struct {
 		Project           string `json:"project"`
 		Workflow          string `json:"workflow"`
+		CommandInvocation string `json:"command_invocation"`
 		AvailableCommands []struct {
-			Name string `json:"name"`
+			Name  string `json:"name"`
+			Alias string `json:"alias"`
+			Brief string `json:"brief"`
 		} `json:"available_commands"`
 	}
 	if err := json.Unmarshal([]byte(result), &bootstrap); err != nil {
@@ -96,6 +99,24 @@ A vault-level custom command for testing.
 	}
 	if !cmdNames["custom-cmd"] {
 		t.Error("available_commands should include vault 'custom-cmd'")
+	}
+
+	// Phase 1 additions: every command must carry a vpc- alias, briefs
+	// must not have trailing whitespace (word-boundary truncation), and
+	// the invocation directive must be populated when commands exist.
+	for _, cmd := range bootstrap.AvailableCommands {
+		if cmd.Alias != "vpc-"+cmd.Name {
+			t.Errorf("alias for %q = %q, want %q", cmd.Name, cmd.Alias, "vpc-"+cmd.Name)
+		}
+		if strings.HasSuffix(cmd.Brief, " ") {
+			t.Errorf("brief for %q has trailing space: %q", cmd.Name, cmd.Brief)
+		}
+	}
+	if bootstrap.CommandInvocation == "" {
+		t.Error("command_invocation should be populated when commands exist")
+	}
+	if !strings.Contains(bootstrap.CommandInvocation, "vpc-") {
+		t.Errorf("command_invocation missing vpc- reference: %q", bootstrap.CommandInvocation)
 	}
 }
 

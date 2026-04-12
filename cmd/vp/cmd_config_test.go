@@ -193,7 +193,7 @@ func TestInitGlobalCreatesVaultWithGit(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 	vaultDir := filepath.Join(t.TempDir(), "vault")
 
-	cmd := cmdInit()
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
 	code := cmd.Run([]string{t.TempDir(), "--vault-path", vaultDir, "--name", "test"})
 	if code != cli.ExitOK {
 		t.Fatalf("exit code = %d", code)
@@ -218,7 +218,7 @@ func TestInitGlobalNoGitSkipsRepo(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 	vaultDir := filepath.Join(t.TempDir(), "vault")
 
-	cmd := cmdInit()
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
 	code := cmd.Run([]string{t.TempDir(), "--vault-path", vaultDir, "--no-git", "--name", "test"})
 	if code != cli.ExitOK {
 		t.Fatalf("exit code = %d", code)

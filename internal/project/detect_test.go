@@ -413,6 +413,112 @@ func TestFindFileUpward_NotFound(t *testing.T) {
 	}
 }
 
+// --- DetectSignal tests ---
+
+func TestDetectSignal_VibeConfig(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir, "[project]\nname = \"p\"\n")
+	if got := DetectSignal(dir); got != SignalVibeConfig {
+		t.Errorf("DetectSignal = %q, want %q", got, SignalVibeConfig)
+	}
+}
+
+func TestDetectSignal_VibeConfigInParent(t *testing.T) {
+	parent := t.TempDir()
+	child := filepath.Join(parent, "a", "b")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeConfig(t, parent, "[project]\nname = \"p\"\n")
+	if got := DetectSignal(child); got != SignalVibeConfig {
+		t.Errorf("DetectSignal = %q, want %q", got, SignalVibeConfig)
+	}
+}
+
+func TestDetectSignal_Git(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := DetectSignal(dir); got != SignalGit {
+		t.Errorf("DetectSignal = %q, want %q", got, SignalGit)
+	}
+}
+
+func TestDetectSignal_ManifestFiles(t *testing.T) {
+	cases := []struct {
+		filename string
+		want     ProjectSignal
+	}{
+		{"go.mod", SignalGoMod},
+		{"package.json", SignalPackageJSON},
+		{"Cargo.toml", SignalCargoToml},
+		{"pyproject.toml", SignalPyprojectToml},
+		{"pom.xml", SignalPomXML},
+	}
+	for _, tc := range cases {
+		t.Run(tc.filename, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, tc.filename), []byte(""), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := DetectSignal(dir); got != tc.want {
+				t.Errorf("DetectSignal(%s) = %q, want %q", tc.filename, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDetectSignal_NoSignal(t *testing.T) {
+	dir := t.TempDir()
+	if got := DetectSignal(dir); got != SignalNone {
+		t.Errorf("DetectSignal on empty dir = %q, want %q", got, SignalNone)
+	}
+}
+
+func TestDetectSignal_PrecedenceConfigOverGit(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir, "[project]\nname = \"p\"\n")
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := DetectSignal(dir); got != SignalVibeConfig {
+		t.Errorf("DetectSignal = %q, want %q (config beats git)", got, SignalVibeConfig)
+	}
+}
+
+func TestDetectSignal_PrecedenceGitOverManifest(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := DetectSignal(dir); got != SignalGit {
+		t.Errorf("DetectSignal = %q, want %q (git beats manifests)", got, SignalGit)
+	}
+}
+
+func TestDetectSignal_ForceSkipHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir")
+	}
+	// Even if the real home contains signals, DetectSignal must return None.
+	// We don't pollute the real home — we just probe it.
+	got := DetectSignal(home)
+	if got != SignalNone {
+		t.Errorf("DetectSignal($HOME) = %q, want %q (must force-skip)", got, SignalNone)
+	}
+}
+
+func TestDetectSignal_ForceSkipRoot(t *testing.T) {
+	if got := DetectSignal("/"); got != SignalNone {
+		t.Errorf("DetectSignal(/) = %q, want %q", got, SignalNone)
+	}
+}
+
 // --- helpers ---
 
 func writeConfig(t *testing.T, dir, content string) {
