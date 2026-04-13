@@ -27,7 +27,7 @@ func cmdAbsorb() *cli.Command {
 	return &cli.Command{
 		Name:        "absorb",
 		Synopsis:    "vp absorb [--dry-run] [--yes] [--project SLUG] [--project-root PATH] [--no-stage]",
-		Description: "Migrate legacy agent-context files (CLAUDE.md, AGENTS.md, .cursorrules, .rules, copilot instructions) into the palace vault. Sections are routed to resume/workflow/knowledge/doc files; resume-bound content is queued for manual merge. Source files are rewritten down to preamble + managed block, with backups under .vibe-palace/.",
+		Description: "Migrate legacy agent-context files (CLAUDE.md, AGENTS.md, .cursorrules, .rules, copilot instructions) into the palace vault. Sections are routed to resume/workflow/knowledge/doc files; resume-bound content is queued for manual merge. Source files are rewritten down to preamble + managed block, with backups under .vibe-palace/. Use --yes to accept every proposed route non-interactively; during interactive use, press A at any prompt to accept the rest.",
 		Flags:       absorbFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp absorb --dry-run", Comment: "Preview the routing plan"},
@@ -120,15 +120,19 @@ func runAbsorb(opts absorbOpts) int {
 	}
 
 	// Per-section interactive pruning. Items removed here never reach
-	// absorb.Apply. --yes accepts every item.
+	// absorb.Apply. --yes accepts every item; pressing `A` at any prompt
+	// accepts every remaining item.
 	items := plan.Items
 	if !opts.Yes {
 		reader := bufio.NewReader(opts.Stdin)
 		kept := items[:0]
+		autoAccept := false
 		for _, it := range items {
-			fmt.Fprintf(opts.Stdout, "\n%s:%d-%d  %q\n  → %s\n",
-				it.DisplayPath, it.Section.StartLine, it.Section.EndLine,
-				it.Section.Heading, describeDest(it.Dest))
+			printItemPrompt(opts.Stdout, it)
+			if autoAccept {
+				kept = append(kept, it)
+				continue
+			}
 			choice, err := absorbPrompt(opts.Stdout, reader)
 			if err != nil {
 				fmt.Fprintf(opts.Stderr, "vp absorb: %v\n", err)
@@ -137,6 +141,9 @@ func runAbsorb(opts absorbOpts) int {
 			switch choice {
 			case "y":
 				kept = append(kept, it)
+			case "a":
+				kept = append(kept, it)
+				autoAccept = true
 			case "s":
 				// Drop this item from the plan.
 			case "q":
@@ -170,7 +177,25 @@ func allSourcesEmpty(plan *absorb.Plan) bool {
 	return false
 }
 
+// absorbContract is the one-time header printed before the per-item plan.
+// It states the file-level rewrite/backup contract once rather than
+// repeating it per prompt. Keep copy in sync with the writer behavior in
+// internal/absorb/writer.go.
+const absorbContract = `Absorb will:
+  1. Route every section listed below into the palace vault.
+  2. Rewrite each source file down to its preamble plus the
+     vibe-palace managed block. Original bodies are discarded from
+     the source file but preserved in backups under .vibe-palace/.
+  3. Stage rewritten source files with ` + "`git add`" + ` unless --no-stage.
+
+Sections not listed (e.g. the managed block itself) are not migrated
+but also not preserved in the source file — they are captured in
+the backup only.
+`
+
 func printPlan(w io.Writer, plan *absorb.Plan) {
+	fmt.Fprint(w, absorbContract)
+	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Absorb plan:")
 	fmt.Fprintln(w)
 	for _, ps := range plan.Sources {
@@ -221,19 +246,72 @@ func truncate(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
+// printItemPrompt renders one item header above the y/s/A/q prompt. Includes
+// the source location, heading, destination, classification reason, and a
+// short body preview so the user can decide without opening the source file.
+func printItemPrompt(w io.Writer, it absorb.Item) {
+	head := it.Section.Heading
+	if head == "" {
+		head = "<preamble>"
+	}
+	fmt.Fprintf(w, "\n%s:%d-%d  %q\n  → %s",
+		it.DisplayPath, it.Section.StartLine, it.Section.EndLine,
+		head, describeDest(it.Dest))
+	if it.Reason != "" {
+		fmt.Fprintf(w, "  (%s)", it.Reason)
+	}
+	fmt.Fprintln(w)
+	for _, line := range bodyPreviewLines(it.Section.Body, 2, 240) {
+		fmt.Fprintf(w, "  ┆ %s\n", line)
+	}
+}
+
+// bodyPreviewLines returns up to maxLines trimmed, non-empty lines from body,
+// capping the total displayed characters at maxChars. The last returned line
+// gets a trailing ellipsis when truncated.
+func bodyPreviewLines(body string, maxLines, maxChars int) []string {
+	var out []string
+	total := 0
+	for _, raw := range strings.Split(body, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		remaining := maxChars - total
+		if remaining <= 0 {
+			break
+		}
+		if len(line) > remaining {
+			if remaining > 1 {
+				line = line[:remaining-1] + "…"
+			} else {
+				line = "…"
+			}
+			out = append(out, line)
+			break
+		}
+		out = append(out, line)
+		total += len(line)
+		if len(out) >= maxLines {
+			break
+		}
+	}
+	return out
+}
+
 func absorbPrompt(w io.Writer, r *bufio.Reader) (string, error) {
 	for i := 0; i < 5; i++ {
-		fmt.Fprint(w, "Accept this route? [y]es / [s]kip / [q]uit: ")
+		fmt.Fprint(w, "Accept this route? [y]es / [s]kip / [A]ccept all / [q]uit: ")
 		line, err := r.ReadString('\n')
 		if err != nil && err != io.EOF {
 			return "", err
 		}
 		line = strings.TrimSpace(strings.ToLower(line))
 		switch line {
-		case "y", "s", "q":
+		case "y", "s", "a", "q":
 			return line, nil
 		}
-		fmt.Fprintln(w, "Please answer y, s, or q.")
+		fmt.Fprintln(w, "Please answer y, s, A, or q.")
 		if err == io.EOF {
 			return "s", nil
 		}

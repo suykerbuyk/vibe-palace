@@ -37,8 +37,10 @@ type Item struct {
 	// BodyHash is sha256(Section.Body), used by the writer to dedup
 	// re-runs against existing dated subheadings.
 	BodyHash string
-	// Reason populates the dry-run "why" column when the classifier
-	// returned DestMisc or an ambiguous result. Empty for clean routes.
+	// Reason is a short, human-readable phrase explaining why this item
+	// routed the way it did. Populated for every item (including clean
+	// routes) so the dry-run and interactive UI can surface the "why"
+	// alongside the source path and destination.
 	Reason string
 }
 
@@ -114,10 +116,12 @@ func BuildPlan(projectRoot string) (*Plan, error) {
 				continue
 			}
 			var dest Destination
+			var reason string
 			if src.SplitStrategy() == SplitWholeFile {
 				dest = src.FixedDestination()
+				reason = "whole-file source → fixed destination"
 			} else {
-				dest = Classify(s.Heading, body)
+				dest, reason = classifyWithRule(s.Heading, body)
 			}
 			if dest == DestKeepInPlace {
 				// Keep-in-place sections are not written to the vault,
@@ -133,9 +137,7 @@ func BuildPlan(projectRoot string) (*Plan, error) {
 				Section:     s,
 				Dest:        dest,
 				BodyHash:    hashBody(body),
-			}
-			if dest == DestMisc {
-				item.Reason = "unrecognized heading — defaults to doc/misc.md"
+				Reason:      reason,
 			}
 			ps.ContributedAt = append(ps.ContributedAt, len(plan.Items))
 			plan.Items = append(plan.Items, item)

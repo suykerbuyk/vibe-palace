@@ -44,7 +44,13 @@ var (
 // ruleSet matches a heading pattern (lowercased, first-token) to a destination.
 // Ordered: earlier entries win. Keep each pattern tight — body tiebreakers
 // happen in Classify below, not here.
+//
+// The name is a short, human-readable label surfaced in dry-run output so
+// users can see *why* a section was classified the way it was (e.g.
+// "matched: architecture"). Keep names stable — they appear verbatim in
+// the UI.
 type headingRule struct {
+	name    string
 	pattern *regexp.Regexp
 	dest    Destination
 }
@@ -52,49 +58,49 @@ type headingRule struct {
 var headingRules = []headingRule{
 	// Keep-in-place: the managed block itself. Matched by caller before
 	// classification; included here for completeness.
-	{regexp.MustCompile(`^vibe-palace integration\b`), DestKeepInPlace},
+	{"keep-in-place", regexp.MustCompile(`^vibe-palace integration\b`), DestKeepInPlace},
 
 	// Architecture/design family.
-	{regexp.MustCompile(`^architecture\b`), DestArchitecture},
-	{regexp.MustCompile(`^design\b`), DestArchitecture},
-	{regexp.MustCompile(`^package layout\b`), DestArchitecture},
-	{regexp.MustCompile(`^import direction\b`), DestArchitecture},
-	{regexp.MustCompile(`^data model\b`), DestArchitecture},
-	{regexp.MustCompile(`^move atomicity\b`), DestArchitecture},
+	{"architecture", regexp.MustCompile(`^architecture\b`), DestArchitecture},
+	{"architecture", regexp.MustCompile(`^design\b`), DestArchitecture},
+	{"architecture", regexp.MustCompile(`^package layout\b`), DestArchitecture},
+	{"architecture", regexp.MustCompile(`^import direction\b`), DestArchitecture},
+	{"architecture", regexp.MustCompile(`^data model\b`), DestArchitecture},
+	{"architecture", regexp.MustCompile(`^move atomicity\b`), DestArchitecture},
 
 	// Testing.
-	{regexp.MustCompile(`^test(ing)?( strategy)?\b`), DestTesting},
-	{regexp.MustCompile(`^coverage\b`), DestTesting},
+	{"testing", regexp.MustCompile(`^test(ing)?( strategy)?\b`), DestTesting},
+	{"testing", regexp.MustCompile(`^coverage\b`), DestTesting},
 
 	// Scope / non-goals.
-	{regexp.MustCompile(`^non-goals?\b`), DestScope},
-	{regexp.MustCompile(`^scope\b`), DestScope},
-	{regexp.MustCompile(`^out of scope\b`), DestScope},
+	{"scope", regexp.MustCompile(`^non-goals?\b`), DestScope},
+	{"scope", regexp.MustCompile(`^scope\b`), DestScope},
+	{"scope", regexp.MustCompile(`^out of scope\b`), DestScope},
 
 	// Commands / build / run — workflow::Commands.
-	{regexp.MustCompile(`^commands?\b`), DestWorkflowCmds},
-	{regexp.MustCompile(`^build\b`), DestWorkflowCmds},
-	{regexp.MustCompile(`^run\b`), DestWorkflowCmds},
-	{regexp.MustCompile(`^dev loop\b`), DestWorkflowCmds},
-	{regexp.MustCompile(`^make targets?\b`), DestWorkflowCmds},
+	{"workflow-cmds", regexp.MustCompile(`^commands?\b`), DestWorkflowCmds},
+	{"workflow-cmds", regexp.MustCompile(`^build\b`), DestWorkflowCmds},
+	{"workflow-cmds", regexp.MustCompile(`^run\b`), DestWorkflowCmds},
+	{"workflow-cmds", regexp.MustCompile(`^dev loop\b`), DestWorkflowCmds},
+	{"workflow-cmds", regexp.MustCompile(`^make targets?\b`), DestWorkflowCmds},
 
 	// Workflow / conventions — workflow::Rules (unless body says otherwise).
-	{regexp.MustCompile(`^workflow\b`), DestWorkflowRules},
-	{regexp.MustCompile(`^when working in this repo\b`), DestWorkflowRules},
-	{regexp.MustCompile(`^conventions?\b`), DestWorkflowRules},
-	{regexp.MustCompile(`^style\b`), DestWorkflowRules},
+	{"workflow-rules", regexp.MustCompile(`^workflow\b`), DestWorkflowRules},
+	{"workflow-rules", regexp.MustCompile(`^when working in this repo\b`), DestWorkflowRules},
+	{"workflow-rules", regexp.MustCompile(`^conventions?\b`), DestWorkflowRules},
+	{"workflow-rules", regexp.MustCompile(`^style\b`), DestWorkflowRules},
 
 	// Resume-family.
-	{regexp.MustCompile(`^overview\b`), DestResumeScratch},
-	{regexp.MustCompile(`^about\b`), DestResumeScratch},
-	{regexp.MustCompile(`^status\b`), DestResumeScratch},
+	{"resume", regexp.MustCompile(`^overview\b`), DestResumeScratch},
+	{"resume", regexp.MustCompile(`^about\b`), DestResumeScratch},
+	{"resume", regexp.MustCompile(`^status\b`), DestResumeScratch},
 
 	// Domain facts / knowledge.
-	{regexp.MustCompile(`^notation\b`), DestKnowledge},
-	{regexp.MustCompile(`^glossary\b`), DestKnowledge},
-	{regexp.MustCompile(`^vocabulary\b`), DestKnowledge},
-	{regexp.MustCompile(`^rules of the game\b`), DestKnowledge},
-	{regexp.MustCompile(`^rules\s*[—-]`), DestKnowledge}, // "Rules — quick reference"
+	{"knowledge", regexp.MustCompile(`^notation\b`), DestKnowledge},
+	{"knowledge", regexp.MustCompile(`^glossary\b`), DestKnowledge},
+	{"knowledge", regexp.MustCompile(`^vocabulary\b`), DestKnowledge},
+	{"knowledge", regexp.MustCompile(`^rules of the game\b`), DestKnowledge},
+	{"knowledge", regexp.MustCompile(`^rules\s*[—-]`), DestKnowledge}, // "Rules — quick reference"
 }
 
 // workflowBodyHints are verbs/phrases that tip an ambiguous "Rules" heading
@@ -112,35 +118,37 @@ var workflowBodyHints = []*regexp.Regexp{
 //
 // Pure function; no I/O.
 func Classify(heading, body string) Destination {
+	d, _ := classifyWithRule(heading, body)
+	return d
+}
+
+// classifyWithRule is like Classify but also returns a short, human-readable
+// reason explaining the decision. Used by the planner to populate Item.Reason
+// so users see *why* a section routed the way it did.
+func classifyWithRule(heading, body string) (Destination, string) {
 	h := strings.ToLower(strings.TrimSpace(heading))
-	// Treat an H1/H2 that looks like a project title (single word, or
-	// matches the repo directory name) as resume material. We can't know
-	// the project slug here, so be conservative: any H1/H2-style single
-	// token without spaces goes to resume.
 	if h == "" {
-		return DestResumeScratch
+		return DestResumeScratch, "empty heading → resume scratch"
 	}
 
 	for _, r := range headingRules {
 		if r.pattern.MatchString(h) {
-			// Tiebreaker: plain "Rules" (no "— quick ref", no "of the game")
-			// goes to knowledge unless the body reads imperative.
 			if r.dest == DestKnowledge && strings.HasPrefix(h, "rules") {
 				if bodyLooksLikeWorkflow(body) {
-					return DestWorkflowRules
+					return DestWorkflowRules, "rules heading + imperative body → workflow"
 				}
 			}
-			return r.dest
+			return r.dest, "matched: " + r.name
 		}
 	}
 
 	// Unrecognized heading that's a single word with no punctuation is
 	// likely the project title — treat as resume scratch.
 	if !strings.ContainsAny(h, " \t-—:") {
-		return DestResumeScratch
+		return DestResumeScratch, "single-word heading → resume scratch"
 	}
 
-	return DestMisc
+	return DestMisc, "unrecognized heading — defaults to doc/misc.md"
 }
 
 func bodyLooksLikeWorkflow(body string) bool {
