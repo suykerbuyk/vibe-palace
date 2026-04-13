@@ -513,3 +513,111 @@ func TestProgressLine(t *testing.T) {
 		t.Errorf("expected Embedder name, got %q", out)
 	}
 }
+
+// TestCheckConfigAt_ParityWithCwd verifies that CheckConfigAt(cwd) produces
+// the same result as CheckConfig() run from that cwd.
+func TestCheckConfigAt_ParityWithCwd(t *testing.T) {
+	tmp := t.TempDir()
+	configDir := filepath.Join(tmp, "vibe-palace")
+	os.MkdirAll(configDir, 0755)
+	vaultDir := filepath.Join(tmp, "vault")
+	os.MkdirAll(vaultDir, 0755)
+	os.WriteFile(filepath.Join(configDir, "config.toml"),
+		[]byte("vault_path = "+`"`+vaultDir+`"`+"\n"), 0644)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	projectDir := filepath.Join(tmp, "proj")
+	os.MkdirAll(projectDir, 0755)
+	t.Chdir(projectDir)
+
+	cfgCwd, vaultCwd, rCwd := CheckConfig()
+	cfgAt, vaultAt, rAt := CheckConfigAt(projectDir)
+
+	if cfgCwd != cfgAt {
+		t.Errorf("configPath mismatch: cwd=%q at=%q", cfgCwd, cfgAt)
+	}
+	if vaultCwd != vaultAt {
+		t.Errorf("vaultPath mismatch: cwd=%q at=%q", vaultCwd, vaultAt)
+	}
+	if rCwd.Status != rAt.Status || rCwd.Summary != rAt.Summary {
+		t.Errorf("result mismatch: cwd=%+v at=%+v", rCwd, rAt)
+	}
+}
+
+// TestCheckConfigAt_CwdOverride asserts the explicit-root variant honors a
+// .vibe-palace.toml vault_path override found at root (not os.Getwd()).
+func TestCheckConfigAt_CwdOverride(t *testing.T) {
+	tmp := t.TempDir()
+	// Global config points at one vault.
+	configDir := filepath.Join(tmp, "vibe-palace")
+	os.MkdirAll(configDir, 0755)
+	globalVault := filepath.Join(tmp, "global-vault")
+	os.MkdirAll(globalVault, 0755)
+	os.WriteFile(filepath.Join(configDir, "config.toml"),
+		[]byte("vault_path = "+`"`+globalVault+`"`+"\n"), 0644)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	// Project dir with a cwd-local override pointing at a different vault.
+	projectDir := filepath.Join(tmp, "proj")
+	os.MkdirAll(projectDir, 0755)
+	projectVault := filepath.Join(tmp, "proj-vault")
+	os.MkdirAll(projectVault, 0755)
+	os.WriteFile(filepath.Join(projectDir, ".vibe-palace.toml"),
+		[]byte("vault_path = "+`"`+projectVault+`"`+"\n"), 0644)
+
+	// Run from an unrelated cwd — At(projectDir) should still pick up the override.
+	t.Chdir(tmp)
+	_, vaultPath, r := CheckConfigAt(projectDir)
+	if r.Status != Pass {
+		t.Fatalf("expected Pass, got %v: %s", r.Status, r.Summary)
+	}
+	if vaultPath != projectVault {
+		t.Errorf("expected project-local vault override %q, got %q",
+			projectVault, vaultPath)
+	}
+}
+
+// TestCheckProjectAt_ParityWithCwd verifies that CheckProjectAt(cwd) produces
+// the same result as CheckProject() run from that cwd.
+func TestCheckProjectAt_ParityWithCwd(t *testing.T) {
+	t.Run("with project file", func(t *testing.T) {
+		tmp := t.TempDir()
+		os.WriteFile(filepath.Join(tmp, ".vibe-palace.toml"),
+			[]byte("[project]\nname = \"test-proj\"\n"), 0644)
+		t.Chdir(tmp)
+		rCwd := CheckProject()
+		rAt := CheckProjectAt(tmp)
+		if rCwd.Status != rAt.Status || rCwd.Summary != rAt.Summary {
+			t.Errorf("mismatch: cwd=%+v at=%+v", rCwd, rAt)
+		}
+	})
+	t.Run("basename fallback", func(t *testing.T) {
+		tmp := t.TempDir()
+		t.Chdir(tmp)
+		rCwd := CheckProject()
+		rAt := CheckProjectAt(tmp)
+		if rCwd.Status != rAt.Status || rCwd.Summary != rAt.Summary {
+			t.Errorf("mismatch: cwd=%+v at=%+v", rCwd, rAt)
+		}
+	})
+}
+
+// TestCheckProjectAt_ExplicitRootDecoupledFromCwd verifies that the explicit
+// root is used for detection, not os.Getwd().
+func TestCheckProjectAt_ExplicitRootDecoupledFromCwd(t *testing.T) {
+	tmp := t.TempDir()
+	projectDir := filepath.Join(tmp, "named-project")
+	os.MkdirAll(projectDir, 0755)
+	os.WriteFile(filepath.Join(projectDir, ".vibe-palace.toml"),
+		[]byte("[project]\nname = \"named-project\"\n"), 0644)
+
+	// Run from an unrelated cwd — At(projectDir) should detect the project.
+	t.Chdir(tmp)
+	r := CheckProjectAt(projectDir)
+	if r.Status != Info {
+		t.Fatalf("expected Info, got %v", r.Status)
+	}
+	if !strings.Contains(r.Summary, "named-project") {
+		t.Errorf("expected summary to reference named-project, got %q", r.Summary)
+	}
+}

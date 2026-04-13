@@ -345,7 +345,7 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 				len(c.EmbeddedContent))
 		}
 
-		choice, err := promptChoice(opts.Stdout, reader)
+		choice, err := cli.PromptChoice(opts.Stdout, reader)
 		if err != nil {
 			fmt.Fprintf(opts.Stderr, "vp commands upgrade: %v\n", err)
 			return cli.ExitSystem
@@ -389,7 +389,7 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 			fmt.Fprintf(opts.Stdout, "No managed block present; one will be appended (sha=%s).\n",
 				b.ExpectedSha)
 		}
-		choice, err := promptChoice(opts.Stdout, reader)
+		choice, err := cli.PromptChoice(opts.Stdout, reader)
 		if err != nil {
 			fmt.Fprintf(opts.Stderr, "vp commands upgrade: %v\n", err)
 			return cli.ExitSystem
@@ -437,7 +437,7 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 				"%s no longer maps to a known command (sha=%s); accept to delete.\n",
 				s.Path, s.PrevSha)
 		}
-		choice, err := promptChoice(opts.Stdout, reader)
+		choice, err := cli.PromptChoice(opts.Stdout, reader)
 		if err != nil {
 			fmt.Fprintf(opts.Stderr, "vp commands upgrade: %v\n", err)
 			return cli.ExitSystem
@@ -484,28 +484,6 @@ func applyAndReport(w, errw io.Writer, accepted []commands.Change, acceptedBlock
 		acceptedCount, skippedCount, custom,
 		rep.Added, rep.Updated, rep.Removed, shimCustom)
 	return cli.ExitOK
-}
-
-// promptChoice reads a single-line response (accept / skip / accept-all / quit).
-// Any unrecognized input repeats the prompt up to a small bound.
-func promptChoice(w io.Writer, r *bufio.Reader) (string, error) {
-	for i := 0; i < 5; i++ {
-		fmt.Fprint(w, "Accept this change? [a]ccept / [s]kip / [A]ccept-all / [q]uit: ")
-		line, err := r.ReadString('\n')
-		if err != nil && err != io.EOF {
-			return "", err
-		}
-		line = strings.TrimSpace(line)
-		switch line {
-		case "a", "A", "s", "q":
-			return line, nil
-		}
-		fmt.Fprintln(w, "Please answer a, s, A, or q.")
-		if err == io.EOF {
-			return "s", nil
-		}
-	}
-	return "s", nil
 }
 
 func printBlockPlan(w io.Writer, changes []commands.BlockChange) {

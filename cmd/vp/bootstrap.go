@@ -26,7 +26,14 @@ func openProjectVault() (*storage.Vault, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get working directory: %w", err)
 	}
-	return storage.OpenVaultFromCwd(cwd)
+	return OpenProjectVaultAt(cwd)
+}
+
+// OpenProjectVaultAt is the explicit-root variant of openProjectVault. It
+// opens the vault honoring any cwd-local vault_path override found by
+// walking up from the given root.
+func OpenProjectVaultAt(root string) (*storage.Vault, error) {
+	return storage.OpenVaultFromCwd(root)
 }
 
 // serverStack holds the full MCP server stack. Callers must defer close().

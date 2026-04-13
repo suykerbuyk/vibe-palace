@@ -83,7 +83,18 @@ func Run() []Result {
 // CheckConfig verifies the config file can be found and parsed.
 // Returns the global config file path, the resolved vault path (honoring
 // any cwd-local .vibe-palace.toml override), and the check result.
+//
+// Uses os.Getwd() to resolve any cwd-local override. For explicit-root
+// callers (reconcilers, tests), use CheckConfigAt.
 func CheckConfig() (configPath, vaultPath string, r Result) {
+	cwd, _ := os.Getwd()
+	return CheckConfigAt(cwd)
+}
+
+// CheckConfigAt is the explicit-root variant of CheckConfig. The root
+// argument is used in place of os.Getwd() when resolving any cwd-local
+// .vibe-palace.toml vault_path override.
+func CheckConfigAt(root string) (configPath, vaultPath string, r Result) {
 	r.Name = "Config"
 
 	configPath, err := storage.VaultConfigFilePath()
@@ -94,9 +105,8 @@ func CheckConfig() (configPath, vaultPath string, r Result) {
 		return
 	}
 
-	cwd, _ := os.Getwd()
 	var source string
-	vaultPath, source, err = storage.ResolveVaultPath(cwd)
+	vaultPath, source, err = storage.ResolveVaultPath(root)
 	if err != nil {
 		r.Status = Fail
 		r.Summary = fmt.Sprintf("not found at %s", configPath)
@@ -258,19 +268,28 @@ func CheckConfigStaleness(configPath string) Result {
 
 // CheckProject checks whether a project is detected in the current directory.
 // This always returns Info status — it never causes a failure.
+//
+// Uses os.Getwd() as the project root. For explicit-root callers
+// (reconcilers, tests), use CheckProjectAt.
 func CheckProject() Result {
+	cwd, _ := os.Getwd()
+	return CheckProjectAt(cwd)
+}
+
+// CheckProjectAt is the explicit-root variant of CheckProject. The root
+// argument is used in place of os.Getwd() when detecting the project and
+// deciding which detection strategy surfaced it.
+func CheckProjectAt(root string) Result {
 	r := Result{Name: "Project"}
 	r.Status = Info
 
-	slug, err := project.DetectProject(".")
+	slug, err := project.DetectProject(root)
 	if err != nil {
 		r.Summary = "no project detected (not in a project directory)"
 		return r
 	}
 
-	// Determine which detection strategy was used.
-	cwd, _ := os.Getwd()
-	if _, cfgErr := findProjectConfig(cwd); cfgErr == nil {
+	if _, cfgErr := findProjectConfig(root); cfgErr == nil {
 		r.Summary = fmt.Sprintf("%s (from %s)", slug, project.ConfigFileName)
 	} else {
 		r.Summary = fmt.Sprintf("%s (from directory name)", slug)

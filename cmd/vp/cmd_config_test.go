@@ -349,3 +349,171 @@ func TestConfigUpgradeProject_InvalidSlug(t *testing.T) {
 		t.Errorf("exit code = %d, want ExitUser", code)
 	}
 }
+
+// --- vp config sync --------------------------------------------------------
+
+// seedFreshVault creates a minimal XDG + vault layout that config sync
+// will treat as "in sync": global config points at vaultPath (which exists
+// with a .gitignore), and there's no project config in projectDir.
+func seedFreshVault(t *testing.T) (configDir, vaultPath, projectDir string) {
+	t.Helper()
+	configDir = t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+
+	vpDir := filepath.Join(configDir, "vibe-palace")
+	if err := os.MkdirAll(vpDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	vaultPath = filepath.Join(configDir, "vault")
+	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Seed global config with canonical defaults so no drift surfaces,
+	// then fill in the placeholder vault_path with our tempdir vault.
+	defaultsText, err := storage.DefaultsTomlContent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeded := strings.Replace(defaultsText,
+		"vault_path = \"\"",
+		"vault_path = \""+vaultPath+"\"", 1)
+	if !strings.Contains(seeded, "vault_path = \""+vaultPath+"\"") {
+		t.Fatalf("seedFreshVault: failed to substitute vault_path in defaults.toml")
+	}
+	if err := os.WriteFile(filepath.Join(vpDir, "config.toml"), []byte(seeded), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Vault .gitignore so Vault reconciler reports Unchanged.
+	if err := storage.WriteVaultGitignore(vaultPath); err != nil {
+		t.Fatal(err)
+	}
+
+	projectDir = t.TempDir()
+	return configDir, vaultPath, projectDir
+}
+
+func TestConfigSync_InSync(t *testing.T) {
+	_, _, projectDir := seedFreshVault(t)
+	code := runConfigSync([]string{"--project-root", projectDir, "--yes"})
+	if code != cli.ExitOK {
+		t.Errorf("exit code = %d, want ExitOK", code)
+	}
+}
+
+func TestConfigSync_Fresh_CreatesNothingWithoutSeeds(t *testing.T) {
+	// With nothing set up at all and no seeds (sync mode), Plan reports
+	// Skip actions and Apply is a no-op.
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	projectDir := t.TempDir()
+
+	code := runConfigSync([]string{"--project-root", projectDir, "--dry-run"})
+	if code != cli.ExitOK {
+		t.Errorf("exit code = %d, want ExitOK", code)
+	}
+	// Nothing must have been written.
+	if _, err := os.Stat(filepath.Join(configDir, "vibe-palace", "config.toml")); err == nil {
+		t.Error("--dry-run on empty env should not create global config")
+	}
+}
+
+func TestConfigSync_DriftInGlobalTier(t *testing.T) {
+	configDir, _, projectDir := seedFreshVault(t)
+
+	// Introduce drift by truncating the global config to one key.
+	cfgPath := filepath.Join(configDir, "vibe-palace", "config.toml")
+	if err := os.WriteFile(cfgPath,
+		[]byte("vault_path = \""+filepath.Join(configDir, "vault")+"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// --yes accepts and Apply should fill in missing keys.
+	code := runConfigSync([]string{
+		"--project-root", projectDir, "--tier", "global", "--yes",
+	})
+	if code != cli.ExitOK {
+		t.Errorf("exit code = %d, want ExitOK", code)
+	}
+	after, _ := os.ReadFile(cfgPath)
+	if !strings.Contains(string(after), "[embedder]") {
+		t.Errorf("expected upgrade to add [embedder] block, got:\n%s", after)
+	}
+	// Backup should have been created by applyUpgrade.
+	if _, err := os.Stat(cfgPath + ".bak"); err != nil {
+		t.Errorf("expected .bak backup: %v", err)
+	}
+}
+
+func TestConfigSync_DryRunDoesNotModify(t *testing.T) {
+	configDir, _, projectDir := seedFreshVault(t)
+	cfgPath := filepath.Join(configDir, "vibe-palace", "config.toml")
+	if err := os.WriteFile(cfgPath,
+		[]byte("vault_path = \""+filepath.Join(configDir, "vault")+"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	original, _ := os.ReadFile(cfgPath)
+	code := runConfigSync([]string{
+		"--project-root", projectDir, "--tier", "global", "--dry-run",
+	})
+	if code != cli.ExitOK {
+		t.Errorf("exit code = %d", code)
+	}
+	after, _ := os.ReadFile(cfgPath)
+	if string(after) != string(original) {
+		t.Error("--dry-run must not modify the config file")
+	}
+	if _, err := os.Stat(cfgPath + ".bak"); err == nil {
+		t.Error("--dry-run must not create a backup")
+	}
+}
+
+func TestConfigSync_UnknownTierRejected(t *testing.T) {
+	code := runConfigSync([]string{"--tier", "bogus"})
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser", code)
+	}
+}
+
+func TestConfigSync_MutuallyExclusiveAddressing(t *testing.T) {
+	code := runConfigSync([]string{"--cwd", ".", "--project", "foo"})
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser", code)
+	}
+}
+
+func TestConfigSync_TierProjectScopeOnly(t *testing.T) {
+	// With --tier project, only the project reconcilers run. Confirm that
+	// a missing global config does not cause a failure — sync reports Skip.
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	projectDir := t.TempDir()
+	// No seed: both CwdProject and VaultProject return Skip.
+	code := runConfigSync([]string{
+		"--project-root", projectDir, "--tier", "project", "--dry-run",
+	})
+	if code != cli.ExitOK {
+		t.Errorf("exit code = %d, want ExitOK", code)
+	}
+}
+
+func TestConfigSync_YesAcceptsWithoutStdin(t *testing.T) {
+	configDir, _, projectDir := seedFreshVault(t)
+	cfgPath := filepath.Join(configDir, "vibe-palace", "config.toml")
+	if err := os.WriteFile(cfgPath,
+		[]byte("vault_path = \""+filepath.Join(configDir, "vault")+"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Close stdin to ensure --yes never reads from it.
+	oldStdin := os.Stdin
+	r, w, _ := os.Pipe()
+	_ = w.Close()
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = oldStdin; _ = r.Close() })
+
+	code := runConfigSync([]string{
+		"--project-root", projectDir, "--tier", "global", "--yes",
+	})
+	if code != cli.ExitOK {
+		t.Errorf("exit code = %d, want ExitOK", code)
+	}
+}
