@@ -87,6 +87,9 @@ func runCheck(version string) int {
 	results = append(results, check.CheckGit(vaultPath, cfg.GitEnabled))
 	results = append(results, check.CheckConfigStaleness(configPath))
 	results = append(results, check.CheckProject())
+	if cwd, err := os.Getwd(); err == nil {
+		results = append(results, check.CheckAgentDrift(cwd))
+	}
 
 	n := check.Print(os.Stdout, version, results)
 	if n > 0 {

@@ -24,6 +24,59 @@ func (v *Vault) WriteResume(project, content string) error {
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
+// WriteWorkflow writes content to the project's workflow file, creating
+// parent directories as needed. Overwrites any existing file — callers
+// wanting append-merge semantics should read, merge, then call this.
+func (v *Vault) WriteWorkflow(project, content string) error {
+	path, err := v.WorkflowFile(project)
+	if err != nil {
+		return err
+	}
+	if err := EnsureDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("ensure project dir: %w", err)
+	}
+	return os.WriteFile(path, []byte(content), 0644)
+}
+
+// WriteKnowledge writes content to the project's knowledge file.
+// Same semantics as WriteWorkflow.
+func (v *Vault) WriteKnowledge(project, content string) error {
+	path, err := v.KnowledgeFile(project)
+	if err != nil {
+		return err
+	}
+	if err := EnsureDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("ensure project dir: %w", err)
+	}
+	return os.WriteFile(path, []byte(content), 0644)
+}
+
+// WriteDoc writes content to a project-scoped doc file. rel is resolved
+// by DocFile (e.g. "architecture.md"). Creates parent directories.
+func (v *Vault) WriteDoc(project, rel, content string) error {
+	path, err := v.DocFile(project, rel)
+	if err != nil {
+		return err
+	}
+	if err := EnsureDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("ensure doc dir: %w", err)
+	}
+	return os.WriteFile(path, []byte(content), 0644)
+}
+
+// WriteAbsorbed writes content to a file under the project's absorbed/
+// scratch directory (used by `vp absorb` for resume-suggestions handoff).
+func (v *Vault) WriteAbsorbed(project, rel, content string) error {
+	path, err := v.AbsorbedFile(project, rel)
+	if err != nil {
+		return err
+	}
+	if err := EnsureDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("ensure absorbed dir: %w", err)
+	}
+	return os.WriteFile(path, []byte(content), 0644)
+}
+
 // AppendIteration appends a narrative entry to the project's iterations file
 // with a leading separator. Uses flock for concurrent safety.
 func (v *Vault) AppendIteration(project, content string) error {

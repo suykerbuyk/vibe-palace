@@ -7,6 +7,7 @@ import "github.com/suykerbuyk/vibe-palace/internal/cli"
 
 // registerAll registers every command with the registry.
 func registerAll(reg *cli.Registry, info cli.BuildInfo) {
+	reg.Register(cmdAbsorb())
 	reg.Register(cmdAudit())
 	reg.Register(cmdAuditRooms())
 	reg.Register(cmdCommands())

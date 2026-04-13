@@ -233,6 +233,64 @@ func (v *Vault) IterationsFile(project string) (string, error) {
 	return filepath.Join(v.Root, "Projects", project, "iterations.md"), nil
 }
 
+// WorkflowFile returns the path to a project's workflow file:
+// {vault}/Projects/{project}/workflow.md
+func (v *Vault) WorkflowFile(project string) (string, error) {
+	if err := ValidateSlug(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.Root, "Projects", project, "workflow.md"), nil
+}
+
+// KnowledgeFile returns the path to a project's knowledge file:
+// {vault}/Projects/{project}/knowledge.md
+func (v *Vault) KnowledgeFile(project string) (string, error) {
+	if err := ValidateSlug(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.Root, "Projects", project, "knowledge.md"), nil
+}
+
+// DocFile returns the path to a project-scoped doc file:
+// {vault}/Projects/{project}/doc/{rel}. rel must be a simple relative
+// filename like "architecture.md" — no traversal, no absolute paths.
+func (v *Vault) DocFile(project, rel string) (string, error) {
+	if err := ValidateSlug(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	if rel == "" {
+		return "", fmt.Errorf("doc filename must not be empty")
+	}
+	if strings.Contains(rel, "..") || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("doc filename %q must be a relative path without traversal", rel)
+	}
+	cleaned := filepath.Clean(rel)
+	if strings.HasPrefix(cleaned, "..") {
+		return "", fmt.Errorf("doc filename %q escapes project dir", rel)
+	}
+	return filepath.Join(v.Root, "Projects", project, "doc", cleaned), nil
+}
+
+// AbsorbedFile returns the path to a file under a project's absorbed/
+// scratch directory. Used by `vp absorb` for resume-suggestions handoffs.
+// rel follows the same rules as DocFile.
+func (v *Vault) AbsorbedFile(project, rel string) (string, error) {
+	if err := ValidateSlug(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	if rel == "" {
+		return "", fmt.Errorf("absorbed filename must not be empty")
+	}
+	if strings.Contains(rel, "..") || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("absorbed filename %q must be a relative path without traversal", rel)
+	}
+	cleaned := filepath.Clean(rel)
+	if strings.HasPrefix(cleaned, "..") {
+		return "", fmt.Errorf("absorbed filename %q escapes project dir", rel)
+	}
+	return filepath.Join(v.Root, "Projects", project, "absorbed", cleaned), nil
+}
+
 // encodeTripleComponent lowercases the input and replaces spaces with underscores.
 func encodeTripleComponent(s string) string {
 	return strings.ReplaceAll(strings.ToLower(s), " ", "_")

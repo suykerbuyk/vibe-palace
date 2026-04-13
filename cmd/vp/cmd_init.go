@@ -282,10 +282,17 @@ func initAgentWiring(projectRoot string, projectReady bool) []check.Result {
 		})
 	}
 
+	var driftFiles []string
 	for _, t := range targets {
 		display := t.DisplayName
 		if len(t.Aliases) > 0 {
 			display += " (→ " + strings.Join(t.Aliases, ", ") + ")"
+		}
+		// Detect legacy content (non-managed-block bytes) before we wire
+		// so the Init summary can suggest `vp absorb` when migration is
+		// warranted.
+		if data, err := os.ReadFile(t.Path); err == nil && hasLegacyContent(data) {
+			driftFiles = append(driftFiles, t.DisplayName)
 		}
 		res, err := agentfile.Wire(t)
 		if err != nil {
@@ -329,7 +336,37 @@ func initAgentWiring(projectRoot string, projectReady bool) []check.Result {
 			Summary: s.DisplayName + " — " + s.Reason,
 		})
 	}
+	if len(driftFiles) > 0 {
+		rows = append(rows, check.Result{
+			Name:    "Agent wiring",
+			Status:  check.Info,
+			Summary: "legacy content detected in " + strings.Join(driftFiles, ", "),
+			Details: []string{"run `vp absorb` to migrate existing content into the vault"},
+		})
+	}
 	return rows
+}
+
+// hasLegacyContent reports whether data contains any non-whitespace bytes
+// outside the managed vibe-palace block. Used by init to suggest `vp
+// absorb`.
+func hasLegacyContent(data []byte) bool {
+	start, end := agentfile.FindBlock(data)
+	var outside []byte
+	if start < 0 {
+		outside = data
+	} else {
+		outside = append([]byte{}, data[:start]...)
+		if end <= len(data) {
+			outside = append(outside, data[end:]...)
+		}
+	}
+	for _, b := range outside {
+		if b != ' ' && b != '\t' && b != '\n' && b != '\r' {
+			return true
+		}
+	}
+	return false
 }
 
 // printInitStatus renders the end-of-run status table. Mirrors check.Print's

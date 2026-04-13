@@ -4,12 +4,14 @@
 package check
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -274,6 +276,69 @@ func CheckProject() Result {
 		r.Summary = fmt.Sprintf("%s (from directory name)", slug)
 	}
 	return r
+}
+
+// CheckAgentDrift reports whether any detected agent-context file in
+// projectRoot contains non-whitespace content outside the managed
+// vibe-palace block. This is a warning-only check (Status: Info) — the
+// user can migrate via `vp absorb`, or suppress per-file with a
+// `<!-- vibe-palace:allow-local -->` marker.
+func CheckAgentDrift(projectRoot string) Result {
+	r := Result{Name: "Agent-file drift"}
+	r.Status = Pass
+
+	targets, _ := agentfile.Detect(projectRoot)
+	if len(targets) == 0 {
+		r.Status = Skip
+		r.Summary = "no agent-context files detected"
+		return r
+	}
+
+	const allowMarker = "vibe-palace:allow-local"
+	var dirty []string
+	for _, t := range targets {
+		data, err := os.ReadFile(t.Path)
+		if err != nil {
+			continue
+		}
+		if bytes.Contains(data, []byte(allowMarker)) {
+			continue
+		}
+		start, end := agentfile.FindBlock(data)
+		var outside []byte
+		if start < 0 {
+			outside = data
+		} else {
+			outside = append([]byte{}, data[:start]...)
+			if end <= len(data) {
+				outside = append(outside, data[end:]...)
+			}
+		}
+		if hasNonWhitespace(outside) {
+			dirty = append(dirty, t.DisplayName)
+		}
+	}
+	if len(dirty) == 0 {
+		r.Summary = "all agent-context files are clean"
+		return r
+	}
+	r.Status = Info
+	r.Summary = fmt.Sprintf("%d file(s) hold content outside the managed block", len(dirty))
+	for _, d := range dirty {
+		r.Details = append(r.Details, "  "+d)
+	}
+	r.Details = append(r.Details,
+		"Run `vp absorb` to migrate into the vault, or add `<!-- vibe-palace:allow-local -->` to suppress.")
+	return r
+}
+
+func hasNonWhitespace(data []byte) bool {
+	for _, b := range data {
+		if b != ' ' && b != '\t' && b != '\n' && b != '\r' {
+			return true
+		}
+	}
+	return false
 }
 
 // findProjectConfig walks upward from dir looking for .vibe-palace.toml.

@@ -59,6 +59,17 @@ func ScanBlock(path string) (string, bool, error) {
 // is somehow present.
 var blockRegexp = regexp.MustCompile(`(?s)<!-- vibe-palace:begin[^>]*-->.*?<!-- vibe-palace:end -->`)
 
+// FindBlock returns the byte offsets of the managed block in data, or
+// (-1, -1) when no block is present. Used by absorb and drift-detection
+// callers that need to strip or inspect content outside the block.
+func FindBlock(data []byte) (start, end int) {
+	loc := blockRegexp.FindIndex(data)
+	if loc == nil {
+		return -1, -1
+	}
+	return loc[0], loc[1]
+}
+
 // shaRegexp extracts the content-hash token from an opening delimiter.
 var shaRegexp = regexp.MustCompile(`sha=([0-9a-f]+)`)
 
