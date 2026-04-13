@@ -544,6 +544,17 @@ names. Each shim is a three-line delegation to `vp_cmd` — the command
 body itself still lives in the vault, so precedence
 (embedded → vault → project/wing/room) stays authoritative.
 
+**Recommended: start every Claude Code session with `/vpc-restart`.**
+Claude Code does not load `CLAUDE.md` until *after* the human's first
+turn, so the `BEFORE … call vp_bootstrap_context` directive in the
+vibe-palace managed block fires on turn 2+ at the earliest. A slash
+shim, by contrast, is resolved before turn 1 completes — so typing
+`/vpc-restart` as the first message is the deterministic way to pull
+bootstrap context on session start. In Cursor, Zed, and Copilot the
+rules file *is* loaded early, so the managed-block directive does the
+job there; `/vpc-restart` is specifically the Claude Code primitive.
+See `knowledge.md` for full rationale.
+
 The shim set is regenerated idempotently on each `vp init` and can be
 re-synced on demand with:
 

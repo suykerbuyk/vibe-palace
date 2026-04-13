@@ -45,7 +45,10 @@ Connect your editor — see the [Tutorial](doc/TUTORIAL.md) for setup.
 - **CLI** — `vp` binary with 20+ commands, man pages, and shell completions
 - **Slash-command shims** — `vp init` writes one `.claude/commands/vpc-<name>.md`
   per vibe-palace command, so typing `/vpc-` in Claude Code fuzzy-matches the
-  whole command set; `vp commands upgrade` keeps the shim set in sync
+  whole command set; `vp commands upgrade` keeps the shim set in sync.
+  `/vpc-restart` is the recommended first message of every Claude Code session —
+  it's the deterministic turn-1 bootstrap trigger, since `CLAUDE.md` isn't
+  loaded until after the human's first turn
 
 ## Documentation
 

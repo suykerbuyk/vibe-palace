@@ -280,10 +280,20 @@ How users trigger commands depends on their frontend:
 
 | Frontend | Invocation |
 |----------|-----------|
-| Claude Code | `/restart` (mapped via skills config in `.claude/settings.json`) |
+| Claude Code | `/vpc-<name>` slash shims in `.claude/commands/` (e.g. `/vpc-restart`) |
 | Cursor | Rules file maps keywords to `vp_cmd` calls |
 | Custom MCP client | Direct `vp_cmd` / `vp_skill` tool calls |
 | CLI fallback | `vv inject` prints context; `vp cmd restart` runs via CLI |
+
+**Claude Code bootstrap primitive.** `/vpc-restart` is the recommended
+first message of every Claude Code session. Claude Code does not load
+`CLAUDE.md` until after the human's first turn, so the
+`BEFORE … call vp_bootstrap_context` directive in the agent-file
+managed block fires on turn 2+ at the earliest. A slash shim is
+resolved before turn 1 completes — making `/vpc-restart` the
+deterministic turn-1 bootstrap trigger. Cursor / Zed / Copilot load
+their rules files early enough that the managed-block directive does
+the job there; the two mechanisms are complementary.
 
 ---
 

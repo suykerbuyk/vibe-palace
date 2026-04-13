@@ -2463,6 +2463,16 @@ templates and agent-file managed blocks. The shim body never carries
 command content; precedence (embedded → vault → project/wing/room)
 stays authoritative through `vp_cmd`.
 
+The shim pipeline is not merely UX sugar in Claude Code — it is the
+bootstrap primitive. Claude Code does not load `CLAUDE.md` until after
+the human's first turn, so the `BEFORE … call vp_bootstrap_context`
+directive in the agent-file managed block fires on turn 2+ at the
+earliest. A slash shim is resolved before turn 1 completes, which
+makes `/vpc-restart` the deterministic turn-1 bootstrap trigger for
+Claude Code sessions. In Cursor / Zed / Copilot the rules file is
+loaded early, so the managed-block directive retains its early-fire
+role there; the two mechanisms are complementary, not redundant.
+
 ---
 
 ## Phase 14: Palace-Scoped Command & Skill Resolution
