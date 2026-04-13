@@ -242,15 +242,21 @@ The block looks like this:
 <!-- vibe-palace:begin v=1 sha=abc1234 -->
 ## Vibe-Palace Integration
 
-- Call `vp_bootstrap_context` at session start to load project context,
-  resume, active tasks, recent sessions, and the command manifest.
-- When the user types `vpc-<name>` (for example `vpc-wrap`,
-  `vpc-restart`, `vpc-review-plan`), call `vp_get_command("<name>")`
-  and follow the returned instructions.
-- Use `vp_list_commands` to see all commands currently available for
-  this project.
+BEFORE responding to the user's first message in a new session, call
+`vp_bootstrap_context` to load project context, resume, active tasks,
+recent sessions, and the command and skill manifests. Do this even if
+the first message seems trivial — the returned payload shapes every
+subsequent response.
+
+When the user types `vpc-<name>` (for example `vpc-wrap`, `vpc-restart`),
+call `vp_cmd` with `name=<name>` and follow the returned
+instructions. `vps-<name>` works the same way via `vp_skill`.
 <!-- vibe-palace:end -->
 ```
+
+The wording is a binding imperative on purpose. An earlier bulleted form
+was treated as passive reference material and the bootstrap call was
+deferred until the user explicitly asked for it.
 
 **Idempotency.** Re-running `vp init` is safe — if the block is already
 present and the content hash (`sha=...`) matches the current template, it
@@ -496,7 +502,7 @@ After import, restart the MCP server to rebuild search indexes.
 The AI transparently calls tools as needed:
 
 - `vp_search` — find relevant past knowledge
-- `vp_get_command` — retrieve workflow instructions
+- `vp_cmd` / `vp_skill` — execute commands, activate skills
 - `vp_palace_status` — browse knowledge structure
 - `vp_traverse` — walk the knowledge graph
 
@@ -504,11 +510,11 @@ You don't need to invoke these manually.
 
 ### Invoking Commands: the `vpc-` Alias Convention
 
-Every command returned by `vp_bootstrap_context` (or `vp_list_commands`)
-carries an `alias` field of the form `vpc-<name>` — mnemonic: *vp
-command*. Type `vpc-<name>` in chat as an unambiguous trigger and the
-AI will call `vp_cmd` with `name=<name>` and follow the returned
-instructions.
+Every command returned by `vp_bootstrap_context` carries an `alias`
+field of the form `vpc-<name>` — mnemonic: *vp command*. Skills use the
+sibling `vps-<name>` form. Type either in chat as an unambiguous trigger
+and the AI will call `vp_cmd`/`vp_skill` with `name=<name>` and follow
+the returned instructions.
 
 Example:
 
@@ -517,15 +523,16 @@ you: vpc-restart
 AI: (calls vp_cmd name=restart, follows the restart workflow)
 ```
 
-The canonical lookup key is still the bare command name — `vpc-` is
-purely a *display and recognition* convenience so humans and AIs have a
-single unambiguous trigger. The bootstrap response also includes a
-`command_invocation` string stating this rule explicitly; new models
-see it on every session start.
+The canonical lookup key is still the bare command name — `vpc-`/`vps-`
+are purely *display and recognition* conveniences so humans and AIs
+have a single unambiguous trigger. The bootstrap response includes
+`command_invocation` and `post_bootstrap_instructions` strings that
+restate this rule and tell the model to announce available commands
+and skills to the user; new models see both on every session start.
 
-To discover what commands are available in the current project, call
-`vp_list_commands` or look at the `available_commands` array in the
-bootstrap response.
+To discover what is available in the current project, call `vp_cmd`
+(or `vp_skill`) with no arguments, or look at the `available_commands`
+and `available_skills` arrays in the bootstrap response.
 
 ### Ending a Session
 

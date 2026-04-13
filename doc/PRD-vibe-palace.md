@@ -535,7 +535,7 @@ flowchart TD
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `vp_bootstrap_context` | project?, max_tokens? | Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands. Precedence-aware. |
+| `vp_bootstrap_context` | project?, max_tokens?, wing?, room? | Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive. Precedence-aware. |
 | `vp_get_workflow` | project? | Workflow rules with precedence resolution (project > vault > embedded) |
 | `vp_get_resume` | project? | Current project state and open threads |
 | `vp_update_resume` | project?, section, content | Update a section of resume.md |
@@ -718,8 +718,9 @@ vault/
   same git-managed vault but serve different purposes.
 
 - **No `.claude/` directory, no symlinks, no command/skill files in source tree.**
-  Commands and skills are served via MCP tools (`vp_get_command`, `vp_get_skill`)
-  and never touch the project repository.
+  Commands and skills are served via MCP tools (canonical: `vp_cmd`, `vp_skill`;
+  read-only siblings: `vp_get_command`, `vp_get_skill`) and never touch the
+  project repository.
 
 ### 7.3 Drawer Storage
 

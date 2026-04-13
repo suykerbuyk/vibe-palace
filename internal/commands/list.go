@@ -29,6 +29,11 @@ func Alias(name string) string {
 	return "vpc-" + name
 }
 
+// SkillAlias returns the "vps-<name>" trigger token for a skill.
+func SkillAlias(name string) string {
+	return "vps-" + name
+}
+
 // List returns Summaries for the given resource type ("command" or "skill"),
 // resolved with 5-tier precedence. The Brief is extracted from the content
 // at the winning tier and truncated to briefLen characters.

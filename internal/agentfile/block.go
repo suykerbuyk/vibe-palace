@@ -18,18 +18,32 @@ import (
 // in a way downstream tooling needs to distinguish.
 const blockVersion = 1
 
+// CommandToolName and SkillToolName are the canonical MCP tool names the
+// managed block and bootstrap directive point users at. Exporting them from
+// this package gives one source of truth that both internal/agentfile's
+// block copy and internal/tools's CommandInvocation directive reference,
+// preventing the drift that the block sha-mismatch path alone cannot catch.
+const (
+	CommandToolName = "vp_cmd"
+	SkillToolName   = "vp_skill"
+)
+
 // blockBody is the canonical content between the open and close delimiters.
-// Changes to this constant propagate automatically to existing files on the
-// next `vp init` via the content-hash mismatch → update path.
-const blockBody = "## Vibe-Palace Integration\n" +
+// Phrased as a BEFORE/call imperative rather than a bullet list — the
+// previous passive form was treated as reference material and deferred
+// instead of executed on session start. Changes propagate to existing
+// files on the next `vp init` via the content-hash mismatch → update path.
+var blockBody = "## Vibe-Palace Integration\n" +
 	"\n" +
-	"- Call `vp_bootstrap_context` at session start to load project context,\n" +
-	"  resume, active tasks, recent sessions, and the command manifest.\n" +
-	"- When the user types `vpc-<name>` (for example `vpc-wrap`,\n" +
-	"  `vpc-restart`, `vpc-review-plan`), call `vp_get_command(\"<name>\")`\n" +
-	"  and follow the returned instructions.\n" +
-	"- Use `vp_list_commands` to see all commands currently available for\n" +
-	"  this project."
+	"BEFORE responding to the user's first message in a new session, call\n" +
+	"`vp_bootstrap_context` to load project context, resume, active tasks,\n" +
+	"recent sessions, and the command and skill manifests. Do this even if\n" +
+	"the first message seems trivial — the returned payload shapes every\n" +
+	"subsequent response.\n" +
+	"\n" +
+	"When the user types `vpc-<name>` (for example `vpc-wrap`, `vpc-restart`),\n" +
+	"call `" + CommandToolName + "` with `name=<name>` and follow the returned\n" +
+	"instructions. `vps-<name>` works the same way via `" + SkillToolName + "`."
 
 const blockCloseDelim = "<!-- vibe-palace:end -->"
 

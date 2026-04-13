@@ -4,6 +4,8 @@
 package agentfile
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -44,7 +46,30 @@ func TestManagedBlockStructure(t *testing.T) {
 	if !strings.Contains(b, "vpc-<name>") {
 		t.Error("block body missing vpc-<name> pattern")
 	}
-	if !strings.Contains(b, "vp_list_commands") {
-		t.Error("block body missing list_commands reference")
+	if !strings.Contains(b, "vps-<name>") {
+		t.Error("block body missing vps-<name> pattern")
+	}
+	// Canonical tool names must appear exactly as advertised by the
+	// exported constants — this is the drift guard paired with the
+	// matching assertion in internal/tools/context_tools_test.go.
+	if !strings.Contains(b, "`"+CommandToolName+"`") {
+		t.Errorf("block body missing canonical command tool name %q", CommandToolName)
+	}
+	if !strings.Contains(b, "`"+SkillToolName+"`") {
+		t.Errorf("block body missing canonical skill tool name %q", SkillToolName)
+	}
+}
+
+// TestBlockBodyGolden pins the exact wording of the managed block. Copy
+// changes must update testdata/block_body.golden deliberately; accidental
+// drift fails here before it ships to every user's CLAUDE.md.
+func TestBlockBodyGolden(t *testing.T) {
+	golden := filepath.Join("testdata", "block_body.golden")
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if string(want) != blockBody {
+		t.Errorf("blockBody drifted from golden fixture.\n--- got ---\n%s\n--- want ---\n%s\n(update testdata/block_body.golden if the change is intentional)", blockBody, string(want))
 	}
 }

@@ -1,0 +1,11 @@
+## Vibe-Palace Integration
+
+BEFORE responding to the user's first message in a new session, call
+`vp_bootstrap_context` to load project context, resume, active tasks,
+recent sessions, and the command and skill manifests. Do this even if
+the first message seems trivial — the returned payload shapes every
+subsequent response.
+
+When the user types `vpc-<name>` (for example `vpc-wrap`, `vpc-restart`),
+call `vp_cmd` with `name=<name>` and follow the returned
+instructions. `vps-<name>` works the same way via `vp_skill`.

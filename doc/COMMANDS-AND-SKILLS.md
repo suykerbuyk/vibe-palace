@@ -183,29 +183,35 @@ Do NOT comment on style or formatting unless it obscures intent.
 
 ## MCP Tools
 
-Six MCP tools provide the runtime interface. Any MCP-capable frontend can
-call them — Claude Code, Cursor, VS Code, or a custom client.
+Any MCP-capable frontend can call these — Claude Code, Cursor, VS Code,
+or a custom client.
 
-### Discovery
+### Canonical: Execute / Activate (with built-in discovery)
 
-| Tool | Parameters | Returns |
-|------|-----------|---------|
-| `vp_list_commands` | `project` (optional), `wing` (optional), `room` (optional) | Names, sources, and brief descriptions |
-| `vp_list_skills` | `project` (optional), `wing` (optional), `room` (optional) | Names, sources, and brief descriptions |
-
-### Read (raw content)
-
-| Tool | Parameters | Returns |
-|------|-----------|---------|
-| `vp_get_command` | `name` (required), `project` (optional), `wing` (optional), `room` (optional) | Raw markdown content + source tier |
-| `vp_get_skill` | `name` (required), `project` (optional), `wing` (optional), `room` (optional) | Raw markdown content + source tier |
-
-### Execute / Activate
+`vp_cmd` and `vp_skill` are the canonical entry points. Both do double
+duty: with a `name`, they wrap and deliver the target; with no
+arguments, they return a formatted discovery list. The managed block
+that `vp init` writes into `CLAUDE.md` / `AGENTS.md` points users here,
+and `vp_bootstrap_context` surfaces them via the `vpc-<name>` and
+`vps-<name>` aliases.
 
 | Tool | Parameters | Returns |
 |------|-----------|---------|
 | `vp_cmd` | `name` (optional), `project` (optional), `wing` (optional), `room` (optional) | Execution frame (see below), or discovery list if name omitted |
 | `vp_skill` | `name` (optional), `project` (optional), `wing` (optional), `room` (optional) | Activation frame (see below), or discovery list if name omitted |
+
+### Secondary: read-only inspection
+
+These return structured JSON (`name`, `content`, `source` metadata)
+rather than execution-framed text — useful for programmatic callers
+that want raw content without the "perform these instructions" wrapper.
+
+| Tool | Parameters | Returns |
+|------|-----------|---------|
+| `vp_list_commands` | `project` (optional), `wing` (optional), `room` (optional) | Names, sources, and brief descriptions |
+| `vp_list_skills` | `project` (optional), `wing` (optional), `room` (optional) | Names, sources, and brief descriptions |
+| `vp_get_command` | `name` (required), `project` (optional), `wing` (optional), `room` (optional) | Raw markdown content + source tier |
+| `vp_get_skill` | `name` (required), `project` (optional), `wing` (optional), `room` (optional) | Raw markdown content + source tier |
 
 ### Execution frames
 

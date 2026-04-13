@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
+	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -15,19 +17,29 @@ import (
 
 // BootstrapResult is the response from vp_bootstrap_context.
 type BootstrapResult struct {
-	Project            string             `json:"project"`
-	Workflow           string             `json:"workflow"`
-	Resume             string             `json:"resume"`
-	ActiveTasks        []storage.TaskMeta `json:"active_tasks"`
-	RecentSessions     []sessionSummary   `json:"recent_sessions,omitempty"`
-	KGSnapshot         *storage.KGStats   `json:"kg_snapshot,omitempty"`
-	AvailableCommands  []commandSummary   `json:"available_commands,omitempty"`
-	CommandInvocation  string             `json:"command_invocation,omitempty"`
+	Project                  string             `json:"project"`
+	Workflow                 string             `json:"workflow"`
+	Resume                   string             `json:"resume"`
+	ActiveTasks              []storage.TaskMeta `json:"active_tasks"`
+	RecentSessions           []sessionSummary   `json:"recent_sessions,omitempty"`
+	KGSnapshot               *storage.KGStats   `json:"kg_snapshot,omitempty"`
+	AvailableCommands        []commandSummary   `json:"available_commands,omitempty"`
+	AvailableSkills          []skillSummary     `json:"available_skills,omitempty"`
+	CommandInvocation        string             `json:"command_invocation,omitempty"`
+	PostBootstrapInstructions string            `json:"post_bootstrap_instructions,omitempty"`
 }
 
-// commandInvocationDirective is the single-line instruction telling the AI
-// how to interpret a "vpc-<name>" alias typed by the user.
-const commandInvocationDirective = "When the user types `vpc-<name>`, call `vp_cmd` with `name=<name>` and follow the returned instructions."
+// skillSummary reuses the commandSummary shape; alias semantics differ
+// (vps-<name> vs vpc-<name>) but the fields are identical.
+type skillSummary = commandSummary
+
+// commandInvocationDirective tells the AI how to interpret a "vpc-<name>" or
+// "vps-<name>" alias typed by the user. References agentfile.CommandToolName
+// so the block copy and this directive cannot drift.
+var commandInvocationDirective = fmt.Sprintf(
+	"When the user types `vpc-<name>`, call `%s` with `name=<name>` and follow the returned instructions. `vps-<name>` works the same way via `%s`.",
+	agentfile.CommandToolName, agentfile.SkillToolName,
+)
 
 // sessionSummary is a lightweight view of SessionMeta for the bootstrap response.
 type sessionSummary struct {
@@ -72,7 +84,7 @@ var bootstrapSchema = json.RawMessage(`{
 func BootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_bootstrap_context",
-		Description: "Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot.",
+		Description: "Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive.",
 		Schema:      bootstrapSchema,
 		Handler:     bootstrapHandler(resolver, vault),
 	}
@@ -129,8 +141,8 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	}
 
 	// Available commands for discovery (palace-scoped when wing/room provided).
-	if commands, err := resolver.ListResourcesScoped("command", project, wing, room); err == nil {
-		for _, cmd := range commands {
+	if cmds, err := resolver.ListResourcesScoped("command", project, wing, room); err == nil {
+		for _, cmd := range cmds {
 			cs := commandSummary{Name: cmd.Name, Alias: commandAlias(cmd.Name), Source: cmd.Source}
 			if content, _, err := resolver.ResolveScoped(fmt.Sprintf("command:%s", cmd.Name), project, wing, room); err == nil {
 				cs.Brief = extractBrief(content, 60)
@@ -142,8 +154,25 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		}
 	}
 
+	// Available skills for discovery (palace-scoped when wing/room provided).
+	if skills, err := resolver.ListResourcesScoped("skill", project, wing, room); err == nil {
+		for _, sk := range skills {
+			ss := skillSummary{Name: sk.Name, Alias: commands.SkillAlias(sk.Name), Source: sk.Source}
+			if content, _, err := resolver.ResolveScoped(fmt.Sprintf("skill:%s", sk.Name), project, wing, room); err == nil {
+				ss.Brief = extractBrief(content, 60)
+			}
+			result.AvailableSkills = append(result.AvailableSkills, ss)
+		}
+	}
+
+	// PostBootstrapInstructions tells the model to announce capabilities after
+	// the bootstrap summary. Populated server-side and excluded from truncation
+	// so the directive fires even when the command list is shed — a degraded
+	// "run vp_cmd to list commands" is still better than silent capability.
+	result.PostBootstrapInstructions = renderPostBootstrapInstructions(result.AvailableCommands, result.AvailableSkills)
+
 	// Token budget truncation: rough estimate 4 chars per token.
-	// Truncate sessions first, then KG, then commands.
+	// Shed order: sessions → KG → commands+skills (as a pair).
 	raw, err := json.Marshal(result)
 	if err == nil {
 		estimatedTokens := len(raw) / 4
@@ -157,13 +186,49 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 			raw, _ = json.Marshal(result)
 			estimatedTokens = len(raw) / 4
 		}
-		if estimatedTokens > maxTokens && len(result.AvailableCommands) > 0 {
+		if estimatedTokens > maxTokens && (len(result.AvailableCommands) > 0 || len(result.AvailableSkills) > 0) {
 			result.AvailableCommands = nil
+			result.AvailableSkills = nil
 			result.CommandInvocation = ""
+			// PostBootstrapInstructions deliberately survives, but the examples
+			// rendered pre-truncation point at aliases that just got shed.
+			// Re-render so the directive degrades to "call vp_cmd / vp_skill
+			// to list them" instead of dangling stale references.
+			result.PostBootstrapInstructions = renderPostBootstrapInstructions(nil, nil)
 		}
 	}
 
 	return result
+}
+
+// renderPostBootstrapInstructions returns a short directive telling the model
+// to announce the available commands and skills after the bootstrap summary.
+// Includes up to two live examples drawn from cmds (or a degraded fallback
+// when nothing was enumerated) so the directive stays accurate without
+// per-project hand-editing.
+func renderPostBootstrapInstructions(cmds []commandSummary, skills []skillSummary) string {
+	const base = "After presenting this bootstrap summary, tell the user in one or two lines which commands and skills are now available and how to invoke them (`vpc-<name>`, `vps-<name>`)."
+	examples := make([]string, 0, 2)
+	for i := 0; i < len(cmds) && len(examples) < 2; i++ {
+		if cmds[i].Alias != "" {
+			examples = append(examples, "`"+cmds[i].Alias+"`")
+		}
+	}
+	if len(examples) == 0 {
+		return base + " If no examples survived truncation, call `" + agentfile.CommandToolName + "` or `" + agentfile.SkillToolName + "` with no arguments to list them."
+	}
+	return base + " Examples from this project: " + joinExamples(examples) + "."
+}
+
+func joinExamples(xs []string) string {
+	switch len(xs) {
+	case 0:
+		return ""
+	case 1:
+		return xs[0]
+	default:
+		return xs[0] + ", " + xs[1]
+	}
 }
 
 func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault) mcp.HandlerFunc {
