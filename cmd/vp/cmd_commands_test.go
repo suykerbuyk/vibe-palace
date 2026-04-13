@@ -14,6 +14,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
+	"github.com/suykerbuyk/vibe-palace/internal/shims"
 )
 
 // boolPtr returns a *bool — used for InteractiveOverride.
@@ -45,6 +46,8 @@ func TestRunCommandsUpgrade_DryRun_NonZeroOnPendingWork(t *testing.T) {
 func TestRunCommandsUpgrade_DryRun_ZeroWhenClean(t *testing.T) {
 	vault := t.TempDir()
 	seedMatchingVault(t, vault)
+	projectRoot := t.TempDir()
+	seedMatchingShims(t, vault, projectRoot)
 
 	var out, errb bytes.Buffer
 	code := runCommandsUpgrade(commandsUpgradeOpts{
@@ -53,7 +56,7 @@ func TestRunCommandsUpgrade_DryRun_ZeroWhenClean(t *testing.T) {
 		Stdout:            &out,
 		Stderr:            &errb,
 		VaultRootOverride:   vault,
-		ProjectRootOverride: t.TempDir(),
+		ProjectRootOverride: projectRoot,
 	})
 	if code != cli.ExitOK {
 		t.Fatalf("dry-run with clean vault: exit=%d, want ExitOK\nstderr: %s", code, errb.String())
@@ -175,6 +178,133 @@ func TestRunCommandsUpgrade_Only_ScopesToOneTemplate(t *testing.T) {
 	}
 }
 
+func TestRunCommandsUpgrade_DryRun_ReportsShimDrift(t *testing.T) {
+	// Clean vault so templates + blocks are a no-op; empty projectRoot so
+	// every shim surfaces as "new". Dry-run must exit non-zero and mention
+	// shim drift in the summary.
+	vault := t.TempDir()
+	seedMatchingVault(t, vault)
+
+	var out, errb bytes.Buffer
+	code := runCommandsUpgrade(commandsUpgradeOpts{
+		DryRun:              true,
+		Stdin:               strings.NewReader(""),
+		Stdout:              &out,
+		Stderr:              &errb,
+		VaultRootOverride:   vault,
+		ProjectRootOverride: t.TempDir(),
+	})
+	if code != cli.ExitUser {
+		t.Fatalf("dry-run with shim drift: exit=%d, want ExitUser\nstderr: %s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "Slash-command shims:") {
+		t.Errorf("output missing shim plan header:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "shims:") {
+		t.Errorf("summary missing shim counts:\n%s", out.String())
+	}
+}
+
+func TestRunCommandsUpgrade_Overwrite_EmitsShims(t *testing.T) {
+	vault := t.TempDir()
+	seedMatchingVault(t, vault)
+	projectRoot := t.TempDir()
+
+	var out, errb bytes.Buffer
+	code := runCommandsUpgrade(commandsUpgradeOpts{
+		Overwrite:           true,
+		Stdin:               strings.NewReader(""),
+		Stdout:              &out,
+		Stderr:              &errb,
+		VaultRootOverride:   vault,
+		ProjectRootOverride: projectRoot,
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("overwrite: exit=%d\nstderr: %s", code, errb.String())
+	}
+	// At least one vpc-*.md file should now exist under the project's shim dir.
+	entries, err := os.ReadDir(filepath.Join(projectRoot, shims.ShimDir))
+	if err != nil {
+		t.Fatalf("read shim dir: %v", err)
+	}
+	var vpcCount int
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), shims.FilePrefix) && strings.HasSuffix(e.Name(), ".md") {
+			vpcCount++
+		}
+	}
+	if vpcCount == 0 {
+		t.Errorf("--overwrite did not emit shims into %s", projectRoot)
+	}
+	if !strings.Contains(out.String(), "Shims:") {
+		t.Errorf("Done line missing shim counts:\n%s", out.String())
+	}
+}
+
+func TestRunCommandsUpgrade_Only_FiltersShims(t *testing.T) {
+	vault := t.TempDir()
+	seedMatchingVault(t, vault)
+	projectRoot := t.TempDir()
+
+	var out, errb bytes.Buffer
+	code := runCommandsUpgrade(commandsUpgradeOpts{
+		Only:                "restart",
+		Overwrite:           true,
+		Stdin:               strings.NewReader(""),
+		Stdout:              &out,
+		Stderr:              &errb,
+		VaultRootOverride:   vault,
+		ProjectRootOverride: projectRoot,
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("--only: exit=%d\nstderr: %s", code, errb.String())
+	}
+	// Only vpc-restart.md should have been written.
+	restart := filepath.Join(projectRoot, shims.ShimDir, shims.Filename("restart"))
+	if _, err := os.Stat(restart); err != nil {
+		t.Errorf("--only restart did not emit %s: %v", restart, err)
+	}
+	wrap := filepath.Join(projectRoot, shims.ShimDir, shims.Filename("wrap"))
+	if _, err := os.Stat(wrap); !os.IsNotExist(err) {
+		t.Errorf("--only restart leaked write to %s (err=%v)", wrap, err)
+	}
+}
+
+func TestRunCommandsUpgrade_PromptsToRemoveStaleShim(t *testing.T) {
+	vault := t.TempDir()
+	seedMatchingVault(t, vault)
+	projectRoot := t.TempDir()
+	seedMatchingShims(t, vault, projectRoot)
+
+	// Drop a well-formed stale shim for a command that does not exist.
+	orphan := filepath.Join(projectRoot, shims.ShimDir, shims.Filename("ghost"))
+	body := shims.Render("ghost", "A ghost from an older vibe-palace.")
+	if err := os.WriteFile(orphan, []byte(body), 0o644); err != nil {
+		t.Fatalf("write ghost shim: %v", err)
+	}
+
+	// Accept-all short-circuits per-prompt input; the stale entry should be
+	// deleted and the Done line should report one removal.
+	var out, errb bytes.Buffer
+	code := runCommandsUpgrade(commandsUpgradeOpts{
+		Overwrite:           true,
+		Stdin:               strings.NewReader(""),
+		Stdout:              &out,
+		Stderr:              &errb,
+		VaultRootOverride:   vault,
+		ProjectRootOverride: projectRoot,
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("stale removal: exit=%d\nstderr: %s", code, errb.String())
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Errorf("stale shim not removed (err=%v)", err)
+	}
+	if !strings.Contains(out.String(), "1 removed") {
+		t.Errorf("Done line missing '1 removed':\n%s", out.String())
+	}
+}
+
 func TestListFormatsJSON(t *testing.T) {
 	// Drive List directly — we can't easily invoke the CLI without a vault,
 	// but List is the layer tested end-to-end everywhere else.
@@ -211,6 +341,28 @@ func writeVaultFile(t *testing.T, vault, rel, content string) {
 	}
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
+	}
+}
+
+// seedMatchingShims emits the full shim set into projectRoot so that a
+// subsequent plan sees no New/Modified/Stale entries. Used by tests that
+// assert the "nothing to do" exit path.
+func seedMatchingShims(t *testing.T, vault, projectRoot string) {
+	t.Helper()
+	r := vpctx.NewResolver(vault)
+	summaries, err := commands.List(r, "command", "", "", "", 60)
+	if err != nil {
+		t.Fatalf("list summaries: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectRoot, shims.ShimDir), 0o755); err != nil {
+		t.Fatalf("mkdir shim dir: %v", err)
+	}
+	plan, err := shims.Plan(summaries, projectRoot)
+	if err != nil {
+		t.Fatalf("shim plan: %v", err)
+	}
+	if _, err := shims.Apply(plan, shims.ApplyOptions{}); err != nil {
+		t.Fatalf("shim apply: %v", err)
 	}
 }
 

@@ -2448,6 +2448,21 @@ management (`vp config upgrade`, `vp check` staleness detection) so that
 new users get a working setup in one command and existing users stay current
 as new settings are added across releases.
 
+**Slash-command shim emission.** As of the `vpc-*` shims work, `vp init`
+also writes one `.claude/commands/vpc-<name>.md` per vibe-palace command
+into the project root after agent-file wiring completes. Each shim is a
+three-line markdown file delegating to the `vp_cmd` MCP tool; Claude
+Code surfaces the set in its `/` menu so users can fuzzy-filter commands
+by name without remembering them. Emission is additive-by-default:
+existing files without the `vibe-palace:shim` marker are treated as
+user-owned and left untouched. `vp commands upgrade` extends this
+contract with per-shim accept/skip/accept-all prompts, stale-removal
+gated on explicit user consent, `--dry-run` drift reporting, and
+`--only NAME` scoping — mirroring the UX already used for embedded
+templates and agent-file managed blocks. The shim body never carries
+command content; precedence (embedded → vault → project/wing/room)
+stays authoritative through `vp_cmd`.
+
 ---
 
 ## Phase 14: Palace-Scoped Command & Skill Resolution

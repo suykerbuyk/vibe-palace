@@ -43,6 +43,9 @@ Connect your editor — see the [Tutorial](doc/TUTORIAL.md) for setup.
 - **Room classification tuning** — configurable keyword weights, algorithmic
   audit, LLM-assisted weight tuning and keyword discovery (offline only)
 - **CLI** — `vp` binary with 20+ commands, man pages, and shell completions
+- **Slash-command shims** — `vp init` writes one `.claude/commands/vpc-<name>.md`
+  per vibe-palace command, so typing `/vpc-` in Claude Code fuzzy-matches the
+  whole command set; `vp commands upgrade` keeps the shim set in sync
 
 ## Documentation
 

@@ -17,6 +17,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
+	"github.com/suykerbuyk/vibe-palace/internal/shims"
 )
 
 // isTerminal reports whether f is a TTY. Falls back to false on any error.
@@ -260,13 +261,38 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 		}
 	}
 
+	// Slash-command shims: compute the plan against the project root so we
+	// can present shim drift alongside template + agent-block drift. Scoped
+	// by --only to the matching shim (Stale entries for other names are
+	// filtered out so a targeted run never sweeps unrelated state).
+	shimPlan, shimErr := planShims(resolver, projectRoot, opts.Only)
+	if shimErr != nil {
+		fmt.Fprintf(opts.Stderr, "vp commands upgrade: shim plan: %v\n", shimErr)
+	}
+	shimAdd, shimUpd, shimStale, shimCustom := 0, 0, 0, 0
+	for _, c := range shimPlan {
+		switch c.Kind {
+		case shims.New:
+			shimAdd++
+		case shims.Modified:
+			shimUpd++
+		case shims.Stale:
+			shimStale++
+		case shims.CustomChange:
+			shimCustom++
+		}
+	}
+	pendingShims := shimAdd + shimUpd + shimStale
+
 	if opts.DryRun {
 		printUpgradePlan(opts.Stdout, plan)
 		printBlockPlan(opts.Stdout, blockChanges)
+		printShimPlan(opts.Stdout, shimPlan)
 		fmt.Fprintf(opts.Stdout,
-			"\nSummary (dry run): %d new, %d updated, %d unchanged, %d custom, %d agent-file block(s) need updating.\n",
-			added, updated, unchanged, custom, pendingBlocks)
-		if added+updated+pendingBlocks > 0 {
+			"\nSummary (dry run): %d new, %d updated, %d unchanged, %d custom, %d agent-file block(s) need updating, shims: %d new, %d updated, %d stale, %d custom.\n",
+			added, updated, unchanged, custom, pendingBlocks,
+			shimAdd, shimUpd, shimStale, shimCustom)
+		if added+updated+pendingBlocks+pendingShims > 0 {
 			return cli.ExitUser // non-zero — manual review required
 		}
 		return cli.ExitOK
@@ -279,8 +305,8 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 	if !opts.Overwrite && !interactive {
 		// Non-interactive and not --overwrite: refuse to silently write.
 		// But we still proceed if there is nothing to do.
-		if added+updated+pendingBlocks == 0 {
-			fmt.Fprintln(opts.Stdout, "All embedded templates and agent blocks match. Nothing to do.")
+		if added+updated+pendingBlocks+pendingShims == 0 {
+			fmt.Fprintln(opts.Stdout, "All embedded templates, agent blocks, and shims match. Nothing to do.")
 			return cli.ExitOK
 		}
 		fmt.Fprintln(opts.Stderr,
@@ -336,7 +362,8 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 			skippedCount++
 		case "q":
 			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
-			return applyAndReport(opts.Stdout, opts.Stderr, accepted, nil, acceptedCount, skippedCount, custom)
+			return applyAndReport(opts.Stdout, opts.Stderr, accepted, nil, nil,
+				acceptedCount, skippedCount, custom, shimCustom)
 		}
 	}
 
@@ -379,16 +406,64 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 			skippedCount++
 		case "q":
 			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
-			return applyAndReport(opts.Stdout, opts.Stderr, accepted, acceptedBlocks,
-				acceptedCount, skippedCount, custom)
+			return applyAndReport(opts.Stdout, opts.Stderr, accepted, acceptedBlocks, nil,
+				acceptedCount, skippedCount, custom, shimCustom)
 		}
 	}
 
-	return applyAndReport(opts.Stdout, opts.Stderr, accepted, acceptedBlocks,
-		acceptedCount, skippedCount, custom)
+	// Slash-command shims: per-entry prompts for New / Modified / Stale.
+	// Unchanged and CustomChange entries never surface here. Stale prompts
+	// make deletion consequence explicit; only accepted entries reach Apply.
+	acceptedShims := make([]shims.Change, 0, len(shimPlan))
+	for _, s := range shimPlan {
+		if s.Kind == shims.UnchangedChange || s.Kind == shims.CustomChange {
+			continue
+		}
+		if acceptAll {
+			acceptedShims = append(acceptedShims, s)
+			acceptedCount++
+			fmt.Fprintf(opts.Stdout, "[accept] shim %s (%s)\n", s.Name, s.Kind)
+			continue
+		}
+		fmt.Fprintf(opts.Stdout, "\n=== shim %s (%s) ===\n", s.Name, s.Kind)
+		switch s.Kind {
+		case shims.New:
+			fmt.Fprintf(opts.Stdout, "%s will be created.\n", s.Path)
+		case shims.Modified:
+			fmt.Fprintf(opts.Stdout, "%s body is stale (prev sha=%s); will be rewritten.\n",
+				s.Path, s.PrevSha)
+		case shims.Stale:
+			fmt.Fprintf(opts.Stdout,
+				"%s no longer maps to a known command (sha=%s); accept to delete.\n",
+				s.Path, s.PrevSha)
+		}
+		choice, err := promptChoice(opts.Stdout, reader)
+		if err != nil {
+			fmt.Fprintf(opts.Stderr, "vp commands upgrade: %v\n", err)
+			return cli.ExitSystem
+		}
+		switch choice {
+		case "a":
+			acceptedShims = append(acceptedShims, s)
+			acceptedCount++
+		case "A":
+			acceptedShims = append(acceptedShims, s)
+			acceptedCount++
+			acceptAll = true
+		case "s":
+			skippedCount++
+		case "q":
+			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
+			return applyAndReport(opts.Stdout, opts.Stderr, accepted, acceptedBlocks, acceptedShims,
+				acceptedCount, skippedCount, custom, shimCustom)
+		}
+	}
+
+	return applyAndReport(opts.Stdout, opts.Stderr, accepted, acceptedBlocks, acceptedShims,
+		acceptedCount, skippedCount, custom, shimCustom)
 }
 
-func applyAndReport(w, errw io.Writer, accepted []commands.Change, acceptedBlocks []commands.BlockChange, acceptedCount, skippedCount, custom int) int {
+func applyAndReport(w, errw io.Writer, accepted []commands.Change, acceptedBlocks []commands.BlockChange, acceptedShims []shims.Change, acceptedCount, skippedCount, custom, shimCustom int) int {
 	if err := commands.Apply(accepted); err != nil {
 		fmt.Fprintf(errw, "apply templates: %v\n", err)
 		return cli.ExitSystem
@@ -397,8 +472,17 @@ func applyAndReport(w, errw io.Writer, accepted []commands.Change, acceptedBlock
 		fmt.Fprintf(errw, "apply agent blocks: %v\n", err)
 		return cli.ExitSystem
 	}
-	fmt.Fprintf(w, "\nDone. %d accepted, %d skipped, %d custom (untouched).\n",
-		acceptedCount, skippedCount, custom)
+	// Only user-approved Stale entries are in acceptedShims, so it is safe
+	// to allow removal — Apply will only touch what the caller passed.
+	rep, err := shims.Apply(acceptedShims, shims.ApplyOptions{AllowStaleRemoval: true})
+	if err != nil {
+		fmt.Fprintf(errw, "apply shims: %v\n", err)
+		return cli.ExitSystem
+	}
+	fmt.Fprintf(w,
+		"\nDone. %d accepted, %d skipped, %d custom (untouched). Shims: %d added, %d updated, %d removed, %d custom.\n",
+		acceptedCount, skippedCount, custom,
+		rep.Added, rep.Updated, rep.Removed, shimCustom)
 	return cli.ExitOK
 }
 
@@ -439,6 +523,55 @@ func printBlockPlan(w io.Writer, changes []commands.BlockChange) {
 				c.Target.DisplayName, c.PresentSha, c.ExpectedSha)
 		case commands.BlockCurrent:
 			fmt.Fprintf(w, "  current   %s\n", c.Target.DisplayName)
+		}
+	}
+}
+
+// planShims builds the shim plan for projectRoot. When only is non-empty,
+// the plan is filtered to the matching command name so a targeted upgrade
+// does not sweep in unrelated Stale/Custom entries.
+func planShims(resolver *vpctx.Resolver, projectRoot, only string) ([]shims.Change, error) {
+	if projectRoot == "" {
+		return nil, nil
+	}
+	summaries, err := commands.List(resolver, "command", "", "", "", 60)
+	if err != nil {
+		return nil, err
+	}
+	plan, err := shims.Plan(summaries, projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	if only == "" {
+		return plan, nil
+	}
+	filtered := plan[:0]
+	for _, c := range plan {
+		if c.Name == only {
+			filtered = append(filtered, c)
+		}
+	}
+	return filtered, nil
+}
+
+func printShimPlan(w io.Writer, plan []shims.Change) {
+	if len(plan) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\nSlash-command shims:")
+	for _, c := range plan {
+		switch c.Kind {
+		case shims.New:
+			fmt.Fprintf(w, "  new       %s\n", c.Path)
+		case shims.Modified:
+			fmt.Fprintf(w, "  modified  %s  (prev sha=%s)\n", c.Path, c.PrevSha)
+		case shims.UnchangedChange:
+			fmt.Fprintf(w, "  unchanged %s\n", c.Path)
+		case shims.Stale:
+			fmt.Fprintf(w, "  stale     %s  (sha=%s — prompts for removal)\n",
+				c.Path, c.PrevSha)
+		case shims.CustomChange:
+			fmt.Fprintf(w, "  custom    %s  (left untouched)\n", c.Path)
 		}
 	}
 }

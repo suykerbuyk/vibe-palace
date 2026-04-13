@@ -534,6 +534,41 @@ To discover what is available in the current project, call `vp_cmd`
 (or `vp_skill`) with no arguments, or look at the `available_commands`
 and `available_skills` arrays in the bootstrap response.
 
+### Browsing Commands in Claude Code's `/` Menu
+
+In addition to the free-form `vpc-<name>` trigger, `vp init` writes one
+tiny shim per command into `.claude/commands/vpc-<name>.md`. Claude Code
+surfaces these in its slash menu, so typing `/vpc-` in the REPL fuzzy-
+filters the full vibe-palace command set without needing to remember
+names. Each shim is a three-line delegation to `vp_cmd` — the command
+body itself still lives in the vault, so precedence
+(embedded → vault → project/wing/room) stays authoritative.
+
+The shim set is regenerated idempotently on each `vp init` and can be
+re-synced on demand with:
+
+```bash
+vp commands upgrade           # interactive: per-shim accept/skip/accept-all
+vp commands upgrade --dry-run # preview drift without writing
+vp commands upgrade --only restart  # narrow to a single shim
+```
+
+Stale shims (for commands that were renamed or removed from the vault)
+are detected automatically but never deleted without explicit consent.
+Files under `.claude/commands/` that do not carry the vibe-palace shim
+marker are reported as `custom` and left strictly alone.
+
+If you prefer not to commit the shims — they are regeneratable on any
+fresh clone — add this line to `.gitignore`:
+
+```gitignore
+.claude/commands/vpc-*.md
+```
+
+Teams that want everyone to see the same `/vpc-` menu can simply omit
+that ignore rule; the shim bodies are deterministic, so checking them in
+produces stable diffs.
+
 ### Ending a Session
 
 Say "capture session" or "wrap up". The AI calls `vp_capture_session` with:
