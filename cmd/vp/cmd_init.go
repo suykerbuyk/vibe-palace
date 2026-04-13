@@ -13,7 +13,10 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/commands"
+	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
+	"github.com/suykerbuyk/vibe-palace/internal/shims"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -67,6 +70,9 @@ func cmdInit(info cli.BuildInfo) *cli.Command {
 
 			// --- Phase 2: Agent-file wiring ---
 			results = append(results, initAgentWiring(projectDir, projectReady)...)
+
+			// --- Phase 3: Slash-command shim emission ---
+			results = append(results, initShimWiring(projectDir, projectReady)...)
 
 			printInitStatus(os.Stdout, info.Version, results)
 			return projectCode
@@ -345,6 +351,92 @@ func initAgentWiring(projectRoot string, projectReady bool) []check.Result {
 		})
 	}
 	return rows
+}
+
+// initShimWiring emits one .claude/commands/vpc-<name>.md shim per
+// vibe-palace command into projectRoot, surfacing the command set in
+// Claude Code's `/` slash menu. Additive-by-default: stale shims (commands
+// that no longer exist) are reported but not deleted — `vp commands
+// upgrade` handles removal with explicit user consent.
+func initShimWiring(projectRoot string, projectReady bool) []check.Result {
+	if !projectReady {
+		return nil // agent-wiring already surfaced the skip row.
+	}
+
+	vault, err := openProjectVault()
+	if err != nil {
+		return []check.Result{{
+			Name:    "Slash-command shims",
+			Status:  check.Skip,
+			Summary: "skipped — open vault: " + err.Error(),
+		}}
+	}
+	resolver := vpctx.NewResolver(vault.Root)
+
+	summaries, err := commands.List(resolver, "command", "", "", "", 60)
+	if err != nil {
+		return []check.Result{{
+			Name:    "Slash-command shims",
+			Status:  check.Fail,
+			Summary: "list commands: " + err.Error(),
+		}}
+	}
+	if len(summaries) == 0 {
+		return []check.Result{{
+			Name:    "Slash-command shims",
+			Status:  check.Skip,
+			Summary: "no commands available to emit",
+		}}
+	}
+
+	shimDir := filepath.Join(projectRoot, shims.ShimDir)
+	if err := os.MkdirAll(shimDir, 0o755); err != nil {
+		// Treat permission/IO errors as warn-and-continue per the plan
+		// doc — `vp init` should not fail because the user deliberately
+		// kept .claude/ read-only.
+		return []check.Result{{
+			Name:    "Slash-command shims",
+			Status:  check.Skip,
+			Summary: "skipped — create " + shims.ShimDir + ": " + err.Error(),
+		}}
+	}
+
+	plan, err := shims.Plan(summaries, projectRoot)
+	if err != nil {
+		return []check.Result{{
+			Name:    "Slash-command shims",
+			Status:  check.Fail,
+			Summary: "plan shims: " + err.Error(),
+		}}
+	}
+
+	rep, err := shims.Apply(plan, shims.ApplyOptions{AllowStaleRemoval: false})
+	if err != nil {
+		return []check.Result{{
+			Name:    "Slash-command shims",
+			Status:  check.Fail,
+			Summary: "apply shims: " + err.Error(),
+		}}
+	}
+
+	summary := fmt.Sprintf(
+		"added %d, updated %d, unchanged %d, stale %d, custom %d",
+		rep.Added, rep.Updated, rep.Unchanged, rep.Stale, rep.Custom,
+	)
+	status := check.Info
+	if rep.Added > 0 || rep.Updated > 0 {
+		status = check.Pass
+	}
+	row := check.Result{
+		Name:    "Slash-command shims",
+		Status:  status,
+		Summary: summary,
+	}
+	if rep.Stale > 0 {
+		row.Details = append(row.Details,
+			"stale shims left in place — run `vp commands upgrade` to review")
+	}
+	return []check.Result{row}
 }
 
 // hasLegacyContent reports whether data contains any non-whitespace bytes

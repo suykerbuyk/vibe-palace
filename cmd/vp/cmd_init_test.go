@@ -512,3 +512,113 @@ func TestInitForceSkipInSandboxedHome(t *testing.T) {
 		t.Errorf("expected [skip] Project config row for $HOME, got:\n%s", out)
 	}
 }
+
+// TestInitEmitsShims verifies that vp init writes a vpc-<name>.md shim into
+// .claude/commands/ for every command the resolver reports, that the files
+// carry the shim marker, and that re-running init is a no-op (Apply records
+// every file as Unchanged).
+func TestInitEmitsShims(t *testing.T) {
+	configDir := initTestEnv(t, false)
+	projDir := t.TempDir()
+	markProjectDir(t, projDir)
+	vaultDir := filepath.Join(t.TempDir(), "vault")
+
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
+	if code := cmd.Run([]string{projDir, "--name", "shimtest", "--vault-path", vaultDir}); code != cli.ExitOK {
+		t.Fatalf("first init exit code = %d", code)
+	}
+	_ = configDir // silence unused
+
+	shimDir := filepath.Join(projDir, ".claude", "commands")
+	entries, err := os.ReadDir(shimDir)
+	if err != nil {
+		t.Fatalf("read shim dir: %v", err)
+	}
+	var shimFiles []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "vpc-") && strings.HasSuffix(e.Name(), ".md") {
+			shimFiles = append(shimFiles, e.Name())
+		}
+	}
+	if len(shimFiles) == 0 {
+		t.Fatalf("no vpc-*.md shims emitted in %s", shimDir)
+	}
+
+	// Spot-check: the first shim must carry the marker.
+	first := filepath.Join(shimDir, shimFiles[0])
+	body, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatalf("read shim %s: %v", first, err)
+	}
+	if !strings.Contains(string(body), "vibe-palace:shim v=") {
+		t.Errorf("shim %s missing marker:\n%s", first, body)
+	}
+
+	// Status row appears in init output.
+	out := captureStdout(t, func() {
+		cmd2 := cmdInit(cli.BuildInfo{Version: "test"})
+		if code := cmd2.Run([]string{projDir, "--name", "shimtest"}); code != cli.ExitOK {
+			t.Fatalf("second init exit code = %d", code)
+		}
+	})
+	if !strings.Contains(out, "Slash-command shims") {
+		t.Errorf("expected Slash-command shims status row in:\n%s", out)
+	}
+	// Second run must be all-unchanged (idempotent).
+	if !strings.Contains(out, "added 0") || !strings.Contains(out, "updated 0") {
+		t.Errorf("second init should be idempotent; got:\n%s", out)
+	}
+}
+
+// TestInitShimsCustomFileLeftAlone verifies that a user-authored
+// .claude/commands/vpc-mine.md without our marker is reported as custom
+// and never overwritten by init.
+func TestInitShimsCustomFileLeftAlone(t *testing.T) {
+	initTestEnv(t, false)
+	projDir := t.TempDir()
+	markProjectDir(t, projDir)
+	vaultDir := filepath.Join(t.TempDir(), "vault")
+
+	shimDir := filepath.Join(projDir, ".claude", "commands")
+	if err := os.MkdirAll(shimDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	customPath := filepath.Join(shimDir, "vpc-mine.md")
+	customBody := "# my hand-rolled shim — keep me\n"
+	if err := os.WriteFile(customPath, []byte(customBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
+	if code := cmd.Run([]string{projDir, "--name", "customtest", "--vault-path", vaultDir}); code != cli.ExitOK {
+		t.Fatalf("init exit code = %d", code)
+	}
+
+	got, err := os.ReadFile(customPath)
+	if err != nil {
+		t.Fatalf("read custom shim: %v", err)
+	}
+	if string(got) != customBody {
+		t.Errorf("custom shim was modified:\n got: %q\nwant: %q", got, customBody)
+	}
+}
+
+// TestInitShimsSkippedWhenNoProject verifies initShimWiring emits no row
+// when the project config could not be created (e.g. running at $HOME).
+// The agent-wiring skip row is the user-visible signal; the shim row must
+// stay silent rather than echo a redundant skip.
+func TestInitShimsSkippedWhenNoProject(t *testing.T) {
+	initTestEnv(t, true)
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	out := captureStdout(t, func() {
+		cmd := cmdInit(cli.BuildInfo{Version: "test"})
+		if code := cmd.Run([]string{fakeHome, "--name", "x"}); code != cli.ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+	if strings.Contains(out, "Slash-command shims") {
+		t.Errorf("did not expect Slash-command shims row when project init skipped:\n%s", out)
+	}
+}
