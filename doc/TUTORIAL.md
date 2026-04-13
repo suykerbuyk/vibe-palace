@@ -393,18 +393,26 @@ missing settings:
 vp check                    # shows "N new setting(s) available" if outdated
 ```
 
-Add missing settings as commented-out defaults:
+Reconcile every managed config tier (global, vault, project) in one pass:
 
 ```bash
-vp config upgrade --dry-run # preview what would be added
-vp config upgrade           # add missing settings, create .bak backup
+vp config sync --dry-run    # preview drift across all tiers
+vp config sync --yes        # apply every action non-interactively
+vp config sync --tier global # reconcile a single tier
 ```
 
-The upgrade system:
-- Never changes your existing values
-- Inserts new settings as `# key = default_value` (commented out)
-- Creates a `.bak` backup only when changes are written
-- Is idempotent — running twice produces identical output
+`vp config sync` is the canonical reconcile entry point. It:
+- Never changes your existing values (drift fills come in as commented defaults)
+- Walks all five reconcilers (global config, vault dir, vault settings, cwd
+  project config, vault-project config) by default
+- Is idempotent — re-running on a synced tree is a no-op
+- Does **not** touch agent files (`CLAUDE.md` etc.) or slash-command shims —
+  those are owned by `vp commands upgrade`
+
+> `vp config upgrade` is **deprecated** and now delegates to
+> `vp config sync` with the equivalent `--tier` flag. It will be removed
+> in the next release. Pass `--legacy` to use the pre-reconciler path
+> for one-off cases until you've migrated.
 
 ### Context Injection
 

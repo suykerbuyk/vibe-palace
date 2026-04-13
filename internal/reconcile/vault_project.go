@@ -85,9 +85,28 @@ func (r *VaultProjectReconciler) Plan(_ context.Context) (Plan, error) {
 	} else if err != nil {
 		return Plan{}, fmt.Errorf("stat %s: %w", cfgPath, err)
 	} else {
-		actions = append(actions, Action{
-			Kind: ActionUnchanged, Target: cfgPath, Summary: "present",
+		// File exists — also check for canonical-key drift so legacy
+		// `vp config upgrade --project SLUG` callers can route through
+		// here without losing the schema-fill behavior they relied on.
+		missing, mErr := detectMissingKeys(cfgPath, upgradeTarget{
+			canonicalText: storage.VaultProjectTemplateContent(),
+			templateText:  storage.VaultProjectTemplateContent(),
 		})
+		if mErr != nil {
+			return Plan{}, mErr
+		}
+		if len(missing) == 0 {
+			actions = append(actions, Action{
+				Kind: ActionUnchanged, Target: cfgPath, Summary: "present",
+			})
+		} else {
+			actions = append(actions, Action{
+				Kind:    ActionUpdate,
+				Target:  cfgPath,
+				Summary: fmt.Sprintf("%d missing key(s)", len(missing)),
+				Details: missing,
+			})
+		}
 	}
 
 	for _, sub := range []string{"done", "cancelled"} {
@@ -136,6 +155,15 @@ func (r *VaultProjectReconciler) Apply(_ context.Context, p Plan) (Report, error
 				}
 			}
 			rep.Created++
+		case ActionUpdate:
+			if _, err := applyUpgrade(a.Target, upgradeTarget{
+				canonicalText: storage.VaultProjectTemplateContent(),
+				templateText:  storage.VaultProjectTemplateContent(),
+			}); err != nil {
+				rep.Errors = append(rep.Errors, err)
+				continue
+			}
+			rep.Updated++
 		case ActionUnchanged:
 			rep.Unchanged++
 		case ActionSkip:

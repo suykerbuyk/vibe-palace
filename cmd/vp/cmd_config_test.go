@@ -141,7 +141,10 @@ func TestConfigUpgradeNoConfig(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 
 	cmd := cmdConfigUpgrade()
-	code := cmd.Run([]string{})
+	// Exercise the legacy path explicitly; delegation now routes through
+	// `vp config sync`, which is permissive when the global config is
+	// missing (reports Skip + exits OK).
+	code := cmd.Run([]string{"--legacy"})
 	if code != cli.ExitUser {
 		t.Errorf("exit code = %d, want %d (missing config)", code, cli.ExitUser)
 	}

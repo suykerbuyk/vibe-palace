@@ -6,6 +6,7 @@ package reconcile
 import (
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -38,6 +39,11 @@ func detectMissingKeys(configPath string, target upgradeTarget) ([]string, error
 	for _, keys := range missing {
 		flat = append(flat, keys...)
 	}
+	// MissingKeys returns a map keyed by section, so the per-call order is
+	// non-deterministic. Sort the flattened list so Plan output is stable
+	// across runs (otherwise users see different orderings on each
+	// invocation, and tests can't fingerprint the drift surface).
+	sort.Strings(flat)
 	return flat, nil
 }
 

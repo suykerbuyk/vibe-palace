@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
@@ -34,6 +35,7 @@ var configUpgradeFlags = []cli.FlagDef{
 	{Name: "--dry-run", Help: "Show what would be added without writing"},
 	{Name: "--cwd", Arg: "DIR", Help: "Upgrade the cwd project config (default: current directory). Mutually exclusive with --project."},
 	{Name: "--project", Arg: "SLUG", Help: "Upgrade the vault-project config for SLUG. Mutually exclusive with --cwd."},
+	{Name: "--legacy", Help: "Use the pre-reconciler upgrade path (no deprecation notice). For testing only."},
 }
 
 // upgradeTarget captures the inputs needed to upgrade a specific config
@@ -49,14 +51,13 @@ func cmdConfigUpgrade() *cli.Command {
 	return &cli.Command{
 		Name:        "config upgrade",
 		Synopsis:    "vp config upgrade [--dry-run] [--cwd [DIR] | --project SLUG]",
-		Description: "Add missing settings to a config file as commented-out defaults. Existing values are never changed. Default target is the global config; use --cwd for a project directory's .vibe-palace.toml or --project SLUG for a vault-project config.",
+		Description: "DEPRECATED — use `vp config sync` instead. Adds missing settings to a single config file. Delegates to `vp config sync --tier <resolved>` and will be removed in the next release.",
 		Flags:       configUpgradeFlags,
 		Examples: []cli.Example{
-			{Cmd: "vp config upgrade", Comment: "Upgrade the global config"},
-			{Cmd: "vp config upgrade --dry-run", Comment: "Preview changes without writing"},
-			{Cmd: "vp config upgrade --cwd", Comment: "Upgrade .vibe-palace.toml in the current directory"},
-			{Cmd: "vp config upgrade --cwd ~/code/myapp", Comment: "Upgrade .vibe-palace.toml in a specific directory"},
-			{Cmd: "vp config upgrade --project myapp", Comment: "Upgrade vault-project config for myapp"},
+			{Cmd: "vp config sync", Comment: "Preferred replacement (reconciles all tiers)"},
+			{Cmd: "vp config sync --tier global --dry-run", Comment: "Preview global-tier drift only"},
+			{Cmd: "vp config upgrade --cwd", Comment: "Legacy: upgrade .vibe-palace.toml in the current directory"},
+			{Cmd: "vp config upgrade --project myapp", Comment: "Legacy: upgrade vault-project config for myapp"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(configUpgradeFlags, args)
@@ -65,6 +66,14 @@ func cmdConfigUpgrade() *cli.Command {
 				return cli.ExitUser
 			}
 			dryRun := fv.Bool("--dry-run")
+
+			// Phase 5 deprecation: by default, delegate to `vp config sync`
+			// with the resolved tier and the same addressing flags. The
+			// --legacy escape hatch keeps the old single-file path
+			// available for callers that haven't migrated yet.
+			if !fv.Bool("--legacy") {
+				return delegateUpgradeToSync(fv)
+			}
 
 			// --cwd and --project are mutually exclusive.
 			cwdFlag := fv.Get("--cwd")
@@ -147,6 +156,47 @@ func cmdConfigUpgrade() *cli.Command {
 			return cli.ExitOK
 		},
 	}
+}
+
+// delegateUpgradeToSync prints a one-line deprecation notice and forwards
+// the upgrade-flavored args to `vp config sync` with the appropriate
+// --tier and addressing flag. Default (no --cwd, no --project) maps to
+// --tier global; --cwd to --tier project --cwd; --project to --tier
+// project --project. --dry-run carries through verbatim.
+func delegateUpgradeToSync(fv *cli.FlagValues) int {
+	cwdFlag := fv.Get("--cwd")
+	projectFlag := fv.Get("--project")
+	cwdSet := fv.IsSet("--cwd")
+	if cwdSet && projectFlag != "" {
+		fmt.Fprintln(os.Stderr, "vp config upgrade: --cwd and --project are mutually exclusive")
+		return cli.ExitUser
+	}
+
+	args := []string{}
+	switch {
+	case projectFlag != "":
+		if err := storage.ValidateSlug(projectFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "vp config upgrade: invalid --project slug %q: %v\n", projectFlag, err)
+			return cli.ExitUser
+		}
+		args = append(args, "--tier", "project", "--project", projectFlag)
+	case cwdSet:
+		args = append(args, "--tier", "project")
+		if cwdFlag != "" {
+			args = append(args, "--cwd", cwdFlag)
+		}
+	default:
+		args = append(args, "--tier", "global")
+	}
+	if fv.Bool("--dry-run") {
+		args = append(args, "--dry-run")
+	} else {
+		args = append(args, "--yes")
+	}
+
+	fmt.Fprintln(os.Stderr,
+		"vp config upgrade: deprecated — delegating to `vp config sync "+strings.Join(args, " ")+"` (will be removed next release)")
+	return runConfigSync(args)
 }
 
 // resolveUpgradeTarget selects the config file, canonical schema source,

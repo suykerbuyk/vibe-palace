@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
+	"github.com/suykerbuyk/vibe-palace/internal/reconcile"
 	"github.com/suykerbuyk/vibe-palace/internal/shims"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -82,73 +84,113 @@ func cmdInit(info cli.BuildInfo) *cli.Command {
 
 // initGlobal creates the global config and vault directory if they don't
 // exist, returning a result row for each logical step plus an exit code.
+// Delegates the underlying writes to the GlobalConfig and Vault reconcilers.
 func initGlobal(fv *cli.FlagValues) ([]check.Result, int) {
 	var results []check.Result
 
 	configPath, err := storage.VaultConfigFilePath()
 	if err != nil {
 		results = append(results, check.Result{
-			Name:    "Global config",
-			Status:  check.Fail,
-			Summary: err.Error(),
+			Name: "Global config", Status: check.Fail, Summary: err.Error(),
 		})
 		results = append(results, check.Result{Name: "Vault", Status: check.Skip, Summary: "skipped — global config error"})
 		return results, cli.ExitSystem
 	}
 
+	// When the global config already exists, treat it as authoritative —
+	// skip the vault re-check and emit two [info] rows. Matches prior init
+	// behavior so users see the same "already configured" message.
 	if _, err := os.Stat(configPath); err == nil {
 		results = append(results, check.Result{
-			Name:    "Global config",
-			Status:  check.Info,
+			Name: "Global config", Status: check.Info,
 			Summary: configPath + " (already exists, skipped)",
 		})
-		// Vault existence is not re-checked here — the existing global
-		// config is authoritative. Surface a single [info] row.
 		results = append(results, check.Result{Name: "Vault", Status: check.Info, Summary: "already configured"})
 		return results, cli.ExitOK
 	}
 
 	vaultPath := fv.Get("--vault-path")
 	if vaultPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
+		home, herr := os.UserHomeDir()
+		if herr != nil {
 			results = append(results, check.Result{
-				Name:    "Global config",
-				Status:  check.Fail,
-				Summary: err.Error(),
+				Name: "Global config", Status: check.Fail, Summary: herr.Error(),
 			})
 			return results, cli.ExitSystem
 		}
 		vaultPath = filepath.Join(home, "vibe-palace-vault")
 	}
-
 	gitEnabled := !fv.Bool("--no-git")
 
-	writtenPath, err := storage.WriteGlobalConfig(vaultPath, gitEnabled)
+	cwd, err := os.Getwd()
 	if err != nil {
 		results = append(results, check.Result{Name: "Global config", Status: check.Fail, Summary: err.Error()})
 		return results, cli.ExitSystem
 	}
-	results = append(results, check.Result{Name: "Global config", Status: check.Pass, Summary: writtenPath})
 
+	ctx := context.Background()
+
+	// --- GlobalConfig reconciler ---
+	gc := reconcile.NewGlobalConfig(cwd, reconcile.GlobalSeed{
+		VaultPath: vaultPath, GitEnabled: gitEnabled,
+	}.WithCreate())
+	gcPlan, err := gc.Plan(ctx)
+	if err != nil {
+		results = append(results, check.Result{Name: "Global config", Status: check.Fail, Summary: err.Error()})
+		return results, cli.ExitSystem
+	}
+	if rep, err := gc.Apply(ctx, gcPlan); err != nil || len(rep.Errors) > 0 {
+		msg := errOrFirst(err, rep.Errors)
+		results = append(results, check.Result{Name: "Global config", Status: check.Fail, Summary: msg})
+		return results, cli.ExitSystem
+	}
+	results = append(results, check.Result{Name: "Global config", Status: check.Pass, Summary: configPath})
+
+	// --- Vault reconciler ---
 	vaultRow := check.Result{Name: "Vault", Status: check.Pass, Summary: vaultPath}
-	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
+
+	gitWanted := gitEnabled
+	gitOK := !gitWanted || storage.GitAvailable()
+	if gitWanted && !gitOK {
+		vaultRow.Details = append(vaultRow.Details, "git not found in PATH — vault version tracking disabled")
+	}
+	v := reconcile.NewVault(cwd, reconcile.VaultSeed{
+		VaultPath: vaultPath, GitEnabled: gitWanted && gitOK,
+	}.WithCreate())
+	vPlan, err := v.Plan(ctx)
+	if err != nil {
+		results = append(results, check.Result{Name: "Vault", Status: check.Fail, Summary: err.Error()})
+		return results, cli.ExitSystem
+	}
+	rep, err := v.Apply(ctx, vPlan)
+	if err != nil {
 		results = append(results, check.Result{Name: "Vault", Status: check.Fail, Summary: fmt.Sprintf("create vault: %v", err)})
 		return results, cli.ExitSystem
 	}
-
-	if gitEnabled {
+	gitInitErr := ""
+	for _, e := range rep.Errors {
+		es := e.Error()
 		switch {
-		case !storage.GitAvailable():
-			vaultRow.Details = append(vaultRow.Details, "git not found in PATH — vault version tracking disabled")
-		case !storage.GitIsRepo(vaultPath):
-			if err := storage.GitInit(vaultPath); err != nil {
-				vaultRow.Details = append(vaultRow.Details, "git init failed: "+err.Error())
-			} else {
-				if err := storage.WriteVaultGitignore(vaultPath); err != nil {
-					slog.Error("write vault .gitignore", "path", vaultPath, "err", err)
+		case strings.HasPrefix(es, "git init"):
+			gitInitErr = es
+		case strings.HasPrefix(es, "mkdir vault"):
+			results = append(results, check.Result{Name: "Vault", Status: check.Fail, Summary: es})
+			return results, cli.ExitSystem
+		default:
+			// .gitignore failures are non-fatal — log only, mirroring the
+			// pre-reconciler init path.
+			slog.Error("vault reconciler error", "err", es)
+		}
+	}
+	if gitWanted && gitOK {
+		if gitInitErr != "" {
+			vaultRow.Details = append(vaultRow.Details, "git init failed: "+gitInitErr)
+		} else {
+			for _, a := range vPlan.Actions {
+				if a.Kind == reconcile.ActionCreate && filepath.Base(a.Target) == ".git" {
+					vaultRow.Details = append(vaultRow.Details, "git repository initialized")
+					break
 				}
-				vaultRow.Details = append(vaultRow.Details, "git repository initialized")
 			}
 		}
 	}
@@ -156,10 +198,26 @@ func initGlobal(fv *cli.FlagValues) ([]check.Result, int) {
 	return results, cli.ExitOK
 }
 
+// errOrFirst returns err.Error() if err is non-nil, else the first error
+// from errs. Used to surface a single message from a reconciler Apply
+// result that may report failures via either return value.
+func errOrFirst(err error, errs []error) string {
+	if err != nil {
+		return err.Error()
+	}
+	if len(errs) > 0 {
+		return errs[0].Error()
+	}
+	return ""
+}
+
 // initProject creates a .vibe-palace.toml in the target directory if project
 // signals are present. Returns the resolved project dir, whether the project
 // is ready for downstream wiring (config present or just created), one or
-// more status rows, and an exit code.
+// more status rows, and an exit code. The cwd-project and vault-project
+// writes are delegated to the CwdProject and VaultProject reconcilers; this
+// function still owns project-signal detection and the [pass|info|skip]
+// row vocabulary that init has always rendered.
 func initProject(fv *cli.FlagValues) (string, bool, []check.Result, int) {
 	var results []check.Result
 
@@ -185,12 +243,15 @@ func initProject(fv *cli.FlagValues) (string, bool, []check.Result, int) {
 
 	configPath := filepath.Join(dir, project.ConfigFileName)
 	if _, err := os.Stat(configPath); err == nil {
+		// Config already exists — the project is ready for agent wiring.
+		// Don't re-touch vault-project artifacts here; that's `vp config
+		// sync`'s job and the existing init contract treats this branch as
+		// a no-op.
 		results = append(results, check.Result{
 			Name:    "Project config",
 			Status:  check.Info,
 			Summary: configPath + " (already exists, skipped)",
 		})
-		// Config already exists — the project is ready for agent wiring.
 		return dir, true, results, cli.ExitOK
 	}
 
@@ -233,8 +294,25 @@ func initProject(fv *cli.FlagValues) (string, bool, []check.Result, int) {
 		}
 	}
 
-	if _, err := storage.WriteCwdProjectConfig(dir, name, fv.Get("--domain"), tagsList, vaultPathOverride); err != nil {
+	ctx := context.Background()
+
+	// --- CwdProject reconciler ---
+	cw := reconcile.NewCwdProject(dir, reconcile.CwdProjectSeed{
+		Name:              name,
+		Domain:            fv.Get("--domain"),
+		Tags:              tagsList,
+		VaultPathOverride: vaultPathOverride,
+	}.WithCreate())
+	cwPlan, err := cw.Plan(ctx)
+	if err != nil {
 		results = append(results, check.Result{Name: "Project config", Status: check.Fail, Summary: err.Error()})
+		return dir, false, results, cli.ExitSystem
+	}
+	if rep, err := cw.Apply(ctx, cwPlan); err != nil || len(rep.Errors) > 0 {
+		results = append(results, check.Result{
+			Name: "Project config", Status: check.Fail,
+			Summary: errOrFirst(err, rep.Errors),
+		})
 		return dir, false, results, cli.ExitSystem
 	}
 
@@ -244,18 +322,25 @@ func initProject(fv *cli.FlagValues) (string, bool, []check.Result, int) {
 		Summary: fmt.Sprintf("%s (%s, %s detected)", configPath, name, signal),
 	}
 
-	if vault, err := storage.OpenVaultFromCwd(dir); err == nil {
-		if tasksDir, err := vault.TasksDir(name); err == nil {
-			if mkErr := os.MkdirAll(filepath.Join(tasksDir, "done"), 0o755); mkErr != nil {
-				slog.Error("create tasks/done dir", "path", tasksDir, "err", mkErr)
-			}
-			if mkErr := os.MkdirAll(filepath.Join(tasksDir, "cancelled"), 0o755); mkErr != nil {
-				slog.Error("create tasks/cancelled dir", "path", tasksDir, "err", mkErr)
-			}
-		}
-		if _, _, wErr := vault.WriteVaultProjectConfig(name); wErr != nil {
-			slog.Error("write vault-project config", "project", name, "err", wErr)
+	// --- VaultProject reconciler --- best-effort, mirrors prior behavior:
+	// failures here are surfaced as a Detail line, not as a row failure.
+	if vault, verr := storage.OpenVaultFromCwd(dir); verr == nil {
+		vp := reconcile.NewVaultProject(vault, name)
+		vpPlan, perr := vp.Plan(ctx)
+		if perr != nil {
+			slog.Error("vault-project plan", "project", name, "err", perr)
 			row.Details = append(row.Details, "vault-project config write failed — see logs")
+		} else {
+			rep, aerr := vp.Apply(ctx, vpPlan)
+			if aerr != nil {
+				slog.Error("vault-project apply", "project", name, "err", aerr)
+				row.Details = append(row.Details, "vault-project config write failed — see logs")
+			}
+			for _, e := range rep.Errors {
+				slog.Error("vault-project apply error", "project", name, "err", e)
+				row.Details = append(row.Details, "vault-project config write failed — see logs")
+				break
+			}
 		}
 	}
 

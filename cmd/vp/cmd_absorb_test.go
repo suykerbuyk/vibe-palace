@@ -152,6 +152,53 @@ func TestRunAbsorb_YesFlag(t *testing.T) {
 	}
 }
 
+// TestAbsorbThenConfigSyncIsNoop is the Phase 6 acceptance criterion: vp
+// absorb writes vault content (notes, scratch, vault-project files) but
+// never touches the five config-tier reconcilers. After absorb completes,
+// `vp config sync --dry-run` must report no actionable drift.
+func TestAbsorbThenConfigSyncIsNoop(t *testing.T) {
+	vaultRoot := setupTestVaultEnv(t)
+	seedVaultProject(t, vaultRoot, "demoproj")
+	projectRoot := writeAbsorbFixture(t)
+
+	syncDryRun := func() string {
+		return captureStdout(t, func() {
+			if code := runConfigSync([]string{
+				"--project-root", projectRoot,
+				"--project", "demoproj",
+				"--dry-run",
+			}); code != cli.ExitOK {
+				t.Fatalf("config sync exit=%d", code)
+			}
+		})
+	}
+
+	// Baseline sync drift surface, before absorb runs at all.
+	before := syncDryRun()
+
+	var stdout, stderr bytes.Buffer
+	if code := runAbsorb(absorbOpts{
+		Yes:         true,
+		Project:     "demoproj",
+		ProjectRoot: projectRoot,
+		NoStage:     true,
+		Stdin:       bytes.NewBuffer(nil),
+		Stdout:      &stdout,
+		Stderr:      &stderr,
+	}); code != cli.ExitOK {
+		t.Fatalf("absorb exit=%d stderr=%s", code, stderr.String())
+	}
+
+	after := syncDryRun()
+
+	// Drift surface must be identical — absorb writes vault content but
+	// does not touch any of the five config-tier reconcilers' artifacts.
+	if before != after {
+		t.Errorf("absorb perturbed config-sync drift surface\n--- before ---\n%s\n--- after ---\n%s",
+			before, after)
+	}
+}
+
 // TestRunAbsorb_DryRunContractHeader verifies --dry-run still prints the
 // contract header and exits non-zero when items are present (preserving the
 // pre-existing gate behavior at cmd_absorb.go).

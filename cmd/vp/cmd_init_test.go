@@ -463,6 +463,31 @@ func TestInitFreshThenIdempotent(t *testing.T) {
 	}
 }
 
+// TestInitMatchesConfigSyncDryRun proves the Phase 3 acceptance criterion:
+// after `vp init`, running `vp config sync --dry-run` reports no actionable
+// drift across the config tiers — the two commands' reconcilers see the
+// same world.
+func TestInitMatchesConfigSyncDryRun(t *testing.T) {
+	initTestEnv(t, false)
+	projDir := t.TempDir()
+	markProjectDir(t, projDir)
+	vaultDir := filepath.Join(t.TempDir(), "vault")
+
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
+	if code := cmd.Run([]string{projDir, "--name", "parity", "--vault-path", vaultDir, "--no-git"}); code != cli.ExitOK {
+		t.Fatalf("init exit = %d", code)
+	}
+
+	out := captureStdout(t, func() {
+		if code := runConfigSync([]string{"--project-root", projDir, "--dry-run"}); code != cli.ExitOK {
+			t.Fatalf("config sync --dry-run exit = %d", code)
+		}
+	})
+	if strings.Contains(out, "[Create]") || strings.Contains(out, "[Update]") {
+		t.Errorf("config sync after init reported actionable drift:\n%s", out)
+	}
+}
+
 // TestInitDetectsManifestOnlyProject confirms that vp init treats a
 // directory with only a go.mod (no .git) as a project — the multi-manifest
 // heuristic added in Phase 1.

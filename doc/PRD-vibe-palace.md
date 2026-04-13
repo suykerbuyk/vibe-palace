@@ -2444,9 +2444,11 @@ content and validates them algorithmically before proposing.
 > **Status: IMPLEMENTED**
 
 **Goal:** Provide guided initialization (`vp init`) and config lifecycle
-management (`vp config upgrade`, `vp check` staleness detection) so that
+management (`vp config sync`, `vp check` staleness detection) so that
 new users get a working setup in one command and existing users stay current
-as new settings are added across releases.
+as new settings are added across releases. The legacy single-file
+`vp config upgrade` is deprecated as of the Check→Plan→Apply reconciler
+split and now delegates to `vp config sync --tier <resolved>`.
 
 **Slash-command shim emission.** As of the `vpc-*` shims work, `vp init`
 also writes one `.claude/commands/vpc-<name>.md` per vibe-palace command
