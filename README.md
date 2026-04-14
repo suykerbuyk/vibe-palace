@@ -50,6 +50,50 @@ Connect your editor — see the [Tutorial](doc/TUTORIAL.md) for setup.
   it's the deterministic turn-1 bootstrap trigger, since `CLAUDE.md` isn't
   loaded until after the human's first turn
 
+## Customizing commands and skills
+
+Vibe-palace ships a small catalog of command templates (`restart`, `wrap`,
+`review-plan`, `cancel-plan`, `capture`) compiled into the `vp` binary.
+These embedded templates are the *floor* — a last-resort default. Your
+vault is the primary editable surface.
+
+- **`<vault>/Templates/commands/`** — materialized from the embedded
+  defaults the first time you run `vp init`. Edit files here freely: a
+  `templates.lock` sidecar (`<vault>/.vibe-palace/templates.lock`) records
+  the embedded SHA that shipped with your binary, so `vp config sync` can
+  tell a user edit apart from a binary bump. `<vault>/Templates/workflow.md`
+  and `<vault>/Templates/resume.md` are materialized the same way.
+- **`<vault>/Projects/<slug>/commands/`** — per-project override
+  directory, scaffolded empty with a README stub. A file here shadows the
+  vault-level `Templates/` copy for that project only, letting one project
+  diverge permanently without affecting the others. `skills/` works the
+  same way (directory + README stub; no embedded skill content yet — see
+  the roadmap).
+
+**Precedence (first match wins):** room > wing > project > vault >
+embedded. For example, `<vault>/Projects/myapp/commands/wrap.md` takes
+precedence over `<vault>/Templates/commands/wrap.md`, which in turn
+shadows the embedded `wrap.md` baked into the binary.
+
+**Promoting an edit back to source.** Vibe-palace cannot automate
+promotion because at runtime it does not know where your vibe-palace
+source checkout lives — this is a deliberate boundary, not a missing
+feature. To land a vault-side template edit into the next release,
+manually copy the file from `<vault>/Templates/commands/<name>.md` to
+`<vp-repo>/internal/templates/templates/commands/<name>.md` in your
+vibe-palace checkout and commit it like any other source change. The
+next `vp` build will ship your edit as the new embedded floor for
+everyone.
+
+When a new `vp` binary changes an embedded default, `vp config sync`
+reconciles the drift per the three-SHA table. For files you never
+touched, it auto-updates and writes a `.bak` of the previous vault
+content. For files where both you and the embedded default have
+diverged from the recorded lock SHA, it presents a three-option prompt:
+`[s]kip / [o]verwrite (writes .bak) / [n]ew-sidecar` (writing
+`<name>.md.new` for side-by-side review). Uppercase `S`/`O`/`N` applies
+the choice to every remaining item.
+
 ## Documentation
 
 - [Tutorial](doc/TUTORIAL.md) — installation, editor setup, daily workflow

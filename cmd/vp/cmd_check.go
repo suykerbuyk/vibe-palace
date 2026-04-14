@@ -67,6 +67,13 @@ func runCheck(version string) int {
 		if vaultOK {
 			if vaultPath, _, perr := storage.ResolveVaultPath(cwd); perr == nil && vaultPath != "" {
 				vault = storage.NewVault(vaultPath)
+				// Phase 3: surface TemplateTree drift alongside the other
+				// reconcilers so vp check stays at parity with
+				// vp config sync --dry-run.
+				tt := reconcile.NewTemplateTree(vaultPath, "Templates", reconcile.TemplateTreeSeed{
+					Mode: reconcile.TemplateModeMaterialize,
+				})
+				results = append(results, tt.Check(ctx)...)
 			}
 		}
 	}
@@ -91,6 +98,17 @@ func runCheck(version string) int {
 			slug, _ := project.DetectProject(cwd)
 			vp := reconcile.NewVaultProject(vault, slug)
 			results = append(results, vp.Check(ctx)...)
+
+			// Phase 4: per-project scaffold check. Only the current
+			// project's scaffold state is surfaced here — config sync
+			// enumerates every project under Projects/ in its default
+			// scope, but vp check stays project-local for parity with
+			// the rest of its rows.
+			if slug != "" {
+				scaffold := reconcile.NewTemplateTree(vault.Root, "Projects/"+slug,
+					reconcile.TemplateTreeSeed{Mode: reconcile.TemplateModeScaffold})
+				results = append(results, scaffold.Check(ctx)...)
+			}
 
 			if sRow.Status == check.Fail {
 				results = append(results, check.Result{Name: "Embedder", Status: check.Skip})

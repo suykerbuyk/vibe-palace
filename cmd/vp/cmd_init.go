@@ -195,6 +195,45 @@ func initGlobal(fv *cli.FlagValues) ([]check.Result, int) {
 		}
 	}
 	results = append(results, vaultRow)
+
+	// --- TemplateTree (materialize) ---
+	// Phase 3: after the vault directory exists, copy every embedded
+	// template resource into <vault>/Templates/ and seed the lock file.
+	// AutoAccept=true so the fresh-vault Create actions run unattended.
+	tt := reconcile.NewTemplateTree(vaultPath, "Templates", reconcile.TemplateTreeSeed{
+		Mode:       reconcile.TemplateModeMaterialize,
+		AutoAccept: true,
+	})
+	ttPlan, err := tt.Plan(ctx)
+	if err != nil {
+		results = append(results, check.Result{
+			Name: "Templates", Status: check.Fail, Summary: err.Error(),
+		})
+		return results, cli.ExitSystem
+	}
+	ttRep, err := tt.Apply(ctx, ttPlan)
+	if err != nil {
+		results = append(results, check.Result{
+			Name: "Templates", Status: check.Fail, Summary: err.Error(),
+		})
+		return results, cli.ExitSystem
+	}
+	if len(ttRep.Errors) > 0 {
+		// Log every error so a multi-failure Apply leaves a complete
+		// forensic trail; the Fail row only surfaces the first.
+		for _, e := range ttRep.Errors {
+			slog.Error("templates materialize apply error", "err", e)
+		}
+		results = append(results, check.Result{
+			Name: "Templates", Status: check.Fail, Summary: ttRep.Errors[0].Error(),
+		})
+		return results, cli.ExitSystem
+	}
+	results = append(results, check.Result{
+		Name:    "Templates",
+		Status:  check.Pass,
+		Summary: fmt.Sprintf("%d templates materialized", ttRep.Created),
+	})
 	return results, cli.ExitOK
 }
 
@@ -324,27 +363,78 @@ func initProject(fv *cli.FlagValues) (string, bool, []check.Result, int) {
 
 	// --- VaultProject reconciler --- best-effort, mirrors prior behavior:
 	// failures here are surfaced as a Detail line, not as a row failure.
+	var scaffoldRow *check.Result
 	if vault, verr := storage.OpenVaultFromCwd(dir); verr == nil {
 		vp := reconcile.NewVaultProject(vault, name)
 		vpPlan, perr := vp.Plan(ctx)
+		vaultProjectOK := true
 		if perr != nil {
 			slog.Error("vault-project plan", "project", name, "err", perr)
 			row.Details = append(row.Details, "vault-project config write failed — see logs")
+			vaultProjectOK = false
 		} else {
 			rep, aerr := vp.Apply(ctx, vpPlan)
 			if aerr != nil {
 				slog.Error("vault-project apply", "project", name, "err", aerr)
 				row.Details = append(row.Details, "vault-project config write failed — see logs")
+				vaultProjectOK = false
 			}
 			for _, e := range rep.Errors {
 				slog.Error("vault-project apply error", "project", name, "err", e)
 				row.Details = append(row.Details, "vault-project config write failed — see logs")
+				vaultProjectOK = false
 				break
+			}
+		}
+
+		// Phase 4: scaffold Projects/<name>/{commands,skills}/ + READMEs.
+		// Best-effort — scaffold failure shouldn't block init of the
+		// project config itself; surface as an Info row and log details.
+		if vaultProjectOK {
+			tt := reconcile.NewTemplateTree(vault.Root, "Projects/"+name, reconcile.TemplateTreeSeed{
+				Mode:       reconcile.TemplateModeScaffold,
+				AutoAccept: true,
+			})
+			ttPlan, ttErr := tt.Plan(ctx)
+			if ttErr != nil {
+				slog.Error("project scaffold plan", "project", name, "err", ttErr)
+				scaffoldRow = &check.Result{
+					Name:    "Project templates",
+					Status:  check.Info,
+					Summary: fmt.Sprintf("scaffold plan failed: %v", ttErr),
+				}
+			} else {
+				ttRep, ttErr := tt.Apply(ctx, ttPlan)
+				switch {
+				case ttErr != nil:
+					slog.Error("project scaffold apply", "project", name, "err", ttErr)
+					scaffoldRow = &check.Result{
+						Name:    "Project templates",
+						Status:  check.Info,
+						Summary: fmt.Sprintf("scaffold apply failed: %v", ttErr),
+					}
+				case len(ttRep.Errors) > 0:
+					slog.Error("project scaffold apply error", "project", name, "err", ttRep.Errors[0])
+					scaffoldRow = &check.Result{
+						Name:    "Project templates",
+						Status:  check.Info,
+						Summary: fmt.Sprintf("scaffold apply error: %v", ttRep.Errors[0]),
+					}
+				default:
+					scaffoldRow = &check.Result{
+						Name:    "Project templates",
+						Status:  check.Pass,
+						Summary: fmt.Sprintf("scaffolded Projects/%s/{commands,skills}/", name),
+					}
+				}
 			}
 		}
 	}
 
 	results = append(results, row)
+	if scaffoldRow != nil {
+		results = append(results, *scaffoldRow)
+	}
 	return dir, true, results, cli.ExitOK
 }
 

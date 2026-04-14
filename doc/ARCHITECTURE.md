@@ -269,7 +269,10 @@ Other templates (workflow.md, resume.md, config) use 3-tier resolution
 
 ### Embedded Templates
 
-Templates are compiled into the binary via `//go:embed templates`:
+Templates are compiled into the binary via `//go:embed templates`. The
+directive and the embedded `templates/` tree live in the
+`internal/templates/` package (moved from `internal/context/` so the
+filesystem lives next to the code that manages its lifecycle):
 
 ```
 templates/
@@ -284,7 +287,82 @@ templates/
 ```
 
 Templates support `{{PROJECT}}`, `{{DATE}}`, `{{WING}}`, and `{{ROOM}}`
-variable expansion.
+variable expansion. `internal/context/precedence.go` consumes the
+embedded tree via `internal/templates.FS()`.
+
+### Materialize-and-reconcile loop
+
+The embedded tier is the *floor*, not the authoritative source for a
+populated vault. Templates flow through four stations:
+
+1. **Embedded-in-binary.** `internal/templates/templates/` is baked into
+   every `vp` build. `internal/templates.WalkEmbedded()` enumerates
+   every resource as `(RelPath, Bytes, SHA256)`.
+2. **Materialize on `vp init`.** First-run `vp init` walks the embedded
+   set and writes every resource into `<vault>/Templates/` (the
+   `TemplateTreeReconciler` running in `Materialize` mode). It also
+   scaffolds `<vault>/Projects/<slug>/{commands,skills}/` with a README
+   stub (`Scaffold` mode — directory + README, no per-file copy), writes
+   the `<vault>/.vibe-palace/templates.lock` sidecar, and adds `*.bak`
+   and `*.new` to `<vault>/.gitignore` via
+   `storage.ReconcileVaultGitignore`.
+3. **User edits freely.** The vault is git-managed. Users treat
+   `<vault>/Templates/commands/*.md` as source-of-truth for their
+   personal command phrasing.
+4. **Reconcile on `vp config sync`.** Default scope is all-projects.
+   The reconciler reads the lock, hashes each vault file, and consults
+   the current embedded SHA for each resource. Drift resolves via the
+   three-SHA decision table below. Manual copy-back to the vibe-palace
+   source checkout is how a vault-side edit becomes the next release's
+   embedded floor — `vp` cannot automate this because at runtime it
+   does not know where the user's source checkout lives.
+
+#### The three-SHA decision table
+
+For each `(lock entry, vault file SHA, embedded file SHA)` triple, the
+reconciler picks one action:
+
+| Vault vs lock | Embedded vs lock | Action |
+|---|---|---|
+| missing       | —                | **Create** (write embedded, record lock) |
+| match         | match            | **Unchanged** |
+| match         | differs          | **Update** (safe: user never edited) |
+| differs       | match            | **Unchanged** (user-edited, embedded stable) |
+| differs       | differs          | **Prompt** (skip / overwrite + `.bak` / write `.new`) |
+| lock missing  | vault exists (bytes == embedded) | **Silent adopt** (write lock entry, no prompt) |
+| lock missing  | vault exists (bytes ≠ embedded)  | Treat as user-edited → **Prompt** |
+
+`ActionPrompt` carries all three SHAs in its `Details` so the
+orchestrator can render the three-option menu without re-reading files.
+The orchestrator rewrites the user's choice (`s`/`o`/`n` or uppercase
+batch variants `S`/`O`/`N`) into a concrete Create / Update /
+WriteAsNew action before Apply runs — Apply itself never touches
+stdin/stdout.
+
+#### Role of `templates.lock`
+
+`<vault>/.vibe-palace/templates.lock` (TOML, keyed by vault-relative
+path) records the embedded SHA each resource was last materialized or
+reconciled against. Without it, the reconciler cannot distinguish "user
+edited this file" from "embedded default changed under a file the user
+never touched" — every binary bump would degrade into a prompt-per-file
+UX. The lock makes the auto-Update branch safe: `vault == lock` is
+unambiguous evidence the user has not edited the file, so replacing it
+with the new embedded bytes (after writing `.bak`) cannot clobber user
+intent.
+
+#### Silent-adopt pre-pass
+
+On the first post-upgrade sync against a vault that predates this
+feature (or on any vault with an absent lock), a naive implementation
+would emit a Prompt for every vault file that exists but has no lock
+entry. To avoid that prompt-storm, `Plan` runs a pre-pass: for every
+existing file under the reconciler's `relSubpath`, it compares the
+vault SHA to the current embedded SHA. Byte-identical files get a lock
+entry written silently — no prompt, no `.bak`. Only genuinely divergent
+files fall through to the Prompt path. "Vault bytes == embedded bytes"
+is unambiguous evidence the user has not edited the file, so adoption
+is safe.
 
 ### Bootstrap Context
 

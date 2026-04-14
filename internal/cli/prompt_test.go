@@ -36,3 +36,35 @@ func TestPromptChoice(t *testing.T) {
 		})
 	}
 }
+
+func TestPromptTemplateChoice(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"skip", "s\n", "s"},
+		{"overwrite", "o\n", "o"},
+		{"new", "n\n", "n"},
+		{"skip-all", "S\n", "S"},
+		{"overwrite-all", "O\n", "O"},
+		{"new-all", "N\n", "N"},
+		{"quit", "q\n", "q"},
+		{"eof becomes skip", "", "s"},
+		{"retry then new", "x\n?\nn\n", "n"},
+		{"retry-exhausted becomes skip", "x\ny\nz\n1\n2\n", "s"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var w bytes.Buffer
+			r := bufio.NewReader(strings.NewReader(tc.input))
+			got, err := PromptTemplateChoice(&w, r)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got %q, want %q (output=%q)", got, tc.want, w.String())
+			}
+		})
+	}
+}

@@ -36,6 +36,30 @@ const (
 	// ActionSkip: cannot act because a required input is missing (e.g. sync
 	// mode with no seed and nothing to fix).
 	ActionSkip ActionKind = "Skip"
+	// ActionPrompt: ambiguous reconcile — the orchestrator must collect a
+	// user choice and REWRITE this action into a concrete Create / Update /
+	// Skip (possibly with a different Target, e.g. "<path>.new") BEFORE
+	// calling Apply. Reconciler Apply implementations MUST return an error
+	// if they observe an ActionPrompt — it is defense-in-depth against a
+	// misbehaving orchestrator.
+	//
+	// For the TemplateTree reconciler, Action.Details carries the three
+	// SHAs and the embedded resource identity needed to render a
+	// meaningful menu, write a `.new` sidecar, and produce a
+	// `vp check --dry-run` row. The Details slice contains, in order:
+	//
+	//   "embedded_sha=<hex>"
+	//   "vault_sha=<hex>"
+	//   "lock_sha=<hex>"
+	//   "embedded_relpath=<embedded-relative-path>"
+	//
+	// Any SHA may be the empty string after the `=` (e.g. lock_sha=
+	// when no lock entry exists). embedded_relpath is always non-empty
+	// for TemplateTree Prompts and is how the orchestrator recovers the
+	// embedded byte source for the `.new` sidecar branch without
+	// reverse-engineering from Target. Orchestrator parsers should split
+	// on the first '=' and treat missing keys as the empty value.
+	ActionPrompt ActionKind = "Prompt"
 )
 
 // Action describes a single proposed change to one artifact (typically

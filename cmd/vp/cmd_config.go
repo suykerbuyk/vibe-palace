@@ -7,15 +7,18 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/reconcile"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
 
 func cmdConfig() *cli.Command {
@@ -376,17 +379,65 @@ func runConfigSync(args []string) int {
 		"CwdProject":    reconcile.NewCwdProject(projectDir, reconcile.CwdProjectSeed{}),
 		"VaultProject":  reconcile.NewVaultProject(vault, projectSlug),
 	}
+	// Phase 3: TemplateTree is vault-tier and requires an open vault.
+	// When vault isn't resolvable (global-only scope, no vault yet) we
+	// skip adding it — matches the policy used by VaultSettings above.
+	var vaultPathForTemplates string
+	if vault != nil {
+		vaultPathForTemplates = vault.Root
+	} else if vp, _, err := storage.ResolveVaultPath(absRoot); err == nil && vp != "" {
+		vaultPathForTemplates = vp
+	} else if err != nil {
+		// Not fatal — we simply skip the Templates reconciler — but
+		// log so a misconfigured global config doesn't silently drop
+		// the whole Templates tier from sync.
+		slog.Error("resolve vault path for TemplateTree", "err", err, "root", absRoot)
+	}
+	if vaultPathForTemplates != "" {
+		all["Templates"] = reconcile.NewTemplateTree(vaultPathForTemplates, "Templates",
+			reconcile.TemplateTreeSeed{Mode: reconcile.TemplateModeMaterialize})
+	}
+
+	// Phase 4: project-scoped TemplateTree scaffolders. When addressing
+	// flags pin to a single project, emit exactly one scaffold reconciler;
+	// otherwise enumerate every directory under <vault>/Projects/ and
+	// emit one per slug.
+	var projectScaffolds []reconcile.Reconciler
+	if vaultPathForTemplates != "" {
+		if projectSlug != "" && (cwdSet || projectFlag != "") {
+			projectScaffolds = append(projectScaffolds,
+				reconcile.NewTemplateTree(vaultPathForTemplates, "Projects/"+projectSlug,
+					reconcile.TemplateTreeSeed{Mode: reconcile.TemplateModeScaffold}))
+		} else {
+			for _, slug := range enumerateVaultProjectSlugs(vaultPathForTemplates) {
+				projectScaffolds = append(projectScaffolds,
+					reconcile.NewTemplateTree(vaultPathForTemplates, "Projects/"+slug,
+						reconcile.TemplateTreeSeed{Mode: reconcile.TemplateModeScaffold}))
+			}
+		}
+	}
 
 	var order []reconcile.Reconciler
+	appendIfPresent := func(out []reconcile.Reconciler, key string) []reconcile.Reconciler {
+		if r, ok := all[key]; ok {
+			return append(out, r)
+		}
+		return out
+	}
 	switch tier {
 	case "all":
-		order = []reconcile.Reconciler{all["GlobalConfig"], all["Vault"], all["VaultSettings"], all["CwdProject"], all["VaultProject"]}
+		order = []reconcile.Reconciler{all["GlobalConfig"], all["Vault"], all["VaultSettings"]}
+		order = appendIfPresent(order, "Templates")
+		order = append(order, all["CwdProject"], all["VaultProject"])
+		order = append(order, projectScaffolds...)
 	case "global":
 		order = []reconcile.Reconciler{all["GlobalConfig"]}
 	case "vault":
 		order = []reconcile.Reconciler{all["Vault"], all["VaultSettings"]}
+		order = appendIfPresent(order, "Templates")
 	case "project":
 		order = []reconcile.Reconciler{all["CwdProject"], all["VaultProject"]}
+		order = append(order, projectScaffolds...)
 	}
 
 	// Collect plans.
@@ -415,13 +466,40 @@ func runConfigSync(args []string) int {
 
 	reader := bufio.NewReader(os.Stdin)
 	acceptAll := autoYes
+	// batchMode is the separate S/O/N batch letter honored by the
+	// Prompt resolver. Distinct from acceptAll because its letter
+	// semantics differ (skip/overwrite/new vs. accept/skip/accept-all).
+	var batchMode string
+	if autoYes {
+		// --yes implies "overwrite" for every Prompt action so the
+		// non-interactive run never blocks on stdin.
+		batchMode = "o"
+	}
 	var totalReport reconcile.Report
 
 	for i, r := range order {
+		actions := plans[i].Actions
+		// Prompt resolver pre-pass: turn every ActionPrompt into a
+		// concrete Create / Update / (drop) before the existing
+		// accept/skip loop runs. TemplateTree is the only reconciler
+		// that emits ActionPrompt today. Actions emitted by the
+		// resolver are already user-approved and bypass the
+		// PromptChoice gate below.
+		resolved, preApproved, abort := resolveTemplatePrompts(r, actions, reader, &batchMode, os.Stdout)
+		if abort {
+			fmt.Fprintln(os.Stdout, "Aborting — no further changes applied.")
+			return finishSync(totalReport)
+		}
+		actions = resolved
+
 		filtered := reconcile.Plan{}
-		for _, a := range plans[i].Actions {
+		for _, a := range actions {
 			if !isActionable(a.Kind) {
 				// Still pass Unchanged/Skip through so Apply's counters match.
+				filtered.Actions = append(filtered.Actions, a)
+				continue
+			}
+			if preApproved[a.Target] {
 				filtered.Actions = append(filtered.Actions, a)
 				continue
 			}
@@ -464,6 +542,179 @@ func runConfigSync(args []string) int {
 	return finishSync(totalReport)
 }
 
+// resolveTemplatePrompts rewrites any ActionPrompt in actions into a
+// concrete Create / Update action (or drops it for Skip) by consulting
+// the user via cli.PromptTemplateChoice. Non-Prompt actions pass
+// through unchanged.
+//
+// The 'n'/'N' branch writes the embedded bytes to <target>.new directly
+// (bypassing Apply) because the reconciler's Apply keys its
+// embedded-bytes lookup on the original target path; rewriting Target
+// to <path>.new would cause Apply to fail to find the resource.
+// Bypassing is safe because the .new write is a pure sidecar emission
+// with no lock bookkeeping.
+//
+// batchMode carries the persistent S/O/N letter across reconcilers so
+// a single uppercase answer suppresses prompts for every remaining
+// Prompt action in this sync run. abort is true when the user picked
+// 'q'; the orchestrator should stop and print a terminal summary.
+func resolveTemplatePrompts(r reconcile.Reconciler, actions []reconcile.Action, reader *bufio.Reader, batchMode *string, w io.Writer) (resolved []reconcile.Action, preApproved map[string]bool, abort bool) {
+	preApproved = map[string]bool{}
+	// Lazily loaded embedded bytes map; only built when we actually
+	// need to write a .new sidecar.
+	var embBytes map[string][]byte
+	ensureEmbeddedBytes := func() error {
+		if embBytes != nil {
+			return nil
+		}
+		rs, err := templates.WalkEmbedded()
+		if err != nil {
+			return err
+		}
+		embBytes = make(map[string][]byte, len(rs))
+		for _, res := range rs {
+			embBytes[res.RelPath] = res.Bytes
+		}
+		return nil
+	}
+
+	for _, a := range actions {
+		if a.Kind != reconcile.ActionPrompt {
+			resolved = append(resolved, a)
+			continue
+		}
+		// Honor active batch mode.
+		answer := *batchMode
+		if answer == "" {
+			fmt.Fprintf(w, "\n=== %s %s ===\n%s\n", r.Name(), a.Kind, a.Summary)
+			for _, d := range a.Details {
+				fmt.Fprintf(w, "  %s\n", d)
+			}
+			ans, err := cli.PromptTemplateChoice(w, reader)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp config sync: %v\n", err)
+				return resolved, preApproved, true
+			}
+			answer = ans
+		}
+		switch answer {
+		case "q":
+			return resolved, preApproved, true
+		case "S":
+			*batchMode = "s"
+			answer = "s"
+		case "O":
+			*batchMode = "o"
+			answer = "o"
+		case "N":
+			*batchMode = "n"
+			answer = "n"
+		}
+		switch answer {
+		case "s":
+			// Drop the action entirely.
+		case "o":
+			resolved = append(resolved, reconcile.Action{
+				Kind:    reconcile.ActionUpdate,
+				Target:  a.Target,
+				Summary: a.Summary + " — overwrite",
+				Details: a.Details,
+			})
+			preApproved[a.Target] = true
+		case "n":
+			// Write .new sidecar directly. The reconciler emits the
+			// embedded RelPath in Details as "embedded_relpath=<rel>" so
+			// we don't have to reverse-engineer it from the Target path.
+			embRel := detailValue(a.Details, "embedded_relpath")
+			if embRel == "" {
+				slog.Error("template prompt missing embedded_relpath", "target", a.Target, "reconciler", r.Name())
+				fmt.Fprintf(os.Stderr, "vp config sync: prompt action for %s missing embedded_relpath detail\n", a.Target)
+				continue
+			}
+			if err := ensureEmbeddedBytes(); err != nil {
+				slog.Error("walk embedded for .new sidecar", "err", err, "target", a.Target)
+				fmt.Fprintf(os.Stderr, "vp config sync: walk embedded: %v\n", err)
+				return resolved, preApproved, true
+			}
+			match, ok := embBytes[embRel]
+			if !ok {
+				slog.Error("embedded resource not found for prompt", "relpath", embRel, "target", a.Target)
+				fmt.Fprintf(os.Stderr, "vp config sync: no embedded resource %q for %s\n", embRel, a.Target)
+				continue
+			}
+			newPath := a.Target + ".new"
+			if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
+				fmt.Fprintf(os.Stderr, "vp config sync: mkdir %s: %v\n", filepath.Dir(newPath), err)
+				continue
+			}
+			// Rotate any existing .new to .new.bak first so users can
+			// recover the prior sidecar body. Last-writer-wins: an
+			// existing .new.bak is unconditionally replaced.
+			if prior, err := os.ReadFile(newPath); err == nil {
+				if werr := os.WriteFile(newPath+".bak", prior, 0o644); werr != nil {
+					fmt.Fprintf(os.Stderr, "vp config sync: rotate %s.bak: %v\n", newPath, werr)
+					continue
+				}
+			} else if !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "vp config sync: read %s: %v\n", newPath, err)
+				continue
+			}
+			if err := os.WriteFile(newPath, match, 0o644); err != nil {
+				fmt.Fprintf(os.Stderr, "vp config sync: write %s: %v\n", newPath, err)
+				continue
+			}
+			fmt.Fprintf(w, "  wrote %s\n", newPath)
+		}
+	}
+	return resolved, preApproved, false
+}
+
+// detailValue returns the value of a "<key>=<value>" entry in
+// Action.Details, or "" if the key is not present. Used to parse the
+// structured fields TemplateTree emits on ActionPrompt (see
+// reconcile.ActionPrompt doc comment for the full contract).
+func detailValue(details []string, key string) string {
+	prefix := key + "="
+	for _, d := range details {
+		if strings.HasPrefix(d, prefix) {
+			return strings.TrimPrefix(d, prefix)
+		}
+	}
+	return ""
+}
+
+// enumerateVaultProjectSlugs lists directory entries under
+// <vaultRoot>/Projects/ that look like project slugs. Entries that
+// aren't directories, and entries whose names start with "." or "_",
+// are skipped. Result is sorted alphabetically for deterministic
+// reconciler ordering.
+func enumerateVaultProjectSlugs(vaultRoot string) []string {
+	projectsDir := filepath.Join(vaultRoot, "Projects")
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		// ENOENT is normal on a fresh vault before any project has been
+		// initialized; everything else is a real operational problem
+		// (permission, IO) that would silently suppress every project
+		// scaffold row — exactly the kind of mystery we want to avoid.
+		if !os.IsNotExist(err) {
+			slog.Error("enumerate vault projects", "err", err, "dir", projectsDir)
+		}
+		return nil
+	}
+	var slugs []string
+	for _, e := range entries {
+		name := e.Name()
+		if !e.IsDir() || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
+			continue
+		}
+		slugs = append(slugs, name)
+	}
+	// ReadDir on Linux returns sorted entries, but sort explicitly to
+	// stay platform-independent.
+	sort.Strings(slugs)
+	return slugs
+}
+
 func printSyncPlans(w *os.File, reconcilers []reconcile.Reconciler, plans []reconcile.Plan) {
 	fmt.Fprintln(w, "Plan:")
 	for i, r := range reconcilers {
@@ -492,7 +743,7 @@ func anyActionable(plans []reconcile.Plan) bool {
 }
 
 func isActionable(k reconcile.ActionKind) bool {
-	return k == reconcile.ActionCreate || k == reconcile.ActionUpdate
+	return k == reconcile.ActionCreate || k == reconcile.ActionUpdate || k == reconcile.ActionPrompt
 }
 
 func mergeReports(dst *reconcile.Report, src reconcile.Report) {
@@ -508,6 +759,7 @@ func finishSync(rep reconcile.Report) int {
 		rep.Created, rep.Updated, rep.Unchanged, rep.Skipped)
 	if len(rep.Errors) > 0 {
 		for _, e := range rep.Errors {
+			slog.Error("config sync apply error", "err", e)
 			fmt.Fprintf(os.Stderr, "  error: %v\n", e)
 		}
 		return cli.ExitSystem

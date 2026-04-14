@@ -2523,6 +2523,77 @@ project, enabling context-sensitive behavior in multi-module codebases.
 
 ---
 
+## Phase 15: Materialize and Reconcile Vault Templates
+
+> **Status: IMPLEMENTED**
+>
+> Task slug: `materialize-and-reconcile-vault-templates` (sibling to
+> `split-init-config-absorb-check`; builds on the Check→Plan→Apply
+> reconciler pattern and the 5-tier resolver).
+
+**Goal:** Make the vault the primary editable surface for command and
+workflow templates. Materialize embedded defaults into
+`<vault>/Templates/` on first `vp init`, scaffold per-project override
+directories, and use a `templates.lock` sidecar to distinguish
+user-edited files from binary-bumped files during reconcile.
+
+**Doctrine:** **embedded = floor, vault = working copy, source = next
+release.** The compiled-in template set is the minimum implementation
+and is never authoritative for a populated vault. The vault's
+`Templates/` tree is where users edit. Promotion back to the
+vibe-palace source tree is manual — `vp` does not know at runtime
+where the user's source checkout lives, so the workflow is
+"copy-and-commit" by hand, documented in `README.md`, `doc/TUTORIAL.md`,
+and `doc/ARCHITECTURE.md`.
+
+**Key changes:**
+
+- **New `internal/templates/` package.** Owns the `//go:embed templates`
+  directive (moved from `internal/context/`), exposes
+  `WalkEmbedded()`, `EmbeddedSHA()`, and lock primitives
+  (`ReadLock` / `WriteLock` against
+  `<vault>/.vibe-palace/templates.lock`).
+- **New `TemplateTreeReconciler`.** Implements the standard
+  `Reconciler` interface in two modes: `Materialize` (full copy of
+  embedded resources under `<vault>/Templates/`) and `Scaffold`
+  (directory + README stub only, used for
+  `<vault>/Projects/<slug>/{commands,skills}/`). Decisions follow the
+  three-SHA table; `ActionPrompt` carries `(embedded_sha, vault_sha,
+  lock_sha)` so the orchestrator can render the three-option menu.
+- **Three-option Prompt on divergence.** When both the vault file and
+  the embedded default have drifted from the lock SHA, `vp config sync`
+  asks `[s]kip / [o]verwrite (writes .bak) / [n]ew-sidecar`. Uppercase
+  `S`/`O`/`N` applies the answer to every remaining item. `.bak` files
+  hold the pre-overwrite vault content; `.new` files sit next to the
+  original for side-by-side review.
+- **`vp config sync` default scope is all-projects.** Without
+  addressing flags, sync walks the vault `Templates/` tier and every
+  project under `<vault>/Projects/*/`, running each reconciler for
+  each scope. `--cwd DIR` and `--project SLUG` restrict to a single
+  project. No new `--all-projects` flag was added; the all-projects
+  behavior *is* the default. Performance holds because scaffold-mode
+  on a populated project is overwhelmingly `Unchanged`, and the
+  silent-adopt pre-pass prevents prompt-storms on first post-upgrade
+  sync.
+- **`vp init` bootstraps on empty vaults.** Materializes `Templates/`,
+  scaffolds the current project's `commands/` + `skills/` + README
+  stubs, writes the lock, and extends `<vault>/.gitignore` with
+  `*.bak` and `*.new`. All Create actions auto-accept — no prompts
+  on first run.
+- **`vp check` parity.** The TemplateTree reconcilers report one row
+  per materialized resource and one aggregate row per project
+  scaffold, keeping `TestCheckParityWithConfigSyncDryRun` green.
+- **Skills deferred.** `Templates/skills/` and
+  `Projects/<slug>/skills/` are scaffolded as empty directory + README
+  stub only — **no embedded skill content ships in this phase.**
+  Skill-as-directory (`skills/<name>/SKILL.md` plus references) is a
+  resolver redesign and lives in the sibling task
+  `vps-skill-artifacts-cross-ide`, which owns the cross-IDE skill
+  delivery surface and will land `startup-analyst` as the first
+  embedded skill.
+
+---
+
 ## Cross-Cutting Concerns
 
 ### Error Handling

@@ -213,8 +213,8 @@ func TestIntegrationGitInitInVault(t *testing.T) {
 	if err := storage.GitInit(vaultDir); err != nil {
 		t.Fatalf("GitInit: %v", err)
 	}
-	if err := storage.WriteVaultGitignore(vaultDir); err != nil {
-		t.Fatalf("WriteVaultGitignore: %v", err)
+	if err := storage.ReconcileVaultGitignore(vaultDir); err != nil {
+		t.Fatalf("ReconcileVaultGitignore: %v", err)
 	}
 
 	// Now a repo.

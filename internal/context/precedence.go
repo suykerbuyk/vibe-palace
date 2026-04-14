@@ -15,10 +15,8 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
+	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
-
-//go:embed templates
-var defaultTemplates embed.FS
 
 // ResourceInfo describes a named resource and which precedence level provided it.
 type ResourceInfo struct {
@@ -37,7 +35,7 @@ type Resolver struct {
 // NewResolver creates a Resolver with the compiled-in defaults and vault root path.
 func NewResolver(vaultRoot string) *Resolver {
 	return &Resolver{
-		defaults:  defaultTemplates,
+		defaults:  templates.FS(),
 		vaultRoot: vaultRoot,
 	}
 }

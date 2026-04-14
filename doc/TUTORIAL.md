@@ -471,6 +471,99 @@ Man pages are available for all commands: `man vp`, `man vp-search`,
 `man vp-commands`, `man vp-commands-upgrade`, etc. Install with
 `make man`.
 
+### Customizing a command template
+
+The command templates shipped inside `vp` are the *floor* — a default.
+Your vault is the primary editable surface. This walkthrough shows the
+full materialize-edit-reconcile loop.
+
+**1. Materialize on init.** A fresh `vp init` writes every embedded
+command into your vault:
+
+```bash
+vp init
+ls ~/vibe-palace-vault/Templates/commands/
+# → capture.md  cancel-plan.md  restart.md  review-plan.md  wrap.md
+cat ~/vibe-palace-vault/.vibe-palace/templates.lock
+# → one entry per materialized file, keyed by vault-relative path
+grep -E '\*\.(bak|new)' ~/vibe-palace-vault/.gitignore
+# → *.bak and *.new present
+```
+
+`vp init` also scaffolds `<vault>/Projects/<your-slug>/commands/` and
+`<vault>/Projects/<your-slug>/skills/` with README stubs explaining
+the 5-tier precedence.
+
+**2. Edit freely.** Open a template and change its phrasing:
+
+```bash
+$EDITOR ~/vibe-palace-vault/Templates/commands/wrap.md
+```
+
+**3. Your edit survives `vp config sync`.** As long as the embedded
+default is unchanged, the reconciler sees `vault ≠ lock` and
+`embedded == lock` — the "user-edited, binary-stable" row of the
+decision table — and reports the file as `Unchanged`:
+
+```bash
+vp config sync --dry-run
+# → Templates/commands/wrap.md ... Unchanged
+```
+
+**4. Simulating a binary bump.** Suppose a future `vp` release ships a
+rewritten `wrap.md`. On the next `vp config sync`, both your vault copy
+*and* the new embedded default have diverged from the lock SHA — the
+"both diverged" row. The reconciler emits a Prompt action:
+
+```
+=== TemplateTree:Templates Prompt ===
+Templates/commands/wrap.md diverged (user-edited AND embedded bumped)
+  embedded_sha=c7f0...
+  vault_sha=ae12...
+  lock_sha=3b88...
+  embedded_relpath=commands/wrap.md
+[s]kip / [o]verwrite (writes .bak) / [n]ew-sidecar — uppercase for all remaining items, [q]uit:
+```
+
+**5. The three options.** Each answer produces a different vault
+state. Uppercase `S`/`O`/`N` applies the choice to every remaining
+Prompt row in the same run.
+
+- `s` — vault file unchanged. No `.bak`, no `.new`. Lock entry is
+  left as-is, so the same Prompt will fire again next sync.
+- `o` — vault file replaced by the new embedded bytes. The previous
+  vault content is moved to `wrap.md.bak` (overwriting any prior
+  `.bak`). Lock entry updated to the new embedded SHA. After this
+  run, the file is back on the "user never edited" track.
+- `n` — vault file unchanged. The new embedded bytes are written
+  side-by-side to `wrap.md.new` for manual review. Lock entry is left
+  as-is. You can diff `wrap.md` against `wrap.md.new` at your leisure,
+  pick the parts you want, and delete the `.new` when done.
+
+**6. Per-project override.** To diverge permanently for one project
+without touching the vault-level template, create a file at the
+project tier:
+
+```bash
+cp ~/vibe-palace-vault/Templates/commands/wrap.md \
+   ~/vibe-palace-vault/Projects/myapp/commands/wrap.md
+$EDITOR ~/vibe-palace-vault/Projects/myapp/commands/wrap.md
+```
+
+The project-level file shadows the vault-level `Templates/` copy for
+`myapp` only. Other projects continue to resolve `wrap.md` from
+`<vault>/Templates/commands/`. `vp config sync` in scaffold mode never
+overwrites project-tier overrides — it only ensures the directory and
+README stub exist.
+
+**Promoting back to the `vp` source tree.** Vibe-palace cannot automate
+promotion because at runtime it does not know where your vibe-palace
+source checkout lives. To land a vault-side edit as the new embedded
+floor for the next release, manually copy the edited file from
+`<vault>/Templates/commands/<name>.md` to
+`<vp-repo>/internal/templates/templates/commands/<name>.md` and commit
+it like any other source change.
+
 ---
 
 ## Part 5: Migration

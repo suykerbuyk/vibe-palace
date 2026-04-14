@@ -159,7 +159,7 @@ func (r *VaultReconciler) Apply(_ context.Context, p Plan) (Report, error) {
 		case ActionCreate:
 			switch filepath.Base(a.Target) {
 			case ".gitignore":
-				if err := storage.WriteVaultGitignore(filepath.Dir(a.Target)); err != nil {
+				if err := storage.ReconcileVaultGitignore(filepath.Dir(a.Target)); err != nil {
 					rep.Errors = append(rep.Errors, fmt.Errorf("write .gitignore: %w", err))
 					continue
 				}

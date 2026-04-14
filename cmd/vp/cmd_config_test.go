@@ -11,6 +11,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
 
 func TestConfigUpgradeDryRun(t *testing.T) {
@@ -387,7 +388,7 @@ func seedFreshVault(t *testing.T) (configDir, vaultPath, projectDir string) {
 		t.Fatal(err)
 	}
 	// Vault .gitignore so Vault reconciler reports Unchanged.
-	if err := storage.WriteVaultGitignore(vaultPath); err != nil {
+	if err := storage.ReconcileVaultGitignore(vaultPath); err != nil {
 		t.Fatal(err)
 	}
 
@@ -520,3 +521,463 @@ func TestConfigSync_YesAcceptsWithoutStdin(t *testing.T) {
 		t.Errorf("exit code = %d, want ExitOK", code)
 	}
 }
+
+// --- Phase 3: TemplateTree drift prompt tests ---
+
+// syncPromptSetup runs vp init, then edits one materialized template
+// (picked by embeddedRel) so vaultSHA ≠ lockSHA. It also installs an
+// EmbeddedSHA override so the reconciler's embedded SHA differs from
+// the lock entry (simulating a binary bump). Returns vault path and
+// the absolute target path of the edited template. The override is
+// cleaned up by t.Cleanup.
+func syncPromptSetup(t *testing.T, embeddedRel string) (vaultPath, target, userEdit string) {
+	t.Helper()
+	configDir := initTestEnv(t, false)
+	_ = configDir
+
+	projDir := t.TempDir()
+	markProjectDir(t, projDir)
+	vaultPath = filepath.Join(t.TempDir(), "vault")
+
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
+	if code := cmd.Run([]string{projDir, "--name", "sync-tpl", "--vault-path", vaultPath, "--no-git"}); code != cli.ExitOK {
+		t.Fatalf("init exit code = %d", code)
+	}
+
+	target = filepath.Join(vaultPath, "Templates", filepath.FromSlash(embeddedRel))
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("expected materialized %s: %v", target, err)
+	}
+	// User edit: distinct bytes so vaultSHA ≠ lockSHA.
+	userEdit = "USER EDIT: " + embeddedRel + "\n"
+	if err := os.WriteFile(target, []byte(userEdit), 0o644); err != nil {
+		t.Fatalf("write user edit: %v", err)
+	}
+
+	// Embedded SHA override: flip one character of the real SHA so
+	// it differs from both the lock entry and the real embedded bytes
+	// but still passes any length checks.
+	orig := templates.EmbeddedSHA
+	templates.EmbeddedSHA = func(rel string) (string, bool) {
+		if rel == embeddedRel {
+			return strings.Repeat("a", 64), true
+		}
+		return orig(rel)
+	}
+	t.Cleanup(func() { templates.EmbeddedSHA = orig })
+
+	// chdir into projDir so DetectProject works for CwdProject tier.
+	cwd, _ := os.Getwd()
+	if err := os.Chdir(projDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	return vaultPath, target, userEdit
+}
+
+// runSyncWithStdin pipes the given input to os.Stdin for the duration
+// of a runConfigSync call. Captures stdout.
+func runSyncWithStdin(t *testing.T, input string, args []string) (stdout string, code int) {
+	t.Helper()
+	oldStdin := os.Stdin
+	rp, wp, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdin = rp
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	go func() {
+		_, _ = wp.Write([]byte(input))
+		_ = wp.Close()
+	}()
+	stdout = captureStdout(t, func() {
+		code = runConfigSync(args)
+	})
+	_ = rp.Close()
+	return stdout, code
+}
+
+func TestConfigSyncTemplateDriftSkip(t *testing.T) {
+	vaultPath, target, userEdit := syncPromptSetup(t, "commands/wrap.md")
+
+	_, code := runSyncWithStdin(t, "s\n", []string{
+		"--project-root", filepath.Dir(target), "--tier", "vault",
+	})
+	if code != cli.ExitOK {
+		t.Errorf("exit code = %d", code)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(got) != userEdit {
+		t.Errorf("skip: target bytes changed — got %q want %q", got, userEdit)
+	}
+	if _, err := os.Stat(target + ".bak"); err == nil {
+		t.Error("skip: unexpected .bak present")
+	}
+	if _, err := os.Stat(target + ".new"); err == nil {
+		t.Error("skip: unexpected .new present")
+	}
+	_ = vaultPath
+}
+
+func TestConfigSyncTemplateDriftOverwrite(t *testing.T) {
+	_, target, userEdit := syncPromptSetup(t, "commands/wrap.md")
+
+	// Capture embedded bytes for assertion.
+	var embBytes []byte
+	if rs, err := templates.WalkEmbedded(); err == nil {
+		for _, res := range rs {
+			if res.RelPath == "commands/wrap.md" {
+				embBytes = res.Bytes
+				break
+			}
+		}
+	}
+	if embBytes == nil {
+		t.Fatal("could not locate commands/wrap.md in embedded corpus")
+	}
+
+	_, code := runSyncWithStdin(t, "o\n", []string{
+		"--project-root", filepath.Dir(target), "--tier", "vault",
+	})
+	if code != cli.ExitOK {
+		t.Errorf("exit code = %d", code)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(got) != string(embBytes) {
+		t.Error("overwrite: target bytes != embedded bytes")
+	}
+	bak, err := os.ReadFile(target + ".bak")
+	if err != nil {
+		t.Fatalf(".bak missing: %v", err)
+	}
+	if string(bak) != userEdit {
+		t.Errorf(".bak should contain user edit; got %q want %q", bak, userEdit)
+	}
+	if _, err := os.Stat(target + ".new"); err == nil {
+		t.Error("overwrite: unexpected .new present")
+	}
+}
+
+func TestConfigSyncTemplateDriftNew(t *testing.T) {
+	_, target, userEdit := syncPromptSetup(t, "commands/wrap.md")
+
+	var embBytes []byte
+	if rs, err := templates.WalkEmbedded(); err == nil {
+		for _, res := range rs {
+			if res.RelPath == "commands/wrap.md" {
+				embBytes = res.Bytes
+				break
+			}
+		}
+	}
+
+	_, code := runSyncWithStdin(t, "n\n", []string{
+		"--project-root", filepath.Dir(target), "--tier", "vault",
+	})
+	if code != cli.ExitOK {
+		t.Errorf("exit code = %d", code)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(got) != userEdit {
+		t.Errorf("new: target bytes changed — got %q want %q", got, userEdit)
+	}
+	newPath := target + ".new"
+	newBytes, err := os.ReadFile(newPath)
+	if err != nil {
+		t.Fatalf(".new missing: %v", err)
+	}
+	if string(newBytes) != string(embBytes) {
+		t.Error(".new: should contain embedded bytes")
+	}
+}
+
+// TestConfigSyncTemplateDriftNewCollision verifies that when a stale
+// <target>.new already exists prior to the 'n' prompt answer, the old
+// .new is rotated to <target>.new.bak before the fresh sidecar is
+// written. Phase 5 explicitly requires preserving the previous sidecar
+// body — the ".new is a transient review artifact" contract keeps a
+// one-level undo for that artifact too.
+func TestConfigSyncTemplateDriftNewCollision(t *testing.T) {
+	_, target, _ := syncPromptSetup(t, "commands/wrap.md")
+
+	// Plant a pre-existing .new with distinct bytes.
+	newPath := target + ".new"
+	priorNew := []byte("STALE .new CONTENT — must be rotated\n")
+	if err := os.WriteFile(newPath, priorNew, 0o644); err != nil {
+		t.Fatalf("plant prior .new: %v", err)
+	}
+
+	var embBytes []byte
+	if rs, err := templates.WalkEmbedded(); err == nil {
+		for _, res := range rs {
+			if res.RelPath == "commands/wrap.md" {
+				embBytes = res.Bytes
+				break
+			}
+		}
+	}
+	if embBytes == nil {
+		t.Fatal("could not locate commands/wrap.md in embedded corpus")
+	}
+
+	_, code := runSyncWithStdin(t, "n\n", []string{
+		"--project-root", filepath.Dir(target), "--tier", "vault",
+	})
+	if code != cli.ExitOK {
+		t.Errorf("exit code = %d", code)
+	}
+
+	got, err := os.ReadFile(newPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", newPath, err)
+	}
+	if string(got) != string(embBytes) {
+		t.Error(".new: expected fresh embedded bytes")
+	}
+	bak, err := os.ReadFile(newPath + ".bak")
+	if err != nil {
+		t.Fatalf("read %s.bak: %v", newPath, err)
+	}
+	if string(bak) != string(priorNew) {
+		t.Errorf(".new.bak: expected prior .new bytes\n got: %q\nwant: %q", bak, priorNew)
+	}
+}
+
+// TestConfigSyncTemplateBatchUppercase verifies that S/O/N letters set
+// a batch mode honored for remaining Prompt actions. We drift two
+// resources and feed a single uppercase letter.
+func TestConfigSyncTemplateBatchUppercase(t *testing.T) {
+	vaultPath, target1, _ := syncPromptSetup(t, "commands/wrap.md")
+
+	// Drift a second file by editing it and extending the SHA override
+	// to cover it as well.
+	target2 := filepath.Join(vaultPath, "Templates", "commands", "restart.md")
+	if _, err := os.Stat(target2); err != nil {
+		t.Skipf("second resource not materialized: %v", err)
+	}
+	if err := os.WriteFile(target2, []byte("USER EDIT 2\n"), 0o644); err != nil {
+		t.Fatalf("edit target2: %v", err)
+	}
+	orig := templates.EmbeddedSHA
+	templates.EmbeddedSHA = func(rel string) (string, bool) {
+		switch rel {
+		case "commands/wrap.md", "commands/restart.md":
+			return strings.Repeat("b", 64), true
+		}
+		return orig(rel)
+	}
+	t.Cleanup(func() { templates.EmbeddedSHA = orig })
+
+	// Single uppercase 'S' answer — both Prompt actions should skip.
+	_, code := runSyncWithStdin(t, "S\n", []string{
+		"--project-root", filepath.Dir(target1), "--tier", "vault",
+	})
+	if code != cli.ExitOK {
+		t.Errorf("exit code = %d", code)
+	}
+	// Both files must retain user-edit bytes.
+	b1, _ := os.ReadFile(target1)
+	b2, _ := os.ReadFile(target2)
+	if !strings.HasPrefix(string(b1), "USER EDIT") {
+		t.Errorf("target1 not preserved: %s", b1)
+	}
+	if !strings.HasPrefix(string(b2), "USER EDIT") {
+		t.Errorf("target2 not preserved: %s", b2)
+	}
+	if _, err := os.Stat(target1 + ".bak"); err == nil {
+		t.Error("target1 .bak unexpectedly present after S")
+	}
+}
+
+// phase4ConfigSyncSetup constructs an isolated environment with a
+// global config pointing at a fresh vault, then returns (vaultDir, projDir).
+// No Projects/ exist yet — callers create whatever slugs they want.
+func phase4ConfigSyncSetup(t *testing.T) (vaultDir, projDir string) {
+	t.Helper()
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+
+	vpDir := filepath.Join(configDir, "vibe-palace")
+	if err := os.MkdirAll(vpDir, 0o755); err != nil {
+		t.Fatalf("mkdir vp: %v", err)
+	}
+	vaultDir = filepath.Join(t.TempDir(), "vault")
+	if err := os.MkdirAll(vaultDir, 0o755); err != nil {
+		t.Fatalf("mkdir vault: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(vpDir, "config.toml"),
+		[]byte("vault_path = \""+vaultDir+"\"\ngit_enabled = false\n"), 0o644); err != nil {
+		t.Fatalf("write global: %v", err)
+	}
+
+	projDir = t.TempDir()
+	markProjectDir(t, projDir)
+	return vaultDir, projDir
+}
+
+// TestConfigSyncDefaultScopeScaffoldsAllProjects verifies that the
+// default scope enumerates every slug under <vault>/Projects/ and
+// scaffolds commands/ + skills/ + README stubs for each one. Also
+// asserts alphabetical ordering in the Plan output.
+func TestConfigSyncDefaultScopeScaffoldsAllProjects(t *testing.T) {
+	vaultDir, projDir := phase4ConfigSyncSetup(t)
+	// Pre-create two empty project dirs.
+	for _, slug := range []string{"beta", "alpha"} {
+		if err := os.MkdirAll(filepath.Join(vaultDir, "Projects", slug), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", slug, err)
+		}
+	}
+
+	stdout := captureStdout(t, func() {
+		code := runConfigSync([]string{"--project-root", projDir, "--yes"})
+		if code != cli.ExitOK {
+			t.Errorf("exit code = %d", code)
+		}
+	})
+
+	// Both projects must have their scaffolded dirs + READMEs.
+	for _, slug := range []string{"alpha", "beta"} {
+		for _, kind := range []string{"commands", "skills"} {
+			readme := filepath.Join(vaultDir, "Projects", slug, kind, "README.md")
+			body, err := os.ReadFile(readme)
+			if err != nil {
+				t.Errorf("missing README %s: %v", readme, err)
+				continue
+			}
+			if string(body) != templates.RenderReadmeStub(kind) {
+				t.Errorf("%s/%s README body mismatch", slug, kind)
+			}
+		}
+	}
+	// Alphabetical ordering: alpha's reconciler name must appear before beta's.
+	iAlpha := strings.Index(stdout, "TemplateTree:Projects/alpha")
+	iBeta := strings.Index(stdout, "TemplateTree:Projects/beta")
+	if iAlpha < 0 || iBeta < 0 {
+		t.Fatalf("expected both scaffold reconcilers in plan output:\n%s", stdout)
+	}
+	if iAlpha > iBeta {
+		t.Errorf("alpha should precede beta in plan output:\n%s", stdout)
+	}
+}
+
+// TestConfigSyncProjectFlagRestrictsScope verifies --project SLUG
+// limits scaffolding to just that slug; sibling projects remain
+// untouched.
+func TestConfigSyncProjectFlagRestrictsScope(t *testing.T) {
+	vaultDir, projDir := phase4ConfigSyncSetup(t)
+	for _, slug := range []string{"alpha", "beta"} {
+		if err := os.MkdirAll(filepath.Join(vaultDir, "Projects", slug), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", slug, err)
+		}
+	}
+
+	code := runConfigSync([]string{
+		"--project-root", projDir, "--yes",
+		"--tier", "project", "--project", "beta",
+	})
+	if code != cli.ExitOK {
+		t.Errorf("exit code = %d", code)
+	}
+
+	// beta got scaffolded.
+	if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "beta", "commands", "README.md")); err != nil {
+		t.Errorf("beta commands README missing: %v", err)
+	}
+	// alpha did NOT.
+	if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "alpha", "commands")); err == nil {
+		t.Errorf("alpha commands/ should not have been scaffolded")
+	}
+}
+
+// TestConfigSyncScaffoldIdempotent verifies that a second sync after a
+// full scaffold emits only Unchanged for the project scaffolders — no
+// duplicate Create rows.
+func TestConfigSyncScaffoldIdempotent(t *testing.T) {
+	vaultDir, projDir := phase4ConfigSyncSetup(t)
+	if err := os.MkdirAll(filepath.Join(vaultDir, "Projects", "alpha"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := runConfigSync([]string{"--project-root", projDir, "--yes"}); code != cli.ExitOK {
+		t.Fatalf("first sync exit = %d", code)
+	}
+	// Second run: no Create actions for the scaffold reconciler.
+	stdout := captureStdout(t, func() {
+		if code := runConfigSync([]string{"--project-root", projDir, "--yes", "--dry-run"}); code != cli.ExitOK {
+			t.Fatalf("second sync exit = %d", code)
+		}
+	})
+	// Look for any [Create] line whose reconciler name is the alpha scaffold.
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.Contains(line, "TemplateTree:Projects/alpha") && strings.Contains(line, "[Create]") {
+			t.Errorf("unexpected Create on second sync:\n%s", line)
+		}
+	}
+}
+
+// TestConfigSyncSkipsDotAndUnderscoreProjects verifies that directory
+// entries under Projects/ whose names begin with '.' or '_' are
+// skipped by the enumerator.
+func TestConfigSyncSkipsDotAndUnderscoreProjects(t *testing.T) {
+	vaultDir, projDir := phase4ConfigSyncSetup(t)
+	for _, name := range []string{".hidden", "_wip", "real"} {
+		if err := os.MkdirAll(filepath.Join(vaultDir, "Projects", name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	code := runConfigSync([]string{"--project-root", projDir, "--yes"})
+	if code != cli.ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+
+	// real/ got scaffolded.
+	if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "real", "commands", "README.md")); err != nil {
+		t.Errorf("real/ should be scaffolded: %v", err)
+	}
+	// .hidden and _wip did not.
+	for _, skipped := range []string{".hidden", "_wip"} {
+		path := filepath.Join(vaultDir, "Projects", skipped, "commands")
+		if _, err := os.Stat(path); err == nil {
+			t.Errorf("%s should have been skipped", skipped)
+		}
+	}
+}
+
+// TestEnumerateVaultProjectSlugsSkipRules is a focused unit test for
+// the enumerator helper — exercises the skip predicate without going
+// through the full runConfigSync path.
+func TestEnumerateVaultProjectSlugsSkipRules(t *testing.T) {
+	vaultDir := t.TempDir()
+	for _, name := range []string{"alpha", "beta", ".hidden", "_wip"} {
+		if err := os.MkdirAll(filepath.Join(vaultDir, "Projects", name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A regular file under Projects/ must also be skipped.
+	if err := os.WriteFile(filepath.Join(vaultDir, "Projects", "README.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := enumerateVaultProjectSlugs(vaultDir)
+	want := []string{"alpha", "beta"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("enumerate = %v, want %v", got, want)
+	}
+
+	// Missing Projects/ dir → nil, not error.
+	if out := enumerateVaultProjectSlugs(t.TempDir()); out != nil {
+		t.Errorf("empty vault: want nil, got %v", out)
+	}
+}
+

@@ -12,6 +12,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
 
 // markProjectDir writes a minimal go.mod in dir so DetectSignal classifies
@@ -645,5 +646,168 @@ func TestInitShimsSkippedWhenNoProject(t *testing.T) {
 	})
 	if strings.Contains(out, "Slash-command shims") {
 		t.Errorf("did not expect Slash-command shims row when project init skipped:\n%s", out)
+	}
+}
+
+// TestInitMaterializesTemplates verifies Phase 3.1: after vp init the
+// vault's Templates/ tree contains embedded resources (byte-identical),
+// templates.lock exists with an entry for each, and the vault
+// .gitignore carries the canonical *.bak / *.new patterns.
+func TestInitMaterializesTemplates(t *testing.T) {
+	initTestEnv(t, false)
+	projDir := t.TempDir()
+	markProjectDir(t, projDir)
+	vaultDir := filepath.Join(t.TempDir(), "vault")
+
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
+	code := cmd.Run([]string{projDir, "--name", "tpl-test", "--vault-path", vaultDir, "--no-git"})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+
+	// Walk the embedded corpus and assert each resource is on disk
+	// with matching bytes.
+	resources, err := templates.WalkEmbedded()
+	if err != nil {
+		t.Fatalf("WalkEmbedded: %v", err)
+	}
+	if len(resources) == 0 {
+		t.Fatal("WalkEmbedded returned zero resources")
+	}
+	cmdCount := 0
+	for _, res := range resources {
+		target := filepath.Join(vaultDir, "Templates", filepath.FromSlash(res.RelPath))
+		got, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatalf("materialized file missing %s: %v", target, err)
+		}
+		if string(got) != string(res.Bytes) {
+			t.Errorf("bytes mismatch for %s", res.RelPath)
+		}
+		if strings.HasPrefix(res.RelPath, "commands/") {
+			cmdCount++
+		}
+	}
+	if cmdCount == 0 {
+		t.Error("expected at least one command materialized under Templates/commands/")
+	}
+
+	// Lock file must exist and cover every materialized resource.
+	lock, err := templates.ReadLock(vaultDir)
+	if err != nil {
+		t.Fatalf("ReadLock: %v", err)
+	}
+	for _, res := range resources {
+		key := "Templates/" + res.RelPath
+		entry, ok := lock.Entries[key]
+		if !ok {
+			t.Errorf("lock missing entry for %s", key)
+			continue
+		}
+		if entry.EmbeddedSHA != res.SHA256 {
+			t.Errorf("lock sha mismatch for %s: got %s, want %s",
+				key, entry.EmbeddedSHA, res.SHA256)
+		}
+	}
+
+	// .gitignore must contain every canonical pattern (including
+	// *.bak / *.new added for the template reconciler).
+	giData, err := os.ReadFile(filepath.Join(vaultDir, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	gi := string(giData)
+	for _, want := range storage.CanonicalGitignorePatterns {
+		if !strings.Contains(gi, want) {
+			t.Errorf(".gitignore missing pattern %q; got:\n%s", want, gi)
+		}
+	}
+	// Spot-check the two added in Phase 3.
+	for _, want := range []string{"*.bak", "*.new"} {
+		if !strings.Contains(gi, want) {
+			t.Errorf(".gitignore missing %q; got:\n%s", want, gi)
+		}
+	}
+}
+
+// TestInitScaffoldsCurrentProject (Phase 4) verifies that vp init
+// creates Projects/<slug>/commands/ and Projects/<slug>/skills/ with
+// README stubs rendered via templates.RenderReadmeStub.
+func TestInitScaffoldsCurrentProject(t *testing.T) {
+	configDir := initTestEnv(t, true)
+	globalData, _ := os.ReadFile(filepath.Join(configDir, "vibe-palace", "config.toml"))
+	vaultDir := ""
+	for _, line := range strings.Split(string(globalData), "\n") {
+		if strings.HasPrefix(line, "vault_path = ") {
+			vaultDir = strings.Trim(strings.TrimPrefix(line, "vault_path = "), `"`)
+			break
+		}
+	}
+	if vaultDir == "" {
+		t.Fatal("could not determine vault path")
+	}
+
+	dir := t.TempDir()
+	markProjectDir(t, dir)
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
+	if code := cmd.Run([]string{dir, "--name", "scaffold-proj"}); code != cli.ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+
+	projBase := filepath.Join(vaultDir, "Projects", "scaffold-proj")
+	for _, kind := range []string{"commands", "skills"} {
+		subDir := filepath.Join(projBase, kind)
+		if info, err := os.Stat(subDir); err != nil || !info.IsDir() {
+			t.Errorf("missing dir %s: %v", subDir, err)
+			continue
+		}
+		readmePath := filepath.Join(subDir, "README.md")
+		body, err := os.ReadFile(readmePath)
+		if err != nil {
+			t.Errorf("missing README %s: %v", readmePath, err)
+			continue
+		}
+		if string(body) != templates.RenderReadmeStub(kind) {
+			t.Errorf("%s README body mismatch", kind)
+		}
+	}
+}
+
+// TestInitScaffoldPreservesUserOverrides (Phase 4): a user-authored
+// override file in Projects/<slug>/commands/foo.md must survive vp
+// init. Scaffold mode is write-if-absent.
+func TestInitScaffoldPreservesUserOverrides(t *testing.T) {
+	configDir := initTestEnv(t, true)
+	globalData, _ := os.ReadFile(filepath.Join(configDir, "vibe-palace", "config.toml"))
+	vaultDir := ""
+	for _, line := range strings.Split(string(globalData), "\n") {
+		if strings.HasPrefix(line, "vault_path = ") {
+			vaultDir = strings.Trim(strings.TrimPrefix(line, "vault_path = "), `"`)
+			break
+		}
+	}
+	// Pre-create the override before running init.
+	overridePath := filepath.Join(vaultDir, "Projects", "pre-existing", "commands", "foo.md")
+	if err := os.MkdirAll(filepath.Dir(overridePath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	const userBody = "# user command override\nhello\n"
+	if err := os.WriteFile(overridePath, []byte(userBody), 0o644); err != nil {
+		t.Fatalf("write override: %v", err)
+	}
+
+	dir := t.TempDir()
+	markProjectDir(t, dir)
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
+	if code := cmd.Run([]string{dir, "--name", "pre-existing"}); code != cli.ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+
+	got, err := os.ReadFile(overridePath)
+	if err != nil {
+		t.Fatalf("override gone: %v", err)
+	}
+	if string(got) != userBody {
+		t.Errorf("override clobbered: got %q", got)
 	}
 }
