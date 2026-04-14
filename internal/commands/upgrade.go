@@ -10,9 +10,25 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 )
+
+// matchesOnly decides whether the given resource name matches an --only
+// filter for the given resource type. Commands match exactly. Skills
+// match either exactly (nested identifier form) or when `only` names the
+// skill directory (prefix "<only>/") so `--only startup-analyst` picks
+// up every file under that skill.
+func matchesOnly(resourceType, name, only string) bool {
+	if resourceType != "skill" {
+		return name == only
+	}
+	if name == only {
+		return true
+	}
+	return strings.HasPrefix(name, only+"/")
+}
 
 // ChangeKind classifies how an embedded template compares to its vault copy.
 type ChangeKind string
@@ -50,9 +66,15 @@ type Change struct {
 // PlanOptions configures which templates Upgrade considers.
 type PlanOptions struct {
 	// ResourceTypes lists which resource types to include. Empty means
-	// {"command"}. Skills can be added here if/when embedded skills exist.
+	// {"command"}. Accepts "command" and "skill". For "skill" the Plan
+	// emits one Change per file (SKILL.md + each reference), with
+	// Change.Name carrying the nested identifier "<skill>/<relpath>" so
+	// callers can group by skill directory.
 	ResourceTypes []string
 	// Only, when non-empty, restricts the plan to the named resource.
+	// For skills it matches against the nested name (prefix match on
+	// "<skill>/" is also accepted so --only <skill> picks up every file
+	// under that skill).
 	Only string
 }
 
@@ -73,7 +95,7 @@ func Plan(resolver *vpctx.Resolver, opts PlanOptions) ([]Change, error) {
 			return nil, err
 		}
 		for _, name := range names {
-			if opts.Only != "" && name != opts.Only {
+			if opts.Only != "" && !matchesOnly(rt, name, opts.Only) {
 				continue
 			}
 			c, err := planOne(resolver, rt, name)
@@ -142,6 +164,36 @@ func Apply(accepted []Change) error {
 	for _, c := range accepted {
 		if c.Kind == ChangeUnchanged {
 			continue
+		}
+		if err := writeAtomic(c.VaultPath, []byte(c.EmbeddedContent), 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", c.VaultPath, err)
+		}
+	}
+	return nil
+}
+
+// ApplyWithBackup is like Apply but, for Updated entries, first renames
+// the existing vault file to a sibling ".bak" so user-modified content
+// is preserved when a dirty-vault upgrade lands. New entries have no
+// prior copy to preserve; Unchanged entries are skipped.
+//
+// The backup is a single sibling ".bak"; repeated runs overwrite it so
+// the on-disk surface stays bounded. Callers who want multi-generation
+// backups should snapshot externally (git, etc.) before invoking.
+func ApplyWithBackup(accepted []Change) error {
+	for _, c := range accepted {
+		if c.Kind == ChangeUnchanged {
+			continue
+		}
+		if c.Kind == ChangeUpdated {
+			// Best-effort backup: if the source file is gone for some
+			// reason (e.g. race), skip the rename and fall through to
+			// the write.
+			if _, err := os.Stat(c.VaultPath); err == nil {
+				if err := os.Rename(c.VaultPath, c.VaultPath+".bak"); err != nil {
+					return fmt.Errorf("backup %s: %w", c.VaultPath, err)
+				}
+			}
 		}
 		if err := writeAtomic(c.VaultPath, []byte(c.EmbeddedContent), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", c.VaultPath, err)

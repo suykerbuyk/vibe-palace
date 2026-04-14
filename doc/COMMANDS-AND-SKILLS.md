@@ -138,8 +138,45 @@ Save this as `audit-deps.md` and it's immediately available.
         framework.md
 ```
 
-For simple skills without references, a flat file also works:
-`{vault}/Templates/skills/{name}.md`
+Skills are always **directory-form** — a `{name}/` subdirectory
+containing `SKILL.md` (and optionally a `references/` tree). Flat-file
+skills (`skills/{name}.md`) are not supported; the resolver refuses
+them and the embedded seed ships only directory-form skills. The
+directory is the unit of override: a project-tier
+`Projects/<slug>/skills/{name}/SKILL.md` shadows the vault's persona
+entry, while each `references/<section>.md` file falls through
+independently to the next tier if the higher tier doesn't supply it.
+This lets a project override the persona without re-authoring every
+reference file.
+
+### Frontmatter schema
+
+`SKILL.md` begins with a YAML frontmatter fence parsed by
+`internal/skills/frontmatter.go`:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `name` | string | Canonical identifier (matches the directory name). |
+| `description` | string | Model-facing trigger description. |
+| `triggers` | `[]string` | Optional keyword/phrase hints for shim rendering. |
+| `paths` | `[]string` | Optional glob hints consumed by Claude Code / Cursor. |
+| `lifetime` | string | `"postural"` (default) or `"transactional"`. |
+
+A missing `lifetime` defaults to `"postural"` — the skill stays
+active across turns until `vps-clear` or a new session. Malformed or
+missing frontmatter produces a parser error; Phase 1 requires every
+directory-form skill to carry a frontmatter block.
+
+### Per-file fallthrough
+
+`ResolveSkillDir(name)` locates the first tier supplying a
+`SKILL.md` and returns it. `ResolveSkillSection(name, section)`
+walks the 5-tier chain independently for each
+`references/<section>.md`. Concretely: if a project override ships
+only `SKILL.md` and a single custom reference, every other reference
+continues to resolve from vault or embedded tiers. The
+`ReferenceNames` list returned by `ResolveSkillDir` is the union of
+reference basenames discovered at every tier.
 
 ### 2. Write the SKILL.md
 
@@ -212,6 +249,7 @@ that want raw content without the "perform these instructions" wrapper.
 | `vp_list_skills` | `project` (optional), `wing` (optional), `room` (optional) | Names, sources, and brief descriptions |
 | `vp_get_command` | `name` (required), `project` (optional), `wing` (optional), `room` (optional) | Raw markdown content + source tier |
 | `vp_get_skill` | `name` (required), `project` (optional), `wing` (optional), `room` (optional) | Raw markdown content + source tier |
+| `vp_get_skill_section` | `name` (required), `section` (required), `project` (optional), `wing` (optional), `room` (optional) | `{content, source}` — one reference file from `skills/<name>/references/<section>.md` |
 
 ### Execution frames
 
@@ -250,6 +288,47 @@ Internalize these guidelines and apply them when relevant.
 ---
 
 End of skill: startup-analyst
+
+References (fetch on demand via vp_get_skill_section):
+  - capex-opex
+  - competitive-landscape
+  - funding-sources
+  - reality-validation
+  - strategic-partnerships
+```
+
+The references list is appended only when the resolved skill directory
+actually contains one or more `references/*.md` files. Names are
+deduplicated and sorted alphabetically across all five precedence
+tiers.
+
+### Fetching references
+
+Once a skill has been activated, the references listed in the frame
+can be pulled individually with `vp_get_skill_section`. Sample call:
+
+```json
+{
+  "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+  "params": {
+    "name": "vp_get_skill_section",
+    "arguments": {"name": "startup-analyst", "section": "capex-opex"}
+  }
+}
+```
+
+The response returns `{"content": "<reference body>", "source":
+"<tier>"}`. Reference resolution is **per-file**: a project may
+override `SKILL.md` without shipping every reference, and the resolver
+transparently falls back to vault or embedded copies for anything the
+project did not override.
+
+The same surface is available from the CLI:
+
+```
+vp skills list
+vp skills show startup-analyst
+vp skills show startup-analyst --section capex-opex
 ```
 
 ---
@@ -352,6 +431,32 @@ For contributors working on the command/skill system itself:
   `Resolve(resource, project)` and `ListResources(resourceType, project)`
   delegate with empty wing/room. Resource names are validated against path
   traversal.
+
+### Resource-identifier grammar
+
+Resolver methods accept the following identifier forms. Phase 5 of
+`vps-skill-artifacts-cross-ide` extended the grammar so the upgrade
+machinery can address per-file skill resources; the original directory
+form still works for top-level SKILL.md access.
+
+| Identifier                            | Resolves to                                       |
+|---------------------------------------|---------------------------------------------------|
+| `workflow`                            | `workflow.md` (tier-walked)                       |
+| `resume`                              | `resume.md` (tier-walked)                         |
+| `command:<name>`                      | `commands/<name>.md`                              |
+| `skill:<name>`                        | `skills/<name>/SKILL.md` (directory form)         |
+| `skill:<name>/<relpath>`              | `skills/<name>/<relpath>` (per-file nested form)  |
+
+The nested form `skill:<name>/<relpath>` is what `commands.Plan`
+consumes for per-file skill diffs — e.g.
+`skill:startup-analyst/references/capex-opex.md` addresses that single
+reference. `ListEmbedded("skill")` returns every nested identifier
+(SKILL.md + references) so the two-SHA upgrade path can emit one
+`Change` per file; `ListResourcesScoped("skill", …)` continues to
+return skill *names* for the directory-oriented surfaces
+(`vp skills list`, `vp_list_skills` MCP tool). The `<relpath>` is
+checked for traversal (no leading `/`, no `..`, no empty segments, no
+backslashes).
 
 - **`internal/tools/cmd_tools.go`** — `CmdTool()` and `SkillCmdTool()` return
   the `vp_cmd` and `vp_skill` MCP tools. `buildExecutionFrame()` wraps content

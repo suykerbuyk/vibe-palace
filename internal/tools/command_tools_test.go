@@ -116,7 +116,7 @@ func TestGetCommandNotFound(t *testing.T) {
 
 func TestGetSkillFromVault(t *testing.T) {
 	resolver, root := testResolverOnly(t)
-	writeVaultFile(t, root, "Templates/skills/analyze.md", "analyze skill content")
+	writeVaultFile(t, root, "Templates/skills/analyze/SKILL.md", "analyze skill content")
 
 	tool := GetSkillTool(resolver)
 	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"analyze"}`))
@@ -222,16 +222,18 @@ func TestListSkillsEmpty(t *testing.T) {
 	}
 
 	r := result.(listResourceResult)
-	if len(r.Resources) != 0 {
-		t.Errorf("expected 0 skills, got %d", len(r.Resources))
+	// Embedded seed ships startup-analyst; no vault/project overrides means
+	// exactly the one embedded skill is listed.
+	if len(r.Resources) != 1 {
+		t.Errorf("expected 1 embedded skill, got %d", len(r.Resources))
 	}
 }
 
 func TestListSkillsFromVault(t *testing.T) {
 	resolver, root := testResolverOnly(t)
 
-	writeVaultFile(t, root, "Templates/skills/analyze.md", "analyze")
-	writeVaultFile(t, root, "Templates/skills/summarize.md", "summarize")
+	writeVaultFile(t, root, "Templates/skills/analyze/SKILL.md", "analyze")
+	writeVaultFile(t, root, "Templates/skills/summarize/SKILL.md", "summarize")
 
 	tool := ListSkillsTool(resolver)
 	result, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
@@ -240,8 +242,9 @@ func TestListSkillsFromVault(t *testing.T) {
 	}
 
 	r := result.(listResourceResult)
-	if len(r.Resources) != 2 {
-		t.Fatalf("got %d skills, want 2", len(r.Resources))
+	// Two vault-tier skills plus the embedded startup-analyst seed.
+	if len(r.Resources) != 3 {
+		t.Fatalf("got %d skills, want 3", len(r.Resources))
 	}
 }
 

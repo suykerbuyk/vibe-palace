@@ -178,7 +178,7 @@ func TestCmdDiscoveryWithProject(t *testing.T) {
 
 func TestSkillExecute(t *testing.T) {
 	resolver, root := testResolverOnly(t)
-	writeVaultFile(t, root, "Templates/skills/analyze.md", "# Analyze\n\nPerform deep analysis.")
+	writeVaultFile(t, root, "Templates/skills/analyze/SKILL.md", "# Analyze\n\nPerform deep analysis.")
 
 	tool := SkillCmdTool(resolver)
 	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"analyze"}`))
@@ -226,15 +226,17 @@ func TestSkillDiscoveryEmpty(t *testing.T) {
 	}
 
 	s := result.(string)
-	if s != "No skills available." {
-		t.Errorf("got %q, want 'No skills available.'", s)
+	// Embedded startup-analyst seed is always available; discovery is
+	// therefore never truly empty once Phase 1 lands.
+	if !strings.Contains(s, "startup-analyst") {
+		t.Errorf("embedded startup-analyst missing from discovery: %q", s)
 	}
 }
 
 func TestSkillDiscoveryWithSkills(t *testing.T) {
 	resolver, root := testResolverOnly(t)
-	writeVaultFile(t, root, "Templates/skills/analyze.md", "# Analyze\n\nDeep analysis skill.")
-	writeVaultFile(t, root, "Templates/skills/summarize.md", "Summarize content concisely.")
+	writeVaultFile(t, root, "Templates/skills/analyze/SKILL.md", "# Analyze\n\nDeep analysis skill.")
+	writeVaultFile(t, root, "Templates/skills/summarize/SKILL.md", "Summarize content concisely.")
 
 	tool := SkillCmdTool(resolver)
 	result, err := tool.Handler(context.Background(), json.RawMessage(`{}`))

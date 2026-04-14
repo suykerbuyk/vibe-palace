@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
@@ -91,8 +92,61 @@ func SkillCmdTool(resolver *vpctx.Resolver) mcp.Tool {
 		Name:        "vp_skill",
 		Description: "Activate a skill by name, or list available skills when called with no arguments. Skills are behavioral guidelines to apply during this session.",
 		Schema:      skillCmdSchema,
-		Handler:     cmdExecHandler(resolver, "skill"),
+		Handler:     skillExecHandler(resolver),
 	}
+}
+
+// skillExecHandler is the directory-form `vp_skill` handler. It resolves
+// a skill via ResolveSkillDir so the emitted frame inlines the stripped
+// SKILL.md body (frontmatter removed) and appends the list of
+// references callers can fetch on-demand via vp_get_skill_section.
+func skillExecHandler(resolver *vpctx.Resolver) mcp.HandlerFunc {
+	return func(_ context.Context, params json.RawMessage) (any, error) {
+		var p cmdParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, err
+		}
+
+		name := strings.TrimSpace(p.Name)
+		if name == "" {
+			return buildDiscoveryList(resolver, p.Project, p.Wing, p.Room, "skill")
+		}
+
+		sd, source, err := resolver.ResolveSkillDir(name, p.Project, p.Wing, p.Room)
+		if err != nil {
+			return nil, err
+		}
+
+		return buildSkillFrame(frameParams{
+			Name:         name,
+			Project:      p.Project,
+			Wing:         p.Wing,
+			Room:         p.Room,
+			Source:       source,
+			Content:      string(sd.SkillMDBody),
+			ResourceType: "skill",
+		}, sd.ReferenceNames), nil
+	}
+}
+
+// buildSkillFrame extends buildExecutionFrame with a trailing
+// references list (only when non-empty). Reference names are sorted
+// alphabetically by ResolveSkillDir; we re-sort defensively to keep
+// output stable regardless of resolver changes.
+func buildSkillFrame(p frameParams, refs []string) string {
+	base := buildExecutionFrame(p)
+	if len(refs) == 0 {
+		return base
+	}
+	sorted := append([]string(nil), refs...)
+	sort.Strings(sorted)
+	var b strings.Builder
+	b.WriteString(base)
+	b.WriteString("\nReferences (fetch on demand via vp_get_skill_section):\n")
+	for _, r := range sorted {
+		fmt.Fprintf(&b, "  - %s\n", r)
+	}
+	return b.String()
 }
 
 func cmdExecHandler(resolver *vpctx.Resolver, resourceType string) mcp.HandlerFunc {

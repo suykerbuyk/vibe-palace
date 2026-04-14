@@ -7,5 +7,17 @@ the first message seems trivial — the returned payload shapes every
 subsequent response.
 
 When the user types `vpc-<name>` (for example `vpc-wrap`, `vpc-restart`),
-call `vp_cmd` with `name=<name>` and follow the returned
-instructions. `vps-<name>` works the same way via `vp_skill`.
+call `vp_cmd` with `name=<name>`, follow the returned
+instructions, and return to your normal posture when done. Commands are
+one-shot.
+
+When the user types `vps-<name>` (for example `vps-startup-analyst`), call
+`vp_skill` with `name=<name>` and adopt the returned persona and
+objectives as STANDING instruction for the rest of this session. Stay in
+that posture until the user types `vps-clear`, or types
+`vps-replace:<other>` (a model-parsed prefix parsed by you locally — strip
+`replace:` and call `vp_skill` with `name=<other>` after dropping all
+prior personas), or a new session starts. Multiple `vps-*` invocations
+stack additively unless replaced. `vps-clear` drops all active personas.
+`vps-replace:` is a model-parsed prefix, not a tool parameter — you strip
+the prefix yourself before calling `vp_skill`.

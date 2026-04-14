@@ -267,6 +267,34 @@ Other templates (workflow.md, resume.md, config) use 3-tier resolution
 (project > vault > embedded) with project files at
 `{vault}/Projects/{project}/{path}`.
 
+Skills follow the same 5-tier precedence but treat the **directory as
+the unit of override**. A skill is `skills/<name>/SKILL.md` plus an
+optional `references/*.md` tree; the tier that supplies `SKILL.md`
+wins for the persona entry-point, but each reference file falls
+through independently via `ResolveSkillSection`. This lets a project
+shadow only the persona while inheriting every reference from vault
+or embedded tiers — overriding a skill does not oblige you to
+re-author its reference corpus. See `doc/COMMANDS-AND-SKILLS.md` for
+the `SkillFrontmatter` schema and the `ResolveSkillDir` /
+`ResolveSkillSection` contract.
+
+Skill **persistence within a session** is emergent, not enforced by
+runtime re-injection. `vp_skill` is called once per `vps-<name>`
+trigger and returns the persona body in a single response; we do not
+re-inject the persona into every subsequent model turn. Instead, the
+managed block in `CLAUDE.md` / `AGENTS.md` / `.cursorrules` teaches
+the model to treat that one returned persona as STANDING instruction
+for the rest of the session, and to recognize `vps-clear` /
+`vps-replace:<other>` as lifetime-control prefixes it parses locally
+(no second tool round-trip to "end" or "swap" a skill). The result is
+a system that looks stateful from the user's seat while the server
+stays stateless — the model carries the posture across turns via its
+own context window, and the session boundary is the garbage
+collector. When the contract itself changes (e.g. v1→v2), the
+content-hashed managed block detects the stale copy on the next `vp
+init` and rewrites it in place, preserving user content outside the
+delimiters byte-for-byte.
+
 ### Embedded Templates
 
 Templates are compiled into the binary via `//go:embed templates`. The
@@ -351,6 +379,32 @@ unambiguous evidence the user has not edited the file, so replacing it
 with the new embedded bytes (after writing `.bak`) cannot clobber user
 intent.
 
+#### Two upgrade entry points
+
+The codebase exposes **two** upgrade surfaces with deliberately
+different UX contracts:
+
+1. **Three-SHA reconcile** (`vp config sync`, `vp init`) —
+   `internal/reconcile/template_tree.go`. Compares vault SHA, lock SHA,
+   and embedded SHA for every materialized file (commands + skills).
+   When the vault has drifted and the embedded floor has also shifted,
+   it prompts `[s]kip / [o]verwrite (writes .bak) / [n]ew-sidecar`.
+   Runs automatically on `vp init` and `vp config sync`.
+2. **Two-SHA diff** (`vp commands upgrade`, `vp skills upgrade`) —
+   `internal/commands/upgrade.go`. Compares embedded vs vault only,
+   renders a unified diff per change, and prompts
+   `[a]ccept / [s]kip / [A]ccept-all / [q]uit`. Skills collapse per-file
+   changes into one prompt per skill directory unless `--granular` is
+   passed. Invoked interactively by the user.
+
+Both paths resolve to the same vault content; they differ in whether
+drift is handled silently (path 1 adopts matches, prompts on conflict)
+or explicitly (path 2 always shows a diff and asks). The shared prompt
+loop — `runUpgradePrompt` in `cmd/vp/upgrade_common.go` — is used by
+both `vp commands upgrade` and `vp skills upgrade`; identity `GroupBy`
+preserves the per-change prompt for commands while the skills path uses
+`skillGroupID` to collapse files under each skill directory.
+
 #### Silent-adopt pre-pass
 
 On the first post-upgrade sync against a vault that predates this
@@ -380,6 +434,89 @@ the 5-tier palace-scoped precedence system (room > wing > project > vault >
 embedded) and can be listed or invoked by name. When wing/room are not
 specified, resolution falls back to the 3-tier project > vault > embedded
 chain.
+
+### Three-target shim system (`internal/shims/`)
+
+vibe-palace emits native shim files into the editor's own surfaces so
+users can invoke commands and skills without leaving the tool they
+already know. One `TargetKind` enum drives three emission paths, all
+sharing the managed-hash atomic-write protocol (tmp + fsync + rename
+with a `<!-- vibe-palace:shim v=N sha=7hex -->` … `<!-- vibe-palace:shim-end -->`
+region that identifies vibe-palace-owned content; files without the
+marker are "custom" and never touched).
+
+| Target          | Location                             | Body                                           |
+|-----------------|--------------------------------------|------------------------------------------------|
+| `ClaudeCommand` | `.claude/commands/vpc-<name>.md`     | Delegates to `vp_command` MCP tool             |
+| `ClaudeSkill`   | `.claude/skills/vps-<name>/SKILL.md` | Delegates to `vp_skill`; teaches additive-stack contract |
+| `CursorRule`    | `.cursor/rules/vps-<name>.mdc`       | Delegates to `vp_skill` with vault-path fallback |
+
+- **Plan / Apply** for commands (`Plan` + `Apply`) and for skill-class
+  targets (`PlanSkills` + `ApplySkills`) each classify on-disk files as
+  New / Modified / Unchanged / Stale / Custom and compute the minimal
+  rewrite set. Per-target content hashes are keyed on render inputs
+  (name, description, paths, target kind, template version) so identical
+  inputs yield a stable `sha=` token across runs, and changes to any
+  input force a rewrite on next apply.
+- **Cursor detection** (`shims.CursorPresent`) is strict: emission is
+  triggered by `.cursor/rules/` (primary) or `.cursor/` (weaker) at the
+  project root. A flat `.cursorrules` file is deliberately **not** a
+  trigger — `agentfile.Detect()` already owns that surface, and
+  bootstrapping `.cursor/rules/` from a `.cursorrules`-only project
+  would presume a Cursor directory surface the user never opted into.
+- **Stale removal** is opt-in (`ApplyOptions.AllowStaleRemoval`) so
+  `vp init` is strictly additive; interactive upgrade flows pass the
+  flag after the user accepts per-file.
+
+### Skills pipeline: resolver → shims → upgrade
+
+The three preceding subsections each describe one stage of the skills
+pipeline. Stitched together:
+
+**Resolver.** A skill is a directory — `skills/<name>/SKILL.md` plus
+an optional `references/*.md` tree — and every file inside is
+resolved independently through the same 5-tier palace-scoped
+precedence as commands (room > wing > project > vault > embedded).
+`ResolveSkillDir` locates the tier that owns `SKILL.md` (the persona
+entry point); `ResolveSkillSection` walks each reference through the
+full tier chain on its own, so a project can override the persona
+while inheriting every reference — or vice versa — without having to
+clone the whole directory. The `SkillFrontmatter` parser (see
+`doc/COMMANDS-AND-SKILLS.md`) validates the `name`, `description`,
+and `version` fields that the downstream shim renderers and the
+Claude Code / Cursor skill pickers all depend on.
+
+**Shims.** On top of the resolver sits `internal/shims/`, which
+emits native artifacts into the editors that expose a first-class
+skill surface. `ClaudeSkill` writes
+`.claude/skills/vps-<name>/SKILL.md` — a three-line delegation to
+`vp_skill` wrapped in the managed-hash shim marker — so Claude Code's
+skill picker auto-loads it. `CursorRule` writes
+`.cursor/rules/vps-<name>.mdc` (only when `.cursor/rules/` or
+`.cursor/` already exists at the project root), giving Cursor's
+Rules panel a native entry with a vault-path fallback for MCP-less
+setups. Every shim carries a render-input-keyed `sha=` token in its
+marker so drift detection is exact; files without the marker are
+"custom" and never touched. Editors without a native surface rely on
+the managed-block trigger phrase (`vps-<name>`) plus `vp_skill` over
+MCP, which is the universal fallback documented in
+`doc/verify-skill-delivery.md`.
+
+**Upgrade.** Skills flow through both upgrade entry points
+described above. Three-SHA reconcile (`vp init`, `vp config sync`)
+keeps `<vault>/Templates/skills/` materialized and in sync with the
+embedded floor, using the lock sidecar to distinguish user edits
+from binary bumps. Two-SHA interactive diff (`vp skills upgrade`)
+compares embedded vs vault directly and groups every file under a
+skill directory into a single `a`/`s`/`A`/`q` prompt — a six-file
+skill like `startup-analyst` becomes one decision, with `--granular`
+available when per-file review is actually wanted. The shim side is
+kept in lockstep via `vp commands upgrade`'s `PlanSkills` /
+`ApplySkills` pair, which re-renders `.claude/skills/` and
+`.cursor/rules/` entries whenever the SHA-token inputs change. The
+resolver is the source of truth, the shims are the IDE-native
+surfaces, and the two upgrade paths keep both sides coherent without
+ever committing to the user's behalf.
 
 ---
 

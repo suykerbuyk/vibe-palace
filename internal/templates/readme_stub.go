@@ -53,9 +53,16 @@ and returns the first match it finds:
 When wing and room aren't set, the resolver collapses to the 3-tier
 subset: Project > Vault > Embedded.
 
-Drop a skill override here as ` + "`<slug>.md`" + `. (Directory-form
-skills — ` + "`<slug>/SKILL.md`" + ` with references — arrive in the sibling
-` + "`vps-skill-artifacts-cross-ide`" + ` task.)
+Skills are **directory-form**: drop a skill override here as
+` + "`<slug>/SKILL.md`" + ` with optional ` + "`<slug>/references/*.md`" + ` files.
+The ` + "`SKILL.md`" + ` is the thin persona entry-point (YAML frontmatter
+plus body); the ` + "`references/`" + ` tree holds heavy material fetched
+on demand. Overrides happen at the directory level: the tier that
+supplies ` + "`SKILL.md`" + ` wins for the persona, while each reference
+file falls through independently — if your project-level override
+omits ` + "`references/capex-opex.md`" + `, the resolver will fetch that one
+file from the next tier down. Flat-file skills (` + "`<slug>.md`" + `
+without a directory) are not supported.
 
 To see what an embedded default looks like before you edit it, check
 the materialized copy at ` + "`<vault>/Templates/skills/<slug>/`" + `.

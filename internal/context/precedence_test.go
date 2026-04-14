@@ -149,8 +149,8 @@ func TestResolveCommandVaultOverride(t *testing.T) {
 func TestResolveSkill(t *testing.T) {
 	r, root := testResolver(t)
 
-	// No embedded skills, so write one to vault.
-	writeFile(t, filepath.Join(root, "Templates", "skills", "analyze.md"), "analyze skill")
+	// Directory-form skill at vault tier.
+	writeFile(t, filepath.Join(root, "Templates", "skills", "analyze", "SKILL.md"), "analyze skill")
 
 	content, source, err := r.Resolve("skill:analyze", "test-proj")
 	if err != nil {
@@ -245,7 +245,7 @@ func TestResourceToPath(t *testing.T) {
 		{"resume", "resume.md", false},
 		{"command:restart", filepath.Join("commands", "restart.md"), false},
 		{"command:review-plan", filepath.Join("commands", "review-plan.md"), false},
-		{"skill:analyze", filepath.Join("skills", "analyze.md"), false},
+		{"skill:analyze", filepath.Join("skills", "analyze", "SKILL.md"), false},
 		{"command:", "", true},
 		{"skill:", "", true},
 		{"unknown", "", true},
@@ -321,15 +321,22 @@ func TestListCommandsMergedNoDuplicates(t *testing.T) {
 	}
 }
 
-func TestListSkillsEmpty(t *testing.T) {
+func TestListSkillsEmbedded(t *testing.T) {
 	r, _ := testResolver(t)
 
 	resources, err := r.ListResources("skill", "")
 	if err != nil {
 		t.Fatalf("ListResources(skill): %v", err)
 	}
-	if len(resources) != 0 {
-		t.Errorf("expected 0 skills (no embedded skills), got %d", len(resources))
+	// Embedded skills: startup-analyst (directory-form).
+	if len(resources) != 1 {
+		t.Fatalf("got %d skills, want 1: %v", len(resources), resources)
+	}
+	if resources[0].Name != "startup-analyst" {
+		t.Errorf("resources[0].Name = %q, want startup-analyst", resources[0].Name)
+	}
+	if resources[0].Source != "embedded" {
+		t.Errorf("resources[0].Source = %q, want embedded", resources[0].Source)
 	}
 }
 
@@ -606,7 +613,7 @@ func TestListResourcesScopedShadowing(t *testing.T) {
 func TestResolveScopedSkill(t *testing.T) {
 	r, root := testResolver(t)
 
-	writeFile(t, filepath.Join(root, "Projects", "proj", "skills", "backend", "api", "owasp.md"), "room owasp skill")
+	writeFile(t, filepath.Join(root, "Projects", "proj", "skills", "backend", "api", "owasp", "SKILL.md"), "room owasp skill")
 
 	content, source, err := r.ResolveScoped("skill:owasp", "proj", "backend", "api")
 	if err != nil {
@@ -617,5 +624,80 @@ func TestResolveScopedSkill(t *testing.T) {
 	}
 	if content != "room owasp skill" {
 		t.Errorf("content = %q, want %q", content, "room owasp skill")
+	}
+}
+
+// TestListEmbeddedSkill_FansOutFiles locks in the Phase-5 contract:
+// ListEmbedded("skill") returns one entry per file under skills/<name>/
+// (SKILL.md + each reference), not just skill names. commands.Plan relies
+// on this fan-out to emit per-file diffs.
+func TestListEmbeddedSkill_FansOutFiles(t *testing.T) {
+	r := NewResolver(t.TempDir())
+	names, err := r.ListEmbedded("skill")
+	if err != nil {
+		t.Fatalf("ListEmbedded: %v", err)
+	}
+	want := []string{
+		"startup-analyst/SKILL.md",
+		"startup-analyst/references/capex-opex.md",
+		"startup-analyst/references/competitive-landscape.md",
+		"startup-analyst/references/funding-sources.md",
+		"startup-analyst/references/reality-validation.md",
+		"startup-analyst/references/strategic-partnerships.md",
+	}
+	have := map[string]bool{}
+	for _, n := range names {
+		have[n] = true
+	}
+	for _, w := range want {
+		if !have[w] {
+			t.Errorf("ListEmbedded(\"skill\") missing %q; got %v", w, names)
+		}
+	}
+}
+
+// TestEmbeddedContent_NestedSkillForm ensures "skill:<name>/<relpath>"
+// resolves to the per-file embedded bytes (SKILL.md or a reference),
+// while "skill:<name>" still resolves to the directory-form SKILL.md.
+func TestEmbeddedContent_NestedSkillForm(t *testing.T) {
+	r := NewResolver(t.TempDir())
+
+	bodyDir, err := r.EmbeddedContent("skill:startup-analyst")
+	if err != nil {
+		t.Fatalf("directory form: %v", err)
+	}
+	bodyMD, err := r.EmbeddedContent("skill:startup-analyst/SKILL.md")
+	if err != nil {
+		t.Fatalf("nested SKILL.md: %v", err)
+	}
+	if bodyDir != bodyMD {
+		t.Errorf("directory form and nested SKILL.md should resolve identically")
+	}
+	ref, err := r.EmbeddedContent("skill:startup-analyst/references/capex-opex.md")
+	if err != nil {
+		t.Fatalf("nested reference: %v", err)
+	}
+	if len(ref) == 0 {
+		t.Errorf("nested reference body is empty")
+	}
+	// Path-traversal guard: ".." rejected.
+	if _, err := r.EmbeddedContent("skill:startup-analyst/../workflow.md"); err == nil {
+		t.Error("expected error for traversal identifier, got nil")
+	}
+}
+
+// TestVaultPath_NestedSkillForm proves the nested identifier round-trips
+// through VaultPath to the filesystem location a vault override would
+// use.
+func TestVaultPath_NestedSkillForm(t *testing.T) {
+	root := t.TempDir()
+	r := NewResolver(root)
+	got, err := r.VaultPath("skill:startup-analyst/references/capex-opex.md")
+	if err != nil {
+		t.Fatalf("VaultPath: %v", err)
+	}
+	want := filepath.Join(root, "Templates", "skills", "startup-analyst", "references", "capex-opex.md")
+	if got != want {
+		t.Errorf("VaultPath = %q, want %q", got, want)
 	}
 }

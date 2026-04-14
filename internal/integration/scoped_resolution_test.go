@@ -178,7 +178,7 @@ func TestIntegrationScopedSkillResolution(t *testing.T) {
 	h := newHarness(t, false)
 	root := h.Vault.Root
 
-	writeVaultFile(t, root, "Projects/test-proj/skills/backend/api/owasp.md",
+	writeVaultFile(t, root, "Projects/test-proj/skills/backend/api/owasp/SKILL.md",
 		"# OWASP Checklist\nRoom-scoped security skill.")
 
 	h.registerAllTools(t)

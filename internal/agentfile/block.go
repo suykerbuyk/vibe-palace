@@ -16,7 +16,7 @@ import (
 
 // blockVersion bumps when the block's schema (not just the body text) changes
 // in a way downstream tooling needs to distinguish.
-const blockVersion = 1
+const blockVersion = 2
 
 // CommandToolName and SkillToolName are the canonical MCP tool names the
 // managed block and bootstrap directive point users at. Exporting them from
@@ -42,8 +42,20 @@ var blockBody = "## Vibe-Palace Integration\n" +
 	"subsequent response.\n" +
 	"\n" +
 	"When the user types `vpc-<name>` (for example `vpc-wrap`, `vpc-restart`),\n" +
-	"call `" + CommandToolName + "` with `name=<name>` and follow the returned\n" +
-	"instructions. `vps-<name>` works the same way via `" + SkillToolName + "`."
+	"call `" + CommandToolName + "` with `name=<name>`, follow the returned\n" +
+	"instructions, and return to your normal posture when done. Commands are\n" +
+	"one-shot.\n" +
+	"\n" +
+	"When the user types `vps-<name>` (for example `vps-startup-analyst`), call\n" +
+	"`" + SkillToolName + "` with `name=<name>` and adopt the returned persona and\n" +
+	"objectives as STANDING instruction for the rest of this session. Stay in\n" +
+	"that posture until the user types `vps-clear`, or types\n" +
+	"`vps-replace:<other>` (a model-parsed prefix parsed by you locally — strip\n" +
+	"`replace:` and call `" + SkillToolName + "` with `name=<other>` after dropping all\n" +
+	"prior personas), or a new session starts. Multiple `vps-*` invocations\n" +
+	"stack additively unless replaced. `vps-clear` drops all active personas.\n" +
+	"`vps-replace:` is a model-parsed prefix, not a tool parameter — you strip\n" +
+	"the prefix yourself before calling `" + SkillToolName + "`."
 
 const blockCloseDelim = "<!-- vibe-palace:end -->"
 

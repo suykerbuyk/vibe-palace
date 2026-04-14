@@ -297,8 +297,8 @@ func TestBootstrapIncludesSkills(t *testing.T) {
 	// Seed a vault-level skill — no embedded skills exist yet, so the
 	// resolver's Templates/skills tier is the first place a skill can live.
 	root := t.TempDir()
-	writeVaultFile(t, root, "Templates/skills/analyze.md", "# Analyze\n\nPerform deep analysis of the codebase.")
-	writeVaultFile(t, root, "Templates/skills/summarize.md", "Summarize content concisely.")
+	writeVaultFile(t, root, "Templates/skills/analyze/SKILL.md", "# Analyze\n\nPerform deep analysis of the codebase.")
+	writeVaultFile(t, root, "Templates/skills/summarize/SKILL.md", "Summarize content concisely.")
 
 	vault := storage.NewVault(root)
 	resolver := vpctx.NewResolver(root)

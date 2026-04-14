@@ -58,6 +58,31 @@ func TestManagedBlockStructure(t *testing.T) {
 	if !strings.Contains(b, "`"+SkillToolName+"`") {
 		t.Errorf("block body missing canonical skill tool name %q", SkillToolName)
 	}
+	// v2 skill-lifetime contract tokens. These are the load-bearing
+	// words that teach the model the full `vps-*` posture protocol.
+	// If the block body is reworded, each of these must still appear
+	// verbatim somewhere in the managed block.
+	for _, token := range []string{
+		"STANDING",
+		"vps-clear",
+		"vps-replace:",
+		"model-parsed",
+	} {
+		if !strings.Contains(b, token) {
+			t.Errorf("block body missing required v2 token %q", token)
+		}
+	}
+}
+
+// TestBlockVersionIsV2 ensures the schema version is 2 — in-the-wild v1
+// blocks must be detected as stale by ScanBlock/Wire and upgraded.
+func TestBlockVersionIsV2(t *testing.T) {
+	if blockVersion != 2 {
+		t.Errorf("blockVersion = %d, want 2", blockVersion)
+	}
+	if !strings.Contains(blockOpenDelim(), "v=2") {
+		t.Errorf("open delim missing v=2: %q", blockOpenDelim())
+	}
 }
 
 // TestBlockBodyGolden pins the exact wording of the managed block. Copy

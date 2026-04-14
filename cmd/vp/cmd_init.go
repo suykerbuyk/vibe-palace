@@ -611,7 +611,92 @@ func initShimWiring(projectRoot string, projectReady bool) []check.Result {
 		row.Details = append(row.Details,
 			"stale shims left in place — run `vp commands upgrade` to review")
 	}
-	return []check.Result{row}
+	rows := []check.Result{row}
+
+	// --- Skill shims: ClaudeSkill always; CursorRule when detected. ---
+	rows = append(rows, initSkillShimWiring(projectRoot, resolver)...)
+	return rows
+}
+
+// initSkillShimWiring emits one row per skill-shim target family
+// (ClaudeSkill always, CursorRule when shims.CursorPresent). Uses the
+// Phase-4 PlanSkills/ApplySkills entry points. Resolver is the caller's
+// already-opened vault resolver so we do not re-run openProjectVault.
+func initSkillShimWiring(projectRoot string, resolver *vpctx.Resolver) []check.Result {
+	names, err := resolver.ListResourcesScoped("skill", "", "", "")
+	if err != nil {
+		return []check.Result{{
+			Name:    "Claude skill shims",
+			Status:  check.Skip,
+			Summary: "list skills: " + err.Error(),
+		}}
+	}
+	items := make([]shims.SkillItem, 0, len(names))
+	for _, ri := range names {
+		sd, _, err := resolver.ResolveSkillDir(ri.Name, "", "", "")
+		if err != nil {
+			// Unresolvable skill — skip silently; lower tiers may have
+			// structural issues the user will see via `vp skills list`.
+			continue
+		}
+		vaultPath := filepath.Join(resolver.VaultRoot(),
+			"Templates", "skills", ri.Name, "SKILL.md")
+		items = append(items, shims.SkillItem{
+			Name:        ri.Name,
+			Frontmatter: sd.Frontmatter,
+			VaultPath:   vaultPath,
+		})
+	}
+
+	var rows []check.Result
+
+	// ClaudeSkill: always.
+	rows = append(rows, applySkillShimTarget(
+		"Claude skill shims", shims.ClaudeSkill, items, projectRoot))
+
+	// CursorRule: only when a Cursor project layout is present.
+	if shims.CursorPresent(projectRoot) {
+		rows = append(rows, applySkillShimTarget(
+			"Cursor rule shims", shims.CursorRule, items, projectRoot))
+	}
+	return rows
+}
+
+func applySkillShimTarget(label string, target shims.TargetKind, items []shims.SkillItem, projectRoot string) check.Result {
+	plan, err := shims.PlanSkills(target, items, projectRoot)
+	if err != nil {
+		return check.Result{
+			Name:    label,
+			Status:  check.Fail,
+			Summary: "plan: " + err.Error(),
+		}
+	}
+	rep, _, err := shims.ApplySkills(plan, shims.ApplyOptions{AllowStaleRemoval: false})
+	if err != nil {
+		return check.Result{
+			Name:    label,
+			Status:  check.Fail,
+			Summary: "apply: " + err.Error(),
+		}
+	}
+	summary := fmt.Sprintf(
+		"added %d, updated %d, unchanged %d, stale %d, custom %d",
+		rep.Added, rep.Updated, rep.Unchanged, rep.Stale, rep.Custom,
+	)
+	status := check.Info
+	if rep.Added > 0 || rep.Updated > 0 {
+		status = check.Pass
+	}
+	row := check.Result{
+		Name:    label,
+		Status:  status,
+		Summary: summary,
+	}
+	if rep.Stale > 0 {
+		row.Details = append(row.Details,
+			"stale shims left in place — run `vp skills upgrade` to review")
+	}
+	return row
 }
 
 // hasLegacyContent reports whether data contains any non-whitespace bytes

@@ -49,6 +49,20 @@ Connect your editor — see the [Tutorial](doc/TUTORIAL.md) for setup.
   `/vpc-restart` is the recommended first message of every Claude Code session —
   it's the deterministic turn-1 bootstrap trigger, since `CLAUDE.md` isn't
   loaded until after the human's first turn
+- **Skill shims** — `vp init` also writes one `.claude/skills/vps-<name>/SKILL.md`
+  per vibe-palace skill (directory-form persona), so typing `/vps-` surfaces
+  the whole skill catalog. When `.cursor/rules/` exists, Cursor `.mdc` rules
+  are emitted alongside. `vp skills upgrade` handles the interactive
+  two-SHA refresh loop (grouped per skill by default, `--granular` for
+  per-file prompts)
+
+### Supported IDE surfaces
+
+| Surface           | Commands rendering            | Skills rendering                  |
+|-------------------|-------------------------------|-----------------------------------|
+| Claude Code       | `.claude/commands/vpc-*.md`   | `.claude/skills/vps-*/SKILL.md`   |
+| Cursor (rules/)   | via MCP (`vp_get_command`)    | `.cursor/rules/vps-*.mdc`         |
+| Any MCP host      | `vp_get_command` tool         | `vp_skill` tool                   |
 
 ## Customizing commands and skills
 

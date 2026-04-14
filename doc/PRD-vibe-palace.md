@@ -1004,29 +1004,42 @@ When a project is initialized for the first time:
 This means a new project has **zero vault template files by default**. Everything
 comes from embedded defaults until the user explicitly overrides something.
 
-### 8.4 Command Graduation Lifecycle
+### 8.4 Command and Skill Graduation Lifecycle
 
-Commands follow a natural promotion path through the precedence tiers:
+Commands **and skills** are first-class resources under the precedence
+system and follow the same natural promotion path through the tiers:
 
 1. **Project-local** (`source: "project"`): Created in
-   `{vault}/Projects/{proj}/commands/{name}.md`. Only available for
-   that project. This is where new commands are born — developed, tested, and
-   iterated in the context of a single project.
+   `{vault}/Projects/{proj}/commands/{name}.md` or
+   `{vault}/Projects/{proj}/skills/{name}/SKILL.md`. Only available for
+   that project. This is where new commands and skills are born —
+   developed, tested, and iterated in the context of a single project.
 
 2. **Vault template** (`source: "vault"`): Promoted to
-   `{vault}/Templates/commands/{name}.md`. Available to all projects (unless
-   overridden at project level). Commands graduate here when they prove useful
-   across multiple projects.
+   `{vault}/Templates/commands/{name}.md` or
+   `{vault}/Templates/skills/{name}/SKILL.md`. Available to all
+   projects (unless overridden at project level). Resources graduate
+   here when they prove useful across multiple projects.
 
-3. **Embedded default** (`source: "embedded"`): Compiled into the binary in
-   `internal/context/templates/commands/{name}.md`. Ships with every vibe-palace
-   installation. Commands graduate here when they are universally useful.
+3. **Embedded default** (`source: "embedded"`): Compiled into the
+   binary in `internal/templates/templates/commands/{name}.md` or
+   `internal/templates/templates/skills/{name}/`. Ships with every
+   vibe-palace installation. Resources graduate here when they are
+   universally useful.
 
-The `source` field in `vp_cmd` discovery mode and `vp_bootstrap_context`
-response makes this lifecycle visible. Users can see which project-local
-commands are candidates for graduation. Promotion is manual: copy the file
-from the project directory to the vault Templates directory, or submit a PR
-to add it to embedded defaults.
+The `source` field in `vp_cmd` / `vp_skill` discovery mode and in the
+`vp_bootstrap_context` response makes the lifecycle visible for both
+surfaces. Users can see which project-local commands *and* skills are
+candidates for graduation. Promotion is manual: copy the file (or
+directory, for skills) from the project tier to the vault Templates
+directory, or submit a PR to add it to embedded defaults.
+
+Skills have an additional wrinkle: the resolution unit is per-file
+within the skill directory. A project may shadow a skill's `SKILL.md`
+(the persona entry point) while inheriting every `references/*.md`
+from the vault or embedded tier. That makes partial promotion natural —
+a project can iterate on persona language without forking the
+reference corpus.
 
 ### 8.5 Portable Command Execution
 

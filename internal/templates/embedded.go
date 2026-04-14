@@ -47,7 +47,11 @@ type Resource struct {
 
 // WalkEmbedded returns every embedded markdown resource under the
 // compiled-in templates tree. Non-markdown files are skipped; the
-// result is ordered by RelPath for deterministic output.
+// result is ordered by RelPath for deterministic output. The walk
+// recurses into subdirectories (e.g. skills/<name>/SKILL.md and
+// skills/<name>/references/*.md), and RelPath is always reported with
+// forward-slash separators regardless of host OS — lock keys and the
+// 5-tier resolver depend on that stability.
 func WalkEmbedded() ([]Resource, error) {
 	var out []Resource
 	err := fs.WalkDir(defaultTemplates, embeddedRoot, func(p string, d fs.DirEntry, err error) error {

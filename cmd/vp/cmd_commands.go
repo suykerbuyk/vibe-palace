@@ -21,7 +21,13 @@ import (
 )
 
 // isTerminal reports whether f is a TTY. Falls back to false on any error.
+// The VP_ASSUME_TTY=1 escape hatch forces true — used by integration tests
+// that drive the upgrade prompts through a pipe. Production code should
+// never rely on this override; it has no user-facing documentation.
 func isTerminal(f *os.File) bool {
+	if os.Getenv("VP_ASSUME_TTY") == "1" {
+		return true
+	}
 	fi, err := f.Stat()
 	if err != nil {
 		return false
@@ -316,55 +322,41 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 		return cli.ExitUser
 	}
 
-	accepted := make([]commands.Change, 0, len(plan))
-	acceptAll := opts.Overwrite
 	reader := bufio.NewReader(opts.Stdin)
 
-	acceptedCount, skippedCount := 0, 0
-	for _, c := range plan {
-		if c.Kind == commands.ChangeUnchanged {
-			continue
-		}
-		if acceptAll {
-			accepted = append(accepted, c)
-			acceptedCount++
-			fmt.Fprintf(opts.Stdout, "[accept] %s (%s)\n", c.Name, c.Kind)
-			continue
-		}
-		// Show header + diff.
-		fmt.Fprintf(opts.Stdout, "\n=== %s (%s) ===\n", c.Name, c.Kind)
-		if c.Kind == commands.ChangeUpdated {
-			diff := commands.RenderUnified(
-				"vault/"+c.Name+".md",
-				"embedded/"+c.Name+".md",
-				c.VaultContent, c.EmbeddedContent,
-			)
-			fmt.Fprint(opts.Stdout, diff)
-		} else {
-			fmt.Fprintf(opts.Stdout, "(new file; %d bytes will be added)\n",
-				len(c.EmbeddedContent))
-		}
-
-		choice, err := cli.PromptChoice(opts.Stdout, reader)
-		if err != nil {
-			fmt.Fprintf(opts.Stderr, "vp commands upgrade: %v\n", err)
-			return cli.ExitSystem
-		}
-		switch choice {
-		case "a":
-			accepted = append(accepted, c)
-			acceptedCount++
-		case "A":
-			accepted = append(accepted, c)
-			acceptedCount++
-			acceptAll = true
-		case "s":
-			skippedCount++
-		case "q":
-			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
-			return applyAndReport(opts.Stdout, opts.Stderr, accepted, nil, nil,
-				acceptedCount, skippedCount, custom, shimCustom)
-		}
+	promptRes := runUpgradePrompt(plan, UpgradePromptOpts{
+		GroupBy: func(c commands.Change) string { return c.Name },
+		RenderHeader: func(w io.Writer, _ string, group []commands.Change) {
+			c := group[0]
+			fmt.Fprintf(w, "\n=== %s (%s) ===\n", c.Name, c.Kind)
+		},
+		RenderBody: func(w io.Writer, _ string, group []commands.Change) {
+			c := group[0]
+			if c.Kind == commands.ChangeUpdated {
+				diff := commands.RenderUnified(
+					"vault/"+c.Name+".md",
+					"embedded/"+c.Name+".md",
+					c.VaultContent, c.EmbeddedContent,
+				)
+				fmt.Fprint(w, diff)
+			} else {
+				fmt.Fprintf(w, "(new file; %d bytes will be added)\n",
+					len(c.EmbeddedContent))
+			}
+		},
+		AcceptAll: opts.Overwrite,
+		Reader:    reader,
+		Stdout:    opts.Stdout,
+		Stderr:    opts.Stderr,
+	})
+	accepted := promptRes.Accepted
+	acceptAll := promptRes.AcceptAll
+	acceptedCount := promptRes.AcceptedCount
+	skippedCount := promptRes.SkippedCount
+	if promptRes.Quit {
+		fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
+		return applyAndReport(opts.Stdout, opts.Stderr, accepted, nil, nil,
+			acceptedCount, skippedCount, custom, shimCustom)
 	}
 
 	// Agent-file managed blocks: collect acceptances using the same prompt.

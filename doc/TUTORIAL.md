@@ -467,9 +467,52 @@ agent files (CLAUDE.md, AGENTS.md, …). When the block template's sha
 changes, the upgrader offers to re-wire each file using the same atomic
 path as `vp init`.
 
+### Upgrading skills
+
+Directory-form skills (SKILL.md + `references/*.md`) have their own
+two-SHA upgrade path that mirrors commands:
+
+```bash
+vp skills upgrade --dry-run          # preview the plan (grouped per skill)
+vp skills upgrade                    # interactive: one prompt per skill directory
+vp skills upgrade --overwrite        # accept every change (required in non-TTY)
+vp skills upgrade --only startup-analyst   # scope to a single skill
+vp skills upgrade --granular         # prompt per file instead of per skill
+```
+
+By default the interactive loop **groups every file under a skill
+directory into a single prompt**: SKILL.md plus every reference share
+one `a`/`s`/`A`/`q` choice. For a six-file skill like `startup-analyst`
+(SKILL.md + 5 references) you review a single diff summary and make a
+single decision. This keeps bulk upgrades tractable when embedded
+refreshes touch many references at once.
+
+Pass `--granular` to restore the per-file prompt. This is the right
+choice when you want to accept a SKILL.md change but hand-merge a
+specific reference, or vice versa.
+
+When the vault copy of a skill file has been hand-edited, accepting the
+upgrade writes the pre-change content to a sibling `.bak` so nothing is
+lost. The on-disk surface stays bounded to a single `.bak` per file;
+snapshot with git before running upgrade when you want multi-generation
+history.
+
+Note the two complementary upgrade entry points:
+
+- **`vp init` / `vp config sync`** run the three-SHA materialize-and-
+  reconcile path (same path as any template refresh): vault SHA vs lock
+  SHA vs embedded SHA, with skip / overwrite+`.bak` / `.new` sidecar
+  prompts when the vault has drifted.
+- **`vp commands upgrade` / `vp skills upgrade`** run the two-SHA
+  interactive diff path: embedded vs vault, with unified diffs and
+  accept/skip/accept-all/quit prompts. Use this when you want to review
+  the change surface rather than silently reconcile.
+
+Both paths converge on the same vault content; they differ only in UX.
+
 Man pages are available for all commands: `man vp`, `man vp-search`,
-`man vp-commands`, `man vp-commands-upgrade`, etc. Install with
-`make man`.
+`man vp-commands`, `man vp-commands-upgrade`, `man vp-skills`,
+`man vp-skills-upgrade`, etc. Install with `make man`.
 
 ### Customizing a command template
 
@@ -634,6 +677,99 @@ and skills to the user; new models see both on every session start.
 To discover what is available in the current project, call `vp_cmd`
 (or `vp_skill`) with no arguments, or look at the `available_commands`
 and `available_skills` arrays in the bootstrap response.
+
+### Skills: personas that span a whole session
+
+#### Cross-IDE compatibility matrix
+
+`vps-<name>` delivery works across every MCP-capable coding surface,
+but the *mechanism* differs by IDE. This table summarizes what each
+surface ships and how skills are invoked there. For step-by-step
+verification, see `doc/verify-skill-delivery.md`.
+
+| IDE                         | Mechanism                                                   | Auto-invokes? | Notes                                                                 |
+|-----------------------------|-------------------------------------------------------------|---------------|-----------------------------------------------------------------------|
+| Claude Code                 | Native SKILL.md primitive (`.claude/skills/vps-<name>/SKILL.md`) | Yes       | Auto-loaded by Claude Code's skill picker; shim is a three-line delegation to `vp_skill`. |
+| Cursor                      | Native rule file (`.cursor/rules/vps-<name>.mdc`)           | Pick from Rules panel | Only emitted when `.cursor/` or `.cursor/rules/` exists in the project. |
+| Zed + Claude                | Trigger phrase (managed block) + `vp_skill` MCP             | Yes, on trigger | Model recognizes `vps-<name>` via the agent-file managed block and calls `vp_skill`. |
+| Zed + Gemini / Copilot Chat | Trigger phrase (managed block) + user-paste fallback        | Partial       | Awareness works from the managed block; user pastes `SKILL.md` contents if MCP isn't wired. |
+| Any MCP-capable host        | Trigger phrase + `vp_skill` MCP                             | Yes, on trigger | Works anywhere `vp mcp` can be registered. Provider-level tool-use policy applies. |
+
+Commands and skills look alike on the wire (`vpc-` vs `vps-`, both
+trigger an MCP tool call) but they have very different **lifetimes**.
+
+- **Commands are one-shot.** `vpc-wrap` says "do this one task, then
+  come back to your normal posture." The model calls `vp_cmd`, follows
+  the returned workflow, finishes, and drops back to the default
+  assistant stance.
+- **Skills are postural.** `vps-startup-analyst` says "adopt this
+  persona and its objectives as a STANDING instruction for the rest of
+  the session." The model calls `vp_skill`, merges the returned persona
+  into its working-self, and keeps behaving that way turn after turn
+  until it is told otherwise.
+
+That standing-instruction stance is what lets one `vps-` call
+substitute for pasting a long persona preamble into every message. It
+also means you need explicit controls to *leave* that posture — which
+is the rest of the contract embedded in the managed block:
+
+- **`vps-clear`** — drops *all* currently active skill personas and
+  returns the assistant to its default posture. Type it verbatim.
+- **`vps-replace:<other>`** — a **model-parsed prefix**, not a tool
+  parameter. The assistant recognizes the `replace:` prefix itself,
+  strips it, drops every prior persona, and then calls `vp_skill` with
+  `name=<other>` so the *new* persona arrives on a clean slate. Useful
+  when you want to swap `vps-startup-analyst` for `vps-code-reviewer`
+  without keeping the first one resident.
+- **Stacking.** Multiple bare `vps-<name>` invocations *stack
+  additively* — `vps-startup-analyst` followed by `vps-pricing-expert`
+  gives you both personas active at once. Stacking is how you compose;
+  `vps-replace:` is how you pivot.
+- **Session boundary.** A new session starts with no active personas.
+  Skills do *not* persist across sessions because the managed block is
+  re-read on every session start and the model's working memory is
+  reset; the block only teaches the model how to respond *within* the
+  session it is currently running in.
+
+The canonical copy of this contract lives in the managed block that
+`vp init` wires into your project's `CLAUDE.md` / `AGENTS.md` /
+`.cursorrules` / `.rules` / `.github/copilot-instructions.md`. When the
+schema changes, `vp init` detects the stale block via its content hash
+and rewrites it in place; user-authored content outside the delimited
+region is preserved byte-for-byte.
+
+### Fetching skill references on demand
+
+Directory-form skills ship a lightweight `SKILL.md` plus any number of
+siblings under `references/`. `vp_skill` only inlines the SKILL.md body
+into its activation frame — the references are listed by name and
+fetched on demand so the context window does not swell with material
+the current conversation may not need. Sample flow inside a Claude or
+Cursor session:
+
+1. Type `vps-startup-analyst` (or call `vp_skill` with
+   `name=startup-analyst`). The returned frame ends with:
+
+   ```
+   References (fetch on demand via vp_get_skill_section):
+     - capex-opex
+     - competitive-landscape
+     - funding-sources
+     - reality-validation
+     - strategic-partnerships
+   ```
+
+2. When a sub-topic actually comes up — say the user asks about capex
+   vs. opex split — the assistant calls
+   `vp_get_skill_section(name="startup-analyst", section="capex-opex")`
+   and merges that body into its working context.
+
+From the CLI the same content is reachable via `vp skills show
+<name>` (SKILL.md + references list) and `vp skills show <name>
+--section <ref>` (just the reference body). Reference resolution is
+per-file: a project may override SKILL.md without having to clone
+every reference — the resolver transparently falls back to vault or
+embedded copies for anything the project did not override.
 
 ### Browsing Commands in Claude Code's `/` Menu
 

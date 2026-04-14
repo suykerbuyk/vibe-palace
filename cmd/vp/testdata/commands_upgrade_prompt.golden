@@ -1,0 +1,14 @@
+
+=== cancel-plan (new) ===
+(new file; 461 bytes will be added)
+Accept this change? [a]ccept / [s]kip / [A]ccept-all / [q]uit: [accept] capture (new)
+[accept] restart (new)
+[accept] review-plan (new)
+[accept] wrap (new)
+[accept] shim cancel-plan (new)
+[accept] shim capture (new)
+[accept] shim restart (new)
+[accept] shim review-plan (new)
+[accept] shim wrap (new)
+
+Done. 10 accepted, 0 skipped, 0 custom (untouched). Shims: 5 added, 0 updated, 0 removed, 0 custom.
