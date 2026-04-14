@@ -7,13 +7,41 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
+
+// requestIDKey is a context-key type for optional MCP request IDs that
+// callers may stash on the context for correlation in handler logs.
+type requestIDKey struct{}
+
+// WithRequestID returns a derived context carrying the given request ID.
+// The MCP dispatch handler logs this ID if present so a single tool call
+// can be correlated across its entry, exit, and any recovered panic.
+func WithRequestID(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, requestIDKey{}, id)
+}
+
+// requestIDFromContext returns the request ID previously attached via
+// WithRequestID, or "" if none is present.
+func requestIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(requestIDKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
 
 // HandlerFunc is the handler signature for vibe-palace tools.
 // It receives the request context and raw JSON parameters, and returns
@@ -143,28 +171,102 @@ func (r *Registry) Dispatch(ctx context.Context, name string, params json.RawMes
 }
 
 // makeHandler creates a mcp-go ToolHandlerFunc that validates parameters
-// and bridges to our HandlerFunc signature.
+// and bridges to our HandlerFunc signature. It logs entry, exit, and any
+// recovered panic at the MCP dispatch boundary — this is the highest
+// leverage log site in the project because every agent tool call flows
+// through it. Entries log the tool name and optional request ID. Exits
+// log elapsed time plus either an error or the response byte size.
 func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	return func(ctx context.Context, req mcplib.CallToolRequest) (result *mcplib.CallToolResult, err error) {
+		start := time.Now()
+		toolName := rt.tool.Name
+		reqID := requestIDFromContext(ctx)
+
+		slog.Debug("mcp.makeHandler: enter",
+			"op", "mcp.makeHandler",
+			"tool", toolName,
+			"request_id", reqID,
+		)
+
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("mcp.makeHandler: panic recovered",
+					"op", "mcp.makeHandler",
+					"tool", toolName,
+					"request_id", reqID,
+					"elapsed_ms", time.Since(start).Milliseconds(),
+					"panic", fmt.Sprintf("%v", rec),
+				)
+				result = mcplib.NewToolResultError(fmt.Sprintf("handler panic: %v", rec))
+				err = nil
+			}
+		}()
+
 		// Marshal arguments back to JSON for schema validation and handler.
-		params, err := json.Marshal(req.GetArguments())
-		if err != nil {
-			return mcplib.NewToolResultError(fmt.Sprintf("invalid arguments: %v", err)), nil
+		params, perr := json.Marshal(req.GetArguments())
+		if perr != nil {
+			slog.Warn("mcp.makeHandler: marshal args failed",
+				"op", "mcp.makeHandler",
+				"tool", toolName,
+				"request_id", reqID,
+				"elapsed_ms", time.Since(start).Milliseconds(),
+				"err", perr,
+			)
+			return mcplib.NewToolResultError(fmt.Sprintf("invalid arguments: %v", perr)), nil
 		}
 
 		// Validate against compiled schema.
 		if vErr := validateParams(rt.compiled, params); vErr != nil {
+			slog.Warn("mcp.makeHandler: validation failed",
+				"op", "mcp.makeHandler",
+				"tool", toolName,
+				"request_id", reqID,
+				"elapsed_ms", time.Since(start).Milliseconds(),
+				"err", vErr,
+			)
 			return mcplib.NewToolResultError(vErr.Error()), nil
 		}
 
 		// Call the application handler.
-		result, hErr := rt.tool.Handler(ctx, params)
+		raw, hErr := rt.tool.Handler(ctx, params)
 		if hErr != nil {
+			slog.Warn("mcp.makeHandler: handler error",
+				"op", "mcp.makeHandler",
+				"tool", toolName,
+				"request_id", reqID,
+				"elapsed_ms", time.Since(start).Milliseconds(),
+				"err", hErr,
+			)
 			return mcplib.NewToolResultError(hErr.Error()), nil
 		}
 
 		// Convert the result to a CallToolResult.
-		return marshalResult(result)
+		out, mErr := marshalResult(raw)
+		if mErr != nil {
+			slog.Warn("mcp.makeHandler: marshal result failed",
+				"op", "mcp.makeHandler",
+				"tool", toolName,
+				"request_id", reqID,
+				"elapsed_ms", time.Since(start).Milliseconds(),
+				"err", mErr,
+			)
+			return out, mErr
+		}
+
+		resultSize := 0
+		if out != nil {
+			if b, jerr := json.Marshal(out); jerr == nil {
+				resultSize = len(b)
+			}
+		}
+		slog.Debug("mcp.makeHandler: exit",
+			"op", "mcp.makeHandler",
+			"tool", toolName,
+			"request_id", reqID,
+			"elapsed_ms", time.Since(start).Milliseconds(),
+			"result_bytes", resultSize,
+		)
+		return out, nil
 	}
 }
 

@@ -7,12 +7,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
+	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
 
 // matchesOnly decides whether the given resource name matches an --only
@@ -158,73 +157,44 @@ func planOne(resolver *vpctx.Resolver, resourceType, name string) (Change, error
 
 // Apply writes the embedded content of each accepted Change to its vault
 // path, creating parent directories as needed. The write is atomic per file
-// (write to a sibling temp file, then rename). Unchanged entries are
-// ignored whether or not they are marked accepted.
+// (templates.Executor handles tmp+rename). Unchanged entries are ignored
+// whether or not they are marked accepted. No .bak is left behind — see
+// doc/TEMPLATE_POLICY.md for the rationale.
 func Apply(accepted []Change) error {
-	for _, c := range accepted {
-		if c.Kind == ChangeUnchanged {
-			continue
-		}
-		if err := writeAtomic(c.VaultPath, []byte(c.EmbeddedContent), 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", c.VaultPath, err)
-		}
-	}
-	return nil
+	return applyWithPolicy(accepted, templates.BackupPolicyNever)
 }
 
-// ApplyWithBackup is like Apply but, for Updated entries, first renames
-// the existing vault file to a sibling ".bak" so user-modified content
-// is preserved when a dirty-vault upgrade lands. New entries have no
-// prior copy to preserve; Unchanged entries are skipped.
+// ApplyWithBackup is like Apply but, for Updated entries, preserves the
+// existing vault file to a sibling ".bak" (via rename — matches the
+// legacy skills-upgrade behavior byte-for-byte) before writing. New
+// entries have no prior copy to preserve; Unchanged entries are
+// skipped. The backup is a single sibling ".bak"; repeated runs
+// overwrite it so the on-disk surface stays bounded.
 //
-// The backup is a single sibling ".bak"; repeated runs overwrite it so
-// the on-disk surface stays bounded. Callers who want multi-generation
-// backups should snapshot externally (git, etc.) before invoking.
+// Centralized .bak policy: this function and Apply differ only in the
+// BackupPolicy passed to the shared templates.Executor. See
+// doc/TEMPLATE_POLICY.md for the follow-up (make the asymmetry user-
+// configurable or unify).
 func ApplyWithBackup(accepted []Change) error {
+	return applyWithPolicy(accepted, templates.BackupPolicyRename)
+}
+
+func applyWithPolicy(accepted []Change, policy templates.BackupPolicy) error {
+	exec := templates.NewExecutor()
 	for _, c := range accepted {
 		if c.Kind == ChangeUnchanged {
 			continue
 		}
-		if c.Kind == ChangeUpdated {
-			// Best-effort backup: if the source file is gone for some
-			// reason (e.g. race), skip the rename and fall through to
-			// the write.
-			if _, err := os.Stat(c.VaultPath); err == nil {
-				if err := os.Rename(c.VaultPath, c.VaultPath+".bak"); err != nil {
-					return fmt.Errorf("backup %s: %w", c.VaultPath, err)
-				}
-			}
+		// New entries have nothing to preserve regardless of policy.
+		effective := policy
+		if c.Kind == ChangeNew {
+			effective = templates.BackupPolicyNever
 		}
-		if err := writeAtomic(c.VaultPath, []byte(c.EmbeddedContent), 0o644); err != nil {
+		if err := exec.Write(c.VaultPath, []byte(c.EmbeddedContent), templates.WriteOptions{Backup: effective}); err != nil {
 			return fmt.Errorf("write %s: %w", c.VaultPath, err)
 		}
 	}
 	return nil
-}
-
-func writeAtomic(dst string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(dst), ".vp-upgrade-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, dst)
 }
 
 func shortHash(s string) string {

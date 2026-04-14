@@ -5,8 +5,6 @@ package capture
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -78,7 +76,7 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 		}
 		// Pre-compute the ID the same way storage does, so we can use it
 		// for vector indexing even before AppendDrawer fills it in.
-		d.ID = drawerID(wing, chunk)
+		d.ID = storage.DrawerID(wing, chunk)
 
 		locs[i] = drawerLoc{drawer: d, room: room}
 	}
@@ -95,17 +93,25 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 		}
 	}
 
-	// Batch embed all chunks.
+	// Batch embed all chunks and index them in a single engine call.
 	if idx.embedder != nil && idx.engine != nil {
 		vecs, err := idx.embedder.EmbedBatch(ctx, chunks)
 		if err != nil {
 			return fmt.Errorf("batch embed: %w", err)
 		}
 
+		batch := make([]search.DrawerInput, len(locs))
 		for i, loc := range locs {
-			if err := idx.engine.IndexDrawerWithVec(project, wing, loc.room, loc.drawer, vecs[i]); err != nil {
-				return fmt.Errorf("index drawer %d: %w", i, err)
+			batch[i] = search.DrawerInput{
+				Project: project,
+				Wing:    wing,
+				Room:    loc.room,
+				Drawer:  loc.drawer,
+				Vec:     vecs[i],
 			}
+		}
+		if err := idx.engine.IndexDrawers(ctx, batch); err != nil {
+			return fmt.Errorf("index drawers: %w", err)
 		}
 	}
 
@@ -115,11 +121,23 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 	return nil
 }
 
-// extractEntities runs regex-based entity extraction and writes to the KG.
-// All errors are silently ignored (best-effort per PRD).
+// extractEntities runs the unified kg.ExtractAll pass and writes every
+// deduplicated entity + relationship to the KG in a single loop.
+//
+// KG writes are best-effort per PRD: failures do not propagate to the
+// caller, but every failure is captured via slog.Warn so maintainers have
+// a full audit trail. The originating extractor name is attached to each
+// log entry (via the Source field on ExtractedEntityRef) so post-hoc log
+// analysis can still tell which extractor produced a problematic write.
 func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp string) {
-	entities := ExtractEntities(transcript)
-	for _, ent := range entities {
+	today := ""
+	if len(timestamp) >= 10 {
+		today = timestamp[:10] // YYYY-MM-DD from RFC3339
+	}
+
+	result := kg.ExtractAll(transcript, today, kg.ExtractAllOptions{})
+
+	for _, ent := range result.Entities {
 		if err := idx.vault.AddEntity(project, storage.Entity{
 			ID:        slug.Slugify(ent.Type + "-" + ent.Name),
 			Name:      ent.Name,
@@ -127,9 +145,11 @@ func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp st
 			CreatedAt: timestamp,
 		}); err != nil {
 			if strings.Contains(err.Error(), "already exists") {
-				slog.Debug("entity extraction: duplicate entity skipped", "entity", ent.Name)
+				slog.Debug("kg: duplicate entity skipped",
+					"entity", ent.Name, "source", ent.Source)
 			} else {
-				slog.Warn("entity extraction: add entity failed", "entity", ent.Name, "err", err)
+				slog.Warn("kg: add entity failed",
+					"entity", ent.Name, "source", ent.Source, "err", err)
 			}
 		}
 		if err := idx.vault.AddTriple(project, storage.Triple{
@@ -138,43 +158,14 @@ func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp st
 			Object:        sessionID,
 			SourceSession: sessionID,
 			ExtractedAt:   timestamp,
-			Confidence:    0.8,
+			Confidence:    ent.Confidence,
 		}); err != nil {
-			slog.Warn("entity extraction: add triple failed", "entity", ent.Name, "err", err)
+			slog.Warn("kg: add mentioned_in triple failed",
+				"entity", ent.Name, "source", ent.Source, "err", err)
 		}
 	}
 
-	// Phase 7: person/project/concept/tool detection.
-	detected := kg.DetectEntities(transcript)
-	for _, d := range detected {
-		if err := idx.vault.AddEntity(project, storage.Entity{
-			ID:        slug.Slugify(string(d.Type) + "-" + d.Name),
-			Name:      d.Name,
-			Type:      string(d.Type),
-			CreatedAt: timestamp,
-		}); err != nil {
-			if strings.Contains(err.Error(), "already exists") {
-				slog.Debug("kg: duplicate entity skipped", "entity", d.Name)
-			} else {
-				slog.Warn("kg: add detected entity failed", "entity", d.Name, "err", err)
-			}
-		}
-		if err := idx.vault.AddTriple(project, storage.Triple{
-			Subject:       d.Name,
-			Predicate:     "mentioned_in",
-			Object:        sessionID,
-			SourceSession: sessionID,
-			ExtractedAt:   timestamp,
-			Confidence:    d.Confidence,
-		}); err != nil {
-			slog.Warn("kg: add mentioned_in triple failed", "entity", d.Name, "err", err)
-		}
-	}
-
-	// Phase 7: relationship extraction.
-	today := timestamp[:10] // extract YYYY-MM-DD from RFC3339
-	triples := kg.ExtractTriples(transcript, detected, today)
-	for _, tr := range triples {
+	for _, tr := range result.Triples {
 		if err := idx.vault.AddTriple(project, storage.Triple{
 			Subject:       tr.Subject,
 			Predicate:     tr.Predicate,
@@ -202,9 +193,3 @@ func (idx *Indexer) chunkConfig() ChunkConfig {
 	return cfg
 }
 
-// drawerID mirrors storage.drawerID: first 8 hex chars of MD5(wing+content).
-// Room is excluded so drawer identity is stable across reclassification.
-func drawerID(wing, content string) string {
-	h := md5.Sum([]byte(wing + content))
-	return hex.EncodeToString(h[:])[:8]
-}

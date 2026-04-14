@@ -15,6 +15,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
+	"github.com/suykerbuyk/vibe-palace/internal/reconcile"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -70,14 +71,16 @@ func ImportVibeVault(
 			Project: projSlug,
 		})
 
-		// Seed the vault-project config.toml with a commented template so
-		// users see what's per-project tunable. Write-only-if-absent —
-		// does not clobber any config a user (or a prior migration) put
-		// in place. Skipped in dry-run.
+		// Seed the vault-project config.toml (and its tasks/ subdirs) via
+		// the VaultProject reconciler — the sole orchestrator for this
+		// artifact. Check → Plan → Apply preserves write-only-if-absent
+		// semantics (a present file becomes Unchanged or Update, never
+		// clobbered) while adding drift-detection parity with `vp init`.
+		// Skipped in dry-run. Non-fatal on error — session import
+		// continues.
 		if !opts.DryRun {
-			if _, _, err := vault.WriteVaultProjectConfig(projSlug); err != nil {
-				log.Printf("migrate: write vault-project config %s: %v", projSlug, err)
-				// Non-fatal: continue importing sessions.
+			if err := reconcileVaultProject(ctx, vault, projSlug); err != nil {
+				log.Printf("migrate: reconcile vault-project config %s: %v", projSlug, err)
 			}
 		}
 
@@ -231,6 +234,30 @@ func ImportVibeVault(
 	}
 
 	return result, nil
+}
+
+// reconcileVaultProject delegates vault-project config.toml creation to
+// the VaultProject reconciler (Check → Plan → Apply). This is the sole
+// orchestration path for `<vault>/Projects/<slug>/config.toml`; migrate
+// no longer calls storage.WriteVaultProjectConfig directly.
+//
+// The reconciler's Plan does not currently emit ActionPrompt for this
+// tier, so migrate runs non-interactively with no ActionPrompt callback.
+// Returns the first error encountered in Apply's Report, if any.
+func reconcileVaultProject(ctx context.Context, vault *storage.Vault, projSlug string) error {
+	r := reconcile.NewVaultProject(vault, projSlug)
+	plan, err := r.Plan(ctx)
+	if err != nil {
+		return fmt.Errorf("plan: %w", err)
+	}
+	rep, err := r.Apply(ctx, plan)
+	if err != nil {
+		return fmt.Errorf("apply: %w", err)
+	}
+	if len(rep.Errors) > 0 {
+		return rep.Errors[0]
+	}
+	return nil
 }
 
 // scanProjects scans {vaultRoot}/Projects/ and returns a map of

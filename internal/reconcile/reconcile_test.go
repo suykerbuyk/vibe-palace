@@ -248,6 +248,116 @@ func TestVaultProject_CreateThenUnchanged(t *testing.T) {
 	}
 }
 
+// TestVaultProject_UpdateDriftedConfig covers the ActionUpdate branch of
+// Apply: an existing config.toml that is missing canonical keys is
+// patched in place (rather than created or left Unchanged).
+// TestVaultProject_ApplyNilVault exercises the defensive Skip/Unchanged
+// tally Apply runs when the reconciler has no vault bound.
+func TestVaultProject_ApplyNilVault(t *testing.T) {
+	r := NewVaultProject(nil, "x")
+	p := Plan{Actions: []Action{
+		{Kind: ActionSkip, Summary: "skip"},
+		{Kind: ActionUnchanged, Summary: "nop"},
+	}}
+	rep, err := r.Apply(context.Background(), p)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if rep.Skipped != 1 || rep.Unchanged != 1 {
+		t.Errorf("tally = %+v, want Skipped=1 Unchanged=1", rep)
+	}
+}
+
+// TestVaultProject_ApplyTasksDirMkdir covers the Apply branch that
+// creates a tasks/* subdirectory separately from the config.toml path.
+func TestVaultProject_ApplyTasksDirMkdir(t *testing.T) {
+	tmp := t.TempDir()
+	v := newVaultAt(t, tmp)
+	r := NewVaultProject(v, "tproj")
+
+	// Pre-create the config.toml so the plan only emits Create actions
+	// for the tasks/ subdirectories — isolating that Apply branch.
+	cfgPath, _ := v.ProjectConfigFile("tproj")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := v.WriteVaultProjectConfig("tproj"); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	p, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	rep, err := r.Apply(context.Background(), p)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if rep.Created < 2 {
+		t.Errorf("expected >=2 Created for tasks/done + tasks/cancelled, got %d", rep.Created)
+	}
+	tasksDir, _ := v.TasksDir("tproj")
+	for _, sub := range []string{"done", "cancelled"} {
+		if _, err := os.Stat(filepath.Join(tasksDir, sub)); err != nil {
+			t.Errorf("tasks/%s not created: %v", sub, err)
+		}
+	}
+}
+
+func TestVaultProject_UpdateDriftedConfig(t *testing.T) {
+	tmp := t.TempDir()
+	v := newVaultAt(t, tmp)
+	r := NewVaultProject(v, "drifted")
+
+	// Seed a minimal, drifted config.toml (missing canonical keys).
+	cfgPath, err := v.ProjectConfigFile("drifted")
+	if err != nil {
+		t.Fatalf("ProjectConfigFile: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("# drifted stub\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	sawUpdate := false
+	for _, a := range p.Actions {
+		if a.Kind == ActionUpdate && a.Target == cfgPath {
+			sawUpdate = true
+		}
+	}
+	if !sawUpdate {
+		t.Fatalf("expected an ActionUpdate for drifted config, got: %+v", p.Actions)
+	}
+
+	rep, err := r.Apply(context.Background(), p)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if rep.Updated < 1 {
+		t.Errorf("expected rep.Updated >= 1, got %d", rep.Updated)
+	}
+	if len(rep.Errors) != 0 {
+		t.Errorf("unexpected errors: %v", rep.Errors)
+	}
+
+	// After update, Plan should report Unchanged for the config.
+	p2, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan #2: %v", err)
+	}
+	for _, a := range p2.Actions {
+		if a.Target == cfgPath && a.Kind != ActionUnchanged {
+			t.Errorf("expected config Unchanged after Update, got %+v", a)
+		}
+	}
+}
+
 func TestGlobalConfig_CheckRows(t *testing.T) {
 	cfgPath := xdgTempHome(t)
 	tmp := filepath.Dir(filepath.Dir(cfgPath))

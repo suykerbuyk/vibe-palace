@@ -409,10 +409,12 @@ vp config sync --tier global # reconcile a single tier
 - Does **not** touch agent files (`CLAUDE.md` etc.) or slash-command shims —
   those are owned by `vp commands upgrade`
 
-> `vp config upgrade` is **deprecated** and now delegates to
-> `vp config sync` with the equivalent `--tier` flag. It will be removed
-> in the next release. Pass `--legacy` to use the pre-reconciler path
-> for one-off cases until you've migrated.
+> `vp config upgrade` is now a thin alias for `vp config sync` — it
+> translates `--cwd` / `--project` into the equivalent `--tier` flag and
+> delegates. The legacy pre-reconciler TOML-parsing path has been
+> removed (byte-identical parity with the reconciler was verified before
+> deletion; see `TestUpgradeAliasParity`). Prefer `vp config sync`
+> directly for new scripts.
 
 ### Context Injection
 

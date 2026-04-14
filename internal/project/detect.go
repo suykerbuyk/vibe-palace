@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
-	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	slugpkg "github.com/suykerbuyk/vibe-palace/internal/slug"
 )
 
 // ConfigFileName is the name of the per-project configuration file.
@@ -136,7 +136,7 @@ func DetectProject(cwd string) (string, error) {
 	if configPath, err := findFileUpward(cwd, ConfigFileName); err == nil {
 		cfg, err := ParseProjectConfig(configPath)
 		if err == nil && cfg.Name != "" {
-			if err := storage.ValidateSlug(cfg.Name); err != nil {
+			if err := slugpkg.Validate(cfg.Name); err != nil {
 				return "", fmt.Errorf("project name from config: %w", err)
 			}
 			return cfg.Name, nil
@@ -147,7 +147,7 @@ func DetectProject(cwd string) (string, error) {
 	// Strategy 2: git remote heuristics.
 	if name, err := gitRemoteName(cwd); err == nil {
 		slug := slugify(name)
-		if slug != "" && storage.ValidateSlug(slug) == nil {
+		if slug != "" && slugpkg.Validate(slug) == nil {
 			return slug, nil
 		}
 	}
@@ -157,7 +157,7 @@ func DetectProject(cwd string) (string, error) {
 	if slug == "" {
 		return "", fmt.Errorf("cannot detect project name from directory %q", cwd)
 	}
-	if err := storage.ValidateSlug(slug); err != nil {
+	if err := slugpkg.Validate(slug); err != nil {
 		return "", fmt.Errorf("directory basename: %w", err)
 	}
 	return slug, nil

@@ -19,6 +19,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/reconcile"
 	"github.com/suykerbuyk/vibe-palace/internal/shims"
+	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -301,7 +302,7 @@ func initProject(fv *cli.FlagValues) (string, bool, []check.Result, int) {
 	if name == "" {
 		name = filepath.Base(dir)
 	}
-	if err := storage.ValidateSlug(name); err != nil {
+	if err := slug.Validate(name); err != nil {
 		results = append(results, check.Result{
 			Name:    "Project config",
 			Status:  check.Fail,
@@ -452,10 +453,30 @@ func initAgentWiring(projectRoot string, projectReady bool) []check.Result {
 		}}
 	}
 
-	targets, skips := agentfile.Detect(projectRoot)
-	var rows []check.Result
+	// Snapshot legacy-content flags before WireAll rewrites files, so the
+	// Init summary can suggest `vp absorb` when pre-existing content needs
+	// migration. Detect runs once here, and WireAll re-runs Detect internally
+	// — cheap (a few os.Stat calls) and keeps the orchestrator's surface
+	// focused on wiring rather than reporting.
+	preTargets, _ := agentfile.Detect(projectRoot)
+	driftSet := make(map[string]bool, len(preTargets))
+	for _, t := range preTargets {
+		if data, err := os.ReadFile(t.Path); err == nil && hasLegacyContent(data) {
+			driftSet[t.DisplayName] = true
+		}
+	}
 
-	if len(targets) == 0 {
+	outcomes, skips, err := agentfile.WireAll(projectRoot)
+	var rows []check.Result
+	if err != nil {
+		return []check.Result{{
+			Name:    "Agent wiring",
+			Status:  check.Fail,
+			Summary: err.Error(),
+		}}
+	}
+
+	if len(outcomes) == 0 {
 		rows = append(rows, check.Result{
 			Name:    "Agent wiring",
 			Status:  check.Skip,
@@ -464,27 +485,24 @@ func initAgentWiring(projectRoot string, projectReady bool) []check.Result {
 	}
 
 	var driftFiles []string
-	for _, t := range targets {
+	for _, oc := range outcomes {
+		t := oc.Target
 		display := t.DisplayName
 		if len(t.Aliases) > 0 {
 			display += " (→ " + strings.Join(t.Aliases, ", ") + ")"
 		}
-		// Detect legacy content (non-managed-block bytes) before we wire
-		// so the Init summary can suggest `vp absorb` when migration is
-		// warranted.
-		if data, err := os.ReadFile(t.Path); err == nil && hasLegacyContent(data) {
+		if driftSet[t.DisplayName] {
 			driftFiles = append(driftFiles, t.DisplayName)
 		}
-		res, err := agentfile.Wire(t)
-		if err != nil {
+		if oc.Err != nil {
 			rows = append(rows, check.Result{
 				Name:    "Agent wiring",
 				Status:  check.Fail,
-				Summary: display + ": " + err.Error(),
+				Summary: display + ": " + oc.Err.Error(),
 			})
 			continue
 		}
-		switch res.Kind {
+		switch oc.Result.Kind {
 		case agentfile.Added:
 			rows = append(rows, check.Result{
 				Name:    "Agent wiring",
@@ -493,8 +511,8 @@ func initAgentWiring(projectRoot string, projectReady bool) []check.Result {
 			})
 		case agentfile.Updated:
 			summary := display + " — block updated"
-			if res.PrevSha != "" {
-				summary += " (was " + res.PrevSha + ")"
+			if oc.Result.PrevSha != "" {
+				summary += " (was " + oc.Result.PrevSha + ")"
 			}
 			rows = append(rows, check.Result{
 				Name:    "Agent wiring",

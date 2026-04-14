@@ -194,7 +194,13 @@ func ImportMemPalace(
 
 		// Index with vector if engine is available.
 		if engine != nil && wi < len(allVecs) {
-			if idxErr := engine.IndexDrawerWithVec("mempalace", w.wing, w.room, sd, allVecs[wi]); idxErr != nil {
+			if idxErr := engine.IndexDrawers(ctx, []search.DrawerInput{{
+				Project: "mempalace",
+				Wing:    w.wing,
+				Room:    w.room,
+				Drawer:  sd,
+				Vec:     allVecs[wi],
+			}}); idxErr != nil {
 				result.Errors = append(result.Errors, ImportError{
 					Project: "mempalace",
 					File:    exportPath,

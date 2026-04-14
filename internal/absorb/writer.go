@@ -6,6 +6,7 @@ package absorb
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -426,9 +427,19 @@ func rewriteSourceFile(ps PlannedSource, opts WriteOptions) (string, error) {
 	if err := atomicWrite(ps.AbsPath, data); err != nil {
 		return "", err
 	}
-	// Wire to ensure a managed block exists with the current hash.
-	if _, err := agentfile.Wire(agentfile.Target{Path: ps.AbsPath, DisplayName: ps.DisplayPath}); err != nil {
+	// Wire to ensure a managed block exists with the current hash. Route
+	// through WireAll with an explicit Target override so all three wiring
+	// call sites share one orchestrator even though we only want this one
+	// file touched.
+	outcomes, _, err := agentfile.WireAll(opts.ProjectRoot,
+		agentfile.WithTargets(agentfile.Target{Path: ps.AbsPath, DisplayName: ps.DisplayPath}))
+	if err != nil {
 		return "", fmt.Errorf("wire managed block into %s: %w", ps.AbsPath, err)
+	}
+	for _, oc := range outcomes {
+		if oc.Err != nil {
+			return "", fmt.Errorf("wire managed block into %s: %w", ps.AbsPath, oc.Err)
+		}
 	}
 
 	rel, err := filepath.Rel(opts.ProjectRoot, backupPath)
@@ -473,12 +484,18 @@ func atomicWrite(path string, data []byte) error {
 	cleanup := func() { _ = os.Remove(tmp) }
 
 	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
+		if cerr := f.Close(); cerr != nil {
+			slog.Error("absorb.atomicWrite: close after write error",
+				"op", "absorb.atomicWrite", "path", path, "tmp", tmp, "err", cerr)
+		}
 		cleanup()
 		return fmt.Errorf("write temp %s: %w", tmp, err)
 	}
 	if err := f.Sync(); err != nil {
-		_ = f.Close()
+		if cerr := f.Close(); cerr != nil {
+			slog.Error("absorb.atomicWrite: close after fsync error",
+				"op", "absorb.atomicWrite", "path", path, "tmp", tmp, "err", cerr)
+		}
 		cleanup()
 		return fmt.Errorf("fsync temp %s: %w", tmp, err)
 	}

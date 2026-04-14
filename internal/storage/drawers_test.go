@@ -16,10 +16,10 @@ func testVault(t *testing.T) *Vault {
 }
 
 func TestDrawerID(t *testing.T) {
-	id1 := drawerID("wing-a", "hello world")
-	id2 := drawerID("wing-a", "hello world")
-	id3 := drawerID("wing-b", "hello world")
-	id4 := drawerID("wing-a", "different content")
+	id1 := DrawerID("wing-a", "hello world")
+	id2 := DrawerID("wing-a", "hello world")
+	id3 := DrawerID("wing-b", "hello world")
+	id4 := DrawerID("wing-a", "different content")
 
 	if id1 != id2 {
 		t.Errorf("same inputs produced different IDs: %q vs %q", id1, id2)
@@ -38,13 +38,13 @@ func TestDrawerID(t *testing.T) {
 func TestDrawerIDRoomIndependent(t *testing.T) {
 	// Drawer ID must be stable across room reclassification.
 	// Same wing+content should produce identical IDs regardless of room.
-	id := drawerID("wing-a", "hello world")
+	id := DrawerID("wing-a", "hello world")
 	if len(id) != 8 {
 		t.Fatalf("ID length = %d, want 8", len(id))
 	}
 	// Verify determinism across multiple calls.
 	for i := 0; i < 10; i++ {
-		if got := drawerID("wing-a", "hello world"); got != id {
+		if got := DrawerID("wing-a", "hello world"); got != id {
 			t.Errorf("call %d: got %q, want %q", i, got, id)
 		}
 	}
@@ -63,7 +63,7 @@ func TestAppendAndGetDrawer(t *testing.T) {
 		t.Fatalf("AppendDrawer: %v", err)
 	}
 
-	expectedID := drawerID("wing-a", d.Content)
+	expectedID := DrawerID("wing-a", d.Content)
 	got, err := v.GetDrawer("proj", "wing-a", "room-1", expectedID)
 	if err != nil {
 		t.Fatalf("GetDrawer: %v", err)
@@ -158,7 +158,7 @@ func TestDeleteDrawer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deleteID := drawerID("wing-a", "delete-me")
+	deleteID := DrawerID("wing-a", "delete-me")
 	if err := v.DeleteDrawer("proj", "wing-a", "room-1", deleteID); err != nil {
 		t.Fatalf("DeleteDrawer: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestDeleteDrawerAtomicWrite(t *testing.T) {
 	}
 
 	// Delete the middle entry.
-	deleteID := drawerID("wing-a", "bravo")
+	deleteID := DrawerID("wing-a", "bravo")
 	if err := v.DeleteDrawer("proj", "wing-a", "room-1", deleteID); err != nil {
 		t.Fatalf("DeleteDrawer: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestDeleteDrawerAllEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	id := drawerID("wing-a", "only-one")
+	id := DrawerID("wing-a", "only-one")
 	if err := v.DeleteDrawer("proj", "wing-a", "room-1", id); err != nil {
 		t.Fatalf("DeleteDrawer: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestDrawerExists(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	id := drawerID("wing-a", "test")
+	id := DrawerID("wing-a", "test")
 	exists, err := v.DrawerExists("proj", "wing-a", "room-1", id)
 	if err != nil {
 		t.Fatalf("DrawerExists: %v", err)

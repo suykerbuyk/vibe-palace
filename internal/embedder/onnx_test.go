@@ -7,6 +7,8 @@ import (
 	"context"
 	"math"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func newTestONNX(t *testing.T) *ONNXEmbedder {
@@ -14,7 +16,7 @@ func newTestONNX(t *testing.T) *ONNXEmbedder {
 	if testing.Short() {
 		t.Skip("skipping ONNX test in short mode (requires model download)")
 	}
-	emb, err := NewONNX("sentence-transformers/all-MiniLM-L6-v2", projectCacheDir(t), 256, 32)
+	emb, err := NewONNX("sentence-transformers/all-MiniLM-L6-v2", testutil.ProjectCacheDir(t), 256, 32)
 	if err != nil {
 		t.Fatalf("NewONNX: %v", err)
 	}

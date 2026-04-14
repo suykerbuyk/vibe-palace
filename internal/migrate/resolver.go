@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,9 +77,11 @@ func scanOnDiskSlugs(vaultProjectsDir string) (map[string]bool, error) {
 	return out, nil
 }
 
-// AutoResolver silently accepts the default rename suggestion
-// (base_vp, escalating to base_vp2, base_vp3, ...). It never reads
-// from stdin and never errors.
+// AutoResolver accepts the default rename suggestion (base_vp, escalating
+// to base_vp2, base_vp3, ...) without prompting. It never reads from
+// stdin and never errors. Each adoption is logged via slog.Warn so the
+// user-visible rename decision leaves an audit trail per the
+// capture-and-log discipline (no silent user-facing decisions).
 type AutoResolver struct {
 	// OnDisk is the set of slugs already present as directories under
 	// {vault}/Projects/ (populated by the caller). AutoResolver will
@@ -88,7 +91,15 @@ type AutoResolver struct {
 
 // Resolve returns the first base_vpN that is unused.
 func (r *AutoResolver) Resolve(collidingDir, existingDir, slugVal string, taken map[string]bool) (string, error) {
-	return proposeDefault(slugVal, taken, r.OnDisk), nil
+	proposed := proposeDefault(slugVal, taken, r.OnDisk)
+	slog.Warn("migrate.AutoResolver: auto-accepting default rename",
+		"op", "migrate.AutoResolver.Resolve",
+		"slug", slugVal,
+		"proposed", proposed,
+		"colliding_dir", collidingDir,
+		"existing_dir", existingDir,
+	)
+	return proposed, nil
 }
 
 // MapResolver consumes a pre-specified slug map (from --slug-map).

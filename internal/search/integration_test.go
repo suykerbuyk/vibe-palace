@@ -9,6 +9,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // newIntegrationEmbedder creates a real ONNX embedder, skipping if model
@@ -19,7 +20,7 @@ func newIntegrationEmbedder(t *testing.T) embedder.Embedder {
 		t.Skip("skipping integration test in short mode (requires ONNX model)")
 	}
 
-	emb, err := embedder.NewONNX("sentence-transformers/all-MiniLM-L6-v2", projectCacheDir(t), 256, 32)
+	emb, err := embedder.NewONNX("sentence-transformers/all-MiniLM-L6-v2", testutil.ProjectCacheDir(t), 256, 32)
 	if err != nil {
 		t.Fatalf("NewONNX: %v", err)
 	}

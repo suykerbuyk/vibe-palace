@@ -4,6 +4,8 @@
 package commands
 
 import (
+	"path/filepath"
+
 	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
 )
 
@@ -64,14 +66,34 @@ func ScanAgentBlocks(projectRoot string) ([]BlockChange, error) {
 }
 
 // ApplyAgentBlocks re-wires each target using the agentfile atomic-write path.
-// Callers pass only the BlockChanges they want to apply (stale or missing).
+// Callers pass only the BlockChanges they want to apply (stale or missing);
+// any BlockCurrent entry is skipped here too so callers can safely pass the
+// raw ScanAgentBlocks result.
+//
+// Thin wrapper over agentfile.WireAll with WithTargets — the orchestrator
+// owns the Wire loop so all three wiring call sites share one code path.
 func ApplyAgentBlocks(changes []BlockChange) error {
+	var targets []agentfile.Target
+	var projectRoot string
 	for _, c := range changes {
 		if c.Kind == BlockCurrent {
 			continue
 		}
-		if _, err := agentfile.Wire(c.Target); err != nil {
-			return err
+		targets = append(targets, c.Target)
+		if projectRoot == "" {
+			projectRoot = filepath.Dir(c.Target.Path)
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	outcomes, _, err := agentfile.WireAll(projectRoot, agentfile.WithTargets(targets...))
+	if err != nil {
+		return err
+	}
+	for _, oc := range outcomes {
+		if oc.Err != nil {
+			return oc.Err
 		}
 	}
 	return nil

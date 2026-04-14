@@ -295,7 +295,7 @@ func TestEmbedderGetter(t *testing.T) {
 	}
 }
 
-func TestIndexDrawerWithVec(t *testing.T) {
+func TestIndexDrawersWithPrecomputedVec(t *testing.T) {
 	eng, v := testEngine(t)
 	ctx := context.Background()
 
@@ -307,9 +307,11 @@ func TestIndexDrawerWithVec(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Index with pre-computed vector.
-	if err := eng.IndexDrawerWithVec("proj", "wing-a", "room-1", d, vec); err != nil {
-		t.Fatalf("IndexDrawerWithVec: %v", err)
+	// Index with pre-computed vector via the batch API.
+	if err := eng.IndexDrawers(ctx, []DrawerInput{{
+		Project: "proj", Wing: "wing-a", Room: "room-1", Drawer: d, Vec: vec,
+	}}); err != nil {
+		t.Fatalf("IndexDrawers: %v", err)
 	}
 
 	// Should be searchable.
@@ -322,5 +324,36 @@ func TestIndexDrawerWithVec(t *testing.T) {
 	}
 	if results[0].DrawerID != d.ID {
 		t.Errorf("got drawer %q, want %q", results[0].DrawerID, d.ID)
+	}
+}
+
+// TestIndexDrawersMixedBatch verifies that a batch with a mix of pre-computed
+// and nil vectors embeds only the missing ones and indexes all entries.
+func TestIndexDrawersMixedBatch(t *testing.T) {
+	eng, v := testEngine(t)
+	ctx := context.Background()
+
+	d1 := addDrawer(t, v, "proj", "wing-a", "room-1", "alpha content precomputed", "facts")
+	d2 := addDrawer(t, v, "proj", "wing-a", "room-1", "beta content embedded by engine", "facts")
+
+	vec1, err := eng.Embedder().Embed(ctx, d1.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = eng.IndexDrawers(ctx, []DrawerInput{
+		{Project: "proj", Wing: "wing-a", Room: "room-1", Drawer: d1, Vec: vec1},
+		{Project: "proj", Wing: "wing-a", Room: "room-1", Drawer: d2}, // Vec nil → engine embeds
+	})
+	if err != nil {
+		t.Fatalf("IndexDrawers: %v", err)
+	}
+
+	results, err := eng.Search(ctx, "content", SearchFilters{Project: "proj"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
 	}
 }

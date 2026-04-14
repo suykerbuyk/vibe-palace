@@ -84,14 +84,14 @@ shared writer with different pre/post conditions.
 
 | Artifact | Writer primitive | Orchestrators | Severity |
 |---|---|---|---|
-| `<vault>/Projects/<slug>/config.toml` | `storage.Vault.WriteVaultProjectConfig` (`storage/config_writer.go:108`) | `migrate/vibevault.go:78` (direct); `reconcile/vault_project.go:147` (via `Apply`) | **High** — migrate bypasses the reconciler's Check/Plan/Apply ceremony, so idempotency + drift detection semantics differ between re-migration and `vp init` re-runs. `absorb` only *reads* this file as a guard (`absorb/writer.go:177`), it does not write it. |
+| `<vault>/Projects/<slug>/config.toml` | `storage.Vault.WriteVaultProjectConfig` (`storage/config_writer.go:108`) | `reconcile/vault_project.go:147` (via `Apply`) — sole orchestrator. `migrate/vibevault.go` now delegates via `reconcileVaultProject` helper. | **DONE (commit pending)** — single orchestrator; migrate inherits Check/Plan/Apply ceremony so re-migration and `vp init` re-runs share idempotency + drift semantics. `absorb` only *reads* this file as a guard (`absorb/writer.go:177`), it does not write it. |
 | `<project_root>/.vibe-palace.toml` (cwd project file — distinct from the vault-project `config.toml`) | `reconcile/cwd_project.go` via its `Apply` | `cmd_init` only | Low — single orchestrator. |
-| `<vault>/Templates/commands/*.md` | Embedded-FS copy | `reconcile.TemplateTree.Apply` (materialize at init); `commands.Apply` (upgrade) | **High** — init uses `reconcile.ActionPrompt` ceremony with the lock file; `commands.Apply` is a bare atomic write. Two different upgrade stories for the same file set. |
-| `<vault>/Templates/skills/*/*.md` | Embedded-FS copy | `reconcile.TemplateTree.Apply` (init); `commands.ApplyWithBackup` (skills upgrade) | **High** — plus asymmetric `.bak` emission (skills only, undocumented). |
+| `<vault>/Templates/commands/*.md` | `templates.Executor.Write` (single atomic-write primitive) | `reconcile.TemplateTree.Apply` (materialize at init, `BackupPolicyAlways` on Update); `commands.Apply` (upgrade, `BackupPolicyNever`) | **DONE (commit pending)** — every template write now funnels through `templates.Executor.Write`; `.bak` policy is a single `BackupPolicy` enum the caller passes through `WriteOptions`. Decision table (silent-adopt + Row 1–5) still owned by `reconcile/template_tree.go`; only the per-file atomic write and `.bak` emission moved. See `doc/TEMPLATE_POLICY.md`. |
+| `<vault>/Templates/skills/*/*.md` | `templates.Executor.Write` | `reconcile.TemplateTree.Apply` (init, `BackupPolicyAlways`); `commands.ApplyWithBackup` (skills upgrade, `BackupPolicyRename`) | **DONE (commit pending)** — `.bak` asymmetry preserved but centralized: commands = Never, skills = Rename. Documented in `doc/TEMPLATE_POLICY.md` as a follow-up to unify (or to expose as an explicit CLI flag). No user-visible behavior change in this refactor. |
 | `.claude/commands/vpc-*.md` | `shims.Wire*` | `shims.WireSkill` (init); `shims.Apply` (commands upgrade) | Medium — no lock coordination; correct writer. |
-| `CLAUDE.md` / `AGENTS.md` / `.cursorrules` / `.rules` / copilot | `agentfile.Wire` (sole writer — atomic, verified single primitive) | `cmd_init.go:478`; `commands/managed.go:73` (`ApplyAgentBlocks`); `absorb/writer.go:430` | Medium — **one writer, three orchestrators**. Not a CLAUDE.md rule violation, but the three orchestration sites have drifted scope (init wires all targets; `ApplyAgentBlocks` rewires stale blocks only; `absorb` wires the one just-written target). Consolidation is an ergonomics win, not a correctness fix. |
-| Drawer index vectors | `search.Engine.indexVec` (internal) | `IndexDrawer` (embed-then-index), `IndexDrawerWithVec` (caller supplies vector), `Rebuild` (batch scan) | Medium — two public entry points with documented but overlapping contracts. |
-| KG entities & triples | `storage.Vault.AddEntity`, `AddTriple` | Three sequential extractors in `capture/indexer.go:121,148,176` | Medium — three extraction passes, same write target, no coordination or frequency filter. |
+| `CLAUDE.md` / `AGENTS.md` / `.cursorrules` / `.rules` / copilot | `agentfile.Wire` (sole writer — atomic, verified single primitive) | `agentfile.WireAll(projectRoot, opts...)` — sole orchestrator. `cmd_init`, `commands.ApplyAgentBlocks`, and `absorb.Apply`'s post-rewrite step all route through it (with `WithTargets` / `WithStaleOnly` opts). | **DONE (commit pending)** — single orchestrator; three callers collapsed onto one `Detect → Wire` loop. Options carry scope differences (`WithTargets` for caller-provided targets, `WithFilter` by DisplayName, `WithStaleOnly` for the current-sha skip). Integration test `TestIntegrationWireAllOrchestratorConvergence` drives init → commands-upgrade → absorb and asserts every candidate file ends with the current managed block regardless of which path wrote last. |
+| Drawer index vectors | `search.Engine` internal insert path (locked `VectorIndex.Insert` + `metadata` update) | `IndexDrawers(ctx, []DrawerInput)` (batch; engine embeds missing vectors via `EmbedBatch`), `IndexDrawer` (single-item convenience wrapper), `Rebuild` (batch scan) | **DONE (commit pending)** — single public batch entry point; `IndexDrawerWithVec` deleted; capture + mempalace migrations updated to `IndexDrawers`; parity test added in `internal/capture/indexer_test.go`. |
+| KG entities & triples | `storage.Vault.AddEntity`, `AddTriple` | Single unified pass via `kg.ExtractAll(text, validFrom, opts)` in `internal/kg/extract_all.go`; `capture/indexer.go:extractEntities` iterates the flat result once. | **DONE (commit pending)** — one orchestrator; dedup across extractors by (type, normalized-name); frequency filter drops singletons (`kg.DefaultMinMentions = 2`). `slog.Warn` on write failures preserved, now with originating extractor `source` attached for log-analysis. Regex/pattern definitions re-homed into `internal/kg/`; `capture.ExtractEntities` is a thin adapter. Integration test `TestIndexTranscriptKGDedup` asserts single-entity write + singleton rejection. Chosen frequency threshold: `>=2` mentions (rationale: cheapest signal that a transcript token was intentional vs. a one-off typo or passing reference). |
 
 ### Consolidation recommendations (rescoped)
 
@@ -116,10 +116,10 @@ shared writer with different pre/post conditions.
 
 | Primitive | Duplicated in | Fix |
 |---|---|---|
-| Slug validation | `slug.Validate()` and `storage.ValidateSlug()` — byte-for-byte identical (regex, constants, error strings) | Delete `storage.ValidateSlug`; update callers in `project/detect.go:139,150,160`, `cmd_init.go`, internal `validateSlugs` helper in `storage/paths.go:43` to import `slug` |
-| `drawerID()` | `storage/drawers.go:31` and `capture/indexer.go:207` (comment at line 205 acknowledges "mirrors storage.drawerID") | Export `storage.DrawerID`; delete the capture copy; import |
+| Slug validation | `slug.Validate()` and `storage.ValidateSlug()` — byte-for-byte identical (regex, constants, error strings) | DONE (commit pending) |
+| `drawerID()` | `storage/drawers.go:31` and `capture/indexer.go:207` (comment at line 205 acknowledges "mirrors storage.drawerID") | DONE (commit pending) |
 | Slug scanning (existing-slug collision) | `migrate/resolver.go:58` and `cmd/vp/cmd_migrate.go:141` | Merge into one exported helper (likely `slug.ScanExisting(vaultRoot)` or `migrate.ResolutionContext`) |
-| `projectCacheDir()` (test helper) | `embedder/testcache_test.go` and `search/testcache_test.go` | Extract to `internal/testutil/cachedir.go` |
+| `projectCacheDir()` (test helper) | `embedder/testcache_test.go` and `search/testcache_test.go` | DONE (commit pending) |
 | Vault-dirty git check | `cmd_commands.go:211` (ad-hoc `git status` invocation); needed by skills-upgrade and config-sync too | Promote to `check.VaultClean(vaultRoot) Result` |
 
 **NOT a duplication — leave alone:**
@@ -186,6 +186,25 @@ For every error-bearing call in `internal/` and `cmd/vp/`:
 
 A dedicated refactor item (#7 below) tracks this sweep.
 
+**Status: implemented in health #7 sweep (commit pending).** The MCP
+dispatch boundary (`mcp/tools.go:makeHandler`) now logs entry/exit, handler
+errors, validation failures, and panic-recovers with `op`, `tool`,
+`request_id`, and `elapsed_ms` attributes. The six `_ = f.Close()`
+write-side sites in `agentfile/wire.go`, `shims/wire.go`, and
+`absorb/writer.go` now emit `slog.Error` on close failure while
+preserving the primary operation's error return. `migrate.AutoResolver`
+now emits `slog.Warn` on every auto-accepted rename so the user-visible
+decision leaves an audit trail. The `capture/indexer.go` "silently
+ignored" comment was corrected — KG writes have been logging via
+`slog.Warn` since day one, and the comment now says so.
+
+**Extension (health #4).** The new `agentfile.WireAll` orchestrator follows
+the same discipline: a failed `ScanBlock` under `WithStaleOnly` emits
+`slog.Warn` (best-effort — the orchestrator proceeds to wire the file
+rather than skip it on a read error), and a failed `Wire` call emits
+`slog.Error` (write-side failure). Every log record carries `op`,
+`path`, `display`, and `err`.
+
 ---
 
 ## Area Findings
@@ -225,13 +244,13 @@ and triples.
 
 **Issues:**
 
-- `search/engine.go:148` (`IndexDrawer`) and `search/engine.go:261`
-  (`IndexDrawerWithVec`) are both public. The second exists for the
-  capture pipeline to avoid double-embedding a pre-batched vector set.
-  `IndexDrawerWithVec` has exactly one non-test caller
-  (`capture/indexer.go:106`). Make it unexported or collapse both into a
-  single `IndexDrawers(batch)` method that handles the batching decision
-  internally.
+- ~~`search/engine.go:148` (`IndexDrawer`) and `search/engine.go:261`
+  (`IndexDrawerWithVec`) are both public.~~ **DONE (commit pending)** —
+  collapsed into `Engine.IndexDrawers(ctx, []DrawerInput)`; entries with
+  a pre-computed `Vec` skip embedding, missing ones are embedded in a
+  single `EmbedBatch` call. `IndexDrawer` remains as a thin convenience
+  wrapper for single-item callers. `IndexDrawerWithVec` deleted.
+  `capture/indexer.go` and `migrate/mempalace.go` updated.
 - `search/engine.go:335-362` has incomplete chunk-aware dedup. Current
   heuristic (first-per-SourceRef) is shipping as a placeholder;
   `SearchResult` lacks a `ChunkIndex` field, so the documented follow-up
@@ -271,9 +290,17 @@ All three KG extractor sites already log their errors via
 - `commands.Apply()` vs `commands.ApplyWithBackup()`: commands never emit
   `.bak`, skills always do. No documented reason; user sees inconsistent
   behavior between upgrade paths.
-- `cmd_config.go` has two upgrade paths: a deprecated legacy TOML-parsing
+- ~~`cmd_config.go` has two upgrade paths: a deprecated legacy TOML-parsing
   path (lines 53-179) and the new reconciler-based `sync`. Needs a
-  deletion date.
+  deletion date.~~ **DONE (commit pending)** — legacy TOML-parsing path
+  deleted; `vp config upgrade` is now a thin alias that translates
+  `--cwd` / `--project` into the equivalent `vp config sync --tier`
+  invocation. Pre-deletion safety test (`TestUpgradeAliasParity`, was
+  `TestLegacyVsSyncByteIdentical` during the overlap) ran legacy and
+  sync on the same fixture across all three target resolutions (global,
+  cwd, project) and asserted byte-identical `config.toml` + `.bak`
+  output. Passed on first run — no divergence — which authorized the
+  deletion. `cmd_config.go` shrunk from 769 to 601 LOC.
 - `cmd_check.go:132` calls `check.CheckAgentDrift` ad-hoc, outside the
   `Plan → Apply` reconciler contract. Drift detection is divorced from
   remediation; what `check` finds has no single `vp fix` target.
@@ -352,6 +379,17 @@ Secondary: a schema-drift matrix test in `tools_lifecycle_test.go` that,
 for every registered tool, verifies missing-required-field requests
 return a well-formed JSON-RPC error.
 
+**Status (DONE, commit pending):** All five journey tests + the
+`TestTools_SchemaDriftMatrix` matrix test landed under
+`internal/integration/`. Journey tests run on the mock embedder in
+`-short` mode via the existing `testHarness` and exercise ≥3 tool calls
+each with cross-tool consistency assertions (not just single-tool
+success). The schema-drift matrix enumerates tools via
+`h.Server.Registry().List()`, parses each schema's `required` array,
+and asserts the protocol boundary returns `IsError=true` with an error
+message that names a missing required field (34 of 39 tools carry
+required fields; the other 5 serve as "no required" baselines).
+
 ---
 
 ## Top 10 Refactoring Wins (revised and prioritized)
@@ -362,15 +400,15 @@ verified against HEAD.
 | # | Refactor | Scope | Effort | Impact |
 |---|---|---|---|---|
 | 1 | **Unify slug validation** — delete `storage.ValidateSlug`, route all callers through `slug.Validate`. Leave `slug.Slugify` and the intentional variants in `project/detect.go` + `tools/kg_tools.go` alone (documented at `slug/slug.go:44-47`). | slug, storage, project, cmd_init | ~2h | High |
-| 2 | **Single `config.toml` orchestrator** — `reconcile.VaultProject.Apply` becomes the only orchestrator; `migrate/vibevault.go:78` builds a desired-state input and delegates. Scope strictly to the vault-project `config.toml`; do **not** touch the cwd `.vibe-palace.toml`, which already has a single orchestrator. | migrate, reconcile | ~3h | High |
-| 3 | **Collapse `IndexDrawer` / `IndexDrawerWithVec`** — hide batching in the engine; single public `IndexDrawers(batch)` method. `capture/indexer.go:106` is the only non-test external caller of the vectored form. | search, capture | ~2h | High |
-| 4 | **Extract `agentfile.WireAll(projectRoot)` orchestrator** — single rewire pipeline called by `cmd_init`, `commands.ApplyAgentBlocks`, and `absorb.Apply`. This is orchestration extraction, not writer unification; `agentfile.Wire` is already the sole writer. | agentfile, cmd_init, commands, absorb | ~3h | Medium-High |
-| 5 | **Template `Executor` API** — move embedded-FS traversal out of `reconcile/template_tree.go` (598 LOC) into `internal/templates`; collapse `TemplateTree.Apply`, `commands.Apply`, and `commands.ApplyWithBackup` onto one plan/apply surface. Decide `.bak` policy centrally and document it. | templates, reconcile, commands | ~6h | High |
-| 6 | **Tool-orchestration user-journey tests** — 5 multi-tool tests exercising real agent flows, using the existing `testHarness`. | internal/integration/ | ~6h | High |
-| 7 | **Error capture & logging sweep** — implement the discipline in Finding #3: (a) add entry/exit/error logging in `mcp/tools.go:makeHandler`; (b) replace every `_ = f.Close()` on write-side descriptors with `slog.Error` on failure; (c) add `slog.Warn` at every code site whose comment says "silently adopted / accepted / ignored" (`migrate/resolver.go:79`, `reconcile/template_tree.go:251`, etc.); (d) add `slog` call plus identifying inputs to any best-effort error that is currently discarded. Does not change user-visible behavior; adds audit trail. | mcp, migrate, reconcile, absorb, shims, agentfile | ~4h | High |
-| 8 | **Deduplicate KG entity extraction** — single `kg.ExtractAll(text, validators)` with a frequency filter and a dedup-across-passes coordinator; `capture/indexer.go` calls it once instead of three separate extractor loops. Keep the `slog.Warn` coverage already present. | capture, kg | ~3h | Medium |
+| 2 | **Single `config.toml` orchestrator** — `reconcile.VaultProject.Apply` becomes the only orchestrator; `migrate/vibevault.go:78` builds a desired-state input and delegates. Scope strictly to the vault-project `config.toml`; do **not** touch the cwd `.vibe-palace.toml`, which already has a single orchestrator. **DONE (commit pending).** | migrate, reconcile | ~3h | High |
+| 3 | **Collapse `IndexDrawer` / `IndexDrawerWithVec`** — hide batching in the engine; single public `IndexDrawers(batch)` method. `capture/indexer.go:106` is the only non-test external caller of the vectored form. **DONE (commit pending)** — `search.Engine.IndexDrawers(ctx, []DrawerInput)` is now the single public batch entry point (entries with a pre-computed `Vec` skip embedding; missing ones are embedded in one `EmbedBatch` call). `IndexDrawer` kept as a thin convenience wrapper; `IndexDrawerWithVec` deleted. `capture/indexer.go` + `migrate/mempalace.go` updated. Parity integration test in `internal/capture/indexer_test.go` (`TestIndexDrawersParityAcrossPaths`) proves both paths yield the same `DrawerID`. | search, capture, migrate | ~2h | High |
+| 4 | **Extract `agentfile.WireAll(projectRoot)` orchestrator** — single rewire pipeline called by `cmd_init`, `commands.ApplyAgentBlocks`, and `absorb.Apply`. This is orchestration extraction, not writer unification; `agentfile.Wire` is already the sole writer. **DONE (commit pending)** — `internal/agentfile/wireall.go` adds `WireAll(projectRoot, opts...)` with three options (`WithTargets`, `WithFilter`, `WithStaleOnly`). `cmd_init` calls it with no options (detect-all); `commands.ApplyAgentBlocks` passes `WithTargets(nonCurrentTargets)`; `absorb.rewriteSourceFile` passes `WithTargets(Target{…})`. Unit coverage 94.3% on `WireAll`, 100% on option constructors. Integration convergence test lives at `internal/integration/wireall_orchestrator_test.go`. | agentfile, cmd_init, commands, absorb | ~3h | Medium-High |
+| 5 | **Template `Executor` API** — move embedded-FS traversal out of `reconcile/template_tree.go` (598 LOC) into `internal/templates`; collapse `TemplateTree.Apply`, `commands.Apply`, and `commands.ApplyWithBackup` onto one plan/apply surface. Decide `.bak` policy centrally and document it. **DONE (commit pending)** — `internal/templates/executor.go` owns the single atomic-write + `.bak` primitive (`Executor.Write`, `HashFile`, `Classify`); the three orchestrators delegate. Per-file traversal already lived in `templates.WalkEmbedded` (Phase 0 of the materialize epic); what moved was the shared writer primitive and the `.bak` policy enum. `.bak` asymmetry (commands = `BackupPolicyNever`, skills = `BackupPolicyRename`, init materialize Update = `BackupPolicyAlways`) preserved but centralized; see `doc/TEMPLATE_POLICY.md` for the rationale + follow-up to unify or expose via CLI flag. Tests: `internal/templates/executor_test.go` (79.5% coverage on new code; 8 subtests covering Classify + every BackupPolicy combination + atomicity + default perm) and `internal/integration/template_executor_test.go` (asymmetry pin + new-file edge case). | templates, reconcile, commands | ~6h | High |
+| 6 | **Tool-orchestration user-journey tests** — 5 multi-tool tests exercising real agent flows, using the existing `testHarness`. **DONE (commit pending)** — five journey tests landed under `internal/integration/journey_*_test.go` (new-project bootstrap/capture/search; command discovery+execution; KG lifecycle; task lifecycle; cross-IDE skill materialization) plus a 6th `TestTools_SchemaDriftMatrix` in `tools_lifecycle_test.go` that enumerates every registered MCP tool (39 total, 34 with required fields) and asserts each tool rejects empty-arg calls with an error message that names a missing required field. | internal/integration/ | ~6h | High |
+| 7 | **Error capture & logging sweep** — implement the discipline in Finding #3: (a) add entry/exit/error logging in `mcp/tools.go:makeHandler`; (b) replace every `_ = f.Close()` on write-side descriptors with `slog.Error` on failure; (c) add `slog.Warn` at every code site whose comment says "silently adopted / accepted / ignored" (`migrate/resolver.go:79`, `reconcile/template_tree.go:251`, etc.); (d) add `slog` call plus identifying inputs to any best-effort error that is currently discarded. Does not change user-visible behavior; adds audit trail. **DONE (commit pending)** — see Finding #3 status note above. | mcp, migrate, reconcile, absorb, shims, agentfile | ~4h | High |
+| 8 | **Deduplicate KG entity extraction** — single `kg.ExtractAll(text, validators)` with a frequency filter and a dedup-across-passes coordinator; `capture/indexer.go` calls it once instead of three separate extractor loops. Keep the `slog.Warn` coverage already present. | capture, kg | ~3h | Medium | **DONE (commit pending)** — `kg.ExtractAll(text, validFrom, ExtractAllOptions{})` returns a flat `{Entities, Triples}` result; dedup by `(type, lower(name))`; default `MinMentions = 2` (singletons dropped, e.g. one-off typos never graduate to permanent KG nodes). Regexes re-homed to `internal/kg/extract_all.go`; `capture/entities.go` now a 20-line adapter. Tests: `internal/kg/extract_all_test.go` (8 cases, ~85% coverage on new file), `TestIndexTranscriptKGDedup` in `internal/capture/indexer_test.go`. |
 | 9 | **Extract `drawerID` + `projectCacheDir`** — promote `drawerID` to `storage.DrawerID` (exported); extract `projectCacheDir` test helper to `internal/testutil/cachedir.go`. | storage, capture, internal/testutil | ~30m | Medium |
-| 10 | **Delete deprecated `vp config upgrade` legacy path** — consolidate to reconciler-based `sync`. Needs a migration test that runs both paths on a fixture vault and asserts byte-identical output during the overlap window before deletion. | cmd_config | ~2h | Medium |
+| 10 | **Delete deprecated `vp config upgrade` legacy path** — consolidate to reconciler-based `sync`. Needs a migration test that runs both paths on a fixture vault and asserts byte-identical output during the overlap window before deletion. **DONE (commit pending)** — byte-identical parity test (`TestLegacyVsSyncByteIdentical`, now `TestUpgradeAliasParity`) ran legacy and sync on the same fixture across all three target resolutions (global, cwd, project) and asserted byte-identical `config.toml` + `.bak` output. Passed on first run — no divergence. Legacy TOML-parsing path deleted; `vp config upgrade` is now a thin alias that translates `--cwd` / `--project` into `vp config sync --tier <resolved>`. `cmd_config.go` shrunk from 769 to 601 LOC. | cmd_config | ~2h | Medium |
 
 Total estimated effort: **~31.5 hours**. Items 1–7 are the core cleanup
 and should land before further feature work. Item 7 (error capture) is

@@ -4,14 +4,30 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+// captureLogs installs a debug-level slog handler that writes to a buffer
+// for the duration of the test, restoring the previous default on cleanup.
+// Entry logs live at Debug level, so the buffer handler must be permissive.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	h := slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	prev := slog.Default()
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
+}
 
 func testRegistry(t *testing.T) *Registry {
 	t.Helper()
@@ -578,4 +594,178 @@ func TestMarshalResult(t *testing.T) {
 			t.Error("expected passthrough of CallToolResult pointer")
 		}
 	})
+}
+
+// callRegisteredHandler drives the mcp-go protocol layer to actually invoke
+// makeHandler for the given tool name — the Dispatch path bypasses it.
+func callRegisteredHandler(t *testing.T, srv *Server, toolName, argsJSON string) {
+	t.Helper()
+	ctx := context.Background()
+	srv.HandleMessage(ctx, json.RawMessage(`{
+		"jsonrpc": "2.0", "id": 1, "method": "initialize",
+		"params": {
+			"protocolVersion": "2025-03-26",
+			"capabilities": {},
+			"clientInfo": {"name": "test", "version": "0.1.0"}
+		}
+	}`))
+	srv.HandleMessage(ctx, json.RawMessage(`{
+		"jsonrpc": "2.0", "method": "notifications/initialized"
+	}`))
+	call := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"` + toolName + `","arguments":` + argsJSON + `}}`
+	srv.HandleMessage(ctx, json.RawMessage(call))
+}
+
+// TestMakeHandlerLogsEntryAndExit verifies that a successful tool call logs
+// both an "enter" and an "exit" record tagged with the tool name via
+// slog.SetDefault. Uses a buffered JSON handler captured for the test.
+func TestMakeHandlerLogsEntryAndExit(t *testing.T) {
+	buf := captureLogs(t)
+
+	srv := testServer(t)
+	srv.Registry().MustRegister(Tool{
+		Name:    "echo-log",
+		Schema:  echoSchema,
+		Handler: echoHandler,
+	})
+
+	callRegisteredHandler(t, srv, "echo-log", `{"message":"hi"}`)
+
+	out := buf.String()
+	if !strings.Contains(out, `"msg":"mcp.makeHandler: enter"`) {
+		t.Errorf("missing entry log record; full output:\n%s", out)
+	}
+	if !strings.Contains(out, `"msg":"mcp.makeHandler: exit"`) {
+		t.Errorf("missing exit log record; full output:\n%s", out)
+	}
+	if !strings.Contains(out, `"tool":"echo-log"`) {
+		t.Errorf("log records missing tool attr; full output:\n%s", out)
+	}
+	if !strings.Contains(out, `"op":"mcp.makeHandler"`) {
+		t.Errorf("log records missing op attr; full output:\n%s", out)
+	}
+	if !strings.Contains(out, `"elapsed_ms"`) {
+		t.Errorf("exit record missing elapsed_ms; full output:\n%s", out)
+	}
+}
+
+// TestMakeHandlerLogsHandlerError asserts that a handler-returned error is
+// logged at Warn level through the dispatch boundary.
+func TestMakeHandlerLogsHandlerError(t *testing.T) {
+	buf := captureLogs(t)
+
+	srv := testServer(t)
+	srv.Registry().MustRegister(Tool{
+		Name: "boom-log",
+		Handler: func(_ context.Context, _ json.RawMessage) (any, error) {
+			return nil, errors.New("kapow")
+		},
+	})
+
+	callRegisteredHandler(t, srv, "boom-log", `{}`)
+
+	out := buf.String()
+	if !strings.Contains(out, `"msg":"mcp.makeHandler: handler error"`) {
+		t.Errorf("missing handler-error log; full output:\n%s", out)
+	}
+	if !strings.Contains(out, `"tool":"boom-log"`) {
+		t.Errorf("handler-error log missing tool attr; full output:\n%s", out)
+	}
+	if !strings.Contains(out, "kapow") {
+		t.Errorf("handler-error log missing err detail; full output:\n%s", out)
+	}
+}
+
+// TestMakeHandlerLogsValidationFailure verifies that a schema-validation
+// failure emits a Warn-level log record with the tool name.
+func TestMakeHandlerLogsValidationFailure(t *testing.T) {
+	buf := captureLogs(t)
+
+	srv := testServer(t)
+	srv.Registry().MustRegister(Tool{
+		Name:    "strict-log",
+		Schema:  echoSchema,
+		Handler: echoHandler,
+	})
+
+	callRegisteredHandler(t, srv, "strict-log", `{}`)
+
+	out := buf.String()
+	if !strings.Contains(out, `"msg":"mcp.makeHandler: validation failed"`) {
+		t.Errorf("missing validation-failure log; full output:\n%s", out)
+	}
+	if !strings.Contains(out, `"tool":"strict-log"`) {
+		t.Errorf("validation-failure log missing tool attr; full output:\n%s", out)
+	}
+}
+
+// TestMakeHandlerRecoversPanic asserts that a panicking handler is caught,
+// logged at Error level, and surfaced as a tool error instead of killing
+// the process. Requires server.WithRecovery to not pre-empt the defer.
+func TestMakeHandlerRecoversPanic(t *testing.T) {
+	buf := captureLogs(t)
+
+	// A bare Registry (no server.WithRecovery interposition) so our
+	// deferred recover is the one that fires.
+	srv := server.NewMCPServer("panic-test", "0.1.0", server.WithToolCapabilities(true))
+	reg := NewRegistry(srv)
+	reg.MustRegister(Tool{
+		Name: "panic-log",
+		Handler: func(_ context.Context, _ json.RawMessage) (any, error) {
+			panic("intentional")
+		},
+	})
+
+	// Directly drive Dispatch is not enough — makeHandler is only invoked
+	// by the mcp-go server path. Bypass by calling the registered handler
+	// through the registry's tools map.
+	reg.mu.RLock()
+	rt := reg.tools["panic-log"]
+	reg.mu.RUnlock()
+	handler := reg.makeHandler(rt)
+
+	// Call the handler directly; recover() should catch the panic.
+	// Supply an empty-object Arguments so schema validation passes and we
+	// actually reach the panicking application handler.
+	req := mcplib.CallToolRequest{}
+	req.Params.Name = "panic-log"
+	req.Params.Arguments = map[string]any{}
+	result, err := handler(
+		WithRequestID(context.Background(), "req-42"),
+		req,
+	)
+	if err != nil {
+		t.Fatalf("expected recovered panic to yield no error, got: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil tool result from recovered panic")
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, `"msg":"mcp.makeHandler: panic recovered"`) {
+		t.Errorf("missing panic-recover log; full output:\n%s", out)
+	}
+	if !strings.Contains(out, `"request_id":"req-42"`) {
+		t.Errorf("panic log missing request_id correlation; full output:\n%s", out)
+	}
+	if !strings.Contains(out, "intentional") {
+		t.Errorf("panic log missing panic message; full output:\n%s", out)
+	}
+}
+
+func TestWithRequestID(t *testing.T) {
+	ctx := WithRequestID(context.Background(), "abc-123")
+	if got := requestIDFromContext(ctx); got != "abc-123" {
+		t.Errorf("requestIDFromContext = %q, want %q", got, "abc-123")
+	}
+	if got := requestIDFromContext(context.Background()); got != "" {
+		t.Errorf("missing ID should return empty, got %q", got)
+	}
+	if got := requestIDFromContext(WithRequestID(context.Background(), "")); got != "" {
+		t.Errorf("empty ID should be ignored, got %q", got)
+	}
+	//nolint:staticcheck // Explicitly exercise nil-ctx branch.
+	if got := requestIDFromContext(nil); got != "" {
+		t.Errorf("nil ctx should yield empty, got %q", got)
+	}
 }

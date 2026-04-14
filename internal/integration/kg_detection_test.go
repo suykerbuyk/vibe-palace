@@ -14,10 +14,17 @@ import (
 func TestIntegrationKGDetection(t *testing.T) {
 	h := newHarness(t, false) // mock embedder — KG doesn't need real embeddings
 
-	transcript := `Alice said the deploy looks good. Bob decided to use Redis for the cache layer.
+	// Each entity under test is mentioned twice so it clears the default
+	// kg.DefaultMinMentions (=2) frequency threshold enforced by the
+	// unified kg.ExtractAll pipeline.
+	transcript := `Alice said the deploy looks good. Alice confirmed the rollout.
+Bob decided to use Redis for the cache layer. Bob suggested Redis again for session state.
 Carol works on vibe-palace and mentioned the new search pipeline.
+Carol reported vibe-palace performance gains.
 We deployed using Docker and monitored with Grafana.
-Dave created the indexing module. vibe-palace depends on hugot for embeddings.`
+Docker is running everywhere and Grafana dashboards are live.
+Dave created the indexing module. Dave also reviewed the ingest path.
+vibe-palace depends on hugot for embeddings. vibe-palace keeps improving.`
 
 	sessionID := "session-kg-detect-01"
 	err := h.Indexer.IndexTranscript(context.Background(), sessionID, "proj", transcript)

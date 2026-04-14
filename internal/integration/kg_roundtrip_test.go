@@ -13,9 +13,14 @@ import (
 func TestIntegrationKGEntityRoundTrip(t *testing.T) {
 	h := newHarness(t, false) // mock embedder — KG doesn't need real embeddings
 
+	// Each entity is mentioned twice to clear the default
+	// kg.DefaultMinMentions (=2) frequency filter.
 	transcript := `We refactored internal/storage/vault.go to improve error handling.
+Re-reading internal/storage/vault.go confirmed the fix.
 The changes were reviewed at https://github.com/suykerbuyk/vibe-palace/pull/42
-and we also updated internal/search/engine.go with the new API.`
+and again at https://github.com/suykerbuyk/vibe-palace/pull/42 after CI.
+We also updated internal/search/engine.go with the new API.
+Follow-up edits to internal/search/engine.go landed shortly after.`
 
 	sessionID := "session-kg-01"
 	err := h.Indexer.IndexTranscript(context.Background(), sessionID, "proj", transcript)
@@ -57,7 +62,10 @@ and we also updated internal/search/engine.go with the new API.`
 	}
 
 	// Verify triples: file/URL entities should have "mentioned_in" triples
-	// with confidence 0.8 (from the original entity extraction).
+	// whose confidence mirrors the originating extractor. Under the
+	// unified kg.ExtractAll pass, file/URL regex matches are treated as
+	// deterministic (confidence 1.0), replacing the previous hard-coded
+	// 0.8 that the pre-refactor entity extractor emitted.
 	for _, e := range entities {
 		if e.Type != "file" && e.Type != "url" {
 			continue // Phase 7 entities have varying confidence
@@ -68,8 +76,8 @@ and we also updated internal/search/engine.go with the new API.`
 		}
 		for _, tr := range triples {
 			if tr.Predicate == "mentioned_in" && tr.Object == sessionID {
-				if tr.Confidence != 0.8 {
-					t.Errorf("triple confidence for %s = %f, want 0.8", e.Name, tr.Confidence)
+				if tr.Confidence != 1.0 {
+					t.Errorf("triple confidence for %s = %f, want 1.0", e.Name, tr.Confidence)
 				}
 				if tr.SourceSession != sessionID {
 					t.Errorf("triple source_session = %q, want %q", tr.SourceSession, sessionID)

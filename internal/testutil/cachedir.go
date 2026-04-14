@@ -1,7 +1,8 @@
 // Copyright (c) 2026 John Suykerbuyk and SykeTech LTD
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-package embedder
+// Package testutil provides shared test helpers for the vibe-palace project.
+package testutil
 
 import (
 	"os"
@@ -9,13 +10,13 @@ import (
 	"testing"
 )
 
-// projectCacheDir returns the project-local .cache/models directory,
+// ProjectCacheDir returns the project-local .cache/models directory,
 // walking up from the test's working directory to find the project root.
 // Checks for common project root markers (go.mod, package.json, Cargo.toml,
 // pyproject.toml) and falls back to .git as a universal marker.
 // This cache persists between test runs and is gitignored. It is only
 // cleared by `make dist-clean` or `git clean -fxd`.
-func projectCacheDir(t *testing.T) string {
+func ProjectCacheDir(t *testing.T) string {
 	t.Helper()
 
 	dir, err := os.Getwd()

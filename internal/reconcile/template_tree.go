@@ -5,8 +5,6 @@ package reconcile
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -110,16 +108,9 @@ func (r *TemplateTreeReconciler) vaultRelFromEmbedded(embeddedRel string) string
 	return r.relSubpath + "/" + embeddedRel
 }
 
-// hashFile returns the hex sha256 of a file on disk, or ("", err) on
-// read error. A missing file returns ("", os.ErrNotExist wrapped).
-func hashFile(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
-}
+// hashFile delegates to templates.HashFile so the reconciler and the
+// templates.Executor share one hash primitive for on-disk bytes.
+func hashFile(path string) (string, error) { return templates.HashFile(path) }
 
 // Check returns one check.Result per embedded resource for
 // materialize mode; one aggregate row for scaffold mode.
@@ -408,6 +399,7 @@ func (r *TemplateTreeReconciler) Apply(_ context.Context, p Plan) (Report, error
 
 func (r *TemplateTreeReconciler) applyMaterialize(p Plan) (Report, error) {
 	var rep Report
+	templateExec := templates.NewExecutor()
 
 	// Ensure the canonical gitignore patterns are in place before any
 	// sidecars appear. Done once per Apply, not per action.
@@ -458,11 +450,8 @@ func (r *TemplateTreeReconciler) applyMaterialize(p Plan) (Report, error) {
 				rep.Errors = append(rep.Errors, fmt.Errorf("create: no embedded resource for %s", a.Target))
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(a.Target), 0o755); err != nil {
-				rep.Errors = append(rep.Errors, fmt.Errorf("mkdir %s: %w", filepath.Dir(a.Target), err))
-				continue
-			}
-			if err := atomicWriteFile(a.Target, res.Bytes, 0o644); err != nil {
+			// Create: nothing to preserve, so Backup=Never.
+			if err := templateExec.Write(a.Target, res.Bytes, templates.WriteOptions{Backup: templates.BackupPolicyNever}); err != nil {
 				rep.Errors = append(rep.Errors, fmt.Errorf("write %s: %w", a.Target, err))
 				continue
 			}
@@ -481,18 +470,9 @@ func (r *TemplateTreeReconciler) applyMaterialize(p Plan) (Report, error) {
 				rep.Errors = append(rep.Errors, fmt.Errorf("update: no embedded resource for %s", a.Target))
 				continue
 			}
-			// Write .bak of current bytes (non-atomic, last-writer-wins).
-			if cur, err := os.ReadFile(a.Target); err == nil {
-				bakPath := a.Target + ".bak"
-				if err := os.WriteFile(bakPath, cur, 0o644); err != nil {
-					rep.Errors = append(rep.Errors, fmt.Errorf("write bak %s: %w", bakPath, err))
-					continue
-				}
-			} else if !os.IsNotExist(err) {
-				rep.Errors = append(rep.Errors, fmt.Errorf("read for bak %s: %w", a.Target, err))
-				continue
-			}
-			if err := atomicWriteFile(a.Target, res.Bytes, 0o644); err != nil {
+			// Update: preserve pre-existing bytes as .bak (copy-then-
+			// rename so the primary stays readable throughout).
+			if err := templateExec.Write(a.Target, res.Bytes, templates.WriteOptions{Backup: templates.BackupPolicyAlways}); err != nil {
 				rep.Errors = append(rep.Errors, fmt.Errorf("write %s: %w", a.Target, err))
 				continue
 			}
@@ -567,32 +547,7 @@ func (r *TemplateTreeReconciler) applyScaffold(p Plan) (Report, error) {
 	return rep, nil
 }
 
-// atomicWriteFile writes data to path via a sibling tmp-file + rename.
-// Leaves no partial file on failure.
-func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".tmpl.*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer func() {
-		if _, statErr := os.Stat(tmpName); statErr == nil {
-			_ = os.Remove(tmpName)
-		}
-	}()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmpName, perm); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
-}
+// atomicWriteFile was the reconciler's private atomic-write helper.
+// It has been promoted to templates.Executor.Write (internal atomic
+// primitive); this file's three call sites now delegate.
+

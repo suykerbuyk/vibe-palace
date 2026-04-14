@@ -17,6 +17,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
+	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -84,7 +85,7 @@ func initProjectHandler(vault *storage.Vault) mcp.HandlerFunc {
 				name = filepath.Base(p.Path)
 			}
 		}
-		if err := storage.ValidateSlug(name); err != nil {
+		if err := slug.Validate(name); err != nil {
 			return nil, fmt.Errorf("invalid project name %q: %w", name, err)
 		}
 

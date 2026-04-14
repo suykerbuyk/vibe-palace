@@ -6,6 +6,7 @@ package agentfile
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -148,12 +149,18 @@ func atomicWrite(path string, data []byte) error {
 	cleanup := func() { _ = os.Remove(tmp) }
 
 	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
+		if cerr := f.Close(); cerr != nil {
+			slog.Error("agentfile.atomicWrite: close after write error",
+				"op", "agentfile.atomicWrite", "path", path, "tmp", tmp, "err", cerr)
+		}
 		cleanup()
 		return fmt.Errorf("write temp %s: %w", tmp, err)
 	}
 	if err := f.Sync(); err != nil {
-		_ = f.Close()
+		if cerr := f.Close(); cerr != nil {
+			slog.Error("agentfile.atomicWrite: close after fsync error",
+				"op", "agentfile.atomicWrite", "path", path, "tmp", tmp, "err", cerr)
+		}
 		cleanup()
 		return fmt.Errorf("fsync temp %s: %w", tmp, err)
 	}

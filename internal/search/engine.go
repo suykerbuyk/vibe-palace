@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
+	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -144,32 +145,79 @@ func (e *Engine) Search(ctx context.Context, query string, f SearchFilters) ([]S
 	return results[:limit], nil
 }
 
-// IndexDrawer adds a single drawer to the search index.
+// DrawerInput describes a drawer to index. If Vec is non-nil, the engine
+// uses it directly and skips embedding (useful when the caller has already
+// batch-embedded content, e.g., the capture pipeline). If Vec is nil, the
+// engine embeds Drawer.Content via its configured embedder.
+type DrawerInput struct {
+	Project string
+	Wing    string
+	Room    string
+	Drawer  storage.Drawer
+	Vec     []float32 // optional; pre-computed embedding
+}
+
+// IndexDrawer adds a single drawer to the search index, embedding its content.
+// It is a convenience wrapper around IndexDrawers.
 func (e *Engine) IndexDrawer(ctx context.Context, project, wing, room string, d storage.Drawer) error {
-	vec, err := e.embedder.Embed(ctx, d.Content)
-	if err != nil {
-		return fmt.Errorf("embed drawer %s: %w", d.ID, err)
+	return e.IndexDrawers(ctx, []DrawerInput{{
+		Project: project, Wing: wing, Room: room, Drawer: d,
+	}})
+}
+
+// IndexDrawers adds a batch of drawers to the search index. For each entry
+// missing a pre-computed Vec, the engine embeds in a single EmbedBatch call
+// (if the embedder supports it) to avoid per-item embedding round-trips.
+// Entries with non-nil Vec skip embedding entirely.
+func (e *Engine) IndexDrawers(ctx context.Context, batch []DrawerInput) error {
+	if len(batch) == 0 {
+		return nil
 	}
 
-	// Cache the embedding (non-fatal on failure).
-	if err := e.cache.Put(project, d.ID, vec); err != nil {
-		slog.Warn("embed cache write failed", "project", project, "drawer", d.ID, "err", err)
+	// Collect texts for any entries needing embedding, preserving indices.
+	var toEmbedIdx []int
+	var toEmbedText []string
+	for i, in := range batch {
+		if in.Vec == nil {
+			toEmbedIdx = append(toEmbedIdx, i)
+			toEmbedText = append(toEmbedText, in.Drawer.Content)
+		}
+	}
+
+	if len(toEmbedText) > 0 {
+		vecs, err := e.embedder.EmbedBatch(ctx, toEmbedText)
+		if err != nil {
+			return fmt.Errorf("embed drawers: %w", err)
+		}
+		if len(vecs) != len(toEmbedText) {
+			return fmt.Errorf("embed drawers: got %d vecs for %d inputs", len(vecs), len(toEmbedText))
+		}
+		for j, idx := range toEmbedIdx {
+			batch[idx].Vec = vecs[j]
+		}
+	}
+
+	// Cache embeddings (non-fatal on failure).
+	for _, in := range batch {
+		if err := e.cache.Put(in.Project, in.Drawer.ID, in.Vec); err != nil {
+			slog.Warn("embed cache write failed", "project", in.Project, "drawer", in.Drawer.ID, "err", err)
+		}
 	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	idx, ok := e.indexes[project]
-	if !ok {
-		idx = NewVectorIndex(e.embedder.Dimensions())
-		e.indexes[project] = idx
+	for _, in := range batch {
+		idx, ok := e.indexes[in.Project]
+		if !ok {
+			idx = NewVectorIndex(e.embedder.Dimensions())
+			e.indexes[in.Project] = idx
+		}
+		if err := idx.Insert(in.Drawer.ID, in.Vec); err != nil {
+			return err
+		}
+		e.metadata[in.Drawer.ID] = makeDrawerMeta(in.Project, in.Wing, in.Room, in.Drawer)
 	}
-
-	if err := idx.Insert(d.ID, vec); err != nil {
-		return err
-	}
-
-	e.metadata[d.ID] = makeDrawerMeta(project, wing, room, d)
 	return nil
 }
 
@@ -253,32 +301,6 @@ func (e *Engine) Rebuild(ctx context.Context, project string) error {
 // Embedder returns the engine's embedder for external batch use.
 func (e *Engine) Embedder() embedder.Embedder {
 	return e.embedder
-}
-
-// IndexDrawerWithVec adds a drawer to the search index using a pre-computed
-// embedding vector. This avoids re-embedding when the caller has already
-// batch-embedded the content (e.g., the ingest pipeline).
-func (e *Engine) IndexDrawerWithVec(project, wing, room string, d storage.Drawer, vec []float32) error {
-	// Cache the embedding (non-fatal on failure).
-	if err := e.cache.Put(project, d.ID, vec); err != nil {
-		slog.Warn("embed cache write failed", "project", project, "drawer", d.ID, "err", err)
-	}
-
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	idx, ok := e.indexes[project]
-	if !ok {
-		idx = NewVectorIndex(e.embedder.Dimensions())
-		e.indexes[project] = idx
-	}
-
-	if err := idx.Insert(d.ID, vec); err != nil {
-		return err
-	}
-
-	e.metadata[d.ID] = makeDrawerMeta(project, wing, room, d)
-	return nil
 }
 
 // Close releases resources.
@@ -374,7 +396,7 @@ func listRooms(vaultRoot, project, wing string) ([]string, error) {
 
 	var rooms []string
 	for _, e := range entries {
-		if e.IsDir() && storage.ValidateSlug(e.Name()) == nil {
+		if e.IsDir() && slug.Validate(e.Name()) == nil {
 			rooms = append(rooms, e.Name())
 		}
 	}

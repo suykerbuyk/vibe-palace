@@ -17,6 +17,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/tools"
 )
 
@@ -60,7 +61,7 @@ func newHarness(t *testing.T, useRealEmbedder bool, cfgOverrides ...func(*storag
 	var emb embedder.Embedder
 	if useRealEmbedder {
 		var err error
-		emb, err = embedder.NewONNX("sentence-transformers/all-MiniLM-L6-v2", projectCacheDir(t), 256, 32)
+		emb, err = embedder.NewONNX("sentence-transformers/all-MiniLM-L6-v2", testutil.ProjectCacheDir(t), 256, 32)
 		if err != nil {
 			t.Fatalf("NewONNX: %v", err)
 		}

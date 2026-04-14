@@ -9,40 +9,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/suykerbuyk/vibe-palace/internal/slug"
 )
-
-// slugPattern matches valid slugs: lowercase alphanumeric segments separated
-// by single hyphens. No leading, trailing, or consecutive hyphens.
-var slugPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
-
-const maxSlugLength = 64
-
-// ValidateSlug checks that s is a valid slug for use in vault paths.
-// Valid slugs are non-empty, contain only lowercase alphanumeric characters
-// and hyphens, and are at most 64 characters long.
-func ValidateSlug(s string) error {
-	if s == "" {
-		return fmt.Errorf("slug must not be empty")
-	}
-	if len(s) > maxSlugLength {
-		return fmt.Errorf("slug %q exceeds maximum length of %d characters", s, maxSlugLength)
-	}
-	if strings.Contains(s, "..") {
-		return fmt.Errorf("slug %q contains path traversal", s)
-	}
-	if strings.Contains(s, "/") || strings.Contains(s, "\\") {
-		return fmt.Errorf("slug %q contains path separator", s)
-	}
-	if !slugPattern.MatchString(s) {
-		return fmt.Errorf("slug %q must contain only lowercase alphanumeric characters and hyphens", s)
-	}
-	return nil
-}
 
 // validateSlugs validates all provided slugs, returning the first error found.
 func validateSlugs(slugs ...string) error {
 	for _, s := range slugs {
-		if err := ValidateSlug(s); err != nil {
+		if err := slug.Validate(s); err != nil {
 			return err
 		}
 	}
@@ -52,7 +26,7 @@ func validateSlugs(slugs ...string) error {
 // PalacePath returns the path to a project's palace directory:
 // {vault}/palace/{project}
 func (v *Vault) PalacePath(project string) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	return filepath.Join(v.Root, "palace", project), nil
@@ -80,7 +54,7 @@ func (v *Vault) DrawerFile(project, wing, room string) (string, error) {
 // KGEntitiesFile returns the path to the knowledge graph entities file:
 // {vault}/palace/{project}/kg/entities.jsonl
 func (v *Vault) KGEntitiesFile(project string) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	return filepath.Join(v.Root, "palace", project, "kg", "entities.jsonl"), nil
@@ -92,7 +66,7 @@ func (v *Vault) KGEntitiesFile(project string) (string, error) {
 // Subject, predicate, and object are lowercased with spaces replaced by
 // underscores. They must not contain the "--" delimiter sequence.
 func (v *Vault) KGTriplePath(project, subject, predicate, object string) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	subj := encodeTripleComponent(subject)
@@ -115,7 +89,7 @@ func (v *Vault) KGTriplePath(project, subject, predicate, object string) (string
 // LocalDir returns the path to a project's machine-local directory:
 // {vault}/palace/{project}/.local
 func (v *Vault) LocalDir(project string) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	return filepath.Join(v.Root, "palace", project, ".local"), nil
@@ -136,7 +110,7 @@ func EnsureDir(path string) error {
 // KGTriplesDir returns the path to the knowledge graph triples directory:
 // {vault}/palace/{project}/kg/triples
 func (v *Vault) KGTriplesDir(project string) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	return filepath.Join(v.Root, "palace", project, "kg", "triples"), nil
@@ -145,7 +119,7 @@ func (v *Vault) KGTriplesDir(project string) (string, error) {
 // SessionDir returns the path to a project's sessions directory:
 // {vault}/Projects/{project}/sessions
 func (v *Vault) SessionDir(project string) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	return filepath.Join(v.Root, "Projects", project, "sessions"), nil
@@ -157,7 +131,7 @@ var datePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 // SessionFile returns the path to a session markdown file:
 // {vault}/Projects/{project}/sessions/YYYY-MM-DD-NN.md
 func (v *Vault) SessionFile(project, date string, iteration int) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	if !datePattern.MatchString(date) {
@@ -173,7 +147,7 @@ func (v *Vault) SessionFile(project, date string, iteration int) (string, error)
 // TasksDir returns the path to a project's tasks directory:
 // {vault}/Projects/{project}/tasks
 func (v *Vault) TasksDir(project string) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	return filepath.Join(v.Root, "Projects", project, "tasks"), nil
@@ -191,7 +165,7 @@ func (v *Vault) TaskFile(project, slug string) (string, error) {
 // TaskDoneDir returns the path to a project's completed tasks directory:
 // {vault}/Projects/{project}/tasks/done
 func (v *Vault) TaskDoneDir(project string) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	return filepath.Join(v.Root, "Projects", project, "tasks", "done"), nil
@@ -200,7 +174,7 @@ func (v *Vault) TaskDoneDir(project string) (string, error) {
 // TaskCancelledDir returns the path to a project's cancelled tasks directory:
 // {vault}/Projects/{project}/tasks/cancelled
 func (v *Vault) TaskCancelledDir(project string) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	return filepath.Join(v.Root, "Projects", project, "tasks", "cancelled"), nil
@@ -209,7 +183,7 @@ func (v *Vault) TaskCancelledDir(project string) (string, error) {
 // ProjectConfigFile returns the path to a project's config file:
 // {vault}/Projects/{project}/config.toml
 func (v *Vault) ProjectConfigFile(project string) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	return filepath.Join(v.Root, "Projects", project, "config.toml"), nil
@@ -218,7 +192,7 @@ func (v *Vault) ProjectConfigFile(project string) (string, error) {
 // ResumeFile returns the path to a project's resume file:
 // {vault}/Projects/{project}/resume.md
 func (v *Vault) ResumeFile(project string) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	return filepath.Join(v.Root, "Projects", project, "resume.md"), nil
@@ -227,7 +201,7 @@ func (v *Vault) ResumeFile(project string) (string, error) {
 // IterationsFile returns the path to a project's iterations file:
 // {vault}/Projects/{project}/iterations.md
 func (v *Vault) IterationsFile(project string) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	return filepath.Join(v.Root, "Projects", project, "iterations.md"), nil
@@ -236,7 +210,7 @@ func (v *Vault) IterationsFile(project string) (string, error) {
 // WorkflowFile returns the path to a project's workflow file:
 // {vault}/Projects/{project}/workflow.md
 func (v *Vault) WorkflowFile(project string) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	return filepath.Join(v.Root, "Projects", project, "workflow.md"), nil
@@ -245,7 +219,7 @@ func (v *Vault) WorkflowFile(project string) (string, error) {
 // KnowledgeFile returns the path to a project's knowledge file:
 // {vault}/Projects/{project}/knowledge.md
 func (v *Vault) KnowledgeFile(project string) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	return filepath.Join(v.Root, "Projects", project, "knowledge.md"), nil
@@ -255,7 +229,7 @@ func (v *Vault) KnowledgeFile(project string) (string, error) {
 // {vault}/Projects/{project}/doc/{rel}. rel must be a simple relative
 // filename like "architecture.md" — no traversal, no absolute paths.
 func (v *Vault) DocFile(project, rel string) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	if rel == "" {
@@ -275,7 +249,7 @@ func (v *Vault) DocFile(project, rel string) (string, error) {
 // scratch directory. Used by `vp absorb` for resume-suggestions handoffs.
 // rel follows the same rules as DocFile.
 func (v *Vault) AbsorbedFile(project, rel string) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	if rel == "" {

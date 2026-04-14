@@ -9,45 +9,6 @@ import (
 	"testing"
 )
 
-func TestValidateSlug(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		wantErr bool
-	}{
-		{"valid simple", "myproject", false},
-		{"valid with hyphens", "my-cool-project", false},
-		{"valid single char", "a", false},
-		{"valid alphanumeric", "project123", false},
-		{"valid numeric start", "123project", false},
-		{"empty", "", true},
-		{"uppercase", "MyProject", true},
-		{"mixed case", "myProject", true},
-		{"contains dot dot", "my..project", true},
-		{"contains forward slash", "my/project", true},
-		{"contains backslash", "my\\project", true},
-		{"leading hyphen", "-project", true},
-		{"trailing hyphen", "project-", true},
-		{"consecutive hyphens", "my--project", true},
-		{"contains space", "my project", true},
-		{"contains underscore", "my_project", true},
-		{"contains dot", "my.project", true},
-		{"absolute path unix", "/etc/passwd", true},
-		{"path traversal", "../secret", true},
-		{"too long", "abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-abcdefghijk", true}, // 65 chars
-		{"exactly 64 chars", "abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-abcdefghij", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateSlug(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ValidateSlug(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
-			}
-		})
-	}
-}
-
 func TestPalacePath(t *testing.T) {
 	v := NewVault("/vault")
 	tests := []struct {

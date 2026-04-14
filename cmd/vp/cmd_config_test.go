@@ -141,13 +141,15 @@ func TestConfigUpgradeNoConfig(t *testing.T) {
 	configDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 
+	// With no legacy path left, `vp config upgrade` is a pure alias for
+	// `vp config sync --tier global --yes`, which is permissive when the
+	// global config is missing (Plan emits Skip and Apply exits OK).
+	// This test pins that contract so the alias cannot silently start
+	// rejecting callers whose config doesn't exist yet.
 	cmd := cmdConfigUpgrade()
-	// Exercise the legacy path explicitly; delegation now routes through
-	// `vp config sync`, which is permissive when the global config is
-	// missing (reports Skip + exits OK).
-	code := cmd.Run([]string{"--legacy"})
-	if code != cli.ExitUser {
-		t.Errorf("exit code = %d, want %d (missing config)", code, cli.ExitUser)
+	code := cmd.Run([]string{})
+	if code != cli.ExitOK {
+		t.Errorf("exit code = %d, want %d (missing config should Skip, not fail)", code, cli.ExitOK)
 	}
 }
 
@@ -979,5 +981,230 @@ func TestEnumerateVaultProjectSlugsSkipRules(t *testing.T) {
 	if out := enumerateVaultProjectSlugs(t.TempDir()); out != nil {
 		t.Errorf("empty vault: want nil, got %v", out)
 	}
+}
+
+// TestUpgradeAliasParity pins the `vp config upgrade` → `vp config sync`
+// alias translation contract established when HEALTH.md item 10 retired
+// the TOML-parsing legacy path. A byte-identical run of `vp config
+// upgrade` (with each addressing variant) and the equivalent
+// `vp config sync --tier X --yes` invocation must produce the same
+// config.toml and .bak bytes on the same fixture. Guards against
+// accidental drift in aliasUpgradeToSync's flag translation.
+//
+// The pre-deletion version of this test compared the legacy
+// TOML-parsing path (--legacy) against the reconciler-based sync path
+// on the same fixture and asserted byte-equality across all three
+// target resolutions (global, cwd, project). That comparison passed
+// cleanly on first run — no divergence — which is what authorized the
+// legacy deletion.
+func TestUpgradeAliasParity(t *testing.T) {
+	// Each subtest runs alias-then-reset-then-sync inside ONE fixture so
+	// the input bytes (and any embedded tempdir paths) are identical
+	// across both invocations. Any byte-level difference therefore
+	// reflects a real alias-translation divergence, not a fixture
+	// artifact.
+	t.Run("global", func(t *testing.T) {
+		fx := seedLegacyFixture(t, "global", "")
+		orig := mustRead(t, fx.target)
+
+		aliasOut, aliasBak := runAliasAndCapture(t, fx, []string{})
+		resetFixtureTarget(t, fx, orig)
+		syncOut, syncBak := runSyncAndCapture(t, fx, []string{"--tier", "global", "--yes"})
+
+		assertBytesEqual(t, "config.toml", aliasOut, syncOut)
+		assertBytesEqual(t, "config.toml.bak", aliasBak, syncBak)
+	})
+
+	t.Run("cwd", func(t *testing.T) {
+		fx := seedLegacyFixture(t, "cwd", "")
+		orig := mustRead(t, fx.target)
+
+		aliasOut, aliasBak := runAliasAndCapture(t, fx, []string{"--cwd", fx.projectDir})
+		resetFixtureTarget(t, fx, orig)
+		syncOut, syncBak := runSyncAndCapture(t, fx,
+			[]string{"--tier", "project", "--cwd", fx.projectDir, "--project-root", fx.projectDir, "--yes"})
+
+		assertBytesEqual(t, ".vibe-palace.toml", aliasOut, syncOut)
+		assertBytesEqual(t, ".vibe-palace.toml.bak", aliasBak, syncBak)
+	})
+
+	t.Run("project", func(t *testing.T) {
+		fx := seedLegacyFixture(t, "project", "alpha")
+		orig := mustRead(t, fx.target)
+
+		aliasOut, aliasBak := runAliasAndCapture(t, fx, []string{"--project", "alpha"})
+		resetFixtureTarget(t, fx, orig)
+		syncOut, syncBak := runSyncAndCapture(t, fx,
+			[]string{"--tier", "project", "--project", "alpha", "--project-root", fx.projectDir, "--yes"})
+
+		assertBytesEqual(t, "<vault>/Projects/alpha/config.toml", aliasOut, syncOut)
+		assertBytesEqual(t, "<vault>/Projects/alpha/config.toml.bak", aliasBak, syncBak)
+	})
+}
+
+// resetFixtureTarget restores the legacy fixture's target config file to
+// its pre-upgrade bytes and removes any .bak left by the first run, so
+// the second path operates on identical input.
+func resetFixtureTarget(t *testing.T, fx legacyFixture, orig []byte) {
+	t.Helper()
+	if err := os.WriteFile(fx.target, orig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(fx.target + ".bak")
+}
+
+type legacyFixture struct {
+	configDir  string // XDG_CONFIG_HOME
+	vaultDir   string
+	projectDir string
+	target     string // absolute path to the config file under upgrade
+}
+
+// seedLegacyFixture materializes the minimum file layout each of the
+// three legacy upgrade targets needs, and returns the absolute path to
+// the config file the upgrade will modify.
+func seedLegacyFixture(t *testing.T, kind, projectSlug string) legacyFixture {
+	t.Helper()
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	vaultDir := filepath.Join(configDir, "vault")
+	if err := os.MkdirAll(vaultDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Global config always exists so sync's vault-tier + project-tier
+	// reconcilers can resolve the vault. Legacy global points through
+	// this file too.
+	vpDir := filepath.Join(configDir, "vibe-palace")
+	if err := os.MkdirAll(vpDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	globalCfg := filepath.Join(vpDir, "config.toml")
+
+	projectDir := t.TempDir()
+	fx := legacyFixture{
+		configDir: configDir, vaultDir: vaultDir, projectDir: projectDir,
+	}
+
+	sparseGlobal := "vault_path = \"" + vaultDir + "\"\n" +
+		"http_port = 7423\n"
+
+	switch kind {
+	case "global":
+		if err := os.WriteFile(globalCfg, []byte(sparseGlobal), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		fx.target = globalCfg
+
+	case "cwd":
+		// Global must still exist and point at the vault, otherwise
+		// sync's OpenVaultFromCwd fails and the two paths diverge for
+		// unrelated reasons. Use canonical defaults so the global
+		// tier stays Unchanged during a --tier project run.
+		defaultsText, err := storage.DefaultsTomlContent()
+		if err != nil {
+			t.Fatal(err)
+		}
+		seeded := strings.Replace(defaultsText,
+			"vault_path = \"\"", "vault_path = \""+vaultDir+"\"", 1)
+		if err := os.WriteFile(globalCfg, []byte(seeded), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cwdFile := filepath.Join(projectDir, ".vibe-palace.toml")
+		if err := os.WriteFile(cwdFile, []byte("[project]\nname = \"p\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		fx.target = cwdFile
+
+	case "project":
+		defaultsText, err := storage.DefaultsTomlContent()
+		if err != nil {
+			t.Fatal(err)
+		}
+		seeded := strings.Replace(defaultsText,
+			"vault_path = \"\"", "vault_path = \""+vaultDir+"\"", 1)
+		if err := os.WriteFile(globalCfg, []byte(seeded), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		projDir := filepath.Join(vaultDir, "Projects", projectSlug)
+		if err := os.MkdirAll(projDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		projCfg := filepath.Join(projDir, "config.toml")
+		if err := os.WriteFile(projCfg, []byte("[palace.scoring]\nmin_score = 0.5\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		fx.target = projCfg
+
+	default:
+		t.Fatalf("unknown fixture kind %q", kind)
+	}
+	return fx
+}
+
+// runAliasAndCapture invokes the `vp config upgrade` alias and returns
+// the resulting target file bytes and backup bytes.
+func runAliasAndCapture(t *testing.T, fx legacyFixture, args []string) (cfgBytes, bakBytes []byte) {
+	t.Helper()
+	// Chdir to projectDir so any implicit os.Getwd() inside the sync
+	// path (e.g. OpenVaultFromCwd) resolves deterministically.
+	restoreCwd := chdir(t, fx.projectDir)
+	defer restoreCwd()
+
+	cmd := cmdConfigUpgrade()
+	if code := cmd.Run(args); code != cli.ExitOK {
+		t.Fatalf("upgrade alias exit = %d", code)
+	}
+	cfgBytes = mustRead(t, fx.target)
+	if data, err := os.ReadFile(fx.target + ".bak"); err == nil {
+		bakBytes = data
+	}
+	return cfgBytes, bakBytes
+}
+
+// runSyncAndCapture invokes the reconciler-based `runConfigSync` and
+// returns the resulting target file bytes and backup bytes.
+func runSyncAndCapture(t *testing.T, fx legacyFixture, args []string) (cfgBytes, bakBytes []byte) {
+	t.Helper()
+	restoreCwd := chdir(t, fx.projectDir)
+	defer restoreCwd()
+
+	if code := runConfigSync(args); code != cli.ExitOK {
+		t.Fatalf("sync exit = %d", code)
+	}
+	cfgBytes = mustRead(t, fx.target)
+	if data, err := os.ReadFile(fx.target + ".bak"); err == nil {
+		bakBytes = data
+	}
+	return cfgBytes, bakBytes
+}
+
+func chdir(t *testing.T, dir string) func() {
+	t.Helper()
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	return func() { _ = os.Chdir(prev) }
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return data
+}
+
+func assertBytesEqual(t *testing.T, label string, want, got []byte) {
+	t.Helper()
+	if string(want) == string(got) {
+		return
+	}
+	t.Errorf("%s: bytes differ between legacy and sync paths\n--- legacy ---\n%s\n--- sync ---\n%s",
+		label, want, got)
 }
 

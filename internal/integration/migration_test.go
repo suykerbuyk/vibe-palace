@@ -65,6 +65,8 @@ I'll create middleware that validates Bearer tokens from the Authorization
 header. We'll use RS256 signing with key rotation support. The middleware
 extracts claims and attaches the authenticated user to the request context.
 We modified internal/auth/middleware.go and internal/auth/jwt.go for this.
+The middleware in internal/auth/middleware.go validates the Bearer header,
+and internal/auth/jwt.go wraps the RS256 signing.
 `
 
 	for name, content := range map[string]string{

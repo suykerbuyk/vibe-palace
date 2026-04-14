@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"gopkg.in/yaml.v3"
 )
 
@@ -41,7 +42,7 @@ type SessionMeta struct {
 // WriteSession writes a session markdown file with YAML frontmatter.
 // It auto-increments the iteration number and returns the session ID.
 func (v *Vault) WriteSession(project string, meta SessionMeta, body string) (string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	if !datePattern.MatchString(meta.Date) {

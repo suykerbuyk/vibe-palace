@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+
+	"github.com/suykerbuyk/vibe-palace/internal/slug"
 )
 
 // Drawer represents a verbatim content chunk stored in the palace.
@@ -26,9 +28,9 @@ type Drawer struct {
 	AddedBy    string `json:"added_by,omitempty"`
 }
 
-// drawerID generates a deterministic ID: first 8 hex chars of md5(wing+content).
+// DrawerID generates a deterministic ID: first 8 hex chars of md5(wing+content).
 // Room is excluded so drawer identity is stable across reclassification.
-func drawerID(wing, content string) string {
+func DrawerID(wing, content string) string {
 	h := md5.Sum([]byte(wing + content))
 	return hex.EncodeToString(h[:])[:8]
 }
@@ -40,7 +42,7 @@ func (v *Vault) AppendDrawer(project, wing, room string, d Drawer) error {
 		return err
 	}
 
-	d.ID = drawerID(wing, d.Content)
+	d.ID = DrawerID(wing, d.Content)
 
 	path, err := v.DrawerFile(project, wing, room)
 	if err != nil {
@@ -269,7 +271,7 @@ func (v *Vault) DrawerExists(project, wing, room, id string) (bool, error) {
 
 // ListWings returns all wing slugs for a project by reading the drawers directory.
 func (v *Vault) ListWings(project string) ([]string, error) {
-	if err := ValidateSlug(project); err != nil {
+	if err := slug.Validate(project); err != nil {
 		return nil, fmt.Errorf("project: %w", err)
 	}
 
@@ -287,7 +289,7 @@ func (v *Vault) ListWings(project string) ([]string, error) {
 		if !e.IsDir() {
 			continue
 		}
-		if ValidateSlug(e.Name()) == nil {
+		if slug.Validate(e.Name()) == nil {
 			wings = append(wings, e.Name())
 		}
 	}
@@ -314,7 +316,7 @@ func (v *Vault) ListRooms(project, wing string) ([]string, error) {
 		if !e.IsDir() {
 			continue
 		}
-		if ValidateSlug(e.Name()) == nil {
+		if slug.Validate(e.Name()) == nil {
 			rooms = append(rooms, e.Name())
 		}
 	}
@@ -341,7 +343,7 @@ func (v *Vault) ListProjects() ([]string, error) {
 		if name == ".local" {
 			continue
 		}
-		if ValidateSlug(name) == nil {
+		if slug.Validate(name) == nil {
 			projects = append(projects, name)
 		}
 	}

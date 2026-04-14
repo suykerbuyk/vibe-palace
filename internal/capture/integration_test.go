@@ -11,6 +11,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // newIntegrationEmbedder creates a real ONNX embedder, skipping in short mode.
@@ -20,7 +21,7 @@ func newIntegrationEmbedder(t *testing.T) embedder.Embedder {
 		t.Skip("skipping integration test in short mode (requires ONNX model)")
 	}
 
-	emb, err := embedder.NewONNX("sentence-transformers/all-MiniLM-L6-v2", projectCacheDir(t), 256, 32)
+	emb, err := embedder.NewONNX("sentence-transformers/all-MiniLM-L6-v2", testutil.ProjectCacheDir(t), 256, 32)
 	if err != nil {
 		t.Fatalf("NewONNX: %v", err)
 	}
@@ -209,9 +210,11 @@ func TestIntegrationCaptureEntityExtraction(t *testing.T) {
 	ctx := context.Background()
 
 	transcript := `We modified internal/capture/chunker.go to add sentence boundary
-detection. The implementation follows the patterns from
-https://github.com/suykerbuyk/vibe-palace in the search package.
-We also updated internal/storage/config.go with the new chunker settings.`
+detection. The change in internal/capture/chunker.go follows the patterns from
+https://github.com/suykerbuyk/vibe-palace in the search package, and
+https://github.com/suykerbuyk/vibe-palace again for the chunker design.
+We also updated internal/storage/config.go with the new chunker settings,
+and internal/storage/config.go was cross-checked against its defaults.`
 
 	err := idx.IndexTranscript(ctx, "session-entities-01", "test-proj", transcript)
 	if err != nil {
