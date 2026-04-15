@@ -120,11 +120,12 @@ func TestRunCommandsUpgrade_Interactive_AcceptOne_SkipOne(t *testing.T) {
 	writeVaultFile(t, vault, "Templates/commands/restart.md", "stale restart\n")
 	writeVaultFile(t, vault, "Templates/commands/wrap.md", "stale wrap\n")
 
-	// Plan order is alphabetical: cancel-plan, capture, execute-plan, restart,
-	// review-plan, wrap. Skip cancel-plan, capture, execute-plan (new, positions
-	// 0-2); accept restart (3); skip review-plan (4); skip wrap (5, already
-	// staged but stale — the test asserts it's NOT updated).
-	input := strings.Join([]string{"s", "s", "s", "a", "s", "s"}, "\n") + "\n"
+	// Plan order is alphabetical: cancel-plan, capture, execute-plan, license,
+	// makefile, restart, review-plan, wrap. Skip positions 0-4 (cancel-plan,
+	// capture, execute-plan, license, makefile — all new); accept restart (5);
+	// skip review-plan (6); skip wrap (7, already staged but stale — the test
+	// asserts it's NOT updated).
+	input := strings.Join([]string{"s", "s", "s", "s", "s", "a", "s", "s"}, "\n") + "\n"
 
 	var out, errb bytes.Buffer
 	code := runCommandsUpgrade(commandsUpgradeOpts{

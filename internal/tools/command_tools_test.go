@@ -159,9 +159,9 @@ func TestListCommandsEmbedded(t *testing.T) {
 		t.Fatalf("result type = %T, want listResourceResult", result)
 	}
 
-	// 6 embedded commands: cancel-plan, capture, execute-plan, restart, review-plan, wrap.
-	if len(r.Resources) != 6 {
-		t.Fatalf("got %d commands, want 6: %v", len(r.Resources), r.Resources)
+	// 8 embedded commands: cancel-plan, capture, execute-plan, license, makefile, restart, review-plan, wrap.
+	if len(r.Resources) != 8 {
+		t.Fatalf("got %d commands, want 8: %v", len(r.Resources), r.Resources)
 	}
 
 	for _, ri := range r.Resources {
@@ -188,9 +188,9 @@ func TestListCommandsMerged(t *testing.T) {
 	}
 
 	r := result.(listResourceResult)
-	// 8 total: cancel-plan, capture, custom, deploy, execute-plan, restart, review-plan, wrap.
-	if len(r.Resources) != 8 {
-		t.Fatalf("got %d commands, want 8: %v", len(r.Resources), r.Resources)
+	// 10 total: cancel-plan, capture, custom, deploy, execute-plan, license, makefile, restart, review-plan, wrap.
+	if len(r.Resources) != 10 {
+		t.Fatalf("got %d commands, want 10: %v", len(r.Resources), r.Resources)
 	}
 
 	// No duplicates.

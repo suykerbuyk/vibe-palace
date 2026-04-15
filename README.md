@@ -1,15 +1,41 @@
 # Vibe-Palace
 
-An MCP server that gives AI coding assistants persistent memory across sessions.
-Vibe-palace captures session context, indexes it with semantic search, and
-delivers it back through a standard MCP interface — decoupled from any specific
-AI provider or IDE.
+> **Persistent memory for AI coding assistants.** An MCP server that
+> captures, indexes, and serves session context — so your AI picks up
+> where you left off, every time, on every machine, in any editor.
 
-**License:** MIT OR Apache-2.0
+**License:** MIT OR Apache-2.0 · **Status:** early public release · **Stack:** Go 1.25, single static binary
 
-## Quick Start
+---
 
-Prerequisites: Go 1.25+, `~/.local/bin` in PATH.
+## The Problem
+
+AI coding assistants forget everything between sessions. Every new
+conversation starts cold: no architectural decisions, no project
+state, no awareness of what was tried yesterday. Teams re-explain the
+same context every morning. Knowledge that took hours to build up
+evaporates the moment a session ends.
+
+## The Solution
+
+Vibe-palace is an **MCP server** that gives any AI assistant — Claude
+Code, Cursor, or any MCP host — durable, queryable memory. Sessions
+are captured as structured markdown in a git-versioned vault,
+indexed with hybrid vector + structural semantic search, and served
+back on demand through a small set of standard tools.
+
+One call at session start (`vp_bootstrap_context`) restores
+workflow, resume, active tasks, and recent history. One call at
+session end (`vp_capture_session`) records what changed and why.
+Between them, `vp_search`, `vp_kg_query`, and `vp_get_project_context`
+let the agent find anything it needs without loading a giant
+upfront context dump.
+
+---
+
+## Quick Start (5 minutes)
+
+**Prerequisites:** Go 1.25+, `~/.local/bin` in `PATH`.
 
 ```bash
 git clone https://github.com/suykerbuyk/vibe-palace.git
@@ -23,40 +49,72 @@ Create `~/.config/vibe-palace/config.toml`:
 vault_path = "/home/you/your-vault"
 ```
 
-Connect your editor — see the [Tutorial](doc/TUTORIAL.md) for setup.
+Initialize a project:
 
-## What It Does
+```bash
+cd ~/code/your-project
+vp init
+```
 
-- **Context injection** — single-call restoration of workflow, resume, tasks,
-  and recent sessions via `vp_bootstrap_context`
-- **Session capture** — model-agnostic recording with automatic chunking,
-  embedding, and semantic indexing
-- **Semantic search** — hybrid vector + structural search across all captured
-  knowledge, with cross-project support
-- **Palace navigation** — spatial metaphor (wings/rooms/halls) for browsing
-  and traversing stored knowledge
-- **Friction tracking** — automated session difficulty scoring with weekly
-  trend analysis
-- **Knowledge graph** — temporal entity-relationship graph with time-travel
-  queries, integrated with session capture
-- **Migration** — import existing VibeVault sessions and MemPalace data
-- **Room classification tuning** — configurable keyword weights, algorithmic
-  audit, LLM-assisted weight tuning and keyword discovery (offline only)
-- **CLI** — `vp` binary with 20+ commands, man pages, and shell completions
-- **Slash-command shims** — `vp init` writes one `.claude/commands/vpc-<name>.md`
-  per vibe-palace command, so typing `/vpc-` in Claude Code fuzzy-matches the
-  whole command set; `vp commands upgrade` keeps the shim set in sync.
-  `/vpc-restart` is the recommended first message of every Claude Code session —
-  it's the deterministic turn-1 bootstrap trigger, since `CLAUDE.md` isn't
-  loaded until after the human's first turn
-- **Skill shims** — `vp init` also writes one `.claude/skills/vps-<name>/SKILL.md`
-  per vibe-palace skill (directory-form persona), so typing `/vps-` surfaces
-  the whole skill catalog. When `.cursor/rules/` exists, Cursor `.mdc` rules
-  are emitted alongside. `vp skills upgrade` handles the interactive
-  two-SHA refresh loop (grouped per skill by default, `--granular` for
-  per-file prompts)
+`vp init` scaffolds an `agentctx/` package in the vault and writes
+`.claude/commands/vpc-*.md` + `.claude/skills/vps-*/SKILL.md` shims
+into the project so Claude Code (or any `vpc-`/`vps-`-aware editor)
+discovers the full vibe-palace command and skill catalog.
 
-### Supported IDE surfaces
+Then add `vibe-palace` to your editor's MCP config (see the
+[Tutorial](doc/TUTORIAL.md) for per-editor setup). Start a new
+session with `/vpc-restart` and the agent will load full context on
+turn one.
+
+---
+
+## What You Get
+
+- **Context injection** — single-call restoration of workflow, resume,
+  tasks, and recent sessions via `vp_bootstrap_context`.
+- **Session capture** — model-agnostic recording with automatic
+  chunking, embedding, and semantic indexing.
+- **Semantic search** — hybrid vector + structural search across all
+  captured knowledge, with optional cross-project queries.
+- **Knowledge graph** — temporal entity-relationship graph with
+  time-travel queries, integrated with session capture.
+- **Palace navigation** — spatial metaphor (wings/rooms/halls) for
+  browsing and traversing stored knowledge.
+- **Friction tracking** — automated session difficulty scoring with
+  weekly trend analysis.
+- **Migration** — import existing VibeVault sessions and MemPalace
+  data into the palace.
+- **Room classification tuning** — configurable keyword weights,
+  algorithmic audit, offline LLM-assisted weight discovery.
+- **`vp` CLI** — 20+ commands, man pages, shell completions.
+- **Cross-IDE shims** — `vp init` writes slash-command shims
+  (`.claude/commands/vpc-*.md`) and skill directories
+  (`.claude/skills/vps-*/SKILL.md`) so every vibe-palace capability
+  is discoverable by fuzzy-matching `/vpc-` or `/vps-` in Claude
+  Code. `vp commands upgrade` and `vp skills upgrade` keep both sets
+  in sync with embedded updates.
+
+### Embedded commands
+
+| Command          | Purpose                                                        |
+|------------------|----------------------------------------------------------------|
+| `/vpc-restart`   | Turn-1 session bootstrap. Pulls vault, sweeps orphan plans, auto-retires completed tasks, loads context. |
+| `/vpc-wrap`      | Session wrap. Quality-gate check, captures session, updates resume, stages files, syncs the vault. |
+| `/vpc-capture`   | Mid-session checkpoint without full wrap.                      |
+| `/vpc-review-plan` | Senior-staff-engineer review of a task plan before implementation. |
+| `/vpc-cancel-plan` | Record the rationale for abandoning a plan so future sessions don't re-litigate it. |
+| `/vpc-execute-plan` | Orchestrated execution of a multi-phase plan via subagents. |
+| `/vpc-license`   | Apply or refresh dual MIT/Apache-2.0 licensing and SPDX banners. |
+| `/vpc-makefile`  | Audit or create a self-documenting Makefile facade for the native build system. |
+
+### Embedded skills
+
+- **`vps-startup-analyst`** — a worked-example domain-expert skill
+  (SKILL.md + 5 reference documents on CapEx/OpEx, competitive
+  landscape, funding, reality validation, strategic partnerships).
+  Use it as a template for your own skill personas.
+
+## Supported IDE Surfaces
 
 | Surface           | Commands rendering            | Skills rendering                  |
 |-------------------|-------------------------------|-----------------------------------|
@@ -64,49 +122,123 @@ Connect your editor — see the [Tutorial](doc/TUTORIAL.md) for setup.
 | Cursor (rules/)   | via MCP (`vp_get_command`)    | `.cursor/rules/vps-*.mdc`         |
 | Any MCP host      | `vp_get_command` tool         | `vp_skill` tool                   |
 
-## Customizing commands and skills
+---
 
-Vibe-palace ships a small catalog of command templates (`restart`, `wrap`,
-`review-plan`, `cancel-plan`, `capture`) compiled into the `vp` binary.
-These embedded templates are the *floor* — a last-resort default. Your
-vault is the primary editable surface.
+## Customizing Commands and Skills
+
+Vibe-palace ships a small catalog of command and skill templates
+compiled into the `vp` binary. These embedded templates are the
+**floor** — a last-resort default. Your vault is the primary
+editable surface.
 
 - **`<vault>/Templates/commands/`** — materialized from the embedded
-  defaults the first time you run `vp init`. Edit files here freely: a
-  `templates.lock` sidecar (`<vault>/.vibe-palace/templates.lock`) records
-  the embedded SHA that shipped with your binary, so `vp config sync` can
-  tell a user edit apart from a binary bump. `<vault>/Templates/workflow.md`
-  and `<vault>/Templates/resume.md` are materialized the same way.
+  defaults the first time you run `vp init`. Edit files here freely:
+  a `templates.lock` sidecar (`<vault>/.vibe-palace/templates.lock`)
+  records the embedded SHA that shipped with your binary, so
+  `vp commands upgrade` can tell a user edit apart from a binary
+  bump. `<vault>/Templates/workflow.md` and
+  `<vault>/Templates/resume.md` are materialized the same way.
 - **`<vault>/Projects/<slug>/commands/`** — per-project override
-  directory, scaffolded empty with a README stub. A file here shadows the
-  vault-level `Templates/` copy for that project only, letting one project
-  diverge permanently without affecting the others. `skills/` works the
-  same way (directory + README stub; no embedded skill content yet — see
-  the roadmap).
+  directory, scaffolded with a README stub. A file here shadows the
+  vault-level `Templates/` copy for that project only, letting one
+  project diverge permanently without affecting the others.
+  `skills/` works the same way.
 
 **Precedence (first match wins):** room > wing > project > vault >
-embedded. For example, `<vault>/Projects/myapp/commands/wrap.md` takes
-precedence over `<vault>/Templates/commands/wrap.md`, which in turn
-shadows the embedded `wrap.md` baked into the binary.
+embedded. For example,
+`<vault>/Projects/myapp/commands/wrap.md` takes precedence over
+`<vault>/Templates/commands/wrap.md`, which shadows the embedded
+`wrap.md` baked into the binary.
 
-**Promoting an edit back to source.** Vibe-palace cannot automate
-promotion because at runtime it does not know where your vibe-palace
-source checkout lives — this is a deliberate boundary, not a missing
-feature. To land a vault-side template edit into the next release,
-manually copy the file from `<vault>/Templates/commands/<name>.md` to
-`<vp-repo>/internal/templates/templates/commands/<name>.md` in your
-vibe-palace checkout and commit it like any other source change. The
-next `vp` build will ship your edit as the new embedded floor for
-everyone.
+### Three-SHA reconciliation (a vignette)
 
-When a new `vp` binary changes an embedded default, `vp config sync`
-reconciles the drift per the three-SHA table. For files you never
-touched, it auto-updates and writes a `.bak` of the previous vault
-content. For files where both you and the embedded default have
-diverged from the recorded lock SHA, it presents a three-option prompt:
-`[s]kip / [o]verwrite (writes .bak) / [n]ew-sidecar` (writing
-`<name>.md.new` for side-by-side review). Uppercase `S`/`O`/`N` applies
-the choice to every remaining item.
+You installed vibe-palace last month. `vp init` wrote eight command
+templates into `<vault>/Templates/commands/` and recorded their
+SHAs in `templates.lock`.
+
+Since then you've edited `wrap.md` to add a team-specific
+integration-test gate. Your vault's `wrap.md` now differs from the
+lock SHA — that's a **user edit**.
+
+Today you upgrade `vp` to a new release. The new binary ships a
+revised embedded `wrap.md` (added a richer two-copy commit.msg
+workflow). The embedded SHA now also differs from the lock SHA —
+that's a **binary bump**.
+
+When you run `vp commands upgrade`:
+
+- For files you never touched (same vault SHA as lock), it
+  auto-updates to the new embedded version and writes a `.bak` of
+  the previous vault content.
+- For files where both you **and** the embedded default have
+  diverged from the recorded lock SHA (like your `wrap.md`), it
+  prompts: `[s]kip / [o]verwrite (writes .bak) / [n]ew-sidecar`.
+  Uppercase `S`/`O`/`N` applies the choice to every remaining
+  conflict.
+
+No magic. No merge. You stay in control of anything you've changed,
+and get everything you haven't for free.
+
+### Promoting vault edits back to source
+
+Vibe-palace does not know where your `vp` source checkout lives, so
+promotion is manual on purpose: copy the file from
+`<vault>/Templates/commands/<name>.md` to
+`internal/templates/templates/commands/<name>.md` in your
+vibe-palace checkout and commit. The next `vp` build ships your
+edit as the new embedded floor for everyone.
+
+---
+
+## How This Compares to vibe-vault
+
+Vibe-palace's predecessor,
+[vibe-vault](https://github.com/suykerbuyk/vibe-vault) (`vv`),
+pioneered the session-observability story: hook into Claude Code,
+parse the JSONL transcript, turn it into structured Obsidian notes.
+Vibe-palace keeps the vault-as-source-of-truth philosophy but
+changes the capture model and adds a memory fabric on top.
+
+| Axis                  | vibe-vault (`vv`)                                       | vibe-palace (`vp`)                                     |
+|-----------------------|---------------------------------------------------------|--------------------------------------------------------|
+| Primary surface       | Post-hoc hook reads JSONL transcripts                   | Live MCP server; agents call tools on demand           |
+| Session capture       | Automatic via `SessionEnd` / `Stop` / `PreCompact`      | Explicit via `vp_capture_session` (agent-driven)       |
+| Search                | Heuristic cross-session linking                         | Hybrid vector + structural semantic search             |
+| Knowledge graph       | —                                                       | Temporal entity-relationship graph with time-travel    |
+| Navigation metaphor   | File browse + Dataview                                  | Palace: wings → rooms → halls                          |
+| IDE coverage          | Claude Code + Zed                                       | Claude Code + Cursor + any MCP host                    |
+| LLM dependency        | Optional enrichment layer                               | None required for capture; optional for tuning         |
+
+### What vibe-vault still does better
+
+Vibe-palace is intentionally a different product, not a drop-in
+replacement. If you want any of the following, vibe-vault is the
+right tool — and the two can run alongside each other:
+
+- **Fully automatic, zero-agent-effort session capture.** `vv`
+  hooks into Claude Code and writes a note at `SessionEnd` with no
+  prompting required. Vibe-palace relies on the agent calling
+  `vp_capture_session` (the `/vpc-wrap` command does this, but it's
+  opt-in).
+- **LLM-enriched note synthesis.** `vv` can call an LLM at capture
+  time to produce "What Happened", "Key Decisions", and "Open
+  Threads" sections. Vibe-palace lets the agent author these
+  directly — no enrichment layer.
+- **Friction analytics.** `vv friction`, `vv trends`,
+  `vv effectiveness` surface correction density, model regressions,
+  and context-effectiveness signals across months of history. Not
+  in vibe-palace.
+- **zstd transcript archive.** `vv archive` compresses raw JSONL
+  (~10:1) so you retain the full original record. Vibe-palace does
+  not own raw transcripts.
+- **Zed SQLite thread ingestion.** `vv` reads Zed's thread DB
+  directly.
+
+In short: reach for `vv` when you want a passive observer. Reach for
+`vp` when you want the agent to actively *use* memory during the
+session.
+
+---
 
 ## Documentation
 
@@ -114,5 +246,11 @@ the choice to every remaining item.
 - [Architecture](doc/ARCHITECTURE.md) — system design and package reference
 - [Testing](doc/TESTING.md) — test strategy and integration test inventory
 - [Migration](doc/MIGRATION.md) — migrating from VibeVault and MemPalace
-- [PRD](doc/PRD-vibe-palace.md) — full product requirements (Phases 1–10, 12
-  implemented, Phase 11 planned)
+- [PRD](doc/PRD-vibe-palace.md) — full product requirements (Phases 1–10, 12 implemented; Phase 11 planned)
+
+## License
+
+Dual-licensed under
+[Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) or
+[MIT](https://opensource.org/licenses/MIT), at your option. See
+[LICENSE](LICENSE) for details.
