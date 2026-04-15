@@ -5,7 +5,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -35,12 +37,13 @@ func cmdInit(info cli.BuildInfo) *cli.Command {
 	return &cli.Command{
 		Name:        "init",
 		Synopsis:    "vp init [path] [flags]",
-		Description: "Initialize vibe-palace. Creates global config and vault if needed, then initializes a project in the current or given directory.",
+		Description: "Initialize vibe-palace. The positional argument is the project directory (defaults to cwd); vault location is set via --vault-path. Creates global config and vault if needed, then initializes the project.",
 		Flags:       initFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp init", Comment: "Initialize global config (if needed) and project in current directory"},
 			{Cmd: "vp init ~/code/myapp --name myapp --domain work"},
 			{Cmd: "vp init --vault-path ~/my-vault", Comment: "Use a custom vault location"},
+			{Cmd: "vp init ./myapp --vault-path ~/my-vault", Comment: "Custom project directory AND custom vault"},
 			{Cmd: "vp init --no-git", Comment: "Initialize without git version tracking"},
 		},
 		Run: func(args []string) int {
@@ -48,6 +51,16 @@ func cmdInit(info cli.BuildInfo) *cli.Command {
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp init: %v\n", err)
 				return cli.ExitUser
+			}
+
+			// Validate any user-supplied positional *before* any filesystem
+			// writes. A nonexistent positional is almost always a user
+			// confusing the positional (project dir) with --vault-path,
+			// and continuing would silently create the default vault
+			// under $HOME.
+			if code, msg := validatePositionalProjectPath(fv.Args()); code != cli.ExitOK {
+				fmt.Fprintln(os.Stderr, msg)
+				return code
 			}
 
 			var results []check.Result
@@ -81,6 +94,31 @@ func cmdInit(info cli.BuildInfo) *cli.Command {
 			return projectCode
 		},
 	}
+}
+
+// validatePositionalProjectPath checks that a user-supplied positional
+// argument to `vp init` points at an existing directory. It returns
+// (ExitOK, "") when the arg is absent or the path exists. A nonexistent
+// path returns ExitUser with a hint pointing the user at --vault-path —
+// this is the single most common source of confusion (user types the
+// vault path as the positional instead of via the flag). Other stat
+// errors (EACCES, symlink loops) return ExitSystem with the raw error,
+// no hint.
+func validatePositionalProjectPath(args []string) (int, string) {
+	if len(args) == 0 {
+		return cli.ExitOK, ""
+	}
+	path := args[0]
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return cli.ExitUser, fmt.Sprintf(
+				"vp init: path %q does not exist — did you mean --vault-path? (the positional argument is the project directory; --vault-path sets the vault location)",
+				path,
+			)
+		}
+		return cli.ExitSystem, fmt.Sprintf("vp init: %v", err)
+	}
+	return cli.ExitOK, ""
 }
 
 // initGlobal creates the global config and vault directory if they don't

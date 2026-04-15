@@ -42,6 +42,10 @@ test-full: build vet ## Run full test suite including ONNX integration tests
 integration: build ## Run integration tests only (requires ONNX model)
 	go test -count=1 -run TestIntegration -v ./...
 
+.PHONY: init-e2e
+init-e2e: ## Run bash end-to-end harness for `vp init` (sandboxed HOME, builds its own binary)
+	bash test/e2e/init/run.sh
+
 .PHONY: cover
 cover: ## Generate HTML coverage report (short mode)
 	go test -race -short -coverprofile=coverage.out ./...

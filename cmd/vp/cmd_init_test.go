@@ -811,3 +811,131 @@ func TestInitScaffoldPreservesUserOverrides(t *testing.T) {
 		t.Errorf("override clobbered: got %q", got)
 	}
 }
+
+// captureStderr swaps os.Stderr for a pipe, runs fn, and returns whatever
+// fn wrote to stderr. Restores os.Stderr on return.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+
+	done := make(chan string, 1)
+	go func() {
+		var sb strings.Builder
+		chunk := make([]byte, 4096)
+		for {
+			n, rerr := r.Read(chunk)
+			if n > 0 {
+				sb.Write(chunk[:n])
+			}
+			if rerr != nil {
+				break
+			}
+		}
+		done <- sb.String()
+	}()
+
+	fn()
+	_ = w.Close()
+	return <-done
+}
+
+// TestInitBogusPositionalFailsBeforeWrites proves that Fix 1 aborts before
+// any filesystem writes when a user-supplied positional doesn't exist.
+// This is the regression lock: if the existence check ever slides back down
+// into initProject, the short-circuit assertions below will fail because
+// initGlobal would have already written the config + vault.
+func TestInitBogusPositionalFailsBeforeWrites(t *testing.T) {
+	configDir := initTestEnv(t, false) // no pre-existing global config
+	// Redirect HOME so the default-vault fallback can't clobber the
+	// developer's real $HOME if the fix ever regresses.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	bogus := filepath.Join(t.TempDir(), "does-not-exist")
+
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
+	var code int
+	stderr := captureStderr(t, func() {
+		code = cmd.Run([]string{bogus})
+	})
+
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want %d (ExitUser)", code, cli.ExitUser)
+	}
+	if !strings.Contains(stderr, "--vault-path") {
+		t.Errorf("stderr missing --vault-path hint: %q", stderr)
+	}
+	if !strings.Contains(stderr, "does not exist") {
+		t.Errorf("stderr missing 'does not exist': %q", stderr)
+	}
+
+	// Protective assertions: no side effects.
+	if _, err := os.Stat(filepath.Join(configDir, "vibe-palace", "config.toml")); !os.IsNotExist(err) {
+		t.Errorf("global config was created despite bogus positional: err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(fakeHome, "vibe-palace-vault")); !os.IsNotExist(err) {
+		t.Errorf("default vault was created despite bogus positional: err=%v", err)
+	}
+}
+
+// TestInitPositionalPermissionDeniedReturnsSystemExit checks that non-ENOENT
+// stat errors (here: an unreadable parent dir) surface as ExitSystem
+// without the "did you mean" hint. The hint would mis-attribute a real
+// filesystem problem to user error.
+func TestInitPositionalPermissionDeniedReturnsSystemExit(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root — mode 0o000 does not deny root")
+	}
+	initTestEnv(t, false)
+	t.Setenv("HOME", t.TempDir())
+
+	// Build an unreadable parent with an inaccessible child path.
+	parent := filepath.Join(t.TempDir(), "locked")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+	child := filepath.Join(parent, "proj")
+	// Drop execute perms on parent so stat(child) returns EACCES.
+	if err := os.Chmod(parent, 0o000); err != nil {
+		t.Fatalf("chmod parent: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
+	var code int
+	stderr := captureStderr(t, func() {
+		code = cmd.Run([]string{child})
+	})
+
+	if code != cli.ExitSystem {
+		t.Errorf("exit code = %d, want %d (ExitSystem)", code, cli.ExitSystem)
+	}
+	if strings.Contains(stderr, "--vault-path") {
+		t.Errorf("stderr should not carry 'did you mean --vault-path' hint for permission errors: %q", stderr)
+	}
+}
+
+// TestInitPositionalValidDirStillWorks regression-locks the happy path.
+// A user-supplied positional pointing at a real, project-marked dir must
+// continue to succeed exactly as before Fix 1.
+func TestInitPositionalValidDirStillWorks(t *testing.T) {
+	initTestEnv(t, true) // pre-created global config, skips initGlobal writes
+	dir := t.TempDir()
+	markProjectDir(t, dir)
+
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
+	code := cmd.Run([]string{dir, "--name", "happy-path"})
+	if code != cli.ExitOK {
+		t.Errorf("exit code = %d, want ExitOK", code)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, project.ConfigFileName)); err != nil {
+		t.Errorf(".vibe-palace.toml missing on happy-path init: %v", err)
+	}
+}
