@@ -46,6 +46,17 @@ integration: build ## Run integration tests only (requires ONNX model)
 init-e2e: ## Run bash end-to-end harness for `vp init` (sandboxed HOME, builds its own binary)
 	bash test/e2e/init/run.sh
 
+.PHONY: walkthrough-e2e
+walkthrough-e2e: ## Run canonical walkthrough (prints transcript on pass)
+	bash test/e2e/walkthrough/run.sh
+
+.PHONY: workflows-e2e
+workflows-e2e: ## Run multi-iteration workflow measurement rig
+	bash test/e2e/workflows/run.sh
+
+.PHONY: e2e
+e2e: init-e2e walkthrough-e2e workflows-e2e ## Run all e2e tiers
+
 .PHONY: cover
 cover: ## Generate HTML coverage report (short mode)
 	go test -race -short -coverprofile=coverage.out ./...

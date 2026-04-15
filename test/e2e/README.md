@@ -84,3 +84,113 @@ post-mortem.
 Sibling harnesses go in `test/e2e/<command>/run.sh`. They `source
 ../lib.sh` for the shared helpers. Reserve `test/e2e/check/`,
 `test/e2e/sync/`, and `test/e2e/absorb/` for future work.
+
+## `walkthrough` tier
+
+A single-case harness whose **stdout is the documentation**. On pass,
+the full annotated transcript is cat'd to the terminal; on fail, the
+retained tmpdir plus the transcript tell you exactly what drifted.
+
+The single case (`happy-path.sh`) mirrors the narrative of
+`doc/TUTORIAL.md` **Part 2: Project Setup** — each step's banner names
+the tutorial subsection it corresponds to (e.g. *Initialize a
+Project*, *Understanding the Vault*). If this harness and Part 2
+disagree, one of them is wrong.
+
+One subtle point: the walkthrough runs `git init` in the project
+directory **before** `vp init`. This is load-bearing, not decorative
+— `vp init` keys several decisions (project-name auto-detection,
+git-detected status in the summary, and the `.gitignore` handling
+path) off the presence of `.git/`. Removing the `git init` would
+silently test a different code path from the one the tutorial
+documents.
+
+How to run:
+
+```bash
+make walkthrough-e2e
+# or:
+bash test/e2e/walkthrough/run.sh
+```
+
+## `workflows` tier
+
+A multi-iteration **measurement rig**. Each case exercises a realistic
+user-facing workflow (seed drawers → tune → apply → idempotency
+re-apply, etc.) across several iterations and emits a JSONL metrics
+stream that the orchestrator renders as a summary table.
+
+Three Go helpers are built once alongside `vp` at the top of `run.sh`:
+
+- `mockllm` — a stub HTTP server speaking the subset of the LLM API
+  that `vp tune` needs. Built as a Go binary so it ships with the
+  repo and has no Python-runner footgun (no venv, no version skew, no
+  network).
+- `seeddrawer` — writes drawer rows directly to the palace JSONL
+  (`source_type="seed"`, `added_by="e2e-rig"`) because `vp capture`
+  is MCP-only and cannot be driven from bash.
+- `tomleq` — decode-then-compare TOML equality, so the idempotency
+  assertion is structural rather than textual.
+
+### Hard-assert vs. tracked-metric rule
+
+This is the contract for what a case is allowed to fail on:
+
+> **If the value depends on the LLM mock's response file, it is a
+> METRIC (tracked via `emit_metric`, never asserted). If it is part
+> of the binary's contract with its caller — exit code, JSON shape,
+> structural idempotency — it is an ASSERTION (`assert_*`).**
+
+Concretely:
+
+| What | Kind |
+|---|---|
+| exit code == 0 | assertion |
+| `report.json` parses | assertion |
+| `.project == "proj"` | assertion |
+| `.samples_total >= 4` | assertion |
+| `.proposals \| type == "array"` | assertion |
+| `(.unmatched_flags // []) \| type == "array"` | assertion |
+| second `--apply` → decoded-TOML-struct equality | assertion |
+| `ms` per command | metric |
+| `.samples_total` value | metric |
+| `.proposals \| length` | metric |
+| `.agreements`, `.disagreements` | metric |
+| `.judgments_total` | metric |
+| `total_tokens` (from mock log) | metric |
+
+This split is why the rig stays green when the mock's response
+distribution drifts, but will go red the instant `vp tune` breaks
+its callable contract.
+
+### Adding a new case
+
+1. Create `test/e2e/workflows/NN-<slug>.sh` (two-digit prefix, next
+   unused).
+2. The orchestrator sources the case; `lib.sh` is already available
+   and `CASE_DIR`, `CASE_HOME`, `HOME`, `XDG_CONFIG_HOME`,
+   `METRIC_FILE="$CASE_DIR/metrics.jsonl"` are pre-set.
+3. Use the convention:
+   - Hard assertions via `assert_shape`, `assert_exit_code`,
+     `assert_toml_struct_equal`.
+   - Tracked values via `emit_metric <iter> <cmd> <key> <value>`.
+4. Build on the provided helpers (`seed_drawer`, `mockllm`,
+   `tomleq`) rather than reimplementing.
+
+### Known limitations
+
+- `vp capture` is MCP-only, so the rig uses `seed_drawer` which
+  writes drawers with `source_type="seed"` and `added_by="e2e-rig"`.
+  Any test that needs the real capture path has to wait for an MCP
+  harness.
+- Metrics are never consumed by any gate. They exist for trend
+  inspection — CI uploads them as an artifact
+  (`workflows-metrics-<sha>`, 14-day retention) on success.
+
+How to run:
+
+```bash
+make workflows-e2e
+# or:
+bash test/e2e/workflows/run.sh
+```

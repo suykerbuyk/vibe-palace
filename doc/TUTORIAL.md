@@ -179,6 +179,12 @@ searchable memory.
 **Projects/** holds workflow (sessions, tasks, config). This is the
 collaboration state between you and the AI.
 
+> **Executable version.** For a machine-verified walkthrough of the
+> steps in this chapter, run `make walkthrough-e2e` from the repo
+> root. The harness prints an annotated transcript of the same
+> operations against a sandboxed `HOME`; if it drifts from this
+> chapter, one of the two is wrong.
+
 ---
 
 ## Part 3: Editor Configuration

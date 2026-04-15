@@ -1,0 +1,7 @@
+[
+  {"drawer_id": "unknown-1", "room": "testing", "confidence": 0.9, "reasoning": "test content"},
+  {"drawer_id": "unknown-2", "room": "testing", "confidence": 0.9, "reasoning": "test content"},
+  {"drawer_id": "unknown-3", "room": "testing", "confidence": 0.9, "reasoning": "test content"},
+  {"drawer_id": "unknown-4", "room": "testing", "confidence": 0.9, "reasoning": "test content"},
+  {"drawer_id": "unknown-5", "room": "testing", "confidence": 0.9, "reasoning": "test content"}
+]
