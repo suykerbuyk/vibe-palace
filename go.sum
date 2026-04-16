@@ -66,6 +66,8 @@ github.com/janpfeifer/go-benchmarks v0.1.1 h1:gLLy07/JrOKSnMWeUxSnjTdhkglgmrNR2I
 github.com/janpfeifer/go-benchmarks v0.1.1/go.mod h1:5AagXCOUzevvmYFQalcgoa4oWPyH1IkZNckolGWfiSM=
 github.com/janpfeifer/must v0.2.0 h1:yWy1CE5gtk1i2ICBvqAcMMXrCMqil9CJPkc7x81fRdQ=
 github.com/janpfeifer/must v0.2.0/go.mod h1:S6c5Yg/YSMR43cJw4zhIq7HFMci90a7kPY9XA4c8UIs=
+github.com/klauspost/compress v1.18.5 h1:/h1gH5Ce+VWNLSWqPzOVn6XBO+vJbCNGvjoaGBFW2IE=
+github.com/klauspost/compress v1.18.5/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
 github.com/knights-analytics/hugot v0.7.0 h1:ihjCnJXqn7agksuH1IfGBJUZkecXhXb1XkuMDG152jw=
 github.com/knights-analytics/hugot v0.7.0/go.mod h1:lMpY26MxcUk0ivJCZz73JNPCopeg5/kFUQtppGBM5J0=
 github.com/knights-analytics/ortgenai v0.2.0 h1:WOZAHxbvlHswydkDrBJi/XnqdzGT1kErUA4hnzoCajA=

@@ -70,6 +70,17 @@ type Config struct {
 	PalaceScoringOverrides  map[string]ScoringRoomOverride    `json:"palace_scoring_overrides,omitempty"`
 	PalaceMinScore          float64                           `json:"palace_min_score,omitempty"`
 	PalaceLLM               LLMConfig                         `json:"palace_llm,omitempty"`
+	Archive                 ArchiveConfig                     `json:"archive,omitempty"`
+}
+
+// ArchiveConfig holds transcript-archive settings (ADR-001 Phase 6).
+// All fields are optional; signing is off by default.
+type ArchiveConfig struct {
+	SignMode       string `json:"sign_mode,omitempty"`       // "", "ssh", "gpg"
+	SignKey        string `json:"sign_key,omitempty"`        // ssh key path or gpg key id
+	SignNamespace  string `json:"sign_namespace,omitempty"`  // ssh-sig namespace
+	AllowedSigners string `json:"allowed_signers,omitempty"` // path for ssh verify
+	SignerIdentity string `json:"signer_identity,omitempty"` // principal for ssh verify
 }
 
 // LLMConfig holds TOML-level LLM endpoint settings.
@@ -123,6 +134,15 @@ type tomlConfig struct {
 		Scoring tomlScoringConfig           `toml:"scoring"`
 		LLM     tomlLLMConfig               `toml:"llm"`
 	} `toml:"palace"`
+	Archive tomlArchiveConfig `toml:"archive"`
+}
+
+type tomlArchiveConfig struct {
+	SignMode       string `toml:"sign_mode"`
+	SignKey        string `toml:"sign_key"`
+	SignNamespace  string `toml:"sign_namespace"`
+	AllowedSigners string `toml:"allowed_signers"`
+	SignerIdentity string `toml:"signer_identity"`
 }
 
 type tomlRoomConfig struct {
@@ -174,6 +194,13 @@ func (tc *tomlConfig) flatten() Config {
 			Model:     tc.Palace.LLM.Model,
 			APIKeyEnv: tc.Palace.LLM.APIKeyEnv,
 			MaxTokens: tc.Palace.LLM.MaxTokens,
+		},
+		Archive: ArchiveConfig{
+			SignMode:       tc.Archive.SignMode,
+			SignKey:        tc.Archive.SignKey,
+			SignNamespace:  tc.Archive.SignNamespace,
+			AllowedSigners: tc.Archive.AllowedSigners,
+			SignerIdentity: tc.Archive.SignerIdentity,
 		},
 	}
 }

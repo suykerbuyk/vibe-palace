@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -26,6 +27,13 @@ type captureSessionParams struct {
 	FilesChanged []string `json:"files_changed,omitempty"`
 	OpenThreads  []string `json:"open_threads,omitempty"`
 	Transcript   string   `json:"transcript,omitempty"`
+	// ArchiveSessionID, if set, causes the handler to resolve an
+	// existing archive for this session under the project's
+	// transcripts/ directory and cross-link it with the session note.
+	ArchiveSessionID string `json:"archive_session_id,omitempty"`
+	// ArchiveAdapter names the adapter to resolve against. Defaults
+	// to claude-code when ArchiveSessionID is set and this is empty.
+	ArchiveAdapter string `json:"archive_adapter,omitempty"`
 }
 
 type captureSessionResult struct {
@@ -78,6 +86,14 @@ var captureSessionSchema = json.RawMessage(`{
 		"transcript": {
 			"type": "string",
 			"description": "Full session transcript (optional, will be chunked and indexed)."
+		},
+		"archive_session_id": {
+			"type": "string",
+			"description": "If set, look up the matching transcript archive under the project's transcripts/ directory and cross-link it with this session note."
+		},
+		"archive_adapter": {
+			"type": "string",
+			"description": "Adapter name for archive lookup (default: claude-code)."
 		}
 	},
 	"required": ["project", "summary"]
@@ -128,6 +144,24 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 			OpenThreads:  p.OpenThreads,
 		}
 
+		// Resolve the archive (if requested) before writing the session
+		// so the note can carry the archive: frontmatter field. The
+		// note -> manifest back-link is closed after the write below.
+		var archiveEntry *archive.Entry
+		if p.ArchiveSessionID != "" {
+			adapter := p.ArchiveAdapter
+			if adapter == "" {
+				adapter = archive.ClaudeCodeAdapterName
+			}
+			if e, err := archive.ResolveEntry(vault.Root, p.Project, p.ArchiveSessionID); err == nil && e.Manifest.Adapter == adapter {
+				archiveEntry = e
+				meta.Archive = archive.VaultRelPath(vault.Root, e.ManifestPath)
+			}
+			// A missing archive is non-fatal — capture still succeeds
+			// without the link. Future hook runs that archive after
+			// capture can call LinkSessionNote to close the loop.
+		}
+
 		// Score transcript friction before writing session.
 		if p.Transcript != "" {
 			if score, err := capture.AnalyzeFriction(p.Transcript); err == nil {
@@ -150,6 +184,17 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 		notePath := ""
 		if readErr == nil {
 			notePath = readMeta.NotePath
+		}
+
+		// Close the bidirectional link: write vault_rel_session_note
+		// into the archive manifest. Non-fatal on failure — the
+		// note's archive: field still provides one-way traversal.
+		if archiveEntry != nil {
+			sessionAbs, err := vault.SessionFile(p.Project, date, iteration)
+			if err == nil {
+				rel := archive.VaultRelPath(vault.Root, sessionAbs)
+				_ = archive.LinkSessionNote(archiveEntry.ManifestPath, rel)
+			}
 		}
 
 		// Index transcript if provided.

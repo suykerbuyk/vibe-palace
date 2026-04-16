@@ -6,8 +6,12 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -116,6 +120,66 @@ func TestCaptureSessionWithTranscript(t *testing.T) {
 		t.Errorf("status = %q, want %q", r.Status, "ok")
 	}
 }
+
+func TestCaptureSessionArchiveLink(t *testing.T) {
+	vault := testSessionVault(t)
+
+	// Seed a real archive under the project's transcripts dir.
+	ctx := context.Background()
+	srcPath := filepath.Join(t.TempDir(), "src.jsonl")
+	if err := os.WriteFile(srcPath, []byte(sampleClaudeJSONL), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := archive.Create(archive.CreateOptions{
+		Adapter:     archive.ClaudeCodeAdapterName,
+		SessionID:   "link-session",
+		SourcePath:  srcPath,
+		VaultRoot:   vault.Root,
+		ProjectSlug: "test-proj",
+	})
+	if err != nil {
+		t.Fatalf("seed archive: %v", err)
+	}
+
+	tool := CaptureSessionTool(vault, nil)
+	params := json.RawMessage(`{
+		"project": "test-proj",
+		"summary": "Session linked to a pre-existing archive.",
+		"archive_session_id": "link-session"
+	}`)
+	r, err := tool.Handler(ctx, params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	got := r.(captureSessionResult)
+
+	// Session frontmatter should carry archive: <vault-rel-manifest>.
+	meta, _, err := vault.ReadSession("test-proj", got.SessionID[:10], got.Iteration)
+	if err != nil {
+		t.Fatalf("read session back: %v", err)
+	}
+	wantArchive := archive.VaultRelPath(vault.Root, res.ManifestPath)
+	if meta.Archive != wantArchive {
+		t.Errorf("session.archive = %q, want %q", meta.Archive, wantArchive)
+	}
+
+	// Manifest should carry vault_rel_session_note.
+	m, err := archive.ReadManifest(res.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.VaultRelSessionNote == "" {
+		t.Error("manifest vault_rel_session_note was not updated")
+	}
+	if !strings.HasSuffix(m.VaultRelSessionNote, ".md") {
+		t.Errorf("vault_rel_session_note = %q, expected a .md path", m.VaultRelSessionNote)
+	}
+}
+
+const sampleClaudeJSONL = `{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"link-session"}
+{"type":"user","message":{"role":"user","content":"hi"}}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":"hello"}}
+`
 
 func TestCaptureSessionValidationMissingProject(t *testing.T) {
 	vault := testSessionVault(t)

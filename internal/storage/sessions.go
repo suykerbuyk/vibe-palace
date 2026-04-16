@@ -37,6 +37,11 @@ type SessionMeta struct {
 	FilesChanged  []string `yaml:"files_changed,omitempty"`
 	OpenThreads   []string `yaml:"open_threads,omitempty"`
 	NotePath      string   `yaml:"note_path,omitempty"`
+	// Archive is the vault-relative path to the transcript manifest
+	// associated with this session, if one was archived. Written by
+	// vp_capture_session when session_id + adapter resolve to an
+	// existing archive. See doc/adr/001-transcript-archive.md.
+	Archive string `yaml:"archive,omitempty"`
 }
 
 // WriteSession writes a session markdown file with YAML frontmatter.
