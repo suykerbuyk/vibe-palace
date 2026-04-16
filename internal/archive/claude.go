@@ -20,6 +20,43 @@ const ClaudeCodeAdapterName = "claude-code"
 // on-disk contract with Claude Code changes (e.g., path layout moves).
 const ClaudeCodeAdapterVersion = "1.0.0"
 
+// claudeAdapter implements Adapter for Claude Code's ~/.claude/projects
+// JSONL session log.
+type claudeAdapter struct{}
+
+func (claudeAdapter) Name() string    { return ClaudeCodeAdapterName }
+func (claudeAdapter) Version() string { return ClaudeCodeAdapterVersion }
+
+func (claudeAdapter) ResolveSource(opts CreateOptions) (string, func(), error) {
+	if opts.SourcePath != "" {
+		return opts.SourcePath, noopCleanup, nil
+	}
+	cwd := opts.SourceCWD
+	if cwd == "" {
+		c, err := os.Getwd()
+		if err != nil {
+			return "", noopCleanup, fmt.Errorf("resolve cwd: %w", err)
+		}
+		cwd = c
+	}
+	p, err := ClaudeSessionPath(cwd, opts.SessionID)
+	if err != nil {
+		return "", noopCleanup, err
+	}
+	if _, err := os.Stat(p); err != nil {
+		return "", noopCleanup, fmt.Errorf("claude session jsonl not found: %w", err)
+	}
+	return p, noopCleanup, nil
+}
+
+func (claudeAdapter) Inspect(sourcePath string) (int, string, error) {
+	return InspectClaudeJSONL(sourcePath)
+}
+
+func init() {
+	RegisterAdapter(claudeAdapter{})
+}
+
 // ClaudeHome returns the root Claude Code state directory, honoring
 // the CLAUDE_HOME env var and falling back to ~/.claude.
 func ClaudeHome() (string, error) {

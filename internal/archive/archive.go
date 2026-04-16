@@ -113,10 +113,15 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 		opts.Now = opts.Now.UTC()
 	}
 
-	sourcePath, adapterVersion, err := resolveSource(opts)
+	a, err := LookupAdapter(opts.Adapter)
 	if err != nil {
 		return nil, err
 	}
+	sourcePath, cleanupSource, err := a.ResolveSource(opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanupSource()
 
 	// Hash + size the source up-front so idempotency decisions work
 	// whether or not a prior archive exists.
@@ -161,21 +166,16 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 		return nil, err
 	}
 
-	turnCount, model := 0, ""
-	if opts.Adapter == ClaudeCodeAdapterName {
-		if n, m, inspectErr := InspectClaudeJSONL(sourcePath); inspectErr == nil {
-			turnCount, model = n, m
-		}
-		// Inspection failures are non-fatal — the source hash still
-		// pins the exact bytes. Turn count is a convenience field.
-	}
+	// Inspection failures are non-fatal — the source hash still pins
+	// the exact bytes. Turn count and model are convenience fields.
+	turnCount, model, _ := a.Inspect(sourcePath)
 
 	hostname, _ := os.Hostname()
 
 	m := &Manifest{
 		SchemaVersion:       ManifestSchemaVersion,
 		Adapter:             opts.Adapter,
-		AdapterVersion:      adapterVersion,
+		AdapterVersion:      a.Version(),
 		SessionID:           opts.SessionID,
 		Model:               model,
 		TurnCount:           turnCount,
@@ -204,33 +204,6 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 		ArchivePath:  archivePath,
 		Manifest:     m,
 	}, nil
-}
-
-func resolveSource(opts CreateOptions) (path, adapterVersion string, err error) {
-	switch opts.Adapter {
-	case ClaudeCodeAdapterName:
-		if opts.SourcePath != "" {
-			return opts.SourcePath, ClaudeCodeAdapterVersion, nil
-		}
-		cwd := opts.SourceCWD
-		if cwd == "" {
-			c, cerr := os.Getwd()
-			if cerr != nil {
-				return "", "", fmt.Errorf("resolve cwd: %w", cerr)
-			}
-			cwd = c
-		}
-		p, err := ClaudeSessionPath(cwd, opts.SessionID)
-		if err != nil {
-			return "", "", err
-		}
-		if _, err := os.Stat(p); err != nil {
-			return "", "", fmt.Errorf("claude session jsonl not found: %w", err)
-		}
-		return p, ClaudeCodeAdapterVersion, nil
-	default:
-		return "", "", fmt.Errorf("unknown adapter %q", opts.Adapter)
-	}
 }
 
 func hashFile(path string) (string, int64, error) {
