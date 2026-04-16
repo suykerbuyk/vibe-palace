@@ -228,11 +228,9 @@ right tool — and the two can run alongside each other:
   `vv effectiveness` surface correction density, model regressions,
   and context-effectiveness signals across months of history. Not
   in vibe-palace.
-- **zstd transcript archive.** `vv archive` compresses raw JSONL
-  (~10:1) so you retain the full original record. Vibe-palace does
-  not own raw transcripts.
 - **Zed SQLite thread ingestion.** `vv` reads Zed's thread DB
-  directly.
+  directly. Vibe-palace's `vp archive` currently supports Claude Code
+  JSONL only; a Zed adapter is planned.
 
 In short: reach for `vv` when you want a passive observer. Reach for
 `vp` when you want the agent to actively *use* memory during the
@@ -247,6 +245,7 @@ session.
 - [Testing](doc/TESTING.md) — test strategy and integration test inventory
 - [Migration](doc/MIGRATION.md) — migrating from VibeVault and MemPalace
 - [PRD](doc/PRD-vibe-palace.md) — full product requirements (Phases 1–10, 12 implemented; Phase 11 planned)
+- [ADR 001: Transcript Archive](doc/adr/001-transcript-archive.md) — copyright-provenance ledger format and reasoning
 
 ## License
 

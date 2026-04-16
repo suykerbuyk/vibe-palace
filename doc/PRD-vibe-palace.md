@@ -2657,6 +2657,12 @@ structural_boost_room = 0.34
 [archive]
 compress = true
 dormant_days = 90
+# Transcript-ledger format and provenance reasoning: see doc/adr/001-transcript-archive.md
+# sign_mode = ""          # "", "gpg", or "ssh"
+# sign_key = ""
+# sign_namespace = "vibe-palace-archive"
+# allowed_signers = ""
+# signer_identity = ""
 
 # Room classification scoring overrides (Phase 12):
 # [palace.scoring]
