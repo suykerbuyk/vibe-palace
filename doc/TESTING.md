@@ -172,6 +172,13 @@ context resolver, and config into a single test fixture.
 | `FrictionTrendsEmpty` | tools → capture → storage | No | Trends for project with no sessions returns empty result |
 | `FrictionSearchByMinScore` | storage | No | `SearchSessions` with minFriction filter returns only sessions above threshold |
 
+### `internal/integration/` — Hook Pipeline Tests
+
+| Test | Layers | ONNX? | What it proves |
+|------|--------|-------|----------------|
+| `HookPipeline_EndToEnd` | hook → archive → capture → storage | No | Full hook flow: archive transcript, create session note with friction score, write claim sentinel, idempotent skip on re-run, isolation between sessions |
+| `HookInstall_EndToEnd` | hook → settings | No | Install replaces `vv hook` with `vp hook`, preserves user hooks, uninstall removes cleanly |
+
 ### `internal/integration/` — Phase 12 Tests (Room Classification)
 
 | Test | Layers | ONNX? | What it proves |

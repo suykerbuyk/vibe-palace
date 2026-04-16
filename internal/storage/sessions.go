@@ -42,6 +42,9 @@ type SessionMeta struct {
 	// vp_capture_session when session_id + adapter resolve to an
 	// existing archive. See doc/adr/001-transcript-archive.md.
 	Archive string `yaml:"archive,omitempty"`
+	// NeedsIndexing marks hook-captured sessions for deferred transcript
+	// indexing. Omitted from YAML when false so existing sessions are unaffected.
+	NeedsIndexing bool `yaml:"needs_indexing,omitempty"`
 }
 
 // WriteSession writes a session markdown file with YAML frontmatter.

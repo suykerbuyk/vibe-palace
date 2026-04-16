@@ -18,6 +18,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
+	"github.com/suykerbuyk/vibe-palace/internal/hook"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/reconcile"
 	"github.com/suykerbuyk/vibe-palace/internal/shims"
@@ -89,6 +90,9 @@ func cmdInit(info cli.BuildInfo) *cli.Command {
 
 			// --- Phase 3: Slash-command shim emission ---
 			results = append(results, initShimWiring(projectDir, projectReady)...)
+
+			// --- Phase 4: Hook wiring ---
+			results = append(results, initHookWiring(projectDir, projectReady)...)
 
 			printInitStatus(os.Stdout, info.Version, results)
 			return projectCode
@@ -775,6 +779,53 @@ func hasLegacyContent(data []byte) bool {
 		}
 	}
 	return false
+}
+
+// initHookWiring ensures vp hook entries are installed in
+// ~/.claude/settings.json, replacing any legacy vv hook entries.
+func initHookWiring(_ string, projectReady bool) []check.Result {
+	if !projectReady {
+		return nil
+	}
+	status, err := hook.Status()
+	if err != nil {
+		return []check.Result{{
+			Name:    "Hook wiring",
+			Status:  check.Skip,
+			Summary: "could not check hook status: " + err.Error(),
+		}}
+	}
+	if status.Installed && !status.LegacyPresent && !status.Stale {
+		return []check.Result{{
+			Name:    "Hook wiring",
+			Status:  check.Info,
+			Summary: "vp hook already installed",
+		}}
+	}
+	changed, err := hook.Install()
+	if err != nil {
+		return []check.Result{{
+			Name:    "Hook wiring",
+			Status:  check.Fail,
+			Summary: "hook install: " + err.Error(),
+		}}
+	}
+	msg := "vp hook installed"
+	if status.LegacyPresent {
+		msg += " (vv hook preserved — both will fire)"
+	}
+	if !changed {
+		return []check.Result{{
+			Name:    "Hook wiring",
+			Status:  check.Info,
+			Summary: msg,
+		}}
+	}
+	return []check.Result{{
+		Name:    "Hook wiring",
+		Status:  check.Pass,
+		Summary: msg,
+	}}
 }
 
 // printInitStatus renders the end-of-run status table. Mirrors check.Print's

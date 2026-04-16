@@ -26,7 +26,8 @@ session capture, semantic search, and palace-based knowledge navigation through
 | `internal/tools` | 38 MCP tool implementations | (see tool table below) |
 | `internal/embedder` | ONNX text embedding | `Embedder` interface, `ONNXEmbedder` |
 | `internal/search` | Hybrid semantic + structural search | `Engine`, `VectorIndex`, `SearchResult` |
-| `internal/capture` | Session ingest, chunking, friction | `Indexer`, `ChunkConfig` |
+| `internal/capture` | Session ingest, chunking, friction, shared capture pipeline | `Indexer`, `ChunkConfig`, `WriteSession` |
+| `internal/hook` | Claude Code hook handler, settings install, claim sentinel | `Run`, `Install`, `WriteClaim` |
 | `internal/palace` | Wing/room/hall classification, graph, audit/tune/discover | `PalaceGraph`, `RoomClassifier`, `AAKResult` |
 | `internal/llm` | OpenAI-compatible LLM client for offline analysis | `Client`, `Response` |
 | `internal/project` | Project detection from working dir | `ProjectConfig` |
@@ -613,7 +614,16 @@ Deleting the cache forces re-embedding but loses no data.
 
 ### Capture Flow
 
-When `vp_capture_session` is called:
+Sessions are captured via two paths, both using the shared pipeline
+`capture.WriteSession`:
+
+- **MCP path**: `vp_capture_session` tool — AI-generated summary, full
+  transcript indexing (chunking + embedding + KG extraction). Writes a
+  claim sentinel so the hook path skips this session.
+- **Hook path**: `vp hook` CLI — Claude Code invokes this on SessionEnd,
+  Stop, and PreCompact events. Produces a deterministic auto-summary from
+  `git log`, runs friction analysis, but defers transcript indexing
+  (`needs_indexing: true` in frontmatter). Skips if a claim sentinel exists.
 
 ```
 1. Write session markdown to {vault}/Projects/{project}/sessions/
@@ -628,7 +638,17 @@ When `vp_capture_session` is called:
    f. Index each chunk+vector in the search engine
    g. Extract entities (file paths, URLs) → knowledge graph
 3. Compute friction score (0–100) from transcript
+4. Archive transcript to {vault}/Projects/{project}/transcripts/ (hook path)
+5. Cross-link archive manifest ↔ session note (bidirectional)
+6. Write claim sentinel to {cwd}/.vibe-palace/ (idempotency)
 ```
+
+### Hook Installation
+
+`vp hook install` manages entries in `~/.claude/settings.json`, replacing
+legacy `vv hook` (vibe-vault) with `vp hook`. `vp init` calls this
+automatically. The hook fires on three Claude Code events (SessionEnd,
+Stop, PreCompact) with a 30-second timeout.
 
 ### Chunking Engine
 

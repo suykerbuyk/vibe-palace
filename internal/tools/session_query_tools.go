@@ -239,7 +239,7 @@ func parseSessionID(id string) (string, int, error) {
 	}
 	date := id[:10]
 	iterStr := id[11:]
-	iteration := parseIteration(id)
+	iteration := capture.ParseIteration(id)
 	if iteration < 1 {
 		return "", 0, fmt.Errorf("invalid iteration %q in session_id %q", iterStr, id)
 	}

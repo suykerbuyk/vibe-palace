@@ -1,0 +1,29 @@
+# Per-directory vibe-palace project config. Managed by 'vp init'.
+#
+# Two roles:
+#   1. Identify this source directory's project.
+#   2. Optionally override vault_path for this directory tree.
+#
+# Only 'vault_path' is honored as an override at this layer. All other
+# settings (search, chunker, palace, embedder, etc.) come from the
+# global config (~/.config/vibe-palace/config.toml) or the per-project
+# vault config ({vault}/Projects/{slug}/config.toml). Edit those to
+# customize.
+
+# Override the palace vault for this source-dir and descendants. The
+# walk stops at $HOME; a file at $HOME/.vibe-palace.toml is ignored.
+# vault_path = "~/work-palace-vault"
+
+# Managed by vp. The version fields drive schema migration — do not
+# hand-edit unless you know what you're doing. Run 'vp config upgrade
+# --cwd' to add missing keys when vp is updated.
+[meta]
+version_major = 1
+version_minor = 0
+# kind identifies this schema — do not change.
+# kind = "cwd-project"
+
+[project]
+name = "vibe-palace"
+# domain = ""
+# tags = []
