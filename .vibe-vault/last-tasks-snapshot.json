@@ -1,12 +1,13 @@
 {
-  "iter_n": 77,
-  "anchor_sha": "",
+  "iter_n": 78,
+  "anchor_sha": "9234103bef0bd2049952bbda0d3a4f5e2d36289d",
   "active": [
     "auto-capture-ide-hooks",
     "friction-analytics-port",
     "git-notes-archive-anchoring",
     "hnsw-library-bug-fixes-and-hardening",
-    "llm-enrichment-synthesis"
+    "llm-enrichment-synthesis",
+    "resume-from-vibe-vault-phase-a"
   ],
   "done": [
     "absorb-ergonomics-accept-all-and-prompts",
