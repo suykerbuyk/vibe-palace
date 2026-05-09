@@ -24,10 +24,6 @@ func cmdVault() *cli.Command {
 		Synopsis:    "vp vault <command> [flags]",
 		Description: "Manage the vault git repository. The vault stores all palace data in a git-tracked directory for versioning and multi-machine sync.",
 		Subcommands: []string{"vault pull", "vault push", "vault sync"},
-		Run: func(args []string) int {
-			fmt.Fprintln(os.Stderr, "Usage: vp vault <command> [flags]\n\nRun 'vp vault --help' for details.")
-			return cli.ExitOK
-		},
 	}
 }
 

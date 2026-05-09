@@ -25,10 +25,6 @@ func cmdMigrate() *cli.Command {
 		Synopsis:    "vp migrate <command> [flags]",
 		Description: "Import data into vibe-palace from external sources.",
 		Subcommands: []string{"migrate vibevault", "migrate mempalace"},
-		Run: func(args []string) int {
-			fmt.Fprintln(os.Stderr, "Usage: vp migrate <command> [flags]\n\nRun 'vp migrate --help' for details.")
-			return cli.ExitOK
-		},
 	}
 }
 

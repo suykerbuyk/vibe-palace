@@ -20,6 +20,7 @@ session capture, semantic search, and palace-based knowledge navigation through
 
 | Package | Responsibility | Key Types |
 |---------|---------------|-----------|
+| `internal/cli` | CLI framework: registry, dispatch, help, flags | `Registry`, `Command`, `FlagDef` |
 | `internal/storage` | Vault layout, CRUD, config | `Vault`, `Config`, `Drawer`, `SessionMeta` |
 | `internal/mcp` | JSON-RPC server, tool registry | `Server`, `Registry`, `Tool` |
 | `internal/context` | Precedence-aware template resolution | `Resolver`, `ResourceInfo` |
@@ -243,6 +244,46 @@ wired into the main binary. It provides REST endpoints:
 - `POST /tools/{name}` — invoke a tool
 
 CORS middleware is included for browser-based clients.
+
+---
+
+## CLI Framework (`internal/cli`)
+
+`Registry.Dispatch` routes argv to a registered `Command`. Two-word
+subcommands (e.g. `vault pull`) are looked up first; single-word
+lookups fall through when the two-word combo is unknown.
+
+### Parent-command contract
+
+A parent command is one that declares `Subcommands`. Dispatch handles
+these uniformly so each parent doesn't need a hand-rolled usage
+string:
+
+- `vp <parent>` (no arguments) → framework renders parent help on
+  **stdout**, exit `0`.
+- `vp <parent> <unknown>` (non-flag token that doesn't match any
+  registered two-word subcommand) → framework writes
+  `"vp <parent>: unknown subcommand \"<token>\""` plus the parent
+  help to **stderr**, exit `ExitUser` (1).
+- `vp <parent> --help` / `-h` → parent help on stdout, exit `0`
+  (unchanged from the pre-gate behavior).
+- `vp <parent> <known-sub> …` → two-word lookup hits first; the
+  parent gate never fires.
+
+`Command.Run` is optional when `len(Subcommands) > 0`: pure parents
+delegate rendering to the dispatcher.
+
+`Command.BareInvocation = true` opts a parent out of the auto-help
+path for empty / flag-only invocations, routing them back to `Run`.
+Only `vp hook` sets this — it doubles as a Claude Code stdin handler
+and must receive bare `vp hook` calls with no args. Non-flag unknown
+tokens still take the unknown-subcommand error path; `BareInvocation`
+is not an escape hatch for typo detection.
+
+A CI-level invariant (`TestAllCommandsRegisterValidly` in
+`cmd/vp/main_test.go`) asserts every registered command has either
+`Run != nil` or non-empty `Subcommands`, and that `BareInvocation`
+implies `Run != nil`.
 
 ---
 

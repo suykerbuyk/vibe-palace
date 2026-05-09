@@ -144,9 +144,11 @@ func TestSkillsCommandMetadata(t *testing.T) {
 	if cs.Name != "skills" {
 		t.Errorf("name = %q", cs.Name)
 	}
-	// Trigger the Run closure to confirm it prints usage without panicking.
-	if rc := cs.Run(nil); rc != 0 {
-		t.Errorf("cmdSkills Run rc=%d", rc)
+	if cs.Run != nil {
+		t.Error("cmdSkills Run should be nil — parent help is rendered by the dispatcher")
+	}
+	if len(cs.Subcommands) == 0 {
+		t.Error("cmdSkills should declare its Subcommands so the dispatcher can render help")
 	}
 	cl := cmdSkillsList()
 	if cl.Name != "skills list" {

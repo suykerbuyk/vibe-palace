@@ -28,10 +28,6 @@ func cmdConfig() *cli.Command {
 		Synopsis:    "vp config <command>",
 		Description: "Manage the global vibe-palace configuration.",
 		Subcommands: []string{"config upgrade", "config sync"},
-		Run: func(args []string) int {
-			fmt.Fprintln(os.Stderr, "Usage: vp config <command>\n\nRun 'vp config --help' for details.")
-			return cli.ExitOK
-		},
 	}
 }
 

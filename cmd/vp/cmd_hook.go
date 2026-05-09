@@ -36,10 +36,11 @@ func fallbackSlug(dir string) string {
 
 func cmdHook(info cli.BuildInfo) *cli.Command {
 	return &cli.Command{
-		Name:        "hook",
-		Synopsis:    "vp hook",
-		Description: "Claude Code hook handler. Reads hook JSON from stdin and archives the session transcript. Also supports install/uninstall subcommands.",
-		Subcommands: []string{"hook install", "hook uninstall"},
+		Name:           "hook",
+		Synopsis:       "vp hook",
+		Description:    "Claude Code hook handler. Reads hook JSON from stdin and archives the session transcript. Also supports install/uninstall subcommands.",
+		Subcommands:    []string{"hook install", "hook uninstall"},
+		BareInvocation: true,
 		Run: func(args []string) int {
 			return runHook(info)
 		},

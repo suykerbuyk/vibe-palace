@@ -45,6 +45,16 @@ func (r *Registry) Lookup(name string) (*Command, bool) {
 	return cmd, ok
 }
 
+// Each invokes fn for every registered command, including two-word
+// subcommands and Hidden entries. Iteration order is registration
+// order. Use All for the filtered, sorted view shown in top-level
+// help.
+func (r *Registry) Each(fn func(*Command)) {
+	for _, name := range r.order {
+		fn(r.commands[name])
+	}
+}
+
 // All returns all non-hidden commands sorted by name. Two-word commands
 // (e.g. "vault pull") are excluded when their parent (e.g. "vault") is
 // also registered, since the parent's help now lists them.
@@ -108,10 +118,49 @@ func (r *Registry) Dispatch(args []string) int {
 			fmt.Fprint(r.out, r.formatHelp(cmd))
 			return ExitOK
 		}
-		return cmd.Run(remaining)
+		return r.dispatchCommand(cmd, remaining)
 	}
 
 	fmt.Fprintf(r.errOut, "vp: unknown command %q\nRun 'vp help' for usage.\n", args[0])
+	return ExitUser
+}
+
+// dispatchCommand routes a matched single-word command to Run, or to
+// the parent-help / unknown-subcommand paths when the command has
+// registered subcommands. See Command.BareInvocation for the opt-out.
+func (r *Registry) dispatchCommand(cmd *Command, remaining []string) int {
+	// Leaf command (no subcommands) — delegate to Run.
+	if len(cmd.Subcommands) == 0 {
+		return cmd.Run(remaining)
+	}
+
+	// Parent command. A two-word lookup already ran in Dispatch and
+	// missed, so anything in remaining is either a flag, an unknown
+	// subcommand token, or empty.
+	if cmd.BareInvocation {
+		// Empty or flag-only args → delegate to Run (stdin handler
+		// or flag-only invocation). A non-flag first token is
+		// treated as an unknown subcommand — preserves typo
+		// detection.
+		if len(remaining) == 0 || strings.HasPrefix(remaining[0], "-") {
+			return cmd.Run(remaining)
+		}
+		return r.unknownSubcommand(cmd, remaining[0])
+	}
+
+	// Pure parent (no Run): bare invocation → help; unknown token → error.
+	if len(remaining) == 0 {
+		fmt.Fprint(r.out, r.formatHelp(cmd))
+		return ExitOK
+	}
+	return r.unknownSubcommand(cmd, remaining[0])
+}
+
+// unknownSubcommand writes "vp <parent>: unknown subcommand ..." plus
+// parent help to stderr and returns ExitUser.
+func (r *Registry) unknownSubcommand(cmd *Command, token string) int {
+	fmt.Fprintf(r.errOut, "vp %s: unknown subcommand %q\n\n", cmd.Name, token)
+	fmt.Fprint(r.errOut, r.formatHelp(cmd))
 	return ExitUser
 }
 

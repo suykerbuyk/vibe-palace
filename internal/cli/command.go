@@ -28,6 +28,13 @@ type Example struct {
 }
 
 // Command describes a CLI command with structured metadata.
+//
+// Run may be nil when Subcommands is non-empty: the dispatcher renders
+// parent help for bare invocation (`vp <parent>`) and emits an
+// unknown-subcommand error for `vp <parent> <bogus>`. Set
+// BareInvocation to route `vp <parent>` back to Run (used by commands
+// that are both a parent and a handler, e.g. `vp hook` which reads
+// stdin from Claude Code).
 type Command struct {
 	Name        string    // e.g. "search" or "vault sync" (two-word)
 	Synopsis    string    // e.g. "vp search <query> [flags]"
@@ -37,4 +44,10 @@ type Command struct {
 	Subcommands []string  // registered names of child commands (e.g. "vault pull")
 	Run         func(args []string) int
 	Hidden      bool // exclude from top-level help
+	// BareInvocation routes bare/flag-only invocations of a parent
+	// command back to Run instead of rendering parent help.
+	// Non-flag unknown subcommand tokens still produce the standard
+	// unknown-subcommand error. Has no effect when Subcommands is
+	// empty.
+	BareInvocation bool
 }

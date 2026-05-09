@@ -13,14 +13,6 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/migrate"
 )
 
-func TestMigrateParentShowsHelp(t *testing.T) {
-	cmd := cmdMigrate()
-	code := cmd.Run(nil)
-	if code != cli.ExitOK {
-		t.Errorf("exit code = %d, want ExitOK (parent help)", code)
-	}
-}
-
 func TestMigrateVibeVaultBadFlags(t *testing.T) {
 	cmd := cmdMigrateVibeVault()
 	code := cmd.Run([]string{"--unknown"})

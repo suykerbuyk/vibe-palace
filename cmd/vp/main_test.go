@@ -130,19 +130,49 @@ func TestDispatchTwoWordPerCommandHelp(t *testing.T) {
 }
 
 func TestDispatchMigrateParent(t *testing.T) {
-	reg, _, _ := testRegistry()
-	// "migrate" alone should show help and return ExitOK.
+	reg, out, errOut := testRegistry()
 	code := reg.Dispatch([]string{"migrate"})
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d, want %d", code, cli.ExitOK)
 	}
+	if !strings.Contains(out.String(), "Commands:") {
+		t.Errorf("bare `migrate` should render help on stdout, got:\n%s", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("bare `migrate` should not write to stderr, got: %q", errOut.String())
+	}
 }
 
 func TestDispatchVaultParent(t *testing.T) {
-	reg, _, _ := testRegistry()
+	reg, out, errOut := testRegistry()
 	code := reg.Dispatch([]string{"vault"})
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d, want %d", code, cli.ExitOK)
+	}
+	if !strings.Contains(out.String(), "Commands:") {
+		t.Errorf("bare `vault` should render help on stdout, got:\n%s", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("bare `vault` should not write to stderr, got: %q", errOut.String())
+	}
+}
+
+func TestDispatchParentUnknownSubcommand(t *testing.T) {
+	// End-to-end validation of the unknown-subcommand error path
+	// against the real command registration.
+	reg, out, errOut := testRegistry()
+	code := reg.Dispatch([]string{"config", "bogus"})
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout should be empty, got: %q", out.String())
+	}
+	if !strings.Contains(errOut.String(), `unknown subcommand "bogus"`) {
+		t.Errorf("stderr should mention the bad token, got:\n%s", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "vp config") {
+		t.Errorf("stderr should name the parent, got:\n%s", errOut.String())
 	}
 }
 
@@ -160,6 +190,23 @@ func TestAllCommandsRegistered(t *testing.T) {
 			t.Errorf("command %q not registered", name)
 		}
 	}
+}
+
+// TestAllCommandsRegisterValidly enforces the Command invariant at CI
+// time: every registered command must have a Run, Subcommands, or
+// both; BareInvocation implies Run != nil. Adding a new parent with
+// neither Run nor Subcommands (or with BareInvocation but no Run)
+// will fail here.
+func TestAllCommandsRegisterValidly(t *testing.T) {
+	reg, _, _ := testRegistry()
+	reg.Each(func(cmd *cli.Command) {
+		if cmd.Run == nil && len(cmd.Subcommands) == 0 {
+			t.Errorf("command %q has neither Run nor Subcommands", cmd.Name)
+		}
+		if cmd.BareInvocation && cmd.Run == nil {
+			t.Errorf("command %q has BareInvocation=true but Run is nil", cmd.Name)
+		}
+	})
 }
 
 // Command-specific tests are in cmd_*_test.go files.

@@ -24,10 +24,6 @@ func cmdDiscover() *cli.Command {
 		Synopsis:    "vp discover <command> [flags]",
 		Description: "LLM-assisted keyword discovery for room classification.",
 		Subcommands: []string{"discover rooms"},
-		Run: func(args []string) int {
-			fmt.Fprintln(os.Stderr, "Usage: vp discover <command> [flags]\n\nRun 'vp help discover' for details.")
-			return cli.ExitOK
-		},
 	}
 }
 
