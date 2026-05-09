@@ -23,10 +23,6 @@ func cmdArchive() *cli.Command {
 		Synopsis:    "vp archive <command> [flags]",
 		Description: "Archive AI session transcripts with provenance manifests. See doc/adr/001-transcript-archive.md.",
 		Subcommands: []string{"archive create", "archive list", "archive verify", "archive extract"},
-		Run: func(args []string) int {
-			fmt.Fprintln(os.Stderr, "Usage: vp archive <command> [flags]\n\nRun 'vp archive --help' for details.")
-			return cli.ExitOK
-		},
 	}
 }
 

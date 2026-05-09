@@ -20,13 +20,15 @@ session capture, semantic search, and palace-based knowledge navigation through
 
 | Package | Responsibility | Key Types |
 |---------|---------------|-----------|
+| `internal/cli` | CLI framework: registry, dispatch, help, flags | `Registry`, `Command`, `FlagDef` |
 | `internal/storage` | Vault layout, CRUD, config | `Vault`, `Config`, `Drawer`, `SessionMeta` |
 | `internal/mcp` | JSON-RPC server, tool registry | `Server`, `Registry`, `Tool` |
 | `internal/context` | Precedence-aware template resolution | `Resolver`, `ResourceInfo` |
 | `internal/tools` | 38 MCP tool implementations | (see tool table below) |
 | `internal/embedder` | ONNX text embedding | `Embedder` interface, `ONNXEmbedder` |
 | `internal/search` | Hybrid semantic + structural search | `Engine`, `VectorIndex`, `SearchResult` |
-| `internal/capture` | Session ingest, chunking, friction | `Indexer`, `ChunkConfig` |
+| `internal/capture` | Session ingest, chunking, friction, shared capture pipeline | `Indexer`, `ChunkConfig`, `WriteSession` |
+| `internal/hook` | Claude Code hook handler, settings install, claim sentinel | `Run`, `Install`, `WriteClaim` |
 | `internal/palace` | Wing/room/hall classification, graph, audit/tune/discover | `PalaceGraph`, `RoomClassifier`, `AAKResult` |
 | `internal/llm` | OpenAI-compatible LLM client for offline analysis | `Client`, `Response` |
 | `internal/project` | Project detection from working dir | `ProjectConfig` |
@@ -242,6 +244,46 @@ wired into the main binary. It provides REST endpoints:
 - `POST /tools/{name}` — invoke a tool
 
 CORS middleware is included for browser-based clients.
+
+---
+
+## CLI Framework (`internal/cli`)
+
+`Registry.Dispatch` routes argv to a registered `Command`. Two-word
+subcommands (e.g. `vault pull`) are looked up first; single-word
+lookups fall through when the two-word combo is unknown.
+
+### Parent-command contract
+
+A parent command is one that declares `Subcommands`. Dispatch handles
+these uniformly so each parent doesn't need a hand-rolled usage
+string:
+
+- `vp <parent>` (no arguments) → framework renders parent help on
+  **stdout**, exit `0`.
+- `vp <parent> <unknown>` (non-flag token that doesn't match any
+  registered two-word subcommand) → framework writes
+  `"vp <parent>: unknown subcommand \"<token>\""` plus the parent
+  help to **stderr**, exit `ExitUser` (1).
+- `vp <parent> --help` / `-h` → parent help on stdout, exit `0`
+  (unchanged from the pre-gate behavior).
+- `vp <parent> <known-sub> …` → two-word lookup hits first; the
+  parent gate never fires.
+
+`Command.Run` is optional when `len(Subcommands) > 0`: pure parents
+delegate rendering to the dispatcher.
+
+`Command.BareInvocation = true` opts a parent out of the auto-help
+path for empty / flag-only invocations, routing them back to `Run`.
+Only `vp hook` sets this — it doubles as a Claude Code stdin handler
+and must receive bare `vp hook` calls with no args. Non-flag unknown
+tokens still take the unknown-subcommand error path; `BareInvocation`
+is not an escape hatch for typo detection.
+
+A CI-level invariant (`TestAllCommandsRegisterValidly` in
+`cmd/vp/main_test.go`) asserts every registered command has either
+`Run != nil` or non-empty `Subcommands`, and that `BareInvocation`
+implies `Run != nil`.
 
 ---
 
@@ -613,7 +655,16 @@ Deleting the cache forces re-embedding but loses no data.
 
 ### Capture Flow
 
-When `vp_capture_session` is called:
+Sessions are captured via two paths, both using the shared pipeline
+`capture.WriteSession`:
+
+- **MCP path**: `vp_capture_session` tool — AI-generated summary, full
+  transcript indexing (chunking + embedding + KG extraction). Writes a
+  claim sentinel so the hook path skips this session.
+- **Hook path**: `vp hook` CLI — Claude Code invokes this on SessionEnd,
+  Stop, and PreCompact events. Produces a deterministic auto-summary from
+  `git log`, runs friction analysis, but defers transcript indexing
+  (`needs_indexing: true` in frontmatter). Skips if a claim sentinel exists.
 
 ```
 1. Write session markdown to {vault}/Projects/{project}/sessions/
@@ -628,7 +679,17 @@ When `vp_capture_session` is called:
    f. Index each chunk+vector in the search engine
    g. Extract entities (file paths, URLs) → knowledge graph
 3. Compute friction score (0–100) from transcript
+4. Archive transcript to {vault}/Projects/{project}/transcripts/ (hook path)
+5. Cross-link archive manifest ↔ session note (bidirectional)
+6. Write claim sentinel to {cwd}/.vibe-palace/ (idempotency)
 ```
+
+### Hook Installation
+
+`vp hook install` manages entries in `~/.claude/settings.json`, replacing
+legacy `vv hook` (vibe-vault) with `vp hook`. `vp init` calls this
+automatically. The hook fires on three Claude Code events (SessionEnd,
+Stop, PreCompact) with a 30-second timeout.
 
 ### Chunking Engine
 

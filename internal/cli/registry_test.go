@@ -361,3 +361,195 @@ func TestRegisterHelpParent(t *testing.T) {
 		t.Errorf("help vault should include Commands section\nGot:\n%s", output)
 	}
 }
+
+// parentRegistry builds a registry with a "svc" parent that has two
+// subcommands and a leaf "ping" — shared fixture for the parent
+// bare-invocation behavior tests.
+func parentRegistry() (*Registry, *bytes.Buffer, *bytes.Buffer, *int) {
+	reg, out, errOut := newTestRegistry()
+	runCalls := 0
+	reg.Register(&Command{
+		Name:        "svc",
+		Synopsis:    "vp svc <command>",
+		Description: "Manage the service.",
+		Subcommands: []string{"svc start", "svc stop"},
+	})
+	reg.Register(&Command{
+		Name:        "svc start",
+		Synopsis:    "vp svc start",
+		Description: "Start the service.",
+		Run:         func([]string) int { return ExitOK },
+	})
+	reg.Register(&Command{
+		Name:        "svc stop",
+		Synopsis:    "vp svc stop",
+		Description: "Stop the service.",
+		Run:         func([]string) int { return ExitOK },
+	})
+	reg.Register(&Command{
+		Name:        "ping",
+		Description: "Leaf command.",
+		Run: func([]string) int {
+			runCalls++
+			return ExitOK
+		},
+	})
+	return reg, out, errOut, &runCalls
+}
+
+func TestDispatchParentBareShowsHelpOnStdout(t *testing.T) {
+	reg, out, errOut, _ := parentRegistry()
+
+	code := reg.Dispatch([]string{"svc"})
+	if code != ExitOK {
+		t.Errorf("exit code = %d, want %d", code, ExitOK)
+	}
+	if !strings.Contains(out.String(), "Commands:") {
+		t.Errorf("bare parent should render help on stdout, got:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "svc start") {
+		t.Errorf("help should list subcommands, got:\n%s", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("stderr should be empty on bare parent invocation, got: %q", errOut.String())
+	}
+}
+
+func TestDispatchParentUnknownSubcommandIsExitUser(t *testing.T) {
+	reg, out, errOut, _ := parentRegistry()
+
+	code := reg.Dispatch([]string{"svc", "bogus"})
+	if code != ExitUser {
+		t.Errorf("exit code = %d, want ExitUser", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout should be empty on unknown-subcommand error, got: %q", out.String())
+	}
+	errText := errOut.String()
+	if !strings.Contains(errText, `unknown subcommand "bogus"`) {
+		t.Errorf("stderr should mention unknown subcommand, got:\n%s", errText)
+	}
+	if !strings.Contains(errText, "vp svc") {
+		t.Errorf("stderr should name the parent command, got:\n%s", errText)
+	}
+	if !strings.Contains(errText, "Commands:") {
+		t.Errorf("stderr should include parent help, got:\n%s", errText)
+	}
+}
+
+func TestDispatchParentKnownSubcommandUnchanged(t *testing.T) {
+	reg, _, _, _ := parentRegistry()
+	if code := reg.Dispatch([]string{"svc", "start"}); code != ExitOK {
+		t.Errorf("known subcommand should dispatch normally, got exit %d", code)
+	}
+}
+
+func TestDispatchParentHelpFlagUnchanged(t *testing.T) {
+	// Regression guard: --help must still route through Dispatch's
+	// early hasHelpFlag branch and land on stdout with ExitOK.
+	reg, out, _, _ := parentRegistry()
+	if code := reg.Dispatch([]string{"svc", "--help"}); code != ExitOK {
+		t.Errorf("--help exit = %d, want ExitOK", code)
+	}
+	if !strings.Contains(out.String(), "Commands:") {
+		t.Errorf("--help should render parent help on stdout")
+	}
+}
+
+func TestDispatchLeafCommandUnaffected(t *testing.T) {
+	// Regression guard: the parent gate must not intercept leaf
+	// commands (no Subcommands).
+	reg, _, _, runCalls := parentRegistry()
+	if code := reg.Dispatch([]string{"ping"}); code != ExitOK {
+		t.Errorf("leaf dispatch exit = %d, want ExitOK", code)
+	}
+	if *runCalls != 1 {
+		t.Errorf("leaf Run call count = %d, want 1", *runCalls)
+	}
+}
+
+// bareInvocationRegistry wraps a BareInvocation=true "hook" parent
+// with a "hook install" subcommand. Used to verify that hook-style
+// parents still receive empty / flag-only args via Run, while
+// unknown non-flag tokens produce the same error path as non-bare
+// parents.
+func bareInvocationRegistry() (*Registry, *bytes.Buffer, *bytes.Buffer, *[][]string) {
+	reg, out, errOut := newTestRegistry()
+	var runCalls [][]string
+	reg.Register(&Command{
+		Name:           "hook",
+		Synopsis:       "vp hook",
+		Description:    "Hook handler; also a parent.",
+		Subcommands:    []string{"hook install"},
+		BareInvocation: true,
+		Run: func(args []string) int {
+			runCalls = append(runCalls, args)
+			return ExitOK
+		},
+	})
+	reg.Register(&Command{
+		Name:        "hook install",
+		Synopsis:    "vp hook install",
+		Description: "Install hook.",
+		Run:         func([]string) int { return ExitOK },
+	})
+	return reg, out, errOut, &runCalls
+}
+
+func TestBareInvocationEmptyArgsRunsHandler(t *testing.T) {
+	reg, _, errOut, calls := bareInvocationRegistry()
+
+	code := reg.Dispatch([]string{"hook"})
+	if code != ExitOK {
+		t.Errorf("exit = %d, want ExitOK", code)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("Run calls = %d, want 1", len(*calls))
+	}
+	if len((*calls)[0]) != 0 {
+		t.Errorf("Run args = %v, want empty", (*calls)[0])
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("stderr should be empty, got: %q", errOut.String())
+	}
+}
+
+func TestBareInvocationFlagOnlyRunsHandler(t *testing.T) {
+	reg, _, _, calls := bareInvocationRegistry()
+
+	code := reg.Dispatch([]string{"hook", "--verbose"})
+	if code != ExitOK {
+		t.Errorf("exit = %d, want ExitOK", code)
+	}
+	if len(*calls) != 1 || len((*calls)[0]) != 1 || (*calls)[0][0] != "--verbose" {
+		t.Errorf("Run calls = %v, want [[--verbose]]", *calls)
+	}
+}
+
+func TestBareInvocationUnknownNonFlagIsExitUser(t *testing.T) {
+	// Regression lock for review finding H1: `vp hook bogus` must
+	// not silently dispatch to Run just because hook sets
+	// BareInvocation.
+	reg, _, errOut, calls := bareInvocationRegistry()
+
+	code := reg.Dispatch([]string{"hook", "bogus"})
+	if code != ExitUser {
+		t.Errorf("exit = %d, want ExitUser", code)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("Run should NOT be called for unknown subcommand, called %d times with %v", len(*calls), *calls)
+	}
+	if !strings.Contains(errOut.String(), `unknown subcommand "bogus"`) {
+		t.Errorf("stderr should mention unknown subcommand, got:\n%s", errOut.String())
+	}
+}
+
+func TestBareInvocationKnownSubcommandUnchanged(t *testing.T) {
+	reg, _, _, calls := bareInvocationRegistry()
+	if code := reg.Dispatch([]string{"hook", "install"}); code != ExitOK {
+		t.Errorf("known subcommand exit = %d, want ExitOK", code)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("parent Run should not be called when two-word lookup hits, got %d calls", len(*calls))
+	}
+}

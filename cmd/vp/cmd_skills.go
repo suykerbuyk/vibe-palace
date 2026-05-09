@@ -26,10 +26,6 @@ func cmdSkills() *cli.Command {
 		Synopsis:    "vp skills <command> [flags]",
 		Description: "List the directory-form skills available for this project, inspect SKILL.md / reference bodies, and upgrade vault-level copies against embedded defaults.",
 		Subcommands: []string{"skills list", "skills show", "skills upgrade"},
-		Run: func(args []string) int {
-			fmt.Fprintln(os.Stderr, "Usage: vp skills <command> [flags]\n\nRun 'vp skills --help' for details.")
-			return cli.ExitOK
-		},
 	}
 }
 

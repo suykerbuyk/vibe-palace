@@ -6,6 +6,7 @@ package storage
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -287,6 +288,50 @@ func containsLine(s, line string) bool {
 	return false
 }
 
+
+func TestWriteSessionNeedsIndexing(t *testing.T) {
+	v := testVault(t)
+
+	// Round-trip with NeedsIndexing: true.
+	meta := SessionMeta{
+		Date:          "2026-03-15",
+		Title:         "Hook-captured session",
+		NeedsIndexing: true,
+	}
+	_, err := v.WriteSession("proj", meta, "")
+	if err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+
+	got, _, err := v.ReadSession("proj", "2026-03-15", 1)
+	if err != nil {
+		t.Fatalf("ReadSession: %v", err)
+	}
+	if !got.NeedsIndexing {
+		t.Error("NeedsIndexing = false after round-trip, want true")
+	}
+
+	// Verify omitempty: a session with NeedsIndexing false should not
+	// contain the field in the written YAML.
+	meta2 := SessionMeta{
+		Date:          "2026-03-16",
+		Title:         "Normal session",
+		NeedsIndexing: false,
+	}
+	_, err = v.WriteSession("proj", meta2, "")
+	if err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+
+	path, _ := v.SessionFile("proj", "2026-03-16", 1)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(data), "needs_indexing") {
+		t.Error("YAML contains needs_indexing when false; omitempty should suppress it")
+	}
+}
 
 func TestWriteSessionAllFields(t *testing.T) {
 	v := testVault(t)

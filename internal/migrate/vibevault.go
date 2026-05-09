@@ -22,11 +22,22 @@ import (
 )
 
 // importMarker is a single JSONL record in the idempotency marker file.
+//
+// Reason is empty for successful imports. A non-empty Reason flags
+// the entry as diagnostic — `isSessionImported` ignores entries whose
+// Reason is non-empty so a future re-migration after manual repair
+// can still ingest the session.
 type importMarker struct {
 	SessionID  string `json:"session_id"`
 	ImportedAt string `json:"imported_at"`
 	Source     string `json:"source"`
+	Reason     string `json:"reason,omitempty"`
 }
+
+// markerReasonParseFailed flags a session whose frontmatter could not
+// be parsed. The marker is written under the tolerant path so the
+// operator has a durable audit trail; it does NOT count as imported.
+const markerReasonParseFailed = "parse_failed"
 
 // ImportVibeVault migrates session data from a VibeVault-style Projects/
 // directory tree into the palace vault, using the capture indexer pipeline.
@@ -112,17 +123,46 @@ func ImportVibeVault(
 
 			meta, body, parseErr := storage.ParseFrontmatter(data)
 			if parseErr != nil {
+				// Frontmatter parse failed — meta.ID is unreliable, so
+				// derive the session ID from the filename.
+				failedID := strings.TrimSuffix(filepath.Base(sf), ".md")
+
 				result.Errors = append(result.Errors, ImportError{
 					Project:   projSlug,
-					SessionID: meta.ID,
+					SessionID: failedID,
 					File:      sf,
 					Err:       parseErr,
 				})
 				progress(opts, ProgressEvent{
-					Type:    ProgressError,
-					Project: projSlug,
-					Message: parseErr.Error(),
+					Type:      ProgressError,
+					Project:   projSlug,
+					SessionID: failedID,
+					File:      sf,
+					Message:   parseErr.Error(),
 				})
+
+				if opts.Strict {
+					return result, fmt.Errorf("parse frontmatter %s: %w", sf, parseErr)
+				}
+
+				// Tolerant path: emit a skip event so per-project
+				// counters stay accurate, then record a parse_failed
+				// marker (real runs only — dry-run never writes
+				// markers) so the operator has a durable audit trail.
+				result.SessionsSkipped++
+				progress(opts, ProgressEvent{
+					Type:      ProgressSessionSkip,
+					Project:   projSlug,
+					SessionID: failedID,
+					File:      sf,
+					Current:   i + 1,
+					Total:     total,
+				})
+				if !opts.DryRun {
+					if markErr := markSessionParseFailed(vault, projSlug, failedID); markErr != nil {
+						log.Printf("migrate: record parse_failed marker %s/%s: %v", projSlug, failedID, markErr)
+					}
+				}
 				continue
 			}
 
@@ -363,15 +403,30 @@ func isSessionImported(vault *storage.Vault, project, sessionID string) (bool, e
 		if err := json.Unmarshal([]byte(line), &m); err != nil {
 			continue // skip malformed lines
 		}
-		if m.SessionID == sessionID {
+		if m.SessionID == sessionID && m.Reason == "" {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-// markSessionImported appends a JSONL record to the idempotency marker file.
+// markSessionImported appends a successful-import JSONL record.
 func markSessionImported(vault *storage.Vault, project, sessionID, source string) error {
+	return markSessionWithReason(vault, project, sessionID, source, "")
+}
+
+// markSessionParseFailed appends a parse_failed JSONL record so the
+// operator has a durable audit trail. Entries with this reason do NOT
+// count as imported (see isSessionImported), so re-running migrate
+// after manual file repair will pick the session up.
+func markSessionParseFailed(vault *storage.Vault, project, sessionID string) error {
+	return markSessionWithReason(vault, project, sessionID, "vibevault", markerReasonParseFailed)
+}
+
+// markSessionWithReason appends a JSONL record to the idempotency marker
+// file. An empty reason marks a successful import; a non-empty reason
+// is diagnostic-only.
+func markSessionWithReason(vault *storage.Vault, project, sessionID, source, reason string) error {
 	path, err := markerPath(vault, project)
 	if err != nil {
 		return err
@@ -385,6 +440,7 @@ func markSessionImported(vault *storage.Vault, project, sessionID, source string
 		SessionID:  sessionID,
 		ImportedAt: time.Now().UTC().Format(time.RFC3339),
 		Source:     source,
+		Reason:     reason,
 	}
 	data, err := json.Marshal(m)
 	if err != nil {

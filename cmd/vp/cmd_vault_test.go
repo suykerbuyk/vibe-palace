@@ -12,14 +12,6 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 )
 
-func TestVaultParentShowsHelp(t *testing.T) {
-	cmd := cmdVault()
-	code := cmd.Run(nil)
-	if code != cli.ExitOK {
-		t.Errorf("exit code = %d", code)
-	}
-}
-
 func TestGitRemotes(t *testing.T) {
 	// Create a temp git repo.
 	dir := t.TempDir()

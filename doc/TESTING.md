@@ -172,6 +172,33 @@ context resolver, and config into a single test fixture.
 | `FrictionTrendsEmpty` | tools → capture → storage | No | Trends for project with no sessions returns empty result |
 | `FrictionSearchByMinScore` | storage | No | `SearchSessions` with minFriction filter returns only sessions above threshold |
 
+### `internal/integration/` — Hook Pipeline Tests
+
+| Test | Layers | ONNX? | What it proves |
+|------|--------|-------|----------------|
+| `HookPipeline_EndToEnd` | hook → archive → capture → storage | No | Full hook flow: archive transcript, create session note with friction score, write claim sentinel, idempotent skip on re-run, isolation between sessions |
+| `HookInstall_EndToEnd` | hook → settings | No | Install replaces `vv hook` with `vp hook`, preserves user hooks, uninstall removes cleanly |
+
+### `internal/integration/` — CLI Dispatch Tests
+
+| Test | Layers | ONNX? | What it proves |
+|------|--------|-------|----------------|
+| `IntegrationDispatchParentBareShowsHelp` | cli → cmd/vp | No | `vp config` renders parent help on stdout and exits 0 via the framework dispatch gate (no per-parent stubby `Run` closure) |
+| `IntegrationDispatchParentUnknownSubcommand` | cli → cmd/vp | No | `vp config bogus` routes the unknown token to stderr with `ExitUser` (1); guards against the pre-plan silent-ExitOK behavior |
+| `IntegrationDispatchKnownSubcommandHelp` | cli → cmd/vp | No | `vp hook install --help` still routes through the two-word lookup with exit 0 after the dispatch gate was added |
+
+### `test/e2e/dispatch/` — Bash E2E (`make dispatch-e2e`)
+
+End-user-level verification that every parent-command exit-code
+contract holds against the real binary.
+
+| Case | What it asserts |
+|------|-----------------|
+| `01-parent-bare-shows-help.sh` | `vp config` → help on stdout, empty stderr, exit 0 |
+| `02-unknown-subcommand-is-exit-user.sh` | `vp config bogus` → `unknown subcommand "bogus"` on stderr, empty stdout, exit 1 |
+| `03-known-subcommand-help.sh` | `vp hook install --help` → help on stdout, exit 0 (two-word lookup regression guard) |
+| `04-bare-parent-exit-code-discipline.sh` | Fan-out check across `vault`, `commands`, `migrate`, `skills`, `archive` — bare exits 0 with help, unknown-subcommand exits 1 |
+
 ### `internal/integration/` — Phase 12 Tests (Room Classification)
 
 | Test | Layers | ONNX? | What it proves |

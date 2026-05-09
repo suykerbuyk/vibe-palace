@@ -24,10 +24,6 @@ func cmdTune() *cli.Command {
 		Synopsis:    "vp tune <command> [flags]",
 		Description: "LLM-assisted classification tuning.",
 		Subcommands: []string{"tune rooms"},
-		Run: func(args []string) int {
-			fmt.Fprintln(os.Stderr, "Usage: vp tune <command> [flags]\n\nRun 'vp help tune' for details.")
-			return cli.ExitOK
-		},
 	}
 }
 

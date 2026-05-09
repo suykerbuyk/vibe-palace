@@ -16,6 +16,22 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
+// validSessionTemplate is a minimal valid session-file body used by tests
+// that need to swap a malformed file for a working one (see the
+// repair-after-parse-fail flow). The %s placeholder is the session_id.
+const validSessionTemplate = `---
+session_id: "%s"
+project: bad-project
+date: "2026-04-01"
+title: "Repaired Session"
+summary: "Now well-formed"
+tag: implementation
+---
+## Transcript
+
+Repaired body content for re-import after parse_failed marker.
+`
+
 const testSession1 = `---
 session_id: "2026-04-01-01"
 project: test-project
@@ -180,17 +196,19 @@ func TestImportVibeVault_DryRun(t *testing.T) {
 	}
 }
 
+// TestImportVibeVault_BadFrontmatter exercises the tolerant default
+// path: a malformed-frontmatter file produces an ImportError, an
+// auditable parse_failed marker, and the loop emits both ProgressError
+// and ProgressSessionSkip events with the source file path so the
+// operator can locate and repair the offender.
 func TestImportVibeVault_BadFrontmatter(t *testing.T) {
 	tmpDir := t.TempDir()
 	sessDir := filepath.Join(tmpDir, "Projects", "bad-project", "sessions")
 	if err := os.MkdirAll(sessDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(
-		filepath.Join(sessDir, "bad.md"),
-		[]byte(testSessionBadFrontmatter),
-		0o644,
-	); err != nil {
+	badPath := filepath.Join(sessDir, "bad.md")
+	if err := os.WriteFile(badPath, []byte(testSessionBadFrontmatter), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -199,16 +217,157 @@ func TestImportVibeVault_BadFrontmatter(t *testing.T) {
 	cfg := storage.Config{}
 	engine := search.NewEngine(emb, vault, cfg)
 
-	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	var mu sync.Mutex
+	var events []ProgressEvent
+	opts := ImportOptions{
+		Progress: func(evt ProgressEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, evt)
+		},
 	}
 
-	if len(result.Errors) == 0 {
-		t.Error("expected at least one error for bad frontmatter")
+	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, opts)
+	if err != nil {
+		t.Fatalf("tolerant default should not return an error, got: %v", err)
+	}
+
+	if len(result.Errors) != 1 {
+		t.Fatalf("len(result.Errors) = %d, want 1", len(result.Errors))
+	}
+	if got := result.Errors[0].File; got != badPath {
+		t.Errorf("result.Errors[0].File = %q, want %q", got, badPath)
 	}
 	if result.SessionsImported != 0 {
 		t.Errorf("SessionsImported = %d, want 0", result.SessionsImported)
+	}
+	if result.SessionsSkipped != 1 {
+		t.Errorf("SessionsSkipped = %d, want 1 (parse-failed counts as skipped)", result.SessionsSkipped)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	var errEvents, skipEvents []ProgressEvent
+	for _, e := range events {
+		switch e.Type {
+		case ProgressError:
+			errEvents = append(errEvents, e)
+		case ProgressSessionSkip:
+			skipEvents = append(skipEvents, e)
+		}
+	}
+	if len(errEvents) != 1 {
+		t.Fatalf("ProgressError event count = %d, want 1", len(errEvents))
+	}
+	if errEvents[0].File != badPath {
+		t.Errorf("ProgressError.File = %q, want %q", errEvents[0].File, badPath)
+	}
+	if errEvents[0].Message == "" {
+		t.Error("ProgressError.Message should carry the parse-error string")
+	}
+	if len(skipEvents) != 1 {
+		t.Fatalf("ProgressSessionSkip event count = %d, want 1", len(skipEvents))
+	}
+	if skipEvents[0].File != badPath {
+		t.Errorf("ProgressSessionSkip.File = %q, want %q", skipEvents[0].File, badPath)
+	}
+
+	// Marker file must contain a parse_failed entry for the failed session.
+	markerFile := filepath.Join(vault.Root, "palace", "bad-project", ".local", "imported-sessions.jsonl")
+	mb, mErr := os.ReadFile(markerFile)
+	if mErr != nil {
+		t.Fatalf("expected parse_failed marker at %s: %v", markerFile, mErr)
+	}
+	if !strings.Contains(string(mb), `"reason":"parse_failed"`) {
+		t.Errorf("marker file should contain a parse_failed entry, got:\n%s", string(mb))
+	}
+}
+
+// TestImportVibeVault_BadFrontmatter_StrictAborts proves that --strict
+// halts on the first parse error with a wrapped error that names the
+// offending file, and writes no marker file.
+func TestImportVibeVault_BadFrontmatter_StrictAborts(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessDir := filepath.Join(tmpDir, "Projects", "bad-project", "sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	badPath := filepath.Join(sessDir, "bad.md")
+	if err := os.WriteFile(badPath, []byte(testSessionBadFrontmatter), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	vault := storage.NewVault(tmpDir)
+	emb := embedder.NewMock(384)
+	cfg := storage.Config{}
+	engine := search.NewEngine(emb, vault, cfg)
+
+	_, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{Strict: true})
+	if err == nil {
+		t.Fatal("strict mode should return an error on parse failure")
+	}
+	if !strings.Contains(err.Error(), badPath) {
+		t.Errorf("strict-mode error should name the offending file; got: %v", err)
+	}
+
+	markerFile := filepath.Join(vault.Root, "palace", "bad-project", ".local", "imported-sessions.jsonl")
+	if _, statErr := os.Stat(markerFile); !os.IsNotExist(statErr) {
+		t.Errorf("strict mode should not write a marker file, stat err=%v", statErr)
+	}
+}
+
+// TestImportVibeVault_BadFrontmatter_RepairAfterParseFail proves the
+// retry-after-repair contract: a parse_failed marker does NOT block a
+// subsequent successful import once the operator has fixed the source
+// file.
+func TestImportVibeVault_BadFrontmatter_RepairAfterParseFail(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessDir := filepath.Join(tmpDir, "Projects", "bad-project", "sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	badPath := filepath.Join(sessDir, "bad.md")
+	if err := os.WriteFile(badPath, []byte(testSessionBadFrontmatter), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	vault := storage.NewVault(tmpDir)
+	emb := embedder.NewMock(384)
+	cfg := storage.Config{}
+	engine := search.NewEngine(emb, vault, cfg)
+
+	// First run: parse fails, parse_failed marker written.
+	r1, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	if err != nil {
+		t.Fatalf("first run: unexpected error: %v", err)
+	}
+	if r1.SessionsImported != 0 || r1.SessionsSkipped != 1 {
+		t.Fatalf("first run: imported=%d skipped=%d, want 0/1", r1.SessionsImported, r1.SessionsSkipped)
+	}
+	// The session ID is derived from the filename when parse fails.
+	failedID := "bad"
+	if imp, _ := isSessionImported(vault, "bad-project", failedID); imp {
+		t.Error("parse_failed entry should not count as imported")
+	}
+
+	// Repair: write a valid frontmatter at the same path so the
+	// filename-derived session ID lines up with the marker entry.
+	repaired := strings.Replace(validSessionTemplate, "%s", failedID, 1)
+	if err := os.WriteFile(badPath, []byte(repaired), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second run: session imports cleanly.
+	r2, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	if err != nil {
+		t.Fatalf("second run: unexpected error: %v", err)
+	}
+	if r2.SessionsImported != 1 {
+		t.Errorf("second run: SessionsImported = %d, want 1", r2.SessionsImported)
+	}
+	if imp, _ := isSessionImported(vault, "bad-project", failedID); !imp {
+		t.Error("session should be marked as imported after repair")
 	}
 }
 

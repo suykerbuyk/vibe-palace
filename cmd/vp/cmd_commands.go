@@ -41,10 +41,6 @@ func cmdCommands() *cli.Command {
 		Synopsis:    "vp commands <command> [flags]",
 		Description: "List the commands available for this project and upgrade vault-level copies against embedded defaults.",
 		Subcommands: []string{"commands list", "commands upgrade"},
-		Run: func(args []string) int {
-			fmt.Fprintln(os.Stderr, "Usage: vp commands <command> [flags]\n\nRun 'vp commands --help' for details.")
-			return cli.ExitOK
-		},
 	}
 }
 

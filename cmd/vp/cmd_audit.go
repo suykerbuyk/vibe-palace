@@ -22,10 +22,6 @@ func cmdAudit() *cli.Command {
 		Synopsis:    "vp audit <command> [flags]",
 		Description: "Audit palace classification quality.",
 		Subcommands: []string{"audit rooms"},
-		Run: func(args []string) int {
-			fmt.Fprintln(os.Stderr, "Usage: vp audit <command> [flags]\n\nRun 'vp help audit' for details.")
-			return cli.ExitOK
-		},
 	}
 }
 
