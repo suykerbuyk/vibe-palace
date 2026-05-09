@@ -1,13 +1,13 @@
 {
-  "iter_n": 79,
-  "anchor_sha": "d63382a9fba46721ceae6f8c76328b75e30270fd",
+  "iter_n": 80,
+  "anchor_sha": "a9a9652f2fd79eec779fa65e66b7cf6124dc3ebf",
   "active": [
     "auto-capture-ide-hooks",
     "friction-analytics-port",
     "git-notes-archive-anchoring",
     "hnsw-library-bug-fixes-and-hardening",
-    "llm-enrichment-synthesis",
-    "resume-from-vibe-vault-phase-b"
+    "hugot-onnx-download-race-in-ci",
+    "llm-enrichment-synthesis"
   ],
   "done": [
     "absorb-ergonomics-accept-all-and-prompts",
@@ -49,6 +49,7 @@
     "phase6-task6-1-palace-metadata-system",
     "restructure-hnsw-upstream-prs",
     "resume-from-vibe-vault-phase-a",
+    "resume-from-vibe-vault-phase-b",
     "split-init-config-absorb-check-along-check-plan-apply",
     "task-12-2-classification-audit-command",
     "task-2-1-jsonrpc-mcp-server",
