@@ -22,6 +22,18 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
+      # Cache the HuggingFace download dir so the upstream
+      # go-huggingface/hub data race (which fires only on cold-cache
+      # download via knights-analytics/hugot) does not run under -race.
+      # On cache hit the warm step below is a no-op file copy from
+      # ~/.cache/huggingface to the test's tmpdir vault.
+      - name: Cache HuggingFace model downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-cache-v1-${{ runner.os }}-sentence-transformers-all-MiniLM-L6-v2
+      - name: Warm HuggingFace cache (download outside -race)
+        run: go test -count=1 -short -timeout 5m -run TestCheckEmitsVaultProjectRow ./cmd/vp/
       - run: go test -short -race -cover ./...
 
   build:
