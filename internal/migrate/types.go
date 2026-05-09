@@ -19,6 +19,7 @@ type ProgressEvent struct {
 	Type      ProgressType
 	Project   string
 	SessionID string
+	File      string
 	Message   string
 	Current   int
 	Total     int
@@ -51,7 +52,11 @@ type ImportError struct {
 
 // ImportOptions configures a migration run.
 type ImportOptions struct {
-	DryRun   bool
+	DryRun bool
+	// Strict aborts the import on the first frontmatter parse error.
+	// When false (default), parse errors are recorded as parse_failed
+	// markers and the loop continues with a ProgressSessionSkip event.
+	Strict   bool
 	Progress ProgressFunc
 	// Resolver decides slug collisions during the scan phase.
 	// If nil, ImportVibeVault uses an AutoResolver.

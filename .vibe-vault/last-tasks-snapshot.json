@@ -1,13 +1,13 @@
 {
-  "iter_n": 78,
-  "anchor_sha": "9234103bef0bd2049952bbda0d3a4f5e2d36289d",
+  "iter_n": 79,
+  "anchor_sha": "d63382a9fba46721ceae6f8c76328b75e30270fd",
   "active": [
     "auto-capture-ide-hooks",
     "friction-analytics-port",
     "git-notes-archive-anchoring",
     "hnsw-library-bug-fixes-and-hardening",
     "llm-enrichment-synthesis",
-    "resume-from-vibe-vault-phase-a"
+    "resume-from-vibe-vault-phase-b"
   ],
   "done": [
     "absorb-ergonomics-accept-all-and-prompts",
@@ -48,6 +48,7 @@
     "phase5-task53-friction-analysis",
     "phase6-task6-1-palace-metadata-system",
     "restructure-hnsw-upstream-prs",
+    "resume-from-vibe-vault-phase-a",
     "split-init-config-absorb-check-along-check-plan-apply",
     "task-12-2-classification-audit-command",
     "task-2-1-jsonrpc-mcp-server",

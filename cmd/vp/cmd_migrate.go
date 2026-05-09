@@ -31,6 +31,7 @@ func cmdMigrate() *cli.Command {
 var migrateVibeVaultFlags = []cli.FlagDef{
 	{Name: "--vault-path", Arg: "PATH", Help: "VibeVault root (default: from config)"},
 	{Name: "--dry-run", Help: "Preview import; prompts for conflict resolution like a real run. Use --yes to auto-accept defaults."},
+	{Name: "--strict", Help: "Abort on the first frontmatter parse error (default: log file path, skip the session, continue)"},
 	{Name: "--yes", Short: "-y", Help: "Accept default slug-rename suggestions without prompting"},
 	{Name: "--slug-map", Arg: "OLD=NEW[,OLD=NEW...]", Help: "Pre-specify slug renames; uncovered collisions fall back to interactive or auto"},
 }
@@ -53,6 +54,7 @@ func cmdMigrateVibeVault() *cli.Command {
 			}
 			vaultPath := fv.Get("--vault-path")
 			dryRun := fv.Bool("--dry-run")
+			strict := fv.Bool("--strict")
 			yes := fv.Bool("--yes")
 			slugMapArg := fv.Get("--slug-map")
 
@@ -84,6 +86,7 @@ func cmdMigrateVibeVault() *cli.Command {
 				context.Background(), vault, eng, emb, cfg,
 				migrate.ImportOptions{
 					DryRun:   dryRun,
+					Strict:   strict,
 					Progress: migrateProgressFuncDeferred(),
 					Resolver: resolver,
 				},
@@ -288,7 +291,11 @@ func migrateProgressFunc() migrate.ProgressFunc {
 		case migrate.ProgressProjectDone:
 			// newline between projects handled by next ProjectStart
 		case migrate.ProgressError:
-			fmt.Fprintf(os.Stderr, "    ERROR (%s): %s\n", lastProject, evt.Message)
+			if evt.File != "" {
+				fmt.Fprintf(os.Stderr, "    ERROR (%s) %s: %s\n", lastProject, evt.File, evt.Message)
+			} else {
+				fmt.Fprintf(os.Stderr, "    ERROR (%s): %s\n", lastProject, evt.Message)
+			}
 		}
 	}
 }
