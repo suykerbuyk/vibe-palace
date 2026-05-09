@@ -1,12 +1,11 @@
 {
-  "iter_n": 80,
-  "anchor_sha": "a9a9652f2fd79eec779fa65e66b7cf6124dc3ebf",
+  "iter_n": 81,
+  "anchor_sha": "b8769bd4ec9f93b449980525b129cbb7e10457b0",
   "active": [
     "auto-capture-ide-hooks",
     "friction-analytics-port",
     "git-notes-archive-anchoring",
     "hnsw-library-bug-fixes-and-hardening",
-    "hugot-onnx-download-race-in-ci",
     "llm-enrichment-synthesis"
   ],
   "done": [
@@ -22,6 +21,7 @@
     "documentation-accuracy-pass-tutorial",
     "e2e-walkthrough-and-workflow-measurement-rig",
     "hugot-embedding-spike-prd-text-fixes",
+    "hugot-onnx-download-race-in-ci",
     "implement-12-missing-mcp-tools",
     "init-migrate-user-test-fixes",
     "keyword-discovery-research",
