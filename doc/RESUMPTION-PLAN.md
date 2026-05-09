@@ -1,6 +1,7 @@
 # Vibe-Palace Resumption Plan
 
 **Date:** 2026-05-08
+**Revised:** 2026-05-09 (Phase C pre-execution review — verified against HEAD after Phases A + B merged in PR #1)
 **Status:** Decision made. Ready to resume.
 **Authors:** John Suykerbuyk, Claude Opus 4.7 (1M context)
 
@@ -130,7 +131,12 @@ over the symptom; path (2) addresses the class.
 **`0 drawers, 0 entities, 0 triples` is by design** — `--dry-run`
 short-circuits before the embedder/indexer/extractor passes. The real
 import will fill these. Verifying real-import drawer/KG counts is
-Phase C.
+Phase C. **Note (verified 2026-05-09):** the prior 2026-04-16 dogfood
+run already populated ~22 projects under `palace/` with drawers, KG
+entities/triples, and embed-cache; the live `imported-sessions.jsonl`
+files now carry 705 successful-import markers. Phase C is therefore a
+**delta migration on top of that state**, not a from-scratch build —
+see Phase C pre-flight for the cold-rebuild option.
 
 ### 2.3 Vault Layout Confirmation
 
@@ -207,34 +213,136 @@ intervention.
 
 **Rollback:** revert the commit on the branch.
 
-### Phase C — Real Migration on the Shared Vault (~30 min)
+### Phase C — Real Migration on the Shared Vault (delta or cold-rebuild)
 
-1. With Phase A + B landed, run:
+**Pre-flight:** Diff the indexer-pipeline packages since the prior
+dogfood run (2026-04-16) to decide whether Phase C is a delta migration
+or a full cold rebuild:
+
+```
+git log --since=2026-04-16 --oneline -- \
+  internal/capture/ internal/kg/ internal/embedder/
+```
+
+If the output is empty (no changes since dogfood), Phase C is a **delta
+migration** and runs in roughly 5 min on the current state; existing
+drawer/KG files for the 22 already-populated projects stay valid.
+`isSessionImported` in `internal/migrate/vibevault.go:175-195` gates the
+entire `IndexTranscript` pipeline on the marker file, so previously
+imported sessions skip without re-embedding.
+
+If the output is non-empty, choose:
+
+- **Accept drift**: run delta migration; existing drawers/KG remain
+  whatever schema they had on 2026-04-16. Acceptable for forward
+  motion; revisit at Phase E if any drift is observed in the cutover
+  acceptance criteria.
+- **Cold rebuild**: `rm -rf ~/obsidian/VibeVault/palace/` and re-run
+  Phase C from scratch. Wall-time ~30 min, dominated by the ONNX
+  embedder (KG extractor at `internal/kg/extract_all.go:138` is
+  regex-based and fast). Embed-cache hashes are content-keyed, so a
+  from-scratch rebuild reconciles on its own — but a `rm -rf palace/`
+  also drops the warm embed-cache, so first-run cost is paid in full.
+
+1. With Phase A + B landed, run from a **fresh terminal with a TTY
+   attached** (NOT from inside an AI session — `cmd/vp/cmd_migrate.go:114-125`
+   picks `InteractiveResolver` only when stdin is a TTY; non-TTY falls
+   back silently to `AutoResolver` and may auto-rename slugs in
+   unexpected ways):
+
    ```
    vp migrate vibevault --vault-path /home/johns/obsidian/VibeVault
    ```
-   No `--dry-run`; no `--yes` (use the interactive resolver to surface
-   any new slug collisions since the prior dogfood run).
-2. Capture the result: drawer count, entity count, triple count, total
-   wall-time, model-cache size at completion.
-3. Validate semantic search returns sensible results:
-   ```
-   vp search "wrap-model-tiering"     # expect iter 161-167 sessions
-   vp search "Grok provider"          # expect iter 230 + adjacent
-   vp search "session-source-interface"  # expect iter 223 + adjacent
-   ```
-4. Validate KG queries:
-   ```
-   vp kg stats                        # expect non-zero entities/triples
-   vp kg query --entity vibe-vault    # expect related projects, decisions
-   ```
-5. Validate `vp_bootstrap_context` from a Claude Code or Zed session —
-   should return resume + active tasks + recent sessions structurally,
-   not as a 57 KB blob.
 
-**Rollback:** delete the `palace/` subtree under
-`~/obsidian/VibeVault/`. Re-running the migration is idempotent so a
-clean delete + re-migrate is safe.
+   No `--dry-run`; no `--yes` (use the interactive resolver to surface
+   any new slug collisions since the 2026-04-16 dogfood run).
+
+2. Capture the result: drawer count, entity count, triple count, total
+   wall-time, model-cache size at completion. Compare against the
+   pre-flight baseline (705 markers, 22 populated projects on
+   2026-05-09) so the delta is auditable.
+
+3. Validate semantic search returns sensible results. `cmd/vp/cmd_search.go:51-58`
+   auto-detects the project from cwd via `project.DetectProject(".")`,
+   so either `cd ~/code/vibe-vault` first or pass `-p vibe-vault`
+   explicitly:
+
+   ```
+   vp search -p vibe-vault "wrap-model-tiering"        # expect iter 161-167 sessions
+   vp search -p vibe-vault "Grok provider"             # expect iter 230 + adjacent
+   vp search -p vibe-vault "session-source-interface"  # expect iter 223 + adjacent
+   ```
+
+4. Validate KG queries via MCP. There is no `vp kg` CLI today; the KG
+   surface is exposed only as `vp_kg_stats` and `vp_kg_query` MCP tools
+   (`internal/tools/kg_tools.go:111-159`). The HTTP transport is
+   REST-style (`internal/mcp/transport_http.go:64-69`): `POST
+   /tools/{name}` with the tool arguments as the raw JSON body. Two
+   paths:
+
+   **(a) Quick smoke via `vp serve` + curl** (default port 7423):
+   ```
+   vp serve &
+   # Sanity:
+   curl -s localhost:7423/health
+   curl -s localhost:7423/tools | jq '.[].name' | grep -E 'vp_kg_|vp_bootstrap'
+
+   # KG stats + query:
+   curl -s -X POST localhost:7423/tools/vp_kg_stats \
+     -H 'content-type: application/json' \
+     -d '{"project":"vibe-vault"}'
+   curl -s -X POST localhost:7423/tools/vp_kg_query \
+     -H 'content-type: application/json' \
+     -d '{"project":"vibe-vault","entity":"vibe-vault"}'
+   ```
+   Expect non-zero `entity_count` / `triple_count` in the stats result;
+   expect a non-empty `triples` array referencing related projects and
+   decisions in the query result. Responses are wrapped in
+   `{"result": ...}` per `transport_http.go:124`.
+
+   **(b) Through Claude Code MCP** — only after vp MCP is registered
+   in the IDE, which is a Phase E task. Until then, prefer path (a).
+
+5. Validate `vp_bootstrap_context` returns structured (not blob)
+   output. Until vp MCP is registered in an IDE, smoke-test via the
+   same `vp serve` + curl path:
+
+   ```
+   curl -s -X POST localhost:7423/tools/vp_bootstrap_context \
+     -H 'content-type: application/json' \
+     -d '{"project":"vibe-vault","max_tokens":4000}' | jq '.result | keys'
+   ```
+
+   Expect a structured JSON object with `workflow`, `resume`,
+   `active_tasks`, `recent_sessions`, `kg_snapshot` fields — NOT a
+   single 57 KB markdown blob. The handler at
+   `internal/tools/context_tools.go:84-91` honors `max_tokens` with a
+   deterministic shed order (`recent_sessions` → `kg_snapshot` →
+   `commands+skills`; `post_bootstrap_instructions` always preserved
+   per `context_tools.go:169-198`). Confirm the budget is respected by
+   trying both `max_tokens: 4000` and `max_tokens: 16000` and observing
+   the size delta:
+
+   ```
+   for budget in 4000 16000; do
+     curl -s -X POST localhost:7423/tools/vp_bootstrap_context \
+       -H 'content-type: application/json' \
+       -d "{\"project\":\"vibe-vault\",\"max_tokens\":${budget}}" \
+       | wc -c
+   done
+   ```
+
+**Rollback** (scoped to the failure mode rather than nuke-everything):
+
+- **Single project's import failed mid-run**: delete just that
+  project's `~/obsidian/VibeVault/palace/<project>/.local/imported-sessions.jsonl`
+  and re-run. Embed-cache hash-keys are content-stable, so existing
+  `.vec` files re-attach without re-embedding.
+- **Pipeline-wide corruption suspected**: `rm -rf ~/obsidian/VibeVault/palace/`
+  and cold-rebuild per the pre-flight section above. Drops the warm
+  embed-cache; first run pays the full embedder cost again.
+- Either way: vibe-vault remains the production session-capture and
+  context system; no data is at risk in the source `Projects/` subtree.
 
 ### Phase D — Parallel Operation: Both Systems Live (1 week)
 
