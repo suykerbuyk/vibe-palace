@@ -1,12 +1,14 @@
 {
-  "iter_n": 82,
-  "anchor_sha": "6f59264730f78159e51d4a4640df3e6eb552a5d3",
+  "iter_n": 84,
+  "anchor_sha": "e29b033d7874902c01521f846a02a248d86854e9",
   "active": [
     "auto-capture-ide-hooks",
     "friction-analytics-port",
     "git-notes-archive-anchoring",
     "hnsw-library-bug-fixes-and-hardening",
-    "llm-enrichment-synthesis"
+    "llm-enrichment-synthesis",
+    "phase-d-parallel-operation",
+    "vp-migrate-source-dest-separation"
   ],
   "done": [
     "absorb-ergonomics-accept-all-and-prompts",
@@ -28,6 +30,7 @@
     "keyword-discovery",
     "llm-assisted-weight-tuning",
     "materialize-and-reconcile-vault-templates",
+    "migration-counter-display-fix",
     "palace-scoped-command-skill-resolution",
     "phase-1-init-status-and-aliases",
     "phase-10-help-and-manpages",
