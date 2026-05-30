@@ -23,7 +23,7 @@ We also updated internal/search/engine.go with the new API.
 Follow-up edits to internal/search/engine.go landed shortly after.`
 
 	sessionID := "session-kg-01"
-	err := h.Indexer.IndexTranscript(context.Background(), sessionID, "proj", transcript)
+	_, err := h.Indexer.IndexTranscript(context.Background(), sessionID, "proj", transcript)
 	if err != nil {
 		t.Fatalf("IndexTranscript: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestIntegrationKGEntityDeduplication(t *testing.T) {
 
 	// Index twice.
 	for i := 0; i < 2; i++ {
-		_ = h.Indexer.IndexTranscript(context.Background(), sessionID, "proj", transcript)
+		_, _ = h.Indexer.IndexTranscript(context.Background(), sessionID, "proj", transcript)
 	}
 
 	entities, err := h.Vault.ListEntities("proj")

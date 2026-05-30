@@ -27,7 +27,7 @@ Dave created the indexing module. Dave also reviewed the ingest path.
 vibe-palace depends on hugot for embeddings. vibe-palace keeps improving.`
 
 	sessionID := "session-kg-detect-01"
-	err := h.Indexer.IndexTranscript(context.Background(), sessionID, "proj", transcript)
+	_, err := h.Indexer.IndexTranscript(context.Background(), sessionID, "proj", transcript)
 	if err != nil {
 		t.Fatalf("IndexTranscript: %v", err)
 	}

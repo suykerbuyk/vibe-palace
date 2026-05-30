@@ -6,6 +6,7 @@ package storage
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -135,6 +136,11 @@ func (v *Vault) ListEntities(project string) ([]Entity, error) {
 }
 
 // AddTriple writes a triple as an individual JSON file.
+// Rejects duplicates by file-path collision (subject/predicate/object).
+// Returns an error containing "already exists" when the triple file already
+// exists, matching the dedup-signal shape of AppendDrawer and AddEntity so
+// callers can use a uniform strings.Contains predicate to detect skips.
+// To mutate an existing triple (e.g. set ValidTo), use InvalidateTriple.
 func (v *Vault) AddTriple(project string, t Triple) error {
 	path, err := v.KGTriplePath(project, t.Subject, t.Predicate, t.Object)
 	if err != nil {
@@ -148,7 +154,20 @@ func (v *Vault) AddTriple(project string, t Triple) error {
 	if err != nil {
 		return fmt.Errorf("marshal triple: %w", err)
 	}
-	return os.WriteFile(path, data, 0644)
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("triple %s/%s/%s already exists", t.Subject, t.Predicate, t.Object)
+		}
+		return fmt.Errorf("open triple file: %w", err)
+	}
+	defer f.Close()
+
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("write triple: %w", err)
+	}
+	return nil
 }
 
 // GetTriple reads a triple by its subject, predicate, and object.

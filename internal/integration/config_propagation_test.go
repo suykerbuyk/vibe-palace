@@ -95,7 +95,7 @@ func TestIntegrationConfigChunkSize(t *testing.T) {
 		c.ChunkMaxChars = 200
 		c.ChunkOverlap = 0
 	})
-	if err := h1.Indexer.IndexTranscript(context.Background(), "s1", "proj", transcript); err != nil {
+	if _, err := h1.Indexer.IndexTranscript(context.Background(), "s1", "proj", transcript); err != nil {
 		t.Fatal(err)
 	}
 	smallDrawers, _ := countAllDrawers(t, h1.Vault, "proj")
@@ -105,7 +105,7 @@ func TestIntegrationConfigChunkSize(t *testing.T) {
 		c.ChunkMaxChars = 1000
 		c.ChunkOverlap = 0
 	})
-	if err := h2.Indexer.IndexTranscript(context.Background(), "s2", "proj", transcript); err != nil {
+	if _, err := h2.Indexer.IndexTranscript(context.Background(), "s2", "proj", transcript); err != nil {
 		t.Fatal(err)
 	}
 	largeDrawers, _ := countAllDrawers(t, h2.Vault, "proj")

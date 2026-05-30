@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -105,6 +106,45 @@ func TestAddAndGetTriple(t *testing.T) {
 	}
 	if got.ValidFrom != "2026-01-01" {
 		t.Errorf("ValidFrom = %q, want %q", got.ValidFrom, "2026-01-01")
+	}
+}
+
+func TestAddTripleDedup(t *testing.T) {
+	v := testVault(t)
+	first := Triple{
+		Subject:     "Kai",
+		Predicate:   "works on",
+		Object:      "Orion",
+		ValidFrom:   "2026-01-01",
+		ExtractedAt: "2026-03-15T00:00:00Z",
+		Confidence:  0.9,
+	}
+	if err := v.AddTriple("proj", first); err != nil {
+		t.Fatalf("first AddTriple: %v", err)
+	}
+
+	second := first
+	second.ExtractedAt = "2026-04-01T00:00:00Z"
+	second.Confidence = 0.5
+	err := v.AddTriple("proj", second)
+	if err == nil {
+		t.Fatal("second AddTriple with identical subject/predicate/object should error")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("error %q should contain \"already exists\" for uniform dedup signal", err)
+	}
+
+	got, err := v.GetTriple("proj", "Kai", "works on", "Orion")
+	if err != nil {
+		t.Fatalf("GetTriple after duplicate attempt: %v", err)
+	}
+	if got.ExtractedAt != first.ExtractedAt {
+		t.Errorf("ExtractedAt = %q, want %q (file should not have been overwritten)",
+			got.ExtractedAt, first.ExtractedAt)
+	}
+	if got.Confidence != first.Confidence {
+		t.Errorf("Confidence = %v, want %v (file should not have been overwritten)",
+			got.Confidence, first.Confidence)
 	}
 }
 

@@ -27,6 +27,22 @@ type Indexer struct {
 	classifier *palace.RoomClassifier
 }
 
+// IndexStats reports per-call counts of newly-written artifacts.
+// Counts exclude artifacts skipped due to dedup ("already exists").
+// Callers that don't accumulate may discard with `_, err := ...`.
+type IndexStats struct {
+	Drawers  int // drawers appended via vault.AppendDrawer (excludes dedup skips)
+	Entities int // entities added via vault.AddEntity (excludes dedup skips)
+	Triples  int // triples added via vault.AddTriple (mentioned_in + relationship; excludes dedup skips)
+}
+
+// add accumulates another IndexStats into this one.
+func (s *IndexStats) add(o IndexStats) {
+	s.Drawers += o.Drawers
+	s.Entities += o.Entities
+	s.Triples += o.Triples
+}
+
 // NewIndexer creates a transcript indexer.
 // Chunk settings are read from config (chunker.max_chars, chunker.overlap).
 func NewIndexer(vault *storage.Vault, engine *search.Engine, emb embedder.Embedder, cfg storage.Config) *Indexer {
@@ -41,14 +57,18 @@ func NewIndexer(vault *storage.Vault, engine *search.Engine, emb embedder.Embedd
 
 // IndexTranscript chunks a raw transcript, classifies each chunk, embeds them
 // in batch, stores drawers, indexes vectors, and optionally extracts entities.
-func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, transcript string) error {
+// Returns IndexStats with per-call counts of newly-written artifacts; dedup
+// skips do not increment.
+func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, transcript string) (IndexStats, error) {
+	var stats IndexStats
+
 	if strings.TrimSpace(transcript) == "" {
-		return nil
+		return stats, nil
 	}
 
 	chunks := Chunk(transcript, idx.chunkConfig())
 	if len(chunks) == 0 {
-		return nil
+		return stats, nil
 	}
 
 	wing := palace.DetectWing(project, "")
@@ -89,15 +109,16 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 			if strings.Contains(err.Error(), "already exists") {
 				continue
 			}
-			return fmt.Errorf("append drawer %d: %w", i, err)
+			return stats, fmt.Errorf("append drawer %d: %w", i, err)
 		}
+		stats.Drawers++
 	}
 
 	// Batch embed all chunks and index them in a single engine call.
 	if idx.embedder != nil && idx.engine != nil {
 		vecs, err := idx.embedder.EmbedBatch(ctx, chunks)
 		if err != nil {
-			return fmt.Errorf("batch embed: %w", err)
+			return stats, fmt.Errorf("batch embed: %w", err)
 		}
 
 		batch := make([]search.DrawerInput, len(locs))
@@ -111,25 +132,29 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 			}
 		}
 		if err := idx.engine.IndexDrawers(ctx, batch); err != nil {
-			return fmt.Errorf("index drawers: %w", err)
+			return stats, fmt.Errorf("index drawers: %w", err)
 		}
 	}
 
 	// Best-effort entity extraction and KG population.
-	idx.extractEntities(project, sessionID, transcript, now)
+	stats.add(idx.extractEntities(project, sessionID, transcript, now))
 
-	return nil
+	return stats, nil
 }
 
 // extractEntities runs the unified kg.ExtractAll pass and writes every
-// deduplicated entity + relationship to the KG in a single loop.
+// deduplicated entity + relationship to the KG in a single loop. Returns
+// per-call counts of newly-written entities and triples; dedup skips
+// (errors containing "already exists") do not increment.
 //
 // KG writes are best-effort per PRD: failures do not propagate to the
 // caller, but every failure is captured via slog.Warn so maintainers have
 // a full audit trail. The originating extractor name is attached to each
 // log entry (via the Source field on ExtractedEntityRef) so post-hoc log
 // analysis can still tell which extractor produced a problematic write.
-func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp string) {
+func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp string) IndexStats {
+	var stats IndexStats
+
 	today := ""
 	if len(timestamp) >= 10 {
 		today = timestamp[:10] // YYYY-MM-DD from RFC3339
@@ -138,35 +163,45 @@ func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp st
 	result := kg.ExtractAll(transcript, today, kg.ExtractAllOptions{})
 
 	for _, ent := range result.Entities {
-		if err := idx.vault.AddEntity(project, storage.Entity{
+		err := idx.vault.AddEntity(project, storage.Entity{
 			ID:        slug.Slugify(ent.Type + "-" + ent.Name),
 			Name:      ent.Name,
 			Type:      ent.Type,
 			CreatedAt: timestamp,
-		}); err != nil {
-			if strings.Contains(err.Error(), "already exists") {
-				slog.Debug("kg: duplicate entity skipped",
-					"entity", ent.Name, "source", ent.Source)
-			} else {
-				slog.Warn("kg: add entity failed",
-					"entity", ent.Name, "source", ent.Source, "err", err)
-			}
+		})
+		switch {
+		case err == nil:
+			stats.Entities++
+		case strings.Contains(err.Error(), "already exists"):
+			slog.Debug("kg: duplicate entity skipped",
+				"entity", ent.Name, "source", ent.Source)
+		default:
+			slog.Warn("kg: add entity failed",
+				"entity", ent.Name, "source", ent.Source, "err", err)
 		}
-		if err := idx.vault.AddTriple(project, storage.Triple{
+
+		err = idx.vault.AddTriple(project, storage.Triple{
 			Subject:       ent.Name,
 			Predicate:     "mentioned_in",
 			Object:        sessionID,
 			SourceSession: sessionID,
 			ExtractedAt:   timestamp,
 			Confidence:    ent.Confidence,
-		}); err != nil {
+		})
+		switch {
+		case err == nil:
+			stats.Triples++
+		case strings.Contains(err.Error(), "already exists"):
+			slog.Debug("kg: duplicate mentioned_in triple skipped",
+				"entity", ent.Name, "source", ent.Source)
+		default:
 			slog.Warn("kg: add mentioned_in triple failed",
 				"entity", ent.Name, "source", ent.Source, "err", err)
 		}
 	}
 
 	for _, tr := range result.Triples {
-		if err := idx.vault.AddTriple(project, storage.Triple{
+		err := idx.vault.AddTriple(project, storage.Triple{
 			Subject:       tr.Subject,
 			Predicate:     tr.Predicate,
 			Object:        tr.Object,
@@ -174,11 +209,20 @@ func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp st
 			SourceSession: sessionID,
 			ValidFrom:     tr.ValidFrom,
 			ExtractedAt:   timestamp,
-		}); err != nil {
+		})
+		switch {
+		case err == nil:
+			stats.Triples++
+		case strings.Contains(err.Error(), "already exists"):
+			slog.Debug("kg: duplicate relationship triple skipped",
+				"subject", tr.Subject, "predicate", tr.Predicate)
+		default:
 			slog.Warn("kg: add relationship triple failed",
 				"subject", tr.Subject, "predicate", tr.Predicate, "err", err)
 		}
 	}
+
+	return stats
 }
 
 // chunkConfig returns a ChunkConfig from the indexer's config, falling back to defaults.

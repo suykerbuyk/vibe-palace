@@ -213,7 +213,7 @@ func ImportVibeVault(
 			}
 
 			// Index the transcript (even if empty — let the indexer decide).
-			idxErr := indexer.IndexTranscript(ctx, sessionID, projSlug, transcript)
+			idxStats, idxErr := indexer.IndexTranscript(ctx, sessionID, projSlug, transcript)
 			if idxErr != nil {
 				result.Errors = append(result.Errors, ImportError{
 					Project:   projSlug,
@@ -228,6 +228,9 @@ func ImportVibeVault(
 				})
 				continue
 			}
+			result.DrawersCreated += idxStats.Drawers
+			result.EntitiesCreated += idxStats.Entities
+			result.TriplesCreated += idxStats.Triples
 
 			// Mark as imported.
 			if markErr := markSessionImported(vault, projSlug, sessionID, "vibevault"); markErr != nil {
@@ -256,13 +259,18 @@ func ImportVibeVault(
 			text := strings.TrimSpace(string(data))
 			if text != "" && !opts.DryRun {
 				knowledgeID := "knowledge-" + projSlug
-				if err := indexer.IndexTranscript(ctx, knowledgeID, projSlug, text); err != nil {
+				kStats, err := indexer.IndexTranscript(ctx, knowledgeID, projSlug, text)
+				if err != nil {
 					result.Errors = append(result.Errors, ImportError{
 						Project:   projSlug,
 						SessionID: knowledgeID,
 						File:      knowledgePath,
 						Err:       err,
 					})
+				} else {
+					result.DrawersCreated += kStats.Drawers
+					result.EntitiesCreated += kStats.Entities
+					result.TriplesCreated += kStats.Triples
 				}
 			}
 		}

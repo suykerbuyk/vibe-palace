@@ -131,8 +131,10 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 	}
 
 	// Index transcript if provided, unless NeedsIndexing signals deferral.
+	// Per-call IndexStats are not surfaced through SessionResult today;
+	// discard with `_` and revisit if dogfood-log telemetry needs them.
 	if p.Transcript != "" && indexer != nil && !p.NeedsIndexing {
-		if err := indexer.IndexTranscript(ctx, sessionID, p.Project, p.Transcript); err != nil {
+		if _, err := indexer.IndexTranscript(ctx, sessionID, p.Project, p.Transcript); err != nil {
 			// Non-fatal: session was captured, indexing failed.
 			return &SessionResult{
 				Status:        "partial",

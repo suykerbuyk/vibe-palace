@@ -44,7 +44,7 @@ func TestIndexTranscriptBasic(t *testing.T) {
 		"The test coverage is now at 96%. " +
 		"We discovered that HNSW has a recall bug."
 
-	err := idx.IndexTranscript(context.Background(), "session-01", "test-proj", transcript)
+	_, err := idx.IndexTranscript(context.Background(), "session-01", "test-proj", transcript)
 	if err != nil {
 		t.Fatalf("IndexTranscript: %v", err)
 	}
@@ -67,12 +67,12 @@ func TestIndexTranscriptEmpty(t *testing.T) {
 	eng, emb := testEngine(t, v)
 	idx := NewIndexer(v, eng, emb, storage.Config{})
 
-	err := idx.IndexTranscript(context.Background(), "session-01", "test-proj", "")
+	_, err := idx.IndexTranscript(context.Background(), "session-01", "test-proj", "")
 	if err != nil {
 		t.Fatalf("expected no error for empty transcript, got: %v", err)
 	}
 
-	err = idx.IndexTranscript(context.Background(), "session-01", "test-proj", "   \n\n  ")
+	_, err = idx.IndexTranscript(context.Background(), "session-01", "test-proj", "   \n\n  ")
 	if err != nil {
 		t.Fatalf("expected no error for whitespace transcript, got: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestIndexTranscriptNoEngine(t *testing.T) {
 
 	transcript := "Some content to chunk and store without embeddings."
 
-	err := idx.IndexTranscript(context.Background(), "session-01", "test-proj", transcript)
+	_, err := idx.IndexTranscript(context.Background(), "session-01", "test-proj", transcript)
 	if err != nil {
 		t.Fatalf("IndexTranscript without engine: %v", err)
 	}
@@ -105,13 +105,58 @@ func TestIndexTranscriptDuplicateIdempotent(t *testing.T) {
 	transcript := "This is a unique chunk of text for dedup testing."
 
 	// First index.
-	if err := idx.IndexTranscript(context.Background(), "session-01", "test-proj", transcript); err != nil {
+	if _, err := idx.IndexTranscript(context.Background(), "session-01", "test-proj", transcript); err != nil {
 		t.Fatalf("first IndexTranscript: %v", err)
 	}
 
 	// Second index with same content should not error (duplicates are skipped).
-	if err := idx.IndexTranscript(context.Background(), "session-01", "test-proj", transcript); err != nil {
+	if _, err := idx.IndexTranscript(context.Background(), "session-01", "test-proj", transcript); err != nil {
 		t.Fatalf("second IndexTranscript should be idempotent: %v", err)
+	}
+}
+
+// TestIndexTranscriptStats locks in the IndexStats contract: a fresh transcript
+// produces non-zero drawer/entity/triple counts; a re-index of identical
+// content produces zero counts (every artifact dedup-skips). The third counter
+// (Triples) depends on AddTriple's O_CREATE|O_EXCL dedup error introduced
+// alongside this contract.
+func TestIndexTranscriptStats(t *testing.T) {
+	v := testVault(t)
+	eng, emb := testEngine(t, v)
+	idx := NewIndexer(v, eng, emb, storage.Config{})
+
+	// Each entity must clear kg.DefaultMinMentions (=2) to be extracted, so
+	// reference internal/capture/indexer.go and https://example.com twice.
+	transcript := "We modified internal/capture/indexer.go and visited https://example.com for docs. " +
+		"Reviewing internal/capture/indexer.go once more; see also https://example.com."
+
+	first, err := idx.IndexTranscript(context.Background(), "session-stats", "test-proj", transcript)
+	if err != nil {
+		t.Fatalf("first IndexTranscript: %v", err)
+	}
+	if first.Drawers == 0 {
+		t.Error("first call: stats.Drawers should be > 0 for a fresh transcript")
+	}
+	if first.Entities == 0 {
+		t.Error("first call: stats.Entities should be > 0 (file path + URL clear MinMentions)")
+	}
+	if first.Triples == 0 {
+		t.Error("first call: stats.Triples should be > 0 (mentioned_in triples per entity)")
+	}
+
+	// Re-index the same transcript — every artifact should dedup-skip.
+	second, err := idx.IndexTranscript(context.Background(), "session-stats", "test-proj", transcript)
+	if err != nil {
+		t.Fatalf("second IndexTranscript: %v", err)
+	}
+	if second.Drawers != 0 {
+		t.Errorf("second call: stats.Drawers = %d, want 0 (every drawer should dedup-skip)", second.Drawers)
+	}
+	if second.Entities != 0 {
+		t.Errorf("second call: stats.Entities = %d, want 0 (every entity should dedup-skip)", second.Entities)
+	}
+	if second.Triples != 0 {
+		t.Errorf("second call: stats.Triples = %d, want 0 (every triple should dedup-skip)", second.Triples)
 	}
 }
 
@@ -126,7 +171,7 @@ func TestIndexTranscriptEntityExtraction(t *testing.T) {
 	transcript := "We modified internal/capture/indexer.go and visited https://example.com for docs. " +
 		"Reviewing internal/capture/indexer.go once more; see also https://example.com."
 
-	err := idx.IndexTranscript(context.Background(), "session-01", "test-proj", transcript)
+	_, err := idx.IndexTranscript(context.Background(), "session-01", "test-proj", transcript)
 	if err != nil {
 		t.Fatalf("IndexTranscript: %v", err)
 	}
@@ -154,7 +199,7 @@ func TestIndexTranscriptPerformance(t *testing.T) {
 		}
 	}
 
-	err := idx.IndexTranscript(context.Background(), "perf-session", "test-proj", b.String())
+	_, err := idx.IndexTranscript(context.Background(), "perf-session", "test-proj", b.String())
 	if err != nil {
 		t.Fatalf("IndexTranscript 100KB: %v", err)
 	}
@@ -203,7 +248,7 @@ func TestNewIndexerWithScoringOverrides(t *testing.T) {
 	// Verify the classifier was constructed with overrides.
 	// Neural network content should classify to "ml" via the override.
 	transcript := "Train the neural network on the transformer architecture dataset."
-	err := idx.IndexTranscript(context.Background(), "ml-session", "test-proj", transcript)
+	_, err := idx.IndexTranscript(context.Background(), "ml-session", "test-proj", transcript)
 	if err != nil {
 		t.Fatalf("IndexTranscript: %v", err)
 	}
@@ -223,7 +268,7 @@ func TestNewIndexerWithLoweredThreshold(t *testing.T) {
 	idx := NewIndexer(v, nil, nil, cfg)
 
 	transcript := "Just test it quickly."
-	err := idx.IndexTranscript(context.Background(), "threshold-session", "test-proj", transcript)
+	_, err := idx.IndexTranscript(context.Background(), "threshold-session", "test-proj", transcript)
 	if err != nil {
 		t.Fatalf("IndexTranscript: %v", err)
 	}
@@ -272,7 +317,7 @@ func TestIndexTranscriptKGDedup(t *testing.T) {
 		"Then: retest internal/foo/bar.go end-to-end. " +
 		"We briefly glanced at onetime/file.go but did not change it."
 
-	if err := idx.IndexTranscript(context.Background(), "session-dedup", "test-proj", transcript); err != nil {
+	if _, err := idx.IndexTranscript(context.Background(), "session-dedup", "test-proj", transcript); err != nil {
 		t.Fatalf("IndexTranscript: %v", err)
 	}
 
@@ -351,7 +396,7 @@ func TestIndexDrawersParityAcrossPaths(t *testing.T) {
 		ChunkMaxChars: 4000, // ensure single chunk
 		ChunkOverlap:  0,
 	})
-	if err := idx.IndexTranscript(ctx, "session-B", "test-proj", content); err != nil {
+	if _, err := idx.IndexTranscript(ctx, "session-B", "test-proj", content); err != nil {
 		t.Fatalf("IndexTranscript: %v", err)
 	}
 

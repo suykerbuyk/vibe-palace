@@ -80,7 +80,7 @@ For hall classification, we detect memory types: decisions (keywords like
 The default hall is "facts" for anything that doesn't match a specific pattern.`
 
 	// Run the full pipeline.
-	err := idx.IndexTranscript(ctx, "session-integration-01", "test-proj", transcript)
+	_, err := idx.IndexTranscript(ctx, "session-integration-01", "test-proj", transcript)
 	if err != nil {
 		t.Fatalf("IndexTranscript: %v", err)
 	}
@@ -163,11 +163,11 @@ configuration for GitHub Actions. The Kubernetes cluster was updated with
 new pod scheduling rules and the deployment rollout completed successfully.
 The CI pipeline now runs linting and building in parallel stages.`
 
-	err := idx.IndexTranscript(ctx, "session-rooms-01", "test-proj", testingTranscript)
+	_, err := idx.IndexTranscript(ctx, "session-rooms-01", "test-proj", testingTranscript)
 	if err != nil {
 		t.Fatalf("IndexTranscript testing: %v", err)
 	}
-	err = idx.IndexTranscript(ctx, "session-rooms-02", "test-proj", devopsTranscript)
+	_, err = idx.IndexTranscript(ctx, "session-rooms-02", "test-proj", devopsTranscript)
 	if err != nil {
 		t.Fatalf("IndexTranscript devops: %v", err)
 	}
@@ -216,7 +216,7 @@ https://github.com/suykerbuyk/vibe-palace again for the chunker design.
 We also updated internal/storage/config.go with the new chunker settings,
 and internal/storage/config.go was cross-checked against its defaults.`
 
-	err := idx.IndexTranscript(ctx, "session-entities-01", "test-proj", transcript)
+	_, err := idx.IndexTranscript(ctx, "session-entities-01", "test-proj", transcript)
 	if err != nil {
 		t.Fatalf("IndexTranscript: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestIntegrationCaptureLargeTranscript(t *testing.T) {
 		b.WriteString("\n\n")
 	}
 
-	err := idx.IndexTranscript(ctx, "session-large-01", "test-proj", b.String())
+	_, err := idx.IndexTranscript(ctx, "session-large-01", "test-proj", b.String())
 	if err != nil {
 		t.Fatalf("IndexTranscript 100KB: %v", err)
 	}
