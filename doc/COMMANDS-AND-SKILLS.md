@@ -1,6 +1,6 @@
 # Commands and Skills
 
-**Last updated:** 2026-04-11
+**Last updated:** 2026-05-31
 
 Vibe-palace lets users create custom **commands** and **skills** as plain
 markdown files. No recompilation, no config edits, no frontend-specific
@@ -32,6 +32,9 @@ updates, architecture reviews, dependency audits, release checklists.
 | `review-plan` | Critical architecture review of a task plan |
 | `cancel-plan` | Archive a planned task found not worth implementing |
 | `capture` | Record a session summary with decisions and open threads |
+| `execute-plan` | Dispatch subagents per phase to execute a task plan |
+| `license` | Add or update dual MIT/Apache-2.0 licensing |
+| `makefile` | Audit or create a Makefile facade for the build system |
 
 ### Skills — Behavioral Guidelines
 
@@ -362,7 +365,7 @@ How users trigger commands depends on their frontend:
 | Claude Code | `/vpc-<name>` slash shims in `.claude/commands/` (e.g. `/vpc-restart`) |
 | Cursor | Rules file maps keywords to `vp_cmd` calls |
 | Custom MCP client | Direct `vp_cmd` / `vp_skill` tool calls |
-| CLI fallback | `vv inject` prints context; `vp cmd restart` runs via CLI |
+| CLI fallback | `vp inject` prints context; `vp commands restart` outputs the command via CLI |
 
 **Claude Code bootstrap primitive.** `/vpc-restart` is the recommended
 first message of every Claude Code session. Claude Code does not load
@@ -382,10 +385,14 @@ the job there; the two mechanisms are complementary.
 {vault}/
 ├── Templates/
 │   ├── commands/               # Vault-wide commands
+│   │   ├── cancel-plan.md
+│   │   ├── capture.md
+│   │   ├── execute-plan.md
+│   │   ├── license.md
+│   │   ├── makefile.md
 │   │   ├── restart.md
-│   │   ├── wrap.md
 │   │   ├── review-plan.md
-│   │   └── cancel-plan.md
+│   │   └── wrap.md
 │   └── skills/                 # Vault-wide skills
 │       └── startup-analyst/
 │           ├── SKILL.md
@@ -407,13 +414,16 @@ the job there; the two mechanisms are complementary.
 Embedded defaults (compiled into `vp`):
 
 ```
-internal/context/templates/
+internal/templates/templates/
 ├── commands/
-│   ├── restart.md
-│   ├── wrap.md
-│   ├── review-plan.md
 │   ├── cancel-plan.md
-│   └── capture.md
+│   ├── capture.md
+│   ├── execute-plan.md
+│   ├── license.md
+│   ├── makefile.md
+│   ├── restart.md
+│   ├── review-plan.md
+│   └── wrap.md
 ├── resume.md
 └── workflow.md
 ```

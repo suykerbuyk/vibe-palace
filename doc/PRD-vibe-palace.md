@@ -3,7 +3,7 @@
 **Version:** 0.1.0-draft
 **Date:** 2026-04-06
 **Authors:** John Suykerbuyk, Claude Opus 4.6
-**Status:** Phases 1–10, 12–14 Implemented | Phase 11 Planned
+**Status:** Phases 1–10, 12–18 Implemented | Phase 11 Planned
 
 > **Implementation notes** are marked with blockquotes throughout. HNSW
 > references in diagrams reflect the design; actual search uses brute-force
@@ -65,7 +65,11 @@ from any specific AI provider's file system expectations.
 20. [Phase 12: Adaptive Room Classification](#phase-12-adaptive-room-classification)
 21. [Phase 13: Guided Onboarding & Config Lifecycle](#phase-13-guided-onboarding--config-lifecycle)
 22. [Phase 14: Palace-Scoped Command & Skill Resolution](#phase-14-palace-scoped-command--skill-resolution)
-23. [Cross-Cutting Concerns](#cross-cutting-concerns)
+23. [Phase 15: Materialize and Reconcile Vault Templates](#phase-15-materialize-and-reconcile-vault-templates)
+24. [Phase 16: Transcript-Archive & Copyright-Provenance Ledger](#phase-16-transcript-archive--copyright-provenance-ledger)
+25. [Phase 17: Host-Level Auto-Capture Hooks](#phase-17-host-level-auto-capture-hooks)
+26. [Phase 18: Zed Transcript Adapter](#phase-18-zed-transcript-adapter)
+27. [Cross-Cutting Concerns](#cross-cutting-concerns)
 21. [Validation Framework](#validation-framework)
 21. [Appendix A: Glossary](#appendix-a-glossary)
 22. [Appendix B: File Inventory](#appendix-b-file-inventory)
@@ -531,7 +535,7 @@ flowchart TD
 
 ### 6.1 Context Tools (from VibeVault, enhanced)
 
-> **7 of 11 implemented.** Planned: vp_get_workflow, vp_get_resume, vp_update_resume, vp_get_knowledge.
+> **12 of 12 implemented.**
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
@@ -542,6 +546,7 @@ flowchart TD
 | `vp_get_knowledge` | project? | Curated project knowledge (knowledge.md) |
 | `vp_get_command` | command, project? | Retrieve a command definition with precedence resolution |
 | `vp_get_skill` | skill, project? | Retrieve a skill definition with precedence resolution |
+| `vp_get_skill_section` | name (req), section (req), project?, wing?, room? | Fetch a single reference file from a directory-form skill (e.g. references/<section>.md), pulled on demand after a skill is activated |
 | `vp_list_commands` | project? | List available commands for current project |
 | `vp_list_skills` | project? | List available skills for current project |
 | `vp_cmd` | name?, project? | Execute a command by name (with LLM-agnostic execution framing), or list available commands when called with no arguments. Portable across all MCP clients. |
@@ -549,7 +554,7 @@ flowchart TD
 
 ### 6.2 Session Tools (from VibeVault, model-agnostic)
 
-> **6 of 8 implemented.** Planned: vp_list_projects, vp_append_iteration.
+> **8 of 8 implemented.**
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
@@ -573,7 +578,7 @@ flowchart TD
 
 ### 6.4 Task Tools (from VibeVault)
 
-> **0 of 3 implemented.** Planned for Phase 8 (Migration & Import).
+> **3 of 3 implemented.**
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
@@ -607,15 +612,16 @@ flowchart TD
 
 ### 6.7 System Tools
 
-> **0 of 3 implemented.** Planned for Phase 9 (CLI & Distribution).
+> **4 of 4 implemented.**
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `vp_init` | project?, domain?, tags? | Initialize project (create .vibe-palace.toml + vault dir) |
 | `vp_vault_sync` | — | Pull/push vault git remotes |
 | `vp_refresh_index` | project? | Rebuild session index and re-embed if needed |
+| `vp_health` | project (req) | Runtime health: recent warnings/errors from the vp log file |
 
-**Total: 38 implemented (Phases 1–10, 12–14)** (vs VibeVault's 16 + MemPalace's 19 = 35, with dedup, consolidation, and Phase 12–14 additions)
+**Total: 39 implemented (Phases 1–10, 12–18)** (vs VibeVault's 16 + MemPalace's 19 = 35, with dedup, consolidation, and Phase 12–18 additions)
 
 ---
 
@@ -1307,7 +1313,7 @@ JSON-RPC 2.0 requests. HTTP REST server on localhost with identical handlers.
 
 ### Task 3.2: Embedded Default Templates
 
-**Deliverable:** `internal/context/templates/` (embedded via `//go:embed`)
+**Deliverable:** `internal/templates/templates/` (embedded via `//go:embed`)
 
 - `workflow.md` — pair programming paradigm, investigation-first workflow, task
   management rules (adapted from VibeVault's current workflow.md)
@@ -1631,15 +1637,15 @@ metadata filtering.
 - 80%+ test coverage with known input/output pairs
 
 **Spike validation (2026-04-07):** Pure-Go hugot backend confirmed viable.
-See `spike/hugot-embed/VERDICT.md` for full results. Key metrics: 66ms single
-embed, 290ms batch-32 (9ms/item), 17MB binary, no CGO, ~306MB peak heap over
-1024 embeds with stable memory. All go thresholds passed. Implementation
-should follow the patterns established in `spike/hugot-embed/embed.go`.
+See `doc/spike-hugot-pure-go-embedding.md` for full results. Key metrics: 66ms
+single embed, 290ms batch-32 (9ms/item), 17MB binary, no CGO, ~306MB peak heap
+over 1024 embeds with stable memory. All go thresholds passed. The shipped
+implementation lives in `internal/embedder/onnx.go`.
 
 ### Task 4.2: HNSW Index
 
 > **Implementation note:** HNSW deferred. Search uses brute-force cosine
-> similarity (`internal/search/index.go`). The `coder/hnsw` library had
+> similarity (`internal/search/vector_index.go`). The `coder/hnsw` library had
 > critical recall bugs (0–2/10 recall due to Heap.Max/PopLast errors). A
 > hardened fork is in progress; brute-force is sufficient at current scale.
 
@@ -1988,7 +1994,7 @@ Vibe-Palace.
 **Deliverable:** `cmd/vp/migrate.go`
 
 - `vp migrate vibevault [--vault-path PATH]` — import from VibeVault
-- `vp migrate mempalace [--palace-path PATH] [--kg-path PATH]` — import from MemPalace
+- `vp migrate mempalace --export-path PATH` — import from a MemPalace JSON export
 - Progress reporting: session count, drawer count, entity count
 - Dry-run mode: `--dry-run` reports what would be imported
 - Error reporting: individual item failures don't abort the import
@@ -2608,6 +2614,164 @@ and `doc/ARCHITECTURE.md`.
 
 ---
 
+## Phase 16: Transcript-Archive & Copyright-Provenance Ledger
+
+> **Status: IMPLEMENTED**
+>
+> Design rationale and the frozen manifest field set are recorded in
+> [ADR-001: Transcript Archive Format](adr/001-transcript-archive.md).
+
+**Goal:** Preserve raw AI session transcripts as compressed, hash-anchored,
+optionally-signed evidentiary records so that authorship and provenance of
+AI-assisted work can be demonstrated after the fact. The archive is a
+copyright-provenance ledger first and a storage optimization second.
+
+**Doctrine:** **the manifest is the evidence.** Every archive is a paired
+`<name>.jsonl.zst` + `<name>.manifest.json` set written under
+`{vault}/Projects/{slug}/transcripts/`. The manifest's `source_sha256` hashes
+the *pre-compression* JSONL — the evidentiary anchor that survives
+re-compression or tool upgrades. Manifest signing (not archive signing) is
+deliberate: the manifest already pins the compressed bytes via
+`source_sha256`, so a valid manifest signature transitively vouches for the
+transcript.
+
+**Key components:**
+
+- **`internal/archive/` package.** Owns the manifest schema
+  (`manifest.go`, `ManifestSchemaVersion = 1`, field set frozen by ADR-001),
+  zstd compression and hashing (`archive.go`), and the pluggable
+  per-IDE adapter registry (`adapter.go`) keyed by adapter name
+  (`claude-code`, `zed`).
+- **Claude Code adapter (`claude.go`).** Resolves the raw Claude Code
+  transcript JSONL from `SourceCWD + SessionID` (the per-project path
+  encoding) and produces the canonical archive input.
+- **Detached signing (`sign.go`).** Two modes — `gpg` and `ssh`
+  (`ssh-keygen -Y sign`) — write a `<manifest>.sig` detached signature.
+  SSH signing uses an archive-specific namespace,
+  `vibe-palace-archive`, so a signature produced here cannot be
+  replayed against a different protocol. Verification
+  (`ssh-keygen -Y verify`) consults an OpenSSH `allowed_signers` file;
+  without it, hash verification still runs but signature checking is
+  skipped. Signing shells out rather than linking native crypto, reusing
+  the user's existing keyring.
+- **CLI surface (`cmd/vp/cmd_archive.go`).**
+  - `vp archive create --session-id ID [--adapter NAME] [--project P] [--source PATH]`
+    — compress, hash, write manifest, optionally sign.
+  - `vp archive list [--project P] [--json]` — enumerate archives.
+  - `vp archive verify [<path-or-session-id> | --all] [--project P]`
+    — re-hash the decompressed transcript against `source_sha256` and,
+    when configured, verify the manifest signature.
+  - `vp archive extract <path-or-session-id> [--to PATH] [--project P]`
+    — decompress to stdout or a file.
+- **Configuration.** The `[archive]` block in `config.toml` controls
+  `compress`, `dormant_days`, and the signing options (`sign_mode`,
+  `sign_key`, `sign_namespace`, `allowed_signers`, `signer_identity`).
+
+**Acceptance criteria:**
+- A round-trip (`create` → `extract`) reproduces the original transcript
+  byte-for-byte, and `verify` confirms the recomputed `source_sha256`.
+- Signing in both `gpg` and `ssh` modes produces a `.sig` that `verify`
+  accepts against the configured signer, and rejects on tamper.
+- The manifest schema is versioned; an archive with a newer
+  `schema_version` than the binary supports is refused, not misread.
+- Adapters are registered through a registry so new IDEs can be added
+  without touching the core archive path.
+
+**Forward references (not in this phase):** `git`-notes anchoring of
+manifest hashes to commits and a retention command (`vp archive prune`
+honoring `dormant_days`) are planned but not yet implemented.
+
+---
+
+## Phase 17: Host-Level Auto-Capture Hooks
+
+> **Status: IMPLEMENTED**
+
+**Goal:** Capture AI sessions automatically at the host level — without the
+AI agent having to remember to call `vp_capture_session` — by wiring
+vibe-palace into Claude Code's session-hook mechanism. When a session ends,
+the transcript is archived (Phase 16) and a session note is captured in one
+non-interactive pass.
+
+**Key components:**
+
+- **`internal/hook/` package.** `Run` (in `hook.go`) executes the hook
+  pipeline triggered by Claude Code: parse the hook JSON from stdin
+  (`session_id`, `transcript_path`, `cwd`, `hook_event_name`),
+  claim-check, archive, generate an auto-summary, and capture the
+  session note. Handled events are `SessionEnd`, `Stop`, and
+  `PreCompact`.
+- **Claim sentinel (`claim.go`).** A per-session sentinel file at
+  `<cwd>/.vibe-palace/claimed-<session_id>` makes capture idempotent
+  across the multiple hook events that can fire for one session. The
+  sentinel records the claiming vault note id so an operator can trace
+  which note owns a session. `IsClaimed` / `WriteClaim` gate the
+  pipeline so a session is archived and captured exactly once.
+- **Deterministic auto-summary (`summary.go`).** When no human summary
+  exists, `AutoSummary` derives one from the last five `git log`
+  one-line entries in the working directory, falling back to
+  "Auto-captured session" when git yields nothing. No LLM call.
+- **Settings management (`settings.go`).** `vp hook install` rewrites
+  `~/.claude/settings.json`, registering `vp hook` on
+  `SessionEnd`/`Stop`/`PreCompact` (30s timeout), replacing any legacy
+  `vv hook` entries while preserving all other user hooks and settings.
+  `Status` reports installed / stale / legacy-present state.
+- **CLI surface (`cmd/vp/cmd_hook.go`, `cmd_hook_install.go`).**
+  `vp hook` (bare) reads hook JSON from stdin and runs the pipeline;
+  `vp hook install` / `vp hook uninstall` manage the settings entries.
+
+**Acceptance criteria:**
+- A `SessionEnd` event archives the transcript and writes a session note
+  exactly once, even when `Stop` and `PreCompact` also fire for the same
+  `session_id` (claim sentinel enforces idempotence).
+- `vp hook install` is non-destructive: existing unrelated hooks and
+  settings survive, and re-running it is a safe no-op when entries are
+  already current.
+- The pipeline is fully non-interactive and degrades gracefully — a
+  missing transcript or absent git history does not abort capture.
+
+---
+
+## Phase 18: Zed Transcript Adapter
+
+> **Status: IMPLEMENTED**
+
+**Goal:** Extend the Phase 16 archive ledger beyond Claude Code by ingesting
+[Zed](https://zed.dev) editor AI threads, so transcripts from a second IDE
+flow through the same provenance pipeline.
+
+**Key components:**
+
+- **`internal/archive/zed/` package.** A deliberately scope-limited
+  reader over Zed's `threads.db` SQLite store: `DefaultDBPath` resolves
+  the per-OS location (Linux `~/.local/share/zed/threads/threads.db`,
+  macOS `~/Library/Application Support/Zed/threads/threads.db`,
+  overridable via `ZED_THREADS_DB`), and `QueryThread` reads and
+  decompresses a single thread by id.
+- **Adapter (`zed_adapter.go`).** Implements the Phase 16 `Adapter`
+  interface (`Name() == "zed"`, independently versioned via
+  `ZedAdapterVersion`). `ResolveSource` reads one thread and synthesizes
+  a deterministic Claude-shape JSONL to a temp file — Zed's Rust-enum
+  message envelopes are flattened to Claude's `tool_use` / `tool_result`
+  shape. This preserves *content, not bytes*, so every archive (Claude
+  Code or Zed) hashes and verifies through one uniform path.
+- **CLI surface.** `vp archive create --adapter zed --session-id ID
+  [--source PATH]` ingests a Zed thread DB; the resulting archive,
+  manifest, and signature are identical in form to a Claude Code
+  archive.
+
+**Acceptance criteria:**
+- A Zed thread is ingested into a `.jsonl.zst` + `.manifest.json` pair
+  whose `adapter` field is `zed` and whose `source_sha256` covers the
+  synthesized JSONL.
+- The synthesized transcript is deterministic — repeated `create` runs
+  over the same thread produce the same hash.
+- `vp archive verify` and `vp archive extract` operate on Zed archives
+  without adapter-specific handling, confirming the uniform-archive
+  contract.
+
+---
+
 ## Cross-Cutting Concerns
 
 ### Error Handling
@@ -2847,11 +3011,11 @@ decisions — they are final.
 | # | Decision | Options Considered | Choice | Rationale |
 |---|----------|-------------------|--------|-----------|
 | D1 | Go module path | `github.com/suykerbuyk/vibe-palace` | `github.com/suykerbuyk/vibe-palace` | Matches GitHub account and project name |
-| D2 | Minimum Go version | 1.21, 1.23 | **1.23** | Required by `mark3labs/mcp-go` (our MCP library). The minimum is set by our dependencies, not by the developer's machine. `go.mod` declares `go 1.23`. |
+| D2 | Minimum Go version | 1.21, 1.23, 1.25 | **1.25.0** | Required by `mark3labs/mcp-go` (our MCP library). The minimum is set by our dependencies, not by the developer's machine. `go.mod` declares `go 1.25.0`. |
 | D3 | ONNX model delivery | Embed in binary (~80MB) vs download on first run | **Download on first run** | Keeps binary under 20MB. Model cached at `{vault}/palace/.local/model/all-MiniLM-L6-v2.onnx`. Downloaded from HuggingFace. SHA256 verified. `vp check` validates cache integrity. |
-| D4 | Embedding library | hugot pure-Go backend, hugot+ORT, ollama sidecar | **hugot with pure Go backend** (`knights-analytics/hugot`) | **Validated via spike** (`spike/hugot-embed/VERDICT.md`, 2026-04-07): single embed 66ms, batch-32 290ms (9ms/item amortized), 17MB stripped binary, no CGO. 10K-drawer reindex projected at ~90s. Pure-Go backend produces correct 384-dim L2-normalized embeddings. All go thresholds passed. License: Apache-2.0. |
+| D4 | Embedding library | hugot pure-Go backend, hugot+ORT, ollama sidecar | **hugot with pure Go backend** (`knights-analytics/hugot`) | **Validated via spike** (`doc/spike-hugot-pure-go-embedding.md`, 2026-04-07): single embed 66ms, batch-32 290ms (9ms/item amortized), 17MB stripped binary, no CGO. 10K-drawer reindex projected at ~90s. Pure-Go backend produces correct 384-dim L2-normalized embeddings. All go thresholds passed. License: Apache-2.0. |
 | D5 | HNSW library | `coder/hnsw`, `fogfish/hnsw`, brute-force with vek | **`coder/hnsw`** | Pure Go, no CGO. Uses `viterin/vek` for SIMD-accelerated L2 distance. CC0 license. 214 stars, actively maintained by Coder. Supports incremental insertion, deletion, export/import persistence. Min Go: 1.21. |
-| D6 | MCP library | `mark3labs/mcp-go`, `modelcontextprotocol/go-sdk`, hand-rolled | **`mark3labs/mcp-go`** | MIT license. 8,500 stars. Handles full JSON-RPC protocol, stdio transport, tool registration with fluent JSON Schema builders. Go 1.23. The official `go-sdk` requires Go 1.25 (not yet released). |
+| D6 | MCP library | `mark3labs/mcp-go`, `modelcontextprotocol/go-sdk`, hand-rolled | **`mark3labs/mcp-go`** | MIT license. 8,500 stars. Handles full JSON-RPC protocol, stdio transport, tool registration with fluent JSON Schema builders. Go 1.23. The official `go-sdk` requires Go 1.25. |
 | D7 | MCP protocol version | 2024-11-05, 2025-03-26 | **2025-03-26** | Latest stable spec. `mcp-go` supports it. Matches VibeVault's upper protocol bound. |
 | D8 | HTTP framework | stdlib `net/http`, chi, echo, gin | **stdlib `net/http`** | Zero additional dependencies. Sufficient for localhost-only REST API. Routing via `http.NewServeMux` (Go 1.22+ pattern matching). |
 | D9 | File locking strategy | flock (POSIX), lockfile (create/delete) | **flock (POSIX advisory locks)** | Atomic, no stale lockfiles on crash. Go's `syscall.Flock()`. Cross-platform: works on Linux and macOS. On Windows, use `LockFileEx` via `golang.org/x/sys/windows`. |
@@ -2883,7 +3047,7 @@ must produce. All subagents code against this layout.
 
 ```
 vibe-palace/
-├── go.mod                         # github.com/suykerbuyk/vibe-palace, go 1.23
+├── go.mod                         # github.com/suykerbuyk/vibe-palace, go 1.25.0
 ├── go.sum
 ├── Makefile                       # build, test, lint, release
 ├── cmd/

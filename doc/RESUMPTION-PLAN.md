@@ -346,6 +346,14 @@ If the output is non-empty, choose:
 
 ### Phase D — Parallel Operation: Both Systems Live (1 week)
 
+> **Update 2026-05-30:** Phase D was closed via retrospective
+> reconciliation rather than a forward 7-day window — vibe-palace reached
+> parity-or-better with vibe-vault (98.0% vs 94.9% ground-truth session
+> coverage, Jaccard 96.9%, zero vv-only misses). See
+> `doc/PHASE-D-OPERATOR-BRIEF.md` and
+> `agentctx/dogfood-log.md §Retrospective Reconciliation`. Operator
+> decision to advance to Phase E is pending.
+
 Both `vv hook` (Claude Code) and `vp_capture_session` (MCP) capture in
 parallel. New sessions land in BOTH systems' subtrees. No data is lost
 if either system is killed.

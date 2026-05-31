@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>flowdoc viewer</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --panel: #f7f8fa;
+    --panel-2: #eef0f3;
+    --ink: #1f2937;
+    --ink-dim: #6b7280;
+    --border: #d1d5db;
+    --border-soft: #e5e7eb;
+    --accent: #2563eb;
+    --accent-bg: #dbeafe;
+    --edge: #9ca3af;
+    --edge-on: #2563eb;
+    --node-fill: #f3f4f6;
+    --node-fill-on: #dbeafe;
+    --node-stroke: #d1d5db;
+    --node-stroke-on: #2563eb;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
+    font-size: 13px; line-height: 1.45;
+  }
+  #layout {
+    display: grid;
+    grid-template-columns: 260px 1fr 340px;
+    height: 100vh;
+  }
+  #sidebar, #details {
+    background: var(--panel);
+    overflow-y: auto;
+    padding: 14px 16px;
+  }
+  #sidebar { border-right: 1px solid var(--border-soft); }
+  #details { border-left: 1px solid var(--border-soft); }
+  #viz {
+    position: relative;
+    overflow: auto;
+    background: var(--bg);
+  }
+  h1 { font-size: 14px; margin: 0 0 6px 0; font-weight: 600; }
+  h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--ink-dim); margin: 16px 0 6px 0; font-weight: 600;
+  }
+  p { margin: 0 0 8px 0; }
+  .subtle { color: var(--ink-dim); font-size: 11px; }
+  .meta { color: var(--ink-dim); font-size: 11px; margin: 2px 0 8px 0; }
+  ul.flows { list-style: none; margin: 0; padding: 0; }
+  ul.flows li {
+    padding: 8px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-bottom: 3px;
+    border: 1px solid transparent;
+    transition: background 0.08s, border-color 0.08s;
+  }
+  ul.flows li:hover { background: var(--panel-2); }
+  ul.flows li.active {
+    background: var(--accent-bg);
+    border-color: var(--accent);
+  }
+  ul.flows li .label {
+    display: block;
+    color: var(--ink);
+  }
+  .chip {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-size: 10px;
+    color: var(--ink-dim);
+    background: var(--panel-2);
+    border: 1px solid var(--border-soft);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.03em;
+    margin-right: 4px;
+  }
+  svg#graph {
+    width: 100%; height: 100%; display: block;
+    min-width: 600px; min-height: 400px;
+  }
+  svg .node rect {
+    fill: var(--node-fill);
+    stroke: var(--node-stroke);
+    stroke-width: 1.2;
+  }
+  svg .node text {
+    fill: var(--ink);
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  svg .node .group {
+    fill: var(--ink-dim);
+    font-size: 9px;
+  }
+  svg .node.highlighted rect {
+    fill: var(--node-fill-on);
+    stroke: var(--node-stroke-on);
+    stroke-width: 1.8;
+  }
+  svg .edge path {
+    fill: none;
+    stroke: var(--edge-on);
+    stroke-width: 1.4;
+    opacity: 0.85;
+  }
+  svg .edge .op-label {
+    font-size: 9px;
+    fill: var(--ink);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  svg .edge .op-label-bg {
+    fill: var(--bg);
+    fill-opacity: 0.85;
+  }
+  ol.steps {
+    list-style: none; padding-left: 0; margin: 0;
+    counter-reset: step;
+  }
+  ol.steps li {
+    padding: 7px 9px 7px 30px;
+    margin-bottom: 4px;
+    border-radius: 3px;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    position: relative;
+  }
+  ol.steps li::before {
+    counter-increment: step;
+    content: counter(step);
+    position: absolute; left: 8px; top: 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10px;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  ol.steps .pair {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: var(--ink);
+  }
+  ol.steps .op { margin-top: 2px; color: var(--ink); }
+  ol.steps .passes {
+    color: var(--ink-dim); font-size: 10px; margin-top: 2px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  ol.steps .ref {
+    color: var(--ink-dim); font-size: 9.5px; margin-top: 2px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  #empty {
+    display: flex; align-items: center; justify-content: center;
+    height: 100%;
+    color: var(--ink-dim);
+    font-size: 14px;
+  }
+  #d-hint {
+    color: var(--ink-dim);
+    font-style: italic;
+  }
+</style>
+</head>
+<body>
+<div id="layout">
+  <aside id="sidebar">
+    <h1 id="title">Flows</h1>
+    <p class="subtle" id="subtitle"></p>
+    <ul class="flows" id="flow-list"></ul>
+  </aside>
+
+  <main id="viz">
+    <svg id="graph" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+        </marker>
+      </defs>
+      <g id="g-edges"></g>
+      <g id="g-nodes"></g>
+    </svg>
+    <div id="empty" style="display:none">No flows in this document.</div>
+  </main>
+
+  <aside id="details">
+    <h1 id="d-label">Select a flow</h1>
+    <p id="d-hint">Click a flow on the left to see its description, entry point, and steps.</p>
+    <p class="meta" id="d-kind" style="display:none"></p>
+    <p id="d-desc" style="display:none"></p>
+    <p class="meta" id="d-entry" style="display:none"></p>
+    <h2 id="d-steps-h" style="display:none">Steps</h2>
+    <ol class="steps" id="d-steps"></ol>
+  </aside>
+</div>
+
+<script>const FLOWS = {"$schema_version":"1","project":"vibe-palace","generated_at":"2026-05-31T00:00:00Z","generator":"vv flowdoc gen","nodes":[{"id":"cmd/vp","label":"vp CLI","role":"Command-line interface and entry point for all operations","path":"cmd/vp","language":"go","layout_group":"CLI & Commands","kind":"binary"},{"id":"internal/cli","label":"CLI Framework","role":"Command parsing, dispatch, and help system","path":"internal/cli","language":"go","layout_group":"CLI & Commands","kind":"library"},{"id":"internal/mcp","label":"MCP Server","role":"Model Context Protocol server with stdio and HTTP transports","path":"internal/mcp","language":"go","layout_group":"Server & Transport","kind":"service"},{"id":"internal/tools","label":"MCP Tools","role":"Tool implementations for context bootstrap, search, capture, and session management","path":"internal/tools","language":"go","layout_group":"Server & Transport","kind":"library"},{"id":"internal/storage","label":"Vault Storage","role":"Vault directory abstraction, project config, drawers, sessions, and knowledge graph","path":"internal/storage","language":"go","layout_group":"Data & Persistence","kind":"library"},{"id":"internal/search","label":"Semantic Search","role":"Hybrid vector + structural search engine with indexing and filtering","path":"internal/search","language":"go","layout_group":"Data & Persistence","kind":"library"},{"id":"internal/capture","label":"Session Capture","role":"Session recording, transcripts, chunking, entity extraction, and friction analysis","path":"internal/capture","language":"go","layout_group":"Data & Persistence","kind":"library"},{"id":"internal/embedder","label":"Embedder","role":"Vector embeddings via ONNX models for semantic search","path":"internal/embedder","language":"go","layout_group":"Data & Persistence","kind":"library"},{"id":"internal/archive","label":"Session Archive","role":"Transcript archival with provenance manifests, adapters, signing, and verification","path":"internal/archive","language":"go","layout_group":"Data & Persistence","kind":"library"},{"id":"internal/absorb","label":"Content Absorption","role":"Migrate legacy agent-context files into the vault with routing and rewrite","path":"internal/absorb","language":"go","layout_group":"Migration & Setup","kind":"library"},{"id":"internal/agentfile","label":"Agent File Wiring","role":"Detect and maintain managed blocks in CLAUDE.md, AGENTS.md, .cursorrules","path":"internal/agentfile","language":"go","layout_group":"Migration & Setup","kind":"library"},{"id":"internal/reconcile","label":"Reconciliation","role":"Plan-based reconciliation for global config, vault, projects, and templates","path":"internal/reconcile","language":"go","layout_group":"Migration & Setup","kind":"library"},{"id":"internal/shims","label":"Shim Generation","role":"Generate slash-command and skill shims for .claude/commands and .cursor/rules","path":"internal/shims","language":"go","layout_group":"Migration & Setup","kind":"library"},{"id":"internal/context","label":"Context Resolution","role":"Resolve commands, skills, and resources from vault with precedence rules","path":"internal/context","language":"go","layout_group":"Templates & Resources","kind":"library"},{"id":"internal/templates","label":"Template Resources","role":"Embedded templates for commands, skills, and workflow markdown","path":"internal/templates","language":"go","layout_group":"Templates & Resources","kind":"template"},{"id":"internal/kg","label":"Knowledge Graph","role":"Temporal entity-relationship graph with time-travel queries and entity extraction","path":"internal/kg","language":"go","layout_group":"Data & Persistence","kind":"library"},{"id":"internal/project","label":"Project Detection","role":"Auto-detect project from .git, .vibe-palace.toml, or build manifests","path":"internal/project","language":"go","layout_group":"Utilities","kind":"library"},{"id":"internal/commands","label":"Command Catalog","role":"List and retrieve command metadata and content from vault","path":"internal/commands","language":"go","layout_group":"Templates & Resources","kind":"library"},{"id":"internal/skills","label":"Skill Catalog","role":"List and retrieve skill metadata, SKILL.md, and sections from vault","path":"internal/skills","language":"go","layout_group":"Templates & Resources","kind":"library"},{"id":"internal/hook","label":"Claude Code Hook","role":"Install and manage SessionEnd hooks in ~/.claude/settings.json","path":"internal/hook","language":"go","layout_group":"IDE Integration","kind":"library"},{"id":"internal/migrate","label":"Legacy Migration","role":"Migrate data from vibe-vault (vv) and MemPalace into vibe-palace","path":"internal/migrate","language":"go","layout_group":"Migration & Setup","kind":"library"},{"id":"internal/palace","label":"Palace Navigation","role":"Wing/room/hall traversal and tunnel-finding for spatial navigation","path":"internal/palace","language":"go","layout_group":"Data & Persistence","kind":"library"},{"id":"internal/slug","label":"Slug Validation","role":"Validate and format project/resource slugs","path":"internal/slug","language":"go","layout_group":"Utilities","kind":"library"},{"id":"internal/llm","label":"LLM Integration","role":"Optional LLM-assisted weight tuning for room classification","path":"internal/llm","language":"go","layout_group":"AI & Analysis","kind":"library"},{"id":"internal/check","label":"Status Checking","role":"Render init status with pass/fail/skip/info rows","path":"internal/check","language":"go","layout_group":"Utilities","kind":"library"},{"id":"internal/vplog","label":"Logging","role":"Structured logging to vault-local vp.log","path":"internal/vplog","language":"go","layout_group":"Utilities","kind":"library"}],"flows":[{"slug":"cli-dispatch","label":"CLI Dispatch & Command Resolution","kind":"cli-verb","description":"Main entry point: parse arguments and dispatch to the appropriate command handler. Registry.Dispatch orchestrates command matching and execution.","entry_point":"vp <verb>","nodes":["cmd/vp","internal/cli"],"steps":[{"from":"cmd/vp","to":"internal/cli","op":"calls","ref":"cmd/vp:main"},{"from":"cmd/vp","to":"internal/cli","op":"calls","ref":"internal/cli:Registry.Dispatch"}]},{"slug":"mcp-server-stdio","label":"MCP Server (stdio)","kind":"cli-verb","description":"Start the Model Context Protocol server on stdin/stdout for AI assistants. Registers all MCP tools and listens for JSON-RPC requests.","entry_point":"vp mcp","nodes":["cmd/vp","internal/cli","internal/mcp","internal/tools","internal/storage","internal/search","internal/capture","internal/embedder","internal/context"],"steps":[{"from":"cmd/vp","to":"internal/cli","op":"calls","ref":"cmd/vp:serveMCP"},{"from":"cmd/vp","to":"internal/storage","op":"calls","ref":"cmd/vp:openProjectVault"},{"from":"cmd/vp","to":"internal/storage","op":"calls","ref":"internal/storage:Vault.LoadConfig"},{"from":"cmd/vp","to":"internal/embedder","op":"calls","ref":"internal/embedder:NewONNX"},{"from":"cmd/vp","to":"internal/search","op":"calls","ref":"internal/search:NewEngine"},{"from":"cmd/vp","to":"internal/context","op":"calls","ref":"internal/context:NewResolver"},{"from":"cmd/vp","to":"internal/mcp","op":"calls","ref":"internal/mcp:NewServer"},{"from":"internal/mcp","to":"internal/tools","op":"calls","ref":"internal/tools:RegisterAll"},{"from":"internal/mcp","to":"internal/mcp","op":"calls","ref":"internal/mcp:Server.Listen"}]},{"slug":"mcp-server-http","label":"MCP Server (HTTP)","kind":"cli-verb","description":"Start the MCP server on an HTTP port for HTTP client access. Shares the same tool registry as stdio mode.","entry_point":"vp serve","nodes":["cmd/vp","internal/cli","internal/mcp","internal/tools","internal/storage","internal/search","internal/capture","internal/embedder"],"steps":[{"from":"cmd/vp","to":"cmd/vp","op":"calls","ref":"cmd/vp:bootstrap"},{"from":"cmd/vp","to":"internal/mcp","op":"calls","ref":"internal/mcp:NewHTTPServer"},{"from":"internal/mcp","to":"internal/mcp","op":"calls","ref":"internal/mcp:Server.ListenAndServe"}]},{"slug":"project-init","label":"Project Initialization","kind":"cli-verb","description":"Initialize a project: create global config and vault, write project config, set up agent file wiring, generate slash-command shims, and install hooks.","entry_point":"vp init","nodes":["cmd/vp","internal/cli","internal/storage","internal/reconcile","internal/agentfile","internal/shims","internal/context","internal/commands","internal/skills","internal/hook","internal/check"],"steps":[{"from":"cmd/vp","to":"internal/reconcile","op":"calls","ref":"internal/reconcile:NewGlobalConfig"},{"from":"cmd/vp","to":"internal/reconcile","op":"calls","ref":"internal/reconcile:NewVault"},{"from":"cmd/vp","to":"internal/reconcile","op":"calls","ref":"internal/reconcile:NewTemplateTree"},{"from":"cmd/vp","to":"internal/agentfile","op":"calls","ref":"internal/agentfile:WireAll"},{"from":"cmd/vp","to":"internal/context","op":"calls","ref":"internal/context:NewResolver"},{"from":"cmd/vp","to":"internal/commands","op":"calls","ref":"internal/commands:List"},{"from":"cmd/vp","to":"internal/shims","op":"calls","ref":"internal/shims:Plan"},{"from":"cmd/vp","to":"internal/shims","op":"calls","ref":"internal/shims:Apply"},{"from":"cmd/vp","to":"internal/hook","op":"calls","ref":"internal/hook:Install"},{"from":"cmd/vp","to":"internal/check","op":"calls","ref":"internal/check:PrintRows"}]},{"slug":"semantic-search","label":"Semantic Search","kind":"cli-verb","description":"Perform hybrid vector + structural search across vault content. Embeds query, searches indexes, filters by wing/room/hall, and boosts results.","entry_point":"vp search","nodes":["cmd/vp","internal/cli","internal/storage","internal/embedder","internal/search","internal/project"],"steps":[{"from":"cmd/vp","to":"internal/project","op":"calls","ref":"internal/project:DetectProject"},{"from":"cmd/vp","to":"internal/storage","op":"calls","ref":"cmd/vp:openProjectVault"},{"from":"cmd/vp","to":"internal/embedder","op":"calls","ref":"internal/embedder:NewONNX"},{"from":"cmd/vp","to":"internal/search","op":"calls","ref":"internal/search:NewEngine"},{"from":"internal/search","to":"internal/search","op":"calls","ref":"internal/search:Engine.Rebuild"},{"from":"internal/search","to":"internal/search","op":"calls","ref":"internal/search:Engine.Search"}]},{"slug":"session-capture","label":"Session Capture & Indexing","kind":"cli-verb","description":"Capture an AI session: write metadata, analyze friction, chunk and embed transcript, extract entities, build knowledge graph, and index for search.","entry_point":"vp_capture_session (MCP tool)","nodes":["internal/mcp","internal/tools","internal/capture","internal/storage","internal/search","internal/embedder","internal/archive","internal/kg"],"steps":[{"from":"internal/tools","to":"internal/storage","op":"calls","ref":"internal/storage:Vault"},{"from":"internal/tools","to":"internal/capture","op":"calls","ref":"internal/capture:WriteSession"},{"from":"internal/capture","to":"internal/storage","op":"calls","ref":"internal/storage:Vault.WriteSession"},{"from":"internal/capture","to":"internal/capture","op":"calls","ref":"internal/capture:AnalyzeFriction"},{"from":"internal/capture","to":"internal/capture","op":"calls","ref":"internal/capture:Indexer.IndexTranscript"},{"from":"internal/capture","to":"internal/capture","op":"calls","ref":"internal/capture:Indexer.extractEntities"},{"from":"internal/capture","to":"internal/search","op":"calls","ref":"internal/search:Engine.IndexDrawers"},{"from":"internal/capture","to":"internal/kg","op":"calls","ref":"internal/kg:ExtractAll"},{"from":"internal/capture","to":"internal/archive","op":"calls","ref":"internal/archive:LinkSessionNote"}]},{"slug":"context-bootstrap","label":"Context Bootstrap","kind":"cli-verb","description":"Load full session context at turn 1: retrieve workflow, resume, active tasks, and recent sessions via MCP vp_bootstrap_context tool.","entry_point":"vp_bootstrap_context (MCP tool)","nodes":["internal/mcp","internal/tools","internal/storage","internal/context"],"steps":[{"from":"internal/tools","to":"internal/storage","op":"calls","ref":"internal/storage:Vault"},{"from":"internal/tools","to":"internal/context","op":"calls","ref":"internal/context:NewResolver"},{"from":"internal/tools","to":"internal/context","op":"calls","ref":"internal/context:Resolver.Resolve"},{"from":"internal/tools","to":"internal/context","op":"calls","ref":"internal/context:Resolver.Resolve"}]},{"slug":"content-absorption","label":"Content Absorption (Legacy Migration)","kind":"cli-verb","description":"Migrate legacy agent-context files (CLAUDE.md, .cursorrules) into the vault. Builds plan, presents interactive routing, rewrites source files, and stages changes.","entry_point":"vp absorb","nodes":["cmd/vp","internal/cli","internal/absorb","internal/storage","internal/project"],"steps":[{"from":"cmd/vp","to":"internal/project","op":"calls","ref":"internal/project:DetectProject"},{"from":"cmd/vp","to":"internal/storage","op":"calls","ref":"cmd/vp:openProjectVault"},{"from":"cmd/vp","to":"internal/absorb","op":"calls","ref":"internal/absorb:BuildPlan"},{"from":"cmd/vp","to":"internal/absorb","op":"calls","ref":"internal/absorb:Apply"}]},{"slug":"session-archive","label":"Session Archive","kind":"cli-verb","description":"Archive an AI session transcript with provenance manifest: compress, compute SHA256, sign, and store under vault/Projects/<slug>/transcripts/.","entry_point":"vp archive create","nodes":["cmd/vp","internal/cli","internal/archive","internal/storage","internal/project"],"steps":[{"from":"cmd/vp","to":"internal/project","op":"calls","ref":"internal/project:DetectProject"},{"from":"cmd/vp","to":"internal/storage","op":"calls","ref":"cmd/vp:openProjectVault"},{"from":"cmd/vp","to":"internal/archive","op":"calls","ref":"internal/archive:Create"},{"from":"internal/archive","to":"internal/archive","op":"calls","ref":"internal/archive:Sign"},{"from":"cmd/vp","to":"internal/archive","op":"calls","ref":"internal/archive:ListEntries"},{"from":"cmd/vp","to":"internal/archive","op":"calls","ref":"internal/archive:VerifyWithOptions"},{"from":"cmd/vp","to":"internal/archive","op":"calls","ref":"internal/archive:Extract"}]},{"slug":"knowledge-graph-query","label":"Knowledge Graph Queries","kind":"cli-verb","description":"Query the temporal knowledge graph: retrieve entities, relationships, timelines, and perform time-travel queries.","entry_point":"vp_kg_query (MCP tool)","nodes":["internal/mcp","internal/tools","internal/kg","internal/storage"],"steps":[{"from":"internal/tools","to":"internal/storage","op":"calls","ref":"internal/storage:Vault.ListEntities"},{"from":"internal/tools","to":"internal/storage","op":"calls","ref":"internal/storage:Vault.Timeline"}]},{"slug":"command-management","label":"Command Management","kind":"cli-verb","description":"List, retrieve, and upgrade embedded commands. Slash-command templates are materialized from embedded defaults and editable in the vault.","entry_point":"vp commands list","nodes":["cmd/vp","internal/cli","internal/context","internal/commands","internal/templates"],"steps":[{"from":"cmd/vp","to":"internal/context","op":"calls","ref":"internal/context:NewResolver"},{"from":"cmd/vp","to":"internal/commands","op":"calls","ref":"internal/commands:List"},{"from":"internal/commands","to":"internal/context","op":"calls","ref":"internal/context:Resolver.ListResourcesScoped"}]},{"slug":"skill-management","label":"Skill Management","kind":"cli-verb","description":"List, show, and upgrade expert skills. Skills contain SKILL.md with personas and reference documents for domain-specific guidance.","entry_point":"vp skills list","nodes":["cmd/vp","internal/cli","internal/context","internal/skills","internal/templates"],"steps":[{"from":"cmd/vp","to":"internal/context","op":"calls","ref":"internal/context:NewResolver"},{"from":"cmd/vp","to":"internal/skills","op":"calls","ref":"internal/skills:Parse"},{"from":"internal/skills","to":"internal/context","op":"calls","ref":"internal/context:Resolver.ListResourcesScoped"}]},{"slug":"palace-navigation","label":"Palace Navigation","kind":"cli-verb","description":"Browse palace structure: list wings and rooms (spatial metaphor for vault content organization), traverse, and find tunnels (cross-project links).","entry_point":"vp discover rooms","nodes":["cmd/vp","internal/cli","internal/storage","internal/palace"],"steps":[{"from":"cmd/vp","to":"internal/storage","op":"calls","ref":"internal/storage:Vault.ListWings"},{"from":"cmd/vp","to":"internal/storage","op":"calls","ref":"internal/storage:Vault.ListDrawers"},{"from":"cmd/vp","to":"internal/palace","op":"calls","ref":"internal/palace:FindTunnels"}]},{"slug":"vault-sync","label":"Vault Synchronization","kind":"cli-verb","description":"Pull and push vault to git remote. Enables distributed access to the persistent memory store.","entry_point":"vp vault sync","nodes":["cmd/vp","internal/cli","internal/storage"],"steps":[{"from":"cmd/vp","to":"cmd/vp","op":"calls","ref":"cmd/vp:pullAll"},{"from":"cmd/vp","to":"cmd/vp","op":"calls","ref":"cmd/vp:pushAll"}]},{"slug":"legacy-migration","label":"Legacy Data Migration","kind":"cli-verb","description":"Migrate data from older tools: import vibe-vault (vv) session notes and MemPalace data into vibe-palace vault structure.","entry_point":"vp migrate vibe-vault","nodes":["cmd/vp","internal/cli","internal/migrate","internal/storage"],"steps":[{"from":"cmd/vp","to":"internal/migrate","op":"calls","ref":"internal/migrate:ImportVibeVault"},{"from":"internal/migrate","to":"internal/storage","op":"calls","ref":"internal/storage:Vault"}]},{"slug":"room-classification-tuning","label":"Room Classification Tuning","kind":"cli-verb","description":"Audit and tune room classification: adjust keyword weights, run algorithmic audits, and optionally use offline LLM for weight discovery.","entry_point":"vp tune rooms","nodes":["cmd/vp","internal/cli","internal/storage","internal/llm","internal/palace"],"steps":[{"from":"cmd/vp","to":"internal/storage","op":"calls","ref":"internal/storage:Vault.LoadConfig"},{"from":"cmd/vp","to":"internal/palace","op":"calls","ref":"internal/palace:RunDiscover"}]},{"slug":"friction-analysis","label":"Friction Analysis & Trends","kind":"cli-verb","description":"Analyze session difficulty: compute friction scores from transcripts and track trends over time to identify pain points.","entry_point":"vp_friction_trends (MCP tool)","nodes":["internal/mcp","internal/tools","internal/capture","internal/storage"],"steps":[{"from":"internal/tools","to":"internal/capture","op":"calls","ref":"internal/capture:AnalyzeFriction"},{"from":"internal/tools","to":"internal/storage","op":"calls","ref":"internal/storage:Vault.ListSessions"}]}]};</script>
+<script>
+(() => {
+  const doc = FLOWS || {};
+  const nodes = Array.isArray(doc.nodes) ? doc.nodes : [];
+  const flows = Array.isArray(doc.flows) ? doc.flows : [];
+
+  // Title / subtitle
+  const title = document.getElementById('title');
+  const subtitle = document.getElementById('subtitle');
+  if (doc.project) title.textContent = doc.project + ' flows';
+  subtitle.textContent = flows.length + ' flow' + (flows.length === 1 ? '' : 's')
+                      + ' / ' + nodes.length + ' node' + (nodes.length === 1 ? '' : 's');
+
+  // Empty state when no flows are present.
+  const empty = document.getElementById('empty');
+  const svg = document.getElementById('graph');
+  if (flows.length === 0) {
+    empty.style.display = 'flex';
+    svg.style.display = 'none';
+  }
+
+  // ---------- Layout: assign columns by layout_group (first-seen order) ----------
+  const groupOrder = [];
+  const groupIndex = new Map();
+  nodes.forEach(n => {
+    const g = n.layout_group || 'default';
+    if (!groupIndex.has(g)) {
+      groupIndex.set(g, groupOrder.length);
+      groupOrder.push(g);
+    }
+  });
+
+  // Bucket nodes by group to compute per-column rows.
+  const byGroup = new Map();
+  groupOrder.forEach(g => byGroup.set(g, []));
+  nodes.forEach(n => {
+    const g = n.layout_group || 'default';
+    byGroup.get(g).push(n);
+  });
+
+  const NODE_W = 170, NODE_H = 44;
+  const COL_W = 220, ROW_H = 60;
+  const PAD_LEFT = 30, PAD_TOP = 40;
+
+  // node-id -> {x, y, w, h, col, row}
+  const nodePos = new Map();
+  groupOrder.forEach((g, ci) => {
+    byGroup.get(g).forEach((n, ri) => {
+      nodePos.set(n.id, {
+        x: PAD_LEFT + ci * COL_W,
+        y: PAD_TOP + ri * ROW_H,
+        w: NODE_W,
+        h: NODE_H,
+        col: ci,
+        row: ri,
+      });
+    });
+  });
+
+  // Compute SVG canvas size and set viewBox.
+  let maxCol = 0, maxRow = 0;
+  nodePos.forEach(p => {
+    if (p.col > maxCol) maxCol = p.col;
+    if (p.row > maxRow) maxRow = p.row;
+  });
+  const SVG_W = PAD_LEFT * 2 + (maxCol + 1) * COL_W;
+  const SVG_H = PAD_TOP * 2 + (maxRow + 1) * ROW_H + 20;
+  svg.setAttribute('viewBox', '0 0 ' + SVG_W + ' ' + SVG_H);
+
+  // ---------- Render nodes ----------
+  const nodesG = document.getElementById('g-nodes');
+  const edgesG = document.getElementById('g-edges');
+  const nodeEls = new Map();
+
+  function makeNode(n) {
+    const pos = nodePos.get(n.id);
+    if (!pos) return;
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('class', 'node');
+    g.setAttribute('data-id', n.id);
+    g.setAttribute('transform', 'translate(' + pos.x + ',' + pos.y + ')');
+
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('width', pos.w);
+    rect.setAttribute('height', pos.h);
+    rect.setAttribute('rx', 4);
+    g.appendChild(rect);
+
+    const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    label.setAttribute('x', 9);
+    label.setAttribute('y', 17);
+    label.textContent = n.label || n.id;
+    g.appendChild(label);
+
+    const groupText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    groupText.setAttribute('class', 'group');
+    groupText.setAttribute('x', 9);
+    groupText.setAttribute('y', 32);
+    const role = n.role ? n.role : (n.layout_group || '');
+    const trimmed = role.length > 28 ? role.slice(0, 26) + '...' : role;
+    groupText.textContent = trimmed;
+    g.appendChild(groupText);
+
+    const tip = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+    tip.textContent = n.id + (n.role ? ' - ' + n.role : '') + (n.path ? '\n' + n.path : '');
+    g.appendChild(tip);
+
+    nodesG.appendChild(g);
+    nodeEls.set(n.id, g);
+  }
+  nodes.forEach(makeNode);
+
+  // ---------- Edge routing ----------
+  function edgePath(fromId, toId) {
+    const a = nodePos.get(fromId);
+    const b = nodePos.get(toId);
+    if (!a || !b) return null;
+    if (fromId === toId) {
+      const sx = a.x + a.w, sy = a.y + a.h * 0.3;
+      const ex = a.x + a.w, ey = a.y + a.h * 0.7;
+      return 'M' + sx + ',' + sy +
+             ' C' + (sx + 40) + ',' + (sy - 10) +
+             ' ' + (ex + 40) + ',' + (ey + 10) +
+             ' ' + ex + ',' + ey;
+    }
+    let sx, sy, ex, ey;
+    if (b.col >= a.col) {
+      sx = a.x + a.w; sy = a.y + a.h / 2;
+      ex = b.x;       ey = b.y + b.h / 2;
+    } else {
+      sx = a.x;       sy = a.y + a.h / 2;
+      ex = b.x + b.w; ey = b.y + b.h / 2;
+    }
+    const dx = Math.abs(ex - sx);
+    const c = Math.max(40, dx * 0.35);
+    const sign = (b.col >= a.col) ? 1 : -1;
+    const c1x = sx + sign * c;
+    const c2x = ex - sign * c;
+    return 'M' + sx + ',' + sy +
+           ' C' + c1x + ',' + sy +
+           ' ' + c2x + ',' + ey +
+           ' ' + ex + ',' + ey;
+  }
+
+  // ---------- Sidebar list ----------
+  const list = document.getElementById('flow-list');
+  flows.forEach(f => {
+    const li = document.createElement('li');
+    li.dataset.slug = f.slug;
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = f.kind || 'flow';
+    const lbl = document.createElement('span');
+    lbl.className = 'label';
+    lbl.textContent = f.label || f.slug;
+    li.appendChild(chip);
+    li.appendChild(lbl);
+    li.addEventListener('click', () => selectFlow(f.slug));
+    list.appendChild(li);
+  });
+
+  // ---------- Selection state ----------
+  let currentSlug = null;
+
+  function clearGraph() {
+    while (edgesG.firstChild) edgesG.removeChild(edgesG.firstChild);
+    nodeEls.forEach(el => el.classList.remove('highlighted'));
+  }
+
+  function escapeText(s) {
+    return String(s == null ? '' : s);
+  }
+
+  function selectFlow(slug) {
+    const f = flows.find(x => x.slug === slug);
+    if (!f) return;
+    currentSlug = slug;
+
+    // Sidebar active state
+    Array.prototype.forEach.call(list.querySelectorAll('li'), li => {
+      li.classList.toggle('active', li.dataset.slug === slug);
+    });
+
+    // Details pane visibility
+    document.getElementById('d-hint').style.display = 'none';
+    document.getElementById('d-label').textContent = f.label || f.slug;
+    const dKind = document.getElementById('d-kind');
+    dKind.textContent = f.kind || '';
+    dKind.style.display = '';
+    const dDesc = document.getElementById('d-desc');
+    dDesc.textContent = f.description || '';
+    dDesc.style.display = '';
+    const dEntry = document.getElementById('d-entry');
+    dEntry.textContent = 'entry: ' + (f.entry_point || '(none)');
+    dEntry.style.display = '';
+    document.getElementById('d-steps-h').style.display = '';
+
+    // Steps list (numbered)
+    const stepsOl = document.getElementById('d-steps');
+    while (stepsOl.firstChild) stepsOl.removeChild(stepsOl.firstChild);
+    const steps = Array.isArray(f.steps) ? f.steps : [];
+    steps.forEach(s => {
+      const li = document.createElement('li');
+
+      const pair = document.createElement('div');
+      pair.className = 'pair';
+      pair.textContent = escapeText(s.from) + ' → ' + escapeText(s.to);
+      li.appendChild(pair);
+
+      const op = document.createElement('div');
+      op.className = 'op';
+      op.textContent = escapeText(s.op);
+      li.appendChild(op);
+
+      if (s.passes) {
+        const p = document.createElement('div');
+        p.className = 'passes';
+        p.textContent = 'passes: ' + s.passes;
+        li.appendChild(p);
+      }
+      if (s.ref) {
+        const r = document.createElement('div');
+        r.className = 'ref';
+        r.textContent = s.ref;
+        li.appendChild(r);
+      }
+      stepsOl.appendChild(li);
+    });
+
+    // Graph: highlight involved nodes, draw step edges
+    clearGraph();
+    const involved = new Set();
+    if (Array.isArray(f.nodes)) f.nodes.forEach(id => involved.add(id));
+    steps.forEach(s => { involved.add(s.from); involved.add(s.to); });
+    nodeEls.forEach((el, id) => {
+      if (involved.has(id)) el.classList.add('highlighted');
+    });
+
+    // Render edges, fanning out duplicate (from,to) pairs to avoid overdraw.
+    const seen = new Map();
+    steps.forEach(s => {
+      const key = s.from + '|' + s.to;
+      const nth = seen.get(key) || 0;
+      seen.set(key, nth + 1);
+
+      const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      g.setAttribute('class', 'edge');
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      let d = edgePath(s.from, s.to);
+      if (!d) return;
+
+      if (nth > 0 && s.from !== s.to) {
+        // Offset duplicate edges so the labels don't stack.
+        const a = nodePos.get(s.from), b = nodePos.get(s.to);
+        const sx = (b.col >= a.col ? a.x + a.w : a.x);
+        const sy = a.y + a.h / 2 + nth * 6 * ((nth % 2) ? 1 : -1);
+        const ex = (b.col >= a.col ? b.x : b.x + b.w);
+        const ey = b.y + b.h / 2 + nth * 6 * ((nth % 2) ? -1 : 1);
+        const c = Math.max(40, Math.abs(ex - sx) * 0.35);
+        const sign = (b.col >= a.col) ? 1 : -1;
+        d = 'M' + sx + ',' + sy +
+            ' C' + (sx + sign * c) + ',' + sy +
+            ' ' + (ex - sign * c) + ',' + ey +
+            ' ' + ex + ',' + ey;
+      }
+      path.setAttribute('d', d);
+      path.setAttribute('marker-end', 'url(#arrow)');
+      g.appendChild(path);
+
+      // Op annotation near the midpoint of the path.
+      const m = d.match(/M(-?\d+\.?\d*),(-?\d+\.?\d*).*?(-?\d+\.?\d*),(-?\d+\.?\d*)$/);
+      if (m && s.op) {
+        const mx = (parseFloat(m[1]) + parseFloat(m[3])) / 2;
+        const my = (parseFloat(m[2]) + parseFloat(m[4])) / 2 - 3;
+        const opText = s.op.length > 28 ? s.op.slice(0, 26) + '...' : s.op;
+        // Background rect for legibility over edges.
+        const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        const approxW = opText.length * 6 + 6;
+        bg.setAttribute('class', 'op-label-bg');
+        bg.setAttribute('x', mx - approxW / 2);
+        bg.setAttribute('y', my - 9);
+        bg.setAttribute('width', approxW);
+        bg.setAttribute('height', 11);
+        bg.setAttribute('rx', 2);
+        g.appendChild(bg);
+
+        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        t.setAttribute('class', 'op-label');
+        t.setAttribute('x', mx);
+        t.setAttribute('y', my);
+        t.setAttribute('text-anchor', 'middle');
+        t.textContent = opText;
+        g.appendChild(t);
+      }
+      edgesG.appendChild(g);
+    });
+  }
+
+  // No auto-select: leave the details pane in its hint state until the user
+  // clicks. (The graph already shows all nodes grouped by layout_group.)
+})();
+</script>
+</body>
+</html>

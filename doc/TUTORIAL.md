@@ -218,7 +218,7 @@ Add to `.mcp.json` in your project root (project-scope) or `~/.claude.json`
 ```
 
 Verify: start Claude Code and check the MCP server list shows `vibe-palace`
-with 38 tools available.
+with 39 tools available.
 
 **Note:** Vibe-palace replaces CLAUDE.md-based context injection —
 `vp_bootstrap_context` delivers workflow, resume, tasks, and sessions via MCP.
@@ -432,7 +432,8 @@ vp check                    # verify installation, config, vault, embedder
 ### Managing Commands
 
 Vibe-palace ships a small catalog of built-in commands (`restart`, `wrap`,
-`review-plan`, `cancel-plan`, `capture`) embedded in the `vp` binary. Users
+`review-plan`, `cancel-plan`, `capture`, `execute-plan`, `license`,
+`makefile`) embedded in the `vp` binary. Users
 and projects can override or extend the catalog via the 5-tier resolver
 (see `doc/COMMANDS-AND-SKILLS.md`).
 
@@ -534,7 +535,7 @@ command into your vault:
 ```bash
 vp init
 ls ~/vibe-palace-vault/Templates/commands/
-# → capture.md  cancel-plan.md  restart.md  review-plan.md  wrap.md
+# → cancel-plan.md  capture.md  execute-plan.md  license.md  makefile.md  restart.md  review-plan.md  wrap.md
 cat ~/vibe-palace-vault/.vibe-palace/templates.lock
 # → one entry per materialized file, keyed by vault-relative path
 grep -E '\*\.(bak|new)' ~/vibe-palace-vault/.gitignore
