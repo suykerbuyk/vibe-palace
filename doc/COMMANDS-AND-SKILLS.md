@@ -334,6 +334,32 @@ vp skills show startup-analyst
 vp skills show startup-analyst --section capex-opex
 ```
 
+### Write and wrap tools
+
+The tools above cover command/skill discovery and execution. The wider
+write/wrap surface lets an agent complete a session end-to-end without
+shelling out to the filesystem. These are catalogued in full (with
+parameters) in `doc/PRD-vibe-palace.md` §6.8–6.11; the families are:
+
+- **Vault file CRUD** (§6.8): `vp_vault_read`, `vp_vault_list`,
+  `vp_vault_exists`, `vp_vault_sha256`, `vp_vault_write`, `vp_vault_edit`,
+  `vp_vault_delete`, `vp_vault_move`. Generic, schema-agnostic access over
+  vault-relative paths. `vp_vault_write` performs no schema validation —
+  prefer the typed writers below for files that have one.
+- **Commit lifecycle** (§6.9): `vp_ingest_commit_msg` reads
+  `<project>/commit.msg` off disk and writes a stamped vault copy.
+- **Resume surgical edits** (§6.10): `vp_thread_insert`,
+  `vp_thread_replace`, `vp_thread_remove`, `vp_carried_add`,
+  `vp_carried_remove`, `vp_carried_promote_to_task` — structure-aware
+  editors for `resume.md`'s Open Threads and Carried-forward sections.
+- **Wrap state** (§6.11): `vp_collect_wrap_state`, `vp_stamp_iter`,
+  `vp_preflight_wrap` — readiness and bookkeeping driven by `.vibe-palace/`
+  anchors (see `doc/adr/002-wrap-state-anchors.md`).
+
+The CLI mirrors the vault-CRUD family: `vp vault read|write|edit|delete|move|exists|sha256`,
+plus `vp vault commit --paths <p1,p2,...> --message <msg> [--push]` for the
+explicit-path commit-then-push that `vp_vault_sync`'s `paths` argument exposes.
+
 ---
 
 ## Frontend Integration

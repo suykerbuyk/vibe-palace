@@ -125,23 +125,32 @@ func initProjectHandler(vault *storage.Vault) mcp.HandlerFunc {
 // ---------------------------------------------------------------------------
 
 type vaultSyncParams struct {
-	Action string `json:"action"`
+	Action  string   `json:"action"`
+	Paths   []string `json:"paths"`
+	Message string   `json:"message"`
 }
 
 var vaultSyncSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action": {"type": "string", "description": "Action: pull, push, or sync."}
+		"action": {"type": "string", "description": "Action: pull, push, or sync."},
+		"paths": {"type": "array", "items": {"type": "string"}, "description": "Optional explicit vault-relative paths to stage and commit before pushing. When provided, ONLY these paths are committed (never git add -A); other dirty files are left untouched. When omitted, push/sync refuse to run on a dirty vault."},
+		"message": {"type": "string", "description": "Commit message. Required when paths is provided."}
 	},
 	"required": ["action"]
 }`)
 
 func VaultSyncTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name:        "vp_vault_sync",
-		Description: "Pull, push, or sync the vault git repository with configured remotes.",
-		Schema:      vaultSyncSchema,
-		Handler:     vaultSyncHandler(vault),
+		Name: "vp_vault_sync",
+		Description: "Pull, push, or sync the vault git repository with configured " +
+			"remotes. With no paths, push/sync refuse to run if the vault has " +
+			"uncommitted changes (accidental-half-written-state guard). Pass an " +
+			"explicit paths list (plus message) to stage and commit ONLY those " +
+			"paths before pushing — other dirty files are left untouched; git " +
+			"add -A is never used.",
+		Schema:  vaultSyncSchema,
+		Handler: vaultSyncHandler(vault),
 	}
 }
 
@@ -162,6 +171,38 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 		defer vaultSyncMu.Unlock()
 
 		root := vault.Root
+
+		// Explicit-path entry point: stage and commit ONLY the supplied
+		// paths (never git add -A), then push when the action calls for it.
+		// This is the ONLY way to mutate vault history through this tool; the
+		// bare push/sync path below keeps its refuse-on-dirty guard intact.
+		if len(p.Paths) > 0 {
+			if p.Message == "" {
+				return nil, fmt.Errorf("message is required when paths are provided")
+			}
+			doPush := p.Action == "push" || p.Action == "sync"
+			res, err := storage.CommitAndPushPaths(root, p.Message, p.Paths, doPush)
+			if err != nil {
+				return nil, fmt.Errorf("commit: %w", err)
+			}
+			remoteResults := map[string]string{}
+			for name, rerr := range res.RemoteResults {
+				if rerr != nil {
+					remoteResults[name] = rerr.Error()
+				} else {
+					remoteResults[name] = "ok"
+				}
+			}
+			return map[string]any{
+				"status":         "ok",
+				"action":         p.Action,
+				"committed":      res.CommitSHA != "",
+				"commit_sha":     res.CommitSHA,
+				"pushed":         doPush,
+				"remote_results": remoteResults,
+			}, nil
+		}
+
 		remotes, err := gitRemoteList(root)
 		if err != nil {
 			return nil, fmt.Errorf("discover remotes: %w", err)

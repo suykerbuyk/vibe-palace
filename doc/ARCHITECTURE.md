@@ -5,7 +5,7 @@
 Vibe-palace is a compiled Go binary that serves as an MCP (Model Context
 Protocol) server for AI-assisted development. It provides context injection,
 session capture, semantic search, and palace-based knowledge navigation through
-39 MCP tools over stdio JSON-RPC 2.0.
+57 MCP tools over stdio JSON-RPC 2.0.
 
 **Design principles:**
 - Single binary, zero-CGo, no external services
@@ -24,7 +24,7 @@ session capture, semantic search, and palace-based knowledge navigation through
 | `internal/storage` | Vault layout, CRUD, config | `Vault`, `Config`, `Drawer`, `SessionMeta` |
 | `internal/mcp` | JSON-RPC server, tool registry | `Server`, `Registry`, `Tool` |
 | `internal/context` | Precedence-aware template resolution | `Resolver`, `ResourceInfo` |
-| `internal/tools` | 39 MCP tool implementations | (see tool table below) |
+| `internal/tools` | 57 MCP tool implementations | (see tool table below) |
 | `internal/embedder` | ONNX text embedding | `Embedder` interface, `ONNXEmbedder` |
 | `internal/search` | Hybrid semantic + structural search | `Engine`, `VectorIndex`, `SearchResult` |
 | `internal/capture` | Session ingest, chunking, friction, shared capture pipeline | `Indexer`, `ChunkConfig`, `WriteSession` |
@@ -177,7 +177,7 @@ cmd/vp/main.go
 ├── search.NewEngine(emb, v, cfg) # create search engine
 ├── context.NewResolver(v.Root)   # template resolver
 ├── mcp.NewServer(v)              # create MCP server
-├── tools.RegisterAll(...)        # register all 39 tools
+├── tools.RegisterAll(...)        # register all 57 tools
 └── srv.Serve(ctx)                # start stdio transport
 ```
 
@@ -199,7 +199,7 @@ On dispatch, the registry validates incoming params against the compiled
 schema before calling the handler. Handlers extract the vault from context
 and operate on storage directly.
 
-### 39 MCP Tools
+### 57 MCP Tools
 
 | Tool | Source File | Category |
 |------|-----------|----------|
@@ -242,10 +242,33 @@ and operate on storage directly.
 | `vp_get_effectiveness` | session_query_tools.go | Session |
 | `vp_get_friction_trends` | friction_tools.go | Session |
 | `vp_refresh_index` | search_tools.go | Search |
+| `vp_vault_read` | vault_file_tools.go | Vault CRUD |
+| `vp_vault_list` | vault_file_tools.go | Vault CRUD |
+| `vp_vault_exists` | vault_file_tools.go | Vault CRUD |
+| `vp_vault_sha256` | vault_file_tools.go | Vault CRUD |
+| `vp_vault_write` | vault_file_tools.go | Vault CRUD |
+| `vp_vault_edit` | vault_file_tools.go | Vault CRUD |
+| `vp_vault_delete` | vault_file_tools.go | Vault CRUD |
+| `vp_vault_move` | vault_file_tools.go | Vault CRUD |
+| `vp_ingest_commit_msg` | commit_msg_tools.go | Commit |
+| `vp_thread_insert` | thread_tools.go | Resume edit |
+| `vp_thread_replace` | thread_tools.go | Resume edit |
+| `vp_thread_remove` | thread_tools.go | Resume edit |
+| `vp_carried_add` | carried_tools.go | Resume edit |
+| `vp_carried_remove` | carried_tools.go | Resume edit |
+| `vp_carried_promote_to_task` | carried_tools.go | Resume edit |
+| `vp_collect_wrap_state` | wrapstate_tools.go | Wrap state |
+| `vp_stamp_iter` | wrapstate_tools.go | Wrap state |
+| `vp_preflight_wrap` | wrapstate_tools.go | Wrap state |
 
-Tools 1–30 (context, palace, health, KG, workflow, tasks, project, vault) are
-always registered. Tools 31–39 require a search engine (embedder must
-initialize successfully).
+All tools except the search-dependent ones are always registered. The nine
+search-gated tools — `vp_search`, `vp_search_cross_project`,
+`vp_capture_session`, `vp_get_project_context`, `vp_search_sessions`,
+`vp_get_session_detail`, `vp_get_effectiveness`, `vp_get_friction_trends`, and
+`vp_refresh_index` — require a search engine (embedder must initialize
+successfully). The vault-CRUD, commit, resume-edit, and wrap-state tools added
+by the restore-mcp-vault-surface work are filesystem operations and are always
+registered.
 
 ### HTTP Transport
 

@@ -6,6 +6,16 @@ This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
+The suite currently runs **~1738 tests** across 35 packages, including
+**92 integration tests** (the ONNX/cross-layer tests `make integration`
+discovers via the `TestIntegration*` prefix). These counts are approximate
+and advisory: they tally `func Test…` declarations — not the table-driven
+subtests each may fan out into — and they drift as the suite grows. Derive
+fresh numbers with
+`grep -rh "^func Test" --include='*_test.go' internal cmd | wc -l` (total)
+and `grep -rh "^func TestIntegration" --include='*_test.go' internal cmd | wc -l`
+(integration).
+
 ---
 
 ## Test Tiers
@@ -237,6 +247,39 @@ contract holds against the real binary.
 | `RebuildAndCache` | Yes | Embed cache populated on rebuild, used on second rebuild |
 | `IndexDrawerAndSearch` | Yes | Incremental indexing preserves all metadata |
 | `StructuralBoostsWithRealEmbeddings` | Yes | Wing filter boosts matching results with real vectors |
+
+---
+
+## Write/Wrap Surface Unit Tests
+
+The restore-mcp-vault-surface work added three pure-unit packages (no ONNX,
+run in `make test`). They underpin the vault-CRUD, commit, resume-edit, and
+wrap-state MCP tools.
+
+### `internal/vaultfs` — Vault File CRUD (coverage 82.6%)
+
+Read / write / edit / delete / move / exists / sha256 over vault-relative
+paths, plus the path-safety and stamping primitives. Tests cover the happy
+paths, traversal/escape rejection and other safety guards, atomic-write
+behavior, optimistic-concurrency `expected-sha256` mismatches, and
+enumeration of the cross-package stamp writers.
+
+### `internal/mdutil` — Markdown Section Editing (coverage 93.4%)
+
+Section-aware editing used by the resume-edit tools: locating and rewriting
+`##`/`###` blocks, and the reserved `### Carried forward` bullet operations
+(add / remove / promote). Tests cover heading normalization, slug matching,
+insert positioning, and idempotent removal.
+
+### `internal/wrapstate` — Wrap-State Collection (coverage 80.1%)
+
+The engine behind `vp_collect_wrap_state` / `vp_stamp_iter` /
+`vp_preflight_wrap`. Tests cover iteration parsing
+(`^### Iteration (\d+)\b`), task-delta computation as a filesystem
+set-difference against the snapshot, the `.vibe-palace/` anchor read/write
+round-trip, the wrap-state record shape, the `doc/TESTING.md` headline
+parse (the regexes this very headline feeds), and the preflight readiness
+matrix.
 
 ---
 

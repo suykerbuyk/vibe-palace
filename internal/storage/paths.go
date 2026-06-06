@@ -198,6 +198,15 @@ func (v *Vault) ResumeFile(project string) (string, error) {
 	return filepath.Join(v.Root, "Projects", project, "resume.md"), nil
 }
 
+// CommitMsgFile returns the path to a project's vault commit-message file:
+// {vault}/Projects/{project}/commit.msg
+func (v *Vault) CommitMsgFile(project string) (string, error) {
+	if err := slug.Validate(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.Root, "Projects", project, "commit.msg"), nil
+}
+
 // IterationsFile returns the path to a project's iterations file:
 // {vault}/Projects/{project}/iterations.md
 func (v *Vault) IterationsFile(project string) (string, error) {

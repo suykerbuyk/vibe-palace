@@ -102,6 +102,16 @@ templates — is delivered through the MCP interface on demand.
 
 No symlinks. No `.claude/` directory. No dual-git management. No CLAUDE.md.
 
+**Write/wrap surface (complete).** The session *wrap* — updating `resume.md`,
+ingesting the commit message, recording the iteration, and committing/pushing
+the vault — is now fully completable through MCP. The restore-mcp-vault-surface
+work added generic vault file CRUD (§6.8), commit ingest (§6.9), surgical
+resume editors (§6.10), and wrap-state tools (§6.11), and extended
+`vp_vault_sync` with explicit-path commit-then-push. An agent no longer needs
+to shell out to the filesystem to finish a session. (The MCP-surface-version
+bump that advertises this expanded surface is deferred to the
+mcp-surface-handshake task.)
+
 ### 1.2 Out-of-Band Context Storage
 
 The vault directory is completely separate from any source code tree. Context data
@@ -617,11 +627,74 @@ flowchart TD
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `vp_init` | project?, domain?, tags? | Initialize project (create .vibe-palace.toml + vault dir) |
-| `vp_vault_sync` | — | Pull/push vault git remotes |
+| `vp_vault_sync` | paths? | Pull/push vault git remotes. Optional `paths` commits only the listed vault-relative files (commit-then-push) instead of a blanket sync |
 | `vp_refresh_index` | project? | Rebuild session index and re-embed if needed |
 | `vp_health` | project (req) | Runtime health: recent warnings/errors from the vp log file |
 
-**Total: 39 implemented (Phases 1–10, 12–18)** (vs VibeVault's 16 + MemPalace's 19 = 35, with dedup, consolidation, and Phase 12–18 additions)
+### 6.8 Vault File CRUD Tools (write/wrap surface)
+
+> **8 of 8 implemented.**
+
+Generic, schema-agnostic file access over vault-relative paths. These close
+the MCP-First gap (§1.1) by letting an agent complete the entire wrap without
+shelling out to the filesystem. `vp_vault_write` bypasses schema validation —
+prefer the typed/surgical writers (§6.10, task tools, commit ingest) and
+reserve raw write for files with no typed writer.
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `vp_vault_read` | path (req) | Read a file at a vault-relative path |
+| `vp_vault_list` | path? | List entries one level under a vault-relative directory |
+| `vp_vault_exists` | path (req) | Check whether a vault-relative path exists |
+| `vp_vault_sha256` | path (req) | Compute SHA-256 of a vault-relative file without reading it back |
+| `vp_vault_write` | path (req), content (req) | Atomically write content to a vault-relative file (no schema validation) |
+| `vp_vault_edit` | path (req), old_string (req), new_string (req) | Replace old_string with new_string in a vault-relative file |
+| `vp_vault_delete` | path (req) | Delete a file at a vault-relative path |
+| `vp_vault_move` | from_path (req), to_path (req) | Rename a vault-relative file |
+
+### 6.9 Commit Lifecycle Tools
+
+> **1 of 1 implemented.**
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `vp_ingest_commit_msg` | project? | Read `<project_path>/commit.msg` off disk and write a stamped copy into the vault |
+
+### 6.10 Resume Surgical-Edit Tools
+
+> **6 of 6 implemented.**
+
+Typed, structure-aware editors for `resume.md`'s `## Open Threads` section and
+its reserved `### Carried forward` sub-section — safer than rewriting the file
+through `vp_update_resume` or raw `vp_vault_write`.
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `vp_thread_insert` | project (req), position (req), slug (req), body (req) | Insert a new `### slug` block into Open Threads at a chosen position |
+| `vp_thread_replace` | project (req), slug (req), body (req) | Replace the body of an existing `### slug` block |
+| `vp_thread_remove` | project (req), slug (req) | Remove a `### slug` block from Open Threads |
+| `vp_carried_add` | project (req), slug (req), title (req), body? | Append a bullet to the `### Carried forward` sub-section |
+| `vp_carried_remove` | project (req), slug (req) | Remove a bullet from `### Carried forward` by slug |
+| `vp_carried_promote_to_task` | project (req), slug (req), new_task_slug (req) | Promote a carried-forward bullet to a new project task |
+
+### 6.11 Wrap-State Tools
+
+> **3 of 3 implemented.**
+
+Drive `/wrap`'s readiness and bookkeeping from anchors under
+`.vibe-palace/` (see ADR 002).
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `vp_collect_wrap_state` | project? | Full wrap-state record: iteration, files changed / commits since the last anchor, task deltas, and parsed test counts |
+| `vp_stamp_iter` | project?, iteration? | Write the current iteration number to `.vibe-palace/last-iter` and snapshot the task set |
+| `vp_preflight_wrap` | project? | Readiness probe: surface compatibility plus required-anchor and shape checks before a wrap |
+
+**Total: 57 implemented (Phases 1–10, 12–18, plus the restore-mcp-vault-surface
+write/wrap surface)** — 39 prior tools plus 18 new ones across vault CRUD (8),
+commit lifecycle (1), resume surgical edits (6), and wrap state (3). (vs
+VibeVault's 16 + MemPalace's 19 = 35, with dedup, consolidation, and the
+Phase 12–18 + write-surface additions.)
 
 ---
 

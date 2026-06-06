@@ -103,10 +103,14 @@ var updateResumeSchema = json.RawMessage(`{
 
 func UpdateResumeTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name:        "vp_update_resume",
-		Description: "Update the resume for a project.",
-		Schema:      updateResumeSchema,
-		Handler:     updateResumeHandler(vault),
+		Name: "vp_update_resume",
+		Description: "Replace a project's resume.md in full (whole-file " +
+			"rewrite). Intended for full-file regeneration or migrations — for " +
+			"routine edits to individual ## Open Threads entries prefer the " +
+			"surgical vp_thread_* tools (insert/replace/remove) and vp_carried_* " +
+			"tools, which mutate a single ### block without rewriting the file.",
+		Schema:  updateResumeSchema,
+		Handler: updateResumeHandler(vault),
 	}
 }
 

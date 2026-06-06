@@ -7,12 +7,112 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
+
+// initVaultRepo creates a git repo (with identity + seed commit) to use as a
+// vault root in vault-sync tests.
+func initVaultRepo(t *testing.T) string {
+	t.Helper()
+	if !storage.GitAvailable() {
+		t.Skip("git not in PATH")
+	}
+	dir := t.TempDir()
+	gitT(t, dir, "init", "-b", "main")
+	gitT(t, dir, "config", "user.email", "test@example.com")
+	gitT(t, dir, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, dir, "add", "-A")
+	gitT(t, dir, "commit", "-m", "seed")
+	return dir
+}
+
+func gitT(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %s: %v", args, out, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestVaultSync_PathsCommitLocal(t *testing.T) {
+	root := initVaultRepo(t)
+	vault := storage.NewVault(root)
+	tool := VaultSyncTool(vault)
+
+	// Two dirty files; commit only one (action=pull → no push, no remote needed).
+	if err := os.WriteFile(filepath.Join(root, "keep.txt"), []byte("k"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "leave.txt"), []byte("l"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	params, _ := json.Marshal(vaultSyncParams{Action: "pull", Paths: []string{"keep.txt"}, Message: "commit keep"})
+	res, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	m := res.(map[string]any)
+	if m["committed"] != true {
+		t.Errorf("committed = %v, want true", m["committed"])
+	}
+	status := gitT(t, root, "status", "--porcelain")
+	if strings.Contains(status, "keep.txt") {
+		t.Errorf("keep.txt should be committed, status: %q", status)
+	}
+	if !strings.Contains(status, "leave.txt") {
+		t.Errorf("leave.txt should remain dirty, status: %q", status)
+	}
+}
+
+func TestVaultSync_PathsRequireMessage(t *testing.T) {
+	root := initVaultRepo(t)
+	vault := storage.NewVault(root)
+	tool := VaultSyncTool(vault)
+	params, _ := json.Marshal(vaultSyncParams{Action: "pull", Paths: []string{"x.txt"}})
+	if _, err := tool.Handler(context.Background(), params); err == nil {
+		t.Fatal("expected error when paths provided without message")
+	}
+}
+
+// TestVaultSync_BarePushRefusesDirty pins the H2 invariant: a bare push (no
+// paths) must refuse to run on a dirty vault.
+func TestVaultSync_BarePushRefusesDirty(t *testing.T) {
+	root := initVaultRepo(t)
+	// Configure a remote so remote discovery succeeds and we reach the guard.
+	bare := t.TempDir()
+	gitT(t, bare, "init", "--bare", "-b", "main")
+	gitT(t, root, "remote", "add", "origin", bare)
+	gitT(t, root, "push", "origin", "main")
+
+	// Dirty the tree.
+	if err := os.WriteFile(filepath.Join(root, "dirty.txt"), []byte("d"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	vault := storage.NewVault(root)
+	tool := VaultSyncTool(vault)
+	params, _ := json.Marshal(vaultSyncParams{Action: "push"})
+	_, err := tool.Handler(context.Background(), params)
+	if err == nil {
+		t.Fatal("expected bare push to refuse on dirty vault")
+	}
+	if !strings.Contains(err.Error(), "uncommitted") {
+		t.Errorf("error = %q, want it to mention uncommitted changes", err)
+	}
+}
 
 func TestInitProjectSuccess(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
