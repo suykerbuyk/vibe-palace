@@ -14,8 +14,20 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
+
+// stampVaultWrite best-effort records the MCP surface version for a successful
+// vault write at path under vaultRoot. A stamp failure is logged and never
+// propagated, so it can never fail the underlying write. Pass vaultRoot == ""
+// (or a non-vault path) to skip stamping; surface resolves those to no stamp
+// dir. Shared by the materialize/scaffold/upgrade apply paths in this package.
+func stampVaultWrite(vaultRoot, path string) {
+	if err := surface.StampForPath(vaultRoot, path); err != nil {
+		slog.Warn("surface stamp failed", "path", path, "err", err)
+	}
+}
 
 // TemplateMode selects which flavour of tree a TemplateTreeReconciler
 // operates on: a full materialize of the embedded corpus (vault
@@ -455,6 +467,7 @@ func (r *TemplateTreeReconciler) applyMaterialize(p Plan) (Report, error) {
 				rep.Errors = append(rep.Errors, fmt.Errorf("write %s: %w", a.Target, err))
 				continue
 			}
+			stampVaultWrite(r.vaultRoot, a.Target)
 			embSHA, ok := templates.EmbeddedSHA(res.RelPath)
 			if !ok {
 				embSHA = res.SHA256
@@ -476,6 +489,7 @@ func (r *TemplateTreeReconciler) applyMaterialize(p Plan) (Report, error) {
 				rep.Errors = append(rep.Errors, fmt.Errorf("write %s: %w", a.Target, err))
 				continue
 			}
+			stampVaultWrite(r.vaultRoot, a.Target)
 			embSHA, ok := templates.EmbeddedSHA(res.RelPath)
 			if !ok {
 				embSHA = res.SHA256
@@ -528,6 +542,7 @@ func (r *TemplateTreeReconciler) applyScaffold(p Plan) (Report, error) {
 					rep.Errors = append(rep.Errors, fmt.Errorf("write %s: %w", a.Target, err))
 					continue
 				}
+				stampVaultWrite(r.vaultRoot, a.Target)
 				rep.Created++
 			} else {
 				if err := os.MkdirAll(a.Target, 0o755); err != nil {

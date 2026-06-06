@@ -99,7 +99,9 @@ func (r *CwdProjectReconciler) Apply(_ context.Context, p Plan) (Report, error) 
 			}
 			rep.Created++
 		case ActionUpdate:
-			if _, err := applyUpgrade(a.Target, upgradeTarget{
+			// CWD project config is host-local (.vibe-palace.toml in the
+			// repo, not the vault) — no surface stamp.
+			if _, err := applyUpgrade("", a.Target, upgradeTarget{
 				canonicalText: storage.CwdProjectTemplateContent(),
 				templateText:  storage.CwdProjectTemplateContent(),
 			}); err != nil {

@@ -15,7 +15,19 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
+
+// stampVault best-effort records the MCP surface version for a successful
+// vault write at path under vaultRoot. A stamp failure is logged and never
+// propagated, so it can never fail the underlying write. Non-vault paths
+// (e.g. rewritten source files under the project repo's .vibe-palace/)
+// resolve to no stamp dir and are skipped inside surface.
+func stampVault(vaultRoot, path string) {
+	if err := surface.StampForPath(vaultRoot, path); err != nil {
+		slog.Warn("surface stamp failed", "path", path, "err", err)
+	}
+}
 
 // WriteOptions configures a writer pass. All paths are absolute.
 type WriteOptions struct {
@@ -125,6 +137,7 @@ func Apply(plan *Plan, opts WriteOptions) (*WriteReport, error) {
 		if err := appendOrCreate(absPath, existing, body, created); err != nil {
 			return nil, err
 		}
+		stampVault(opts.Vault.Root, absPath)
 		if created {
 			report.VaultFilesCreated = append(report.VaultFilesCreated, k.path)
 			// For new doc/*.md files, queue a pointer line for resume.
@@ -148,6 +161,7 @@ func Apply(plan *Plan, opts WriteOptions) (*WriteReport, error) {
 		if err := appendScratch(opts.Vault, opts.Project, "resume-suggestions.md", body); err != nil {
 			return nil, err
 		}
+		stampVault(opts.Vault.Root, scratchPath)
 		report.ResumeScratchPath = scratchPath
 	}
 

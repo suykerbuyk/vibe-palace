@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,7 +16,18 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
+
+// stampVault best-effort records the MCP surface version for a successful
+// vault write at path under vaultRoot. A stamp failure is logged and never
+// propagated, so it can never fail the underlying write.
+func stampVault(vaultRoot, path string) {
+	if err := surface.StampForPath(vaultRoot, path); err != nil {
+		slog.Warn("surface stamp failed", "path", path, "err", err)
+	}
+}
 
 // CreateOptions drives a single archive operation. All fields except
 // SessionID and Adapter are optional; the adapter fills in what it
@@ -198,6 +210,10 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 			return nil, fmt.Errorf("sign manifest: %w", err)
 		}
 	}
+
+	// Both the manifest and the .jsonl.zst live in the same transcripts
+	// dir under Projects/<slug>/, so one stamp covers the project root.
+	stampVault(opts.VaultRoot, manifestPath)
 
 	return &CreateResult{
 		ManifestPath: manifestPath,

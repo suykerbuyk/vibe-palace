@@ -126,7 +126,7 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		sessionAbs, err := vault.SessionFile(p.Project, date, iteration)
 		if err == nil {
 			rel := archive.VaultRelPath(vault.Root, sessionAbs)
-			_ = archive.LinkSessionNote(archiveEntry.ManifestPath, rel)
+			_ = archive.LinkSessionNote(vault.Root, archiveEntry.ManifestPath, rel)
 		}
 	}
 

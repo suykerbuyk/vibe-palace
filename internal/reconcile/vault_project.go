@@ -156,7 +156,7 @@ func (r *VaultProjectReconciler) Apply(_ context.Context, p Plan) (Report, error
 			}
 			rep.Created++
 		case ActionUpdate:
-			if _, err := applyUpgrade(a.Target, upgradeTarget{
+			if _, err := applyUpgrade(r.vault.Root, a.Target, upgradeTarget{
 				canonicalText: storage.VaultProjectTemplateContent(),
 				templateText:  storage.VaultProjectTemplateContent(),
 			}); err != nil {

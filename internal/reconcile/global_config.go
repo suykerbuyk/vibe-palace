@@ -122,7 +122,9 @@ func (r *GlobalConfigReconciler) Apply(_ context.Context, p Plan) (Report, error
 				rep.Errors = append(rep.Errors, fmt.Errorf("load defaults: %w", derr))
 				continue
 			}
-			if _, err := applyUpgrade(a.Target, upgradeTarget{
+			// Global config lives under the user's config dir, not the
+			// vault — no surface stamp.
+			if _, err := applyUpgrade("", a.Target, upgradeTarget{
 				canonicalText: defaultsText,
 				templateText:  storage.TemplateTomlContent(),
 			}); err != nil {

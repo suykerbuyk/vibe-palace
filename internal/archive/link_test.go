@@ -9,10 +9,10 @@ import (
 )
 
 func TestLinkSessionNote_WritesAndPersists(t *testing.T) {
-	_, res := seedArchive(t, "sess-link")
+	vaultRoot, res := seedArchive(t, "sess-link")
 
 	rel := "Projects/demo/sessions/2026-04-15-01.md"
-	if err := LinkSessionNote(res.ManifestPath, rel); err != nil {
+	if err := LinkSessionNote(vaultRoot, res.ManifestPath, rel); err != nil {
 		t.Fatalf("LinkSessionNote: %v", err)
 	}
 	m, err := ReadManifest(res.ManifestPath)
@@ -24,7 +24,7 @@ func TestLinkSessionNote_WritesAndPersists(t *testing.T) {
 	}
 
 	// Idempotent: second call with same value is a no-op success.
-	if err := LinkSessionNote(res.ManifestPath, rel); err != nil {
+	if err := LinkSessionNote(vaultRoot, res.ManifestPath, rel); err != nil {
 		t.Errorf("second LinkSessionNote: %v", err)
 	}
 }

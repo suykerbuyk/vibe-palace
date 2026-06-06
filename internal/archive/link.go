@@ -17,7 +17,10 @@ import (
 // The write is non-atomic in the general sense (no fsync contract),
 // but it is crash-safe at the manifest level: a failed write leaves
 // the prior manifest intact because we rename-over via a temp file.
-func LinkSessionNote(manifestPath, vaultRelSessionNote string) error {
+//
+// vaultRoot is used only to stamp the MCP surface version on success;
+// pass "" to skip stamping (e.g. manifests outside any vault).
+func LinkSessionNote(vaultRoot, manifestPath, vaultRelSessionNote string) error {
 	m, err := ReadManifest(manifestPath)
 	if err != nil {
 		return err
@@ -26,7 +29,11 @@ func LinkSessionNote(manifestPath, vaultRelSessionNote string) error {
 		return nil // idempotent no-op
 	}
 	m.VaultRelSessionNote = vaultRelSessionNote
-	return atomicWriteManifest(manifestPath, m)
+	if err := atomicWriteManifest(manifestPath, m); err != nil {
+		return err
+	}
+	stampVault(vaultRoot, manifestPath)
+	return nil
 }
 
 // atomicWriteManifest writes via a sibling temp file and rename so a

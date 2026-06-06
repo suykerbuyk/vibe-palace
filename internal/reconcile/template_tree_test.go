@@ -385,7 +385,8 @@ func TestTemplateTree_ScaffoldFresh(t *testing.T) {
 		if err != nil || info.IsDir() {
 			return nil
 		}
-		if filepath.Base(p) == "README.md" {
+		// README stubs and the managed .surface stamp sidecar are expected.
+		if base := filepath.Base(p); base == "README.md" || base == ".surface" {
 			return nil
 		}
 		others = append(others, p)

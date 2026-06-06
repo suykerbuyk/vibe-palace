@@ -50,7 +50,11 @@ func detectMissingKeys(configPath string, target upgradeTarget) ([]string, error
 // applyUpgrade reads configPath, computes missing keys, writes an upgraded
 // file (with a .bak backup on success), and returns the number of keys
 // added. Returns (0, nil) when the file is already up to date.
-func applyUpgrade(configPath string, target upgradeTarget) (int, error) {
+//
+// vaultRoot is used only to stamp the MCP surface version when configPath is
+// a vault write; pass "" for host-local configs (CWD project, global config)
+// so stamping is skipped.
+func applyUpgrade(vaultRoot, configPath string, target upgradeTarget) (int, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return 0, fmt.Errorf("read %s: %w", configPath, err)
@@ -85,5 +89,6 @@ func applyUpgrade(configPath string, target upgradeTarget) (int, error) {
 		_ = os.Remove(tmpPath)
 		return 0, fmt.Errorf("rename: %w", err)
 	}
+	stampVaultWrite(vaultRoot, configPath)
 	return total, nil
 }
