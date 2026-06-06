@@ -48,11 +48,25 @@ Write summaries that help a developer resuming this work tomorrow.
 decisions, or module tables to `resume.md` — those belong in `doc/`
 files.
 
-4. Add a corresponding summary row to the Project History table in
-   `resume.md`.
-5. Move any completed plans from `resume.md` to the Completed Plans
-   section in `iterations.md`, replacing them with a single-line
-   pointer.
+4. Add **one terse row** to the Project History table in `resume.md`.
+   The table is a scannable **index**, not a diary — the full narrative
+   goes ONLY to `iterations.md` (Step 4), never duplicated here. Format:
+   `| # | Summary | Key Changes |` where Summary is the
+   feature/phase in a few words and Key Changes is a short comma-list of
+   the most salient artifacts. Keep the whole row to a single line of a
+   few hundred characters at most. **Do not paste the iteration narrative
+   into this table** — that is what bloats `resume.md` and taxes every
+   `vp_bootstrap_context` at session start.
+5. Keep the gateway sections current (all in `resume.md`, all terse):
+   - **Quick Reference** — update only if build/test/run commands changed.
+   - **Completed Plans** — when a task is retired (Step 6), add a one-line
+     row `| Task | Iteration | File |` pointing at `tasks/done/<slug>.md`.
+     The full task content moves to `tasks/done/`; the narrative goes to
+     `iterations.md` (Step 4). Do not paste task content here.
+   - **Cancelled Plans** — when a plan is cancelled, add a row with the
+     rejection reason and the `tasks/cancelled/<slug>.md` pointer.
+   - **Known Issues** — add an entry when a standing issue is found;
+     remove it when resolved.
 
 ## Step 4: Append Iteration Narrative
 
@@ -69,7 +83,8 @@ decisions, test structure), update the relevant `doc/` file directly.
 Use `vp_list_tasks` to check each active task against the session's
 work and resume.md history. If a task has been implemented and
 committed, use `vp_manage_task` with `action: retire` to move it to
-`tasks/done/`.
+`tasks/done/`, then add its one-line row to the **Completed Plans**
+table in `resume.md` (Step 3.5).
 
 ## Step 7: Update commit.msg (Two-Copy Workflow)
 
@@ -78,7 +93,7 @@ sync:
 
 1. **Vault archive** — canonical; survives across machines via vault
    git sync:
-   `<vault_path>/Projects/<project>/agentctx/commit.msg`
+   `<vault_path>/Projects/<project>/commit.msg`
 2. **Project-root working copy** — gitignored; the path that
    `git commit -F commit.msg` reads when the user runs it:
    `<project_root>/commit.msg`
