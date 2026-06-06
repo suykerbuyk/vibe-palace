@@ -5,6 +5,7 @@ package storage
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 )
 
@@ -87,6 +89,7 @@ func (v *Vault) AppendDrawer(project, wing, room string, d Drawer) error {
 	if _, err := f.Write(line); err != nil {
 		return fmt.Errorf("write drawer: %w", err)
 	}
+	v.stamp(path)
 	return nil
 }
 
@@ -179,29 +182,14 @@ func (v *Vault) DeleteDrawer(project, wing, room, id string) error {
 		return fmt.Errorf("drawer %q not found in %s/%s", id, wing, room)
 	}
 
-	// Atomic write: temp file in same directory, then rename.
-	dir := filepath.Dir(path)
-	tmpPath := filepath.Join(dir, ".tmp-"+filepath.Base(path))
-	tmp, err := os.Create(tmpPath)
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-
+	// Atomic write via the shared primitive (temp + rename + surface stamp).
+	var buf bytes.Buffer
 	for _, line := range kept {
-		if _, err := tmp.Write(append(line, '\n')); err != nil {
-			tmp.Close()
-			os.Remove(tmpPath)
-			return fmt.Errorf("write temp file: %w", err)
-		}
+		buf.Write(line)
+		buf.WriteByte('\n')
 	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("close temp file: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("rename temp file: %w", err)
+	if err := atomicfile.Write(v.Root, path, buf.Bytes()); err != nil {
+		return fmt.Errorf("rewrite drawer file: %w", err)
 	}
 	return nil
 }

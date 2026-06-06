@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 )
 
 // WriteResume writes content to the project's resume file, creating directories
@@ -21,7 +23,7 @@ func (v *Vault) WriteResume(project, content string) error {
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("ensure project dir: %w", err)
 	}
-	return os.WriteFile(path, []byte(content), 0644)
+	return atomicfile.Write(v.Root, path, []byte(content))
 }
 
 // WriteWorkflow writes content to the project's workflow file, creating
@@ -35,7 +37,7 @@ func (v *Vault) WriteWorkflow(project, content string) error {
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("ensure project dir: %w", err)
 	}
-	return os.WriteFile(path, []byte(content), 0644)
+	return atomicfile.Write(v.Root, path, []byte(content))
 }
 
 // WriteKnowledge writes content to the project's knowledge file.
@@ -48,7 +50,7 @@ func (v *Vault) WriteKnowledge(project, content string) error {
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("ensure project dir: %w", err)
 	}
-	return os.WriteFile(path, []byte(content), 0644)
+	return atomicfile.Write(v.Root, path, []byte(content))
 }
 
 // WriteDoc writes content to a project-scoped doc file. rel is resolved
@@ -61,7 +63,7 @@ func (v *Vault) WriteDoc(project, rel, content string) error {
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("ensure doc dir: %w", err)
 	}
-	return os.WriteFile(path, []byte(content), 0644)
+	return atomicfile.Write(v.Root, path, []byte(content))
 }
 
 // WriteAbsorbed writes content to a file under the project's absorbed/
@@ -74,7 +76,7 @@ func (v *Vault) WriteAbsorbed(project, rel, content string) error {
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("ensure absorbed dir: %w", err)
 	}
-	return os.WriteFile(path, []byte(content), 0644)
+	return atomicfile.Write(v.Root, path, []byte(content))
 }
 
 // AppendIteration appends a narrative entry to the project's iterations file
@@ -107,6 +109,7 @@ func (v *Vault) AppendIteration(project, content string) error {
 	if _, err := f.WriteString(entry); err != nil {
 		return fmt.Errorf("write iteration: %w", err)
 	}
+	v.stamp(path)
 	return nil
 }
 

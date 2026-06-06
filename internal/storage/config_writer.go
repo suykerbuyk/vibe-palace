@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 )
 
 //go:embed config/cwd_project_template.toml
@@ -117,17 +119,8 @@ func (v *Vault) WriteVaultProjectConfig(slug string) (string, bool, error) {
 		return "", false, fmt.Errorf("stat config: %w", err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-		return "", false, fmt.Errorf("create project dir: %w", err)
-	}
-
-	tmpPath := cfgPath + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(vaultProjectTemplate), 0o644); err != nil {
-		return "", false, fmt.Errorf("write temp: %w", err)
-	}
-	if err := os.Rename(tmpPath, cfgPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", false, fmt.Errorf("rename: %w", err)
+	if err := atomicfile.Write(v.Root, cfgPath, []byte(vaultProjectTemplate)); err != nil {
+		return "", false, fmt.Errorf("write vault project config: %w", err)
 	}
 	return cfgPath, true, nil
 }

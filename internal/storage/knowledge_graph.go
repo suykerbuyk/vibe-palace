@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 )
 
 // Entity represents a person, project, concept, or tool in the knowledge graph.
@@ -87,6 +89,7 @@ func (v *Vault) AddEntity(project string, e Entity) error {
 	if _, err := f.Write(append(line, '\n')); err != nil {
 		return fmt.Errorf("write entity: %w", err)
 	}
+	v.stamp(path)
 	return nil
 }
 
@@ -167,6 +170,7 @@ func (v *Vault) AddTriple(project string, t Triple) error {
 	if _, err := f.Write(data); err != nil {
 		return fmt.Errorf("write triple: %w", err)
 	}
+	v.stamp(path)
 	return nil
 }
 
@@ -260,7 +264,7 @@ func (v *Vault) InvalidateTriple(project, subject, predicate, object, ended stri
 	if err != nil {
 		return fmt.Errorf("marshal triple: %w", err)
 	}
-	return os.WriteFile(path, out, 0644)
+	return atomicfile.Write(v.Root, path, out)
 }
 
 // Timeline returns all triples involving the named entity, sorted by ValidFrom.

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"gopkg.in/yaml.v3"
 )
@@ -90,7 +91,7 @@ func (v *Vault) WriteSession(project string, meta SessionMeta, body string) (str
 		}
 	}
 
-	if err := os.WriteFile(path, buf.Bytes(), 0644); err != nil {
+	if err := atomicfile.Write(v.Root, path, buf.Bytes()); err != nil {
 		return "", fmt.Errorf("write session file: %w", err)
 	}
 	return meta.ID, nil

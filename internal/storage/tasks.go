@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 )
 
 // TaskMeta is the lightweight metadata for task listing.
@@ -60,7 +62,7 @@ func (v *Vault) CreateTask(project, slug, title, content, priority string) error
 		}
 	}
 
-	return os.WriteFile(path, []byte(buf.String()), 0644)
+	return atomicfile.Write(v.Root, path, []byte(buf.String()))
 }
 
 // GetTask reads a task file and returns its metadata and full content.
@@ -160,7 +162,7 @@ func (v *Vault) UpdateTaskStatus(project, slug, status string) error {
 	}
 
 	updated := replaceStatusLine(string(data), status)
-	return os.WriteFile(path, []byte(updated), 0644)
+	return atomicfile.Write(v.Root, path, []byte(updated))
 }
 
 // RetireTask moves a task to the done/ directory with status "retired".
@@ -203,7 +205,7 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 	}
 
 	destPath := filepath.Join(destDir, slug+".md")
-	if err := os.WriteFile(destPath, []byte(updated), 0644); err != nil {
+	if err := atomicfile.Write(v.Root, destPath, []byte(updated)); err != nil {
 		return fmt.Errorf("write to dest: %w", err)
 	}
 

@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"bytes"
 	_ "embed"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,8 @@ import (
 	"sync"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 )
 
 // CurrentVersionMajor and CurrentVersionMinor are the schema version that
@@ -439,25 +442,13 @@ func (v *Vault) WriteScoringConfig(project string, rooms map[string]ScoringRoomO
 		tc.Palace.Scoring.MinScore = minScore
 	}
 
-	// Atomic write: temp file + rename.
-	tmpPath := cfgPath + ".tmp"
-	f, err := os.Create(tmpPath)
-	if err != nil {
-		return fmt.Errorf("create temp config: %w", err)
-	}
-
-	if err := toml.NewEncoder(f).Encode(tc); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
+	// Atomic write via the shared primitive (temp + rename + surface stamp).
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(tc); err != nil {
 		return fmt.Errorf("encode config: %w", err)
 	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("close temp config: %w", err)
-	}
-	if err := os.Rename(tmpPath, cfgPath); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("rename config: %w", err)
+	if err := atomicfile.Write(v.Root, cfgPath, buf.Bytes()); err != nil {
+		return fmt.Errorf("write config: %w", err)
 	}
 
 	slog.Info("wrote scoring config", "path", cfgPath, "rooms", len(rooms))
