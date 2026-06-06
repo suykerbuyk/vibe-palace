@@ -30,6 +30,8 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(cmdConfigUpgrade())
 	reg.Register(cmdConfigSync())
 	reg.Register(cmdMCP())
+	reg.Register(cmdMCPInstall(info))
+	reg.Register(cmdMCPUninstall())
 	reg.Register(cmdCheck(info))
 	reg.Register(cmdHook(info))
 	reg.Register(cmdHookInstall())

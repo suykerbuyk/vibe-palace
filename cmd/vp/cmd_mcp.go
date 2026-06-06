@@ -21,7 +21,13 @@ func cmdMCP() *cli.Command {
 		Description: "Start the MCP server on stdio (JSON-RPC). Used by AI assistants to access palace tools via the Model Context Protocol.",
 		Examples: []cli.Example{
 			{Cmd: "vp mcp", Comment: "Start MCP server on stdin/stdout"},
+			{Cmd: "vp mcp install --claude-plugin", Comment: "Register vibe-palace as a Claude Code plugin"},
 		},
+		Subcommands: []string{"mcp install", "mcp uninstall"},
+		// vp mcp (bare) starts the stdio server; install/uninstall are
+		// subcommands. BareInvocation routes the bare form back to Run while
+		// still erroring on unknown subcommand tokens.
+		BareInvocation: true,
 		Run: func(args []string) int {
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
