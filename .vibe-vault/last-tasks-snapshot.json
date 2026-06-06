@@ -1,6 +1,6 @@
 {
-  "iter_n": 85,
-  "anchor_sha": "e7042209f3a5bf88f7bf370462283cb95b18ba39",
+  "iter_n": 86,
+  "anchor_sha": "350143ec46ba21b62426b0539b9ca9864c4e6ee0",
   "active": [
     "auto-capture-ide-hooks",
     "friction-analytics-port",
@@ -8,6 +8,7 @@
     "hnsw-library-bug-fixes-and-hardening",
     "llm-enrichment-synthesis",
     "phase-d-parallel-operation",
+    "phase-e-plugin-marketplace-build",
     "vp-migrate-source-dest-separation"
   ],
   "done": [
