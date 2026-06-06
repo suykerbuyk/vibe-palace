@@ -1,11 +1,11 @@
 # Architecture: Vibe-Palace
 
-**Last updated:** 2026-04-10
+**Last updated:** 2026-05-31
 
 Vibe-palace is a compiled Go binary that serves as an MCP (Model Context
 Protocol) server for AI-assisted development. It provides context injection,
 session capture, semantic search, and palace-based knowledge navigation through
-38 MCP tools over stdio JSON-RPC 2.0.
+39 MCP tools over stdio JSON-RPC 2.0.
 
 **Design principles:**
 - Single binary, zero-CGo, no external services
@@ -24,7 +24,7 @@ session capture, semantic search, and palace-based knowledge navigation through
 | `internal/storage` | Vault layout, CRUD, config | `Vault`, `Config`, `Drawer`, `SessionMeta` |
 | `internal/mcp` | JSON-RPC server, tool registry | `Server`, `Registry`, `Tool` |
 | `internal/context` | Precedence-aware template resolution | `Resolver`, `ResourceInfo` |
-| `internal/tools` | 38 MCP tool implementations | (see tool table below) |
+| `internal/tools` | 39 MCP tool implementations | (see tool table below) |
 | `internal/embedder` | ONNX text embedding | `Embedder` interface, `ONNXEmbedder` |
 | `internal/search` | Hybrid semantic + structural search | `Engine`, `VectorIndex`, `SearchResult` |
 | `internal/capture` | Session ingest, chunking, friction, shared capture pipeline | `Indexer`, `ChunkConfig`, `WriteSession` |
@@ -34,6 +34,18 @@ session capture, semantic search, and palace-based knowledge navigation through
 | `internal/project` | Project detection from working dir | `ProjectConfig` |
 | `internal/kg` | Entity detection + triple extraction | `DetectedEntity`, `ExtractedTriple` |
 | `internal/vplog` | Structured logging (slog to file) | `Init()`, `Close()` |
+| `internal/archive` | Transcript archive / copyright-provenance ledger (per-IDE adapters, manifests, signing) | `Manifest`, `Entry`, `CreateOptions` |
+| `internal/archive/zed` | Read-only Zed agent-panel thread DB parser → Claude-shape JSONL | `parser`, `messages`, `types` |
+| `internal/migrate` | Import VibeVault sessions and MemPalace data into the vault | `ImportVibeVault`, `ImportMemPalace` |
+| `internal/absorb` | Migrate legacy agent-context files (CLAUDE.md, AGENTS.md, .cursorrules) into the vault | `Planner`, `Classifier`, `Writer` |
+| `internal/agentfile` | Detect well-known agent instruction files and wire in a managed bootstrap block | `Detect`, `Wire`, `WireAll` |
+| `internal/shims` | Emit Claude Code slash-command shims into `.claude/commands/` | `Plan`, `Apply`, `Shim` |
+| `internal/skills` | Directory-form persona artifacts: SKILL.md frontmatter parser/resolver | `Frontmatter` |
+| `internal/commands` | Shared command list/upgrade surface over the Resolver | `List`, `Upgrade`, `Diff` |
+| `internal/reconcile` | Check → Plan → Apply reconcilers for managed config-file tiers | (per-artifact reconcilers) |
+| `internal/templates` | Compiled-in template corpus + materialize/reconcile lifecycle | `Executor`, `Lock` |
+| `internal/check` | Doctor checks for config, vault, embedder, git, agent drift | `Run`, `CheckConfig`, `CheckAgentDrift` |
+| `internal/slug` | Project-slug validation and normalization | `Slugify`, `Validate` |
 
 ---
 
@@ -165,7 +177,7 @@ cmd/vp/main.go
 ├── search.NewEngine(emb, v, cfg) # create search engine
 ├── context.NewResolver(v.Root)   # template resolver
 ├── mcp.NewServer(v)              # create MCP server
-├── tools.RegisterAll(...)        # register all 38 tools
+├── tools.RegisterAll(...)        # register all 39 tools
 └── srv.Serve(ctx)                # start stdio transport
 ```
 
@@ -187,7 +199,7 @@ On dispatch, the registry validates incoming params against the compiled
 schema before calling the handler. Handlers extract the vault from context
 and operate on storage directly.
 
-### 38 MCP Tools
+### 39 MCP Tools
 
 | Tool | Source File | Category |
 |------|-----------|----------|
@@ -198,6 +210,7 @@ and operate on storage directly.
 | `vp_list_skills` | command_tools.go | Context |
 | `vp_cmd` | cmd_tools.go | Context |
 | `vp_skill` | cmd_tools.go | Context |
+| `vp_get_skill_section` | skill_section_tool.go | Context |
 | `vp_palace_status` | palace_tools.go | Palace |
 | `vp_list_wings` | palace_tools.go | Palace |
 | `vp_list_rooms` | palace_tools.go | Palace |
@@ -218,7 +231,7 @@ and operate on storage directly.
 | `vp_list_tasks` | task_tools.go | Tasks |
 | `vp_get_task` | task_tools.go | Tasks |
 | `vp_manage_task` | task_tools.go | Tasks |
-| `vp_init_project` | project_tools.go | Project |
+| `vp_init` | system_tools.go | Project |
 | `vp_vault_sync` | vault_tools.go | Vault |
 | `vp_search` | search_tools.go | Search |
 | `vp_search_cross_project` | search_tools.go | Search |
@@ -230,8 +243,8 @@ and operate on storage directly.
 | `vp_get_friction_trends` | friction_tools.go | Session |
 | `vp_refresh_index` | search_tools.go | Search |
 
-Tools 1–29 (context, palace, health, KG, workflow, tasks, project, vault) are
-always registered. Tools 30–38 require a search engine (embedder must
+Tools 1–30 (context, palace, health, KG, workflow, tasks, project, vault) are
+always registered. Tools 31–39 require a search engine (embedder must
 initialize successfully).
 
 ### HTTP Transport
@@ -1011,9 +1024,11 @@ beyond stdlib. Used by both tune and discover workflows. Configured via
 
 ## Roadmap
 
-Phases 7–10, 12–14 are complete (knowledge graph, migration, CLI,
+Phases 7–10, 12–18 are complete (knowledge graph, migration, CLI,
 documentation, adaptive room classification, guided onboarding,
-palace-scoped resolution).
+palace-scoped resolution, vault template materialization and
+reconciliation, transcript-archive provenance ledger, host-level
+auto-capture hooks, and the Zed transcript adapter).
 
 | Phase | Goal |
 |-------|------|

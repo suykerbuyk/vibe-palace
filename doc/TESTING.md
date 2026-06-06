@@ -1,6 +1,6 @@
 # Testing Strategy
 
-**Last updated:** 2026-04-10
+**Last updated:** 2026-05-31
 
 This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
@@ -48,11 +48,11 @@ All integration test function names start with `TestIntegration` so
 ### Tier 3: Full Suite
 
 **Command:** `make test-full`
-**Flags:** `go test -race -cover ./...`
+**Flags:** `go test -count=1 -cover ./...`
 **Duration:** ~70 seconds (warm cache)
 **ONNX required:** Yes
 
-Runs everything: unit tests with race detection plus all integration tests.
+Runs everything: unit tests plus all integration tests.
 This is the gate for commits.
 
 ---
@@ -129,16 +129,18 @@ This makes repeated rebuilds fast even for large projects.
 The embed cache is a pure performance optimization — it is never
 authoritative. Deleting it simply forces re-embedding on next rebuild.
 
-### Test helper: `projectCacheDir(t)`
+### Test helper: `testutil.ProjectCacheDir(t)`
 
-Each package that runs ONNX integration tests includes a
-`testcache_test.go` file with a `projectCacheDir(t)` function that walks
-up from the test's working directory to find the project root (`go.mod`),
-then returns `.cache/models/` under that root. This ensures all packages
-share the same model cache regardless of where `go test` runs from.
+The exported `ProjectCacheDir(t)` helper lives in
+`internal/testutil/cachedir.go`. It walks up from the test's working
+directory to find the project root (`go.mod`), then returns
+`.cache/models/` under that root. This ensures all packages share the
+same model cache regardless of where `go test` runs from.
 
-Currently present in: `internal/embedder/`, `internal/search/`,
-`internal/capture/`, `internal/integration/`.
+Consumed by the ONNX integration tests in `internal/embedder/onnx_test.go`,
+`internal/search/integration_test.go`,
+`internal/capture/integration_test.go`, and
+`internal/integration/helpers_test.go`.
 
 ---
 
@@ -269,7 +271,7 @@ any test that needs an embedder. Use `t.TempDir()` for vault roots.
 2. Name it `TestIntegration*` so `make integration` discovers it.
 3. Call `newHarness(t, true)` or check `testing.Short()` to skip in
    short mode.
-4. Use `projectCacheDir(t)` for the ONNX model path.
+4. Use `testutil.ProjectCacheDir(t)` for the ONNX model path.
 
 ### Integration test NOT requiring ONNX
 

@@ -48,8 +48,8 @@ files there; vibe-palace reads them for import and context injection.
 - **715 sessions** in the vibe-vault index across **29 projects**
 - **691 session markdown files** in `Projects/*/sessions/`
 - **palace/ directory** contains only the ONNX model cache — no imported data yet
-- vibe-palace Phases 1–10, 12 complete (storage, MCP, context, search, capture, palace, KG, migration, CLI, docs, adaptive room classification)
-- vibe-palace serves 38 MCP tools via stdio JSON-RPC
+- vibe-palace Phases 1–10, 12–18 complete (storage, MCP, context, search, capture, palace, KG, migration, CLI, docs, adaptive room classification, template reconciliation, transcript archive, auto-capture hooks, Zed adapter)
+- vibe-palace serves 39 MCP tools via stdio JSON-RPC
 - vibe-vault remains the active session capture system (Claude Code hook)
 
 ---
@@ -124,15 +124,15 @@ Also import from each project's directory:
 
 #### MemPalace ChromaDB Import (Task 8.2)
 
-`internal/migrate/mempalace.go` — for importing from the predecessor
-MemPalace system's ChromaDB persistent storage and SQLite KG database.
-Re-embeds all content with ONNX to ensure consistent embeddings.
+`internal/migrate/mempalace.go` — for importing from a JSON export
+produced by the MemPalace tool. Re-embeds all content with ONNX to
+ensure consistent embeddings.
 
 #### Import CLI (Task 8.3)
 
 ```bash
-vp migrate vibevault [--vault-path PATH] [--dry-run] [--yes] [--slug-map OLD=NEW,...]
-vp migrate mempalace [--palace-path PATH] [--kg-path PATH] [--dry-run]
+vp migrate vibevault [--vault-path PATH] [--dry-run] [--yes] [--slug-map OLD=NEW,...] [--strict]
+vp migrate mempalace --export-path PATH [--dry-run]
 ```
 
 - Progress reporting: session count, drawer count, entity count

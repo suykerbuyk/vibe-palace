@@ -86,7 +86,7 @@ turn one.
   data into the palace.
 - **Room classification tuning** — configurable keyword weights,
   algorithmic audit, offline LLM-assisted weight discovery.
-- **`vp` CLI** — 20+ commands, man pages, shell completions.
+- **`vp` CLI** — 22 commands, man pages, shell completions.
 - **Cross-IDE shims** — `vp init` writes slash-command shims
   (`.claude/commands/vpc-*.md`) and skill directories
   (`.claude/skills/vps-*/SKILL.md`) so every vibe-palace capability
@@ -228,9 +228,10 @@ right tool — and the two can run alongside each other:
   `vv effectiveness` surface correction density, model regressions,
   and context-effectiveness signals across months of history. Not
   in vibe-palace.
-- **Zed SQLite thread ingestion.** `vv` reads Zed's thread DB
-  directly. Vibe-palace's `vp archive` currently supports Claude Code
-  JSONL only; a Zed adapter is planned.
+
+(Zed thread ingestion is no longer vibe-vault-only: `vp archive
+--adapter zed` reads Zed's SQLite thread DB and archives threads by
+id, alongside the default Claude Code JSONL adapter.)
 
 In short: reach for `vv` when you want a passive observer. Reach for
 `vp` when you want the agent to actively *use* memory during the
@@ -244,7 +245,7 @@ session.
 - [Architecture](doc/ARCHITECTURE.md) — system design and package reference
 - [Testing](doc/TESTING.md) — test strategy and integration test inventory
 - [Migration](doc/MIGRATION.md) — migrating from VibeVault and MemPalace
-- [PRD](doc/PRD-vibe-palace.md) — full product requirements (Phases 1–10, 12 implemented; Phase 11 planned)
+- [PRD](doc/PRD-vibe-palace.md) — full product requirements (Phases 1–10, 12–18 implemented; Phase 11 planned)
 - [ADR 001: Transcript Archive](doc/adr/001-transcript-archive.md) — copyright-provenance ledger format and reasoning
 
 ## License
