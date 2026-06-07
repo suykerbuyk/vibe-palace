@@ -116,8 +116,23 @@ vp check — vibe-palace installation diagnostic (0.1.0-dev)
 [pass] Git:              remotes: github, vault
 [pass] Config Staleness: config is up to date
 [info] Project:          my-project (from .vibe-palace.toml)
+[pass] Surface:          binary v1 >= vault max
 
 All checks passed.
+```
+
+The **Surface** row is the closing line: it mirrors the runtime MCP
+write-gate, comparing this binary's MCP tool-surface version against the
+highest `.surface` stamp recorded in the vault. It reports `[pass]` when the
+binary is current, and `[FAIL]` (with upgrade remediation) when the vault was
+written by a newer binary than the one you are running.
+
+For scripting, `vp check --json` emits a stable machine-readable report
+(`{version, binary, checks, summary, exit_code}`) and exits non-zero when any
+check fails:
+
+```bash
+vp check --json    # exit_code 1 on any [FAIL], 0 otherwise
 ```
 
 The first run downloads `all-MiniLM-L6-v2` (~90MB) from HuggingFace for
@@ -129,8 +144,9 @@ If the embedder step fails, see [Troubleshooting](#model-download-fails).
 Other useful commands:
 
 ```bash
-vp version   # print version
-vp help      # show all commands
+vp version             # print version, commit, build date
+vp version --surface   # print the binary's MCP tool-surface version (e.g. "surface: 1")
+vp help                # show all commands
 ```
 
 ---

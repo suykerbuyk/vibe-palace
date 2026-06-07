@@ -27,6 +27,22 @@ Do **not** fall back to raw `git -C <vault>` commands — not every AI
 host supports arbitrary Bash, and `vp vault` covers every needed
 operation.
 
+### Surface preflight
+
+After the vault sync, confirm this binary can safely write to the
+vault before loading context or mutating any task. Run
+`vp check --json` via Bash and parse the JSON: find the entry in
+`checks[]` whose `name` is `"Surface"`.
+
+- If its `status` is `"fail"`, the vault was last written by a newer
+  `vp` binary than this host has installed. **Halt** — do not
+  bootstrap context, sweep plans, or retire tasks — and surface that
+  entry's `detail` field to the human verbatim. It names the version
+  mismatch and the remediation: upgrade `vp`
+  (`cd ~/code/vibe-palace && git pull && make install`), or override
+  at risk with `VP_SURFACE_GATE=warn`.
+- If its `status` is `"pass"` or `"info"`, proceed to Step 2.
+
 ## Step 2: Bootstrap Context
 
 Call `vp_bootstrap_context` to load workflow, resume, active tasks,

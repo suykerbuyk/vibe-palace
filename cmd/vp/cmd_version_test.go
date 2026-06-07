@@ -4,9 +4,12 @@
 package main
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
 func TestVersionCommand(t *testing.T) {
@@ -15,5 +18,19 @@ func TestVersionCommand(t *testing.T) {
 	code := cmd.Run(nil)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
+	}
+}
+
+func TestVersionSurfaceFlag(t *testing.T) {
+	info := cli.BuildInfo{Version: "1.2.3"}
+	cmd := cmdVersion(info)
+	out := captureStdout(t, func() {
+		if code := cmd.Run([]string{"--surface"}); code != cli.ExitOK {
+			t.Errorf("exit code = %d", code)
+		}
+	})
+	want := fmt.Sprintf("surface: %d", surface.MCPSurfaceVersion)
+	if strings.TrimSpace(out) != want {
+		t.Errorf("output = %q, want %q", strings.TrimSpace(out), want)
 	}
 }

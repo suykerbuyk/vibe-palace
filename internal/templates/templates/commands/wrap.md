@@ -23,6 +23,22 @@ Before capturing anything, the working tree must be clean:
 If any gate fails, **stop and fix before continuing**. A wrap that
 records a broken state is worse than no wrap.
 
+### Surface preflight
+
+Before capturing the session, updating resume, or staging anything,
+confirm this binary can safely write to the vault. Run
+`vp check --json` via Bash and parse the JSON: find the entry in
+`checks[]` whose `name` is `"Surface"`.
+
+- If its `status` is `"fail"`, the vault was last written by a newer
+  `vp` binary than this host has installed. **Halt** — do not capture
+  the session, update resume, append iterations, or stage any file —
+  and surface that entry's `detail` field to the human verbatim. It
+  names the version mismatch and the remediation: upgrade `vp`
+  (`cd ~/code/vibe-palace && git pull && make install`), or override
+  at risk with `VP_SURFACE_GATE=warn`.
+- If its `status` is `"pass"` or `"info"`, proceed to Step 2.
+
 ## Step 2: Capture the Session
 
 Call `vp_capture_session` with:

@@ -121,6 +121,52 @@ func TestEmbeddedSHA_OverrideHook(t *testing.T) {
 	}
 }
 
+// TestEmbeddedCommands_SurfacePreflight is the regression guard for the
+// mcp-surface-handshake Phase 4 preflight: both the restart and wrap command
+// templates must instruct the executor to run `vp check --json`, locate the
+// "Surface" check, and halt on a fail verdict before touching the vault. If a
+// future template edit drops the preflight, this test catches the silent
+// removal.
+func TestEmbeddedCommands_SurfacePreflight(t *testing.T) {
+	resources, err := WalkEmbedded()
+	if err != nil {
+		t.Fatalf("WalkEmbedded returned error: %v", err)
+	}
+	body := make(map[string]string)
+	for _, r := range resources {
+		body[r.RelPath] = string(r.Bytes)
+	}
+
+	// Phrases every gated command template must carry. Kept loose enough to
+	// survive copy edits but strict enough to fail if the preflight vanishes.
+	wantPhrases := []string{
+		"vp check --json",      // the command the executor must run
+		"Surface",              // the checks[] entry it must parse
+		`"fail"`,               // the status it must halt on
+		"VP_SURFACE_GATE=warn", // the override remediation it must surface
+	}
+	for _, rel := range []string{"commands/restart.md", "commands/wrap.md"} {
+		content, ok := body[rel]
+		if !ok {
+			t.Fatalf("embedded resource %q missing", rel)
+		}
+		for _, phrase := range wantPhrases {
+			if !strings.Contains(content, phrase) {
+				t.Errorf("%s: missing surface-preflight phrase %q", rel, phrase)
+			}
+		}
+		// The preflight must precede any vault write. Assert the check runs
+		// before the first numbered step that mutates the vault: in restart
+		// that is "## Step 2" (Bootstrap), in wrap "## Step 2" (Capture).
+		preflightIdx := strings.Index(content, "vp check --json")
+		step2Idx := strings.Index(content, "## Step 2")
+		if preflightIdx < 0 || step2Idx < 0 || preflightIdx > step2Idx {
+			t.Errorf("%s: surface preflight must appear before '## Step 2' "+
+				"(preflightIdx=%d step2Idx=%d)", rel, preflightIdx, step2Idx)
+		}
+	}
+}
+
 func TestFS_ContainsTemplatesRoot(t *testing.T) {
 	fsys := FS()
 	// Reading through the exported FS should locate at least one

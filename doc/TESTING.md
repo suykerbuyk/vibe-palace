@@ -283,6 +283,96 @@ matrix.
 
 ---
 
+## MCP Surface-Handshake Check Tests
+
+The `mcp-surface-handshake` epic added the `vp check` surface row and the
+`vp check --json` machine-readable report. These are pure-unit tests (no
+ONNX, run in `make test`).
+
+### `internal/check/surface_test.go` — Surface Compatibility Check (combined new-code coverage 87.8%)
+
+Covers `CheckSurface(vaultRoot)`: empty vault → `Pass`, empty/unreachable
+path → `Pass`, a stamp at `MCPSurfaceVersion` → `Pass`, and an ahead vault
+(stamp at `MCPSurfaceVersion+1`) → `Fail` with remediation `Details`. The
+ahead-vault staging helper mirrors `internal/mcp/surface_gate_test.go`.
+
+### `internal/check/json_test.go` — `vp check --json` Report Shape
+
+Covers `ToJSON`: status-string projection (`pass`/`fail`/`skip`/`info`),
+per-bucket summary tallies, `exit_code = 1` iff any check is `Fail`, the
+folding of `Summary`+`Details` into one `detail` line, stable JSON field
+names, and the deliberate omission of vibe-vault's `schema` field (no
+context-schema counter exists in vibe-palace).
+
+### `cmd/vp` — Flag Wiring
+
+`cmd_check_test.go` drives `vp check --json` end-to-end (JSON parse, binary
+block, surface row present, `exit_code`/exit-code agreement) and asserts the
+registered tool count is positive. `cmd_version_test.go` covers
+`vp version --surface` (`surface: <N>`).
+
+### `cmd/vp` — Tool-Surface Golden Invariant (Phase 6)
+
+`tool_surface_golden_test.go` pins the full MCP tool surface against the
+build-time golden at `internal/mcp/tool_surface.golden.json`. The golden is
+`{surface_version, tools:[{name, mutating, schema_sha256}]}`, name-sorted for
+determinism, generated from the real registry (`Registry.List()`) via the same
+throwaway-registry construction `registeredToolCount` uses. `mutating` is the
+Phase 2 write-gate flag; `schema_sha256` is the hex sha256 of each tool's
+parameter JSON Schema canonicalized through `encoding/json` (so whitespace and
+key order don't affect the hash). `ToolInfo` has no tool-level `required`
+field, so — unlike vibe-vault's `required_inputs` golden — the per-tool hash is
+what catches param-schema drift.
+
+The test fails on any surface change: a tool added/removed, a `mutating` flag
+flipped, or a schema edited. The drift message tells the dev to regenerate with
+`-update-golden` AND to *consider* whether `internal/surface.MCPSurfaceVersion`
+needs a bump. Regenerating the golden does **not** bump the version — the
+surface-version bump is a deliberate operator decision made separately. The
+golden currently records `surface_version: 1`, 57 tools (20 mutating).
+
+It lives in `cmd/vp` (not `internal/mcp`) because building the full tool set
+requires `internal/tools`, which imports `internal/mcp` — so `internal/mcp`
+cannot enumerate the tools itself without an import cycle. The golden *file*
+still lives next to the registry under `internal/mcp/`. Regenerate / verify:
+
+```
+go test ./cmd/vp -run TestToolSurfaceGolden -update-golden   # regenerate
+go test ./cmd/vp -run TestToolSurfaceGolden                  # verify
+```
+
+It runs as part of `make test` (`go test ./...`) and CI's
+`go test -short -race ./...` with no extra wiring (there is no `pre-commit`
+aggregate target).
+
+### `cmd/vp` — Surface Merge Driver (Phase 5, combined new-code coverage ~91%)
+
+The `vp-surface` git merge driver resolves `*.surface` stamp conflicts to
+`max(ours, theirs)` (monotonic — never go backwards) so two hosts that both
+bump a directory's surface version converge on a vault merge instead of
+hard-conflicting on the integer. It is registered in `~/.gitconfig` as
+`[merge "vp-surface"]` and activated per-path by `*.surface merge=vp-surface`
+in the vault's `.gitattributes`; `vp vault pull/sync` auto-install it on the
+live (configured-remote) path unless `--no-install-merge-driver` is given.
+
+- `vault_merge_driver_test.go` — the resolution table (ours>theirs,
+  theirs>ours, equal, all-zero), missing/malformed ancestor, malformed/missing
+  ours/theirs (→ exit 1 + text-conflict markers), auxiliary-field clearing,
+  arg-count validation, and the `cmd vault merge-driver` Run path. Inputs are
+  arbitrary temp `%O/%A/%B` paths parsed into `surface.Stamp`.
+- `vault_merge_driver_install_test.go` — `EnsureMergeDriverInstalled`
+  idempotency (two installs → exactly one entry in each file), partial install,
+  existing-content preservation, and read-error branches. The **primary**
+  auto-invoke test stages a temp vault git repo with a local bare remote and
+  drives `vp vault pull` twice on the configured-remote path, asserting the
+  driver installs and stays idempotent across repeated real pulls; a defensive
+  test covers the no-remote no-op (returns at `gitRemotes()` before install)
+  and the `--no-install-merge-driver` opt-out. All tests use a temp `HOME` plus
+  `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` isolation — they never touch the real
+  `~/.gitconfig` or vault.
+
+---
+
 ## MockEmbedder vs Real ONNX
 
 | Aspect | MockEmbedder | ONNX Embedder |
