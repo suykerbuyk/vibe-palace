@@ -30,6 +30,7 @@ var updateGolden = flag.Bool("update-golden", false,
 // threads the same prompt sequence through the shared runUpgradePrompt
 // helper, and any drift is caught here.
 func TestRunCommandsUpgrade_InteractiveGolden(t *testing.T) {
+	grokOff(t)
 	vault := t.TempDir()
 	// "A\n" → accept-all on the first prompt; remainder of the output
 	// is deterministic (no diff variance, no block/shim surfaces since

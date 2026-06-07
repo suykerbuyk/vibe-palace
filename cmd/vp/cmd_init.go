@@ -726,7 +726,47 @@ func initSkillShimWiring(projectRoot string, resolver *vpctx.Resolver) []check.R
 		rows = append(rows, applySkillShimTarget(
 			"Cursor rule shims", shims.CursorRule, items, projectRoot))
 	}
+
+	// GrokSkill: only when Grok is detected. Emits both the per-persona
+	// vps-* shims AND the /vpc command hub.
+	if shims.GrokPresent(projectRoot) {
+		rows = append(rows, applyGrokShims(items, projectRoot))
+	}
 	return rows
+}
+
+// applyGrokShims wires the Grok skill family: the per-persona vps-* shims
+// (PlanSkills) plus the single /vpc command hub (PlanGrokHub), combined into
+// one plan and applied together so both land in the same check.Result row.
+func applyGrokShims(items []shims.SkillItem, projectRoot string) check.Result {
+	const label = "Grok skill shims"
+	plan, err := shims.PlanSkills(shims.GrokSkill, items, projectRoot)
+	if err != nil {
+		return check.Result{Name: label, Status: check.Fail, Summary: "plan: " + err.Error()}
+	}
+	hub, err := shims.PlanGrokHub(projectRoot)
+	if err != nil {
+		return check.Result{Name: label, Status: check.Fail, Summary: "plan hub: " + err.Error()}
+	}
+	plan = append(plan, hub)
+	rep, _, err := shims.ApplySkills(plan, shims.ApplyOptions{AllowStaleRemoval: false})
+	if err != nil {
+		return check.Result{Name: label, Status: check.Fail, Summary: "apply: " + err.Error()}
+	}
+	summary := fmt.Sprintf(
+		"added %d, updated %d, unchanged %d, stale %d, custom %d",
+		rep.Added, rep.Updated, rep.Unchanged, rep.Stale, rep.Custom,
+	)
+	status := check.Info
+	if rep.Added > 0 || rep.Updated > 0 {
+		status = check.Pass
+	}
+	row := check.Result{Name: label, Status: status, Summary: summary}
+	if rep.Stale > 0 {
+		row.Details = append(row.Details,
+			"stale shims left in place — run `vp commands upgrade` to review")
+	}
+	return row
 }
 
 func applySkillShimTarget(label string, target shims.TargetKind, items []shims.SkillItem, projectRoot string) check.Result {

@@ -836,6 +836,18 @@ upgrade too — stale skill shims are offered for removal with the same
 accept/skip/accept-all prompts, and `--dry-run` previews skill-shim
 drift alongside command drift.
 
+**Grok (xAI) shims.** When Grok Build is detected — the project has a
+`.grok/` directory, `~/.grok/` exists, or the `grok` CLI is on `PATH` —
+`vp init` and `vp commands upgrade` also emit Grok skill shims under
+`.grok/skills/`: a single `/vpc` **command hub** (`.grok/skills/vpc/SKILL.md`)
+that mirrors every Claude `vpc-*` command shim in one argument-taking skill
+(naked `/vpc` lists commands via `vp_cmd {}`; `/vpc <cmd> <args>` dispatches
+via `vp_cmd name=<cmd>`), plus one `.grok/skills/vps-<name>/SKILL.md` per
+skill mirroring the Claude skill shims. The hub instructs Grok to read tasks
+through `vp_get_task` (never by grepping the filesystem) for the
+`review-plan`/`cancel-plan`/`execute-plan` commands. `.grok/` is gitignored
+and host-local just like `.claude/`.
+
 Stale shims (for commands that were renamed or removed from the vault)
 are detected automatically but never deleted without explicit consent.
 Files under `.claude/commands/` that do not carry the vibe-palace shim

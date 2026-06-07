@@ -20,6 +20,17 @@ import (
 // boolPtr returns a *bool — used for InteractiveOverride.
 func boolPtr(b bool) *bool { return &b }
 
+// grokOff makes shims.GrokPresent report false for the duration of the test
+// by pointing HOME and PATH at Grok-free temp dirs. The legacy upgrade tests
+// here assert the Claude/Cursor shim surfaces only; without this they fail on
+// any host that has the `grok` CLI on PATH or a `~/.grok/` directory, since
+// GrokPresent is host-wide by design.
+func grokOff(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+}
+
 func TestRunCommandsUpgrade_DryRun_NonZeroOnPendingWork(t *testing.T) {
 	vault := t.TempDir()
 	// No vault copies exist → every embedded command is "new".
@@ -44,6 +55,7 @@ func TestRunCommandsUpgrade_DryRun_NonZeroOnPendingWork(t *testing.T) {
 }
 
 func TestRunCommandsUpgrade_DryRun_ZeroWhenClean(t *testing.T) {
+	grokOff(t)
 	vault := t.TempDir()
 	seedMatchingVault(t, vault)
 	projectRoot := t.TempDir()
@@ -333,6 +345,7 @@ func seedStaleSkillShim(t *testing.T, projectRoot, name string) string {
 // in a project with no skill shims emits them (the upgrade path now mirrors
 // vp init's skill-shim wiring).
 func TestRunCommandsUpgrade_RefreshesMissingSkillShims(t *testing.T) {
+	grokOff(t)
 	vault := t.TempDir()
 	seedMatchingVault(t, vault)
 	projectRoot := t.TempDir()
@@ -374,6 +387,7 @@ func TestRunCommandsUpgrade_RefreshesMissingSkillShims(t *testing.T) {
 // TestRunCommandsUpgrade_RemovesStaleSkillShim verifies that a skill removed
 // from the corpus has its shim cleaned up on upgrade (AllowStaleRemoval).
 func TestRunCommandsUpgrade_RemovesStaleSkillShim(t *testing.T) {
+	grokOff(t)
 	vault := t.TempDir()
 	seedMatchingVault(t, vault)
 	projectRoot := t.TempDir()
@@ -407,6 +421,7 @@ func TestRunCommandsUpgrade_RemovesStaleSkillShim(t *testing.T) {
 // TestRunCommandsUpgrade_SkillShimsIdempotent verifies that re-running the
 // upgrade against an already-current project writes no skill shims.
 func TestRunCommandsUpgrade_SkillShimsIdempotent(t *testing.T) {
+	grokOff(t)
 	vault := t.TempDir()
 	seedMatchingVault(t, vault)
 	projectRoot := t.TempDir()

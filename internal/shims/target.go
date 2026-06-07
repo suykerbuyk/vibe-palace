@@ -32,6 +32,12 @@ const (
 	// calls vp_skill with a vault-path fallback so Cursor surfaces without
 	// MCP still resolve the persona.
 	CursorRule
+	// GrokSkill emits one directory per skill under .grok/skills/ —
+	// .grok/skills/vps-<name>/SKILL.md — mirroring ClaudeSkill, for xAI's
+	// Grok Build CLI (Claude-Code-compatible, reads .grok/skills/<n>/SKILL.md).
+	// The reserved name "vpc" renders the single command hub at
+	// .grok/skills/vpc/SKILL.md instead of a vps-* persona shim.
+	GrokSkill
 )
 
 // String gives each kind a short stable name for logs and tests.
@@ -43,6 +49,8 @@ func (k TargetKind) String() string {
 		return "claude-skill"
 	case CursorRule:
 		return "cursor-rule"
+	case GrokSkill:
+		return "grok-skill"
 	default:
 		return fmt.Sprintf("target(%d)", int(k))
 	}
@@ -67,6 +75,13 @@ const (
 	ClaudeSkillsDir = ".claude/skills"
 	// CursorRulesDir is the project-relative dir for .cursor/rules/<file>.mdc.
 	CursorRulesDir = ".cursor/rules"
+	// GrokSkillsDir is the project-relative parent dir for
+	// .grok/skills/<dir>/SKILL.md (subdir-per-skill, like ClaudeSkill).
+	GrokSkillsDir = ".grok/skills"
+	// GrokHubName is the reserved skill name whose shim is the single
+	// /vpc command hub at .grok/skills/vpc/SKILL.md (literal dir "vpc", no
+	// vps- prefix), rather than a per-persona vps-* shim.
+	GrokHubName = "vpc"
 )
 
 // SkillDirName returns the directory name (under .claude/skills/) that
@@ -103,6 +118,13 @@ func TargetDir(kind TargetKind, projectRoot, name string) string {
 		return filepath.Join(projectRoot, ClaudeSkillsDir, SkillDirName(name))
 	case CursorRule:
 		return filepath.Join(projectRoot, CursorRulesDir)
+	case GrokSkill:
+		// The /vpc hub uses the literal dir name "vpc"; every other skill
+		// gets its own vps-<name>/ subdir like ClaudeSkill.
+		if name == GrokHubName {
+			return filepath.Join(projectRoot, GrokSkillsDir, GrokHubName)
+		}
+		return filepath.Join(projectRoot, GrokSkillsDir, SkillDirName(name))
 	default:
 		return ""
 	}
@@ -117,6 +139,8 @@ func TargetFile(kind TargetKind, projectRoot, name string) string {
 		return filepath.Join(TargetDir(kind, projectRoot, name), "SKILL.md")
 	case CursorRule:
 		return filepath.Join(projectRoot, CursorRulesDir, CursorRuleFilename(name))
+	case GrokSkill:
+		return filepath.Join(TargetDir(kind, projectRoot, name), "SKILL.md")
 	default:
 		return ""
 	}
@@ -139,7 +163,9 @@ func skillContentHash(kind TargetKind, item SkillItem) string {
 	for _, p := range item.Frontmatter.Paths {
 		fmt.Fprintf(h, "\x00path=%s", p)
 	}
-	if kind == CursorRule {
+	if kind == CursorRule || kind == GrokSkill {
+		// Both CursorRule and GrokSkill render a vault-path fallback whose
+		// text is part of the file bytes, so the vault path keys the hash.
 		fmt.Fprintf(h, "\x00vault=%s", item.VaultPath)
 	}
 	sum := h.Sum(nil)
@@ -162,6 +188,11 @@ func RenderSkill(kind TargetKind, item SkillItem) string {
 		return renderClaudeSkill(item)
 	case CursorRule:
 		return renderCursorRule(item)
+	case GrokSkill:
+		if item.Name == GrokHubName {
+			return renderGrokHub(item)
+		}
+		return renderGrokSkill(item)
 	default:
 		return ""
 	}
@@ -233,6 +264,150 @@ func renderCursorRule(item SkillItem) string {
 		sb.WriteString("/SKILL.md`\n")
 	}
 	sb.WriteString("directly and adopt the persona manually.\n")
+	sb.WriteString(shimCloseDelim)
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// grokHubDescription is the single-line description carried in the /vpc
+// hub frontmatter and hashed into the hub shim's sha. Kept as one constant
+// so the renderer and PlanGrokHub agree on the exact bytes.
+const grokHubDescription = "Vibe-palace command hub. Naked /vpc lists all commands via vp_cmd {}; /vpc <cmd> <args> dispatches via vp_cmd name=<cmd>. Use for restart, wrap, review-plan, execute-plan, cancel-plan and other vibe-palace operations."
+
+// grokHubBody is the fixed instructional body of the /vpc command hub,
+// wrapped between the managed markers by renderGrokHub. It collapses every
+// Claude .claude/commands/vpc-*.md shim into one argument-taking Grok skill
+// and encodes the vp_get_task / no-grep task-reading discipline.
+const grokHubBody = `# Vibe-Palace Command Hub (/vpc)
+
+A single ` + "`/vpc`" + ` slash command that mirrors the Claude ` + "`.claude/commands/vpc-*.md`" + `
+shims. It lists vibe-palace commands and dispatches them through the ` + "`vp_cmd`" + `
+MCP tool. Grok skills take arguments, so this one skill replaces every
+per-command shim.
+
+## Tool
+
+Use the qualified MCP tool name ` + "`vp_cmd`" + `. If it is not already available in
+this session, load its schema first (search your tool list for ` + "`vp_cmd`" + `), then
+call it. Never guess parameter names — use only the schema the tool exposes.
+
+## Naked ` + "`/vpc`" + ` — list commands
+
+Call ` + "`vp_cmd`" + ` with empty input ` + "`{}`" + `. Do NOT pass ` + "`project`" + ` — let ` + "`vp_cmd`" + `
+resolve it from the working directory / ` + "`.vibe-palace.toml`" + `. Present the returned
+commands (name, source, brief) to the user and offer to run one.
+
+## ` + "`/vpc <cmd> <args>`" + ` — dispatch a command
+
+Parse the first word of the argument as the command name (e.g. ` + "`review-plan`" + `)
+and treat the rest as its arguments. Call ` + "`vp_cmd`" + ` with ` + "`name=\"<cmd>\"`" + `. Do
+NOT pass ` + "`project`" + ` — ` + "`vp_cmd`" + ` resolves it, exactly as the Claude ` + "`vpc-*`" + `
+shims do, which keeps this portable across projects. Then **follow the returned
+instructions verbatim** — do not summarize; execute every step as written.
+
+## Reading tasks (review-plan, cancel-plan, execute-plan)
+
+For the task-reading commands ` + "`review-plan`" + `, ` + "`cancel-plan`" + `, and
+` + "`execute-plan`" + ` the argument is a task name (e.g. ` + "`/vpc review-plan <task-name>`" + `).
+BEFORE acting, call ` + "`vp_get_task`" + ` with the resolved ` + "`project`" + ` and ` + "`task`" + ` to
+read the task. Task files live ONLY in the vault and are reachable solely
+through the MCP task tools. NEVER grep or scan the filesystem for task files,
+never fall back to stale resume prose, and never write a task to a repo-relative
+` + "`tasks/`" + ` path. If a task tool is not loaded, load its schema first, then call
+it.
+
+## After execution
+
+Confirm what was done. For a review or plan, ask whether to proceed with
+implementation. Update task status in the vault via the MCP task tools when
+appropriate.`
+
+// GrokHubItem is the canonical SkillItem describing the /vpc command hub.
+// Both PlanGrokHub and the init/upgrade wiring use it so the hub's expected
+// sha and rendered bytes never drift between plan and apply.
+func GrokHubItem() SkillItem {
+	return SkillItem{
+		Name:        GrokHubName,
+		Frontmatter: skills.SkillFrontmatter{Description: grokHubDescription},
+	}
+}
+
+// renderGrokSkill renders a per-persona Grok skill shim (vps-<name>). It
+// mirrors renderCursorRule structurally — vp_skill delegation plus a
+// vault-path MCP-unavailable fallback — but emits Grok frontmatter
+// (name/description/metadata.short-description) and omits the Claude-only
+// user-invocable / argument-hint keys.
+func renderGrokSkill(item SkillItem) string {
+	sha := skillContentHash(GrokSkill, item)
+	openMarker := fmt.Sprintf(shimOpenFmt, skillShimVersion, sha)
+	shimName := SkillDirName(item.Name)
+	desc := sanitizeFrontmatter(item.Frontmatter.Description)
+	if desc == "" {
+		desc = "Vibe-palace skill persona — " + item.Name
+	}
+
+	var sb strings.Builder
+	sb.WriteString("---\n")
+	sb.WriteString("name: ")
+	sb.WriteString(shimName)
+	sb.WriteString("\n")
+	sb.WriteString("description: ")
+	sb.WriteString(desc)
+	sb.WriteString("\n")
+	sb.WriteString("metadata:\n")
+	sb.WriteString("  short-description: \"Vibe-palace skill: ")
+	sb.WriteString(item.Name)
+	sb.WriteString("\"\n")
+	sb.WriteString("---\n\n")
+	sb.WriteString(openMarker)
+	sb.WriteString("\n")
+	sb.WriteString("Call `vp_skill` with `name=\"")
+	sb.WriteString(item.Name)
+	sb.WriteString("\"` and adopt the returned persona as standing instruction\n")
+	sb.WriteString("for the rest of this session. Multiple vps-* invocations stack\n")
+	sb.WriteString("additively; `vps-clear` drops all.\n\n")
+	sb.WriteString("If MCP tools are not available in this session, read\n")
+	if item.VaultPath != "" {
+		sb.WriteString("`")
+		sb.WriteString(item.VaultPath)
+		sb.WriteString("`\n")
+	} else {
+		sb.WriteString("`{vault}/Templates/skills/")
+		sb.WriteString(item.Name)
+		sb.WriteString("/SKILL.md`\n")
+	}
+	sb.WriteString("directly and adopt the persona manually.\n")
+	sb.WriteString(shimCloseDelim)
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// renderGrokHub renders the single /vpc command hub shim. The body is the
+// fixed grokHubBody constant wrapped in the managed marker pair so ScanShim
+// detects it and version/drift handling works exactly like the other shims.
+func renderGrokHub(item SkillItem) string {
+	sha := skillContentHash(GrokSkill, item)
+	openMarker := fmt.Sprintf(shimOpenFmt, skillShimVersion, sha)
+	desc := sanitizeFrontmatter(item.Frontmatter.Description)
+	if desc == "" {
+		desc = grokHubDescription
+	}
+
+	var sb strings.Builder
+	sb.WriteString("---\n")
+	sb.WriteString("name: ")
+	sb.WriteString(GrokHubName)
+	sb.WriteString("\n")
+	sb.WriteString("description: ")
+	sb.WriteString(desc)
+	sb.WriteString("\n")
+	sb.WriteString("metadata:\n")
+	sb.WriteString("  short-description: \"Vibe-palace command hub (/vpc)\"\n")
+	sb.WriteString("---\n\n")
+	sb.WriteString(openMarker)
+	sb.WriteString("\n")
+	sb.WriteString(grokHubBody)
+	sb.WriteString("\n")
 	sb.WriteString(shimCloseDelim)
 	sb.WriteString("\n")
 	return sb.String()

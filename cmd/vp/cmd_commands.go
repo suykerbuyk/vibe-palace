@@ -638,6 +638,21 @@ func planSkillShims(resolver *vpctx.Resolver, projectRoot, only string) ([]shims
 		}
 		plan = append(plan, changes...)
 	}
+	// GrokSkill: when Grok is detected, append the per-persona vps-* shims
+	// AND the /vpc command hub so the same dry-run/prompt/apply flow handles
+	// them. The hub's Name is "vpc", so `--only vpc` correctly targets it.
+	if shims.GrokPresent(projectRoot) {
+		grokChanges, err := shims.PlanSkills(shims.GrokSkill, items, projectRoot)
+		if err != nil {
+			return nil, err
+		}
+		plan = append(plan, grokChanges...)
+		hub, err := shims.PlanGrokHub(projectRoot)
+		if err != nil {
+			return nil, err
+		}
+		plan = append(plan, hub)
+	}
 	if only == "" {
 		return plan, nil
 	}

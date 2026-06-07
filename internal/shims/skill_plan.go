@@ -33,7 +33,7 @@ type SkillChange struct {
 // are ignored (other tools' territory). Stale files (marker present,
 // name no longer in items) are reported as Stale.
 func PlanSkills(target TargetKind, items []SkillItem, projectRoot string) ([]SkillChange, error) {
-	if target != ClaudeSkill && target != CursorRule {
+	if target != ClaudeSkill && target != CursorRule && target != GrokSkill {
 		return nil, fmt.Errorf("PlanSkills: unsupported target %s", target)
 	}
 
@@ -47,11 +47,17 @@ func PlanSkills(target TargetKind, items []SkillItem, projectRoot string) ([]Ski
 		changes []SkillChange
 	)
 
-	if target == ClaudeSkill {
+	switch target {
+	case ClaudeSkill:
 		// .claude/skills/vps-<name>/SKILL.md — each skill owns its own
 		// subdirectory; scan for subdirs matching the prefix.
 		rootDir = filepath.Join(projectRoot, ClaudeSkillsDir)
-	} else {
+	case GrokSkill:
+		// .grok/skills/vps-<name>/SKILL.md — same subdir-per-skill shape as
+		// ClaudeSkill. The /vpc hub dir lacks the vps- prefix, so the prefix
+		// filter below ignores it (it is owned by PlanGrokHub, never Stale).
+		rootDir = filepath.Join(projectRoot, GrokSkillsDir)
+	default:
 		rootDir = filepath.Join(projectRoot, CursorRulesDir)
 	}
 
@@ -66,7 +72,7 @@ func PlanSkills(target TargetKind, items []SkillItem, projectRoot string) ([]Ski
 	}
 	for _, ent := range entries {
 		switch target {
-		case ClaudeSkill:
+		case ClaudeSkill, GrokSkill:
 			if !ent.IsDir() {
 				continue
 			}
@@ -158,6 +164,39 @@ func PlanSkills(target TargetKind, items []SkillItem, projectRoot string) ([]Ski
 
 	sortSkillChanges(changes)
 	return changes, nil
+}
+
+// PlanGrokHub computes the SkillChange for the single /vpc command hub at
+// .grok/skills/vpc/SKILL.md. The hub is NOT covered by PlanSkills (its dir
+// lacks the vps- prefix, so PlanSkills' prefix filter ignores it and never
+// flags it Stale); this dedicated planner owns it instead. The returned
+// change rides ApplySkills unchanged: New/Modified flow through WireSkill →
+// RenderSkill → renderGrokHub, UnchangedChange and CustomChange are no-ops.
+func PlanGrokHub(projectRoot string) (SkillChange, error) {
+	item := GrokHubItem()
+	path := TargetFile(GrokSkill, projectRoot, item.Name)
+	scan, err := ScanShim(path)
+	if err != nil {
+		return SkillChange{}, fmt.Errorf("scan %s: %w", path, err)
+	}
+	expected := ExpectedSkillSha(GrokSkill, item)
+	switch {
+	case !scan.Exists:
+		return SkillChange{Kind: New, Target: GrokSkill, Name: item.Name, Path: path, Item: item}, nil
+	case !scan.HasMarker:
+		// A marker-less SKILL.md the user owns — surface, never overwrite.
+		return SkillChange{Kind: CustomChange, Target: GrokSkill, Name: item.Name, Path: path}, nil
+	case scan.Sha == expected && scan.Version == skillShimVersion:
+		return SkillChange{
+			Kind: UnchangedChange, Target: GrokSkill, Name: item.Name,
+			Path: path, Item: item, PrevSha: scan.Sha,
+		}, nil
+	default:
+		return SkillChange{
+			Kind: Modified, Target: GrokSkill, Name: item.Name,
+			Path: path, Item: item, PrevSha: scan.Sha,
+		}, nil
+	}
 }
 
 // sortSkillChanges orders plan output as New → Modified → Unchanged →
@@ -276,11 +315,11 @@ func ApplySkills(changes []SkillChange, opts ApplyOptions) (Report, []SkillOutco
 			}
 			if removed {
 				rep.Removed++
-				// ClaudeSkill: try to prune the now-empty parent
+				// ClaudeSkill/GrokSkill: try to prune the now-empty parent
 				// vps-<name>/ directory so the scan set shrinks. Best
 				// effort — if the dir still has references/ siblings
 				// the remove fails and we leave it alone.
-				if ch.Target == ClaudeSkill {
+				if ch.Target == ClaudeSkill || ch.Target == GrokSkill {
 					_ = os.Remove(filepath.Dir(ch.Path))
 				}
 			} else {
