@@ -119,8 +119,8 @@ gives **mutual exclusion** — concurrent writers cannot lose each other's
 updates. Atomicity alone is not enough: two writers can each read the same
 base, compute a whole-file body, and rename over the target, with the second
 rename silently discarding the first update. That race is real both
-cross-process (CLI vs the `vp serve` MCP server) and in-process (concurrent
-`vp serve` goroutines).
+cross-process (CLI vs the `vp mcp serve` MCP server) and in-process (concurrent
+`vp mcp serve` goroutines).
 
 `vaultlock.Acquire(vaultRoot, targetAbsPath)` takes an exclusive advisory
 `flock` and returns a `release` func. The flock is held on a **sidecar** file
@@ -301,16 +301,40 @@ successfully). The vault-CRUD, commit, resume-edit, and wrap-state tools added
 by the restore-mcp-vault-surface work are filesystem operations and are always
 registered.
 
-### HTTP Transport
+### Remote Transport: Streamable HTTP (`vp mcp serve`)
 
-An HTTP transport (`internal/mcp/transport_http.go`) is implemented but not
-wired into the main binary. It provides REST endpoints:
+Besides the stdio transport (`vp mcp`), the binary can expose the same tool
+backend over a **Streamable-HTTP MCP** transport via `vp mcp serve`
+(`internal/mcp/transport_streamable.go`, `cmd/vp/cmd_mcp_serve.go`). This is a
+*dedicated* MCP server instance — never the stdio one — so its tool surface can
+be filtered independently of the local server:
 
-- `GET /health` — server status
-- `GET /tools` — list registered tools
-- `POST /tools/{name}` — invoke a tool
+- **Bearer authentication.** The handler is wrapped in middleware that requires
+  `Authorization: Bearer <token>`, compared in constant time (both sides reduced
+  to a SHA-256 digest before `subtle.ConstantTimeCompare`). The token *value* is
+  read at runtime from the environment variable named by `--bearer-token-env`
+  (default `VP_MCP_BEARER_TOKEN`); only the variable *name* is configurable — the
+  secret is never written to config. When the variable is unset the server runs
+  unauthenticated and prints a loud startup warning, on the assumption that the
+  operator fronts it with a tunnel or network ACL they control.
+- **Read-only by default.** The 20 vault-mutating tools (`tools.MutatingToolNames`)
+  are stripped from this instance via `Server.DeleteTools` unless `--allow-writes`
+  is passed, so they are absent from both `tools/list` and `tools/call`. Exposing
+  writes prints a second startup warning.
+- **No CORS.** Both real clients connect server-side, so no CORS headers are
+  emitted; browser preflight is out of scope.
+- **Binding.** Defaults to `127.0.0.1:7423` (`--addr` / `--port`, the port
+  falling back to `cfg.HTTPPort`). The `StreamableHTTPServer` handler is mounted
+  directly as the `http.Server` handler, so it speaks MCP at the root path `/`
+  (the library's default `/mcp` mux applies only to its own `Start`, which is not
+  used here). Public exposure is expected to go through an explicit tunnel that
+  terminates TLS — there is no in-binary TLS.
 
-CORS middleware is included for browser-based clients.
+The mutating-tool filtering lives in `cmd/vp`, not `internal/mcp`: `internal/tools`
+imports `internal/mcp` to register handlers, so `internal/mcp` cannot import
+`internal/tools` to learn which tools mutate without an import cycle. The
+composition root in `cmd/vp` (`buildMCPServeHandler`) sees both packages and
+applies the filter there.
 
 ---
 

@@ -179,9 +179,9 @@ func TestDispatchParentUnknownSubcommand(t *testing.T) {
 func TestAllCommandsRegistered(t *testing.T) {
 	reg, _, _ := testRegistry()
 	expected := []string{
-		"check", "help", "init", "inject", "mcp",
+		"check", "help", "init", "inject", "mcp", "mcp serve",
 		"migrate", "migrate mempalace", "migrate vibevault",
-		"search", "serve", "sessions", "status", "tasks",
+		"search", "sessions", "status", "tasks",
 		"vault", "vault pull", "vault push", "vault sync",
 		"version",
 	}

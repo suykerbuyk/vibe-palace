@@ -280,6 +280,15 @@ If the output is non-empty, choose:
    /tools/{name}` with the tool arguments as the raw JSON body. Two
    paths:
 
+   > **Note (2026-06-07):** The unauthenticated `vp serve` REST transport and
+   > its `transport_http.go` endpoints (`GET /health`, `GET /tools`,
+   > `POST /tools/{name}`) described below were **removed** in Phase 2 (remote
+   > MCP transport). The remote surface is now `vp mcp serve` — a
+   > bearer-authenticated, read-only-by-default Streamable-HTTP MCP server (see
+   > `doc/ARCHITECTURE.md` → "Remote Transport: Streamable HTTP"). The curl
+   > smoke tests in (a) no longer apply; drive the server with an MCP client
+   > instead. The historical procedure is left intact below for context.
+
    **(a) Quick smoke via `vp serve` + curl** (default port 7423):
    ```
    vp serve &

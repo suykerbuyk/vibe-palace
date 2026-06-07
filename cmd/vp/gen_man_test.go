@@ -80,9 +80,9 @@ func TestGenerateManPages(t *testing.T) {
 func knownCommands() []string {
 	return []string{
 		"check", "commands", "commands list", "commands upgrade",
-		"init", "inject", "mcp",
+		"init", "inject", "mcp", "mcp serve",
 		"migrate", "migrate mempalace", "migrate vibevault",
-		"search", "serve", "sessions", "status", "tasks",
+		"search", "sessions", "status", "tasks",
 		"vault", "vault pull", "vault push", "vault sync",
 		"version",
 	}

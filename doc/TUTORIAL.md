@@ -370,6 +370,83 @@ Requires `grok` on your PATH. Verify with `grok mcp doctor` or `grok mcp list`
 natively, so the managed block gives it the same behavioral contract as Claude
 Code.
 
+### Connect Grok web (or the xAI API) to vibe-palace
+
+Everything above wires vibe-palace into a **local** host that can spawn `vp mcp`
+over stdio. To reach vibe-palace from a *remote* client — Grok on the web, or the
+xAI API's remote-MCP feature — you instead run the dedicated HTTP transport,
+`vp mcp serve`, and expose it through a tunnel.
+
+**1. Start the remote MCP server.**
+
+```bash
+VP_MCP_BEARER_TOKEN=$(openssl rand -hex 32) vp mcp serve
+```
+
+- Binds `127.0.0.1:7423` by default (override with `--addr` / `--port`; the port
+  falls back to `http_port` in config).
+- **Read-only by default** — the 20 vault-mutating tools are stripped from the
+  surface, so a remote client can read and search but cannot write the vault.
+  Pass `--allow-writes` to expose them too (see the security note below).
+- The bearer token is read from the environment variable named by
+  `--bearer-token-env` (default `VP_MCP_BEARER_TOKEN`). With it set, every request
+  must carry `Authorization: Bearer <token>`. If the variable is **unset**, the
+  server runs UNAUTHENTICATED and prints a loud warning — only acceptable behind
+  a tunnel or network ACL you fully control.
+- The server speaks the MCP protocol over Streamable HTTP at the **root path**
+  (`/`). There is no in-binary TLS.
+
+**2. Expose it with a tunnel.**
+
+Use any tunnel that gives you a public HTTPS URL and terminates TLS for you.
+For example, with Cloudflare Tunnel:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:7423
+```
+
+This prints a public `https://<random>.trycloudflare.com` URL. ngrok
+(`ngrok http 7423`) or `tailscale funnel 7423` work equally well. Because the
+server serves MCP at `/`, the URL you hand to clients is the tunnel root —
+`https://<public-host>/` — with no extra path suffix.
+
+**3a. Register with Grok web.** Go to [grok.com](https://grok.com) →
+**Connectors** → **Bring Your Own MCP** (Custom), and paste:
+
+- **URL:** `https://<public-host>/`
+- **Authorization:** the bearer token value (sent as `Bearer <token>`).
+
+**3b. Register with the Grok CLI** against the public endpoint:
+
+```bash
+grok mcp add vibe-palace-remote \
+  --url https://<public-host>/ \
+  --type streamable_http
+```
+
+`streamable_http` is the transport token Grok uses for a Streamable-HTTP MCP
+server (verify the accepted values with `grok mcp add --help` for your version).
+Confirm with `grok mcp doctor vibe-palace-remote`.
+
+**4. xAI API (remote MCP).** When calling the xAI API directly, reference the
+server as a remote-MCP tool with the public URL and the bearer header:
+
+```json
+{
+  "type": "mcp",
+  "server_label": "vibe-palace",
+  "server_url": "https://<public-host>/",
+  "authorization": "Bearer <token>"
+}
+```
+
+**Security note.** The bearer token lives **only** in the server's environment —
+it is never written to vibe-palace config (only the env-var *name* is
+configurable). Read-only is the default; `--allow-writes` exposes vault mutation
+(create / edit / delete / move, resume and task edits) over the network, which is
+a meaningful escalation — only enable it for a tunnel and token you trust, and
+prefer a freshly generated, high-entropy token.
+
 ### Vim / Neovim
 
 Requires an MCP client plugin (e.g., `mcphub.nvim`). Add to your

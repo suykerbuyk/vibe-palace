@@ -20,10 +20,10 @@ update.
 
 This is not hypothetical. Two real contention paths exist:
 
-- **Cross-process** — the `vp` CLI and the `vp serve` MCP server are separate
+- **Cross-process** — the `vp` CLI and the `vp mcp serve` MCP server are separate
   OS processes that can edit the same vault file at the same time (a human
   running `vp vault edit` while an agent drives `vp_vault_write`).
-- **In-process** — `vp serve` handles MCP calls concurrently, so two
+- **In-process** — `vp mcp serve` handles MCP calls concurrently, so two
   goroutines can read-modify-write the same file simultaneously.
 
 The pre-existing `DeleteDrawer` bug was the canonical demonstration: it flocked
@@ -111,7 +111,7 @@ filesystem.
 
 **Positive:**
 
-- Concurrent writers of the same vault file — CLI vs MCP, or two `vp serve`
+- Concurrent writers of the same vault file — CLI vs MCP, or two `vp mcp serve`
   goroutines — can no longer lose updates; the read-modify-write is
   serialized end to end.
 - Append, whole-file, and RMW writers of one path share a single lock object,

@@ -156,8 +156,7 @@ with Claude Code, Cursor, Windsurf, Cline, Zed, Ollama, or any future MCP client
 ### 1.6 Single Binary, Zero Dependencies
 
 The compiled Go binary contains:
-- The MCP server (stdio transport)
-- An HTTP REST server (same backend, HTTP transport)
+- The MCP server (stdio transport, plus an optional bearer-authenticated, read-only-by-default Streamable-HTTP transport via `vp mcp serve`)
 - A CLI for human interaction
 - An embedded ONNX runtime for text embeddings
 - An embedded HNSW index for vector search
@@ -2099,7 +2098,7 @@ Vibe-Palace.
 - `vp vault pull` — pull only
 - `vp vault push` — push only
 - `vp mcp` — start MCP server (stdio)
-- `vp serve [--port N]` — start HTTP server
+- `vp mcp serve [--port N] [--addr HOST] [--allow-writes]` — start the remote MCP server (Streamable HTTP, bearer-authenticated, read-only by default)
 - `vp inject [--project P]` — output context to stdout (for non-MCP clients)
 - `vp version` — version and build info
 - `vp check` — validate config, vault structure, JSONL integrity
