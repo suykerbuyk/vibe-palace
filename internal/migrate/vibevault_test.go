@@ -133,7 +133,7 @@ func setupTestVault(t *testing.T) (*storage.Vault, *search.Engine, embedder.Embe
 func TestImportVibeVault_Basic(t *testing.T) {
 	vault, engine, emb, cfg := setupTestVault(t)
 
-	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestImportVibeVault_Idempotent(t *testing.T) {
 	ctx := context.Background()
 
 	// First import.
-	r1, err := ImportVibeVault(ctx, vault, engine, emb, cfg, ImportOptions{})
+	r1, err := ImportVibeVault(ctx, vault, vault, engine, emb, cfg, ImportOptions{})
 	if err != nil {
 		t.Fatalf("first import: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestImportVibeVault_Idempotent(t *testing.T) {
 	}
 
 	// Second import — everything should be skipped.
-	r2, err := ImportVibeVault(ctx, vault, engine, emb, cfg, ImportOptions{})
+	r2, err := ImportVibeVault(ctx, vault, vault, engine, emb, cfg, ImportOptions{})
 	if err != nil {
 		t.Fatalf("second import: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestImportVibeVault_Idempotent(t *testing.T) {
 func TestImportVibeVault_DryRun(t *testing.T) {
 	vault, engine, emb, cfg := setupTestVault(t)
 
-	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{
+	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{
 		DryRun: true,
 	})
 	if err != nil {
@@ -227,7 +227,7 @@ func TestImportVibeVault_BadFrontmatter(t *testing.T) {
 		},
 	}
 
-	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, opts)
+	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, opts)
 	if err != nil {
 		t.Fatalf("tolerant default should not return an error, got: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestImportVibeVault_BadFrontmatter_StrictAborts(t *testing.T) {
 	cfg := storage.Config{}
 	engine := search.NewEngine(emb, vault, cfg)
 
-	_, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{Strict: true})
+	_, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{Strict: true})
 	if err == nil {
 		t.Fatal("strict mode should return an error on parse failure")
 	}
@@ -338,7 +338,7 @@ func TestImportVibeVault_BadFrontmatter_RepairAfterParseFail(t *testing.T) {
 	engine := search.NewEngine(emb, vault, cfg)
 
 	// First run: parse fails, parse_failed marker written.
-	r1, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	r1, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
 	if err != nil {
 		t.Fatalf("first run: unexpected error: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestImportVibeVault_BadFrontmatter_RepairAfterParseFail(t *testing.T) {
 	}
 
 	// Second run: session imports cleanly.
-	r2, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	r2, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
 	if err != nil {
 		t.Fatalf("second run: unexpected error: %v", err)
 	}
@@ -390,7 +390,7 @@ func TestImportVibeVault_EmptyTranscript(t *testing.T) {
 	cfg := storage.Config{}
 	engine := search.NewEngine(emb, vault, cfg)
 
-	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -420,7 +420,7 @@ func TestImportVibeVault_SlugMapping(t *testing.T) {
 	cfg := storage.Config{}
 	engine := search.NewEngine(emb, vault, cfg)
 
-	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -457,7 +457,7 @@ func TestImportVibeVault_SlugCollision(t *testing.T) {
 
 	// Default resolver (AutoResolver) should auto-rename the later-sorted dir,
 	// not fatally abort.
-	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error with default resolver: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestImportVibeVault_Progress(t *testing.T) {
 		},
 	}
 
-	_, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, opts)
+	_, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, opts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -517,7 +517,7 @@ func TestImportVibeVault_CancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err := ImportVibeVault(ctx, vault, engine, emb, cfg, ImportOptions{})
+	_, err := ImportVibeVault(ctx, vault, vault, engine, emb, cfg, ImportOptions{})
 	if err == nil {
 		t.Fatal("expected context cancellation error, got nil")
 	}
@@ -535,7 +535,7 @@ func TestImportVibeVault_KnowledgeMD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -578,7 +578,7 @@ Content without a session ID.
 	cfg := storage.Config{}
 	engine := search.NewEngine(emb, vault, cfg)
 
-	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -604,7 +604,7 @@ func TestImportVibeVault_NoProjectsDir(t *testing.T) {
 	cfg := storage.Config{}
 	engine := search.NewEngine(emb, vault, cfg)
 
-	_, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	_, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
 	if err == nil {
 		t.Fatal("expected error for missing Projects dir, got nil")
 	}
@@ -636,7 +636,7 @@ func TestImportVibeVault_EmptySlugSkip(t *testing.T) {
 	cfg := storage.Config{}
 	engine := search.NewEngine(emb, vault, cfg)
 
-	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -672,7 +672,7 @@ func TestImportVibeVault_UnreadableFile(t *testing.T) {
 	cfg := storage.Config{}
 	engine := search.NewEngine(emb, vault, cfg)
 
-	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -693,7 +693,7 @@ func TestImportVibeVault_UnreadableFile(t *testing.T) {
 func TestImportVibeVault_VaultProjectReconcilerSideEffects(t *testing.T) {
 	vault, engine, emb, cfg := setupTestVault(t)
 
-	_, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	_, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -724,7 +724,7 @@ func TestImportVibeVault_VaultProjectIdempotent(t *testing.T) {
 	vault, engine, emb, cfg := setupTestVault(t)
 	ctx := context.Background()
 
-	if _, err := ImportVibeVault(ctx, vault, engine, emb, cfg, ImportOptions{}); err != nil {
+	if _, err := ImportVibeVault(ctx, vault, vault, engine, emb, cfg, ImportOptions{}); err != nil {
 		t.Fatalf("first import: %v", err)
 	}
 
@@ -734,7 +734,7 @@ func TestImportVibeVault_VaultProjectIdempotent(t *testing.T) {
 		t.Fatalf("read config.toml: %v", err)
 	}
 
-	if _, err := ImportVibeVault(ctx, vault, engine, emb, cfg, ImportOptions{}); err != nil {
+	if _, err := ImportVibeVault(ctx, vault, vault, engine, emb, cfg, ImportOptions{}); err != nil {
 		t.Fatalf("second import: %v", err)
 	}
 
@@ -752,7 +752,7 @@ func TestImportVibeVault_VaultProjectIdempotent(t *testing.T) {
 func TestImportVibeVault_DryRunSkipsReconciler(t *testing.T) {
 	vault, engine, emb, cfg := setupTestVault(t)
 
-	_, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{DryRun: true})
+	_, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{DryRun: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -804,7 +804,7 @@ Identical body text for deduplication testing purposes.
 	cfg := storage.Config{}
 	engine := search.NewEngine(emb, vault, cfg)
 
-	result, err := ImportVibeVault(context.Background(), vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

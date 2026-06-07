@@ -47,7 +47,8 @@ const markerReasonParseFailed = "parse_failed"
 // AutoResolver (same behavior as passing --yes).
 func ImportVibeVault(
 	ctx context.Context,
-	vault *storage.Vault,
+	source *storage.Vault,
+	destination *storage.Vault,
 	engine *search.Engine,
 	emb embedder.Embedder,
 	cfg storage.Config,
@@ -55,25 +56,27 @@ func ImportVibeVault(
 ) (ImportResult, error) {
 	var result ImportResult
 
-	// Step 1: scan projects and build slug map.
+	// Step 1: scan projects and build slug map. Reads come from the
+	// SOURCE vault tree only.
 	resolver := opts.Resolver
 	if resolver == nil {
-		onDisk, err := scanOnDiskSlugs(filepath.Join(vault.Root, "Projects"))
+		onDisk, err := scanOnDiskSlugs(filepath.Join(source.Root, "Projects"))
 		if err != nil {
 			return result, fmt.Errorf("scan existing slugs: %w", err)
 		}
 		resolver = &AutoResolver{OnDisk: onDisk}
 	}
 
-	projects, remap, err := scanProjects(vault.Root, resolver)
+	projects, remap, err := scanProjects(source.Root, resolver)
 	if err != nil {
 		return result, fmt.Errorf("scan projects: %w", err)
 	}
 	result.ProjectsScanned = len(projects)
 	result.SlugRemap = remap
 
-	// Step 2: create a single indexer for the entire run.
-	indexer := capture.NewIndexer(vault, engine, emb, cfg)
+	// Step 2: create a single indexer for the entire run. All indexer
+	// writes land in the DESTINATION vault.
+	indexer := capture.NewIndexer(destination, engine, emb, cfg)
 
 	// Step 3: process each project.
 	for dirPath, projSlug := range projects {
@@ -90,7 +93,7 @@ func ImportVibeVault(
 		// Skipped in dry-run. Non-fatal on error — session import
 		// continues.
 		if !opts.DryRun {
-			if err := reconcileVaultProject(ctx, vault, projSlug); err != nil {
+			if err := reconcileVaultProject(ctx, destination, projSlug); err != nil {
 				log.Printf("migrate: reconcile vault-project config %s: %v", projSlug, err)
 			}
 		}
@@ -159,7 +162,7 @@ func ImportVibeVault(
 					Total:     total,
 				})
 				if !opts.DryRun {
-					if markErr := markSessionParseFailed(vault, projSlug, failedID); markErr != nil {
+					if markErr := markSessionParseFailed(destination, projSlug, failedID); markErr != nil {
 						log.Printf("migrate: record parse_failed marker %s/%s: %v", projSlug, failedID, markErr)
 					}
 				}
@@ -172,7 +175,7 @@ func ImportVibeVault(
 			}
 
 			// Idempotency check.
-			imported, checkErr := isSessionImported(vault, projSlug, sessionID)
+			imported, checkErr := isSessionImported(destination, projSlug, sessionID)
 			if checkErr != nil {
 				result.Errors = append(result.Errors, ImportError{
 					Project:   projSlug,
@@ -233,7 +236,7 @@ func ImportVibeVault(
 			result.TriplesCreated += idxStats.Triples
 
 			// Mark as imported.
-			if markErr := markSessionImported(vault, projSlug, sessionID, "vibevault"); markErr != nil {
+			if markErr := markSessionImported(destination, projSlug, sessionID, "vibevault"); markErr != nil {
 				result.Errors = append(result.Errors, ImportError{
 					Project:   projSlug,
 					SessionID: sessionID,
@@ -377,9 +380,11 @@ func scanProjects(vaultRoot string, resolver SlugResolver) (map[string]string, m
 	return result, remap, nil
 }
 
-// markerPath returns the path to the idempotency marker file for a project.
-func markerPath(vault *storage.Vault, project string) (string, error) {
-	localDir, err := vault.LocalDir(project)
+// markerPath returns the path to the idempotency marker file for a
+// project. Markers live in the DESTINATION vault — they record what has
+// been written there, never anything about the source tree.
+func markerPath(destination *storage.Vault, project string) (string, error) {
+	localDir, err := destination.LocalDir(project)
 	if err != nil {
 		return "", err
 	}
@@ -387,9 +392,9 @@ func markerPath(vault *storage.Vault, project string) (string, error) {
 }
 
 // isSessionImported checks whether a session has already been imported
-// by scanning the JSONL marker file.
-func isSessionImported(vault *storage.Vault, project, sessionID string) (bool, error) {
-	path, err := markerPath(vault, project)
+// by scanning the JSONL marker file in the DESTINATION vault.
+func isSessionImported(destination *storage.Vault, project, sessionID string) (bool, error) {
+	path, err := markerPath(destination, project)
 	if err != nil {
 		return false, err
 	}
@@ -418,24 +423,25 @@ func isSessionImported(vault *storage.Vault, project, sessionID string) (bool, e
 	return false, nil
 }
 
-// markSessionImported appends a successful-import JSONL record.
-func markSessionImported(vault *storage.Vault, project, sessionID, source string) error {
-	return markSessionWithReason(vault, project, sessionID, source, "")
+// markSessionImported appends a successful-import JSONL record to the
+// DESTINATION vault.
+func markSessionImported(destination *storage.Vault, project, sessionID, source string) error {
+	return markSessionWithReason(destination, project, sessionID, source, "")
 }
 
 // markSessionParseFailed appends a parse_failed JSONL record so the
 // operator has a durable audit trail. Entries with this reason do NOT
 // count as imported (see isSessionImported), so re-running migrate
 // after manual file repair will pick the session up.
-func markSessionParseFailed(vault *storage.Vault, project, sessionID string) error {
-	return markSessionWithReason(vault, project, sessionID, "vibevault", markerReasonParseFailed)
+func markSessionParseFailed(destination *storage.Vault, project, sessionID string) error {
+	return markSessionWithReason(destination, project, sessionID, "vibevault", markerReasonParseFailed)
 }
 
 // markSessionWithReason appends a JSONL record to the idempotency marker
-// file. An empty reason marks a successful import; a non-empty reason
-// is diagnostic-only.
-func markSessionWithReason(vault *storage.Vault, project, sessionID, source, reason string) error {
-	path, err := markerPath(vault, project)
+// file in the DESTINATION vault. An empty reason marks a successful
+// import; a non-empty reason is diagnostic-only.
+func markSessionWithReason(destination *storage.Vault, project, sessionID, source, reason string) error {
+	path, err := markerPath(destination, project)
 	if err != nil {
 		return err
 	}

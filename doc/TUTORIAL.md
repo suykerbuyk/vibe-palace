@@ -780,12 +780,23 @@ migration guide, architecture details, and risk assessment.
 vp migrate vibevault --dry-run
 vp migrate mempalace --export-path ~/mempalace-export.json --dry-run
 
-# Run the actual import
+# Run the actual import (in place: source and destination are your configured vault)
 vp migrate vibevault
 vp migrate mempalace --export-path ~/mempalace-export.json
 ```
 
-After import, restart the MCP server to rebuild search indexes.
+`--vault-path` names the **source** vault to read sessions from; the
+**destination** for all writes is always your configured `vault_path`. To
+import from a different vault than you write to, point `--vault-path` at the
+source and confirm with `--yes`:
+
+```bash
+vp migrate vibevault --vault-path ~/obsidian/VibeVault --yes
+```
+
+Each run prints a `Source` / `Destination` / `Same vault` banner before
+scanning; a real cross-vault import needs `--yes` (or an interactive `[y/N]`
+confirmation). After import, restart the MCP server to rebuild search indexes.
 
 ---
 

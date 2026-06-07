@@ -80,7 +80,7 @@ and internal/auth/jwt.go wraps the RS256 signing.
 
 	// Run the import.
 	result, err := migrate.ImportVibeVault(
-		context.Background(), h.Vault, h.Engine, h.Embedder, h.Config,
+		context.Background(), h.Vault, h.Vault, h.Engine, h.Embedder, h.Config,
 		migrate.ImportOptions{},
 	)
 	if err != nil {
@@ -196,7 +196,7 @@ We also reviewed internal/cache/redis.go for connection pooling issues.
 	ctx := context.Background()
 
 	// First import.
-	r1, err := migrate.ImportVibeVault(ctx, h.Vault, h.Engine, h.Embedder, h.Config, migrate.ImportOptions{})
+	r1, err := migrate.ImportVibeVault(ctx, h.Vault, h.Vault, h.Engine, h.Embedder, h.Config, migrate.ImportOptions{})
 	if err != nil {
 		t.Fatalf("first import: %v", err)
 	}
@@ -209,7 +209,7 @@ We also reviewed internal/cache/redis.go for connection pooling issues.
 	entities1, _ := h.Vault.ListEntities("idempotent-proj")
 
 	// Second import — should skip.
-	r2, err := migrate.ImportVibeVault(ctx, h.Vault, h.Engine, h.Embedder, h.Config, migrate.ImportOptions{})
+	r2, err := migrate.ImportVibeVault(ctx, h.Vault, h.Vault, h.Engine, h.Embedder, h.Config, migrate.ImportOptions{})
 	if err != nil {
 		t.Fatalf("second import: %v", err)
 	}
@@ -499,7 +499,7 @@ We discussed internal/api/handler.go refactoring.
 	os.WriteFile(filepath.Join(sessDir, "2026-04-01-01.md"), []byte(session), 0o644)
 
 	result, err := migrate.ImportVibeVault(
-		context.Background(), h.Vault, h.Engine, h.Embedder, h.Config,
+		context.Background(), h.Vault, h.Vault, h.Engine, h.Embedder, h.Config,
 		migrate.ImportOptions{DryRun: true},
 	)
 	if err != nil {
@@ -530,7 +530,7 @@ We discussed internal/api/handler.go refactoring.
 
 	// Now do a real import — should succeed since dry run left no markers.
 	r2, err := migrate.ImportVibeVault(
-		context.Background(), h.Vault, h.Engine, h.Embedder, h.Config,
+		context.Background(), h.Vault, h.Vault, h.Engine, h.Embedder, h.Config,
 		migrate.ImportOptions{},
 	)
 	if err != nil {

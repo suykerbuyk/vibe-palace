@@ -4,12 +4,15 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
@@ -29,7 +32,7 @@ func cmdMigrate() *cli.Command {
 }
 
 var migrateVibeVaultFlags = []cli.FlagDef{
-	{Name: "--vault-path", Arg: "PATH", Help: "VibeVault root (default: from config)"},
+	{Name: "--vault-path", Arg: "PATH", Help: "SOURCE VibeVault root to read sessions from (default: the configured vault). Writes always land in the configured vault_path, never here."},
 	{Name: "--dry-run", Help: "Preview import; prompts for conflict resolution like a real run. Use --yes to auto-accept defaults."},
 	{Name: "--strict", Help: "Abort on the first frontmatter parse error (default: log file path, skip the session, continue)"},
 	{Name: "--yes", Short: "-y", Help: "Accept default slug-rename suggestions without prompting"},
@@ -40,11 +43,19 @@ func cmdMigrateVibeVault() *cli.Command {
 	return &cli.Command{
 		Name:        "migrate vibevault",
 		Synopsis:    "vp migrate vibevault [--vault-path PATH] [--dry-run]",
-		Description: "Import sessions from a VibeVault directory into the palace.",
-		Flags:       migrateVibeVaultFlags,
+		Description: "Import sessions from a VibeVault directory into the palace. " +
+			"--vault-path names the SOURCE vault to read sessions from; the DESTINATION " +
+			"is always the configured vault_path (~/.config/vibe-palace/config.toml). All " +
+			"writes — palace data, idempotency markers, embed and model caches, and per-project " +
+			"config scaffolds — land in the destination. When --vault-path is omitted, source " +
+			"and destination are the same configured vault. Every run prints a Source/Destination/" +
+			"Same-vault banner to stderr before scanning; a real (non-dry-run) cross-vault import " +
+			"requires confirmation (--yes, or an interactive [y/N] prompt on a TTY).",
+		Flags: migrateVibeVaultFlags,
 		Examples: []cli.Example{
-			{Cmd: "vp migrate vibevault", Comment: "Import from default vault path"},
-			{Cmd: "vp migrate vibevault --vault-path ~/old-vault --dry-run", Comment: "Preview import from a specific directory"},
+			{Cmd: "vp migrate vibevault", Comment: "Import in place: source and destination are the configured vault"},
+			{Cmd: "vp migrate vibevault --vault-path ~/old-vault --dry-run", Comment: "Preview import reading from another vault (writes nothing)"},
+			{Cmd: "vp migrate vibevault --vault-path /home/johns/obsidian/VibeVault --yes", Comment: "Cross-vault import: read from VibeVault, write to the configured vault (--yes confirms)"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(migrateVibeVaultFlags, args)
@@ -58,19 +69,73 @@ func cmdMigrateVibeVault() *cli.Command {
 			yes := fv.Bool("--yes")
 			slugMapArg := fv.Get("--slug-map")
 
-			vault, cfg, err := openMigrateVault(vaultPath)
+			dest, cfg, err := openMigrateDestination()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
 				return cli.ExitUser
 			}
 
-			resolver, err := buildSlugResolver(vault.Root, yes, slugMapArg)
+			source, err := openMigrateSource(vaultPath, dest)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
 				return cli.ExitUser
 			}
 
-			emb, eng, cleanup, err := setupEmbedder(vault, cfg)
+			// Resolve both roots to absolute paths for an accurate
+			// "Same vault" comparison without mutating the vaults.
+			resolvedSource, err := expandAndAbsPath(source.Root)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
+				return cli.ExitUser
+			}
+			resolvedDest, err := expandAndAbsPath(dest.Root)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
+				return cli.ExitUser
+			}
+			sameVault := resolvedSource == resolvedDest
+
+			// Banner on every run (real and dry), before any other output.
+			fmt.Fprint(os.Stderr, migrateBanner(resolvedSource, resolvedDest))
+
+			// Real-run cross-vault confirmation gate (before the embedder
+			// loads, so an abort costs nothing).
+			proceed, abortMsg := confirmCrossVaultWrite(
+				sameVault, dryRun, yes, isStdinTTY(),
+				resolvedSource, resolvedDest, os.Stdin, os.Stderr,
+			)
+			if !proceed {
+				if abortMsg != "" {
+					fmt.Fprintln(os.Stderr, abortMsg)
+				}
+				return cli.ExitUser
+			}
+
+			// Orphan-marker preflight warning for cross-vault runs.
+			if sourceHasOrphanMarkers(resolvedSource, resolvedDest) {
+				fmt.Fprintf(os.Stderr,
+					"WARNING: prior runs left idempotency markers in the source vault, but after\n"+
+						"this fix markers are read from the destination. Those sessions will be\n"+
+						"re-processed (slow; re-embeds). Palace artifacts are deduped by ID, so no\n"+
+						"corruption results.\n"+
+						"One-time remediation: copy\n"+
+						"  %s/palace/*/.local/imported-sessions.jsonl\n"+
+						"into the matching\n"+
+						"  %s/palace/*/.local/\n"+
+						"before running.\n",
+					resolvedSource, resolvedDest,
+				)
+			}
+
+			// Resolver scans the SOURCE for sibling-collision avoidance.
+			resolver, err := buildSlugResolver(source.Root, yes, slugMapArg)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
+				return cli.ExitUser
+			}
+
+			// Engine and model cache bind to the DESTINATION.
+			emb, eng, cleanup, err := setupEmbedder(dest, cfg)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
 				return cli.ExitSystem
@@ -83,7 +148,7 @@ func cmdMigrateVibeVault() *cli.Command {
 			fmt.Fprintln(os.Stderr, "Scanning projects...")
 
 			result, err := migrate.ImportVibeVault(
-				context.Background(), vault, eng, emb, cfg,
+				context.Background(), source, dest, eng, emb, cfg,
 				migrate.ImportOptions{
 					DryRun:   dryRun,
 					Strict:   strict,
@@ -198,13 +263,13 @@ func cmdMigrateMemPalace() *cli.Command {
 				return cli.ExitUser
 			}
 
-			vault, cfg, err := openMigrateVault("")
+			dest, cfg, err := openMigrateDestination()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
 				return cli.ExitUser
 			}
 
-			emb, eng, cleanup, err := setupEmbedder(vault, cfg)
+			emb, eng, cleanup, err := setupEmbedder(dest, cfg)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
 				return cli.ExitSystem
@@ -217,7 +282,7 @@ func cmdMigrateMemPalace() *cli.Command {
 			fmt.Fprintln(os.Stderr, "Importing MemPalace data...")
 
 			result, err := migrate.ImportMemPalace(
-				context.Background(), vault, eng, emb, exportPath,
+				context.Background(), dest, eng, emb, exportPath,
 				migrate.ImportOptions{
 					DryRun:   dryRun,
 					Progress: migrateProgressFunc(),
@@ -234,18 +299,13 @@ func cmdMigrateMemPalace() *cli.Command {
 	}
 }
 
-// openMigrateVault opens the vault, using the given path or falling back to config.
-func openMigrateVault(vaultPath string) (*storage.Vault, storage.Config, error) {
-	var vault *storage.Vault
-	var err error
-
-	if vaultPath != "" {
-		vault = storage.NewVault(vaultPath)
-	} else {
-		vault, err = openProjectVault()
-		if err != nil {
-			return nil, storage.Config{}, fmt.Errorf("open vault: %w", err)
-		}
+// openMigrateDestination opens the canonical write target — always the
+// config `vault_path`-rooted vault (honoring any cwd-local override) — and
+// loads its config. This is where all migration writes land.
+func openMigrateDestination() (*storage.Vault, storage.Config, error) {
+	vault, err := openProjectVault()
+	if err != nil {
+		return nil, storage.Config{}, fmt.Errorf("open vault: %w", err)
 	}
 
 	cfg, err := vault.LoadConfig("")
@@ -254,6 +314,75 @@ func openMigrateVault(vaultPath string) (*storage.Vault, storage.Config, error) 
 	}
 
 	return vault, cfg, nil
+}
+
+// openMigrateSource resolves the read source for a migration. When
+// vaultPath is set, it returns a new Vault rooted at the resolved
+// (tilde-expanded, absolute) path; otherwise it returns dest, so the
+// shared-vault (in-place) case reuses the destination pointer.
+func openMigrateSource(vaultPath string, dest *storage.Vault) (*storage.Vault, error) {
+	if vaultPath == "" {
+		return dest, nil
+	}
+	resolved, err := expandAndAbsPath(vaultPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve --vault-path: %w", err)
+	}
+	return storage.NewVault(resolved), nil
+}
+
+// migrateBanner formats the source/destination summary printed before
+// every vibevault migration run. source and dest must be already-resolved
+// absolute paths.
+func migrateBanner(source, dest string) string {
+	same := "no"
+	if source == dest {
+		same = "yes"
+	}
+	return fmt.Sprintf("Source:      %s\nDestination: %s\nSame vault:  %s\n", source, dest, same)
+}
+
+// confirmCrossVaultWrite gates a real (non-dry-run) migration that writes
+// into a destination different from the source.
+//
+//   - same vault, dry run, or --yes → proceed (no prompt).
+//   - TTY → prompt on promptOut, read a line from in, proceed on y/yes.
+//   - non-TTY without --yes → refuse, returning an explanatory message.
+//
+// Returns (proceed, abortMsg); abortMsg is a user-facing reason to print
+// when proceed is false (empty if no message is warranted).
+func confirmCrossVaultWrite(sameVault, dryRun, yes, tty bool, source, dest string, in io.Reader, promptOut io.Writer) (bool, string) {
+	if sameVault || dryRun || yes {
+		return true, ""
+	}
+	if !tty {
+		return false, "cross-vault migration into a different destination requires --yes (or a TTY to confirm)"
+	}
+	fmt.Fprintf(promptOut, "Write into %s (reading from %s)? [y/N]: ", dest, source)
+	line, _ := bufio.NewReader(in).ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true, ""
+	default:
+		return false, "Aborted."
+	}
+}
+
+// sourceHasOrphanMarkers reports whether the source vault holds
+// per-project idempotency markers (palace/*/.local/imported-sessions.jsonl)
+// that the destination lacks. After the source/destination split, markers
+// are read from the destination, so orphaned source-side markers would no
+// longer suppress re-processing. Returns false when the roots are identical.
+func sourceHasOrphanMarkers(srcRoot, dstRoot string) bool {
+	if srcRoot == dstRoot {
+		return false
+	}
+	srcMarkers, _ := filepath.Glob(filepath.Join(srcRoot, "palace", "*", ".local", "imported-sessions.jsonl"))
+	if len(srcMarkers) == 0 {
+		return false
+	}
+	dstMarkers, _ := filepath.Glob(filepath.Join(dstRoot, "palace", "*", ".local", "imported-sessions.jsonl"))
+	return len(dstMarkers) == 0
 }
 
 // setupEmbedder creates an ONNX embedder and search engine for migration.

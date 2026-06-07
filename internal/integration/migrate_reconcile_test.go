@@ -47,7 +47,7 @@ Verify migrate uses the reconciler.
 	// Run migrate end-to-end.
 	res, err := migrate.ImportVibeVault(
 		context.Background(),
-		h.Vault, h.Engine, h.Embedder, h.Config,
+		h.Vault, h.Vault, h.Engine, h.Embedder, h.Config,
 		migrate.ImportOptions{},
 	)
 	if err != nil {
@@ -102,7 +102,7 @@ Verify migrate uses the reconciler.
 	// bytes unchanged.
 	if _, err := migrate.ImportVibeVault(
 		context.Background(),
-		h.Vault, h.Engine, h.Embedder, h.Config,
+		h.Vault, h.Vault, h.Engine, h.Embedder, h.Config,
 		migrate.ImportOptions{},
 	); err != nil {
 		t.Fatalf("second ImportVibeVault: %v", err)

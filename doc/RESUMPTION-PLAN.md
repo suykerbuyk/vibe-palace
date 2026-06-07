@@ -100,6 +100,14 @@ file. This proves migration idempotency is working: re-running the
 import only ingests the delta (196 sessions added since the last
 dogfood run).
 
+> **Note (post source/destination split):** markers are now read from
+> the **destination** (configured `vault_path`), not from the source.
+> A cross-vault run whose source holds these markers but whose
+> destination does not now emits the non-blocking orphan-marker
+> preflight WARNING (see `doc/MIGRATION.md` → "Orphan-marker warning"),
+> which surfaces exactly this 701-marker situation and suggests copying
+> the markers into the destination's `palace/*/.local/` dirs first.
+
 **The 4 YAML parse errors:**
 
 | Project | Error | File location |
@@ -245,14 +253,23 @@ If the output is non-empty, choose:
   also drops the warm embed-cache, so first-run cost is paid in full.
 
 1. With Phase A + B landed, run from a **fresh terminal with a TTY
-   attached** (NOT from inside an AI session — `cmd/vp/cmd_migrate.go:114-125`
-   picks `InteractiveResolver` only when stdin is a TTY; non-TTY falls
-   back silently to `AutoResolver` and may auto-rename slugs in
-   unexpected ways):
+   attached** (NOT from inside an AI session — `buildSlugResolver` in
+   `cmd/vp/cmd_migrate.go` picks `InteractiveResolver` only when stdin is
+   a TTY; non-TTY falls back silently to `AutoResolver` and may
+   auto-rename slugs in unexpected ways):
 
    ```
    vp migrate vibevault --vault-path /home/johns/obsidian/VibeVault
    ```
+
+   `--vault-path` is the **source** to read from; the **destination** is
+   always the configured `vault_path`. After Phase A set that to
+   `/home/johns/obsidian/VibeVault`, source and destination are the same
+   vault, so the run is an in-place migration (the banner reports
+   `Same vault: yes`) and no cross-vault confirmation is required. Because
+   markers and all writes now land in the destination, this run no longer
+   needs any post-hoc `mv`/`rm` cleanup of marker files written into the
+   wrong vault — the pre-fix failure mode is gone.
 
    No `--dry-run`; no `--yes` (use the interactive resolver to surface
    any new slug collisions since the 2026-04-16 dogfood run).
@@ -442,10 +459,13 @@ once vibe-palace task tooling is the primary surface.
    `evt.Message`.
 
 3. **`--vault-path` flag semantics double as source AND palace store.**
-   Worked correctly in the dry-run, but documentation in
-   `doc/MIGRATION.md` and `vp migrate vibevault --help` should make this
-   explicit. A separate `--target-vault` flag, if added, would let
-   operators import from one vault into another — useful for testing.
+   ✅ Resolved by the source/destination separation refactor
+   (`vp-migrate-source-dest-separation`): `--vault-path` is now the
+   read-only **source**, and all writes land in the configured
+   destination `vault_path`. Operators can import from one vault into
+   another directly — `vp migrate vibevault --vault-path <src> --yes` —
+   without a separate `--target-vault` flag. Semantics are documented in
+   `doc/MIGRATION.md` and `vp migrate vibevault --help`.
 
 4. **Two `vibe-palace` config rows may need normalization.** The
    currently-configured vault `~/obsidian/vibe-palace-vault` has only

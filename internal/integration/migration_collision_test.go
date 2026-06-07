@@ -54,7 +54,7 @@ Body content for %s.
 
 	// Dry run first — remap should populate, no storage writes.
 	dryResult, err := migrate.ImportVibeVault(
-		context.Background(), h.Vault, h.Engine, h.Embedder, h.Config,
+		context.Background(), h.Vault, h.Vault, h.Engine, h.Embedder, h.Config,
 		migrate.ImportOptions{
 			DryRun:   true,
 			Resolver: &migrate.AutoResolver{},
@@ -80,7 +80,7 @@ Body content for %s.
 
 	// Real run — both slugs end up with content.
 	result, err := migrate.ImportVibeVault(
-		context.Background(), h.Vault, h.Engine, h.Embedder, h.Config,
+		context.Background(), h.Vault, h.Vault, h.Engine, h.Embedder, h.Config,
 		migrate.ImportOptions{Resolver: &migrate.AutoResolver{}},
 	)
 	if err != nil {
@@ -125,7 +125,7 @@ func TestIntegrationMigrateSlugCollisionEscalatesPastOnDisk(t *testing.T) {
 	}
 
 	result, err := migrate.ImportVibeVault(
-		context.Background(), h.Vault, h.Engine, h.Embedder, h.Config,
+		context.Background(), h.Vault, h.Vault, h.Engine, h.Embedder, h.Config,
 		migrate.ImportOptions{
 			DryRun: true,
 			// Nil resolver triggers default AutoResolver with on-disk seeded.

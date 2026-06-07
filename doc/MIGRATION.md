@@ -81,7 +81,7 @@ Import all historical data into the palace knowledge store.
 
 #### VibeVault Session Import (Task 8.1)
 
-`internal/migrate/vibevault.go` — `ImportVibeVault(vaultPath string) (ImportResult, error)`
+`internal/migrate/vibevault.go` — `ImportVibeVault(ctx, source, destination *storage.Vault, engine, emb, cfg, opts) (ImportResult, error)` — reads sessions from `source`, writes all palace data to `destination` (see "Source vs. destination" below).
 
 For each `Projects/*/sessions/*.md` file:
 
@@ -141,6 +141,52 @@ vp migrate mempalace --export-path PATH [--dry-run]
   `--yes` to auto-accept default rename suggestions.
 - Individual item failures are reported but don't abort the import
 - Safe to re-run (idempotent by session ID)
+
+#### Source vs. destination (`--vault-path`)
+
+`--vault-path` names the **source** vault that sessions are *read* from —
+its `Projects/<name>/sessions/*.md` files. It is **not** a write target.
+The **destination** is always the configured `vault_path` from
+`~/.config/vibe-palace/config.toml`. Everything the migration writes —
+palace data (drawers, KG), per-project idempotency markers
+(`palace/*/.local/imported-sessions.jsonl`), the embed cache, the ONNX
+model cache, and per-project `Projects/<slug>/config.toml` scaffolds —
+lands in the destination, never in the source.
+
+When `--vault-path` is omitted, source and destination are the same
+configured vault — the original single-vault, in-place behavior.
+
+##### Cross-vault import
+
+To import from a different vault than the one you write to, point
+`--vault-path` at the source:
+
+```bash
+vp migrate vibevault --vault-path /home/johns/obsidian/VibeVault --yes
+```
+
+Every run (real or dry) prints a banner to stderr before scanning:
+
+```
+Source:      /home/johns/obsidian/VibeVault
+Destination: /home/johns/obsidian/vibe-palace-vault
+Same vault:  no
+```
+
+A **real** (non-dry-run) run where source ≠ destination requires
+confirmation: pass `--yes` to proceed non-interactively, or answer the
+interactive `[y/N]` prompt. With no TTY and no `--yes`, the command
+aborts before loading the embedder.
+
+**Orphan-marker warning.** If the source vault holds idempotency markers
+from a prior (pre-fix) contaminated run
+(`<source>/palace/*/.local/imported-sessions.jsonl`) but the destination
+has none, the command prints a non-blocking WARNING: those sessions will
+be re-processed (slow; they re-embed), but palace artifacts dedupe by
+session ID, so no corruption results. The one-time remediation is to copy
+the source marker files into the destination's matching
+`palace/*/.local/` directories before running, so previously imported
+sessions are skipped.
 
 #### Slug collision resolution
 
