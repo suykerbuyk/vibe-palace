@@ -180,6 +180,10 @@ func gatherCheckResults() []check.Result {
 	// vp commands upgrade, surfaced here when canonical entries are missing). ---
 	results = append(results, check.CheckProjectGitignore(cwd))
 
+	// --- MCP host registration (advisory — one row per detected host:
+	// Claude/Grok/Zed, reporting whether vibe-palace is registered). ---
+	results = append(results, check.CheckMCPHosts()...)
+
 	// --- Surface compatibility — last check, mirroring the runtime gate so
 	// the binary-vs-vault verdict reads as the closing line of the report. ---
 	surfaceVault := ""

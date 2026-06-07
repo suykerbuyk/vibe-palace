@@ -33,7 +33,7 @@ func InstallToCache(version string) (string, error) {
 	}
 
 	mcpConfig := map[string]any{
-		pluginName: mcpServerEntry(),
+		pluginName: MCPServerEntry(),
 	}
 	if err := writeJSON(filepath.Join(installDir, ".mcp.json"), mcpConfig); err != nil {
 		return "", fmt.Errorf("write cache .mcp.json: %w", err)

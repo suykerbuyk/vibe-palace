@@ -47,17 +47,17 @@ var mcpEnvPassthroughKeys = []string{
 	"XAI_API_KEY",
 }
 
-// mcpServerEntry returns the canonical .mcp.json entry for the vibe-palace MCP
+// MCPServerEntry returns the canonical .mcp.json entry for the vibe-palace MCP
 // server. It is the single source of truth shared by Generate (marketplace
-// source) and InstallToCache (Claude Code plugin cache) so the two configs can
-// never drift.
+// source), InstallToCache (Claude Code plugin cache), and the cross-host
+// registry in internal/mcphost (Grok/Zed) so the configs can never drift.
 //
 // The command is "vp" (PATH-relative) rather than an absolute binary path so
 // the plugin always invokes whichever vp resolves first in PATH at session
 // start. Baking an absolute path here is brittle: if the install was triggered
 // by a stale binary, os.Executable would pin the plugin to it across rebuilds.
 // PATH lookup converges on the operator's installed binary automatically.
-func mcpServerEntry() map[string]any {
+func MCPServerEntry() map[string]any {
 	env := make(map[string]any, len(mcpEnvPassthroughKeys))
 	for _, key := range mcpEnvPassthroughKeys {
 		env[key] = "${" + key + "}"
@@ -68,6 +68,18 @@ func mcpServerEntry() map[string]any {
 		"env":     env,
 	}
 }
+
+// MCPEnvPassthroughKeys returns a copy of the provider-env keys propagated into
+// the MCP server subprocess, in their canonical order. The registry uses this
+// to build per-host env declarations (e.g. Grok's `--env KEY=${KEY}` flags)
+// from the same source of truth as MCPServerEntry.
+func MCPEnvPassthroughKeys() []string {
+	return append([]string(nil), mcpEnvPassthroughKeys...)
+}
+
+// Detected reports whether Claude Code is present on this host (~/.claude/
+// exists). Exported for the cross-host registry's status reporting.
+func Detected() bool { return claudeDetected() }
 
 // dataDir returns the vibe-palace data directory, honoring XDG_DATA_HOME and
 // falling back to ~/.local/share/vibe-palace.

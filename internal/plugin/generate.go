@@ -61,11 +61,11 @@ func Generate(version string) (string, error) {
 		return "", fmt.Errorf("write plugin manifest: %w", err)
 	}
 
-	// MCP config via the shared mcpServerEntry helper so this writer and
+	// MCP config via the shared MCPServerEntry helper so this writer and
 	// InstallToCache cannot drift. See plugin.go for the env-passthrough and
 	// PATH-relative-command rationale.
 	mcpConfig := map[string]any{
-		pluginName: mcpServerEntry(),
+		pluginName: MCPServerEntry(),
 	}
 	if err := writeJSON(MCPConfigPath(), mcpConfig); err != nil {
 		return "", fmt.Errorf("write MCP config: %w", err)

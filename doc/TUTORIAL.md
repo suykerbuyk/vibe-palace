@@ -216,6 +216,30 @@ the AI never touches vault files directly.
 Editor ←→ AI Model ←→ MCP Client ←→ vp (stdio) ←→ Vault
 ```
 
+### One-command registration (recommended)
+
+`vp mcp install` registers the vibe-palace MCP server with a host for you,
+idempotently, backing up any file it edits. The *same* server (`vp mcp`,
+JSON-RPC over stdio) backs every host — only the registration differs, so the
+flag picks which host's config to write:
+
+```bash
+vp mcp install --claude-plugin   # Claude Code (local plugin/marketplace)
+vp mcp install --grok            # Grok Build (xAI) via `grok mcp add`
+vp mcp install --zed             # Zed editor (context_servers entry)
+vp mcp install --grok --zed      # register with several hosts at once
+```
+
+Each installer also ensures `AGENTS.md` carries the managed behavioral block
+(the cross-host baseline that teaches `vp_bootstrap_context` and the
+`vpc-*`/`vps-*` triggers). Reverse any of them with
+`vp mcp uninstall --<host>`. Check what's registered on this machine with
+`vp check` — it prints one `MCP host: <name>` row per detected host.
+
+The manual per-host instructions below remain valid if you prefer to wire the
+config yourself, or for hosts vp does not yet write automatically (Neovim,
+Cursor, OpenCode).
+
 ### Claude Code
 
 Add to `.mcp.json` in your project root (project-scope) or `~/.claude.json`
@@ -299,20 +323,52 @@ once opt-out is wired up).
 
 ### Zed
 
-Add to `~/.config/zed/settings.json` or `.zed/settings.json` in your project:
+The one-command path is `vp mcp install --zed`. It surgically adds the
+`context_servers` entry below to `~/.config/zed/settings.json` using a
+comment-preserving JWCC editor (tailscale/hujson), so your existing comments
+and settings survive; the pre-edit file is saved to `settings.json.vp.bak`.
+Restart Zed (or reload settings) to activate.
+
+To wire it by hand instead, add to `~/.config/zed/settings.json` (or
+`.zed/settings.json` in your project):
 
 ```json
 {
   "context_servers": {
     "vibe-palace": {
-      "command": { "path": "vp", "args": ["mcp"] }
+      "command": "vp",
+      "args": ["mcp"]
     }
   }
 }
 ```
 
-Works with Claude, Gemini, and Grok via Zed's provider settings. Provider
-configuration is Zed's concern, not vibe-palace's.
+No `env` block is needed: Zed launches the server with its own inherited
+environment, so provider keys (e.g. `XAI_API_KEY`) flow through from the shell
+that started Zed. Works with Claude, Gemini, and Grok via Zed's provider
+settings — provider configuration is Zed's concern, not vibe-palace's.
+
+### Grok Build (xAI)
+
+The one-command path is `vp mcp install --grok`. It shells out to the official
+`grok mcp add` CLI (so Grok owns its own `~/.grok/config.toml` schema and vp
+never has to track it), registering:
+
+```toml
+[mcp_servers.vibe-palace]
+command = "vp"
+args = ["mcp"]
+
+[mcp_servers.vibe-palace.env]
+XAI_API_KEY = "${XAI_API_KEY}"   # expanded by Grok at server-spawn time
+# ...ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY likewise
+```
+
+Requires `grok` on your PATH. Verify with `grok mcp doctor` or `grok mcp list`
+(it should show `vibe-palace: vp mcp`). Reverse with `vp mcp uninstall --grok`
+(which runs `grok mcp remove vibe-palace`). Grok Build also reads `AGENTS.md`
+natively, so the managed block gives it the same behavioral contract as Claude
+Code.
 
 ### Vim / Neovim
 
