@@ -2,6 +2,7 @@
 /commit.msg
 /.cache/
 /.claude/
+/.grok/
 /coverage.out
 /coverage.html
 /vp
