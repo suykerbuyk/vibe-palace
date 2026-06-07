@@ -468,6 +468,21 @@ func TestReconcileProjectGitignore_AtomicWrite(t *testing.T) {
 	}
 }
 
+// TestCanonicalProjectGitignoreIncludesAgents guards that the vp-managed
+// project artifact set covers both host-local bootstrap shims (CLAUDE.md and
+// AGENTS.md), so neither is ever committed into a consuming project.
+func TestCanonicalProjectGitignoreIncludesAgents(t *testing.T) {
+	set := make(map[string]bool, len(CanonicalProjectGitignorePatterns))
+	for _, p := range CanonicalProjectGitignorePatterns {
+		set[p] = true
+	}
+	for _, want := range []string{"/CLAUDE.md", "/AGENTS.md", "/commit.msg", "/.claude/", "/.grok/", "/.vibe-palace/"} {
+		if !set[want] {
+			t.Errorf("CanonicalProjectGitignorePatterns missing %q: %v", want, CanonicalProjectGitignorePatterns)
+		}
+	}
+}
+
 // TestMissingProjectGitignorePatterns covers the advisory detection used
 // by `vp check`: a missing file reports the full set; a complete file
 // reports none; a partial file reports exactly the absent lines in
@@ -506,7 +521,7 @@ func TestMissingProjectGitignorePatterns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"/CLAUDE.md", "/commit.msg", "/.vibe-palace/"}
+	want := []string{"/CLAUDE.md", "/AGENTS.md", "/commit.msg", "/.vibe-palace/"}
 	if strings.Join(missing, "|") != strings.Join(want, "|") {
 		t.Errorf("partial-file: want %v, got %v", want, missing)
 	}

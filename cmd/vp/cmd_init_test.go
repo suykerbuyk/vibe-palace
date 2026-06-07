@@ -401,11 +401,12 @@ func TestInitStatusTableRendered(t *testing.T) {
 		"[pass] Vault",
 		"[pass] Project config",
 		"go.mod detected",
-		// No agent files in this fresh tmpdir — agent wiring reports skip
-		// with the "create CLAUDE.md/AGENTS.md" hint (plus the .github/
-		// copilot skip line).
+		// init manages AGENTS.md as a host-local bootstrap shim, so even a
+		// fresh tmpdir reports an Agent wiring row for it. The copilot
+		// candidate still produces a [skip] row (.github/ absent).
+		"Agent wiring",
+		"AGENTS.md",
 		"[skip] Agent wiring",
-		"no agent file found",
 		"Summary:",
 		"it is idempotent",
 	}
@@ -593,6 +594,39 @@ func TestInitEmitsShims(t *testing.T) {
 	// Second run must be all-unchanged (idempotent).
 	if !strings.Contains(out, "added 0") || !strings.Contains(out, "updated 0") {
 		t.Errorf("second init should be idempotent; got:\n%s", out)
+	}
+}
+
+// TestInitManagesAgentsFile verifies that `vp init` treats AGENTS.md like a
+// host-local vp-managed bootstrap shim: it is created (even when absent from a
+// fresh project), carries the managed vibe-palace block, and is gitignored.
+func TestInitManagesAgentsFile(t *testing.T) {
+	initTestEnv(t, false)
+	projDir := t.TempDir()
+	markProjectDir(t, projDir)
+	vaultDir := filepath.Join(t.TempDir(), "vault")
+
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
+	if code := cmd.Run([]string{projDir, "--name", "agentstest", "--vault-path", vaultDir}); code != cli.ExitOK {
+		t.Fatalf("init exit code = %d", code)
+	}
+
+	// AGENTS.md created and carries the managed block.
+	agents, err := os.ReadFile(filepath.Join(projDir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("AGENTS.md not created: %v", err)
+	}
+	if !strings.Contains(string(agents), "<!-- vibe-palace:begin ") {
+		t.Errorf("AGENTS.md missing managed block:\n%s", agents)
+	}
+
+	// Project .gitignore ignores the host-local AGENTS.md shim.
+	gi, err := os.ReadFile(filepath.Join(projDir, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	if !strings.Contains(string(gi), "/AGENTS.md") {
+		t.Errorf(".gitignore missing /AGENTS.md:\n%s", gi)
 	}
 }
 

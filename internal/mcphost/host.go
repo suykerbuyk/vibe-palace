@@ -78,19 +78,7 @@ func Registry() []Host {
 // empty one first when missing. Targeting AGENTS.md specifically (rather than
 // agentfile.WireAll) avoids disturbing a CLAUDE.md the operator manages.
 func ensureAgentsFile(projectRoot string) (agentfile.Result, error) {
-	path := filepath.Join(projectRoot, "AGENTS.md")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if err := os.WriteFile(path, []byte{}, 0o644); err != nil {
-			return agentfile.Result{}, err
-		}
-	} else if err != nil {
-		return agentfile.Result{}, err
-	}
-	canonical, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		canonical = path
-	}
-	return agentfile.Wire(agentfile.Target{Path: canonical, DisplayName: "AGENTS.md"})
+	return agentfile.EnsureManaged(filepath.Join(projectRoot, "AGENTS.md"), "AGENTS.md")
 }
 
 // backupFile copies path to path+".vp.bak" before mutation. No-op when the file

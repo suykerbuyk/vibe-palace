@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"testing"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
@@ -18,6 +19,18 @@ func testServer(t *testing.T) *Server {
 	t.Helper()
 	vault := storage.NewVault(t.TempDir())
 	return NewServer(vault)
+}
+
+// TestServerInstructionsConst guards the package-level bootstrap directive
+// against accidental emptying — it must be non-empty and point clients at
+// vp_bootstrap_context.
+func TestServerInstructionsConst(t *testing.T) {
+	if serverInstructions == "" {
+		t.Fatal("serverInstructions is empty")
+	}
+	if !strings.Contains(serverInstructions, "vp_bootstrap_context") {
+		t.Errorf("serverInstructions missing vp_bootstrap_context: %q", serverInstructions)
+	}
 }
 
 func TestNewServer(t *testing.T) {
@@ -68,9 +81,20 @@ func TestHandleInitialize(t *testing.T) {
 		Capabilities struct {
 			Tools *struct{} `json:"tools"`
 		} `json:"capabilities"`
+		Instructions string `json:"instructions"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
 		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	// The server-level bootstrap directive must reach clients in the
+	// initialize response so hosts that surface it (Grok, etc.) prompt the
+	// agent to load project context on connect.
+	if result.Instructions == "" {
+		t.Error("initialize result: instructions is empty")
+	}
+	if !strings.Contains(result.Instructions, "vp_bootstrap_context") {
+		t.Errorf("initialize instructions missing vp_bootstrap_context: %q", result.Instructions)
 	}
 
 	if result.ServerInfo.Name != "vibe-palace" {

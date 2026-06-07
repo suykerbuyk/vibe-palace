@@ -502,6 +502,21 @@ func initAgentWiring(projectRoot string, projectReady bool) []check.Result {
 		}}
 	}
 
+	// Guarantee AGENTS.md *exists* so the WireAll pass below wires it and
+	// reports it. AGENTS.md is a host-local vp-managed bootstrap shim
+	// (gitignored, like CLAUDE.md) and the cross-host behavioral baseline;
+	// WireAll only wires *pre-existing* agent files, so a fresh project would
+	// otherwise never get one. We create an EMPTY file (not the managed block
+	// itself) so WireAll remains the sole wirer and honestly reports "block
+	// added" on a fresh init rather than "unchanged". Non-fatal: a failure must
+	// not abort init — log and let WireAll proceed.
+	agentsPath := filepath.Join(projectRoot, "AGENTS.md")
+	if _, err := os.Stat(agentsPath); os.IsNotExist(err) {
+		if werr := os.WriteFile(agentsPath, []byte{}, 0o644); werr != nil {
+			slog.Error("create AGENTS.md baseline", "err", werr)
+		}
+	}
+
 	// Snapshot legacy-content flags before WireAll rewrites files, so the
 	// Init summary can suggest `vp absorb` when pre-existing content needs
 	// migration. Detect runs once here, and WireAll re-runs Detect internally

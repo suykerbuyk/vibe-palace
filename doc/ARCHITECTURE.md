@@ -471,8 +471,11 @@ populated vault. Templates flow through four stations:
    `storage.ReconcileProjectGitignore`, appending the host-local AI
    artifacts vp writes into the project tree
    (`storage.CanonicalProjectGitignorePatterns`: `/CLAUDE.md`,
-   `/commit.msg`, `/.claude/`, `/.grok/`, `/.vibe-palace/`) so they are
-   never committed. That project-root reconcile is append-only and
+   `/AGENTS.md`, `/commit.msg`, `/.claude/`, `/.grok/`, `/.vibe-palace/`)
+   so they are never committed. `AGENTS.md` is a host-local vp-managed
+   bootstrap shim — `vp init` creates and wires it (the cross-host
+   `agents.md` baseline that teaches `vp_bootstrap_context` + the
+   `vpc-*`/`vps-*` triggers), exactly as it treats `CLAUDE.md`. That project-root reconcile is append-only and
    idempotent — it never removes or reorders user lines, and a run where
    every canonical line is already present touches nothing. It also runs
    on `vp commands upgrade` so existing projects self-heal, and

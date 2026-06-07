@@ -32,8 +32,8 @@ var CanonicalGitignorePatterns = []string{
 // CanonicalProjectGitignorePatterns is the set of .gitignore lines that
 // vibe-palace owns in a *consuming project's* repository root. These are
 // the host-local AI artifacts vp writes into the project tree (CLAUDE.md,
-// commit.msg, .claude/, .grok/, .vibe-palace/) and must never be
-// committed. The reconciler treats every entry as an exact-line presence
+// AGENTS.md, commit.msg, .claude/, .grok/, .vibe-palace/) and must never
+// be committed. The reconciler treats every entry as an exact-line presence
 // requirement: missing lines are appended at EOF in declaration order;
 // already-present lines are left alone (including their position).
 //
@@ -42,6 +42,7 @@ var CanonicalGitignorePatterns = []string{
 // consuming project's concern and are intentionally NOT managed here.
 var CanonicalProjectGitignorePatterns = []string{
 	"/CLAUDE.md",
+	"/AGENTS.md",
 	"/commit.msg",
 	"/.claude/",
 	"/.grok/",
