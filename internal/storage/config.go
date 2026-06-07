@@ -15,6 +15,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // CurrentVersionMajor and CurrentVersionMinor are the schema version that
@@ -418,6 +419,14 @@ func (v *Vault) WriteScoringConfig(project string, rooms map[string]ScoringRoomO
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
+
+	// This is a read→merge→write of the same file (RMW): hold the per-path
+	// lock across the whole sequence so concurrent merges never lose updates.
+	release, err := vaultlock.Acquire(v.Root, cfgPath)
+	if err != nil {
+		return fmt.Errorf("lock config: %w", err)
+	}
+	defer release()
 
 	// Load existing config if present.
 	var tc tomlConfig

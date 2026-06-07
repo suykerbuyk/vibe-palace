@@ -9,8 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 )
 
 //go:embed config/cwd_project_template.toml
@@ -119,7 +117,7 @@ func (v *Vault) WriteVaultProjectConfig(slug string) (string, bool, error) {
 		return "", false, fmt.Errorf("stat config: %w", err)
 	}
 
-	if err := atomicfile.Write(v.Root, cfgPath, []byte(vaultProjectTemplate)); err != nil {
+	if err := v.lockedWrite(cfgPath, []byte(vaultProjectTemplate)); err != nil {
 		return "", false, fmt.Errorf("write vault project config: %w", err)
 	}
 	return cfgPath, true, nil

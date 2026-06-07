@@ -373,6 +373,59 @@ live (configured-remote) path unless `--no-install-merge-driver` is given.
 
 ---
 
+## Vault-Write-Concurrency Tests
+
+The `vault-write-concurrency` epic added a per-path advisory write lock
+(`internal/vaultlock`) that serializes vault read-modify-write so concurrent
+writers cannot lose updates. The unit tests below are pure-unit (no ONNX) and
+are written to run under the race detector (`go test -race -short ./...`,
+already the `make test` / Tier 1 default); the cross-process test is an
+integration-tier test, `-short`-skipped, run by `make integration`.
+
+### `internal/vaultlock` — Lock Primitive
+
+| Test | What it proves |
+|------|----------------|
+| `TestAcquireCreatesLockDirAndFile` | `Acquire` creates `<root>/.vp-locks/` and exactly one `.lock` sidecar |
+| `TestSameTargetSameLockFile` | repeated and lexically-equivalent spellings (`.`/`..` segments) of one path map to a single lock file |
+| `TestSymlinkedRootSameLockFile` | a path reached through a symlinked root canonicalizes to the same key (the `vaultfs`-resolved vs `storage`-lexical contract) |
+| `TestSerialization` | 50 goroutines on one path never overlap their critical sections — the lock actually serializes |
+| `TestDifferentTargetsDifferentLocks` | distinct paths get distinct locks and do not block each other (watchdogged) |
+| `TestReleaseIdempotent` | a second `release()` is a no-op returning nil |
+| `TestAcquireNonExistentTarget` | locking a not-yet-existing file exercises the `EvalSymlinks` parent-fallback branch |
+| `TestAcquireInvalidVaultRoot` | empty or relative `vaultRoot` is rejected |
+
+### `internal/vaultfs` — Concurrent Write Path (`-race`)
+
+| Test | What it proves |
+|------|----------------|
+| `TestEdit_ConcurrentNoLostUpdate` | 32 goroutines each `Edit` their own anchor in one file; with the lock held across the whole read-modify-write every contribution survives (no lost update) |
+| `TestWrite_ConcurrentSameBaseNoCorruption` | many blind `Write`s at one target: last-writer-wins is fine but the final content is exactly one writer's payload, never an interleaved/partial file |
+
+The `.vp-locks` segment refusal is covered by
+`TestIsRefusedWritePath_RejectsVpLocksSegment` and
+`TestIsRefusedWritePath_AllowsVpLocksSubstringNotSegment` in
+`internal/vaultfs/safety_test.go`.
+
+### `internal/storage` — Interlock and RMW (`-race`)
+
+`vaultlock_write_test.go`:
+
+| Test | What it proves |
+|------|----------------|
+| `TestDeleteDrawerAppendDrawerInterlock` | concurrent `AppendDrawer` and `DeleteDrawer` on one drawers file interlock on the same lock object: the file stays valid JSONL, every appended-and-kept ID survives, every deleted ID is gone (the historical non-interlock bug) |
+| `TestConcurrentInvalidateTriple` | concurrent `InvalidateTriple` RMWs — same-triple invalidations converge deterministically and never corrupt the file; distinct triples each land correctly |
+| `TestConcurrentAppendIteration` | N distinct markers appended concurrently to one iterations file all survive with separators intact |
+| `TestConcurrentAddEntity` | N distinct entities added concurrently to one JSONL file all survive and the file stays well-formed JSONL |
+
+### `internal/integration` — Cross-Process (`-short`-skipped, `make integration`)
+
+| Test | What it proves |
+|------|----------------|
+| `TestIntegration_VaultLockCrossProcess` | builds the real `vp` binary and launches N concurrent `vp vault edit` child **processes** contending on one seeded file; every fixed-width anchor is converted to its DONE marker exactly once, proving the advisory flock serializes whole-file RMW across separate OS processes (CLI vs MCP). Skipped under `-short`. |
+
+---
+
 ## MockEmbedder vs Real ONNX
 
 | Aspect | MockEmbedder | ONNX Embedder |

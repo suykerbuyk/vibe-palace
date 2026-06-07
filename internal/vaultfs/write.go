@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // Write places content at relPath under vaultPath atomically.
@@ -39,6 +40,16 @@ func Write(vaultPath, relPath, content, expectedSha256 string) (WriteResult, err
 	if err != nil {
 		return WriteResult{}, err
 	}
+
+	// Serialize the whole read→compute→write under an exclusive advisory lock
+	// so concurrent writers cannot lose updates (TOCTOU between the sha pre-read
+	// and atomicfile.Write). Acquired after path validation/resolution so a
+	// rejected path never creates a lock sidecar.
+	release, lerr := vaultlock.Acquire(vaultPath, abs)
+	if lerr != nil {
+		return WriteResult{}, fmt.Errorf("vaultfs: lock %s: %w", relPath, lerr)
+	}
+	defer release()
 
 	var replacedSha string
 	if existing, rerr := os.ReadFile(abs); rerr == nil {
@@ -87,6 +98,13 @@ func Edit(vaultPath, relPath, oldString, newString string, replaceAll bool, expe
 	if err != nil {
 		return EditResult{}, err
 	}
+	// Hold an exclusive advisory lock across the entire read→replace→write so
+	// concurrent edits to the same file cannot clobber each other's changes.
+	release, lerr := vaultlock.Acquire(vaultPath, abs)
+	if lerr != nil {
+		return EditResult{}, fmt.Errorf("vaultfs: lock %s: %w", relPath, lerr)
+	}
+	defer release()
 	existing, err := os.ReadFile(abs)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -147,6 +165,13 @@ func Delete(vaultPath, relPath, expectedSha256 string) (DeleteResult, error) {
 	if err != nil {
 		return DeleteResult{}, err
 	}
+	// Hold an exclusive advisory lock across the stat/pre-read→remove so the
+	// delete-vs-recreate race (and the sha compare-and-set) is serialized.
+	release, lerr := vaultlock.Acquire(vaultPath, abs)
+	if lerr != nil {
+		return DeleteResult{}, fmt.Errorf("vaultfs: lock %s: %w", relPath, lerr)
+	}
+	defer release()
 	info, err := os.Stat(abs)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -204,6 +229,14 @@ func Move(vaultPath, fromPath, toPath string) (MoveResult, error) {
 	if err != nil {
 		return MoveResult{}, err
 	}
+	// src is only being renamed away; dst is the at-risk created path. Locking
+	// the single dst path (rather than both endpoints) avoids a two-lock
+	// ordering deadlock while still guarding the file being created.
+	release, lerr := vaultlock.Acquire(vaultPath, dstAbs)
+	if lerr != nil {
+		return MoveResult{}, fmt.Errorf("vaultfs: lock %s: %w", toPath, lerr)
+	}
+	defer release()
 	if _, statErr := os.Stat(srcAbs); statErr != nil {
 		if errors.Is(statErr, fs.ErrNotExist) {
 			return MoveResult{}, fmt.Errorf("%w: %s", ErrFileNotFound, fromPath)

@@ -3,19 +3,20 @@
 
 //go:build unix
 
-package storage
+package vaultlock
 
 import (
 	"os"
 	"syscall"
 )
 
-// flockFile acquires an exclusive advisory lock on f.
-func flockFile(f *os.File) error {
+// flockExclusive acquires an exclusive advisory lock on f, blocking until it is
+// available.
+func flockExclusive(f *os.File) error {
 	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
 }
 
-// funlockFile releases the advisory lock on f.
-func funlockFile(f *os.File) error {
+// funlock releases the advisory lock on f.
+func funlock(f *os.File) error {
 	return syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 }

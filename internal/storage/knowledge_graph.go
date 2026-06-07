@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // Entity represents a person, project, concept, or tool in the knowledge graph.
@@ -57,16 +58,17 @@ func (v *Vault) AddEntity(project string, e Entity) error {
 		return fmt.Errorf("ensure kg dir: %w", err)
 	}
 
+	release, err := vaultlock.Acquire(v.Root, path)
+	if err != nil {
+		return fmt.Errorf("lock entities file: %w", err)
+	}
+	defer release()
+
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return fmt.Errorf("open entities file: %w", err)
 	}
 	defer f.Close()
-
-	if err := flockFile(f); err != nil {
-		return fmt.Errorf("lock entities file: %w", err)
-	}
-	defer funlockFile(f)
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -247,6 +249,14 @@ func (v *Vault) InvalidateTriple(project, subject, predicate, object, ended stri
 	if err != nil {
 		return err
 	}
+
+	// Hold the per-path lock across the read→rewrite so concurrent
+	// invalidations of the same triple never corrupt the file or lose a write.
+	release, err := vaultlock.Acquire(v.Root, path)
+	if err != nil {
+		return fmt.Errorf("lock triple: %w", err)
+	}
+	defer release()
 
 	data, err := os.ReadFile(path)
 	if err != nil {

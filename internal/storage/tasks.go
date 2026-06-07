@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // TaskMeta is the lightweight metadata for task listing.
@@ -62,7 +63,7 @@ func (v *Vault) CreateTask(project, slug, title, content, priority string) error
 		}
 	}
 
-	return atomicfile.Write(v.Root, path, []byte(buf.String()))
+	return v.lockedWrite(path, []byte(buf.String()))
 }
 
 // GetTask reads a task file and returns its metadata and full content.
@@ -156,6 +157,14 @@ func (v *Vault) UpdateTaskStatus(project, slug, status string) error {
 		return err
 	}
 
+	// Hold the per-path lock across the read→rewrite (RMW): a concurrent
+	// status update of the same task must not clobber this one.
+	release, err := vaultlock.Acquire(v.Root, path)
+	if err != nil {
+		return fmt.Errorf("lock task: %w", err)
+	}
+	defer release()
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read task: %w", err)
@@ -205,7 +214,7 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 	}
 
 	destPath := filepath.Join(destDir, slug+".md")
-	if err := atomicfile.Write(v.Root, destPath, []byte(updated)); err != nil {
+	if err := v.lockedWrite(destPath, []byte(updated)); err != nil {
 		return fmt.Errorf("write to dest: %w", err)
 	}
 

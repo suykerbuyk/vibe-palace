@@ -7,9 +7,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -430,5 +432,102 @@ func TestMove_SamePath(t *testing.T) {
 	_, err := Move(vault, "f.md", "f.md")
 	if err == nil {
 		t.Fatal("expected error for same source/dest")
+	}
+}
+
+// TestEdit_ConcurrentNoLostUpdate is the headline acceptance test for the
+// vault-write-concurrency epic. It pre-seeds a file with N distinct anchor
+// tokens (ANCHOR_0..ANCHOR_{N-1}) and launches N goroutines, each replacing its
+// own anchor with a DONE marker via vaultfs.Edit. Because Edit does a
+// whole-file read→replace→write, without the per-path lock concurrent writers
+// clobber each other's DONE markers (lost update). With the lock held across the
+// entire read-modify-write, every contribution survives. Run under -race.
+func TestEdit_ConcurrentNoLostUpdate(t *testing.T) {
+	const n = 32
+	vault := t.TempDir()
+
+	// Zero-pad token indices to a fixed width so no anchor/marker is a substring
+	// of another (ANCHOR_1 would otherwise match ANCHOR_10..19, breaking the
+	// single-occurrence Edit and the substring assertions below).
+	anchor := func(i int) string { return fmt.Sprintf("ANCHOR_%03d", i) }
+	done := func(i int) string { return fmt.Sprintf("DONE_%03d", i) }
+
+	var seed strings.Builder
+	for i := range n {
+		fmt.Fprintf(&seed, "line %s\n", anchor(i))
+	}
+	if _, err := Write(vault, "concurrent.md", seed.String(), ""); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := range n {
+		wg.Go(func() {
+			_, errs[i] = Edit(vault, "concurrent.md", anchor(i), done(i), false, "")
+		})
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("Edit goroutine %d: %v", i, err)
+		}
+	}
+
+	got, err := os.ReadFile(filepath.Join(vault, "concurrent.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := string(got)
+	for i := range n {
+		if !strings.Contains(final, done(i)) {
+			t.Errorf("lost update: %s missing from final content", done(i))
+		}
+		if strings.Contains(final, anchor(i)) {
+			t.Errorf("unreplaced anchor remains: %s", anchor(i))
+		}
+	}
+}
+
+// TestWrite_ConcurrentSameBaseNoCorruption launches many blind Writes at the
+// same target. Last-writer-wins is acceptable for a blind Write, but the final
+// content must be exactly one of the written values (no interleaving / partial
+// corruption) and the race detector must stay quiet.
+func TestWrite_ConcurrentSameBaseNoCorruption(t *testing.T) {
+	const n = 32
+	vault := t.TempDir()
+
+	if _, err := Write(vault, "blind.md", "base", ""); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+
+	valid := make(map[string]bool, n)
+	for i := range n {
+		valid[fmt.Sprintf("writer-%d-payload", i)] = true
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := range n {
+		wg.Go(func() {
+			content := fmt.Sprintf("writer-%d-payload", i)
+			_, errs[i] = Write(vault, "blind.md", content, "")
+		})
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("Write goroutine %d: %v", i, err)
+		}
+	}
+
+	got, err := os.ReadFile(filepath.Join(vault, "blind.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !valid[string(got)] {
+		t.Errorf("corrupted final content: %q is not any single writer's payload", got)
 	}
 }

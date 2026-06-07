@@ -210,3 +210,23 @@ func TestIsRefusedWritePath_AllowsHiddenNonGit(t *testing.T) {
 		}
 	}
 }
+
+func TestIsRefusedWritePath_RejectsVpLocksSegment(t *testing.T) {
+	cases := []string{
+		".vp-locks/abc.lock",
+		"Projects/x/.vp-locks/y",
+		".VP-LOCKS/abc.lock",
+		"Projects/x/.Vp-Locks/y",
+	}
+	for _, c := range cases {
+		if !IsRefusedWritePath(c) {
+			t.Errorf("IsRefusedWritePath(%q): want true, got false", c)
+		}
+	}
+}
+
+func TestIsRefusedWritePath_AllowsVpLocksSubstringNotSegment(t *testing.T) {
+	if IsRefusedWritePath("Projects/foo/foo.vp-locks/bar") {
+		t.Error("want false for substring .vp-locks (not a full segment)")
+	}
+}

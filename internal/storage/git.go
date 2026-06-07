@@ -25,6 +25,8 @@ var CanonicalGitignorePatterns = []string{
 	"# Template reconcile sidecars",
 	"*.bak",
 	"*.new",
+	"# Per-path advisory write locks (vaultlock) — host-local, never synced",
+	".vp-locks/",
 }
 
 // ReconcileVaultGitignore ensures every pattern in

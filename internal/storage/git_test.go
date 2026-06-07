@@ -67,6 +67,10 @@ func TestReconcileVaultGitignore_FreshFile(t *testing.T) {
 	if strings.HasSuffix(s, "\n\n") {
 		t.Error(".gitignore should not end with multiple trailing newlines")
 	}
+	// The vaultlock sidecar dir is host-local and must never be synced.
+	if !strings.Contains(s, "\n.vp-locks/\n") && !strings.HasSuffix(s, ".vp-locks/\n") {
+		t.Errorf(".gitignore missing .vp-locks/ entry:\n%s", s)
+	}
 }
 
 func TestReconcileVaultGitignore_Idempotent(t *testing.T) {

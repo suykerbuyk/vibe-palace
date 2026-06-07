@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // WriteResume writes content to the project's resume file, creating directories
@@ -23,7 +23,7 @@ func (v *Vault) WriteResume(project, content string) error {
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("ensure project dir: %w", err)
 	}
-	return atomicfile.Write(v.Root, path, []byte(content))
+	return v.lockedWrite(path, []byte(content))
 }
 
 // WriteWorkflow writes content to the project's workflow file, creating
@@ -37,7 +37,7 @@ func (v *Vault) WriteWorkflow(project, content string) error {
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("ensure project dir: %w", err)
 	}
-	return atomicfile.Write(v.Root, path, []byte(content))
+	return v.lockedWrite(path, []byte(content))
 }
 
 // WriteKnowledge writes content to the project's knowledge file.
@@ -50,7 +50,7 @@ func (v *Vault) WriteKnowledge(project, content string) error {
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("ensure project dir: %w", err)
 	}
-	return atomicfile.Write(v.Root, path, []byte(content))
+	return v.lockedWrite(path, []byte(content))
 }
 
 // WriteDoc writes content to a project-scoped doc file. rel is resolved
@@ -63,7 +63,7 @@ func (v *Vault) WriteDoc(project, rel, content string) error {
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("ensure doc dir: %w", err)
 	}
-	return atomicfile.Write(v.Root, path, []byte(content))
+	return v.lockedWrite(path, []byte(content))
 }
 
 // WriteAbsorbed writes content to a file under the project's absorbed/
@@ -76,11 +76,12 @@ func (v *Vault) WriteAbsorbed(project, rel, content string) error {
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("ensure absorbed dir: %w", err)
 	}
-	return atomicfile.Write(v.Root, path, []byte(content))
+	return v.lockedWrite(path, []byte(content))
 }
 
 // AppendIteration appends a narrative entry to the project's iterations file
-// with a leading separator. Uses flock for concurrent safety.
+// with a leading separator. The per-path vaultlock serializes concurrent
+// appends (and interlocks with any whole-file rewriter of the same file).
 func (v *Vault) AppendIteration(project, content string) error {
 	path, err := v.IterationsFile(project)
 	if err != nil {
@@ -90,16 +91,17 @@ func (v *Vault) AppendIteration(project, content string) error {
 		return fmt.Errorf("ensure project dir: %w", err)
 	}
 
+	release, err := vaultlock.Acquire(v.Root, path)
+	if err != nil {
+		return fmt.Errorf("lock iterations file: %w", err)
+	}
+	defer release()
+
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return fmt.Errorf("open iterations file: %w", err)
 	}
 	defer f.Close()
-
-	if err := flockFile(f); err != nil {
-		return fmt.Errorf("lock iterations file: %w", err)
-	}
-	defer funlockFile(f)
 
 	if _, err := f.Seek(0, 2); err != nil {
 		return fmt.Errorf("seek iterations file: %w", err)

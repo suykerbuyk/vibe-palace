@@ -16,6 +16,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // Drawer represents a verbatim content chunk stored in the palace.
@@ -54,16 +55,17 @@ func (v *Vault) AppendDrawer(project, wing, room string, d Drawer) error {
 		return fmt.Errorf("ensure drawer dir: %w", err)
 	}
 
+	release, err := vaultlock.Acquire(v.Root, path)
+	if err != nil {
+		return fmt.Errorf("lock drawer file: %w", err)
+	}
+	defer release()
+
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return fmt.Errorf("open drawer file: %w", err)
 	}
 	defer f.Close()
-
-	if err := flockFile(f); err != nil {
-		return fmt.Errorf("lock drawer file: %w", err)
-	}
-	defer funlockFile(f)
 
 	// Check for duplicate ID.
 	scanner := bufio.NewScanner(f)
@@ -150,16 +152,19 @@ func (v *Vault) DeleteDrawer(project, wing, room, id string) error {
 		return err
 	}
 
+	// Hold the per-path lock across the full read→rewrite so this RMW
+	// interlocks with concurrent AppendDrawer/DeleteDrawer on the same file.
+	release, err := vaultlock.Acquire(v.Root, path)
+	if err != nil {
+		return fmt.Errorf("lock drawer file: %w", err)
+	}
+	defer release()
+
 	f, err := os.OpenFile(path, os.O_RDWR, 0644)
 	if err != nil {
 		return fmt.Errorf("open drawer file: %w", err)
 	}
 	defer f.Close()
-
-	if err := flockFile(f); err != nil {
-		return fmt.Errorf("lock drawer file: %w", err)
-	}
-	defer funlockFile(f)
 
 	var kept [][]byte
 	found := false

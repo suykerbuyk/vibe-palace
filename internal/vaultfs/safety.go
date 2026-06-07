@@ -18,9 +18,9 @@
 // project is Linux-primary and the vault is git-managed. If cross-platform
 // support is added later, extend ValidateRelPath accordingly.
 //
-// IsRefusedWritePath enforces the .git-segment refusal policy
-// (case-insensitive, segment-equality only — substring matches such as
-// "foo.git/bar" are allowed).
+// IsRefusedWritePath enforces the refused-segment policy for ".git" and
+// ".vp-locks" (case-insensitive, segment-equality only — substring matches such
+// as "foo.git/bar" are allowed).
 package vaultfs
 
 import (
@@ -147,9 +147,11 @@ func pathIsUnder(candidate, root string) bool {
 
 // IsRefusedWritePath reports whether p contains a refused path segment.
 //
-// Currently the only refused segment is ".git" (case-insensitive).
-// Substring matches are NOT refused: "foo.git/bar" is allowed because
-// "foo.git" is not equal to ".git" as a segment.
+// The refused segments are ".git" and ".vp-locks" (both case-insensitive).
+// ".vp-locks" is the vaultlock sidecar directory; the generic vaultfs surface
+// must never write content into it. Substring matches are NOT refused:
+// "foo.git/bar" and "foo.vp-locks/bar" are allowed because the segments are not
+// equal to ".git"/".vp-locks".
 //
 // p is filepath.Cleaned and split on path separators; segments are compared
 // via strings.EqualFold to catch ".GIT", ".Git", ".gIt" cross-filesystem
@@ -158,7 +160,7 @@ func pathIsUnder(candidate, root string) bool {
 func IsRefusedWritePath(p string) bool {
 	cleaned := filepath.Clean(p)
 	for _, seg := range strings.Split(cleaned, string(filepath.Separator)) {
-		if strings.EqualFold(seg, ".git") {
+		if strings.EqualFold(seg, ".git") || strings.EqualFold(seg, ".vp-locks") {
 			return true
 		}
 	}

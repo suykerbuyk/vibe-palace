@@ -110,6 +110,37 @@ layer between human and AI.
 - **KG Entities**: JSONL (append-only, name + type + properties)
 - **Config**: TOML at all three precedence levels
 
+### Vault Write Serialization
+
+Vault writes pass through two distinct disciplines that solve two distinct
+problems. `internal/atomicfile.Write` (temp-file + `os.Rename`) gives
+**crash-atomicity** — a reader never sees a torn file. `internal/vaultlock`
+gives **mutual exclusion** — concurrent writers cannot lose each other's
+updates. Atomicity alone is not enough: two writers can each read the same
+base, compute a whole-file body, and rename over the target, with the second
+rename silently discarding the first update. That race is real both
+cross-process (CLI vs the `vp serve` MCP server) and in-process (concurrent
+`vp serve` goroutines).
+
+`vaultlock.Acquire(vaultRoot, targetAbsPath)` takes an exclusive advisory
+`flock` and returns a `release` func. The flock is held on a **sidecar** file
+at `<vaultRoot>/.vp-locks/<sha256(canonicalKey)>.lock`, not on the target —
+because the whole-file writer renames a temp over the target, which would swap
+the inode out from under a target-held lock. Callers acquire the lock around
+their entire read→modify→write (the lost-update window opens at the read), and
+every writer of a given path — append, whole-file, and read-modify-write —
+shares one lock object so they actually interlock. The **canonical-key
+contract** is that `canonicalKey` mirrors `vaultfs.ResolveSafePath`
+(EvalSymlinks → parent-fallback → lexical-clean), so a symlink-resolved path
+from `vaultfs` and a lexical `filepath.Join` from `storage` hash to the same
+lock file.
+
+`.vp-locks/` is host-local: registered in `storage.CanonicalGitignorePatterns`
+(never synced), refused by `vaultfs.IsRefusedWritePath`, and not indexed. The
+lock is unix-only (Windows is a no-op stub); `flock` auto-releases on process
+exit, so a leftover `.lock` marker after a crash is harmless. See ADR-003
+(`doc/adr/003-vault-write-locking.md`) for the full rationale.
+
 ### Configuration: 3-Tier TOML Precedence
 
 Configuration follows a 3-tier override chain:
