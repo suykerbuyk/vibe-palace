@@ -109,6 +109,7 @@ var captureSessionSchema = json.RawMessage(`{
 func CaptureSessionTool(vault *storage.Vault, indexer *capture.Indexer) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_capture_session",
+		Mutating:    true,
 		Description: "Capture a coding session: write session markdown to the vault, optionally chunk and index transcript for semantic search.",
 		Schema:      captureSessionSchema,
 		Handler:     captureSessionHandler(vault, indexer),

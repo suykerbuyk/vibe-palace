@@ -49,6 +49,7 @@ var initSchema = json.RawMessage(`{
 func InitProjectTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_init",
+		Mutating:    true,
 		Description: "Initialize a new vibe-palace project: create .vibe-palace.toml and vault directories.",
 		Schema:      initSchema,
 		Handler:     initProjectHandler(vault),
@@ -142,7 +143,8 @@ var vaultSyncSchema = json.RawMessage(`{
 
 func VaultSyncTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name: "vp_vault_sync",
+		Name:     "vp_vault_sync",
+		Mutating: true,
 		Description: "Pull, push, or sync the vault git repository with configured " +
 			"remotes. With no paths, push/sync refuse to run if the vault has " +
 			"uncommitted changes (accidental-half-written-state guard). Pass an " +

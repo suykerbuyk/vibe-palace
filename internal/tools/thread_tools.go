@@ -93,7 +93,8 @@ var threadInsertSchema = json.RawMessage(`{
 // ThreadInsertTool inserts a new ### slug block under ## Open Threads.
 func ThreadInsertTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name: "vp_thread_insert",
+		Name:     "vp_thread_insert",
+		Mutating: true,
 		Description: "Insert a new ### slug block into the ## Open Threads " +
 			"section of a project's resume.md. The slug must not already exist. " +
 			"The body must NOT include the ### heading line — the tool emits it. " +
@@ -164,7 +165,8 @@ var threadReplaceSchema = json.RawMessage(`{
 // ThreadReplaceTool replaces the body of an existing ### slug block.
 func ThreadReplaceTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name: "vp_thread_replace",
+		Name:     "vp_thread_replace",
+		Mutating: true,
 		Description: "Replace the body of an existing ### slug block in the " +
 			"## Open Threads section of a project's resume.md. The body must NOT " +
 			"include the ### heading line — the original heading is preserved " +
@@ -224,7 +226,8 @@ var threadRemoveSchema = json.RawMessage(`{
 // ThreadRemoveTool removes a ### slug block from ## Open Threads.
 func ThreadRemoveTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name: "vp_thread_remove",
+		Name:     "vp_thread_remove",
+		Mutating: true,
 		Description: "Remove a ### slug block from the ## Open Threads section " +
 			"of a project's resume.md. A missing slug, or an ambiguous " +
 			"(multi-match) slug, is a hard error. The slug 'Carried forward' is " +

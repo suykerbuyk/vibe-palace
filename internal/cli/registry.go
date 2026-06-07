@@ -15,6 +15,7 @@ type Registry struct {
 	info     BuildInfo
 	out      io.Writer
 	errOut   io.Writer
+	preRun   func(*Command) int
 }
 
 // NewRegistry creates a command registry with the given build info.
@@ -31,6 +32,26 @@ func NewRegistry(info BuildInfo) *Registry {
 func (r *Registry) SetOutput(out, errOut io.Writer) {
 	r.out = out
 	r.errOut = errOut
+}
+
+// SetPreRun installs a hook invoked just before a leaf command's Run, with the
+// matched command. A non-zero return aborts dispatch with that exit code; zero
+// proceeds. cmd/vp uses this as the single choke-point for the MCP surface gate
+// (fail-stop on MutatesVault commands, warn-only otherwise) without the cli
+// framework depending on storage/surface. nil hook = no gating.
+func (r *Registry) SetPreRun(fn func(*Command) int) {
+	r.preRun = fn
+}
+
+// runCmd is the single execution choke-point: it runs the pre-run hook (if any)
+// before delegating to cmd.Run, so every leaf invocation is gated uniformly.
+func (r *Registry) runCmd(cmd *Command, args []string) int {
+	if r.preRun != nil {
+		if code := r.preRun(cmd); code != ExitOK {
+			return code
+		}
+	}
+	return cmd.Run(args)
 }
 
 // Register adds a command to the registry.
@@ -107,7 +128,7 @@ func (r *Registry) Dispatch(args []string) int {
 				fmt.Fprint(r.out, r.formatHelp(cmd))
 				return ExitOK
 			}
-			return cmd.Run(remaining)
+			return r.runCmd(cmd, remaining)
 		}
 	}
 
@@ -131,7 +152,7 @@ func (r *Registry) Dispatch(args []string) int {
 func (r *Registry) dispatchCommand(cmd *Command, remaining []string) int {
 	// Leaf command (no subcommands) — delegate to Run.
 	if len(cmd.Subcommands) == 0 {
-		return cmd.Run(remaining)
+		return r.runCmd(cmd, remaining)
 	}
 
 	// Parent command. A two-word lookup already ran in Dispatch and
@@ -143,7 +164,7 @@ func (r *Registry) dispatchCommand(cmd *Command, remaining []string) int {
 		// treated as an unknown subcommand — preserves typo
 		// detection.
 		if len(remaining) == 0 || strings.HasPrefix(remaining[0], "-") {
-			return cmd.Run(remaining)
+			return r.runCmd(cmd, remaining)
 		}
 		return r.unknownSubcommand(cmd, remaining[0])
 	}

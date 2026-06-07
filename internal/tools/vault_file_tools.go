@@ -202,7 +202,8 @@ var vaultWriteSchema = json.RawMessage(`{
 // VaultWriteTool atomically writes content to a vault-relative file.
 func VaultWriteTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name: "vp_vault_write",
+		Name:     "vp_vault_write",
+		Mutating: true,
 		Description: "Atomically write content to a vault-relative file. Returns " +
 			"{bytes, sha256, replaced_sha256?}. Refuses any path whose segments " +
 			"include '.git' (case-insensitive). Parent directories are created as " +
@@ -245,7 +246,8 @@ var vaultEditSchema = json.RawMessage(`{
 // VaultEditTool replaces old_string with new_string in a vault-relative file.
 func VaultEditTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name: "vp_vault_edit",
+		Name:     "vp_vault_edit",
+		Mutating: true,
 		Description: "Replace old_string with new_string in a vault-relative " +
 			"file. Returns {bytes, sha256, replacements}. If old_string occurs " +
 			"more than once, the call fails unless replace_all=true (mirrors " +
@@ -290,7 +292,8 @@ var vaultDeleteSchema = json.RawMessage(`{
 // VaultDeleteTool deletes a file at a vault-relative path.
 func VaultDeleteTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name: "vp_vault_delete",
+		Name:     "vp_vault_delete",
+		Mutating: true,
 		Description: "Delete a file at a vault-relative path. Returns {removed}. " +
 			"Refuses directories (file-only in v1) and any path whose segments " +
 			"include '.git' (case-insensitive). Pass expected_sha256 for " +
@@ -328,7 +331,8 @@ var vaultMoveSchema = json.RawMessage(`{
 // VaultMoveTool renames a vault-relative file.
 func VaultMoveTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name: "vp_vault_move",
+		Name:     "vp_vault_move",
+		Mutating: true,
 		Description: "Rename a vault-relative file from from_path to to_path. " +
 			"Returns {moved}. Refuses to overwrite an existing destination. " +
 			"Refuses '.git' paths on either endpoint. Refuses same-source-and-" +

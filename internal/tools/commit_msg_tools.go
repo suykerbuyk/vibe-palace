@@ -38,7 +38,8 @@ var ingestCommitMsgSchema = json.RawMessage(`{
 // stamped vault copy at Projects/<slug>/commit.msg.
 func IngestCommitMsgTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name: "vp_ingest_commit_msg",
+		Name:     "vp_ingest_commit_msg",
+		Mutating: true,
 		Description: "Ingest a commit message the agent already wrote to " +
 			"<project_path>/commit.msg into the vault at " +
 			"Projects/<slug>/commit.msg (atomic, surface-stamped). There is no " +

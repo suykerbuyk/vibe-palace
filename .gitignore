@@ -8,3 +8,4 @@
 /build/
 /doc/man/
 test/e2e/**/.tmp/
+.vibe-palace/

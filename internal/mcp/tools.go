@@ -15,6 +15,8 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/santhosh-tekuri/jsonschema/v6"
+
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
 // requestIDKey is a context-key type for optional MCP request IDs that
@@ -54,6 +56,11 @@ type Tool struct {
 	Description string
 	Schema      json.RawMessage // JSON Schema for parameters (type: object)
 	Handler     HandlerFunc
+	// Mutating marks a tool that writes to the vault (or project-root state).
+	// The dispatch choke-point (makeHandler/Dispatch) refuses mutating tools
+	// when the vault's MCP surface version exceeds this binary's, so a stale
+	// host cannot corrupt a newer vault. Read-only tools leave this false.
+	Mutating bool
 }
 
 // ToolInfo is a read-only summary returned by Registry.List.
@@ -61,6 +68,7 @@ type ToolInfo struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	Schema      json.RawMessage `json:"schema,omitempty"`
+	Mutating    bool            `json:"mutating,omitempty"`
 }
 
 // registeredTool holds a tool definition alongside its compiled schema.
@@ -142,6 +150,7 @@ func (r *Registry) List() []ToolInfo {
 			Name:        rt.tool.Name,
 			Description: rt.tool.Description,
 			Schema:      rt.tool.Schema,
+			Mutating:    rt.tool.Mutating,
 		})
 	}
 	return out
@@ -167,7 +176,29 @@ func (r *Registry) Dispatch(ctx context.Context, name string, params json.RawMes
 		return nil, err
 	}
 
+	if gErr := r.gateIfMutating(ctx, rt); gErr != nil {
+		return nil, gErr
+	}
+
 	return rt.tool.Handler(ctx, params)
+}
+
+// gateIfMutating refuses a mutating tool when the vault's MCP surface version
+// exceeds this binary's, returning the IncompatibleError remediation. Read-only
+// tools and an unreachable/empty vault pass. It honors VP_SURFACE_GATE=warn via
+// surface.EnforceFailStop. There is deliberately NO MCP startup gate — vp is
+// MCP-primary, so the server stays up and the remediation surfaces in-band as a
+// tool error payload. Both dispatch paths (makeHandler and Dispatch) route
+// through here so neither can bypass the gate.
+func (r *Registry) gateIfMutating(ctx context.Context, rt *registeredTool) error {
+	if !rt.tool.Mutating {
+		return nil
+	}
+	root := ""
+	if v := VaultFromContext(ctx); v != nil {
+		root = v.Root
+	}
+	return surface.EnforceFailStop(root)
 }
 
 // makeHandler creates a mcp-go ToolHandlerFunc that validates parameters
@@ -225,6 +256,19 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 				"err", vErr,
 			)
 			return mcplib.NewToolResultError(vErr.Error()), nil
+		}
+
+		// Surface gate: refuse mutating tools when the vault is ahead of this
+		// binary, returning the IncompatibleError remediation in-band.
+		if gErr := r.gateIfMutating(ctx, rt); gErr != nil {
+			slog.Warn("mcp.makeHandler: surface gate refused",
+				"op", "mcp.makeHandler",
+				"tool", toolName,
+				"request_id", reqID,
+				"elapsed_ms", time.Since(start).Milliseconds(),
+				"err", gErr,
+			)
+			return mcplib.NewToolResultError(gErr.Error()), nil
 		}
 
 		// Call the application handler.

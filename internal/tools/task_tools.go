@@ -142,6 +142,7 @@ var manageTaskSchema = json.RawMessage(`{
 func ManageTaskTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_manage_task",
+		Mutating:    true,
 		Description: "Create, update, retire, or cancel a task.",
 		Schema:      manageTaskSchema,
 		Handler:     manageTaskHandler(vault),

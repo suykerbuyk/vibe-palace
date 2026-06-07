@@ -65,6 +65,7 @@ var appendIterationSchema = json.RawMessage(`{
 func AppendIterationTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_append_iteration",
+		Mutating:    true,
 		Description: "Append an iteration narrative to the project's iterations file.",
 		Schema:      appendIterationSchema,
 		Handler:     appendIterationHandler(vault),

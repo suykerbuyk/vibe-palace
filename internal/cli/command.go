@@ -50,4 +50,10 @@ type Command struct {
 	// unknown-subcommand error. Has no effect when Subcommands is
 	// empty.
 	BareInvocation bool
+	// MutatesVault marks a command that writes vault content. The
+	// dispatcher's pre-run hook (see Registry.SetPreRun) fail-stops such a
+	// command when the vault's MCP surface version exceeds this binary's;
+	// non-mutating commands are warn-only. The framework itself stays
+	// app-agnostic — cmd/vp injects the actual surface policy via SetPreRun.
+	MutatesVault bool
 }

@@ -42,7 +42,8 @@ var carriedAddSchema = json.RawMessage(`{
 // CarriedAddTool appends a bullet to the ### Carried forward sub-section.
 func CarriedAddTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name: "vp_carried_add",
+		Name:     "vp_carried_add",
+		Mutating: true,
 		Description: "Append a bullet to the reserved ### Carried forward " +
 			"sub-section inside ## Open Threads of a project's resume.md. The " +
 			"bullet is emitted in canonical form '- **{slug}** — {title} {body}'. " +
@@ -99,7 +100,8 @@ var carriedRemoveSchema = json.RawMessage(`{
 // CarriedRemoveTool removes a bullet from the ### Carried forward sub-section.
 func CarriedRemoveTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name: "vp_carried_remove",
+		Name:     "vp_carried_remove",
+		Mutating: true,
 		Description: "Remove a bullet from the ### Carried forward sub-section " +
 			"of a project's resume.md. The slug match is case-insensitive. " +
 			"Returns a hard error (listing the available slugs) if the slug is " +
@@ -152,7 +154,8 @@ var carriedPromoteSchema = json.RawMessage(`{
 // (via the shared CreateTask backend) and removes it from the carried list.
 func CarriedPromoteToTaskTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name: "vp_carried_promote_to_task",
+		Name:     "vp_carried_promote_to_task",
+		Mutating: true,
 		Description: "Promote a ### Carried forward bullet to a new project task " +
 			"and remove it from the carried list. The task file is created via " +
 			"the same backend as vp_manage_task create " +

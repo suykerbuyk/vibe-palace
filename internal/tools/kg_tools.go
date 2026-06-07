@@ -122,6 +122,7 @@ func KGQueryTool(vault *storage.Vault) mcp.Tool {
 func KGAddTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_kg_add",
+		Mutating:    true,
 		Description: "Add a fact (triple) to the knowledge graph, creating entities if needed.",
 		Schema:      kgAddSchema,
 		Handler:     kgAddHandler(vault),
@@ -132,6 +133,7 @@ func KGAddTool(vault *storage.Vault) mcp.Tool {
 func KGInvalidateTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_kg_invalidate",
+		Mutating:    true,
 		Description: "Mark a knowledge graph fact as no longer valid (sets end date).",
 		Schema:      kgInvalidateSchema,
 		Handler:     kgInvalidateHandler(vault),

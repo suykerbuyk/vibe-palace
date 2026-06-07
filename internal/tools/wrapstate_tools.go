@@ -124,7 +124,8 @@ var stampIterSchema = json.RawMessage(`{
 // .vibe-palace/last-tasks-snapshot.json.
 func StampIterTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name: "vp_stamp_iter",
+		Name:     "vp_stamp_iter",
+		Mutating: true,
 		Description: "Write the current iteration number to .vibe-palace/last-iter " +
 			"AND a snapshot of the vault-side tasks/ tree (active/done/cancelled " +
 			"slug sets) to .vibe-palace/last-tasks-snapshot.json at the project " +
