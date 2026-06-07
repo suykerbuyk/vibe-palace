@@ -176,6 +176,10 @@ func gatherCheckResults() []check.Result {
 	// --- Agent drift (not reconciled — owned by vp commands upgrade) ---
 	results = append(results, check.CheckAgentDrift(cwd))
 
+	// --- Project-root .gitignore (advisory — reconciled by vp init /
+	// vp commands upgrade, surfaced here when canonical entries are missing). ---
+	results = append(results, check.CheckProjectGitignore(cwd))
+
 	// --- Surface compatibility — last check, mirroring the runtime gate so
 	// the binary-vs-vault verdict reads as the closing line of the report. ---
 	surfaceVault := ""

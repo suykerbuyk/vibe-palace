@@ -621,3 +621,40 @@ func TestCheckProjectAt_ExplicitRootDecoupledFromCwd(t *testing.T) {
 		t.Errorf("expected summary to reference named-project, got %q", r.Summary)
 	}
 }
+
+func TestCheckProjectGitignore_Missing(t *testing.T) {
+	dir := t.TempDir()
+	// No .gitignore at all → all canonical entries missing → advisory Info.
+	r := CheckProjectGitignore(dir)
+	if r.Status != Info {
+		t.Errorf("missing file: want Info, got %v", r.Status)
+	}
+	if len(r.Details) == 0 {
+		t.Error("expected details listing missing entries")
+	}
+}
+
+func TestCheckProjectGitignore_Clean(t *testing.T) {
+	dir := t.TempDir()
+	if err := storage.ReconcileProjectGitignore(dir); err != nil {
+		t.Fatal(err)
+	}
+	r := CheckProjectGitignore(dir)
+	if r.Status != Pass {
+		t.Errorf("reconciled file: want Pass, got %v (%s)", r.Status, r.Summary)
+	}
+}
+
+func TestCheckProjectGitignore_Partial(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("/.claude/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := CheckProjectGitignore(dir)
+	if r.Status != Info {
+		t.Errorf("partial file: want Info, got %v", r.Status)
+	}
+	if !strings.Contains(r.Summary, "missing") {
+		t.Errorf("expected summary to mention missing, got %q", r.Summary)
+	}
+}

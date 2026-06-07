@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGitAvailable(t *testing.T) {
@@ -272,6 +273,242 @@ func TestReconcileVaultGitignore_CaseSensitive(t *testing.T) {
 	}
 	if !strings.Contains(s, "\n*.new\n") && !strings.HasSuffix(s, "*.new\n") {
 		t.Errorf("canonical *.new not appended (case-sensitive match expected):\n%s", s)
+	}
+}
+
+// --- Project-root .gitignore reconciler ---
+
+// TestReconcileProjectGitignore_FreshFile: a missing project .gitignore
+// gains the full canonical set, with exactly one trailing newline.
+func TestReconcileProjectGitignore_FreshFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := ReconcileProjectGitignore(dir); err != nil {
+		t.Fatalf("ReconcileProjectGitignore: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	s := string(data)
+	for _, p := range CanonicalProjectGitignorePatterns {
+		if !strings.Contains(s, p) {
+			t.Errorf("missing canonical pattern %q in:\n%s", p, s)
+		}
+	}
+	if !strings.HasSuffix(s, "\n") {
+		t.Error(".gitignore should end with exactly one newline")
+	}
+	if strings.HasSuffix(s, "\n\n") {
+		t.Error(".gitignore should not end with multiple trailing newlines")
+	}
+	// vp-owned artifacts only — must NOT manage build/coverage/binary lines.
+	for _, forbidden := range []string{"/vp\n", "/build/", "/coverage."} {
+		if strings.Contains(s, forbidden) {
+			t.Errorf("reconciler must not inject project-owned entry %q:\n%s", forbidden, s)
+		}
+	}
+}
+
+// TestReconcileProjectGitignore_PartialPresence: only the missing
+// canonical lines are appended; the pre-existing canonical line and the
+// user's own lines are preserved in their original order.
+func TestReconcileProjectGitignore_PartialPresence(t *testing.T) {
+	dir := t.TempDir()
+	seed := "# user header\nnode_modules/\n/.claude/\nbuild/\n"
+	path := filepath.Join(dir, ".gitignore")
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReconcileProjectGitignore(dir); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	s := string(data)
+	// User content preserved verbatim at the head, in original order.
+	if !strings.HasPrefix(s, seed) {
+		t.Errorf("user content not preserved verbatim at head:\n%s", s)
+	}
+	// Every canonical present exactly once (the seeded /.claude/ not doubled).
+	for _, p := range CanonicalProjectGitignorePatterns {
+		n := 0
+		for _, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+			if line == p {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("canonical %q appears %d times, want 1:\n%s", p, n, s)
+		}
+	}
+}
+
+// TestReconcileProjectGitignore_AllPresentNoOp: when every canonical line
+// is already present, the file must NOT be touched at all — content and
+// mtime unchanged (idempotent no-op so a stable project never churns).
+func TestReconcileProjectGitignore_AllPresentNoOp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".gitignore")
+	// Seed with all canonical lines plus user content, deliberately
+	// WITHOUT trailing-newline normalization (no final newline) so a
+	// rewrite would be detectable by the changed bytes.
+	seed := "# mine\nfoo/\n" + strings.Join(CanonicalProjectGitignorePatterns, "\n")
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Backdate mtime so a rewrite would visibly bump it.
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ReconcileProjectGitignore(dir); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("no-op run changed mtime: before=%v after=%v", before.ModTime(), after.ModTime())
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != seed {
+		t.Errorf("no-op run altered content:\nwant:\n%q\ngot:\n%q", seed, string(data))
+	}
+}
+
+// TestReconcileProjectGitignore_Idempotent: a second run after the first
+// produces byte-identical content and does not touch the file again.
+func TestReconcileProjectGitignore_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".gitignore")
+	if err := ReconcileProjectGitignore(dir); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Backdate so a needless rewrite would be observable via mtime.
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	st1, _ := os.Stat(path)
+	if err := ReconcileProjectGitignore(dir); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Errorf("not byte-identical on re-run:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+	st2, _ := os.Stat(path)
+	if !st2.ModTime().Equal(st1.ModTime()) {
+		t.Error("second reconcile rewrote a complete file (mtime changed)")
+	}
+}
+
+// TestReconcileProjectGitignore_PreservesLeadingTrailingContent: user
+// content before and after the appended block survives verbatim.
+func TestReconcileProjectGitignore_PreservesLeadingTrailingContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".gitignore")
+	// Some canonical present (/.claude/) interleaved with user lines, and
+	// a trailing user line after it.
+	user := "# top\n*.log\n\n/.claude/\n\n# bottom\ndist/\n"
+	if err := os.WriteFile(path, []byte(user), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReconcileProjectGitignore(dir); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	s := string(data)
+	if !strings.HasPrefix(s, user) {
+		t.Errorf("user content not preserved verbatim at head:\n%s", s)
+	}
+	if strings.Contains(s, "\n\n\n") {
+		t.Errorf("introduced consecutive blank lines:\n%s", s)
+	}
+	if !strings.HasSuffix(s, "\n") || strings.HasSuffix(s, "\n\n") {
+		t.Errorf("expected exactly one trailing newline:\n%q", s)
+	}
+}
+
+// TestReconcileProjectGitignore_AtomicWrite: no leftover .tmp sidecars
+// remain after a successful reconcile (temp-file + rename leaves the dir
+// clean).
+func TestReconcileProjectGitignore_AtomicWrite(t *testing.T) {
+	dir := t.TempDir()
+	if err := ReconcileProjectGitignore(dir); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("leftover temp file after reconcile: %s", e.Name())
+		}
+	}
+	// The final file must exist with 0o644.
+	info, err := os.Stat(filepath.Join(dir, ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o644 {
+		t.Errorf("expected 0o644, got %o", perm)
+	}
+}
+
+// TestMissingProjectGitignorePatterns covers the advisory detection used
+// by `vp check`: a missing file reports the full set; a complete file
+// reports none; a partial file reports exactly the absent lines in
+// declaration order.
+func TestMissingProjectGitignorePatterns(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".gitignore")
+
+	// Missing file → full canonical set.
+	missing, err := MissingProjectGitignorePatterns(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != len(CanonicalProjectGitignorePatterns) {
+		t.Errorf("missing-file: want %d, got %d", len(CanonicalProjectGitignorePatterns), len(missing))
+	}
+
+	// Complete file → none missing.
+	if err := ReconcileProjectGitignore(dir); err != nil {
+		t.Fatal(err)
+	}
+	missing, err = MissingProjectGitignorePatterns(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != 0 {
+		t.Errorf("complete-file: want 0 missing, got %v", missing)
+	}
+
+	// Partial file → only the absent lines, in declaration order.
+	seed := "/.claude/\n/.grok/\n"
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missing, err = MissingProjectGitignorePatterns(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/CLAUDE.md", "/commit.msg", "/.vibe-palace/"}
+	if strings.Join(missing, "|") != strings.Join(want, "|") {
+		t.Errorf("partial-file: want %v, got %v", want, missing)
 	}
 }
 

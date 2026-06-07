@@ -94,6 +94,13 @@ func cmdInit(info cli.BuildInfo) *cli.Command {
 			// --- Phase 4: Hook wiring ---
 			results = append(results, initHookWiring(projectDir, projectReady)...)
 
+			// --- Phase 5: Project-root .gitignore reconcile ---
+			// vp writes host-local AI artifacts (CLAUDE.md, .claude/, .grok/,
+			// .vibe-palace/, commit.msg) into the project tree; none should be
+			// committed. Reconcile the project repo-root .gitignore so they are
+			// ignored. Non-fatal: a failure here must not abort init.
+			results = append(results, initProjectGitignore(projectDir, projectReady))
+
 			printInitStatus(os.Stdout, info.Version, results)
 			return projectCode
 		},
@@ -826,6 +833,35 @@ func initHookWiring(_ string, projectReady bool) []check.Result {
 		Status:  check.Pass,
 		Summary: msg,
 	}}
+}
+
+// initProjectGitignore reconciles the project repo-root .gitignore so the
+// host-local AI artifacts vp writes into the project tree (CLAUDE.md,
+// commit.msg, .claude/, .grok/, .vibe-palace/) are never committed. It is
+// append-only and idempotent. Failures are non-fatal — they surface as an
+// Info row and are logged, mirroring how the vault .gitignore reconcile is
+// treated, so a gitignore hiccup never aborts init.
+func initProjectGitignore(projectRoot string, projectReady bool) check.Result {
+	if !projectReady {
+		return check.Result{
+			Name:    "Project .gitignore",
+			Status:  check.Skip,
+			Summary: "skipped — no project config",
+		}
+	}
+	if err := storage.ReconcileProjectGitignore(projectRoot); err != nil {
+		slog.Error("project gitignore reconcile error", "err", err)
+		return check.Result{
+			Name:    "Project .gitignore",
+			Status:  check.Info,
+			Summary: "could not reconcile .gitignore: " + err.Error(),
+		}
+	}
+	return check.Result{
+		Name:    "Project .gitignore",
+		Status:  check.Pass,
+		Summary: "host-local vp artifacts ignored",
+	}
 }
 
 // printInitStatus renders the end-of-run status table. Mirrors check.Print's

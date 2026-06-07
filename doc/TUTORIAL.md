@@ -826,21 +826,34 @@ vp commands upgrade --dry-run # preview drift without writing
 vp commands upgrade --only restart  # narrow to a single shim
 ```
 
+`vp commands upgrade` refreshes three things in one pass: the command
+shims (`.claude/commands/vpc-*.md`), the agent-file managed blocks, and
+the per-project **skill** shims (`.claude/skills/vps-*/SKILL.md` and,
+when a `.cursor/` layout is present, `.cursor/rules/vps-*.mdc`). Skill
+shims previously refreshed only at `vp init`; now bumping a skill's
+version, adding a new `vps-*` skill, or removing one propagates on
+upgrade too — stale skill shims are offered for removal with the same
+accept/skip/accept-all prompts, and `--dry-run` previews skill-shim
+drift alongside command drift.
+
 Stale shims (for commands that were renamed or removed from the vault)
 are detected automatically but never deleted without explicit consent.
 Files under `.claude/commands/` that do not carry the vibe-palace shim
 marker are reported as `custom` and left strictly alone.
 
-If you prefer not to commit the shims — they are regeneratable on any
-fresh clone — add this line to `.gitignore`:
+The shims are regeneratable on any fresh clone, so they are treated as
+host-local by default: `vp init` (and `vp commands upgrade`) reconcile
+the project repo-root `.gitignore` to ignore `/.claude/` along with the
+other vp-written artifacts (`/CLAUDE.md`, `/commit.msg`, `/.grok/`,
+`/.vibe-palace/`). The reconcile is append-only and idempotent — it
+never rewrites or reorders your existing `.gitignore` lines — and
+`vp check` flags an advisory when a canonical entry is missing.
 
-```gitignore
-.claude/commands/vpc-*.md
-```
-
-Teams that want everyone to see the same `/vpc-` menu can simply omit
-that ignore rule; the shim bodies are deterministic, so checking them in
-produces stable diffs.
+Teams that instead want everyone to see the same `/vpc-` menu checked
+in can commit the shim bodies (they are deterministic, so diffs are
+stable); since the reconciler ignores all of `/.claude/`, narrow the
+ignore yourself (e.g. drop `/.claude/` and add only the paths you don't
+want tracked) and keep the shim files force-added.
 
 ### Ending a Session
 

@@ -442,7 +442,18 @@ populated vault. Templates flow through four stations:
    stub (`Scaffold` mode — directory + README, no per-file copy), writes
    the `<vault>/.vibe-palace/templates.lock` sidecar, and adds `*.bak`
    and `*.new` to `<vault>/.gitignore` via
-   `storage.ReconcileVaultGitignore`.
+   `storage.ReconcileVaultGitignore`. It also reconciles the *consuming
+   project's* repo-root `.gitignore` via
+   `storage.ReconcileProjectGitignore`, appending the host-local AI
+   artifacts vp writes into the project tree
+   (`storage.CanonicalProjectGitignorePatterns`: `/CLAUDE.md`,
+   `/commit.msg`, `/.claude/`, `/.grok/`, `/.vibe-palace/`) so they are
+   never committed. That project-root reconcile is append-only and
+   idempotent — it never removes or reorders user lines, and a run where
+   every canonical line is already present touches nothing. It also runs
+   on `vp commands upgrade` so existing projects self-heal, and
+   `vp check` surfaces an advisory (`Info`, never `Fail`) when canonical
+   entries are missing.
 3. **User edits freely.** The vault is git-managed. Users treat
    `<vault>/Templates/commands/*.md` as source-of-truth for their
    personal command phrasing.

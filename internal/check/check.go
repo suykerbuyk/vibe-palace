@@ -351,6 +351,33 @@ func CheckAgentDrift(projectRoot string) Result {
 	return r
 }
 
+// CheckProjectGitignore reports whether the project repo-root .gitignore
+// is missing any of the canonical vp-owned host-local artifact patterns
+// (CLAUDE.md, commit.msg, .claude/, .grok/, .vibe-palace/). This is an
+// advisory check (Status: Info) — never Fail — pointing the user at
+// `vp commands upgrade` (or `vp init`) to self-heal. A clean file is Pass.
+func CheckProjectGitignore(projectRoot string) Result {
+	r := Result{Name: "Project .gitignore", Status: Pass}
+	missing, err := storage.MissingProjectGitignorePatterns(projectRoot)
+	if err != nil {
+		r.Status = Info
+		r.Summary = "could not read .gitignore: " + err.Error()
+		return r
+	}
+	if len(missing) == 0 {
+		r.Summary = "host-local vp artifacts ignored"
+		return r
+	}
+	r.Status = Info
+	r.Summary = fmt.Sprintf("%d canonical entry(ies) missing", len(missing))
+	for _, m := range missing {
+		r.Details = append(r.Details, "  "+m)
+	}
+	r.Details = append(r.Details,
+		"Run `vp commands upgrade` (or `vp init`) to reconcile the project .gitignore.")
+	return r
+}
+
 func hasNonWhitespace(data []byte) bool {
 	for _, b := range data {
 		if b != ' ' && b != '\t' && b != '\n' && b != '\r' {

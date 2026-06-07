@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/shims"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 // isTerminal reports whether f is a TTY. Falls back to false on any error.
@@ -286,15 +288,40 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 	}
 	pendingShims := shimAdd + shimUpd + shimStale
 
+	// Per-project skill shims: ClaudeSkill always; CursorRule when a Cursor
+	// layout is present. Planned against the project root so we can present
+	// skill-shim drift alongside command-shim drift, then prompt + apply it
+	// through the same UX. Scoped by --only the same way command shims are.
+	skillPlan, skillErr := planSkillShims(resolver, projectRoot, opts.Only)
+	if skillErr != nil {
+		fmt.Fprintf(opts.Stderr, "vp commands upgrade: skill shim plan: %v\n", skillErr)
+	}
+	skillAdd, skillUpd, skillStale, skillCustom := 0, 0, 0, 0
+	for _, c := range skillPlan {
+		switch c.Kind {
+		case shims.New:
+			skillAdd++
+		case shims.Modified:
+			skillUpd++
+		case shims.Stale:
+			skillStale++
+		case shims.CustomChange:
+			skillCustom++
+		}
+	}
+	pendingSkillShims := skillAdd + skillUpd + skillStale
+
 	if opts.DryRun {
 		printUpgradePlan(opts.Stdout, plan)
 		printBlockPlan(opts.Stdout, blockChanges)
 		printShimPlan(opts.Stdout, shimPlan)
+		printSkillShimPlan(opts.Stdout, skillPlan)
 		fmt.Fprintf(opts.Stdout,
-			"\nSummary (dry run): %d new, %d updated, %d unchanged, %d custom, %d agent-file block(s) need updating, shims: %d new, %d updated, %d stale, %d custom.\n",
+			"\nSummary (dry run): %d new, %d updated, %d unchanged, %d custom, %d agent-file block(s) need updating, shims: %d new, %d updated, %d stale, %d custom, skill shims: %d new, %d updated, %d stale, %d custom.\n",
 			added, updated, unchanged, custom, pendingBlocks,
-			shimAdd, shimUpd, shimStale, shimCustom)
-		if added+updated+pendingBlocks+pendingShims > 0 {
+			shimAdd, shimUpd, shimStale, shimCustom,
+			skillAdd, skillUpd, skillStale, skillCustom)
+		if added+updated+pendingBlocks+pendingShims+pendingSkillShims > 0 {
 			return cli.ExitUser // non-zero — manual review required
 		}
 		return cli.ExitOK
@@ -307,7 +334,7 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 	if !opts.Overwrite && !interactive {
 		// Non-interactive and not --overwrite: refuse to silently write.
 		// But we still proceed if there is nothing to do.
-		if added+updated+pendingBlocks+pendingShims == 0 {
+		if added+updated+pendingBlocks+pendingShims+pendingSkillShims == 0 {
 			fmt.Fprintln(opts.Stdout, "All embedded templates, agent blocks, and shims match. Nothing to do.")
 			return cli.ExitOK
 		}
@@ -351,8 +378,8 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 	skippedCount := promptRes.SkippedCount
 	if promptRes.Quit {
 		fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
-		return applyAndReport(opts.Stdout, opts.Stderr, accepted, nil, nil,
-			acceptedCount, skippedCount, custom, shimCustom)
+		return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, nil, nil, nil,
+			acceptedCount, skippedCount, custom, shimCustom, skillCustom)
 	}
 
 	// Agent-file managed blocks: collect acceptances using the same prompt.
@@ -394,8 +421,8 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 			skippedCount++
 		case "q":
 			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
-			return applyAndReport(opts.Stdout, opts.Stderr, accepted, acceptedBlocks, nil,
-				acceptedCount, skippedCount, custom, shimCustom)
+			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, nil, nil,
+				acceptedCount, skippedCount, custom, shimCustom, skillCustom)
 		}
 	}
 
@@ -442,16 +469,64 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 			skippedCount++
 		case "q":
 			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
-			return applyAndReport(opts.Stdout, opts.Stderr, accepted, acceptedBlocks, acceptedShims,
-				acceptedCount, skippedCount, custom, shimCustom)
+			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, acceptedShims, nil,
+				acceptedCount, skippedCount, custom, shimCustom, skillCustom)
 		}
 	}
 
-	return applyAndReport(opts.Stdout, opts.Stderr, accepted, acceptedBlocks, acceptedShims,
-		acceptedCount, skippedCount, custom, shimCustom)
+	// Per-project skill shims: per-entry prompts for New / Modified / Stale,
+	// mirroring the command-shim loop above. Unchanged and CustomChange
+	// entries never surface here; only accepted entries reach ApplySkills.
+	acceptedSkillShims := make([]shims.SkillChange, 0, len(skillPlan))
+	for _, s := range skillPlan {
+		if s.Kind == shims.UnchangedChange || s.Kind == shims.CustomChange {
+			continue
+		}
+		if acceptAll {
+			acceptedSkillShims = append(acceptedSkillShims, s)
+			acceptedCount++
+			fmt.Fprintf(opts.Stdout, "[accept] skill-shim %s %s (%s)\n", s.Target, s.Name, s.Kind)
+			continue
+		}
+		fmt.Fprintf(opts.Stdout, "\n=== skill-shim %s %s (%s) ===\n", s.Target, s.Name, s.Kind)
+		switch s.Kind {
+		case shims.New:
+			fmt.Fprintf(opts.Stdout, "%s will be created.\n", s.Path)
+		case shims.Modified:
+			fmt.Fprintf(opts.Stdout, "%s body is stale (prev sha=%s); will be rewritten.\n",
+				s.Path, s.PrevSha)
+		case shims.Stale:
+			fmt.Fprintf(opts.Stdout,
+				"%s no longer maps to a known skill (sha=%s); accept to delete.\n",
+				s.Path, s.PrevSha)
+		}
+		choice, err := cli.PromptChoice(opts.Stdout, reader)
+		if err != nil {
+			fmt.Fprintf(opts.Stderr, "vp commands upgrade: %v\n", err)
+			return cli.ExitSystem
+		}
+		switch choice {
+		case "a":
+			acceptedSkillShims = append(acceptedSkillShims, s)
+			acceptedCount++
+		case "A":
+			acceptedSkillShims = append(acceptedSkillShims, s)
+			acceptedCount++
+			acceptAll = true
+		case "s":
+			skippedCount++
+		case "q":
+			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
+			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, acceptedShims, acceptedSkillShims,
+				acceptedCount, skippedCount, custom, shimCustom, skillCustom)
+		}
+	}
+
+	return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, acceptedShims, acceptedSkillShims,
+		acceptedCount, skippedCount, custom, shimCustom, skillCustom)
 }
 
-func applyAndReport(w, errw io.Writer, accepted []commands.Change, acceptedBlocks []commands.BlockChange, acceptedShims []shims.Change, acceptedCount, skippedCount, custom, shimCustom int) int {
+func applyAndReport(w, errw io.Writer, projectRoot string, accepted []commands.Change, acceptedBlocks []commands.BlockChange, acceptedShims []shims.Change, acceptedSkillShims []shims.SkillChange, acceptedCount, skippedCount, custom, shimCustom, skillCustom int) int {
 	if err := commands.Apply(accepted); err != nil {
 		fmt.Fprintf(errw, "apply templates: %v\n", err)
 		return cli.ExitSystem
@@ -467,10 +542,26 @@ func applyAndReport(w, errw io.Writer, accepted []commands.Change, acceptedBlock
 		fmt.Fprintf(errw, "apply shims: %v\n", err)
 		return cli.ExitSystem
 	}
+	// Skill shims ride the same contract: only user-approved Stale entries
+	// reach here, so AllowStaleRemoval cleans up a removed skill's shim.
+	skillRep, _, err := shims.ApplySkills(acceptedSkillShims, shims.ApplyOptions{AllowStaleRemoval: true})
+	if err != nil {
+		fmt.Fprintf(errw, "apply skill shims: %v\n", err)
+		return cli.ExitSystem
+	}
+	// Reconcile the project repo-root .gitignore so existing projects
+	// self-heal (ignore host-local vp artifacts) without a full re-init.
+	// Append-only and idempotent; non-fatal — log and carry on.
+	if projectRoot != "" {
+		if err := storage.ReconcileProjectGitignore(projectRoot); err != nil {
+			slog.Error("project gitignore reconcile error", "err", err)
+		}
+	}
 	fmt.Fprintf(w,
-		"\nDone. %d accepted, %d skipped, %d custom (untouched). Shims: %d added, %d updated, %d removed, %d custom.\n",
+		"\nDone. %d accepted, %d skipped, %d custom (untouched). Shims: %d added, %d updated, %d removed, %d custom. Skill shims: %d added, %d updated, %d removed, %d custom.\n",
 		acceptedCount, skippedCount, custom,
-		rep.Added, rep.Updated, rep.Removed, shimCustom)
+		rep.Added, rep.Updated, rep.Removed, shimCustom,
+		skillRep.Added, skillRep.Updated, skillRep.Removed, skillCustom)
 	return cli.ExitOK
 }
 
@@ -518,6 +609,94 @@ func planShims(resolver *vpctx.Resolver, projectRoot, only string) ([]shims.Chan
 		}
 	}
 	return filtered, nil
+}
+
+// planSkillShims builds the combined per-project skill-shim plan across every
+// detected skill target (ClaudeSkill always; CursorRule when a Cursor layout
+// is present). Mirrors initSkillShimWiring in cmd_init.go for the item set and
+// target selection, but returns a flat plan so runCommandsUpgrade can present,
+// prompt, and apply it through the same UX as command shims. When only is
+// non-empty the plan is filtered to the matching skill name so a targeted
+// upgrade does not sweep in unrelated skills.
+func planSkillShims(resolver *vpctx.Resolver, projectRoot, only string) ([]shims.SkillChange, error) {
+	if projectRoot == "" {
+		return nil, nil
+	}
+	items, err := skillShimItems(resolver)
+	if err != nil {
+		return nil, err
+	}
+	targets := []shims.TargetKind{shims.ClaudeSkill}
+	if shims.CursorPresent(projectRoot) {
+		targets = append(targets, shims.CursorRule)
+	}
+	var plan []shims.SkillChange
+	for _, target := range targets {
+		changes, err := shims.PlanSkills(target, items, projectRoot)
+		if err != nil {
+			return nil, err
+		}
+		plan = append(plan, changes...)
+	}
+	if only == "" {
+		return plan, nil
+	}
+	filtered := plan[:0]
+	for _, c := range plan {
+		if c.Name == only {
+			filtered = append(filtered, c)
+		}
+	}
+	return filtered, nil
+}
+
+// skillShimItems resolves the skill set into the SkillItem inputs the
+// ClaudeSkill/CursorRule renderers need. Mirrors the item-building loop in
+// initSkillShimWiring: unresolvable skills are skipped silently.
+func skillShimItems(resolver *vpctx.Resolver) ([]shims.SkillItem, error) {
+	names, err := resolver.ListResourcesScoped("skill", "", "", "")
+	if err != nil {
+		return nil, err
+	}
+	items := make([]shims.SkillItem, 0, len(names))
+	for _, ri := range names {
+		sd, _, err := resolver.ResolveSkillDir(ri.Name, "", "", "")
+		if err != nil {
+			continue
+		}
+		vaultPath := filepath.Join(resolver.VaultRoot(),
+			"Templates", "skills", ri.Name, "SKILL.md")
+		items = append(items, shims.SkillItem{
+			Name:        ri.Name,
+			Frontmatter: sd.Frontmatter,
+			VaultPath:   vaultPath,
+		})
+	}
+	return items, nil
+}
+
+// printSkillShimPlan renders the skill-shim plan for --dry-run, mirroring
+// printShimPlan's layout so command and skill drift read consistently.
+func printSkillShimPlan(w io.Writer, plan []shims.SkillChange) {
+	if len(plan) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\nSkill shims:")
+	for _, c := range plan {
+		switch c.Kind {
+		case shims.New:
+			fmt.Fprintf(w, "  new       %s\n", c.Path)
+		case shims.Modified:
+			fmt.Fprintf(w, "  modified  %s  (prev sha=%s)\n", c.Path, c.PrevSha)
+		case shims.UnchangedChange:
+			fmt.Fprintf(w, "  unchanged %s\n", c.Path)
+		case shims.Stale:
+			fmt.Fprintf(w, "  stale     %s  (sha=%s — prompts for removal)\n",
+				c.Path, c.PrevSha)
+		case shims.CustomChange:
+			fmt.Fprintf(w, "  custom    %s  (left untouched)\n", c.Path)
+		}
+	}
 }
 
 func printShimPlan(w io.Writer, plan []shims.Change) {
