@@ -539,6 +539,35 @@ vp vault sync               # bidirectional sync (pull then push)
 To disable git tracking, pass `--no-git` during init or set
 `git_enabled = false` in your config file.
 
+### Zero manual git in the vault
+
+You should never have to run raw `git` inside the vault. Session capture and
+the hooks constantly write machine-generated artifacts — session summaries,
+transcript archives, knowledge-graph data, drawers, and `.surface` stamps —
+and these are committed for you automatically:
+
+- **`/restart`** heals leftover capture residue (from the previous session's
+  hooks, a crash, or another machine) right after it pulls, so the vault is
+  clean before context loads.
+- **`/wrap`** sweeps the session's own capture artifacts after it syncs your
+  narrative notes.
+
+Both commit *only* classified capture artifacts and **report** everything else —
+`git add -A` is never used, so a stray edit or an accidental project scaffold is
+flagged for you instead of being silently committed.
+
+To see what a sweep would do at any time, preview it without committing:
+
+```bash
+vp vault tidy --dry-run     # show what would be Swept vs. Reported
+vp vault tidy --no-push     # commit the swept artifacts locally only
+vp vault tidy               # commit swept artifacts and push to all remotes
+```
+
+The dry-run prints two counted lists — the artifacts it *would* sweep and the
+dirt it leaves for your eyes — and commits nothing. When no remotes are
+configured, a real run downgrades to a local-only commit instead of failing.
+
 ### Keeping Config Current
 
 As vibe-palace evolves, new settings are added. Check if your config has

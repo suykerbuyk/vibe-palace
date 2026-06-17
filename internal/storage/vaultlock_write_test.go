@@ -76,7 +76,7 @@ func TestDeleteDrawerAppendDrawerInterlock(t *testing.T) {
 		t.Fatalf("read drawer file: %v", err)
 	}
 	present := make(map[string]bool)
-	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(string(data), "\n"), "\n") {
 		if line == "" {
 			continue
 		}
@@ -172,6 +172,44 @@ func TestConcurrentInvalidateTriple(t *testing.T) {
 		if tr.ValidTo != want {
 			t.Errorf("triple %d ValidTo = %q, want %q", i, tr.ValidTo, want)
 		}
+	}
+}
+
+// TestConcurrentAppendDrawerDedup proves the duplicate-ID guard still fires
+// after the atomic-write conversion: many goroutines race to append the same
+// deterministic drawer ID and exactly one wins, leaving a single well-formed
+// JSONL line. Run under -race.
+func TestConcurrentAppendDrawerDedup(t *testing.T) {
+	v := testVault(t)
+	const project, wing, room = "proj", "wing-a", "room-1"
+	const n = 32
+
+	var wg sync.WaitGroup
+	var wins int
+	var mu sync.Mutex
+	for range n {
+		wg.Go(func() {
+			d := Drawer{Hall: "facts", Content: "same content", SourceType: "session", FiledAt: "2026-06-06T00:00:00Z"}
+			if err := v.AppendDrawer(project, wing, room, d); err == nil {
+				mu.Lock()
+				wins++
+				mu.Unlock()
+			} else if !strings.Contains(err.Error(), "already exists") {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+
+	if wins != 1 {
+		t.Errorf("got %d successful appends, want 1 (dedup must hold)", wins)
+	}
+	drawers, err := v.ListDrawers(project, wing, room)
+	if err != nil {
+		t.Fatalf("ListDrawers (file not well-formed?): %v", err)
+	}
+	if len(drawers) != 1 {
+		t.Fatalf("drawer count = %d, want 1", len(drawers))
 	}
 }
 

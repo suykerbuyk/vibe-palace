@@ -297,6 +297,124 @@ func gitPush(root string, remotes []string) (string, error) {
 }
 
 // ---------------------------------------------------------------------------
+// vp_vault_tidy
+// ---------------------------------------------------------------------------
+
+type vaultTidyParams struct {
+	DryRun bool  `json:"dry_run"`
+	Push   *bool `json:"push"`
+}
+
+var vaultTidySchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"dry_run": {"type": "boolean", "description": "Classify dirt without committing (default false). Returns the swept/reported split only."},
+		"push": {"type": "boolean", "description": "Push the tidy commit to all configured remotes (default true). Downgrades to a local-only commit when no remotes are configured."}
+	}
+}`)
+
+func VaultTidyTool(vault *storage.Vault) mcp.Tool {
+	return mcp.Tool{
+		Name:     "vp_vault_tidy",
+		Mutating: true,
+		Description: "Scan the whole vault and commit ONLY classified capture " +
+			"artifacts (session summaries, transcript archives, knowledge-graph " +
+			"entities/triples, drawers, and tracked .surface stamps) with a " +
+			"hostname-stamped message. git add -A is NEVER used: every other dirty " +
+			"file is reported for human eyes and left untouched. With dry_run, " +
+			"classifies without committing. With push (default true), pushes the " +
+			"commit to all configured remotes, downgrading to a local-only commit " +
+			"when none exist.",
+		Schema:  vaultTidySchema,
+		Handler: vaultTidyHandler(vault),
+	}
+}
+
+func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
+	return func(_ context.Context, params json.RawMessage) (any, error) {
+		var p vaultTidyParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("parse params: %w", err)
+		}
+
+		vaultSyncMu.Lock()
+		defer vaultSyncMu.Unlock()
+
+		root := vault.Root
+
+		if p.DryRun {
+			res, err := storage.TidyScan(root)
+			if err != nil {
+				return nil, fmt.Errorf("tidy scan: %w", err)
+			}
+			summary := fmt.Sprintf("dry run: would sweep %d artifact%s, %d reported",
+				len(res.Swept), plural(len(res.Swept)), len(res.Reported))
+			return map[string]any{
+				"status":    "ok",
+				"dry_run":   true,
+				"swept":     res.Swept,
+				"reported":  res.Reported,
+				"committed": false,
+				"summary":   summary,
+			}, nil
+		}
+
+		push := true
+		if p.Push != nil {
+			push = *p.Push
+		}
+		res, err := storage.TidyVault(root, push)
+		if err != nil {
+			return nil, fmt.Errorf("tidy: %w", err)
+		}
+
+		remoteResults := map[string]string{}
+		for name, rerr := range res.RemoteResults {
+			if rerr != nil {
+				remoteResults[name] = rerr.Error()
+			} else {
+				remoteResults[name] = "ok"
+			}
+		}
+
+		var summary string
+		if res.Committed {
+			summary = fmt.Sprintf("Swept %d artifact%s (commit %s); %d reported",
+				len(res.Swept), plural(len(res.Swept)), res.CommitSHA, len(res.Reported))
+			switch {
+			case res.PushDowngraded:
+				summary += "; no remotes — committed locally only"
+			case len(remoteResults) > 0:
+				summary += fmt.Sprintf("; pushed to %d remote%s", len(remoteResults), plural(len(remoteResults)))
+			}
+		} else {
+			summary = fmt.Sprintf("no-op: nothing to sweep, %d reported", len(res.Reported))
+		}
+
+		return map[string]any{
+			"status":          "ok",
+			"dry_run":         false,
+			"swept":           res.Swept,
+			"reported":        res.Reported,
+			"committed":       res.Committed,
+			"commit_sha":      res.CommitSHA,
+			"push_downgraded": res.PushDowngraded,
+			"remote_results":  remoteResults,
+			"summary":         summary,
+		}, nil
+	}
+}
+
+// plural returns "s" for any count other than 1, for terse pluralization in
+// human-readable tool summaries.
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// ---------------------------------------------------------------------------
 // vp_refresh_index
 // ---------------------------------------------------------------------------
 

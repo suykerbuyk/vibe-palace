@@ -61,20 +61,19 @@ func (v *Vault) AppendDrawer(project, wing, room string, d Drawer) error {
 	}
 	defer release()
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		return fmt.Errorf("open drawer file: %w", err)
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read drawer file: %w", err)
 	}
-	defer f.Close()
 
 	// Check for duplicate ID.
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(bytes.NewReader(existing))
 	for scanner.Scan() {
-		var existing Drawer
-		if err := json.Unmarshal(scanner.Bytes(), &existing); err != nil {
+		var cur Drawer
+		if err := json.Unmarshal(scanner.Bytes(), &cur); err != nil {
 			continue
 		}
-		if existing.ID == d.ID {
+		if cur.ID == d.ID {
 			return fmt.Errorf("drawer %q already exists in %s/%s", d.ID, wing, room)
 		}
 	}
@@ -86,12 +85,14 @@ func (v *Vault) AppendDrawer(project, wing, room string, d Drawer) error {
 	if err != nil {
 		return fmt.Errorf("marshal drawer: %w", err)
 	}
-	line = append(line, '\n')
 
-	if _, err := f.Write(line); err != nil {
+	var buf bytes.Buffer
+	buf.Write(existing)
+	buf.Write(line)
+	buf.WriteByte('\n')
+	if err := atomicfile.Write(v.Root, path, buf.Bytes()); err != nil {
 		return fmt.Errorf("write drawer: %w", err)
 	}
-	v.stamp(path)
 	return nil
 }
 

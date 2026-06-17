@@ -83,7 +83,7 @@ func knownCommands() []string {
 		"init", "inject", "mcp", "mcp serve",
 		"migrate", "migrate mempalace", "migrate vibevault",
 		"search", "sessions", "status", "tasks",
-		"vault", "vault pull", "vault push", "vault sync",
+		"vault", "vault pull", "vault push", "vault sync", "vault tidy",
 		"version",
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
@@ -124,6 +125,85 @@ func TestVaultSyncBadFlags(t *testing.T) {
 	code := cmd.Run([]string{"--unknown"})
 	if code != cli.ExitUser {
 		t.Errorf("exit code = %d, want %d", code, cli.ExitUser)
+	}
+}
+
+func TestVaultTidyBadFlags(t *testing.T) {
+	cmd := cmdVaultTidy()
+	code := cmd.Run([]string{"--unknown"})
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want %d", code, cli.ExitUser)
+	}
+}
+
+// TestVaultTidyDryRun verifies --dry-run prints the sweep/report split, makes
+// clear nothing was committed, and creates no commit.
+func TestVaultTidyDryRun(t *testing.T) {
+	vaultDir := setupTestVaultEnv(t)
+	run := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", vaultDir}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-b", "main")
+	run("config", "user.email", "test@test.com")
+	run("config", "user.name", "Test")
+	os.WriteFile(filepath.Join(vaultDir, "seed.txt"), []byte("seed"), 0o644)
+	run("add", "seed.txt")
+	run("commit", "-m", "seed")
+
+	headBefore := gitHead(t, vaultDir)
+
+	// One sweepable artifact, one piece of non-artifact dirt.
+	mkfile(t, vaultDir, "Projects/vibe-palace/sessions/2026-06-17.md", "session\n")
+	mkfile(t, vaultDir, "Projects/vibe-palace/resume.md", "resume\n")
+
+	var code int
+	out := captureStdout(t, func() {
+		code = cmdVaultTidy().Run([]string{"--dry-run"})
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want %d", code, cli.ExitOK)
+	}
+	for _, want := range []string{
+		"Would sweep",
+		"Projects/vibe-palace/sessions/2026-06-17.md",
+		"Reported",
+		"Projects/vibe-palace/resume.md",
+		"nothing was committed",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dry-run output missing %q; got:\n%s", want, out)
+		}
+	}
+	if headAfter := gitHead(t, vaultDir); headAfter != headBefore {
+		t.Errorf("dry-run created a commit: HEAD %s -> %s", headBefore, headAfter)
+	}
+}
+
+// gitHead returns the current HEAD commit hash of dir.
+func gitHead(t *testing.T, dir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "HEAD")
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// mkfile writes rel (creating parent dirs) under dir.
+func mkfile(t *testing.T, dir, rel, content string) {
+	t.Helper()
+	full := filepath.Join(dir, rel)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

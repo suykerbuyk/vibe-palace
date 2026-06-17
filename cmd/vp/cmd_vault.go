@@ -34,7 +34,7 @@ func cmdVault() *cli.Command {
 		Synopsis:    "vp vault <command> [flags]",
 		Description: "Manage the vault git repository. The vault stores all palace data in a git-tracked directory for versioning and multi-machine sync.",
 		Subcommands: []string{
-			"vault pull", "vault push", "vault sync", "vault commit",
+			"vault pull", "vault push", "vault sync", "vault commit", "vault tidy",
 			"vault read", "vault write", "vault edit", "vault delete",
 			"vault move", "vault exists", "vault sha256", "vault merge-driver",
 		},
@@ -237,6 +237,94 @@ func cmdVaultCommit() *cli.Command {
 					} else {
 						fmt.Fprintf(os.Stderr, "  push %s: ok\n", remote)
 					}
+				}
+			}
+			return cli.ExitOK
+		},
+	}
+}
+
+var vaultTidyFlags = []cli.FlagDef{
+	{Name: "--dry-run", Help: "Classify dirt and print what would be swept, without committing anything"},
+	{Name: "--no-push", Help: "Commit the swept artifacts locally without pushing to remotes"},
+}
+
+// printTidyList prints a counted, indented "label (N):" block for a set of
+// tidy paths. An empty set still prints its header (with count 0) so the
+// sweep/report split is always visible.
+func printTidyList(label string, paths []string) {
+	fmt.Printf("%s (%d):\n", label, len(paths))
+	for _, p := range paths {
+		fmt.Printf("  %s\n", p)
+	}
+}
+
+func cmdVaultTidy() *cli.Command {
+	return &cli.Command{
+		Name:     "vault tidy",
+		Synopsis: "vp vault tidy [--dry-run] [--no-push]",
+		Description: "Scan the whole vault and commit ONLY classified capture artifacts " +
+			"(session summaries, transcript archives, knowledge-graph entities/triples, " +
+			"drawers, and tracked .surface stamps) with a hostname-stamped message. " +
+			"git add -A is NEVER used: every other dirty file is reported for your eyes " +
+			"and left untouched. By default the tidy commit is pushed to all configured " +
+			"remotes (downgrading to a local-only commit when none are configured); " +
+			"--no-push commits locally only, and --dry-run classifies without committing.",
+		Flags: vaultTidyFlags,
+		Examples: []cli.Example{
+			{Cmd: "vp vault tidy --dry-run", Comment: "Preview the sweep/report split without committing"},
+			{Cmd: "vp vault tidy --no-push", Comment: "Commit swept artifacts locally only"},
+			{Cmd: "vp vault tidy", Comment: "Commit swept artifacts and push to all remotes"},
+		},
+		Run: func(args []string) int {
+			fv, err := cli.ParseFlags(vaultTidyFlags, args)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp vault tidy: %v\n", err)
+				return cli.ExitUser
+			}
+			root, err := gitEnabledGuard()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp vault tidy: %v\n", err)
+				return cli.ExitUser
+			}
+
+			// --dry-run: classify only, never commit.
+			if fv.Bool("--dry-run") {
+				res, err := storage.TidyScan(root)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "vp vault tidy: %v\n", err)
+					return cli.ExitSystem
+				}
+				printTidyList("Would sweep", res.Swept)
+				printTidyList("Reported — needs your eyes", res.Reported)
+				fmt.Println("dry run: nothing was committed")
+				return cli.ExitOK
+			}
+
+			res, err := storage.TidyVault(root, !fv.Bool("--no-push"))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp vault tidy: %v\n", err)
+				return cli.ExitSystem
+			}
+			if res.Committed {
+				artifacts := "artifacts"
+				if len(res.Swept) == 1 {
+					artifacts = "artifact"
+				}
+				fmt.Printf("Swept %d %s (commit %s)\n", len(res.Swept), artifacts, res.CommitSHA)
+			} else {
+				fmt.Println("nothing to sweep")
+			}
+			// Reported dirt always needs human eyes — show it even on a no-op.
+			printTidyList("Reported — needs your eyes", res.Reported)
+			if res.PushDowngraded {
+				fmt.Println("no remotes configured — committed locally only")
+			}
+			for remote, rerr := range res.RemoteResults {
+				if rerr != nil {
+					fmt.Printf("  push %s: %v\n", remote, rerr)
+				} else {
+					fmt.Printf("  push %s: ok\n", remote)
 				}
 			}
 			return cli.ExitOK

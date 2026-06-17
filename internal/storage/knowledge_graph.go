@@ -5,8 +5,8 @@ package storage
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -64,19 +64,18 @@ func (v *Vault) AddEntity(project string, e Entity) error {
 	}
 	defer release()
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		return fmt.Errorf("open entities file: %w", err)
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read entities file: %w", err)
 	}
-	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(bytes.NewReader(existing))
 	for scanner.Scan() {
-		var existing Entity
-		if err := json.Unmarshal(scanner.Bytes(), &existing); err != nil {
+		var cur Entity
+		if err := json.Unmarshal(scanner.Bytes(), &cur); err != nil {
 			continue
 		}
-		if existing.ID == e.ID {
+		if cur.ID == e.ID {
 			return fmt.Errorf("entity %q already exists", e.ID)
 		}
 	}
@@ -88,10 +87,14 @@ func (v *Vault) AddEntity(project string, e Entity) error {
 	if err != nil {
 		return fmt.Errorf("marshal entity: %w", err)
 	}
-	if _, err := f.Write(append(line, '\n')); err != nil {
+
+	var buf bytes.Buffer
+	buf.Write(existing)
+	buf.Write(line)
+	buf.WriteByte('\n')
+	if err := atomicfile.Write(v.Root, path, buf.Bytes()); err != nil {
 		return fmt.Errorf("write entity: %w", err)
 	}
-	v.stamp(path)
 	return nil
 }
 
@@ -160,19 +163,24 @@ func (v *Vault) AddTriple(project string, t Triple) error {
 		return fmt.Errorf("marshal triple: %w", err)
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	// Hold the per-path lock so the create-once stat→write is atomic against
+	// other vp writers: atomicfile.Write replaces rather than failing on an
+	// existing file, so existence is enforced here rather than by O_EXCL.
+	release, err := vaultlock.Acquire(v.Root, path)
 	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("triple %s/%s/%s already exists", t.Subject, t.Predicate, t.Object)
-		}
-		return fmt.Errorf("open triple file: %w", err)
+		return fmt.Errorf("lock triple: %w", err)
 	}
-	defer f.Close()
+	defer release()
 
-	if _, err := f.Write(data); err != nil {
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("triple %s/%s/%s already exists", t.Subject, t.Predicate, t.Object)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat triple file: %w", err)
+	}
+
+	if err := atomicfile.Write(v.Root, path, data); err != nil {
 		return fmt.Errorf("write triple: %w", err)
 	}
-	v.stamp(path)
 	return nil
 }
 

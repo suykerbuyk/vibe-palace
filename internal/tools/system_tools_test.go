@@ -114,6 +114,79 @@ func TestVaultSync_BarePushRefusesDirty(t *testing.T) {
 	}
 }
 
+// TestVaultTidy_DryRunClassifiesNoCommit verifies dry_run returns the
+// swept/reported split without creating a commit.
+func TestVaultTidy_DryRunClassifiesNoCommit(t *testing.T) {
+	root := initVaultRepo(t)
+	headBefore := gitT(t, root, "rev-parse", "HEAD")
+	vault := storage.NewVault(root)
+	tool := VaultTidyTool(vault)
+
+	// One sweepable artifact, one piece of non-artifact dirt.
+	mustWrite(t, vault, "Projects/vibe-palace/sessions/2026-06-17.md", "session\n")
+	mustWrite(t, vault, "Projects/vibe-palace/resume.md", "resume\n")
+
+	params, _ := json.Marshal(vaultTidyParams{DryRun: true})
+	res, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	m := res.(map[string]any)
+	if m["committed"] != false {
+		t.Errorf("committed = %v, want false", m["committed"])
+	}
+	if m["dry_run"] != true {
+		t.Errorf("dry_run = %v, want true", m["dry_run"])
+	}
+	swept := m["swept"].([]string)
+	reported := m["reported"].([]string)
+	if !strings.Contains(strings.Join(swept, ","), "sessions/2026-06-17.md") {
+		t.Errorf("expected session swept, swept=%v", swept)
+	}
+	if !strings.Contains(strings.Join(reported, ","), "resume.md") {
+		t.Errorf("expected resume reported, reported=%v", reported)
+	}
+	if headAfter := gitT(t, root, "rev-parse", "HEAD"); headAfter != headBefore {
+		t.Errorf("dry run created a commit: HEAD %s -> %s", headBefore, headAfter)
+	}
+}
+
+// TestVaultTidy_SweepCommitsLocal verifies a real (push=false) sweep commits
+// the artifacts, reports the rest, and leaves reported dirt in the worktree.
+func TestVaultTidy_SweepCommitsLocal(t *testing.T) {
+	root := initVaultRepo(t)
+	vault := storage.NewVault(root)
+	tool := VaultTidyTool(vault)
+
+	mustWrite(t, vault, "Projects/vibe-palace/sessions/2026-06-17.md", "session\n")
+	mustWrite(t, vault, "Projects/vibe-palace/resume.md", "resume\n")
+
+	push := false
+	params, _ := json.Marshal(vaultTidyParams{Push: &push})
+	res, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	m := res.(map[string]any)
+	if m["committed"] != true {
+		t.Errorf("committed = %v, want true", m["committed"])
+	}
+	if m["commit_sha"] == "" {
+		t.Error("expected a commit_sha")
+	}
+	if sum, _ := m["summary"].(string); !strings.Contains(sum, "Swept 1 artifact") {
+		t.Errorf("summary = %q, want it to mention Swept 1 artifact", sum)
+	}
+
+	status := gitT(t, root, "status", "--porcelain", "-uall")
+	if strings.Contains(status, "sessions/2026-06-17.md") {
+		t.Errorf("swept session should be committed, status: %q", status)
+	}
+	if !strings.Contains(status, "resume.md") {
+		t.Errorf("reported resume.md should remain dirty, status: %q", status)
+	}
+}
+
 func TestInitProjectSuccess(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
 	tool := InitProjectTool(vault)

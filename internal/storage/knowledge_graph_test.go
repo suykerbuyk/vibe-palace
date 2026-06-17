@@ -4,7 +4,11 @@
 package storage
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -43,6 +47,72 @@ func TestAddEntityDuplicate(t *testing.T) {
 	err := v.AddEntity("proj", e)
 	if err == nil {
 		t.Error("duplicate entity should return error")
+	}
+}
+
+// TestAddEntityFileContent verifies the atomic writer preserves the exact
+// on-disk JSONL byte layout: one marshaled entity per line, newline-terminated,
+// in append order.
+func TestAddEntityFileContent(t *testing.T) {
+	v := testVault(t)
+	e1 := Entity{ID: "e1", Name: "Kai", Type: "person", CreatedAt: "2026-01-01T00:00:00Z"}
+	e2 := Entity{ID: "e2", Name: "Orion", Type: "project", CreatedAt: "2026-01-02T00:00:00Z"}
+	if err := v.AddEntity("proj", e1); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.AddEntity("proj", e2); err != nil {
+		t.Fatal(err)
+	}
+
+	path, err := v.KGEntitiesFile("proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read entities file: %v", err)
+	}
+
+	l1, _ := json.Marshal(e1)
+	l2, _ := json.Marshal(e2)
+	want := string(l1) + "\n" + string(l2) + "\n"
+	if string(data) != want {
+		t.Errorf("file content = %q, want %q", string(data), want)
+	}
+}
+
+// TestConcurrentAddEntityDedup proves the duplicate-ID guard still fires after
+// the atomic-write conversion: many goroutines race to add the same ID and the
+// surviving file holds exactly one copy with no corruption. Run under -race.
+func TestConcurrentAddEntityDedup(t *testing.T) {
+	v := testVault(t)
+	const project = "proj"
+	const n = 32
+
+	var wg sync.WaitGroup
+	var failures int
+	var mu sync.Mutex
+	for range n {
+		wg.Go(func() {
+			e := Entity{ID: "dup", Name: "Kai", Type: "person", CreatedAt: "2026-06-06T00:00:00Z"}
+			if err := v.AddEntity(project, e); err != nil {
+				mu.Lock()
+				failures++
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+
+	if failures != n-1 {
+		t.Errorf("got %d duplicate failures, want %d (exactly one writer should win)", failures, n-1)
+	}
+	entities, err := v.ListEntities(project)
+	if err != nil {
+		t.Fatalf("ListEntities (file not well-formed?): %v", err)
+	}
+	if len(entities) != 1 {
+		t.Fatalf("entity count = %d, want 1", len(entities))
 	}
 }
 
@@ -145,6 +215,79 @@ func TestAddTripleDedup(t *testing.T) {
 	if got.Confidence != first.Confidence {
 		t.Errorf("Confidence = %v, want %v (file should not have been overwritten)",
 			got.Confidence, first.Confidence)
+	}
+}
+
+// TestAddTripleFileContent verifies the atomic writer produces a byte-identical
+// triple file: the same indented JSON the prior O_EXCL writer emitted.
+func TestAddTripleFileContent(t *testing.T) {
+	v := testVault(t)
+	tr := Triple{
+		Subject:     "Kai",
+		Predicate:   "works on",
+		Object:      "Orion",
+		ValidFrom:   "2026-01-01",
+		ExtractedAt: "2026-03-15T00:00:00Z",
+		Confidence:  0.9,
+	}
+	if err := v.AddTriple("proj", tr); err != nil {
+		t.Fatalf("AddTriple: %v", err)
+	}
+
+	path, err := v.KGTriplePath("proj", "Kai", "works on", "Orion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read triple file: %v", err)
+	}
+
+	want, _ := json.MarshalIndent(tr, "", "  ")
+	if string(data) != string(want) {
+		t.Errorf("file content = %q, want %q", string(data), string(want))
+	}
+
+	// File must be complete and parseable.
+	var got Triple
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("triple file is not valid JSON: %v", err)
+	}
+}
+
+// TestConcurrentAddTripleDedup proves the create-once guard still fires after
+// the conversion from O_EXCL to stat-under-lock + atomic write: many goroutines
+// race to create the same triple and exactly one wins. Run under -race.
+func TestConcurrentAddTripleDedup(t *testing.T) {
+	v := testVault(t)
+	const project = "proj"
+	const n = 32
+
+	var wg sync.WaitGroup
+	var wins int
+	var mu sync.Mutex
+	for i := range n {
+		wg.Go(func() {
+			tr := Triple{
+				Subject: "Kai", Predicate: "works on", Object: "Orion",
+				ExtractedAt: fmt.Sprintf("2026-06-%02dT00:00:00Z", (i%28)+1),
+			}
+			if err := v.AddTriple(project, tr); err == nil {
+				mu.Lock()
+				wins++
+				mu.Unlock()
+			} else if !strings.Contains(err.Error(), "already exists") {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+
+	if wins != 1 {
+		t.Errorf("got %d successful creates, want 1 (create-once must hold)", wins)
+	}
+	if _, err := v.GetTriple(project, "Kai", "works on", "Orion"); err != nil {
+		t.Fatalf("GetTriple after concurrent create: %v", err)
 	}
 }
 

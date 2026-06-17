@@ -282,6 +282,11 @@
       "schema_sha256": "d5ce6f416bee5795d86e460b32e5dc8d158a4b4b743a9d200dbd52486b751235"
     },
     {
+      "name": "vp_vault_tidy",
+      "mutating": true,
+      "schema_sha256": "59aae254f31dce1e41b2c5fae6629922ffe4c5ab75714caa4213f55161cf4d77"
+    },
+    {
       "name": "vp_vault_write",
       "mutating": true,
       "schema_sha256": "78b54bd1686c7d042492c88a032f863d33fb780ba50c54e86269f6052ab5ab43"

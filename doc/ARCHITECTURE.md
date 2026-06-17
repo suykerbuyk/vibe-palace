@@ -5,7 +5,7 @@
 Vibe-palace is a compiled Go binary that serves as an MCP (Model Context
 Protocol) server for AI-assisted development. It provides context injection,
 session capture, semantic search, and palace-based knowledge navigation through
-57 MCP tools over stdio JSON-RPC 2.0.
+58 MCP tools over stdio JSON-RPC 2.0.
 
 **Design principles:**
 - Single binary, zero-CGo, no external services
@@ -24,7 +24,7 @@ session capture, semantic search, and palace-based knowledge navigation through
 | `internal/storage` | Vault layout, CRUD, config | `Vault`, `Config`, `Drawer`, `SessionMeta` |
 | `internal/mcp` | JSON-RPC server, tool registry | `Server`, `Registry`, `Tool` |
 | `internal/context` | Precedence-aware template resolution | `Resolver`, `ResourceInfo` |
-| `internal/tools` | 57 MCP tool implementations | (see tool table below) |
+| `internal/tools` | 58 MCP tool implementations | (see tool table below) |
 | `internal/embedder` | ONNX text embedding | `Embedder` interface, `ONNXEmbedder` |
 | `internal/search` | Hybrid semantic + structural search | `Engine`, `VectorIndex`, `SearchResult` |
 | `internal/capture` | Session ingest, chunking, friction, shared capture pipeline | `Indexer`, `ChunkConfig`, `WriteSession` |
@@ -193,6 +193,133 @@ level in sequence. `GetConfigValue(project, key)` returns value + source level.
 
 ---
 
+## Vault Housekeeping (tidy)
+
+### The problem: capture churn nobody commits
+
+The hook path (`vp hook` on SessionEnd/Stop) and the MCP capture tools write
+session summaries, transcript archives, knowledge-graph entities/triples, and
+drawer JSONL across **every** project, and bump `.surface` provenance stamps as
+they go. Nothing in the routine workflow ever commits this churn: `/wrap` only
+commits the *current* project's explicit narrative paths (resume, iterations,
+the active task, `commit.msg`). The machine-generated artifacts pile up
+uncommitted, and because `vp vault push` refuses to push a dirty tree, the
+backlog eventually blocks multi-machine sync. The historical fix was to run raw
+git in the vault by hand — eyeball `git status`, build a comma-separated
+`--paths` list, and `vp vault commit --push`. The goal of tidy is that a normal
+end user **never runs raw git in the vault**.
+
+### Principle: classify, don't `git add -A`
+
+Tidy is *not* "commit everything dirty." It commits a precisely-classified set
+of host-generated capture artifacts and **reports** everything else, preserving
+the deliberate never-`git add -A` invariant shared with `vp vault commit`. Each
+dirty path is routed into exactly one of two buckets:
+
+- **Swept** — machine-generated capture output that is safe to commit
+  unattended. Staged and committed with a hostname-stamped message.
+- **Reported** — everything else. Never staged, never committed; surfaced to the
+  human so a stray edit or an accidental scaffold gets one round of eyes.
+
+This split is what lets the feature run automatically without ever committing on
+the user's behalf for anything it does not positively recognize.
+
+### The data-driven classifier (`sweepRules`)
+
+The heart of tidy is `sweepRules` in `internal/storage/vaulttidy.go` — a table
+that is the single source of truth for what gets committed:
+
+| Category | Shape (vault-relative) |
+|----------|------------------------|
+| Session summaries | `Projects/*/sessions/*.md` |
+| Transcript archives | `Projects/*/transcripts/*.{manifest.json,jsonl.zst}` |
+| Knowledge-graph entities | `palace/*/kg/entities.jsonl` |
+| Knowledge-graph triples | `palace/*/kg/triples/**/*.json` (deep) |
+| Drawers | `palace/*/drawers/**/*.jsonl` (deep) |
+| Surface stamps | `{Projects/*,palace/*,Templates}/.surface` (status-gated) |
+
+The real vault layout requires deep (`**`) matching: drawers nest as
+`palace/<p>/drawers/<p>/<room>/drawers.jsonl` and triples nest arbitrarily under
+a source-derived subpath (e.g.
+`palace/<p>/kg/triples/.claude/plans/<name>--mentioned_in--<uuid>.json` — triple
+paths legitimately contain `.claude/` segments, so the classifier must **never**
+exclude them). Go's stdlib `filepath.Match` has no `**`, and `doublestar` is not
+a dependency. Rather than add one for ~5 stable rules (decision M1, option B),
+each `SweepRule` carries an explicit segment-matcher func over
+`parts = strings.Split(vaultRelPath, "/")`. The `Pattern` string on each rule is
+documentation only — the human-readable shape the `Match` func implements, kept
+for the test table and audit trail. `matchRule` returns the first rule whose
+`Match` accepts a path; the rules are mutually exclusive in practice.
+
+Everything that matches no rule — `resume.md`, task files, `Knowledge/` notes,
+hand-edited content — falls through to Reported and is left untouched.
+
+### The `.surface` status gate
+
+The `.surface` rule is the one case where routing depends on the git status code,
+not the path alone. `git status --porcelain -z` encodes status as two columns
+`XY` (index, worktree). `classifyDirty` applies the gate only to the
+`.surface` rule:
+
+- **Tracked modification** (` M` worktree-modified — the normal per-session stamp
+  churn — plus `M ` / `MM`) → **swept**.
+- **Untracked** (`??`) `.surface` → **reported**.
+
+An untracked `.surface` means a project directory git has never seen: either a
+genuinely new project (which gets one round of human eyes on its first capture)
+or a stray scaffold from an accidental `vp init` (e.g. `Projects/p/`). Pure
+path-globbing would commit `Projects/p/.surface` while reporting its siblings
+(`config.toml`, the `commands/`/`skills/` README stubs) — a split-brain commit
+that breaks the "stray is flagged, not committed" guarantee. After a project's
+first commit its stamps read ` M` and sweep automatically. All other rules sweep
+regardless of status, including `??` for newly created
+sessions/transcripts/drawers/triples and `D ` deletes (git stages deletions).
+
+### Porcelain parsing and rename/copy handling
+
+`scanPorcelain` runs `git status --porcelain -z -uall` (the `-uall` surfaces
+files inside untracked directories, not just the directory) with the same
+prompt-suppressing env as the other git helpers. `parsePorcelainZ` splits the
+NUL-delimited output into `PorcelainEntry{Status, Path}`. A rename/copy record
+(`R` or `C` in either status column) is followed by a **second** NUL-separated
+field holding the old path; that extra field must be consumed or every
+subsequent record misaligns. Rename/copy entries report the new path and are
+routed to Reported unconditionally — capture artifacts are append-only and
+timestamped, so a rename always signals human activity that needs eyes.
+
+### Push policy and remote downgrade
+
+`TidyVault` delegates the actual commit to `CommitAndPushPaths`, inheriting its
+batched staging, hostname stamp, and offline tolerance (the commit lands locally
+first; per-remote push failures are recorded in `RemoteResults` and never become
+a returned error). When push is requested, `TidyVault` first probes for
+configured remotes; if there are none it downgrades to a local-only commit and
+sets `PushDowngraded` (a remote-less vault is not the same as being offline). An
+empty swept set is a no-op — `CommitAndPushPaths` errors on zero paths, so it is
+never called, and the result carries `Committed=false` with Reported populated.
+
+### Three layers
+
+| Layer | Entry point | Role |
+|-------|-------------|------|
+| Core | `storage.TidyVault(vaultPath, push)` / `storage.TidyScan(vaultPath)` | Scan → parse → classify → (commit). `TidyScan` is the read-only classification path (never commits, never probes remotes) that backs `--dry-run` and is shared with `TidyVault` so there is one classification code path. |
+| CLI | `vp vault tidy [--dry-run] [--no-push]` | The human / cron-able escape hatch. `--dry-run` prints the swept/reported split without committing; `--no-push` commits locally only; bare invocation commits and pushes. |
+| MCP | `vp_vault_tidy` (mutating; params `dry_run`, `push`) | What the workflow templates call. Returns the `TidyResult` (swept, reported, commit info, per-remote results) as structured content plus a concise human summary. |
+
+### Workflow wiring
+
+Tidy is invoked through the MCP tool by two commands so end users never touch
+git directly:
+
+- **`/restart`** sweeps right after `vp vault pull` and the Surface preflight, so
+  residue left by the previous session's hooks, a crash, or another machine is
+  healed *before* context loads — and tidy runs against the already-merged state.
+- **`/wrap`** sweeps after the narrative sync, committing the `.surface` churn the
+  wrap itself generated plus any session/transcript artifacts produced during the
+  session.
+
+---
+
 ## MCP Server (Phase 2)
 
 ### Protocol Layer
@@ -208,7 +335,7 @@ cmd/vp/main.go
 ├── search.NewEngine(emb, v, cfg) # create search engine
 ├── context.NewResolver(v.Root)   # template resolver
 ├── mcp.NewServer(v)              # create MCP server
-├── tools.RegisterAll(...)        # register all 57 tools
+├── tools.RegisterAll(...)        # register all 58 tools
 └── srv.Serve(ctx)                # start stdio transport
 ```
 
@@ -230,7 +357,7 @@ On dispatch, the registry validates incoming params against the compiled
 schema before calling the handler. Handlers extract the vault from context
 and operate on storage directly.
 
-### 57 MCP Tools
+### 58 MCP Tools
 
 | Tool | Source File | Category |
 |------|-----------|----------|
@@ -264,6 +391,7 @@ and operate on storage directly.
 | `vp_manage_task` | task_tools.go | Tasks |
 | `vp_init` | system_tools.go | Project |
 | `vp_vault_sync` | vault_tools.go | Vault |
+| `vp_vault_tidy` | system_tools.go | Vault |
 | `vp_search` | search_tools.go | Search |
 | `vp_search_cross_project` | search_tools.go | Search |
 | `vp_capture_session` | session_tools.go | Session |

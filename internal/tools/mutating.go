@@ -39,4 +39,5 @@ var MutatingToolNames = []string{
 	"vp_kg_invalidate",
 	"vp_init",
 	"vp_vault_sync",
+	"vp_vault_tidy",
 }

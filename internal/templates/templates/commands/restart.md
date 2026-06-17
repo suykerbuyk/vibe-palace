@@ -41,7 +41,30 @@ vault before loading context or mutating any task. Run
   mismatch and the remediation: upgrade `vp`
   (`cd ~/code/vibe-palace && git pull && make install`), or override
   at risk with `VP_SURFACE_GATE=warn`.
-- If its `status` is `"pass"` or `"info"`, proceed to Step 2.
+- If its `status` is `"pass"` or `"info"`, proceed to the vault tidy
+  below.
+
+### Vault tidy (heal capture residue)
+
+After the Surface preflight passes (and only then), sweep any
+uncommitted capture artifacts left by prior sessions, crashes, or
+other machines so the vault is clean before context loads. Pull ran
+first, so this tidies the already-merged state.
+
+Call `vp_vault_tidy` (the MCP tool — prefer it over Bash so the
+command works in AI hosts without arbitrary-shell support; fall back
+to `vp vault tidy` via Bash only if the tool is unavailable). It
+commits **only** machine-generated capture artifacts (session
+summaries, transcript archives, `.surface` stamps, knowledge-graph
+entities/triples, drawers) and pushes to every configured remote,
+degrading to a local-only commit when no remote is configured. It
+**never** runs `git add -A`: non-artifact dirt is reported, never
+committed.
+
+If the result lists any **Reported** paths, surface them to the user
+— they are unexpected vault dirt that needs human eyes (e.g. a stray
+`Projects/<slug>/` scaffold from an accidental `vp init`). Then
+proceed to Step 2.
 
 ## Step 2: Bootstrap Context
 

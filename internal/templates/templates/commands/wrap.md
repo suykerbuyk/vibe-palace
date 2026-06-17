@@ -169,7 +169,24 @@ the next and surfaces the error at the end. If all pushes fail
 (no remote, network error), warn and proceed — local state is still
 valid.
 
-## Step 10: Report
+## Step 10: Vault Tidy (sweep capture artifacts)
+
+After the narrative sync, sweep the machine-generated capture
+artifacts this session produced — the `.surface` stamp churn from the
+wrap itself, plus any session summaries, transcript archives, and
+knowledge-graph / drawer writes that the narrative `vp_vault_sync`
+(which commits only the explicit `--paths` you named) did not include.
+
+Call `vp_vault_tidy` (the MCP tool — prefer it over Bash so the
+command works in AI hosts without arbitrary-shell support; fall back
+to `vp vault tidy` via Bash only if the tool is unavailable). It
+commits **only** classified capture artifacts and pushes, never
+`git add -A`; non-artifact dirt is reported, not committed.
+
+If the result lists any **Reported** paths, surface them to the user
+before finishing — they need human eyes.
+
+## Step 11: Report
 
 Report what was done:
 
@@ -180,6 +197,7 @@ Report what was done:
 - `commit.msg` updated in both locations (with verification)
 - Project files staged (by path)
 - Vault synced
+- Vault tidied (capture artifacts swept; any reported dirt surfaced)
 
 Note that the user should review the staged diff and the
 `commit.msg` before running `git commit -F commit.msg`.
