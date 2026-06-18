@@ -71,12 +71,33 @@ func ImportVibeVault(
 	if err != nil {
 		return result, fmt.Errorf("scan projects: %w", err)
 	}
+
+	// Restrict to the requested projects (matched by either the slugified
+	// source dir name or the final post-remap slug) so a targeted run does
+	// not fan out across an entire shared source vault.
+	if len(opts.OnlyProjects) > 0 {
+		only := make(map[string]bool, len(opts.OnlyProjects))
+		for _, s := range opts.OnlyProjects {
+			only[s] = true
+		}
+		for dir, finalSlug := range projects {
+			orig := slug.Slugify(filepath.Base(dir))
+			if !only[orig] && !only[finalSlug] {
+				delete(projects, dir)
+			}
+		}
+	}
+
 	result.ProjectsScanned = len(projects)
 	result.SlugRemap = remap
 
 	// Step 2: create a single indexer for the entire run. All indexer
-	// writes land in the DESTINATION vault.
-	indexer := capture.NewIndexer(destination, engine, emb, cfg)
+	// writes land in the DESTINATION vault. Skipped (and engine/emb may be
+	// nil) when SkipSessions is set — an agentctx-only run needs no model.
+	var indexer *capture.Indexer
+	if !opts.SkipSessions {
+		indexer = capture.NewIndexer(destination, engine, emb, cfg)
+	}
 
 	// Step 3: process each project.
 	for dirPath, projSlug := range projects {
@@ -98,9 +119,29 @@ func ImportVibeVault(
 			}
 		}
 
-		// Gather session files.
-		sessionsDir := filepath.Join(dirPath, "sessions")
-		sessionFiles, _ := filepath.Glob(filepath.Join(sessionsDir, "*.md"))
+		// Carry the agentctx tree (resume/iterations/workflow/knowledge/
+		// tasks/memory + the verbatim migrated/ archive) when requested.
+		// Pure file IO — runs in dry-run too (preview), needs no embedder.
+		if opts.WithAgentctx {
+			actx, aerr := copyAgentctx(destination, dirPath, projSlug, opts)
+			result.Agentctx.Copied += actx.Copied
+			result.Agentctx.Skipped += actx.Skipped
+			result.Agentctx.Bytes += actx.Bytes
+			result.Agentctx.CopiedPaths = append(result.Agentctx.CopiedPaths, actx.CopiedPaths...)
+			result.Agentctx.SkippedPaths = append(result.Agentctx.SkippedPaths, actx.SkippedPaths...)
+			result.Agentctx.CrownJewelSkipped = append(result.Agentctx.CrownJewelSkipped, actx.CrownJewelSkipped...)
+			if aerr != nil {
+				result.Errors = append(result.Errors, ImportError{Project: projSlug, Err: aerr})
+				progress(opts, ProgressEvent{Type: ProgressError, Project: projSlug, Message: aerr.Error()})
+			}
+		}
+
+		// Gather session files (skipped for an agentctx-only run).
+		var sessionFiles []string
+		if !opts.SkipSessions {
+			sessionsDir := filepath.Join(dirPath, "sessions")
+			sessionFiles, _ = filepath.Glob(filepath.Join(sessionsDir, "*.md"))
+		}
 
 		total := len(sessionFiles)
 
@@ -256,9 +297,9 @@ func ImportVibeVault(
 			})
 		}
 
-		// Step 4: import knowledge.md if present.
+		// Step 4: import knowledge.md if present (skipped for agentctx-only).
 		knowledgePath := filepath.Join(dirPath, "knowledge.md")
-		if data, err := os.ReadFile(knowledgePath); err == nil {
+		if data, err := os.ReadFile(knowledgePath); err == nil && !opts.SkipSessions {
 			text := strings.TrimSpace(string(data))
 			if text != "" && !opts.DryRun {
 				knowledgeID := "knowledge-" + projSlug

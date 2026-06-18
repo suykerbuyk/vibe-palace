@@ -37,25 +37,33 @@ var migrateVibeVaultFlags = []cli.FlagDef{
 	{Name: "--strict", Help: "Abort on the first frontmatter parse error (default: log file path, skip the session, continue)"},
 	{Name: "--yes", Short: "-y", Help: "Accept default slug-rename suggestions without prompting"},
 	{Name: "--slug-map", Arg: "OLD=NEW[,OLD=NEW...]", Help: "Pre-specify slug renames; uncovered collisions fall back to interactive or auto"},
+	{Name: "--only", Arg: "SLUG[,SLUG...]", Help: "Restrict the run to these projects (matched by source dir slug or final slug). Default: every project in the source vault."},
+	{Name: "--agentctx", Help: "Also carry each project's agentctx tree (resume, iterations, workflow, knowledge, tasks, memory) plus a verbatim migrated/ archive of commands/skills/snippets/features. Copy-if-absent."},
+	{Name: "--force", Help: "Overwrite existing agentctx destination files (default: skip present files). Re-seeds from source, discarding vault-side edits. Requires --agentctx."},
+	{Name: "--no-sessions", Help: "Skip session + knowledge indexing; copy agentctx only (loads no embedder). Requires --agentctx."},
 }
 
 func cmdMigrateVibeVault() *cli.Command {
 	return &cli.Command{
-		Name:        "migrate vibevault",
-		Synopsis:    "vp migrate vibevault [--vault-path PATH] [--dry-run]",
-		Description: "Import sessions from a VibeVault directory into the palace. " +
-			"--vault-path names the SOURCE vault to read sessions from; the DESTINATION " +
-			"is always the configured vault_path (~/.config/vibe-palace/config.toml). All " +
-			"writes — palace data, idempotency markers, embed and model caches, and per-project " +
-			"config scaffolds — land in the destination. When --vault-path is omitted, source " +
-			"and destination are the same configured vault. Every run prints a Source/Destination/" +
-			"Same-vault banner to stderr before scanning; a real (non-dry-run) cross-vault import " +
-			"requires confirmation (--yes, or an interactive [y/N] prompt on a TTY).",
+		Name:     "migrate vibevault",
+		Synopsis: "vp migrate vibevault [--vault-path PATH] [--dry-run] [--agentctx]",
+		Description: "Import data from a VibeVault directory into the palace. By default it " +
+			"imports sessions (indexed for search) only. --agentctx additionally carries each " +
+			"project's agentctx tree — resume, iterations, workflow, knowledge, tasks, and memory " +
+			"land in their canonical slots; commands/skills/snippets/features are preserved " +
+			"verbatim under Projects/<slug>/migrated/. Agentctx copy is copy-if-absent (use --force " +
+			"to overwrite); --no-sessions copies agentctx only and loads no embedder. " +
+			"--vault-path names the SOURCE vault; the DESTINATION is always the configured vault_path " +
+			"(~/.config/vibe-palace/config.toml). When --vault-path is omitted, source and destination " +
+			"are the same configured vault. Every run prints a Source/Destination/Same-vault banner to " +
+			"stderr before scanning; a real (non-dry-run) cross-vault import requires confirmation " +
+			"(--yes, or an interactive [y/N] prompt on a TTY).",
 		Flags: migrateVibeVaultFlags,
 		Examples: []cli.Example{
-			{Cmd: "vp migrate vibevault", Comment: "Import in place: source and destination are the configured vault"},
+			{Cmd: "vp migrate vibevault", Comment: "Import sessions in place: source and destination are the configured vault"},
 			{Cmd: "vp migrate vibevault --vault-path ~/old-vault --dry-run", Comment: "Preview import reading from another vault (writes nothing)"},
-			{Cmd: "vp migrate vibevault --vault-path /home/johns/obsidian/VibeVault --yes", Comment: "Cross-vault import: read from VibeVault, write to the configured vault (--yes confirms)"},
+			{Cmd: "vp migrate vibevault --vault-path /home/johns/obsidian/VibeVault --agentctx --slug-map RezBldrVault=rezbldrvault --yes", Comment: "Cross-vault import of sessions + agentctx, pinning the canonical slug"},
+			{Cmd: "vp migrate vibevault --vault-path ~/old-vault --agentctx --no-sessions --dry-run", Comment: "Preview an agentctx-only copy (no embedder, no session indexing)"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(migrateVibeVaultFlags, args)
@@ -68,6 +76,19 @@ func cmdMigrateVibeVault() *cli.Command {
 			strict := fv.Bool("--strict")
 			yes := fv.Bool("--yes")
 			slugMapArg := fv.Get("--slug-map")
+			withAgentctx := fv.Bool("--agentctx")
+			force := fv.Bool("--force")
+			noSessions := fv.Bool("--no-sessions")
+			onlyProjects := parseCommaList(fv.Get("--only"))
+
+			if force && !withAgentctx {
+				fmt.Fprintln(os.Stderr, "vp migrate vibevault: --force only applies to --agentctx")
+				return cli.ExitUser
+			}
+			if noSessions && !withAgentctx {
+				fmt.Fprintln(os.Stderr, "vp migrate vibevault: --no-sessions requires --agentctx (nothing to import otherwise)")
+				return cli.ExitUser
+			}
 
 			dest, cfg, err := openMigrateDestination()
 			if err != nil {
@@ -134,11 +155,20 @@ func cmdMigrateVibeVault() *cli.Command {
 				return cli.ExitUser
 			}
 
-			// Engine and model cache bind to the DESTINATION.
-			emb, eng, cleanup, err := setupEmbedder(dest, cfg)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
-				return cli.ExitSystem
+			// Engine and model cache bind to the DESTINATION. An
+			// agentctx-only run (--no-sessions) indexes nothing, so it
+			// skips the embedder entirely (no ~90MB model load).
+			var (
+				emb     embedder.Embedder
+				eng     *search.Engine
+				cleanup = func() {}
+			)
+			if !noSessions {
+				emb, eng, cleanup, err = setupEmbedder(dest, cfg)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
+					return cli.ExitSystem
+				}
 			}
 			defer cleanup()
 
@@ -150,10 +180,14 @@ func cmdMigrateVibeVault() *cli.Command {
 			result, err := migrate.ImportVibeVault(
 				context.Background(), source, dest, eng, emb, cfg,
 				migrate.ImportOptions{
-					DryRun:   dryRun,
-					Strict:   strict,
-					Progress: migrateProgressFuncDeferred(),
-					Resolver: resolver,
+					DryRun:       dryRun,
+					Strict:       strict,
+					Progress:     migrateProgressFuncDeferred(),
+					Resolver:     resolver,
+					WithAgentctx: withAgentctx,
+					Force:        force,
+					SkipSessions: noSessions,
+					OnlyProjects: onlyProjects,
 				},
 			)
 			if err != nil {
@@ -385,6 +419,21 @@ func sourceHasOrphanMarkers(srcRoot, dstRoot string) bool {
 	return len(dstMarkers) == 0
 }
 
+// parseCommaList splits a comma-separated flag value into a trimmed,
+// non-empty slice. Returns nil for an empty input.
+func parseCommaList(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // setupEmbedder creates an ONNX embedder and search engine for migration.
 func setupEmbedder(vault *storage.Vault, cfg storage.Config) (embedder.Embedder, *search.Engine, func(), error) {
 	modelDir := vault.VaultLocalDir() + "/models"
@@ -437,7 +486,7 @@ func migrateProgressFuncDeferred() migrate.ProgressFunc {
 	var banner bool
 	return func(evt migrate.ProgressEvent) {
 		if !banner && evt.Type == migrate.ProgressProjectStart {
-			fmt.Fprintln(os.Stderr, "Importing VibeVault sessions...")
+			fmt.Fprintln(os.Stderr, "Importing VibeVault data...")
 			banner = true
 		}
 		inner(evt)
@@ -476,7 +525,48 @@ func printMigrateResult(result migrate.ImportResult, dryRun bool) {
 		}
 	}
 
+	printAgentctxResult(result.Agentctx, dryRun)
+
 	if !dryRun && (result.SessionsImported > 0 || result.DrawersCreated > 0) {
 		fmt.Fprintln(os.Stderr, "\nRestart the MCP server to rebuild search indexes.")
+	}
+}
+
+// printAgentctxResult renders the agentctx file-copy summary. It is a no-op
+// when --agentctx was not requested (zero counts, no skips). Crown-jewel
+// skips are surfaced LOUDLY and individually so a scaffold placeholder can
+// never silently shadow real history.
+func printAgentctxResult(a migrate.AgentctxResult, dryRun bool) {
+	if a.Copied == 0 && a.Skipped == 0 {
+		return
+	}
+	verb := "copied"
+	if dryRun {
+		verb = "would copy"
+	}
+	fmt.Fprintf(os.Stderr, "\nAgentctx: %d files %s, %d skipped (present), %d bytes\n",
+		a.Copied, verb, a.Skipped, a.Bytes)
+
+	if len(a.CrownJewelSkipped) > 0 {
+		fmt.Fprintln(os.Stderr, "\n  WARNING — crown-jewel files already present, NOT overwritten:")
+		for _, p := range a.CrownJewelSkipped {
+			fmt.Fprintf(os.Stderr, "    %s (skipped)\n", p)
+		}
+		fmt.Fprintln(os.Stderr, "  Verify these by content; re-run with --force to re-seed from source.")
+	}
+
+	if dryRun {
+		if len(a.CopiedPaths) > 0 {
+			fmt.Fprintln(os.Stderr, "\n  Planned agentctx copies:")
+			for _, p := range a.CopiedPaths {
+				fmt.Fprintf(os.Stderr, "    %s\n", p)
+			}
+		}
+		if len(a.SkippedPaths) > 0 {
+			fmt.Fprintln(os.Stderr, "\n  Skipped (already present):")
+			for _, p := range a.SkippedPaths {
+				fmt.Fprintf(os.Stderr, "    %s\n", p)
+			}
+		}
 	}
 }

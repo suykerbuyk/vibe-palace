@@ -25,6 +25,41 @@ func TestMigrateVibeVaultBadFlags(t *testing.T) {
 	}
 }
 
+func TestMigrateVibeVault_ForceRequiresAgentctx(t *testing.T) {
+	// --force only applies to --agentctx; on its own it is a usage error,
+	// rejected before any vault is opened.
+	code := cmdMigrateVibeVault().Run([]string{"--force"})
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want %d (--force without --agentctx)", code, cli.ExitUser)
+	}
+}
+
+func TestMigrateVibeVault_NoSessionsRequiresAgentctx(t *testing.T) {
+	// --no-sessions with nothing to copy is a usage error.
+	code := cmdMigrateVibeVault().Run([]string{"--no-sessions"})
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want %d (--no-sessions without --agentctx)", code, cli.ExitUser)
+	}
+}
+
+func TestPrintAgentctxResult(t *testing.T) {
+	// Zero-valued result is a no-op (no --agentctx run).
+	printAgentctxResult(migrate.AgentctxResult{}, false)
+
+	a := migrate.AgentctxResult{
+		Copied:            3,
+		Skipped:           2,
+		Bytes:             4096,
+		CopiedPaths:       []string{"Projects/p/resume.md", "Projects/p/iterations.md"},
+		SkippedPaths:      []string{"Projects/p/workflow.md"},
+		CrownJewelSkipped: []string{"Projects/p/workflow.md"},
+	}
+	// Real-run rendering (crown-jewel warning) and dry-run rendering
+	// (planned/skipped path lists) must both run without panicking.
+	printAgentctxResult(a, false)
+	printAgentctxResult(a, true)
+}
+
 func TestMigrateMemPalaceMissing(t *testing.T) {
 	cmd := cmdMigrateMemPalace()
 	code := cmd.Run(nil)

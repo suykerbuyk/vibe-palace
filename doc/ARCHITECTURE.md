@@ -36,7 +36,7 @@ session capture, semantic search, and palace-based knowledge navigation through
 | `internal/vplog` | Structured logging (slog to file) | `Init()`, `Close()` |
 | `internal/archive` | Transcript archive / copyright-provenance ledger (per-IDE adapters, manifests, signing) | `Manifest`, `Entry`, `CreateOptions` |
 | `internal/archive/zed` | Read-only Zed agent-panel thread DB parser → Claude-shape JSONL | `parser`, `messages`, `types` |
-| `internal/migrate` | Import VibeVault sessions and MemPalace data into the vault | `ImportVibeVault`, `ImportMemPalace` |
+| `internal/migrate` | Import VibeVault sessions + agentctx (resume/iterations/workflow/knowledge/tasks/memory + verbatim `migrated/` archive) and MemPalace data into the vault | `ImportVibeVault`, `ImportMemPalace`, `copyAgentctx` |
 | `internal/absorb` | Migrate legacy agent-context files (CLAUDE.md, AGENTS.md, .cursorrules) into the vault | `Planner`, `Classifier`, `Writer` |
 | `internal/agentfile` | Detect well-known agent instruction files and wire in a managed bootstrap block | `Detect`, `Wire`, `WireAll` |
 | `internal/shims` | Emit Claude Code slash-command shims into `.claude/commands/` | `Plan`, `Apply`, `Shim` |
