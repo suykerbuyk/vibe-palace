@@ -164,6 +164,11 @@ func StampForPath(vaultPath, writePath string) error {
 	if stampDir == "" {
 		return nil
 	}
+	// Tripwire: a `go test` process writing a vault outside os.TempDir() is an
+	// unisolated test polluting the real vault. Fail fast at the write site.
+	// Runs before the memoization short-circuit so it fires on every write,
+	// and only for in-vault writes (stampDir != "").
+	GuardTestVaultWrite(vaultPath, writePath)
 	if _, done := stampedDirs.Load(stampDir); done {
 		return nil
 	}

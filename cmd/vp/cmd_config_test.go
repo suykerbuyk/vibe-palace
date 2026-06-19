@@ -241,6 +241,9 @@ func TestInitGlobalNoGitSkipsRepo(t *testing.T) {
 func TestConfigUpgradeCwd_AddsMissingMeta(t *testing.T) {
 	// Start from a minimal hand-written cwd file — no [meta], no
 	// vault_path comment. Upgrade should add [meta] as active keys.
+	// Isolate XDG_CONFIG_HOME so the vault never resolves to the operator's
+	// real vault (a `--cwd` sync otherwise scaffolds Projects/p there).
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	dir := t.TempDir()
 	cwdFile := filepath.Join(dir, ".vibe-palace.toml")
 	os.WriteFile(cwdFile, []byte(`[project]
@@ -272,6 +275,7 @@ name = "p"
 }
 
 func TestConfigUpgradeCwd_UpToDate(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	dir := t.TempDir()
 	cwdFile := filepath.Join(dir, ".vibe-palace.toml")
 	// Write a cwd file that already has all canonical keys (generated
@@ -290,6 +294,7 @@ func TestConfigUpgradeCwd_UpToDate(t *testing.T) {
 }
 
 func TestConfigUpgradeCwd_DryRun(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	dir := t.TempDir()
 	cwdFile := filepath.Join(dir, ".vibe-palace.toml")
 	os.WriteFile(cwdFile, []byte("[project]\nname = \"p\"\n"), 0o644)

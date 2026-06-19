@@ -658,3 +658,65 @@ func TestCheckProjectGitignore_Partial(t *testing.T) {
 		t.Errorf("expected summary to mention missing, got %q", r.Summary)
 	}
 }
+
+func TestCheckStrayScaffolds(t *testing.T) {
+	vaultDir := t.TempDir() // under os.TempDir(): the write-guard stays inert
+	v := storage.NewVault(vaultDir)
+	mk := func(parts ...string) string {
+		p := filepath.Join(append([]string{vaultDir, "Projects"}, parts...)...)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	// stray: scaffold-only (config.toml + empty tasks dirs), no real content.
+	mk("stray", "config.toml")
+	os.MkdirAll(filepath.Join(vaultDir, "Projects", "stray", "tasks", "done"), 0o755)
+	os.MkdirAll(filepath.Join(vaultDir, "Projects", "stray", "commands"), 0o755)
+	mk("stray", "commands", "README.md")
+
+	// real: has resume.md → not flagged.
+	mk("real", "config.toml")
+	mk("real", "resume.md")
+
+	// busy: has a task file → not flagged.
+	mk("busy", "config.toml")
+	mk("busy", "tasks", "done", "did-it.md")
+
+	// dot/underscore dirs are skipped entirely.
+	mk(".trash", "config.toml")
+	mk("_archive", "config.toml")
+
+	r := CheckStrayScaffolds(v)
+	if r.Status != Info {
+		t.Fatalf("status = %v, want Info; summary=%q details=%v", r.Status, r.Summary, r.Details)
+	}
+	joined := strings.Join(append([]string{r.Summary}, r.Details...), "\n")
+	if !strings.Contains(joined, "stray") {
+		t.Errorf("expected 'stray' flagged, got:\n%s", joined)
+	}
+	for _, notFlagged := range []string{"real", "busy", "trash", "archive"} {
+		if strings.Contains(joined, notFlagged) {
+			t.Errorf("%q should not be flagged, got:\n%s", notFlagged, joined)
+		}
+	}
+}
+
+func TestCheckStrayScaffolds_NoneClean(t *testing.T) {
+	vaultDir := t.TempDir()
+	v := storage.NewVault(vaultDir)
+	// A real project only.
+	dir := filepath.Join(vaultDir, "Projects", "real")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "config.toml"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(dir, "resume.md"), []byte("x"), 0o644)
+
+	r := CheckStrayScaffolds(v)
+	if r.Status != Pass {
+		t.Fatalf("status = %v, want Pass (summary=%q)", r.Status, r.Summary)
+	}
+}

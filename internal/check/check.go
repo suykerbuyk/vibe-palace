@@ -9,12 +9,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
 // Status represents the outcome of a diagnostic check.
@@ -385,6 +387,102 @@ func hasNonWhitespace(data []byte) bool {
 		}
 	}
 	return false
+}
+
+// CheckStrayScaffolds scans <vault>/Projects/* for scaffold-only orphan
+// projects: directories that carry the init scaffold (config.toml) but have no
+// real content — no resume.md, no iterations.md, no sessions/, and no task
+// files under tasks/. These are typically the residue of a stray `vp init`
+// against the wrong vault or an un-isolated test (the recurring `Projects/p/`).
+// Always Info or Pass, never Fail — removal is a human decision. The .surface
+// timestamp is surfaced as provenance so the operator can judge.
+func CheckStrayScaffolds(v *storage.Vault) Result {
+	r := Result{Name: "Stray scaffolds"}
+	projectsDir := filepath.Join(v.Root, "Projects")
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			r.Status = Pass
+			r.Summary = "no Projects/ directory"
+			return r
+		}
+		r.Status = Info
+		r.Summary = fmt.Sprintf("scan Projects/: %v", err)
+		return r
+	}
+
+	var stray []string
+	for _, e := range entries {
+		name := e.Name()
+		if !e.IsDir() || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
+			continue
+		}
+		dir := filepath.Join(projectsDir, name)
+		if !isScaffoldOnly(dir) {
+			continue
+		}
+		row := name
+		if s, serr := surface.ReadStamp(dir); serr == nil && s.LastWriteAt != "" {
+			row = fmt.Sprintf("%s (scaffolded %s)", name, s.LastWriteAt)
+		}
+		stray = append(stray, row)
+	}
+
+	if len(stray) == 0 {
+		r.Status = Pass
+		r.Summary = "none"
+		return r
+	}
+	sort.Strings(stray)
+	r.Status = Info
+	r.Summary = fmt.Sprintf("%d scaffold-only project(s) with no content", len(stray))
+	r.Details = append([]string{
+		"a stray `vp init` or an unused/un-isolated-test project — `rm -rf` from the vault if unwanted:",
+	}, stray...)
+	return r
+}
+
+// isScaffoldOnly reports whether a Projects/<slug> directory carries the init
+// scaffold (config.toml) but no real content: no resume.md, no iterations.md,
+// no non-empty sessions/, and no task files anywhere under tasks/.
+func isScaffoldOnly(dir string) bool {
+	if !fileExists(filepath.Join(dir, "config.toml")) {
+		return false
+	}
+	if fileExists(filepath.Join(dir, "resume.md")) || fileExists(filepath.Join(dir, "iterations.md")) {
+		return false
+	}
+	if dirHasAnyFile(filepath.Join(dir, "sessions")) {
+		return false
+	}
+	if dirHasAnyFile(filepath.Join(dir, "tasks")) {
+		return false
+	}
+	return true
+}
+
+// fileExists reports whether path is an existing regular file.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// dirHasAnyFile reports whether dir contains at least one regular file at any
+// depth. A missing directory or one holding only empty subdirectories counts as
+// "no files" (the scaffold's tasks/{done,cancelled}/ are empty dirs).
+func dirHasAnyFile(dir string) bool {
+	found := false
+	_ = filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !d.IsDir() {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 // findProjectConfig walks upward from dir looking for .vibe-palace.toml.

@@ -119,6 +119,10 @@ func gatherCheckResults() []check.Result {
 					Mode: reconcile.TemplateModeMaterialize,
 				})
 				results = append(results, tt.Check(ctx)...)
+
+				// Vault-wide: flag scaffold-only orphan projects (stray
+				// `vp init` / un-isolated test residue like Projects/p).
+				results = append(results, check.CheckStrayScaffolds(vault))
 			}
 		}
 	}
