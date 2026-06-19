@@ -213,10 +213,20 @@ func TestCreate_SourceChangePreservesPriorManifest(t *testing.T) {
 }
 
 func TestEncodeProjectDir(t *testing.T) {
-	got := EncodeProjectDir("/home/johns/code/vibe-palace")
-	want := "-home-johns-code-vibe-palace"
-	if got != want {
-		t.Errorf("EncodeProjectDir = %q, want %q", got, want)
+	// Claude Code replaces every non-(ASCII-alnum or '-') character with '-':
+	// path separators, dots, underscores, spaces, and non-ASCII all collapse.
+	cases := []struct{ in, want string }{
+		{"/home/johns/code/vibe-palace", "-home-johns-code-vibe-palace"},
+		{"/home/alice/code/my.app_v2", "-home-alice-code-my-app-v2"},
+		{"/home/user/path with spaces", "-home-user-path-with-spaces"},
+		{"/home/user/project-123", "-home-user-project-123"},
+		{`C:\Users\bob\proj`, "C--Users-bob-proj"},
+		{"/home/josé/café", "-home-jos--caf-"},
+	}
+	for _, c := range cases {
+		if got := EncodeProjectDir(c.in); got != c.want {
+			t.Errorf("EncodeProjectDir(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 

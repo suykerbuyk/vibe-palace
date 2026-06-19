@@ -29,6 +29,7 @@ session capture, semantic search, and palace-based knowledge navigation through
 | `internal/search` | Hybrid semantic + structural search | `Engine`, `VectorIndex`, `SearchResult` |
 | `internal/capture` | Session ingest, chunking, friction, shared capture pipeline | `Indexer`, `ChunkConfig`, `WriteSession` |
 | `internal/hook` | Claude Code hook handler, settings install, claim sentinel | `Run`, `Install`, `WriteClaim` |
+| `internal/memory` | Host-agnostic AI memory + one-way SessionEnd harvest of Claude native memory (see ADR-004) | `Harvest`, `Options`, `Result` |
 | `internal/palace` | Wing/room/hall classification, graph, audit/tune/discover | `PalaceGraph`, `RoomClassifier`, `AAKResult` |
 | `internal/llm` | OpenAI-compatible LLM client for offline analysis | `Client`, `Response` |
 | `internal/project` | Project detection from working dir | `ProjectConfig` |

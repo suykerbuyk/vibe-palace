@@ -223,6 +223,54 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 	return result, nil
 }
 
+// CommitAndPushPathsWithDowngrade wraps CommitAndPushPaths with the remote-
+// downgrade policy shared by tidy and harvest: when push is requested but the
+// vault has zero configured remotes, it downgrades to a local-only commit
+// (CommitAndPushPaths errors on push against a remote-less vault) and reports
+// downgraded=true. When push is false it passes straight through and downgraded
+// is always false. The returned *PushResult and error are CommitAndPushPaths's
+// own (RemoteResults populated only when an effective push ran).
+func CommitAndPushPathsWithDowngrade(vaultPath, message string, paths []string, push bool) (res *PushResult, downgraded bool, err error) {
+	effectivePush := push
+	if push {
+		remotes, rErr := listRemotes(vaultPath)
+		if rErr != nil {
+			return nil, false, fmt.Errorf("listing remotes: %w", rErr)
+		}
+		if len(remotes) == 0 {
+			effectivePush = false
+			downgraded = true
+		}
+	}
+	res, err = CommitAndPushPaths(vaultPath, message, paths, effectivePush)
+	if err != nil {
+		return nil, downgraded, err
+	}
+	return res, downgraded, nil
+}
+
+// HasUncommittedChanges reports whether `git status --porcelain` limited to the
+// given vault-relative paths produces any output. Empty/clean → false. Returns
+// false (not an error) when vaultPath is not a git repo (e.g. a never-init'd
+// vault), so callers can treat "no repo" the same as "nothing to commit".
+//
+// Paths are passed after a `--` separator so entries beginning with `-` are
+// treated as paths, not flags. A directory path includes everything beneath it.
+func HasUncommittedChanges(vaultPath string, relPaths ...string) (bool, error) {
+	if _, err := gitCmd(vaultPath, 5*time.Second, "rev-parse", "--is-inside-work-tree"); err != nil {
+		// Not a git repo (or git unavailable) → treat as clean, not an error.
+		return false, nil
+	}
+	args := make([]string, 0, len(relPaths)+3)
+	args = append(args, "status", "--porcelain", "--")
+	args = append(args, relPaths...)
+	out, err := gitCmd(vaultPath, 10*time.Second, args...)
+	if err != nil {
+		return false, fmt.Errorf("git status: %w", err)
+	}
+	return strings.TrimSpace(out) != "", nil
+}
+
 // stageBatchByteBudget caps the per-`git add` argv path-byte budget at ~64 KB.
 // Linux MAX_ARG_LEN is ~128 KB and macOS is ~64 KB; the lower figure governs.
 // Each path costs len(path)+1 bytes (NUL terminator) when measured against the
@@ -292,7 +340,7 @@ func listRemotes(vaultPath string) ([]string, error) {
 		return nil, nil
 	}
 	var remotes []string
-	for _, r := range strings.Split(out, "\n") {
+	for r := range strings.SplitSeq(out, "\n") {
 		if r = strings.TrimSpace(r); r != "" {
 			remotes = append(remotes, r)
 		}

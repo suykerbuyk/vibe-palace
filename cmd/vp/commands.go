@@ -68,6 +68,8 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(cmdVaultExists())
 	reg.Register(cmdVaultSha256())
 	reg.Register(cmdVaultMergeDriver())
+	reg.Register(cmdMemory())
+	reg.Register(mutates(cmdMemoryHarvest()))
 	reg.Register(mutates(cmdMigrate()))
 	reg.Register(mutates(cmdMigrateVibeVault()))
 	reg.Register(mutates(cmdMigrateMemPalace()))

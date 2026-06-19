@@ -13,13 +13,23 @@ import (
 )
 
 // TidyResult reports the outcome of a TidyVault sweep.
+//
+// Reported vs ReportedUserContent semantics: Reported is the FULL catch-all of
+// everything tidy declined to sweep (it needs human eyes; never staged) and is
+// preserved exactly as before so existing consumers are unaffected.
+// ReportedUserContent is an ADDITIVE classified SUBSET of Reported holding the
+// paths that are user-persistent memory (Projects/<slug>/memory/...). These are
+// deliberately un-swept user data (committed later by wrap/SessionEnd, not by
+// tidy) — expected pending content, NOT genuinely-unexpected dirt. Every path in
+// ReportedUserContent is also present in Reported; nothing here is ever Swept.
 type TidyResult struct {
-	Swept          []string         // vault-relative paths staged+committed
-	Reported       []string         // dirt that needs human eyes; never staged
-	Committed      bool             // true if a commit was created
-	CommitSHA      string           // short SHA of the tidy commit (empty if no-op)
-	RemoteResults  map[string]error // per-remote push result (nil = success)
-	PushDowngraded bool             // push requested but no remotes → local commit only
+	Swept               []string         // vault-relative paths staged+committed
+	Reported            []string         // dirt that needs human eyes; never staged (full catch-all)
+	ReportedUserContent []string         // subset of Reported that is user memory (Projects/<slug>/memory/...); expected, not dirt
+	Committed           bool             // true if a commit was created
+	CommitSHA           string           // short SHA of the tidy commit (empty if no-op)
+	RemoteResults       map[string]error // per-remote push result (nil = success)
+	PushDowngraded      bool             // push requested but no remotes → local commit only
 }
 
 // SweepRule classifies a vault-relative path as a sweepable capture artifact.
@@ -186,6 +196,30 @@ func classifyDirty(entries []PorcelainEntry) (swept, reported []string) {
 	return swept, reported
 }
 
+// isUserMemoryPath reports whether a vault-relative path is user-persistent
+// memory under Projects/<slug>/memory/. These files are deliberately NOT covered
+// by any sweepRule (memory is user data, committed by wrap/SessionEnd, never by
+// tidy); this segment check mirrors the sweepRules matchers (parts =
+// strings.Split(vaultRelPath, "/")) so tidy can label them as expected user
+// content rather than lumping them into the generic "needs human eyes" dirt.
+func isUserMemoryPath(parts []string) bool {
+	return len(parts) >= 4 && parts[0] == "Projects" && parts[2] == "memory"
+}
+
+// classifyReportedUserContent returns the subset of reported paths that are
+// user-persistent memory. The returned slice is a classified view ONLY — every
+// element is still present in reported (decision: Reported stays the full catch-
+// all; ReportedUserContent is additive).
+func classifyReportedUserContent(reported []string) []string {
+	var userContent []string
+	for _, p := range reported {
+		if isUserMemoryPath(strings.Split(p, "/")) {
+			userContent = append(userContent, p)
+		}
+	}
+	return userContent
+}
+
 // matchRule returns the first sweepRule whose Match accepts vaultRelPath, or nil.
 func matchRule(vaultRelPath string) *SweepRule {
 	parts := strings.Split(vaultRelPath, "/")
@@ -222,7 +256,11 @@ func TidyScan(vaultPath string) (*TidyResult, error) {
 		return nil, err
 	}
 	swept, reported := classifyDirty(parsePorcelainZ(raw))
-	return &TidyResult{Swept: swept, Reported: reported}, nil
+	return &TidyResult{
+		Swept:               swept,
+		Reported:            reported,
+		ReportedUserContent: classifyReportedUserContent(reported),
+	}, nil
 }
 
 // TidyVault scans the whole vault for uncommitted dirt, classifies it into
@@ -256,23 +294,11 @@ func TidyVault(vaultPath string, push bool) (*TidyResult, error) {
 	}
 
 	// Remote downgrade: requesting push against a remote-less vault would error
-	// in CommitAndPushPaths ("no git remotes configured"). Downgrade to a local
-	// commit instead and record it.
-	effectivePush := push
-	if push {
-		remotes, rErr := listRemotes(vaultPath)
-		if rErr != nil {
-			return nil, fmt.Errorf("listing remotes: %w", rErr)
-		}
-		if len(remotes) == 0 {
-			effectivePush = false
-			result.PushDowngraded = true
-		}
-	}
-
+	// in CommitAndPushPaths ("no git remotes configured"). The shared helper
+	// downgrades to a local commit instead and reports it.
 	msg := tidyCommitMessage(swept)
 
-	pushRes, err := CommitAndPushPaths(vaultPath, msg, swept, effectivePush)
+	pushRes, downgraded, err := CommitAndPushPathsWithDowngrade(vaultPath, msg, swept, push)
 	if err != nil {
 		return nil, err
 	}
@@ -280,6 +306,7 @@ func TidyVault(vaultPath string, push bool) (*TidyResult, error) {
 	result.Committed = true
 	result.CommitSHA = pushRes.CommitSHA
 	result.RemoteResults = pushRes.RemoteResults
+	result.PushDowngraded = downgraded
 	return result, nil
 }
 

@@ -169,6 +169,13 @@ the next and surfaces the error at the end. If all pushes fail
 (no remote, network error), warn and proceed — local state is still
 valid.
 
+Include `Projects/<slug>/memory/` among the synced paths — AI memory is
+user-persistent content like `resume.md` and `tasks/`, so wrap commits it
+on the host-agnostic path (Grok/Zed never run `vp hook`). Uncommitted
+memory at wrap time is **expected**, not a problem: Claude's SessionEnd
+harvest auto-commits it and wrap commits it here, so preflight surfaces
+memory dirt as a NOTE, never a blocker.
+
 ## Step 10: Vault Tidy (sweep capture artifacts)
 
 After the narrative sync, sweep the machine-generated capture

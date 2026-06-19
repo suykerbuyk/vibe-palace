@@ -70,16 +70,31 @@ func ClaudeHome() (string, error) {
 	return filepath.Join(home, ".claude"), nil
 }
 
-// EncodeProjectDir converts an absolute working-directory path into
-// the encoded segment Claude Code uses under ~/.claude/projects/.
-// The encoding replaces path separators with a dash and drops the
-// leading dash if the input is absolute (which is the common case).
+// EncodeProjectDir converts an absolute working-directory path into the encoded
+// segment Claude Code uses under ~/.claude/projects/. Claude Code's encoding
+// replaces every character that is not an ASCII letter, ASCII digit, or '-'
+// with a dash — so path separators ('/' and '\'), dots, underscores, spaces,
+// and non-ASCII characters all become '-'. The leading separator is NOT
+// stripped, so an absolute path yields a leading dash, matching the real
+// on-disk directory names. The encoding is lossy (many characters collapse to
+// '-'), so there is deliberately no inverse: never reverse-decode a segment.
 //
-// Example: "/home/alice/code/proj" -> "-home-alice-code-proj"
+// Example: "/home/alice/code/my.app_v2" -> "-home-alice-code-my-app-v2"
 func EncodeProjectDir(cwd string) string {
-	// Normalize separators for portability.
 	s := filepath.ToSlash(cwd)
-	return strings.ReplaceAll(s, "/", "-")
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r < 128 && (r == '-' ||
+			(r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9')) {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
 }
 
 // ClaudeSessionPath returns the absolute path to the JSONL file for

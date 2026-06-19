@@ -17,16 +17,17 @@ import (
 
 // BootstrapResult is the response from vp_bootstrap_context.
 type BootstrapResult struct {
-	Project                  string             `json:"project"`
-	Workflow                 string             `json:"workflow"`
-	Resume                   string             `json:"resume"`
-	ActiveTasks              []storage.TaskMeta `json:"active_tasks"`
-	RecentSessions           []sessionSummary   `json:"recent_sessions,omitempty"`
-	KGSnapshot               *storage.KGStats   `json:"kg_snapshot,omitempty"`
-	AvailableCommands        []commandSummary   `json:"available_commands,omitempty"`
-	AvailableSkills          []skillSummary     `json:"available_skills,omitempty"`
-	CommandInvocation        string             `json:"command_invocation,omitempty"`
-	PostBootstrapInstructions string            `json:"post_bootstrap_instructions,omitempty"`
+	Project                   string             `json:"project"`
+	Workflow                  string             `json:"workflow"`
+	Resume                    string             `json:"resume"`
+	ActiveTasks               []storage.TaskMeta `json:"active_tasks"`
+	RecentSessions            []sessionSummary   `json:"recent_sessions,omitempty"`
+	KGSnapshot                *storage.KGStats   `json:"kg_snapshot,omitempty"`
+	Memory                    []memorySnapshot   `json:"memory,omitempty"`
+	AvailableCommands         []commandSummary   `json:"available_commands,omitempty"`
+	AvailableSkills           []skillSummary     `json:"available_skills,omitempty"`
+	CommandInvocation         string             `json:"command_invocation,omitempty"`
+	PostBootstrapInstructions string             `json:"post_bootstrap_instructions,omitempty"`
 }
 
 // skillSummary reuses the commandSummary shape; alias semantics differ
@@ -40,6 +41,22 @@ var commandInvocationDirective = fmt.Sprintf(
 	"When the user types `vpc-<name>`, call `%s` with `name=<name>` and follow the returned instructions. `vps-<name>` works the same way via `%s`.",
 	agentfile.CommandToolName, agentfile.SkillToolName,
 )
+
+// memoryRecallCap bounds how many memory index entries the bootstrap surfaces.
+// Recall is "index now, body on demand via vp_memory_read" — the cap keeps the
+// curated index small so it sheds cheaply under a tight token budget.
+const memoryRecallCap = 50
+
+// memorySnapshot is a lightweight view of storage.MemoryMeta for the bootstrap
+// response. It carries the index metadata only — never the body. Rel is
+// included because vp_memory_read is keyed by rel, so the agent needs it to
+// fetch a body on demand.
+type memorySnapshot struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Type        string `json:"type"`
+	Rel         string `json:"rel"`
+}
 
 // sessionSummary is a lightweight view of SessionMeta for the bootstrap response.
 type sessionSummary struct {
@@ -140,6 +157,19 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		result.KGSnapshot = &stats
 	}
 
+	// Memory index (capped) — bodies fetched on demand via vp_memory_read.
+	// Graceful: a missing dir or read error must never hard-fail bootstrap.
+	if mems, err := vault.ListMemories(project, memoryRecallCap); err == nil {
+		for _, m := range mems {
+			result.Memory = append(result.Memory, memorySnapshot{
+				Name:        m.Name,
+				Description: m.Description,
+				Type:        m.Type,
+				Rel:         m.Rel,
+			})
+		}
+	}
+
 	// Available commands for discovery (palace-scoped when wing/room provided).
 	if cmds, err := resolver.ListResourcesScoped("command", project, wing, room); err == nil {
 		for _, cmd := range cmds {
@@ -172,12 +202,17 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	result.PostBootstrapInstructions = renderPostBootstrapInstructions(result.AvailableCommands, result.AvailableSkills)
 
 	// Token budget truncation: rough estimate 4 chars per token.
-	// Shed order: sessions → KG → commands+skills (as a pair).
+	// Shed order: sessions → memory → KG → commands+skills (as a pair).
 	raw, err := json.Marshal(result)
 	if err == nil {
 		estimatedTokens := len(raw) / 4
 		for estimatedTokens > maxTokens && len(result.RecentSessions) > 0 {
 			result.RecentSessions = result.RecentSessions[:len(result.RecentSessions)-1]
+			raw, _ = json.Marshal(result)
+			estimatedTokens = len(raw) / 4
+		}
+		for estimatedTokens > maxTokens && len(result.Memory) > 0 {
+			result.Memory = result.Memory[:len(result.Memory)-1]
 			raw, _ = json.Marshal(result)
 			estimatedTokens = len(raw) / 4
 		}

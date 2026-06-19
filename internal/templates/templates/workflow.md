@@ -54,9 +54,12 @@ Never jump to coding short-term fixes without investigation.
 
 ### 3. Self-Improvement Loop
 
-- After ANY correction from the user: update lessons with the pattern
-- Write rules that prevent the same mistake
-- Review lessons at session start
+- After ANY correction from the user: save the pattern with `vp_memory_write`
+  (`type: feedback`) — host-agnostic, lands in `Projects/<slug>/memory/`, and
+  reaches every agent via `vp_bootstrap_context`
+- Write rules that prevent the same mistake; for cross-project lessons, also
+  record under vault `Knowledge/learnings/`
+- Review memory and lessons at session start
 
 ### 4. Verification Before Done
 

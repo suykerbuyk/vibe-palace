@@ -232,6 +232,62 @@ func TestTidyVault_SweepsArtifactsReportsDirt(t *testing.T) {
 	}
 }
 
+// TestTidyVault_MemoryReportedAsUserContent verifies that uncommitted user
+// memory under Projects/<slug>/memory/ is classified into ReportedUserContent
+// (a subset of the full Reported catch-all) — distinct from genuinely-unexpected
+// dirt — and is NEVER swept (memory has no sweepRule; it is committed by
+// wrap/SessionEnd, not by tidy).
+func TestTidyVault_MemoryReportedAsUserContent(t *testing.T) {
+	dir := initTestRepo(t)
+
+	// One sweepable artifact so a commit is created.
+	writeFile(t, dir, "Projects/vibe-palace/sessions/2026-06-17.md", "session\n")
+	// User memory (expected user content; un-swept).
+	const mem = "Projects/vibe-palace/memory/MEMORY.md"
+	const memNested = "Projects/vibe-palace/memory/notes/extra.md"
+	writeFile(t, dir, mem, "memory\n")
+	writeFile(t, dir, memNested, "more\n")
+	// Genuinely-unexpected dirt.
+	const dirt = "Projects/p/config.toml"
+	writeFile(t, dir, dirt, "stray\n")
+
+	res, err := TidyVault(dir, false)
+	if err != nil {
+		t.Fatalf("TidyVault: %v", err)
+	}
+
+	// Memory lands in ReportedUserContent and (per chosen semantics) also in the
+	// full Reported catch-all — but NEVER in Swept.
+	for _, want := range []string{mem, memNested} {
+		if !hasPath(res.ReportedUserContent, want) {
+			t.Errorf("expected %q in ReportedUserContent, got %v", want, res.ReportedUserContent)
+		}
+		if !hasPath(res.Reported, want) {
+			t.Errorf("expected %q to remain in full Reported catch-all, got %v", want, res.Reported)
+		}
+		if hasPath(res.Swept, want) {
+			t.Errorf("user memory %q must never be swept", want)
+		}
+	}
+
+	// Unexpected dirt is reported but NOT classified as user content.
+	if !hasPath(res.Reported, dirt) {
+		t.Errorf("expected %q in Reported, got %v", dirt, res.Reported)
+	}
+	if hasPath(res.ReportedUserContent, dirt) {
+		t.Errorf("unexpected dirt %q must not be ReportedUserContent, got %v", dirt, res.ReportedUserContent)
+	}
+	if hasPath(res.Swept, dirt) {
+		t.Errorf("unexpected dirt %q must never be swept", dirt)
+	}
+
+	// Memory must remain dirty in the working tree (tidy never committed it).
+	status := gitRun(t, dir, "status", "--porcelain", "-uall")
+	if !strings.Contains(status, "memory/MEMORY.md") {
+		t.Errorf("user memory should remain dirty, status:\n%s", status)
+	}
+}
+
 // TestTidyScan_ClassifiesWithoutCommitting verifies the read-only scan path:
 // it populates Swept/Reported but never commits and leaves HEAD untouched.
 func TestTidyScan_ClassifiesWithoutCommitting(t *testing.T) {

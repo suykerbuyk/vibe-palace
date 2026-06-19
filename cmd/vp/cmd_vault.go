@@ -259,6 +259,28 @@ func printTidyList(label string, paths []string) {
 	}
 }
 
+// printTidyReported splits the full Reported catch-all into expected user-memory
+// (committed later by wrap/SessionEnd) and genuinely-unexpected dirt, so the
+// "needs your eyes" warning isn't diluted by routine memory writes. The memory
+// block is only printed when non-empty (it is the expected case, not a warning);
+// the dirt warning header always prints so the report is always visible.
+func printTidyReported(res *storage.TidyResult) {
+	userContent := make(map[string]bool, len(res.ReportedUserContent))
+	for _, p := range res.ReportedUserContent {
+		userContent[p] = true
+	}
+	var dirt []string
+	for _, p := range res.Reported {
+		if !userContent[p] {
+			dirt = append(dirt, p)
+		}
+	}
+	printTidyList("Reported — needs your eyes", dirt)
+	if len(res.ReportedUserContent) > 0 {
+		printTidyList("User-memory pending commit (committed by wrap/SessionEnd)", res.ReportedUserContent)
+	}
+}
+
 func cmdVaultTidy() *cli.Command {
 	return &cli.Command{
 		Name:     "vault tidy",
@@ -296,7 +318,7 @@ func cmdVaultTidy() *cli.Command {
 					return cli.ExitSystem
 				}
 				printTidyList("Would sweep", res.Swept)
-				printTidyList("Reported — needs your eyes", res.Reported)
+				printTidyReported(res)
 				fmt.Println("dry run: nothing was committed")
 				return cli.ExitOK
 			}
@@ -316,7 +338,7 @@ func cmdVaultTidy() *cli.Command {
 				fmt.Println("nothing to sweep")
 			}
 			// Reported dirt always needs human eyes — show it even on a no-op.
-			printTidyList("Reported — needs your eyes", res.Reported)
+			printTidyReported(res)
 			if res.PushDowngraded {
 				fmt.Println("no remotes configured — committed locally only")
 			}

@@ -81,6 +81,7 @@ func knownCommands() []string {
 	return []string{
 		"check", "commands", "commands list", "commands upgrade",
 		"init", "inject", "mcp", "mcp serve",
+		"memory", "memory harvest",
 		"migrate", "migrate mempalace", "migrate vibevault",
 		"search", "sessions", "status", "tasks",
 		"vault", "vault pull", "vault push", "vault sync", "vault tidy",

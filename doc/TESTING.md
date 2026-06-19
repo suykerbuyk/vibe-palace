@@ -6,8 +6,8 @@ This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~1738 tests** across 35 packages, including
-**92 integration tests** (the ONNX/cross-layer tests `make integration`
+The suite currently runs **~1971 tests** across 38 packages, including
+**95 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
 subtests each may fan out into — and they drift as the suite grows. Derive
@@ -423,6 +423,56 @@ The `.vp-locks` segment refusal is covered by
 | Test | What it proves |
 |------|----------------|
 | `TestIntegration_VaultLockCrossProcess` | builds the real `vp` binary and launches N concurrent `vp vault edit` child **processes** contending on one seeded file; every fixed-width anchor is converted to its DONE marker exactly once, proving the advisory flock serializes whole-file RMW across separate OS processes (CLI vs MCP). Skipped under `-short`. |
+
+---
+
+## MCP-Native Memory Tests
+
+The `mcp-native-memory` epic added a host-agnostic AI-memory surface stored in
+the vault, a one-way harvest of Claude's host-local native memory, and the dual
+commit/sync model (SessionEnd harvest + `/wrap`). See ADR-004
+(`doc/adr/004-mcp-native-memory.md`) for the design. These are pure-unit tests
+(no ONNX, run in `make test`).
+
+### `internal/storage` — Memory Storage (`memory_test.go`)
+
+Frontmatter parse/write round-trip for `Projects/<slug>/memory/` files
+(top-level `name`/`description`, nested `metadata.type`), lenient parsing across
+top-level `type:` and native `metadata.type:`, the valid-type set
+(`user`/`feedback`/`project`/`reference`), `MEMORY.md` index skipping in list
+operations, and the `Rel` population on list/read.
+
+### `internal/memory` — Harvest Engine (`harvest_test.go`)
+
+The one-way drain: native-dir resolution from transcript and from cwd, routing
+typed files into the vault, dedup of identical content, `.harvested-<ts>`
+suffixing on same-name/different-content, `MEMORY.md` index drop, host-local
+deletion of routed/deduped/index originals, dry-run zero-mutation reporting, the
+native-missing clean no-op (Grok/Zed), and the commit-if-dirty step that catches
+direct `vp_memory_write`s.
+
+### `internal/tools` — Memory MCP Tools (`memory_tools_test.go`)
+
+Handler logic for `vp_memory_write`/`read`/`list`/`delete`/`harvest`: parameter
+parsing and validation, project scoping, the list index shape (no bodies), and
+harvest param wiring (`project`/`cwd`/`dry_run`/`push`).
+
+### `internal/wrapstate` — Memory Dirt Categorization (`collect_test.go`)
+
+| Test | What it proves |
+|------|----------------|
+| `TestDirtyProbes` | vault dirt is split into non-memory vs memory by path (including rename-by-destination and quoted paths) |
+| `TestCollect_MemoryDirtNotNagWorthy` | memory-only dirt sets `MemoryHasUncommittedWrites` but not `VaultHasUncommittedWrites` |
+| `TestPreflight_MemoryDirt` | memory-only dirt emits a `memory_dirty` NOTE and no `vault_dirty` warning; non-memory dirt still warns |
+
+### `internal/hook` — SessionEnd Harvest (`hook_test.go`)
+
+| Test | What it proves |
+|------|----------------|
+| `TestRun_SessionEndHarvests` | `SessionEnd` drains the native dir into the vault and commits |
+| `TestRun_StopIsHarvestNoop` | `Stop` never harvests |
+| `TestRun_PreCompactIsHarvestNoop` | `PreCompact` never harvests |
+| `TestRun_ClaimDecoupling_ArchiveAndHarvestRunWhenClaimed` | archive and harvest run regardless of claim state |
 
 ---
 

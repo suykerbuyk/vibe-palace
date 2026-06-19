@@ -177,6 +177,31 @@
       "schema_sha256": "c6a0b70b67a6b0ef5a9592a572ea79b6549334c88a6acbe61e3c9dc12b720d48"
     },
     {
+      "name": "vp_memory_delete",
+      "mutating": true,
+      "schema_sha256": "76ca2bec64797b28e459fa7fdf1658a0b7791d4533811faa12712d25076f3227"
+    },
+    {
+      "name": "vp_memory_harvest",
+      "mutating": true,
+      "schema_sha256": "eade1764a5d2478f067a7750f47c76f4c49327624fe5a73685754c2a9d3e2437"
+    },
+    {
+      "name": "vp_memory_list",
+      "mutating": false,
+      "schema_sha256": "1b15a4223b7fc6b935a0a18b3a909105ce4dc2ecac1f69d4d7623e8e0ae5f67b"
+    },
+    {
+      "name": "vp_memory_read",
+      "mutating": false,
+      "schema_sha256": "76ca2bec64797b28e459fa7fdf1658a0b7791d4533811faa12712d25076f3227"
+    },
+    {
+      "name": "vp_memory_write",
+      "mutating": true,
+      "schema_sha256": "c2ae3284137b6d8f523e3eeaf92ece071ad3a2f01483410cf809221aa8525003"
+    },
+    {
       "name": "vp_palace_status",
       "mutating": false,
       "schema_sha256": "e6bb4842aab417be857b871f1a3d5a5a2867ac63fa1450cd2d5627f542dd9dc4"

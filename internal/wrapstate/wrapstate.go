@@ -80,6 +80,7 @@ type Result struct {
 	TaskDeltas                  TaskDeltas   `json:"task_deltas"`
 	TestCounts                  TestCounts   `json:"test_counts"`
 	VaultHasUncommittedWrites   bool         `json:"vault_has_uncommitted_writes"`
+	MemoryHasUncommittedWrites  bool         `json:"memory_has_uncommitted_writes"`
 	ProjectHasUncommittedWrites bool         `json:"project_has_uncommitted_writes"`
 	Shape                       WrapShape    `json:"shape"`
 }

@@ -103,8 +103,8 @@ func TestComputeTaskDeltas(t *testing.T) {
 	// alpha stayed active; beta moved to done; gamma moved to cancelled;
 	// delta is brand new active; old-done/old-cancel unchanged.
 	got := ComputeTaskDeltas(snap,
-		[]string{"alpha", "delta"}, // live active
-		[]string{"old-done", "beta"}, // live done
+		[]string{"alpha", "delta"},      // live active
+		[]string{"old-done", "beta"},    // live done
 		[]string{"old-cancel", "gamma"}, // live cancelled
 	)
 	want := TaskDeltas{

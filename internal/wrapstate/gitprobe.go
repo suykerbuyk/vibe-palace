@@ -63,18 +63,21 @@ func DetectBranch(projectDir string) string {
 	return strings.TrimSpace(out)
 }
 
-// VaultHasUncommittedWrites returns true iff `git status --porcelain` in
-// vaultPath produces any output. Returns false and nil error when vaultPath is
-// empty or not a git repo.
+// VaultDirtyByCategory reports uncommitted writes under Projects/<project>/,
+// split into memory (Projects/<project>/memory/...) and non-memory. Memory is
+// committed automatically (by the Claude SessionEnd harvest and by /wrap's
+// vault sync) and is not nag-worthy; non-memory is the signal the wrap
+// preflight warns on. Non-repo / empty project / clean tree → both false.
 //
-// When project is non-empty, the probe is scoped to Projects/<project>/ so a
-// sibling project's uncommitted writes do not falsely trip the warning.
-func VaultHasUncommittedWrites(vaultPath, project string) (bool, error) {
+// When project is non-empty the probe is scoped to Projects/<project>/ so a
+// sibling project's uncommitted writes do not falsely trip the flags. When
+// project is empty, all dirt counts as non-memory (no memory subtree to scope).
+func VaultDirtyByCategory(vaultPath, project string) (nonMemory, memory bool, err error) {
 	if vaultPath == "" {
-		return false, nil
+		return false, false, nil
 	}
 	if _, err := os.Stat(filepath.Join(vaultPath, ".git")); err != nil {
-		return false, nil
+		return false, false, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
@@ -86,9 +89,65 @@ func VaultHasUncommittedWrites(vaultPath, project string) (bool, error) {
 	}
 	out, err := gitCmdRunner(ctx, vaultPath, args...)
 	if err != nil {
+		return false, false, err
+	}
+
+	memPrefix := ""
+	if project != "" {
+		memPrefix = "Projects/" + project + "/memory/"
+	}
+	for line := range strings.SplitSeq(out, "\n") {
+		path := porcelainPath(line)
+		if path == "" {
+			continue
+		}
+		if memPrefix != "" && strings.HasPrefix(path, memPrefix) {
+			memory = true
+		} else {
+			nonMemory = true
+		}
+	}
+	return nonMemory, memory, nil
+}
+
+// porcelainPath extracts the working-tree path from a single
+// `git status --porcelain` line. Each line is `XY <path>` (two status chars,
+// a space, then the path); renames/copies are `XY <old> -> <new>`, for which
+// the new (destination) path is returned. Blank/short lines yield "".
+func porcelainPath(line string) string {
+	if len(line) < 4 {
+		return ""
+	}
+	// Strip the two status chars and the separating space.
+	path := strings.TrimSpace(line[3:])
+	if path == "" {
+		return ""
+	}
+	// For renames/copies, classify by the destination path.
+	if idx := strings.Index(path, " -> "); idx >= 0 {
+		path = path[idx+len(" -> "):]
+	}
+	// Porcelain quotes paths containing special chars; drop the wrapping
+	// quotes so prefix matching still works for the common case.
+	if len(path) >= 2 && path[0] == '"' && path[len(path)-1] == '"' {
+		path = path[1 : len(path)-1]
+	}
+	return path
+}
+
+// VaultHasUncommittedWrites returns true iff there are any uncommitted writes
+// under Projects/<project>/ (memory or non-memory). Returns false and nil error
+// when vaultPath is empty or not a git repo. Retained for callers that want the
+// "any dirt" meaning; reimplemented atop VaultDirtyByCategory.
+//
+// When project is non-empty, the probe is scoped to Projects/<project>/ so a
+// sibling project's uncommitted writes do not falsely trip the warning.
+func VaultHasUncommittedWrites(vaultPath, project string) (bool, error) {
+	nonMemory, memory, err := VaultDirtyByCategory(vaultPath, project)
+	if err != nil {
 		return false, err
 	}
-	return strings.TrimSpace(out) != "", nil
+	return nonMemory || memory, nil
 }
 
 // ProjectHasUncommittedWrites returns true iff `git status --porcelain` in

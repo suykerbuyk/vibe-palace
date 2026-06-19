@@ -139,12 +139,17 @@ func Collect(ctx context.Context, in CollectInput) (Result, error) {
 
 	// vault/project dirty flags. The vault probe is scoped to
 	// Projects/<project>/ so a sibling project's uncommitted writes do not
-	// falsely trip the vault-dirty flag for this project.
-	vaultDirty, err := VaultHasUncommittedWrites(in.VaultRoot, in.Project)
+	// falsely trip the vault-dirty flag for this project. Dirt is split by
+	// category: VaultHasUncommittedWrites carries only NON-memory writes (the
+	// nag-worthy signal), while memory writes — committed automatically by the
+	// SessionEnd harvest and /wrap's vault sync — are surfaced separately and
+	// are not a blocker.
+	nonMemoryDirty, memoryDirty, err := VaultDirtyByCategory(in.VaultRoot, in.Project)
 	if err != nil {
 		return res, fmt.Errorf("vault git status: %w", err)
 	}
-	res.VaultHasUncommittedWrites = vaultDirty
+	res.VaultHasUncommittedWrites = nonMemoryDirty
+	res.MemoryHasUncommittedWrites = memoryDirty
 
 	projectDirty, err := ProjectHasUncommittedWrites(in.ProjectRoot)
 	if err != nil {

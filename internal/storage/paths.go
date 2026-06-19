@@ -263,6 +263,40 @@ func (v *Vault) DocFile(project, rel string) (string, error) {
 	return filepath.Join(v.Root, "Projects", project, "doc", cleaned), nil
 }
 
+// MemoryDir returns the path to a project's memory directory:
+// {vault}/Projects/{project}/memory
+func (v *Vault) MemoryDir(project string) (string, error) {
+	if err := slug.Validate(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.Root, "Projects", project, "memory"), nil
+}
+
+// MemoryFile returns the path to a file under a project's memory directory:
+// {vault}/Projects/{project}/memory/{rel}. rel must be a simple relative
+// path like "pref-foo.md" — no traversal, no absolute paths, no .git segment.
+func (v *Vault) MemoryFile(project, rel string) (string, error) {
+	if err := slug.Validate(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	if rel == "" {
+		return "", fmt.Errorf("memory filename must not be empty")
+	}
+	if strings.Contains(rel, "..") || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("memory filename %q must be a relative path without traversal", rel)
+	}
+	cleaned := filepath.Clean(rel)
+	if strings.HasPrefix(cleaned, "..") {
+		return "", fmt.Errorf("memory filename %q escapes project dir", rel)
+	}
+	for seg := range strings.SplitSeq(cleaned, string(filepath.Separator)) {
+		if strings.EqualFold(seg, ".git") {
+			return "", fmt.Errorf("memory filename %q must not contain a .git segment", rel)
+		}
+	}
+	return filepath.Join(v.Root, "Projects", project, "memory", cleaned), nil
+}
+
 // AbsorbedFile returns the path to a file under a project's absorbed/
 // scratch directory. Used by `vp absorb` for resume-suggestions handoffs.
 // rel follows the same rules as DocFile.

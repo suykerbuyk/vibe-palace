@@ -401,6 +401,138 @@ func TestBootstrapPostInstructionsSurvivesTruncation(t *testing.T) {
 	}
 }
 
+func TestBootstrapSurfacesMemory(t *testing.T) {
+	vault, resolver := testSetup(t)
+
+	mems := []struct {
+		rel  string
+		meta storage.MemoryMeta
+		body string
+	}{
+		{"prefs.md", storage.MemoryMeta{Name: "prefs", Description: "user preferences", Type: "user"}, "body one"},
+		{"arch.md", storage.MemoryMeta{Name: "arch", Description: "architecture notes", Type: "project"}, "body two"},
+		{"style.md", storage.MemoryMeta{Name: "style", Description: "style feedback", Type: "feedback"}, "body three"},
+	}
+	for _, m := range mems {
+		if err := vault.WriteMemory("test-proj", m.rel, m.meta, m.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tool := BootstrapContextTool(resolver, vault)
+	// Generous budget so nothing sheds.
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"project":"test-proj","max_tokens":100000}`))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+
+	br := result.(BootstrapResult)
+	if len(br.Memory) != 3 {
+		t.Fatalf("Memory = %d, want 3", len(br.Memory))
+	}
+	byName := map[string]memorySnapshot{}
+	for _, m := range br.Memory {
+		byName[m.Name] = m
+		if m.Rel == "" {
+			t.Errorf("memory %q has empty Rel", m.Name)
+		}
+	}
+	if got := byName["prefs"]; got.Description != "user preferences" || got.Type != "user" || got.Rel != "prefs.md" {
+		t.Errorf("prefs snapshot = %+v", got)
+	}
+	if got := byName["arch"]; got.Type != "project" {
+		t.Errorf("arch type = %q, want project", got.Type)
+	}
+	if got := byName["style"]; got.Type != "feedback" {
+		t.Errorf("style type = %q, want feedback", got.Type)
+	}
+}
+
+func TestBootstrapEmptyVaultNoMemory(t *testing.T) {
+	vault, resolver := testSetup(t)
+	tool := BootstrapContextTool(resolver, vault)
+
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"project":"test-proj"}`))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	br := result.(BootstrapResult)
+	if len(br.Memory) != 0 {
+		t.Errorf("Memory = %d, want 0 for empty vault", len(br.Memory))
+	}
+}
+
+func TestBootstrapMemoryTruncationOrder(t *testing.T) {
+	vault, resolver := testSetup(t)
+
+	// Sessions and memories both sized to be sheddable.
+	for i := 0; i < 5; i++ {
+		if _, err := vault.WriteSession("test-proj", storage.SessionMeta{
+			Date:    "2026-04-07",
+			Title:   "session with a long title to inflate size",
+			Summary: strings.Repeat("detail ", 50),
+			Tag:     "implementation",
+		}, "body"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 5; i++ {
+		rel := "mem-" + string(rune('a'+i)) + ".md"
+		if err := vault.WriteMemory("test-proj", rel, storage.MemoryMeta{
+			Name:        "mem-" + string(rune('a'+i)),
+			Description: strings.Repeat("memory detail ", 20),
+			Type:        "project",
+		}, "ignored body"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tool := BootstrapContextTool(resolver, vault)
+	fullResult, _ := tool.Handler(context.Background(), json.RawMessage(`{"project":"test-proj","max_tokens":1000000}`))
+	fullBR := fullResult.(BootstrapResult)
+	if len(fullBR.Memory) != 5 {
+		t.Fatalf("setup: full Memory = %d, want 5", len(fullBR.Memory))
+	}
+
+	// Budget that sheds sessions but keeps memory: just above the no-sessions size.
+	withoutSessions := fullBR
+	withoutSessions.RecentSessions = nil
+	noSessionJSON, _ := json.Marshal(withoutSessions)
+	budgetKeepMem := len(noSessionJSON)/4 + 10
+	res, _ := tool.Handler(context.Background(), mustParams(t, "test-proj", budgetKeepMem))
+	br := res.(BootstrapResult)
+	if len(br.RecentSessions) >= 5 {
+		t.Errorf("expected sessions shed, got %d", len(br.RecentSessions))
+	}
+	if len(br.Memory) == 0 {
+		t.Error("memory should survive when only sessions need shedding (memory sheds after sessions)")
+	}
+
+	// Budget that sheds sessions AND memory but keeps KG: just above the
+	// no-sessions, no-memory size. Proves memory sheds before KG is nil'd.
+	withoutSessAndMem := withoutSessions
+	withoutSessAndMem.Memory = nil
+	noSessMemJSON, _ := json.Marshal(withoutSessAndMem)
+	budgetShedMem := len(noSessMemJSON)/4 + 10
+	res2, _ := tool.Handler(context.Background(), mustParams(t, "test-proj", budgetShedMem))
+	br2 := res2.(BootstrapResult)
+	if len(br2.Memory) != 0 {
+		t.Errorf("expected memory fully shed, got %d", len(br2.Memory))
+	}
+	if br2.KGSnapshot == nil {
+		t.Error("KGSnapshot should survive when shedding memory is enough (memory sheds before KG)")
+	}
+}
+
+func mustParams(t *testing.T, project string, maxTokens int) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(bootstrapParams{Project: project, MaxTokens: maxTokens})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 func TestBootstrapToolSchema(t *testing.T) {
 	vault, resolver := testSetup(t)
 	tool := BootstrapContextTool(resolver, vault)

@@ -60,6 +60,42 @@ func writeFile(t *testing.T, dir, rel, content string) {
 	}
 }
 
+func TestHasUncommittedChanges(t *testing.T) {
+	if !GitAvailable() {
+		t.Skip("git not in PATH")
+	}
+
+	// Not a git repo → false, no error.
+	bare := t.TempDir()
+	if dirty, err := HasUncommittedChanges(bare, "anything"); err != nil || dirty {
+		t.Fatalf("non-repo should be clean: dirty=%v err=%v", dirty, err)
+	}
+
+	dir := initTestRepo(t)
+
+	// Clean repo, watched path absent → false.
+	if dirty, err := HasUncommittedChanges(dir, "memory"); err != nil || dirty {
+		t.Fatalf("clean repo should report clean: dirty=%v err=%v", dirty, err)
+	}
+
+	// Untracked file under a watched DIR path → dirty (recursive).
+	writeFile(t, dir, "memory/new.md", "hello\n")
+	if dirty, err := HasUncommittedChanges(dir, "memory"); err != nil || !dirty {
+		t.Fatalf("new file under dir should be dirty: dirty=%v err=%v", dirty, err)
+	}
+
+	// A change OUTSIDE the watched paths is invisible to the scoped check.
+	writeFile(t, dir, "other.md", "elsewhere\n")
+	if dirty, err := HasUncommittedChanges(dir, "memory/new.md"); err != nil || !dirty {
+		t.Fatalf("watched file still dirty: dirty=%v err=%v", dirty, err)
+	}
+	gitRun(t, dir, "add", "memory/new.md")
+	gitRun(t, dir, "commit", "-m", "add memory")
+	if dirty, err := HasUncommittedChanges(dir, "memory"); err != nil || dirty {
+		t.Fatalf("committed memory dir should be clean: dirty=%v err=%v", dirty, err)
+	}
+}
+
 func TestCommitAndPushPaths_EmptyPaths(t *testing.T) {
 	dir := initTestRepo(t)
 	if _, err := CommitAndPushPaths(dir, "msg", nil, false); err == nil {

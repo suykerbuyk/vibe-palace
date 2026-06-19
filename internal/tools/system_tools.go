@@ -347,15 +347,17 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 			if err != nil {
 				return nil, fmt.Errorf("tidy scan: %w", err)
 			}
-			summary := fmt.Sprintf("dry run: would sweep %d artifact%s, %d reported",
-				len(res.Swept), plural(len(res.Swept)), len(res.Reported))
+			summary := fmt.Sprintf("dry run: would sweep %d artifact%s, %d reported%s",
+				len(res.Swept), plural(len(res.Swept)), len(res.Reported),
+				userMemorySummarySuffix(len(res.ReportedUserContent)))
 			return map[string]any{
-				"status":    "ok",
-				"dry_run":   true,
-				"swept":     res.Swept,
-				"reported":  res.Reported,
-				"committed": false,
-				"summary":   summary,
+				"status":                "ok",
+				"dry_run":               true,
+				"swept":                 res.Swept,
+				"reported":              res.Reported,
+				"reported_user_content": res.ReportedUserContent,
+				"committed":             false,
+				"summary":               summary,
 			}, nil
 		}
 
@@ -379,8 +381,9 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 
 		var summary string
 		if res.Committed {
-			summary = fmt.Sprintf("Swept %d artifact%s (commit %s); %d reported",
-				len(res.Swept), plural(len(res.Swept)), res.CommitSHA, len(res.Reported))
+			summary = fmt.Sprintf("Swept %d artifact%s (commit %s); %d reported%s",
+				len(res.Swept), plural(len(res.Swept)), res.CommitSHA, len(res.Reported),
+				userMemorySummarySuffix(len(res.ReportedUserContent)))
 			switch {
 			case res.PushDowngraded:
 				summary += "; no remotes — committed locally only"
@@ -388,19 +391,21 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 				summary += fmt.Sprintf("; pushed to %d remote%s", len(remoteResults), plural(len(remoteResults)))
 			}
 		} else {
-			summary = fmt.Sprintf("no-op: nothing to sweep, %d reported", len(res.Reported))
+			summary = fmt.Sprintf("no-op: nothing to sweep, %d reported%s",
+				len(res.Reported), userMemorySummarySuffix(len(res.ReportedUserContent)))
 		}
 
 		return map[string]any{
-			"status":          "ok",
-			"dry_run":         false,
-			"swept":           res.Swept,
-			"reported":        res.Reported,
-			"committed":       res.Committed,
-			"commit_sha":      res.CommitSHA,
-			"push_downgraded": res.PushDowngraded,
-			"remote_results":  remoteResults,
-			"summary":         summary,
+			"status":                "ok",
+			"dry_run":               false,
+			"swept":                 res.Swept,
+			"reported":              res.Reported,
+			"reported_user_content": res.ReportedUserContent,
+			"committed":             res.Committed,
+			"commit_sha":            res.CommitSHA,
+			"push_downgraded":       res.PushDowngraded,
+			"remote_results":        remoteResults,
+			"summary":               summary,
 		}, nil
 	}
 }
@@ -412,6 +417,17 @@ func plural(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// userMemorySummarySuffix renders the user-memory clause appended to a tidy
+// summary. The reported count is the full catch-all; this clause flags how many
+// of those are expected user-memory files pending commit (committed by
+// wrap/SessionEnd, not by tidy) rather than unexpected dirt. Empty when n == 0.
+func userMemorySummarySuffix(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (incl. %d user-memory file%s pending commit)", n, plural(n))
 }
 
 // ---------------------------------------------------------------------------

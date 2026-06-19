@@ -19,11 +19,14 @@ type PreflightCheckItem struct {
 }
 
 // PreflightResult is the JSON shape returned by vp_preflight_wrap. `ok`
-// mirrors len(errors) == 0; warnings never flip ok off.
+// mirrors len(errors) == 0; warnings never flip ok off. `notes` carries
+// purely-informational, non-alarming items (e.g. memory changes that commit
+// automatically) and, like warnings, never affects `ok`.
 type PreflightResult struct {
 	OK       bool                 `json:"ok"`
 	Warnings []PreflightCheckItem `json:"warnings"`
 	Errors   []PreflightCheckItem `json:"errors"`
+	Notes    []PreflightCheckItem `json:"notes"`
 }
 
 // surfaceCheckCompatible is the seam wrapping surface.CheckCompatible so tests
@@ -40,6 +43,7 @@ func Preflight(vaultRoot, projectRoot, project string) PreflightResult {
 	res := PreflightResult{
 		Warnings: []PreflightCheckItem{},
 		Errors:   []PreflightCheckItem{},
+		Notes:    []PreflightCheckItem{},
 	}
 
 	// 1. Surface check. Gate on surface.IncompatibleError; degrade
@@ -61,18 +65,29 @@ func Preflight(vaultRoot, projectRoot, project string) PreflightResult {
 		}
 	}
 
-	// 2. Vault dirty (warning, never error).
-	vaultDirty, err := VaultHasUncommittedWrites(vaultRoot, project)
+	// 2. Vault dirty, split by category. Non-memory dirt is the nag-worthy
+	// signal (warning); memory dirt commits automatically (SessionEnd harvest
+	// / wrap vault sync) and is surfaced as a non-alarming note. Neither
+	// affects ok.
+	nonMemoryDirty, memoryDirty, err := VaultDirtyByCategory(vaultRoot, project)
 	if err != nil {
 		res.Warnings = append(res.Warnings, PreflightCheckItem{
 			Check:  "vault_dirty",
 			Detail: fmt.Sprintf("vault git status probe failed: %v", err),
 		})
-	} else if vaultDirty {
-		res.Warnings = append(res.Warnings, PreflightCheckItem{
-			Check:  "vault_dirty",
-			Detail: "vault has uncommitted writes — review before committing the wrap iter",
-		})
+	} else {
+		if nonMemoryDirty {
+			res.Warnings = append(res.Warnings, PreflightCheckItem{
+				Check:  "vault_dirty",
+				Detail: "vault has uncommitted writes — review before committing the wrap iter",
+			})
+		}
+		if memoryDirty {
+			res.Notes = append(res.Notes, PreflightCheckItem{
+				Check:  "memory_dirty",
+				Detail: "memory changes present — committed automatically by wrap/SessionEnd, not a blocker",
+			})
+		}
 	}
 
 	// 3. Project dirty (warning, never error).

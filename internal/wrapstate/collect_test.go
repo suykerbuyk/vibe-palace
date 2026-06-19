@@ -134,6 +134,62 @@ func TestDirtyProbes(t *testing.T) {
 	}
 }
 
+func TestVaultDirtyByCategory(t *testing.T) {
+	repo := mkGitDir(t)
+	cases := []struct {
+		name          string
+		porcelain     string
+		wantNonMemory bool
+		wantMemory    bool
+	}{
+		{"clean", "", false, false},
+		{"memory only", " M Projects/demo/memory/MEMORY.md\n", false, true},
+		{"non-memory only", " M Projects/demo/resume.md\n", true, false},
+		{
+			"both",
+			" M Projects/demo/memory/MEMORY.md\n M Projects/demo/tasks/x.md\n",
+			true, true,
+		},
+		{"added memory file", "A  Projects/demo/memory/new.md\n", false, true},
+		{"untracked non-memory", "?? Projects/demo/notes.md\n", true, false},
+		{
+			"rename into memory classifies by destination",
+			"R  Projects/demo/old.md -> Projects/demo/memory/new.md\n",
+			false, true,
+		},
+		{
+			"rename out of memory classifies by destination",
+			"R  Projects/demo/memory/old.md -> Projects/demo/resume.md\n",
+			true, false,
+		},
+		{
+			"quoted memory path",
+			" M \"Projects/demo/memory/a b.md\"\n",
+			false, true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeGit(t, func([]string) (string, error) { return tc.porcelain, nil })
+			nonMem, mem, err := VaultDirtyByCategory(repo, "demo")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if nonMem != tc.wantNonMemory || mem != tc.wantMemory {
+				t.Errorf("got (nonMemory=%v, memory=%v), want (nonMemory=%v, memory=%v)",
+					nonMem, mem, tc.wantNonMemory, tc.wantMemory)
+			}
+		})
+	}
+
+	// Non-repo degrades to (false, false).
+	fakeGit(t, func([]string) (string, error) { return " M Projects/demo/memory/x.md\n", nil })
+	nonMem, mem, err := VaultDirtyByCategory(t.TempDir(), "demo")
+	if err != nil || nonMem || mem {
+		t.Errorf("non-repo: got (%v, %v, %v), want (false, false, nil)", nonMem, mem, err)
+	}
+}
+
 func TestCollect_Integration(t *testing.T) {
 	projectRoot := mkGitDir(t)
 	vaultRoot := t.TempDir()
@@ -215,6 +271,109 @@ func TestCollect_Integration(t *testing.T) {
 	if res.Shape != ShapeFreshFeature {
 		t.Errorf("shape = %q, want fresh-feature", res.Shape)
 	}
+}
+
+func TestCollect_MemoryDirtNotNagWorthy(t *testing.T) {
+	projectRoot := mkGitDir(t)
+	vaultRoot := mkGitDir(t)
+
+	iterPath := filepath.Join(vaultRoot, "Projects", "demo", "iterations.md")
+	if err := os.MkdirAll(filepath.Dir(iterPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(iterPath, []byte("### Iteration 1 — x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tasksDir := filepath.Join(vaultRoot, "Projects", "demo", "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeGit(t, func(args []string) (string, error) {
+		switch args[0] {
+		case "status":
+			// Only a memory file is dirty in the vault.
+			return " M Projects/demo/memory/MEMORY.md\n", nil
+		default:
+			return "", nil
+		}
+	})
+
+	res, err := Collect(context.Background(), CollectInput{
+		VaultRoot:      vaultRoot,
+		Project:        "demo",
+		IterationsPath: iterPath,
+		TasksDir:       tasksDir,
+		ProjectRoot:    projectRoot,
+	})
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if res.VaultHasUncommittedWrites {
+		t.Error("memory-only dirt must not set VaultHasUncommittedWrites")
+	}
+	if !res.MemoryHasUncommittedWrites {
+		t.Error("memory-only dirt must set MemoryHasUncommittedWrites")
+	}
+}
+
+func TestPreflight_MemoryDirt(t *testing.T) {
+	oldChk := surfaceCheckCompatible
+	surfaceCheckCompatible = func(string) error { return nil }
+	t.Cleanup(func() { surfaceCheckCompatible = oldChk })
+
+	// Memory-only vault dirt, clean project: no vault_dirty warning, note
+	// present, ok stays true.
+	t.Run("memory only", func(t *testing.T) {
+		fakeGit(t, func(args []string) (string, error) {
+			if args[0] == "status" {
+				// project dir status is empty; the vault scoped status carries
+				// the memory dirt. The stub can't distinguish dirs, so both
+				// calls return the same — project_dirty would also fire here,
+				// so scope the memory assertion to vault_dirty only.
+				return " M Projects/demo/memory/MEMORY.md\n", nil
+			}
+			return "", nil
+		})
+		res := Preflight(mkGitDir(t), mkGitDir(t), "demo")
+		if !res.OK {
+			t.Error("memory dirt must not flip ok off")
+		}
+		for _, w := range res.Warnings {
+			if w.Check == "vault_dirty" {
+				t.Errorf("memory-only dirt must not emit vault_dirty warning; warnings=%+v", res.Warnings)
+			}
+		}
+		found := false
+		for _, n := range res.Notes {
+			if n.Check == "memory_dirty" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected memory_dirty note, got notes=%+v", res.Notes)
+		}
+	})
+
+	// Non-memory vault dirt: vault_dirty warning present.
+	t.Run("non-memory dirt", func(t *testing.T) {
+		fakeGit(t, func(args []string) (string, error) {
+			if args[0] == "status" {
+				return " M Projects/demo/resume.md\n", nil
+			}
+			return "", nil
+		})
+		res := Preflight(mkGitDir(t), mkGitDir(t), "demo")
+		found := false
+		for _, w := range res.Warnings {
+			if w.Check == "vault_dirty" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected vault_dirty warning, got warnings=%+v", res.Warnings)
+		}
+	})
 }
 
 func TestPreflight_Matrix(t *testing.T) {
