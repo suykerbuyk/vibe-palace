@@ -45,12 +45,12 @@ func TestPlanClassifiesMixedState(t *testing.T) {
 
 	// restart exists and is up-to-date.
 	restartPath := filepath.Join(cmdDir, Filename("restart"))
-	if err := os.WriteFile(restartPath, []byte(Render("restart", "current")), 0o644); err != nil {
+	if err := os.WriteFile(restartPath, []byte(Render("restart", "current", "", "")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// wrap exists but has a stale brief — should be Modified.
 	wrapPath := filepath.Join(cmdDir, Filename("wrap"))
-	if err := os.WriteFile(wrapPath, []byte(Render("wrap", "OLD BRIEF")), 0o644); err != nil {
+	if err := os.WriteFile(wrapPath, []byte(Render("wrap", "OLD BRIEF", "", "")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// doctor is in the desired set but no file yet — New.
@@ -58,7 +58,7 @@ func TestPlanClassifiesMixedState(t *testing.T) {
 	// retired: a file we wrote previously for a command that no longer
 	// exists — Stale.
 	retiredPath := filepath.Join(cmdDir, Filename("retired"))
-	if err := os.WriteFile(retiredPath, []byte(Render("retired", "gone")), 0o644); err != nil {
+	if err := os.WriteFile(retiredPath, []byte(Render("retired", "gone", "", "")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// mine: a vpc-*.md without our marker — Custom.
@@ -92,7 +92,7 @@ func TestPlanClassifiesMixedState(t *testing.T) {
 	if got := byName["wrap"].Kind; got != Modified {
 		t.Errorf("wrap Kind = %s, want Modified", got)
 	}
-	if byName["wrap"].PrevSha != ExpectedSha("wrap", "OLD BRIEF") {
+	if byName["wrap"].PrevSha != ExpectedSha("wrap", "OLD BRIEF", "", "") {
 		t.Errorf("wrap PrevSha = %q, want old sha", byName["wrap"].PrevSha)
 	}
 	if got := byName["doctor"].Kind; got != New {
@@ -116,9 +116,9 @@ func TestPlanSortOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Populate: one Unchanged, one Modified, one Stale, one Custom.
-	os.WriteFile(filepath.Join(cmdDir, Filename("u")), []byte(Render("u", "same")), 0o644)
-	os.WriteFile(filepath.Join(cmdDir, Filename("m")), []byte(Render("m", "old")), 0o644)
-	os.WriteFile(filepath.Join(cmdDir, Filename("s")), []byte(Render("s", "x")), 0o644)
+	os.WriteFile(filepath.Join(cmdDir, Filename("u")), []byte(Render("u", "same", "", "")), 0o644)
+	os.WriteFile(filepath.Join(cmdDir, Filename("m")), []byte(Render("m", "old", "", "")), 0o644)
+	os.WriteFile(filepath.Join(cmdDir, Filename("s")), []byte(Render("s", "x", "", "")), 0o644)
 	os.WriteFile(filepath.Join(cmdDir, Filename("c")), []byte("# custom\n"), 0o644)
 
 	changes, err := Plan(sums("u", "same", "m", "new", "n", "brief"), root)
@@ -146,6 +146,77 @@ func TestPlanMissingShimDirIsAllNew(t *testing.T) {
 	}
 	if len(changes) != 1 || changes[0].Kind != New {
 		t.Errorf("want single New, got %+v", changes)
+	}
+}
+
+// TestPlanProjectScopedCarriesProjectAndHint verifies a project-tier Summary
+// produces a New Change carrying the project slug and argument-hint.
+func TestPlanProjectScopedCarriesProjectAndHint(t *testing.T) {
+	root := t.TempDir()
+	changes, err := Plan([]commands.Summary{
+		{Name: "res_build", Brief: "b", Source: "project", Project: "rezbldrvault", ArgHint: "[x]"},
+	}, root)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(changes) != 1 || changes[0].Kind != New {
+		t.Fatalf("want 1 New, got %+v", changes)
+	}
+	if changes[0].Project != "rezbldrvault" {
+		t.Errorf("Project = %q, want rezbldrvault", changes[0].Project)
+	}
+	if changes[0].ArgHint != "[x]" {
+		t.Errorf("ArgHint = %q, want [x]", changes[0].ArgHint)
+	}
+}
+
+// TestPlanProjectShimDriftOnSlugChange verifies an on-disk project shim is
+// classified Modified when its slug changes, since the slug folds into the hash.
+func TestPlanProjectShimDriftOnSlugChange(t *testing.T) {
+	root := t.TempDir()
+	cmdDir := filepath.Join(root, ShimDir)
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(cmdDir, Filename("res_build"))
+	if err := os.WriteFile(p, []byte(Render("res_build", "b", "old", "")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := Plan([]commands.Summary{
+		{Name: "res_build", Brief: "b", Source: "project", Project: "new"},
+	}, root)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(changes) != 1 || changes[0].Kind != Modified {
+		t.Fatalf("want 1 Modified on slug change, got %+v", changes)
+	}
+}
+
+// TestPlanSkipsNewWhenCustomFileCollides verifies a hand-written markerless file
+// occupying a desired command's path is reported as CustomChange only — no
+// duplicate New (Wire refuses to clobber it; the user removes it to adopt).
+func TestPlanSkipsNewWhenCustomFileCollides(t *testing.T) {
+	root := t.TempDir()
+	cmdDir := filepath.Join(root, ShimDir)
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cmdDir, Filename("res_build")),
+		[]byte("# hand made, no marker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := Plan([]commands.Summary{
+		{Name: "res_build", Brief: "b", Source: "project", Project: "p"},
+	}, root)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("want exactly 1 change (CustomChange), got %+v", changes)
+	}
+	if changes[0].Kind != CustomChange {
+		t.Errorf("Kind = %s, want CustomChange", changes[0].Kind)
 	}
 }
 

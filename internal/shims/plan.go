@@ -61,6 +61,8 @@ type Change struct {
 	Name    string
 	Path    string
 	Brief   string // desired brief for New/Modified; empty otherwise
+	Project string // owning project slug for project-scoped commands; empty for global
+	ArgHint string // argument-hint passthrough for New/Modified; empty otherwise
 	PrevSha string // sha currently on disk for Modified/Stale; empty otherwise
 }
 
@@ -85,8 +87,9 @@ func Plan(summaries []commands.Summary, projectRoot string) ([]Change, error) {
 
 	// Scan the on-disk set. A missing directory is not an error — it just
 	// means every desired shim is New.
-	onDisk := map[string]string{} // name -> absolute path
-	customs := []string{}         // vpc-*.md files lacking our marker
+	onDisk := map[string]string{}    // name -> absolute path (marker-bearing)
+	customs := []string{}            // vpc-*.md files lacking our marker
+	customNames := map[string]bool{} // command names occupied by a custom file
 	entries, err := os.ReadDir(shimRoot)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("read %s: %w", shimRoot, err)
@@ -107,6 +110,7 @@ func Plan(summaries []commands.Summary, projectRoot string) ([]Change, error) {
 		}
 		if !scan.HasMarker {
 			customs = append(customs, path)
+			customNames[name] = true
 			continue
 		}
 		onDisk[name] = path
@@ -119,8 +123,17 @@ func Plan(summaries []commands.Summary, projectRoot string) ([]Change, error) {
 		path := filepath.Join(shimRoot, Filename(s.Name))
 		existing, ok := onDisk[s.Name]
 		if !ok {
+			// A markerless custom file already occupies this command's path
+			// (e.g. a hand-written shim). Wire would refuse to clobber it; the
+			// CustomChange entry below already reports it, so skip the New to
+			// avoid a confusing duplicate. The user removes the custom file to
+			// adopt a managed shim.
+			if customNames[s.Name] {
+				continue
+			}
 			changes = append(changes, Change{
-				Kind: New, Name: s.Name, Path: path, Brief: s.Brief,
+				Kind: New, Name: s.Name, Path: path,
+				Brief: s.Brief, Project: s.Project, ArgHint: s.ArgHint,
 			})
 			continue
 		}
@@ -128,16 +141,16 @@ func Plan(summaries []commands.Summary, projectRoot string) ([]Change, error) {
 		if err != nil {
 			return nil, fmt.Errorf("rescan %s: %w", existing, err)
 		}
-		expected := ExpectedSha(s.Name, s.Brief)
+		expected := ExpectedSha(s.Name, s.Brief, s.Project, s.ArgHint)
 		if scan.Sha == expected && scan.Version == shimVersion {
 			changes = append(changes, Change{
 				Kind: UnchangedChange, Name: s.Name, Path: existing,
-				Brief: s.Brief, PrevSha: scan.Sha,
+				Brief: s.Brief, Project: s.Project, ArgHint: s.ArgHint, PrevSha: scan.Sha,
 			})
 		} else {
 			changes = append(changes, Change{
 				Kind: Modified, Name: s.Name, Path: existing,
-				Brief: s.Brief, PrevSha: scan.Sha,
+				Brief: s.Brief, Project: s.Project, ArgHint: s.ArgHint, PrevSha: scan.Sha,
 			})
 		}
 	}

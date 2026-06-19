@@ -61,9 +61,9 @@ type Result struct {
 // Writes are atomic (tmp + fsync + rename in the same directory) so a crash
 // mid-write cannot leave a half-written shim visible to Claude Code's
 // directory watcher.
-func Wire(path, name, brief string) (Result, error) {
-	rendered := Render(name, brief)
-	expected := ExpectedSha(name, brief)
+func Wire(path, name, brief, project, argHint string) (Result, error) {
+	rendered := Render(name, brief, project, argHint)
+	expected := ExpectedSha(name, brief, project, argHint)
 
 	scan, err := ScanShim(path)
 	if err != nil {

@@ -129,7 +129,7 @@ func TestIntegrationShimsLifecycle(t *testing.T) {
 	// --- Round 4: upstream rename simulation => Stale + AllowStaleRemoval contract ---
 	// Drop a shim for a name not in summaries; re-Plan must classify Stale.
 	stalePath := filepath.Join(projectRoot, shims.ShimDir, shims.Filename("ghostcmd"))
-	if err := os.WriteFile(stalePath, []byte(shims.Render("ghostcmd", "ghost brief")), 0o644); err != nil {
+	if err := os.WriteFile(stalePath, []byte(shims.Render("ghostcmd", "ghost brief", "", "")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	plan4, err := shims.Plan(summaries3, projectRoot)

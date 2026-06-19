@@ -14,6 +14,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/shims"
 )
 
@@ -292,7 +293,7 @@ func TestRunCommandsUpgrade_PromptsToRemoveStaleShim(t *testing.T) {
 
 	// Drop a well-formed stale shim for a command that does not exist.
 	orphan := filepath.Join(projectRoot, shims.ShimDir, shims.Filename("ghost"))
-	body := shims.Render("ghost", "A ghost from an older vibe-palace.")
+	body := shims.Render("ghost", "A ghost from an older vibe-palace.", "", "")
 	if err := os.WriteFile(orphan, []byte(body), 0o644); err != nil {
 		t.Fatalf("write ghost shim: %v", err)
 	}
@@ -629,10 +630,66 @@ func writeVaultFile(t *testing.T, vault, rel, content string) {
 // seedMatchingShims emits the full shim set into projectRoot so that a
 // subsequent plan sees no New/Modified/Stale entries. Used by tests that
 // assert the "nothing to do" exit path.
+// TestPlanShims_IncludesProjectScopedCommand exercises the Phase 1+2 wiring:
+// planShims detects the project slug from projectRoot's .vibe-palace.toml,
+// resolves the project-tier command, and produces a managed shim plan whose
+// rendered body carries the project="<slug>" param and the command's argument
+// hint lifted from frontmatter.
+func TestPlanShims_IncludesProjectScopedCommand(t *testing.T) {
+	vault := t.TempDir()
+	dir := filepath.Join(vault, "Projects", "demoproj", "commands")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "foo.md"),
+		[]byte("---\nargument-hint: [bar]\n---\n\nDo foo.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, ".vibe-palace.toml"),
+		[]byte("[project]\nname = \"demoproj\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := vpctx.NewResolver(vault)
+	plan, err := planShims(r, projectRoot, "")
+	if err != nil {
+		t.Fatalf("planShims: %v", err)
+	}
+	var foo *shims.Change
+	for i := range plan {
+		if plan[i].Name == "foo" {
+			foo = &plan[i]
+		}
+	}
+	if foo == nil {
+		t.Fatalf("project command foo absent from shim plan: %+v", plan)
+	}
+	if foo.Kind != shims.New {
+		t.Errorf("foo Kind = %s, want New", foo.Kind)
+	}
+	if foo.Project != "demoproj" {
+		t.Errorf("foo Project = %q, want demoproj", foo.Project)
+	}
+	if foo.ArgHint != "[bar]" {
+		t.Errorf("foo ArgHint = %q, want [bar]", foo.ArgHint)
+	}
+	body := shims.Render(foo.Name, foo.Brief, foo.Project, foo.ArgHint)
+	if !strings.Contains(body, `project="demoproj"`) {
+		t.Errorf("rendered shim missing project param:\n%s", body)
+	}
+	if !strings.Contains(body, "argument-hint: [bar]") {
+		t.Errorf("rendered shim missing specific argument-hint:\n%s", body)
+	}
+}
+
 func seedMatchingShims(t *testing.T, vault, projectRoot string) {
 	t.Helper()
 	r := vpctx.NewResolver(vault)
-	summaries, err := commands.List(r, "command", "", "", "", 60)
+	// Mirror planShims: resolve with the detected project slug so seeded shims
+	// carry the same (project-interpolated) briefs production expects.
+	slug, _ := project.DetectProject(projectRoot)
+	summaries, err := commands.List(r, "command", slug, "", "", 60)
 	if err != nil {
 		t.Fatalf("list summaries: %v", err)
 	}

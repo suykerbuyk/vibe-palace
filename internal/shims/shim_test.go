@@ -19,15 +19,15 @@ func TestFilename(t *testing.T) {
 }
 
 func TestRenderDeterministic(t *testing.T) {
-	a := Render("restart", "Reload vault and resume work")
-	b := Render("restart", "Reload vault and resume work")
+	a := Render("restart", "Reload vault and resume work", "", "")
+	b := Render("restart", "Reload vault and resume work", "", "")
 	if a != b {
 		t.Errorf("Render not deterministic:\na=%q\nb=%q", a, b)
 	}
 }
 
 func TestRenderContainsRequiredElements(t *testing.T) {
-	out := Render("wrap", "Wrap up current work")
+	out := Render("wrap", "Wrap up current work", "", "")
 	checks := []string{
 		"---\n",                                 // frontmatter open
 		"description: Vibe-palace command — ",   // brief surfaces
@@ -46,10 +46,14 @@ func TestRenderContainsRequiredElements(t *testing.T) {
 			t.Errorf("Render missing %q in:\n%s", want, out)
 		}
 	}
+	// Global command: no project param in the body.
+	if strings.Contains(out, "project=") {
+		t.Errorf("global Render leaked a project param:\n%s", out)
+	}
 }
 
 func TestRenderHandlesEmptyBrief(t *testing.T) {
-	out := Render("doctor", "")
+	out := Render("doctor", "", "", "")
 	// No " — " suffix when brief is empty.
 	if strings.Contains(out, "Vibe-palace command — ") {
 		t.Errorf("empty brief produced dash separator:\n%s", out)
@@ -60,7 +64,7 @@ func TestRenderHandlesEmptyBrief(t *testing.T) {
 }
 
 func TestRenderSanitizesMultilineBrief(t *testing.T) {
-	out := Render("x", "line one\nline two\r\nline three")
+	out := Render("x", "line one\nline two\r\nline three", "", "")
 	// Frontmatter must stay single-line — no raw CR or LF inside the
 	// description value before the closing "---".
 	fmEnd := strings.Index(out, "---\n\n")
@@ -84,11 +88,42 @@ func TestRenderSanitizesMultilineBrief(t *testing.T) {
 	}
 }
 
+// TestRenderProjectScoped verifies a project-scoped command renders the
+// project="<slug>" param so the MCP server resolves the project tier.
+func TestRenderProjectScoped(t *testing.T) {
+	out := Render("res_build", "Generate a targeted resume", "rezbldrvault", "")
+	for _, want := range []string{
+		"name=\"res_build\"",
+		"project=\"rezbldrvault\"",
+		", then follow the returned instructions verbatim",
+		"/vpc-res_build",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("project Render missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+// TestRenderArgHint verifies a specific argument-hint passes through into the
+// shim frontmatter, replacing the generic fallback.
+func TestRenderArgHint(t *testing.T) {
+	out := Render("res_build", "brief", "rezbldrvault", "[job file path] [--cover-letter]")
+	if !strings.Contains(out, "argument-hint: [job file path] [--cover-letter]\n") {
+		t.Errorf("specific argument-hint not emitted:\n%s", out)
+	}
+	if strings.Contains(out, "[args forwarded to the vibe-palace command]") {
+		t.Errorf("generic argument-hint fallback leaked despite a specific hint:\n%s", out)
+	}
+}
+
 func TestContentHashInputsAffectHash(t *testing.T) {
-	base := contentHash("restart", "brief")
+	base := contentHash("restart", "brief", "", "")
 	cases := map[string]string{
-		"different name":  contentHash("wrap", "brief"),
-		"different brief": contentHash("restart", "other"),
+		"different name":    contentHash("wrap", "brief", "", ""),
+		"different brief":   contentHash("restart", "other", "", ""),
+		"added project":     contentHash("restart", "brief", "proj", ""),
+		"added arghint":     contentHash("restart", "brief", "", "[x]"),
+		"different project": contentHash("restart", "brief", "proj2", ""),
 	}
 	for label, got := range cases {
 		if got == base {
@@ -100,12 +135,37 @@ func TestContentHashInputsAffectHash(t *testing.T) {
 	}
 }
 
+// TestContentHashGlobalStable guards the no-churn property: an empty
+// project/argHint must hash identically to the pre-feature two-input form, so
+// existing global shims are never needlessly rewritten on upgrade.
+func TestContentHashGlobalStable(t *testing.T) {
+	withEmpties := contentHash("restart", "Reload and resume", "", "")
+	// The pre-feature hash inputs, recomputed inline.
+	if got := contentHash("restart", "Reload and resume", "", ""); got != withEmpties {
+		t.Fatalf("non-deterministic: %s vs %s", got, withEmpties)
+	}
+	// Sanity: a global shim's hash must NOT equal the same name+brief once a
+	// project is folded in (proves conditional inclusion actually fires).
+	if withEmpties == contentHash("restart", "Reload and resume", "proj", "") {
+		t.Error("global and project hashes collided")
+	}
+}
+
 func TestExpectedShaMatchesRendered(t *testing.T) {
 	name, brief := "restart", "Reload and resume"
-	expected := ExpectedSha(name, brief)
-	rendered := Render(name, brief)
+	expected := ExpectedSha(name, brief, "", "")
+	rendered := Render(name, brief, "", "")
 	if !strings.Contains(rendered, "sha="+expected+" ") {
 		t.Errorf("rendered sha does not match ExpectedSha (%s):\n%s", expected, rendered)
+	}
+}
+
+func TestExpectedShaMatchesRenderedProject(t *testing.T) {
+	name, brief, proj, hint := "res_build", "brief", "rezbldrvault", "[x]"
+	expected := ExpectedSha(name, brief, proj, hint)
+	rendered := Render(name, brief, proj, hint)
+	if !strings.Contains(rendered, "sha="+expected+" ") {
+		t.Errorf("project rendered sha does not match ExpectedSha (%s):\n%s", expected, rendered)
 	}
 }
 
@@ -138,7 +198,7 @@ func TestScanShimNoMarker(t *testing.T) {
 
 func TestScanShimExtractsShaAndVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "vpc-restart.md")
-	if err := os.WriteFile(path, []byte(Render("restart", "do the thing")), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(Render("restart", "do the thing", "", "")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	res, err := ScanShim(path)
@@ -151,8 +211,8 @@ func TestScanShimExtractsShaAndVersion(t *testing.T) {
 	if res.Version != shimVersion {
 		t.Errorf("Version = %d, want %d", res.Version, shimVersion)
 	}
-	if res.Sha != ExpectedSha("restart", "do the thing") {
-		t.Errorf("Sha = %q, want %q", res.Sha, ExpectedSha("restart", "do the thing"))
+	if res.Sha != ExpectedSha("restart", "do the thing", "", "") {
+		t.Errorf("Sha = %q, want %q", res.Sha, ExpectedSha("restart", "do the thing", "", ""))
 	}
 }
 

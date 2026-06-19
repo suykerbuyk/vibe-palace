@@ -22,6 +22,15 @@ type Summary struct {
 	Alias  string `json:"alias,omitempty"`
 	Source string `json:"source"`
 	Brief  string `json:"brief,omitempty"`
+	// Project is the slug a project-scoped command resolves under (Source one
+	// of "project"/"wing"/"room"). Empty for global ("vault"/"embedded")
+	// resources. Shims use it to emit a project="<slug>" param so the MCP
+	// server resolves the project tier without cwd context.
+	Project string `json:"project,omitempty"`
+	// ArgHint is the command's argument-hint frontmatter value, when present.
+	// Surfaced into the slash-command shim so domain commands keep their
+	// specific hints. Commands only; empty for skills.
+	ArgHint string `json:"arg_hint,omitempty"`
 }
 
 // Alias returns the "vpc-<name>" trigger token for a command.
@@ -48,15 +57,77 @@ func List(resolver *vpctx.Resolver, resourceType, project, wing, room string, br
 		if resourceType == "command" {
 			s.Alias = Alias(ri.Name)
 		}
+		if project != "" && isProjectScoped(ri.Source) {
+			s.Project = project
+		}
 		content, _, err := resolver.ResolveScoped(
 			fmt.Sprintf("%s:%s", resourceType, ri.Name), project, wing, room,
 		)
 		if err == nil {
-			s.Brief = ExtractBrief(content, briefLen)
+			body := content
+			// Commands may carry a leading YAML frontmatter fence (e.g.
+			// argument-hint). Strip it before brief extraction so the brief
+			// never becomes "---", and lift the argument-hint for the shim.
+			// Scoped to commands so skill brief behavior is unchanged.
+			if resourceType == "command" {
+				var fm map[string]string
+				fm, body = parseFrontmatter(content)
+				s.ArgHint = strings.TrimSpace(fm["argument-hint"])
+			}
+			s.Brief = ExtractBrief(body, briefLen)
 		}
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+// isProjectScoped reports whether a resolver source tier is project-scoped
+// (and therefore needs a project="<slug>" param to resolve), as opposed to the
+// global "vault"/"embedded" tiers.
+func isProjectScoped(source string) bool {
+	switch source {
+	case "project", "wing", "room":
+		return true
+	default:
+		return false
+	}
+}
+
+// parseFrontmatter splits an optional leading YAML frontmatter fence
+// ("---\n…\n---\n") from the body. It returns a flat key→value map of the
+// frontmatter's top-level "key: value" scalar lines and the remaining body.
+// When no well-formed fence is present the map is empty and body is the
+// original content unchanged. Only the minimal single-line scalar subset
+// needed for shim metadata is parsed; nested YAML is ignored.
+func parseFrontmatter(content string) (map[string]string, string) {
+	fm := map[string]string{}
+	if !strings.HasPrefix(content, "---\n") {
+		return fm, content
+	}
+	lines := strings.Split(content, "\n")
+	end := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimRight(lines[i], "\r") == "---" {
+			end = i
+			break
+		}
+	}
+	if end == -1 {
+		// No closing fence — not frontmatter; leave content intact.
+		return fm, content
+	}
+	for i := 1; i < end; i++ {
+		line := strings.TrimRight(lines[i], "\r")
+		idx := strings.Index(line, ":")
+		if idx <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		val := strings.TrimSpace(line[idx+1:])
+		fm[key] = val
+	}
+	body := strings.Join(lines[end+1:], "\n")
+	return fm, strings.TrimLeft(body, "\n")
 }
 
 // ExtractBrief returns the first non-blank, non-heading line from content,

@@ -762,8 +762,11 @@ func (r *Resolver) ResolveSkillSection(name, section, project, wing, room string
 	return nil, "", fmt.Errorf("skill section %q/%q not found at any precedence level", name, section)
 }
 
-// listMDFiles returns sorted basenames (without .md) of markdown files in a directory.
-// Returns nil if the directory does not exist.
+// listMDFiles returns sorted basenames (without .md) of markdown files in a
+// directory. Returns nil if the directory does not exist. README.md is skipped:
+// every scaffolded commands/ tier carries a README.md override-guide stub (see
+// internal/templates/readme_stub.go) which is documentation, not a command —
+// listing it would surface a bogus "README" command (and slash-command shim).
 func listMDFiles(dir string) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -772,6 +775,9 @@ func listMDFiles(dir string) []string {
 	var names []string
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		if strings.EqualFold(e.Name(), "README.md") {
 			continue
 		}
 		names = append(names, strings.TrimSuffix(e.Name(), ".md"))

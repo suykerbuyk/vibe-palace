@@ -17,7 +17,7 @@ func shimPath(t *testing.T, name string) string {
 
 func TestWireAddsMissingFile(t *testing.T) {
 	path := shimPath(t, "restart")
-	res, err := Wire(path, "restart", "Reload vault")
+	res, err := Wire(path, "restart", "Reload vault", "", "")
 	if err != nil {
 		t.Fatalf("Wire: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestWireCreatesParentDir(t *testing.T) {
 	// the parent into existence (0o755).
 	root := t.TempDir()
 	path := filepath.Join(root, ".claude", "commands", Filename("wrap"))
-	if _, err := Wire(path, "wrap", "wrap up"); err != nil {
+	if _, err := Wire(path, "wrap", "wrap up", "", ""); err != nil {
 		t.Fatalf("Wire: %v", err)
 	}
 	info, err := os.Stat(filepath.Dir(path))
@@ -52,13 +52,13 @@ func TestWireCreatesParentDir(t *testing.T) {
 
 func TestWireIdempotentUnchanged(t *testing.T) {
 	path := shimPath(t, "restart")
-	if _, err := Wire(path, "restart", "Reload"); err != nil {
+	if _, err := Wire(path, "restart", "Reload", "", ""); err != nil {
 		t.Fatalf("first Wire: %v", err)
 	}
 	info1, _ := os.Stat(path)
 	data1, _ := os.ReadFile(path)
 
-	res, err := Wire(path, "restart", "Reload")
+	res, err := Wire(path, "restart", "Reload", "", "")
 	if err != nil {
 		t.Fatalf("second Wire: %v", err)
 	}
@@ -77,12 +77,12 @@ func TestWireIdempotentUnchanged(t *testing.T) {
 
 func TestWireUpdatesOnStaleSha(t *testing.T) {
 	path := shimPath(t, "restart")
-	if _, err := Wire(path, "restart", "old brief"); err != nil {
+	if _, err := Wire(path, "restart", "old brief", "", ""); err != nil {
 		t.Fatalf("seed Wire: %v", err)
 	}
-	prevSha := ExpectedSha("restart", "old brief")
+	prevSha := ExpectedSha("restart", "old brief", "", "")
 
-	res, err := Wire(path, "restart", "new brief")
+	res, err := Wire(path, "restart", "new brief", "", "")
 	if err != nil {
 		t.Fatalf("update Wire: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestWireLeavesCustomFileAlone(t *testing.T) {
 	}
 	info1, _ := os.Stat(path)
 
-	res, err := Wire(path, "mine", "some brief")
+	res, err := Wire(path, "mine", "some brief", "", "")
 	if err != nil {
 		t.Fatalf("Wire: %v", err)
 	}
@@ -128,13 +128,13 @@ func TestWireLeavesCustomFileAlone(t *testing.T) {
 
 func TestWirePreservesFileMode(t *testing.T) {
 	path := shimPath(t, "restart")
-	if _, err := Wire(path, "restart", "v1"); err != nil {
+	if _, err := Wire(path, "restart", "v1", "", ""); err != nil {
 		t.Fatalf("first Wire: %v", err)
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
-	if _, err := Wire(path, "restart", "v2"); err != nil {
+	if _, err := Wire(path, "restart", "v2", "", ""); err != nil {
 		t.Fatalf("update Wire: %v", err)
 	}
 	info, _ := os.Stat(path)
@@ -146,7 +146,7 @@ func TestWirePreservesFileMode(t *testing.T) {
 func TestRemoveDeletesOnlyMarkedFiles(t *testing.T) {
 	// Our shim: Remove should delete it.
 	marked := shimPath(t, "restart")
-	if _, err := Wire(marked, "restart", "brief"); err != nil {
+	if _, err := Wire(marked, "restart", "brief", "", ""); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	ok, err := Remove(marked)

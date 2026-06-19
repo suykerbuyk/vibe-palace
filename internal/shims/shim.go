@@ -57,28 +57,49 @@ func Filename(name string) string { return FilePrefix + name + ".md" }
 // inputs plus the template version. Keying on inputs (rather than on the
 // rendered bytes) avoids the self-referential problem where the sha token
 // would need to be in the hashed content.
-func contentHash(name, brief string) string {
+//
+// project and argHint are appended to the hashed input ONLY when non-empty,
+// so an existing global shim (project=="" && argHint=="") keeps its prior
+// hash byte-for-byte — no mass rewrite on upgrade. A project-scoped or
+// hinted shim folds those values in so a slug/hint change trips drift
+// detection.
+func contentHash(name, brief, project, argHint string) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "v=%d\x00name=%s\x00brief=%s\x00tool=%s",
 		shimVersion, name, brief, agentfile.CommandToolName)
+	if project != "" {
+		fmt.Fprintf(h, "\x00project=%s", project)
+	}
+	if argHint != "" {
+		fmt.Fprintf(h, "\x00arghint=%s", argHint)
+	}
 	sum := h.Sum(nil)
 	return hex.EncodeToString(sum)[:7]
 }
 
 // ExpectedSha returns the sha a freshly rendered shim would carry for the
-// given name and brief. Callers comparing an on-disk shim's extracted sha
-// to the current expected value use this.
-func ExpectedSha(name, brief string) string { return contentHash(name, brief) }
+// given name, brief, project, and argHint. Callers comparing an on-disk
+// shim's extracted sha to the current expected value use this.
+func ExpectedSha(name, brief, project, argHint string) string {
+	return contentHash(name, brief, project, argHint)
+}
 
-// Render returns the full shim file body for the given command name and
-// brief (one-line description from commands.List). Output uses LF line
-// endings and is deterministic for a given (name, brief, template version)
-// triple.
-func Render(name, brief string) string {
-	sha := contentHash(name, brief)
+// Render returns the full shim file body for the given command. project is the
+// owning project slug for project-scoped commands (empty for global ones); when
+// set, the body passes project="<slug>" so the MCP server resolves the project
+// tier without cwd context. argHint, when non-empty, becomes the frontmatter
+// argument-hint (else a generic fallback). Output uses LF line endings and is
+// deterministic for a given (name, brief, project, argHint, template version)
+// tuple.
+func Render(name, brief, project, argHint string) string {
+	sha := contentHash(name, brief, project, argHint)
 	desc := "Vibe-palace command"
 	if brief != "" {
 		desc += " — " + sanitizeFrontmatter(brief)
+	}
+	hint := "[args forwarded to the vibe-palace command]"
+	if argHint != "" {
+		hint = sanitizeFrontmatter(argHint)
 	}
 	alias := commands.Alias(name)
 	openMarker := fmt.Sprintf(shimOpenFmt, shimVersion, sha)
@@ -87,7 +108,9 @@ func Render(name, brief string) string {
 	sb.WriteString("description: ")
 	sb.WriteString(desc)
 	sb.WriteString("\n")
-	sb.WriteString("argument-hint: [args forwarded to the vibe-palace command]\n")
+	sb.WriteString("argument-hint: ")
+	sb.WriteString(hint)
+	sb.WriteString("\n")
 	sb.WriteString("---\n\n")
 	sb.WriteString(openMarker)
 	sb.WriteString("\n")
@@ -95,7 +118,14 @@ func Render(name, brief string) string {
 	sb.WriteString(agentfile.CommandToolName)
 	sb.WriteString("` with `name=\"")
 	sb.WriteString(name)
-	sb.WriteString("\"` and follow the returned instructions verbatim. Forward any\n")
+	sb.WriteString("\"`")
+	if project != "" {
+		sb.WriteString(" and `project=\"")
+		sb.WriteString(project)
+		sb.WriteString("\"`, then follow the returned instructions verbatim. Forward any\n")
+	} else {
+		sb.WriteString(" and follow the returned instructions verbatim. Forward any\n")
+	}
 	sb.WriteString("arguments the user supplied after `/")
 	sb.WriteString(alias)
 	sb.WriteString("` as `$ARGUMENTS`.\n")

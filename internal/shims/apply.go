@@ -58,7 +58,7 @@ func Apply(changes []Change, opts ApplyOptions) (Report, error) {
 		out := Outcome{Change: ch}
 		switch ch.Kind {
 		case New, Modified:
-			res, err := Wire(ch.Path, ch.Name, ch.Brief)
+			res, err := Wire(ch.Path, ch.Name, ch.Brief, ch.Project, ch.ArgHint)
 			out.Result = res
 			out.Err = err
 			if err != nil {

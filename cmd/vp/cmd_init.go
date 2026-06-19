@@ -630,7 +630,10 @@ func initShimWiring(projectRoot string, projectReady bool) []check.Result {
 	}
 	resolver := vpctx.NewResolver(vault.Root)
 
-	summaries, err := commands.List(resolver, "command", "", "", "", 60)
+	// Detect the owning project so project-scoped commands get shims too
+	// (rendered with a project="<slug>" param). Empty slug -> global-only.
+	slug, _ := project.DetectProject(projectRoot)
+	summaries, err := commands.List(resolver, "command", slug, "", "", 60)
 	if err != nil {
 		return []check.Result{{
 			Name:    "Slash-command shims",

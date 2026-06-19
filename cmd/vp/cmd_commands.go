@@ -18,6 +18,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/shims"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -591,7 +592,11 @@ func planShims(resolver *vpctx.Resolver, projectRoot, only string) ([]shims.Chan
 	if projectRoot == "" {
 		return nil, nil
 	}
-	summaries, err := commands.List(resolver, "command", "", "", "", 60)
+	// Detect the owning project so project-scoped commands enter the desired
+	// set (and render a project="<slug>" param). Empty slug on failure ->
+	// global-only, preserving prior behavior.
+	slug, _ := project.DetectProject(projectRoot)
+	summaries, err := commands.List(resolver, "command", slug, "", "", 60)
 	if err != nil {
 		return nil, err
 	}

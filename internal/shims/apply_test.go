@@ -29,7 +29,7 @@ func applyProject(t *testing.T, writes map[string]string) string {
 
 func TestApplyAddsNewShimsAndSkipsUnchanged(t *testing.T) {
 	root := applyProject(t, map[string]string{
-		Filename("restart"): Render("restart", "same"),
+		Filename("restart"): Render("restart", "same", "", ""),
 	})
 	changes, err := Plan(sums("restart", "same", "wrap", "w"), root)
 	if err != nil {
@@ -51,14 +51,14 @@ func TestApplyAddsNewShimsAndSkipsUnchanged(t *testing.T) {
 	if err != nil || !scan.HasMarker {
 		t.Fatalf("wrap shim not written correctly: err=%v scan=%+v", err, scan)
 	}
-	if scan.Sha != ExpectedSha("wrap", "w") {
-		t.Errorf("wrap sha = %q, want %q", scan.Sha, ExpectedSha("wrap", "w"))
+	if scan.Sha != ExpectedSha("wrap", "w", "", "") {
+		t.Errorf("wrap sha = %q, want %q", scan.Sha, ExpectedSha("wrap", "w", "", ""))
 	}
 }
 
 func TestApplyUpdatesModifiedShim(t *testing.T) {
 	root := applyProject(t, map[string]string{
-		Filename("restart"): Render("restart", "old"),
+		Filename("restart"): Render("restart", "old", "", ""),
 	})
 	changes, err := Plan(sums("restart", "new"), root)
 	if err != nil {
@@ -73,8 +73,8 @@ func TestApplyUpdatesModifiedShim(t *testing.T) {
 	}
 	path := filepath.Join(root, ShimDir, Filename("restart"))
 	scan, _ := ScanShim(path)
-	if scan.Sha != ExpectedSha("restart", "new") {
-		t.Errorf("sha after update = %q, want %q", scan.Sha, ExpectedSha("restart", "new"))
+	if scan.Sha != ExpectedSha("restart", "new", "", "") {
+		t.Errorf("sha after update = %q, want %q", scan.Sha, ExpectedSha("restart", "new", "", ""))
 	}
 }
 
@@ -104,7 +104,7 @@ func TestApplyStaleDefaultRetains(t *testing.T) {
 	// Default options: Stale entries are counted but not removed. This is
 	// the init-flow contract; removal only happens via interactive upgrade.
 	root := applyProject(t, map[string]string{
-		Filename("retired"): Render("retired", "gone"),
+		Filename("retired"): Render("retired", "gone", "", ""),
 	})
 	changes, err := Plan(sums("restart", "r"), root) // retired absent from desired
 	if err != nil {
@@ -127,7 +127,7 @@ func TestApplyStaleDefaultRetains(t *testing.T) {
 
 func TestApplyStaleWithAllowStaleRemoval(t *testing.T) {
 	root := applyProject(t, map[string]string{
-		Filename("retired"): Render("retired", "gone"),
+		Filename("retired"): Render("retired", "gone", "", ""),
 	})
 	changes, err := Plan(sums("restart", "r"), root)
 	if err != nil {

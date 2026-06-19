@@ -323,6 +323,36 @@ func TestListCommandsMergedNoDuplicates(t *testing.T) {
 	}
 }
 
+// TestListCommandsSkipsReadme verifies the scaffolded README.md override-guide
+// stub in a commands/ tier is not surfaced as a command (which would otherwise
+// produce a bogus "README" command and slash-command shim in every project).
+func TestListCommandsSkipsReadme(t *testing.T) {
+	r, root := testResolver(t)
+	writeFile(t, filepath.Join(root, "Templates", "commands", "README.md"), "# override guide")
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "README.md"), "# override guide")
+	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "deploy.md"), "deploy cmd")
+
+	resources, err := r.ListResources("command", "proj")
+	if err != nil {
+		t.Fatalf("ListResources: %v", err)
+	}
+	for _, ri := range resources {
+		if strings.EqualFold(ri.Name, "README") {
+			t.Errorf("README surfaced as a command (source=%q); it must be skipped", ri.Source)
+		}
+	}
+	// A real sibling command is still listed.
+	var sawDeploy bool
+	for _, ri := range resources {
+		if ri.Name == "deploy" {
+			sawDeploy = true
+		}
+	}
+	if !sawDeploy {
+		t.Error("deploy command missing — README skip should not drop real commands")
+	}
+}
+
 func TestListSkillsEmbedded(t *testing.T) {
 	r, _ := testResolver(t)
 
