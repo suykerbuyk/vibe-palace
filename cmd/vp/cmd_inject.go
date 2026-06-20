@@ -65,7 +65,8 @@ func cmdInject() *cli.Command {
 
 func runInject(vault *storage.Vault, proj string, maxTokens int, out io.Writer) int {
 	resolver := vpctx.NewResolver(vault.Root)
-	result := tools.AssembleBootstrap(resolver, vault, proj, maxTokens, "", "")
+	// CLI inject mirrors stdio: full inline bodies (slim=false).
+	result := tools.AssembleBootstrap(resolver, vault, proj, maxTokens, "", "", false)
 
 	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")

@@ -597,3 +597,33 @@ func TestMetaMatchesQuery(t *testing.T) {
 		t.Error("should not match")
 	}
 }
+
+// TestParseSessionIDRejectsMalformed pins that parseSessionID validates the
+// YYYY-MM-DD-NN layout positionally, so a slug-valid but malformed id is
+// rejected rather than silently sliced into a different real session. The id
+// now arrives off the wire via the session resource URI.
+func TestParseSessionIDRejectsMalformed(t *testing.T) {
+	bad := []string{
+		"2026-06-201-5", // misplaced hyphen: would slice to 2026-06-20 iter 5
+		"2026-06-2-08",  // day not two digits / hyphen at wrong position
+		"202-06-20-08",  // year not four digits
+		"2026/06/20/08", // wrong separators
+		"2026-06-20",    // no iteration
+		"xxxx-xx-xx-01", // non-digit date
+		"2026-06-20-",   // empty iteration
+	}
+	for _, id := range bad {
+		if _, _, err := parseSessionID(id); err == nil {
+			t.Errorf("parseSessionID(%q): expected error, got nil", id)
+		}
+	}
+
+	// A well-formed id still parses.
+	date, iter, err := parseSessionID("2026-06-20-08")
+	if err != nil {
+		t.Fatalf("parseSessionID(valid): unexpected error %v", err)
+	}
+	if date != "2026-06-20" || iter != 8 {
+		t.Errorf("parseSessionID(valid) = (%q, %d), want (2026-06-20, 8)", date, iter)
+	}
+}

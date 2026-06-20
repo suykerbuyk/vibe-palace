@@ -12,6 +12,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -20,6 +21,8 @@ type BootstrapResult struct {
 	Project                   string             `json:"project"`
 	Workflow                  string             `json:"workflow"`
 	Resume                    string             `json:"resume"`
+	WorkflowURI               string             `json:"workflow_uri"`
+	ResumeURI                 string             `json:"resume_uri"`
 	ActiveTasks               []storage.TaskMeta `json:"active_tasks"`
 	RecentSessions            []sessionSummary   `json:"recent_sessions,omitempty"`
 	KGSnapshot                *storage.KGStats   `json:"kg_snapshot,omitempty"`
@@ -41,6 +44,23 @@ var commandInvocationDirective = fmt.Sprintf(
 	"When the user types `vpc-<name>`, call `%s` with `name=<name>` and follow the returned instructions. `vps-<name>` works the same way via `%s`.",
 	agentfile.CommandToolName, agentfile.SkillToolName,
 )
+
+// bootstrapExcerptCap bounds the rune-safe excerpt substituted for resume (and,
+// when oversized, workflow) on the slim byte-axis path. The full body remains
+// reachable via the resume_uri / workflow_uri the result always carries.
+const bootstrapExcerptCap = 4000
+
+// bootstrapWorkflowInlineCap is the size above which even workflow — normally
+// kept inline because it is the behavioral contract and the smaller file — is
+// excerpted on the slim path so its bytes cannot bust the channel budget.
+const bootstrapWorkflowInlineCap = 24000
+
+// bootstrapExcerptBanner prefixes a slim excerpt with a loud, unmissable
+// pointer to the full body. The caller MUST read the URI before acting.
+func bootstrapExcerptBanner(body, uri string) string {
+	return "⚠ excerpt — full content at " + uri + ", read before acting\n\n" +
+		runeSafeExcerpt(body, bootstrapExcerptCap)
+}
 
 // memoryRecallCap bounds how many memory index entries the bootstrap surfaces.
 // Recall is "index now, body on demand via vp_memory_read" — the cap keeps the
@@ -72,6 +92,10 @@ type bootstrapParams struct {
 	MaxTokens int    `json:"max_tokens,omitempty"`
 	Wing      string `json:"wing,omitempty"`
 	Room      string `json:"room,omitempty"`
+	// Slim is tri-state on the byte axis (distinct from the max_tokens token
+	// axis): nil ⇒ the per-transport default; true ⇒ excerpt resume (and
+	// oversized workflow) behind a banner+URI; false ⇒ full inline bodies.
+	Slim *bool `json:"slim,omitempty"`
 }
 
 var bootstrapSchema = json.RawMessage(`{
@@ -92,30 +116,53 @@ var bootstrapSchema = json.RawMessage(`{
 		"room": {
 			"type": "string",
 			"description": "Room slug for palace-scoped command discovery (requires wing)."
+		},
+		"slim": {
+			"type": "boolean",
+			"description": "Drop the large inline resume body for a banner-led excerpt plus resume_uri (fetch the full body via vp_read_resource). Defaults per transport when omitted."
 		}
 	},
 	"required": ["project"]
 }`)
 
 // BootstrapContextTool returns the MCP tool definition for vp_bootstrap_context.
-func BootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Tool {
+// slimDefault seeds the effective-slim fallback used when a request omits the
+// `slim` param; it is variadic only so the many existing constructor call sites
+// (and stdio) keep compiling with the false default — the serve path threads
+// true via RegisterAll's WithBootstrapSlimDefault option.
+func BootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, slimDefault ...bool) mcp.Tool {
+	def := false
+	if len(slimDefault) > 0 {
+		def = slimDefault[0]
+	}
 	return mcp.Tool{
 		Name:        "vp_bootstrap_context",
 		Description: "Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive.",
 		Schema:      bootstrapSchema,
-		Handler:     bootstrapHandler(resolver, vault),
+		Handler:     bootstrapHandler(resolver, vault, def),
 	}
 }
 
 // AssembleBootstrap builds context restoration payload.
 // Used by both the MCP tool handler and the CLI inject command.
 // When wing/room are provided, palace-scoped commands are included in discovery.
-func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, maxTokens int, wing, room string) BootstrapResult {
+//
+// slim is the BYTE-axis control, distinct from the maxTokens TOKEN-axis shed
+// loop below. When slim is true, resume (and oversized workflow) are replaced
+// by banner-led, rune-safe excerpts pointing at their always-present URIs. When
+// slim is false, resume/workflow stay fully inline no matter what — the
+// token-budget shed loop NEVER excerpts them; it only sheds
+// sessions→memory→KG→commands+skills. The two axes are deliberately separate.
+func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, maxTokens int, wing, room string, slim bool) BootstrapResult {
 	if maxTokens == 0 {
 		maxTokens = 8000
 	}
 
-	result := BootstrapResult{Project: project}
+	result := BootstrapResult{
+		Project:     project,
+		ResumeURI:   mcp.ResumeURI(project),
+		WorkflowURI: mcp.WorkflowURI(project),
+	}
 
 	// Workflow — graceful on error.
 	if wf, _, err := resolver.Resolve("workflow", project); err == nil {
@@ -125,6 +172,23 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// Resume — graceful on error.
 	if resume, _, err := resolver.Resolve("resume", project); err == nil {
 		result.Resume = resume
+	}
+
+	// Byte-axis slim: excerpt resume behind a banner+URI ONLY when it actually
+	// exceeds the cap — a resume that already fits inline (the common embedded
+	// default, well under bootstrapExcerptCap) is returned whole and must NOT be
+	// mislabeled as a truncated excerpt, or the agent wastes a vp_read_resource
+	// round-trip on content it already holds. Workflow stays inline (behavioral
+	// contract, smaller file) unless its own size busts the budget. This is the
+	// ONLY place resume/workflow are ever excerpted — the token shed loop further
+	// down leaves them untouched.
+	if slim {
+		if len(result.Resume) > bootstrapExcerptCap {
+			result.Resume = bootstrapExcerptBanner(result.Resume, result.ResumeURI)
+		}
+		if len(result.Workflow) > bootstrapWorkflowInlineCap {
+			result.Workflow = bootstrapExcerptBanner(result.Workflow, result.WorkflowURI)
+		}
 	}
 
 	// Active tasks — graceful on error.
@@ -201,8 +265,10 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// "run vp_cmd to list commands" is still better than silent capability.
 	result.PostBootstrapInstructions = renderPostBootstrapInstructions(result.AvailableCommands, result.AvailableSkills)
 
-	// Token budget truncation: rough estimate 4 chars per token.
-	// Shed order: sessions → memory → KG → commands+skills (as a pair).
+	// Token budget truncation (TOKEN axis — independent of the byte-axis slim
+	// above): rough estimate 4 chars per token. Shed order: sessions → memory →
+	// KG → commands+skills (as a pair). This loop NEVER touches resume/workflow:
+	// under slim=false they stay fully inline even when over maxTokens.
 	raw, err := json.Marshal(result)
 	if err == nil {
 		estimatedTokens := len(raw) / 4
@@ -266,12 +332,25 @@ func joinExamples(xs []string) string {
 	}
 }
 
-func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault) mcp.HandlerFunc {
+func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault, slimDefault bool) mcp.HandlerFunc {
 	return func(_ context.Context, params json.RawMessage) (any, error) {
 		var p bootstrapParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, err
 		}
-		return AssembleBootstrap(resolver, vault, p.Project, p.MaxTokens, p.Wing, p.Room), nil
+		// Validate the project up front: the result advertises resume_uri /
+		// workflow_uri built from it, and those URIs are later re-validated by
+		// ResolveURI / vp_read_resource. Reject a non-slug project here so we
+		// never hand out an URI the read path will refuse.
+		if err := slug.Validate(p.Project); err != nil {
+			return nil, fmt.Errorf("invalid project %q: %w", p.Project, err)
+		}
+		// Resolve the tri-state slim: explicit param wins, else the
+		// per-transport default seeded at registration.
+		slim := slimDefault
+		if p.Slim != nil {
+			slim = *p.Slim
+		}
+		return AssembleBootstrap(resolver, vault, p.Project, p.MaxTokens, p.Wing, p.Room, slim), nil
 	}
 }

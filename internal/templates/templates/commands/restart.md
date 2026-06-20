@@ -71,6 +71,11 @@ proceed to Step 2.
 Call `vp_bootstrap_context` to load workflow, resume, active tasks,
 and recent sessions in a single call.
 
+Under `slim`, `resume` may arrive as a banner-led **excerpt** plus a
+`resume_uri` (marked with the `⚠ excerpt` banner) rather than the full body;
+`workflow` stays inline. When `resume` is an excerpt, read its `resume_uri`
+(via `vp_read_resource`) before relying on full resume content.
+
 After bootstrap, continue loading context in the order below.
 
 ## Step 3: Sweep Orphaned Plans

@@ -6,8 +6,11 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
+	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -247,5 +250,157 @@ func TestManageTaskUpdateStatusMissing(t *testing.T) {
 	})
 	if _, err := tool.Handler(context.Background(), params); err == nil {
 		t.Fatal("expected error for missing status")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// vp_get_task Phase-2 behaviour: include_content tri-state + ContentURI/Size.
+// ---------------------------------------------------------------------------
+
+// getTaskCall drives the vp_get_task handler with raw JSON params and returns
+// the typed result, mirroring how context_tools_test.go drives bootstrap.
+func getTaskCall(t *testing.T, vault *storage.Vault, params string) getTaskResult {
+	t.Helper()
+	tool := GetTaskTool(vault)
+	res, err := tool.Handler(context.Background(), json.RawMessage(params))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	gr, ok := res.(getTaskResult)
+	if !ok {
+		t.Fatalf("result type = %T, want getTaskResult", res)
+	}
+	return gr
+}
+
+// makeBigTask creates a task whose STORED body (header + content, what GetTask
+// returns) comfortably exceeds taskExcerptCap so the excerpt path is exercised.
+// It returns the canonical task URI and the full stored body.
+func makeBigTask(t *testing.T, vault *storage.Vault, project, slug string) (uri, body string) {
+	t.Helper()
+	content := strings.Repeat("This is a line of task body content for the excerpt test.\n", 80)
+	if err := vault.CreateTask(project, slug, "Big Task", content, "high"); err != nil {
+		t.Fatal(err)
+	}
+	_, stored, err := vault.GetTask(project, slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) <= taskExcerptCap {
+		t.Fatalf("setup: stored body len %d <= taskExcerptCap %d, excerpt path unreachable",
+			len(stored), taskExcerptCap)
+	}
+	return mcp.TaskURI(project, slug), stored
+}
+
+// TestGetTaskURIAndSizeAlwaysSet pins that ContentURI and ContentSize are set on
+// every response shape — content included OR dropped — and that they address the
+// canonical task URI and the full body length.
+func TestGetTaskURIAndSizeAlwaysSet(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	uri, body := makeBigTask(t, vault, "test-proj", "big-task")
+
+	cases := []struct {
+		name   string
+		params string
+	}{
+		{"default (no include_content)", `{"project":"test-proj","task":"big-task"}`},
+		{"include_content=true", `{"project":"test-proj","task":"big-task","include_content":true}`},
+		{"include_content=false", `{"project":"test-proj","task":"big-task","include_content":false}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gr := getTaskCall(t, vault, tc.params)
+			if gr.ContentURI != uri {
+				t.Errorf("ContentURI = %q, want %q", gr.ContentURI, uri)
+			}
+			if gr.ContentSize != len(body) {
+				t.Errorf("ContentSize = %d, want %d (full body len)", gr.ContentSize, len(body))
+			}
+		})
+	}
+}
+
+// TestGetTaskDefaultIncludesFullBody pins the back-compat contract: with
+// include_content omitted (nil) or explicitly true, Content is the full body
+// byte-for-byte and Excerpt is empty.
+func TestGetTaskDefaultIncludesFullBody(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	_, body := makeBigTask(t, vault, "test-proj", "big-task")
+
+	for _, params := range []string{
+		`{"project":"test-proj","task":"big-task"}`,
+		`{"project":"test-proj","task":"big-task","include_content":true}`,
+	} {
+		gr := getTaskCall(t, vault, params)
+		if gr.Content != body {
+			t.Errorf("params %s: Content not byte-identical to full body (len %d, want %d)",
+				params, len(gr.Content), len(body))
+		}
+		if gr.Excerpt != "" {
+			t.Errorf("params %s: Excerpt = %q, want empty when content included", params, gr.Excerpt)
+		}
+	}
+}
+
+// TestGetTaskExcludeContentReturnsExcerpt pins the slim path: include_content=false
+// drops the inline Content for a bounded, rune-safe Excerpt that is a genuine
+// leading slice of the body and never exceeds the excerpt cap.
+func TestGetTaskExcludeContentReturnsExcerpt(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	_, body := makeBigTask(t, vault, "test-proj", "big-task")
+
+	gr := getTaskCall(t, vault, `{"project":"test-proj","task":"big-task","include_content":false}`)
+
+	if gr.Content != "" {
+		t.Errorf("Content non-empty (len %d), want empty when include_content=false", len(gr.Content))
+	}
+	if gr.Excerpt == "" {
+		t.Fatal("Excerpt should be non-empty when content is dropped")
+	}
+	if !utf8.ValidString(gr.Excerpt) {
+		t.Error("Excerpt is not valid UTF-8")
+	}
+	// Bound read from the production constant, not a hardcoded guess.
+	if len(gr.Excerpt) > taskExcerptCap {
+		t.Errorf("Excerpt len %d exceeds taskExcerptCap %d", len(gr.Excerpt), taskExcerptCap)
+	}
+	// The excerpt is a true leading slice of the body (runeSafeExcerpt may cut
+	// back to the last newline within the cap, which keeps it a prefix).
+	if !strings.HasPrefix(body, gr.Excerpt) {
+		t.Errorf("Excerpt is not a prefix of the body:\n excerpt head %q", gr.Excerpt[:min(60, len(gr.Excerpt))])
+	}
+	// The body was big enough that the excerpt is genuinely shorter.
+	if len(gr.Excerpt) >= len(body) {
+		t.Errorf("Excerpt len %d not shorter than body len %d — excerpt path not exercised", len(gr.Excerpt), len(body))
+	}
+}
+
+// TestGetTaskExcludeContentSmallBodyStaysInline pins the fix for the wasted-fetch
+// case: a body that already fits within taskExcerptCap cannot truncate, so even
+// with include_content=false it is returned whole in Content (not as a partial
+// Excerpt), sparing the agent a vp_read_resource round-trip.
+func TestGetTaskExcludeContentSmallBodyStaysInline(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	if err := vault.CreateTask("test-proj", "small-task", "Small", "a tiny body", "low"); err != nil {
+		t.Fatal(err)
+	}
+	_, full, err := vault.GetTask("test-proj", "small-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full) > taskExcerptCap {
+		t.Fatalf("fixture too large: %d > cap %d", len(full), taskExcerptCap)
+	}
+
+	gr := getTaskCall(t, vault, `{"project":"test-proj","task":"small-task","include_content":false}`)
+	if gr.Content != full {
+		t.Errorf("small body not returned inline: got Content len %d, want full len %d", len(gr.Content), len(full))
+	}
+	if gr.Excerpt != "" {
+		t.Errorf("Excerpt should be empty for a complete small body, got %q", gr.Excerpt)
+	}
+	if gr.ContentURI == "" || gr.ContentSize != len(full) {
+		t.Errorf("ContentURI/ContentSize must still be set: uri=%q size=%d want %d", gr.ContentURI, gr.ContentSize, len(full))
 	}
 }

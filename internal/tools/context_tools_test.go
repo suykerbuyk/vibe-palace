@@ -11,6 +11,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
+	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -531,6 +532,159 @@ func mustParams(t *testing.T, project string, maxTokens int) json.RawMessage {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// bootstrapResult is a small helper that drives the bootstrap tool with the
+// given raw params and returns the typed result.
+func bootstrapResult(t *testing.T, tool mcp.Tool, params string) BootstrapResult {
+	t.Helper()
+	result, err := tool.Handler(context.Background(), json.RawMessage(params))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	return result.(BootstrapResult)
+}
+
+// TestBootstrapResumeWorkflowURIs pins that the resource URIs are ALWAYS set,
+// independent of slim — they are the byte-for-byte fetch path for any host.
+func TestBootstrapResumeWorkflowURIs(t *testing.T) {
+	vault, resolver := testSetup(t)
+	tool := BootstrapContextTool(resolver, vault)
+
+	br := bootstrapResult(t, tool, `{"project":"test-proj"}`)
+	if br.ResumeURI != "vibe-palace://resume/test-proj" {
+		t.Errorf("ResumeURI = %q", br.ResumeURI)
+	}
+	if br.WorkflowURI != "vibe-palace://workflow/test-proj" {
+		t.Errorf("WorkflowURI = %q", br.WorkflowURI)
+	}
+}
+
+// TestBootstrapSlimExcerptsResume verifies the byte-axis slim path: resume is
+// replaced by a banner-led, rune-safe excerpt + URI while workflow stays inline.
+func TestBootstrapSlimExcerptsResume(t *testing.T) {
+	vault, resolver := testSetup(t)
+	// A resume larger than bootstrapExcerptCap so slim must excerpt it.
+	bigResume := "# Resume\n\n" + strings.Repeat("state line for test-proj\n", 400)
+	if err := vault.WriteResume("test-proj", bigResume); err != nil {
+		t.Fatal(err)
+	}
+	tool := BootstrapContextTool(resolver, vault)
+
+	br := bootstrapResult(t, tool, `{"project":"test-proj","slim":true}`)
+	if !strings.HasPrefix(br.Resume, "⚠ excerpt — full content at vibe-palace://resume/test-proj") {
+		t.Errorf("slim resume missing banner; got prefix %q", br.Resume[:min(80, len(br.Resume))])
+	}
+	if len(br.Resume) >= len(bigResume) {
+		t.Errorf("slim resume not excerpted: len %d >= full %d", len(br.Resume), len(bigResume))
+	}
+	// Workflow is the behavioral contract — it stays inline (not banner-led)
+	// since the embedded default is well under bootstrapWorkflowInlineCap.
+	if strings.HasPrefix(br.Workflow, "⚠ excerpt") {
+		t.Error("workflow should stay inline under slim, not be excerpted")
+	}
+}
+
+// TestBootstrapSlimSmallResumeStaysInline pins the fix for the unconditional
+// banner: a resume that already fits within bootstrapExcerptCap must be returned
+// whole under slim, NOT labeled as a truncated excerpt (which would lure the
+// agent into a wasted vp_read_resource fetch for content it already holds).
+func TestBootstrapSlimSmallResumeStaysInline(t *testing.T) {
+	vault, resolver := testSetup(t)
+	smallResume := "# Resume\n\nA short resume for test-proj, well under the cap.\n"
+	if len(smallResume) > bootstrapExcerptCap {
+		t.Fatalf("test fixture too large: %d > cap %d", len(smallResume), bootstrapExcerptCap)
+	}
+	if err := vault.WriteResume("test-proj", smallResume); err != nil {
+		t.Fatal(err)
+	}
+	tool := BootstrapContextTool(resolver, vault, true) // HTTP default slim=true
+
+	br := bootstrapResult(t, tool, `{"project":"test-proj"}`)
+	if strings.HasPrefix(br.Resume, "⚠ excerpt") {
+		t.Errorf("small resume wrongly banner-labeled as excerpt: %q", br.Resume)
+	}
+	if br.Resume != smallResume {
+		t.Errorf("small resume not returned whole under slim:\n got %q\nwant %q", br.Resume, smallResume)
+	}
+}
+
+// TestBootstrapRejectsInvalidProject pins that the handler refuses a non-slug
+// project up front, rather than succeeding and advertising resume_uri/
+// workflow_uri that the vp_read_resource path would later reject.
+func TestBootstrapRejectsInvalidProject(t *testing.T) {
+	vault, resolver := testSetup(t)
+	tool := BootstrapContextTool(resolver, vault)
+
+	for _, bad := range []string{"MyApp", "has space", "../escape", ""} {
+		params := json.RawMessage(`{"project":"` + bad + `"}`)
+		if _, err := tool.Handler(context.Background(), params); err == nil {
+			t.Errorf("project %q: expected validation error, got nil", bad)
+		}
+	}
+}
+
+// TestBootstrapSlimPerTransportDefault pins the tri-state default: with the
+// param omitted, the per-transport default (threaded via BootstrapContextTool's
+// slimDefault) decides; an explicit slim overrides it both ways.
+func TestBootstrapSlimPerTransportDefault(t *testing.T) {
+	vault, resolver := testSetup(t)
+	bigResume := "# Resume\n\n" + strings.Repeat("state line for test-proj\n", 400)
+	if err := vault.WriteResume("test-proj", bigResume); err != nil {
+		t.Fatal(err)
+	}
+
+	isExcerpt := func(br BootstrapResult) bool {
+		return strings.HasPrefix(br.Resume, "⚠ excerpt")
+	}
+
+	// HTTP transport defaults slim=true (param omitted).
+	httpTool := BootstrapContextTool(resolver, vault, true)
+	if !isExcerpt(bootstrapResult(t, httpTool, `{"project":"test-proj"}`)) {
+		t.Error("HTTP default (slimDefault=true), param omitted: expected excerpt")
+	}
+	// stdio transport defaults slim=false (param omitted).
+	stdioTool := BootstrapContextTool(resolver, vault) // slimDefault defaults false
+	if isExcerpt(bootstrapResult(t, stdioTool, `{"project":"test-proj"}`)) {
+		t.Error("stdio default (slimDefault=false), param omitted: expected full body")
+	}
+	// Explicit param overrides the transport default both ways.
+	if isExcerpt(bootstrapResult(t, httpTool, `{"project":"test-proj","slim":false}`)) {
+		t.Error("explicit slim=false over HTTP: expected full body")
+	}
+	if !isExcerpt(bootstrapResult(t, stdioTool, `{"project":"test-proj","slim":true}`)) {
+		t.Error("explicit slim=true over stdio: expected excerpt")
+	}
+}
+
+// TestBootstrapSlimFalseKeepsFullBodiesOverBudget is the regression pin for the
+// MED finding: the token-budget shed loop must NEVER excerpt resume/workflow.
+// Under slim=false, even a tiny max_tokens leaves both fully inline and
+// byte-identical to the resolved bodies — only sessions/memory/KG/commands shed.
+func TestBootstrapSlimFalseKeepsFullBodiesOverBudget(t *testing.T) {
+	vault, resolver := testSetup(t)
+	bigResume := "# Resume\n\n" + strings.Repeat("state line for test-proj\n", 400)
+	if err := vault.WriteResume("test-proj", bigResume); err != nil {
+		t.Fatal(err)
+	}
+	wantResume, _, err := resolver.Resolve("resume", "test-proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantWorkflow, _, err := resolver.Resolve("workflow", "test-proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tool := BootstrapContextTool(resolver, vault)
+	// slim=false (explicit) + a tiny budget that would shed everything else.
+	br := bootstrapResult(t, tool, `{"project":"test-proj","slim":false,"max_tokens":50}`)
+	if br.Resume != wantResume {
+		t.Errorf("slim=false over budget: resume excerpted/changed (len %d, want %d)", len(br.Resume), len(wantResume))
+	}
+	if br.Workflow != wantWorkflow {
+		t.Errorf("slim=false over budget: workflow excerpted/changed (len %d, want %d)", len(br.Workflow), len(wantWorkflow))
+	}
 }
 
 func TestBootstrapToolSchema(t *testing.T) {

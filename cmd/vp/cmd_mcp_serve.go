@@ -158,7 +158,11 @@ func (c mcpServeConfig) startupLines() []string {
 // testable without binding a socket.
 func buildMCPServeHandler(stack *serverStack, token string, allowWrites bool) http.Handler {
 	srv := mcpkg.NewServer(stack.vault)
-	tools.RegisterAll(srv.Registry(), stack.resolver, stack.vault, stack.eng, stack.cfg)
+	// The streamable-HTTP channel truncates large inline tool results, so this
+	// dedicated HTTP-served instance defaults vp_bootstrap_context to slim.
+	tools.RegisterAll(srv.Registry(), stack.resolver, stack.vault, stack.eng,
+		tools.WithConfig(stack.cfg), tools.WithBootstrapSlimDefault(true))
+	tools.RegisterResources(srv, stack.resolver, stack.vault)
 	if !allowWrites {
 		srv.DeleteTools(tools.MutatingToolNames...)
 	}

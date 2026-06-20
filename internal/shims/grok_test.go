@@ -113,6 +113,15 @@ func TestRenderGrokHubGolden(t *testing.T) {
 		"call `vp_get_task`",
 		"NEVER grep or scan the filesystem for task files",
 		"repo-relative\n`tasks/` path",
+		// Large-body paging via the always-callable read tool.
+		"include_content=false",
+		"`vp_read_resource(uri, offset, limit)`",
+		"`offset+length`",
+		"until `eof`",
+		// Session start passes slim=true; resume excerpt + resume_uri.
+		"call `vp_bootstrap_context`",
+		"with `slim=true`",
+		"`resume_uri`",
 		// Schema-loading guidance.
 		"load its schema first",
 		shimCloseDelim,

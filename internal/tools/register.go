@@ -11,10 +11,44 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
+// registerOptions holds the optional, transport-specific knobs threaded into
+// RegisterAll. It replaces the former trailing `cfg ...storage.Config`
+// variadic: Go forbids two variadics on one signature, and Phase 2 needs a
+// second optional input (the per-transport bootstrap slim default), so both are
+// folded into functional options. Callers that passed a cfg switch to
+// WithConfig; callers that passed nothing are unchanged.
+type registerOptions struct {
+	cfg                  storage.Config
+	bootstrapSlimDefault bool
+}
+
+// RegisterOption configures RegisterAll. The zero set of options preserves the
+// pre-Phase-2 behaviour (empty config, slim default false).
+type RegisterOption func(*registerOptions)
+
+// WithConfig supplies the storage.Config used to build the capture indexer.
+// Mirrors the old trailing cfg argument.
+func WithConfig(cfg storage.Config) RegisterOption {
+	return func(o *registerOptions) { o.cfg = cfg }
+}
+
+// WithBootstrapSlimDefault seeds the effective-slim fallback for
+// vp_bootstrap_context when the request omits the `slim` param. stdio (local
+// Claude/Zed) leaves this false; the streamable-HTTP serve path sets it true
+// because that channel truncates large inline results.
+func WithBootstrapSlimDefault(slim bool) RegisterOption {
+	return func(o *registerOptions) { o.bootstrapSlimDefault = slim }
+}
+
 // RegisterAll registers all tools with the MCP registry.
 // If engine is nil, search tools and capture tools are not registered.
-func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vault, engine *search.Engine, cfg ...storage.Config) {
-	reg.MustRegister(BootstrapContextTool(resolver, vault))
+func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vault, engine *search.Engine, opts ...RegisterOption) {
+	var o registerOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	reg.MustRegister(BootstrapContextTool(resolver, vault, o.bootstrapSlimDefault))
 	reg.MustRegister(GetCommandTool(resolver))
 	reg.MustRegister(GetSkillTool(resolver))
 	reg.MustRegister(ListCommandsTool(resolver))
@@ -42,6 +76,7 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	reg.MustRegister(ListTasksTool(vault))
 	reg.MustRegister(GetTaskTool(vault))
 	reg.MustRegister(ManageTaskTool(vault))
+	reg.MustRegister(ReadResourceTool(resolver, vault))
 	reg.MustRegister(InitProjectTool(vault))
 	reg.MustRegister(VaultSyncTool(vault))
 	reg.MustRegister(VaultTidyTool(vault))
@@ -71,11 +106,7 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	if engine != nil {
 		reg.MustRegister(SearchTool(engine))
 		reg.MustRegister(SearchCrossProjectTool(engine))
-		var c storage.Config
-		if len(cfg) > 0 {
-			c = cfg[0]
-		}
-		indexer := capture.NewIndexer(vault, engine, engine.Embedder(), c)
+		indexer := capture.NewIndexer(vault, engine, engine.Embedder(), o.cfg)
 		reg.MustRegister(CaptureSessionTool(vault, indexer))
 		reg.MustRegister(FrictionTrendsTool(vault))
 		reg.MustRegister(SearchSessionsTool(vault))

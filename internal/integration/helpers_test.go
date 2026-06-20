@@ -91,7 +91,7 @@ func newHarness(t *testing.T, useRealEmbedder bool, cfgOverrides ...func(*storag
 // registerAllTools registers all MCP tools on the harness server.
 func (h *testHarness) registerAllTools(t *testing.T) {
 	t.Helper()
-	tools.RegisterAll(h.Server.Registry(), h.Resolver, h.Vault, h.Engine, h.Config)
+	tools.RegisterAll(h.Server.Registry(), h.Resolver, h.Vault, h.Engine, tools.WithConfig(h.Config))
 }
 
 // initMCP sends the initialize + notifications/initialized handshake.
