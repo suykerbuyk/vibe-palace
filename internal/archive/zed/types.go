@@ -47,12 +47,12 @@ type Thread struct {
 	UpdatedAt time.Time
 
 	// JSON payload.
-	Title           string              `json:"title"`
-	Model           *Model              `json:"model"`
-	RawMessages     []json.RawMessage   `json:"messages"`
-	Messages        []Message           `json:"-"`
-	Version         string              `json:"version"`
-	ProjectSnapshot *ProjectSnapshot    `json:"initial_project_snapshot,omitempty"`
+	Title           string            `json:"title"`
+	Model           *Model            `json:"model"`
+	RawMessages     []json.RawMessage `json:"messages"`
+	Messages        []Message         `json:"-"`
+	Version         string            `json:"version"`
+	ProjectSnapshot *ProjectSnapshot  `json:"initial_project_snapshot,omitempty"`
 }
 
 // Model identifies the LLM used in a Zed thread.

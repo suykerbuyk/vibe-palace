@@ -115,10 +115,10 @@ default_limit = 10
 
 func TestMissingKeys(t *testing.T) {
 	canonical := map[string]bool{
-		"vault_path":      true,
-		"http_port":       true,
-		"embedder.model":  true,
-		"search.limit":    true,
+		"vault_path":     true,
+		"http_port":      true,
+		"embedder.model": true,
+		"search.limit":   true,
 	}
 	present := map[string]bool{
 		"vault_path":     true,

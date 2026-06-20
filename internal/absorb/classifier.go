@@ -30,15 +30,15 @@ func (d Destination) IsZero() bool { return d.Path == "" }
 // Well-known destinations used across the package. Paths are relative to
 // Projects/{slug}/.
 var (
-	DestResumeScratch   = Destination{Path: "resume.md", Scratch: true}
-	DestArchitecture    = Destination{Path: "doc/architecture.md"}
-	DestTesting         = Destination{Path: "doc/testing.md"}
-	DestScope           = Destination{Path: "doc/scope.md"}
-	DestMisc            = Destination{Path: "doc/misc.md"}
-	DestWorkflowCmds    = Destination{Path: "workflow.md", Section: "Commands"}
-	DestWorkflowRules   = Destination{Path: "workflow.md", Section: "Rules"}
-	DestKnowledge       = Destination{Path: "knowledge.md"}
-	DestKeepInPlace     = Destination{Path: ""} // sentinel — do not migrate
+	DestResumeScratch = Destination{Path: "resume.md", Scratch: true}
+	DestArchitecture  = Destination{Path: "doc/architecture.md"}
+	DestTesting       = Destination{Path: "doc/testing.md"}
+	DestScope         = Destination{Path: "doc/scope.md"}
+	DestMisc          = Destination{Path: "doc/misc.md"}
+	DestWorkflowCmds  = Destination{Path: "workflow.md", Section: "Commands"}
+	DestWorkflowRules = Destination{Path: "workflow.md", Section: "Rules"}
+	DestKnowledge     = Destination{Path: "knowledge.md"}
+	DestKeepInPlace   = Destination{Path: ""} // sentinel — do not migrate
 )
 
 // ruleSet matches a heading pattern (lowercased, first-token) to a destination.

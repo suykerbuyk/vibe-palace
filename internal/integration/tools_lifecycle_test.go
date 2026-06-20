@@ -195,8 +195,10 @@ func TestKnowledgeSnapshot(t *testing.T) {
 	})
 
 	var result struct {
-		Stats   struct{ TripleCount int `json:"triple_count"` } `json:"stats"`
-		Triples []json.RawMessage                               `json:"triples"`
+		Stats struct {
+			TripleCount int `json:"triple_count"`
+		} `json:"stats"`
+		Triples []json.RawMessage `json:"triples"`
 	}
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
 		t.Fatalf("parse result: %v", err)

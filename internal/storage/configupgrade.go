@@ -386,11 +386,11 @@ func UpgradeConfig(userText string, missing map[string][]string, templateBlocks 
 					shortKey = key[i+1:]
 				}
 				var snippet string
-			if sectionKeepsActive(section) {
-				snippet = ExtractKeySnippetActive(templateBlocks[section], shortKey)
-			} else {
-				snippet = ExtractKeySnippet(templateBlocks[section], shortKey)
-			}
+				if sectionKeepsActive(section) {
+					snippet = ExtractKeySnippetActive(templateBlocks[section], shortKey)
+				} else {
+					snippet = ExtractKeySnippet(templateBlocks[section], shortKey)
+				}
 				if snippet != "" {
 					block += snippet + "\n"
 				} else {

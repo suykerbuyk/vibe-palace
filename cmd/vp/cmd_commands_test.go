@@ -37,10 +37,10 @@ func TestRunCommandsUpgrade_DryRun_NonZeroOnPendingWork(t *testing.T) {
 	// No vault copies exist → every embedded command is "new".
 	var out, errb bytes.Buffer
 	code := runCommandsUpgrade(commandsUpgradeOpts{
-		DryRun:            true,
-		Stdin:             strings.NewReader(""),
-		Stdout:            &out,
-		Stderr:            &errb,
+		DryRun:              true,
+		Stdin:               strings.NewReader(""),
+		Stdout:              &out,
+		Stderr:              &errb,
 		VaultRootOverride:   vault,
 		ProjectRootOverride: t.TempDir(),
 	})
@@ -64,10 +64,10 @@ func TestRunCommandsUpgrade_DryRun_ZeroWhenClean(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	code := runCommandsUpgrade(commandsUpgradeOpts{
-		DryRun:            true,
-		Stdin:             strings.NewReader(""),
-		Stdout:            &out,
-		Stderr:            &errb,
+		DryRun:              true,
+		Stdin:               strings.NewReader(""),
+		Stdout:              &out,
+		Stderr:              &errb,
 		VaultRootOverride:   vault,
 		ProjectRootOverride: projectRoot,
 	})
@@ -83,10 +83,10 @@ func TestRunCommandsUpgrade_Overwrite_AppliesAll(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	code := runCommandsUpgrade(commandsUpgradeOpts{
-		Overwrite:         true,
-		Stdin:             strings.NewReader(""),
-		Stdout:            &out,
-		Stderr:            &errb,
+		Overwrite:           true,
+		Stdin:               strings.NewReader(""),
+		Stdout:              &out,
+		Stderr:              &errb,
 		VaultRootOverride:   vault,
 		ProjectRootOverride: t.TempDir(),
 	})
@@ -175,11 +175,11 @@ func TestRunCommandsUpgrade_Only_ScopesToOneTemplate(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	code := runCommandsUpgrade(commandsUpgradeOpts{
-		Only:              "restart",
-		Overwrite:         true,
-		Stdin:             strings.NewReader(""),
-		Stdout:            &out,
-		Stderr:            &errb,
+		Only:                "restart",
+		Overwrite:           true,
+		Stdin:               strings.NewReader(""),
+		Stdout:              &out,
+		Stderr:              &errb,
 		VaultRootOverride:   vault,
 		ProjectRootOverride: t.TempDir(),
 	})

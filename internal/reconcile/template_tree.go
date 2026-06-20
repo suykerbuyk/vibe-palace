@@ -565,4 +565,3 @@ func (r *TemplateTreeReconciler) applyScaffold(p Plan) (Report, error) {
 // atomicWriteFile was the reconciler's private atomic-write helper.
 // It has been promoted to templates.Executor.Write (internal atomic
 // primitive); this file's three call sites now delegate.
-

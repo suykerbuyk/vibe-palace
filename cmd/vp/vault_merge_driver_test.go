@@ -60,8 +60,8 @@ func mergeDriverPaths(t *testing.T, ancestorV, oursV, theirsV int) (anc, ours, t
 // ours>theirs, theirs>ours, equal, and all-zero.
 func TestMergeDriver_MaxResolution(t *testing.T) {
 	cases := []struct {
-		name                     string
-		anc, ours, theirs, want  int
+		name                    string
+		anc, ours, theirs, want int
 	}{
 		{"ours higher", 10, 12, 11, 12},
 		{"theirs higher", 10, 11, 16, 16},

@@ -156,10 +156,10 @@ func TestGetEntityNotFound(t *testing.T) {
 func TestAddAndGetTriple(t *testing.T) {
 	v := testVault(t)
 	tr := Triple{
-		Subject:   "Kai",
-		Predicate: "works on",
-		Object:    "Orion",
-		ValidFrom: "2026-01-01",
+		Subject:     "Kai",
+		Predicate:   "works on",
+		Object:      "Orion",
+		ValidFrom:   "2026-01-01",
 		ExtractedAt: "2026-03-15T00:00:00Z",
 	}
 

@@ -34,10 +34,10 @@ func TestAlias(t *testing.T) {
 
 func TestExtractBrief(t *testing.T) {
 	cases := []struct {
-		name    string
-		input   string
-		maxLen  int
-		want    string
+		name   string
+		input  string
+		maxLen int
+		want   string
 	}{
 		{"empty", "", 40, "(no description)"},
 		{"only headings", "# Title\n## Sub\n", 40, "(no description)"},

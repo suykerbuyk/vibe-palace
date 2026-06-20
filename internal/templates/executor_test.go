@@ -159,9 +159,9 @@ func TestHashFile(t *testing.T) {
 // TestClassify exercises every row of the classification table.
 func TestClassify(t *testing.T) {
 	cases := []struct {
-		name              string
-		vault, emb, lock  string
-		want              templates.Classification
+		name             string
+		vault, emb, lock string
+		want             templates.Classification
 	}{
 		{"missing vault", "", "aa", "", templates.ClassMissing},
 		{"missing vault with lock", "", "aa", "aa", templates.ClassMissing},

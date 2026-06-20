@@ -1212,4 +1212,3 @@ func assertBytesEqual(t *testing.T, label string, want, got []byte) {
 	t.Errorf("%s: bytes differ between legacy and sync paths\n--- legacy ---\n%s\n--- sync ---\n%s",
 		label, want, got)
 }
-

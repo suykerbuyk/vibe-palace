@@ -18,6 +18,7 @@ import (
 //  1. Global config.toml under XDG (with [meta] v1).
 //  2. Cwd .vibe-palace.toml with [meta] and [project].name.
 //  3. Vault-project {vault}/Projects/{slug}/config.toml with [meta].
+//
 // Every file must parse as valid TOML.
 func TestIntegrationInitFullFileset(t *testing.T) {
 	home := t.TempDir()

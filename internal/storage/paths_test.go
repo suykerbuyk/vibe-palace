@@ -106,10 +106,10 @@ func TestKGEntitiesFile(t *testing.T) {
 func TestKGTriplePath(t *testing.T) {
 	v := NewVault("/vault")
 	tests := []struct {
-		name                        string
-		project, subj, pred, obj    string
-		want                        string
-		wantErr                     bool
+		name                     string
+		project, subj, pred, obj string
+		want                     string
+		wantErr                  bool
 	}{
 		{
 			"basic encoding", "recmeet", "Kai", "works on", "Orion",

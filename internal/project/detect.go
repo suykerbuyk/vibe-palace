@@ -34,14 +34,14 @@ var manifestFiles = []string{
 type ProjectSignal string
 
 const (
-	SignalNone            ProjectSignal = ""
-	SignalVibeConfig      ProjectSignal = ".vibe-palace.toml"
-	SignalGit             ProjectSignal = ".git"
-	SignalCargoToml       ProjectSignal = "Cargo.toml"
-	SignalGoMod           ProjectSignal = "go.mod"
-	SignalPackageJSON     ProjectSignal = "package.json"
-	SignalPomXML          ProjectSignal = "pom.xml"
-	SignalPyprojectToml   ProjectSignal = "pyproject.toml"
+	SignalNone          ProjectSignal = ""
+	SignalVibeConfig    ProjectSignal = ".vibe-palace.toml"
+	SignalGit           ProjectSignal = ".git"
+	SignalCargoToml     ProjectSignal = "Cargo.toml"
+	SignalGoMod         ProjectSignal = "go.mod"
+	SignalPackageJSON   ProjectSignal = "package.json"
+	SignalPomXML        ProjectSignal = "pom.xml"
+	SignalPyprojectToml ProjectSignal = "pyproject.toml"
 )
 
 // DetectSignal returns the first project signal found in dir (non-recursive

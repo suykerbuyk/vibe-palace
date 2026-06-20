@@ -73,16 +73,16 @@ func TestBuildPlan_RoutingTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]Destination{
-		"checkers01":                                      DestResumeScratch,
-		"Status":                                          DestResumeScratch,
-		"Architecture (from PRD §4, §7)":                  DestArchitecture,
-		"Rules — quick reference":                         DestKnowledge,
-		"Move atomicity":                                  DestArchitecture,
-		"Commands (once bootstrapped)":                    DestWorkflowCmds,
-		"Testing strategy (PRD §8)":                       DestTesting,
-		"Notation":                                        DestKnowledge,
-		"Non-goals for v1 (do not build)":                 DestScope,
-		"When working in this repo":                       DestWorkflowRules,
+		"checkers01":                      DestResumeScratch,
+		"Status":                          DestResumeScratch,
+		"Architecture (from PRD §4, §7)":  DestArchitecture,
+		"Rules — quick reference":         DestKnowledge,
+		"Move atomicity":                  DestArchitecture,
+		"Commands (once bootstrapped)":    DestWorkflowCmds,
+		"Testing strategy (PRD §8)":       DestTesting,
+		"Notation":                        DestKnowledge,
+		"Non-goals for v1 (do not build)": DestScope,
+		"When working in this repo":       DestWorkflowRules,
 	}
 	got := map[string]Destination{}
 	for _, it := range plan.Items {
