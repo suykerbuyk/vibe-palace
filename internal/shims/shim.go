@@ -35,6 +35,12 @@ const FilePrefix = "vpc-"
 // ShimDir is the project-relative directory shims land in.
 const ShimDir = ".claude/commands"
 
+// GrokCommandsPluginDir is the directory inside a project-scoped Grok
+// plugin where we emit the same vpc-*.md slash-command shims. This gives
+// Grok Build first-class native /vpc-<name> slash commands (discovered from
+// .grok/plugins/) with the identical naming convention used for Claude.
+const GrokCommandsPluginDir = ".grok/plugins/vibe-palace/commands"
+
 // shim marker delimiters. The opening marker carries a 7-hex content hash
 // derived from the render inputs and the template version; the closing
 // marker is static so the regex can find the marker pair regardless of

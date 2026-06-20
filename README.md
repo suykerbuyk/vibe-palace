@@ -57,7 +57,7 @@ vp init
 ```
 
 `vp init` scaffolds an `agentctx/` package in the vault and writes
-`.claude/commands/vpc-*.md` + `.claude/skills/vps-*/SKILL.md` shims
+`.claude/commands/vpc-*.md` + `.grok/plugins/vibe-palace/commands/vpc-*.md` + `.claude/skills/vps-*/SKILL.md` + `.grok/skills/...` shims
 into the project so Claude Code (or any `vpc-`/`vps-`-aware editor)
 discovers the full vibe-palace command and skill catalog.
 
@@ -88,7 +88,8 @@ turn one.
   algorithmic audit, offline LLM-assisted weight discovery.
 - **`vp` CLI** — 22 commands, man pages, shell completions.
 - **Cross-IDE shims** — `vp init` writes slash-command shims
-  (`.claude/commands/vpc-*.md`) and skill directories
+  (`.claude/commands/vpc-*.md` and `.grok/plugins/vibe-palace/commands/vpc-*.md`)
+  and skill directories (`.claude/skills/`, `.grok/skills/`, `.cursor/rules/`)
   (`.claude/skills/vps-*/SKILL.md`) so every vibe-palace capability
   is discoverable by fuzzy-matching `/vpc-` or `/vps-` in Claude
   Code. `vp commands upgrade` and `vp skills upgrade` keep both sets
@@ -118,7 +119,8 @@ turn one.
 
 | Surface           | Commands rendering            | Skills rendering                  |
 |-------------------|-------------------------------|-----------------------------------|
-| Claude Code       | `.claude/commands/vpc-*.md`   | `.claude/skills/vps-*/SKILL.md`   |
+| Claude Code       | `.claude/commands/vpc-*.md`                  | `.claude/skills/vps-*/SKILL.md`          |
+| Grok Build        | `.grok/plugins/.../commands/vpc-*.md` (native) | `.grok/skills/vps-*/` + `/vpc` hub       |
 | Cursor (rules/)   | via MCP (`vp_get_command`)    | `.cursor/rules/vps-*.mdc`         |
 | Any MCP host      | `vp_get_command` tool         | `vp_skill` tool                   |
 

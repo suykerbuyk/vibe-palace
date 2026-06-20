@@ -389,6 +389,7 @@ How users trigger commands depends on their frontend:
 | Frontend | Invocation |
 |----------|-----------|
 | Claude Code | `/vpc-<name>` slash shims in `.claude/commands/` (e.g. `/vpc-restart`) |
+| Grok Build | Native `/vpc-<name>` slash commands via `.grok/plugins/vibe-palace/commands/vpc-<name>.md` (first-class project plugin commands); a `/vpc` skill hub is also emitted under `.grok/skills/vpc/` for the dispatcher + usage instructions |
 | Cursor | Rules file maps keywords to `vp_cmd` calls |
 | Custom MCP client | Direct `vp_cmd` / `vp_skill` tool calls |
 | CLI fallback | `vp inject` prints context; `vp commands restart` outputs the command via CLI |
