@@ -534,10 +534,10 @@ func TestListResourcesScopedFullMerge(t *testing.T) {
 		sourceMap[ri.Name] = ri.Source
 	}
 	checks := map[string]string{
-		"gen":    "room",
-		"lint":   "wing",
-		"custom": "project",
-		"deploy": "vault",
+		"gen":     "room",
+		"lint":    "wing",
+		"custom":  "project",
+		"deploy":  "vault",
 		"restart": "embedded",
 	}
 	for name, wantSource := range checks {

@@ -15,7 +15,7 @@ import (
 
 // WeeklyMetric aggregates friction data for one calendar week.
 type WeeklyMetric struct {
-	WeekStart    string  `json:"week_start"`    // Monday of the week, YYYY-MM-DD
+	WeekStart    string  `json:"week_start"` // Monday of the week, YYYY-MM-DD
 	SessionCount int     `json:"session_count"`
 	AvgFriction  float64 `json:"avg_friction"`
 	MaxFriction  int     `json:"max_friction"`

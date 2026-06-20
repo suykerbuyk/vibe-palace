@@ -155,9 +155,9 @@ type traverseParams struct {
 // --- Result types ---
 
 type palaceStatusResult struct {
-	Stats    palace.PalaceStats `json:"stats"`
-	PerWing  []wingDetail       `json:"per_wing"`
-	Tunnels  []palace.Tunnel    `json:"tunnels"`
+	Stats   palace.PalaceStats `json:"stats"`
+	PerWing []wingDetail       `json:"per_wing"`
+	Tunnels []palace.Tunnel    `json:"tunnels"`
 }
 
 type wingDetail struct {
@@ -173,10 +173,10 @@ type roomDetail struct {
 }
 
 type traverseResult struct {
-	Wing     string `json:"wing"`
-	Room     string `json:"room"`
-	Drawers  int    `json:"drawers"`
-	HopDist  int    `json:"hop_distance"`
+	Wing    string `json:"wing"`
+	Room    string `json:"room"`
+	Drawers int    `json:"drawers"`
+	HopDist int    `json:"hop_distance"`
 }
 
 // --- Handlers ---

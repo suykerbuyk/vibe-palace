@@ -43,7 +43,7 @@ var (
 
 	// Concept: capitalized terms near conceptual signals.
 	conceptTermRe = regexp.MustCompile(`\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:architecture|pattern|strategy|principle|approach|paradigm|methodology|framework|design)\b`)
-	conceptCtxRe = regexp.MustCompile(`(?i)\b(?:architecture|pattern|strategy|principle|approach|paradigm|methodology|framework|design)\s+(?:called|named|known as)\s+([A-Z][A-Za-z\s]+)`)
+	conceptCtxRe  = regexp.MustCompile(`(?i)\b(?:architecture|pattern|strategy|principle|approach|paradigm|methodology|framework|design)\s+(?:called|named|known as)\s+([A-Z][A-Za-z\s]+)`)
 )
 
 // knownTools is a curated set of well-known developer tools.

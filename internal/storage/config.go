@@ -54,27 +54,27 @@ func DefaultsTomlContent() (string, error) { return defaultsToml, nil }
 
 // Config holds resolved configuration values.
 type Config struct {
-	MetaVersionMajor        int                               `json:"meta_version_major"`
-	MetaVersionMinor        int                               `json:"meta_version_minor"`
-	MetaKind                string                            `json:"meta_kind"`
-	VaultPath               string                            `json:"vault_path"`
-	GitEnabled              bool                              `json:"git_enabled"`
-	HTTPPort                int                               `json:"http_port"`
-	LogLevel                string                            `json:"log_level"`
-	EmbedderModel           string                            `json:"embedder_model"`
-	EmbedderMaxSeqLen       int                               `json:"embedder_max_seq_len"`
-	EmbedderBatchSize       int                               `json:"embedder_batch_size"`
-	SearchDefaultLimit      int                               `json:"search_default_limit"`
-	BoostWing               float64                           `json:"boost_wing"`
-	BoostHall               float64                           `json:"boost_hall"`
-	BoostRoom               float64                           `json:"boost_room"`
-	ChunkMaxChars           int                               `json:"chunk_max_chars"`
-	ChunkOverlap            int                               `json:"chunk_overlap"`
-	PalaceRoomKeywords      map[string][]string               `json:"palace_room_keywords,omitempty"`
-	PalaceScoringOverrides  map[string]ScoringRoomOverride    `json:"palace_scoring_overrides,omitempty"`
-	PalaceMinScore          float64                           `json:"palace_min_score,omitempty"`
-	PalaceLLM               LLMConfig                         `json:"palace_llm,omitempty"`
-	Archive                 ArchiveConfig                     `json:"archive,omitempty"`
+	MetaVersionMajor       int                            `json:"meta_version_major"`
+	MetaVersionMinor       int                            `json:"meta_version_minor"`
+	MetaKind               string                         `json:"meta_kind"`
+	VaultPath              string                         `json:"vault_path"`
+	GitEnabled             bool                           `json:"git_enabled"`
+	HTTPPort               int                            `json:"http_port"`
+	LogLevel               string                         `json:"log_level"`
+	EmbedderModel          string                         `json:"embedder_model"`
+	EmbedderMaxSeqLen      int                            `json:"embedder_max_seq_len"`
+	EmbedderBatchSize      int                            `json:"embedder_batch_size"`
+	SearchDefaultLimit     int                            `json:"search_default_limit"`
+	BoostWing              float64                        `json:"boost_wing"`
+	BoostHall              float64                        `json:"boost_hall"`
+	BoostRoom              float64                        `json:"boost_room"`
+	ChunkMaxChars          int                            `json:"chunk_max_chars"`
+	ChunkOverlap           int                            `json:"chunk_overlap"`
+	PalaceRoomKeywords     map[string][]string            `json:"palace_room_keywords,omitempty"`
+	PalaceScoringOverrides map[string]ScoringRoomOverride `json:"palace_scoring_overrides,omitempty"`
+	PalaceMinScore         float64                        `json:"palace_min_score,omitempty"`
+	PalaceLLM              LLMConfig                      `json:"palace_llm,omitempty"`
+	Archive                ArchiveConfig                  `json:"archive,omitempty"`
 }
 
 // ArchiveConfig holds transcript-archive settings (ADR-001 Phase 6).
@@ -114,11 +114,11 @@ type tomlMeta struct {
 // tomlConfig is the intermediate struct matching the TOML file structure.
 type tomlConfig struct {
 	Meta       tomlMeta `toml:"meta"`
-	VaultPath  string `toml:"vault_path"`
-	GitEnabled bool   `toml:"git_enabled"`
-	HTTPPort   int    `toml:"http_port"`
-	LogLevel  string `toml:"log_level"`
-	Embedder  struct {
+	VaultPath  string   `toml:"vault_path"`
+	GitEnabled bool     `toml:"git_enabled"`
+	HTTPPort   int      `toml:"http_port"`
+	LogLevel   string   `toml:"log_level"`
+	Embedder   struct {
 		Model             string `toml:"model"`
 		MaxSequenceLength int    `toml:"max_sequence_length"`
 		BatchSize         int    `toml:"batch_size"`
@@ -134,9 +134,9 @@ type tomlConfig struct {
 		Overlap  int `toml:"overlap"`
 	} `toml:"chunker"`
 	Palace struct {
-		Rooms   map[string]tomlRoomConfig   `toml:"rooms"`
-		Scoring tomlScoringConfig           `toml:"scoring"`
-		LLM     tomlLLMConfig               `toml:"llm"`
+		Rooms   map[string]tomlRoomConfig `toml:"rooms"`
+		Scoring tomlScoringConfig         `toml:"scoring"`
+		LLM     tomlLLMConfig             `toml:"llm"`
 	} `toml:"palace"`
 	Archive tomlArchiveConfig `toml:"archive"`
 }
@@ -154,8 +154,8 @@ type tomlRoomConfig struct {
 }
 
 type tomlScoringConfig struct {
-	MinScore float64                        `toml:"min_score"`
-	Rooms    map[string]tomlRoomScoring     `toml:"rooms"`
+	MinScore float64                    `toml:"min_score"`
+	Rooms    map[string]tomlRoomScoring `toml:"rooms"`
 }
 
 type tomlRoomScoring struct {
@@ -174,22 +174,22 @@ type tomlLLMConfig struct {
 // flatten converts a tomlConfig into a Config.
 func (tc *tomlConfig) flatten() Config {
 	return Config{
-		MetaVersionMajor:   tc.Meta.VersionMajor,
-		MetaVersionMinor:   tc.Meta.VersionMinor,
-		MetaKind:           tc.Meta.Kind,
-		VaultPath:          tc.VaultPath,
-		GitEnabled:         tc.GitEnabled,
-		HTTPPort:           tc.HTTPPort,
-		LogLevel:           tc.LogLevel,
-		EmbedderModel:      tc.Embedder.Model,
-		EmbedderMaxSeqLen:  tc.Embedder.MaxSequenceLength,
-		EmbedderBatchSize:  tc.Embedder.BatchSize,
-		SearchDefaultLimit: tc.Search.DefaultLimit,
-		BoostWing:          tc.Search.StructuralBoostWing,
-		BoostHall:          tc.Search.StructuralBoostHall,
-		BoostRoom:          tc.Search.StructuralBoostRoom,
-		ChunkMaxChars:      tc.Chunker.MaxChars,
-		ChunkOverlap:       tc.Chunker.Overlap,
+		MetaVersionMajor:       tc.Meta.VersionMajor,
+		MetaVersionMinor:       tc.Meta.VersionMinor,
+		MetaKind:               tc.Meta.Kind,
+		VaultPath:              tc.VaultPath,
+		GitEnabled:             tc.GitEnabled,
+		HTTPPort:               tc.HTTPPort,
+		LogLevel:               tc.LogLevel,
+		EmbedderModel:          tc.Embedder.Model,
+		EmbedderMaxSeqLen:      tc.Embedder.MaxSequenceLength,
+		EmbedderBatchSize:      tc.Embedder.BatchSize,
+		SearchDefaultLimit:     tc.Search.DefaultLimit,
+		BoostWing:              tc.Search.StructuralBoostWing,
+		BoostHall:              tc.Search.StructuralBoostHall,
+		BoostRoom:              tc.Search.StructuralBoostRoom,
+		ChunkMaxChars:          tc.Chunker.MaxChars,
+		ChunkOverlap:           tc.Chunker.Overlap,
 		PalaceRoomKeywords:     flattenPalaceRooms(tc.Palace.Rooms),
 		PalaceScoringOverrides: flattenScoringRooms(tc.Palace.Scoring.Rooms),
 		PalaceMinScore:         tc.Palace.Scoring.MinScore,

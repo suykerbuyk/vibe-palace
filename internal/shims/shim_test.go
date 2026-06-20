@@ -29,17 +29,17 @@ func TestRenderDeterministic(t *testing.T) {
 func TestRenderContainsRequiredElements(t *testing.T) {
 	out := Render("wrap", "Wrap up current work", "", "")
 	checks := []string{
-		"---\n",                                 // frontmatter open
-		"description: Vibe-palace command — ",   // brief surfaces
-		"Wrap up current work",                  // user-provided brief
-		"argument-hint:",                        // arg hint key present
-		"<!-- vibe-palace:shim v=1 sha=",        // opening marker
-		" -->",                                  // marker closes
-		agentfile.CommandToolName,               // delegates to canonical tool
-		"name=\"wrap\"",                         // name arg to the tool
-		"/vpc-wrap",                             // alias mentioned for $ARGUMENTS
-		"$ARGUMENTS",                            // argument-forwarding instruction
-		shimCloseDelim,                          // closing marker
+		"---\n",                               // frontmatter open
+		"description: Vibe-palace command — ", // brief surfaces
+		"Wrap up current work",                // user-provided brief
+		"argument-hint:",                      // arg hint key present
+		"<!-- vibe-palace:shim v=1 sha=",      // opening marker
+		" -->",                                // marker closes
+		agentfile.CommandToolName,             // delegates to canonical tool
+		"name=\"wrap\"",                       // name arg to the tool
+		"/vpc-wrap",                           // alias mentioned for $ARGUMENTS
+		"$ARGUMENTS",                          // argument-forwarding instruction
+		shimCloseDelim,                        // closing marker
 	}
 	for _, want := range checks {
 		if !strings.Contains(out, want) {

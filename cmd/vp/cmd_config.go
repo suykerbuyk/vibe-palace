@@ -594,4 +594,3 @@ func finishSync(rep reconcile.Report) int {
 	}
 	return cli.ExitOK
 }
-

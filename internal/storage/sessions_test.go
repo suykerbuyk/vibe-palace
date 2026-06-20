@@ -288,7 +288,6 @@ func containsLine(s, line string) bool {
 	return false
 }
 
-
 func TestWriteSessionNeedsIndexing(t *testing.T) {
 	v := testVault(t)
 

@@ -209,4 +209,3 @@ func verifyGPG(manifestPath string) error {
 	}
 	return nil
 }
-

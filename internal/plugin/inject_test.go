@@ -143,7 +143,7 @@ func TestRegisterInstalledPlugin_Fresh(t *testing.T) {
 func TestRegisterInstalledPlugin_PreservesExisting(t *testing.T) {
 	isolate(t)
 	if err := writeJSONSecure(InstalledPluginsPath(), map[string]any{
-		"version":            float64(2),
+		"version":           float64(2),
 		"other@other-local": []any{map[string]any{"scope": "user"}},
 	}); err != nil {
 		t.Fatal(err)

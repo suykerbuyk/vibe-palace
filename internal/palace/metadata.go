@@ -207,22 +207,22 @@ type filenameRule struct {
 
 var filenameRules = []filenameRule{
 	// Testing — language-agnostic test file patterns.
-	{suffix: "_test.go", room: "testing"},    // Go
-	{suffix: "_test.py", room: "testing"},    // Python (suffix convention)
-	{prefix: "test_", room: "testing"},       // Python (prefix convention)
-	{suffix: ".test.ts", room: "testing"},    // TypeScript
-	{suffix: ".test.js", room: "testing"},    // JavaScript
-	{suffix: ".test.tsx", room: "testing"},   // React/TSX
-	{suffix: ".test.jsx", room: "testing"},   // React/JSX
-	{suffix: ".spec.ts", room: "testing"},    // TypeScript (spec convention)
-	{suffix: ".spec.js", room: "testing"},    // JavaScript (spec convention)
-	{suffix: "test.java", room: "testing"},   // Java (FooTest.java)
-	{suffix: "_test.rs", room: "testing"},    // Rust
-	{suffix: "_test.rb", room: "testing"},    // Ruby
-	{suffix: "_spec.rb", room: "testing"},    // Ruby (RSpec)
-	{suffix: "_test.exs", room: "testing"},   // Elixir
-	{suffix: "_test.dart", room: "testing"},  // Dart
-	{contains: "conftest", room: "testing"},  // Python (pytest fixtures)
+	{suffix: "_test.go", room: "testing"},   // Go
+	{suffix: "_test.py", room: "testing"},   // Python (suffix convention)
+	{prefix: "test_", room: "testing"},      // Python (prefix convention)
+	{suffix: ".test.ts", room: "testing"},   // TypeScript
+	{suffix: ".test.js", room: "testing"},   // JavaScript
+	{suffix: ".test.tsx", room: "testing"},  // React/TSX
+	{suffix: ".test.jsx", room: "testing"},  // React/JSX
+	{suffix: ".spec.ts", room: "testing"},   // TypeScript (spec convention)
+	{suffix: ".spec.js", room: "testing"},   // JavaScript (spec convention)
+	{suffix: "test.java", room: "testing"},  // Java (FooTest.java)
+	{suffix: "_test.rs", room: "testing"},   // Rust
+	{suffix: "_test.rb", room: "testing"},   // Ruby
+	{suffix: "_spec.rb", room: "testing"},   // Ruby (RSpec)
+	{suffix: "_test.exs", room: "testing"},  // Elixir
+	{suffix: "_test.dart", room: "testing"}, // Dart
+	{contains: "conftest", room: "testing"}, // Python (pytest fixtures)
 	// DevOps — CI/CD, containerization, IaC.
 	{exact: "dockerfile", room: "devops"},
 	{exact: "docker-compose.yml", room: "devops"},

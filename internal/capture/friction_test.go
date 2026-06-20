@@ -195,10 +195,10 @@ func TestCountRetries(t *testing.T) {
 		expected int // sub-score
 	}{
 		{"no tool calls here", 0},
-		{"tool_use: read\ntool_use: read", 0},                                    // only 2, not 3
-		{"tool_use: read\ntool_use: read\ntool_use: read", 10},                   // 1 group
+		{"tool_use: read\ntool_use: read", 0},                                                // only 2, not 3
+		{"tool_use: read\ntool_use: read\ntool_use: read", 10},                               // 1 group
 		{"tool_use: a\ntool_use: a\ntool_use: a\ntool_use: b\ntool_use: b\ntool_use: b", 20}, // 2 groups
-		{"tool_use: a\n" + strings.Repeat("tool_use: a\n", 10), 10},              // still 1 group
+		{"tool_use: a\n" + strings.Repeat("tool_use: a\n", 10), 10},                          // still 1 group
 	}
 	for _, tt := range tests {
 		got := countRetries(tt.input)

@@ -10,8 +10,8 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
-	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
+	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -346,10 +346,12 @@ func TestIndexTranscriptKGDedup(t *testing.T) {
 
 // TestIndexDrawersParityAcrossPaths verifies the collapsed engine API
 // produces identical searchable results whether:
-//   (A) a single drawer is indexed via the convenience Engine.IndexDrawer
-//       (engine embeds the content), or
-//   (B) the capture batch path calls Engine.IndexDrawers with pre-computed
-//       vectors from EmbedBatch.
+//
+//	(A) a single drawer is indexed via the convenience Engine.IndexDrawer
+//	    (engine embeds the content), or
+//	(B) the capture batch path calls Engine.IndexDrawers with pre-computed
+//	    vectors from EmbedBatch.
+//
 // Both paths must yield the same DrawerID in the search result for the
 // same content.
 func TestIndexDrawersParityAcrossPaths(t *testing.T) {

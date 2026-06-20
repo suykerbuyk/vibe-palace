@@ -81,9 +81,9 @@ func TestWriteStamp_EqualRefreshesWriter(t *testing.T) {
 func TestResolveStampDir_Roots(t *testing.T) {
 	vault := t.TempDir()
 	cases := []struct {
-		name      string
-		writeRel  string
-		wantSub   string // relative to vault; "" means skip ("")
+		name     string
+		writeRel string
+		wantSub  string // relative to vault; "" means skip ("")
 	}{
 		{"projects file", "Projects/foo/resume.md", "Projects/foo"},
 		{"projects nested", "Projects/foo/sessions/2026-01-01-01.md", "Projects/foo"},
