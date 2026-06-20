@@ -86,7 +86,7 @@ func buildToolSurfaceManifest() toolSurfaceManifest {
 	v := storage.NewVault("")
 	srv := mcpkg.NewServer(v)
 	eng := search.NewEngine(nil, v, storage.Config{})
-	tools.RegisterAll(srv.Registry(), vpctx.NewResolver(""), v, eng, storage.Config{})
+	tools.RegisterAll(srv.Registry(), vpctx.NewResolver(""), v, eng)
 
 	infos := srv.Registry().List()
 	entries := make([]toolSurfaceEntry, 0, len(infos))

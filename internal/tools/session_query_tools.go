@@ -232,10 +232,34 @@ func getSessionDetailHandler(vault *storage.Vault) mcp.HandlerFunc {
 }
 
 // parseSessionID extracts date and iteration from "YYYY-MM-DD-NN".
+//
+// The layout is validated positionally (not just by length) so a malformed but
+// slug-valid id like "2026-06-201-5" is REJECTED rather than silently sliced
+// into a different real session. This matters because the id now arrives off the
+// wire via the session resource URI, so a wrong-but-valid id must not resolve to
+// an unrelated session.
 func parseSessionID(id string) (string, int, error) {
-	// Format: YYYY-MM-DD-NN (min 13 chars).
-	if len(id) < 13 {
+	formatErr := func() (string, int, error) {
 		return "", 0, fmt.Errorf("invalid session_id %q: expected YYYY-MM-DD-NN format", id)
+	}
+	// "YYYY-MM-DD-" prefix is exactly 11 chars; at least one iteration digit.
+	if len(id) < 13 {
+		return formatErr()
+	}
+	// Hyphens must sit at the date separators and after the day.
+	if id[4] != '-' || id[7] != '-' || id[10] != '-' {
+		return formatErr()
+	}
+	// Date digits at the fixed positions; iteration digits in the suffix.
+	for i, c := range id {
+		switch i {
+		case 4, 7, 10:
+			// separators, already checked
+		default:
+			if c < '0' || c > '9' {
+				return formatErr()
+			}
+		}
 	}
 	date := id[:10]
 	iterStr := id[11:]
@@ -258,12 +282,12 @@ type getProjectContextParams struct {
 
 // ProjectContext is the response for vp_get_project_context.
 type ProjectContext struct {
-	Project   string                  `json:"project"`
-	Summary   string                  `json:"summary,omitempty"`
-	Sessions  []sessionSearchResult   `json:"sessions,omitempty"`
-	Threads   []string                `json:"threads,omitempty"`
-	Decisions []string                `json:"decisions,omitempty"`
-	Friction  []capture.WeeklyMetric  `json:"friction,omitempty"`
+	Project   string                 `json:"project"`
+	Summary   string                 `json:"summary,omitempty"`
+	Sessions  []sessionSearchResult  `json:"sessions,omitempty"`
+	Threads   []string               `json:"threads,omitempty"`
+	Decisions []string               `json:"decisions,omitempty"`
+	Friction  []capture.WeeklyMetric `json:"friction,omitempty"`
 }
 
 var getProjectContextSchema = json.RawMessage(`{
@@ -410,25 +434,25 @@ type WeeklyEffectiveness struct {
 	WeekStart       string  `json:"week_start"`
 	SessionCount    int     `json:"session_count"`
 	AvgOutcome      float64 `json:"avg_outcome"`
-	WithContext      int     `json:"with_context"`
-	WithoutContext   int     `json:"without_context"`
+	WithContext     int     `json:"with_context"`
+	WithoutContext  int     `json:"without_context"`
 	AvgCtxOutcome   float64 `json:"avg_context_outcome"`
 	AvgNoCtxOutcome float64 `json:"avg_no_context_outcome"`
 }
 
 // EffectivenessResult is the response for vp_get_effectiveness.
 type EffectivenessResult struct {
-	Project    string                `json:"project"`
-	Weeks      []WeeklyEffectiveness `json:"weeks"`
-	Overall    OverallEffectiveness  `json:"overall"`
+	Project string                `json:"project"`
+	Weeks   []WeeklyEffectiveness `json:"weeks"`
+	Overall OverallEffectiveness  `json:"overall"`
 }
 
 // OverallEffectiveness aggregates across all weeks.
 type OverallEffectiveness struct {
 	TotalSessions   int     `json:"total_sessions"`
 	AvgOutcome      float64 `json:"avg_outcome"`
-	WithContext      int     `json:"with_context"`
-	WithoutContext   int     `json:"without_context"`
+	WithContext     int     `json:"with_context"`
+	WithoutContext  int     `json:"without_context"`
 	AvgCtxOutcome   float64 `json:"avg_context_outcome"`
 	AvgNoCtxOutcome float64 `json:"avg_no_context_outcome"`
 	Delta           float64 `json:"delta"`
@@ -488,10 +512,10 @@ func getEffectivenessHandler(vault *storage.Vault) mcp.HandlerFunc {
 
 		// Group sessions by ISO week.
 		type weekBucket struct {
-			weekStart string
-			ctxSum    float64
-			ctxCount  int
-			noCtxSum  float64
+			weekStart  string
+			ctxSum     float64
+			ctxCount   int
+			noCtxSum   float64
 			noCtxCount int
 		}
 		buckets := make(map[string]*weekBucket)
@@ -542,9 +566,9 @@ func getEffectivenessHandler(vault *storage.Vault) mcp.HandlerFunc {
 			b := buckets[k]
 			total := b.ctxCount + b.noCtxCount
 			we := WeeklyEffectiveness{
-				WeekStart:    b.weekStart,
-				SessionCount: total,
-				WithContext:   b.ctxCount,
+				WeekStart:      b.weekStart,
+				SessionCount:   total,
+				WithContext:    b.ctxCount,
 				WithoutContext: b.noCtxCount,
 			}
 			if total > 0 {
@@ -566,8 +590,8 @@ func getEffectivenessHandler(vault *storage.Vault) mcp.HandlerFunc {
 
 		overall := OverallEffectiveness{
 			TotalSessions:  totalCtxCount + totalNoCtxCount,
-			WithContext:     totalCtxCount,
-			WithoutContext:  totalNoCtxCount,
+			WithContext:    totalCtxCount,
+			WithoutContext: totalNoCtxCount,
 		}
 		if overall.TotalSessions > 0 {
 			overall.AvgOutcome = roundTo((totalCtxSum+totalNoCtxSum)/float64(overall.TotalSessions), 1)

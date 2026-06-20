@@ -9,7 +9,7 @@
     {
       "name": "vp_bootstrap_context",
       "mutating": false,
-      "schema_sha256": "23b57263bba43ed48b2dd1622f8f488ee6f5fc6ef9b6a100228db332fc0c5ae8"
+      "schema_sha256": "047d6a1c863e53f7971e44e6e8dd4a1b355faf0acdfdd346e5da4cb995ee39ff"
     },
     {
       "name": "vp_capture_session",
@@ -94,7 +94,7 @@
     {
       "name": "vp_get_task",
       "mutating": false,
-      "schema_sha256": "3d99966be7784cd76f3580a508981f08a2a608448ae666eabb684cd59718c839"
+      "schema_sha256": "cf42f5af6c77f00270cdd0c70c46dfbc8e7c41c3ad5cc5c8619d386ee2e56231"
     },
     {
       "name": "vp_get_workflow",
@@ -210,6 +210,11 @@
       "name": "vp_preflight_wrap",
       "mutating": false,
       "schema_sha256": "66838c875858c422c0a68167dfd0b09cef752d27261a01078ca94b59d11d1e7c"
+    },
+    {
+      "name": "vp_read_resource",
+      "mutating": false,
+      "schema_sha256": "4c28781b4631700fe5d860917aff8048208666185ba46b797ea598fdac13b21c"
     },
     {
       "name": "vp_refresh_index",

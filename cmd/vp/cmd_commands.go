@@ -274,6 +274,17 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 	if shimErr != nil {
 		fmt.Fprintf(opts.Stderr, "vp commands upgrade: shim plan: %v\n", shimErr)
 	}
+
+	// Grok native command shims (first-class /vpc-* via .grok/plugins/...).
+	// Emitted only when Grok is detected, using identical bodies.
+	var grokShimPlan []shims.Change
+	if shims.GrokPresent(projectRoot) {
+		var gerr error
+		grokShimPlan, gerr = planGrokCommandShims(resolver, projectRoot, opts.Only)
+		if gerr != nil {
+			fmt.Fprintf(opts.Stderr, "vp commands upgrade: grok shim plan: %v\n", gerr)
+		}
+	}
 	shimAdd, shimUpd, shimStale, shimCustom := 0, 0, 0, 0
 	for _, c := range shimPlan {
 		switch c.Kind {
@@ -287,7 +298,20 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 			shimCustom++
 		}
 	}
-	pendingShims := shimAdd + shimUpd + shimStale
+	grokShimAdd, grokShimUpd, grokShimStale, grokShimCustom := 0, 0, 0, 0
+	for _, c := range grokShimPlan {
+		switch c.Kind {
+		case shims.New:
+			grokShimAdd++
+		case shims.Modified:
+			grokShimUpd++
+		case shims.Stale:
+			grokShimStale++
+		case shims.CustomChange:
+			grokShimCustom++
+		}
+	}
+	pendingShims := shimAdd + shimUpd + shimStale + grokShimAdd + grokShimUpd + grokShimStale
 
 	// Per-project skill shims: ClaudeSkill always; CursorRule when a Cursor
 	// layout is present. Planned against the project root so we can present
@@ -316,11 +340,15 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 		printUpgradePlan(opts.Stdout, plan)
 		printBlockPlan(opts.Stdout, blockChanges)
 		printShimPlan(opts.Stdout, shimPlan)
+		if len(grokShimPlan) > 0 {
+			printGrokCommandShimPlan(opts.Stdout, grokShimPlan)
+		}
 		printSkillShimPlan(opts.Stdout, skillPlan)
 		fmt.Fprintf(opts.Stdout,
-			"\nSummary (dry run): %d new, %d updated, %d unchanged, %d custom, %d agent-file block(s) need updating, shims: %d new, %d updated, %d stale, %d custom, skill shims: %d new, %d updated, %d stale, %d custom.\n",
+			"\nSummary (dry run): %d new, %d updated, %d unchanged, %d custom, %d agent-file block(s) need updating, shims: %d new, %d updated, %d stale, %d custom, grok shims: %d new, %d updated, %d stale, %d custom, skill shims: %d new, %d updated, %d stale, %d custom.\n",
 			added, updated, unchanged, custom, pendingBlocks,
 			shimAdd, shimUpd, shimStale, shimCustom,
+			grokShimAdd, grokShimUpd, grokShimStale, grokShimCustom,
 			skillAdd, skillUpd, skillStale, skillCustom)
 		if added+updated+pendingBlocks+pendingShims+pendingSkillShims > 0 {
 			return cli.ExitUser // non-zero — manual review required
@@ -379,8 +407,8 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 	skippedCount := promptRes.SkippedCount
 	if promptRes.Quit {
 		fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
-		return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, nil, nil, nil,
-			acceptedCount, skippedCount, custom, shimCustom, skillCustom)
+		return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, nil, nil, nil, nil,
+			acceptedCount, skippedCount, custom, shimCustom, grokShimCustom, skillCustom)
 	}
 
 	// Agent-file managed blocks: collect acceptances using the same prompt.
@@ -422,8 +450,8 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 			skippedCount++
 		case "q":
 			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
-			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, nil, nil,
-				acceptedCount, skippedCount, custom, shimCustom, skillCustom)
+			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, nil, nil, nil,
+				acceptedCount, skippedCount, custom, shimCustom, grokShimCustom, skillCustom)
 		}
 	}
 
@@ -431,6 +459,7 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 	// Unchanged and CustomChange entries never surface here. Stale prompts
 	// make deletion consequence explicit; only accepted entries reach Apply.
 	acceptedShims := make([]shims.Change, 0, len(shimPlan))
+	acceptedGrokShims := make([]shims.Change, 0, len(grokShimPlan))
 	for _, s := range shimPlan {
 		if s.Kind == shims.UnchangedChange || s.Kind == shims.CustomChange {
 			continue
@@ -470,8 +499,53 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 			skippedCount++
 		case "q":
 			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
-			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, acceptedShims, nil,
-				acceptedCount, skippedCount, custom, shimCustom, skillCustom)
+			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, acceptedShims, nil, nil,
+				acceptedCount, skippedCount, custom, shimCustom, grokShimCustom, skillCustom)
+		}
+	}
+
+	// Grok command shims (under .grok/plugins/...): same prompt UX.
+	for _, s := range grokShimPlan {
+		if s.Kind == shims.UnchangedChange || s.Kind == shims.CustomChange {
+			continue
+		}
+		if acceptAll {
+			acceptedGrokShims = append(acceptedGrokShims, s)
+			acceptedCount++
+			fmt.Fprintf(opts.Stdout, "[accept] grok-shim %s (%s)\n", s.Name, s.Kind)
+			continue
+		}
+		fmt.Fprintf(opts.Stdout, "\n=== grok-shim %s (%s) ===\n", s.Name, s.Kind)
+		switch s.Kind {
+		case shims.New:
+			fmt.Fprintf(opts.Stdout, "%s will be created.\n", s.Path)
+		case shims.Modified:
+			fmt.Fprintf(opts.Stdout, "%s body is stale (prev sha=%s); will be rewritten.\n",
+				s.Path, s.PrevSha)
+		case shims.Stale:
+			fmt.Fprintf(opts.Stdout,
+				"%s no longer maps to a known command (sha=%s); accept to delete.\n",
+				s.Path, s.PrevSha)
+		}
+		choice, err := cli.PromptChoice(opts.Stdout, reader)
+		if err != nil {
+			fmt.Fprintf(opts.Stderr, "vp commands upgrade: %v\n", err)
+			return cli.ExitSystem
+		}
+		switch choice {
+		case "a":
+			acceptedGrokShims = append(acceptedGrokShims, s)
+			acceptedCount++
+		case "A":
+			acceptedGrokShims = append(acceptedGrokShims, s)
+			acceptedCount++
+			acceptAll = true
+		case "s":
+			skippedCount++
+		case "q":
+			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
+			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, acceptedShims, acceptedGrokShims, nil,
+				acceptedCount, skippedCount, custom, shimCustom, grokShimCustom, skillCustom)
 		}
 	}
 
@@ -518,16 +592,16 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 			skippedCount++
 		case "q":
 			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
-			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, acceptedShims, acceptedSkillShims,
-				acceptedCount, skippedCount, custom, shimCustom, skillCustom)
+			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, acceptedShims, acceptedGrokShims, acceptedSkillShims,
+				acceptedCount, skippedCount, custom, shimCustom, grokShimCustom, skillCustom)
 		}
 	}
 
-	return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, acceptedShims, acceptedSkillShims,
-		acceptedCount, skippedCount, custom, shimCustom, skillCustom)
+	return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, acceptedShims, acceptedGrokShims, acceptedSkillShims,
+		acceptedCount, skippedCount, custom, shimCustom, grokShimCustom, skillCustom)
 }
 
-func applyAndReport(w, errw io.Writer, projectRoot string, accepted []commands.Change, acceptedBlocks []commands.BlockChange, acceptedShims []shims.Change, acceptedSkillShims []shims.SkillChange, acceptedCount, skippedCount, custom, shimCustom, skillCustom int) int {
+func applyAndReport(w, errw io.Writer, projectRoot string, accepted []commands.Change, acceptedBlocks []commands.BlockChange, acceptedShims, acceptedGrokShims []shims.Change, acceptedSkillShims []shims.SkillChange, acceptedCount, skippedCount, custom, shimCustom, grokShimCustom, skillCustom int) int {
 	if err := commands.Apply(accepted); err != nil {
 		fmt.Fprintf(errw, "apply templates: %v\n", err)
 		return cli.ExitSystem
@@ -541,6 +615,11 @@ func applyAndReport(w, errw io.Writer, projectRoot string, accepted []commands.C
 	rep, err := shims.Apply(acceptedShims, shims.ApplyOptions{AllowStaleRemoval: true})
 	if err != nil {
 		fmt.Fprintf(errw, "apply shims: %v\n", err)
+		return cli.ExitSystem
+	}
+	grokRep, err := shims.Apply(acceptedGrokShims, shims.ApplyOptions{AllowStaleRemoval: true})
+	if err != nil {
+		fmt.Fprintf(errw, "apply grok shims: %v\n", err)
 		return cli.ExitSystem
 	}
 	// Skill shims ride the same contract: only user-approved Stale entries
@@ -559,9 +638,10 @@ func applyAndReport(w, errw io.Writer, projectRoot string, accepted []commands.C
 		}
 	}
 	fmt.Fprintf(w,
-		"\nDone. %d accepted, %d skipped, %d custom (untouched). Shims: %d added, %d updated, %d removed, %d custom. Skill shims: %d added, %d updated, %d removed, %d custom.\n",
+		"\nDone. %d accepted, %d skipped, %d custom (untouched). Shims: %d added, %d updated, %d removed, %d custom. Grok shims: %d added, %d updated, %d removed, %d custom. Skill shims: %d added, %d updated, %d removed, %d custom.\n",
 		acceptedCount, skippedCount, custom,
 		rep.Added, rep.Updated, rep.Removed, shimCustom,
+		grokRep.Added, grokRep.Updated, grokRep.Removed, grokShimCustom,
 		skillRep.Added, skillRep.Updated, skillRep.Removed, skillCustom)
 	return cli.ExitOK
 }
@@ -583,6 +663,33 @@ func printBlockPlan(w io.Writer, changes []commands.BlockChange) {
 			fmt.Fprintf(w, "  current   %s\n", c.Target.DisplayName)
 		}
 	}
+}
+
+// planGrokCommandShims builds the Grok plugin command shim plan (parallel
+// to planShims). When only is non-empty the plan is filtered.
+func planGrokCommandShims(resolver *vpctx.Resolver, projectRoot, only string) ([]shims.Change, error) {
+	if projectRoot == "" {
+		return nil, nil
+	}
+	slug, _ := project.DetectProject(projectRoot)
+	summaries, err := commands.List(resolver, "command", slug, "", "", 60)
+	if err != nil {
+		return nil, err
+	}
+	plan, err := shims.PlanGrokCommands(summaries, projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	if only == "" {
+		return plan, nil
+	}
+	filtered := plan[:0]
+	for _, c := range plan {
+		if c.Name == only {
+			filtered = append(filtered, c)
+		}
+	}
+	return filtered, nil
 }
 
 // planShims builds the shim plan for projectRoot. When only is non-empty,
@@ -719,11 +826,14 @@ func printSkillShimPlan(w io.Writer, plan []shims.SkillChange) {
 	}
 }
 
-func printShimPlan(w io.Writer, plan []shims.Change) {
+// printShimChanges renders a command-shim plan under the given header. Shared
+// by the Claude (printShimPlan) and Grok (printGrokCommandShimPlan) paths so
+// the row formatting stays in one place.
+func printShimChanges(w io.Writer, header string, plan []shims.Change) {
 	if len(plan) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "\nSlash-command shims:")
+	fmt.Fprintln(w, header)
 	for _, c := range plan {
 		switch c.Kind {
 		case shims.New:
@@ -739,6 +849,14 @@ func printShimPlan(w io.Writer, plan []shims.Change) {
 			fmt.Fprintf(w, "  custom    %s  (left untouched)\n", c.Path)
 		}
 	}
+}
+
+func printShimPlan(w io.Writer, plan []shims.Change) {
+	printShimChanges(w, "\nSlash-command shims:", plan)
+}
+
+func printGrokCommandShimPlan(w io.Writer, plan []shims.Change) {
+	printShimChanges(w, "\nGrok command shims (.grok/plugins/vibe-palace/commands/):", plan)
 }
 
 func printUpgradePlan(w io.Writer, plan []commands.Change) {

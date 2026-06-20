@@ -63,21 +63,39 @@ func listTasksHandler(vault *storage.Vault) mcp.HandlerFunc {
 // vp_get_task
 // ---------------------------------------------------------------------------
 
+// taskExcerptCap bounds the rune-safe excerpt returned when the caller drops
+// the inline body (include_content=false). ~1.5 KB is enough to orient the
+// agent; the full body is then fetched via ContentURI with vp_read_resource.
+const taskExcerptCap = 1500
+
 type getTaskParams struct {
 	Project string `json:"project"`
 	Task    string `json:"task"`
+	// IncludeContent is tri-state: nil or true ⇒ full inline Content (the
+	// pre-Phase-2 behaviour, byte-identical for local Claude); false ⇒ drop the
+	// body and return only ContentURI + a bounded Excerpt.
+	IncludeContent *bool `json:"include_content,omitempty"`
 }
 
 type getTaskResult struct {
-	Meta    storage.TaskMeta `json:"meta"`
-	Content string           `json:"content"`
+	Meta storage.TaskMeta `json:"meta"`
+	// Content is the full task body. Omitted (empty) when include_content=false.
+	Content string `json:"content,omitempty"`
+	// ContentURI and ContentSize are ALWAYS set. ContentURI addresses the full
+	// body for vp_read_resource; ContentSize is its length in bytes.
+	ContentURI  string `json:"content_uri"`
+	ContentSize int    `json:"content_size"`
+	// Excerpt is a rune-safe leading slice of the body, set only when the inline
+	// Content was dropped (include_content=false).
+	Excerpt string `json:"excerpt,omitempty"`
 }
 
 var getTaskSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"project": {"type": "string", "description": "Project slug."},
-		"task":    {"type": "string", "description": "Task slug."}
+		"project":         {"type": "string", "description": "Project slug."},
+		"task":            {"type": "string", "description": "Task slug."},
+		"include_content": {"type": "boolean", "description": "Include the full inline task body. Default true. When false, a large body is dropped in favour of content_uri + a short excerpt (fetch the full body via vp_read_resource); a small body that cannot be truncated is still returned inline. content present means the body is complete; excerpt present means it is partial."}
 	},
 	"required": ["project", "task"]
 }`)
@@ -107,7 +125,28 @@ func getTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 		if err != nil {
 			return nil, fmt.Errorf("get task: %w", err)
 		}
-		return getTaskResult{Meta: meta, Content: content}, nil
+
+		res := getTaskResult{
+			Meta:        meta,
+			ContentURI:  mcp.TaskURI(p.Project, p.Task),
+			ContentSize: len(content),
+		}
+		// Tri-state: nil/true keeps the full inline body (Claude unchanged).
+		// false drops the body for a host that truncates large results — but only
+		// when it is actually large: a body that already fits within taskExcerptCap
+		// cannot truncate, so we still return it inline (in Content) rather than as
+		// an Excerpt, sparing the agent a vp_read_resource round-trip for content it
+		// would receive in full anyway. Content present ⇒ complete body; Excerpt
+		// present ⇒ partial, fetch the rest via ContentURI.
+		switch {
+		case p.IncludeContent == nil || *p.IncludeContent:
+			res.Content = content
+		case len(content) <= taskExcerptCap:
+			res.Content = content
+		default:
+			res.Excerpt = runeSafeExcerpt(content, taskExcerptCap)
+		}
+		return res, nil
 	}
 }
 

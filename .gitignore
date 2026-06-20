@@ -11,3 +11,4 @@
 /doc/man/
 test/e2e/**/.tmp/
 .vibe-palace/
+/.vibe-palace/

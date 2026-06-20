@@ -72,13 +72,38 @@ type Change struct {
 // as a dry-run before invoking Apply.
 //
 // Summaries carry the authoritative command names and briefs (from
-// commands.List). Files under .claude/commands/ with the "vpc-" prefix are
+// commands.List). Files under the shim directory with the "vpc-" prefix are
 // scanned; files without that prefix are ignored (other tools' territory).
 // The returned slice is sorted: New first, then Modified, Unchanged, Stale,
 // Custom; stable by path within each kind.
 func Plan(summaries []commands.Summary, projectRoot string) ([]Change, error) {
+	if projectRoot == "" {
+		return nil, nil
+	}
 	shimRoot := filepath.Join(projectRoot, ShimDir)
+	return planCommandShims(summaries, shimRoot)
+}
 
+// PlanGrokCommands is the Grok equivalent of Plan. It plans native
+// slash-command shims under .grok/plugins/vibe-palace/commands/ using the
+// same vpc-<name>.md filenames, frontmatter, and delegation bodies so that
+// Grok surfaces a first-class /vpc-<name> menu for project commands (the
+// same naming convention as the Claude .claude/commands/ shims).
+//
+// When Grok Build is detected we emit both the Claude shims (for Claude
+// users) and the Grok plugin shims. The bodies are byte-identical.
+func PlanGrokCommands(summaries []commands.Summary, projectRoot string) ([]Change, error) {
+	if projectRoot == "" {
+		return nil, nil
+	}
+	shimRoot := filepath.Join(projectRoot, GrokCommandsPluginDir)
+	return planCommandShims(summaries, shimRoot)
+}
+
+// planCommandShims contains the shared implementation for Plan and
+// PlanGrokCommands. It scans the provided shimRoot (which may be
+// .claude/commands or .grok/plugins/.../commands) for vpc-*.md files.
+func planCommandShims(summaries []commands.Summary, shimRoot string) ([]Change, error) {
 	// Build the desired set keyed by command name.
 	desired := make(map[string]commands.Summary, len(summaries))
 	for _, s := range summaries {

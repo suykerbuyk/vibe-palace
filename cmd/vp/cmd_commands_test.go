@@ -495,6 +495,7 @@ func TestRunCommandsUpgrade_DryRunShowsSkillShimsNoWrite(t *testing.T) {
 // accepted for removal. Templates/command-shims are pre-seeded current so the
 // only prompts are skill-shim prompts (EOF after our inputs skips any others).
 func TestRunCommandsUpgrade_Interactive_SkillShimPrompts(t *testing.T) {
+	grokOff(t)
 	vault := t.TempDir()
 	seedMatchingVault(t, vault)
 	projectRoot := t.TempDir()
@@ -531,6 +532,57 @@ func TestRunCommandsUpgrade_Interactive_SkillShimPrompts(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Skill shims: 1 added, 0 updated, 1 removed") {
 		t.Errorf("Done line wrong skill-shim counts:\n%s", out.String())
+	}
+	// Grok off in this test; grok shims count should be zero.
+	if !strings.Contains(out.String(), "Grok shims: 0 added, 0 updated, 0 removed, 0 custom") {
+		t.Errorf("Done line should report zero grok shims when grokOff:\n%s", out.String())
+	}
+}
+
+// TestRunCommandsUpgrade_GrokShimsSurviveSkillPhaseQuit is the H1 regression
+// guard: a Grok command shim accepted in the Grok prompt loop must still be
+// applied even when the user quits during the later skill-shim phase. The bug
+// passed nil for acceptedGrokShims on the skill-phase "q" abort, silently
+// dropping the user's accepted Grok shims.
+func TestRunCommandsUpgrade_GrokShimsSurviveSkillPhaseQuit(t *testing.T) {
+	vault := t.TempDir()
+	seedMatchingVault(t, vault)
+	projectRoot := t.TempDir()
+	seedMatchingShims(t, vault, projectRoot)
+	seedMatchingGrokShims(t, vault, projectRoot) // also creates .grok/ → GrokPresent
+
+	// Force exactly one Grok command shim to be New (the only Grok prompt).
+	grokRestart := filepath.Join(projectRoot, shims.GrokCommandsPluginDir, shims.Filename("restart"))
+	if err := os.Remove(grokRestart); err != nil {
+		t.Fatalf("rm grok restart shim: %v", err)
+	}
+	// Force exactly one skill prompt (startup-analyst New) to quit at.
+	skillPath := claudeSkillPath(projectRoot, "startup-analyst")
+	if err := os.RemoveAll(filepath.Dir(skillPath)); err != nil {
+		t.Fatalf("rm skill dir: %v", err)
+	}
+
+	// Accept the Grok New shim, then quit at the skill prompt.
+	input := "a\nq\n"
+	var out, errb bytes.Buffer
+	code := runCommandsUpgrade(commandsUpgradeOpts{
+		Stdin:               strings.NewReader(input),
+		Stdout:              &out,
+		Stderr:              &errb,
+		VaultRootOverride:   vault,
+		ProjectRootOverride: projectRoot,
+		InteractiveOverride: boolPtr(true),
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("interactive: exit=%d\nstderr: %s", code, errb.String())
+	}
+	if _, err := os.Stat(grokRestart); err != nil {
+		t.Errorf("accepted Grok shim dropped on skill-phase quit (H1 regression): %v\n%s",
+			err, out.String())
+	}
+	// Sanity: we did quit before accepting the skill shim, so it stays absent.
+	if _, err := os.Stat(skillPath); !os.IsNotExist(err) {
+		t.Errorf("skill shim should not exist after quitting at its prompt (err=%v)", err)
 	}
 }
 
@@ -723,6 +775,27 @@ func seedMatchingShims(t *testing.T, vault, projectRoot string) {
 		if _, _, err := shims.ApplySkills(sp, shims.ApplyOptions{}); err != nil {
 			t.Fatalf("skill shim apply: %v", err)
 		}
+	}
+}
+
+// seedMatchingGrokShims writes up-to-date Grok command shims under
+// .grok/plugins/vibe-palace/commands/ (mirrors seedMatchingShims for the Grok
+// plugin path). The Apply also creates .grok/, so GrokPresent reports true
+// afterward regardless of host state.
+func seedMatchingGrokShims(t *testing.T, vault, projectRoot string) {
+	t.Helper()
+	r := vpctx.NewResolver(vault)
+	slug, _ := project.DetectProject(projectRoot)
+	summaries, err := commands.List(r, "command", slug, "", "", 60)
+	if err != nil {
+		t.Fatalf("list summaries: %v", err)
+	}
+	plan, err := shims.PlanGrokCommands(summaries, projectRoot)
+	if err != nil {
+		t.Fatalf("grok shim plan: %v", err)
+	}
+	if _, err := shims.Apply(plan, shims.ApplyOptions{}); err != nil {
+		t.Fatalf("grok shim apply: %v", err)
 	}
 }
 

@@ -88,7 +88,9 @@ func bootstrap() (*serverStack, error) {
 
 	resolver := vpctx.NewResolver(v.Root)
 	srv := mcpkg.NewServer(v)
-	tools.RegisterAll(srv.Registry(), resolver, v, eng, cfg)
+	// stdio serves local Claude/Zed — bootstrap slim default stays false.
+	tools.RegisterAll(srv.Registry(), resolver, v, eng, tools.WithConfig(cfg))
+	tools.RegisterResources(srv, resolver, v)
 
 	return &serverStack{
 		vault:    v,

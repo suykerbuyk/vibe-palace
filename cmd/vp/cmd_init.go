@@ -679,24 +679,12 @@ func initShimWiring(projectRoot string, projectReady bool) []check.Result {
 		}}
 	}
 
-	summary := fmt.Sprintf(
-		"added %d, updated %d, unchanged %d, stale %d, custom %d",
-		rep.Added, rep.Updated, rep.Unchanged, rep.Stale, rep.Custom,
-	)
-	status := check.Info
-	if rep.Added > 0 || rep.Updated > 0 {
-		status = check.Pass
+	rows := []check.Result{shimReportRow("Slash-command shims", rep)}
+
+	// Grok command shims via project plugin (first-class native slash commands).
+	if shims.GrokPresent(projectRoot) {
+		rows = append(rows, applyGrokCommandShims(summaries, projectRoot))
 	}
-	row := check.Result{
-		Name:    "Slash-command shims",
-		Status:  status,
-		Summary: summary,
-	}
-	if rep.Stale > 0 {
-		row.Details = append(row.Details,
-			"stale shims left in place — run `vp commands upgrade` to review")
-	}
-	rows := []check.Result{row}
 
 	// --- Skill shims: ClaudeSkill always; CursorRule when detected. ---
 	rows = append(rows, initSkillShimWiring(projectRoot, resolver)...)
@@ -771,6 +759,43 @@ func applyGrokShims(items []shims.SkillItem, projectRoot string) check.Result {
 	if err != nil {
 		return check.Result{Name: label, Status: check.Fail, Summary: "apply: " + err.Error()}
 	}
+	summary := fmt.Sprintf(
+		"added %d, updated %d, unchanged %d, stale %d, custom %d",
+		rep.Added, rep.Updated, rep.Unchanged, rep.Stale, rep.Custom,
+	)
+	status := check.Info
+	if rep.Added > 0 || rep.Updated > 0 {
+		status = check.Pass
+	}
+	row := check.Result{Name: label, Status: status, Summary: summary}
+	if rep.Stale > 0 {
+		row.Details = append(row.Details,
+			"stale shims left in place — run `vp commands upgrade` to review")
+	}
+	return row
+}
+
+// applyGrokCommandShims emits the native Grok slash command shims under
+// .grok/plugins/vibe-palace/commands/ (vpc-*.md) using the same delegation
+// content as the Claude shims. This makes Grok a first-class citizen for
+// the /vpc-<name> menu.
+func applyGrokCommandShims(summaries []commands.Summary, projectRoot string) check.Result {
+	const label = "Grok command shims"
+	plan, err := shims.PlanGrokCommands(summaries, projectRoot)
+	if err != nil {
+		return check.Result{Name: label, Status: check.Fail, Summary: "plan: " + err.Error()}
+	}
+	rep, err := shims.Apply(plan, shims.ApplyOptions{AllowStaleRemoval: false})
+	if err != nil {
+		return check.Result{Name: label, Status: check.Fail, Summary: "apply: " + err.Error()}
+	}
+	return shimReportRow(label, rep)
+}
+
+// shimReportRow builds the init status row shared by the Claude and Grok
+// command-shim apply paths from an Apply report: Pass when anything was
+// added or updated (else Info), with a stale-leftover advisory.
+func shimReportRow(label string, rep shims.Report) check.Result {
 	summary := fmt.Sprintf(
 		"added %d, updated %d, unchanged %d, stale %d, custom %d",
 		rep.Added, rep.Updated, rep.Unchanged, rep.Stale, rep.Custom,

@@ -220,6 +220,74 @@ func TestPlanSkipsNewWhenCustomFileCollides(t *testing.T) {
 	}
 }
 
+// TestPlanGrokCommandsAllNewUnderPluginDir verifies the Grok plugin path
+// plans New shims under .grok/plugins/.../commands/ — not .claude/commands/ —
+// with bodies byte-identical to the Claude shims (same Render inputs).
+func TestPlanGrokCommandsAllNewUnderPluginDir(t *testing.T) {
+	root := t.TempDir()
+	changes, err := PlanGrokCommands(sums("restart", "r", "wrap", "w"), root)
+	if err != nil {
+		t.Fatalf("PlanGrokCommands: %v", err)
+	}
+	if len(changes) != 2 {
+		t.Fatalf("len(changes) = %d, want 2", len(changes))
+	}
+	wantDir := filepath.Join(root, GrokCommandsPluginDir)
+	for _, c := range changes {
+		if c.Kind != New {
+			t.Errorf("%s: Kind = %s, want New", c.Name, c.Kind)
+		}
+		if filepath.Dir(c.Path) != wantDir {
+			t.Errorf("%s: Path = %s, want under %s", c.Name, c.Path, wantDir)
+		}
+	}
+}
+
+// TestPlanGrokCommandsClassifiesExisting verifies an up-to-date Grok shim is
+// Unchanged and a stale-brief one is Modified — the shared classifier works
+// against the plugin dir exactly as it does for .claude/commands/.
+func TestPlanGrokCommandsClassifiesExisting(t *testing.T) {
+	root := t.TempDir()
+	cmdDir := filepath.Join(root, GrokCommandsPluginDir)
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cmdDir, Filename("restart")),
+		[]byte(Render("restart", "current", "", "")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cmdDir, Filename("wrap")),
+		[]byte(Render("wrap", "OLD BRIEF", "", "")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := PlanGrokCommands(sums("restart", "current", "wrap", "NEW BRIEF"), root)
+	if err != nil {
+		t.Fatalf("PlanGrokCommands: %v", err)
+	}
+	got := make(map[string]ChangeKind, len(changes))
+	for _, c := range changes {
+		got[c.Name] = c.Kind
+	}
+	if got["restart"] != UnchangedChange {
+		t.Errorf("restart: Kind = %s, want unchanged", got["restart"])
+	}
+	if got["wrap"] != Modified {
+		t.Errorf("wrap: Kind = %s, want modified", got["wrap"])
+	}
+}
+
+// TestPlanGrokCommandsEmptyRoot guards the empty-root early return shared
+// with Plan.
+func TestPlanGrokCommandsEmptyRoot(t *testing.T) {
+	changes, err := PlanGrokCommands(sums("restart", "r"), "")
+	if err != nil {
+		t.Fatalf("PlanGrokCommands: %v", err)
+	}
+	if changes != nil {
+		t.Errorf("changes = %v, want nil on empty root", changes)
+	}
+}
+
 func TestChangeKindString(t *testing.T) {
 	cases := map[ChangeKind]string{
 		New: "new", Modified: "modified", UnchangedChange: "unchanged",

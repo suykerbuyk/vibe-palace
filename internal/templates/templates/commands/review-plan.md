@@ -22,6 +22,11 @@ read only that task.
 
 ## Step 1: Read the Plan
 
+When reading a task via `vp_get_task`, the body may arrive as a `content_uri`
+(with `include_content=false`) rather than inline. Read the resource
+(`resources/read`) or page it via `vp_read_resource` to get the full body
+before reviewing it.
+
 Read the task file(s) and extract:
 
 - What code it proposes to modify or create

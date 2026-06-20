@@ -46,7 +46,10 @@ Wait for their response before continuing.
 
 ## Step 3: Update the Task File
 
-Use `vp_get_task` to read the task file. Make these changes:
+Use `vp_get_task` to read the task file. The body may arrive as a `content_uri`
+(with `include_content=false`) rather than inline; read the resource
+(`resources/read`) or page it via `vp_read_resource` to get the full body before
+editing. Make these changes:
 
 1. Update the **Status** line to `Cancelled (rev N+1)` (increment
    the existing rev).

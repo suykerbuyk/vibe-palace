@@ -310,11 +310,27 @@ instructions verbatim** — do not summarize; execute every step as written.
 For the task-reading commands ` + "`review-plan`" + `, ` + "`cancel-plan`" + `, and
 ` + "`execute-plan`" + ` the argument is a task name (e.g. ` + "`/vpc review-plan <task-name>`" + `).
 BEFORE acting, call ` + "`vp_get_task`" + ` with the resolved ` + "`project`" + ` and ` + "`task`" + ` to
-read the task. Task files live ONLY in the vault and are reachable solely
-through the MCP task tools. NEVER grep or scan the filesystem for task files,
-never fall back to stale resume prose, and never write a task to a repo-relative
+read the task. For a large task body, call ` + "`vp_get_task`" + ` with
+` + "`include_content=false`" + ` — it drops the big inline body and returns a
+` + "`content_uri`" + ` plus a short ` + "`excerpt`" + ` — then page the full body with
+` + "`vp_read_resource(uri, offset, limit)`" + `, advancing ` + "`offset`" + ` by the
+returned ` + "`offset+length`" + ` until ` + "`eof`" + `. Do NOT assume your client
+surfaces ` + "`resources/read`" + ` to the model; ` + "`vp_read_resource`" + ` is a tool you
+can always call. Task files live ONLY in the vault and are reachable solely
+through the MCP task tools and these ` + "`vibe-palace://`" + ` resource URIs.
+NEVER grep or scan the filesystem for task files, never fall back to stale
+resume prose, and never write a task to a repo-relative
 ` + "`tasks/`" + ` path. If a task tool is not loaded, load its schema first, then call
 it.
+
+## Session start
+
+When restoring context (e.g. ` + "`/vpc restart`" + `), call ` + "`vp_bootstrap_context`" + `
+with ` + "`slim=true`" + `. Under slim the large ` + "`resume`" + ` body arrives as a
+banner-led excerpt plus a ` + "`resume_uri`" + ` (` + "`workflow`" + ` stays inline); read
+that ` + "`resume_uri`" + ` via ` + "`vp_read_resource`" + ` before relying on full resume
+content. The HTTP transport already defaults ` + "`slim=true`" + `, but the explicit
+flag documents intent.
 
 ## After execution
 

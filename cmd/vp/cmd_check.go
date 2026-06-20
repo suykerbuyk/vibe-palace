@@ -218,6 +218,6 @@ func registeredToolCount() int {
 	v := storage.NewVault("")
 	srv := mcpkg.NewServer(v)
 	eng := search.NewEngine(nil, v, storage.Config{})
-	tools.RegisterAll(srv.Registry(), vpctx.NewResolver(""), v, eng, storage.Config{})
+	tools.RegisterAll(srv.Registry(), vpctx.NewResolver(""), v, eng)
 	return len(srv.Registry().List())
 }

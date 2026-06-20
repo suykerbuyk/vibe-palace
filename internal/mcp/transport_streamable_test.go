@@ -222,3 +222,141 @@ func TestStreamableDeleteToolsFiltersListing(t *testing.T) {
 		t.Fatalf("echo tool still present after DeleteTools: %+v", listed.Tools)
 	}
 }
+
+// TestStreamableResourceRoundTrip is the highest-value guard for the Phase-2
+// resources layer: it proves a content resource is listed AND readable over the
+// streamable-HTTP transport, which injects NO contextFunc. A handler that read
+// the vault from ctx would nil-panic here; this passes only because the provider
+// CLOSES OVER its body (the same contract internal/tools.RegisterResources must
+// honour). The mcp package cannot import internal/tools (import cycle), so the
+// resource is registered via the package-local AddContentResource primitive with
+// a closure over a captured value — sufficient to assert the closes-over-vault
+// contract holds across the real HTTP wire.
+func TestStreamableResourceRoundTrip(t *testing.T) {
+	ts, srv := testStreamableServer(t, testBearerToken)
+
+	const (
+		template = "vibe-palace://task/{project}/{slug}"
+		uri      = "vibe-palace://task/demo/known-task"
+		body     = "# Known Task\n\n**Status:** open — body reachable over HTTP\n"
+	)
+	// captured stands in for the vault the real provider closes over. Reading it
+	// from ctx would fail over this transport; closing over it is the contract.
+	captured := body
+	srv.AddContentResource(template, "task", "text/markdown",
+		func(_ context.Context, vars map[string]string) (string, string, error) {
+			if vars["project"] != "demo" || vars["slug"] != "known-task" {
+				t.Errorf("vars = %+v, want project=demo slug=known-task", vars)
+			}
+			return captured, "text/markdown", nil
+		})
+
+	c := newMCPClient(t, ts.URL, testBearerToken)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// The template must be advertised over HTTP.
+	tmpls, err := c.ListResourceTemplates(ctx, mcplib.ListResourceTemplatesRequest{})
+	if err != nil {
+		t.Fatalf("list resource templates: %v", err)
+	}
+	if !hasResourceTemplate(tmpls.ResourceTemplates, template) {
+		t.Fatalf("template %q not advertised over HTTP: %+v", template, tmpls.ResourceTemplates)
+	}
+
+	// The concrete URI must be readable over HTTP and byte-identical.
+	if got := readResourceText(t, c, ctx, uri); got != body {
+		t.Fatalf("resources/read over HTTP: text = %q, want %q", got, body)
+	}
+}
+
+// TestStreamableReadResourceSurvivesDeleteTools pins the read-only HTTP serve
+// shape: stripping mutating tools (as the read-only streamable server does) must
+// NOT remove the non-mutating resource reader, and resources stay readable. The
+// mcp package cannot import internal/tools, so a non-mutating stand-in named
+// "vp_read_resource" and a mutating stand-in are registered locally; only the
+// mutating one is deleted.
+func TestStreamableReadResourceSurvivesDeleteTools(t *testing.T) {
+	ts, srv := testStreamableServer(t, testBearerToken)
+
+	// Non-mutating reader (the real vp_read_resource is non-mutating too).
+	srv.Registry().MustRegister(Tool{
+		Name:        "vp_read_resource",
+		Description: "reads a resource (non-mutating stand-in)",
+		Schema:      echoSchema,
+		Handler:     echoHandler,
+	})
+	// Mutating tool that the read-only serve path would strip.
+	srv.Registry().MustRegister(Tool{
+		Name:        "vp_manage_task",
+		Mutating:    true,
+		Description: "mutates the vault (stand-in)",
+		Schema:      echoSchema,
+		Handler:     echoHandler,
+	})
+
+	const (
+		template = "vibe-palace://resume/{project}"
+		uri      = "vibe-palace://resume/demo"
+		body     = "# Resume\n\nstill readable after stripping mutating tools\n"
+	)
+	captured := body
+	srv.AddContentResource(template, "resume", "text/markdown",
+		func(_ context.Context, _ map[string]string) (string, string, error) {
+			return captured, "text/markdown", nil
+		})
+
+	// Strip mutating tools, as the read-only streamable serve path does.
+	srv.DeleteTools("vp_manage_task")
+
+	c := newMCPClient(t, ts.URL, testBearerToken)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	listed, err := c.ListTools(ctx, mcplib.ListToolsRequest{})
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	if hasTool(listed.Tools, "vp_manage_task") {
+		t.Error("mutating vp_manage_task should be stripped from read-only listing")
+	}
+	if !hasTool(listed.Tools, "vp_read_resource") {
+		t.Fatalf("non-mutating vp_read_resource must survive the strip: %+v", listed.Tools)
+	}
+
+	// Resources remain readable after the strip.
+	if got := readResourceText(t, c, ctx, uri); got != body {
+		t.Fatalf("resources/read after strip: text = %q, want %q", got, body)
+	}
+}
+
+// hasResourceTemplate reports whether template appears (by raw URI template) in
+// a resources/templates/list result.
+func hasResourceTemplate(tmpls []mcplib.ResourceTemplate, template string) bool {
+	for _, rt := range tmpls {
+		if rt.URITemplate != nil && rt.URITemplate.Raw() == template {
+			return true
+		}
+	}
+	return false
+}
+
+// readResourceText issues a resources/read for uri over the client and returns
+// the single text content, failing the test on any protocol or shape error.
+func readResourceText(t *testing.T, c *client.Client, ctx context.Context, uri string) string {
+	t.Helper()
+	req := mcplib.ReadResourceRequest{}
+	req.Params.URI = uri
+	res, err := c.ReadResource(ctx, req)
+	if err != nil {
+		t.Fatalf("resources/read %q: %v", uri, err)
+	}
+	if len(res.Contents) != 1 {
+		t.Fatalf("resources/read %q: %d contents, want 1", uri, len(res.Contents))
+	}
+	tc, ok := res.Contents[0].(mcplib.TextResourceContents)
+	if !ok {
+		t.Fatalf("resources/read %q: content type %T, want TextResourceContents", uri, res.Contents[0])
+	}
+	return tc.Text
+}
