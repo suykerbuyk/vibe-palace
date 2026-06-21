@@ -24,7 +24,7 @@ import (
 // forward-compatible. See the [meta] block in defaults.toml.
 const (
 	CurrentVersionMajor = 1
-	CurrentVersionMinor = 0
+	CurrentVersionMinor = 1
 )
 
 // MetaKind values identify which config-file schema a [meta] block belongs to.
@@ -75,6 +75,21 @@ type Config struct {
 	PalaceMinScore         float64                        `json:"palace_min_score,omitempty"`
 	PalaceLLM              LLMConfig                      `json:"palace_llm,omitempty"`
 	Archive                ArchiveConfig                  `json:"archive,omitempty"`
+	Enrichment             EnrichmentConfig               `json:"enrichment,omitempty"`
+}
+
+// EnrichmentConfig holds resolved settings for the session-enrichment LLM
+// pass. APIKeyEnv is the name of the environment variable holding the API
+// key, not the key itself. All fields are optional; Enabled is off by
+// default so an absent [enrichment] block decodes to the zero value.
+type EnrichmentConfig struct {
+	Enabled        bool   `json:"enabled"`
+	Provider       string `json:"provider"`
+	Model          string `json:"model"`
+	APIKeyEnv      string `json:"api_key_env"`
+	BaseURL        string `json:"base_url"`
+	MaxTokens      int    `json:"max_tokens"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
 }
 
 // ArchiveConfig holds transcript-archive settings (ADR-001 Phase 6).
@@ -138,7 +153,18 @@ type tomlConfig struct {
 		Scoring tomlScoringConfig         `toml:"scoring"`
 		LLM     tomlLLMConfig             `toml:"llm"`
 	} `toml:"palace"`
-	Archive tomlArchiveConfig `toml:"archive"`
+	Archive    tomlArchiveConfig    `toml:"archive"`
+	Enrichment tomlEnrichmentConfig `toml:"enrichment"`
+}
+
+type tomlEnrichmentConfig struct {
+	Enabled        bool   `toml:"enabled"`
+	Provider       string `toml:"provider"`
+	Model          string `toml:"model"`
+	APIKeyEnv      string `toml:"api_key_env"`
+	BaseURL        string `toml:"base_url"`
+	MaxTokens      int    `toml:"max_tokens"`
+	TimeoutSeconds int    `toml:"timeout_seconds"`
 }
 
 type tomlArchiveConfig struct {
@@ -205,6 +231,15 @@ func (tc *tomlConfig) flatten() Config {
 			SignNamespace:  tc.Archive.SignNamespace,
 			AllowedSigners: tc.Archive.AllowedSigners,
 			SignerIdentity: tc.Archive.SignerIdentity,
+		},
+		Enrichment: EnrichmentConfig{
+			Enabled:        tc.Enrichment.Enabled,
+			Provider:       tc.Enrichment.Provider,
+			Model:          tc.Enrichment.Model,
+			APIKeyEnv:      tc.Enrichment.APIKeyEnv,
+			BaseURL:        tc.Enrichment.BaseURL,
+			MaxTokens:      tc.Enrichment.MaxTokens,
+			TimeoutSeconds: tc.Enrichment.TimeoutSeconds,
 		},
 	}
 }

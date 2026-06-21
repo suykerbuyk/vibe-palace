@@ -5,9 +5,12 @@ package hook
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/memorytestutil"
@@ -189,6 +192,95 @@ func TestRun_ArchiveFailureNonFatal(t *testing.T) {
 	}
 	if res.SessionNoteID == "" {
 		t.Error("expected session to be captured despite archive failure")
+	}
+}
+
+// TestRun_EnrichmentEnabled drives the SessionEnd auto-capture path with
+// [enrichment] enabled in the project config, pointing base_url at an httptest
+// server returning a canned OpenAI-compatible completion. It asserts the
+// captured note is LLM-enriched (summary replaced, fence + enriched_by).
+func TestRun_EnrichmentEnabled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"summary\":\"Auto-enriched summary.\",\"decisions\":[\"Picked the synchronous path\"],\"open_threads\":[\"Add drain telemetry\"],\"tag\":\"implementation\"}"}}]}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("VP_TEST_HOOK_ENRICH_KEY", "sk-hook-test")
+
+	vaultRoot := t.TempDir()
+	cwd := t.TempDir()
+	writeVibeMarker(t, cwd)
+	claimDir := filepath.Join(cwd, ".vibe-palace")
+	if err := os.MkdirAll(claimDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Project config enabling enrichment against the test server.
+	vault := storage.NewVault(vaultRoot)
+	cfgPath, err := vault.ProjectConfigFile("test-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgBody := "[enrichment]\n" +
+		"enabled = true\n" +
+		"provider = \"openai\"\n" +
+		"model = \"hook-enrich-model\"\n" +
+		"api_key_env = \"VP_TEST_HOOK_ENRICH_KEY\"\n" +
+		"base_url = \"" + srv.URL + "\"\n" +
+		"max_tokens = 512\n" +
+		"timeout_seconds = 10\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	transcriptPath := filepath.Join(t.TempDir(), "transcript.jsonl")
+	if err := os.WriteFile(transcriptPath, []byte(fakeTranscript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	initGitRepo(t, cwd, "initial commit")
+
+	res, err := Run(context.Background(), Payload{
+		SessionID:      "enrich-session",
+		TranscriptPath: transcriptPath,
+		CWD:            cwd,
+		HookEventName:  "SessionEnd",
+	}, RunOptions{
+		VaultRoot:   vaultRoot,
+		ProjectSlug: "test-project",
+		VPVersion:   "test-0.1",
+		ClaimDir:    claimDir,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.SessionNoteID == "" {
+		t.Fatal("expected SessionNoteID set")
+	}
+
+	// Locate and read the captured note.
+	sessDir := filepath.Join(vaultRoot, "Projects", "test-project", "sessions")
+	matches, err := filepath.Glob(filepath.Join(sessDir, "*.md"))
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("no session note written: matches=%v err=%v", matches, err)
+	}
+	data, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	for _, want := range []string{
+		"Auto-enriched summary.",
+		"<!-- enriched -->",
+		"enriched by hook-enrich-model",
+		"hook-enrich-model", // enriched_by frontmatter
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("enriched note missing %q\n---\n%s", want, body)
+		}
 	}
 }
 

@@ -6,6 +6,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -227,6 +229,172 @@ func TestCaptureSessionResult(t *testing.T) {
 	}
 	if decoded["session_id"] != "2026-04-07-03" {
 		t.Errorf("session_id = %v, want 2026-04-07-03", decoded["session_id"])
+	}
+}
+
+// writeEnrichmentProjectConfig writes a project-level config.toml enabling
+// [enrichment] for the given project, pointing base_url at the test server.
+func writeEnrichmentProjectConfig(t *testing.T, vault *storage.Vault, project, baseURL, keyEnv string) {
+	t.Helper()
+	path, err := vault.ProjectConfigFile(project)
+	if err != nil {
+		t.Fatalf("ProjectConfigFile: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "[enrichment]\n" +
+		"enabled = true\n" +
+		"provider = \"openai\"\n" +
+		"model = \"enrich-test-model\"\n" +
+		"api_key_env = \"" + keyEnv + "\"\n" +
+		"base_url = \"" + baseURL + "\"\n" +
+		"max_tokens = 512\n" +
+		"timeout_seconds = 10\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestCaptureSessionEnrichDefaultPlain verifies that without enrich (default
+// false) the handler writes a plain, unenriched note exactly as before.
+func TestCaptureSessionEnrichDefaultPlain(t *testing.T) {
+	vault := testSessionVault(t)
+	tool := CaptureSessionTool(vault, nil)
+
+	params := json.RawMessage(`{
+		"project": "test-proj",
+		"summary": "Plain agent-authored summary.",
+		"transcript": "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}"
+	}`)
+
+	result, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	r := result.(captureSessionResult)
+	if r.Status != "ok" {
+		t.Errorf("status = %q, want ok", r.Status)
+	}
+
+	meta, _, err := vault.ReadSession("test-proj", r.SessionID[:10], r.Iteration)
+	if err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	if meta.EnrichedBy != "" {
+		t.Errorf("expected no enrichment, got enriched_by=%q", meta.EnrichedBy)
+	}
+	if meta.Summary != "Plain agent-authored summary." {
+		t.Errorf("summary mutated unexpectedly: %q", meta.Summary)
+	}
+	notePath, err := vault.SessionFile("test-proj", r.SessionID[:10], r.Iteration)
+	if err != nil {
+		t.Fatalf("SessionFile: %v", err)
+	}
+	data, err := os.ReadFile(notePath)
+	if err != nil {
+		t.Fatalf("read note: %v", err)
+	}
+	if strings.Contains(string(data), "<!-- enriched -->") {
+		t.Error("plain note must not carry an enrichment fence")
+	}
+}
+
+// TestCaptureSessionEnrichDisabledConfig verifies that enrich:true with
+// enrichment NOT enabled in config still succeeds with a plain note and
+// surfaces no error to the caller.
+func TestCaptureSessionEnrichDisabledConfig(t *testing.T) {
+	vault := testSessionVault(t)
+	tool := CaptureSessionTool(vault, nil)
+
+	params := json.RawMessage(`{
+		"project": "test-proj",
+		"summary": "Summary with enrich requested but config disabled.",
+		"enrich": true,
+		"transcript": "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}"
+	}`)
+
+	result, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler should not error when enrichment is disabled: %v", err)
+	}
+	r := result.(captureSessionResult)
+	if r.Status != "ok" {
+		t.Errorf("status = %q, want ok", r.Status)
+	}
+	meta, _, err := vault.ReadSession("test-proj", r.SessionID[:10], r.Iteration)
+	if err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	if meta.EnrichedBy != "" {
+		t.Errorf("expected no enrichment when config disabled, got %q", meta.EnrichedBy)
+	}
+}
+
+// TestCaptureSessionEnrichLive drives the full opt-in enrichment path against
+// an httptest server returning a canned OpenAI-compatible completion, and
+// asserts the written note carries the enriched summary, enriched_by, and the
+// provenance fence.
+func TestCaptureSessionEnrichLive(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// choices[0].message.content holds the enrichment JSON payload.
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"summary\":\"LLM-refined summary.\",\"decisions\":[\"Chose option B\"],\"open_threads\":[\"Wire step 9\"],\"tag\":\"implementation\"}"}}]}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("VP_TEST_ENRICH_KEY", "sk-test-live")
+
+	vault := testSessionVault(t)
+	writeEnrichmentProjectConfig(t, vault, "test-proj", srv.URL, "VP_TEST_ENRICH_KEY")
+	tool := CaptureSessionTool(vault, nil)
+
+	params := json.RawMessage(`{
+		"project": "test-proj",
+		"summary": "Heuristic summary to be replaced.",
+		"enrich": true,
+		"transcript": "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"implement step 8\"}}\n{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"done\"}}"
+	}`)
+
+	result, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	r := result.(captureSessionResult)
+	if r.Status != "ok" {
+		t.Errorf("status = %q, want ok", r.Status)
+	}
+
+	meta, _, err := vault.ReadSession("test-proj", r.SessionID[:10], r.Iteration)
+	if err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	if meta.Summary != "LLM-refined summary." {
+		t.Errorf("summary = %q, want enriched summary", meta.Summary)
+	}
+	if meta.EnrichedBy != "enrich-test-model" {
+		t.Errorf("enriched_by = %q, want %q", meta.EnrichedBy, "enrich-test-model")
+	}
+	if meta.Tag != "implementation" {
+		t.Errorf("tag = %q, want implementation", meta.Tag)
+	}
+	notePath, err := vault.SessionFile("test-proj", r.SessionID[:10], r.Iteration)
+	if err != nil {
+		t.Fatalf("SessionFile: %v", err)
+	}
+	data, err := os.ReadFile(notePath)
+	if err != nil {
+		t.Fatalf("read note: %v", err)
+	}
+	body := string(data)
+	if !strings.Contains(body, "<!-- enriched -->") {
+		t.Error("enriched note missing provenance fence")
+	}
+	if !strings.Contains(body, "enriched by enrich-test-model") {
+		t.Error("enriched note missing enriched-by footer")
+	}
+	if !strings.Contains(body, "LLM-refined summary.") {
+		t.Error("enriched note body missing refined summary")
 	}
 }
 

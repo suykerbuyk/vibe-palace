@@ -6,6 +6,7 @@ package storage
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -280,12 +281,7 @@ func TestSessionFileFormat(t *testing.T) {
 }
 
 func containsLine(s, line string) bool {
-	for _, l := range splitLines(s) {
-		if l == line {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(splitLines(s), line)
 }
 
 func TestWriteSessionNeedsIndexing(t *testing.T) {
@@ -329,6 +325,121 @@ func TestWriteSessionNeedsIndexing(t *testing.T) {
 	}
 	if strings.Contains(string(data), "needs_indexing") {
 		t.Error("YAML contains needs_indexing when false; omitempty should suppress it")
+	}
+}
+
+func TestRewriteSessionOverwritesInPlace(t *testing.T) {
+	v := testVault(t)
+
+	// Seed a session via the normal writer.
+	id, err := v.WriteSession("proj", SessionMeta{
+		Date:    "2026-05-01",
+		Title:   "Original",
+		Summary: "plain summary",
+	}, "## Summary\n\nplain summary\n")
+	if err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	if id != "2026-05-01-01" {
+		t.Fatalf("id = %q, want 2026-05-01-01", id)
+	}
+
+	// Rewrite the SAME date+iteration with modified meta/body.
+	newMeta := SessionMeta{
+		Date:        "2026-05-01",
+		Title:       "Enriched",
+		Summary:     "enriched summary",
+		Tag:         "refactor",
+		EnrichedBy:  "test-model",
+		EnrichedAt:  "2026-05-01T00:00:00Z",
+		Decisions:   []string{"d1"},
+		OpenThreads: []string{"t1"},
+	}
+	if err := v.RewriteSession("proj", "2026-05-01", 1, newMeta, "## Summary\n\nenriched summary\n"); err != nil {
+		t.Fatalf("RewriteSession: %v", err)
+	}
+
+	// No new iteration should have been created.
+	if n, _ := v.NextIteration("proj", "2026-05-01"); n != 2 {
+		t.Errorf("NextIteration = %d, want 2 (iteration must NOT be bumped)", n)
+	}
+	dir, _ := v.SessionDir("proj")
+	matches, _ := filepath.Glob(filepath.Join(dir, "2026-05-01-*.md"))
+	if len(matches) != 1 {
+		t.Fatalf("found %d session files, want exactly 1 (no new file): %v", len(matches), matches)
+	}
+
+	// Round-trips with the new content and pinned identity fields.
+	got, body, err := v.ReadSession("proj", "2026-05-01", 1)
+	if err != nil {
+		t.Fatalf("ReadSession: %v", err)
+	}
+	if got.Summary != "enriched summary" {
+		t.Errorf("Summary = %q, want enriched summary", got.Summary)
+	}
+	if got.Tag != "refactor" {
+		t.Errorf("Tag = %q, want refactor", got.Tag)
+	}
+	if got.EnrichedBy != "test-model" {
+		t.Errorf("EnrichedBy = %q, want test-model", got.EnrichedBy)
+	}
+	if got.ID != "2026-05-01-01" {
+		t.Errorf("ID = %q, want 2026-05-01-01", got.ID)
+	}
+	if got.Project != "proj" || got.Iteration != 1 {
+		t.Errorf("identity drift: project=%q iteration=%d", got.Project, got.Iteration)
+	}
+	if !strings.Contains(body, "enriched summary") {
+		t.Errorf("body = %q, want enriched summary", body)
+	}
+}
+
+func TestRewriteSessionByteIdenticalFraming(t *testing.T) {
+	v := testVault(t)
+
+	meta := SessionMeta{
+		Date:      "2026-05-02",
+		Title:     "Framing",
+		Summary:   "s",
+		Decisions: []string{"d1"},
+	}
+	body := "## Summary\n\ns"
+
+	// Write via WriteSession (which mutates identity fields), then capture the
+	// on-disk bytes.
+	id, err := v.WriteSession("proj", meta, body)
+	if err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	path, _ := v.SessionFile("proj", "2026-05-02", 1)
+	writeBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = id
+
+	// marshalSessionFile with the SAME identity-stamped meta must reproduce
+	// the exact framing WriteSession produced.
+	framed := meta
+	framed.Project = "proj"
+	framed.Iteration = 1
+	framed.ID = "2026-05-02-01"
+	got, err := marshalSessionFile(framed, body)
+	if err != nil {
+		t.Fatalf("marshalSessionFile: %v", err)
+	}
+	if string(got) != string(writeBytes) {
+		t.Errorf("marshalSessionFile framing mismatch:\ngot:\n%q\nwant:\n%q", got, writeBytes)
+	}
+}
+
+func TestRewriteSessionInvalidArgs(t *testing.T) {
+	v := testVault(t)
+	if err := v.RewriteSession("BAD PROJECT", "2026-05-01", 1, SessionMeta{}, ""); err == nil {
+		t.Error("RewriteSession with invalid project should error")
+	}
+	if err := v.RewriteSession("proj", "not-a-date", 1, SessionMeta{}, ""); err == nil {
+		t.Error("RewriteSession with invalid date should error")
 	}
 }
 

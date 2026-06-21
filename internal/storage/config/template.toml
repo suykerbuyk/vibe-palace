@@ -23,7 +23,7 @@ log_level = "info"
 # to add missing keys when vp is updated.
 [meta]
 version_major = 1
-version_minor = 0
+version_minor = 1
 # kind identifies which schema this file follows ("global", "cwd-project",
 # or "vault-project"). Do not change for an existing file.
 # kind = "global"
@@ -79,3 +79,16 @@ overlap = 100
 # model = "grok-3-mini"
 # api_key_env = "XAI_API_KEY"
 # max_tokens = 4096
+
+# LLM enrichment of captured sessions (synthesis pass).
+# Disabled by default; set enabled = true and configure a provider to opt in.
+# api_key_env is the name of the environment variable holding the API key,
+# not the key itself.
+# [enrichment]
+# enabled = false
+# provider = "xai"
+# model = "grok-3-mini"
+# api_key_env = "XAI_API_KEY"
+# base_url = "https://api.x.ai/v1"
+# max_tokens = 4096
+# timeout_seconds = 30

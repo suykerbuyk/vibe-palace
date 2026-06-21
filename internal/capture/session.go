@@ -6,11 +6,13 @@ package capture
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
+	"github.com/suykerbuyk/vibe-palace/internal/enrichment"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -30,6 +32,21 @@ type SessionParams struct {
 	ArchiveAdapter   string
 	CWD              string // for claim sentinel (Phase 3 will use this)
 	NeedsIndexing    bool   // when true, skip indexing (deferred to later)
+
+	// Enricher, when non-nil, drives a synchronous LLM enrichment pass over
+	// Transcript before the note is written. This is intentionally a
+	// dependency-carrying field, NOT a bool flag: a nil Enricher means
+	// enrichment is disabled and capture proceeds with the plain heuristic
+	// summary. Enrichment is always best-effort — a failure is warn-logged and
+	// never fails the capture.
+	Enricher *enrichment.Enricher
+
+	// EnrichedBy is the enriching model name. WriteSession sets it internally
+	// when an enrichment pass succeeds; it is also settable directly by the
+	// Step-7 drain so the drain can reproduce the exact fenced body. A
+	// non-empty EnrichedBy drives the provenance fence in buildSessionBody and
+	// the enriched_by/enriched_at frontmatter fields.
+	EnrichedBy string
 }
 
 // SessionResult is the outcome of a successful session capture.
@@ -77,6 +94,41 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		OpenThreads:  p.OpenThreads,
 	}
 
+	// Synchronous LLM enrichment phase. A non-nil Enricher plus a transcript
+	// refines the heuristic summary/decisions/threads/tag in meta. Always
+	// best-effort: any failure is warn-logged and capture proceeds with the
+	// plain auto-summary (capture must never fail because enrichment did).
+	// enqueuePending records that an enrichment was attempted (extraction
+	// succeeded, a transcript was available) but produced nothing usable — the
+	// API errored, returned nil, or returned an all-empty result. The note is
+	// written plain and the extracted PromptInput is enqueued (after the write,
+	// once the iteration is known) for the drain to retry asynchronously.
+	var enqueuePending bool
+	var enqueueInput enrichment.PromptInput
+	if p.Enricher != nil && p.Transcript != "" {
+		in, err := enrichment.ExtractPromptInput([]byte(p.Transcript))
+		if err == nil {
+			if len(p.FilesChanged) > 0 {
+				in.FilesChanged = p.FilesChanged // git-derived list is authoritative
+			}
+			in.NarrativeSummary = p.Summary // the heuristic auto-summary as refinement context
+			in.NarrativeTag = p.Tag
+			enqueueInput = in
+			res, eerr := p.Enricher.Enrich(ctx, in)
+			if eerr != nil {
+				slog.Warn("enrichment failed; using plain summary", "err", eerr, "project", p.Project)
+			}
+			// applyEnrichment overwrites only non-empty fields and reports
+			// whether anything was actually applied; a nil or all-empty result
+			// is a miss, so the note stays plain and the job is queued for retry.
+			if res == nil || !applyEnrichment(&meta, res, p.Enricher.Model()) {
+				enqueuePending = true
+			}
+		} else {
+			slog.Warn("enrichment: extract prompt input failed", "err", err, "project", p.Project)
+		}
+	}
+
 	// Resolve the archive (if requested) before writing the session
 	// so the note can carry the archive: frontmatter field. The
 	// note -> manifest back-link is closed after the write below.
@@ -102,7 +154,7 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		}
 	}
 
-	body := buildSessionBody(p)
+	body := buildSessionBody(paramsFromMeta(meta))
 
 	sessionID, err := vault.WriteSession(p.Project, meta, body)
 	if err != nil {
@@ -117,6 +169,17 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 	notePath := ""
 	if readErr == nil {
 		notePath = readMeta.NotePath
+	}
+
+	// Enqueue-on-miss: when enrichment was attempted but produced nothing
+	// usable, persist the extracted PromptInput so the Step-7 drain can retry
+	// it asynchronously and rewrite this note in place. Enqueue is best-effort
+	// — capture must never fail because the queue write did. Skipped when there
+	// is no host dir (p.CWD == "", e.g. the pure MCP path).
+	if enqueuePending && p.CWD != "" {
+		if qerr := EnqueueEnrichment(p.CWD, p.Project, date, iteration, notePath, enqueueInput); qerr != nil {
+			slog.Warn("enrichment: enqueue failed (non-fatal)", "err", qerr, "project", p.Project)
+		}
 	}
 
 	// Close the bidirectional link: write vault_rel_session_note
@@ -157,6 +220,55 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 	}, nil
 }
 
+// applyEnrichment overwrites meta's heuristic fields with the non-empty values
+// from an enrichment result and, when at least one field was applied, stamps the
+// enriching model and timestamp. It returns whether any field was applied: an
+// all-empty result applies nothing and leaves the note a plain capture (so the
+// caller can queue a retry rather than falsely marking the note enriched). Both
+// the inline capture path and the async drain call this so they converge.
+func applyEnrichment(meta *storage.SessionMeta, res *enrichment.Result, model string) bool {
+	applied := false
+	if res.Summary != "" {
+		meta.Summary = res.Summary
+		applied = true
+	}
+	if len(res.Decisions) > 0 {
+		meta.Decisions = res.Decisions
+		applied = true
+	}
+	if len(res.OpenThreads) > 0 {
+		meta.OpenThreads = res.OpenThreads
+		applied = true
+	}
+	if res.Tag != "" {
+		meta.Tag = res.Tag
+		applied = true
+	}
+	if applied {
+		meta.EnrichedBy = model
+		// Preserve an existing timestamp so a re-drain is byte-identical; only
+		// stamp a fresh one on the first successful enrichment.
+		if meta.EnrichedAt == "" {
+			meta.EnrichedAt = time.Now().UTC().Format(time.RFC3339)
+		}
+	}
+	return applied
+}
+
+// paramsFromMeta projects the fields buildSessionBody consumes out of a
+// SessionMeta, so the inline write path and the async drain build the note body
+// from the single same source — keeping enriched notes byte-identical no matter
+// which path produced them.
+func paramsFromMeta(meta storage.SessionMeta) SessionParams {
+	return SessionParams{
+		Summary:      meta.Summary,
+		Decisions:    meta.Decisions,
+		FilesChanged: meta.FilesChanged,
+		OpenThreads:  meta.OpenThreads,
+		EnrichedBy:   meta.EnrichedBy,
+	}
+}
+
 // buildSessionBody assembles the markdown body for a session file.
 func buildSessionBody(p SessionParams) string {
 	var b []string
@@ -182,6 +294,20 @@ func buildSessionBody(p SessionParams) string {
 		for _, t := range p.OpenThreads {
 			b = append(b, "- "+t)
 		}
+	}
+
+	// When the session was LLM-enriched, wrap the whole assembled body in a
+	// provenance fence (HTML-comment markers, matching internal/shims/shim.go).
+	// Wrapping the complete body — rather than individual sections — keeps
+	// section ordering identical and lets the Step-7 drain reproduce a
+	// byte-identical body by reconstructing the same params with EnrichedBy set.
+	// When EnrichedBy is empty the output is byte-identical to the unenriched
+	// path: no fence, no footer.
+	if p.EnrichedBy != "" {
+		fenced := []string{"<!-- enriched -->"}
+		fenced = append(fenced, b...)
+		fenced = append(fenced, "<!-- /enriched -->", "", "*enriched by "+p.EnrichedBy+"*")
+		b = fenced
 	}
 
 	return joinLines(b)

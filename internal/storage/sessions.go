@@ -45,6 +45,12 @@ type SessionMeta struct {
 	// NeedsIndexing marks hook-captured sessions for deferred transcript
 	// indexing. Omitted from YAML when false so existing sessions are unaffected.
 	NeedsIndexing bool `yaml:"needs_indexing,omitempty"`
+	// EnrichedBy and EnrichedAt mark a session whose summary/decisions/threads
+	// were synthesized by an LLM enrichment pass (set by the enrichment pass or
+	// the Step-7 drain). EnrichedBy is the enriching model; EnrichedAt is an
+	// RFC3339 timestamp. Both are omitted for plain heuristic captures.
+	EnrichedBy string `yaml:"enriched_by,omitempty"`
+	EnrichedAt string `yaml:"enriched_at,omitempty"`
 }
 
 // WriteSession writes a session markdown file with YAML frontmatter.
@@ -74,9 +80,26 @@ func (v *Vault) WriteSession(project string, meta SessionMeta, body string) (str
 		return "", fmt.Errorf("ensure sessions dir: %w", err)
 	}
 
+	data, err := marshalSessionFile(meta, body)
+	if err != nil {
+		return "", err
+	}
+
+	if err := v.lockedWrite(path, data); err != nil {
+		return "", fmt.Errorf("write session file: %w", err)
+	}
+	return meta.ID, nil
+}
+
+// marshalSessionFile assembles the on-disk session file bytes: the YAML
+// frontmatter (marshaled from meta) framed by "---\n…---\n", followed by the
+// body with exactly one trailing newline. WriteSession and RewriteSession
+// share this helper so both writers produce byte-identical framing for the
+// same (meta, body) pair.
+func marshalSessionFile(meta SessionMeta, body string) ([]byte, error) {
 	yamlBytes, err := yaml.Marshal(meta)
 	if err != nil {
-		return "", fmt.Errorf("marshal session meta: %w", err)
+		return nil, fmt.Errorf("marshal session meta: %w", err)
 	}
 
 	var buf bytes.Buffer
@@ -89,11 +112,49 @@ func (v *Vault) WriteSession(project string, meta SessionMeta, body string) (str
 			buf.WriteByte('\n')
 		}
 	}
+	return buf.Bytes(), nil
+}
 
-	if err := v.lockedWrite(path, buf.Bytes()); err != nil {
-		return "", fmt.Errorf("write session file: %w", err)
+// RewriteSession overwrites an EXISTING session file in place at the fixed
+// (project, date, iteration) path. Unlike WriteSession it does NOT allocate a
+// new iteration — the iteration is the caller's responsibility — so it is
+// idempotent: re-running it with the same (meta, body) yields byte-identical
+// bytes. It is used by the Step-7 enrichment drain to rewrite a previously
+// captured note with synthesized summary/decisions/threads. It shares only the
+// marshalSessionFile framing helper with WriteSession and serializes against a
+// concurrent WriteSession via the same per-path advisory lock (lockedWrite).
+func (v *Vault) RewriteSession(project, date string, iteration int, meta SessionMeta, body string) error {
+	if err := slug.Validate(project); err != nil {
+		return fmt.Errorf("project: %w", err)
 	}
-	return meta.ID, nil
+	if !datePattern.MatchString(date) {
+		return fmt.Errorf("date %q must be in YYYY-MM-DD format", date)
+	}
+
+	path, err := v.SessionFile(project, date, iteration)
+	if err != nil {
+		return err
+	}
+	if err := EnsureDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("ensure sessions dir: %w", err)
+	}
+
+	// Defensively pin the identity fields so a rewrite cannot drift the
+	// note's own coordinates away from its path.
+	meta.Project = project
+	meta.Date = date
+	meta.Iteration = iteration
+	meta.ID = fmt.Sprintf("%s-%02d", date, iteration)
+
+	data, err := marshalSessionFile(meta, body)
+	if err != nil {
+		return err
+	}
+
+	if err := v.lockedWrite(path, data); err != nil {
+		return fmt.Errorf("rewrite session file: %w", err)
+	}
+	return nil
 }
 
 // ReadSession reads a session file and returns its metadata and body.

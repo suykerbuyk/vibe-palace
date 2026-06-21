@@ -12,6 +12,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
+	"github.com/suykerbuyk/vibe-palace/internal/enrichment"
 	"github.com/suykerbuyk/vibe-palace/internal/memory"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -46,6 +47,11 @@ type Result struct {
 	MemoryHarvest    *memory.Result `json:"memory_harvest,omitempty"`
 	Error            string         `json:"error,omitempty"`
 }
+
+// enrichDrainBudget bounds how many queued enrichment jobs a single SessionEnd
+// hook run will drain, so a large backlog (e.g. after an LLM outage) cannot
+// stall Claude Code session teardown. Remaining jobs drain on later sessions.
+const enrichDrainBudget = 5
 
 // ValidEvents are the Claude Code hook events we handle.
 var ValidEvents = map[string]bool{
@@ -144,8 +150,39 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 		}
 	}
 
-	// 6. Check claim sentinel (idempotency). The claim gates ONLY the rich
-	// session capture below — archive and harvest above already ran.
+	// 6. Open the vault and resolve the LLM enricher from project config (both
+	// non-fatal). Built before the claim gate so the SessionEnd drain below runs
+	// even for sessions already captured (claimed) via vp_capture_session, and
+	// reused for this run's capture.
+	vault := storage.NewVault(opts.VaultRoot)
+	var enricher *enrichment.Enricher
+	if cfg, cfgErr := vault.LoadConfig(opts.ProjectSlug); cfgErr != nil {
+		slog.Debug("hook: load config for enrichment failed (non-fatal)", "err", cfgErr)
+	} else {
+		e, eerr := capture.NewEnricherFromConfig(cfg.Enrichment, opts.VaultRoot)
+		if eerr != nil {
+			slog.Warn("hook: enrichment disabled", "err", eerr)
+		}
+		enricher = e
+	}
+
+	// 7. Drain previously-queued enrichment jobs at SessionEnd, BEFORE this run's
+	// capture and BEFORE the claim gate. Draining before capture means a job
+	// enqueued by THIS run's own inline miss waits for the next session rather
+	// than being retried immediately against the just-failed endpoint; running
+	// before the claim gate means MCP-captured (claimed) sessions still drain the
+	// backlog. Bounded so a large backlog cannot stall session teardown. A nil
+	// enricher (enrichment disabled) makes this a no-op.
+	if payload.HookEventName == "SessionEnd" {
+		if n, derr := capture.DrainEnrichmentQueue(ctx, vault, payload.CWD, enricher, enrichDrainBudget); derr != nil {
+			slog.Warn("hook: enrichment drain failed (non-fatal)", "err", derr)
+		} else if n > 0 {
+			slog.Info("hook: drained enrichment queue", "count", n)
+		}
+	}
+
+	// 8. Check claim sentinel (idempotency). The claim gates ONLY the rich
+	// session capture below — archive, harvest, and drain above already ran.
 	if IsClaimed(claimDir, payload.SessionID) {
 		res.ClaimedSkip = true
 		return res, nil
@@ -164,8 +201,7 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 		}
 	}
 
-	// 9. Open vault and capture session.
-	vault := storage.NewVault(opts.VaultRoot)
+	// 9. Capture the session, reusing the vault + enricher built above.
 	sessionResult, err := capture.WriteSession(ctx, vault, nil, capture.SessionParams{
 		Project:          opts.ProjectSlug,
 		Summary:          summary,
@@ -174,6 +210,7 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 		ArchiveSessionID: payload.SessionID,
 		NeedsIndexing:    true,
 		CWD:              payload.CWD,
+		Enricher:         enricher,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("capture session: %w", err)

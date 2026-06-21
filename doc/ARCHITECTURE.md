@@ -31,7 +31,8 @@ session capture, semantic search, and palace-based knowledge navigation through
 | `internal/hook` | Claude Code hook handler, settings install, claim sentinel | `Run`, `Install`, `WriteClaim` |
 | `internal/memory` | Host-agnostic AI memory + one-way SessionEnd harvest of Claude native memory (see ADR-004) | `Harvest`, `Options`, `Result` |
 | `internal/palace` | Wing/room/hall classification, graph, audit/tune/discover | `PalaceGraph`, `RoomClassifier`, `AAKResult` |
-| `internal/llm` | OpenAI-compatible LLM client for offline analysis | `Client`, `Response` |
+| `internal/llm` | LLM clients behind a `Completer` (OpenAI-compatible + native Anthropic) for offline analysis and session enrichment | `Client`, `Completer`, `NewCompleter` |
+| `internal/enrichment` | LLM session synthesis: truncated transcript extraction → summary/decisions/threads/tag (see ADR-005) | `ExtractPromptInput`, `Enricher`, `LoadSystemPrompt` |
 | `internal/project` | Project detection from working dir | `ProjectConfig` |
 | `internal/kg` | Entity detection + triple extraction | `DetectedEntity`, `ExtractedTriple` |
 | `internal/vplog` | Structured logging (slog to file) | `Init()`, `Close()` |
@@ -939,6 +940,38 @@ in un-init'd directories are intentionally skipped.
 legacy `vv hook` (vibe-vault) with `vp hook`. `vp init` calls this
 automatically. The hook fires on three Claude Code events (SessionEnd,
 Stop, PreCompact) with a 30-second timeout.
+
+### Session Enrichment (LLM synthesis)
+
+The hook path's deterministic auto-summary is a `git log` dump — poor memory for
+bootstrap, search, and a resuming developer. When the opt-in `[enrichment]`
+config block is enabled, an LLM synthesis pass replaces that heuristic
+summary/decisions/open-threads/tag with a real synthesis. It sits between the
+transcript and `WriteSession`, and is wired only into the SessionEnd hook and the
+`vp_capture_session` `enrich` param (default off — agent-authored `/wrap` notes
+are already good).
+
+`internal/enrichment.ExtractPromptInput` distills the multi-MB transcript into a
+bounded `PromptInput` (user/assistant text capped at 12000 chars each, tool
+counts, edited files) — the LLM never sees the raw JSONL. An `Enricher` calls a
+`Completer` (`internal/llm`: OpenAI-compatible `*Client` or native Anthropic,
+selected by provider via `NewCompleter`, sharing one `retryWithBackoff` helper),
+tolerantly parses the JSON reply (strips ```json fences, one corrective
+reprompt), and validates the tag against the canonical 7-tag set. The system
+prompt is vault-editable (`<vault>/Templates/enrichment.md` > embedded > const)
+and loaded **raw** so no `{{DATE}}` expansion leaks nondeterminism.
+
+The pass is synchronous and best-effort: on success the note is written enriched
+(`enriched_by`/`enriched_at` frontmatter + an `<!-- enriched -->…<!-- /enriched -->`
+fenced body) and capture proceeds; on LLM error/timeout capture **never fails** —
+the note is written plain and the extracted input is enqueued to a host-local
+`<CWD>/.vibe-palace/enrichment-queue/` (not the vault, so it never trips tidy/wrap
+preflight). `DrainEnrichmentQueue` (run in the SessionEnd hook, not in
+latency-sensitive bootstrap) claims each job via atomic `.processing` rename and
+rewrites the note in place via `storage.RewriteSession`, which shares
+`buildSessionBody`/`marshalSessionFile` with the inline path so an inline-enriched
+and a drained note converge to byte-identical bodies. See ADR-005
+(`doc/adr/005-llm-enrichment-synthesis.md`) for the full rationale.
 
 ### Chunking Engine
 

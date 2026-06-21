@@ -354,6 +354,72 @@ func TestConfigPalaceLLMEmpty(t *testing.T) {
 	}
 }
 
+func TestConfigEnrichment(t *testing.T) {
+	v := testVault(t)
+
+	projDir := filepath.Join(v.Root, "Projects", "proj")
+	os.MkdirAll(projDir, 0755)
+	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`
+[enrichment]
+enabled = true
+provider = "xai"
+model = "grok-3-mini"
+api_key_env = "XAI_API_KEY"
+base_url = "https://api.x.ai/v1"
+max_tokens = 4096
+timeout_seconds = 30
+`), 0644)
+
+	cfg, err := v.LoadConfig("proj")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if !cfg.Enrichment.Enabled {
+		t.Errorf("Enabled = false, want true")
+	}
+	if cfg.Enrichment.Provider != "xai" {
+		t.Errorf("Provider = %q, want %q", cfg.Enrichment.Provider, "xai")
+	}
+	if cfg.Enrichment.Model != "grok-3-mini" {
+		t.Errorf("Model = %q, want %q", cfg.Enrichment.Model, "grok-3-mini")
+	}
+	if cfg.Enrichment.APIKeyEnv != "XAI_API_KEY" {
+		t.Errorf("APIKeyEnv = %q, want %q", cfg.Enrichment.APIKeyEnv, "XAI_API_KEY")
+	}
+	if cfg.Enrichment.BaseURL != "https://api.x.ai/v1" {
+		t.Errorf("BaseURL = %q, want %q", cfg.Enrichment.BaseURL, "https://api.x.ai/v1")
+	}
+	if cfg.Enrichment.MaxTokens != 4096 {
+		t.Errorf("MaxTokens = %d, want 4096", cfg.Enrichment.MaxTokens)
+	}
+	if cfg.Enrichment.TimeoutSeconds != 30 {
+		t.Errorf("TimeoutSeconds = %d, want 30", cfg.Enrichment.TimeoutSeconds)
+	}
+}
+
+func TestConfigEnrichmentEmpty(t *testing.T) {
+	v := testVault(t)
+
+	// No [enrichment] block — Config.Enrichment must be the zero value.
+	cfg, err := v.LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Enrichment != (EnrichmentConfig{}) {
+		t.Errorf("Enrichment should be zero value when no block configured, got %+v", cfg.Enrichment)
+	}
+	if cfg.Enrichment.Enabled {
+		t.Errorf("Enrichment.Enabled should be false by default, got true")
+	}
+}
+
+func TestCurrentVersionMinor(t *testing.T) {
+	if CurrentVersionMinor != 1 {
+		t.Errorf("CurrentVersionMinor = %d, want 1", CurrentVersionMinor)
+	}
+}
+
 func TestWriteScoringConfig_NewFile(t *testing.T) {
 	v := testVault(t)
 

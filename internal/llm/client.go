@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"time"
 )
@@ -104,69 +103,43 @@ func (c *Client) ChatCompletion(ctx context.Context, messages []Message) (*Respo
 	}
 
 	url := c.cfg.Endpoint + "/chat/completions"
-	backoff := c.initialBackoff
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			slog.Warn("llm: retrying", "attempt", attempt, "backoff", backoff)
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(backoff):
-			}
-			backoff *= 4
-		}
-
+	resp, err := retryWithBackoff(ctx, c.initialBackoff, func() (*http.Response, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 		if err != nil {
 			return nil, fmt.Errorf("llm: create request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-
-		resp, err := c.http.Do(req)
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			slog.Warn("llm: request failed", "err", err, "attempt", attempt)
-			if attempt < maxRetries {
-				continue
-			}
-			return nil, fmt.Errorf("llm: request failed after %d retries: %w", maxRetries, err)
-		}
-
-		respBody, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if readErr != nil {
-			return nil, fmt.Errorf("llm: read response: %w", readErr)
-		}
-
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			slog.Warn("llm: retryable status", "status", resp.StatusCode, "attempt", attempt)
-			if attempt < maxRetries {
-				continue
-			}
-			return nil, fmt.Errorf("llm: %d after %d retries: %s", resp.StatusCode, maxRetries, truncate(respBody, 200))
-		}
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, fmt.Errorf("llm: %d: %s", resp.StatusCode, truncate(respBody, 200))
-		}
-
-		var result Response
-		if err := json.Unmarshal(respBody, &result); err != nil {
-			return nil, fmt.Errorf("llm: unmarshal response: %w", err)
-		}
-		if len(result.Choices) == 0 {
-			return nil, fmt.Errorf("llm: response contains no choices")
-		}
-
-		return &result, nil
+		return c.http.Do(req)
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	// Should not reach here, but satisfy the compiler.
-	return nil, fmt.Errorf("llm: exhausted retries")
+	respBody, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("llm: read response: %w", readErr)
+	}
+
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		return nil, fmt.Errorf("llm: %d after %d retries: %s", resp.StatusCode, maxRetries, truncate(respBody, 200))
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("llm: %d: %s", resp.StatusCode, truncate(respBody, 200))
+	}
+
+	var result Response
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("llm: unmarshal response: %w", err)
+	}
+	if len(result.Choices) == 0 {
+		return nil, fmt.Errorf("llm: response contains no choices")
+	}
+
+	return &result, nil
 }
 
 // EstimateTokens returns a rough token count using the 4-chars-per-token heuristic.

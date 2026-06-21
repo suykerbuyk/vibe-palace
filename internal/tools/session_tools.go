@@ -36,6 +36,11 @@ type captureSessionParams struct {
 	// CWD is the working directory for writing a claim sentinel so
 	// the SessionEnd hook skips sessions already captured via MCP.
 	CWD string `json:"cwd,omitempty"`
+	// Enrich opts this capture into an LLM synthesis pass over the
+	// transcript (refining summary/decisions/threads/tag) when [enrichment]
+	// is enabled in config. Default false: agent-authored notes are already
+	// good, so enrichment is opt-in for the MCP path.
+	Enrich bool `json:"enrich,omitempty"`
 }
 
 type captureSessionResult struct {
@@ -100,6 +105,10 @@ var captureSessionSchema = json.RawMessage(`{
 		"cwd": {
 			"type": "string",
 			"description": "Working directory for claim sentinel (optional). When set with archive_session_id, writes a claim so the SessionEnd hook skips this session."
+		},
+		"enrich": {
+			"type": "boolean",
+			"description": "When true and [enrichment] is enabled in config, run an LLM synthesis pass over the transcript to refine summary/decisions/threads/tag. Default false."
 		}
 	},
 	"required": ["project", "summary"]
@@ -136,6 +145,20 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 			ArchiveSessionID: p.ArchiveSessionID,
 			ArchiveAdapter:   p.ArchiveAdapter,
 			CWD:              p.CWD,
+		}
+
+		// Opt-in LLM enrichment. Resolve an Enricher from config only when the
+		// caller asked for it; a nil sp.Enricher leaves the plain-note behavior
+		// unchanged. Every failure here is non-fatal — capture proceeds with the
+		// agent-authored note and no error is surfaced to the caller.
+		if p.Enrich {
+			if cfg, cfgErr := vault.LoadConfig(p.Project); cfgErr != nil {
+				slog.Warn("vp_capture_session: load config for enrichment failed", "err", cfgErr)
+			} else if e, eerr := capture.NewEnricherFromConfig(cfg.Enrichment, vault.Root); eerr != nil {
+				slog.Warn("vp_capture_session: enrichment disabled", "err", eerr)
+			} else {
+				sp.Enricher = e
+			}
 		}
 
 		result, err := capture.WriteSession(ctx, vault, indexer, sp)

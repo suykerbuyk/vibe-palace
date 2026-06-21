@@ -496,6 +496,102 @@ harvest param wiring (`project`/`cwd`/`dry_run`/`push`).
 
 ---
 
+## LLM-Enrichment-Synthesis Tests
+
+The `llm-enrichment-synthesis` epic replaces the heuristic SessionEnd
+auto-summary with a real LLM synthesis (summary/decisions/open-threads/tag),
+behind the opt-in `[enrichment]` config block, with a synchronous pass plus a
+host-local async queue + drain. See ADR-005
+(`doc/adr/005-llm-enrichment-synthesis.md`) for the design. These are pure-unit
+tests (no ONNX, run in `make test`) except where a live `httptest` LLM endpoint
+is noted; those still run in `make test` (no network — the fake server is
+in-process).
+
+### `internal/llm` — Completer, Anthropic, Shared Retry
+
+`retry_test.go` covers the `retryWithBackoff` helper extracted from
+`ChatCompletion`: success first try, retry on 429 and on 500 then success,
+retries exhausted, a non-retryable status returned immediately, context-cancel
+mid-backoff, and a transport error exhausting retries.
+
+`completer_test.go` covers `*Client.Complete` (system/user → first choice, error
+propagation), `Client.Name`, and the `NewCompleter` factory (OpenAI default,
+Anthropic selection, Anthropic constructor validation).
+
+`anthropic_test.go` covers the native Anthropic client against an `httptest`
+server: request shape (`x-api-key`/`anthropic-version` headers, body), the
+`max_tokens` override vs default, retry on 429, non-OK error, empty-content
+error, invalid-JSON response, and the default-endpoint constructor.
+
+### `internal/enrichment` — Extraction, Synthesis, Template
+
+`extract_test.go` — `ExtractPromptInput`: both content shapes (plain string +
+content-block array), tool-count tallying, file-path collection, message counts,
+and the 12000-char UserText/AssistantText truncation.
+
+`enrichment_test.go` — `Generate`/`Enricher`: happy path, fenced and bare-fenced
+JSON stripping, nil completer, completer error, the one-shot corrective reprompt
+(recovers / still fails / errors), `validateTag` and invalid-tag emptying, user
+prompt assembly, and the `Enricher` lifecycle (custom/empty system prompt, nil
+receiver, nil completer, zero-timeout default).
+
+`template_test.go` — `LoadSystemPrompt` precedence (empty vault, vault override,
+missing vault file falls back to embedded), prompt integrity, and a drift guard
+on the embedded `enrichment.md`.
+
+### `internal/storage` — RewriteSession and the Enrichment Config Block
+
+`sessions_test.go` adds `TestRewriteSessionOverwritesInPlace` (fixed-path
+overwrite, no iteration increment), `TestRewriteSessionByteIdenticalFraming`
+(shares `marshalSessionFile` framing with `WriteSession`), and
+`TestRewriteSessionInvalidArgs`.
+
+`config_test.go` adds `TestConfigEnrichment` and `TestConfigEnrichmentEmpty`
+(the `[enrichment]` block resolves into `EnrichmentConfig`; an absent block is
+the zero value) and `TestCurrentVersionMinor` (the additive 1.0 → 1.1 bump).
+
+### `internal/capture` — Enrichment Integration, Queue, Config Builder
+
+`session_test.go` adds the inline-enrichment cases:
+`TestWriteSessionEnrichmentSuccess` (summary/decisions/threads/tag overwritten,
+`enriched_by`/`enriched_at` set, `<!-- enriched -->` fence present),
+`TestWriteSessionEnrichmentFailureFallsBack` (LLM failure → plain note, no
+provenance, capture still succeeds), and `TestWriteSessionNilEnricherUnchanged`
+(nil enricher is byte-for-byte the old plain behavior), plus a direct
+`buildSessionBody` fence test (adding `EnrichedBy` wraps the plain body verbatim;
+clearing it restores the byte-identical plain body).
+
+`enrichqueue_test.go` — the host-local `<CWD>/.vibe-palace/enrichment-queue/`
+queue and drain: enqueue round-trip, drain happy path, the byte-identical
+inline-vs-drain convergence (and `EnrichedAt` preserved on re-drain), transient
+failure renames the claim back (no stranded `.processing`), an already-claimed
+`.processing` item is left untouched (glob invisibility), corrupt-item removal,
+nil-result enqueue, the `max` cap, the nil-enricher / empty-queue no-ops, and
+`TestWriteSessionEnqueueOnMiss` / `TestWriteSessionNoEnqueueWithoutCWD`.
+
+`enricher_config_test.go` — `NewEnricherFromConfig`: disabled config → nil
+enricher, missing `api_key_env` name, unset env var, Anthropic provider, and the
+OpenAI-compatible provider requiring (and accepting) a `base_url`.
+
+### `internal/tools` — `vp_capture_session` enrich Param (incl. live path)
+
+`session_tools_test.go` covers the opt-in `enrich` bool:
+`TestCaptureSessionEnrichDefaultPlain` (default false → plain note),
+`TestCaptureSessionEnrichDisabledConfig` (enrich requested but `[enrichment]`
+disabled → plain), and `TestCaptureSessionEnrichLive` — a full-stack pass that
+points a project `[enrichment]` config's `base_url` at an in-process `httptest`
+fake LLM endpoint and asserts the note is synthesized end to end.
+
+### `internal/hook` — SessionEnd Enrichment (`hook_test.go`)
+
+`TestRun_EnrichmentEnabled` drives the SessionEnd auto-capture path with
+`[enrichment]` enabled in the project config, pointing `base_url` at an
+`httptest` fake LLM endpoint, and asserts the hook synthesizes (and drains) end
+to end — the full-stack integration coverage for the hook side, mirroring the
+MCP-tool live path above.
+
+---
+
 ## MockEmbedder vs Real ONNX
 
 | Aspect | MockEmbedder | ONNX Embedder |

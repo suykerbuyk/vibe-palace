@@ -14,7 +14,7 @@
     {
       "name": "vp_capture_session",
       "mutating": true,
-      "schema_sha256": "6d26d8d9319212a278f2c7cccc156b39c64fc1ac640a3a73010282764797316f"
+      "schema_sha256": "b8c2005e5bbb95152c305934b4c737d5da80e52f5fbfb7ba5090c41ca2bd232b"
     },
     {
       "name": "vp_carried_add",
