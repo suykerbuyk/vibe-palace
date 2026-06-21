@@ -54,6 +54,23 @@ Write summaries that help a developer resuming this work tomorrow.
 
 ## Step 3: Update Resume
 
+**Prune before you append.** `resume.md` must stay a thin gateway — every
+wrap that only adds bloats it and taxes `vp_bootstrap_context` at session
+start. Before adding anything, remove what is now stale:
+
+- **Open Threads** — delete every thread that is now done or cancelled. Do
+  **not** leave a `~~struck-through~~` "DONE iter N" entry inline; move its
+  pointer to **Completed Plans** / **Cancelled Plans** and its narrative to
+  `iterations.md`. Open Threads holds only genuinely-open work.
+- **Project History** — if any existing row exceeds one line, compress it to
+  the `| # | Summary | Key Changes |` one-liner (full narrative already lives
+  in `iterations.md`).
+- **Current State** — keep to terse bullets + pointers (counts, what's live,
+  links to `doc/`); move per-iteration detail to `iterations.md`.
+
+Target: keep `resume.md` well under ~30 KB. If a section has grown into a
+diary, trim it this wrap.
+
 1. Read the current resume with `vp_get_resume`.
 2. Compare against the actual codebase state (files, tests,
    architecture).
@@ -81,6 +98,9 @@ files.
      `iterations.md` (Step 4). Do not paste task content here.
    - **Cancelled Plans** — when a plan is cancelled, add a row with the
      rejection reason and the `tasks/cancelled/<slug>.md` pointer.
+   - **Open Threads** — add genuinely-open follow-ups; **delete** entries
+     the moment they are done or cancelled (see *Prune before you append*
+     above) instead of striking them through.
    - **Known Issues** — add an entry when a standing issue is found;
      remove it when resolved.
 
