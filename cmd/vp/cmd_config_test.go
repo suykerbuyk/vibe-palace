@@ -605,6 +605,107 @@ func runSyncWithStdin(t *testing.T, input string, args []string) (stdout string,
 	return stdout, code
 }
 
+// syncRelockSetup inits a vault, then corrupts a single lock entry's
+// EmbeddedSHA to a stale value while leaving the materialized file bytes
+// untouched — the false-positive TemplateTree drift state. Unlike
+// syncPromptSetup it does NOT override templates.EmbeddedSHA: the heal
+// must work against the real embedded corpus.
+func syncRelockSetup(t *testing.T, embeddedRel string) (vaultPath, target, key, freshSHA string) {
+	t.Helper()
+	_ = initTestEnv(t, false)
+
+	projDir := t.TempDir()
+	markProjectDir(t, projDir)
+	vaultPath = filepath.Join(t.TempDir(), "vault")
+
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
+	if code := cmd.Run([]string{projDir, "--name", "relock-tpl", "--vault-path", vaultPath, "--no-git"}); code != cli.ExitOK {
+		t.Fatalf("init exit code = %d", code)
+	}
+
+	target = filepath.Join(vaultPath, "Templates", filepath.FromSlash(embeddedRel))
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("expected materialized %s: %v", target, err)
+	}
+
+	key = "Templates/" + embeddedRel
+	lock, err := templates.ReadLock(vaultPath)
+	if err != nil {
+		t.Fatalf("ReadLock: %v", err)
+	}
+	entry, ok := lock.Entries[key]
+	if !ok {
+		t.Fatalf("lock missing entry for %q", key)
+	}
+	freshSHA = entry.EmbeddedSHA
+	entry.EmbeddedSHA = strings.Repeat("0", 64)
+	lock.Entries[key] = entry
+	if err := templates.WriteLock(vaultPath, lock); err != nil {
+		t.Fatalf("WriteLock: %v", err)
+	}
+
+	cwd, _ := os.Getwd()
+	if err := os.Chdir(projDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	return vaultPath, target, key, freshSHA
+}
+
+func TestConfigSyncRelocksStaleLock(t *testing.T) {
+	vaultPath, target, key, freshSHA := syncRelockSetup(t, "commands/wrap.md")
+
+	before, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+
+	// --yes is non-interactive; the relock auto-applies regardless since it
+	// is never prompted. No stdin needed.
+	out, code := runSyncWithStdin(t, "", []string{
+		"--project-root", filepath.Dir(target), "--tier", "vault", "--yes",
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "relocked=1") {
+		t.Errorf("summary missing relocked=1:\n%s", out)
+	}
+
+	// File bytes unchanged; no .bak emitted.
+	after, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("re-read target: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("relock mutated file bytes")
+	}
+	if _, err := os.Stat(target + ".bak"); err == nil {
+		t.Error("relock unexpectedly created a .bak sidecar")
+	}
+
+	// Lock refreshed to the real embedded SHA.
+	healed, err := templates.ReadLock(vaultPath)
+	if err != nil {
+		t.Fatalf("ReadLock (healed): %v", err)
+	}
+	if healed.Entries[key].EmbeddedSHA != freshSHA {
+		t.Errorf("lock SHA = %q, want %q", healed.Entries[key].EmbeddedSHA, freshSHA)
+	}
+
+	// Idempotent: a second sync relocks nothing.
+	out2, code2 := runSyncWithStdin(t, "", []string{
+		"--project-root", filepath.Dir(target), "--tier", "vault", "--yes",
+	})
+	if code2 != cli.ExitOK {
+		t.Fatalf("second sync exit code = %d\n%s", code2, out2)
+	}
+	if !strings.Contains(out2, "relocked=0") {
+		t.Errorf("second sync should report relocked=0:\n%s", out2)
+	}
+}
+
 func TestConfigSyncTemplateDriftSkip(t *testing.T) {
 	vaultPath, target, userEdit := syncPromptSetup(t, "commands/wrap.md")
 

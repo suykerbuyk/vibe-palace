@@ -329,6 +329,26 @@ func (r *TemplateTreeReconciler) planMaterialize() (Plan, error) {
 				Target:  target,
 				Summary: key + " user-edited (embedded stable)",
 			})
+		case haveLock && vaultSHA == embSHA && vaultSHA != entry.EmbeddedSHA:
+			// Row 4b: vault already equals current embedded, but the lock
+			// baseline is stale (recorded an older embedded SHA). No content
+			// change is needed — only the lock entry must be refreshed. Heals
+			// the false-positive TemplateTree drift that vp check reports when
+			// a vault template was upgraded on disk out-of-band (e.g. a
+			// Surface-preflight rewrite committed without the reconciler
+			// refreshing its lock). Metadata-only: no file write, no .bak, no
+			// prompt. Must sit above Row 5, whose predicate is a superset that
+			// would otherwise swallow it.
+			actions = append(actions, Action{
+				Kind:    ActionRelock,
+				Target:  target,
+				Summary: "relock " + key + " (content current, lock stale)",
+				Details: []string{
+					"embedded_sha=" + embSHA,
+					"vault_sha=" + vaultSHA,
+					"lock_sha=" + entry.EmbeddedSHA,
+				},
+			})
 		case haveLock && vaultSHA != entry.EmbeddedSHA && embSHA != entry.EmbeddedSHA:
 			// Row 5: differs / differs → Prompt.
 			actions = append(actions, Action{
@@ -499,6 +519,26 @@ func (r *TemplateTreeReconciler) applyMaterialize(p Plan) (Report, error) {
 				WrittenAt:   now,
 			}
 			rep.Updated++
+		case ActionRelock:
+			// Metadata-only heal: the vault file already equals the current
+			// embedded bytes, so we refresh the stale lock entry without
+			// touching the file (no Write, no .bak, no surface stamp). The
+			// embedded SHA is derived identically to Create/Update so the
+			// next plan routes the key to Row 2 (Unchanged) — idempotent.
+			res, ok := byTarget[a.Target]
+			if !ok {
+				rep.Errors = append(rep.Errors, fmt.Errorf("relock: no embedded resource for %s", a.Target))
+				continue
+			}
+			embSHA, ok := templates.EmbeddedSHA(res.RelPath)
+			if !ok {
+				embSHA = res.SHA256
+			}
+			state.lock.Entries[r.vaultRelFromEmbedded(res.RelPath)] = templates.LockEntry{
+				EmbeddedSHA: embSHA,
+				WrittenAt:   now,
+			}
+			rep.Relocked++
 		case ActionUnchanged:
 			rep.Unchanged++
 		case ActionSkip:

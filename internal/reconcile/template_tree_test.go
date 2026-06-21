@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
 
@@ -118,6 +119,133 @@ func TestTemplateTree_MaterializeFreshVault(t *testing.T) {
 	if rep2.Created != 0 || rep2.Updated != 0 {
 		t.Errorf("re-run should not create/update: %+v", rep2)
 	}
+}
+
+// TestTemplateTree_RelocksStaleLock exercises the metadata-only heal:
+// when the vault file already equals the current embedded bytes but the
+// lock entry records a stale EmbeddedSHA, Plan emits ActionRelock and
+// Apply refreshes the lock without touching the file. This is the
+// false-positive TemplateTree drift that vp check otherwise nags on
+// forever. The test deliberately does NOT override templates.EmbeddedSHA
+// (it corrupts the lock instead) so checkMaterialize — which compares
+// res.SHA256 — and planMaterialize agree on the embedded SHA.
+func TestTemplateTree_RelocksStaleLock(t *testing.T) {
+	root := t.TempDir()
+	r := NewTemplateTree(root, "Templates", TemplateTreeSeed{Mode: TemplateModeMaterialize})
+
+	// Materialize a fresh vault so every template + lock entry exists.
+	plan, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if _, err := r.Apply(context.Background(), plan); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	const key = "Templates/commands/wrap.md"
+	target := filepath.Join(root, filepath.FromSlash(key))
+	before, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+
+	// Corrupt only the lock baseline for this one key to a stale SHA; the
+	// file bytes stay exactly as materialized.
+	lock, err := templates.ReadLock(root)
+	if err != nil {
+		t.Fatalf("ReadLock: %v", err)
+	}
+	entry, ok := lock.Entries[key]
+	if !ok {
+		t.Fatalf("lock missing entry for %q", key)
+	}
+	freshSHA := entry.EmbeddedSHA
+	entry.EmbeddedSHA = strings.Repeat("0", 64)
+	lock.Entries[key] = entry
+	if err := templates.WriteLock(root, lock); err != nil {
+		t.Fatalf("WriteLock: %v", err)
+	}
+
+	// Check now reports drift for this key.
+	if got := checkSummaryFor(r.Check(context.Background()), r.Name()+":"+key); got != "drift" {
+		t.Fatalf("pre-heal check summary = %q, want %q", got, "drift")
+	}
+
+	// Plan must classify it as a relock, not a prompt or update.
+	plan2, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan (stale lock): %v", err)
+	}
+	a, ok := findAction(plan2, filepath.Join("Templates", "commands", "wrap.md"))
+	if !ok {
+		t.Fatalf("no action for wrap.md")
+	}
+	if a.Kind != ActionRelock {
+		t.Fatalf("expected ActionRelock, got %s", a.Kind)
+	}
+
+	// Apply the heal.
+	rep, err := r.Apply(context.Background(), plan2)
+	if err != nil {
+		t.Fatalf("Apply (relock): %v", err)
+	}
+	if len(rep.Errors) > 0 {
+		t.Fatalf("Apply errors: %v", rep.Errors)
+	}
+	if rep.Relocked != 1 {
+		t.Errorf("Relocked = %d, want 1", rep.Relocked)
+	}
+
+	// File bytes are byte-identical — no content change.
+	after, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("re-read target: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("relock mutated file bytes:\n before=%q\n after =%q", before, after)
+	}
+	// No .bak sidecar was emitted.
+	if _, err := os.Stat(target + ".bak"); err == nil {
+		t.Error("relock unexpectedly created a .bak sidecar")
+	}
+
+	// Lock entry was refreshed back to the real embedded SHA.
+	healed, err := templates.ReadLock(root)
+	if err != nil {
+		t.Fatalf("ReadLock (healed): %v", err)
+	}
+	if healed.Entries[key].EmbeddedSHA != freshSHA {
+		t.Errorf("lock SHA = %q, want %q", healed.Entries[key].EmbeddedSHA, freshSHA)
+	}
+
+	// Check now reports in sync.
+	if got := checkSummaryFor(r.Check(context.Background()), r.Name()+":"+key); got != "in sync" {
+		t.Errorf("post-heal check summary = %q, want %q", got, "in sync")
+	}
+
+	// Idempotent: a second plan routes the key to Unchanged, not Relock.
+	plan3, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan (post-heal): %v", err)
+	}
+	a3, ok := findAction(plan3, filepath.Join("Templates", "commands", "wrap.md"))
+	if !ok {
+		t.Fatalf("no action for wrap.md post-heal")
+	}
+	if a3.Kind != ActionUnchanged {
+		t.Errorf("post-heal expected ActionUnchanged, got %s", a3.Kind)
+	}
+}
+
+// checkSummaryFor returns the Summary of the check.Result with the given
+// Name, or "" if absent.
+func checkSummaryFor(results []check.Result, name string) string {
+	for _, res := range results {
+		if res.Name == name {
+			return res.Summary
+		}
+	}
+	return ""
 }
 
 func TestTemplateTree_BinaryBumpedUserUntouched(t *testing.T) {
