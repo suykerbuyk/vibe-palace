@@ -103,6 +103,121 @@ func TestCommitAndPushPaths_EmptyPaths(t *testing.T) {
 	}
 }
 
+func TestCommitAndPushPaths_SkipsNeverExistedPath(t *testing.T) {
+	dir := initTestRepo(t)
+	writeFile(t, dir, "real.txt", "real")
+
+	res, err := CommitAndPushPaths(dir, "mixed", []string{"real.txt", "ghost.txt"}, false)
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if res.CommitSHA == "" {
+		t.Error("expected a commit SHA for the existing path")
+	}
+	if len(res.SkippedPaths) != 1 || res.SkippedPaths[0] != "ghost.txt" {
+		t.Errorf("expected SkippedPaths=[ghost.txt], got %#v", res.SkippedPaths)
+	}
+	// real.txt committed, clean working tree.
+	if status := gitRun(t, dir, "status", "--porcelain", "real.txt"); status != "" {
+		t.Errorf("real.txt still dirty: %q", status)
+	}
+}
+
+func TestCommitAndPushPaths_DeletionIsStagedNotSkipped(t *testing.T) {
+	dir := initTestRepo(t)
+	// Track a file, then delete it from the worktree.
+	writeFile(t, dir, "tracked.txt", "data")
+	gitRun(t, dir, "add", "tracked.txt")
+	gitRun(t, dir, "commit", "-m", "add tracked")
+	if err := os.Remove(filepath.Join(dir, "tracked.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := CommitAndPushPaths(dir, "remove tracked", []string{"tracked.txt"}, false)
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if len(res.SkippedPaths) != 0 {
+		t.Errorf("tracked-deleted path must NOT be skipped, got %#v", res.SkippedPaths)
+	}
+	if res.CommitSHA == "" {
+		t.Error("expected a commit SHA for the staged deletion")
+	}
+	// The deletion must be committed: file no longer tracked.
+	if tracked := gitRun(t, dir, "ls-files", "tracked.txt"); tracked != "" {
+		t.Errorf("deletion not committed, still tracked: %q", tracked)
+	}
+}
+
+func TestCommitAndPushPaths_MixedExistingDeletedAndGhost(t *testing.T) {
+	dir := initTestRepo(t)
+	// Tracked-then-deleted file.
+	writeFile(t, dir, "gone.txt", "bye")
+	gitRun(t, dir, "add", "gone.txt")
+	gitRun(t, dir, "commit", "-m", "add gone")
+	if err := os.Remove(filepath.Join(dir, "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	// Existing new file.
+	writeFile(t, dir, "here.txt", "present")
+
+	res, err := CommitAndPushPaths(dir, "mixed", []string{"here.txt", "gone.txt", "ghost.txt"}, false)
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if len(res.SkippedPaths) != 1 || res.SkippedPaths[0] != "ghost.txt" {
+		t.Errorf("expected only ghost.txt skipped, got %#v", res.SkippedPaths)
+	}
+	if res.CommitSHA == "" {
+		t.Error("expected a commit SHA")
+	}
+	// here.txt added, gone.txt deletion committed.
+	if tracked := gitRun(t, dir, "ls-files", "gone.txt"); tracked != "" {
+		t.Errorf("gone.txt deletion not committed: %q", tracked)
+	}
+	if tracked := gitRun(t, dir, "ls-files", "here.txt"); tracked == "" {
+		t.Error("here.txt should be committed/tracked")
+	}
+}
+
+func TestCommitAndPushPaths_AllFilteredOutIsNoOp(t *testing.T) {
+	dir := initTestRepo(t)
+	res, err := CommitAndPushPaths(dir, "all ghosts", []string{"ghost1.txt", "ghost2.txt"}, false)
+	if err != nil {
+		t.Fatalf("expected benign no-op, got error: %v", err)
+	}
+	if res == nil {
+		t.Fatal("expected non-nil PushResult for no-op")
+	}
+	if res.CommitSHA != "" {
+		t.Errorf("expected empty CommitSHA for no-op, got %q", res.CommitSHA)
+	}
+	if len(res.SkippedPaths) != 2 {
+		t.Errorf("expected 2 skipped paths, got %#v", res.SkippedPaths)
+	}
+}
+
+func TestCommitAndPushPaths_NeverWrittenMemoryDir(t *testing.T) {
+	// Regression for the iter-134 wrap failure: an explicit paths list that
+	// includes a never-written Projects/<slug>/memory dir must not fatal.
+	dir := initTestRepo(t)
+	writeFile(t, dir, "Projects/demo/resume.md", "resume\n")
+
+	res, err := CommitAndPushPaths(dir, "wrap", []string{
+		"Projects/demo/resume.md",
+		"Projects/demo/memory",
+	}, false)
+	if err != nil {
+		t.Fatalf("commit with absent memory dir must succeed, got: %v", err)
+	}
+	if res.CommitSHA == "" {
+		t.Error("expected the resume.md commit to land")
+	}
+	if len(res.SkippedPaths) != 1 || res.SkippedPaths[0] != "Projects/demo/memory" {
+		t.Errorf("expected memory dir skipped, got %#v", res.SkippedPaths)
+	}
+}
+
 func TestCommitAndPushPaths_LocalOnlyNoRemote(t *testing.T) {
 	dir := initTestRepo(t)
 	writeFile(t, dir, "a.txt", "alpha")

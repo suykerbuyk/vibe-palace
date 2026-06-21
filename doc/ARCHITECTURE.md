@@ -299,6 +299,16 @@ sets `PushDowngraded` (a remote-less vault is not the same as being offline). An
 empty swept set is a no-op — `CommitAndPushPaths` errors on zero paths, so it is
 never called, and the result carries `Committed=false` with Reported populated.
 
+Before staging, `CommitAndPushPaths` filters the supplied paths, dropping any that
+match nothing in **both** the worktree and the index. The filter is deletion-safe:
+a tracked-but-deleted path matches the index, so it is kept and its removal is
+staged; only a path absent from both is dropped. Dropped paths are reported in
+`PushResult.SkippedPaths`. A non-empty input that filters down to nothing is a
+benign no-op (returns an empty `CommitSHA` with the skips reported), distinct from
+the zero-**input** case, which still errors. This is what lets `/wrap` list a
+never-written `Projects/<slug>/memory/` dir unconditionally without one absent path
+making `git add` exit 128 and aborting the whole commit.
+
 ### Three layers
 
 | Layer | Entry point | Role |

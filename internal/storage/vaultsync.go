@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -24,6 +25,13 @@ var afterPushHook = func(remote string) {}
 type PushResult struct {
 	CommitSHA     string           // the commit SHA that was pushed (empty if nothing to commit)
 	RemoteResults map[string]error // per-remote push result (nil = success)
+	// SkippedPaths lists the supplied paths that were dropped before staging
+	// because they matched nothing in BOTH the worktree and the index (absent
+	// file that is not tracked). Tracked-but-deleted paths are NOT skipped —
+	// their deletion is staged. A populated entry here flags either a benign
+	// not-yet-created path (e.g. an empty Projects/<slug>/memory/) or a
+	// misspelled path the caller should notice.
+	SkippedPaths []string
 }
 
 // AllPushed returns true if all remotes were pushed successfully.
@@ -93,6 +101,18 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 
 	result := &PushResult{}
 
+	// Drop paths that match nothing in BOTH the worktree and the index; `git
+	// add -- <path>` fatals (exit 128) on such a no-match and would abort the
+	// whole commit for one absent path (e.g. a never-written memory/ dir).
+	// Tracked-but-deleted paths survive the filter so their deletion is staged.
+	keep, skipped := filterStageablePaths(vaultPath, paths)
+	result.SkippedPaths = skipped
+	if len(keep) == 0 {
+		// Non-empty input filtered to nothing: benign no-op, not an error.
+		// (The zero-input case errored at the guard above.)
+		return result, nil
+	}
+
 	if err := checkIdentity(vaultPath); err != nil {
 		return nil, err
 	}
@@ -112,9 +132,9 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 		}
 	}
 
-	// Stage only the supplied paths. Chunk under a conservative argv byte
+	// Stage only the surviving paths. Chunk under a conservative argv byte
 	// budget to stay clear of MAX_ARG_LEN ceilings.
-	if err := stageInBatches(vaultPath, paths); err != nil {
+	if err := stageInBatches(vaultPath, keep); err != nil {
 		return nil, fmt.Errorf("git add: %w", err)
 	}
 
@@ -269,6 +289,36 @@ func HasUncommittedChanges(vaultPath string, relPaths ...string) (bool, error) {
 		return false, fmt.Errorf("git status: %w", err)
 	}
 	return strings.TrimSpace(out) != "", nil
+}
+
+// filterStageablePaths partitions paths into those safe to `git add` (keep) and
+// those that would make `git add -- <path>` fatal because they match nothing in
+// BOTH the worktree and the index (skipped).
+//
+// The predicate is deletion-safe: `git add` only aborts (exit 128) when a path
+// is absent from the worktree AND not tracked. A tracked file deleted from the
+// worktree is NOT a no-match — `git add` correctly stages the deletion — so it
+// must be kept. A naive os.Stat filter would drop it and silently fail to commit
+// the removal. Keep path P when os.Lstat(P) succeeds (present in the worktree,
+// including as a symlink or directory) OR `git ls-files --error-unmatch -- P`
+// exits 0 (tracked, possibly deleted). Skip only when both fail.
+//
+// Paths are literal vault-relative strings; no glob matching is performed.
+func filterStageablePaths(vaultPath string, paths []string) (keep, skipped []string) {
+	for _, p := range paths {
+		if _, err := os.Lstat(filepath.Join(vaultPath, p)); err == nil {
+			keep = append(keep, p)
+			continue
+		}
+		// Absent from the worktree — keep only if git tracks it (a staged
+		// deletion is legitimate work; `git add` will record the removal).
+		if _, err := gitCmd(vaultPath, 10*time.Second, "ls-files", "--error-unmatch", "--", p); err == nil {
+			keep = append(keep, p)
+			continue
+		}
+		skipped = append(skipped, p)
+	}
+	return keep, skipped
 }
 
 // stageBatchByteBudget caps the per-`git add` argv path-byte budget at ~64 KB.

@@ -150,7 +150,10 @@ func VaultSyncTool(vault *storage.Vault) mcp.Tool {
 			"uncommitted changes (accidental-half-written-state guard). Pass an " +
 			"explicit paths list (plus message) to stage and commit ONLY those " +
 			"paths before pushing — other dirty files are left untouched; git " +
-			"add -A is never used.",
+			"add -A is never used. Supplied paths that match nothing in both the " +
+			"worktree and the index are skipped and reported in skipped_paths " +
+			"rather than aborting the commit; a tracked-but-deleted path is still " +
+			"staged so its removal is committed.",
 		Schema:  vaultSyncSchema,
 		Handler: vaultSyncHandler(vault),
 	}
@@ -202,6 +205,7 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 				"commit_sha":     res.CommitSHA,
 				"pushed":         doPush,
 				"remote_results": remoteResults,
+				"skipped_paths":  res.SkippedPaths,
 			}, nil
 		}
 

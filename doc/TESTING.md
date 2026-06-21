@@ -199,6 +199,26 @@ context resolver, and config into a single test fixture.
 | `IntegrationDispatchParentUnknownSubcommand` | cli → cmd/vp | No | `vp config bogus` routes the unknown token to stderr with `ExitUser` (1); guards against the pre-plan silent-ExitOK behavior |
 | `IntegrationDispatchKnownSubcommandHelp` | cli → cmd/vp | No | `vp hook install --help` still routes through the two-word lookup with exit 0 after the dispatch gate was added |
 
+### `internal/integration/` — Vault Commit Path Tolerance
+
+Regression for the iter-134 `/wrap` failure: a never-written
+`Projects/<slug>/memory/` dir in the `--paths` list made `git add` exit 128 and
+aborted the whole commit. `CommitAndPushPaths` now filters supplied paths absent
+from both worktree and index before staging, reporting them in `SkippedPaths`.
+
+| Test | Layers | ONNX? | What it proves |
+|------|--------|-------|----------------|
+| `VaultCommitTolerateMissingPath` | cli → storage → git | No | Full-stack `vp vault commit --paths Projects/demo/resume.md,Projects/demo/memory`: exits 0, prints `Skipped (absent): Projects/demo/memory` on stderr, commits `resume.md` (tracked + "wrap demo" at HEAD), and never creates/commits the absent memory path |
+
+Unit coverage in `internal/storage/vaultsync_test.go`:
+`TestCommitAndPushPaths_SkipsNeverExistedPath` (absent path skipped, real path
+committed), `TestCommitAndPushPaths_DeletionIsStagedNotSkipped` (tracked-but-
+deleted survives the filter, removal staged), `TestCommitAndPushPaths_MixedExistingDeletedAndGhost`
+(mixed set partitions correctly), `TestCommitAndPushPaths_AllFilteredOutIsNoOp`
+(non-empty input filtering to empty is a benign no-op, not the zero-input error),
+and `TestCommitAndPushPaths_NeverWrittenMemoryDir` (the iter-134 memory-dir
+regression at the unit boundary).
+
 ### `test/e2e/dispatch/` — Bash E2E (`make dispatch-e2e`)
 
 End-user-level verification that every parent-command exit-code
