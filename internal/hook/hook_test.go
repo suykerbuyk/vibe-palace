@@ -23,6 +23,7 @@ const fakeTranscript = `{"type":"permission-mode","permissionMode":"default","se
 func TestRun_HappyPath(t *testing.T) {
 	vaultRoot := t.TempDir()
 	cwd := t.TempDir()
+	writeVibeMarker(t, cwd)
 
 	// Create .vibe-palace dir for claim checks.
 	claimDir := filepath.Join(cwd, ".vibe-palace")
@@ -82,6 +83,7 @@ func TestRun_HappyPath(t *testing.T) {
 func TestRun_ClaimedSkip(t *testing.T) {
 	vaultRoot := t.TempDir()
 	cwd := t.TempDir()
+	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
 	if err := os.MkdirAll(claimDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -153,6 +155,7 @@ func TestRun_MissingCWD(t *testing.T) {
 func TestRun_ArchiveFailureNonFatal(t *testing.T) {
 	vaultRoot := t.TempDir()
 	cwd := t.TempDir()
+	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
 	if err := os.MkdirAll(claimDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -234,6 +237,7 @@ func fakeClaudeProject(t *testing.T) (transcriptPath, nativeDir string) {
 func TestRun_SessionEndHarvests(t *testing.T) {
 	vaultRoot := newGitVault(t)
 	cwd := t.TempDir()
+	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
 	if err := os.MkdirAll(claimDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -293,6 +297,7 @@ func testHarvestNoop(t *testing.T, event string) {
 	t.Helper()
 	vaultRoot := newGitVault(t)
 	cwd := t.TempDir()
+	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
 	if err := os.MkdirAll(claimDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -330,6 +335,7 @@ func testHarvestNoop(t *testing.T, event string) {
 func TestRun_StopDoesNotArchive(t *testing.T) {
 	vaultRoot := newGitVault(t)
 	cwd := t.TempDir()
+	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
 	if err := os.MkdirAll(claimDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -360,6 +366,7 @@ func TestRun_StopDoesNotArchive(t *testing.T) {
 func TestRun_PreCompactArchives(t *testing.T) {
 	vaultRoot := newGitVault(t)
 	cwd := t.TempDir()
+	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
 	if err := os.MkdirAll(claimDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -398,6 +405,7 @@ func countMD(t *testing.T, dir string) int {
 func TestRun_ClaimDecoupling_ArchiveAndHarvestRunWhenClaimed(t *testing.T) {
 	vaultRoot := newGitVault(t)
 	cwd := t.TempDir()
+	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
 	if err := os.MkdirAll(claimDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -442,6 +450,80 @@ func TestRun_ClaimDecoupling_ArchiveAndHarvestRunWhenClaimed(t *testing.T) {
 	}
 	if n := countMD(t, nativeDir); n != 0 {
 		t.Errorf("expected native memory dir drained when claimed, found %d *.md", n)
+	}
+}
+
+// TestRun_SkipsNonProjectCWD guards the regression where auto-capture misrouted
+// into a stray Projects/<basename>/ scaffold and wrote a claim sentinel when the
+// CWD was a non-project directory. The CWD may be a git repo (SignalGit), so the
+// gate keys strictly on the .vibe-palace.toml opt-in marker (SignalVibeConfig):
+// without it, Run must short-circuit before archive/claim — scaffolding nothing
+// and claiming nothing.
+func TestRun_SkipsNonProjectCWD(t *testing.T) {
+	assertSkipped := func(t *testing.T, vaultRoot, cwd, claimDir string) {
+		t.Helper()
+		res, err := Run(context.Background(), Payload{
+			SessionID:      "skip-session",
+			TranscriptPath: "",
+			CWD:            cwd,
+			HookEventName:  "SessionEnd",
+		}, RunOptions{
+			VaultRoot:   vaultRoot,
+			ProjectSlug: "test-project",
+			ClaimDir:    claimDir,
+		})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if !res.SkippedNoProject {
+			t.Error("expected SkippedNoProject=true for non-project CWD")
+		}
+		if res.ArchivePath != "" {
+			t.Errorf("expected empty ArchivePath, got %q", res.ArchivePath)
+		}
+		if res.SessionNoteID != "" {
+			t.Errorf("expected empty SessionNoteID, got %q", res.SessionNoteID)
+		}
+		// No stray Projects/ scaffold under the vault root.
+		if _, err := os.Stat(filepath.Join(vaultRoot, "Projects")); !os.IsNotExist(err) {
+			t.Errorf("expected no Projects/ scaffold under vault root, stat err=%v", err)
+		}
+		// No claim sentinel written into the (non-project) claim dir.
+		matches, err := filepath.Glob(filepath.Join(claimDir, "claimed-*"))
+		if err != nil {
+			t.Fatalf("glob claim dir: %v", err)
+		}
+		if len(matches) != 0 {
+			t.Errorf("expected no claim sentinel, found %v", matches)
+		}
+	}
+
+	// git repo, no marker — the general un-init'd code repo case.
+	t.Run("git repo without marker", func(t *testing.T) {
+		vaultRoot := t.TempDir()
+		cwd := t.TempDir()
+		initGitRepo(t, cwd, "init")
+		assertSkipped(t, vaultRoot, cwd, filepath.Join(cwd, ".vibe-palace"))
+	})
+
+	// CWD == vault root, where the vault root is itself the git repo — the exact
+	// self-referential scenario the bug misrouted into a stray scaffold.
+	t.Run("cwd is vault root", func(t *testing.T) {
+		vaultRoot := newGitVault(t)
+		assertSkipped(t, vaultRoot, vaultRoot, filepath.Join(vaultRoot, ".vibe-palace"))
+	})
+}
+
+// writeVibeMarker writes a minimal valid .vibe-palace.toml into dir so that
+// project.DetectSignal(dir) returns SignalVibeConfig — the opt-in marker the
+// hook capture gate requires. Distinct from cmd_init_test's markProjectDir,
+// which writes a go.mod (SignalGoMod) that does NOT satisfy the gate.
+func writeVibeMarker(t *testing.T, dir string) {
+	t.Helper()
+	marker := filepath.Join(dir, ".vibe-palace.toml")
+	body := "[project]\nname = \"test-project\"\n"
+	if err := os.WriteFile(marker, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

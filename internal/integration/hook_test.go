@@ -92,8 +92,15 @@ func TestHookPipeline_EndToEnd(t *testing.T) {
 	cwd := t.TempDir()
 	slug := "test-proj"
 
-	// Setup: git repo + vault project dirs + transcript.
+	// Setup: git repo + vault project dirs + transcript. The .vibe-palace.toml
+	// marker in the source cwd satisfies the hook's opt-in capture gate
+	// (project.DetectSignal == SignalVibeConfig); without it the SessionEnd hook
+	// would skip capture as a non-project directory.
 	initGitRepo(t, cwd)
+	if err := os.WriteFile(filepath.Join(cwd, ".vibe-palace.toml"),
+		[]byte("[project]\nname = \"test-proj\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	prepareVaultProject(t, vaultRoot, slug)
 	transcript1 := fakeTranscript(t, "hook-e2e-session")
 

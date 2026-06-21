@@ -13,6 +13,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/memory"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -36,13 +37,14 @@ type RunOptions struct {
 
 // Result reports what the hook run produced.
 type Result struct {
-	Event          string         `json:"event"`
-	ArchiveSkipped bool           `json:"archive_skipped"`
-	ArchivePath    string         `json:"archive_path,omitempty"`
-	SessionNoteID  string         `json:"session_note_id,omitempty"`
-	ClaimedSkip    bool           `json:"claimed_skip"`
-	MemoryHarvest  *memory.Result `json:"memory_harvest,omitempty"`
-	Error          string         `json:"error,omitempty"`
+	Event            string         `json:"event"`
+	SkippedNoProject bool           `json:"skipped_no_project"`
+	ArchiveSkipped   bool           `json:"archive_skipped"`
+	ArchivePath      string         `json:"archive_path,omitempty"`
+	SessionNoteID    string         `json:"session_note_id,omitempty"`
+	ClaimedSkip      bool           `json:"claimed_skip"`
+	MemoryHarvest    *memory.Result `json:"memory_harvest,omitempty"`
+	Error            string         `json:"error,omitempty"`
 }
 
 // ValidEvents are the Claude Code hook events we handle.
@@ -53,11 +55,12 @@ var ValidEvents = map[string]bool{
 }
 
 // Run executes the hook pipeline. Ordering (claim-decoupling): validate →
-// resolve claimDir → archive (ALWAYS, non-fatal) → memory harvest (SessionEnd
-// only, non-fatal) → claim-gated session capture (auto-summary, transcript
-// read, WriteSession, WriteClaim). Archive and harvest run regardless of claim
-// state — both are idempotent housekeeping; only the rich session capture is
-// gated by the claim sentinel.
+// opt-in gate (.vibe-palace.toml signal) → resolve claimDir → archive (ALWAYS,
+// non-fatal) → memory harvest (SessionEnd only, non-fatal) → claim-gated session
+// capture (auto-summary, transcript read, WriteSession, WriteClaim). Archive and
+// harvest run regardless of claim state — both are idempotent housekeeping; only
+// the rich session capture is gated by the claim sentinel. The opt-in gate runs
+// before everything so a non-project CWD scaffolds nothing and claims nothing.
 func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error) {
 	// 1. Validate required fields.
 	if payload.SessionID == "" {
@@ -72,13 +75,24 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 
 	res := &Result{Event: payload.HookEventName}
 
-	// 2. Resolve claim directory.
+	// 2. Opt-in gate. Auto-capture only into directories carrying an explicit
+	// .vibe-palace.toml signal (cwd or a parent). Without it the CWD is not a
+	// vp-managed project — e.g. the vault root (itself a git repo) or an
+	// un-init'd code repo — and capturing would scaffold a stray
+	// Projects/<basename>/ tree and write a claim sentinel into a non-project dir.
+	if project.DetectSignal(payload.CWD) != project.SignalVibeConfig {
+		res.SkippedNoProject = true
+		slog.Info("hook: skipping capture — no .vibe-palace.toml project signal", "cwd", payload.CWD)
+		return res, nil
+	}
+
+	// 3. Resolve claim directory.
 	claimDir := opts.ClaimDir
 	if claimDir == "" {
 		claimDir = filepath.Join(payload.CWD, ".vibe-palace")
 	}
 
-	// 3. Archive transcript at the "preserve now" events — SessionEnd (the
+	// 4. Archive transcript at the "preserve now" events — SessionEnd (the
 	// complete transcript) and PreCompact (before compaction discards history) —
 	// but NOT on Stop. Stop fires once per assistant turn, and archive's dedup
 	// keys on the transcript content hash, which grows every turn; archiving on
@@ -105,7 +119,7 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 		}
 	}
 
-	// 4. Memory harvest — SessionEnd only, and only when a transcript path is
+	// 5. Memory harvest — SessionEnd only, and only when a transcript path is
 	// known (the native memory dir is resolved from it). Runs before the claim
 	// gate so it happens once at SessionEnd regardless of claim state; it is
 	// idempotent housekeeping (a drained native dir is simply missing/empty next
@@ -130,17 +144,17 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 		}
 	}
 
-	// 5. Check claim sentinel (idempotency). The claim gates ONLY the rich
+	// 6. Check claim sentinel (idempotency). The claim gates ONLY the rich
 	// session capture below — archive and harvest above already ran.
 	if IsClaimed(claimDir, payload.SessionID) {
 		res.ClaimedSkip = true
 		return res, nil
 	}
 
-	// 6. Build auto summary from git log.
+	// 7. Build auto summary from git log.
 	summary := AutoSummary(payload.CWD)
 
-	// 7. Read transcript for friction analysis (best-effort).
+	// 8. Read transcript for friction analysis (best-effort).
 	transcript := ""
 	if payload.TranscriptPath != "" {
 		if data, err := os.ReadFile(payload.TranscriptPath); err == nil {
@@ -150,7 +164,7 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 		}
 	}
 
-	// 8. Open vault and capture session.
+	// 9. Open vault and capture session.
 	vault := storage.NewVault(opts.VaultRoot)
 	sessionResult, err := capture.WriteSession(ctx, vault, nil, capture.SessionParams{
 		Project:          opts.ProjectSlug,

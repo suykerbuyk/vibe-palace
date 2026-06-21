@@ -900,6 +900,9 @@ Sessions are captured via two paths, both using the shared pipeline
   `git log`, runs friction analysis, but defers transcript indexing
   (`needs_indexing: true` in frontmatter). Skips if a claim sentinel exists.
 
+`vp hook` auto-capture requires a `.vibe-palace.toml` (run `vp init`); sessions
+in un-init'd directories are intentionally skipped.
+
 ```
 1. Write session markdown to {vault}/Projects/{project}/sessions/
    - YAML frontmatter: date, tag, friction, decisions, files_changed
