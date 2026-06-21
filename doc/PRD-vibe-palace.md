@@ -689,11 +689,26 @@ Drive `/wrap`'s readiness and bookkeeping from anchors under
 | `vp_stamp_iter` | project?, iteration? | Write the current iteration number to `.vibe-palace/last-iter` and snapshot the task set |
 | `vp_preflight_wrap` | project? | Readiness probe: surface compatibility plus required-anchor and shape checks before a wrap |
 
-**Total: 57 implemented (Phases 1–10, 12–18, plus the restore-mcp-vault-surface
-write/wrap surface)** — 39 prior tools plus 18 new ones across vault CRUD (8),
-commit lifecycle (1), resume surgical edits (6), and wrap state (3). (vs
-VibeVault's 16 + MemPalace's 19 = 35, with dedup, consolidation, and the
-Phase 12–18 + write-surface additions.)
+### 6.12 Learnings Tools (cross-project, read-only)
+
+> **2 of 2 implemented.**
+
+Read-only access to vault-wide cross-project "learnings" — curated lessons
+stored as flat-frontmatter markdown under `Knowledge/learnings/`, shared across
+every project (not project-scoped). Ported from VibeVault; like VibeVault, there
+is no create/add path — learnings are authored out-of-band and only read here.
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `vp_list_learnings` | filter_type? (user\|feedback\|reference) | List learning metadata (slug, name, description, type), sorted by slug; optional type filter |
+| `vp_get_learning` | slug (req), include_content? | Fetch a single learning. Always returns `content_uri` (`vibe-palace://learning/<slug>`) + `content_size`; tri-state `include_content` (nil/true ⇒ inline body; false + large body ⇒ excerpt + content_uri). Unknown slug errors with the available slugs listed |
+
+**Total: 59 implemented (Phases 1–10, 12–18, plus the restore-mcp-vault-surface
+write/wrap surface and the cross-project learnings read tools)** — 39 prior
+tools plus 20 new ones across vault CRUD (8), commit lifecycle (1), resume
+surgical edits (6), wrap state (3), and learnings (2). (vs VibeVault's 16 +
+MemPalace's 19 = 35, with dedup, consolidation, and the Phase 12–18 +
+write-surface + learnings additions.)
 
 ---
 

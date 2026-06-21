@@ -358,7 +358,7 @@ On dispatch, the registry validates incoming params against the compiled
 schema before calling the handler. Handlers extract the vault from context
 and operate on storage directly.
 
-### 58 MCP Tools
+### 60 MCP Tools
 
 | Tool | Source File | Category |
 |------|-----------|----------|
@@ -395,6 +395,8 @@ and operate on storage directly.
 | `vp_vault_tidy` | system_tools.go | Vault |
 | `vp_search` | search_tools.go | Search |
 | `vp_search_cross_project` | search_tools.go | Search |
+| `vp_list_learnings` | learning_tools.go | Learnings |
+| `vp_get_learning` | learning_tools.go | Learnings |
 | `vp_capture_session` | session_tools.go | Session |
 | `vp_get_project_context` | session_query_tools.go | Session |
 | `vp_search_sessions` | session_query_tools.go | Session |

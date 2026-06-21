@@ -67,6 +67,11 @@
       "schema_sha256": "6b612037cde8e0dd7a7971428231651778474d071df6edadc3d991968d3ebb76"
     },
     {
+      "name": "vp_get_learning",
+      "mutating": false,
+      "schema_sha256": "ad978f9f297e6b37fbcf875c1aef9e54f84d4241254b739b9b67e7b531168ced"
+    },
+    {
       "name": "vp_get_project_context",
       "mutating": false,
       "schema_sha256": "cdf5f09a69dee085c33751ab6184a85dd07f24f975818edb13e0a4dc4daf5b3d"
@@ -145,6 +150,11 @@
       "name": "vp_list_commands",
       "mutating": false,
       "schema_sha256": "e9a9384042af8c5148fb119ce12f2bcc47bc84684f1a9f299a5b60cb607e2bca"
+    },
+    {
+      "name": "vp_list_learnings",
+      "mutating": false,
+      "schema_sha256": "dc5786e11dab6ab98bec3f17ecacbe9707a82139042f4bb849ce8eee66254dd9"
     },
     {
       "name": "vp_list_projects",

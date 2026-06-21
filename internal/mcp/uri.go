@@ -17,6 +17,7 @@ const (
 	SkillURITemplate     = ResourceScheme + "skill/{project}/{name}"
 	SessionURITemplate   = ResourceScheme + "session/{project}/{session_id}"
 	KnowledgeURITemplate = ResourceScheme + "knowledge/{project}"
+	LearningURITemplate  = ResourceScheme + "learning/{slug}"
 )
 
 // TaskURI builds the canonical URI for a task body.
@@ -52,4 +53,9 @@ func SessionURI(project, id string) string {
 // KnowledgeURI builds the canonical URI for a project's knowledge body.
 func KnowledgeURI(project string) string {
 	return ResourceScheme + "knowledge/" + project
+}
+
+// LearningURI builds the canonical URI for a vault-wide learning body.
+func LearningURI(slug string) string {
+	return ResourceScheme + "learning/" + slug
 }

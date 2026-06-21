@@ -124,6 +124,23 @@ var resourceTypes = []resourceType{
 			return string(data), nil
 		},
 	},
+	{
+		name: "learning", template: mcp.LearningURITemplate, vars: []string{"slug"},
+		resolve: func(v map[string]string, _ *vpctx.Resolver, vault *storage.Vault) (string, error) {
+			// Resolve through GetLearning so the resource body is byte-identical
+			// to vp_get_learning's Content (the parsed body, frontmatter
+			// stripped). The content-URI idiom requires content_uri to address
+			// exactly the bytes the tool reports as content/content_size — the
+			// task row resolves through vault.GetTask for the same reason. An
+			// unknown slug surfaces GetLearning's not-found error (which lists
+			// the available slugs), mirroring the task resource.
+			learning, err := vault.GetLearning(v["slug"])
+			if err != nil {
+				return "", err
+			}
+			return learning.Content, nil
+		},
+	},
 }
 
 func resourceTypeByName(name string) *resourceType {

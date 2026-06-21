@@ -46,6 +46,7 @@ func resourceFixture(t *testing.T) (*vpctx.Resolver, *storage.Vault, map[string]
 		"skill":     "# Skill\n\nskill body without frontmatter\n",
 		"session":   "# Session\n\nsession body\n",
 		"knowledge": "# Knowledge\n\nproject knowledge\n",
+		"learning":  "# Learning\n\nvault-wide learning\n",
 	}
 
 	writeFile(t, filepath.Join(projDir, "tasks", "fix-bug.md"), bodies["task"])
@@ -58,6 +59,13 @@ func resourceFixture(t *testing.T) (*vpctx.Resolver, *storage.Vault, map[string]
 	writeFile(t, filepath.Join(projDir, "sessions", "2026-06-20-01.md"),
 		"---\ntitle: Demo session\niteration: 1\n---\n"+bodies["session"])
 	writeFile(t, filepath.Join(projDir, "knowledge.md"), bodies["knowledge"])
+	// Learnings are vault-wide, not per-project: they live under
+	// Knowledge/learnings/<slug>.md, not beneath Projects/<p>/. They carry YAML
+	// frontmatter; the learning resource resolves through GetLearning and hands
+	// back only the parsed body that follows it (byte-identical to
+	// vp_get_learning's content), so bodies["learning"] is that body.
+	writeFile(t, filepath.Join(root, "Knowledge", "learnings", "cache-invalidation.md"),
+		"---\nname: Cache Invalidation\ndescription: vault-wide learning\ntype: reference\n---\n"+bodies["learning"])
 
 	return vpctx.NewResolver(root), storage.NewVault(root), bodies
 }
@@ -79,6 +87,7 @@ func TestResolveURIHappyPath(t *testing.T) {
 		{"skill", mcp.SkillURI("demo", "analyze"), bodies["skill"]},
 		{"session", mcp.SessionURI("demo", "2026-06-20-01"), bodies["session"]},
 		{"knowledge", mcp.KnowledgeURI("demo"), bodies["knowledge"]},
+		{"learning", mcp.LearningURI("cache-invalidation"), bodies["learning"]},
 	}
 
 	for _, tc := range cases {
@@ -109,6 +118,10 @@ func TestResolveURINotFound(t *testing.T) {
 		mcp.CommandURI("empty", "ghost"),
 		mcp.SkillURI("empty", "ghost"),
 		mcp.SessionURI("demo", "2099-01-01-09"),
+		// Learning resolves through GetLearning, so an unknown slug is a hard
+		// not-found error (listing the available slugs), mirroring the task
+		// resource — not the benign empty-body state that knowledge uses.
+		mcp.LearningURI("no-such-learning"),
 	}
 	for _, uri := range uris {
 		if _, _, err := ResolveURI(uri, resolver, vault); err == nil {
@@ -161,6 +174,7 @@ func TestResolveURITraversalRejected(t *testing.T) {
 		{"skill name ..", mcp.ResourceScheme + "skill/demo/.."},
 		{"session id ..", mcp.ResourceScheme + "session/demo/.."},
 		{"knowledge project ..", mcp.ResourceScheme + "knowledge/.."},
+		{"learning slug ..", mcp.ResourceScheme + "learning/.."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -243,6 +257,7 @@ func TestRegisterResourcesRoundTrip(t *testing.T) {
 		{"skill", mcp.SkillURI("demo", "analyze"), bodies["skill"]},
 		{"session", mcp.SessionURI("demo", "2026-06-20-01"), bodies["session"]},
 		{"knowledge", mcp.KnowledgeURI("demo"), bodies["knowledge"]},
+		{"learning", mcp.LearningURI("cache-invalidation"), bodies["learning"]},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
