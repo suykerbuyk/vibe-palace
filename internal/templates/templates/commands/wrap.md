@@ -107,11 +107,13 @@ table in `resume.md` (Step 3.5).
 There are **two** `commit.msg` copies and **both** must be kept in
 sync:
 
-1. **Vault archive** — canonical; survives across machines via vault
-   git sync:
+1. **Vault archive** — canonical; **committed** to the vault repo each
+   wrap and synced across machines. `git log -p` over it is the
+   permanent history of every commit message (future MCP data-mining):
    `<vault_path>/Projects/<project>/commit.msg`
-2. **Project-root working copy** — gitignored; the path that
-   `git commit -F commit.msg` reads when the user runs it:
+2. **Project-root working copy** — gitignored, host-local scratch; the
+   path that `git commit -F commit.msg` reads when the user runs it,
+   consumed once and never committed:
    `<project_root>/commit.msg`
 
 ### Workflow
@@ -126,7 +128,11 @@ sync:
    `git commit -F commit.msg` would fall back to a stale version or
    fail.
 
-Neither copy is repo-tracked. **Do not stage either of them.**
+The **project-root** copy is host-local scratch — never stage or
+commit it in the project repo. The **vault** copy is the committed
+archive: Step 9 syncs it (`vp_vault_sync` with the vault `commit.msg`
+among its paths), so each wrap records the new message in vault git
+history.
 
 **Failure mode to avoid:** while editing vault files in sequence
 (resume.md, iterations.md, tasks/done/) the vault's `commit.msg`
@@ -168,6 +174,11 @@ remote in one call. If a push fails for one remote, it continues to
 the next and surfaces the error at the end. If all pushes fail
 (no remote, network error), warn and proceed — local state is still
 valid.
+
+Include `Projects/<slug>/commit.msg` among the synced paths — the vault
+copy is the committed archive (Step 7), so each wrap records the new
+commit message in vault git history. (The project-root copy stays
+gitignored and is never synced.)
 
 Include `Projects/<slug>/memory/` among the synced paths — AI memory is
 user-persistent content like `resume.md` and `tasks/`, so wrap commits it

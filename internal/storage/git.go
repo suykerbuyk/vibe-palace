@@ -27,10 +27,17 @@ var CanonicalGitignorePatterns = []string{
 	"*.new",
 	"# Per-path advisory write locks (vaultlock) — host-local, never synced",
 	".vp-locks/",
-	"# Wrap commit-message scratch (Projects/<slug>/commit.msg) — host-local handoff",
-	"# regenerated each /wrap, never synced; matches at any depth",
-	"commit.msg",
 }
+
+// NOTE: the vault deliberately does NOT ignore Projects/<slug>/commit.msg.
+// The /wrap two-copy workflow keeps two copies: the project-root copy is
+// host-local scratch (ignored by CanonicalProjectGitignorePatterns) that
+// `git commit -F commit.msg` consumes once and never commits, while the
+// vault copy is the canonical, COMMITTED archive — each wrap overwrites and
+// commits it, so `git log -p Projects/<slug>/commit.msg` is the permanent
+// history of every commit message. An earlier change (a0477e4) wrongly added
+// a depth-agnostic `commit.msg` rule here, ignoring the vault archive too;
+// that was reverted.
 
 // CanonicalProjectGitignorePatterns is the set of .gitignore lines that
 // vibe-palace owns in a *consuming project's* repository root. These are

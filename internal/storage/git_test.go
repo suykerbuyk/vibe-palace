@@ -74,24 +74,20 @@ func TestReconcileVaultGitignore_FreshFile(t *testing.T) {
 	}
 }
 
-// TestReconcileVaultGitignore_CommitMsg pins the canonical handling of the
-// wrap two-copy commit.msg scratch: the vault gitignore must carry a
-// depth-agnostic `commit.msg` rule (no leading slash) so every
-// Projects/<slug>/commit.msg is ignored automatically — including on a fresh
-// vault before the first wrap ever writes one. Regression guard for the gap
-// where the consuming-project set ignored /commit.msg but the vault set did not.
-func TestReconcileVaultGitignore_CommitMsg(t *testing.T) {
-	found := false
+// TestReconcileVaultGitignore_KeepsCommitMsgArchive guards that the vault
+// canonical set does NOT ignore commit.msg. The /wrap two-copy workflow keeps
+// the vault copy (Projects/<slug>/commit.msg) as the canonical, COMMITTED
+// archive — `git log -p` over it is the permanent history of every commit
+// message — while only the project-root copy is host-local scratch (ignored by
+// CanonicalProjectGitignorePatterns). a0477e4 wrongly added a depth-agnostic
+// `commit.msg` rule here, ignoring the vault archive too; this is the
+// regression guard against re-introducing it. (The project-root copy's
+// /commit.msg rule is asserted separately for CanonicalProjectGitignorePatterns.)
+func TestReconcileVaultGitignore_KeepsCommitMsgArchive(t *testing.T) {
 	for _, p := range CanonicalGitignorePatterns {
-		if p == "commit.msg" {
-			found = true
+		if p == "commit.msg" || p == "/commit.msg" {
+			t.Errorf("vault canonical set must NOT ignore the committed commit.msg archive; found %q", p)
 		}
-		if p == "/commit.msg" {
-			t.Errorf("vault commit.msg rule must be depth-agnostic (no leading slash); got %q", p)
-		}
-	}
-	if !found {
-		t.Fatalf("CanonicalGitignorePatterns missing depth-agnostic \"commit.msg\" rule")
 	}
 
 	dir := t.TempDir()
@@ -102,9 +98,10 @@ func TestReconcileVaultGitignore_CommitMsg(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read .gitignore: %v", err)
 	}
-	// The line must appear exactly as `commit.msg` (its own line), not anchored.
-	if !strings.Contains(string(data), "\ncommit.msg\n") && !strings.HasSuffix(string(data), "\ncommit.msg\n") {
-		t.Errorf("reconciled vault .gitignore missing bare `commit.msg` line:\n%s", data)
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "commit.msg" {
+			t.Errorf("reconciled vault .gitignore must not contain a `commit.msg` rule:\n%s", data)
+		}
 	}
 }
 

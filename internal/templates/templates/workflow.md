@@ -12,8 +12,10 @@
 
 - **Never commit without explicit human permission.** Stage files and update
   commit.msg freely, but the actual git commit requires human approval.
-- **Never commit AI context files.** CLAUDE.md, commit.msg, and anything
-  under .claude/ are local-only.
+- **Never commit AI context files into the project repo.** CLAUDE.md, the
+  project-root `commit.msg`, and anything under .claude/ are host-local only.
+  (The *vault* copy of `commit.msg` is the exception: it is committed to the
+  vault repo each wrap as the canonical commit-message archive.)
 - **Git commit messages are the project's history.** Write them to be clear,
   detailed, and self-sufficient.
 
