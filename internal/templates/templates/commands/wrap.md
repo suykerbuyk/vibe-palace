@@ -56,20 +56,33 @@ Write summaries that help a developer resuming this work tomorrow.
 
 **Prune before you append.** `resume.md` must stay a thin gateway — every
 wrap that only adds bloats it and taxes `vp_bootstrap_context` at session
-start. Before adding anything, remove what is now stale:
+start. The full record already lives elsewhere (`iterations.md`,
+`tasks/done/`, `tasks/cancelled/`), so the gateway's growing sections are
+**bounded** — trim them *every* wrap, BEFORE adding anything new. Compressing
+rows is not enough; these tables are append-only by nature and must be
+**capped**, or they regrow indefinitely:
 
-- **Open Threads** — delete every thread that is now done or cancelled. Do
-  **not** leave a `~~struck-through~~` "DONE iter N" entry inline; move its
-  pointer to **Completed Plans** / **Cancelled Plans** and its narrative to
+- **Project History** — keep only the **most recent 15 rows**. Delete older
+  rows outright; their full narrative is already in `iterations.md`. Compress
+  any surviving row that spills past one line to the
+  `| # | Summary | Key Changes |` one-liner.
+- **Completed Plans** — keep only the **most recent ~12 rows**, each a true
+  **one line** (`| Task | Iteration | File |`). If a cell has grown into a
+  paragraph, cut it to the slug plus a few words — the full content is in
+  `tasks/done/<slug>.md`. Delete older rows; the directory is the index.
+- **Known Issues** — **delete** an entry the moment it is resolved. NEVER keep
+  a "RESOLVED iter N …" narrative inline; that is history, and history lives
+  in `iterations.md`. This section holds only *currently-open* issues.
+- **Open Threads** — delete every thread now done or cancelled. Do **not**
+  leave a `~~struck-through~~` "DONE iter N" entry inline; move its pointer to
+  **Completed Plans** / **Cancelled Plans** and its narrative to
   `iterations.md`. Open Threads holds only genuinely-open work.
-- **Project History** — if any existing row exceeds one line, compress it to
-  the `| # | Summary | Key Changes |` one-liner (full narrative already lives
-  in `iterations.md`).
 - **Current State** — keep to terse bullets + pointers (counts, what's live,
   links to `doc/`); move per-iteration detail to `iterations.md`.
 
-Target: keep `resume.md` well under ~30 KB. If a section has grown into a
-diary, trim it this wrap.
+Target: keep `resume.md` **under ~25 KB**. Pruning to the caps above is not
+optional and is never deferred to "later" — a wrap that adds a row without
+trimming past-cap rows is the bug this section exists to prevent.
 
 1. Read the current resume with `vp_get_resume`.
 2. Compare against the actual codebase state (files, tests,
@@ -89,20 +102,23 @@ files.
    the most salient artifacts. Keep the whole row to a single line of a
    few hundred characters at most. **Do not paste the iteration narrative
    into this table** — that is what bloats `resume.md` and taxes every
-   `vp_bootstrap_context` at session start.
+   `vp_bootstrap_context` at session start. After adding the row, trim the
+   table back to the **15-row cap** (see *Prune before you append*).
 5. Keep the gateway sections current (all in `resume.md`, all terse):
    - **Quick Reference** — update only if build/test/run commands changed.
    - **Completed Plans** — when a task is retired (Step 6), add a one-line
      row `| Task | Iteration | File |` pointing at `tasks/done/<slug>.md`.
      The full task content moves to `tasks/done/`; the narrative goes to
-     `iterations.md` (Step 4). Do not paste task content here.
+     `iterations.md` (Step 4). Do not paste task content here. Then trim the
+     table back to the **~12-row cap** (see *Prune before you append*).
    - **Cancelled Plans** — when a plan is cancelled, add a row with the
      rejection reason and the `tasks/cancelled/<slug>.md` pointer.
    - **Open Threads** — add genuinely-open follow-ups; **delete** entries
      the moment they are done or cancelled (see *Prune before you append*
      above) instead of striking them through.
    - **Known Issues** — add an entry when a standing issue is found;
-     remove it when resolved.
+     **delete** it the moment it is resolved (do not keep a "RESOLVED" note
+     inline — that history belongs in `iterations.md`).
 
 ## Step 4: Append Iteration Narrative
 
