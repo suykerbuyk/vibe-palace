@@ -27,6 +27,9 @@ var CanonicalGitignorePatterns = []string{
 	"*.new",
 	"# Per-path advisory write locks (vaultlock) — host-local, never synced",
 	".vp-locks/",
+	"# Wrap commit-message scratch (Projects/<slug>/commit.msg) — host-local handoff",
+	"# regenerated each /wrap, never synced; matches at any depth",
+	"commit.msg",
 }
 
 // CanonicalProjectGitignorePatterns is the set of .gitignore lines that

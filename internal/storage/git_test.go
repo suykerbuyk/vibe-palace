@@ -74,6 +74,40 @@ func TestReconcileVaultGitignore_FreshFile(t *testing.T) {
 	}
 }
 
+// TestReconcileVaultGitignore_CommitMsg pins the canonical handling of the
+// wrap two-copy commit.msg scratch: the vault gitignore must carry a
+// depth-agnostic `commit.msg` rule (no leading slash) so every
+// Projects/<slug>/commit.msg is ignored automatically — including on a fresh
+// vault before the first wrap ever writes one. Regression guard for the gap
+// where the consuming-project set ignored /commit.msg but the vault set did not.
+func TestReconcileVaultGitignore_CommitMsg(t *testing.T) {
+	found := false
+	for _, p := range CanonicalGitignorePatterns {
+		if p == "commit.msg" {
+			found = true
+		}
+		if p == "/commit.msg" {
+			t.Errorf("vault commit.msg rule must be depth-agnostic (no leading slash); got %q", p)
+		}
+	}
+	if !found {
+		t.Fatalf("CanonicalGitignorePatterns missing depth-agnostic \"commit.msg\" rule")
+	}
+
+	dir := t.TempDir()
+	if err := ReconcileVaultGitignore(dir); err != nil {
+		t.Fatalf("ReconcileVaultGitignore: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	// The line must appear exactly as `commit.msg` (its own line), not anchored.
+	if !strings.Contains(string(data), "\ncommit.msg\n") && !strings.HasSuffix(string(data), "\ncommit.msg\n") {
+		t.Errorf("reconciled vault .gitignore missing bare `commit.msg` line:\n%s", data)
+	}
+}
+
 func TestReconcileVaultGitignore_Idempotent(t *testing.T) {
 	dir := t.TempDir()
 	if err := ReconcileVaultGitignore(dir); err != nil {
