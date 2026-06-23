@@ -568,6 +568,24 @@ The dry-run prints two counted lists — the artifacts it *would* sweep and the
 dirt it leaves for your eyes — and commits nothing. When no remotes are
 configured, a real run downgrades to a local-only commit instead of failing.
 
+### Checking vault sync state
+
+To see how the vault stands against its remotes without changing anything,
+ask for a status report:
+
+```bash
+vp vault status             # fetch and report sync state for all remotes
+vp vault status --no-fetch  # fast cached report (behind counts unknown)
+vp vault status --json      # the versioned report as JSON
+```
+
+It is strictly read-only — it never commits, pushes, or touches the working
+tree. Per remote it reports whether you are *ahead* (local commits not yet
+pushed → `unpushed`), *behind*, *diverged*, and whether the remote is
+*reachable*, plus the working-tree dirt (the same Swept vs. Reported split that
+`vp vault tidy` uses). By default it runs a bounded `git fetch` so behind counts
+are real; `--no-fetch` skips the network and reports behind as unknown.
+
 ### Keeping Config Current
 
 As vibe-palace evolves, new settings are added. Check if your config has

@@ -317,6 +317,11 @@
       "schema_sha256": "05477dcd142bf592df01b874bc86994d561bd802cf6e77dce8b216a699fdbe3b"
     },
     {
+      "name": "vp_vault_status",
+      "mutating": false,
+      "schema_sha256": "9f9ae2e674374bd3fb62d57fba222a7defcc9987ffc0f7bae95b5ab83d62d7ea"
+    },
+    {
       "name": "vp_vault_sync",
       "mutating": true,
       "schema_sha256": "d5ce6f416bee5795d86e460b32e5dc8d158a4b4b743a9d200dbd52486b751235"

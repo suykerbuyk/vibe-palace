@@ -175,7 +175,7 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 	var reconcileErrs map[string]error
 	if push {
 		var rErr error
-		remotes, rErr = listRemotes(vaultPath)
+		remotes, rErr = ListRemotes(vaultPath)
 		if rErr != nil {
 			return nil, fmt.Errorf("listing remotes: %w", rErr)
 		}
@@ -338,7 +338,7 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 func CommitAndPushPathsWithDowngrade(vaultPath, message string, paths []string, push bool) (res *PushResult, downgraded bool, err error) {
 	effectivePush := push
 	if push {
-		remotes, rErr := listRemotes(vaultPath)
+		remotes, rErr := ListRemotes(vaultPath)
 		if rErr != nil {
 			return nil, false, fmt.Errorf("listing remotes: %w", rErr)
 		}
@@ -576,8 +576,8 @@ func short(sha string) string {
 	return sha[:7]
 }
 
-// listRemotes discovers all configured git remotes for the vault repo.
-func listRemotes(vaultPath string) ([]string, error) {
+// ListRemotes discovers all configured git remotes for the vault repo.
+func ListRemotes(vaultPath string) ([]string, error) {
 	out, err := gitCmd(vaultPath, 10*time.Second, "remote")
 	if err != nil {
 		return nil, err

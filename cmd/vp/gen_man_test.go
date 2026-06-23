@@ -84,7 +84,7 @@ func knownCommands() []string {
 		"memory", "memory harvest",
 		"migrate", "migrate mempalace", "migrate vibevault",
 		"search", "sessions", "status", "tasks",
-		"vault", "vault pull", "vault push", "vault sync", "vault tidy",
+		"vault", "vault pull", "vault push", "vault status", "vault sync", "vault tidy",
 		"version",
 	}
 }

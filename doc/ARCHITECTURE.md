@@ -404,6 +404,7 @@ and operate on storage directly.
 | `vp_init` | system_tools.go | Project |
 | `vp_vault_sync` | vault_tools.go | Vault |
 | `vp_vault_tidy` | system_tools.go | Vault |
+| `vp_vault_status` | system_tools.go | Vault |
 | `vp_search` | search_tools.go | Search |
 | `vp_search_cross_project` | search_tools.go | Search |
 | `vp_list_learnings` | learning_tools.go | Learnings |

@@ -284,6 +284,43 @@ func TestVaultSyncInvalidAction(t *testing.T) {
 	}
 }
 
+// TestVaultStatusTool verifies the read-only status tool: it is non-mutating and
+// its handler returns a versioned StatusReport that round-trips through JSON.
+func TestVaultStatusTool(t *testing.T) {
+	root := initVaultRepo(t)
+	vault := storage.NewVault(root)
+	tool := VaultStatusTool(vault)
+
+	if tool.Name != "vp_vault_status" {
+		t.Errorf("name = %q, want vp_vault_status", tool.Name)
+	}
+	if tool.Mutating {
+		t.Error("Mutating = true, want false (status is read-only)")
+	}
+
+	params, _ := json.Marshal(vaultStatusParams{Refresh: false})
+	res, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	// The result must decode through JSON into the shared StatusReport schema.
+	raw, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	var report storage.StatusReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("decode StatusReport: %v\n%s", err, raw)
+	}
+	if report.Version != 1 {
+		t.Errorf("Version = %d, want 1", report.Version)
+	}
+	if report.Branch != "main" {
+		t.Errorf("Branch = %q, want main", report.Branch)
+	}
+}
+
 func TestRefreshIndexTool(t *testing.T) {
 	// RefreshIndexTool requires a non-nil engine. Verify the tool constructor works.
 	// We can't easily test a full rebuild without the embedder, but we verify

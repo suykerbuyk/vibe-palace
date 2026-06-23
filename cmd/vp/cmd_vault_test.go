@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 func TestGitRemotes(t *testing.T) {
@@ -204,6 +206,155 @@ func mkfile(t *testing.T, dir, rel, content string) {
 	}
 	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestVaultStatusBadFlags(t *testing.T) {
+	cmd := cmdVaultStatus()
+	code := cmd.Run([]string{"--unknown"})
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want %d", code, cli.ExitUser)
+	}
+}
+
+// setupVaultWithOrigin builds an isolated temp vault wired to a bare origin and
+// pushed in sync (origin/main tracking ref present). Returns the vault root.
+func setupVaultWithOrigin(t *testing.T) string {
+	t.Helper()
+	vaultDir := setupTestVaultEnv(t)
+	bare := t.TempDir()
+
+	gitEnv := append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+	)
+	bareRun := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", bare}, args...)...)
+		cmd.Env = gitEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", vaultDir}, args...)...)
+		cmd.Env = gitEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	bareRun("init", "--bare", "-b", "main")
+	run("init", "-b", "main")
+	run("config", "user.email", "test@test.com")
+	run("config", "user.name", "Test")
+	run("remote", "add", "origin", bare)
+	os.WriteFile(filepath.Join(vaultDir, "seed.txt"), []byte("seed\n"), 0o644)
+	run("add", "seed.txt")
+	run("commit", "-m", "seed")
+	run("push", "-u", "origin", "main")
+	return vaultDir
+}
+
+// TestVaultStatusJSONInSync verifies the --json report decodes and reports an
+// in-sync remote with a real (fetched) behind count.
+func TestVaultStatusJSONInSync(t *testing.T) {
+	setupVaultWithOrigin(t)
+
+	var code int
+	out := captureStdout(t, func() {
+		code = cmdVaultStatus().Run([]string{"--json"})
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want %d", code, cli.ExitOK)
+	}
+	var rep storage.StatusReport
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("decode JSON: %v\n%s", err, out)
+	}
+	if rep.Version != 1 {
+		t.Errorf("Version = %d, want 1", rep.Version)
+	}
+	if rep.Branch != "main" {
+		t.Errorf("Branch = %q, want main", rep.Branch)
+	}
+	if len(rep.Remotes) != 1 {
+		t.Fatalf("Remotes = %d, want 1", len(rep.Remotes))
+	}
+	r := rep.Remotes[0]
+	if r.Remote != "origin" {
+		t.Errorf("Remote = %q, want origin", r.Remote)
+	}
+	if !r.Reachable {
+		t.Error("Reachable = false, want true")
+	}
+	if r.Ahead != 0 || r.Unpushed {
+		t.Errorf("ahead=%d unpushed=%v, want in sync", r.Ahead, r.Unpushed)
+	}
+	if !r.BehindKnown {
+		t.Error("BehindKnown = false after fetch, want true")
+	}
+	if r.Behind != 0 {
+		t.Errorf("Behind = %d, want 0", r.Behind)
+	}
+}
+
+// TestVaultStatusNoFetch verifies --no-fetch leaves behind_known=false.
+func TestVaultStatusNoFetch(t *testing.T) {
+	setupVaultWithOrigin(t)
+
+	var code int
+	out := captureStdout(t, func() {
+		code = cmdVaultStatus().Run([]string{"--no-fetch", "--json"})
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want %d", code, cli.ExitOK)
+	}
+	var rep storage.StatusReport
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("decode JSON: %v\n%s", err, out)
+	}
+	if len(rep.Remotes) != 1 {
+		t.Fatalf("Remotes = %d, want 1", len(rep.Remotes))
+	}
+	if rep.Remotes[0].BehindKnown {
+		t.Error("BehindKnown = true with --no-fetch, want false")
+	}
+}
+
+// TestVaultStatusUnpushed verifies a local-only commit reports unpushed=true and
+// ahead>=1.
+func TestVaultStatusUnpushed(t *testing.T) {
+	vaultDir := setupVaultWithOrigin(t)
+
+	run := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", vaultDir}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	// A second local commit, never pushed → ahead of origin/main.
+	os.WriteFile(filepath.Join(vaultDir, "more.txt"), []byte("more\n"), 0o644)
+	run("add", "more.txt")
+	run("commit", "-m", "local only")
+
+	var code int
+	out := captureStdout(t, func() {
+		code = cmdVaultStatus().Run([]string{"--json"})
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want %d", code, cli.ExitOK)
+	}
+	var rep storage.StatusReport
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("decode JSON: %v\n%s", err, out)
+	}
+	if len(rep.Remotes) != 1 {
+		t.Fatalf("Remotes = %d, want 1", len(rep.Remotes))
+	}
+	r := rep.Remotes[0]
+	if !r.Unpushed || r.Ahead < 1 {
+		t.Errorf("unpushed=%v ahead=%d, want unpushed with ahead>=1", r.Unpushed, r.Ahead)
 	}
 }
 

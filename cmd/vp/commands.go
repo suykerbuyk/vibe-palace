@@ -60,6 +60,7 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(mutates(cmdVaultSync()))
 	reg.Register(mutates(cmdVaultCommit()))
 	reg.Register(mutates(cmdVaultTidy()))
+	reg.Register(cmdVaultStatus())
 	reg.Register(cmdVaultRead())
 	reg.Register(mutates(cmdVaultWrite()))
 	reg.Register(mutates(cmdVaultEdit()))

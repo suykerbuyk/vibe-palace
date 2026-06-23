@@ -458,6 +458,51 @@ func userMemorySummarySuffix(n int) string {
 }
 
 // ---------------------------------------------------------------------------
+// vp_vault_status
+// ---------------------------------------------------------------------------
+
+type vaultStatusParams struct {
+	Refresh bool `json:"refresh"`
+}
+
+var vaultStatusSchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"refresh": {"type": "boolean", "description": "Perform a bounded per-remote git fetch so behind counts are real (default false). When false, behind counts are reported from cached tracking refs and behind_known is false."}
+	}
+}`)
+
+func VaultStatusTool(vault *storage.Vault) mcp.Tool {
+	return mcp.Tool{
+		Name:     "vp_vault_status",
+		Mutating: false,
+		Description: "Read-only vault sync + working-tree dirt report. Per remote it " +
+			"reports ahead/unpushed, behind (only meaningful when behind_known), " +
+			"diverged, reachable, and last_fetched; plus the tidy sweep/report dirt " +
+			"classification of the working tree. By DEFAULT it does NOT fetch (fast " +
+			"cached path; behind_known=false). Pass refresh:true to run a bounded " +
+			"per-remote git fetch for real behind counts. It NEVER commits, pushes, " +
+			"or mutates the working tree; a fetch only updates .git tracking refs.",
+		Schema:  vaultStatusSchema,
+		Handler: vaultStatusHandler(vault),
+	}
+}
+
+func vaultStatusHandler(vault *storage.Vault) mcp.HandlerFunc {
+	return func(_ context.Context, params json.RawMessage) (any, error) {
+		var p vaultStatusParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("parse params: %w", err)
+		}
+		report, err := storage.BuildStatusReport(vault.Root, p.Refresh)
+		if err != nil {
+			return nil, fmt.Errorf("vault status: %w", err)
+		}
+		return report, nil
+	}
+}
+
+// ---------------------------------------------------------------------------
 // vp_refresh_index
 // ---------------------------------------------------------------------------
 

@@ -621,12 +621,13 @@ flowchart TD
 
 ### 6.7 System Tools
 
-> **4 of 4 implemented.**
+> **5 of 5 implemented.**
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `vp_init` | project?, domain?, tags? | Initialize project (create .vibe-palace.toml + vault dir) |
 | `vp_vault_sync` | paths? | Pull/push vault git remotes. Optional `paths` commits only the listed vault-relative files (commit-then-push) instead of a blanket sync |
+| `vp_vault_status` | refresh? | Read-only vault sync + working-tree dirt report (per-remote ahead/unpushed/behind/diverged/reachable + Swept/Reported dirt). `refresh` runs a bounded per-remote fetch for real behind counts; never commits, pushes, or mutates the tree |
 | `vp_refresh_index` | project? | Rebuild session index and re-embed if needed |
 | `vp_health` | project (req) | Runtime health: recent warnings/errors from the vp log file |
 
@@ -2112,6 +2113,7 @@ Vibe-Palace.
 - `vp vault sync` — pull/push vault git remotes
 - `vp vault pull` — pull only
 - `vp vault push` — push only
+- `vp vault status [--json] [--no-fetch]` — read-only sync + working-tree dirt report (per-remote ahead/unpushed/behind/diverged/reachable)
 - `vp mcp` — start MCP server (stdio)
 - `vp mcp serve [--port N] [--addr HOST] [--allow-writes]` — start the remote MCP server (Streamable HTTP, bearer-authenticated, read-only by default)
 - `vp inject [--project P]` — output context to stdout (for non-MCP clients)

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -35,7 +36,7 @@ func cmdVault() *cli.Command {
 		Description: "Manage the vault git repository. The vault stores all palace data in a git-tracked directory for versioning and multi-machine sync.",
 		Subcommands: []string{
 			"vault pull", "vault push", "vault sync", "vault commit", "vault tidy",
-			"vault read", "vault write", "vault edit", "vault delete",
+			"vault status", "vault read", "vault write", "vault edit", "vault delete",
 			"vault move", "vault exists", "vault sha256", "vault merge-driver",
 		},
 	}
@@ -373,6 +374,154 @@ func cmdVaultTidy() *cli.Command {
 					fmt.Fprintf(os.Stderr, "    %s\n", p)
 				}
 				fmt.Fprintln(os.Stderr, "  Your edits are preserved in `git stash list`.")
+			}
+			return cli.ExitOK
+		},
+	}
+}
+
+// ---------------------------------------------------------------------------
+// vault status — read-only sync + dirt snapshot.
+//
+// Versioned JSON report parallel to `vp check --json`: a Version field plus a
+// typed payload. Producing it never commits, pushes, or mutates the working
+// tree; the default per-remote `git fetch` only updates .git tracking refs so
+// behind counts are real. --no-fetch is the fast cached path (behind unknown).
+// ---------------------------------------------------------------------------
+
+var vaultStatusFlags = []cli.FlagDef{
+	{Name: "--json", Help: "Output the versioned status report as JSON"},
+	{Name: "--no-fetch", Help: "Skip the per-remote git fetch (fast cached path); behind counts are reported as unknown"},
+}
+
+// humanAge renders a coarse, readable age for a fetch timestamp (e.g. "3h ago").
+// Returns "" for the zero time so callers can omit the hint entirely.
+func humanAge(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours())/24)
+	}
+}
+
+// remoteAge renders the fetch-age hint for a RemoteStatusJSON, dereferencing the
+// optional LastFetched pointer (nil → "" so callers omit the hint entirely).
+func remoteAge(st storage.RemoteStatusJSON) string {
+	if st.LastFetched == nil {
+		return ""
+	}
+	return humanAge(*st.LastFetched)
+}
+
+// printVaultRemoteLine renders one human-readable remote status line.
+func printVaultRemoteLine(st storage.RemoteStatusJSON) {
+	if !st.Reachable {
+		fmt.Printf("%s: unreachable", st.Remote)
+		if age := remoteAge(st); age != "" {
+			fmt.Printf(" (last fetch %s)", age)
+		}
+		fmt.Println()
+		return
+	}
+	switch {
+	case st.Diverged:
+		fmt.Printf("%s: DIVERGED — ahead %d, behind %d\n", st.Remote, st.Ahead, st.Behind)
+	case st.Ahead > 0:
+		fmt.Printf("%s: ahead %d — UNPUSHED", st.Remote, st.Ahead)
+		if st.BehindKnown {
+			fmt.Printf(" (behind %d)\n", st.Behind)
+		} else {
+			fmt.Printf(" (behind unknown — run without --no-fetch")
+			if age := remoteAge(st); age != "" {
+				fmt.Printf("; last fetch %s", age)
+			}
+			fmt.Println(")")
+		}
+	default:
+		if st.BehindKnown {
+			fmt.Printf("%s: in sync (ahead 0, behind %d)\n", st.Remote, st.Behind)
+		} else {
+			fmt.Printf("%s: ahead 0 (behind unknown — run without --no-fetch", st.Remote)
+			if age := remoteAge(st); age != "" {
+				fmt.Printf("; last fetch %s", age)
+			}
+			fmt.Println(")")
+		}
+	}
+}
+
+func cmdVaultStatus() *cli.Command {
+	return &cli.Command{
+		Name:     "vault status",
+		Synopsis: "vp vault status [--json] [--no-fetch]",
+		Description: "Report the vault's sync state against every configured remote " +
+			"(ahead/unpushed, behind, diverged, reachable) plus working-tree dirt " +
+			"(the tidy sweep/report split). Read-only: never commits, pushes, or " +
+			"touches the working tree. By default it runs a bounded per-remote " +
+			"`git fetch` (network) so behind counts are real; --no-fetch is the fast " +
+			"cached path that reports behind as unknown.",
+		Flags: vaultStatusFlags,
+		Examples: []cli.Example{
+			{Cmd: "vp vault status", Comment: "Fetch and report sync state for all remotes"},
+			{Cmd: "vp vault status --no-fetch", Comment: "Fast cached report (behind unknown)"},
+			{Cmd: "vp vault status --json", Comment: "Emit the versioned report as JSON"},
+		},
+		Run: func(args []string) int {
+			fv, err := cli.ParseFlags(vaultStatusFlags, args)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp vault status: %v\n", err)
+				return cli.ExitUser
+			}
+			root, err := gitEnabledGuard()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp vault status: %v\n", err)
+				return cli.ExitUser
+			}
+			fetch := !fv.Bool("--no-fetch")
+
+			report, err := storage.BuildStatusReport(root, fetch)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp vault status: %v\n", err)
+				return cli.ExitSystem
+			}
+
+			if fv.Bool("--json") {
+				return printVaultJSON(report)
+			}
+
+			// Human-readable.
+			fmt.Printf("Vault: %s\n", report.VaultPath)
+			fmt.Printf("Branch: %s\n", report.Branch)
+			if len(report.Remotes) == 0 {
+				fmt.Println("Remotes: none configured")
+			} else {
+				fmt.Println("Remotes:")
+				for _, st := range report.Remotes {
+					fmt.Print("  ")
+					printVaultRemoteLine(st)
+				}
+			}
+
+			dirt := report.Dirt
+			clean := len(dirt.Swept) == 0 && len(dirt.Reported) == 0
+			if clean {
+				fmt.Println("Working tree: clean")
+			} else {
+				fmt.Println("Working tree:")
+				printTidyList("  Would sweep", dirt.Swept)
+				printTidyReported(&storage.TidyResult{
+					Reported:            dirt.Reported,
+					ReportedUserContent: dirt.ReportedUserContent,
+				})
 			}
 			return cli.ExitOK
 		},
