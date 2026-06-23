@@ -87,6 +87,12 @@ func TestHookPipeline_EndToEnd(t *testing.T) {
 		t.Skip("skipping hook pipeline integration test in short mode")
 	}
 
+	// Isolate from host global config (which often has [enrichment] enabled on
+	// dev machines). This prevents the test from picking up real enrichment
+	// and re-tagging "auto-capture" → "implementation" (see known issue in resume).
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+
 	ctx := context.Background()
 	vaultRoot := t.TempDir()
 	cwd := t.TempDir()

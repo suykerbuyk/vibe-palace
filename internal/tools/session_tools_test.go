@@ -305,6 +305,23 @@ func TestCaptureSessionEnrichDefaultPlain(t *testing.T) {
 // surfaces no error to the caller.
 func TestCaptureSessionEnrichDisabledConfig(t *testing.T) {
 	vault := testSessionVault(t)
+
+	// Write a project config that explicitly disables enrichment. This
+	// overrides any global ~/.config/vibe-palace/config.toml that may have
+	// [enrichment] enabled (as on developer machines), ensuring the test
+	// verifies the "enrich requested but config disabled" path.
+	path, err := vault.ProjectConfigFile("test-proj")
+	if err != nil {
+		t.Fatalf("ProjectConfigFile: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "[enrichment]\nenabled = false\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	tool := CaptureSessionTool(vault, nil)
 
 	params := json.RawMessage(`{

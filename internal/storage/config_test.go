@@ -399,6 +399,11 @@ timeout_seconds = 30
 }
 
 func TestConfigEnrichmentEmpty(t *testing.T) {
+	// Isolate from any host global ~/.config/vibe-palace/config.toml (which
+	// on developer machines often has [enrichment] enabled). Point XDG to
+	// empty temp so LoadConfig sees only embedded defaults (enrichment off).
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
 	v := testVault(t)
 
 	// No [enrichment] block — Config.Enrichment must be the zero value.
