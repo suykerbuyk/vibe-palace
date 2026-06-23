@@ -305,6 +305,46 @@ contract holds against the real binary.
 | `IndexDrawerAndSearch` | Yes | Incremental indexing preserves all metadata |
 | `StructuralBoostsWithRealEmbeddings` | Yes | Wing filter boosts matching results with real vectors |
 
+### `internal/search/` — Recall Harness (`recall_test.go`)
+
+A model-free harness that guards the **`VectorIndex` brute-force exactness
+claim** (100% recall) against an independent ground-truth scan. It runs in the
+`-short` fast suite — **no ONNX**.
+
+- **Corpus:** four constitutional documents under
+  `internal/search/testdata/constitution/` (US Constitution, US Amendments,
+  Canada Constitution Act 1867, Mexico 1917 Constitution), chunked at ~600
+  chars into **~801 chunks**.
+- **Vectorizer:** a deterministic, model-free hash-TF-IDF embedder
+  (2048-dim) — stop words removed, each remaining word feature-hashed to one
+  dimension and weighted by corpus IDF, then L2-normalized. Shared words between
+  query and document land on the SAME dimensions, producing real cosine signal
+  without any neural model.
+- **Ground truth:** an independent exhaustive cosine scan computed with the
+  *same* `cosineDistanceF32` the index uses, so GT and index are bit-identical.
+- **Exactness assertion:** **tie-robust distance-bound** — every returned
+  distance must be `<=` the GT k-th-smallest distance (plus a tiny `eps` for
+  float32 op-ordering). It deliberately does **not** assert per-rank ID equality
+  nor set-overlap recall, because the corpus has duplicate structural lines that
+  produce ties at the k-th boundary and `sort.Slice` is not stable — those
+  assertions would be tie-fragile and flaky. The distance-bound property is the
+  real correctness signal.
+
+| Test | ONNX? | What it proves |
+|------|-------|----------------|
+| `TestConstitutionRecall` | No | Across k ∈ {5,10,20} and sampled queries, every returned distance stays within the GT distance bound (set-overlap recall@k is logged for information only) |
+| `TestConstitutionCrossDocumentSearch` | No | Re-embedded natural-language phrase queries (e.g. "necessary and proper", "right to bear arms", "amparo") surface their expected source document within the top-10 |
+| `TestConstitutionDeleteAndSearch` | No | After deleting ~20% of the corpus, search still satisfies the distance bound over survivors and never returns a deleted id |
+
+**Scope (important):** this harness guards the **`VectorIndex` KNN data
+structure** with synthetic vectors. It does **not** exercise the production
+384-dim ONNX embedding path or `Engine.Search` — those are covered by the
+real-embedder integration tests in `internal/search/integration_test.go`. The
+harness retains a set-overlap recall@k metric (logged, not asserted here);
+should the index boundary ever be pointed at an approximate backend such as
+HNSW, that recall@k becomes the meaningful threshold to assert (e.g. `>= 0.90`),
+since an approximate index is not expected to hold the exact distance bound.
+
 ---
 
 ## Write/Wrap Surface Unit Tests

@@ -852,10 +852,18 @@ compares against all stored vectors and returns top-N.
 - **~1-5ms** at 10K vectors — sufficient for personal knowledge management
 - **Thread-safe** — `sync.RWMutex` for concurrent reads
 
+The exactness claim is guarded by an in-repo recall harness
+(`internal/search/recall_test.go`) that loads a constitution corpus embedded
+with synthetic TF-IDF vectors and asserts every returned distance stays within
+the exhaustive ground-truth bound.
+
 The PRD specified HNSW (Hierarchical Navigable Small World), but `coder/hnsw`
 had critical recall bugs (Heap.Max/PopLast returning wrong elements, 0–2/10
-recall). A hardened fork is in progress; brute-force is the correct choice at
-current scale.
+recall). The three core recall bugs were fixed in our fork and merged upstream
+into `coder/hnsw@main` (2026-06-22), then validated against our in-repo recall
+harness (recall@10 0.96). Brute-force remains the exact, zero-dependency default
+at current scale; HNSW is parked behind the same index boundary for a future
+scale trigger.
 
 ### Hybrid Search Engine
 

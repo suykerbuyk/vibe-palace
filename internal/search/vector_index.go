@@ -24,8 +24,9 @@ type vectorEntry struct {
 
 // VectorIndex is a brute-force vector search index with cosine distance.
 // It provides exact (100% recall) nearest-neighbor search suitable for
-// collections up to ~100K vectors. For larger collections, this can be
-// replaced with an HNSW implementation behind the same interface.
+// collections up to ~100K vectors. For larger collections, this could be
+// swapped for an approximate index such as HNSW (deferred — validated
+// upstream `coder/hnsw@main`, parked behind this boundary).
 type VectorIndex struct {
 	mu      sync.RWMutex
 	entries []vectorEntry

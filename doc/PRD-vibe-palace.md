@@ -6,8 +6,14 @@
 **Status:** Phases 1–10, 12–18 Implemented | Phase 11 Planned
 
 > **Implementation notes** are marked with blockquotes throughout. HNSW
-> references in diagrams reflect the design; actual search uses brute-force
-> cosine similarity (see Task 4.2 annotation).
+> references in diagrams, directory trees, and `go.mod` snippets reflect the
+> design intent and remain authoritative as *deferred* design — they are not
+> stale. Actual shipped search uses brute-force cosine similarity
+> (`internal/search/vector_index.go`); see the Task 4.2 annotation. The three
+> upstream `coder/hnsw` recall bugs were fixed in our fork and merged into
+> `coder/hnsw@main` (2026-06-22), then validated against the in-repo recall
+> harness (recall@10 0.96). HNSW adoption remains **deferred (Phase 11)** behind
+> the brute-force index boundary, parked for a future scale trigger.
 
 ---
 
@@ -729,7 +735,8 @@ would express with tables and indexes.
 - Half the proposed tables would duplicate data that already exists as files
   (sessions, tasks, config)
 - The actual query workload (metadata filtering on small datasets, semantic
-  search via HNSW) does not require a database engine
+  search — brute-force cosine today, HNSW deferred) does not require a database
+  engine
 - Human readability matters — `cat`, `grep`, `jq` should work on all stored data
 
 **What git taught us:** Git manages billions of objects across millions of
@@ -737,14 +744,17 @@ repositories using nothing but POSIX filesystem semantics and hash references.
 No key-value store, no database, no binary index files in the critical path.
 The data volumes in Vibe-Palace are trivially small by comparison.
 
-**The only binary artifact** is the HNSW vector index, which is:
+**The only binary artifact** is the vector index (deferred design: the HNSW
+index; today brute-force rebuilds the index in-memory and the only persisted
+binary cache is the embeddings cache), which is:
 - **Derived** — rebuilt deterministically from drawer content + ONNX model
 - **Ephemeral** — gitignored, machine-local
 - **Deterministic** — same input text + same model = same embeddings, every time
 
 This is the same pattern as compiled code: you don't check in binaries, you
 rebuild from source. Drawer JSONL files are the "source code" of your knowledge.
-The HNSW index is the "compiled binary."
+The vector index is the "compiled binary" (deferred design; today brute-force
+rebuilds in-memory, the embeddings cache is the only binary artifact).
 
 ### 7.2 Vault Directory Layout
 
@@ -959,6 +969,12 @@ Configuration continues to use TOML files in the existing precedence chain:
 No database table needed.
 
 ### 7.8 HNSW Index (Machine-Local, Derived)
+
+> **Deferred design (Phase 11).** This section describes the intended HNSW
+> persistence. Today there is no persisted HNSW index: the brute-force
+> `VectorIndex` rebuilds in-memory and the only binary artifact is the
+> embeddings cache. HNSW fixes were merged upstream (`coder/hnsw@main`,
+> 2026-06-22) and validated, but adoption is parked behind the index boundary.
 
 The HNSW vector index is the only binary artifact in the system. It is:
 
@@ -1734,10 +1750,14 @@ implementation lives in `internal/embedder/onnx.go`.
 
 > **Implementation note:** HNSW deferred. Search uses brute-force cosine
 > similarity (`internal/search/vector_index.go`). The `coder/hnsw` library had
-> critical recall bugs (0–2/10 recall due to Heap.Max/PopLast errors). A
-> hardened fork is in progress; brute-force is sufficient at current scale.
+> critical recall bugs (0–2/10 recall due to Heap.Max/PopLast errors). Our
+> fork's three recall-bug fixes were merged upstream into `coder/hnsw@main`
+> (2026-06-22), validated against the in-repo recall harness (recall@10 0.96),
+> and parked; brute-force is the exact, zero-dependency default at current
+> scale. The deliverable below is retained as **deferred design** (Phase 11) —
+> there is no `internal/search/hnsw.go` today.
 
-**Deliverable:** `internal/search/hnsw.go`
+**Deliverable (deferred design — Phase 11):** `internal/search/hnsw.go`
 
 - In-memory HNSW index with L2 distance
 - `Build(vectors [][]float32, ids []string) error` — bulk build from drawer files
@@ -3103,7 +3123,7 @@ decisions — they are final.
 | D2 | Minimum Go version | 1.21, 1.23, 1.25 | **1.25.0** | Required by `mark3labs/mcp-go` (our MCP library). The minimum is set by our dependencies, not by the developer's machine. `go.mod` declares `go 1.25.0`. |
 | D3 | ONNX model delivery | Embed in binary (~80MB) vs download on first run | **Download on first run** | Keeps binary under 20MB. Model cached at `{vault}/palace/.local/model/all-MiniLM-L6-v2.onnx`. Downloaded from HuggingFace. SHA256 verified. `vp check` validates cache integrity. |
 | D4 | Embedding library | hugot pure-Go backend, hugot+ORT, ollama sidecar | **hugot with pure Go backend** (`knights-analytics/hugot`) | **Validated via spike** (`doc/spike-hugot-pure-go-embedding.md`, 2026-04-07): single embed 66ms, batch-32 290ms (9ms/item amortized), 17MB stripped binary, no CGO. 10K-drawer reindex projected at ~90s. Pure-Go backend produces correct 384-dim L2-normalized embeddings. All go thresholds passed. License: Apache-2.0. |
-| D5 | HNSW library | `coder/hnsw`, `fogfish/hnsw`, brute-force with vek | **`coder/hnsw`** | Pure Go, no CGO. Uses `viterin/vek` for SIMD-accelerated L2 distance. CC0 license. 214 stars, actively maintained by Coder. Supports incremental insertion, deletion, export/import persistence. Min Go: 1.21. |
+| D5 | HNSW library | `coder/hnsw`, `fogfish/hnsw`, brute-force with vek | **`coder/hnsw`** | Pure Go, no CGO. Uses `viterin/vek` for SIMD-accelerated L2 distance. CC0 license. 214 stars, actively maintained by Coder. Supports incremental insertion, deletion, export/import persistence. Min Go: 1.21. **Update:** our fork's three recall-bug fixes (Heap.Max/PopLast) were merged upstream into `coder/hnsw@main` (2026-06-22) and validated against the in-repo recall harness (recall@10 0.96); adoption is deferred (brute-force is the shipped index). |
 | D6 | MCP library | `mark3labs/mcp-go`, `modelcontextprotocol/go-sdk`, hand-rolled | **`mark3labs/mcp-go`** | MIT license. 8,500 stars. Handles full JSON-RPC protocol, stdio transport, tool registration with fluent JSON Schema builders. Go 1.23. The official `go-sdk` requires Go 1.25. |
 | D7 | MCP protocol version | 2024-11-05, 2025-03-26 | **2025-03-26** | Latest stable spec. `mcp-go` supports it. Matches VibeVault's upper protocol bound. |
 | D8 | HTTP framework | stdlib `net/http`, chi, echo, gin | **stdlib `net/http`** | Zero additional dependencies. Sufficient for localhost-only REST API. Routing via `http.NewServeMux` (Go 1.22+ pattern matching). |
