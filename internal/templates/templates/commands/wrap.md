@@ -27,8 +27,11 @@ records a broken state is worse than no wrap.
 
 Before capturing the session, updating resume, or staging anything,
 confirm this binary can safely write to the vault. Run
-`vp check --json` via Bash and parse the JSON: find the entry in
-`checks[]` whose `name` is `"Surface"`.
+`vp check --json --check surface` via Bash and parse the JSON: find
+the entry in `checks[]` whose `name` is `"Surface"`. The `--check
+surface` flag runs only the surface-compatibility check — skipping the
+embedder model load and tool-registry build — so the preflight stays
+near-instant even on a cold model cache.
 
 - If its `status` is `"fail"`, the vault was last written by a newer
   `vp` binary than this host has installed. **Halt** — do not capture

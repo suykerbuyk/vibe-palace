@@ -454,8 +454,16 @@ context-schema counter exists in vibe-palace).
 
 `cmd_check_test.go` drives `vp check --json` end-to-end (JSON parse, binary
 block, surface row present, `exit_code`/exit-code agreement) and asserts the
-registered tool count is positive. `cmd_version_test.go` covers
-`vp version --surface` (`surface: <N>`).
+registered tool count is positive. It also covers the iter-158 `--check
+NAME[,NAME...]` **selective-execution** flag (`vp-check-section-filter`):
+`--check` parse (single + comma form), surface-only human output (asserts no
+"Embedder" model-load line on stdout or stderr), surface-only `--json` (exactly
+one `Surface` check, summary total 1, real `MCPSurfaceVersion` constant with
+`tools:0` — never a false `surface:0` — and the commit echoed), the unknown-name
+`ExitUser` path, the `isSurfaceOnly` normalization table, and two full-stack
+tests driving the real `cmdCheck(info).Run([]string{...})` dispatch
+(ParseFlags → runCheck → runSelectedChecks → ToJSON). `cmd_version_test.go`
+covers `vp version --surface` (`surface: <N>`).
 
 ### `cmd/vp` — Tool-Surface Golden Invariant (Phase 6)
 

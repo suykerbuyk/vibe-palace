@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
@@ -23,17 +24,19 @@ import (
 
 var checkFlags = []cli.FlagDef{
 	{Name: "--json", Help: "Output JSON"},
+	{Name: "--check", Help: "Run only the named check(s) (comma-separated list; e.g. surface)", Arg: "NAME"},
 }
 
 func cmdCheck(info cli.BuildInfo) *cli.Command {
 	return &cli.Command{
 		Name:        "check",
-		Synopsis:    "vp check [--json]",
-		Description: "Verify installation, config, vault, embedder, surface compatibility, and project detection. Reports pass/fail status for each component.",
+		Synopsis:    "vp check [--json] [--check NAME[,NAME...]]",
+		Description: "Verify installation, config, vault, embedder, surface compatibility, and project detection. Reports pass/fail status for each component. With --check, runs only the named check(s) via selective execution — skipping the expensive embedder load and tool-registry build — for fast scripting / AI preflights.",
 		Flags:       checkFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp check", Comment: "Run all installation checks"},
 			{Cmd: "vp check --json", Comment: "Emit machine-readable results (exit_code 1 on any failure)"},
+			{Cmd: "vp check --check surface --json", Comment: "Fast surface-only preflight (used by restart/wrap)"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(checkFlags, args)
@@ -41,19 +44,100 @@ func cmdCheck(info cli.BuildInfo) *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp check: %v\n", err)
 				return cli.ExitUser
 			}
-			return runCheck(info, fv.Bool("--json"))
+			return runCheck(info, fv)
 		},
 	}
+}
+
+// checkProducers maps a --check name to a light, dependency-light producer.
+// Designed to grow one cheap check at a time. The string arg is the resolved
+// vault path (cheap to compute; "" when unresolved — CheckSurface tolerates it).
+var checkProducers = map[string]func(vaultRoot string) []check.Result{
+	"surface": func(vaultRoot string) []check.Result { return []check.Result{check.CheckSurface(vaultRoot)} },
+}
+
+// runSelectedChecks splits a comma-separated filter, validates each name
+// against checkProducers, and collects results. Unknown name → error (caller
+// maps to ExitUser). Resolves the vault path once (cheap).
+func runSelectedChecks(filter string) ([]check.Result, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	vaultRoot := ""
+	if vp, _, perr := storage.ResolveVaultPath(cwd); perr == nil {
+		vaultRoot = vp
+	}
+	var results []check.Result
+	for _, raw := range strings.Split(filter, ",") {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		prod, ok := checkProducers[name]
+		if !ok {
+			return nil, fmt.Errorf("unknown check: %s", name)
+		}
+		results = append(results, prod(vaultRoot)...)
+	}
+	if len(results) == 0 {
+		return nil, fmt.Errorf("no checks selected")
+	}
+	return results, nil
+}
+
+// isSurfaceOnly reports whether the filter, after splitting/trimming and
+// dropping empties, is exactly the set {"surface"} — the case where the JSON
+// binary block can skip the expensive registeredToolCount() build.
+func isSurfaceOnly(filter string) bool {
+	seen := map[string]struct{}{}
+	for _, raw := range strings.Split(filter, ",") {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		seen[name] = struct{}{}
+	}
+	if len(seen) != 1 {
+		return false
+	}
+	_, ok := seen["surface"]
+	return ok
 }
 
 // runCheck renders the diagnostic results either as the human-readable table
 // (with a trailing failure count → exit code) or, with --json, as the stable
 // JSONReport (exit_code carried on the report).
-func runCheck(info cli.BuildInfo, asJSON bool) int {
-	results := gatherCheckResults()
+func runCheck(info cli.BuildInfo, fv *cli.FlagValues) int {
+	asJSON := fv.Bool("--json")
+	filter := fv.Get("--check")
+
+	var results []check.Result
+	surfaceOnly := false
+	if filter != "" {
+		var err error
+		results, err = runSelectedChecks(filter)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "vp check: %v\n", err)
+			return cli.ExitUser
+		}
+		surfaceOnly = isSurfaceOnly(filter)
+	} else {
+		results = gatherCheckResults()
+	}
 
 	if asJSON {
-		report := check.ToJSON(results, binaryInfo(info))
+		var bi check.JSONBinaryInfo
+		if surfaceOnly {
+			bi = check.JSONBinaryInfo{
+				Surface: surface.MCPSurfaceVersion, // free constant — NOT 0
+				Commit:  info.Commit,               // already in hand
+				Tools:   0,                         // skip registeredToolCount(): the only expensive field
+			}
+		} else {
+			bi = binaryInfo(info)
+		}
+		report := check.ToJSON(results, bi)
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		enc.Encode(report)

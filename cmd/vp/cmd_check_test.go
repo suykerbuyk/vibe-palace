@@ -19,7 +19,8 @@ import (
 func TestCheckCommand(t *testing.T) {
 	// runCheck depends on real config; just verify it doesn't panic
 	// and returns a valid exit code.
-	code := runCheck(cli.BuildInfo{Version: "test"}, false)
+	fv, _ := cli.ParseFlags(checkFlags, nil)
+	code := runCheck(cli.BuildInfo{Version: "test"}, fv)
 	if code != cli.ExitOK && code != cli.ExitUser {
 		t.Errorf("exit code = %d, want ExitOK or ExitUser", code)
 	}
@@ -34,7 +35,8 @@ func TestCheckParityWithConfigSyncDryRun(t *testing.T) {
 	configDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 	// No global config — both surfaces should agree it's missing.
-	checkOut := captureStdout(t, func() { runCheck(cli.BuildInfo{Version: "test"}, false) })
+	fv, _ := cli.ParseFlags(checkFlags, nil)
+	checkOut := captureStdout(t, func() { runCheck(cli.BuildInfo{Version: "test"}, fv) })
 	if !strings.Contains(checkOut, "Config:") {
 		t.Errorf("vp check missing Config row:\n%s", checkOut)
 	}
@@ -70,7 +72,8 @@ func TestCheckEmitsVaultProjectRow(t *testing.T) {
 	defer os.Chdir(cwd)
 	_ = os.Chdir(projDir)
 
-	out := captureStdout(t, func() { runCheck(cli.BuildInfo{Version: "test"}, false) })
+	fv, _ := cli.ParseFlags(checkFlags, nil)
+	out := captureStdout(t, func() { runCheck(cli.BuildInfo{Version: "test"}, fv) })
 	if !strings.Contains(out, "Vault project") {
 		t.Errorf("expected Vault project row in vp check output:\n%s", out)
 	}
@@ -117,9 +120,10 @@ func TestCheckJSONOutput(t *testing.T) {
 	configDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 
+	fvJSON, _ := cli.ParseFlags(checkFlags, []string{"--json"})
 	var code int
 	out := captureStdout(t, func() {
-		code = runCheck(cli.BuildInfo{Version: "test", Commit: "abc"}, true)
+		code = runCheck(cli.BuildInfo{Version: "test", Commit: "abc"}, fvJSON)
 	})
 
 	var rep check.JSONReport
@@ -157,5 +161,172 @@ func TestCheckJSONOutput(t *testing.T) {
 	}
 	if !sawSurface {
 		t.Error("expected a Surface check in the JSON report")
+	}
+}
+
+// TestCheckFlagParse verifies the --check flag parses its value (single name
+// and comma-separated list form) via ParseFlags.
+func TestCheckFlagParse(t *testing.T) {
+	fv, err := cli.ParseFlags(checkFlags, []string{"--check", "surface"})
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if got := fv.Get("--check"); got != "surface" {
+		t.Errorf("--check = %q, want surface", got)
+	}
+
+	fv2, err := cli.ParseFlags(checkFlags, []string{"--check", "surface,foo"})
+	if err != nil {
+		t.Fatalf("ParseFlags comma: %v", err)
+	}
+	if got := fv2.Get("--check"); got != "surface,foo" {
+		t.Errorf("--check = %q, want surface,foo", got)
+	}
+}
+
+// TestCheckSurfaceOnlyHuman verifies the human renderer for --check surface
+// emits only the Surface row and never loads the embedder (no "Embedder"
+// progress line on stderr — the whole point of selective execution).
+func TestCheckSurfaceOnlyHuman(t *testing.T) {
+	fv, _ := cli.ParseFlags(checkFlags, []string{"--check", "surface"})
+	var stderr string
+	stdout := captureStdout(t, func() {
+		stderr = captureStderr(t, func() {
+			runCheck(cli.BuildInfo{Version: "test"}, fv)
+		})
+	})
+	if !strings.Contains(stdout, "Surface") {
+		t.Errorf("expected a Surface row in output:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "Embedder") || strings.Contains(stderr, "Embedder") {
+		t.Errorf("surface-only check must not load the embedder:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+}
+
+// TestCheckSurfaceOnlyJSON verifies --check surface --json emits exactly one
+// Surface check, summary counts that reflect only it, and a binary block whose
+// surface is the real constant, tools is zeroed (registeredToolCount skipped),
+// and commit is the passed build commit.
+func TestCheckSurfaceOnlyJSON(t *testing.T) {
+	fv, _ := cli.ParseFlags(checkFlags, []string{"--check", "surface", "--json"})
+	out := captureStdout(t, func() {
+		runCheck(cli.BuildInfo{Version: "test", Commit: "feedface"}, fv)
+	})
+
+	var rep check.JSONReport
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
+	}
+	if len(rep.Checks) != 1 {
+		t.Fatalf("expected exactly one check, got %d:\n%s", len(rep.Checks), out)
+	}
+	if rep.Checks[0].Name != "Surface" {
+		t.Errorf("check name = %q, want Surface", rep.Checks[0].Name)
+	}
+	total := rep.Summary.Pass + rep.Summary.Fail + rep.Summary.Skip + rep.Summary.Info
+	if total != 1 {
+		t.Errorf("summary totals = %d, want 1 (only the Surface row)", total)
+	}
+	if rep.Binary.Surface != surface.MCPSurfaceVersion {
+		t.Errorf("binary.surface = %d, want %d", rep.Binary.Surface, surface.MCPSurfaceVersion)
+	}
+	if rep.Binary.Tools != 0 {
+		t.Errorf("binary.tools = %d, want 0 (registeredToolCount skipped)", rep.Binary.Tools)
+	}
+	if rep.Binary.Commit != "feedface" {
+		t.Errorf("binary.commit = %q, want feedface", rep.Binary.Commit)
+	}
+}
+
+// TestCheckUnknownName verifies an unknown --check name fails fast with
+// ExitUser and an "unknown check" diagnostic on stderr.
+func TestCheckUnknownName(t *testing.T) {
+	fv, _ := cli.ParseFlags(checkFlags, []string{"--check", "foo"})
+	var code int
+	stderr := captureStderr(t, func() {
+		code = runCheck(cli.BuildInfo{Version: "test"}, fv)
+	})
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser", code)
+	}
+	if !strings.Contains(stderr, "unknown check") {
+		t.Errorf("expected 'unknown check' on stderr, got:\n%s", stderr)
+	}
+}
+
+// TestCheckCommandRunSurfaceOnly is the full-stack proof: it drives the real
+// command-dispatch path (cmdCheck(...).Run), exercising ParseFlags → runCheck →
+// runSelectedChecks → ToJSON exactly as a `vp check --check surface --json`
+// invocation does — not runCheck in isolation. It asserts the wired flag yields
+// a single Surface check, a surface-only binary block, ExitOK, and no embedder
+// load on stderr.
+func TestCheckCommandRunSurfaceOnly(t *testing.T) {
+	cmd := cmdCheck(cli.BuildInfo{Version: "test", Commit: "feedface"})
+	var code int
+	var stderr string
+	out := captureStdout(t, func() {
+		stderr = captureStderr(t, func() {
+			code = cmd.Run([]string{"--check", "surface", "--json"})
+		})
+	})
+	if code != cli.ExitOK {
+		t.Errorf("exit code = %d, want ExitOK\nstdout:\n%s", code, out)
+	}
+	if strings.Contains(stderr, "Embedder") {
+		t.Errorf("surface-only dispatch must not load the embedder, stderr:\n%s", stderr)
+	}
+	var rep check.JSONReport
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
+	}
+	if len(rep.Checks) != 1 || rep.Checks[0].Name != "Surface" {
+		t.Fatalf("expected exactly one Surface check, got %d:\n%s", len(rep.Checks), out)
+	}
+	if rep.Binary.Surface != surface.MCPSurfaceVersion {
+		t.Errorf("binary.surface = %d, want %d", rep.Binary.Surface, surface.MCPSurfaceVersion)
+	}
+	if rep.Binary.Tools != 0 {
+		t.Errorf("binary.tools = %d, want 0 (registeredToolCount skipped)", rep.Binary.Tools)
+	}
+	if rep.Binary.Commit != "feedface" {
+		t.Errorf("binary.commit = %q, want feedface", rep.Binary.Commit)
+	}
+}
+
+// TestCheckCommandRunUnknown drives the full dispatch path for an unknown check
+// name and asserts the user-facing ExitUser + diagnostic surface correctly.
+func TestCheckCommandRunUnknown(t *testing.T) {
+	cmd := cmdCheck(cli.BuildInfo{Version: "test"})
+	var code int
+	stderr := captureStderr(t, func() {
+		code = cmd.Run([]string{"--check", "nope"})
+	})
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser", code)
+	}
+	if !strings.Contains(stderr, "unknown check") {
+		t.Errorf("expected 'unknown check' on stderr, got:\n%s", stderr)
+	}
+}
+
+// TestIsSurfaceOnly exercises the normalization used to decide whether the JSON
+// binary block can skip the expensive tool-registry build.
+func TestIsSurfaceOnly(t *testing.T) {
+	cases := []struct {
+		filter string
+		want   bool
+	}{
+		{"surface", true},
+		{" surface ", true},
+		{"surface,", true},
+		{"surface,surface", true},
+		{"surface,foo", false},
+		{"foo", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isSurfaceOnly(c.filter); got != c.want {
+			t.Errorf("isSurfaceOnly(%q) = %v, want %v", c.filter, got, c.want)
+		}
 	}
 }

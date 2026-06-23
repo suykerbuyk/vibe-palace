@@ -135,6 +135,19 @@ check fails:
 vp check --json    # exit_code 1 on any [FAIL], 0 otherwise
 ```
 
+For fast preflights, `--check <name>` runs only the named check(s)
+(comma-separated) via selective execution — skipping the expensive embedder
+load and tool-registry build. The surface compatibility gate needs none of
+that, so a surface-only preflight is near-instant even on a cold model cache:
+
+```bash
+vp check --check surface --json    # only the Surface check; no model load
+```
+
+The session restart/wrap flows use this to confirm vault write-compatibility
+without paying for the full 33-row report or the ~90MB model download. An
+unknown check name exits non-zero with an `unknown check` diagnostic.
+
 The first run downloads `all-MiniLM-L6-v2` (~90MB) from HuggingFace for
 semantic search. The model is cached at `{vault}/palace/.local/models/` —
 subsequent runs use the cache.

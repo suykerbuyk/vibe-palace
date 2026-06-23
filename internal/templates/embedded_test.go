@@ -123,10 +123,11 @@ func TestEmbeddedSHA_OverrideHook(t *testing.T) {
 
 // TestEmbeddedCommands_SurfacePreflight is the regression guard for the
 // mcp-surface-handshake Phase 4 preflight: both the restart and wrap command
-// templates must instruct the executor to run `vp check --json`, locate the
-// "Surface" check, and halt on a fail verdict before touching the vault. If a
-// future template edit drops the preflight, this test catches the silent
-// removal.
+// templates must instruct the executor to run the selective surface preflight
+// `vp check --json --check surface`, locate the "Surface" check, and halt on a
+// fail verdict before touching the vault. The `--check surface` form runs only
+// the surface gate (no embedder load) — if a future template edit drops the
+// preflight or reverts to the slow full-report form, this test catches it.
 func TestEmbeddedCommands_SurfacePreflight(t *testing.T) {
 	resources, err := WalkEmbedded()
 	if err != nil {
@@ -140,10 +141,10 @@ func TestEmbeddedCommands_SurfacePreflight(t *testing.T) {
 	// Phrases every gated command template must carry. Kept loose enough to
 	// survive copy edits but strict enough to fail if the preflight vanishes.
 	wantPhrases := []string{
-		"vp check --json",      // the command the executor must run
-		"Surface",              // the checks[] entry it must parse
-		`"fail"`,               // the status it must halt on
-		"VP_SURFACE_GATE=warn", // the override remediation it must surface
+		"vp check --json --check surface", // the selective preflight command (no embedder load)
+		"Surface",                         // the checks[] entry it must parse
+		`"fail"`,                          // the status it must halt on
+		"VP_SURFACE_GATE=warn",            // the override remediation it must surface
 	}
 	for _, rel := range []string{"commands/restart.md", "commands/wrap.md"} {
 		content, ok := body[rel]
@@ -158,7 +159,7 @@ func TestEmbeddedCommands_SurfacePreflight(t *testing.T) {
 		// The preflight must precede any vault write. Assert the check runs
 		// before the first numbered step that mutates the vault: in restart
 		// that is "## Step 2" (Bootstrap), in wrap "## Step 2" (Capture).
-		preflightIdx := strings.Index(content, "vp check --json")
+		preflightIdx := strings.Index(content, "vp check --json --check surface")
 		step2Idx := strings.Index(content, "## Step 2")
 		if preflightIdx < 0 || step2Idx < 0 || preflightIdx > step2Idx {
 			t.Errorf("%s: surface preflight must appear before '## Step 2' "+
