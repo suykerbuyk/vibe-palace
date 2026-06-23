@@ -443,6 +443,101 @@ func TestRewriteSessionInvalidArgs(t *testing.T) {
 	}
 }
 
+func TestFrictionBreakdownTotal(t *testing.T) {
+	tests := []struct {
+		name string
+		b    FrictionBreakdown
+		want int
+	}{
+		{"zero", FrictionBreakdown{}, 0},
+		{"sum", FrictionBreakdown{Corrections: 8, Retries: 10, ErrorDensity: 5, Rework: 10}, 33},
+		{"each-at-cap", FrictionBreakdown{Corrections: 25, Retries: 25, ErrorDensity: 25, Rework: 25}, 100},
+		{"over-100-capped", FrictionBreakdown{Corrections: 25, Retries: 25, ErrorDensity: 25, Rework: 26}, 100},
+	}
+	for _, tt := range tests {
+		if got := tt.b.Total(); got != tt.want {
+			t.Errorf("%s: Total() = %d, want %d", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestSessionBreakdownRoundTrip(t *testing.T) {
+	v := testVault(t)
+
+	// A non-nil all-zero breakdown is a measured frictionless session and must
+	// round-trip as present (distinguishable from nil).
+	zero := &FrictionBreakdown{}
+	if _, err := v.WriteSession("proj", SessionMeta{
+		Date:      "2026-03-15",
+		Title:     "Measured zero",
+		Breakdown: zero,
+	}, ""); err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	got, _, err := v.ReadSession("proj", "2026-03-15", 1)
+	if err != nil {
+		t.Fatalf("ReadSession: %v", err)
+	}
+	if got.Breakdown == nil {
+		t.Fatal("Breakdown = nil after round-trip; want non-nil all-zero (presence semantics)")
+	}
+	if got.Breakdown.Total() != 0 {
+		t.Errorf("Breakdown.Total() = %d, want 0", got.Breakdown.Total())
+	}
+	// The key must be present in the written YAML.
+	path, _ := v.SessionFile("proj", "2026-03-15", 1)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), "friction_breakdown") {
+		t.Error("YAML missing friction_breakdown for non-nil breakdown")
+	}
+
+	// A populated breakdown round-trips field-for-field.
+	full := &FrictionBreakdown{Corrections: 8, Retries: 10, ErrorDensity: 5, Rework: 25}
+	if _, err := v.WriteSession("proj", SessionMeta{
+		Date:      "2026-03-16",
+		Title:     "Populated",
+		Breakdown: full,
+	}, ""); err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	got2, _, err := v.ReadSession("proj", "2026-03-16", 1)
+	if err != nil {
+		t.Fatalf("ReadSession: %v", err)
+	}
+	if got2.Breakdown == nil {
+		t.Fatal("populated Breakdown = nil after round-trip")
+	}
+	if *got2.Breakdown != *full {
+		t.Errorf("Breakdown = %+v, want %+v", *got2.Breakdown, *full)
+	}
+
+	// A nil breakdown must omit the key entirely (old sessions stay clean).
+	if _, err := v.WriteSession("proj", SessionMeta{
+		Date:  "2026-03-17",
+		Title: "No breakdown",
+	}, ""); err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	got3, _, err := v.ReadSession("proj", "2026-03-17", 1)
+	if err != nil {
+		t.Fatalf("ReadSession: %v", err)
+	}
+	if got3.Breakdown != nil {
+		t.Errorf("Breakdown = %+v after round-trip, want nil (omitted)", *got3.Breakdown)
+	}
+	path3, _ := v.SessionFile("proj", "2026-03-17", 1)
+	data3, err := os.ReadFile(path3)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(data3), "friction_breakdown") {
+		t.Error("YAML contains friction_breakdown for nil breakdown; omitempty should suppress it")
+	}
+}
+
 func TestWriteSessionAllFields(t *testing.T) {
 	v := testVault(t)
 	meta := SessionMeta{

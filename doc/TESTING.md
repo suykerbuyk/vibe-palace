@@ -184,6 +184,55 @@ context resolver, and config into a single test fixture.
 | `FrictionTrendsEmpty` | tools → capture → storage | No | Trends for project with no sessions returns empty result |
 | `FrictionSearchByMinScore` | storage | No | `SearchSessions` with minFriction filter returns only sessions above threshold |
 
+### Friction Analytics (friction-analytics-port)
+
+Unit tests for the pure, slice-based friction-analytics functions and the three
+CLI commands that wrap them. "Needs model?" marks tests that exercise the
+session `model` field (model-regression detection).
+
+| Test | Layer | Needs model? | What it proves |
+|------|-------|--------------|----------------|
+| `TestGetFrictionWindows_Empty` | `internal/capture` | No | Empty session slice yields zero-count windows with no divide-by-zero |
+| `TestGetFrictionWindows_OrderAndBuckets` | `internal/capture` | No | Windows returned in requested order; each averages only sessions inside its N-day cutoff |
+| `TestGetFrictionWindows_BoundaryInclusive` | `internal/capture` | No | A session exactly at the window cutoff is counted (inclusive boundary) |
+| `TestGetFrictionWindows_SkipsUnparseable` | `internal/capture` | No | Sessions with unparseable dates are skipped, not counted |
+| `TestGetFrictionWindows_Rounding` | `internal/capture` | No | Average friction rounds to one decimal place |
+| `TestComputeFrictionTrend_Unknown` | `internal/capture` | No | No recent sessions yields "unknown" direction and no warn |
+| `TestComputeFrictionTrend_Improving` | `internal/capture` | No | 7d average well below the 30d baseline → "improving" |
+| `TestComputeFrictionTrend_WorseningAndWarn` | `internal/capture` | No | 7d above an elevated baseline → "worsening" with warn flag and message |
+| `TestComputeFrictionTrend_WorseningNoWarnBelowFloor` | `internal/capture` | No | Worsening but recent average below the warn floor → no warn |
+| `TestComputeFrictionTrend_Stable` | `internal/capture` | No | 7d within the dead-band of 30d → "stable" |
+| `TestDetectModelRegressions_Basic` | `internal/capture` | Yes | Reports the avg-friction delta across a model-change boundary |
+| `TestDetectModelRegressions_SkipsEmptyModelAndCounts` | `internal/capture` | Yes | Empty-model sessions excluded from runs and counted as unmodeled |
+| `TestDetectModelRegressions_ConsecutiveRunGrouping` | `internal/capture` | Yes | Consecutive same-model sessions collapse into one run |
+| `TestDetectModelRegressions_NoBoundaries` | `internal/capture` | Yes | A single model run produces no regressions |
+| `TestTopFrictionSessions_OrderAndLimit` | `internal/capture` | No | Highest-friction first, limited to n |
+| `TestTopFrictionSessions_TieBreak` | `internal/capture` | No | Friction ties broken by most-recent date then iteration |
+| `TestTopFrictionSessions_NonPositiveN` | `internal/capture` | No | n <= 0 returns nil |
+| `TestTopFrictionSessions_NLargerThanInput` | `internal/capture` | No | n larger than the input returns all sessions |
+| `TestGetCorrectionDensitySeries_MissingAndOrder` | `internal/capture` | No | nil-breakdown sessions counted as missing; points are chronological |
+| `TestGetCorrectionDensitySeries_AllMissing` | `internal/capture` | No | All-nil breakdowns → empty points, missing count equals total |
+| `TestGetCorrectionDensitySeries_MeasuredZeroNotMissing` | `internal/capture` | No | A present-but-zero breakdown is a measured point, never counted missing |
+| `TestComputeEffectiveness_ContextDelta` | `internal/capture` | No | With-context vs without-context outcome split and the delta between them |
+| `TestComputeEffectiveness_Empty` | `internal/capture` | No | Empty slice yields zero totals |
+| `TestComputeEffectiveness_WeekBucketingAndSkipBadDate` | `internal/capture` | No | ISO-week (Monday) bucketing; unparseable dates skipped |
+| `TestAnalyzeFrictionBreakdown_EmptyIsNonNilZero` | `internal/capture` | No | Empty transcript yields a non-nil, all-zero breakdown (measured zero, not absent) |
+| `TestAnalyzeFrictionBreakdown_SubScores` | `internal/capture` | No | Each friction signal maps to its capped 0–25 sub-score |
+| `TestAnalyzeFrictionBreakdown_TotalMatchesLegacy` | `internal/capture` | No | Breakdown total equals the legacy `AnalyzeFriction` composite score |
+| `TestFrictionBreakdownTotal` | `internal/storage` | No | `FrictionBreakdown.Total()` sums the four sub-scores, capped at 100 |
+| `TestSessionBreakdownRoundTrip` | `internal/storage` | No | `friction_breakdown` survives a write/read frontmatter round-trip with presence preserved |
+| `TestBootstrapFrictionTrendWarn` | `internal/tools` | No | Bootstrap surfaces `friction_trend` with warn and appends the nudge to post-bootstrap instructions |
+| `TestBootstrapNoFrictionTrendEmptyVault` | `internal/tools` | No | An empty vault omits the `friction_trend` field |
+| `TestRunFrictionEmpty` | `cmd/vp` | No | No sessions prints "No sessions found." |
+| `TestRunFrictionHuman` | `cmd/vp` | No | Human output shows the recent-week line and triage table |
+| `TestRunFrictionJSON` | `cmd/vp` | No | `--json` emits the `recent_week` + `top` payload |
+| `TestRunTrendsEmpty` | `cmd/vp` | No | No sessions renders empty windows, density, and regressions |
+| `TestRunTrendsHuman` | `cmd/vp` | No | Human output shows windows, correction density, and model regressions |
+| `TestRunTrendsJSON` | `cmd/vp` | No | `--json` emits `windows` + `correction_density` + `model_regressions` |
+| `TestRunEffectivenessEmpty` | `cmd/vp` | No | No sessions prints "No sessions found." |
+| `TestRunEffectivenessHuman` | `cmd/vp` | No | Human output shows the overall and per-week outcome split |
+| `TestRunEffectivenessJSON` | `cmd/vp` | No | `--json` emits the full `EffectivenessResult` |
+
 ### `internal/integration/` — Hook Pipeline Tests
 
 | Test | Layers | ONNX? | What it proves |

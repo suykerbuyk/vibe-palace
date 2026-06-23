@@ -506,6 +506,106 @@ vp tasks --done             # include completed and cancelled tasks
 vp search "authentication"  # semantic search across palace content
 ```
 
+### Friction Analytics
+
+Every captured session carries a friction score (0–100, higher = rougher).
+Three read-only commands turn that history into actionable signal. All of them
+auto-detect the project from the current directory (override with `--project/-p`)
+and accept `--json` for machine-readable output. They each scan the project's
+sessions once and compute pure analytics over them.
+
+```bash
+vp friction                 # recent-week average + top-friction triage
+vp friction --top 5         # triage the 5 highest-friction sessions
+vp trends                   # rolling 7/30/90-day windows + correction density + model regressions
+vp effectiveness            # outcome (100 - friction) WITH vs WITHOUT context
+```
+
+**`vp friction`** reports the last 7 days' average friction and a top-N triage
+table (default 10, set with `--top/-n`) of the highest-friction sessions worth
+reviewing:
+
+```
+Recent week (7d): 97 sessions, avg friction 18.3
+
+Top-friction triage:
+DATE         ITER FRIC  TITLE
+2026-04-16   1    100   Auto-captured session...
+```
+
+With `--json`:
+
+```json
+{
+  "recent_week": {"days": 7, "session_count": 97, "avg_friction": 18.3},
+  "top": [
+    {"id": "...", "date": "2026-04-16", "iteration": 1, "title": "Auto-captured session...", "friction_score": 100}
+  ]
+}
+```
+
+**`vp trends`** shows rolling 7/30/90-day friction windows, a correction-density
+series over time, and friction deltas across model-change boundaries. Sessions
+captured before friction breakdowns were recorded are excluded from the
+correction-density series and counted explicitly (never treated as a measured
+zero); model regressions are labeled with model coverage:
+
+```
+Friction windows:
+WINDOW SESSIONS  AVG_FRIC
+7d     97        18.3
+30d    152       20.8
+90d    161       21.9
+
+Correction density:
+  (161 sessions predate breakdown capture — excluded)
+
+Model regressions:
+  claude-opus-4-8[1m] → claude-opus-4-8: 0.0 → 0.0 (delta +0.0, 3→2 sessions)
+  model coverage: 8 of 161 sessions
+```
+
+These rolling N-day windows are complementary to the ISO-calendar-week buckets
+reported by `vp_get_friction_trends` — the windows answer "how rough was the
+last week/month/quarter," the buckets answer "which calendar week was rough."
+
+With `--json`:
+
+```json
+{
+  "windows": [{"days": 7, "session_count": 97, "avg_friction": 18.3}],
+  "correction_density": {"points": [{"date": "2026-04-16", "iteration": 1, "corrections": 12}], "missing_count": 161},
+  "model_regressions": {
+    "regressions": [{"from_model": "claude-opus-4-8[1m]", "to_model": "claude-opus-4-8", "from_avg_friction": 0.0, "to_avg_friction": 0.0, "delta": 0.0, "from_sessions": 3, "to_sessions": 2}],
+    "modeled_count": 8,
+    "unmodeled_count": 153
+  }
+}
+```
+
+**`vp effectiveness`** measures outcome (defined as `100 - friction`) for
+sessions captured **with** context versus **without** it. "Context" is a binary
+with/without split — a session has context if it recorded decisions or
+files-changed — not a measure of context size:
+
+```
+Effectiveness (outcome = 100 - friction), with vs without context:
+
+Overall: 161 sessions, avg outcome 78.1
+  with context:    140 sessions, avg outcome 79.4
+  without context: 21 sessions, avg outcome 69.2
+  delta (with − without): +10.2
+
+WEEK         SESSIONS  OUTCOME  WITH_CTX NO_CTX
+2026-04-13   12        77.5     78.0     70.0
+```
+
+With `--json` it emits the full `EffectivenessResult`: a `project`, a per-week
+`weeks` array (`week_start`, `session_count`, `avg_outcome`, `with_context`,
+`without_context`, `avg_context_outcome`, `avg_no_context_outcome`), and an
+`overall` object adding a `total_sessions` count and the `delta` between the
+with- and without-context averages.
+
 ### Room Classification Management
 
 ```bash

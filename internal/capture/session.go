@@ -149,8 +149,9 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 
 	// Score transcript friction before writing session.
 	if p.Transcript != "" {
-		if score, err := AnalyzeFriction(p.Transcript); err == nil {
-			meta.FrictionScore = score
+		if b, err := AnalyzeFrictionBreakdown(p.Transcript); err == nil {
+			meta.FrictionScore = b.Total()
+			meta.Breakdown = b
 		}
 	}
 

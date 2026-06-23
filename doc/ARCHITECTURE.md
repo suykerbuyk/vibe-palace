@@ -1021,6 +1021,59 @@ Friction score (0–100) measures session difficulty via four signals:
 `GetFrictionTrends` aggregates weekly averages and maximums, grouped by
 ISO week (Monday start).
 
+### Friction Analytics Layer
+
+```
+internal/capture/analytics.go
+internal/capture/effectiveness.go
+```
+
+The analytics layer turns the friction history into actionable signal for the
+`vp friction`, `vp trends`, and `vp effectiveness` CLI commands. Its functions
+are **pure and slice-based**: they take an already-loaded `[]storage.SessionMeta`
+rather than a vault handle. The CLI command is a thin wrapper that scans the
+project's sessions **once** and calls these functions in sequence — a single
+read of disk feeds every metric, and the analytics package never imports
+`storage` for I/O (avoiding an import cycle with the capture pipeline that
+`storage` already depends on). `ComputeEffectiveness` was extracted here from
+`internal/tools`; type aliases (`EffectivenessResult`, `WeeklyEffectiveness`,
+`OverallEffectiveness`) remain in `tools` so the `vp_get_effectiveness` MCP tool
+and its tests are unchanged.
+
+**Friction breakdown with presence semantics.** Session capture now records a
+`FrictionBreakdown` — four capped sub-scores (corrections, retries,
+error_density, rework; each 0–25) that sum to the 0–100 composite score. It is
+stored as `friction_breakdown` in session frontmatter as a *pointer with
+presence semantics*: a `nil` breakdown means friction was never broken down
+(the session predates this feature), while a present-but-all-zero breakdown
+means a genuinely measured frictionless session. The correction-density series
+counts `nil`-breakdown sessions as **missing** and labels them explicitly — it
+never conflates "no data" with a measured zero. This is the central design
+decision of the layer: every metric distinguishes absence from a measured value.
+
+**Rolling windows vs ISO buckets.** `GetFrictionWindows` reports rolling N-day
+windows (7/30/90), where `GetFrictionTrends` (above) reports ISO-calendar-week
+buckets. They are complementary, not duplicates: windows answer "how rough was
+the last week/month/quarter," buckets answer "which calendar week was rough."
+
+**Model field + regression detection.** The SessionEnd hook extracts the model
+from the live Claude JSONL transcript (`archive.InspectClaudeJSONL`) and stores
+it as `model` in frontmatter; the MCP capture path leaves it empty unless
+supplied. Because old sessions have no model, `DetectModelRegressions` (which
+groups consecutive same-model runs and reports the avg-friction delta at each
+boundary) is near-empty until new sessions accrue — so its output is labeled
+with model coverage (`X of Y sessions`) rather than implying complete data.
+
+**Proactive boot-warning.** `ComputeFrictionTrend` derives a trend direction
+(improving/worsening/stable/unknown) by comparing the 7-day window against the
+30-day baseline, plus a `warn` flag and message that fire only when friction is
+both rising *and* the recent average is elevated. `vp_bootstrap_context` (and
+`vp inject`, which shares the path) surfaces this as a `friction_trend` field and,
+when the warning fires, appends an actionable nudge (narrow scope / use plan
+mode) to the post-bootstrap instructions so the agent acts on it. It is computed
+from the **full session history already loaded during bootstrap** — zero extra
+I/O.
+
 ### Session Query Tools
 
 - `vp_search_sessions` — filter by date range, friction score, tag, text query

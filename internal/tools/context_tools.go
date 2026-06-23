@@ -7,8 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
+	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
@@ -18,19 +20,20 @@ import (
 
 // BootstrapResult is the response from vp_bootstrap_context.
 type BootstrapResult struct {
-	Project                   string             `json:"project"`
-	Workflow                  string             `json:"workflow"`
-	Resume                    string             `json:"resume"`
-	WorkflowURI               string             `json:"workflow_uri"`
-	ResumeURI                 string             `json:"resume_uri"`
-	ActiveTasks               []storage.TaskMeta `json:"active_tasks"`
-	RecentSessions            []sessionSummary   `json:"recent_sessions,omitempty"`
-	KGSnapshot                *storage.KGStats   `json:"kg_snapshot,omitempty"`
-	Memory                    []memorySnapshot   `json:"memory,omitempty"`
-	AvailableCommands         []commandSummary   `json:"available_commands,omitempty"`
-	AvailableSkills           []skillSummary     `json:"available_skills,omitempty"`
-	CommandInvocation         string             `json:"command_invocation,omitempty"`
-	PostBootstrapInstructions string             `json:"post_bootstrap_instructions,omitempty"`
+	Project                   string                 `json:"project"`
+	Workflow                  string                 `json:"workflow"`
+	Resume                    string                 `json:"resume"`
+	WorkflowURI               string                 `json:"workflow_uri"`
+	ResumeURI                 string                 `json:"resume_uri"`
+	ActiveTasks               []storage.TaskMeta     `json:"active_tasks"`
+	RecentSessions            []sessionSummary       `json:"recent_sessions,omitempty"`
+	KGSnapshot                *storage.KGStats       `json:"kg_snapshot,omitempty"`
+	Memory                    []memorySnapshot       `json:"memory,omitempty"`
+	AvailableCommands         []commandSummary       `json:"available_commands,omitempty"`
+	AvailableSkills           []skillSummary         `json:"available_skills,omitempty"`
+	CommandInvocation         string                 `json:"command_invocation,omitempty"`
+	PostBootstrapInstructions string                 `json:"post_bootstrap_instructions,omitempty"`
+	FrictionTrend             *capture.FrictionTrend `json:"friction_trend,omitempty"`
 }
 
 // skillSummary reuses the commandSummary shape; alias semantics differ
@@ -198,6 +201,16 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 
 	// Recent sessions (last 5, most-recent-first) — graceful on error.
 	if sessions, err := vault.ListSessions(project, "", "", 0); err == nil {
+		// Compute the friction trend from the FULL history BEFORE the 5-session
+		// trim — computing after the trim would leave the 30d/90d windows
+		// meaningless. GetFrictionWindows always returns one window per request,
+		// so guard on real data (any window covering at least one session) rather
+		// than len(Windows): a zero-session project attaches nothing, while a
+		// frictionless-but-active project (RecentAvg 0, direction "stable")
+		// legitimately attaches. The omitempty pointer means nil = not attached.
+		if trend := capture.ComputeFrictionTrend(sessions, time.Now()); frictionTrendHasData(trend) {
+			result.FrictionTrend = &trend
+		}
 		if len(sessions) > 5 {
 			sessions = sessions[len(sessions)-5:]
 		}
@@ -265,6 +278,14 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// "run vp_cmd to list commands" is still better than silent capability.
 	result.PostBootstrapInstructions = renderPostBootstrapInstructions(result.AvailableCommands, result.AvailableSkills)
 
+	// Surface the proactive friction nudge in the directive itself. The directive
+	// is excluded from the token-shed truncation below, so appending the trend's
+	// actionable Message here guarantees the agent sees (and acts on) it even when
+	// the friction_trend field would otherwise be missed in a large payload.
+	if result.FrictionTrend != nil && result.FrictionTrend.Warn && result.FrictionTrend.Message != "" {
+		result.PostBootstrapInstructions += " " + result.FrictionTrend.Message
+	}
+
 	// Token budget truncation (TOKEN axis — independent of the byte-axis slim
 	// above): rough estimate 4 chars per token. Shed order: sessions → memory →
 	// KG → commands+skills (as a pair). This loop NEVER touches resume/workflow:
@@ -319,6 +340,19 @@ func renderPostBootstrapInstructions(cmds []commandSummary, skills []skillSummar
 		return base + " If no examples survived truncation, call `" + agentfile.CommandToolName + "` or `" + agentfile.SkillToolName + "` with no arguments to list them."
 	}
 	return base + " Examples from this project: " + joinExamples(examples) + "."
+}
+
+// frictionTrendHasData reports whether a computed trend covers at least one
+// session in any of its windows. Used to decide whether to attach the trend to
+// the bootstrap result: a zero-session project produces all-empty windows and
+// must not attach a misleading empty trend.
+func frictionTrendHasData(t capture.FrictionTrend) bool {
+	for _, w := range t.Windows {
+		if w.SessionCount > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func joinExamples(xs []string) string {

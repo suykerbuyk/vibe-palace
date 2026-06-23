@@ -167,6 +167,109 @@ func TestAnalyzeFriction_MaxScore(t *testing.T) {
 	}
 }
 
+// --- AnalyzeFrictionBreakdown tests ---
+
+func TestAnalyzeFrictionBreakdown_EmptyIsNonNilZero(t *testing.T) {
+	for _, input := range []string{"", "   ", "\n\t\n"} {
+		b, err := AnalyzeFrictionBreakdown(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if b == nil {
+			t.Fatalf("empty transcript %q yielded nil breakdown; want non-nil all-zero (presence semantics)", input)
+		}
+		if b.Corrections != 0 || b.Retries != 0 || b.ErrorDensity != 0 || b.Rework != 0 {
+			t.Errorf("empty transcript %q yielded non-zero breakdown %+v", input, *b)
+		}
+		if b.Total() != 0 {
+			t.Errorf("empty transcript %q Total() = %d, want 0", input, b.Total())
+		}
+	}
+}
+
+func TestAnalyzeFrictionBreakdown_SubScores(t *testing.T) {
+	transcript := `
+User: No not that, wrong file. Undo that.
+User: No not that, revert it. Wrong again.
+tool_use: read_file
+tool_use: read_file
+tool_use: read_file
+tool_use: read_file
+Error: file not found. Error: parse failed. Exception raised. Failed to compile.
+Traceback printed. Panic in handler. Error: nil pointer. Stack trace follows.
+User: Go back to the old approach. Start over entirely.
+User: Try again with a clean slate. Scratch that idea.
+User: Never mind, let's redo the whole thing. Try again please.
+`
+	b, err := AnalyzeFrictionBreakdown(transcript)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if b == nil {
+		t.Fatal("breakdown is nil")
+	}
+	// Each sub-score must be within its 0-25 cap.
+	for name, v := range map[string]int{
+		"Corrections":  b.Corrections,
+		"Retries":      b.Retries,
+		"ErrorDensity": b.ErrorDensity,
+		"Rework":       b.Rework,
+	} {
+		if v < 0 || v > 25 {
+			t.Errorf("%s sub-score %d out of range 0-25", name, v)
+		}
+	}
+	// Cross-check each sub-score against the underlying count functions.
+	lower := strings.ToLower(strings.TrimSpace(transcript))
+	tokens := countTokens(strings.TrimSpace(transcript))
+	if b.Corrections != countCorrections(lower) {
+		t.Errorf("Corrections = %d, want %d", b.Corrections, countCorrections(lower))
+	}
+	if b.Retries != countRetries(lower) {
+		t.Errorf("Retries = %d, want %d", b.Retries, countRetries(lower))
+	}
+	if b.ErrorDensity != countErrorDensity(lower, tokens) {
+		t.Errorf("ErrorDensity = %d, want %d", b.ErrorDensity, countErrorDensity(lower, tokens))
+	}
+	if b.Rework != countReworkSignals(lower) {
+		t.Errorf("Rework = %d, want %d", b.Rework, countReworkSignals(lower))
+	}
+}
+
+// TestAnalyzeFrictionBreakdown_TotalMatchesLegacy is the regression guard:
+// b.Total() must equal AnalyzeFriction for every input, proving the refactor is
+// byte-identical in composite behavior.
+func TestAnalyzeFrictionBreakdown_TotalMatchesLegacy(t *testing.T) {
+	inputs := []string{
+		"",
+		"   ",
+		"a perfectly smooth conversation with no friction at all",
+		strings.Repeat("wrong wrong wrong ", 10), // capped corrections
+		"tool_use: read\ntool_use: read\ntool_use: read",
+		strings.Repeat("error exception failed failure ", 50), // high density
+		`No not that, wrong. Undo. Revert. tool_use: a
+tool_use: a
+tool_use: a
+Error error error. Go back, start over, try again, scratch that.`,
+	}
+	for _, in := range inputs {
+		b, berr := AnalyzeFrictionBreakdown(in)
+		if berr != nil {
+			t.Fatalf("AnalyzeFrictionBreakdown(%q): %v", in, berr)
+		}
+		score, serr := AnalyzeFriction(in)
+		if serr != nil {
+			t.Fatalf("AnalyzeFriction(%q): %v", in, serr)
+		}
+		if b.Total() != score {
+			t.Errorf("input %q: Total() = %d, AnalyzeFriction = %d (must match)", in, b.Total(), score)
+		}
+		if score > 100 {
+			t.Errorf("input %q: composite %d exceeds 100", in, score)
+		}
+	}
+}
+
 // --- Helper function tests ---
 
 func TestCountCorrections(t *testing.T) {

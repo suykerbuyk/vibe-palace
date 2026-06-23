@@ -21,27 +21,34 @@ type WeeklyMetric struct {
 	MaxFriction  int     `json:"max_friction"`
 }
 
-// AnalyzeFriction scores a transcript for friction on a 0-100 scale.
+// AnalyzeFrictionBreakdown scores a transcript and returns the four capped
+// friction sub-scores. A nil return is never produced for a non-error path; an
+// empty transcript yields a non-nil all-zero breakdown (a measured zero). This
+// is the lower-level companion to AnalyzeFriction, which sums the breakdown.
 // Four signals are detected, each contributing a sub-score capped at 25.
-func AnalyzeFriction(transcript string) (int, error) {
+func AnalyzeFrictionBreakdown(transcript string) (*storage.FrictionBreakdown, error) {
 	trimmed := strings.TrimSpace(transcript)
 	if trimmed == "" {
-		return 0, nil
+		return &storage.FrictionBreakdown{}, nil
 	}
-
 	lower := strings.ToLower(trimmed)
 	tokens := countTokens(trimmed)
+	return &storage.FrictionBreakdown{
+		Corrections:  countCorrections(lower),
+		Retries:      countRetries(lower),
+		ErrorDensity: countErrorDensity(lower, tokens),
+		Rework:       countReworkSignals(lower),
+	}, nil
+}
 
-	corrections := countCorrections(lower)
-	retries := countRetries(lower)
-	errorDensity := countErrorDensity(lower, tokens)
-	rework := countReworkSignals(lower)
-
-	score := corrections + retries + errorDensity + rework
-	if score > 100 {
-		score = 100
+// AnalyzeFriction scores a transcript for friction on a 0-100 scale. It is a
+// thin wrapper over AnalyzeFrictionBreakdown that returns the composite total.
+func AnalyzeFriction(transcript string) (int, error) {
+	b, err := AnalyzeFrictionBreakdown(transcript)
+	if err != nil {
+		return 0, err
 	}
-	return score, nil
+	return b.Total(), nil
 }
 
 // correctionPhrases are multi-word phrases checked first (order matters).

@@ -554,7 +554,7 @@ flowchart TD
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `vp_bootstrap_context` | project?, max_tokens?, wing?, room? | Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive. Precedence-aware. |
+| `vp_bootstrap_context` | project?, max_tokens?, wing?, room? | Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + a `friction_trend` field (rolling 7/30/90-day windows, direction, warn flag) computed from the loaded history + post-bootstrap capability-announcement directive (with an actionable nudge appended when friction is rising and elevated). Precedence-aware. |
 | `vp_get_workflow` | project? | Workflow rules with precedence resolution (project > vault > embedded) |
 | `vp_get_resume` | project? | Current project state and open threads |
 | `vp_update_resume` | project?, section, content | Update a section of resume.md |
@@ -573,12 +573,12 @@ flowchart TD
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `vp_capture_session` | summary (req), title?, tag?, model?, decisions?, files_changed?, open_threads?, transcript? | Record a session. Auto-chunks and indexes transcript if provided. |
+| `vp_capture_session` | summary (req), title?, tag?, model?, decisions?, files_changed?, open_threads?, transcript? | Record a session. Auto-chunks and indexes transcript if provided, and records the `friction_breakdown` sub-scores plus the `model` (the SessionEnd hook extracts model from the live transcript; the MCP path uses the supplied `model`). |
 | `vp_list_projects` | — | All projects with session counts and date ranges |
 | `vp_get_project_context` | project?, sections?, max_tokens? | Condensed context: sessions, threads, decisions, friction |
 | `vp_search_sessions` | query?, project?, date_from?, date_to?, min_friction?, max_results? | Search session metadata |
 | `vp_get_session_detail` | project, date, iteration? | Full session markdown |
-| `vp_get_friction_trends` | project?, weeks? | Friction and efficiency trends |
+| `vp_get_friction_trends` | project?, weeks? | Friction and efficiency trends by ISO-calendar week (complementary to the rolling 7/30/90-day windows of the `vp trends` CLI command) |
 | `vp_get_effectiveness` | project? | Context availability vs outcome correlation |
 | `vp_append_iteration` | project?, iteration?, title (req), narrative (req), date? | Append iteration narrative |
 
@@ -1861,7 +1861,8 @@ implementation lives in `internal/embedder/onnx.go`.
 
 ### Task 5.3: Friction Analysis
 
-**Deliverable:** `internal/capture/friction.go`
+**Deliverable:** `internal/capture/friction.go`, `internal/capture/analytics.go`,
+`internal/capture/effectiveness.go`
 
 - `AnalyzeFriction(transcript string) (int, error)` — returns 0-100 score
 - Heuristics:
@@ -1870,6 +1871,36 @@ implementation lives in `internal/embedder/onnx.go`.
   - Error density (error/exception keywords per 1000 tokens)
   - Rework signals ("go back", "start over", "try again")
 - `GetFrictionTrends(project string, weeks int) ([]WeeklyMetric, error)`
+
+**Shipped analytics (friction-analytics-port):**
+
+- **Friction breakdown sub-scores.** Capture records a `FrictionBreakdown` —
+  four capped sub-scores (corrections, retries, error_density, rework; each
+  0–25) that sum to the 0–100 composite. Stored as `friction_breakdown` in
+  session frontmatter as a *pointer with presence semantics*: absent means
+  friction was never broken down (pre-feature sessions); present-but-all-zero
+  means a measured frictionless session. Analytics never conflate the two.
+- **Model extraction.** The SessionEnd hook extracts the model from the live
+  Claude JSONL transcript (`archive.InspectClaudeJSONL`) and stores it as
+  `model` in frontmatter (best-effort; the MCP capture path leaves it empty
+  unless supplied). Model-regression detection is therefore near-empty until
+  new sessions accrue and is labeled with model coverage (`X of Y sessions`).
+- **Pure slice-based analytics functions** in `internal/capture`:
+  `GetFrictionWindows` (rolling 7/30/90-day windows, complementary to the
+  ISO-week buckets of `GetFrictionTrends`), `TopFrictionSessions`,
+  `GetCorrectionDensitySeries`, `DetectModelRegressions`, `ComputeFrictionTrend`,
+  and `ComputeEffectiveness`. They take an already-loaded `[]SessionMeta`, so a
+  CLI command scans sessions once and feeds every metric.
+- **Three CLI commands** (each `--project/-p` auto-detected, plus `--json`):
+  `vp friction` (recent-week average + top-N triage, `--top/-n` default 10),
+  `vp trends` (rolling windows + correction density + model regressions), and
+  `vp effectiveness` (outcome = `100 - friction` for sessions WITH vs WITHOUT
+  context, a binary decisions/files-changed split).
+- **Proactive boot-warning.** `vp_bootstrap_context` (and `vp inject`) return a
+  `friction_trend` field (7/30/90 windows, recent average, direction, warn flag,
+  message); when friction is rising and elevated, an actionable nudge is appended
+  to the post-bootstrap instructions. Computed from the full session history
+  already loaded during bootstrap — zero extra I/O.
 
 **Acceptance criteria:**
 - Known high-friction transcripts score > 50

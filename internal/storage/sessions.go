@@ -15,28 +15,49 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// FrictionBreakdown holds the four capped friction sub-scores that sum to the
+// composite FrictionScore. It is stored as a pointer on SessionMeta with
+// presence semantics: a nil pointer means friction was never broken down (old
+// sessions), while a non-nil pointer with all-zero fields means a real,
+// measured frictionless session. Each field is the already-capped sub-score
+// (each 0-25), matching the composite computation. Total() reproduces the
+// composite (sum, capped at 100).
+type FrictionBreakdown struct {
+	Corrections  int `yaml:"corrections"`
+	Retries      int `yaml:"retries"`
+	ErrorDensity int `yaml:"error_density"`
+	Rework       int `yaml:"rework"`
+}
+
+// Total returns the composite friction score: the sum of the four sub-scores,
+// capped at 100. It is the authoritative reconstruction of FrictionScore.
+func (b FrictionBreakdown) Total() int {
+	return min(b.Corrections+b.Retries+b.ErrorDensity+b.Rework, 100)
+}
+
 // SessionMeta is the lightweight metadata parsed from YAML frontmatter.
 type SessionMeta struct {
-	ID            string   `yaml:"session_id"`
-	Project       string   `yaml:"project"`
-	Date          string   `yaml:"date"`
-	Iteration     int      `yaml:"iteration"`
-	Title         string   `yaml:"title,omitempty"`
-	Summary       string   `yaml:"summary,omitempty"`
-	Tag           string   `yaml:"tag,omitempty"`
-	Model         string   `yaml:"model,omitempty"`
-	Branch        string   `yaml:"branch,omitempty"`
-	Domain        string   `yaml:"domain,omitempty"`
-	DurationMin   int      `yaml:"duration_minutes,omitempty"`
-	Messages      int      `yaml:"messages,omitempty"`
-	TokensIn      int      `yaml:"tokens_in,omitempty"`
-	TokensOut     int      `yaml:"tokens_out,omitempty"`
-	ToolUses      int      `yaml:"tool_uses,omitempty"`
-	FrictionScore int      `yaml:"friction_score,omitempty"`
-	Decisions     []string `yaml:"decisions,omitempty"`
-	FilesChanged  []string `yaml:"files_changed,omitempty"`
-	OpenThreads   []string `yaml:"open_threads,omitempty"`
-	NotePath      string   `yaml:"note_path,omitempty"`
+	ID            string             `yaml:"session_id"`
+	Project       string             `yaml:"project"`
+	Date          string             `yaml:"date"`
+	Iteration     int                `yaml:"iteration"`
+	Title         string             `yaml:"title,omitempty"`
+	Summary       string             `yaml:"summary,omitempty"`
+	Tag           string             `yaml:"tag,omitempty"`
+	Model         string             `yaml:"model,omitempty"`
+	Branch        string             `yaml:"branch,omitempty"`
+	Domain        string             `yaml:"domain,omitempty"`
+	DurationMin   int                `yaml:"duration_minutes,omitempty"`
+	Messages      int                `yaml:"messages,omitempty"`
+	TokensIn      int                `yaml:"tokens_in,omitempty"`
+	TokensOut     int                `yaml:"tokens_out,omitempty"`
+	ToolUses      int                `yaml:"tool_uses,omitempty"`
+	FrictionScore int                `yaml:"friction_score,omitempty"`
+	Breakdown     *FrictionBreakdown `yaml:"friction_breakdown,omitempty"`
+	Decisions     []string           `yaml:"decisions,omitempty"`
+	FilesChanged  []string           `yaml:"files_changed,omitempty"`
+	OpenThreads   []string           `yaml:"open_threads,omitempty"`
+	NotePath      string             `yaml:"note_path,omitempty"`
 	// Archive is the vault-relative path to the transcript manifest
 	// associated with this session, if one was archived. Written by
 	// vp_capture_session when session_id + adapter resolve to an

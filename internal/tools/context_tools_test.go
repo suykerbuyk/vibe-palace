@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
@@ -123,6 +124,78 @@ func TestBootstrapWithSessions(t *testing.T) {
 	// Most recent first.
 	if br.RecentSessions[0].Date != "2026-04-07" {
 		t.Errorf("first session date = %q, want 2026-04-07", br.RecentSessions[0].Date)
+	}
+}
+
+func TestBootstrapFrictionTrendWarn(t *testing.T) {
+	vault, resolver := testSetup(t)
+
+	now := time.Now()
+	// Five older (within 30d, beyond 7d) low-friction sessions, then three
+	// recent high-friction sessions: a worsening trend with elevated recent
+	// friction. Seeding >5 sessions proves the trend is computed from the FULL
+	// history — if it were computed after the 5-session trim, the 30-day window
+	// would not see all eight sessions.
+	old := now.AddDate(0, 0, -20).Format("2006-01-02")
+	recent := now.AddDate(0, 0, -2).Format("2006-01-02")
+	for i := 0; i < 5; i++ {
+		if _, err := vault.WriteSession("test-proj", storage.SessionMeta{
+			Date: old, Title: "calm", FrictionScore: 10,
+		}, "body"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := vault.WriteSession("test-proj", storage.SessionMeta{
+			Date: recent, Title: "rough", FrictionScore: 90,
+		}, "body"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tool := BootstrapContextTool(resolver, vault)
+	params := json.RawMessage(`{"project":"test-proj"}`)
+	result, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	br := result.(BootstrapResult)
+
+	if br.FrictionTrend == nil {
+		t.Fatal("FrictionTrend = nil, want a worsening trend")
+	}
+	if !br.FrictionTrend.Warn {
+		t.Errorf("FrictionTrend.Warn = false, want true (direction=%q recent=%.1f)",
+			br.FrictionTrend.Direction, br.FrictionTrend.RecentAvg)
+	}
+	if br.FrictionTrend.Direction != "worsening" {
+		t.Errorf("Direction = %q, want worsening", br.FrictionTrend.Direction)
+	}
+	// Computed from the full history: the 30-day window must cover all 8 sessions,
+	// not just the 5 that survive the recent-sessions trim.
+	if len(br.FrictionTrend.Windows) < 2 || br.FrictionTrend.Windows[1].SessionCount != 8 {
+		t.Errorf("30d window session count = %v, want 8 (full history)", br.FrictionTrend.Windows)
+	}
+	// The nudge must be appended to the truncation-exempt directive.
+	if br.FrictionTrend.Message == "" {
+		t.Fatal("expected a non-empty trend Message")
+	}
+	if !strings.Contains(br.PostBootstrapInstructions, br.FrictionTrend.Message) {
+		t.Errorf("PostBootstrapInstructions missing the nudge:\n%s", br.PostBootstrapInstructions)
+	}
+}
+
+func TestBootstrapNoFrictionTrendEmptyVault(t *testing.T) {
+	vault, resolver := testSetup(t)
+	tool := BootstrapContextTool(resolver, vault)
+	params := json.RawMessage(`{"project":"test-proj"}`)
+	result, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	br := result.(BootstrapResult)
+	if br.FrictionTrend != nil {
+		t.Errorf("FrictionTrend = %+v, want nil on a zero-session vault", br.FrictionTrend)
 	}
 }
 

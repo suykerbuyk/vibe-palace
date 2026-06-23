@@ -191,13 +191,20 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 	// 7. Build auto summary from git log.
 	summary := AutoSummary(payload.CWD)
 
-	// 8. Read transcript for friction analysis (best-effort).
+	// 8. Read transcript for friction analysis (best-effort), and extract the
+	// model from the JSONL transcript (also best-effort — never fail capture).
 	transcript := ""
+	model := ""
 	if payload.TranscriptPath != "" {
 		if data, err := os.ReadFile(payload.TranscriptPath); err == nil {
 			transcript = string(data)
 		} else {
 			slog.Warn("hook: could not read transcript for friction analysis", "err", err)
+		}
+		if _, m, err := archive.InspectClaudeJSONL(payload.TranscriptPath); err == nil {
+			model = m
+		} else {
+			slog.Warn("hook: could not extract model from transcript", "err", err)
 		}
 	}
 
@@ -206,6 +213,7 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 		Project:          opts.ProjectSlug,
 		Summary:          summary,
 		Tag:              "auto-capture",
+		Model:            model,
 		Transcript:       transcript,
 		ArchiveSessionID: payload.SessionID,
 		NeedsIndexing:    true,
