@@ -315,3 +315,71 @@ func containsStr(s, sub string) bool {
 	}
 	return false
 }
+
+// TestVaultTidy_StrandedStatus verifies that when a sweep commits but the push
+// reaches no remote (a dead, configured remote), the handler reports
+// status:"stranded", stranded:true, and a loud summary rather than claiming
+// success.
+func TestVaultTidy_StrandedStatus(t *testing.T) {
+	root := initVaultRepo(t)
+	// A configured remote pointing at a path that does not exist: push + fetch
+	// both fail, so the commit lands locally but reaches no remote.
+	gitT(t, root, "remote", "add", "origin", filepath.Join(t.TempDir(), "nonexistent.git"))
+
+	vault := storage.NewVault(root)
+	tool := VaultTidyTool(vault)
+	mustWrite(t, vault, "Projects/vibe-palace/sessions/2026-06-17.md", "session\n")
+
+	push := true
+	params, _ := json.Marshal(vaultTidyParams{Push: &push})
+	res, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	m := res.(map[string]any)
+	if m["status"] != "stranded" {
+		t.Errorf("status = %v, want \"stranded\"", m["status"])
+	}
+	if m["stranded"] != true {
+		t.Errorf("stranded = %v, want true", m["stranded"])
+	}
+	if m["committed"] != true {
+		t.Errorf("committed = %v, want true (commit must still land locally)", m["committed"])
+	}
+	if sum, _ := m["summary"].(string); !strings.Contains(sum, "STRANDED") {
+		t.Errorf("summary = %q, want it to contain the loud STRANDED warning", sum)
+	}
+}
+
+// TestVaultTidy_PartialPushCount verifies the corrected "pushed to N/M remotes"
+// count: with one healthy and one dead remote the push lands on one of two, so
+// the result is honest (not stranded, status ok) and the summary reports 1/2.
+func TestVaultTidy_PartialPushCount(t *testing.T) {
+	root := initVaultRepo(t)
+	good := t.TempDir()
+	gitT(t, good, "init", "--bare", "-b", "main")
+	gitT(t, root, "remote", "add", "good", good)
+	gitT(t, root, "push", "good", "main")
+	gitT(t, root, "remote", "add", "dead", filepath.Join(t.TempDir(), "nonexistent.git"))
+
+	vault := storage.NewVault(root)
+	tool := VaultTidyTool(vault)
+	mustWrite(t, vault, "Projects/vibe-palace/sessions/2026-06-17.md", "session\n")
+
+	push := true
+	params, _ := json.Marshal(vaultTidyParams{Push: &push})
+	res, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	m := res.(map[string]any)
+	if m["status"] != "ok" {
+		t.Errorf("status = %v, want \"ok\" (one remote succeeded)", m["status"])
+	}
+	if m["stranded"] != false {
+		t.Errorf("stranded = %v, want false", m["stranded"])
+	}
+	if sum, _ := m["summary"].(string); !strings.Contains(sum, "pushed to 1/2 remotes") {
+		t.Errorf("summary = %q, want it to report \"pushed to 1/2 remotes\"", sum)
+	}
+}

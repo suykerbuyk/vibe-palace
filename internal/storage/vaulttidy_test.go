@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -421,5 +422,56 @@ func TestTidyVault_PushMultiRemoteSuccess(t *testing.T) {
 		if subj := gitRun(t, bare, "log", "-1", "--format=%s"); !strings.Contains(subj, "vault tidy") {
 			t.Errorf("remote %s missing tidy commit, subject=%q", bare, subj)
 		}
+	}
+}
+
+// TestTidyVault_StrandedWhenAllRemotesFail verifies that when a commit is
+// created and push is attempted against a configured remote that no longer
+// exists (push + fetch both fail), TidyResult.Stranded is true while the commit
+// still lands locally. The dead-remote path exercises the same per-remote error
+// surfacing CommitAndPushPaths uses, leaving RemoteResults populated with a
+// failure and AnyPushed()==false.
+func TestTidyVault_StrandedWhenAllRemotesFail(t *testing.T) {
+	dir := initTestRepo(t)
+	// Point a configured remote at a path that does not exist: both the push
+	// and the fallback fetch fail, surfacing a per-remote error.
+	gitRun(t, dir, "remote", "add", "origin", filepath.Join(t.TempDir(), "nonexistent.git"))
+
+	writeFile(t, dir, "Projects/vibe-palace/sessions/s.md", "session\n")
+
+	res, err := TidyVault(dir, true) // push requested against a dead remote
+	if err != nil {
+		t.Fatalf("TidyVault: %v", err)
+	}
+	if !res.Committed {
+		t.Error("expected local commit despite push failure")
+	}
+	if res.PushDowngraded {
+		t.Error("a configured remote was present — this is a strand, not a downgrade")
+	}
+	if len(res.RemoteResults) != 1 {
+		t.Fatalf("expected 1 remote result, got %#v", res.RemoteResults)
+	}
+	if !res.Stranded {
+		t.Errorf("expected Stranded=true when all remotes fail, results=%#v", res.RemoteResults)
+	}
+}
+
+// TestTidyVault_NotStrandedOnSuccess verifies a normal successful multi-remote
+// tidy leaves Stranded false.
+func TestTidyVault_NotStrandedOnSuccess(t *testing.T) {
+	dir := initTestRepo(t)
+	bare := initBareRemote(t)
+	gitRun(t, dir, "remote", "add", "origin", bare)
+	gitRun(t, dir, "push", "origin", "main")
+
+	writeFile(t, dir, "Projects/vibe-palace/sessions/s.md", "session\n")
+
+	res, err := TidyVault(dir, true)
+	if err != nil {
+		t.Fatalf("TidyVault: %v", err)
+	}
+	if res.Stranded {
+		t.Errorf("successful push must not be stranded, results=%#v", res.RemoteResults)
 	}
 }

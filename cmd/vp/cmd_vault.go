@@ -241,6 +241,17 @@ func cmdVaultCommit() *cli.Command {
 						fmt.Fprintf(os.Stderr, "  push %s: ok\n", remote)
 					}
 				}
+				if res.Stranded() {
+					fmt.Fprintf(os.Stderr, "⚠ STRANDED: commit %s reached no remote — local-only; run `vp vault sync` to reconcile\n", res.CommitSHA)
+					return cli.ExitSystem
+				}
+				if res.PopConflict {
+					fmt.Fprintf(os.Stderr, "⚠ AUTOSTASH CONFLICT: commit %s pushed, but your unswept edits could not be cleanly re-applied — resolve conflict markers in:\n", res.CommitSHA)
+					for _, p := range res.PopConflictPaths {
+						fmt.Fprintf(os.Stderr, "    %s\n", p)
+					}
+					fmt.Fprintln(os.Stderr, "  Your edits are preserved in `git stash list`.")
+				}
 			}
 			return cli.ExitOK
 		},
@@ -351,6 +362,17 @@ func cmdVaultTidy() *cli.Command {
 				} else {
 					fmt.Printf("  push %s: ok\n", remote)
 				}
+			}
+			if res.Stranded {
+				fmt.Fprintf(os.Stderr, "⚠ STRANDED: commit %s reached no remote — local-only; run `vp vault sync` to reconcile\n", res.CommitSHA)
+				return cli.ExitSystem
+			}
+			if res.PopConflict {
+				fmt.Fprintf(os.Stderr, "⚠ AUTOSTASH CONFLICT: commit %s pushed, but your unswept edits could not be cleanly re-applied — resolve conflict markers in:\n", res.CommitSHA)
+				for _, p := range res.PopConflictPaths {
+					fmt.Fprintf(os.Stderr, "    %s\n", p)
+				}
+				fmt.Fprintln(os.Stderr, "  Your edits are preserved in `git stash list`.")
 			}
 			return cli.ExitOK
 		},

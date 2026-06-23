@@ -219,6 +219,43 @@ deleted survives the filter, removal staged), `TestCommitAndPushPaths_MixedExist
 and `TestCommitAndPushPaths_NeverWrittenMemoryDir` (the iter-134 memory-dir
 regression at the unit boundary).
 
+### `internal/storage/` — Vault Sync Stranded-Commit Hardening
+
+Hardens `CommitAndPushPaths`'s push/rebase recovery so a dirty working tree can
+no longer strand a local capture commit, and so an already-ahead branch heals
+instead of compounding the strand across sessions (the observed ahead-2 → ahead-N
+divergence). Three behavioral fixes — a loud `Stranded` surface (commit created +
+push attempted but reached no remote, distinct from a clean no-remote downgrade),
+a `--autostash` rebase that distinguishes a TRUE content conflict (state-dir
+probe → abort + strand) from an autostash re-apply pop-conflict (commit still
+lands and pushes; `PopConflict`/`PopConflictPaths` name the marked files, edits
+preserved in the git stash), and a network-free already-ahead reconcile guard.
+
+The git-behavior assumptions were pinned by a throwaway-repo experiment (git
+2.54.0): a pop-conflict exits **0** (not non-zero), and `merge-base
+--is-ancestor` cannot discriminate true-vs-pop (it is true in both) — so the
+`rebase-merge`/`rebase-apply` state-dir is the only reliable discriminator.
+
+Unit coverage in `internal/storage/vaultsync_test.go` (all use real `git`
+subprocesses against bare-remote + clone fixtures — full-stack for this path):
+`TestPushResult_Stranded` (the four strand/not-strand cases),
+`TestCommitAndPushPaths_AutostashDirtyTreeRebases` (dirty tracked file no longer
+defeats the rebase — the core fix), `TestCommitAndPushPaths_AutostashPopConflict`
+(pop-conflict: commit landed + pushed, `PopConflict` set, NOT re-stranded, stash
+retained), `TestCommitAndPushPaths_TrueRebaseConflictStrands` (true conflict
+aborts + skips push + strands, no leftover rebase state),
+`TestCommitAndPushPaths_AlreadyAheadReconcilesThenPushes` /
+`_AlreadyAheadPersistentConflictStrands` /
+`_AlreadyAheadGuardFailsOpen` (Fix B reconcile, lossless strand-on-conflict, and
+fail-open / no-fire on push=false / unresolved-ref / not-ahead), plus
+`TestRebaseInProgress` and `TestUnmergedPaths` (the discriminator helpers). The
+pre-existing `TestCommitAndPushPaths_PushRebasesOnNonFastForward` stays green
+through the restructured branch. `internal/storage/vaulttidy_test.go` mirrors the
+strand at the `TidyVault` boundary (`TestTidyVault_StrandedWhenAllRemotesFail`,
+`_NotStrandedOnSuccess`); `internal/tools/system_tools_test.go` covers the MCP
+`vp_vault_tidy` surface (`TestVaultTidy_StrandedStatus` → `status:"stranded"`,
+`TestVaultTidy_PartialPushCount` → corrected `pushed to N/M remotes` count).
+
 ### `test/e2e/dispatch/` — Bash E2E (`make dispatch-e2e`)
 
 End-user-level verification that every parent-command exit-code

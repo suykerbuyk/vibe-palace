@@ -30,6 +30,9 @@ type TidyResult struct {
 	CommitSHA           string           // short SHA of the tidy commit (empty if no-op)
 	RemoteResults       map[string]error // per-remote push result (nil = success)
 	PushDowngraded      bool             // push requested but no remotes → local commit only
+	Stranded            bool             // commit created + push attempted but reached NO remote (local-only strand)
+	PopConflict         bool             // commit landed+pushed, but autostash re-apply conflicted (edits saved in stash)
+	PopConflictPaths    []string         // files left with conflict markers after the autostash re-apply
 }
 
 // SweepRule classifies a vault-relative path as a sweepable capture artifact.
@@ -307,6 +310,9 @@ func TidyVault(vaultPath string, push bool) (*TidyResult, error) {
 	result.CommitSHA = pushRes.CommitSHA
 	result.RemoteResults = pushRes.RemoteResults
 	result.PushDowngraded = downgraded
+	result.Stranded = pushRes.Stranded()
+	result.PopConflict = pushRes.PopConflict
+	result.PopConflictPaths = pushRes.PopConflictPaths
 	return result, nil
 }
 

@@ -198,14 +198,21 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 					remoteResults[name] = "ok"
 				}
 			}
+			status := "ok"
+			if res.Stranded() {
+				status = "stranded"
+			}
 			return map[string]any{
-				"status":         "ok",
-				"action":         p.Action,
-				"committed":      res.CommitSHA != "",
-				"commit_sha":     res.CommitSHA,
-				"pushed":         doPush,
-				"remote_results": remoteResults,
-				"skipped_paths":  res.SkippedPaths,
+				"status":             status,
+				"action":             p.Action,
+				"committed":          res.CommitSHA != "",
+				"commit_sha":         res.CommitSHA,
+				"pushed":             doPush,
+				"stranded":           res.Stranded(),
+				"pop_conflict":       res.PopConflict,
+				"pop_conflict_paths": res.PopConflictPaths,
+				"remote_results":     remoteResults,
+				"skipped_paths":      res.SkippedPaths,
 			}, nil
 		}
 
@@ -375,11 +382,13 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 		}
 
 		remoteResults := map[string]string{}
+		pushedCount := 0
 		for name, rerr := range res.RemoteResults {
 			if rerr != nil {
 				remoteResults[name] = rerr.Error()
 			} else {
 				remoteResults[name] = "ok"
+				pushedCount++
 			}
 		}
 
@@ -391,16 +400,27 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 			switch {
 			case res.PushDowngraded:
 				summary += "; no remotes — committed locally only"
+			case res.Stranded:
+				summary += "; STRANDED — commit NOT pushed to any remote (local-only; reconcile required)"
 			case len(remoteResults) > 0:
-				summary += fmt.Sprintf("; pushed to %d remote%s", len(remoteResults), plural(len(remoteResults)))
+				summary += fmt.Sprintf("; pushed to %d/%d remote%s", pushedCount, len(remoteResults), plural(len(remoteResults)))
+			}
+			if res.PopConflict {
+				summary += fmt.Sprintf("; pushed, but autostash re-apply conflicted — resolve markers in %s; edits saved in stash",
+					strings.Join(res.PopConflictPaths, ", "))
 			}
 		} else {
 			summary = fmt.Sprintf("no-op: nothing to sweep, %d reported%s",
 				len(res.Reported), userMemorySummarySuffix(len(res.ReportedUserContent)))
 		}
 
+		status := "ok"
+		if res.Stranded {
+			status = "stranded"
+		}
+
 		return map[string]any{
-			"status":                "ok",
+			"status":                status,
 			"dry_run":               false,
 			"swept":                 res.Swept,
 			"reported":              res.Reported,
@@ -408,6 +428,9 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 			"committed":             res.Committed,
 			"commit_sha":            res.CommitSHA,
 			"push_downgraded":       res.PushDowngraded,
+			"stranded":              res.Stranded,
+			"pop_conflict":          res.PopConflict,
+			"pop_conflict_paths":    res.PopConflictPaths,
 			"remote_results":        remoteResults,
 			"summary":               summary,
 		}, nil

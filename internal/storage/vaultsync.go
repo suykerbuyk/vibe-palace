@@ -32,6 +32,13 @@ type PushResult struct {
 	// not-yet-created path (e.g. an empty Projects/<slug>/memory/) or a
 	// misspelled path the caller should notice.
 	SkippedPaths []string
+	// PopConflict is set when the autostash re-apply after a rebase conflicted:
+	// the capture commit DID land and push, but the operator's shelved working-tree
+	// edits could not be cleanly re-applied. The edits are preserved in the git
+	// stash (recoverable via `git stash list`) and PopConflictPaths names the files
+	// left with conflict markers. NOT a strand — the commit reached the remote.
+	PopConflict      bool
+	PopConflictPaths []string
 }
 
 // AllPushed returns true if all remotes were pushed successfully.
@@ -57,6 +64,14 @@ func (r *PushResult) AnyPushed() bool {
 	return false
 }
 
+// Stranded reports a commit that was created and pushed-attempted but reached
+// NO remote — a local-only commit left behind despite remotes being configured.
+// Distinct from a clean no-remote downgrade (RemoteResults stays nil there, so
+// this returns false) and from a push=false local commit (also nil RemoteResults).
+func (r *PushResult) Stranded() bool {
+	return r.CommitSHA != "" && len(r.RemoteResults) > 0 && !r.AnyPushed()
+}
+
 // CommitAndPushPaths stages only the supplied paths, commits with a
 // machine-stamped message, and (when push=true) pushes to all configured
 // remotes. Dirty paths NOT in the supplied list are left dirty in the working
@@ -75,13 +90,45 @@ func (r *PushResult) AnyPushed() bool {
 // When push=false, the function stages, commits, and returns immediately with
 // PushResult.CommitSHA set and RemoteResults nil. No remote network I/O occurs
 // and the rebase / converge loop is skipped — useful for local-only commits
-// that a later push will carry to remotes.
+// that a later push will carry to remotes. Being ahead of a remote is NORMAL on
+// this path (accumulating local commits is the whole point), so the
+// already-ahead reconcile below NEVER fires when push=false.
+//
+// Already-ahead reconcile (push=true, ≥1 remote only): before staging the new
+// commit, each remote's branch is checked — network-free — against the explicit
+// remote-tracking ref via `git rev-list --count <remote>/<branch>..HEAD` (the
+// code never configures upstream tracking, so @{u} would fatal; the explicit ref
+// is used instead, and a never-pushed strand is ahead of even a stale ref). When
+// HEAD is ahead — a prior commit that was stranded and never reached the remote —
+// that remote is fetched and HEAD is rebased onto it WITH `--autostash` so the
+// new commit fast-forwards instead of stacking ahead-N and compounding the
+// strand. A reconcile that hits a persistent content conflict aborts the rebase
+// and is recorded so the push to that remote is skipped (the new commit still
+// commits locally — capture artifacts are never lost — and surfaces as a strand
+// via per-remote RemoteResults). Detection is fail-open: if `<remote>/<branch>`
+// does not resolve (never fetched) or the fetch fails, the guard simply skips
+// that remote — it is a compounding optimization, never a correctness gate, and
+// must never hard-error the commit path. The fetch happens ONLY in this rare
+// already-ahead state, so the happy path stays network-free.
+//
+// CROSS-CALLER IMPACT: this function is shared by tidy, `vault commit --push`,
+// and memory harvest, so the already-ahead reconcile fires for all three — and
+// that is intended. An already-ahead `vault commit --push` means a prior push
+// stranded and must reconcile before stacking more on top; the reconcile is
+// lossless (it replays the prior commit onto the remote tip, or commits locally
+// and strands on a real conflict).
 //
 // When push=true: the happy path is a sequential fast-forward push. On a
 // non-fast-forward rejection, the rejected remote is fetched and the local
-// branch is rebased onto it; the rebased commit is then pushed to that remote.
-// Fetch failures and rebase failures (after `rebase --abort`) surface directly
-// via per-remote RemoteResults rather than masquerading as downstream errors.
+// branch is rebased onto it WITH `--autostash` (so dirty tracked files that the
+// caller deliberately left unswept do not abort the rebase); the rebased commit
+// is then pushed to that remote. Fetch failures and true rebase content
+// conflicts (after `rebase --abort`) surface directly via per-remote
+// RemoteResults rather than masquerading as downstream errors. When the rebase
+// itself completes but the autostash re-apply conflicts, the capture commit
+// still lands and pushes — PushResult.PopConflict / PopConflictPaths name the
+// files left with conflict markers and the operator's edits are preserved in the
+// git stash (recoverable via `git stash list`); this is NOT a strand.
 //
 // After every successful rebase-and-push, prior remotes whose last-known-good
 // SHA differs from the new HEAD are converged via
@@ -121,6 +168,11 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 	// Local-only commits (push=false) must succeed on a vault with zero
 	// remotes.
 	var remotes []string
+	branch := "main"
+	// reconcileErrs maps a remote to a persistent reconcile conflict: such a
+	// remote's push is skipped below (its RemoteResults entry is the error) so
+	// the new commit lands locally and strands rather than compounding.
+	var reconcileErrs map[string]error
 	if push {
 		var rErr error
 		remotes, rErr = listRemotes(vaultPath)
@@ -130,6 +182,17 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 		if len(remotes) == 0 {
 			return nil, fmt.Errorf("no git remotes configured in vault %s", vaultPath)
 		}
+		// Resolve the branch once, up front: the already-ahead guard needs it
+		// before staging and the push loop reuses it. HEAD already exists (the
+		// vault always has at least a seed commit) so this resolves before our
+		// own commit. Keep the "main" fallback for a detached/empty HEAD.
+		if b, _ := gitCmd(vaultPath, 10*time.Second, "rev-parse", "--abbrev-ref", "HEAD"); b != "" {
+			branch = b
+		}
+		// Fix B: heal an already-ahead branch (a prior stranded commit) BEFORE a
+		// new commit stacks on top of it and compounds the strand. Gated on
+		// push && len(remotes) > 0 so it never fires on the downgrade path.
+		reconcileErrs = reconcileIfAhead(vaultPath, remotes, branch)
 	}
 
 	// Stage only the surviving paths. Chunk under a conservative argv byte
@@ -165,17 +228,22 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 		return result, nil
 	}
 
-	// Push to all remotes.
-	branch, _ := gitCmd(vaultPath, 10*time.Second, "rev-parse", "--abbrev-ref", "HEAD")
-	if branch == "" {
-		branch = "main"
-	}
-
+	// Push to all remotes. branch was resolved up front (before the
+	// already-ahead guard) and is reused here.
 	result.RemoteResults = make(map[string]error, len(remotes))
 	remoteSHA := make(map[string]string, len(remotes))
 	rebasedAny := false
 
 	for _, remote := range remotes {
+		// A persistent already-ahead reconcile conflict (Fix B) means this
+		// remote diverges on content the prior strand can't replay cleanly.
+		// Skip the push and surface the reconcile error so the new commit (which
+		// did land locally above) reports as stranded rather than being retried.
+		if err := reconcileErrs[remote]; err != nil {
+			result.RemoteResults[remote] = err
+			continue
+		}
+
 		curSHA, _ := gitCmd(vaultPath, 10*time.Second, "rev-parse", "HEAD")
 
 		if _, pushErr := gitCmd(vaultPath, 60*time.Second, "push", remote, branch); pushErr == nil {
@@ -193,12 +261,29 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 			continue
 		}
 
-		// Rebase failure aborts cleanly so HEAD does not stay polluted for
-		// the next remote in the loop.
-		if _, rebaseErr := gitCmd(vaultPath, 60*time.Second, "rebase", remote+"/"+branch); rebaseErr != nil {
+		// Rebase the local capture commit onto the freshly-fetched remote tip.
+		// --autostash shelves any dirty tracked files (tidy deliberately leaves
+		// non-swept dirt in the tree) so the rebase can start, then re-applies
+		// them. The state-dir — NOT the exit code — is the source of truth for
+		// whether the rebase landed: a true content conflict leaves rebase-merge/
+		// rebase-apply in place (commit did NOT land), while an autostash re-apply
+		// conflict completes the rebase (commit landed) yet may exit non-zero on
+		// older git or exit 0 with conflict markers on modern git.
+		_, rebaseErr := gitCmd(vaultPath, 60*time.Second, "rebase", "--autostash", remote+"/"+branch)
+		if rebaseInProgress(vaultPath) {
+			// TRUE rebase conflict: the capture commit did not land. Abort
+			// (this also restores the autostashed working-tree edits) and skip
+			// the push for this remote — the commit stays local (Stranded surfaces it).
 			_, _ = gitCmd(vaultPath, 10*time.Second, "rebase", "--abort")
 			result.RemoteResults[remote] = fmt.Errorf("rebase against %s failed: %w", remote, rebaseErr)
 			continue
+		}
+		// Rebase completed: the capture commit is on HEAD and will push below.
+		// If the autostash re-apply conflicted, the operator's edits are retained
+		// in the stash and the named files carry conflict markers — surface loudly.
+		if unmerged := unmergedPaths(vaultPath); len(unmerged) > 0 {
+			result.PopConflict = true
+			result.PopConflictPaths = unmerged
 		}
 
 		rebasedAny = true
@@ -267,6 +352,70 @@ func CommitAndPushPathsWithDowngrade(vaultPath, message string, paths []string, 
 		return nil, downgraded, err
 	}
 	return res, downgraded, nil
+}
+
+// reconcileIfAhead heals branches that are already ahead of a remote — the
+// signature of a prior commit that was stranded (never pushed) — BEFORE a new
+// commit stacks on top and compounds the strand (the ahead-2 → ahead-N bug). It
+// runs only on the push path with remotes present; being ahead is normal and
+// intended on the push=false / no-remote downgrade path.
+//
+// Detection is network-free and does NOT depend on @{u}: the code never
+// configures upstream tracking (pushes are explicit `git push <remote>
+// <branch>`), so @{u} would fatal "no upstream configured". The explicit
+// remote-tracking ref `<remote>/<branch>` is used instead. A stranded commit was
+// never pushed, so it is ahead of even a STALE `<remote>/<branch>` — no fetch is
+// needed to detect it.
+//
+// The guard is fail-open: a remote whose `<remote>/<branch>` ref does not resolve
+// (never fetched) is skipped, and a fetch failure is skipped — it is a
+// compounding optimization, never a correctness gate, so it must never hard-error
+// the commit path. The single fetch occurs ONLY in the rare already-ahead state,
+// keeping the happy path network-free.
+//
+// For each ahead remote it fetches then `git rebase --autostash <remote>/<branch>`
+// (autostash shelves any unswept dirty tracked files so the rebase can start),
+// reusing the Fix A discriminator: if rebaseInProgress afterward, a TRUE content
+// conflict occurred — the rebase is aborted (restoring any autostashed dirt) and
+// the remote is recorded in the returned map so the caller skips its push and
+// strands the new commit. Otherwise the reconcile succeeded: HEAD now sits on the
+// remote tip with the prior commit replayed, and the new commit will
+// fast-forward. The returned map is nil when nothing conflicted.
+func reconcileIfAhead(vaultPath string, remotes []string, branch string) map[string]error {
+	var reconcileErrs map[string]error
+	for _, remote := range remotes {
+		ref := remote + "/" + branch
+		// Fail-open: skip remotes whose tracking ref never materialized.
+		if _, err := gitCmd(vaultPath, 10*time.Second, "rev-parse", "--verify", "--quiet", ref); err != nil {
+			continue
+		}
+		// Network-free ahead check against the (possibly stale) tracking ref.
+		count, err := gitCmd(vaultPath, 10*time.Second, "rev-list", "--count", ref+"..HEAD")
+		if err != nil || count == "" || count == "0" {
+			continue
+		}
+		// Already ahead: a prior commit never reached this remote. Reconcile now —
+		// the only fetch on an otherwise network-free path — so the new commit
+		// fast-forwards. A fetch failure is fail-open (skip; the normal push loop
+		// retains its own fetch+rebase recovery).
+		if _, err := gitCmd(vaultPath, 60*time.Second, "fetch", remote); err != nil {
+			continue
+		}
+		_, rebaseErr := gitCmd(vaultPath, 60*time.Second, "rebase", "--autostash", ref)
+		if rebaseInProgress(vaultPath) {
+			// TRUE conflict: the prior strand cannot replay onto the remote tip.
+			// Abort (restores any autostashed dirt) and record the failure so the
+			// caller skips this remote's push; the new commit stays local (strand).
+			_, _ = gitCmd(vaultPath, 10*time.Second, "rebase", "--abort")
+			if reconcileErrs == nil {
+				reconcileErrs = make(map[string]error, 1)
+			}
+			reconcileErrs[remote] = fmt.Errorf("reconcile against %s failed: %w", remote, rebaseErr)
+		}
+		// else: reconcile succeeded — HEAD advanced onto the remote tip with the
+		// prior commit replayed; the new commit fast-forwards.
+	}
+	return reconcileErrs
 }
 
 // HasUncommittedChanges reports whether `git status --porcelain` limited to the
@@ -369,6 +518,53 @@ func forceWithLease(vaultPath, remote, branch, expectedSHA string) error {
 	lease := fmt.Sprintf("--force-with-lease=refs/heads/%s:%s", branch, expectedSHA)
 	_, err := gitCmd(vaultPath, 60*time.Second, "push", lease, remote, branch)
 	return err
+}
+
+// rebaseInProgress reports whether a rebase is mid-flight in the vault repo,
+// i.e. git's rebase-merge or rebase-apply state directory exists. This is the
+// reliable discriminator between a TRUE rebase conflict (state dir present,
+// commit not landed) and a completed rebase whose autostash re-apply conflicted
+// (state dir absent, commit landed) — the rebase exit code is NOT reliable for
+// this across git versions.
+func rebaseInProgress(vaultPath string) bool {
+	for _, name := range []string{"rebase-merge", "rebase-apply"} {
+		p, err := gitCmd(vaultPath, 5*time.Second, "rev-parse", "--git-path", name)
+		if err != nil || p == "" {
+			continue
+		}
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(vaultPath, p)
+		}
+		if fi, statErr := os.Stat(p); statErr == nil && fi.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// unmergedPaths returns the de-duplicated set of working-tree paths with
+// unmerged (conflict) entries, via `git ls-files -u`. Empty when the tree is
+// clean. Used after a completed rebase to detect an autostash re-apply conflict.
+func unmergedPaths(vaultPath string) []string {
+	out, err := gitCmd(vaultPath, 10*time.Second, "ls-files", "-u")
+	if err != nil || out == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var paths []string
+	for line := range strings.SplitSeq(out, "\n") {
+		// format: "<mode> <sha> <stage>\t<path>"
+		tab := strings.IndexByte(line, '\t')
+		if tab < 0 {
+			continue
+		}
+		p := line[tab+1:]
+		if p != "" && !seen[p] {
+			seen[p] = true
+			paths = append(paths, p)
+		}
+	}
+	return paths
 }
 
 // short returns the first 7 characters of a SHA for log breadcrumbs, or the
