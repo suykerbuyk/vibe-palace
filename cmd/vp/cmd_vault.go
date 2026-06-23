@@ -446,16 +446,17 @@ func printVaultRemoteLine(st storage.RemoteStatusJSON) {
 			}
 			fmt.Println(")")
 		}
+	case st.BehindKnown && st.Behind > 0:
+		fmt.Printf("%s: BEHIND %d — run `vp vault pull`\n", st.Remote, st.Behind)
+	case st.BehindKnown:
+		fmt.Printf("%s: in sync\n", st.Remote)
 	default:
-		if st.BehindKnown {
-			fmt.Printf("%s: in sync (ahead 0, behind %d)\n", st.Remote, st.Behind)
-		} else {
-			fmt.Printf("%s: ahead 0 (behind unknown — run without --no-fetch", st.Remote)
-			if age := remoteAge(st); age != "" {
-				fmt.Printf("; last fetch %s", age)
-			}
-			fmt.Println(")")
+		// Behind unknown (cached / --no-fetch path).
+		fmt.Printf("%s: ahead 0 (behind unknown — run without --no-fetch", st.Remote)
+		if age := remoteAge(st); age != "" {
+			fmt.Printf("; last fetch %s", age)
 		}
+		fmt.Println(")")
 	}
 }
 

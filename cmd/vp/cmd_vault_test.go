@@ -297,6 +297,59 @@ func TestVaultStatusJSONInSync(t *testing.T) {
 	}
 }
 
+// TestVaultStatusLineLabels verifies printVaultRemoteLine never labels a remote
+// we are behind on as "in sync" (the default-case bug), and renders the other
+// states correctly.
+func TestVaultStatusLineLabels(t *testing.T) {
+	cases := []struct {
+		name    string
+		st      storage.RemoteStatusJSON
+		want    string
+		notWant string
+	}{
+		{
+			name:    "behind known nonzero is flagged, not in sync",
+			st:      storage.RemoteStatusJSON{Remote: "origin", Reachable: true, BehindKnown: true, Behind: 3},
+			want:    "BEHIND 3",
+			notWant: "in sync",
+		},
+		{
+			name: "behind known zero is in sync",
+			st:   storage.RemoteStatusJSON{Remote: "origin", Reachable: true, BehindKnown: true, Behind: 0},
+			want: "in sync",
+		},
+		{
+			name:    "unreachable is not in sync",
+			st:      storage.RemoteStatusJSON{Remote: "vault", Reachable: false},
+			want:    "unreachable",
+			notWant: "in sync",
+		},
+		{
+			name:    "diverged",
+			st:      storage.RemoteStatusJSON{Remote: "origin", Reachable: true, Ahead: 2, BehindKnown: true, Behind: 5, Diverged: true},
+			want:    "DIVERGED",
+			notWant: "in sync",
+		},
+		{
+			name:    "ahead unpushed",
+			st:      storage.RemoteStatusJSON{Remote: "origin", Reachable: true, Ahead: 1, Unpushed: true, BehindKnown: true, Behind: 0},
+			want:    "UNPUSHED",
+			notWant: "in sync",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := captureStdout(t, func() { printVaultRemoteLine(tc.st) })
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("output %q does not contain %q", out, tc.want)
+			}
+			if tc.notWant != "" && strings.Contains(out, tc.notWant) {
+				t.Errorf("output %q must not contain %q", out, tc.notWant)
+			}
+		})
+	}
+}
+
 // TestVaultStatusNoFetch verifies --no-fetch leaves behind_known=false.
 func TestVaultStatusNoFetch(t *testing.T) {
 	setupVaultWithOrigin(t)
