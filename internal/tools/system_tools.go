@@ -266,16 +266,24 @@ func gitRemoteList(root string) ([]string, error) {
 }
 
 func gitPull(root string, remotes []string) (string, error) {
+	// storage.Pull is best-effort across mirror remotes: it attempts each,
+	// self-healing phantom Templates/commands/*.md dirt before the merge, and stops
+	// early only when a merge conflict leaves the tree unmergeable. gitPull folds
+	// captured output up to and including the first failing remote and returns that
+	// remote's error — but later mirrors may already have been merged successfully.
+	res, err := storage.Pull(root, remotes)
+	if err != nil {
+		return "", err
+	}
+
 	var buf strings.Builder
+	for _, p := range res.HealedTemplates {
+		fmt.Fprintf(&buf, "[heal] discarded stale local %s (matched remote)\n", p)
+	}
 	for _, remote := range remotes {
-		cmd := exec.Command("git", "-C", root, "pull", remote, "main")
-		var combined bytes.Buffer
-		cmd.Stdout = &combined
-		cmd.Stderr = &combined
-		err := cmd.Run()
-		fmt.Fprintf(&buf, "[pull %s] %s\n", remote, strings.TrimSpace(combined.String()))
-		if err != nil {
-			return buf.String(), fmt.Errorf("%s: %w", remote, err)
+		fmt.Fprintf(&buf, "[pull %s] %s\n", remote, strings.TrimSpace(res.RemoteOutput[remote]))
+		if rerr := res.RemoteResults[remote]; rerr != nil {
+			return buf.String(), fmt.Errorf("%s: %w", remote, rerr)
 		}
 	}
 	return buf.String(), nil

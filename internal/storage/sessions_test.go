@@ -4,11 +4,14 @@
 package storage
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
 func TestWriteAndReadSession(t *testing.T) {
@@ -24,15 +27,17 @@ func TestWriteAndReadSession(t *testing.T) {
 	}
 	body := "## Transcript\n\nSome session content here.\n"
 
+	fp := surface.WriterFingerprint(v.Root)
 	id, err := v.WriteSession("proj", meta, body)
 	if err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
-	if id != "2026-03-15-01" {
-		t.Errorf("ID = %q, want %q", id, "2026-03-15-01")
+	wantID := fmt.Sprintf("2026-03-15-%s-01", fp)
+	if id != wantID {
+		t.Errorf("ID = %q, want %q", id, wantID)
 	}
 
-	gotMeta, gotBody, err := v.ReadSession("proj", "2026-03-15", 1)
+	gotMeta, gotBody, err := v.ReadSession("proj", "2026-03-15", fp, 1)
 	if err != nil {
 		t.Fatalf("ReadSession: %v", err)
 	}
@@ -64,6 +69,7 @@ func TestWriteAndReadSession(t *testing.T) {
 
 func TestWriteSessionAutoIncrement(t *testing.T) {
 	v := testVault(t)
+	fp := surface.WriterFingerprint(v.Root)
 
 	for i := 1; i <= 3; i++ {
 		meta := SessionMeta{Date: "2026-03-15", Title: "Session"}
@@ -71,26 +77,18 @@ func TestWriteSessionAutoIncrement(t *testing.T) {
 		if err != nil {
 			t.Fatalf("WriteSession %d: %v", i, err)
 		}
-		want := "2026-03-15-" + string(rune('0'+i))
-		wantFmt := ""
-		switch i {
-		case 1:
-			wantFmt = "2026-03-15-01"
-		case 2:
-			wantFmt = "2026-03-15-02"
-		case 3:
-			wantFmt = "2026-03-15-03"
-		}
+		wantFmt := fmt.Sprintf("2026-03-15-%s-%02d", fp, i)
 		if id != wantFmt {
-			t.Errorf("iteration %d: ID = %q, want %q (also tried %q)", i, id, wantFmt, want)
+			t.Errorf("iteration %d: ID = %q, want %q", i, id, wantFmt)
 		}
 	}
 }
 
 func TestNextIteration(t *testing.T) {
 	v := testVault(t)
+	fp := surface.WriterFingerprint(v.Root)
 
-	n, err := v.NextIteration("proj", "2026-03-15")
+	n, err := v.NextIteration("proj", "2026-03-15", fp)
 	if err != nil {
 		t.Fatalf("NextIteration: %v", err)
 	}
@@ -104,7 +102,7 @@ func TestNextIteration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	n, err = v.NextIteration("proj", "2026-03-15")
+	n, err = v.NextIteration("proj", "2026-03-15", fp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +226,7 @@ func TestWriteSessionInvalidProject(t *testing.T) {
 
 func TestReadSessionNotFound(t *testing.T) {
 	v := testVault(t)
-	_, _, err := v.ReadSession("proj", "2026-03-15", 1)
+	_, _, err := v.ReadSession("proj", "2026-03-15", surface.WriterFingerprint(v.Root), 1)
 	if err == nil {
 		t.Error("ReadSession for missing file should return error")
 	}
@@ -264,7 +262,7 @@ func TestSessionFileFormat(t *testing.T) {
 	}
 	_ = id
 
-	path, _ := v.SessionFile("proj", "2026-03-15", 1)
+	path, _ := v.SessionFile("proj", "2026-03-15", surface.WriterFingerprint(v.Root), 1)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -286,6 +284,7 @@ func containsLine(s, line string) bool {
 
 func TestWriteSessionNeedsIndexing(t *testing.T) {
 	v := testVault(t)
+	fp := surface.WriterFingerprint(v.Root)
 
 	// Round-trip with NeedsIndexing: true.
 	meta := SessionMeta{
@@ -298,7 +297,7 @@ func TestWriteSessionNeedsIndexing(t *testing.T) {
 		t.Fatalf("WriteSession: %v", err)
 	}
 
-	got, _, err := v.ReadSession("proj", "2026-03-15", 1)
+	got, _, err := v.ReadSession("proj", "2026-03-15", fp, 1)
 	if err != nil {
 		t.Fatalf("ReadSession: %v", err)
 	}
@@ -318,7 +317,7 @@ func TestWriteSessionNeedsIndexing(t *testing.T) {
 		t.Fatalf("WriteSession: %v", err)
 	}
 
-	path, _ := v.SessionFile("proj", "2026-03-16", 1)
+	path, _ := v.SessionFile("proj", "2026-03-16", fp, 1)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -330,6 +329,7 @@ func TestWriteSessionNeedsIndexing(t *testing.T) {
 
 func TestRewriteSessionOverwritesInPlace(t *testing.T) {
 	v := testVault(t)
+	fp := surface.WriterFingerprint(v.Root)
 
 	// Seed a session via the normal writer.
 	id, err := v.WriteSession("proj", SessionMeta{
@@ -340,8 +340,9 @@ func TestRewriteSessionOverwritesInPlace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
-	if id != "2026-05-01-01" {
-		t.Fatalf("id = %q, want 2026-05-01-01", id)
+	wantID := fmt.Sprintf("2026-05-01-%s-01", fp)
+	if id != wantID {
+		t.Fatalf("id = %q, want %q", id, wantID)
 	}
 
 	// Rewrite the SAME date+iteration with modified meta/body.
@@ -355,12 +356,12 @@ func TestRewriteSessionOverwritesInPlace(t *testing.T) {
 		Decisions:   []string{"d1"},
 		OpenThreads: []string{"t1"},
 	}
-	if err := v.RewriteSession("proj", "2026-05-01", 1, newMeta, "## Summary\n\nenriched summary\n"); err != nil {
+	if err := v.RewriteSession("proj", "2026-05-01", fp, 1, newMeta, "## Summary\n\nenriched summary\n"); err != nil {
 		t.Fatalf("RewriteSession: %v", err)
 	}
 
 	// No new iteration should have been created.
-	if n, _ := v.NextIteration("proj", "2026-05-01"); n != 2 {
+	if n, _ := v.NextIteration("proj", "2026-05-01", fp); n != 2 {
 		t.Errorf("NextIteration = %d, want 2 (iteration must NOT be bumped)", n)
 	}
 	dir, _ := v.SessionDir("proj")
@@ -370,7 +371,7 @@ func TestRewriteSessionOverwritesInPlace(t *testing.T) {
 	}
 
 	// Round-trips with the new content and pinned identity fields.
-	got, body, err := v.ReadSession("proj", "2026-05-01", 1)
+	got, body, err := v.ReadSession("proj", "2026-05-01", fp, 1)
 	if err != nil {
 		t.Fatalf("ReadSession: %v", err)
 	}
@@ -383,8 +384,8 @@ func TestRewriteSessionOverwritesInPlace(t *testing.T) {
 	if got.EnrichedBy != "test-model" {
 		t.Errorf("EnrichedBy = %q, want test-model", got.EnrichedBy)
 	}
-	if got.ID != "2026-05-01-01" {
-		t.Errorf("ID = %q, want 2026-05-01-01", got.ID)
+	if got.ID != wantID {
+		t.Errorf("ID = %q, want %q", got.ID, wantID)
 	}
 	if got.Project != "proj" || got.Iteration != 1 {
 		t.Errorf("identity drift: project=%q iteration=%d", got.Project, got.Iteration)
@@ -396,6 +397,7 @@ func TestRewriteSessionOverwritesInPlace(t *testing.T) {
 
 func TestRewriteSessionByteIdenticalFraming(t *testing.T) {
 	v := testVault(t)
+	fp := surface.WriterFingerprint(v.Root)
 
 	meta := SessionMeta{
 		Date:      "2026-05-02",
@@ -411,7 +413,7 @@ func TestRewriteSessionByteIdenticalFraming(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
-	path, _ := v.SessionFile("proj", "2026-05-02", 1)
+	path, _ := v.SessionFile("proj", "2026-05-02", fp, 1)
 	writeBytes, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -423,7 +425,7 @@ func TestRewriteSessionByteIdenticalFraming(t *testing.T) {
 	framed := meta
 	framed.Project = "proj"
 	framed.Iteration = 1
-	framed.ID = "2026-05-02-01"
+	framed.ID = fmt.Sprintf("2026-05-02-%s-01", fp)
 	got, err := marshalSessionFile(framed, body)
 	if err != nil {
 		t.Fatalf("marshalSessionFile: %v", err)
@@ -435,10 +437,10 @@ func TestRewriteSessionByteIdenticalFraming(t *testing.T) {
 
 func TestRewriteSessionInvalidArgs(t *testing.T) {
 	v := testVault(t)
-	if err := v.RewriteSession("BAD PROJECT", "2026-05-01", 1, SessionMeta{}, ""); err == nil {
+	if err := v.RewriteSession("BAD PROJECT", "2026-05-01", "", 1, SessionMeta{}, ""); err == nil {
 		t.Error("RewriteSession with invalid project should error")
 	}
-	if err := v.RewriteSession("proj", "not-a-date", 1, SessionMeta{}, ""); err == nil {
+	if err := v.RewriteSession("proj", "not-a-date", "", 1, SessionMeta{}, ""); err == nil {
 		t.Error("RewriteSession with invalid date should error")
 	}
 }
@@ -463,6 +465,7 @@ func TestFrictionBreakdownTotal(t *testing.T) {
 
 func TestSessionBreakdownRoundTrip(t *testing.T) {
 	v := testVault(t)
+	fp := surface.WriterFingerprint(v.Root)
 
 	// A non-nil all-zero breakdown is a measured frictionless session and must
 	// round-trip as present (distinguishable from nil).
@@ -474,7 +477,7 @@ func TestSessionBreakdownRoundTrip(t *testing.T) {
 	}, ""); err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
-	got, _, err := v.ReadSession("proj", "2026-03-15", 1)
+	got, _, err := v.ReadSession("proj", "2026-03-15", fp, 1)
 	if err != nil {
 		t.Fatalf("ReadSession: %v", err)
 	}
@@ -485,7 +488,7 @@ func TestSessionBreakdownRoundTrip(t *testing.T) {
 		t.Errorf("Breakdown.Total() = %d, want 0", got.Breakdown.Total())
 	}
 	// The key must be present in the written YAML.
-	path, _ := v.SessionFile("proj", "2026-03-15", 1)
+	path, _ := v.SessionFile("proj", "2026-03-15", fp, 1)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -503,7 +506,7 @@ func TestSessionBreakdownRoundTrip(t *testing.T) {
 	}, ""); err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
-	got2, _, err := v.ReadSession("proj", "2026-03-16", 1)
+	got2, _, err := v.ReadSession("proj", "2026-03-16", fp, 1)
 	if err != nil {
 		t.Fatalf("ReadSession: %v", err)
 	}
@@ -521,14 +524,14 @@ func TestSessionBreakdownRoundTrip(t *testing.T) {
 	}, ""); err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
-	got3, _, err := v.ReadSession("proj", "2026-03-17", 1)
+	got3, _, err := v.ReadSession("proj", "2026-03-17", fp, 1)
 	if err != nil {
 		t.Fatalf("ReadSession: %v", err)
 	}
 	if got3.Breakdown != nil {
 		t.Errorf("Breakdown = %+v after round-trip, want nil (omitted)", *got3.Breakdown)
 	}
-	path3, _ := v.SessionFile("proj", "2026-03-17", 1)
+	path3, _ := v.SessionFile("proj", "2026-03-17", fp, 1)
 	data3, err := os.ReadFile(path3)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -560,12 +563,13 @@ func TestWriteSessionAllFields(t *testing.T) {
 		NotePath:      "/notes/session.md",
 	}
 
+	fp := surface.WriterFingerprint(v.Root)
 	_, err := v.WriteSession("proj", meta, "transcript")
 	if err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
 
-	got, _, err := v.ReadSession("proj", "2026-03-15", 1)
+	got, _, err := v.ReadSession("proj", "2026-03-15", fp, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,9 +587,127 @@ func TestWriteSessionAllFields(t *testing.T) {
 	}
 
 	// Verify session file lives in expected path.
-	path, _ := v.SessionFile("proj", "2026-03-15", 1)
+	path, _ := v.SessionFile("proj", "2026-03-15", fp, 1)
 	wantDir := filepath.Join(v.Root, "Projects", "proj", "sessions")
 	if filepath.Dir(path) != wantDir {
 		t.Errorf("session dir = %q, want %q", filepath.Dir(path), wantDir)
+	}
+}
+
+// TestNextIterationHostScoped pins that NextIteration counts only files written
+// by the SAME writer fingerprint, so two offline hosts each independently
+// allocate iterations starting at 01 for the same project+date.
+func TestNextIterationHostScoped(t *testing.T) {
+	v := testVault(t)
+	dir, _ := v.SessionDir("proj")
+	if err := EnsureDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	const fpA, fpB = "aaaaaaaa", "bbbbbbbb"
+
+	// Seed one file for host A.
+	pathA, _ := v.SessionFile("proj", "2026-06-23", fpA, 1)
+	if err := os.WriteFile(pathA, []byte("---\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Host A's next iteration is 2; host B is unaffected and still starts at 1.
+	if n, err := v.NextIteration("proj", "2026-06-23", fpA); err != nil || n != 2 {
+		t.Errorf("NextIteration(fpA) = %d, err=%v; want 2", n, err)
+	}
+	if n, err := v.NextIteration("proj", "2026-06-23", fpB); err != nil || n != 1 {
+		t.Errorf("NextIteration(fpB) = %d, err=%v; want 1 (host-scoped)", n, err)
+	}
+}
+
+// TestNextIterationGap pins that NextIteration returns max(NN)+1, not count+1:
+// with files 01 and 03 present (02 deleted), the next iteration must be 04 so a
+// new note never overwrites the existing 03.
+func TestNextIterationGap(t *testing.T) {
+	v := testVault(t)
+	dir, _ := v.SessionDir("proj")
+	if err := EnsureDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	const fp = "aaaaaaaa"
+
+	for _, it := range []int{1, 3} {
+		p, _ := v.SessionFile("proj", "2026-06-23", fp, it)
+		if err := os.WriteFile(p, []byte("---\n---\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if n, err := v.NextIteration("proj", "2026-06-23", fp); err != nil || n != 4 {
+		t.Errorf("NextIteration with gap = %d, err=%v; want 4 (max+1, not count+1)", n, err)
+	}
+}
+
+// TestCrossHostNoCollision simulates two distinct hosts writing the same
+// project+date+iteration: the previously-colliding case. With fingerprinting
+// they produce distinct filenames AND distinct meta.IDs, and each round-trips
+// to its own content (no add/add conflict, no identity ambiguity).
+func TestCrossHostNoCollision(t *testing.T) {
+	v := testVault(t)
+	const fpA, fpB = "aaaaaaaa", "bbbbbbbb"
+
+	if err := v.RewriteSession("proj", "2026-06-23", fpA, 1, SessionMeta{Date: "2026-06-23", Title: "host A"}, "## A\n"); err != nil {
+		t.Fatalf("RewriteSession A: %v", err)
+	}
+	if err := v.RewriteSession("proj", "2026-06-23", fpB, 1, SessionMeta{Date: "2026-06-23", Title: "host B"}, "## B\n"); err != nil {
+		t.Fatalf("RewriteSession B: %v", err)
+	}
+
+	// Two distinct files, not one overwritten file.
+	dir, _ := v.SessionDir("proj")
+	matches, _ := filepath.Glob(filepath.Join(dir, "2026-06-23-*.md"))
+	if len(matches) != 2 {
+		t.Fatalf("want 2 distinct session files, got %d: %v", len(matches), matches)
+	}
+
+	gotA, _, err := v.ReadSession("proj", "2026-06-23", fpA, 1)
+	if err != nil {
+		t.Fatalf("ReadSession A: %v", err)
+	}
+	gotB, _, err := v.ReadSession("proj", "2026-06-23", fpB, 1)
+	if err != nil {
+		t.Fatalf("ReadSession B: %v", err)
+	}
+	if gotA.ID == gotB.ID {
+		t.Errorf("meta.IDs collide across hosts: %q == %q", gotA.ID, gotB.ID)
+	}
+	if gotA.ID != "2026-06-23-aaaaaaaa-01" || gotB.ID != "2026-06-23-bbbbbbbb-01" {
+		t.Errorf("meta.IDs = %q, %q; want host-scoped", gotA.ID, gotB.ID)
+	}
+	if gotA.Title != "host A" || gotB.Title != "host B" {
+		t.Errorf("cross-host content mixed: A=%q B=%q", gotA.Title, gotB.Title)
+	}
+}
+
+// TestReadLegacySessionFile pins back-compat: a pre-fingerprint note named
+// <date>-NN.md stays readable through the fp="" code path, with no migration.
+func TestReadLegacySessionFile(t *testing.T) {
+	v := testVault(t)
+	dir, _ := v.SessionDir("proj")
+	if err := EnsureDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(dir, "2026-01-02-01.md")
+	if err := os.WriteFile(legacy, []byte("---\nsession_id: 2026-01-02-01\ntitle: Legacy\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _, err := v.ReadSession("proj", "2026-01-02", "", 1)
+	if err != nil {
+		t.Fatalf("ReadSession(legacy, fp=\"\"): %v", err)
+	}
+	if got.Title != "Legacy" {
+		t.Errorf("Title = %q, want Legacy", got.Title)
+	}
+
+	// SessionFile with fp="" resolves the legacy host-agnostic name.
+	p, _ := v.SessionFile("proj", "2026-01-02", "", 1)
+	if filepath.Base(p) != "2026-01-02-01.md" {
+		t.Errorf("legacy SessionFile base = %q, want 2026-01-02-01.md", filepath.Base(p))
 	}
 }

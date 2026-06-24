@@ -234,24 +234,30 @@ func TestSessionFile(t *testing.T) {
 		name      string
 		project   string
 		date      string
+		fp        string
 		iteration int
 		want      string
 		wantErr   bool
 	}{
 		{
-			"valid", "recmeet", "2026-03-15", 2,
+			"host-scoped", "recmeet", "2026-03-15", "a1b2c3d4", 2,
+			filepath.Join("/vault", "Projects", "recmeet", "sessions", "2026-03-15-a1b2c3d4-02.md"),
+			false,
+		},
+		{
+			"legacy empty fp", "recmeet", "2026-03-15", "", 2,
 			filepath.Join("/vault", "Projects", "recmeet", "sessions", "2026-03-15-02.md"),
 			false,
 		},
-		{"invalid project", "BAD", "2026-03-15", 1, "", true},
-		{"invalid date format", "recmeet", "March 15", 1, "", true},
-		{"zero iteration", "recmeet", "2026-03-15", 0, "", true},
-		{"negative iteration", "recmeet", "2026-03-15", -1, "", true},
+		{"invalid project", "BAD", "2026-03-15", "a1b2c3d4", 1, "", true},
+		{"invalid date format", "recmeet", "March 15", "a1b2c3d4", 1, "", true},
+		{"zero iteration", "recmeet", "2026-03-15", "a1b2c3d4", 0, "", true},
+		{"negative iteration", "recmeet", "2026-03-15", "a1b2c3d4", -1, "", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := v.SessionFile(tt.project, tt.date, tt.iteration)
+			got, err := v.SessionFile(tt.project, tt.date, tt.fp, tt.iteration)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("SessionFile error = %v, wantErr %v", err, tt.wantErr)
 			}

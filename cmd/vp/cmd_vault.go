@@ -574,17 +574,34 @@ func gitRemotes(root string) ([]string, error) {
 }
 
 func pullAll(root string, remotes []string, dryRun bool) int {
-	for _, remote := range remotes {
-		if dryRun {
+	if dryRun {
+		for _, remote := range remotes {
 			fmt.Fprintf(os.Stderr, "would run: git -C %s pull %s main\n", root, remote)
-			continue
 		}
+		return cli.ExitOK
+	}
+
+	// storage.Pull attempts every remote and returns per-remote results plus the
+	// captured git output; it never streams to stderr (so live streaming is lost)
+	// and self-heals phantom Templates/commands/*.md dirt before the merge.
+	res, err := storage.Pull(root, remotes)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vp vault pull: %v\n", err)
+		return cli.ExitSystem
+	}
+
+	for _, p := range res.HealedTemplates {
+		fmt.Fprintf(os.Stderr, "vp vault pull: healed phantom template %s (matched remote; discarded stale local copy)\n", p)
+	}
+
+	for _, remote := range remotes {
 		fmt.Fprintf(os.Stderr, "Pulling from %s...\n", remote)
-		cmd := exec.Command("git", "-C", root, "pull", remote, "main")
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "vp vault pull: %s: %v\n", remote, err)
-			// Continue trying other remotes.
+		if out := strings.TrimSpace(res.RemoteOutput[remote]); out != "" {
+			fmt.Fprintln(os.Stderr, out)
+		}
+		if rerr := res.RemoteResults[remote]; rerr != nil {
+			fmt.Fprintf(os.Stderr, "vp vault pull: %s: %v\n", remote, rerr)
+			// Best-effort: continue reporting other remotes.
 		}
 	}
 	return cli.ExitOK

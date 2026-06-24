@@ -15,7 +15,15 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/enrichment"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
+
+// queuePath builds the enrichment-queue filename for the standard 2026-06-21
+// test date, mirroring EnqueueEnrichment's naming (host-scoped when fp != "",
+// legacy otherwise).
+func queuePath(dir, fp string, iter int) string {
+	return filepath.Join(dir, storage.SessionStem("2026-06-21", fp, iter)+".json")
+}
 
 // stripFrontmatter returns just the markdown body of a session file (the part
 // after the closing frontmatter delimiter), so body-only comparisons ignore
@@ -56,11 +64,13 @@ func TestEnqueueEnrichmentRoundTrip(t *testing.T) {
 		NarrativeSummary: "plain summary",
 		NarrativeTag:     "implementation",
 	}
-	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", 3, "/notes/x.md", in); err != nil {
+	const fp = "a1b2c3d4"
+	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", fp, 3, "/notes/x.md", in); err != nil {
 		t.Fatalf("EnqueueEnrichment: %v", err)
 	}
 
-	path := filepath.Join(cwd, ".vibe-palace", "enrichment-queue", "2026-06-21-03.json")
+	// The queue filename is host-scoped by the fingerprint.
+	path := filepath.Join(cwd, ".vibe-palace", "enrichment-queue", "2026-06-21-a1b2c3d4-03.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read queue file: %v", err)
@@ -71,6 +81,9 @@ func TestEnqueueEnrichmentRoundTrip(t *testing.T) {
 	}
 	if item.Project != "proj" || item.Date != "2026-06-21" || item.Iteration != 3 {
 		t.Errorf("coords = %+v, want proj/2026-06-21/3", item)
+	}
+	if item.Fingerprint != fp {
+		t.Errorf("fingerprint = %q, want %q", item.Fingerprint, fp)
 	}
 	if item.NotePath != "/notes/x.md" {
 		t.Errorf("note_path = %q", item.NotePath)
@@ -88,11 +101,12 @@ func TestDrainEnrichmentQueueHappyPath(t *testing.T) {
 	cwd := t.TempDir()
 
 	// Write a plain note directly, then enqueue an enrichment job for it.
+	fp := surface.WriterFingerprint(vault.Root)
 	if _, err := vault.WriteSession("proj", testPlainMeta(), "## Summary\n\nplain\n"); err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
 	in := enrichment.PromptInput{UserText: "u", AssistantText: "a"}
-	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", 1, "", in); err != nil {
+	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", fp, 1, "", in); err != nil {
 		t.Fatalf("EnqueueEnrichment: %v", err)
 	}
 
@@ -104,7 +118,7 @@ func TestDrainEnrichmentQueueHappyPath(t *testing.T) {
 		t.Fatalf("drained = %d, want 1", drained)
 	}
 
-	meta, body, err := vault.ReadSession("proj", "2026-06-21", 1)
+	meta, body, err := vault.ReadSession("proj", "2026-06-21", fp, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +170,7 @@ func TestDrainByteIdenticalBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inline WriteSession: %v", err)
 	}
-	pathA, _ := vaultA.SessionFile("proj", resA.SessionID[:10], resA.Iteration)
+	pathA, _ := vaultA.SessionFile("proj", resA.SessionID[:10], ParseFingerprint(resA.SessionID), resA.Iteration)
 	bodyA := stripFrontmatter(t, pathA)
 
 	// Session B: failing Enricher + CWD → plain note + enqueue, then drain
@@ -182,7 +196,7 @@ func TestDrainByteIdenticalBody(t *testing.T) {
 	if drained != 1 {
 		t.Fatalf("drained = %d, want 1", drained)
 	}
-	pathB, _ := vaultB.SessionFile("proj", resB.SessionID[:10], resB.Iteration)
+	pathB, _ := vaultB.SessionFile("proj", resB.SessionID[:10], ParseFingerprint(resB.SessionID), resB.Iteration)
 	bodyB := stripFrontmatter(t, pathB)
 
 	if bodyA != bodyB {
@@ -196,25 +210,26 @@ func TestDrainIdempotentFileBytes(t *testing.T) {
 	vault := testVault(t)
 	cwd := t.TempDir()
 
+	fp := surface.WriterFingerprint(vault.Root)
 	if _, err := vault.WriteSession("proj", testPlainMeta(), "## Summary\n\nplain\n"); err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
 	in := enrichment.PromptInput{UserText: "u", AssistantText: "a"}
 
-	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", 1, "", in); err != nil {
+	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", fp, 1, "", in); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := DrainEnrichmentQueue(context.Background(), vault, cwd, workingEnricher(), 0); err != nil || n != 1 {
 		t.Fatalf("first drain: n=%d err=%v", n, err)
 	}
-	path, _ := vault.SessionFile("proj", "2026-06-21", 1)
+	path, _ := vault.SessionFile("proj", "2026-06-21", fp, 1)
 	first, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Re-enqueue and drain the already-enriched note again.
-	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", 1, "", in); err != nil {
+	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", fp, 1, "", in); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := DrainEnrichmentQueue(context.Background(), vault, cwd, workingEnricher(), 0); err != nil || n != 1 {
@@ -234,11 +249,12 @@ func TestDrainTransientFailureRetries(t *testing.T) {
 	vault := testVault(t)
 	cwd := t.TempDir()
 
+	fp := surface.WriterFingerprint(vault.Root)
 	if _, err := vault.WriteSession("proj", testPlainMeta(), "## Summary\n\nplain\n"); err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
 	in := enrichment.PromptInput{UserText: "u"}
-	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", 1, "", in); err != nil {
+	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", fp, 1, "", in); err != nil {
 		t.Fatal(err)
 	}
 
@@ -251,7 +267,7 @@ func TestDrainTransientFailureRetries(t *testing.T) {
 	}
 
 	dir := filepath.Join(cwd, ".vibe-palace", "enrichment-queue")
-	jsonPath := filepath.Join(dir, "2026-06-21-01.json")
+	jsonPath := queuePath(dir, fp, 1)
 	if _, err := os.Stat(jsonPath); err != nil {
 		t.Errorf("job not retained for retry: %v", err)
 	}
@@ -266,16 +282,17 @@ func TestDrainClaimSkip(t *testing.T) {
 	vault := testVault(t)
 	cwd := t.TempDir()
 
+	fp := surface.WriterFingerprint(vault.Root)
 	if _, err := vault.WriteSession("proj", testPlainMeta(), "## Summary\n\nplain\n"); err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
 	in := enrichment.PromptInput{UserText: "u"}
-	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", 1, "", in); err != nil {
+	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", fp, 1, "", in); err != nil {
 		t.Fatal(err)
 	}
 
 	dir := filepath.Join(cwd, ".vibe-palace", "enrichment-queue")
-	jsonPath := filepath.Join(dir, "2026-06-21-01.json")
+	jsonPath := queuePath(dir, fp, 1)
 	procPath := jsonPath + ".processing"
 	if err := os.Rename(jsonPath, procPath); err != nil {
 		t.Fatalf("simulate claim: %v", err)
@@ -293,7 +310,7 @@ func TestDrainClaimSkip(t *testing.T) {
 	}
 
 	// The note must remain plain (not enriched).
-	meta, _, err := vault.ReadSession("proj", "2026-06-21", 1)
+	meta, _, err := vault.ReadSession("proj", "2026-06-21", fp, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,10 +347,11 @@ func TestDrainCorruptItemDiscarded(t *testing.T) {
 func TestDrainNilResultRetains(t *testing.T) {
 	vault := testVault(t)
 	cwd := t.TempDir()
+	fp := surface.WriterFingerprint(vault.Root)
 	if _, err := vault.WriteSession("proj", testPlainMeta(), "## Summary\n\nplain\n"); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", 1, "", enrichment.PromptInput{}); err != nil {
+	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", fp, 1, "", enrichment.PromptInput{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -347,7 +365,7 @@ func TestDrainNilResultRetains(t *testing.T) {
 		t.Errorf("drained = %d, want 0 for nil result", drained)
 	}
 	// Job retained for retry (renamed back).
-	if _, err := os.Stat(filepath.Join(cwd, ".vibe-palace", "enrichment-queue", "2026-06-21-01.json")); err != nil {
+	if _, err := os.Stat(queuePath(filepath.Join(cwd, ".vibe-palace", "enrichment-queue"), fp, 1)); err != nil {
 		t.Errorf("job not retained on nil result: %v", err)
 	}
 }
@@ -356,7 +374,7 @@ func TestDrainMissingNoteRetains(t *testing.T) {
 	vault := testVault(t)
 	cwd := t.TempDir()
 	// Enqueue a job whose target note does not exist.
-	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", 7, "", enrichment.PromptInput{}); err != nil {
+	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", "", 7, "", enrichment.PromptInput{}); err != nil {
 		t.Fatal(err)
 	}
 	drained, err := DrainEnrichmentQueue(context.Background(), vault, cwd, workingEnricher(), 0)
@@ -375,11 +393,12 @@ func TestDrainMaxBound(t *testing.T) {
 	vault := testVault(t)
 	cwd := t.TempDir()
 	// Two plain notes + two queued jobs.
+	fp := surface.WriterFingerprint(vault.Root)
 	for i := 1; i <= 2; i++ {
 		if _, err := vault.WriteSession("proj", testPlainMeta(), "## Summary\n\nplain\n"); err != nil {
 			t.Fatal(err)
 		}
-		if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", i, "", enrichment.PromptInput{}); err != nil {
+		if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", fp, i, "", enrichment.PromptInput{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -428,7 +447,7 @@ func TestWriteSessionEnqueueOnMiss(t *testing.T) {
 	}
 
 	// Note written plain (no fence).
-	_, body, err := vault.ReadSession("proj", res.SessionID[:10], res.Iteration)
+	_, body, err := vault.ReadSession("proj", res.SessionID[:10], ParseFingerprint(res.SessionID), res.Iteration)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,15 +490,16 @@ func TestDrainDeadLettersAfterMaxAttempts(t *testing.T) {
 	vault := testVault(t)
 	cwd := t.TempDir()
 
+	fp := surface.WriterFingerprint(vault.Root)
 	if _, err := vault.WriteSession("proj", testPlainMeta(), "## Summary\n\nplain\n"); err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
-	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", 1, "", enrichment.PromptInput{UserText: "u"}); err != nil {
+	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", fp, 1, "", enrichment.PromptInput{UserText: "u"}); err != nil {
 		t.Fatal(err)
 	}
 
 	dir := filepath.Join(cwd, ".vibe-palace", "enrichment-queue")
-	jsonPath := filepath.Join(dir, "2026-06-21-01.json")
+	jsonPath := queuePath(dir, fp, 1)
 	failedPath := jsonPath + ".failed"
 
 	// Drain repeatedly with a failing enricher. Each transient failure bumps
@@ -513,15 +533,16 @@ func TestDrainReclaimsStaleProcessing(t *testing.T) {
 	vault := testVault(t)
 	cwd := t.TempDir()
 
+	fp := surface.WriterFingerprint(vault.Root)
 	if _, err := vault.WriteSession("proj", testPlainMeta(), "## Summary\n\nplain\n"); err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
 	// Build a valid queue item, then orphan it as a stale .processing claim.
-	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", 1, "", enrichment.PromptInput{UserText: "u"}); err != nil {
+	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", fp, 1, "", enrichment.PromptInput{UserText: "u"}); err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(cwd, ".vibe-palace", "enrichment-queue")
-	jsonPath := filepath.Join(dir, "2026-06-21-01.json")
+	jsonPath := queuePath(dir, fp, 1)
 	procPath := jsonPath + ".processing"
 	if err := os.Rename(jsonPath, procPath); err != nil {
 		t.Fatalf("orphan claim: %v", err)
@@ -540,7 +561,7 @@ func TestDrainReclaimsStaleProcessing(t *testing.T) {
 	}
 
 	// Note rewritten enriched.
-	meta, body, err := vault.ReadSession("proj", "2026-06-21", 1)
+	meta, body, err := vault.ReadSession("proj", "2026-06-21", fp, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -564,14 +585,15 @@ func TestDrainDoesNotReclaimFreshProcessing(t *testing.T) {
 	vault := testVault(t)
 	cwd := t.TempDir()
 
+	fp := surface.WriterFingerprint(vault.Root)
 	if _, err := vault.WriteSession("proj", testPlainMeta(), "## Summary\n\nplain\n"); err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
-	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", 1, "", enrichment.PromptInput{UserText: "u"}); err != nil {
+	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", fp, 1, "", enrichment.PromptInput{UserText: "u"}); err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(cwd, ".vibe-palace", "enrichment-queue")
-	jsonPath := filepath.Join(dir, "2026-06-21-01.json")
+	jsonPath := queuePath(dir, fp, 1)
 	procPath := jsonPath + ".processing"
 	if err := os.Rename(jsonPath, procPath); err != nil {
 		t.Fatalf("simulate live claim: %v", err)
@@ -589,7 +611,7 @@ func TestDrainDoesNotReclaimFreshProcessing(t *testing.T) {
 		t.Errorf("fresh .processing claim was disturbed: %v", err)
 	}
 	// Note must remain plain.
-	meta, _, err := vault.ReadSession("proj", "2026-06-21", 1)
+	meta, _, err := vault.ReadSession("proj", "2026-06-21", fp, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -605,5 +627,36 @@ func testPlainMeta() storage.SessionMeta {
 		Date:    "2026-06-21",
 		Title:   "Plain",
 		Summary: "plain",
+	}
+}
+
+// TestDrainLegacyQueueItem proves back-compat: a legacy queue item with an
+// empty Fingerprint, targeting a pre-fingerprint <date>-NN.md note, still
+// drains because fp="" resolves the legacy filename end-to-end.
+func TestDrainLegacyQueueItem(t *testing.T) {
+	vault := testVault(t)
+	cwd := t.TempDir()
+
+	// Seed a legacy host-agnostic note (fp="") and a legacy queue item.
+	if err := vault.RewriteSession("proj", "2026-06-21", "", 1, testPlainMeta(), "## Summary\n\nplain\n"); err != nil {
+		t.Fatalf("RewriteSession(legacy): %v", err)
+	}
+	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", "", 1, "", enrichment.PromptInput{UserText: "u", AssistantText: "a"}); err != nil {
+		t.Fatal(err)
+	}
+
+	drained, err := DrainEnrichmentQueue(context.Background(), vault, cwd, workingEnricher(), 0)
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if drained != 1 {
+		t.Fatalf("drained = %d, want 1 (legacy item must still drain)", drained)
+	}
+	meta, _, err := vault.ReadSession("proj", "2026-06-21", "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.EnrichedBy != "test-model" {
+		t.Errorf("legacy note not enriched: enriched_by=%q", meta.EnrichedBy)
 	}
 }

@@ -128,9 +128,36 @@ func (v *Vault) SessionDir(project string) (string, error) {
 // datePattern matches YYYY-MM-DD date strings.
 var datePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
-// SessionFile returns the path to a session markdown file:
-// {vault}/Projects/{project}/sessions/YYYY-MM-DD-NN.md
-func (v *Vault) SessionFile(project, date string, iteration int) (string, error) {
+// SessionStem returns the host-qualified session identity stem
+// "<date>-<fp>-<NN>", or legacy "<date>-<NN>" when fp=="". Single source of
+// truth for session filename and meta.ID construction.
+func SessionStem(date, fp string, iteration int) string {
+	if fp != "" {
+		return fmt.Sprintf("%s-%s-%02d", date, fp, iteration)
+	}
+	return fmt.Sprintf("%s-%02d", date, iteration)
+}
+
+// SessionGlobPrefix returns the glob-ready prefix for one host's sessions on a
+// date: "<date>-<fp>-" (or legacy "<date>-" when fp=="").
+func SessionGlobPrefix(date, fp string) string {
+	if fp != "" {
+		return date + "-" + fp + "-"
+	}
+	return date + "-"
+}
+
+// SessionFile returns the path to a session markdown file. When fp (the
+// writer fingerprint, see surface.WriterFingerprint) is non-empty the
+// host-scoped layout is used:
+//
+//	{vault}/Projects/{project}/sessions/YYYY-MM-DD-<fp>-NN.md
+//
+// When fp is empty the legacy host-agnostic layout is used, so pre-existing
+// notes written before fingerprinting remain readable:
+//
+//	{vault}/Projects/{project}/sessions/YYYY-MM-DD-NN.md
+func (v *Vault) SessionFile(project, date, fp string, iteration int) (string, error) {
 	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
@@ -140,7 +167,7 @@ func (v *Vault) SessionFile(project, date string, iteration int) (string, error)
 	if iteration < 1 {
 		return "", fmt.Errorf("iteration must be >= 1, got %d", iteration)
 	}
-	filename := fmt.Sprintf("%s-%02d.md", date, iteration)
+	filename := SessionStem(date, fp, iteration) + ".md"
 	return filepath.Join(v.Root, "Projects", project, "sessions", filename), nil
 }
 

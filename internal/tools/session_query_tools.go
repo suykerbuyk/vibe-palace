@@ -202,12 +202,12 @@ func getSessionDetailHandler(vault *storage.Vault) mcp.HandlerFunc {
 			return nil, fmt.Errorf("session_id is required")
 		}
 
-		date, iteration, err := parseSessionID(p.SessionID)
+		date, fp, iteration, err := parseSessionID(p.SessionID)
 		if err != nil {
 			return nil, err
 		}
 
-		meta, body, err := vault.ReadSession(p.Project, date, iteration)
+		meta, body, err := vault.ReadSession(p.Project, date, fp, iteration)
 		if err != nil {
 			return nil, fmt.Errorf("read session: %w", err)
 		}
@@ -230,18 +230,23 @@ func getSessionDetailHandler(vault *storage.Vault) mcp.HandlerFunc {
 	}
 }
 
-// parseSessionID extracts date and iteration from "YYYY-MM-DD-NN".
+// parseSessionID extracts date, writer fingerprint, and iteration from a
+// session id. It accepts two layouts:
+//
+//	YYYY-MM-DD-NN            (legacy, host-agnostic) → fp == ""
+//	YYYY-MM-DD-<fp>-NN       (host-scoped)           → fp is 8 lowercase-hex
 //
 // The layout is validated positionally (not just by length) so a malformed but
 // slug-valid id like "2026-06-201-5" is REJECTED rather than silently sliced
 // into a different real session. This matters because the id now arrives off the
 // wire via the session resource URI, so a wrong-but-valid id must not resolve to
-// an unrelated session.
-func parseSessionID(id string) (string, int, error) {
-	formatErr := func() (string, int, error) {
-		return "", 0, fmt.Errorf("invalid session_id %q: expected YYYY-MM-DD-NN format", id)
+// an unrelated session. The returned fp is fed back into the storage read API,
+// where "" selects the legacy filename.
+func parseSessionID(id string) (date string, fp string, iteration int, err error) {
+	formatErr := func() (string, string, int, error) {
+		return "", "", 0, fmt.Errorf("invalid session_id %q: expected YYYY-MM-DD-NN or YYYY-MM-DD-<fp>-NN format", id)
 	}
-	// "YYYY-MM-DD-" prefix is exactly 11 chars; at least one iteration digit.
+	// "YYYY-MM-DD-" prefix is exactly 11 chars; at least one trailing char.
 	if len(id) < 13 {
 		return formatErr()
 	}
@@ -249,24 +254,67 @@ func parseSessionID(id string) (string, int, error) {
 	if id[4] != '-' || id[7] != '-' || id[10] != '-' {
 		return formatErr()
 	}
-	// Date digits at the fixed positions; iteration digits in the suffix.
-	for i, c := range id {
-		switch i {
-		case 4, 7, 10:
-			// separators, already checked
-		default:
-			if c < '0' || c > '9' {
-				return formatErr()
-			}
+	// Date digits at the fixed positions.
+	for i := 0; i < 10; i++ {
+		if i == 4 || i == 7 {
+			continue
+		}
+		if id[i] < '0' || id[i] > '9' {
+			return formatErr()
 		}
 	}
-	date := id[:10]
-	iterStr := id[11:]
-	iteration := capture.ParseIteration(id)
-	if iteration < 1 {
-		return "", 0, fmt.Errorf("invalid iteration %q in session_id %q", iterStr, id)
+	// The suffix after "YYYY-MM-DD-" is either "<NN>" (legacy: all digits) or
+	// "<fp>-<NN>" (host-scoped: 8 lowercase-hex chars, a hyphen, then digits).
+	// Validate it positionally to REJECT a malformed-but-slug-valid id; the
+	// returned values themselves are then derived from the canonical extractors
+	// (capture.ParseFingerprint/ParseIteration) so this parser cannot drift from
+	// how the rest of the codebase splits a session id.
+	rest := id[11:]
+	if h := strings.IndexByte(rest, '-'); h >= 0 {
+		if !isHex8(rest[:h]) || !allDigits(rest[h+1:]) {
+			return formatErr()
+		}
+	} else if !allDigits(rest) {
+		return formatErr()
 	}
-	return date, iteration, nil
+
+	date = id[:10]
+	fp = capture.ParseFingerprint(id)
+	iteration = capture.ParseIteration(id)
+	if iteration < 1 {
+		return "", "", 0, fmt.Errorf("invalid iteration in session_id %q", id)
+	}
+	return date, fp, iteration, nil
+}
+
+// isHex8 reports whether s is exactly 8 lowercase-hex characters, the shape of
+// a surface.WriterFingerprint. It is intentionally strict so a legacy all-digit
+// iteration (which is never 8 hex chars with a following hyphen) cannot be
+// mistaken for a fingerprint.
+func isHex8(s string) bool {
+	if len(s) != 8 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// allDigits reports whether s is non-empty and entirely ASCII digits.
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // ---------------------------------------------------------------------------

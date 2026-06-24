@@ -162,11 +162,16 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		return nil, fmt.Errorf("write session: %w", err)
 	}
 
-	// Parse iteration from sessionID (format: "YYYY-MM-DD-NN").
+	// Parse iteration from sessionID (format: "YYYY-MM-DD-<fp>-NN").
 	iteration := ParseIteration(sessionID)
 
+	// The fingerprint that scoped this write, read back from the authoritative
+	// sessionID WriteSession returned (rather than recomputed). Thread it through
+	// every readback so the host-scoped filename resolves.
+	fp := ParseFingerprint(sessionID)
+
 	// Read session back to get the note path.
-	readMeta, _, readErr := vault.ReadSession(p.Project, date, iteration)
+	readMeta, _, readErr := vault.ReadSession(p.Project, date, fp, iteration)
 	notePath := ""
 	if readErr == nil {
 		notePath = readMeta.NotePath
@@ -178,7 +183,7 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 	// — capture must never fail because the queue write did. Skipped when there
 	// is no host dir (p.CWD == "", e.g. the pure MCP path).
 	if enqueuePending && p.CWD != "" {
-		if qerr := EnqueueEnrichment(p.CWD, p.Project, date, iteration, notePath, enqueueInput); qerr != nil {
+		if qerr := EnqueueEnrichment(p.CWD, p.Project, date, fp, iteration, notePath, enqueueInput); qerr != nil {
 			slog.Warn("enrichment: enqueue failed (non-fatal)", "err", qerr, "project", p.Project)
 		}
 	}
@@ -187,7 +192,7 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 	// into the archive manifest. Non-fatal on failure -- the
 	// note's archive: field still provides one-way traversal.
 	if archiveEntry != nil {
-		sessionAbs, err := vault.SessionFile(p.Project, date, iteration)
+		sessionAbs, err := vault.SessionFile(p.Project, date, fp, iteration)
 		if err == nil {
 			rel := archive.VaultRelPath(vault.Root, sessionAbs)
 			_ = archive.LinkSessionNote(vault.Root, archiveEntry.ManifestPath, rel)
@@ -322,7 +327,9 @@ func joinLines(lines []string) string {
 	return result
 }
 
-// ParseIteration extracts the iteration number from a session ID (format: "YYYY-MM-DD-NN").
+// ParseIteration extracts the iteration number from a session ID. It accepts
+// both the host-scoped form "YYYY-MM-DD-<fp>-NN" (5 hyphen segments) and the
+// legacy form "YYYY-MM-DD-NN" (4 segments): in both, NN is the final segment.
 func ParseIteration(sessionID string) int {
 	parts := strings.Split(sessionID, "-")
 	if len(parts) < 4 {
@@ -330,4 +337,17 @@ func ParseIteration(sessionID string) int {
 	}
 	n, _ := strconv.Atoi(parts[len(parts)-1])
 	return n
+}
+
+// ParseFingerprint extracts the writer fingerprint from a session ID. It
+// returns the fp for the host-scoped form "YYYY-MM-DD-<fp>-NN" (5 segments)
+// and "" for the legacy host-agnostic form "YYYY-MM-DD-NN" (4 segments). The
+// empty string is the correct fp to feed back into the storage read API for a
+// legacy note, so a parse miss degrades to legacy resolution.
+func ParseFingerprint(sessionID string) string {
+	parts := strings.Split(sessionID, "-")
+	if len(parts) < 5 {
+		return ""
+	}
+	return parts[3]
 }

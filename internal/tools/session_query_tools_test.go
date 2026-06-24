@@ -14,13 +14,15 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-// seedSession writes a session file directly so tests don't depend on CaptureSessionTool.
-func seedSession(t *testing.T, vault *storage.Vault, project string, meta storage.SessionMeta, body string) {
+// seedSession writes a session file directly so tests don't depend on
+// CaptureSessionTool. It returns the host-scoped session ID the writer minted.
+func seedSession(t *testing.T, vault *storage.Vault, project string, meta storage.SessionMeta, body string) string {
 	t.Helper()
-	_, err := vault.WriteSession(project, meta, body)
+	id, err := vault.WriteSession(project, meta, body)
 	if err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
+	return id
 }
 
 func seedTestSessions(t *testing.T, vault *storage.Vault) {
@@ -232,10 +234,21 @@ func TestGetSessionDetailSchema(t *testing.T) {
 
 func TestGetSessionDetailBasic(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	seedTestSessions(t, vault)
+	id := seedSession(t, vault, "test-proj", storage.SessionMeta{
+		Date:          "2026-04-01",
+		Title:         "Implement chunking engine",
+		Summary:       "Built sliding window chunker with sentence boundaries.",
+		Tag:           "implementation",
+		FrictionScore: 15,
+		Decisions:     []string{"Use sliding window", "800 char chunks"},
+		FilesChanged:  []string{"internal/capture/chunker.go"},
+		OpenThreads:   []string{"Phase 5 Task 5.3 next"},
+	}, "\n## Summary\nBuilt chunker.\n")
 	tool := GetSessionDetailTool(vault)
 
-	params := json.RawMessage(`{"project": "test-proj", "session_id": "2026-04-01-01"}`)
+	// Use the host-scoped id the writer minted so the detail handler resolves
+	// the file via the fingerprint threaded through parseSessionID → ReadSession.
+	params := json.RawMessage(`{"project": "test-proj", "session_id": "` + id + `"}`)
 	result, err := tool.Handler(context.Background(), params)
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
@@ -545,20 +558,33 @@ func TestGetEffectivenessOutcomeScores(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseSessionID(t *testing.T) {
-	date, iter, err := parseSessionID("2026-04-07-03")
+	// Legacy host-agnostic id: fp is empty.
+	date, fp, iter, err := parseSessionID("2026-04-07-03")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if date != "2026-04-07" {
 		t.Errorf("date = %q, want 2026-04-07", date)
 	}
+	if fp != "" {
+		t.Errorf("fp = %q, want empty for legacy id", fp)
+	}
 	if iter != 3 {
 		t.Errorf("iteration = %d, want 3", iter)
+	}
+
+	// Host-scoped id: fp is the 8-hex segment.
+	date, fp, iter, err = parseSessionID("2026-06-23-a1b2c3d4-01")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if date != "2026-06-23" || fp != "a1b2c3d4" || iter != 1 {
+		t.Errorf("parse host-scoped = (%q, %q, %d), want (2026-06-23, a1b2c3d4, 1)", date, fp, iter)
 	}
 }
 
 func TestParseSessionIDInvalid(t *testing.T) {
-	_, _, err := parseSessionID("bad")
+	_, _, _, err := parseSessionID("bad")
 	if err == nil {
 		t.Fatal("expected error for bad session ID")
 	}
@@ -604,26 +630,31 @@ func TestMetaMatchesQuery(t *testing.T) {
 // now arrives off the wire via the session resource URI.
 func TestParseSessionIDRejectsMalformed(t *testing.T) {
 	bad := []string{
-		"2026-06-201-5", // misplaced hyphen: would slice to 2026-06-20 iter 5
-		"2026-06-2-08",  // day not two digits / hyphen at wrong position
-		"202-06-20-08",  // year not four digits
-		"2026/06/20/08", // wrong separators
-		"2026-06-20",    // no iteration
-		"xxxx-xx-xx-01", // non-digit date
-		"2026-06-20-",   // empty iteration
+		"2026-06-201-5",          // misplaced hyphen: would slice to 2026-06-20 iter 5
+		"2026-06-2-08",           // day not two digits / hyphen at wrong position
+		"202-06-20-08",           // year not four digits
+		"2026/06/20/08",          // wrong separators
+		"2026-06-20",             // no iteration
+		"xxxx-xx-xx-01",          // non-digit date
+		"2026-06-20-",            // empty iteration
+		"2026-06-23-a1b2c3d-01",  // fp segment not 8 chars
+		"2026-06-23-A1B2C3D4-01", // fp not lowercase-hex
+		"2026-06-23-a1b2c3z4-01", // fp has non-hex char
+		"2026-06-23-a1b2c3d4-",   // host-scoped, empty iteration
+		"2026-06-23-a1b2c3d4-xx", // host-scoped, non-digit iteration
 	}
 	for _, id := range bad {
-		if _, _, err := parseSessionID(id); err == nil {
+		if _, _, _, err := parseSessionID(id); err == nil {
 			t.Errorf("parseSessionID(%q): expected error, got nil", id)
 		}
 	}
 
-	// A well-formed id still parses.
-	date, iter, err := parseSessionID("2026-06-20-08")
+	// A well-formed legacy id still parses (fp empty).
+	date, fp, iter, err := parseSessionID("2026-06-20-08")
 	if err != nil {
 		t.Fatalf("parseSessionID(valid): unexpected error %v", err)
 	}
-	if date != "2026-06-20" || iter != 8 {
-		t.Errorf("parseSessionID(valid) = (%q, %d), want (2026-06-20, 8)", date, iter)
+	if date != "2026-06-20" || fp != "" || iter != 8 {
+		t.Errorf("parseSessionID(valid) = (%q, %q, %d), want (2026-06-20, \"\", 8)", date, fp, iter)
 	}
 }

@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"gopkg.in/yaml.v3"
 )
 
@@ -84,16 +86,21 @@ func (v *Vault) WriteSession(project string, meta SessionMeta, body string) (str
 		return "", fmt.Errorf("date %q must be in YYYY-MM-DD format", meta.Date)
 	}
 
-	iteration, err := v.NextIteration(project, meta.Date)
+	// Fingerprint this writer (host+vault) so two offline hosts minting the
+	// same (date, iteration) produce distinct filenames AND distinct meta.IDs,
+	// avoiding git add/add conflicts and ambiguous session identity on sync.
+	fp := surface.WriterFingerprint(v.Root)
+
+	iteration, err := v.NextIteration(project, meta.Date, fp)
 	if err != nil {
 		return "", err
 	}
 
 	meta.Iteration = iteration
 	meta.Project = project
-	meta.ID = fmt.Sprintf("%s-%02d", meta.Date, iteration)
+	meta.ID = SessionStem(meta.Date, fp, iteration)
 
-	path, err := v.SessionFile(project, meta.Date, iteration)
+	path, err := v.SessionFile(project, meta.Date, fp, iteration)
 	if err != nil {
 		return "", err
 	}
@@ -144,7 +151,7 @@ func marshalSessionFile(meta SessionMeta, body string) ([]byte, error) {
 // captured note with synthesized summary/decisions/threads. It shares only the
 // marshalSessionFile framing helper with WriteSession and serializes against a
 // concurrent WriteSession via the same per-path advisory lock (lockedWrite).
-func (v *Vault) RewriteSession(project, date string, iteration int, meta SessionMeta, body string) error {
+func (v *Vault) RewriteSession(project, date, fp string, iteration int, meta SessionMeta, body string) error {
 	if err := slug.Validate(project); err != nil {
 		return fmt.Errorf("project: %w", err)
 	}
@@ -152,7 +159,7 @@ func (v *Vault) RewriteSession(project, date string, iteration int, meta Session
 		return fmt.Errorf("date %q must be in YYYY-MM-DD format", date)
 	}
 
-	path, err := v.SessionFile(project, date, iteration)
+	path, err := v.SessionFile(project, date, fp, iteration)
 	if err != nil {
 		return err
 	}
@@ -161,11 +168,12 @@ func (v *Vault) RewriteSession(project, date string, iteration int, meta Session
 	}
 
 	// Defensively pin the identity fields so a rewrite cannot drift the
-	// note's own coordinates away from its path.
+	// note's own coordinates away from its path. The ID carries the
+	// fingerprint when present so it matches the host-scoped filename.
 	meta.Project = project
 	meta.Date = date
 	meta.Iteration = iteration
-	meta.ID = fmt.Sprintf("%s-%02d", date, iteration)
+	meta.ID = SessionStem(date, fp, iteration)
 
 	data, err := marshalSessionFile(meta, body)
 	if err != nil {
@@ -178,9 +186,13 @@ func (v *Vault) RewriteSession(project, date string, iteration int, meta Session
 	return nil
 }
 
-// ReadSession reads a session file and returns its metadata and body.
-func (v *Vault) ReadSession(project, date string, iteration int) (SessionMeta, string, error) {
-	path, err := v.SessionFile(project, date, iteration)
+// ReadSession reads a session file and returns its metadata and body. fp is
+// the writer fingerprint that scoped the file at write time (empty for legacy
+// host-agnostic notes). Because this resolves arbitrary — possibly other-host
+// — sessions (e.g. via the MCP session resource), fp must be supplied by the
+// caller, not recomputed for the local host.
+func (v *Vault) ReadSession(project, date, fp string, iteration int) (SessionMeta, string, error) {
+	path, err := v.SessionFile(project, date, fp, iteration)
 	if err != nil {
 		return SessionMeta{}, "", err
 	}
@@ -266,19 +278,44 @@ func (v *Vault) SearchSessions(query, project string, minFriction, limit int) ([
 }
 
 // NextIteration returns the next available iteration number for a
-// project+date combination (1-based).
-func (v *Vault) NextIteration(project, date string) (int, error) {
+// project+date combination (1-based). It is max(NN)+1 over the matching files
+// — not count+1 — so a gap in the iteration set (e.g. 01 and 03 present, 02
+// deleted) never re-mints an existing iteration and overwrites its note. The
+// scan is scoped to the writer fingerprint fp so two offline hosts each
+// allocate iterations independently (both may legitimately start at 01 for the
+// same date). When fp is empty the legacy host-agnostic glob is used.
+func (v *Vault) NextIteration(project, date, fp string) (int, error) {
 	dir, err := v.SessionDir(project)
 	if err != nil {
 		return 0, err
 	}
 
-	pattern := filepath.Join(dir, date+"-*.md")
+	pattern := filepath.Join(dir, SessionGlobPrefix(date, fp)+"*.md")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return 0, fmt.Errorf("glob iterations: %w", err)
 	}
-	return len(matches) + 1, nil
+	next := 0
+	for _, m := range matches {
+		if it := iterationFromSessionFilename(m); it > next {
+			next = it
+		}
+	}
+	return next + 1, nil
+}
+
+// iterationFromSessionFilename extracts the trailing NN iteration from a session
+// filename's base (the last hyphen segment of the stem). It returns 0 for names
+// with too few segments to carry an iteration, so a malformed match cannot
+// inflate NextIteration. Kept storage-local — storage must not import capture.
+func iterationFromSessionFilename(name string) int {
+	base := strings.TrimSuffix(filepath.Base(name), ".md")
+	parts := strings.Split(base, "-")
+	if len(parts) < 4 {
+		return 0
+	}
+	n, _ := strconv.Atoi(parts[len(parts)-1])
+	return n
 }
 
 // ParseFrontmatter splits a markdown file with YAML frontmatter into

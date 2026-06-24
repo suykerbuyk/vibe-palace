@@ -28,6 +28,12 @@ type enrichmentItem struct {
 	Iteration int                    `json:"iteration"`
 	NotePath  string                 `json:"note_path"`
 	Prompt    enrichment.PromptInput `json:"prompt"`
+	// Fingerprint is the writer fingerprint that scoped the target note's
+	// host-scoped filename (see surface.WriterFingerprint). It is threaded to
+	// the drain so ReadSession/RewriteSession resolve the right file. Legacy
+	// queue items written before fingerprinting omit it; an empty value
+	// resolves the legacy host-agnostic filename.
+	Fingerprint string `json:"fingerprint,omitempty"`
 	// Attempts counts how many times the drain has tried and failed this job.
 	// Once it reaches maxEnrichAttempts the job is dead-lettered instead of
 	// retried, so a deterministically-failing job cannot loop forever.
@@ -53,28 +59,32 @@ func enrichmentQueueDir(cwd string) string {
 }
 
 // EnqueueEnrichment persists a single enrichment job to the host-local queue
-// as <queueDir>/<date>-<NN>.json (zero-padded iteration, matching the
-// session-id format). It is best-effort: the caller logs any error
-// non-fatally so a failed enqueue never fails capture.
-func EnqueueEnrichment(cwd, project, date string, iteration int, notePath string, in enrichment.PromptInput) error {
+// as <queueDir>/<date>-<fp>-<NN>.json (zero-padded iteration, matching the
+// session-id format), or <queueDir>/<date>-<NN>.json when fp is empty. fp is
+// the writer fingerprint scoping the target note; including it in the queue
+// filename prevents the same cross-host collision in the queue directory. It
+// is best-effort: the caller logs any error non-fatally so a failed enqueue
+// never fails capture.
+func EnqueueEnrichment(cwd, project, date, fp string, iteration int, notePath string, in enrichment.PromptInput) error {
 	dir := enrichmentQueueDir(cwd)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create enrichment queue dir: %w", err)
 	}
 
 	item := enrichmentItem{
-		Project:   project,
-		Date:      date,
-		Iteration: iteration,
-		NotePath:  notePath,
-		Prompt:    in,
+		Project:     project,
+		Date:        date,
+		Iteration:   iteration,
+		NotePath:    notePath,
+		Prompt:      in,
+		Fingerprint: fp,
 	}
 	data, err := json.Marshal(item)
 	if err != nil {
 		return fmt.Errorf("marshal enrichment item: %w", err)
 	}
 
-	name := fmt.Sprintf("%s-%02d.json", date, iteration)
+	name := storage.SessionStem(date, fp, iteration) + ".json"
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("write enrichment item: %w", err)
@@ -187,7 +197,7 @@ func DrainEnrichmentQueue(ctx context.Context, vault *storage.Vault, cwd string,
 			continue
 		}
 
-		meta, _, rerr := vault.ReadSession(item.Project, item.Date, item.Iteration)
+		meta, _, rerr := vault.ReadSession(item.Project, item.Date, item.Fingerprint, item.Iteration)
 		if rerr != nil {
 			slog.Warn("enrichment drain: read note failed; will retry", "err", rerr, "project", item.Project)
 			requeue()
@@ -206,7 +216,7 @@ func DrainEnrichmentQueue(ctx context.Context, vault *storage.Vault, cwd string,
 		// uses so inline and drained notes converge to byte-identical bodies [M-B].
 		body := buildSessionBody(paramsFromMeta(meta))
 
-		if rwErr := vault.RewriteSession(item.Project, item.Date, item.Iteration, meta, body); rwErr != nil {
+		if rwErr := vault.RewriteSession(item.Project, item.Date, item.Fingerprint, item.Iteration, meta, body); rwErr != nil {
 			slog.Warn("enrichment drain: rewrite note failed; will retry", "err", rwErr, "project", item.Project)
 			requeue()
 			continue

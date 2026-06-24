@@ -97,11 +97,11 @@ var resourceTypes = []resourceType{
 	{
 		name: "session", template: mcp.SessionURITemplate, vars: []string{"project", "session_id"},
 		resolve: func(v map[string]string, _ *vpctx.Resolver, vault *storage.Vault) (string, error) {
-			date, iter, err := parseSessionID(v["session_id"])
+			date, fp, iter, err := parseSessionID(v["session_id"])
 			if err != nil {
 				return "", err
 			}
-			_, body, err := vault.ReadSession(v["project"], date, iter)
+			_, body, err := vault.ReadSession(v["project"], date, fp, iter)
 			return body, err
 		},
 	},

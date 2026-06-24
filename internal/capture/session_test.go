@@ -83,7 +83,7 @@ func TestWriteSessionTitleDefaulting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	meta, _, err := vault.ReadSession("test-proj", result.SessionID[:10], result.Iteration)
+	meta, _, err := vault.ReadSession("test-proj", result.SessionID[:10], ParseFingerprint(result.SessionID), result.Iteration)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestWriteSessionWithArchiveLink(t *testing.T) {
 	}
 
 	// Session frontmatter should carry archive: field.
-	meta, _, err := vault.ReadSession("test-proj", result.SessionID[:10], result.Iteration)
+	meta, _, err := vault.ReadSession("test-proj", result.SessionID[:10], ParseFingerprint(result.SessionID), result.Iteration)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestWriteSessionAllFields(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	meta, body, err := vault.ReadSession("test-proj", result.SessionID[:10], result.Iteration)
+	meta, body, err := vault.ReadSession("test-proj", result.SessionID[:10], ParseFingerprint(result.SessionID), result.Iteration)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestWriteSessionEnrichmentSuccess(t *testing.T) {
 		t.Fatalf("WriteSession: %v", err)
 	}
 
-	meta, body, err := vault.ReadSession("test-proj", result.SessionID[:10], result.Iteration)
+	meta, body, err := vault.ReadSession("test-proj", result.SessionID[:10], ParseFingerprint(result.SessionID), result.Iteration)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +341,7 @@ func TestWriteSessionEnrichmentFailureFallsBack(t *testing.T) {
 		t.Fatalf("WriteSession should not fail on enrichment error: %v", err)
 	}
 
-	meta, body, err := vault.ReadSession("test-proj", result.SessionID[:10], result.Iteration)
+	meta, body, err := vault.ReadSession("test-proj", result.SessionID[:10], ParseFingerprint(result.SessionID), result.Iteration)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +376,7 @@ func TestWriteSessionEmptyEnrichmentResultEnqueues(t *testing.T) {
 		t.Fatalf("WriteSession: %v", err)
 	}
 
-	meta, body, err := vault.ReadSession("test-proj", result.SessionID[:10], result.Iteration)
+	meta, body, err := vault.ReadSession("test-proj", result.SessionID[:10], ParseFingerprint(result.SessionID), result.Iteration)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +417,7 @@ func TestWriteSessionNilEnricherUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta, body, err := vault.ReadSession("test-proj", result.SessionID[:10], result.Iteration)
+	meta, body, err := vault.ReadSession("test-proj", result.SessionID[:10], ParseFingerprint(result.SessionID), result.Iteration)
 	if err != nil {
 		t.Fatal(err)
 	}

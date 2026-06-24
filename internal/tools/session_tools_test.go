@@ -156,7 +156,7 @@ func TestCaptureSessionArchiveLink(t *testing.T) {
 	got := r.(captureSessionResult)
 
 	// Session frontmatter should carry archive: <vault-rel-manifest>.
-	meta, _, err := vault.ReadSession("test-proj", got.SessionID[:10], got.Iteration)
+	meta, _, err := vault.ReadSession("test-proj", got.SessionID[:10], capture.ParseFingerprint(got.SessionID), got.Iteration)
 	if err != nil {
 		t.Fatalf("read session back: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestCaptureSessionEnrichDefaultPlain(t *testing.T) {
 		t.Errorf("status = %q, want ok", r.Status)
 	}
 
-	meta, _, err := vault.ReadSession("test-proj", r.SessionID[:10], r.Iteration)
+	meta, _, err := vault.ReadSession("test-proj", r.SessionID[:10], capture.ParseFingerprint(r.SessionID), r.Iteration)
 	if err != nil {
 		t.Fatalf("read session: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestCaptureSessionEnrichDefaultPlain(t *testing.T) {
 	if meta.Summary != "Plain agent-authored summary." {
 		t.Errorf("summary mutated unexpectedly: %q", meta.Summary)
 	}
-	notePath, err := vault.SessionFile("test-proj", r.SessionID[:10], r.Iteration)
+	notePath, err := vault.SessionFile("test-proj", r.SessionID[:10], capture.ParseFingerprint(r.SessionID), r.Iteration)
 	if err != nil {
 		t.Fatalf("SessionFile: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestCaptureSessionEnrichDisabledConfig(t *testing.T) {
 	if r.Status != "ok" {
 		t.Errorf("status = %q, want ok", r.Status)
 	}
-	meta, _, err := vault.ReadSession("test-proj", r.SessionID[:10], r.Iteration)
+	meta, _, err := vault.ReadSession("test-proj", r.SessionID[:10], capture.ParseFingerprint(r.SessionID), r.Iteration)
 	if err != nil {
 		t.Fatalf("read session: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestCaptureSessionEnrichLive(t *testing.T) {
 		t.Errorf("status = %q, want ok", r.Status)
 	}
 
-	meta, _, err := vault.ReadSession("test-proj", r.SessionID[:10], r.Iteration)
+	meta, _, err := vault.ReadSession("test-proj", r.SessionID[:10], capture.ParseFingerprint(r.SessionID), r.Iteration)
 	if err != nil {
 		t.Fatalf("read session: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestCaptureSessionEnrichLive(t *testing.T) {
 	if meta.Tag != "implementation" {
 		t.Errorf("tag = %q, want implementation", meta.Tag)
 	}
-	notePath, err := vault.SessionFile("test-proj", r.SessionID[:10], r.Iteration)
+	notePath, err := vault.SessionFile("test-proj", r.SessionID[:10], capture.ParseFingerprint(r.SessionID), r.Iteration)
 	if err != nil {
 		t.Fatalf("SessionFile: %v", err)
 	}

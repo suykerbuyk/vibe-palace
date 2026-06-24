@@ -112,6 +112,34 @@ layer between human and AI.
 - **KG Entities**: JSONL (append-only, name + type + properties)
 - **Config**: TOML at all three precedence levels
 
+### Session Identity (host-qualified IDs)
+
+Session notes are named and keyed by a **host-qualified** id of the form
+`<date>-<fp8>-<NN>` (for example `2026-06-23-a1b2c3d4-01`), where `<fp8>` is the
+8-hex-char `surface.WriterFingerprint(vaultPath)` — a `sha256(hostname +
+vaultPath)` prefix. The fingerprint stamps both the filename
+(`<date>-<fp8>-<NN>.md`) and `meta.ID`; `meta.Iteration` remains the bare
+numeric `NN` (the last hyphen segment), so iteration parsing is unchanged.
+
+The fingerprint exists to keep two machines from colliding while offline. The
+previous scheme globbed `<date>-*.md` host-agnostically, so two hosts capturing
+on the same date both minted `NN=01` — producing identical filenames **and**
+identical `meta.ID` values that collided as an add/add conflict the moment the
+vaults synced. Scoping the `NextIteration` glob to `<date>-<fp8>-*.md` makes
+each host number its own sessions independently, and the raw hostname is never
+written into the vault (only its hash prefix).
+
+The fingerprint is threaded through the session read/write/rewrite paths,
+`NextIteration`, the capture pipeline, and the enrichment queue (whose item
+filenames are likewise host-scoped). Resolution stays **back-compatible**: legacy
+`<date>-<NN>.md` files and ids still parse and read (the fingerprint segment is
+simply empty), and no existing notes are migrated.
+
+One consequence: per-host iteration numbers are no longer globally monotonic, so
+the analytics sort comparators tiebreak by `(Date, Fingerprint, Iteration)`,
+with the fingerprint recovered from `meta.ID` via `capture.ParseFingerprint`
+rather than from any new persisted field.
+
 ### Vault Write Serialization
 
 Vault writes pass through two distinct disciplines that solve two distinct
@@ -329,6 +357,54 @@ git directly:
 - **`/wrap`** sweeps after the narrative sync, committing the `.surface` churn the
   wrap itself generated plus any session/transcript artifacts produced during the
   session.
+
+---
+
+## Vault Pull
+
+### The primitive
+
+`storage.Pull(vaultPath, remotes)` in `internal/storage/vaultpull.go` centralizes
+the incoming half of vault sync, the way `CommitAndPushPaths` centralizes the
+outgoing half. It existed previously only as duplicated inline `git pull <remote>
+<branch>` logic in two front-ends — `pullAll` in `cmd/vp/cmd_vault.go` and
+`gitPull` in `internal/tools/system_tools.go` — neither of which stashed,
+autostashed, or pre-checked the working tree. `Pull` returns a `PullResult` that
+mirrors `PushResult` but drops `CommitSHA`, adds `HealedTemplates []string` and
+`RemoteOutput map[string]string`, and exposes `AllPulled()` / `AnyPulled()` /
+`Stranded()` alongside the per-remote `RemoteResults`.
+
+`Pull` keeps **plain merge semantics**. It deliberately does *not* replicate the
+push path's rebase / force-with-lease converge loop: incoming history is merged,
+not replayed. It attempts **every** remote and records each outcome in
+`RemoteResults` rather than aborting internally, leaving each front-end its own
+policy. The CLI `pullAll` is best-effort / continue-all, adds a CLI-only
+`--dry-run`, and re-prints each remote's captured output to stderr; the MCP
+`gitPull` is fail-fast (returns on the first failing remote) and folds the
+captured output into its response payload.
+
+### Phantom-template self-heal
+
+The core fix `Pull` adds is a narrowly-scoped self-heal for a wedged working
+tree. Before the merge, for each working-tree-dirty path matching exactly
+`Templates/commands/*.md`, `Pull` runs `git diff --quiet <remote>/<branch> --
+<path>`. If that exits 0 — the dirty working-tree content is provably identical
+to the freshly-fetched remote ref — it runs `git checkout HEAD -- <path>` to
+discard the uncommitted dirt, so the subsequent merge cannot abort with "Your
+local changes to the following files would be overwritten by merge", and records
+the path in `HealedTemplates`. The heal is **fail-open**: any error while
+healing a path skips that path and is never fatal, and a genuinely-edited
+template (nonzero diff) is left untouched.
+
+This neutralizes the triggering incident, where an older `vp commands upgrade`
+wrote stale template bytes over a newer committed copy, leaving the host's tree
+dirty in a way that blocked every pull. The dirty-path scan reuses tidy's
+`scanPorcelain` / `parsePorcelainZ` parser (see *Porcelain parsing and
+rename/copy handling* above) — no new porcelain parser was added.
+
+The heal clears a **dirty-tree obstruction only**; it is not a committed-conflict
+resolver. A template that has genuinely diverged at the commit level on two hosts
+still produces a normal merge conflict, exactly as before.
 
 ---
 

@@ -177,6 +177,58 @@ func ComputeFrictionTrend(sessions []storage.SessionMeta, now time.Time) Frictio
 	return t
 }
 
+// lessSessionByDateFpIter orders sessions by (Date, Fingerprint, Iteration)
+// ascending. Same-date cross-host sessions can share an iteration number, so the
+// writer fingerprint is the secondary key for a deterministic total order. The
+// descending call sites invert the order by swapping operands.
+func lessSessionByDateFpIter(aDate, aFP string, aIter int, bDate, bFP string, bIter int) bool {
+	if aDate != bDate {
+		return aDate < bDate
+	}
+	if aFP != bFP {
+		return aFP < bFP
+	}
+	return aIter < bIter
+}
+
+// sessionSortKey holds a session's ordering coordinates with the writer
+// fingerprint parsed from the ID exactly once. Sorting this decorated slice (a
+// decorate-sort) keeps fingerprint parsing O(n) instead of the O(n log n) it
+// would cost re-parsing inside every comparison. idx points back at the source
+// slice so it can be reordered to match.
+type sessionSortKey struct {
+	date     string
+	fp       string
+	iter     int
+	friction int
+	idx      int
+}
+
+// sessionSortKeys decorates sessions with their parsed fingerprints for sorting.
+func sessionSortKeys(sessions []storage.SessionMeta) []sessionSortKey {
+	keys := make([]sessionSortKey, len(sessions))
+	for i, s := range sessions {
+		keys[i] = sessionSortKey{
+			date:     s.Date,
+			fp:       ParseFingerprint(s.ID),
+			iter:     s.Iteration,
+			friction: s.FrictionScore,
+			idx:      i,
+		}
+	}
+	return keys
+}
+
+// reorderSessions returns a new slice of sessions in the order described by the
+// (already-sorted) decoration keys.
+func reorderSessions(sessions []storage.SessionMeta, keys []sessionSortKey) []storage.SessionMeta {
+	out := make([]storage.SessionMeta, len(keys))
+	for i, k := range keys {
+		out[i] = sessions[k.idx]
+	}
+	return out
+}
+
 // DetectModelRegressions sorts sessions chronologically (by Date then
 // Iteration), drops those with an empty Model, groups consecutive runs of the
 // same model, and reports the avg-friction delta at each model->model boundary.
@@ -193,12 +245,14 @@ func DetectModelRegressions(sessions []storage.SessionMeta) ModelRegressionRepor
 	}
 	report.ModeledCount = len(modeled)
 
-	sort.SliceStable(modeled, func(i, j int) bool {
-		if modeled[i].Date != modeled[j].Date {
-			return modeled[i].Date < modeled[j].Date
-		}
-		return modeled[i].Iteration < modeled[j].Iteration
+	keys := sessionSortKeys(modeled)
+	sort.SliceStable(keys, func(i, j int) bool {
+		return lessSessionByDateFpIter(
+			keys[i].date, keys[i].fp, keys[i].iter,
+			keys[j].date, keys[j].fp, keys[j].iter,
+		)
 	})
+	modeled = reorderSessions(modeled, keys)
 
 	// Collapse into maximal consecutive runs sharing a Model.
 	type run struct {
@@ -239,17 +293,19 @@ func TopFrictionSessions(sessions []storage.SessionMeta, n int) []FrictionSessio
 	if n <= 0 {
 		return nil
 	}
-	sorted := make([]storage.SessionMeta, len(sessions))
-	copy(sorted, sessions)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		if sorted[i].FrictionScore != sorted[j].FrictionScore {
-			return sorted[i].FrictionScore > sorted[j].FrictionScore
+	keys := sessionSortKeys(sessions)
+	sort.SliceStable(keys, func(i, j int) bool {
+		if keys[i].friction != keys[j].friction {
+			return keys[i].friction > keys[j].friction
 		}
-		if sorted[i].Date != sorted[j].Date {
-			return sorted[i].Date > sorted[j].Date // most recent first
-		}
-		return sorted[i].Iteration > sorted[j].Iteration
+		// Descending (Date, Fingerprint, Iteration): invert by swapping operands
+		// so most-recent / higher-fp / higher-iteration sorts first.
+		return lessSessionByDateFpIter(
+			keys[j].date, keys[j].fp, keys[j].iter,
+			keys[i].date, keys[i].fp, keys[i].iter,
+		)
 	})
+	sorted := reorderSessions(sessions, keys)
 
 	limit := min(n, len(sorted))
 	out := make([]FrictionSession, 0, limit)
@@ -281,12 +337,14 @@ func GetCorrectionDensitySeries(sessions []storage.SessionMeta) CorrectionDensit
 		withData = append(withData, s)
 	}
 
-	sort.SliceStable(withData, func(i, j int) bool {
-		if withData[i].Date != withData[j].Date {
-			return withData[i].Date < withData[j].Date
-		}
-		return withData[i].Iteration < withData[j].Iteration
+	keys := sessionSortKeys(withData)
+	sort.SliceStable(keys, func(i, j int) bool {
+		return lessSessionByDateFpIter(
+			keys[i].date, keys[i].fp, keys[i].iter,
+			keys[j].date, keys[j].fp, keys[j].iter,
+		)
 	})
+	withData = reorderSessions(withData, keys)
 
 	for _, s := range withData {
 		series.Points = append(series.Points, CorrectionPoint{

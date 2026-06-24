@@ -396,3 +396,43 @@ func TestGetCorrectionDensitySeries_MeasuredZeroNotMissing(t *testing.T) {
 		t.Errorf("points = %+v, want one zero-corrections point", series.Points)
 	}
 }
+
+// TestSortTiebreakByFingerprint pins that same-date, same-iteration sessions
+// from different writer fingerprints (which can now legitimately collide on
+// (date, iteration)) get a deterministic total order via the fingerprint
+// tiebreak parsed from meta.ID — independent of input order.
+func TestSortTiebreakByFingerprint(t *testing.T) {
+	// Two sessions, same date+iteration, distinct fingerprints in the ID.
+	a := storage.SessionMeta{
+		ID: "2026-06-23-aaaaaaaa-01", Date: "2026-06-23", Iteration: 1,
+		FrictionScore: 40, Breakdown: &storage.FrictionBreakdown{Corrections: 9},
+	}
+	b := storage.SessionMeta{
+		ID: "2026-06-23-bbbbbbbb-01", Date: "2026-06-23", Iteration: 1,
+		FrictionScore: 40, Breakdown: &storage.FrictionBreakdown{Corrections: 5},
+	}
+
+	// GetCorrectionDensitySeries sorts ascending by (date, fp, iteration).
+	for _, order := range [][]storage.SessionMeta{{a, b}, {b, a}} {
+		series := GetCorrectionDensitySeries(order)
+		if len(series.Points) != 2 {
+			t.Fatalf("points = %d, want 2", len(series.Points))
+		}
+		// aaaaaaaa sorts before bbbbbbbb regardless of input order.
+		if series.Points[0].Corrections != 9 || series.Points[1].Corrections != 5 {
+			t.Errorf("correction-series order not deterministic: %+v", series.Points)
+		}
+	}
+
+	// TopFrictionSessions breaks the equal-friction, equal-date tie by fp
+	// (descending), also deterministic across input orders.
+	for _, order := range [][]storage.SessionMeta{{a, b}, {b, a}} {
+		top := TopFrictionSessions(order, 2)
+		if len(top) != 2 {
+			t.Fatalf("top = %d, want 2", len(top))
+		}
+		if top[0].ID != "2026-06-23-bbbbbbbb-01" || top[1].ID != "2026-06-23-aaaaaaaa-01" {
+			t.Errorf("top-friction tiebreak not deterministic: %q, %q", top[0].ID, top[1].ID)
+		}
+	}
+}

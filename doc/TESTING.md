@@ -305,6 +305,43 @@ strand at the `TidyVault` boundary (`TestTidyVault_StrandedWhenAllRemotesFail`,
 `vp_vault_tidy` surface (`TestVaultTidy_StrandedStatus` → `status:"stranded"`,
 `TestVaultTidy_PartialPushCount` → corrected `pushed to N/M remotes` count).
 
+### `internal/storage/` — Vault Pull & Phantom-Template Heal
+
+Covers the incoming half of vault sync added in `storage.Pull` (plain-merge
+semantics, per-remote `RemoteResults`, and the dirty-`Templates/commands/*.md`
+self-heal that unwedged the triggering `vp commands upgrade` incident). Unit
+coverage in `internal/storage/vaultpull_test.go` (real `git` subprocesses against
+bare-remote + clone fixtures):
+
+| Test | What it proves |
+|------|----------------|
+| `TestPull_PhantomTemplateHeal` | A dirty template whose content equals the remote ref is `git checkout HEAD`-discarded and recorded in `HealedTemplates`, so the merge succeeds instead of aborting |
+| `TestPull_GenuineEditNotHealed` | A genuinely-edited template (nonzero diff vs the remote ref) is left untouched — the heal never clobbers real edits |
+| `TestPull_UnreachableRemote` | An unreachable remote is recorded as a failed `RemoteResult` rather than aborting the whole pull |
+| `TestPull_MultiRemoteResultMap` | Every remote is attempted and its outcome lands in the `RemoteResults` map |
+| `TestPull_RestartFlow` | The `/restart` pull path merges cleanly after a heal |
+| `TestPull_NonMainBranch` | Heal + merge work against a non-`main` branch |
+| `TestDirtyTemplateCommandPaths` | The dirty-path scan (reusing tidy's porcelain parser) selects exactly `Templates/commands/*.md` |
+| `TestPullResult_Stranded` | `Stranded()` reports a pull that reached no remote |
+
+### `internal/storage/`, `internal/capture/`, `internal/tools/` — Host-Identity Session IDs
+
+Covers the host-qualified `<date>-<fp8>-<NN>` session-id scheme (see
+*Session Identity* in `doc/ARCHITECTURE.md`): cross-host collision avoidance via
+`surface.WriterFingerprint`, host-scoped `NextIteration` globbing, legacy
+`<date>-<NN>` back-compat, the host-scoped enrichment queue, and the analytics
+`(Date, Fingerprint, Iteration)` tiebreak.
+
+- **Storage** (`sessions_test.go`): `TestNextIterationHostScoped`,
+  `TestCrossHostNoCollision`, `TestReadLegacySessionFile`; plus host-scoped and
+  legacy cases in `TestSessionFile` (`paths_test.go`).
+- **Capture** (`enrichqueue_test.go`): `TestDrainLegacyQueueItem` and the
+  fingerprint round-trip in `TestEnqueueEnrichmentRoundTrip`;
+  (`analytics_test.go`) `TestSortTiebreakByFingerprint`.
+- **Tools** (`session_query_tools_test.go`): a new host-scoped parse case plus
+  five new malformed cases in `TestParseSessionID` /
+  `TestParseSessionIDRejectsMalformed`.
+
 ### `test/e2e/dispatch/` — Bash E2E (`make dispatch-e2e`)
 
 End-user-level verification that every parent-command exit-code
