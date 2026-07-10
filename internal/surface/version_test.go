@@ -4,6 +4,7 @@
 package surface
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -37,15 +38,20 @@ func TestWriteStamp_RoundTrip(t *testing.T) {
 	if err := WriteStamp(dir, 1, "abcd1234"); err != nil {
 		t.Fatalf("WriteStamp: %v", err)
 	}
+	// The emitted file must be exactly the surface line — no provenance.
+	raw, err := os.ReadFile(filepath.Join(dir, stampFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "surface = 1\n" {
+		t.Fatalf("stamp bytes = %q, want %q", string(raw), "surface = 1\n")
+	}
 	s, err := ReadStamp(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Surface != 1 || s.LastWriter != "abcd1234" {
-		t.Fatalf("roundtrip stamp = %+v", s)
-	}
-	if s.LastWriteAt == "" {
-		t.Fatal("last_write_at not set")
+	if s.Surface != 1 || s.LastWriter != "" || s.LastWriteAt != "" {
+		t.Fatalf("roundtrip stamp = %+v; want Surface=1 and empty provenance", s)
 	}
 }
 
@@ -59,22 +65,57 @@ func TestWriteStamp_MonotonicShortCircuit(t *testing.T) {
 		t.Fatalf("WriteStamp lower: %v", err)
 	}
 	s, _ := ReadStamp(dir)
-	if s.Surface != 5 || s.LastWriter != "high" {
+	if s.Surface != 5 {
 		t.Fatalf("lower write clobbered higher stamp: %+v", s)
 	}
 }
 
-func TestWriteStamp_EqualRefreshesWriter(t *testing.T) {
+func TestWriteStamp_EqualVersionNoOp(t *testing.T) {
 	dir := t.TempDir()
-	if err := WriteStamp(dir, 3, "first"); err != nil {
+	// Pre-write a sentinel stamp at surface=3 carrying a bogus last_writer.
+	// A no-op equal-version write must leave these exact bytes untouched.
+	sentinel := []byte("surface = 3\nlast_writer = \"sentinel\"\n")
+	if err := os.WriteFile(filepath.Join(dir, stampFilename), sentinel, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(dir, stampFilename))
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := WriteStamp(dir, 3, "second"); err != nil {
 		t.Fatal(err)
 	}
-	s, _ := ReadStamp(dir)
-	if s.LastWriter != "second" {
-		t.Fatalf("equal-version write did not refresh writer: %+v", s)
+	after, err := os.ReadFile(filepath.Join(dir, stampFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("equal-version write rewrote the file: before=%q after=%q", before, after)
+	}
+}
+
+func TestWriteStamp_ByteIdenticalAcrossWriters(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	if err := WriteStamp(dirA, 2, "hostAAAAA"); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteStamp(dirB, 2, "hostBBBBB"); err != nil {
+		t.Fatal(err)
+	}
+	rawA, err := os.ReadFile(filepath.Join(dirA, stampFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawB, err := os.ReadFile(filepath.Join(dirB, stampFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(rawA, rawB) {
+		t.Fatalf("stamps differ across writers: A=%q B=%q", rawA, rawB)
+	}
+	if string(rawA) != "surface = 2\n" {
+		t.Fatalf("stamp bytes = %q, want %q", string(rawA), "surface = 2\n")
 	}
 }
 

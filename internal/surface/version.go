@@ -22,7 +22,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -38,8 +37,8 @@ const MCPSurfaceVersion int = 1
 // Stamp models the on-disk .surface TOML file recording the latest writer.
 type Stamp struct {
 	Surface     int    `toml:"surface"`
-	LastWriter  string `toml:"last_writer"`
-	LastWriteAt string `toml:"last_write_at"`
+	LastWriter  string `toml:"last_writer,omitempty"`
+	LastWriteAt string `toml:"last_write_at,omitempty"`
 }
 
 // stampFilename is the per-directory record relative to a stamp directory.
@@ -65,12 +64,18 @@ func ReadStamp(stampDir string) (Stamp, error) {
 	return s, nil
 }
 
-// WriteStamp atomically writes <stampDir>/.surface with the supplied version
-// and writerFingerprint, setting last_write_at to time.Now().UTC() in RFC3339.
+// WriteStamp atomically writes <stampDir>/.surface with a surface-only stamp
+// (the emitted file is exactly "surface = N\n").
 //
-// Monotonic: if an existing stamp's surface is strictly greater than version,
-// WriteStamp returns nil without writing. Equal versions refresh the timestamp;
-// lower or missing versions get overwritten.
+// Byte-stable per version: WriteStamp is a no-op when an existing stamp is
+// already at a surface version >= the requested version, so the file is never
+// rewritten once it exists at the current version. This keeps the tracked stamp
+// byte-identical across writers and vault writes, eliminating merge churn.
+//
+// The writerFingerprint parameter is retained for signature compatibility with
+// callers but is no longer persisted. The provenance fields (LastWriter,
+// LastWriteAt) remain on the Stamp struct solely so ReadStamp can decode legacy
+// on-disk stamps that still contain them.
 //
 // The .surface file is written via a direct temp-file + rename rather than
 // internal/atomicfile.Write — surface must not import atomicfile (which imports
@@ -80,7 +85,7 @@ func WriteStamp(stampDir string, version int, writerFingerprint string) error {
 	if err != nil {
 		return err
 	}
-	if existing.Surface > version {
+	if existing.Surface >= version {
 		return nil
 	}
 
@@ -88,11 +93,7 @@ func WriteStamp(stampDir string, version int, writerFingerprint string) error {
 		return fmt.Errorf("create stamp dir: %w", err)
 	}
 
-	s := Stamp{
-		Surface:     version,
-		LastWriter:  writerFingerprint,
-		LastWriteAt: time.Now().UTC().Format(time.RFC3339),
-	}
+	s := Stamp{Surface: version}
 
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(s); err != nil {

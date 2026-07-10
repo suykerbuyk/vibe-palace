@@ -229,8 +229,10 @@ level in sequence. `GetConfigValue(project, key)` returns value + source level.
 
 The hook path (`vp hook` on SessionEnd/Stop) and the MCP capture tools write
 session summaries, transcript archives, knowledge-graph entities/triples, and
-drawer JSONL across **every** project, and bump `.surface` provenance stamps as
-they go. Nothing in the routine workflow ever commits this churn: `/wrap` only
+drawer JSONL across **every** project. (Historically the hook also bumped a
+`.surface` provenance stamp on every write; stamps are now byte-stable per surface
+version and no longer churn per session — see "The `.surface` status gate" below.)
+Nothing in the routine workflow ever commits this churn: `/wrap` only
 commits the *current* project's explicit narrative paths (resume, iterations,
 the active task, `commit.msg`). The machine-generated artifacts pile up
 uncommitted, and because `vp vault push` refuses to push a dirty tree, the
@@ -291,8 +293,11 @@ not the path alone. `git status --porcelain -z` encodes status as two columns
 `XY` (index, worktree). `classifyDirty` applies the gate only to the
 `.surface` rule:
 
-- **Tracked modification** (` M` worktree-modified — the normal per-session stamp
-  churn — plus `M ` / `MM`) → **swept**.
+- **Tracked modification** (` M` worktree-modified — a surface-version bump or the
+  one-time stamp normalization, plus `M ` / `MM`) → **swept**. Routine per-session
+  `.surface` churn was eliminated when stamps became byte-stable per surface
+  version (`WriteStamp` is a no-op at the current version and no longer persists
+  provenance fields), so this case now fires only on a version bump.
 - **Untracked** (`??`) `.surface` → **reported**.
 
 An untracked `.surface` means a project directory git has never seen: either a
@@ -354,9 +359,9 @@ git directly:
 - **`/restart`** sweeps right after `vp vault pull` and the Surface preflight, so
   residue left by the previous session's hooks, a crash, or another machine is
   healed *before* context loads — and tidy runs against the already-merged state.
-- **`/wrap`** sweeps after the narrative sync, committing the `.surface` churn the
-  wrap itself generated plus any session/transcript artifacts produced during the
-  session.
+- **`/wrap`** sweeps after the narrative sync, committing any session/transcript
+  artifacts produced during the session (and a `.surface` stamp only if a
+  surface-version bump occurred — steady-version writes no longer touch it).
 
 ---
 
