@@ -22,13 +22,6 @@ var vaultDryRunFlag = []cli.FlagDef{
 	{Name: "--dry-run", Help: "Print git commands without executing"},
 }
 
-// vaultSyncFlags adds the merge-driver opt-out to the dry-run flag for the
-// pull/sync subcommands, which auto-install the vp-surface merge driver.
-var vaultSyncFlags = []cli.FlagDef{
-	{Name: "--dry-run", Help: "Print git commands without executing"},
-	{Name: "--no-install-merge-driver", Help: "Skip auto-installing the vp-surface merge driver"},
-}
-
 func cmdVault() *cli.Command {
 	return &cli.Command{
 		Name:        "vault",
@@ -37,55 +30,23 @@ func cmdVault() *cli.Command {
 		Subcommands: []string{
 			"vault pull", "vault push", "vault sync", "vault commit", "vault tidy",
 			"vault status", "vault read", "vault write", "vault edit", "vault delete",
-			"vault move", "vault exists", "vault sha256", "vault merge-driver",
+			"vault move", "vault exists", "vault sha256",
 		},
-	}
-}
-
-// cmdVaultMergeDriver is the internal subcommand git invokes as the configured
-// vp-surface merge driver for *.surface files. It takes three positional path
-// arguments (%O %A %B = ancestor, ours, theirs), resolves the surface integer
-// to max(ours, theirs), and exits 0 on success / 1 on conflict — git's
-// merge-driver contract. No surface gate, no auto-install: just resolve.
-func cmdVaultMergeDriver() *cli.Command {
-	return &cli.Command{
-		Name:        "vault merge-driver",
-		Synopsis:    "vp vault merge-driver <ancestor> <ours> <theirs>",
-		Description: "Internal git merge driver for *.surface stamps. Resolves a conflicting surface integer to max(ours, theirs). Invoked by git, not directly by users.",
-		Examples: []cli.Example{
-			{Cmd: "vp vault merge-driver base.surface ours.surface theirs.surface", Comment: "Resolve a .surface conflict to the max version"},
-		},
-		Run: func(args []string) int {
-			return runVaultMergeDriverExit(args)
-		},
-	}
-}
-
-// ensureMergeDriver auto-installs the vp-surface merge driver for the given
-// vault root, gated by the --no-install-merge-driver opt-out. It is invoked
-// from the live pull/sync paths and is idempotent across repeated real pulls.
-// Install failures are logged (best-effort) but never fail the pull/sync.
-func ensureMergeDriver(root string, fv *cli.FlagValues) {
-	if fv.Bool("--no-install-merge-driver") {
-		return
-	}
-	if _, err := EnsureMergeDriverInstalled(root); err != nil {
-		fmt.Fprintf(os.Stderr, "vp vault: merge-driver auto-install: %v\n", err)
 	}
 }
 
 func cmdVaultPull() *cli.Command {
 	return &cli.Command{
 		Name:        "vault pull",
-		Synopsis:    "vp vault pull [--dry-run] [--no-install-merge-driver]",
-		Description: "Pull from all configured vault remotes. Auto-installs the vp-surface merge driver (resolves *.surface conflicts to max) unless --no-install-merge-driver is given.",
-		Flags:       vaultSyncFlags,
+		Synopsis:    "vp vault pull [--dry-run]",
+		Description: "Pull from all configured vault remotes.",
+		Flags:       vaultDryRunFlag,
 		Examples: []cli.Example{
 			{Cmd: "vp vault pull", Comment: "Pull from all remotes"},
 			{Cmd: "vp vault pull --dry-run", Comment: "Preview pull commands without executing"},
 		},
 		Run: func(args []string) int {
-			fv, err := cli.ParseFlags(vaultSyncFlags, args)
+			fv, err := cli.ParseFlags(vaultDryRunFlag, args)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault pull: %v\n", err)
 				return cli.ExitUser
@@ -100,11 +61,7 @@ func cmdVaultPull() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault pull: %v\n", err)
 				return cli.ExitSystem
 			}
-			dryRun := fv.Bool("--dry-run")
-			if !dryRun {
-				ensureMergeDriver(root, fv)
-			}
-			return pullAll(root, remotes, dryRun)
+			return pullAll(root, remotes, fv.Bool("--dry-run"))
 		},
 	}
 }
@@ -143,15 +100,15 @@ func cmdVaultPush() *cli.Command {
 func cmdVaultSync() *cli.Command {
 	return &cli.Command{
 		Name:        "vault sync",
-		Synopsis:    "vp vault sync [--dry-run] [--no-install-merge-driver]",
-		Description: "Pull then push all configured vault remotes. Auto-installs the vp-surface merge driver (resolves *.surface conflicts to max) unless --no-install-merge-driver is given.",
-		Flags:       vaultSyncFlags,
+		Synopsis:    "vp vault sync [--dry-run]",
+		Description: "Pull then push all configured vault remotes.",
+		Flags:       vaultDryRunFlag,
 		Examples: []cli.Example{
 			{Cmd: "vp vault sync", Comment: "Pull then push all remotes"},
 			{Cmd: "vp vault sync --dry-run", Comment: "Preview sync commands without executing"},
 		},
 		Run: func(args []string) int {
-			fv, err := cli.ParseFlags(vaultSyncFlags, args)
+			fv, err := cli.ParseFlags(vaultDryRunFlag, args)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault sync: %v\n", err)
 				return cli.ExitUser
@@ -167,9 +124,6 @@ func cmdVaultSync() *cli.Command {
 				return cli.ExitSystem
 			}
 			dryRun := fv.Bool("--dry-run")
-			if !dryRun {
-				ensureMergeDriver(root, fv)
-			}
 			if code := pullAll(root, remotes, dryRun); code != cli.ExitOK {
 				return code
 			}

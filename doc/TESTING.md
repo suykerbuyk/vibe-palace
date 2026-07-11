@@ -561,31 +561,22 @@ It runs as part of `make test` (`go test ./...`) and CI's
 `go test -short -race ./...` with no extra wiring (there is no `pre-commit`
 aggregate target).
 
-### `cmd/vp` — Surface Merge Driver (Phase 5, combined new-code coverage ~91%)
+### `cmd/vp` — Surface Merge Driver (REMOVED, iter 174)
 
-The `vp-surface` git merge driver resolves `*.surface` stamp conflicts to
-`max(ours, theirs)` (monotonic — never go backwards) so two hosts that both
-bump a directory's surface version converge on a vault merge instead of
-hard-conflicting on the integer. It is registered in `~/.gitconfig` as
-`[merge "vp-surface"]` and activated per-path by `*.surface merge=vp-surface`
-in the vault's `.gitattributes`; `vp vault pull/sync` auto-install it on the
-live (configured-remote) path unless `--no-install-merge-driver` is given.
+The `vp-surface` git merge driver and its auto-installer were **deleted**. They
+existed to resolve `*.surface` stamp conflicts to `max(ours, theirs)`, but the
+byte-stable stamp (iter 168, `6d53b70`) removed the conflict class they served:
+`WriteStamp` is a no-op at equal surface version and emits a surface-only stamp,
+so routine writes never touch the file and two hosts bumping to the same version
+produce byte-identical content that git merges cleanly on its own.
 
-- `vault_merge_driver_test.go` — the resolution table (ours>theirs,
-  theirs>ours, equal, all-zero), missing/malformed ancestor, malformed/missing
-  ours/theirs (→ exit 1 + text-conflict markers), auxiliary-field clearing,
-  arg-count validation, and the `cmd vault merge-driver` Run path. Inputs are
-  arbitrary temp `%O/%A/%B` paths parsed into `surface.Stamp`.
-- `vault_merge_driver_install_test.go` — `EnsureMergeDriverInstalled`
-  idempotency (two installs → exactly one entry in each file), partial install,
-  existing-content preservation, and read-error branches. The **primary**
-  auto-invoke test stages a temp vault git repo with a local bare remote and
-  drives `vp vault pull` twice on the configured-remote path, asserting the
-  driver installs and stays idempotent across repeated real pulls; a defensive
-  test covers the no-remote no-op (returns at `gitRemotes()` before install)
-  and the `--no-install-merge-driver` opt-out. All tests use a temp `HOME` plus
-  `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` isolation — they never touch the real
-  `~/.gitconfig` or vault.
+Deleted with the driver: `vault_merge_driver.go`, `vault_merge_driver_install.go`
+and both test files; the `vp vault merge-driver` subcommand; the
+`--no-install-merge-driver` opt-out on `vault pull`/`vault sync`; and the
+`*.surface merge=vp-surface` line in the vault's `.gitattributes`.
+
+Rationale and the two scenarios that decided it are recorded in
+`tasks/done/mcp-pull-parity-and-bashless-preflight.md`.
 
 ---
 
