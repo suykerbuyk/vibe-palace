@@ -472,8 +472,9 @@ func getProjectContextHandler(vault *storage.Vault, resolver *vpctx.Resolver) mc
 // ---------------------------------------------------------------------------
 
 type getEffectivenessParams struct {
-	Project string `json:"project"`
-	Weeks   int    `json:"weeks,omitempty"`
+	Project  string   `json:"project"`
+	Weeks    int      `json:"weeks,omitempty"`
+	Sections []string `json:"sections,omitempty"`
 }
 
 // The effectiveness result types now live in internal/capture (review findings
@@ -495,6 +496,11 @@ var getEffectivenessSchema = json.RawMessage(`{
 		"weeks": {
 			"type": "integer",
 			"description": "Number of weeks to analyze (default 8, max 52)."
+		},
+		"sections": {
+			"type": "array",
+			"items": {"type": "string", "enum": ["overall", "weeks"]},
+			"description": "Optional subset of result sections to return: \"overall\" (headline aggregate) and/or \"weeks\" (per-week array). Default/empty returns all. Unselected sections are ZEROED (present-but-empty, not computed) — do not read a suppressed \"overall\" as real zeros. Orthogonal to the weeks bucket-count param."
 		}
 	},
 	"required": ["project"]
@@ -537,7 +543,34 @@ func getEffectivenessHandler(vault *storage.Vault) mcp.HandlerFunc {
 			return nil, fmt.Errorf("list sessions: %w", err)
 		}
 
-		return capture.ComputeEffectiveness(p.Project, sessions), nil
+		result := capture.ComputeEffectiveness(p.Project, sessions)
+
+		// Optional post-filter: when a narrowing sections selector is supplied,
+		// ZERO the unselected section's field (present-but-empty, not an absent
+		// key, and never omitempty on the shared output struct). Default/empty
+		// returns the full result byte-for-byte unchanged. The bucket count
+		// (weeks) and this selector are orthogonal — both are honored.
+		if len(p.Sections) > 0 {
+			var wantOverall, wantWeeks bool
+			for _, s := range p.Sections {
+				switch s {
+				case "overall":
+					wantOverall = true
+				case "weeks":
+					wantWeeks = true
+				default:
+					return nil, fmt.Errorf("invalid section %q: must be one of [overall weeks]", s)
+				}
+			}
+			if !wantOverall {
+				result.Overall = capture.OverallEffectiveness{}
+			}
+			if !wantWeeks {
+				result.Weeks = nil
+			}
+		}
+
+		return result, nil
 	}
 }
 

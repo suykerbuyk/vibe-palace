@@ -470,13 +470,15 @@ func userMemorySummarySuffix(n int) string {
 // ---------------------------------------------------------------------------
 
 type vaultStatusParams struct {
-	Refresh bool `json:"refresh"`
+	Refresh  bool     `json:"refresh"`
+	Sections []string `json:"sections,omitempty"`
 }
 
 var vaultStatusSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"refresh": {"type": "boolean", "description": "Perform a bounded per-remote git fetch so behind counts are real (default false). When false, behind counts are reported from cached tracking refs and behind_known is false."}
+		"refresh": {"type": "boolean", "description": "Perform a bounded per-remote git fetch so behind counts are real (default false). When false, behind counts are reported from cached tracking refs and behind_known is false."},
+		"sections": {"type": "array", "items": {"type": "string", "enum": ["sync", "dirt"]}, "description": "Optional subset of report sections to return: \"sync\" (per-remote git sync state, the remotes field) and/or \"dirt\" (working-tree dirt classification). Default/empty returns all. Unselected sections are ZEROED (present-but-empty, not computed) — do not read a suppressed section's fields as real data. The tidy scan always runs regardless; this only trims the payload."}
 	}
 }`)
 
@@ -505,6 +507,30 @@ func vaultStatusHandler(vault *storage.Vault) mcp.HandlerFunc {
 		report, err := storage.BuildStatusReport(vault.Root, p.Refresh)
 		if err != nil {
 			return nil, fmt.Errorf("vault status: %w", err)
+		}
+		// Optional post-filter: when a narrowing sections selector is supplied,
+		// ZERO the unselected section's field (present-but-empty, not an absent
+		// key, and never omitempty on the shared output struct). Default/empty
+		// returns the full report byte-for-byte unchanged. The tidy scan and
+		// remote probes always run — this trims the payload, not the IO.
+		if len(p.Sections) > 0 {
+			var wantSync, wantDirt bool
+			for _, s := range p.Sections {
+				switch s {
+				case "sync":
+					wantSync = true
+				case "dirt":
+					wantDirt = true
+				default:
+					return nil, fmt.Errorf("invalid section %q: must be one of [sync dirt]", s)
+				}
+			}
+			if !wantSync {
+				report.Remotes = nil
+			}
+			if !wantDirt {
+				report.Dirt = storage.DirtJSON{}
+			}
 		}
 		return report, nil
 	}

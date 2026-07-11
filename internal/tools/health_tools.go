@@ -22,10 +22,26 @@ var healthSchema = json.RawMessage(`{
 		"project": {
 			"type": "string",
 			"description": "Project slug."
+		},
+		"hours": {
+			"type": "integer",
+			"description": "Look-back window in hours (default 24, max 720). Widens the window for BOTH warn_counts and recent_warns."
+		},
+		"limit": {
+			"type": "integer",
+			"description": "Max entries in the recent_warns list (default 20, max 1000). Caps ONLY recent_warns — warn_counts still tallies every WARN/ERROR in the window."
 		}
 	},
 	"required": ["project"]
 }`)
+
+// healthParams carries the vp_health input. project stays required; hours and
+// limit are optional scalar tuning knobs (see healthSchema for semantics).
+type healthParams struct {
+	Project string `json:"project"`
+	Hours   int    `json:"hours,omitempty"`
+	Limit   int    `json:"limit,omitempty"`
+}
 
 // HealthResult is the structured response from vp_health.
 type HealthResult struct {
@@ -55,12 +71,28 @@ func HealthTool(vault *storage.Vault) mcp.Tool {
 
 func healthHandler(vault *storage.Vault) mcp.HandlerFunc {
 	return func(_ context.Context, params json.RawMessage) (any, error) {
-		var p projectParams
+		var p healthParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
 		}
 		if p.Project == "" {
 			return nil, fmt.Errorf("project is required")
+		}
+
+		hours := p.Hours
+		if hours <= 0 {
+			hours = 24
+		}
+		if hours > 720 {
+			hours = 720
+		}
+
+		limit := p.Limit
+		if limit <= 0 {
+			limit = 20
+		}
+		if limit > 1000 {
+			limit = 1000
 		}
 
 		logPath := vault.VaultLocalDir() + "/vp.log"
@@ -83,7 +115,7 @@ func healthHandler(vault *storage.Vault) mcp.HandlerFunc {
 		}
 		defer f.Close()
 
-		cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+		cutoff := time.Now().UTC().Add(-time.Duration(hours) * time.Hour).Format(time.RFC3339)
 
 		scanner := bufio.NewScanner(f)
 		for scanner.Scan() {
@@ -105,7 +137,7 @@ func healthHandler(vault *storage.Vault) mcp.HandlerFunc {
 			msg, _ := entry["msg"].(string)
 			le := LogEntry{Time: ts, Level: level, Msg: msg}
 
-			if len(result.RecentWarns) < 20 {
+			if len(result.RecentWarns) < limit {
 				result.RecentWarns = append(result.RecentWarns, le)
 			}
 

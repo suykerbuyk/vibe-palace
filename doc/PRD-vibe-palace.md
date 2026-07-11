@@ -579,7 +579,7 @@ flowchart TD
 | `vp_search_sessions` | query?, project?, date_from?, date_to?, min_friction?, max_results? | Search session metadata |
 | `vp_get_session_detail` | project, date, iteration? | Full session markdown |
 | `vp_get_friction_trends` | project?, weeks? | Friction and efficiency trends by ISO-calendar week (complementary to the rolling 7/30/90-day windows of the `vp trends` CLI command) |
-| `vp_get_effectiveness` | project? | Context availability vs outcome correlation |
+| `vp_get_effectiveness` | project?, weeks?, sections? | Context availability vs outcome correlation. `sections` (`overall`/`weeks`, default both) trims the payload by zeroing the unselected section (present-but-empty, not computed); orthogonal to the `weeks` bucket count |
 | `vp_append_iteration` | project?, iteration?, title (req), narrative (req), date? | Append iteration narrative |
 
 ### 6.3 Search Tools (from MemPalace, new)
@@ -619,7 +619,7 @@ flowchart TD
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `vp_palace_status` | project? | Palace overview: wings, rooms, drawer counts |
+| `vp_palace_status` | project?, sections? | Palace overview: wings, rooms, drawer counts. `sections` (`stats`/`per_wing`/`tunnels`, default all) trims the payload by zeroing the unselected section (present-but-empty, not computed — a zeroed `stats` reads as an empty palace, so don't mistake it for real data) |
 | `vp_list_wings` | project? | All wings with drawer counts |
 | `vp_list_rooms` | project?, wing? | Rooms in a wing with counts |
 | `vp_traverse` | start_room (req), project?, max_hops? | Walk the room graph (BFS) |
@@ -633,9 +633,9 @@ flowchart TD
 |------|-----------|-------------|
 | `vp_init` | project?, domain?, tags? | Initialize project (create .vibe-palace.toml + vault dir) |
 | `vp_vault_sync` | paths? | Pull/push vault git remotes. Optional `paths` commits only the listed vault-relative files (commit-then-push) instead of a blanket sync |
-| `vp_vault_status` | refresh? | Read-only vault sync + working-tree dirt report (per-remote ahead/unpushed/behind/diverged/reachable + Swept/Reported dirt). `refresh` runs a bounded per-remote fetch for real behind counts; never commits, pushes, or mutates the tree |
+| `vp_vault_status` | refresh?, sections? | Read-only vault sync + working-tree dirt report (per-remote ahead/unpushed/behind/diverged/reachable + Swept/Reported dirt). `refresh` runs a bounded per-remote fetch for real behind counts; never commits, pushes, or mutates the tree. `sections` (`sync`/`dirt`, default both) trims the payload by zeroing the unselected section (present-but-empty, not computed); the tidy scan always runs regardless |
 | `vp_refresh_index` | project? | Rebuild session index and re-embed if needed |
-| `vp_health` | project (req) | Runtime health: recent warnings/errors from the vp log file |
+| `vp_health` | project (req), hours?, limit? | Runtime health: recent warnings/errors from the vp log file. `hours` (default 24, max 720) widens the look-back window for BOTH warn_counts and recent_warns; `limit` (default 20, max 1000) caps ONLY the recent_warns list — warn_counts still tallies every WARN/ERROR in the window |
 
 ### 6.8 Vault File CRUD Tools (write/wrap surface)
 

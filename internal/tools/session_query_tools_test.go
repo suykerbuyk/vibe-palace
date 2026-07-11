@@ -553,6 +553,110 @@ func TestGetEffectivenessOutcomeScores(t *testing.T) {
 	}
 }
 
+// effectivenessRaw runs the tool and returns both the marshaled JSON bytes (for
+// wire-key presence assertions) and the decoded result.
+func effectivenessRaw(t *testing.T, vault *storage.Vault, params map[string]any) ([]byte, EffectivenessResult) {
+	t.Helper()
+	tool := GetEffectivenessTool(vault)
+	in, _ := json.Marshal(params)
+	res, err := tool.Handler(context.Background(), in)
+	if err != nil {
+		t.Fatalf("handler(%v): %v", params, err)
+	}
+	out, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	return out, res.(EffectivenessResult)
+}
+
+func TestGetEffectivenessSections(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedTestSessions(t, vault)
+
+	t.Run("default_carries_both_keys", func(t *testing.T) {
+		raw, r := effectivenessRaw(t, vault, map[string]any{"project": "test-proj", "weeks": 52})
+		if !hasKey(t, raw, "overall") || !hasKey(t, raw, "weeks") {
+			t.Errorf("default output must carry overall+weeks keys, got %s", raw)
+		}
+		if r.Overall.TotalSessions != 3 {
+			t.Errorf("overall must be populated by default, got %+v", r.Overall)
+		}
+		if len(r.Weeks) == 0 {
+			t.Errorf("weeks must be populated by default, got %+v", r.Weeks)
+		}
+	})
+
+	t.Run("overall_only_zeroes_weeks", func(t *testing.T) {
+		raw, r := effectivenessRaw(t, vault, map[string]any{"project": "test-proj", "weeks": 52, "sections": []string{"overall"}})
+		if !hasKey(t, raw, "weeks") {
+			t.Errorf("weeks key must remain present (null/zeroed), got %s", raw)
+		}
+		if r.Weeks != nil {
+			t.Errorf("Weeks must be nil for overall-only selection, got %+v", r.Weeks)
+		}
+		if r.Overall.TotalSessions != 3 {
+			t.Errorf("Overall must be populated, got %+v", r.Overall)
+		}
+		if r.Project != "test-proj" {
+			t.Errorf("Project must always be present, got %q", r.Project)
+		}
+	})
+
+	t.Run("weeks_only_zeroes_overall", func(t *testing.T) {
+		raw, r := effectivenessRaw(t, vault, map[string]any{"project": "test-proj", "weeks": 52, "sections": []string{"weeks"}})
+		if !hasKey(t, raw, "overall") {
+			t.Errorf("overall key must remain present (zeroed), got %s", raw)
+		}
+		if r.Overall != (OverallEffectiveness{}) {
+			t.Errorf("Overall must be zeroed for weeks-only selection, got %+v", r.Overall)
+		}
+		if len(r.Weeks) == 0 {
+			t.Errorf("Weeks must be populated for weeks selection, got %+v", r.Weeks)
+		}
+		if r.Project != "test-proj" {
+			t.Errorf("Project must always be present, got %q", r.Project)
+		}
+	})
+
+	t.Run("both_sections_equal_default", func(t *testing.T) {
+		rawBoth, _ := effectivenessRaw(t, vault, map[string]any{"project": "test-proj", "weeks": 52, "sections": []string{"overall", "weeks"}})
+		rawDefault, _ := effectivenessRaw(t, vault, map[string]any{"project": "test-proj", "weeks": 52})
+		if string(rawBoth) != string(rawDefault) {
+			t.Errorf("both-sections output must equal default output\n both=%s\n def =%s", rawBoth, rawDefault)
+		}
+	})
+
+	t.Run("weeks_scalar_and_sections_coexist", func(t *testing.T) {
+		// A tiny bucket count restricts the window (all fixtures are 2026-04);
+		// with weeks:1 the recent window excludes them, so Weeks is empty AND
+		// Overall is zeroed by the selector — proving both are honored.
+		_, r := effectivenessRaw(t, vault, map[string]any{"project": "test-proj", "weeks": 1, "sections": []string{"weeks"}})
+		if r.Overall != (OverallEffectiveness{}) {
+			t.Errorf("Overall must be zeroed by selector even with weeks scalar, got %+v", r.Overall)
+		}
+		if len(r.Weeks) != 0 {
+			t.Errorf("weeks:1 window must exclude the 2026-04 fixtures, got %+v", r.Weeks)
+		}
+		// And weeks:52 with the same selector DOES include them → bucket count honored.
+		_, r52 := effectivenessRaw(t, vault, map[string]any{"project": "test-proj", "weeks": 52, "sections": []string{"weeks"}})
+		if len(r52.Weeks) == 0 {
+			t.Errorf("weeks:52 window must include the fixtures, got empty")
+		}
+		if r52.Overall != (OverallEffectiveness{}) {
+			t.Errorf("Overall must still be zeroed by selector, got %+v", r52.Overall)
+		}
+	})
+
+	t.Run("unknown_section_errors", func(t *testing.T) {
+		tool := GetEffectivenessTool(vault)
+		in, _ := json.Marshal(map[string]any{"project": "test-proj", "sections": []string{"bogus"}})
+		if _, err := tool.Handler(context.Background(), in); err == nil {
+			t.Fatal("expected error for unknown section, got nil")
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Helper tests
 // ---------------------------------------------------------------------------

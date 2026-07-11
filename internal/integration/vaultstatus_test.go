@@ -288,6 +288,93 @@ func TestIntegrationVaultStatus(t *testing.T) {
 	})
 }
 
+// TestIntegrationVaultStatusSections drives the vp_vault_status sections selector
+// through the full MCP stack against REAL git: it proves the selector zeroes the
+// unselected section (present-but-empty on the wire, never an absent key), keeps
+// Version/Branch/VaultPath regardless, that both-sections equals the default byte
+// output, and that an unknown section name is a clean tool error.
+func TestIntegrationVaultStatusSections(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	root, _ := vsNewVaultWithOrigin(t)
+	// Make the tree dirty so both sections carry real content by default.
+	writeFile(t, filepath.Join(root, "Projects/vibe-palace/resume.md"), "resume\n")
+	vault := storage.NewVault(root)
+	tool := tools.VaultStatusTool(vault)
+
+	call := func(t *testing.T, params map[string]any) ([]byte, storage.StatusReport) {
+		t.Helper()
+		in, _ := json.Marshal(params)
+		res, err := tool.Handler(context.Background(), in)
+		if err != nil {
+			t.Fatalf("handler(%v): %v", params, err)
+		}
+		out, err := json.Marshal(res)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var report storage.StatusReport
+		if err := json.Unmarshal(out, &report); err != nil {
+			t.Fatalf("decode StatusReport: %v\n%s", err, out)
+		}
+		return out, report
+	}
+	hasKey := func(t *testing.T, raw []byte, k string) bool {
+		t.Helper()
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatalf("decode keys: %v\n%s", err, raw)
+		}
+		_, ok := m[k]
+		return ok
+	}
+
+	t.Run("sync_only", func(t *testing.T) {
+		raw, report := call(t, map[string]any{"sections": []string{"sync"}})
+		if !hasKey(t, raw, "dirt") {
+			t.Errorf("dirt key must remain present, got %s", raw)
+		}
+		if report.Dirt.Reported != nil || report.Dirt.Swept != nil {
+			t.Errorf("Dirt must be zeroed for sync-only, got %+v", report.Dirt)
+		}
+		if len(report.Remotes) == 0 {
+			t.Errorf("Remotes must be populated for sync-only, got %+v", report.Remotes)
+		}
+		if report.Version != 1 || report.Branch != "main" {
+			t.Errorf("Version/Branch must persist, got version=%d branch=%q", report.Version, report.Branch)
+		}
+	})
+
+	t.Run("dirt_only", func(t *testing.T) {
+		raw, report := call(t, map[string]any{"sections": []string{"dirt"}})
+		if !hasKey(t, raw, "remotes") {
+			t.Errorf("remotes key must remain present, got %s", raw)
+		}
+		if report.Remotes != nil {
+			t.Errorf("Remotes must be nil for dirt-only, got %+v", report.Remotes)
+		}
+		if !containsPath(report.Dirt.Reported, "Projects/vibe-palace/resume.md") {
+			t.Errorf("Dirt must be populated for dirt-only, got %+v", report.Dirt)
+		}
+	})
+
+	t.Run("both_equal_default", func(t *testing.T) {
+		rawBoth, _ := call(t, map[string]any{"sections": []string{"sync", "dirt"}})
+		rawDefault, _ := call(t, map[string]any{})
+		if string(rawBoth) != string(rawDefault) {
+			t.Errorf("both-sections must equal default\n both=%s\n def =%s", rawBoth, rawDefault)
+		}
+	})
+
+	t.Run("unknown_section_errors", func(t *testing.T) {
+		in, _ := json.Marshal(map[string]any{"sections": []string{"bogus"}})
+		if _, err := tool.Handler(context.Background(), in); err == nil {
+			t.Fatal("expected error for unknown section, got nil")
+		}
+	})
+}
+
 // mustReport is a tiny BuildStatusReport wrapper that fails the test on error.
 func mustReport(t *testing.T, root string, fetch bool) storage.StatusReport {
 	t.Helper()

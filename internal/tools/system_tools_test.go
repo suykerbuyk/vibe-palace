@@ -319,6 +319,112 @@ func TestVaultStatusTool(t *testing.T) {
 	if report.Branch != "main" {
 		t.Errorf("Branch = %q, want main", report.Branch)
 	}
+
+	// A no-sections call must keep BOTH section keys present in the raw JSON
+	// (the shared output struct has no omitempty; the default path zeroes
+	// nothing). Assert on the wire bytes, not just the round-trip.
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		t.Fatalf("decode raw keys: %v\n%s", err, raw)
+	}
+	if _, ok := keys["remotes"]; !ok {
+		t.Errorf("default call: missing \"remotes\" key in %s", raw)
+	}
+	if _, ok := keys["dirt"]; !ok {
+		t.Errorf("default call: missing \"dirt\" key in %s", raw)
+	}
+}
+
+// buildVaultStatusRaw invokes the vp_vault_status handler with the given params
+// and returns the raw JSON wire bytes plus the decoded StatusReport. It fails the
+// test on any handler or (de)serialization error.
+func buildVaultStatusRaw(t *testing.T, vault *storage.Vault, params map[string]any) ([]byte, storage.StatusReport) {
+	t.Helper()
+	tool := VaultStatusTool(vault)
+	raw, _ := json.Marshal(params)
+	res, err := tool.Handler(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("handler(%v): %v", params, err)
+	}
+	out, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	var report storage.StatusReport
+	if err := json.Unmarshal(out, &report); err != nil {
+		t.Fatalf("decode StatusReport: %v\n%s", err, out)
+	}
+	return out, report
+}
+
+// hasKey reports whether the top-level JSON object in raw carries key k
+// (present-but-empty still counts as present).
+func hasKey(t *testing.T, raw []byte, k string) bool {
+	t.Helper()
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("decode raw keys: %v\n%s", err, raw)
+	}
+	_, ok := m[k]
+	return ok
+}
+
+// TestVaultStatusSections verifies the optional sections selector: it post-filters
+// the built report by ZEROING the unselected section's field (present-but-empty,
+// never an absent key), always keeps Version/Branch/VaultPath, and rejects unknown
+// section names with a clean error.
+func TestVaultStatusSections(t *testing.T) {
+	root := initVaultRepo(t)
+	vault := storage.NewVault(root)
+
+	t.Run("sync_only_zeroes_dirt", func(t *testing.T) {
+		raw, report := buildVaultStatusRaw(t, vault, map[string]any{"sections": []string{"sync"}})
+		if !hasKey(t, raw, "dirt") {
+			t.Errorf("dirt key must remain present (zeroed), got %s", raw)
+		}
+		if report.Dirt.Swept != nil || report.Dirt.Reported != nil || report.Dirt.ReportedUserContent != nil {
+			t.Errorf("Dirt must be zeroed, got %+v", report.Dirt)
+		}
+		if report.Remotes == nil {
+			t.Errorf("Remotes must be populated (non-nil) for sync selection, got nil")
+		}
+		if report.Version != 1 || report.Branch != "main" {
+			t.Errorf("Version/Branch must always be present, got version=%d branch=%q", report.Version, report.Branch)
+		}
+	})
+
+	t.Run("dirt_only_zeroes_remotes", func(t *testing.T) {
+		raw, report := buildVaultStatusRaw(t, vault, map[string]any{"sections": []string{"dirt"}})
+		if !hasKey(t, raw, "remotes") {
+			t.Errorf("remotes key must remain present (null/zeroed), got %s", raw)
+		}
+		if report.Remotes != nil {
+			t.Errorf("Remotes must be nil for dirt selection, got %+v", report.Remotes)
+		}
+		if report.Version != 1 || report.Branch != "main" {
+			t.Errorf("Version/Branch must always be present, got version=%d branch=%q", report.Version, report.Branch)
+		}
+	})
+
+	t.Run("both_sections_equal_default", func(t *testing.T) {
+		rawBoth, both := buildVaultStatusRaw(t, vault, map[string]any{"sections": []string{"sync", "dirt"}})
+		rawDefault, _ := buildVaultStatusRaw(t, vault, map[string]any{})
+		if string(rawBoth) != string(rawDefault) {
+			t.Errorf("both-sections output must equal default output\n both=%s\n def =%s", rawBoth, rawDefault)
+		}
+		if !hasKey(t, rawBoth, "remotes") || !hasKey(t, rawBoth, "dirt") {
+			t.Errorf("both-sections must carry remotes+dirt keys, got %s", rawBoth)
+		}
+		_ = both
+	})
+
+	t.Run("unknown_section_errors", func(t *testing.T) {
+		tool := VaultStatusTool(vault)
+		raw, _ := json.Marshal(map[string]any{"sections": []string{"bogus"}})
+		if _, err := tool.Handler(context.Background(), raw); err == nil {
+			t.Fatal("expected error for unknown section, got nil")
+		}
+	})
 }
 
 func TestRefreshIndexTool(t *testing.T) {

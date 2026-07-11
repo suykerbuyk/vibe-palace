@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/palace"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -96,6 +97,125 @@ func TestPalaceStatusBasic(t *testing.T) {
 	if len(result.PerWing) != 2 {
 		t.Errorf("PerWing count = %d, want 2", len(result.PerWing))
 	}
+}
+
+// palaceKeyPresent reports whether the top-level JSON object in raw carries key
+// k (present-but-empty/zeroed still counts as present).
+func palaceKeyPresent(t *testing.T, raw []byte, k string) bool {
+	t.Helper()
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("decode raw keys: %v\n%s", err, raw)
+	}
+	_, ok := m[k]
+	return ok
+}
+
+// TestPalaceStatusSections verifies the optional sections selector: it
+// post-filters the result by ZEROING the unselected section's field
+// (present-but-empty, never an absent key), leaves the default output
+// byte-for-byte unchanged, and rejects unknown section names with a clean
+// error. Presence/zero assertions decode into the real palaceStatusResult
+// (not the anonymous mirror in TestPalaceStatusBasic) so a rename/omitempty on
+// the production type would be caught.
+func TestPalaceStatusSections(t *testing.T) {
+	v := testVaultWithPalace(t)
+
+	t.Run("default_carries_all_three_keys", func(t *testing.T) {
+		raw := callPalaceTool(t, PalaceStatusTool, v, map[string]any{"project": "proj"})
+		for _, k := range []string{"stats", "per_wing", "tunnels"} {
+			if !palaceKeyPresent(t, raw, k) {
+				t.Errorf("default output missing key %q: %s", k, raw)
+			}
+		}
+	})
+
+	t.Run("stats_only_zeroes_others", func(t *testing.T) {
+		raw := callPalaceTool(t, PalaceStatusTool, v, map[string]any{
+			"project":  "proj",
+			"sections": []string{"stats"},
+		})
+		var got palaceStatusResult
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Stats.Wings != 2 || got.Stats.Drawers != 4 {
+			t.Errorf("stats must be populated, got %+v", got.Stats)
+		}
+		if got.PerWing != nil {
+			t.Errorf("per_wing must be nil, got %+v", got.PerWing)
+		}
+		if got.Tunnels != nil {
+			t.Errorf("tunnels must be nil, got %+v", got.Tunnels)
+		}
+		if !palaceKeyPresent(t, raw, "per_wing") || !palaceKeyPresent(t, raw, "tunnels") {
+			t.Errorf("zeroed sections must remain present as keys: %s", raw)
+		}
+	})
+
+	t.Run("per_wing_only_zeroes_others", func(t *testing.T) {
+		raw := callPalaceTool(t, PalaceStatusTool, v, map[string]any{
+			"project":  "proj",
+			"sections": []string{"per_wing"},
+		})
+		var got palaceStatusResult
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		if len(got.PerWing) != 2 {
+			t.Errorf("per_wing must be populated, got %+v", got.PerWing)
+		}
+		if got.Stats != (palace.PalaceStats{}) {
+			t.Errorf("stats must be zeroed, got %+v", got.Stats)
+		}
+		if got.Tunnels != nil {
+			t.Errorf("tunnels must be nil, got %+v", got.Tunnels)
+		}
+		if !palaceKeyPresent(t, raw, "stats") {
+			t.Errorf("zeroed stats must remain present as a key: %s", raw)
+		}
+	})
+
+	t.Run("tunnels_only_zeroes_others", func(t *testing.T) {
+		raw := callPalaceTool(t, PalaceStatusTool, v, map[string]any{
+			"project":  "proj",
+			"sections": []string{"tunnels"},
+		})
+		var got palaceStatusResult
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Tunnels) != 1 {
+			t.Errorf("tunnels must be populated, got %+v", got.Tunnels)
+		}
+		if got.Stats != (palace.PalaceStats{}) {
+			t.Errorf("stats must be zeroed, got %+v", got.Stats)
+		}
+		if got.PerWing != nil {
+			t.Errorf("per_wing must be nil, got %+v", got.PerWing)
+		}
+	})
+
+	t.Run("all_sections_equal_default", func(t *testing.T) {
+		rawAll := callPalaceTool(t, PalaceStatusTool, v, map[string]any{
+			"project":  "proj",
+			"sections": []string{"stats", "per_wing", "tunnels"},
+		})
+		rawDefault := callPalaceTool(t, PalaceStatusTool, v, map[string]any{"project": "proj"})
+		if string(rawAll) != string(rawDefault) {
+			t.Errorf("all-sections output must equal default output\n all=%s\n def=%s", rawAll, rawDefault)
+		}
+	})
+
+	t.Run("unknown_section_errors", func(t *testing.T) {
+		p, _ := json.Marshal(map[string]any{
+			"project":  "proj",
+			"sections": []string{"bogus"},
+		})
+		if _, err := PalaceStatusTool(v).Handler(context.Background(), p); err == nil {
+			t.Fatal("expected error for unknown section, got nil")
+		}
+	})
 }
 
 func TestPalaceStatusEmpty(t *testing.T) {

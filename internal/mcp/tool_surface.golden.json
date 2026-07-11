@@ -54,7 +54,7 @@
     {
       "name": "vp_get_effectiveness",
       "mutating": false,
-      "schema_sha256": "30f05f07df1df8f895599726124ac11764616c2367dfcdfaf29e585260dc6625"
+      "schema_sha256": "f0fb8dd5b0c7e419426e0accea8c992c801c3c283d4edae67659415e5f7454f4"
     },
     {
       "name": "vp_get_friction_trends",
@@ -109,7 +109,7 @@
     {
       "name": "vp_health",
       "mutating": false,
-      "schema_sha256": "e6bb4842aab417be857b871f1a3d5a5a2867ac63fa1450cd2d5627f542dd9dc4"
+      "schema_sha256": "56be8ba1f5ba4eb7e2d7003ace9253aa179a76dfc2cf3846735aff67db002196"
     },
     {
       "name": "vp_ingest_commit_msg",
@@ -214,7 +214,7 @@
     {
       "name": "vp_palace_status",
       "mutating": false,
-      "schema_sha256": "e6bb4842aab417be857b871f1a3d5a5a2867ac63fa1450cd2d5627f542dd9dc4"
+      "schema_sha256": "5b2a60e076cd5dcd66e5ac395206fd1b02d0909347bedfcaadcc83a0700ad2e4"
     },
     {
       "name": "vp_preflight_wrap",
@@ -319,7 +319,7 @@
     {
       "name": "vp_vault_status",
       "mutating": false,
-      "schema_sha256": "9f9ae2e674374bd3fb62d57fba222a7defcc9987ffc0f7bae95b5ab83d62d7ea"
+      "schema_sha256": "e9f886983adc351096cb50fbef847207378ddd0eb7ff6316bf5a6ea8397c66a8"
     },
     {
       "name": "vp_vault_sync",

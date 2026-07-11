@@ -22,6 +22,11 @@ var palaceStatusSchema = json.RawMessage(`{
 		"project": {
 			"type": "string",
 			"description": "Project slug."
+		},
+		"sections": {
+			"type": "array",
+			"items": {"type": "string", "enum": ["stats", "per_wing", "tunnels"]},
+			"description": "Optional subset of sections to return: \"stats\" (aggregate counts), \"per_wing\" (per-wing breakdown), and/or \"tunnels\" (cross-wing rooms). Default/empty returns all. Unselected sections are ZEROED (present-but-empty, not computed) — because stats is a struct of counts, a suppressed stats is byte-indistinguishable from a genuinely empty palace, so do not read a suppressed section's fields as real data. The graph is built in full regardless; this only trims the payload."
 		}
 	},
 	"required": ["project"]
@@ -141,6 +146,11 @@ type projectParams struct {
 	Project string `json:"project"`
 }
 
+type palaceStatusParams struct {
+	Project  string   `json:"project"`
+	Sections []string `json:"sections,omitempty"`
+}
+
 type wingParams struct {
 	Project string `json:"project"`
 	Wing    string `json:"wing"`
@@ -183,7 +193,7 @@ type traverseResult struct {
 
 func palaceStatusHandler(vault *storage.Vault) mcp.HandlerFunc {
 	return func(_ context.Context, params json.RawMessage) (any, error) {
-		var p projectParams
+		var p palaceStatusParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
 		}
@@ -196,13 +206,43 @@ func palaceStatusHandler(vault *storage.Vault) mcp.HandlerFunc {
 			return nil, fmt.Errorf("build graph: %w", err)
 		}
 
-		perWing := buildWingDetails(g)
-
-		return palaceStatusResult{
+		result := palaceStatusResult{
 			Stats:   g.Stats(),
-			PerWing: perWing,
+			PerWing: buildWingDetails(g),
 			Tunnels: g.FindTunnels(),
-		}, nil
+		}
+
+		// Optional post-filter: when a narrowing sections selector is supplied,
+		// ZERO the unselected section's field (present-but-empty, not an absent
+		// key, and never omitempty on the result struct). Default/empty returns
+		// the full result byte-for-byte unchanged. BuildGraph always runs in
+		// full — this trims the payload, not the graph work.
+		if len(p.Sections) > 0 {
+			var wantStats, wantPerWing, wantTunnels bool
+			for _, s := range p.Sections {
+				switch s {
+				case "stats":
+					wantStats = true
+				case "per_wing":
+					wantPerWing = true
+				case "tunnels":
+					wantTunnels = true
+				default:
+					return nil, fmt.Errorf("invalid section %q: must be one of [stats per_wing tunnels]", s)
+				}
+			}
+			if !wantStats {
+				result.Stats = palace.PalaceStats{}
+			}
+			if !wantPerWing {
+				result.PerWing = nil
+			}
+			if !wantTunnels {
+				result.Tunnels = nil
+			}
+		}
+
+		return result, nil
 	}
 }
 
