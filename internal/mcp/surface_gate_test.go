@@ -86,7 +86,12 @@ func TestSurfaceGateWarnOverrideProceeds(t *testing.T) {
 	}
 }
 
-func TestSurfaceGateNoVaultOnContextProceeds(t *testing.T) {
+// TestSurfaceGateNoVaultOnContextRefuses pins the hole this test used to assert
+// as correct behavior: a mutating tool dispatched with NO vault on the context
+// (root == "") was admitted, because CheckCompatible folded an empty path into a
+// nil "nothing to check" return. There is no coherent way to mutate a vault that
+// was never supplied — the gate must refuse.
+func TestSurfaceGateNoVaultOnContextRefuses(t *testing.T) {
 	reg := testRegistry(t)
 	ran := false
 	if err := reg.Register(Tool{
@@ -96,12 +101,94 @@ func TestSurfaceGateNoVaultOnContextProceeds(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// No vault on the context → root "" → gate no-ops.
-	if _, err := reg.Dispatch(context.Background(), "mut", json.RawMessage(`{}`)); err != nil {
-		t.Fatalf("no-vault context should not gate: %v", err)
+
+	_, err := reg.Dispatch(context.Background(), "mut", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("mutating tool with no vault on context must be refused")
+	}
+	if !errors.Is(err, surface.ErrNoVault) {
+		t.Errorf("err = %v, want surface.ErrNoVault", err)
+	}
+	if ran {
+		t.Error("handler must not run when there is no vault to write to")
+	}
+}
+
+// TestSurfaceGateNoVaultNotBypassableByWarn pins the escape-hatch scope:
+// VP_SURFACE_GATE=warn is an override for a version mismatch (old binary, vault
+// present — the write may still be fine), NOT a way to proceed without a vault.
+func TestSurfaceGateNoVaultNotBypassableByWarn(t *testing.T) {
+	t.Setenv("VP_SURFACE_GATE", "warn")
+
+	reg := testRegistry(t)
+	ran := false
+	if err := reg.Register(Tool{
+		Name:     "mut",
+		Mutating: true,
+		Handler:  func(context.Context, json.RawMessage) (any, error) { ran = true; return "ok", nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := reg.Dispatch(context.Background(), "mut", json.RawMessage(`{}`)); err == nil {
+		t.Fatal("VP_SURFACE_GATE=warn must not bypass a missing vault")
+	}
+	if ran {
+		t.Error("handler must not run under warn with no vault")
+	}
+}
+
+// TestSurfaceGateUnreachableVaultRefuses covers the operational failure that
+// motivated this fix: a vault root deleted out from under a running MCP server.
+// The gate previously passed (os.Stat error → nil), so the write proceeded into
+// a vault that was not there.
+func TestSurfaceGateUnreachableVaultRefuses(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "vanished-vault")
+	ctx := context.WithValue(context.Background(), vaultKey, storage.NewVault(missing))
+
+	reg := testRegistry(t)
+	ran := false
+	if err := reg.Register(Tool{
+		Name:     "mut",
+		Mutating: true,
+		Handler:  func(context.Context, json.RawMessage) (any, error) { ran = true; return "ok", nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := reg.Dispatch(ctx, "mut", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("mutating tool against an absent vault root must be refused")
+	}
+	var ue *surface.VaultUnreachableError
+	if !errors.As(err, &ue) {
+		t.Errorf("err = %v, want *surface.VaultUnreachableError", err)
+	}
+	if ran {
+		t.Error("handler must not run against an absent vault root")
+	}
+}
+
+// TestSurfaceGateReadOnlyToolUnaffected guards the blast radius: closing the
+// gate for mutating tools must not start refusing reads, which are explicitly
+// allowed to run against an unreachable vault (they will fail on their own terms
+// if they actually need the files).
+func TestSurfaceGateReadOnlyToolUnaffected(t *testing.T) {
+	reg := testRegistry(t)
+	ran := false
+	if err := reg.Register(Tool{
+		Name:     "ro",
+		Mutating: false,
+		Handler:  func(context.Context, json.RawMessage) (any, error) { ran = true; return "ok", nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := reg.Dispatch(context.Background(), "ro", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("read-only tool must still pass with no vault: %v", err)
 	}
 	if !ran {
-		t.Fatal("handler should run when there is no vault to check")
+		t.Fatal("read-only handler should have run")
 	}
 }
 

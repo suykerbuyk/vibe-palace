@@ -81,7 +81,13 @@ func (s *Server) contextFunc(ctx context.Context) context.Context {
 }
 
 // HandleMessage exposes the protocol layer for unit testing without stdio
-// plumbing. It delegates directly to the underlying MCPServer.
+// plumbing.
+//
+// It applies contextFunc before delegating, exactly as the stdio and
+// streamable-HTTP transports do. Without that, this seam was the one dispatch
+// path where VaultFromContext returned nil — so the surface gate silently
+// no-opped in every test that went through it, and the tests could not have
+// caught a gate regression.
 func (s *Server) HandleMessage(ctx context.Context, msg json.RawMessage) mcplib.JSONRPCMessage {
-	return s.mcp.HandleMessage(ctx, msg)
+	return s.mcp.HandleMessage(s.contextFunc(ctx), msg)
 }

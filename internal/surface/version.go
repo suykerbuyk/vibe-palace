@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -327,18 +328,53 @@ func (e *IncompatibleError) Error() string {
 	)
 }
 
+// ErrNoVault is returned by CheckCompatible when vaultPath is empty — no vault
+// was configured, or none was carried in the caller's context. It is a distinct
+// condition from VaultUnreachableError: "nobody said where the vault is" is a
+// normal state for a read on a host that has not run `vp init`, whereas a
+// configured-but-absent vault is always wrong. Callers that cannot proceed
+// without a vault (every mutating path) must refuse on it; read-only paths may
+// ignore it.
+var ErrNoVault = errors.New("vp: no vault configured (empty vault path)")
+
+// VaultUnreachableError is returned by CheckCompatible when vaultPath is
+// non-empty but cannot be stat'd — the configured vault root is absent,
+// deleted out from under a running server, or unreadable. Unlike an
+// IncompatibleError this is NOT a "proceed at risk" condition: there is nothing
+// to write to, so VP_SURFACE_GATE=warn does not bypass it (see gate.go).
+type VaultUnreachableError struct {
+	Path string
+	Err  error
+}
+
+func (e *VaultUnreachableError) Error() string {
+	return fmt.Sprintf(
+		"vp: configured vault root '%s' is unreachable: %v\n"+
+			"    the vault may have been moved, deleted, or unmounted since this process started\n"+
+			"    action:    check vault_path in ~/.config/vibe-palace/config.toml, then restart the MCP server",
+		e.Path, e.Err,
+	)
+}
+
+func (e *VaultUnreachableError) Unwrap() error { return e.Err }
+
 // CheckCompatible scans known stamp targets under vaultPath and returns a
 // non-nil *IncompatibleError if any stamp's surface > MCPSurfaceVersion (i.e.,
 // the vault was written by a newer binary than this one).
 //
-// Vault-unreachable degradation: if vaultPath is empty or os.Stat fails,
-// returns nil (best-effort; gates proceed).
+// A vault it cannot reach is reported, never swallowed: an empty vaultPath
+// returns ErrNoVault and an un-stat-able one returns *VaultUnreachableError.
+// Both were previously folded into a nil return ("best-effort; gates proceed"),
+// which let gateIfMutating admit a mutating tool with no vault in context at
+// all, and let a write proceed against a vault root that had been deleted.
+// Distinguishing the two lets each caller decide: mutating paths refuse on
+// both, read-only paths may tolerate ErrNoVault.
 func CheckCompatible(vaultPath string) error {
 	if vaultPath == "" {
-		return nil
+		return ErrNoVault
 	}
 	if _, err := os.Stat(vaultPath); err != nil {
-		return nil
+		return &VaultUnreachableError{Path: vaultPath, Err: err}
 	}
 
 	patterns := []string{

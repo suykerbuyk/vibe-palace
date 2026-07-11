@@ -185,11 +185,20 @@ func (r *Registry) Dispatch(ctx context.Context, name string, params json.RawMes
 
 // gateIfMutating refuses a mutating tool when the vault's MCP surface version
 // exceeds this binary's, returning the IncompatibleError remediation. Read-only
-// tools and an unreachable/empty vault pass. It honors VP_SURFACE_GATE=warn via
-// surface.EnforceFailStop. There is deliberately NO MCP startup gate — vp is
-// MCP-primary, so the server stays up and the remediation surfaces in-band as a
-// tool error payload. Both dispatch paths (makeHandler and Dispatch) route
-// through here so neither can bypass the gate.
+// tools pass.
+//
+// It also refuses a mutating tool with NO vault in context (root == "", which
+// surface.CheckCompatible reports as ErrNoVault) or one whose vault root is
+// unreachable (*VaultUnreachableError). Both used to pass silently — the gate
+// treated an absent vault as "nothing to check" — which meant a mutating tool
+// could be admitted with no vault at all, and a write could proceed against a
+// vault root that had been deleted out from under the server.
+// VP_SURFACE_GATE=warn does not bypass either; see surface.EnforceFailStop.
+//
+// There is deliberately NO MCP startup gate — vp is MCP-primary, so the server
+// stays up and the remediation surfaces in-band as a tool error payload. Both
+// dispatch paths (makeHandler and Dispatch) route through here so neither can
+// bypass the gate.
 func (r *Registry) gateIfMutating(ctx context.Context, rt *registeredTool) error {
 	if !rt.tool.Mutating {
 		return nil

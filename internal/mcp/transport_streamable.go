@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"net/http"
@@ -18,9 +19,24 @@ import (
 // a tunnel or network ACL they control; the caller (cmd/vp) emits a startup
 // warning in that case. No CORS headers are added: both real clients connect
 // server-side, so browser preflight is out of scope for this transport.
+//
+// The vault is injected into the request context exactly as the stdio transport
+// does via Server.contextFunc. This is load-bearing for the surface gate: until
+// it was added, no contextFunc ran on this transport, so VaultFromContext
+// returned nil, gateIfMutating saw root == "", and every mutating tool served
+// over `vp mcp serve --allow-writes` bypassed the surface gate entirely.
 func (s *Server) StreamableHTTPHandler(token string) http.Handler {
-	streamable := server.NewStreamableHTTPServer(s.mcp)
+	streamable := server.NewStreamableHTTPServer(s.mcp,
+		server.WithHTTPContextFunc(s.httpContextFunc),
+	)
 	return bearerAuthMiddleware(token, streamable)
+}
+
+// httpContextFunc enriches an inbound HTTP request context with the vault
+// reference, mirroring Server.contextFunc on the stdio transport. The request is
+// unused: the vault is a per-server property, not a per-request one.
+func (s *Server) httpContextFunc(ctx context.Context, _ *http.Request) context.Context {
+	return context.WithValue(ctx, vaultKey, s.vault)
 }
 
 // DeleteTools removes the named tools from the underlying MCP server so they no

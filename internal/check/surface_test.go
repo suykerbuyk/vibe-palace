@@ -4,6 +4,7 @@
 package check
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -36,10 +37,36 @@ func TestCheckSurface(t *testing.T) {
 		}
 	})
 
-	t.Run("empty path passes (vault unreachable)", func(t *testing.T) {
+	t.Run("no vault configured is Info, not Pass", func(t *testing.T) {
+		// A host that has not run `vp init` yet: reported, but non-halting —
+		// /vpc-restart only halts on status=fail.
 		r := CheckSurface("")
-		if r.Status != Pass {
-			t.Fatalf("status = %v, want Pass (%s)", r.Status, r.Summary)
+		if r.Status != Info {
+			t.Fatalf("status = %v, want Info (%s)", r.Status, r.Summary)
+		}
+		if !errors.Is(r.Err, surface.ErrNoVault) {
+			t.Errorf("Err = %v, want ErrNoVault", r.Err)
+		}
+	})
+
+	t.Run("configured but absent vault root fails", func(t *testing.T) {
+		// The dangerous case: a vault_path pointing at a root that has been
+		// moved, deleted, or unmounted. This must be a hard Fail so the restart
+		// template halts before bootstrapping context or mutating tasks.
+		missing := filepath.Join(t.TempDir(), "vanished-vault")
+		r := CheckSurface(missing)
+		if r.Status != Fail {
+			t.Fatalf("status = %v, want Fail (%s)", r.Status, r.Summary)
+		}
+		if !strings.Contains(r.Summary, "unreachable") {
+			t.Errorf("summary should name the condition, got %q", r.Summary)
+		}
+		if len(r.Details) == 0 {
+			t.Error("expected remediation details on an unreachable vault")
+		}
+		var ue *surface.VaultUnreachableError
+		if !errors.As(r.Err, &ue) {
+			t.Errorf("Err = %v, want *surface.VaultUnreachableError", r.Err)
 		}
 	})
 

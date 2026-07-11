@@ -559,6 +559,16 @@ be filtered independently of the local server:
   are stripped from this instance via `Server.DeleteTools` unless `--allow-writes`
   is passed, so they are absent from both `tools/list` and `tools/call`. Exposing
   writes prints a second startup warning.
+- **Vault-in-context (surface-gate parity).** The handler installs
+  `server.WithHTTPContextFunc` to put the `*storage.Vault` on every request
+  context, exactly as the stdio transport does via `Server.contextFunc`. This is
+  load-bearing rather than cosmetic: the surface gate (`gateIfMutating`) reads the
+  vault root from the context, so before this existed `VaultFromContext` returned
+  nil here, the gate saw `root == ""`, and — because `CheckCompatible` then treated
+  an empty path as "nothing to check" — **every mutating tool served under
+  `--allow-writes` bypassed the surface gate entirely**. A gate that depends on
+  per-transport context plumbing has one silent-bypass mode per transport; both
+  transports (and `Server.HandleMessage`, the test seam) now inject the vault.
 - **No CORS.** Both real clients connect server-side, so no CORS headers are
   emitted; browser preflight is out of scope.
 - **Binding.** Defaults to `127.0.0.1:7423` (`--addr` / `--port`, the port

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/tools"
 )
 
@@ -153,6 +155,90 @@ func TestMCPServeAllowWritesExposesMutatingTools(t *testing.T) {
 		if !names[m] {
 			t.Errorf("mutating tool %q must be PRESENT with --allow-writes", m)
 		}
+	}
+}
+
+// callToolHTTP initializes an MCP client against handler (served via httptest)
+// and invokes one tool, returning the result and any transport/handler error.
+func callToolHTTP(t *testing.T, handler http.Handler, token, tool string, args map[string]any) (*mcplib.CallToolResult, error) {
+	t.Helper()
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	c, err := client.NewStreamableHttpClient(ts.URL,
+		transport.WithHTTPHeaders(map[string]string{
+			"Authorization": "Bearer " + token,
+		}),
+	)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("client start: %v", err)
+	}
+	initReq := mcplib.InitializeRequest{}
+	initReq.Params.ProtocolVersion = mcplib.LATEST_PROTOCOL_VERSION
+	initReq.Params.ClientInfo = mcplib.Implementation{Name: "test-client", Version: "0.1.0"}
+	if _, err := c.Initialize(ctx, initReq); err != nil {
+		t.Fatalf("client initialize: %v", err)
+	}
+
+	req := mcplib.CallToolRequest{}
+	req.Params.Name = tool
+	req.Params.Arguments = args
+	return c.CallTool(ctx, req)
+}
+
+// TestMCPServeAllowWritesIsSurfaceGated pins the transport-parity hole: the
+// streamable-HTTP transport ran no contextFunc, so VaultFromContext was nil,
+// gateIfMutating saw root == "", and EVERY mutating tool served over
+// `vp mcp serve --allow-writes` bypassed the surface gate entirely — writing to
+// a vault stamped by a newer binary was silently permitted.
+//
+// With the vault injected into the request context (StreamableHTTPHandler), an
+// ahead vault must now refuse the write with the standard remediation, exactly
+// as it does over stdio.
+func TestMCPServeAllowWritesIsSurfaceGated(t *testing.T) {
+	stack := newServeTestStack(t)
+
+	// Stamp the vault one surface version ahead of this binary.
+	stampDir := filepath.Join(stack.vault.Root, "Projects", "p")
+	if err := surface.WriteStamp(stampDir, surface.MCPSurfaceVersion+1, "tester"); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := buildMCPServeHandler(stack, mcpServeTestToken, true /* allowWrites */)
+
+	res, err := callToolHTTP(t, handler, mcpServeTestToken, "vp_manage_task", map[string]any{
+		"project": "p",
+		"action":  "create",
+		"task":    "should-never-be-created",
+	})
+
+	// The gate surfaces in-band as a tool error (there is deliberately no
+	// startup gate), so accept either a transport error or an IsError result —
+	// what matters is that the write was refused and the remediation is present.
+	var text string
+	switch {
+	case err != nil:
+		text = err.Error()
+	case res != nil && res.IsError:
+		for _, c := range res.Content {
+			if tc, ok := c.(mcplib.TextContent); ok {
+				text += tc.Text
+			}
+		}
+	default:
+		t.Fatal("mutating tool over HTTP against an ahead vault must be refused, but it succeeded")
+	}
+
+	if !strings.Contains(text, "git pull && make install") {
+		t.Errorf("refusal should carry the surface remediation, got: %s", text)
 	}
 }
 

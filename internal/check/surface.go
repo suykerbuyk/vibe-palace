@@ -15,13 +15,17 @@ import (
 // runtime gate (surface.CheckCompatible) so `vp check` reports the same
 // verdict an MCP write would face.
 //
-//   - Pass: the vault is compatible (binary >= vault max), an empty vault
-//     (no stamps), or vaultRoot is "" / unreachable — surface.CheckCompatible
-//     treats those as best-effort and returns nil.
-//   - Fail: the vault was written by a newer binary (vault surface exceeds
-//     this binary's). Details carry the upgrade / override remediation.
-//   - Info: any unexpected error from the compatibility scan. vibe-palace's
-//     check.Status has no Warn, so the vibe-vault Warn case maps to Info here.
+//   - Pass: the vault is compatible (binary >= vault max), including an empty
+//     vault with no stamps yet.
+//   - Fail: the vault was written by a newer binary (vault surface exceeds this
+//     binary's), OR the configured vault root is unreachable. Both are blocking:
+//     the /vpc-restart template halts on status=fail, which is exactly what
+//     should happen when the vault a session is about to mutate is not there.
+//     Details carry the remediation.
+//   - Info: no vault is configured at all (surface.ErrNoVault) — a normal
+//     pre-`vp init` state, reported but non-halting — or any other unexpected
+//     error from the scan. vibe-palace's check.Status has no Warn, so the
+//     vibe-vault Warn case maps to Info here.
 func CheckSurface(vaultRoot string) Result {
 	r := Result{Name: "Surface"}
 
@@ -41,6 +45,26 @@ func CheckSurface(vaultRoot string) Result {
 			"Upgrade:  cd ~/code/vibe-palace && git pull && make install",
 			"Override (at risk):  VP_SURFACE_GATE=warn <command>",
 		}
+		r.Err = err
+		return r
+	}
+
+	var ue *surface.VaultUnreachableError
+	if errors.As(err, &ue) {
+		r.Status = Fail
+		r.Summary = fmt.Sprintf("vault root %s is unreachable", ue.Path)
+		r.Details = []string{
+			"The configured vault root cannot be read — moved, deleted, or unmounted.",
+			"Check:    vault_path in ~/.config/vibe-palace/config.toml",
+			"Then:     restart the MCP server (it resolves vault_path once, at startup)",
+		}
+		r.Err = err
+		return r
+	}
+
+	if errors.Is(err, surface.ErrNoVault) {
+		r.Status = Info
+		r.Summary = "no vault configured"
 		r.Err = err
 		return r
 	}

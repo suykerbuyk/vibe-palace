@@ -105,16 +105,39 @@ func TestSurfaceCheckTool_FailNewerVault(t *testing.T) {
 	}
 }
 
-// An empty/unreachable vault path is best-effort compatible → pass.
+// No vault configured at all → info: reported, but non-halting, since the
+// restart template only halts on status=fail and a pre-`vp init` host is a
+// legitimate state.
 func TestSurfaceCheckTool_EmptyVaultPath(t *testing.T) {
 	vault := storage.NewVault("")
 
 	out := callSurfaceCheck(t, vault, map[string]any{})
 
-	if out.Status != "pass" {
-		t.Errorf("status = %q, want pass for empty vault path", out.Status)
+	if out.Status != "info" {
+		t.Errorf("status = %q, want info for empty vault path", out.Status)
 	}
 	if out.VaultSurface != 0 {
 		t.Errorf("vault_surface = %d, want 0", out.VaultSurface)
+	}
+}
+
+// A configured-but-absent vault root → fail, with remediation. This is the
+// verdict /vpc-restart halts on, and the whole point of the preflight: a session
+// must not bootstrap context and start mutating tasks against a vault that is
+// not there.
+func TestSurfaceCheckTool_UnreachableVaultRoot(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "vanished-vault")
+	vault := storage.NewVault(missing)
+
+	out := callSurfaceCheck(t, vault, map[string]any{})
+
+	if out.Status != "fail" {
+		t.Fatalf("status = %q, want fail for an absent vault root", out.Status)
+	}
+	if !strings.Contains(out.Summary, "unreachable") {
+		t.Errorf("summary should name the condition, got %q", out.Summary)
+	}
+	if len(out.Details) == 0 {
+		t.Error("expected remediation details on an unreachable vault root")
 	}
 }

@@ -6,6 +6,7 @@ package surface
 import (
 	"bytes"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -272,13 +273,43 @@ func TestWriterFingerprint_Deterministic(t *testing.T) {
 	}
 }
 
+// TestCheckCompatible_EmptyAndMissing pins the two vault-unreachable conditions
+// as DISTINCT reported errors. Both previously returned nil ("best-effort; gates
+// proceed"), which let a mutating tool through with no vault in context at all
+// and let a write proceed against a deleted vault root.
 func TestCheckCompatible_EmptyAndMissing(t *testing.T) {
-	if err := CheckCompatible(""); err != nil {
-		t.Fatalf("empty vault path: %v", err)
-	}
-	if err := CheckCompatible(filepath.Join(t.TempDir(), "does-not-exist")); err != nil {
-		t.Fatalf("missing vault: %v", err)
-	}
+	t.Run("empty path reports ErrNoVault", func(t *testing.T) {
+		err := CheckCompatible("")
+		if !errors.Is(err, ErrNoVault) {
+			t.Fatalf("empty vault path: got %v, want ErrNoVault", err)
+		}
+	})
+
+	t.Run("missing root reports VaultUnreachableError", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "does-not-exist")
+		err := CheckCompatible(missing)
+
+		var ue *VaultUnreachableError
+		if !errors.As(err, &ue) {
+			t.Fatalf("missing vault: got %v, want *VaultUnreachableError", err)
+		}
+		if ue.Path != missing {
+			t.Errorf("Path = %q, want %q", ue.Path, missing)
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("expected wrapped os.Stat error to unwrap to fs.ErrNotExist, got %v", err)
+		}
+	})
+
+	t.Run("the two conditions are not interchangeable", func(t *testing.T) {
+		var ue *VaultUnreachableError
+		if errors.As(CheckCompatible(""), &ue) {
+			t.Error("empty path must not report as VaultUnreachableError")
+		}
+		if errors.Is(CheckCompatible(filepath.Join(t.TempDir(), "nope")), ErrNoVault) {
+			t.Error("missing root must not report as ErrNoVault")
+		}
+	})
 }
 
 func TestCheckCompatible_NoStampsCompatible(t *testing.T) {

@@ -30,8 +30,9 @@ func main() {
 // mutating commands (marked via mutates() in registerAll) fail-stop when the
 // vault's surface version exceeds this binary's, honoring VP_SURFACE_GATE=warn;
 // every other command is warn-only so a stale binary never blocks a read or a
-// capture. An unresolvable vault degrades to a no-op (and surface.CheckCompatible
-// itself no-ops on an empty/unreachable path).
+// capture. A vault path that cannot even be resolved degrades to a no-op here;
+// a resolved-but-unreachable root does NOT — CheckCompatible reports it, so a
+// mutating command fail-stops rather than writing into the void.
 func surfaceGate(cmd *cli.Command) int {
 	root, err := vaultRoot()
 	if err != nil {

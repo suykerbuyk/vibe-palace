@@ -13,10 +13,11 @@ import (
 // ResourceFunc resolves a content resource from the template-matched URI
 // variables. It returns the resource body, its MIME type, and any error.
 //
-// Handlers MUST NOT read the *storage.Vault or *context.Resolver from ctx:
-// over the streamable-HTTP transport no contextFunc runs, so VaultFromContext
-// is nil there. Providers close over the vault/resolver captured at
-// registration time instead.
+// Handlers MUST NOT read the *storage.Vault or *context.Resolver from ctx.
+// Providers close over the vault/resolver captured at registration time
+// instead. (The vault IS now on the context over both transports — see
+// StreamableHTTPHandler — but the resolver is not, and closing over both keeps
+// one rule rather than two.)
 type ResourceFunc func(ctx context.Context, vars map[string]string) (text, mime string, err error)
 
 // AddContentResource registers a read-only content resource template with the

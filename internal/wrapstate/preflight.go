@@ -46,9 +46,11 @@ func Preflight(vaultRoot, projectRoot, project string) PreflightResult {
 		Notes:    []PreflightCheckItem{},
 	}
 
-	// 1. Surface check. Gate on surface.IncompatibleError; degrade
-	// best-effort on other errors (CheckCompatible already returns nil for
-	// unreachable/empty vault paths per its contract).
+	// 1. Surface check. Gate on surface.IncompatibleError; any other non-nil
+	// error is also an error item. Note CheckCompatible now reports an empty
+	// vault path (ErrNoVault) and an unreachable root (*VaultUnreachableError)
+	// rather than returning nil for them — both are blocking for a wrap, which
+	// exists to write to that vault.
 	if err := surfaceCheckCompatible(vaultRoot); err != nil {
 		var ie *surface.IncompatibleError
 		if errors.As(err, &ie) {

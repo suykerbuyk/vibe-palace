@@ -4,6 +4,7 @@
 package surface
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
@@ -12,18 +13,22 @@ import (
 // to capture stderr; production uses os.Stderr.
 var gateStderr = os.Stderr
 
-// EnforceFailStop checks compatibility and returns the error directly, unless
-// VP_SURFACE_GATE=warn is set (in which case it logs a single line to stderr
-// and returns nil). Used by CLI write entry points and write-tool handlers.
+// EnforceFailStop checks compatibility and returns the error directly. Used by
+// CLI write entry points and write-tool handlers.
 //
-// On vault-unreachable (CheckCompatible returns nil for empty/missing paths),
-// this is a no-op.
+// VP_SURFACE_GATE=warn bypasses an *IncompatibleError only — a version mismatch
+// is a coherent "proceed at risk" (the binary is old, but the vault is there and
+// the write may well be fine). It deliberately does NOT bypass ErrNoVault or
+// *VaultUnreachableError: you cannot accept the risk of writing to a vault that
+// does not exist, and letting an operator override their way past it only moves
+// the failure somewhere later and less legible.
 func EnforceFailStop(vaultPath string) error {
 	err := CheckCompatible(vaultPath)
 	if err == nil {
 		return nil
 	}
-	if os.Getenv("VP_SURFACE_GATE") == "warn" {
+	var ie *IncompatibleError
+	if errors.As(err, &ie) && os.Getenv("VP_SURFACE_GATE") == "warn" {
 		fmt.Fprintln(gateStderr, err.Error())
 		return nil
 	}
@@ -35,10 +40,14 @@ func EnforceFailStop(vaultPath string) error {
 // `vp hook` and read-only CLI commands so an out-of-date binary can never block
 // a capture or a read.
 //
+// ErrNoVault is silent here: a read on a host with no vault configured is a
+// normal pre-`vp init` state, not something to nag about. A configured-but-
+// unreachable vault still warns — that one is always a misconfiguration.
+//
 // VP_SURFACE_QUIET=1 suppresses the stderr line for non-interactive callers.
 func EnforceWarnOnly(vaultPath string) {
 	err := CheckCompatible(vaultPath)
-	if err == nil {
+	if err == nil || errors.Is(err, ErrNoVault) {
 		return
 	}
 	if os.Getenv("VP_SURFACE_QUIET") == "1" {
