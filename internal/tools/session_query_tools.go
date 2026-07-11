@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -255,7 +256,7 @@ func parseSessionID(id string) (date string, fp string, iteration int, err error
 		return formatErr()
 	}
 	// Date digits at the fixed positions.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if i == 4 || i == 7 {
 			continue
 		}
@@ -270,8 +271,8 @@ func parseSessionID(id string) (date string, fp string, iteration int, err error
 	// (capture.ParseFingerprint/ParseIteration) so this parser cannot drift from
 	// how the rest of the codebase splits a session id.
 	rest := id[11:]
-	if h := strings.IndexByte(rest, '-'); h >= 0 {
-		if !isHex8(rest[:h]) || !allDigits(rest[h+1:]) {
+	if before, after, ok := strings.Cut(rest, "-"); ok {
+		if !isHex8(before) || !allDigits(after) {
 			return formatErr()
 		}
 	} else if !allDigits(rest) {
@@ -432,8 +433,8 @@ func getProjectContextHandler(vault *storage.Vault, resolver *vpctx.Resolver) mc
 				if want["threads"] {
 					seen := make(map[string]bool)
 					// Walk recent sessions in reverse (most recent first).
-					for i := len(recent) - 1; i >= 0; i-- {
-						for _, t := range recent[i].OpenThreads {
+					for _, r := range slices.Backward(recent) {
+						for _, t := range r.OpenThreads {
 							if !seen[t] {
 								seen[t] = true
 								result.Threads = append(result.Threads, t)
@@ -444,8 +445,8 @@ func getProjectContextHandler(vault *storage.Vault, resolver *vpctx.Resolver) mc
 
 				if want["decisions"] {
 					seen := make(map[string]bool)
-					for i := len(recent) - 1; i >= 0; i-- {
-						for _, d := range recent[i].Decisions {
+					for _, r := range slices.Backward(recent) {
+						for _, d := range r.Decisions {
 							if !seen[d] {
 								seen[d] = true
 								result.Decisions = append(result.Decisions, d)

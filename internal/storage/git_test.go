@@ -98,7 +98,7 @@ func TestReconcileVaultGitignore_KeepsCommitMsgArchive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read .gitignore: %v", err)
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		if strings.TrimSpace(line) == "commit.msg" {
 			t.Errorf("reconciled vault .gitignore must not contain a `commit.msg` rule:\n%s", data)
 		}
@@ -169,7 +169,7 @@ func TestReconcileVaultGitignore_PartialPresence(t *testing.T) {
 		if strings.Count(s, p+"\n") != 1 && !strings.HasSuffix(s, p) {
 			// Count occurrences either as full lines or the final line.
 			n := 0
-			for _, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+			for line := range strings.SplitSeq(strings.TrimRight(s, "\n"), "\n") {
 				if line == p {
 					n++
 				}
@@ -194,7 +194,7 @@ func TestReconcileVaultGitignore_IdempotentRepeat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if err := ReconcileVaultGitignore(dir); err != nil {
 			t.Fatalf("iter %d: %v", i+1, err)
 		}
@@ -239,7 +239,7 @@ func TestReconcileVaultGitignore_InterleavedUserContent(t *testing.T) {
 	// Every canonical pattern present exactly once.
 	for _, p := range CanonicalGitignorePatterns {
 		n := 0
-		for _, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+		for line := range strings.SplitSeq(strings.TrimRight(s, "\n"), "\n") {
 			if line == p {
 				n++
 			}
@@ -362,7 +362,7 @@ func TestReconcileProjectGitignore_PartialPresence(t *testing.T) {
 	// Every canonical present exactly once (the seeded /.claude/ not doubled).
 	for _, p := range CanonicalProjectGitignorePatterns {
 		n := 0
-		for _, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+		for line := range strings.SplitSeq(strings.TrimRight(s, "\n"), "\n") {
 			if line == p {
 				n++
 			}
@@ -576,7 +576,7 @@ func TestReconcileVaultGitignore_AddsTrailingNewline(t *testing.T) {
 	}
 	// foo/ preserved once.
 	n := 0
-	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(string(data), "\n"), "\n") {
 		if line == "foo/" {
 			n++
 		}

@@ -6,6 +6,7 @@ package storage
 import (
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -412,7 +413,7 @@ func UpgradeConfig(userText string, missing map[string][]string, templateBlocks 
 		// Insert after the last key line, or after section header + comments.
 		insertAt := findInsertionPoint(lines, sr)
 
-		var block string
+		var block strings.Builder
 		for _, key := range keys {
 			shortKey := key
 			if i := lastDot(key); i >= 0 {
@@ -425,13 +426,16 @@ func UpgradeConfig(userText string, missing map[string][]string, templateBlocks 
 				snippet = ExtractKeySnippet(templateBlocks[section], shortKey)
 			}
 			if snippet != "" {
-				block += snippet + "\n"
+				block.WriteString(snippet)
+				block.WriteString("\n")
 			} else {
-				block += "# " + shortKey + " = \"\"\n"
+				block.WriteString("# ")
+				block.WriteString(shortKey)
+				block.WriteString(" = \"\"\n")
 			}
 		}
-		if block != "" {
-			insertions = append(insertions, insertion{afterLine: insertAt, content: block})
+		if block.String() != "" {
+			insertions = append(insertions, insertion{afterLine: insertAt, content: block.String()})
 		}
 	}
 
@@ -452,14 +456,16 @@ func UpgradeConfig(userText string, missing map[string][]string, templateBlocks 
 		lines = newLines
 	}
 
-	result := joinLines(lines)
+	var result strings.Builder
+	result.WriteString(joinLines(lines))
 
 	// Append EOF sections.
 	for _, block := range eofAppend {
-		result += "\n" + block
+		result.WriteString("\n")
+		result.WriteString(block)
 	}
 
-	return result
+	return result.String()
 }
 
 // findInsertionPoint finds the line index after which new keys should be
@@ -480,7 +486,7 @@ func findInsertionPoint(lines []string, sr *SectionRange) int {
 // already exist and returns any necessary parent section headers.
 func ensureParentSections(section string, sectionMap map[string]*SectionRange, lines []string) string {
 	parts := splitDot(section)
-	var result string
+	var result strings.Builder
 	for i := 1; i < len(parts); i++ {
 		parent := joinDot(parts[:i])
 		if _, exists := sectionMap[parent]; !exists {
@@ -497,11 +503,13 @@ func ensureParentSections(section string, sectionMap map[string]*SectionRange, l
 				}
 			}
 			if !found {
-				result += "\n[" + parent + "]"
+				result.WriteString("\n[")
+				result.WriteString(parent)
+				result.WriteString("]")
 			}
 		}
 	}
-	return result
+	return result.String()
 }
 
 func lastDot(s string) int {
@@ -517,22 +525,26 @@ func joinDot(parts []string) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	result := parts[0]
+	var result strings.Builder
+	result.WriteString(parts[0])
 	for _, p := range parts[1:] {
-		result += "." + p
+		result.WriteString(".")
+		result.WriteString(p)
 	}
-	return result
+	return result.String()
 }
 
 func joinLines(lines []string) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	result := lines[0]
+	var result strings.Builder
+	result.WriteString(lines[0])
 	for _, l := range lines[1:] {
-		result += "\n" + l
+		result.WriteString("\n")
+		result.WriteString(l)
 	}
-	return result
+	return result.String()
 }
 
 // Helper functions to avoid regexp dependency.

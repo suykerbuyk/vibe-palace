@@ -224,7 +224,7 @@ func TestIntegrationDiscoverApplyReducesGeneral(t *testing.T) {
 func TestIntegrationDiscoverEstimate(t *testing.T) {
 	h := newHarness(t, false)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		h.addDrawer(t, "proj", "proj", "general",
 			"Some unclassified content "+string(rune('A'+i)),
 			"facts", "2026-04-10")

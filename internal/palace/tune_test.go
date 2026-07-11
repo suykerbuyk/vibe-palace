@@ -100,7 +100,7 @@ func TestSelectSamples_Cap(t *testing.T) {
 	rc := NewRoomClassifier(nil, 0)
 
 	// Add many general drawers.
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		addTuneDrawer(t, v, "proj", "proj", "general", "Some unclassified content about topic "+string(rune('A'+i)))
 	}
 
@@ -262,7 +262,7 @@ func TestComputeProposals_PromoteLow(t *testing.T) {
 	// where the keyword "test" fires.
 	samples := make([]TuneSample, 4)
 	judgments := make([]LLMJudgment, 4)
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		id := string(rune('a' + i))
 		samples[i] = TuneSample{DrawerID: id, CurrentRoom: "general", Content: "this is a test of the system"}
 		judgments[i] = LLMJudgment{DrawerID: id, Room: "testing", Confidence: 0.9}
@@ -291,7 +291,7 @@ func TestComputeProposals_PromoteMedium(t *testing.T) {
 	// "assert" is medium (0.6) in testing room.
 	samples := make([]TuneSample, 4)
 	judgments := make([]LLMJudgment, 4)
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		id := string(rune('a' + i))
 		samples[i] = TuneSample{DrawerID: id, CurrentRoom: "general", Content: "use assert to verify correctness"}
 		judgments[i] = LLMJudgment{DrawerID: id, Room: "testing", Confidence: 0.9}
@@ -318,7 +318,7 @@ func TestComputeProposals_DemoteMedium(t *testing.T) {
 	// Simulate 3 drawers in devops that LLM says belong elsewhere.
 	samples := make([]TuneSample, 3)
 	judgments := make([]LLMJudgment, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		id := string(rune('a' + i))
 		samples[i] = TuneSample{DrawerID: id, CurrentRoom: "devops", Content: "deploy the application to production"}
 		judgments[i] = LLMJudgment{DrawerID: id, Room: "api", Confidence: 0.8}
@@ -345,7 +345,7 @@ func TestComputeProposals_DemoteHigh(t *testing.T) {
 	// Simulate 3 drawers in devops that LLM says belong in api.
 	samples := make([]TuneSample, 3)
 	judgments := make([]LLMJudgment, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		id := string(rune('a' + i))
 		samples[i] = TuneSample{DrawerID: id, CurrentRoom: "devops", Content: "kubernetes service mesh for api routing"}
 		judgments[i] = LLMJudgment{DrawerID: id, Room: "api", Confidence: 0.85}
@@ -503,7 +503,7 @@ func TestRunTune_WithMock(t *testing.T) {
 	rc := NewRoomClassifier(nil, 0)
 
 	// Add 4 general drawers with content that has the "test" keyword (unique content for unique IDs).
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		addTuneDrawer(t, v, "proj", "proj", "general", fmt.Sprintf("this is a test of subsystem %d", i))
 	}
 

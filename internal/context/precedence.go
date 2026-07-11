@@ -404,11 +404,6 @@ func (r *Resolver) ListEmbedded(resourceType string) ([]string, error) {
 	return names, nil
 }
 
-// expand replaces template placeholders (3-tier compat).
-func (r *Resolver) expand(content, project string) string {
-	return r.expandScoped(content, project, "", "")
-}
-
 // expandScoped replaces template placeholders including wing/room.
 func (r *Resolver) expandScoped(content, project, wing, room string) string {
 	s := strings.ReplaceAll(content, "{{PROJECT}}", project)
@@ -502,7 +497,7 @@ func validateSkillRelPath(rel string) error {
 	if strings.HasPrefix(rel, "/") {
 		return fmt.Errorf("skill relative path must not be absolute: %q", rel)
 	}
-	for _, seg := range strings.Split(rel, "/") {
+	for seg := range strings.SplitSeq(rel, "/") {
 		if seg == "" || seg == "." || seg == ".." {
 			return fmt.Errorf("skill relative path must not contain empty or '..' segments: %q", rel)
 		}

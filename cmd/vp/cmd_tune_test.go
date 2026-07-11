@@ -36,7 +36,7 @@ func TestRunTuneRooms_Estimate(t *testing.T) {
 	cfg := storage.Config{}
 
 	// Add some drawers so we have samples.
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		d := storage.Drawer{
 			Content:    "some unclassified content " + string(rune('a'+i)),
 			Hall:       "facts",
@@ -239,7 +239,7 @@ func TestRunTuneRooms_Apply(t *testing.T) {
 	v := testVault(t)
 
 	// Create 4 general drawers with "test" keyword content.
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		d := storage.Drawer{
 			Content:    "this is a test of subsystem " + string(rune('a'+i)),
 			Hall:       "facts",
@@ -307,7 +307,7 @@ func TestRunTuneRooms_WithUnmatchedFlags(t *testing.T) {
 	v := testVault(t)
 
 	// Add drawers with content that has no keywords for any room.
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		d := storage.Drawer{
 			Content:    "quantum computing research paper " + string(rune('a'+i)),
 			Hall:       "facts",

@@ -87,7 +87,7 @@ func TestBootstrapWithSessions(t *testing.T) {
 	vault, resolver := testSetup(t)
 
 	// Create 7 sessions across two dates.
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		_, err := vault.WriteSession("test-proj", storage.SessionMeta{
 			Date:    "2026-04-06",
 			Title:   "session",
@@ -98,7 +98,7 @@ func TestBootstrapWithSessions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_, err := vault.WriteSession("test-proj", storage.SessionMeta{
 			Date:    "2026-04-07",
 			Title:   "session",
@@ -138,14 +138,14 @@ func TestBootstrapFrictionTrendWarn(t *testing.T) {
 	// would not see all eight sessions.
 	old := now.AddDate(0, 0, -20).Format("2006-01-02")
 	recent := now.AddDate(0, 0, -2).Format("2006-01-02")
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if _, err := vault.WriteSession("test-proj", storage.SessionMeta{
 			Date: old, Title: "calm", FrictionScore: 10,
 		}, "body"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		if _, err := vault.WriteSession("test-proj", storage.SessionMeta{
 			Date: recent, Title: "rough", FrictionScore: 90,
 		}, "body"); err != nil {
@@ -203,7 +203,7 @@ func TestBootstrapTokenBudget(t *testing.T) {
 	vault, resolver := testSetup(t)
 
 	// Create sessions so the response is non-trivial.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		_, err := vault.WriteSession("test-proj", storage.SessionMeta{
 			Date:    "2026-04-07",
 			Title:   "session with a long title to inflate size",
@@ -304,7 +304,7 @@ func TestBootstrapCommandsTruncationOrder(t *testing.T) {
 	vault, resolver := testSetup(t)
 
 	// Create sessions to inflate size.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		_, err := vault.WriteSession("test-proj", storage.SessionMeta{
 			Date:    "2026-04-07",
 			Title:   "session with a long title to inflate size",
@@ -425,7 +425,7 @@ func TestBootstrapPostInstructionsPopulated(t *testing.T) {
 	}
 	// First two command aliases should appear as examples.
 	if len(br.AvailableCommands) >= 2 {
-		for i := 0; i < 2; i++ {
+		for i := range 2 {
 			want := br.AvailableCommands[i].Alias
 			if !strings.Contains(br.PostBootstrapInstructions, want) {
 				t.Errorf("PostBootstrapInstructions missing example %q: %q",
@@ -439,7 +439,7 @@ func TestBootstrapPostInstructionsSurvivesTruncation(t *testing.T) {
 	vault, resolver := testSetup(t)
 
 	// Force heavy truncation that drops commands + skills.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		_, err := vault.WriteSession("test-proj", storage.SessionMeta{
 			Date:    "2026-04-07",
 			Title:   "session",
@@ -540,7 +540,7 @@ func TestBootstrapMemoryTruncationOrder(t *testing.T) {
 	vault, resolver := testSetup(t)
 
 	// Sessions and memories both sized to be sheddable.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if _, err := vault.WriteSession("test-proj", storage.SessionMeta{
 			Date:    "2026-04-07",
 			Title:   "session with a long title to inflate size",
@@ -550,7 +550,7 @@ func TestBootstrapMemoryTruncationOrder(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		rel := "mem-" + string(rune('a'+i)) + ".md"
 		if err := vault.WriteMemory("test-proj", rel, storage.MemoryMeta{
 			Name:        "mem-" + string(rune('a'+i)),

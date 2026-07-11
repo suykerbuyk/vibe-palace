@@ -272,7 +272,7 @@ func printItemPrompt(w io.Writer, it absorb.Item) {
 func bodyPreviewLines(body string, maxLines, maxChars int) []string {
 	var out []string
 	total := 0
-	for _, raw := range strings.Split(body, "\n") {
+	for raw := range strings.SplitSeq(body, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
@@ -300,7 +300,7 @@ func bodyPreviewLines(body string, maxLines, maxChars int) []string {
 }
 
 func absorbPrompt(w io.Writer, r *bufio.Reader) (string, error) {
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		fmt.Fprint(w, "Accept this route? [y]es / [s]kip / [A]ccept all / [q]uit: ")
 		line, err := r.ReadString('\n')
 		if err != nil && err != io.EOF {

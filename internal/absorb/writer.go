@@ -393,7 +393,8 @@ func renderResumeScratch(items []Item, pointerLines []string, date string) strin
 		fmt.Fprintf(&b, "\n## Reference pointers (%s)\n\n", date)
 		b.WriteString("<!-- paste one or more of these into resume.md so `doc/*` stays discoverable -->\n\n")
 		for _, p := range pointerLines {
-			b.WriteString(p + "\n")
+			b.WriteString(p)
+			b.WriteString("\n")
 		}
 		b.WriteString("\n")
 	}
@@ -533,7 +534,7 @@ func atomicWrite(path string, data []byte) error {
 func titleCase(s string) string {
 	out := []byte(s)
 	up := true
-	for i := 0; i < len(out); i++ {
+	for i := range out {
 		if out[i] == ' ' || out[i] == '\t' {
 			up = true
 			continue

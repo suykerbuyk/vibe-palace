@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"github.com/BurntSushi/toml"
@@ -73,9 +74,9 @@ type Config struct {
 	PalaceRoomKeywords     map[string][]string            `json:"palace_room_keywords,omitempty"`
 	PalaceScoringOverrides map[string]ScoringRoomOverride `json:"palace_scoring_overrides,omitempty"`
 	PalaceMinScore         float64                        `json:"palace_min_score,omitempty"`
-	PalaceLLM              LLMConfig                      `json:"palace_llm,omitempty"`
-	Archive                ArchiveConfig                  `json:"archive,omitempty"`
-	Enrichment             EnrichmentConfig               `json:"enrichment,omitempty"`
+	PalaceLLM              LLMConfig                      `json:"palace_llm"`
+	Archive                ArchiveConfig                  `json:"archive"`
+	Enrichment             EnrichmentConfig               `json:"enrichment"`
 }
 
 // EnrichmentConfig holds resolved settings for the session-enrichment LLM
@@ -383,13 +384,13 @@ func (v *Vault) GetConfigValue(project, key string) (string, string, error) {
 	}
 
 	// Check from highest precedence to lowest.
-	for i := len(levels) - 1; i >= 0; i-- {
-		var raw map[string]interface{}
-		if _, err := toml.Decode(levels[i].data, &raw); err != nil {
+	for _, level := range slices.Backward(levels) {
+		var raw map[string]any
+		if _, err := toml.Decode(level.data, &raw); err != nil {
 			continue
 		}
 		if val, ok := lookupKey(raw, key); ok {
-			return fmt.Sprintf("%v", val), levels[i].name, nil
+			return fmt.Sprintf("%v", val), level.name, nil
 		}
 	}
 
@@ -397,7 +398,7 @@ func (v *Vault) GetConfigValue(project, key string) (string, string, error) {
 }
 
 // lookupKey resolves a dot-notation key in a nested map.
-func lookupKey(m map[string]interface{}, key string) (interface{}, bool) {
+func lookupKey(m map[string]any, key string) (any, bool) {
 	parts := splitDot(key)
 	current := m
 	for i, part := range parts {
@@ -408,7 +409,7 @@ func lookupKey(m map[string]interface{}, key string) (interface{}, bool) {
 		if i == len(parts)-1 {
 			return val, true
 		}
-		sub, ok := val.(map[string]interface{})
+		sub, ok := val.(map[string]any)
 		if !ok {
 			return nil, false
 		}

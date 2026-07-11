@@ -320,11 +320,12 @@ func buildSessionBody(p SessionParams) string {
 }
 
 func joinLines(lines []string) string {
-	result := ""
+	var result strings.Builder
 	for _, l := range lines {
-		result += l + "\n"
+		result.WriteString(l)
+		result.WriteString("\n")
 	}
-	return result
+	return result.String()
 }
 
 // ParseIteration extracts the iteration number from a session ID. It accepts

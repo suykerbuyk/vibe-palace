@@ -122,7 +122,7 @@ func gitignorePresentLines(path string) (map[string]struct{}, error) {
 	trimmed := bytes.TrimRight(existing, "\n")
 	present := make(map[string]struct{})
 	if len(trimmed) > 0 {
-		for _, l := range strings.Split(string(trimmed), "\n") {
+		for l := range strings.SplitSeq(string(trimmed), "\n") {
 			present[l] = struct{}{}
 		}
 	}

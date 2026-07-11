@@ -25,8 +25,8 @@ import (
 // The input should be the text after the "### " prefix.
 func NormalizeSubheadingSlug(headingText string) string {
 	const sep = " — " // U+2014 em dash, space-padded
-	if idx := strings.Index(headingText, sep); idx >= 0 {
-		return headingText[:idx]
+	if before, _, ok := strings.Cut(headingText, sep); ok {
+		return before
 	}
 	return headingText
 }
@@ -37,8 +37,8 @@ func subheadingSlugs(lines []string, parentStart, parentEnd int) []string {
 	var slugs []string
 	for i := parentStart + 1; i < parentEnd; i++ {
 		line := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(line, "### ") {
-			slugs = append(slugs, NormalizeSubheadingSlug(strings.TrimPrefix(line, "### ")))
+		if after, ok := strings.CutPrefix(line, "### "); ok {
+			slugs = append(slugs, NormalizeSubheadingSlug(after))
 		}
 	}
 	return slugs
@@ -104,8 +104,8 @@ func ReplaceSubsectionBody(doc, parentHeading, subHeading, newBody string) (stri
 
 	for i := parentStart + 1; i < parentEnd; i++ {
 		line := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(line, "### ") {
-			slug := NormalizeSubheadingSlug(strings.TrimPrefix(line, "### "))
+		if after, ok := strings.CutPrefix(line, "### "); ok {
+			slug := NormalizeSubheadingSlug(after)
 			if slug == subHeading {
 				bodyEnd := parentEnd
 				for j := i + 1; j < parentEnd; j++ {
@@ -208,8 +208,8 @@ func InsertSubsection(doc, parentHeading string, pos InsertPosition, subHeading,
 		anchorBodyEnd := -1
 		for j := parentStart + 1; j < parentEnd; j++ {
 			line := strings.TrimSpace(lines[j])
-			if strings.HasPrefix(line, "### ") {
-				slug := NormalizeSubheadingSlug(strings.TrimPrefix(line, "### "))
+			if after, ok := strings.CutPrefix(line, "### "); ok {
+				slug := NormalizeSubheadingSlug(after)
 				if slug == pos.AnchorSlug {
 					anchorIdx = j
 					anchorBodyEnd = parentEnd
@@ -272,8 +272,8 @@ func RemoveSubsection(doc, parentHeading, subHeading string) (string, error) {
 
 	for i := parentStart + 1; i < parentEnd; i++ {
 		line := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(line, "### ") {
-			slug := NormalizeSubheadingSlug(strings.TrimPrefix(line, "### "))
+		if after, ok := strings.CutPrefix(line, "### "); ok {
+			slug := NormalizeSubheadingSlug(after)
 			if slug == subHeading {
 				bodyEnd := parentEnd
 				for j := i + 1; j < parentEnd; j++ {

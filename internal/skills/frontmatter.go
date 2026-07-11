@@ -59,12 +59,12 @@ func Parse(raw []byte) (SkillFrontmatter, []byte, error) {
 
 	// Find the closing fence: a "\n---\n" or "\n---" at EOF.
 	rest := normalised[len("---\n"):]
-	closeRel := bytes.Index(rest, []byte("\n---"))
-	if closeRel < 0 {
+	before, after0, ok := bytes.Cut(rest, []byte("\n---"))
+	if !ok {
 		return fm, raw, fmt.Errorf("skills: unterminated frontmatter fence")
 	}
-	yamlBlock := rest[:closeRel]
-	after := rest[closeRel+len("\n---"):]
+	yamlBlock := before
+	after := after0
 	// Consume the rest of the closing-fence line: either "\n" or EOF.
 	switch {
 	case len(after) == 0:

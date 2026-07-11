@@ -26,6 +26,7 @@ package vaultfs
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -62,20 +63,16 @@ func ValidateRelPath(p string) error {
 	// checking after filepath.Clean: paths like "foo/../bar" clean to "bar"
 	// and would otherwise slip through, but we refuse them to deny any
 	// escape attempt regardless of whether Clean would absorb it.
-	for _, seg := range strings.Split(p, "/") {
-		if seg == ".." {
-			return fmt.Errorf("%w: %q segment in path", ErrPathTraversal, "..")
-		}
+	if slices.Contains(strings.Split(p, "/"), "..") {
+		return fmt.Errorf("%w: %q segment in path", ErrPathTraversal, "..")
 	}
 	cleaned := filepath.Clean(p)
 	if cleaned == "." {
 		return fmt.Errorf("%w: path resolves to vault root", ErrPathTraversal)
 	}
 	// Defense-in-depth: also re-check segments of the cleaned form.
-	for _, seg := range strings.Split(cleaned, string(filepath.Separator)) {
-		if seg == ".." {
-			return fmt.Errorf("%w: %q segment in path", ErrPathTraversal, "..")
-		}
+	if slices.Contains(strings.Split(cleaned, string(filepath.Separator)), "..") {
+		return fmt.Errorf("%w: %q segment in path", ErrPathTraversal, "..")
 	}
 	return nil
 }
@@ -159,7 +156,7 @@ func pathIsUnder(candidate, root string) bool {
 // host could mount a case-insensitive filesystem).
 func IsRefusedWritePath(p string) bool {
 	cleaned := filepath.Clean(p)
-	for _, seg := range strings.Split(cleaned, string(filepath.Separator)) {
+	for seg := range strings.SplitSeq(cleaned, string(filepath.Separator)) {
 		if strings.EqualFold(seg, ".git") || strings.EqualFold(seg, ".vp-locks") {
 			return true
 		}

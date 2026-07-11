@@ -76,7 +76,7 @@ overlap = 100
 // containsActiveLine reports whether text contains a line whose trimmed form
 // starts with the prefix (i.e., not commented out).
 func containsActiveLine(text, prefix string) bool {
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		trimmed := strings.TrimLeft(line, " \t")
 		if strings.HasPrefix(trimmed, "#") {
 			continue

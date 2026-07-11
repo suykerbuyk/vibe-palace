@@ -554,11 +554,11 @@ func unmergedPaths(vaultPath string) []string {
 	var paths []string
 	for line := range strings.SplitSeq(out, "\n") {
 		// format: "<mode> <sha> <stage>\t<path>"
-		tab := strings.IndexByte(line, '\t')
-		if tab < 0 {
+		_, after, ok := strings.Cut(line, "\t")
+		if !ok {
 			continue
 		}
-		p := line[tab+1:]
+		p := after
 		if p != "" && !seen[p] {
 			seen[p] = true
 			paths = append(paths, p)

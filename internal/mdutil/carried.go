@@ -127,10 +127,10 @@ func parseSingleBullet(rawLines []string) CarriedBullet {
 		rest := content[2:] // after opening **
 
 		// Find the closing **.
-		closeIdx := strings.Index(rest, "**")
-		if closeIdx >= 0 {
-			boldText := rest[:closeIdx]
-			after := strings.TrimSpace(rest[closeIdx+2:]) // text after closing **
+		before, after, ok := strings.Cut(rest, "**")
+		if ok {
+			boldText := before
+			after := strings.TrimSpace(after) // text after closing **
 
 			// Normalise multiline bold text (continuation might have carried it).
 			// For single-line bullets this is a no-op.
@@ -145,8 +145,8 @@ func parseSingleBullet(rawLines []string) CarriedBullet {
 			}
 
 			// bold-colon variant: - **slug:**
-			if strings.HasSuffix(boldText, ":") {
-				slug := strings.TrimSuffix(boldText, ":")
+			if before0, ok0 := strings.CutSuffix(boldText, ":"); ok0 {
+				slug := before0
 				return CarriedBullet{Slug: slug, Body: joinBody(after), RawForm: "bold-colon", rawText: rawText}
 			}
 
@@ -161,11 +161,13 @@ func parseSingleBullet(rawLines []string) CarriedBullet {
 
 		// No closing ** found — treat remainder as bold spanning multiple lines.
 		// Join all lines and re-attempt (handles "- **text\n  cont**").
-		allContent := content
+		var allContent strings.Builder
+		allContent.WriteString(content)
 		for _, cl := range rawLines[1:] {
-			allContent += " " + strings.TrimLeft(cl, " \t")
+			allContent.WriteString(" ")
+			allContent.WriteString(strings.TrimLeft(cl, " \t"))
 		}
-		if joined := parseSingleBullet([]string{"- " + allContent}); joined.Slug != "" {
+		if joined := parseSingleBullet([]string{"- " + allContent.String()}); joined.Slug != "" {
 			joined.rawText = rawText
 			return joined
 		}
@@ -173,12 +175,14 @@ func parseSingleBullet(rawLines []string) CarriedBullet {
 
 	// Plain "- text" path: derive slug from plain text.
 	log.Printf("mdutil: warning: non-conforming carried bullet, deriving slug from plain text: %q", first)
-	fullContent := content
+	var fullContent strings.Builder
+	fullContent.WriteString(content)
 	for _, cl := range rawLines[1:] {
-		fullContent += " " + strings.TrimLeft(cl, " \t")
+		fullContent.WriteString(" ")
+		fullContent.WriteString(strings.TrimLeft(cl, " \t"))
 	}
-	slug := derivePlainSlug(fullContent)
-	bodyRem := strings.TrimSpace(strings.TrimPrefix(fullContent, slug))
+	slug := derivePlainSlug(fullContent.String())
+	bodyRem := strings.TrimSpace(strings.TrimPrefix(fullContent.String(), slug))
 	return CarriedBullet{Slug: slug, Body: bodyRem, RawForm: "plain", rawText: rawText}
 }
 
@@ -186,8 +190,8 @@ func parseSingleBullet(rawLines []string) CarriedBullet {
 // " — " the slug is the portion before; otherwise the full text is returned.
 func deriveSlugFromBold(bold string) string {
 	const sep = " — " // U+2014 em dash
-	if idx := strings.Index(bold, sep); idx >= 0 {
-		return strings.TrimSpace(bold[:idx])
+	if before, _, ok := strings.Cut(bold, sep); ok {
+		return strings.TrimSpace(before)
 	}
 	return strings.TrimSpace(bold)
 }
@@ -341,8 +345,8 @@ func locateCarriedBullets(doc, parentHeading string) ([]CarriedBullet, int, int,
 	cfBodyEnd := parentEnd
 	for i := parentStart + 1; i < parentEnd; i++ {
 		line := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(line, "### ") {
-			s := NormalizeSubheadingSlug(strings.TrimPrefix(line, "### "))
+		if after, ok := strings.CutPrefix(line, "### "); ok {
+			s := NormalizeSubheadingSlug(after)
 			if s == carriedForwardSubheading {
 				cfStart = i
 				for j := i + 1; j < parentEnd; j++ {

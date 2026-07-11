@@ -61,7 +61,7 @@ type DiscoverReport struct {
 	LLMCalls        int               `json:"llm_calls"`
 	Proposals       []KeywordProposal `json:"proposals"`
 	Rejected        []KeywordProposal `json:"rejected,omitempty"`
-	TokenEstimate   TokenEstimate     `json:"token_estimate,omitempty"`
+	TokenEstimate   TokenEstimate     `json:"token_estimate"`
 }
 
 const (
@@ -186,10 +186,7 @@ func BatchDiscoverySamples(samples []DiscoverySample, batchSize int) [][]Discove
 
 	var batches [][]DiscoverySample
 	for i := 0; i < len(sorted); i += batchSize {
-		end := i + batchSize
-		if end > len(sorted) {
-			end = len(sorted)
-		}
+		end := min(i+batchSize, len(sorted))
 		batches = append(batches, sorted[i:end])
 	}
 	return batches
@@ -208,7 +205,7 @@ func BuildDiscoveryPrompt(batch []DiscoverySample, roomDefs []RoomDefinition) []
 		if len(kws) > 8 {
 			kws = kws[:8]
 		}
-		sb.WriteString(fmt.Sprintf("- %s: %s\n", rd.Name, strings.Join(kws, ", ")))
+		fmt.Fprintf(&sb, "- %s: %s\n", rd.Name, strings.Join(kws, ", "))
 	}
 	sb.WriteString("\nKeyword weight tiers:\n")
 	sb.WriteString("- \"high\": domain-specific terms unlikely to appear outside this room (weight 1.0)\n")
@@ -231,7 +228,7 @@ func BuildDiscoveryPrompt(batch []DiscoverySample, roomDefs []RoomDefinition) []
 		if len(content) > discoverContentMaxLen {
 			content = content[:discoverContentMaxLen] + "..."
 		}
-		ub.WriteString(fmt.Sprintf("---\ndrawer_id: %s\ncontent: %s\n---\n\n", s.DrawerID, content))
+		fmt.Fprintf(&ub, "---\ndrawer_id: %s\ncontent: %s\n---\n\n", s.DrawerID, content)
 	}
 
 	return []llm.Message{
@@ -530,15 +527,15 @@ func FormatDiscoveryTOML(proposals []KeywordProposal) string {
 			sb.WriteString(c)
 			sb.WriteString("\n")
 		}
-		sb.WriteString(fmt.Sprintf("[palace.scoring.rooms.%s]\n", room))
+		fmt.Fprintf(&sb, "[palace.scoring.rooms.%s]\n", room)
 		if len(b.high) > 0 {
-			sb.WriteString(fmt.Sprintf("high = %s\n", formatStringSlice(b.high)))
+			fmt.Fprintf(&sb, "high = %s\n", formatStringSlice(b.high))
 		}
 		if len(b.medium) > 0 {
-			sb.WriteString(fmt.Sprintf("medium = %s\n", formatStringSlice(b.medium)))
+			fmt.Fprintf(&sb, "medium = %s\n", formatStringSlice(b.medium))
 		}
 		if len(b.low) > 0 {
-			sb.WriteString(fmt.Sprintf("low = %s\n", formatStringSlice(b.low)))
+			fmt.Fprintf(&sb, "low = %s\n", formatStringSlice(b.low))
 		}
 		sb.WriteString("\n")
 	}

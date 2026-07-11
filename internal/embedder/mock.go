@@ -48,7 +48,7 @@ func hashToVector(text string, dims int) []float32 {
 
 	// Use hash bytes as seed material, extending with rehashing.
 	seed := h[:]
-	for i := 0; i < dims; i++ {
+	for i := range dims {
 		if i%8 == 0 && i > 0 {
 			next := sha256.Sum256(seed)
 			seed = next[:]

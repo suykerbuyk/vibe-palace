@@ -376,7 +376,7 @@ func initProject(fv *cli.FlagValues) (string, bool, []check.Result, int) {
 
 	var tagsList []string
 	if t := fv.Get("--tags"); t != "" {
-		for _, tag := range strings.Split(t, ",") {
+		for tag := range strings.SplitSeq(t, ",") {
 			if trimmed := strings.TrimSpace(tag); trimmed != "" {
 				tagsList = append(tagsList, trimmed)
 			}

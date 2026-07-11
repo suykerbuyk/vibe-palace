@@ -155,7 +155,7 @@ func cmdVaultCommit() *cli.Command {
 				return cli.ExitUser
 			}
 			var paths []string
-			for _, p := range strings.Split(fv.Get("--paths"), ",") {
+			for p := range strings.SplitSeq(fv.Get("--paths"), ",") {
 				if p = strings.TrimSpace(p); p != "" {
 					paths = append(paths, p)
 				}
@@ -516,7 +516,7 @@ func gitRemotes(root string) ([]string, error) {
 		return nil, fmt.Errorf("git remote: %w", err)
 	}
 	var remotes []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if line = strings.TrimSpace(line); line != "" {
 			remotes = append(remotes, line)
 		}

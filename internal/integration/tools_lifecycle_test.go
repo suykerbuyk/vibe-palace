@@ -266,7 +266,6 @@ func TestTools_SchemaDriftMatrix(t *testing.T) {
 	coveredRequired := 0
 
 	for _, info := range infos {
-		info := info
 		t.Run(info.Name, func(t *testing.T) {
 			// Parse schema to extract required fields.
 			var schemaDoc struct {

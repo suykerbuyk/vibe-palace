@@ -7,8 +7,11 @@ package vaultlock
 
 import "os"
 
-// flockExclusive is a no-op stub on Windows.
-func flockExclusive(f *os.File) error { return nil }
+// flockExclusive is a no-op stub on Windows: it locks NOTHING and reports
+// success, so every "serialized" vault writer is in fact unprotected here. The
+// parameter is unused deliberately — see the windows-lockfileex task for the
+// LockFileEx implementation that will make this real.
+func flockExclusive(_ *os.File) error { return nil }
 
-// funlock is a no-op stub on Windows.
-func funlock(f *os.File) error { return nil }
+// funlock is a no-op stub on Windows. See flockExclusive.
+func funlock(_ *os.File) error { return nil }

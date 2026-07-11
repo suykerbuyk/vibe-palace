@@ -309,7 +309,7 @@ func TopFrictionSessions(sessions []storage.SessionMeta, n int) []FrictionSessio
 
 	limit := min(n, len(sorted))
 	out := make([]FrictionSession, 0, limit)
-	for i := 0; i < limit; i++ {
+	for i := range limit {
 		s := sorted[i]
 		out = append(out, FrictionSession{
 			ID:            s.ID,

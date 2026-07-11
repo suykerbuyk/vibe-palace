@@ -224,10 +224,3 @@ func TestPrintSkillsTableProject(t *testing.T) {
 		t.Errorf("missing project header: %q", s)
 	}
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

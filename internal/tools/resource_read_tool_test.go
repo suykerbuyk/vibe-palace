@@ -172,7 +172,7 @@ func TestReadResourceMultibyteBoundary(t *testing.T) {
 	vault, resolver := testSetup(t)
 	// Build a body where em-dashes (— = 3 bytes, U+2014) straddle page edges.
 	var sb strings.Builder
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		sb.WriteString("a—b—c—") // mix of 1- and 3-byte runes
 	}
 	body := sb.String()

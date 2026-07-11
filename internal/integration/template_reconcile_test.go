@@ -263,7 +263,7 @@ func assertInitialMaterialization(t *testing.T, env *testEnv) {
 // containsLine reports whether any line of s equals line exactly after
 // trimming trailing whitespace.
 func containsLine(s, line string) bool {
-	for _, l := range strings.Split(s, "\n") {
+	for l := range strings.SplitSeq(s, "\n") {
 		if strings.TrimRight(l, " \t\r") == line {
 			return true
 		}

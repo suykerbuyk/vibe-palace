@@ -285,8 +285,8 @@ type skillsUpgradeOpts struct {
 // reference share one accept/skip prompt.
 func skillGroupID(c commands.Change) string {
 	n := c.Name
-	if i := strings.IndexByte(n, '/'); i >= 0 {
-		return n[:i]
+	if before, _, ok := strings.Cut(n, "/"); ok {
+		return before
 	}
 	return n
 }

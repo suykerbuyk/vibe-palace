@@ -91,16 +91,6 @@ tag: exploration
 ---
 `
 
-const testSessionWithSummaryOnly = `---
-session_id: "2026-04-03-02"
-project: test-project
-date: "2026-04-03"
-title: "Summary Only"
-summary: "This session only has a summary, no body"
-tag: planning
----
-`
-
 func setupTestVault(t *testing.T) (*storage.Vault, *search.Engine, embedder.Embedder, storage.Config) {
 	t.Helper()
 	tmpDir := t.TempDir()

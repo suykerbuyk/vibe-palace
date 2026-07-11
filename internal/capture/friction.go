@@ -82,10 +82,7 @@ func countCorrections(lower string) int {
 		count += strings.Count(remaining, word)
 	}
 
-	sub := count * 8
-	if sub > 25 {
-		sub = 25
-	}
+	sub := min(count*8, 25)
 	return sub
 }
 
@@ -111,10 +108,7 @@ func countRetries(lower string) int {
 		}
 	}
 
-	sub := groups * 10
-	if sub > 25 {
-		sub = 25
-	}
+	sub := min(groups*10, 25)
 	return sub
 }
 
@@ -144,10 +138,7 @@ func countErrorDensity(lower string, tokenCount int) int {
 	}
 
 	density := (float64(count) / float64(tokenCount)) * 1000
-	sub := int(density * 5)
-	if sub > 25 {
-		sub = 25
-	}
+	sub := min(int(density*5), 25)
 	return sub
 }
 
@@ -169,10 +160,7 @@ func countReworkSignals(lower string) int {
 		count += strings.Count(lower, phrase)
 	}
 
-	sub := count * 10
-	if sub > 25 {
-		sub = 25
-	}
+	sub := min(count*10, 25)
 	return sub
 }
 

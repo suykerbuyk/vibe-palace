@@ -4,6 +4,7 @@
 package kg
 
 import (
+	"slices"
 	"testing"
 )
 
@@ -169,10 +170,5 @@ func tripleByPredicate(triples []ExtractedTriple, predicate string) *ExtractedTr
 }
 
 func containsFlag(flags []string, flag string) bool {
-	for _, f := range flags {
-		if f == flag {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(flags, flag)
 }

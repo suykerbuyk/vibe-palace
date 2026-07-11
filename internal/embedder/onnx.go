@@ -104,10 +104,7 @@ func (e *ONNXEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 			return nil, err
 		}
 
-		end := start + e.batchSz
-		if end > len(texts) {
-			end = len(texts)
-		}
+		end := min(start+e.batchSz, len(texts))
 		chunk := texts[start:end]
 
 		e.mu.Lock()

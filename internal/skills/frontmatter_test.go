@@ -160,10 +160,3 @@ func TestParseFenceFirstLineOnly(t *testing.T) {
 		t.Errorf("expected ErrNoFrontmatter for non-first-line fence, got %v", err)
 	}
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

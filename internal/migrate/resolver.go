@@ -199,17 +199,17 @@ func ParseSlugMap(s string) (map[string]string, error) {
 	if strings.TrimSpace(s) == "" {
 		return out, nil
 	}
-	for _, pair := range strings.Split(s, ",") {
+	for pair := range strings.SplitSeq(s, ",") {
 		pair = strings.TrimSpace(pair)
 		if pair == "" {
 			continue
 		}
-		idx := strings.IndexByte(pair, '=')
-		if idx < 0 {
+		before, after, ok := strings.Cut(pair, "=")
+		if !ok {
 			return nil, fmt.Errorf("slug-map entry %q missing '='", pair)
 		}
-		k := strings.TrimSpace(pair[:idx])
-		v := strings.TrimSpace(pair[idx+1:])
+		k := strings.TrimSpace(before)
+		v := strings.TrimSpace(after)
 		if k == "" || v == "" {
 			return nil, fmt.Errorf("slug-map entry %q has empty key or value", pair)
 		}

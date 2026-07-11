@@ -201,8 +201,7 @@ func TestWriteLockConcurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(n)
 	now := time.Now().UTC().Truncate(time.Second)
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
 		go func() {
 			defer wg.Done()
 			// Each writer has distinct content — last-writer-wins is
@@ -230,7 +229,7 @@ func TestWriteLockConcurrent(t *testing.T) {
 	}
 	// SHA must match one of the writers' payloads.
 	found := false
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if entry.EmbeddedSHA == sha("writer", i) {
 			found = true
 			break
@@ -332,7 +331,7 @@ func sha(prefix string, i int) string {
 	// Fill to 64 chars using hex-safe digits.
 	const hexpad = "0123456789abcdef"
 	b := make([]byte, 64)
-	for j := 0; j < 64; j++ {
+	for j := range 64 {
 		b[j] = hexpad[(j+i+len(base))%16]
 	}
 	return string(b)

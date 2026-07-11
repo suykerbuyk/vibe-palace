@@ -69,7 +69,7 @@ func runSelectedChecks(filter string) ([]check.Result, error) {
 		vaultRoot = vp
 	}
 	var results []check.Result
-	for _, raw := range strings.Split(filter, ",") {
+	for raw := range strings.SplitSeq(filter, ",") {
 		name := strings.TrimSpace(raw)
 		if name == "" {
 			continue
@@ -91,7 +91,7 @@ func runSelectedChecks(filter string) ([]check.Result, error) {
 // binary block can skip the expensive registeredToolCount() build.
 func isSurfaceOnly(filter string) bool {
 	seen := map[string]struct{}{}
-	for _, raw := range strings.Split(filter, ",") {
+	for raw := range strings.SplitSeq(filter, ",") {
 		name := strings.TrimSpace(raw)
 		if name == "" {
 			continue

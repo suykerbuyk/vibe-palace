@@ -448,7 +448,7 @@ func isSessionImported(destination *storage.Vault, project, sessionID string) (b
 		return false, err
 	}
 
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue

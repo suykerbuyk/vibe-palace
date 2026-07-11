@@ -96,7 +96,7 @@ func TestIntegrationKGEntityDeduplication(t *testing.T) {
 	sessionID := "session-dedup-01"
 
 	// Index twice.
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		_, _ = h.Indexer.IndexTranscript(context.Background(), sessionID, "proj", transcript)
 	}
 

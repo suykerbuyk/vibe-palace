@@ -195,8 +195,8 @@ func TestFormatFlagAlignment(t *testing.T) {
 	}
 	out := FormatHelp(cmd)
 	// Both flags should have help text on the same line.
-	lines := strings.Split(out, "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(out, "\n")
+	for line := range lines {
 		if strings.Contains(line, "--short") && !strings.Contains(line, "A short flag") {
 			t.Error("short flag and help should be on same line")
 		}

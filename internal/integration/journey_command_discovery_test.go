@@ -117,7 +117,7 @@ func TestJourney_CommandDiscovery_And_Execution(t *testing.T) {
 	// frame.
 	expected := strings.ReplaceAll(get.Content, "{{PROJECT}}", project)
 	// Keep the check substring-sized to avoid whitespace/date variance.
-	firstLine := strings.SplitN(expected, "\n", 2)[0]
+	firstLine, _, _ := strings.Cut(expected, "\n")
 	if firstLine != "" && !strings.Contains(body, firstLine) {
 		t.Errorf("vp_cmd body missing first line from get_command content: %q", firstLine)
 	}

@@ -86,9 +86,9 @@ func TestInitWritesVaultProjectConfig(t *testing.T) {
 	}
 	// Crude extract — the helper wrote: vault_path = "<path>"
 	vaultDir := ""
-	for _, line := range strings.Split(string(globalData), "\n") {
-		if strings.HasPrefix(line, "vault_path = ") {
-			vaultDir = strings.Trim(strings.TrimPrefix(line, "vault_path = "), `"`)
+	for line := range strings.SplitSeq(string(globalData), "\n") {
+		if after, ok := strings.CutPrefix(line, "vault_path = "); ok {
+			vaultDir = strings.Trim(after, `"`)
 			break
 		}
 	}
@@ -771,9 +771,9 @@ func TestInitScaffoldsCurrentProject(t *testing.T) {
 	configDir := initTestEnv(t, true)
 	globalData, _ := os.ReadFile(filepath.Join(configDir, "vibe-palace", "config.toml"))
 	vaultDir := ""
-	for _, line := range strings.Split(string(globalData), "\n") {
-		if strings.HasPrefix(line, "vault_path = ") {
-			vaultDir = strings.Trim(strings.TrimPrefix(line, "vault_path = "), `"`)
+	for line := range strings.SplitSeq(string(globalData), "\n") {
+		if after, ok := strings.CutPrefix(line, "vault_path = "); ok {
+			vaultDir = strings.Trim(after, `"`)
 			break
 		}
 	}
@@ -814,9 +814,9 @@ func TestInitScaffoldPreservesUserOverrides(t *testing.T) {
 	configDir := initTestEnv(t, true)
 	globalData, _ := os.ReadFile(filepath.Join(configDir, "vibe-palace", "config.toml"))
 	vaultDir := ""
-	for _, line := range strings.Split(string(globalData), "\n") {
-		if strings.HasPrefix(line, "vault_path = ") {
-			vaultDir = strings.Trim(strings.TrimPrefix(line, "vault_path = "), `"`)
+	for line := range strings.SplitSeq(string(globalData), "\n") {
+		if after, ok := strings.CutPrefix(line, "vault_path = "); ok {
+			vaultDir = strings.Trim(after, `"`)
 			break
 		}
 	}

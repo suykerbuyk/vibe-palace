@@ -89,7 +89,7 @@ func TestSearchToolValidation(t *testing.T) {
 
 func TestSearchToolLimitClamping(t *testing.T) {
 	eng, vault := testSearchEngine(t)
-	for i := 0; i < 60; i++ {
+	for i := range 60 {
 		d := storage.Drawer{
 			Content:    string(rune('A'+i%26)) + " unique content",
 			Hall:       "facts",

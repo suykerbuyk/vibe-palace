@@ -200,7 +200,7 @@ func TestHealthToolDefaultBehavior(t *testing.T) {
 
 	var lines []string
 	// 25 in-window warns (> the 20 cap) to prove the default cap.
-	for i := 0; i < 25; i++ {
+	for i := range 25 {
 		lines = append(lines, fmt.Sprintf(`{"time":"%s","level":"WARN","msg":"cat: entry %d"}`, now, i))
 	}
 	// An entry outside the default 24h window must be excluded.
@@ -227,7 +227,7 @@ func TestHealthToolLimitCapsOnlyRecentWarns(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	var lines []string
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		lines = append(lines, fmt.Sprintf(`{"time":"%s","level":"WARN","msg":"cat: entry %d"}`, now, i))
 	}
 	writeHealthLog(t, vault, lines)
@@ -308,7 +308,7 @@ func TestHealthToolClamping(t *testing.T) {
 	t.Run("limit zero -> 20 default", func(t *testing.T) {
 		vault := storage.NewVault(t.TempDir())
 		var lines []string
-		for i := 0; i < 25; i++ {
+		for i := range 25 {
 			lines = append(lines, fmt.Sprintf(`{"time":"%s","level":"WARN","msg":"cat: e%d"}`, now, i))
 		}
 		writeHealthLog(t, vault, lines)
@@ -321,7 +321,7 @@ func TestHealthToolClamping(t *testing.T) {
 	t.Run("limit huge -> 1000 ceiling", func(t *testing.T) {
 		vault := storage.NewVault(t.TempDir())
 		var lines []string
-		for i := 0; i < 25; i++ {
+		for i := range 25 {
 			lines = append(lines, fmt.Sprintf(`{"time":"%s","level":"WARN","msg":"cat: e%d"}`, now, i))
 		}
 		writeHealthLog(t, vault, lines)

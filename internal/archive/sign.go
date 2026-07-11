@@ -156,10 +156,7 @@ func VerifySignature(manifestPath string, vo VerifyOptions) error {
 
 func containsHeader(s, header string) bool {
 	// Check only the first ~128 bytes — headers are always at the top.
-	max := 128
-	if len(s) < max {
-		max = len(s)
-	}
+	max := min(len(s), 128)
 	return indexOf(s[:max], header) >= 0
 }
 

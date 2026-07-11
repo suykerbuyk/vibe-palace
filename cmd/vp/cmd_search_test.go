@@ -104,7 +104,7 @@ func TestRunSearchLimit(t *testing.T) {
 	eng, v := testEngine(t)
 
 	// Add several drawers.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		v.AppendDrawer("test-proj", "code", "misc", storage.Drawer{
 			Content:    "Some content for search testing purposes",
 			Hall:       "facts",

@@ -59,7 +59,7 @@ type TuneReport struct {
 	Disagreements  int              `json:"disagreements"`
 	Proposals      []WeightProposal `json:"proposals"`
 	UnmatchedFlags []UnmatchedFlag  `json:"unmatched_flags,omitempty"`
-	TokenEstimate  TokenEstimate    `json:"token_estimate,omitempty"`
+	TokenEstimate  TokenEstimate    `json:"token_estimate"`
 }
 
 // UnmatchedFlag flags content the LLM classified into a room but no existing
@@ -223,10 +223,7 @@ func BatchSamples(samples []TuneSample, batchSize int) [][]TuneSample {
 
 	var batches [][]TuneSample
 	for i := 0; i < len(sorted); i += batchSize {
-		end := i + batchSize
-		if end > len(sorted) {
-			end = len(sorted)
-		}
+		end := min(i+batchSize, len(sorted))
 		batches = append(batches, sorted[i:end])
 	}
 	return batches
@@ -246,7 +243,7 @@ func BuildClassificationPrompt(batch []TuneSample, roomDefs []RoomDefinition) []
 		if len(kws) > 8 {
 			kws = kws[:8]
 		}
-		sb.WriteString(fmt.Sprintf("- %s: %s\n", rd.Name, strings.Join(kws, ", ")))
+		fmt.Fprintf(&sb, "- %s: %s\n", rd.Name, strings.Join(kws, ", "))
 	}
 	sb.WriteString("- general: content that doesn't clearly match any other room\n\n")
 	sb.WriteString("For each drawer, respond with a JSON array. Each element must have:\n")
@@ -264,7 +261,7 @@ func BuildClassificationPrompt(batch []TuneSample, roomDefs []RoomDefinition) []
 		if len(content) > promptContentMaxLen {
 			content = content[:promptContentMaxLen] + "..."
 		}
-		ub.WriteString(fmt.Sprintf("---\ndrawer_id: %s\ncontent: %s\n---\n\n", s.DrawerID, content))
+		fmt.Fprintf(&ub, "---\ndrawer_id: %s\ncontent: %s\n---\n\n", s.DrawerID, content)
 	}
 
 	return []llm.Message{
@@ -518,15 +515,15 @@ func FormatTOMLDiff(proposals []WeightProposal) string {
 			sb.WriteString(c)
 			sb.WriteString("\n")
 		}
-		sb.WriteString(fmt.Sprintf("[palace.scoring.rooms.%s]\n", room))
+		fmt.Fprintf(&sb, "[palace.scoring.rooms.%s]\n", room)
 		if len(b.high) > 0 {
-			sb.WriteString(fmt.Sprintf("high = %s\n", formatStringSlice(b.high)))
+			fmt.Fprintf(&sb, "high = %s\n", formatStringSlice(b.high))
 		}
 		if len(b.medium) > 0 {
-			sb.WriteString(fmt.Sprintf("medium = %s\n", formatStringSlice(b.medium)))
+			fmt.Fprintf(&sb, "medium = %s\n", formatStringSlice(b.medium))
 		}
 		if len(b.low) > 0 {
-			sb.WriteString(fmt.Sprintf("low = %s\n", formatStringSlice(b.low)))
+			fmt.Fprintf(&sb, "low = %s\n", formatStringSlice(b.low))
 		}
 		sb.WriteString("\n")
 	}

@@ -52,7 +52,7 @@ func initGitRepo(t *testing.T, dir string) {
 		}
 	}
 	// Create a few commits.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		f := filepath.Join(dir, "file.txt")
 		if err := os.WriteFile(f, []byte("v"+string(rune('0'+i))), 0o644); err != nil {
 			t.Fatal(err)

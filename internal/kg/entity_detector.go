@@ -248,7 +248,7 @@ func isFalsePositive(name string) bool {
 }
 
 func isKnownTool(name string) bool {
-	for _, w := range strings.Fields(name) {
+	for w := range strings.FieldsSeq(name) {
 		if knownTools[w] {
 			return true
 		}

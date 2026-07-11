@@ -97,12 +97,12 @@ func TestLoadConfig_MinorForwardCompat(t *testing.T) {
 	v := hermeticTestVault(t)
 	projDir := filepath.Join(v.Root, "Projects", "proj")
 	os.MkdirAll(projDir, 0o755)
-	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(fmt.Sprintf(`
+	os.WriteFile(filepath.Join(projDir, "config.toml"), fmt.Appendf(nil, `
 [meta]
 version_major = %d
 version_minor = 99
 kind = "vault-project"
-`, CurrentVersionMajor)), 0o644)
+`, CurrentVersionMajor), 0o644)
 
 	cfg, err := v.LoadConfig("proj")
 	if err != nil {

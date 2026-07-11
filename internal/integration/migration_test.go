@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -337,13 +338,7 @@ func TestIntegrationMemPalaceImportToSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListProjects: %v", err)
 	}
-	foundMempalace := false
-	for _, p := range projects {
-		if p == "mempalace" {
-			foundMempalace = true
-			break
-		}
-	}
+	foundMempalace := slices.Contains(projects, "mempalace")
 	if !foundMempalace {
 		t.Fatal("expected 'mempalace' project in vault after import")
 	}

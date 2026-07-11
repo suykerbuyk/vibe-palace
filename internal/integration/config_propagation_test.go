@@ -125,7 +125,7 @@ func TestIntegrationConfigSearchLimit(t *testing.T) {
 	ctx := context.Background()
 
 	// Add 10 drawers.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		h.addDrawer(t, "proj", "wing", "room",
 			"unique content item number "+string(rune('A'+i)), "facts", "2026-04-01")
 	}

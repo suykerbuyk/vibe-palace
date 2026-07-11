@@ -452,8 +452,8 @@ func TestTemplateTree_LockAbsentNonEmbeddedBytesPrompt(t *testing.T) {
 	// lock_sha should be empty.
 	var lockSHA string
 	for _, d := range a.Details {
-		if strings.HasPrefix(d, "lock_sha=") {
-			lockSHA = strings.TrimPrefix(d, "lock_sha=")
+		if after, ok0 := strings.CutPrefix(d, "lock_sha="); ok0 {
+			lockSHA = after
 		}
 	}
 	if lockSHA != "" {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -231,11 +232,8 @@ func VaultFetchAge(vaultPath string) (age time.Duration, fetchedAt time.Time, kn
 		return 0, time.Time{}, false
 	}
 	remote := remotes[0]
-	for _, r := range remotes {
-		if r == "origin" {
-			remote = "origin"
-			break
-		}
+	if slices.Contains(remotes, "origin") {
+		remote = "origin"
 	}
 	branch := currentBranch(vaultPath) // local `git rev-parse`, no network
 	fetchedAt = lastFetched(vaultPath, remote, branch)

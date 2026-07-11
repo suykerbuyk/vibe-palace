@@ -35,7 +35,7 @@ func TestRunDiscoverRooms_Estimate(t *testing.T) {
 	v := testVault(t)
 	cfg := storage.Config{}
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		d := storage.Drawer{
 			Content:    "some unclassified content " + string(rune('a'+i)),
 			Hall:       "facts",
@@ -167,7 +167,7 @@ func TestRunDiscoverRooms_WithProposals(t *testing.T) {
 	v := testVault(t)
 
 	// 3 general drawers with "neural network" content.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		d := storage.Drawer{
 			Content:    "neural network transformer training " + string(rune('a'+i)),
 			Hall:       "facts",
@@ -219,7 +219,7 @@ func TestRunDiscoverRooms_Apply(t *testing.T) {
 	v := testVault(t)
 
 	// 3 general drawers with matching content.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		d := storage.Drawer{
 			Content:    "neural network transformer training " + string(rune('a'+i)),
 			Hall:       "facts",

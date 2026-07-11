@@ -43,7 +43,7 @@ func TestDrawerIDRoomIndependent(t *testing.T) {
 		t.Fatalf("ID length = %d, want 8", len(id))
 	}
 	// Verify determinism across multiple calls.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if got := DrawerID("wing-a", "hello world"); got != id {
 			t.Errorf("call %d: got %q, want %q", i, got, id)
 		}

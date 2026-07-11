@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"slices"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/mcphost"
@@ -13,12 +14,7 @@ import (
 
 // hasFlag reports whether name appears in args.
 func hasFlag(args []string, name string) bool {
-	for _, a := range args {
-		if a == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(args, name)
 }
 
 // selectHosts returns the registry hosts whose selector flag is present in

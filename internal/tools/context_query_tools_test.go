@@ -157,7 +157,7 @@ func TestGetKnowledgePopulated(t *testing.T) {
 func TestGetKnowledgeLimit(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if err := vault.AddTriple("test-proj", storage.Triple{
 			Subject:   "A",
 			Predicate: "rel",

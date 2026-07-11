@@ -59,7 +59,7 @@ func TestRunSessionsWithData(t *testing.T) {
 
 func TestRunSessionsLimit(t *testing.T) {
 	v := testVault(t)
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		v.WriteSession("test-proj", storage.SessionMeta{
 			Date: "2026-04-01", Title: "Session",
 		}, "body")

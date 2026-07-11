@@ -153,7 +153,7 @@ func TestIntegrationSessionIterationAcrossSessions(t *testing.T) {
 	h.registerAllTools(t)
 
 	var iterations []int
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		result := h.callTool(t, "vp_capture_session", map[string]any{
 			"project": "test-proj",
 			"summary": "Session number " + string(rune('1'+i)),

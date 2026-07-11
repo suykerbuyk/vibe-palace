@@ -170,7 +170,7 @@ func TestFullInjectCommand(t *testing.T) {
 func TestFullSessionsWithLimit(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	v := storage.NewVault(vaultDir)
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		v.WriteSession("test-proj", storage.SessionMeta{
 			Date: "2026-04-01", Title: "Session",
 		}, "body")
@@ -226,7 +226,7 @@ func TestFullBadFlags(t *testing.T) {
 func TestFullSessionsDefaultLimit(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	v := storage.NewVault(vaultDir)
-	for i := 0; i < 15; i++ {
+	for range 15 {
 		v.WriteSession("test-proj", storage.SessionMeta{
 			Date: "2026-04-01", Title: "Session",
 		}, "body")

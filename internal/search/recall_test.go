@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -244,7 +245,7 @@ func gtThreshold(query []float32, vecs [][]float32, k int) float32 {
 	for i, v := range vecs {
 		dists[i] = cosineDistanceF32(query, v)
 	}
-	sort.Slice(dists, func(i, j int) bool { return dists[i] < dists[j] })
+	slices.Sort(dists)
 	if k > len(dists) {
 		k = len(dists)
 	}
@@ -397,7 +398,6 @@ func TestConstitutionCrossDocumentSearch(t *testing.T) {
 	allResults := make([]queryResult, 0, len(queries))
 
 	for _, q := range queries {
-		q := q // capture
 		t.Run(q.name, func(t *testing.T) {
 			queryVec := tfidfEmbedding(q.phrase, embeddingDim, idf)
 			results, err := idx.Search(queryVec, 10)
@@ -469,7 +469,7 @@ func TestConstitutionDeleteAndSearch(t *testing.T) {
 	deleteCount := preLen / 5
 	perm := rng.Perm(len(ids))
 	deleted := make(map[string]struct{}, deleteCount)
-	for i := 0; i < deleteCount; i++ {
+	for i := range deleteCount {
 		id := ids[perm[i]]
 		if !idx.Delete(id) {
 			t.Fatalf("Delete(%s) returned false", id)

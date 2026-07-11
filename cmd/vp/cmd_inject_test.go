@@ -58,7 +58,7 @@ func TestRunInjectWithData(t *testing.T) {
 func TestRunInjectTokenBudget(t *testing.T) {
 	v := testVault(t)
 	// Create enough sessions to exceed a small token budget.
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		v.WriteSession("test-proj", storage.SessionMeta{
 			Date: "2026-04-01", Title: "Session with long title for token budget testing",
 			Summary: "This is a longer summary to consume more tokens in the output",

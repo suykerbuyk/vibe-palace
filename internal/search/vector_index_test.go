@@ -55,7 +55,7 @@ func TestExactRecall(t *testing.T) {
 
 	vectors := make([][]float32, n)
 	ids := make([]string, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		vec := make([]float32, dims)
 		for j := range vec {
 			vec[j] = rng.Float32()*2 - 1
@@ -92,7 +92,7 @@ func TestExactRecall(t *testing.T) {
 	sort.Slice(brute, func(i, j int) bool { return brute[i].dist < brute[j].dist })
 
 	// Brute-force index must have 100% recall.
-	for i := 0; i < k; i++ {
+	for i := range k {
 		if indexResults[i].ID != brute[i].id {
 			t.Errorf("rank %d: got %s, want %s", i, indexResults[i].ID, brute[i].id)
 		}
@@ -172,7 +172,7 @@ func TestConcurrentSearchInsert(t *testing.T) {
 	_ = idx.Insert("seed", []float32{0.5, 0.5, 0.5})
 
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -183,12 +183,10 @@ func TestConcurrentSearchInsert(t *testing.T) {
 			)
 		}(i)
 	}
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 50 {
+		wg.Go(func() {
 			_, _ = idx.Search([]float32{0.5, 0.5, 0.5}, 5)
-		}()
+		})
 	}
 	wg.Wait()
 

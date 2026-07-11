@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -386,10 +387,5 @@ func mustReport(t *testing.T, root string, fetch bool) storage.StatusReport {
 }
 
 func containsPath(paths []string, want string) bool {
-	for _, p := range paths {
-		if p == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(paths, want)
 }

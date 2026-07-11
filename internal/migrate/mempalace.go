@@ -123,10 +123,7 @@ func ImportMemPalace(
 			if err := ctx.Err(); err != nil {
 				return result, err
 			}
-			end := start + embedBatchSize
-			if end > len(texts) {
-				end = len(texts)
-			}
+			end := min(start+embedBatchSize, len(texts))
 			batch, embErr := emb.EmbedBatch(ctx, texts[start:end])
 			if embErr != nil {
 				return result, fmt.Errorf("embed batch: %w", embErr)

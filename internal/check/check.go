@@ -224,7 +224,7 @@ func CheckGit(vaultPath string, gitEnabled bool) Result {
 	}
 
 	var remotes []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if line = strings.TrimSpace(line); line != "" {
 			remotes = append(remotes, line)
 		}

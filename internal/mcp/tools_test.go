@@ -765,7 +765,7 @@ func TestWithRequestID(t *testing.T) {
 		t.Errorf("empty ID should be ignored, got %q", got)
 	}
 	//nolint:staticcheck // Explicitly exercise nil-ctx branch.
-	if got := requestIDFromContext(nil); got != "" {
+	if got := requestIDFromContext(context.TODO()); got != "" {
 		t.Errorf("nil ctx should yield empty, got %q", got)
 	}
 }

@@ -1026,7 +1026,7 @@ func TestConfigSyncScaffoldIdempotent(t *testing.T) {
 		}
 	})
 	// Look for any [Create] line whose reconciler name is the alpha scaffold.
-	for _, line := range strings.Split(stdout, "\n") {
+	for line := range strings.SplitSeq(stdout, "\n") {
 		if strings.Contains(line, "TemplateTree:Projects/alpha") && strings.Contains(line, "[Create]") {
 			t.Errorf("unexpected Create on second sync:\n%s", line)
 		}

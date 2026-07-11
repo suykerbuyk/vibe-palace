@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -209,12 +210,12 @@ func CommitsSinceAnchor(ctx context.Context, projectDir, anchorSHA string) ([]Co
 			continue
 		}
 		// Format is "<sha><space><subject>"; split on the first space only.
-		idx := strings.IndexByte(line, ' ')
-		if idx < 0 {
+		before, after, ok := strings.Cut(line, " ")
+		if !ok {
 			commits = append(commits, CommitInfo{SHA: line})
 			continue
 		}
-		commits = append(commits, CommitInfo{SHA: line[:idx], Subject: line[idx+1:]})
+		commits = append(commits, CommitInfo{SHA: before, Subject: after})
 	}
 	return commits, nil
 }
@@ -253,8 +254,8 @@ func OldestRootCommit(ctx context.Context, projectDir string) (string, error) {
 		return "", err
 	}
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if l := strings.TrimSpace(lines[i]); l != "" {
+	for _, line := range slices.Backward(lines) {
+		if l := strings.TrimSpace(line); l != "" {
 			return l, nil
 		}
 	}

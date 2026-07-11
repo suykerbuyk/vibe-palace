@@ -40,11 +40,11 @@ func stripFrontmatter(t *testing.T, path string) string {
 		t.Fatalf("missing opening frontmatter in %s", path)
 	}
 	rest := s[len(open):]
-	idx := strings.Index(rest, "\n---\n")
-	if idx < 0 {
+	_, after, ok := strings.Cut(rest, "\n---\n")
+	if !ok {
 		t.Fatalf("missing closing frontmatter in %s", path)
 	}
-	return rest[idx+len("\n---\n"):]
+	return after
 }
 
 func workingEnricher() *enrichment.Enricher {
@@ -504,7 +504,7 @@ func TestDrainDeadLettersAfterMaxAttempts(t *testing.T) {
 
 	// Drain repeatedly with a failing enricher. Each transient failure bumps
 	// Attempts; the maxEnrichAttempts'th drain dead-letters the job.
-	for i := 0; i < maxEnrichAttempts+2; i++ {
+	for i := range maxEnrichAttempts + 2 {
 		drained, err := DrainEnrichmentQueue(context.Background(), vault, cwd, failingEnricher(), 0)
 		if err != nil {
 			t.Fatalf("drain %d: %v", i, err)

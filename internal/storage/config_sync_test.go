@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/BurntSushi/toml"
 )
 
 // TestTemplateSyncWithDefaults verifies that template.toml and defaults.toml
@@ -32,33 +30,6 @@ func TestTemplateSyncWithDefaults(t *testing.T) {
 	for k := range templateKeys {
 		if !defaultKeys[k] {
 			t.Errorf("key %q in template.toml but missing from defaults.toml", k)
-		}
-	}
-}
-
-// extractKeys parses TOML text and returns all dot-notation keys.
-func extractKeys(t *testing.T, content, name string) map[string]bool {
-	t.Helper()
-	var raw map[string]any
-	if _, err := toml.Decode(content, &raw); err != nil {
-		t.Fatalf("parse %s: %v", name, err)
-	}
-	keys := make(map[string]bool)
-	flattenKeys("", raw, keys)
-	return keys
-}
-
-// flattenKeys recursively walks a parsed TOML map and emits dot-notation keys.
-func flattenKeys(prefix string, m map[string]any, out map[string]bool) {
-	for k, v := range m {
-		full := k
-		if prefix != "" {
-			full = prefix + "." + k
-		}
-		if sub, ok := v.(map[string]any); ok {
-			flattenKeys(full, sub, out)
-		} else {
-			out[full] = true
 		}
 	}
 }

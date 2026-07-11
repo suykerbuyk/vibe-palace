@@ -891,7 +891,7 @@ func vaultCommandsDirty(vaultRoot string) (bool, []string) {
 		return false, nil
 	}
 	var paths []string
-	for _, line := range strings.Split(strings.TrimRight(out.String(), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(out.String(), "\n"), "\n") {
 		if line == "" {
 			continue
 		}

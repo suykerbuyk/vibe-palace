@@ -504,8 +504,8 @@ func resolveTemplatePrompts(r reconcile.Reconciler, actions []reconcile.Action, 
 func detailValue(details []string, key string) string {
 	prefix := key + "="
 	for _, d := range details {
-		if strings.HasPrefix(d, prefix) {
-			return strings.TrimPrefix(d, prefix)
+		if after, ok := strings.CutPrefix(d, prefix); ok {
+			return after
 		}
 	}
 	return ""

@@ -265,7 +265,7 @@ func TestSearchDefaultLimit(t *testing.T) {
 	ctx := context.Background()
 
 	// Add 15 drawers.
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		d := storage.Drawer{
 			Content:    string(rune('A'+i)) + " unique content item",
 			Hall:       "facts",

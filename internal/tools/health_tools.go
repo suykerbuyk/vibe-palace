@@ -44,12 +44,19 @@ type healthParams struct {
 }
 
 // HealthResult is the structured response from vp_health.
+//
+// ScanError is set when the log scan aborted before EOF (bufio.Scanner caps a
+// line at 64 KiB, so one oversized entry ends the loop). The counts below are
+// then a PREFIX of the log, not the whole of it — without this field a truncated
+// scan is indistinguishable from a clean one, and the health report would
+// under-count warnings while looking authoritative.
 type HealthResult struct {
 	Status      string         `json:"status"`
 	RecentWarns []LogEntry     `json:"recent_warns,omitempty"`
 	WarnCounts  map[string]int `json:"warn_counts,omitempty"`
 	LogPath     string         `json:"log_path"`
 	LogSize     int64          `json:"log_size_bytes"`
+	ScanError   string         `json:"scan_error,omitempty"`
 }
 
 // LogEntry represents a parsed log line.
@@ -143,6 +150,14 @@ func healthHandler(vault *storage.Vault) mcp.HandlerFunc {
 
 			category := categorizeMsg(msg)
 			result.WarnCounts[category]++
+		}
+
+		// A scan that stops short (an oversized line) leaves the tallies above
+		// covering only a prefix of the log. Report the partial results — the
+		// tool tolerates a bad log rather than failing the caller — but say so,
+		// so the numbers are not read as complete.
+		if err := scanner.Err(); err != nil {
+			result.ScanError = err.Error()
 		}
 
 		if len(result.RecentWarns) > 0 {

@@ -381,7 +381,7 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 // Includes up to two live examples drawn from cmds (or a degraded fallback
 // when nothing was enumerated) so the directive stays accurate without
 // per-project hand-editing.
-func renderPostBootstrapInstructions(cmds []commandSummary, skills []skillSummary) string {
+func renderPostBootstrapInstructions(cmds []commandSummary, _ []skillSummary) string {
 	const base = "After presenting this bootstrap summary, tell the user in one or two lines which commands and skills are now available and how to invoke them (`vpc-<name>`, `vps-<name>`)."
 	examples := make([]string, 0, 2)
 	for i := 0; i < len(cmds) && len(examples) < 2; i++ {

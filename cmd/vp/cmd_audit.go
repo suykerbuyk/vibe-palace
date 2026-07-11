@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
@@ -234,12 +235,12 @@ func joinMax(items []string, max int) string {
 }
 
 func join(items []string) string {
-	result := ""
+	var result strings.Builder
 	for i, item := range items {
 		if i > 0 {
-			result += ", "
+			result.WriteString(", ")
 		}
-		result += item
+		result.WriteString(item)
 	}
-	return result
+	return result.String()
 }

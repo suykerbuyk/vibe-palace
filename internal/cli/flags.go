@@ -83,9 +83,9 @@ func ParseFlags(defs []FlagDef, args []string) (*FlagValues, error) {
 		// Handle --flag=value.
 		var key, val string
 		var hasEq bool
-		if eqIdx := strings.IndexByte(a, '='); eqIdx >= 0 {
-			key = a[:eqIdx]
-			val = a[eqIdx+1:]
+		if before, after, ok := strings.Cut(a, "="); ok {
+			key = before
+			val = after
 			hasEq = true
 		} else {
 			key = a
