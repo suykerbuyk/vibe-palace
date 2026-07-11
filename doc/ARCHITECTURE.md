@@ -356,9 +356,12 @@ making `git add` exit 128 and aborting the whole commit.
 Tidy is invoked through the MCP tool by two commands so end users never touch
 git directly:
 
-- **`/restart`** sweeps right after `vp vault pull` and the Surface preflight, so
-  residue left by the previous session's hooks, a crash, or another machine is
-  healed *before* context loads — and tidy runs against the already-merged state.
+- **`/restart`** sweeps right after the `vp_vault_sync` pull and the
+  `vp_surface_check` surface preflight (both MCP calls — the restart template is
+  now Bash-free for vault-sync + surface-preflight, so it works on hosts without
+  Bash), so residue left by the previous session's hooks, a crash, or another
+  machine is healed *before* context loads — and tidy runs against the
+  already-merged state.
 - **`/wrap`** sweeps after the narrative sync, committing any session/transcript
   artifacts produced during the session (and a `.surface` stamp only if a
   surface-version bump occurred — steady-version writes no longer touch it).
@@ -450,7 +453,7 @@ On dispatch, the registry validates incoming params against the compiled
 schema before calling the handler. Handlers extract the vault from context
 and operate on storage directly.
 
-### 60 MCP Tools
+### 68 MCP Tools
 
 | Tool | Source File | Category |
 |------|-----------|----------|
@@ -515,15 +518,26 @@ and operate on storage directly.
 | `vp_collect_wrap_state` | wrapstate_tools.go | Wrap state |
 | `vp_stamp_iter` | wrapstate_tools.go | Wrap state |
 | `vp_preflight_wrap` | wrapstate_tools.go | Wrap state |
+| `vp_surface_check` | surface_tools.go | Surface |
 
 All tools except the search-dependent ones are always registered. The nine
 search-gated tools — `vp_search`, `vp_search_cross_project`,
 `vp_capture_session`, `vp_get_project_context`, `vp_search_sessions`,
 `vp_get_session_detail`, `vp_get_effectiveness`, `vp_get_friction_trends`, and
 `vp_refresh_index` — require a search engine (embedder must initialize
-successfully). The vault-CRUD, commit, resume-edit, and wrap-state tools added
-by the restore-mcp-vault-surface work are filesystem operations and are always
-registered.
+successfully). The vault-CRUD, commit, resume-edit, wrap-state, and
+surface-check tools are filesystem operations and are always registered.
+
+`vp_surface_check` (`surface_tools.go`) is a read-only probe that returns the
+same whole-vault surface-compatibility verdict a mutating write is gated
+against (`check.CheckSurface(vault.Root)`), so restart/wrap templates can run a
+surface preflight without shelling out to `vp check`.
+
+The table above enumerates the primary tool surface; for brevity it omits the
+five `vp_memory_*` tools (`memory_tools.go`) and `vp_read_resource`
+(`resource_read_tool.go`), which are also always registered. Counting those,
+the registry (`internal/tools/register.go`) exposes **68 tools with a search
+engine and 59 without it** — the numbers pinned by `internal/tools/register_test.go`.
 
 ### Remote Transport: Streamable HTTP (`vp mcp serve`)
 

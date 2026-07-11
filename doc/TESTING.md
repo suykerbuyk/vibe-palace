@@ -7,7 +7,7 @@ the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
 The suite currently runs **~1971 tests** across 38 packages, including
-**95 integration tests** (the ONNX/cross-layer tests `make integration`
+**102 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
 subtests each may fan out into — and they drift as the suite grows. Derive
@@ -176,6 +176,7 @@ context resolver, and config into a single test fixture.
 | `SessionIterationAcrossSessions` | tools → storage | No | Multiple captures auto-increment iteration numbers |
 | `MCPSearchEndToEnd` | MCP → tools → search | Yes | JSON-RPC `tools/call` for `vp_search` returns semantically correct results |
 | `MCPSearchValidation` | MCP → tools | No | Invalid parameters produce proper JSON-RPC error responses |
+| `SurfaceCheck` | MCP → tools → check | No | JSON-RPC `tools/call` for `vp_surface_check` returns `status:"pass"` with the binary's surface version on a compatible vault; the fail path carries the curated remediation `details` across the wire |
 | `BootstrapFullContext` | tools → context → storage | No | Bootstrap tool assembles workflow, commands from embedded + vault sources |
 | `BootstrapWithSessions` | storage | No | Sessions written via API are readable through list/read operations |
 | `FrictionScoringOnCapture` | tools → capture → storage | No | `vp_capture_session` computes and persists friction score; high-friction transcript scores >= 50, smooth < 20 |
@@ -479,6 +480,30 @@ path → `Pass`, a stamp at `MCPSurfaceVersion` → `Pass`, and an ahead vault
 (stamp at `MCPSurfaceVersion+1`) → `Fail` with remediation `Details`. The
 ahead-vault staging helper mirrors `internal/mcp/surface_gate_test.go`.
 
+### `internal/tools/surface_tools_test.go` — `vp_surface_check` MCP Tool
+
+The `mcp-pull-parity-and-bashless-preflight` work exposed the surface verdict
+as a read-only MCP tool. Covers `SurfaceCheckTool`:
+`TestSurfaceCheckTool_NotMutating` (the tool carries no write-gate flag),
+`_PassEmptyVault` / `_PassCompatibleStamp` (`status:"pass"`, `binary_surface`
+reported), `_FailNewerVault` (an ahead vault → `status:"fail"` with remediation
+`details`, `vault_surface`, and `stamp_dir`), and `_EmptyVaultPath` — the same
+non-mutating probe that `TestIntegrationSurfaceCheck` drives through the full
+JSON-RPC stack.
+
+### `internal/storage/vaultfetchage_test.go` — Network-Free Fetch Age
+
+Covers `VaultFetchAge` (pure `os.Stat` of the tracking-ref / `FETCH_HEAD`
+mtime, no network): old vs recent tracking ref, no-remote and
+remote-but-no-tracking-ref (both `known=false`), and origin preference.
+
+### `internal/tools/vault_staleness_test.go` — Bootstrap Staleness Field
+
+Covers `computeVaultStaleness` and its wiring into `vp_bootstrap_context`:
+old (>24h → `warn` + message), recent (no warn), unknown-fetch (never
+fetched → warn), the no-warn boundary, and `TestBootstrapPopulatesVaultStaleness`
+(bootstrap emits the `vault_staleness` field).
+
 ### `internal/check/json_test.go` — `vp check --json` Report Shape
 
 Covers `ToJSON`: status-string projection (`pass`/`fail`/`skip`/`info`),
@@ -520,7 +545,7 @@ flipped, or a schema edited. The drift message tells the dev to regenerate with
 `-update-golden` AND to *consider* whether `internal/surface.MCPSurfaceVersion`
 needs a bump. Regenerating the golden does **not** bump the version — the
 surface-version bump is a deliberate operator decision made separately. The
-golden currently records `surface_version: 1`, 57 tools (20 mutating).
+golden currently records `surface_version: 1`, 68 tools (24 mutating).
 
 It lives in `cmd/vp` (not `internal/mcp`) because building the full tool set
 requires `internal/tools`, which imports `internal/mcp` — so `internal/mcp`

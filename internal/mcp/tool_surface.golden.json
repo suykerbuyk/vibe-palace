@@ -257,6 +257,11 @@
       "schema_sha256": "f073d65f03a3dd0ecdb003a2849080bdb9e407deb9acfb92f667f943c0b2c009"
     },
     {
+      "name": "vp_surface_check",
+      "mutating": false,
+      "schema_sha256": "909d45c9d12052000096b9dad9859fe30af1851990f893c0ce431745431351ed"
+    },
+    {
       "name": "vp_thread_insert",
       "mutating": true,
       "schema_sha256": "8ed05e8bc0151ed121b75eea474af6ff136049d7edc2dcf96e64035e2ada2f37"

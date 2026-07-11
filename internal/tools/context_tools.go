@@ -34,6 +34,46 @@ type BootstrapResult struct {
 	CommandInvocation         string                 `json:"command_invocation,omitempty"`
 	PostBootstrapInstructions string                 `json:"post_bootstrap_instructions,omitempty"`
 	FrictionTrend             *capture.FrictionTrend `json:"friction_trend,omitempty"`
+	VaultStaleness            *VaultStaleness        `json:"vault_staleness,omitempty"`
+}
+
+// VaultStaleness reports the network-free fetch AGE of the vault view at
+// bootstrap — how long since the last `git fetch` on this host. It never carries
+// a "commits behind" count: a behind-count requires a fetch and is deliberately
+// out of scope. LastFetched is a pointer (nil + omitempty) so an unknown fetch
+// time is omitted rather than serialized as a zero timestamp.
+type VaultStaleness struct {
+	LastFetched *time.Time `json:"last_fetched,omitempty"`
+	AgeHours    float64    `json:"age_hours"`
+	Warn        bool       `json:"warn"`
+	Message     string     `json:"message,omitempty"`
+}
+
+// vaultStaleThreshold is how old the last fetch may be before bootstrap warns.
+const vaultStaleThreshold = 24 * time.Hour
+
+// computeVaultStaleness derives the staleness verdict from a network-free fetch
+// age. It warns when the vault was last fetched more than vaultStaleThreshold
+// ago, or when the fetch age is unknown (never fetched / no tracking ref on this
+// host). Kept separate from AssembleBootstrap so the threshold logic is unit
+// testable without a git repo.
+func computeVaultStaleness(age time.Duration, fetchedAt time.Time, known bool) VaultStaleness {
+	if !known {
+		return VaultStaleness{
+			Warn:    true,
+			Message: "vault fetch age unknown — never fetched on this host?",
+		}
+	}
+	vs := VaultStaleness{
+		AgeHours: age.Hours(),
+	}
+	lf := fetchedAt
+	vs.LastFetched = &lf
+	if age > vaultStaleThreshold {
+		vs.Warn = true
+		vs.Message = fmt.Sprintf("vault last fetched %.1f days ago — run a pull to refresh context", age.Hours()/24)
+	}
+	return vs
 }
 
 // skillSummary reuses the commandSummary shape; alias semantics differ
@@ -284,6 +324,19 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// the friction_trend field would otherwise be missed in a large payload.
 	if result.FrictionTrend != nil && result.FrictionTrend.Warn && result.FrictionTrend.Message != "" {
 		result.PostBootstrapInstructions += " " + result.FrictionTrend.Message
+	}
+
+	// Vault-staleness warning — NETWORK-FREE. VaultFetchAge reads only local git
+	// plumbing + os.Stat (no fetch, no ls-remote, no GetRemoteStatus), so it is
+	// safe on the session-start critical path and on offline hosts. Best-effort:
+	// a stale/unknown fetch age never fails the bootstrap. When it warns, mirror
+	// the friction pattern above and surface a human-visible line in the directive
+	// in addition to the structured vault_staleness field.
+	age, fetchedAt, known := storage.VaultFetchAge(vault.Root)
+	vs := computeVaultStaleness(age, fetchedAt, known)
+	result.VaultStaleness = &vs
+	if vs.Warn && vs.Message != "" {
+		result.PostBootstrapInstructions += " " + vs.Message
 	}
 
 	// Token budget truncation (TOKEN axis — independent of the byte-axis slim

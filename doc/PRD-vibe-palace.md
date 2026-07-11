@@ -554,7 +554,7 @@ flowchart TD
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `vp_bootstrap_context` | project?, max_tokens?, wing?, room? | Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + a `friction_trend` field (rolling 7/30/90-day windows, direction, warn flag) computed from the loaded history + post-bootstrap capability-announcement directive (with an actionable nudge appended when friction is rising and elevated). Precedence-aware. |
+| `vp_bootstrap_context` | project?, max_tokens?, wing?, room? | Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + a `friction_trend` field (rolling 7/30/90-day windows, direction, warn flag) computed from the loaded history + a network-free `vault_staleness` field (`last_fetched`, `age_hours`, `warn`, `message`) derived from the local tracking-ref/`FETCH_HEAD` mtime (NO network — reports fetch AGE, not a commits-behind count) that warns when the vault hasn't been fetched in >24h or was never fetched + post-bootstrap capability-announcement directive (with an actionable nudge appended when friction is rising and elevated, and the staleness message when the vault is stale). Precedence-aware. |
 | `vp_get_workflow` | project? | Workflow rules with precedence resolution (project > vault > embedded) |
 | `vp_get_resume` | project? | Current project state and open threads |
 | `vp_update_resume` | project?, section, content | Update a section of resume.md |
@@ -627,13 +627,14 @@ flowchart TD
 
 ### 6.7 System Tools
 
-> **5 of 5 implemented.**
+> **6 of 6 implemented.**
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `vp_init` | project?, domain?, tags? | Initialize project (create .vibe-palace.toml + vault dir) |
-| `vp_vault_sync` | paths? | Pull/push vault git remotes. Optional `paths` commits only the listed vault-relative files (commit-then-push) instead of a blanket sync |
+| `vp_vault_sync` | action (req: pull/push/sync), paths?, message? | Pull/push/sync vault git remotes. Optional `paths` (with `message`) commits only the listed vault-relative files (commit-then-push) instead of a blanket sync; with no paths, push/sync refuse to run on a dirty vault |
 | `vp_vault_status` | refresh?, sections? | Read-only vault sync + working-tree dirt report (per-remote ahead/unpushed/behind/diverged/reachable + Swept/Reported dirt). `refresh` runs a bounded per-remote fetch for real behind counts; never commits, pushes, or mutates the tree. `sections` (`sync`/`dirt`, default both) trims the payload by zeroing the unselected section (present-but-empty, not computed); the tidy scan always runs regardless |
+| `vp_surface_check` | project? | Read-only surface preflight (non-mutating): reports whether this binary's MCP surface version is compatible with the vault (binary ≥ max `.surface` stamp) — the SAME whole-vault verdict a mutating write is gated against, curated remediation included. Returns `{status (pass\|fail\|info), summary, details[] (upgrade/override lines on fail), binary_surface, vault_surface, stamp_dir}`. Lets command templates run a surface preflight without shelling out to `vp check`. `project` is accepted for parity but does not narrow the whole-vault scan |
 | `vp_refresh_index` | project? | Rebuild session index and re-embed if needed |
 | `vp_health` | project (req), hours?, limit? | Runtime health: recent warnings/errors from the vp log file. `hours` (default 24, max 720) widens the look-back window for BOTH warn_counts and recent_warns; `limit` (default 20, max 1000) caps ONLY the recent_warns list — warn_counts still tallies every WARN/ERROR in the window |
 
@@ -710,12 +711,23 @@ is no create/add path — learnings are authored out-of-band and only read here.
 | `vp_list_learnings` | filter_type? (user\|feedback\|reference) | List learning metadata (slug, name, description, type), sorted by slug; optional type filter |
 | `vp_get_learning` | slug (req), include_content? | Fetch a single learning. Always returns `content_uri` (`vibe-palace://learning/<slug>`) + `content_size`; tri-state `include_content` (nil/true ⇒ inline body; false + large body ⇒ excerpt + content_uri). Unknown slug errors with the available slugs listed |
 
-**Total: 59 implemented (Phases 1–10, 12–18, plus the restore-mcp-vault-surface
-write/wrap surface and the cross-project learnings read tools)** — 39 prior
-tools plus 20 new ones across vault CRUD (8), commit lifecycle (1), resume
-surgical edits (6), wrap state (3), and learnings (2). (vs VibeVault's 16 +
-MemPalace's 19 = 35, with dedup, consolidation, and the Phase 12–18 +
-write-surface + learnings additions.)
+**Total (sum of the per-section labels above): 61 implemented (Phases 1–10,
+12–18, plus the restore-mcp-vault-surface write/wrap surface, the cross-project
+learnings read tools, and the `vp_surface_check` read-only surface preflight)** —
+40 prior tools plus 21 new ones across vault CRUD (8), commit lifecycle (1),
+resume surgical edits (6), wrap state (3), learnings (2), and the surface
+preflight (1).
+(vs VibeVault's 16 + MemPalace's 19 = 35, with dedup, consolidation, and the
+Phase 12–18 + write-surface + learnings + surface-preflight additions.)
+
+> Ground truth: `internal/tools/register.go` registers **68 tools when the
+> search engine initializes and 59 without it** (the nine search-gated tools
+> require an embedder) — verified against `internal/tools/register_test.go`. The
+> section tables above enumerate the primary surface (61 tools) and do not list
+> the five `vp_memory_*` tools (`memory_tools.go`), `vp_read_resource`
+> (`resource_read_tool.go`), or `vp_vault_tidy` (`system_tools.go`) — all seven
+> also always registered (61 + 7 = 68); count those in when reconciling against
+> the registry.
 
 ---
 

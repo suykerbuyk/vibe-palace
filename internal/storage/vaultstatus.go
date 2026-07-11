@@ -212,6 +212,39 @@ func BuildStatusReport(vaultPath string, fetch bool) (StatusReport, error) {
 	}, nil
 }
 
+// VaultFetchAge reports how long ago the vault's default remote was last fetched,
+// derived ENTIRELY from local git plumbing and os.Stat — it is provably
+// network-free and therefore safe on the session-start critical path and on
+// hosts that may be offline. It invokes only local commands: `git remote`
+// (ListRemotes), `git rev-parse` (currentBranch + lastFetched's --git-path), and
+// os.Stat of the tracking ref / FETCH_HEAD mtime. It NEVER runs `git fetch`,
+// `git ls-remote`, or any command that touches the network.
+//
+// The default remote is "origin" when present, else the first configured remote.
+// When there is no remote, or the tracking ref / FETCH_HEAD cannot be stat'd
+// (e.g. never fetched on this host), known is false and age/lastFetched are zero.
+// Otherwise known is true, lastFetched is the ref mtime, and age is
+// time.Now().Sub(lastFetched).
+func VaultFetchAge(vaultPath string) (age time.Duration, fetchedAt time.Time, known bool) {
+	remotes, err := ListRemotes(vaultPath) // local `git remote`; (nil,nil) when none
+	if err != nil || len(remotes) == 0 {
+		return 0, time.Time{}, false
+	}
+	remote := remotes[0]
+	for _, r := range remotes {
+		if r == "origin" {
+			remote = "origin"
+			break
+		}
+	}
+	branch := currentBranch(vaultPath) // local `git rev-parse`, no network
+	fetchedAt = lastFetched(vaultPath, remote, branch)
+	if fetchedAt.IsZero() {
+		return 0, time.Time{}, false
+	}
+	return time.Since(fetchedAt), fetchedAt, true
+}
+
 // lastFetched returns the mtime of the loose remote-tracking ref
 // refs/remotes/<remote>/<branch>, falling back to FETCH_HEAD (updated by every
 // fetch) when the ref is packed or absent. Best-effort: returns the zero time

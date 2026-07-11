@@ -26,21 +26,20 @@ records a broken state is worse than no wrap.
 ### Surface preflight
 
 Before capturing the session, updating resume, or staging anything,
-confirm this binary can safely write to the vault. Run
-`vp check --json --check surface` via Bash and parse the JSON: find
-the entry in `checks[]` whose `name` is `"Surface"`. The `--check
-surface` flag runs only the surface-compatibility check — skipping the
-embedder model load and tool-registry build — so the preflight stays
-near-instant even on a cold model cache.
+confirm this binary can safely write to the vault. Call
+`vp_surface_check` (the MCP tool). It returns the same surface verdict a
+mutating vault write would face — `status` is `"pass"`, `"fail"`, or
+`"info"` — without loading the embedder model, so it stays near-instant
+even on a cold cache.
 
-- If its `status` is `"fail"`, the vault was last written by a newer
-  `vp` binary than this host has installed. **Halt** — do not capture
-  the session, update resume, append iterations, or stage any file —
-  and surface that entry's `detail` field to the human verbatim. It
-  names the version mismatch and the remediation: upgrade `vp`
-  (`cd ~/code/vibe-palace && git pull && make install`), or override
-  at risk with `VP_SURFACE_GATE=warn`.
-- If its `status` is `"pass"` or `"info"`, proceed to Step 2.
+- If `status` is `"fail"`, the vault was last written by a newer `vp`
+  binary than this host has installed. **Halt** — do not capture the
+  session, update resume, append iterations, or stage any file — and
+  surface the tool's `details` lines to the human verbatim. They name
+  the version mismatch and carry the remediation (the `git pull && make
+  install` upgrade, plus the at-risk override); relay them as-is rather
+  than paraphrasing.
+- If `status` is `"pass"` or `"info"`, proceed to Step 2.
 
 ## Step 2: Capture the Session
 

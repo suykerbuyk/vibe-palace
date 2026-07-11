@@ -10,42 +10,46 @@ follow it for the rest of the session.
 
 ## Step 1: Vault Sync (multi-machine)
 
-Before loading context, sync the vault so you get the latest state
-from other machines.
+Before loading context, run the surface preflight, then sync the vault
+so you pick up the latest state from other machines. Every operation in
+this step is an MCP tool call — no Bash is required, so the step works
+identically on AI hosts without arbitrary-shell support (Claude, Grok,
+Zed).
 
-Run `vp vault pull` via Bash. It discovers configured remotes
-automatically and pulls from each.
+### Surface preflight (run first)
 
-- If it reports "regenerated", also run `vp index` to rebuild
-  auto-generated files.
-- If it reports files needing manual review, inform the user before
-  proceeding.
-- If it fails (no remote, network error), warn and proceed — local
-  state is still valid.
+Before pulling, loading context, or mutating anything, confirm this
+binary can safely write to the vault. Call `vp_surface_check` (the MCP
+tool). It returns the same surface verdict a mutating vault write would
+face — `status` is `"pass"`, `"fail"`, or `"info"` — without loading the
+embedder model, so it stays near-instant even on a cold cache.
 
-Do **not** fall back to raw `git -C <vault>` commands — not every AI
-host supports arbitrary Bash, and `vp vault` covers every needed
-operation.
+- If `status` is `"fail"`, the vault was last written by a newer `vp`
+  binary than this host has installed. **Halt the entire restart** — do
+  not pull, tidy, bootstrap context, sweep plans, or retire tasks — and
+  surface the tool's `details` lines to the human verbatim. They name
+  the version mismatch and carry the remediation (the `git pull && make
+  install` upgrade, plus the at-risk override); relay them as-is rather
+  than paraphrasing.
+- If `status` is `"pass"` or `"info"`, proceed to the vault sync below.
 
-### Surface preflight
+### Vault sync (pull)
 
-After the vault sync, confirm this binary can safely write to the
-vault before loading context or mutating any task. Run
-`vp check --json --check surface` via Bash and parse the JSON: find
-the entry in `checks[]` whose `name` is `"Surface"`. The `--check
-surface` flag runs only the surface-compatibility check — skipping the
-embedder model load and tool-registry build — so the preflight stays
-near-instant even on a cold model cache.
+Call `vp_vault_sync` with `action: "pull"` (the MCP tool). It discovers
+configured remotes automatically and pulls from each, self-healing
+stale local template copies before the merge. It returns
+`{status, action, output}`, where `output` is the captured per-remote
+git text (`[pull <remote>] …` lines, plus any `[heal] …` lines).
 
-- If its `status` is `"fail"`, the vault was last written by a newer
-  `vp` binary than this host has installed. **Halt** — do not
-  bootstrap context, sweep plans, or retire tasks — and surface that
-  entry's `detail` field to the human verbatim. It names the version
-  mismatch and the remediation: upgrade `vp`
-  (`cd ~/code/vibe-palace && git pull && make install`), or override
-  at risk with `VP_SURFACE_GATE=warn`.
-- If its `status` is `"pass"` or `"info"`, proceed to the vault tidy
-  below.
+- If `output` shows the pull merged remote changes (anything other than
+  "Already up to date"), rebuild the semantic search index with
+  `vp_refresh_index` (pass the project slug) so newly-pulled content is
+  searchable — the MCP equivalent of the old `vp index`.
+- If `output` shows a merge conflict or files git flags for manual
+  resolution (e.g. `CONFLICT`, "Automatic merge failed"), inform the
+  user before proceeding.
+- If the call returns an error (no remote configured, network failure),
+  warn and proceed — local state is still valid.
 
 ### Vault tidy (heal capture residue)
 
