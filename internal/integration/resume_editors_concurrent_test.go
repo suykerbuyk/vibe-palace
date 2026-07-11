@@ -133,7 +133,7 @@ func TestIntegration_ResumeEditorsConcurrentDispatch(t *testing.T) {
 	h.registerAllTools(t)
 	h.initMCP(t) // handshake once, on the test goroutine
 
-	if err := h.Vault.WriteResume(project, resumeConcurrentFixture); err != nil {
+	if err := h.Vault.WriteResume(project, resumeConcurrentFixture, ""); err != nil {
 		t.Fatalf("seed resume.md: %v", err)
 	}
 	resumePath, err := h.Vault.ResumeFile(project)
@@ -242,5 +242,123 @@ func TestIntegration_ResumeEditorsConcurrentDispatch(t *testing.T) {
 	}
 	if got := strings.Count(final, "### Carried forward"); got != 1 {
 		t.Errorf("### Carried forward appears %d times, want 1", got)
+	}
+}
+
+// TestIntegration_UpdateResumeStaleWriteRefused is the full-stack acceptance test
+// for the compare-and-set guard on vp_update_resume — the last blind whole-file
+// resume writer in the repo.
+//
+// The scenario is the one that actually bites: an agent calls vp_get_resume,
+// composes a full-body rewrite from what it read, and while it is thinking a
+// concurrent vp_thread_insert lands. The stale rewrite used to be accepted and
+// silently reverted the insert. Now it must FAIL, and the insert must survive.
+//
+// Everything runs through the PRODUCTION WIRING (real JSON-RPC tools/call →
+// registry schema validation + mutating gate → handler), because that is the path
+// an agent takes.
+//
+// Non-vacuity: the test first asserts the composed stale body genuinely does NOT
+// contain the concurrently-inserted thread — i.e. accepting it WOULD have
+// clobbered it — before asserting the refusal. Without that check a passing test
+// could be proving nothing.
+func TestIntegration_UpdateResumeStaleWriteRefused(t *testing.T) {
+	const project = "demo"
+
+	h := newHarness(t, false)
+	h.registerAllTools(t)
+	h.initMCP(t)
+
+	if err := h.Vault.WriteResume(project, resumeConcurrentFixture, ""); err != nil {
+		t.Fatalf("seed resume.md: %v", err)
+	}
+	resumePath, err := h.Vault.ResumeFile(project)
+	if err != nil {
+		t.Fatalf("ResumeFile: %v", err)
+	}
+
+	// 1. The agent reads the resume and captures its digest.
+	getRes := dispatchTool(h, "vp_get_resume", "", map[string]any{"project": project})
+	if getRes.isError {
+		t.Fatalf("vp_get_resume: %s", getRes.text)
+	}
+	var got struct {
+		Content string `json:"content"`
+		Sha256  string `json:"sha256"`
+	}
+	if err := json.Unmarshal([]byte(getRes.text), &got); err != nil {
+		t.Fatalf("parse vp_get_resume result: %v (raw=%s)", err, getRes.text)
+	}
+	if got.Sha256 == "" {
+		t.Fatal("vp_get_resume returned an empty sha for a seeded resume")
+	}
+
+	// 2. A concurrent editor lands a thread insert.
+	insRes := dispatchTool(h, "vp_thread_insert", "landed-first", map[string]any{
+		"project":  project,
+		"position": map[string]any{"mode": "bottom"},
+		"slug":     "landed-first",
+		"body":     "this thread must survive the stale rewrite",
+	})
+	if insRes.isError {
+		t.Fatalf("vp_thread_insert: %s", insRes.text)
+	}
+
+	// 3. The agent submits the full-body rewrite it composed from its stale read.
+	staleBody := got.Content + "\n### composed-from-stale-read\n\nagent's rewrite\n"
+	if strings.Contains(staleBody, "### landed-first") {
+		t.Fatal("non-vacuity check failed: the stale body already contains the concurrent insert, so accepting it could not clobber anything")
+	}
+
+	upRes := dispatchTool(h, "vp_update_resume", "", map[string]any{
+		"project":         project,
+		"content":         staleBody,
+		"expected_sha256": got.Sha256,
+	})
+	if !upRes.isError {
+		t.Fatalf("the stale vp_update_resume SUCCEEDED; the thread insert was silently reverted. result: %s", upRes.text)
+	}
+	if !strings.Contains(upRes.text, `"conflict":true`) {
+		t.Errorf("conflict result text %q is not the machine-parseable conflict payload", upRes.text)
+	}
+
+	// 4. The insert survived; the stale rewrite did not land.
+	data, err := os.ReadFile(resumePath)
+	if err != nil {
+		t.Fatalf("read final resume.md: %v", err)
+	}
+	final := string(data)
+	if !strings.Contains(final, "### landed-first") {
+		t.Errorf("the concurrent thread insert was clobbered by the stale rewrite:\n%s", final)
+	}
+	if strings.Contains(final, "### composed-from-stale-read") {
+		t.Errorf("the refused rewrite landed anyway:\n%s", final)
+	}
+
+	// 5. The remedy works: re-read, recompose against the CURRENT body, resubmit.
+	getRes2 := dispatchTool(h, "vp_get_resume", "", map[string]any{"project": project})
+	if getRes2.isError {
+		t.Fatalf("vp_get_resume (retry): %s", getRes2.text)
+	}
+	if err := json.Unmarshal([]byte(getRes2.text), &got); err != nil {
+		t.Fatalf("parse vp_get_resume result: %v", err)
+	}
+	retry := dispatchTool(h, "vp_update_resume", "", map[string]any{
+		"project":         project,
+		"content":         got.Content + "\n### composed-from-fresh-read\n\nagent's rewrite\n",
+		"expected_sha256": got.Sha256,
+	})
+	if retry.isError {
+		t.Fatalf("the recomposed retry was refused: %s", retry.text)
+	}
+	data, err = os.ReadFile(resumePath)
+	if err != nil {
+		t.Fatalf("read resume.md after retry: %v", err)
+	}
+	final = string(data)
+	for _, want := range []string{"### landed-first", "### composed-from-fresh-read", "### alpha"} {
+		if !strings.Contains(final, want) {
+			t.Errorf("after the retry, %q is missing:\n%s", want, final)
+		}
 	}
 }

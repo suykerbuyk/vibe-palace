@@ -4,19 +4,65 @@
 package storage
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
+
+// ResumeConflictError is the typed compare-and-set refusal from WriteResume. It
+// carries the ACTUAL current on-disk digest so a caller can build its retry
+// payload (and its user-facing message) without a second read and without
+// scraping the error string. Current is the literal "(absent)" when the file
+// does not exist.
+//
+// It unwraps to vaultfs.ErrShaConflict so errors.Is(err, vaultfs.ErrShaConflict)
+// holds uniformly across BOTH compare-and-set writers in the repo — vaultfs.Write
+// and storage.WriteResume — rather than forking a second conflict concept.
+type ResumeConflictError struct {
+	Current  string // current on-disk sha256, or "(absent)"
+	Expected string // the sha the caller asserted; "" means "assert absent"
+}
+
+func (e *ResumeConflictError) Error() string {
+	expected := e.Expected
+	if expected == "" {
+		expected = "absent (empty expected_sha256 asserts no resume.md exists yet)"
+	}
+	return fmt.Sprintf("%s: have %s, expected %s", vaultfs.ErrShaConflict, e.Current, expected)
+}
+
+// Unwrap makes errors.Is(err, vaultfs.ErrShaConflict) true.
+func (e *ResumeConflictError) Unwrap() error { return vaultfs.ErrShaConflict }
 
 // WriteResume writes content to the project's resume file, creating directories
 // as needed. This writes to the tier-1 (project override) path so the resolver
 // picks it up immediately.
-func (v *Vault) WriteResume(project, content string) error {
+//
+// The write is COMPARE-AND-SET: there is no blind whole-file overwrite path.
+//
+//   - expectedSha256 non-empty: the resume's current on-disk SHA-256 must equal
+//     it, or the write is refused with vaultfs.ErrShaConflict and the file is
+//     left untouched.
+//   - expectedSha256 == "": assert-absent. The write succeeds only if no resume
+//     file exists yet (the first-wrap / bootstrap create). If one DOES exist the
+//     call is a conflict and is refused — an omitted guard can never silently
+//     degrade to last-writer-wins.
+//
+// The compare happens INSIDE the held per-path lock (a compare outside it is a
+// TOCTOU), and — like EditResume, whose doc comment explains the trap in full —
+// the write goes through atomicfile.Write directly rather than lockedWrite:
+// lockedWrite re-acquires the same lock, and vaultlock.Acquire is a blocking
+// LOCK_EX, so the re-entry would be a permanent self-deadlock.
+func (v *Vault) WriteResume(project, content, expectedSha256 string) error {
 	path, err := v.ResumeFile(project)
 	if err != nil {
 		return err
@@ -24,7 +70,33 @@ func (v *Vault) WriteResume(project, content string) error {
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("ensure project dir: %w", err)
 	}
-	return v.lockedWrite(path, []byte(content))
+
+	release, err := vaultlock.Acquire(v.Root, path)
+	if err != nil {
+		return fmt.Errorf("lock resume: %w", err)
+	}
+	defer release()
+
+	existing, rerr := os.ReadFile(path)
+	switch {
+	case rerr == nil:
+		sum := sha256.Sum256(existing)
+		current := hex.EncodeToString(sum[:])
+		if expectedSha256 == "" || current != expectedSha256 {
+			return &ResumeConflictError{Current: current, Expected: expectedSha256}
+		}
+	case errors.Is(rerr, fs.ErrNotExist):
+		if expectedSha256 != "" {
+			return &ResumeConflictError{Current: "(absent)", Expected: expectedSha256}
+		}
+	default:
+		return fmt.Errorf("pre-read resume: %w", rerr)
+	}
+
+	if err := atomicfile.Write(v.Root, path, []byte(content)); err != nil {
+		return fmt.Errorf("write resume: %w", err)
+	}
+	return nil
 }
 
 // EditResume serializes a full read→modify→write of the project's resume.md
@@ -75,59 +147,6 @@ func (v *Vault) EditResume(project string, mutate func(string) (string, error)) 
 		return fmt.Errorf("write resume: %w", err)
 	}
 	return nil
-}
-
-// WriteWorkflow writes content to the project's workflow file, creating
-// parent directories as needed. Overwrites any existing file — callers
-// wanting append-merge semantics should read, merge, then call this.
-func (v *Vault) WriteWorkflow(project, content string) error {
-	path, err := v.WorkflowFile(project)
-	if err != nil {
-		return err
-	}
-	if err := EnsureDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("ensure project dir: %w", err)
-	}
-	return v.lockedWrite(path, []byte(content))
-}
-
-// WriteKnowledge writes content to the project's knowledge file.
-// Same semantics as WriteWorkflow.
-func (v *Vault) WriteKnowledge(project, content string) error {
-	path, err := v.KnowledgeFile(project)
-	if err != nil {
-		return err
-	}
-	if err := EnsureDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("ensure project dir: %w", err)
-	}
-	return v.lockedWrite(path, []byte(content))
-}
-
-// WriteDoc writes content to a project-scoped doc file. rel is resolved
-// by DocFile (e.g. "architecture.md"). Creates parent directories.
-func (v *Vault) WriteDoc(project, rel, content string) error {
-	path, err := v.DocFile(project, rel)
-	if err != nil {
-		return err
-	}
-	if err := EnsureDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("ensure doc dir: %w", err)
-	}
-	return v.lockedWrite(path, []byte(content))
-}
-
-// WriteAbsorbed writes content to a file under the project's absorbed/
-// scratch directory (used by `vp absorb` for resume-suggestions handoff).
-func (v *Vault) WriteAbsorbed(project, rel, content string) error {
-	path, err := v.AbsorbedFile(project, rel)
-	if err != nil {
-		return err
-	}
-	if err := EnsureDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("ensure absorbed dir: %w", err)
-	}
-	return v.lockedWrite(path, []byte(content))
 }
 
 // AppendIteration appends a narrative entry to the project's iterations file

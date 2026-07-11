@@ -109,10 +109,13 @@ func TestContextRoundtrip(t *testing.T) {
 		t.Fatal("get_resume default: empty")
 	}
 
-	// Update resume.
+	// Update resume. No project resume.md exists yet (the read above fell through
+	// to the embedded default), so the compare-and-set guard is the empty string:
+	// "assert absent".
 	h.callTool(t, "vp_update_resume", map[string]any{
-		"project": "test-proj",
-		"content": "# Updated Resume\nNew content here.",
+		"project":         "test-proj",
+		"content":         "# Updated Resume\nNew content here.",
+		"expected_sha256": "",
 	})
 
 	// Get resume again — should reflect the write.

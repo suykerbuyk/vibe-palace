@@ -1,7 +1,8 @@
 # ADR 003: Vault Write Locking
 
 **Status:** Accepted (2026-06-07); amended 2026-07-11 (see *Amendment: the
-resume.md lost-update hole*)
+resume.md lost-update hole*, then *Amendment: compare-and-set on blind
+whole-file overwrites*)
 **Deciders:** Project owner
 **Context:** Vibe-palace vault-write-concurrency — serializing vault read-modify-write
 
@@ -99,6 +100,14 @@ independent cross-call optimistic guard (a client that reads in one MCP call
 and writes in a later one can assert the file did not change in between). It is
 **not** made mandatory — the lock makes single-call writes safe on its own, and
 forcing CAS would break the common blind-write path.
+
+> **Superseded for `resume.md` only** (see *Amendment: compare-and-set on blind
+> whole-file overwrites*). The reasoning above still holds for CAS *as a
+> serializer* — that is the lock's job, and it remains the lock's job. But for
+> the one path that is a blind full-body overwrite, `expected_sha256` is now
+> **required**: there is no "common blind-write path" worth preserving on
+> `resume.md`, because a blind full-body write there is not a valid operation.
+> Every other writer of every other path is unchanged.
 
 ### Platform scope
 
@@ -263,6 +272,10 @@ on blind whole-file overwrites, which is the separate
 `default-cas-for-blind-overwrites` task. `expected_sha256` remains the
 (currently optional) guard for that class.
 
+> **Since closed** — `default-cas-for-blind-overwrites` shipped on 2026-07-11.
+> `expected_sha256` is no longer optional on `resume.md`. See the next
+> amendment.
+
 And, per *Platform scope* above: on Windows this fix protects nothing.
 
 ### Consequences of the amendment
@@ -285,6 +298,134 @@ And, per *Platform scope* above: on Windows this fix protects nothing.
   small and infrequent, so the contention cost is irrelevant — but a future
   high-volume editor would feel it.
 
+## Amendment (2026-07-11): compare-and-set on blind whole-file overwrites
+
+The lock closed the *race*. It could not close the *stale read* — and the
+previous amendment said so explicitly ("What this does NOT fix"). This closes
+it, for the one path where a blind full-body overwrite exists.
+
+### `WriteResume` is now compare-and-set; there is no blind path left
+
+```go
+func (v *Vault) WriteResume(project, content, expectedSha256 string) error
+```
+
+- **`expectedSha256` non-empty** — `resume.md`'s current on-disk SHA-256 must
+  equal it, or the write is refused and the file is left untouched.
+- **`expectedSha256 == ""`** — *assert-absent*. The write succeeds only if no
+  `resume.md` exists yet (first-wrap / bootstrap create). If one **does** exist,
+  that is a conflict and is refused.
+
+There is no third case, and that is the whole point: **an omitted guard can
+never silently degrade to last-writer-wins.** `expected_sha256` is a REQUIRED
+argument on `vp_update_resume`, which returns a machine-parseable conflict
+carrying the actual current digest so a caller can re-read and retry without
+scraping an error string. The refusal is `*storage.ResumeConflictError`, which
+unwraps to `vaultfs.ErrShaConflict` — so `errors.Is(err, vaultfs.ErrShaConflict)`
+holds uniformly across both CAS writers in the repo rather than forking a second
+conflict concept.
+
+The compare runs **inside** the held per-path lock. A compare outside it is a
+TOCTOU — the same mistake the original Context section rejects CAS for. CAS here
+is not a replacement for the lock; it is a second, orthogonal guard *stacked on
+top of* the lock, and it only works because the lock is underneath it.
+
+The cleanup that fell out: `WriteWorkflow`, `WriteKnowledge`, `WriteDoc`, and
+`WriteAbsorbed` (blind whole-file `lockedWrite`s of `project_dirs.go`, reachable
+only from tests) are **deleted**, and the dead `resume.md` branch in
+`internal/absorb`'s `resolveDestPath` is **deleted**. That branch was
+unreachable — every resume-bound absorb item is `DestResumeScratch` and is
+diverted to `absorbed/resume-suggestions.md` for human merge — but it was a live
+trap: absorb's private `atomicWrite` takes no `vaultlock`, so wiring it up would
+have blind-overwritten `resume.md` outside *both* the lock and the new CAS,
+reopening from the CLI exactly the hole this amendment closes in the MCP surface.
+
+### Why CAS belongs here and was correctly rejected on `EditResume`
+
+The two rejections are not in tension; they are about two different operations.
+
+**The surgical editors carry a delta, not a body.** `vp_thread_replace(slug,
+body)`, `vp_carried_add(bullet)`, and their siblings supply a slug plus one
+block. `EditResume` reads the authoritative content *under the lock* and the
+transform recomputes the new body from **that fresh read** — never from whatever
+the caller last saw. They are **stale-read-immune by construction**: there is no
+stale snapshot in the write path to be stale about. Bolting a whole-file CAS
+onto them would only manufacture **spurious conflicts** — two agents editing two
+*disjoint* blocks of `resume.md` would collide on a whole-file digest and one
+would be refused, despite neither having lost anything. The original rejection
+stands, unamended.
+
+**A blind full-body overwrite carries no delta and has no fresh read.**
+`vp_update_resume` hands over an entire replacement body computed from a snapshot
+the caller took at some arbitrary earlier time. Reading under the lock buys it
+*nothing* — the content it is about to write was already decided. And for this
+operation there is no such thing as a spurious conflict: if the file changed
+since the caller read it, the caller's body genuinely **does** revert that
+change. Every conflict is a real one. That asymmetry — *delta + fresh in-lock
+read* vs. *whole body + stale snapshot* — is the entire criterion for where CAS
+belongs.
+
+### Read-path contract: the digest is of the RAW pre-expansion bytes
+
+`vpctx.Resolver.ResolveDigest` hashes the bytes **as they sit on disk**, before
+template expansion. `vp_get_resume` / `vp_get_workflow` return that as
+`sha256`; `vp_bootstrap_context` returns `resume_sha256` (of the full body,
+computed pre-excerpt so a truncated preview still yields a usable guard).
+
+This is not an implementation detail — it is a correctness requirement. The
+resolver runs `expandScoped` (`{{PROJECT}}`, `{{DATE}}`, …) over what it
+returns, so hashing the **returned string** would produce a digest matching
+nothing on disk, and every CAS would fail. Worse, `{{DATE}}` expands from
+`time.Now()`, so the returned string's digest would differ **on every call** —
+a guard that can never be satisfied. Hash what a writer will compare against:
+the file.
+
+### Known, ACCEPTED residual: block-granularity staleness
+
+The surgical editors are stale-read-immune at **file** granularity, not at
+**block** granularity. An agent that reads a thread block, thinks for ten
+minutes, and calls `vp_thread_replace(slug, body)` with a body derived from that
+stale block will clobber a concurrent rewrite of *that same block*. The write is
+correctly serialized and the rest of the file is correctly preserved — the
+**blast radius is exactly one block**, and only when two agents rewrite the same
+block concurrently.
+
+This is accepted, not overlooked. If it is ever closed, the unit is a **per-block
+digest compared inside the lock** — the caller asserts the digest of the block it
+read, and `EditResume`'s transform refuses if that one block moved. It is
+**never** a whole-file CAS on `EditResume`: that would reintroduce precisely the
+spurious-conflict failure the section above rejects.
+
+### Platform caveat (unchanged, and it applies to CAS too)
+
+Per *Platform scope*: `vaultlock` is a no-op stub on Windows. The CAS
+**pre-read is therefore unprotected there** — the compare still happens and a
+genuinely stale write is still refused, but nothing serializes the read against
+a concurrent writer, so two writers can both observe the same digest, both pass
+the compare, and one can still lose. CAS narrows the window on Windows; it does
+not close it. Only `windows-lockfileex` does.
+
+### Consequences of this amendment
+
+**Positive:**
+
+- The stale-read mode the previous amendment left open is closed for
+  `resume.md`: an agent writing a body computed from an out-of-date snapshot is
+  now **refused with the current digest**, not silently obeyed.
+- CAS cannot be forgotten into last-writer-wins: the guard is a required
+  argument, and its empty value means *assert-absent*, not *skip the check*.
+- Four blind whole-file writers and one unreachable blind-write branch into
+  `resume.md` are gone, so the invariant "no blind whole-file resume overwrite
+  path exists" is enforced by the absence of code, not by discipline.
+
+**Negative / trade-offs:**
+
+- `vp_update_resume` callers must now read before they write. The wrap and
+  cancel-plan templates thread the sha through; an out-of-band caller that skips
+  the read gets a conflict, by design.
+- The guard is file-granular, so the block-granularity residual above remains.
+- On Windows the compare is unserialized (above).
+
 ## References
 
 - Lock primitive: `internal/vaultlock/` (`vaultlock.go`, `flock_unix.go`,
@@ -306,5 +447,14 @@ And, per *Platform scope* above: on Windows this fix protects nothing.
   `internal/tools/carried_tools_test.go`,
   `internal/storage/tasks_test.go`, and the full-stack
   `internal/integration/resume_editors_concurrent_test.go` (see `doc/TESTING.md`)
+- Compare-and-set writer (2nd Amendment): `internal/storage/project_dirs.go`
+  (`(*Vault).WriteResume`, `ResumeConflictError`); the conflict sentinel
+  `internal/vaultfs` (`ErrShaConflict`); the required guard in
+  `internal/tools/context_tools.go` (`vp_update_resume`); the read-path digest
+  in `internal/context` (`Resolver.ResolveDigest`, hashing RAW pre-expansion
+  bytes) surfaced by `vp_get_resume` / `vp_get_workflow` (`sha256`) and
+  `vp_bootstrap_context` (`resume_sha256`); the templates that thread it
+  through: `internal/templates/templates/commands/{wrap,cancel-plan}.md`
 - Still open: `windows-lockfileex` (real locking on Windows) and
-  `default-cas-for-blind-overwrites` (the stale-read mode)
+  `unlocked-rmw-writers-beyond-resume` (absorb's `workflow.md` / `knowledge.md`
+  / `doc/*.md` writes still take no `vaultlock`)

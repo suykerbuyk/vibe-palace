@@ -23,6 +23,7 @@ type BootstrapResult struct {
 	Project                   string                 `json:"project"`
 	Workflow                  string                 `json:"workflow"`
 	Resume                    string                 `json:"resume"`
+	ResumeSha256              string                 `json:"resume_sha256"`
 	WorkflowURI               string                 `json:"workflow_uri"`
 	ResumeURI                 string                 `json:"resume_uri"`
 	ActiveTasks               []storage.TaskMeta     `json:"active_tasks"`
@@ -212,9 +213,15 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		result.Workflow = wf
 	}
 
-	// Resume — graceful on error.
-	if resume, _, err := resolver.Resolve("resume", project); err == nil {
+	// Resume — graceful on error. The digest comes from the same read as the
+	// body and covers the FULL resume, so it is captured HERE, before the slim
+	// excerpting below: a sha of the excerpt would collide with nothing on disk
+	// and would fail every compare-and-set made by a caller that paged the full
+	// body back through resume_uri. It is empty when no project-tier resume.md
+	// exists (vault/embedded fallback) — the writer reads that as "assert absent".
+	if resume, _, sha, err := resolver.ResolveDigest("resume", project); err == nil {
 		result.Resume = resume
+		result.ResumeSha256 = sha
 	}
 
 	// Byte-axis slim: excerpt resume behind a banner+URI ONLY when it actually

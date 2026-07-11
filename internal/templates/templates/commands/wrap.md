@@ -86,11 +86,16 @@ Target: keep `resume.md` **under ~25 KB**. Pruning to the caps above is not
 optional and is never deferred to "later" — a wrap that adds a row without
 trimming past-cap rows is the bug this section exists to prevent.
 
-1. Read the current resume with `vp_get_resume`.
+1. Read the current resume with `vp_get_resume`. Keep the `sha256` it
+   returns — it is the compare-and-set guard for the write below.
 2. Compare against the actual codebase state (files, tests,
    architecture).
 3. Update with `vp_update_resume`: current state (test count,
-   iteration count), open threads.
+   iteration count), open threads. Pass `expected_sha256` = the `sha256`
+   from step 1 (it is REQUIRED; pass `""` only when no `resume.md` exists
+   yet). If the call comes back with `"conflict":true`, someone else wrote
+   the resume while you were composing: re-read it, recompose your edit
+   against the current body, and resubmit with the new sha. Do not force.
 
 **Do not** add file inventories, architecture diagrams, design
 decisions, or module tables to `resume.md` — those belong in `doc/`

@@ -12,7 +12,8 @@ import (
 func TestWriteResume(t *testing.T) {
 	vault := NewVault(t.TempDir())
 
-	if err := vault.WriteResume("myproj", "# Resume\nSome content"); err != nil {
+	// No resume.md yet: the empty guard is the assert-absent (first-write) case.
+	if err := vault.WriteResume("myproj", "# Resume\nSome content", ""); err != nil {
 		t.Fatalf("WriteResume: %v", err)
 	}
 
@@ -29,10 +30,12 @@ func TestWriteResume(t *testing.T) {
 func TestWriteResumeOverwrite(t *testing.T) {
 	vault := NewVault(t.TempDir())
 
-	if err := vault.WriteResume("myproj", "v1"); err != nil {
+	if err := vault.WriteResume("myproj", "v1", ""); err != nil {
 		t.Fatalf("WriteResume v1: %v", err)
 	}
-	if err := vault.WriteResume("myproj", "v2"); err != nil {
+	// The overwrite must present v1's digest: atomicfile writes verbatim, so the
+	// bytes handed to WriteResume are exactly the bytes now on disk.
+	if err := vault.WriteResume("myproj", "v2", sha256Hex("v1")); err != nil {
 		t.Fatalf("WriteResume v2: %v", err)
 	}
 
@@ -48,7 +51,7 @@ func TestWriteResumeOverwrite(t *testing.T) {
 
 func TestWriteResumeInvalidSlug(t *testing.T) {
 	vault := NewVault(t.TempDir())
-	if err := vault.WriteResume("INVALID", "content"); err == nil {
+	if err := vault.WriteResume("INVALID", "content", ""); err == nil {
 		t.Fatal("expected error for invalid slug")
 	}
 }

@@ -213,8 +213,13 @@ func resolveDestPath(v *storage.Vault, project, rel string) (path string, fresh 
 		path, err = v.WorkflowFile(project)
 	case rel == "knowledge.md":
 		path, err = v.KnowledgeFile(project)
-	case rel == "resume.md":
-		path, err = v.ResumeFile(project)
+	// Deliberately NO "resume.md" case. Every resume-bound item is classified
+	// DestResumeScratch (Scratch: true) and Apply diverts it to
+	// absorbed/resume-suggestions.md for human merge before resolveDestPath is
+	// ever reached. A resume.md case here would be a trap, not a feature:
+	// absorb's atomicWrite takes no vaultlock and carries no expected-sha, so
+	// wiring it up would blind-overwrite resume.md outside both the advisory
+	// lock and the WriteResume compare-and-set (see doc/adr/003).
 	case strings.HasPrefix(rel, "doc/"):
 		path, err = v.DocFile(project, strings.TrimPrefix(rel, "doc/"))
 	default:

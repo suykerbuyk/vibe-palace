@@ -4,7 +4,9 @@
 package context
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
@@ -140,21 +142,66 @@ func (r *Resolver) ResolveScoped(resource, project, wing, room string) (string, 
 // resolveByPath handles non-command/skill resources (workflow, resume) which
 // don't participate in wing/room scoping.
 func (r *Resolver) resolveByPath(relPath, project, wing, room string) (string, string, error) {
+	data, source, err := r.readByPath(relPath, project)
+	if err != nil {
+		return "", "", err
+	}
+	return r.expandScoped(string(data), project, wing, room), source, nil
+}
+
+// readByPath walks the 3-tier chain (Project > Vault > Embedded) for a
+// non-command/skill resource and returns the RAW, unexpanded bytes it read
+// plus the tier that supplied them.
+func (r *Resolver) readByPath(relPath, project string) ([]byte, string, error) {
 	if project != "" {
 		projPath := filepath.Join(r.vaultRoot, "Projects", project, relPath)
 		if data, err := os.ReadFile(projPath); err == nil {
-			return r.expandScoped(string(data), project, wing, room), "project", nil
+			return data, "project", nil
 		}
 	}
 	vaultPath := filepath.Join(r.vaultRoot, "Templates", relPath)
 	if data, err := os.ReadFile(vaultPath); err == nil {
-		return r.expandScoped(string(data), project, wing, room), "vault", nil
+		return data, "vault", nil
 	}
 	embedPath := path.Join("templates", relPath)
 	if data, err := fs.ReadFile(r.defaults, embedPath); err == nil {
-		return r.expandScoped(string(data), project, wing, room), "embedded", nil
+		return data, "embedded", nil
 	}
-	return "", "", fmt.Errorf("resource %q not found at any precedence level", relPath)
+	return nil, "", fmt.Errorf("resource %q not found at any precedence level", relPath)
+}
+
+// ResolveDigest resolves a non-scoped resource ("workflow", "resume") exactly
+// as Resolve does, and additionally returns the lowercase-hex SHA-256 of the
+// bytes that read produced — never a second stat/read, so the digest and the
+// content always describe the same instant.
+//
+// The digest is over the RAW, pre-expansion bytes: the returned content has
+// been through expandScoped ({{PROJECT}}, {{DATE}}, …), so hashing the string
+// would NOT match the file and would make a compare-and-set on it never match.
+// The digest is therefore byte-identical to what vaultfs computes for the same
+// file, which is what a CAS writer compares against.
+//
+// The digest is empty unless the content came from the "project" tier
+// (Projects/<project>/<resource>.md). A "vault" or "embedded" hit means no
+// per-project file backs the content at all, and an empty digest is the
+// caller's signal for "no file — assert absent".
+func (r *Resolver) ResolveDigest(resource, project string) (content, source, sha256Hex string, err error) {
+	resType, _, dir, err := parseResource(resource)
+	if err != nil {
+		return "", "", "", err
+	}
+	if dir != "" {
+		return "", "", "", fmt.Errorf("resource %q is scoped and has no project-tier digest", resource)
+	}
+	data, source, err := r.readByPath(resType+".md", project)
+	if err != nil {
+		return "", "", "", err
+	}
+	if source == "project" {
+		sum := sha256.Sum256(data)
+		sha256Hex = hex.EncodeToString(sum[:])
+	}
+	return r.expandScoped(string(data), project, "", ""), source, sha256Hex, nil
 }
 
 // ListResources returns deduplicated resource names using 3-tier precedence.

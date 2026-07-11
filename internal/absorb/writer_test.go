@@ -100,9 +100,18 @@ func TestApply_EndToEnd(t *testing.T) {
 		t.Errorf("testing.md not created: %v", err)
 	}
 
-	// Resume scratch created; resume.md itself NOT written.
+	// Resume scratch created; resume.md itself NOT written. absorb has no
+	// resume destination at all: every resume-bound item is DestResumeScratch
+	// and lands in absorbed/resume-suggestions.md for human merge. absorb's
+	// atomicWrite holds no vaultlock and carries no expected-sha, so a direct
+	// resume.md write from here would bypass both the advisory lock and the
+	// WriteResume compare-and-set. Pin the destination, not just its absence.
 	if report.ResumeScratchPath == "" {
 		t.Errorf("expected resume scratch path in report")
+	}
+	wantScratch, _ := v.AbsorbedFile("checkers01", "resume-suggestions.md")
+	if report.ResumeScratchPath != wantScratch {
+		t.Errorf("resume scratch path = %q, want %q", report.ResumeScratchPath, wantScratch)
 	}
 	scratchData, err := os.ReadFile(report.ResumeScratchPath)
 	if err != nil {

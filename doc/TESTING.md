@@ -6,15 +6,17 @@ This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~2242 tests** across 38 packages, including
-**103 integration tests** (the ONNX/cross-layer tests `make integration`
+The suite currently runs **~2255 tests** across 40 packages, including
+**104 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
 subtests each may fan out into — and they drift as the suite grows. Derive
 fresh numbers with
-`grep -rh "^func Test" --include='*_test.go' internal cmd | wc -l` (total)
-and `grep -rh "^func TestIntegration" --include='*_test.go' internal cmd | wc -l`
-(integration).
+`grep -rh "^func Test" --include='*_test.go' internal cmd | wc -l` (total),
+`grep -rh "^func TestIntegration" --include='*_test.go' internal cmd | wc -l`
+(integration), and
+`go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... | grep -c .`
+(packages carrying tests).
 
 ---
 
@@ -661,7 +663,7 @@ are pure-unit / in-process (no ONNX, no subprocesses) and run in `make test`.
 | `TestEditResumeStampsSurface` | the write goes through the stamping `atomicfile.Write`, so the surface stamp is still emitted |
 | `TestEditResumeMutateErrorReleasesLock` | a mutate error aborts without writing **and** releases the lock (a leaked lock would hang the next `Acquire` forever — it is a blocking `LOCK_EX` with no timeout) |
 | `TestEditResumeConcurrentEditsAllSurvive` | 32 concurrent `EditResume` appends: every marker appears exactly once |
-| `TestEditResumeInterlocksWithWriteResume` | `EditResume` and the blind `WriteResume` contend on the same lock object — the file is never torn mid-write |
+| `TestEditResumeInterlocksWithWriteResume` | `EditResume` and `WriteResume` contend on the same lock object — the file is never torn mid-write |
 
 ### `internal/tools` — Surgical Editors Under Concurrency
 
@@ -682,6 +684,54 @@ are pure-unit / in-process (no ONNX, no subprocesses) and run in `make test`.
 | Test | Layers | ONNX? | What it proves |
 |------|--------|-------|----------------|
 | `TestIntegration_ResumeEditorsConcurrentDispatch` | MCP → tools → storage → vaultlock | No | 32 concurrent JSON-RPC `tools/call` messages (29 `vp_thread_insert` + 2 `vp_carried_add` + 1 `vp_carried_promote_to_task` — a realistic wrap) driven through the **production wiring**: `tools.RegisterAll` on a real `mcp.Server`, the registry's schema validation and mutating-write gate, a real on-disk vault. Every nil-error call survives exactly once in the final file, the promoted task file exists, and nothing pre-existing is clobbered. Unlike the unit tests it never touches a tool value directly, and unlike the cross-process test it spawns no subprocesses — so it is **not** `-short`-skipped and runs in `make test` as well as `make integration`. |
+
+---
+
+## Blind-Overwrite CAS Tests (`default-cas-for-blind-overwrites`)
+
+The lock (above) closed the *race* on `resume.md`; it could not close the
+*stale read* — an agent that reads `resume.md`, thinks for minutes, and
+blind-writes a full body computed from that stale snapshot is not racing
+anyone, it is simply reverting whoever wrote in between. `storage.WriteResume`
+is now **compare-and-set** and `expected_sha256` is **required** on
+`vp_update_resume`; `""` means *assert-absent*, never *skip the check*, so
+there is no blind whole-file resume overwrite path left. See the second
+*Amendment* in `doc/adr/003-vault-write-locking.md`.
+
+Two properties govern these tests. First, the digest is of the **RAW
+pre-expansion bytes** — the resolver runs `expandScoped` (`{{PROJECT}}`,
+`{{DATE}}`, …) on what it returns, and `{{DATE}}` is `time.Now()`, so a digest
+of the *returned* string would match nothing on disk and would differ on every
+call. Second, the empty guard is an assertion, not an escape hatch. All of
+these are pure-unit / in-process (no ONNX) and run in `make test`.
+
+### `internal/storage` — CAS Writer (`project_dirs_test.go`)
+
+| Test | What it proves |
+|------|----------------|
+| `TestWriteResumeCAS` | the full matrix: a matching sha writes; a mismatched sha is refused with `*ResumeConflictError` (unwrapping to `vaultfs.ErrShaConflict`) carrying the actual current digest; `""` creates when absent; `""` is a **conflict** when the file exists (an omitted guard cannot degrade to last-writer-wins); a non-empty sha against an absent file conflicts with `Current: "(absent)"` |
+| `TestWriteResumeRefusesStaleRead` | the motivating scenario end to end: A reads, B writes, A's write against its stale sha is refused and **B's content is still on disk** — the file is left untouched by the refusal |
+
+### `internal/tools` — Digest Read Path and the Required Guard
+
+| Test | What it proves |
+|------|----------------|
+| `TestGetResumeSha256MatchesDisk` (`context_query_tools_test.go`) | `vp_get_resume`'s `sha256` equals the sha256 of the bytes actually on disk — i.e. it is a usable CAS guard, not a decoration |
+| `TestGetResumeSha256IsOfRawBytes` (`context_query_tools_test.go`) | the pin for the whole read-path contract: with a `{{DATE}}`/`{{PROJECT}}` placeholder in the file, the reported digest is of the **raw** bytes, not the expanded body — hashing post-expansion would match nothing on disk and would change every call |
+| `TestGetResumeSha256EmptyWithoutProjectFile` (`context_query_tools_test.go`) | no project-tier `resume.md` → empty `sha256`, which round-trips into `WriteResume`'s assert-absent create |
+| `TestGetWorkflowSha256MatchesDisk` (`context_query_tools_test.go`) | the same digest contract holds for `vp_get_workflow` |
+| `TestUpdateResumeCASRoundTrip` (`context_query_tools_test.go`) | the sha handed out by `vp_get_resume` is accepted verbatim by `vp_update_resume` — read → write is a closed loop with no re-hashing on the caller |
+| `TestUpdateResumeStaleShaIsMachineParseableError` (`context_query_tools_test.go`) | a stale write is refused with a **machine-parseable** conflict carrying the current digest, so a caller can rebuild its retry payload without a second read and without scraping the error string |
+| `TestUpdateResumeSchemaRequiresExpectedSha` (`context_query_tools_test.go`) | `expected_sha256` is `required` in the registered tool schema: an **omitted** guard is rejected by schema validation before the handler runs (a `*mcp.ValidationError` naming the property), while a **present-but-empty** guard clears validation — `required` mandates presence, not non-emptiness, which is exactly the assert-absent case and why there is deliberately no `minLength`. This is what makes "no blind path" structural rather than advisory |
+| `TestBootstrapResumeSha256MatchesDisk` (`context_tools_test.go`) | `vp_bootstrap_context`'s `resume_sha256` matches disk, so a session that bootstraps can wrap without a redundant `vp_get_resume` |
+| `TestBootstrapSlimResumeSha256IsOfFullBody` (`context_tools_test.go`) | in slim/excerpt mode the digest is of the **full** body, computed pre-excerpt — a truncated preview still yields a guard that will actually match |
+| `TestBootstrapResumeSha256EmptyWithoutProjectFile` (`context_tools_test.go`) | absent resume → empty `resume_sha256`, feeding the assert-absent create |
+
+### `internal/integration` — Full-Stack MCP Dispatch (`resume_editors_concurrent_test.go`)
+
+| Test | Layers | ONNX? | What it proves |
+|------|--------|-------|----------------|
+| `TestIntegration_UpdateResumeStaleWriteRefused` | MCP → tools → storage → vaultlock | No | the whole loop through the **production wiring** (`tools.RegisterAll` on a real `mcp.Server`, real JSON-RPC `tools/call`, real on-disk vault): the agent reads via `vp_get_resume` and captures its `sha256`; a concurrent `vp_thread_insert` lands; the agent's full-body rewrite composed from that now-stale read is **refused** by `vp_update_resume`, and the concurrent insert is still in the file. A non-vacuity check first asserts the stale body does not already contain the insert, so accepting it really would have clobbered something. |
 
 ---
 

@@ -94,7 +94,9 @@ from re-proposing the same work.
 
 ## Step 7: Update resume.md
 
-Using `vp_update_resume`:
+Using `vp_update_resume` (read the resume with `vp_get_resume` first and
+pass its `sha256` as the REQUIRED `expected_sha256` guard; on a
+`"conflict":true` error, re-read and recompose rather than forcing):
 
 - Remove or update any reference to the cancelled task in the Open
   Threads section.

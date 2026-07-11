@@ -5,6 +5,8 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -639,7 +641,7 @@ func TestBootstrapSlimExcerptsResume(t *testing.T) {
 	vault, resolver := testSetup(t)
 	// A resume larger than bootstrapExcerptCap so slim must excerpt it.
 	bigResume := "# Resume\n\n" + strings.Repeat("state line for test-proj\n", 400)
-	if err := vault.WriteResume("test-proj", bigResume); err != nil {
+	if err := vault.WriteResume("test-proj", bigResume, ""); err != nil {
 		t.Fatal(err)
 	}
 	tool := BootstrapContextTool(resolver, vault)
@@ -668,7 +670,7 @@ func TestBootstrapSlimSmallResumeStaysInline(t *testing.T) {
 	if len(smallResume) > bootstrapExcerptCap {
 		t.Fatalf("test fixture too large: %d > cap %d", len(smallResume), bootstrapExcerptCap)
 	}
-	if err := vault.WriteResume("test-proj", smallResume); err != nil {
+	if err := vault.WriteResume("test-proj", smallResume, ""); err != nil {
 		t.Fatal(err)
 	}
 	tool := BootstrapContextTool(resolver, vault, true) // HTTP default slim=true
@@ -703,7 +705,7 @@ func TestBootstrapRejectsInvalidProject(t *testing.T) {
 func TestBootstrapSlimPerTransportDefault(t *testing.T) {
 	vault, resolver := testSetup(t)
 	bigResume := "# Resume\n\n" + strings.Repeat("state line for test-proj\n", 400)
-	if err := vault.WriteResume("test-proj", bigResume); err != nil {
+	if err := vault.WriteResume("test-proj", bigResume, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -737,7 +739,7 @@ func TestBootstrapSlimPerTransportDefault(t *testing.T) {
 func TestBootstrapSlimFalseKeepsFullBodiesOverBudget(t *testing.T) {
 	vault, resolver := testSetup(t)
 	bigResume := "# Resume\n\n" + strings.Repeat("state line for test-proj\n", 400)
-	if err := vault.WriteResume("test-proj", bigResume); err != nil {
+	if err := vault.WriteResume("test-proj", bigResume, ""); err != nil {
 		t.Fatal(err)
 	}
 	wantResume, _, err := resolver.Resolve("resume", "test-proj")
@@ -778,5 +780,76 @@ func TestBootstrapToolSchema(t *testing.T) {
 	}
 	if schema["type"] != "object" {
 		t.Errorf("schema type = %v, want object", schema["type"])
+	}
+}
+
+// TestBootstrapResumeSha256MatchesDisk pins that resume_sha256 is the SHA-256 of
+// the vault's resume.md as it sits on disk — the value a Phase-1 compare-and-set
+// write is keyed on.
+func TestBootstrapResumeSha256MatchesDisk(t *testing.T) {
+	vault, resolver := testSetup(t)
+	const body = "# Resume\n\nSmall enough to stay fully inline.\n"
+	if err := vault.WriteResume("test-proj", body, ""); err != nil {
+		t.Fatal(err)
+	}
+	path, err := vault.ResumeFile("test-proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	br := bootstrapResult(t, BootstrapContextTool(resolver, vault), `{"project":"test-proj"}`)
+	if br.Resume != body {
+		t.Fatalf("resume not inline: %q", br.Resume)
+	}
+	if want := onDiskSha(t, path); br.ResumeSha256 != want {
+		t.Errorf("resume_sha256 = %q, want on-disk %q", br.ResumeSha256, want)
+	}
+}
+
+// TestBootstrapSlimResumeSha256IsOfFullBody is the regression that would
+// otherwise ship silently: under slim the resume body is replaced by a banner-led
+// excerpt, but resume_sha256 must still describe the FULL file. Hashing the
+// excerpt would make a wrap that pages the full body via resume_uri and writes it
+// back conflict with itself on every attempt.
+func TestBootstrapSlimResumeSha256IsOfFullBody(t *testing.T) {
+	vault, resolver := testSetup(t)
+	bigResume := "# Resume\n\n" + strings.Repeat("state line for test-proj\n", 400)
+	if len(bigResume) <= bootstrapExcerptCap {
+		t.Fatalf("fixture too small to be excerpted: %d <= cap %d", len(bigResume), bootstrapExcerptCap)
+	}
+	if err := vault.WriteResume("test-proj", bigResume, ""); err != nil {
+		t.Fatal(err)
+	}
+	path, err := vault.ResumeFile("test-proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	br := bootstrapResult(t, BootstrapContextTool(resolver, vault), `{"project":"test-proj","slim":true}`)
+	if !strings.HasPrefix(br.Resume, "⚠ excerpt") {
+		t.Fatalf("fixture was not excerpted, test proves nothing")
+	}
+
+	if want := onDiskSha(t, path); br.ResumeSha256 != want {
+		t.Errorf("resume_sha256 = %q, want sha of FULL body %q", br.ResumeSha256, want)
+	}
+	excerpt := sha256.Sum256([]byte(br.Resume))
+	if br.ResumeSha256 == hex.EncodeToString(excerpt[:]) {
+		t.Error("resume_sha256 is the sha of the EXCERPT — a CAS write of the full body would conflict with itself")
+	}
+}
+
+// TestBootstrapResumeSha256EmptyWithoutProjectFile pins the assert-absent signal:
+// with no Projects/<slug>/resume.md the body comes from the embedded default, so
+// there is no file to compare against and the sha must be empty.
+func TestBootstrapResumeSha256EmptyWithoutProjectFile(t *testing.T) {
+	vault, resolver := testSetup(t)
+
+	br := bootstrapResult(t, BootstrapContextTool(resolver, vault), `{"project":"test-proj"}`)
+	if br.Resume == "" {
+		t.Fatal("expected the embedded default resume")
+	}
+	if br.ResumeSha256 != "" {
+		t.Errorf("resume_sha256 = %q, want empty when no project resume.md exists", br.ResumeSha256)
 	}
 }

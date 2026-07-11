@@ -42,6 +42,21 @@ func assertStamped(t *testing.T, stampDir string) {
 // .surface stamp at its root. A new write site that forgets to stamp (whole-file
 // via atomicfile.Write, or append via v.stamp) fails here. Each case uses its
 // own vault so the per-process stamp cache never masks a missing stamp.
+//
+// Both stamping routes stay covered here after the dead whole-file project
+// writers (WriteWorkflow/WriteKnowledge/WriteDoc/WriteAbsorbed — test-only
+// callers, deleted) were removed:
+//
+//   - atomicfile.Write called directly under a held lock: WriteResume (with the
+//     assert-absent "" guard, its only create path).
+//   - v.lockedWrite → atomicfile.Write: WriteSession, UpdateTaskStatus,
+//     RetireTask, WriteVaultProjectConfig.
+//   - v.stamp after a non-replace write: AppendIteration, AppendDrawer, the KG
+//     writers.
+//
+// Stamp-dir resolution from a path NESTED below the project root (the thing the
+// old WriteDoc case incidentally covered) is still exercised: CreateTask and
+// friends write Projects/<slug>/tasks/<slug>.md yet must stamp Projects/<slug>.
 func TestEveryVaultWriterStamps(t *testing.T) {
 	const proj = "proj"
 	const wing = "facts"
@@ -56,31 +71,7 @@ func TestEveryVaultWriterStamps(t *testing.T) {
 		run func(t *testing.T, v *Vault, vault string) string
 	}{
 		{"WriteResume", func(t *testing.T, v *Vault, vault string) string {
-			if err := v.WriteResume(proj, "x"); err != nil {
-				t.Fatal(err)
-			}
-			return projectsRoot(vault)
-		}},
-		{"WriteWorkflow", func(t *testing.T, v *Vault, vault string) string {
-			if err := v.WriteWorkflow(proj, "x"); err != nil {
-				t.Fatal(err)
-			}
-			return projectsRoot(vault)
-		}},
-		{"WriteKnowledge", func(t *testing.T, v *Vault, vault string) string {
-			if err := v.WriteKnowledge(proj, "x"); err != nil {
-				t.Fatal(err)
-			}
-			return projectsRoot(vault)
-		}},
-		{"WriteDoc", func(t *testing.T, v *Vault, vault string) string {
-			if err := v.WriteDoc(proj, "architecture.md", "x"); err != nil {
-				t.Fatal(err)
-			}
-			return projectsRoot(vault)
-		}},
-		{"WriteAbsorbed", func(t *testing.T, v *Vault, vault string) string {
-			if err := v.WriteAbsorbed(proj, "note.md", "x"); err != nil {
+			if err := v.WriteResume(proj, "x", ""); err != nil {
 				t.Fatal(err)
 			}
 			return projectsRoot(vault)
