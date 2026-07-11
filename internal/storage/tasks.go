@@ -33,14 +33,21 @@ var validStatuses = map[string]bool{
 }
 
 // CreateTask creates a new task markdown file in the project's tasks directory.
+// It is a hard error if the task already exists.
+//
+// The existence check runs INSIDE the per-path vaultlock: checking outside it is
+// a TOCTOU — two concurrent creates of the same slug would both pass the stat and
+// one would silently overwrite the other, breaking the already-exists contract.
+//
+// The write therefore goes through atomicfile.Write directly rather than
+// lockedWrite: lockedWrite re-acquires this same lock, and vaultlock.Acquire is a
+// blocking LOCK_EX with no LOCK_NB and no timeout, so the re-entry would be a
+// permanent self-deadlock rather than an error. Same shape as
+// (*Vault).EditResume and UpdateTaskStatus.
 func (v *Vault) CreateTask(project, slug, title, content, priority string) error {
 	path, err := v.TaskFile(project, slug)
 	if err != nil {
 		return err
-	}
-
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("task %q already exists in project %q", slug, project)
 	}
 
 	tasksDir, err := v.TasksDir(project)
@@ -49,6 +56,16 @@ func (v *Vault) CreateTask(project, slug, title, content, priority string) error
 	}
 	if err := EnsureDir(tasksDir); err != nil {
 		return fmt.Errorf("ensure tasks dir: %w", err)
+	}
+
+	release, err := vaultlock.Acquire(v.Root, path)
+	if err != nil {
+		return fmt.Errorf("lock task: %w", err)
+	}
+	defer release()
+
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("task %q already exists in project %q", slug, project)
 	}
 
 	var buf strings.Builder
@@ -63,7 +80,7 @@ func (v *Vault) CreateTask(project, slug, title, content, priority string) error
 		}
 	}
 
-	return v.lockedWrite(path, []byte(buf.String()))
+	return atomicfile.Write(v.Root, path, []byte(buf.String()))
 }
 
 // GetTask reads a task file and returns its metadata and full content.
@@ -224,16 +241,16 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 // parseTaskMeta extracts metadata from task markdown content.
 func parseTaskMeta(slug, content string, done bool) TaskMeta {
 	meta := TaskMeta{Slug: slug, Done: done}
-	for _, line := range strings.Split(content, "\n") {
+	for line := range strings.SplitSeq(content, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "# ") && meta.Title == "" {
 			meta.Title = strings.TrimPrefix(trimmed, "# ")
 		}
-		if strings.HasPrefix(trimmed, "**Status:**") {
-			meta.Status = strings.TrimSpace(strings.TrimPrefix(trimmed, "**Status:**"))
+		if after, ok := strings.CutPrefix(trimmed, "**Status:**"); ok {
+			meta.Status = strings.TrimSpace(after)
 		}
-		if strings.HasPrefix(trimmed, "**Priority:**") {
-			meta.Priority = strings.TrimSpace(strings.TrimPrefix(trimmed, "**Priority:**"))
+		if after, ok := strings.CutPrefix(trimmed, "**Priority:**"); ok {
+			meta.Priority = strings.TrimSpace(after)
 		}
 	}
 	return meta

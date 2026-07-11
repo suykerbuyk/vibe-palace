@@ -4,9 +4,11 @@
 // Surgical resume.md editors (vp_thread_*). These operate on the ## Open
 // Threads section of Projects/<slug>/resume.md, inserting, replacing, and
 // removing individual ### slug blocks without rewriting the whole file. The
-// markdown machinery lives in internal/mdutil (pure string ops); this layer
-// reads resume.md off disk, applies the edit, and writes it back through
-// internal/atomicfile so the write is atomic and surface-stamped.
+// markdown machinery lives in internal/mdutil (pure string ops); the I/O is
+// storage.(*Vault).EditResume, which holds the per-path vaultlock across the
+// whole read→modify→write so a concurrent editor cannot lose the update. The
+// handlers here are therefore pure transforms: they neither read nor write the
+// file themselves.
 //
 // The slug "Carried forward" is reserved: vp_thread_replace and
 // vp_thread_remove refuse it, directing callers to the vp_carried_* tools.
@@ -19,7 +21,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/mdutil"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -34,6 +35,12 @@ const carriedForwardSlug = "Carried forward"
 
 // readResumeForEdit resolves and reads Projects/<project>/resume.md, returning
 // its content and absolute path.
+//
+// Lock-free, and read-only: the only remaining caller is
+// vp_carried_promote_to_task, which uses it to validate that the carried bullet
+// exists before it creates anything. The content it returns is a snapshot and is
+// never written back — every resume write goes through
+// storage.(*Vault).EditResume, which re-reads the file under the per-path lock.
 func readResumeForEdit(vault *storage.Vault, project string) (content, absPath string, err error) {
 	abs, err := vault.ResumeFile(project)
 	if err != nil {
@@ -49,12 +56,33 @@ func readResumeForEdit(vault *storage.Vault, project string) (content, absPath s
 	return string(data), abs, nil
 }
 
-// writeResumeEdit atomically writes updated resume content (surface-stamped) and
-// returns the standard result payload.
-func writeResumeEdit(vault *storage.Vault, absPath, project, updated, slug, position string) (any, error) {
-	if err := atomicfile.Write(vault.Root, absPath, []byte(updated)); err != nil {
-		return nil, fmt.Errorf("write resume: %w", err)
+// editResume applies a pure mdutil transform to a project's resume.md through
+// storage.(*Vault).EditResume — which holds the per-path vaultlock across the
+// whole read→modify→write, so a concurrent editor of the same file cannot
+// clobber the result — and returns the standard result payload.
+//
+// The transform sees the authoritative content read under the lock, so the
+// surgical editors need no stale-read check of their own: they carry a slug plus
+// a delta, not a whole-file body.
+func editResume(vault *storage.Vault, project, slug, position string, transform func(string) (string, error)) (any, error) {
+	absPath, err := vault.ResumeFile(project)
+	if err != nil {
+		return nil, err
 	}
+
+	var updated string
+	err = vault.EditResume(project, func(content string) (string, error) {
+		next, err := transform(content)
+		if err != nil {
+			return "", err
+		}
+		updated = next
+		return next, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	res := map[string]any{
 		"project":       project,
 		"vault_path":    absPath,
@@ -128,22 +156,15 @@ func ThreadInsertTool(vault *storage.Vault) mcp.Tool {
 				return nil, fmt.Errorf("position.mode is required")
 			}
 
-			content, absPath, err := readResumeForEdit(vault, args.Project)
-			if err != nil {
-				return nil, err
-			}
-
-			pos := mdutil.InsertPosition{Mode: args.Position.Mode, AnchorSlug: args.Position.AnchorSlug}
-			updated, err := mdutil.InsertSubsection(content, openThreadsSection, pos, args.Slug, args.Body)
-			if err != nil {
-				return nil, err
-			}
-
 			posLabel := args.Position.Mode
 			if args.Position.AnchorSlug != "" {
 				posLabel = args.Position.Mode + ":" + args.Position.AnchorSlug
 			}
-			return writeResumeEdit(vault, absPath, args.Project, updated, args.Slug, posLabel)
+
+			pos := mdutil.InsertPosition{Mode: args.Position.Mode, AnchorSlug: args.Position.AnchorSlug}
+			return editResume(vault, args.Project, args.Slug, posLabel, func(content string) (string, error) {
+				return mdutil.InsertSubsection(content, openThreadsSection, pos, args.Slug, args.Body)
+			})
 		},
 	}
 }
@@ -196,16 +217,9 @@ func ThreadReplaceTool(vault *storage.Vault) mcp.Tool {
 				return nil, fmt.Errorf("refusing to replace Carried forward sub-section; use vp_carried_* tools")
 			}
 
-			content, absPath, err := readResumeForEdit(vault, args.Project)
-			if err != nil {
-				return nil, err
-			}
-
-			updated, err := mdutil.ReplaceSubsectionBody(content, openThreadsSection, args.Slug, args.Body)
-			if err != nil {
-				return nil, err
-			}
-			return writeResumeEdit(vault, absPath, args.Project, updated, args.Slug, "")
+			return editResume(vault, args.Project, args.Slug, "", func(content string) (string, error) {
+				return mdutil.ReplaceSubsectionBody(content, openThreadsSection, args.Slug, args.Body)
+			})
 		},
 	}
 }
@@ -251,16 +265,9 @@ func ThreadRemoveTool(vault *storage.Vault) mcp.Tool {
 				return nil, fmt.Errorf("refusing to remove Carried forward sub-section; use vp_carried_* tools")
 			}
 
-			content, absPath, err := readResumeForEdit(vault, args.Project)
-			if err != nil {
-				return nil, err
-			}
-
-			updated, err := mdutil.RemoveSubsection(content, openThreadsSection, args.Slug)
-			if err != nil {
-				return nil, err
-			}
-			return writeResumeEdit(vault, absPath, args.Project, updated, args.Slug, "")
+			return editResume(vault, args.Project, args.Slug, "", func(content string) (string, error) {
+				return mdutil.RemoveSubsection(content, openThreadsSection, args.Slug)
+			})
 		},
 	}
 }

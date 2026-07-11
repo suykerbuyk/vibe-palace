@@ -165,6 +165,17 @@ contract** is that `canonicalKey` mirrors `vaultfs.ResolveSafePath`
 from `vaultfs` and a lexical `filepath.Join` from `storage` hash to the same
 lock file.
 
+The interlock claim above holds only while every writer of a path takes the
+lock — an advisory lock excludes nobody else. So **vault I/O stays in
+`internal/storage` / `internal/vaultfs`, where the `Acquire` sites live**: a
+higher layer must never read-and-write a vault file itself. The surgical
+`resume.md` editors (`vp_thread_*`, `vp_carried_*`) once did exactly that and
+silently lost updates; they are now pure `mdutil` transforms handed to
+`storage.(*Vault).EditResume`, the locked read→modify→write combinator that owns
+the lock and the I/O on their behalf. Inside a held lock, write with raw
+`atomicfile.Write`, never `lockedWrite` — re-acquiring the same path is a
+blocking `LOCK_EX` with no timeout, i.e. a permanent self-deadlock.
+
 `.vp-locks/` is host-local: registered in `storage.CanonicalGitignorePatterns`
 (never synced), refused by `vaultfs.IsRefusedWritePath`, and not indexed. The
 lock is unix-only (Windows is a no-op stub); `flock` auto-releases on process

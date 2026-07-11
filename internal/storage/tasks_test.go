@@ -4,8 +4,11 @@
 package storage
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -243,6 +246,68 @@ func TestTaskFileContent(t *testing.T) {
 	}
 	if !contains(content, "## Details") {
 		t.Error("file should contain custom content")
+	}
+}
+
+// TestCreateTask_ConcurrentSameSlugExactlyOneWins is the acceptance test for
+// CreateTask's TOCTOU. The existence check used to sit OUTSIDE the per-path
+// vaultlock (os.Stat, then lockedWrite), so two concurrent creates of the same
+// slug could both pass the stat and the later write would silently overwrite the
+// earlier task — breaking the documented "hard error if the task already exists"
+// contract and losing whatever the first creator wrote.
+//
+// N goroutines create the SAME slug with DISTINCT bodies. Exactly one must
+// succeed; the other N-1 must fail with the already-exists error; and the file on
+// disk must be byte-for-byte the winner's content (not a torn or overwritten mix).
+// The race detector cannot see this — a file-level overwrite is not a memory data
+// race — so the on-disk bytes are the only detector.
+func TestCreateTask_ConcurrentSameSlugExactlyOneWins(t *testing.T) {
+	const n = 32
+	v := testVault(t)
+
+	// Pre-create the tasks dir so every goroutine races on the task file only.
+	if err := v.CreateTask("proj", "seed", "Seed", "", "medium"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	body := func(i int) string { return fmt.Sprintf("body from creator %03d", i) }
+	title := func(i int) string { return fmt.Sprintf("Title %03d", i) }
+
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			errs[i] = v.CreateTask("proj", "contended", title(i), body(i), "medium")
+		})
+	}
+	wg.Wait()
+
+	winners := []int{}
+	for i, err := range errs {
+		if err == nil {
+			winners = append(winners, i)
+			continue
+		}
+		if !strings.Contains(err.Error(), `task "contended" already exists in project "proj"`) {
+			t.Errorf("creator %03d: unexpected error %v", i, err)
+		}
+	}
+	if len(winners) != 1 {
+		t.Fatalf("expected exactly 1 successful CreateTask, got %d: %v", len(winners), winners)
+	}
+
+	path, err := v.TaskFile("proj", "contended")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	w := winners[0]
+	want := fmt.Sprintf("# %s\n\n**Status:** pending\n**Priority:** medium\n\n%s\n", title(w), body(w))
+	if string(data) != want {
+		t.Errorf("task file is not the winner's content verbatim (torn or overwritten)\n got: %q\nwant: %q", data, want)
 	}
 }
 

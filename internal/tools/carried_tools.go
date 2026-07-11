@@ -4,12 +4,16 @@
 // Carried-forward bullet editors (vp_carried_*). These operate on the reserved
 // ### Carried forward sub-section inside ## Open Threads of a project's
 // resume.md. The markdown machinery lives in internal/mdutil (pure string ops);
-// this layer reads resume.md off disk, applies the edit, and writes it back
-// through internal/atomicfile so writes are atomic and surface-stamped.
+// vp_carried_add and vp_carried_remove push the edit through
+// storage.(*Vault).EditResume, which holds the per-path vaultlock across the
+// read→modify→write so concurrent editors cannot lose an update.
 //
 // vp_carried_promote_to_task reuses the project's existing task-creation backend
 // (storage.(*Vault).CreateTask — the same path vp_manage_task create uses)
-// rather than reimplementing task-file writing.
+// rather than reimplementing task-file writing, and pushes its resume edit
+// through EditResume too: it creates the task first (task lock taken and
+// released inside CreateTask), then removes the bullet under the resume lock, so
+// the two per-path locks are held sequentially and never nested.
 
 package tools
 
@@ -18,7 +22,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/mdutil"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -70,16 +73,9 @@ func CarriedAddTool(vault *storage.Vault) mcp.Tool {
 				return nil, fmt.Errorf("title is required")
 			}
 
-			content, absPath, err := readResumeForEdit(vault, args.Project)
-			if err != nil {
-				return nil, err
-			}
-
-			updated, err := mdutil.AddCarriedBullet(content, openThreadsSection, args.Slug, args.Title, args.Body)
-			if err != nil {
-				return nil, err
-			}
-			return writeResumeEdit(vault, absPath, args.Project, updated, args.Slug, "")
+			return editResume(vault, args.Project, args.Slug, "", func(content string) (string, error) {
+				return mdutil.AddCarriedBullet(content, openThreadsSection, args.Slug, args.Title, args.Body)
+			})
 		},
 	}
 }
@@ -122,16 +118,9 @@ func CarriedRemoveTool(vault *storage.Vault) mcp.Tool {
 				return nil, fmt.Errorf("slug is required")
 			}
 
-			content, absPath, err := readResumeForEdit(vault, args.Project)
-			if err != nil {
-				return nil, err
-			}
-
-			updated, err := mdutil.RemoveCarriedBullet(content, openThreadsSection, args.Slug)
-			if err != nil {
-				return nil, err
-			}
-			return writeResumeEdit(vault, absPath, args.Project, updated, args.Slug, "")
+			return editResume(vault, args.Project, args.Slug, "", func(content string) (string, error) {
+				return mdutil.RemoveCarriedBullet(content, openThreadsSection, args.Slug)
+			})
 		},
 	}
 }
@@ -183,20 +172,37 @@ func CarriedPromoteToTaskTool(vault *storage.Vault) mcp.Tool {
 				return nil, fmt.Errorf("new_task_slug is required")
 			}
 
-			content, absPath, err := readResumeForEdit(vault, args.Project)
+			absPath, err := vault.ResumeFile(args.Project)
 			if err != nil {
 				return nil, err
 			}
 
-			// Find the bullet to promote (also validates it exists before any
-			// write happens).
+			// This handler touches two files, each guarded by its own per-path
+			// vaultlock. INVARIANT: the two locks are SEQUENTIAL, never NESTED —
+			// CreateTask (step 2) acquires and releases the task file's lock
+			// before EditResume (step 3) acquires resume.md's. There is therefore
+			// no lock order between them to invert, and nothing to document.
+			// vaultlock.Acquire is a blocking LOCK_EX with no LOCK_NB and no
+			// timeout, so a nested acquisition would turn any future inversion
+			// into a permanent hang rather than an error; do not hoist the resume
+			// lock across the CreateTask call.
+
+			// Step 1 (lock-free, read-only): validate the carried bullet exists
+			// and capture its body BEFORE anything is created. This content is a
+			// validation snapshot only — it is never written back. Step 3 re-reads
+			// the authoritative content under the resume lock.
+			content, _, err := readResumeForEdit(vault, args.Project)
+			if err != nil {
+				return nil, err
+			}
 			bullet, err := mdutil.GetCarriedBullet(content, openThreadsSection, args.Slug)
 			if err != nil {
 				return nil, err
 			}
 
-			// Create the task via the shared backend (errors if it already
-			// exists or if new_task_slug is not a valid slug).
+			// Step 2: create the task via the shared backend (errors if it
+			// already exists or if new_task_slug is not a valid slug). CreateTask
+			// takes and releases the task file's lock internally.
 			taskBody := buildPromotedTaskBody(bullet.Slug, bullet.Body)
 			if err := vault.CreateTask(args.Project, args.NewTaskSlug, bullet.Slug, taskBody, "medium"); err != nil {
 				return nil, fmt.Errorf("create task: %w", err)
@@ -207,13 +213,26 @@ func CarriedPromoteToTaskTool(vault *storage.Vault) mcp.Tool {
 				return nil, err
 			}
 
-			// Remove the bullet and persist the resume. The task already
-			// exists at this point, so surface an actionable error if these fail.
-			updated, err := mdutil.RemoveCarriedBullet(content, openThreadsSection, args.Slug)
+			// Step 3: remove the bullet from the AUTHORITATIVE resume content
+			// under the resume lock. The task file already exists at this point,
+			// so both failure modes get an actionable error. (The two-file
+			// operation remains non-atomic across a crash — a task can exist while
+			// its bullet remains — exactly as before; locking does not change that.)
+			var updated string
+			var mutateErr error
+			err = vault.EditResume(args.Project, func(cur string) (string, error) {
+				next, err := mdutil.RemoveCarriedBullet(cur, openThreadsSection, args.Slug)
+				if err != nil {
+					mutateErr = err
+					return "", err
+				}
+				updated = next
+				return next, nil
+			})
 			if err != nil {
-				return nil, fmt.Errorf("task created at %s but failed to remove carried bullet: %w", taskPath, err)
-			}
-			if err := atomicfile.Write(vault.Root, absPath, []byte(updated)); err != nil {
+				if mutateErr != nil {
+					return nil, fmt.Errorf("task created at %s but failed to remove carried bullet: %w", taskPath, mutateErr)
+				}
 				return nil, fmt.Errorf("task created at %s but failed to write resume: %w", taskPath, err)
 			}
 

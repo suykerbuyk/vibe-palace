@@ -1,13 +1,13 @@
 # Testing Strategy
 
-**Last updated:** 2026-05-31
+**Last updated:** 2026-07-11
 
 This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~1971 tests** across 38 packages, including
-**102 integration tests** (the ONNX/cross-layer tests `make integration`
+The suite currently runs **~2242 tests** across 38 packages, including
+**103 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
 subtests each may fan out into — and they drift as the suite grows. Derive
@@ -630,6 +630,58 @@ The `.vp-locks` segment refusal is covered by
 | Test | What it proves |
 |------|----------------|
 | `TestIntegration_VaultLockCrossProcess` | builds the real `vp` binary and launches N concurrent `vp vault edit` child **processes** contending on one seeded file; every fixed-width anchor is converted to its DONE marker exactly once, proving the advisory flock serializes whole-file RMW across separate OS processes (CLI vs MCP). Skipped under `-short`. |
+
+---
+
+## Resume-Editor Lost-Update Tests (`resume-md-lost-update`)
+
+The six surgical `resume.md` editors (`vp_thread_insert`/`_replace`/`_remove`,
+`vp_carried_add`/`_remove`/`_promote_to_task`) used to read-modify-write
+`Projects/<slug>/resume.md` from `internal/tools` **without** taking the
+`vaultlock` that `storage.WriteResume` takes — and an advisory lock only excludes
+the writers that take it, so it bought nothing. They now route through the locked
+RMW combinator `storage.(*Vault).EditResume`; see the *Amendment* in
+`doc/adr/003-vault-write-locking.md`.
+
+Two properties govern every test below. First, **`-race` cannot see this bug** —
+a file-level lost update is not a memory data race, so the FINAL ON-DISK FILE is
+the only detector. Second, an edit whose handler **returned a nil error must be
+present in the final file**: that promise is the invariant. Slug indices are
+zero-padded (`thread-000`…) so no slug is a substring of another. All of these
+are pure-unit / in-process (no ONNX, no subprocesses) and run in `make test`.
+
+### `internal/storage` — `EditResume` Combinator (`project_dirs_test.go`)
+
+| Test | What it proves |
+|------|----------------|
+| `TestEditResume` | the happy path: mutate sees the file's content and its return value is what lands on disk |
+| `TestEditResumeMissingErrorMatchesLegacyContract` | an absent `resume.md` still errors with the same `resume.md not found for project %q` message the tools used to emit |
+| `TestEditResumeMutateSeesCurrentContent` | mutate is handed the content read **under the lock**, not a caller-supplied snapshot |
+| `TestEditResumeEnsuresProjectDir` | the project dir is created inside the critical section |
+| `TestEditResumeStampsSurface` | the write goes through the stamping `atomicfile.Write`, so the surface stamp is still emitted |
+| `TestEditResumeMutateErrorReleasesLock` | a mutate error aborts without writing **and** releases the lock (a leaked lock would hang the next `Acquire` forever — it is a blocking `LOCK_EX` with no timeout) |
+| `TestEditResumeConcurrentEditsAllSurvive` | 32 concurrent `EditResume` appends: every marker appears exactly once |
+| `TestEditResumeInterlocksWithWriteResume` | `EditResume` and the blind `WriteResume` contend on the same lock object — the file is never torn mid-write |
+
+### `internal/tools` — Surgical Editors Under Concurrency
+
+| Test | What it proves |
+|------|----------------|
+| `TestThreadInsert_ConcurrentInsertsAllSurvive` (`thread_tools_test.go`) | the regression that exposed the hole: 32 concurrent `vp_thread_insert` calls with distinct slugs — pre-fix, 22 were silently lost while every handler returned nil; post-fix every nil-error insert is in the final file exactly once |
+| `TestCarriedPromoteToTask_ConcurrentPromotesAllSurvive` (`carried_tools_test.go`) | N concurrent promotes of distinct bullets: each task file is created and each bullet leaves the carried list exactly once (the two per-path locks are sequential, never nested — so no hang) |
+| `TestCarriedPromoteToTask_ConcurrentWithThreadInsert` (`carried_tools_test.go`) | promotes racing thread inserts on the same `resume.md`: neither editor class clobbers the other |
+
+### `internal/storage` — `CreateTask` TOCTOU (`tasks_test.go`)
+
+| Test | What it proves |
+|------|----------------|
+| `TestCreateTask_ConcurrentSameSlugExactlyOneWins` | the already-exists `os.Stat` now runs **inside** the per-path lock: of N concurrent creates of one slug, exactly one succeeds and the rest error — previously both passed the check and one silently overwrote the other |
+
+### `internal/integration` — Full-Stack MCP Dispatch (`resume_editors_concurrent_test.go`)
+
+| Test | Layers | ONNX? | What it proves |
+|------|--------|-------|----------------|
+| `TestIntegration_ResumeEditorsConcurrentDispatch` | MCP → tools → storage → vaultlock | No | 32 concurrent JSON-RPC `tools/call` messages (29 `vp_thread_insert` + 2 `vp_carried_add` + 1 `vp_carried_promote_to_task` — a realistic wrap) driven through the **production wiring**: `tools.RegisterAll` on a real `mcp.Server`, the registry's schema validation and mutating-write gate, a real on-disk vault. Every nil-error call survives exactly once in the final file, the promoted task file exists, and nothing pre-existing is clobbered. Unlike the unit tests it never touches a tool value directly, and unlike the cross-process test it spawns no subprocesses — so it is **not** `-short`-skipped and runs in `make test` as well as `make integration`. |
 
 ---
 

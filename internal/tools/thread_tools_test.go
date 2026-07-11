@@ -6,9 +6,11 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -202,6 +204,73 @@ func TestThreadRemove_AmbiguousHardError(t *testing.T) {
 	}
 	if got := readFile(t, abs); got != dup {
 		t.Error("file should be unchanged on ambiguous error")
+	}
+}
+
+// TestThreadInsert_ConcurrentInsertsAllSurvive is the acceptance test for
+// vp_thread_insert's read-modify-write. The handler reads resume.md, applies the
+// insert in memory via mdutil, and writes the whole file back through
+// atomicfile. atomicfile makes each write atomic but does nothing about lost
+// updates: two handlers that read the same base concurrently and write back in
+// sequence silently discard the earlier insert. mcp-go's stdio transport
+// dispatches tool calls on a worker pool, so concurrent vp_thread_insert calls
+// are reachable in production.
+//
+// N goroutines each insert a DISTINCT slug. Every insert whose handler returned
+// nil error MUST appear exactly once in the final on-disk file. Note the race
+// detector cannot see this bug — a file-level lost update is not a memory data
+// race — so the final file content is the only detector.
+func TestThreadInsert_ConcurrentInsertsAllSurvive(t *testing.T) {
+	const n = 32
+	vault := newVaultRoot(t)
+	abs := writeResumeFixture(t, vault, "proj", threadFixture)
+
+	// Zero-pad the slug indices to a fixed width so no slug is a substring of
+	// another (thread-1 would otherwise match thread-10..19, breaking both the
+	// insert and the occurrence counting below).
+	slug := func(i int) string { return fmt.Sprintf("thread-%03d", i) }
+
+	tool := ThreadInsertTool(vault)
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := range n {
+		wg.Go(func() {
+			p, _ := json.Marshal(map[string]any{
+				"project":  "proj",
+				"position": map[string]any{"mode": "bottom"},
+				"slug":     slug(i),
+				"body":     "body " + slug(i),
+			})
+			_, errs[i] = tool.Handler(context.Background(), p)
+		})
+	}
+	wg.Wait()
+
+	final := readFile(t, abs)
+	lost := 0
+	for i, err := range errs {
+		if err != nil {
+			t.Logf("insert %s returned error (not counted as lost): %v", slug(i), err)
+			continue
+		}
+		// The handler reported success, so the slug must be in the file, exactly
+		// once: missing means a concurrent writer clobbered it (lost update),
+		// duplicated means the section was written twice.
+		switch got := strings.Count(final, "### "+slug(i)); got {
+		case 1:
+			// survived
+		case 0:
+			lost++
+			t.Errorf("lost update: %s reported success but is missing from final content", slug(i))
+		default:
+			t.Errorf("duplicate: %s appears %d times in final content", slug(i), got)
+		}
+	}
+	if lost > 0 {
+		t.Errorf("%d of %d concurrent inserts were lost", lost, n)
+	}
+	if !strings.Contains(final, "### alpha") || !strings.Contains(final, "history") {
+		t.Error("pre-existing content clobbered")
 	}
 }
 
