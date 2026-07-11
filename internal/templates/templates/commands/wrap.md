@@ -157,15 +157,28 @@ sync:
 
 ### Workflow
 
-1. Read the vault copy first with the `Read` tool (it likely exists
-   from a prior iteration — `Read` must be called before `Write`
-   will overwrite).
-2. Overwrite the vault copy with the new message via `Write`.
-3. Copy the vault file to the project root via Bash `cp`.
-4. **Verify** the project-root copy exists (`ls
-   <project_root>/commit.msg`) — a missing project-root copy means
-   `git commit -F commit.msg` would fall back to a stale version or
-   fail.
+Use the typed writer `vp_ingest_commit_msg`: it reads the
+**project-root** copy off disk and writes the vault copy atomically,
+surface-stamped. Author the message once in the project root, then
+ingest — do **not** hand-copy the vault file or `cp` between the two.
+
+1. **Read** the project-root `commit.msg` first with the `Read` tool.
+   It almost always exists from a prior wrap, and the `Write` tool
+   refuses to overwrite a file it has not read this session — so this
+   Read is mandatory. It also lets you confirm you are not clobbering
+   anything unexpected before replacing it.
+2. **Write** the new message to the project-root `commit.msg` via
+   `Write`.
+3. Call **`vp_ingest_commit_msg`** with `project_path` set to the
+   local project repo root. It reads the file you just wrote and emits
+   the vault copy (`<vault_path>/Projects/<project>/commit.msg`)
+   atomically and surface-stamped — there is no `content` parameter,
+   so the message is emitted exactly once.
+4. **Verify** both copies match (compare byte counts / first line).
+   The project-root copy is what `git commit -F commit.msg` reads; the
+   vault copy is the archive Step 9 commits. A missing or stale
+   project-root copy means `git commit -F commit.msg` would fall back
+   to a stale version or fail.
 
 The **project-root** copy is host-local scratch — never stage or
 commit it in the project repo. The **vault** copy is the committed
@@ -173,11 +186,14 @@ archive: Step 9 syncs it (`vp_vault_sync` with the vault `commit.msg`
 among its paths), so each wrap records the new message in vault git
 history.
 
-**Failure mode to avoid:** while editing vault files in sequence
-(resume.md, iterations.md, tasks/done/) the vault's `commit.msg`
-sits right next to them and pattern-matches as "the" commit.msg, so
-the source-repo copy gets missed. **Always update the vault copy
-first, then copy it to the project root.**
+**Failure mode to avoid:** do **not** hand-edit the *vault* `commit.msg`
+directly — while editing vault files in sequence (resume.md,
+iterations.md, tasks/done/) it sits right next to them and
+pattern-matches as "the" commit.msg. Author the **project-root** copy
+and let `vp_ingest_commit_msg` produce the vault copy; that keeps them
+byte-identical and correctly surface-stamped. If you edit the vault
+copy by hand instead, the project-root copy that `git commit -F` reads
+silently diverges.
 
 ### commit.msg quality
 
