@@ -438,11 +438,13 @@ since an approximate index is not expected to hold the exact distance bound.
 
 ## Write/Wrap Surface Unit Tests
 
-The restore-mcp-vault-surface work added three pure-unit packages (no ONNX,
-run in `make test`). They underpin the vault-CRUD, commit, resume-edit, and
-wrap-state MCP tools.
+The restore-mcp-vault-surface work added two pure-unit packages (no ONNX,
+run in `make test`). They underpin the vault-CRUD, commit, and wrap-state MCP
+tools. (A third, `internal/mdutil` — markdown section editing — backed the six
+surgical resume editors and was **deleted with them**; see *Resume-Editor
+Lost-Update Tests* below.)
 
-### `internal/vaultfs` — Vault File CRUD (coverage 82.6%)
+### `internal/vaultfs` — Vault File CRUD (coverage 82.0%)
 
 Read / write / edit / delete / move / exists / sha256 over vault-relative
 paths, plus the path-safety and stamping primitives. Tests cover the happy
@@ -450,14 +452,13 @@ paths, traversal/escape rejection and other safety guards, atomic-write
 behavior, optimistic-concurrency `expected-sha256` mismatches, and
 enumeration of the cross-package stamp writers.
 
-### `internal/mdutil` — Markdown Section Editing (coverage 93.4%)
+`vaultfs.Edit` is now the **routine `resume.md` write path** (behind
+`vp_vault_edit`), so its three loud failure modes are load-bearing rather than
+incidental: `old_string` not found, `old_string` ambiguous without
+`replace_all`, and `expected_sha256` mismatch. Each is an assertion that the
+caller's model of the file is wrong — see *Resume CAS Tests*.
 
-Section-aware editing used by the resume-edit tools: locating and rewriting
-`##`/`###` blocks, and the reserved `### Carried forward` bullet operations
-(add / remove / promote). Tests cover heading normalization, slug matching,
-insert positioning, and idempotent removal.
-
-### `internal/wrapstate` — Wrap-State Collection (coverage 80.1%)
+### `internal/wrapstate` — Wrap-State Collection (coverage 85.2%)
 
 The engine behind `vp_collect_wrap_state` / `vp_stamp_iter` /
 `vp_preflight_wrap`. Tests cover iteration parsing
@@ -681,9 +682,13 @@ them through the locked RMW combinator `storage.(*Vault).EditResume`; see the
 been deleted.** No command template ever named the tools, so no agent could reach
 them, and `vp_thread_insert` with `position: "top"` against a bullet-shaped
 `## Open Threads` was itself a silent data-loss path. With the last caller gone,
-`EditResume` went too — `resume.md` now has exactly one writer,
-the compare-and-set `storage.WriteResume` (see the next section), which is a
-strictly stronger contract than the lock alone. The retired tests were:
+`EditResume` went too — leaving `resume.md` with exactly **two** writers, both of
+which take the lock **and** a compare-and-set guard: `storage.WriteResume`
+(whole-file regeneration and migrations, behind `vp_update_resume`) and
+`vaultfs.Edit` (the one-section-at-a-time path behind `vp_vault_edit`, which is
+the **routine** wrap path — see *Full-Stack CAS Dispatch* below). CAS is a
+strictly stronger contract than the lock alone, and it is now the primary
+discipline rather than a backstop. The retired tests were:
 `TestEditResume*` (`internal/storage/project_dirs_test.go`),
 `TestThreadInsert_*` / `TestCarriedPromoteToTask_*` (`internal/tools`), and
 `TestIntegration_ResumeEditorsConcurrentDispatch` (`internal/integration`).
@@ -739,17 +744,29 @@ these are pure-unit / in-process (no ONNX) and run in `make test`.
 | `TestBootstrapSlimResumeSha256IsOfFullBody` (`context_tools_test.go`) | in slim/excerpt mode the digest is of the **full** body, computed pre-excerpt — a truncated preview still yields a guard that will actually match |
 | `TestBootstrapResumeSha256EmptyWithoutProjectFile` (`context_tools_test.go`) | absent resume → empty `resume_sha256`, feeding the assert-absent create |
 
-> **Coverage gap.** The full-stack MCP-dispatch test for this epic,
-> `TestIntegration_UpdateResumeStaleWriteRefused`, lived in
-> `internal/integration/resume_editors_concurrent_test.go` and was deleted with
-> that file: it used a concurrent `vp_thread_insert` as the racing writer, so it
-> could not survive the editors' removal as written. The CAS contract itself is
-> still covered at the storage layer (`TestWriteResumeRefusesStaleRead`,
-> `TestWriteResumeCAS`) and at the schema layer
-> (`TestUpdateResumeSchemaRequiresExpectedSha`), but **no test now drives the
-> stale-write refusal end-to-end through real JSON-RPC `tools/call` dispatch**.
-> Restoring it needs a second racing writer that still exists — `vp_vault_edit`
-> or a second `vp_update_resume` — rather than a thread editor.
+### `internal/integration` — Full-Stack CAS Dispatch (`resume_cas_test.go`)
+
+`TestIntegration_UpdateResumeStaleWriteRefused` drives the stale-write refusal
+**end-to-end through real JSON-RPC `tools/call` dispatch** — `tools.RegisterAll`
+on a real `mcp.Server`, the registry's schema validation and mutating-write gate,
+then the handler. The storage- and schema-layer tests above would all still pass
+if the tool mapped a conflict to a SUCCESS result or lost the error on the way
+back through dispatch; this is the test that makes those failure modes visible.
+
+| What it proves |
+|----------------|
+| Writer A reads `resume.md`, writer B lands a concurrent `vp_vault_edit`, and A's whole-file `vp_update_resume` against its now-stale sha is **refused** — B's edit survives. Mutation-proven: breaking the in-lock compare in `storage.WriteResume` makes it fail with *"the stale `vp_update_resume` SUCCEEDED; writer B's edit was silently reverted."* |
+| `vp_vault_read` serves **RAW** bytes — the fixture carries a live `{{DATE}}` token and the test asserts it is still there, pinning the expanded-vs-raw distinction as an executable assertion rather than a comment |
+| `vp_vault_edit` moves the sha, so the recovery path (re-read → recompose → resubmit) is exercised, not just asserted |
+
+**Why the racer is `vp_vault_edit`.** The original version of this test used a
+concurrent `vp_thread_insert`, and was deleted along with the six surgical
+editors. `vp_vault_edit` is not an arbitrary substitute: it is the tool
+`vp_update_resume` now points agents at, it takes the **same** per-path
+`vaultlock` on `resume.md`, and it is itself CAS-capable — so it is the writer
+that realistically races a whole-file rewrite in production. A second
+`vp_update_resume` would only prove CAS against itself; a *different-writer*
+racer is the shape the 179 hole actually had.
 
 ---
 

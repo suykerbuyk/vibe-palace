@@ -170,11 +170,37 @@ lock — an advisory lock excludes nobody else. So **vault I/O stays in
 `internal/storage` / `internal/vaultfs`, where the `Acquire` sites live**: a
 higher layer must never read-and-write a vault file itself. The surgical
 `resume.md` editors (`vp_thread_*`, `vp_carried_*`) once did exactly that and
-silently lost updates; they are now pure `mdutil` transforms handed to
-`storage.(*Vault).EditResume`, the locked read→modify→write combinator that owns
-the lock and the I/O on their behalf. Inside a held lock, write with raw
-`atomicfile.Write`, never `lockedWrite` — re-acquiring the same path is a
+silently lost updates; they were routed through a locked combinator
+(`storage.EditResume`) and then **deleted outright**, along with that combinator
+and `internal/mdutil` — see *Resume write paths* below. Inside a held lock, write
+with raw `atomicfile.Write`, never `lockedWrite` — re-acquiring the same path is a
 blocking `LOCK_EX` with no timeout, i.e. a permanent self-deadlock.
+
+### Resume write paths
+
+`resume.md` has exactly **two** writers, and both take the lock **and** a
+compare-and-set guard:
+
+- `storage.WriteResume` — whole-file regeneration and migrations, behind
+  `vp_update_resume`. `expected_sha256` is **required**; the empty string means
+  *assert-absent* (first write), never *skip the check*. The compare happens
+  **inside** the lock.
+- `vaultfs.Edit` — the surgical, one-section-at-a-time path behind
+  `vp_vault_edit`. This is the routine wrap path: every ordinary resume update
+  goes through it.
+
+`vaultlock.canonicalKey` normalizes both path spellings to a single key, so the
+two writers genuinely interlock rather than merely appearing to.
+
+**The CAS digest is over the RAW, pre-expansion bytes.** The resolver runs
+`expandScoped()` over everything it returns (`{{PROJECT}}`, `{{DATE}}`), so
+`vp_get_resume` / `vp_bootstrap_context` serve *expanded* text while their
+`sha256` is computed over the *raw* bytes. Compose an edit from the expanded body
+and one of two things happens: an `old_string` spanning a placeholder fails to
+match disk (loud, harmless), or a whole-file body passes CAS and **silently bakes
+the expanded values onto disk**, destroying the live tokens. Source any text you
+intend to write back from `vp_vault_read`, never from the context tools. CAS is
+therefore the *primary* discipline here, not a backstop. See ADR-003.
 
 `.vp-locks/` is host-local: registered in `storage.CanonicalGitignorePatterns`
 (never synced), refused by `vaultfs.IsRefusedWritePath`, and not indexed. The

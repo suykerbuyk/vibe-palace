@@ -2,7 +2,8 @@
 
 **Status:** Accepted (2026-06-07); amended 2026-07-11 (see *Amendment: the
 resume.md lost-update hole*, then *Amendment: compare-and-set on blind
-whole-file overwrites*)
+whole-file overwrites*, then *Amendment: the surgical editors and `EditResume`
+are deleted* — *read that one first if you are here to write to `resume.md`*)
 **Deciders:** Project owner
 **Context:** Vibe-palace vault-write-concurrency — serializing vault read-modify-write
 
@@ -117,17 +118,22 @@ Unix uses a real `syscall.Flock` advisory lock; Windows is a no-op stub
 filesystems is out of scope — vaults are assumed to live on a local
 filesystem.
 
-**Everything in this ADR — including the `EditResume` fix in the Amendment
-below — is a NO-OP ON WINDOWS.** `flock_windows.go` returns `nil` from both
-`flockExclusive` and `funlock`, so `vaultlock.Acquire` succeeds having locked
-nothing: it creates the sidecar, hands back a `release` that unlocks nothing,
-and every writer "holds" the lock simultaneously. Routing the surgical editors
-through `EditResume` therefore makes `resume.md` safe on unix and leaves it
-**completely unprotected on Windows** — two concurrent `vp_thread_insert`
-calls there still lose updates exactly as they did before the fix. Do not read
-this ADR as "`resume.md` is safe everywhere." Real Windows locking
-(`LockFileEx`) is the separate `windows-lockfileex` task; until it lands,
-Windows is unprotected on *every* vault path, not just this one.
+**Every locking claim in this ADR is a NO-OP ON WINDOWS.** `flock_windows.go`
+returns `nil` from both `flockExclusive` and `funlock`, so `vaultlock.Acquire`
+succeeds having locked nothing: it creates the sidecar, hands back a `release`
+that unlocks nothing, and every writer "holds" the lock simultaneously. The
+locking discipline therefore makes `resume.md` safe on unix and leaves it
+**completely unprotected on Windows** — two concurrent writers there still lose
+updates exactly as they did before the fix.
+
+**This applies to the compare-and-set guard too, and CAS does not rescue it.**
+Both surviving `resume.md` writers (`storage.WriteResume` and `vaultfs.Edit`)
+compare the digest *inside* the lock — but on Windows that lock orders nothing,
+so two writers can pass the same compare and one still loses. CAS **narrows** the
+window on Windows; it does not close it. Do not read this ADR as "`resume.md` is
+safe everywhere." Real Windows locking (`LockFileEx`) is the separate
+`windows-lockfileex` task; until it lands, Windows is unprotected on *every*
+vault path, not just this one.
 
 ## Consequences
 
@@ -177,6 +183,13 @@ Windows is unprotected on *every* vault path, not just this one.
 
 ## Amendment (2026-07-11): the resume.md lost-update hole
 
+> **Partly superseded — see the third amendment, *the surgical editors and
+> `EditResume` are deleted*.** The diagnosis in this section still stands and is
+> why the layering rule exists. The *remedy* does not: the six tools,
+> `internal/mdutil`, and `storage.EditResume` have all been deleted. Do not reach
+> for `EditResume`; it no longer exists. This text is kept as the record of the
+> hole and of why vault I/O must stay in `storage` / `vaultfs`.
+
 The discipline above was correct and the primitive worked — and `resume.md` was
 losing updates anyway, because the layer that edits it never took the lock.
 
@@ -200,7 +213,14 @@ The root cause is **layering**, not a missing `Acquire` call. Every
 tools layer performed vault I/O directly and so sat *outside* the discipline
 this ADR describes. A rule that a caller can silently opt out of is not a rule.
 
-### `storage.EditResume` — the sanctioned locked-RMW combinator
+### `storage.EditResume` — the sanctioned locked-RMW combinator (DELETED)
+
+> **This combinator no longer exists.** It went callerless when the six surgical
+> editors were deleted, and was removed with them. The locked-RMW *shape* it
+> describes remains the correct pattern for any future multi-step vault mutation,
+> which is why the reasoning is preserved — but there is no `EditResume` to call.
+> For `resume.md`, use `vp_vault_read` + `vp_vault_edit` (CAS-chained); see the
+> third amendment.
 
 ```go
 func (v *Vault) EditResume(project string, mutate func(string) (string, error)) error
@@ -426,6 +446,117 @@ not close it. Only `windows-lockfileex` does.
 - The guard is file-granular, so the block-granularity residual above remains.
 - On Windows the compare is unserialized (above).
 
+## Amendment (2026-07-12): the surgical editors and `EditResume` are deleted
+
+**Read this before writing to `resume.md`.** The two amendments above describe a
+write path that no longer exists.
+
+### What was removed
+
+The six surgical editors (`vp_thread_insert` / `_replace` / `_remove`,
+`vp_carried_add` / `_remove` / `_promote_to_task`), the `internal/mdutil` package
+that backed them, and `storage.EditResume` — the locked-RMW combinator the first
+amendment introduced — have all been deleted. `EditResume` went callerless the
+moment the six tools did; keeping a locked-RMW combinator with no callers would
+have been a trap, not a safety net. The MCP surface went 68 → 62 tools, 24 → 18
+mutating. `MCPSurfaceVersion` stays **1**: removing tools changes nothing about
+what is written on disk.
+
+The tools were not merely unused — they were **broken**. They target `###`
+sub-headings, and no `resume.md` in the vault has any; `vp_thread_insert` with
+`position: "top"` against a bullet-shaped `## Open Threads` silently reparented
+the whole section body under a new `### slug` block, which a later
+`vp_thread_remove` would then delete wholesale. That is a two-call silent
+data-loss path, and no command template ever named the tools, so the safety
+apparatus of the first amendment was protecting code no agent could reach.
+
+### `resume.md` now has exactly two writers, both locked AND CAS'd
+
+- **`storage.WriteResume`** — whole-file regeneration and migrations, behind
+  `vp_update_resume`. `expected_sha256` required; `""` means *assert-absent*.
+- **`vaultfs.Edit`** — one section at a time, behind `vp_vault_edit`. **This is
+  the routine wrap path**: every ordinary resume update now goes through it.
+
+`vaultlock.canonicalKey` normalizes both path spellings to one key, so
+`vaultfs.Edit` takes the *same* lock `EditResume` did. The locking discipline of
+this ADR is intact; only the combinator is gone.
+
+**CAS is now the primary discipline, not a backstop.** Every routine resume write
+is a compare-and-set edit.
+
+### The spurious-conflict objection now bites — and we accepted it
+
+*Why CAS belongs here and was correctly rejected on `EditResume`* argued that a
+whole-file CAS would manufacture **spurious conflicts**: two agents editing
+*disjoint* blocks would collide on a whole-file digest though neither lost
+anything. That objection was sound, and the wrap path now **incurs exactly it** —
+`vaultfs.Edit`'s guard is file-granular, so two agents editing different sections
+of `resume.md` concurrently will conflict.
+
+This is an accepted trade, made with open eyes: a **loud, recoverable** spurious
+conflict (re-read, re-derive the anchor, resubmit) is strictly better than the
+**silent data-loss path** the editors actually were. The cure for a spurious
+conflict is a retry; the cure for a silent clobber is a restore from git.
+
+### The block-granularity residual is improved, not merely carried forward
+
+`vaultfs.Edit` asserts the *content* it is replacing via `old_string`, which is a
+**finer** assertion than the per-block digest the previous amendment proposed as
+the eventual fix. If the region moved, the anchor no longer matches and the edit
+fails **loudly** (`old_string not found`) instead of clobbering. Ambiguity fails
+loudly too (`old_string occurs N times`). The three loud failures — not-found,
+ambiguous, sha-mismatch — are the safety net. **Fix a failing anchor by making it
+more specific, never by broadening it until something matches.**
+
+### The write path inherits the raw-vs-expanded trap
+
+*Read-path contract* above says the digest is of the RAW pre-expansion bytes.
+That is now a **write-path** correctness requirement as well. `vp_get_resume` /
+`vp_bootstrap_context` serve placeholder-**expanded** bodies while hashing the
+**raw** ones, so text taken from them is poison for a write-back: an `old_string`
+spanning a placeholder will not match disk (loud, harmless), and a whole-file body
+composed from them **passes CAS and silently bakes the expanded values onto disk**,
+destroying the live tokens. `expandScoped` is a blind `strings.ReplaceAll` — it
+does not respect code spans, so tokens inside backticks are eaten too.
+
+**`vp_vault_read` is the only legal source of text you intend to write back.**
+`vp_get_resume` is for reading. `vp_update_resume`'s description, its schema, and
+the `remedy` in its conflict payload all say so — that last one matters most,
+because it fires exactly when an agent is recovering from a conflict and is most
+likely to do what it is told.
+
+### What this does NOT deliver
+
+- **Structural validation.** `vaultfs.Edit` will happily accept an edit that
+  mangles section structure. That is the one guarantee typed editors would have
+  given, and it is deliberately forgone. Loud failure on a bad anchor is the
+  mitigation, not a substitute. Cap violations are now **detected**, not
+  prevented: `vp check --check resume-caps` (read-only) warns on size and row
+  overruns, because with the typed editors gone there is no write path left to
+  enforce a cap *at*.
+- **Windows protection.** Unchanged and still absent; see *Platform scope*.
+
+### Consequences of this amendment
+
+**Positive:**
+
+- The only two known silent-corruption paths into `resume.md` are gone: the
+  editors' reparenting bug (deleted) and the blind whole-file rewrite composed
+  from expanded content (now refused, and documented at all three places the tool
+  speaks to the agent).
+- ~2,360 net lines removed, including a whole package, with zero new tool code.
+- The end-to-end guarantee is pinned by
+  `TestIntegration_UpdateResumeStaleWriteRefused`
+  (`internal/integration/resume_cas_test.go`), which drives the refusal through
+  real JSON-RPC dispatch with `vp_vault_edit` as the racing writer, and is
+  mutation-proven against the in-lock compare.
+
+**Negative / trade-offs:**
+
+- Spurious file-granular conflicts on concurrent disjoint edits (above).
+- Anchors are composed by hand, so a careless `old_string` fails loudly rather
+  than doing something clever. This is the intended posture.
+
 ## References
 
 - Lock primitive: `internal/vaultlock/` (`vaultlock.go`, `flock_unix.go`,
@@ -438,15 +569,23 @@ not close it. Only `windows-lockfileex` does.
   `internal/vaultfs/safety.go` (`IsRefusedWritePath`)
 - The write-gate audit that surfaced the hole: `mcp-surface-handshake`
   Phase 2 (see ADR-002 references and PRD §1.1)
-- Locked-RMW combinator (Amendment): `internal/storage/project_dirs.go`
-  (`(*Vault).EditResume`); its callers `internal/tools/thread_tools.go`
-  (`editResume`) and `internal/tools/carried_tools.go`; the TOCTOU fix in
-  `internal/storage/tasks.go` (`CreateTask`)
+- Locked-RMW combinator (1st Amendment) — **DELETED** (3rd Amendment):
+  `storage.(*Vault).EditResume`, `internal/tools/thread_tools.go`,
+  `internal/tools/carried_tools.go`, and `internal/mdutil/` no longer exist; they
+  survive only in git history. The TOCTOU fix in `internal/storage/tasks.go`
+  (`CreateTask`) **does** survive — `CreateTask` outlived the editor that was its
+  second caller
+- Surviving `resume.md` writers (3rd Amendment): `internal/storage/project_dirs.go`
+  (`(*Vault).WriteResume` — whole-file, behind `vp_update_resume`) and
+  `internal/vaultfs/write.go` (`Edit` — surgical, behind `vp_vault_edit`, the
+  routine wrap path). Cap detection: `internal/check/resume.go`
+  (`vp check --check resume-caps`)
 - Amendment coverage: `internal/storage/project_dirs_test.go`,
-  `internal/tools/thread_tools_test.go`,
-  `internal/tools/carried_tools_test.go`,
   `internal/storage/tasks_test.go`, and the full-stack
-  `internal/integration/resume_editors_concurrent_test.go` (see `doc/TESTING.md`)
+  `internal/integration/resume_cas_test.go`
+  (`TestIntegration_UpdateResumeStaleWriteRefused` — `vp_vault_edit` as the
+  racing writer; it replaces the deleted `resume_editors_concurrent_test.go`).
+  See `doc/TESTING.md`
 - Compare-and-set writer (2nd Amendment): `internal/storage/project_dirs.go`
   (`(*Vault).WriteResume`, `ResumeConflictError`); the conflict sentinel
   `internal/vaultfs` (`ErrShaConflict`); the required guard in
