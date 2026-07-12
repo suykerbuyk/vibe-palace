@@ -42,7 +42,38 @@ func TestNextIterFromIterationsMD(t *testing.T) {
 		// A heading-shaped line inside a fence is sample text, not a header, and
 		// must not move the counter.
 		{name: "fenced heading ignored", content: "## Iteration 3 — real\n\n```md\n## Iteration 900 — an example in a doc snippet\n```\n", want: 4},
-		{name: "fenced tilde heading ignored", content: "## Iteration 3 — real\n\n~~~\n## Iteration 900 — sample\n~~~\n", want: 4},
+		{name: "fenced tilde heading ignored", content: "## Iteration 3 — sample\n\n~~~\n## Iteration 900 — sample\n~~~\n", want: 4},
+
+		// REGRESSION, from the live iterations.md (line 698). A backtick run that
+		// opens AND closes on one line is inline code in prose, not a fence — its
+		// info string carries a backtick, which CommonMark forbids in an opening
+		// fence. A naive "starts with ```" scanner reads it as a lone OPEN,
+		// inverts its fence state, and swallows every heading that follows: it
+		// lost 187 of 191 headings and reported iteration 77 on a project at 190.
+		{
+			name:    "inline code run is not an opening fence",
+			content: "## Iteration 3 — real\n\nsee the ```bash tutorial``` for details\n\n## Iteration 190 — also real\n",
+			want:    191,
+		},
+		// The same shape must not break a REAL fence that follows it.
+		{
+			name:    "real fence still works after an inline code run",
+			content: "## Iteration 3 — real\n\nsee ```bash tutorial``` here\n\n```md\n## Iteration 900 — sample\n```\n\n## Iteration 190 — real\n",
+			want:    191,
+		},
+		// A closing delimiter carries no info string; "```go" mid-fence is content.
+		{
+			name:    "info string only opens, bare run closes",
+			content: "## Iteration 5 — real\n\n```go\n// ## Iteration 900 — sample\n```\n\n## Iteration 7 — real\n",
+			want:    8,
+		},
+		// An indented 4+ space line is an indented code block, not a fence
+		// delimiter, and must not toggle fence state.
+		{
+			name:    "four-space indent is not a fence delimiter",
+			content: "## Iteration 3 — real\n\n    ```\n\n## Iteration 190 — real\n",
+			want:    191,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
