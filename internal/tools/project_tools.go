@@ -10,6 +10,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
 
 // ---------------------------------------------------------------------------
@@ -57,7 +58,7 @@ var appendIterationSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
 		"project": {"type": "string", "description": "Project slug."},
-		"content": {"type": "string", "description": "Iteration narrative content (markdown)."}
+		"content": {"type": "string", "description": "Iteration narrative content (markdown). MUST open with a canonical H2 header — \"## Iteration N — title\". H3 is reserved for sub-sections inside the narrative; an H3 iteration header is rejected."}
 	},
 	"required": ["project", "content"]
 }`)
@@ -83,6 +84,12 @@ func appendIterationHandler(vault *storage.Vault) mcp.HandlerFunc {
 		}
 		if p.Content == "" {
 			return nil, fmt.Errorf("content is required")
+		}
+		// Reject a non-canonical heading at the door. iterations.md is read by
+		// NextIterFromIterationsMD to derive the next iteration number, and a
+		// header the reader disagrees with is how the counter silently drifts.
+		if err := wrapstate.ValidateIterationNarrative(p.Content); err != nil {
+			return nil, err
 		}
 		if err := vault.AppendIteration(p.Project, p.Content); err != nil {
 			return nil, fmt.Errorf("append iteration: %w", err)

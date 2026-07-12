@@ -18,13 +18,31 @@ func TestNextIterFromIterationsMD(t *testing.T) {
 	}{
 		{name: "missing file", content: "", want: 1},
 		{name: "no headers", content: "# Iterations\n\nno entries yet\n", want: 1},
-		{name: "single header", content: "### Iteration 1 — first (2026-01-01)\n", want: 2},
-		{name: "many headers", content: "### Iteration 40 — a\n### Iteration 41 — b\n### Iteration 168 — z\n", want: 169},
-		{name: "out of order", content: "### Iteration 168 — z\n### Iteration 40 — a\n", want: 169},
-		// The H3 (###) level is canonical; a stale H2 (##) line must NOT be
-		// parsed as an iteration header.
-		{name: "h2 ignored", content: "## Iteration 999 — wrong level\n### Iteration 7 — right\n", want: 8},
-		{name: "only h2 stale fixture", content: "## Iteration 50 — stale format\n", want: 1},
+		{name: "single header h2 canonical", content: "## Iteration 1 — first (2026-01-01)\n", want: 2},
+		{name: "many headers", content: "## Iteration 40 — a\n## Iteration 41 — b\n## Iteration 168 — z\n", want: 169},
+		{name: "out of order", content: "## Iteration 168 — z\n## Iteration 40 — a\n", want: 169},
+
+		// The reader is tolerant of BOTH levels on purpose. It returns a bare
+		// number and so cannot report a wrong level — a strict matcher could only
+		// under-count silently, which is the defect these cases pin down.
+
+		// Legacy H3 narratives still count. A file migrated to H2 keeps its
+		// history readable even if an H3 header survives somewhere.
+		{name: "legacy h3 still counts", content: "### Iteration 7 — legacy\n", want: 8},
+
+		// Mixed levels: the max wins regardless of level. Before the fix, a
+		// strict-H3 matcher read this as 8 — the H2 999 was invisible to it.
+		{name: "mixed levels take the max", content: "## Iteration 999 — h2\n### Iteration 7 — h3\n", want: 1000},
+
+		// THE rusty-can CASE. An all-H2 file returned 1 — the "fresh project"
+		// signal — on a project with real history, so a wrap would have
+		// renumbered from scratch on top of it.
+		{name: "all h2 file is not a fresh project", content: "## Iteration 50 — real history\n", want: 51},
+
+		// A heading-shaped line inside a fence is sample text, not a header, and
+		// must not move the counter.
+		{name: "fenced heading ignored", content: "## Iteration 3 — real\n\n```md\n## Iteration 900 — an example in a doc snippet\n```\n", want: 4},
+		{name: "fenced tilde heading ignored", content: "## Iteration 3 — real\n\n~~~\n## Iteration 900 — sample\n~~~\n", want: 4},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -52,6 +70,59 @@ func TestNextIterFromIterationsMD(t *testing.T) {
 func TestNextIterFromIterationsMD_EmptyPath(t *testing.T) {
 	if got, err := NextIterFromIterationsMD(""); err != nil || got != 1 {
 		t.Errorf("empty path: got (%d, %v), want (1, nil)", got, err)
+	}
+}
+
+// ValidateIterationNarrative is the writer half of the heading contract: the
+// reader tolerates H2 and H3 so it can never go blind, and the writer refuses
+// anything but canonical H2 so nothing new drifts in.
+func TestValidateIterationNarrative(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantErr bool
+	}{
+		{
+			name:    "canonical h2 accepted",
+			content: "## Iteration 191 — what changed\n\nsome narrative.\n",
+		},
+		{
+			name:    "h2 with h3 subsections accepted",
+			content: "## Iteration 191 — title\n\n### Phase 1 — adapter\n\nbody\n\n### Results\n\nmore\n",
+		},
+		{
+			name:    "h3 iteration header rejected",
+			content: "### Iteration 191 — wrong level\n\nbody\n",
+			wantErr: true,
+		},
+		{
+			name:    "no iteration header rejected",
+			content: "just some prose with no header at all\n",
+			wantErr: true,
+		},
+		{
+			name:    "a later h3 iteration header is still rejected",
+			content: "## Iteration 191 — right\n\n### Iteration 192 — smuggled in at the wrong level\n",
+			wantErr: true,
+		},
+		{
+			// The iteration-184 lesson: a heading-shaped line inside a fence is a
+			// shell comment or a doc sample, not a header. Rejecting those would
+			// hard-fail append on a legitimate and very common body shape.
+			name:    "heading-shaped line inside a fence does not trigger rejection",
+			content: "## Iteration 191 — real\n\n```md\n### Iteration 900 — an example being quoted\n```\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateIterationNarrative(tc.content)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected an error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 

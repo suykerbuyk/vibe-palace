@@ -97,16 +97,44 @@ type Snapshot struct {
 	Cancelled []string `json:"cancelled"`
 }
 
-// iterNarrativeRe matches the H3 narrative header used in iterations.md
-// (e.g., "### Iteration 168 — title (date)"). The capture group is the
-// project-wide iteration number. The H3 (###) level is canonical and must
-// not be relaxed to H2 (##).
-var iterNarrativeRe = regexp.MustCompile(`(?m)^### Iteration (\d+)\b`)
+// IterationHeadingPrefix is the canonical markdown prefix for an iteration
+// narrative header in iterations.md: H2, e.g. "## Iteration 191 — title".
+//
+// iterations.md is titled with a single H1 ("# <project> — Iteration
+// Narratives"), so H2 is the natural level for a narrative and H3 is left free
+// for the sub-sections narratives routinely carry ("### Phase 1 — ...",
+// "### Results"). The file previously used H3 for BOTH, which put an iteration
+// header at the same level as its own subsections.
+const IterationHeadingPrefix = "## "
+
+// iterHeadingRe matches an iteration narrative header at H2 (canonical) or H3
+// (legacy). The capture groups are the hashes and the project-wide iteration
+// number.
+//
+// The READER is deliberately tolerant of both levels, and that asymmetry is the
+// whole point. NextIterFromIterationsMD's only output is a number: it has no
+// channel on which to report "your heading is at the wrong level", so a strict
+// matcher cannot fail loudly — it can only silently UNDER-COUNT, which is
+// exactly the defect this tolerance exists to prevent. A strict-H3 matcher was
+// blind to 110 H2 headings in vibe-palace (reporting iteration 188 at 190) and
+// blind to every heading in rusty-can, whose narratives are entirely H2 — for
+// which it reported 1, the "fresh project" signal, on a project with 18
+// iterations of history. A wrap trusting that would have renumbered from
+// scratch on top of real history.
+//
+// Strictness belongs in the WRITER, where a caller can actually see the error:
+// ValidateIterationNarrative rejects a non-canonical heading loudly, so nothing
+// new enters the file at the wrong level while the reader stays unable to go
+// blind on what is already there.
+var iterHeadingRe = regexp.MustCompile(`^(#{2,3})[ \t]+Iteration (\d+)\b`)
 
 // NextIterFromIterationsMD parses the iterations.md at the given path and
-// returns max(### Iteration N) + 1. Returns 1 when the path is empty, the
-// file is missing, or it contains no matching headers — the canonical
-// "fresh project" signal.
+// returns max(Iteration N) + 1 over every iteration header, at either heading
+// level. Returns 1 when the path is empty, the file is missing, or it contains
+// no headers at all — the canonical "fresh project" signal.
+//
+// Fence-aware: a heading-shaped line inside a fenced code block is a comment or
+// sample text, not a header, and must not move the iteration counter.
 func NextIterFromIterationsMD(iterationsPath string) (int, error) {
 	if iterationsPath == "" {
 		return 1, nil
@@ -119,16 +147,76 @@ func NextIterFromIterationsMD(iterationsPath string) (int, error) {
 		return 0, err
 	}
 	maxN := 0
-	for _, m := range iterNarrativeRe.FindAllStringSubmatch(string(data), -1) {
-		if len(m) < 2 {
-			continue
-		}
-		n, err := strconv.Atoi(m[1])
-		if err == nil && n > maxN {
-			maxN = n
+	for _, h := range scanIterHeadings(string(data)) {
+		if h.n > maxN {
+			maxN = h.n
 		}
 	}
 	return maxN + 1, nil
+}
+
+// iterHeading is one iteration header found outside a code fence.
+type iterHeading struct {
+	line   int    // 1-indexed line number
+	hashes string // "##" or "###"
+	n      int    // the iteration number
+	text   string // the trimmed header line
+}
+
+// scanIterHeadings returns every iteration header in content that lies outside
+// a fenced code block. Fence handling matches storage.validateTaskBody: an
+// unterminated fence means the remainder is treated as fenced, since
+// over-rejecting (or over-counting) is the failure mode being avoided.
+func scanIterHeadings(content string) []iterHeading {
+	var out []iterHeading
+	inFence := false
+	for i, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue // "## Iteration 9" here is sample text, not a header.
+		}
+		m := iterHeadingRe.FindStringSubmatch(trimmed)
+		if m == nil {
+			continue
+		}
+		n, err := strconv.Atoi(m[2])
+		if err != nil {
+			continue
+		}
+		out = append(out, iterHeading{line: i + 1, hashes: m[1], n: n, text: trimmed})
+	}
+	return out
+}
+
+// ValidateIterationNarrative checks a narrative body before it is appended to
+// iterations.md: it must carry at least one iteration header, and every header
+// it carries must be at the canonical H2 level.
+//
+// This is the writer half of the contract described on iterHeadingRe. Before it
+// existed, vp_append_iteration accepted arbitrary markdown and the wrap template
+// named no heading level at all, so agents chose one per-session and the file
+// accumulated both — 110 H2 against 81 H3 in vibe-palace alone. That is the same
+// shape as the status-line defect fixed in iteration 184: a reader with a strict
+// private definition, a writer with none, and no one to notice they disagreed.
+func ValidateIterationNarrative(content string) error {
+	const remedy = `open the narrative with a canonical H2 header, e.g. "## Iteration 191 — what changed this session"`
+
+	headings := scanIterHeadings(content)
+	if len(headings) == 0 {
+		return fmt.Errorf("iteration narrative carries no %q header: %s", "## Iteration N", remedy)
+	}
+	for _, h := range headings {
+		if h.hashes != strings.TrimSpace(IterationHeadingPrefix) {
+			return fmt.Errorf(
+				"iteration narrative line %d is an H%d header (%q); the canonical level is H2: %s. H3 is reserved for sub-sections INSIDE a narrative",
+				h.line, len(h.hashes), h.text, remedy)
+		}
+	}
+	return nil
 }
 
 // ClassifyWrapShape returns the work-unit shape. Pure function: no I/O.

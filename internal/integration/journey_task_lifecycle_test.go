@@ -114,8 +114,11 @@ func TestJourney_Task_Lifecycle(t *testing.T) {
 		t.Errorf("retired task file not at %s: %v", donePath, err)
 	}
 
-	// 5. vp_append_iteration: record the wrap-up narrative.
-	iterContent := "## Iteration\nRetired task " + taskSlug + " after shipping journey tests."
+	// 5. vp_append_iteration: record the wrap-up narrative. The header must be a
+	// canonical, NUMBERED H2 — vp_append_iteration rejects anything else, since
+	// an unparseable header is invisible to NextIterFromIterationsMD and so
+	// silently fails to advance the iteration counter.
+	iterContent := "## Iteration 1 — journey\nRetired task " + taskSlug + " after shipping journey tests."
 	raw = h.callTool(t, "vp_append_iteration", map[string]any{
 		"project": project,
 		"content": iterContent,
