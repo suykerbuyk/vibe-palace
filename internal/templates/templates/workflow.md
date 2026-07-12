@@ -57,8 +57,9 @@ Never jump to coding short-term fixes without investigation.
 ### 3. Self-Improvement Loop
 
 - After ANY correction from the user: save the pattern with `vp_memory_write`
-  (`type: feedback`) — host-agnostic, lands in `Projects/<slug>/memory/`, and
-  reaches every agent via `vp_bootstrap_context`
+  (`type: feedback`) — host-agnostic, lands in `Projects/<slug>/memory/`.
+  `vp_bootstrap_context` surfaces the memory **index** only (name, description,
+  type, rel) — never the bodies; read a body on demand with `vp_memory_read`
 - Write rules that prevent the same mistake; for cross-project lessons, also
   record under vault `Knowledge/learnings/`
 - Review memory and lessons at session start
@@ -84,11 +85,13 @@ Never jump to coding short-term fixes without investigation.
 
 ## Task Management
 
+**NOTHING is done until the human says it is done. Never retire a task, never claim completion, without explicit human approval.**
+
 1. Write plan using `vp_manage_task` or plan mode
 2. Check in before starting implementation
 3. Track progress and explain changes at each step
 4. Add review section to the task file
-5. When complete: retire the task and record an iteration summary
+5. When the human confirms completion: retire the task and record an iteration summary
 
 ## Core Principles
 

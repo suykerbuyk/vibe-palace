@@ -39,7 +39,7 @@ func TestJourney_Task_Lifecycle(t *testing.T) {
 		"action":   "create",
 		"task":     taskSlug,
 		"title":    "Ship Journey Tests",
-		"content":  "Write multi-tool user-journey integration tests.",
+		"content":  taskBody("Write multi-tool user-journey integration tests."),
 		"priority": "high",
 	})
 	if !strings.Contains(raw, "created") {
@@ -78,11 +78,13 @@ func TestJourney_Task_Lifecycle(t *testing.T) {
 		t.Fatalf("update_status: %s", raw)
 	}
 
-	// 4. retire.
+	// 4. retire. Requires the agent's own approved_by_human attestation —
+	// friction on the default path, not an authorization check.
 	raw = h.callTool(t, "vp_manage_task", map[string]any{
-		"project": project,
-		"action":  "retire",
-		"task":    taskSlug,
+		"project":           project,
+		"action":            "retire",
+		"task":              taskSlug,
+		"approved_by_human": true,
 	})
 	if !strings.Contains(raw, "retired") {
 		t.Fatalf("retire: %s", raw)

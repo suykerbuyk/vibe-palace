@@ -5,7 +5,9 @@ package wrapstate
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -431,4 +433,165 @@ func TestPreflight_Matrix(t *testing.T) {
 			t.Errorf("expected vault_dirty + project_dirty warnings, got %+v", res.Warnings)
 		}
 	})
+}
+
+// realGitRepo builds an actual git repo in a fresh temp dir (init + one empty
+// commit) so the unstubbed gitCmdRunner probes real git. When dirty, an
+// untracked file is left behind — `git status --porcelain` reports untracked
+// files, which is exactly the "any dirt at all" signal ProjectGitState wants.
+func realGitRepo(t *testing.T, dirty bool) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "-C", dir, "init"},
+		{"git", "-C", dir, "config", "user.email", "test@test.com"},
+		{"git", "-C", dir, "config", "user.name", "Test"},
+		{"git", "-C", dir, "commit", "--allow-empty", "-m", "root"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	if dirty {
+		if err := os.WriteFile(filepath.Join(dir, "dirt.txt"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// mkSubdir creates (and returns) a nested subdirectory of dir.
+func mkSubdir(t *testing.T, dir string) string {
+	t.Helper()
+	sub := filepath.Join(dir, "a", "b")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return sub
+}
+
+// gitWorktree adds a linked worktree of repo whose `.git` is a FILE, not a
+// directory — the case an info.IsDir() check would wrongly reject.
+func gitWorktree(t *testing.T, repo string) string {
+	t.Helper()
+	wt := filepath.Join(t.TempDir(), "wt")
+	cmd := exec.Command("git", "-C", repo, "worktree", "add", "-b", "wt-branch", wt)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+	info, err := os.Lstat(filepath.Join(wt, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.IsDir() {
+		t.Fatalf("precondition failed: worktree .git is a dir, expected a file")
+	}
+	return wt
+}
+
+// TestProjectGitState exercises the three-valued probe against real git repos.
+// Every case first passes through ResolveProjectRoot, mirroring what the
+// vp_ingest_commit_msg handler does, so subdirectory inputs must land on the
+// repo root and report the root's state.
+func TestProjectGitState(t *testing.T) {
+	cases := []struct {
+		name string
+		dir  func(t *testing.T) string
+		want GitState
+	}{
+		{"not a repo", func(t *testing.T) string { return t.TempDir() }, GitNotARepo},
+		{"not a repo, subdir", func(t *testing.T) string { return mkSubdir(t, t.TempDir()) }, GitNotARepo},
+		{"clean repo", func(t *testing.T) string { return realGitRepo(t, false) }, GitClean},
+		{"clean repo, subdir", func(t *testing.T) string { return mkSubdir(t, realGitRepo(t, false)) }, GitClean},
+		{"dirty repo", func(t *testing.T) string { return realGitRepo(t, true) }, GitDirty},
+		{"dirty repo, subdir", func(t *testing.T) string { return mkSubdir(t, realGitRepo(t, true)) }, GitDirty},
+		{"worktree (.git is a file)", func(t *testing.T) string { return gitWorktree(t, realGitRepo(t, false)) }, GitClean},
+		{"worktree subdir", func(t *testing.T) string { return mkSubdir(t, gitWorktree(t, realGitRepo(t, false))) }, GitClean},
+		{"empty dir arg", func(t *testing.T) string { return "" }, GitNotARepo},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := ResolveProjectRoot(tc.dir(t))
+			got, err := ProjectGitState(root)
+			if err != nil {
+				t.Fatalf("ProjectGitState(%q): %v", root, err)
+			}
+			if got != tc.want {
+				t.Errorf("ProjectGitState(%q) = %v, want %v", root, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestProjectGitState_ShallowOnSubdir locks in why callers MUST resolve the
+// root first: the probe stats `.git` in dir itself and does not walk upward.
+func TestProjectGitState_ShallowOnSubdir(t *testing.T) {
+	sub := mkSubdir(t, realGitRepo(t, true))
+	got, err := ProjectGitState(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != GitNotARepo {
+		t.Errorf("unresolved subdir = %v, want %v (probe is deliberately shallow)", got, GitNotARepo)
+	}
+}
+
+// TestProjectGitState_ProbeError checks a failing git invocation surfaces the
+// error rather than a confident state — ingest permits on error.
+func TestProjectGitState_ProbeError(t *testing.T) {
+	fakeGit(t, func([]string) (string, error) {
+		return "", errors.New("boom")
+	})
+	got, err := ProjectGitState(mkGitDir(t))
+	if err == nil {
+		t.Fatal("expected probe error")
+	}
+	if got != GitNotARepo {
+		t.Errorf("state on error = %v, want indeterminate %v", got, GitNotARepo)
+	}
+	// The delegating wrapper must keep its old (false, err) contract.
+	dirty, err := ProjectHasUncommittedWrites(mkGitDir(t))
+	if err == nil || dirty {
+		t.Errorf("ProjectHasUncommittedWrites on error = (%v, %v), want (false, err)", dirty, err)
+	}
+}
+
+// TestProjectHasUncommittedWrites_DelegatesToGitState pins the flattening: the
+// wrapper must still collapse not-a-repo and clean alike into false.
+func TestProjectHasUncommittedWrites_DelegatesToGitState(t *testing.T) {
+	cases := []struct {
+		name string
+		dir  string
+		want bool
+	}{
+		{"not a repo", t.TempDir(), false},
+		{"clean repo", realGitRepo(t, false), false},
+		{"dirty repo", realGitRepo(t, true), true},
+		{"empty path", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ProjectHasUncommittedWrites(tc.dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("ProjectHasUncommittedWrites(%q) = %v, want %v", tc.dir, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGitStateString(t *testing.T) {
+	for state, want := range map[GitState]string{
+		GitNotARepo: "not-a-repo",
+		GitClean:    "clean",
+		GitDirty:    "dirty",
+		GitState(9): "unknown",
+	} {
+		if got := state.String(); got != want {
+			t.Errorf("GitState(%d).String() = %q, want %q", state, got, want)
+		}
+	}
 }

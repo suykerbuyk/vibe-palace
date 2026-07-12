@@ -23,6 +23,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
 
 var ingestCommitMsgSchema = json.RawMessage(`{
@@ -59,6 +60,20 @@ func IngestCommitMsgTool(vault *storage.Vault) mcp.Tool {
 			}
 			if args.ProjectPath == "" {
 				return nil, fmt.Errorf("project_path is required")
+			}
+
+			// Refuse to author a commit message for an empty diff. Resolve to
+			// the repo ROOT first: project_path is not validated as a root, and
+			// probing a subdirectory would shallow-stat as not-a-repo and take
+			// the permit branch, silently defeating this check.
+			//
+			// Only a CLEAN repo refuses. A non-repo project is a legitimate
+			// wrap target, and a flaky/slow probe must never block one — so
+			// GitNotARepo, GitDirty, and any probe error all permit.
+			root := wrapstate.ResolveProjectRoot(args.ProjectPath)
+			if state, err := wrapstate.ProjectGitState(root); err == nil && state == wrapstate.GitClean {
+				return nil, fmt.Errorf("refusing to write commit.msg: the project repo at %q "+
+					"has no uncommitted changes — there is nothing to describe", root)
 			}
 
 			// Resolve the project slug: explicit wins, else detect from the

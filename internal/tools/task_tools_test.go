@@ -120,6 +120,13 @@ func TestGetTaskNotFound(t *testing.T) {
 	}
 }
 
+// unitTaskBody returns a create body that clears the handler's minimum-content
+// floor and carries no metadata header of its own (storage.CreateTask rejects a
+// body with its own H1 or **Status:** line).
+func unitTaskBody() string {
+	return strings.Repeat("A real plan line describing what to do and why it matters.\n", 6)
+}
+
 func TestManageTaskCreate(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
 	tool := ManageTaskTool(vault)
@@ -129,7 +136,7 @@ func TestManageTaskCreate(t *testing.T) {
 		Action:   "create",
 		Task:     "new-task",
 		Title:    "New Task",
-		Content:  "Task body.",
+		Content:  unitTaskBody(),
 		Priority: "high",
 	})
 	result, err := tool.Handler(context.Background(), params)
@@ -182,9 +189,10 @@ func TestManageTaskRetire(t *testing.T) {
 
 	tool := ManageTaskTool(vault)
 	params, _ := json.Marshal(manageTaskParams{
-		Project: "test-proj",
-		Action:  "retire",
-		Task:    "my-task",
+		Project:         "test-proj",
+		Action:          "retire",
+		Task:            "my-task",
+		ApprovedByHuman: true,
 	})
 	if _, err := tool.Handler(context.Background(), params); err != nil {
 		t.Fatalf("handler: %v", err)

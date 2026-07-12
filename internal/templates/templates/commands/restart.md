@@ -87,23 +87,24 @@ After bootstrap, continue loading context in the order below.
 
 ## Step 3: Sweep Orphaned Plans
 
-Check `~/.claude/plans/` for plan files from prior sessions (Claude
-Code creates these when plan mode is used). Use the Glob tool with
-pattern `*.md` and path set to the absolute expansion of
-`~/.claude/plans/` — do **not** put the full path in the pattern when
-also setting path.
+Check your host's local plan/scratch directory for plan files from
+prior sessions (on Claude Code this is `~/.claude/plans/`; other hosts
+have their own, and some have none — if there is no such directory,
+skip this step). That directory is **scratch only, never the source of
+truth**: plans live in the vault, reached only through `vp_manage_task`.
+Use the Glob tool with pattern `*.md` and path set to the absolute
+expansion of that directory — do **not** put the full path in the
+pattern when also setting path.
 
 For each file found:
 
 - Read the plan to determine whether it belongs to the current
   project (look for references to project files, directories, or the
   project name).
-- If it belongs to a **different** project, leave it in
-  `~/.claude/plans/`.
+- If it belongs to a **different** project, leave it where it is.
 - If it belongs to **this** project, create it as a task with a
   descriptive slug derived from the plan title (rules below), then
-  delete the original file from `~/.claude/plans/` using `rm` via
-  Bash.
+  delete the original scratch file.
 
 ### Slugification rules
 
@@ -121,33 +122,64 @@ For each file found:
 Example: `# Plan: Deprecate Agentctx Symlinks` →
 `deprecate-agentctx-symlinks`.
 
-Use `vp_manage_task` with `action: create`, `task` set to the derived
-slug, and `content` set to the full plan file content.
+### Strip the plan's metadata block before creating the task
 
-Plans **must** live in `agentctx/tasks/`, never in `~/.claude/plans/`.
+**This is mandatory — skipping it makes the create call fail.** Agent-written
+plans idiomatically open with a metadata block:
+
+    # Some Plan Title
+    **Status:** Draft
+    **Priority:** High
+
+`vp_manage_task` with `action: create` **supplies that block itself**, and it
+**rejects** any `content` that carries its own `**Status:**` line or its own
+top-level `# ` heading. So before you pass the plan body:
+
+- **Delete the leading metadata block** — the `# Title` line, the
+  `**Status:**` line, and the `**Priority:**` line — and pass only the body
+  that follows.
+- Keep the title's meaning in the **slug** (and, if you like, in a `## `
+  subheading inside the body).
+- (H1-shaped shell comments *inside* a fenced code block — ``` or ~~~ — are
+  fine and are not treated as headings.)
+
+**Why:** two `**Status:**` lines in one task file means the reader and the
+writer disagree about which one is real. `vp_get_task` and `vp_list_tasks`
+would report one status while `vp_manage_task update_status` rewrites the
+other. The create call refuses the duplicate rather than letting the file rot.
+
+Then use `vp_manage_task` with `action: create`, `task` set to the derived
+slug, and `content` set to the **stripped** plan body.
+
+Plans **must** live in the vault under `Projects/<slug>/tasks/`, reached only
+via the MCP task tools — never in a host's local plan/scratch directory.
 Summarize each plan's disposition (created as task, other project,
 etc.) when done.
 
-## Step 4: Auto-Retire Completed Tasks
+## Step 4: Report Retirement Candidates (never retire)
 
-List active tasks (exclude `done/` and `cancelled/` subdirectories).
-For each task:
+**Never retire a task here. Never retire a task anywhere without explicit
+human approval.** The operator's standing Rule 0 is: *nothing is ever done
+until the human says it is done.* A session-start sweep that retires tasks on
+its own reasoning violates that directly — and a plan that was written but
+never implemented would get filed into `done/` at the next session start,
+where nobody would look at it again.
 
-- Read its title and status line.
-- Check `git log --oneline -20` for commits that clearly implement
-  the task's objective (matching keywords from the title).
-- **Auto-retire if** the status already says "Done"/"Complete", OR
-  all checklist items (`- [x]`) are checked with none unchecked
-  (`- [ ]`) **and** recent commits match the task's subject matter.
-- **Never auto-retire if** unchecked checklist items remain, the
-  status says "In Progress" or "Blocked", or no matching commits
-  are found.
-- For each retirement: use `vp_manage_task` with `action: retire`,
-  then `vp_append_iteration` with a brief narrative noting which
-  commits fulfilled the task.
-- On uncertainty, report "Task {slug} may be complete — review
-  recommended" and leave it active. False negatives are far better
-  than false positives.
+So this step **reports**, it does not act:
+
+- List active tasks with `vp_list_tasks` (excludes `done/` and `cancelled/`).
+- For each, read its title and status line, and check
+  `git log --oneline -20` for commits that plausibly implement it.
+- If a task **looks** complete (status says "Done"/"Complete", or every
+  checklist item is checked and recent commits match its subject), add it to
+  a **"possible retirement candidates"** list you show the human.
+- Present that list and stop. The human decides. If they approve a
+  retirement, then — and only then — call `vp_manage_task` with
+  `action: retire` and `approved_by_human: true`, and record it with
+  `vp_append_iteration`.
+- Report candidates as "Task {slug} may be complete — review recommended".
+  Leaving a finished task active costs nothing; burying an unfinished one in
+  `done/` costs a whole plan.
 
 ## Step 5: Structured Context (optional)
 

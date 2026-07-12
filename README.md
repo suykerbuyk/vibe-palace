@@ -99,7 +99,7 @@ turn one.
 
 | Command          | Purpose                                                        |
 |------------------|----------------------------------------------------------------|
-| `/vpc-restart`   | Turn-1 session bootstrap. Pulls vault, sweeps orphan plans, auto-retires completed tasks, loads context. |
+| `/vpc-restart`   | Turn-1 session bootstrap. Pulls vault, sweeps orphan plans, reports retirement candidates for the human to decide, loads context. |
 | `/vpc-wrap`      | Session wrap. Quality-gate check, captures session, updates resume, stages files, syncs the vault. |
 | `/vpc-capture`   | Mid-session checkpoint without full wrap.                      |
 | `/vpc-review-plan` | Senior-staff-engineer review of a task plan before implementation. |

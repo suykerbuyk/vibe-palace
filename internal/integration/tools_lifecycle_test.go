@@ -19,13 +19,14 @@ func TestTaskLifecycle(t *testing.T) {
 	h := newHarness(t, false)
 	h.registerAllTools(t)
 
-	// Create a task.
+	// Create a task. The body must clear the handler's minimum-content floor and
+	// must not carry its own H1/**Status:** header (CreateTask writes those).
 	raw := h.callTool(t, "vp_manage_task", map[string]any{
 		"project":  "test-proj",
 		"action":   "create",
 		"task":     "lifecycle-task",
 		"title":    "Lifecycle Test Task",
-		"content":  "This is test content.",
+		"content":  taskBody("Exercise the full create → list → get → update_status → retire path."),
 		"priority": "high",
 	})
 	if !strings.Contains(raw, "created") {
@@ -60,11 +61,14 @@ func TestTaskLifecycle(t *testing.T) {
 		t.Fatalf("update_status: %s", raw)
 	}
 
-	// Retire.
+	// Retire. approved_by_human is friction, not authorization — the schema
+	// requires it to be present and the handler requires it to be true, but
+	// nothing verifies the claim behind it.
 	raw = h.callTool(t, "vp_manage_task", map[string]any{
-		"project": "test-proj",
-		"action":  "retire",
-		"task":    "lifecycle-task",
+		"project":           "test-proj",
+		"action":            "retire",
+		"task":              "lifecycle-task",
+		"approved_by_human": true,
 	})
 	if !strings.Contains(raw, "retired") {
 		t.Fatalf("retire: %s", raw)

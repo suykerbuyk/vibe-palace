@@ -9,12 +9,26 @@ the code it references, and identify what will actually go wrong.
 
 ## Inputs
 
-Before reviewing, check `~/.claude/plans/` for any plan files not
-yet moved to `agentctx/tasks/`. If found, create each as a task via
-`vp_manage_task` (`action: create`, with the plan content) using
-the slugification rules from `/restart`, then delete the original
-from `~/.claude/plans/`. Then proceed with the review from
-`agentctx/tasks/`.
+**Where plans live.** Tasks live in the vault, under
+`Projects/<slug>/tasks/`, and are reached **only** through the MCP task tools:
+`vp_manage_task` to mutate, `vp_get_task` / `vp_list_tasks` to read. Your
+host's local plan/scratch directory (on Claude Code, `~/.claude/plans/`; other
+hosts differ, and some have none) is **scratch — never the source of truth**.
+Never review from it, and never leave a plan there.
+
+Before reviewing, check that scratch directory for any plan files not yet
+promoted into the vault. If found, create each as a task via `vp_manage_task`
+(`action: create`) using the slugification rules from `/restart`, then delete
+the original scratch file. Then review from the vault copy via `vp_get_task`.
+
+**Strip the plan's metadata block before passing it as `content`.** Plans
+idiomatically open with `# Title`, `**Status:**`, and `**Priority:**` lines.
+`vp_manage_task create` **supplies those itself** and **rejects** any `content`
+carrying its own `**Status:**` line or its own top-level `# ` heading — so
+delete that leading metadata block and pass only the body beneath it. (H1-shaped
+shell comments inside a ``` or ~~~ fence are fine.) **Why:** duplicate status
+lines make the reader and the writer disagree about which one is real — the
+task tools would report one status while `update_status` rewrites the other.
 
 If no argument is given, use `vp_list_tasks` to find all active
 tasks and review them. If a filename is given, use `vp_get_task` to
@@ -52,6 +66,45 @@ coupling, interfaces, or behavior. Specific checks:
 
 Use subagents liberally to parallelize investigation of
 independent components.
+
+### Feasibility, not existence
+
+A symbol existing is not the same as the plan being able to use it. Existence
+checks pass on plans that cannot compile. So:
+
+- For **every "reuse X" / "call into X" / "we already have X" claim**, write
+  out the literal `import` line and the literal call, and decide whether it
+  **compiles**. Specifically:
+  - A symbol defined in a `_test.go` file is **not importable** from
+    non-test code.
+  - A symbol in `package main` is **not importable** at all.
+  - A lowercase (unexported) symbol is **not visible** outside its package.
+  - A symbol in an `internal/` tree is not importable from outside that
+    module subtree.
+  - Reuse that would create an **import cycle** is not reuse.
+- For **every threshold, timeout, budget, or timing claim**, check **where the
+  code runs** and **what else runs there** — a 200 ms budget is meaningless
+  until you know it shares a process with an embedder load, a git pull, or a
+  full vault walk. Verify the number against the real call site, not the
+  plan's assertion about it.
+
+### Adversarial self-review
+
+If the same model authored the plan, an ordinary review just re-confirms the
+plan's own reasoning. Break that loop:
+
+- **Re-derive the key claims from source**, using independent subagents whose
+  prompts carry **none of the plan's conclusions** — no citations, no "verify
+  that X", no framing. Ask them **"is this possible?"** and **"how would you
+  do this?"**, never "is this cited correctly?".
+- Compare what they come back with against what the plan asserts. A divergence
+  is a finding, not a rounding error.
+- **An infeasible settled decision must be reversed, loudly.** "We already
+  decided this" is not evidence that it works. If a decision the plan treats
+  as settled turns out not to compile, not to run where it claims, or not to
+  exist, say so at the top of the review as a **Critical**, name the decision,
+  and state plainly that it must be reversed. Do not soften it into a "risk"
+  and do not route around it.
 
 ## Step 3: Structured Review
 

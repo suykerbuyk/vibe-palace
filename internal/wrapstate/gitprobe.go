@@ -151,23 +151,83 @@ func VaultHasUncommittedWrites(vaultPath, project string) (bool, error) {
 	return nonMemory || memory, nil
 }
 
-// ProjectHasUncommittedWrites returns true iff `git status --porcelain` in
-// projectDir produces any output. Returns false and nil error when projectDir
-// is empty or not a git repo.
-func ProjectHasUncommittedWrites(projectDir string) (bool, error) {
-	if projectDir == "" {
-		return false, nil
+// GitState is the three-valued result of probing a project directory for
+// uncommitted work. It exists to separate "not a git repo at all" from "a git
+// repo whose tree is clean" — a distinction ProjectHasUncommittedWrites
+// deliberately collapses (both yield false), and which callers that must refuse
+// on an empty diff (vp_ingest_commit_msg) cannot afford to lose.
+type GitState int
+
+const (
+	// GitNotARepo — no `.git` entry at the directory, so there is nothing to
+	// probe. Also the indeterminate value returned alongside a non-nil error.
+	GitNotARepo GitState = iota
+	// GitClean — a git repo whose `git status --porcelain` output is empty.
+	GitClean
+	// GitDirty — a git repo with staged, unstaged, or untracked changes.
+	GitDirty
+)
+
+func (s GitState) String() string {
+	switch s {
+	case GitNotARepo:
+		return "not-a-repo"
+	case GitClean:
+		return "clean"
+	case GitDirty:
+		return "dirty"
+	default:
+		return "unknown"
 	}
-	if _, err := os.Stat(filepath.Join(projectDir, ".git")); err != nil {
-		return false, nil
+}
+
+// ProjectGitState reports whether dir is a git repo and, if so, whether its
+// working tree carries any uncommitted work. `git status --porcelain` (run
+// WITHOUT --ignored) covers staged, unstaged, and untracked changes alike, so
+// GitDirty means "any dirt at all" and gitignored files never trip it.
+//
+// dir must already be a repo ROOT — resolve it with ResolveProjectRoot first.
+// The `.git` lookup is a shallow stat of dir itself, so a subdirectory of a
+// repo would otherwise misreport GitNotARepo.
+//
+// The stat deliberately does NOT require a directory: in git worktrees and
+// submodules `.git` is a FILE containing a gitdir pointer, and an IsDir() check
+// would wrongly classify those as not-a-repo.
+//
+// An empty dir yields (GitNotARepo, nil). A failed probe (timeout on a slow
+// filesystem, broken git) yields (GitNotARepo, err) — the state is
+// indeterminate and callers should key off err, not off the state.
+func ProjectGitState(dir string) (GitState, error) {
+	if dir == "" {
+		return GitNotARepo, nil
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		return GitNotARepo, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
-	out, err := gitCmdRunner(ctx, projectDir, "status", "--porcelain")
+	out, err := gitCmdRunner(ctx, dir, "status", "--porcelain")
+	if err != nil {
+		return GitNotARepo, err
+	}
+	if strings.TrimSpace(out) != "" {
+		return GitDirty, nil
+	}
+	return GitClean, nil
+}
+
+// ProjectHasUncommittedWrites returns true iff `git status --porcelain` in
+// projectDir produces any output. Returns false and nil error when projectDir
+// is empty or not a git repo.
+//
+// Thin wrapper over ProjectGitState so the probe has exactly one
+// implementation; it flattens GitNotARepo and GitClean back into false.
+func ProjectHasUncommittedWrites(projectDir string) (bool, error) {
+	state, err := ProjectGitState(projectDir)
 	if err != nil {
 		return false, err
 	}
-	return strings.TrimSpace(out) != "", nil
+	return state == GitDirty, nil
 }
 
 // LastIterAnchorSha returns the SHA of the most recent commit that touched the

@@ -137,15 +137,49 @@ why (past tense, technical detail).
 If stable project documentation changed (architecture, design
 decisions, test structure), update the relevant `doc/` file directly.
 
-## Step 6: Retire Completed Tasks
+## Step 6: Retire Tasks — Only on Explicit Human Approval
 
-Use `vp_list_tasks` to check each active task against the session's
-work and resume.md history. If a task has been implemented and
-committed, use `vp_manage_task` with `action: retire` to move it to
-`tasks/done/`, then add its one-line row to the **Completed Plans**
-table in `resume.md` (Step 3.5).
+**Retire a task only when the human has said, in this session, that it is
+done.** Nothing else counts. Not passing tests, not a clean build, not your
+own reading of the diff.
+
+Note where you are in the flow: **wrap runs BEFORE the commit.** Step 8 stages
+files and the human runs `git commit -F commit.msg` afterward. So at this
+point the work is not even committed, and "it's implemented, I'll retire it"
+is the agent adjudicating its own completion — exactly what the operator's
+standing Rule 0 forbids: *nothing is done until the human says it is done.*
+
+So:
+
+- Use `vp_list_tasks` to check each active task against the session's work.
+- For any task that **looks** finished, say so — "task `<slug>` looks complete;
+  retire it?" — and leave it active.
+- Retire **only** a task the human explicitly approved. `vp_manage_task`
+  `action: retire` takes an `approved_by_human` parameter; pass `true` only
+  when the human actually said so in this session. It is an attestation you
+  are making, not a check being run on you — asserting it falsely just means
+  you lied in the record.
+- After an approved retirement, add its one-line row to the **Completed
+  Plans** table in `resume.md` (Step 3.5).
 
 ## Step 7: Update commit.msg (Two-Copy Workflow)
+
+### Skip this step entirely when the session wrote no project code
+
+A commit message describes a commit. If this session changed **nothing in the
+project repo** — a docs-only pass in the vault, a pure investigation, a
+read-only review — then there is no commit to describe and **you must skip
+Step 7 altogether**. Do not write a `commit.msg`, do not ingest one, do not
+carry a stale one forward.
+
+`vp_ingest_commit_msg` **refuses on a clean repo** — it returns an error
+rather than archiving a message for a commit that will never exist. That is
+not a failure to work around; it is the tool agreeing with you. Check
+`git status` first: if the project working tree has no staged or unstaged
+project changes, note "no project code changed — commit.msg skipped" in the
+Step 11 report and move on to Step 8.
+
+Everything below applies **only** when the session did write project code.
 
 There are **two** `commit.msg` copies and **both** must be kept in
 sync:
@@ -270,8 +304,10 @@ Report what was done:
 - Session captured (`vp_capture_session` ID)
 - `resume.md` updated
 - `iterations.md` entry appended
-- Tasks retired (if any)
-- `commit.msg` updated in both locations (with verification)
+- Tasks retired (only those the human explicitly approved) and tasks
+  reported as retirement candidates awaiting the human's call
+- `commit.msg` updated in both locations (with verification) — or
+  "no project code changed — commit.msg skipped"
 - Project files staged (by path)
 - Vault synced
 - Vault tidied (capture artifacts swept; any reported dirt surfaced)

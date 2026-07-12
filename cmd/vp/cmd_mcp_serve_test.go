@@ -214,10 +214,25 @@ func TestMCPServeAllowWritesIsSurfaceGated(t *testing.T) {
 
 	handler := buildMCPServeHandler(stack, mcpServeTestToken, true /* allowWrites */)
 
+	// The arguments must be FULLY VALID, or this test would pass for the wrong
+	// reason. Schema validation runs BEFORE the surface gate (internal/mcp/
+	// tools.go, makeHandler), so a create missing its now-required `content`
+	// would be refused by the schema and this test would go green while the gate
+	// itself was broken. A real body (over the create content floor, and with no
+	// H1/**Status:** header of its own, which storage.CreateTask rejects) means
+	// the only thing left that can refuse the write is the gate.
+	body := "Verify that an ahead-stamped vault refuses a mutating tool over HTTP.\n\n" +
+		"This body is deliberately substantive so it clears the create content floor\n" +
+		"and carries no metadata header of its own. If the surface gate ever stops\n" +
+		"firing, this create would otherwise SUCCEED — which is precisely the\n" +
+		"regression this test exists to catch.\n"
+
 	res, err := callToolHTTP(t, handler, mcpServeTestToken, "vp_manage_task", map[string]any{
 		"project": "p",
 		"action":  "create",
 		"task":    "should-never-be-created",
+		"title":   "Should Never Be Created",
+		"content": body,
 	})
 
 	// The gate surfaces in-band as a tool error (there is deliberately no

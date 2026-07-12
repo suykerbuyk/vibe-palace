@@ -261,7 +261,7 @@ language. The defaults must reflect that.
 | **Context Engine** | Precedence-aware context assembly; workflow/resume/template merging |
 | **Session Capture** | Model-agnostic session recording; metadata extraction; auto-indexing |
 | **Search Engine** | Hybrid semantic + structural search; HNSW queries + metadata filters |
-| **Task Manager** | Task CRUD; lifecycle management; auto-retirement heuristics |
+| **Task Manager** | Task CRUD; lifecycle management; retirement on explicit human approval |
 | **Palace Graph** | Wing/hall/room navigation; tunnel discovery; structural filtering |
 | **Knowledge Graph** | Temporal entity-relationship triples; time-travel queries |
 | **Precedence Resolver** | Merge embedded defaults + vault templates + project overrides |
@@ -4084,17 +4084,19 @@ sessions, and KG snapshot in a single call.
 
 After bootstrap:
 
-1. **Auto-retire completed tasks**: List active tasks via `vp_list_tasks`.
-   For each task:
+1. **Report retirement candidates — never retire**: List active tasks via
+   `vp_list_tasks`. For each task:
    - Read its title and status via `vp_get_task`.
    - Check `git log --oneline -20` for commits matching the task's objective.
-   - **Auto-retire if**: status says "Done" or "Complete", OR all checklist
-     items are checked AND recent commits match the task's subject matter.
-   - **Never auto-retire if**: unchecked items remain, status says
-     "In Progress" or "Blocked", or no matching commits found.
-   - For each retirement: use `vp_manage_task` with `action: retire`, then
+   - If it **looks** complete (status says "Done"/"Complete", or all checklist
+     items are checked AND recent commits match its subject matter), add it to
+     a **retirement-candidates** list shown to the human. Then stop.
+   - **Never retire a task here.** Nothing is done until the human says it is
+     done. Retire only after explicit human approval, via `vp_manage_task`
+     (`action: retire`, `approved_by_human: true`), followed by
      `vp_append_iteration` with a brief narrative.
-   - On uncertainty: leave active. False negatives beat false positives.
+   - Leaving a finished task active costs nothing; burying an unfinished plan
+     in `done/` loses it.
 
 2. Call `vp_get_project_context` for structured context (sessions, threads,
    decisions, friction trends).

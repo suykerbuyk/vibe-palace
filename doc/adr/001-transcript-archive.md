@@ -161,4 +161,6 @@ provenance requires rewriting history, which is detectable.
 - *Thaler v. Perlmutter*, SCOTUS cert. denied March 2026:
   https://www.mayerbrown.com/en/insights/publications/2026/03/supreme-court-denies-review-in-ai-authorship-case
 - Vibe-vault archive format: `vv archive` command (prior art).
-- Task plan: `<vault>/Projects/vibe-palace/agentctx/tasks/transcript-archive-ledger.md`
+- Task plan: `<vault>/Projects/vibe-palace/tasks/transcript-archive-ledger.md`
+  (reached via the MCP task tools; the `agentctx/` segment named in the
+  original draft of this ADR no longer exists in the vibe-palace layout)

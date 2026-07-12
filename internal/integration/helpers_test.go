@@ -21,6 +21,29 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/tools"
 )
 
+// taskBody builds a vp_manage_task create body that satisfies BOTH doors a real
+// create body must pass:
+//
+//   - the vp_manage_task handler's minimum-content floor (a body shorter than
+//     minTaskContentBytes is refused as a pointer-to-a-plan rather than a plan);
+//   - storage.validateTaskBody, which rejects a body carrying its own H1 or
+//     "**Status:**" line, because CreateTask writes the header itself.
+//
+// It takes a caller-supplied lead line so failures still name the test that
+// produced them, then pads with plain prose to clear the floor.
+func taskBody(lead string) string {
+	body := lead + "\n\n" +
+		"Steps:\n" +
+		"- Establish the fixture and register the tool surface.\n" +
+		"- Drive the action under test through the MCP registry.\n" +
+		"- Assert the on-disk result, not just the tool response.\n\n" +
+		"Notes: this body exists to clear the create content floor with real prose.\n"
+	for len(body) < 260 {
+		body += "Additional plan detail so the body reads as a plan, not a pointer.\n"
+	}
+	return body
+}
+
 // testHarness bundles all layers for full-stack integration tests.
 type testHarness struct {
 	Vault    *storage.Vault
@@ -115,9 +138,15 @@ func (h *testHarness) initMCP(t *testing.T) {
 	h.mcpReady = true
 }
 
-// callTool sends a tools/call JSON-RPC request and returns the text content.
-// Fails the test on protocol errors.
-func (h *testHarness) callTool(t *testing.T, name string, args any) string {
+// callToolRaw sends a tools/call JSON-RPC request through the REAL MCP server —
+// so schema validation (internal/mcp, validateParams) runs BEFORE the handler,
+// exactly as it does in production — and returns the text content along with
+// whether the call was refused.
+//
+// Tests that need to assert a REFUSAL must use this rather than the handler
+// directly: a handler-level test would pass even if the schema were wrong, and
+// the schema is the thing under test.
+func (h *testHarness) callToolRaw(t *testing.T, name string, args any) (text string, isErr bool) {
 	t.Helper()
 
 	if !h.mcpReady {
@@ -152,15 +181,23 @@ func (h *testHarness) callTool(t *testing.T, name string, args any) string {
 	if err := json.Unmarshal(raw, &result); err != nil {
 		t.Fatalf("unmarshal result: %v (raw: %s)", err, raw)
 	}
-
-	if result.IsError {
-		t.Fatalf("tool %q returned error: %s", name, result.Content[0].Text)
-	}
 	if len(result.Content) == 0 {
 		t.Fatalf("tool %q returned empty content", name)
 	}
 
-	return result.Content[0].Text
+	return result.Content[0].Text, result.IsError
+}
+
+// callTool sends a tools/call JSON-RPC request and returns the text content.
+// Fails the test on protocol errors and on any tool refusal.
+func (h *testHarness) callTool(t *testing.T, name string, args any) string {
+	t.Helper()
+
+	text, isErr := h.callToolRaw(t, name, args)
+	if isErr {
+		t.Fatalf("tool %q returned error: %s", name, text)
+	}
+	return text
 }
 
 // addDrawer is a convenience for writing a drawer and returning it with the generated ID.

@@ -100,7 +100,9 @@ func TestEveryVaultWriterStamps(t *testing.T) {
 				t.Fatal(err)
 			}
 			writeFileDirect(t, p, []byte("# T1\n\n**Status:** pending\n"))
-			if err := v.UpdateTaskStatus(proj, "t1", "completed"); err != nil {
+			// "completed" is no longer in the write set — a task reaches a
+			// terminal state by moving (RetireTask), not by being stamped.
+			if err := v.UpdateTaskStatus(proj, "t1", "in_progress"); err != nil {
 				t.Fatal(err)
 			}
 			return projectsRoot(vault)
