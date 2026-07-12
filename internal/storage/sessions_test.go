@@ -426,6 +426,9 @@ func TestRewriteSessionByteIdenticalFraming(t *testing.T) {
 	framed.Project = "proj"
 	framed.Iteration = 1
 	framed.ID = fmt.Sprintf("2026-05-02-%s-01", fp)
+	// note_path is an identity coordinate that both writers pin, so the
+	// hand-stamped meta must carry it for the framing to match.
+	framed.NotePath = fmt.Sprintf("Projects/proj/sessions/2026-05-02-%s-01.md", fp)
 	got, err := marshalSessionFile(framed, body)
 	if err != nil {
 		t.Fatalf("marshalSessionFile: %v", err)
@@ -560,7 +563,9 @@ func TestWriteSessionAllFields(t *testing.T) {
 		Decisions:     []string{"decision-1"},
 		FilesChanged:  []string{"file-1.go"},
 		OpenThreads:   []string{"thread-1"},
-		NotePath:      "/notes/session.md",
+		// Seeded with a bogus absolute path on purpose: the writer must IGNORE
+		// it and stamp the real vault-relative path (asserted below).
+		NotePath: "/notes/session.md",
 	}
 
 	fp := surface.WriterFingerprint(v.Root)
@@ -582,8 +587,15 @@ func TestWriteSessionAllFields(t *testing.T) {
 	if got.TokensIn != 50000 {
 		t.Errorf("TokensIn = %d, want 50000", got.TokensIn)
 	}
-	if got.NotePath != "/notes/session.md" {
-		t.Errorf("NotePath = %q", got.NotePath)
+	// note_path is WRITER-OWNED: WriteSession stamps the vault-relative path it
+	// actually wrote to, overwriting whatever the caller passed. This test used
+	// to seed NotePath with an absolute "/notes/session.md" and assert it round-
+	// tripped, which is why note_path looked covered for six months while every
+	// real capture reported "" -- no production caller ever set the field, so
+	// omitempty dropped the key and the read-back unmarshalled nothing.
+	wantNote := "Projects/proj/sessions/" + SessionStem("2026-03-15", fp, 1) + ".md"
+	if got.NotePath != wantNote {
+		t.Errorf("NotePath = %q, want %q (writer-owned, vault-relative)", got.NotePath, wantNote)
 	}
 
 	// Verify session file lives in expected path.

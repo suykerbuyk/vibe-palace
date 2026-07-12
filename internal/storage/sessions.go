@@ -100,6 +100,18 @@ func (v *Vault) WriteSession(project string, meta SessionMeta, body string) (str
 	meta.Project = project
 	meta.ID = SessionStem(meta.Date, fp, iteration)
 
+	// note_path is an identity coordinate, so the writer that decides where the
+	// note goes is the only thing entitled to state where it went. It was yaml-
+	// tagged and never assigned, so omitempty dropped the key from every note
+	// ever written and every read-back unmarshalled a field that was not there:
+	// vp_capture_session had reported note_path: "" for the entire life of the
+	// project while returning status ok.
+	rel, err := v.SessionRelPath(project, meta.Date, fp, iteration)
+	if err != nil {
+		return "", err
+	}
+	meta.NotePath = rel
+
 	path, err := v.SessionFile(project, meta.Date, fp, iteration)
 	if err != nil {
 		return "", err
@@ -170,10 +182,20 @@ func (v *Vault) RewriteSession(project, date, fp string, iteration int, meta Ses
 	// Defensively pin the identity fields so a rewrite cannot drift the
 	// note's own coordinates away from its path. The ID carries the
 	// fingerprint when present so it matches the host-scoped filename.
+	// note_path is pinned here too — it is a coordinate like the rest, and
+	// pinning it backfills every note written before WriteSession set it
+	// (the drain rewrites from a ReadSession whose note_path is empty for
+	// those, and an empty field would otherwise be written straight back).
 	meta.Project = project
 	meta.Date = date
 	meta.Iteration = iteration
 	meta.ID = SessionStem(date, fp, iteration)
+
+	rel, err := v.SessionRelPath(project, date, fp, iteration)
+	if err != nil {
+		return err
+	}
+	meta.NotePath = rel
 
 	data, err := marshalSessionFile(meta, body)
 	if err != nil {

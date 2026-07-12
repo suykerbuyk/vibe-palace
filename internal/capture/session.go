@@ -138,18 +138,39 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		if adapter == "" {
 			adapter = archive.ClaudeCodeAdapterName
 		}
-		if e, err := archive.ResolveEntry(vault.Root, p.Project, p.ArchiveSessionID); err == nil && e.Manifest.Adapter == adapter {
+		// A missing or adapter-mismatched archive is non-fatal -- capture still
+		// succeeds without the link, and a future hook run that archives after
+		// capture can call LinkSessionNote to close the loop. But it is NOT
+		// silent: this branch had no else, so a session that asked to be linked
+		// to a transcript and was not got an identical "ok" to one that was.
+		// The adapter mismatch is the one that matters -- it is how a Zed
+		// transcript goes missing while capture reports success.
+		e, err := archive.ResolveEntry(vault.Root, p.Project, p.ArchiveSessionID)
+		switch {
+		case err != nil:
+			slog.Warn("capture: archive not linked; transcript will not be reachable from this note",
+				"err", err, "project", p.Project, "archive_session_id", p.ArchiveSessionID, "adapter", adapter)
+		case e.Manifest.Adapter != adapter:
+			slog.Warn("capture: archive not linked; adapter mismatch",
+				"project", p.Project, "archive_session_id", p.ArchiveSessionID,
+				"want_adapter", adapter, "got_adapter", e.Manifest.Adapter)
+		default:
 			archiveEntry = e
 			meta.Archive = archive.VaultRelPath(vault.Root, e.ManifestPath)
 		}
-		// A missing archive is non-fatal -- capture still succeeds
-		// without the link. Future hook runs that archive after
-		// capture can call LinkSessionNote to close the loop.
 	}
 
 	// Score transcript friction before writing session.
 	if p.Transcript != "" {
-		if b, err := AnalyzeFrictionBreakdown(p.Transcript); err == nil {
+		b, err := AnalyzeFrictionBreakdown(p.Transcript)
+		if err != nil {
+			// Was swallowed by an `if err == nil` with no else: the note kept a
+			// zero friction score, which is indistinguishable from a genuinely
+			// frictionless session, and every friction trend silently averaged
+			// the zero in.
+			slog.Warn("capture: friction scoring failed; note will carry no friction score",
+				"err", err, "project", p.Project)
+		} else {
 			meta.FrictionScore = b.Total()
 			meta.Breakdown = b
 		}
@@ -170,11 +191,20 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 	// every readback so the host-scoped filename resolves.
 	fp := ParseFingerprint(sessionID)
 
-	// Read session back to get the note path.
-	readMeta, _, readErr := vault.ReadSession(p.Project, date, fp, iteration)
-	notePath := ""
-	if readErr == nil {
-		notePath = readMeta.NotePath
+	// The note path is DERIVED, not read back. SessionRelPath is the one
+	// definition of where the note lives -- it is what WriteSession just used to
+	// place the file and what it stamped into the frontmatter -- so asking it is
+	// asking the authority. The previous code read the note back off disk to
+	// recover a frontmatter field that nothing had ever assigned, so it
+	// unmarshalled an absent key and reported note_path: "" on every session
+	// ever captured while returning status ok. It also dropped its own read
+	// error on the floor. Deriving removes both faults at once: there is no
+	// read, so there is no error to drop.
+	notePath, err := vault.SessionRelPath(p.Project, date, fp, iteration)
+	if err != nil {
+		// Unreachable in practice -- WriteSession resolved this same path
+		// moments ago -- but it is the note's identity, so it is not guessed at.
+		return nil, fmt.Errorf("resolve note path for %s: %w", sessionID, err)
 	}
 
 	// Enqueue-on-miss: when enrichment was attempted but produced nothing
@@ -188,14 +218,17 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		}
 	}
 
-	// Close the bidirectional link: write vault_rel_session_note
-	// into the archive manifest. Non-fatal on failure -- the
-	// note's archive: field still provides one-way traversal.
+	// Close the bidirectional link: write vault_rel_session_note into the archive
+	// manifest. Non-fatal on failure -- the note's archive: field still provides
+	// one-way traversal -- but no longer silent. Both halves used to discard
+	// their error: the SessionFile error skipped the link with no trace, and
+	// LinkSessionNote's was thrown away with `_ =`. The manifest back-link is
+	// what makes a transcript discoverable FROM the archive side, so losing it
+	// quietly is how a transcript becomes unreachable while capture says ok.
 	if archiveEntry != nil {
-		sessionAbs, err := vault.SessionFile(p.Project, date, fp, iteration)
-		if err == nil {
-			rel := archive.VaultRelPath(vault.Root, sessionAbs)
-			_ = archive.LinkSessionNote(vault.Root, archiveEntry.ManifestPath, rel)
+		if err := archive.LinkSessionNote(vault.Root, archiveEntry.ManifestPath, notePath); err != nil {
+			slog.Warn("capture: archive manifest back-link failed; transcript is reachable from the note but not the reverse",
+				"err", err, "project", p.Project, "manifest", archiveEntry.ManifestPath, "note_path", notePath)
 		}
 	}
 

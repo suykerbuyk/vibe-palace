@@ -1030,6 +1030,59 @@ MCP-tool live path above.
 
 ---
 
+## Session `note_path` Tests (`capture-silent-failure-observability` §1a)
+
+`vp_capture_session` returned `note_path: ""` — with `status: "ok"` — on **every
+session ever captured**, for the entire life of the project. It passed every gate
+for six months. The tests below exist because of *how* it did that, which is a
+more useful lesson than the bug.
+
+**Why the suite could not see it.** `storage.SessionMeta.NotePath` is yaml-tagged
+`omitempty` and **nothing ever assigned it**, so the key was never written to a
+note and the read-back unmarshalled a field that was not there. Two test-shaped
+reasons this went unseen:
+
+1. `TestWriteSessionHappyPath` asserted `Status`, `Project`, `SessionID` and
+   `Iteration` — **every field except the broken one.**
+2. The only test touching `NotePath` (`TestWriteSessionAllFields`) **seeded the
+   value itself** — `NotePath: "/notes/session.md"` — and asserted it round-tripped.
+   No production caller ever set that field. The field was **covered on paper and
+   unassigned in fact**, and the value it enshrined was an *absolute* path, which
+   is separately forbidden (see below).
+
+**The invariant.** `note_path` is **writer-owned** and **vault-relative**.
+`storage.SessionRelPath` is the single definition of where a session note lives;
+`SessionFile` is its absolute form. `WriteSession` and `RewriteSession` both pin
+`note_path` as an identity coordinate, so a caller-supplied value is **ignored**
+and pre-fix notes are **backfilled** when the enrichment drain rewrites them.
+
+It is vault-relative because the vault syncs to other machines: one project lives
+at different absolute paths on different hosts (and in different subtrees on one
+host), `note_path` is **persisted**, and it is exactly the form `vp_vault_read`
+consumes. An absolute path here is a fact about the writing host and a lie
+everywhere else.
+
+| Test | What it proves |
+|------|----------------|
+| `TestWriteSessionNotePathNamesARealFile` (`internal/capture`) | The returned `note_path` is non-empty, **relative**, slash-separated, **resolves to a file that exists** under the vault root, and that file carries both the session ID and **its own `note_path` in frontmatter** |
+| `TestWriteSessionAllFields` (`internal/storage`) | The writer **ignores** a caller-supplied `NotePath` (seeded with a bogus absolute path on purpose) and stamps the real vault-relative one |
+| `TestRewriteSessionByteIdenticalFraming` (`internal/storage`) | `note_path` is pinned identically by **both** writers, so the drain's rewrite cannot drift a note's stated location away from its actual one |
+
+**The assertion that has teeth is not "non-empty."** Mutation-proven: with the
+frontmatter stamp removed, `TestWriteSessionNotePathNamesARealFile` still finds a
+non-empty `note_path` — because `capture.WriteSession` **derives** the path rather
+than reading it back, so the *return value* stays correct on its own. What fails is
+the assertion that **the persisted frontmatter matches the returned string**. A
+weaker test would have shipped a note whose own frontmatter disagreed with the
+value handed to the agent.
+
+**Deriving, not reading back, is the fix.** The old read-back existed solely to
+recover the never-assigned field, and it discarded its own `readErr`. Deleting it
+removes that silent site **by construction** — no read, no error to drop — which is
+why there is no test for "the read-back error is logged": there is no read-back.
+
+---
+
 ## MockEmbedder vs Real ONNX
 
 | Aspect | MockEmbedder | ONNX Embedder |

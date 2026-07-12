@@ -68,6 +68,65 @@ func TestWriteSessionHappyPath(t *testing.T) {
 	if result.Iteration < 1 {
 		t.Errorf("iteration = %d, want >= 1", result.Iteration)
 	}
+	if result.NotePath == "" {
+		t.Error("note_path is empty")
+	}
+}
+
+// TestWriteSessionNotePathNamesARealFile is the regression test for the bug this
+// suite was structurally unable to see: WriteSession returned note_path: "" on
+// EVERY session ever captured, and reported status "ok" while doing it.
+//
+// It survived because the assertions above check every field except the broken
+// one, and because the only test that touched storage.SessionMeta.NotePath
+// SEEDED the field itself before asserting it round-tripped -- something no
+// production caller ever did. So the field was covered on paper and unassigned
+// in fact.
+//
+// The assertion that has teeth is not "note_path is non-empty" (a hardcoded
+// constant would satisfy that). It is that note_path, resolved against the vault
+// root, NAMES A FILE THAT EXISTS -- and that it is vault-relative, because the
+// vault syncs to hosts where an absolute path from this one is a lie.
+func TestWriteSessionNotePathNamesARealFile(t *testing.T) {
+	vault := testVault(t)
+
+	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project: "test-proj",
+		Summary: "Implemented feature X",
+	})
+	if err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+
+	if result.NotePath == "" {
+		t.Fatal("note_path is empty -- capture is reporting success for a note it cannot name")
+	}
+	if filepath.IsAbs(result.NotePath) {
+		t.Errorf("note_path = %q, want a VAULT-RELATIVE path: the vault syncs to other hosts, "+
+			"where an absolute path from this one names nothing", result.NotePath)
+	}
+	if strings.Contains(result.NotePath, `\`) {
+		t.Errorf("note_path = %q, want slash-separated: it is a vault path, not a host path", result.NotePath)
+	}
+
+	// The whole point: it must resolve.
+	abs := filepath.Join(vault.Root, filepath.FromSlash(result.NotePath))
+	if _, err := os.Stat(abs); err != nil {
+		t.Fatalf("note_path %q does not resolve to a file under the vault root: %v", result.NotePath, err)
+	}
+
+	// And it must be the note we just wrote, not merely some file.
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), result.SessionID) {
+		t.Errorf("note at %q does not carry session_id %q", result.NotePath, result.SessionID)
+	}
+	if !strings.Contains(string(data), "note_path: "+result.NotePath) {
+		t.Errorf("note at %q does not carry its own note_path in frontmatter; "+
+			"the returned path and the persisted one must be the same string", result.NotePath)
+	}
 }
 
 func TestWriteSessionTitleDefaulting(t *testing.T) {

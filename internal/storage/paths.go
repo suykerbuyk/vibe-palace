@@ -147,17 +147,26 @@ func SessionGlobPrefix(date, fp string) string {
 	return date + "-"
 }
 
-// SessionFile returns the path to a session markdown file. When fp (the
-// writer fingerprint, see surface.WriterFingerprint) is non-empty the
-// host-scoped layout is used:
+// SessionRelPath returns the VAULT-RELATIVE, slash-separated path to a session
+// markdown file. When fp (the writer fingerprint, see surface.WriterFingerprint)
+// is non-empty the host-scoped layout is used:
 //
-//	{vault}/Projects/{project}/sessions/YYYY-MM-DD-<fp>-NN.md
+//	Projects/{project}/sessions/YYYY-MM-DD-<fp>-NN.md
 //
 // When fp is empty the legacy host-agnostic layout is used, so pre-existing
 // notes written before fingerprinting remain readable:
 //
-//	{vault}/Projects/{project}/sessions/YYYY-MM-DD-NN.md
-func (v *Vault) SessionFile(project, date, fp string, iteration int) (string, error) {
+//	Projects/{project}/sessions/YYYY-MM-DD-NN.md
+//
+// This is the ONE definition of where a session note lives; SessionFile is the
+// absolute form of it, and note_path in the frontmatter is this string verbatim.
+// It is vault-relative because a session note is read on machines other than the
+// one that wrote it: the vault syncs everywhere, one project lives at different
+// absolute paths on different hosts (and in different subtrees on one host), and
+// note_path is persisted — so an absolute path here is a fact about the writing
+// host and a lie everywhere else. It is also exactly the form vp_vault_read
+// takes, so relative is the useful answer, not merely the safe one.
+func (v *Vault) SessionRelPath(project, date, fp string, iteration int) (string, error) {
 	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
@@ -168,7 +177,20 @@ func (v *Vault) SessionFile(project, date, fp string, iteration int) (string, er
 		return "", fmt.Errorf("iteration must be >= 1, got %d", iteration)
 	}
 	filename := SessionStem(date, fp, iteration) + ".md"
-	return filepath.Join(v.Root, "Projects", project, "sessions", filename), nil
+	// path.Join, not filepath.Join: this is a vault-relative slash path on every
+	// OS, not a host path. On Windows filepath.Join would emit backslashes and
+	// bake a host convention into a synced document.
+	return "Projects/" + project + "/sessions/" + filename, nil
+}
+
+// SessionFile returns the ABSOLUTE path to a session markdown file, derived from
+// SessionRelPath so the layout has exactly one definition. See SessionRelPath.
+func (v *Vault) SessionFile(project, date, fp string, iteration int) (string, error) {
+	rel, err := v.SessionRelPath(project, date, fp, iteration)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(v.Root, filepath.FromSlash(rel)), nil
 }
 
 // TasksDir returns the path to a project's tasks directory:
