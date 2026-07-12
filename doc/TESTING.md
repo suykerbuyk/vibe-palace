@@ -6,7 +6,7 @@ This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~2215 tests** across 39 packages, including
+The suite currently runs **~2222 tests** across 39 packages, including
 **105 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
@@ -188,6 +188,52 @@ context resolver, and config into a single test fixture.
 | `FrictionTrendsEndToEnd` | tools → capture → storage | No | `vp_get_friction_trends` returns correctly aggregated weekly metrics from stored sessions |
 | `FrictionTrendsEmpty` | tools → capture → storage | No | Trends for project with no sessions returns empty result |
 | `FrictionSearchByMinScore` | storage | No | `SearchSessions` with minFriction filter returns only sessions above threshold |
+
+### Code fences (`internal/mdfence`) — iter 191
+
+`mdfence` is the **one** definition of a markdown code fence in this codebase.
+Three packages previously carried their own copy of the rule "a fence delimiter
+is a trimmed line starting with ``` or ~~~", and all three were wrong in the
+same way — so these tests exist to keep the rule in one place and to keep it
+CommonMark-correct.
+
+The load-bearing case is a line whose **first non-space characters are an inline
+code run**, opened and closed on the same line. `iterations.md:698` is one, and
+the tests use it **verbatim** rather than paraphrasing it, because a paraphrase
+that does not lead with the run will not reproduce the bug:
+
+```text
+  ```bash tutorial``` extraction from `doc/TUTORIAL.md` — deferred
+```
+
+The naive rule reads that as a lone OPENING fence, inverts its fence state, and
+never recovers. What that cost, per caller:
+
+| Caller | Failure the naive rule caused |
+|--------|-------------------------------|
+| `wrapstate.NextIterFromIterationsMD` | Swallowed 187 of 191 iteration headings → reported iteration **77** on a project at 190 |
+| `storage.validateTaskBody` | **Failed open** — skipped the rest of the body, so a duplicate `**Status:**` passed the check added in iter 184 to stop it, reinstating the 183/184 status-line corruption |
+| `check.countSectionTableRows` | **Failed open** — hid every table row below such a line, so `resume-caps` would never breach. **Latent**: no resume.md in the vault carries a fence today |
+
+The rule `mdfence` implements, and each test's job:
+
+| Test | What it proves |
+|------|----------------|
+| `TestTheRealLineIsNotAnOpeningFence` | An opening **backtick** fence's info string may not contain a backtick — the single rule that makes the line above prose, not a fence |
+| `TestOutsideFences/inline code run is prose, not a fence` | The line is returned AND the lines after it stay visible |
+| `TestOutsideFences/a real fence still works after an inline code run` | Correctness for the pathological line does not break genuine fences |
+| `TestOutsideFences/info string opens, only a bare run closes` | A closing delimiter is a bare run of the same char, ≥ the opener's length |
+| `TestOutsideFences/four-space indent is not a delimiter` | 4+ leading spaces is an indented code block |
+| `TestOutsideFences/unterminated fence swallows the remainder` | Deliberate: a heading-shaped line in a half-open fence is sample text |
+| `TestOutsideFencesReportsOriginalLineNumbers` | Line numbers index the ORIGINAL content — they appear in errors a human must act on |
+| `storage.TestValidateTaskBodyDoesNotFailOpenOnInlineCodeRun` | Duplicate `**Status:**`/H1 below an inline run is still rejected — **and** `# Usage` inside a *genuine* fence is still accepted, the case iter 184 protected |
+| `check.TestCountSectionTableRowsInlineCodeRun` | Table rows below an inline run are still counted |
+| `check.TestCountSectionTableRowsRealFenceStillHidesRows` | A genuinely fenced table still does not inflate the count |
+
+**Do not reimplement fence detection.** If a fourth caller needs it, call
+`mdfence.OutsideFences` (structurally-real lines) or `mdfence.Scanner` (when a
+Delimiter must be told apart from Fenced content — `check` needs this, because a
+fence boundary breaks a contiguous table run and must flush it).
 
 ### Friction Analytics (friction-analytics-port)
 
