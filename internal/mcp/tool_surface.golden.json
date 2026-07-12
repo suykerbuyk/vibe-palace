@@ -17,21 +17,6 @@
       "schema_sha256": "b8c2005e5bbb95152c305934b4c737d5da80e52f5fbfb7ba5090c41ca2bd232b"
     },
     {
-      "name": "vp_carried_add",
-      "mutating": true,
-      "schema_sha256": "d72179ba076c154f4ff9e0e5545589b2f3e90333c3484d985e2ca49b30c1f743"
-    },
-    {
-      "name": "vp_carried_promote_to_task",
-      "mutating": true,
-      "schema_sha256": "7448323f40d574af969adbc05d8c46dfe758bcfe1743be7cc4f99d321ea80292"
-    },
-    {
-      "name": "vp_carried_remove",
-      "mutating": true,
-      "schema_sha256": "410fd02a2074f40db83667281db3942ba9ff1e96a8e894f69474915d7fb4ca9c"
-    },
-    {
       "name": "vp_cmd",
       "mutating": false,
       "schema_sha256": "41cd4c428fa53d67610a1ac2008d492bb8f973e101baca4570d5b23074ac8034"
@@ -262,21 +247,6 @@
       "schema_sha256": "909d45c9d12052000096b9dad9859fe30af1851990f893c0ce431745431351ed"
     },
     {
-      "name": "vp_thread_insert",
-      "mutating": true,
-      "schema_sha256": "8ed05e8bc0151ed121b75eea474af6ff136049d7edc2dcf96e64035e2ada2f37"
-    },
-    {
-      "name": "vp_thread_remove",
-      "mutating": true,
-      "schema_sha256": "aa2d67b62ea348f26bef4d178fb0d7b1dd8153a66030f2236a5c86729e441aeb"
-    },
-    {
-      "name": "vp_thread_replace",
-      "mutating": true,
-      "schema_sha256": "9400d44d5276e1c5ce1dbfac28500c396b3e807f39c64cdc6b57936a743dd87d"
-    },
-    {
       "name": "vp_traverse",
       "mutating": false,
       "schema_sha256": "b14cc31e18932b36cfae3670312f27979445469b860f75fb74d86b1d20ca6e54"
@@ -284,7 +254,7 @@
     {
       "name": "vp_update_resume",
       "mutating": true,
-      "schema_sha256": "e94b962dfcb5093047842d0ec74fcfa3472f39dfc5e8e152ec720e242c333531"
+      "schema_sha256": "81d159ded1a98578a67fe7a7efe4044f6b9d7e59c75be4f82ffc5fcc93f96075"
     },
     {
       "name": "vp_vault_delete",

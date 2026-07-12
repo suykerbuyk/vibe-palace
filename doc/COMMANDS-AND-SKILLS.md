@@ -348,10 +348,6 @@ parameters) in `doc/PRD-vibe-palace.md` §6.8–6.11; the families are:
   prefer the typed writers below for files that have one.
 - **Commit lifecycle** (§6.9): `vp_ingest_commit_msg` reads
   `<project>/commit.msg` off disk and writes a stamped vault copy.
-- **Resume surgical edits** (§6.10): `vp_thread_insert`,
-  `vp_thread_replace`, `vp_thread_remove`, `vp_carried_add`,
-  `vp_carried_remove`, `vp_carried_promote_to_task` — structure-aware
-  editors for `resume.md`'s Open Threads and Carried-forward sections.
 - **Wrap state** (§6.11): `vp_collect_wrap_state`, `vp_stamp_iter`,
   `vp_preflight_wrap` — readiness and bookkeeping driven by `.vibe-palace/`
   anchors (see `doc/adr/002-wrap-state-anchors.md`).

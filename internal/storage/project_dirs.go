@@ -58,10 +58,9 @@ func (e *ResumeConflictError) Unwrap() error { return vaultfs.ErrShaConflict }
 //     degrade to last-writer-wins.
 //
 // The compare happens INSIDE the held per-path lock (a compare outside it is a
-// TOCTOU), and — like EditResume, whose doc comment explains the trap in full —
-// the write goes through atomicfile.Write directly rather than lockedWrite:
-// lockedWrite re-acquires the same lock, and vaultlock.Acquire is a blocking
-// LOCK_EX, so the re-entry would be a permanent self-deadlock.
+// TOCTOU), and the write goes through atomicfile.Write directly rather than
+// lockedWrite: lockedWrite re-acquires the same lock, and vaultlock.Acquire is a
+// blocking LOCK_EX, so the re-entry would be a permanent self-deadlock.
 func (v *Vault) WriteResume(project, content, expectedSha256 string) error {
 	path, err := v.ResumeFile(project)
 	if err != nil {
@@ -94,56 +93,6 @@ func (v *Vault) WriteResume(project, content, expectedSha256 string) error {
 	}
 
 	if err := atomicfile.Write(v.Root, path, []byte(content)); err != nil {
-		return fmt.Errorf("write resume: %w", err)
-	}
-	return nil
-}
-
-// EditResume serializes a full read→modify→write of the project's resume.md
-// against every other vault writer of that path (WriteResume, the CLI, a second
-// MCP goroutine). mutate receives the authoritative content read under the held
-// lock and returns the replacement; a mutate error aborts the edit without
-// writing.
-//
-// This is the only sanctioned way to surgically edit resume.md: a caller that
-// reads the file itself and writes it back opts out of the advisory lock, and an
-// advisory lock only excludes the writers that take it — that is exactly the
-// lost-update hole the vp_thread_*/vp_carried_* editors used to have.
-//
-// The write goes through atomicfile.Write directly rather than lockedWrite:
-// lockedWrite re-acquires the same per-path lock, and vaultlock.Acquire is a
-// blocking LOCK_EX with no LOCK_NB and no timeout, so the re-entry would be a
-// permanent self-deadlock rather than an error.
-func (v *Vault) EditResume(project string, mutate func(string) (string, error)) error {
-	path, err := v.ResumeFile(project)
-	if err != nil {
-		return err
-	}
-
-	release, err := vaultlock.Acquire(v.Root, path)
-	if err != nil {
-		return fmt.Errorf("lock resume: %w", err)
-	}
-	defer release()
-
-	if err := EnsureDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("ensure project dir: %w", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("resume.md not found for project %q", project)
-		}
-		return fmt.Errorf("read resume: %w", err)
-	}
-
-	updated, err := mutate(string(data))
-	if err != nil {
-		return err
-	}
-
-	if err := atomicfile.Write(v.Root, path, []byte(updated)); err != nil {
 		return fmt.Errorf("write resume: %w", err)
 	}
 	return nil

@@ -86,46 +86,153 @@ Target: keep `resume.md` **under ~25 KB**. Pruning to the caps above is not
 optional and is never deferred to "later" — a wrap that adds a row without
 trimming past-cap rows is the bug this section exists to prevent.
 
-1. Read the current resume with `vp_get_resume`. Keep the `sha256` it
-   returns — it is the compare-and-set guard for the write below.
-2. Compare against the actual codebase state (files, tests,
-   architecture).
-3. Update with `vp_update_resume`: current state (test count,
-   iteration count), open threads. Pass `expected_sha256` = the `sha256`
-   from step 1 (it is REQUIRED; pass `""` only when no `resume.md` exists
-   yet). If the call comes back with `"conflict":true`, someone else wrote
-   the resume while you were composing: re-read it, recompose your edit
-   against the current body, and resubmit with the new sha. Do not force.
+### How to write resume.md: read raw, edit surgically, re-chain the sha
+
+`resume.md` is edited **surgically**, one section at a time, with
+`vp_vault_read` + `vp_vault_edit` under compare-and-set. There is no blind
+whole-file rewrite in the wrap path.
+
+1. **READ the raw bytes.** Call `vp_vault_read` on
+   `Projects/{{PROJECT}}/resume.md`. It returns the file's **RAW** contents
+   and a `sha256` computed over **those same raw bytes**. That text is what
+   is actually on disk, so an `old_string` copied out of it will match, and
+   that sha is the compare-and-set guard for the write.
+
+   > **The trap — read this twice.** **NEVER use `vp_get_resume` (or
+   > `vp_bootstrap_context`) as the source of text you intend to write
+   > back.** Their bodies are placeholder-**EXPANDED** — the resolver
+   > substitutes the double-brace tokens (`PROJECT`, `DATE`, `WING`, `ROOM`;
+   > written here with names only, because a literal token in this file
+   > would itself be expanded before you read it) — while their `sha256` is
+   > computed over the **RAW** bytes. The two do not describe the same text.
+   > So: an `old_string` copied from them **will not exist on disk** wherever
+   > a token lives, and the edit hard-fails; and a whole body composed from
+   > them **passes compare-and-set and silently bakes the expanded values
+   > onto disk**, destroying the live tokens permanently. This project's
+   > `resume.md` carries such tokens *today*. `vp_get_resume` is for
+   > *reading* context. `vp_vault_read` is for text you intend to *edit*.
+
+2. **EDIT one section at a time** with `vp_vault_edit`, passing
+   `expected_sha256` from the read. `vp_vault_edit` does an exact
+   `old_string` → `new_string` replace: it takes the per-path vault lock,
+   re-hashes the file and compares the CAS **inside** the lock, writes
+   atomically, and stamps `.surface`. Its failures are **LOUD** and they are
+   the safety net:
+   - `old_string` not found → error. Your anchor does not match the disk.
+   - `old_string` occurs more than once (without `replace_all`) → error.
+     Your anchor is ambiguous.
+   - sha mismatch → error. The file moved under you.
+
+   When an edit fails, **fix the anchor by making it more specific**
+   (add the neighbouring line, extend the row) — **never** by broadening it
+   until something matches, and never by falling back to a whole-file
+   rewrite. A loud failure has told you your model of the file is wrong;
+   re-read and look.
+
+3. **RE-CHAIN the sha between edits.** Each successful `vp_vault_edit`
+   changes the file, so the sha you read is now stale. `vp_vault_edit`
+   returns `{bytes, sha256, replacements}` — its `sha256` is the digest of
+   the **post-edit** file, so feed **that** value in as the
+   `expected_sha256` of your next edit. (If you lose the chain, or anything
+   else may have written, call `vp_vault_read` again.) **Never reuse a stale
+   sha across edits**, and never pass `""` to opt out of the guard.
+
+**On conflict: re-read and recompose. NEVER force.** A sha mismatch means
+another writer landed while you were composing. Re-read `resume.md` with
+`vp_vault_read`, re-derive your `old_string` anchors from the *new* body,
+and resubmit with the new sha.
+
+`vp_update_resume` is **not** the routine wrap path. It is what its own
+description says: full-file **regeneration** and **migrations** — bootstrap
+of a resume that does not exist yet, or a wholesale structural rewrite done
+deliberately. Reach for it in this command only if there is no `resume.md`
+at all.
+
+### The four edit shapes
+
+You now compose anchors by hand, so use these shapes. Prefer **line-oriented
+anchors** — anchor on whole table rows and whole bullets, never on individual
+cells. Table cells can contain backticked code spans and pipes, and
+cell-level surgery breaks on them; whole-line anchoring is cheap insurance
+against a class of failure you cannot see coming, not a claim that such rows
+are common (they are not).
+
+**1. Append a row to a table** — anchor on the **last existing row** and
+re-emit it followed by the new row:
+
+```
+old_string: "| 41 | Vault CAS writes | vaultfs.Edit, resume_cas_test.go |"
+new_string: "| 41 | Vault CAS writes | vaultfs.Edit, resume_cas_test.go |\n| 42 | Surgical wrap path | wrap.md, vault_file_tools.go |"
+```
+
+**2. Delete a row or a bullet** — anchor on the row/bullet **itself**,
+including its leading newline, and replace with the empty string:
+
+```
+old_string: "\n| 26 | Old iteration long since narrated | foo.go, bar.go |"
+new_string: ""
+```
+
+```
+old_string: "\n- **Retire auto-close** — decide whether wrap may retire tasks (iter 38)."
+new_string: ""
+```
+
+**3. Rewrite a row in place** — anchor on the **whole row**, identified by
+its leading cell text, and emit the whole replacement row:
+
+```
+old_string: "| resume-cas-hardening | 44 | tasks/active/resume-cas-hardening.md |"
+new_string: "| resume-cas-hardening | 45 | tasks/done/resume-cas-hardening.md |"
+```
+
+**4. Replace a section body** — anchor from the section heading through the
+end of its body (a stable following heading is the cheapest terminator), and
+emit heading + new body:
+
+```
+old_string: "## Current State\n\n- 412 tests passing; 44 iterations.\n- Vault writes go through vaultfs.\n\n## Open Threads"
+new_string: "## Current State\n\n- 431 tests passing; 45 iterations.\n- Vault writes go through vaultfs; resume edits are CAS-guarded.\n\n## Open Threads"
+```
+
+`## Open Threads` is a **bullet list**, not a set of `###` blocks — a thread
+is one bullet, so adding or removing one is shape 1 or shape 2, not shape 4.
+
+### What goes in, what stays out
+
+Compare the resume against the actual codebase state (files, tests,
+architecture) and bring the gateway sections current.
 
 **Do not** add file inventories, architecture diagrams, design
 decisions, or module tables to `resume.md` — those belong in `doc/`
 files.
 
-4. Add **one terse row** to the Project History table in `resume.md`.
-   The table is a scannable **index**, not a diary — the full narrative
-   goes ONLY to `iterations.md` (Step 4), never duplicated here. Format:
-   `| # | Summary | Key Changes |` where Summary is the
-   feature/phase in a few words and Key Changes is a short comma-list of
-   the most salient artifacts. Keep the whole row to a single line of a
-   few hundred characters at most. **Do not paste the iteration narrative
-   into this table** — that is what bloats `resume.md` and taxes every
-   `vp_bootstrap_context` at session start. After adding the row, trim the
-   table back to the **15-row cap** (see *Prune before you append*).
-5. Keep the gateway sections current (all in `resume.md`, all terse):
-   - **Quick Reference** — update only if build/test/run commands changed.
-   - **Completed Plans** — when a task is retired (Step 6), add a one-line
-     row `| Task | Iteration | File |` pointing at `tasks/done/<slug>.md`.
-     The full task content moves to `tasks/done/`; the narrative goes to
-     `iterations.md` (Step 4). Do not paste task content here. Then trim the
-     table back to the **~12-row cap** (see *Prune before you append*).
-   - **Cancelled Plans** — when a plan is cancelled, add a row with the
-     rejection reason and the `tasks/cancelled/<slug>.md` pointer.
-   - **Open Threads** — add genuinely-open follow-ups; **delete** entries
-     the moment they are done or cancelled (see *Prune before you append*
-     above) instead of striking them through.
-   - **Known Issues** — add an entry when a standing issue is found;
-     **delete** it the moment it is resolved (do not keep a "RESOLVED" note
-     inline — that history belongs in `iterations.md`).
+- **Project History** — add **one terse row** (shape 1). The table is a
+  scannable **index**, not a diary — the full narrative goes ONLY to
+  `iterations.md` (Step 4), never duplicated here. Format:
+  `| # | Summary | Key Changes |` where Summary is the feature/phase in a few
+  words and Key Changes is a short comma-list of the most salient artifacts.
+  Keep the whole row to a single line of a few hundred characters at most.
+  **Do not paste the iteration narrative into this table** — that is what
+  bloats `resume.md` and taxes every `vp_bootstrap_context` at session start.
+  After adding the row, delete the overflow rows (shape 2) to hold the
+  **15-row cap** (see *Prune before you append*).
+- **Quick Reference** — update only if build/test/run commands changed.
+- **Completed Plans** — when a task is retired (Step 6), add a one-line row
+  `| Task | Iteration | File |` pointing at `tasks/done/<slug>.md` (shape 1).
+  The full task content moves to `tasks/done/`; the narrative goes to
+  `iterations.md` (Step 4). Do not paste task content here. Then delete the
+  overflow rows (shape 2) to hold the **~12-row cap**.
+- **Cancelled Plans** — when a plan is cancelled, add a row with the
+  rejection reason and the `tasks/cancelled/<slug>.md` pointer (shape 1).
+- **Open Threads** — add genuinely-open follow-up bullets (shape 1);
+  **delete** a bullet (shape 2) the moment it is done or cancelled, instead
+  of striking it through.
+- **Known Issues** — add an entry when a standing issue is found; **delete**
+  it (shape 2) the moment it is resolved (do not keep a "RESOLVED" note
+  inline — that history belongs in `iterations.md`).
+- **Current State** — terse bullets and pointers; a full rewrite of this
+  section is shape 4.
 
 ## Step 4: Append Iteration Narrative
 
@@ -160,7 +267,8 @@ So:
   are making, not a check being run on you — asserting it falsely just means
   you lied in the record.
 - After an approved retirement, add its one-line row to the **Completed
-  Plans** table in `resume.md` (Step 3.5).
+  Plans** table in `resume.md` (Step 3, *What goes in, what stays out* —
+  a shape-1 `vp_vault_edit`, not a whole-file rewrite).
 
 ## Step 7: Update commit.msg (Two-Copy Workflow)
 

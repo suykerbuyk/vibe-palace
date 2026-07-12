@@ -46,7 +46,7 @@ session capture, semantic search, and palace-based knowledge navigation through
 | `internal/commands` | Shared command list/upgrade surface over the Resolver | `List`, `Upgrade`, `Diff` |
 | `internal/reconcile` | Check → Plan → Apply reconcilers for managed config-file tiers | (per-artifact reconcilers) |
 | `internal/templates` | Compiled-in template corpus + materialize/reconcile lifecycle | `Executor`, `Lock` |
-| `internal/check` | Doctor checks for config, vault, embedder, git, agent drift | `Run`, `CheckConfig`, `CheckAgentDrift` |
+| `internal/check` | Doctor checks for config, vault, embedder, git, agent drift, resume.md caps | `Run`, `CheckConfig`, `CheckAgentDrift`, `CheckResumeCaps` |
 | `internal/slug` | Project-slug validation and normalization | `Slugify`, `Validate` |
 
 ---
@@ -464,7 +464,7 @@ On dispatch, the registry validates incoming params against the compiled
 schema before calling the handler. Handlers extract the vault from context
 and operate on storage directly.
 
-### 68 MCP Tools
+### 62 MCP Tools
 
 | Tool | Source File | Category |
 |------|-----------|----------|
@@ -520,12 +520,6 @@ and operate on storage directly.
 | `vp_vault_delete` | vault_file_tools.go | Vault CRUD |
 | `vp_vault_move` | vault_file_tools.go | Vault CRUD |
 | `vp_ingest_commit_msg` | commit_msg_tools.go | Commit |
-| `vp_thread_insert` | thread_tools.go | Resume edit |
-| `vp_thread_replace` | thread_tools.go | Resume edit |
-| `vp_thread_remove` | thread_tools.go | Resume edit |
-| `vp_carried_add` | carried_tools.go | Resume edit |
-| `vp_carried_remove` | carried_tools.go | Resume edit |
-| `vp_carried_promote_to_task` | carried_tools.go | Resume edit |
 | `vp_collect_wrap_state` | wrapstate_tools.go | Wrap state |
 | `vp_stamp_iter` | wrapstate_tools.go | Wrap state |
 | `vp_preflight_wrap` | wrapstate_tools.go | Wrap state |
@@ -536,8 +530,8 @@ search-gated tools — `vp_search`, `vp_search_cross_project`,
 `vp_capture_session`, `vp_get_project_context`, `vp_search_sessions`,
 `vp_get_session_detail`, `vp_get_effectiveness`, `vp_get_friction_trends`, and
 `vp_refresh_index` — require a search engine (embedder must initialize
-successfully). The vault-CRUD, commit, resume-edit, wrap-state, and
-surface-check tools are filesystem operations and are always registered.
+successfully). The vault-CRUD, commit, wrap-state, and surface-check tools are
+filesystem operations and are always registered.
 
 `vp_surface_check` (`surface_tools.go`) is a read-only probe that returns the
 same whole-vault surface-compatibility verdict a mutating write is gated
@@ -547,8 +541,8 @@ surface preflight without shelling out to `vp check`.
 The table above enumerates the primary tool surface; for brevity it omits the
 five `vp_memory_*` tools (`memory_tools.go`) and `vp_read_resource`
 (`resource_read_tool.go`), which are also always registered. Counting those,
-the registry (`internal/tools/register.go`) exposes **68 tools with a search
-engine and 59 without it** — the numbers pinned by `internal/tools/register_test.go`.
+the registry (`internal/tools/register.go`) exposes **62 tools with a search
+engine and 53 without it** — the numbers pinned by `internal/tools/register_test.go`.
 
 ### Remote Transport: Streamable HTTP (`vp mcp serve`)
 
@@ -634,6 +628,61 @@ A CI-level invariant (`TestAllCommandsRegisterValidly` in
 `cmd/vp/main_test.go`) asserts every registered command has either
 `Run != nil` or non-empty `Subcommands`, and that `BareInvocation`
 implies `Run != nil`.
+
+### `vp check` and selective execution
+
+`vp check` renders an ordered list of `check.Result` rows (`Pass` / `Fail` /
+`Skip` / `Info`), either as a human table or — with `--json` — as the stable
+`check.JSONReport`. `gatherCheckResults` (`cmd/vp/cmd_check.go`) runs the full
+set; the five reconciled artifacts come from their reconcilers' `Check()`
+methods so `vp check` and `vp config sync --dry-run` see the same world.
+
+`--check NAME[,NAME...]` runs only the named check(s) via the `checkProducers`
+map — a selective-execution path that skips the expensive embedder load and
+tool-registry build. Registered names:
+
+| Name | Row | Scope |
+|------|-----|-------|
+| `surface` | `Surface` | Whole vault — binary MCP surface vs. max `.surface` stamp |
+| `resume-caps` | `Resume caps` | Whole vault — every `Projects/*/resume.md` |
+
+An unknown name exits `ExitUser` with an `unknown check` diagnostic.
+
+### resume.md cap detection (`check.CheckResumeCaps`)
+
+`resume.md` is a **gateway, not an archive**: `vp_bootstrap_context` pays for
+every byte at session start, and the full record already lives in
+`iterations.md`, `tasks/done/` and `tasks/cancelled/`. The `/vpc-wrap` Step 3
+contract therefore caps its growing sections — but with the typed resume
+editors retired, routine edits go through the generic `vp_vault_read` +
+`vp_vault_edit` pair and **no typed write path exists on which a cap could be
+mechanically enforced**. Any agent holding Bash could bypass one anyway.
+Prevention is unachievable in-process; **detection is achievable**, so the caps
+are surfaced as a warning, never a gate:
+
+| Cap | Threshold | Constant |
+|-----|-----------|----------|
+| Total size | > 25 KB | `check.ResumeMaxBytes` |
+| `## Project History` data rows | > 15 | `check.ResumeMaxHistoryRows` |
+| `## Completed Plans` data rows | > 12 | `check.ResumeMaxCompletedRows` |
+
+`CheckResumeCaps` walks `<vault>/Projects/*/resume.md` and emits one `Info` row
+naming each over-cap project and which caps it broke; every resume within its
+caps yields `Pass`. It is strictly read-only — it never writes, never "fixes",
+never touches `resume.md` — and it is never `Fail`: pruning is a wrap-time
+judgement call, and a fat resume is a tax, not a breakage. **Absence is never a
+violation**: a missing `resume.md`, a missing section, and an empty or
+header-only table all report nothing.
+
+Row counting is deliberately line-oriented rather than a markdown parse. Resume
+cells carry escaped pipes (`\|`), inline code spans and bold runs, all of which
+defeat a cell-splitting parser; only three structural facts are needed, and each
+is decidable from the line alone. Fenced code blocks are tracked and skipped; a
+section runs from its `##` heading to the next H1/H2 (a `###` sub-heading does
+not close it); and within a section each contiguous run of pipe-leading lines
+counts only the lines *after* its `|---|---|` delimiter, so header and delimiter
+rows are excluded by construction and a run with no delimiter — which GFM does
+not render as a table at all — counts zero.
 
 ---
 

@@ -148,6 +148,42 @@ The session restart/wrap flows use this to confirm vault write-compatibility
 without paying for the full 33-row report or the ~90MB model download. An
 unknown check name exits non-zero with an `unknown check` diagnostic.
 
+Selectable check names:
+
+| Name | Reports |
+|------|---------|
+| `surface` | Binary-vs-vault MCP surface compatibility (the runtime write-gate verdict) |
+| `resume-caps` | Any project whose `resume.md` has outgrown its size / row caps |
+
+### Resume caps
+
+`resume.md` is a gateway, not an archive — every byte is paid for at session
+start by `vp_bootstrap_context`. The wrap flow prunes it to three caps, and
+`vp check` warns when a project has drifted past them:
+
+- total size over **25 KB**
+- `## Project History` over **15** data rows
+- `## Completed Plans` over **12** data rows
+
+```bash
+vp check --check resume-caps
+```
+
+```
+[info] Resume caps: 2 of 6 resume.md over cap
+                    rezbldr: Project History 18 rows (cap 15)
+                    vibe-palace: 64.8 KB (cap 25 KB); Completed Plans 13 rows (cap 12)
+                  Caps: 25 KB total, Project History 15 rows, Completed Plans 12 rows.
+                  resume.md is a gateway, not an archive — prune at the next wrap (/vpc-wrap Step 3);
+                  the full record already lives in iterations.md and tasks/done/.
+```
+
+The row is **advisory** — `[info]`, never `[FAIL]`, so it never changes the
+exit code. The check is strictly read-only: it never edits, trims or "fixes"
+`resume.md`. Pruning happens during `/vpc-wrap` Step 3, where the judgement
+about *what* to cut belongs. A project with no `resume.md`, or a resume with no
+such section, is silent — absence is not a violation.
+
 The first run downloads `all-MiniLM-L6-v2` (~90MB) from HuggingFace for
 semantic search. The model is cached at `{vault}/palace/.local/models/` —
 subsequent runs use the cache.

@@ -667,22 +667,22 @@ reserve raw write for files with no typed writer.
 |------|-----------|-------------|
 | `vp_ingest_commit_msg` | project? | Read `<project_path>/commit.msg` off disk and write a stamped copy into the vault |
 
-### 6.10 Resume Surgical-Edit Tools
+### 6.10 Resume Surgical-Edit Tools — REMOVED
 
-> **6 of 6 implemented.**
+> **0 of 6 implemented. Withdrawn.**
 
-Typed, structure-aware editors for `resume.md`'s `## Open Threads` section and
-its reserved `### Carried forward` sub-section — safer than rewriting the file
-through `vp_update_resume` or raw `vp_vault_write`.
+Six typed editors for `resume.md`'s `## Open Threads` and `### Carried forward`
+sections (`vp_thread_insert`/`_replace`/`_remove`,
+`vp_carried_add`/`_remove`/`_promote_to_task`) were implemented and have since
+been **deleted**. No command template ever named them, so no agent could reach
+them; and `vp_thread_insert` with `position: "top"` against a bullet-shaped
+`## Open Threads` silently reparented the whole section body under a new
+`### slug` block, which a later `vp_thread_remove` would then delete wholesale —
+a two-call silent data-loss path. Structure-aware resume editing, if it returns,
+needs a design that cannot corrupt a section it failed to parse.
 
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `vp_thread_insert` | project (req), position (req), slug (req), body (req) | Insert a new `### slug` block into Open Threads at a chosen position |
-| `vp_thread_replace` | project (req), slug (req), body (req) | Replace the body of an existing `### slug` block |
-| `vp_thread_remove` | project (req), slug (req) | Remove a `### slug` block from Open Threads |
-| `vp_carried_add` | project (req), slug (req), title (req), body? | Append a bullet to the `### Carried forward` sub-section |
-| `vp_carried_remove` | project (req), slug (req) | Remove a bullet from `### Carried forward` by slug |
-| `vp_carried_promote_to_task` | project (req), slug (req), new_task_slug (req) | Promote a carried-forward bullet to a new project task |
+Edit `resume.md` through `vp_update_resume` (compare-and-set on
+`expected_sha256`) or `vp_vault_edit`.
 
 ### 6.11 Wrap-State Tools
 
@@ -711,22 +711,22 @@ is no create/add path — learnings are authored out-of-band and only read here.
 | `vp_list_learnings` | filter_type? (user\|feedback\|reference) | List learning metadata (slug, name, description, type), sorted by slug; optional type filter |
 | `vp_get_learning` | slug (req), include_content? | Fetch a single learning. Always returns `content_uri` (`vibe-palace://learning/<slug>`) + `content_size`; tri-state `include_content` (nil/true ⇒ inline body; false + large body ⇒ excerpt + content_uri). Unknown slug errors with the available slugs listed |
 
-**Total (sum of the per-section labels above): 61 implemented (Phases 1–10,
+**Total (sum of the per-section labels above): 55 implemented (Phases 1–10,
 12–18, plus the restore-mcp-vault-surface write/wrap surface, the cross-project
 learnings read tools, and the `vp_surface_check` read-only surface preflight)** —
-40 prior tools plus 21 new ones across vault CRUD (8), commit lifecycle (1),
-resume surgical edits (6), wrap state (3), learnings (2), and the surface
-preflight (1).
+40 prior tools plus 15 new ones across vault CRUD (8), commit lifecycle (1),
+wrap state (3), learnings (2), and the surface preflight (1). The six resume
+surgical editors of §6.10 were withdrawn (see that section).
 (vs VibeVault's 16 + MemPalace's 19 = 35, with dedup, consolidation, and the
 Phase 12–18 + write-surface + learnings + surface-preflight additions.)
 
-> Ground truth: `internal/tools/register.go` registers **68 tools when the
-> search engine initializes and 59 without it** (the nine search-gated tools
+> Ground truth: `internal/tools/register.go` registers **62 tools when the
+> search engine initializes and 53 without it** (the nine search-gated tools
 > require an embedder) — verified against `internal/tools/register_test.go`. The
-> section tables above enumerate the primary surface (61 tools) and do not list
+> section tables above enumerate the primary surface (55 tools) and do not list
 > the five `vp_memory_*` tools (`memory_tools.go`), `vp_read_resource`
 > (`resource_read_tool.go`), or `vp_vault_tidy` (`system_tools.go`) — all seven
-> also always registered (61 + 7 = 68); count those in when reconciling against
+> also always registered (55 + 7 = 62); count those in when reconciling against
 > the registry.
 
 ---
@@ -2181,7 +2181,16 @@ Vibe-Palace.
 - `vp mcp serve [--port N] [--addr HOST] [--allow-writes]` — start the remote MCP server (Streamable HTTP, bearer-authenticated, read-only by default)
 - `vp inject [--project P]` — output context to stdout (for non-MCP clients)
 - `vp version` — version and build info
-- `vp check` — validate config, vault structure, JSONL integrity
+- `vp check [--json] [--check NAME[,NAME...]]` — validate config, vault
+  structure, JSONL integrity, and vault hygiene. `--check` runs only the named
+  check(s) via selective execution (skipping the embedder load and tool-registry
+  build): `surface` (binary-vs-vault MCP surface compatibility) and
+  `resume-caps` (any `Projects/*/resume.md` over its 25 KB size cap, its 15-row
+  `## Project History` cap, or its 12-row `## Completed Plans` cap). The
+  resume-caps row is advisory — `Info`, never `Fail` — and strictly read-only:
+  with the typed resume editors retired, no write path can enforce a cap, so
+  vibe-palace **detects** the violation and leaves pruning to `/vpc-wrap`
+  Step 3. A missing `resume.md` or a missing section is not a violation.
 
 Each command's help text must be defined as a structured Go data type (not
 ad-hoc strings) containing: command name, one-line synopsis, detailed

@@ -94,15 +94,32 @@ from re-proposing the same work.
 
 ## Step 7: Update resume.md
 
-Using `vp_update_resume` (read the resume with `vp_get_resume` first and
-pass its `sha256` as the REQUIRED `expected_sha256` guard; on a
-`"conflict":true` error, re-read and recompose rather than forcing):
+Edit `resume.md` **surgically**, exactly as `/wrap` does: read the raw bytes
+with `vp_vault_read` on `Projects/{{PROJECT}}/resume.md`, then make each change
+with `vp_vault_edit`, passing the `sha256` from the read as `expected_sha256`.
+Chain the sha the edit returns into the next edit. On a sha conflict, re-read
+and recompose — **never force**.
 
-- Remove or update any reference to the cancelled task in the Open
-  Threads section.
-- Update iteration count if changed.
-- Keep `resume.md` thin — just remove the pointer, don't add
-  cancellation details.
+> **Never source write-back text from `vp_get_resume`.** Its body is
+> placeholder-**expanded** (the resolver substitutes the double-brace tokens)
+> while its `sha256` is over the **raw** bytes. An `old_string` copied from it
+> will not match disk wherever a token lives, and a whole body composed from it
+> passes compare-and-set and **silently bakes the expanded values onto disk**,
+> destroying the live tokens. `vp_get_resume` reads context; `vp_vault_read`
+> supplies text you intend to edit.
+
+Both edits here are single-line anchors — do not reach for a whole-file rewrite:
+
+- **Remove the cancelled task's Open Threads bullet.** Anchor `old_string` on the
+  bullet itself (leading newline through its last continuation line) and replace
+  with `""`. Open Threads is a bullet list.
+- **Update the iteration count** if it changed: anchor on the existing
+  `- **Iterations:** N` line and replace it in place.
+- Keep `resume.md` thin — just remove the pointer, don't add cancellation
+  details.
+
+`vp_update_resume` is **not** the path here. It is a full-file regeneration and
+migration tool; nothing in this command needs it.
 
 ## Step 8: Confirm
 

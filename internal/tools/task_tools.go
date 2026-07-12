@@ -193,9 +193,8 @@ const minTaskContentBytes = 200
 //
 // Nor is this door the only door. At least six others reach the identical
 // on-disk state: vp_vault_write, vp_vault_edit, vp_vault_move, vp_vault_delete,
-// vp_carried_promote_to_task, the `vp vault move` CLI (which never enters
-// internal/mcp at all), and plain Bash `mv` — the vault is an ordinary git
-// checkout on an ordinary filesystem.
+// the `vp vault move` CLI (which never enters internal/mcp at all), and plain
+// Bash `mv` — the vault is an ordinary git checkout on an ordinary filesystem.
 //
 // What this buys is real but narrow: it removes the shortest, default,
 // didn't-notice path to an agent quietly closing out its own work. It does NOT

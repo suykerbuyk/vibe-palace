@@ -24,19 +24,20 @@ import (
 
 var checkFlags = []cli.FlagDef{
 	{Name: "--json", Help: "Output JSON"},
-	{Name: "--check", Help: "Run only the named check(s) (comma-separated list; e.g. surface)", Arg: "NAME"},
+	{Name: "--check", Help: "Run only the named check(s) (comma-separated list; e.g. surface, resume-caps)", Arg: "NAME"},
 }
 
 func cmdCheck(info cli.BuildInfo) *cli.Command {
 	return &cli.Command{
 		Name:        "check",
 		Synopsis:    "vp check [--json] [--check NAME[,NAME...]]",
-		Description: "Verify installation, config, vault, embedder, surface compatibility, and project detection. Reports pass/fail status for each component. With --check, runs only the named check(s) via selective execution — skipping the expensive embedder load and tool-registry build — for fast scripting / AI preflights.",
+		Description: "Verify installation, config, vault, embedder, surface compatibility, project detection, and vault hygiene (stray scaffolds, resume.md size/row caps). Reports pass/fail status for each component. With --check, runs only the named check(s) via selective execution — skipping the expensive embedder load and tool-registry build — for fast scripting / AI preflights. Selectable names: surface, resume-caps.",
 		Flags:       checkFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp check", Comment: "Run all installation checks"},
 			{Cmd: "vp check --json", Comment: "Emit machine-readable results (exit_code 1 on any failure)"},
 			{Cmd: "vp check --check surface --json", Comment: "Fast surface-only preflight (used by restart/wrap)"},
+			{Cmd: "vp check --check resume-caps", Comment: "Warn on any project resume.md over its size/row caps"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(checkFlags, args)
@@ -54,6 +55,12 @@ func cmdCheck(info cli.BuildInfo) *cli.Command {
 // vault path (cheap to compute; "" when unresolved — CheckSurface tolerates it).
 var checkProducers = map[string]func(vaultRoot string) []check.Result{
 	"surface": func(vaultRoot string) []check.Result { return []check.Result{check.CheckSurface(vaultRoot)} },
+	"resume-caps": func(vaultRoot string) []check.Result {
+		if vaultRoot == "" {
+			return []check.Result{{Name: "Resume caps", Status: check.Skip, Summary: "no vault configured"}}
+		}
+		return []check.Result{check.CheckResumeCaps(storage.NewVault(vaultRoot))}
+	},
 }
 
 // runSelectedChecks splits a comma-separated filter, validates each name
@@ -207,6 +214,12 @@ func gatherCheckResults() []check.Result {
 				// Vault-wide: flag scaffold-only orphan projects (stray
 				// `vp init` / un-isolated test residue like Projects/p).
 				results = append(results, check.CheckStrayScaffolds(vault))
+
+				// Vault-wide: flag resume.md files that have outgrown the
+				// wrap-time caps. Advisory only — with the typed resume
+				// editors retired, no write path can enforce a cap, so
+				// detection is all that is on offer.
+				results = append(results, check.CheckResumeCaps(vault))
 			}
 		}
 	}

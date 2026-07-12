@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -328,5 +329,118 @@ func TestIsSurfaceOnly(t *testing.T) {
 		if got := isSurfaceOnly(c.filter); got != c.want {
 			t.Errorf("isSurfaceOnly(%q) = %v, want %v", c.filter, got, c.want)
 		}
+	}
+}
+
+// seedResumeCapsVault points config at a temp vault holding one project whose
+// resume.md is over every cap, and returns the vault path.
+func seedResumeCapsVault(t *testing.T) string {
+	t.Helper()
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	vpDir := filepath.Join(configDir, "vibe-palace")
+	if err := os.MkdirAll(vpDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	vaultPath := filepath.Join(configDir, "vault")
+	projDir := filepath.Join(vaultPath, "Projects", "fatproj")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vpDir, "config.toml"),
+		[]byte("vault_path = \""+vaultPath+"\"\ngit_enabled = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var b strings.Builder
+	b.WriteString("## Project History\n\n| # | Summary |\n|---|---------|\n")
+	for i := range check.ResumeMaxHistoryRows + 1 {
+		fmt.Fprintf(&b, "| %d | did a thing |\n", i)
+	}
+	b.WriteString("\n## Completed Plans\n\n| Task | Iteration | File |\n|------|-----------|------|\n")
+	for i := range check.ResumeMaxCompletedRows + 1 {
+		fmt.Fprintf(&b, "| t%d | %d | `tasks/done/t.md` |\n", i, i)
+	}
+	b.WriteString("\n## Notes\n\n")
+	b.WriteString(strings.Repeat("x", check.ResumeMaxBytes))
+	if err := os.WriteFile(filepath.Join(projDir, "resume.md"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return vaultPath
+}
+
+// TestCheckResumeCapsOnlyHuman verifies `vp check --check resume-caps` selects
+// exactly the Resume caps row, flags the over-cap project on all three caps,
+// and — like the surface preflight — never loads the embedder.
+func TestCheckResumeCapsOnlyHuman(t *testing.T) {
+	seedResumeCapsVault(t)
+
+	fv, _ := cli.ParseFlags(checkFlags, []string{"--check", "resume-caps"})
+	var stderr string
+	stdout := captureStdout(t, func() {
+		stderr = captureStderr(t, func() {
+			runCheck(cli.BuildInfo{Version: "test"}, fv)
+		})
+	})
+	if !strings.Contains(stdout, "[info] Resume caps:") {
+		t.Errorf("expected an [info] Resume caps row:\n%s", stdout)
+	}
+	for _, want := range []string{"fatproj:", "cap 25 KB", "Project History 16 rows", "Completed Plans 13 rows"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("output missing %q:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "Embedder") || strings.Contains(stderr, "Embedder") {
+		t.Errorf("resume-caps check must not load the embedder:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if strings.Contains(stdout, "Surface:") {
+		t.Errorf("resume-caps selection must not run the Surface check:\n%s", stdout)
+	}
+}
+
+// TestCheckResumeCapsOnlyJSON verifies the --json projection of the selective
+// resume-caps run: exactly one info check whose detail carries every breach.
+func TestCheckResumeCapsOnlyJSON(t *testing.T) {
+	seedResumeCapsVault(t)
+
+	fv, _ := cli.ParseFlags(checkFlags, []string{"--check", "resume-caps", "--json"})
+	var code int
+	out := captureStdout(t, func() {
+		code = runCheck(cli.BuildInfo{Version: "test", Commit: "cafe"}, fv)
+	})
+
+	var rep check.JSONReport
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
+	}
+	if len(rep.Checks) != 1 || rep.Checks[0].Name != "Resume caps" {
+		t.Fatalf("expected exactly one Resume caps check, got %+v", rep.Checks)
+	}
+	if rep.Checks[0].Status != "info" {
+		t.Errorf("status = %q, want info (a cap breach warns, never fails)", rep.Checks[0].Status)
+	}
+	if rep.Summary.Info != 1 || rep.Summary.Fail != 0 {
+		t.Errorf("summary = %+v, want exactly one info and zero fail", rep.Summary)
+	}
+	if rep.ExitCode != 0 || code != cli.ExitOK {
+		t.Errorf("exit_code = %d / code = %d, want 0 / ExitOK — a warning must not fail the run",
+			rep.ExitCode, code)
+	}
+	for _, want := range []string{"fatproj", "Project History 16 rows", "Completed Plans 13 rows"} {
+		if !strings.Contains(rep.Checks[0].Detail, want) {
+			t.Errorf("detail missing %q: %q", want, rep.Checks[0].Detail)
+		}
+	}
+}
+
+// TestCheckResumeCapsNoVault verifies the producer degrades to Skip (not a
+// panic or a bogus Pass) when no vault can be resolved.
+func TestCheckResumeCapsNoVault(t *testing.T) {
+	rs := checkProducers["resume-caps"]("")
+	if len(rs) != 1 {
+		t.Fatalf("want one result, got %d", len(rs))
+	}
+	if rs[0].Status != check.Skip || rs[0].Name != "Resume caps" {
+		t.Errorf("got %+v, want a skipped Resume caps row", rs[0])
 	}
 }

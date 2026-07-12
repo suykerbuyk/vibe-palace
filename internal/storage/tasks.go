@@ -60,7 +60,7 @@ var validStatuses = map[string]bool{
 // lockedWrite: lockedWrite re-acquires this same lock, and vaultlock.Acquire is a
 // blocking LOCK_EX with no LOCK_NB and no timeout, so the re-entry would be a
 // permanent self-deadlock rather than an error. Same shape as
-// (*Vault).EditResume and UpdateTaskStatus.
+// (*Vault).WriteResume and UpdateTaskStatus.
 func (v *Vault) CreateTask(project, slug, title, content, priority string) error {
 	path, err := v.TaskFile(project, slug)
 	if err != nil {
@@ -68,10 +68,12 @@ func (v *Vault) CreateTask(project, slug, title, content, priority string) error
 	}
 
 	// Validate the caller-supplied body BEFORE any directory or file is
-	// touched. This lives here, not in the MCP handler, because CreateTask has
-	// more than one production caller (vp_manage_task create AND
-	// vp_carried_promote_to_task); the storage layer is the only chokepoint
-	// that covers all of them.
+	// touched. This lives here, not in the MCP handler, as defense in depth:
+	// the storage layer is the chokepoint every caller must pass through, so a
+	// future second caller cannot reintroduce an unvalidated body by forgetting
+	// to repeat the check. (vp_manage_task create is currently the only
+	// production caller; vp_carried_promote_to_task was the second until it was
+	// deleted.)
 	if err := validateTaskBody(content); err != nil {
 		return err
 	}

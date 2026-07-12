@@ -514,6 +514,31 @@ folding of `Summary`+`Details` into one `detail` line, stable JSON field
 names, and the deliberate omission of vibe-vault's `schema` field (no
 context-schema counter exists in vibe-palace).
 
+### `internal/check/resume_test.go` — resume.md Cap Detection
+
+Covers `CheckResumeCaps` and its line-oriented table counter. `countSectionTableRows`
+is table-driven over the shapes that actually occur in the wild: a missing
+section, a section with no table, an **empty table** (header + delimiter, zero
+data rows), a **header-only** run with no delimiter (not a GFM table → 0),
+trailing prose after the last row, a `###` sub-heading *not* closing the
+section, pipe-leading lines inside a **fenced code block** (skipped), cells
+carrying **escaped pipes and code spans** (still one row), two tables in one
+section (summed), a table running to EOF, and CRLF line endings.
+`isTableDelimiter` is asserted against `|---|`, alignment colons, and the empty
+`|   |   |` data row that must *not* be mistaken for a delimiter.
+
+`resumeBreaches` is exercised **at** each cap (silent — 15 history rows and 12
+completed rows are the allowed maximum, not a violation), **over** each cap
+independently (size / Project History / Completed Plans, each producing exactly
+one breach line), and over **all three at once**. `CheckResumeCaps` itself
+covers: no `Projects/` directory, a project with **no resume.md** (skipped, not
+counted, not flagged), a resume with **neither section** (Pass), a mixed vault
+where three projects breach different caps and a fourth stays silent, dot- and
+underscore-prefixed directories being ignored, and an unreadable `Projects/`.
+`TestCheckResumeCaps_IsReadOnly` proves the central constraint: after a run that
+flags a resume, its bytes, size and mtime are unchanged and no sibling file was
+written.
+
 ### `cmd/vp` — Flag Wiring
 
 `cmd_check_test.go` drives `vp check --json` end-to-end (JSON parse, binary
@@ -526,8 +551,15 @@ one `Surface` check, summary total 1, real `MCPSurfaceVersion` constant with
 `tools:0` — never a false `surface:0` — and the commit echoed), the unknown-name
 `ExitUser` path, the `isSurfaceOnly` normalization table, and two full-stack
 tests driving the real `cmdCheck(info).Run([]string{...})` dispatch
-(ParseFlags → runCheck → runSelectedChecks → ToJSON). `cmd_version_test.go`
-covers `vp version --surface` (`surface: <N>`).
+(ParseFlags → runCheck → runSelectedChecks → ToJSON).
+
+The `resume-caps` producer is covered against a seeded temp vault holding one
+over-every-cap project: `--check resume-caps` human output (the `[info] Resume
+caps` row plus all three breach strings; asserts no embedder load and no Surface
+row), its `--json` projection (exactly one `Resume caps` check, `status: info`,
+`summary.fail == 0`, **`exit_code 0`** — a cap breach warns and must never fail
+the run), and the no-vault-resolved path degrading to `Skip`.
+`cmd_version_test.go` covers `vp version --surface` (`surface: <N>`).
 
 ### `cmd/vp` — Tool-Surface Golden Invariant (Phase 6)
 
@@ -547,7 +579,7 @@ flipped, or a schema edited. The drift message tells the dev to regenerate with
 `-update-golden` AND to *consider* whether `internal/surface.MCPSurfaceVersion`
 needs a bump. Regenerating the golden does **not** bump the version — the
 surface-version bump is a deliberate operator decision made separately. The
-golden currently records `surface_version: 1`, 68 tools (24 mutating).
+golden currently records `surface_version: 1`, 62 tools (18 mutating).
 
 It lives in `cmd/vp` (not `internal/mcp`) because building the full tool set
 requires `internal/tools`, which imports `internal/mcp` — so `internal/mcp`
@@ -635,55 +667,35 @@ The `.vp-locks` segment refusal is covered by
 
 ---
 
-## Resume-Editor Lost-Update Tests (`resume-md-lost-update`)
+## Resume-Editor Lost-Update Tests (`resume-md-lost-update`) — RETIRED
 
 The six surgical `resume.md` editors (`vp_thread_insert`/`_replace`/`_remove`,
 `vp_carried_add`/`_remove`/`_promote_to_task`) used to read-modify-write
 `Projects/<slug>/resume.md` from `internal/tools` **without** taking the
 `vaultlock` that `storage.WriteResume` takes — and an advisory lock only excludes
-the writers that take it, so it bought nothing. They now route through the locked
-RMW combinator `storage.(*Vault).EditResume`; see the *Amendment* in
-`doc/adr/003-vault-write-locking.md`.
+the writers that take it, so it bought nothing. That hole was closed by routing
+them through the locked RMW combinator `storage.(*Vault).EditResume`; see the
+*Amendment* in `doc/adr/003-vault-write-locking.md`.
 
-Two properties govern every test below. First, **`-race` cannot see this bug** —
-a file-level lost update is not a memory data race, so the FINAL ON-DISK FILE is
-the only detector. Second, an edit whose handler **returned a nil error must be
-present in the final file**: that promise is the invariant. Slug indices are
-zero-padded (`thread-000`…) so no slug is a substring of another. All of these
-are pure-unit / in-process (no ONNX, no subprocesses) and run in `make test`.
+**The six tools, `EditResume`, and every test listed in this section have since
+been deleted.** No command template ever named the tools, so no agent could reach
+them, and `vp_thread_insert` with `position: "top"` against a bullet-shaped
+`## Open Threads` was itself a silent data-loss path. With the last caller gone,
+`EditResume` went too — `resume.md` now has exactly one writer,
+the compare-and-set `storage.WriteResume` (see the next section), which is a
+strictly stronger contract than the lock alone. The retired tests were:
+`TestEditResume*` (`internal/storage/project_dirs_test.go`),
+`TestThreadInsert_*` / `TestCarriedPromoteToTask_*` (`internal/tools`), and
+`TestIntegration_ResumeEditorsConcurrentDispatch` (`internal/integration`).
 
-### `internal/storage` — `EditResume` Combinator (`project_dirs_test.go`)
-
-| Test | What it proves |
-|------|----------------|
-| `TestEditResume` | the happy path: mutate sees the file's content and its return value is what lands on disk |
-| `TestEditResumeMissingErrorMatchesLegacyContract` | an absent `resume.md` still errors with the same `resume.md not found for project %q` message the tools used to emit |
-| `TestEditResumeMutateSeesCurrentContent` | mutate is handed the content read **under the lock**, not a caller-supplied snapshot |
-| `TestEditResumeEnsuresProjectDir` | the project dir is created inside the critical section |
-| `TestEditResumeStampsSurface` | the write goes through the stamping `atomicfile.Write`, so the surface stamp is still emitted |
-| `TestEditResumeMutateErrorReleasesLock` | a mutate error aborts without writing **and** releases the lock (a leaked lock would hang the next `Acquire` forever — it is a blocking `LOCK_EX` with no timeout) |
-| `TestEditResumeConcurrentEditsAllSurvive` | 32 concurrent `EditResume` appends: every marker appears exactly once |
-| `TestEditResumeInterlocksWithWriteResume` | `EditResume` and `WriteResume` contend on the same lock object — the file is never torn mid-write |
-
-### `internal/tools` — Surgical Editors Under Concurrency
-
-| Test | What it proves |
-|------|----------------|
-| `TestThreadInsert_ConcurrentInsertsAllSurvive` (`thread_tools_test.go`) | the regression that exposed the hole: 32 concurrent `vp_thread_insert` calls with distinct slugs — pre-fix, 22 were silently lost while every handler returned nil; post-fix every nil-error insert is in the final file exactly once |
-| `TestCarriedPromoteToTask_ConcurrentPromotesAllSurvive` (`carried_tools_test.go`) | N concurrent promotes of distinct bullets: each task file is created and each bullet leaves the carried list exactly once (the two per-path locks are sequential, never nested — so no hang) |
-| `TestCarriedPromoteToTask_ConcurrentWithThreadInsert` (`carried_tools_test.go`) | promotes racing thread inserts on the same `resume.md`: neither editor class clobbers the other |
+The one test from this epic that survives is the `CreateTask` TOCTOU guard,
+because `CreateTask` outlived the editor that was its second caller.
 
 ### `internal/storage` — `CreateTask` TOCTOU (`tasks_test.go`)
 
 | Test | What it proves |
 |------|----------------|
 | `TestCreateTask_ConcurrentSameSlugExactlyOneWins` | the already-exists `os.Stat` now runs **inside** the per-path lock: of N concurrent creates of one slug, exactly one succeeds and the rest error — previously both passed the check and one silently overwrote the other |
-
-### `internal/integration` — Full-Stack MCP Dispatch (`resume_editors_concurrent_test.go`)
-
-| Test | Layers | ONNX? | What it proves |
-|------|--------|-------|----------------|
-| `TestIntegration_ResumeEditorsConcurrentDispatch` | MCP → tools → storage → vaultlock | No | 32 concurrent JSON-RPC `tools/call` messages (29 `vp_thread_insert` + 2 `vp_carried_add` + 1 `vp_carried_promote_to_task` — a realistic wrap) driven through the **production wiring**: `tools.RegisterAll` on a real `mcp.Server`, the registry's schema validation and mutating-write gate, a real on-disk vault. Every nil-error call survives exactly once in the final file, the promoted task file exists, and nothing pre-existing is clobbered. Unlike the unit tests it never touches a tool value directly, and unlike the cross-process test it spawns no subprocesses — so it is **not** `-short`-skipped and runs in `make test` as well as `make integration`. |
 
 ---
 
@@ -727,11 +739,17 @@ these are pure-unit / in-process (no ONNX) and run in `make test`.
 | `TestBootstrapSlimResumeSha256IsOfFullBody` (`context_tools_test.go`) | in slim/excerpt mode the digest is of the **full** body, computed pre-excerpt — a truncated preview still yields a guard that will actually match |
 | `TestBootstrapResumeSha256EmptyWithoutProjectFile` (`context_tools_test.go`) | absent resume → empty `resume_sha256`, feeding the assert-absent create |
 
-### `internal/integration` — Full-Stack MCP Dispatch (`resume_editors_concurrent_test.go`)
-
-| Test | Layers | ONNX? | What it proves |
-|------|--------|-------|----------------|
-| `TestIntegration_UpdateResumeStaleWriteRefused` | MCP → tools → storage → vaultlock | No | the whole loop through the **production wiring** (`tools.RegisterAll` on a real `mcp.Server`, real JSON-RPC `tools/call`, real on-disk vault): the agent reads via `vp_get_resume` and captures its `sha256`; a concurrent `vp_thread_insert` lands; the agent's full-body rewrite composed from that now-stale read is **refused** by `vp_update_resume`, and the concurrent insert is still in the file. A non-vacuity check first asserts the stale body does not already contain the insert, so accepting it really would have clobbered something. |
+> **Coverage gap.** The full-stack MCP-dispatch test for this epic,
+> `TestIntegration_UpdateResumeStaleWriteRefused`, lived in
+> `internal/integration/resume_editors_concurrent_test.go` and was deleted with
+> that file: it used a concurrent `vp_thread_insert` as the racing writer, so it
+> could not survive the editors' removal as written. The CAS contract itself is
+> still covered at the storage layer (`TestWriteResumeRefusesStaleRead`,
+> `TestWriteResumeCAS`) and at the schema layer
+> (`TestUpdateResumeSchemaRequiresExpectedSha`), but **no test now drives the
+> stale-write refusal end-to-end through real JSON-RPC `tools/call` dispatch**.
+> Restoring it needs a second racing writer that still exists — `vp_vault_edit`
+> or a second `vp_update_resume` — rather than a thread editor.
 
 ---
 
