@@ -57,7 +57,7 @@ func bootstrap() (*serverStack, error) {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
 
-	vplog.Init(v.VaultLocalDir()+"/vp.log", parseLogLevel(cfg.LogLevel))
+	initLoggingFor(v, cfg)
 
 	// The embedder is lazy: loading the ONNX model can take tens of seconds and
 	// downloads ~90MB on a cold cache. Doing that here would stall the MCP
@@ -102,6 +102,28 @@ func (s *serverStack) close() {
 	s.eng.Close()
 	s.emb.Close()
 	vplog.Close()
+}
+
+// initLoggingFor points process logging at v's log file. It is the single
+// definition of where vp.log lives and at what level; every entry point routes
+// through it — the CLI pre-run (main.go), bootstrap above, and the hook's
+// re-point once it has parsed its payload — so no two of them can disagree
+// about the destination.
+func initLoggingFor(v *storage.Vault, cfg storage.Config) {
+	// Best-effort: Init falls back to a discard handler and reports the error,
+	// but a command must never fail because logging could not be set up.
+	_ = vplog.Init(v.VaultLocalDir()+"/vp.log", parseLogLevel(cfg.LogLevel))
+}
+
+// initLoggingForVault is initLoggingFor for callers that hold a vault but have
+// not loaded its config. An unreadable config is not a reason to run without a
+// log: parseLogLevel("") yields the same Info default LoadConfig would.
+func initLoggingForVault(v *storage.Vault) {
+	cfg, err := v.LoadConfig("")
+	if err != nil {
+		cfg = storage.Config{}
+	}
+	initLoggingFor(v, cfg)
 }
 
 func parseLogLevel(s string) slog.Level {

@@ -20,13 +20,44 @@ var (
 func main() {
 	info := cli.BuildInfo{Version: version, Commit: commit, BuildDate: buildDate}
 	reg := cli.NewRegistry(info)
-	reg.SetPreRun(surfaceGate)
+	reg.SetPreRun(preRun)
 	registerAll(reg, info)
 	os.Exit(reg.Dispatch(os.Args[1:]))
 }
 
-// surfaceGate is the CLI dispatch pre-run hook (see cli.Registry.SetPreRun) and
-// the single choke-point for the MCP surface gate on the CLI side. Vault-
+// preRun is the CLI dispatch pre-run hook (see cli.Registry.SetPreRun). Every
+// leaf invocation funnels through it, which makes it the one place that can
+// give a command a logger before it runs.
+//
+// It has to: vplog.Init used to be reachable only from bootstrap(), and only
+// `vp mcp` and `vp mcp serve` call bootstrap. So ~40 of the ~42 entry points —
+// `vp hook` among them — ran with Go's default slog handler and wrote their
+// warnings to stderr, where nothing reads them. `vp hook` is the only path that
+// archives a transcript or derives a model, so its 11 slog calls were the ones
+// that mattered most and the ones most reliably lost.
+func preRun(cmd *cli.Command) int {
+	initLogging()
+	return surfaceGate(cmd)
+}
+
+// initLogging attaches logging to the vault this command will act on. Silent
+// and best-effort — a command must never fail because logging could not be set
+// up, and a cwd outside any vault legitimately has nowhere to log.
+//
+// Resolution goes through openProjectVault (not surfaceGate's vaultRoot, which
+// uses OpenVaultGlobal) so a cwd-local .vibe-palace.toml vault_path override is
+// honored. Otherwise a project that redirects its vault would log to the global
+// one — the right lines in the wrong file.
+func initLogging() {
+	v, err := openProjectVault()
+	if err != nil {
+		return
+	}
+	initLoggingForVault(v)
+}
+
+// surfaceGate is the MCP surface gate on the CLI side, invoked from preRun.
+// Vault-
 // mutating commands (marked via mutates() in registerAll) fail-stop when the
 // vault's surface version exceeds this binary's, honoring VP_SURFACE_GATE=warn;
 // every other command is warn-only so a stale binary never blocks a read or a

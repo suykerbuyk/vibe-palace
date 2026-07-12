@@ -13,17 +13,32 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
+// MaxSize is the size past which the log is rotated to <path>.1 on the next
+// Init. One generation is kept.
+//
+// Headroom matters more than it used to: Init now runs from the CLI dispatch
+// pre-run, so every vp command emits here, not just the two that call
+// bootstrap(). A 1 MiB cap and a single generation meant a chatty run could
+// rotate away the warning history the log exists to preserve.
+const MaxSize = 8 << 20
+
 var (
 	mu      sync.Mutex
 	logFile *os.File
 )
 
-// Init configures the global slog default with a JSON handler writing to
-// the given path. Call once from cmd/vp/main.go after config is loaded.
-// Creates parent directories via EnsureDir. Opens file with O_APPEND for
-// POSIX atomic writes (safe for concurrent vp instances).
-// If file creation fails, falls back to a no-op handler (never blocks startup).
-// Rotates: if file exceeds 1MB, renames to .log.1 first.
+// Init points the global slog default at a JSON handler writing to logPath.
+// Creates parent directories via EnsureDir. Opens with O_APPEND, so concurrent
+// vp processes can share the file. If the file cannot be opened, installs a
+// no-op handler and returns the error — logging never blocks startup.
+//
+// Init is safe to call more than once: it closes the handle it previously
+// installed before opening the new one. Re-pointing is not just tolerated, it
+// is required — `vp hook` resolves its vault from the CWD in the JSON payload
+// on stdin, which is read *after* the pre-run hook has already initialized
+// logging against the process's own cwd. The hook re-points to the vault it is
+// actually writing to; without that, its warnings would land in a different
+// vault's log.
 func Init(logPath string, level slog.Level) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -33,8 +48,7 @@ func Init(logPath string, level slog.Level) error {
 		return err
 	}
 
-	// Rotate if existing file exceeds 1MB.
-	if info, err := os.Stat(logPath); err == nil && info.Size() > 1<<20 {
+	if info, err := os.Stat(logPath); err == nil && info.Size() > MaxSize {
 		_ = os.Rename(logPath, logPath+".1")
 	}
 
@@ -42,6 +56,12 @@ func Init(logPath string, level slog.Level) error {
 	if err != nil {
 		slog.SetDefault(slog.New(discardHandler{}))
 		return err
+	}
+
+	// Close the handle from a prior Init before dropping the reference, or a
+	// re-point leaks the fd (and, on the MCP path, leaked one per call).
+	if logFile != nil {
+		logFile.Close()
 	}
 
 	logFile = f

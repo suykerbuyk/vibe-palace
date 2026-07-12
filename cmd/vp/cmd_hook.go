@@ -85,6 +85,14 @@ func runHook(info cli.BuildInfo) int {
 		}
 	}
 
+	// Re-point logging at the vault this hook is actually writing to. The CLI
+	// pre-run already initialized a logger, but it resolved the vault from this
+	// process's cwd — and the hook's vault comes from the CWD in the payload we
+	// only just parsed off stdin. Those differ whenever the hook runs from
+	// somewhere other than the project it is capturing, which is the normal
+	// case. Without this, the hook's warnings land in a different vault's log.
+	initLoggingForVault(vault)
+
 	opts := hook.RunOptions{
 		VaultRoot:   vault.Root,
 		ProjectSlug: proj,
