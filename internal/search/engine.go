@@ -40,18 +40,94 @@ type Engine struct {
 	mu       sync.RWMutex
 	indexes  map[string]*VectorIndex // project -> index
 	metadata map[string]drawerMeta   // drawerID -> metadata
+
+	// Lazy per-project index construction. buildMu guards both maps; it is
+	// never held across a Rebuild, so builds for different projects run
+	// concurrently and never serialize behind one another.
+	buildMu   sync.Mutex
+	built     map[string]bool          // project -> index materialized
+	buildsRun map[string]*projectBuild // project -> in-flight build
+}
+
+// projectBuild is a single in-flight lazy index build. Concurrent searches for
+// the same project join the same build and share its outcome.
+type projectBuild struct {
+	done chan struct{}
+	err  error
 }
 
 // NewEngine creates a search engine.
 func NewEngine(emb embedder.Embedder, vault *storage.Vault, cfg storage.Config) *Engine {
 	return &Engine{
-		embedder: emb,
-		vault:    vault,
-		cache:    NewEmbedCache(vault),
-		config:   cfg,
-		indexes:  make(map[string]*VectorIndex),
-		metadata: make(map[string]drawerMeta),
+		embedder:  emb,
+		vault:     vault,
+		cache:     NewEmbedCache(vault),
+		config:    cfg,
+		indexes:   make(map[string]*VectorIndex),
+		metadata:  make(map[string]drawerMeta),
+		built:     make(map[string]bool),
+		buildsRun: make(map[string]*projectBuild),
 	}
+}
+
+// ensureIndex materializes a project's index on first use and memoizes the
+// result. It must be called with no engine lock held: Rebuild takes e.mu for
+// write, and Search takes it for read immediately afterwards.
+//
+// A failed build is not memoized — the next search retries — but a build error
+// is returned to the caller rather than being swallowed into an empty result.
+func (e *Engine) ensureIndex(ctx context.Context, project string) error {
+	e.buildMu.Lock()
+	if e.built[project] {
+		e.buildMu.Unlock()
+		return nil
+	}
+	if b, ok := e.buildsRun[project]; ok {
+		e.buildMu.Unlock()
+		<-b.done
+		return b.err
+	}
+	// An index populated incrementally (IndexDrawers) needs no rebuild.
+	e.mu.RLock()
+	_, indexed := e.indexes[project]
+	e.mu.RUnlock()
+	if indexed {
+		e.built[project] = true
+		e.buildMu.Unlock()
+		return nil
+	}
+
+	b := &projectBuild{done: make(chan struct{})}
+	e.buildsRun[project] = b
+	e.buildMu.Unlock()
+
+	b.err = e.Rebuild(ctx, project)
+
+	e.buildMu.Lock()
+	delete(e.buildsRun, project)
+	if b.err == nil {
+		e.built[project] = true
+	}
+	e.buildMu.Unlock()
+	close(b.done)
+
+	return b.err
+}
+
+// ensureAllIndexes materializes every known project's index. Cross-project
+// search iterates e.indexes directly, so without this a cold engine would
+// silently return no results.
+func (e *Engine) ensureAllIndexes(ctx context.Context) error {
+	projects, err := e.vault.ListProjects()
+	if err != nil {
+		return fmt.Errorf("list projects: %w", err)
+	}
+	for _, p := range projects {
+		if err := e.ensureIndex(ctx, p); err != nil {
+			return fmt.Errorf("build index for %s: %w", p, err)
+		}
+	}
+	return nil
 }
 
 // Search performs hybrid semantic + structural search.
@@ -68,6 +144,16 @@ func (e *Engine) Search(ctx context.Context, query string, f SearchFilters) ([]S
 	queryVec, err := e.embedder.Embed(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("embed query: %w", err)
+	}
+
+	// Build the index(es) this search reads, on first use. Must happen before
+	// e.mu is taken — Rebuild acquires it for write.
+	if f.Project != "" {
+		if err := e.ensureIndex(ctx, f.Project); err != nil {
+			return nil, fmt.Errorf("build index for %s: %w", f.Project, err)
+		}
+	} else if err := e.ensureAllIndexes(ctx); err != nil {
+		return nil, err
 	}
 
 	e.mu.RLock()
@@ -210,7 +296,11 @@ func (e *Engine) IndexDrawers(ctx context.Context, batch []DrawerInput) error {
 	for _, in := range batch {
 		idx, ok := e.indexes[in.Project]
 		if !ok {
-			idx = NewVectorIndex(e.embedder.Dimensions())
+			dims, err := e.embedder.Dimensions()
+			if err != nil {
+				return fmt.Errorf("embedder dimensions: %w", err)
+			}
+			idx = NewVectorIndex(dims)
 			e.indexes[in.Project] = idx
 		}
 		if err := idx.Insert(in.Drawer.ID, in.Vec); err != nil {
@@ -232,7 +322,9 @@ func (e *Engine) RemoveDrawer(project, id string) {
 	delete(e.metadata, id)
 }
 
-// Rebuild rebuilds the index for a project from scratch.
+// Rebuild rebuilds the index for a project from scratch. Drawers whose vectors
+// are absent from the embed cache are embedded in batches — per-item embedding
+// is roughly 7x slower on the ONNX backend.
 func (e *Engine) Rebuild(ctx context.Context, project string) error {
 	wings, err := e.vault.ListWings(project)
 	if err != nil {
@@ -242,6 +334,10 @@ func (e *Engine) Rebuild(ctx context.Context, project string) error {
 	var ids []string
 	var vecs [][]float32
 	var metas []drawerMeta
+
+	// Positions in vecs that still need an embedding, and their drawer text.
+	var missIdx []int
+	var missText []string
 
 	for _, wing := range wings {
 		rooms, err := listRooms(e.vault.Root, project, wing)
@@ -261,16 +357,11 @@ func (e *Engine) Rebuild(ctx context.Context, project string) error {
 					return err
 				}
 
-				// Try cache first.
+				// Try cache first; misses are embedded together below.
 				vec, _ := e.cache.Get(project, d.ID)
 				if vec == nil {
-					vec, err = e.embedder.Embed(ctx, d.Content)
-					if err != nil {
-						return fmt.Errorf("embed drawer %s: %w", d.ID, err)
-					}
-					if err := e.cache.Put(project, d.ID, vec); err != nil {
-						slog.Warn("embed cache write failed", "project", project, "drawer", d.ID, "err", err)
-					}
+					missIdx = append(missIdx, len(vecs))
+					missText = append(missText, d.Content)
 				}
 
 				ids = append(ids, d.ID)
@@ -280,11 +371,25 @@ func (e *Engine) Rebuild(ctx context.Context, project string) error {
 		}
 	}
 
+	if err := e.embedMisses(ctx, project, ids, vecs, missIdx, missText); err != nil {
+		return err
+	}
+
 	if len(vecs) == 0 {
+		// The project's drawers are all gone. Drop any index from a previous
+		// build so it stops serving hits for content that no longer exists.
+		e.mu.Lock()
+		delete(e.indexes, project)
+		e.mu.Unlock()
 		return nil
 	}
 
-	idx := NewVectorIndex(e.embedder.Dimensions())
+	dims, err := e.embedder.Dimensions()
+	if err != nil {
+		return fmt.Errorf("embedder dimensions: %w", err)
+	}
+
+	idx := NewVectorIndex(dims)
 	if err := idx.Build(vecs, ids); err != nil {
 		return fmt.Errorf("build index: %w", err)
 	}
@@ -295,6 +400,46 @@ func (e *Engine) Rebuild(ctx context.Context, project string) error {
 		e.metadata[id] = metas[i]
 	}
 	e.mu.Unlock()
+	return nil
+}
+
+// embedMisses embeds the cache-miss drawers in batches, filling their slots in
+// vecs. Each vector is written to the embed cache as it lands, so a rebuild
+// killed partway through still leaves durable progress behind.
+func (e *Engine) embedMisses(ctx context.Context, project string, ids []string, vecs [][]float32, missIdx []int, missText []string) error {
+	if len(missIdx) == 0 {
+		return nil
+	}
+
+	batchSize := e.config.EmbedderBatchSize
+	if batchSize <= 0 {
+		batchSize = 32
+	}
+
+	for start := 0; start < len(missText); start += batchSize {
+		end := min(start+batchSize, len(missText))
+
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		batch := missText[start:end]
+		got, err := e.embedder.EmbedBatch(ctx, batch)
+		if err != nil {
+			return fmt.Errorf("embed drawers for %s: %w", project, err)
+		}
+		if len(got) != len(batch) {
+			return fmt.Errorf("embed drawers for %s: got %d vecs for %d inputs", project, len(got), len(batch))
+		}
+
+		for j, vec := range got {
+			pos := missIdx[start+j]
+			vecs[pos] = vec
+			if err := e.cache.Put(project, ids[pos], vec); err != nil {
+				slog.Warn("embed cache write failed", "project", project, "drawer", ids[pos], "err", err)
+			}
+		}
+	}
 	return nil
 }
 

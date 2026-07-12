@@ -66,6 +66,27 @@ func newHarness(t *testing.T, useRealEmbedder bool, cfgOverrides ...func(*storag
 		t.Skip("skipping integration test in short mode (requires ONNX model)")
 	}
 
+	var emb embedder.Embedder
+	if useRealEmbedder {
+		var err error
+		emb, err = embedder.NewONNX("sentence-transformers/all-MiniLM-L6-v2", testutil.ProjectCacheDir(t), 256, 32)
+		if err != nil {
+			t.Fatalf("NewONNX: %v", err)
+		}
+	} else {
+		emb = embedder.NewMock(384)
+	}
+
+	return newHarnessWithEmbedder(t, emb, cfgOverrides...)
+}
+
+// newHarnessWithEmbedder builds the same full stack as newHarness around a
+// caller-supplied embedder. Tests that need to observe WHEN the embedder is
+// constructed — rather than what it returns — wrap their own constructor in
+// embedder.NewLazy and pass it here; the harness must not construct it for them.
+func newHarnessWithEmbedder(t *testing.T, emb embedder.Embedder, cfgOverrides ...func(*storage.Config)) *testHarness {
+	t.Helper()
+
 	root := t.TempDir()
 	vault := storage.NewVault(root)
 
@@ -81,16 +102,6 @@ func newHarness(t *testing.T, useRealEmbedder bool, cfgOverrides ...func(*storag
 		override(&cfg)
 	}
 
-	var emb embedder.Embedder
-	if useRealEmbedder {
-		var err error
-		emb, err = embedder.NewONNX("sentence-transformers/all-MiniLM-L6-v2", testutil.ProjectCacheDir(t), 256, 32)
-		if err != nil {
-			t.Fatalf("NewONNX: %v", err)
-		}
-	} else {
-		emb = embedder.NewMock(384)
-	}
 	t.Cleanup(func() { emb.Close() })
 
 	eng := search.NewEngine(emb, vault, cfg)

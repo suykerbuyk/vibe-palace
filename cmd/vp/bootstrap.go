@@ -4,7 +4,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -60,31 +59,27 @@ func bootstrap() (*serverStack, error) {
 
 	vplog.Init(v.VaultLocalDir()+"/vp.log", parseLogLevel(cfg.LogLevel))
 
+	// The embedder is lazy: loading the ONNX model can take tens of seconds and
+	// downloads ~90MB on a cold cache. Doing that here would stall the MCP
+	// initialize handshake past the host's timeout, killing the session before
+	// a single tool is registered. The model loads on first use instead — which
+	// means a load failure now surfaces at first search, not at startup.
 	modelDir := v.VaultLocalDir() + "/models"
-	emb, err := embedder.NewONNX(
-		cfg.EmbedderModel, modelDir,
-		cfg.EmbedderMaxSeqLen, cfg.EmbedderBatchSize,
-	)
-	if err != nil {
-		vplog.Close()
-		return nil, fmt.Errorf("embedder: %w", err)
-	}
-
-	eng := search.NewEngine(emb, v, cfg)
-
-	// Rebuild indexes for known projects in the background.
-	go func() {
-		projects, err := v.ListProjects()
+	emb := embedder.NewLazy(func() (embedder.Embedder, error) {
+		e, err := embedder.NewONNX(
+			cfg.EmbedderModel, modelDir,
+			cfg.EmbedderMaxSeqLen, cfg.EmbedderBatchSize,
+		)
 		if err != nil {
-			slog.Warn("background rebuild: list projects failed", "err", err)
-			return
+			return nil, fmt.Errorf("embedder: %w", err)
 		}
-		for _, p := range projects {
-			if err := eng.Rebuild(context.Background(), p); err != nil {
-				slog.Warn("background rebuild failed", "project", p, "err", err)
-			}
-		}
-	}()
+		return e, nil
+	})
+
+	// The engine builds each project's index lazily, on the first search that
+	// touches it. Rebuilding all projects up front cost minutes of CPU on every
+	// MCP spawn — most of it for projects the session never searched.
+	eng := search.NewEngine(emb, v, cfg)
 
 	resolver := vpctx.NewResolver(v.Root)
 	srv := mcpkg.NewServer(v)

@@ -120,7 +120,8 @@ func (e *ONNXEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 }
 
 // Dimensions returns the embedding dimensionality (384 for all-MiniLM-L6-v2).
-func (e *ONNXEmbedder) Dimensions() int { return e.dims }
+// The model is already loaded, so this never fails.
+func (e *ONNXEmbedder) Dimensions() (int, error) { return e.dims, nil }
 
 // Close releases the hugot session and pipeline resources.
 func (e *ONNXEmbedder) Close() error {

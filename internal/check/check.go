@@ -186,8 +186,16 @@ func CheckEmbedder(cfg storage.Config, v *storage.Vault, configPath string) Resu
 	}
 	defer emb.Close()
 
+	dims, err := emb.Dimensions()
+	if err != nil {
+		r.Status = Fail
+		r.Summary = fmt.Sprintf("embedder dimensions: %v", err)
+		r.Err = err
+		return r
+	}
+
 	r.Status = Pass
-	r.Summary = fmt.Sprintf("ONNX loaded, %d dimensions", emb.Dimensions())
+	r.Summary = fmt.Sprintf("ONNX loaded, %d dimensions", dims)
 	return r
 }
 

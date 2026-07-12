@@ -5,11 +5,74 @@ package search
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
+
+// countingEmbedder wraps the mock embedder to count calls, and can be made to
+// fail EmbedBatch (which is the only embedding a Rebuild performs).
+type countingEmbedder struct {
+	inner     *embedder.MockEmbedder
+	batchFail bool
+
+	mu         sync.Mutex
+	embedCalls int
+	batchCalls int
+	batchSizes []int
+}
+
+func newCountingEmbedder(dims int) *countingEmbedder {
+	return &countingEmbedder{inner: embedder.NewMock(dims)}
+}
+
+func (c *countingEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
+	c.mu.Lock()
+	c.embedCalls++
+	c.mu.Unlock()
+	return c.inner.Embed(ctx, text)
+}
+
+func (c *countingEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	c.mu.Lock()
+	c.batchCalls++
+	c.batchSizes = append(c.batchSizes, len(texts))
+	fail := c.batchFail
+	c.mu.Unlock()
+	if fail {
+		return nil, errors.New("embed batch exploded")
+	}
+	return c.inner.EmbedBatch(ctx, texts)
+}
+
+func (c *countingEmbedder) Dimensions() (int, error) { return c.inner.Dimensions() }
+func (c *countingEmbedder) Close() error             { return c.inner.Close() }
+
+func (c *countingEmbedder) counts() (embedCalls, batchCalls int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.embedCalls, c.batchCalls
+}
+
+// countingEngine builds an engine over a fresh vault with a call-counting embedder.
+func countingEngine(t *testing.T, cfg storage.Config) (*Engine, *storage.Vault, *countingEmbedder) {
+	t.Helper()
+	v := testVault(t)
+	if cfg.SearchDefaultLimit == 0 {
+		cfg.SearchDefaultLimit = 10
+	}
+	emb := newCountingEmbedder(384)
+	eng := NewEngine(emb, v, cfg)
+	t.Cleanup(func() { eng.Close() })
+	return eng, v, emb
+}
 
 func testEngine(t *testing.T) (*Engine, *storage.Vault) {
 	t.Helper()
@@ -290,8 +353,12 @@ func TestEmbedderGetter(t *testing.T) {
 	if emb == nil {
 		t.Fatal("Embedder() returned nil")
 	}
-	if emb.Dimensions() != 384 {
-		t.Errorf("Dimensions() = %d, want 384", emb.Dimensions())
+	dims, err := emb.Dimensions()
+	if err != nil {
+		t.Fatalf("Dimensions: %v", err)
+	}
+	if dims != 384 {
+		t.Errorf("Dimensions() = %d, want 384", dims)
 	}
 }
 
@@ -324,6 +391,207 @@ func TestIndexDrawersWithPrecomputedVec(t *testing.T) {
 	}
 	if results[0].DrawerID != d.ID {
 		t.Errorf("got drawer %q, want %q", results[0].DrawerID, d.ID)
+	}
+}
+
+// TestSearchLazyBuildsIndex verifies that searching a project whose index was
+// never built returns real results — the engine builds it on demand. Disabling
+// the lazy build in Search makes this fail with "returned 0 results".
+func TestSearchLazyBuildsIndex(t *testing.T) {
+	eng, v, _ := countingEngine(t, storage.Config{})
+	ctx := context.Background()
+
+	addDrawer(t, v, "proj", "wing-a", "room-1", "first document", "facts")
+	addDrawer(t, v, "proj", "wing-a", "room-2", "second document", "opinions")
+
+	// No IndexDrawer, no Rebuild — the engine's index map is empty.
+	eng.mu.RLock()
+	n := len(eng.indexes)
+	eng.mu.RUnlock()
+	if n != 0 {
+		t.Fatalf("precondition: engine has %d indexes, want 0", n)
+	}
+
+	results, err := eng.Search(ctx, "document", SearchFilters{Project: "proj"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("lazy build: returned %d results, want 2", len(results))
+	}
+}
+
+// TestCrossProjectSearchLazyBuildsAllIndexes verifies that a cross-project
+// search over a cold engine builds every known project rather than silently
+// returning nothing.
+func TestCrossProjectSearchLazyBuildsAllIndexes(t *testing.T) {
+	eng, v, _ := countingEngine(t, storage.Config{})
+	ctx := context.Background()
+
+	addDrawer(t, v, "proj-a", "wing-1", "room-1", "alpha project content", "facts")
+	addDrawer(t, v, "proj-b", "wing-1", "room-1", "beta project content", "facts")
+
+	results, err := eng.Search(ctx, "content", SearchFilters{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("cross-project lazy build: returned %d results, want 2", len(results))
+	}
+
+	seen := map[string]bool{}
+	for _, r := range results {
+		seen[r.Project] = true
+	}
+	if !seen["proj-a"] || !seen["proj-b"] {
+		t.Errorf("expected hits from both projects, got %v", seen)
+	}
+}
+
+// TestLazyBuildRunsOnce verifies that concurrent searches for the same project
+// trigger exactly one index build.
+func TestLazyBuildRunsOnce(t *testing.T) {
+	eng, v, emb := countingEngine(t, storage.Config{})
+	ctx := context.Background()
+
+	for i := range 5 {
+		addDrawer(t, v, "proj", "wing-a", "room-1", fmt.Sprintf("document %d", i), "facts")
+	}
+
+	const searchers = 8
+	var wg sync.WaitGroup
+	errs := make([]error, searchers)
+	counts := make([]int, searchers)
+	for i := range searchers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, err := eng.Search(ctx, "document", SearchFilters{Project: "proj"})
+			errs[i] = err
+			counts[i] = len(res)
+		}()
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("searcher %d: %v", i, err)
+		}
+		if counts[i] != 5 {
+			t.Errorf("searcher %d got %d results, want 5", i, counts[i])
+		}
+	}
+
+	// One build of 5 cache-miss drawers = exactly one EmbedBatch call.
+	_, batchCalls := emb.counts()
+	if batchCalls != 1 {
+		t.Errorf("build ran %d times under concurrent search, want exactly 1", batchCalls)
+	}
+}
+
+// TestRebuildBatchesEmbeddings verifies that Rebuild embeds cache misses via
+// EmbedBatch in chunks of EmbedderBatchSize, never one at a time.
+func TestRebuildBatchesEmbeddings(t *testing.T) {
+	eng, v, emb := countingEngine(t, storage.Config{EmbedderBatchSize: 32})
+	ctx := context.Background()
+
+	const drawers = 70 // ceil(70/32) = 3 batches
+	for i := range drawers {
+		addDrawer(t, v, "proj", "wing-a", "room-1", fmt.Sprintf("document number %d", i), "facts")
+	}
+
+	if err := eng.Rebuild(ctx, "proj"); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	embedCalls, batchCalls := emb.counts()
+	if embedCalls != 0 {
+		t.Errorf("Rebuild made %d single Embed calls, want 0", embedCalls)
+	}
+	if batchCalls != 3 {
+		t.Fatalf("Rebuild made %d EmbedBatch calls, want 3", batchCalls)
+	}
+	if want := []int{32, 32, 6}; !slices.Equal(emb.batchSizes, want) {
+		t.Errorf("batch sizes = %v, want %v", emb.batchSizes, want)
+	}
+
+	// Every vector should now be durable in the embed cache.
+	stored, err := v.ListDrawers("proj", "wing-a", "room-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range stored {
+		vec, err := eng.cache.Get("proj", d.ID)
+		if err != nil {
+			t.Fatalf("cache.Get %s: %v", d.ID, err)
+		}
+		if vec == nil {
+			t.Fatalf("drawer %s not written to embed cache", d.ID)
+		}
+	}
+}
+
+// TestSearchPropagatesBuildError verifies that a failed lazy build surfaces as
+// an error, not as an empty result set.
+func TestSearchPropagatesBuildError(t *testing.T) {
+	eng, v, emb := countingEngine(t, storage.Config{})
+	emb.batchFail = true
+	ctx := context.Background()
+
+	addDrawer(t, v, "proj", "wing-a", "room-1", "unreachable content", "facts")
+
+	results, err := eng.Search(ctx, "content", SearchFilters{Project: "proj"})
+	if err == nil {
+		t.Fatalf("expected build error, got %d results and nil error", len(results))
+	}
+	if results != nil {
+		t.Errorf("expected nil results on build failure, got %v", results)
+	}
+
+	// The failure is not memoized: a subsequent search retries and succeeds.
+	emb.mu.Lock()
+	emb.batchFail = false
+	emb.mu.Unlock()
+
+	results, err = eng.Search(ctx, "content", SearchFilters{Project: "proj"})
+	if err != nil {
+		t.Fatalf("retry after failed build: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("retry returned %d results, want 1", len(results))
+	}
+}
+
+// TestRebuildClearsStaleIndex verifies that rebuilding a project whose drawers
+// have all been deleted drops the previous index instead of serving hits for
+// content that no longer exists.
+func TestRebuildClearsStaleIndex(t *testing.T) {
+	eng, v, _ := countingEngine(t, storage.Config{})
+	ctx := context.Background()
+
+	addDrawer(t, v, "proj", "wing-a", "room-1", "doomed content", "facts")
+
+	results, err := eng.Search(ctx, "doomed", SearchFilters{Project: "proj"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results before deletion, want 1", len(results))
+	}
+
+	if err := os.RemoveAll(filepath.Join(v.Root, "palace", "proj", "drawers")); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.Rebuild(ctx, "proj"); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	results, err = eng.Search(ctx, "doomed", SearchFilters{Project: "proj"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("stale index still serving %d results after all drawers deleted", len(results))
 	}
 }
 

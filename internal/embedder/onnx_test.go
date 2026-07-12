@@ -26,8 +26,12 @@ func newTestONNX(t *testing.T) *ONNXEmbedder {
 
 func TestONNXDimensions(t *testing.T) {
 	emb := newTestONNX(t)
-	if emb.Dimensions() != 384 {
-		t.Errorf("Dimensions() = %d, want 384", emb.Dimensions())
+	dims, err := emb.Dimensions()
+	if err != nil {
+		t.Fatalf("Dimensions: %v", err)
+	}
+	if dims != 384 {
+		t.Errorf("Dimensions() = %d, want 384", dims)
 	}
 }
 
@@ -149,8 +153,12 @@ func TestONNXEmbedSimilarity(t *testing.T) {
 
 func TestMockEmbedder(t *testing.T) {
 	m := NewMock(384)
-	if m.Dimensions() != 384 {
-		t.Errorf("Dimensions() = %d, want 384", m.Dimensions())
+	dims, err := m.Dimensions()
+	if err != nil {
+		t.Fatalf("Dimensions: %v", err)
+	}
+	if dims != 384 {
+		t.Errorf("Dimensions() = %d, want 384", dims)
 	}
 
 	ctx := context.Background()

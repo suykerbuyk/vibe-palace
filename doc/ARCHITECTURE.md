@@ -464,13 +464,41 @@ injects the vault reference into every request context.
 ```
 cmd/vp/main.go
 ├── storage.OpenVaultFromCwd(cwd) # resolve vault (honors cwd .vibe-palace.toml vault_path override)
-├── embedder.NewONNX(...)         # load ONNX model
-├── search.NewEngine(emb, v, cfg) # create search engine
+├── embedder.NewLazy(NewONNX...)  # DEFER the ONNX model load — no I/O here
+├── search.NewEngine(emb, v, cfg) # create search engine (no indexes built yet)
 ├── context.NewResolver(v.Root)   # template resolver
 ├── mcp.NewServer(v)              # create MCP server
-├── tools.RegisterAll(...)        # register all 58 tools
+├── tools.RegisterAll(...)        # register all 62 tools
 └── srv.Serve(ctx)                # start stdio transport
 ```
+
+### Cold Start: Nothing Expensive Before the Handshake
+
+Bootstrap performs **no embedding, no model load, and no indexing**. Both of
+the expensive things it used to do happened *before* the MCP `initialize`
+handshake was answered, and both of them could — and did — blow past the host's
+initialize timeout, leaving the session alive with zero tools:
+
+- **The ONNX model load.** `embedder.NewONNX` takes tens of seconds and
+  downloads ~90MB on a cold model cache. `cmd/vp/bootstrap.go` now wraps that
+  constructor in `embedder.NewLazy` (`internal/embedder/lazy.go`), a `sync.Once`
+  proxy that constructs the real embedder on the first call that actually needs
+  a vector. Construction happens at most once, concurrent callers share it, a
+  construction *failure* is memoized rather than retried in a hot loop, and
+  `Close()` on a never-used embedder does not force the load. The consequence:
+  a model-load failure now surfaces at first search, not at startup.
+- **The full-vault reindex.** Bootstrap used to spawn a goroutine that called
+  `Engine.Rebuild` for every project in the vault. Most of that work was for
+  projects the session never searched. It is gone; indexes are built lazily
+  (below).
+
+Because `Dimensions()` is a property of the loaded model, it returns
+`(int, error)` — the dimensionality cannot be known before the model exists.
+
+Integration coverage: `internal/integration/lazy_startup_test.go` drives a real
+JSON-RPC `initialize` + `tools/list` against the production tool surface and
+asserts the embedder was **constructed zero times**, then exactly once after the
+first search.
 
 ### Tool Registration
 
@@ -555,8 +583,10 @@ All tools except the search-dependent ones are always registered. The nine
 search-gated tools — `vp_search`, `vp_search_cross_project`,
 `vp_capture_session`, `vp_get_project_context`, `vp_search_sessions`,
 `vp_get_session_detail`, `vp_get_effectiveness`, `vp_get_friction_trends`, and
-`vp_refresh_index` — require a search engine (embedder must initialize
-successfully). The vault-CRUD, commit, wrap-state, and surface-check tools are
+`vp_refresh_index` — require a search *engine* (`engine != nil`). They do **not**
+require a loaded model: the engine holds a lazy embedder, so registration never
+touches ONNX and a model that fails to load fails the first search rather than
+the tool surface. The vault-CRUD, commit, wrap-state, and surface-check tools are
 filesystem operations and are always registered.
 
 `vp_surface_check` (`surface_tools.go`) is a read-only probe that returns the
@@ -1065,14 +1095,45 @@ internal/search/engine.go
 The search pipeline combines vector similarity with structural metadata:
 
 ```
-1. Embed query text → query vector
-2. Vector search → top limit×3 candidates (over-fetch for filtering)
-3. Metadata filter → remove non-matching wing/room/hall/date
-4. Score conversion → 1 / (1 + cosine_distance)
-5. Structural boost → multiply score for matching filters
-6. Deduplicate → keep highest-scored per SourceRef
-7. Return top-N
+1. Embed query text → query vector          (forces the lazy model load, once)
+2. Ensure index    → build this project's index if it has never been built
+3. Vector search → top limit×3 candidates (over-fetch for filtering)
+4. Metadata filter → remove non-matching wing/room/hall/date
+5. Score conversion → 1 / (1 + cosine_distance)
+6. Structural boost → multiply score for matching filters
+7. Deduplicate → keep highest-scored per SourceRef
+8. Return top-N
 ```
+
+### Lazy Index Construction
+
+There is **no reindex on spawn**. A project's `VectorIndex` is built by
+`ensureIndex` on the first search that touches it, and the result is memoized:
+subsequent searches for that project reuse it. Concurrent searches for the same
+project join one in-flight build (`projectBuild`) rather than each running their
+own `Rebuild`; builds for *different* projects run concurrently, because the
+build mutex is never held across a `Rebuild`. A project whose index was already
+populated incrementally (`IndexDrawers`, from the capture pipeline) is marked
+built and never rebuilt from disk.
+
+A cross-project search — one with no `Project` filter — iterates every index in
+the engine, so it calls `ensureAllIndexes`, which builds every project the vault
+knows about. That is the expensive case, and it is paid only by callers who
+actually ask for it.
+
+A build **failure is returned to the caller**, never swallowed. This is
+load-bearing: before `ensureIndex` existed, a search against a project with no
+index took a `return nil, nil` branch — an empty result and a nil error. With no
+eager rebuild left to hide it, every agent on every fresh session would have been
+told, plausibly and silently, that the vault contains nothing.
+`internal/integration/lazy_startup_test.go` pins the positive case: a
+never-rebuilt project returns real hits through a real JSON-RPC `vp_search`.
+
+`Rebuild` embeds cache-miss drawers with `EmbedBatch` in chunks of
+`EmbedderBatchSize` (default 32), writing each vector to the embed cache as it
+lands, so a rebuild killed partway through leaves durable progress behind.
+Per-drawer embedding — the old behavior — is roughly 7x slower on the ONNX
+backend.
 
 Structural boosts (configurable):
 
@@ -1420,7 +1481,7 @@ Entries are typically 200–500 bytes, well under PIPE_BUF (4096 bytes).
 
 After init, all packages use `slog.Info/Warn/Error` directly (no vplog import
 needed). Expected "already exists" entity duplicates log at DEBUG to avoid
-flooding WARN during re-index (~1000 duplicates per startup).
+flooding WARN during a bulk re-index.
 
 ### Health Tool (`vp_health`)
 

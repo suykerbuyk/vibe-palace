@@ -120,6 +120,9 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 		if err != nil {
 			return stats, fmt.Errorf("batch embed: %w", err)
 		}
+		if len(vecs) != len(chunks) {
+			return stats, fmt.Errorf("batch embed: got %d vecs for %d chunks", len(vecs), len(chunks))
+		}
 
 		batch := make([]search.DrawerInput, len(locs))
 		for i, loc := range locs {

@@ -1,13 +1,13 @@
 # Testing Strategy
 
-**Last updated:** 2026-07-11
+**Last updated:** 2026-07-12
 
 This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~2255 tests** across 40 packages, including
-**104 integration tests** (the ONNX/cross-layer tests `make integration`
+The suite currently runs **~2215 tests** across 39 packages, including
+**105 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
 subtests each may fan out into — and they drift as the suite grows. Derive
@@ -178,6 +178,8 @@ context resolver, and config into a single test fixture.
 | `SessionIterationAcrossSessions` | tools → storage | No | Multiple captures auto-increment iteration numbers |
 | `MCPSearchEndToEnd` | MCP → tools → search | Yes | JSON-RPC `tools/call` for `vp_search` returns semantically correct results |
 | `MCPSearchValidation` | MCP → tools | No | Invalid parameters produce proper JSON-RPC error responses |
+| `HandshakeDoesNotConstructEmbedder` | MCP → tools → search → embedder | No | A real JSON-RPC `initialize` + `tools/list` against the production tool surface constructs the embedder **zero** times; the first `vp_search` constructs it exactly once, and a second search does not reconstruct it (see below) |
+| `ColdSearchBuildsIndexLazily` | MCP → tools → search → storage | No | `vp_search` and `vp_search_cross_project` return **real hits** on projects whose index has never been built — no `Rebuild`, no `IndexDrawer`, only drawers on disk (see below) |
 | `SurfaceCheck` | MCP → tools → check | No | JSON-RPC `tools/call` for `vp_surface_check` returns `status:"pass"` with the binary's surface version on a compatible vault; the fail path carries the curated remediation `details` across the wire |
 | `BootstrapFullContext` | tools → context → storage | No | Bootstrap tool assembles workflow, commands from embedded + vault sources |
 | `BootstrapWithSessions` | storage | No | Sessions written via API are readable through list/read operations |
@@ -376,7 +378,7 @@ contract holds against the real binary.
 | `DiscoverEstimate` | palace | No | `--estimate` reports token count without making API calls |
 | `DiscoverRejectsRegressions` | palace → storage | No | Proposals causing regressions (negative score) are filtered out |
 
-### `internal/capture/` — Capture Pipeline Tests
+### `internal/capture/` — Capture Pipeline Tests (coverage 92.5%)
 
 | Test | ONNX? | What it proves |
 |------|-------|----------------|
@@ -385,7 +387,17 @@ contract holds against the real binary.
 | `CaptureEntityExtraction` | Yes | Entities extracted and written to KG with triples |
 | `CaptureLargeTranscript` | Yes | 100KB transcript handled within performance bounds |
 
-### `internal/search/` — Search Engine Tests
+> **Known caveat (pre-existing, not a regression).** `go test ./internal/capture/
+> -race` **without** `-short` times out at Go's 600s default deadline. The race
+> detector's instrumentation overhead is pathological inside
+> `gomlx/backends/simplego`'s parallel executor: `TestIntegrationCaptureLargeTranscript`
+> (~32s un-instrumented) is still grinding through `simplego.(*FunctionExecutable).executeParallel`
+> when the deadline fires. This was confirmed against a clean worktree at HEAD — it
+> predates the lazy-embedder work and is not caused by it. Neither gate hits it:
+> `make test` is `-short -race` (the ONNX tests skip) and `make integration` runs
+> without `-race`. Do not combine `-race` with the ONNX tests in this package.
+
+### `internal/search/` — Search Engine Tests (coverage 88.2%)
 
 | Test | ONNX? | What it proves |
 |------|-------|----------------|
@@ -393,6 +405,12 @@ contract holds against the real binary.
 | `RebuildAndCache` | Yes | Embed cache populated on rebuild, used on second rebuild |
 | `IndexDrawerAndSearch` | Yes | Incremental indexing preserves all metadata |
 | `StructuralBoostsWithRealEmbeddings` | Yes | Wing filter boosts matching results with real vectors |
+| `TestSearchLazyBuildsIndex` | No | A `Search` on a project with no index builds it and returns hits, instead of the old silent `nil, nil` |
+| `TestCrossProjectSearchLazyBuildsAllIndexes` | No | An unfiltered search builds **every** known project's index (`ensureAllIndexes`), not just one |
+| `TestLazyBuildRunsOnce` | No | Concurrent searches for the same project join one in-flight build; the index is not rebuilt per query |
+| `TestSearchPropagatesBuildError` | No | A failed build is **returned** to the caller, never swallowed into an empty result |
+| `TestRebuildBatchesEmbeddings` | No | `Rebuild` embeds cache misses via `EmbedBatch` in `EmbedderBatchSize` chunks, not one drawer at a time |
+| `TestRebuildClearsStaleIndex` | No | A rebuild of a now-empty project drops its index, so it stops serving hits for deleted content |
 
 ### `internal/search/` — Recall Harness (`recall_test.go`)
 
@@ -767,6 +785,56 @@ editors. `vp_vault_edit` is not an arbitrary substitute: it is the tool
 that realistically races a whole-file rewrite in production. A second
 `vp_update_resume` would only prove CAS against itself; a *different-writer*
 racer is the shape the 179 hole actually had.
+
+---
+
+## Lazy Startup Tests
+
+The MCP server no longer loads the ONNX model or reindexes the vault before it
+answers `initialize`. Both used to happen inside `bootstrap()`, and both could
+blow past the host's initialize timeout — leaving a live session with zero tools.
+Three layers of test hold that down.
+
+### `internal/embedder/lazy_test.go` — the `LazyEmbedder` proxy (unit, no ONNX)
+
+| Test | What it proves |
+|------|----------------|
+| `TestLazyDefersConstruction` | The wrapped constructor has run **zero** times before first use, once after |
+| `TestLazyConstructsOnceUnderConcurrency` | 32 concurrent `Embed` calls produce exactly one construction |
+| `TestLazyCloseDoesNotConstruct` | Closing a never-used embedder does **not** load the model just to tear it down |
+| `TestLazyCloseDelegatesAfterUse` | After construction, `Close` reaches the underlying embedder exactly once |
+| `TestLazyDimensions` | `Dimensions()` forces construction and returns the model's real dimensionality — it cannot be known before the model exists, which is why it returns `(int, error)` |
+| `TestLazyEmbedBatch` | `EmbedBatch` delegates after forcing construction |
+| `TestLazyMemoizesConstructionError` | A **failed** load is memoized, not retried on every call — a hot loop of searches must never re-attempt a 90MB download |
+
+### `internal/search/engine_test.go` — lazy index build and batching
+
+See the search-engine table above: `TestSearchLazyBuildsIndex`,
+`TestCrossProjectSearchLazyBuildsAllIndexes`, `TestLazyBuildRunsOnce`,
+`TestSearchPropagatesBuildError`, `TestRebuildBatchesEmbeddings`,
+`TestRebuildClearsStaleIndex`.
+
+### `internal/integration/lazy_startup_test.go` — full-stack (no ONNX)
+
+The unit tests above prove `LazyEmbedder` defers and `Engine` builds on demand.
+Neither proves that nothing on the **server's** startup path forces the model
+anyway, or that a cold `vp_search` actually reaches the disk. These two do,
+through real JSON-RPC dispatch against the production tool surface
+(`tools.RegisterAll` on a real `mcp.Server`).
+
+| Test | What it proves |
+|------|----------------|
+| `TestIntegration_HandshakeDoesNotConstructEmbedder` | Registering the surface, answering `initialize`, and answering `tools/list` construct the embedder **zero** times. The count — not wall-clock time — is the observable: timing assertions are unworkable under CI's `-race`. Non-vacuity: the first `vp_search` drives the count to exactly 1, and a second search leaves it at 1 |
+| `TestIntegration_ColdSearchBuildsIndexLazily` | `vp_search` (project-scoped) and `vp_search_cross_project` (all projects) return **real, correct hits** on projects that have never been rebuilt — drawers on disk and nothing else |
+
+**Why the second test matters more than it looks.** With the eager reindex gone,
+a `Search` against a project with no index used to take a `return nil, nil`
+branch: an empty result **and a nil error**. Every agent on every fresh session
+would have been told, plausibly and silently, that the vault is empty — a failure
+invisible to any test that only asserts "no error". Mutation-proven: deleting the
+`ensureIndex` / `ensureAllIndexes` calls from `Engine.Search` makes it fail with
+*"cold vp_search returned 0 results on a never-rebuilt project — the lazy index
+build is gone and every agent now sees an empty vault (raw: [])"*.
 
 ---
 

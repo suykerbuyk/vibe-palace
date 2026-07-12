@@ -36,7 +36,7 @@ func (m *MockEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float3
 }
 
 // Dimensions returns the configured dimensionality.
-func (m *MockEmbedder) Dimensions() int { return m.dims }
+func (m *MockEmbedder) Dimensions() (int, error) { return m.dims, nil }
 
 // Close is a no-op for the mock.
 func (m *MockEmbedder) Close() error { return nil }
