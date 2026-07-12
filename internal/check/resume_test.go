@@ -396,3 +396,37 @@ func TestCheckResumeCaps_IsReadOnly(t *testing.T) {
 		t.Errorf("check wrote extra files: %v", entries)
 	}
 }
+
+// TestCountSectionTableRowsInlineCodeRun pins a LATENT fail-open in the cap
+// check. No resume.md in the vault trips it today — the live files carry no
+// fences at all — but the defect is real and is the same one that broke
+// wrapstate's iteration counter and storage's task validation.
+//
+// A line whose first non-space characters are an INLINE code run is prose. The
+// naive rule ("the trimmed line starts with ```") reads it as an opening fence
+// and treats everything after it as fenced — so the table rows below it are
+// never counted, the cap is never breached, and the one check whose entire job
+// is to notice quietly reports nothing.
+func TestCountSectionTableRowsInlineCodeRun(t *testing.T) {
+	const inlineRun = "  ```bash tutorial``` extraction from `doc/TUTORIAL.md` — deferred"
+
+	body := "## Project History\n\n" + inlineRun + "\n\n" +
+		"| # | Summary |\n|---|---------|\n| 3 | c |\n| 2 | b |\n| 1 | a |\n"
+
+	if got := countSectionTableRows([]byte(body), "Project History"); got != 3 {
+		t.Errorf("FAILS OPEN: got %d data rows, want 3 — an inline code run was misread "+
+			"as an opening fence, hiding the table from the cap check", got)
+	}
+}
+
+// A genuine fence must still hide pipe-leading lines, which is what the fence
+// tracking was for in the first place.
+func TestCountSectionTableRowsRealFenceStillHidesRows(t *testing.T) {
+	body := "## Project History\n\n" +
+		"| # | Summary |\n|---|---------|\n| 1 | real |\n\n" +
+		"```md\n| 9 | fake, inside a fence |\n| 8 | also fake |\n```\n"
+
+	if got := countSectionTableRows([]byte(body), "Project History"); got != 1 {
+		t.Errorf("got %d data rows, want 1 — a fenced table must not inflate the count", got)
+	}
+}

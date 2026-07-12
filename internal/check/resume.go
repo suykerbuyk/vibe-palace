@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/mdfence"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -165,7 +166,6 @@ func humanKB(n int) string {
 func countSectionTableRows(data []byte, section string) int {
 	heading := "## " + section
 	inSection := false
-	inFence := false
 	rows := 0
 	run := 0      // pipe-leading lines seen in the current contiguous run
 	delimAt := -1 // index within the run of its delimiter row, or -1
@@ -177,15 +177,23 @@ func countSectionTableRows(data []byte, section string) int {
 		run, delimAt = 0, -1
 	}
 
+	// Fence classification lives in internal/mdfence — the one definition in this
+	// codebase. It is NOT "the trimmed line starts with ```": that rule misreads
+	// a line beginning with an INLINE code run as an opening fence, inverts its
+	// state, and treats the whole rest of the file as fenced — which here means
+	// silently counting ZERO rows and never firing the cap warning. Fail-open, in
+	// the one check whose entire job is to notice. See the mdfence package doc.
+	var fences mdfence.Scanner
+
 	for line := range strings.SplitSeq(string(data), "\n") {
 		trimmed := strings.TrimSpace(strings.TrimSuffix(line, "\r"))
 
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			inFence = !inFence
+		switch fences.Step(line) {
+		case mdfence.Delimiter:
+			// A fence boundary breaks any contiguous table run.
 			flush()
 			continue
-		}
-		if inFence {
+		case mdfence.Fenced:
 			continue
 		}
 

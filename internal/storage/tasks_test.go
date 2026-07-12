@@ -665,3 +665,47 @@ func searchSubstr(s, sub string) bool {
 	}
 	return false
 }
+
+// TestValidateTaskBodyDoesNotFailOpenOnInlineCodeRun pins the bug that a naive
+// fence check ("the trimmed line starts with ```") introduced here.
+//
+// A body line whose first non-space characters are an INLINE code run — opened
+// and closed on the same line — is prose, not an opening fence. The naive rule
+// read it as a lone OPEN, inverted its fence state, and skipped the rest of the
+// body as "fenced". A duplicate "**Status:**" then sailed past the very check
+// this function exists to perform, silently reinstating the status-line
+// corruption iteration 184 closed.
+//
+// The literal below is iterations.md:698, byte-exact — the line that actually
+// occurs in this vault, not a paraphrase of it.
+func TestValidateTaskBodyDoesNotFailOpenOnInlineCodeRun(t *testing.T) {
+	const inlineRun = "  ```bash tutorial``` extraction from `doc/TUTORIAL.md` — deferred"
+
+	t.Run("control: a duplicate status line is rejected", func(t *testing.T) {
+		if err := validateTaskBody("some plan\n\n**Status:** Draft\n"); err == nil {
+			t.Fatal("control broken: duplicate status line was not rejected")
+		}
+	})
+
+	t.Run("an inline code run must not disable validation for the rest of the body", func(t *testing.T) {
+		if err := validateTaskBody(inlineRun + "\n\n**Status:** Draft\n"); err == nil {
+			t.Error("FAILS OPEN: the duplicate **Status:** was not rejected — an inline " +
+				"code run was misread as an opening fence, skipping the rest of the body")
+		}
+	})
+
+	t.Run("the same applies to a smuggled H1", func(t *testing.T) {
+		if err := validateTaskBody(inlineRun + "\n\n# Smuggled Title\n"); err == nil {
+			t.Error("FAILS OPEN: the duplicate H1 was not rejected")
+		}
+	})
+
+	t.Run("a REAL fence still suppresses metadata-shaped lines", func(t *testing.T) {
+		// The legitimate case 184 protected: "# Usage" inside a shell snippet is
+		// a comment, not a heading. This must still be accepted.
+		body := "a plan\n\n```bash\n# Usage: vp init\n**Status:** not really\n```\n"
+		if err := validateTaskBody(body); err != nil {
+			t.Errorf("over-rejected a legitimate fenced snippet: %v", err)
+		}
+	})
+}

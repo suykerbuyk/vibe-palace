@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/mdfence"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -312,6 +313,15 @@ func isH1Line(line string) bool {
 // entirely legitimate body shape. Inside a fence, nothing is metadata. Outside
 // one, an H1 or a status line can only be a duplicated header block.
 //
+// Fence detection lives in internal/mdfence and MUST NOT be reimplemented here.
+// It was, once, as "the trimmed line starts with ``` or ~~~" — and that rule
+// FAILED OPEN. A body line whose first non-space characters are an inline code
+// run (```bash tutorial``` ...) was misread as an opening fence, so everything
+// after it was treated as fenced and skipped, and a duplicate "**Status:**"
+// walked straight past the check this function exists to perform — silently
+// reinstating the corruption iteration 184 closed. Proven by test before the
+// fix, not argued. See the mdfence package doc.
+//
 // An unterminated fence simply means the rest of the body is treated as fenced.
 // A task body is not required to be well-formed markdown, and over-rejecting is
 // precisely the failure mode being avoided here.
@@ -322,21 +332,13 @@ func isH1Line(line string) bool {
 // body can be reached.
 func validateTaskBody(content string) error {
 	const remedy = "strip the leading metadata block from content: create supplies the \"# Title\" heading, \"**Status:**\" and \"**Priority:**\" lines itself"
-	inFence := false
-	for i, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			inFence = !inFence
-			continue
-		}
-		if inFence {
-			continue // "# ..." here is a shell comment, not a heading.
-		}
+	for _, l := range mdfence.OutsideFences(content) {
+		trimmed := strings.TrimSpace(l.Text)
 		switch {
 		case isStatusLine(trimmed):
-			return fmt.Errorf("task content line %d is a status line (%q): %s", i+1, trimmed, remedy)
+			return fmt.Errorf("task content line %d is a status line (%q): %s", l.Num, trimmed, remedy)
 		case isH1Line(trimmed):
-			return fmt.Errorf("task content line %d is an H1 heading (%q): %s", i+1, trimmed, remedy)
+			return fmt.Errorf("task content line %d is an H1 heading (%q): %s", l.Num, trimmed, remedy)
 		}
 	}
 	return nil

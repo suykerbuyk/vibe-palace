@@ -23,6 +23,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/suykerbuyk/vibe-palace/internal/mdfence"
 )
 
 // AnchorDir is the project-root directory holding the wrap anchors. Unlike
@@ -163,79 +165,19 @@ type iterHeading struct {
 	text   string // the trimmed header line
 }
 
-// fenceDelim reports whether line is a code-fence delimiter, returning the fence
-// character and the length of its run.
-//
-// This follows CommonMark rather than "the line starts with ```", and the
-// difference is not academic. A backtick fence's info string MAY NOT CONTAIN A
-// BACKTICK — which is exactly what stops a prose line like
-//
-//	```bash tutorial```
-//
-// (inline code, opened and closed on one line) from being read as an opening
-// fence. A naive scanner counts that as a single OPEN, inverts its fence state,
-// and never recovers: every heading after it is swallowed as "inside a fence".
-// iterations.md contains precisely that line, and a naive scanner lost 187 of
-// its 191 iteration headings to it, reporting iteration 77 on a project at 190.
-//
-// An indent of 4+ spaces is an indented code block, not a fence delimiter.
-func fenceDelim(line string) (ch byte, run int, info string, ok bool) {
-	i := 0
-	for i < len(line) && line[i] == ' ' {
-		i++
-	}
-	if i > 3 || i >= len(line) {
-		return 0, 0, "", false
-	}
-	c := line[i]
-	if c != '`' && c != '~' {
-		return 0, 0, "", false
-	}
-	j := i
-	for j < len(line) && line[j] == c {
-		j++
-	}
-	if j-i < 3 {
-		return 0, 0, "", false
-	}
-	return c, j - i, strings.TrimSpace(line[j:]), true
-}
-
 // scanIterHeadings returns every iteration header in content that lies outside a
-// fenced code block. An unterminated fence means the remainder is treated as
-// fenced: a heading-shaped line in a half-open fence is far more likely to be
-// sample text than a real header.
+// fenced code block: a heading-shaped line inside a code block is sample text,
+// not a header, and must not move the iteration counter.
+//
+// Fence detection lives in internal/mdfence, which is the ONE definition of a
+// markdown fence in this codebase. It is not "the line starts with ```" — that
+// rule misreads an inline code run as an opening fence and swallows the rest of
+// the document. See the mdfence package doc; iterations.md carries the line that
+// proves it.
 func scanIterHeadings(content string) []iterHeading {
 	var out []iterHeading
-	var fenceChar byte
-	var fenceRun int
-	inFence := false
-
-	for i, line := range strings.Split(content, "\n") {
-		if ch, run, info, ok := fenceDelim(line); ok {
-			switch {
-			case !inFence:
-				// An opening backtick fence may not carry a backtick in its info
-				// string. When it does, this is prose containing inline code —
-				// not a fence — so fall through and treat the line normally.
-				if ch == '`' && strings.Contains(info, "`") {
-					break
-				}
-				inFence, fenceChar, fenceRun = true, ch, run
-				continue
-			// A closing fence is a bare run of the SAME character, at least as
-			// long as the opener. Anything else inside a fence is content.
-			case ch == fenceChar && run >= fenceRun && info == "":
-				inFence = false
-				continue
-			default:
-				continue // a stray delimiter inside a fence is just content
-			}
-		}
-		if inFence {
-			continue // "## Iteration 9" here is sample text, not a header.
-		}
-		trimmed := strings.TrimSpace(line)
+	for _, l := range mdfence.OutsideFences(content) {
+		trimmed := strings.TrimSpace(l.Text)
 		m := iterHeadingRe.FindStringSubmatch(trimmed)
 		if m == nil {
 			continue
@@ -244,7 +186,7 @@ func scanIterHeadings(content string) []iterHeading {
 		if err != nil {
 			continue
 		}
-		out = append(out, iterHeading{line: i + 1, hashes: m[1], n: n, text: trimmed})
+		out = append(out, iterHeading{line: l.Num, hashes: m[1], n: n, text: trimmed})
 	}
 	return out
 }
