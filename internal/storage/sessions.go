@@ -76,14 +76,41 @@ type SessionMeta struct {
 	EnrichedAt string `yaml:"enriched_at,omitempty"`
 }
 
+// SessionRef identifies a session note that was just written: its ID plus the
+// coordinates that resolve it again. It exists so a caller never has to
+// re-derive where the note went by parsing the ID back apart — the writer that
+// placed the file is the only thing entitled to say where it landed, and it now
+// simply says so. NotePath is vault-relative (see SessionRelPath).
+type SessionRef struct {
+	ID          string
+	NotePath    string
+	Date        string
+	Fingerprint string
+	Iteration   int
+}
+
 // WriteSession writes a session markdown file with YAML frontmatter.
 // It auto-increments the iteration number and returns the session ID.
+// It is a thin wrapper over WriteSessionRef, which additionally reports where
+// the note landed; prefer that one when you need the note's path.
 func (v *Vault) WriteSession(project string, meta SessionMeta, body string) (string, error) {
+	ref, err := v.WriteSessionRef(project, meta, body)
+	if err != nil {
+		return "", err
+	}
+	return ref.ID, nil
+}
+
+// WriteSessionRef writes a session markdown file with YAML frontmatter,
+// auto-incrementing the iteration number, and returns the full identity of the
+// note it wrote — ID, vault-relative path, and the (date, fp, iteration)
+// coordinates that resolve it.
+func (v *Vault) WriteSessionRef(project string, meta SessionMeta, body string) (SessionRef, error) {
 	if err := slug.Validate(project); err != nil {
-		return "", fmt.Errorf("project: %w", err)
+		return SessionRef{}, fmt.Errorf("project: %w", err)
 	}
 	if !datePattern.MatchString(meta.Date) {
-		return "", fmt.Errorf("date %q must be in YYYY-MM-DD format", meta.Date)
+		return SessionRef{}, fmt.Errorf("date %q must be in YYYY-MM-DD format", meta.Date)
 	}
 
 	// Fingerprint this writer (host+vault) so two offline hosts minting the
@@ -93,7 +120,7 @@ func (v *Vault) WriteSession(project string, meta SessionMeta, body string) (str
 
 	iteration, err := v.NextIteration(project, meta.Date, fp)
 	if err != nil {
-		return "", err
+		return SessionRef{}, err
 	}
 
 	meta.Iteration = iteration
@@ -108,27 +135,33 @@ func (v *Vault) WriteSession(project string, meta SessionMeta, body string) (str
 	// project while returning status ok.
 	rel, err := v.SessionRelPath(project, meta.Date, fp, iteration)
 	if err != nil {
-		return "", err
+		return SessionRef{}, err
 	}
 	meta.NotePath = rel
 
 	path, err := v.SessionFile(project, meta.Date, fp, iteration)
 	if err != nil {
-		return "", err
+		return SessionRef{}, err
 	}
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
-		return "", fmt.Errorf("ensure sessions dir: %w", err)
+		return SessionRef{}, fmt.Errorf("ensure sessions dir: %w", err)
 	}
 
 	data, err := marshalSessionFile(meta, body)
 	if err != nil {
-		return "", err
+		return SessionRef{}, err
 	}
 
 	if err := v.lockedWrite(path, data); err != nil {
-		return "", fmt.Errorf("write session file: %w", err)
+		return SessionRef{}, fmt.Errorf("write session file: %w", err)
 	}
-	return meta.ID, nil
+	return SessionRef{
+		ID:          meta.ID,
+		NotePath:    rel,
+		Date:        meta.Date,
+		Fingerprint: fp,
+		Iteration:   iteration,
+	}, nil
 }
 
 // marshalSessionFile assembles the on-disk session file bytes: the YAML

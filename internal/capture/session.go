@@ -49,7 +49,32 @@ type SessionParams struct {
 	EnrichedBy string
 }
 
-// SessionResult is the outcome of a successful session capture.
+// CaptureFailure names one thing the capture pipeline could not do. Stage is a
+// stable machine-readable identifier (see the capture*Stage constants); Err is
+// the underlying error's text.
+type CaptureFailure struct {
+	Stage string `json:"stage"`
+	Err   string `json:"err"`
+}
+
+// The stages a capture can lose. These are stable identifiers: they are
+// reported to agents in the failure payload, so renaming one is a surface
+// change, not a refactor.
+const (
+	StageEnrichmentExtract = "enrichment_extract"
+	StageEnrichment        = "enrichment"
+	StageArchiveResolve    = "archive_resolve"
+	StageArchiveAdapter    = "archive_adapter_mismatch"
+	StageFrictionScoring   = "friction_scoring"
+	StageEnrichmentEnqueue = "enrichment_enqueue"
+	StageArchiveBacklink   = "archive_backlink"
+	StageTranscriptIndex   = "transcript_index"
+	StageClaimSentinel     = "claim_sentinel"
+	StageEnricherInit      = "enricher_init"
+)
+
+// SessionResult is the outcome of a session capture. A non-empty Failures means
+// the note landed but something around it did not — see WriteSession's contract.
 type SessionResult struct {
 	Status        string
 	Project       string
@@ -57,19 +82,50 @@ type SessionResult struct {
 	Iteration     int
 	SessionID     string
 	FrictionScore int
+
+	// Failures lists every part of the pipeline that was lost. The note itself
+	// is NOT among them: if WriteSession returns a non-nil result, the note is on
+	// disk. Callers decide what a loss means — the MCP path raises it to the
+	// agent as an error it can retry, the hook path logs it and exits zero.
+	Failures []CaptureFailure
 }
+
+// Failed reports whether any part of the capture was lost.
+func (r *SessionResult) Failed() bool { return len(r.Failures) > 0 }
 
 // WriteSession performs the full capture pipeline: title defaulting,
 // metadata population, archive resolution, friction analysis, body
-// building, vault write, read-back, bidirectional archive linking,
-// and optional transcript indexing. Both the MCP handler and the hook
-// command call this.
+// building, vault write, bidirectional archive linking, and optional
+// transcript indexing. Both the MCP handler and the hook command call this.
+//
+// THE NOTE ALWAYS LANDS. Every stage but the vault write itself is
+// ACCUMULATE-AND-CONTINUE: a failure is warn-logged, appended to
+// result.Failures, and the pipeline proceeds. This is a hard structural rule,
+// not a style preference — three of the losable stages (enrichment, archive
+// resolve, friction scoring) feed the frontmatter and therefore run BEFORE the
+// note exists, so an early return on any of them would write no note at all and
+// lose the session entirely. Losing the session is strictly worse than losing an
+// archive link, which is the whole point: capture's one irreplaceable output is
+// the note. There is exactly ONE fatal error in this function, and it is
+// storage.WriteSessionRef failing — at which point there is nothing to salvage.
+//
+// A non-nil result with a non-empty Failures therefore means: the note is safe
+// on disk, and these peripheral things were lost. Callers decide what that is
+// worth (the MCP path errors so the agent can retry; the hook path logs and
+// exits zero — it has no reader and its only hard-failure primitive, exit 2, is
+// Claude Code's blocking-error code on a hook that fires once per turn).
 func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p SessionParams) (*SessionResult, error) {
 	if p.Project == "" {
 		return nil, fmt.Errorf("project is required")
 	}
 	if p.Summary == "" {
 		return nil, fmt.Errorf("summary is required")
+	}
+
+	var failures []CaptureFailure
+	lose := func(stage string, err error, msg string, args ...any) {
+		failures = append(failures, CaptureFailure{Stage: stage, Err: err.Error()})
+		slog.Warn(msg, append([]any{"err", err, "stage", stage, "project", p.Project}, args...)...)
 	}
 
 	now := time.Now().UTC()
@@ -116,7 +172,7 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 			enqueueInput = in
 			res, eerr := p.Enricher.Enrich(ctx, in)
 			if eerr != nil {
-				slog.Warn("enrichment failed; using plain summary", "err", eerr, "project", p.Project)
+				lose(StageEnrichment, eerr, "capture: enrichment failed; note keeps the plain summary")
 			}
 			// applyEnrichment overwrites only non-empty fields and reports
 			// whether anything was actually applied; a nil or all-empty result
@@ -125,7 +181,7 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 				enqueuePending = true
 			}
 		} else {
-			slog.Warn("enrichment: extract prompt input failed", "err", err, "project", p.Project)
+			lose(StageEnrichmentExtract, err, "capture: enrichment extract failed; note keeps the plain summary")
 		}
 	}
 
@@ -148,12 +204,13 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		e, err := archive.ResolveEntry(vault.Root, p.Project, p.ArchiveSessionID)
 		switch {
 		case err != nil:
-			slog.Warn("capture: archive not linked; transcript will not be reachable from this note",
-				"err", err, "project", p.Project, "archive_session_id", p.ArchiveSessionID, "adapter", adapter)
+			lose(StageArchiveResolve, err, "capture: archive not linked; transcript will not be reachable from this note",
+				"archive_session_id", p.ArchiveSessionID, "adapter", adapter)
 		case e.Manifest.Adapter != adapter:
-			slog.Warn("capture: archive not linked; adapter mismatch",
-				"project", p.Project, "archive_session_id", p.ArchiveSessionID,
-				"want_adapter", adapter, "got_adapter", e.Manifest.Adapter)
+			lose(StageArchiveAdapter,
+				fmt.Errorf("archive adapter is %q, want %q", e.Manifest.Adapter, adapter),
+				"capture: archive not linked; adapter mismatch",
+				"archive_session_id", p.ArchiveSessionID)
 		default:
 			archiveEntry = e
 			meta.Archive = archive.VaultRelPath(vault.Root, e.ManifestPath)
@@ -168,8 +225,7 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 			// zero friction score, which is indistinguishable from a genuinely
 			// frictionless session, and every friction trend silently averaged
 			// the zero in.
-			slog.Warn("capture: friction scoring failed; note will carry no friction score",
-				"err", err, "project", p.Project)
+			lose(StageFrictionScoring, err, "capture: friction scoring failed; note will carry no friction score")
 		} else {
 			meta.FrictionScore = b.Total()
 			meta.Breakdown = b
@@ -178,33 +234,11 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 
 	body := buildSessionBody(paramsFromMeta(meta))
 
-	sessionID, err := vault.WriteSession(p.Project, meta, body)
+	// THE ONE FATAL ERROR. Past this line the note is on disk and every
+	// subsequent failure is accumulated, never returned: see the contract above.
+	ref, err := vault.WriteSessionRef(p.Project, meta, body)
 	if err != nil {
 		return nil, fmt.Errorf("write session: %w", err)
-	}
-
-	// Parse iteration from sessionID (format: "YYYY-MM-DD-<fp>-NN").
-	iteration := ParseIteration(sessionID)
-
-	// The fingerprint that scoped this write, read back from the authoritative
-	// sessionID WriteSession returned (rather than recomputed). Thread it through
-	// every readback so the host-scoped filename resolves.
-	fp := ParseFingerprint(sessionID)
-
-	// The note path is DERIVED, not read back. SessionRelPath is the one
-	// definition of where the note lives -- it is what WriteSession just used to
-	// place the file and what it stamped into the frontmatter -- so asking it is
-	// asking the authority. The previous code read the note back off disk to
-	// recover a frontmatter field that nothing had ever assigned, so it
-	// unmarshalled an absent key and reported note_path: "" on every session
-	// ever captured while returning status ok. It also dropped its own read
-	// error on the floor. Deriving removes both faults at once: there is no
-	// read, so there is no error to drop.
-	notePath, err := vault.SessionRelPath(p.Project, date, fp, iteration)
-	if err != nil {
-		// Unreachable in practice -- WriteSession resolved this same path
-		// moments ago -- but it is the note's identity, so it is not guessed at.
-		return nil, fmt.Errorf("resolve note path for %s: %w", sessionID, err)
 	}
 
 	// Enqueue-on-miss: when enrichment was attempted but produced nothing
@@ -213,8 +247,8 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 	// — capture must never fail because the queue write did. Skipped when there
 	// is no host dir (p.CWD == "", e.g. the pure MCP path).
 	if enqueuePending && p.CWD != "" {
-		if qerr := EnqueueEnrichment(p.CWD, p.Project, date, fp, iteration, notePath, enqueueInput); qerr != nil {
-			slog.Warn("enrichment: enqueue failed (non-fatal)", "err", qerr, "project", p.Project)
+		if qerr := EnqueueEnrichment(p.CWD, p.Project, ref.Date, ref.Fingerprint, ref.Iteration, ref.NotePath, enqueueInput); qerr != nil {
+			lose(StageEnrichmentEnqueue, qerr, "capture: enrichment enqueue failed; this note will not be retried by the drain")
 		}
 	}
 
@@ -226,36 +260,35 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 	// what makes a transcript discoverable FROM the archive side, so losing it
 	// quietly is how a transcript becomes unreachable while capture says ok.
 	if archiveEntry != nil {
-		if err := archive.LinkSessionNote(vault.Root, archiveEntry.ManifestPath, notePath); err != nil {
-			slog.Warn("capture: archive manifest back-link failed; transcript is reachable from the note but not the reverse",
-				"err", err, "project", p.Project, "manifest", archiveEntry.ManifestPath, "note_path", notePath)
+		if err := archive.LinkSessionNote(vault.Root, archiveEntry.ManifestPath, ref.NotePath); err != nil {
+			lose(StageArchiveBacklink, err, "capture: archive manifest back-link failed; transcript is reachable from the note but not the reverse",
+				"manifest", archiveEntry.ManifestPath, "note_path", ref.NotePath)
 		}
 	}
 
 	// Index transcript if provided, unless NeedsIndexing signals deferral.
 	// Per-call IndexStats are not surfaced through SessionResult today;
 	// discard with `_` and revisit if dogfood-log telemetry needs them.
+	//
+	// This used to early-return Status "partial". That tier is gone: a soft
+	// status is one agents learn to skim past, and it was the only status that
+	// ever reported a loss — every other loss on this path returned a flat "ok".
+	// An index failure is now exactly what it is, one accumulated failure among
+	// the rest, and the note it belongs to has already landed.
 	if p.Transcript != "" && indexer != nil && !p.NeedsIndexing {
-		if _, err := indexer.IndexTranscript(ctx, sessionID, p.Project, p.Transcript); err != nil {
-			// Non-fatal: session was captured, indexing failed.
-			return &SessionResult{
-				Status:        "partial",
-				Project:       p.Project,
-				NotePath:      notePath,
-				Iteration:     iteration,
-				SessionID:     sessionID,
-				FrictionScore: meta.FrictionScore,
-			}, nil
+		if _, err := indexer.IndexTranscript(ctx, ref.ID, p.Project, p.Transcript); err != nil {
+			lose(StageTranscriptIndex, err, "capture: transcript indexing failed; this session will not be semantically searchable")
 		}
 	}
 
 	return &SessionResult{
 		Status:        "ok",
 		Project:       p.Project,
-		NotePath:      notePath,
-		Iteration:     iteration,
-		SessionID:     sessionID,
+		NotePath:      ref.NotePath,
+		Iteration:     ref.Iteration,
+		SessionID:     ref.ID,
 		FrictionScore: meta.FrictionScore,
+		Failures:      failures,
 	}, nil
 }
 

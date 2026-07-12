@@ -46,6 +46,15 @@ type Result struct {
 	ClaimedSkip      bool           `json:"claimed_skip"`
 	MemoryHarvest    *memory.Result `json:"memory_harvest,omitempty"`
 	Error            string         `json:"error,omitempty"`
+
+	// Failures lists the capture stages this run lost. On the hook path a loss
+	// is reported here and in vp.log — never as a non-zero exit. The hook has no
+	// agent and no human in the loop, and its only hard-failure primitive is exit
+	// code 2, which Claude Code reads as a BLOCKING error: the hook is installed
+	// on Stop, which fires once per assistant turn, so a deterministically-failing
+	// capture would block the first turn of every session and feed its own error
+	// back into the model. A loop. Loudness here is the durable log, not the exit.
+	Failures []capture.CaptureFailure `json:"failures,omitempty"`
 }
 
 // enrichDrainBudget bounds how many queued enrichment jobs a single SessionEnd
@@ -221,14 +230,33 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 		Enricher:         enricher,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("capture session: %w", err)
+		// The note did not land — capture's one fatal error. This is the total
+		// loss, and it is precisely the failure that used to leave NO trace
+		// anywhere: it was surfaced by returning an error that cmd_hook printed
+		// with a bare fmt.Fprintf to stderr and turned into exit 2. It never
+		// touched slog, so it never reached vp.log, while the failures that did
+		// not matter (archive, harvest, drain) were all durably logged. Report it
+		// where someone can actually see it, and do NOT fail the hook.
+		slog.Error("hook: session capture failed; no note was written",
+			"err", err, "project", opts.ProjectSlug, "event", payload.HookEventName)
+		res.Error = fmt.Sprintf("capture session: %v", err)
+		return res, nil
 	}
 
 	res.SessionNoteID = sessionResult.SessionID
+	res.Failures = sessionResult.Failures
 
-	// Write claim sentinel so re-runs of the hook skip this session.
+	// Write the claim sentinel on the SUCCESS path, even when a peripheral stage
+	// was lost. The claim asserts "this session has a note", which is still true
+	// when the archive back-link or the friction score went missing. Gating it on
+	// a clean run would mean every subsequent hook event re-captures the same
+	// session — a duplicate note per turn, forever, over a missing link.
 	if err := WriteClaim(claimDir, payload.SessionID, sessionResult.SessionID); err != nil {
 		slog.Warn("hook: could not write claim sentinel", "err", err)
+		res.Failures = append(res.Failures, capture.CaptureFailure{
+			Stage: capture.StageClaimSentinel,
+			Err:   err.Error(),
+		})
 	}
 
 	return res, nil

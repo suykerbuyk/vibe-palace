@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -99,16 +100,25 @@ func runHook(info cli.BuildInfo) int {
 		VPVersion:   info.Version,
 	}
 
+	// A hook failure is reported through the LOG and the result body — never
+	// through the exit code. cli.ExitSystem is 2, and 2 is Claude Code's reserved
+	// BLOCKING-error code: the hook is installed on SessionEnd, Stop and
+	// PreCompact, and Stop fires once per assistant turn. Exiting 2 there blocks
+	// the turn and feeds stderr back into the model, so a deterministically-failing
+	// hook (bad config, missing dir) would blocking-error on the first turn of
+	// every session, forever, in a loop. At SessionEnd the same exit blocks
+	// nothing at all — it is a silent shrug. So the exit code is obnoxious at one
+	// end and useless at the other, and it is not the alarm. slog is: it reaches
+	// vp.log, which vp_health reads.
 	result, err := hook.Run(context.Background(), payload, opts)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "vp hook: %v\n", err)
-		return cli.ExitSystem
+		slog.Error("hook: run failed", "err", err, "event", payload.HookEventName, "cwd", payload.CWD)
+		result = &hook.Result{Event: payload.HookEventName, Error: err.Error()}
 	}
 
 	// Write result JSON to stdout.
-	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
-		fmt.Fprintf(os.Stderr, "vp hook: encode result: %v\n", err)
-		return cli.ExitSystem
+	if encErr := json.NewEncoder(os.Stdout).Encode(result); encErr != nil {
+		slog.Error("hook: encode result failed", "err", encErr, "event", payload.HookEventName)
 	}
 	return cli.ExitOK
 }
