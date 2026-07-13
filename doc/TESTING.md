@@ -1083,6 +1083,86 @@ why there is no test for "the read-back error is logged": there is no read-back.
 
 ---
 
+## Capture Failure + Idempotency Tests (`capture-silent-failure-observability` §1b)
+
+§1a made capture's losses **visible**. §1b makes them **survivable** and then makes
+them **fail**. Three invariants carry the whole design, and each has a test that was
+**mutation-proven** — the defect was deliberately reintroduced and the test watched
+to go red. A green test that has never been seen to fail is not evidence here; that
+is the explicit lesson of the six-month `note_path` bug above.
+
+### Invariant 1 — THE NOTE ALWAYS LANDS
+
+`capture.WriteSession` **accumulates** failures and continues. There is exactly
+**one** fatal error in the pipeline: `storage.WriteSessionRef`. Everything else
+appends a `CaptureFailure` and the pipeline proceeds.
+
+This is structural, not stylistic. Enrichment, archive resolve and friction scoring
+**feed the frontmatter** and therefore run **before the note exists**, so an early
+return on any of them writes **no note at all** — losing the session entirely, which
+is strictly worse than losing the archive link it was trying to report. **There must
+be no `return` between validation and the write.**
+
+### Invariant 2 — THE KEY IDENTIFIES THE CAPTURE *ATTEMPT*, NOT THE SESSION
+
+An agent captures once per **work unit** and a session holds several, so a
+session-scoped key would make each work-unit capture **overwrite the last**. The
+server **mints** a key, writes the note, and hands the key back — in the result on
+success, in the error payload on failure. A **retry pushes it back** and updates in
+place; **new work omits it** and gets a new note. Identity is *pushed, never derived*.
+
+### Invariant 3 — AN UPDATE IS READ-MERGE-REWRITE, NEVER REWRITE-BLIND
+
+`RewriteSession` marshals **exactly what it is handed**, and every `SessionMeta`
+field is `omitempty` — so a field absent from the incoming meta is not "left alone",
+it is **deleted**. `mergeCaptureMeta` therefore inherits what the new capture did not
+recompute: `archive:`, `friction_breakdown` (whose **nil is load-bearing** — nil means
+*never scored*, so dropping it does not merely lose data, it **lies**), and any
+LLM-synthesized narrative. That last one is a **live race**: the enrichment drain
+rewrites notes *asynchronously, after* the capture that created them.
+
+| Test | What it proves |
+|------|----------------|
+| `TestWriteSessionNoteLandsDespitePreWriteFailures` (`internal/capture`) | A failing enricher **and** an unresolvable archive together still leave the note **on disk**, with both losses reported |
+| `TestWriteSessionNoteLandsDespitePostWriteFailure` (`internal/capture`) | A post-write loss cannot retroactively make the capture fatal |
+| `TestCaptureMintsAKeyAndReturnsIt` (`internal/capture`) | A keyless capture gets a key **minted, persisted, and returned** — the only way a retry can name the attempt it is retrying |
+| `TestCaptureRetryWithSameKeyUpdatesInPlace` (`internal/capture`) | A retry with the same key rewrites the **same note** — **one** note on disk, not two |
+| `TestCaptureWithoutKeyMintsANewNote` (`internal/capture`) | Distinct work units are **not** merged (the failure mode of the superseded session-key design) |
+| `TestCaptureRetryPreservesEnrichmentArchiveAndFriction` (`internal/capture`) | A re-capture preserves the drain's LLM narrative, the `archive:` link, and the `friction_breakdown` |
+| `TestConcurrentCapturesDoNotClobber` (`internal/capture`) | 8 concurrent captures produce 8 notes — the **pre-existing** unlocked-`NextIteration` race is closed |
+| `TestCaptureSessionFailsHardOnLoss` (`internal/tools`) | The MCP tool returns **`isError`**, never `ok`, and the error carries a **JSON payload** naming `note_path`, `session_key`, what was lost, and the remedy |
+| `TestCaptureSessionRetryAfterFailureDoesNotDuplicate` (`internal/tools`) | The full agent loop — fail, read the key out of the error, retry — leaves **one** note |
+| `TestCaptureSessionClaimSurvivesTheErrorPath` (`internal/tools`) | The claim sentinel is written **before** the error is raised |
+| `TestRun_ClaimWrittenDespitePeripheralLoss` (`internal/hook`) | The claim survives a peripheral loss on the hook path too |
+| `TestRun_CaptureFailureDoesNotError` (`internal/hook`) | A capture failure never becomes a hook **run** error |
+| `TestRunHookNeverExitsBlockingOnCaptureFailure` (`cmd/vp`) | `vp hook` **never exits 2** on a capture failure, and logs an `ERROR` to `vp.log` instead |
+
+### Why the claim sentinel is written on the SUCCESS path
+
+The claim asserts *"this session has a note"*, which stays **true** when a peripheral
+stage was lost. Gating it on a clean run — the obvious-looking tidy — would leave
+every hard-failing capture unclaimed, so the next hook event captures the session
+**again**: a duplicate note per turn, forever, over a missing archive link. It is
+correspondingly **withheld** when no note was written, so a failed capture stays
+retryable rather than permanently marked done.
+
+### Why the hook never exits 2
+
+`cli.ExitSystem` is `2`, and `2` is Claude Code's **reserved blocking-error code**.
+The hook fires on `Stop` — **once per assistant turn** — so a deterministically
+failing capture that exits 2 would block the first turn of every session and feed its
+own stderr back into the model. A loop. At `SessionEnd` the same code blocks nothing
+and is invisible. The alarm is the durable log, not the exit code.
+
+### Why failing hard REQUIRED idempotency first
+
+An `isError` on a call that has **already written its note** is an invitation to
+retry. Without a key, that retry writes a **second** note — turning one lost archive
+link into two conflicting session records. That is why Invariant 2 landed before the
+MCP path was allowed to fail.
+
+---
+
 ## MockEmbedder vs Real ONNX
 
 | Aspect | MockEmbedder | ONNX Embedder |

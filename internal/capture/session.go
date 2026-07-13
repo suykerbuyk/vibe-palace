@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/enrichment"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -32,6 +33,17 @@ type SessionParams struct {
 	ArchiveAdapter   string
 	CWD              string // for claim sentinel (Phase 3 will use this)
 	NeedsIndexing    bool   // when true, skip indexing (deferred to later)
+
+	// SessionKey is the capture-attempt idempotency key. Supply the key a previous
+	// capture RETURNED to update that same note in place; leave it empty to mint a
+	// new note (and a new key, which the result reports back).
+	//
+	// It keys the CAPTURE ATTEMPT, not the session. An agent captures once per work
+	// unit and a session holds several, so a session-scoped key would make each
+	// work-unit capture overwrite the last. Capture must be idempotent under RETRY,
+	// which is a different thing entirely — and retry is exactly what a hard failure
+	// invites, which is why this exists before the MCP path is allowed to fail hard.
+	SessionKey string
 
 	// Enricher, when non-nil, drives a synchronous LLM enrichment pass over
 	// Transcript before the note is written. This is intentionally a
@@ -73,6 +85,12 @@ const (
 	StageEnricherInit      = "enricher_init"
 )
 
+// Where a capture's idempotency key came from.
+const (
+	KeySourceCaller = "caller" // the caller pushed it — a retry of a known attempt
+	KeySourceMinted = "minted" // the server minted it, and hands it back
+)
+
 // SessionResult is the outcome of a session capture. A non-empty Failures means
 // the note landed but something around it did not — see WriteSession's contract.
 type SessionResult struct {
@@ -82,6 +100,14 @@ type SessionResult struct {
 	Iteration     int
 	SessionID     string
 	FrictionScore int
+
+	// SessionKey identifies this capture attempt. Pass it back to update this same
+	// note rather than mint a second one — which is what makes a retry after a
+	// hard failure safe. Updated reports whether this call rewrote an existing note
+	// (true) or minted a new one (false).
+	SessionKey       string
+	SessionKeySource string
+	Updated          bool
 
 	// Failures lists every part of the pipeline that was lost. The note itself
 	// is NOT among them: if WriteSession returns a non-nil result, the note is on
@@ -139,15 +165,28 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		}
 	}
 
+	// Resolve the idempotency key. A caller-supplied key means "this is a retry of
+	// an attempt you already told me about"; an empty one means a fresh attempt, so
+	// the server mints the key and hands it back in the result. Minting here rather
+	// than deriving it from the connection is deliberate: the MCP stdio session ID
+	// is the compile-time constant "stdio", one vp mcp serves a whole Zed window,
+	// and every attempt to infer identity from the transport has been wrong.
+	sessionKey, keySource := p.SessionKey, KeySourceCaller
+	if sessionKey == "" {
+		sessionKey, keySource = uuid.NewString(), KeySourceMinted
+	}
+
 	meta := storage.SessionMeta{
-		Date:         date,
-		Title:        title,
-		Summary:      p.Summary,
-		Tag:          p.Tag,
-		Model:        p.Model,
-		Decisions:    p.Decisions,
-		FilesChanged: p.FilesChanged,
-		OpenThreads:  p.OpenThreads,
+		Date:             date,
+		SessionKey:       sessionKey,
+		SessionKeySource: keySource,
+		Title:            title,
+		Summary:          p.Summary,
+		Tag:              p.Tag,
+		Model:            p.Model,
+		Decisions:        p.Decisions,
+		FilesChanged:     p.FilesChanged,
+		OpenThreads:      p.OpenThreads,
 	}
 
 	// Synchronous LLM enrichment phase. A non-nil Enricher plus a transcript
@@ -236,7 +275,10 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 
 	// THE ONE FATAL ERROR. Past this line the note is on disk and every
 	// subsequent failure is accumulated, never returned: see the contract above.
-	ref, err := vault.WriteSessionRef(p.Project, meta, body)
+	//
+	// Resolve-or-mint under a single lock: a retry carrying a known key rewrites
+	// that note in place, anything else mints a new one.
+	ref, updated, err := vault.UpsertSessionByKey(p.Project, sessionKey, meta, body, mergeCaptureMeta)
 	if err != nil {
 		return nil, fmt.Errorf("write session: %w", err)
 	}
@@ -282,14 +324,76 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 	}
 
 	return &SessionResult{
-		Status:        "ok",
-		Project:       p.Project,
-		NotePath:      ref.NotePath,
-		Iteration:     ref.Iteration,
-		SessionID:     ref.ID,
-		FrictionScore: meta.FrictionScore,
-		Failures:      failures,
+		Status:           "ok",
+		Project:          p.Project,
+		NotePath:         ref.NotePath,
+		Iteration:        ref.Iteration,
+		SessionID:        ref.ID,
+		FrictionScore:    meta.FrictionScore,
+		SessionKey:       sessionKey,
+		SessionKeySource: keySource,
+		Updated:          updated,
+		Failures:         failures,
 	}, nil
+}
+
+// mergeCaptureMeta reconciles a re-capture against the note already on disk, and
+// it exists because RewriteSession marshals EXACTLY what it is handed: every
+// SessionMeta field is omitempty, so a field absent from the incoming meta is not
+// "left alone", it is DELETED from the note.
+//
+// So the rule is: the new capture's narrative wins — that is the whole point of a
+// retry, and the operator's framing was that the only thing which should vary
+// between two captures of one attempt is the text the agent chose. But anything
+// the new capture did not recompute is INHERITED rather than dropped:
+//
+//   - archive: a retry that could not resolve the archive must not erase the link
+//     an earlier attempt succeeded in making.
+//   - friction_breakdown: its nil is load-bearing (see storage.FrictionBreakdown —
+//     nil means "never scored", non-nil-all-zero means "measured, frictionless").
+//     Dropping it does not merely lose data, it LIES, converting a measured session
+//     into one that looks like a legacy pre-breakdown note.
+//   - enrichment: the async drain may have rewritten this note with an
+//     LLM-synthesized narrative AFTER the capture that created it.
+//
+// An enriched narrative is preserved WHOLE — text and provenance together. If the
+// note carries an LLM synthesis and this capture did not itself enrich, the
+// synthesized summary/decisions/threads/tag are kept and the incoming heuristic
+// ones dropped. Two real cases need exactly this: the async drain enriches a note
+// AFTER the capture that created it, so a later re-capture would otherwise revert
+// an LLM narrative to a git-log auto-summary; and a retry whose OWN enrichment pass
+// failed must not destroy the good synthesis the first attempt produced. Text and
+// provenance move as a unit, so enriched_by can never end up describing text the
+// LLM did not write.
+func mergeCaptureMeta(old storage.SessionMeta, _ string, next storage.SessionMeta) (storage.SessionMeta, string) {
+	merged := next
+
+	if merged.Archive == "" {
+		merged.Archive = old.Archive
+	}
+	if merged.Model == "" {
+		merged.Model = old.Model
+	}
+	if merged.Breakdown == nil {
+		merged.Breakdown = old.Breakdown
+		merged.FrictionScore = old.FrictionScore
+	}
+	if merged.EnrichedBy == "" && old.EnrichedBy != "" {
+		merged.Summary = old.Summary
+		merged.Decisions = old.Decisions
+		merged.OpenThreads = old.OpenThreads
+		merged.Tag = old.Tag
+		merged.EnrichedBy = old.EnrichedBy
+		merged.EnrichedAt = old.EnrichedAt
+	}
+
+	// The body is REBUILT from the merged metadata rather than spliced from the old
+	// text, which is exactly what the enrichment drain does (see DrainEnrichmentQueue)
+	// — so an updated note and a freshly-minted one with the same content are
+	// byte-identical, no matter which path produced them. This is safe precisely
+	// because capture owns the whole body: buildSessionBody is the only thing that
+	// ever writes one.
+	return merged, buildSessionBody(paramsFromMeta(merged))
 }
 
 // applyEnrichment overwrites meta's heuristic fields with the non-empty values

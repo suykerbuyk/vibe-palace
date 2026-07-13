@@ -228,6 +228,12 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 		NeedsIndexing:    true,
 		CWD:              payload.CWD,
 		Enricher:         enricher,
+		// The hook PUSHES its key: the harness session ID it was handed. The hook
+		// captures a given session at most once, so this makes a re-run idempotent
+		// on its own terms rather than depending on the claim sentinel — which is a
+		// host-local file, and therefore gone the moment .vibe-palace/ is cleaned.
+		// Belt and braces: the claim still short-circuits before we get here.
+		SessionKey: payload.SessionID,
 	})
 	if err != nil {
 		// The note did not land — capture's one fatal error. This is the total

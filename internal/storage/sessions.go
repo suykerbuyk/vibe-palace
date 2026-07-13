@@ -6,6 +6,7 @@ package storage
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 	"gopkg.in/yaml.v3"
 )
 
@@ -39,9 +41,28 @@ func (b FrictionBreakdown) Total() int {
 
 // SessionMeta is the lightweight metadata parsed from YAML frontmatter.
 type SessionMeta struct {
-	ID            string             `yaml:"session_id"`
-	Project       string             `yaml:"project"`
-	Date          string             `yaml:"date"`
+	ID      string `yaml:"session_id"`
+	Project string `yaml:"project"`
+	Date    string `yaml:"date"`
+
+	// SessionKey is the capture-attempt idempotency key, and SessionKeySource
+	// records where it came from ("caller" | "minted"). A capture that resolves
+	// an existing note by this key UPDATES it in place instead of minting a new
+	// one, so a retry of a failed capture cannot leave a duplicate behind.
+	//
+	// The key identifies the CAPTURE ATTEMPT, not the session: an agent captures
+	// once per WORK UNIT and a session holds several, so keying on the session
+	// would make each work-unit capture overwrite the last. The server mints a key
+	// when the caller supplies none and hands it back, so a retry can push it
+	// again — identity is pushed, never derived.
+	//
+	// These sit high in the struct ON PURPOSE. yaml.Marshal emits fields in
+	// declaration order, so keeping them above the free-text Title/Summary keeps
+	// them inside the first few hundred bytes of every note — which is what lets
+	// the key scan read a bounded HEAD of each file instead of the whole thing.
+	SessionKey       string `yaml:"session_key,omitempty"`
+	SessionKeySource string `yaml:"session_key_source,omitempty"`
+
 	Iteration     int                `yaml:"iteration"`
 	Title         string             `yaml:"title,omitempty"`
 	Summary       string             `yaml:"summary,omitempty"`
@@ -74,6 +95,187 @@ type SessionMeta struct {
 	// RFC3339 timestamp. Both are omitted for plain heuristic captures.
 	EnrichedBy string `yaml:"enriched_by,omitempty"`
 	EnrichedAt string `yaml:"enriched_at,omitempty"`
+}
+
+// sessionKeyScanBytes bounds how much of a note the key scan reads. Frontmatter
+// sits at the top of the file and session_key is declared high in SessionMeta, so
+// the key is always well inside this window. The bound is the whole point: notes
+// are ~20 KB of narrative each and grow forever, so a whole-file scan of the
+// directory would cost megabytes of I/O on EVERY capture, inside an exclusive
+// lock every other writer queues behind. A head read makes it cents.
+const sessionKeyScanBytes = 4096
+
+// sessionKeyFromHead returns the session_key recorded in a note's frontmatter,
+// reading only the first sessionKeyScanBytes of the file. It returns "" for a
+// note with no key (every note written before this existed), for an unreadable
+// file, and for anything that is not frontmatter — a miss is never an error,
+// because the caller's fallback is simply to mint a new note.
+//
+// It deliberately does NOT yaml.Unmarshal: the head is a TRUNCATED document, so a
+// real parse would fail on exactly the large notes we are trying not to read.
+func sessionKeyFromHead(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	buf := make([]byte, sessionKeyScanBytes)
+	n, err := f.Read(buf)
+	if n == 0 || (err != nil && err != io.EOF) {
+		return ""
+	}
+	head := string(buf[:n])
+	if !strings.HasPrefix(head, "---\n") {
+		return ""
+	}
+	front := head[4:]
+	// Stop at the closing delimiter when it is inside the window, so a key-shaped
+	// line in the BODY can never be mistaken for frontmatter.
+	if end := strings.Index(front, "\n---\n"); end >= 0 {
+		front = front[:end]
+	}
+	for line := range strings.SplitSeq(front, "\n") {
+		rest, ok := strings.CutPrefix(line, "session_key:")
+		if !ok {
+			continue
+		}
+		return strings.Trim(strings.TrimSpace(rest), `"'`)
+	}
+	return ""
+}
+
+// parseSessionStem splits a session filename stem back into the coordinates that
+// resolve it: "YYYY-MM-DD-<fp>-NN" (host-scoped) or "YYYY-MM-DD-NN" (legacy).
+func parseSessionStem(stem string) (date, fp string, iteration int, ok bool) {
+	parts := strings.Split(stem, "-")
+	if len(parts) < 4 {
+		return "", "", 0, false
+	}
+	date = strings.Join(parts[:3], "-")
+	if !datePattern.MatchString(date) {
+		return "", "", 0, false
+	}
+	n, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil || n < 1 {
+		return "", "", 0, false
+	}
+	if len(parts) >= 5 {
+		fp = parts[3]
+	}
+	return date, fp, n, true
+}
+
+// findSessionByKey scans a project's session notes for one carrying sessionKey.
+// Callers MUST hold the sessions-directory lock: this is a read that a concurrent
+// capture could invalidate, and its whole purpose is to decide whether to mint.
+func (v *Vault) findSessionByKey(project, sessionKey string) (SessionRef, bool, error) {
+	dir, err := v.SessionDir(project)
+	if err != nil {
+		return SessionRef{}, false, err
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "*.md"))
+	if err != nil {
+		return SessionRef{}, false, fmt.Errorf("glob sessions: %w", err)
+	}
+	for _, m := range matches {
+		if sessionKeyFromHead(m) != sessionKey {
+			continue
+		}
+		stem := strings.TrimSuffix(filepath.Base(m), ".md")
+		date, fp, iteration, ok := parseSessionStem(stem)
+		if !ok {
+			continue
+		}
+		rel, relErr := v.SessionRelPath(project, date, fp, iteration)
+		if relErr != nil {
+			continue
+		}
+		return SessionRef{
+			ID:          stem,
+			NotePath:    rel,
+			Date:        date,
+			Fingerprint: fp,
+			Iteration:   iteration,
+		}, true, nil
+	}
+	return SessionRef{}, false, nil
+}
+
+// MergeSessionFunc reconciles a capture against the note it is updating. It
+// receives the note as it exists on disk and the metadata the new capture wants
+// to write, and returns the metadata and body to persist.
+type MergeSessionFunc func(old SessionMeta, oldBody string, next SessionMeta) (SessionMeta, string)
+
+// UpsertSessionByKey is the ONE critical section of a capture: it resolves
+// sessionKey, and then either rewrites the note that key already names or mints a
+// brand new one — under a single lock, so the two cannot race.
+//
+// The lock closes a hole that PREDATES idempotency. NextIteration globs the
+// directory and takes max(NN)+1, and it did so OUTSIDE any lock: the lock was
+// taken later, on the already-decided path. So two concurrent captures on one
+// host+date both computed the same N+1, both locked the same note path, and the
+// second CLOBBERED the first — today, with no keys involved. Resolving a key in
+// front of an unlocked mint would have inherited that race; holding one lock over
+// resolve + mint + write removes it instead.
+//
+// LOCK ORDER — DIRECTORY BEFORE FILE, NEVER THE REVERSE. This takes the lock on
+// the sessions DIRECTORY, and the writers it calls (WriteSessionRef,
+// RewriteSession) take the lock on the NOTE PATH. vaultlock keys on a sha256 of
+// the canonical path, so those are different lock files and the nesting is safe —
+// but vaultlock.Acquire is a blocking LOCK_EX with no LOCK_NB and no timeout, so
+// a caller that ever inverts this order gets a PERMANENT HANG, not an error.
+//
+// Returns the note's identity and whether an existing note was updated (true) or
+// a new one minted (false). An empty sessionKey always mints.
+func (v *Vault) UpsertSessionByKey(project, sessionKey string, meta SessionMeta, body string, merge MergeSessionFunc) (SessionRef, bool, error) {
+	dir, err := v.SessionDir(project)
+	if err != nil {
+		return SessionRef{}, false, err
+	}
+	if err := EnsureDir(dir); err != nil {
+		return SessionRef{}, false, fmt.Errorf("ensure sessions dir: %w", err)
+	}
+
+	release, err := vaultlock.Acquire(v.Root, dir)
+	if err != nil {
+		return SessionRef{}, false, fmt.Errorf("storage: lock sessions dir: %w", err)
+	}
+	defer func() { _ = release() }()
+
+	if sessionKey != "" {
+		ref, found, ferr := v.findSessionByKey(project, sessionKey)
+		if ferr != nil {
+			return SessionRef{}, false, ferr
+		}
+		if found {
+			// READ-MERGE-REWRITE, never rewrite-blind. RewriteSession marshals
+			// EXACTLY what it is handed and every field is omitempty, so handing it
+			// the new capture's meta alone would silently delete everything the note
+			// already carried that this capture did not recompute: archive:,
+			// friction_breakdown (whose nil is load-bearing — it means "never
+			// scored"), and the LLM-synthesized enriched_by/enriched_at narrative the
+			// async drain may have written since. This is the same read-then-apply
+			// shape the enrichment drain already uses; it is preservation, not
+			// convenience.
+			oldMeta, oldBody, rerr := v.ReadSession(project, ref.Date, ref.Fingerprint, ref.Iteration)
+			if rerr != nil {
+				return SessionRef{}, false, fmt.Errorf("read session for update: %w", rerr)
+			}
+			finalMeta, finalBody := merge(oldMeta, oldBody, meta)
+			// Source the coordinates from the note we ACTUALLY READ. RewriteSession
+			// never checks that its target exists, so a wrong iteration here would
+			// overwrite a DIFFERENT note and stamp it with that note's ID — producing
+			// a perfectly well-formed, self-consistent, wrong file.
+			if err := v.RewriteSession(project, ref.Date, ref.Fingerprint, ref.Iteration, finalMeta, finalBody); err != nil {
+				return SessionRef{}, false, err
+			}
+			return ref, true, nil
+		}
+	}
+
+	ref, err := v.WriteSessionRef(project, meta, body)
+	return ref, false, err
 }
 
 // SessionRef identifies a session note that was just written: its ID plus the
