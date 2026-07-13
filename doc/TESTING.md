@@ -1244,6 +1244,84 @@ erase them (`composeDirective`).
 
 ---
 
+## Source Audit — the gate that would have caught `note_path` in five minutes
+
+`internal/sourceaudit` is a static analysis **of this repository's own source**, run as
+a test. It exists because of a measured fact: **every serious defect found in
+iterations 191–201 was caught by looking at a real artifact, and NOT ONE was caught by
+a test, a check, or a code review** — and two of them were *mechanically detectable*
+and hid for months anyway.
+
+### The two findings, and why they are the same bug
+
+| Kind | What it finds | The defect that earned it |
+|------|---------------|---------------------------|
+| `write-only-field` | a yaml/json-tagged field on a struct the code **constructs**, that nothing ever assigns | **`note_path`** — tagged, serialized, never assigned; `vp_capture_session` reported `note_path: ""` for the life of the project. **Six months. Every test green.** |
+| `uninvoked` | a function declared in non-test code and called from **nowhere** in non-test code | **"capability built, nothing invokes it"** — the Zed archive adapter, `vp check`, `vp_health`, and the claim sentinel on the MCP path |
+
+Both are one shape: **a symbol nothing ever produces.** A field only ever read. A
+function only ever defined. The compiler is happy, the tests are green, the feature is
+inert.
+
+### Why it is a TEST and not a `vp check` item
+
+`vp check` runs from an **installed binary against a vault**, on a host that may have
+no source tree at all — it structurally cannot do this. A test can, it runs on **every
+change** instead of once a week, and it cannot be forgotten.
+
+### 🔴 The "constructs" qualifier is the whole trick
+
+A naive *"tagged field nobody assigns"* flags every **deserialized** struct in the tree
+— every MCP `*Params`, `hook.Payload`, the Zed DB rows, LLM responses. Those are
+populated by `Unmarshal` through reflection, so **no** field is ever hand-assigned.
+That is 46 false positives, and **a noisy gate is a disabled gate** — which is how
+`note_path` survived six months in the first place.
+
+So a struct is audited **only when the code constructs it** (at least one keyed
+composite literal of that type exists). Input structs drop out entirely, and what
+remains is exactly the `note_path` shape: **a record the code builds, with one field it
+forgot.**
+
+### 🔴 The baseline can only SHRINK — this is the ratchet
+
+The tree did not start clean, so known findings live in `baseline.json`. The gate fails
+on **two** conditions, and the second is the point:
+
+1. a **new** finding — new debt; and
+2. a **baseline entry that is no longer a finding** — fixed debt, still recorded.
+
+Without (2) the baseline rots into a lie: you fix something, the list keeps claiming it
+is broken, and the list stops meaning anything. With it, the list **can only shrink** —
+no fix can be quietly un-recorded. Regenerate with
+`go test ./internal/sourceaudit -update-baseline`; every entry must carry a **reason**.
+
+### The analyzer has its own mutation tests, and it needs them
+
+While it was being built, **two separate bugs made it report ZERO findings on a tree
+full of defects** — a walk that skipped its own root, then a type resolver that could
+not see `pkg.Type{…}` literals. Both times it produced a confident clean bill of
+health. *That is the disease, inside the tool built to cure it.*
+
+| Test | What it proves |
+|------|----------------|
+| `TestFindsAPlantedWriteOnlyField` | it **finds** a planted `note_path`-shaped bug — an analyzer that cannot prove this is worth nothing |
+| `TestFindsAPlantedUninvokedFunc` | it finds a function nothing calls, and does **not** flag one that is called |
+| `TestIgnoresDeserializedStructs` | it does **not** fire on `Unmarshal`-populated structs (the false-positive flood that would disable it) |
+| `TestFuncValuesCountAsInvoked` | a handler passed as a **value** is invoked through that value — else every MCP handler looks dead |
+| `TestBaselineCanOnlyShrink` | a **fixed** baseline entry fails the build |
+| `TestSourceAuditGate` | the gate itself, over this repo |
+
+### Honest limits
+
+It is **syntactic** (go/ast, stdlib only, no type information), which biases it toward
+**false negatives, never false positives**. Field names are not unique across structs,
+so `Foo.Name = x` counts as an assignment to every `Name` in the repo — which is why it
+found **4** of `SessionMeta`'s 8 dead fields and not 8. **Missing a real bug is bad;
+crying wolf is worse**, because a noisy gate gets switched off and then catches nothing
+at all.
+
+---
+
 ## MockEmbedder vs Real ONNX
 
 | Aspect | MockEmbedder | ONNX Embedder |

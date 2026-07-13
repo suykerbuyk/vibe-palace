@@ -282,51 +282,15 @@ func containsLine(s, line string) bool {
 	return slices.Contains(splitLines(s), line)
 }
 
-func TestWriteSessionNeedsIndexing(t *testing.T) {
-	v := testVault(t)
-	fp := surface.WriterFingerprint(v.Root)
-
-	// Round-trip with NeedsIndexing: true.
-	meta := SessionMeta{
-		Date:          "2026-03-15",
-		Title:         "Hook-captured session",
-		NeedsIndexing: true,
-	}
-	_, err := v.WriteSession("proj", meta, "")
-	if err != nil {
-		t.Fatalf("WriteSession: %v", err)
-	}
-
-	got, _, err := v.ReadSession("proj", "2026-03-15", fp, 1)
-	if err != nil {
-		t.Fatalf("ReadSession: %v", err)
-	}
-	if !got.NeedsIndexing {
-		t.Error("NeedsIndexing = false after round-trip, want true")
-	}
-
-	// Verify omitempty: a session with NeedsIndexing false should not
-	// contain the field in the written YAML.
-	meta2 := SessionMeta{
-		Date:          "2026-03-16",
-		Title:         "Normal session",
-		NeedsIndexing: false,
-	}
-	_, err = v.WriteSession("proj", meta2, "")
-	if err != nil {
-		t.Fatalf("WriteSession: %v", err)
-	}
-
-	path, _ := v.SessionFile("proj", "2026-03-16", fp, 1)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if strings.Contains(string(data), "needs_indexing") {
-		t.Error("YAML contains needs_indexing when false; omitempty should suppress it")
-	}
-}
-
+// TestWriteSessionNeedsIndexing was DELETED at 202 along with the field it tested.
+//
+// SessionMeta.NeedsIndexing was yaml-tagged and no production code ever assigned it;
+// its doc comment claimed "hook captures set it", which was FALSE — the hook sets
+// capture.SessionParams.NeedsIndexing, a DIFFERENT struct, and WriteSession read it
+// only as a control flag and never copied it to meta. So this test seeded the field
+// itself, asserted it round-tripped, and passed for the entire life of the project
+// while 0 of 273 real notes ever carried the key. A test that seeds the value it
+// asserts is testing the YAML library, not the system.
 func TestRewriteSessionOverwritesInPlace(t *testing.T) {
 	v := testVault(t)
 	fp := surface.WriterFingerprint(v.Root)
@@ -546,19 +510,20 @@ func TestSessionBreakdownRoundTrip(t *testing.T) {
 
 func TestWriteSessionAllFields(t *testing.T) {
 	v := testVault(t)
+	// The eight telemetry fields this literal used to seed — branch, domain,
+	// duration_minutes, messages, tokens_in, tokens_out, tool_uses, needs_indexing —
+	// were DELETED at 202. They were yaml-tagged and no production code ever assigned
+	// one; 0 of 273 real notes carried any of them. THIS TEST WAS THE ONLY THING THAT
+	// EVER SET THEM, and it then asserted they round-tripped — which is exactly why
+	// they looked covered while being inert, the identical trap that hid note_path for
+	// six months. A test that seeds the value it is about to assert is testing yaml,
+	// not the system.
 	meta := SessionMeta{
 		Date:          "2026-03-15",
 		Title:         "Full Session",
 		Summary:       "Complete test",
 		Tag:           "implementation",
 		Model:         "claude-opus-4-6",
-		Branch:        "feature-x",
-		Domain:        "personal",
-		DurationMin:   45,
-		Messages:      120,
-		TokensIn:      50000,
-		TokensOut:     30000,
-		ToolUses:      25,
 		FrictionScore: 15,
 		Decisions:     []string{"decision-1"},
 		FilesChanged:  []string{"file-1.go"},
@@ -580,12 +545,6 @@ func TestWriteSessionAllFields(t *testing.T) {
 	}
 	if got.Model != "claude-opus-4-6" {
 		t.Errorf("Model = %q, want %q", got.Model, "claude-opus-4-6")
-	}
-	if got.DurationMin != 45 {
-		t.Errorf("DurationMin = %d, want 45", got.DurationMin)
-	}
-	if got.TokensIn != 50000 {
-		t.Errorf("TokensIn = %d, want 50000", got.TokensIn)
 	}
 	// note_path is WRITER-OWNED: WriteSession stamps the vault-relative path it
 	// actually wrote to, overwriting whatever the caller passed. This test used

@@ -63,18 +63,29 @@ type SessionMeta struct {
 	SessionKey       string `yaml:"session_key,omitempty"`
 	SessionKeySource string `yaml:"session_key_source,omitempty"`
 
+	// DELETED at 202: branch, domain, duration_minutes, messages, tokens_in,
+	// tokens_out, tool_uses — and needs_indexing, below.
+	//
+	// All eight were yaml-tagged, omitempty, and NOTHING EVER ASSIGNED THEM. They
+	// were the same defect as note_path, sitting in the same struct, and they
+	// survived the note_path fix because that fix chased one field instead of asking
+	// what else shared its shape.
+	//
+	// internal/sourceaudit found them mechanically, and the live vault confirmed the
+	// verdict before a line was deleted: **0 of 273 session notes carry any of these
+	// keys** — never written, not once, in the whole life of the project. Nothing
+	// reads them either (the apparent readers are bare-name collisions on other
+	// structs). So removing them is a provable no-op on disk, not a migration.
+	//
+	// Delete, don't "wire up": a field nobody produces and nobody consumes is not a
+	// feature waiting to happen, it is a claim the struct was making and never
+	// honoring. If session telemetry is wanted later, add it WITH a writer and a
+	// reader in the same commit.
 	Iteration     int                `yaml:"iteration"`
 	Title         string             `yaml:"title,omitempty"`
 	Summary       string             `yaml:"summary,omitempty"`
 	Tag           string             `yaml:"tag,omitempty"`
 	Model         string             `yaml:"model,omitempty"`
-	Branch        string             `yaml:"branch,omitempty"`
-	Domain        string             `yaml:"domain,omitempty"`
-	DurationMin   int                `yaml:"duration_minutes,omitempty"`
-	Messages      int                `yaml:"messages,omitempty"`
-	TokensIn      int                `yaml:"tokens_in,omitempty"`
-	TokensOut     int                `yaml:"tokens_out,omitempty"`
-	ToolUses      int                `yaml:"tool_uses,omitempty"`
 	FrictionScore int                `yaml:"friction_score,omitempty"`
 	Breakdown     *FrictionBreakdown `yaml:"friction_breakdown,omitempty"`
 	Decisions     []string           `yaml:"decisions,omitempty"`
@@ -86,9 +97,6 @@ type SessionMeta struct {
 	// vp_capture_session when session_id + adapter resolve to an
 	// existing archive. See doc/adr/001-transcript-archive.md.
 	Archive string `yaml:"archive,omitempty"`
-	// NeedsIndexing marks hook-captured sessions for deferred transcript
-	// indexing. Omitted from YAML when false so existing sessions are unaffected.
-	NeedsIndexing bool `yaml:"needs_indexing,omitempty"`
 	// EnrichedBy and EnrichedAt mark a session whose summary/decisions/threads
 	// were synthesized by an LLM enrichment pass (set by the enrichment pass or
 	// the Step-7 drain). EnrichedBy is the enriching model; EnrichedAt is an

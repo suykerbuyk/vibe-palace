@@ -1,0 +1,244 @@
+{
+  "entries": [
+    {
+      "id": "uninvoked agentfile.WithFilter",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked agentfile.WithStaleOnly",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked archive.RegisteredAdapterNames",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked archive.Verify",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked atomicfile.WithFsync",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked atomicfile.WithInheritPerm",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked atomicfile.WithPerm",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked capture.AnalyzeFriction",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked capture.ExtractEntities",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked cli.FormatManPage",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked cli.Registry.Each",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked cli.Registry.SetOutput",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked context.Resolver.ListResources",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked embedder.NewMock",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked mcp.CommandURI",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked mcp.KnowledgeURI",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked mcp.Server.Serve",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked mcp.SessionURI",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked mcp.SkillURI",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked mcp.WithRequestID",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked mdfence.Scanner.InFence",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked memorytestutil.WriteNativeMemoryFixture",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked palace.CompressBatch",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked palace.DefaultRoomKeywords",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked palace.DetectRoom",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked reconcile.CwdProjectReconciler.Requires",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked reconcile.GlobalConfigReconciler.Requires",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked reconcile.TemplateTreeReconciler.Requires",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked reconcile.VaultProjectReconciler.Requires",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked reconcile.VaultReconciler.Requires",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked reconcile.VaultSettingsReconciler.Requires",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked search.Engine.IndexDrawer",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked search.Engine.RemoveDrawer",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked sourceaudit.Baseline.Diff",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked sourceaudit.Baseline.Save",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked sourceaudit.LoadBaseline",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked storage.PullResult.AllPulled",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked storage.PushResult.AllPushed",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked storage.ResumeConflictError.Unwrap",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked storage.Vault.CountLearnings",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked storage.Vault.DrawerExists",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked storage.Vault.GetConfigValue",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked storage.Vault.GetEntity",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked storage.Vault.GetTriple",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked storage.Vault.ListDrawersByWing",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked storage.Vault.PalacePath",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked storage.Vault.SearchSessions",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked surface.VaultUnreachableError.Unwrap",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked surface.resetStampCacheForTest",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked surface.resetUnrecognizedTopWarnForTest",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked templates.realEmbeddedSHA",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked testutil.ProjectCacheDir",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked tools.sortStrings",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked vplog.discardHandler.Handle",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked vplog.discardHandler.WithAttrs",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked vplog.discardHandler.WithGroup",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked wrapstate.VaultHasUncommittedWrites",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "uninvoked zed.ListThreadIDs",
+      "reason": "UNTRIAGED at baseline creation (202). Each of these is EITHER a real 'capability built, nothing invokes it' finding \u2014 the class that produced the Zed adapter, vp check, vp_health and the never-firing claim sentinel \u2014 OR a false negative from the syntactic analysis (called through an interface, or via reflection). They are NOT yet distinguished. Triaging them is the ratchet's next turn: each entry must end up either deleted from the tree or explained here."
+    },
+    {
+      "id": "write-only-field skills.SkillFrontmatter.Paths",
+      "reason": "UNTRIAGED (202). SkillFrontmatter is parsed from skill files, but something DOES construct it, so this may be a real never-assigned field or a bare-name false negative. Triage: does anything set Paths/Triggers, and does anything read them?"
+    },
+    {
+      "id": "write-only-field skills.SkillFrontmatter.Triggers",
+      "reason": "UNTRIAGED (202). SkillFrontmatter is parsed from skill files, but something DOES construct it, so this may be a real never-assigned field or a bare-name false negative. Triage: does anything set Paths/Triggers, and does anything read them?"
+    }
+  ]
+}
