@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -14,7 +15,7 @@ import (
 
 func TestCreateAndGetTask(t *testing.T) {
 	v := testVault(t)
-	err := v.CreateTask("proj", "my-task", "My Task Title", "Some content here.", "P1")
+	err := v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "My Task Title", Content: "Some content here.", Priority: "P1"})
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -45,10 +46,10 @@ func TestCreateAndGetTask(t *testing.T) {
 
 func TestCreateTaskDuplicate(t *testing.T) {
 	v := testVault(t)
-	if err := v.CreateTask("proj", "my-task", "Title", "", "P1"); err != nil {
+	if err := v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "Title", Content: "", Priority: "P1"}); err != nil {
 		t.Fatal(err)
 	}
-	err := v.CreateTask("proj", "my-task", "Title 2", "", "P2")
+	err := v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "Title 2", Content: "", Priority: "P2"})
 	if err == nil {
 		t.Error("creating duplicate task should return error")
 	}
@@ -56,7 +57,7 @@ func TestCreateTaskDuplicate(t *testing.T) {
 
 func TestCreateTaskInvalidSlug(t *testing.T) {
 	v := testVault(t)
-	err := v.CreateTask("proj", "BAD SLUG", "Title", "", "P1")
+	err := v.CreateTask("proj", TaskSpec{Slug: "BAD SLUG", Title: "Title", Content: "", Priority: "P1"})
 	if err == nil {
 		t.Error("CreateTask with invalid slug should return error")
 	}
@@ -72,8 +73,8 @@ func TestGetTaskNotFound(t *testing.T) {
 
 func TestListTasks(t *testing.T) {
 	v := testVault(t)
-	v.CreateTask("proj", "task-a", "Task A", "", "P1")
-	v.CreateTask("proj", "task-b", "Task B", "", "P2")
+	v.CreateTask("proj", TaskSpec{Slug: "task-a", Title: "Task A", Content: "", Priority: "P1"})
+	v.CreateTask("proj", TaskSpec{Slug: "task-b", Title: "Task B", Content: "", Priority: "P2"})
 
 	got, err := v.ListTasks("proj", false)
 	if err != nil {
@@ -97,9 +98,9 @@ func TestListTasksEmpty(t *testing.T) {
 
 func TestListTasksIncludeDone(t *testing.T) {
 	v := testVault(t)
-	v.CreateTask("proj", "active", "Active", "", "P1")
-	v.CreateTask("proj", "to-retire", "To Retire", "", "P1")
-	v.CreateTask("proj", "to-cancel", "To Cancel", "", "P1")
+	v.CreateTask("proj", TaskSpec{Slug: "active", Title: "Active", Content: "", Priority: "P1"})
+	v.CreateTask("proj", TaskSpec{Slug: "to-retire", Title: "To Retire", Content: "", Priority: "P1"})
+	v.CreateTask("proj", TaskSpec{Slug: "to-cancel", Title: "To Cancel", Content: "", Priority: "P1"})
 
 	v.RetireTask("proj", "to-retire")
 	v.CancelTask("proj", "to-cancel")
@@ -123,7 +124,7 @@ func TestListTasksIncludeDone(t *testing.T) {
 
 func TestUpdateTaskStatus(t *testing.T) {
 	v := testVault(t)
-	v.CreateTask("proj", "my-task", "Title", "", "P1")
+	v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "Title", Content: "", Priority: "P1"})
 
 	if err := v.UpdateTaskStatus("proj", "my-task", "in_progress"); err != nil {
 		t.Fatalf("UpdateTaskStatus: %v", err)
@@ -140,7 +141,7 @@ func TestUpdateTaskStatus(t *testing.T) {
 
 func TestUpdateTaskStatusInvalid(t *testing.T) {
 	v := testVault(t)
-	v.CreateTask("proj", "my-task", "Title", "", "P1")
+	v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "Title", Content: "", Priority: "P1"})
 
 	err := v.UpdateTaskStatus("proj", "my-task", "invalid_status")
 	if err == nil {
@@ -150,7 +151,7 @@ func TestUpdateTaskStatusInvalid(t *testing.T) {
 
 func TestRetireTask(t *testing.T) {
 	v := testVault(t)
-	v.CreateTask("proj", "my-task", "Title", "", "P1")
+	v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "Title", Content: "", Priority: "P1"})
 
 	if err := v.RetireTask("proj", "my-task"); err != nil {
 		t.Fatalf("RetireTask: %v", err)
@@ -184,7 +185,7 @@ func TestRetireTask(t *testing.T) {
 
 func TestRetireTaskAlreadyRetired(t *testing.T) {
 	v := testVault(t)
-	v.CreateTask("proj", "my-task", "Title", "", "P1")
+	v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "Title", Content: "", Priority: "P1"})
 	v.RetireTask("proj", "my-task")
 
 	err := v.RetireTask("proj", "my-task")
@@ -195,7 +196,7 @@ func TestRetireTaskAlreadyRetired(t *testing.T) {
 
 func TestCancelTask(t *testing.T) {
 	v := testVault(t)
-	v.CreateTask("proj", "my-task", "Title", "", "P1")
+	v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "Title", Content: "", Priority: "P1"})
 
 	if err := v.CancelTask("proj", "my-task"); err != nil {
 		t.Fatalf("CancelTask: %v", err)
@@ -215,7 +216,7 @@ func TestCancelTask(t *testing.T) {
 
 func TestCancelTaskAlreadyCancelled(t *testing.T) {
 	v := testVault(t)
-	v.CreateTask("proj", "my-task", "Title", "", "P1")
+	v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "Title", Content: "", Priority: "P1"})
 	v.CancelTask("proj", "my-task")
 
 	err := v.CancelTask("proj", "my-task")
@@ -226,7 +227,7 @@ func TestCancelTaskAlreadyCancelled(t *testing.T) {
 
 func TestTaskFileContent(t *testing.T) {
 	v := testVault(t)
-	v.CreateTask("proj", "my-task", "My Title", "## Details\n\nSome details.", "P0")
+	v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "My Title", Content: "## Details\n\nSome details.", Priority: "P0"})
 
 	path, _ := v.TaskFile("proj", "my-task")
 	data, err := os.ReadFile(path)
@@ -266,7 +267,7 @@ func TestCreateTask_ConcurrentSameSlugExactlyOneWins(t *testing.T) {
 	v := testVault(t)
 
 	// Pre-create the tasks dir so every goroutine races on the task file only.
-	if err := v.CreateTask("proj", "seed", "Seed", "", "medium"); err != nil {
+	if err := v.CreateTask("proj", TaskSpec{Slug: "seed", Title: "Seed", Content: "", Priority: "medium"}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -277,7 +278,7 @@ func TestCreateTask_ConcurrentSameSlugExactlyOneWins(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range n {
 		wg.Go(func() {
-			errs[i] = v.CreateTask("proj", "contended", title(i), body(i), "medium")
+			errs[i] = v.CreateTask("proj", TaskSpec{Slug: "contended", Title: title(i), Content: body(i), Priority: "medium"})
 		})
 	}
 	wg.Wait()
@@ -320,7 +321,7 @@ func TestCreateTaskRejectsStatusLineInContent(t *testing.T) {
 	v := testVault(t)
 	content := "**Status:** in_progress\n**Priority:** high\n\n## Plan\n\nDo the thing."
 
-	err := v.CreateTask("proj", "my-task", "My Task", content, "high")
+	err := v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "My Task", Content: content, Priority: "high"})
 	if err == nil {
 		t.Fatal("CreateTask with a **Status:** line in content should return error")
 	}
@@ -341,7 +342,7 @@ func TestCreateTaskRejectsH1InContent(t *testing.T) {
 	v := testVault(t)
 	content := "# My Task\n\nSome body text."
 
-	err := v.CreateTask("proj", "my-task", "My Task", content, "high")
+	err := v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "My Task", Content: content, Priority: "high"})
 	if err == nil {
 		t.Fatal("CreateTask with an H1 in content should return error")
 	}
@@ -359,7 +360,7 @@ func TestCreateTaskCleanBodyHasSingleHeader(t *testing.T) {
 	v := testVault(t)
 	content := "## Plan\n\nStep one.\n\n### Notes\n\nA `**Status:**` inline mention is not a status line."
 
-	if err := v.CreateTask("proj", "my-task", "My Task", content, "high"); err != nil {
+	if err := v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "My Task", Content: content, Priority: "high"}); err != nil {
 		t.Fatalf("CreateTask with a clean body: %v", err)
 	}
 
@@ -416,7 +417,7 @@ func TestCreateTaskAcceptsMetadataShapesInsideCodeFences(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			v := testVault(t)
-			if err := v.CreateTask("proj", "my-task", "My Task", tc.content, "high"); err != nil {
+			if err := v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "My Task", Content: tc.content, Priority: "high"}); err != nil {
 				t.Fatalf("CreateTask should ACCEPT this body, got: %v", err)
 			}
 		})
@@ -441,7 +442,7 @@ func TestCreateTaskAcceptsRealCorpusBodyShape(t *testing.T) {
 		"## Verification\n\n" +
 		"The rig must report zero regressions.\n"
 
-	if err := v.CreateTask("proj", "rig", "E2E Walkthrough Rig", content, "high"); err != nil {
+	if err := v.CreateTask("proj", TaskSpec{Slug: "rig", Title: "E2E Walkthrough Rig", Content: content, Priority: "high"}); err != nil {
 		t.Fatalf("CreateTask should ACCEPT a real-corpus body shape, got: %v", err)
 	}
 
@@ -561,7 +562,7 @@ func TestReplaceStatusLineAppendsWhenMissing(t *testing.T) {
 // moving (RetireTask/CancelTask), never by being stamped in place.
 func TestUpdateTaskStatusReaderWriterAgree(t *testing.T) {
 	v := testVault(t)
-	if err := v.CreateTask("proj", "my-task", "My Task", "## Plan\n\nDo it.", "high"); err != nil {
+	if err := v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "My Task", Content: "## Plan\n\nDo it.", Priority: "high"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -598,7 +599,7 @@ func TestUpdateTaskStatusReaderWriterAgree(t *testing.T) {
 func TestUpdateTaskStatusRejectsTerminalButMoveStillWritesThem(t *testing.T) {
 	for _, terminal := range []string{"completed", "retired", "cancelled"} {
 		v := testVault(t)
-		if err := v.CreateTask("proj", "t", "T", "body", "high"); err != nil {
+		if err := v.CreateTask("proj", TaskSpec{Slug: "t", Title: "T", Content: "body", Priority: "high"}); err != nil {
 			t.Fatal(err)
 		}
 		if err := v.UpdateTaskStatus("proj", "t", terminal); err == nil {
@@ -608,7 +609,7 @@ func TestUpdateTaskStatusRejectsTerminalButMoveStillWritesThem(t *testing.T) {
 
 	// retire → done/, status "retired".
 	v := testVault(t)
-	if err := v.CreateTask("proj", "r", "R", "body", "high"); err != nil {
+	if err := v.CreateTask("proj", TaskSpec{Slug: "r", Title: "R", Content: "body", Priority: "high"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := v.RetireTask("proj", "r"); err != nil {
@@ -623,7 +624,7 @@ func TestUpdateTaskStatusRejectsTerminalButMoveStillWritesThem(t *testing.T) {
 	}
 
 	// cancel → cancelled/, status "cancelled".
-	if err := v.CreateTask("proj", "c", "C", "body", "high"); err != nil {
+	if err := v.CreateTask("proj", TaskSpec{Slug: "c", Title: "C", Content: "body", Priority: "high"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := v.CancelTask("proj", "c"); err != nil {
@@ -708,4 +709,229 @@ func TestValidateTaskBodyDoesNotFailOpenOnInlineCodeRun(t *testing.T) {
 			t.Errorf("over-rejected a legitimate fenced snippet: %v", err)
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Relations: parent / depends
+// ---------------------------------------------------------------------------
+
+// 🔴 THE BUG THIS FEATURE COULD HAVE SHIPPED WITH.
+//
+// parseTaskMeta scans the whole file, first-wins, fence-unaware — safe for
+// Status and Priority only because CreateTask ALWAYS writes them in the header,
+// so the header match is always reached first. Parent and Depends are OPTIONAL:
+// a task that never declared a relation has no header line to win the race, so a
+// whole-file scan would read its BODY as metadata and invent a relationship
+// nobody wrote. Header-block scoping is what prevents it.
+//
+// This is not hypothetical. The task file that specified this feature quotes the
+// exact header shape in its body, in prose and in a fence.
+func TestBodyProseIsNeverReadAsARelation(t *testing.T) {
+	v := testVault(t)
+
+	body := "## Design\n\n" +
+		"The header will look like this:\n\n" +
+		"```\n" +
+		"**Parent:** fenced-epic\n" +
+		"**Depends:** fenced-a, fenced-b\n" +
+		"```\n\n" +
+		"An un-fenced section can discuss it too, and this is the harder case " +
+		"because fence-awareness alone would not save us here.\n"
+
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "spec", Title: "Spec", Content: body, Priority: "high",
+	}); err != nil {
+		t.Fatalf("a body that merely DISCUSSES relations must be legal: %v", err)
+	}
+
+	meta, _, err := v.GetTask("proj", "spec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Parent != "" {
+		t.Fatalf("phantom parent %q read from the body", meta.Parent)
+	}
+	if len(meta.Depends) != 0 {
+		t.Fatalf("phantom depends %v read from the body", meta.Depends)
+	}
+}
+
+// The other half of the defence: a body-borne relation line OUTSIDE a fence is
+// rejected at the door, so it cannot reach disk in the first place.
+func TestCreateRejectsBodyBorneRelationLines(t *testing.T) {
+	v := testVault(t)
+	for _, tc := range []struct{ name, body string }{
+		{"parent", "## Plan\n\n**Parent:** sneaky-epic\n\nmore text\n"},
+		{"depends", "## Plan\n\n**Depends:** sneaky-a, sneaky-b\n\nmore text\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := v.CreateTask("proj", TaskSpec{
+				Slug: "t-" + tc.name, Title: "T", Content: tc.body, Priority: "high",
+			})
+			if err == nil {
+				t.Fatal("a body-borne relation line outside a fence must be rejected")
+			}
+		})
+	}
+}
+
+func TestCreateAndReadRelations(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "child", Title: "Child", Content: "body", Priority: "high",
+		Parent: "epic", Depends: []string{"a", "b", "a"}, // dupe is dropped
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	meta, _, err := v.GetTask("proj", "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Parent != "epic" {
+		t.Errorf("parent = %q, want epic", meta.Parent)
+	}
+	if !slices.Equal(meta.Depends, []string{"a", "b"}) {
+		t.Errorf("depends = %v, want [a b] (deduped, file order)", meta.Depends)
+	}
+	// Status and Priority must still parse — the header block grew, and the
+	// original whole-file scan must not have been disturbed.
+	if meta.Status != "pending" || meta.Priority != "high" {
+		t.Errorf("status/priority regressed: %q/%q", meta.Status, meta.Priority)
+	}
+}
+
+func TestSetTaskRelationsIsTriState(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "t", Title: "T", Content: "body", Priority: "high",
+		Parent: "epic", Depends: []string{"a"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Setting ONLY depends must leave the parent alone. A non-pointer field
+	// could not express this, and the task would have been silently unparented.
+	deps := []string{"x", "y"}
+	if err := v.SetTaskRelations("proj", "t", TaskRelations{Depends: &deps}); err != nil {
+		t.Fatal(err)
+	}
+	meta, _, _ := v.GetTask("proj", "t")
+	if meta.Parent != "epic" {
+		t.Fatalf("parent was clobbered by a depends-only update: %q", meta.Parent)
+	}
+	if !slices.Equal(meta.Depends, []string{"x", "y"}) {
+		t.Fatalf("depends = %v", meta.Depends)
+	}
+
+	// A non-nil EMPTY value clears.
+	empty := ""
+	none := []string{}
+	if err := v.SetTaskRelations("proj", "t", TaskRelations{Parent: &empty, Depends: &none}); err != nil {
+		t.Fatal(err)
+	}
+	meta, content, _ := v.GetTask("proj", "t")
+	if meta.Parent != "" || len(meta.Depends) != 0 {
+		t.Fatalf("clear failed: parent=%q depends=%v", meta.Parent, meta.Depends)
+	}
+	if strings.Contains(content, "**Parent:**") || strings.Contains(content, "**Depends:**") {
+		t.Fatalf("cleared relations must leave no line behind:\n%s", content)
+	}
+}
+
+func TestSetTaskRelationsRejectsSelfReference(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "t", Title: "T", Content: "body", Priority: "high"}); err != nil {
+		t.Fatal(err)
+	}
+	self := "t"
+	if err := v.SetTaskRelations("proj", "t", TaskRelations{Parent: &self}); err == nil {
+		t.Error("a task must not be its own parent")
+	}
+	selfDep := []string{"t"}
+	if err := v.SetTaskRelations("proj", "t", TaskRelations{Depends: &selfDep}); err == nil {
+		t.Error("a task must not depend on itself")
+	}
+}
+
+// Relations must survive the retire MOVE. moveTask rewrites the status line and
+// copies everything else — this pins that, and guards the plausible future
+// refactor that "tidies" the header on the way out.
+func TestRetirePreservesRelations(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "t", Title: "T", Content: "body", Priority: "high",
+		Parent: "epic", Depends: []string{"a", "b"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.RetireTask("proj", "t"); err != nil {
+		t.Fatal(err)
+	}
+
+	meta, _, err := v.GetTask("proj", "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Status != "retired" {
+		t.Fatalf("status = %q", meta.Status)
+	}
+	if meta.Parent != "epic" || !slices.Equal(meta.Depends, []string{"a", "b"}) {
+		t.Fatalf("relations lost in the move: parent=%q depends=%v", meta.Parent, meta.Depends)
+	}
+}
+
+// A relation may name a task that does not exist YET. Enforcing existence at
+// write time would force a creation order — a child could never be written
+// before its epic — and would turn a typo into a hard failure instead of a
+// finding the graph reports and works around.
+func TestRelationsToNonexistentTasksAreAllowed(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "child", Title: "C", Content: "body", Priority: "high",
+		Parent: "epic-not-created-yet", Depends: []string{"also-missing"},
+	}); err != nil {
+		t.Fatalf("a forward reference must be legal: %v", err)
+	}
+}
+
+func TestIceboxIsAValidNonTerminalStatus(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "t", Title: "T", Content: "body", Priority: "low"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.UpdateTaskStatus("proj", "t", StatusIcebox); err != nil {
+		t.Fatalf("icebox must be settable in place: %v", err)
+	}
+	meta, _, _ := v.GetTask("proj", "t")
+	if meta.Status != StatusIcebox {
+		t.Fatalf("status = %q", meta.Status)
+	}
+	if meta.Done {
+		t.Fatal("icebox is NOT done — the file stays in the active directory")
+	}
+}
+
+// An OLD binary (pre-relations) has no body-borne-relation validation, so it can
+// write a task whose body carries a line starting with "**Parent:**" OUTSIDE any
+// fence — validateTaskBody did not exist to stop it. The NEW parser must still
+// not read it.
+//
+// This is THE cross-version hazard, and it is why the parser is bounded to the
+// header block rather than merely being fence-aware: the line here is in no
+// fence at all, so fence-awareness would not have saved us. Verified against a
+// binary built from the pre-change commit, which reads and rewrites these files
+// happily and preserves the header lines through a retire.
+func TestOldBinaryBodyBorneRelationIsStillNotRead(t *testing.T) {
+	raw := "# Title\n\n**Status:** pending\n**Priority:** high\n\n" +
+		"## Notes\n\n**Parent:** sneaky-epic\n**Depends:** sneaky-a\n\nmore prose\n"
+
+	meta := parseTaskMeta("t", raw, false)
+	if meta.Parent != "" || len(meta.Depends) != 0 {
+		t.Fatalf("a body-borne relation written by an OLD binary was read as real: parent=%q depends=%v",
+			meta.Parent, meta.Depends)
+	}
+	if meta.Status != "pending" || meta.Priority != "high" {
+		t.Fatalf("header regressed: %q/%q", meta.Status, meta.Priority)
+	}
 }

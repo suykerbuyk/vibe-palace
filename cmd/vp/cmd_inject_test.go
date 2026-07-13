@@ -32,7 +32,7 @@ func TestRunInjectEmpty(t *testing.T) {
 
 func TestRunInjectWithData(t *testing.T) {
 	v := testVault(t)
-	v.CreateTask("test-proj", "my-task", "My Task", "content", "high")
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "My Task", Content: "content", Priority: "high"})
 	v.WriteSession("test-proj", storage.SessionMeta{
 		Date: "2026-04-01", Title: "Test Session", Tag: "impl",
 	}, "body")

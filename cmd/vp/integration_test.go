@@ -23,8 +23,8 @@ func TestIntegrationStatusSessionsTasks(t *testing.T) {
 	proj := "integration-test"
 
 	// Seed the vault with realistic data.
-	v.CreateTask(proj, "implement-auth", "Implement authentication", "OAuth2 flow", "high")
-	v.CreateTask(proj, "write-tests", "Write unit tests", "80% coverage target", "medium")
+	v.CreateTask(proj, storage.TaskSpec{Slug: "implement-auth", Title: "Implement authentication", Content: "OAuth2 flow", Priority: "high"})
+	v.CreateTask(proj, storage.TaskSpec{Slug: "write-tests", Title: "Write unit tests", Content: "80% coverage target", Priority: "medium"})
 	v.WriteSession(proj, storage.SessionMeta{
 		Date: "2026-04-01", Title: "Initial auth work", Tag: "implementation",
 		FrictionScore: 15,
@@ -63,7 +63,7 @@ func TestIntegrationStatusSessionsTasks(t *testing.T) {
 
 	// Tasks should list both.
 	var tasksBuf bytes.Buffer
-	code = runTasks(v, proj, false, true, &tasksBuf)
+	code = runTasks(v, proj, taskListOpts{flat: true, asJSON: true}, &tasksBuf)
 	if code != cli.ExitOK {
 		t.Fatalf("tasks exit code = %d", code)
 	}
@@ -84,7 +84,7 @@ func TestIntegrationStatusSessionsTasks(t *testing.T) {
 
 	// Tasks without --done should hide retired.
 	tasksBuf.Reset()
-	runTasks(v, proj, false, true, &tasksBuf)
+	runTasks(v, proj, taskListOpts{flat: true, asJSON: true}, &tasksBuf)
 	json.Unmarshal(tasksBuf.Bytes(), &tasks)
 	if len(tasks) != 1 {
 		t.Errorf("tasks without --done = %d, want 1", len(tasks))
@@ -92,7 +92,7 @@ func TestIntegrationStatusSessionsTasks(t *testing.T) {
 
 	// Tasks with --done should show both.
 	tasksBuf.Reset()
-	runTasks(v, proj, true, true, &tasksBuf)
+	runTasks(v, proj, taskListOpts{flat: true, includeDone: true, asJSON: true}, &tasksBuf)
 	json.Unmarshal(tasksBuf.Bytes(), &tasks)
 	if len(tasks) != 2 {
 		t.Errorf("tasks with --done = %d, want 2", len(tasks))
@@ -105,7 +105,7 @@ func TestIntegrationInjectBootstrap(t *testing.T) {
 	v := testVault(t)
 	proj := "inject-test"
 
-	v.CreateTask(proj, "my-task", "Test Task", "content", "high")
+	v.CreateTask(proj, storage.TaskSpec{Slug: "my-task", Title: "Test Task", Content: "content", Priority: "high"})
 	v.WriteSession(proj, storage.SessionMeta{
 		Date: "2026-04-01", Title: "Work session", Tag: "impl",
 		Summary: "Did some work",
@@ -267,12 +267,12 @@ func TestIntegrationTasksTableFormat(t *testing.T) {
 	v := testVault(t)
 	proj := "tasktable-test"
 
-	v.CreateTask(proj, "high-pri", "High Priority Task", "urgent", "high")
-	v.CreateTask(proj, "low-pri", "Low Priority Task", "not urgent", "low")
+	v.CreateTask(proj, storage.TaskSpec{Slug: "high-pri", Title: "High Priority Task", Content: "urgent", Priority: "high"})
+	v.CreateTask(proj, storage.TaskSpec{Slug: "low-pri", Title: "Low Priority Task", Content: "not urgent", Priority: "low"})
 	v.UpdateTaskStatus(proj, "high-pri", "in_progress")
 
 	var buf bytes.Buffer
-	code := runTasks(v, proj, false, false, &buf)
+	code := runTasks(v, proj, taskListOpts{flat: true}, &buf)
 	if code != cli.ExitOK {
 		t.Fatalf("exit code = %d", code)
 	}

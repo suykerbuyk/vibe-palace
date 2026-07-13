@@ -6,7 +6,7 @@ This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~2248 tests** across 39 packages, including
+The suite currently runs **~2277 tests** across 40 packages, including
 **105 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
@@ -66,6 +66,34 @@ All integration test function names start with `TestIntegration` so
 
 Runs everything: unit tests plus all integration tests.
 This is the gate for commits.
+
+---
+
+## Live-vault canaries (`internal/taskgraph/live_vault_test.go`)
+
+A small class of test runs against the **operator's real vault**, resolved through
+`storage.OpenVaultGlobal()`, and **skips** when no vault is configured. It is not an
+integration test and it is not a fixture — it is a **canary over real data**, and it
+exists because this project has twice shipped a bug that every fixture test passed:
+
+- `note_path` was empty on **every session ever captured for ~6 months**, green suite throughout.
+- Eight write-only `SessionMeta` fields survived because the tests **seeded the fields themselves**
+  and asserted they round-tripped.
+
+The mechanism is the same both times: **a test that seeds the value it then asserts cannot catch a
+value that is never written.** Only the real corpus contains the fenced snippets, the prose that
+merely *discusses* a header line, and the accumulated markdown weirdness of a hundred files.
+
+Current canaries:
+
+| Test | What it would catch |
+|---|---|
+| `TestLiveVaultHasNoPhantomRelations` | `parseTaskMeta` regressing to a whole-file scan and reading a task's **body** as a real `Parent`/`Depends` — several real task files discuss the header syntax in prose and inside fences |
+| `TestLiveVaultGraphIsCleanAndTerminates` | A structural lie in the real backlog (cycle / dangling ref / retired parent with live children) — and, under a bounded timeout, a cycle being **walked instead of detected** |
+
+**Rules for adding one:** it must `t.Skip` (never fail) when the vault is absent, it must never
+write, and it must assert something a fixture *structurally cannot* — otherwise it is just a slow
+unit test with a dependency on one machine.
 
 ---
 

@@ -65,10 +65,10 @@ func TestBootstrapWithTasks(t *testing.T) {
 	vault, resolver := testSetup(t)
 
 	// Create two tasks.
-	if err := vault.CreateTask("test-proj", "fix-bug", "Fix the bug", "", "high"); err != nil {
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "fix-bug", Title: "Fix the bug", Content: "", Priority: "high"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := vault.CreateTask("test-proj", "add-feature", "Add feature", "", "medium"); err != nil {
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "add-feature", Title: "Add feature", Content: "", Priority: "medium"}); err != nil {
 		t.Fatal(err)
 	}
 

@@ -39,8 +39,8 @@ func TestRunStatusEmpty(t *testing.T) {
 
 func TestRunStatusWithData(t *testing.T) {
 	v := testVault(t)
-	v.CreateTask("test-proj", "task-one", "Task One", "content", "high")
-	v.CreateTask("test-proj", "task-two", "Task Two", "content", "low")
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "task-one", Title: "Task One", Content: "content", Priority: "high"})
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "task-two", Title: "Task Two", Content: "content", Priority: "low"})
 	v.WriteSession("test-proj", storage.SessionMeta{
 		Date: "2026-04-01", Title: "Session 1", Tag: "impl",
 	}, "body")
@@ -61,7 +61,7 @@ func TestRunStatusWithData(t *testing.T) {
 
 func TestRunStatusJSON(t *testing.T) {
 	v := testVault(t)
-	v.CreateTask("test-proj", "task-one", "Task One", "content", "high")
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "task-one", Title: "Task One", Content: "content", Priority: "high"})
 
 	var buf bytes.Buffer
 	code := runStatus(v, "test-proj", true, &buf)

@@ -32,7 +32,7 @@ func TestListTasksEmpty(t *testing.T) {
 
 func TestListTasksPopulated(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	if err := vault.CreateTask("test-proj", "my-task", "My Task", "content", "high"); err != nil {
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "My Task", Content: "content", Priority: "high"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
@@ -54,10 +54,10 @@ func TestListTasksPopulated(t *testing.T) {
 
 func TestListTasksIncludeDone(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	if err := vault.CreateTask("test-proj", "active-task", "Active", "", "medium"); err != nil {
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "active-task", Title: "Active", Content: "", Priority: "medium"}); err != nil {
 		t.Fatalf("CreateTask active: %v", err)
 	}
-	if err := vault.CreateTask("test-proj", "done-task", "Done", "", "low"); err != nil {
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "done-task", Title: "Done", Content: "", Priority: "low"}); err != nil {
 		t.Fatalf("CreateTask done: %v", err)
 	}
 	if err := vault.RetireTask("test-proj", "done-task"); err != nil {
@@ -91,7 +91,7 @@ func TestListTasksIncludeDone(t *testing.T) {
 
 func TestGetTaskFound(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	if err := vault.CreateTask("test-proj", "my-task", "My Task", "body", "high"); err != nil {
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "My Task", Content: "body", Priority: "high"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
@@ -160,7 +160,7 @@ func TestManageTaskCreate(t *testing.T) {
 
 func TestManageTaskUpdateStatus(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	if err := vault.CreateTask("test-proj", "my-task", "My Task", "", "medium"); err != nil {
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "My Task", Content: "", Priority: "medium"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
@@ -183,7 +183,7 @@ func TestManageTaskUpdateStatus(t *testing.T) {
 
 func TestManageTaskRetire(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	if err := vault.CreateTask("test-proj", "my-task", "My Task", "", "medium"); err != nil {
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "My Task", Content: "", Priority: "medium"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
@@ -210,7 +210,7 @@ func TestManageTaskRetire(t *testing.T) {
 
 func TestManageTaskCancel(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	if err := vault.CreateTask("test-proj", "my-task", "My Task", "", "medium"); err != nil {
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "My Task", Content: "", Priority: "medium"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
@@ -287,7 +287,7 @@ func getTaskCall(t *testing.T, vault *storage.Vault, params string) getTaskResul
 func makeBigTask(t *testing.T, vault *storage.Vault, project, slug string) (uri, body string) {
 	t.Helper()
 	content := strings.Repeat("This is a line of task body content for the excerpt test.\n", 80)
-	if err := vault.CreateTask(project, slug, "Big Task", content, "high"); err != nil {
+	if err := vault.CreateTask(project, storage.TaskSpec{Slug: slug, Title: "Big Task", Content: content, Priority: "high"}); err != nil {
 		t.Fatal(err)
 	}
 	_, stored, err := vault.GetTask(project, slug)
@@ -390,7 +390,7 @@ func TestGetTaskExcludeContentReturnsExcerpt(t *testing.T) {
 // Excerpt), sparing the agent a vp_read_resource round-trip.
 func TestGetTaskExcludeContentSmallBodyStaysInline(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	if err := vault.CreateTask("test-proj", "small-task", "Small", "a tiny body", "low"); err != nil {
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "small-task", Title: "Small", Content: "a tiny body", Priority: "low"}); err != nil {
 		t.Fatal(err)
 	}
 	_, full, err := vault.GetTask("test-proj", "small-task")

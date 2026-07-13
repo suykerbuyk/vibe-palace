@@ -89,7 +89,7 @@ func TestEveryVaultWriterStamps(t *testing.T) {
 			return projectsRoot(vault)
 		}},
 		{"CreateTask", func(t *testing.T, v *Vault, vault string) string {
-			if err := v.CreateTask(proj, "t1", "T1", "body", "high"); err != nil {
+			if err := v.CreateTask(proj, TaskSpec{Slug: "t1", Title: "T1", Content: "body", Priority: "high"}); err != nil {
 				t.Fatal(err)
 			}
 			return projectsRoot(vault)

@@ -256,8 +256,14 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	}
 
 	// Active tasks — graceful on error.
+	//
+	// Iceboxed tasks are dropped: bootstrap carries what the project INTENDS to
+	// do, not everything it KNOWS. An agent that opens a session to a list where
+	// the critical work sits beside a dozen deliberately-unscheduled
+	// found-in-passing items has to re-derive the difference every time, and this
+	// payload is already over its own token budget besides.
 	if tasks, err := vault.ListTasks(project, false); err == nil {
-		result.ActiveTasks = tasks
+		result.ActiveTasks = storage.DropIcebox(tasks)
 	}
 
 	// Recent sessions (last 5, most-recent-first) — graceful on error.

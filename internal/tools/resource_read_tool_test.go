@@ -62,7 +62,7 @@ func readResourceCall(t *testing.T, resolver *vpctx.Resolver, vault *storage.Vau
 
 func TestReadResourceBasic(t *testing.T) {
 	vault, resolver := testSetup(t)
-	if err := vault.CreateTask("test-proj", "my-task", "My Task", "hello world body", "high"); err != nil {
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "My Task", Content: "hello world body", Priority: "high"}); err != nil {
 		t.Fatal(err)
 	}
 	_, body, err := vault.GetTask("test-proj", "my-task")
@@ -95,7 +95,7 @@ func TestReadResourceBasic(t *testing.T) {
 
 func TestReadResourceOffsetPastEnd(t *testing.T) {
 	vault, resolver := testSetup(t)
-	if err := vault.CreateTask("test-proj", "my-task", "T", "short", "low"); err != nil {
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "T", Content: "short", Priority: "low"}); err != nil {
 		t.Fatal(err)
 	}
 	uri := mcp.TaskURI("test-proj", "my-task")
@@ -118,7 +118,7 @@ func TestReadResourceOffsetPastEnd(t *testing.T) {
 
 func TestReadResourceLimitLargerThanContent(t *testing.T) {
 	vault, resolver := testSetup(t)
-	if err := vault.CreateTask("test-proj", "my-task", "T", "body content here", "low"); err != nil {
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "T", Content: "body content here", Priority: "low"}); err != nil {
 		t.Fatal(err)
 	}
 	uri := mcp.TaskURI("test-proj", "my-task")
@@ -176,7 +176,7 @@ func TestReadResourceMultibyteBoundary(t *testing.T) {
 		sb.WriteString("a—b—c—") // mix of 1- and 3-byte runes
 	}
 	body := sb.String()
-	if err := vault.CreateTask("test-proj", "emdash", "Em", body, "low"); err != nil {
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "emdash", Title: "Em", Content: body, Priority: "low"}); err != nil {
 		t.Fatal(err)
 	}
 	uri := mcp.TaskURI("test-proj", "emdash")
@@ -220,7 +220,7 @@ func TestReadResourceMultibyteBoundary(t *testing.T) {
 func TestReadResourceSingleRuneLargerThanLimit(t *testing.T) {
 	vault, resolver := testSetup(t)
 	body := "—tail"
-	if err := vault.CreateTask("test-proj", "lead", "L", body, "low"); err != nil {
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "lead", Title: "L", Content: body, Priority: "low"}); err != nil {
 		t.Fatal(err)
 	}
 	uri := mcp.TaskURI("test-proj", "lead")

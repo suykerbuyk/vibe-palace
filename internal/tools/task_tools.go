@@ -10,6 +10,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/taskgraph"
 )
 
 // ---------------------------------------------------------------------------
@@ -19,23 +20,30 @@ import (
 type listTasksParams struct {
 	Project     string `json:"project"`
 	IncludeDone bool   `json:"include_done,omitempty"`
+	// IncludeIcebox surfaces tasks the project KNOWS about but has not
+	// scheduled. Default false: a backlog that carries everything known is a
+	// knowledge base, not a backlog, and that is what made this list unreadable.
+	IncludeIcebox bool `json:"include_icebox,omitempty"`
 }
 
 var listTasksSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"project":      {"type": "string", "description": "Project slug."},
-		"include_done": {"type": "boolean", "description": "Include done/cancelled tasks (default false)."}
+		"project":        {"type": "string", "description": "Project slug."},
+		"include_done":   {"type": "boolean", "description": "Include done/cancelled tasks (default false)."},
+		"include_icebox": {"type": "boolean", "description": "Include iceboxed tasks — known, deliberately not scheduled (default false)."}
 	},
 	"required": ["project"]
 }`)
 
 func ListTasksTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name:        "vp_list_tasks",
-		Description: "List tasks for a project.",
-		Schema:      listTasksSchema,
-		Handler:     listTasksHandler(vault),
+		Name: "vp_list_tasks",
+		Description: "List tasks for a project. Each task may carry a parent (its epic) and a " +
+			"list of dependencies; an epic is simply a task that others name as their parent. " +
+			"Iceboxed tasks are excluded unless include_icebox is set.",
+		Schema:  listTasksSchema,
+		Handler: listTasksHandler(vault),
 	}
 }
 
@@ -51,6 +59,9 @@ func listTasksHandler(vault *storage.Vault) mcp.HandlerFunc {
 		tasks, err := vault.ListTasks(p.Project, p.IncludeDone)
 		if err != nil {
 			return nil, fmt.Errorf("list tasks: %w", err)
+		}
+		if !p.IncludeIcebox {
+			tasks = storage.DropIcebox(tasks)
 		}
 		if tasks == nil {
 			tasks = []storage.TaskMeta{}
@@ -162,6 +173,12 @@ type manageTaskParams struct {
 	Content  string `json:"content,omitempty"`
 	Priority string `json:"priority,omitempty"`
 	Status   string `json:"status,omitempty"`
+	// Parent and DependsOn are POINTERS because they are tri-state on
+	// set_relations: absent means "leave it alone", and a present-but-empty value
+	// means "clear it". A plain string could not tell those apart, so a caller
+	// updating only the dependencies would silently unparent the task.
+	Parent    *string   `json:"parent,omitempty"`
+	DependsOn *[]string `json:"depends_on,omitempty"`
 	// ApprovedByHuman is ATTESTATION, not AUTHORIZATION. See the friction note
 	// on manageTaskSchema.
 	ApprovedByHuman bool `json:"approved_by_human,omitempty"`
@@ -227,12 +244,14 @@ var manageTaskSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
 		"project":  {"type": "string", "description": "Project slug."},
-		"action":   {"type": "string", "enum": ["create", "update_status", "retire", "cancel"], "description": "Action: create, update_status, retire, or cancel."},
+		"action":   {"type": "string", "enum": ["create", "update_status", "set_relations", "retire", "cancel"], "description": "Action: create, update_status, set_relations, retire, or cancel."},
 		"task":     {"type": "string", "description": "Task slug."},
 		"title":    {"type": "string", "description": "Task title (for create)."},
-		"content":  {"type": "string", "description": "Task content body. REQUIRED for create, and must be at least 200 bytes of real plan — not a pointer to a plan stored elsewhere. Do not include a '# Title' heading or '**Status:**'/'**Priority:**' lines; create writes those itself."},
+		"content":  {"type": "string", "description": "Task content body. REQUIRED for create, and must be at least 200 bytes of real plan — not a pointer to a plan stored elsewhere. Do not include a '# Title' heading or '**Status:**'/'**Priority:**'/'**Parent:**'/'**Depends:**' lines; create writes those itself."},
 		"priority": {"type": "string", "description": "Priority: low, medium, high, critical (for create)."},
-		"status":   {"type": "string", "enum": ["pending", "in_progress", "blocked"], "description": "New status (for update_status). Terminal states are not reachable here: use action=retire or action=cancel, which move the file."},
+		"status":   {"type": "string", "enum": ["pending", "in_progress", "blocked", "icebox"], "description": "New status (for update_status). 'icebox' means known but deliberately not scheduled — it stays in the active directory and is hidden from default listings. Terminal states are not reachable here: use action=retire or action=cancel, which move the file."},
+		"parent":   {"type": "string", "description": "Slug of this task's parent (for create or set_relations). An EPIC is simply a task that others name as their parent — there is no separate epic type. Pass \"\" with set_relations to clear it."},
+		"depends_on": {"type": "array", "items": {"type": "string"}, "description": "Slugs this task depends on (for create or set_relations). A dependency on a retired or cancelled task counts as SATISFIED. Pass [] with set_relations to clear."},
 		"approved_by_human": {"type": "boolean", "description": "REQUIRED for retire, and must be true. Set this ONLY when the human has actually said the task is done. Nothing verifies this — it is your own attestation, not an authorization check."}
 	},
 	"required": ["project", "action", "task"],
@@ -244,6 +263,10 @@ var manageTaskSchema = json.RawMessage(`{
 		{
 			"if":   {"properties": {"action": {"const": "retire"}}, "required": ["action"]},
 			"then": {"required": ["approved_by_human"]}
+		},
+		{
+			"if":   {"properties": {"action": {"const": "set_relations"}}, "required": ["action"]},
+			"then": {"anyOf": [{"required": ["parent"]}, {"required": ["depends_on"]}]}
 		}
 	]
 }`)
@@ -252,12 +275,66 @@ func ManageTaskTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:     "vp_manage_task",
 		Mutating: true,
-		Description: "Create, update, retire, or cancel a task. create requires a substantive content body; " +
+		Description: "Create, update, relate, retire, or cancel a task. create requires a substantive content body; " +
 			"retire requires approved_by_human=true, which is your own attestation that the human said the task " +
-			"is done — set it only when that is true.",
+			"is done — set it only when that is true. set_relations sets a task's parent (its epic) and/or its " +
+			"dependencies; structure is derived from those two edges, so an epic is any task others point at.",
 		Schema:  manageTaskSchema,
 		Handler: manageTaskHandler(vault),
 	}
+}
+
+// checkParentCycle refuses a parent edge that would close a loop.
+//
+// Parent cycles are rejected; DEPENDENCY cycles are not. The asymmetry is
+// deliberate. A dependency cycle is a real state a plan can pass through while
+// it is being written ("A needs B, and actually B needs A — one of these is
+// wrong"), and taskgraph reports it loudly without falling over, so refusing the
+// write would just make the agent fight the tool. A parent cycle has no
+// legitimate transient form: it means a task is inside its own epic, which is
+// not a plan in progress, it is nonsense — and it is the shape that makes every
+// reader walk in circles.
+//
+// Cheap by construction: it walks a parent chain, never the whole graph.
+func checkParentCycle(vault *storage.Vault, project, task string, parent *string) error {
+	if parent == nil || *parent == "" || *parent == task {
+		// Self-parenting is caught in storage (normalizeRelations); nothing to
+		// walk for a clear.
+		return nil
+	}
+
+	g, err := taskgraph.BuildFromVault(vault, project)
+	if err != nil {
+		return fmt.Errorf("build task graph: %w", err)
+	}
+
+	// Walk up from the PROPOSED parent. If the chain reaches the task being
+	// re-parented, the new edge would close a loop.
+	seen := map[string]bool{}
+	for cur := *parent; cur != ""; {
+		if cur == task {
+			return fmt.Errorf(
+				"parent %q would create a cycle: %q is already above it in the parent chain — "+
+					"a task cannot be inside its own epic",
+				*parent, task)
+		}
+		if seen[cur] {
+			// A cycle that already exists on disk. Report it rather than
+			// spinning; the graph surfaces it as a finding.
+			return fmt.Errorf(
+				"parent chain above %q already contains a cycle (run `vp tasks` to see it) — "+
+					"fix that before adding another edge",
+				*parent)
+		}
+		seen[cur] = true
+
+		n, ok := g.Nodes[cur]
+		if !ok {
+			return nil // dangling ancestor: the chain ends, no loop is possible
+		}
+		cur = n.Meta.Parent
+	}
+	return nil
 }
 
 func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
@@ -296,7 +373,14 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 			if priority == "" {
 				priority = "medium"
 			}
-			if err := vault.CreateTask(p.Project, p.Task, title, p.Content, priority); err != nil {
+			spec := storage.TaskSpec{Slug: p.Task, Title: title, Content: p.Content, Priority: priority}
+			if p.Parent != nil {
+				spec.Parent = *p.Parent
+			}
+			if p.DependsOn != nil {
+				spec.Depends = *p.DependsOn
+			}
+			if err := vault.CreateTask(p.Project, spec); err != nil {
 				return nil, fmt.Errorf("create task: %w", err)
 			}
 			return map[string]string{"status": "created", "task": p.Task}, nil
@@ -309,6 +393,28 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 				return nil, fmt.Errorf("update task status: %w", err)
 			}
 			return map[string]string{"status": p.Status, "task": p.Task}, nil
+
+		case "set_relations":
+			if p.Parent == nil && p.DependsOn == nil {
+				return nil, fmt.Errorf("set_relations requires parent and/or depends_on")
+			}
+			if err := checkParentCycle(vault, p.Project, p.Task, p.Parent); err != nil {
+				return nil, err
+			}
+			if err := vault.SetTaskRelations(p.Project, p.Task, storage.TaskRelations{
+				Parent:  p.Parent,
+				Depends: p.DependsOn,
+			}); err != nil {
+				return nil, fmt.Errorf("set task relations: %w", err)
+			}
+			result := map[string]any{"status": "relations_set", "task": p.Task}
+			if p.Parent != nil {
+				result["parent"] = *p.Parent
+			}
+			if p.DependsOn != nil {
+				result["depends_on"] = *p.DependsOn
+			}
+			return result, nil
 
 		case "retire":
 			// The schema requires approved_by_human to be PRESENT on retire; this

@@ -159,7 +159,7 @@
     {
       "name": "vp_list_tasks",
       "mutating": false,
-      "schema_sha256": "5df990ffb819de75b7e6a95f92c00bbb9ad1415a07a173c992e225da3f1baf7b"
+      "schema_sha256": "d865e586d20e32f45cd83f7d3d381c44f292e44d8b5b4ecb998e2ab950c81393"
     },
     {
       "name": "vp_list_wings",
@@ -169,7 +169,7 @@
     {
       "name": "vp_manage_task",
       "mutating": true,
-      "schema_sha256": "3d9f625de75a439c19023ce826c249f336009532c79aed2e9279dffee8d0ac0f"
+      "schema_sha256": "8c1e3e792e14d1bcdd965b45167083e892e2a115964367734afbf63c59d80baa"
     },
     {
       "name": "vp_memory_delete",

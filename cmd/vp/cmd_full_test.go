@@ -18,7 +18,7 @@ import (
 func TestFullStatusCommand(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	v := storage.NewVault(vaultDir)
-	v.CreateTask("test-proj", "task-one", "Task One", "content", "high")
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "task-one", Title: "Task One", Content: "content", Priority: "high"})
 	v.WriteSession("test-proj", storage.SessionMeta{
 		Date: "2026-04-01", Title: "Session", Tag: "impl",
 	}, "body")
@@ -49,7 +49,7 @@ func TestFullStatusCommand(t *testing.T) {
 func TestFullStatusJSON(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	v := storage.NewVault(vaultDir)
-	v.CreateTask("jsonproj", "t1", "T1", "c", "high")
+	v.CreateTask("jsonproj", storage.TaskSpec{Slug: "t1", Title: "T1", Content: "c", Priority: "high"})
 
 	old := os.Stdout
 	r, w, _ := os.Pipe()
@@ -109,7 +109,7 @@ func TestFullSessionsCommand(t *testing.T) {
 func TestFullTasksCommand(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	v := storage.NewVault(vaultDir)
-	v.CreateTask("test-proj", "my-task", "My Task", "content", "high")
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "My Task", Content: "content", Priority: "high"})
 
 	old := os.Stdout
 	r, w, _ := os.Pipe()
@@ -136,7 +136,7 @@ func TestFullTasksCommand(t *testing.T) {
 func TestFullInjectCommand(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	v := storage.NewVault(vaultDir)
-	v.CreateTask("test-proj", "inject-task", "Inject Task", "content", "high")
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "inject-task", Title: "Inject Task", Content: "content", Priority: "high"})
 
 	old := os.Stdout
 	r, w, _ := os.Pipe()
@@ -259,8 +259,8 @@ func TestFullSessionsDefaultLimit(t *testing.T) {
 func TestFullTasksDone(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	v := storage.NewVault(vaultDir)
-	v.CreateTask("test-proj", "active-one", "Active", "c", "high")
-	v.CreateTask("test-proj", "done-one", "Done", "c", "low")
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "active-one", Title: "Active", Content: "c", Priority: "high"})
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "done-one", Title: "Done", Content: "c", Priority: "low"})
 	v.RetireTask("test-proj", "done-one")
 
 	old := os.Stdout
