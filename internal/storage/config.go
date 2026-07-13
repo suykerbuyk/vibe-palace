@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 
 	"github.com/BurntSushi/toml"
@@ -345,77 +344,6 @@ func checkConfigVersion(path string, m tomlMeta) error {
 		})
 	}
 	return nil
-}
-
-// GetConfigValue returns the value for a given key and which config level
-// provided it ("project", "vault", or "embedded"). Keys use dot notation
-// for nested values (e.g., "embedder.model", "search.default_limit").
-func (v *Vault) GetConfigValue(project, key string) (string, string, error) {
-	// Load each level as raw maps.
-	levels := []struct {
-		name string
-		data string
-	}{
-		{"embedded", defaultsToml},
-	}
-
-	// Vault level.
-	vaultConfigPath, err := VaultConfigFilePath()
-	if err == nil {
-		if data, err := os.ReadFile(vaultConfigPath); err == nil {
-			levels = append(levels, struct {
-				name string
-				data string
-			}{"vault", string(data)})
-		}
-	}
-
-	// Project level.
-	if project != "" {
-		projPath, pathErr := v.ProjectConfigFile(project)
-		if pathErr == nil {
-			if data, err := os.ReadFile(projPath); err == nil {
-				levels = append(levels, struct {
-					name string
-					data string
-				}{"project", string(data)})
-			}
-		}
-	}
-
-	// Check from highest precedence to lowest.
-	for _, level := range slices.Backward(levels) {
-		var raw map[string]any
-		if _, err := toml.Decode(level.data, &raw); err != nil {
-			continue
-		}
-		if val, ok := lookupKey(raw, key); ok {
-			return fmt.Sprintf("%v", val), level.name, nil
-		}
-	}
-
-	return "", "", fmt.Errorf("key %q not found in any config level", key)
-}
-
-// lookupKey resolves a dot-notation key in a nested map.
-func lookupKey(m map[string]any, key string) (any, bool) {
-	parts := splitDot(key)
-	current := m
-	for i, part := range parts {
-		val, ok := current[part]
-		if !ok {
-			return nil, false
-		}
-		if i == len(parts)-1 {
-			return val, true
-		}
-		sub, ok := val.(map[string]any)
-		if !ok {
-			return nil, false
-		}
-		current = sub
-	}
-	return nil, false
 }
 
 // splitDot splits a string on '.' characters.

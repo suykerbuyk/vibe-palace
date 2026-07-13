@@ -23,9 +23,9 @@ type WeeklyMetric struct {
 
 // AnalyzeFrictionBreakdown scores a transcript and returns the four capped
 // friction sub-scores. A nil return is never produced for a non-error path; an
-// empty transcript yields a non-nil all-zero breakdown (a measured zero). This
-// is the lower-level companion to AnalyzeFriction, which sums the breakdown.
+// empty transcript yields a non-nil all-zero breakdown (a measured zero).
 // Four signals are detected, each contributing a sub-score capped at 25.
+// Call Total() on the result for the composite 0-100 score.
 func AnalyzeFrictionBreakdown(transcript string) (*storage.FrictionBreakdown, error) {
 	trimmed := strings.TrimSpace(transcript)
 	if trimmed == "" {
@@ -39,16 +39,6 @@ func AnalyzeFrictionBreakdown(transcript string) (*storage.FrictionBreakdown, er
 		ErrorDensity: countErrorDensity(lower, tokens),
 		Rework:       countReworkSignals(lower),
 	}, nil
-}
-
-// AnalyzeFriction scores a transcript for friction on a 0-100 scale. It is a
-// thin wrapper over AnalyzeFrictionBreakdown that returns the composite total.
-func AnalyzeFriction(transcript string) (int, error) {
-	b, err := AnalyzeFrictionBreakdown(transcript)
-	if err != nil {
-		return 0, err
-	}
-	return b.Total(), nil
 }
 
 // correctionPhrases are multi-word phrases checked first (order matters).

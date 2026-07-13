@@ -55,6 +55,41 @@ func (b Baseline) Save(path string) error {
 	return os.WriteFile(path, append(data, '\n'), 0o644)
 }
 
+// reasonTODO marks an entry nobody has triaged yet. It is deliberately ugly: an
+// entry wearing it is claiming nothing, and should read as unfinished work.
+const reasonTODO = "TODO: accepted at baseline creation — explain or fix"
+
+// Regenerate rebuilds the baseline from the current findings while PRESERVING the
+// reason on every entry that survives.
+//
+// The reason string is the entire value of a baseline entry — it is where a human
+// recorded why a finding is accepted (the stdlib dispatches it, task X owns the fix,
+// it is deliberate). Regeneration is routine: every deletion forces one. So a regen
+// that stamps TODO over every reason destroys the triage that produced them, and the
+// list decays back into the undifferentiated blob it started as — which is exactly
+// the state the first 60-entry baseline was in, and it took a full session of
+// subagent triage to climb out of it.
+//
+// Survivors keep their reason. Fixed findings drop out (the baseline may only
+// shrink). Genuinely new findings arrive marked TODO, so an untriaged entry can never
+// masquerade as an explained one.
+func (b Baseline) Regenerate(findings []Finding) Baseline {
+	prior := make(map[string]string, len(b.Entries))
+	for _, e := range b.Entries {
+		prior[e.ID] = e.Reason
+	}
+	out := Baseline{}
+	for _, f := range findings {
+		reason, ok := prior[f.ID()]
+		if !ok || reason == "" {
+			reason = reasonTODO
+		}
+		out.Entries = append(out.Entries, BaselineEntry{ID: f.ID(), Reason: reason})
+	}
+	sort.Slice(out.Entries, func(i, j int) bool { return out.Entries[i].ID < out.Entries[j].ID })
+	return out
+}
+
 // Diff compares findings against the baseline and returns what the gate must act on.
 //
 // TWO failures, and the second one is the point:

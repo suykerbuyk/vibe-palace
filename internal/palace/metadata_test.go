@@ -10,6 +10,10 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
+// roomClassifier is the default-configured classifier exercised by the room
+// classification tests.
+var roomClassifier = NewRoomClassifier(nil, 0)
+
 func TestDetectWing(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -32,7 +36,7 @@ func TestDetectWing(t *testing.T) {
 	}
 }
 
-func TestDetectRoom_ContentKeywords(t *testing.T) {
+func TestRoomClassifier_ContentKeywords(t *testing.T) {
 	tests := []struct {
 		content string
 		want    string
@@ -52,27 +56,27 @@ func TestDetectRoom_ContentKeywords(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
-			if got := DetectRoom(tt.content, "", nil); got != tt.want {
-				t.Errorf("DetectRoom(%q) = %q, want %q", tt.content, got, tt.want)
+			if got := roomClassifier.Classify(tt.content, "", nil); got != tt.want {
+				t.Errorf("roomClassifier.Classify(%q) = %q, want %q", tt.content, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestDetectRoom_CaseInsensitive(t *testing.T) {
-	if got := DetectRoom("THE API ENDPOINT IS BROKEN", "", nil); got != "api" {
+func TestRoomClassifier_CaseInsensitive(t *testing.T) {
+	if got := roomClassifier.Classify("THE API ENDPOINT IS BROKEN", "", nil); got != "api" {
 		t.Errorf("expected case-insensitive match: got %q, want %q", got, "api")
 	}
 }
 
-func TestDetectRoom_BenchmarkGoesToPerformance(t *testing.T) {
-	got := DetectRoom("running the benchmark suite", "", nil)
+func TestRoomClassifier_BenchmarkGoesToPerformance(t *testing.T) {
+	got := roomClassifier.Classify("running the benchmark suite", "", nil)
 	if got != "performance" {
 		t.Errorf("'benchmark' should map to performance, got %q", got)
 	}
 }
 
-func TestDetectRoom_SourcePath(t *testing.T) {
+func TestRoomClassifier_SourcePath(t *testing.T) {
 	tests := []struct {
 		name       string
 		sourcePath string
@@ -122,59 +126,59 @@ func TestDetectRoom_SourcePath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Use content with no keyword hits so only filename matters.
-			if got := DetectRoom("nothing interesting here", tt.sourcePath, nil); got != tt.want {
-				t.Errorf("DetectRoom(_, %q, nil) = %q, want %q", tt.sourcePath, got, tt.want)
+			if got := roomClassifier.Classify("nothing interesting here", tt.sourcePath, nil); got != tt.want {
+				t.Errorf("roomClassifier.Classify(_, %q, nil) = %q, want %q", tt.sourcePath, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestDetectRoom_CustomKeywords(t *testing.T) {
+func TestRoomClassifier_CustomKeywords(t *testing.T) {
 	custom := map[string][]string{
 		"audio": {"wav", "mp3", "codec"},
 	}
-	got := DetectRoom("convert the wav file to mp3", "", custom)
+	got := roomClassifier.Classify("convert the wav file to mp3", "", custom)
 	if got != "audio" {
 		t.Errorf("custom keywords should match: got %q, want %q", got, "audio")
 	}
 }
 
-func TestDetectRoom_CustomKeywordsCaseInsensitive(t *testing.T) {
+func TestRoomClassifier_CustomKeywordsCaseInsensitive(t *testing.T) {
 	custom := map[string][]string{
 		"audio": {"WAV", "MP3"},
 	}
-	got := DetectRoom("convert the wav file", "", custom)
+	got := roomClassifier.Classify("convert the wav file", "", custom)
 	if got != "audio" {
 		t.Errorf("custom keywords should be case-insensitive: got %q, want %q", got, "audio")
 	}
 }
 
-func TestDetectRoom_CascadePriority(t *testing.T) {
+func TestRoomClassifier_CascadePriority(t *testing.T) {
 	// Custom keywords (tier 1) should beat filename (tier 2) and content (tier 3).
 	custom := map[string][]string{
 		"audio": {"test"},
 	}
-	got := DetectRoom("test content", "foo_test.go", custom)
+	got := roomClassifier.Classify("test content", "foo_test.go", custom)
 	if got != "audio" {
 		t.Errorf("custom keywords should take priority: got %q, want %q", got, "audio")
 	}
 
 	// Filename (tier 2) should beat content (tier 3).
-	got = DetectRoom("nothing here", "bar_test.go", nil)
+	got = roomClassifier.Classify("nothing here", "bar_test.go", nil)
 	if got != "testing" {
 		t.Errorf("filename should take priority over content: got %q, want %q", got, "testing")
 	}
 }
 
-func TestDetectRoom_EmptyContent(t *testing.T) {
-	if got := DetectRoom("", "", nil); got != "general" {
+func TestRoomClassifier_EmptyContent(t *testing.T) {
+	if got := roomClassifier.Classify("", "", nil); got != "general" {
 		t.Errorf("empty content should fallback to general: got %q", got)
 	}
 }
 
-// TestDetectRoom_WordBoundary verifies that leading word-boundary matching
+// TestRoomClassifier_WordBoundary verifies that leading word-boundary matching
 // prevents substring false positives while allowing legitimate matches.
-func TestDetectRoom_WordBoundary(t *testing.T) {
+func TestRoomClassifier_WordBoundary(t *testing.T) {
 	falsePositives := []struct {
 		name    string
 		content string
@@ -190,7 +194,7 @@ func TestDetectRoom_WordBoundary(t *testing.T) {
 	}
 	for _, tt := range falsePositives {
 		t.Run(tt.name, func(t *testing.T) {
-			got := DetectRoom(tt.content, "", nil)
+			got := roomClassifier.Classify(tt.content, "", nil)
 			if got != "general" {
 				t.Errorf("false positive: %q classified as %q, want general", tt.content, got)
 			}
@@ -198,9 +202,9 @@ func TestDetectRoom_WordBoundary(t *testing.T) {
 	}
 }
 
-// TestDetectRoom_StemMatching verifies that inflected word forms still match
+// TestRoomClassifier_StemMatching verifies that inflected word forms still match
 // via leading word-boundary matching (no trailing \b).
-func TestDetectRoom_StemMatching(t *testing.T) {
+func TestRoomClassifier_StemMatching(t *testing.T) {
 	stems := []struct {
 		content string
 		want    string
@@ -214,32 +218,32 @@ func TestDetectRoom_StemMatching(t *testing.T) {
 	}
 	for _, tt := range stems {
 		t.Run(tt.want, func(t *testing.T) {
-			if got := DetectRoom(tt.content, "", nil); got != tt.want {
+			if got := roomClassifier.Classify(tt.content, "", nil); got != tt.want {
 				t.Errorf("stem match: %q = %q, want %q", tt.content, got, tt.want)
 			}
 		})
 	}
 }
 
-// TestDetectRoom_CustomKeywordsDeterministic verifies that custom keyword
+// TestRoomClassifier_CustomKeywordsDeterministic verifies that custom keyword
 // map iteration is deterministic (sorted by room name).
-func TestDetectRoom_CustomKeywordsDeterministic(t *testing.T) {
+func TestRoomClassifier_CustomKeywordsDeterministic(t *testing.T) {
 	custom := map[string][]string{
 		"bravo": {"keyword"},
 		"alpha": {"keyword"},
 	}
 	for i := range 100 {
-		got := DetectRoom("this has the keyword here", "", custom)
+		got := roomClassifier.Classify("this has the keyword here", "", custom)
 		if got != "alpha" {
 			t.Errorf("iteration %d: got %q, want %q (sorted determinism)", i, got, "alpha")
 		}
 	}
 }
 
-// TestDetectRoom_WeightedScoring verifies the weighted scoring behavior:
+// TestRoomClassifier_WeightedScoring verifies the weighted scoring behavior:
 // low-weight keywords alone fall to "general", co-occurrence clears threshold,
 // and high-weight keywords classify on a single hit.
-func TestDetectRoom_WeightedScoring(t *testing.T) {
+func TestRoomClassifier_WeightedScoring(t *testing.T) {
 	tests := []struct {
 		name    string
 		content string
@@ -261,8 +265,8 @@ func TestDetectRoom_WeightedScoring(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := DetectRoom(tt.content, "", nil); got != tt.want {
-				t.Errorf("DetectRoom(%q) = %q, want %q", tt.content, got, tt.want)
+			if got := roomClassifier.Classify(tt.content, "", nil); got != tt.want {
+				t.Errorf("roomClassifier.Classify(%q) = %q, want %q", tt.content, got, tt.want)
 			}
 		})
 	}
@@ -308,10 +312,20 @@ func TestDetectHall_WordBoundary(t *testing.T) {
 	}
 }
 
-func TestDefaultRoomKeywords(t *testing.T) {
-	m := DefaultRoomKeywords()
+// roomKeywordMap flattens RoomDefinitions into a room -> keywords map.
+func roomKeywordMap(rc *RoomClassifier) map[string][]string {
+	defs := rc.RoomDefinitions()
+	m := make(map[string][]string, len(defs))
+	for _, d := range defs {
+		m[d.Name] = d.Keywords
+	}
+	return m
+}
+
+func TestRoomDefinitions_Defaults(t *testing.T) {
+	m := roomKeywordMap(NewRoomClassifier(nil, 0))
 	if len(m) == 0 {
-		t.Fatal("DefaultRoomKeywords() returned empty map")
+		t.Fatal("RoomDefinitions() returned no rooms")
 	}
 	expectedRooms := []string{"testing", "devops", "api", "data", "config",
 		"debugging", "refactoring", "architecture", "performance", "security"}
@@ -345,38 +359,19 @@ func TestDefaultRoomKeywords(t *testing.T) {
 	}
 }
 
-func TestDefaultRoomKeywordsReturnsCopy(t *testing.T) {
-	m1 := DefaultRoomKeywords()
-	m1["testing"] = append(m1["testing"], "mutated")
-	m2 := DefaultRoomKeywords()
+func TestRoomDefinitions_ReturnsCopy(t *testing.T) {
+	rc := NewRoomClassifier(nil, 0)
+	m1 := roomKeywordMap(rc)
+	m1["testing"][0] = "mutated"
+	m2 := roomKeywordMap(rc)
 	for _, kw := range m2["testing"] {
 		if kw == "mutated" {
-			t.Error("DefaultRoomKeywords should return a copy, not a reference")
+			t.Error("RoomDefinitions should return a copy, not a reference")
 		}
 	}
 }
 
 // --- RoomClassifier tests ---
-
-func TestRoomClassifier_DefaultMatchesDetectRoom(t *testing.T) {
-	rc := NewRoomClassifier(nil, 0)
-	tests := []string{
-		"We need to write a test with full coverage.",
-		"Deploy the Docker container to production.",
-		"The API endpoint returns 404.",
-		"Run the SQL migration on the database.",
-		"The sky is blue and water is wet.",
-		"Set up the kubernetes cluster.",
-		"Got a segfault on line 42.",
-	}
-	for _, content := range tests {
-		want := DetectRoom(content, "", nil)
-		got := rc.Classify(content, "", nil)
-		if got != want {
-			t.Errorf("Classify(%q) = %q, want %q (DetectRoom result)", content, got, want)
-		}
-	}
-}
 
 func TestRoomClassifier_OverrideExistingRoom(t *testing.T) {
 	overrides := map[string]WeightedOverride{
@@ -440,7 +435,7 @@ func TestRoomClassifier_OverrideDoesNotMutateDefaults(t *testing.T) {
 	_ = NewRoomClassifier(overrides, 0)
 
 	// The default classifier should NOT have the override keyword.
-	got := DetectRoom("canary-keyword is here", "", nil)
+	got := NewRoomClassifier(nil, 0).Classify("canary-keyword is here", "", nil)
 	if got != "general" {
 		t.Errorf("override leaked into defaults: got %q, want general", got)
 	}

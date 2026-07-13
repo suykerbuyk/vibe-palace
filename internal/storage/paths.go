@@ -23,15 +23,6 @@ func validateSlugs(slugs ...string) error {
 	return nil
 }
 
-// PalacePath returns the path to a project's palace directory:
-// {vault}/palace/{project}
-func (v *Vault) PalacePath(project string) (string, error) {
-	if err := slug.Validate(project); err != nil {
-		return "", fmt.Errorf("project: %w", err)
-	}
-	return filepath.Join(v.Root, "palace", project), nil
-}
-
 // DrawerDir returns the path to a drawer directory:
 // {vault}/palace/{project}/drawers/{wing}/{room}
 func (v *Vault) DrawerDir(project, wing, room string) (string, error) {

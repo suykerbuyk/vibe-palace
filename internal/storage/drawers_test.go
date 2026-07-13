@@ -262,42 +262,6 @@ func TestDeleteDrawerAllEntries(t *testing.T) {
 	}
 }
 
-func TestDrawerExists(t *testing.T) {
-	v := testVault(t)
-	d := Drawer{Content: "test", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}
-	if err := v.AppendDrawer("proj", "wing-a", "room-1", d); err != nil {
-		t.Fatal(err)
-	}
-
-	id := DrawerID("wing-a", "test")
-	exists, err := v.DrawerExists("proj", "wing-a", "room-1", id)
-	if err != nil {
-		t.Fatalf("DrawerExists: %v", err)
-	}
-	if !exists {
-		t.Error("DrawerExists returned false for existing drawer")
-	}
-
-	exists, err = v.DrawerExists("proj", "wing-a", "room-1", "nonexist")
-	if err != nil {
-		t.Fatalf("DrawerExists: %v", err)
-	}
-	if exists {
-		t.Error("DrawerExists returned true for nonexistent drawer")
-	}
-}
-
-func TestDrawerExistsNoFile(t *testing.T) {
-	v := testVault(t)
-	exists, err := v.DrawerExists("proj", "wing-a", "room-1", "anything")
-	if err != nil {
-		t.Fatalf("DrawerExists: %v", err)
-	}
-	if exists {
-		t.Error("DrawerExists should return false when file doesn't exist")
-	}
-}
-
 func TestAppendDrawerInvalidSlug(t *testing.T) {
 	v := testVault(t)
 	d := Drawer{Content: "test", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}

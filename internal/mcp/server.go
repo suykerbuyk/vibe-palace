@@ -59,14 +59,6 @@ func (s *Server) Registry() *Registry {
 	return s.registry
 }
 
-// Serve starts the stdio transport on os.Stdin/os.Stdout. It blocks until
-// stdin closes or a termination signal is received.
-func (s *Server) Serve(ctx context.Context) error {
-	return server.ServeStdio(s.mcp,
-		server.WithStdioContextFunc(s.contextFunc),
-	)
-}
-
 // Listen starts the MCP server on the provided reader/writer pair. It blocks
 // until the reader is closed or ctx is cancelled.
 func (s *Server) Listen(ctx context.Context, r io.Reader, w io.Writer) error {

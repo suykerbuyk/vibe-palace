@@ -26,12 +26,6 @@ type wireOpts struct {
 	// that already know which Targets they want wired (commands upgrade,
 	// absorb post-rewrite).
 	override []Target
-	// filter, when non-nil, restricts detected targets to those whose
-	// DisplayName is present in the set. Ignored when override is set.
-	filter map[string]struct{}
-	// staleOnly skips targets whose existing block sha already matches
-	// the embedded block — the ApplyAgentBlocks semantics.
-	staleOnly bool
 }
 
 // WireOption configures WireAll.
@@ -46,31 +40,13 @@ func WithTargets(targets ...Target) WireOption {
 	}
 }
 
-// WithFilter restricts wiring to detected targets whose DisplayName is in
-// the given set. Has no effect when combined with WithTargets.
-func WithFilter(displayNames ...string) WireOption {
-	return func(o *wireOpts) {
-		if o.filter == nil {
-			o.filter = make(map[string]struct{}, len(displayNames))
-		}
-		for _, n := range displayNames {
-			o.filter[n] = struct{}{}
-		}
-	}
-}
-
-// WithStaleOnly wires only targets whose current block sha differs from
-// the embedded sha (or is absent). Mirrors the commands.ApplyAgentBlocks
-// filter applied prior to extraction.
-func WithStaleOnly() WireOption {
-	return func(o *wireOpts) { o.staleOnly = true }
-}
-
 // WireAll is the single orchestrator that drives agentfile.Wire across a
 // project root. Behavior with no options: detect every agent file under
-// projectRoot and wire each one (the cmd_init flow). See WithTargets,
-// WithFilter, and WithStaleOnly for the flows used by commands upgrade
-// and absorb.
+// projectRoot and wire each one (the cmd_init flow). See WithTargets for
+// the flow used by commands upgrade and absorb, which both hand WireAll
+// the exact targets they want wired rather than re-running Detect —
+// commands upgrade having already dropped the targets whose block sha is
+// current, so WireAll never needs to make that judgment itself.
 //
 // Returns one Outcome per wired (or attempted) target plus the Skip list
 // from Detect (empty when WithTargets is used). The error return is
@@ -100,33 +76,10 @@ func WireAll(projectRoot string, opts ...WireOption) ([]Outcome, []Skip, error) 
 		targets = cfg.override
 	} else {
 		targets, skips = Detect(projectRoot)
-		if cfg.filter != nil {
-			kept := targets[:0]
-			for _, t := range targets {
-				if _, ok := cfg.filter[t.DisplayName]; ok {
-					kept = append(kept, t)
-				}
-			}
-			targets = kept
-		}
-	}
-
-	var expectedSha string
-	if cfg.staleOnly {
-		expectedSha = ExpectedSha()
 	}
 
 	outcomes := make([]Outcome, 0, len(targets))
 	for _, t := range targets {
-		if cfg.staleOnly {
-			sha, _, err := ScanBlock(t.Path)
-			if err != nil {
-				slog.Warn("agentfile.WireAll: ScanBlock failed; wiring anyway",
-					"op", "agentfile.WireAll", "path", t.Path, "err", err)
-			} else if sha == expectedSha {
-				continue
-			}
-		}
 		res, err := Wire(t)
 		if err != nil {
 			slog.Error("agentfile.WireAll: Wire failed",

@@ -379,7 +379,7 @@ func TestIndexDrawersParityAcrossPaths(t *testing.T) {
 	if err := vaultA.AppendDrawer("test-proj", wing, room, dA); err != nil {
 		t.Fatalf("vaultA.AppendDrawer: %v", err)
 	}
-	if err := engA.IndexDrawer(ctx, "test-proj", wing, room, dA); err != nil {
+	if err := engA.IndexDrawers(ctx, []search.DrawerInput{{Project: "test-proj", Wing: wing, Room: room, Drawer: dA}}); err != nil {
 		t.Fatalf("engA.IndexDrawer: %v", err)
 	}
 

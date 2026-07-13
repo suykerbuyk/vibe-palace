@@ -401,15 +401,6 @@ func (rc *RoomClassifier) Classify(content, sourcePath string, keywords map[stri
 	return "general"
 }
 
-// defaultClassifier is the package-level classifier using compiled defaults.
-var defaultClassifier = NewRoomClassifier(nil, 0)
-
-// DetectRoom inspects content, source path, and optional custom keywords to
-// classify into a room. Delegates to the default RoomClassifier.
-func DetectRoom(content, sourcePath string, keywords map[string][]string) string {
-	return defaultClassifier.Classify(content, sourcePath, keywords)
-}
-
 // hallEntry maps a hall type to its keywords.
 type hallEntry struct {
 	hall     string
@@ -613,17 +604,4 @@ func (rc *RoomClassifier) MatchingKeywords(content, room string) []KeywordMatch 
 		return matches
 	}
 	return nil
-}
-
-// DefaultRoomKeywords returns a copy of the built-in room keyword map.
-func DefaultRoomKeywords() map[string][]string {
-	m := make(map[string][]string, len(defaultRoomKeywords))
-	for _, entry := range defaultRoomKeywords {
-		raw := make([]string, len(entry.keywords))
-		for i, kw := range entry.keywords {
-			raw[i] = kw.raw
-		}
-		m[entry.room] = raw
-	}
-	return m
 }

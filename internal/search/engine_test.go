@@ -120,7 +120,7 @@ func TestSearchBasic(t *testing.T) {
 	ctx := context.Background()
 
 	d := addDrawer(t, v, "proj", "wing-a", "room-1", "Go concurrency patterns", "facts")
-	if err := eng.IndexDrawer(ctx, "proj", "wing-a", "room-1", d); err != nil {
+	if err := eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing-a", Room: "room-1", Drawer: d}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -146,8 +146,8 @@ func TestSearchFilters(t *testing.T) {
 	d1 := addDrawer(t, v, "proj", "wing-a", "room-1", "alpha content", "facts")
 	d2 := addDrawer(t, v, "proj", "wing-b", "room-1", "beta content", "facts")
 
-	_ = eng.IndexDrawer(ctx, "proj", "wing-a", "room-1", d1)
-	_ = eng.IndexDrawer(ctx, "proj", "wing-b", "room-1", d2)
+	_ = eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing-a", Room: "room-1", Drawer: d1}})
+	_ = eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing-b", Room: "room-1", Drawer: d2}})
 
 	// Filter by wing.
 	results, _ := eng.Search(ctx, "content", SearchFilters{Project: "proj", Wing: "wing-a"})
@@ -160,7 +160,7 @@ func TestSearchFilters(t *testing.T) {
 
 	// Filter by hall.
 	d3 := addDrawer(t, v, "proj", "wing-a", "room-2", "gamma content", "opinions")
-	_ = eng.IndexDrawer(ctx, "proj", "wing-a", "room-2", d3)
+	_ = eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing-a", Room: "room-2", Drawer: d3}})
 
 	results, _ = eng.Search(ctx, "content", SearchFilters{Project: "proj", Hall: "opinions"})
 	if len(results) != 1 {
@@ -178,12 +178,12 @@ func TestSearchDateFilter(t *testing.T) {
 	d1 := storage.Drawer{Content: "old stuff", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-15T00:00:00Z"}
 	_ = v.AppendDrawer("proj", "wing-a", "room-1", d1)
 	stored1, _ := v.ListDrawers("proj", "wing-a", "room-1")
-	_ = eng.IndexDrawer(ctx, "proj", "wing-a", "room-1", stored1[0])
+	_ = eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing-a", Room: "room-1", Drawer: stored1[0]}})
 
 	d2 := storage.Drawer{Content: "new stuff", Hall: "facts", SourceType: "manual", FiledAt: "2026-06-15T00:00:00Z"}
 	_ = v.AppendDrawer("proj", "wing-a", "room-2", d2)
 	stored2, _ := v.ListDrawers("proj", "wing-a", "room-2")
-	_ = eng.IndexDrawer(ctx, "proj", "wing-a", "room-2", stored2[0])
+	_ = eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing-a", Room: "room-2", Drawer: stored2[0]}})
 
 	results, _ := eng.Search(ctx, "stuff", SearchFilters{Project: "proj", DateFrom: "2026-03-01"})
 	if len(results) != 1 {
@@ -201,8 +201,8 @@ func TestStructuralBoosts(t *testing.T) {
 	d1 := addDrawer(t, v, "proj", "wing-a", "room-1", "content in target wing", "facts")
 	d2 := addDrawer(t, v, "proj", "wing-b", "room-1", "content in other wing", "facts")
 
-	_ = eng.IndexDrawer(ctx, "proj", "wing-a", "room-1", d1)
-	_ = eng.IndexDrawer(ctx, "proj", "wing-b", "room-1", d2)
+	_ = eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing-a", Room: "room-1", Drawer: d1}})
+	_ = eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing-b", Room: "room-1", Drawer: d2}})
 
 	// Search with wing filter — matching drawer should get boosted.
 	results, _ := eng.Search(ctx, "content", SearchFilters{Project: "proj", Wing: "wing-a"})
@@ -293,8 +293,8 @@ func TestCrossProjectSearch(t *testing.T) {
 	d1 := addDrawer(t, v, "proj-a", "wing-1", "room-1", "alpha project content", "facts")
 	d2 := addDrawer(t, v, "proj-b", "wing-1", "room-1", "beta project content", "facts")
 
-	_ = eng.IndexDrawer(ctx, "proj-a", "wing-1", "room-1", d1)
-	_ = eng.IndexDrawer(ctx, "proj-b", "wing-1", "room-1", d2)
+	_ = eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj-a", Wing: "wing-1", Room: "room-1", Drawer: d1}})
+	_ = eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj-b", Wing: "wing-1", Room: "room-1", Drawer: d2}})
 
 	// Cross-project search (no project filter).
 	results, _ := eng.Search(ctx, "content", SearchFilters{})
@@ -308,7 +308,7 @@ func TestIndexAndRemoveDrawer(t *testing.T) {
 	ctx := context.Background()
 
 	d := addDrawer(t, v, "proj", "wing-a", "room-1", "removable content", "facts")
-	_ = eng.IndexDrawer(ctx, "proj", "wing-a", "room-1", d)
+	_ = eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing-a", Room: "room-1", Drawer: d}})
 
 	results, _ := eng.Search(ctx, "removable", SearchFilters{Project: "proj"})
 	if len(results) != 1 {

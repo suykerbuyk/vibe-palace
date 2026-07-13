@@ -37,7 +37,7 @@ func seedDrawer(t *testing.T, v *storage.Vault, eng *search.Engine, project, win
 	drawers, _ := v.ListDrawers(project, wing, room)
 	for _, stored := range drawers {
 		if stored.Content == content {
-			if err := eng.IndexDrawer(context.Background(), project, wing, room, stored); err != nil {
+			if err := eng.IndexDrawers(context.Background(), []search.DrawerInput{{Project: project, Wing: wing, Room: room, Drawer: stored}}); err != nil {
 				t.Fatal(err)
 			}
 			return

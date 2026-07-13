@@ -175,6 +175,155 @@ func Register() tool { return tool{Handler: handlerFn} }
 	}
 }
 
+// TestFuncSeamInValueSpecCountsAsInvoked pins the fix for a FALSE POSITIVE the gate
+// shipped with — and a false positive is the more dangerous failure of the two.
+//
+// `var EmbeddedSHA = realEmbeddedSHA` is this repo's standard package-level test
+// seam. The first version of this analyzer visited KeyValueExpr, AssignStmt,
+// CallExpr and ReturnStmt but NOT ValueSpec, so the seam's real implementation was
+// reported DEAD while running in production on every single command. A gate that
+// calls live code dead teaches everyone to wave off its findings, which is how you
+// get a disabled gate without anyone ever deciding to disable it.
+func TestFuncSeamInValueSpecCountsAsInvoked(t *testing.T) {
+	dir := writeFixture(t, `package fixture
+
+func realImpl(s string) (string, bool) { return s, true }
+
+// The seam: a package-level var holding the real implementation, swapped in tests.
+var Impl func(string) (string, bool) = realImpl
+
+func Entry(s string) (string, bool) { return Impl(s) }
+`)
+
+	findings, err := Run(dir)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, f := range findings {
+		if f.Kind == KindUninvoked && strings.HasSuffix(f.Symbol, ".realImpl") {
+			t.Fatalf("flagged the real implementation behind a package-level func seam as uninvoked. " +
+				"It runs in production through the var. This is a FALSE POSITIVE, and it is exactly the " +
+				"one that got templates.realEmbeddedSHA into the first baseline.")
+		}
+	}
+}
+
+// TestStdlibDispatchedMethodsAreExempt — a method the STANDARD LIBRARY calls can
+// never have an in-tree call site, so flagging it is pure noise.
+func TestStdlibDispatchedMethodsAreExempt(t *testing.T) {
+	dir := writeFixture(t, `package fixture
+
+type wrapErr struct{ err error }
+
+func (e *wrapErr) Error() string { return "wrapped" }
+func (e *wrapErr) Unwrap() error { return e.err }
+
+func Make(err error) error { return &wrapErr{err: err} }
+`)
+
+	findings, err := Run(dir)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, f := range findings {
+		if f.Kind == KindUninvoked && strings.HasSuffix(f.Symbol, "wrapErr.Unwrap") {
+			t.Errorf("flagged Unwrap on an error type. errors.Is/As call it during chain traversal — " +
+				"the dispatcher is the stdlib, so no in-tree call site can EVER exist and this finding " +
+				"can never be actioned.")
+		}
+	}
+}
+
+// TestInTreeInterfaceMethodNobodyCallsIsStillFlagged is the OTHER half of the
+// exemption, and it is the half that matters.
+//
+// The tempting rule — "exempt any method that satisfies an interface" — would have
+// hidden the most valuable finding in the entire first triage: six
+// reconcile.*.Requires() methods that satisfy reconcile.Reconciler (an interface the
+// tree really uses) and declare a dependency graph that the driver loop re-derives by
+// hand in a switch and NEVER READS. Satisfying an interface nobody dispatches on is
+// not an exemption; it is this project's signature bug wearing a contract.
+//
+// So: plant exactly that shape — an in-tree interface, a real implementation of it, a
+// driver that holds the interface and calls only SOME of its methods — and demand the
+// uncalled one still be named.
+func TestInTreeInterfaceMethodNobodyCallsIsStillFlagged(t *testing.T) {
+	dir := writeFixture(t, `package fixture
+
+type Reconciler interface {
+	Name() string
+	Requires() []string
+}
+
+type vaultRec struct{}
+
+func (r *vaultRec) Name() string     { return "Vault" }
+func (r *vaultRec) Requires() []string { return []string{"GlobalConfig"} }
+
+// The driver holds the interface — and calls Name(), never Requires().
+func Drive() string {
+	var r Reconciler = &vaultRec{}
+	return r.Name()
+}
+`)
+
+	findings, err := Run(dir)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var flagged bool
+	for _, f := range findings {
+		if f.Kind == KindUninvoked && strings.HasSuffix(f.Symbol, "vaultRec.Requires") {
+			flagged = true
+		}
+	}
+	if !flagged {
+		t.Fatalf("did NOT flag an in-tree interface method that no driver ever calls. The exemption has "+
+			"overreached: this is the reconcile.Requires() shape, six real instances of which declared a "+
+			"dependency graph nothing read. Blanket-exempting interface methods hides this class.\ngot: %v",
+			ids(findings))
+	}
+}
+
+// TestBaselineRegenPreservesReasons protects the ratchet's memory.
+//
+// The reason string is the whole value of a baseline entry: it is where a human
+// recorded WHY a finding is accepted (dispatched by an interface, owned by task X,
+// deliberate). Regenerating the baseline is routine — every deletion forces one — and
+// if regeneration stamps TODO over every reason, then the first regen erases the
+// triage that produced them, and the list decays back into the undifferentiated blob
+// it started as. Survivors keep their reason; only genuinely new entries get a TODO.
+func TestBaselineRegenPreservesReasons(t *testing.T) {
+	prior := Baseline{Entries: []BaselineEntry{
+		{ID: "uninvoked fixture.Kept", Reason: "dispatched via the plugin registry; see task foo"},
+		{ID: "uninvoked fixture.Fixed", Reason: "this one gets deleted from the tree"},
+	}}
+	findings := []Finding{
+		{Kind: KindUninvoked, Symbol: "fixture.Kept"},
+		{Kind: KindUninvoked, Symbol: "fixture.Fresh"},
+	}
+
+	regen := prior.Regenerate(findings)
+
+	byID := map[string]string{}
+	for _, e := range regen.Entries {
+		byID[e.ID] = e.Reason
+	}
+	if len(regen.Entries) != 2 {
+		t.Fatalf("regenerated baseline should hold exactly the current findings; got %d", len(regen.Entries))
+	}
+	if got := byID["uninvoked fixture.Kept"]; got != "dispatched via the plugin registry; see task foo" {
+		t.Errorf("a surviving entry LOST its reason on regen — the triage that produced it is erased and "+
+			"the baseline decays back into an undifferentiated list. got %q", got)
+	}
+	if _, ok := byID["uninvoked fixture.Fixed"]; ok {
+		t.Error("a fixed finding survived regeneration — the baseline must only shrink")
+	}
+	if got := byID["uninvoked fixture.Fresh"]; !strings.Contains(got, "TODO") {
+		t.Errorf("a NEW entry must be marked TODO so it cannot pass as triaged; got %q", got)
+	}
+}
+
 // TestBaselineCanOnlyShrink pins THE RATCHET.
 //
 // A baseline that only guards against NEW findings rots into a lie: you fix
@@ -212,10 +361,14 @@ func TestSourceAuditGate(t *testing.T) {
 	}
 
 	if *updateBaseline {
-		b := Baseline{}
-		for _, f := range findings {
-			b.Entries = append(b.Entries, BaselineEntry{ID: f.ID(), Reason: "TODO: accepted at baseline creation — explain or fix"})
+		// Regenerate, do NOT rebuild from scratch: a survivor keeps the reason a human
+		// wrote for it. Stamping TODO over every entry on each regen would erase the
+		// triage and let the list rot back into an undifferentiated blob.
+		prior, err := LoadBaseline(baselinePath)
+		if err != nil {
+			t.Fatalf("load baseline: %v", err)
 		}
+		b := prior.Regenerate(findings)
 		if err := b.Save(baselinePath); err != nil {
 			t.Fatalf("save baseline: %v", err)
 		}

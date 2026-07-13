@@ -6,7 +6,7 @@ This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~2222 tests** across 39 packages, including
+The suite currently runs **~2248 tests** across 39 packages, including
 **105 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
@@ -269,7 +269,6 @@ session `model` field (model-regression detection).
 | `TestComputeEffectiveness_WeekBucketingAndSkipBadDate` | `internal/capture` | No | ISO-week (Monday) bucketing; unparseable dates skipped |
 | `TestAnalyzeFrictionBreakdown_EmptyIsNonNilZero` | `internal/capture` | No | Empty transcript yields a non-nil, all-zero breakdown (measured zero, not absent) |
 | `TestAnalyzeFrictionBreakdown_SubScores` | `internal/capture` | No | Each friction signal maps to its capped 0–25 sub-score |
-| `TestAnalyzeFrictionBreakdown_TotalMatchesLegacy` | `internal/capture` | No | Breakdown total equals the legacy `AnalyzeFriction` composite score |
 | `TestFrictionBreakdownTotal` | `internal/storage` | No | `FrictionBreakdown.Total()` sums the four sub-scores, capped at 100 |
 | `TestSessionBreakdownRoundTrip` | `internal/storage` | No | `friction_breakdown` survives a write/read frontmatter round-trip with presence preserved |
 | `TestBootstrapFrictionTrendWarn` | `internal/tools` | No | Bootstrap surfaces `friction_trend` with warn and appends the nudge to post-bootstrap instructions |
@@ -1308,17 +1307,61 @@ health. *That is the disease, inside the tool built to cure it.*
 | `TestFindsAPlantedUninvokedFunc` | it finds a function nothing calls, and does **not** flag one that is called |
 | `TestIgnoresDeserializedStructs` | it does **not** fire on `Unmarshal`-populated structs (the false-positive flood that would disable it) |
 | `TestFuncValuesCountAsInvoked` | a handler passed as a **value** is invoked through that value — else every MCP handler looks dead |
+| `TestFuncSeamInValueSpecCountsAsInvoked` | a package-level seam (`var Impl = realImpl`) does **not** make `realImpl` look dead — **the false positive the gate actually shipped with** |
+| `TestStdlibDispatchedMethodsAreExempt` | `Unwrap` on an error type is not flagged: `errors.Is` dispatches it from **outside** the tree |
+| `TestInTreeInterfaceMethodNobodyCallsIsStillFlagged` | an **in-tree** interface method no driver calls **is still flagged** — the exemption must not overreach |
+| `TestBaselineRegenPreservesReasons` | regeneration keeps a survivor's reason — else the first regen erases every triage |
 | `TestBaselineCanOnlyShrink` | a **fixed** baseline entry fails the build |
 | `TestSourceAuditGate` | the gate itself, over this repo |
+
+### 🔴 Interface dispatch: the one exemption, and where the line is drawn
+
+A method reached only through an interface has no direct call site, so it looks
+uninvoked. The tempting fix — **exempt every method that satisfies an interface** — is
+**wrong**, and triaging the first baseline proved it: six `reconcile.*.Requires()`
+methods satisfy `reconcile.Reconciler`, an interface the tree genuinely uses, and they
+declare a dependency graph that the driver loop re-derives by hand in a `switch` and
+**never once reads**. The blanket rule would have hidden all six. An interface method
+nobody dispatches on is not noise; it is this project's signature bug wearing a contract.
+
+Exempting on *"tests call it"* is equally wrong, and for the same reason: **every dead
+functional option in the tree has a passing unit test.** That rule turns the gate from
+*"capability built, nothing invokes it"* into *"capability built, and its own unit test
+invokes it, so we're fine."*
+
+So the exemption keys on **where the dispatcher lives** (`stdlibContracts`):
+
+- **Out of tree** — `log/slog` calls `Handle`, `errors.Is` calls `Unwrap`. No in-tree
+  call site can *ever* exist, so the finding can never be actioned. **Exempt.**
+- **In tree** — keep flagging. This needs no special case at all: calls are tracked by
+  bare name, so the moment any code calls `x.Requires()`, every implementation of it
+  goes quiet on its own.
 
 ### Honest limits
 
 It is **syntactic** (go/ast, stdlib only, no type information), which biases it toward
-**false negatives, never false positives**. Field names are not unique across structs,
-so `Foo.Name = x` counts as an assignment to every `Name` in the repo — which is why it
-found **4** of `SessionMeta`'s 8 dead fields and not 8. **Missing a real bug is bad;
-crying wolf is worse**, because a noisy gate gets switched off and then catches nothing
-at all.
+**false negatives**. Field names are not unique across structs, so `Foo.Name = x` counts
+as an assignment to every `Name` in the repo — which is why it found **4** of
+`SessionMeta`'s 8 dead fields and not 8.
+
+**It is NOT immune to false positives, and this doc used to claim it was.** It shipped
+one: `templates.realEmbeddedSHA` runs in production on every `vp init`, and the analyzer
+called it dead because it never visited `*ast.ValueSpec` — so the package-level seam
+`var EmbeddedSHA = realEmbeddedSHA` marked nothing as used. **A gate that reports live
+code as dead is how you get a disabled gate without anyone deciding to disable it.** That
+is the noisy-gate failure arriving from the opposite direction, and it is why
+`TestFuncSeamInValueSpecCountsAsInvoked` exists.
+
+**Missing a real bug is bad; crying wolf is worse**, because a noisy gate gets switched
+off and then catches nothing at all.
+
+### ⚠ Known gap: the `write-only-field` charter and its heuristic disagree
+
+The rule fired on `skills.SkillFrontmatter`, which **is** `Unmarshal`-populated and by
+the *"only structs the code constructs"* qualifier above should have been **suppressed** —
+a single composite literal in `internal/shims/target.go` enrolled it. **It found a true
+bug anyway, but for the wrong reason**, which means the next struct in that shape is a
+coin flip. Close this before it matters.
 
 ---
 

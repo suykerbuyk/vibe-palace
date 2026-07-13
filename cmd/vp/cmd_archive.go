@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
@@ -28,8 +29,17 @@ func cmdArchive() *cli.Command {
 
 // -------- archive create --------
 
+// adapterFlagHelp renders the --adapter help from the archive adapter
+// registry, so a newly registered adapter shows up in `--help` without a
+// second edit here. Package archive's init functions have already run by
+// the time this package's variables are initialized, so the registry is
+// fully populated.
+func adapterFlagHelp() string {
+	return "Source adapter (" + strings.Join(archive.RegisteredAdapterNames(), ", ") + ")"
+}
+
 var archiveCreateFlags = []cli.FlagDef{
-	{Name: "--adapter", Arg: "NAME", Help: "Source adapter (claude-code, zed)", Default: "claude-code"},
+	{Name: "--adapter", Arg: "NAME", Help: adapterFlagHelp(), Default: archive.ClaudeCodeAdapterName},
 	{Name: "--session-id", Arg: "ID", Help: "Session identifier within the adapter (thread id for zed)"},
 	{Name: "--project", Short: "-p", Arg: "PROJECT", Help: "Project slug (default: auto-detect)"},
 	{Name: "--source", Arg: "PATH", Help: "Override source path (JSONL for claude-code, threads.db for zed)"},

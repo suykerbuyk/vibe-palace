@@ -204,11 +204,6 @@ func (r *Resolver) ResolveDigest(resource, project string) (content, source, sha
 	return r.expandScoped(string(data), project, "", ""), source, sha256Hex, nil
 }
 
-// ListResources returns deduplicated resource names using 3-tier precedence.
-func (r *Resolver) ListResources(resourceType, project string) ([]ResourceInfo, error) {
-	return r.ListResourcesScoped(resourceType, project, "", "")
-}
-
 // ListResourcesScoped returns deduplicated resource names merged across up to
 // 5 precedence tiers: Room > Wing > Project > Vault > Embedded.
 // Higher-precedence sources shadow lower when names collide.

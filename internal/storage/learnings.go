@@ -119,9 +119,6 @@ func parseLearningFrontmatter(data []byte) (LearningMetadata, string, error) {
 // nil error. Non-.md files and subdirectories are ignored, and files that fail
 // to parse are logged and skipped rather than failing the whole walk. If
 // filterType is non-empty, only learnings whose Type matches are returned.
-//
-// ListLearnings and CountLearnings share this walk so the two never diverge on
-// what counts as a valid learning.
 func (v *Vault) collectLearnings(filterType string) ([]LearningMetadata, error) {
 	dir := v.LearningsDir()
 
@@ -236,16 +233,4 @@ func (v *Vault) GetLearning(slug string) (Learning, error) {
 		Type:        meta.Type,
 		Content:     body,
 	}, nil
-}
-
-// CountLearnings returns the number of valid learnings in the vault-wide
-// learnings directory. A missing directory yields 0 and nil error. It shares
-// collectLearnings with ListLearnings (so malformed files are excluded the
-// same way) but skips the sort and slice copy that a bare count does not need.
-func (v *Vault) CountLearnings() (int, error) {
-	result, err := v.collectLearnings("")
-	if err != nil {
-		return 0, err
-	}
-	return len(result), nil
 }

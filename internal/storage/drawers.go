@@ -234,35 +234,6 @@ func (v *Vault) MoveDrawer(project, wing, fromRoom, toRoom, id string) error {
 	return nil
 }
 
-// DrawerExists reports whether a drawer with the given ID exists in the room.
-func (v *Vault) DrawerExists(project, wing, room, id string) (bool, error) {
-	path, err := v.DrawerFile(project, wing, room)
-	if err != nil {
-		return false, err
-	}
-
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("open drawer file: %w", err)
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		var d Drawer
-		if err := json.Unmarshal(scanner.Bytes(), &d); err != nil {
-			continue
-		}
-		if d.ID == id {
-			return true, nil
-		}
-	}
-	return false, scanner.Err()
-}
-
 // ListWings returns all wing slugs for a project by reading the drawers directory.
 func (v *Vault) ListWings(project string) ([]string, error) {
 	if err := slug.Validate(project); err != nil {

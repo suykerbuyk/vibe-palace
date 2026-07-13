@@ -591,15 +591,6 @@ func metaMatchesQuery(meta storage.SessionMeta, lowerQuery string) bool {
 	return false
 }
 
-// sortStrings sorts a string slice in ascending order.
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j-1] > s[j]; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
-}
-
 // roundTo rounds f to n decimal places.
 func roundTo(f float64, n int) float64 {
 	pow := math.Pow(10, float64(n))

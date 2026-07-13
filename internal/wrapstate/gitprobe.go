@@ -136,21 +136,6 @@ func porcelainPath(line string) string {
 	return path
 }
 
-// VaultHasUncommittedWrites returns true iff there are any uncommitted writes
-// under Projects/<project>/ (memory or non-memory). Returns false and nil error
-// when vaultPath is empty or not a git repo. Retained for callers that want the
-// "any dirt" meaning; reimplemented atop VaultDirtyByCategory.
-//
-// When project is non-empty, the probe is scoped to Projects/<project>/ so a
-// sibling project's uncommitted writes do not falsely trip the warning.
-func VaultHasUncommittedWrites(vaultPath, project string) (bool, error) {
-	nonMemory, memory, err := VaultDirtyByCategory(vaultPath, project)
-	if err != nil {
-		return false, err
-	}
-	return nonMemory || memory, nil
-}
-
 // GitState is the three-valued result of probing a project directory for
 // uncommitted work. It exists to separate "not a git repo at all" from "a git
 // repo whose tree is clean" — a distinction ProjectHasUncommittedWrites

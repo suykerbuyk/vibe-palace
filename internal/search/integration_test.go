@@ -191,7 +191,7 @@ func TestIntegrationIndexDrawerAndSearch(t *testing.T) {
 	}
 	stored, _ := vault.ListDrawers("proj", "infra", "k8s")
 
-	if err := eng.IndexDrawer(ctx, "proj", "infra", "k8s", stored[0]); err != nil {
+	if err := eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "infra", Room: "k8s", Drawer: stored[0]}}); err != nil {
 		t.Fatal(err)
 	}
 

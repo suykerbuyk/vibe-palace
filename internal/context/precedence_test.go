@@ -270,9 +270,9 @@ func TestResourceToPath(t *testing.T) {
 func TestListCommandsEmbedded(t *testing.T) {
 	r, _ := testResolver(t)
 
-	resources, err := r.ListResources("command", "")
+	resources, err := r.ListResourcesScoped("command", "", "", "")
 	if err != nil {
-		t.Fatalf("ListResources(command): %v", err)
+		t.Fatalf("ListResourcesScoped(command): %v", err)
 	}
 	// Embedded commands: cancel-plan, capture, execute-plan, license,
 	// makefile, restart, review-plan, wrap (sorted).
@@ -300,7 +300,7 @@ func TestListCommandsMergedNoDuplicates(t *testing.T) {
 	// Add a project-level command.
 	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "custom.md"), "custom cmd")
 
-	resources, err := r.ListResources("command", "proj")
+	resources, err := r.ListResourcesScoped("command", "proj", "", "")
 	if err != nil {
 		t.Fatalf("ListResources: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestListCommandsSkipsReadme(t *testing.T) {
 	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "README.md"), "# override guide")
 	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "deploy.md"), "deploy cmd")
 
-	resources, err := r.ListResources("command", "proj")
+	resources, err := r.ListResourcesScoped("command", "proj", "", "")
 	if err != nil {
 		t.Fatalf("ListResources: %v", err)
 	}
@@ -356,9 +356,9 @@ func TestListCommandsSkipsReadme(t *testing.T) {
 func TestListSkillsEmbedded(t *testing.T) {
 	r, _ := testResolver(t)
 
-	resources, err := r.ListResources("skill", "")
+	resources, err := r.ListResourcesScoped("skill", "", "", "")
 	if err != nil {
-		t.Fatalf("ListResources(skill): %v", err)
+		t.Fatalf("ListResourcesScoped(skill): %v", err)
 	}
 	// Embedded skills: startup-analyst (directory-form).
 	if len(resources) != 1 {
@@ -375,7 +375,7 @@ func TestListSkillsEmbedded(t *testing.T) {
 func TestListResourcesInvalidType(t *testing.T) {
 	r, _ := testResolver(t)
 
-	_, err := r.ListResources("bogus", "")
+	_, err := r.ListResourcesScoped("bogus", "", "", "")
 	if err == nil {
 		t.Fatal("expected error for unsupported resource type, got nil")
 	}
@@ -587,7 +587,7 @@ func TestListResourcesScopedProjectDirSkipsSubdirs(t *testing.T) {
 	writeFile(t, filepath.Join(root, "Projects", "proj", "commands", "backend", ".wing", "lint.md"), "wing cmd")
 
 	// List without scope — should only see project-level "custom" plus embedded.
-	resources, err := r.ListResources("command", "proj")
+	resources, err := r.ListResourcesScoped("command", "proj", "", "")
 	if err != nil {
 		t.Fatalf("ListResources: %v", err)
 	}

@@ -243,14 +243,6 @@ type DrawerInput struct {
 	Vec     []float32 // optional; pre-computed embedding
 }
 
-// IndexDrawer adds a single drawer to the search index, embedding its content.
-// It is a convenience wrapper around IndexDrawers.
-func (e *Engine) IndexDrawer(ctx context.Context, project, wing, room string, d storage.Drawer) error {
-	return e.IndexDrawers(ctx, []DrawerInput{{
-		Project: project, Wing: wing, Room: room, Drawer: d,
-	}})
-}
-
 // IndexDrawers adds a batch of drawers to the search index. For each entry
 // missing a pre-computed Vec, the engine embeds in a single EmbedBatch call
 // (if the embedder supports it) to avoid per-item embedding round-trips.

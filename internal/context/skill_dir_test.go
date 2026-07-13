@@ -179,7 +179,7 @@ func TestListResourcesSkillsMerged(t *testing.T) {
 	// vault-tier skill
 	writeFile(t, filepath.Join(root, "Templates", "skills", "vault-skill", "SKILL.md"), "body")
 
-	resources, err := r.ListResources("skill", "p")
+	resources, err := r.ListResourcesScoped("skill", "p", "", "")
 	if err != nil {
 		t.Fatalf("ListResources: %v", err)
 	}

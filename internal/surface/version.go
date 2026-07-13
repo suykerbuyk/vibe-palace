@@ -181,14 +181,6 @@ func StampForPath(vaultPath, writePath string) error {
 	return nil
 }
 
-// resetStampCacheForTest clears the per-process stamped-dir cache. Test-only.
-func resetStampCacheForTest() {
-	stampedDirs.Range(func(k, _ any) bool {
-		stampedDirs.Delete(k)
-		return true
-	})
-}
-
 // unrecognizedTopWarn keys a sync.Once per unrecognized top-level directory so
 // the stderr warning fires at most once per process per name.
 var (
@@ -283,13 +275,6 @@ func warnUnrecognizedTopOnce(top, writePath string) {
 	once.Do(func() {
 		fmt.Fprintf(os.Stderr, "vp: warning — vault write at unrecognized path %q (no .surface stamp)\n", writePath)
 	})
-}
-
-// resetUnrecognizedTopWarnForTest clears the once-cache. Test-only.
-func resetUnrecognizedTopWarnForTest() {
-	unrecognizedTopWarnMu.Lock()
-	defer unrecognizedTopWarnMu.Unlock()
-	unrecognizedTopWarn = map[string]*sync.Once{}
 }
 
 // WriterFingerprint returns an 8-hex-char prefix of sha256(hostname+vaultPath).

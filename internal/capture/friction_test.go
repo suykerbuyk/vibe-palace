@@ -12,19 +12,20 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-func TestAnalyzeFriction_EmptyTranscript(t *testing.T) {
+func TestAnalyzeFrictionBreakdown_EmptyTranscript(t *testing.T) {
 	for _, input := range []string{"", "   ", "\n\t\n"} {
-		score, err := AnalyzeFriction(input)
+		b, err := AnalyzeFrictionBreakdown(input)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
+		score := b.Total()
 		if score != 0 {
 			t.Errorf("expected 0 for empty input %q, got %d", input, score)
 		}
 	}
 }
 
-func TestAnalyzeFriction_SmoothSession(t *testing.T) {
+func TestAnalyzeFrictionBreakdown_SmoothSession(t *testing.T) {
 	transcript := `
 User: Can you add a helper function to parse the config file?
 Assistant: Sure, I'll add a parseConfig function to config.go.
@@ -33,16 +34,17 @@ Assistant: Done. The function reads the TOML file and returns a Config struct.
 User: Perfect. Let's move on to the next task.
 Assistant: Ready when you are.
 `
-	score, err := AnalyzeFriction(transcript)
+	b, err := AnalyzeFrictionBreakdown(transcript)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	score := b.Total()
 	if score >= 20 {
 		t.Errorf("smooth session should score < 20, got %d", score)
 	}
 }
 
-func TestAnalyzeFriction_HighFrictionCorrections(t *testing.T) {
+func TestAnalyzeFrictionBreakdown_HighFrictionCorrections(t *testing.T) {
 	transcript := `
 User: No not that, I wanted the other file.
 Assistant: Let me read the correct file.
@@ -52,16 +54,17 @@ User: Undo that change.
 User: Revert the last edit.
 User: No, not that file either. Wrong approach entirely.
 `
-	score, err := AnalyzeFriction(transcript)
+	b, err := AnalyzeFrictionBreakdown(transcript)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	score := b.Total()
 	if score < 25 {
 		t.Errorf("high-friction corrections should score >= 25, got %d", score)
 	}
 }
 
-func TestAnalyzeFriction_HighFrictionRetries(t *testing.T) {
+func TestAnalyzeFrictionBreakdown_HighFrictionRetries(t *testing.T) {
 	transcript := `
 tool_use: read_file
 tool_use: read_file
@@ -72,16 +75,17 @@ tool_use: edit_file
 tool_use: edit_file
 Other conversation text about implementing the feature.
 `
-	score, err := AnalyzeFriction(transcript)
+	b, err := AnalyzeFrictionBreakdown(transcript)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	score := b.Total()
 	if score < 20 {
 		t.Errorf("high-friction retries should score >= 20, got %d", score)
 	}
 }
 
-func TestAnalyzeFriction_HighFrictionErrors(t *testing.T) {
+func TestAnalyzeFrictionBreakdown_HighFrictionErrors(t *testing.T) {
 	// Dense errors: ~20 error keywords in ~100 tokens → density ~200/1000 → sub = 1000
 	words := make([]string, 80)
 	for i := range words {
@@ -95,16 +99,17 @@ func TestAnalyzeFriction_HighFrictionErrors(t *testing.T) {
 	}
 	transcript := strings.Join(append(words, errorWords...), " ")
 
-	score, err := AnalyzeFriction(transcript)
+	b, err := AnalyzeFrictionBreakdown(transcript)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	score := b.Total()
 	if score < 25 {
 		t.Errorf("high error density should max the error sub-score, got %d", score)
 	}
 }
 
-func TestAnalyzeFriction_HighFrictionRework(t *testing.T) {
+func TestAnalyzeFrictionBreakdown_HighFrictionRework(t *testing.T) {
 	transcript := `
 User: Let's go back to the previous approach.
 User: Actually, start over with a different design.
@@ -112,16 +117,17 @@ User: Try again, that didn't work.
 User: Scratch that, let's redo this from the beginning.
 User: Never mind, let's try again from the top.
 `
-	score, err := AnalyzeFriction(transcript)
+	b, err := AnalyzeFrictionBreakdown(transcript)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	score := b.Total()
 	if score < 25 {
 		t.Errorf("high-friction rework should max the rework sub-score, got %d", score)
 	}
 }
 
-func TestAnalyzeFriction_CombinedSignals(t *testing.T) {
+func TestAnalyzeFrictionBreakdown_CombinedSignals(t *testing.T) {
 	transcript := `
 User: No not that, wrong file. Undo that.
 User: No not that, revert it. Wrong again.
@@ -135,33 +141,36 @@ User: Go back to the old approach. Start over entirely.
 User: Try again with a clean slate. Scratch that idea.
 User: Never mind, let's redo the whole thing. Try again please.
 `
-	score, err := AnalyzeFriction(transcript)
+	b, err := AnalyzeFrictionBreakdown(transcript)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	score := b.Total()
 	if score < 70 {
 		t.Errorf("combined signals should score >= 70, got %d", score)
 	}
 }
 
-func TestAnalyzeFriction_SubScoreCapping(t *testing.T) {
+func TestAnalyzeFrictionBreakdown_SubScoreCapping(t *testing.T) {
 	// 30x "wrong" should still cap corrections at 25.
 	transcript := strings.Repeat("wrong wrong wrong ", 10)
-	score, err := AnalyzeFriction(transcript)
+	b, err := AnalyzeFrictionBreakdown(transcript)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	score := b.Total()
 	// Only corrections signal, should be exactly 25.
 	if score > 25 {
 		t.Errorf("corrections sub-score should cap at 25, got total %d", score)
 	}
 }
 
-func TestAnalyzeFriction_MaxScore(t *testing.T) {
-	score, err := AnalyzeFriction("test")
+func TestAnalyzeFrictionBreakdown_MaxScore(t *testing.T) {
+	b, err := AnalyzeFrictionBreakdown("test")
 	if err != nil {
 		t.Fatal(err)
 	}
+	score := b.Total()
 	if score > 100 {
 		t.Errorf("score should never exceed 100, got %d", score)
 	}
@@ -233,40 +242,6 @@ User: Never mind, let's redo the whole thing. Try again please.
 	}
 	if b.Rework != countReworkSignals(lower) {
 		t.Errorf("Rework = %d, want %d", b.Rework, countReworkSignals(lower))
-	}
-}
-
-// TestAnalyzeFrictionBreakdown_TotalMatchesLegacy is the regression guard:
-// b.Total() must equal AnalyzeFriction for every input, proving the refactor is
-// byte-identical in composite behavior.
-func TestAnalyzeFrictionBreakdown_TotalMatchesLegacy(t *testing.T) {
-	inputs := []string{
-		"",
-		"   ",
-		"a perfectly smooth conversation with no friction at all",
-		strings.Repeat("wrong wrong wrong ", 10), // capped corrections
-		"tool_use: read\ntool_use: read\ntool_use: read",
-		strings.Repeat("error exception failed failure ", 50), // high density
-		`No not that, wrong. Undo. Revert. tool_use: a
-tool_use: a
-tool_use: a
-Error error error. Go back, start over, try again, scratch that.`,
-	}
-	for _, in := range inputs {
-		b, berr := AnalyzeFrictionBreakdown(in)
-		if berr != nil {
-			t.Fatalf("AnalyzeFrictionBreakdown(%q): %v", in, berr)
-		}
-		score, serr := AnalyzeFriction(in)
-		if serr != nil {
-			t.Fatalf("AnalyzeFriction(%q): %v", in, serr)
-		}
-		if b.Total() != score {
-			t.Errorf("input %q: Total() = %d, AnalyzeFriction = %d (must match)", in, b.Total(), score)
-		}
-		if score > 100 {
-			t.Errorf("input %q: composite %d exceeds 100", in, score)
-		}
 	}
 }
 

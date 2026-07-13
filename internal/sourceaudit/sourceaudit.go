@@ -49,12 +49,31 @@
 //   - Field names are not unique across structs, so `Foo.Name = x` counts as an
 //     assignment to every `Name` field in the repo. A write-only field that shares
 //     its name with an assigned field elsewhere will be missed.
-//   - A function called only through an interface, or only via reflection, looks
-//     uninvoked. Those are recorded in the baseline with a reason rather than
-//     special-cased, because a special case is a place for a real bug to hide.
+//   - A function called only via reflection looks uninvoked. Those are recorded in
+//     the baseline with a reason rather than special-cased.
 //
 // Missing a real bug is bad. Crying wolf is worse: a noisy gate is a disabled
 // gate, and a disabled gate is how note_path survived six months.
+//
+// # Interface dispatch: the ONE exemption, and why the line is drawn where it is
+//
+// A method reached only through an interface has no direct call site and so looks
+// uninvoked. The tempting fix — exempt every method that satisfies some interface —
+// is WRONG, and triaging the first baseline proved it: six reconcile.*.Requires()
+// methods satisfy reconcile.Reconciler, an interface the tree genuinely uses, and
+// they declare a dependency graph that the driver loop re-derives by hand in a
+// switch and never once reads. The blanket rule would have hidden all six. An
+// interface method nobody dispatches on is not noise; it is this project's signature
+// bug wearing a contract.
+//
+// So the exemption keys on WHERE THE DISPATCHER LIVES (see stdlibContracts):
+//
+//   - OUT of tree (log/slog calls Handle, errors.Is calls Unwrap): no in-tree call
+//     site can ever exist, the finding can never be actioned, and reporting it is
+//     pure noise. Exempt.
+//   - IN tree: keep flagging. This needs no special case at all — calls are tracked
+//     by bare name, so as soon as any code calls x.Requires(), every implementation
+//     of it goes quiet on its own.
 package sourceaudit
 
 import (
@@ -407,14 +426,32 @@ func uninvokedFuncs(files []file) []Finding {
 				for _, res := range node.Results {
 					markFuncValue(res, called)
 				}
+			case *ast.ValueSpec:
+				// `var EmbeddedSHA = realEmbeddedSHA` — a package-level test seam, and
+				// this repo's standard idiom for one. Without this case the seam's real
+				// implementation looks DEAD while running in production on every command,
+				// which is a FALSE POSITIVE — and a gate that calls live code dead is how
+				// you teach everyone to wave off its findings. Caught by triaging the
+				// first baseline: templates.realEmbeddedSHA is reachable from five sites
+				// via internal/templates/embedded.go:103 and the gate reported it dead.
+				for _, v := range node.Values {
+					markFuncValue(v, called)
+				}
 			}
 			return true
 		})
 	}
 
+	// Methods that exist ONLY to satisfy an interface the STANDARD LIBRARY dispatches
+	// can never have an in-tree call site. Exempt them; see stdlibContracts.
+	exempt := stdlibDispatchedMethods(files)
+
 	var out []Finding
 	for _, d := range declared {
 		if called[d.name] {
+			continue
+		}
+		if d.recv != "" && exempt[d.recv][d.name] {
 			continue
 		}
 		sym := d.pkg + "." + d.name
@@ -431,6 +468,109 @@ func uninvokedFuncs(files []file) []Finding {
 		})
 	}
 	return out
+}
+
+// stdlibContract is an interface whose implementations are dispatched by code
+// OUTSIDE this repository.
+type stdlibContract struct {
+	// requires is the method set a type must have for us to believe it implements
+	// the contract. Syntactic, and deliberately so: no type information is available.
+	requires []string
+	// dispatched are the methods the standard library will then call on it.
+	dispatched []string
+}
+
+// stdlibContracts is the ONLY exemption the uninvoked rule grants, and the line it
+// draws is the whole design.
+//
+// It is tempting to exempt any method that satisfies any interface. Do not. That
+// rule would have hidden the single most valuable finding in the first triage: six
+// reconcile.*.Requires() methods that satisfy reconcile.Reconciler — an interface
+// the tree really uses — declaring a dependency graph that the driver loop
+// (cmd/vp/cmd_config.go) re-derives by hand in a switch and NEVER READS. Satisfying
+// an interface nobody dispatches on is not an exemption; it is the bug.
+//
+// The line that actually separates noise from bugs is WHERE THE DISPATCHER LIVES:
+//
+//   - Dispatcher OUT of tree (log/slog calls Handle; errors.Is calls Unwrap): no
+//     in-tree call site can EVER exist, so the finding can never be actioned.
+//     Reporting it is pure noise, and a noisy gate is a disabled gate.
+//   - Dispatcher IN tree: "the interface is satisfied and nobody calls the method"
+//     is exactly the capability-built-nothing-invokes-it class. Keep flagging it.
+//     (Note this needs no special case: calls are tracked by bare name, so the
+//     moment any in-tree code calls x.Requires(), every implementation goes quiet
+//     on its own.)
+var stdlibContracts = []stdlibContract{
+	// error — errors.Is/As/Unwrap walk the chain by calling these.
+	{requires: []string{"Error"}, dispatched: []string{"Unwrap", "Is", "As"}},
+	// log/slog.Handler — slog.New(h) hands the value to the stdlib logger.
+	{
+		requires:   []string{"Enabled", "Handle", "WithAttrs", "WithGroup"},
+		dispatched: []string{"Enabled", "Handle", "WithAttrs", "WithGroup"},
+	},
+	// fmt.Stringer — every %v/%s in the stdlib dispatches it.
+	{requires: []string{"String"}, dispatched: []string{"String"}},
+	// sort.Interface.
+	{requires: []string{"Len", "Less", "Swap"}, dispatched: []string{"Len", "Less", "Swap"}},
+	// encoding/json and gopkg.in/yaml marshalers.
+	{requires: []string{"MarshalJSON"}, dispatched: []string{"MarshalJSON"}},
+	{requires: []string{"UnmarshalJSON"}, dispatched: []string{"UnmarshalJSON"}},
+	{requires: []string{"MarshalYAML"}, dispatched: []string{"MarshalYAML"}},
+	{requires: []string{"UnmarshalYAML"}, dispatched: []string{"UnmarshalYAML"}},
+	// net/http.Handler.
+	{requires: []string{"ServeHTTP"}, dispatched: []string{"ServeHTTP"}},
+}
+
+// stdlibDispatchedMethods returns, per receiver type, the methods exempt from the
+// uninvoked rule because the standard library — not this repo — invokes them.
+func stdlibDispatchedMethods(files []file) map[string]map[string]bool {
+	// methods[recvType] = set of method names declared on it, in non-test code.
+	methods := map[string]map[string]bool{}
+	for _, f := range files {
+		if f.isTest {
+			continue
+		}
+		for _, d := range f.ast.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Name == nil || fd.Recv == nil || len(fd.Recv.List) == 0 {
+				continue
+			}
+			recv := typeNameOf(fd.Recv.List[0].Type)
+			if recv == "" {
+				continue
+			}
+			if methods[recv] == nil {
+				methods[recv] = map[string]bool{}
+			}
+			methods[recv][fd.Name.Name] = true
+		}
+	}
+
+	exempt := map[string]map[string]bool{}
+	for recv, have := range methods {
+		for _, c := range stdlibContracts {
+			satisfied := true
+			for _, need := range c.requires {
+				if !have[need] {
+					satisfied = false
+					break
+				}
+			}
+			if !satisfied {
+				continue
+			}
+			for _, m := range c.dispatched {
+				if !have[m] {
+					continue
+				}
+				if exempt[recv] == nil {
+					exempt[recv] = map[string]bool{}
+				}
+				exempt[recv][m] = true
+			}
+		}
+	}
+	return exempt
 }
 
 // markFuncValue records a bare function reference used as a VALUE (a handler, a

@@ -125,9 +125,9 @@ func TestDirtyProbes(t *testing.T) {
 	if err != nil || !dirty {
 		t.Errorf("project dirty: got (%v, %v), want (true, nil)", dirty, err)
 	}
-	vdirty, err := VaultHasUncommittedWrites(repo, "demo")
-	if err != nil || !vdirty {
-		t.Errorf("vault dirty: got (%v, %v), want (true, nil)", vdirty, err)
+	nonMemory, memory, err := VaultDirtyByCategory(repo, "demo")
+	if err != nil || !nonMemory || memory {
+		t.Errorf("vault dirty: got (%v, %v, %v), want (true, false, nil)", nonMemory, memory, err)
 	}
 	// Non-git dir degrades to clean.
 	clean, err := ProjectHasUncommittedWrites(t.TempDir())

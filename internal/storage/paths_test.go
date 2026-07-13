@@ -9,34 +9,6 @@ import (
 	"testing"
 )
 
-func TestPalacePath(t *testing.T) {
-	v := NewVault("/vault")
-	tests := []struct {
-		name    string
-		project string
-		want    string
-		wantErr bool
-	}{
-		{"valid", "recmeet", filepath.Join("/vault", "palace", "recmeet"), false},
-		{"with hyphens", "my-project", filepath.Join("/vault", "palace", "my-project"), false},
-		{"invalid slug", "My Project", "", true},
-		{"empty", "", "", true},
-		{"path traversal", "../evil", "", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := v.PalacePath(tt.project)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("PalacePath(%q) error = %v, wantErr %v", tt.project, err, tt.wantErr)
-			}
-			if got != tt.want {
-				t.Errorf("PalacePath(%q) = %q, want %q", tt.project, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestDrawerDir(t *testing.T) {
 	v := NewVault("/vault")
 	tests := []struct {

@@ -694,14 +694,6 @@ func TestParseSessionIDInvalid(t *testing.T) {
 	}
 }
 
-func TestSortStrings(t *testing.T) {
-	s := []string{"c", "a", "b"}
-	sortStrings(s)
-	if s[0] != "a" || s[1] != "b" || s[2] != "c" {
-		t.Errorf("sort failed: %v", s)
-	}
-}
-
 func TestRoundTo(t *testing.T) {
 	if r := roundTo(3.456, 1); r != 3.5 {
 		t.Errorf("roundTo(3.456, 1) = %v, want 3.5", r)

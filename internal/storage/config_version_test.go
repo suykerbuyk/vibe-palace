@@ -14,8 +14,8 @@ import (
 )
 
 // hermeticTestVault returns a vault wired so that VaultConfigFilePath resolves
-// into a fresh temp dir. Prevents Load/GetConfigValue from reading the user's
-// real ~/.config/vibe-palace/config.toml during tests.
+// into a fresh temp dir. Prevents Load from reading the user's real
+// ~/.config/vibe-palace/config.toml during tests.
 func hermeticTestVault(t *testing.T) *Vault {
 	t.Helper()
 	// os.UserConfigDir honors XDG_CONFIG_HOME on Linux.

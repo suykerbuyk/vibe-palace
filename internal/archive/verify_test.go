@@ -73,7 +73,7 @@ func TestVerify_OK(t *testing.T) {
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("ListEntries: %v len=%d", err, len(entries))
 	}
-	r := Verify(entries[0])
+	r := VerifyWithOptions(entries[0], VerifyOptions{})
 	if !r.OK {
 		t.Fatalf("expected OK, problems: %v", r.Problems)
 	}
@@ -98,7 +98,7 @@ func TestVerify_DetectsTamperedArchive(t *testing.T) {
 	}
 
 	entries, _ := ListEntries(vault, "demo")
-	r := Verify(entries[0])
+	r := VerifyWithOptions(entries[0], VerifyOptions{})
 	if r.OK {
 		t.Fatal("tampered archive must fail verification")
 	}
@@ -119,7 +119,7 @@ func TestVerify_DetectsMissingArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	entries, _ := ListEntries(vault, "demo")
-	r := Verify(entries[0])
+	r := VerifyWithOptions(entries[0], VerifyOptions{})
 	if r.OK {
 		t.Fatal("missing archive must fail verification")
 	}

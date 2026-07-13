@@ -80,10 +80,9 @@ var ErrArchiveMissing = errors.New("archive file missing")
 // precisely so re-compression with a different zstd level or frame
 // format cannot break verification.
 //
-// VerifyWithOptions is the extended form that also validates the
-// manifest signature when one is present and VerifyOptions supply
-// enough to anchor it. The zero-value options preserve the hash-only
-// behavior of the plain Verify below.
+// VerifyWithOptions also validates the manifest signature when one is
+// present and VerifyOptions supply enough to anchor it. The zero-value
+// options yield hash-only verification.
 func VerifyWithOptions(e *Entry, vo VerifyOptions) *VerifyResult {
 	res := &VerifyResult{Entry: e}
 
@@ -133,12 +132,6 @@ func VerifyWithOptions(e *Entry, vo VerifyOptions) *VerifyResult {
 
 	res.OK = len(res.Problems) == 0
 	return res
-}
-
-// Verify is the hash-only wrapper retained for callers that never
-// care about signatures. Equivalent to VerifyWithOptions(e, VerifyOptions{}).
-func Verify(e *Entry) *VerifyResult {
-	return VerifyWithOptions(e, VerifyOptions{})
 }
 
 // hashArchive decompresses an archive and returns the SHA256 of the

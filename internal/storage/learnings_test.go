@@ -171,29 +171,3 @@ func TestGetLearningEmptyAndTraversal(t *testing.T) {
 		})
 	}
 }
-
-func TestCountLearnings(t *testing.T) {
-	v := testVault(t)
-
-	// Missing dir → 0, nil error.
-	n, err := v.CountLearnings()
-	if err != nil {
-		t.Fatalf("CountLearnings (missing dir): %v", err)
-	}
-	if n != 0 {
-		t.Errorf("CountLearnings (missing dir) = %d, want 0", n)
-	}
-
-	writeLearning(t, v, "one", validLearning("One", "d", "user", "body\n"))
-	writeLearning(t, v, "two", validLearning("Two", "d", "reference", "body\n"))
-	// A malformed file should not be counted.
-	writeLearning(t, v, "bad", "no frontmatter here")
-
-	n, err = v.CountLearnings()
-	if err != nil {
-		t.Fatalf("CountLearnings: %v", err)
-	}
-	if n != 2 {
-		t.Errorf("CountLearnings = %d, want 2", n)
-	}
-}

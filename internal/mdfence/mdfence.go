@@ -112,9 +112,6 @@ type Scanner struct {
 	in  bool
 }
 
-// InFence reports whether the scanner is currently inside a fenced block.
-func (s *Scanner) InFence() bool { return s.in }
-
 // Step advances the scanner by one line and classifies it.
 func (s *Scanner) Step(line string) Kind {
 	if ch, run, info, ok := Delim(line); ok {
