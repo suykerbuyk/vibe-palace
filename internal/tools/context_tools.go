@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
@@ -16,6 +17,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/vplog"
 )
 
 // BootstrapResult is the response from vp_bootstrap_context.
@@ -36,6 +38,18 @@ type BootstrapResult struct {
 	PostBootstrapInstructions string                 `json:"post_bootstrap_instructions,omitempty"`
 	FrictionTrend             *capture.FrictionTrend `json:"friction_trend,omitempty"`
 	VaultStaleness            *VaultStaleness        `json:"vault_staleness,omitempty"`
+
+	// Health rides in the payload every session already loads, so a degraded vp
+	// reaches every agent on every host WITHOUT the agent having to think to ask.
+	// "Who calls vp_health?" was the wrong question: every pull-based answer is a
+	// rule in prose, and `vp check` is this project's standing proof that prose
+	// reaches nobody — it has an entire check suite that no template invokes.
+	//
+	// NIL WHEN HEALTHY, and that is deliberate. An always-on "healthy ✅" is the
+	// soft signal agents learn to skim past, which is the same reasoning that
+	// killed the `partial` capture status. This field appearing AT ALL means
+	// something needs looking at.
+	Health *vplog.Summary `json:"health,omitempty"`
 }
 
 // VaultStaleness reports the network-free fetch AGE of the vault view at
@@ -325,12 +339,27 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// "run vp_cmd to list commands" is still better than silent capability.
 	result.PostBootstrapInstructions = renderPostBootstrapInstructions(result.AvailableCommands, result.AvailableSkills)
 
+	// ALERTS ARE COLLECTED SEPARATELY FROM THE DIRECTIVE, and that separation is a
+	// bug fix, not bookkeeping.
+	//
+	// The friction, staleness and health warnings used to be appended straight onto
+	// PostBootstrapInstructions — and the token-budget truncation below RE-RENDERS
+	// that field with a blind assignment when it sheds the command list, which
+	// silently DISCARDED every warning appended before it. So the payload dropped its
+	// alerts exactly when it was too big, i.e. on a busy project, which is precisely
+	// when they matter. The alerts are the highest-value thing in this payload and
+	// they were the first thing thrown away.
+	//
+	// Keeping them in their own slice and composing at the end makes that
+	// unrepresentable: re-rendering the directive can no longer drop them.
+	var alerts []string
+
 	// Surface the proactive friction nudge in the directive itself. The directive
 	// is excluded from the token-shed truncation below, so appending the trend's
 	// actionable Message here guarantees the agent sees (and acts on) it even when
 	// the friction_trend field would otherwise be missed in a large payload.
 	if result.FrictionTrend != nil && result.FrictionTrend.Warn && result.FrictionTrend.Message != "" {
-		result.PostBootstrapInstructions += " " + result.FrictionTrend.Message
+		alerts = append(alerts, result.FrictionTrend.Message)
 	}
 
 	// Vault-staleness warning — NETWORK-FREE. VaultFetchAge reads only local git
@@ -343,8 +372,30 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	vs := computeVaultStaleness(age, fetchedAt, known)
 	result.VaultStaleness = &vs
 	if vs.Warn && vs.Message != "" {
-		result.PostBootstrapInstructions += " " + vs.Message
+		alerts = append(alerts, vs.Message)
 	}
+
+	// Health — PUSHED, not pulled, and SILENT WHEN HEALTHY.
+	//
+	// vp_health existed for a long time and NOTHING EVER CALLED IT: not a template,
+	// not a command, not a skill. It was itself a member of the very class it was
+	// built to detect — capability built, nothing invokes it. Riding in the payload
+	// every session already loads fixes that structurally, instead of asking agents
+	// to remember a rule. ("Who calls vp_health?" was the wrong question: every
+	// pull-based answer is a rule in prose, and `vp check` is the standing proof
+	// that prose reaches nobody.)
+	//
+	// Summarize reads a BOUNDED TAIL (vplog.TailBytes), never the whole log: this is
+	// the hottest path in the system — 190 spent a session taking the handshake from
+	// ~0.4 s to 0.012 s — and the log is capped at 8 MiB. It also never errors: a
+	// health probe that fails is itself a health signal, so it degrades to status
+	// "unknown" rather than failing the bootstrap.
+	if h := vplog.Summarize(vaultLogPath(vault), healthWindowHours, healthDisplayLimit); !h.Healthy() {
+		result.Health = &h
+		alerts = append(alerts, healthMessage(h))
+	}
+
+	result.PostBootstrapInstructions = composeDirective(result.PostBootstrapInstructions, alerts)
 
 	// Token budget truncation (TOKEN axis — independent of the byte-axis slim
 	// above): rough estimate 4 chars per token. Shed order: sessions → memory →
@@ -376,11 +427,31 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 			// rendered pre-truncation point at aliases that just got shed.
 			// Re-render so the directive degrades to "call vp_cmd / vp_skill
 			// to list them" instead of dangling stale references.
-			result.PostBootstrapInstructions = renderPostBootstrapInstructions(nil, nil)
+			//
+			// RE-COMPOSE, DO NOT RE-ASSIGN. This used to be a blind assignment, which
+			// threw away the friction / staleness / health alerts appended above —
+			// dropping the payload's most important content precisely when the payload
+			// was too big to fit, which is when a project is busiest.
+			result.PostBootstrapInstructions = composeDirective(renderPostBootstrapInstructions(nil, nil), alerts)
 		}
 	}
 
 	return result
+}
+
+// composeDirective joins the capability directive with any alerts (friction,
+// vault staleness, health). Alerts come LAST so they are the final thing the model
+// reads, and they are never folded into the directive string itself — see the
+// truncation path, which re-renders the directive and would otherwise erase them.
+func composeDirective(directive string, alerts []string) string {
+	if len(alerts) == 0 {
+		return directive
+	}
+	joined := strings.Join(alerts, " ")
+	if directive == "" {
+		return joined
+	}
+	return directive + " " + joined
 }
 
 // renderPostBootstrapInstructions returns a short directive telling the model

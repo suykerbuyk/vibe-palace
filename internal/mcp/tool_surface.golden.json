@@ -94,7 +94,7 @@
     {
       "name": "vp_health",
       "mutating": false,
-      "schema_sha256": "56be8ba1f5ba4eb7e2d7003ace9253aa179a76dfc2cf3846735aff67db002196"
+      "schema_sha256": "2e4e7b4ab0dba8e1b2c0aa8245c563f1863782ad3d7e4745614bf7ce96d60261"
     },
     {
       "name": "vp_ingest_commit_msg",

@@ -1163,6 +1163,87 @@ MCP path was allowed to fail.
 
 ---
 
+## `vp_health` Tests (`capture-silent-failure-observability` §1c)
+
+`vp_health` is the instrument that reads the log the rest of this task writes to. It
+had five defects, and the fifth is the one that made the other four moot.
+
+### Invariant 1 — "UNKNOWN" IS NOT "HEALTHY"
+
+A tool that cannot **read** the log must not report that the system is **fine**. A
+missing log returned `status: "healthy"`; an unopenable one did the same and did not
+even set `scan_error`. And "log missing" is the *normal* state on a fresh host and the
+*permanent* state for any process that never initialized the logger — which is exactly
+the condition this task was filed to make visible.
+
+**The old test asserted the bug.** `TestHealthToolHealthy` checked
+`status == "healthy"` against a vault with **no log file** and went green on it — the
+disease sitting in the test suite of the tool built to detect it. It is now
+`TestHealthToolUnknownWhenItCannotReadTheLog`, asserting the opposite.
+
+### Invariant 2 — `status` IS DERIVED FROM EVERY IN-WINDOW ENTRY, NOT THE DISPLAY LIST
+
+`status` was computed by looping over `RecentWarns` — the **capped** list. So an
+`ERROR` past the cap was tallied into `warn_counts` and then **never set
+`status: "errors"`**: the tool reported `"warnings"` while holding an `ERROR` it had
+counted itself, contradicting itself **inside its own payload**. Fixing the tail alone
+does *not* fix this; it only changes *which* errors get missed.
+
+Related: `recent_warns` kept the **oldest** N, because it appended while
+`len < limit` while scanning **forward** through an append-only file. The old test
+asserted only the *length* of that list, never *which* entries — a test named for
+recency that never tested recency.
+
+### Invariant 3 — A BOUNDED TAIL, NEVER A SCAN
+
+`vplog.Summarize` reads only the last `vplog.TailBytes`. This is a hard constraint:
+it runs on the `vp_bootstrap_context` path — the hottest call in the system, which
+iteration 190 spent a session taking from ~0.4 s to 0.012 s — and the log is capped at
+**8 MiB**. Scanning it end to end on every session start would hand that win back.
+`Truncated` reports when the view is partial, so a partial count can never read as an
+authoritative one.
+
+### Invariant 4 — PUSHED, NOT PULLED; SILENT WHEN HEALTHY
+
+**Nothing ever called `vp_health`** — not a template, not a command, not a skill. It
+was itself a member of the class it was built to detect: *capability built, nothing
+invokes it*. *"Who calls it?"* was the wrong question, because every pull-based answer
+is a rule in prose, and `vp check` is this project's standing proof that prose reaches
+nobody.
+
+So health **rides in the `vp_bootstrap_context` payload** every session already loads,
+and is **absent entirely when healthy** — an always-on green light is the soft signal
+agents learn to skim past, the same reasoning that killed the `partial` capture tier.
+The field appearing *at all* means something needs looking at.
+
+| Test | What it proves |
+|------|----------------|
+| `TestSummarizeUnknownNotHealthyOnMissingLog` (`internal/vplog`) | A log that cannot be read is **`unknown`**, never `healthy`, and `scan_error` says why |
+| `TestSummarizeStatusOverAllEntriesNotTheDisplayCap` (`internal/vplog`) | An `ERROR` **outside** the display cap still sets `status: "errors"` |
+| `TestSummarizeRecentWarnsIsNewestN` (`internal/vplog`) | `recent_warns` holds the **newest** N, not the oldest |
+| `TestSummarizeReadsABoundedTailNotTheWholeLog` (`internal/vplog`) | A warning buried above the tail window is **not** seen, and `Truncated` says so |
+| `TestSummarizeDropsThePartialFirstLine` (`internal/vplog`) | The line fragment a mid-file seek lands in is never parsed as a record |
+| `TestHealthToolUnknownWhenItCannotReadTheLog` (`internal/tools`) | Same, through the MCP tool (replaces the test that asserted the bug) |
+| `TestHealthStatusSeesErrorsBeyondTheDisplayCap` (`internal/tools`) | Same, through the tool |
+| `TestBootstrapPushesHealthWhenDegraded` (`internal/tools`) | A degraded vp **reaches the agent** without the agent asking |
+| `TestBootstrapPushesHealthWhenBlind` (`internal/tools`) | A **blind** vp reaches the agent too — blindness is not health |
+| `TestBootstrapIsSilentWhenHealthy` (`internal/tools`) | A healthy vp says **nothing** |
+| `TestBootstrapAlertsSurviveTokenTruncation` (`internal/tools`) | See below |
+
+### The pre-existing bug §1c uncovered: alerts were dropped under token pressure
+
+The token-budget truncation sheds the command list and then **re-renders**
+`post_bootstrap_instructions`. That re-render was a blind **assignment**, which threw
+away every alert appended before it — friction, vault-staleness, and now health.
+
+So the payload discarded its warnings **exactly when it was too big to fit**, which is
+when a project is busiest and the warnings matter most. The alerts are the
+highest-value content in the payload and they were the first thing thrown away. Alerts
+are now collected separately and **re-composed**, so re-rendering the directive cannot
+erase them (`composeDirective`).
+
+---
+
 ## MockEmbedder vs Real ONNX
 
 | Aspect | MockEmbedder | ONNX Embedder |

@@ -4,75 +4,52 @@
 package tools
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"sort"
 	"strings"
-	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/vplog"
 )
 
+// healthSchema no longer takes a project.
+//
+// It used to REQUIRE one and never use it: the log lives at a vault-global path
+// (VaultLocalDir()), which takes no arguments, so the parameter was rejected-if-
+// missing and then ignored. A required parameter that does nothing is theatre —
+// it teaches callers a lie about what the tool is scoped to.
 var healthSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"project": {
-			"type": "string",
-			"description": "Project slug."
-		},
 		"hours": {
 			"type": "integer",
 			"description": "Look-back window in hours (default 24, max 720). Widens the window for BOTH warn_counts and recent_warns."
 		},
 		"limit": {
 			"type": "integer",
-			"description": "Max entries in the recent_warns list (default 20, max 1000). Caps ONLY recent_warns — warn_counts still tallies every WARN/ERROR in the window."
+			"description": "Max entries in the recent_warns list (default 20, max 1000). Caps ONLY the displayed list — status and warn_counts are computed over EVERY entry in the window."
 		}
-	},
-	"required": ["project"]
+	}
 }`)
 
-// healthParams carries the vp_health input. project stays required; hours and
-// limit are optional scalar tuning knobs (see healthSchema for semantics).
 type healthParams struct {
-	Project string `json:"project"`
-	Hours   int    `json:"hours,omitempty"`
-	Limit   int    `json:"limit,omitempty"`
-}
-
-// HealthResult is the structured response from vp_health.
-//
-// ScanError is set when the log scan aborted before EOF (bufio.Scanner caps a
-// line at 64 KiB, so one oversized entry ends the loop). The counts below are
-// then a PREFIX of the log, not the whole of it — without this field a truncated
-// scan is indistinguishable from a clean one, and the health report would
-// under-count warnings while looking authoritative.
-type HealthResult struct {
-	Status      string         `json:"status"`
-	RecentWarns []LogEntry     `json:"recent_warns,omitempty"`
-	WarnCounts  map[string]int `json:"warn_counts,omitempty"`
-	LogPath     string         `json:"log_path"`
-	LogSize     int64          `json:"log_size_bytes"`
-	ScanError   string         `json:"scan_error,omitempty"`
-}
-
-// LogEntry represents a parsed log line.
-type LogEntry struct {
-	Time  string `json:"time"`
-	Level string `json:"level"`
-	Msg   string `json:"msg"`
+	Hours int `json:"hours,omitempty"`
+	Limit int `json:"limit,omitempty"`
 }
 
 // HealthTool returns the MCP tool for vp_health.
 func HealthTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name:        "vp_health",
-		Description: "Runtime health: recent warnings/errors from the vp log file.",
-		Schema:      healthSchema,
-		Handler:     healthHandler(vault),
+		Name: "vp_health",
+		Description: "Runtime health: recent warnings/errors from the vp log. " +
+			"status is \"healthy\", \"warnings\", \"errors\", or \"unknown\" — where \"unknown\" means the log could not be READ " +
+			"(see scan_error), which is NOT the same as healthy. Health is also pushed into vp_bootstrap_context when it is not healthy, " +
+			"so you do not have to remember to ask.",
+		Schema:  healthSchema,
+		Handler: healthHandler(vault),
 	}
 }
 
@@ -81,9 +58,6 @@ func healthHandler(vault *storage.Vault) mcp.HandlerFunc {
 		var p healthParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
-		}
-		if p.Project == "" {
-			return nil, fmt.Errorf("project is required")
 		}
 
 		hours := p.Hours
@@ -102,90 +76,72 @@ func healthHandler(vault *storage.Vault) mcp.HandlerFunc {
 			limit = 1000
 		}
 
-		logPath := vault.VaultLocalDir() + "/vp.log"
-		result := HealthResult{
-			Status:     "healthy",
-			WarnCounts: map[string]int{},
-			LogPath:    logPath,
-		}
-
-		info, err := os.Stat(logPath)
-		if err != nil {
-			// Missing log = healthy.
-			return result, nil
-		}
-		result.LogSize = info.Size()
-
-		f, err := os.Open(logPath)
-		if err != nil {
-			return result, nil
-		}
-		defer f.Close()
-
-		cutoff := time.Now().UTC().Add(-time.Duration(hours) * time.Hour).Format(time.RFC3339)
-
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
-			var entry map[string]any
-			if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-				continue // tolerate malformed lines
-			}
-
-			level, _ := entry["level"].(string)
-			if level != "WARN" && level != "ERROR" {
-				continue
-			}
-
-			ts, _ := entry["time"].(string)
-			if ts != "" && ts < cutoff {
-				continue
-			}
-
-			msg, _ := entry["msg"].(string)
-			le := LogEntry{Time: ts, Level: level, Msg: msg}
-
-			if len(result.RecentWarns) < limit {
-				result.RecentWarns = append(result.RecentWarns, le)
-			}
-
-			category := categorizeMsg(msg)
-			result.WarnCounts[category]++
-		}
-
-		// A scan that stops short (an oversized line) leaves the tallies above
-		// covering only a prefix of the log. Report the partial results — the
-		// tool tolerates a bad log rather than failing the caller — but say so,
-		// so the numbers are not read as complete.
-		if err := scanner.Err(); err != nil {
-			result.ScanError = err.Error()
-		}
-
-		if len(result.RecentWarns) > 0 {
-			hasError := false
-			for _, w := range result.RecentWarns {
-				if w.Level == "ERROR" {
-					hasError = true
-					break
-				}
-			}
-			if hasError {
-				result.Status = "errors"
-			} else {
-				result.Status = "warnings"
-			}
-		}
-
-		return result, nil
+		// vplog.Summarize is the ONE definition of what the log says about the
+		// system's health, so this tool and the health pushed into
+		// vp_bootstrap_context cannot drift apart into two different answers.
+		return vplog.Summarize(vaultLogPath(vault), hours, limit), nil
 	}
 }
 
-// categorizeMsg extracts a category prefix from a log message.
-func categorizeMsg(msg string) string {
-	if idx := strings.Index(msg, ":"); idx > 0 && idx < 40 {
-		return strings.TrimSpace(msg[:idx])
+// vaultLogPath is where vplog writes: <vault>/palace/.local/vp.log. It takes no
+// project, which is exactly why vp_health does not either.
+func vaultLogPath(vault *storage.Vault) string {
+	return vault.VaultLocalDir() + "/vp.log"
+}
+
+// The window vp_bootstrap_context reports health over. Kept deliberately tight:
+// bootstrap health is about "did something break in the work you are resuming",
+// not a full audit — that is what calling vp_health with a wider `hours` is for.
+const (
+	healthWindowHours  = 24
+	healthDisplayLimit = 5
+)
+
+// healthMessage renders a Summary as one line an agent will actually read, for the
+// post-bootstrap directive. It mirrors how friction_trend and vault_staleness
+// surface themselves: a structured field for machines, plus a human-visible
+// sentence, because a field in a large payload is easy to skim past.
+//
+// It is only ever called for a NON-healthy summary — there is no cheerful case.
+func healthMessage(s vplog.Summary) string {
+	switch s.Status {
+	case vplog.StatusUnknown:
+		return fmt.Sprintf("⚠ vp health is UNKNOWN — the log at %s could not be read (%s). "+
+			"This is not the same as healthy: vp cannot currently tell you when it loses your work.", s.LogPath, s.ScanError)
+	case vplog.StatusErrors:
+		return fmt.Sprintf("🔴 vp logged ERRORS in the last %dh (%s). Something failed and was recorded but not surfaced. "+
+			"Call vp_health for the full list before trusting recent captures.", healthWindowHours, summarizeCounts(s))
+	case vplog.StatusWarnings:
+		return fmt.Sprintf("⚠ vp logged warnings in the last %dh (%s). Call vp_health for detail.",
+			healthWindowHours, summarizeCounts(s))
 	}
-	if len(msg) > 40 {
-		return msg[:40]
+	return ""
+}
+
+// summarizeCounts renders the warn_counts map as a compact "category xN" list, in
+// descending count order so the loudest thing is named first.
+func summarizeCounts(s vplog.Summary) string {
+	type kv struct {
+		k string
+		n int
 	}
-	return msg
+	pairs := make([]kv, 0, len(s.WarnCounts))
+	for k, n := range s.WarnCounts {
+		pairs = append(pairs, kv{k, n})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].n != pairs[j].n {
+			return pairs[i].n > pairs[j].n
+		}
+		return pairs[i].k < pairs[j].k
+	})
+	parts := make([]string, 0, len(pairs))
+	for i, p := range pairs {
+		if i == 3 {
+			parts = append(parts, "…")
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s ×%d", p.k, p.n))
+	}
+	return strings.Join(parts, ", ")
 }
