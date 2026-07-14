@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -29,6 +30,7 @@ type BootstrapResult struct {
 	WorkflowURI               string                 `json:"workflow_uri"`
 	ResumeURI                 string                 `json:"resume_uri"`
 	ActiveTasks               []storage.TaskMeta     `json:"active_tasks"`
+	ActiveTaskCount           int                    `json:"active_task_count"`
 	RecentSessions            []sessionSummary       `json:"recent_sessions,omitempty"`
 	KGSnapshot                *storage.KGStats       `json:"kg_snapshot,omitempty"`
 	Memory                    []memorySnapshot       `json:"memory,omitempty"`
@@ -50,6 +52,41 @@ type BootstrapResult struct {
 	// killed the `partial` capture status. This field appearing AT ALL means
 	// something needs looking at.
 	Health *vplog.Summary `json:"health,omitempty"`
+
+	// Budget reports what the token shed ladder did. NIL when nothing was shed
+	// and the payload fit — the healthy case says nothing, exactly like Health.
+	//
+	// It exists because the shed loop was a silent instrument. It would set
+	// recent_sessions to null, drop the memory index and the command list, run
+	// out of things to shed, RETURN OVER BUDGET ANYWAY, and report none of it:
+	// no error, no field, no log line. The 204 review had to INFER that a shed
+	// had happened from the wording of the directive it got back. A tool that
+	// quietly returns less than it was asked for, while reporting success, is
+	// the class this epic exists to delete — and it was living inside the shed
+	// loop the whole time.
+	Budget *BootstrapBudget `json:"budget,omitempty"`
+}
+
+// BootstrapBudget is the shed ladder's own account of itself: what it dropped,
+// what the payload cost in the end, and whether it met the budget it was given.
+type BootstrapBudget struct {
+	MaxTokens int `json:"max_tokens"`
+	// EstimatedTokens is measured on the payload AS RETURNED, with this budget
+	// field already in place — exact to within the digits of its own value, and
+	// on the same rough 4-chars-per-token basis the ladder sheds against. An
+	// instrument that reported a number for some other payload than the one it
+	// sent would be the very defect being fixed here.
+	EstimatedTokens int `json:"estimated_tokens"`
+	// OverBudget is true when the ladder ran out of things to shed and returned
+	// over the caller's budget anyway. It is NEVER silent: it also raises an
+	// alert in post_bootstrap_instructions and a WARN in vp.log.
+	OverBudget bool `json:"over_budget"`
+	// Shed names each rung the ladder had to use, in order, so the caller knows
+	// precisely what is missing and can fetch it: "recent_sessions", "memory",
+	// "kg_snapshot", "commands+skills", "resume->pinned", "active_tasks",
+	// "workflow->excerpt".
+	Shed   []string `json:"shed,omitempty"`
+	Reason string   `json:"reason,omitempty"`
 }
 
 // VaultStaleness reports the network-free fetch AGE of the vault view at
@@ -118,6 +155,15 @@ const bootstrapWorkflowInlineCap = 24000
 func bootstrapExcerptBanner(body, uri string) string {
 	return "⚠ excerpt — full content at " + uri + ", read before acting\n\n" +
 		runeSafeExcerpt(body, bootstrapExcerptCap)
+}
+
+// bootstrapZoneBanner prefixes the PINNED ZONE of a resume with the same loud
+// pointer — but does NOT truncate. The zone is already a deliberate selection
+// (every section its author marked as always-inline); cutting it at
+// bootstrapExcerptCap would silently amputate the very sections the marker
+// exists to protect, which is the failure the marker was introduced to prevent.
+func bootstrapZoneBanner(zone, uri string) string {
+	return "⚠ pinned sections only — the full resume is at " + uri + ", read it before relying on project state\n\n" + zone
 }
 
 // memoryRecallCap bounds how many memory index entries the bootstrap surfaces.
@@ -195,7 +241,7 @@ func BootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, slimDe
 	}
 	return mcp.Tool{
 		Name:        "vp_bootstrap_context",
-		Description: "Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive.",
+		Description: "Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive. Sheds context to fit max_tokens and REPORTS WHAT IT SHED in `budget.shed` (absent when nothing was shed). A shed resume arrives as its pinned sections only, behind a banner — read `resume_uri` for the full body. A shed task list leaves `active_task_count` — call vp_list_tasks for it.",
 		Schema:      bootstrapSchema,
 		Handler:     bootstrapHandler(resolver, vault, def),
 	}
@@ -206,11 +252,19 @@ func BootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, slimDe
 // When wing/room are provided, palace-scoped commands are included in discovery.
 //
 // slim is the BYTE-axis control, distinct from the maxTokens TOKEN-axis shed
-// loop below. When slim is true, resume (and oversized workflow) are replaced
-// by banner-led, rune-safe excerpts pointing at their always-present URIs. When
-// slim is false, resume/workflow stay fully inline no matter what — the
-// token-budget shed loop NEVER excerpts them; it only sheds
-// sessions→memory→KG→commands+skills. The two axes are deliberately separate.
+// ladder below. When slim is true, resume (and oversized workflow) are replaced
+// by banner-led, rune-safe excerpts pointing at their always-present URIs.
+//
+// The two axes remain deliberately separate — slim is an unconditional prefix
+// cut for a byte-constrained transport, while the ladder is a graduated,
+// last-resort reduction that reaches resume only after the cheap context is
+// gone, and reaches only the sections the resume did not pin.
+//
+// 🔴 CORRECTED at 209: this comment used to promise that the shed loop "NEVER
+// excerpts" resume/workflow. That was true, and it was the bug — with 96% of a
+// real payload sitting in resume+workflow+tasks, a ladder forbidden to touch
+// any of the three ran out of rungs and returned 2.4x over budget in silence.
+// See shedToBudget.
 func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, maxTokens int, wing, room string, slim bool) BootstrapResult {
 	if maxTokens == 0 {
 		maxTokens = 8000
@@ -238,14 +292,20 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		result.ResumeSha256 = sha
 	}
 
+	// The full body is held aside for the token ladder's resume rung, which
+	// needs the WHOLE document to find its pin markers — the slim excerpt below
+	// is a prefix cut and would hide every section after the first 4 KB.
+	fullResume := result.Resume
+
 	// Byte-axis slim: excerpt resume behind a banner+URI ONLY when it actually
 	// exceeds the cap — a resume that already fits inline (the common embedded
 	// default, well under bootstrapExcerptCap) is returned whole and must NOT be
 	// mislabeled as a truncated excerpt, or the agent wastes a vp_read_resource
 	// round-trip on content it already holds. Workflow stays inline (behavioral
-	// contract, smaller file) unless its own size busts the budget. This is the
-	// ONLY place resume/workflow are ever excerpted — the token shed loop further
-	// down leaves them untouched.
+	// contract, smaller file) unless its own size busts the budget.
+	//
+	// This is the BYTE axis only. The token ladder (shedToBudget) can also reduce
+	// resume and workflow, but by different rules and only as a last resort.
 	if slim {
 		if len(result.Resume) > bootstrapExcerptCap {
 			result.Resume = bootstrapExcerptBanner(result.Resume, result.ResumeURI)
@@ -264,6 +324,10 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// payload is already over its own token budget besides.
 	if tasks, err := vault.ListTasks(project, false); err == nil {
 		result.ActiveTasks = storage.DropIcebox(tasks)
+		// The COUNT survives the ladder even when the list itself is shed, so a
+		// caller that gets a shed payload still knows the backlog exists and how
+		// big it is. A shed list that leaves no trace reads as "no open tasks".
+		result.ActiveTaskCount = len(result.ActiveTasks)
 	}
 
 	// Recent sessions (last 5, most-recent-first) — graceful on error.
@@ -401,48 +465,290 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		alerts = append(alerts, healthMessage(h))
 	}
 
+	// Compose a PROVISIONAL directive so the ladder below measures a payload the
+	// same shape as the one that will be returned. The final compose happens
+	// after the ladder, because the ladder can itself raise an alert.
 	result.PostBootstrapInstructions = composeDirective(result.PostBootstrapInstructions, alerts)
 
-	// Token budget truncation (TOKEN axis — independent of the byte-axis slim
-	// above): rough estimate 4 chars per token. Shed order: sessions → memory →
-	// KG → commands+skills (as a pair). This loop NEVER touches resume/workflow:
-	// under slim=false they stay fully inline even when over maxTokens.
-	raw, err := json.Marshal(result)
-	if err == nil {
-		estimatedTokens := len(raw) / 4
-		for estimatedTokens > maxTokens && len(result.RecentSessions) > 0 {
-			result.RecentSessions = result.RecentSessions[:len(result.RecentSessions)-1]
-			raw, _ = json.Marshal(result)
-			estimatedTokens = len(raw) / 4
-		}
-		for estimatedTokens > maxTokens && len(result.Memory) > 0 {
-			result.Memory = result.Memory[:len(result.Memory)-1]
-			raw, _ = json.Marshal(result)
-			estimatedTokens = len(raw) / 4
-		}
-		if estimatedTokens > maxTokens && result.KGSnapshot != nil {
-			result.KGSnapshot = nil
-			raw, _ = json.Marshal(result)
-			estimatedTokens = len(raw) / 4
-		}
-		if estimatedTokens > maxTokens && (len(result.AvailableCommands) > 0 || len(result.AvailableSkills) > 0) {
-			result.AvailableCommands = nil
-			result.AvailableSkills = nil
-			result.CommandInvocation = ""
-			// PostBootstrapInstructions deliberately survives, but the examples
-			// rendered pre-truncation point at aliases that just got shed.
-			// Re-render so the directive degrades to "call vp_cmd / vp_skill
-			// to list them" instead of dangling stale references.
-			//
-			// RE-COMPOSE, DO NOT RE-ASSIGN. This used to be a blind assignment, which
-			// threw away the friction / staleness / health alerts appended above —
-			// dropping the payload's most important content precisely when the payload
-			// was too big to fit, which is when a project is busiest.
-			result.PostBootstrapInstructions = composeDirective(renderPostBootstrapInstructions(nil, nil), alerts)
-		}
+	budget := shedToBudget(&result, maxTokens, fullResume, slim)
+
+	// AN UNMEETABLE BUDGET IS NEVER SILENT. It says so in the payload (Budget),
+	// in the directive the agent actually reads (alerts), and in vp.log — which
+	// vp_health reads, so the next session opens on it too. A max_tokens the
+	// tool cannot honor and does not mention is a budget that is a lie, and
+	// that lie is what let this payload run 2.4x over on the transport every
+	// agent uses, for as long as it has existed.
+	if budget.OverBudget {
+		alerts = append(alerts, budget.Reason)
+		slog.Warn("bootstrap: payload exceeds max_tokens after shedding everything sheddable",
+			"project", project, "max_tokens", budget.MaxTokens,
+			"estimated_tokens", budget.EstimatedTokens, "shed", strings.Join(budget.Shed, ","))
+	}
+	if shedTasks(budget) {
+		alerts = append(alerts, fmt.Sprintf("⚠ The active task list (%d open) was shed to fit the token budget — call `vp_list_tasks` for it.", result.ActiveTaskCount))
+	}
+
+	// FINAL compose. RE-COMPOSE, DO NOT RE-ASSIGN: this used to be a blind
+	// assignment inside the shed loop, which threw away the friction / staleness
+	// / health alerts appended above — dropping the payload's most important
+	// content precisely when the payload was too big to fit, which is when a
+	// project is busiest. Rendering from the POST-ladder command list also means
+	// the examples can no longer point at aliases that were just shed.
+	result.PostBootstrapInstructions = composeDirective(
+		renderPostBootstrapInstructions(result.AvailableCommands, result.AvailableSkills), alerts)
+
+	result.Budget = budget
+	// Measure the payload AS RETURNED, budget field included. Reporting a size
+	// for some other payload than the one being sent is the defect, not the fix.
+	if raw, err := json.Marshal(result); err == nil {
+		budget.EstimatedTokens = len(raw) / 4
+	}
+	// Silent when healthy: nothing shed and inside budget ⇒ no field at all.
+	if len(budget.Shed) == 0 && !budget.OverBudget {
+		result.Budget = nil
 	}
 
 	return result
+}
+
+// dropRung removes a rung from the shed list — used by the give-back pass when
+// a shed turns out to have been unnecessary. The report must name what is
+// actually missing from the payload, not what the descent considered dropping.
+func dropRung(xs []string, drop string) []string {
+	out := xs[:0]
+	for _, x := range xs {
+		if x != drop {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// shedResumeToPinnedZone replaces the resume body with the sections its author
+// marked ResumePinMarker, behind a banner pointing at resume_uri. Idempotent:
+// once the resume has been reduced it will not be reduced again.
+//
+// Skipped when slim already excerpted the resume — that excerpt is SMALLER than
+// the pinned zone, so re-expanding to the zone would GROW the payload the ladder
+// is trying to shrink.
+//
+// resume_sha256 is deliberately NOT touched: it covers the FULL RAW file, and a
+// caller that pages the whole body back through resume_uri needs the digest to
+// still match disk, or every compare-and-set it makes will fail.
+func shedResumeToPinnedZone(result *BootstrapResult, b *BootstrapBudget, fullResume string, slim bool, est func() int) int {
+	if fullResume == "" || sliceHasRung(b.Shed, shedResumePinned) {
+		return est()
+	}
+	if slim && len(fullResume) > bootstrapExcerptCap {
+		return est() // already reduced on the byte axis
+	}
+	zone, declared := pinnedResumeZone(fullResume)
+	if !declared {
+		// NO PIN MARKER ⇒ NOT SHEDDABLE. The server will not guess which half of
+		// an undeclared resume was safe to drop; guessing wrong drops the
+		// behavioral notes — the ones that stop an agent corrupting the vault —
+		// silently. Stay inline and say so, loudly, in the budget report.
+		b.Reason = "resume declares no " + ResumePinMarker + " zone, so it cannot be shed — see the pinned-zone marker in the resume template"
+		return est()
+	}
+	if len(zone) >= len(result.Resume) {
+		return est() // a resume that pins everything sheds nothing
+	}
+	result.Resume = bootstrapZoneBanner(zone, result.ResumeURI)
+	b.Shed = append(b.Shed, shedResumePinned)
+	return est()
+}
+
+func sliceHasRung(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
+}
+
+// shedTasks reports whether the ladder had to drop the active task list.
+func shedTasks(b *BootstrapBudget) bool {
+	for _, s := range b.Shed {
+		if s == shedActiveTasks {
+			return true
+		}
+	}
+	return false
+}
+
+// The rungs of the ladder, named so the caller knows exactly what is missing
+// from the payload it received and can go and fetch it.
+const (
+	shedRecentSessions = "recent_sessions"
+	shedMemory         = "memory"
+	shedKGSnapshot     = "kg_snapshot"
+	shedCommands       = "commands+skills"
+	shedResumePinned   = "resume->pinned"
+	shedActiveTasks    = "active_tasks"
+	shedWorkflow       = "workflow->excerpt"
+)
+
+// shedToBudget is the TOKEN-axis ladder (independent of the byte-axis slim
+// control, which has already run by the time we get here). It sheds, in order,
+// until the payload fits — and reports what it did.
+//
+// THE ORDER IS THE DESIGN: least correctness-critical and cheapest to re-fetch
+// goes first.
+//
+//  1. sessions, memory, KG, commands — cheap context, re-fetchable, no rule lives in them.
+//  5. resume down to its PINNED ZONE — the diary is a narrative and the full body is one
+//     vp_read_resource away; /vpc-restart Step 2 already instructs the agent to fetch it.
+//     The behavioral notes are marked ResumePinMarker and CANNOT be shed by this rung.
+//  6. active_tasks — one cheap vp_list_tasks call away, and ActiveTaskCount survives, so
+//     nothing is silently lost. Note it drops the WHOLE list rather than truncating titles:
+//     a truncated title is a title that misleads, and the title is what every agent reads
+//     first (the 205 set_meta lesson).
+//  7. workflow — LAST, because it is the behavioral contract. Losing it is a correctness
+//     risk, not an inconvenience.
+//
+// The four original rungs alone COULD NOT REACH THE BUDGET on any real vault:
+// this project's live payload measured 78,055 bytes ≈ 19.5k tokens against a
+// default of 8,000, of which resume+workflow+tasks were 96% — and the old loop
+// could touch NONE of those three. It shed everything it was allowed to touch,
+// came up 2.4x short, and returned anyway without a word.
+func shedToBudget(result *BootstrapResult, maxTokens int, fullResume string, slim bool) *BootstrapBudget {
+	b := &BootstrapBudget{MaxTokens: maxTokens}
+
+	// The estimate is rough (4 chars ≈ 1 token) and deliberately so: an exact
+	// tokenizer would tie this hot path to a model's vocabulary. It only has to
+	// be honest about which side of the line it is on.
+	est := func() int {
+		raw, err := json.Marshal(result)
+		if err != nil {
+			// Unmeasurable is not "fine" (invariant: "I have no information" is
+			// not "nothing is wrong"). Report it as over budget so it is loud.
+			return maxTokens + 1
+		}
+		return len(raw) / 4
+	}
+	tokens := est()
+	if tokens <= maxTokens {
+		b.EstimatedTokens = tokens
+		return b
+	}
+
+	// Snapshot every sheddable field before the descent, so the give-back pass
+	// below can put back whatever the descent turned out not to need.
+	before := *result
+
+	// ── THE DESCENT: shed least-valuable first, until it fits ──
+	if len(result.RecentSessions) > 0 {
+		result.RecentSessions = nil
+		b.Shed = append(b.Shed, shedRecentSessions)
+		tokens = est()
+	}
+	if tokens > maxTokens && len(result.Memory) > 0 {
+		result.Memory = nil
+		b.Shed = append(b.Shed, shedMemory)
+		tokens = est()
+	}
+	if tokens > maxTokens && result.KGSnapshot != nil {
+		result.KGSnapshot = nil
+		b.Shed = append(b.Shed, shedKGSnapshot)
+		tokens = est()
+	}
+	if tokens > maxTokens && (len(result.AvailableCommands) > 0 || len(result.AvailableSkills) > 0) {
+		result.AvailableCommands = nil
+		result.AvailableSkills = nil
+		result.CommandInvocation = ""
+		b.Shed = append(b.Shed, shedCommands)
+		tokens = est()
+	}
+	if tokens > maxTokens {
+		tokens = shedResumeToPinnedZone(result, b, fullResume, slim, est)
+	}
+	if tokens > maxTokens && len(result.ActiveTasks) > 0 {
+		result.ActiveTasks = nil
+		b.Shed = append(b.Shed, shedActiveTasks)
+		tokens = est()
+	}
+	if tokens > maxTokens && len(result.Workflow) > bootstrapExcerptCap {
+		result.Workflow = bootstrapExcerptBanner(result.Workflow, result.WorkflowURI)
+		b.Shed = append(b.Shed, shedWorkflow)
+		tokens = est()
+	}
+
+	// ── 🔴 THE GIVE-BACK: put back everything the descent did not actually need ──
+	//
+	// A greedy descent OVER-SHEDS, and the first version of this ladder proved it
+	// on the live vault: it dropped recent_sessions, the KG snapshot AND the
+	// command list — and then had to shed the resume and the task list anyway.
+	// Those three were destroyed for nothing. Shedding the resume alone would have
+	// kept all of them.
+	//
+	// The descent cannot know that, because it cannot see the future. So it does
+	// not have to: walk the shed rungs back in order of DESCENDING VALUE, restore
+	// each one that still fits, and keep the rest shed. The most valuable thing we
+	// gave up is the first thing offered back.
+	//
+	// This is the same rule the workflow rung used to enforce by hand — "only pay a
+	// cost that buys something" — generalized to every rung, which is why the
+	// hand-rolled workflow special case is gone.
+	for _, g := range []struct {
+		rung    string
+		restore func()
+	}{
+		{shedWorkflow, func() { result.Workflow = before.Workflow }},
+		{shedActiveTasks, func() { result.ActiveTasks = before.ActiveTasks }},
+		{shedResumePinned, func() { result.Resume = before.Resume }},
+		{shedCommands, func() {
+			result.AvailableCommands = before.AvailableCommands
+			result.AvailableSkills = before.AvailableSkills
+			result.CommandInvocation = before.CommandInvocation
+		}},
+		{shedKGSnapshot, func() { result.KGSnapshot = before.KGSnapshot }},
+		{shedMemory, func() { result.Memory = before.Memory }},
+		{shedRecentSessions, func() { result.RecentSessions = before.RecentSessions }},
+	} {
+		if !sliceHasRung(b.Shed, g.rung) {
+			continue
+		}
+		undo := *result
+		g.restore()
+		if est() <= maxTokens {
+			b.Shed = dropRung(b.Shed, g.rung)
+			tokens = est()
+			continue
+		}
+		*result = undo // it did not fit after all; stay shed
+	}
+
+	// 🔴 THE CONTRACT IS NOT SACRIFICED TO A BUDGET THAT WAS MISSED ANYWAY.
+	//
+	// The give-back above restores a rung only when restoring it FITS. That is the
+	// right rule for re-fetchable context, and the wrong rule for the workflow: if
+	// the payload is over budget even after the full descent, then shedding the
+	// contract bought NOTHING, and an agent without the contract does not know the
+	// rules it is breaking. Being over budget WITH the rules beats being over
+	// budget without them. (The cheap rungs stay shed — a smaller payload still
+	// lowers the odds a host truncates the tail, where the alerts live.)
+	if tokens > maxTokens && sliceHasRung(b.Shed, shedWorkflow) {
+		result.Workflow = before.Workflow
+		b.Shed = dropRung(b.Shed, shedWorkflow)
+		tokens = est()
+	}
+
+	b.EstimatedTokens = tokens
+	if tokens > maxTokens {
+		b.OverBudget = true
+		if b.Reason == "" {
+			b.Reason = "⚠ bootstrap payload is over its own token budget with nothing left to shed — read the resume via resume_uri and treat this payload as incomplete"
+		} else {
+			b.Reason = "⚠ bootstrap payload is over its own token budget: " + b.Reason
+		}
+	} else {
+		// A reason recorded on the way down is only worth reporting if the
+		// payload actually ended up over budget. Fitting anyway is not a defect.
+		b.Reason = ""
+	}
+	return b
 }
 
 // composeDirective joins the capability directive with any alerts (friction,

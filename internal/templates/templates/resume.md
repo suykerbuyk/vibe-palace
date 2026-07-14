@@ -9,11 +9,28 @@ project: {{PROJECT}}
      - Stable architecture, design decisions, test inventories -> doc/
      - Completed iteration narratives -> iterations.md
      - Active work items -> tasks/ directory
-     Only current state, open threads, and pointers to deeper context belong here. -->
+     Only current state, open threads, and pointers to deeper context belong here.
+
+     THE PIN MARKER. A section marked `<!-- vp:pin -->` is ALWAYS-INLINE: it survives
+     the vp_bootstrap_context token shed ladder no matter how tight the budget gets.
+     Everything else is shed to the resume_uri when the payload will not fit.
+
+     Pin ONLY what an agent must not act without — the rules that stop it corrupting
+     the vault. Narrative, history and status are NOT that, and pinning them defeats
+     the mechanism: a resume that pins everything sheds nothing. -->
 
 ## What This Project Is
+<!-- vp:pin -->
 
 <!-- Brief description of the project: purpose, stack, key commands. -->
+
+## Project-Specific Behavioral Notes
+<!-- vp:pin -->
+
+<!-- Gotchas that must reach EVERY agent on EVERY host, because getting one wrong
+     corrupts the vault or wastes a session. Keep terse. Prune a note only when it
+     becomes FALSE, never merely old. This section is load-bearing for correctness —
+     it is why the pin marker exists. -->
 
 ## Current State
 

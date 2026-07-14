@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -736,9 +737,20 @@ func TestBootstrapSlimPerTransportDefault(t *testing.T) {
 // MED finding: the token-budget shed loop must NEVER excerpt resume/workflow.
 // Under slim=false, even a tiny max_tokens leaves both fully inline and
 // byte-identical to the resolved bodies — only sessions/memory/KG/commands shed.
-func TestBootstrapSlimFalseKeepsFullBodiesOverBudget(t *testing.T) {
+// An UNMARKED resume is never shed — the server does not guess which half of a
+// document nobody annotated was safe to drop — and it says so out loud instead.
+//
+// 🔴 THIS TEST USED TO ASSERT THE BUG. As TestBootstrapSlimFalseKeepsFullBodiesOverBudget
+// it pinned "slim=false keeps resume AND workflow fully inline no matter how far
+// over budget", which is precisely the behavior that let the live payload return
+// 2.4x over its own max_tokens in silence: the shed loop was forbidden to touch
+// the 96% of the payload that was resume+workflow+tasks, so it ran out of rungs
+// and gave up without a word. The half worth keeping is "do not silently mangle a
+// resume you were told nothing about" — kept here, now with the loud report that
+// was missing.
+func TestBootstrapUnmarkedResumeIsNeverShedAndSaysSo(t *testing.T) {
 	vault, resolver := testSetup(t)
-	bigResume := "# Resume\n\n" + strings.Repeat("state line for test-proj\n", 400)
+	bigResume := "# Resume\n\n## State\n\n" + strings.Repeat("state line for test-proj\n", 400)
 	if err := vault.WriteResume("test-proj", bigResume, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -752,13 +764,171 @@ func TestBootstrapSlimFalseKeepsFullBodiesOverBudget(t *testing.T) {
 	}
 
 	tool := BootstrapContextTool(resolver, vault)
-	// slim=false (explicit) + a tiny budget that would shed everything else.
 	br := bootstrapResult(t, tool, `{"project":"test-proj","slim":false,"max_tokens":50}`)
+
 	if br.Resume != wantResume {
-		t.Errorf("slim=false over budget: resume excerpted/changed (len %d, want %d)", len(br.Resume), len(wantResume))
+		t.Errorf("resume with no %s marker was shed anyway (len %d, want %d) — the server guessed", ResumePinMarker, len(br.Resume), len(wantResume))
 	}
+	// The contract is put back when shedding it would not have saved the payload
+	// anyway: losing the rules AND blowing the budget is worse than blowing it.
 	if br.Workflow != wantWorkflow {
-		t.Errorf("slim=false over budget: workflow excerpted/changed (len %d, want %d)", len(br.Workflow), len(wantWorkflow))
+		t.Errorf("workflow excerpted for no benefit: still over budget, so the contract should have been restored (len %d, want %d)", len(br.Workflow), len(wantWorkflow))
+	}
+
+	// And the whole point: it is NOT silent about any of it.
+	if br.Budget == nil {
+		t.Fatal("no budget report on a payload that could not meet its budget — this is the silent overrun, unfixed")
+	}
+	if !br.Budget.OverBudget {
+		t.Errorf("over_budget=false at %d estimated tokens against max_tokens=50", br.Budget.EstimatedTokens)
+	}
+	if !strings.Contains(br.Budget.Reason, ResumePinMarker) {
+		t.Errorf("over-budget reason does not name the missing pin marker, so nobody can act on it: %q", br.Budget.Reason)
+	}
+	if !strings.Contains(br.PostBootstrapInstructions, "over its own token budget") {
+		t.Errorf("the over-budget alert never reached the directive the agent actually reads: %q", br.PostBootstrapInstructions)
+	}
+}
+
+// The ladder reaches the resume's shed zone and STOPS AT THE PIN MARKER.
+func TestBootstrapShedsResumeDiaryButNeverThePinnedZone(t *testing.T) {
+	vault, resolver := testSetup(t)
+	const notes = "NEVER place a .vibe-palace.toml at $HOME"
+	const diary = "we shipped the thing and then we shipped another thing"
+	resume := "---\ntype: project-resume\n---\n\n# Resume\n\n" +
+		"## Project-Specific Behavioral Notes\n" + ResumePinMarker + "\n\n- " + notes + "\n\n" +
+		"## Current State\n\n" + strings.Repeat("- "+diary+"\n", 500)
+	if err := vault.WriteResume("test-proj", resume, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := BootstrapContextTool(resolver, vault)
+	br := bootstrapResult(t, tool, `{"project":"test-proj","slim":false,"max_tokens":2000}`)
+
+	if !strings.Contains(br.Resume, notes) {
+		t.Error("the PINNED behavioral notes were shed — the marker did not hold, and these are the notes that stop an agent corrupting the vault")
+	}
+	if strings.Contains(br.Resume, diary) {
+		t.Error("the un-pinned diary survived: the ladder did not actually shed the resume")
+	}
+	if !strings.Contains(br.Resume, br.ResumeURI) {
+		t.Errorf("a reduced resume must carry its resume_uri or the full body is unreachable: %q", br.Resume)
+	}
+	if br.Budget == nil || !slices.Contains(br.Budget.Shed, shedResumePinned) {
+		t.Errorf("resume was reduced but the budget report does not say so: %+v", br.Budget)
+	}
+
+	// The digest still covers the FULL RAW file. A caller that pages the whole
+	// body back through resume_uri and then writes must find its CAS matches
+	// disk — a sha of the pinned zone would collide with nothing that exists.
+	full, _, wantSha, err := resolver.ResolveDigest("resume", "test-proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if br.ResumeSha256 != wantSha {
+		t.Errorf("resume_sha256 = %q after shedding, want the digest of the full body %q", br.ResumeSha256, wantSha)
+	}
+	if len(br.Resume) >= len(full) {
+		t.Errorf("resume did not shrink: %d >= %d", len(br.Resume), len(full))
+	}
+}
+
+// The task list sheds to a COUNT, never to nothing: a payload that drops the
+// backlog and leaves no trace reads as "this project has no open work".
+func TestBootstrapShedTaskListLeavesTheCountAndSaysWhereToLook(t *testing.T) {
+	vault, resolver := testSetup(t)
+	resume := "# Resume\n\n## Notes\n" + ResumePinMarker + "\n\nterse.\n\n## Current State\n\n" +
+		strings.Repeat("- narrative\n", 300)
+	if err := vault.WriteResume("test-proj", resume, ""); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 12 {
+		spec := storage.TaskSpec{
+			Slug:     "task-" + string(rune('a'+i)),
+			Title:    strings.Repeat("a long title that carries the finding ", 6),
+			Priority: "high",
+			Content:  strings.Repeat("plan body. ", 40),
+		}
+		if err := vault.CreateTask("test-proj", spec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tool := BootstrapContextTool(resolver, vault)
+	br := bootstrapResult(t, tool, `{"project":"test-proj","slim":false,"max_tokens":400}`)
+
+	if len(br.ActiveTasks) != 0 {
+		t.Fatalf("task list survived a 400-token budget: %d tasks", len(br.ActiveTasks))
+	}
+	if br.ActiveTaskCount != 12 {
+		t.Errorf("active_task_count = %d after shedding the list, want 12 — the count is the only thing telling the agent the backlog exists", br.ActiveTaskCount)
+	}
+	if !strings.Contains(br.PostBootstrapInstructions, "vp_list_tasks") {
+		t.Errorf("shed the task list without telling the agent how to get it back: %q", br.PostBootstrapInstructions)
+	}
+}
+
+// 🔴 THE ALERTS SURVIVE AT THE DEFAULT BUDGET WITH A LIVE-SIZED RESUME.
+//
+// This is the case that was broken, and it is the reason the whole task is a
+// blocker for the vault-audit staleness nag. The alerts (friction, vault
+// staleness, health — and soon audit staleness) ride in the TAIL of
+// post_bootstrap_instructions. The payload used to come back 2.4x over its own
+// budget, so a host that hard-truncates cut exactly the tail, and the highest-value
+// content in the payload was the first thing lost. Claude Code spilled to a file
+// and recovered it; Grok and Zed would not have.
+//
+// The resume here is sized like a real one (~50 KB) BECAUSE THE BUG ONLY APPEARS
+// AT THAT SIZE. A small fixture passes this test with the mechanism entirely
+// broken — which is precisely how it stayed broken.
+func TestBootstrapAlertsSurviveDefaultBudgetWithLiveSizedResume(t *testing.T) {
+	vault, resolver := testSetup(t)
+	resume := "# Resume\n\n## Behavioral Notes\n" + ResumePinMarker + "\n\n- never do the bad thing\n\n" +
+		"## Current State\n\n" + strings.Repeat("- narrative line that belongs in iterations.md\n", 1100)
+	if len(resume) < 50_000 {
+		t.Fatalf("test resume is %d bytes — too small to reproduce the defect", len(resume))
+	}
+	if err := vault.WriteResume("test-proj", resume, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := BootstrapContextTool(resolver, vault)
+	// No max_tokens ⇒ the DEFAULT (8000). No slim ⇒ stdio's default (false).
+	br := bootstrapResult(t, tool, `{"project":"test-proj"}`)
+
+	// The temp vault is not a git repo, so vault staleness is unknown ⇒ it warns.
+	// That alert is the canary: if it reached the directive, the tail survived.
+	if br.VaultStaleness == nil || !br.VaultStaleness.Warn {
+		t.Fatal("expected a vault-staleness warning in a non-git temp vault — test premise broken")
+	}
+	if !strings.Contains(br.PostBootstrapInstructions, br.VaultStaleness.Message) {
+		t.Errorf("the staleness alert did not survive into the directive:\n  directive: %q\n  alert: %q",
+			br.PostBootstrapInstructions, br.VaultStaleness.Message)
+	}
+
+	raw, err := json.Marshal(br)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokens := len(raw) / 4; tokens > 8000 {
+		t.Errorf("payload is %d tokens against the default budget of 8000 — the alerts are riding in a tail a host will truncate", tokens)
+	}
+	if !strings.Contains(br.Resume, "never do the bad thing") {
+		t.Error("the pinned behavioral note was shed at the default budget")
+	}
+}
+
+// Nothing shed, inside budget ⇒ NO budget field. Silent when healthy, exactly
+// like Health: an always-on report is the soft signal agents learn to skim.
+func TestBootstrapBudgetSilentWhenNothingShed(t *testing.T) {
+	vault, resolver := testSetup(t)
+	if err := vault.WriteResume("test-proj", "# Resume\n\n## State\n\nsmall.\n", ""); err != nil {
+		t.Fatal(err)
+	}
+	tool := BootstrapContextTool(resolver, vault)
+	br := bootstrapResult(t, tool, `{"project":"test-proj"}`)
+	if br.Budget != nil {
+		t.Errorf("budget reported on a healthy payload that shed nothing: %+v", br.Budget)
 	}
 }
 
