@@ -33,11 +33,30 @@ func ReportRelPath(date string) string { return "Audits/" + date + "-vault-audit
 // The date is passed in rather than read from the clock: a caller that stamps the
 // report and a caller that names the file must agree, and a function that reads the
 // clock twice can disagree with itself across midnight.
+//
+// An EMPTY date is legitimate and renders as an UNDATED report — it is what the MCP
+// tool produces when it is asked for an inline verdict rather than a file, since the
+// server has no business inventing a date the caller already knows.
+//
+// It must NOT render as an empty field. The first MCP run of this tool emitted
+// `date:` with nothing after it and a title ending in a bare em-dash: a document
+// asserting it has a date, and then not having one. A hollow field is worse than an
+// absent one — it looks like data, so a reader (or a parser) trusts it — and shipping
+// one from THIS package, whose entire subject is instruments that claim more than they
+// know, would have been the joke writing itself. Absent means absent.
 func (r Report) Render(date, vaultRoot string) string {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "---\ntype: vault-audit\ndate: %s\n---\n\n", date)
-	fmt.Fprintf(&b, "# Vault Audit — %s\n\n", date)
+	if date == "" {
+		b.WriteString("---\ntype: vault-audit\n---\n\n")
+		b.WriteString("# Vault Audit — undated\n\n")
+		b.WriteString("*This report was rendered inline and carries no date. Write it with " +
+			"`vp audit vault --write` (or `vp_audit_vault` with `write` and `date`) to stamp and " +
+			"commit it, which is what makes `git log -p Audits/` show drift.*\n\n")
+	} else {
+		fmt.Fprintf(&b, "---\ntype: vault-audit\ndate: %s\n---\n\n", date)
+		fmt.Fprintf(&b, "# Vault Audit — %s\n\n", date)
+	}
 
 	// The headline verdict, before any detail. A reader who stops here must not be
 	// misled: accepted debt PASSES but is not CLEAN, and the summary says both.
