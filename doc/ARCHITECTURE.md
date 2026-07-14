@@ -51,6 +51,39 @@ session capture, semantic search, and palace-based knowledge navigation through
 
 ---
 
+## Where Business Logic Lives (ADR-006)
+
+**For any rule you would write in prose, ask whether the server could simply do it.**
+Correctness must not depend on which model read which paragraph of which template —
+`vp check` has a full check suite that no template invokes, and `resume.md` carried
+"keep this file thin" in three places while growing to 88 KB.
+
+Every rule in this system sits in exactly one of three postures. There is no fourth:
+a rule that is none of these is not enforced, it is merely written down.
+
+| Posture | When | Example |
+|---|---|---|
+| **DERIVE** | the server can see every input, and there is one checkable answer | iteration number; `request_id`; the sync verdict (`storage.RemoteVerdict`); audit churn |
+| **DECLARE + ENFORCE** | the answer is authorial INTENT that no parsing recovers; the artifact declares it and the server refuses to guess when it is absent | the `<!-- vp:pin -->` marker in `resume.md`; a task's `Parent:`/`Depends:` lines; every `reason` in the `sourceaudit` baseline |
+| **REPORT + DEFER** | the answer is a trade-off or an irreversible act | the vault audit's findings; task retirement |
+
+**Err DOWNWARD.** The postures do not fail symmetrically: a REPORT that should have
+been a DERIVE costs a human a minute, while **a DERIVE of something that is not
+derivable is a silent wrong guess wearing the face of a measurement.** That is how
+`archive_adapter` defaulted to `claude-code` and made the Zed adapter unreachable, and
+how a missing audit anchor was read as zero and reported an entire vault's history as
+one day's churn. **Absence is not a value.**
+
+Distinct from all three: **DERIVE ≠ VERIFY ≠ TRUST.** The server *computes* it, or the
+agent supplies it and the server *checks* it, or nobody checks it — and the third must
+be labelled as trust (`approved_by_human` is an attestation, not an authorization).
+This is a **correctness boundary, not a security boundary**; "guard" is a banned word.
+
+See `doc/adr/006-derive-dont-ask.md` for the full rationale, the L0–L5 ladder, and
+where each open task sits on the line.
+
+---
+
 ## Storage Engine (Phase 1)
 
 ### Vault Concept
