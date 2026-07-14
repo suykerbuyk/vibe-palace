@@ -113,14 +113,6 @@
       "reason": "TEST-ONLY BY CONSTRUCTION, same as its siblings LoadBaseline/Diff/Save/Regenerate: this gate IS a go test, so its entry point has no non-test caller. It was HIDDEN until 206 — the bare-name matcher counted every exec.Cmd.Run() in the tree as a call to it. Surfaced by the import-scoped fix. Accepted."
     },
     {
-      "id": "uninvoked storage.PullResult.AllPulled",
-      "reason": "REAL FINDING, owned by task partial-remote-failure-is-reported-as-success. Not merely dead — its ABSENCE is the bug. cmd/vp/cmd_vault.go prints each failing remote and still returns cli.ExitOK, because it gates on Stranded() (no remote succeeded) rather than AllPulled(). So `vp vault pull` EXITS 0 when a remote fails. The all-succeeded predicate was written, tested, and never wired to the exit code."
-    },
-    {
-      "id": "uninvoked storage.PushResult.AllPushed",
-      "reason": "REAL FINDING, owned by task partial-remote-failure-is-reported-as-success. Same shape: internal/tools/system_tools.go sets status 'ok' whenever !Stranded(), so vp_vault_sync reports SUCCESS on a partial push failure. The two front-ends already disagree with each other about what a partial failure means."
-    },
-    {
       "id": "uninvoked storage.Vault.GetEntity",
       "reason": "REAL FINDING, owned by task storage-accessors-reimplemented-by-their-callers. Zero non-test callers; AddEntity hand-rolls the same find-entity-by-ID scan, and vp_kg_stats aggregates ListEntities itself. Built for a get-entity surface that never shipped."
     },

@@ -63,7 +63,7 @@ func TestPull_PhantomTemplateHeal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
-	if !res.AllPulled() {
+	if len(FailedRemotes(res.RemoteResults)) > 0 {
 		t.Fatalf("expected clean pull after heal, got %#v (output=%q)", res.RemoteResults, res.RemoteOutput["origin"])
 	}
 	if len(res.HealedTemplates) != 1 || res.HealedTemplates[0] != phantomTemplate {
@@ -147,8 +147,16 @@ func TestPull_MultiRemoteResultMap(t *testing.T) {
 	if res.RemoteResults["backup"] == nil {
 		t.Errorf("broken backup should record an error")
 	}
-	if !res.AnyPulled() || res.AllPulled() {
-		t.Errorf("AnyPulled=%v AllPulled=%v, want true/false", res.AnyPulled(), res.AllPulled())
+	if !res.AnyPulled() {
+		t.Errorf("AnyPulled=false, want true (origin pulled cleanly)")
+	}
+	// A partial pull is a FAILURE, and the verdict must name the remote that failed
+	// — the exact thing `vp vault pull` used to print and then exit 0 over.
+	if got := FailedRemotes(res.RemoteResults); len(got) != 1 || got[0] != "backup" {
+		t.Errorf("FailedRemotes = %v, want [backup]", got)
+	}
+	if v := RemoteVerdict(OpPull, res.RemoteResults, ""); !strings.Contains(v, "PARTIAL") || !strings.Contains(v, "backup") {
+		t.Errorf("RemoteVerdict = %q, want a PARTIAL verdict naming backup", v)
 	}
 	if res.Stranded() {
 		t.Errorf("one success means not stranded: %#v", res.RemoteResults)
@@ -182,7 +190,7 @@ func TestPull_RestartFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
-	if !res.AllPulled() {
+	if len(FailedRemotes(res.RemoteResults)) > 0 {
 		t.Fatalf("restart pull should land clean, got %#v (output=%q)", res.RemoteResults, res.RemoteOutput["origin"])
 	}
 	if len(res.HealedTemplates) != 1 || res.HealedTemplates[0] != phantomTemplate {
@@ -270,7 +278,7 @@ func TestPull_MultiRemoteSingleScanHeal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
-	if !res.AllPulled() {
+	if len(FailedRemotes(res.RemoteResults)) > 0 {
 		t.Fatalf("both remotes should pull clean, got %#v (origin=%q backup=%q)",
 			res.RemoteResults, res.RemoteOutput["origin"], res.RemoteOutput["backup"])
 	}
@@ -316,7 +324,7 @@ func TestPull_NonMainBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
-	if !res.AllPulled() {
+	if len(FailedRemotes(res.RemoteResults)) > 0 {
 		t.Fatalf("expected clean pull on trunk, got %#v", res.RemoteResults)
 	}
 	if len(res.HealedTemplates) != 1 {
@@ -373,8 +381,19 @@ func TestPullResult_Stranded(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.res.AllPulled(); got != tc.wantAll {
-				t.Errorf("AllPulled() = %v, want %v", got, tc.wantAll)
+			// The live all-succeeded predicate. NOTE THE no_remotes CASE: it has no
+			// failures, so RemoteVerdict is silent — a vault with no remotes configured
+			// is a clean local-only degrade, NOT an error. The deleted AllPulled()
+			// returned FALSE there, which is exactly why it could not be wired to an
+			// exit code as its own task assumed: `!AllPulled()` would have made every
+			// remote-less vault a failure.
+			gotAll := len(FailedRemotes(tc.res.RemoteResults)) == 0 && len(tc.res.RemoteResults) > 0
+			if gotAll != tc.wantAll {
+				t.Errorf("all-succeeded = %v, want %v", gotAll, tc.wantAll)
+			}
+			wantVerdict := len(FailedRemotes(tc.res.RemoteResults)) > 0
+			if v := RemoteVerdict(OpPull, tc.res.RemoteResults, ""); (v != "") != wantVerdict {
+				t.Errorf("RemoteVerdict = %q, want non-empty=%v", v, wantVerdict)
 			}
 			if got := tc.res.AnyPulled(); got != tc.wantAny {
 				t.Errorf("AnyPulled() = %v, want %v", got, tc.wantAny)

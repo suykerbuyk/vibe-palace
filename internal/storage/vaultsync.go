@@ -41,18 +41,10 @@ type PushResult struct {
 	PopConflictPaths []string
 }
 
-// AllPushed returns true if all remotes were pushed successfully.
-func (r *PushResult) AllPushed() bool {
-	if len(r.RemoteResults) == 0 {
-		return false
-	}
-	for _, err := range r.RemoteResults {
-		if err != nil {
-			return false
-		}
-	}
-	return true
-}
+// AllPushed was DELETED at 209 — see the AllPulled note in vaultpull.go for the full
+// reasoning. Same shape, same fate: written, unit-tested, never wired, while
+// vp_vault_sync reported `status: "ok"` on a partial push. Superseded by
+// FailedRemotes + RemoteVerdict (remotes.go), which both front-ends now call.
 
 // AnyPushed returns true if at least one remote was pushed successfully.
 func (r *PushResult) AnyPushed() bool {

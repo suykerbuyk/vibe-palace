@@ -459,11 +459,17 @@ func containsStr(s, sub string) bool {
 	return false
 }
 
-// TestVaultTidy_StrandedStatus verifies that when a sweep commits but the push
-// reaches no remote (a dead, configured remote), the handler reports
-// status:"stranded", stranded:true, and a loud summary rather than claiming
-// success.
-func TestVaultTidy_StrandedStatus(t *testing.T) {
+// A sweep whose commit reaches NO remote is an ERROR, not a status string.
+//
+// 🔴 THIS TEST USED TO ASSERT A SOFT TIER. It required status:"stranded" — a value
+// that is neither success nor failure, which is exactly the tier iteration 196
+// killed for capture and that this project keeps re-growing. A caller checking
+// `err != nil` (which is every caller) saw a stranded commit as a clean sweep.
+//
+// The commit still lands locally, and the error says so: the result body is
+// DISCARDED on a handler error (196), so everything the caller needs to act has to
+// ride in the error string itself.
+func TestVaultTidy_StrandedIsAnError(t *testing.T) {
 	root := initVaultRepo(t)
 	// A configured remote pointing at a path that does not exist: push + fetch
 	// both fail, so the commit lands locally but reaches no remote.
@@ -476,28 +482,36 @@ func TestVaultTidy_StrandedStatus(t *testing.T) {
 	push := true
 	params, _ := json.Marshal(vaultTidyParams{Push: &push})
 	res, err := tool.Handler(context.Background(), params)
-	if err != nil {
-		t.Fatalf("handler: %v", err)
+
+	if err == nil {
+		t.Fatalf("stranded tidy returned NO error — a commit that reached no remote was reported as success: %v", res)
 	}
-	m := res.(map[string]any)
-	if m["status"] != "stranded" {
-		t.Errorf("status = %v, want \"stranded\"", m["status"])
+	if !strings.Contains(err.Error(), "STRANDED") {
+		t.Errorf("error does not name the outcome: %v", err)
 	}
-	if m["stranded"] != true {
-		t.Errorf("stranded = %v, want true", m["stranded"])
+	// The caller must still learn that the commit EXISTS locally, or it cannot act.
+	if !strings.Contains(err.Error(), "EXISTS locally") {
+		t.Errorf("error does not tell the caller the commit landed locally: %v", err)
 	}
-	if m["committed"] != true {
-		t.Errorf("committed = %v, want true (commit must still land locally)", m["committed"])
-	}
-	if sum, _ := m["summary"].(string); !strings.Contains(sum, "STRANDED") {
-		t.Errorf("summary = %q, want it to contain the loud STRANDED warning", sum)
+	if !strings.Contains(err.Error(), "origin") {
+		t.Errorf("error does not name the failing remote: %v", err)
 	}
 }
 
-// TestVaultTidy_PartialPushCount verifies the corrected "pushed to N/M remotes"
-// count: with one healthy and one dead remote the push lands on one of two, so
-// the result is honest (not stranded, status ok) and the summary reports 1/2.
-func TestVaultTidy_PartialPushCount(t *testing.T) {
+// 🔴 A PARTIAL PUSH IS AN ERROR — AND THIS TEST USED TO ASSERT THE OPPOSITE.
+//
+// It was called TestVaultTidy_PartialPushCount, and its own doc comment described a
+// 1-of-2 remote failure as "honest (not stranded, status ok)". It asserted
+// status == "ok" and a summary reading "pushed to 1/2 remotes". That is the bug in
+// this task, written down and pinned by a green test: the vault is synced across
+// machines, and a remote that did not get the commit is a machine that will silently
+// be behind. Reporting that as success is the sync path telling you it worked when
+// it half-worked.
+//
+// The fixture it built — one healthy remote, one unreachable — IS the verification
+// bar this task demands ("a real vault with two remotes, one of them unreachable").
+// It was here the whole time, arriving at the wrong conclusion.
+func TestVaultTidy_PartialPushIsAnError(t *testing.T) {
 	root := initVaultRepo(t)
 	good := t.TempDir()
 	gitT(t, good, "init", "--bare", "-b", "main")
@@ -512,17 +526,19 @@ func TestVaultTidy_PartialPushCount(t *testing.T) {
 	push := true
 	params, _ := json.Marshal(vaultTidyParams{Push: &push})
 	res, err := tool.Handler(context.Background(), params)
-	if err != nil {
-		t.Fatalf("handler: %v", err)
+
+	if err == nil {
+		t.Fatalf("a 1-of-2 partial push returned NO error — the dead remote is silently behind: %v", res)
 	}
-	m := res.(map[string]any)
-	if m["status"] != "ok" {
-		t.Errorf("status = %v, want \"ok\" (one remote succeeded)", m["status"])
+	if !strings.Contains(err.Error(), "PARTIAL") {
+		t.Errorf("error does not distinguish PARTIAL from STRANDED: %v", err)
 	}
-	if m["stranded"] != false {
-		t.Errorf("stranded = %v, want false", m["stranded"])
+	if !strings.Contains(err.Error(), "dead") {
+		t.Errorf("error does not name the remote that failed, so nobody can act on it: %v", err)
 	}
-	if sum, _ := m["summary"].(string); !strings.Contains(sum, "pushed to 1/2 remotes") {
-		t.Errorf("summary = %q, want it to report \"pushed to 1/2 remotes\"", sum)
+	// ...and it must NOT be reported as stranded: the commit did reach a remote, and
+	// the remediation differs. Distinct in the message, identical in the verdict.
+	if strings.Contains(err.Error(), "STRANDED") {
+		t.Errorf("a partial push was reported as STRANDED: %v", err)
 	}
 }

@@ -196,8 +196,11 @@ func cmdVaultCommit() *cli.Command {
 						fmt.Fprintf(os.Stderr, "  push %s: ok\n", remote)
 					}
 				}
-				if res.Stranded() {
-					fmt.Fprintf(os.Stderr, "⚠ STRANDED: commit %s reached no remote — local-only; run `vp vault sync` to reconcile\n", res.CommitSHA)
+				// Stranded AND partial both fail here. Gating on Stranded() alone —
+				// which only fires when NO remote succeeded — meant a 1-of-2 remote
+				// failure exited 0 with the failure printed and then contradicted.
+				if v := storage.RemoteVerdict(storage.OpPush, res.RemoteResults, res.CommitSHA); v != "" {
+					fmt.Fprintln(os.Stderr, v)
 					return cli.ExitSystem
 				}
 				if res.PopConflict {
@@ -318,8 +321,8 @@ func cmdVaultTidy() *cli.Command {
 					fmt.Printf("  push %s: ok\n", remote)
 				}
 			}
-			if res.Stranded {
-				fmt.Fprintf(os.Stderr, "⚠ STRANDED: commit %s reached no remote — local-only; run `vp vault sync` to reconcile\n", res.CommitSHA)
+			if v := storage.RemoteVerdict(storage.OpPush, res.RemoteResults, res.CommitSHA); v != "" {
+				fmt.Fprintln(os.Stderr, v)
 				return cli.ExitSystem
 			}
 			if res.PopConflict {
@@ -555,8 +558,19 @@ func pullAll(root string, remotes []string, dryRun bool) int {
 		}
 		if rerr := res.RemoteResults[remote]; rerr != nil {
 			fmt.Fprintf(os.Stderr, "vp vault pull: %s: %v\n", remote, rerr)
-			// Best-effort: continue reporting other remotes.
+			// Best-effort on REPORTING — every remote is attempted and printed. The
+			// VERDICT below is not best-effort.
 		}
+	}
+
+	// ANY REMOTE FAILURE IS A FAILURE. This used to return ExitOK here — it printed
+	// each failing remote and then told its caller everything was fine, so a `vp
+	// vault pull` in a script, a hook or a restart flow succeeded while the host
+	// quietly ran on stale vault state. The vault is synced across machines, and
+	// this is the mechanism that is supposed to TELL you a machine is out of sync.
+	if v := storage.RemoteVerdict(storage.OpPull, res.RemoteResults, ""); v != "" {
+		fmt.Fprintln(os.Stderr, v)
+		return cli.ExitSystem
 	}
 	return cli.ExitOK
 }
@@ -574,6 +588,7 @@ func pushAll(root string, remotes []string, dryRun bool) int {
 		return cli.ExitUser
 	}
 
+	results := make(map[string]error, len(remotes))
 	for _, remote := range remotes {
 		if dryRun {
 			fmt.Fprintf(os.Stderr, "would run: git -C %s push %s main\n", root, remote)
@@ -582,9 +597,19 @@ func pushAll(root string, remotes []string, dryRun bool) int {
 		fmt.Fprintf(os.Stderr, "Pushing to %s...\n", remote)
 		cmd := exec.Command("git", "-C", root, "push", remote, "main")
 		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
+		err := cmd.Run()
+		results[remote] = err
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "vp vault push: %s: %v\n", remote, err)
 		}
+	}
+
+	// Same rule as pull and commit: any remote failure is a failure. This loop used
+	// to print the error and return ExitOK — a push that reached no remote at all
+	// still reported success.
+	if v := storage.RemoteVerdict(storage.OpPush, results, "HEAD"); v != "" {
+		fmt.Fprintln(os.Stderr, v)
+		return cli.ExitSystem
 	}
 	return cli.ExitOK
 }

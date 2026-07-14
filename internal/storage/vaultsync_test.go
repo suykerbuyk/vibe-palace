@@ -303,7 +303,7 @@ func TestCommitAndPushPaths_PushSingleRemote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("commit+push: %v", err)
 	}
-	if !res.AllPushed() {
+	if len(FailedRemotes(res.RemoteResults)) > 0 {
 		t.Errorf("expected all pushed, got %#v", res.RemoteResults)
 	}
 	// Verify the commit landed on the bare remote.
@@ -329,7 +329,7 @@ func TestCommitAndPushPaths_MultipleRemotes(t *testing.T) {
 	if len(res.RemoteResults) != 2 {
 		t.Errorf("got %d remote results, want 2", len(res.RemoteResults))
 	}
-	if !res.AllPushed() {
+	if len(FailedRemotes(res.RemoteResults)) > 0 {
 		t.Errorf("expected all pushed, got %#v", res.RemoteResults)
 	}
 }
@@ -356,7 +356,7 @@ func TestCommitAndPushPaths_PushRebasesOnNonFastForward(t *testing.T) {
 	if err != nil {
 		t.Fatalf("commit+push: %v", err)
 	}
-	if !res.AllPushed() {
+	if len(FailedRemotes(res.RemoteResults)) > 0 {
 		t.Errorf("expected all pushed after rebase, got %#v", res.RemoteResults)
 	}
 	// Both files must be present on the remote tip.
@@ -839,7 +839,7 @@ func TestCommitAndPushPaths_AlreadyAheadGuardFailsOpen(t *testing.T) {
 		if err != nil {
 			t.Fatalf("not-ahead happy path must succeed: %v", err)
 		}
-		if !res.AllPushed() {
+		if len(FailedRemotes(res.RemoteResults)) > 0 {
 			t.Errorf("not-ahead fast-forward push must succeed: %#v", res.RemoteResults)
 		}
 		if res.Stranded() {

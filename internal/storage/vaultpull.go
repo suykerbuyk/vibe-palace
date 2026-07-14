@@ -34,18 +34,23 @@ type PullResult struct {
 	HealedTemplates []string
 }
 
-// AllPulled returns true if all remotes were pulled successfully.
-func (r *PullResult) AllPulled() bool {
-	if len(r.RemoteResults) == 0 {
-		return false
-	}
-	for _, err := range r.RemoteResults {
-		if err != nil {
-			return false
-		}
-	}
-	return true
-}
+// AllPulled was DELETED at 209, and its deletion is the fix, not a cleanup.
+//
+// It was written, unit-tested, and never called by anything but its own tests —
+// while `vp vault pull` exited 0 on a failing remote, which is precisely the gate it
+// was written to be. Its absence WAS the bug.
+//
+// It is not resurrected here, because it could not have been used as written:
+//
+//   - It returns FALSE for an empty map, so `!AllPulled()` reads a vault with NO
+//     remotes — a legitimate local-only degrade — as a failure.
+//   - It cannot name the remotes that failed, and a verdict nobody can act on is
+//     half a verdict.
+//
+// FailedRemotes + RemoteVerdict (remotes.go) answer both questions in one place, and
+// BOTH front-ends now call them. Keeping a second, subtly-different predicate for the
+// same concept is how two implementations of one rule silently diverge — the trap
+// mdfence exists to document.
 
 // AnyPulled returns true if at least one remote was pulled successfully.
 func (r *PullResult) AnyPulled() bool {

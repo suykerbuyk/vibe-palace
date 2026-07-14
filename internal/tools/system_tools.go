@@ -198,12 +198,17 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 					remoteResults[name] = "ok"
 				}
 			}
-			status := "ok"
-			if res.Stranded() {
-				status = "stranded"
+			// ANY REMOTE FAILURE IS AN ERROR — never `status: "ok"` with the failure
+			// buried in remote_results, a field nothing reads. This is the posture
+			// vp_capture_session adopted at 200, for the same reason: a tool that
+			// reports success for work it did not do trains its caller to stop
+			// checking. Partial and stranded differ in the MESSAGE, never in the
+			// verdict — 196 killed the middle tier and the precedent holds here.
+			if v := storage.RemoteVerdict(storage.OpPush, res.RemoteResults, res.CommitSHA); v != "" {
+				return nil, fmt.Errorf("%s: %s (remote_results: %v)", p.Action, v, remoteResults)
 			}
 			return map[string]any{
-				"status":             status,
+				"status":             "ok",
 				"action":             p.Action,
 				"committed":          res.CommitSHA != "",
 				"commit_sha":         res.CommitSHA,
@@ -268,9 +273,13 @@ func gitRemoteList(root string) ([]string, error) {
 func gitPull(root string, remotes []string) (string, error) {
 	// storage.Pull is best-effort across mirror remotes: it attempts each,
 	// self-healing phantom Templates/commands/*.md dirt before the merge, and stops
-	// early only when a merge conflict leaves the tree unmergeable. gitPull folds
-	// captured output up to and including the first failing remote and returns that
-	// remote's error — but later mirrors may already have been merged successfully.
+	// early only when a merge conflict leaves the tree unmergeable.
+	//
+	// 🔴 THIS USED TO RETURN AT THE FIRST FAILING REMOTE, which meant the two
+	// front-ends disagreed about the same event: the CLI printed every remote and
+	// exited 0, while this errored on remote #1 and never mentioned remote #2. There
+	// was no single answer to "did the sync succeed?" Now both report EVERY remote
+	// and both take the same verdict from storage.RemoteVerdict.
 	res, err := storage.Pull(root, remotes)
 	if err != nil {
 		return "", err
@@ -283,8 +292,11 @@ func gitPull(root string, remotes []string) (string, error) {
 	for _, remote := range remotes {
 		fmt.Fprintf(&buf, "[pull %s] %s\n", remote, strings.TrimSpace(res.RemoteOutput[remote]))
 		if rerr := res.RemoteResults[remote]; rerr != nil {
-			return buf.String(), fmt.Errorf("%s: %w", remote, rerr)
+			fmt.Fprintf(&buf, "[pull %s] FAILED: %v\n", remote, rerr)
 		}
+	}
+	if v := storage.RemoteVerdict(storage.OpPull, res.RemoteResults, ""); v != "" {
+		return buf.String(), fmt.Errorf("%s", v)
 	}
 	return buf.String(), nil
 }
@@ -301,16 +313,23 @@ func gitPush(root string, remotes []string) (string, error) {
 	}
 
 	var buf strings.Builder
+	results := make(map[string]error, len(remotes))
 	for _, remote := range remotes {
 		cmd := exec.Command("git", "-C", root, "push", remote, "main")
 		var combined bytes.Buffer
 		cmd.Stdout = &combined
 		cmd.Stderr = &combined
 		err := cmd.Run()
+		results[remote] = err
 		fmt.Fprintf(&buf, "[push %s] %s\n", remote, strings.TrimSpace(combined.String()))
 		if err != nil {
-			return buf.String(), fmt.Errorf("%s: %w", remote, err)
+			fmt.Fprintf(&buf, "[push %s] FAILED: %v\n", remote, err)
 		}
+	}
+	// Every remote is attempted and reported; the verdict names all of them. Same
+	// rule, same words, same outcome as the CLI — one definition, two front-ends.
+	if v := storage.RemoteVerdict(storage.OpPush, results, "HEAD"); v != "" {
+		return buf.String(), fmt.Errorf("%s", v)
 	}
 	return buf.String(), nil
 }
@@ -422,13 +441,17 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 				len(res.Reported), userMemorySummarySuffix(len(res.ReportedUserContent)))
 		}
 
-		status := "ok"
-		if res.Stranded {
-			status = "stranded"
+		// A tidy that could not reach a remote is a tidy that FAILED, even though the
+		// commit landed locally. The result body is DISCARDED on a handler error (196),
+		// so everything the caller needs to act — the commit that does exist, and what
+		// is missing from where — has to ride in the error string itself.
+		if v := storage.RemoteVerdict(storage.OpPush, res.RemoteResults, res.CommitSHA); v != "" {
+			return nil, fmt.Errorf("tidy: %s — the commit EXISTS locally (%s, %d swept) but is not safe; remote_results: %v",
+				v, res.CommitSHA, len(res.Swept), remoteResults)
 		}
 
 		return map[string]any{
-			"status":                status,
+			"status":                "ok",
 			"dry_run":               false,
 			"swept":                 res.Swept,
 			"reported":              res.Reported,
