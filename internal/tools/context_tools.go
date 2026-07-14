@@ -18,6 +18,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultaudit"
 	"github.com/suykerbuyk/vibe-palace/internal/vplog"
 )
 
@@ -52,6 +53,13 @@ type BootstrapResult struct {
 	// killed the `partial` capture status. This field appearing AT ALL means
 	// something needs looking at.
 	Health *vplog.Summary `json:"health,omitempty"`
+
+	// AuditStaleness nags when the vault audit has gone stale — NIL WHEN FRESH, for
+	// the same reason Health is. This payload now carries four possible alerts, and
+	// four alerts that fire on a healthy vault is how you train a reader to skim all
+	// four. Any new bootstrap alert MUST be silent in the healthy case; if a fifth is
+	// ever proposed, they need a priority or a cap first.
+	AuditStaleness *vaultaudit.Staleness `json:"audit_staleness,omitempty"`
 
 	// Budget reports what the token shed ladder did. NIL when nothing was shed
 	// and the payload fit — the healthy case says nothing, exactly like Health.
@@ -463,6 +471,32 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	if h := vplog.Summarize(vaultLogPath(vault), healthWindowHours, healthDisplayLimit); !h.Healthy() {
 		result.Health = &h
 		alerts = append(alerts, healthMessage(h))
+	}
+
+	// Audit staleness — PUSHED, not pulled, and SILENT WHEN FRESH.
+	//
+	// The operator arrived at this independently of the vp_health work ("it's easy
+	// to forget to run QA-like tools such as vault-audit… perhaps on startup, if an
+	// audit has not been run for 50 or so iterations, it suggests one be performed"),
+	// which is the strongest evidence it is right. "Agents and humans forget to call
+	// the QA tool" is EXACTLY the vp_health problem, and the answer is already proved:
+	// do not write a rule in prose asking someone to remember — have the SERVER
+	// notice and say so. `vp check` is this project's standing proof that prose
+	// reaches nobody.
+	//
+	// It is essentially FREE (see vaultaudit.CheckStaleness): churn is a glob of
+	// session-note filenames with zero file reads, and the only read is a bounded
+	// 512-byte head of the newest report's frontmatter. The AUDIT may be slow; the
+	// STALENESS CHECK may not — this is the hottest path in the system.
+	//
+	// 🔴 THIS IS THE FOURTH ALERT ON THIS PAYLOAD, and it could only be added once
+	// the payload could actually deliver three (bootstrap-payload-exceeds-its-own-
+	// token-budget, landed at 209). Adding a fourth alert to a vehicle returning
+	// 2.4x over budget would not have been a feature; it would have been a fourth
+	// thing nobody reads, reporting success while being silently truncated away.
+	if as := vaultaudit.CheckStaleness(vault, time.Now()); as.Warn {
+		result.AuditStaleness = &as
+		alerts = append(alerts, as.Message)
 	}
 
 	// Compose a PROVISIONAL directive so the ladder below measures a payload the

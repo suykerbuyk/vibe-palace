@@ -8,6 +8,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -915,6 +918,79 @@ func TestBootstrapAlertsSurviveDefaultBudgetWithLiveSizedResume(t *testing.T) {
 	}
 	if !strings.Contains(br.Resume, "never do the bad thing") {
 		t.Error("the pinned behavioral note was shed at the default budget")
+	}
+}
+
+// 🔴 THE FOURTH ALERT SURVIVES THE LADDER — which is the entire reason phase 4 of
+// the vault audit was gated on the payload fix.
+//
+// Adding an audit-staleness nag to a payload that returned 2.4x over budget would
+// not have been a feature: it would have been a fourth thing riding in a tail the
+// host truncates, reporting success while being silently dropped. This asserts it
+// arrives at the DEFAULT max_tokens against a live-sized resume — the case that was
+// broken — and that a FRESH audit says nothing at all.
+func TestBootstrapAuditStalenessNagSurvivesTheShedLadder(t *testing.T) {
+	vault, resolver := testSetup(t)
+	resume := "# Resume\n\n## Notes\n" + ResumePinMarker + "\n\n- terse\n\n## Current State\n\n" +
+		strings.Repeat("- narrative that belongs in iterations.md\n", 1200)
+	if err := vault.WriteResume("test-proj", resume, ""); err != nil {
+		t.Fatal(err)
+	}
+	// A corpus far past the churn threshold, and an audit report that anchors it.
+	seedSessionNotes(t, vault.Root, "test-proj", 120)
+	writeAuditReport(t, vault.Root, "2026-01-01", 5)
+
+	tool := BootstrapContextTool(resolver, vault)
+	br := bootstrapResult(t, tool, `{"project":"test-proj"}`)
+
+	if br.AuditStaleness == nil || !br.AuditStaleness.Warn {
+		t.Fatalf("no audit-staleness nag on a vault 115 notes past its last audit: %+v", br.AuditStaleness)
+	}
+	if !strings.Contains(br.PostBootstrapInstructions, br.AuditStaleness.Message) {
+		t.Errorf("the nag never reached the directive the agent actually reads — it rode in a field and died in the tail:\n  directive: %q",
+			br.PostBootstrapInstructions)
+	}
+	// It must not have COST us the budget to deliver it.
+	if br.Budget != nil && br.Budget.OverBudget {
+		t.Errorf("payload went over budget carrying the fourth alert: %+v", br.Budget)
+	}
+
+	// The other half, and the one that keeps all four alerts readable: a FRESH audit
+	// is SILENT. Four alerts that fire on a healthy vault is how a reader learns to
+	// skim all four.
+	writeAuditReport(t, vault.Root, time.Now().Format("2006-01-02"), 120)
+	fresh := bootstrapResult(t, tool, `{"project":"test-proj"}`)
+	if fresh.AuditStaleness != nil {
+		t.Errorf("a fresh audit still nagged: %+v", fresh.AuditStaleness)
+	}
+	if strings.Contains(fresh.PostBootstrapInstructions, "vault audit is STALE") {
+		t.Errorf("a fresh audit leaked a nag into the directive: %q", fresh.PostBootstrapInstructions)
+	}
+}
+
+func seedSessionNotes(t *testing.T, root, project string, n int) {
+	t.Helper()
+	dir := filepath.Join(root, "Projects", project, "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := range n {
+		name := fmt.Sprintf("2026-07-%02d-abcdef12-%02d.md", (i%28)+1, i)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("# note\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func writeAuditReport(t *testing.T, root, date string, sessionNotes int) {
+	t.Helper()
+	dir := filepath.Join(root, "Audits")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf("---\ntype: vault-audit\ndate: %s\nsession_notes: %d\n---\n\n# Vault Audit\n", date, sessionNotes)
+	if err := os.WriteFile(filepath.Join(dir, date+"-vault-audit.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

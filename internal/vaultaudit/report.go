@@ -54,7 +54,11 @@ func (r Report) Render(date, vaultRoot string) string {
 			"`vp audit vault --write` (or `vp_audit_vault` with `write` and `date`) to stamp and " +
 			"commit it, which is what makes `git log -p Audits/` show drift.*\n\n")
 	} else {
-		fmt.Fprintf(&b, "---\ntype: vault-audit\ndate: %s\n---\n\n", date)
+		// session_notes is the CHURN ANCHOR the staleness nag subtracts from. It is
+		// stamped only on a DATED (i.e. written) report: an undated inline render is
+		// not a record of anything, and a nag that anchored on one would silently
+		// reset its own clock every time someone merely LOOKED at the audit.
+		fmt.Fprintf(&b, "---\ntype: vault-audit\ndate: %s\nsession_notes: %d\n---\n\n", date, r.SessionNotes)
 		fmt.Fprintf(&b, "# Vault Audit — %s\n\n", date)
 	}
 

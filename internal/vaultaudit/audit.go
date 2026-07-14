@@ -56,6 +56,12 @@ type DimensionResult struct {
 // Report is one audit run over the whole vault.
 type Report struct {
 	Dimensions []DimensionResult
+
+	// SessionNotes is the vault-wide session-note count AT RUN TIME. It is stamped
+	// into the report's frontmatter, and it is the anchor the staleness nag
+	// subtracts from to compute churn — without it, the next bootstrap can only ask
+	// "how OLD is the last audit", never "how much has HAPPENED since it".
+	SessionNotes int
 }
 
 // Findings returns every finding across every dimension — the input to
@@ -115,7 +121,7 @@ func Run(vault *storage.Vault) (Report, error) {
 		{DimIterationHeadings, EvidenceIterationHeadings, auditIterationHeadings},
 	}
 
-	report := Report{}
+	report := Report{SessionNotes: SessionNoteCount(vault)}
 	for _, d := range dims {
 		findings, unknowns, err := d.run(vault)
 		if err != nil {
