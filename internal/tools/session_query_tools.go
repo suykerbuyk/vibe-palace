@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"slices"
 	"strings"
 	"time"
@@ -589,10 +588,4 @@ func metaMatchesQuery(meta storage.SessionMeta, lowerQuery string) bool {
 		}
 	}
 	return false
-}
-
-// roundTo rounds f to n decimal places.
-func roundTo(f float64, n int) float64 {
-	pow := math.Pow(10, float64(n))
-	return math.Round(f*pow) / pow
 }

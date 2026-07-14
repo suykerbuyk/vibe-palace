@@ -163,7 +163,10 @@ func TestListAllProjects_MissingTreesAreNotErrors(t *testing.T) {
 // TestListAllProjects_LiveVaultCanary runs the enumerator against a REAL vault
 // and reports what ListProjects cannot see. It is opt-in:
 //
-//	VP_LIVE_VAULT=~/obsidian/vibe-palace-vault go test ./internal/storage/ -run LiveVaultCanary -v
+//	VP_LIVE_VAULT=~/obsidian/vibe-palace-vault go test ./internal/storage/ -run LiveVaultCanary -v -count=1
+//
+// -count=1 matters: the vault is OUTSIDE the module, so `go test` cannot see its
+// contents change and will serve a CACHED verdict for a vault it never re-read.
 //
 // It exists because every bug this enumerator was built to fix survived a green
 // unit suite. Fixtures are built by the same person holding the same wrong

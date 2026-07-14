@@ -351,8 +351,31 @@ func writeOnlyFields(files []file) []Finding {
 // uninvokedFuncs finds functions and methods declared in non-test code that no
 // non-test code ever calls — "capability built, nothing invokes it".
 //
-// Calls are tracked by BARE NAME (both `Foo()` and `x.Foo()`), which is again the
-// conservative direction: a name called anywhere counts as called everywhere.
+// Calls are tracked by BARE NAME (both `Foo()` and `x.Foo()`) because this is an
+// AST-only analyzer with no type resolution: at `base.Diff(x)` there is nothing to
+// say what type `base` is. Bare-name matching is the conservative direction — a name
+// called anywhere counts as called everywhere — which trades false negatives for
+// safety from false positives, and 203 is why (a gate that calls LIVE code dead is
+// how you get a disabled gate without anyone deciding to disable it).
+//
+// # But the conservative direction had teeth of its own (206)
+//
+// A bare name is only unambiguous if ONE package declares it. When two do, a live
+// call to one silently marks the OTHER as invoked — and this is not theoretical: the
+// new internal/vaultaudit package declares Baseline.Diff/Save/Regenerate and
+// LoadBaseline, mirroring sourceaudit's own, and its live calls made the gate report
+// sourceaudit's genuinely-dead versions as STALE baseline entries. **The gate then
+// demanded the removal of two TRUE records.** A false negative that merely hides a
+// finding is bad; one that actively rewrites the baseline corrupts the ratchet.
+// Names like Save, Load, Run and Diff are not exotic — they are Go.
+//
+// So: names declared in EXACTLY ONE package keep the permissive rule (there is no
+// ambiguity to resolve, and permissive cannot be wrong). Names declared in TWO OR
+// MORE are IMPORT-SCOPED: a call in package P satisfies a declaration in package Q
+// only if P == Q or P imports Q. That is sound without type information — a package
+// that does not import Q cannot name Q's function — and it is applied ONLY where the
+// ambiguity exists, so the blast radius is exactly the collision class and nothing
+// else.
 func uninvokedFuncs(files []file) []Finding {
 	type decl struct {
 		name string
@@ -361,9 +384,20 @@ func uninvokedFuncs(files []file) []Finding {
 		pos  string
 	}
 	var declared []decl
-	called := map[string]bool{}
+
+	// called[callerPkg][name] — WHO called it, not merely that someone did.
+	called := map[string]map[string]bool{}
+	markCalled := func(pkg, name string) {
+		if called[pkg] == nil {
+			called[pkg] = map[string]bool{}
+		}
+		called[pkg][name] = true
+	}
+
+	imports := importGraph(files)
 
 	for _, f := range files {
+		pkg := f.ast.Name.Name
 		if !f.isTest {
 			for _, d := range f.ast.Decls {
 				fd, ok := d.(*ast.FuncDecl)
@@ -400,9 +434,9 @@ func uninvokedFuncs(files []file) []Finding {
 			}
 			switch fn := call.Fun.(type) {
 			case *ast.Ident:
-				called[fn.Name] = true
+				markCalled(pkg, fn.Name)
 			case *ast.SelectorExpr:
-				called[fn.Sel.Name] = true
+				markCalled(pkg, fn.Sel.Name)
 			}
 			return true
 		})
@@ -410,21 +444,22 @@ func uninvokedFuncs(files []file) []Finding {
 		// A function VALUE passed around (mycmd.Run, not mycmd.Run()) is also a use:
 		// it is invoked later, through the value. Without this, every handler and
 		// callback in the tree looks dead.
+		mark := func(e ast.Expr) { markFuncValue(e, pkg, markCalled) }
 		ast.Inspect(f.ast, func(n ast.Node) bool {
 			switch node := n.(type) {
 			case *ast.KeyValueExpr:
-				markFuncValue(node.Value, called)
+				mark(node.Value)
 			case *ast.AssignStmt:
 				for _, rhs := range node.Rhs {
-					markFuncValue(rhs, called)
+					mark(rhs)
 				}
 			case *ast.CallExpr:
 				for _, arg := range node.Args {
-					markFuncValue(arg, called)
+					mark(arg)
 				}
 			case *ast.ReturnStmt:
 				for _, res := range node.Results {
-					markFuncValue(res, called)
+					mark(res)
 				}
 			case *ast.ValueSpec:
 				// `var EmbeddedSHA = realEmbeddedSHA` — a package-level test seam, and
@@ -435,7 +470,7 @@ func uninvokedFuncs(files []file) []Finding {
 				// first baseline: templates.realEmbeddedSHA is reachable from five sites
 				// via internal/templates/embedded.go:103 and the gate reported it dead.
 				for _, v := range node.Values {
-					markFuncValue(v, called)
+					mark(v)
 				}
 			}
 			return true
@@ -446,9 +481,20 @@ func uninvokedFuncs(files []file) []Finding {
 	// can never have an in-tree call site. Exempt them; see stdlibContracts.
 	exempt := stdlibDispatchedMethods(files)
 
+	// declaringPkgs[name] — every package declaring this name. A name declared in
+	// exactly ONE package is unambiguous, and bare-name matching cannot be wrong
+	// about it. Two or more, and a call must be attributed by the import graph.
+	declaringPkgs := map[string]map[string]bool{}
+	for _, d := range declared {
+		if declaringPkgs[d.name] == nil {
+			declaringPkgs[d.name] = map[string]bool{}
+		}
+		declaringPkgs[d.name][d.pkg] = true
+	}
+
 	var out []Finding
 	for _, d := range declared {
-		if called[d.name] {
+		if isCalled(d.name, d.pkg, called, imports, declaringPkgs) {
 			continue
 		}
 		if d.recv != "" && exempt[d.recv][d.name] {
@@ -466,6 +512,79 @@ func uninvokedFuncs(files []file) []Finding {
 				"should be invoking it and does not (the Zed-adapter / vp_health / vp-check class), or it is " +
 				"dead and should be deleted.",
 		})
+	}
+	return out
+}
+
+// isCalled decides whether a declaration in declPkg named name has a non-test call
+// site, resolving the ambiguity that bare-name matching cannot.
+//
+//   - Declared in exactly ONE package ⇒ permissive: a call from anywhere counts.
+//     There is nothing to confuse it with, so this cannot produce a false positive.
+//   - Declared in TWO OR MORE ⇒ import-scoped: only a call from the declaring package
+//     itself, or from a package that IMPORTS it, can be a call to THIS one. A package
+//     that does not import Q cannot name Q's function — sound without type info.
+//
+// Restricting the strict rule to ambiguous names is what keeps this safe. Applying it
+// everywhere would flag a method dispatched through an interface from a package that
+// never imports the implementation — a false positive, and 203 established that a gate
+// which calls live code dead is worse than one that misses something.
+func isCalled(name, declPkg string, called map[string]map[string]bool, imports map[string]map[string]bool, declaringPkgs map[string]map[string]bool) bool {
+	ambiguous := len(declaringPkgs[name]) > 1
+
+	for callerPkg, names := range called {
+		if !names[name] {
+			continue
+		}
+		if !ambiguous {
+			return true
+		}
+		if callerPkg == declPkg || imports[callerPkg][declPkg] {
+			return true
+		}
+	}
+	return false
+}
+
+// importGraph maps each package name to the set of IN-TREE package names it imports.
+//
+// Import paths are resolved to package names by their final segment, then translated
+// through the packages actually parsed — so a package whose name differs from its
+// directory is still resolved correctly. Out-of-tree imports (stdlib, third party)
+// simply never match an in-tree declaring package, which is the right answer.
+func importGraph(files []file) map[string]map[string]bool {
+	// dirBase → package name, learned from the files we parsed.
+	pkgByDirBase := map[string]string{}
+	for _, f := range files {
+		pkgByDirBase[filepath.Base(filepath.Dir(f.path))] = f.ast.Name.Name
+	}
+
+	out := map[string]map[string]bool{}
+	for _, f := range files {
+		if f.isTest {
+			continue
+		}
+		pkg := f.ast.Name.Name
+		if out[pkg] == nil {
+			out[pkg] = map[string]bool{}
+		}
+		for _, imp := range f.ast.Imports {
+			if imp.Path == nil {
+				continue
+			}
+			path := strings.Trim(imp.Path.Value, `"`)
+			seg := path
+			if i := strings.LastIndex(seg, "/"); i >= 0 {
+				seg = seg[i+1:]
+			}
+			// An explicit alias names the package as this file sees it, but the
+			// DECLARING package's real name is what we must match, so resolve the
+			// path — not the alias.
+			if real, ok := pkgByDirBase[seg]; ok {
+				out[pkg][real] = true
+			}
+			out[pkg][seg] = true
+		}
 	}
 	return out
 }
@@ -575,12 +694,12 @@ func stdlibDispatchedMethods(files []file) map[string]map[string]bool {
 
 // markFuncValue records a bare function reference used as a VALUE (a handler, a
 // callback, a struct field) as "called" — because it will be, through that value.
-func markFuncValue(e ast.Expr, called map[string]bool) {
+func markFuncValue(e ast.Expr, pkg string, markCalled func(pkg, name string)) {
 	switch v := e.(type) {
 	case *ast.Ident:
-		called[v.Name] = true
+		markCalled(pkg, v.Name)
 	case *ast.SelectorExpr:
-		called[v.Sel.Name] = true
+		markCalled(pkg, v.Sel.Name)
 	}
 }
 

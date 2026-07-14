@@ -6,6 +6,7 @@ package sourceaudit
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -247,6 +248,110 @@ func Make(err error) error { return &wrapErr{err: err} }
 // So: plant exactly that shape — an in-tree interface, a real implementation of it, a
 // driver that holds the interface and calls only SOME of its methods — and demand the
 // uncalled one still be named.
+// writeMultiPkgFixture writes several packages under one root, so a test can pin
+// CROSS-PACKAGE behaviour. srcByPkg maps package name → file body.
+func writeMultiPkgFixture(t *testing.T, srcByPkg map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+	for pkg, src := range srcByPkg {
+		dir := filepath.Join(root, pkg)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, pkg+".go"), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// 🔴 TestDeadCodeIsNotResurrectedByASameNamedFuncElsewhere pins the 206 bug.
+//
+// The matcher is AST-only and cannot resolve what `x` is in `x.Diff()`, so it keys on
+// bare names. That silently marked internal/sourceaudit's genuinely-dead Baseline.Diff
+// and LoadBaseline as INVOKED the moment internal/vaultaudit — which does not import
+// sourceaudit — defined and called its own. The gate then reported those two TRUE
+// baseline entries as STALE and demanded their removal.
+//
+// A false negative that hides a finding is bad. One that REWRITES THE BASELINE
+// corrupts the ratchet the whole epic leans on. Names like Save, Load, Run and Diff
+// are not exotic; they are Go, so any new package could do this again.
+//
+// The rule: a name declared in ONE package stays permissive (nothing to confuse it
+// with); a name declared in TWO OR MORE is import-scoped.
+func TestDeadCodeIsNotResurrectedByASameNamedFuncElsewhere(t *testing.T) {
+	root := writeMultiPkgFixture(t, map[string]string{
+		// alpha.Diff is DEAD. Nothing anywhere calls it.
+		"alpha": `package alpha
+
+func Diff() string { return "dead — nobody calls this" }
+`,
+		// beta declares its OWN Diff and calls it. beta does NOT import alpha, so this
+		// call cannot possibly be a call to alpha.Diff.
+		"beta": `package beta
+
+func Diff() string { return "live" }
+
+func Drive() string { return Diff() }
+`,
+	})
+
+	findings, err := Run(root)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := ids(findings)
+	if !slices.Contains(got, "uninvoked alpha.Diff") {
+		t.Fatalf("alpha.Diff is DEAD and was not flagged — beta's identically-named, "+
+			"live Diff resurrected it. A package that does not import alpha cannot call "+
+			"alpha.Diff.\n  findings: %v", got)
+	}
+	if slices.Contains(got, "uninvoked beta.Diff") {
+		t.Errorf("beta.Diff IS called, in its own package — flagging it is a false positive: %v", got)
+	}
+}
+
+// TestImportScopingDoesNotFlagAGenuineCrossPackageCall is the other half: the scoping
+// must not create a FALSE POSITIVE. A package that DOES import the declarer, and calls
+// the function, satisfies it — even when the name is ambiguous tree-wide.
+//
+// 203 established the asymmetry that makes this test matter: a gate calling LIVE code
+// dead is worse than one that misses something, because it teaches everyone to wave off
+// its findings.
+func TestImportScopingDoesNotFlagAGenuineCrossPackageCall(t *testing.T) {
+	root := writeMultiPkgFixture(t, map[string]string{
+		"alpha": `package alpha
+
+func Diff() string { return "live, called from gamma" }
+`,
+		// beta makes the name AMBIGUOUS, which is what turns on import scoping.
+		"beta": `package beta
+
+func Diff() string { return "also live" }
+
+func Drive() string { return Diff() }
+`,
+		// gamma imports alpha and calls it. This MUST satisfy alpha.Diff.
+		"gamma": `package gamma
+
+import "example.com/fixture/alpha"
+
+func Drive() string { return alpha.Diff() }
+`,
+	})
+
+	findings, err := Run(root)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if got := ids(findings); slices.Contains(got, "uninvoked alpha.Diff") {
+		t.Fatalf("alpha.Diff IS called from gamma, which imports alpha — flagging it is "+
+			"the false positive 203 warned about.\n  findings: %v", got)
+	}
+}
+
 func TestInTreeInterfaceMethodNobodyCallsIsStillFlagged(t *testing.T) {
 	dir := writeFixture(t, `package fixture
 

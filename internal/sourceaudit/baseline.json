@@ -1,6 +1,10 @@
 {
   "entries": [
     {
+      "id": "uninvoked absorb.Classify",
+      "reason": "REAL FINDING (capability built, nothing invokes it), surfaced at 206 by the import-scoped fix — it was hidden because palace.RoomClassifier.Classify is live and the matcher compared bare names. Verified: production reaches absorb through BuildPlan/Apply (cmd/vp/cmd_absorb.go:96,157); NOTHING — not even absorb itself — calls this exported pure function. Only its own test does. Owned by task dead-classify-and-generate-entry-points-nothing-calls."
+    },
+    {
       "id": "uninvoked atomicfile.WithFsync",
       "reason": "REAL FINDING, owned by task atomicfile-options-unused-nothing-is-ever-fsynced. Zero non-test callers: all 17 production atomicfile.Write call sites pass zero options, so NOTHING IN THE PRODUCT IS EVER FSYNCED and this option's stated purpose (durability beyond rename atomicity) is unmet everywhere. Do not delete without deciding the durability posture first — the option is the fix, not the debt."
     },
@@ -27,6 +31,10 @@
     {
       "id": "uninvoked embedder.NewMock",
       "reason": "TEST-ONLY BY DESIGN. ~26 callers across 12 test files in 7 packages. Go forbids importing a _test.go from another package, so a cross-package test helper is FORCED into a non-test file — it is irreducible, not dead. Accepted. (Could be removed from scope entirely by moving it to an internal/embedder/embeddertest package.)"
+    },
+    {
+      "id": "uninvoked enrichment.Generate",
+      "reason": "REAL FINDING, surfaced at 206 by the import-scoped fix (hidden behind plugin.Generate, an unrelated same-named func in another package). Verified: production enriches via NewEnricher + enricher.Enrich (capture/enricher_config.go:57, capture/enrichqueue.go:193). This package-level entry point has only test callers. Owned by task dead-classify-and-generate-entry-points-nothing-calls."
     },
     {
       "id": "uninvoked mcp.CommandURI",
@@ -101,6 +109,10 @@
       "reason": "TEST-ONLY BY CONSTRUCTION, same as Baseline.Diff. Accepted."
     },
     {
+      "id": "uninvoked sourceaudit.Run",
+      "reason": "TEST-ONLY BY CONSTRUCTION, same as its siblings LoadBaseline/Diff/Save/Regenerate: this gate IS a go test, so its entry point has no non-test caller. It was HIDDEN until 206 — the bare-name matcher counted every exec.Cmd.Run() in the tree as a call to it. Surfaced by the import-scoped fix. Accepted."
+    },
+    {
       "id": "uninvoked storage.PullResult.AllPulled",
       "reason": "REAL FINDING, owned by task partial-remote-failure-is-reported-as-success. Not merely dead — its ABSENCE is the bug. cmd/vp/cmd_vault.go prints each failing remote and still returns cli.ExitOK, because it gates on Stranded() (no remote succeeded) rather than AllPulled(). So `vp vault pull` EXITS 0 when a remote fails. The all-succeeded predicate was written, tested, and never wired to the exit code."
     },
@@ -125,8 +137,32 @@
       "reason": "REAL FINDING, owned by task storage-accessors-reimplemented-by-their-callers. The worst of the batch: vp_search_sessions EXISTS and does not call this — it re-does the same friction/query/limit loop inline and duplicates the matcher. The two HAVE ALREADY DIVERGED (the tool has a tag filter and clamps limit; storage's does neither). And internal/integration/friction_test.go tests the DEAD path, giving false confidence that the shipped path is covered."
     },
     {
+      "id": "uninvoked templates.Classify",
+      "reason": "REAL FINDING, surfaced at 206 by the import-scoped fix (hidden behind palace.RoomClassifier.Classify). Worse than merely dead: its own doc comment says 'the mapping matches the decision table documented in reconcile.TemplateTree.planMaterialize' — so the live decision table is implemented SEPARATELY in reconcile and this is a PARALLEL COPY that no caller reaches. Two implementations of one rule, one of them unreachable, is how they silently diverge. Owned by task dead-classify-and-generate-entry-points-nothing-calls."
+    },
+    {
       "id": "uninvoked testutil.ProjectCacheDir",
       "reason": "TEST-ONLY BY DESIGN (it takes a *testing.T), cross-package so it cannot live in a _test.go. Accepted."
+    },
+    {
+      "id": "uninvoked vaultaudit.Baseline.Regenerate",
+      "reason": "DELIBERATELY PARKED, owned by vault-audit-phase3-dimensions-and-command — rebuilds the baseline while PRESERVING reasons (the bug sourceaudit shipped and fixed at 203). Test-only until phase 3 exposes it. Self-cleaning. Do NOT reap."
+    },
+    {
+      "id": "uninvoked vaultaudit.Baseline.Save",
+      "reason": "DELIBERATELY PARKED, owned by vault-audit-phase3-dimensions-and-command — the write half of the ratchet, called when the operator accepts current state. Test-only until phase 3 exposes it. Self-cleaning. Do NOT reap."
+    },
+    {
+      "id": "uninvoked vaultaudit.Report.Failed",
+      "reason": "DELIBERATELY PARKED, owned by vault-audit-phase3-dimensions-and-command. It tells the report renderer how loudly to speak; the audit is ADVISORY and never blocks (operator decision, 204), so nothing else consults it yet. Self-cleaning: goes STALE when phase 3 lands. Do NOT reap."
+    },
+    {
+      "id": "uninvoked vaultaudit.Report.Findings",
+      "reason": "DELIBERATELY PARKED, owned by vault-audit-phase3-dimensions-and-command. It feeds Baseline.Regenerate on the operator's accept-the-current-state path, which phase 3 exposes as a flag on `vp audit vault`. Self-cleaning: goes STALE when phase 3 lands. Do NOT reap."
+    },
+    {
+      "id": "uninvoked vaultaudit.Run",
+      "reason": "DELIBERATELY PARKED, owned by vault-audit-phase3-dimensions-and-command. Built by phase 1 (206); its consumers are `vp audit vault` (CLI) and vp_audit_vault (MCP), which phase 3 wires. Same position internal/sourceaudit's own machinery is in. THIS ENTRY IS SELF-CLEANING: the moment phase 3 lands, it stops being a finding and the gate reports it STALE, forcing its removal. Do NOT reap."
     },
     {
       "id": "uninvoked zed.ListThreadIDs",

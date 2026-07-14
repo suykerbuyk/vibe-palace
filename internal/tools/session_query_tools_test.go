@@ -694,15 +694,6 @@ func TestParseSessionIDInvalid(t *testing.T) {
 	}
 }
 
-func TestRoundTo(t *testing.T) {
-	if r := roundTo(3.456, 1); r != 3.5 {
-		t.Errorf("roundTo(3.456, 1) = %v, want 3.5", r)
-	}
-	if r := roundTo(3.456, 2); r != 3.46 {
-		t.Errorf("roundTo(3.456, 2) = %v, want 3.46", r)
-	}
-}
-
 func TestMetaMatchesQuery(t *testing.T) {
 	meta := storage.SessionMeta{
 		Title:     "Implement chunking",
