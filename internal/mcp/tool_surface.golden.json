@@ -7,6 +7,11 @@
       "schema_sha256": "c182cb03e0a4081aa21b32d183332f96db5ebcef5bb66cf788c018e72f016489"
     },
     {
+      "name": "vp_audit_vault",
+      "mutating": true,
+      "schema_sha256": "b8e4ba413012992be864261c30acbe747701aa75d1b145ffaad743dc7e681ef1"
+    },
+    {
       "name": "vp_bootstrap_context",
       "mutating": false,
       "schema_sha256": "047d6a1c863e53f7971e44e6e8dd4a1b355faf0acdfdd346e5da4cb995ee39ff"

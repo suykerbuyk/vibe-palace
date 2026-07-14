@@ -20,6 +20,10 @@ package tools
 // must refuse) even though they do not write content and so do not stamp.
 var MutatingToolNames = []string{
 	"vp_capture_session",
+	// vp_audit_vault writes a report into Audits/ (and stamps the surface) when
+	// write=true. It is ADVISORY — it never blocks — but it is still a WRITER, and a
+	// stale binary must refuse it like any other.
+	"vp_audit_vault",
 	"vp_manage_task",
 	"vp_update_resume",
 	"vp_append_iteration",

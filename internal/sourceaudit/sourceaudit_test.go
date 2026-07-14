@@ -352,6 +352,51 @@ func Drive() string { return alpha.Diff() }
 	}
 }
 
+// 🔴 TestFuncValueInACompositeLiteralIsNotDead pins a FALSE POSITIVE found at 207.
+//
+// The registry idiom — a table of {name, evidence, fn} rows — puts the function in a
+// POSITIONAL slot of a composite literal. markFuncValue visited KeyValueExpr (`Field: fn`)
+// but not the positional form, so every function in such a table looked DEAD while it ran
+// on every single invocation.
+//
+// 203 settled the asymmetry that makes this the more urgent bug direction: a gate that
+// calls LIVE code dead is how you get a disabled gate without anyone deciding to disable
+// it. It found this by flagging internal/vaultaudit's five dimension functions, all of
+// which the audit dispatches on every run.
+func TestFuncValueInACompositeLiteralIsNotDead(t *testing.T) {
+	dir := writeFixture(t, `package fixture
+
+func auditThing() string { return "live — dispatched from the table below" }
+
+type dim struct {
+	name string
+	run  func() string
+}
+
+// The registry idiom: the func sits in a POSITIONAL slot, not a keyed one.
+var dims = []dim{
+	{"thing", auditThing},
+}
+
+func Drive() string {
+	for _, d := range dims {
+		return d.run()
+	}
+	return ""
+}
+`)
+
+	findings, err := Run(dir)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if got := ids(findings); slices.Contains(got, "uninvoked fixture.auditThing") {
+		t.Fatalf("auditThing is dispatched from a composite-literal table on every run — "+
+			"flagging it is the false positive 203 warned about.\n  findings: %v", got)
+	}
+}
+
 func TestInTreeInterfaceMethodNobodyCallsIsStillFlagged(t *testing.T) {
 	dir := writeFixture(t, `package fixture
 

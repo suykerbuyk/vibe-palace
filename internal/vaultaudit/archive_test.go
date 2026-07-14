@@ -22,6 +22,13 @@ func seedManifest(t *testing.T, vault *storage.Vault, p, sessionID, noteRel stri
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Give the project BOTH trees. Run() executes every dimension, and a project that
+	// exists under Projects/ but not palace/ is real drift that project-tree-coherence
+	// correctly reports — so a fixture missing it would make these archive tests fail
+	// for a reason that has nothing to do with archives.
+	if err := os.MkdirAll(filepath.Join(vault.Root, "palace", p), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	stem := "2026-07-14-" + sessionID
 	m := archive.Manifest{
 		SchemaVersion:       1,

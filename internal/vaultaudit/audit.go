@@ -4,6 +4,7 @@
 package vaultaudit
 
 import (
+	"fmt"
 	"path/filepath"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -97,14 +98,42 @@ func Run(vault *storage.Vault) (Report, error) {
 		return Report{}, err
 	}
 
-	findings, unknowns, err := auditArchiveRoundTrip(vault)
-	if err != nil {
-		return Report{}, err
+	// The dimension registry. Every entry is EVIDENCE-BACKED — it exists because a
+	// real defect got through — and carries the command that reproduces its numbers.
+	// Order is fixed so the report is DIFFABLE: a report that reorders its own rows
+	// between runs destroys the week-over-week drift signal that is the point of
+	// committing it.
+	dims := []struct {
+		name     string
+		evidence string
+		run      func(*storage.Vault) ([]Finding, []string, error)
+	}{
+		{DimArchiveRoundTrip, EvidenceArchiveRoundTrip, auditArchiveRoundTrip},
+		{DimProjectTreeCoherence, EvidenceProjectTreeCoherence, auditProjectTreeCoherence},
+		{DimKGPortability, EvidenceKGPortability, auditKGPortability},
+		{DimResumeDiscipline, EvidenceResumeDiscipline, auditResumeDiscipline},
+		{DimIterationHeadings, EvidenceIterationHeadings, auditIterationHeadings},
 	}
 
-	return Report{Dimensions: []DimensionResult{
-		newDimensionResult(DimArchiveRoundTrip, EvidenceArchiveRoundTrip, base, findings, unknowns),
-	}}, nil
+	report := Report{}
+	for _, d := range dims {
+		findings, unknowns, err := d.run(vault)
+		if err != nil {
+			// A dimension that cannot run at all is UNKNOWN, not absent. Dropping it
+			// silently would shrink the audit's own scope without saying so — the
+			// failure this whole epic is named after.
+			report.Dimensions = append(report.Dimensions, DimensionResult{
+				Name:     d.name,
+				Status:   StatusUnknown,
+				Evidence: d.evidence,
+				Unknowns: []string{fmt.Sprintf("dimension failed to run: %v", err)},
+			})
+			continue
+		}
+		report.Dimensions = append(report.Dimensions,
+			newDimensionResult(d.name, d.evidence, base, findings, unknowns))
+	}
+	return report, nil
 }
 
 // newDimensionResult diffs one dimension's findings against the baseline and decides

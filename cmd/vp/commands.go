@@ -25,6 +25,12 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(cmdArchiveExtract())
 	reg.Register(cmdAudit())
 	reg.Register(cmdAuditRooms())
+	// mutates(): `vp audit vault --write` writes a report and `--accept` writes the
+	// baseline, so it must FAIL-STOP against a vault written by a newer binary rather
+	// than take the warn-only path. Its sibling cmdAuditRooms is registered UNWRAPPED
+	// while `--apply` calls vault.MoveDrawer — filed as
+	// audit-rooms-apply-bypasses-the-surface-gate. Do not copy that.
+	reg.Register(mutates(cmdAuditVault()))
 	reg.Register(cmdCommands())
 	reg.Register(cmdCommandsList())
 	reg.Register(cmdCommandsUpgrade())

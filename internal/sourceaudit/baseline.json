@@ -145,26 +145,6 @@
       "reason": "TEST-ONLY BY DESIGN (it takes a *testing.T), cross-package so it cannot live in a _test.go. Accepted."
     },
     {
-      "id": "uninvoked vaultaudit.Baseline.Regenerate",
-      "reason": "DELIBERATELY PARKED, owned by vault-audit-phase3-dimensions-and-command — rebuilds the baseline while PRESERVING reasons (the bug sourceaudit shipped and fixed at 203). Test-only until phase 3 exposes it. Self-cleaning. Do NOT reap."
-    },
-    {
-      "id": "uninvoked vaultaudit.Baseline.Save",
-      "reason": "DELIBERATELY PARKED, owned by vault-audit-phase3-dimensions-and-command — the write half of the ratchet, called when the operator accepts current state. Test-only until phase 3 exposes it. Self-cleaning. Do NOT reap."
-    },
-    {
-      "id": "uninvoked vaultaudit.Report.Failed",
-      "reason": "DELIBERATELY PARKED, owned by vault-audit-phase3-dimensions-and-command. It tells the report renderer how loudly to speak; the audit is ADVISORY and never blocks (operator decision, 204), so nothing else consults it yet. Self-cleaning: goes STALE when phase 3 lands. Do NOT reap."
-    },
-    {
-      "id": "uninvoked vaultaudit.Report.Findings",
-      "reason": "DELIBERATELY PARKED, owned by vault-audit-phase3-dimensions-and-command. It feeds Baseline.Regenerate on the operator's accept-the-current-state path, which phase 3 exposes as a flag on `vp audit vault`. Self-cleaning: goes STALE when phase 3 lands. Do NOT reap."
-    },
-    {
-      "id": "uninvoked vaultaudit.Run",
-      "reason": "DELIBERATELY PARKED, owned by vault-audit-phase3-dimensions-and-command. Built by phase 1 (206); its consumers are `vp audit vault` (CLI) and vp_audit_vault (MCP), which phase 3 wires. Same position internal/sourceaudit's own machinery is in. THIS ENTRY IS SELF-CLEANING: the moment phase 3 lands, it stops being a finding and the gate reports it STALE, forcing its removal. Do NOT reap."
-    },
-    {
       "id": "uninvoked zed.ListThreadIDs",
       "reason": "REAL FINDING, owned by the existing task zed-pane-capture-parity (Phase 1). This is the missing half of the documented Zed failure: zedAdapter.ResolveSource requires a Zed thread UUID, ListThreadIDs is the ONLY code in the tree that can enumerate one, and nothing calls it — so a thread cannot be found without hand-querying SQLite. Its doc comment cites a `--detect` smoke mode that DOES NOT EXIST anywhere in the tree. The gate rediscovered that task's root cause from source alone."
     },

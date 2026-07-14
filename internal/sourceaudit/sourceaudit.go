@@ -461,6 +461,17 @@ func uninvokedFuncs(files []file) []Finding {
 				for _, res := range node.Results {
 					mark(res)
 				}
+			case *ast.CompositeLit:
+				// A func value as a POSITIONAL element of a composite literal —
+				// `[]dim{{name, evidence, auditKGPortability}, …}`, the registry idiom.
+				// Without this case, every function in such a table looks DEAD while it
+				// runs on every invocation: a FALSE POSITIVE, and 203 established that a
+				// gate calling live code dead is how you get a disabled gate without
+				// anyone deciding to disable it. The KeyValueExpr case above only covers
+				// the `Field: fn` form; this covers `{a, b, fn}`.
+				for _, e := range node.Elts {
+					mark(e)
+				}
 			case *ast.ValueSpec:
 				// `var EmbeddedSHA = realEmbeddedSHA` — a package-level test seam, and
 				// this repo's standard idiom for one. Without this case the seam's real
