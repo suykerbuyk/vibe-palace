@@ -753,6 +753,91 @@ func TestMakeHandlerRecoversPanic(t *testing.T) {
 	}
 }
 
+// 🔴 THE TEST THAT WOULD HAVE CAUGHT THIS, AND THE ONE THE OTHERS COULD NOT.
+//
+// Every existing test here SEEDS the request id itself — TestWithRequestID passes
+// "abc-123" in and reads it back; the panic test passes "req-42". They all passed
+// for the whole life of the feature while `request_id` was EMPTY on every MCP
+// dispatch ever logged, because nothing in production ever called the setter. That
+// is the note_path trap exactly: a test that supplies the value the world never
+// supplies proves only that the plumbing can carry it.
+//
+// This test supplies NOTHING. It dispatches through makeHandler on a BARE context
+// and asserts the handler saw an id anyway — so it fails if nobody CALLS the setter,
+// which is the actual bug. It also asserts two dispatches get DIFFERENT ids: an id
+// that is constant across calls would look like a correlation id while correlating
+// nothing, which is the trap that ruled out minting in stdio's contextFunc.
+func TestMakeHandlerMintsARequestIDWhenNobodySuppliesOne(t *testing.T) {
+	reg := NewRegistry(server.NewMCPServer("test", "1.0.0"))
+
+	var seen []string
+	reg.MustRegister(Tool{
+		Name: "mint-check",
+		Handler: func(ctx context.Context, _ json.RawMessage) (any, error) {
+			// What the APPLICATION sees — not what the test put there.
+			seen = append(seen, requestIDFromContext(ctx))
+			return map[string]string{"ok": "1"}, nil
+		},
+	})
+	reg.mu.RLock()
+	rt := reg.tools["mint-check"]
+	reg.mu.RUnlock()
+	handler := reg.makeHandler(rt)
+
+	req := mcplib.CallToolRequest{}
+	req.Params.Name = "mint-check"
+	req.Params.Arguments = map[string]any{}
+
+	for range 2 {
+		// A BARE context. This is what the real transports hand us.
+		if _, err := handler(context.Background(), req); err != nil {
+			t.Fatalf("handler: %v", err)
+		}
+	}
+
+	if len(seen) != 2 {
+		t.Fatalf("handler ran %d times, want 2", len(seen))
+	}
+	for i, id := range seen {
+		if id == "" {
+			t.Errorf("dispatch %d saw an EMPTY request_id — nothing called WithRequestID, and the correlation field is dead again", i)
+		}
+	}
+	if seen[0] == seen[1] {
+		t.Errorf("both dispatches got the SAME request id (%q) — an id that never changes correlates nothing", seen[0])
+	}
+}
+
+// An id already on the context WINS: an in-process caller (or a test) can supply
+// its own and see it honored end-to-end rather than silently overwritten.
+func TestMakeHandlerHonorsACallerSuppliedRequestID(t *testing.T) {
+	reg := NewRegistry(server.NewMCPServer("test", "1.0.0"))
+
+	got := ""
+	reg.MustRegister(Tool{
+		Name: "honor-check",
+		Handler: func(ctx context.Context, _ json.RawMessage) (any, error) {
+			got = requestIDFromContext(ctx)
+			return map[string]string{"ok": "1"}, nil
+		},
+	})
+	reg.mu.RLock()
+	rt := reg.tools["honor-check"]
+	reg.mu.RUnlock()
+	handler := reg.makeHandler(rt)
+
+	req := mcplib.CallToolRequest{}
+	req.Params.Name = "honor-check"
+	req.Params.Arguments = map[string]any{}
+
+	if _, err := handler(WithRequestID(context.Background(), "caller-supplied"), req); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if got != "caller-supplied" {
+		t.Errorf("request id = %q, want the caller's own %q", got, "caller-supplied")
+	}
+}
+
 func TestWithRequestID(t *testing.T) {
 	ctx := WithRequestID(context.Background(), "abc-123")
 	if got := requestIDFromContext(ctx); got != "abc-123" {

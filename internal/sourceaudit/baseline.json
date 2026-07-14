@@ -53,10 +53,6 @@
       "reason": "REAL FINDING, owned by task content-uri-idiom-reaches-only-tasks-and-learnings. Skill bodies (SKILL.md) are the other largest body type and likewise get no content_uri."
     },
     {
-      "id": "uninvoked mcp.WithRequestID",
-      "reason": "REAL FINDING, owned by task mcp-request-id-is-always-empty. Zero non-test callers — but requestIDFromContext IS called in production (internal/mcp/tools.go) and its result is logged as request_id on every MCP dispatch enter/exit/panic, at the site the code itself calls 'the highest leverage log site in the project'. Because nothing ever calls WithRequestID, request_id is ALWAYS empty in production and the correlation-ID feature is entirely non-functional. Fix by populating it in the transport, NOT by deleting."
-    },
-    {
       "id": "uninvoked memorytestutil.WriteNativeMemoryFixture",
       "reason": "TEST-ONLY BY DESIGN, cross-package (7 callers across 5 packages) so it cannot live in a _test.go. Accepted."
     },

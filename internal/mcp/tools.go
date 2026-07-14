@@ -16,6 +16,8 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
+	"github.com/google/uuid"
+
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
@@ -24,14 +26,33 @@ import (
 type requestIDKey struct{}
 
 // WithRequestID returns a derived context carrying the given request ID.
-// The MCP dispatch handler logs this ID if present so a single tool call
-// can be correlated across its entry, exit, and any recovered panic.
+// The MCP dispatch handler logs this ID so a single tool call can be correlated
+// across its entry, exit, and any recovered panic.
+//
+// 🔴 UNTIL 209 NOTHING CALLED THIS, AND THAT WAS THE BUG — not the dead symbol,
+// but what its deadness meant: requestIDFromContext runs on EVERY dispatch and
+// logs its result as `request_id` at what this file's own comment calls "the
+// highest leverage log site in the project". With no setter, that field was ""
+// on every MCP dispatch ever logged. The correlation feature was 100%
+// non-functional for its entire life, and the logs looked fine.
 func WithRequestID(ctx context.Context, id string) context.Context {
 	if id == "" {
 		return ctx
 	}
 	return context.WithValue(ctx, requestIDKey{}, id)
 }
+
+// newRequestID mints the per-dispatch correlation ID.
+//
+// It is MINTED, not echoed from the client's JSON-RPC id, and that is forced by
+// the library rather than chosen: mcp-go never hands the request id to a tool
+// handler (CallToolRequest embeds only Method+Params), the hooks API that does
+// see it cannot inject into the handler's context, and stdio's contextFunc runs
+// ONCE before the read loop — so an id minted there would be constant for the
+// whole process, which is worse than empty because it would LOOK like a
+// correlation id while correlating nothing. Echoing would mean forking the
+// transport to own the envelope parse. Verified against mcp-go v0.47.0 at 205.
+func newRequestID() string { return uuid.NewString() }
 
 // requestIDFromContext returns the request ID previously attached via
 // WithRequestID, or "" if none is present.
@@ -220,12 +241,35 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (result *mcplib.CallToolResult, err error) {
 		start := time.Now()
 		toolName := rt.tool.Name
+
+		// MINT THE CORRELATION ID HERE. This is the single chokepoint every tool
+		// call crosses on BOTH transports, which is why the id belongs here and not
+		// at the call sites: a call site that forgets is a dispatch that cannot be
+		// followed, and for this feature's entire life EVERY call site forgot,
+		// because there were none.
+		//
+		// An id already on the context wins, so an in-process caller (or a test) can
+		// supply its own and see it honored end-to-end.
 		reqID := requestIDFromContext(ctx)
+		if reqID == "" {
+			reqID = newRequestID()
+			ctx = WithRequestID(ctx, reqID)
+		}
+
+		// The session id correlates a RUN; the request id correlates one DISPATCH.
+		// Neither substitutes for the other — "which session did these 40 dispatches
+		// belong to" is not a question a per-call UUID can answer. mcp-go already
+		// flows the session on both transports and nothing in this repo was reading it.
+		sessionID := ""
+		if s := server.ClientSessionFromContext(ctx); s != nil {
+			sessionID = s.SessionID()
+		}
 
 		slog.Debug("mcp.makeHandler: enter",
 			"op", "mcp.makeHandler",
 			"tool", toolName,
 			"request_id", reqID,
+			"session_id", sessionID,
 		)
 
 		defer func() {
@@ -234,6 +278,7 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 					"op", "mcp.makeHandler",
 					"tool", toolName,
 					"request_id", reqID,
+					"session_id", sessionID,
 					"elapsed_ms", time.Since(start).Milliseconds(),
 					"panic", fmt.Sprintf("%v", rec),
 				)
@@ -249,6 +294,7 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 				"op", "mcp.makeHandler",
 				"tool", toolName,
 				"request_id", reqID,
+				"session_id", sessionID,
 				"elapsed_ms", time.Since(start).Milliseconds(),
 				"err", perr,
 			)
@@ -261,6 +307,7 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 				"op", "mcp.makeHandler",
 				"tool", toolName,
 				"request_id", reqID,
+				"session_id", sessionID,
 				"elapsed_ms", time.Since(start).Milliseconds(),
 				"err", vErr,
 			)
@@ -274,6 +321,7 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 				"op", "mcp.makeHandler",
 				"tool", toolName,
 				"request_id", reqID,
+				"session_id", sessionID,
 				"elapsed_ms", time.Since(start).Milliseconds(),
 				"err", gErr,
 			)
@@ -287,6 +335,7 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 				"op", "mcp.makeHandler",
 				"tool", toolName,
 				"request_id", reqID,
+				"session_id", sessionID,
 				"elapsed_ms", time.Since(start).Milliseconds(),
 				"err", hErr,
 			)
@@ -300,6 +349,7 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 				"op", "mcp.makeHandler",
 				"tool", toolName,
 				"request_id", reqID,
+				"session_id", sessionID,
 				"elapsed_ms", time.Since(start).Milliseconds(),
 				"err", mErr,
 			)
@@ -316,6 +366,7 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 			"op", "mcp.makeHandler",
 			"tool", toolName,
 			"request_id", reqID,
+			"session_id", sessionID,
 			"elapsed_ms", time.Since(start).Milliseconds(),
 			"result_bytes", resultSize,
 		)
