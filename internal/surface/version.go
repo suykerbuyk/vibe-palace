@@ -196,13 +196,17 @@ var (
 //   - writePath is under an excluded segment: .local (machine-local),
 //     .git, or has a .bak / .surface basename (non-schema / self)
 //   - writePath is under vaultPath but the top-level dir is not
-//     Projects / palace / Templates (a stderr warning fires once per process
-//     per top-level name)
+//     Projects / palace / Templates / Audits (a stderr warning fires once per
+//     process per top-level name)
 //
 // Recognized layouts (vibe-palace; note: NO agentctx/ subdir, unlike vv):
 //   - <vault>/Projects/<p>/...   → <vault>/Projects/<p>
 //   - <vault>/palace/<p>/...     → <vault>/palace/<p>   (excluding .local/)
 //   - <vault>/Templates/...      → <vault>/Templates
+//   - <vault>/Audits/...         → <vault>/Audits       (vault-global audit output)
+//
+// Any root added here MUST also be added to CheckCompatible's glob list, or the
+// stamp is written and never read.
 func ResolveStampDir(vaultPath, writePath string) (string, error) {
 	if vaultPath == "" {
 		return "", nil
@@ -255,6 +259,11 @@ func ResolveStampDir(vaultPath, writePath string) (string, error) {
 		return filepath.Join(absVault, "palace", parts[1]), nil
 	case "Templates":
 		return filepath.Join(absVault, "Templates"), nil
+	case "Audits":
+		// Vault-global audit output. Stamped like Templates (one stamp for the
+		// whole root, not one per subdir) because the reports are not
+		// project-scoped -- the thing being audited is the vault.
+		return filepath.Join(absVault, "Audits"), nil
 	default:
 		// Vault-relative but unrecognized — warn once per top-level name.
 		warnUnrecognizedTopOnce(top, writePath)
@@ -362,10 +371,15 @@ func CheckCompatible(vaultPath string) error {
 		return &VaultUnreachableError{Path: vaultPath, Err: err}
 	}
 
+	// Every root ResolveStampDir can return MUST appear here. A stamp this scan
+	// does not read is a stamp that gates nothing: the vault's version floor
+	// would ignore it, and an older binary would be told `pass` for a vault only
+	// a newer one can safely write.
 	patterns := []string{
 		filepath.Join(vaultPath, "Projects", "*", stampFilename),
 		filepath.Join(vaultPath, "palace", "*", stampFilename),
 		filepath.Join(vaultPath, "Templates", stampFilename),
+		filepath.Join(vaultPath, "Audits", stampFilename),
 	}
 
 	maxSurface := 0

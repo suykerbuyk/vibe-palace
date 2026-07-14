@@ -25,23 +25,60 @@ var listProjectsSchema = json.RawMessage(`{
 
 func ListProjectsTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name:        "vp_list_projects",
-		Description: "List all projects in the palace.",
-		Schema:      listProjectsSchema,
-		Handler:     listProjectsHandler(vault),
+		Name: "vp_list_projects",
+		Description: "List every project in the vault — the union of the palace/ store and the " +
+			"Projects/ history tree. A project present in only one tree is reported in drift; " +
+			"drift is absent when the two trees agree.",
+		Schema:  listProjectsSchema,
+		Handler: listProjectsHandler(vault),
 	}
 }
 
+// projectDrift is one project that exists in only ONE of the vault's two trees.
+// It is reported, never silently resolved: a project with history and no palace/
+// store is unsearchable, and a palace/ store with no history is a leftover. Both
+// are real drift, and this enumerator is the only thing positioned to see them.
+type projectDrift struct {
+	Slug       string `json:"slug"`
+	InPalace   bool   `json:"in_palace"`
+	InProjects bool   `json:"in_projects"`
+}
+
+// listProjectsHandler enumerates the UNION of both trees.
+//
+// It used to call ListProjects, which reads only palace/ — so it silently
+// omitted every project whose history was captured but never drawer-indexed. In
+// the live vault that was 5 projects and 73 session notes, including one with 35
+// notes: an agent asking this tool "what is in this vault?" was told a subset and
+// could not tell. The tool's name promised the vault and it delivered one tree.
+//
+// drift is omitted entirely when the trees agree — silent when healthy, loud when
+// not, like every other signal in this system.
 func listProjectsHandler(vault *storage.Vault) mcp.HandlerFunc {
 	return func(_ context.Context, _ json.RawMessage) (any, error) {
-		projects, err := vault.ListProjects()
+		all, err := vault.ListAllProjects()
 		if err != nil {
 			return nil, fmt.Errorf("list projects: %w", err)
 		}
-		if projects == nil {
-			projects = []string{}
+
+		projects := make([]string, 0, len(all))
+		drift := []projectDrift{}
+		for _, p := range all {
+			projects = append(projects, p.Slug)
+			if !p.Complete() {
+				drift = append(drift, projectDrift{
+					Slug:       p.Slug,
+					InPalace:   p.InPalace,
+					InProjects: p.InProjects,
+				})
+			}
 		}
-		return map[string]any{"projects": projects}, nil
+
+		out := map[string]any{"projects": projects}
+		if len(drift) > 0 {
+			out["drift"] = drift
+		}
+		return out, nil
 	}
 }
 

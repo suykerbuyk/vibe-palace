@@ -91,10 +91,23 @@ var sweepRules = []SweepRule{
 			return len(p) >= 4 && p[0] == "palace" && p[2] == "drawers" && suffix(p, ".jsonl")
 		}},
 
+	// Vault-global audit output. Reports are machine-generated and dated; the
+	// baseline is the audit's watermark. Both are FLAT under Audits/ — a nested
+	// path is an unknown shape and gets human eyes (default-deny), which is why
+	// these match on an exact length rather than a prefix.
+	{Category: "Audit reports", Pattern: "Audits/*.md",
+		Match: func(p []string) bool {
+			return len(p) == 2 && p[0] == "Audits" && suffix(p, ".md")
+		}},
+	{Category: "Audit baseline", Pattern: "Audits/baseline.json",
+		Match: func(p []string) bool {
+			return len(p) == 2 && p[0] == "Audits" && p[1] == "baseline.json"
+		}},
+
 	// Surface provenance stamps — STATUS-GATED, not path-only (see H2). Match is
 	// path-only here; the " M" (sweep) vs "??" (report) gate is applied by
 	// classifyDirty.
-	{Category: surfaceCategory, Pattern: "{Projects/*,palace/*,Templates}/.surface",
+	{Category: surfaceCategory, Pattern: "{Projects/*,palace/*,Templates,Audits}/.surface",
 		Match: func(p []string) bool {
 			if p[len(p)-1] != ".surface" {
 				return false
@@ -105,6 +118,8 @@ var sweepRules = []SweepRule{
 			case len(p) == 3 && p[0] == "palace": // palace/<p>/.surface
 				return true
 			case len(p) == 2 && p[0] == "Templates": // Templates/.surface
+				return true
+			case len(p) == 2 && p[0] == "Audits": // Audits/.surface
 				return true
 			}
 			return false

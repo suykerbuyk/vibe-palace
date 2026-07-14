@@ -34,6 +34,11 @@ func TestClassifyDirty_SweepRulesPositive(t *testing.T) {
 		{"surface tracked", " M", "Projects/vibe-palace/.surface"},
 		{"palace surface tracked", " M", "palace/vibe-palace/.surface"},
 		{"templates surface tracked", " M", "Templates/.surface"},
+		// Vault-global audit output. Without these, the FIRST report the audit
+		// writes is permanent tidy dirt that blocks `vault push`.
+		{"audit report", "??", "Audits/2026-07-13-vault-audit.md"},
+		{"audit baseline", "??", "Audits/baseline.json"},
+		{"audits surface tracked", " M", "Audits/.surface"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -66,6 +71,12 @@ func TestClassifyDirty_NegativeCasesReported(t *testing.T) {
 		{"triples wrong suffix", "??", "palace/p/kg/triples/foo.txt"},
 		// palace file outside kg/drawers must not match.
 		{"palace stray note", "??", "palace/p/notes.md"},
+		// Audits/ is swept for the two artifact shapes the audit writes and
+		// NOTHING else — an unrecognized shape under Audits/ still gets human
+		// eyes. Default-deny is the whole reason tidy is trustworthy.
+		{"audits wrong suffix", "??", "Audits/notes.txt"},
+		{"audits stray json", "??", "Audits/scratch.json"},
+		{"audits nested report", "??", "Audits/2026/report.md"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

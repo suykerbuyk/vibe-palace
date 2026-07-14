@@ -288,29 +288,19 @@ func (v *Vault) ListRooms(project, wing string) ([]string, error) {
 	return rooms, nil
 }
 
-// ListProjects returns all project slugs by reading the palace directory.
+// ListProjects returns the project slugs that have a palace/ store — the
+// drawer + knowledge-graph tree. It is what search wants, because search indexes
+// drawers and drawers live there.
+//
+// It is NOT an enumeration of the vault. A project's sessions live under
+// Projects/<slug>/, and many projects appear in one tree and not the other, so
+// this returns a SUBSET and cannot tell you it did. Any caller asking "what is
+// in this vault?" wants ListAllProjects (projects.go), which returns the union
+// of both trees and records which one each project came from.
 func (v *Vault) ListProjects() ([]string, error) {
-	palaceDir := filepath.Join(v.Root, "palace")
-	entries, err := os.ReadDir(palaceDir)
+	projects, err := listProjectDirs(filepath.Join(v.Root, "palace"))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("read palace dir: %w", err)
-	}
-
-	var projects []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if name == ".local" {
-			continue
-		}
-		if slug.Validate(name) == nil {
-			projects = append(projects, name)
-		}
 	}
 	return projects, nil
 }

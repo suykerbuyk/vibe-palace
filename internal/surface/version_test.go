@@ -132,6 +132,8 @@ func TestResolveStampDir_Roots(t *testing.T) {
 		{"palace drawers", "palace/foo/drawers/halls/facts/drawers.jsonl", "palace/foo"},
 		{"palace kg", "palace/foo/kg/entities.jsonl", "palace/foo"},
 		{"templates", "Templates/commands/restart.md", "Templates"},
+		{"audits report", "Audits/2026-07-13-vault-audit.md", "Audits"},
+		{"audits baseline", "Audits/baseline.json", "Audits"},
 		{"palace local excluded", "palace/foo/.local/imported-sessions.jsonl", ""},
 		{"vault local excluded", "palace/.local/x", ""},
 		{"git excluded", "Projects/foo/.git/config", ""},
@@ -338,6 +340,66 @@ func TestCheckCompatible_AheadVaultIncompatible(t *testing.T) {
 	}
 	if !strings.Contains(ie.Error(), "VP_SURFACE_GATE=warn") {
 		t.Fatalf("remediation message missing escape hatch: %q", ie.Error())
+	}
+}
+
+// TestCheckCompatible_EveryStampedRootGates pins the invariant that ties
+// ResolveStampDir and CheckCompatible together: a stamp WRITTEN by one must be
+// READ by the other.
+//
+// The two have independent notions of where stamps live -- ResolveStampDir
+// switches on the top-level dir, CheckCompatible globs a hardcoded list -- so
+// adding a root to one and not the other yields a stamp that gates NOTHING: the
+// vault's version floor silently ignores it, and an older binary is told `pass`
+// for a vault only a newer binary can safely write. That is not a hypothetical;
+// Audits/ was added to ResolveStampDir and CheckCompatible in the same change
+// precisely because splitting them is undetectable at runtime.
+//
+// Drive each root through the REAL resolver rather than hardcoding stamp dirs,
+// so a fifth root that forgets the glob fails here instead of in production.
+func TestCheckCompatible_EveryStampedRootGates(t *testing.T) {
+	// One representative write path per root ResolveStampDir recognizes.
+	writes := []struct {
+		name     string
+		writeRel string
+	}{
+		{"Projects", "Projects/foo/resume.md"},
+		{"palace", "palace/foo/kg/entities.jsonl"},
+		{"Templates", "Templates/commands/restart.md"},
+		{"Audits", "Audits/2026-07-13-vault-audit.md"},
+	}
+
+	for _, w := range writes {
+		t.Run(w.name, func(t *testing.T) {
+			vault := t.TempDir()
+
+			dir, err := ResolveStampDir(vault, filepath.Join(vault, w.writeRel))
+			if err != nil {
+				t.Fatalf("ResolveStampDir: %v", err)
+			}
+			if dir == "" {
+				t.Fatalf("%s is not a stamped root: ResolveStampDir(%q) = \"\"", w.name, w.writeRel)
+			}
+
+			// A newer binary stamps this root, and only this root.
+			if err := WriteStamp(dir, MCPSurfaceVersion+1, "newer"); err != nil {
+				t.Fatal(err)
+			}
+
+			err = CheckCompatible(vault)
+			if err == nil {
+				t.Fatalf("a stamp at %s (surface %d > binary %d) did not gate: CheckCompatible "+
+					"does not read this root, so the stamp is written and never read",
+					dir, MCPSurfaceVersion+1, MCPSurfaceVersion)
+			}
+			var ie *IncompatibleError
+			if !errors.As(err, &ie) {
+				t.Fatalf("error type = %T, want *IncompatibleError", err)
+			}
+			if ie.VaultSurface != MCPSurfaceVersion+1 {
+				t.Fatalf("vault surface = %d, want %d", ie.VaultSurface, MCPSurfaceVersion+1)
+			}
+		})
 	}
 }
 
