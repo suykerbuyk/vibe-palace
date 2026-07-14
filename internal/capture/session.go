@@ -75,7 +75,13 @@ type CaptureFailure struct {
 const (
 	StageEnrichmentExtract = "enrichment_extract"
 	StageEnrichment        = "enrichment"
-	StageArchiveResolve    = "archive_resolve"
+	// StageArchiveResolve DELETED at 210. A missing archive is a DEFERRED link, not
+	// a lost stage: the hook does not archive until SessionEnd, so at capture time
+	// the archive ordinarily does not exist yet, and hook.go now closes the loop
+	// from the archive side once it does. The stage was reported on EVERY session
+	// ever captured, which is what a structurally-unavoidable "failure" looks like.
+	// Deleted rather than left unproduced: a stage nothing can emit is a claim the
+	// failure payload was making and never honoring.
 	StageArchiveAdapter    = "archive_adapter_mismatch"
 	StageFrictionScoring   = "friction_scoring"
 	StageEnrichmentEnqueue = "enrichment_enqueue"
@@ -180,6 +186,14 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		Date:             date,
 		SessionKey:       sessionKey,
 		SessionKeySource: keySource,
+		// Record WHICH HOST SESSION this note came from, unconditionally and BEFORE
+		// the resolve attempt below. The archive almost never exists yet at capture
+		// time -- the hook only archives at SessionEnd/PreCompact -- so a note that
+		// cannot be linked NOW is exactly the note that must stay findable LATER,
+		// when hook.go closes the loop from the archive side. Capture has always been
+		// handed this value and always threw it away, which is why 105 of 417
+		// manifests were stranded and no agent-written note was ever linked at all.
+		ArchiveSessionID: p.ArchiveSessionID,
 		Title:            title,
 		Summary:          p.Summary,
 		Tag:              p.Tag,
@@ -233,18 +247,32 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		if adapter == "" {
 			adapter = archive.ClaudeCodeAdapterName
 		}
-		// A missing or adapter-mismatched archive is non-fatal -- capture still
-		// succeeds without the link, and a future hook run that archives after
-		// capture can call LinkSessionNote to close the loop. But it is NOT
-		// silent: this branch had no else, so a session that asked to be linked
-		// to a transcript and was not got an identical "ok" to one that was.
-		// The adapter mismatch is the one that matters -- it is how a Zed
-		// transcript goes missing while capture reports success.
+		// A missing archive is DEFERRED, NOT LOST (210). The archive usually does
+		// not exist yet at capture time -- the hook only archives at SessionEnd /
+		// PreCompact, while this runs at the first Stop (~90 s in) and at the agent's
+		// mid-session wrap -- so "no archive found" is the ORDINARY case, not a
+		// failure. The note records its ArchiveSessionID above, so the link is
+		// recoverable, and hook.go closes it from the archive side once the archive
+		// exists.
+		//
+		// This used to lose(StageArchiveResolve) and warn "transcript will not be
+		// reachable from this note". That fired once per session, STRUCTURALLY, on
+		// every session ever captured -- and once the loop actually closes it is also
+		// FALSE: the transcript IS reachable, thirty minutes later. A warning that is
+		// both unavoidable and untrue is how vp_health goes amber for work that
+		// succeeded, and how agents learn to skim it.
+		//
+		// The instrument for "a link that never closed" is the vault AUDIT, which
+		// measures the outcome on the real vault instead of predicting it here.
+		//
+		// The ADAPTER MISMATCH below stays a LOUD failure: that one is not a
+		// not-yet, it is a wrong-thing -- it is how a Zed transcript goes missing
+		// while capture reports success (see zed-pane-capture-parity).
 		e, err := archive.ResolveEntry(vault.Root, p.Project, p.ArchiveSessionID)
 		switch {
 		case err != nil:
-			lose(StageArchiveResolve, err, "capture: archive not linked; transcript will not be reachable from this note",
-				"archive_session_id", p.ArchiveSessionID, "adapter", adapter)
+			slog.Debug("capture: no archive yet; link deferred to the archiving hook run",
+				"archive_session_id", p.ArchiveSessionID, "adapter", adapter, "err", err)
 		case e.Manifest.Adapter != adapter:
 			lose(StageArchiveAdapter,
 				fmt.Errorf("archive adapter is %q, want %q", e.Manifest.Adapter, adapter),
@@ -370,6 +398,14 @@ func mergeCaptureMeta(old storage.SessionMeta, _ string, next storage.SessionMet
 
 	if merged.Archive == "" {
 		merged.Archive = old.Archive
+	}
+	// Preserve the host session id across a retry that did not carry one. Without
+	// this, a retry from a caller that omitted archive_session_id would ERASE the
+	// note's only route back to its transcript -- the same silent-deletion shape
+	// the Archive line above exists to prevent, and the reason RewriteSession is
+	// never handed a fresh meta blind.
+	if merged.ArchiveSessionID == "" {
+		merged.ArchiveSessionID = old.ArchiveSessionID
 	}
 	if merged.Model == "" {
 		merged.Model = old.Model

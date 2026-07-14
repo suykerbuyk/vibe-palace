@@ -11,26 +11,65 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/hook"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
+
+// seedMismatchedArchive writes a REAL claude-code archive and returns its session
+// id, so a capture that asks to resolve it as some OTHER adapter loses the archive
+// link for real.
+//
+// These three tests used to synthesize their loss with a session id no archive
+// existed for. That stopped being a loss at 210: a missing archive is DEFERRED,
+// not lost — the hook does not archive until SessionEnd, so at capture time the
+// archive ordinarily does not exist yet, and hook.go closes the loop later. Had
+// these tests kept passing on that input they would have been asserting a warning
+// the product no longer owes anyone.
+//
+// The ADAPTER MISMATCH is still a true, loud loss, and it is the one that matters:
+// it is how a Zed transcript goes missing while capture reports success. So the
+// contracts below (fail hard, retry idempotently, claim on the error path) are now
+// driven by the loss that actually still exists.
+func seedMismatchedArchive(t *testing.T, vault *storage.Vault) string {
+	t.Helper()
+	const sessionID = "adapter-mismatch-session"
+	srcPath := filepath.Join(t.TempDir(), "src.jsonl")
+	if err := os.WriteFile(srcPath, []byte(sampleClaudeJSONL), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archive.Create(archive.CreateOptions{
+		Adapter:     archive.ClaudeCodeAdapterName,
+		SessionID:   sessionID,
+		SourcePath:  srcPath,
+		VaultRoot:   vault.Root,
+		ProjectSlug: "test-proj",
+	}); err != nil {
+		t.Fatalf("seed archive: %v", err)
+	}
+	return sessionID
+}
 
 // TestCaptureSessionFailsHardOnLoss is the headline assertion of this whole task:
 // vp_capture_session must NEVER report `status: ok` for work it did not do.
 //
-// The capture below asks to be linked to an archive that does not exist. Before
-// this, that returned {"status":"ok","note_path":...} — the loss logged a warning
-// and the agent was told everything was fine. It must now be an ERROR.
+// The capture below resolves a real archive but demands the WRONG ADAPTER, so the
+// archive link is genuinely lost. Before this, that returned
+// {"status":"ok","note_path":...} — the loss logged a warning and the agent was
+// told everything was fine. It must be an ERROR.
 func TestCaptureSessionFailsHardOnLoss(t *testing.T) {
 	vault := testSessionVault(t)
 	tool := CaptureSessionTool(vault, nil)
+	sessionID := seedMismatchedArchive(t, vault)
 
-	params := json.RawMessage(`{
-		"project": "test-proj",
-		"summary": "a capture whose archive does not resolve",
-		"archive_session_id": "no-such-archive"
-	}`)
+	params, _ := json.Marshal(map[string]any{
+		"project":            "test-proj",
+		"summary":            "a capture whose archive resolves as the wrong adapter",
+		"archive_session_id": sessionID,
+		"archive_adapter":    "zed",
+	})
 
-	result, err := tool.Handler(context.Background(), params)
+	result, err := tool.Handler(context.Background(), json.RawMessage(params))
 	if err == nil {
 		t.Fatalf("capture LOST the archive link and returned success: %+v", result)
 	}
@@ -87,12 +126,15 @@ func TestCaptureSessionFailsHardOnLoss(t *testing.T) {
 func TestCaptureSessionRetryAfterFailureDoesNotDuplicate(t *testing.T) {
 	vault := testSessionVault(t)
 	tool := CaptureSessionTool(vault, nil)
+	sessionID := seedMismatchedArchive(t, vault)
 
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{
-		"project": "test-proj",
-		"summary": "first attempt",
-		"archive_session_id": "no-such-archive"
-	}`))
+	firstParams, _ := json.Marshal(map[string]any{
+		"project":            "test-proj",
+		"summary":            "first attempt",
+		"archive_session_id": sessionID,
+		"archive_adapter":    "zed",
+	})
+	_, err := tool.Handler(context.Background(), json.RawMessage(firstParams))
 	if err == nil {
 		t.Fatal("expected the first capture to fail hard")
 	}
@@ -106,10 +148,10 @@ func TestCaptureSessionRetryAfterFailureDoesNotDuplicate(t *testing.T) {
 	}
 
 	// The agent retries with the key the error handed it, and this time without
-	// asking for the archive that does not exist.
+	// asking for the adapter that does not match.
 	retryParams, _ := json.Marshal(map[string]any{
 		"project":     "test-proj",
-		"summary":     "retry, having dropped the bad archive id",
+		"summary":     "retry, having dropped the bad adapter",
 		"session_key": payload.SessionKey,
 	})
 	out, retryErr := tool.Handler(context.Background(), json.RawMessage(retryParams))
@@ -145,21 +187,23 @@ func TestCaptureSessionClaimSurvivesTheErrorPath(t *testing.T) {
 	vault := testSessionVault(t)
 	tool := CaptureSessionTool(vault, nil)
 	cwd := t.TempDir()
+	sessionID := seedMismatchedArchive(t, vault)
 
 	params, _ := json.Marshal(map[string]any{
 		"project": "test-proj",
 		"summary": "a capture that loses its archive but must still claim",
 		// Both are required for a claim to be written at all.
 		"cwd":                cwd,
-		"archive_session_id": "no-such-archive",
+		"archive_session_id": sessionID,
+		"archive_adapter":    "zed",
 	})
 
 	if _, err := tool.Handler(context.Background(), json.RawMessage(params)); err == nil {
-		t.Fatal("expected a hard failure on the unresolvable archive")
+		t.Fatal("expected a hard failure on the mismatched archive adapter")
 	}
 
 	claimDir := filepath.Join(cwd, ".vibe-palace")
-	if !hook.IsClaimed(claimDir, "no-such-archive") {
+	if !hook.IsClaimed(claimDir, sessionID) {
 		t.Fatal("no claim was written on the error path — the SessionEnd hook will now " +
 			"re-capture this session and duplicate its note")
 	}

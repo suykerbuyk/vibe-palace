@@ -38,14 +38,18 @@ type RunOptions struct {
 
 // Result reports what the hook run produced.
 type Result struct {
-	Event            string         `json:"event"`
-	SkippedNoProject bool           `json:"skipped_no_project"`
-	ArchiveSkipped   bool           `json:"archive_skipped"`
-	ArchivePath      string         `json:"archive_path,omitempty"`
-	SessionNoteID    string         `json:"session_note_id,omitempty"`
-	ClaimedSkip      bool           `json:"claimed_skip"`
-	MemoryHarvest    *memory.Result `json:"memory_harvest,omitempty"`
-	Error            string         `json:"error,omitempty"`
+	Event            string `json:"event"`
+	SkippedNoProject bool   `json:"skipped_no_project"`
+	ArchiveSkipped   bool   `json:"archive_skipped"`
+	ArchivePath      string `json:"archive_path,omitempty"`
+	SessionNoteID    string `json:"session_note_id,omitempty"`
+	// LinkedNotes counts the session notes whose archive: field this run pointed at
+	// the transcript. Zero is the steady state once a session is linked (the link is
+	// idempotent and rewrites nothing), so this reports work DONE, not health.
+	LinkedNotes   int            `json:"linked_notes,omitempty"`
+	ClaimedSkip   bool           `json:"claimed_skip"`
+	MemoryHarvest *memory.Result `json:"memory_harvest,omitempty"`
+	Error         string         `json:"error,omitempty"`
 
 	// Failures lists the capture stages this run lost. On the hook path a loss
 	// is reported here and in vp.log — never as a non-zero exit. The hook has no
@@ -115,6 +119,12 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 	// leak a manifest .bak per turn. Archive runs BEFORE the claim gate (non-fatal)
 	// so a session already claimed by an MCP vp_capture_session still gets its
 	// transcript ledger — archive's own dedup keeps that from duplicating.
+	//
+	// archiveManifestPath carries the manifest OUT of this block so step 7b below can
+	// close the note <-> transcript loop against it. It is set even when the archive
+	// was DEDUPED (Skipped): CreateResult.ManifestPath names the written OR
+	// pre-existing manifest, and a re-run must still be able to link.
+	var archiveManifestPath string
 	if payload.HookEventName == "SessionEnd" || payload.HookEventName == "PreCompact" {
 		archiveResult, archiveErr := archive.Create(archive.CreateOptions{
 			Adapter:     archive.ClaudeCodeAdapterName,
@@ -131,6 +141,7 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 		} else {
 			res.ArchivePath = archiveResult.ArchivePath
 			res.ArchiveSkipped = archiveResult.Skipped
+			archiveManifestPath = archiveResult.ManifestPath
 		}
 	}
 
@@ -190,6 +201,50 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 		}
 	}
 
+	// 7b. CLOSE THE NOTE <-> TRANSCRIPT LOOP. This runs BEFORE the claim gate on
+	// purpose: the gate is the entire reason the link was never closed.
+	//
+	// Capture can only link a note to an archive that already exists, and it almost
+	// never does at capture time — the auto-capture note is written at the first
+	// Stop (~90 s in) and the agent's wrap note lands mid-session, while the archive
+	// is not created until SessionEnd. The claim written by that first Stop then
+	// short-circuits capture forever, so the archive that finally appeared here was
+	// linked to nothing. Measured: 105 of 417 manifests vault-wide stranded, and
+	// every agent-written note divorced from its transcript (implementation 0/61).
+	//
+	// Linking from the ARCHIVE side, after archive.Create, is the "future hook run
+	// can call LinkSessionNote" recovery path that capture/session.go's comment has
+	// promised since the day it was written and that NOTHING ever built.
+	//
+	// Non-fatal in every branch: a failure to link must never cost the session its
+	// note or its transcript — both are already durable by this point — but it is
+	// never silent either.
+	if archiveManifestPath != "" {
+		archiveRel := archive.VaultRelPath(opts.VaultRoot, archiveManifestPath)
+		link, linkErr := vault.LinkArchiveToSessions(opts.ProjectSlug, payload.SessionID, archiveRel)
+		switch {
+		case linkErr != nil:
+			slog.Warn("hook: could not link session notes to transcript (non-fatal)",
+				"err", linkErr, "archive_session_id", payload.SessionID, "archive", archiveRel)
+		case !link.Found:
+			// No note carries this session id. Expected and fine: a session captured
+			// before ArchiveSessionID was recorded, or one whose only capture is still
+			// to come at step 9 below (which links inline, as it always has). Not a
+			// warning — there is nothing wrong and nothing an operator would do.
+			slog.Debug("hook: no session note to link yet", "archive_session_id", payload.SessionID)
+		default:
+			// Back-link (transcript -> note). Points at the note a human would want to
+			// land on, never the auto-capture stub when a real one exists.
+			if err := archive.LinkSessionNote(opts.VaultRoot, archiveManifestPath, link.Canonical.NotePath); err != nil {
+				slog.Warn("hook: archive manifest back-link failed; transcript is reachable from the note but not the reverse (non-fatal)",
+					"err", err, "manifest", archiveManifestPath, "note_path", link.Canonical.NotePath)
+			}
+			res.LinkedNotes = len(link.Updated)
+			slog.Info("hook: linked session notes to transcript",
+				"updated", len(link.Updated), "canonical", link.Canonical.NotePath, "archive", archiveRel)
+		}
+	}
+
 	// 8. Check claim sentinel (idempotency). The claim gates ONLY the rich
 	// session capture below — archive, harvest, and drain above already ran.
 	if IsClaimed(claimDir, payload.SessionID) {
@@ -221,7 +276,7 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 	sessionResult, err := capture.WriteSession(ctx, vault, nil, capture.SessionParams{
 		Project:          opts.ProjectSlug,
 		Summary:          summary,
-		Tag:              "auto-capture",
+		Tag:              storage.TagAutoCapture,
 		Model:            model,
 		Transcript:       transcript,
 		ArchiveSessionID: payload.SessionID,

@@ -48,7 +48,9 @@ func TestWriteSessionNoteLandsDespitePreWriteFailures(t *testing.T) {
 		Summary:    "work that must survive a bad enricher and a missing archive",
 		Transcript: enrichTranscript,
 		Enricher:   failingEnricher(),
-		// No archive was ever created for this ID, so ResolveEntry fails.
+		// No archive exists for this ID yet — the ORDINARY case at capture time,
+		// since the hook does not archive until SessionEnd. This is a deferred
+		// link, not a lost one (210).
 		ArchiveSessionID: "no-such-archive-session",
 	})
 	if err != nil {
@@ -65,15 +67,22 @@ func TestWriteSessionNoteLandsDespitePreWriteFailures(t *testing.T) {
 		t.Fatal("note exists but is empty")
 	}
 
-	// And the losses must be reported, not swallowed.
+	// And the REAL loss must be reported, not swallowed.
 	if !result.Failed() {
-		t.Fatalf("capture lost enrichment AND the archive link but reported no failures: %+v", result)
+		t.Fatalf("capture lost enrichment but reported no failures: %+v", result)
 	}
 	if !hasFailure(result, StageEnrichment) {
 		t.Errorf("enrichment failure not reported; stages = %v", stages(result))
 	}
-	if !hasFailure(result, StageArchiveResolve) {
-		t.Errorf("archive resolve failure not reported; stages = %v", stages(result))
+
+	// A MISSING ARCHIVE IS NOT A LOSS (210). It is the ordinary state of the world
+	// at capture time, and reporting it as a failure made vp_health go amber on
+	// every session ever captured, for work that SessionEnd goes on to complete.
+	// The old assertion here demanded that false alarm.
+	for _, f := range result.Failures {
+		if f.Stage == "archive_resolve" {
+			t.Errorf("a not-yet-created archive was reported as a capture LOSS; stages = %v", stages(result))
+		}
 	}
 
 	// The note must carry the plain heuristic summary, not a half-applied one.
@@ -86,6 +95,14 @@ func TestWriteSessionNoteLandsDespitePreWriteFailures(t *testing.T) {
 	}
 	if meta.EnrichedBy != "" {
 		t.Errorf("enriched_by = %q, want empty — the enricher FAILED", meta.EnrichedBy)
+	}
+
+	// THIS is what makes deferring the link safe rather than silently dropping it:
+	// the note records WHICH SESSION it came from, so the archiving hook run can
+	// find it later. Without this field a note whose archive did not exist yet was
+	// unlinkable forever — which is exactly how 105 of 417 manifests were stranded.
+	if meta.ArchiveSessionID != "no-such-archive-session" {
+		t.Errorf("note must record its host session id so the link can be closed later: got %q", meta.ArchiveSessionID)
 	}
 }
 
