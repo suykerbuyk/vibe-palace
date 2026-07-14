@@ -412,3 +412,90 @@ func TestGetTaskExcludeContentSmallBodyStaysInline(t *testing.T) {
 		t.Errorf("ContentURI/ContentSize must still be set: uri=%q size=%d want %d", gr.ContentURI, gr.ContentSize, len(full))
 	}
 }
+
+// TestManageTaskAmend_RecordsADecisionIntoThePlan is the end-to-end reason amend
+// exists: /vpc-review-plan produces findings and reversals, and before amend they
+// had nowhere to land — the tool could change a task's STATUS and its EDGES but
+// not its PLAN. A task whose body still asserts a premise you have disproved is a
+// task that gets implemented wrong.
+func TestManageTaskAmend_RecordsADecisionIntoThePlan(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	tool := ManageTaskTool(vault)
+
+	body := "## Diagnosis\n\nThe premise: Rebuild serves a stale vector.\n\n## Verification\n\nDrive the real tool.\n" + unitTaskBody()
+	params, _ := json.Marshal(manageTaskParams{
+		Project: "test-proj", Action: "create", Task: "t",
+		Title: "T", Content: body, Priority: "high",
+	})
+	if _, err := tool.Handler(context.Background(), params); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Amend twice with the SAME section: the second must replace, not duplicate.
+	for _, decision := range []string{"Provisional.", "REVERSED: the key is already a content hash."} {
+		p, _ := json.Marshal(manageTaskParams{
+			Project: "test-proj", Action: "amend", Task: "t",
+			Section: "Decision (205)", Content: decision,
+		})
+		result, err := tool.Handler(context.Background(), p)
+		if err != nil {
+			t.Fatalf("amend: %v", err)
+		}
+		m, ok := result.(map[string]string)
+		if !ok || m["status"] != "amended" || m["section"] != "Decision (205)" {
+			t.Errorf("amend result = %#v, want status=amended, section=Decision (205)", result)
+		}
+	}
+
+	meta, got, err := vault.GetTask("test-proj", "t")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if n := strings.Count(got, "## Decision (205)"); n != 1 {
+		t.Errorf("section count = %d, want 1 — a repeated amend duplicated instead of converging:\n%s", n, got)
+	}
+	if !strings.Contains(got, "REVERSED: the key is already a content hash.") {
+		t.Errorf("the second amend did not land:\n%s", got)
+	}
+	if strings.Contains(got, "Provisional.") {
+		t.Errorf("the first amend's body survived the replace:\n%s", got)
+	}
+	if meta.Status != "pending" || meta.Priority != "high" {
+		t.Errorf("amend disturbed the header block: status=%q priority=%q", meta.Status, meta.Priority)
+	}
+	// The original plan sections must be intact.
+	if !strings.Contains(got, "## Diagnosis") || !strings.Contains(got, "## Verification") {
+		t.Errorf("amend destroyed the original plan:\n%s", got)
+	}
+}
+
+func TestManageTaskAmend_RequiresSectionAndContent(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	tool := ManageTaskTool(vault)
+
+	params, _ := json.Marshal(manageTaskParams{
+		Project: "test-proj", Action: "create", Task: "t",
+		Title: "T", Content: unitTaskBody(), Priority: "high",
+	})
+	if _, err := tool.Handler(context.Background(), params); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	cases := []struct{ name, section, content, want string }{
+		{"no section", "", "body", "section is required"},
+		{"no content", "Decision", "", "content is required"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _ := json.Marshal(manageTaskParams{
+				Project: "test-proj", Action: "amend", Task: "t",
+				Section: tc.section, Content: tc.content,
+			})
+			if _, err := tool.Handler(context.Background(), p); err == nil {
+				t.Fatal("amend succeeded, want rejection")
+			} else if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %v, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+}

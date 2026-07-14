@@ -169,7 +169,7 @@
     {
       "name": "vp_manage_task",
       "mutating": true,
-      "schema_sha256": "8c1e3e792e14d1bcdd965b45167083e892e2a115964367734afbf63c59d80baa"
+      "schema_sha256": "4a476f58c76c8f8435c5234a350b0be93d4e51f76354db25bb04d1bf9f89f763"
     },
     {
       "name": "vp_memory_delete",

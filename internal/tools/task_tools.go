@@ -179,6 +179,9 @@ type manageTaskParams struct {
 	// updating only the dependencies would silently unparent the task.
 	Parent    *string   `json:"parent,omitempty"`
 	DependsOn *[]string `json:"depends_on,omitempty"`
+	// Section names the H2 block that amend replaces or appends. It is what makes
+	// a repeated amend converge rather than duplicate.
+	Section string `json:"section,omitempty"`
 	// ApprovedByHuman is ATTESTATION, not AUTHORIZATION. See the friction note
 	// on manageTaskSchema.
 	ApprovedByHuman bool `json:"approved_by_human,omitempty"`
@@ -195,12 +198,18 @@ type manageTaskParams struct {
 // the accidental version of that mistake. It does not remove the deliberate one.
 const minTaskContentBytes = 200
 
-// manageTaskSchema multiplexes four actions over one tool. Two of them carry
+// manageTaskSchema multiplexes seven actions over one tool. Two of them carry
 // FRICTION — deliberately, and with a precisely bounded claim:
 //
 //   - create requires a `content` body (and the handler additionally requires it
 //     to clear minTaskContentBytes).
 //   - retire requires `approved_by_human`.
+//
+// amend carries no friction and deliberately no minimum length: a decision worth
+// recording is often one line ("Option B; the re-key is unjustified"), and a
+// floor there would only teach agents to pad. create's floor exists because a
+// task with no plan is useless to a future reader; an amend's value does not
+// scale with its size.
 //
 // approved_by_human is a boolean the AGENT PASSES TO ITSELF. There is no
 // approval primitive anywhere in this codebase — no MCP elicitation, no prompt,
@@ -244,11 +253,12 @@ var manageTaskSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
 		"project":  {"type": "string", "description": "Project slug."},
-		"action":   {"type": "string", "enum": ["create", "update_status", "set_relations", "retire", "cancel"], "description": "Action: create, update_status, set_relations, retire, or cancel."},
+		"action":   {"type": "string", "enum": ["create", "amend", "set_meta", "update_status", "set_relations", "retire", "cancel"], "description": "Action: create, amend, set_meta, update_status, set_relations, retire, or cancel."},
 		"task":     {"type": "string", "description": "Task slug."},
-		"title":    {"type": "string", "description": "Task title (for create)."},
-		"content":  {"type": "string", "description": "Task content body. REQUIRED for create, and must be at least 200 bytes of real plan — not a pointer to a plan stored elsewhere. Do not include a '# Title' heading or '**Status:**'/'**Priority:**'/'**Parent:**'/'**Depends:**' lines; create writes those itself."},
-		"priority": {"type": "string", "description": "Priority: low, medium, high, critical (for create)."},
+		"title":    {"type": "string", "description": "Task title (for create or set_meta). set_meta is the ONLY way to change a title after creation \u2014 and a title stating a premise you have since disproved keeps reaching every agent at session start as the headline, because this is the field vp_list_tasks and vp_bootstrap_context surface."},
+		"content":  {"type": "string", "description": "Task content body. REQUIRED for create (min 200 bytes of real plan, not a pointer to a plan stored elsewhere) and for amend (the section body). Do not include a '# Title' heading or '**Status:**'/'**Priority:**'/'**Parent:**'/'**Depends:**' lines; create writes those itself and amend must never touch them. For amend, do not include an '## H2' heading either — the 'section' parameter supplies it; use '###' for sub-headings."},
+		"section":  {"type": "string", "description": "REQUIRED for amend: the H2 heading TEXT (no '##' markup) of the section to replace, or to append if absent. Amend is keyed on this so a repeated amend CONVERGES instead of duplicating the section. Use it to record decisions, review findings and reversals into a task's plan — e.g. section=\"Decision (iter 205)\"."},
+		"priority": {"type": "string", "description": "Priority: low, medium, high, critical (for create or set_meta). set_meta is the ONLY way to re-prioritize an existing task."},
 		"status":   {"type": "string", "enum": ["pending", "in_progress", "blocked", "icebox"], "description": "New status (for update_status). 'icebox' means known but deliberately not scheduled — it stays in the active directory and is hidden from default listings. Terminal states are not reachable here: use action=retire or action=cancel, which move the file."},
 		"parent":   {"type": "string", "description": "Slug of this task's parent (for create or set_relations). An EPIC is simply a task that others name as their parent — there is no separate epic type. Pass \"\" with set_relations to clear it."},
 		"depends_on": {"type": "array", "items": {"type": "string"}, "description": "Slugs this task depends on (for create or set_relations). A dependency on a retired or cancelled task counts as SATISFIED. Pass [] with set_relations to clear."},
@@ -261,12 +271,20 @@ var manageTaskSchema = json.RawMessage(`{
 			"then": {"required": ["content"]}
 		},
 		{
+			"if":   {"properties": {"action": {"const": "amend"}}, "required": ["action"]},
+			"then": {"required": ["section", "content"]}
+		},
+		{
 			"if":   {"properties": {"action": {"const": "retire"}}, "required": ["action"]},
 			"then": {"required": ["approved_by_human"]}
 		},
 		{
 			"if":   {"properties": {"action": {"const": "set_relations"}}, "required": ["action"]},
 			"then": {"anyOf": [{"required": ["parent"]}, {"required": ["depends_on"]}]}
+		},
+		{
+			"if":   {"properties": {"action": {"const": "set_meta"}}, "required": ["action"]},
+			"then": {"anyOf": [{"required": ["title"]}, {"required": ["priority"]}]}
 		}
 	]
 }`)
@@ -275,10 +293,14 @@ func ManageTaskTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:     "vp_manage_task",
 		Mutating: true,
-		Description: "Create, update, relate, retire, or cancel a task. create requires a substantive content body; " +
+		Description: "Create, amend, update, relate, retire, or cancel a task. create requires a substantive content body; " +
 			"retire requires approved_by_human=true, which is your own attestation that the human said the task " +
 			"is done — set it only when that is true. set_relations sets a task's parent (its epic) and/or its " +
-			"dependencies; structure is derived from those two edges, so an epic is any task others point at.",
+			"dependencies; structure is derived from those two edges, so an epic is any task others point at. " +
+			"amend is the ONLY way to change a task's PLAN: it replaces the named H2 `section` (or appends it if " +
+			"absent), so recording a decision, a review finding or a reversal converges rather than duplicating. " +
+			"Use it whenever a plan is superseded — a task whose body still states a premise you have disproved " +
+			"is a task that will be implemented wrong.",
 		Schema:  manageTaskSchema,
 		Handler: manageTaskHandler(vault),
 	}
@@ -385,6 +407,46 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 			}
 			return map[string]string{"status": "created", "task": p.Task}, nil
 
+		case "amend":
+			// No length floor here, unlike create. See the note on manageTaskSchema.
+			if p.Section == "" {
+				return nil, fmt.Errorf("section is required for amend action: it names the H2 heading to replace or append")
+			}
+			if p.Content == "" {
+				return nil, fmt.Errorf("content is required for amend action: it is the body of the section")
+			}
+			if err := vault.AmendTask(p.Project, p.Task, p.Section, p.Content); err != nil {
+				return nil, fmt.Errorf("amend task: %w", err)
+			}
+			return map[string]string{"status": "amended", "task": p.Task, "section": p.Section}, nil
+
+		case "set_meta":
+			// Title and Priority are the two header fields that had no writer at all
+			// until 205: create stamped them once and nothing could ever change them.
+			// Deliberately CANNOT set status or edges — three writers, disjoint fields,
+			// so there is never a second way to write one.
+			if p.Title == "" && p.Priority == "" {
+				return nil, fmt.Errorf("set_meta requires title and/or priority")
+			}
+			edit := storage.TaskMetaEdit{}
+			if p.Title != "" {
+				edit.Title = &p.Title
+			}
+			if p.Priority != "" {
+				edit.Priority = &p.Priority
+			}
+			if err := vault.SetTaskMeta(p.Project, p.Task, edit); err != nil {
+				return nil, fmt.Errorf("set task meta: %w", err)
+			}
+			result := map[string]string{"status": "meta_set", "task": p.Task}
+			if p.Title != "" {
+				result["title"] = p.Title
+			}
+			if p.Priority != "" {
+				result["priority"] = p.Priority
+			}
+			return result, nil
+
 		case "update_status":
 			if p.Status == "" {
 				return nil, fmt.Errorf("status is required for update_status action")
@@ -443,7 +505,9 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 			return map[string]string{"status": "cancelled", "task": p.Task}, nil
 
 		default:
-			return nil, fmt.Errorf("invalid action %q: must be create, update_status, retire, or cancel", p.Action)
+			return nil, fmt.Errorf(
+				"invalid action %q: must be create, amend, set_meta, update_status, set_relations, retire, or cancel",
+				p.Action)
 		}
 	}
 }

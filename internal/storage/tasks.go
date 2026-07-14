@@ -253,6 +253,316 @@ func (v *Vault) SetTaskRelations(project, taskSlug string, rel TaskRelations) er
 	return atomicfile.Write(v.Root, path, []byte(updated))
 }
 
+// TaskMetaEdit is the input to SetTaskMeta. Both fields are TRI-STATE for the
+// same reason TaskRelations is: nil means "leave it alone". Unlike relations,
+// neither can be CLEARED — a task with no title or no priority is not a state
+// worth being able to reach — so an empty string is rejected rather than treated
+// as a clear.
+type TaskMetaEdit struct {
+	Title    *string
+	Priority *string
+}
+
+// SetTaskMeta changes an ACTIVE task's TITLE and/or PRIORITY in place.
+//
+// Why this exists: Title and Priority were the two header fields with NO WRITER.
+// CreateTask stamped them once and nothing could ever change them —
+// UpdateTaskStatus owns Status, SetTaskRelations owns Parent/Depends, AmendTask
+// owns the body sections, and the remaining two fields belonged to nobody.
+//
+// That is not academic. A task's TITLE is what vp_list_tasks and
+// vp_bootstrap_context hand to every agent at session start, so a title that
+// states a premise later disproved keeps reaching every future session as the
+// headline while the correction sits in a body section the agent may never read.
+// (Live specimen, 205: search-index-and-embed-cache-have-no-eviction-path was
+// titled "...a full Rebuild does NOT fix a stale vector, because Rebuild trusts
+// the same by-ID cache" — a claim the review disproved from source.) And a
+// backlog whose priorities can never be revised is a backlog that records what
+// someone guessed at creation time, not what the project currently believes.
+//
+// THREE WRITERS, DISJOINT FIELDS. Status stays with UpdateTaskStatus, which owns
+// real terminal-state semantics; edges stay with SetTaskRelations. Nothing here
+// can set a status or an edge, so there is never a second way to write a field —
+// which is what keeps the reader and the writer from disagreeing about which
+// value is real.
+//
+// Locking is the same shape as its siblings: the per-path lock spans the
+// read→rewrite, and the write goes through atomicfile.Write(v.Root, ...) directly
+// — never lockedWrite, which re-acquires this same lock and would self-deadlock.
+func (v *Vault) SetTaskMeta(project, taskSlug string, edit TaskMetaEdit) error {
+	if edit.Title == nil && edit.Priority == nil {
+		return fmt.Errorf("set meta for %q: nothing to set (both title and priority are unspecified)", taskSlug)
+	}
+
+	var title, priority string
+	if edit.Title != nil {
+		title = strings.TrimSpace(*edit.Title)
+		if title == "" {
+			return fmt.Errorf("set meta for %q: title cannot be empty — a task with no title is not a reachable state", taskSlug)
+		}
+		if strings.ContainsAny(title, "\r\n") {
+			return fmt.Errorf("set meta for %q: title must be a single line", taskSlug)
+		}
+	}
+	if edit.Priority != nil {
+		priority = strings.TrimSpace(*edit.Priority)
+		if !validPriorities[priority] {
+			return fmt.Errorf(
+				"set meta for %q: invalid priority %q — must be low, medium, high, or critical",
+				taskSlug, priority)
+		}
+	}
+
+	path, err := v.TaskFile(project, taskSlug)
+	if err != nil {
+		return err
+	}
+
+	release, err := vaultlock.Acquire(v.Root, path)
+	if err != nil {
+		return fmt.Errorf("lock task: %w", err)
+	}
+	defer release()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("task %q not found in project %q (set_meta works on ACTIVE tasks only)", taskSlug, project)
+		}
+		return fmt.Errorf("read task: %w", err)
+	}
+
+	updated := string(data)
+	if edit.Title != nil {
+		updated = replaceTitleLine(updated, title)
+	}
+	if edit.Priority != nil {
+		updated = upsertHeaderField(updated, fieldPriority, priority)
+	}
+
+	return atomicfile.Write(v.Root, path, []byte(updated))
+}
+
+// validPriorities is the write set for SetTaskMeta.
+//
+// CreateTask deliberately does NOT consult this — it accepts whatever it is
+// given, and the corpus proves why: real task files on disk carry "P0"/"P1"
+// priorities from an older convention. A read-side whitelist would declare them
+// invalid; a create-side one would be a behaviour change nobody asked for. This
+// constrains only the NEW writer, where there is no legacy to honour.
+var validPriorities = map[string]bool{
+	"low":      true,
+	"medium":   true,
+	"high":     true,
+	"critical": true,
+}
+
+// replaceTitleLine rewrites the first H1 line. If the file has none, one is
+// inserted at the top — the same not-silently-dropping-the-update posture as
+// replaceStatusLine, and for the same reason: a caller that explicitly set a
+// title and got no title is a caller that was lied to.
+//
+// It splices into the line slice rather than concatenating strings, so the
+// file's trailing-newline shape survives exactly.
+//
+// FENCE-UNAWARE, AND SAFE — but only because of an invariant, so state it: this
+// is a whole-file first-wins scan, and a fenced shell comment ("# rebuild the
+// index") is H1-shaped. It cannot win the race because CreateTask ALWAYS writes
+// "# Title" as line 1 and validateTaskBody REFUSES an unfenced H1 in any body, so
+// the real title is always the first H1 in the file. This is the same reasoning
+// that makes parseTaskMeta's whole-file Status/Priority scan safe (204) — and the
+// same reasoning that made it UNSAFE for the OPTIONAL Parent/Depends fields,
+// which have no such guaranteed first match. Do not copy this pattern to a field
+// that CreateTask does not always write.
+func replaceTitleLine(content, title string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if isH1Line(line) {
+			lines[i] = "# " + title
+			return strings.Join(lines, "\n")
+		}
+	}
+	lines = slices.Insert(lines, 0, "# "+title, "")
+	return strings.Join(lines, "\n")
+}
+
+// AmendTask replaces (or appends) one H2 SECTION of an ACTIVE task's body, in
+// place. It is the only writer that can change a task's PLAN.
+//
+// Why this exists: for most of this project's life vp_manage_task could change a
+// task's STATUS and its EDGES but not its BODY. So a decision, a review finding,
+// or a reversal — the outputs of /vpc-review-plan, and of every architecture
+// conversation — had nowhere to land. workflow.md said task files are "mutated
+// ONLY via vp_manage_task" while the API made obeying that impossible, so an
+// agent with an amendment to record either hand-edited the file (breaking the
+// rule) or dropped the amendment on the floor when the session ended. A rule the
+// API cannot satisfy is not a rule, it is prose.
+//
+// SECTION-KEYED, NOT APPEND-ONLY, and that is the whole design. An append-only
+// amend is not idempotent: re-running it — after a crash, a retry, a re-read of
+// the same instruction — silently duplicates the section, and the task then
+// carries two "## Decision" blocks that disagree. Keying on the heading makes a
+// repeated amend converge instead of accumulate. (Capture learned this at 199 and
+// the reasoning transfers exactly.)
+//
+// The header block is unreachable from here BY CONSTRUCTION, not by checking:
+// sections start at an H2, and headerBlock() ends before the first one. Title,
+// Status, Priority, Parent and Depends stay owned by CreateTask,
+// UpdateTaskStatus and SetTaskRelations respectively. validateTaskBody is still
+// applied to the incoming body as defense in depth, so a caller cannot smuggle a
+// "**Status:**" line into a section and produce a file whose reader and writer
+// disagree about which status is real.
+//
+// Locking is the same shape as UpdateTaskStatus and SetTaskRelations: the
+// per-path lock is held across the read→rewrite so a concurrent amend of a
+// DIFFERENT section cannot clobber this one, and the write goes through
+// atomicfile.Write(v.Root, ...) directly — NEVER lockedWrite, which re-acquires
+// this same lock, and vaultlock.Acquire is a blocking LOCK_EX with no LOCK_NB
+// and no timeout, so re-entry is a permanent self-deadlock rather than an error.
+// Passing v.Root is what stamps the surface; a bare atomicfile.Write would
+// silently skip it.
+//
+// Active tasks only. A retired task's plan is history, and history is append-only
+// (iterations.md), not amendable.
+func (v *Vault) AmendTask(project, taskSlug, section, body string) error {
+	section = strings.TrimSpace(section)
+	if section == "" {
+		return fmt.Errorf("amend %q: section is required — it names the H2 heading to replace or append", taskSlug)
+	}
+	if strings.ContainsAny(section, "\r\n") {
+		return fmt.Errorf("amend %q: section must be a single line, got %q", taskSlug, section)
+	}
+	if strings.HasPrefix(section, "#") {
+		return fmt.Errorf(
+			"amend %q: section is the heading TEXT, not the markup — pass %q, not %q",
+			taskSlug, strings.TrimLeft(strings.TrimSpace(section), "# "), section)
+	}
+	if strings.TrimSpace(body) == "" {
+		return fmt.Errorf("amend %q: body is required — an empty section records nothing", taskSlug)
+	}
+	if err := validateTaskBody(body); err != nil {
+		return err
+	}
+	if err := validateAmendBody(body); err != nil {
+		return err
+	}
+
+	path, err := v.TaskFile(project, taskSlug)
+	if err != nil {
+		return err
+	}
+
+	release, err := vaultlock.Acquire(v.Root, path)
+	if err != nil {
+		return fmt.Errorf("lock task: %w", err)
+	}
+	defer release()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("task %q not found in project %q (amend works on ACTIVE tasks only)", taskSlug, project)
+		}
+		return fmt.Errorf("read task: %w", err)
+	}
+
+	return atomicfile.Write(v.Root, path, []byte(upsertSection(string(data), section, body)))
+}
+
+// validateAmendBody refuses an H2 inside an amend body.
+//
+// The section heading is supplied by the `section` parameter and rendered here.
+// A second H2 inside the body would START A NEW SECTION, and the next amend of
+// the same section would then replace only up to that inner H2 — silently
+// orphaning the remainder as a section nothing owns. Rejecting it is what keeps
+// the replace idempotent. Sub-headings are H3+.
+func validateAmendBody(body string) error {
+	for _, l := range mdfence.OutsideFences(body) {
+		if trimmed := strings.TrimSpace(l.Text); isH2Line(trimmed) {
+			return fmt.Errorf(
+				"amend body line %d is an H2 heading (%q): the section heading is supplied by the "+
+					"`section` parameter, and a second H2 inside the body would split the section so a "+
+					"later amend could not replace it whole — use H3 (###) for sub-headings",
+				l.Num, trimmed)
+		}
+	}
+	return nil
+}
+
+// sectionBounds locates an H2 section by heading text, FENCE-AWARE.
+//
+// Fence-awareness is not decoration. Task bodies quote markdown at each other
+// constantly — this very project's task files contain fenced examples of task
+// headers — so a naive scan would match a "## Decision" that is sample text
+// inside a code block and splice a replacement into the middle of a fence. The
+// 191 fence bug and the 204 header-parser bug were both this mistake; mdfence
+// exists so it is made once.
+//
+// Returns the half-open line range [start, end) covering the heading and its
+// body, where end is the next H1 or H2 outside a fence, or EOF. An H3 does not
+// terminate a section.
+func sectionBounds(content, section string) (start, end int, found bool) {
+	lines := strings.Split(content, "\n")
+	outside := make([]bool, len(lines))
+	for _, l := range mdfence.OutsideFences(content) {
+		if i := l.Num - 1; i >= 0 && i < len(outside) {
+			outside[i] = true
+		}
+	}
+
+	want := "## " + section
+	start = -1
+	for i, line := range lines {
+		if outside[i] && strings.TrimSpace(line) == want {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return 0, 0, false
+	}
+
+	end = len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		if !outside[i] {
+			continue
+		}
+		if trimmed := strings.TrimSpace(lines[i]); isH1Line(trimmed) || isH2Line(trimmed) {
+			end = i
+			break
+		}
+	}
+	return start, end, true
+}
+
+// upsertSection replaces the named H2 section, or appends it if absent.
+//
+// Unlike upsertHeaderField, this normalizes the file to exactly one trailing
+// newline. A body edit already rewrites whole lines, and CreateTask writes that
+// shape anyway, so converging on it is predictable rather than lossy.
+func upsertSection(content, section, body string) string {
+	rendered := "## " + section + "\n\n" + strings.TrimRight(body, "\n")
+
+	start, end, found := sectionBounds(content, section)
+	if !found {
+		base := strings.TrimRight(content, "\n")
+		if base == "" {
+			return rendered + "\n"
+		}
+		return base + "\n\n" + rendered + "\n"
+	}
+
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines))
+	out = append(out, lines[:start]...)
+	out = append(out, strings.Split(rendered, "\n")...)
+	if end < len(lines) {
+		out = append(out, "") // blank line before the section that follows
+		out = append(out, lines[end:]...)
+	}
+	return strings.TrimRight(strings.Join(out, "\n"), "\n") + "\n"
+}
+
 // CreateTask creates a new task markdown file in the project's tasks directory.
 // It is a hard error if the task already exists.
 //
@@ -556,6 +866,14 @@ func isDependsLine(line string) bool {
 // isH1Line reports whether a line is a markdown H1 ("# " at line start).
 func isH1Line(line string) bool {
 	return strings.HasPrefix(strings.TrimSpace(line), "# ")
+}
+
+// isH2Line reports whether a line opens an H2 section. The trailing space in the
+// prefix is load-bearing: it makes "### sub" an H3 rather than an H2 with a
+// stray hash, which is what lets a section carry sub-headings without any of
+// them terminating it.
+func isH2Line(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(line), "## ")
 }
 
 // headerBlock returns the [start, end) line range of the contiguous metadata

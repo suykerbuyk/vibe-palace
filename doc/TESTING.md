@@ -69,7 +69,7 @@ This is the gate for commits.
 
 ---
 
-## Live-vault canaries (`internal/taskgraph/live_vault_test.go`)
+## Live-vault canaries (`internal/taskgraph/live_vault_test.go`, `internal/storage/tasks_live_vault_test.go`)
 
 A small class of test runs against the **operator's real vault**, resolved through
 `storage.OpenVaultGlobal()`, and **skips** when no vault is configured. It is not an
@@ -90,10 +90,19 @@ Current canaries:
 |---|---|
 | `TestLiveVaultHasNoPhantomRelations` | `parseTaskMeta` regressing to a whole-file scan and reading a task's **body** as a real `Parent`/`Depends` — several real task files discuss the header syntax in prose and inside fences |
 | `TestLiveVaultGraphIsCleanAndTerminates` | A structural lie in the real backlog (cycle / dangling ref / retired parent with live children) — and, under a bounded timeout, a cycle being **walked instead of detected** |
+| `TestLiveVaultAmendNeverDisturbsTheHeaderBlock` | `vp_manage_task amend` splicing a body section in a way that moves a task's status, priority, title or edges. Run over **every real section of every real task file** — the guarantee is structural, so it is asserted against the corpus rather than a body written to make it pass |
+| `TestLiveVaultAmendNeverMatchesAFencedHeading` | `sectionBounds` regressing to a naive scan and splicing **into a code fence**. Not hypothetical: **22 H2 headings in this project's own task files exist only as fenced sample text** — including the `## Decision` quoted by the task that specified `amend` |
+| `TestLiveVaultAmendIsIdempotentOnRealBodies` | A retried amend **duplicating** a section on a real body instead of converging — the failure a crash-and-retry would produce |
+| `TestLiveVaultRetitleNeverDisturbsAnythingElse` | `replaceTitleLine` (whole-file, first-wins, **fence-unaware**) rewriting an H1-shaped line that is not the title. Safe only because `CreateTask` always writes `# Title` first and `validateTaskBody` refuses an unfenced H1 in a body — **that is an invariant about the CORPUS, not the function**, so only the corpus can check it. Asserts exactly one line changed per file |
 
 **Rules for adding one:** it must `t.Skip` (never fail) when the vault is absent, it must never
 write, and it must assert something a fixture *structurally cannot* — otherwise it is just a slow
 unit test with a dependency on one machine.
+
+**A canary that finds no hazard should say so, not pass silently.** `TestLiveVaultAmendNeverMatchesAFencedHeading`
+skips (rather than passes) when the corpus contains zero fenced-only headings: a green canary with
+nothing to guard is indistinguishable from a green canary that is broken, and this project has twice
+shipped an auditor that reported zero findings on a tree full of defects.
 
 ---
 

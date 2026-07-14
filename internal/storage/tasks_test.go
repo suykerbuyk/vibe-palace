@@ -935,3 +935,451 @@ func TestOldBinaryBodyBorneRelationIsStillNotRead(t *testing.T) {
 		t.Fatalf("header regressed: %q/%q", meta.Status, meta.Priority)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// AmendTask
+// ---------------------------------------------------------------------------
+
+// amendFixture creates a task with a two-section body.
+func amendFixture(t *testing.T) *Vault {
+	t.Helper()
+	v := testVault(t)
+	body := "## Diagnosis\n\nThe cache is never evicted.\n\n## Verification\n\nDrive the real tool.\n"
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "t", Title: "T", Content: body, Priority: "high",
+		Parent: "epic", Depends: []string{"other"},
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	return v
+}
+
+func TestAmendTaskAppendsWhenSectionAbsent(t *testing.T) {
+	v := amendFixture(t)
+	if err := v.AmendTask("proj", "t", "Decision (205)", "Option B. The re-key is unjustified."); err != nil {
+		t.Fatalf("AmendTask: %v", err)
+	}
+	_, body, err := v.GetTask("proj", "t")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if !strings.Contains(body, "## Decision (205)\n\nOption B. The re-key is unjustified.\n") {
+		t.Errorf("appended section missing or malformed:\n%s", body)
+	}
+	// The pre-existing sections must survive.
+	for _, want := range []string{"## Diagnosis", "## Verification", "The cache is never evicted."} {
+		if !strings.Contains(body, want) {
+			t.Errorf("amend destroyed existing content %q:\n%s", want, body)
+		}
+	}
+}
+
+// TestAmendTaskIsIdempotent is the whole reason amend is section-keyed rather
+// than append-only. A retried amend must CONVERGE, not accumulate.
+func TestAmendTaskIsIdempotent(t *testing.T) {
+	v := amendFixture(t)
+	for range 3 {
+		if err := v.AmendTask("proj", "t", "Decision", "Ship it."); err != nil {
+			t.Fatalf("AmendTask: %v", err)
+		}
+	}
+	_, body, err := v.GetTask("proj", "t")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if n := strings.Count(body, "## Decision"); n != 1 {
+		t.Errorf("section count = %d, want 1 — a repeated amend duplicated instead of replacing:\n%s", n, body)
+	}
+	if n := strings.Count(body, "Ship it."); n != 1 {
+		t.Errorf("body count = %d, want 1:\n%s", n, body)
+	}
+}
+
+func TestAmendTaskReplacesInPlaceAndKeepsNeighbours(t *testing.T) {
+	v := amendFixture(t)
+	if err := v.AmendTask("proj", "t", "Diagnosis", "REVERSED: the premise was false."); err != nil {
+		t.Fatalf("AmendTask: %v", err)
+	}
+	_, body, err := v.GetTask("proj", "t")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if strings.Contains(body, "The cache is never evicted.") {
+		t.Errorf("old section body survived the replace:\n%s", body)
+	}
+	if !strings.Contains(body, "REVERSED: the premise was false.") {
+		t.Errorf("new body missing:\n%s", body)
+	}
+	// The section AFTER the replaced one must be intact, and still be a section.
+	if !strings.Contains(body, "## Verification\n\nDrive the real tool.") {
+		t.Errorf("following section was damaged by the splice:\n%s", body)
+	}
+	// Order must be preserved: Diagnosis still precedes Verification.
+	if strings.Index(body, "## Diagnosis") > strings.Index(body, "## Verification") {
+		t.Errorf("replace reordered the sections:\n%s", body)
+	}
+}
+
+// TestAmendTaskNeverTouchesHeaderBlock pins the invariant that makes amend safe
+// to expose at all: the reader and the writer of a task's status/edges must not
+// be able to disagree because someone amended a body.
+func TestAmendTaskNeverTouchesHeaderBlock(t *testing.T) {
+	v := amendFixture(t)
+	if err := v.UpdateTaskStatus("proj", "t", "in_progress"); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+	if err := v.AmendTask("proj", "t", "Decision", "Recorded."); err != nil {
+		t.Fatalf("AmendTask: %v", err)
+	}
+	meta, body, err := v.GetTask("proj", "t")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if meta.Status != "in_progress" {
+		t.Errorf("Status = %q, want in_progress — amend clobbered the status", meta.Status)
+	}
+	if meta.Priority != "high" {
+		t.Errorf("Priority = %q, want high", meta.Priority)
+	}
+	if meta.Parent != "epic" {
+		t.Errorf("Parent = %q, want epic — amend clobbered the parent edge", meta.Parent)
+	}
+	if !slices.Equal(meta.Depends, []string{"other"}) {
+		t.Errorf("Depends = %v, want [other] — amend clobbered the dependency edge", meta.Depends)
+	}
+	if n := strings.Count(body, "**Status:**"); n != 1 {
+		t.Errorf("status line count = %d, want exactly 1 — reader and writer would disagree:\n%s", n, body)
+	}
+	if !strings.HasPrefix(body, "# T\n") {
+		t.Errorf("H1 title was disturbed:\n%s", body)
+	}
+}
+
+// TestAmendTaskIsFenceAware is the 191/204 bug class, and it is not
+// hypothetical: the task file that SPECIFIED this feature quotes "## Decision"
+// inside a fence as an example. A naive scan would find that quoted heading
+// first and splice the replacement into the middle of a code block.
+func TestAmendTaskIsFenceAware(t *testing.T) {
+	v := testVault(t)
+	body := "## Schema\n\nAn amend looks like:\n\n```markdown\n## Decision\n\nsample text\n```\n\nThat fenced block is an example, not a section.\n"
+	if err := v.CreateTask("proj", TaskSpec{Slug: "t", Title: "T", Content: body, Priority: "high"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if err := v.AmendTask("proj", "t", "Decision", "The real decision."); err != nil {
+		t.Fatalf("AmendTask: %v", err)
+	}
+
+	_, got, err := v.GetTask("proj", "t")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	// The fenced sample must be untouched, byte for byte.
+	if !strings.Contains(got, "```markdown\n## Decision\n\nsample text\n```") {
+		t.Errorf("amend spliced into a fenced code block — the fence was not respected:\n%s", got)
+	}
+	// The real section must have been APPENDED at the end, not matched inside the fence.
+	if !strings.HasSuffix(strings.TrimRight(got, "\n"), "## Decision\n\nThe real decision.") {
+		t.Errorf("amend did not append a real section after the fenced example:\n%s", got)
+	}
+	if !strings.Contains(got, "That fenced block is an example, not a section.") {
+		t.Errorf("amend destroyed prose following the fence:\n%s", got)
+	}
+}
+
+// TestAmendTaskH3DoesNotTerminateSection: sub-headings belong to their section.
+func TestAmendTaskH3DoesNotTerminateSection(t *testing.T) {
+	v := testVault(t)
+	body := "## Plan\n\n### Phase 1\n\nold one\n\n### Phase 2\n\nold two\n\n## Risks\n\nA risk.\n"
+	if err := v.CreateTask("proj", TaskSpec{Slug: "t", Title: "T", Content: body, Priority: "high"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := v.AmendTask("proj", "t", "Plan", "### Phase 1\n\nnew one\n\n### Phase 2\n\nnew two"); err != nil {
+		t.Fatalf("AmendTask: %v", err)
+	}
+	_, got, err := v.GetTask("proj", "t")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	// Replacing "## Plan" must have swallowed BOTH H3 subsections, not just up to the first.
+	for _, gone := range []string{"old one", "old two"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("H3 terminated the section early — %q survived a whole-section replace:\n%s", gone, got)
+		}
+	}
+	for _, want := range []string{"new one", "new two", "## Risks", "A risk."} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q after amend:\n%s", want, got)
+		}
+	}
+}
+
+func TestAmendTaskRejectsMetadataAndH2InBody(t *testing.T) {
+	cases := []struct {
+		name, body, wantErr string
+	}{
+		{"status line", "**Status:** done", "status line"},
+		{"parent line", "**Parent:** other-epic", "parent line"},
+		{"depends line", "**Depends:** a, b", "depends line"},
+		{"h1 heading", "# A New Title", "H1 heading"},
+		{"h2 heading", "Some prose.\n\n## Sneaky Second Section\n\nmore", "H2 heading"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := amendFixture(t)
+			err := v.AmendTask("proj", "t", "Decision", tc.body)
+			if err == nil {
+				t.Fatalf("AmendTask(%q) succeeded, want rejection", tc.body)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %v, want it to mention %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// A fenced metadata shape is sample text, not metadata. Same rule as create.
+func TestAmendTaskAcceptsMetadataShapesInsideFences(t *testing.T) {
+	v := amendFixture(t)
+	body := "The header syntax is:\n\n```markdown\n**Status:** pending\n**Parent:** epic\n## Example\n```\n\nQuoted, not applied."
+	if err := v.AmendTask("proj", "t", "Decision", body); err != nil {
+		t.Fatalf("AmendTask rejected a fenced example: %v", err)
+	}
+	meta, got, err := v.GetTask("proj", "t")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if meta.Status != "pending" || meta.Parent != "epic" {
+		t.Errorf("fenced sample text was read as metadata: status=%q parent=%q", meta.Status, meta.Parent)
+	}
+	if n := strings.Count(got, "**Status:**"); n != 2 {
+		// One real header line + one quoted inside the fence.
+		t.Errorf("status line count = %d, want 2 (one real, one fenced sample):\n%s", n, got)
+	}
+}
+
+func TestAmendTaskRejectsBadSection(t *testing.T) {
+	cases := []struct{ name, section, body, wantErr string }{
+		{"empty section", "", "x", "section is required"},
+		{"markup in section", "## Decision", "x", "heading TEXT, not the markup"},
+		{"multiline section", "Decision\nExtra", "x", "single line"},
+		{"empty body", "Decision", "   ", "body is required"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := amendFixture(t)
+			err := v.AmendTask("proj", "t", tc.section, tc.body)
+			if err == nil {
+				t.Fatal("AmendTask succeeded, want rejection")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %v, want it to mention %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestAmendTaskNotFound(t *testing.T) {
+	v := testVault(t)
+	err := v.AmendTask("proj", "nope", "Decision", "x")
+	if err == nil {
+		t.Fatal("AmendTask on a missing task succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %v, want it to say not found", err)
+	}
+}
+
+// Concurrent amends of DIFFERENT sections must both survive: the per-path lock
+// spans the read→rewrite, so neither can clobber the other's section.
+func TestAmendTaskConcurrentDifferentSectionsBothSurvive(t *testing.T) {
+	v := amendFixture(t)
+	sections := []string{"Alpha", "Beta", "Gamma", "Delta", "Epsilon"}
+
+	var wg sync.WaitGroup
+	errs := make([]error, len(sections))
+	for i, s := range sections {
+		wg.Go(func() {
+			errs[i] = v.AmendTask("proj", "t", s, fmt.Sprintf("body of %s", s))
+		})
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("AmendTask(%s): %v", sections[i], err)
+		}
+	}
+
+	_, got, err := v.GetTask("proj", "t")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	for _, s := range sections {
+		if !strings.Contains(got, "## "+s+"\n\nbody of "+s) {
+			t.Errorf("concurrent amend lost section %q — a write clobbered another:\n%s", s, got)
+		}
+	}
+	// And the original body is still there.
+	if !strings.Contains(got, "## Diagnosis") || !strings.Contains(got, "## Verification") {
+		t.Errorf("concurrent amends destroyed the original sections:\n%s", got)
+	}
+}
+
+// The file must stay parseable by the thing that reads it — a round-trip through
+// GetTask after an amend must yield the same metadata the writers set.
+func TestAmendTaskRoundTripsThroughParser(t *testing.T) {
+	v := amendFixture(t)
+	if err := v.AmendTask("proj", "t", "Decision", "Recorded."); err != nil {
+		t.Fatalf("AmendTask: %v", err)
+	}
+	if err := v.SetTaskRelations("proj", "t", TaskRelations{Depends: &[]string{"a", "b"}}); err != nil {
+		t.Fatalf("SetTaskRelations after amend: %v", err)
+	}
+	if err := v.AmendTask("proj", "t", "Decision", "Re-recorded."); err != nil {
+		t.Fatalf("second AmendTask: %v", err)
+	}
+	meta, got, err := v.GetTask("proj", "t")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if !slices.Equal(meta.Depends, []string{"a", "b"}) {
+		t.Errorf("Depends = %v, want [a b] — amend and set_relations disagree", meta.Depends)
+	}
+	if meta.Parent != "epic" {
+		t.Errorf("Parent = %q, want epic", meta.Parent)
+	}
+	if strings.Contains(got, "Recorded.\n") && !strings.Contains(got, "Re-recorded.") {
+		t.Errorf("second amend did not replace the first:\n%s", got)
+	}
+	if n := strings.Count(got, "## Decision"); n != 1 {
+		t.Errorf("Decision section count = %d, want 1:\n%s", n, got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SetTaskMeta
+// ---------------------------------------------------------------------------
+
+func TestSetTaskMetaRetitleAndReprioritize(t *testing.T) {
+	v := amendFixture(t)
+
+	newTitle := "REVERSED: the key is already a content hash"
+	newPri := "critical"
+	if err := v.SetTaskMeta("proj", "t", TaskMetaEdit{Title: &newTitle, Priority: &newPri}); err != nil {
+		t.Fatalf("SetTaskMeta: %v", err)
+	}
+
+	meta, body, err := v.GetTask("proj", "t")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if meta.Title != newTitle {
+		t.Errorf("Title = %q, want %q", meta.Title, newTitle)
+	}
+	if meta.Priority != "critical" {
+		t.Errorf("Priority = %q, want critical", meta.Priority)
+	}
+	// Everything else must be untouched.
+	if meta.Status != "pending" || meta.Parent != "epic" || !slices.Equal(meta.Depends, []string{"other"}) {
+		t.Errorf("set_meta disturbed a field it does not own: %+v", meta)
+	}
+	if n := strings.Count(body, "# "+newTitle); n != 1 {
+		t.Errorf("title line count = %d, want 1:\n%s", n, body)
+	}
+	if !strings.Contains(body, "## Diagnosis") {
+		t.Errorf("set_meta destroyed the body:\n%s", body)
+	}
+}
+
+// Tri-state: setting only one field must leave the other alone.
+func TestSetTaskMetaLeavesTheUnspecifiedFieldAlone(t *testing.T) {
+	v := amendFixture(t)
+
+	pri := "low"
+	if err := v.SetTaskMeta("proj", "t", TaskMetaEdit{Priority: &pri}); err != nil {
+		t.Fatalf("SetTaskMeta: %v", err)
+	}
+	meta, _, err := v.GetTask("proj", "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Title != "T" {
+		t.Errorf("Title = %q, want T — set_meta clobbered a title it was not given", meta.Title)
+	}
+	if meta.Priority != "low" {
+		t.Errorf("Priority = %q, want low", meta.Priority)
+	}
+}
+
+func TestSetTaskMetaRejections(t *testing.T) {
+	empty, blank, bad, ok := "", "   ", "urgent", "high"
+	multi := "line one\nline two"
+	cases := []struct {
+		name    string
+		edit    TaskMetaEdit
+		wantErr string
+	}{
+		{"nothing to set", TaskMetaEdit{}, "nothing to set"},
+		{"empty title", TaskMetaEdit{Title: &empty}, "title cannot be empty"},
+		{"blank title", TaskMetaEdit{Title: &blank}, "title cannot be empty"},
+		{"multiline title", TaskMetaEdit{Title: &multi}, "single line"},
+		{"invalid priority", TaskMetaEdit{Priority: &bad}, "invalid priority"},
+		{"empty priority", TaskMetaEdit{Priority: &empty}, "invalid priority"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := amendFixture(t)
+			err := v.SetTaskMeta("proj", "t", tc.edit)
+			if err == nil {
+				t.Fatal("SetTaskMeta succeeded, want rejection")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %v, want it to mention %q", err, tc.wantErr)
+			}
+		})
+	}
+	// Sanity: the valid one is accepted.
+	v := amendFixture(t)
+	if err := v.SetTaskMeta("proj", "t", TaskMetaEdit{Priority: &ok}); err != nil {
+		t.Errorf("SetTaskMeta with a valid priority failed: %v", err)
+	}
+}
+
+// set_meta must not be a second way to write a status or an edge. Three writers,
+// disjoint fields — that is what keeps the reader and the writer agreeing.
+func TestSetTaskMetaCannotReachStatusOrEdges(t *testing.T) {
+	v := amendFixture(t)
+	if err := v.UpdateTaskStatus("proj", "t", "in_progress"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A title that LOOKS like a status line must be written as a title, not
+	// interpreted as one.
+	sneaky := "**Status:** done"
+	if err := v.SetTaskMeta("proj", "t", TaskMetaEdit{Title: &sneaky}); err != nil {
+		t.Fatalf("SetTaskMeta: %v", err)
+	}
+	meta, body, err := v.GetTask("proj", "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Status != "in_progress" {
+		t.Errorf("Status = %q, want in_progress — a title was read as a status line", meta.Status)
+	}
+	if n := strings.Count(body, "\n**Status:**"); n != 1 {
+		t.Errorf("real status line count = %d, want 1:\n%s", n, body)
+	}
+	if meta.Parent != "epic" {
+		t.Errorf("Parent = %q, want epic", meta.Parent)
+	}
+}
+
+func TestSetTaskMetaNotFound(t *testing.T) {
+	v := testVault(t)
+	title := "x"
+	err := v.SetTaskMeta("proj", "nope", TaskMetaEdit{Title: &title})
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %v, want not found", err)
+	}
+}
