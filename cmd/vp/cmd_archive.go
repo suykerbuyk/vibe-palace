@@ -14,6 +14,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultaudit"
 )
 
 // Root `vp archive` is a container that prints usage. All real work
@@ -23,7 +24,7 @@ func cmdArchive() *cli.Command {
 		Name:        "archive",
 		Synopsis:    "vp archive <command> [flags]",
 		Description: "Archive AI session transcripts with provenance manifests. See doc/adr/001-transcript-archive.md.",
-		Subcommands: []string{"archive create", "archive list", "archive verify", "archive extract"},
+		Subcommands: []string{"archive create", "archive list", "archive verify", "archive extract", "archive backfill", "archive link"},
 	}
 }
 
@@ -330,6 +331,142 @@ func cmdArchiveExtract() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp archive extract: %v\n", err)
 				return cli.ExitSystem
 			}
+			return cli.ExitOK
+		},
+	}
+}
+
+// -------- archive backfill --------
+
+var archiveBackfillFlags = []cli.FlagDef{
+	{Name: "--project", Short: "-p", Arg: "PROJECT", Help: "Limit to one project (default: whole vault)"},
+	{Name: "--json", Help: "Output JSON"},
+}
+
+// cmdArchiveBackfill is READ-ONLY: it lists the recoverable pairs and the exact
+// command that applies each one. The applier is `vp archive link` — one pair
+// per invocation, because running it IS the human approval for that pair.
+func cmdArchiveBackfill() *cli.Command {
+	return &cli.Command{
+		Name:     "archive backfill",
+		Synopsis: "vp archive backfill [--project P] [--json]",
+		Description: "List stranded transcript manifests whose session note is mechanically recoverable: " +
+			"the note carries the session id as a caller-pushed session_key. Read-only — apply a pair with " +
+			"`vp archive link`. Vault-global unless --project is given.",
+		Flags: archiveBackfillFlags,
+		Examples: []cli.Example{
+			{Cmd: "vp archive backfill", Comment: "List every recoverable pair in the vault"},
+			{Cmd: "vp archive backfill -p myapp --json", Comment: "One project, as JSON"},
+		},
+		Run: func(args []string) int {
+			fv, err := cli.ParseFlags(archiveBackfillFlags, args)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp archive backfill: %v\n", err)
+				return cli.ExitUser
+			}
+			vault, err := openProjectVault()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp archive backfill: %v\n", err)
+				return cli.ExitUser
+			}
+
+			cands, err := vaultaudit.BackfillCandidates(vault)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp archive backfill: %v\n", err)
+				return cli.ExitSystem
+			}
+			if proj := fv.Get("--project"); proj != "" {
+				filtered := cands[:0]
+				for _, c := range cands {
+					if c.Project == proj {
+						filtered = append(filtered, c)
+					}
+				}
+				cands = filtered
+			}
+
+			if fv.Bool("--json") {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				_ = enc.Encode(cands)
+				return cli.ExitOK
+			}
+
+			if len(cands) == 0 {
+				fmt.Fprintln(os.Stdout, "No recoverable pairs found.")
+				return cli.ExitOK
+			}
+			for _, c := range cands {
+				fmt.Fprintf(os.Stdout, "session %s  (project %s)\n", c.SessionID, c.Project)
+				for _, n := range c.NoteRels {
+					fmt.Fprintf(os.Stdout, "  note:     %s  (session_key_source: caller)\n", n)
+				}
+				for _, m := range c.StrandedManifests {
+					mark := ""
+					if m == c.TargetManifest {
+						mark = "  <- target (newest stranded)"
+					}
+					fmt.Fprintf(os.Stdout, "  stranded: %s%s\n", m, mark)
+				}
+				fmt.Fprintf(os.Stdout, "  apply:    vp archive link %s -p %s\n", c.SessionID, c.Project)
+			}
+			fmt.Fprintf(os.Stdout, "%d recoverable pair(s).\n", len(cands))
+			return cli.ExitOK
+		},
+	}
+}
+
+// -------- archive link --------
+
+var archiveLinkFlags = []cli.FlagDef{
+	{Name: "--project", Short: "-p", Arg: "PROJECT", Help: "Project slug (default: auto-detect)"},
+}
+
+func cmdArchiveLink() *cli.Command {
+	return &cli.Command{
+		Name:     "archive link",
+		Synopsis: "vp archive link SESSION_ID [--project P]",
+		Description: "Backfill the note<->transcript link for ONE recoverable session (see `vp archive backfill`). " +
+			"Stamps archive_session_id (provenance: backfilled) onto the session's caller-keyed notes, points their " +
+			"archive: field at the newest stranded manifest, and back-links that manifest to the canonical note. " +
+			"Running this command is the human approval for the pair; there is deliberately no bulk mode.",
+		Flags: archiveLinkFlags,
+		Examples: []cli.Example{
+			{Cmd: "vp archive link 9e17615c-01dc-4f5c-8136-e2e29325f50a -p vibe-palace", Comment: "Apply one reviewed pair"},
+		},
+		Run: func(args []string) int {
+			fv, err := cli.ParseFlags(archiveLinkFlags, args)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp archive link: %v\n", err)
+				return cli.ExitUser
+			}
+			pos := fv.Args()
+			if len(pos) == 0 {
+				fmt.Fprintln(os.Stderr, "vp archive link: provide SESSION_ID (list candidates with `vp archive backfill`)")
+				return cli.ExitUser
+			}
+			proj, vaultRoot, code := resolveProjectAndVault(fv.Get("--project"), "archive link")
+			if code != cli.ExitOK {
+				return code
+			}
+
+			res, err := vaultaudit.ApplyBackfill(storage.NewVault(vaultRoot), proj, pos[0])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp archive link: %v\n", err)
+				return cli.ExitUser
+			}
+			if res.NothingToDo != "" {
+				fmt.Fprintf(os.Stdout, "nothing to do: %s\n", res.NothingToDo)
+				return cli.ExitOK
+			}
+			for _, n := range res.NotesUpdated {
+				fmt.Fprintf(os.Stdout, "note updated:  %s\n", n)
+			}
+			if len(res.NotesUpdated) == 0 {
+				fmt.Fprintln(os.Stdout, "notes already stamped (idempotent skip)")
+			}
+			fmt.Fprintf(os.Stdout, "canonical:     %s\nmanifest:      %s -> %s\n",
+				res.Canonical, res.TargetManifest, res.Canonical)
 			return cli.ExitOK
 		},
 	}

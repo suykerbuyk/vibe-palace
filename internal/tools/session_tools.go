@@ -231,7 +231,7 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 		// it to the transcript once the archive exists.
 		if id := hostSessionID(); id != "" {
 			sp.ArchiveSessionID = id
-			sp.ArchiveSessionIDSource = capture.ArchiveIDSourceDerived
+			sp.ArchiveSessionIDSource = storage.ArchiveIDSourceDerived
 		}
 
 		// Opt-in LLM enrichment. Resolve an Enricher from config only when the

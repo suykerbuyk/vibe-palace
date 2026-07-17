@@ -87,17 +87,42 @@ func auditArchiveRoundTrip(vault *storage.Vault) ([]Finding, []string, error) {
 			continue
 		}
 
+		// Recoverable strandings get their finding MESSAGE annotated with the
+		// exact repair command. The Artifact is untouched: finding identity is
+		// (Dimension, Artifact), so annotating Detail cannot churn the accepted
+		// baseline. A candidate scan that fails degrades to un-annotated
+		// findings plus an unknown — the defects still surface.
+		byTarget := make(map[string]BackfillCandidate)
+		recoverableSession := make(map[string]string) // session id -> target manifest rel
+		if cands, cerr := backfillCandidatesFromEntries(vault, p.Slug, entries); cerr != nil {
+			unknowns = append(unknowns, fmt.Sprintf("%s: backfill candidate scan: %v", p.Slug, cerr))
+		} else {
+			for _, c := range cands {
+				byTarget[c.TargetManifest] = c
+				recoverableSession[c.SessionID] = c.TargetManifest
+			}
+		}
+
 		for _, e := range entries {
 			artifact := archive.VaultRelPath(vault.Root, e.ManifestPath)
 
 			note := e.Manifest.VaultRelSessionNote
 			if note == "" {
+				detail := fmt.Sprintf("transcript for session %s back-links to NO session note "+
+					"— the transcript is stranded: nothing can navigate from the note to it",
+					e.Manifest.SessionID)
+				if c, ok := byTarget[artifact]; ok {
+					detail += fmt.Sprintf(" — RECOVERABLE: note %s carries a caller-pushed key; "+
+						"apply with `vp archive link %s -p %s`", c.NoteRels[0], c.SessionID, p.Slug)
+				} else if target, ok := recoverableSession[e.Manifest.SessionID]; ok {
+					detail += fmt.Sprintf(" — session %s is recoverable via its newest stranded "+
+						"manifest (%s); this older manifest stays stranded by design",
+						e.Manifest.SessionID, target)
+				}
 				findings = append(findings, Finding{
 					Dimension: DimArchiveRoundTrip,
 					Artifact:  artifact,
-					Detail: fmt.Sprintf("transcript for session %s back-links to NO session note "+
-						"— the transcript is stranded: nothing can navigate from the note to it",
-						e.Manifest.SessionID),
+					Detail:    detail,
 				})
 				continue
 			}

@@ -23,6 +23,11 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(cmdArchiveList())
 	reg.Register(cmdArchiveVerify())
 	reg.Register(cmdArchiveExtract())
+	reg.Register(cmdArchiveBackfill())
+	// mutates(): `vp archive link` rewrites session notes and a manifest. Registered
+	// WRAPPED deliberately — the audit-rooms-apply bypass (below) is the mistake this
+	// comment exists to keep from being copied.
+	reg.Register(mutates(cmdArchiveLink()))
 	reg.Register(cmdAudit())
 	reg.Register(cmdAuditRooms())
 	// mutates(): `vp audit vault --write` writes a report and `--accept` writes the

@@ -180,9 +180,9 @@ func TestCaptureSessionArchiveLink(t *testing.T) {
 	if meta.ArchiveSessionID != "link-session" {
 		t.Errorf("session.archive_session_id = %q, want %q", meta.ArchiveSessionID, "link-session")
 	}
-	if meta.ArchiveSessionIDSource != capture.ArchiveIDSourceDerived {
+	if meta.ArchiveSessionIDSource != storage.ArchiveIDSourceDerived {
 		t.Errorf("session.archive_session_id_source = %q, want %q",
-			meta.ArchiveSessionIDSource, capture.ArchiveIDSourceDerived)
+			meta.ArchiveSessionIDSource, storage.ArchiveIDSourceDerived)
 	}
 
 	// Manifest should carry vault_rel_session_note.
@@ -263,9 +263,9 @@ func TestCaptureSessionDerivedIDRecordedBeforeArchiveExists(t *testing.T) {
 	if meta.ArchiveSessionID != "live-session-uuid" {
 		t.Errorf("archive_session_id = %q, want %q", meta.ArchiveSessionID, "live-session-uuid")
 	}
-	if meta.ArchiveSessionIDSource != capture.ArchiveIDSourceDerived {
+	if meta.ArchiveSessionIDSource != storage.ArchiveIDSourceDerived {
 		t.Errorf("archive_session_id_source = %q, want %q",
-			meta.ArchiveSessionIDSource, capture.ArchiveIDSourceDerived)
+			meta.ArchiveSessionIDSource, storage.ArchiveIDSourceDerived)
 	}
 	if meta.Archive != "" {
 		t.Errorf("archive = %q, want empty — no archive exists yet; the link is deferred", meta.Archive)

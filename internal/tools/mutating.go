@@ -24,6 +24,9 @@ var MutatingToolNames = []string{
 	// write=true. It is ADVISORY — it never blocks — but it is still a WRITER, and a
 	// stale binary must refuse it like any other.
 	"vp_audit_vault",
+	// vp_archive_link rewrites session notes and a transcript manifest (the Phase-4
+	// backfill applier). One call = one human-approved pair.
+	"vp_archive_link",
 	"vp_manage_task",
 	"vp_update_resume",
 	"vp_append_iteration",

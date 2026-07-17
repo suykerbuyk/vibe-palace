@@ -97,17 +97,12 @@ const (
 	StageEnricherInit      = "enricher_init"
 )
 
-// Where a capture's idempotency key came from.
-const (
-	KeySourceCaller = "caller" // the caller pushed it — a retry of a known attempt
-	KeySourceMinted = "minted" // the server minted it, and hands it back
-)
-
-// ArchiveIDSourceDerived marks an ArchiveSessionID the MCP server resolved
-// itself from the host's live session map (internal/hostsession), as opposed
-// to one the hook pushed from its payload. Absence is not a value: a note with
-// no source carries either a hook-pushed id or no id at all.
-const ArchiveIDSourceDerived = "derived"
+// The key-source and archive-id-source constants (KeySourceCaller,
+// KeySourceMinted, ArchiveIDSourceDerived, ArchiveIDSourceBackfilled) live in
+// package storage, beside the SessionMeta fields whose values they are — moved
+// there at Phase 4 of capture-note-archive-link-never-closes, because the
+// backfill writer needs them and storage cannot import capture. One home per
+// value; a second definition here is how two readers of one field drift.
 
 // SessionResult is the outcome of a session capture. A non-empty Failures means
 // the note landed but something around it did not — see WriteSession's contract.
@@ -189,9 +184,9 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 	// than deriving it from the connection is deliberate: the MCP stdio session ID
 	// is the compile-time constant "stdio", one vp mcp serves a whole Zed window,
 	// and every attempt to infer identity from the transport has been wrong.
-	sessionKey, keySource := p.SessionKey, KeySourceCaller
+	sessionKey, keySource := p.SessionKey, storage.KeySourceCaller
 	if sessionKey == "" {
-		sessionKey, keySource = uuid.NewString(), KeySourceMinted
+		sessionKey, keySource = uuid.NewString(), storage.KeySourceMinted
 	}
 
 	meta := storage.SessionMeta{

@@ -57,8 +57,8 @@ func TestCaptureMintsAKeyAndReturnsIt(t *testing.T) {
 	if result.SessionKey == "" {
 		t.Fatal("no session_key returned — a caller cannot retry an attempt it cannot name")
 	}
-	if result.SessionKeySource != KeySourceMinted {
-		t.Errorf("key source = %q, want %q", result.SessionKeySource, KeySourceMinted)
+	if result.SessionKeySource != storage.KeySourceMinted {
+		t.Errorf("key source = %q, want %q", result.SessionKeySource, storage.KeySourceMinted)
 	}
 	if result.Updated {
 		t.Error("Updated = true on a fresh capture")
@@ -105,8 +105,8 @@ func TestCaptureRetryWithSameKeyUpdatesInPlace(t *testing.T) {
 	if !second.Updated {
 		t.Error("Updated = false, but an existing note was rewritten")
 	}
-	if second.SessionKeySource != KeySourceCaller {
-		t.Errorf("key source = %q, want %q", second.SessionKeySource, KeySourceCaller)
+	if second.SessionKeySource != storage.KeySourceCaller {
+		t.Errorf("key source = %q, want %q", second.SessionKeySource, storage.KeySourceCaller)
 	}
 	if second.NotePath != first.NotePath {
 		t.Errorf("retry wrote a different note: %q vs %q", second.NotePath, first.NotePath)

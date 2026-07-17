@@ -346,6 +346,31 @@ func (v *Vault) UpsertSessionByKey(project, sessionKey string, meta SessionMeta,
 // change exists to fix.
 const TagAutoCapture = "auto-capture"
 
+// Where a capture's idempotency key came from. These are values of
+// SessionMeta.SessionKeySource, so they live beside the struct they describe —
+// storage cannot import capture, and the backfill writer below needs
+// KeySourceCaller to recognize a derivable note. (Moved from capture at Phase 4
+// of capture-note-archive-link-never-closes; one home per value.)
+const (
+	KeySourceCaller = "caller" // the caller pushed it — a retry of a known attempt
+	KeySourceMinted = "minted" // the server minted it, and hands it back
+)
+
+// Values of SessionMeta.ArchiveSessionIDSource. Absence is not a value: a note
+// with no source carries either a hook-pushed id or no id at all.
+const (
+	// ArchiveIDSourceDerived marks an ArchiveSessionID the MCP server resolved
+	// itself from the host's live session map (internal/hostsession), as opposed
+	// to one the hook pushed from its payload.
+	ArchiveIDSourceDerived = "derived"
+
+	// ArchiveIDSourceBackfilled marks an ArchiveSessionID recovered after the
+	// fact by BackfillArchiveLink: derived from a caller-pushed session_key, on
+	// explicit human command, never at capture time. Distinct from "derived" so
+	// an audit (or a human) can always tell a live link from a repaired one.
+	ArchiveIDSourceBackfilled = "backfilled"
+)
+
 // ArchiveLinkResult reports what LinkArchiveToSessions did.
 type ArchiveLinkResult struct {
 	// Updated names every note whose archive: field now points at the manifest.
@@ -477,6 +502,179 @@ func preferCanonical(curMeta SessionMeta, cur SessionRef, nextMeta SessionMeta, 
 		return next.Date > cur.Date
 	}
 	return next.Iteration > cur.Iteration
+}
+
+// CallerKeyedNote is one session note whose capture key was PUSHED by the hook
+// (session_key_source: caller) and that carries no archive_session_id. Such a
+// note's session_key IS the harness session id — the hook passed
+// payload.SessionID — so pairing it with a stranded manifest is a DERIVATION,
+// not a guess. Notes with a minted key are excluded by definition: a random
+// UUID that happens to equal a manifest's session id identifies nothing.
+type CallerKeyedNote struct {
+	SessionKey string
+	NoteRel    string
+}
+
+// ListCallerKeyedUnstampedNotes scans one project's session notes for backfill
+// candidates: caller-keyed, not yet stamped with an archive_session_id. It is
+// the NOTE-SIDE HALF of the backfill candidate predicate — the manifest-side
+// half lives with the manifest parser (internal/vaultaudit pairs the two;
+// storage cannot import internal/archive).
+//
+// Read-only and LOCK-FREE by design: this feeds reports (the audit annotation,
+// `vp archive backfill`). The applier, BackfillArchiveLink, re-derives its own
+// match set under the sessions-directory lock, so a stale answer here can
+// mislead a human reading a report but can never corrupt a write.
+func (v *Vault) ListCallerKeyedUnstampedNotes(project string) ([]CallerKeyedNote, error) {
+	dir, err := v.SessionDir(project)
+	if err != nil {
+		return nil, err
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "*.md"))
+	if err != nil {
+		return nil, fmt.Errorf("glob sessions: %w", err)
+	}
+
+	var out []CallerKeyedNote
+	for _, m := range matches {
+		if frontmatterFieldFromHead(m, "session_key_source") != KeySourceCaller {
+			continue
+		}
+		if frontmatterFieldFromHead(m, "archive_session_id") != "" {
+			continue
+		}
+		key := sessionKeyFromHead(m)
+		if key == "" {
+			continue
+		}
+		stem := strings.TrimSuffix(filepath.Base(m), ".md")
+		date, fp, iteration, ok := parseSessionStem(stem)
+		if !ok {
+			continue
+		}
+		rel, relErr := v.SessionRelPath(project, date, fp, iteration)
+		if relErr != nil {
+			continue
+		}
+		out = append(out, CallerKeyedNote{SessionKey: key, NoteRel: rel})
+	}
+	return out, nil
+}
+
+// BackfillArchiveLink is the Phase-4 APPLIER for
+// capture-note-archive-link-never-closes: it stamps archiveRel (and the
+// recovered archive_session_id, provenance "backfilled") onto every note whose
+// caller-pushed session_key equals sessionID, and reports which note the
+// manifest should point back at. It is the after-the-fact sibling of
+// LinkArchiveToSessions, which handles the live path where the note already
+// carries archive_session_id.
+//
+// The match predicate is deliberately NARROWER than "key equals id":
+//
+//   - session_key_source must be "caller" — a minted key is a random UUID, and
+//     one that collides with a manifest's session id identifies nothing.
+//   - a note already stamped with a DIFFERENT archive_session_id is an identity
+//     CONFLICT and fails the whole call loudly. Identity is never overwritten:
+//     a wrong stamp is sticky (mergeCaptureMeta carries it forward), so writing
+//     over one would trade a visible conflict for a silent mis-link.
+//   - a note already stamped with THIS id converges: nothing is rewritten
+//     unless its archive: field is still empty.
+//
+// Idempotent end to end: a re-run matches the same notes, finds them stamped,
+// and writes nothing.
+//
+// LOCK ORDER — DIRECTORY BEFORE FILE, exactly as LinkArchiveToSessions: one
+// sessions-directory lock spans the whole scan-and-write, with the note-path
+// lock nested inside via RewriteSession. It does NOT call LinkArchiveToSessions
+// (which re-acquires the directory lock — a permanent hang, since
+// vaultlock.Acquire is a blocking LOCK_EX with no LOCK_NB and no timeout).
+func (v *Vault) BackfillArchiveLink(project, sessionID, archiveRel string) (ArchiveLinkResult, error) {
+	if sessionID == "" {
+		return ArchiveLinkResult{}, fmt.Errorf("session id is empty")
+	}
+	if archiveRel == "" {
+		return ArchiveLinkResult{}, fmt.Errorf("archive path is empty")
+	}
+
+	dir, err := v.SessionDir(project)
+	if err != nil {
+		return ArchiveLinkResult{}, err
+	}
+
+	release, err := vaultlock.Acquire(v.Root, dir)
+	if err != nil {
+		return ArchiveLinkResult{}, fmt.Errorf("storage: lock sessions dir: %w", err)
+	}
+	defer func() { _ = release() }()
+
+	matches, err := filepath.Glob(filepath.Join(dir, "*.md"))
+	if err != nil {
+		return ArchiveLinkResult{}, fmt.Errorf("glob sessions: %w", err)
+	}
+
+	var res ArchiveLinkResult
+	var canonicalMeta SessionMeta
+
+	for _, m := range matches {
+		if sessionKeyFromHead(m) != sessionID {
+			continue
+		}
+		if frontmatterFieldFromHead(m, "session_key_source") != KeySourceCaller {
+			continue
+		}
+		stem := strings.TrimSuffix(filepath.Base(m), ".md")
+		date, fp, iteration, ok := parseSessionStem(stem)
+		if !ok {
+			continue
+		}
+		rel, relErr := v.SessionRelPath(project, date, fp, iteration)
+		if relErr != nil {
+			continue
+		}
+		meta, body, rerr := v.ReadSession(project, date, fp, iteration)
+		if rerr != nil {
+			return ArchiveLinkResult{}, fmt.Errorf("read session %s: %w", stem, rerr)
+		}
+
+		// Identity conflict: this note already claims to come from a DIFFERENT
+		// host session. Refuse the whole call — a human must look, because one
+		// of the two identities is wrong and the writer cannot know which.
+		if meta.ArchiveSessionID != "" && meta.ArchiveSessionID != sessionID {
+			return ArchiveLinkResult{}, fmt.Errorf(
+				"identity conflict: note %s carries archive_session_id %q, refusing to backfill %q over it",
+				stem, meta.ArchiveSessionID, sessionID)
+		}
+
+		ref := SessionRef{ID: stem, NotePath: rel, Date: date, Fingerprint: fp, Iteration: iteration}
+
+		changed := false
+		if meta.ArchiveSessionID == "" {
+			meta.ArchiveSessionID = sessionID
+			meta.ArchiveSessionIDSource = ArchiveIDSourceBackfilled
+			changed = true
+		}
+		// Never re-point a note that already links SOMEWHERE: the live path
+		// (LinkArchiveToSessions) may have linked it to a different manifest of
+		// this session, and a backfill that fights the live writer converges on
+		// whichever ran last — the thrash preferCanonical exists to prevent.
+		if meta.Archive == "" {
+			meta.Archive = archiveRel
+			changed = true
+		}
+		if changed {
+			if werr := v.RewriteSession(project, date, fp, iteration, meta, body); werr != nil {
+				return ArchiveLinkResult{}, fmt.Errorf("backfill session %s: %w", stem, werr)
+			}
+			res.Updated = append(res.Updated, ref)
+		}
+
+		if !res.Found || preferCanonical(canonicalMeta, res.Canonical, meta, ref) {
+			res.Canonical, canonicalMeta = ref, meta
+		}
+		res.Found = true
+	}
+
+	return res, nil
 }
 
 // SessionRef identifies a session note that was just written: its ID plus the
