@@ -19,7 +19,7 @@
     {
       "name": "vp_capture_session",
       "mutating": true,
-      "schema_sha256": "e45e0aec3179658bbd6646377781670539b242a24749e13657294b3379af0baf"
+      "schema_sha256": "2de6ce9a77140facf947740918a02f29acef6fe41e87769175e72db71fd77766"
     },
     {
       "name": "vp_cmd",

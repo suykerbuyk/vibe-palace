@@ -8,13 +8,31 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 
+	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/hook"
+	"github.com/suykerbuyk/vibe-palace/internal/hostsession"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
+
+// hostSessionID resolves the live session id of the host process that spawned
+// this server, or "" when it cannot be CONFIRMED. It is a var so handler tests
+// can stub the derivation. The default reads Claude Code's per-process session
+// map keyed by this process's parent pid — the server is a DIRECT child of the
+// host (verified live: no intermediate shell) — guarded against pid reuse by
+// /proc start-time. Non-Claude hosts (Zed, HTTP serve) simply have no such
+// file and resolve to "": an honest unknown, never a guess.
+var hostSessionID = func() string {
+	home, err := archive.ClaudeHome()
+	if err != nil {
+		return ""
+	}
+	return hostsession.ClaudeSessionID(os.Getppid(), home, hostsession.ReadProcStart)
+}
 
 type captureSessionParams struct {
 	Project      string   `json:"project"`
@@ -26,9 +44,14 @@ type captureSessionParams struct {
 	FilesChanged []string `json:"files_changed,omitempty"`
 	OpenThreads  []string `json:"open_threads,omitempty"`
 	Transcript   string   `json:"transcript,omitempty"`
-	// ArchiveSessionID, if set, causes the handler to resolve an
-	// existing archive for this session under the project's
-	// transcripts/ directory and cross-link it with the session note.
+	// ArchiveSessionID is accepted for wire compatibility and IGNORED. The
+	// handler derives the host session id itself (see hostSessionID) and never
+	// trusts a caller-supplied one: the only caller of this tool is the agent,
+	// and agents are demonstrably fed WRONG ids in their context (the commit
+	// template's bridge session id, a CLAUDE_CODE_SESSION_ID frozen across
+	// /clear). The archive linker matches on the stamped id alone, so a wrong
+	// id would mis-link ANOTHER session's transcript — the id must be
+	// correct-or-absent, never best-effort-possibly-wrong.
 	ArchiveSessionID string `json:"archive_session_id,omitempty"`
 	// ArchiveAdapter names the adapter to resolve against. Defaults
 	// to claude-code when ArchiveSessionID is set and this is empty.
@@ -143,7 +166,7 @@ var captureSessionSchema = json.RawMessage(`{
 		},
 		"archive_session_id": {
 			"type": "string",
-			"description": "If set, look up the matching transcript archive under the project's transcripts/ directory and cross-link it with this session note."
+			"description": "IGNORED (accepted for wire compatibility). The server derives the host session id itself from the host's live session map and never trusts a caller-supplied one — a wrong id would mis-link another session's transcript. Omit it."
 		},
 		"archive_adapter": {
 			"type": "string",
@@ -151,7 +174,7 @@ var captureSessionSchema = json.RawMessage(`{
 		},
 		"cwd": {
 			"type": "string",
-			"description": "Working directory for claim sentinel (optional). When set with archive_session_id, writes a claim so the SessionEnd hook skips this session."
+			"description": "Working directory for claim sentinel (optional). When set and the server could derive the host session id, writes a claim so the SessionEnd hook skips re-capturing this session."
 		},
 		"enrich": {
 			"type": "boolean",
@@ -186,19 +209,29 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 		}
 
 		sp := capture.SessionParams{
-			Project:          p.Project,
-			Summary:          p.Summary,
-			Title:            p.Title,
-			Tag:              p.Tag,
-			Model:            p.Model,
-			Decisions:        p.Decisions,
-			FilesChanged:     p.FilesChanged,
-			OpenThreads:      p.OpenThreads,
-			Transcript:       p.Transcript,
-			ArchiveSessionID: p.ArchiveSessionID,
-			ArchiveAdapter:   p.ArchiveAdapter,
-			CWD:              p.CWD,
-			SessionKey:       p.SessionKey,
+			Project:        p.Project,
+			Summary:        p.Summary,
+			Title:          p.Title,
+			Tag:            p.Tag,
+			Model:          p.Model,
+			Decisions:      p.Decisions,
+			FilesChanged:   p.FilesChanged,
+			OpenThreads:    p.OpenThreads,
+			Transcript:     p.Transcript,
+			ArchiveAdapter: p.ArchiveAdapter,
+			CWD:            p.CWD,
+			SessionKey:     p.SessionKey,
+		}
+
+		// DERIVE ONLY — p.ArchiveSessionID is deliberately not copied above.
+		// The server resolves the host session id from the host's live session
+		// map and stamps it with provenance; when it cannot be confirmed the
+		// note stays honestly unlinked. Deriving here (not trusting the caller)
+		// is what lets the SessionEnd hook find the agent's wrap note and link
+		// it to the transcript once the archive exists.
+		if id := hostSessionID(); id != "" {
+			sp.ArchiveSessionID = id
+			sp.ArchiveSessionIDSource = capture.ArchiveIDSourceDerived
 		}
 
 		// Opt-in LLM enrichment. Resolve an Enricher from config only when the
@@ -231,9 +264,9 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 		// hard-failing capture leaves the session unclaimed, so the SessionEnd hook
 		// captures it AGAIN and duplicates the note, over a loss as trivial as a
 		// missing archive link.
-		if p.CWD != "" && p.ArchiveSessionID != "" {
+		if p.CWD != "" && sp.ArchiveSessionID != "" {
 			claimDir := filepath.Join(p.CWD, ".vibe-palace")
-			if claimErr := hook.WriteClaim(claimDir, p.ArchiveSessionID, result.SessionID); claimErr != nil {
+			if claimErr := hook.WriteClaim(claimDir, sp.ArchiveSessionID, result.SessionID); claimErr != nil {
 				slog.Warn("vp_capture_session: claim sentinel write failed", "err", claimErr)
 				result.Failures = append(result.Failures, capture.CaptureFailure{
 					Stage: capture.StageClaimSentinel,

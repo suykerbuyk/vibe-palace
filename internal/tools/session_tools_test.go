@@ -24,6 +24,16 @@ func testSessionVault(t *testing.T) *storage.Vault {
 	return storage.NewVault(dir)
 }
 
+// stubHostSessionID pins the handler's server-side session-id derivation for
+// the duration of a test. An empty id models "cannot be confirmed" (non-Claude
+// host, no sessions file): the note must stay honestly unlinked.
+func stubHostSessionID(t *testing.T, id string) {
+	t.Helper()
+	orig := hostSessionID
+	hostSessionID = func() string { return id }
+	t.Cleanup(func() { hostSessionID = orig })
+}
+
 func TestCaptureSessionSchema(t *testing.T) {
 	vault := testSessionVault(t)
 	tool := CaptureSessionTool(vault, nil)
@@ -143,11 +153,14 @@ func TestCaptureSessionArchiveLink(t *testing.T) {
 		t.Fatalf("seed archive: %v", err)
 	}
 
+	// The id reaches the note by SERVER-SIDE DERIVATION, never from the
+	// caller — stub the resolver to the seeded session.
+	stubHostSessionID(t, "link-session")
+
 	tool := CaptureSessionTool(vault, nil)
 	params := json.RawMessage(`{
 		"project": "test-proj",
-		"summary": "Session linked to a pre-existing archive.",
-		"archive_session_id": "link-session"
+		"summary": "Session linked to a pre-existing archive."
 	}`)
 	r, err := tool.Handler(ctx, params)
 	if err != nil {
@@ -163,6 +176,13 @@ func TestCaptureSessionArchiveLink(t *testing.T) {
 	wantArchive := archive.VaultRelPath(vault.Root, res.ManifestPath)
 	if meta.Archive != wantArchive {
 		t.Errorf("session.archive = %q, want %q", meta.Archive, wantArchive)
+	}
+	if meta.ArchiveSessionID != "link-session" {
+		t.Errorf("session.archive_session_id = %q, want %q", meta.ArchiveSessionID, "link-session")
+	}
+	if meta.ArchiveSessionIDSource != capture.ArchiveIDSourceDerived {
+		t.Errorf("session.archive_session_id_source = %q, want %q",
+			meta.ArchiveSessionIDSource, capture.ArchiveIDSourceDerived)
 	}
 
 	// Manifest should carry vault_rel_session_note.
@@ -182,6 +202,122 @@ const sampleClaudeJSONL = `{"type":"permission-mode","permissionMode":"bypassPer
 {"type":"user","message":{"role":"user","content":"hi"}}
 {"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":"hello"}}
 `
+
+// A caller-supplied archive_session_id is IGNORED: the only caller of this
+// tool is the agent, and agents are demonstrably fed wrong ids. A wrong id
+// mis-links another session's transcript, so the note must carry the derived
+// id or none — never the caller's.
+func TestCaptureSessionCallerSuppliedIDIgnored(t *testing.T) {
+	vault := testSessionVault(t)
+	stubHostSessionID(t, "") // nothing derivable
+
+	tool := CaptureSessionTool(vault, nil)
+	params := json.RawMessage(`{
+		"project": "test-proj",
+		"summary": "Caller pushes an id the server must not trust.",
+		"archive_session_id": "wrong-bridge-id"
+	}`)
+	r, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	got := r.(captureSessionResult)
+
+	meta, _, err := vault.ReadSession("test-proj", got.SessionID[:10], capture.ParseFingerprint(got.SessionID), got.Iteration)
+	if err != nil {
+		t.Fatalf("read session back: %v", err)
+	}
+	if meta.ArchiveSessionID != "" {
+		t.Errorf("archive_session_id = %q, want empty — the caller's id must be ignored", meta.ArchiveSessionID)
+	}
+	if meta.ArchiveSessionIDSource != "" {
+		t.Errorf("archive_session_id_source = %q, want empty", meta.ArchiveSessionIDSource)
+	}
+	if meta.Archive != "" {
+		t.Errorf("archive = %q, want empty — nothing was derivable", meta.Archive)
+	}
+}
+
+// When the id is derivable but no archive exists yet (the ordinary case — the
+// hook only archives at SessionEnd), the note still records the derived id and
+// its provenance, so the archiving hook run can find it and close the loop.
+func TestCaptureSessionDerivedIDRecordedBeforeArchiveExists(t *testing.T) {
+	vault := testSessionVault(t)
+	stubHostSessionID(t, "live-session-uuid")
+
+	tool := CaptureSessionTool(vault, nil)
+	params := json.RawMessage(`{
+		"project": "test-proj",
+		"summary": "Wrap note captured mid-session, before any archive exists."
+	}`)
+	r, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	got := r.(captureSessionResult)
+
+	meta, _, err := vault.ReadSession("test-proj", got.SessionID[:10], capture.ParseFingerprint(got.SessionID), got.Iteration)
+	if err != nil {
+		t.Fatalf("read session back: %v", err)
+	}
+	if meta.ArchiveSessionID != "live-session-uuid" {
+		t.Errorf("archive_session_id = %q, want %q", meta.ArchiveSessionID, "live-session-uuid")
+	}
+	if meta.ArchiveSessionIDSource != capture.ArchiveIDSourceDerived {
+		t.Errorf("archive_session_id_source = %q, want %q",
+			meta.ArchiveSessionIDSource, capture.ArchiveIDSourceDerived)
+	}
+	if meta.Archive != "" {
+		t.Errorf("archive = %q, want empty — no archive exists yet; the link is deferred", meta.Archive)
+	}
+}
+
+// The claim sentinel is keyed on the DERIVED id, so it actually matches the
+// payload.SessionID the SessionEnd hook checks. A claim keyed on a wrong
+// caller-supplied id never matched anything, which meant the hook re-captured
+// and duplicated the note.
+func TestCaptureSessionClaimUsesDerivedID(t *testing.T) {
+	vault := testSessionVault(t)
+	stubHostSessionID(t, "live-session-uuid")
+
+	cwd := t.TempDir()
+	tool := CaptureSessionTool(vault, nil)
+	params := json.RawMessage(`{
+		"project": "test-proj",
+		"summary": "Capture that should claim the session for the hook.",
+		"cwd": ` + string(mustJSON(t, cwd)) + `,
+		"archive_session_id": "wrong-bridge-id"
+	}`)
+	if _, err := tool.Handler(context.Background(), params); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	claimDir := filepath.Join(cwd, ".vibe-palace")
+	entries, err := os.ReadDir(claimDir)
+	if err != nil {
+		t.Fatalf("read claim dir: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	joined := strings.Join(names, " ")
+	if !strings.Contains(joined, "live-session-uuid") {
+		t.Errorf("claim dir %v carries no claim for the derived id", names)
+	}
+	if strings.Contains(joined, "wrong-bridge-id") {
+		t.Errorf("claim dir %v carries a claim for the caller's untrusted id", names)
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
 
 func TestCaptureSessionValidationMissingProject(t *testing.T) {
 	vault := testSessionVault(t)

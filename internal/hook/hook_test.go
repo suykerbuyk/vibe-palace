@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/memorytestutil"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -80,6 +81,78 @@ func TestRun_HappyPath(t *testing.T) {
 	}
 	if len(entries) == 0 {
 		t.Error("expected at least one session file in vault")
+	}
+}
+
+// TestRun_SessionEndWithNoPriorStopLinksInline is the F2 regression guard from
+// capture-note-archive-link-never-closes: when SessionEnd arrives with NO prior
+// Stop (no claim), archive.Create runs first and capture runs in the SAME hook
+// invocation — so capture's inline ResolveEntry must link the fresh note to the
+// archive that already exists. This case is saved only by that inline link (the
+// SessionEnd LinkArchiveToSessions pass runs BEFORE capture writes the note), so
+// a refactor that drops it would strand every short session silently.
+func TestRun_SessionEndWithNoPriorStopLinksInline(t *testing.T) {
+	vaultRoot := t.TempDir()
+	cwd := t.TempDir()
+	writeVibeMarker(t, cwd)
+	claimDir := filepath.Join(cwd, ".vibe-palace")
+	if err := os.MkdirAll(claimDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	transcriptPath := filepath.Join(t.TempDir(), "transcript.jsonl")
+	if err := os.WriteFile(transcriptPath, []byte(fakeTranscript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	initGitRepo(t, cwd, "initial commit")
+
+	res, err := Run(context.Background(), Payload{
+		SessionID:      "test-session",
+		TranscriptPath: transcriptPath,
+		CWD:            cwd,
+		HookEventName:  "SessionEnd",
+	}, RunOptions{
+		VaultRoot:   vaultRoot,
+		ProjectSlug: "test-project",
+		VPVersion:   "test-0.1",
+		ClaimDir:    claimDir,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.ArchivePath == "" {
+		t.Fatal("no archive was created")
+	}
+
+	// The note must carry archive: → the manifest that exists.
+	sessDir := filepath.Join(vaultRoot, "Projects", "test-project", "sessions")
+	notes, err := filepath.Glob(filepath.Join(sessDir, "*.md"))
+	if err != nil || len(notes) != 1 {
+		t.Fatalf("want exactly one session note, got %v (err %v)", notes, err)
+	}
+	note, err := os.ReadFile(notes[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := string(note)
+	if !strings.Contains(head, "\narchive: ") {
+		t.Errorf("note carries no archive: link — the inline ResolveEntry link did not fire:\n%s", head)
+	}
+	if !strings.Contains(head, "\narchive_session_id: test-session") {
+		t.Errorf("note carries no archive_session_id — the identity stamp is missing:\n%s", head)
+	}
+
+	// And the manifest must point back at the note.
+	manifests, err := filepath.Glob(filepath.Join(
+		vaultRoot, "Projects", "test-project", "transcripts", "*.manifest.json"))
+	if err != nil || len(manifests) != 1 {
+		t.Fatalf("want exactly one manifest, got %v (err %v)", manifests, err)
+	}
+	m, err := archive.ReadManifest(manifests[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.VaultRelSessionNote == "" {
+		t.Error("manifest vault_rel_session_note is empty — the back-link never closed")
 	}
 }
 

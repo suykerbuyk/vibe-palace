@@ -61,12 +61,13 @@ func TestCaptureSessionFailsHardOnLoss(t *testing.T) {
 	vault := testSessionVault(t)
 	tool := CaptureSessionTool(vault, nil)
 	sessionID := seedMismatchedArchive(t, vault)
+	// The session id reaches the handler by server-side derivation only.
+	stubHostSessionID(t, sessionID)
 
 	params, _ := json.Marshal(map[string]any{
-		"project":            "test-proj",
-		"summary":            "a capture whose archive resolves as the wrong adapter",
-		"archive_session_id": sessionID,
-		"archive_adapter":    "zed",
+		"project":         "test-proj",
+		"summary":         "a capture whose archive resolves as the wrong adapter",
+		"archive_adapter": "zed",
 	})
 
 	result, err := tool.Handler(context.Background(), json.RawMessage(params))
@@ -128,11 +129,12 @@ func TestCaptureSessionRetryAfterFailureDoesNotDuplicate(t *testing.T) {
 	tool := CaptureSessionTool(vault, nil)
 	sessionID := seedMismatchedArchive(t, vault)
 
+	stubHostSessionID(t, sessionID)
+
 	firstParams, _ := json.Marshal(map[string]any{
-		"project":            "test-proj",
-		"summary":            "first attempt",
-		"archive_session_id": sessionID,
-		"archive_adapter":    "zed",
+		"project":         "test-proj",
+		"summary":         "first attempt",
+		"archive_adapter": "zed",
 	})
 	_, err := tool.Handler(context.Background(), json.RawMessage(firstParams))
 	if err == nil {
@@ -189,13 +191,14 @@ func TestCaptureSessionClaimSurvivesTheErrorPath(t *testing.T) {
 	cwd := t.TempDir()
 	sessionID := seedMismatchedArchive(t, vault)
 
+	stubHostSessionID(t, sessionID)
+
 	params, _ := json.Marshal(map[string]any{
 		"project": "test-proj",
 		"summary": "a capture that loses its archive but must still claim",
-		// Both are required for a claim to be written at all.
-		"cwd":                cwd,
-		"archive_session_id": sessionID,
-		"archive_adapter":    "zed",
+		// A claim needs cwd AND a derivable session id (stubbed above).
+		"cwd":             cwd,
+		"archive_adapter": "zed",
 	})
 
 	if _, err := tool.Handler(context.Background(), json.RawMessage(params)); err == nil {

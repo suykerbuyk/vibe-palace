@@ -89,6 +89,14 @@ type SessionMeta struct {
 	// scan below reads.
 	ArchiveSessionID string `yaml:"archive_session_id,omitempty"`
 
+	// ArchiveSessionIDSource records the provenance of ArchiveSessionID:
+	// "derived" when the MCP server resolved it from the host's live session
+	// map (internal/hostsession), empty when the hook pushed the id it was
+	// handed (the hook IS the authority) or when no id was recorded. Lets the
+	// vault audit — and a human reading the note — tell a derived link from a
+	// pushed one.
+	ArchiveSessionIDSource string `yaml:"archive_session_id_source,omitempty"`
+
 	// DELETED at 202: branch, domain, duration_minutes, messages, tokens_in,
 	// tokens_out, tool_uses — and needs_indexing, below.
 	//

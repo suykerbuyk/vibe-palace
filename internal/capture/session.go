@@ -30,9 +30,15 @@ type SessionParams struct {
 	OpenThreads      []string
 	Transcript       string // raw transcript for friction analysis
 	ArchiveSessionID string
-	ArchiveAdapter   string
-	CWD              string // for claim sentinel (Phase 3 will use this)
-	NeedsIndexing    bool   // when true, skip indexing (deferred to later)
+	// ArchiveSessionIDSource records where ArchiveSessionID came from. The MCP
+	// handler sets ArchiveIDSourceDerived when it resolved the id server-side
+	// from the host's live session map; the hook pushes the id it was handed
+	// and leaves this empty. Recorded into the note's frontmatter so an audit
+	// can tell a derived link from a pushed one.
+	ArchiveSessionIDSource string
+	ArchiveAdapter         string
+	CWD                    string // for claim sentinel (Phase 3 will use this)
+	NeedsIndexing          bool   // when true, skip indexing (deferred to later)
 
 	// SessionKey is the capture-attempt idempotency key. Supply the key a previous
 	// capture RETURNED to update that same note in place; leave it empty to mint a
@@ -96,6 +102,12 @@ const (
 	KeySourceCaller = "caller" // the caller pushed it — a retry of a known attempt
 	KeySourceMinted = "minted" // the server minted it, and hands it back
 )
+
+// ArchiveIDSourceDerived marks an ArchiveSessionID the MCP server resolved
+// itself from the host's live session map (internal/hostsession), as opposed
+// to one the hook pushed from its payload. Absence is not a value: a note with
+// no source carries either a hook-pushed id or no id at all.
+const ArchiveIDSourceDerived = "derived"
 
 // SessionResult is the outcome of a session capture. A non-empty Failures means
 // the note landed but something around it did not — see WriteSession's contract.
@@ -193,14 +205,15 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		// when hook.go closes the loop from the archive side. Capture has always been
 		// handed this value and always threw it away, which is why 105 of 417
 		// manifests were stranded and no agent-written note was ever linked at all.
-		ArchiveSessionID: p.ArchiveSessionID,
-		Title:            title,
-		Summary:          p.Summary,
-		Tag:              p.Tag,
-		Model:            p.Model,
-		Decisions:        p.Decisions,
-		FilesChanged:     p.FilesChanged,
-		OpenThreads:      p.OpenThreads,
+		ArchiveSessionID:       p.ArchiveSessionID,
+		ArchiveSessionIDSource: p.ArchiveSessionIDSource,
+		Title:                  title,
+		Summary:                p.Summary,
+		Tag:                    p.Tag,
+		Model:                  p.Model,
+		Decisions:              p.Decisions,
+		FilesChanged:           p.FilesChanged,
+		OpenThreads:            p.OpenThreads,
 	}
 
 	// Synchronous LLM enrichment phase. A non-nil Enricher plus a transcript
@@ -406,6 +419,9 @@ func mergeCaptureMeta(old storage.SessionMeta, _ string, next storage.SessionMet
 	// never handed a fresh meta blind.
 	if merged.ArchiveSessionID == "" {
 		merged.ArchiveSessionID = old.ArchiveSessionID
+		// The provenance travels with the id: inheriting the id but dropping its
+		// source would strip the very marker that says how it was obtained.
+		merged.ArchiveSessionIDSource = old.ArchiveSessionIDSource
 	}
 	if merged.Model == "" {
 		merged.Model = old.Model
