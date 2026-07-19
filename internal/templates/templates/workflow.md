@@ -93,6 +93,8 @@ Never jump to coding short-term fixes without investigation.
 4. Add review section to the task file
 5. When the human confirms completion: retire the task and record an iteration summary
 
+**What counts as the human confirming completion: their own git commit of the completing work.** When a task is fully done and the human has committed that work to git, that commit IS the confirmation — you may retire with `approved_by_human: true` without a separate ask. Both conditions are required: the work is genuinely finished (not a partial phase or WIP checkpoint), and the **human**, not the agent, made the commit. `/wrap` runs BEFORE the commit, so retiring at wrap time stays forbidden — retire once the commit lands.
+
 ## Core Principles
 
 - **Simplicity First**: Make every change as simple as possible but no simpler
