@@ -83,7 +83,7 @@ func TestList_EmbeddedCommands(t *testing.T) {
 			t.Errorf("%s: brief is empty", s.Name)
 		}
 	}
-	for _, want := range []string{"restart", "wrap", "capture"} {
+	for _, want := range []string{"restart", "wrap", "capture", "stage"} {
 		if !seen[want] {
 			t.Errorf("missing expected embedded command %q", want)
 		}

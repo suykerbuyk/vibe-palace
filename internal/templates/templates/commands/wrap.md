@@ -13,6 +13,14 @@ Do not ask for confirmation — just do the updates, stage the files,
 show what changed, and note that the user should review before
 committing.
 
+> **Feature-branch commits use `/stage`, not `/wrap`.** `/stage` is the
+> commit-preparation subset — a light gate, author `commit.msg`, `git add` by
+> path — for each intermediate commit on a feature branch. `/wrap` runs ONCE,
+> AFTER the branch is `--ff-only` merged to `main`: on the now-clean tree its
+> Steps 7–8 (commit.msg, staging) self-skip and it is coherency-only. In the
+> direct-to-main flow `/wrap` still does everything, including the staging that
+> `/stage` would do.
+
 ## Step 1: Quality Gates
 
 Before capturing anything, the working tree must be clean:

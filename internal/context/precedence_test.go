@@ -275,11 +275,11 @@ func TestListCommandsEmbedded(t *testing.T) {
 		t.Fatalf("ListResourcesScoped(command): %v", err)
 	}
 	// Embedded commands: cancel-plan, capture, execute-plan, license,
-	// makefile, restart, review-plan, vault-audit, wrap (sorted).
-	if len(resources) != 9 {
-		t.Fatalf("got %d commands, want 9: %v", len(resources), resources)
+	// makefile, restart, review-plan, stage, vault-audit, wrap (sorted).
+	if len(resources) != 10 {
+		t.Fatalf("got %d commands, want 10: %v", len(resources), resources)
 	}
-	wantNames := []string{"cancel-plan", "capture", "execute-plan", "license", "makefile", "restart", "review-plan", "vault-audit", "wrap"}
+	wantNames := []string{"cancel-plan", "capture", "execute-plan", "license", "makefile", "restart", "review-plan", "stage", "vault-audit", "wrap"}
 	for i, want := range wantNames {
 		if resources[i].Name != want {
 			t.Errorf("resources[%d].Name = %q, want %q", i, resources[i].Name, want)
@@ -307,9 +307,9 @@ func TestListCommandsMergedNoDuplicates(t *testing.T) {
 
 	// Expect: cancel-plan(embedded), capture(embedded), custom(project), deploy(vault),
 	//         execute-plan(embedded), license(embedded), makefile(embedded),
-	//         restart(vault — shadows embedded), review-plan(embedded), wrap(embedded)
-	if len(resources) != 11 {
-		t.Fatalf("got %d resources, want 11: %v", len(resources), resources)
+	//         restart(vault — shadows embedded), review-plan(embedded), stage(embedded), wrap(embedded)
+	if len(resources) != 12 {
+		t.Fatalf("got %d resources, want 12: %v", len(resources), resources)
 	}
 
 	// Check restart comes from vault (override), not embedded.
@@ -519,13 +519,13 @@ func TestListResourcesScopedFullMerge(t *testing.T) {
 	// Expect: cancel-plan(embedded), capture(embedded), custom(project),
 	//         deploy(vault), execute-plan(embedded), gen(room),
 	//         license(embedded), lint(wing), makefile(embedded),
-	//         restart(embedded), review-plan(embedded), wrap(embedded) = 12 total
-	if len(resources) != 13 {
+	//         restart(embedded), review-plan(embedded), stage(embedded), wrap(embedded) = 13 total
+	if len(resources) != 14 {
 		names := make([]string, len(resources))
 		for i, ri := range resources {
 			names[i] = ri.Name + "(" + ri.Source + ")"
 		}
-		t.Fatalf("got %d resources %v, want 13", len(resources), names)
+		t.Fatalf("got %d resources %v, want 14", len(resources), names)
 	}
 
 	// Verify specific sources.
@@ -558,13 +558,13 @@ func TestListResourcesScopedWingOnly(t *testing.T) {
 		t.Fatalf("ListResourcesScoped: %v", err)
 	}
 
-	// Wing + project + embedded (8 embedded commands) = 10
-	if len(resources) != 11 {
+	// Wing + project + embedded (10 embedded commands) = 12
+	if len(resources) != 12 {
 		names := make([]string, len(resources))
 		for i, ri := range resources {
 			names[i] = ri.Name + "(" + ri.Source + ")"
 		}
-		t.Fatalf("got %d resources %v, want 10", len(resources), names)
+		t.Fatalf("got %d resources %v, want 12", len(resources), names)
 	}
 
 	sourceMap := make(map[string]string)

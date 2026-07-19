@@ -111,6 +111,17 @@ func TestJourney_CommandDiscovery_And_Execution(t *testing.T) {
 	if strings.Contains(body, "{{PROJECT_NAME}}") {
 		t.Errorf("vp_cmd body contains unresolved {{PROJECT_NAME}} placeholder")
 	}
+
+	// 5. The commit-prep /stage command resolves through the same full path —
+	// proof a newly-added command is discovered and executable end to end with no
+	// registration step (directory-walk discovery, embedded tier).
+	stageBody := h.callTool(t, "vp_cmd", map[string]any{"name": "stage", "project": project})
+	if !strings.Contains(stageBody, "=== EXECUTE COMMAND: stage ===") {
+		t.Errorf("vp_cmd stage frame header missing: %.200s", stageBody)
+	}
+	if !strings.Contains(stageBody, "Prepare a Commit") {
+		t.Errorf("vp_cmd stage body missing expected content: %.200s", stageBody)
+	}
 	// And vp_cmd frame content must be consistent with vp_get_command
 	// output after placeholder substitution: take the get.Content,
 	// substitute {{PROJECT}}, and verify it appears inside the vp_cmd

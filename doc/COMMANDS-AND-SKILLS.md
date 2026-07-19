@@ -29,6 +29,7 @@ updates, architecture reviews, dependency audits, release checklists.
 |------|---------|
 | `restart` | Sync vault, restore context, sweep orphaned plans |
 | `wrap` | Update resume and dependent docs to reflect current state |
+| `stage` | Prepare a commit: light gate, author commit.msg, stage files by path (the commit-prep subset of wrap) |
 | `review-plan` | Critical architecture review of a task plan |
 | `cancel-plan` | Archive a planned task found not worth implementing |
 | `capture` | Record a session summary with decisions and open threads |
@@ -416,6 +417,8 @@ the job there; the two mechanisms are complementary.
 │   │   ├── makefile.md
 │   │   ├── restart.md
 │   │   ├── review-plan.md
+│   │   ├── stage.md
+│   │   ├── vault-audit.md
 │   │   └── wrap.md
 │   └── skills/                 # Vault-wide skills
 │       └── startup-analyst/
