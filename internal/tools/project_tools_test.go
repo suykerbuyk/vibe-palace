@@ -139,26 +139,63 @@ func TestAppendIterationTool(t *testing.T) {
 	tool := AppendIterationTool(vault)
 
 	params, _ := json.Marshal(appendIterationParams{
-		Project: "test-proj",
-		Content: "## Iteration 1\nDid some work.",
+		Project:   "test-proj",
+		Title:     "did some work",
+		Narrative: "The body of the narrative.",
 	})
 	result, err := tool.Handler(context.Background(), params)
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
-	m := result.(map[string]string)
+	m := result.(map[string]any)
 	if m["status"] != "appended" {
-		t.Errorf("status = %q", m["status"])
+		t.Errorf("status = %v", m["status"])
+	}
+	// Fresh vault: the SERVER mints iteration 1 — the caller supplied no number.
+	if m["iter_n"] != 1 {
+		t.Errorf("iter_n = %v, want 1", m["iter_n"])
+	}
+	if _, present := m["overridden"]; present {
+		t.Errorf("overridden must be absent when no override is passed: %+v", m)
 	}
 
-	// Verify content on disk.
+	// The server composed the canonical H2 header itself.
 	path, _ := vault.IterationsFile("test-proj")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if !strings.Contains(string(data), "Iteration 1") {
-		t.Errorf("missing content: %q", string(data))
+	if !strings.Contains(string(data), "## Iteration 1 — did some work") {
+		t.Errorf("missing composed header: %q", string(data))
+	}
+}
+
+func TestAppendIterationOverride(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	tool := AppendIterationTool(vault)
+
+	override := 189
+	params, _ := json.Marshal(appendIterationParams{
+		Project:   "p",
+		Title:     "backfilled",
+		Narrative: "body",
+		Iteration: &override,
+	})
+	result, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	m := result.(map[string]any)
+	if m["iter_n"] != 189 {
+		t.Errorf("iter_n = %v, want 189 (override honored)", m["iter_n"])
+	}
+	if m["overridden"] != true {
+		t.Errorf("overridden = %v, want true", m["overridden"])
+	}
+	// The override disagreed with what the server would have minted (1 on a fresh
+	// vault) — surfaced loudly rather than silently corrected.
+	if m["derived_n"] != 1 {
+		t.Errorf("derived_n = %v, want 1", m["derived_n"])
 	}
 }
 
@@ -170,8 +207,10 @@ func TestAppendIterationValidation(t *testing.T) {
 		name   string
 		params appendIterationParams
 	}{
-		{"empty project", appendIterationParams{Project: "", Content: "x"}},
-		{"empty content", appendIterationParams{Project: "proj", Content: ""}},
+		{"empty project", appendIterationParams{Project: "", Title: "t", Narrative: "n"}},
+		{"empty title", appendIterationParams{Project: "proj", Title: "", Narrative: "n"}},
+		{"empty narrative", appendIterationParams{Project: "proj", Title: "t", Narrative: ""}},
+		{"narrative carries its own header", appendIterationParams{Project: "proj", Title: "t", Narrative: "## Iteration 5 — smuggled\n\nbody"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

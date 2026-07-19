@@ -78,10 +78,21 @@ never hang on credential or editor prompts, and degrade to empty results
 
 ### `iter_n` from the iteration narrative
 
-The iteration number is parsed from the resume/iteration narrative with
-`^### Iteration (\d+)\b` (multiline); `iter_n` is the maximum matched value
-plus one. This keeps the iteration counter derived from the human-readable
-record rather than a second source of truth.
+`vp_collect_wrap_state` derives a PREVIEW iteration number by scanning the
+iteration narrative with `^(#{2,3})[ \t]+Iteration (\d+)\b` (canonical H2, with
+legacy H3 tolerated so the reader never goes blind on history already on disk);
+`iter_n` is the maximum matched value plus one. This keeps the counter derived
+from the human-readable record rather than a second source of truth.
+
+The preview is advisory. The AUTHORITATIVE number is minted by
+`vp_append_iteration`, which re-derives the maximum and appends **under a single
+hold of the `iterations.md` vaultlock** (see ADR-006 and the
+`append-iteration-server-owned` task). Because read-max and append are one
+critical section there, two concurrent wraps cannot mint a duplicate — the
+check-then-act race the unlocked preview scan is subject to but the write path is
+not. The server also composes the canonical `## Iteration N — title` header
+itself from the derived number and a caller-supplied title, so a caller can no
+longer drift it to the wrong heading level.
 
 ### `render_wrap_text` is intentionally not ported
 
@@ -110,8 +121,11 @@ avoids baking a presentation format into the tool contract.
   deliberate expansion of the project-local footprint for the wrap path.
 - `task_deltas` is a set-difference on slugs, so a task that is renamed
   reads as one retired + one added rather than a rename.
-- Iteration parsing depends on the `### Iteration N` heading convention;
-  narratives that drift from it will not advance `iter_n`.
+- `iter_n` from `vp_collect_wrap_state` is a preview derived from the heading
+  convention, so a narrative that drifted from it would mis-count. Since
+  `vp_append_iteration` now mints the number server-side and writes the header
+  itself, new drift cannot enter through the write path — but the reader stays
+  tolerant of the H2/H3 history already on disk.
 
 ## Alternatives considered
 

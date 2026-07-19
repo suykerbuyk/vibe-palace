@@ -56,11 +56,16 @@ func TestWriteResumeInvalidSlug(t *testing.T) {
 	}
 }
 
-func TestAppendIteration(t *testing.T) {
+func TestAppendIterationOwned(t *testing.T) {
 	vault := NewVault(t.TempDir())
 
-	if err := vault.AppendIteration("myproj", "Iteration 1"); err != nil {
-		t.Fatalf("AppendIteration: %v", err)
+	// Fresh vault: the server mints iteration 1 and composes the header itself.
+	n, derived, err := vault.AppendIterationOwned("myproj", "first work", "body", nil)
+	if err != nil {
+		t.Fatalf("AppendIterationOwned: %v", err)
+	}
+	if n != 1 || derived != 1 {
+		t.Fatalf("n=%d derived=%d, want 1,1", n, derived)
 	}
 
 	path, _ := vault.IterationsFile("myproj")
@@ -68,19 +73,23 @@ func TestAppendIteration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if !strings.Contains(string(data), "Iteration 1") {
-		t.Errorf("missing iteration content: %q", string(data))
+	if !strings.Contains(string(data), "## Iteration 1 — first work") {
+		t.Errorf("missing composed header: %q", string(data))
 	}
 }
 
 func TestAppendIterationMultiple(t *testing.T) {
 	vault := NewVault(t.TempDir())
 
-	if err := vault.AppendIteration("myproj", "First"); err != nil {
-		t.Fatalf("AppendIteration 1: %v", err)
+	if n, _, err := vault.AppendIterationOwned("myproj", "First", "body", nil); err != nil {
+		t.Fatalf("AppendIterationOwned 1: %v", err)
+	} else if n != 1 {
+		t.Fatalf("first n=%d, want 1", n)
 	}
-	if err := vault.AppendIteration("myproj", "Second"); err != nil {
-		t.Fatalf("AppendIteration 2: %v", err)
+	if n, _, err := vault.AppendIterationOwned("myproj", "Second", "body", nil); err != nil {
+		t.Fatalf("AppendIterationOwned 2: %v", err)
+	} else if n != 2 {
+		t.Fatalf("second n=%d, want 2", n)
 	}
 
 	path, _ := vault.IterationsFile("myproj")
@@ -99,7 +108,7 @@ func TestAppendIterationMultiple(t *testing.T) {
 
 func TestAppendIterationInvalidSlug(t *testing.T) {
 	vault := NewVault(t.TempDir())
-	if err := vault.AppendIteration("INVALID", "content"); err == nil {
+	if _, _, err := vault.AppendIterationOwned("INVALID", "title", "content", nil); err == nil {
 		t.Fatal("expected error for invalid slug")
 	}
 }

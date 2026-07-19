@@ -125,9 +125,11 @@ const IterationHeadingPrefix = "## "
 // scratch on top of real history.
 //
 // Strictness belongs in the WRITER, where a caller can actually see the error:
-// ValidateIterationNarrative rejects a non-canonical heading loudly, so nothing
-// new enters the file at the wrong level while the reader stays unable to go
-// blind on what is already there.
+// AppendIterationOwned COMPOSES the canonical H2 header itself (via
+// FormatIterationHeader) from the server-derived number and the caller's title,
+// so nothing new can enter the file at the wrong level, while the reader stays
+// unable to go blind on what is already there. ContainsIterationHeader guards
+// the door so a narrative body cannot smuggle in a second header.
 var iterHeadingRe = regexp.MustCompile(`^(#{2,3})[ \t]+Iteration (\d+)\b`)
 
 // NextIterFromIterationsMD parses the iterations.md at the given path and
@@ -191,31 +193,24 @@ func scanIterHeadings(content string) []iterHeading {
 	return out
 }
 
-// ValidateIterationNarrative checks a narrative body before it is appended to
-// iterations.md: it must carry at least one iteration header, and every header
-// it carries must be at the canonical H2 level.
-//
-// This is the writer half of the contract described on iterHeadingRe. Before it
-// existed, vp_append_iteration accepted arbitrary markdown and the wrap template
-// named no heading level at all, so agents chose one per-session and the file
-// accumulated both — 110 H2 against 81 H3 in vibe-palace alone. That is the same
-// shape as the status-line defect fixed in iteration 184: a reader with a strict
-// private definition, a writer with none, and no one to notice they disagreed.
-func ValidateIterationNarrative(content string) error {
-	const remedy = `open the narrative with a canonical H2 header, e.g. "## Iteration 191 — what changed this session"`
+// FormatIterationHeader composes the canonical H2 iteration header line —
+// "## Iteration N — title" — from a server-derived number and a caller title.
+// It is the WRITER half of the contract iterHeadingRe reads: the server owns the
+// header, so the file can never accumulate the wrong heading level again. Before
+// this, vp_append_iteration accepted arbitrary markdown and the wrap template
+// named no level, so the file grew both — 110 H2 against 81 H3 in vibe-palace
+// alone, the same shape as the status-line defect fixed in iteration 184: a
+// reader with a strict private definition, a writer with none.
+func FormatIterationHeader(n int, title string) string {
+	return fmt.Sprintf("%sIteration %d — %s", IterationHeadingPrefix, n, strings.TrimSpace(title))
+}
 
-	headings := scanIterHeadings(content)
-	if len(headings) == 0 {
-		return fmt.Errorf("iteration narrative carries no %q header: %s", "## Iteration N", remedy)
-	}
-	for _, h := range headings {
-		if h.hashes != strings.TrimSpace(IterationHeadingPrefix) {
-			return fmt.Errorf(
-				"iteration narrative line %d is an H%d header (%q); the canonical level is H2: %s. H3 is reserved for sub-sections INSIDE a narrative",
-				h.line, len(h.hashes), h.text, remedy)
-		}
-	}
-	return nil
+// ContainsIterationHeader reports whether content carries any iteration header
+// (at H2 or H3, outside a code fence). AppendIterationOwned composes the header
+// itself, so a narrative body that also carries one would double it; the tool
+// handler rejects such a body at the door.
+func ContainsIterationHeader(content string) bool {
+	return len(scanIterHeadings(content)) > 0
 }
 
 // ClassifyWrapShape returns the work-unit shape. Pure function: no I/O.

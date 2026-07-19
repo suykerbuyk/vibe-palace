@@ -104,54 +104,39 @@ func TestNextIterFromIterationsMD_EmptyPath(t *testing.T) {
 	}
 }
 
-// ValidateIterationNarrative is the writer half of the heading contract: the
-// reader tolerates H2 and H3 so it can never go blind, and the writer refuses
-// anything but canonical H2 so nothing new drifts in.
-func TestValidateIterationNarrative(t *testing.T) {
+// FormatIterationHeader is the writer half of the heading contract: the server
+// owns the canonical H2 header, so the file can never drift to the wrong level.
+func TestFormatIterationHeader(t *testing.T) {
+	if got, want := FormatIterationHeader(191, "what changed"), "## Iteration 191 — what changed"; got != want {
+		t.Fatalf("FormatIterationHeader = %q, want %q", got, want)
+	}
+	// Title is trimmed so the composed header is stable regardless of caller
+	// whitespace.
+	if got, want := FormatIterationHeader(7, "  padded  "), "## Iteration 7 — padded"; got != want {
+		t.Fatalf("FormatIterationHeader did not trim title: %q, want %q", got, want)
+	}
+}
+
+// ContainsIterationHeader guards the tool door: the server composes the header,
+// so a narrative body carrying its own would double it — except a heading-shaped
+// line inside a code fence, which is sample text, not a header (the iter-184
+// lesson).
+func TestContainsIterationHeader(t *testing.T) {
 	tests := []struct {
 		name    string
 		content string
-		wantErr bool
+		want    bool
 	}{
-		{
-			name:    "canonical h2 accepted",
-			content: "## Iteration 191 — what changed\n\nsome narrative.\n",
-		},
-		{
-			name:    "h2 with h3 subsections accepted",
-			content: "## Iteration 191 — title\n\n### Phase 1 — adapter\n\nbody\n\n### Results\n\nmore\n",
-		},
-		{
-			name:    "h3 iteration header rejected",
-			content: "### Iteration 191 — wrong level\n\nbody\n",
-			wantErr: true,
-		},
-		{
-			name:    "no iteration header rejected",
-			content: "just some prose with no header at all\n",
-			wantErr: true,
-		},
-		{
-			name:    "a later h3 iteration header is still rejected",
-			content: "## Iteration 191 — right\n\n### Iteration 192 — smuggled in at the wrong level\n",
-			wantErr: true,
-		},
-		{
-			// The iteration-184 lesson: a heading-shaped line inside a fence is a
-			// shell comment or a doc sample, not a header. Rejecting those would
-			// hard-fail append on a legitimate and very common body shape.
-			name:    "heading-shaped line inside a fence does not trigger rejection",
-			content: "## Iteration 191 — real\n\n```md\n### Iteration 900 — an example being quoted\n```\n",
-		},
+		{name: "plain prose has none", content: "just some prose with no header at all\n", want: false},
+		{name: "h2 iteration header detected", content: "## Iteration 191 — smuggled\n\nbody\n", want: true},
+		{name: "h3 iteration header detected", content: "### Iteration 192 — also smuggled\n", want: true},
+		{name: "h3 subsection is not an iteration header", content: "### Phase 1 — adapter\n\nbody\n", want: false},
+		{name: "heading inside a fence is sample text", content: "body\n\n```md\n### Iteration 900 — quoted example\n```\n", want: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateIterationNarrative(tc.content)
-			if tc.wantErr && err == nil {
-				t.Fatalf("expected an error, got nil")
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("unexpected error: %v", err)
+			if got := ContainsIterationHeader(tc.content); got != tc.want {
+				t.Fatalf("ContainsIterationHeader = %v, want %v", got, tc.want)
 			}
 		})
 	}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -87,24 +88,28 @@ func listProjectsHandler(vault *storage.Vault) mcp.HandlerFunc {
 // ---------------------------------------------------------------------------
 
 type appendIterationParams struct {
-	Project string `json:"project"`
-	Content string `json:"content"`
+	Project   string `json:"project"`
+	Title     string `json:"title"`
+	Narrative string `json:"narrative"`
+	Iteration *int   `json:"iteration,omitempty"`
 }
 
 var appendIterationSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
 		"project": {"type": "string", "description": "Project slug."},
-		"content": {"type": "string", "description": "Iteration narrative content (markdown). MUST open with a canonical H2 header — \"## Iteration N — title\". H3 is reserved for sub-sections inside the narrative; an H3 iteration header is rejected."}
+		"title": {"type": "string", "description": "Iteration title — the text after the em dash in the canonical header. Do NOT include the \"## Iteration N —\" prefix; the server writes it."},
+		"narrative": {"type": "string", "description": "Iteration narrative body (markdown), WITHOUT a leading \"## Iteration N\" header — the server composes the canonical H2 header from the derived number and title. Use H3 (###) for sub-sections inside the narrative."},
+		"iteration": {"type": "integer", "description": "OPTIONAL override for the iteration number. Omit it in normal use: the server derives the next number under the file lock. Supply it only to backfill a specific number; if it disagrees with what the server would mint, the result reports both (overridden=true, derived_n)."}
 	},
-	"required": ["project", "content"]
+	"required": ["project", "title", "narrative"]
 }`)
 
 func AppendIterationTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_append_iteration",
 		Mutating:    true,
-		Description: "Append an iteration narrative to the project's iterations file.",
+		Description: "Append an iteration narrative to the project's iterations file. The server mints the iteration number under the file lock and writes the canonical \"## Iteration N — title\" header itself; supply only title and narrative (and, rarely, an iteration override).",
 		Schema:      appendIterationSchema,
 		Handler:     appendIterationHandler(vault),
 	}
@@ -119,18 +124,32 @@ func appendIterationHandler(vault *storage.Vault) mcp.HandlerFunc {
 		if p.Project == "" {
 			return nil, fmt.Errorf("project is required")
 		}
-		if p.Content == "" {
-			return nil, fmt.Errorf("content is required")
+		if strings.TrimSpace(p.Title) == "" {
+			return nil, fmt.Errorf("title is required")
 		}
-		// Reject a non-canonical heading at the door. iterations.md is read by
-		// NextIterFromIterationsMD to derive the next iteration number, and a
-		// header the reader disagrees with is how the counter silently drifts.
-		if err := wrapstate.ValidateIterationNarrative(p.Content); err != nil {
-			return nil, err
+		if strings.TrimSpace(p.Narrative) == "" {
+			return nil, fmt.Errorf("narrative is required")
 		}
-		if err := vault.AppendIteration(p.Project, p.Content); err != nil {
+		// The server owns the header, so a narrative that carries its own
+		// "## Iteration N" header would produce a duplicate. Reject it at the
+		// door and name the fix, rather than silently emitting two headers.
+		if wrapstate.ContainsIterationHeader(p.Narrative) {
+			return nil, fmt.Errorf("narrative must not contain its own \"## Iteration N\" header: the server composes it from the derived number and the title — pass only the body")
+		}
+
+		n, derived, err := vault.AppendIterationOwned(p.Project, p.Title, p.Narrative, p.Iteration)
+		if err != nil {
 			return nil, fmt.Errorf("append iteration: %w", err)
 		}
-		return map[string]string{"status": "appended", "project": p.Project}, nil
+
+		result := map[string]any{"status": "appended", "project": p.Project, "iter_n": n}
+		if p.Iteration != nil {
+			// Honored, but say so loudly: a disagreement with the derived number
+			// means the caller's model of the vault is stale, and that is worth
+			// surfacing rather than silently correcting.
+			result["overridden"] = true
+			result["derived_n"] = derived
+		}
+		return result, nil
 	}
 }

@@ -151,13 +151,17 @@ func TestIterationAppend(t *testing.T) {
 	h := newHarness(t, false)
 	h.registerAllTools(t)
 
+	// The server mints the number under the lock: on a fresh vault these become
+	// Iteration 1 and 2, regardless of what the caller thinks the count is.
 	h.callTool(t, "vp_append_iteration", map[string]any{
-		"project": "test-proj",
-		"content": "## Iteration 25\nAdded integration tests.",
+		"project":   "test-proj",
+		"title":     "added integration tests",
+		"narrative": "Body of the first iteration.",
 	})
 	h.callTool(t, "vp_append_iteration", map[string]any{
-		"project": "test-proj",
-		"content": "## Iteration 26\nAdded system tools.",
+		"project":   "test-proj",
+		"title":     "added system tools",
+		"narrative": "Body of the second iteration.",
 	})
 
 	// Read the file directly to verify.
@@ -170,7 +174,8 @@ func TestIterationAppend(t *testing.T) {
 		t.Fatalf("ReadFile: %v", err)
 	}
 	content := string(data)
-	if !strings.Contains(content, "Iteration 25") || !strings.Contains(content, "Iteration 26") {
+	if !strings.Contains(content, "## Iteration 1 — added integration tests") ||
+		!strings.Contains(content, "## Iteration 2 — added system tools") {
 		t.Fatalf("iterations: %s", content)
 	}
 	if strings.Count(content, "---") < 2 {

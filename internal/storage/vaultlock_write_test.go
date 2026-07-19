@@ -213,25 +213,46 @@ func TestConcurrentAppendDrawerDedup(t *testing.T) {
 	}
 }
 
-// TestConcurrentAppendIteration appends N distinct markers concurrently to the
-// same iterations file; every marker must survive and the separators stay
-// intact. Without the per-path lock concurrent seek+append races lose writes.
-// Run under -race.
-func TestConcurrentAppendIteration(t *testing.T) {
+// TestConcurrentAppendIterationOwned mints N iteration numbers concurrently on
+// one iterations file. Because AppendIterationOwned derives max+1 UNDER the same
+// lock it appends within, the N results must be exactly {1..N} — distinct and
+// gapless. The superseded flow (derive from an unlocked read via a separate
+// tool, then append) could hand two concurrent callers the same number — the
+// counter corruption this task closes. Run under -race.
+func TestConcurrentAppendIterationOwned(t *testing.T) {
 	v := testVault(t)
 	const project = "proj"
 	const n = 50
 
+	got := make([]int, n)
 	var wg sync.WaitGroup
 	for i := range n {
 		wg.Go(func() {
-			if err := v.AppendIteration(project, fmt.Sprintf("marker-%d-end", i)); err != nil {
-				t.Errorf("AppendIteration %d: %v", i, err)
+			num, _, err := v.AppendIterationOwned(project, fmt.Sprintf("title-%d", i), "body", nil)
+			if err != nil {
+				t.Errorf("AppendIterationOwned %d: %v", i, err)
+				return
 			}
+			got[i] = num
 		})
 	}
 	wg.Wait()
 
+	// Every number in 1..n must appear exactly once — no duplicate, no gap.
+	seen := make(map[int]int)
+	for _, num := range got {
+		seen[num]++
+	}
+	for want := 1; want <= n; want++ {
+		if seen[want] != 1 {
+			t.Errorf("iteration number %d minted %d times, want exactly 1 (duplicate or gap)", want, seen[want])
+		}
+	}
+	if len(seen) != n {
+		t.Errorf("distinct numbers = %d, want %d", len(seen), n)
+	}
+
+	// The file must physically carry N canonical headers, one per number.
 	path, err := v.IterationsFile(project)
 	if err != nil {
 		t.Fatalf("IterationsFile: %v", err)
@@ -241,14 +262,11 @@ func TestConcurrentAppendIteration(t *testing.T) {
 		t.Fatalf("read iterations: %v", err)
 	}
 	content := string(data)
-	for i := range n {
-		marker := fmt.Sprintf("marker-%d-end", i)
-		if c := strings.Count(content, marker); c != 1 {
-			t.Errorf("marker %q appears %d times, want 1 (lost/corrupted append)", marker, c)
+	for want := 1; want <= n; want++ {
+		header := fmt.Sprintf("## Iteration %d — ", want)
+		if c := strings.Count(content, header); c != 1 {
+			t.Errorf("header %q appears %d times, want 1", header, c)
 		}
-	}
-	if c := strings.Count(content, "\n---\n"); c != n {
-		t.Errorf("separator count = %d, want %d", c, n)
 	}
 }
 

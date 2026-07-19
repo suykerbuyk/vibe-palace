@@ -255,27 +255,22 @@ files.
 
 ## Step 4: Append Iteration Narrative
 
-Use `vp_append_iteration` to describe what changed this session and
-why (past tense, technical detail).
+Use `vp_append_iteration` to describe what changed this session and why
+(past tense, technical detail). Pass two fields:
 
-**Open the narrative with a canonical H2 header — nothing else:**
+- **`title`** — the short title, WITHOUT any `## Iteration N —` prefix.
+- **`narrative`** — the body (markdown), WITHOUT a leading iteration header.
+  Use **H3 (`###`)** for sub-sections *inside* the narrative
+  ("### Phase 1 — …", "### Results").
 
-    ## Iteration <N> — <title>
-
-`<N>` is the iteration number. **H3 (`###`) is reserved for sub-sections
-*inside* a narrative** ("### Phase 1 — …", "### Results"); an H3 iteration
-header is **rejected** by `vp_append_iteration`.
-
-**Why this is spelled out rather than left to your judgement:** the next
-iteration number is derived by scanning `iterations.md` for these headers. For
-most of this project's life the template named no level at all, so each session
-picked one — and the file accumulated **110 H2 against 81 H3**. The reader saw
-only one of the two, so it reported iteration **188** when the project was at
-**190**, and reported **1** — the *fresh project* signal — for a sibling project
-whose narratives are entirely H2 and which has 18 iterations of real history. A
-wrap that trusted that number would have renumbered from scratch on top of it.
-Pick the wrong level and you are not making a cosmetic mistake; you are
-corrupting the counter for every session that follows.
+**Do NOT compute or pass the iteration number.** The server mints it under the
+`iterations.md` lock and composes the canonical `## Iteration N — title` header
+itself — so the number cannot drift to the wrong heading level, and two
+concurrent wraps cannot collide on it (the counter-corruption class this
+deletes rather than polices). The tool returns `iter_n`, the number actually
+written. Supply the optional `iteration` override ONLY to backfill a specific
+number; if it disagrees with what the server would mint, the result reports
+both `overridden` and `derived_n`.
 
 ## Step 5: Update Stable Docs (if changed)
 

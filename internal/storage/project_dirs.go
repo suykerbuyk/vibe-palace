@@ -12,10 +12,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
+	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
 
 // ResumeConflictError is the typed compare-and-set refusal from WriteResume. It
@@ -98,40 +100,65 @@ func (v *Vault) WriteResume(project, content, expectedSha256 string) error {
 	return nil
 }
 
-// AppendIteration appends a narrative entry to the project's iterations file
-// with a leading separator. The per-path vaultlock serializes concurrent
-// appends (and interlocks with any whole-file rewriter of the same file).
-func (v *Vault) AppendIteration(project, content string) error {
+// AppendIterationOwned mints the iteration number server-side and appends the
+// narrative under a SINGLE hold of the per-path vaultlock, so "read the current
+// max" and "append max+1" are one critical section. Two concurrent callers
+// therefore serialize on the lock and can never mint a duplicate number — the
+// check-then-act race that a caller-supplied number (derived from an unlocked
+// read of iterations.md) is prone to, and the counter corruption iteration 191
+// closed in capture.
+//
+// It writes the canonical "## Iteration N — title" header itself; the caller
+// supplies only title and body. When override is non-nil its value is honored
+// verbatim (e.g. to backfill a missing iteration). It returns both the number
+// actually written (n) and the number it would have minted from the file
+// (derived), so a caller can report — loudly — when an override disagrees with
+// the live vault instead of silently correcting a stale caller.
+func (v *Vault) AppendIterationOwned(project, title, body string, override *int) (n int, derived int, err error) {
 	path, err := v.IterationsFile(project)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("ensure project dir: %w", err)
+		return 0, 0, fmt.Errorf("ensure project dir: %w", err)
 	}
 
 	release, err := vaultlock.Acquire(v.Root, path)
 	if err != nil {
-		return fmt.Errorf("lock iterations file: %w", err)
+		return 0, 0, fmt.Errorf("lock iterations file: %w", err)
 	}
 	defer release()
 
+	// Everything below runs UNDER THE ONE LOCK: the read of the current max and
+	// the append are a single critical section, so a concurrent
+	// AppendIterationOwned cannot slip its own append in between and force a
+	// duplicate number. Keep the append inline here rather than delegating to a
+	// helper that re-acquires this lock — vaultlock.Acquire is a blocking LOCK_EX
+	// with no timeout, so re-entry would hang, not error.
+	derived, err = wrapstate.NextIterFromIterationsMD(path)
+	if err != nil {
+		return 0, 0, fmt.Errorf("derive iteration number: %w", err)
+	}
+	n = derived
+	if override != nil {
+		n = *override
+	}
+
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
-		return fmt.Errorf("open iterations file: %w", err)
+		return 0, 0, fmt.Errorf("open iterations file: %w", err)
 	}
 	defer f.Close()
-
 	if _, err := f.Seek(0, 2); err != nil {
-		return fmt.Errorf("seek iterations file: %w", err)
+		return 0, 0, fmt.Errorf("seek iterations file: %w", err)
 	}
-
-	entry := "\n---\n" + content
+	header := wrapstate.FormatIterationHeader(n, title)
+	entry := "\n---\n" + header + "\n\n" + strings.TrimSpace(body) + "\n"
 	if _, err := f.WriteString(entry); err != nil {
-		return fmt.Errorf("write iteration: %w", err)
+		return 0, 0, fmt.Errorf("write iteration: %w", err)
 	}
 	v.stamp(path)
-	return nil
+	return n, derived, nil
 }
 
 // ListTriples returns all triples for a project by globbing the triples directory.

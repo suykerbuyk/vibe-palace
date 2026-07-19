@@ -76,8 +76,8 @@ func TestEveryVaultWriterStamps(t *testing.T) {
 			}
 			return projectsRoot(vault)
 		}},
-		{"AppendIteration", func(t *testing.T, v *Vault, vault string) string {
-			if err := v.AppendIteration(proj, "x"); err != nil {
+		{"AppendIterationOwned", func(t *testing.T, v *Vault, vault string) string {
+			if _, _, err := v.AppendIterationOwned(proj, "t", "x", nil); err != nil {
 				t.Fatal(err)
 			}
 			return projectsRoot(vault)

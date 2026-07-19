@@ -52,7 +52,9 @@ func CollectWrapStateTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name: "vp_collect_wrap_state",
 		Description: "Return the full wrap-state record for the current project: " +
-			"iter_n (max ### Iteration N + 1), branch, last_iter_anchor_sha, " +
+			"iter_n (a PREVIEW of the next iteration number, max ## Iteration N + 1; " +
+			"vp_append_iteration mints the AUTHORITATIVE number under the file lock), " +
+			"branch, last_iter_anchor_sha, " +
 			"commits_since_last_iter, files_changed, task_deltas (added/retired/" +
 			"cancelled via .vibe-palace/last-tasks-snapshot.json diff), test_counts " +
 			"(parsed best-effort from doc/TESTING.md headline), " +

@@ -4,7 +4,7 @@
     {
       "name": "vp_append_iteration",
       "mutating": true,
-      "schema_sha256": "c182cb03e0a4081aa21b32d183332f96db5ebcef5bb66cf788c018e72f016489"
+      "schema_sha256": "dd6e698ebcc3a491313e5a49fe732198d0d83f718daf860819011c6ea778ce05"
     },
     {
       "name": "vp_archive_link",
