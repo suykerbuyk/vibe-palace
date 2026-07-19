@@ -9,6 +9,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
@@ -166,6 +167,56 @@ func TestSurfaceGateUnreachableVaultRefuses(t *testing.T) {
 	}
 	if ran {
 		t.Error("handler must not run against an absent vault root")
+	}
+}
+
+// TestSurfaceGateUnreachableVaultFailsFast is the bounded-timeout regression
+// guard for the ~1852 s hang: a mutating tool dispatched against a deleted vault
+// root must be refused by the surface gate BEFORE it reaches any write path that
+// could block. TestSurfaceGateUnreachableVaultRefuses pins the error VALUE; this
+// pins its TIMING. The handler here blocks until cleanup, so if the gate ever
+// regresses to admitting the call (as it did when an os.Stat error folded into a
+// nil "compatible" return), the dispatch hangs and this test fails on its own
+// deadline rather than stalling the caller for the host's ~1852 s idle timeout.
+func TestSurfaceGateUnreachableVaultFailsFast(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "vanished-vault")
+	ctx := context.WithValue(context.Background(), vaultKey, storage.NewVault(missing))
+
+	// The handler blocks until the test tears down. If the gate wrongly admits
+	// the call, the dispatch parks here and the deadline below fires; cleanup then
+	// releases the parked goroutine so it does not leak past the test.
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	reg := testRegistry(t)
+	if err := reg.Register(Tool{
+		Name:     "mut",
+		Mutating: true,
+		Handler: func(context.Context, json.RawMessage) (any, error) {
+			<-release
+			return "ok", nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := reg.Dispatch(ctx, "mut", json.RawMessage(`{}`))
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("mutating tool against an absent vault root must be refused, not admitted")
+		}
+		var ue *surface.VaultUnreachableError
+		if !errors.As(err, &ue) {
+			t.Errorf("err = %v, want *surface.VaultUnreachableError", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("dispatch against a deleted vault root hung: the surface gate failed to fail-fast (regression of the ~1852 s hang)")
 	}
 }
 

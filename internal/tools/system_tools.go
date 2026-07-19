@@ -564,10 +564,14 @@ func VaultStatusTool(vault *storage.Vault) mcp.Tool {
 		Description: "Read-only vault sync + working-tree dirt report. Per remote it " +
 			"reports ahead/unpushed, behind (only meaningful when behind_known), " +
 			"diverged, reachable, and last_fetched; plus the tidy sweep/report dirt " +
-			"classification of the working tree. By DEFAULT it does NOT fetch (fast " +
-			"cached path; behind_known=false). Pass refresh:true to run a bounded " +
-			"per-remote git fetch for real behind counts. It NEVER commits, pushes, " +
-			"or mutates the working tree; a fetch only updates .git tracking refs.",
+			"classification of the working tree. It also flags vault_path drift: when " +
+			"the running server's root (frozen at startup) no longer matches a fresh " +
+			"resolution of the config, drift is true and configured_vault_path names " +
+			"the new target — a mid-session config change that would split writes " +
+			"across two vaults (reload the server to re-resolve). By DEFAULT it does " +
+			"NOT fetch (fast cached path; behind_known=false). Pass refresh:true to run " +
+			"a bounded per-remote git fetch for real behind counts. It NEVER commits, " +
+			"pushes, or mutates the working tree; a fetch only updates .git tracking refs.",
 		Schema:  vaultStatusSchema,
 		Handler: vaultStatusHandler(vault),
 	}
@@ -582,6 +586,15 @@ func vaultStatusHandler(vault *storage.Vault) mcp.HandlerFunc {
 		report, err := storage.BuildStatusReport(vault.Root, p.Refresh)
 		if err != nil {
 			return nil, fmt.Errorf("vault status: %w", err)
+		}
+		// Drift is a property of the SERVER context, not of the path BuildStatusReport
+		// was handed, so it is computed here rather than inside the shared builder: a
+		// long-lived server froze vault.Root at startup, and a fresh resolution now may
+		// disagree. (A fresh CLI process resolves both from one call and never drifts,
+		// which is why the builder leaves these fields zero.)
+		if configured, drift := storage.DetectVaultPathDrift(vault.Root); drift {
+			report.ConfiguredVaultPath = configured
+			report.Drift = true
 		}
 		// Optional post-filter: when a narrowing sections selector is supplied,
 		// ZERO the unselected section's field (present-but-empty, not an absent

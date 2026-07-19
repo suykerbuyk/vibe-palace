@@ -127,14 +127,50 @@ func GetRemoteStatus(vaultPath, remote, branch string, fetch bool) (RemoteStatus
 }
 
 // StatusReport is the versioned, read-only vault status payload shared by the
-// `vp vault status` CLI and the vp_vault_status MCP tool — one schema, no drift.
+// `vp vault status` CLI and the vp_vault_status MCP tool — one schema.
 // Bump Version when adding or removing fields.
 type StatusReport struct {
-	Version   int                `json:"version"`
-	Branch    string             `json:"branch"`
-	VaultPath string             `json:"vault_path"`
-	Remotes   []RemoteStatusJSON `json:"remotes"`
-	Dirt      DirtJSON           `json:"dirt"`
+	Version   int    `json:"version"`
+	Branch    string `json:"branch"`
+	VaultPath string `json:"vault_path"`
+	// ConfiguredVaultPath and Drift surface the mid-session config-change split
+	// documented in tasks/mcp-server-startup-cached-vault-root.md: a long-lived
+	// `vp mcp` server keeps writing to the root it resolved at STARTUP (VaultPath),
+	// while a fresh resolution from the config file may now point elsewhere. The
+	// running server cannot re-resolve, but it CAN report the divergence so the
+	// split stops being silent. ConfiguredVaultPath is omitted (and Drift stays
+	// false) whenever the freshly-resolved path equals VaultPath — the common case
+	// — and always in a fresh CLI process, which resolves both from the same call
+	// and therefore cannot drift.
+	ConfiguredVaultPath string             `json:"configured_vault_path,omitempty"`
+	Drift               bool               `json:"drift"`
+	Remotes             []RemoteStatusJSON `json:"remotes"`
+	Dirt                DirtJSON           `json:"dirt"`
+}
+
+// DetectVaultPathDrift compares a frozen vault root (resolved once — e.g. at MCP
+// server startup and cached for the life of the process) against what a fresh
+// resolution from the current working directory yields NOW. It exists because a
+// running `vp mcp` server never re-resolves vault_path: if the operator edits the
+// config mid-session, the server keeps writing to frozenRoot while every fresh
+// `vp` process (and the SessionEnd hook) picks up the new path, splitting one
+// session's writes across two vaults. The server cannot fix the split, but this
+// lets a read-only status call REPORT it.
+//
+// configured is the freshly-resolved path; drift is true only when configured is
+// non-empty AND differs from frozenRoot. A resolution failure (unreadable config,
+// no cwd) returns ("", false): an unreadable config is not evidence of a swap, so
+// it is reported as "no drift" rather than a false alarm.
+func DetectVaultPathDrift(frozenRoot string) (configured string, drift bool) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+	resolved, _, err := ResolveVaultPath(cwd)
+	if err != nil || resolved == "" {
+		return "", false
+	}
+	return resolved, resolved != frozenRoot
 }
 
 // RemoteStatusJSON is the JSON projection of RemoteStatus. Unpushed folds Ahead>0
@@ -201,7 +237,7 @@ func BuildStatusReport(vaultPath string, fetch bool) (StatusReport, error) {
 	}
 
 	return StatusReport{
-		Version:   1,
+		Version:   2,
 		Branch:    branch,
 		VaultPath: vaultPath,
 		Remotes:   rems,
