@@ -407,6 +407,104 @@ func TestPushResult_Stranded(t *testing.T) {
 	}
 }
 
+// TestPushPlain_SingleRemote proves the plain-push path pushes an
+// already-committed HEAD to a single configured remote: the per-remote result is
+// nil (success), git output is captured, and the commit lands on the bare remote.
+func TestPushPlain_SingleRemote(t *testing.T) {
+	dir := initTestRepo(t)
+	bare := initBareRemote(t)
+	gitRun(t, dir, "remote", "add", "origin", bare)
+
+	writeFile(t, dir, "a.txt", "alpha")
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-m", "add a")
+
+	res, err := PushPlain(dir, []string{"origin"})
+	if err != nil {
+		t.Fatalf("PushPlain: %v", err)
+	}
+	if res == nil {
+		t.Fatal("expected non-nil PlainPushResult")
+	}
+	if rerr := res.RemoteResults["origin"]; rerr != nil {
+		t.Errorf("expected origin push to succeed, got %v", rerr)
+	}
+	if _, ok := res.RemoteOutput["origin"]; !ok {
+		t.Error("expected captured output for origin")
+	}
+	if len(FailedRemotes(res.RemoteResults)) > 0 {
+		t.Errorf("expected no failed remotes, got %#v", res.RemoteResults)
+	}
+	// The commit must have landed on the bare remote.
+	if got := gitRun(t, bare, "log", "-1", "--format=%s", "main"); !strings.Contains(got, "add a") {
+		t.Errorf("bare remote missing commit, subject: %q", got)
+	}
+}
+
+// TestPushPlain_TwoRemotesBothSucceed confirms every configured remote is
+// attempted and both record success with the commit present on each bare repo.
+func TestPushPlain_TwoRemotesBothSucceed(t *testing.T) {
+	dir := initTestRepo(t)
+	bare1 := initBareRemote(t)
+	bare2 := initBareRemote(t)
+	gitRun(t, dir, "remote", "add", "github", bare1)
+	gitRun(t, dir, "remote", "add", "vault", bare2)
+
+	writeFile(t, dir, "a.txt", "alpha")
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-m", "multi push")
+
+	res, err := PushPlain(dir, []string{"github", "vault"})
+	if err != nil {
+		t.Fatalf("PushPlain: %v", err)
+	}
+	if len(res.RemoteResults) != 2 {
+		t.Errorf("got %d remote results, want 2", len(res.RemoteResults))
+	}
+	if len(FailedRemotes(res.RemoteResults)) > 0 {
+		t.Errorf("expected all pushed, got %#v", res.RemoteResults)
+	}
+	for _, bare := range []string{bare1, bare2} {
+		if got := gitRun(t, bare, "log", "-1", "--format=%s", "main"); !strings.Contains(got, "multi push") {
+			t.Errorf("bare remote %s missing commit, subject: %q", bare, got)
+		}
+	}
+}
+
+// TestPushPlain_BadRemoteBestEffort proves the loop is best-effort: an
+// unreachable remote yields a non-nil per-remote result while a good remote is
+// still attempted and succeeds. PushPlain itself never returns a top-level error
+// for a failed remote — that is adjudicated by RemoteVerdict in the front-ends.
+func TestPushPlain_BadRemoteBestEffort(t *testing.T) {
+	dir := initTestRepo(t)
+	good := initBareRemote(t)
+	gitRun(t, dir, "remote", "add", "origin", good)
+	// A remote pointed at a nonexistent path: the push must fail for it alone.
+	gitRun(t, dir, "remote", "add", "dead", filepath.Join(dir, "does-not-exist.git"))
+
+	writeFile(t, dir, "a.txt", "alpha")
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-m", "best effort")
+
+	res, err := PushPlain(dir, []string{"origin", "dead"})
+	if err != nil {
+		t.Fatalf("PushPlain must not return a top-level error for a failed remote: %v", err)
+	}
+	if rerr := res.RemoteResults["origin"]; rerr != nil {
+		t.Errorf("good remote must still succeed, got %v", rerr)
+	}
+	if res.RemoteResults["dead"] == nil {
+		t.Error("unreachable remote must record a non-nil result")
+	}
+	if failed := FailedRemotes(res.RemoteResults); len(failed) != 1 || failed[0] != "dead" {
+		t.Errorf("expected only 'dead' to fail, got %#v", failed)
+	}
+	// The good remote received the commit despite the bad one failing.
+	if got := gitRun(t, good, "log", "-1", "--format=%s", "main"); !strings.Contains(got, "best effort") {
+		t.Errorf("good remote missing commit, subject: %q", got)
+	}
+}
+
 // TestCommitAndPushPaths_AutostashDirtyTreeRebases is the core Fix A guard: a
 // dirty (uncommitted) edit to a tracked file no longer defeats the recovery
 // rebase. Local commits file X while the working tree carries an unswept dirty

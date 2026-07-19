@@ -129,6 +129,7 @@ type vaultSyncParams struct {
 	Action  string   `json:"action"`
 	Paths   []string `json:"paths"`
 	Message string   `json:"message"`
+	NoTidy  bool     `json:"no_tidy"`
 }
 
 var vaultSyncSchema = json.RawMessage(`{
@@ -136,7 +137,8 @@ var vaultSyncSchema = json.RawMessage(`{
 	"properties": {
 		"action": {"type": "string", "description": "Action: pull, push, or sync."},
 		"paths": {"type": "array", "items": {"type": "string"}, "description": "Optional explicit vault-relative paths to stage and commit before pushing. When provided, ONLY these paths are committed (never git add -A); other dirty files are left untouched. When omitted, push/sync refuse to run on a dirty vault."},
-		"message": {"type": "string", "description": "Commit message. Required when paths is provided."}
+		"message": {"type": "string", "description": "Commit message. Required when paths is provided."},
+		"no_tidy": {"type": "boolean", "description": "Skip the implicit capture-artifact tidy on a bare sync; raw pull+push that refuses on any dirt."}
 	},
 	"required": ["action"]
 }`)
@@ -146,8 +148,13 @@ func VaultSyncTool(vault *storage.Vault) mcp.Tool {
 		Name:     "vp_vault_sync",
 		Mutating: true,
 		Description: "Pull, push, or sync the vault git repository with configured " +
-			"remotes. With no paths, push/sync refuse to run if the vault has " +
-			"uncommitted changes (accidental-half-written-state guard). Pass an " +
+			"remotes. A bare sync (no paths) now tidies capture artifacts first: " +
+			"it classifies the working tree, commits ONLY capture artifacts " +
+			"(never git add -A), pulls, then pushes — refusing up front on genuine " +
+			"non-artifact dirt. Pass no_tidy:true to restore the raw behavior: a " +
+			"plain pull+push that refuses to run if the vault has uncommitted " +
+			"changes (accidental-half-written-state guard); bare pull/push always " +
+			"use that raw path. Pass an " +
 			"explicit paths list (plus message) to stage and commit ONLY those " +
 			"paths before pushing — other dirty files are left untouched; git " +
 			"add -A is never used. Supplied paths that match nothing in both the " +
@@ -224,6 +231,49 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 		remotes, err := gitRemoteList(root)
 		if err != nil {
 			return nil, fmt.Errorf("discover remotes: %w", err)
+		}
+
+		// Bare sync now tidies capture artifacts first (classify → refuse-on-dirt →
+		// commit artifacts → pull → push) via the shared orchestration. no_tidy
+		// restores the raw pull+push path below.
+		if p.Action == "sync" && !p.NoTidy {
+			res, err := storage.SyncVault(root, remotes)
+			var output strings.Builder
+			if res.Committed {
+				fmt.Fprintf(&output, "swept %d capture artifact%s before sync\n", len(res.Swept), plural(len(res.Swept)))
+			}
+			if n := len(res.Deferred); n > 0 {
+				pairs := "pairs"
+				if n == 1 {
+					pairs = "pair"
+				}
+				fmt.Fprintf(&output, "Deferred %d incomplete transcript %s (manifest pending) — left for the next sweep\n", n, pairs)
+			}
+			if res.Pull != nil {
+				for _, remote := range remotes {
+					fmt.Fprintf(&output, "[pull %s] %s\n", remote, strings.TrimSpace(res.Pull.RemoteOutput[remote]))
+				}
+			}
+			if res.Push != nil {
+				for _, remote := range remotes {
+					fmt.Fprintf(&output, "[push %s] %s\n", remote, strings.TrimSpace(res.Push.RemoteOutput[remote]))
+				}
+			}
+			if err != nil {
+				// The refusal/verdict message names the dirt or failing remote;
+				// SyncVault already formatted it. The result body is discarded on
+				// a handler error, so the error string must carry what to act on.
+				return nil, fmt.Errorf("sync: %w", err)
+			}
+			return map[string]any{
+				"status":     "ok",
+				"action":     "sync",
+				"committed":  res.Committed,
+				"commit_sha": res.CommitSHA,
+				"swept":      res.Swept,
+				"deferred":   res.Deferred,
+				"output":     output.String(),
+			}, nil
 		}
 
 		var output strings.Builder
@@ -312,23 +362,23 @@ func gitPush(root string, remotes []string) (string, error) {
 		return "", fmt.Errorf("vault has uncommitted changes, commit before pushing")
 	}
 
+	// Delegate the plain push loop to storage.PushPlain, which attempts every
+	// remote and returns structured per-remote results (mirroring storage.Pull).
+	res, err := storage.PushPlain(root, remotes)
+	if err != nil {
+		return "", err
+	}
+
 	var buf strings.Builder
-	results := make(map[string]error, len(remotes))
 	for _, remote := range remotes {
-		cmd := exec.Command("git", "-C", root, "push", remote, "main")
-		var combined bytes.Buffer
-		cmd.Stdout = &combined
-		cmd.Stderr = &combined
-		err := cmd.Run()
-		results[remote] = err
-		fmt.Fprintf(&buf, "[push %s] %s\n", remote, strings.TrimSpace(combined.String()))
-		if err != nil {
-			fmt.Fprintf(&buf, "[push %s] FAILED: %v\n", remote, err)
+		fmt.Fprintf(&buf, "[push %s] %s\n", remote, strings.TrimSpace(res.RemoteOutput[remote]))
+		if rerr := res.RemoteResults[remote]; rerr != nil {
+			fmt.Fprintf(&buf, "[push %s] FAILED: %v\n", remote, rerr)
 		}
 	}
 	// Every remote is attempted and reported; the verdict names all of them. Same
 	// rule, same words, same outcome as the CLI — one definition, two front-ends.
-	if v := storage.RemoteVerdict(storage.OpPush, results, "HEAD"); v != "" {
+	if v := storage.RemoteVerdict(storage.OpPush, res.RemoteResults, "HEAD"); v != "" {
 		return buf.String(), fmt.Errorf("%s", v)
 	}
 	return buf.String(), nil
@@ -394,6 +444,7 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 				"swept":                 res.Swept,
 				"reported":              res.Reported,
 				"reported_user_content": res.ReportedUserContent,
+				"deferred":              res.Deferred,
 				"committed":             false,
 				"summary":               summary,
 			}, nil
@@ -456,6 +507,7 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 			"swept":                 res.Swept,
 			"reported":              res.Reported,
 			"reported_user_content": res.ReportedUserContent,
+			"deferred":              res.Deferred,
 			"committed":             res.Committed,
 			"commit_sha":            res.CommitSHA,
 			"push_downgraded":       res.PushDowngraded,

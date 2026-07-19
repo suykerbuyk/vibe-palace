@@ -682,7 +682,7 @@ repository in the vault directory. This enables multi-machine sync:
 ```bash
 vp vault pull               # pull vault state from all remotes
 vp vault push               # push vault state to all remotes
-vp vault sync               # bidirectional sync (pull then push)
+vp vault sync               # tidy capture artifacts, then pull and push
 ```
 
 To disable git tracking, pass `--no-git` during init or set
@@ -700,6 +700,12 @@ and these are committed for you automatically:
   clean before context loads.
 - **`/wrap`** sweeps the session's own capture artifacts after it syncs your
   narrative notes.
+- **`vp vault sync`** itself now tidies by default: a plain `vp vault sync`
+  commits the sweepable capture artifacts, then pulls and pushes, so you no
+  longer have to run `vp vault tidy` first to clear capture churn. It still
+  refuses up front — before any network — if the tree carries genuine
+  non-artifact dirt (pending user memory does not count and never blocks). Pass
+  `--no-tidy` for the old raw pull+push that refuses on *any* uncommitted change.
 
 Both commit *only* classified capture artifacts and **report** everything else —
 `git add -A` is never used, so a stray edit or an accidental project scaffold is

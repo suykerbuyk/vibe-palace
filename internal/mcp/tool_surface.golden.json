@@ -309,7 +309,7 @@
     {
       "name": "vp_vault_sync",
       "mutating": true,
-      "schema_sha256": "d5ce6f416bee5795d86e460b32e5dc8d158a4b4b743a9d200dbd52486b751235"
+      "schema_sha256": "1ff18644588b32c48b4b108386cf05576bcbaaa09e4189dcdae1048d94565ad0"
     },
     {
       "name": "vp_vault_tidy",

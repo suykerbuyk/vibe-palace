@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -26,6 +27,7 @@ type TidyResult struct {
 	Swept               []string         // vault-relative paths staged+committed
 	Reported            []string         // dirt that needs human eyes; never staged (full catch-all)
 	ReportedUserContent []string         // subset of Reported that is user memory (Projects/<slug>/memory/...); expected, not dirt
+	Deferred            []string         // transcript .jsonl.zst whose sibling .manifest.json is not yet on disk; left untracked, not committed, not blocking
 	Committed           bool             // true if a commit was created
 	CommitSHA           string           // short SHA of the tidy commit (empty if no-op)
 	RemoteResults       map[string]error // per-remote push result (nil = success)
@@ -165,9 +167,9 @@ func parsePorcelainZ(out string) []PorcelainEntry {
 }
 
 // classifyDirty routes each porcelain entry into swept (committable capture
-// artifacts) or reported (everything else; needs human eyes). It is the data-
-// driven heart of tidy: each path is matched against the first applicable
-// sweepRule.
+// artifacts), reported (everything else; needs human eyes), or deferred (an
+// in-flight transcript half; left for the next sweep). It is the data-driven
+// heart of tidy: each path is matched against the first applicable sweepRule.
 //
 // Status gating (H2): for the .surface rule only, routing depends on the status
 // code, not the path alone. Porcelain -z encodes status as two columns XY where
@@ -180,12 +182,24 @@ func parsePorcelainZ(out string) []PorcelainEntry {
 //     plus "M " staged and "MM" both-modified) → SWEPT. The gate is simply
 //     "untracked ('??') reports; everything else sweeps".
 //
+// Transcript pair split: transcripts are written by a background hook as a PAIR
+// — Projects/<slug>/transcripts/<name>.jsonl.zst (atomic temp+rename, written
+// first) THEN <name>.manifest.json (written second, NOT atomic). A sweep that
+// runs between the two writes would commit the .jsonl.zst without its manifest.
+// So when a .jsonl.zst matches the transcript rule but its sibling manifest is
+// not yet on disk (os.IsNotExist), the zst is DEFERRED — left untracked for the
+// next sweep once the pair is complete. The manifest is ALWAYS swept as before:
+// its zst was written first so it exists, and this also covers the steady state
+// where the zst is already committed and only the manifest is now dirty. The
+// probe stats the sibling on disk (NOT the dirty entry set) — gating on the
+// dirty set would defer the follow-up manifest forever.
+//
 // All other rules sweep regardless of status, including "??" for newly created
 // sessions/transcripts/drawers/triples and "D " deletes (git add stages
 // deletions). Rename/copy (R/C in either column) never matches a sweep rule's
 // intent — capture artifacts are append-only and timestamped, so a rename
 // signals human activity — and is routed to Reported.
-func classifyDirty(entries []PorcelainEntry) (swept, reported []string) {
+func classifyDirty(vaultPath string, entries []PorcelainEntry) (swept, reported, deferred []string) {
 	for _, e := range entries {
 		// Rename/copy always needs human eyes regardless of path.
 		if strings.ContainsAny(e.Status, "RC") {
@@ -209,9 +223,19 @@ func classifyDirty(entries []PorcelainEntry) (swept, reported []string) {
 			continue
 		}
 
+		// Transcript pair-split guard: a lone .jsonl.zst whose sibling manifest is
+		// not yet on disk is deferred, not swept.
+		if base, ok := strings.CutSuffix(e.Path, ".jsonl.zst"); ok {
+			sibling := base + ".manifest.json"
+			if _, err := os.Stat(filepath.Join(vaultPath, sibling)); os.IsNotExist(err) {
+				deferred = append(deferred, e.Path)
+				continue
+			}
+		}
+
 		swept = append(swept, e.Path)
 	}
-	return swept, reported
+	return swept, reported, deferred
 }
 
 // isUserMemoryPath reports whether a vault-relative path is user-persistent
@@ -273,11 +297,12 @@ func TidyScan(vaultPath string) (*TidyResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	swept, reported := classifyDirty(parsePorcelainZ(raw))
+	swept, reported, deferred := classifyDirty(vaultPath, parsePorcelainZ(raw))
 	return &TidyResult{
 		Swept:               swept,
 		Reported:            reported,
 		ReportedUserContent: classifyReportedUserContent(reported),
+		Deferred:            deferred,
 	}, nil
 }
 

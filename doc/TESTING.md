@@ -411,6 +411,31 @@ bare-remote + clone fixtures):
 | `TestDirtyTemplateCommandPaths` | The dirty-path scan (reusing tidy's porcelain parser) selects exactly `Templates/commands/*.md` |
 | `TestPullResult_Stranded` | `Stranded()` reports a pull that reached no remote |
 
+### `internal/storage/` — Vault Sync Orchestration (tidy-before-push)
+
+Covers `storage.SyncVault` — the default `vp vault sync` that classifies, refuses
+on genuine dirt before any network I/O, commits swept artifacts locally, then
+pulls and pushes — plus the `storage.PushPlain` loop it delegates the push to and
+the classifier's transcript-DEFER guard. Unit coverage in
+`internal/storage/vaultsyncflow_test.go`, `vaultsync_test.go`, and
+`vaulttidy_test.go` (real `git` subprocesses against bare-remote + clone
+fixtures):
+
+| Test | What it proves |
+|------|----------------|
+| `TestSyncVault_CleanArtifacts` | A tree with only sweepable artifacts is committed locally, then pulled and pushed |
+| `TestSyncVault_GenuineDirtRefusesBeforeNetwork` | Genuine non-artifact dirt refuses the sync up front, before any pull/push |
+| `TestSyncVault_MemoryDoesNotBlock` | Pending `Projects/<slug>/memory/…` is expected, not dirt — it never blocks the sync |
+| `TestSyncVault_DeferredInFlightTranscript` | A `.jsonl.zst` whose sibling manifest is not yet on disk is deferred, never committed half-complete |
+| `TestSyncVault_PullConflictAbortsBeforePush` | A merge conflict (recorded in `RemoteResults`, not the Go error) aborts before the push |
+| `TestTidyVault_DefersInFlightTranscript` | The classifier routes the manifest-pending transcript half to `Deferred`, not `Swept` |
+| `TestPushPlain_SingleRemote` / `_TwoRemotesBothSucceed` / `_BadRemoteBestEffort` | The plain-push loop attempts every remote best-effort and returns no top-level error |
+
+MCP handler coverage in `internal/tools/system_tools_test.go`:
+`TestVaultSync_BareTidiesAndPushes` (default `sync` tidies then pushes),
+`TestVaultSync_BareRefusesGenuineDirt` (refuses on genuine dirt), and
+`TestVaultSync_NoTidyIsRawRefusal` (`no_tidy:true` restores the raw refuse-on-any-dirt path).
+
 ### `internal/storage/`, `internal/capture/`, `internal/tools/` — Host-Identity Session IDs
 
 Covers the host-qualified `<date>-<fp8>-<NN>` session-id scheme (see

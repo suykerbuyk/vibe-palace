@@ -466,6 +466,190 @@ func TestFullVaultPushDryRun(t *testing.T) {
 	}
 }
 
+// lsRemoteMain returns the SHA that origin advertises for refs/heads/main, i.e.
+// the tip actually present on the bare remote. Returns "" when the ref is absent.
+func lsRemoteMain(t *testing.T, dir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", dir, "ls-remote", "origin", "main")
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git ls-remote origin main: %v", err)
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+// gitPorcelain returns `git status --porcelain` for dir (empty == clean tree).
+func gitPorcelain(t *testing.T, dir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", dir, "status", "--porcelain")
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git status --porcelain: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// gitTracksPath reports whether rel is tracked in HEAD's tree.
+func gitTracksPath(t *testing.T, dir, rel string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "-C", dir, "ls-tree", "-r", "--name-only", "HEAD")
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git ls-tree HEAD: %v", err)
+	}
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(line) == rel {
+			return true
+		}
+	}
+	return false
+}
+
+// TestVaultSyncTidyThenSyncHappyPath exercises the DEFAULT tidy-then-sync path:
+// a vault dirty with only a sweepable capture artifact + a configured bare
+// remote must return ExitOK, land the artifact commit on the bare remote, and
+// leave the working tree clean.
+func TestVaultSyncTidyThenSyncHappyPath(t *testing.T) {
+	vaultDir := setupVaultWithOrigin(t)
+	remoteBefore := lsRemoteMain(t, vaultDir)
+
+	// Only a sweepable capture artifact is dirty — no genuine dirt.
+	artifact := "Projects/vibe-palace/sessions/2026-07-19.md"
+	mkfile(t, vaultDir, artifact, "session\n")
+
+	code := cmdVaultSync().Run(nil)
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want %d", code, cli.ExitOK)
+	}
+	// Working tree must be clean: the artifact was committed, nothing left over.
+	if p := gitPorcelain(t, vaultDir); p != "" {
+		t.Errorf("working tree not clean after sync:\n%s", p)
+	}
+	// The artifact commit must be on the bare remote (origin/main advanced to the
+	// local HEAD, which now tracks the artifact).
+	remoteAfter := lsRemoteMain(t, vaultDir)
+	if remoteAfter == remoteBefore {
+		t.Errorf("origin/main did not advance: still %s", remoteBefore)
+	}
+	if head := gitHead(t, vaultDir); remoteAfter != head {
+		t.Errorf("origin/main %s != local HEAD %s", remoteAfter, head)
+	}
+	if !gitTracksPath(t, vaultDir, artifact) {
+		t.Errorf("artifact %s not committed to HEAD", artifact)
+	}
+}
+
+// TestVaultSyncNoTidyRefusesDirt verifies --no-tidy is the raw pull+push: with a
+// non-artifact file dirtying the tree the push guard fires (ExitUser) and nothing
+// reaches the remote.
+func TestVaultSyncNoTidyRefusesDirt(t *testing.T) {
+	vaultDir := setupVaultWithOrigin(t)
+	remoteBefore := lsRemoteMain(t, vaultDir)
+
+	// Non-artifact dirt: --no-tidy never sweeps or commits it.
+	mkfile(t, vaultDir, "notes.txt", "scratch\n")
+
+	code := cmdVaultSync().Run([]string{"--no-tidy"})
+	if code != cli.ExitUser {
+		t.Fatalf("exit code = %d, want %d", code, cli.ExitUser)
+	}
+	if remoteAfter := lsRemoteMain(t, vaultDir); remoteAfter != remoteBefore {
+		t.Errorf("origin/main changed on refusal: %s -> %s", remoteBefore, remoteAfter)
+	}
+}
+
+// TestVaultSyncNoTidyCleanPassthrough verifies a clean, in-sync vault under
+// --no-tidy succeeds: raw pull+push both pass.
+func TestVaultSyncNoTidyCleanPassthrough(t *testing.T) {
+	setupVaultWithOrigin(t)
+
+	code := cmdVaultSync().Run([]string{"--no-tidy"})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want %d", code, cli.ExitOK)
+	}
+}
+
+// TestVaultSyncDefaultRefusesGenuineDirt verifies the DEFAULT path refuses a tree
+// carrying genuine (non-artifact) dirt: SyncVault sets Refused, the CLI maps that
+// to ExitUser, and — because the refusal is before any network I/O — nothing is
+// pushed.
+func TestVaultSyncDefaultRefusesGenuineDirt(t *testing.T) {
+	vaultDir := setupVaultWithOrigin(t)
+	remoteBefore := lsRemoteMain(t, vaultDir)
+
+	mkfile(t, vaultDir, "notes.txt", "scratch\n")
+
+	code := cmdVaultSync().Run(nil)
+	if code != cli.ExitUser {
+		t.Fatalf("exit code = %d, want %d", code, cli.ExitUser)
+	}
+	if remoteAfter := lsRemoteMain(t, vaultDir); remoteAfter != remoteBefore {
+		t.Errorf("origin/main changed on refusal: %s -> %s", remoteBefore, remoteAfter)
+	}
+}
+
+// TestVaultSyncDryRunPreviewSweep verifies the --dry-run tidy path previews the
+// sweep ("Would sweep" + the artifact path) on stdout and commits NOTHING (local
+// HEAD unchanged). Dry-run never touches the network, so a URL remote suffices.
+//
+// Exit code is ExitUser, not ExitOK: the preview is printed first, but the
+// downstream dry-run pushAll checks `git status --porcelain` BEFORE its dry-run
+// branch and refuses on the (still-dirty) tree. The preview + no-commit are the
+// load-bearing assertions here; the exit code just records that pre-existing
+// pushAll guard on a dirty dry-run.
+func TestVaultSyncDryRunPreviewSweep(t *testing.T) {
+	vaultDir := setupTestVaultEnv(t)
+	run := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", vaultDir}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-b", "main")
+	run("config", "user.email", "test@test.com")
+	run("config", "user.name", "Test")
+	run("remote", "add", "origin", "https://example.com/repo.git")
+	os.WriteFile(filepath.Join(vaultDir, "seed.txt"), []byte("seed"), 0o644)
+	run("add", "seed.txt")
+	run("commit", "-m", "seed")
+
+	headBefore := gitHead(t, vaultDir)
+
+	artifact := "Projects/vibe-palace/sessions/2026-07-19.md"
+	mkfile(t, vaultDir, artifact, "session\n")
+	mkfile(t, vaultDir, "Projects/vibe-palace/resume.md", "resume\n")
+
+	var code int
+	out := captureStdout(t, func() {
+		code = cmdVaultSync().Run([]string{"--dry-run"})
+	})
+	// A dry-run executes nothing, so it previews the classification and the
+	// would-run pull/push and exits OK — it never fails on the dirty tree the
+	// real run would sweep (the Reported section already surfaces genuine dirt).
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want %d", code, cli.ExitOK)
+	}
+	for _, want := range []string{"Would sweep", artifact} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dry-run output missing %q; got:\n%s", want, out)
+		}
+	}
+	if headAfter := gitHead(t, vaultDir); headAfter != headBefore {
+		t.Errorf("dry-run created a commit: HEAD %s -> %s", headBefore, headAfter)
+	}
+}
+
 func TestFullVaultSyncDryRun(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	run := func(args ...string) {

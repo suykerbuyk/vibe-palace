@@ -187,6 +187,113 @@ func TestVaultTidy_SweepCommitsLocal(t *testing.T) {
 	}
 }
 
+// TestVaultSync_BareTidiesAndPushes covers the default (no no_tidy) sync path: a
+// vault dirty with a sweepable capture artifact classifies → commits the
+// artifact → pulls → pushes, returning committed:true, and the artifact reaches
+// the bare remote.
+func TestVaultSync_BareTidiesAndPushes(t *testing.T) {
+	root := initVaultRepo(t)
+	bare := t.TempDir()
+	gitT(t, bare, "init", "--bare", "-b", "main")
+	gitT(t, root, "remote", "add", "origin", bare)
+	gitT(t, root, "push", "origin", "main")
+
+	vault := storage.NewVault(root)
+	tool := VaultSyncTool(vault)
+
+	// One sweepable capture artifact, written directly so vaultfs's lock/.surface
+	// sidecars don't add genuine dirt that would trip the refuse-on-dirt gate.
+	sessDir := filepath.Join(root, "Projects/vibe-palace/sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessDir, "2026-06-17.md"), []byte("session\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	params, _ := json.Marshal(vaultSyncParams{Action: "sync"})
+	res, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	m := res.(map[string]any)
+	if m["committed"] != true {
+		t.Errorf("committed = %v, want true", m["committed"])
+	}
+	if m["commit_sha"] == "" {
+		t.Error("expected a commit_sha")
+	}
+
+	// The artifact must have reached the bare remote: clone it and check.
+	clone := t.TempDir()
+	gitT(t, clone, "clone", bare, ".")
+	if _, err := os.Stat(filepath.Join(clone, "Projects/vibe-palace/sessions/2026-06-17.md")); err != nil {
+		t.Errorf("swept artifact did not reach the bare remote: %v", err)
+	}
+	// The working tree is clean after the sweep+sync.
+	if status := gitT(t, root, "status", "--porcelain", "-uall"); status != "" {
+		t.Errorf("working tree should be clean after sync, status: %q", status)
+	}
+}
+
+// TestVaultSync_BareRefusesGenuineDirt covers the refuse-on-dirt gate: a vault
+// with genuine non-artifact dirt returns an error naming the file, before any
+// network I/O, and nothing is pushed.
+func TestVaultSync_BareRefusesGenuineDirt(t *testing.T) {
+	root := initVaultRepo(t)
+	bare := t.TempDir()
+	gitT(t, bare, "init", "--bare", "-b", "main")
+	gitT(t, root, "remote", "add", "origin", bare)
+	gitT(t, root, "push", "origin", "main")
+	headBefore := gitT(t, root, "rev-parse", "HEAD")
+
+	vault := storage.NewVault(root)
+	tool := VaultSyncTool(vault)
+
+	// Genuine, non-artifact dirt (resume.md is reported, not swept).
+	mustWrite(t, vault, "Projects/vibe-palace/resume.md", "resume\n")
+
+	params, _ := json.Marshal(vaultSyncParams{Action: "sync"})
+	if _, err := tool.Handler(context.Background(), params); err == nil {
+		t.Fatal("expected sync to refuse on genuine non-artifact dirt")
+	} else if !strings.Contains(err.Error(), "resume.md") {
+		t.Errorf("error = %q, want it to name the dirty file", err)
+	}
+
+	// Nothing committed, nothing pushed: HEAD unchanged locally and on the remote.
+	if headAfter := gitT(t, root, "rev-parse", "HEAD"); headAfter != headBefore {
+		t.Errorf("refused sync created a commit: HEAD %s -> %s", headBefore, headAfter)
+	}
+	if remoteHead := gitT(t, bare, "rev-parse", "HEAD"); remoteHead != headBefore {
+		t.Errorf("refused sync pushed to the remote: remote HEAD %s, want %s", remoteHead, headBefore)
+	}
+}
+
+// TestVaultSync_NoTidyIsRawRefusal covers no_tidy:true: on an artifact-dirty
+// vault it takes the raw pull+push path, whose clean-state guard refuses on the
+// (uncommitted, unswept) dirt rather than tidying it.
+func TestVaultSync_NoTidyIsRawRefusal(t *testing.T) {
+	root := initVaultRepo(t)
+	bare := t.TempDir()
+	gitT(t, bare, "init", "--bare", "-b", "main")
+	gitT(t, root, "remote", "add", "origin", bare)
+	gitT(t, root, "push", "origin", "main")
+
+	vault := storage.NewVault(root)
+	tool := VaultSyncTool(vault)
+
+	// A sweepable capture artifact — the tidy path WOULD commit it, but no_tidy
+	// takes the raw path whose guard refuses on any uncommitted change.
+	mustWrite(t, vault, "Projects/vibe-palace/sessions/2026-06-17.md", "session\n")
+
+	params, _ := json.Marshal(vaultSyncParams{Action: "sync", NoTidy: true})
+	if _, err := tool.Handler(context.Background(), params); err == nil {
+		t.Fatal("expected no_tidy sync to refuse on the uncommitted artifact")
+	} else if !strings.Contains(err.Error(), "uncommitted") {
+		t.Errorf("error = %q, want it to mention uncommitted changes", err)
+	}
+}
+
 func TestInitProjectSuccess(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
 	tool := InitProjectTool(vault)

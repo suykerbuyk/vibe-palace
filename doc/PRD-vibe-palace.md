@@ -632,7 +632,7 @@ flowchart TD
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `vp_init` | project?, domain?, tags? | Initialize project (create .vibe-palace.toml + vault dir) |
-| `vp_vault_sync` | action (req: pull/push/sync), paths?, message? | Pull/push/sync vault git remotes. Optional `paths` (with `message`) commits only the listed vault-relative files (commit-then-push) instead of a blanket sync; with no paths, push/sync refuse to run on a dirty vault |
+| `vp_vault_sync` | action (req: pull/push/sync), paths?, message?, no_tidy? | Pull/push/sync vault git remotes. Optional `paths` (with `message`) commits only the listed vault-relative files (commit-then-push) instead of a blanket sync. A bare `sync` (no paths) now **tidies capture artifacts by default** — it commits the sweepable artifacts, then pulls and pushes, refusing up front only on genuine non-artifact dirt (pending user memory does not block; an in-flight transcript whose manifest is not yet on disk is deferred). `no_tidy:true` restores the raw pull+push that refuses on *any* dirt; `push` (no paths) still refuses on a dirty vault |
 | `vp_vault_status` | refresh?, sections? | Read-only vault sync + working-tree dirt report (per-remote ahead/unpushed/behind/diverged/reachable + Swept/Reported dirt). `refresh` runs a bounded per-remote fetch for real behind counts; never commits, pushes, or mutates the tree. `sections` (`sync`/`dirt`, default both) trims the payload by zeroing the unselected section (present-but-empty, not computed); the tidy scan always runs regardless |
 | `vp_surface_check` | project? | Read-only surface preflight (non-mutating): reports whether this binary's MCP surface version is compatible with the vault (binary ≥ max `.surface` stamp) — the SAME whole-vault verdict a mutating write is gated against, curated remediation included. Returns `{status (pass\|fail\|info), summary, details[] (upgrade/override lines on fail), binary_surface, vault_surface, stamp_dir}`. Lets command templates run a surface preflight without shelling out to `vp check`. `project` is accepted for parity but does not narrow the whole-vault scan |
 | `vp_refresh_index` | project? | Rebuild session index and re-embed if needed |
@@ -2173,7 +2173,7 @@ Vibe-Palace.
 - `vp status [--project P]` — palace overview
 - `vp sessions [--project P] [--last N]` — recent sessions
 - `vp tasks [--project P]` — active tasks
-- `vp vault sync` — pull/push vault git remotes
+- `vp vault sync [--no-tidy]` — tidy capture artifacts, then pull/push vault git remotes (`--no-tidy` for raw pull+push)
 - `vp vault pull` — pull only
 - `vp vault push` — push only
 - `vp vault status [--json] [--no-fetch]` — read-only sync + working-tree dirt report (per-remote ahead/unpushed/behind/diverged/reachable)

@@ -64,6 +64,43 @@ func (r *PushResult) Stranded() bool {
 	return r.CommitSHA != "" && len(r.RemoteResults) > 0 && !r.AnyPushed()
 }
 
+// PlainPushResult reports a plain `git push <remote> <branch>` across remotes.
+// It mirrors PullResult: per-remote outcome + captured git output, no commit of
+// its own (the caller pushes an already-committed HEAD). Callers adjudicate with
+// FailedRemotes / RemoteVerdict, exactly as the pull path does.
+type PlainPushResult struct {
+	RemoteResults map[string]error  // per-remote push result (nil = success)
+	RemoteOutput  map[string]string // combined stdout+stderr git output per remote
+}
+
+// PushPlain pushes the already-committed HEAD to each configured remote with a
+// plain `git push <remote> main` — the non-rebase counterpart to Pull, mirroring
+// its shape. It attempts every remote in order and records each outcome in
+// RemoteResults (nil = success) alongside the captured combined stdout+stderr in
+// RemoteOutput, rather than aborting internally: the two front-ends differ on
+// output channel (CLI stderr vs MCP payload string) and both take their verdict
+// from RemoteVerdict, so PushPlain returns data and leaves policy to the callers.
+// It NEVER writes to os.Stderr.
+//
+// PushPlain does NOT guard the working tree (the porcelain check stays in the
+// front-ends), does NOT commit, does NOT converge/rebase (that is
+// CommitAndPushPaths's job), and does NOT call RemoteVerdict. Pure execution +
+// capture, like Pull. The branch is main — matching what both front-ends push
+// today. The returned *PlainPushResult is always non-nil, even if a remote
+// failed; the error return is reserved for a failure to run git at all.
+func PushPlain(vaultPath string, remotes []string) (*PlainPushResult, error) {
+	result := &PlainPushResult{
+		RemoteResults: make(map[string]error, len(remotes)),
+		RemoteOutput:  make(map[string]string, len(remotes)),
+	}
+	for _, remote := range remotes {
+		out, err := gitCmd(vaultPath, 60*time.Second, "push", remote, "main")
+		result.RemoteOutput[remote] = out
+		result.RemoteResults[remote] = err
+	}
+	return result, nil
+}
+
 // CommitAndPushPaths stages only the supplied paths, commits with a
 // machine-stamped message, and (when push=true) pushes to all configured
 // remotes. Dirty paths NOT in the supplied list are left dirty in the working

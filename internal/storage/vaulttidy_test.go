@@ -18,6 +18,7 @@ func hasPath(paths []string, want string) bool {
 }
 
 func TestClassifyDirty_SweepRulesPositive(t *testing.T) {
+	vaultPath := t.TempDir()
 	cases := []struct {
 		name   string
 		status string
@@ -25,6 +26,8 @@ func TestClassifyDirty_SweepRulesPositive(t *testing.T) {
 	}{
 		{"session summary", "??", "Projects/vibe-palace/sessions/2026-06-17.md"},
 		{"transcript manifest", "??", "Projects/vibe-palace/transcripts/abc.manifest.json"},
+		// A COMPLETE transcript pair (sibling manifest seeded on disk below) sweeps;
+		// the lone-zst DEFER case is covered by TestClassifyDirty_TranscriptPairSplit.
 		{"transcript zst", "??", "Projects/vibe-palace/transcripts/abc.jsonl.zst"},
 		{"kg entities", " M", "palace/vibe-palace/kg/entities.jsonl"},
 		// DEEP triples path (H1) — nests under a source-derived subpath incl. .claude (L2).
@@ -42,9 +45,14 @@ func TestClassifyDirty_SweepRulesPositive(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			swept, reported := classifyDirty([]PorcelainEntry{{Status: c.status, Path: c.path}})
+			// Seed the sibling manifest so a .jsonl.zst is treated as a complete
+			// pair (the pair-split guard sweeps only when the manifest is on disk).
+			if base, ok := strings.CutSuffix(c.path, ".jsonl.zst"); ok {
+				writeFile(t, vaultPath, base+".manifest.json", "{}\n")
+			}
+			swept, reported, deferred := classifyDirty(vaultPath, []PorcelainEntry{{Status: c.status, Path: c.path}})
 			if !hasPath(swept, c.path) {
-				t.Errorf("expected %q swept, got swept=%v reported=%v", c.path, swept, reported)
+				t.Errorf("expected %q swept, got swept=%v reported=%v deferred=%v", c.path, swept, reported, deferred)
 			}
 			if hasPath(reported, c.path) {
 				t.Errorf("%q should not be reported", c.path)
@@ -54,6 +62,7 @@ func TestClassifyDirty_SweepRulesPositive(t *testing.T) {
 }
 
 func TestClassifyDirty_NegativeCasesReported(t *testing.T) {
+	vaultPath := t.TempDir()
 	cases := []struct {
 		name   string
 		status string
@@ -80,9 +89,9 @@ func TestClassifyDirty_NegativeCasesReported(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			swept, reported := classifyDirty([]PorcelainEntry{{Status: c.status, Path: c.path}})
+			swept, reported, deferred := classifyDirty(vaultPath, []PorcelainEntry{{Status: c.status, Path: c.path}})
 			if !hasPath(reported, c.path) {
-				t.Errorf("expected %q reported, got swept=%v reported=%v", c.path, swept, reported)
+				t.Errorf("expected %q reported, got swept=%v reported=%v deferred=%v", c.path, swept, reported, deferred)
 			}
 			if hasPath(swept, c.path) {
 				t.Errorf("%q must never be swept", c.path)
@@ -94,11 +103,12 @@ func TestClassifyDirty_NegativeCasesReported(t *testing.T) {
 // TestClassifyDirty_SurfaceStatusGate covers the H2 status gate: tracked
 // modifications of .surface (in any M form) sweep; untracked (??) reports.
 func TestClassifyDirty_SurfaceStatusGate(t *testing.T) {
+	vaultPath := t.TempDir()
 	const surf = "Projects/vibe-palace/.surface"
 
 	for _, status := range []string{" M", "M ", "MM"} {
 		t.Run("sweep_"+strings.ReplaceAll(status, " ", "_"), func(t *testing.T) {
-			swept, reported := classifyDirty([]PorcelainEntry{{Status: status, Path: surf}})
+			swept, reported, _ := classifyDirty(vaultPath, []PorcelainEntry{{Status: status, Path: surf}})
 			if !hasPath(swept, surf) {
 				t.Errorf("status %q: expected %q swept, got swept=%v reported=%v", status, surf, swept, reported)
 			}
@@ -109,12 +119,69 @@ func TestClassifyDirty_SurfaceStatusGate(t *testing.T) {
 	// reported, NOT swept (split-brain commit guard, H2).
 	t.Run("untracked_reported", func(t *testing.T) {
 		const stray = "Projects/p/.surface"
-		swept, reported := classifyDirty([]PorcelainEntry{{Status: "??", Path: stray}})
+		swept, reported, _ := classifyDirty(vaultPath, []PorcelainEntry{{Status: "??", Path: stray}})
 		if !hasPath(reported, stray) {
 			t.Errorf("untracked %q must be reported, got swept=%v reported=%v", stray, swept, reported)
 		}
 		if hasPath(swept, stray) {
 			t.Errorf("untracked stray %q must never be swept", stray)
+		}
+	})
+}
+
+// TestClassifyDirty_TranscriptPairSplit covers the DEFER disposition for an
+// in-flight transcript pair. Transcripts are written by a background hook as a
+// PAIR — .jsonl.zst first (atomic), .manifest.json second (not atomic) — so a
+// sweep landing between the two writes must NOT commit a lone .jsonl.zst.
+func TestClassifyDirty_TranscriptPairSplit(t *testing.T) {
+	const zst = "Projects/foo/transcripts/x.jsonl.zst"
+	const manifest = "Projects/foo/transcripts/x.manifest.json"
+
+	// A lone .jsonl.zst with no sibling manifest on disk is DEFERRED — not swept,
+	// not reported.
+	t.Run("lone_zst_deferred", func(t *testing.T) {
+		vaultPath := t.TempDir()
+		swept, reported, deferred := classifyDirty(vaultPath, []PorcelainEntry{{Status: "??", Path: zst}})
+		if !hasPath(deferred, zst) {
+			t.Errorf("lone zst must be deferred, got swept=%v reported=%v deferred=%v", swept, reported, deferred)
+		}
+		if hasPath(swept, zst) {
+			t.Errorf("lone zst must never be swept, swept=%v", swept)
+		}
+		if hasPath(reported, zst) {
+			t.Errorf("lone zst must not be reported, reported=%v", reported)
+		}
+	})
+
+	// Both halves present on disk and dirty → BOTH swept, nothing deferred.
+	t.Run("complete_pair_both_swept", func(t *testing.T) {
+		vaultPath := t.TempDir()
+		writeFile(t, vaultPath, zst, "zst\n")
+		writeFile(t, vaultPath, manifest, "{}\n")
+		swept, _, deferred := classifyDirty(vaultPath, []PorcelainEntry{
+			{Status: "??", Path: zst},
+			{Status: "??", Path: manifest},
+		})
+		for _, want := range []string{zst, manifest} {
+			if !hasPath(swept, want) {
+				t.Errorf("complete pair: expected %q swept, got swept=%v deferred=%v", want, swept, deferred)
+			}
+		}
+		if len(deferred) != 0 {
+			t.Errorf("complete pair must defer nothing, got %v", deferred)
+		}
+	})
+
+	// A lone manifest (its zst already committed / on disk, only the manifest now
+	// dirty) is ALWAYS swept — never deferred.
+	t.Run("lone_manifest_swept", func(t *testing.T) {
+		vaultPath := t.TempDir()
+		swept, reported, deferred := classifyDirty(vaultPath, []PorcelainEntry{{Status: "??", Path: manifest}})
+		if !hasPath(swept, manifest) {
+			t.Errorf("lone manifest must sweep, got swept=%v reported=%v deferred=%v", swept, reported, deferred)
+		}
+		if hasPath(deferred, manifest) {
+			t.Errorf("manifest must never be deferred, deferred=%v", deferred)
 		}
 	})
 }
@@ -149,7 +216,7 @@ func TestParsePorcelainZ_RenameAlignment(t *testing.T) {
 		t.Errorf("delete entry mis-parsed: %#v", entries[2])
 	}
 
-	swept, reported := classifyDirty(entries)
+	swept, reported, _ := classifyDirty(t.TempDir(), entries)
 	if !hasPath(reported, "Projects/vibe-palace/notes/new.md") {
 		t.Errorf("rename should be reported, got reported=%v", reported)
 	}
@@ -333,6 +400,51 @@ func TestTidyScan_ClassifiesWithoutCommitting(t *testing.T) {
 	}
 	if status := gitRun(t, dir, "status", "--porcelain", "-uall"); !strings.Contains(status, "sessions/2026-06-17.md") {
 		t.Errorf("scanned artifact should remain dirty, status:\n%s", status)
+	}
+}
+
+// TestTidyVault_DefersInFlightTranscript verifies end-to-end that a lone
+// .jsonl.zst (manifest not yet written) lands in Deferred — never Swept, never
+// Reported — and remains DIRTY in the working tree (never staged/committed),
+// while a complete pair alongside it sweeps both halves out of the dirty tree.
+func TestTidyVault_DefersInFlightTranscript(t *testing.T) {
+	dir := initTestRepo(t)
+
+	// In-flight half: zst on disk, manifest not yet written.
+	const inflight = "Projects/vibe-palace/transcripts/inflight.jsonl.zst"
+	writeFile(t, dir, inflight, "zst\n")
+	// A complete pair so a commit is actually created.
+	const doneZst = "Projects/vibe-palace/transcripts/done.jsonl.zst"
+	const doneManifest = "Projects/vibe-palace/transcripts/done.manifest.json"
+	writeFile(t, dir, doneZst, "zst\n")
+	writeFile(t, dir, doneManifest, "{}\n")
+
+	res, err := TidyVault(dir, false)
+	if err != nil {
+		t.Fatalf("TidyVault: %v", err)
+	}
+	if !hasPath(res.Deferred, inflight) {
+		t.Errorf("in-flight zst must be deferred, got Deferred=%v", res.Deferred)
+	}
+	if hasPath(res.Swept, inflight) {
+		t.Errorf("deferred zst must never be swept, Swept=%v", res.Swept)
+	}
+	if hasPath(res.Reported, inflight) {
+		t.Errorf("deferred zst must not be reported, Reported=%v", res.Reported)
+	}
+	for _, want := range []string{doneZst, doneManifest} {
+		if !hasPath(res.Swept, want) {
+			t.Errorf("complete pair half %q must sweep, Swept=%v", want, res.Swept)
+		}
+	}
+
+	// The deferred half must remain dirty; the complete pair must be gone.
+	status := gitRun(t, dir, "status", "--porcelain", "-uall")
+	if !strings.Contains(status, "inflight.jsonl.zst") {
+		t.Errorf("deferred zst should remain dirty, status:\n%s", status)
+	}
+	if strings.Contains(status, "done.jsonl.zst") || strings.Contains(status, "done.manifest.json") {
+		t.Errorf("complete pair should be committed, status:\n%s", status)
 	}
 }
 

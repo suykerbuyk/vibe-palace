@@ -22,6 +22,13 @@ var vaultDryRunFlag = []cli.FlagDef{
 	{Name: "--dry-run", Help: "Print git commands without executing"},
 }
 
+// vaultSyncFlags is dedicated to `vault sync`: it carries --no-tidy in addition
+// to --dry-run, and must NOT be shared with pull/push (which never tidy).
+var vaultSyncFlags = []cli.FlagDef{
+	{Name: "--dry-run", Help: "Print git commands without executing"},
+	{Name: "--no-tidy", Help: "Skip the implicit capture-artifact tidy; raw pull+push (refuses on any dirt)"},
+}
+
 func cmdVault() *cli.Command {
 	return &cli.Command{
 		Name:        "vault",
@@ -99,16 +106,21 @@ func cmdVaultPush() *cli.Command {
 
 func cmdVaultSync() *cli.Command {
 	return &cli.Command{
-		Name:        "vault sync",
-		Synopsis:    "vp vault sync [--dry-run]",
-		Description: "Pull then push all configured vault remotes.",
-		Flags:       vaultDryRunFlag,
+		Name:     "vault sync",
+		Synopsis: "vp vault sync [--dry-run] [--no-tidy]",
+		Description: "Tidy capture artifacts, then pull and push all configured vault " +
+			"remotes. By default sync classifies the working tree, commits ONLY " +
+			"capture artifacts (never git add -A), then pulls and pushes — refusing " +
+			"up front on genuine non-artifact dirt. --no-tidy restores the raw " +
+			"behavior: a plain pull+push that refuses on any uncommitted changes.",
+		Flags: vaultSyncFlags,
 		Examples: []cli.Example{
-			{Cmd: "vp vault sync", Comment: "Pull then push all remotes"},
-			{Cmd: "vp vault sync --dry-run", Comment: "Preview sync commands without executing"},
+			{Cmd: "vp vault sync", Comment: "Tidy capture artifacts, then pull and push all remotes"},
+			{Cmd: "vp vault sync --dry-run", Comment: "Preview the sweep and sync without committing or executing"},
+			{Cmd: "vp vault sync --no-tidy", Comment: "Raw pull+push (refuses on any dirt)"},
 		},
 		Run: func(args []string) int {
-			fv, err := cli.ParseFlags(vaultDryRunFlag, args)
+			fv, err := cli.ParseFlags(vaultSyncFlags, args)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault sync: %v\n", err)
 				return cli.ExitUser
@@ -123,13 +135,72 @@ func cmdVaultSync() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault sync: %v\n", err)
 				return cli.ExitSystem
 			}
+
+			noTidy := fv.Bool("--no-tidy")
 			dryRun := fv.Bool("--dry-run")
-			if code := pullAll(root, remotes, dryRun); code != cli.ExitOK {
-				return code
+
+			// --no-tidy: the exact old behavior — raw pull then push, honoring
+			// dry-run. The push guard refuses on any uncommitted changes.
+			if noTidy {
+				if code := pullAll(root, remotes, dryRun); code != cli.ExitOK {
+					return code
+				}
+				return pushAll(root, remotes, dryRun)
 			}
-			return pushAll(root, remotes, dryRun)
+
+			// --dry-run (tidy path): commit NOTHING. Classify and print the
+			// sweep/report split, then preview the network with dry-run pull+push.
+			if dryRun {
+				scan, err := storage.TidyScan(root)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "vp vault sync: %v\n", err)
+					return cli.ExitSystem
+				}
+				printTidyList("Would sweep", scan.Swept)
+				printTidyReported(scan)
+				if code := pullAll(root, remotes, true); code != cli.ExitOK {
+					return code
+				}
+				return pushAll(root, remotes, true)
+			}
+
+			// Default: tidy-then-sync via the shared orchestration.
+			res, err := storage.SyncVault(root, remotes)
+			if res.Committed {
+				fmt.Fprintf(os.Stderr, "swept %d capture artifact%s before sync\n", len(res.Swept), plural(len(res.Swept)))
+			}
+			if n := len(res.Deferred); n > 0 {
+				pairs := "pairs"
+				if n == 1 {
+					pairs = "pair"
+				}
+				fmt.Printf("Deferred %d incomplete transcript %s (manifest pending) — left for the next sweep\n", n, pairs)
+			}
+			if res.Pull != nil {
+				printPullOutput(remotes, res.Pull)
+			}
+			if res.Push != nil {
+				printPushOutput(remotes, res.Push)
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp vault sync: %v\n", err)
+				if res.Refused {
+					return cli.ExitUser
+				}
+				return cli.ExitSystem
+			}
+			return cli.ExitOK
 		},
 	}
+}
+
+// plural returns "s" for any count other than 1, for terse pluralization in
+// human-readable output.
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 var vaultCommitFlags = []cli.FlagDef{
@@ -250,6 +321,15 @@ func printTidyReported(res *storage.TidyResult) {
 	printTidyList("Reported — needs your eyes", dirt)
 	if len(res.ReportedUserContent) > 0 {
 		printTidyList("User-memory pending commit (committed by wrap/SessionEnd)", res.ReportedUserContent)
+	}
+	// In-flight transcript halves are neither dirt nor swept: their manifest is
+	// still pending, so they are left for the next sweep. One-line notice only.
+	if n := len(res.Deferred); n > 0 {
+		pairs := "pairs"
+		if n == 1 {
+			pairs = "pair"
+		}
+		fmt.Printf("Deferred %d incomplete transcript %s (manifest pending) — left for the next sweep\n", n, pairs)
 	}
 }
 
@@ -547,21 +627,7 @@ func pullAll(root string, remotes []string, dryRun bool) int {
 		return cli.ExitSystem
 	}
 
-	for _, p := range res.HealedTemplates {
-		fmt.Fprintf(os.Stderr, "vp vault pull: healed phantom template %s (matched remote; discarded stale local copy)\n", p)
-	}
-
-	for _, remote := range remotes {
-		fmt.Fprintf(os.Stderr, "Pulling from %s...\n", remote)
-		if out := strings.TrimSpace(res.RemoteOutput[remote]); out != "" {
-			fmt.Fprintln(os.Stderr, out)
-		}
-		if rerr := res.RemoteResults[remote]; rerr != nil {
-			fmt.Fprintf(os.Stderr, "vp vault pull: %s: %v\n", remote, rerr)
-			// Best-effort on REPORTING — every remote is attempted and printed. The
-			// VERDICT below is not best-effort.
-		}
-	}
+	printPullOutput(remotes, res)
 
 	// ANY REMOTE FAILURE IS A FAILURE. This used to return ExitOK here — it printed
 	// each failing remote and then told its caller everything was fine, so a `vp
@@ -576,6 +642,19 @@ func pullAll(root string, remotes []string, dryRun bool) int {
 }
 
 func pushAll(root string, remotes []string, dryRun bool) int {
+	// Dry-run executes nothing, so it must preview unconditionally and never fail
+	// on tree state — the clean-state guard below is a precondition for an ACTUAL
+	// push, not for printing what one would run. (Gating the preview here made
+	// `vault sync --dry-run` on a vault dirty with capture artifacts print
+	// "Would sweep N" and then error "commit before pushing" — contradicting the
+	// tidy-then-sync the real run performs.)
+	if dryRun {
+		for _, remote := range remotes {
+			fmt.Fprintf(os.Stderr, "would run: git -C %s push %s main\n", root, remote)
+		}
+		return cli.ExitOK
+	}
+
 	// Check for clean state.
 	cmd := exec.Command("git", "-C", root, "status", "--porcelain")
 	out, err := cmd.Output()
@@ -588,30 +667,58 @@ func pushAll(root string, remotes []string, dryRun bool) int {
 		return cli.ExitUser
 	}
 
-	results := make(map[string]error, len(remotes))
-	for _, remote := range remotes {
-		if dryRun {
-			fmt.Fprintf(os.Stderr, "would run: git -C %s push %s main\n", root, remote)
-			continue
-		}
-		fmt.Fprintf(os.Stderr, "Pushing to %s...\n", remote)
-		cmd := exec.Command("git", "-C", root, "push", remote, "main")
-		cmd.Stderr = os.Stderr
-		err := cmd.Run()
-		results[remote] = err
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "vp vault push: %s: %v\n", remote, err)
-		}
+	// Delegate the plain push loop to storage.PushPlain, which attempts every
+	// remote and returns structured per-remote results. This trades live push
+	// streaming for shared structured results — the same tradeoff Pull/pullAll
+	// already made: the captured git output is re-printed to stderr below.
+	res, err := storage.PushPlain(root, remotes)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vp vault push: %v\n", err)
+		return cli.ExitSystem
 	}
+
+	printPushOutput(remotes, res)
 
 	// Same rule as pull and commit: any remote failure is a failure. This loop used
 	// to print the error and return ExitOK — a push that reached no remote at all
 	// still reported success.
-	if v := storage.RemoteVerdict(storage.OpPush, results, "HEAD"); v != "" {
+	if v := storage.RemoteVerdict(storage.OpPush, res.RemoteResults, "HEAD"); v != "" {
 		fmt.Fprintln(os.Stderr, v)
 		return cli.ExitSystem
 	}
 	return cli.ExitOK
+}
+
+// printPullOutput re-prints the captured per-remote pull output to stderr —
+// `Pulling from <remote>...` followed by git's combined output and any per-remote
+// failure. Shared by pullAll and the sync tidy path so both render identically.
+func printPullOutput(remotes []string, res *storage.PullResult) {
+	for _, remote := range remotes {
+		fmt.Fprintf(os.Stderr, "Pulling from %s...\n", remote)
+		if out := strings.TrimSpace(res.RemoteOutput[remote]); out != "" {
+			fmt.Fprintln(os.Stderr, out)
+		}
+		if rerr := res.RemoteResults[remote]; rerr != nil {
+			fmt.Fprintf(os.Stderr, "vp vault pull: %s: %v\n", remote, rerr)
+			// Best-effort on REPORTING — every remote is attempted and printed. The
+			// VERDICT (in the caller) is not best-effort.
+		}
+	}
+}
+
+// printPushOutput re-prints the captured per-remote push output to stderr —
+// `Pushing to <remote>...` followed by git's combined output and any per-remote
+// failure. Shared by pushAll and the sync tidy path so both render identically.
+func printPushOutput(remotes []string, res *storage.PlainPushResult) {
+	for _, remote := range remotes {
+		fmt.Fprintf(os.Stderr, "Pushing to %s...\n", remote)
+		if out := strings.TrimSpace(res.RemoteOutput[remote]); out != "" {
+			fmt.Fprintln(os.Stderr, out)
+		}
+		if rerr := res.RemoteResults[remote]; rerr != nil {
+			fmt.Fprintf(os.Stderr, "vp vault push: %s: %v\n", remote, rerr)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

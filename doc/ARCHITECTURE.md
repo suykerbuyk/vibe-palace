@@ -487,6 +487,38 @@ still produces a normal merge conflict, exactly as before.
 
 ---
 
+## Vault Sync
+
+`storage.SyncVault(vaultPath, remotes)` in `internal/storage/vaultsyncflow.go`
+orchestrates the default `vp vault sync` (and the `vp_vault_sync` `sync` action
+with no `paths`): it **tidies capture artifacts before pushing** so a bare sync
+no longer refuses on the machine-generated churn a manual `vp vault tidy` used to
+have to clear first. The order is correctness-critical:
+
+1. **Classify** the whole working tree via `TidyScan` (read-only; the same
+   `sweepRules` classifier tidy uses).
+2. **Refuse before any network I/O** if there is genuine dirt — `GenuineDirt` is
+   `Reported \ ReportedUserContent`, the reported paths that are *not*
+   deliberately-pending user memory. Pending memory (`Projects/<slug>/memory/…`)
+   is expected content committed later by wrap/SessionEnd and never blocks a sync.
+3. **Commit the swept artifacts locally** (`TidyVault(vaultPath, false)` —
+   `push=false`, no network), then **pull** each remote, then **push**.
+4. An **in-flight transcript** — a `.jsonl.zst` present on disk whose sibling
+   `.manifest.json` has not been written yet — is **deferred** by the classifier
+   (`TidyScan.Deferred`): left untracked for the next sweep, never committed
+   half-complete and never counted as blocking dirt.
+5. The pull and push gates read `RemoteVerdict` over `RemoteResults`, not the Go
+   error (`Pull`/`PushPlain` return `err == nil` and record outcomes per remote),
+   and a post-merge re-assert re-scans for genuine dirt plus unmerged index
+   entries before pushing over a conflicted tree.
+
+`--no-tidy` (CLI) / `no_tidy:true` (MCP) bypasses `SyncVault` entirely and
+restores the old raw pull+push, which refuses on **any** uncommitted change.
+`--dry-run` classifies and previews (via `TidyScan` + dry-run pull/push) without
+committing anything.
+
+---
+
 ## MCP Server (Phase 2)
 
 ### Protocol Layer
