@@ -1392,6 +1392,39 @@ is the noisy-gate failure arriving from the opposite direction, and it is why
 **Missing a real bug is bad; crying wolf is worse**, because a noisy gate gets switched
 off and then catches nothing at all.
 
+## Vault Audit — the instrument that asks the artifact so a human need not remember to
+
+`internal/vaultaudit` is the runtime sibling of the source audit: where `sourceaudit`
+checks the repo's own source, the vault audit checks the **live vault** against design
+intent (five dimensions; see ADR-007). Its tests carry the same doctrine — *an auditor
+validated only by its own logic is the thing this epic exists to prevent* — so the
+central test is a **mutation test**, exactly as in `sourceaudit`.
+
+| Test (file) | What it proves |
+|------|----------------|
+| `TestArchiveRoundTrip_FindsKnownDefects` (`archive_test.go`) | hand a vault three KNOWN defects (a stranded manifest, a dangling back-link, a readable-but-empty tree) and assert it finds exactly those — **an auditor that cannot fail issues a clean bill of health it never earned** |
+| `TestArchiveRoundTrip_CleanVaultIsClean` (`archive_test.go`) | a fully-linked vault produces no findings — trustworthy only *because* the mutation test above can fail |
+| `TestRun_FixingTheBugForcesTheBaselineToShrink` (`archive_test.go`) | linking a stranded-but-accepted manifest turns its baseline entry STALE — the ratchet, exercised end to end |
+| `TestRun_LiveVaultCanary` (`archive_test.go`) | the audit runs against the **real vault** in `make test` — the discipline the whole epic rests on |
+| `dimensions_test.go` | project-tree-coherence, KG-portability, resume-discipline, iteration-headings each find their planted defect and pass a clean fixture |
+| `baseline_test.go` | `(Dimension, Artifact)` identity; an accepted pair is `accepted` not `new`; a **fixed** accepted entry goes **STALE and FAILS** (the may-only-shrink ratchet); `Regenerate` preserves reasons |
+| `staleness_test.go` | the nag is **silent when fresh** and trips on churn/age — a missing anchor must read as *unknown*, never `0` (the 209 `ABSENCE IS NOT A VALUE` bug) |
+
+### Archive backfill — the remediation path, tested against the artifact
+
+`backfill.go` and `storage.BackfillArchiveLink` are covered in `backfill_test.go`
+(both packages) and asserted against the **written files**, not the tool's own return
+value — the bug that started the whole epic survived every test that trusted the result
+struct.
+
+| Test | What it proves |
+|------|----------------|
+| `TestBackfillArchiveLink_*` (`internal/storage`) | stamps a caller-keyed note (provenance `backfilled`); idempotent re-run writes nothing; skips a **minted**-key coincidence; **refuses an identity conflict** loudly; never re-points an already-linked note; canonical prefers the non-stub |
+| `TestBackfillCandidates_TargetIsNewestStranded` | the multi-manifest case (H1): a session with two stranded manifests targets the **newest**; the older stays stranded by design |
+| `TestBackfillCandidates_UnreadableTranscriptsDirIsError` | an unreadable dir is an **error, not "no candidates"** — `filepath.Glob` swallows permission errors, so the scan `os.ReadDir`-probes first |
+| `TestApplyBackfill_EndToEnd` | note→manifest→note round trip verified by **reading both files off disk** — frontmatter carries `archive_session_id`, `…_source: backfilled`, `archive:`; the manifest back-links the note |
+| `TestArchiveRoundTrip_AnnotatesRecoverable` | the audit annotation touches the finding **message only**; `Artifact` is byte-stable so the accepted baseline cannot churn |
+
 ### ⚠ Known gap: the `write-only-field` charter and its heuristic disagree
 
 The rule fired on `skills.SkillFrontmatter`, which **is** `Unmarshal`-populated and by

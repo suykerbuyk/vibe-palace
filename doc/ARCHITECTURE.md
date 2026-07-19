@@ -5,7 +5,7 @@
 Vibe-palace is a compiled Go binary that serves as an MCP (Model Context
 Protocol) server for AI-assisted development. It provides context injection,
 session capture, semantic search, and palace-based knowledge navigation through
-58 MCP tools over stdio JSON-RPC 2.0.
+64 MCP tools over stdio JSON-RPC 2.0.
 
 **Design principles:**
 - Single binary, zero-CGo, no external services
@@ -24,7 +24,7 @@ session capture, semantic search, and palace-based knowledge navigation through
 | `internal/storage` | Vault layout, CRUD, config | `Vault`, `Config`, `Drawer`, `SessionMeta` |
 | `internal/mcp` | JSON-RPC server, tool registry | `Server`, `Registry`, `Tool` |
 | `internal/context` | Precedence-aware template resolution | `Resolver`, `ResourceInfo` |
-| `internal/tools` | 58 MCP tool implementations | (see tool table below) |
+| `internal/tools` | 64 MCP tool implementations | (see tool table below) |
 | `internal/embedder` | ONNX text embedding | `Embedder` interface, `ONNXEmbedder` |
 | `internal/search` | Hybrid semantic + structural search | `Engine`, `VectorIndex`, `SearchResult` |
 | `internal/capture` | Session ingest, chunking, friction, shared capture pipeline | `Indexer`, `ChunkConfig`, `WriteSession` |
@@ -36,8 +36,9 @@ session capture, semantic search, and palace-based knowledge navigation through
 | `internal/project` | Project detection from working dir | `ProjectConfig` |
 | `internal/kg` | Entity detection + triple extraction | `DetectedEntity`, `ExtractedTriple` |
 | `internal/vplog` | Structured logging (slog to file) | `Init()`, `Close()` |
-| `internal/archive` | Transcript archive / copyright-provenance ledger (per-IDE adapters, manifests, signing) | `Manifest`, `Entry`, `CreateOptions` |
+| `internal/archive` | Transcript archive / copyright-provenance ledger (per-IDE adapters, manifests, signing) + the note↔manifest link (`LinkSessionNote`, `ResolveEntry`) | `Manifest`, `Entry`, `CreateOptions`, `LinkSessionNote` |
 | `internal/archive/zed` | Read-only Zed agent-panel thread DB parser → Claude-shape JSONL | `parser`, `messages`, `types` |
+| `internal/vaultaudit` | Vault audit (5 dimensions), accepted-debt baseline, staleness nag, and the archive-backfill remediation predicate (ADR-007) | `Run`, `Baseline`, `BackfillCandidates`, `ApplyBackfill` |
 | `internal/migrate` | Import VibeVault sessions + agentctx (resume/iterations/workflow/knowledge/tasks/memory + verbatim `migrated/` archive) and MemPalace data into the vault | `ImportVibeVault`, `ImportMemPalace`, `copyAgentctx` |
 | `internal/absorb` | Migrate legacy agent-context files (CLAUDE.md, AGENTS.md, .cursorrules) into the vault | `Planner`, `Classifier`, `Writer` |
 | `internal/agentfile` | Detect well-known agent instruction files and wire in a managed bootstrap block | `Detect`, `Wire`, `WireAll` |
@@ -501,7 +502,7 @@ cmd/vp/main.go
 ├── search.NewEngine(emb, v, cfg) # create search engine (no indexes built yet)
 ├── context.NewResolver(v.Root)   # template resolver
 ├── mcp.NewServer(v)              # create MCP server
-├── tools.RegisterAll(...)        # register all 62 tools
+├── tools.RegisterAll(...)        # register all 64 tools
 └── srv.Serve(ctx)                # start stdio transport
 ```
 
@@ -551,7 +552,7 @@ On dispatch, the registry validates incoming params against the compiled
 schema before calling the handler. Handlers extract the vault from context
 and operate on storage directly.
 
-### 62 MCP Tools
+### 64 MCP Tools
 
 | Tool | Source File | Category |
 |------|-----------|----------|
@@ -611,6 +612,8 @@ and operate on storage directly.
 | `vp_stamp_iter` | wrapstate_tools.go | Wrap state |
 | `vp_preflight_wrap` | wrapstate_tools.go | Wrap state |
 | `vp_surface_check` | surface_tools.go | Surface |
+| `vp_audit_vault` | audit_tools.go | Integrity |
+| `vp_archive_link` | archive_tools.go | Integrity |
 
 All tools except the search-dependent ones are always registered. The nine
 search-gated tools — `vp_search`, `vp_search_cross_project`,
@@ -630,8 +633,9 @@ surface preflight without shelling out to `vp check`.
 The table above enumerates the primary tool surface; for brevity it omits the
 five `vp_memory_*` tools (`memory_tools.go`) and `vp_read_resource`
 (`resource_read_tool.go`), which are also always registered. Counting those,
-the registry (`internal/tools/register.go`) exposes **62 tools with a search
-engine and 53 without it** — the numbers pinned by `internal/tools/register_test.go`.
+the registry (`internal/tools/register.go`) exposes **64 tools with a search
+engine and 55 without it** — the numbers pinned by `internal/tools/register_test.go`
+(the authoritative surface is `internal/mcp/tool_surface.golden.json`).
 
 ### Remote Transport: Streamable HTTP (`vp mcp serve`)
 
@@ -1224,7 +1228,12 @@ in un-init'd directories are intentionally skipped.
    g. Extract entities (file paths, URLs) → knowledge graph
 3. Compute friction score (0–100) from transcript
 4. Archive transcript to {vault}/Projects/{project}/transcripts/ (hook path)
-5. Cross-link archive manifest ↔ session note (bidirectional)
+5. Cross-link archive manifest ↔ session note (bidirectional): the note is
+   stamped with `archive_session_id` and linked to the manifest at SessionEnd,
+   after `archive.Create`; the manifest back-links the canonical note. A link
+   that never closes leaves a *stranded* transcript — detected by the vault
+   audit's `archive-roundtrip` dimension and recovered by `vp archive backfill`
+   / `vp archive link` (see ADR-007).
 6. Write claim sentinel to {cwd}/.vibe-palace/ (idempotency)
 ```
 
@@ -1608,12 +1617,62 @@ Binary: `vp` installed to `${PREFIX}/bin/vp` (default `~/.local/bin/vp`).
 Phase 12 adds a self-improving classification system built on the
 `RoomClassifier` and a thin OpenAI-compatible LLM client.
 
-### Audit (`internal/palace/audit.go`)
+### Room Audit (`internal/palace/audit.go`)
 
 `vp audit rooms` re-scores every drawer against the current weight table,
 flags mismatches and borderline classifications, and reports keyword coverage.
 `--apply` uses `MoveDrawer` (atomic temp-file + rename) to reclassify and
-rebuild the search index.
+rebuild the search index. This audits a *project's drawer classification* and
+takes `--project`; it is a different thing from the vault audit below.
+
+### Vault Audit (`internal/vaultaudit`)
+
+`vp audit vault` (and the MCP `vp_audit_vault`) scans the WHOLE VAULT against
+design intent and reports **pass / fail / unknown per dimension**. Full rationale
+in ADR-007; the mechanics:
+
+- **Five dimensions:** `archive-roundtrip` (every transcript manifest back-links
+  to a session note that exists), `project-tree-coherence` (every project appears
+  in both `palace/` and `Projects/`), `kg-portability` (KG triple filenames are
+  NTFS/exFAT-safe), `resume-discipline` (no `resume.md` over the size cap),
+  `iteration-headings` (canonical H2 so the iteration counter derives correctly).
+- **Advisory — a FAIL exits 0.** It reports; it never blocks. An audit that
+  failed the build is an audit people learn to disable.
+- **Vault-global — no `project` parameter.** Scoping it per-project is how a
+  project nobody has opened escapes scrutiny forever. (Contrast `vp audit rooms`,
+  which *is* per-project — the asymmetry is deliberate.)
+- **`unknown` ≠ `pass`.** A transcripts dir the auditor could not read is
+  `unknown`; `auditArchiveRoundTrip` probes `os.ReadDir` before
+  `archive.ListEntries`, whose `filepath.Glob` swallows permission errors.
+- **Accepted-debt baseline** (`Audits/baseline.json`): a finding whose
+  `(Dimension, Artifact)` pair is accepted is reported as `accepted`, not `new`,
+  and does not fail the dimension. It is a DECLARE channel (every entry carries a
+  `reason` and an owning task), **may only shrink**, and a fixed-but-still-accepted
+  entry goes STALE and fails as loudly as a new finding. Finding identity is
+  `(Dimension, Artifact)` only — the message text is never part of the key.
+- **Staleness nag** (`staleness.go`): rides in `vp_bootstrap_context`, **silent
+  when fresh**, tripping on churn (~50 notes) or age (7 days).
+
+### Archive Backfill (`internal/vaultaudit/backfill.go`, `storage.BackfillArchiveLink`)
+
+The `archive-roundtrip` dimension not only detects a stranded transcript but
+distinguishes the **recoverable** ones. A note whose capture key was PUSHED by the
+hook (`session_key_source: caller`) carries the harness session id as its
+`session_key`, so pairing it with a stranded manifest of the same `session_id` is
+an exact **derivation**, not a guess. The candidate predicate lives once in
+`backfill.go` and drives three surfaces:
+
+- `vp archive backfill` — read-only; lists each recoverable pair and prints the
+  exact `vp archive link <id> -p <project>` that repairs it.
+- `vp audit vault` — annotates a recoverable finding's *message* (never its
+  identity) with the same command.
+- `vp archive link` / `vp_archive_link` — the applier. **Running it IS the human
+  approval for that one pair; there is deliberately no bulk mode.** It links the
+  newest *stranded* manifest of the session (older siblings stay stranded by
+  design), refuses an identity conflict, and stamps provenance
+  `archive_session_id_source: backfilled` (distinct from the live path's
+  `derived`). Notes predating `SessionKey` (199) never recorded their session and
+  are permanently lost, not backfillable. See ADR-007.
 
 ### LLM-Assisted Tuning (`internal/palace/tune.go`)
 

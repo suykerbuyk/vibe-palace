@@ -76,9 +76,15 @@ func TestGenerateManPages(t *testing.T) {
 	}
 }
 
-// knownCommands returns the full list of registered command names.
+// knownCommands returns the command names that get man pages. Two-word entries
+// (e.g. "archive backfill") must be listed explicitly: TestGenerateManPages
+// resolves a parent's children by looking each subcommand up in THIS list, so a
+// parent whose subcommands are absent here emits a page with no child sections.
 func knownCommands() []string {
 	return []string{
+		"archive", "archive create", "archive list", "archive verify",
+		"archive extract", "archive backfill", "archive link",
+		"audit", "audit rooms", "audit vault",
 		"check", "commands", "commands list", "commands upgrade",
 		"init", "inject", "mcp", "mcp serve",
 		"memory", "memory harvest",

@@ -79,6 +79,16 @@ Field notes:
 - **`vault_rel_session_note`** closes the loop with the session
   markdown, which in turn carries an `archive:` frontmatter key
   pointing back to the manifest. Bidirectional traversal.
+
+  > **Superseded/extended by ADR-007.** This ADR describes the *intended*
+  > bidirectional link. In practice that loop **regressed at the 2026-06-06
+  > capture cutover and stayed broken for six weeks** — 105 of 417 manifests
+  > vault-wide carried no `vault_rel_session_note`, and the agent's own wrap
+  > note was linked 0/61 times. The link is now closed at SessionEnd (the note
+  > carries an `archive_session_id`, derived server-side), the failure class is
+  > detected by the vault audit's `archive-roundtrip` dimension, and stranded
+  > transcripts are recovered by `vp archive backfill` / `vp archive link`. See
+  > **ADR-007: The Vault Audit and the Archive Backfill.**
 - **`vp_version`** lets us evolve the manifest schema without breaking
   older archives.
 

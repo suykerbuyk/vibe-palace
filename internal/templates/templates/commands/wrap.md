@@ -41,6 +41,17 @@ even on a cold cache.
   than paraphrasing.
 - If `status` is `"pass"` or `"info"`, proceed to Step 2.
 
+### Vault integrity (advisory — NOT a gate)
+
+Optionally run `vp audit vault` (or `vp_audit_vault`). It is **advisory and
+never blocks** — a FAIL exits 0, so it is *not* a quality gate and must not stop
+the wrap. It catches vault-integrity drift the compile/test gates cannot see
+(stranded transcripts, project-tree incoherence, resume over cap). Report any
+new/stale/unknown findings to the human. **Do NOT apply archive backfills as
+part of the wrap** — running `vp archive link` is the human's per-pair approval
+(ADR-007). The staleness nag surfaces at the next bootstrap regardless, so this
+is a convenience, not a requirement.
+
 ## Step 2: Capture the Session
 
 Call `vp_capture_session` with:

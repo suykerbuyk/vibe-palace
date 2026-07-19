@@ -35,6 +35,7 @@ updates, architecture reviews, dependency audits, release checklists.
 | `execute-plan` | Dispatch subagents per phase to execute a task plan |
 | `license` | Add or update dual MIT/Apache-2.0 licensing |
 | `makefile` | Audit or create a Makefile facade for the build system |
+| `vault-audit` | Adversarial whole-vault audit: runs `vp audit vault` and adds the Layer-2 human-judgment pass |
 
 ### Skills — Behavioral Guidelines
 

@@ -86,6 +86,12 @@ turn one.
   data into the palace.
 - **Room classification tuning** — configurable keyword weights,
   algorithmic audit, offline LLM-assisted weight discovery.
+- **Vault integrity audit** — `vp audit vault` checks the whole vault
+  against design intent (transcript round-trips, project-tree coherence,
+  KG portability, resume discipline, iteration headings) against an
+  accepted-debt baseline that may only shrink, and recovers stranded
+  transcript↔note links via `vp archive backfill` / `vp archive link`
+  (see ADR-007).
 - **`vp` CLI** — 22 commands, man pages, shell completions.
 - **Cross-IDE shims** — `vp init` writes slash-command shims
   (`.claude/commands/vpc-*.md` and `.grok/plugins/vibe-palace/commands/vpc-*.md`)
@@ -107,6 +113,7 @@ turn one.
 | `/vpc-execute-plan` | Orchestrated execution of a multi-phase plan via subagents. |
 | `/vpc-license`   | Apply or refresh dual MIT/Apache-2.0 licensing and SPDX banners. |
 | `/vpc-makefile`  | Audit or create a self-documenting Makefile facade for the native build system. |
+| `/vpc-vault-audit` | Adversarial vault audit: runs `vp audit vault` and adds the human-judgment layer code cannot (Layer 2). |
 
 ### Embedded skills
 
@@ -249,6 +256,8 @@ session.
 - [Migration](doc/MIGRATION.md) — migrating from VibeVault and MemPalace
 - [PRD](doc/PRD-vibe-palace.md) — full product requirements (Phases 1–10, 12–18 implemented; Phase 11 planned)
 - [ADR 001: Transcript Archive](doc/adr/001-transcript-archive.md) — copyright-provenance ledger format and reasoning
+- [ADR 006: Derive, Don't Ask](doc/adr/006-derive-dont-ask.md) — where business logic lives: DERIVE / DECLARE / DEFER
+- [ADR 007: Vault Audit & Archive Backfill](doc/adr/007-vault-audit-and-archive-backfill.md) — the five-dimension vault audit, the accepted-debt baseline, and the transcript-link backfill
 
 ## License
 

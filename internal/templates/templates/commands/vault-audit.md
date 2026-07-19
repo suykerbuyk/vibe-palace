@@ -25,6 +25,22 @@ Read the result. For each dimension:
 - **`unknown`** — **the auditor could not read something.** This is NOT a pass. Chase it
   down or say plainly that you could not.
 
+### Remediate what is RECOVERABLE — but only on human approval
+
+The `archive-roundtrip` dimension does more than flag stranded transcripts: it marks the
+ones that are **mechanically recoverable** (a note carries the session id as a
+caller-pushed `session_key`) and annotates the finding with the exact repair command.
+List them read-only with `vp archive backfill`; each recoverable pair prints its own
+`vp archive link <session-id> -p <project>`.
+
+**Do NOT apply them yourself as part of the audit.** Running `vp archive link` (or
+`vp_archive_link`) is a WRITE, and per ADR-007 running it *is* the human's approval for
+that one pair — there is deliberately no bulk mode. Report the recoverable pairs to the
+human and hand them the commands. A stranding that is *not* recoverable (the note
+predates `session_key`, 199) is permanently lost; say so, and let the human decide
+whether to `--accept` it as debt (Step 5). **The audit REPORTS and DEFERS; it does not
+repair.**
+
 ---
 
 ## Step 2: The three method invariants — they govern everything below

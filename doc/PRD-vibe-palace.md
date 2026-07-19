@@ -2824,6 +2824,14 @@ transcript.
     when configured, verify the manifest signature.
   - `vp archive extract <path-or-session-id> [--to PATH] [--project P]`
     — decompress to stdout or a file.
+  - `vp archive backfill [--project P] [--json]` — read-only: list
+    stranded transcript manifests whose session note is mechanically
+    recoverable (the note carries the session id as a caller-pushed
+    `session_key`), and print the exact `vp archive link` per pair.
+  - `vp archive link SESSION_ID [--project P]` — backfill one recoverable
+    note↔transcript link (provenance `backfilled`); running it is the
+    human approval for that pair. See the vault audit (`vp audit vault`)
+    and ADR-007.
 - **Configuration.** The `[archive]` block in `config.toml` controls
   `compress`, `dormant_days`, and the signing options (`sign_mode`,
   `sign_key`, `sign_namespace`, `allowed_signers`, `signer_identity`).

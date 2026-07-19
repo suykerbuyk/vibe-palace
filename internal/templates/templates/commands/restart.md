@@ -188,6 +188,12 @@ So this step **reports**, it does not act:
 - Read `iterations.md` on demand only — not required for routine work.
 - `doc/*.md` — stable reference (architecture, design, testing) —
   read on demand when needed.
+- **Vault-audit staleness rides in the `vp_bootstrap_context` payload and is
+  silent when fresh.** If it fired, that is your cue to run `vp audit vault`
+  (or the `/vpc-vault-audit` command for the full adversarial pass). The audit
+  is advisory — a FAIL exits 0 — so it never blocks the restart; surface any
+  new/stale/unknown findings to the human. Do NOT run it unprompted when the
+  payload is quiet.
 
 ## Step 6: Confirm and Recommend
 

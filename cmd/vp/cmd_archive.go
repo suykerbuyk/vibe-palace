@@ -351,8 +351,11 @@ func cmdArchiveBackfill() *cli.Command {
 		Name:     "archive backfill",
 		Synopsis: "vp archive backfill [--project P] [--json]",
 		Description: "List stranded transcript manifests whose session note is mechanically recoverable: " +
-			"the note carries the session id as a caller-pushed session_key. Read-only — apply a pair with " +
-			"`vp archive link`. Vault-global unless --project is given.",
+			"the note carries the session id as a caller-pushed session_key. For each recoverable session it " +
+			"prints the note, every stranded manifest (marking the NEWEST as the link target), and the exact " +
+			"`vp archive link <id> -p <project>` command that repairs it. Read-only: it plans, it never writes " +
+			"— running the printed `vp archive link` is the human approval for that pair. Vault-global unless " +
+			"--project is given.",
 		Flags: archiveBackfillFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp archive backfill", Comment: "List every recoverable pair in the vault"},
