@@ -4,8 +4,11 @@
 package storage
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -77,42 +80,51 @@ func TestKGEntitiesFile(t *testing.T) {
 
 func TestKGTriplePath(t *testing.T) {
 	v := NewVault("/vault")
+	triplesDir := filepath.Join("/vault", "palace", "recmeet", "kg", "triples")
 	tests := []struct {
 		name                     string
 		project, subj, pred, obj string
-		want                     string
 		wantErr                  bool
 	}{
-		{
-			"basic encoding", "recmeet", "Kai", "works on", "Orion",
-			filepath.Join("/vault", "palace", "recmeet", "kg", "triples", "kai--works_on--orion.json"),
-			false,
-		},
-		{
-			"already lowercase", "recmeet", "kai", "knows", "orion",
-			filepath.Join("/vault", "palace", "recmeet", "kg", "triples", "kai--knows--orion.json"),
-			false,
-		},
-		{
-			"multiple spaces", "recmeet", "kai", "is friend of", "orion",
-			filepath.Join("/vault", "palace", "recmeet", "kg", "triples", "kai--is_friend_of--orion.json"),
-			false,
-		},
-		{"invalid project", "BAD", "kai", "knows", "orion", "", true},
-		{"empty subject", "recmeet", "", "knows", "orion", "", true},
-		{"empty predicate", "recmeet", "kai", "", "orion", "", true},
-		{"empty object", "recmeet", "kai", "knows", "", "", true},
-		{"subject contains delimiter", "recmeet", "kai--evil", "knows", "orion", "", true},
+		{"basic encoding", "recmeet", "Kai", "works on", "Orion", false},
+		{"already lowercase", "recmeet", "kai", "knows", "orion", false},
+		{"multiple spaces", "recmeet", "kai", "is friend of", "orion", false},
+		// The new encoder SANITIZES a "--"-bearing raw component (collapses the
+		// hyphen run) rather than rejecting it — no error, still delimiter-safe.
+		{"subject contains delimiter is sanitized", "recmeet", "kai--evil", "knows", "orion", false},
+		// Portability-hostile raw values that used to escape or break storage all
+		// encode to a flat, contained name.
+		{"url subject", "recmeet", "https://api.github.com/x", "mentioned_in", "s1", false},
+		{"path subject", "recmeet", "src/main.rs", "mentioned_in", "s1", false},
+		{"traversal subject", "recmeet", "../../../../etc/passwd", "p", "o", false},
+		{"invalid project", "BAD", "kai", "knows", "orion", true},
+		{"empty subject", "recmeet", "", "knows", "orion", true},
+		{"empty predicate", "recmeet", "kai", "", "orion", true},
+		{"empty object", "recmeet", "kai", "knows", "", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := v.KGTriplePath(tt.project, tt.subj, tt.pred, tt.obj)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("KGTriplePath error = %v, wantErr %v", err, tt.wantErr)
+				t.Fatalf("KGTriplePath error = %v, wantErr %v", err, tt.wantErr)
 			}
-			if got != tt.want {
-				t.Errorf("KGTriplePath = %q, want %q", got, tt.want)
+			if tt.wantErr {
+				return
+			}
+			// Flat and contained: directly under triplesDir, with exactly two
+			// "--" delimiters (no encoded component carries "--").
+			if filepath.Dir(got) != triplesDir {
+				t.Errorf("KGTriplePath = %q, not directly under %q", got, triplesDir)
+			}
+			base := filepath.Base(got)
+			if strings.Count(base, "--") != 2 {
+				t.Errorf("filename %q does not have exactly two \"--\" delimiters", base)
+			}
+			for _, bad := range []string{"/", "\\", ":", ".."} {
+				if strings.Contains(base, bad) {
+					t.Errorf("filename %q contains forbidden %q", base, bad)
+				}
 			}
 		})
 	}
@@ -320,21 +332,31 @@ func TestProjectConfigFile(t *testing.T) {
 }
 
 func TestEncodeTripleComponent(t *testing.T) {
+	hash8 := func(s string) string {
+		sum := sha256.Sum256([]byte(s))
+		return hex.EncodeToString(sum[:])[:8]
+	}
+	// Each output is <slug>_<8 hex of sha256(raw)>. The slug lowercases, maps
+	// disallowed runes to "_", and collapses runs of "_" and "-".
 	tests := []struct {
-		input, want string
+		input, wantSlug string
 	}{
 		{"Kai", "kai"},
 		{"works on", "works_on"},
 		{"Already Lower", "already_lower"},
 		{"ALLCAPS", "allcaps"},
 		{"no-change", "no-change"},
-		{"multi  space", "multi__space"},
+		{"multi  space", "multi_space"}, // "__" collapses to "_"
+		{"a--b", "a-b"},                 // "--" collapses to "-" (no delimiter survives)
+		{"https://x/y", "https_x_y"},
+		{"a/b\\c:d", "a_b_c_d"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
+			want := tt.wantSlug + "_" + hash8(tt.input)
 			got := encodeTripleComponent(tt.input)
-			if got != tt.want {
-				t.Errorf("encodeTripleComponent(%q) = %q, want %q", tt.input, got, tt.want)
+			if got != want {
+				t.Errorf("encodeTripleComponent(%q) = %q, want %q", tt.input, got, want)
 			}
 		})
 	}

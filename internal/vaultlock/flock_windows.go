@@ -6,6 +6,7 @@
 package vaultlock
 
 import (
+	"errors"
 	"os"
 
 	"golang.org/x/sys/windows"
@@ -42,6 +43,29 @@ func flockExclusive(f *os.File) error {
 		lockRangeHigh,
 		&overlapped,
 	)
+}
+
+// flockTryExclusive is the non-blocking companion to flockExclusive. Adding
+// LOCKFILE_FAIL_IMMEDIATELY makes LockFileEx return at once instead of blocking:
+// on contention it fails with ERROR_LOCK_VIOLATION, which maps to ok=false; any
+// other failure is a real error.
+func flockTryExclusive(f *os.File) (ok bool, err error) {
+	var overlapped windows.Overlapped
+	err = windows.LockFileEx(
+		windows.Handle(f.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
+		0,
+		lockRangeLow,
+		lockRangeHigh,
+		&overlapped,
+	)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+		return false, nil
+	}
+	return false, err
 }
 
 // funlock releases the exclusive lock on f over the same offset 0 / length 1

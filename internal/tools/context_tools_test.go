@@ -25,7 +25,7 @@ import (
 func testSetup(t *testing.T) (*storage.Vault, *vpctx.Resolver) {
 	t.Helper()
 	root := t.TempDir()
-	vault := storage.NewVault(root)
+	vault := bornCurrentTestVault(t, root)
 	resolver := vpctx.NewResolver(root)
 	return vault, resolver
 }

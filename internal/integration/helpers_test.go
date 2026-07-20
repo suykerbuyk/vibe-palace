@@ -17,6 +17,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/tools"
 )
@@ -88,6 +89,12 @@ func newHarnessWithEmbedder(t *testing.T, emb embedder.Embedder, cfgOverrides ..
 	t.Helper()
 
 	root := t.TempDir()
+	// Stamp the fresh harness vault born-current (same stamp-on-creation
+	// semantics a real fresh vault gets) so its KG object-side reads pass the
+	// armed data-format gate.
+	if err := surface.WriteFormat(root, surface.RequiredDataFormat); err != nil {
+		t.Fatalf("stamp born-current vault: %v", err)
+	}
 	vault := storage.NewVault(root)
 
 	cfg := storage.Config{

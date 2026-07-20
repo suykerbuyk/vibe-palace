@@ -13,6 +13,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
 // VaultSeed carries what Vault.Apply needs when the vault directory has to
@@ -173,6 +174,14 @@ func (r *VaultReconciler) Apply(_ context.Context, p Plan) (Report, error) {
 				if err := os.MkdirAll(a.Target, 0o755); err != nil {
 					rep.Errors = append(rep.Errors, fmt.Errorf("mkdir vault: %w", err))
 					continue
+				}
+				// Born-current: a freshly CREATED vault is already in the current
+				// on-disk data format, so stamp it at creation. This is the ONLY
+				// place the format is stamped on scaffold — never on opening an
+				// existing vault, which could falsely mark unmigrated data as
+				// migrated. Non-fatal: a stamp hiccup must not abort vault init.
+				if err := surface.WriteFormat(a.Target, surface.RequiredDataFormat); err != nil {
+					rep.Errors = append(rep.Errors, fmt.Errorf("stamp vault data format: %w", err))
 				}
 			}
 			rep.Created++

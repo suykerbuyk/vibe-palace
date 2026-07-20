@@ -12,7 +12,7 @@ import (
 
 func testVault(t *testing.T) *Vault {
 	t.Helper()
-	return NewVault(t.TempDir())
+	return bornCurrentVault(t, t.TempDir())
 }
 
 func TestDrawerID(t *testing.T) {

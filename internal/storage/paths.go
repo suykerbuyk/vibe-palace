@@ -4,6 +4,8 @@
 package storage
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -52,29 +54,53 @@ func (v *Vault) KGEntitiesFile(project string) (string, error) {
 }
 
 // KGTriplePath returns the path to a knowledge graph triple file:
-// {vault}/palace/{project}/kg/triples/{subj}--{pred}--{obj}.json
+// {vault}/palace/{project}/kg/triples/{enc_subj}--{enc_pred}--{enc_obj}.json
 //
-// Subject, predicate, and object are lowercased with spaces replaced by
-// underscores. They must not contain the "--" delimiter sequence.
+// Each component is encoded by encodeTripleComponent into a FLAT, portable,
+// injective on-disk name (slug + content hash). The encoded parts contain no
+// "/", "\\", ":", control chars, ".." or "--", so the filename is single-level
+// and the "--" delimiter is unambiguous. The RAW subject/predicate/object are
+// retained in the JSON body (see Triple), so nothing is lost.
 func (v *Vault) KGTriplePath(project, subject, predicate, object string) (string, error) {
 	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
+	// Reject empty RAW components: every encoded component carries a "_<hash>"
+	// suffix so it is never itself empty, so emptiness must be checked on the
+	// raw input (a blank subject/predicate/object is a meaningless triple).
+	for _, c := range []struct{ name, val string }{
+		{"subject", subject}, {"predicate", predicate}, {"object", object},
+	} {
+		if strings.TrimSpace(c.val) == "" {
+			return "", fmt.Errorf("%s must not be empty", c.name)
+		}
+	}
 	subj := encodeTripleComponent(subject)
 	pred := encodeTripleComponent(predicate)
 	obj := encodeTripleComponent(object)
+	// Defense-in-depth: the encoder collapses "-" runs so no component can carry
+	// the "--" delimiter, but assert it so the filename split stays unambiguous.
 	for _, c := range []struct{ name, val string }{
 		{"subject", subj}, {"predicate", pred}, {"object", obj},
 	} {
-		if c.val == "" {
-			return "", fmt.Errorf("%s must not be empty", c.name)
-		}
 		if strings.Contains(c.val, "--") {
 			return "", fmt.Errorf("%s %q must not contain \"--\" delimiter", c.name, c.val)
 		}
 	}
 	filename := subj + "--" + pred + "--" + obj + ".json"
-	return filepath.Join(v.Root, "palace", project, "kg", "triples", filename), nil
+
+	// Containment assertion (defense-in-depth): the flat encoder already strips
+	// "/", "\\", ":", control chars and "..", but assert it anyway — this is the
+	// traversal fix and mirrors the Contains("..")+Clean+prefix idiom used by
+	// DocFile/MemoryFile/AbsorbedFile above. The joined path must be
+	// Clean-stable and stay directly under triplesDir (no interior separator,
+	// no "..").
+	triplesDir := filepath.Join(v.Root, "palace", project, "kg", "triples")
+	full := filepath.Join(triplesDir, filename)
+	if strings.Contains(filename, "..") || full != filepath.Clean(full) || filepath.Dir(full) != triplesDir {
+		return "", fmt.Errorf("triple filename %q escapes triples dir", filename)
+	}
+	return full, nil
 }
 
 // LocalDir returns the path to a project's machine-local directory:
@@ -381,7 +407,53 @@ func (v *Vault) AbsorbedFile(project, rel string) (string, error) {
 	return filepath.Join(v.Root, "Projects", project, "absorbed", cleaned), nil
 }
 
-// encodeTripleComponent lowercases the input and replaces spaces with underscores.
+// encodeTripleComponent produces a FLAT, portable, injective on-disk name for a
+// single triple component (subject, predicate, or object). It is the sole
+// encoder behind KGTriplePath and the glob patterns used by
+// QueryEntity/KGStats/ListTriples.
+//
+// Shape: slug(raw) + "_" + hex(sha256(raw))[:8].
+//   - slug lowercases raw and maps every rune outside [a-z0-9._-] to "_",
+//     collapsing runs of "_" and "-" and trimming them. This guarantees the
+//     result carries no "/", "\\", ":", control character or path separator,
+//     and — because "-" runs collapse — no "--" triple delimiter.
+//   - the 8-char content hash makes the whole name INJECTIVE despite slug
+//     collisions: two distinct raw strings that slug identically still differ in
+//     the hash suffix, so distinct triples never share a filename.
+//
+// Because every component ends in "_<hash>", it can never be a bare ".." or an
+// NTFS-reserved bareword (CON/PRN/AUX/NUL/COM1-9/LPT1-9), and the name is FLAT
+// (no interior "/"), which keeps the single-level triple globs correct. The RAW
+// subject/predicate/object stay in the JSON body (Triple), so reversibility by
+// filename is deliberately traded away — the raw is always recoverable in-file.
 func encodeTripleComponent(s string) string {
-	return strings.ReplaceAll(strings.ToLower(s), " ", "_")
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	slug := b.String()
+	// Collapse runs of "_", "-" and "." to a single char, then trim those from
+	// the ends. Collapsing "-" kills any "--" (the triple delimiter); collapsing
+	// "." kills any ".." (the traversal token) while still allowing a single "."
+	// (e.g. "main.rs"). This lossiness is safe: the content hash below preserves
+	// injectivity regardless.
+	for strings.Contains(slug, "__") {
+		slug = strings.ReplaceAll(slug, "__", "_")
+	}
+	for strings.Contains(slug, "--") {
+		slug = strings.ReplaceAll(slug, "--", "-")
+	}
+	for strings.Contains(slug, "..") {
+		slug = strings.ReplaceAll(slug, "..", ".")
+	}
+	slug = strings.Trim(slug, "._-")
+
+	sum := sha256.Sum256([]byte(s))
+	return slug + "_" + hex.EncodeToString(sum[:])[:8]
 }

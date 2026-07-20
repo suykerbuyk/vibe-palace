@@ -150,14 +150,15 @@ func TestWriteFormat_EmptyRootErrors(t *testing.T) {
 
 func TestEnforceFormatFailStop_PassesWhenAtOrAbove(t *testing.T) {
 	root := t.TempDir()
-	// Production posture: RequiredDataFormat == 0, absent manifest == 0, passes.
-	if err := EnforceFormatFailStop(root, false); err != nil {
-		t.Fatalf("EnforceFormatFailStop at required=0 should pass, got %v", err)
-	}
-	// And a vault at/above the required floor passes (test seam, required > 0).
-	if err := WriteFormat(root, 1); err != nil {
+	// Armed posture: RequiredDataFormat == 1. A born-current vault (stamped at
+	// creation) passes the production gate.
+	if err := WriteFormat(root, RequiredDataFormat); err != nil {
 		t.Fatal(err)
 	}
+	if err := EnforceFormatFailStop(root, false); err != nil {
+		t.Fatalf("EnforceFormatFailStop against a born-current vault should pass, got %v", err)
+	}
+	// And, via the test seam, a vault at/above the required floor passes.
 	if err := enforceFormatFailStop(root, 1, false); err != nil {
 		t.Fatalf("format 1 >= required 1 should pass, got %v", err)
 	}

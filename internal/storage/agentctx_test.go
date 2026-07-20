@@ -10,7 +10,7 @@ import (
 )
 
 func TestWriteResume(t *testing.T) {
-	vault := NewVault(t.TempDir())
+	vault := bornCurrentVault(t, t.TempDir())
 
 	// No resume.md yet: the empty guard is the assert-absent (first-write) case.
 	if err := vault.WriteResume("myproj", "# Resume\nSome content", ""); err != nil {
@@ -28,7 +28,7 @@ func TestWriteResume(t *testing.T) {
 }
 
 func TestWriteResumeOverwrite(t *testing.T) {
-	vault := NewVault(t.TempDir())
+	vault := bornCurrentVault(t, t.TempDir())
 
 	if err := vault.WriteResume("myproj", "v1", ""); err != nil {
 		t.Fatalf("WriteResume v1: %v", err)
@@ -50,14 +50,14 @@ func TestWriteResumeOverwrite(t *testing.T) {
 }
 
 func TestWriteResumeInvalidSlug(t *testing.T) {
-	vault := NewVault(t.TempDir())
+	vault := bornCurrentVault(t, t.TempDir())
 	if err := vault.WriteResume("INVALID", "content", ""); err == nil {
 		t.Fatal("expected error for invalid slug")
 	}
 }
 
 func TestAppendIterationOwned(t *testing.T) {
-	vault := NewVault(t.TempDir())
+	vault := bornCurrentVault(t, t.TempDir())
 
 	// Fresh vault: the server mints iteration 1 and composes the header itself.
 	n, derived, err := vault.AppendIterationOwned("myproj", "first work", "body", nil)
@@ -79,7 +79,7 @@ func TestAppendIterationOwned(t *testing.T) {
 }
 
 func TestAppendIterationMultiple(t *testing.T) {
-	vault := NewVault(t.TempDir())
+	vault := bornCurrentVault(t, t.TempDir())
 
 	if n, _, err := vault.AppendIterationOwned("myproj", "First", "body", nil); err != nil {
 		t.Fatalf("AppendIterationOwned 1: %v", err)
@@ -107,14 +107,14 @@ func TestAppendIterationMultiple(t *testing.T) {
 }
 
 func TestAppendIterationInvalidSlug(t *testing.T) {
-	vault := NewVault(t.TempDir())
+	vault := bornCurrentVault(t, t.TempDir())
 	if _, _, err := vault.AppendIterationOwned("INVALID", "title", "content", nil); err == nil {
 		t.Fatal("expected error for invalid slug")
 	}
 }
 
 func TestListTriplesEmpty(t *testing.T) {
-	vault := NewVault(t.TempDir())
+	vault := bornCurrentVault(t, t.TempDir())
 	triples, err := vault.ListTriples("myproj")
 	if err != nil {
 		t.Fatalf("ListTriples: %v", err)
@@ -125,7 +125,7 @@ func TestListTriplesEmpty(t *testing.T) {
 }
 
 func TestListTriplesPopulated(t *testing.T) {
-	vault := NewVault(t.TempDir())
+	vault := bornCurrentVault(t, t.TempDir())
 
 	t1 := Triple{Subject: "Go", Predicate: "uses", Object: "modules", Confidence: 1.0}
 	t2 := Triple{Subject: "Rust", Predicate: "uses", Object: "crates", Confidence: 0.9}

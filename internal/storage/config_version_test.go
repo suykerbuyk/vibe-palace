@@ -22,7 +22,7 @@ func hermeticTestVault(t *testing.T) *Vault {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	// On macOS, os.UserConfigDir uses HOME/Library/Application Support.
 	t.Setenv("HOME", t.TempDir())
-	return NewVault(t.TempDir())
+	return bornCurrentVault(t, t.TempDir())
 }
 
 func resetMissingMetaWarnOnce() {

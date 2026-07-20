@@ -9,11 +9,23 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
+
+// bornCurrentTestVault returns an ephemeral vault stamped at the current data
+// format so KG reads pass the armed format gate — the same "stamp on creation"
+// semantics a freshly-created real vault gets. Shared by the tools test helpers.
+func bornCurrentTestVault(t *testing.T, root string) *storage.Vault {
+	t.Helper()
+	if err := surface.WriteFormat(root, surface.RequiredDataFormat); err != nil {
+		t.Fatalf("stamp born-current vault: %v", err)
+	}
+	return storage.NewVault(root)
+}
 
 func newTestVault(t *testing.T) *storage.Vault {
 	t.Helper()
-	return storage.NewVault(t.TempDir())
+	return bornCurrentTestVault(t, t.TempDir())
 }
 
 func TestKGAddAndQuery(t *testing.T) {

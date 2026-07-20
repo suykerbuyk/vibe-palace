@@ -3,11 +3,29 @@
 
 package storage
 
-import "testing"
+import (
+	"testing"
 
-// TestFormatGate_NormalReadsUnaffected proves the data-format read gate is inert
-// today (RequiredDataFormat == 0, absent manifest == 0): normal KG reads against
-// an ephemeral, unstamped vault succeed unchanged.
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
+)
+
+// bornCurrentVault returns an ephemeral vault stamped at the current data format
+// (RequiredDataFormat), mirroring how a freshly-created real vault is stamped at
+// creation. Test vaults are NEW empty dirs, so stamping them born-current is the
+// same "stamp on creation" semantics — it is what lets KG reads pass the armed
+// format gate. Used by the shared storage test helpers.
+func bornCurrentVault(t *testing.T, root string) *Vault {
+	t.Helper()
+	if err := surface.WriteFormat(root, surface.RequiredDataFormat); err != nil {
+		t.Fatalf("stamp born-current vault: %v", err)
+	}
+	return NewVault(root)
+}
+
+// TestFormatGate_NormalReadsUnaffected proves normal KG reads succeed against a
+// born-current vault (the state a freshly-created real vault and every test
+// vault are in): with the gate armed at RequiredDataFormat, a vault stamped at
+// creation clears it and reads are unaffected.
 func TestFormatGate_NormalReadsUnaffected(t *testing.T) {
 	v := testVault(t)
 
@@ -42,16 +60,16 @@ func TestFormatGate_NormalReadsUnaffected(t *testing.T) {
 }
 
 // TestFormatGate_MigratorSeamOff confirms the migrator-exempt seam defaults off
-// (a fresh NewVault is gated by default) and can be flipped on. The gate itself
-// is inert at RequiredDataFormat=0, so both postures currently read cleanly; the
-// test locks in the seam's wiring for the downstream migration task.
+// and can be flipped on. On a born-current vault the non-exempt gate passes; the
+// exempt seam bypasses the gate entirely (the path the migration relies on to
+// read format-0 data). Also pins that a fresh NewVault is not exempt by default.
 func TestFormatGate_MigratorSeamOff(t *testing.T) {
 	v := testVault(t)
 	if v.migratorExempt {
 		t.Fatal("fresh Vault should not be migrator-exempt by default")
 	}
 	if err := v.checkFormatGate(); err != nil {
-		t.Fatalf("default (non-exempt) gate at required=0 should pass, got %v", err)
+		t.Fatalf("default (non-exempt) gate on a born-current vault should pass, got %v", err)
 	}
 
 	v.SetMigratorExempt(true)

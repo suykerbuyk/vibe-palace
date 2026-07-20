@@ -40,6 +40,50 @@ import (
 // caller is about to read-modify-write. It returns a release function that
 // unlocks and closes the lock handle; release is idempotent and safe to defer.
 func Acquire(vaultRoot, targetAbsPath string) (release func() error, err error) {
+	f, err := openLockFile(vaultRoot, targetAbsPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := flockExclusive(f); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("vaultlock: acquire lock: %w", err)
+	}
+	return releaser(f), nil
+}
+
+// TryAcquire is the NON-BLOCKING form of Acquire. It attempts an exclusive
+// advisory lock without blocking: if another holder already has the lock it
+// returns ok=false (and a nil release), leaving the caller to refuse rather than
+// wait. err is non-nil only on a genuine failure (bad root, open failure, a
+// syscall error other than "would block").
+//
+// This is the primitive the KG filename migration uses to demand EXCLUSIVE
+// access before it starts a bulk rename/remove/prune: it refuses to run rather
+// than block on, or silently race, a concurrent writer.
+//
+// PLATFORM: on Windows vaultlock is a no-op stub (see ADR-003 Platform scope),
+// so TryAcquire always reports ok=true there without excluding anyone — exactly
+// as Acquire "succeeds having locked nothing" on Windows.
+func TryAcquire(vaultRoot, targetAbsPath string) (release func() error, ok bool, err error) {
+	f, err := openLockFile(vaultRoot, targetAbsPath)
+	if err != nil {
+		return nil, false, err
+	}
+	got, err := flockTryExclusive(f)
+	if err != nil {
+		f.Close()
+		return nil, false, fmt.Errorf("vaultlock: try acquire lock: %w", err)
+	}
+	if !got {
+		f.Close()
+		return nil, false, nil
+	}
+	return releaser(f), true, nil
+}
+
+// openLockFile validates the root, computes the sidecar path for targetAbsPath,
+// and opens (creating if needed) the sidecar lock file. It performs no locking.
+func openLockFile(vaultRoot, targetAbsPath string) (*os.File, error) {
 	if vaultRoot == "" {
 		return nil, fmt.Errorf("vaultlock: vaultRoot must not be empty")
 	}
@@ -62,14 +106,14 @@ func Acquire(vaultRoot, targetAbsPath string) (release func() error, err error) 
 	if err != nil {
 		return nil, fmt.Errorf("vaultlock: open lock file: %w", err)
 	}
+	return f, nil
+}
 
-	if err := flockExclusive(f); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("vaultlock: acquire lock: %w", err)
-	}
-
+// releaser wraps f in the idempotent unlock-and-close release function shared by
+// Acquire and TryAcquire.
+func releaser(f *os.File) func() error {
 	var once sync.Once
-	release = func() error {
+	return func() error {
 		var rerr error
 		once.Do(func() {
 			uerr := funlock(f)
@@ -84,7 +128,6 @@ func Acquire(vaultRoot, targetAbsPath string) (release func() error, err error) 
 		})
 		return rerr
 	}
-	return release, nil
 }
 
 // canonicalKey reduces targetAbsPath to a stable identity shared by every

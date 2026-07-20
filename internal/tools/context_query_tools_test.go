@@ -20,7 +20,7 @@ import (
 )
 
 func TestGetWorkflow(t *testing.T) {
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentTestVault(t, t.TempDir())
 	resolver := vpctx.NewResolver(vault.Root)
 
 	tool := GetWorkflowTool(resolver)
@@ -44,7 +44,7 @@ func TestGetWorkflow(t *testing.T) {
 }
 
 func TestGetResume(t *testing.T) {
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentTestVault(t, t.TempDir())
 	resolver := vpctx.NewResolver(vault.Root)
 
 	tool := GetResumeTool(resolver)
@@ -65,7 +65,7 @@ func TestGetResume(t *testing.T) {
 }
 
 func TestUpdateResumeThenGet(t *testing.T) {
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentTestVault(t, t.TempDir())
 	resolver := vpctx.NewResolver(vault.Root)
 
 	// Write a resume.
@@ -112,7 +112,7 @@ func onDiskSha(t *testing.T, path string) string {
 // hands back must be the SHA-256 of the vault's resume.md as it sits on disk, or
 // a Phase-1 compare-and-set write keyed on it can never match.
 func TestGetResumeSha256MatchesDisk(t *testing.T) {
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentTestVault(t, t.TempDir())
 	resolver := vpctx.NewResolver(vault.Root)
 
 	const body = "# Resume\n\nProject state for test-proj.\n"
@@ -145,7 +145,7 @@ func TestGetResumeSha256MatchesDisk(t *testing.T) {
 // which no CAS can be keyed on, so the sha must be empty rather than the hash of
 // a template that isn't on disk.
 func TestGetResumeSha256EmptyWithoutProjectFile(t *testing.T) {
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentTestVault(t, t.TempDir())
 	resolver := vpctx.NewResolver(vault.Root)
 
 	params, _ := json.Marshal(map[string]string{"project": "test-proj"})
@@ -166,7 +166,7 @@ func TestGetResumeSha256EmptyWithoutProjectFile(t *testing.T) {
 // TestGetWorkflowSha256MatchesDisk pins that the digest is uniform across every
 // tool sharing resolveResult, not special-cased for resume.
 func TestGetWorkflowSha256MatchesDisk(t *testing.T) {
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentTestVault(t, t.TempDir())
 	resolver := vpctx.NewResolver(vault.Root)
 
 	dir, err := vault.ProjectDir("test-proj")
@@ -198,7 +198,7 @@ func TestGetWorkflowSha256MatchesDisk(t *testing.T) {
 // live {{PROJECT}} placeholder is served expanded; hashing that expansion would
 // yield a sha matching nothing on disk and would break every CAS write.
 func TestGetResumeSha256IsOfRawBytes(t *testing.T) {
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentTestVault(t, t.TempDir())
 	resolver := vpctx.NewResolver(vault.Root)
 
 	const raw = "# Resume for {{PROJECT}}\n\nUnexpanded placeholder.\n"
@@ -230,7 +230,7 @@ func TestGetResumeSha256IsOfRawBytes(t *testing.T) {
 }
 
 func TestUpdateResumeValidation(t *testing.T) {
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentTestVault(t, t.TempDir())
 	tool := UpdateResumeTool(vault)
 
 	tests := []struct {
@@ -254,7 +254,7 @@ func TestUpdateResumeValidation(t *testing.T) {
 // vp_get_resume hands back a body and its sha, vp_update_resume submits a rewrite
 // keyed on that sha, and the write lands.
 func TestUpdateResumeCASRoundTrip(t *testing.T) {
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentTestVault(t, t.TempDir())
 	resolver := vpctx.NewResolver(vault.Root)
 
 	if err := vault.WriteResume("test-proj", "# Resume\nv1\n", ""); err != nil {
@@ -298,7 +298,7 @@ func TestUpdateResumeCASRoundTrip(t *testing.T) {
 // its text must carry a JSON object with the ACTUAL current sha so the agent's
 // retry is mechanical.
 func TestUpdateResumeStaleShaIsMachineParseableError(t *testing.T) {
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentTestVault(t, t.TempDir())
 
 	if err := vault.WriteResume("test-proj", "# Resume\ncurrent\n", ""); err != nil {
 		t.Fatal(err)
@@ -358,7 +358,7 @@ func TestUpdateResumeStaleShaIsMachineParseableError(t *testing.T) {
 // omitted guard must never silently become an assert-absent (or, worse, a blind
 // overwrite).
 func TestUpdateResumeSchemaRequiresExpectedSha(t *testing.T) {
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentTestVault(t, t.TempDir())
 	reg := mcp.NewServer(vault).Registry()
 	reg.MustRegister(UpdateResumeTool(vault))
 
@@ -390,7 +390,7 @@ func TestUpdateResumeSchemaRequiresExpectedSha(t *testing.T) {
 }
 
 func TestGetKnowledgeEmpty(t *testing.T) {
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentTestVault(t, t.TempDir())
 	tool := GetKnowledgeTool(vault)
 
 	params, _ := json.Marshal(map[string]string{"project": "test-proj"})
@@ -409,7 +409,7 @@ func TestGetKnowledgeEmpty(t *testing.T) {
 }
 
 func TestGetKnowledgePopulated(t *testing.T) {
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentTestVault(t, t.TempDir())
 
 	if err := vault.AddTriple("test-proj", storage.Triple{
 		Subject: "Go", Predicate: "uses", Object: "modules",
@@ -434,7 +434,7 @@ func TestGetKnowledgePopulated(t *testing.T) {
 }
 
 func TestGetKnowledgeLimit(t *testing.T) {
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentTestVault(t, t.TempDir())
 
 	for i := range 5 {
 		if err := vault.AddTriple("test-proj", storage.Triple{

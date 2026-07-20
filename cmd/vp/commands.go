@@ -87,5 +87,6 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(mutates(cmdMigrate()))
 	reg.Register(mutates(cmdMigrateVibeVault()))
 	reg.Register(mutates(cmdMigrateMemPalace()))
+	reg.Register(mutates(cmdMigrateKGFilenames()))
 	reg.RegisterHelp()
 }

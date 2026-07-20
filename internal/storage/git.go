@@ -227,3 +227,49 @@ func GitInit(dir string) error {
 	}
 	return nil
 }
+
+// GitStatusClean reports whether the git working tree rooted at dir has NO
+// changes at all — no staged, unstaged, or untracked files. It runs
+// `git status --porcelain`; any non-empty output means the tree is dirty. This
+// is the refuse-on-dirty precondition for the KG migration: a clean tree makes
+// `git checkout .` a guaranteed, complete rollback of the rename.
+func GitStatusClean(dir string) (bool, error) {
+	cmd := exec.Command("git", "-C", dir, "status", "--porcelain")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("git status %s: %s: %w", dir, bytes.TrimSpace(out), err)
+	}
+	return len(bytes.TrimSpace(out)) == 0, nil
+}
+
+// GitAdd stages the given pathspecs in the repo at dir (`git add -- <paths>`).
+// Ignored paths are silently skipped by git; use GitAddForce to stage a path
+// that a .gitignore rule would otherwise exclude.
+func GitAdd(dir string, paths ...string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	args := append([]string{"-C", dir, "add", "--"}, paths...)
+	cmd := exec.Command("git", args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git add %v in %s: %s: %w", paths, dir, bytes.TrimSpace(out), err)
+	}
+	return nil
+}
+
+// GitAddForce stages pathspecs with -f so a gitignored path is added anyway
+// (`git add -f -- <paths>`). It is how the migration tracks the data-format
+// stamp `.vibe-palace/vault.toml`, which lives under the otherwise-ignored
+// `.vibe-palace/` dir: once tracked, the stamp syncs to every other host with
+// the renamed data instead of being left behind (the gitignored-stamp bug).
+func GitAddForce(dir string, paths ...string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	args := append([]string{"-C", dir, "add", "-f", "--"}, paths...)
+	cmd := exec.Command("git", args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git add -f %v in %s: %s: %w", paths, dir, bytes.TrimSpace(out), err)
+	}
+	return nil
+}

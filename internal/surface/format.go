@@ -35,12 +35,15 @@ import (
 // hand-bumped monotonic integer, sibling to MCPSurfaceVersion but on an
 // independent axis.
 //
-// Baseline 0: this task INTRODUCES the axis but does NOT arm it. With
-// RequiredDataFormat = 0 and an absent manifest reading as format 0, the format
-// read gate (EnforceFormatFailStop) is a NO-OP for every vault today. The
-// consumer task kg-triple-filename-sanitization bumps this 0 -> 1 and ships the
-// migration that writes format = 1; the two axes then compose.
-const RequiredDataFormat int = 0
+// ARMED at 1 (kg-triple-filename-sanitization): the KG triple filename encoding
+// changed to a FLAT, sanitized form, so a vault still at format 0 holds
+// old-encoding triple files the current binary's globs cannot find. The format
+// read gate (EnforceFormatFailStop) therefore FAIL-STOPS KG object-side reads on
+// any vault below format 1 — reads must stop rather than silently miss data —
+// until the migration renames the files and stamps format = 1. Freshly created
+// vaults are born-current (stamped at creation), and the migration command
+// advances an existing vault to 1 on completion.
+const RequiredDataFormat int = 1
 
 // vaultManifestDir/vaultManifestFile locate the vault-root manifest carrying the
 // data-format number: <root>/.vibe-palace/vault.toml.
@@ -189,8 +192,8 @@ func checkFormatCompatible(root string, required int) error {
 //
 // migratorExempt is the MIGRATOR SEAM: the migration tool runs on the current
 // binary and MUST read format-0 (unmigrated) data to rewrite it, so it bypasses
-// the gate entirely. Every normal caller passes false. Because
-// RequiredDataFormat == 0, this gate is inert today regardless of the seam.
+// the gate entirely. Every normal caller passes false. With RequiredDataFormat
+// armed at 1, this gate fail-stops normal KG reads on any format-0 vault.
 func EnforceFormatFailStop(root string, migratorExempt bool) error {
 	return enforceFormatFailStop(root, RequiredDataFormat, migratorExempt)
 }

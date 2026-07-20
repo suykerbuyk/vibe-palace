@@ -211,6 +211,11 @@ func gatherCheckResults() []check.Result {
 				})
 				results = append(results, tt.Check(ctx)...)
 
+				// Vault-wide: flag a vault sitting on a filesystem that rejects
+				// ":" in filenames (NTFS/exFAT), reported plainly here rather
+				// than surfacing as a cryptic write failure later.
+				results = append(results, check.CheckVaultFilesystem(vaultPath))
+
 				// Vault-wide: flag scaffold-only orphan projects (stray
 				// `vp init` / un-isolated test residue like Projects/p).
 				results = append(results, check.CheckStrayScaffolds(vault))

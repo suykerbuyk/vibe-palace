@@ -10,8 +10,8 @@
 /build/
 /doc/man/
 test/e2e/**/.tmp/
-.vibe-palace/
-/.vibe-palace/
+.vibe-palace/*
+!.vibe-palace/vault.toml
 
 # legacy vibe-vault state (decommissioned 2026-06-06 cutover to vibe-palace)
 .vibe-vault.toml

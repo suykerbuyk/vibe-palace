@@ -11,8 +11,20 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
+
+// bornCurrentVault stamps a fresh temp vault at the current data format so KG
+// reads pass the armed format gate (same stamp-on-creation semantics a real
+// fresh vault gets).
+func bornCurrentVault(t *testing.T, root string) *storage.Vault {
+	t.Helper()
+	if err := surface.WriteFormat(root, surface.RequiredDataFormat); err != nil {
+		t.Fatalf("stamp born-current vault: %v", err)
+	}
+	return storage.NewVault(root)
+}
 
 // newIntegrationEmbedder creates a real ONNX embedder, skipping in short mode.
 func newIntegrationEmbedder(t *testing.T) embedder.Embedder {
@@ -34,7 +46,7 @@ func newIntegrationEmbedder(t *testing.T) embedder.Embedder {
 // store drawers → index vectors → search finds the content.
 func TestIntegrationCaptureAndSearch(t *testing.T) {
 	emb := newIntegrationEmbedder(t)
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentVault(t, t.TempDir())
 	cfg := storage.Config{
 		SearchDefaultLimit: 10,
 		BoostWing:          0.12,
@@ -143,7 +155,7 @@ The default hall is "facts" for anything that doesn't match a specific pattern.`
 // detector correctly classify chunks into different rooms based on content.
 func TestIntegrationCaptureRoomClassification(t *testing.T) {
 	emb := newIntegrationEmbedder(t)
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentVault(t, t.TempDir())
 	cfg := storage.Config{SearchDefaultLimit: 10}
 	eng := search.NewEngine(emb, vault, cfg)
 	defer eng.Close()
@@ -201,7 +213,7 @@ The CI pipeline now runs linting and building in parallel stages.`
 // from a transcript are written to the knowledge graph and can be queried.
 func TestIntegrationCaptureEntityExtraction(t *testing.T) {
 	emb := newIntegrationEmbedder(t)
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentVault(t, t.TempDir())
 	cfg := storage.Config{SearchDefaultLimit: 10}
 	eng := search.NewEngine(emb, vault, cfg)
 	defer eng.Close()
@@ -268,7 +280,7 @@ and internal/storage/config.go was cross-checked against its defaults.`
 // real ONNX embedder.
 func TestIntegrationCaptureLargeTranscript(t *testing.T) {
 	emb := newIntegrationEmbedder(t)
-	vault := storage.NewVault(t.TempDir())
+	vault := bornCurrentVault(t, t.TempDir())
 	cfg := storage.Config{SearchDefaultLimit: 10}
 	eng := search.NewEngine(emb, vault, cfg)
 	defer eng.Close()
