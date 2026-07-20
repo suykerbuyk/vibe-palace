@@ -222,10 +222,19 @@ func TestListSkillsEmpty(t *testing.T) {
 	}
 
 	r := result.(listResourceResult)
-	// Embedded seed ships startup-analyst; no vault/project overrides means
-	// exactly the one embedded skill is listed.
-	if len(r.Resources) != 1 {
-		t.Errorf("expected 1 embedded skill, got %d", len(r.Resources))
+	// Embedded seed ships code-digger, epic-orchestrator, and startup-analyst;
+	// no vault/project overrides means exactly those embedded skills are listed.
+	got := make(map[string]bool, len(r.Resources))
+	for _, ri := range r.Resources {
+		got[ri.Name] = true
+	}
+	for _, want := range []string{"code-digger", "epic-orchestrator", "startup-analyst"} {
+		if !got[want] {
+			t.Errorf("embedded skill %q missing from list; got %v", want, r.Resources)
+		}
+	}
+	if len(r.Resources) != 3 {
+		t.Errorf("expected 3 embedded skills, got %d", len(r.Resources))
 	}
 }
 
@@ -242,9 +251,10 @@ func TestListSkillsFromVault(t *testing.T) {
 	}
 
 	r := result.(listResourceResult)
-	// Two vault-tier skills plus the embedded startup-analyst seed.
-	if len(r.Resources) != 3 {
-		t.Fatalf("got %d skills, want 3", len(r.Resources))
+	// Two vault-tier skills plus the three embedded seeds (code-digger,
+	// epic-orchestrator, startup-analyst).
+	if len(r.Resources) != 5 {
+		t.Fatalf("got %d skills, want 5", len(r.Resources))
 	}
 }
 

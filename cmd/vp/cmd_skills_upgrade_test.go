@@ -105,10 +105,13 @@ func TestRunSkillsUpgrade_Overwrite_AppliesAll(t *testing.T) {
 
 func TestRunSkillsUpgrade_Interactive_AcceptGroupOnce(t *testing.T) {
 	vault := t.TempDir()
-	// Accept the whole startup-analyst group with a single "a".
+	// Accept the whole startup-analyst group with a single "a". Scoped to
+	// startup-analyst so the group's file layout and prompt count stay fixed
+	// regardless of how many other skills the binary embeds.
 	input := "a\n"
 	var out, errb bytes.Buffer
 	code := runSkillsUpgrade(skillsUpgradeOpts{
+		Only:                "startup-analyst",
 		Stdin:               strings.NewReader(input),
 		Stdout:              &out,
 		Stderr:              &errb,

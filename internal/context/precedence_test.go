@@ -360,15 +360,24 @@ func TestListSkillsEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListResourcesScoped(skill): %v", err)
 	}
-	// Embedded skills: startup-analyst (directory-form).
-	if len(resources) != 1 {
-		t.Fatalf("got %d skills, want 1: %v", len(resources), resources)
+	// Embedded skills (directory-form): code-digger, epic-orchestrator, startup-analyst.
+	wantEmbedded := []string{"code-digger", "epic-orchestrator", "startup-analyst"}
+	if len(resources) != len(wantEmbedded) {
+		t.Fatalf("got %d skills, want %d: %v", len(resources), len(wantEmbedded), resources)
 	}
-	if resources[0].Name != "startup-analyst" {
-		t.Errorf("resources[0].Name = %q, want startup-analyst", resources[0].Name)
+	bySource := map[string]string{}
+	for _, ri := range resources {
+		bySource[ri.Name] = ri.Source
 	}
-	if resources[0].Source != "embedded" {
-		t.Errorf("resources[0].Source = %q, want embedded", resources[0].Source)
+	for _, name := range wantEmbedded {
+		src, ok := bySource[name]
+		if !ok {
+			t.Errorf("embedded skill %q missing: %v", name, resources)
+			continue
+		}
+		if src != "embedded" {
+			t.Errorf("%s source = %q, want embedded", name, src)
+		}
 	}
 }
 
