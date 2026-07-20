@@ -36,6 +36,31 @@ jobs:
         run: go test -count=1 -short -timeout 5m -run TestCheckEmitsVaultProjectRow ./cmd/vp/
       - run: go test -short -race -cover ./...
 
+  # Windows-native verification of the vaultlock byte-range lock
+  # (flock_windows.go). The rest of CI is Linux-only, where the windows-tagged
+  # lock file is never compiled, so this is the sole runtime proof of the
+  # LockFileEx/UnlockFileEx path. Two explicit commands — NOT `make test` /
+  # `go test -short ./...` — because the cross-process test self-skips under
+  # -short, so a mirrored -short invocation would prove only the in-process
+  # lock. No -race: that needs a CGO toolchain on windows/amd64, cutting
+  # against the zero-CGO ethos; TestSerialization's own overlap detector
+  # proves correctness without it.
+  windows-lock:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      # TestSerialization: 50-goroutine in-process overlap detector. Fast, no
+      # ONNX model. Would fail today against the no-op stub.
+      - run: go test -short ./internal/vaultlock/...
+      # Cross-process per-handle contention proof. No -short (the test
+      # self-skips under it); no model needed (vp vault edit loads no
+      # embeddings), so the full ./internal/integration/... suite is avoided
+      # to keep the ONNX download off the Windows runner.
+      - run: go test -run TestIntegration_VaultLockCrossProcess ./internal/integration/
+
   build:
     runs-on: ubuntu-latest
     steps:

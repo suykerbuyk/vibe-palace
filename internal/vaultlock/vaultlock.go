@@ -21,7 +21,9 @@
 // storage (a lexical filepath.Join of root and a relative path) hash to the same
 // lock key and therefore contend on the same lock file.
 //
-// vaultlock is a leaf package: it imports only the standard library.
+// vaultlock is a near-leaf package: it imports only the standard library,
+// except on the windows build, whose flock_windows.go pulls in
+// golang.org/x/sys/windows for the LockFileEx/UnlockFileEx byte-range lock.
 package vaultlock
 
 import (
