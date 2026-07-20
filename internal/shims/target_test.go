@@ -17,7 +17,6 @@ func sampleItem() SkillItem {
 		Frontmatter: skills.SkillFrontmatter{
 			Name:        "pairing",
 			Description: "Pair-programming persona",
-			Triggers:    []string{"pair", "mob"},
 			Paths:       []string{"**/*.go", "internal/**"},
 			Lifetime:    "postural",
 		},

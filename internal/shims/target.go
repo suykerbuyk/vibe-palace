@@ -94,8 +94,10 @@ func CursorRuleFilename(name string) string { return SkillFilePrefix + name + ".
 
 // SkillItem is the Plan/Apply input for ClaudeSkill and CursorRule
 // targets. Name drives the filename and persona argument; Frontmatter
-// carries description/triggers/paths (parsed by internal/skills.Parse
-// via context.ResolveSkillDir).
+// carries description/paths (parsed by internal/skills.Parse via
+// context.ResolveSkillDir). Paths is Cursor-only — it renders into the
+// Cursor rule's globs line; a path-less skill renders `globs: []` and
+// still activates by description.
 type SkillItem struct {
 	Name        string
 	Frontmatter skills.SkillFrontmatter
@@ -148,18 +150,15 @@ func TargetFile(kind TargetKind, projectRoot, name string) string {
 
 // skillContentHash keys the skill-shim sha on every input that can change
 // the rendered bytes: target kind, template version, name, description,
-// triggers/paths (order-sensitive, rendered verbatim), and vault path
-// for the Cursor fallback. Keeping the hash input-based (rather than
-// over the rendered output) avoids the self-referential problem of
-// embedding the sha into the hashed content.
+// paths (order-sensitive, rendered verbatim into the Cursor globs line),
+// and vault path for the Cursor fallback. Keeping the hash input-based
+// (rather than over the rendered output) avoids the self-referential
+// problem of embedding the sha into the hashed content.
 func skillContentHash(kind TargetKind, item SkillItem) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "kind=%s\x00v=%d\x00name=%s\x00desc=%s\x00lifetime=%s",
 		kind.String(), skillShimVersion, item.Name,
 		item.Frontmatter.Description, item.Frontmatter.Lifetime)
-	for _, t := range item.Frontmatter.Triggers {
-		fmt.Fprintf(h, "\x00trig=%s", t)
-	}
 	for _, p := range item.Frontmatter.Paths {
 		fmt.Fprintf(h, "\x00path=%s", p)
 	}

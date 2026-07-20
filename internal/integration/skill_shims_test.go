@@ -11,7 +11,57 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/shims"
 	"github.com/suykerbuyk/vibe-palace/internal/skills"
+	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
+
+// TestEmbeddedSkillPathsReachCursorGlobs closes the note_path trap for
+// SkillFrontmatter.Paths: instead of hand-seeding the field, it drives a
+// SHIPPED template end-to-end and proves the `paths:` declared in
+// internal/templates/templates/skills/*/SKILL.md actually reach the
+// rendered Cursor rule's `globs:` line. If any skill template that
+// declares `paths:` regresses to an empty glob list, this fails.
+func TestEmbeddedSkillPathsReachCursorGlobs(t *testing.T) {
+	resources, err := templates.WalkEmbedded()
+	if err != nil {
+		t.Fatalf("WalkEmbedded: %v", err)
+	}
+	var checkedPathBearing bool
+	for _, r := range resources {
+		// Only interested in top-level skill SKILL.md files.
+		if !strings.HasPrefix(r.RelPath, "skills/") || !strings.HasSuffix(r.RelPath, "/SKILL.md") {
+			continue
+		}
+		if strings.Count(r.RelPath, "/") != 2 {
+			continue // skip references/*.md nested under the skill dir
+		}
+		fm, _, err := skills.Parse(r.Bytes)
+		if err != nil {
+			t.Fatalf("parse %s: %v", r.RelPath, err)
+		}
+		item := shims.SkillItem{Name: fm.Name, Frontmatter: fm}
+		out := shims.RenderSkill(shims.CursorRule, item)
+		if len(fm.Paths) == 0 {
+			// A path-less skill is valid: it must still render, with an
+			// empty glob list, never an error.
+			if !strings.Contains(out, "globs: []\n") {
+				t.Errorf("%s: path-less skill should render globs: [], got:\n%s", r.RelPath, out)
+			}
+			continue
+		}
+		checkedPathBearing = true
+		if strings.Contains(out, "globs: []\n") {
+			t.Errorf("%s: declares %d paths but rendered empty globs:\n%s", r.RelPath, len(fm.Paths), out)
+		}
+		for _, p := range fm.Paths {
+			if !strings.Contains(out, p) {
+				t.Errorf("%s: declared path %q absent from rendered globs:\n%s", r.RelPath, p, out)
+			}
+		}
+	}
+	if !checkedPathBearing {
+		t.Error("no shipped skill template declares paths: — the populate half of the fix is unproven")
+	}
+}
 
 // TestIntegrationSkillShimsLifecycle drives the Phase-4 skill-shim
 // surfaces (ClaudeSkill + CursorRule) end-to-end against a fixture

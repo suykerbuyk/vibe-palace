@@ -19,15 +19,18 @@ import (
 
 // SkillFrontmatter captures the parsed YAML header of a SKILL.md.
 // Name and Description are the primary persona identifiers consumed
-// by Claude Code and Cursor shims; Triggers and Paths are optional
-// glob/keyword hints rendered into those same shim files. Lifetime
-// defaults to "postural" when omitted — transactional skills bypass
-// the stack-until-cleared lifetime contract taught by the managed
-// block and are treated as single-shot invocations.
+// by Claude Code and Cursor shims. Paths is an optional list of file
+// globs rendered into the Cursor rule's `globs:` line so the rule can
+// path-activate; it is Cursor-only — the Claude and Grok shims are
+// description-driven and ignore it. A skill that declares no Paths is
+// valid: its Cursor rule ships `globs: []` and activates by
+// description (Cursor's agent-requested mode). Lifetime defaults to
+// "postural" when omitted — transactional skills bypass the
+// stack-until-cleared lifetime contract taught by the managed block
+// and are treated as single-shot invocations.
 type SkillFrontmatter struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`
-	Triggers    []string `yaml:"triggers"`
 	Paths       []string `yaml:"paths"`
 	Lifetime    string   `yaml:"lifetime"`
 }

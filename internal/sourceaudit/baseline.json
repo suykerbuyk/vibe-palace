@@ -138,11 +138,7 @@
     },
     {
       "id": "write-only-field skills.SkillFrontmatter.Paths",
-      "reason": "REAL FINDING (READ_BUT_NEVER_SET — the note_path shape), owned by task skill-frontmatter-paths-and-triggers-are-never-set. Nothing assigns it; it is read in internal/shims/target.go and rendered into the Cursor rule's `globs:` line. Verified against reality, not source: grepping '^paths:|^triggers:' across every markdown file in BOTH the vault and the repo returns ZERO matches — no skill file has ever declared it. So every Cursor rule vibe-palace can emit carries `globs: []` and can never path-activate. The tests that 'use' it SEED IT THEMSELVES, which is exactly how note_path survived six months."
-    },
-    {
-      "id": "write-only-field skills.SkillFrontmatter.Triggers",
-      "reason": "REAL FINDING (DEAD), owned by task skill-frontmatter-paths-and-triggers-are-never-set. Never set by any artifact and rendered NOWHERE, despite the doc comment at internal/skills/frontmatter.go claiming both fields are 'rendered into those same shim files'. Its only read is a sha input that is provably always the empty contribution. Same on-disk evidence as .Paths: zero skill files declare it."
+      "reason": "FALSE POSITIVE (Unmarshal-populated), NOT the note_path shape — the original defect was FIXED under task skill-frontmatter-paths-and-triggers-are-never-set (DECISION 205). Paths is now genuinely produced from disk: the shipped template internal/templates/templates/skills/startup-analyst/SKILL.md declares a real `paths:` list, skills.Parse yaml.Unmarshals it (frontmatter.go), it flows SkillDir.Frontmatter -> reconcile.go -> SkillItem, and renderCursorRule emits it into the Cursor rule's `globs:` line (target.go). The residual flag is the known gate/charter gap tracked by the write-only-field charter thread (203): the static heuristic cannot see yaml.Unmarshal as a producer and trips on the partial composite literal in target.go GrokHubItem, which sets only Description. By the gate's own STATED charter (Unmarshal-populated structs are exempt) this should be suppressed. The sibling field Triggers was DELETED in the same change. Verified: integration/skill_shims_test.go TestEmbeddedSkillPathsReachCursorGlobs drives a shipped template end-to-end and proves the declared paths reach the rendered globs."
     }
   ]
 }

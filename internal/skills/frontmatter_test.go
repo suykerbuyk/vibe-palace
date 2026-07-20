@@ -10,6 +10,10 @@ import (
 )
 
 func TestParseHappyPath(t *testing.T) {
+	// The `triggers:` key is intentionally present: SkillFrontmatter no
+	// longer carries a Triggers field, so it must parse away silently
+	// (yaml.v3 ignores unknown keys) without breaking the rest of the
+	// frontmatter. See TestParseIgnoresTriggersKey for the focused check.
 	in := []byte(`---
 name: startup-analyst
 description: Does analysis
@@ -34,9 +38,6 @@ Persona text.
 	}
 	if fm.Description != "Does analysis" {
 		t.Errorf("Description=%q", fm.Description)
-	}
-	if len(fm.Triggers) != 2 || fm.Triggers[0] != "pitch deck" {
-		t.Errorf("Triggers=%v", fm.Triggers)
 	}
 	if len(fm.Paths) != 1 || fm.Paths[0] != "**/*.md" {
 		t.Errorf("Paths=%v", fm.Paths)
@@ -66,6 +67,40 @@ func TestParseMissingFields(t *testing.T) {
 	}
 	if string(body) != "hello\n" {
 		t.Errorf("body=%q", body)
+	}
+}
+
+// TestParseIgnoresTriggersKey pins the removal of the Triggers field:
+// a SKILL.md that still carries a legacy `triggers:` key must parse
+// without error, silently dropping the unknown key while every other
+// field survives. (yaml.v3 is non-strict, so unknown keys are ignored.)
+func TestParseIgnoresTriggersKey(t *testing.T) {
+	in := []byte("---\nname: legacy\ndescription: d\ntriggers:\n  - a\n  - b\n---\nbody\n")
+	fm, _, err := Parse(in)
+	if err != nil {
+		t.Fatalf("Parse with legacy triggers key: %v", err)
+	}
+	if fm.Name != "legacy" || fm.Description != "d" {
+		t.Errorf("triggers key contaminated other fields: %+v", fm)
+	}
+}
+
+// TestParsePathsRoundTrip proves the surviving Paths field round-trips a
+// multi-entry glob list verbatim and in order.
+func TestParsePathsRoundTrip(t *testing.T) {
+	in := []byte("---\nname: x\npaths:\n  - \"**/a*.md\"\n  - \"docs/**\"\n---\nbody\n")
+	fm, _, err := Parse(in)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := []string{"**/a*.md", "docs/**"}
+	if len(fm.Paths) != len(want) {
+		t.Fatalf("Paths=%v want %v", fm.Paths, want)
+	}
+	for i := range want {
+		if fm.Paths[i] != want[i] {
+			t.Errorf("Paths[%d]=%q want %q", i, fm.Paths[i], want[i])
+		}
 	}
 }
 

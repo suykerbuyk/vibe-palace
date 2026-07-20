@@ -9,6 +9,10 @@ description: >
   "who might partner with us?" — even if the word "business plan" is never used. If
   there is a document describing a product, service, or company and the user wants
   analytical feedback of any kind, use this skill.
+paths:
+  - "**/business-plan*.md"
+  - "**/pitch-deck*.md"
+  - "**/executive-summary*.md"
 ---
 
 # Startup Business Plan Analyst
