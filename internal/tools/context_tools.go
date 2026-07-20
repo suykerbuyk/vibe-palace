@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,6 +18,8 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
+	"github.com/suykerbuyk/vibe-palace/internal/shims"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultaudit"
@@ -73,6 +77,22 @@ type BootstrapResult struct {
 	// the class this epic exists to delete — and it was living inside the shed
 	// loop the whole time.
 	Budget *BootstrapBudget `json:"budget,omitempty"`
+
+	// ShimsSynced records host shim files this session materialized or rewrote
+	// to match the vault's command/skill set — NIL WHEN NOTHING CHANGED. Its
+	// presence means the vault had gained (or altered) a capability and this
+	// bootstrap wired it into the host so it is typeable, closing the drift that
+	// used to require a manual `vp commands upgrade` the human was never told to
+	// run.
+	//
+	// It is deliberately NOT one of the four attention-competing alerts the
+	// AuditStaleness comment above caps (Health, AuditStaleness, VaultStaleness,
+	// Budget). It is an action-less positive receipt, not a warning: it needs no
+	// human response, and it is silent in the steady state (a no-op reconcile is
+	// Empty()), so it never trains a reader to skim. It stays a pure data field
+	// and is never folded into post_bootstrap_instructions, keeping the alert
+	// budget untouched.
+	ShimsSynced *shims.ReconcileReport `json:"shims_synced,omitempty"`
 }
 
 // BootstrapBudget is the shed ladder's own account of itself: what it dropped,
@@ -594,22 +614,12 @@ func shedResumeToPinnedZone(result *BootstrapResult, b *BootstrapBudget, fullRes
 }
 
 func sliceHasRung(xs []string, want string) bool {
-	for _, x := range xs {
-		if x == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(xs, want)
 }
 
 // shedTasks reports whether the ladder had to drop the active task list.
 func shedTasks(b *BootstrapBudget) bool {
-	for _, s := range b.Shed {
-		if s == shedActiveTasks {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(b.Shed, shedActiveTasks)
 }
 
 // The rungs of the ladder, named so the caller knows exactly what is missing
@@ -862,6 +872,38 @@ func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault, slimDefaul
 		if p.Slim != nil {
 			slim = *p.Slim
 		}
-		return AssembleBootstrap(resolver, vault, p.Project, p.MaxTokens, p.Wing, p.Room, slim), nil
+		result := AssembleBootstrap(resolver, vault, p.Project, p.MaxTokens, p.Wing, p.Room, slim)
+
+		// Session-start shim self-heal: bring this host's slash-command and
+		// skill shims into line with the vault's command set, so a command
+		// added to the vault becomes typeable WITHOUT the human remembering to
+		// run `vp commands upgrade`. Best-effort and additive; runs only over
+		// the MCP handler (not the shared AssembleBootstrap, so `vp inject`
+		// stays read-only).
+		if rep := reconcileHostShims(resolver, p.Project); !rep.Empty() {
+			result.ShimsSynced = &rep
+		}
+		return result, nil
 	}
+}
+
+// reconcileHostShims runs the additive shim self-heal for the bootstrap's
+// project, but ONLY when the MCP server's working directory actually resolves
+// to that same project. A server started outside the project tree would
+// otherwise scatter shim files into the wrong directory; when the guard
+// declines, `vp init` / `vp commands upgrade` remain the fallback for that
+// host. Returns an Empty() report whenever it declines or nothing drifted.
+func reconcileHostShims(resolver *vpctx.Resolver, projectSlug string) shims.ReconcileReport {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return shims.ReconcileReport{}
+	}
+	// The server's CWD must resolve to the very project being bootstrapped, or
+	// we are looking at the wrong tree. project.DetectProject uses the same
+	// signals that named the project in the first place, so agreement is a
+	// reliable "this is the right root" check.
+	if slug, _ := project.DetectProject(cwd); slug != projectSlug {
+		return shims.ReconcileReport{}
+	}
+	return shims.Reconcile(cwd, resolver, projectSlug)
 }
