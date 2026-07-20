@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
@@ -40,6 +42,12 @@ type Engine struct {
 	mu       sync.RWMutex
 	indexes  map[string]*VectorIndex // project -> index
 	metadata map[string]drawerMeta   // drawerID -> metadata
+
+	// collisions counts distinct-content DrawerID collisions observed at
+	// index-build time. It is zero in a healthy vault; a nonzero value is the
+	// concrete signal that the 32-bit ID has actually collided and re-keying is
+	// finally justified. See detectCollision.
+	collisions atomic.Int64
 
 	// Lazy per-project index construction. buildMu guards both maps; it is
 	// never held across a Rebuild, so builds for different projects run
@@ -295,23 +303,34 @@ func (e *Engine) IndexDrawers(ctx context.Context, batch []DrawerInput) error {
 			idx = NewVectorIndex(dims)
 			e.indexes[in.Project] = idx
 		}
+		meta := makeDrawerMeta(in.Project, in.Wing, in.Room, in.Drawer)
+		if e.detectCollision(in.Drawer.ID, meta) {
+			continue
+		}
 		if err := idx.Insert(in.Drawer.ID, in.Vec); err != nil {
 			return err
 		}
-		e.metadata[in.Drawer.ID] = makeDrawerMeta(in.Project, in.Wing, in.Room, in.Drawer)
+		e.metadata[in.Drawer.ID] = meta
 	}
 	return nil
 }
 
-// RemoveDrawer removes a drawer from the index.
-func (e *Engine) RemoveDrawer(project, id string) {
+// RemoveDrawer evicts a drawer completely: it drops the vector from the
+// in-memory index, drops the global metadata entry, and unlinks the drawer's
+// cached .vec file. It is the search engine's complete eviction primitive —
+// wire it wherever a drawer is deleted so the long-lived vp mcp process stops
+// serving a drawer that is gone and stops leaking its vector. A missing .vec is
+// not an error. The file unlink runs after the lock is released so on-disk I/O
+// never serializes searches.
+func (e *Engine) RemoveDrawer(project, id string) error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	if idx, ok := e.indexes[project]; ok {
 		idx.Delete(id)
 	}
 	delete(e.metadata, id)
+	e.mu.Unlock()
+
+	return e.cache.Delete(project, id)
 }
 
 // Rebuild rebuilds the index for a project from scratch. Drawers whose vectors
@@ -367,12 +386,25 @@ func (e *Engine) Rebuild(ctx context.Context, project string) error {
 		return err
 	}
 
+	// Live drawer IDs for this build — the reaper unlinks every .vec whose ID is
+	// not in this set.
+	live := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		live[id] = true
+	}
+
 	if len(vecs) == 0 {
 		// The project's drawers are all gone. Drop any index from a previous
-		// build so it stops serving hits for content that no longer exists.
+		// build so it stops serving hits for content that no longer exists, then
+		// reap every now-orphaned vector (live set is empty).
 		e.mu.Lock()
 		delete(e.indexes, project)
 		e.mu.Unlock()
+		if n, err := e.reapOrphanVectors(project, live); err != nil {
+			slog.Warn("reap orphan vectors failed", "project", project, "err", err)
+		} else if n > 0 {
+			slog.Info("reaped orphan vectors", "project", project, "count", n)
+		}
 		return nil
 	}
 
@@ -389,10 +421,91 @@ func (e *Engine) Rebuild(ctx context.Context, project string) error {
 	e.mu.Lock()
 	e.indexes[project] = idx
 	for i, id := range ids {
+		if e.detectCollision(id, metas[i]) {
+			continue
+		}
 		e.metadata[id] = metas[i]
 	}
 	e.mu.Unlock()
+
+	if n, err := e.reapOrphanVectors(project, live); err != nil {
+		slog.Warn("reap orphan vectors failed", "project", project, "err", err)
+	} else if n > 0 {
+		slog.Info("reaped orphan vectors", "project", project, "count", n)
+	}
 	return nil
+}
+
+// detectCollision reports whether writing meta under id would overwrite an
+// existing metadata entry that carries DIFFERENT content, recording it loudly
+// when it would. DrawerID = md5(wing+content)[:8] (internal/storage) excludes
+// BOTH project and room, so two drawers with identical (wing, content) — in
+// different projects, or different rooms of one wing — hash to the SAME global
+// e.metadata key with certainty, and an md5[:8] accident can collide two
+// unrelated contents at ~8.8% odds across the live corpus. When the key already
+// holds distinct content, one drawer's vector would silently answer for another:
+// a wrong search result reported as a correct one, which is this epic's thesis
+// living inside the engine. We fail LOUD (slog.Error naming both drawers) and
+// NON-FATAL (return true so the caller skips the colliding write; never panic —
+// this runs inside the long-lived vp mcp process, and a panic would take the
+// server down, unlike the warn-and-continue already used above in Rebuild). The
+// caller must hold e.mu. Installed only at the metadata WRITE sites (Rebuild and
+// IndexDrawers) — not on the lazy ensureAllIndexes path, which only runs on a
+// cross-project search and is not guaranteed to execute. Because a colliding ID
+// already lands on the same global key, "same key, different Content" is a
+// complete global check with no per-project enumeration.
+func (e *Engine) detectCollision(id string, meta drawerMeta) bool {
+	existing, ok := e.metadata[id]
+	if !ok || existing.Content == meta.Content {
+		return false
+	}
+	e.collisions.Add(1)
+	slog.Error("drawer ID collision: distinct content shares one search index key; skipping the colliding drawer",
+		"id", id,
+		"kept_project", existing.Project, "kept_wing", existing.Wing, "kept_room", existing.Room,
+		"skipped_project", meta.Project, "skipped_wing", meta.Wing, "skipped_room", meta.Room,
+	)
+	return true
+}
+
+// reapOrphanVectors unlinks every .vec file under a project's embed-cache whose
+// drawer ID is not in live, evicting each through RemoveDrawer so any stale
+// in-memory index/metadata for that ID is dropped in the same step (Rebuild adds
+// metadata keys but never removes them, so this is where deleted-drawer keys get
+// cleaned). It returns the number of vectors reaped. This is cheap hygiene:
+// MoveDrawer preserves the ID so it orphans nothing, and no live delete path
+// exists today, but a future delete would leak .vec files without it. Must be
+// called with no engine lock held (RemoveDrawer takes e.mu).
+func (e *Engine) reapOrphanVectors(project string, live map[string]bool) (int, error) {
+	localDir, err := e.vault.LocalDir(project)
+	if err != nil {
+		return 0, fmt.Errorf("local dir: %w", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(localDir, "embed-cache"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read embed cache dir: %w", err)
+	}
+
+	reaped := 0
+	for _, ent := range entries {
+		name := ent.Name()
+		if ent.IsDir() || !strings.HasSuffix(name, ".vec") {
+			continue
+		}
+		id := strings.TrimSuffix(name, ".vec")
+		if live[id] {
+			continue
+		}
+		if err := e.RemoveDrawer(project, id); err != nil {
+			slog.Warn("reap orphan vector failed", "project", project, "drawer", id, "err", err)
+			continue
+		}
+		reaped++
+	}
+	return reaped, nil
 }
 
 // embedMisses embeds the cache-miss drawers in batches, filling their slots in

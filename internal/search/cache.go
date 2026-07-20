@@ -71,6 +71,21 @@ func (c *EmbedCache) Put(project, drawerID string, vec []float32) error {
 	return os.WriteFile(path, data, 0644)
 }
 
+// Delete unlinks a cached embedding vector. A missing file is not an error,
+// so calling Delete for a drawer that was never cached is a no-op. This is the
+// embed cache's only eviction primitive; RemoveDrawer and the orphan reaper both
+// route the on-disk unlink through it.
+func (c *EmbedCache) Delete(project, drawerID string) error {
+	path, err := c.path(project, drawerID)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete embed cache: %w", err)
+	}
+	return nil
+}
+
 // path returns palace/{project}/.local/embed-cache/{drawerID}.vec.
 func (c *EmbedCache) path(project, drawerID string) (string, error) {
 	localDir, err := c.vault.LocalDir(project)

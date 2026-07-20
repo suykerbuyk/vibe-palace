@@ -85,10 +85,6 @@
       "reason": "REAL FINDING, owned by task reconcile-requires-declares-a-graph-nobody-reads. See reconcile.CwdProjectReconciler.Requires."
     },
     {
-      "id": "uninvoked search.Engine.RemoveDrawer",
-      "reason": "REAL FINDING, owned by task search-index-and-embed-cache-have-no-eviction-path. This is the search index's ONLY eviction API and nothing calls it, while the insert path (IndexDrawers) IS wired. EmbedCache has no eviction API at all (Get/Put/path only), is keyed by drawer ID, and Rebuild trusts it blind — so a changed drawer keeps its stale vector EVEN THROUGH A FULL REBUILD. Vault.DeleteDrawer/MoveDrawer mutate drawers with no index eviction, so the long-lived vp mcp process keeps serving removed drawers."
-    },
-    {
       "id": "uninvoked sourceaudit.Baseline.Diff",
       "reason": "TEST-ONLY BY CONSTRUCTION. This gate IS a go test, so its own baseline machinery can have no non-test caller — the analyzer is flagging itself. Accepted, and the irony is noted."
     },

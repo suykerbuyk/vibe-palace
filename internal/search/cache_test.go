@@ -77,6 +77,34 @@ func TestCacheBinaryFormat(t *testing.T) {
 	}
 }
 
+func TestCacheDelete(t *testing.T) {
+	v := testVault(t)
+	c := NewEmbedCache(v)
+
+	if err := c.Put("proj", "d1", []float32{1, 2, 3}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	path, _ := c.path("proj", "d1")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("precondition: .vec should exist: %v", err)
+	}
+
+	if err := c.Delete("proj", "d1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("expected .vec unlinked, stat err = %v", err)
+	}
+
+	// A missing file is not an error.
+	if err := c.Delete("proj", "d1"); err != nil {
+		t.Errorf("Delete of missing file returned %v, want nil", err)
+	}
+	if err := c.Delete("proj", "never-cached"); err != nil {
+		t.Errorf("Delete of never-cached returned %v, want nil", err)
+	}
+}
+
 func TestCacheOverwrite(t *testing.T) {
 	v := testVault(t)
 	c := NewEmbedCache(v)

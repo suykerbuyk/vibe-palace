@@ -323,6 +323,158 @@ func TestIndexAndRemoveDrawer(t *testing.T) {
 	}
 }
 
+// TestRemoveDrawerUnlinksVec verifies that eviction is complete: RemoveDrawer
+// drops the drawer from search AND unlinks its cached .vec file, so nothing is
+// left to leak or to serve.
+func TestRemoveDrawerUnlinksVec(t *testing.T) {
+	eng, v := testEngine(t)
+	ctx := context.Background()
+
+	d := addDrawer(t, v, "proj", "wing-a", "room-1", "removable content", "facts")
+	if err := eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing-a", Room: "room-1", Drawer: d}}); err != nil {
+		t.Fatal(err)
+	}
+
+	vecPath, _ := eng.cache.path("proj", d.ID)
+	if _, err := os.Stat(vecPath); err != nil {
+		t.Fatalf("precondition: .vec should exist after index: %v", err)
+	}
+
+	if err := eng.RemoveDrawer("proj", d.ID); err != nil {
+		t.Fatalf("RemoveDrawer: %v", err)
+	}
+
+	if _, err := os.Stat(vecPath); !os.IsNotExist(err) {
+		t.Errorf("expected .vec unlinked after RemoveDrawer, stat err = %v", err)
+	}
+	results, _ := eng.Search(ctx, "removable", SearchFilters{Project: "proj"})
+	if len(results) != 0 {
+		t.Errorf("expected 0 results after remove, got %d", len(results))
+	}
+}
+
+// TestCollisionDetectorFires feeds two DISTINCT contents on ONE drawer ID and
+// asserts the global collision detector fires (counter increments), skips the
+// colliding entry rather than overwriting, and does NOT panic — a panic would
+// take down the long-lived vp mcp process.
+func TestCollisionDetectorFires(t *testing.T) {
+	eng, _ := testEngine(t)
+	ctx := context.Background()
+
+	const id = "deadbeef"
+	first := storage.Drawer{ID: id, Content: "alpha distinct content", Hall: "facts", SourceType: "manual", FiledAt: "2026-04-07T00:00:00Z"}
+	second := storage.Drawer{ID: id, Content: "beta wholly different content", Hall: "facts", SourceType: "manual", FiledAt: "2026-04-07T00:00:00Z"}
+
+	// Both land on the same global metadata key; the second must be rejected.
+	err := eng.IndexDrawers(ctx, []DrawerInput{
+		{Project: "proj-a", Wing: "wing-a", Room: "room-1", Drawer: first},
+		{Project: "proj-b", Wing: "wing-a", Room: "room-1", Drawer: second},
+	})
+	if err != nil {
+		t.Fatalf("IndexDrawers: %v", err)
+	}
+
+	if got := eng.collisions.Load(); got != 1 {
+		t.Fatalf("collision counter = %d, want 1", got)
+	}
+	// The first writer keeps the key; the colliding entry was skipped.
+	eng.mu.RLock()
+	meta := eng.metadata[id]
+	eng.mu.RUnlock()
+	if meta.Content != first.Content {
+		t.Errorf("metadata content = %q, want the first writer %q (colliding entry must be skipped, not overwrite)", meta.Content, first.Content)
+	}
+}
+
+// TestCollisionDetectorInRebuild verifies the detector also guards the Rebuild
+// write site, not only IndexDrawers. We seed the global metadata key for a real
+// on-disk drawer with DIFFERENT content, then rebuild: the write must collide.
+func TestCollisionDetectorInRebuild(t *testing.T) {
+	eng, v := testEngine(t)
+	ctx := context.Background()
+
+	real := addDrawer(t, v, "proj", "wing-a", "room-1", "on-disk content", "facts")
+
+	// Force the global key to already hold distinct content from another drawer.
+	eng.mu.Lock()
+	eng.metadata[real.ID] = drawerMeta{Project: "other", Wing: "wing-z", Room: "room-9", Content: "wholly different seeded content"}
+	eng.mu.Unlock()
+	before := eng.collisions.Load()
+
+	if err := eng.Rebuild(ctx, "proj"); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	if got := eng.collisions.Load(); got <= before {
+		t.Errorf("collision counter did not advance during Rebuild: before=%d after=%d", before, got)
+	}
+}
+
+// TestReapOrphanVectors verifies the reaper unlinks .vec files whose drawer ID
+// is not in the live set and leaves live vectors alone.
+func TestReapOrphanVectors(t *testing.T) {
+	eng, v := testEngine(t)
+
+	if err := eng.cache.Put("proj", "live1", []float32{1, 2, 3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.cache.Put("proj", "orphan1", []float32{4, 5, 6}); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.cache.Put("proj", "orphan2", []float32{7, 8, 9}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := eng.reapOrphanVectors("proj", map[string]bool{"live1": true})
+	if err != nil {
+		t.Fatalf("reapOrphanVectors: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("reaped %d, want 2", n)
+	}
+
+	livePath, _ := eng.cache.path("proj", "live1")
+	if _, err := os.Stat(livePath); err != nil {
+		t.Errorf("live vector should survive reap: %v", err)
+	}
+	for _, id := range []string{"orphan1", "orphan2"} {
+		p, _ := eng.cache.path("proj", id)
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("orphan %s not reaped, stat err = %v", id, err)
+		}
+	}
+
+	// Missing embed-cache dir is not an error.
+	if _, err := eng.reapOrphanVectors("no-such-project", nil); err != nil {
+		t.Errorf("reap on missing cache dir returned %v, want nil", err)
+	}
+	_ = v
+}
+
+// TestRebuildReapsOrphanVectors verifies Rebuild is a live caller of the reaper:
+// a stray .vec for a drawer that is not on disk is unlinked by a rebuild.
+func TestRebuildReapsOrphanVectors(t *testing.T) {
+	eng, v := testEngine(t)
+	ctx := context.Background()
+
+	addDrawer(t, v, "proj", "wing-a", "room-1", "real document", "facts")
+	if err := eng.Rebuild(ctx, "proj"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Plant an orphan vector for a drawer that does not exist on disk.
+	if err := eng.cache.Put("proj", "ghost123", []float32{1, 2, 3}); err != nil {
+		t.Fatal(err)
+	}
+	ghostPath, _ := eng.cache.path("proj", "ghost123")
+
+	if err := eng.Rebuild(ctx, "proj"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(ghostPath); !os.IsNotExist(err) {
+		t.Errorf("Rebuild did not reap orphan .vec, stat err = %v", err)
+	}
+}
+
 func TestSearchDefaultLimit(t *testing.T) {
 	eng, v := testEngine(t)
 	ctx := context.Background()
