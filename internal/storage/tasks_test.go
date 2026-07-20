@@ -55,6 +55,115 @@ func TestCreateTaskDuplicate(t *testing.T) {
 	}
 }
 
+// A retired task is still a task: creating a slug that already lives in done/
+// must be refused, not silently duplicated into the active dir (which would then
+// clobber the historical record on the next retire).
+func TestCreateTaskOverRetiredSlug(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "Title", Content: "", Priority: "P1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.RetireTask("proj", "my-task"); err != nil {
+		t.Fatalf("RetireTask: %v", err)
+	}
+
+	err := v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "Title 2", Content: "", Priority: "P2"})
+	if err == nil {
+		t.Fatal("creating over a retired slug should be refused")
+	}
+	if !strings.Contains(err.Error(), "done/") {
+		t.Errorf("error should name the done/ state, got: %v", err)
+	}
+
+	// No duplicate should have been written to the active dir.
+	activePath, _ := v.TaskFile("proj", "my-task")
+	if _, statErr := os.Stat(activePath); !os.IsNotExist(statErr) {
+		t.Error("refused create must not leave a duplicate in the active dir")
+	}
+}
+
+// Same guard for the cancelled/ directory.
+func TestCreateTaskOverCancelledSlug(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "Title", Content: "", Priority: "P1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.CancelTask("proj", "my-task"); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+
+	err := v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "Title 2", Content: "", Priority: "P2"})
+	if err == nil {
+		t.Fatal("creating over a cancelled slug should be refused")
+	}
+	if !strings.Contains(err.Error(), "cancelled/") {
+		t.Errorf("error should name the cancelled/ state, got: %v", err)
+	}
+}
+
+// A novel slug that collides with nothing in any of the three dirs still creates.
+func TestCreateTaskNovelSlugAfterRetire(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "old-task", Title: "Title", Content: "", Priority: "P1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.RetireTask("proj", "old-task"); err != nil {
+		t.Fatalf("RetireTask: %v", err)
+	}
+	if err := v.CreateTask("proj", TaskSpec{Slug: "new-task", Title: "Title", Content: "", Priority: "P1"}); err != nil {
+		t.Fatalf("novel slug should still create: %v", err)
+	}
+}
+
+// The actual data-loss mechanism: a re-retire whose destination already holds a
+// historical done/ record must error loudly and leave the prior record intact,
+// never overwrite it.
+func TestRetireDoesNotClobberExistingDoneRecord(t *testing.T) {
+	v := testVault(t)
+
+	// Plant a historical done/ record with distinctive bytes.
+	doneDir, _ := v.TaskDoneDir("proj")
+	if err := EnsureDir(doneDir); err != nil {
+		t.Fatal(err)
+	}
+	donePath := filepath.Join(doneDir, "my-task.md")
+	historical := []byte("# My Task\n\n**Status:** retired\n\nHISTORICAL RECORD iter-209\n")
+	if err := os.WriteFile(donePath, historical, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// An active duplicate of the same slug (as could arise from a create that
+	// slipped past the guard on an older binary).
+	activePath, _ := v.TaskFile("proj", "my-task")
+	if err := EnsureDir(filepath.Dir(activePath)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activePath, []byte("# My Task\n\n**Status:** pending\n\nDUPLICATE\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := v.RetireTask("proj", "my-task")
+	if err == nil {
+		t.Fatal("re-retire over an existing done/ record should be refused")
+	}
+	if !strings.Contains(err.Error(), "overwrite") {
+		t.Errorf("error should explain it refuses to overwrite, got: %v", err)
+	}
+
+	// The historical record must be byte-for-byte intact.
+	got, readErr := os.ReadFile(donePath)
+	if readErr != nil {
+		t.Fatalf("read done record: %v", readErr)
+	}
+	if string(got) != string(historical) {
+		t.Errorf("historical done/ record was clobbered:\ngot:  %q\nwant: %q", got, historical)
+	}
+	// And the active duplicate must not have been removed (the move failed).
+	if _, statErr := os.Stat(activePath); statErr != nil {
+		t.Errorf("failed move should leave the source in place: %v", statErr)
+	}
+}
+
 func TestCreateTaskInvalidSlug(t *testing.T) {
 	v := testVault(t)
 	err := v.CreateTask("proj", TaskSpec{Slug: "BAD SLUG", Title: "Title", Content: "", Priority: "P1"})

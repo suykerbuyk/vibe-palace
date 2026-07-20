@@ -617,6 +617,29 @@ func (v *Vault) CreateTask(project string, spec TaskSpec) error {
 		return fmt.Errorf("task %q already exists in project %q", slug, project)
 	}
 
+	// A retired task is still a task. Guard the done/ and cancelled/ directories
+	// too, mirroring GetTask's three-dir search idiom: creating a slug that was
+	// already retired or cancelled would otherwise silently write a duplicate
+	// active file, and the subsequent retire/cancel would clobber the historical
+	// completion record. Refuse loudly and name the state so the operator can
+	// choose a new slug (reopen is a deliberate, separate action — never folded
+	// into create).
+	for _, loc := range []struct {
+		dir   func(string) (string, error)
+		state string
+	}{
+		{v.TaskDoneDir, "done"},
+		{v.TaskCancelledDir, "cancelled"},
+	} {
+		dir, err := loc.dir(project)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stat(filepath.Join(dir, slug+".md")); err == nil {
+			return fmt.Errorf("task %q already exists in tasks/%s/ (a retired task is still a task; choose a new slug, or reopen the existing one)", slug, loc.state)
+		}
+	}
+
 	var buf strings.Builder
 	fmt.Fprintf(&buf, "# %s\n\n", title)
 	fmt.Fprintf(&buf, "**Status:** pending\n")
@@ -794,6 +817,18 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 	}
 
 	destPath := filepath.Join(destDir, slug+".md")
+
+	// Never overwrite an existing destination. lockedWrite is an unconditional
+	// atomic overwrite, so a re-retire of a duplicate slug would clobber the
+	// historical done/ (or cancelled/) record in place. That is the actual
+	// data-loss mechanism; surface it as a bug state rather than destroy the
+	// prior record.
+	if _, err := os.Stat(destPath); err == nil {
+		return fmt.Errorf("cannot move task %q to %q: a task of that slug already exists there — refusing to overwrite the existing record", slug, destPath)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat dest: %w", err)
+	}
+
 	if err := v.lockedWrite(destPath, []byte(updated)); err != nil {
 		return fmt.Errorf("write to dest: %w", err)
 	}
