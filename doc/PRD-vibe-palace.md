@@ -1945,6 +1945,11 @@ implementation lives in `internal/embedder/onnx.go`.
 **Goal:** Wing/hall/room structural metadata, palace graph navigation, AAAK
 compression dialect.
 
+> **AAAK is PARKED — implemented but not wired into any production path.** The
+> metadata (6.1), graph (6.2), and navigation tools (6.4) ship and are used;
+> the AAAK compression dialect (6.3) is built and unit tested but has no
+> production caller. See Task 6.3 for details.
+
 ### Task 6.1: Palace Metadata System
 
 **Deliverable:** `internal/palace/metadata.go`
@@ -1992,10 +1997,21 @@ compression dialect.
 
 ### Task 6.3: AAAK Compression Dialect
 
-**Deliverable:** `internal/palace/aaak.go`
+> **PARKED — implemented but not wired into any production path.** The AAAK
+> code exists in `internal/palace/aaak.go` and is unit tested, but `Compress`
+> and `CompressBatch` have no non-test callers: no context-loading path in the
+> tree produces or consumes an AAAK digest. This is a deliberately kept,
+> unwired subsystem, not a delivered capability. The signatures and acceptance
+> criteria below describe the intended dialect; treat the "matches MemPalace's
+> format" and "<10% of input" claims as design targets, not verified-in-use
+> results, since nothing in production exercises the path.
 
-- `Compress(text string, metadata DrawerMetadata) string` — text → AAAK format
-- `CompressBatch(drawers []Drawer) []string` — batch compression
+**Deliverable:** `internal/palace/aaak.go` (built, not wired)
+
+- `Compress(text string, meta DrawerMetadata, reg *EntityRegistry) AAKResult`
+  — text → AAAK format
+- `CompressBatch(drawers []storage.Drawer, metas []DrawerMetadata) []AAKResult`
+  — batch compression
 - Entity code generation (3-letter uppercase from known entities)
 - Topic extraction (frequency-ranked, stop words removed, top 3)
 - Key sentence extraction (decision keywords, entity mentions, length scoring)
@@ -2003,11 +2019,14 @@ compression dialect.
 - Flag detection (ORIGIN, CORE, SENSITIVE, PIVOT, GENESIS, DECISION, TECHNICAL)
 - Format: `ZID:ENTITIES|topics|"key_quote"|WEIGHT|EMOTIONS|FLAGS`
 
-**Note:** AAAK is explicitly documented as **lossy compression** (structured
-summarization). The palace stores verbatim content in drawers; AAAK provides
-token-efficient summaries for context loading. Both representations coexist.
+**Note:** AAAK is designed as **lossy compression** (structured
+summarization). The palace stores verbatim content in drawers; AAAK was
+intended to provide token-efficient summaries for context loading. Because it
+is parked (no production caller), only the verbatim drawer representation is
+actually in use today.
 
-**Acceptance criteria:**
+**Acceptance criteria (design targets — not verified in a production path, as
+the subsystem is parked):**
 - Compression output matches MemPalace's format
 - Emotion and flag detection produce reasonable results on test content
 - Entity codes generated correctly from known entity registry
@@ -3087,8 +3106,7 @@ Once semantic search is operational:
 | **Hall** | Memory type classification: facts, events, discoveries, preferences, advice |
 | **Room** | Topic-level grouping within a wing (e.g., "auth-migration", "ci-pipeline") |
 | **Tunnel** | A room that appears in two or more wings, creating cross-domain connections |
-| **Closet** | An AAAK-compressed summary of drawer content for token-efficient loading |
-| **AAAK** | Autonomous Adaptive Associative Knowledge — a lossy structured compression format |
+| **AAAK** | Autonomous Adaptive Associative Knowledge — a lossy structured compression format. **PARKED: implemented but not wired into any production path; no code produces or consumes an AAAK digest today.** |
 | **Triple** | A subject-predicate-object fact in the knowledge graph, with temporal validity |
 | **Session** | A captured work unit with metadata, transcript, and semantic index |
 | **Precedence** | The resolution order: project override > vault template > embedded default |
@@ -3260,7 +3278,7 @@ vibe-palace/
 │   ├── palace/
 │   │   ├── metadata.go            # Wing/hall/room detection
 │   │   ├── graph.go               # Palace graph (BFS, tunnels)
-│   │   └── aaak.go                # AAAK compression dialect
+│   │   └── aaak.go                # AAAK compression dialect (PARKED: built, no production caller)
 │   ├── kg/
 │   │   ├── entity_detector.go     # Regex-based entity detection
 │   │   └── extractor.go           # Triple extraction from text

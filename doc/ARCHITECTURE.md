@@ -1451,6 +1451,13 @@ advice, happened → events, default → facts).
 internal/palace/aaak.go
 ```
 
+> **PARKED — implemented but not wired into any production path.** AAAK is
+> built and unit tested, but no production code invokes it: `Compress` /
+> `CompressBatch` have no non-test callers, and no context-loading path in the
+> tree produces or consumes an AAAK digest. The code is kept deliberately (it
+> may yet earn a caller); the description below is of the format as built, not
+> of a capability the running system currently exercises.
+
 AAAK (Autonomous Adaptive Associative Knowledge) is a lossy compression
 format for token-efficient context loading:
 

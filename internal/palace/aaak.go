@@ -5,8 +5,15 @@
 // graph navigation, and AAAK compression.
 //
 // AAAK (Autonomous Adaptive Associative Knowledge) is a lossy compression
-// format that produces token-efficient structured summaries. Verbatim content
-// stays in drawers; AAAK provides compact digests for context loading.
+// format that produces token-efficient structured summaries, intended to give
+// compact digests for context loading.
+//
+// PARKED — implemented but not wired into any production path. AAAK is built
+// and unit tested, but no production code calls Compress or CompressBatch:
+// nothing in the tree produces or consumes an AAAK digest today, and no
+// context-loading path uses one. The code is kept deliberately (it may yet
+// earn a caller) but must not be read as a live capability. See the AAAK
+// sections of doc/ARCHITECTURE.md and doc/PRD-vibe-palace.md.
 //
 // Format: ZID:ENTITIES|topics|"key_quote"|WEIGHT|EMOTIONS|FLAGS
 package palace
