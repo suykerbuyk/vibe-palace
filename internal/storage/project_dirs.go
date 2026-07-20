@@ -163,6 +163,9 @@ func (v *Vault) AppendIterationOwned(project, title, body string, override *int)
 
 // ListTriples returns all triples for a project by globbing the triples directory.
 func (v *Vault) ListTriples(project string) ([]Triple, error) {
+	if err := v.checkFormatGate(); err != nil {
+		return nil, err
+	}
 	triplesDir, err := v.KGTriplesDir(project)
 	if err != nil {
 		return nil, err

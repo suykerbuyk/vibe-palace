@@ -206,6 +206,9 @@ func (v *Vault) GetTriple(project, subject, predicate, object string) (Triple, e
 // QueryEntity returns triples involving the named entity, filtered by
 // direction ("out", "in", or "both") and temporal validity (asOf date).
 func (v *Vault) QueryEntity(project, name, asOf, direction string) ([]Triple, error) {
+	if err := v.checkFormatGate(); err != nil {
+		return nil, err
+	}
 	triplesDir, err := v.KGTriplesDir(project)
 	if err != nil {
 		return nil, err
@@ -299,6 +302,9 @@ func (v *Vault) Timeline(project, entity string) ([]Triple, error) {
 
 // KGStats returns summary statistics for the knowledge graph.
 func (v *Vault) KGStats(project string) (KGStats, error) {
+	if err := v.checkFormatGate(); err != nil {
+		return KGStats{}, err
+	}
 	entities, err := v.ListEntities(project)
 	if err != nil {
 		return KGStats{}, err

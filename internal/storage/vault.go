@@ -16,6 +16,14 @@ import (
 // path-building methods for all vault artifacts.
 type Vault struct {
 	Root string // Absolute, tilde-expanded path to vault root
+
+	// migratorExempt, when true, bypasses the vault data-format READ gate (see
+	// checkFormatGate and internal/surface). ONLY the KG data migration sets it:
+	// the migration must read format-0 (unmigrated) data to rewrite it, so it
+	// cannot be gated against the very format it is about to advance. Zero-value
+	// false ⇒ every normal caller (all existing NewVault call sites) is gated by
+	// default.
+	migratorExempt bool
 }
 
 // config is the minimal TOML structure needed for vault resolution.
