@@ -49,10 +49,13 @@ project's history. Do **not** add "Co-Authored-By" lines or any other AI-authors
 marker, in the message or in code.
 
 **`/stage` does not touch the vault.** It does not run `vp_ingest_commit_msg` and does
-not commit the vault `commit.msg` archive. The archive is populated at wrap time,
-derived from the commits that actually land — so it can never disagree with git, and
-you never have to remember to archive a message in a particular order. Authoring the
-project-root copy here is all a commit needs.
+not commit any vault commit-message artifact. The permanent history —
+`Projects/<slug>/commit-log.md` — is populated at **wrap** time by
+`vp_archive_commit_log`, which walks `git log` over the commits that actually
+landed and appends their real messages. Because it derives from git after the
+fact, it captures this feature-branch commit no matter when or by whom it was
+made, and you never have to remember to archive a message in a particular
+order. Authoring the project-root `commit.msg` here is all a commit needs.
 
 ## Step 4: Stage Project Files
 

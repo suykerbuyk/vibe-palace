@@ -33,11 +33,14 @@ var CanonicalGitignorePatterns = []string{
 // The /wrap two-copy workflow keeps two copies: the project-root copy is
 // host-local scratch (ignored by CanonicalProjectGitignorePatterns) that
 // `git commit -F commit.msg` consumes once and never commits, while the
-// vault copy is the canonical, COMMITTED archive — each wrap overwrites and
-// commits it, so `git log -p Projects/<slug>/commit.msg` is the permanent
-// history of every commit message. An earlier change (a0477e4) wrongly added
-// a depth-agnostic `commit.msg` rule here, ignoring the vault archive too;
-// that was reverted.
+// vault copy is the canonical, COMMITTED mirror of the LATEST commit message —
+// each wrap overwrites and commits it. The single-overwrite contract holds:
+// `commit.msg` always reflects the most recent message, no more. The PERMANENT
+// history is a separate append-log, Projects/<slug>/commit-log.md, to which
+// every landed commit's full message is appended at wrap (see commit_log.go);
+// `git log -p Projects/<slug>/commit-log.md` recovers every message ever
+// archived. An earlier change (a0477e4) wrongly added a depth-agnostic
+// `commit.msg` rule here, ignoring the vault archive too; that was reverted.
 
 // CanonicalProjectGitignorePatterns is the set of .gitignore lines that
 // vibe-palace owns in a *consuming project's* repository root. These are

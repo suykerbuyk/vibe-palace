@@ -77,8 +77,9 @@ func TestReconcileVaultGitignore_FreshFile(t *testing.T) {
 // TestReconcileVaultGitignore_KeepsCommitMsgArchive guards that the vault
 // canonical set does NOT ignore commit.msg. The /wrap two-copy workflow keeps
 // the vault copy (Projects/<slug>/commit.msg) as the canonical, COMMITTED
-// archive — `git log -p` over it is the permanent history of every commit
-// message — while only the project-root copy is host-local scratch (ignored by
+// mirror of the LATEST commit message (single-overwrite) — the permanent
+// history is the sibling append-log Projects/<slug>/commit-log.md — while only
+// the project-root copy is host-local scratch (ignored by
 // CanonicalProjectGitignorePatterns). a0477e4 wrongly added a depth-agnostic
 // `commit.msg` rule here, ignoring the vault archive too; this is the
 // regression guard against re-introducing it. (The project-root copy's

@@ -256,6 +256,30 @@ func (v *Vault) CommitMsgFile(project string) (string, error) {
 	return filepath.Join(v.Root, "Projects", project, "commit.msg"), nil
 }
 
+// CommitLogFile returns the path to a project's vault commit-log append-log:
+// {vault}/Projects/{project}/commit-log.md. Unlike commit.msg (a
+// single-overwrite mirror of the LATEST message), commit-log.md is the
+// permanent, append-only history — each landed commit's full message is
+// appended, so `git log -p` over it recovers every message ever archived.
+func (v *Vault) CommitLogFile(project string) (string, error) {
+	if err := slug.Validate(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.Root, "Projects", project, "commit-log.md"), nil
+}
+
+// CommitLogAnchorFile returns the path to a project's vault-resident
+// last-archived anchor: {vault}/Projects/{project}/commit-log.anchor. It holds
+// the SHA of the commit through which commit-log.md is up to date. It lives in
+// the VAULT (not .vibe-palace/) so vp_vault_sync commits it each wrap without
+// re-dirtying a coherency-only feature-branch project tree.
+func (v *Vault) CommitLogAnchorFile(project string) (string, error) {
+	if err := slug.Validate(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.Root, "Projects", project, "commit-log.anchor"), nil
+}
+
 // IterationsFile returns the path to a project's iterations file:
 // {vault}/Projects/{project}/iterations.md
 func (v *Vault) IterationsFile(project string) (string, error) {

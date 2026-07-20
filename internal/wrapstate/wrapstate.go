@@ -48,10 +48,16 @@ const (
 	ShapeBookkeeping  WrapShape = "bookkeeping"
 )
 
-// CommitInfo summarizes a commit between the last-iter anchor and HEAD.
+// CommitInfo summarizes a commit between an anchor and HEAD. Subject is the
+// first line only (filled by CommitsSinceAnchor); Body is the FULL raw message
+// including the subject (filled by CommitBodiesSinceAnchor). The two probes
+// populate different fields deliberately: the subject-only line-split walk
+// cannot carry a multi-line body, so the commit-log archive uses the
+// record-separated body walk instead.
 type CommitInfo struct {
 	SHA     string `json:"sha"`
 	Subject string `json:"subject"`
+	Body    string `json:"body,omitempty"`
 }
 
 // TaskDeltas reports task-folder transitions since the last wrap. Deltas are

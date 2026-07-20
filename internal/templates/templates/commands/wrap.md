@@ -325,10 +325,10 @@ Everything below applies **only** when the session did write project code.
 There are **two** `commit.msg` copies and **both** must be kept in
 sync:
 
-1. **Vault archive** — canonical; **committed** to the vault repo each
-   wrap and synced across machines. `git log -p` over it is the
-   permanent history of every commit message (future MCP data-mining):
-   `<vault_path>/Projects/<project>/commit.msg`
+1. **Vault mirror** — the **latest** commit message, **committed** to the
+   vault repo each wrap and synced across machines (single-overwrite, not a
+   history): `<vault_path>/Projects/<project>/commit.msg`. The permanent
+   history is a separate append-log, `commit-log.md` — Step 7b keeps it.
 2. **Project-root working copy** — gitignored, host-local scratch; the
    path that `git commit -F commit.msg` reads when the user runs it,
    consumed once and never committed:
@@ -383,6 +383,21 @@ be terse — be verbose. The commit message is the project's history.
 Do **not** add "Co-Authored-By" lines to commit messages or source
 files.
 
+## Step 7b: Archive landed commits to the permanent history
+
+Call **`vp_archive_commit_log`** with `project_path` set to the local
+project repo root. It walks `git log <last-archived>..HEAD` and appends
+each **landed** commit's full message to `Projects/<slug>/commit-log.md`
+(the permanent history), then advances the anchor. Run it **every wrap,
+in BOTH flows** — it is DERIVED from git and idempotent, so it needs no
+call-order care and a re-run with no new commits is a no-op.
+
+This is the step that captures **feature-branch** commits: they land
+*before* the wrap, so Step 7's dirty-tree ingest self-skips and never
+sees them; this walk reads the real committed messages after the fact.
+It runs **regardless** of whether Step 7 fired, so do not gate it behind
+Step 7's "no project code" skip.
+
 ## Step 8: Stage Project Files
 
 Stage all modified and newly added project files using `git add`
@@ -409,10 +424,12 @@ the next and surfaces the error at the end. If all pushes fail
 (no remote, network error), warn and proceed — local state is still
 valid.
 
-Include `Projects/<slug>/commit.msg` among the synced paths — the vault
-copy is the committed archive (Step 7), so each wrap records the new
-commit message in vault git history. (The project-root copy stays
-gitignored and is never synced.)
+Include `Projects/<slug>/commit.msg`, `Projects/<slug>/commit-log.md`,
+and `Projects/<slug>/commit-log.anchor` among the synced paths — the
+`commit.msg` mirror is written by Step 7, the append-log and its anchor
+by Step 7b, and all three must be committed so the permanent history and
+its cursor advance together each wrap. (The project-root `commit.msg`
+copy stays gitignored and is never synced.)
 
 Include `Projects/<slug>/memory/` among the synced paths — AI memory is
 user-persistent content like `resume.md` and `tasks/`, so wrap commits it

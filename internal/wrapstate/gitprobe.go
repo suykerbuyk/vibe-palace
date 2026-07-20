@@ -265,6 +265,81 @@ func CommitsSinceAnchor(ctx context.Context, projectDir, anchorSHA string) ([]Co
 	return commits, nil
 }
 
+// CommitBodiesSinceAnchor returns the commits between anchorSHA (exclusive) and
+// HEAD (inclusive) in projectDir, in CHRONOLOGICAL order (oldest first), each
+// carrying its FULL raw message (%B) in CommitInfo.Body. Empty anchorSHA
+// degrades to an empty list.
+//
+// It exists as a sibling of CommitsSinceAnchor rather than an extension of it
+// because %B is multi-line: the subject-only walk splits on '\n', which a
+// commit body would shred into bogus records. The framing here is
+// record-separated instead — each commit is emitted as
+//
+//	<sha><US><raw body><RS>
+//
+// where US is the ASCII unit separator (0x1f) between the sha and the body and
+// RS is the ASCII record separator (0x1e) terminating each commit. Both are
+// control characters that never occur in a commit message, so a body of
+// arbitrary length and internal newlines round-trips intact. --reverse yields
+// oldest-first so appends to commit-log.md read as a forward history.
+func CommitBodiesSinceAnchor(ctx context.Context, projectDir, anchorSHA string) ([]CommitInfo, error) {
+	if projectDir == "" || anchorSHA == "" {
+		return nil, nil
+	}
+	out, err := gitCmdRunner(ctx, projectDir,
+		"log", "--reverse", "--format=%H%x1f%B%x1e", anchorSHA+"..HEAD")
+	if err != nil {
+		return nil, err
+	}
+	return parseCommitBodies(out), nil
+}
+
+// parseCommitBodies splits the record-separated log emitted by
+// CommitBodiesSinceAnchor into {SHA, Body} records. Each RS-delimited record is
+// "<sha><US><body>", possibly wrapped in the newlines git inserts between
+// format outputs; those wrapping newlines are trimmed while the body's own
+// interior newlines are preserved. The subject is derived as the body's first
+// line so callers that want just the headline still have it.
+func parseCommitBodies(out string) []CommitInfo {
+	commits := []CommitInfo{}
+	for rec := range strings.SplitSeq(out, "\x1e") {
+		rec = strings.Trim(rec, "\n")
+		if rec == "" {
+			continue
+		}
+		sha, body, ok := strings.Cut(rec, "\x1f")
+		if !ok {
+			commits = append(commits, CommitInfo{SHA: strings.TrimSpace(rec)})
+			continue
+		}
+		body = strings.TrimRight(body, "\n")
+		subject, _, _ := strings.Cut(body, "\n")
+		commits = append(commits, CommitInfo{
+			SHA:     strings.TrimSpace(sha),
+			Subject: subject,
+			Body:    body,
+		})
+	}
+	return commits
+}
+
+// HeadSHA returns the full SHA of HEAD in projectDir, or "" when projectDir is
+// empty, is not a repo, or the probe fails (an unborn branch, a detached
+// probe error). Callers treat "" as "nothing to anchor to" and no-op.
+func HeadSHA(ctx context.Context, projectDir string) (string, error) {
+	if projectDir == "" {
+		return "", nil
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, ".git")); err != nil {
+		return "", nil
+	}
+	out, err := gitCmdRunner(ctx, projectDir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", nil
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // FilesChangedSinceAnchor returns the list of files that differ between
 // anchorSHA and HEAD in projectDir. Empty anchorSHA degrades to an empty list.
 func FilesChangedSinceAnchor(ctx context.Context, projectDir, anchorSHA string) ([]string, error) {

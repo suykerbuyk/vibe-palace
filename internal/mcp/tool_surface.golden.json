@@ -7,6 +7,11 @@
       "schema_sha256": "dd6e698ebcc3a491313e5a49fe732198d0d83f718daf860819011c6ea778ce05"
     },
     {
+      "name": "vp_archive_commit_log",
+      "mutating": true,
+      "schema_sha256": "9cd48c4bd6a8b45a6c9dc43136790b567fe68a375d5f6602b8d7881715be6e87"
+    },
+    {
       "name": "vp_archive_link",
       "mutating": true,
       "schema_sha256": "22c8569c3fb0fec4308255b42965eb2f5a8ddf73de0043ec82f30cb08e8c8387"

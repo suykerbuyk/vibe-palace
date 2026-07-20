@@ -38,6 +38,9 @@ var MutatingToolNames = []string{
 	"vp_memory_delete",
 	"vp_memory_harvest",
 	"vp_ingest_commit_msg",
+	// vp_archive_commit_log appends landed commit messages to the vault
+	// commit-log.md permanent history and advances the last-archived anchor.
+	"vp_archive_commit_log",
 	"vp_stamp_iter",
 	"vp_kg_add",
 	"vp_kg_invalidate",

@@ -99,6 +99,7 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	reg.MustRegister(MemoryDeleteTool(vault))
 	reg.MustRegister(MemoryHarvestTool(vault))
 	reg.MustRegister(IngestCommitMsgTool(vault))
+	reg.MustRegister(ArchiveCommitLogTool(vault))
 	reg.MustRegister(CollectWrapStateTool(vault))
 	reg.MustRegister(StampIterTool(vault))
 	reg.MustRegister(PreflightWrapTool(vault))
