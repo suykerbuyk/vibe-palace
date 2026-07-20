@@ -615,13 +615,11 @@ func TestLazyBuildRunsOnce(t *testing.T) {
 	errs := make([]error, searchers)
 	counts := make([]int, searchers)
 	for i := range searchers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			res, err := eng.Search(ctx, "document", SearchFilters{Project: "proj"})
 			errs[i] = err
 			counts[i] = len(res)
-		}()
+		})
 	}
 	wg.Wait()
 
