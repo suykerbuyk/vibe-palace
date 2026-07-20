@@ -67,6 +67,45 @@ func TestListEntries_SortedByCapturedAt(t *testing.T) {
 	}
 }
 
+// An UNREADABLE transcripts directory must produce an error, never an empty
+// listing. filepath.Glob swallowed EACCES and returned nil,nil -- "I could not
+// look" reported as "there was nothing there". os.ReadDir surfaces it.
+func TestListEntries_UnreadableDirIsError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; directory permission bits do not bind")
+	}
+	vault, _ := seedArchive(t, "sess-unreadable")
+	dir := filepath.Join(vault, "Projects", "demo", "transcripts")
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	entries, err := ListEntries(vault, "demo")
+	if err == nil {
+		t.Fatalf("want an error for an unreadable transcripts dir; got %d entries, nil error", len(entries))
+	}
+	if entries != nil {
+		t.Errorf("entries must be nil on error, got %v", entries)
+	}
+}
+
+// An ABSENT transcripts directory is the common no-transcripts-yet project: it
+// must stay a non-erroring empty listing, matching Glob's old behaviour, so
+// `vp archive list` does not begin erroring for every project without an
+// archive.
+func TestListEntries_AbsentDirIsEmptyNotError(t *testing.T) {
+	vaultRoot := filepath.Join(t.TempDir(), "vault")
+	// Nothing under Projects/demo/transcripts -- the directory never existed.
+	entries, err := ListEntries(vaultRoot, "demo")
+	if err != nil {
+		t.Fatalf("absent transcripts dir must not error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("absent transcripts dir must be an empty listing, got %d entries", len(entries))
+	}
+}
+
 func TestVerify_OK(t *testing.T) {
 	vault, res := seedArchive(t, "sess-verify-ok")
 	entries, err := ListEntries(vault, "demo")

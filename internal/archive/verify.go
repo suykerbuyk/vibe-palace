@@ -29,18 +29,33 @@ type Entry struct {
 // are returned sorted by CapturedAt (oldest first).
 func ListEntries(vaultRoot, projectSlug string) ([]*Entry, error) {
 	dir := filepath.Join(vaultRoot, "Projects", projectSlug, "transcripts")
-	matches, err := filepath.Glob(filepath.Join(dir, "*.manifest.json"))
+	// filepath.Glob would swallow a directory read error -- EACCES, a vanished
+	// mount -- and return nil,nil, reporting "I could not look" as "there was
+	// nothing there". os.ReadDir surfaces that read error instead. A genuinely
+	// absent transcripts directory (the common no-transcripts-yet project) is
+	// NOT an error: it is an empty listing, matching Glob's old behaviour for
+	// that case and keeping `vp archive list` non-erroring for every project
+	// that has never archived a transcript.
+	dirents, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("glob manifests: %w", err)
+		if os.IsNotExist(err) {
+			return []*Entry{}, nil
+		}
+		return nil, fmt.Errorf("read transcripts dir: %w", err)
 	}
 
-	entries := make([]*Entry, 0, len(matches))
-	for _, mp := range matches {
+	entries := make([]*Entry, 0, len(dirents))
+	for _, de := range dirents {
+		name := de.Name()
+		if !strings.HasSuffix(name, ".manifest.json") {
+			continue
+		}
+		mp := filepath.Join(dir, name)
 		m, err := ReadManifest(mp)
 		if err != nil {
-			// Skip unreadable manifests but note them via caller's logs
-			// later. Returning error here would poison the whole list
-			// for one bad file.
+			// Skip an unreadable individual manifest -- one bad file must not
+			// poison the whole list. Directory-level blindness is fatal above;
+			// a single unreadable manifest is tolerated here.
 			continue
 		}
 		ap := strings.TrimSuffix(mp, ".manifest.json") + ".jsonl.zst"

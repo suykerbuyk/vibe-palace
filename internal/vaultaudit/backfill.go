@@ -5,8 +5,6 @@ package vaultaudit
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
@@ -49,9 +47,9 @@ type BackfillCandidate struct {
 
 // BackfillCandidates enumerates candidates VAULT-GLOBAL — the stranded set
 // spans projects. A transcripts directory that exists but cannot be read is an
-// ERROR, never "no candidates": filepath.Glob (under archive.ListEntries)
-// swallows permission errors, so readability is probed first, exactly as
-// auditArchiveRoundTrip does.
+// ERROR, never "no candidates": archive.ListEntries (on os.ReadDir) returns
+// that read error rather than the empty listing filepath.Glob used to swallow
+// it into. A genuinely absent directory is an empty listing, not an error.
 func BackfillCandidates(v *storage.Vault) ([]BackfillCandidate, error) {
 	projects, err := v.ListAllProjects()
 	if err != nil {
@@ -62,13 +60,6 @@ func BackfillCandidates(v *storage.Vault) ([]BackfillCandidate, error) {
 	for _, p := range projects {
 		if !p.InProjects {
 			continue
-		}
-		dir := filepath.Join(v.Root, "Projects", p.Slug, "transcripts")
-		if _, err := os.ReadDir(dir); err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, fmt.Errorf("%s: cannot read transcripts: %w", p.Slug, err)
 		}
 		entries, err := archive.ListEntries(v.Root, p.Slug)
 		if err != nil {
@@ -172,13 +163,10 @@ func ApplyBackfill(v *storage.Vault, project, sessionID string) (*ApplyBackfillR
 
 	res := &ApplyBackfillResult{Project: project, SessionID: sessionID}
 
-	dir := filepath.Join(v.Root, "Projects", project, "transcripts")
-	if _, err := os.ReadDir(dir); err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no transcripts directory for project %q", project)
-		}
-		return nil, fmt.Errorf("cannot read transcripts for %q: %w", project, err)
-	}
+	// archive.ListEntries owns transcripts-dir blindness: an unreadable tree is
+	// an error (not the empty listing filepath.Glob swallowed a permission error
+	// into), while an absent tree is an empty listing. An absent or empty tree
+	// therefore falls through to the honest "no manifest for session id" below.
 	entries, err := archive.ListEntries(v.Root, project)
 	if err != nil {
 		return nil, fmt.Errorf("list transcripts: %w", err)

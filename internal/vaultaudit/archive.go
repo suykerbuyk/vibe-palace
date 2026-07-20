@@ -67,20 +67,12 @@ func auditArchiveRoundTrip(vault *storage.Vault) ([]Finding, []string, error) {
 			continue
 		}
 
-		// 🔴 DO NOT TRUST ListEntries TO REPORT BLINDNESS. It is built on
-		// filepath.Glob, and Glob SWALLOWS a permission error: an unreadable
-		// transcripts directory comes back as zero matches and a nil error, which is
-		// indistinguishable from a project that has no transcripts. That is exactly
-		// "I could not look" reported as "there was nothing there" — the vp_health
-		// bug of 201 — and an auditor built on it would issue a clean bill of health
-		// for a tree it never read. So probe readability FIRST, and only then list.
-		// (The same blindness affects `vp archive list`; filed separately.)
-		dir := filepath.Join(vault.Root, "Projects", p.Slug, "transcripts")
-		if _, err := os.ReadDir(dir); err != nil && !os.IsNotExist(err) {
-			unknowns = append(unknowns, fmt.Sprintf("%s: cannot read transcripts: %v", p.Slug, err))
-			continue
-		}
-
+		// archive.ListEntries now owns blindness: it is built on os.ReadDir and
+		// returns an error for a transcripts directory it cannot read (EACCES, a
+		// vanished mount), instead of the old filepath.Glob that swallowed the
+		// permission error and reported an unreadable tree as an empty one. A
+		// genuinely absent directory is an empty listing, not an error, so the
+		// no-transcripts project stays clean.
 		entries, err := archive.ListEntries(vault.Root, p.Slug)
 		if err != nil {
 			unknowns = append(unknowns, fmt.Sprintf("%s: cannot list transcripts: %v", p.Slug, err))
