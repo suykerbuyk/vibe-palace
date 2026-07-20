@@ -66,8 +66,12 @@ Write `{{DELIVERABLE}}` — typically 1–3 pages. Every non-obvious claim cites
    they disagree, **which one CI actually runs**. That disagreement is where the
    findings live. Every command is `[unverified]`.
 4. **Test** — what test suites exist, how many, how they are invoked, and — the
-   question that matters — **are they actually run by CI?** Count them. A suite
-   that exists and never runs is a finding, not a feature.
+   question that matters — **are they actually run by CI?** Count them by *running*
+   the count (e.g. `grep -rl 'testing\.[TB]' | wc -l`) and cite the command — never
+   eyeball a number you then report. The same discipline covers **every** count you
+   state in this doc — CI `jobs:` keys, tools, subcommands: run the count, show the
+   command and its integer (e.g. `yq '.jobs | keys | length' ci.yml`). A suite that
+   exists and never runs is a finding, not a feature.
 5. **Deploy** — how it ships: image, chart, DaemonSet, systemd unit, nothing at
    all. If it is not deployed anywhere you can find, **say that explicitly** — it
    changes the severity of everything else in the repo.
@@ -76,7 +80,18 @@ Write `{{DELIVERABLE}}` — typically 1–3 pages. Every non-obvious claim cites
    pins it. Never reason about this from the general rule; check the build file.
 7. **Gotchas** — the traps. Fossils, half-migrations, config that lies, defaults
    that differ between the Makefile and CI, a flag that silently changes
-   correctness. This section is usually the most valuable one in the doc.
+   correctness. This section is usually the most valuable one in the doc. Two traps
+   to hunt for *actively*, because neither appears in a diff: **(a) the defect no
+   comment points at** — do not let your findings all trace back to a `TODO` or an
+   author's admission; reason about correctness from the code itself. **(b)
+   duplicated implementations of one responsibility** — the same write/parse/auth
+   logic living in two places, or a shared primitive that some callers
+   re-implement privately instead of using; a change to one copy silently leaves the
+   others wrong. Name each copy's `path:line` and flag it for the register. **(c) on-disk
+   names that are not portable** — for any filename, directory key, or ID the code writes,
+   check what characters the components can contain against NTFS/exFAT reserved chars
+   (`: \ / * ? " < > |`) and case-collisions; **read the encoder** rather than trusting the
+   word "encoded". A store that cannot exist on a shipped OS is a finding, not a footnote.
 8. **Provenance** — the SHA, and the files you actually read, as `path:line`.
 
 ### 9. Deep-dive seed  *(required — this is the handoff)*

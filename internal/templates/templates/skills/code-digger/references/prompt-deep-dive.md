@@ -91,7 +91,10 @@ relative to the workspace root.
 2. **External interfaces** — every way the outside world touches it: network
    protocols and ports, APIs (REST/gRPC/thrift/S3), CLI surface, config files,
    environment variables, signals, on-disk formats it reads or writes. For each:
-   the wire/serialisation format and the file that defines it.
+   the wire/serialisation format and the file that defines it. For any on-disk **name or
+   key** (filenames, directory keys, IDs), also audit the input charset against the
+   filesystems the store must survive on — NTFS/exFAT reserved chars (`: \ / * ? " < > |`),
+   case collisions, length caps — by **reading the encoder**, not trusting the word "encoded".
 3. **Internal decomposition** — the real module/package/subsystem structure and
    what each part owns. Not a directory listing: an explanation of the **seams**.
 4. **Data path** — trace a unit of data end to end: ingest → transform →
@@ -120,7 +123,12 @@ relative to the workspace root.
     of the process/container. **Note what is absent.** An unauthenticated data
     plane is a finding, not a footnote.
 12. **Evolution and technical debt** — dead code, fossils, TODO/FIXME clusters,
-    half-migrations, vendored drift. What would bite a newcomer?
+    half-migrations, vendored drift, and **duplicated implementations of one
+    responsibility** (the same logic in two places, or a shared primitive that some
+    callers re-implement privately and thereby bypass — a fix to one copy leaves the
+    rest wrong, and the bypasses skip whatever the primitive centralises). What would
+    bite a newcomer? And do not let this section become a transcription of the
+    authors' own `TODO`s: the debt **no comment marks** is the debt worth finding.
 13. **Provenance and unknowns** — the SHA, the files you actually read as
     `path:line`, and **an explicit list of what remains unknown**. An honest
     unknowns list is worth more than a confident guess. Anything you could not

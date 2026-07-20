@@ -71,6 +71,40 @@ repo. No tests run by CI. None of these appear in a diff, so nobody has ever rev
 They are frequently the most serious things you will find, and only a reader explicitly
 asking *"what is missing?"* will ever find them.
 
+**The codebase will not always convict itself.** The strongest findings are often
+*harvested* — a convicting comment, a `TODO`, an ADR, a named task. A well-run but quiet
+codebase hands you none of that, and a method that leans on self-incrimination goes thin
+exactly there. Budget explicit effort for the defect **no comment points at**: reason about
+correctness from the data path itself, not from what the authors chose to write down. If
+every finding traces to something already documented, you have restated known issues, not
+audited the code.
+
+**Duplicated implementations are a finding.** Two or more places implementing the same
+responsibility — the same write primitive, decision table, parser, or auth check — are a
+*fragility* finding even when each copy is correct today: a fix or a security patch to one
+copy silently leaves the siblings wrong, and the copies drift until they disagree about the
+same rule. Name every parallel implementation with its `path:line`, say what one
+responsibility they share, and propose the consolidation. The most dangerous form is a
+**central primitive that private copies bypass** — those copies also skip whatever it
+centralises (a lock, an fsync, a stamp), so this and an *absence* finding are the same
+defect.
+
+**Every stated count is a computed count.** Any number you report — test files, CI jobs,
+tools, call sites, LOC — is produced by *running the count* and citing the command, never by
+eyeballing a list. An eyeballed count is an unverified claim, and the register's credibility
+does not survive an off-by-one in a headline number. This bites hardest on the counts you
+*think* you can eyeball off a short list — CI `jobs:` keys, config sections, subcommands. Put
+the command and its integer output right next to the number.
+
+**Audit the representation, don't just transcribe it.** For every on-disk name, key, or
+serialisation a store uses — a filename, a directory key, an ID, an encoded field — audit the
+*input charset* against every filesystem and tool the vault must survive on: NTFS/exFAT
+reserved characters (`: \ / * ? " < > |`), case-insensitive collisions, path-length caps,
+Unicode normalisation, delimiter injection. An "encoded" component is **not safe until you
+read the encoder** and confirm what it actually escapes. Documenting a scheme without auditing
+its charset is how a store that works on the author's Linux box silently cannot exist on a
+shipped platform.
+
 **Grade the deployment condition separately from the defect.** A data-loss bug in something
 nobody deploys is a High with a condition — *"→ Critical if deployed"* — plus an explicit
 question for a human. It is not a Critical, and it is not nothing.
@@ -176,3 +210,11 @@ to make it easy for the reader to check that you are.
   honours an ignore-file returns "not found" for code that is right there.
 - **Documenting the repo instead of the product.** Nobody deploys a repo. Follow the
   binaries, and follow the bytes.
+- **Leaning on the confession.** Your best findings all traced to a comment, a `TODO`, or
+  an ADR — so a codebase that documented nothing would have gotten a far thinner register.
+  Self-incrimination is a lead, not a method; the defect nobody wrote down is the one worth
+  the most.
+- **Transcribing a scheme instead of auditing it.** You wrote down the on-disk naming or
+  encoding format and moved on, trusting the word "encoded" — without reading the encoder or
+  asking whether the result is legal on every target filesystem. The scheme that reads
+  cleanly is exactly the one whose character set nobody checked.

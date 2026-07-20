@@ -104,6 +104,25 @@ None of these appear in any diff, so nobody has ever reviewed them. They are
 frequently the most serious things in the register, and they are only findable by a
 reader who is explicitly asking *"what is missing?"*
 
+### Duplicated implementations are a finding
+
+Two or more places that implement the same responsibility — the same write primitive, the
+same decision table, the same parser, the same validation or auth check — are a **fragility
+finding**, even when each copy is individually correct today. A fix, or a security patch,
+applied to one copy silently leaves the siblings wrong, and the copies drift apart over time
+until they disagree about the same rule.
+
+Record it as **one** finding: name every parallel implementation with its `path:line`, state
+the single responsibility they share, and propose the consolidation. The most dangerous form
+is a **central primitive that private copies bypass** — those copies also skip whatever the
+primitive centralises (a lock, an fsync, a stamp, an auth check), so the duplication and an
+*absence* finding are the same defect wearing two hats.
+
+Do not confuse this with the sibling-check rule above: there, a sibling that does the same
+thing *correctly* protects you from over-reporting one copy's bug across the family; here, the
+existence of siblings that do the same thing *at all* is itself the risk, because the
+duplication — not any one copy's current behaviour — is what will bite when one is changed.
+
 ### Do not inflate
 
 Every finding you overstate costs the reader trust in the ones you got right. A
