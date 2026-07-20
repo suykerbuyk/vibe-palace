@@ -32,11 +32,27 @@ const (
 	StatusUnknown  = "unknown"
 )
 
+// Fault values stamped on WARN lines by the MCP handler seam (mcp.makeHandler).
+// Only FaultCaller is excluded from health Status; FaultInternal and
+// FaultOperational stay amber. A line with no fault field defaults to internal —
+// so an unclassified error is honestly amber, never falsely green.
+const (
+	FaultCaller      = "caller"
+	FaultInternal    = "internal"
+	FaultOperational = "operational"
+)
+
 // Entry is one WARN/ERROR line from the log.
 type Entry struct {
 	Time  string `json:"time"`
 	Level string `json:"level"`
 	Msg   string `json:"msg"`
+
+	// Fault is the caller-vs-fault taxonomy stamped at the log site
+	// (fault="caller"|"internal"|"operational"), empty on lines that carry no
+	// such field. A "caller" line is a guard that WORKED — the tool correctly
+	// rejected bad input — and must not move Status off healthy; see Summarize.
+	Fault string `json:"fault,omitempty"`
 }
 
 // Summary is the health of the log: what has gone wrong recently, and how badly.
@@ -53,8 +69,17 @@ type Summary struct {
 	RecentWarns []Entry `json:"recent_warns,omitempty"`
 
 	WarnCounts map[string]int `json:"warn_counts,omitempty"`
-	LogPath    string         `json:"log_path"`
-	LogSize    int64          `json:"log_size_bytes"`
+
+	// CallerFriction counts in-window lines stamped fault="caller": guards that
+	// rejected bad input. These are deliberately EXCLUDED from Status (a working
+	// guard is not a health problem) but kept as a separate tally, because a tool
+	// being called wrong repeatedly is real friction this project measures — it
+	// just is not a HEALTH signal. Derived from the fault field, never from
+	// categorize(msg), whose message-prefix buckets cannot tell caller from fault.
+	CallerFriction int `json:"caller_friction,omitempty"`
+
+	LogPath string `json:"log_path"`
+	LogSize int64  `json:"log_size_bytes"`
 
 	// Truncated reports that the log is larger than TailBytes, so the counts cover
 	// the tail and not the whole file. Without it, a partial view is
@@ -148,11 +173,23 @@ func Summarize(logPath string, hours, limit int) Summary {
 			continue
 		}
 		msg, _ := raw["msg"].(string)
-		inWindow = append(inWindow, Entry{Time: ts, Level: level, Msg: msg})
+		fault, _ := raw["fault"].(string)
+		inWindow = append(inWindow, Entry{Time: ts, Level: level, Msg: msg, Fault: fault})
 		s.WarnCounts[categorize(msg)]++
+		if fault == FaultCaller {
+			s.CallerFriction++
+		}
 	}
 
+	// Status is derived over EVERY in-window entry EXCEPT caller-friction lines: a
+	// guard that correctly rejected bad input is not a health problem, and folding
+	// it into status is what made vp_health open amber every session. An ERROR
+	// always wins; otherwise any non-caller WARN (internal or operational) is amber.
+	// A caller line never moves status — it is counted into CallerFriction instead.
 	for _, e := range inWindow {
+		if e.Fault == FaultCaller {
+			continue
+		}
 		if e.Level == "ERROR" {
 			s.Status = StatusErrors
 			break

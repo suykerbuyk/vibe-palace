@@ -488,9 +488,17 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// ~0.4 s to 0.012 s — and the log is capped at 8 MiB. It also never errors: a
 	// health probe that fails is itself a health signal, so it degrades to status
 	// "unknown" rather than failing the bootstrap.
-	if h := vplog.Summarize(vaultLogPath(vault), healthWindowHours, healthDisplayLimit); !h.Healthy() {
+	h := vplog.Summarize(vaultLogPath(vault), healthWindowHours, healthDisplayLimit)
+	if !h.Healthy() {
 		result.Health = &h
 		alerts = append(alerts, healthMessage(h))
+	}
+	// Caller friction is a SEPARATE, non-amber signal: guards that correctly
+	// rejected bad input. It is surfaced distinctly from health.status and only
+	// when the count is non-zero — silent in the healthy case, per the standing
+	// operator rule and the payload's ~110-token headroom.
+	if msg := callerFrictionMessage(h); msg != "" {
+		alerts = append(alerts, msg)
 	}
 
 	// Audit staleness — PUSHED, not pulled, and SILENT WHEN FRESH.

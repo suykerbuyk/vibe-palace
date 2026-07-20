@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
@@ -119,15 +120,19 @@ func Edit(vaultPath, relPath, oldString, newString string, replaceAll bool, expe
 			return EditResult{}, fmt.Errorf("%w: have %s, expected %s", ErrShaConflict, current, expectedSha256)
 		}
 	}
+	// These three are CALLER errors — the caller passed an old_string the file
+	// cannot satisfy. Wrapped as apperr.CallerError (propagated up via %w) so the
+	// MCP seam counts them as friction, not health faults. old_string-not-found on
+	// resume.md was the single highest-frequency amber-maker in the evidence.
 	if oldString == "" {
-		return EditResult{}, fmt.Errorf("vaultfs: edit %s: old_string must be non-empty", relPath)
+		return EditResult{}, apperr.Caller(fmt.Errorf("vaultfs: edit %s: old_string must be non-empty", relPath))
 	}
 	count := strings.Count(string(existing), oldString)
 	if count == 0 {
-		return EditResult{}, fmt.Errorf("vaultfs: edit %s: old_string not found", relPath)
+		return EditResult{}, apperr.Caller(fmt.Errorf("vaultfs: edit %s: old_string not found", relPath))
 	}
 	if count > 1 && !replaceAll {
-		return EditResult{}, fmt.Errorf("vaultfs: edit %s: old_string occurs %d times; pass replace_all=true to replace all", relPath, count)
+		return EditResult{}, apperr.Caller(fmt.Errorf("vaultfs: edit %s: old_string occurs %d times; pass replace_all=true to replace all", relPath, count))
 	}
 
 	var updated string

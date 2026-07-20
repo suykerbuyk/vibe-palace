@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
@@ -303,12 +304,18 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 
 		// Validate against compiled schema.
 		if vErr := validateParams(rt.compiled, params); vErr != nil {
+			// Schema rejection is a CALLER error: the tool did its job. Stamped
+			// fault="caller" so vplog.Summarize counts it as friction without
+			// moving health status off healthy. This is the single most common
+			// "caller passed a bad parameter" class and it fires BEFORE the
+			// handler runs, so it needs its own stamp.
 			slog.Warn("mcp.makeHandler: validation failed",
 				"op", "mcp.makeHandler",
 				"tool", toolName,
 				"request_id", reqID,
 				"session_id", sessionID,
 				"elapsed_ms", time.Since(start).Milliseconds(),
+				"fault", "caller",
 				"err", vErr,
 			)
 			return mcplib.NewToolResultError(vErr.Error()), nil
@@ -317,12 +324,16 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 		// Surface gate: refuse mutating tools when the vault is ahead of this
 		// binary, returning the IncompatibleError remediation in-band.
 		if gErr := r.gateIfMutating(ctx, rt); gErr != nil {
+			// OPERATIONAL, not caller: a vault-ahead-of-this-binary mismatch is a
+			// real condition an operator SHOULD see amber (operator decision), so
+			// this stays out of the caller-friction bucket and keeps health amber.
 			slog.Warn("mcp.makeHandler: surface gate refused",
 				"op", "mcp.makeHandler",
 				"tool", toolName,
 				"request_id", reqID,
 				"session_id", sessionID,
 				"elapsed_ms", time.Since(start).Milliseconds(),
+				"fault", "operational",
 				"err", gErr,
 			)
 			return mcplib.NewToolResultError(gErr.Error()), nil
@@ -331,12 +342,22 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 		// Call the application handler.
 		raw, hErr := rt.tool.Handler(ctx, params)
 		if hErr != nil {
+			// Classify at the seam: a handler error that IS (or wraps) an
+			// apperr.CallerError is the caller's fault — a guard that worked — and
+			// gets fault="caller" (counted as friction, not health). Anything else
+			// defaults to fault="internal" (amber), so an unclassified error stays
+			// honestly amber rather than falsely green.
+			fault := "internal"
+			if apperr.IsCaller(hErr) {
+				fault = "caller"
+			}
 			slog.Warn("mcp.makeHandler: handler error",
 				"op", "mcp.makeHandler",
 				"tool", toolName,
 				"request_id", reqID,
 				"session_id", sessionID,
 				"elapsed_ms", time.Since(start).Milliseconds(),
+				"fault", fault,
 				"err", hErr,
 			)
 			return mcplib.NewToolResultError(hErr.Error()), nil

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -408,4 +409,20 @@ func TestHealthToolClamping(t *testing.T) {
 			t.Errorf("limit:99999 -> recent=%d, want 25 (all fit under 1000 ceiling)", len(hr.RecentWarns))
 		}
 	})
+}
+
+// TestCallerFrictionMessageSilentAtZero — the bootstrap friction line MUST be
+// empty at count 0, so it costs nothing in the healthy case (the ~110-token
+// headroom rule), and MUST render terse when the count is positive.
+func TestCallerFrictionMessageSilentAtZero(t *testing.T) {
+	if msg := callerFrictionMessage(vplog.Summary{CallerFriction: 0}); msg != "" {
+		t.Errorf("callerFrictionMessage at 0 = %q, want empty — the line must be silent in the healthy case", msg)
+	}
+	msg := callerFrictionMessage(vplog.Summary{CallerFriction: 3})
+	if msg == "" {
+		t.Fatal("callerFrictionMessage at 3 is empty — a real friction count must surface")
+	}
+	if !strings.Contains(msg, "3") {
+		t.Errorf("friction line %q does not carry the count", msg)
+	}
 }

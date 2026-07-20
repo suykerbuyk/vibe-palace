@@ -156,3 +156,77 @@ func TestSummarizeRecentWarnsIsNewestN(t *testing.T) {
 		}
 	}
 }
+
+// TestSummarizeExcludesCallerFaultFromStatus is the whole point of the task made
+// executable: a WARN stamped fault="caller" is a guard that WORKED (the tool
+// correctly rejected bad input), so it must NOT move status off healthy — while
+// still being COUNTED as caller friction so the information is not lost.
+func TestSummarizeExcludesCallerFaultFromStatus(t *testing.T) {
+	lines := []string{
+		fmt.Sprintf(`{"time":"%s","level":"WARN","msg":"mcp.makeHandler: handler error","fault":"caller"}`, nowStamp()),
+		fmt.Sprintf(`{"time":"%s","level":"WARN","msg":"mcp.makeHandler: validation failed","fault":"caller"}`, nowStamp()),
+	}
+	s := Summarize(writeLog(t, lines), 24, 20)
+
+	if s.Status != StatusHealthy {
+		t.Errorf("status = %q, want %q — a caller-fault WARN moved health amber, which is the exact bug this task exists to kill", s.Status, StatusHealthy)
+	}
+	if s.CallerFriction != 2 {
+		t.Errorf("caller_friction = %d, want 2 — a caller error must stay VISIBLE as friction; silencing it is a regression, not a fix", s.CallerFriction)
+	}
+}
+
+// TestSummarizePlainWarnStillGoesAmber — an unclassified (internal) WARN must
+// still set status=warnings. The fix must not turn EVERY warning green; only
+// fault="caller" is excluded. A line with no fault field defaults to internal.
+func TestSummarizePlainWarnStillGoesAmber(t *testing.T) {
+	lines := []string{
+		fmt.Sprintf(`{"time":"%s","level":"WARN","msg":"capture: archive not linked"}`, nowStamp()),
+	}
+	s := Summarize(writeLog(t, lines), 24, 20)
+
+	if s.Status != StatusWarnings {
+		t.Errorf("status = %q, want %q — an internal WARN must still go amber", s.Status, StatusWarnings)
+	}
+	if s.CallerFriction != 0 {
+		t.Errorf("caller_friction = %d, want 0 — an unstamped WARN is not caller friction", s.CallerFriction)
+	}
+}
+
+// TestSummarizeOperationalWarnGoesAmber — fault="operational" (the surface-gate
+// refusal: vault ahead of binary) is neither caller nor silent. Per the operator
+// decision it STAYS amber, distinct from caller friction.
+func TestSummarizeOperationalWarnGoesAmber(t *testing.T) {
+	lines := []string{
+		fmt.Sprintf(`{"time":"%s","level":"WARN","msg":"mcp.makeHandler: surface gate refused","fault":"operational"}`, nowStamp()),
+	}
+	s := Summarize(writeLog(t, lines), 24, 20)
+
+	if s.Status != StatusWarnings {
+		t.Errorf("status = %q, want %q — an operational surface-gate refusal should show amber", s.Status, StatusWarnings)
+	}
+	if s.CallerFriction != 0 {
+		t.Errorf("caller_friction = %d, want 0 — operational is not caller friction", s.CallerFriction)
+	}
+}
+
+// TestSummarizeCallerFaultDoesNotMaskARealError — a caller WARN alongside a
+// genuine internal ERROR must not swallow the error: status is still errors, and
+// the caller line is still counted.
+func TestSummarizeCallerFaultDoesNotMaskARealError(t *testing.T) {
+	lines := []string{
+		fmt.Sprintf(`{"time":"%s","level":"WARN","msg":"mcp.makeHandler: handler error","fault":"caller"}`, nowStamp()),
+		fmt.Sprintf(`{"time":"%s","level":"ERROR","msg":"boom: it broke"}`, nowStamp()),
+	}
+	s := Summarize(writeLog(t, lines), 24, 20)
+
+	if s.Status != StatusErrors {
+		t.Errorf("status = %q, want %q — a caller line must not mask a real error", s.Status, StatusErrors)
+	}
+	if s.CallerFriction != 1 {
+		t.Errorf("caller_friction = %d, want 1", s.CallerFriction)
+	}
+	if e := s.RecentWarns; len(e) > 0 && e[0].Fault != FaultCaller {
+		t.Errorf("caller line surfaced in recent_warns without its Fault field: %+v", e[0])
+	}
+}

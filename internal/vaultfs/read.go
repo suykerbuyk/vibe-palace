@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 )
 
 // Size caps for Read: 1 MiB default, settable up to 10 MiB.
@@ -39,7 +41,8 @@ func Read(vaultPath, relPath string, maxBytes int64) (Content, error) {
 		cap = defaultReadCap
 	}
 	if cap > maxReadCap {
-		return Content{}, fmt.Errorf("vaultfs: max_bytes %d exceeds hard limit %d (10 MiB)", cap, maxReadCap)
+		// CALLER error: the caller asked for a cap above the hard limit.
+		return Content{}, apperr.Caller(fmt.Errorf("vaultfs: max_bytes %d exceeds hard limit %d (10 MiB)", cap, maxReadCap))
 	}
 
 	info, err := os.Stat(abs)
@@ -53,7 +56,9 @@ func Read(vaultPath, relPath string, maxBytes int64) (Content, error) {
 		return Content{}, fmt.Errorf("vaultfs: %s is a directory, not a file", relPath)
 	}
 	if info.Size() > cap {
-		return Content{}, fmt.Errorf("vaultfs: file %s is %d bytes, exceeds cap %d (set max_bytes up to %d)", relPath, info.Size(), cap, maxReadCap)
+		// CALLER error: the file exceeds the caller's OWN cap. The remedy is in the
+		// message (raise max_bytes); it is not a fault of the tool.
+		return Content{}, apperr.Caller(fmt.Errorf("vaultfs: file %s is %d bytes, exceeds cap %d (set max_bytes up to %d)", relPath, info.Size(), cap, maxReadCap))
 	}
 
 	data, err := os.ReadFile(abs)

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
@@ -134,7 +135,9 @@ func appendIterationHandler(vault *storage.Vault) mcp.HandlerFunc {
 		// "## Iteration N" header would produce a duplicate. Reject it at the
 		// door and name the fix, rather than silently emitting two headers.
 		if wrapstate.ContainsIterationHeader(p.Narrative) {
-			return nil, fmt.Errorf("narrative must not contain its own \"## Iteration N\" header: the server composes it from the derived number and the title — pass only the body")
+			// CALLER error: the guard rejected a body carrying its own header (the
+			// "### Iteration 999 — LIVE GUARD PROBE" class). The tool worked.
+			return nil, apperr.Caller(fmt.Errorf("narrative must not contain its own \"## Iteration N\" header: the server composes it from the derived number and the title — pass only the body"))
 		}
 
 		n, derived, err := vault.AppendIterationOwned(p.Project, p.Title, p.Narrative, p.Iteration)

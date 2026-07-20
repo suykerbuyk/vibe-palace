@@ -118,6 +118,24 @@ func healthMessage(s vplog.Summary) string {
 	return ""
 }
 
+// callerFrictionMessage renders the caller-friction tally as ONE terse line for
+// the bootstrap directive. It is a FRICTION signal, deliberately distinct from
+// health.status: these are guards that WORKED (a caller passed bad input), not
+// faults, so they never turn the payload amber.
+//
+// 🔴 IT MUST BE SILENT AT ZERO. The bootstrap payload has ~110 tokens of
+// headroom and a standing operator rule that any new alert is silent in the good
+// case; the caller only appends this when CallerFriction > 0. Kept to one short
+// sentence (no per-category breakdown — that is what vp_health is for) so it
+// costs a handful of tokens in the rare case it fires and nothing otherwise.
+func callerFrictionMessage(s vplog.Summary) string {
+	if s.CallerFriction <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("ℹ %d caller-side rejection(s) in %dh (guards working, not faults) — vp_health for detail.",
+		s.CallerFriction, healthWindowHours)
+}
+
 // summarizeCounts renders the warn_counts map as a compact "category xN" list, in
 // descending count order so the loudest thing is named first.
 func summarizeCounts(s vplog.Summary) string {

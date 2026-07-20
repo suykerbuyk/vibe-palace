@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
@@ -190,7 +191,8 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 		// bare push/sync path below keeps its refuse-on-dirty guard intact.
 		if len(p.Paths) > 0 {
 			if p.Message == "" {
-				return nil, fmt.Errorf("message is required when paths are provided")
+				// CALLER error: the guard rejected an incomplete request.
+				return nil, apperr.Caller(fmt.Errorf("message is required when paths are provided"))
 			}
 			doPush := p.Action == "push" || p.Action == "sync"
 			res, err := storage.CommitAndPushPaths(root, p.Message, p.Paths, doPush)
