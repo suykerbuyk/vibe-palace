@@ -59,7 +59,7 @@ func TestKGAddAndQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	triples := qResult.([]storage.Triple)
+	triples := qResult.(kgTripleListResult).Triples
 	if len(triples) == 0 {
 		t.Fatal("expected at least 1 triple")
 	}
@@ -143,7 +143,7 @@ func TestKGInvalidate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	triples := qResult.([]storage.Triple)
+	triples := qResult.(kgTripleListResult).Triples
 	if len(triples) != 0 {
 		t.Errorf("expected 0 triples after invalidation, got %d", len(triples))
 	}
@@ -172,7 +172,7 @@ func TestKGTimeline(t *testing.T) {
 		t.Fatalf("timeline: %v", err)
 	}
 
-	triples := result.([]storage.Triple)
+	triples := result.(kgTripleListResult).Triples
 	if len(triples) < 2 {
 		t.Fatalf("expected >= 2 triples, got %d", len(triples))
 	}
@@ -226,7 +226,7 @@ func TestKGQueryEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	triples := result.([]storage.Triple)
+	triples := result.(kgTripleListResult).Triples
 	if len(triples) != 0 {
 		t.Errorf("expected empty result, got %d", len(triples))
 	}

@@ -52,14 +52,17 @@ func TestJourney_KG_Lifecycle(t *testing.T) {
 		"project": project,
 		"entity":  "vibe-palace",
 	})
-	var got []struct {
-		Subject   string `json:"subject"`
-		Predicate string `json:"predicate"`
-		Object    string `json:"object"`
+	var qr struct {
+		Triples []struct {
+			Subject   string `json:"subject"`
+			Predicate string `json:"predicate"`
+			Object    string `json:"object"`
+		} `json:"triples"`
 	}
-	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+	if err := json.Unmarshal([]byte(raw), &qr); err != nil {
 		t.Fatalf("kg_query parse: %v (%s)", err, raw)
 	}
+	got := qr.Triples
 	seen := map[string]bool{}
 	for _, g := range got {
 		seen[g.Subject+"|"+g.Predicate+"|"+g.Object] = true
@@ -76,14 +79,17 @@ func TestJourney_KG_Lifecycle(t *testing.T) {
 		"project": project,
 		"entity":  "vibe-palace",
 	})
-	var timeline []struct {
-		Subject   string `json:"subject"`
-		Predicate string `json:"predicate"`
-		Object    string `json:"object"`
+	var tl struct {
+		Triples []struct {
+			Subject   string `json:"subject"`
+			Predicate string `json:"predicate"`
+			Object    string `json:"object"`
+		} `json:"triples"`
 	}
-	if err := json.Unmarshal([]byte(raw), &timeline); err != nil {
+	if err := json.Unmarshal([]byte(raw), &tl); err != nil {
 		t.Fatalf("kg_timeline parse: %v (%s)", err, raw)
 	}
+	timeline := tl.Triples
 	if len(timeline) != len(triples) {
 		t.Errorf("kg_timeline len = %d, want %d", len(timeline), len(triples))
 	}

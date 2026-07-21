@@ -36,10 +36,13 @@ func TestIntegrationMCPSearchEndToEnd(t *testing.T) {
 	})
 
 	// Parse search results.
-	var results []search.SearchResult
-	if err := json.Unmarshal([]byte(result), &results); err != nil {
+	var sr struct {
+		Items []search.SearchResult `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(result), &sr); err != nil {
 		t.Fatalf("parse search results: %v (raw: %s)", err, result)
 	}
+	results := sr.Items
 
 	if len(results) == 0 {
 		t.Fatal("expected search results via MCP")
@@ -56,8 +59,13 @@ func TestIntegrationMCPSearchEndToEnd(t *testing.T) {
 		"query":   "making homemade pasta dough",
 	})
 
-	var cookingResults []search.SearchResult
-	json.Unmarshal([]byte(cookingResult), &cookingResults)
+	var cookingWrap struct {
+		Items []search.SearchResult `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(cookingResult), &cookingWrap); err != nil {
+		t.Fatalf("parse cooking results: %v (raw: %s)", err, cookingResult)
+	}
+	cookingResults := cookingWrap.Items
 
 	if len(cookingResults) == 0 {
 		t.Fatal("expected cooking results via MCP")
@@ -71,8 +79,13 @@ func TestIntegrationMCPSearchEndToEnd(t *testing.T) {
 		"query": "concurrency patterns",
 	})
 
-	var crossResults []search.SearchResult
-	json.Unmarshal([]byte(crossResult), &crossResults)
+	var crossWrap struct {
+		Items []search.SearchResult `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(crossResult), &crossWrap); err != nil {
+		t.Fatalf("parse cross-project results: %v (raw: %s)", err, crossResult)
+	}
+	crossResults := crossWrap.Items
 
 	if len(crossResults) == 0 {
 		t.Fatal("expected cross-project results via MCP")

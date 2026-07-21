@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -405,8 +406,35 @@ func marshalResult(v any) (*mcplib.CallToolResult, error) {
 	case *mcplib.CallToolResult:
 		return val, nil
 	default:
+		// MCP requires `structuredContent` to be a JSON object. A handler that
+		// returns a top-level array (or any non-object) sets StructuredContent
+		// to that value verbatim (NewToolResultJSON), which strict clients
+		// reject with "expected record, received array". Guard the whole tool
+		// surface here — the one choke-point every handler result passes
+		// through — so a bare-collection return can never reach a client again:
+		// wrap non-objects under an "items" key. Object-shaped returns (structs,
+		// maps) pass through untouched, so tools that already return a named
+		// object keep their field names.
+		if !marshalsToJSONObject(v) {
+			v = map[string]any{"items": v}
+		}
 		return mcplib.NewToolResultJSON(v)
 	}
+}
+
+// marshalsToJSONObject reports whether v serializes to a JSON object ("{...}"),
+// the shape the MCP spec requires for structuredContent. It marshals v and
+// inspects the first non-space byte, so it is faithful to what the client
+// actually receives — a type's custom MarshalJSON is honored — rather than
+// guessing from Go kinds. A marshal error returns false so the caller wraps;
+// NewToolResultJSON then surfaces the same error rather than swallowing it.
+func marshalsToJSONObject(v any) bool {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return false
+	}
+	b = bytes.TrimSpace(b)
+	return len(b) > 0 && b[0] == '{'
 }
 
 // compileSchema compiles a JSON Schema from raw bytes. If schema is nil or

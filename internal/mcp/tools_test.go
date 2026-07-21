@@ -594,6 +594,66 @@ func TestMarshalResult(t *testing.T) {
 			t.Error("expected passthrough of CallToolResult pointer")
 		}
 	})
+
+	// The MCP spec requires structuredContent to be a JSON object. A handler
+	// returning a bare slice (or any non-object) must be wrapped so a strict
+	// client does not reject it — this is the guard that fixes the whole class
+	// of bare-collection handlers (vp_kg_query, vp_search, vp_traverse, ...).
+	structuredObject := func(t *testing.T, r *mcplib.CallToolResult) map[string]json.RawMessage {
+		t.Helper()
+		b, err := json.Marshal(r.StructuredContent)
+		if err != nil {
+			t.Fatalf("marshal StructuredContent: %v", err)
+		}
+		if len(b) == 0 || b[0] != '{' {
+			t.Fatalf("structuredContent must be a JSON object, got %s", b)
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(b, &obj); err != nil {
+			t.Fatalf("structuredContent is not an object: %v (%s)", err, b)
+		}
+		return obj
+	}
+
+	t.Run("bare slice is wrapped under items", func(t *testing.T) {
+		r, err := marshalResult([]int{1, 2, 3})
+		if err != nil {
+			t.Fatalf("marshalResult(slice): %v", err)
+		}
+		obj := structuredObject(t, r)
+		if _, ok := obj["items"]; !ok {
+			t.Errorf("expected a top-level array wrapped under \"items\", got %v", obj)
+		}
+	})
+
+	t.Run("nil typed slice is wrapped, not left null", func(t *testing.T) {
+		var s []string
+		r, err := marshalResult(s)
+		if err != nil {
+			t.Fatalf("marshalResult(nil slice): %v", err)
+		}
+		obj := structuredObject(t, r)
+		if _, ok := obj["items"]; !ok {
+			t.Errorf("expected nil slice wrapped under \"items\", got %v", obj)
+		}
+	})
+
+	t.Run("named object keeps its own fields, not wrapped", func(t *testing.T) {
+		type named struct {
+			Triples []int `json:"triples"`
+		}
+		r, err := marshalResult(named{Triples: []int{1}})
+		if err != nil {
+			t.Fatalf("marshalResult(named struct): %v", err)
+		}
+		obj := structuredObject(t, r)
+		if _, ok := obj["triples"]; !ok {
+			t.Errorf("named object field lost; got %v", obj)
+		}
+		if _, ok := obj["items"]; ok {
+			t.Errorf("an object must not be re-wrapped under \"items\"; got %v", obj)
+		}
+	})
 }
 
 // callRegisteredHandler drives the mcp-go protocol layer to actually invoke

@@ -106,6 +106,16 @@ type kgStatsResult struct {
 	TypeBreakdown map[string]int `json:"type_breakdown"`
 }
 
+// kgTripleListResult wraps a triple slice as an object so structuredContent is
+// a JSON object (which MCP requires) carrying a named `triples` field, matching
+// vp_get_knowledge. Without it the KG query/timeline handlers returned a
+// top-level array, which strict clients reject. (The dispatch-layer guard in
+// internal/mcp would otherwise wrap a bare slice under a generic "items" key;
+// this type gives these user-facing tools the clearer `triples` name instead.)
+type kgTripleListResult struct {
+	Triples []storage.Triple `json:"triples"`
+}
+
 // --- Tool constructors ---
 
 // KGQueryTool returns the MCP tool for vp_kg_query.
@@ -187,7 +197,7 @@ func kgQueryHandler(vault *storage.Vault) mcp.HandlerFunc {
 		if triples == nil {
 			triples = []storage.Triple{}
 		}
-		return triples, nil
+		return kgTripleListResult{Triples: triples}, nil
 	}
 }
 
@@ -277,7 +287,7 @@ func kgTimelineHandler(vault *storage.Vault) mcp.HandlerFunc {
 		if triples == nil {
 			triples = []storage.Triple{}
 		}
-		return triples, nil
+		return kgTripleListResult{Triples: triples}, nil
 	}
 }
 

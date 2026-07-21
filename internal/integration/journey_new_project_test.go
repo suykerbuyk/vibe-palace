@@ -98,10 +98,13 @@ func TestJourney_NewProject_Bootstrap_Capture_Search(t *testing.T) {
 	// Results are an array of objects; with the mock embedder we just need
 	// any results at all, plus cross-tool consistency: the search must
 	// have seen the transcript indexed by capture.
-	var results []map[string]any
-	if err := json.Unmarshal([]byte(raw), &results); err != nil {
+	var sr struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(raw), &sr); err != nil {
 		t.Fatalf("search parse: %v (raw=%s)", err, raw)
 	}
+	results := sr.Items
 	if len(results) == 0 {
 		t.Fatalf("search returned 0 results after capture indexed transcript (raw=%s)", raw)
 	}

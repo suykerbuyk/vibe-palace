@@ -183,14 +183,17 @@ func TestIntegration_ColdSearchBuildsIndexLazily(t *testing.T) {
 		h.addDrawer(t, "proj", "dev", "go", goContent, "facts", "2026-04-01")
 		h.addDrawer(t, "proj", "cooking", "italian", pastaContent, "facts", "2026-04-01")
 
-		var results []search.SearchResult
 		raw := h.callTool(t, "vp_search", map[string]any{
 			"project": "proj",
 			"query":   goContent,
 		})
-		if err := json.Unmarshal([]byte(raw), &results); err != nil {
+		var sr struct {
+			Items []search.SearchResult `json:"items"`
+		}
+		if err := json.Unmarshal([]byte(raw), &sr); err != nil {
 			t.Fatalf("parse vp_search results: %v (raw: %s)", err, raw)
 		}
+		results := sr.Items
 
 		if len(results) == 0 {
 			t.Fatalf("cold vp_search returned 0 results on a never-rebuilt project — the lazy index build is gone and every agent now sees an empty vault (raw: %s)", raw)
@@ -208,10 +211,13 @@ func TestIntegration_ColdSearchBuildsIndexLazily(t *testing.T) {
 			"project": "proj",
 			"query":   pastaContent,
 		})
-		var second []search.SearchResult
-		if err := json.Unmarshal([]byte(raw), &second); err != nil {
+		var secondWrap struct {
+			Items []search.SearchResult `json:"items"`
+		}
+		if err := json.Unmarshal([]byte(raw), &secondWrap); err != nil {
 			t.Fatalf("parse second vp_search results: %v (raw: %s)", err, raw)
 		}
+		second := secondWrap.Items
 		if len(second) == 0 {
 			t.Fatalf("the second search on the same project returned 0 results (raw: %s)", raw)
 		}
@@ -235,10 +241,13 @@ func TestIntegration_ColdSearchBuildsIndexLazily(t *testing.T) {
 		raw := h.callTool(t, "vp_search_cross_project", map[string]any{
 			"query": pastaContent,
 		})
-		var results []search.SearchResult
-		if err := json.Unmarshal([]byte(raw), &results); err != nil {
+		var cr struct {
+			Items []search.SearchResult `json:"items"`
+		}
+		if err := json.Unmarshal([]byte(raw), &cr); err != nil {
 			t.Fatalf("parse vp_search_cross_project results: %v (raw: %s)", err, raw)
 		}
+		results := cr.Items
 		if len(results) == 0 {
 			t.Fatalf("cold vp_search_cross_project returned 0 results across two never-rebuilt projects (raw: %s)", raw)
 		}

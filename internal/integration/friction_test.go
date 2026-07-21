@@ -143,10 +143,13 @@ func TestIntegrationFrictionTrendsEndToEnd(t *testing.T) {
 		"weeks":   52,
 	})
 
-	var metrics []capture.WeeklyMetric
-	if err := json.Unmarshal([]byte(result), &metrics); err != nil {
+	var trends struct {
+		Items []capture.WeeklyMetric `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(result), &trends); err != nil {
 		t.Fatalf("unmarshal trends: %v", err)
 	}
+	metrics := trends.Items
 
 	if len(metrics) != 3 {
 		t.Fatalf("expected 3 weeks, got %d: %+v", len(metrics), metrics)
@@ -204,10 +207,13 @@ func TestIntegrationFrictionTrendsEmpty(t *testing.T) {
 		"weeks":   4,
 	})
 
-	var metrics []capture.WeeklyMetric
-	if err := json.Unmarshal([]byte(result), &metrics); err != nil {
+	var trends struct {
+		Items []capture.WeeklyMetric `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(result), &trends); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
+	metrics := trends.Items
 	if len(metrics) != 0 {
 		t.Errorf("expected empty metrics, got %d", len(metrics))
 	}
