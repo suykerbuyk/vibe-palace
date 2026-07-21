@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -119,12 +120,7 @@ func TestBootstrapLiveVaultFitsItsOwnBudget(t *testing.T) {
 }
 
 func sliceHas(xs []string, want string) bool {
-	for _, x := range xs {
-		if x == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(xs, want)
 }
 
 func shedOf(br BootstrapResult) []string {

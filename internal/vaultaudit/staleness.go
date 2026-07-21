@@ -189,7 +189,7 @@ func newestReportStamp(vault *storage.Vault) (date string, sessionNotes int, anc
 		return "", 0, false, false
 	}
 
-	for _, line := range strings.Split(string(head[:n]), "\n") {
+	for line := range strings.SplitSeq(string(head[:n]), "\n") {
 		switch key, val, _ := strings.Cut(line, ":"); strings.TrimSpace(key) {
 		case "date":
 			date = strings.TrimSpace(val)

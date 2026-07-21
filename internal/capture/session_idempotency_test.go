@@ -236,9 +236,7 @@ func TestConcurrentCapturesDoNotClobber(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
 	for i := range n {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_, err := WriteSession(context.Background(), vault, nil, SessionParams{
 				Project: "test-proj",
 				Summary: fmt.Sprintf("concurrent capture %d", i),
@@ -246,7 +244,7 @@ func TestConcurrentCapturesDoNotClobber(t *testing.T) {
 			if err != nil {
 				errs <- err
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)

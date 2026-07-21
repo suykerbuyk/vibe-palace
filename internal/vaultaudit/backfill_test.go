@@ -5,6 +5,7 @@ package vaultaudit
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,13 +60,13 @@ func seedKeyedNote(t *testing.T, vault *storage.Vault, p, name, key, source, arc
 	}
 	var b strings.Builder
 	b.WriteString("---\n")
-	b.WriteString("session_key: " + key + "\n")
-	b.WriteString("session_key_source: " + source + "\n")
+	fmt.Fprintf(&b, "session_key: %s\n", key)
+	fmt.Fprintf(&b, "session_key_source: %s\n", source)
 	if archiveSessionID != "" {
-		b.WriteString("archive_session_id: " + archiveSessionID + "\n")
+		fmt.Fprintf(&b, "archive_session_id: %s\n", archiveSessionID)
 	}
 	if tag != "" {
-		b.WriteString("tag: " + tag + "\n")
+		fmt.Fprintf(&b, "tag: %s\n", tag)
 	}
 	b.WriteString("title: t\n---\nbody\n")
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(b.String()), 0o644); err != nil {

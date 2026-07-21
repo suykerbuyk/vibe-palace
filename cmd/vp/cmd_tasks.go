@@ -187,8 +187,8 @@ func printTaskTree(out io.Writer, g *taskgraph.Graph, includeIcebox bool) {
 		if i > 0 {
 			fmt.Fprintln(out)
 		}
-		switch {
-		case grp.Epic == "":
+		switch grp.Epic {
+		case "":
 			fmt.Fprintln(out, "STANDALONE")
 		default:
 			epic := g.Nodes[grp.Epic]
