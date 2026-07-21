@@ -33,7 +33,11 @@ import (
 // into the vault, so older binaries gate against vaults written by newer ones.
 //
 // Baseline 1: fresh for vibe-palace (NOT inherited from vibe-vault's counter).
-const MCPSurfaceVersion int = 1
+// Bumped 1->2 once the vault-portability epic's write-path changes landed and
+// every host ran the surface-v1 binary: the KG triple-filename migration and
+// the armed data-format axis changed what gets written into the vault, so an
+// older binary must gate against a vault a v2 host has written.
+const MCPSurfaceVersion int = 2
 
 // Stamp models the on-disk .surface TOML file recording the latest writer.
 type Stamp struct {

@@ -705,7 +705,7 @@ flipped, or a schema edited. The drift message tells the dev to regenerate with
 `-update-golden` AND to *consider* whether `internal/surface.MCPSurfaceVersion`
 needs a bump. Regenerating the golden does **not** bump the version — the
 surface-version bump is a deliberate operator decision made separately. The
-golden currently records `surface_version: 1`, 62 tools (18 mutating).
+golden currently records `surface_version: 2`, 65 tools (21 mutating).
 
 It lives in `cmd/vp` (not `internal/mcp`) because building the full tool set
 requires `internal/tools`, which imports `internal/mcp` — so `internal/mcp`
