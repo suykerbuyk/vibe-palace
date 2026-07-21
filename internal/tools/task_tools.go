@@ -24,6 +24,39 @@ type listTasksParams struct {
 	// scheduled. Default false: a backlog that carries everything known is a
 	// knowledge base, not a backlog, and that is what made this list unreadable.
 	IncludeIcebox bool `json:"include_icebox,omitempty"`
+	// Epic, Standalone and EpicsOnly are the three OPTIONAL, MUTUALLY-EXCLUSIVE
+	// derivation modes. With none set the tool returns the flat vault listing
+	// exactly as before; with one set the graph is built and the corresponding
+	// derived view is returned. Setting two or more is a caller error.
+	//
+	// Epic returns the transitive subtree rooted at an epic or story slug.
+	Epic string `json:"epic,omitempty"`
+	// Standalone returns only standalone tasks (no parent, no children).
+	Standalone bool `json:"standalone,omitempty"`
+	// EpicsOnly returns only the root epics with transitive open/total counts.
+	EpicsOnly bool `json:"epics_only,omitempty"`
+}
+
+// taskWithRole is a TaskMeta carrying its DERIVED role ("epic"|"story"|"task")
+// alongside. TaskMeta is embedded so every existing task JSON field is preserved
+// byte-for-byte and `role` rides beside them; the flat no-param path still
+// returns plain storage.TaskMeta, so only the derived modes pay for the field.
+type taskWithRole struct {
+	storage.TaskMeta
+	Role string `json:"role"`
+}
+
+// epicRow is one root-epic roll-up returned by epics_only: the epic's own
+// header fields plus the TRANSITIVE descendant counts under it (open excludes
+// the archive, total includes it — the fixed formula from `vp tasks epics`).
+type epicRow struct {
+	Slug     string `json:"slug"`
+	Title    string `json:"title"`
+	Priority string `json:"priority"`
+	Status   string `json:"status"`
+	Open     int    `json:"open"`
+	Total    int    `json:"total"`
+	Role     string `json:"role"`
 }
 
 var listTasksSchema = json.RawMessage(`{
@@ -31,7 +64,10 @@ var listTasksSchema = json.RawMessage(`{
 	"properties": {
 		"project":        {"type": "string", "description": "Project slug."},
 		"include_done":   {"type": "boolean", "description": "Include done/cancelled tasks (default false)."},
-		"include_icebox": {"type": "boolean", "description": "Include iceboxed tasks — known, deliberately not scheduled (default false)."}
+		"include_icebox": {"type": "boolean", "description": "Include iceboxed tasks — known, deliberately not scheduled (default false)."},
+		"epic":           {"type": "string", "description": "Return the subtree (transitive) rooted at this epic or story slug. Mutually exclusive with standalone and epics_only."},
+		"standalone":     {"type": "boolean", "description": "Return only standalone tasks — no parent and no children. Mutually exclusive with epic and epics_only."},
+		"epics_only":     {"type": "boolean", "description": "Return only the root epics, each with transitive open/total descendant counts. Mutually exclusive with epic and standalone."}
 	},
 	"required": ["project"]
 }`)
@@ -56,18 +92,134 @@ func listTasksHandler(vault *storage.Vault) mcp.HandlerFunc {
 		if p.Project == "" {
 			return nil, fmt.Errorf("project is required")
 		}
-		tasks, err := vault.ListTasks(p.Project, p.IncludeDone)
+
+		// At most ONE derivation mode may be requested. Reject the nonsensical
+		// combination up front, before touching the vault or the graph.
+		modes := 0
+		if p.Epic != "" {
+			modes++
+		}
+		if p.Standalone {
+			modes++
+		}
+		if p.EpicsOnly {
+			modes++
+		}
+		if modes > 1 {
+			return nil, fmt.Errorf(
+				"epic, standalone, and epics_only are mutually exclusive: set at most one")
+		}
+
+		// Fast path — no derivation requested. Byte-identical to the historical
+		// behaviour: the flat vault listing, icebox dropped unless asked, returned
+		// as plain []storage.TaskMeta under {"tasks": ...}. The graph is NOT built
+		// here.
+		if modes == 0 {
+			tasks, err := vault.ListTasks(p.Project, p.IncludeDone)
+			if err != nil {
+				return nil, fmt.Errorf("list tasks: %w", err)
+			}
+			if !p.IncludeIcebox {
+				tasks = storage.DropIcebox(tasks)
+			}
+			if tasks == nil {
+				tasks = []storage.TaskMeta{}
+			}
+			return map[string]any{"tasks": tasks}, nil
+		}
+
+		// A derived view was requested: build the whole-set graph once.
+		g, err := taskgraph.BuildFromVault(vault, p.Project)
 		if err != nil {
-			return nil, fmt.Errorf("list tasks: %w", err)
+			return nil, fmt.Errorf("build task graph: %w", err)
 		}
-		if !p.IncludeIcebox {
-			tasks = storage.DropIcebox(tasks)
+		includeArchived := p.IncludeDone
+
+		switch {
+		case p.EpicsOnly:
+			// Root epics only. g.Epics also carries nested stories, so filter to
+			// IsRootEpic. Counts are TRANSITIVE descendants excluding the epic node
+			// itself; the formula is fixed (OPEN excludes the archive, TOTAL
+			// includes it) — include_done governs only whether a fully-archived
+			// root epic is LISTED, matching `vp tasks epics`.
+			rows := []epicRow{}
+			for _, slug := range g.Epics {
+				if !g.IsRootEpic(slug) {
+					continue
+				}
+				n := g.Nodes[slug]
+				if n.Meta.Done && !p.IncludeDone {
+					continue
+				}
+				total, _ := g.Subtree(slug, p.IncludeIcebox, true)
+				open, _ := g.Subtree(slug, p.IncludeIcebox, false)
+				rows = append(rows, epicRow{
+					Slug:     slug,
+					Title:    n.Meta.Title,
+					Priority: n.Meta.Priority,
+					Status:   n.Meta.Status,
+					Open:     descendantCount(slug, open.Members),
+					Total:    descendantCount(slug, total.Members),
+					Role:     "epic",
+				})
+			}
+			return map[string]any{"epics": rows}, nil
+
+		case p.Epic != "":
+			// Any grouping node — an epic OR a story — is accepted; a leaf is not.
+			slug := p.Epic
+			if _, ok := g.Nodes[slug]; !ok {
+				return nil, fmt.Errorf("no such task: %q", slug)
+			}
+			if g.Role(slug) == "task" {
+				return nil, fmt.Errorf(
+					"epic must name an epic or story (a task with children); %q is a leaf task", slug)
+			}
+			sub, _ := g.Subtree(slug, p.IncludeIcebox, includeArchived)
+			return map[string]any{"tasks": membersWithRole(g, sub.Members)}, nil
+
+		default: // p.Standalone
+			// The Epic=="" bucket of GroupedArchived: tasks that are nobody's child
+			// and nobody's parent. Every such member's role is "task".
+			var members []string
+			for _, grp := range g.GroupedArchived(p.IncludeIcebox, includeArchived) {
+				if grp.Epic == "" {
+					members = grp.Members
+					break
+				}
+			}
+			return map[string]any{"tasks": membersWithRole(g, members)}, nil
 		}
-		if tasks == nil {
-			tasks = []storage.TaskMeta{}
-		}
-		return map[string]any{"tasks": tasks}, nil
 	}
+}
+
+// descendantCount counts a subtree's members EXCLUDING the root itself. Subtree
+// returns "root + transitive descendants", so the root is dropped — the same
+// count `vp tasks epics` reports.
+func descendantCount(root string, members []string) int {
+	n := 0
+	for _, m := range members {
+		if m != root {
+			n++
+		}
+	}
+	return n
+}
+
+// membersWithRole maps subtree/standalone member slugs to their TaskMeta
+// augmented with the derived role, skipping any slug absent from the node set
+// (Subtree only ever yields present nodes, so this is defensive). It always
+// returns a non-nil slice so the JSON envelope carries [] rather than null.
+func membersWithRole(g *taskgraph.Graph, members []string) []taskWithRole {
+	out := make([]taskWithRole, 0, len(members))
+	for _, m := range members {
+		n, ok := g.Nodes[m]
+		if !ok {
+			continue
+		}
+		out = append(out, taskWithRole{TaskMeta: n.Meta, Role: g.Role(m)})
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

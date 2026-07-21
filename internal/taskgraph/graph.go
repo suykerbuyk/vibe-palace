@@ -527,21 +527,75 @@ func (g *Graph) root(slug string) string {
 	}
 }
 
+// hasResolvableParent reports whether slug names a node whose parent is set AND
+// present in the node set. Whether a parent RESOLVES is a whole-set fact — a
+// node cannot know from its own file whether the slug it names exists — so it is
+// derived here on the graph, never stored, mirroring root(), which treats a
+// dangling parent as the node being its own root.
+func (g *Graph) hasResolvableParent(slug string) bool {
+	n, ok := g.Nodes[slug]
+	if !ok || n.Meta.Parent == "" {
+		return false
+	}
+	_, ok = g.Nodes[n.Meta.Parent]
+	return ok
+}
+
+// Role classifies a node's place in the epic/story/task hierarchy, DERIVED from
+// its edges rather than stored (there is no role field, just as there is no epic
+// field): a node with no children is a "task"; a node WITH children whose parent
+// resolves is a "story" — an epic nested under another epic; a node with children
+// whose parent is empty or dangling is a root "epic", its own root, matching
+// root(). Keeping this on the graph is what lets the dangling-parent case agree
+// with root() — a Node alone cannot tell a resolvable parent from a phantom one.
+func (g *Graph) Role(slug string) string {
+	n, ok := g.Nodes[slug]
+	if !ok || !n.IsEpic() {
+		return "task"
+	}
+	if g.hasResolvableParent(slug) {
+		return "story"
+	}
+	return "epic"
+}
+
+// IsRootEpic reports whether slug heads its own chain (Role == "epic"). A thin
+// convenience wrapper so callers read intent instead of matching on the string.
+func (g *Graph) IsRootEpic(slug string) bool { return g.Role(slug) == "epic" }
+
+// IsStory reports whether slug is an epic nested under a resolvable parent
+// (Role == "story"). A thin convenience wrapper over Role.
+func (g *Graph) IsStory(slug string) bool { return g.Role(slug) == "story" }
+
 // Grouped buckets the OPEN work by the epic at the top of its parent chain.
 //
 // Groups are ordered by their most urgent member so the critical work is at the
 // top of the screen, and the standalone bucket — tasks that are nobody's child
 // and nobody's parent — comes last. Members within a group follow Order, so a
 // dependency is always listed above the task it blocks.
+//
+// This is the byte-for-byte historical behavior: a thin wrapper over grouped
+// with archived work excluded.
 func (g *Graph) Grouped(includeIcebox bool) []Group {
-	orderIdx := make(map[string]int, len(g.Order))
-	for i, s := range g.Order {
-		orderIdx[s] = i
-	}
+	return g.grouped(includeIcebox, false)
+}
+
+// GroupedArchived is Grouped with the archive-inclusion decision made explicit:
+// pass includeArchived=true to keep Done tasks in the buckets (an epic-close
+// review wants to SEE the finished work), false to reproduce Grouped exactly.
+func (g *Graph) GroupedArchived(includeIcebox, includeArchived bool) []Group {
+	return g.grouped(includeIcebox, includeArchived)
+}
+
+// grouped is the shared implementation. includeArchived governs whether Done
+// tasks are kept; includeIcebox whether icebox tasks are. Both default off so
+// the open-work view stays uncluttered.
+func (g *Graph) grouped(includeIcebox, includeArchived bool) []Group {
+	orderIdx := g.orderIndex()
 
 	byRoot := make(map[string][]string)
 	for slug, n := range g.Nodes {
-		if n.Meta.Done {
+		if !includeArchived && n.Meta.Done {
 			continue
 		}
 		if !includeIcebox && n.Meta.Status == storage.StatusIcebox {
@@ -585,62 +639,9 @@ func (g *Graph) Grouped(includeIcebox bool) []Group {
 		return bestPri, bestOrder
 	}
 
-	// nodeLess ranks two tasks at the same level: dependency order first (a
-	// dependency precedes what it blocks), then priority, then slug.
-	nodeLess := func(a, b string) int {
-		ia, oka := orderIdx[a]
-		ib, okb := orderIdx[b]
-		switch {
-		case oka && okb && ia != ib:
-			return cmp.Compare(ia, ib)
-		case oka != okb:
-			// A cycle member has no position in Order; list it after the tasks
-			// that do, rather than pretending it has one.
-			if oka {
-				return -1
-			}
-			return 1
-		}
-		return cmp.Compare(a, b)
-	}
-
-	// ancestry returns the chain from just below the group root down to m.
-	// Sorting on it makes the listing a PRE-ORDER walk, which is the only
-	// ordering in which a nested epic can print above its own child. A flat sort
-	// put "leaf" above "mid" (alphabetical) and the indentation then read as a
-	// child parenting its parent.
-	ancestry := func(m string) []string {
-		var chain []string
-		seen := map[string]bool{}
-		for cur := m; cur != "" && !seen[cur]; {
-			seen[cur] = true
-			chain = append(chain, cur)
-			n, ok := g.Nodes[cur]
-			if !ok {
-				break
-			}
-			cur = n.Meta.Parent
-		}
-		slices.Reverse(chain)
-		return chain
-	}
-
 	groups := make([]Group, 0, len(byRoot))
 	for epic, members := range byRoot {
-		paths := make(map[string][]string, len(members))
-		for _, m := range members {
-			paths[m] = ancestry(m)
-		}
-		slices.SortFunc(members, func(a, b string) int {
-			pa, pb := paths[a], paths[b]
-			for i := 0; i < len(pa) && i < len(pb); i++ {
-				if pa[i] != pb[i] {
-					return nodeLess(pa[i], pb[i])
-				}
-			}
-			// One chain is a prefix of the other: the ancestor comes first.
-			return cmp.Compare(len(pa), len(pb))
-		})
+		g.sortMembers(members, orderIdx)
 		groups = append(groups, Group{Epic: epic, Members: members})
 	}
 
@@ -663,4 +664,129 @@ func (g *Graph) Grouped(includeIcebox bool) []Group {
 		return cmp.Compare(a.Epic, b.Epic)
 	})
 	return groups
+}
+
+// Subtree returns the group rooted at root: the root slug plus every transitive
+// descendant reached through Node.Children (which is direct-children-only, so
+// the walk here is what makes it transitive), filtered and ordered exactly as a
+// Grouped group's members. The bool reports whether root exists in the node set;
+// a leaf's subtree is simply itself, which is NOT an error — callers decide
+// leaf-vs-grouping via Role, not via this bool.
+//
+// The same filter grouped applies is applied here, to the root as well as its
+// descendants: a Done member is dropped unless includeArchived, an icebox member
+// unless includeIcebox. Existence and visibility are distinct facts, so a root
+// that exists but is itself filtered out (a Done root without includeArchived)
+// yields ok=true with an empty Members rather than ok=false — the caller asked
+// "does this exist and what is open under it", and both answers are honest.
+func (g *Graph) Subtree(root string, includeIcebox, includeArchived bool) (Group, bool) {
+	if _, ok := g.Nodes[root]; !ok {
+		return Group{Epic: root}, false
+	}
+
+	visible := func(n *Node) bool {
+		if !includeArchived && n.Meta.Done {
+			return false
+		}
+		if !includeIcebox && n.Meta.Status == storage.StatusIcebox {
+			return false
+		}
+		return true
+	}
+
+	// BFS over Children. The seen set makes the walk transitive without ever
+	// revisiting a node, which also caps a parent cycle rather than spinning on
+	// it — this package's contract is that it never hangs.
+	var members []string
+	seen := map[string]bool{}
+	queue := []string{root}
+	for len(queue) > 0 {
+		slug := queue[0]
+		queue = queue[1:]
+		if seen[slug] {
+			continue
+		}
+		seen[slug] = true
+		n, ok := g.Nodes[slug]
+		if !ok {
+			continue
+		}
+		if visible(n) {
+			members = append(members, slug)
+		}
+		queue = append(queue, n.Children...)
+	}
+
+	g.sortMembers(members, g.orderIndex())
+	return Group{Epic: root, Members: members}, true
+}
+
+// orderIndex inverts Order into slug -> position for O(1) lookups.
+func (g *Graph) orderIndex() map[string]int {
+	orderIdx := make(map[string]int, len(g.Order))
+	for i, s := range g.Order {
+		orderIdx[s] = i
+	}
+	return orderIdx
+}
+
+// sortMembers orders slugs in place exactly the way a group's Members are
+// ordered, factored out of grouped so Grouped and Subtree share ONE ordering and
+// cannot drift. The listing is a PRE-ORDER walk of the parent forest — the only
+// ordering in which a nested epic prints above its own child (a flat sort put
+// "leaf" above "mid" alphabetically, and the indentation then read as a child
+// parenting its parent). Within a level, dependency order wins (a dependency
+// precedes what it blocks), then priority, then slug.
+func (g *Graph) sortMembers(members []string, orderIdx map[string]int) {
+	// nodeLess ranks two tasks at the same level: dependency order first, then
+	// priority, then slug.
+	nodeLess := func(a, b string) int {
+		ia, oka := orderIdx[a]
+		ib, okb := orderIdx[b]
+		switch {
+		case oka && okb && ia != ib:
+			return cmp.Compare(ia, ib)
+		case oka != okb:
+			// A cycle member has no position in Order; list it after the tasks
+			// that do, rather than pretending it has one.
+			if oka {
+				return -1
+			}
+			return 1
+		}
+		return cmp.Compare(a, b)
+	}
+
+	// ancestry returns the chain from the top of the parent chain down to m,
+	// capped on a cycle.
+	ancestry := func(m string) []string {
+		var chain []string
+		seen := map[string]bool{}
+		for cur := m; cur != "" && !seen[cur]; {
+			seen[cur] = true
+			chain = append(chain, cur)
+			n, ok := g.Nodes[cur]
+			if !ok {
+				break
+			}
+			cur = n.Meta.Parent
+		}
+		slices.Reverse(chain)
+		return chain
+	}
+
+	paths := make(map[string][]string, len(members))
+	for _, m := range members {
+		paths[m] = ancestry(m)
+	}
+	slices.SortFunc(members, func(a, b string) int {
+		pa, pb := paths[a], paths[b]
+		for i := 0; i < len(pa) && i < len(pb); i++ {
+			if pa[i] != pb[i] {
+				return nodeLess(pa[i], pb[i])
+			}
+		}
+		// One chain is a prefix of the other: the ancestor comes first.
+		return cmp.Compare(len(pa), len(pb))
+	})
 }

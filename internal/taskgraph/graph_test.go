@@ -364,3 +364,216 @@ func TestNestedEpicIsAMemberOfItsParentsGroup(t *testing.T) {
 	}
 	t.Fatal("top group missing")
 }
+
+// memberSet flattens every group's members into one sorted set, dropping the
+// epic labels — enough to assert presence/absence regardless of grouping.
+func memberSet(groups []Group) []string {
+	var out []string
+	for _, grp := range groups {
+		out = append(out, grp.Members...)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// includeArchived=false hides Done work (reproducing Grouped); includeArchived=true
+// surfaces it. The wrapper and the archived form must agree on the false case.
+func TestGroupedArchivedIncludesDoneOnlyWhenAsked(t *testing.T) {
+	g := Build([]storage.TaskMeta{
+		task("epic", "pending", "high", ""),
+		task("live", "pending", "high", "epic"),
+		task("finished", "retired", "high", "epic"),
+	})
+
+	open := memberSet(g.GroupedArchived(false, false))
+	if slices.Contains(open, "finished") {
+		t.Fatalf("Done member leaked into the open view: %v", open)
+	}
+	if !slices.Contains(open, "live") {
+		t.Fatalf("active member missing from the open view: %v", open)
+	}
+
+	withDone := memberSet(g.GroupedArchived(false, true))
+	if !slices.Contains(withDone, "finished") {
+		t.Fatalf("Done member absent with includeArchived=true: %v", withDone)
+	}
+
+	// The exported wrapper is byte-for-byte the archived form with the flag off.
+	if !reflect.DeepEqual(g.Grouped(false), g.GroupedArchived(false, false)) {
+		t.Fatal("Grouped(x) must equal GroupedArchived(x, false)")
+	}
+	if !reflect.DeepEqual(g.Grouped(true), g.GroupedArchived(true, false)) {
+		t.Fatal("Grouped(x) must equal GroupedArchived(x, false) for includeIcebox=true too")
+	}
+}
+
+// Subtree collects the root plus ALL transitive descendants — Node.Children is
+// direct-only, so every level below must be reached by walking, not by one hop.
+func TestSubtreeReturnsFullTransitiveSet(t *testing.T) {
+	g := Build([]storage.TaskMeta{
+		task("epic", "pending", "high", ""),
+		task("story", "pending", "high", "epic"),
+		task("leaf", "pending", "high", "story"),
+		task("elsewhere", "pending", "high", ""),
+	})
+
+	grp, ok := g.Subtree("epic", false, false)
+	if !ok {
+		t.Fatal("Subtree(epic) must report ok=true — the root exists")
+	}
+	if grp.Epic != "epic" {
+		t.Fatalf("Group.Epic = %q, want the requested root %q", grp.Epic, "epic")
+	}
+	if !slices.Equal(grp.Members, []string{"epic", "story", "leaf"}) {
+		t.Fatalf("Subtree(epic) members = %v, want the full chain including the deepest leaf", grp.Members)
+	}
+	if slices.Contains(grp.Members, "elsewhere") {
+		t.Fatalf("Subtree(epic) leaked an unrelated task: %v", grp.Members)
+	}
+
+	// A nested root returns only its own subtree.
+	sub, ok := g.Subtree("story", false, false)
+	if !ok {
+		t.Fatal("Subtree(story) must report ok=true")
+	}
+	if !slices.Equal(sub.Members, []string{"story", "leaf"}) {
+		t.Fatalf("Subtree(story) members = %v, want [story leaf]", sub.Members)
+	}
+
+	// A leaf's subtree is simply itself — not an error.
+	leaf, ok := g.Subtree("leaf", false, false)
+	if !ok {
+		t.Fatal("Subtree(leaf) must report ok=true")
+	}
+	if !slices.Equal(leaf.Members, []string{"leaf"}) {
+		t.Fatalf("Subtree(leaf) members = %v, want just [leaf]", leaf.Members)
+	}
+
+	// A nonexistent root is the only ok=false case.
+	if _, ok := g.Subtree("no-such-root", false, false); ok {
+		t.Fatal("Subtree(nonexistent) must report ok=false")
+	}
+}
+
+// Subtree honors the same filters as grouped, applied to the root as well.
+func TestSubtreeFiltersDoneAndIcebox(t *testing.T) {
+	g := Build([]storage.TaskMeta{
+		task("epic", "pending", "high", ""),
+		task("live", "pending", "high", "epic"),
+		task("finished", "retired", "high", "epic"),
+		task("cold", storage.StatusIcebox, "low", "epic"),
+	})
+
+	def, _ := g.Subtree("epic", false, false)
+	if !slices.Equal(def.Members, []string{"epic", "live"}) {
+		t.Fatalf("default Subtree members = %v, want Done and icebox hidden", def.Members)
+	}
+
+	all, _ := g.Subtree("epic", true, true)
+	got := append([]string(nil), all.Members...)
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"cold", "epic", "finished", "live"}) {
+		t.Fatalf("Subtree(all) members = %v, want everything under the epic", all.Members)
+	}
+
+	// A root that exists but is itself filtered out yields ok=true, empty members.
+	gd := Build([]storage.TaskMeta{
+		task("done-epic", "retired", "high", ""),
+		task("done-child", "retired", "high", "done-epic"),
+	})
+	grp, ok := gd.Subtree("done-epic", false, false)
+	if !ok {
+		t.Fatal("a Done root still EXISTS — ok must be true")
+	}
+	if len(grp.Members) != 0 {
+		t.Fatalf("a Done root without includeArchived must yield empty members: %v", grp.Members)
+	}
+}
+
+// Subtree must terminate even when Children form a parent cycle.
+func TestSubtreeTerminatesOnParentCycle(t *testing.T) {
+	withinTimeout(t, func() {
+		g := Build([]storage.TaskMeta{
+			task("a", "pending", "high", "b"),
+			task("b", "pending", "high", "a"),
+		})
+		grp, ok := g.Subtree("a", false, false)
+		if !ok {
+			t.Fatal("Subtree(a) must report ok=true")
+		}
+		if !slices.Contains(grp.Members, "a") {
+			t.Fatalf("Subtree(a) must contain its own root: %v", grp.Members)
+		}
+	})
+}
+
+// Role is DERIVED from edges: children make an epic; a resolvable parent demotes
+// it to a story; no children makes a task.
+func TestRoleDerivesEpicStoryTask(t *testing.T) {
+	g := Build([]storage.TaskMeta{
+		task("epic", "pending", "high", ""),
+		task("story", "pending", "high", "epic"),
+		task("leaf", "pending", "high", "story"),
+	})
+
+	if got := g.Role("epic"); got != "epic" {
+		t.Fatalf("Role(epic) = %q, want epic — children, no parent", got)
+	}
+	if got := g.Role("story"); got != "story" {
+		t.Fatalf("Role(story) = %q, want story — children AND a resolvable parent", got)
+	}
+	if got := g.Role("leaf"); got != "task" {
+		t.Fatalf("Role(leaf) = %q, want task — no children", got)
+	}
+
+	if !g.IsRootEpic("epic") || g.IsRootEpic("story") || g.IsRootEpic("leaf") {
+		t.Fatal("IsRootEpic must be true only for the root epic")
+	}
+	if !g.IsStory("story") || g.IsStory("epic") || g.IsStory("leaf") {
+		t.Fatal("IsStory must be true only for the nested epic")
+	}
+}
+
+// A node with children whose named parent is MISSING is a root "epic" — its own
+// root — matching root(), not a "story". hasResolvableParent is the graph-level
+// fact that tells the two apart.
+func TestRoleDanglingParentWithChildrenIsEpic(t *testing.T) {
+	g := Build([]storage.TaskMeta{
+		task("head", "pending", "high", "ghost"), // parent does not exist
+		task("child", "pending", "high", "head"), // has a child (leaf) AND a resolvable parent
+		task("leaf", "pending", "high", "child"),
+	})
+
+	if !g.hasResolvableParent("child") {
+		t.Fatal("child's parent (head) exists — it must resolve")
+	}
+	if g.hasResolvableParent("head") {
+		t.Fatal("head's parent (ghost) is missing — it must NOT resolve")
+	}
+	if got := g.Role("head"); got != "epic" {
+		t.Fatalf("Role(head) = %q, want epic — a dangling parent makes it its own root", got)
+	}
+	if got := g.Role("child"); got != "story" {
+		t.Fatalf("Role(child) = %q, want story — it has a child AND a resolvable parent", got)
+	}
+}
+
+// IsEpic() semantics are UNCHANGED: it is len(Children) > 0, nothing more. A
+// childless node is not an epic; a nested epic with children still is.
+func TestIsEpicSemanticsUnchanged(t *testing.T) {
+	g := Build([]storage.TaskMeta{
+		task("top", "pending", "high", ""),
+		task("mid", "pending", "high", "top"), // nested epic: has a child AND a parent
+		task("leaf", "pending", "high", "mid"),
+	})
+
+	if !g.Nodes["top"].IsEpic() {
+		t.Fatal("top has children — IsEpic must be true")
+	}
+	if !g.Nodes["mid"].IsEpic() {
+		t.Fatal("a nested epic still has children — IsEpic must remain true regardless of its parent")
+	}
+	if g.Nodes["leaf"].IsEpic() {
+		t.Fatal("a childless node is not an epic")
+	}
+}

@@ -67,6 +67,8 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(cmdEffectiveness())
 	reg.Register(cmdStatus())
 	reg.Register(cmdTasks())
+	reg.Register(cmdTasksEpics())
+	reg.Register(mutates(cmdTasksEdit()))
 	reg.Register(cmdVersion(info))
 	reg.Register(cmdVault())
 	reg.Register(cmdVaultPull())

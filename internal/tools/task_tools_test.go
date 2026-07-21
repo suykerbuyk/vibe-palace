@@ -469,6 +469,274 @@ func TestManageTaskAmend_RecordsADecisionIntoThePlan(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// vp_list_tasks Phase-D behaviour: epic / standalone / epics_only derivations.
+// ---------------------------------------------------------------------------
+
+const epicFixtureProject = "epic-proj"
+
+// epicFixtureVault builds a small hierarchy exercising every role:
+//
+//	root-epic (epic)
+//	├── story-a (story)          — an epic nested under root-epic
+//	│   └── deep-task (task)     — the deepest descendant
+//	└── leaf-b (task)            — a leaf directly under the root
+//	standalone (task)            — nobody's child, nobody's parent
+//
+// Parents are created before children only for readability; storage imposes no
+// write-time ordering. Bodies are trivial — this fixture tests STRUCTURE.
+func epicFixtureVault(t *testing.T) *storage.Vault {
+	t.Helper()
+	vault := storage.NewVault(t.TempDir())
+	mk := func(slug, parent string) {
+		spec := storage.TaskSpec{Slug: slug, Title: slug, Content: "body", Priority: "medium"}
+		if parent != "" {
+			spec.Parent = parent
+		}
+		if err := vault.CreateTask(epicFixtureProject, spec); err != nil {
+			t.Fatalf("CreateTask %s: %v", slug, err)
+		}
+	}
+	mk("root-epic", "")
+	mk("story-a", "root-epic")
+	mk("deep-task", "story-a")
+	mk("leaf-b", "root-epic")
+	mk("standalone", "")
+	return vault
+}
+
+// listTasksCall drives the vp_list_tasks handler and returns the object result.
+func listTasksCall(t *testing.T, vault *storage.Vault, p listTasksParams) map[string]any {
+	t.Helper()
+	tool := ListTasksTool(vault)
+	params, _ := json.Marshal(p)
+	res, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	m, ok := res.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T, want map[string]any", res)
+	}
+	return m
+}
+
+// listTasksErr drives the handler expecting an error, returning it.
+func listTasksErr(t *testing.T, vault *storage.Vault, p listTasksParams) error {
+	t.Helper()
+	tool := ListTasksTool(vault)
+	params, _ := json.Marshal(p)
+	_, err := tool.Handler(context.Background(), params)
+	return err
+}
+
+// derivedTasks extracts the []taskWithRole payload of a derived-tasks envelope.
+func derivedTasks(t *testing.T, m map[string]any) []taskWithRole {
+	t.Helper()
+	got, ok := m["tasks"].([]taskWithRole)
+	if !ok {
+		t.Fatalf("tasks payload type = %T, want []taskWithRole", m["tasks"])
+	}
+	return got
+}
+
+// rolesBySlug indexes a derived-tasks slice by slug for order-independent asserts.
+func rolesBySlug(items []taskWithRole) map[string]string {
+	out := make(map[string]string, len(items))
+	for _, it := range items {
+		out[it.Slug] = it.Role
+	}
+	return out
+}
+
+// TestListTasksNoParamPathUnchanged pins the fast path: with none of the three
+// derivation params set the handler returns the plain flat listing as
+// []storage.TaskMeta (NOT the augmented taskWithRole), byte-shape unchanged.
+func TestListTasksNoParamPathUnchanged(t *testing.T) {
+	vault := epicFixtureVault(t)
+	m := listTasksCall(t, vault, listTasksParams{Project: epicFixtureProject})
+	tasks, ok := m["tasks"].([]storage.TaskMeta)
+	if !ok {
+		t.Fatalf("no-param path payload type = %T, want []storage.TaskMeta", m["tasks"])
+	}
+	// All five active tasks, no role field, no graph derivation.
+	if len(tasks) != 5 {
+		t.Errorf("flat listing count = %d, want 5", len(tasks))
+	}
+}
+
+// TestListTasksEpicsOnly pins epics_only: root epics only, role=="epic", nested
+// stories absent as top-level rows, and correct transitive open/total counts.
+func TestListTasksEpicsOnly(t *testing.T) {
+	vault := epicFixtureVault(t)
+	m := listTasksCall(t, vault, listTasksParams{Project: epicFixtureProject, EpicsOnly: true})
+	rows, ok := m["epics"].([]epicRow)
+	if !ok {
+		t.Fatalf("epics payload type = %T, want []epicRow", m["epics"])
+	}
+	if len(rows) != 1 {
+		t.Fatalf("epics count = %d, want 1 (only root-epic; story-a is nested)", len(rows))
+	}
+	r := rows[0]
+	if r.Slug != "root-epic" {
+		t.Errorf("epic slug = %q, want root-epic", r.Slug)
+	}
+	if r.Role != "epic" {
+		t.Errorf("role = %q, want epic", r.Role)
+	}
+	// Transitive descendants: story-a, deep-task, leaf-b = 3 open, 3 total.
+	if r.Open != 3 || r.Total != 3 {
+		t.Errorf("open/total = %d/%d, want 3/3", r.Open, r.Total)
+	}
+}
+
+// TestListTasksEpicsOnlyCountsSplitOnArchive pins the FIXED counts formula:
+// OPEN excludes the archive, TOTAL includes it, regardless of include_done
+// (which only decides whether a fully-archived root epic is LISTED).
+func TestListTasksEpicsOnlyCountsSplitOnArchive(t *testing.T) {
+	vault := epicFixtureVault(t)
+	if err := vault.RetireTask(epicFixtureProject, "deep-task"); err != nil {
+		t.Fatalf("RetireTask deep-task: %v", err)
+	}
+	m := listTasksCall(t, vault, listTasksParams{Project: epicFixtureProject, EpicsOnly: true})
+	rows := m["epics"].([]epicRow)
+	if len(rows) != 1 {
+		t.Fatalf("epics count = %d, want 1", len(rows))
+	}
+	// OPEN drops the retired deep-task (story-a, leaf-b = 2); TOTAL keeps it (3).
+	if rows[0].Open != 2 || rows[0].Total != 3 {
+		t.Errorf("open/total = %d/%d, want 2/3 (open excludes archive, total includes)", rows[0].Open, rows[0].Total)
+	}
+}
+
+// TestListTasksEpicRootSubtree pins epic=<root>: the whole transitive subtree,
+// each member carrying its derived role, including the deepest descendant.
+func TestListTasksEpicRootSubtree(t *testing.T) {
+	vault := epicFixtureVault(t)
+	m := listTasksCall(t, vault, listTasksParams{Project: epicFixtureProject, Epic: "root-epic"})
+	roles := rolesBySlug(derivedTasks(t, m))
+	want := map[string]string{
+		"root-epic": "epic",
+		"story-a":   "story",
+		"deep-task": "task",
+		"leaf-b":    "task",
+	}
+	if len(roles) != len(want) {
+		t.Fatalf("subtree members = %v, want keys %v", roles, want)
+	}
+	for slug, role := range want {
+		if roles[slug] != role {
+			t.Errorf("role[%s] = %q, want %q", slug, roles[slug], role)
+		}
+	}
+}
+
+// TestListTasksEpicNestedStorySubtree pins epic=<story>: a story is an accepted
+// grouping node, and its subtree is itself plus its descendants.
+func TestListTasksEpicNestedStorySubtree(t *testing.T) {
+	vault := epicFixtureVault(t)
+	m := listTasksCall(t, vault, listTasksParams{Project: epicFixtureProject, Epic: "story-a"})
+	roles := rolesBySlug(derivedTasks(t, m))
+	want := map[string]string{"story-a": "story", "deep-task": "task"}
+	if len(roles) != len(want) {
+		t.Fatalf("subtree members = %v, want keys %v", roles, want)
+	}
+	for slug, role := range want {
+		if roles[slug] != role {
+			t.Errorf("role[%s] = %q, want %q", slug, roles[slug], role)
+		}
+	}
+}
+
+// TestListTasksEpicLeafRejected pins that a leaf slug is a caller error.
+func TestListTasksEpicLeafRejected(t *testing.T) {
+	vault := epicFixtureVault(t)
+	err := listTasksErr(t, vault, listTasksParams{Project: epicFixtureProject, Epic: "leaf-b"})
+	if err == nil {
+		t.Fatal("expected error for leaf slug")
+	}
+	if !strings.Contains(err.Error(), "leaf") {
+		t.Errorf("error = %v, want it to mention leaf", err)
+	}
+}
+
+// TestListTasksEpicUnknownRejected pins that an absent slug is a caller error.
+func TestListTasksEpicUnknownRejected(t *testing.T) {
+	vault := epicFixtureVault(t)
+	err := listTasksErr(t, vault, listTasksParams{Project: epicFixtureProject, Epic: "ghost"})
+	if err == nil {
+		t.Fatal("expected error for unknown slug")
+	}
+	if !strings.Contains(err.Error(), "no such task") {
+		t.Errorf("error = %v, want it to mention no such task", err)
+	}
+}
+
+// TestListTasksStandalone pins standalone: only the no-parent-no-child task,
+// role=="task".
+func TestListTasksStandalone(t *testing.T) {
+	vault := epicFixtureVault(t)
+	m := listTasksCall(t, vault, listTasksParams{Project: epicFixtureProject, Standalone: true})
+	items := derivedTasks(t, m)
+	if len(items) != 1 {
+		t.Fatalf("standalone count = %d, want 1 (only 'standalone')", len(items))
+	}
+	if items[0].Slug != "standalone" {
+		t.Errorf("slug = %q, want standalone", items[0].Slug)
+	}
+	if items[0].Role != "task" {
+		t.Errorf("role = %q, want task", items[0].Role)
+	}
+}
+
+// TestListTasksIncludeDoneTogglesSubtreeArchive pins that include_done governs
+// archive inclusion in a derived subtree: the retired deepest descendant is
+// hidden by default and surfaced with include_done.
+func TestListTasksIncludeDoneTogglesSubtreeArchive(t *testing.T) {
+	vault := epicFixtureVault(t)
+	if err := vault.RetireTask(epicFixtureProject, "deep-task"); err != nil {
+		t.Fatalf("RetireTask deep-task: %v", err)
+	}
+
+	// Default: deep-task excluded.
+	m := listTasksCall(t, vault, listTasksParams{Project: epicFixtureProject, Epic: "root-epic"})
+	if roles := rolesBySlug(derivedTasks(t, m)); roles["deep-task"] != "" {
+		t.Errorf("deep-task present without include_done: %v", roles)
+	}
+
+	// include_done: deep-task included.
+	m = listTasksCall(t, vault, listTasksParams{Project: epicFixtureProject, Epic: "root-epic", IncludeDone: true})
+	if roles := rolesBySlug(derivedTasks(t, m)); roles["deep-task"] != "task" {
+		t.Errorf("deep-task missing/mis-roled with include_done: %v", roles)
+	}
+}
+
+// TestListTasksMutuallyExclusiveModes pins that setting two+ derivation modes is
+// rejected up front, for every pairing.
+func TestListTasksMutuallyExclusiveModes(t *testing.T) {
+	vault := epicFixtureVault(t)
+	cases := []struct {
+		name string
+		p    listTasksParams
+	}{
+		{"epic+standalone", listTasksParams{Project: epicFixtureProject, Epic: "root-epic", Standalone: true}},
+		{"epic+epics_only", listTasksParams{Project: epicFixtureProject, Epic: "root-epic", EpicsOnly: true}},
+		{"standalone+epics_only", listTasksParams{Project: epicFixtureProject, Standalone: true, EpicsOnly: true}},
+		{"all three", listTasksParams{Project: epicFixtureProject, Epic: "root-epic", Standalone: true, EpicsOnly: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := listTasksErr(t, vault, tc.p)
+			if err == nil {
+				t.Fatal("expected error for mutually-exclusive modes")
+			}
+			if !strings.Contains(err.Error(), "mutually exclusive") {
+				t.Errorf("error = %v, want it to mention mutually exclusive", err)
+			}
+		})
+	}
+}
+
 func TestManageTaskAmend_RequiresSectionAndContent(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
 	tool := ManageTaskTool(vault)

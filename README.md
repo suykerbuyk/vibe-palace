@@ -114,6 +114,10 @@ turn one.
 | `/vpc-license`   | Apply or refresh dual MIT/Apache-2.0 licensing and SPDX banners. |
 | `/vpc-makefile`  | Audit or create a self-documenting Makefile facade for the native build system. |
 | `/vpc-vault-audit` | Adversarial vault audit: runs `vp audit vault` and adds the human-judgment layer code cannot (Layer 2). |
+| `/vpc-tasks-epics` | Roll-up table of every epic — open/total counts, priority, status. |
+| `/vpc-tasks-epic <slug>` | The subtree of one epic (or story), re-rooted, each task tagged with its derived role. |
+| `/vpc-tasks-standalone` | The standalone bucket — tasks that belong to no epic. |
+| `/vpc-tasks-read <name>` | Print a single task or epic body verbatim (reads across active/done/cancelled). |
 
 ### Embedded skills
 

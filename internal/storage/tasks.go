@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -661,11 +662,19 @@ func (v *Vault) CreateTask(project string, spec TaskSpec) error {
 	return atomicfile.Write(v.Root, path, []byte(buf.String()))
 }
 
-// GetTask reads a task file and returns its metadata and full content.
-// It searches active, done, and cancelled directories.
-func (v *Vault) GetTask(project, slug string) (TaskMeta, string, error) {
+// resolveTaskFile searches the active, done, and cancelled directories for a
+// task's markdown file and returns the first match: its absolute path and
+// whether it was found in an archive dir (done/ or cancelled/). It is the shared
+// three-directory search behind GetTask and TaskFilePath — the ONE place that
+// knows the search order, so the readers and the whole-file writer cannot drift
+// apart about where a task lives.
+//
+// Unlike TaskFile (paths.go), which computes the ACTIVE path unconditionally
+// without touching the filesystem, this resolves against what is actually on
+// disk and errors if the slug is nowhere.
+func (v *Vault) resolveTaskFile(project, slug string) (path string, done bool, err error) {
 	if err := validateSlugs(project, slug); err != nil {
-		return TaskMeta{}, "", err
+		return "", false, err
 	}
 
 	type location struct {
@@ -681,22 +690,40 @@ func (v *Vault) GetTask(project, slug string) (TaskMeta, string, error) {
 	for _, loc := range locations {
 		dir, err := loc.dir(project)
 		if err != nil {
-			return TaskMeta{}, "", err
+			return "", false, err
 		}
-		path := filepath.Join(dir, slug+".md")
-		data, err := os.ReadFile(path)
+		p := filepath.Join(dir, slug+".md")
+		info, err := os.Stat(p)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return TaskMeta{}, "", fmt.Errorf("read task: %w", err)
+			return "", false, fmt.Errorf("stat task: %w", err)
 		}
-
-		meta := parseTaskMeta(slug, string(data), loc.done)
-		return meta, string(data), nil
+		if info.IsDir() {
+			continue
+		}
+		return p, loc.done, nil
 	}
 
-	return TaskMeta{}, "", fmt.Errorf("task %q not found in project %q", slug, project)
+	return "", false, fmt.Errorf("task %q not found in project %q", slug, project)
+}
+
+// GetTask reads a task file and returns its metadata and full content.
+// It searches active, done, and cancelled directories.
+func (v *Vault) GetTask(project, slug string) (TaskMeta, string, error) {
+	path, done, err := v.resolveTaskFile(project, slug)
+	if err != nil {
+		return TaskMeta{}, "", err
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return TaskMeta{}, "", fmt.Errorf("read task: %w", err)
+	}
+
+	meta := parseTaskMeta(slug, string(data), done)
+	return meta, string(data), nil
 }
 
 // ListTasks returns metadata for all tasks in a project. If includeDone is
@@ -1004,6 +1031,176 @@ func validateTaskBody(content string) error {
 		}
 	}
 	return nil
+}
+
+// validateWholeTaskFile validates a COMPLETE task file — header and body
+// together — the shape OverwriteTaskFile is about to persist over an existing
+// task. It is the exact INVERSE of validateTaskBody: that function rejects a
+// header-less create/amend body that carries ANY metadata; this one REQUIRES a
+// well-formed metadata header and rejects a file that is missing it or has it
+// twice. Do not confuse the two, and do not call one from the other.
+//
+// It is fence-aware for the same reason validateTaskBody is: a whole task file
+// routinely carries shell/TOML/Python snippets whose "# Usage" comment or sample
+// "**Status:**" line is prose, not structure. Only lines OUTSIDE fenced code
+// blocks count. Fence detection is mdfence's, never a local reimplementation.
+//
+// Enforced, counting only lines outside fences:
+//   - balanced code fences (an unterminated ``` or ~~~ run is an error — checked
+//     first, because an open fence swallows the trailing header and would
+//     otherwise masquerade as a "missing field"),
+//   - exactly one "# " H1 title line,
+//   - exactly one "**Status:**" line and exactly one "**Priority:**" line,
+//   - those Status and Priority lines lie inside the one contiguous "**Field:**"
+//     run following the title (a well-formed header block — a stray field marooned
+//     in the body is not a header).
+func validateWholeTaskFile(content string) error {
+	if unbalancedFence(content) {
+		return errors.New("unterminated code fence: a ``` or ~~~ block is opened but never closed")
+	}
+
+	outside := mdfence.OutsideFences(content)
+	lines := make([]string, len(outside))
+	var h1, status, priority int
+	for i, l := range outside {
+		lines[i] = l.Text
+		if isH1Line(l.Text) {
+			h1++
+		}
+		if isStatusLine(l.Text) {
+			status++
+		}
+		if isPriorityLine(l.Text) {
+			priority++
+		}
+	}
+
+	switch {
+	case h1 == 0:
+		return errors.New("missing title: no \"# \" H1 heading outside code fences")
+	case h1 > 1:
+		return fmt.Errorf("two title lines: found %d \"# \" H1 headings, want exactly one", h1)
+	}
+	switch {
+	case status == 0:
+		return errors.New("missing Status: no \"**Status:**\" line outside code fences")
+	case status > 1:
+		return fmt.Errorf("two Status lines: found %d \"**Status:**\" lines, want exactly one", status)
+	}
+	switch {
+	case priority == 0:
+		return errors.New("missing Priority: no \"**Priority:**\" line outside code fences")
+	case priority > 1:
+		return fmt.Errorf("two Priority lines: found %d \"**Priority:**\" lines, want exactly one", priority)
+	}
+
+	start, end := headerBlock(lines)
+	if start == end {
+		return errors.New("malformed header block: no \"**Field:**\" run follows the title")
+	}
+	if !blockHas(lines, start, end, isStatusLine) {
+		return errors.New("malformed header block: the \"**Status:**\" line is not part of the contiguous header block after the title")
+	}
+	if !blockHas(lines, start, end, isPriorityLine) {
+		return errors.New("malformed header block: the \"**Priority:**\" line is not part of the contiguous header block after the title")
+	}
+
+	return nil
+}
+
+// blockHas reports whether any line in the half-open range [start, end) of lines
+// satisfies pred. It scopes the header-field predicates to the header block found
+// by headerBlock.
+func blockHas(lines []string, start, end int, pred func(string) bool) bool {
+	for i := start; i < end && i < len(lines); i++ {
+		if pred(lines[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// unbalancedFence reports whether content ends with an OPEN code fence — a ```
+// or ~~~ block that is opened and never closed.
+//
+// mdfence exposes no imbalance detector (OutsideFences deliberately treats the
+// tail of an unterminated fence as fenced and simply drops it), so this drives
+// mdfence's own Delim/OpensFence primitives through the identical open/close
+// state machine as mdfence.Scanner and reports whether it is still inside a fence
+// at EOF. Reusing those primitives is what keeps "is this a fence" answered in
+// exactly one place; only the terminal in-fence check is local.
+func unbalancedFence(content string) bool {
+	var openCh byte
+	var openRun int
+	in := false
+	for line := range strings.SplitSeq(content, "\n") {
+		ch, run, info, ok := mdfence.Delim(line)
+		if !ok {
+			continue
+		}
+		if !in {
+			// A backtick delimiter whose info string carries a backtick is prose
+			// (an inline code run), not an opening fence — the defect mdfence
+			// exists to prevent.
+			if !mdfence.OpensFence(ch, info) {
+				continue
+			}
+			in, openCh, openRun = true, ch, run
+			continue
+		}
+		// Inside a fence: a bare run of the same character, at least as long as
+		// the opener, closes it.
+		if ch == openCh && run >= openRun && info == "" {
+			in = false
+		}
+	}
+	return in
+}
+
+// OverwriteTaskFile replaces a task file's entire contents with content, after
+// validating content as a well-formed whole task file (validateWholeTaskFile).
+//
+// The write is guarded and surface-stamped: it resolves the task across the
+// active/done/cancelled dirs, holds the per-path advisory lock across the
+// read→compare→write, and — because content already equals the header+body a
+// task file carries — persists it verbatim via atomicfile.Write under v.Root so
+// the .surface stamp is applied. An identical-content call is a no-op: the file
+// is neither rewritten nor restamped. Invalid content is rejected WITHOUT
+// touching the file on disk.
+//
+// Whether writing to an ARCHIVED task (done/ or cancelled/) is permitted is the
+// CALLER's concern — the CLI refuses archived slugs. This writer honors whatever
+// path resolveTaskFile returns.
+func (v *Vault) OverwriteTaskFile(project, slug, content string) error {
+	path, _, err := v.resolveTaskFile(project, slug)
+	if err != nil {
+		return err
+	}
+
+	// Hold the per-path lock across the read→compare→write so a concurrent
+	// writer of the same task cannot interleave. Acquire is a blocking LOCK_EX
+	// and re-entrant acquisition deadlocks, so write with atomicfile.Write
+	// directly under the held lock rather than via lockedWrite (which re-locks).
+	release, err := vaultlock.Acquire(v.Root, path)
+	if err != nil {
+		return fmt.Errorf("lock task: %w", err)
+	}
+	defer release()
+
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read task: %w", err)
+	}
+	if string(current) == content {
+		// No-op: identical content. Do not rewrite and do not restamp.
+		return nil
+	}
+
+	if err := validateWholeTaskFile(content); err != nil {
+		return err
+	}
+
+	return atomicfile.Write(v.Root, path, []byte(content))
 }
 
 // parseTaskMeta extracts metadata from task markdown content.

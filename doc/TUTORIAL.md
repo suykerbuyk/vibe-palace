@@ -545,9 +545,23 @@ Run `vp help` for the full list, or `vp <command> --help` for details.
 ```bash
 vp status                   # palace overview: sessions, tasks, recent activity
 vp sessions                 # list recent sessions with dates and tags
-vp tasks                    # list active tasks with priority and status
+vp tasks                    # list active tasks, grouped by epic, with priority and status
 vp tasks --done             # include completed and cancelled tasks
+vp tasks --epic <slug>      # just the subtree under an epic (or story), re-rooted
+vp tasks --standalone       # only the tasks that belong to no epic
+vp tasks epics              # roll-up of every epic: open/total, priority, status
+vp tasks edit <slug>        # open a task file in $EDITOR
 ```
+
+The `--epic`, `--standalone`, and `epics` views are epic-aware: the epic tree
+and each task's role (epic / story / task) are **derived server-side** from the
+`Parent` links, never re-asked (see `doc/adr/006-derive-dont-ask.md`). The same
+derived views are reachable from the `/vpc-tasks-epics`, `/vpc-tasks-epic`,
+`/vpc-tasks-standalone`, and `/vpc-tasks-read` slash commands, which call
+`vp_list_tasks` (now accepting `epic`, `standalone`, and `epics_only`) and
+`vp_get_task`. There is no `vp tasks read` CLI command — reading a raw task
+body is `/vpc-tasks-read` (or `vp_get_task`) and `vp tasks edit` opens it for
+editing.
 
 ### Search
 

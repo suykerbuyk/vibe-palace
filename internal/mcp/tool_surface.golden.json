@@ -174,7 +174,7 @@
     {
       "name": "vp_list_tasks",
       "mutating": false,
-      "schema_sha256": "d865e586d20e32f45cd83f7d3d381c44f292e44d8b5b4ecb998e2ab950c81393"
+      "schema_sha256": "cb1089d7f28425362ea8a2af48ad10c548d0c986ba295183e9e688a22139bd3f"
     },
     {
       "name": "vp_list_wings",

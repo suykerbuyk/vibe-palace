@@ -1492,3 +1492,287 @@ func TestSetTaskMetaNotFound(t *testing.T) {
 		t.Errorf("error = %v, want not found", err)
 	}
 }
+
+// --- Phase B: resolveTaskFile / validateWholeTaskFile / OverwriteTaskFile ---
+
+// TestResolveTaskFileResolvesActive proves resolveTaskFile resolves a live task
+// to its tasks/ path and reports it as not archived.
+func TestResolveTaskFileResolvesActive(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "alpha", Title: "Alpha", Priority: "P1"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	got, done, err := v.resolveTaskFile("proj", "alpha")
+	if err != nil {
+		t.Fatalf("resolveTaskFile: %v", err)
+	}
+	if done {
+		t.Errorf("done = true, want false for an active task")
+	}
+	want := filepath.Join(v.Root, "Projects", "proj", "tasks", "alpha.md")
+	if got != want {
+		t.Errorf("path = %q, want %q", got, want)
+	}
+}
+
+// TestResolveTaskFileResolvesDone proves resolveTaskFile searches the done/
+// archive — where TaskFile (active-only) would not look — and flags it archived.
+func TestResolveTaskFileResolvesDone(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "beta", Title: "Beta", Priority: "P2"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := v.RetireTask("proj", "beta"); err != nil {
+		t.Fatalf("RetireTask: %v", err)
+	}
+
+	got, done, err := v.resolveTaskFile("proj", "beta")
+	if err != nil {
+		t.Fatalf("resolveTaskFile: %v", err)
+	}
+	if !done {
+		t.Errorf("done = false, want true for a retired task")
+	}
+	want := filepath.Join(v.Root, "Projects", "proj", "tasks", "done", "beta.md")
+	if got != want {
+		t.Errorf("path = %q, want %q", got, want)
+	}
+}
+
+// TestResolveTaskFileResolvesCancelled proves resolveTaskFile searches the
+// cancelled/ archive and flags it archived.
+func TestResolveTaskFileResolvesCancelled(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "gamma", Title: "Gamma", Priority: "P3"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := v.CancelTask("proj", "gamma"); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+
+	got, done, err := v.resolveTaskFile("proj", "gamma")
+	if err != nil {
+		t.Fatalf("resolveTaskFile: %v", err)
+	}
+	if !done {
+		t.Errorf("done = false, want true for a cancelled task")
+	}
+	want := filepath.Join(v.Root, "Projects", "proj", "tasks", "cancelled", "gamma.md")
+	if got != want {
+		t.Errorf("path = %q, want %q", got, want)
+	}
+}
+
+// TestResolveTaskFileNotFound proves an unknown slug is an error, not an active
+// path pointing at a file that does not exist.
+func TestResolveTaskFileNotFound(t *testing.T) {
+	v := testVault(t)
+	if _, _, err := v.resolveTaskFile("proj", "ghost"); err == nil {
+		t.Fatal("resolveTaskFile for a nonexistent slug should error")
+	} else if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %v, want not found", err)
+	}
+}
+
+// validTaskFile is the canonical shape CreateTask writes: one title, one Status,
+// one Priority, contiguous, then a body.
+const validTaskFile = "# Task Title\n\n" +
+	"**Status:** pending\n" +
+	"**Priority:** P1\n\n" +
+	"Body prose goes here.\n"
+
+// TestValidateWholeTaskFileValid proves a normal well-formed task passes.
+func TestValidateWholeTaskFileValid(t *testing.T) {
+	if err := validateWholeTaskFile(validTaskFile); err != nil {
+		t.Fatalf("valid task rejected: %v", err)
+	}
+}
+
+// TestValidateWholeTaskFileTwoStatus proves a duplicated Status line is rejected
+// by name.
+func TestValidateWholeTaskFileTwoStatus(t *testing.T) {
+	content := "# Task Title\n\n" +
+		"**Status:** pending\n" +
+		"**Status:** blocked\n" +
+		"**Priority:** P1\n\nBody.\n"
+	err := validateWholeTaskFile(content)
+	if err == nil || !strings.Contains(err.Error(), "two Status lines") {
+		t.Fatalf("error = %v, want 'two Status lines'", err)
+	}
+}
+
+// TestValidateWholeTaskFileTwoTitles proves a second H1 is rejected by name.
+func TestValidateWholeTaskFileTwoTitles(t *testing.T) {
+	content := "# Task Title\n# Second Title\n\n" +
+		"**Status:** pending\n**Priority:** P1\n\nBody.\n"
+	err := validateWholeTaskFile(content)
+	if err == nil || !strings.Contains(err.Error(), "two title lines") {
+		t.Fatalf("error = %v, want 'two title lines'", err)
+	}
+}
+
+// TestValidateWholeTaskFileTwoPriority proves a duplicated Priority line is
+// rejected by name.
+func TestValidateWholeTaskFileTwoPriority(t *testing.T) {
+	content := "# Task Title\n\n" +
+		"**Status:** pending\n" +
+		"**Priority:** P1\n" +
+		"**Priority:** P2\n\nBody.\n"
+	err := validateWholeTaskFile(content)
+	if err == nil || !strings.Contains(err.Error(), "two Priority lines") {
+		t.Fatalf("error = %v, want 'two Priority lines'", err)
+	}
+}
+
+// TestValidateWholeTaskFileMissingField proves a file missing a required header
+// field is rejected and names the field.
+func TestValidateWholeTaskFileMissingField(t *testing.T) {
+	content := "# Task Title\n\n**Status:** pending\n\nBody, no priority.\n"
+	err := validateWholeTaskFile(content)
+	if err == nil || !strings.Contains(err.Error(), "missing Priority") {
+		t.Fatalf("error = %v, want 'missing Priority'", err)
+	}
+}
+
+// TestValidateWholeTaskFileMissingTitle proves a headerless file is rejected.
+func TestValidateWholeTaskFileMissingTitle(t *testing.T) {
+	content := "**Status:** pending\n**Priority:** P1\n\nNo title here.\n"
+	err := validateWholeTaskFile(content)
+	if err == nil || !strings.Contains(err.Error(), "missing title") {
+		t.Fatalf("error = %v, want 'missing title'", err)
+	}
+}
+
+// TestValidateWholeTaskFileUnterminatedFence proves an open code fence is
+// rejected by name.
+func TestValidateWholeTaskFileUnterminatedFence(t *testing.T) {
+	content := "# Task Title\n\n" +
+		"**Status:** pending\n**Priority:** P1\n\n" +
+		"```go\nnever closed\n"
+	err := validateWholeTaskFile(content)
+	if err == nil || !strings.Contains(err.Error(), "unterminated code fence") {
+		t.Fatalf("error = %v, want 'unterminated code fence'", err)
+	}
+}
+
+// TestValidateWholeTaskFileMalformedHeaderBlock proves a header field marooned in
+// the body — not part of the contiguous run after the title — is rejected.
+func TestValidateWholeTaskFileMalformedHeaderBlock(t *testing.T) {
+	content := "# Task Title\n\n" +
+		"**Status:** pending\n\n" + // blank line breaks the contiguous run
+		"**Priority:** P1\n\nBody.\n"
+	err := validateWholeTaskFile(content)
+	if err == nil || !strings.Contains(err.Error(), "malformed header block") {
+		t.Fatalf("error = %v, want 'malformed header block'", err)
+	}
+}
+
+// TestValidateWholeTaskFileFenceAware proves the validator does NOT count header
+// lines that live INSIDE a fenced code block — the whole reason it drives
+// mdfence. A closed fence containing a second "# H1" and a second "**Status:**"
+// must not be read as duplicate header material.
+func TestValidateWholeTaskFileFenceAware(t *testing.T) {
+	content := "# Task Title\n\n" +
+		"**Status:** pending\n**Priority:** P1\n\n" +
+		"Example task markdown:\n\n" +
+		"```md\n" +
+		"# Not A Real Title\n" +
+		"**Status:** fake\n" +
+		"**Priority:** fake\n" +
+		"```\n\n" +
+		"Done.\n"
+	if err := validateWholeTaskFile(content); err != nil {
+		t.Fatalf("fenced header lines tripped the validator: %v", err)
+	}
+}
+
+// TestOverwriteTaskFileWritesValid proves a valid whole-file overwrite persists
+// and re-reads verbatim, and that the surface stamp lands (v.Root was passed).
+func TestOverwriteTaskFileWritesValid(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "task", Title: "Old", Priority: "P1"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	newContent := "# New Title\n\n" +
+		"**Status:** in_progress\n**Priority:** P0\n\nRewritten body.\n"
+	if err := v.OverwriteTaskFile("proj", "task", newContent); err != nil {
+		t.Fatalf("OverwriteTaskFile: %v", err)
+	}
+
+	_, body, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if body != newContent {
+		t.Errorf("re-read body = %q, want %q", body, newContent)
+	}
+
+	stamp := filepath.Join(v.Root, "Projects", "proj", ".surface")
+	if _, err := os.Stat(stamp); err != nil {
+		t.Errorf(".surface stamp missing after overwrite (v.Root not passed?): %v", err)
+	}
+}
+
+// TestOverwriteTaskFileRejectsInvalid proves invalid content is refused and the
+// on-disk file is left byte-for-byte unchanged.
+func TestOverwriteTaskFileRejectsInvalid(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "task", Title: "Keep", Priority: "P1"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	path := filepath.Join(v.Root, "Projects", "proj", "tasks", "task.md")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read before: %v", err)
+	}
+
+	bad := "# T\n\n**Status:** a\n**Status:** b\n**Priority:** P1\n"
+	if err := v.OverwriteTaskFile("proj", "task", bad); err == nil {
+		t.Fatal("OverwriteTaskFile accepted invalid content")
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("file changed after rejected write:\nbefore=%q\nafter=%q", before, after)
+	}
+}
+
+// TestOverwriteTaskFileIdenticalNoOp proves writing identical content returns nil
+// and leaves the file intact.
+func TestOverwriteTaskFileIdenticalNoOp(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "task", Title: "T", Priority: "P1"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	_, body, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+
+	if err := v.OverwriteTaskFile("proj", "task", body); err != nil {
+		t.Fatalf("identical overwrite should be a no-op, got: %v", err)
+	}
+
+	_, after, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask after: %v", err)
+	}
+	if after != body {
+		t.Errorf("content changed after no-op overwrite:\nwant=%q\ngot=%q", body, after)
+	}
+}
+
+// TestOverwriteTaskFileNotFound proves a nonexistent slug errors before any
+// write.
+func TestOverwriteTaskFileNotFound(t *testing.T) {
+	v := testVault(t)
+	err := v.OverwriteTaskFile("proj", "ghost", validTaskFile)
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %v, want not found", err)
+	}
+}

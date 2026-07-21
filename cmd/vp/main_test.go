@@ -181,7 +181,7 @@ func TestAllCommandsRegistered(t *testing.T) {
 	expected := []string{
 		"check", "help", "init", "inject", "mcp", "mcp serve",
 		"migrate", "migrate mempalace", "migrate vibevault",
-		"search", "sessions", "status", "tasks",
+		"search", "sessions", "status", "tasks", "tasks epics", "tasks edit",
 		"vault", "vault pull", "vault push", "vault sync",
 		"version",
 	}

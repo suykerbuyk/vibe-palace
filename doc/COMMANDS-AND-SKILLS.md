@@ -106,7 +106,9 @@ subdirectory under `commands/{wing}/.wing/` or `commands/{wing}/{room}/`.
 
 ### 2. Write the markdown
 
-Commands are plain markdown — no frontmatter, no special syntax. Write
+Commands are plain markdown — the body is the instructions. An optional
+leading YAML frontmatter fence may carry `argument-hint: <hint>`, which is
+lifted into the generated slash-command shim; everything else is body. Write
 instructions the way you'd brief a capable developer:
 
 ```markdown
@@ -255,6 +257,14 @@ that want raw content without the "perform these instructions" wrapper.
 | `vp_get_command` | `name` (required), `project` (optional), `wing` (optional), `room` (optional) | Raw markdown content + source tier |
 | `vp_get_skill` | `name` (required), `project` (optional), `wing` (optional), `room` (optional) | Raw markdown content + source tier |
 | `vp_get_skill_section` | `name` (required), `section` (required), `project` (optional), `wing` (optional), `room` (optional) | `{content, source}` — one reference file from `skills/<name>/references/<section>.md` |
+| `vp_list_tasks` | `project` (optional) + at most one of `epic` (subtree slug), `standalone` (bool), `epics_only` (bool) | `{tasks: [TaskMeta+role]}` for the flat/epic/standalone views; `{epics: [{slug, title, priority, status, open, total, role}]}` for `epics_only` |
+| `vp_get_task` | `project` (optional), `task` (required) | Raw task markdown, resolved across `active`/`done`/`cancelled` |
+
+The epic tree and each task's `role` (epic / story / task) are **derived
+server-side** from the task `Parent` links — callers never re-scan or re-ask
+(see `doc/adr/006-derive-dont-ask.md`). The four `/vpc-tasks-epics`,
+`/vpc-tasks-epic`, `/vpc-tasks-standalone`, and `/vpc-tasks-read` slash commands
+are thin wrappers over these two tools.
 
 ### Execution frames
 
