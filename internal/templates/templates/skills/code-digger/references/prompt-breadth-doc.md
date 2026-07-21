@@ -71,7 +71,11 @@ Write `{{DELIVERABLE}}` — typically 1–3 pages. Every non-obvious claim cites
    eyeball a number you then report. The same discipline covers **every** count you
    state in this doc — CI `jobs:` keys, tools, subcommands: run the count, show the
    command and its integer (e.g. `yq '.jobs | keys | length' ci.yml`). A suite that
-   exists and never runs is a finding, not a feature.
+   exists and never runs is a finding, not a feature. And when a suite exists but CI never
+   runs it, do not stop at the coverage gap: **the un-run tests are the authors' own spec.**
+   Skim them for the invariants they assert (a vendor/identity string, a status code, an
+   on-disk layout) and flag any the code visibly contradicts — that contradiction is a
+   high-confidence finding the codebase will not otherwise confess.
 5. **Deploy** — how it ships: image, chart, DaemonSet, systemd unit, nothing at
    all. If it is not deployed anywhere you can find, **say that explicitly** — it
    changes the severity of everything else in the repo.

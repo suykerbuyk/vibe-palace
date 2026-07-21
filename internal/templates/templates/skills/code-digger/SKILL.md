@@ -71,6 +71,17 @@ repo. No tests run by CI. None of these appear in a diff, so nobody has ever rev
 They are frequently the most serious things you will find, and only a reader explicitly
 asking *"what is missing?"* will ever find them.
 
+**Un-run tests are a behavioural oracle — mine them.** Finding that CI runs none of the
+tests (Tier 0's job) is the *start* of the finding, not the end. Those tests are the
+authors' own executable specification of intended behaviour — and nothing enforces it. Read
+them, extract each invariant they assert (a vendor string, a status code, a record layout,
+an error class), and diff the running code against it. A test that asserts `X` over code
+that does `Y`, with no CI to catch the divergence, is a high-confidence finding the codebase
+will never surface on its own — the author *wrote down* the intent, then shipped past it. In
+the Rust VTL run the shipped changer announced a competitor's brand where the repo's own
+un-run integration test asserted the correct one: the coverage gap was reported, but the
+contradiction it was hiding was missed until the test was read as a spec.
+
 **The codebase will not always convict itself.** The strongest findings are often
 *harvested* — a convicting comment, a `TODO`, an ADR, a named task. A well-run but quiet
 codebase hands you none of that, and a method that leans on self-incrimination goes thin
@@ -105,9 +116,27 @@ read the encoder** and confirm what it actually escapes. Documenting a scheme wi
 its charset is how a store that works on the author's Linux box silently cannot exist on a
 shipped platform.
 
+**The entrypoint must match how the binary parses its arguments.** For every shipped image,
+chart, or unit, cross-check the `ENTRYPOINT`/`CMD` (and any chart `args`) against how the
+binary *actually* reads `argv`. A `CMD ["--config", path]` in front of a binary that takes
+its config path **positionally** as `argv[1]` is a service that will not start from its own
+default command — a deployability defect that lives in the seam between two files and so
+appears in neither when each is read alone. Read the arg parser and the launch command
+*together*.
+
 **Grade the deployment condition separately from the defect.** A data-loss bug in something
 nobody deploys is a High with a condition — *"→ Critical if deployed"* — plus an explicit
 question for a human. It is not a Critical, and it is not nothing.
+
+**Anchor severity to an impact ladder, then check the ordering.** Detection is not grading:
+the same defect set graded twice can disagree on severity, and it has — one pass called a
+wrong-vendor-identity string `Critical` while grading silent acknowledged-data-loss only
+`High`. Grade each finding by its worst realistic outcome on the *deployed* plane (data-loss /
+RCE / auth-bypass > reachable crash/DoS > interop/identity > cosmetic), **then sort the whole
+register and read it top-down** — each finding must have a worse worst-case than the one below
+it. If a wrong identity string outranks silent data loss, one grade is wrong. The ladder and
+the ordering check together are in `references/artifact-issue-register.md`; the *order* is what
+makes the grades reproducible run-to-run, not just the finds.
 
 ---
 
@@ -218,3 +247,14 @@ to make it easy for the reader to check that you are.
   encoding format and moved on, trusting the word "encoded" — without reading the encoder or
   asking whether the result is legal on every target filesystem. The scheme that reads
   cleanly is exactly the one whose character set nobody checked.
+- **Reporting the coverage gap but not mining it.** You correctly found that CI runs none of
+  the N tests — and stopped there. The un-run tests are the authors' own spec; the gap
+  between what they assert and what the code does is a finding generator you left on the
+  table. Report the gap *and* diff the code against the assertions.
+- **Reading the launch command and the arg parser separately.** You documented the
+  `CMD`/`ENTRYPOINT` and, elsewhere, how the binary reads `argv`, and never crossed them —
+  so a default command that cannot start the process reads as normal in both files.
+- **Grading the eye-catching defect above the dangerous one.** A wrong brand string on the
+  wire is vivid, so it drew a `Critical` while the silent data-loss two findings down got a
+  `High`. Striking ≠ severe. Sort the register by grade and confirm each finding's worst case
+  actually outranks the one beneath it; grade by outcome on the deployed plane, not by drama.

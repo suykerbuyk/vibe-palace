@@ -69,6 +69,31 @@ State it in the preamble, and mean it:
 This is the sentence that makes the whole document credible. Do not write it unless
 it is true.
 
+### Anchor the grade to an impact ladder — then check the ordering
+
+Detection is not grading. Two runs of this method over the same code have found the same
+defects and then **disagreed about their severities** — one graded a wrong-vendor-identity
+string `Critical` while grading silent acknowledged-**data-loss** only `High`. That ordering
+is indefensible, and it is the failure this section exists to stop. Grade by **worst realistic
+outcome on the deployed plane**, not by how striking or eye-catching the defect is.
+
+Assign a **base grade from the impact class**, evaluated as if the code runs where it ships:
+
+| Base | Impact class |
+|---|---|
+| **Critical** | Irreversible **data loss**, **RCE**, or **auth-bypass of a mutating plane** — *and* the code is shipped, reachable, and the impact is unconditional. If any of {shipped, reachable, irreversible} is only *conditional*, it is a **High** with a `→ Critical if …`. |
+| **High** | Defeats the component's **primary purpose**; corrupts or loses data *under a condition*; bypasses **read** auth; or is a reachable crash/DoS of a deployed service. **Identity / protocol-correctness defects that make the product fail its one job live here** — they break interop, but a wrong vendor string is not data loss. |
+| **Medium** | Correctness or robustness defect with a **bounded** blast radius, an operator-only trigger, or a workaround. |
+| **Low** | Cosmetic, dead code, docs, style, or a defect with no plausible failure path. |
+
+**Then run the ordering check — this is what makes the grades reproducible.** Sort the whole
+register by grade and read it top-down: **each finding must have a worse realistic worst-case
+than the one below it.** If the sort puts a wrong identity string *above* silent
+acknowledged-data-loss, one of the two grades is wrong — fix it before the register ships. The
+ladder decides each grade in isolation; the ordering check catches the run-to-run drift the
+ladder alone does not. A register whose *order* an engineer would reshuffle is a register whose
+severities they will stop trusting.
+
 ### The conditional grade
 
 Some defects' severity depends on a fact the source tree cannot answer — most often

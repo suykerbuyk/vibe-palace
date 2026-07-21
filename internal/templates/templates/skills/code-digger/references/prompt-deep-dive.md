@@ -69,6 +69,20 @@ it, **say so loudly and cite the refutation** — a correction is worth more tha
 confirmation, and this programme has already had several confidently-repeated
 claims turn out to be false.
 
+**Mine the un-run tests.** If this component ships tests that CI does not run (Tier 0
+will tell you, or check the build file yourself), read them as the authors' own
+specification of intended behaviour and diff the code against each assertion they make —
+a vendor/identity string, a status code, an on-disk layout, an error class. A test that
+asserts `X` over code that visibly does `Y`, with nothing running it, is a high-confidence
+finding for `## NEW ISSUES`; the author wrote the intent down and then shipped past it.
+
+**Cross-check the launch command against the arg parser.** When you document how the
+binary reads its arguments (`argv`, flags, env), also read the shipped `ENTRYPOINT`/`CMD`
+and any chart `args`, and confirm the default command can actually start the process. A
+`CMD ["--config", path]` in front of a positional `argv[1]` reader is a service that will
+not boot from its own default — a deployability finding that hides in the seam between the
+two files.
+
 ## Focus questions
 
 This deep dive must answer:
