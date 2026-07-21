@@ -5,6 +5,7 @@ package hook
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -18,13 +19,79 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-// Payload carries the fields extracted from the Claude Code hook
-// invocation (stdin JSON).
+// Payload carries the fields extracted from a hook invocation's stdin JSON.
+// Two clients emit it in two different wire formats, and UnmarshalJSON below
+// reconciles them: Claude Code sends snake_case keys (session_id) with
+// PascalCase event values ("SessionEnd"); Grok sends camelCase keys
+// (sessionId) with snake_case event values ("session_end"). The struct itself
+// is the canonical, post-normalization shape — snake_case keys, PascalCase
+// event — so every consumer below (the ValidEvents gate, the
+// HookEventName == "SessionEnd" branches) sees one format regardless of client.
 type Payload struct {
 	SessionID      string `json:"session_id"`
 	TranscriptPath string `json:"transcript_path"`
 	CWD            string `json:"cwd"`
 	HookEventName  string `json:"hook_event_name"`
+}
+
+// UnmarshalJSON accepts BOTH the Claude Code (snake_case key) and Grok
+// (camelCase key) hook wire formats and normalizes to the canonical Payload.
+//
+// Go's encoding/json key matching is case-insensitive but not
+// separator-insensitive, so `sessionId` never binds to a `session_id` tag — the
+// underscore differs. That single gap is why a Grok hook payload used to land
+// with only `cwd` populated and fail at "session_id is required": Grok sends a
+// COMPLETE payload, just under different keys. We therefore read every field
+// under both spellings and take the first non-empty, then canonicalize the
+// event value. A genuinely empty payload still yields an empty SessionID and is
+// still rejected by Run — this reconciles formats, it does not swallow blanks.
+func (p *Payload) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		SessionID           string `json:"session_id"`
+		SessionIDCamel      string `json:"sessionId"`
+		TranscriptPath      string `json:"transcript_path"`
+		TranscriptPathCamel string `json:"transcriptPath"`
+		CWD                 string `json:"cwd"`
+		HookEventName       string `json:"hook_event_name"`
+		HookEventNameCamel  string `json:"hookEventName"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	p.SessionID = firstNonEmpty(raw.SessionID, raw.SessionIDCamel)
+	p.TranscriptPath = firstNonEmpty(raw.TranscriptPath, raw.TranscriptPathCamel)
+	p.CWD = raw.CWD
+	p.HookEventName = canonicalHookEvent(firstNonEmpty(raw.HookEventName, raw.HookEventNameCamel))
+	return nil
+}
+
+// firstNonEmpty returns the first non-empty string in order.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// canonicalHookEvent maps the wire event name onto the PascalCase form the rest
+// of this package gates on (ValidEvents, the SessionEnd/PreCompact branches).
+// Claude already sends PascalCase, so those pass through the default arm
+// unchanged; Grok sends snake_case ("session_end"), so those are translated.
+// Only the three events vp actually handles are mapped — an unhandled event
+// keeps its wire spelling and is correctly rejected by the ValidEvents gate.
+func canonicalHookEvent(s string) string {
+	switch s {
+	case "session_end":
+		return "SessionEnd"
+	case "stop":
+		return "Stop"
+	case "pre_compact":
+		return "PreCompact"
+	default:
+		return s
+	}
 }
 
 // RunOptions carries configuration that is resolved once per vp
