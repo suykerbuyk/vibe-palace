@@ -65,6 +65,7 @@ type Result struct {
 	DedupSkipped     []string `json:"dedup_skipped"`      // identical content already in vault → dropped
 	IndexSkipped     []string `json:"index_skipped"`      // MEMORY.md / non-typed index files skipped
 	Unclassified     []string `json:"unclassified"`       // missing/unknown type → default-routed (logged)
+	NameRejected     []string `json:"name_rejected"`      // unportable/colliding NAME → skipped, left host-local for human
 	DeletedHostLocal []string `json:"deleted_host_local"` // host-local originals removed (incl. MEMORY.md)
 	Committed        bool     `json:"committed"`
 	CommitSHA        string   `json:"commit_sha"`
@@ -176,6 +177,18 @@ func Harvest(opts Options) (*Result, error) {
 				res.Unclassified = append(res.Unclassified, rel)
 			}
 
+			// Reject an unportable/illegal native NAME up front. A name the vault's
+			// portable contract cannot represent must not abort the whole hook — and
+			// must not be misread below as an "unreadable existing vault file" (a bad
+			// name makes ReadMemory itself error before it ever touches disk). Leave
+			// the host-local original for human eyes rather than dropping it.
+			if _, nerr := vault.MemoryFile(opts.Project, rel); nerr != nil {
+				slog.Warn("harvest: native memory name is unportable; left host-local for human",
+					"file", base, "err", nerr)
+				res.NameRejected = append(res.NameRejected, rel)
+				continue
+			}
+
 			// Compare against any existing vault file at the same rel.
 			existMeta, existBody, readErr := vault.ReadMemory(opts.Project, rel)
 			switch {
@@ -191,6 +204,12 @@ func Harvest(opts Options) (*Result, error) {
 				conflictRel := conflictName(rel, ts)
 				if !opts.DryRun {
 					if werr := vault.WriteMemory(opts.Project, conflictRel, meta, body); werr != nil {
+						if errors.Is(werr, storage.ErrMemoryNameRejected) {
+							slog.Warn("harvest: memory name rejected on write; left host-local for human",
+								"rel", conflictRel, "err", werr)
+							res.NameRejected = append(res.NameRejected, conflictRel)
+							continue
+						}
 						return nil, fmt.Errorf("write conflict memory %s: %w", conflictRel, werr)
 					}
 				}
@@ -207,6 +226,12 @@ func Harvest(opts Options) (*Result, error) {
 				conflictRel := conflictName(rel, ts)
 				if !opts.DryRun {
 					if werr := vault.WriteMemory(opts.Project, conflictRel, meta, body); werr != nil {
+						if errors.Is(werr, storage.ErrMemoryNameRejected) {
+							slog.Warn("harvest: memory name rejected on write; left host-local for human",
+								"rel", conflictRel, "err", werr)
+							res.NameRejected = append(res.NameRejected, conflictRel)
+							continue
+						}
 						return nil, fmt.Errorf("write conflict memory %s: %w", conflictRel, werr)
 					}
 				}
@@ -219,6 +244,12 @@ func Harvest(opts Options) (*Result, error) {
 			// Route normally.
 			if !opts.DryRun {
 				if werr := vault.WriteMemory(opts.Project, rel, meta, body); werr != nil {
+					if errors.Is(werr, storage.ErrMemoryNameRejected) {
+						slog.Warn("harvest: memory name rejected on write; left host-local for human",
+							"rel", rel, "err", werr)
+						res.NameRejected = append(res.NameRejected, rel)
+						continue
+					}
 					return nil, fmt.Errorf("write memory %s: %w", rel, werr)
 				}
 			}

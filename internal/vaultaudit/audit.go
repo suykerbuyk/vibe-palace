@@ -119,6 +119,7 @@ func Run(vault *storage.Vault) (Report, error) {
 		{DimKGPortability, EvidenceKGPortability, auditKGPortability},
 		{DimResumeDiscipline, EvidenceResumeDiscipline, auditResumeDiscipline},
 		{DimIterationHeadings, EvidenceIterationHeadings, auditIterationHeadings},
+		{DimMemoryPortability, EvidenceMemoryPortability, auditMemoryPortability},
 	}
 
 	report := Report{SessionNotes: SessionNoteCount(vault)}

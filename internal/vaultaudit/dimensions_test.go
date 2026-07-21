@@ -205,3 +205,60 @@ func TestIterationHeadings_DoesNotFlagDuplicateNumbers(t *testing.T) {
 			"write addendum narratives), not a defect. Do not re-add this rule: %+v", findings)
 	}
 }
+
+// TestMemoryPortability_FlagsUnportableAndCollisions: reserved chars, Windows
+// device names, and case-insensitive collisions in Projects/*/memory/ are each a
+// finding; a clean name is not. The portable-name test is the SAME predicate the
+// write path enforces (vaultfs.ValidatePortableSegment), so the two cannot drift.
+func TestMemoryPortability_FlagsUnportableAndCollisions(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	writeFile(t, vault.Root, "Projects/p/memory/team:notes.md", "x") // reserved char
+	writeFile(t, vault.Root, "Projects/p/memory/aux.md", "x")        // device name
+	writeFile(t, vault.Root, "Projects/p/memory/Foo.md", "x")        // collision pair...
+	writeFile(t, vault.Root, "Projects/p/memory/foo.md", "x")        // ...second is flagged
+	writeFile(t, vault.Root, "Projects/p/memory/clean-note.md", "x") // clean
+
+	findings, _, err := auditMemoryPortability(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byArtifact := map[string]string{}
+	for _, f := range findings {
+		if f.Dimension != DimMemoryPortability {
+			t.Errorf("finding on wrong dimension: %q", f.Dimension)
+		}
+		if strings.HasPrefix(f.Artifact, "/") {
+			t.Errorf("absolute artifact path leaked: %q", f.Artifact)
+		}
+		byArtifact[f.Artifact] = f.Detail
+	}
+	if _, ok := byArtifact["Projects/p/memory/team:notes.md"]; !ok {
+		t.Error("reserved-char memory filename must be flagged")
+	}
+	if _, ok := byArtifact["Projects/p/memory/aux.md"]; !ok {
+		t.Error("device-name memory filename must be flagged")
+	}
+	_, flaggedLower := byArtifact["Projects/p/memory/foo.md"]
+	_, flaggedUpper := byArtifact["Projects/p/memory/Foo.md"]
+	if flaggedLower == flaggedUpper {
+		t.Errorf("exactly one of the case-collision pair must be flagged (Foo=%v foo=%v)",
+			flaggedUpper, flaggedLower)
+	}
+	if _, ok := byArtifact["Projects/p/memory/clean-note.md"]; ok {
+		t.Error("a clean memory filename must not be flagged")
+	}
+}
+
+func TestMemoryPortability_CleanVaultIsClean(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	writeFile(t, vault.Root, "Projects/p/memory/pref-foo.md", "x")
+	writeFile(t, vault.Root, "Projects/p/memory/prefs/style.md", "x")
+
+	findings, _, err := auditMemoryPortability(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("a clean memory tree produced findings: %+v", findings)
+	}
+}

@@ -5,6 +5,7 @@ package storage
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -15,6 +16,13 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"gopkg.in/yaml.v3"
 )
+
+// ErrMemoryNameRejected classifies a memory write that failed because of the
+// TARGET NAME — an unportable/illegal/traversing filename, or a case-insensitive
+// collision with an existing file — rather than an I/O failure. The harvest keys
+// on it (errors.Is) to skip+log a single offending native memory file instead of
+// aborting the whole SessionEnd hook.
+var ErrMemoryNameRejected = errors.New("storage: memory filename rejected")
 
 // memoryIndexFile is the name of the Claude native memory index. It is an
 // index of memories, not a memory itself, so List operations skip it.
@@ -171,7 +179,13 @@ func (v *Vault) WriteMemory(project, rel string, meta MemoryMeta, body string) e
 
 	abs, err := v.MemoryFile(project, rel)
 	if err != nil {
-		return err
+		// A rejected NAME is classifiable so the harvest can skip+log one bad file
+		// instead of failing the whole hook. MemoryFile already returns the specific
+		// cause (unportable / traversal / .git / empty); tag it for the caller.
+		return errors.Join(ErrMemoryNameRejected, err)
+	}
+	if err := v.checkMemoryCaseCollision(project, rel); err != nil {
+		return err // already wraps ErrMemoryNameRejected
 	}
 
 	data, err := renderMemory(meta, body)
@@ -181,6 +195,41 @@ func (v *Vault) WriteMemory(project, rel string, meta MemoryMeta, body string) e
 
 	if err := atomicfile.Write(v.Root, abs, data); err != nil {
 		return fmt.Errorf("write memory file: %w", err)
+	}
+	return nil
+}
+
+// checkMemoryCaseCollision refuses a write whose target filename collides
+// case-insensitively with a DIFFERENTLY-cased file already in the same memory
+// directory. On a case-insensitive filesystem (macOS/Windows default) "Foo.md"
+// and "foo.md" are one file, so the second write silently clobbers the first —
+// exactly the kind of silent cross-platform corruption this guards. An EXACT-name
+// match is exempt: rewriting the same file is an update, not a collision.
+func (v *Vault) checkMemoryCaseCollision(project, rel string) error {
+	dir, err := v.MemoryDir(project)
+	if err != nil {
+		return err
+	}
+	cleaned := filepath.Clean(rel)
+	targetDir := filepath.Join(dir, filepath.Dir(cleaned))
+	targetBase := filepath.Base(cleaned)
+
+	entries, err := os.ReadDir(targetDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // no directory yet ⇒ no sibling to collide with
+		}
+		return fmt.Errorf("read memory dir: %w", err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if name == targetBase {
+			continue // same file, exact case ⇒ a rewrite, allowed
+		}
+		if strings.EqualFold(name, targetBase) {
+			return fmt.Errorf("%w: %q collides case-insensitively with existing %q "+
+				"(the same file on macOS/Windows)", ErrMemoryNameRejected, targetBase, name)
+		}
 	}
 	return nil
 }

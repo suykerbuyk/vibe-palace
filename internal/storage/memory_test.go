@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -51,6 +52,13 @@ func TestMemoryFilePath(t *testing.T) {
 		{"git segment", ".git/config"},
 		{"git segment nested", "sub/.git/hooks"},
 		{"git segment uppercase", ".GIT/config"},
+		{"reserved colon", "team:notes.md"},
+		{"reserved star", "a*b.md"},
+		{"reserved backslash", `a\b.md`},
+		{"device name", "aux.md"},
+		{"device name bare", "NUL"},
+		{"trailing space", "foo "},
+		{"trailing dot", "foo.md."},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -315,5 +323,44 @@ func TestWriteMemoryConcurrent(t *testing.T) {
 	}
 	if len(got) != n {
 		t.Errorf("ListMemories = %d entries, want %d", len(got), n)
+	}
+}
+
+func TestWriteMemoryRejectsUnportableName(t *testing.T) {
+	v := testVault(t)
+	meta := MemoryMeta{Name: "n", Type: "user"}
+	for _, rel := range []string{"team:notes.md", "aux.md", "foo ", `a\b.md`} {
+		err := v.WriteMemory("proj", rel, meta, "body")
+		if err == nil {
+			t.Errorf("WriteMemory(%q): want error, got nil", rel)
+			continue
+		}
+		// The harvest keys on ErrMemoryNameRejected to skip+log rather than abort.
+		if !errors.Is(err, ErrMemoryNameRejected) {
+			t.Errorf("WriteMemory(%q): want ErrMemoryNameRejected, got %v", rel, err)
+		}
+	}
+}
+
+func TestWriteMemoryCaseCollision(t *testing.T) {
+	v := testVault(t)
+	meta := MemoryMeta{Name: "n", Type: "user"}
+
+	if err := v.WriteMemory("proj", "Foo.md", meta, "first"); err != nil {
+		t.Fatalf("WriteMemory(Foo.md): %v", err)
+	}
+
+	// A differently-cased sibling collides — one file on macOS/Windows.
+	err := v.WriteMemory("proj", "foo.md", meta, "second")
+	if err == nil {
+		t.Fatalf("WriteMemory(foo.md): want collision error, got nil")
+	}
+	if !errors.Is(err, ErrMemoryNameRejected) {
+		t.Errorf("collision: want ErrMemoryNameRejected, got %v", err)
+	}
+
+	// Rewriting the SAME exact name is an update, not a collision.
+	if err := v.WriteMemory("proj", "Foo.md", meta, "updated"); err != nil {
+		t.Errorf("WriteMemory(Foo.md) rewrite: want nil, got %v", err)
 	}
 }

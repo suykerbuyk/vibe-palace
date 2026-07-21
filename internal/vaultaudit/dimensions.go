@@ -14,6 +14,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/mdfence"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
 // Every dimension below is EVIDENCE-BACKED: it exists because a real defect got
@@ -40,6 +41,14 @@ const (
 	// Earned by 191: 110 H2 against 81 H3 meant the counter read a level nobody wrote
 	// and reported "fresh project" on 18 iterations of real history.
 	DimIterationHeadings = "iteration-headings"
+
+	// DimMemoryPortability — no memory filename may be unrepresentable on NTFS/exFAT,
+	// and no two in one directory may collide case-insensitively. Earned by
+	// memory-filenames-unaudited-charset-and-case (high): MemoryFile accepted reserved
+	// chars and Windows device names, WriteMemory had no case-fold guard, and NO
+	// dimension covered Projects/*/memory/ — so a vault that synced cleanly on Linux
+	// could silently become un-checkout-able on the Windows/darwin release targets.
+	DimMemoryPortability = "memory-portability"
 )
 
 // Evidence commands. RECORD THE GREP, NEVER THE COUNT (invariant 3) — every number
@@ -49,6 +58,8 @@ const (
 	EvidenceKGPortability        = `find palace/*/kg/triples -name '*:*' -o -name '*' -newer /dev/null | grep ':'`
 	EvidenceResumeDiscipline     = `wc -c Projects/*/resume.md; grep -c '{{[A-Z]*}}' Projects/*/resume.md`
 	EvidenceIterationHeadings    = `grep -n '^### Iteration' Projects/*/iterations.md   # must be EMPTY: the canonical level is H2`
+	EvidenceMemoryPortability    = `find Projects/*/memory -type f -printf '%f\n' | grep -Ei '[<>:"\\|?*]|[. ]$|^(con|prn|aux|nul|com[1-9]|lpt[1-9])([.]|$)'; ` +
+		`for d in Projects/*/memory; do find "$d" -type f -printf '%f\n' | tr 'A-Z' 'a-z' | sort | uniq -d; done   # case collisions`
 )
 
 // auditProjectTreeCoherence: a project present in one tree and not the other.
@@ -165,6 +176,78 @@ func auditKGPortability(vault *storage.Vault) ([]Finding, []string, error) {
 					"Windows work. One migration fixes them together, so they are recorded together.",
 					hostile, total, worst),
 			})
+		}
+	}
+	return findings, unknowns, nil
+}
+
+// auditMemoryPortability: memory filenames that no Windows filesystem can represent,
+// or that collide case-insensitively within one directory.
+//
+// Unlike KG triples (one bulk migration fixes them together, so that dimension keys on
+// the directory), memory files are individually authored and rare, so each offender is
+// its own finding keyed on its own path — the ratchet clears them one fix at a time.
+//
+// The portable-name test is vaultfs.ValidatePortableSegment — the SAME predicate the
+// write path (MemoryFile → ValidateRelPath) now enforces. Sharing it is the point: the
+// audit reports exactly what a write would refuse, so the two can never drift into
+// disagreeing about what "portable" means.
+func auditMemoryPortability(vault *storage.Vault) ([]Finding, []string, error) {
+	projects, err := vault.ListAllProjects()
+	if err != nil {
+		return nil, nil, fmt.Errorf("enumerate projects: %w", err)
+	}
+
+	var findings []Finding
+	var unknowns []string
+
+	for _, p := range projects {
+		if !p.InProjects {
+			continue // memory/ lives under Projects/<slug>/; no history ⇒ no memory dir
+		}
+		root := filepath.Join(vault.Root, "Projects", p.Slug, "memory")
+		if _, err := os.Stat(root); os.IsNotExist(err) {
+			continue
+		}
+
+		// first[dir+"\x00"+lower(name)] = the first actual-cased name seen in that
+		// directory, so a later differently-cased sibling is flagged as a collision.
+		first := map[string]string{}
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				unknowns = append(unknowns, fmt.Sprintf("%s: cannot read %s: %v",
+					p.Slug, relTo(vault.Root, path), err))
+				return nil
+			}
+			if d.IsDir() {
+				return nil
+			}
+			name := d.Name()
+			if perr := vaultfs.ValidatePortableSegment(name); perr != nil {
+				findings = append(findings, Finding{
+					Dimension: DimMemoryPortability,
+					Artifact:  relTo(vault.Root, path),
+					Detail: fmt.Sprintf("memory filename is not portable to NTFS/exFAT (%v) — the vault "+
+						"cannot be checked out on the Windows/darwin release targets while this exists.", perr),
+				})
+			}
+			key := filepath.Dir(path) + "\x00" + strings.ToLower(name)
+			if prev, ok := first[key]; ok {
+				if prev != name {
+					findings = append(findings, Finding{
+						Dimension: DimMemoryPortability,
+						Artifact:  relTo(vault.Root, path),
+						Detail: fmt.Sprintf("collides case-insensitively with %q in the same directory — "+
+							"they are one file on macOS/Windows, so one silently clobbers the other.", prev),
+					})
+				}
+			} else {
+				first[key] = name
+			}
+			return nil
+		})
+		if err != nil {
+			unknowns = append(unknowns, fmt.Sprintf("%s: walk failed: %v", p.Slug, err))
 		}
 	}
 	return findings, unknowns, nil

@@ -587,3 +587,46 @@ func TestHarvest_DedupIgnoresTrailingNewline(t *testing.T) {
 		t.Errorf("expected 1 vault memory, got %v", rels)
 	}
 }
+
+// TestHarvest_UnportableNameSkippedNotFailed: a single native memory file whose
+// NAME is illegal on the Windows/darwin targets must be skipped and LEFT
+// host-local — never routed into the synced vault, and never aborting the whole
+// hook (which would strand every other memory in the batch).
+func TestHarvest_UnportableNameSkippedNotFailed(t *testing.T) {
+	vaultRoot := newGitVault(t)
+	vault := storage.NewVault(vaultRoot)
+	nativeDir := filepath.Join(t.TempDir(), "memory")
+	if err := os.MkdirAll(nativeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	typed := func(name string) string {
+		return "---\nname: " + name + "\ndescription: d\nmetadata:\n  type: user\n---\nbody\n"
+	}
+	// "aux" is a Windows reserved device name — well-formed content, illegal name.
+	badName := filepath.Join(nativeDir, "aux.md")
+	if err := os.WriteFile(badName, []byte(typed("Bad")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nativeDir, "good-note.md"), []byte(typed("Good")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Harvest(Options{VaultRoot: vaultRoot, Project: testProject, NativeDir: nativeDir, Push: false})
+	if err != nil {
+		t.Fatalf("Harvest must not fail on one unportable name: %v", err)
+	}
+	if !hasRel(res.NameRejected, "aux.md") {
+		t.Errorf("aux.md should be NameRejected, got %v", res.NameRejected)
+	}
+	if !hasRel(res.Routed, "good-note.md") {
+		t.Errorf("good-note.md should still route despite the bad sibling, got %v", res.Routed)
+	}
+	// The rejected native file is left host-local (for human eyes), not deleted.
+	if _, err := os.Stat(badName); err != nil {
+		t.Errorf("rejected native file must be left host-local, stat err: %v", err)
+	}
+	// And it must never reach the vault.
+	if hasRel(memoryRels(t, vault), "aux.md") {
+		t.Error("an unportable name must not reach the synced vault")
+	}
+}

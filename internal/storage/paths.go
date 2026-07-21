@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
 // validateSlugs validates all provided slugs, returning the first error found.
@@ -363,27 +364,30 @@ func (v *Vault) MemoryDir(project string) (string, error) {
 }
 
 // MemoryFile returns the path to a file under a project's memory directory:
-// {vault}/Projects/{project}/memory/{rel}. rel must be a simple relative
-// path like "pref-foo.md" — no traversal, no absolute paths, no .git segment.
+// {vault}/Projects/{project}/memory/{rel}. rel must be a simple relative path
+// like "pref-foo.md" — no traversal, no absolute paths, no .git segment, and no
+// NTFS/exFAT-illegal name.
+//
+// Path safety and cross-platform portability are delegated to vaultfs, the same
+// validators that gate the vp_vault_* surface: ValidateRelPath rejects empty,
+// absolute, control-byte, traversal, and unportable-name inputs (reserved chars,
+// Windows device names, trailing dot/space), and IsRefusedWritePath rejects a
+// ".git"/".vp-locks" segment. Sharing them keeps memory writes held to exactly the
+// portability contract the audit reports on — a Claude/Grok/Zed host that harvests
+// a natively-named memory file can no longer smuggle a Windows-illegal name into
+// the synced vault.
 func (v *Vault) MemoryFile(project, rel string) (string, error) {
 	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
 	}
-	if rel == "" {
-		return "", fmt.Errorf("memory filename must not be empty")
+	if err := vaultfs.ValidateRelPath(rel); err != nil {
+		return "", fmt.Errorf("memory filename %q: %w", rel, err)
 	}
-	if strings.Contains(rel, "..") || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("memory filename %q must be a relative path without traversal", rel)
+	if vaultfs.IsRefusedWritePath(rel) {
+		return "", fmt.Errorf("%w: memory filename %q must not contain a .git or .vp-locks segment",
+			vaultfs.ErrRefusedPath, rel)
 	}
 	cleaned := filepath.Clean(rel)
-	if strings.HasPrefix(cleaned, "..") {
-		return "", fmt.Errorf("memory filename %q escapes project dir", rel)
-	}
-	for seg := range strings.SplitSeq(cleaned, string(filepath.Separator)) {
-		if strings.EqualFold(seg, ".git") {
-			return "", fmt.Errorf("memory filename %q must not contain a .git segment", rel)
-		}
-	}
 	return filepath.Join(v.Root, "Projects", project, "memory", cleaned), nil
 }
 

@@ -13,10 +13,14 @@
 // first argument rather than a schema-typed storage handle, keeping generic
 // file operations out of the storage API.
 //
-// Linux-primary scope: this package does NOT validate against
-// Windows-reserved names (CON, PRN, AUX, NUL, COM1-9, LPT1-9). The vibe-palace
-// project is Linux-primary and the vault is git-managed. If cross-platform
-// support is added later, extend ValidateRelPath accordingly.
+// Cross-platform scope: ValidateRelPath ALSO rejects filenames that cannot be
+// represented on NTFS/exFAT — reserved characters, Windows reserved device names
+// (CON, PRN, AUX, NUL, COM1-9, LPT1-9), and trailing dot/space — via
+// ValidatePortableSegment. Windows and darwin are shipped release targets, so the
+// vault must stay checkout-able there; a name legal only on the Linux host would
+// break the sync everywhere else. ValidatePortableSegment is exported so the
+// vaultaudit memory-portability dimension checks against the SAME rules the write
+// path enforces, keeping one source of truth for what "portable" means.
 //
 // IsRefusedWritePath enforces the refused-segment policy for ".git" and
 // ".vp-locks" (case-insensitive, segment-equality only — substring matches such
@@ -73,6 +77,71 @@ func ValidateRelPath(p string) error {
 	// Defense-in-depth: also re-check segments of the cleaned form.
 	if slices.Contains(strings.Split(cleaned, string(filepath.Separator)), "..") {
 		return fmt.Errorf("%w: %q segment in path", ErrPathTraversal, "..")
+	}
+	// Cross-platform portability: every segment (each directory name and the
+	// leaf) must be representable on NTFS/exFAT, or the synced vault cannot be
+	// checked out on the Windows/darwin release targets.
+	for seg := range strings.SplitSeq(cleaned, string(filepath.Separator)) {
+		if seg == "" {
+			continue
+		}
+		if err := ValidatePortableSegment(seg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// portableReservedChars are the characters no NTFS/exFAT filename may contain.
+// The path separator "/" is deliberately absent — it delimits segments and is
+// handled structurally by ValidateRelPath. A literal backslash IS rejected: it is
+// a separator on Windows, so a "\" inside a vault-relative segment would change
+// the path's meaning on checkout. Control characters are rejected separately by
+// ValidateRelPath.
+const portableReservedChars = `<>:"\|?*`
+
+// reservedDeviceNames are the Windows reserved device basenames. A file whose
+// name (or whose stem before the first ".") equals one of these — case-insensitively,
+// with or without an extension, e.g. "NUL", "nul.md", "COM1.txt" — cannot be
+// created or checked out on Windows.
+var reservedDeviceNames = map[string]bool{
+	"con": true, "prn": true, "aux": true, "nul": true,
+	"com1": true, "com2": true, "com3": true, "com4": true, "com5": true,
+	"com6": true, "com7": true, "com8": true, "com9": true,
+	"lpt1": true, "lpt2": true, "lpt3": true, "lpt4": true, "lpt5": true,
+	"lpt6": true, "lpt7": true, "lpt8": true, "lpt9": true,
+}
+
+// ValidatePortableSegment reports whether a single path segment — one filename or
+// directory name, never a multi-segment path — is representable on NTFS/exFAT.
+// It is the ONE definition of "portable name" shared by the write path
+// (ValidateRelPath) and the vaultaudit memory-portability dimension, so the
+// audit flags exactly what a write would refuse and the two cannot drift.
+//
+// Rejects (all with ErrUnportableName): reserved characters, a Windows reserved
+// device name, a trailing dot or space (Windows silently strips these, so the
+// name you wrote is not the name on disk), and a segment over 255 bytes (the
+// common per-component filesystem limit).
+func ValidatePortableSegment(seg string) error {
+	if seg == "" {
+		return fmt.Errorf("%w: empty segment", ErrUnportableName)
+	}
+	if i := strings.IndexAny(seg, portableReservedChars); i >= 0 {
+		return fmt.Errorf("%w: segment %q contains %q, illegal on NTFS/exFAT",
+			ErrUnportableName, seg, seg[i])
+	}
+	if last := seg[len(seg)-1]; last == '.' || last == ' ' {
+		return fmt.Errorf("%w: segment %q ends with a dot or space, illegal on Windows",
+			ErrUnportableName, seg)
+	}
+	stem, _, _ := strings.Cut(seg, ".")
+	if reservedDeviceNames[strings.ToLower(stem)] {
+		return fmt.Errorf("%w: segment %q is a Windows reserved device name",
+			ErrUnportableName, seg)
+	}
+	if len(seg) > 255 {
+		return fmt.Errorf("%w: segment is %d bytes, over the 255-byte filesystem limit",
+			ErrUnportableName, len(seg))
 	}
 	return nil
 }

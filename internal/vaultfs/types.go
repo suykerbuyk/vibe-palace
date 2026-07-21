@@ -24,6 +24,14 @@ var (
 	// outside the vault root.
 	ErrSymlinkEscape = errors.New("vaultfs: symlink escape rejected")
 
+	// ErrUnportableName is returned when a path segment cannot be represented on
+	// NTFS/exFAT — a reserved character (< > : " \ | ? *), a Windows reserved
+	// device name (CON, PRN, AUX, NUL, COM1-9, LPT1-9), a trailing dot or space,
+	// or an over-length segment. Windows and darwin are shipped release targets,
+	// so a name that is fine on the Linux host but illegal on those filesystems
+	// makes the synced vault un-checkout-able there.
+	ErrUnportableName = errors.New("vaultfs: unportable filename rejected")
+
 	// ErrFileNotFound is returned when a target file does not exist. It
 	// wraps fs.ErrNotExist via errors.Join in the constructing call site.
 	ErrFileNotFound = errors.New("vaultfs: file not found")

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -228,5 +229,80 @@ func TestIsRefusedWritePath_RejectsVpLocksSegment(t *testing.T) {
 func TestIsRefusedWritePath_AllowsVpLocksSubstringNotSegment(t *testing.T) {
 	if IsRefusedWritePath("Projects/foo/foo.vp-locks/bar") {
 		t.Error("want false for substring .vp-locks (not a full segment)")
+	}
+}
+
+func TestValidatePortableSegment_RejectsReservedChars(t *testing.T) {
+	// Each reserved char makes a filename unrepresentable on NTFS/exFAT.
+	for _, c := range []string{
+		"team:notes.md", "a*b.md", "what?.md", `quote".md`,
+		"less<than.md", "greater>than.md", "pipe|d.md", `back\slash.md`,
+	} {
+		if err := ValidatePortableSegment(c); err == nil {
+			t.Errorf("ValidatePortableSegment(%q): want error, got nil", c)
+		} else if !errors.Is(err, ErrUnportableName) {
+			t.Errorf("ValidatePortableSegment(%q): want ErrUnportableName, got %v", c, err)
+		}
+	}
+}
+
+func TestValidatePortableSegment_RejectsReservedDeviceNames(t *testing.T) {
+	// Reserved with or without an extension, case-insensitively.
+	for _, c := range []string{
+		"CON", "con", "nul.md", "AUX.txt", "com1", "COM9.md", "lpt1", "LPT9.log", "Nul",
+	} {
+		if err := ValidatePortableSegment(c); err == nil {
+			t.Errorf("ValidatePortableSegment(%q): want error, got nil", c)
+		} else if !errors.Is(err, ErrUnportableName) {
+			t.Errorf("ValidatePortableSegment(%q): want ErrUnportableName, got %v", c, err)
+		}
+	}
+}
+
+func TestValidatePortableSegment_RejectsTrailingDotOrSpace(t *testing.T) {
+	for _, c := range []string{"foo.md.", "foo ", "bar."} {
+		if err := ValidatePortableSegment(c); err == nil {
+			t.Errorf("ValidatePortableSegment(%q): want error, got nil", c)
+		} else if !errors.Is(err, ErrUnportableName) {
+			t.Errorf("ValidatePortableSegment(%q): want ErrUnportableName, got %v", c, err)
+		}
+	}
+}
+
+func TestValidatePortableSegment_RejectsOverLength(t *testing.T) {
+	long := strings.Repeat("a", 256)
+	if err := ValidatePortableSegment(long); err == nil {
+		t.Fatalf("ValidatePortableSegment(256 bytes): want error, got nil")
+	} else if !errors.Is(err, ErrUnportableName) {
+		t.Errorf("want ErrUnportableName, got %v", err)
+	}
+}
+
+func TestValidatePortableSegment_AcceptsTypical(t *testing.T) {
+	// Device-name substrings that are NOT the whole stem must pass, as must a
+	// single interior dot and typical kebab memory names.
+	for _, c := range []string{
+		"pref-foo.md", "main.rs", "console.md", "nul-thoughts.md", "aux-note.md",
+		"com10.md", "lpt.md", "a.b.c.md", "CONTRIBUTING.md",
+	} {
+		if err := ValidatePortableSegment(c); err != nil {
+			t.Errorf("ValidatePortableSegment(%q): want nil, got %v", c, err)
+		}
+	}
+}
+
+func TestValidateRelPath_RejectsUnportableSegment(t *testing.T) {
+	// The reserved-name rules apply to EVERY segment of a multi-segment path.
+	for _, c := range []string{
+		"Projects/x/memory/team:notes.md",
+		"Projects/x/memory/aux.md",
+		"Projects/CON/memory/ok.md",
+		"Projects/x/memory/trailing ",
+	} {
+		if err := ValidateRelPath(c); err == nil {
+			t.Errorf("ValidateRelPath(%q): want error, got nil", c)
+		} else if !errors.Is(err, ErrUnportableName) {
+			t.Errorf("ValidateRelPath(%q): want ErrUnportableName, got %v", c, err)
+		}
 	}
 }
