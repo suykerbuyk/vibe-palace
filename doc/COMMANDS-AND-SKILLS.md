@@ -33,7 +33,7 @@ updates, architecture reviews, dependency audits, release checklists.
 | `review-plan` | Critical architecture review of a task plan |
 | `cancel-plan` | Archive a planned task found not worth implementing |
 | `capture` | Record a session summary with decisions and open threads |
-| `execute-plan` | Dispatch subagents per phase to execute a task plan |
+| `execute-plan` | Dispatch subagents per phase to execute a task plan in an isolated `../wt/<slug>` worktree (via `vp worktree`), gate the `plan/<slug>` branch, and hand the human the fast-forward-only merge — so multiple plans run concurrently |
 | `license` | Add or update dual MIT/Apache-2.0 licensing |
 | `makefile` | Audit or create a Makefile facade for the build system |
 | `vault-audit` | Adversarial whole-vault audit: runs `vp audit vault` and adds the Layer-2 human-judgment pass |

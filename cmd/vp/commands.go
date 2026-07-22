@@ -72,6 +72,12 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(cmdTasksEpics())
 	reg.Register(mutates(cmdTasksEdit()))
 	reg.Register(cmdVersion(info))
+	// Worktree ops target the PROJECT repo (not the vault), so they carry no
+	// vault surface gate and are registered UNWRAPPED.
+	reg.Register(cmdWorktree())
+	reg.Register(cmdWorktreeCreate())
+	reg.Register(cmdWorktreeRemove())
+	reg.Register(cmdWorktreeList())
 	reg.Register(cmdVault())
 	reg.Register(cmdVaultPull())
 	reg.Register(cmdVaultPush())

@@ -92,6 +92,7 @@ func knownCommands() []string {
 		"search", "sessions", "status", "tasks", "tasks epics", "tasks edit",
 		"vault", "vault pull", "vault push", "vault status", "vault sync", "vault tidy",
 		"version",
+		"worktree", "worktree create", "worktree remove", "worktree list",
 	}
 }
 
