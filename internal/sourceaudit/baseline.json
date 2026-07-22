@@ -5,10 +5,6 @@
       "reason": "REAL FINDING (capability built, nothing invokes it), surfaced at 206 by the import-scoped fix — it was hidden because palace.RoomClassifier.Classify is live and the matcher compared bare names. Verified: production reaches absorb through BuildPlan/Apply (cmd/vp/cmd_absorb.go:96,157); NOTHING — not even absorb itself — calls this exported pure function. Only its own test does. Owned by task dead-classify-and-generate-entry-points-nothing-calls."
     },
     {
-      "id": "uninvoked atomicfile.WithFsync",
-      "reason": "REAL FINDING, owned by task atomicfile-options-unused-nothing-is-ever-fsynced. Zero non-test callers: all 17 production atomicfile.Write call sites pass zero options, so NOTHING IN THE PRODUCT IS EVER FSYNCED and this option's stated purpose (durability beyond rename atomicity) is unmet everywhere. Do not delete without deciding the durability posture first — the option is the fix, not the debt."
-    },
-    {
       "id": "uninvoked atomicfile.WithInheritPerm",
       "reason": "REAL FINDING, owned by task atomicfile-options-unused-nothing-is-ever-fsynced. Zero non-test callers. Its doc claims it is 'used by writers that must preserve user-set permissions on managed files' — NO SUCH WRITER EXISTS. Every managed-file rewrite therefore resets mode to the 0o644 default."
     },

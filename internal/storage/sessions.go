@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
@@ -753,7 +754,13 @@ func (v *Vault) WriteSessionRef(project string, meta SessionMeta, body string) (
 		return SessionRef{}, err
 	}
 
-	if err := v.lockedWrite(path, data); err != nil {
+	// Capture-only fsync (ADR-003, atomicfile-options task): the shared
+	// atomicfile primitive stays no-fsync-by-default so the hot bootstrap read
+	// path pays nothing, but a session capture note is the one vault write that
+	// is both durability-critical and unrecoverable if lost before it is
+	// committed (the vault is git-backed, so anything already committed can be
+	// recovered — an uncommitted note cannot). So this write opts into fsync.
+	if err := v.lockedWrite(path, data, atomicfile.WithFsync()); err != nil {
 		return SessionRef{}, fmt.Errorf("write session file: %w", err)
 	}
 	return SessionRef{
@@ -836,7 +843,9 @@ func (v *Vault) RewriteSession(project, date, fp string, iteration int, meta Ses
 		return err
 	}
 
-	if err := v.lockedWrite(path, data); err != nil {
+	// Capture-only fsync — see the rationale at WriteSession above. The drain
+	// rewrite is the same durability-critical capture write, so it fsyncs too.
+	if err := v.lockedWrite(path, data, atomicfile.WithFsync()); err != nil {
 		return fmt.Errorf("rewrite session file: %w", err)
 	}
 	return nil
