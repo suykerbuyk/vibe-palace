@@ -69,7 +69,8 @@ func DetectSignal(dir string) ProjectSignal {
 		return SignalNone
 	}
 
-	if _, err := findFileUpward(resolved, ConfigFileName); err == nil {
+	homeBoundary, _ := resolvedHome()
+	if _, err := findMarkerUpward(resolved, homeBoundary); err == nil {
 		return SignalVibeConfig
 	}
 
@@ -86,20 +87,33 @@ func DetectSignal(dir string) ProjectSignal {
 	return SignalNone
 }
 
+// resolvedHome returns the symlink-resolved, cleaned absolute path of the
+// user's home directory, and whether it could be determined. It is both the
+// force-skip target (isForceSkipDir) and the boundary at which the
+// .vibe-palace.toml marker walk stops (findMarkerUpward): a marker located
+// exactly at $HOME is ignored and the walk never climbs above it. Resolving
+// symlinks here keeps the boundary comparison exact even when $HOME itself is
+// a symlink (as it was for the dotfile-manager case that motivated this).
+func resolvedHome() (string, bool) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", false
+	}
+	resolved, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		resolved = home
+	}
+	return filepath.Clean(resolved), true
+}
+
 // isForceSkipDir reports whether dir is a directory where project-init
 // must never run regardless of signals present (user's $HOME or fs root).
 func isForceSkipDir(dir string) bool {
 	if dir == "/" {
 		return true
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		homeResolved, err := filepath.EvalSymlinks(home)
-		if err != nil {
-			homeResolved = home
-		}
-		if filepath.Clean(homeResolved) == dir {
-			return true
-		}
+	if home, ok := resolvedHome(); ok && home == dir {
+		return true
 	}
 	return false
 }
@@ -132,8 +146,17 @@ func DetectProject(cwd string) (string, error) {
 		return "", fmt.Errorf("resolve cwd: %w", err)
 	}
 
-	// Strategy 1: config file walk.
-	if configPath, err := findFileUpward(cwd, ConfigFileName); err == nil {
+	// Strategy 1: config file walk, bounded at $HOME so a stray
+	// ~/.vibe-palace.toml does not name every directory under the home tree
+	// (see the home-marker hardening). The walk is symlink-resolved to match
+	// the resolved home boundary; the git/basename strategies below keep using
+	// the unresolved cwd, preserving their existing behavior.
+	markerStart := cwd
+	if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
+		markerStart = filepath.Clean(resolved)
+	}
+	homeBoundary, _ := resolvedHome()
+	if configPath, err := findMarkerUpward(markerStart, homeBoundary); err == nil {
 		cfg, err := ParseProjectConfig(configPath)
 		if err == nil && cfg.Name != "" {
 			if err := slugpkg.Validate(cfg.Name); err != nil {
@@ -188,6 +211,37 @@ func ParseProjectFile(path string) (ProjectFile, error) {
 		return ProjectFile{}, fmt.Errorf("parse config: %w", err)
 	}
 	return pf, nil
+}
+
+// findMarkerUpward walks from dir toward the filesystem root looking for a
+// .vibe-palace.toml marker, but STOPS at the home boundary: it never inspects
+// or climbs above $HOME. This honors the marker-file template's promise that a
+// file at $HOME/.vibe-palace.toml is ignored — so a single stray marker in the
+// home directory (e.g. linked there by a dotfile manager) does not enroll the
+// entire home tree into auto-capture.
+//
+// dir must already be symlink-resolved by the caller so the boundary comparison
+// is exact. A zero homeBoundary disables the stop (used only when the home
+// directory cannot be determined), degrading to findFileUpward's walk-to-root.
+// This bound applies to the marker walk ONLY; the .git walk in gitRemoteName
+// still climbs to the filesystem root, since a project legitimately lives above
+// $HOME on some hosts.
+func findMarkerUpward(dir, homeBoundary string) (string, error) {
+	for {
+		if homeBoundary != "" && dir == homeBoundary {
+			return "", fmt.Errorf("%s not found (stopped at home boundary)", ConfigFileName)
+		}
+		candidate := filepath.Join(dir, ConfigFileName)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached filesystem root.
+			return "", fmt.Errorf("%s not found", ConfigFileName)
+		}
+		dir = parent
+	}
 }
 
 // findFileUpward walks from dir toward the filesystem root looking for a file

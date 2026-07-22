@@ -543,3 +543,127 @@ func initGitRepo(t *testing.T, dir, remoteURL string) {
 		}
 	}
 }
+
+// --- $HOME-boundary marker walk (home-marker-must-not-enroll-home-tree) ---
+
+// mkdirAll is a test helper that creates a nested directory under root.
+func mkSubdir(t *testing.T, root string, parts ...string) string {
+	t.Helper()
+	dir := filepath.Join(append([]string{root}, parts...)...)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestDetectSignal_HomeMarkerDoesNotEnrollHomeTree is the direct repro from the
+// home-marker task: a single .vibe-palace.toml at $HOME must NOT make every
+// descendant directory report SignalVibeConfig. Before the boundary walk, rows
+// 2 and 3 leaked SignalVibeConfig.
+func TestDetectSignal_HomeMarkerDoesNotEnrollHomeTree(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeConfig(t, home, `[project]
+name = "dotfiles"
+`)
+	sub := mkSubdir(t, home, "random-subdir")
+	nested := mkSubdir(t, home, "random-subdir", "nested")
+
+	for _, dir := range []string{home, sub, nested} {
+		if got := DetectSignal(dir); got != SignalNone {
+			t.Errorf("DetectSignal(%q) = %q, want %q (a $HOME marker must not enroll the home tree)", dir, got, SignalNone)
+		}
+	}
+
+	// DetectProject must also refuse to name descendants after the $HOME marker.
+	// With no git remote it falls to the directory basename, never "dotfiles".
+	if got, _ := DetectProject(sub); got == "dotfiles" {
+		t.Errorf("DetectProject(%q) = %q; a $HOME marker must not name a descendant", sub, got)
+	}
+}
+
+// TestDetectSignal_NearerMarkerWinsUnderHome verifies a real project under the
+// home tree still detects — the boundary only ignores a marker AT $HOME, never
+// a nearer one in an actual project directory.
+func TestDetectSignal_NearerMarkerWinsUnderHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeConfig(t, home, `[project]
+name = "dotfiles"
+`)
+	proj := mkSubdir(t, home, "code", "realproj")
+	writeConfig(t, proj, `[project]
+name = "realproj"
+`)
+	sub := mkSubdir(t, home, "code", "realproj", "internal")
+
+	if got := DetectSignal(sub); got != SignalVibeConfig {
+		t.Errorf("DetectSignal(%q) = %q, want %q (nearer marker must win)", sub, got, SignalVibeConfig)
+	}
+	if got, err := DetectProject(sub); err != nil || got != "realproj" {
+		t.Errorf("DetectProject(%q) = %q, %v; want realproj (nearer marker)", sub, got, err)
+	}
+}
+
+// TestDetectSignal_ProjectOutsideHomeStillWalksToRoot verifies the boundary
+// does not clip a project that lives OUTSIDE the home tree: the marker walk
+// there must still climb to the filesystem root as before.
+func TestDetectSignal_ProjectOutsideHomeStillWalksToRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// A sibling temp root, not under $HOME.
+	outside := t.TempDir()
+	writeConfig(t, outside, `[project]
+name = "srv-project"
+`)
+	sub := mkSubdir(t, outside, "a", "b", "c")
+
+	if got := DetectSignal(sub); got != SignalVibeConfig {
+		t.Errorf("DetectSignal(%q) = %q, want %q (a project outside $HOME must still walk to root)", sub, got, SignalVibeConfig)
+	}
+	if got, err := DetectProject(sub); err != nil || got != "srv-project" {
+		t.Errorf("DetectProject(%q) = %q, %v; want srv-project", sub, got, err)
+	}
+}
+
+// TestDetectSignal_SymlinkedHomeBoundary verifies the boundary comparison holds
+// when $HOME itself is a symlink — the case that originally surfaced the bug
+// (the reporter's ~/.vibe-palace.toml was a stow symlink). Both the walked path
+// and the boundary are symlink-resolved, so the stop still fires.
+func TestDetectSignal_SymlinkedHomeBoundary(t *testing.T) {
+	realHome := t.TempDir()
+	link := filepath.Join(t.TempDir(), "home-link")
+	if err := os.Symlink(realHome, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	t.Setenv("HOME", link)
+	writeConfig(t, realHome, `[project]
+name = "dotfiles"
+`)
+	// Reach a descendant through the symlinked home path.
+	if err := os.MkdirAll(filepath.Join(realHome, "random"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	via := filepath.Join(link, "random")
+
+	if got := DetectSignal(via); got != SignalNone {
+		t.Errorf("DetectSignal(%q) = %q, want %q (symlinked $HOME boundary must still stop the walk)", via, got, SignalNone)
+	}
+}
+
+// TestFindMarkerUpward_ZeroBoundaryWalksToRoot documents that a zero boundary
+// (home undeterminable) degrades to the unbounded walk rather than failing.
+func TestFindMarkerUpward_ZeroBoundaryWalksToRoot(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, root, `[project]
+name = "x"
+`)
+	child := mkSubdir(t, root, "a", "b")
+	got, err := findMarkerUpward(child, "")
+	if err != nil {
+		t.Fatalf("unexpected error with zero boundary: %v", err)
+	}
+	if got != filepath.Join(root, ConfigFileName) {
+		t.Errorf("got %q, want marker at %q", got, root)
+	}
+}
