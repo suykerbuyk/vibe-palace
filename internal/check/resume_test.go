@@ -215,6 +215,218 @@ func TestResumeBreaches(t *testing.T) {
 	})
 }
 
+func TestResumeRefBreaches(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantCount  int
+		wantSubstr []string // substrings that must appear across the breaches
+	}{
+		{
+			name:       "home-relative plan ref is a breach",
+			body:       "## Current State\n\nSee ~/.claude/plans/foo.md for the plan.\n",
+			wantCount:  1,
+			wantSubstr: []string{"line 3", "~/.claude/plans/foo.md"},
+		},
+		{
+			name:       "absolute plan ref is a breach",
+			body:       "# Resume\n\nPlan lives at /home/x/.claude/plans/bar.md today.\n",
+			wantCount:  1,
+			wantSubstr: []string{"line 3", "/home/x/.claude/plans/bar.md"},
+		},
+		{
+			name:      "home-relative ref inside a code fence is NOT a breach",
+			body:      "## Notes\n\n```\n~/.claude/plans/foo.md\n```\n",
+			wantCount: 0,
+		},
+		{
+			name:      "absolute ref inside a code fence is NOT a breach",
+			body:      "## Notes\n\n```sh\ncat /home/x/.claude/plans/bar.md\n```\n",
+			wantCount: 0,
+		},
+		{
+			name:      "clean resume has no breach",
+			body:      "# Resume\n\n## Current State\n\n- all good\n",
+			wantCount: 0,
+		},
+		{
+			name:      "legitimate vault-relative doc pointer is NOT a breach",
+			body:      "See doc/PLANS.md and tasks/done/task-7.md for the record.\n",
+			wantCount: 0,
+		},
+		{
+			name:       "home-relative ref is counted once, not double-flagged as absolute",
+			body:       "~/.claude/plans/foo.md\n",
+			wantCount:  1,
+			wantSubstr: []string{"line 1", "~/.claude/plans/foo.md"},
+		},
+		{
+			name:       "both patterns on separate lines each breach",
+			body:       "a: ~/.claude/plans/a.md\nb: /home/y/.claude/plans/b.md\n",
+			wantCount:  2,
+			wantSubstr: []string{"~/.claude/plans/a.md", "/home/y/.claude/plans/b.md"},
+		},
+		{
+			name:       "ref mid-line after a real fence has closed is still a breach",
+			body:       "```\nsample\n```\n\nlive: ~/.claude/plans/live.md\n",
+			wantCount:  1,
+			wantSubstr: []string{"line 5", "~/.claude/plans/live.md"},
+		},
+		{
+			name:       "CRLF line ending does not bleed into the matched path",
+			body:       "ref: /home/z/.claude/plans/c.md\r\n",
+			wantCount:  1,
+			wantSubstr: []string{"/home/z/.claude/plans/c.md"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resumeRefBreaches([]byte(tc.body))
+			if len(got) != tc.wantCount {
+				t.Fatalf("breach count = %d, want %d: %v", len(got), tc.wantCount, got)
+			}
+			joined := strings.Join(got, "\n")
+			for _, want := range tc.wantSubstr {
+				if !strings.Contains(joined, want) {
+					t.Errorf("breaches %q missing %q", joined, want)
+				}
+			}
+		})
+	}
+}
+
+func TestCheckResumeRefs_EmptyVaultRootSkips(t *testing.T) {
+	r := CheckResumeRefs(storage.NewVault(""))
+	if r.Status != Skip {
+		t.Errorf("status = %v, want Skip on an empty vault root", r.Status)
+	}
+}
+
+func TestCheckResumeRefs_NoProjectsDir(t *testing.T) {
+	r := CheckResumeRefs(storage.NewVault(t.TempDir()))
+	if r.Status != Pass {
+		t.Errorf("status = %v, want Pass", r.Status)
+	}
+	if r.Summary != "no Projects/ directory" {
+		t.Errorf("summary = %q", r.Summary)
+	}
+}
+
+func TestCheckResumeRefs_CleanIsPass(t *testing.T) {
+	vault := t.TempDir()
+	writeResume(t, vault, "tidy", "# tidy\n\n## Current State\n\nSee tasks/done/task-1.md.\n")
+	r := CheckResumeRefs(storage.NewVault(vault))
+	if r.Status != Pass {
+		t.Fatalf("status = %v (%s), want Pass", r.Status, r.Summary)
+	}
+	if r.Summary != "1 resume.md free of host-local plan refs" {
+		t.Errorf("summary = %q", r.Summary)
+	}
+}
+
+func TestCheckResumeRefs_MissingResumeIsNotAViolation(t *testing.T) {
+	vault := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(vault, "Projects", "bare"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := CheckResumeRefs(storage.NewVault(vault))
+	if r.Status != Pass {
+		t.Errorf("status = %v, want Pass (missing resume.md is not a violation)", r.Status)
+	}
+	if r.Summary != "0 resume.md free of host-local plan refs" {
+		t.Errorf("summary = %q, want the project to be skipped, not scanned", r.Summary)
+	}
+}
+
+func TestCheckResumeRefs_SkipsDotAndUnderscoreDirs(t *testing.T) {
+	vault := t.TempDir()
+	writeResume(t, vault, ".hidden", "~/.claude/plans/x.md\n")
+	writeResume(t, vault, "_archive", "/home/x/.claude/plans/y.md\n")
+	r := CheckResumeRefs(storage.NewVault(vault))
+	if r.Status != Pass {
+		t.Errorf("status = %v (%v), want Pass — dot/underscore dirs are not projects", r.Status, r.Details)
+	}
+}
+
+func TestCheckResumeRefs_ProjectsIsAFile(t *testing.T) {
+	vault := t.TempDir()
+	if err := os.WriteFile(filepath.Join(vault, "Projects"), []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := CheckResumeRefs(storage.NewVault(vault))
+	if r.Status != Info {
+		t.Errorf("status = %v, want Info on an unreadable Projects/", r.Status)
+	}
+	if !strings.Contains(r.Summary, "scan Projects/") {
+		t.Errorf("summary = %q", r.Summary)
+	}
+}
+
+func TestCheckResumeRefs_FlagsEachProjectAndNeverFails(t *testing.T) {
+	vault := t.TempDir()
+	writeResume(t, vault, "homey", "## State\n\nplan: ~/.claude/plans/foo.md\n")
+	writeResume(t, vault, "absy", "## State\n\nplan: /home/x/.claude/plans/bar.md\n")
+	writeResume(t, vault, "fenced", "## State\n\n```\n~/.claude/plans/ignored.md\n```\n")
+	writeResume(t, vault, "clean", "## State\n\nSee tasks/done/task-1.md.\n")
+
+	r := CheckResumeRefs(storage.NewVault(vault))
+	if r.Status != Info {
+		t.Fatalf("status = %v, want Info", r.Status)
+	}
+	if r.Summary != "2 of 4 resume.md hold host-local plan refs" {
+		t.Errorf("summary = %q, want \"2 of 4 resume.md hold host-local plan refs\"", r.Summary)
+	}
+	joined := strings.Join(r.Details, "\n")
+	for _, want := range []string{
+		"absy: line 3: /home/x/.claude/plans/bar.md",
+		"homey: line 3: ~/.claude/plans/foo.md",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("details missing %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "fenced:") {
+		t.Errorf("fenced reference must be ignored:\n%s", joined)
+	}
+	if strings.Contains(joined, "clean:") {
+		t.Errorf("clean project should be silent:\n%s", joined)
+	}
+	// Details are sorted by project (absy before homey) and end with remediation.
+	if !strings.Contains(r.Details[len(r.Details)-1], "vault-relative") {
+		t.Errorf("last detail should be the remediation pointer, got %q", r.Details[len(r.Details)-1])
+	}
+}
+
+// TestCheckResumeRefs_IsReadOnly proves the check never mutates the vault.
+func TestCheckResumeRefs_IsReadOnly(t *testing.T) {
+	vault := t.TempDir()
+	body := "## State\n\nplan: ~/.claude/plans/foo.md\n"
+	writeResume(t, vault, "homey", body)
+	path := filepath.Join(vault, "Projects", "homey", "resume.md")
+
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := CheckResumeRefs(storage.NewVault(vault)); r.Status != Info {
+		t.Fatalf("expected a flagged resume, got %v", r.Status)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !before.ModTime().Equal(after.ModTime()) || before.Size() != after.Size() {
+		t.Errorf("resume.md was mutated")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != body {
+		t.Error("resume.md content changed")
+	}
+}
+
 func TestHumanKB(t *testing.T) {
 	if got := humanKB(25 * 1024); got != "25.0 KB" {
 		t.Errorf("humanKB(25KiB) = %q, want %q", got, "25.0 KB")

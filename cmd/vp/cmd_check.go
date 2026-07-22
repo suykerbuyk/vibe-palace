@@ -31,13 +31,14 @@ func cmdCheck(info cli.BuildInfo) *cli.Command {
 	return &cli.Command{
 		Name:        "check",
 		Synopsis:    "vp check [--json] [--check NAME[,NAME...]]",
-		Description: "Verify installation, config, vault, embedder, surface compatibility, project detection, and vault hygiene (stray scaffolds, resume.md size/row caps). Reports pass/fail status for each component. With --check, runs only the named check(s) via selective execution — skipping the expensive embedder load and tool-registry build — for fast scripting / AI preflights. Selectable names: surface, resume-caps.",
+		Description: "Verify installation, config, vault, embedder, surface compatibility, project detection, and vault hygiene (stray scaffolds, resume.md size/row caps, host-local plan refs). Reports pass/fail status for each component. With --check, runs only the named check(s) via selective execution — skipping the expensive embedder load and tool-registry build — for fast scripting / AI preflights. Selectable names: surface, resume-caps, resume-refs.",
 		Flags:       checkFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp check", Comment: "Run all installation checks"},
 			{Cmd: "vp check --json", Comment: "Emit machine-readable results (exit_code 1 on any failure)"},
 			{Cmd: "vp check --check surface --json", Comment: "Fast surface-only preflight (used by restart/wrap)"},
 			{Cmd: "vp check --check resume-caps", Comment: "Warn on any project resume.md over its size/row caps"},
+			{Cmd: "vp check --check resume-refs", Comment: "Warn on any resume.md committing a host-local ~/.claude/plans/… path"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(checkFlags, args)
@@ -60,6 +61,12 @@ var checkProducers = map[string]func(vaultRoot string) []check.Result{
 			return []check.Result{{Name: "Resume caps", Status: check.Skip, Summary: "no vault configured"}}
 		}
 		return []check.Result{check.CheckResumeCaps(storage.NewVault(vaultRoot))}
+	},
+	"resume-refs": func(vaultRoot string) []check.Result {
+		if vaultRoot == "" {
+			return []check.Result{{Name: "Resume refs", Status: check.Skip, Summary: "no vault configured"}}
+		}
+		return []check.Result{check.CheckResumeRefs(storage.NewVault(vaultRoot))}
 	},
 }
 
@@ -225,6 +232,12 @@ func gatherCheckResults() []check.Result {
 				// editors retired, no write path can enforce a cap, so
 				// detection is all that is on offer.
 				results = append(results, check.CheckResumeCaps(vault))
+
+				// Vault-wide: flag resume.md files that commit a host-local
+				// plan reference (~/.claude/plans/… or an absolute
+				// /…/.claude/plans/… path) — dead weight in a shared,
+				// committed artifact. Advisory only, never Fail.
+				results = append(results, check.CheckResumeRefs(vault))
 			}
 		}
 	}

@@ -172,6 +172,68 @@ func TestEmbeddedCommands_SurfacePreflight(t *testing.T) {
 	}
 }
 
+// TestEmbeddedWrap_PlanHygiene guards the plan-hygiene additions to the wrap
+// command template: a narrow "Sweep Orphaned Plans" reconcile step that prefers
+// the read-only vp_scan_plans reporter (with a glob fallback for older
+// binaries) and only deletes a scratch plan promoted THIS session, plus the
+// resume guardrail bullet that forbids committing a host-local plan/commit.msg
+// path into the synced resume.md. If a future edit drops either, this catches
+// it. (Prose enforcement — ADR-006: the template asks the executor to honor
+// these; the test pins that the ask is still present.)
+func TestEmbeddedWrap_PlanHygiene(t *testing.T) {
+	resources, err := WalkEmbedded()
+	if err != nil {
+		t.Fatalf("WalkEmbedded returned error: %v", err)
+	}
+	var wrap string
+	for _, r := range resources {
+		if r.RelPath == "commands/wrap.md" {
+			wrap = string(r.Bytes)
+			break
+		}
+	}
+	if wrap == "" {
+		t.Fatal("embedded resource commands/wrap.md missing or empty")
+	}
+
+	// Edit A — the Sweep Orphaned Plans step.
+	sweepPhrases := []string{
+		"Sweep Orphaned Plans", // the step heading
+		"vp_scan_plans",        // the preferred read-only reporter
+		"~/.claude/plans/*.md",   // the glob fallback for an older binary
+		"Promoted this session",  // the narrow promote-and-delete rule
+		"/restart",               // strays are restart's job, not wrap's
+	}
+	for _, phrase := range sweepPhrases {
+		if !strings.Contains(wrap, phrase) {
+			t.Errorf("wrap.md: missing sweep-step phrase %q", phrase)
+		}
+	}
+
+	// Edit B — the resume guardrail bullet.
+	guardPhrases := []string{
+		"dangling by",                  // committed/synced resume can't point at host scratch
+		"vp check --check resume-refs", // the new check that flags .claude/plans refs
+	}
+	for _, phrase := range guardPhrases {
+		if !strings.Contains(wrap, phrase) {
+			t.Errorf("wrap.md: missing resume-guardrail phrase %q", phrase)
+		}
+	}
+
+	// The sweep step must land after Step 6 (Retire) and before Step 7
+	// (commit.msg) so it reads as a late reconcile pass, not a session-start
+	// promote-everything sweep.
+	sweepIdx := strings.Index(wrap, "## Step 6b: Sweep Orphaned Plans")
+	step6Idx := strings.Index(wrap, "## Step 6: Retire Tasks")
+	step7Idx := strings.Index(wrap, "## Step 7: Update commit.msg")
+	if sweepIdx < 0 || step6Idx < 0 || step7Idx < 0 ||
+		!(step6Idx < sweepIdx && sweepIdx < step7Idx) {
+		t.Errorf("wrap.md: sweep step must sit between Step 6 and Step 7 "+
+			"(step6=%d sweep=%d step7=%d)", step6Idx, sweepIdx, step7Idx)
+	}
+}
+
 func TestFS_ContainsTemplatesRoot(t *testing.T) {
 	fsys := FS()
 	// Reading through the exported FS should locate at least one

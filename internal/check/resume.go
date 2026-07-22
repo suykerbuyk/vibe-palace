@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -240,4 +241,130 @@ func isTableDelimiter(trimmed string) bool {
 		}
 	}
 	return dash
+}
+
+// resume.md is a COMMITTED, shared file — vp_bootstrap_context reads it on every
+// host, and it travels in the vault git history. A reference to a plan under a
+// host-local `~/.claude/plans/…` (or an absolute `/home/…/.claude/plans/…`) is
+// dead weight anywhere but the machine that wrote it: the path does not resolve
+// on another host, and it leaks a local home layout into a shared artifact. The
+// durable pointer is vault-relative (e.g. `tasks/done/…`).
+//
+// These two patterns are the only ones flagged (see CheckResumeRefs). Like every
+// resume check this is detection, not prevention — reported as Info, never Fail.
+var (
+	// resumeRefHomeRe matches a home-relative plan reference: `~/.claude/plans/…`.
+	resumeRefHomeRe = regexp.MustCompile(`~/\.claude/plans/\S*`)
+
+	// resumeRefAbsRe matches an absolute plan reference: `/…/.claude/plans/…`.
+	// The `(^|[^~])` guard keeps it from also firing on the tail of a
+	// `~/.claude/plans/` token (whose leading `/` is preceded by `~`), so a
+	// home-relative reference is counted once, as a home breach — not twice.
+	// The path itself is captured in group 2.
+	resumeRefAbsRe = regexp.MustCompile(`(^|[^~])(/\S*\.claude/plans/\S*)`)
+)
+
+// resumeRefBreaches returns one human-readable line per host-local plan
+// reference committed into a resume body — a home-relative `~/.claude/plans/…`
+// or an absolute `/…/.claude/plans/…` — each carrying the 1-indexed source line
+// and the matched substring. An empty slice means the resume is clean.
+//
+// It is fence-aware: a path documented inside a Markdown code fence is a
+// sample, not a live pointer, and is never flagged. Fence classification uses
+// the shared mdfence.Scanner — the one definition in this codebase — so an
+// inline code run is never misread as an opening fence.
+func resumeRefBreaches(body []byte) []string {
+	var out []string
+	var fences mdfence.Scanner
+	lineNo := 0
+	for line := range strings.SplitSeq(string(body), "\n") {
+		lineNo++
+		// Advance the scanner on EVERY line so fence state stays correct;
+		// only lines outside a fence (Text) are real references.
+		if fences.Step(line) != mdfence.Text {
+			continue
+		}
+		clean := strings.TrimSuffix(line, "\r")
+		for _, m := range resumeRefHomeRe.FindAllString(clean, -1) {
+			out = append(out, fmt.Sprintf("line %d: %s", lineNo, m))
+		}
+		for _, m := range resumeRefAbsRe.FindAllStringSubmatch(clean, -1) {
+			out = append(out, fmt.Sprintf("line %d: %s", lineNo, m[2]))
+		}
+	}
+	return out
+}
+
+// CheckResumeRefs scans every project under <vault>/Projects/ and reports the
+// ones whose resume.md commits a host-local plan reference — a home-relative
+// `~/.claude/plans/…` or an absolute `/…/.claude/plans/…` path. Because
+// resume.md is a shared, committed artifact, such a path is unresolvable on any
+// other host and leaks a local home layout into the vault.
+//
+// It is strictly READ-ONLY and advisory: Pass when every resume is clean, Info
+// when one or more carry a host-local reference. Never Fail — the fix is a
+// wrap-time judgement call (rewrite the pointer as vault-relative), and a stale
+// path is a tax, not a breakage. Skip when no vault root is configured.
+//
+// It reads ONLY <vault>/Projects/*/resume.md; task files and everything else are
+// out of scope. Absence is never a violation: a missing Projects/ dir, a project
+// with no resume.md, and a clean resume all report nothing.
+func CheckResumeRefs(v *storage.Vault) Result {
+	r := Result{Name: "Resume refs"}
+
+	if v.Root == "" {
+		r.Status = Skip
+		r.Summary = "no vault configured"
+		return r
+	}
+
+	projectsDir := filepath.Join(v.Root, "Projects")
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			r.Status = Pass
+			r.Summary = "no Projects/ directory"
+			return r
+		}
+		r.Status = Info
+		r.Summary = fmt.Sprintf("scan Projects/: %v", err)
+		return r
+	}
+
+	scanned := 0
+	var violations []resumeViolation
+	for _, e := range entries {
+		name := e.Name()
+		if !e.IsDir() || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
+			continue
+		}
+		path := filepath.Join(projectsDir, name, "resume.md")
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			// Missing resume.md is not a violation — nothing to report.
+			continue
+		}
+		scanned++
+		if breaches := resumeRefBreaches(data); len(breaches) > 0 {
+			violations = append(violations, resumeViolation{Project: name, Breaches: breaches})
+		}
+	}
+
+	if len(violations) == 0 {
+		r.Status = Pass
+		r.Summary = fmt.Sprintf("%d resume.md free of host-local plan refs", scanned)
+		return r
+	}
+
+	sort.Slice(violations, func(i, j int) bool { return violations[i].Project < violations[j].Project })
+	r.Status = Info
+	r.Summary = fmt.Sprintf("%d of %d resume.md hold host-local plan refs", len(violations), scanned)
+	for _, viol := range violations {
+		r.Details = append(r.Details,
+			fmt.Sprintf("  %s: %s", viol.Project, strings.Join(viol.Breaches, "; ")))
+	}
+	r.Details = append(r.Details,
+		"resume.md is committed and shared — a `~/.claude/plans/…` or absolute plan path is host-local and unresolvable elsewhere;",
+		"replace it with a vault-relative pointer (e.g. tasks/done/…) at the next wrap (/vpc-wrap).")
+	return r
 }

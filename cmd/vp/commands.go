@@ -66,6 +66,8 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(cmdTrends())
 	reg.Register(cmdEffectiveness())
 	reg.Register(cmdStatus())
+	reg.Register(cmdPlans())
+	reg.Register(cmdPlansScan())
 	reg.Register(cmdTasks())
 	reg.Register(cmdTasksEpics())
 	reg.Register(mutates(cmdTasksEdit()))

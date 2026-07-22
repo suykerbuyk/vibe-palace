@@ -23,8 +23,8 @@ func TestRegisterAll(t *testing.T) {
 	RegisterAll(srv.Registry(), resolver, vault, eng)
 
 	tools := srv.Registry().List()
-	if len(tools) != 65 {
-		t.Fatalf("registered %d tools, want 65", len(tools))
+	if len(tools) != 67 {
+		t.Fatalf("registered %d tools, want 67", len(tools))
 	}
 
 	wantNames := map[string]bool{
@@ -93,6 +93,8 @@ func TestRegisterAll(t *testing.T) {
 		"vp_stamp_iter":           true,
 		"vp_preflight_wrap":       true,
 		"vp_surface_check":        true,
+		"vp_check_resume_refs":    true,
+		"vp_scan_plans":           true,
 	}
 	for _, tool := range tools {
 		if !wantNames[tool.Name] {
@@ -113,7 +115,7 @@ func TestRegisterAllNilEngine(t *testing.T) {
 	RegisterAll(srv.Registry(), resolver, vault, nil)
 
 	tools := srv.Registry().List()
-	if len(tools) != 56 {
-		t.Fatalf("registered %d tools with nil engine, want 56", len(tools))
+	if len(tools) != 58 {
+		t.Fatalf("registered %d tools with nil engine, want 58", len(tools))
 	}
 }

@@ -32,6 +32,11 @@
       "schema_sha256": "0f3e680708f1aaf1151ea6fb6b3fdbe3e1ebc563222a6b075c07b7bd8ab2275b"
     },
     {
+      "name": "vp_check_resume_refs",
+      "mutating": false,
+      "schema_sha256": "ec54b14620286ba7c24de81af74a3fa0c8215afa2dda3317f31e2392d8c9ea88"
+    },
+    {
       "name": "vp_cmd",
       "mutating": false,
       "schema_sha256": "41cd4c428fa53d67610a1ac2008d492bb8f973e101baca4570d5b23074ac8034"
@@ -230,6 +235,11 @@
       "name": "vp_refresh_index",
       "mutating": false,
       "schema_sha256": "e6bb4842aab417be857b871f1a3d5a5a2867ac63fa1450cd2d5627f542dd9dc4"
+    },
+    {
+      "name": "vp_scan_plans",
+      "mutating": false,
+      "schema_sha256": "2c4ae8131050550b90e273106d52b97971b6c4940bb5c93f9bb769a23648015a"
     },
     {
       "name": "vp_search",

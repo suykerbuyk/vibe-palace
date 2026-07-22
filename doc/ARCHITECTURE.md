@@ -770,6 +770,7 @@ tool-registry build. Registered names:
 |------|-----|-------|
 | `surface` | `Surface` | Whole vault — binary MCP surface vs. max `.surface` stamp |
 | `resume-caps` | `Resume caps` | Whole vault — every `Projects/*/resume.md` |
+| `resume-refs` | `Resume refs` | Whole vault — host-local plan refs in every `Projects/*/resume.md` |
 
 An unknown name exits `ExitUser` with an `unknown check` diagnostic.
 
@@ -808,6 +809,80 @@ not close it); and within a section each contiguous run of pipe-leading lines
 counts only the lines *after* its `|---|---|` delimiter, so header and delimiter
 rows are excluded by construction and a run with no delimiter — which GFM does
 not render as a table at all — counts zero.
+
+### resume.md host-local plan refs (`check.CheckResumeRefs`)
+
+`resume.md` is **committed and shared** — it travels in the vault git history and
+`vp_bootstrap_context` reads it on every host. A plan reference under a
+host-local path is therefore dead weight anywhere but the machine that wrote it:
+the path does not resolve on another host and it leaks a local home layout into a
+shared artifact. `CheckResumeRefs` flags exactly two patterns:
+
+| Pattern | Example |
+|---------|---------|
+| Home-relative (`resumeRefHomeRe`) | `~/.claude/plans/foo.md` |
+| Absolute (`resumeRefAbsRe`) | `/home/dev/.claude/plans/bar.md` |
+
+It walks `<vault>/Projects/*/resume.md` and emits one `Info` row naming each
+offending project with the source line number and matched path; a clean vault is
+`Pass`. Like the cap check it is strictly read-only and **never `Fail`** — the
+fix (rewrite the pointer as vault-relative, e.g. `tasks/done/…`) is a wrap-time
+judgement call, and a stale path is a tax, not a breakage. It is **fence-aware**:
+a path documented inside a Markdown code fence is a sample, not a live pointer,
+and is skipped via the shared `internal/mdfence` scanner (so an inline code run
+is never misread as an opening fence). It reads **only** `resume.md` — task files
+and everything else are out of scope. The same verdict is exposed
+host-agnostically over MCP as the read-only `vp_check_resume_refs` tool.
+
+### Orphaned-plan reporter (`internal/planscan`)
+
+Claude Code drops each plan's markdown under a **flat** `~/.claude/plans/*.md`
+directory (honoring `CLAUDE_HOME`) — with **no** cwd encoding, unlike the
+cwd-encoded `~/.claude/projects/` tree. A stray plan therefore carries no
+structural signal about which project it belonged to; the only cwd evidence it
+leaves is the absolute filesystem paths its prose happens to mention.
+`planscan.Scan(claudeHome, vaultRoot)` is a strictly **read-only** "detect-and-
+report" reporter over that directory. For each plan file it:
+
+1. greps every absolute path from the body (URL-safe, fence-tolerant regex),
+2. reduces them to candidate directory roots ranked by **frequency, then depth**
+   (a deeper dir is the better cwd guess on a tie),
+3. resolves each candidate's owner and folds the result into one verdict.
+
+| Resolution `kind` | Meaning |
+|-------------------|---------|
+| `managed` | A candidate dir has a `.vibe-palace.toml` (`project.DetectSignal == SignalVibeConfig`) **and** its detected slug has a matching `<vault>/Projects/<slug>` directory. `project` holds the slug. |
+| `unmanaged` | Candidate dirs resolve to real directories but none is a vault-managed project (no marker up to `$HOME`, or a marker with no vault project). `candidate_dir` is the top-ranked candidate as evidence. |
+| `none` | The body contained no absolute path — unattributable. |
+
+Attribution gates on `DetectSignal` **first**: `project.DetectProject` falls back
+to git-remote/basename for *any* directory, so it is never trusted on its own;
+only after a `.vibe-palace.toml` is found is the slug taken and confirmed against
+a real `Projects/<slug>` directory. A plan whose candidates resolve to **more
+than one distinct owner** sets `ambiguous: true` and lists every ranked candidate
+rather than collapse a multi-root plan to a single guessed owner.
+
+An **absent plans dir is normal** — it returns an empty report with a nil error,
+which is exactly what happens on **Grok and Zed hosts** (they have no plans
+directory at all). The reporter is **Claude-only** in practice and **never
+promotes, deletes, or writes** anything: it reads the plans dir, reads the
+referenced directories' markers, and Stats the vault. All logic lives in
+`internal/planscan`; the `vp plans scan [--json]` CLI subcommand and the
+read-only `vp_scan_plans` MCP tool are thin wrappers that resolve the Claude home
+(`archive.ClaudeHome`) and vault root and marshal the `Report`.
+
+Both command templates consume this reporter, but with **different mandates**
+(prose enforcement, ADR-006 — the templates ask the executor to honor the split;
+the embedded-template tests pin that the ask survives edits). `/restart`'s
+session-start sweep **promotes** this-project strays into vault tasks and deletes
+the scratch copy. `/wrap`'s Step 6b sweep is **narrower**: it runs pre-commit
+under Rule 0, so it may delete a scratch plan **only** when that plan was promoted
+to a task *during this session* (the scratch copy is now pure redundancy); every
+other stray — other-project, `unmanaged`, `none`, `ambiguous`, or an unpromoted
+this-project plan — is **reported to the human, never acted on**. Wrap also carries
+a companion resume guardrail: `resume.md` is committed and synced, so it must not
+reference a host-local `~/.claude/plans/…` (or the project-root `commit.msg`) —
+the `vp_check_resume_refs` tool / `vp check --check resume-refs` flags that.
 
 ---
 

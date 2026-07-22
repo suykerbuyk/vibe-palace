@@ -252,6 +252,14 @@ files.
   inline — that history belongs in `iterations.md`).
 - **Current State** — terse bullets and pointers; a full rewrite of this
   section is shape 4.
+- **No host-local or ephemeral paths** — `resume.md` is committed and synced
+  across machines, so a pointer into a host's scratch is **dangling by
+  construction** on every other machine. **Never** reference `~/.claude/plans/…`,
+  an absolute `/…/.claude/plans/…`, or the project-root `commit.msg` from
+  `resume.md`. Point at the **durable** equivalent instead: a vault task slug
+  (`Projects/{{PROJECT}}/tasks/…`), a `tasks/done/<slug>.md` pointer, or a
+  `doc/…` file under source control. `vp check --check resume-refs` (new this
+  release) now flags the `.claude/plans/` case.
 
 ## Step 4: Append Iteration Narrative
 
@@ -302,6 +310,51 @@ So:
 - After an approved retirement, add its one-line row to the **Completed
   Plans** table in `resume.md` (Step 3, *What goes in, what stays out* —
   a shape-1 `vp_vault_edit`, not a whole-file rewrite).
+
+## Step 6b: Sweep Orphaned Plans
+
+Wrap runs a **narrow** plan-hygiene pass over the host's local plan/scratch
+directory — on Claude Code that is `~/.claude/plans/`; other hosts have their
+own, and some have none. **If there is no such directory, skip this step.**
+That directory is **scratch only, never the source of truth** — plans live in
+the vault, reached only through the MCP task tools.
+
+**This is a reconcile-and-report step, not a promote-everything step.** The
+session-start sweep in `/restart` is the one that promotes strays into tasks;
+wrap runs **before the commit** (Step 8 stages, the human commits after), so
+under the operator's standing Rule 0 — *nothing is done until the human says it
+is done* — wrap does not adjudicate arbitrary plans on its own reasoning.
+
+**Prefer the MCP reporter.** Call `vp_scan_plans` (read-only — it never
+promotes, deletes, or writes anything). It returns, per stray plan, the file,
+the absolute paths grepped from its body, and a `resolution` — `managed`
+(belongs to a vibe-palace-managed project, with the slug), `unmanaged` (a real
+directory with no `.vibe-palace.toml`), `none` (no absolute path in the body,
+so it is unattributable), or `ambiguous` (multiple candidate roots). Use that
+structured attribution to decide each plan's disposition **instead of**
+hand-globbing and eyeballing.
+
+- **Fallback:** if `vp_scan_plans` is unavailable (an older binary that a
+  freshly synced template is briefly running against), fall back to globbing
+  `~/.claude/plans/*.md` with the Glob tool and reading each file by hand —
+  the same rollout hedge Step 10 makes for `vp_vault_tidy` vs `vp vault tidy`.
+
+Then, for each stray, act **narrowly**:
+
+- **Promoted this session → delete.** Wrap may delete a scratch plan file
+  **only** when its content was promoted to a vault task **during this
+  session** — its work is now captured under `Projects/{{PROJECT}}/tasks/` and
+  the scratch copy is pure redundancy. Confirm the task exists first
+  (`vp_list_tasks`), *then* delete the scratch `.md`.
+- **Everything else → report, do not act.** Do **not** auto-create tasks from
+  strays here — that is `/restart`'s session-start job. Do **not** delete
+  other-project (`managed` for a different slug), `unmanaged`, `none`, or
+  `ambiguous` plans, and do **not** delete a plan for **this** project that was
+  **not** promoted this session. List each such plan for the human in the Step
+  11 report with its attribution and let the human decide.
+
+The one deletion wrap owns is the redundant-scratch-after-promotion case;
+every other disposition is a **report**, never an action.
 
 ## Step 7: Update commit.msg (Two-Copy Workflow)
 
