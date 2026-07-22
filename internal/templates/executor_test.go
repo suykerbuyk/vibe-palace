@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
 
@@ -196,5 +197,43 @@ func TestExecutor_Write_DefaultPerm(t *testing.T) {
 	// Only the low 9 bits are interesting (platform may mask others).
 	if st.Mode().Perm() != 0o644 {
 		t.Errorf("perm = %o, want 0644", st.Mode().Perm())
+	}
+}
+
+// TestExecutor_Write_StampsSurfaceWhenVaultRootSet is the regression guard for
+// the write-path-correctness fix: a template write that names its vault root
+// now stamps .surface structurally. Before the private atomicWrite copy was
+// removed, `vp commands`/`vp skills upgrade` (which route through Executor.Write)
+// stamped nowhere, so a template bump left the surface version stale.
+func TestExecutor_Write_StampsSurfaceWhenVaultRootSet(t *testing.T) {
+	vault := t.TempDir()
+	dst := filepath.Join(vault, "Projects", "proj", "commands", "restart.md")
+	if err := templates.NewExecutor().Write(dst, []byte("body"), templates.WriteOptions{
+		Backup:    templates.BackupPolicyNever,
+		VaultRoot: vault,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := surface.ReadStamp(filepath.Join(vault, "Projects", "proj"))
+	if err != nil {
+		t.Fatalf("read stamp: %v", err)
+	}
+	if s.Surface != surface.MCPSurfaceVersion {
+		t.Errorf("stamp surface = %d, want %d", s.Surface, surface.MCPSurfaceVersion)
+	}
+}
+
+// TestExecutor_Write_NoStampWhenVaultRootEmpty verifies the non-vault write
+// path is unchanged: an empty VaultRoot skips stamping entirely.
+func TestExecutor_Write_NoStampWhenVaultRootEmpty(t *testing.T) {
+	vault := t.TempDir()
+	dst := filepath.Join(vault, "Projects", "proj", "commands", "restart.md")
+	if err := templates.NewExecutor().Write(dst, []byte("body"), templates.WriteOptions{
+		Backup: templates.BackupPolicyNever,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(vault, "Projects", "proj", ".surface")); !os.IsNotExist(err) {
+		t.Errorf("empty VaultRoot must not stamp (stat err=%v)", err)
 	}
 }

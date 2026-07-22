@@ -482,12 +482,13 @@ func (r *TemplateTreeReconciler) applyMaterialize(p Plan) (Report, error) {
 				rep.Errors = append(rep.Errors, fmt.Errorf("create: no embedded resource for %s", a.Target))
 				continue
 			}
-			// Create: nothing to preserve, so Backup=Never.
-			if err := templateExec.Write(a.Target, res.Bytes, templates.WriteOptions{Backup: templates.BackupPolicyNever}); err != nil {
+			// Create: nothing to preserve, so Backup=Never. VaultRoot lets
+			// Executor.Write stamp .surface structurally — no out-of-band
+			// stampVaultWrite needed here any more.
+			if err := templateExec.Write(a.Target, res.Bytes, templates.WriteOptions{Backup: templates.BackupPolicyNever, VaultRoot: r.vaultRoot}); err != nil {
 				rep.Errors = append(rep.Errors, fmt.Errorf("write %s: %w", a.Target, err))
 				continue
 			}
-			stampVaultWrite(r.vaultRoot, a.Target)
 			embSHA, ok := templates.EmbeddedSHA(res.RelPath)
 			if !ok {
 				embSHA = res.SHA256
@@ -504,12 +505,13 @@ func (r *TemplateTreeReconciler) applyMaterialize(p Plan) (Report, error) {
 				continue
 			}
 			// Update: preserve pre-existing bytes as .bak (copy-then-
-			// rename so the primary stays readable throughout).
-			if err := templateExec.Write(a.Target, res.Bytes, templates.WriteOptions{Backup: templates.BackupPolicyAlways}); err != nil {
+			// rename so the primary stays readable throughout). VaultRoot lets
+			// Executor.Write stamp .surface structurally — no out-of-band
+			// stampVaultWrite needed here any more.
+			if err := templateExec.Write(a.Target, res.Bytes, templates.WriteOptions{Backup: templates.BackupPolicyAlways, VaultRoot: r.vaultRoot}); err != nil {
 				rep.Errors = append(rep.Errors, fmt.Errorf("write %s: %w", a.Target, err))
 				continue
 			}
-			stampVaultWrite(r.vaultRoot, a.Target)
 			embSHA, ok := templates.EmbeddedSHA(res.RelPath)
 			if !ok {
 				embSHA = res.SHA256

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 )
 
 // Executor is the central plan/apply surface for materializing
@@ -66,6 +68,12 @@ type WriteOptions struct {
 	// Perm is the file mode applied to the written target. Defaults
 	// to 0o644 when zero.
 	Perm os.FileMode
+	// VaultRoot is the vault root that owns dst, used to stamp the
+	// .surface version on a successful write. Leave empty for a
+	// non-vault target (no stamp). Threading this through is why the
+	// private atomicWrite copy was removed: stamping is now structural,
+	// not out-of-band per-caller discipline.
+	VaultRoot string
 }
 
 // Write materializes data to dst atomically, honoring the backup
@@ -110,37 +118,11 @@ func (e *Executor) Write(dst string, data []byte, opts WriteOptions) error {
 			return fmt.Errorf("stat for bak %s: %w", dst, err)
 		}
 	}
-	return atomicWrite(dst, data, perm)
-}
-
-// atomicWrite writes data to dst via a sibling tmp + rename, leaving
-// no partial file on failure. Shared by every template-write caller.
-func atomicWrite(dst string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(dst)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".vp-tmpl-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer func() {
-		if _, statErr := os.Stat(tmpName); statErr == nil {
-			_ = os.Remove(tmpName)
-		}
-	}()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmpName, perm); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, dst)
+	// Route through the shared atomicfile primitive so the .surface stamp is
+	// structural: on success it stamps opts.VaultRoot/dst (skipped when
+	// VaultRoot is ""). This template write never fsynced under the old private
+	// copy, so no WithFsync() here — behavior is preserved.
+	return atomicfile.Write(opts.VaultRoot, dst, data, atomicfile.WithPerm(perm))
 }
 
 // HashFile returns the hex sha256 of a file on disk. A missing file

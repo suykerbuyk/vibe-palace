@@ -60,6 +60,11 @@ type Change struct {
 	VaultHash string
 	// VaultPath is the filesystem path where the vault copy lives or would live.
 	VaultPath string
+	// VaultRoot is the root of the vault that owns VaultPath, used to stamp the
+	// .surface version on write. Threading it here is what lets the shared
+	// atomicfile primitive stamp structurally — commands/skills upgrade
+	// previously stamped nowhere.
+	VaultRoot string
 }
 
 // PlanOptions configures which templates Upgrade considers.
@@ -140,6 +145,7 @@ func planOne(resolver *vpctx.Resolver, resourceType, name string) (Change, error
 		EmbeddedContent: embedded,
 		EmbeddedHash:    shortHash(embedded),
 		VaultPath:       vaultPath,
+		VaultRoot:       resolver.VaultRoot(),
 	}
 	if !haveVault {
 		c.Kind = ChangeNew
@@ -190,7 +196,7 @@ func applyWithPolicy(accepted []Change, policy templates.BackupPolicy) error {
 		if c.Kind == ChangeNew {
 			effective = templates.BackupPolicyNever
 		}
-		if err := exec.Write(c.VaultPath, []byte(c.EmbeddedContent), templates.WriteOptions{Backup: effective}); err != nil {
+		if err := exec.Write(c.VaultPath, []byte(c.EmbeddedContent), templates.WriteOptions{Backup: effective, VaultRoot: c.VaultRoot}); err != nil {
 			return fmt.Errorf("write %s: %w", c.VaultPath, err)
 		}
 	}
