@@ -6,7 +6,6 @@ package absorb
 import (
 	"bytes"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,20 +13,10 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
+	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
-	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
-
-// stampVault best-effort records the MCP surface version for a successful
-// vault write at path under vaultRoot. A stamp failure is logged and never
-// propagated, so it can never fail the underlying write. Non-vault paths
-// (e.g. rewritten source files under the project repo's .vibe-palace/)
-// resolve to no stamp dir and are skipped inside surface.
-func stampVault(vaultRoot, path string) {
-	if err := surface.StampForPath(vaultRoot, path); err != nil {
-		slog.Warn("surface stamp failed", "path", path, "err", err)
-	}
-}
 
 // WriteOptions configures a writer pass. All paths are absolute.
 type WriteOptions struct {
@@ -108,46 +97,65 @@ func Apply(plan *Plan, opts WriteOptions) (*WriteReport, error) {
 	// remaining items under a dated subheading.
 	for _, k := range destOrder {
 		items := buckets[k]
-		absPath, created, err := resolveDestPath(opts.Vault, opts.Project, k.path)
+		absPath, _, err := resolveDestPath(opts.Vault, opts.Project, k.path)
 		if err != nil {
 			return nil, err
 		}
-		existing, err := readIfExists(absPath)
-		if err != nil {
-			return nil, err
-		}
-
-		var toWrite []Item
-		for _, it := range items {
-			if containsBodyHash(existing, it.BodyHash) {
-				report.DuplicateSkipped = append(report.DuplicateSkipped,
-					k.path+"#"+it.BodyHash)
-				continue
+		// Serialize the whole read-dedup-append against a concurrent absorb or
+		// vp_memory_write of the same file: it is a read-modify-write, and
+		// unlocked two writers both read the old bytes and the loser's append
+		// vanishes. `created` is derived from the LOCKED read (readIfExists
+		// returns nil only on not-exist), so it cannot go stale between a
+		// pre-lock stat and the write.
+		if err := func() error {
+			release, lerr := vaultlock.Acquire(opts.Vault.Root, absPath)
+			if lerr != nil {
+				return fmt.Errorf("absorb: lock %s: %w", absPath, lerr)
 			}
-			toWrite = append(toWrite, it)
-		}
-		if len(toWrite) == 0 {
-			continue
-		}
+			defer release()
 
-		body := renderDatedAppend(toWrite, dateStr, k.section, created)
-		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
-			return nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(absPath), err)
-		}
-		if err := appendOrCreate(absPath, existing, body, created); err != nil {
-			return nil, err
-		}
-		stampVault(opts.Vault.Root, absPath)
-		if created {
-			report.VaultFilesCreated = append(report.VaultFilesCreated, k.path)
-			// For new doc/*.md files, queue a pointer line for resume.
-			if strings.HasPrefix(k.path, "doc/") {
-				summary := summarizeDestination(k.path)
-				report.PointerLines = append(report.PointerLines,
-					fmt.Sprintf("- see `%s` for %s", k.path, summary))
+			existing, err := readIfExists(absPath)
+			if err != nil {
+				return err
 			}
-		} else {
-			report.VaultFilesAppended = append(report.VaultFilesAppended, k.path)
+			created := existing == nil
+
+			var toWrite []Item
+			for _, it := range items {
+				if containsBodyHash(existing, it.BodyHash) {
+					report.DuplicateSkipped = append(report.DuplicateSkipped,
+						k.path+"#"+it.BodyHash)
+					continue
+				}
+				toWrite = append(toWrite, it)
+			}
+			if len(toWrite) == 0 {
+				return nil
+			}
+
+			body := renderDatedAppend(toWrite, dateStr, k.section, created)
+			if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+				return fmt.Errorf("mkdir %s: %w", filepath.Dir(absPath), err)
+			}
+			// appendOrCreate routes through atomicfile.Write, which stamps
+			// .surface on success — no out-of-band stampVault needed.
+			if err := appendOrCreate(opts.Vault.Root, absPath, existing, body, created); err != nil {
+				return err
+			}
+			if created {
+				report.VaultFilesCreated = append(report.VaultFilesCreated, k.path)
+				// For new doc/*.md files, queue a pointer line for resume.
+				if strings.HasPrefix(k.path, "doc/") {
+					summary := summarizeDestination(k.path)
+					report.PointerLines = append(report.PointerLines,
+						fmt.Sprintf("- see `%s` for %s", k.path, summary))
+				}
+			} else {
+				report.VaultFilesAppended = append(report.VaultFilesAppended, k.path)
+			}
+			return nil
+		}(); err != nil {
+			return nil, err
 		}
 	}
 
@@ -161,7 +169,6 @@ func Apply(plan *Plan, opts WriteOptions) (*WriteReport, error) {
 		if err := appendScratch(opts.Vault, opts.Project, "resume-suggestions.md", body); err != nil {
 			return nil, err
 		}
-		stampVault(opts.Vault.Root, scratchPath)
 		report.ResumeScratchPath = scratchPath
 	}
 
@@ -342,7 +349,7 @@ func summarizeDestination(path string) string {
 
 // appendOrCreate writes body to an existing file (append) or creates a new
 // one seeded with body. Uses a tmp + rename for atomicity.
-func appendOrCreate(path string, existing []byte, body string, created bool) error {
+func appendOrCreate(vaultRoot, path string, existing []byte, body string, created bool) error {
 	var out []byte
 	if created {
 		out = []byte(body)
@@ -354,7 +361,11 @@ func appendOrCreate(path string, existing []byte, body string, created bool) err
 		}
 		out = append(out, []byte(body)...)
 	}
-	return atomicWrite(path, out)
+	// WithFsync + WithInheritPerm preserve the deleted private atomicWrite's
+	// behavior (it fsynced and chmod-inherited an existing target); a NEW file
+	// shifts 0600 -> the atomicfile 0o644 default — a deliberate, recorded delta.
+	// A non-empty vaultRoot makes the .surface stamp structural here.
+	return atomicfile.Write(vaultRoot, path, out, atomicfile.WithFsync(), atomicfile.WithInheritPerm())
 }
 
 func appendScratch(v *storage.Vault, project, rel, body string) error {
@@ -365,6 +376,12 @@ func appendScratch(v *storage.Vault, project, rel, body string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	// Lock the read-then-append so a concurrent scratch append cannot clobber it.
+	release, err := vaultlock.Acquire(v.Root, path)
+	if err != nil {
+		return fmt.Errorf("absorb: lock %s: %w", path, err)
+	}
+	defer release()
 	existing, err := readIfExists(path)
 	if err != nil {
 		return err
@@ -375,7 +392,7 @@ func appendScratch(v *storage.Vault, project, rel, body string) error {
 		out = append(out, '\n')
 	}
 	out = append(out, []byte(body)...)
-	return atomicWrite(path, out)
+	return atomicfile.Write(v.Root, path, out, atomicfile.WithFsync(), atomicfile.WithInheritPerm())
 }
 
 func renderResumeScratch(items []Item, pointerLines []string, date string) string {
@@ -444,7 +461,10 @@ func rewriteSourceFile(ps PlannedSource, opts WriteOptions) (string, error) {
 	if ps.UsesCRLF {
 		data = bytes.ReplaceAll(data, []byte("\n"), []byte("\r\n"))
 	}
-	if err := atomicWrite(ps.AbsPath, data); err != nil {
+	// A project-repo source file, NOT a vault file: pass vaultRoot="" so no
+	// .surface stamp is attempted, but keep fsync + inherit-perm to match the
+	// deleted private atomicWrite's behavior on this path.
+	if err := atomicfile.Write("", ps.AbsPath, data, atomicfile.WithFsync(), atomicfile.WithInheritPerm()); err != nil {
 		return "", err
 	}
 	// Wire to ensure a managed block exists with the current hash. Route
@@ -491,47 +511,6 @@ func stageRewrittenFiles(projectRoot string, plan *Plan, report *WriteReport) {
 	_ = cmd.Run()
 }
 
-// atomicWrite is a local copy of the same-named helper in agentfile: tmp
-// + fsync + rename in the target's directory. Duplicated to avoid an
-// awkward cross-package export.
-func atomicWrite(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".vp-absorb-*")
-	if err != nil {
-		return fmt.Errorf("create temp in %s: %w", dir, err)
-	}
-	tmp := f.Name()
-	cleanup := func() { _ = os.Remove(tmp) }
-
-	if _, err := f.Write(data); err != nil {
-		if cerr := f.Close(); cerr != nil {
-			slog.Error("absorb.atomicWrite: close after write error",
-				"op", "absorb.atomicWrite", "path", path, "tmp", tmp, "err", cerr)
-		}
-		cleanup()
-		return fmt.Errorf("write temp %s: %w", tmp, err)
-	}
-	if err := f.Sync(); err != nil {
-		if cerr := f.Close(); cerr != nil {
-			slog.Error("absorb.atomicWrite: close after fsync error",
-				"op", "absorb.atomicWrite", "path", path, "tmp", tmp, "err", cerr)
-		}
-		cleanup()
-		return fmt.Errorf("fsync temp %s: %w", tmp, err)
-	}
-	if err := f.Close(); err != nil {
-		cleanup()
-		return fmt.Errorf("close temp %s: %w", tmp, err)
-	}
-	if info, err := os.Stat(path); err == nil {
-		_ = os.Chmod(tmp, info.Mode())
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		cleanup()
-		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
-	}
-	return nil
-}
 
 // titleCase capitalizes the first rune of each whitespace-separated word.
 // Ascii-only — project directory names don't use unicode punctuation, so

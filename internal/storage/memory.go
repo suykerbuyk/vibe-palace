@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 	"gopkg.in/yaml.v3"
 )
 
@@ -193,7 +193,13 @@ func (v *Vault) WriteMemory(project, rel string, meta MemoryMeta, body string) e
 		return err
 	}
 
-	if err := atomicfile.Write(v.Root, abs, data); err != nil {
+	// lockedWrite serializes this blind whole-file write against a concurrent
+	// vp_memory_write or a harvest of the same rel (the lost-update the module's
+	// "never clobber" conflict mechanism is only sound under a lock). Callers
+	// must NOT already hold this path's lock — the harvest per-file loop that
+	// would is deferred to harvest-per-file-loop-needs-unlocked-inner-write,
+	// which needs an unlocked inner write to avoid the LOCK_EX re-entry hang.
+	if err := v.lockedWrite(abs, data); err != nil {
 		return fmt.Errorf("write memory file: %w", err)
 	}
 	return nil
@@ -329,6 +335,15 @@ func (v *Vault) DeleteMemory(project, rel string) error {
 	if err != nil {
 		return err
 	}
+	// Serialize the unlink against a concurrent write of the same rel. There is
+	// no atomicfile delete counterpart, so acquire the per-path lock directly.
+	// Deletes deliberately do not re-stamp .surface (stamping tracks content
+	// writes, not removals — matching vaultfs.Delete).
+	release, err := vaultlock.Acquire(v.Root, abs)
+	if err != nil {
+		return fmt.Errorf("delete memory file: lock %s: %w", abs, err)
+	}
+	defer release()
 	if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("delete memory file: %w", err)
 	}
