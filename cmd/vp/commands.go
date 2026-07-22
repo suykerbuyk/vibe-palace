@@ -29,12 +29,13 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	// comment exists to keep from being copied.
 	reg.Register(mutates(cmdArchiveLink()))
 	reg.Register(cmdAudit())
-	reg.Register(cmdAuditRooms())
+	// mutates(): `vp audit rooms --apply` calls vault.MoveDrawer, relocating a drawer
+	// between rooms, so it must FAIL-STOP against a vault written by a newer binary
+	// rather than take the warn-only path — same as any other local vault writer.
+	reg.Register(mutates(cmdAuditRooms()))
 	// mutates(): `vp audit vault --write` writes a report and `--accept` writes the
 	// baseline, so it must FAIL-STOP against a vault written by a newer binary rather
-	// than take the warn-only path. Its sibling cmdAuditRooms is registered UNWRAPPED
-	// while `--apply` calls vault.MoveDrawer — filed as
-	// audit-rooms-apply-bypasses-the-surface-gate. Do not copy that.
+	// than take the warn-only path.
 	reg.Register(mutates(cmdAuditVault()))
 	reg.Register(cmdCommands())
 	reg.Register(cmdCommandsList())

@@ -209,4 +209,64 @@ func TestAllCommandsRegisterValidly(t *testing.T) {
 	})
 }
 
+// TestMutatingCommandsAreGated pins the class invariant behind the surface
+// gate: a command that can write the local vault MUST be marked MutatesVault,
+// so surfaceGate fail-stops it against a newer-format vault instead of taking
+// the warn-only path. It exists because audit rooms once opted out silently
+// (audit-rooms-apply-bypasses-the-surface-gate) and nothing checked the
+// property, so the gate did not actually gate that write.
+//
+// It uses reg.Each, NOT reg.All: All() skips a two-word subcommand whose parent
+// is registered, so a test built on All() would never see "audit rooms" — the
+// exact command that regressed — and would pass while the bug was live.
+//
+// wantMutating is the complete set of local-vault-writing command Names. When
+// you add a command that writes the vault, add it here and wrap its
+// registration in mutates(); the test fails both ways (a writer left unwrapped,
+// or a non-writer wrapped) so the table cannot silently drift from reality.
+//
+// Deliberately EXCLUDED: `vault pull` / `vault push` mutate on-disk vault
+// content, but that content is remote-sourced (git fetch/merge), not this
+// binary writing through the stamped local write path — a different category
+// than the fail-stop guards, so they stay unwrapped by design.
+func TestMutatingCommandsAreGated(t *testing.T) {
+	wantMutating := map[string]bool{
+		"absorb":               true,
+		"archive create":       true,
+		"archive link":         true,
+		"audit rooms":          true,
+		"audit vault":          true,
+		"discover rooms":       true,
+		"tune rooms":           true,
+		"config upgrade":       true,
+		"config sync":          true,
+		"init":                 true,
+		"tasks edit":           true,
+		"vault sync":           true,
+		"vault commit":         true,
+		"vault tidy":           true,
+		"vault write":          true,
+		"vault edit":           true,
+		"vault delete":         true,
+		"vault move":           true,
+		"memory harvest":       true,
+		"migrate":              true,
+		"migrate vibevault":    true,
+		"migrate mempalace":    true,
+		"migrate kg-filenames": true,
+	}
+
+	reg, _, _ := testRegistry()
+	reg.Each(func(cmd *cli.Command) {
+		want := wantMutating[cmd.Name]
+		if cmd.MutatesVault != want {
+			if want {
+				t.Errorf("command %q must be registered mutates() (it writes the vault) but MutatesVault=false", cmd.Name)
+			} else {
+				t.Errorf("command %q is marked MutatesVault=true but is not in the known-vault-writer table; if it writes the vault add it to wantMutating, otherwise drop the mutates() wrapper", cmd.Name)
+			}
+		}
+	})
+}
+
 // Command-specific tests are in cmd_*_test.go files.
