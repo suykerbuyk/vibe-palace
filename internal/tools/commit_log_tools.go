@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
@@ -77,6 +78,13 @@ func ArchiveCommitLogTool(vault *storage.Vault) mcp.Tool {
 				return nil, fmt.Errorf("detect project from %q: %w", args.ProjectPath, err)
 			}
 			projectRoot := wrapstate.ResolveProjectRoot(args.ProjectPath)
+
+			// Refuse to scaffold a phantom vault project from an unmanaged
+			// directory: vault.ArchiveCommitBodies lazily creates Projects/<slug>/
+			// on first write. Key on the resolved repo ROOT.
+			if err := project.RequireKnownProject(slug, vault.Root, projectRoot); err != nil {
+				return nil, err
+			}
 
 			runCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()

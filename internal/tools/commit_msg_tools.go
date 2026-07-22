@@ -87,6 +87,15 @@ func IngestCommitMsgTool(vault *storage.Vault) mcp.Tool {
 				slug = detected
 			}
 
+			// Refuse to scaffold a phantom vault project from an unmanaged
+			// directory. atomicfile.Write below lazily creates Projects/<slug>/
+			// on first write, so without this gate a basename-derived slug in
+			// any dirty directory silently materializes a vault project. Key on
+			// the resolved repo ROOT, not args.ProjectPath.
+			if err := project.RequireKnownProject(slug, vault.Root, root); err != nil {
+				return nil, err
+			}
+
 			// Read the project-root commit.msg (normal filesystem I/O — this
 			// is NOT a vault path).
 			src := filepath.Join(args.ProjectPath, "commit.msg")

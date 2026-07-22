@@ -77,6 +77,15 @@ func cmdMemoryHarvest() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp memory harvest: %v\n", err)
 				return cli.ExitUser
 			}
+			// Refuse to scaffold a phantom vault project from an unmanaged
+			// directory: memory.Harvest lazily creates Projects/<slug>/memory/ on
+			// first write, and slug is the cwd basename here. Authorize only a
+			// marked or already-known project (applies to --dry-run too: an
+			// unmanaged dir has no valid harvest target to preview).
+			if err := project.RequireKnownProject(slug, root, cwd); err != nil {
+				fmt.Fprintf(os.Stderr, "vp memory harvest: %v\n", err)
+				return cli.ExitUser
+			}
 			nativeDir, err := memory.NativeDirFromCwd(cwd)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp memory harvest: %v\n", err)

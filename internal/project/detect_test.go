@@ -651,6 +651,51 @@ name = "dotfiles"
 	}
 }
 
+// --- RequireKnownProject (commit-write-tools write-authorization gate) ---
+
+func TestRequireKnownProject_MarkerPresent(t *testing.T) {
+	vault := t.TempDir()
+	repo := t.TempDir()
+	writeConfig(t, repo, `[project]
+name = "proj"
+`)
+	if err := RequireKnownProject("proj", vault, repo); err != nil {
+		t.Errorf("marker present must authorize: %v", err)
+	}
+}
+
+func TestRequireKnownProject_ExistingVaultProject(t *testing.T) {
+	vault := t.TempDir()
+	repo := t.TempDir() // no marker
+	if err := os.MkdirAll(filepath.Join(vault, "Projects", "proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireKnownProject("proj", vault, repo); err != nil {
+		t.Errorf("existing Projects/<slug>/ must authorize a markerless project: %v", err)
+	}
+}
+
+func TestRequireKnownProject_RefusesWhenBothAbsent(t *testing.T) {
+	vault := t.TempDir()
+	repo := t.TempDir() // no marker, no vault project
+	if err := RequireKnownProject("proj", vault, repo); err == nil {
+		t.Error("must refuse when neither a marker nor a vault project exists (the phantom-scaffold case)")
+	}
+}
+
+func TestRequireKnownProject_RefusesHomeEvenIfVaultProjectExists(t *testing.T) {
+	vault := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// A stray Projects/<home-basename>/ residue must NOT re-authorize $HOME.
+	if err := os.MkdirAll(filepath.Join(vault, "Projects", filepath.Base(home)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireKnownProject(filepath.Base(home), vault, home); err == nil {
+		t.Error("must refuse a write rooted at $HOME even when a stray vault project dir exists")
+	}
+}
+
 // TestFindMarkerUpward_ZeroBoundaryWalksToRoot documents that a zero boundary
 // (home undeterminable) degrades to the unbounded walk rather than failing.
 func TestFindMarkerUpward_ZeroBoundaryWalksToRoot(t *testing.T) {

@@ -191,3 +191,22 @@ func TestArchiveCommitLog_MissingProjectPath(t *testing.T) {
 		t.Fatal("expected error for missing project_path")
 	}
 }
+
+// TestArchiveCommitLog_RefusesUnmanagedDir guards the write-authorization gate
+// wiring on this tool: a git repo with no marker and no existing vault project
+// must be refused, not scaffolded into a phantom Projects/<slug>/.
+func TestArchiveCommitLog_RefusesUnmanagedDir(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	tool := ArchiveCommitLogTool(vault)
+	projDir := newGitProjectRepoNoMarker(t, false) // committed git repo, no marker
+
+	params, _ := json.Marshal(map[string]string{"project": "junk-project", "project_path": projDir})
+	if _, err := tool.Handler(context.Background(), params); err == nil {
+		t.Fatal("expected refusal for an unmanaged dir")
+	} else if !strings.Contains(err.Error(), "run `vp init`") {
+		t.Errorf("refusal message = %q, want it to point at vp init", err)
+	}
+	if _, serr := os.Stat(filepath.Join(vault.Root, "Projects", "junk-project")); !os.IsNotExist(serr) {
+		t.Errorf("vault project scaffolded despite refusal (stat err = %v)", serr)
+	}
+}

@@ -186,6 +186,55 @@ func DetectProject(cwd string) (string, error) {
 	return slug, nil
 }
 
+// resolveDir returns the symlink-resolved, cleaned absolute form of dir — the
+// same normalization DetectSignal applies — so a force-skip or boundary
+// comparison against it is exact.
+func resolveDir(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return filepath.Clean(dir)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(abs)
+}
+
+// RequireKnownProject reports whether vault artifacts may be written for slug on
+// behalf of the project rooted at repoRoot. It authorizes on EITHER signal of
+// legitimacy — an explicit .vibe-palace.toml marker at/above repoRoot, or an
+// already-existing Projects/<slug>/ directory in the vault — and refuses only
+// when BOTH are absent. It is the write-authorization gate the commit/archive
+// tools and `vp absorb` / `vp memory harvest` lacked: those tools derive a slug
+// by cwd basename and then lazily scaffold Projects/<slug>/ on first write, so
+// running one in any unmanaged directory silently materializes a phantom vault
+// project.
+//
+// "marker OR exists" is deliberately weaker than the hook's marker-only gate:
+// the hook is opportunistic (a false negative is a harmless skipped capture),
+// whereas these tools run during a wrap where a false negative BREAKS it — and
+// legitimate projects exist in Projects/<slug>/ without a repo-side marker
+// (vp init's vault-tree creation is best-effort and skipped on re-init).
+//
+// The $HOME / filesystem-root force-skip takes precedence over the exists
+// branch: a stray Projects/<home-basename>/ left by an earlier mis-scaffold must
+// never re-authorize a write rooted at the home tree (the residue this gate
+// exists to stop). Pass the resolved repo ROOT, not a subdirectory, so the
+// marker walk keys on the right directory.
+func RequireKnownProject(slug, vaultRoot, repoRoot string) error {
+	resolved := resolveDir(repoRoot)
+	if isForceSkipDir(resolved) {
+		return fmt.Errorf("refusing to write vault artifacts for %q: it is the home directory or filesystem root, not a project — run `vp init` in a project directory", repoRoot)
+	}
+	if DetectSignal(resolved) == SignalVibeConfig {
+		return nil
+	}
+	if fi, err := os.Stat(filepath.Join(vaultRoot, "Projects", slug)); err == nil && fi.IsDir() {
+		return nil
+	}
+	return fmt.Errorf("refusing to write vault artifacts for %q: no %s marker and no Projects/%s/ in the vault — run `vp init` first", repoRoot, ConfigFileName, slug)
+}
+
 // ParseProjectConfig parses a .vibe-palace.toml file and returns the project
 // configuration. Returns an error if the file cannot be read or is invalid TOML.
 // Unknown top-level keys are tolerated.

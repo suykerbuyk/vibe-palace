@@ -93,6 +93,15 @@ func runAbsorb(opts absorbOpts) int {
 		return cli.ExitUser
 	}
 
+	// Refuse to scaffold a phantom vault project from an unmanaged directory:
+	// the absorb writers lazily create Projects/<slug>/ on first write, and the
+	// slug may be a bare cwd basename. Authorize only a marked or already-known
+	// project.
+	if err := project.RequireKnownProject(slug, vault.Root, projectRoot); err != nil {
+		fmt.Fprintf(opts.Stderr, "vp absorb: %v\n", err)
+		return cli.ExitUser
+	}
+
 	plan, err := absorb.BuildPlan(projectRoot)
 	if err != nil {
 		fmt.Fprintf(opts.Stderr, "vp absorb: build plan: %v\n", err)

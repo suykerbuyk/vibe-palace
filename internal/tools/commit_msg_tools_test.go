@@ -62,11 +62,18 @@ func TestIngestCommitMsg_Success(t *testing.T) {
 }
 
 func TestIngestCommitMsg_ExplicitProject(t *testing.T) {
-	vault := storage.NewVault(t.TempDir())
+	vaultRoot := t.TempDir()
+	vault := storage.NewVault(vaultRoot)
 	tool := IngestCommitMsgTool(vault)
 
 	projDir := t.TempDir() // no .vibe-palace.toml; rely on explicit project
 	if err := os.WriteFile(filepath.Join(projDir, "commit.msg"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A markerless but already-registered project: the vault dir exists, which
+	// is the "OR exists" half of the write-authorization gate. Without it the
+	// tool refuses (see TestIngestCommitMsg_RefusesUnmanagedDir).
+	if err := os.MkdirAll(filepath.Join(vaultRoot, "Projects", "explicit-proj"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	params, _ := json.Marshal(map[string]string{"project": "explicit-proj", "project_path": projDir})
@@ -76,6 +83,31 @@ func TestIngestCommitMsg_ExplicitProject(t *testing.T) {
 	}
 	if res.(map[string]any)["project"] != "explicit-proj" {
 		t.Errorf("project = %v, want explicit-proj", res.(map[string]any)["project"])
+	}
+}
+
+// TestIngestCommitMsg_RefusesUnmanagedDir is the write-authorization regression
+// guard: a dirty directory with no .vibe-palace.toml marker and no existing
+// vault project must be refused, not silently scaffolded into a phantom
+// Projects/<slug>/. This is the live incident the commit-write-tools task fixed.
+func TestIngestCommitMsg_RefusesUnmanagedDir(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	tool := IngestCommitMsgTool(vault)
+
+	projDir := newGitProjectRepoNoMarker(t, true) // git repo, dirty, NO marker
+	writeCommitMsg(t, projDir)
+
+	params, _ := json.Marshal(map[string]string{"project": "junk-project", "project_path": projDir})
+	_, err := tool.Handler(context.Background(), params)
+	if err == nil {
+		t.Fatal("expected refusal: an unmanaged dir must not scaffold a vault project")
+	}
+	if !strings.Contains(err.Error(), "run `vp init`") {
+		t.Errorf("refusal message = %q, want it to point at vp init", err)
+	}
+	// Nothing must have been scaffolded in the vault.
+	if _, serr := os.Stat(filepath.Join(vault.Root, "Projects", "junk-project")); !os.IsNotExist(serr) {
+		t.Errorf("vault project scaffolded despite refusal (stat err = %v)", serr)
 	}
 }
 
@@ -126,6 +158,36 @@ func newGitProjectRepo(t *testing.T, name string, dirty bool) string {
 		[]byte("[project]\nname = \""+name+"\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("commit.msg\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init")
+	run("add", "-A")
+	run("commit", "-m", "init")
+	if dirty {
+		if err := os.WriteFile(filepath.Join(dir, "dirt.txt"), []byte("uncommitted\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// newGitProjectRepoNoMarker is newGitProjectRepo without the .vibe-palace.toml
+// marker: a real git repo that is NOT an enrolled vibe-palace project. Used to
+// exercise the write-authorization gate's refusal path.
+func newGitProjectRepoNoMarker(t *testing.T, dirty bool) string {
+	t.Helper()
+	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("commit.msg\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
