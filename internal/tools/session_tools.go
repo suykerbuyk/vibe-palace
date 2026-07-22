@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
@@ -34,16 +35,51 @@ var hostSessionID = func() string {
 	return hostsession.ClaudeSessionID(os.Getppid(), home, hostsession.ReadProcStart)
 }
 
+// flexStringList unmarshals from either a JSON array of strings or a single JSON
+// string. Some MCP clients (Grok's capture shim, observed 2026-07-21) send the
+// list-valued capture fields — decisions, files_changed, open_threads — as one
+// string rather than an array; before this the strict "type: array" schema
+// rejected the whole vp_capture_session call at validation and the session was
+// LOST. A lone string is coerced to a one-element list (never split on a guessed
+// delimiter); an empty string or null yields an empty list. Its underlying type
+// is []string, so it assigns straight into capture.SessionParams.
+type flexStringList []string
+
+func (f *flexStringList) UnmarshalJSON(data []byte) error {
+	switch trimmed := strings.TrimSpace(string(data)); {
+	case trimmed == "" || trimmed == "null":
+		*f = nil
+	case trimmed[0] == '[':
+		var arr []string
+		if err := json.Unmarshal(data, &arr); err != nil {
+			return err
+		}
+		*f = arr
+	default:
+		// A lone JSON string → one-element list; empty string → empty list.
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		if s == "" {
+			*f = nil
+		} else {
+			*f = flexStringList{s}
+		}
+	}
+	return nil
+}
+
 type captureSessionParams struct {
-	Project      string   `json:"project"`
-	Summary      string   `json:"summary"`
-	Title        string   `json:"title,omitempty"`
-	Tag          string   `json:"tag,omitempty"`
-	Model        string   `json:"model,omitempty"`
-	Decisions    []string `json:"decisions,omitempty"`
-	FilesChanged []string `json:"files_changed,omitempty"`
-	OpenThreads  []string `json:"open_threads,omitempty"`
-	Transcript   string   `json:"transcript,omitempty"`
+	Project      string         `json:"project"`
+	Summary      string         `json:"summary"`
+	Title        string         `json:"title,omitempty"`
+	Tag          string         `json:"tag,omitempty"`
+	Model        string         `json:"model,omitempty"`
+	Decisions    flexStringList `json:"decisions,omitempty"`
+	FilesChanged flexStringList `json:"files_changed,omitempty"`
+	OpenThreads  flexStringList `json:"open_threads,omitempty"`
+	Transcript   string         `json:"transcript,omitempty"`
 	// ArchiveSessionID is accepted for wire compatibility and IGNORED. The
 	// handler derives the host session id itself (see hostSessionID) and never
 	// trusts a caller-supplied one: the only caller of this tool is the agent,
@@ -68,6 +104,9 @@ type captureSessionParams struct {
 	// session_key a previous call returned to RETRY that attempt: the note is
 	// updated in place instead of duplicated. Omit it for new work.
 	SessionKey string `json:"session_key,omitempty"`
+	// ClientInfo (derived by server for L3/L4) is accepted for wire compatibility
+	// with hosts that supply it. The MCP handler derives it from context when absent.
+	ClientInfo json.RawMessage `json:"client_info,omitempty"`
 }
 
 type captureSessionResult struct {
@@ -146,19 +185,19 @@ var captureSessionSchema = json.RawMessage(`{
 			"description": "LLM model used."
 		},
 		"decisions": {
-			"type": "array",
+			"type": ["array", "string"],
 			"items": {"type": "string"},
-			"description": "Key decisions made."
+			"description": "Key decisions made. An array of strings, or a single string (coerced to a one-element list)."
 		},
 		"files_changed": {
-			"type": "array",
+			"type": ["array", "string"],
 			"items": {"type": "string"},
-			"description": "Files modified."
+			"description": "Files modified. An array of strings, or a single string (coerced to a one-element list)."
 		},
 		"open_threads": {
-			"type": "array",
+			"type": ["array", "string"],
 			"items": {"type": "string"},
-			"description": "Open items for next session."
+			"description": "Open items for next session. An array of strings, or a single string (coerced to a one-element list)."
 		},
 		"transcript": {
 			"type": "string",
