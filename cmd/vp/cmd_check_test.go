@@ -544,6 +544,114 @@ func TestCheckResumeRefsOnlyJSON(t *testing.T) {
 	}
 }
 
+// seedWorkflowCapsVault points config at a temp vault holding one project
+// whose workflow.md is over the WorkflowMaxBytes cap and one within it.
+// Returns the vault path.
+func seedWorkflowCapsVault(t *testing.T) string {
+	t.Helper()
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	vpDir := filepath.Join(configDir, "vibe-palace")
+	if err := os.MkdirAll(vpDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	vaultPath := filepath.Join(configDir, "vault")
+	if err := os.WriteFile(filepath.Join(vpDir, "config.toml"),
+		[]byte("vault_path = \""+vaultPath+"\"\ngit_enabled = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	write := func(slug, body string) {
+		dir := filepath.Join(vaultPath, "Projects", slug)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "workflow.md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("fatwf", "# fatwf — Workflow\n\n"+strings.Repeat("x", check.WorkflowMaxBytes+1))
+	write("thinwf", "# thinwf — Workflow\n\n- (none recorded yet)\n")
+	return vaultPath
+}
+
+// TestCheckWorkflowCapsOnlyHuman verifies `vp check --check workflow-caps`
+// selects exactly the Workflow caps row, flags only the over-cap project, and
+// — like the surface preflight — never loads the embedder.
+func TestCheckWorkflowCapsOnlyHuman(t *testing.T) {
+	seedWorkflowCapsVault(t)
+
+	fv, _ := cli.ParseFlags(checkFlags, []string{"--check", "workflow-caps"})
+	var stderr string
+	stdout := captureStdout(t, func() {
+		stderr = captureStderr(t, func() {
+			runCheck(cli.BuildInfo{Version: "test"}, fv)
+		})
+	})
+	if !strings.Contains(stdout, "[info] Workflow caps:") {
+		t.Errorf("expected an [info] Workflow caps row:\n%s", stdout)
+	}
+	for _, want := range []string{"1 of 2 workflow.md over cap", "fatwf:", "cap 4000 bytes"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("output missing %q:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "thinwf") {
+		t.Errorf("under-cap project must stay silent:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "Embedder") || strings.Contains(stderr, "Embedder") {
+		t.Errorf("workflow-caps check must not load the embedder:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if strings.Contains(stdout, "Surface:") {
+		t.Errorf("workflow-caps selection must not run the Surface check:\n%s", stdout)
+	}
+}
+
+// TestCheckWorkflowCapsOnlyJSON verifies the --json projection: exactly one
+// info check naming the over-cap project, and exit code 0 even with a breach
+// present (an advisory warns, never fails).
+func TestCheckWorkflowCapsOnlyJSON(t *testing.T) {
+	seedWorkflowCapsVault(t)
+
+	fv, _ := cli.ParseFlags(checkFlags, []string{"--check", "workflow-caps", "--json"})
+	var code int
+	out := captureStdout(t, func() {
+		code = runCheck(cli.BuildInfo{Version: "test", Commit: "cafe"}, fv)
+	})
+
+	var rep check.JSONReport
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
+	}
+	if len(rep.Checks) != 1 || rep.Checks[0].Name != "Workflow caps" {
+		t.Fatalf("expected exactly one Workflow caps check, got %+v", rep.Checks)
+	}
+	if rep.Checks[0].Status != "info" {
+		t.Errorf("status = %q, want info (a cap breach warns, never fails)", rep.Checks[0].Status)
+	}
+	if rep.Summary.Info != 1 || rep.Summary.Fail != 0 {
+		t.Errorf("summary = %+v, want exactly one info and zero fail", rep.Summary)
+	}
+	if rep.ExitCode != 0 || code != cli.ExitOK {
+		t.Errorf("exit_code = %d / code = %d, want 0 / ExitOK — an advisory must not fail the run",
+			rep.ExitCode, code)
+	}
+	if !strings.Contains(rep.Checks[0].Detail, "fatwf") {
+		t.Errorf("detail missing %q: %q", "fatwf", rep.Checks[0].Detail)
+	}
+}
+
+// TestCheckWorkflowCapsNoVault verifies the producer degrades to Skip (not a
+// panic or a bogus Pass) when no vault can be resolved.
+func TestCheckWorkflowCapsNoVault(t *testing.T) {
+	rs := checkProducers["workflow-caps"]("")
+	if len(rs) != 1 {
+		t.Fatalf("want one result, got %d", len(rs))
+	}
+	if rs[0].Status != check.Skip || rs[0].Name != "Workflow caps" {
+		t.Errorf("got %+v, want a skipped Workflow caps row", rs[0])
+	}
+}
+
 // TestCheckResumeRefsNoVault verifies the producer degrades to Skip when no
 // vault can be resolved.
 func TestCheckResumeRefsNoVault(t *testing.T) {

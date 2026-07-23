@@ -31,7 +31,7 @@ func cmdCheck(info cli.BuildInfo) *cli.Command {
 	return &cli.Command{
 		Name:        "check",
 		Synopsis:    "vp check [--json] [--check NAME[,NAME...]]",
-		Description: "Verify installation, config, vault, embedder, surface compatibility, project detection, and vault hygiene (stray scaffolds, resume.md size/row caps, host-local plan refs). Reports pass/fail status for each component. With --check, runs only the named check(s) via selective execution — skipping the expensive embedder load and tool-registry build — for fast scripting / AI preflights. Selectable names: surface, resume-caps, resume-refs.",
+		Description: "Verify installation, config, vault, embedder, surface compatibility, project detection, and vault hygiene (stray scaffolds, resume.md size/row caps, host-local plan refs, workflow.md size cap). Reports pass/fail status for each component. With --check, runs only the named check(s) via selective execution — skipping the expensive embedder load and tool-registry build — for fast scripting / AI preflights. Selectable names: surface, resume-caps, resume-refs, workflow-caps.",
 		Flags:       checkFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp check", Comment: "Run all installation checks"},
@@ -39,6 +39,7 @@ func cmdCheck(info cli.BuildInfo) *cli.Command {
 			{Cmd: "vp check --check surface --json", Comment: "Fast surface-only preflight (used by restart/wrap)"},
 			{Cmd: "vp check --check resume-caps", Comment: "Warn on any project resume.md over its size/row caps"},
 			{Cmd: "vp check --check resume-refs", Comment: "Warn on any resume.md committing a host-local ~/.claude/plans/… path"},
+			{Cmd: "vp check --check workflow-caps", Comment: "Warn on any project workflow.md over the bootstrap-excerpt cap"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(checkFlags, args)
@@ -67,6 +68,12 @@ var checkProducers = map[string]func(vaultRoot string) []check.Result{
 			return []check.Result{{Name: "Resume refs", Status: check.Skip, Summary: "no vault configured"}}
 		}
 		return []check.Result{check.CheckResumeRefs(storage.NewVault(vaultRoot))}
+	},
+	"workflow-caps": func(vaultRoot string) []check.Result {
+		if vaultRoot == "" {
+			return []check.Result{{Name: "Workflow caps", Status: check.Skip, Summary: "no vault configured"}}
+		}
+		return []check.Result{check.CheckWorkflowCaps(storage.NewVault(vaultRoot))}
 	},
 }
 
@@ -238,6 +245,13 @@ func gatherCheckResults() []check.Result {
 				// /…/.claude/plans/… path) — dead weight in a shared,
 				// committed artifact. Advisory only, never Fail.
 				results = append(results, check.CheckResumeRefs(vault))
+
+				// Vault-wide: flag workflow.md files over the bootstrap
+				// excerpt cap — the size above which the shed ladder may
+				// excerpt the behavioral contract under token pressure.
+				// Advisory only, never Fail (same stance as resume caps:
+				// no write path can prevent, so detection is on offer).
+				results = append(results, check.CheckWorkflowCaps(vault))
 			}
 		}
 	}
