@@ -68,6 +68,7 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	reg.MustRegister(KGTimelineTool(vault))
 	reg.MustRegister(KGStatsTool(vault))
 	reg.MustRegister(GetWorkflowTool(resolver))
+	reg.MustRegister(GetDoctrineTool(resolver))
 	reg.MustRegister(GetResumeTool(resolver))
 	reg.MustRegister(UpdateResumeTool(vault))
 	reg.MustRegister(GetKnowledgeTool(vault))

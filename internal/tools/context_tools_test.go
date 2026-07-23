@@ -48,9 +48,12 @@ func TestBootstrapEmptyVault(t *testing.T) {
 	if br.Project != "test-proj" {
 		t.Errorf("Project = %q, want %q", br.Project, "test-proj")
 	}
-	// Workflow should come from embedded defaults.
-	if !strings.Contains(br.Workflow, "Pair Programming") {
-		t.Error("expected embedded workflow content")
+	// Workflow should come from embedded defaults. The embedded floor is the
+	// THIN post-ADR-008 template: the generic doctrine lives in the on-demand
+	// doctrine resource, and the workflow carries the minimal bootstrap
+	// contract pointing at it.
+	if !strings.Contains(br.Workflow, "vp_get_doctrine") {
+		t.Error("expected embedded thin workflow with the doctrine-fetch contract paragraph")
 	}
 	// Resume should come from embedded defaults.
 	if !strings.Contains(br.Resume, "test-proj") {
@@ -1060,6 +1063,71 @@ func TestShedRungTierClassification(t *testing.T) {
 		if got := tier == shedTierCore; got != wantCore[r] {
 			t.Errorf("rung %q tier = %q, want core=%v", r, tier, wantCore[r])
 		}
+	}
+}
+
+// TestBootstrapThinWorkflowContractSurvivesShedding pins the ADR-008 shape of
+// the un-sheddable contract: the embedded workflow floor is thin (under the
+// excerpt cap), so even a hopeless budget cannot trigger the workflow rung —
+// the minimal bootstrap-contract paragraph that points a fresh host at
+// vp_get_doctrine arrives inline no matter what the ladder shed, and the
+// overrun is reported loudly rather than paid for with the contract.
+func TestBootstrapThinWorkflowContractSurvivesShedding(t *testing.T) {
+	vault, resolver := testSetup(t)
+	tool := BootstrapContextTool(resolver, vault)
+
+	br := bootstrapResult(t, tool, `{"project":"test-proj","slim":false,"max_tokens":50}`)
+
+	if !strings.Contains(br.Workflow, "vp_get_doctrine") {
+		t.Error("the doctrine-fetch contract paragraph did not survive the shed ladder — a fresh host has no contract")
+	}
+	if br.Budget == nil {
+		t.Fatal("no budget report on a payload that could not meet its budget")
+	}
+	if sliceHas(br.Budget.Shed, shedWorkflow) {
+		t.Errorf("thin embedded workflow was excerpted — it must sit under the excerpt cap so the rung never fires: shed=%v", br.Budget.Shed)
+	}
+	if !br.Budget.OverBudget {
+		t.Errorf("over_budget=false at %d estimated tokens against max_tokens=50", br.Budget.EstimatedTokens)
+	}
+}
+
+// TestBootstrapFatWorkflowOverrideRestoredWhenBudgetMissedAnyway keeps the
+// core-tier guard covered now that the embedded floor is too small to trigger
+// the workflow rung: a fat vault-tier override (the pre-rollout / foreign-vault
+// case) IS excerpted during the descent, but when the budget is missed anyway
+// the guard puts the contract back — shedding core that buys nothing is the
+// ADR-009 defect class. shedRungTier classifies the rung core; this drives the
+// restore that enforcement rides on.
+func TestBootstrapFatWorkflowOverrideRestoredWhenBudgetMissedAnyway(t *testing.T) {
+	vault, resolver := testSetup(t)
+	fatWorkflow := "# Fat Workflow\n\n" + strings.Repeat("a standing rule line for the contract\n", 300)
+	wfPath := filepath.Join(vault.Root, "Templates", "workflow.md")
+	if err := os.MkdirAll(filepath.Dir(wfPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wfPath, []byte(fatWorkflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantWorkflow, _, err := resolver.Resolve("workflow", "test-proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tool := BootstrapContextTool(resolver, vault)
+	br := bootstrapResult(t, tool, `{"project":"test-proj","slim":false,"max_tokens":50}`)
+
+	if br.Workflow != wantWorkflow {
+		t.Errorf("workflow excerpted for no benefit: still over budget, so the core-tier contract should have been restored (len %d, want %d)", len(br.Workflow), len(wantWorkflow))
+	}
+	if br.Budget == nil {
+		t.Fatal("no budget report on a payload that could not meet its budget")
+	}
+	if sliceHas(br.Budget.Shed, shedWorkflow) {
+		t.Errorf("shed still names %s after the restore: %v", shedWorkflow, br.Budget.Shed)
+	}
+	if !br.Budget.OverBudget {
+		t.Errorf("over_budget=false at %d estimated tokens against max_tokens=50", br.Budget.EstimatedTokens)
 	}
 }
 

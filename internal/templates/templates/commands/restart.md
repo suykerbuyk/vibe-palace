@@ -4,9 +4,11 @@ Restore full AI session context for the {{PROJECT}} project.
 
 This command covers only the session-start **mechanics**. Standing
 behavioral rules — pair-programming paradigm, investigation-first
-workflow, task-management discipline, core principles — live in
-`workflow.md`. Load that file via `vp_bootstrap_context` below and
-follow it for the rest of the session.
+workflow, task-management discipline, core principles — are the
+Vibe-Palace **doctrine**, served on demand from the binary. Fetch it
+with `vp_get_doctrine` in Step 2 below and follow it for the rest of
+the session; the project's `workflow.md` (loaded by
+`vp_bootstrap_context`) carries only project-specific patterns.
 
 ## Step 1: Vault Sync (multi-machine)
 
@@ -83,7 +85,14 @@ Under `slim`, `resume` may arrive as a banner-led **excerpt** plus a
 `workflow` stays inline. When `resume` is an excerpt, read its `resume_uri`
 (via `vp_read_resource`) before relying on full resume content.
 
-After bootstrap, continue loading context in the order below.
+Then fetch the full operating doctrine with `vp_get_doctrine` (pass the
+project slug). The inline `workflow` is deliberately **thin** — it carries
+only this project's patterns plus a minimal pointer at the doctrine — so
+the doctrine fetch is not optional: it is where the standing behavioral
+rules arrive.
+
+After bootstrap and the doctrine fetch, continue loading context in the
+order below.
 
 ## Step 3: Sweep Orphaned Plans
 
@@ -203,6 +212,7 @@ on based on recent git history. If active task files exist,
 summarize each with its priority and status, and recommend which to
 start based on priority order and dependencies.
 
-After this command, consult `workflow.md` (already loaded by
-`vp_bootstrap_context`) for the standing rules that govern the rest
-of the session.
+After this command, follow the doctrine (fetched with `vp_get_doctrine`
+in Step 2) for the standing rules that govern the rest of the session,
+and the project's `workflow.md` (already loaded by
+`vp_bootstrap_context`) for this project's own patterns.

@@ -41,8 +41,81 @@ func TestResolveEmbeddedDefault(t *testing.T) {
 	if source != "embedded" {
 		t.Errorf("source = %q, want %q", source, "embedded")
 	}
-	if !strings.Contains(content, "Pair Programming") {
-		t.Error("embedded workflow.md should contain 'Pair Programming'")
+	// The embedded workflow is the thin post-ADR-008 template: the generic
+	// doctrine moved to the doctrine resource, and the workflow carries the
+	// minimal bootstrap-contract paragraph pointing at it.
+	if !strings.Contains(content, "vp_get_doctrine") {
+		t.Error("embedded workflow.md should carry the doctrine-fetch contract paragraph")
+	}
+}
+
+// --- Doctrine resource (ADR-008) ---
+
+// TestResolveDoctrineEmbeddedDefault pins that the doctrine resolves from the
+// embedded floor and carries the generic manual extracted from the old
+// workflow template.
+func TestResolveDoctrineEmbeddedDefault(t *testing.T) {
+	r, _ := testResolver(t)
+
+	content, source, err := r.Resolve("doctrine", "test-proj")
+	if err != nil {
+		t.Fatalf("Resolve(doctrine): %v", err)
+	}
+	if source != "embedded" {
+		t.Errorf("source = %q, want %q", source, "embedded")
+	}
+	for _, want := range []string{"Pair Programming", "Task Management", "Core Principles", "vp_manage_task"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("embedded doctrine.md should contain %q", want)
+		}
+	}
+}
+
+// The doctrine is 3-tier overridable like workflow/resume: a project fork
+// (glide path) shadows the vault tier, which shadows the embedded floor.
+func TestResolveDoctrinePrecedence(t *testing.T) {
+	r, root := testResolver(t)
+
+	writeFile(t, filepath.Join(root, "Templates", "doctrine.md"), "vault doctrine override")
+	content, source, err := r.Resolve("doctrine", "test-proj")
+	if err != nil {
+		t.Fatalf("Resolve(doctrine): %v", err)
+	}
+	if source != "vault" || content != "vault doctrine override" {
+		t.Errorf("got (%q, %q), want vault override", content, source)
+	}
+
+	writeFile(t, filepath.Join(root, "Projects", "test-proj", "doctrine.md"), "project doctrine override")
+	content, source, err = r.Resolve("doctrine", "test-proj")
+	if err != nil {
+		t.Fatalf("Resolve(doctrine): %v", err)
+	}
+	if source != "project" || content != "project doctrine override" {
+		t.Errorf("got (%q, %q), want project override", content, source)
+	}
+}
+
+// The doctrine is flat/non-scoped, so it participates in ResolveDigest exactly
+// like workflow/resume: a project-tier hit carries the raw-bytes digest, any
+// other tier an empty one.
+func TestResolveDoctrineDigest(t *testing.T) {
+	r, root := testResolver(t)
+
+	_, source, sha, err := r.ResolveDigest("doctrine", "test-proj")
+	if err != nil {
+		t.Fatalf("ResolveDigest(doctrine): %v", err)
+	}
+	if source != "embedded" || sha != "" {
+		t.Errorf("embedded tier: source=%q sha=%q, want embedded with empty sha", source, sha)
+	}
+
+	writeFile(t, filepath.Join(root, "Projects", "test-proj", "doctrine.md"), "project doctrine")
+	_, source, sha, err = r.ResolveDigest("doctrine", "test-proj")
+	if err != nil {
+		t.Fatalf("ResolveDigest(doctrine): %v", err)
+	}
+	if source != "project" || sha == "" {
+		t.Errorf("project tier: source=%q sha=%q, want project with non-empty sha", source, sha)
 	}
 }
 
@@ -243,6 +316,7 @@ func TestResourceToPath(t *testing.T) {
 	}{
 		{"workflow", "workflow.md", false},
 		{"resume", "resume.md", false},
+		{"doctrine", "doctrine.md", false},
 		{"command:restart", filepath.Join("commands", "restart.md"), false},
 		{"command:review-plan", filepath.Join("commands", "review-plan.md"), false},
 		{"skill:analyze", filepath.Join("skills", "analyze", "SKILL.md"), false},

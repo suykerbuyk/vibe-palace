@@ -65,6 +65,7 @@ func NewResolver(vaultRoot string) *Resolver {
 //
 //	"workflow"        → workflow.md
 //	"resume"          → resume.md
+//	"doctrine"        → doctrine.md
 //	"command:{name}"  → commands/{name}.md
 //	"skill:{name}"    → skills/{name}.md
 func (r *Resolver) Resolve(resource, project string) (string, string, error) {
@@ -84,7 +85,7 @@ func (r *Resolver) ResolveScoped(resource, project, wing, room string) (string, 
 		return "", "", err
 	}
 
-	// For non-command/skill resources (workflow, resume), fall through to path-based resolution.
+	// For non-command/skill resources (workflow, resume, doctrine), fall through to path-based resolution.
 	if dir == "" {
 		return r.resolveByPath(resType+".md", project, wing, room)
 	}
@@ -139,8 +140,8 @@ func (r *Resolver) ResolveScoped(resource, project, wing, room string) (string, 
 	return "", "", fmt.Errorf("resource %q not found at any precedence level", resource)
 }
 
-// resolveByPath handles non-command/skill resources (workflow, resume) which
-// don't participate in wing/room scoping.
+// resolveByPath handles non-command/skill resources (workflow, resume,
+// doctrine) which don't participate in wing/room scoping.
 func (r *Resolver) resolveByPath(relPath, project, wing, room string) (string, string, error) {
 	data, source, err := r.readByPath(relPath, project)
 	if err != nil {
@@ -170,7 +171,8 @@ func (r *Resolver) readByPath(relPath, project string) ([]byte, string, error) {
 	return nil, "", fmt.Errorf("resource %q not found at any precedence level", relPath)
 }
 
-// ResolveDigest resolves a non-scoped resource ("workflow", "resume") exactly
+// ResolveDigest resolves a non-scoped resource ("workflow", "resume",
+// "doctrine") exactly
 // as Resolve does, and additionally returns the lowercase-hex SHA-256 of the
 // bytes that read produced — never a second stat/read, so the digest and the
 // content always describe the same instant.
@@ -464,6 +466,13 @@ func parseResource(resource string) (resType, name, dir string, err error) {
 		return "workflow", "", "", nil
 	case resource == "resume":
 		return "resume", "", "", nil
+	case resource == "doctrine":
+		// The generic Vibe-Palace operating manual (ADR-008). Flat and
+		// non-scoped like workflow/resume — NOT directory-form — so it flows
+		// through resolveByPath and ResolveDigest with no further cases. The
+		// embedded copy is the tested floor; vault/project overrides remain
+		// the glide path for iterating a behavior before it graduates.
+		return "doctrine", "", "", nil
 	case strings.HasPrefix(resource, "command:"):
 		name = strings.TrimPrefix(resource, "command:")
 		if err := validateResourceName(name); err != nil {

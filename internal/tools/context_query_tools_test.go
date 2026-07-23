@@ -43,6 +43,69 @@ func TestGetWorkflow(t *testing.T) {
 	}
 }
 
+// TestGetDoctrine pins the ADR-008 on-demand doctrine surface: the tool
+// serves the embedded generic manual (empty sha — no project-tier file), and a
+// project override wins with the digest of its raw bytes, exactly like
+// workflow/resume.
+func TestGetDoctrine(t *testing.T) {
+	vault := bornCurrentTestVault(t, t.TempDir())
+	resolver := vpctx.NewResolver(vault.Root)
+
+	tool := GetDoctrineTool(resolver)
+	if tool.Name != "vp_get_doctrine" {
+		t.Fatalf("name = %q", tool.Name)
+	}
+	if tool.Mutating {
+		t.Error("vp_get_doctrine must be read-only")
+	}
+
+	params, _ := json.Marshal(map[string]string{"project": "test-proj"})
+	result, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	rr := result.(doctrineResult)
+	if rr.Source != "embedded" {
+		t.Errorf("source = %q, want embedded", rr.Source)
+	}
+	if rr.Sha256 != "" {
+		t.Errorf("sha256 = %q, want empty for a non-project tier", rr.Sha256)
+	}
+	if want := mcp.DoctrineURI("test-proj"); rr.DoctrineURI != want {
+		t.Errorf("doctrine_uri = %q, want %q", rr.DoctrineURI, want)
+	}
+	for _, want := range []string{"Pair Programming", "Task Management", "Core Principles"} {
+		if !strings.Contains(rr.Content, want) {
+			t.Errorf("embedded doctrine missing %q", want)
+		}
+	}
+
+	// Project override shadows the embedded floor and carries the raw digest.
+	raw := "# Forked doctrine\n\nproject glide-path override\n"
+	doctrinePath := filepath.Join(vault.Root, "Projects", "test-proj", "doctrine.md")
+	if err := os.MkdirAll(filepath.Dir(doctrinePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(doctrinePath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err = tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler after override: %v", err)
+	}
+	rr = result.(doctrineResult)
+	if rr.Source != "project" {
+		t.Errorf("source = %q, want project", rr.Source)
+	}
+	sum := sha256.Sum256([]byte(raw))
+	if want := hex.EncodeToString(sum[:]); rr.Sha256 != want {
+		t.Errorf("sha256 = %q, want digest of raw override bytes %q", rr.Sha256, want)
+	}
+	if !strings.Contains(rr.Content, "glide-path override") {
+		t.Errorf("content is not the project override: %q", rr.Content)
+	}
+}
+
 func TestGetResume(t *testing.T) {
 	vault := bornCurrentTestVault(t, t.TempDir())
 	resolver := vpctx.NewResolver(vault.Root)

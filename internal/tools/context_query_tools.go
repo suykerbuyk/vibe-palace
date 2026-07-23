@@ -50,6 +50,61 @@ func GetWorkflowTool(resolver *vpctx.Resolver) mcp.Tool {
 }
 
 // ---------------------------------------------------------------------------
+// vp_get_doctrine
+// ---------------------------------------------------------------------------
+
+var getDoctrineSchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"project": {"type": "string", "description": "Project slug the doctrine is resolved for (a project may override the embedded copy)."}
+	},
+	"required": ["project"]
+}`)
+
+// doctrineResult is resolveResult plus the always-present resource URI, so a
+// host whose channel truncates the inline body can page the full doctrine via
+// vp_read_resource — the same content-URI idiom vp_get_task uses.
+type doctrineResult struct {
+	resolveResult
+	DoctrineURI string `json:"doctrine_uri"`
+}
+
+// GetDoctrineTool serves the generic Vibe-Palace operating manual (ADR-008).
+// The doctrine is binary-owned and fetched ON DEMAND — it is deliberately not
+// inlined into the bootstrap payload, whose thin workflow carries only a
+// minimal contract paragraph pointing here. It resolves through the same
+// 3-tier precedence as workflow/resume so a project can fork it as a glide
+// path, but the embedded copy is the tested floor.
+func GetDoctrineTool(resolver *vpctx.Resolver) mcp.Tool {
+	return mcp.Tool{
+		Name: "vp_get_doctrine",
+		Description: "Get the Vibe-Palace operating doctrine: the generic, " +
+			"host-agnostic manual (pair-programming contract, investigation-first " +
+			"workflow, task-management rules, vault-accessor/air-gap rules, core " +
+			"principles). Served from the binary on demand — it is not part of the " +
+			"bootstrap payload. Fetch it once at session start and follow it for " +
+			"the rest of the session.",
+		Schema:  getDoctrineSchema,
+		Handler: getDoctrineHandler(resolver),
+	}
+}
+
+func getDoctrineHandler(resolver *vpctx.Resolver) mcp.HandlerFunc {
+	base := resolveHandler(resolver, "doctrine")
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		res, err := base(ctx, params)
+		if err != nil {
+			return nil, err
+		}
+		rr := res.(resolveResult)
+		return doctrineResult{
+			resolveResult: rr,
+			DoctrineURI:   mcp.DoctrineURI(rr.Project),
+		}, nil
+	}
+}
+
+// ---------------------------------------------------------------------------
 // vp_get_resume
 // ---------------------------------------------------------------------------
 

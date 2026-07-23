@@ -234,6 +234,111 @@ func TestEmbeddedWrap_PlanHygiene(t *testing.T) {
 	}
 }
 
+// TestEmbeddedDoctrine_GenericAndHostNeutral pins the ADR-008 doctrine split:
+// the embedded doctrine.md carries the generic manual (the sections extracted
+// from the old fat workflow template) and stays host-agnostic — it names MCP
+// tools and capability classes, never a host's context files, config paths, or
+// filesystem layout.
+func TestEmbeddedDoctrine_GenericAndHostNeutral(t *testing.T) {
+	resources, err := WalkEmbedded()
+	if err != nil {
+		t.Fatalf("WalkEmbedded returned error: %v", err)
+	}
+	var doctrine string
+	for _, r := range resources {
+		if r.RelPath == "doctrine.md" {
+			doctrine = string(r.Bytes)
+			break
+		}
+	}
+	if doctrine == "" {
+		t.Fatal("embedded resource doctrine.md missing or empty")
+	}
+
+	// The generic sections the split moved out of workflow.md.
+	for _, want := range []string{
+		"Pair Programming",
+		"Investigation-First",
+		"Task Management",
+		"Core Principles",
+		"air-gapped",
+		"vp_manage_task",
+	} {
+		if !strings.Contains(doctrine, want) {
+			t.Errorf("doctrine.md: missing generic-doctrine phrase %q", want)
+		}
+	}
+
+	// Host-neutrality: no host names, host context files, or host-local
+	// config/scratch paths. The leak grep from the ADR-008 plan, pinned.
+	lower := strings.ToLower(doctrine)
+	for _, leak := range []string{
+		"claude", // CLAUDE.md, .claude/, Claude Code
+		"grok",
+		"zed",
+		"agents.md",
+		"~/.config",
+		"obsidian",
+	} {
+		if strings.Contains(lower, leak) {
+			t.Errorf("doctrine.md: host-specific leak %q — the doctrine must be host-agnostic", leak)
+		}
+	}
+}
+
+// TestEmbeddedWorkflow_ThinWithDoctrineContract pins the other half of the
+// ADR-008 split: the embedded workflow floor is THIN (project-specific shape
+// only) and carries the minimal bootstrap-contract paragraph pointing a fresh
+// host at the on-demand doctrine surface. It must stay small enough that the
+// bootstrap shed ladder can never excerpt it (bootstrapExcerptCap in
+// internal/tools is 4000 bytes) — that size, not prose, is what makes the
+// contract paragraph structurally un-sheddable at the embedded floor.
+func TestEmbeddedWorkflow_ThinWithDoctrineContract(t *testing.T) {
+	resources, err := WalkEmbedded()
+	if err != nil {
+		t.Fatalf("WalkEmbedded returned error: %v", err)
+	}
+	body := make(map[string]string)
+	for _, r := range resources {
+		body[r.RelPath] = string(r.Bytes)
+	}
+
+	wf, ok := body["workflow.md"]
+	if !ok || wf == "" {
+		t.Fatal("embedded resource workflow.md missing or empty")
+	}
+	if !strings.Contains(wf, "vp_get_doctrine") {
+		t.Error("workflow.md: missing the doctrine-fetch contract paragraph — a fresh host would never learn to fetch the doctrine")
+	}
+	if !strings.Contains(wf, "vp_read_resource") {
+		t.Error("workflow.md: contract paragraph must name vp_read_resource for paging vibe-palace:// URIs")
+	}
+	if strings.Contains(wf, "Pair Programming") {
+		t.Error("workflow.md: still carries generic doctrine — the split moved that to doctrine.md")
+	}
+	const excerptCap = 4000 // internal/tools bootstrapExcerptCap
+	if len(wf) >= excerptCap {
+		t.Errorf("workflow.md is %d bytes, must stay under the %d-byte excerpt cap so the contract paragraph cannot be shed", len(wf), excerptCap)
+	}
+
+	// Ship-together gate (rollout ordering, iter-179 class): the embedded
+	// command templates that open a session or lean on the doctrine must point
+	// at the doctrine surface in the same corpus that ships it.
+	for _, rel := range []string{
+		"commands/restart.md",
+		"commands/review-plan.md",
+		"commands/cancel-plan.md",
+	} {
+		content, ok := body[rel]
+		if !ok {
+			t.Fatalf("embedded resource %q missing", rel)
+		}
+		if !strings.Contains(content, "vp_get_doctrine") {
+			t.Errorf("%s: does not point at the vp_get_doctrine surface", rel)
+		}
+	}
+}
+
 func TestFS_ContainsTemplatesRoot(t *testing.T) {
 	fsys := FS()
 	// Reading through the exported FS should locate at least one

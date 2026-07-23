@@ -42,6 +42,7 @@ func resourceFixture(t *testing.T) (*vpctx.Resolver, *storage.Vault, map[string]
 		"task":      "# Fix bug\n\n**Status:** pending\n**Priority:** high\n\nbody of task\n",
 		"resume":    "# Resume\n\ncurrent state, no placeholders\n",
 		"workflow":  "# Workflow\n\nrules, no placeholders\n",
+		"doctrine":  "# Doctrine\n\ngeneric manual, no placeholders\n",
 		"command":   "# Command\n\ncommand body, no placeholders\n",
 		"skill":     "# Skill\n\nskill body without frontmatter\n",
 		"session":   "# Session\n\nsession body\n",
@@ -52,6 +53,7 @@ func resourceFixture(t *testing.T) (*vpctx.Resolver, *storage.Vault, map[string]
 	writeFile(t, filepath.Join(projDir, "tasks", "fix-bug.md"), bodies["task"])
 	writeFile(t, filepath.Join(projDir, "resume.md"), bodies["resume"])
 	writeFile(t, filepath.Join(projDir, "workflow.md"), bodies["workflow"])
+	writeFile(t, filepath.Join(projDir, "doctrine.md"), bodies["doctrine"])
 	writeFile(t, filepath.Join(projDir, "commands", "deploy.md"), bodies["command"])
 	writeFile(t, filepath.Join(projDir, "skills", "analyze", "SKILL.md"), bodies["skill"])
 	// Sessions are stored with YAML frontmatter; ReadSession returns only the
@@ -83,6 +85,7 @@ func TestResolveURIHappyPath(t *testing.T) {
 		{"task", mcp.TaskURI("demo", "fix-bug"), bodies["task"]},
 		{"resume", mcp.ResumeURI("demo"), bodies["resume"]},
 		{"workflow", mcp.WorkflowURI("demo"), bodies["workflow"]},
+		{"doctrine", mcp.DoctrineURI("demo"), bodies["doctrine"]},
 		{"command", mcp.CommandURI("demo", "deploy"), bodies["command"]},
 		{"skill", mcp.SkillURI("demo", "analyze"), bodies["skill"]},
 		{"session", mcp.SessionURI("demo", "2026-06-20-01"), bodies["session"]},
@@ -253,6 +256,7 @@ func TestRegisterResourcesRoundTrip(t *testing.T) {
 		{"task", mcp.TaskURI("demo", "fix-bug"), bodies["task"]},
 		{"resume", mcp.ResumeURI("demo"), bodies["resume"]},
 		{"workflow", mcp.WorkflowURI("demo"), bodies["workflow"]},
+		{"doctrine", mcp.DoctrineURI("demo"), bodies["doctrine"]},
 		{"command", mcp.CommandURI("demo", "deploy"), bodies["command"]},
 		{"skill", mcp.SkillURI("demo", "analyze"), bodies["skill"]},
 		{"session", mcp.SessionURI("demo", "2026-06-20-01"), bodies["session"]},

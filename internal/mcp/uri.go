@@ -13,6 +13,7 @@ const (
 	TaskURITemplate      = ResourceScheme + "task/{project}/{slug}"
 	ResumeURITemplate    = ResourceScheme + "resume/{project}"
 	WorkflowURITemplate  = ResourceScheme + "workflow/{project}"
+	DoctrineURITemplate  = ResourceScheme + "doctrine/{project}"
 	CommandURITemplate   = ResourceScheme + "command/{project}/{name}"
 	SkillURITemplate     = ResourceScheme + "skill/{project}/{name}"
 	SessionURITemplate   = ResourceScheme + "session/{project}/{session_id}"
@@ -33,6 +34,14 @@ func ResumeURI(project string) string {
 // WorkflowURI builds the canonical URI for a project's workflow body.
 func WorkflowURI(project string) string {
 	return ResourceScheme + "workflow/" + project
+}
+
+// DoctrineURI builds the canonical URI for the doctrine body as resolved for a
+// project. The doctrine is the generic Vibe-Palace operating manual (ADR-008):
+// its source of truth is the embedded binary, but it stays project-addressed
+// because the precedence resolver lets a project override it.
+func DoctrineURI(project string) string {
+	return ResourceScheme + "doctrine/" + project
 }
 
 // CommandURI builds the canonical URI for a command body.

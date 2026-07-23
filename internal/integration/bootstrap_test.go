@@ -82,8 +82,11 @@ A vault-level custom command for testing.
 	if bootstrap.Workflow == "" {
 		t.Error("workflow should be non-empty")
 	}
-	if !strings.Contains(bootstrap.Workflow, "Pair Programming") {
-		t.Error("workflow should contain 'Pair Programming' from embedded template")
+	// The embedded workflow is the thin post-ADR-008 template: generic
+	// doctrine is served on demand, and the workflow's contract paragraph
+	// points at the vp_get_doctrine fetch.
+	if !strings.Contains(bootstrap.Workflow, "vp_get_doctrine") {
+		t.Error("workflow should contain the doctrine-fetch contract from the embedded template")
 	}
 
 	// Verify commands include both embedded and vault commands.

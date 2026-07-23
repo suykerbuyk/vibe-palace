@@ -57,6 +57,11 @@
       "schema_sha256": "fa21fc719e95878a56109cc2bb4aee88395d173fa8ac6658bd1066b6ac5f8023"
     },
     {
+      "name": "vp_get_doctrine",
+      "mutating": false,
+      "schema_sha256": "c2ab409fc9134fa06b4fda6aa5888293d4287909733502574cd49875e807843d"
+    },
+    {
       "name": "vp_get_effectiveness",
       "mutating": false,
       "schema_sha256": "f0fb8dd5b0c7e419426e0accea8c992c801c3c283d4edae67659415e5f7454f4"

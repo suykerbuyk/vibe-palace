@@ -9,6 +9,11 @@ the code it references, and identify what will actually go wrong.
 
 ## Inputs
 
+**Standing rules.** The task-management and investigation-first discipline
+this review leans on is the Vibe-Palace doctrine, served on demand from the
+binary — if this session has not loaded it yet, fetch it with
+`vp_get_doctrine` before reviewing.
+
 **Where plans live.** Tasks live in the vault, under
 `Projects/<slug>/tasks/`, and are reached **only** through the MCP task tools:
 `vp_manage_task` to mutate, `vp_get_task` / `vp_list_tasks` to read. Your

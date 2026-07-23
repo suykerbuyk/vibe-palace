@@ -37,7 +37,7 @@ const resourceMIME = "text/markdown"
 //     (a nonexistent task/session is an error; a project with no knowledge file
 //     yet resolves to an empty body).
 //
-//   - resume / workflow / command / skill resolve through the precedence
+//   - resume / workflow / doctrine / command / skill resolve through the precedence
 //     Resolver. That means the body is NOT byte-identical to any single file:
 //     the Resolver substitutes template placeholders ({{PROJECT}}, {{WING}},
 //     {{ROOM}}, and {{DATE}} — which is today's date, so the same URI can yield
@@ -74,6 +74,13 @@ var resourceTypes = []resourceType{
 		name: "workflow", template: mcp.WorkflowURITemplate, vars: []string{"project"},
 		resolve: func(v map[string]string, r *vpctx.Resolver, _ *storage.Vault) (string, error) {
 			body, _, err := r.Resolve("workflow", v["project"])
+			return body, err
+		},
+	},
+	{
+		name: "doctrine", template: mcp.DoctrineURITemplate, vars: []string{"project"},
+		resolve: func(v map[string]string, r *vpctx.Resolver, _ *storage.Vault) (string, error) {
+			body, _, err := r.Resolve("doctrine", v["project"])
 			return body, err
 		},
 	},

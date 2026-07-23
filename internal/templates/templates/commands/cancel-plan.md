@@ -9,6 +9,11 @@ from active work. This mechanism is how future sessions (in the same
 project **or a different one**) discover that a task was already
 evaluated and why it was rejected.
 
+The task-management discipline that governs cancellation — nothing is
+cancelled without explicit human approval — is part of the Vibe-Palace
+doctrine, served on demand from the binary; if this session has not
+loaded it yet, fetch it with `vp_get_doctrine` first.
+
 ## Inputs
 
 An optional argument names the task file to cancel (without path or

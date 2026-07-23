@@ -871,6 +871,20 @@ func shedToBudget(result *BootstrapResult, maxTokens int, fullResume string, sli
 	// rules it is breaking. Being over budget WITH the rules beats being over
 	// budget without them. (The cheap rungs stay shed — a smaller payload still
 	// lowers the odds a host truncates the tail, where the alerts live.)
+	//
+	// This restore is the un-armed enforcement of the ADR-009 core tier for the
+	// ONE core rung whose shed leaves core content incomplete. shedRungTier
+	// classifies two rungs core: resume->pinned DELIVERS its core whole when it
+	// sheds (the pinned zone survives by construction), so there is nothing to
+	// un-shed; workflow->excerpt is a prefix cut that can sever the contract, so
+	// it alone is put back. Since ADR-008 what that contract IS has shrunk: the
+	// doctrine is served on demand (vp_get_doctrine), and the inline workflow
+	// carries the project-specific patterns plus the minimal bootstrap-contract
+	// paragraph that points a fresh host at the doctrine surface. At the
+	// embedded floor the thin workflow sits under bootstrapExcerptCap, so this
+	// rung cannot even trigger — the guard remains for fat vault overrides.
+	// Refusing to shed core outright (fail-loud) stays the gated sibling task
+	// adr-009-arm-fail-loud-bootstrap.
 	if tokens > maxTokens && sliceHasRung(b.Shed, shedWorkflow) {
 		result.Workflow = before.Workflow
 		b.Shed = dropRung(b.Shed, shedWorkflow)
