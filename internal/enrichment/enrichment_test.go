@@ -52,12 +52,15 @@ func samplePromptInput() PromptInput {
 	}
 }
 
+// The TestGenerate_* tests exercise the unexported worker generate — the live
+// path Enricher.Enrich delegates to — covering parse-failure reprompt,
+// code-fence stripping, nil-completer, and completer-error behavior.
 func TestGenerate_HappyPath(t *testing.T) {
 	mock := &mockCompleter{responses: []string{
 		`{"summary":"Built enrichment pipeline.","decisions":["Raw HTTP over SDK — fewer deps"],"open_threads":["Add retry logic"],"tag":"implementation"}`,
 	}}
 
-	result, err := Generate(context.Background(), mock, samplePromptInput())
+	result, err := generate(context.Background(), mock, defaultSystemPrompt, samplePromptInput())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -90,7 +93,7 @@ func TestGenerate_FencedJSON(t *testing.T) {
 		"```json\n{\"summary\":\"Fenced.\",\"tag\":\"docs\"}\n```",
 	}}
 
-	result, err := Generate(context.Background(), mock, samplePromptInput())
+	result, err := generate(context.Background(), mock, defaultSystemPrompt, samplePromptInput())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,7 +113,7 @@ func TestGenerate_BareFencedJSON(t *testing.T) {
 		"```\n{\"summary\":\"Bare fence.\",\"tag\":\"review\"}\n```",
 	}}
 
-	result, err := Generate(context.Background(), mock, samplePromptInput())
+	result, err := generate(context.Background(), mock, defaultSystemPrompt, samplePromptInput())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,7 +123,7 @@ func TestGenerate_BareFencedJSON(t *testing.T) {
 }
 
 func TestGenerate_NilCompleter(t *testing.T) {
-	result, err := Generate(context.Background(), nil, PromptInput{})
+	result, err := generate(context.Background(), nil, defaultSystemPrompt, PromptInput{})
 	if result != nil || err != nil {
 		t.Errorf("nil completer: got result=%v, err=%v", result, err)
 	}
@@ -128,7 +131,7 @@ func TestGenerate_NilCompleter(t *testing.T) {
 
 func TestGenerate_CompleterError(t *testing.T) {
 	mock := &mockCompleter{err: fmt.Errorf("connection refused")}
-	_, err := Generate(context.Background(), mock, samplePromptInput())
+	_, err := generate(context.Background(), mock, defaultSystemPrompt, samplePromptInput())
 	if err == nil {
 		t.Fatal("expected error from completer")
 	}
@@ -140,7 +143,7 @@ func TestGenerate_RepromptRecovers(t *testing.T) {
 		`{"summary":"Recovered on retry.","tag":"debugging"}`,
 	}}
 
-	result, err := Generate(context.Background(), mock, samplePromptInput())
+	result, err := generate(context.Background(), mock, defaultSystemPrompt, samplePromptInput())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -162,7 +165,7 @@ func TestGenerate_RepromptStillFails(t *testing.T) {
 		"still not json",
 	}}
 
-	_, err := Generate(context.Background(), mock, samplePromptInput())
+	_, err := generate(context.Background(), mock, defaultSystemPrompt, samplePromptInput())
 	if err == nil {
 		t.Fatal("expected error after failed reprompt")
 	}
@@ -174,7 +177,7 @@ func TestGenerate_RepromptStillFails(t *testing.T) {
 func TestGenerate_RepromptCompleterError(t *testing.T) {
 	// First call returns unparseable content; the reprompt itself errors.
 	mock := &mockCompleter{responses: []string{"not json"}}
-	_, err := Generate(context.Background(), mock, samplePromptInput())
+	_, err := generate(context.Background(), mock, defaultSystemPrompt, samplePromptInput())
 	if err == nil {
 		t.Fatal("expected error when reprompt completer fails")
 	}

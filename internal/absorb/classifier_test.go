@@ -5,7 +5,9 @@ package absorb
 
 import "testing"
 
-func TestClassify(t *testing.T) {
+// TestClassifyWithRule is the direct table test of the heading-routing rules
+// production reaches via the planner (BuildPlan → classifyWithRule).
+func TestClassifyWithRule(t *testing.T) {
 	tests := []struct {
 		heading string
 		body    string
@@ -48,9 +50,12 @@ func TestClassify(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.heading, func(t *testing.T) {
-			got := Classify(tc.heading, tc.body)
+			got, reason := classifyWithRule(tc.heading, tc.body)
 			if got != tc.want {
-				t.Errorf("Classify(%q) = %+v; want %+v", tc.heading, got, tc.want)
+				t.Errorf("classifyWithRule(%q) = %+v; want %+v", tc.heading, got, tc.want)
+			}
+			if reason == "" {
+				t.Errorf("classifyWithRule(%q) returned an empty reason", tc.heading)
 			}
 		})
 	}

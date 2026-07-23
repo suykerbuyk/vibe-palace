@@ -30,17 +30,11 @@ var allowedTags = map[string]bool{
 	"planning":       true,
 }
 
-// Generate calls the LLM to enrich a session note using the built-in
-// default system prompt. Returns (nil, nil) when c is nil (enrichment
-// disabled/unavailable).
-func Generate(ctx context.Context, c llm.Completer, in PromptInput) (*Result, error) {
-	return generate(ctx, c, defaultSystemPrompt, in)
-}
-
-// generate is the internal worker shared by Generate and Enricher.Enrich.
-// It threads an arbitrary system prompt so Step 5 can supply a
-// vault-editable template without reworking this path. On a parse failure
-// it performs exactly one corrective reprompt before giving up.
+// generate is the internal worker behind Enricher.Enrich. It threads an
+// arbitrary system prompt so a vault-editable template can be supplied
+// without reworking this path. Returns (nil, nil) when c is nil (enrichment
+// disabled/unavailable). On a parse failure it performs exactly one
+// corrective reprompt before giving up.
 func generate(ctx context.Context, c llm.Completer, systemPrompt string, in PromptInput) (*Result, error) {
 	if c == nil {
 		return nil, nil

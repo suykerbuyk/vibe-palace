@@ -23,8 +23,9 @@ import (
 // (ListCallerKeyedUnstampedNotes), the manifest-side half in archive
 // (ListEntries), and the pairing here, because vaultaudit is the one package
 // that already imports both and all three consumers already import vaultaudit.
-// Two implementations of one rule silently diverge (the templates.Classify
-// lesson); do not copy this predicate anywhere.
+// Two implementations of one rule silently diverge (the lesson of the
+// since-deleted templates.Classify, a dead parallel copy of reconcile's live
+// decision table); do not copy this predicate anywhere.
 
 // BackfillCandidate is one RECOVERABLE session: a stranded transcript manifest
 // whose harness session id was recorded — exactly — as a caller-pushed

@@ -111,20 +111,14 @@ var workflowBodyHints = []*regexp.Regexp{
 	regexp.MustCompile(`(?mi)\brun\s+['"` + "`" + `]?(vp|go|make|npm|pnpm)\b`),
 }
 
-// Classify maps a section heading (plus its body for tiebreakers) to a
-// destination. heading should be the heading text without the leading `#`
-// marks. Returns DestMisc when nothing matches — caller may prompt the user
-// for a manual route.
+// classifyWithRule maps a section heading (plus its body for tiebreakers) to
+// a destination, along with a short, human-readable reason explaining the
+// decision. heading should be the heading text without the leading `#` marks.
+// Returns DestMisc when nothing matches — caller may prompt the user for a
+// manual route. Used by the planner to populate Item.Reason so users see
+// *why* a section routed the way it did.
 //
 // Pure function; no I/O.
-func Classify(heading, body string) Destination {
-	d, _ := classifyWithRule(heading, body)
-	return d
-}
-
-// classifyWithRule is like Classify but also returns a short, human-readable
-// reason explaining the decision. Used by the planner to populate Item.Reason
-// so users see *why* a section routed the way it did.
 func classifyWithRule(heading, body string) (Destination, string) {
 	h := strings.ToLower(strings.TrimSpace(heading))
 	if h == "" {

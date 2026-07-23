@@ -157,32 +157,6 @@ func TestHashFile(t *testing.T) {
 	}
 }
 
-// TestClassify exercises every row of the classification table.
-func TestClassify(t *testing.T) {
-	cases := []struct {
-		name             string
-		vault, emb, lock string
-		want             templates.Classification
-	}{
-		{"missing vault", "", "aa", "", templates.ClassMissing},
-		{"missing vault with lock", "", "aa", "aa", templates.ClassMissing},
-		{"adoptable: no lock, vault matches embedded", "aa", "aa", "", templates.ClassAdoptable},
-		{"diverged: no lock, vault differs from embedded", "bb", "aa", "", templates.ClassDiverged},
-		{"unchanged: all three equal", "aa", "aa", "aa", templates.ClassUnchanged},
-		{"embedded bumped: vault==lock, embedded differs", "aa", "bb", "aa", templates.ClassEmbeddedBumped},
-		{"user edited: embedded==lock, vault differs", "bb", "aa", "aa", templates.ClassUserEdited},
-		{"diverged: all three differ", "bb", "cc", "aa", templates.ClassDiverged},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := templates.Classify(c.vault, c.emb, c.lock)
-			if got != c.want {
-				t.Errorf("Classify(%q,%q,%q) = %d, want %d", c.vault, c.emb, c.lock, got, c.want)
-			}
-		})
-	}
-}
-
 // TestExecutor_Write_DefaultPerm verifies the Perm=0 default becomes 0644.
 func TestExecutor_Write_DefaultPerm(t *testing.T) {
 	dir := t.TempDir()
