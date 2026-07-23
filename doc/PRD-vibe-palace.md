@@ -720,14 +720,14 @@ surgical editors of §6.10 were withdrawn (see that section).
 (vs VibeVault's 16 + MemPalace's 19 = 35, with dedup, consolidation, and the
 Phase 12–18 + write-surface + learnings + surface-preflight additions.)
 
-> Ground truth: `internal/tools/register.go` registers **62 tools when the
-> search engine initializes and 53 without it** (the nine search-gated tools
-> require an embedder) — verified against `internal/tools/register_test.go`. The
-> section tables above enumerate the primary surface (55 tools) and do not list
-> the five `vp_memory_*` tools (`memory_tools.go`), `vp_read_resource`
-> (`resource_read_tool.go`), or `vp_vault_tidy` (`system_tools.go`) — all seven
-> also always registered (55 + 7 = 62); count those in when reconciling against
-> the registry.
+> Ground truth is the golden surface, not this document:
+> `internal/mcp/tool_surface.golden.json` records every registered tool
+> (`jq '.tools | length'` for the count) and `internal/tools/register_test.go`
+> enforces it. Registration is smaller without a search engine — the
+> search-gated tools require an embedder. The section tables above enumerate
+> the surface as it was designed phase by phase and lag the registry; when
+> reconciling, count from the golden. Totals recorded in this PRD's prose
+> (55/62/etc.) are historical.
 
 ---
 
@@ -2296,7 +2296,7 @@ man pages are always in sync with the running binary.
 
 ### Task 10.2: Getting Started Tutorial
 
-**Deliverable:** `doc/tutorial.md`
+**Deliverable:** `doc/tutorial.md` (shipped as `doc/TUTORIAL.md`)
 
 A step-by-step walkthrough that takes a novice user from zero to a fully
 operational Vibe-Palace setup. Written for someone who has never used MCP,
@@ -2331,7 +2331,10 @@ The tutorial covers the complete lifecycle:
 
 ### Task 10.3: MCP Tool Reference
 
-**Deliverable:** `doc/mcp-tools.md`
+**Deliverable:** `doc/mcp-tools.md` (not shipped as a standalone doc — the
+tool reference was folded into `doc/ARCHITECTURE.md` and
+`doc/COMMANDS-AND-SKILLS.md`; the authoritative machine-readable list is
+`internal/mcp/tool_surface.golden.json`)
 
 A reference document listing every MCP tool exposed by Vibe-Palace with its
 purpose, parameters, return format, and usage examples. This serves both
@@ -2355,7 +2358,8 @@ AI assistant developers (who may write prompts referencing these tools).
 
 ### Task 10.4: Configuration Reference
 
-**Deliverable:** `doc/configuration.md`
+**Deliverable:** `doc/configuration.md` (not shipped as a standalone doc —
+configuration is covered in `doc/TUTORIAL.md` and `doc/COMMANDS-AND-SKILLS.md`)
 
 Complete reference for all configuration options across the three precedence
 levels (embedded defaults → vault-level → project-level).

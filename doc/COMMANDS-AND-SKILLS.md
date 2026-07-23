@@ -1,6 +1,6 @@
 # Commands and Skills
 
-**Last updated:** 2026-05-31
+**Last updated:** 2026-07-23
 
 Vibe-palace lets users create custom **commands** and **skills** as plain
 markdown files. No recompilation, no config edits, no frontend-specific
@@ -37,6 +37,13 @@ updates, architecture reviews, dependency audits, release checklists.
 | `license` | Add or update dual MIT/Apache-2.0 licensing |
 | `makefile` | Audit or create a Makefile facade for the build system |
 | `vault-audit` | Adversarial whole-vault audit: runs `vp audit vault` and adds the Layer-2 human-judgment pass |
+| `tasks-epics` | Roll-up table of every epic — open/total counts, priority, status |
+| `tasks-epic <slug>` | One epic's subtree re-rooted, each task tagged with its derived role |
+| `tasks-standalone` | Tasks with no parent and no children — the no-epic bucket |
+| `tasks-read <name>` | Print one task/epic body verbatim; searches `active`/`done`/`cancelled` |
+
+The four `tasks-*` commands are thin wrappers over the `vp_list_tasks` /
+`vp_get_task` MCP tools (see [MCP Tools](#mcp-tools) below).
 
 ### Skills — Behavioral Guidelines
 
@@ -49,6 +56,14 @@ required frontmatter fields:
 
 Skills can include a `references/` subdirectory with supporting documents
 (checklists, frameworks, domain knowledge) that the AI can pull in as needed.
+
+**Built-in skills** (embedded in the `vp` binary):
+
+| Name | Purpose |
+|------|---------|
+| `code-digger` | Read-only codebase cartographer and auditor — onboarding maps, architecture deep-dives, a severity-ranked issue register |
+| `epic-orchestrator` | Parallel epic-closure orchestrator — isolated worktrees and subagents, adversarial review before implementation, human gate at the end |
+| `startup-analyst` | Startup and early-stage business plan analyst |
 
 ---
 
@@ -266,6 +281,26 @@ server-side** from the task `Parent` links — callers never re-scan or re-ask
 `/vpc-tasks-epic`, `/vpc-tasks-standalone`, and `/vpc-tasks-read` slash commands
 are thin wrappers over these two tools.
 
+### Doctrine and workflow
+
+Two context-resource tools live alongside the command/skill surface (the
+authoritative tool inventory is `internal/mcp/tool_surface.golden.json`):
+
+| Tool | Parameters | Returns |
+|------|-----------|---------|
+| `vp_get_workflow` | `project` (required) | Resolved `workflow.md` content + source tier + project-file sha256 |
+| `vp_get_doctrine` | `project` (required) | The embedded agent operating doctrine + source tier + `doctrine_uri` |
+
+`vp_get_doctrine` (ADR-008 Phase 1) serves the generic, host-agnostic
+operating manual — pair-programming contract, investigation-first workflow,
+task-management rules, vault-accessor rules — on demand. It is **deliberately
+not part of the bootstrap payload**: the embedded `workflow.md` template is
+now thin by design, carrying only project-specific patterns plus a contract
+paragraph pointing at the doctrine. The doctrine also has a resource form,
+`vibe-palace://doctrine/<project>`, and resolves through the same precedence
+chain as `workflow` / `resume` — a project may override the embedded copy,
+but the embedded copy is the tested floor.
+
 ### Execution frames
 
 When `vp_cmd` is called with a name, it wraps the markdown in a directive
@@ -399,6 +434,7 @@ How users trigger commands depends on their frontend:
 | Claude Code | `/vpc-<name>` slash shims in `.claude/commands/` (e.g. `/vpc-restart`) |
 | Grok Build | Native `/vpc-<name>` slash commands via `.grok/plugins/vibe-palace/commands/vpc-<name>.md` (first-class project plugin commands); a `/vpc` skill hub is also emitted under `.grok/skills/vpc/` for the dispatcher + usage instructions |
 | Cursor | Rules file maps keywords to `vp_cmd` calls |
+| Zed | MCP-registered host: `internal/mcphost` writes a `context_servers.vibe-palace` entry in Zed settings; no shim files — commands/skills are reached via the `AGENTS.md` managed block instructing `vp_cmd` / `vp_skill` calls |
 | Custom MCP client | Direct `vp_cmd` / `vp_skill` tool calls |
 | CLI fallback | `vp inject` prints context; `vp commands restart` outputs the command via CLI |
 
@@ -460,9 +496,21 @@ internal/templates/templates/
 │   ├── makefile.md
 │   ├── restart.md
 │   ├── review-plan.md
+│   ├── stage.md
+│   ├── tasks-epic.md
+│   ├── tasks-epics.md
+│   ├── tasks-read.md
+│   ├── tasks-standalone.md
+│   ├── vault-audit.md
 │   └── wrap.md
+├── skills/
+│   ├── code-digger/            # SKILL.md + references/
+│   ├── epic-orchestrator/      # SKILL.md + references/
+│   └── startup-analyst/        # SKILL.md + references/
+├── doctrine.md                 # Served via vp_get_doctrine (ADR-008)
+├── enrichment.md
 ├── resume.md
-└── workflow.md
+└── workflow.md                 # Thin: project patterns + doctrine pointer
 ```
 
 ---

@@ -1,11 +1,12 @@
 # Architecture: Vibe-Palace
 
-**Last updated:** 2026-05-31
+**Last updated:** 2026-07-23
 
 Vibe-palace is a compiled Go binary that serves as an MCP (Model Context
 Protocol) server for AI-assisted development. It provides context injection,
 session capture, semantic search, and palace-based knowledge navigation through
-64 MCP tools over stdio JSON-RPC 2.0.
+its full MCP tool surface (versioned in `internal/mcp/tool_surface.golden.json`,
+`surface_version: 2`) over stdio JSON-RPC 2.0.
 
 **Design principles:**
 - Single binary, zero-CGo, no external services
@@ -24,7 +25,7 @@ session capture, semantic search, and palace-based knowledge navigation through
 | `internal/storage` | Vault layout, CRUD, config | `Vault`, `Config`, `Drawer`, `SessionMeta` |
 | `internal/mcp` | JSON-RPC server, tool registry | `Server`, `Registry`, `Tool` |
 | `internal/context` | Precedence-aware template resolution | `Resolver`, `ResourceInfo` |
-| `internal/tools` | 64 MCP tool implementations | (see tool table below) |
+| `internal/tools` | MCP tool implementations (surface versioned in `internal/mcp/tool_surface.golden.json`) | (see tool table below) |
 | `internal/embedder` | ONNX text embedding | `Embedder` interface, `ONNXEmbedder` |
 | `internal/search` | Hybrid semantic + structural search | `Engine`, `VectorIndex`, `SearchResult` |
 | `internal/capture` | Session ingest, chunking, friction, shared capture pipeline | `Indexer`, `ChunkConfig`, `WriteSession` |
@@ -46,8 +47,9 @@ session capture, semantic search, and palace-based knowledge navigation through
 | `internal/skills` | Directory-form persona artifacts: SKILL.md frontmatter parser/resolver | `Frontmatter` |
 | `internal/commands` | Shared command list/upgrade surface over the Resolver | `List`, `Upgrade`, `Diff` |
 | `internal/reconcile` | Check → Plan → Apply reconcilers for managed config-file tiers | (per-artifact reconcilers) |
-| `internal/templates` | Compiled-in template corpus + materialize/reconcile lifecycle | `Executor`, `Lock` |
-| `internal/check` | Doctor checks for config, vault, embedder, git, agent drift, resume.md caps | `Run`, `CheckConfig`, `CheckAgentDrift`, `CheckResumeCaps` |
+| `internal/templates` | Compiled-in template corpus (incl. the agent doctrine, `templates/doctrine.md`) + materialize/reconcile lifecycle | `Executor`, `Lock` |
+| `internal/worktree` | Git-worktree isolation for plan execution (`vp worktree create\|remove\|list`) | `Create`, `Remove`, `List` |
+| `internal/check` | Doctor checks for config, vault, embedder, git, agent drift, resume.md caps, workflow.md caps | `Run`, `CheckConfig`, `CheckAgentDrift`, `CheckResumeCaps`, `CheckWorkflowCaps` |
 | `internal/slug` | Project-slug validation and normalization | `Slugify`, `Validate` |
 
 ---
@@ -241,6 +243,34 @@ therefore the *primary* discipline here, not a backstop. See ADR-003.
 lock is unix-only (Windows is a no-op stub); `flock` auto-releases on process
 exit, so a leftover `.lock` marker after a crash is harmless. See ADR-003
 (`doc/adr/003-vault-write-locking.md`) for the full rationale.
+
+### Memory write locking
+
+The per-path lock discipline extends to the AI memory files
+(`Projects/<slug>/memory/…`). `WriteMemory` and `DeleteMemory` acquire the
+per-path lock around their write. The harvest per-file loop
+(`internal/memory/harvest.go`) is a read→decide→write sequence, so locking only
+the final write would leave the lost-update window open at the read: it instead
+holds `LockMemory(rel)` across the whole per-file decision and writes through
+`WriteMemoryUnlocked` (`internal/storage/memory.go`) — the same function as
+`WriteMemory` minus the acquire, which under a held lock would be a blocking,
+timeout-free self-deadlock (see the `lockedWrite` rule above).
+
+### Repo-root commit lock
+
+Per-path locks serialize content writers, but the vault has a second shared
+mutable resource: the git index. Four independent committers funnel through
+`CommitAndPushPaths` (`internal/storage/vaultsync.go`) — the memory-harvest
+tail, vault tidy, the `vp_vault_sync` MCP tool, and `vp vault commit` — and two
+of them running concurrently race `git add`/`git commit`, with one hard-failing
+on `index.lock: File exists` (exit 128). `CommitAndPushPaths` therefore takes
+one repo-root advisory lock, `vaultlock.Acquire(vaultPath, vaultPath)`, around
+the reconcile + stage + commit critical section. The lock is released **before**
+the network push — the index race is the only correctness hazard, and holding
+across push would serialize every remote. Keying the lock on the vault root
+itself keeps it distinct from the per-path keys the content writers take, so a
+committer that already holds a per-path lock cannot self-deadlock (the paths
+hash to different sidecar files).
 
 ### Configuration: 3-Tier TOML Precedence
 
@@ -534,7 +564,7 @@ cmd/vp/main.go
 ├── search.NewEngine(emb, v, cfg) # create search engine (no indexes built yet)
 ├── context.NewResolver(v.Root)   # template resolver
 ├── mcp.NewServer(v)              # create MCP server
-├── tools.RegisterAll(...)        # register all 64 tools
+├── tools.RegisterAll(...)        # register the full tool surface
 └── srv.Serve(ctx)                # start stdio transport
 ```
 
@@ -584,7 +614,7 @@ On dispatch, the registry validates incoming params against the compiled
 schema before calling the handler. Handlers extract the vault from context
 and operate on storage directly.
 
-### 64 MCP Tools
+### MCP Tools
 
 | Tool | Source File | Category |
 |------|-----------|----------|
@@ -596,6 +626,7 @@ and operate on storage directly.
 | `vp_cmd` | cmd_tools.go | Context |
 | `vp_skill` | cmd_tools.go | Context |
 | `vp_get_skill_section` | skill_section_tool.go | Context |
+| `vp_get_doctrine` | context_query_tools.go | Context |
 | `vp_palace_status` | palace_tools.go | Palace |
 | `vp_list_wings` | palace_tools.go | Palace |
 | `vp_list_rooms` | palace_tools.go | Palace |
@@ -662,12 +693,16 @@ same whole-vault surface-compatibility verdict a mutating write is gated
 against (`check.CheckSurface(vault.Root)`), so restart/wrap templates can run a
 surface preflight without shelling out to `vp check`.
 
-The table above enumerates the primary tool surface; for brevity it omits the
-five `vp_memory_*` tools (`memory_tools.go`) and `vp_read_resource`
-(`resource_read_tool.go`), which are also always registered. Counting those,
-the registry (`internal/tools/register.go`) exposes **64 tools with a search
-engine and 55 without it** — the numbers pinned by `internal/tools/register_test.go`
-(the authoritative surface is `internal/mcp/tool_surface.golden.json`).
+The table above enumerates the primary tool surface; for brevity it omits
+several always-registered tools — the five `vp_memory_*` tools
+(`memory_tools.go`), `vp_read_resource` (`resource_read_tool.go`),
+`vp_archive_commit_log`, and the read-only probes documented in their own
+sections (`vp_check_resume_refs`, `vp_scan_plans`). The authoritative
+enumeration is the full tool surface versioned in
+`internal/mcp/tool_surface.golden.json` (`surface_version: 2`), pinned by
+`internal/tools/register_test.go` — the registry
+(`internal/tools/register.go`) exposes that surface with a search engine and
+the search-gated subset stripped without one.
 
 ### Remote Transport: Streamable HTTP (`vp mcp serve`)
 
@@ -771,6 +806,7 @@ tool-registry build. Registered names:
 | `surface` | `Surface` | Whole vault — binary MCP surface vs. max `.surface` stamp |
 | `resume-caps` | `Resume caps` | Whole vault — every `Projects/*/resume.md` |
 | `resume-refs` | `Resume refs` | Whole vault — host-local plan refs in every `Projects/*/resume.md` |
+| `workflow-caps` | `Workflow caps` | Whole vault — every `Projects/*/workflow.md` vs the bootstrap-excerpt bound |
 
 An unknown name exits `ExitUser` with an `unknown check` diagnostic.
 
@@ -834,6 +870,21 @@ is never misread as an opening fence). It reads **only** `resume.md` — task fi
 and everything else are out of scope. The same verdict is exposed
 host-agnostically over MCP as the read-only `vp_check_resume_refs` tool.
 
+### workflow.md cap detection (`check.CheckWorkflowCaps`)
+
+The served workflow is a behavioral contract, and `vp_bootstrap_context`'s
+token-shed ladder may excerpt it (`workflow->excerpt`) only when its body
+exceeds `check.WorkflowMaxBytes` (4,000 bytes) — at or under that bound the
+contract ships whole on every rung of the ladder. `CheckWorkflowCaps`
+(`internal/check/workflow.go`) walks `<vault>/Projects/*/workflow.md` and
+measures each served contract against that excerpt bound: every project within
+the cap yields `Pass`, one or more over it yields a single `Info` row naming
+them. Like the resume checks it is strictly read-only and **never `Fail`** —
+trimming a fat workflow is a judgement call, and an excerptable contract is a
+tax, not a breakage. A healthy state is silent, and absence (no `Projects/`,
+no `workflow.md`) reports nothing. Selectable as `vp check --check
+workflow-caps`.
+
 ### Orphaned-plan reporter (`internal/planscan`)
 
 Claude Code drops each plan's markdown under a **flat** `~/.claude/plans/*.md`
@@ -883,6 +934,24 @@ this-project plan — is **reported to the human, never acted on**. Wrap also ca
 a companion resume guardrail: `resume.md` is committed and synced, so it must not
 reference a host-local `~/.claude/plans/…` (or the project-root `commit.msg`) —
 the `vp_check_resume_refs` tool / `vp check --check resume-refs` flags that.
+
+### Plan worktree isolation (`internal/worktree`)
+
+`vp worktree create|remove|list` (`cmd/vp/cmd_worktree.go`) gives
+`/vpc-execute-plan` an isolated tree per plan. `Create` cuts a `plan/<slug>`
+branch from a base branch (`main` by default) and checks it out into a
+**sibling** worktree at `../wt/<slug>` — outside the primary tree, so multiple
+plans can run concurrently without stepping on each other's working state. The
+package operates on the **project repo, never the vault**: the vault has its
+own write disciplines (locks, tidy, sync) and no worktrees.
+
+Removal is deliberately safe: `Remove` detaches the worktree and, when asked to
+delete the branch, uses `git branch -d` — the non-forcing form, which refuses
+while the branch carries unmerged commits — so an unlanded plan cannot be
+destroyed by cleanup. Landing is a human act: the human merges `plan/<slug>`
+into the base branch with `merge --ff-only`, mirroring the epic-orchestrator's
+`../wt/<epic>` + ff-only convention one level down, at single-plan granularity.
+`List` enumerates the repo's worktrees, filtered to `plan/*` by default.
 
 ---
 
@@ -945,7 +1014,8 @@ filesystem lives next to the code that manages its lifecycle):
 
 ```
 templates/
-├── workflow.md                    # Pair programming workflow rules
+├── workflow.md                    # Thin per-project workflow (project-specific patterns + doctrine pointer)
+├── doctrine.md                    # Generic agent operating manual (ADR-008, served on demand)
 ├── resume.md                      # Project state template
 └── commands/
     ├── capture.md                 # Session capture instructions
@@ -1079,6 +1149,47 @@ is safe.
 A single call assembles: workflow rules, project resume, active tasks, recent
 sessions, KG snapshot, and available commands/skills. This replaces the
 multi-file CLAUDE.md pattern used by legacy systems.
+
+#### Honest context budgets (ADR-009)
+
+The payload is not unconditional: a token-shed ladder drops rungs until the
+result fits `max_tokens`. The ladder used to be a **silent instrument** — it
+could run out of things to shed, return over budget anyway, and report none of
+it. ADR-009 makes it honest:
+
+- **`budget.shed`** lists, in shed order, every rung the ladder dropped
+  (e.g. `kg_snapshot`, `commands+skills`, `resume->pinned`, `active_tasks`).
+  The `budget` block is absent entirely when nothing was shed.
+- **`budget.shed_core`** names the subset of shed rungs ADR-009 classifies as
+  CORE (e.g. `resume->pinned`) — core rungs still shed exactly like context
+  rungs today, but a core shrink is called out as such.
+- **`budget.over_budget`** is the honest verdict, computed on the **final**
+  payload as returned — a payload that still exceeds `max_tokens` after the
+  ladder shed everything it could says so. There is no false pass.
+- A shed resume arrives as its **pinned sections only**, behind a banner, with
+  a `resume_uri` the caller can page through `vp_read_resource` for the full
+  body. A shed task list leaves `active_task_count`, so the backlog's existence
+  and size survive the shed.
+
+A fail-loud arm — refusing the call outright rather than shedding core —
+exists in the design but is **gated on rollout** (task
+`adr-009-arm-fail-loud-bootstrap`); today core rungs shed with honest
+reporting rather than refusal.
+
+### Served doctrine (ADR-008 Phase 1)
+
+The generic agent operating manual — the doctrine — is embedded in the binary
+at `internal/templates/templates/doctrine.md` and served **on demand** via the
+`vp_get_doctrine` MCP tool (`context_query_tools.go`) and the
+`vibe-palace://doctrine/<project>` resource. It is deliberately **not** part of
+the bootstrap payload: the doctrine is generic and stable, so paying its bytes
+on every session start would tax exactly the budget ADR-009 protects. The
+embedded `workflow.md` template is correspondingly **thin** — project-specific
+patterns plus a pointer at the doctrine — rather than carrying the full manual
+inline. Resolution follows the normal precedence tiers, so a project may
+override the embedded doctrine with its own copy; the tool's result always
+carries the `doctrine_uri` so a host whose channel truncates the inline body
+can page the full text.
 
 ### Commands and Skills
 
@@ -1343,6 +1454,22 @@ in un-init'd directories are intentionally skipped.
    / `vp archive link` (see ADR-007).
 6. Write claim sentinel to {cwd}/.vibe-palace/ (idempotency)
 ```
+
+### Host attribution from the client handshake
+
+The MCP capture path derives the session's host attribution (`claude-code`,
+`Zed`, …) from the MCP `initialize` handshake — `mcp.ClientInfoFromContext`
+reads the `clientInfo` the client sent at connect — rather than trusting a
+caller-supplied `client_info` param. `resolveCaptureHost`
+(`internal/tools/session_tools.go`) settles it **derived-wins**: when the
+handshake yields a host it is used and stamped `host_source: derived`; a
+caller-declared value that loses to the derivation is logged. Only when the
+handshake carries nothing does a caller-declared value apply
+(`host_source: declared`), and when neither exists the host is recorded as
+unknown (`host_source: unknown`) — never fabricated, because absence is not a
+value (ADR-006: this is a DERIVE where the server can see the input). The
+`HostSource` provenance field on `SessionMeta` records which path established
+the host.
 
 ### Hook Installation
 

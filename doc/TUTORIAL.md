@@ -307,7 +307,8 @@ Add to `.mcp.json` in your project root (project-scope) or `~/.claude.json`
 ```
 
 Verify: start Claude Code and check the MCP server list shows `vibe-palace`
-with 57 tools available.
+with its full tool surface available (the authoritative tool list is
+`internal/mcp/tool_surface.golden.json` in the source tree).
 
 **Note:** Vibe-palace replaces CLAUDE.md-based context injection —
 `vp_bootstrap_context` delivers workflow, resume, tasks, and sessions via MCP.

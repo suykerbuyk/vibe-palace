@@ -5,6 +5,10 @@
 closed via retrospective reconciliation 2026-05-30)
 **Source plan:** `doc/RESUMPTION-PLAN.md`
 
+> **Historical document (May 2026).** Point-in-time operator briefing for the
+> cutover; kept as a record. Claims and counts here describe that moment, not
+> the current system.
+
 A complete operator briefing — what vibe-palace is, what we shipped through
 Phase C, how Phase D landed, and the single go/no-go decision now in front
 of you.

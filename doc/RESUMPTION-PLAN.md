@@ -5,6 +5,11 @@
 **Status:** Decision made. Ready to resume.
 **Authors:** John Suykerbuyk, Claude Opus 4.7 (1M context)
 
+> **Historical document (May 2026).** Preserved as the resumption decision
+> record. The plan it describes was executed and closed (see
+> `doc/PHASE-D-OPERATOR-BRIEF.md`); claims and counts here describe that
+> moment, not the current system.
+
 This document captures the decision to resume vibe-palace as the strategic
 successor to vibe-vault, the verification work done before that decision,
 and the concrete cutover plan with rollback points.

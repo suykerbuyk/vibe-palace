@@ -1,6 +1,10 @@
 # ADR 009: Deliver the Inviolable Core Whole, or Fail Loud — Never Silently Truncate Operating Instructions or Active State
 
-**Status:** Accepted (2026-07-21) — enforcement pending (see Consequences)
+**Status:** Accepted (2026-07-21) — partially enforced 2026-07-22
+(`e52cfe1`: honest over-budget verdict computed on the final payload +
+`budget.shed_core` core-tier report; `cffa14f`: advisory workflow-caps check).
+The fail-loud arm remains gated on the ADR-008 rollout
+(task `adr-009-arm-fail-loud-bootstrap`; see Consequences).
 **Deciders:** Project owner
 **Context:** The bootstrap shed ladder trims the payload to a token budget by dropping rungs in order — and today the operating contract (`workflow`) and active project state (`resume`'s un-pinned zone, the active task list) are ordinary rungs. A shed that fits the budget by dropping them returns **success**, so an agent about to change code can receive a degraded-but-plausible payload and never know a rule or a hazard is missing.
 

@@ -1,6 +1,10 @@
 # ADR 008: The Agent Instruction-Manual Lives in the Binary, Not in Vault Files
 
-**Status:** Proposed (2026-07-21)
+**Status:** Accepted (2026-07-21) — Phase 1 implemented 2026-07-22
+(`29437ff`: doctrine embedded in the binary and served via `vp_get_doctrine` /
+`vibe-palace://doctrine/<project>`; embedded `workflow.md` thinned to project
+patterns + doctrine pointer). Live-vault rollout edits and Phases 2–4 pending
+(see `doc/rollout/adr-008-phase1-live-vault-edits.md`).
 **Deciders:** Project owner
 **Context:** `workflow.md` is the largest un-sheddable item in the bootstrap payload, it has drifted from its embedded floor, and it is riddled with host-specific assumptions — three symptoms of one cause.
 

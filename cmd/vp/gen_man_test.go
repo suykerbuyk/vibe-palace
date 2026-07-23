@@ -12,11 +12,15 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 )
 
+// manPageDate is the date stamped into every generated page; bump it when
+// regenerating after a CLI-facing change so pages carry the generation date.
+const manPageDate = "2026-07-23"
+
 // TestGenerateManPages generates man pages from command metadata.
 // By default it writes to t.TempDir() to validate formatting.
 // Set VP_GEN_MAN=1 to write to doc/man/man1/ in the repo root.
 func TestGenerateManPages(t *testing.T) {
-	info := cli.BuildInfo{Version: "0.1.0", Commit: "HEAD", BuildDate: "2026-04-10"}
+	info := cli.BuildInfo{Version: "0.1.0", Commit: "HEAD", BuildDate: manPageDate}
 	reg := cli.NewRegistry(info)
 	registerAll(reg, info)
 
@@ -54,7 +58,7 @@ func TestGenerateManPages(t *testing.T) {
 			}
 		}
 
-		page := cli.FormatManPage(cmd, children, 1, "2026-04-10", info.Version)
+		page := cli.FormatManPage(cmd, children, 1, manPageDate, info.Version)
 		if page == "" {
 			t.Errorf("empty man page for %q", name)
 			continue
