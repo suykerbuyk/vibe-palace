@@ -189,72 +189,91 @@ func Harvest(opts Options) (*Result, error) {
 				continue
 			}
 
-			// Compare against any existing vault file at the same rel.
-			existMeta, existBody, readErr := vault.ReadMemory(opts.Project, rel)
-			switch {
-			case readErr == nil:
-				if memoryEqual(existMeta, existBody, meta, body) {
-					// Identical content already in the vault → drop, drain host-local.
-					res.DedupSkipped = append(res.DedupSkipped, rel)
-					toDelete = append(toDelete, m)
-					continue
+			// Hold the dest rel's per-path lock across the whole
+			// read-decide-write. The "never clobber" conflict mechanism is only
+			// sound under a lock: unlocked, two harvests (or a harvest racing
+			// vp_memory_write) can both read "not exist" and both write rel, and
+			// the loser's bytes vanish with no conflict file. WriteMemory takes
+			// the lock itself, so we use WriteMemoryUnlocked under the lock we
+			// already hold — routing through WriteMemory here would re-acquire
+			// the same key and hang (blocking LOCK_EX, no timeout).
+			if err := func() error {
+				release, lerr := vault.LockMemory(opts.Project, rel)
+				if lerr != nil {
+					// An unportable name was already filtered above, so this is a
+					// real lock-acquisition failure — fatal to the run.
+					return fmt.Errorf("lock memory %s: %w", rel, lerr)
 				}
-				// Same rel, different content → write to a suffixed name so the
-				// existing vault file is never clobbered.
-				conflictRel := conflictName(rel, ts)
-				if !opts.DryRun {
-					if werr := vault.WriteMemory(opts.Project, conflictRel, meta, body); werr != nil {
-						if errors.Is(werr, storage.ErrMemoryNameRejected) {
-							slog.Warn("harvest: memory name rejected on write; left host-local for human",
-								"rel", conflictRel, "err", werr)
-							res.NameRejected = append(res.NameRejected, conflictRel)
-							continue
-						}
-						return nil, fmt.Errorf("write conflict memory %s: %w", conflictRel, werr)
-					}
-				}
-				res.Conflicted = append(res.Conflicted, conflictRel)
-				toDelete = append(toDelete, m)
-				continue
-			case !errors.Is(readErr, os.ErrNotExist):
-				// An existing vault file is present but unreadable/unparseable (e.g.
-				// hand-corrupted frontmatter — the vault is user-editable). Routing
-				// normally would blind-overwrite it, so instead write to a conflict
-				// name and leave the original for the human to reconcile. Never clobber.
-				slog.Warn("harvest: existing vault memory unreadable; routing to conflict name to avoid clobber",
-					"rel", rel, "err", readErr)
-				conflictRel := conflictName(rel, ts)
-				if !opts.DryRun {
-					if werr := vault.WriteMemory(opts.Project, conflictRel, meta, body); werr != nil {
-						if errors.Is(werr, storage.ErrMemoryNameRejected) {
-							slog.Warn("harvest: memory name rejected on write; left host-local for human",
-								"rel", conflictRel, "err", werr)
-							res.NameRejected = append(res.NameRejected, conflictRel)
-							continue
-						}
-						return nil, fmt.Errorf("write conflict memory %s: %w", conflictRel, werr)
-					}
-				}
-				res.Conflicted = append(res.Conflicted, conflictRel)
-				toDelete = append(toDelete, m)
-				continue
-			}
-			// readErr is os.ErrNotExist → no existing file; route normally.
+				defer release()
 
-			// Route normally.
-			if !opts.DryRun {
-				if werr := vault.WriteMemory(opts.Project, rel, meta, body); werr != nil {
-					if errors.Is(werr, storage.ErrMemoryNameRejected) {
-						slog.Warn("harvest: memory name rejected on write; left host-local for human",
-							"rel", rel, "err", werr)
-						res.NameRejected = append(res.NameRejected, rel)
-						continue
+				// Compare against any existing vault file at the same rel.
+				existMeta, existBody, readErr := vault.ReadMemory(opts.Project, rel)
+				switch {
+				case readErr == nil:
+					if memoryEqual(existMeta, existBody, meta, body) {
+						// Identical content already in the vault → drop, drain host-local.
+						res.DedupSkipped = append(res.DedupSkipped, rel)
+						toDelete = append(toDelete, m)
+						return nil
 					}
-					return nil, fmt.Errorf("write memory %s: %w", rel, werr)
+					// Same rel, different content → write to a suffixed name so the
+					// existing vault file is never clobbered.
+					conflictRel := conflictName(rel, ts)
+					if !opts.DryRun {
+						if werr := vault.WriteMemoryUnlocked(opts.Project, conflictRel, meta, body); werr != nil {
+							if errors.Is(werr, storage.ErrMemoryNameRejected) {
+								slog.Warn("harvest: memory name rejected on write; left host-local for human",
+									"rel", conflictRel, "err", werr)
+								res.NameRejected = append(res.NameRejected, conflictRel)
+								return nil
+							}
+							return fmt.Errorf("write conflict memory %s: %w", conflictRel, werr)
+						}
+					}
+					res.Conflicted = append(res.Conflicted, conflictRel)
+					toDelete = append(toDelete, m)
+					return nil
+				case !errors.Is(readErr, os.ErrNotExist):
+					// An existing vault file is present but unreadable/unparseable (e.g.
+					// hand-corrupted frontmatter — the vault is user-editable). Routing
+					// normally would blind-overwrite it, so instead write to a conflict
+					// name and leave the original for the human to reconcile. Never clobber.
+					slog.Warn("harvest: existing vault memory unreadable; routing to conflict name to avoid clobber",
+						"rel", rel, "err", readErr)
+					conflictRel := conflictName(rel, ts)
+					if !opts.DryRun {
+						if werr := vault.WriteMemoryUnlocked(opts.Project, conflictRel, meta, body); werr != nil {
+							if errors.Is(werr, storage.ErrMemoryNameRejected) {
+								slog.Warn("harvest: memory name rejected on write; left host-local for human",
+									"rel", conflictRel, "err", werr)
+								res.NameRejected = append(res.NameRejected, conflictRel)
+								return nil
+							}
+							return fmt.Errorf("write conflict memory %s: %w", conflictRel, werr)
+						}
+					}
+					res.Conflicted = append(res.Conflicted, conflictRel)
+					toDelete = append(toDelete, m)
+					return nil
 				}
+				// readErr is os.ErrNotExist → no existing file; route normally.
+				if !opts.DryRun {
+					if werr := vault.WriteMemoryUnlocked(opts.Project, rel, meta, body); werr != nil {
+						if errors.Is(werr, storage.ErrMemoryNameRejected) {
+							slog.Warn("harvest: memory name rejected on write; left host-local for human",
+								"rel", rel, "err", werr)
+							res.NameRejected = append(res.NameRejected, rel)
+							return nil
+						}
+						return fmt.Errorf("write memory %s: %w", rel, werr)
+					}
+				}
+				res.Routed = append(res.Routed, rel)
+				toDelete = append(toDelete, m)
+				return nil
+			}(); err != nil {
+				return nil, err
 			}
-			res.Routed = append(res.Routed, rel)
-			toDelete = append(toDelete, m)
 		}
 	}
 

@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 	"gopkg.in/yaml.v3"
 )
@@ -170,13 +171,6 @@ func renderMemory(meta MemoryMeta, body string) ([]byte, error) {
 // the MCP surface, so no pre-scaffold or vault lock is needed. meta.Type must
 // be one of user|feedback|project|reference and meta.Name must be non-empty.
 func (v *Vault) WriteMemory(project, rel string, meta MemoryMeta, body string) error {
-	if strings.TrimSpace(meta.Name) == "" {
-		return fmt.Errorf("memory name must not be empty")
-	}
-	if !memoryTypes[meta.Type] {
-		return fmt.Errorf("memory type %q must be one of user, feedback, project, reference", meta.Type)
-	}
-
 	abs, err := v.MemoryFile(project, rel)
 	if err != nil {
 		// A rejected NAME is classifiable so the harvest can skip+log one bad file
@@ -184,22 +178,65 @@ func (v *Vault) WriteMemory(project, rel string, meta MemoryMeta, body string) e
 		// cause (unportable / traversal / .git / empty); tag it for the caller.
 		return errors.Join(ErrMemoryNameRejected, err)
 	}
+	// Serialize this blind whole-file write against a concurrent vp_memory_write
+	// or harvest of the same rel (the "never clobber" conflict mechanism is only
+	// sound under a lock). A caller that ALREADY holds this path's lock — the
+	// harvest per-file loop, which spans ReadMemory -> decide -> write — must use
+	// WriteMemoryUnlocked instead; re-acquiring here is a blocking, timeout-free
+	// LOCK_EX and would hang.
+	release, err := vaultlock.Acquire(v.Root, abs)
+	if err != nil {
+		return fmt.Errorf("write memory file: lock %s: %w", abs, err)
+	}
+	defer release()
+	return v.writeMemoryNoLock(project, rel, meta, body)
+}
+
+// WriteMemoryUnlocked is WriteMemory without acquiring the per-path lock. The
+// caller MUST already hold that lock for MemoryFile(project, rel) — obtain it
+// via LockMemory. It exists for the harvest per-file loop, which holds the lock
+// across the whole read-decide-write so the conflict mechanism is sound;
+// routing that loop through the locked WriteMemory would re-acquire the same
+// key and deadlock.
+func (v *Vault) WriteMemoryUnlocked(project, rel string, meta MemoryMeta, body string) error {
+	return v.writeMemoryNoLock(project, rel, meta, body)
+}
+
+// LockMemory acquires the per-path advisory lock for the memory file at
+// (project, rel) and returns its release func. Use it to hold the lock across a
+// read-modify-write (ReadMemory -> decide -> WriteMemoryUnlocked). A rejected
+// name (unportable / traversal / .git / empty) returns ErrMemoryNameRejected
+// with no lock taken.
+func (v *Vault) LockMemory(project, rel string) (func() error, error) {
+	abs, err := v.MemoryFile(project, rel)
+	if err != nil {
+		return nil, errors.Join(ErrMemoryNameRejected, err)
+	}
+	return vaultlock.Acquire(v.Root, abs)
+}
+
+// writeMemoryNoLock validates, renders, and atomically writes a memory file
+// WITHOUT taking the per-path lock. It is the shared core of WriteMemory (which
+// locks first) and WriteMemoryUnlocked (caller holds the lock).
+func (v *Vault) writeMemoryNoLock(project, rel string, meta MemoryMeta, body string) error {
+	if strings.TrimSpace(meta.Name) == "" {
+		return fmt.Errorf("memory name must not be empty")
+	}
+	if !memoryTypes[meta.Type] {
+		return fmt.Errorf("memory type %q must be one of user, feedback, project, reference", meta.Type)
+	}
+	abs, err := v.MemoryFile(project, rel)
+	if err != nil {
+		return errors.Join(ErrMemoryNameRejected, err)
+	}
 	if err := v.checkMemoryCaseCollision(project, rel); err != nil {
 		return err // already wraps ErrMemoryNameRejected
 	}
-
 	data, err := renderMemory(meta, body)
 	if err != nil {
 		return err
 	}
-
-	// lockedWrite serializes this blind whole-file write against a concurrent
-	// vp_memory_write or a harvest of the same rel (the lost-update the module's
-	// "never clobber" conflict mechanism is only sound under a lock). Callers
-	// must NOT already hold this path's lock — the harvest per-file loop that
-	// would is deferred to harvest-per-file-loop-needs-unlocked-inner-write,
-	// which needs an unlocked inner write to avoid the LOCK_EX re-entry hang.
-	if err := v.lockedWrite(abs, data); err != nil {
+	if err := atomicfile.Write(v.Root, abs, data); err != nil {
 		return fmt.Errorf("write memory file: %w", err)
 	}
 	return nil
