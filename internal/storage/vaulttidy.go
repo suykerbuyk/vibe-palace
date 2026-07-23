@@ -201,6 +201,16 @@ func parsePorcelainZ(out string) []PorcelainEntry {
 // signals human activity — and is routed to Reported.
 func classifyDirty(vaultPath string, entries []PorcelainEntry) (swept, reported, deferred []string) {
 	for _, e := range entries {
+		// .vp-locks/ holds transient advisory-lock sidecars — pure runtime state,
+		// never content. Production vaults gitignore it so it never reaches
+		// porcelain, but skip it defensively regardless: a lock file must never be
+		// committed (not swept) nor block a push (not reported). This matters for
+		// the repo-root commit lock, whose sidecar persists past release and would
+		// otherwise be re-scanned as dirt by the post-merge sync gate.
+		if strings.SplitN(e.Path, "/", 2)[0] == ".vp-locks" {
+			continue
+		}
+
 		// Rename/copy always needs human eyes regardless of path.
 		if strings.ContainsAny(e.Status, "RC") {
 			reported = append(reported, e.Path)

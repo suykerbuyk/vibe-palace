@@ -13,6 +13,14 @@ import (
 func syncSeedRemote(t *testing.T) (dir, bare string) {
 	t.Helper()
 	dir = initTestRepo(t)
+	// Match production: a real vault gitignores .vp-locks/ (transient
+	// advisory-lock sidecars, via CanonicalGitignorePatterns), so the repo-root
+	// commit lock's persistent sidecar never surfaces as dirt in a status scan.
+	if err := ReconcileVaultGitignore(dir); err != nil {
+		t.Fatalf("reconcile vault gitignore: %v", err)
+	}
+	gitRun(t, dir, "add", ".gitignore")
+	gitRun(t, dir, "commit", "-m", "seed vault .gitignore")
 	bare = initBareRemote(t)
 	gitRun(t, dir, "remote", "add", "origin", bare)
 	gitRun(t, dir, "push", "origin", "main")

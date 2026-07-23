@@ -27,6 +27,11 @@ func initVaultRepo(t *testing.T) string {
 	gitT(t, dir, "init", "-b", "main")
 	gitT(t, dir, "config", "user.email", "test@example.com")
 	gitT(t, dir, "config", "user.name", "Test User")
+	// Match production: gitignore .vp-locks/ so the repo-root commit lock's
+	// persistent sidecar never surfaces as dirt in a status check.
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".vp-locks/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("seed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

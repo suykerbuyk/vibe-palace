@@ -247,6 +247,10 @@ func setupVaultWithOrigin(t *testing.T) string {
 	run("config", "user.email", "test@test.com")
 	run("config", "user.name", "Test")
 	run("remote", "add", "origin", bare)
+	// Match production: gitignore .vp-locks/ so the repo-root commit lock's
+	// persistent sidecar never surfaces as dirt in a status check.
+	os.WriteFile(filepath.Join(vaultDir, ".gitignore"), []byte(".vp-locks/\n"), 0o644)
+	run("add", ".gitignore")
 	os.WriteFile(filepath.Join(vaultDir, "seed.txt"), []byte("seed\n"), 0o644)
 	run("add", "seed.txt")
 	run("commit", "-m", "seed")

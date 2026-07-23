@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // afterPushHook runs immediately after a successful push records its SHA in
@@ -193,6 +195,31 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 		return nil, err
 	}
 
+	// Serialize the .git index critical section (reconcile + stage + commit)
+	// against every other vault committer. All four committers funnel here —
+	// memory.Harvest's tail, vaulttidy, the vp_vault MCP tool, and `vp vault
+	// commit` (CommitAndPushPathsWithDowngrade delegates to this function) — so
+	// a single repo-root advisory lock covers them all. Without it two
+	// concurrent committers race `git add`/`git commit` and one hard-fails with
+	// `index.lock: File exists` (exit 128). The lock is released BEFORE the
+	// network push so pushes are not serialized — the index race is the only
+	// correctness hazard, and holding across push would throttle every remote.
+	// The key is the vault root itself, distinct from the per-path keys the
+	// content writers take, so there is no self-deadlock (paths hash to
+	// different sidecars).
+	release, lerr := vaultlock.Acquire(vaultPath, vaultPath)
+	if lerr != nil {
+		return nil, fmt.Errorf("acquire vault commit lock: %w", lerr)
+	}
+	commitLockReleased := false
+	releaseCommitLock := func() {
+		if !commitLockReleased {
+			commitLockReleased = true
+			release()
+		}
+	}
+	defer releaseCommitLock()
+
 	// Remote enumeration is required only for the network push path.
 	// Local-only commits (push=false) must succeed on a vault with zero
 	// remotes.
@@ -247,6 +274,10 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 	if _, err := gitCmd(vaultPath, 10*time.Second, "commit", "-m", fullMsg); err != nil {
 		return nil, fmt.Errorf("git commit: %w", err)
 	}
+
+	// The index critical section is done — release before the network push so
+	// pushes across committers run concurrently.
+	releaseCommitLock()
 
 	// Get commit SHA.
 	sha, _ := gitCmd(vaultPath, 10*time.Second, "rev-parse", "--short", "HEAD")
