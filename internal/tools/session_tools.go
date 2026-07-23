@@ -35,6 +35,70 @@ var hostSessionID = func() string {
 	return hostsession.ClaudeSessionID(os.Getppid(), home, hostsession.ReadProcStart)
 }
 
+// clientInfoHost resolves the host name the MCP initialize handshake recorded
+// on the client session flowing in ctx, or "" when it cannot be CONFIRMED (no
+// session on the context, a session without clientInfo, or an unnamed client).
+// It is a var so handler tests can stub the derivation, mirroring
+// hostSessionID above. "" is an honest absent, never a guess.
+var clientInfoHost = func(ctx context.Context) string {
+	if info, ok := mcp.ClientInfoFromContext(ctx); ok {
+		return info.Name
+	}
+	return ""
+}
+
+// declaredClientName extracts the client name from a caller-supplied
+// client_info parameter. The canonical shape is the initialize clientInfo
+// object ({"name": ...}); a bare JSON string is tolerated because the field
+// exists for wire compatibility with hosts whose exact shape we do not
+// control. Anything else — absent, null, unparseable, or nameless — is "",
+// an honest absent.
+func declaredClientName(raw json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return ""
+	}
+	var impl struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &impl); err == nil {
+		return strings.TrimSpace(impl.Name)
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return strings.TrimSpace(s)
+	}
+	return ""
+}
+
+// resolveCaptureHost settles the host attribution for one capture:
+// DERIVED-WINS, declared as fallback, explicit unknown when neither exists.
+//
+// The handshake-derived value is authoritative because the transport saw the
+// client name itself; a caller-declared client_info could claim anything, so
+// it is honored only when there is nothing derived, and its provenance says
+// "declared" so a reader can always tell. When a declared claim loses to the
+// derived value, the override is logged so the discarded claim is still
+// recorded somewhere. Per ADR-006 the empty case records storage.HostUnknown,
+// never a default host: absence is not a value, and a fabricated host is
+// indistinguishable from a measured one.
+func resolveCaptureHost(ctx context.Context, clientInfo json.RawMessage) (host, source string) {
+	derived := strings.TrimSpace(clientInfoHost(ctx))
+	declared := declaredClientName(clientInfo)
+	switch {
+	case derived != "":
+		if declared != "" && declared != derived {
+			slog.Debug("vp_capture_session: caller-declared client_info loses to handshake-derived host",
+				"derived", derived, "declared", declared)
+		}
+		return derived, storage.HostSourceDerived
+	case declared != "":
+		return declared, storage.HostSourceDeclared
+	default:
+		return storage.HostUnknown, storage.HostSourceUnknown
+	}
+}
+
 // flexStringList unmarshals from either a JSON array of strings or a single JSON
 // string. Some MCP clients (Grok's capture shim, observed 2026-07-21) send the
 // list-valued capture fields — decisions, files_changed, open_threads — as one
@@ -104,8 +168,16 @@ type captureSessionParams struct {
 	// session_key a previous call returned to RETRY that attempt: the note is
 	// updated in place instead of duplicated. Omit it for new work.
 	SessionKey string `json:"session_key,omitempty"`
-	// ClientInfo (derived by server for L3/L4) is accepted for wire compatibility
-	// with hosts that supply it. The MCP handler derives it from context when absent.
+	// ClientInfo is a caller-DECLARED client identity, accepted for wire
+	// compatibility with hosts that supply it ({"name": ...} in the initialize
+	// clientInfo shape; a bare string is tolerated). It NEVER overrides the
+	// server's own derivation: the handler reads the host from the initialize
+	// handshake's clientInfo on the live session (mcp.ClientInfoFromContext),
+	// and that derived value is authoritative — any caller could claim any
+	// host, and a declared claim recorded indistinguishably from a measured
+	// one is exactly the fabricated-value failure ADR-006 forbids. A declared
+	// identity is honored only when no handshake identity exists, and then the
+	// note's host_source says "declared" so a reader can tell them apart.
 	ClientInfo json.RawMessage `json:"client_info,omitempty"`
 }
 
@@ -261,6 +333,13 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 			CWD:            p.CWD,
 			SessionKey:     p.SessionKey,
 		}
+
+		// HOST ATTRIBUTION — always set, never defaulted. Derived from the
+		// initialize handshake's clientInfo when the transport confirmed it
+		// (derived-wins over any caller-declared client_info); the declared
+		// identity only as a fallback with its own provenance; an explicit
+		// "unknown" when neither exists. See resolveCaptureHost.
+		sp.Host, sp.HostSource = resolveCaptureHost(ctx, p.ClientInfo)
 
 		// DERIVE ONLY — p.ArchiveSessionID is deliberately not copied above.
 		// The server resolves the host session id from the host's live session

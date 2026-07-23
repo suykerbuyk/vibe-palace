@@ -40,6 +40,16 @@ type SessionParams struct {
 	CWD                    string // for claim sentinel (Phase 3 will use this)
 	NeedsIndexing          bool   // when true, skip indexing (deferred to later)
 
+	// Host is the MCP host application this capture is attributed to, and
+	// HostSource records how the caller established it (the storage.HostSource*
+	// constants). The MCP handler always sets both — derived from the initialize
+	// handshake's clientInfo when confirmed, a caller-declared identity as
+	// fallback, storage.HostUnknown when neither exists — and WriteSession
+	// records them verbatim; it never invents a host. The hook path leaves them
+	// empty (it pushes no host claim), so hook-written notes carry no host key.
+	Host       string
+	HostSource string
+
 	// SessionKey is the capture-attempt idempotency key. Supply the key a previous
 	// capture RETURNED to update that same note in place; leave it empty to mint a
 	// new note (and a new key, which the result reports back).
@@ -202,13 +212,20 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		// manifests were stranded and no agent-written note was ever linked at all.
 		ArchiveSessionID:       p.ArchiveSessionID,
 		ArchiveSessionIDSource: p.ArchiveSessionIDSource,
-		Title:                  title,
-		Summary:                p.Summary,
-		Tag:                    p.Tag,
-		Model:                  p.Model,
-		Decisions:              p.Decisions,
-		FilesChanged:           p.FilesChanged,
-		OpenThreads:            p.OpenThreads,
+		// Host attribution is recorded VERBATIM from the params — resolution
+		// (derive from the handshake, fall back to declared, record unknown)
+		// belongs to the MCP handler, which can see the transport session.
+		// WriteSession never invents a host; empty means the caller made no
+		// host claim and the note carries no key (the hook path).
+		Host:         p.Host,
+		HostSource:   p.HostSource,
+		Title:        title,
+		Summary:      p.Summary,
+		Tag:          p.Tag,
+		Model:        p.Model,
+		Decisions:    p.Decisions,
+		FilesChanged: p.FilesChanged,
+		OpenThreads:  p.OpenThreads,
 	}
 
 	// Synchronous LLM enrichment phase. A non-nil Enricher plus a transcript

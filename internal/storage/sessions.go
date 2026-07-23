@@ -98,6 +98,25 @@ type SessionMeta struct {
 	// pushed one.
 	ArchiveSessionIDSource string `yaml:"archive_session_id_source,omitempty"`
 
+	// Host is the MCP host application this session was captured from
+	// ("claude-code", "Zed", ...), and HostSource records how it was
+	// established — the HostSource* constants below. The MCP capture path
+	// always writes BOTH: derived from the initialize handshake's clientInfo
+	// when the transport confirmed it, a caller-declared identity only as a
+	// fallback, and an explicit "unknown" when neither exists. Per ADR-006
+	// absence is not a value: recording "unknown" is honest, while a silent
+	// default is a fabricated value indistinguishable from a measured one —
+	// which is exactly how every session was once implicitly attributed to
+	// Claude Code. A note with NO host key predates the field or came from a
+	// writer that makes no host claim (the hook path).
+	//
+	// Host names the HOST, never the model. clientInfo carries no model field
+	// (mcp.Implementation is name/version/title/...), so writing this value
+	// into Model would feed model-identity consumers a host name — worse than
+	// omission, and silent. Model stays caller-declared.
+	Host       string `yaml:"host,omitempty"`
+	HostSource string `yaml:"host_source,omitempty"`
+
 	// DELETED at 202: branch, domain, duration_minutes, messages, tokens_in,
 	// tokens_out, tool_uses — and needs_indexing, below.
 	//
@@ -371,6 +390,35 @@ const (
 	// an audit (or a human) can always tell a live link from a repaired one.
 	ArchiveIDSourceBackfilled = "backfilled"
 )
+
+// Values of SessionMeta.HostSource, plus the explicit unknown-host value.
+// Precedence is DERIVED-WINS: a caller-declared identity never overrides what
+// the transport itself confirmed, because any caller could claim any host and
+// the note would record it indistinguishably. The source sibling exists so a
+// reader (or an audit) can always tell the three apart.
+const (
+	// HostSourceDerived marks a Host the MCP server read from the initialize
+	// handshake's clientInfo on the live session — the transport saw the
+	// client name itself. Authoritative.
+	HostSourceDerived = "derived"
+
+	// HostSourceDeclared marks a Host taken from a caller-supplied client_info
+	// parameter because no handshake identity was available. Honored only as a
+	// fallback, and labeled so it is never mistaken for a derived value.
+	HostSourceDeclared = "declared"
+
+	// HostSourceUnknown marks a capture where neither the handshake nor the
+	// caller supplied a client identity. The paired Host value is HostUnknown:
+	// recorded explicitly rather than omitted, so "we could not tell" is
+	// distinguishable from "this note predates the field".
+	HostSourceUnknown = "unknown"
+)
+
+// HostUnknown is the SessionMeta.Host value written when no host could be
+// established. Never a guessed host name: a default that is silently wrong for
+// one host is worse than no default, because it produces a record that LOOKS
+// attributed.
+const HostUnknown = "unknown"
 
 // ArchiveLinkResult reports what LinkArchiveToSessions did.
 type ArchiveLinkResult struct {

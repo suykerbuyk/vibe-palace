@@ -32,6 +32,38 @@ func VaultFromContext(ctx context.Context) *storage.Vault {
 	return v
 }
 
+// ClientInfoFromContext returns the clientInfo the MCP initialize handshake
+// recorded on the client session flowing in ctx, and whether a client name was
+// actually CONFIRMED. It is a thin read over the session mcp-go already flows
+// on every transport (stdio, streamable HTTP, SSE, in-process) — deliberately
+// NOT a parallel plumbing path, and deliberately NOT contextFunc: contextFunc
+// runs once in Listen before the read loop, before initialize has been
+// processed, so it can never see clientInfo; GetClientInfo reads the same
+// session object's atomic that handleInitialize populated, so any tool call
+// after initialize sees it.
+//
+// ok is false for every degraded shape — no session on ctx (the HandleMessage
+// test/dispatch seam registers none), a session that does not implement
+// SessionWithClientInfo, and a zero/unnamed Implementation (a tool call before
+// initialize, or a client that sent no name). Callers must treat false as
+// ABSENT, never substitute a default: per ADR-006 a fabricated host is worse
+// than a recorded unknown, because it is indistinguishable from a measured one.
+func ClientInfoFromContext(ctx context.Context) (mcplib.Implementation, bool) {
+	s := server.ClientSessionFromContext(ctx)
+	if s == nil {
+		return mcplib.Implementation{}, false
+	}
+	sci, ok := s.(server.SessionWithClientInfo)
+	if !ok {
+		return mcplib.Implementation{}, false
+	}
+	info := sci.GetClientInfo()
+	if info.Name == "" {
+		return mcplib.Implementation{}, false
+	}
+	return info, true
+}
+
 // Server wraps an MCP server with vault context injection.
 type Server struct {
 	mcp      *server.MCPServer
