@@ -574,11 +574,15 @@ func TestBootstrapMemoryTruncationOrder(t *testing.T) {
 		t.Fatalf("setup: full Memory = %d, want 5", len(fullBR.Memory))
 	}
 
-	// Budget that sheds sessions but keeps memory: just above the no-sessions size.
+	// Budget that sheds sessions but keeps memory: just above the no-sessions
+	// size. The +60 headroom covers the budget report the ladder now honestly
+	// measures itself carrying (shed list + counters); it stays far below the
+	// ~400-token size of either the sessions or the memory rung, so it cannot
+	// change WHICH rungs this test forces.
 	withoutSessions := fullBR
 	withoutSessions.RecentSessions = nil
 	noSessionJSON, _ := json.Marshal(withoutSessions)
-	budgetKeepMem := len(noSessionJSON)/4 + 10
+	budgetKeepMem := len(noSessionJSON)/4 + 60
 	res, _ := tool.Handler(context.Background(), mustParams(t, "test-proj", budgetKeepMem))
 	br := res.(BootstrapResult)
 	if len(br.RecentSessions) >= 5 {
@@ -593,7 +597,7 @@ func TestBootstrapMemoryTruncationOrder(t *testing.T) {
 	withoutSessAndMem := withoutSessions
 	withoutSessAndMem.Memory = nil
 	noSessMemJSON, _ := json.Marshal(withoutSessAndMem)
-	budgetShedMem := len(noSessMemJSON)/4 + 10
+	budgetShedMem := len(noSessMemJSON)/4 + 60
 	res2, _ := tool.Handler(context.Background(), mustParams(t, "test-proj", budgetShedMem))
 	br2 := res2.(BootstrapResult)
 	if len(br2.Memory) != 0 {
@@ -1026,6 +1030,213 @@ func TestBootstrapToolSchema(t *testing.T) {
 	}
 	if schema["type"] != "object" {
 		t.Errorf("schema type = %v, want object", schema["type"])
+	}
+}
+
+// TestShedRungTierClassification pins the ADR-009 tier partition as a
+// structural property: every rung carries a tier, and the core set is exactly
+// {resume->pinned, workflow->excerpt} — the two rungs that are safety surface
+// (active project state, the operating contract) rather than re-fetchable
+// context. active_tasks is deliberately context: the count survives the shed
+// and vp_list_tasks recovers the list, so nothing is silently lost.
+func TestShedRungTierClassification(t *testing.T) {
+	allRungs := []string{
+		shedRecentSessions, shedMemory, shedKGSnapshot, shedCommands,
+		shedResumePinned, shedActiveTasks, shedWorkflow,
+	}
+	if len(shedRungTier) != len(allRungs) {
+		t.Errorf("shedRungTier has %d entries, want %d — every ladder rung must carry a tier", len(shedRungTier), len(allRungs))
+	}
+	wantCore := map[string]bool{shedResumePinned: true, shedWorkflow: true}
+	for _, r := range allRungs {
+		tier, ok := shedRungTier[r]
+		if !ok {
+			t.Errorf("rung %q has no ADR-009 tier — an unclassified rung sheds with no tier report", r)
+			continue
+		}
+		if tier != shedTierCore && tier != shedTierContext {
+			t.Errorf("rung %q has unknown tier %q", r, tier)
+		}
+		if got := tier == shedTierCore; got != wantCore[r] {
+			t.Errorf("rung %q tier = %q, want core=%v", r, tier, wantCore[r])
+		}
+	}
+}
+
+// coreShed filters to the core-classified rungs and preserves shed order, so
+// budget.shed_core reads in the same order the ladder acted.
+func TestCoreShedFiltersAndPreservesOrder(t *testing.T) {
+	got := coreShed([]string{shedRecentSessions, shedResumePinned, shedActiveTasks, shedWorkflow})
+	if want := []string{shedResumePinned, shedWorkflow}; !slices.Equal(got, want) {
+		t.Errorf("coreShed = %v, want %v", got, want)
+	}
+	if got := coreShed([]string{shedRecentSessions, shedMemory, shedKGSnapshot}); len(got) != 0 {
+		t.Errorf("context-only shed reported core rungs: %v", got)
+	}
+	if got := coreShed(nil); got != nil {
+		t.Errorf("coreShed(nil) = %v, want nil", got)
+	}
+}
+
+// TestBootstrapShedCoreReportsTheCoreTier drives the whole tool: when the
+// ladder sheds the resume down to its pinned zone, budget.shed_core must name
+// that rung — and, MECHANISM ONLY, the shed itself must still have happened
+// exactly as before (the diary gone, the pinned zone kept). The fail-loud arm
+// that would refuse this shed is a separate, gated task.
+func TestBootstrapShedCoreReportsTheCoreTier(t *testing.T) {
+	vault, resolver := testSetup(t)
+	const diary = "un-pinned diary line that the ladder may drop"
+	resume := "# Resume\n\n## Notes\n" + ResumePinMarker + "\n\n- terse pinned note\n\n" +
+		"## Current State\n\n" + strings.Repeat("- "+diary+"\n", 500)
+	if err := vault.WriteResume("test-proj", resume, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := BootstrapContextTool(resolver, vault)
+	br := bootstrapResult(t, tool, `{"project":"test-proj","slim":false,"max_tokens":2000}`)
+
+	if br.Budget == nil || !slices.Contains(br.Budget.Shed, shedResumePinned) {
+		t.Fatalf("test premise broken: resume->pinned was not shed at max_tokens=2000: %+v", br.Budget)
+	}
+	if !slices.Contains(br.Budget.ShedCore, shedResumePinned) {
+		t.Errorf("resume->pinned (core tier) was shed but shed_core does not say so: %v", br.Budget.ShedCore)
+	}
+	// shed_core is a strict, tier-true subset of shed — never an independent list.
+	for _, r := range br.Budget.ShedCore {
+		if !slices.Contains(br.Budget.Shed, r) {
+			t.Errorf("shed_core entry %q is not in shed %v — the report drifted from the ladder", r, br.Budget.Shed)
+		}
+		if shedRungTier[r] != shedTierCore {
+			t.Errorf("shed_core entry %q is not classified core", r)
+		}
+	}
+	// MECHANISM ONLY: the tier report must not have changed shed behavior.
+	if strings.Contains(br.Resume, diary) {
+		t.Error("the un-pinned diary survived — classifying the rung as core must NOT stop the shed (that is the gated arm task)")
+	}
+	if !strings.Contains(br.Resume, "terse pinned note") {
+		t.Error("the pinned zone was lost — the shed changed behavior, not just reporting")
+	}
+}
+
+// A context-only shed reports NO shed_core: the field appearing at all means
+// safety surface was dropped, so it must stay silent when only context went.
+func TestBootstrapShedCoreAbsentWhenOnlyContextSheds(t *testing.T) {
+	vault, resolver := testSetup(t)
+	for range 5 {
+		if _, err := vault.WriteSession("test-proj", storage.SessionMeta{
+			Date:    "2026-04-07",
+			Title:   "session with a long title to inflate size",
+			Summary: strings.Repeat("detail ", 50),
+			Tag:     "implementation",
+		}, "body"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tool := BootstrapContextTool(resolver, vault)
+	// Budget just above the no-sessions size (+60 covers the budget report the
+	// payload now honestly measures itself carrying): sessions shed, core stays.
+	fullResult, _ := tool.Handler(context.Background(), json.RawMessage(`{"project":"test-proj","max_tokens":1000000}`))
+	fullBR := fullResult.(BootstrapResult)
+	withoutSessions := fullBR
+	withoutSessions.RecentSessions = nil
+	noSessionJSON, _ := json.Marshal(withoutSessions)
+	br := bootstrapResult(t, tool, string(mustParams(t, "test-proj", len(noSessionJSON)/4+60)))
+
+	if br.Budget == nil || len(br.Budget.Shed) == 0 {
+		t.Fatalf("test premise broken: nothing was shed: %+v", br.Budget)
+	}
+	for _, r := range br.Budget.Shed {
+		if shedRungTier[r] != shedTierContext {
+			t.Fatalf("test premise broken: core rung %q was shed at this budget", r)
+		}
+	}
+	if len(br.Budget.ShedCore) != 0 {
+		t.Errorf("shed_core = %v on a context-only shed — the tier report is crying wolf", br.Budget.ShedCore)
+	}
+}
+
+// 🔴 TestBootstrapOverBudgetReportIsHonest is the regression pin for the stale
+// verdict: the ladder used to measure the payload WITHOUT the budget field it
+// attaches afterward (and without the post-ladder alerts), freeze over_budget
+// on that under-measurement, and ship the live vault at 8060 tokens against a
+// budget of 8000 with over=false. The verdict must be a function of the FINAL
+// payload: sweep budgets across every shed boundary and re-measure what came
+// back. The ±1 slack is the report's own digits — estimated_tokens is part of
+// the bytes being measured.
+func TestBootstrapOverBudgetReportIsHonest(t *testing.T) {
+	vault, resolver := testSetup(t)
+	// An un-markered resume is unsheddable, so mid-range budgets genuinely
+	// cannot be met; tasks and sessions give the ladder context rungs — and the
+	// post-ladder task alert — to hit boundaries with.
+	resume := "# Resume\n\n## State\n\n" + strings.Repeat("state line for the sweep\n", 300)
+	if err := vault.WriteResume("test-proj", resume, ""); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 8 {
+		if err := vault.CreateTask("test-proj", storage.TaskSpec{
+			Slug:     "task-" + string(rune('a'+i)),
+			Title:    "a task title long enough to carry weight in the payload",
+			Priority: "high",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 5 {
+		if _, err := vault.WriteSession("test-proj", storage.SessionMeta{
+			Date:    "2026-04-07",
+			Title:   "session",
+			Summary: strings.Repeat("detail ", 40),
+			Tag:     "implementation",
+		}, "body"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tool := BootstrapContextTool(resolver, vault)
+	full := bootstrapResult(t, tool, `{"project":"test-proj","max_tokens":1000000}`)
+	fullRaw, err := json.Marshal(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullTokens := len(fullRaw) / 4
+
+	budgets := []int{50, 120, 250, 500, 900, 1300}
+	// A fine sweep across the top, where "the ladder thinks it fits but the
+	// attached report and alerts push the real payload over" lives.
+	for b := fullTokens - 90; b <= fullTokens+20; b += 3 {
+		budgets = append(budgets, b)
+	}
+	for _, max := range budgets {
+		br := bootstrapResult(t, tool, string(mustParams(t, "test-proj", max)))
+		raw, err := json.Marshal(br)
+		if err != nil {
+			t.Fatal(err)
+		}
+		measured := len(raw) / 4
+
+		if br.Budget == nil {
+			if measured > max {
+				t.Errorf("max_tokens=%d: no budget report on a payload measuring %d tokens — the silent overrun", max, measured)
+			}
+			continue
+		}
+		if br.Budget.OverBudget != (br.Budget.EstimatedTokens > max) {
+			t.Errorf("max_tokens=%d: over=%v contradicts its own estimated_tokens=%d", max, br.Budget.OverBudget, br.Budget.EstimatedTokens)
+		}
+		if d := measured - br.Budget.EstimatedTokens; d < -1 || d > 1 {
+			t.Errorf("max_tokens=%d: estimated_tokens=%d but the returned payload measures %d — the report describes some other payload", max, br.Budget.EstimatedTokens, measured)
+		}
+		if measured > max+1 && !br.Budget.OverBudget {
+			t.Errorf("max_tokens=%d: over=false on a payload measuring %d tokens — the stale verdict, back again", max, measured)
+		}
+		if measured < max && br.Budget.OverBudget {
+			t.Errorf("max_tokens=%d: over=true on a payload measuring %d tokens — crying wolf trains readers to skim", max, measured)
+		}
+		if br.Budget.OverBudget && !strings.Contains(br.PostBootstrapInstructions, "over its own token budget") {
+			t.Errorf("max_tokens=%d: over=true but the alert never reached the directive the agent reads", max)
+		}
 	}
 }
 

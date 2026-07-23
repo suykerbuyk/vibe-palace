@@ -105,16 +105,28 @@ type BootstrapBudget struct {
 	// instrument that reported a number for some other payload than the one it
 	// sent would be the very defect being fixed here.
 	EstimatedTokens int `json:"estimated_tokens"`
-	// OverBudget is true when the ladder ran out of things to shed and returned
-	// over the caller's budget anyway. It is NEVER silent: it also raises an
-	// alert in post_bootstrap_instructions and a WARN in vp.log.
+	// OverBudget is true when the payload AS RETURNED exceeds max_tokens after
+	// the ladder shed everything it could. The verdict is taken on the FINAL
+	// measurement — budget field and post-ladder alerts included — never frozen
+	// at whatever the ladder last saw: the frozen verdict was the stale-report
+	// defect that let the live vault ship 8060 tokens against a budget of 8000
+	// with over=false. It is NEVER silent: it also raises an alert in
+	// post_bootstrap_instructions and a WARN in vp.log.
 	OverBudget bool `json:"over_budget"`
 	// Shed names each rung the ladder had to use, in order, so the caller knows
 	// precisely what is missing and can fetch it: "recent_sessions", "memory",
 	// "kg_snapshot", "commands+skills", "resume->pinned", "active_tasks",
 	// "workflow->excerpt".
-	Shed   []string `json:"shed,omitempty"`
-	Reason string   `json:"reason,omitempty"`
+	Shed []string `json:"shed,omitempty"`
+	// ShedCore names, in shed order, the subset of Shed that ADR-009 classifies
+	// as inviolable core rather than re-fetchable context (see shedRungTier).
+	// MECHANISM ONLY today: the tier is reported so a caller can see that safety
+	// surface — not just context — was dropped, but core rungs still shed
+	// exactly like context rungs. Refusing to shed core (fail-loud) is the gated
+	// sibling task adr-009-arm-fail-loud-bootstrap, sequenced behind the ADR-008
+	// core shrink. Absent when no core rung was shed.
+	ShedCore []string `json:"shed_core,omitempty"`
+	Reason   string   `json:"reason,omitempty"`
 }
 
 // VaultStaleness reports the network-free fetch AGE of the vault view at
@@ -533,19 +545,12 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	result.PostBootstrapInstructions = composeDirective(result.PostBootstrapInstructions, alerts)
 
 	budget := shedToBudget(&result, maxTokens, fullResume, slim)
+	// ADR-009 tier report, derived from Shed so the two can never drift: which
+	// of the shed rungs were inviolable core. Reported even though the shed
+	// itself still happened — see shedRungTier for why reporting is (for now)
+	// the whole mechanism.
+	budget.ShedCore = coreShed(budget.Shed)
 
-	// AN UNMEETABLE BUDGET IS NEVER SILENT. It says so in the payload (Budget),
-	// in the directive the agent actually reads (alerts), and in vp.log — which
-	// vp_health reads, so the next session opens on it too. A max_tokens the
-	// tool cannot honor and does not mention is a budget that is a lie, and
-	// that lie is what let this payload run 2.4x over on the transport every
-	// agent uses, for as long as it has existed.
-	if budget.OverBudget {
-		alerts = append(alerts, budget.Reason)
-		slog.Warn("bootstrap: payload exceeds max_tokens after shedding everything sheddable",
-			"project", project, "max_tokens", budget.MaxTokens,
-			"estimated_tokens", budget.EstimatedTokens, "shed", strings.Join(budget.Shed, ","))
-	}
 	if shedTasks(budget) {
 		alerts = append(alerts, fmt.Sprintf("⚠ The active task list (%d open) was shed to fit the token budget — call `vp_list_tasks` for it.", result.ActiveTaskCount))
 	}
@@ -556,15 +561,50 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// content precisely when the payload was too big to fit, which is when a
 	// project is busiest. Rendering from the POST-ladder command list also means
 	// the examples can no longer point at aliases that were just shed.
-	result.PostBootstrapInstructions = composeDirective(
-		renderPostBootstrapInstructions(result.AvailableCommands, result.AvailableSkills), alerts)
+	baseDirective := renderPostBootstrapInstructions(result.AvailableCommands, result.AvailableSkills)
+	result.PostBootstrapInstructions = composeDirective(baseDirective, alerts)
 
 	result.Budget = budget
 	// Measure the payload AS RETURNED, budget field included. Reporting a size
 	// for some other payload than the one being sent is the defect, not the fix.
-	if raw, err := json.Marshal(result); err == nil {
-		budget.EstimatedTokens = len(raw) / 4
+	budget.EstimatedTokens = measuredTokens(&result, budget.MaxTokens)
+
+	// 🔴 THE VERDICT IS TAKEN HERE, ON THE FINAL MEASUREMENT — never inside the
+	// ladder. The ladder's last look predates this budget attach and the alert
+	// composition above, and a verdict frozen there described a payload other
+	// than the one being sent: the live vault shipped 8060 tokens against its
+	// 8000 budget with over=false exactly that way.
+	//
+	// AN UNMEETABLE BUDGET IS NEVER SILENT. It says so in the payload (Budget),
+	// in the directive the agent actually reads (alerts), and in vp.log — which
+	// vp_health reads, so the next session opens on it too. A max_tokens the
+	// tool cannot honor and does not mention is a budget that is a lie, and
+	// that lie is what let this payload run 2.4x over on the transport every
+	// agent uses, for as long as it has existed.
+	if budget.EstimatedTokens > budget.MaxTokens {
+		budget.OverBudget = true
+		if budget.Reason == "" {
+			budget.Reason = "⚠ bootstrap payload is over its own token budget after shedding everything sheddable — read the resume via resume_uri and treat this payload as incomplete"
+		} else {
+			budget.Reason = "⚠ bootstrap payload is over its own token budget: " + budget.Reason
+		}
+		alerts = append(alerts, budget.Reason)
+		slog.Warn("bootstrap: payload exceeds max_tokens after shedding everything sheddable",
+			"project", project, "max_tokens", budget.MaxTokens,
+			"estimated_tokens", budget.EstimatedTokens, "shed", strings.Join(budget.Shed, ","))
+		result.PostBootstrapInstructions = composeDirective(baseDirective, alerts)
+		// The alert itself grew the payload; re-measure so the reported number
+		// still describes the payload being sent. Growth is monotonic here, so
+		// the verdict cannot flip back under.
+		budget.EstimatedTokens = measuredTokens(&result, budget.MaxTokens)
+	} else {
+		// A reason recorded on the way down is only worth reporting if the
+		// payload actually ended up over budget. Fitting anyway is not a defect
+		// — and the report must describe the payload without the dropped reason.
+		budget.Reason = ""
+		budget.EstimatedTokens = measuredTokens(&result, budget.MaxTokens)
 	}
+
 	// Silent when healthy: nothing shed and inside budget ⇒ no field at all.
 	if len(budget.Shed) == 0 && !budget.OverBudget {
 		result.Budget = nil
@@ -642,6 +682,55 @@ const (
 	shedWorkflow       = "workflow->excerpt"
 )
 
+// shedTier is a rung's ADR-009 classification
+// (doc/adr/009-inviolable-core-delivered-whole-or-fail-loud.md): core rungs
+// carry the operating contract or active project state; context rungs carry
+// re-fetchable context.
+type shedTier string
+
+const (
+	shedTierCore    shedTier = "core"
+	shedTierContext shedTier = "context"
+)
+
+// shedRungTier classifies every ladder rung, structurally, per ADR-009.
+//
+// MECHANISM ONLY (task enforce-adr-009-inviolable-bootstrap-core): the
+// classification exists and is REPORTED (BootstrapBudget.ShedCore), but it does
+// not change shed behavior — the ladder still sheds core rungs exactly as
+// before when it reaches them. Refusing to shed core (the fail-loud arm) is the
+// gated sibling task adr-009-arm-fail-loud-bootstrap, sequenced behind the
+// ADR-008 core shrink: arming today would halt every bootstrap, because the
+// live core alone exceeds the default budget.
+//
+// active_tasks is deliberately CONTEXT even though ADR-009 puts "the current
+// task" in the core: the list sheds to a surviving ActiveTaskCount plus an
+// explicit vp_list_tasks alert, so nothing is silently lost and one cheap call
+// recovers it — and the CURRENT task belongs in resume's pinned active-state,
+// not in a whole-backlog dump whose promotion would grow a core floor that must
+// shrink.
+var shedRungTier = map[string]shedTier{
+	shedRecentSessions: shedTierContext,
+	shedMemory:         shedTierContext,
+	shedKGSnapshot:     shedTierContext,
+	shedCommands:       shedTierContext,
+	shedResumePinned:   shedTierCore,
+	shedActiveTasks:    shedTierContext,
+	shedWorkflow:       shedTierCore,
+}
+
+// coreShed filters shed down to the rungs classified core, preserving shed
+// order. Derived from Shed at report time so the two lists can never drift.
+func coreShed(shed []string) []string {
+	var out []string
+	for _, r := range shed {
+		if shedRungTier[r] == shedTierCore {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // shedToBudget is the TOKEN-axis ladder (independent of the byte-axis slim
 // control, which has already run by the time we get here). It sheds, in order,
 // until the payload fits — and reports what it did.
@@ -670,15 +759,16 @@ func shedToBudget(result *BootstrapResult, maxTokens int, fullResume string, sli
 
 	// The estimate is rough (4 chars ≈ 1 token) and deliberately so: an exact
 	// tokenizer would tie this hot path to a model's vocabulary. It only has to
-	// be honest about which side of the line it is on.
+	// be honest about which side of the line it is on — which is why it measures
+	// WITH the budget report attached: the returned payload carries b, and a
+	// ladder that measures a payload without the field it later attaches
+	// under-reports. That under-measurement, frozen into the verdict, is how the
+	// live vault shipped 8060 tokens against a budget of 8000 with over=false.
+	// The final verdict is still re-taken by the caller after the post-ladder
+	// alerts are composed (see AssembleBootstrap).
 	est := func() int {
-		raw, err := json.Marshal(result)
-		if err != nil {
-			// Unmeasurable is not "fine" (invariant: "I have no information" is
-			// not "nothing is wrong"). Report it as over budget so it is loud.
-			return maxTokens + 1
-		}
-		return len(raw) / 4
+		result.Budget = b
+		return measuredTokens(result, maxTokens)
 	}
 	tokens := est()
 	if tokens <= maxTokens {
@@ -788,19 +878,25 @@ func shedToBudget(result *BootstrapResult, maxTokens int, fullResume string, sli
 	}
 
 	b.EstimatedTokens = tokens
-	if tokens > maxTokens {
-		b.OverBudget = true
-		if b.Reason == "" {
-			b.Reason = "⚠ bootstrap payload is over its own token budget with nothing left to shed — read the resume via resume_uri and treat this payload as incomplete"
-		} else {
-			b.Reason = "⚠ bootstrap payload is over its own token budget: " + b.Reason
-		}
-	} else {
-		// A reason recorded on the way down is only worth reporting if the
-		// payload actually ended up over budget. Fitting anyway is not a defect.
-		b.Reason = ""
-	}
+	// NO VERDICT IS TAKEN HERE. The ladder cannot see the post-ladder alerts
+	// (over-budget reason, shed-tasks pointer) that AssembleBootstrap composes
+	// into the directive after it returns, so any over/under call made at this
+	// point describes a payload other than the one being sent — the stale-report
+	// defect. OverBudget and Reason formatting are decided on the final
+	// measurement in AssembleBootstrap.
 	return b
+}
+
+// measuredTokens estimates the token cost of the payload exactly as it stands,
+// on the same rough 4-chars-per-token basis the ladder sheds against. An
+// unmarshalable payload reports over budget so the failure is loud — "I have no
+// information" is not "nothing is wrong".
+func measuredTokens(result *BootstrapResult, maxTokens int) int {
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return maxTokens + 1
+	}
+	return len(raw) / 4
 }
 
 // composeDirective joins the capability directive with any alerts (friction,
