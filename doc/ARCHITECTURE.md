@@ -37,7 +37,7 @@ its full MCP tool surface (versioned in `internal/mcp/tool_surface.golden.json`,
 | `internal/project` | Project detection from working dir | `ProjectConfig` |
 | `internal/kg` | Entity detection + triple extraction | `DetectedEntity`, `ExtractedTriple` |
 | `internal/vplog` | Structured logging (slog to file) | `Init()`, `Close()` |
-| `internal/archive` | Transcript archive / copyright-provenance ledger (per-IDE adapters, manifests, signing) + the note↔manifest link (`LinkSessionNote`, `ResolveEntry`) | `Manifest`, `Entry`, `CreateOptions`, `LinkSessionNote` |
+| `internal/archive` | Transcript archive / copyright-provenance ledger (source adapters `claude-code`, `zed`, `inline`; manifests, signing) + the note↔manifest link (`LinkSessionNote`, `ResolveEntry`) | `Manifest`, `Entry`, `CreateOptions`, `LinkSessionNote` |
 | `internal/archive/zed` | Read-only Zed agent-panel thread DB parser → Claude-shape JSONL | `parser`, `messages`, `types` |
 | `internal/vaultaudit` | Vault audit (5 dimensions), accepted-debt baseline, staleness nag, and the archive-backfill remediation predicate (ADR-007) | `Run`, `Baseline`, `BackfillCandidates`, `ApplyBackfill` |
 | `internal/migrate` | Import VibeVault sessions + agentctx (resume/iterations/workflow/knowledge/tasks/memory + verbatim `migrated/` archive) and MemPalace data into the vault | `ImportVibeVault`, `ImportMemPalace`, `copyAgentctx` |
@@ -1445,8 +1445,9 @@ Sessions are captured via two paths, both using the shared pipeline
 `capture.WriteSession`:
 
 - **MCP path**: `vp_capture_session` tool — AI-generated summary, full
-  transcript indexing (chunking + embedding + KG extraction). Writes a
-  claim sentinel so the hook path skips this session.
+  transcript indexing (chunking + embedding + KG extraction). When the host
+  session id was **derived**, writes a claim sentinel so the hook path skips
+  this session (a minted inline id gets no claim — no hook will ever query it).
 - **Hook path**: `vp hook` CLI — Claude Code invokes this on SessionEnd,
   Stop, and PreCompact events. Produces a deterministic auto-summary from
   `git log`, runs friction analysis, but defers transcript indexing
@@ -1468,14 +1469,17 @@ in un-init'd directories are intentionally skipped.
    f. Index each chunk+vector in the search engine
    g. Extract entities (file paths, URLs) → knowledge graph
 3. Compute friction score (0–100) from transcript
-4. Archive transcript to {vault}/Projects/{project}/transcripts/ (hook path)
+4. Archive transcript to {vault}/Projects/{project}/transcripts/ (hook path,
+   or the MCP path's opt-in inline archive — see below)
 5. Cross-link archive manifest ↔ session note (bidirectional): the note is
    stamped with `archive_session_id` and linked to the manifest at SessionEnd,
    after `archive.Create`; the manifest back-links the canonical note. A link
    that never closes leaves a *stranded* transcript — detected by the vault
    audit's `archive-roundtrip` dimension and recovered by `vp archive backfill`
-   / `vp archive link` (see ADR-007).
-6. Write claim sentinel to {cwd}/.vibe-palace/ (idempotency)
+   / `vp archive link` (see ADR-007). The inline path never strands: its
+   archive is created *before* the note, so both link directions exist at birth.
+6. Write claim sentinel to {cwd}/.vibe-palace/ (idempotency; derived host
+   session ids only)
 ```
 
 ### Host attribution from the client handshake
@@ -1493,6 +1497,50 @@ unknown (`host_source: unknown`) — never fabricated, because absence is not a
 value (ADR-006: this is a DERIVE where the server can see the input). The
 `HostSource` provenance field on `SessionMeta` records which path established
 the host.
+
+### Inline transcript archive on hook-less hosts
+
+Hook-less MCP hosts (Grok Build, the Zed assistant pane, `vp mcp serve` over
+HTTP) have no SessionEnd hook and no on-disk transcript, so their captures
+historically produced a note with no archive pair. `vp_capture_session`'s
+opt-in `archive_transcript` param closes that gap at capture time:
+
+- **Derived-empty gate.** The inline path fires only when the server's host
+  session-id derivation honestly came up empty. On a derivable host (Claude
+  Code) the flag is a **no-op**: the SessionEnd hook archives the
+  authoritative host transcript later, and an inline copy of the agent's own
+  rendition would be a lossy duplicate — never a competitor.
+- **Minted id, shared by note and archive.** The server mints the capture
+  `session_key` (UUID) and uses it as the archive session id, so a retry with
+  the same key converges on the same note *and* the same manifest. The mint is
+  server-controlled and collision-free by construction.
+- **Born linked.** `archive.Create` runs **before** `WriteSession`, so the
+  existing linking machinery (`ResolveEntry` + `LinkSessionNote`) stamps both
+  directions when the note is written — no new linking code, no deferred loop,
+  no stranded transcript for `archive-roundtrip` to find.
+- **Honest provenance.** The note records `archive_session_id_source: inline`
+  (distinct from `derived` and `backfilled`) and `session_key_source: minted`
+  — a handler-minted key must never masquerade as caller-supplied, and the
+  backfill predicate (which keys on `session_key_source: caller`) correctly
+  never treats a born-linked inline pair as recoverable debt.
+- **The note always lands.** A failed inline `archive.Create` is stashed as a
+  `transcript_archive` entry in the incomplete-capture error payload; capture
+  proceeds and the note is written unlinked.
+- **No claim sentinel.** Claims are keyed by the *host's* session id — the id
+  the SessionEnd hook queries — so only a derived id can ever match one. The
+  sentinel is written for derived ids only; a minted id would be a sentinel
+  with no reader.
+
+The `inline` archive adapter (`internal/archive/inline_adapter.go`) is
+**mechanism-named, never host-named**: the manifest records how the bytes
+arrived (handed to `Create` in-memory via `CreateOptions.SourceContent`), not
+which host produced them — the content is the agent's own rendition of the
+session, not host ground truth, and naming a host would launder a self-report
+into an authenticity claim. The host is recorded separately by the note's
+host provenance (above). `ResolveSource` writes the supplied bytes verbatim
+to a temp file (the same synthesize-to-temp shape as the Zed adapter) so the
+rest of the Create pipeline stays byte-oriented, and empty `SourceContent` is
+a hard error, never a fallback to some on-disk location.
 
 ### Hook Installation
 
@@ -1936,8 +1984,10 @@ an exact **derivation**, not a guess. The candidate predicate lives once in
   newest *stranded* manifest of the session (older siblings stay stranded by
   design), refuses an identity conflict, and stamps provenance
   `archive_session_id_source: backfilled` (distinct from the live path's
-  `derived`). Notes predating `SessionKey` (199) never recorded their session and
-  are permanently lost, not backfillable. See ADR-007.
+  `derived` and the capture-time `inline`). Notes predating `SessionKey` (199)
+  never recorded their session and are permanently lost, not backfillable.
+  Inline-archive pairs never surface as candidates: their key source is
+  `minted`, not `caller`, and they are born linked anyway. See ADR-007.
 
 ### LLM-Assisted Tuning (`internal/palace/tune.go`)
 

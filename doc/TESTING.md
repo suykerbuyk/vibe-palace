@@ -1,12 +1,12 @@
 # Testing Strategy
 
-**Last updated:** 2026-07-12
+**Last updated:** 2026-07-26
 
 This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~2277 tests** across 40 packages, including
+The suite currently runs **~2676 tests** across 47 packages, including
 **105 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
@@ -1257,6 +1257,20 @@ An `isError` on a call that has **already written its note** is an invitation to
 retry. Without a key, that retry writes a **second** note — turning one lost archive
 link into two conflicting session records. That is why Invariant 2 landed before the
 MCP path was allowed to fail.
+
+---
+
+## Inline Transcript Archive Tests (`native-capture-session`)
+
+Hook-less hosts can opt into a transcript archive at capture time
+(`vp_capture_session` `archive_transcript` — see the inline-archive section of
+`doc/ARCHITECTURE.md`). The coverage spans the three layers the feature touches:
+
+| Test | What it proves |
+|------|----------------|
+| `TestInlineAdapter_*` (`internal/archive`, 6 tests) | The `inline` adapter round-trips caller-supplied bytes **verbatim** into a manifest + compressed archive pair; empty `SourceContent` is a clear hard error, never a fallback; re-`Create` with the same id is idempotent; changed content preserves the prior manifest; the temp file is cleaned up |
+| `TestCaptureKeySource*` / `TestInlineProvenanceConstantValues` (`internal/capture`) | A caller-vouched `SessionKeySource` is recorded **verbatim** (a handler-minted key never masquerades as caller-supplied); leaving it unset keeps today's caller/minted inference; the provenance constant values are pinned |
+| `TestCaptureSessionInlineArchive*` (`internal/tools`, 5 tests) | On a hook-less host the note and archive land **born-linked** with `archive_session_id_source: inline` and `session_key_source: minted`; a retry with the returned key converges on the **same** note and manifest; on a derivable host the flag is a **no-op**; flag off changes nothing; a failed archive is a `transcript_archive` entry in the incomplete-capture error and the note still lands |
 
 ---
 
