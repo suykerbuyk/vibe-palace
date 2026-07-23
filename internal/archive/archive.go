@@ -52,6 +52,12 @@ type CreateOptions struct {
 	// Code). Defaults to the current process cwd.
 	SourceCWD string
 
+	// SourceContent is the transcript bytes supplied directly by the
+	// caller, for adapters that synthesize their source from content
+	// rather than resolving a file (the "inline" adapter). Ignored by
+	// adapters that resolve an on-disk source.
+	SourceContent []byte
+
 	// VaultRoot is the absolute path to the vault root. Archive
 	// output is written under
 	// {VaultRoot}/Projects/{ProjectSlug}/transcripts/.
