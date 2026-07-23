@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/hook"
@@ -156,6 +157,13 @@ type captureSessionParams struct {
 	// ArchiveAdapter names the adapter to resolve against. Defaults
 	// to claude-code when ArchiveSessionID is set and this is empty.
 	ArchiveAdapter string `json:"archive_adapter,omitempty"`
+	// ArchiveTranscript opts this capture into creating an INLINE transcript
+	// archive when the server cannot derive a host session id (hook-less
+	// hosts: Grok, Zed pane, HTTP serve). On a derivable host it is a no-op —
+	// the SessionEnd hook archives the authoritative host transcript later,
+	// and an inline copy of the agent's own rendition would be a lossy
+	// duplicate. Requires a non-empty Transcript.
+	ArchiveTranscript bool `json:"archive_transcript,omitempty"`
 	// CWD is the working directory for writing a claim sentinel so
 	// the SessionEnd hook skips sessions already captured via MCP.
 	CWD string `json:"cwd,omitempty"`
@@ -283,6 +291,10 @@ var captureSessionSchema = json.RawMessage(`{
 			"type": "string",
 			"description": "Adapter name for archive lookup (default: claude-code)."
 		},
+		"archive_transcript": {
+			"type": "boolean",
+			"description": "Opt-in: archive the supplied transcript as this capture's compressed archive pair, linked to the note at birth. Takes effect ONLY when the server cannot derive a host session id (hook-less hosts: Grok, Zed pane, HTTP serve) — on a derivable host (Claude Code) it is a no-op, because the hook archives the authoritative host transcript at SessionEnd and an inline copy would be a lossy duplicate. Requires a non-empty transcript. Default false."
+		},
 		"cwd": {
 			"type": "string",
 			"description": "Working directory for claim sentinel (optional). When set and the server could derive the host session id, writes a claim so the SessionEnd hook skips re-capturing this session."
@@ -352,6 +364,66 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 			sp.ArchiveSessionIDSource = storage.ArchiveIDSourceDerived
 		}
 
+		// INLINE TRANSCRIPT ARCHIVE — transcript-archive parity for hook-less
+		// hosts, opt-in via archive_transcript.
+		//
+		//   - DERIVED-EMPTY GATE: this fires only when the derivation above
+		//     honestly failed. On a derivable host (Claude Code) the SessionEnd
+		//     hook archives the AUTHORITATIVE host transcript later, and an
+		//     inline copy of the agent's own rendition would be a lossy
+		//     duplicate — so the flag is a no-op there, never a competitor.
+		//   - MINT, NEVER TRUST: the archive id is server-controlled — the
+		//     caller's session_key when this is a retry (retries must converge
+		//     on the SAME manifest), a fresh uuid otherwise. A minted id is
+		//     collision-free by construction, so the mis-link failure the
+		//     DERIVE-ONLY block above exists to prevent cannot occur here.
+		//   - INLINE ADAPTER, NOT A HOST ADAPTER: the content is the agent's
+		//     own rendition of the session, not host ground truth; the manifest
+		//     records the mechanism (see archive.InlineAdapterName) and the
+		//     host is recorded separately by the note's host provenance.
+		//   - CREATE BEFORE WriteSession: the manifest must exist when
+		//     WriteSession resolves the archive, so ResolveEntry finds it and
+		//     the EXISTING linking machinery writes both link directions at
+		//     birth — no new linking code, no deferred loop to close.
+		//
+		// A Create failure is stashed, never fatal: the note is capture's one
+		// irreplaceable output, and a capture that loses the note over a failed
+		// archive inverts the priority. The stash joins result.Failures after
+		// WriteSession returns, where the accumulation lives.
+		var inlineArchiveFailure *capture.CaptureFailure
+		if p.ArchiveTranscript && sp.ArchiveSessionID == "" && strings.TrimSpace(p.Transcript) != "" {
+			archiveID := p.SessionKey
+			if archiveID == "" {
+				// Fresh attempt: mint the id and make it the idempotency key,
+				// so the note and its archive pair share one id and a retry
+				// converges on both. SessionKeySource records the mint
+				// honestly — a handler-minted key must never masquerade as
+				// caller-supplied (see capture.SessionParams.SessionKeySource).
+				archiveID = uuid.NewString()
+				sp.SessionKey = archiveID
+				sp.SessionKeySource = storage.KeySourceMinted
+			}
+			if _, aerr := archive.Create(archive.CreateOptions{
+				Adapter:       archive.InlineAdapterName,
+				SessionID:     archiveID,
+				SourceContent: []byte(p.Transcript),
+				VaultRoot:     vault.Root,
+				ProjectSlug:   p.Project,
+				SourceCWD:     p.CWD,
+			}); aerr != nil {
+				slog.Warn("vp_capture_session: inline transcript archive failed", "err", aerr)
+				inlineArchiveFailure = &capture.CaptureFailure{
+					Stage: capture.StageTranscriptArchive,
+					Err:   aerr.Error(),
+				}
+				// sp.ArchiveSessionID stays empty: nothing pretends to link.
+			} else {
+				sp.ArchiveSessionID = archiveID
+				sp.ArchiveSessionIDSource = storage.ArchiveIDSourceInline
+				sp.ArchiveAdapter = archive.InlineAdapterName
+			}
+		}
+
 		// Opt-in LLM enrichment. Resolve an Enricher from config only when the
 		// caller asked for it; a nil sp.Enricher leaves the plain-note behavior
 		// unchanged. Every failure here is non-fatal — capture proceeds with the
@@ -373,6 +445,13 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 			return nil, err
 		}
 
+		// The inline-archive loss (if any) joins the accumulation HERE, not at
+		// the Create site: result.Failures is where every peripheral loss lands,
+		// and the note had to land before there was a result to append to.
+		if inlineArchiveFailure != nil {
+			result.Failures = append(result.Failures, *inlineArchiveFailure)
+		}
+
 		// Write claim sentinel so the SessionEnd hook skips this session.
 		//
 		// THIS RUNS BEFORE THE ERROR RETURN BELOW, AND THAT ORDER IS LOAD-BEARING.
@@ -382,7 +461,13 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 		// hard-failing capture leaves the session unclaimed, so the SessionEnd hook
 		// captures it AGAIN and duplicates the note, over a loss as trivial as a
 		// missing archive link.
-		if p.CWD != "" && sp.ArchiveSessionID != "" {
+		//
+		// DERIVED IDS ONLY. A claim is keyed by the HOST's session id — the id the
+		// SessionEnd hook queries — so only a derived id can ever match one. A
+		// minted inline id is one no hook will ever ask about: writing a claim for
+		// it would be a sentinel with no reader, and on a hook-less host there is
+		// no hook to skip in the first place.
+		if p.CWD != "" && sp.ArchiveSessionID != "" && sp.ArchiveSessionIDSource == storage.ArchiveIDSourceDerived {
 			claimDir := filepath.Join(p.CWD, ".vibe-palace")
 			if claimErr := hook.WriteClaim(claimDir, sp.ArchiveSessionID, result.SessionID); claimErr != nil {
 				slog.Warn("vp_capture_session: claim sentinel write failed", "err", claimErr)

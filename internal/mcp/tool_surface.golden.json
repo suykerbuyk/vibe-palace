@@ -29,7 +29,7 @@
     {
       "name": "vp_capture_session",
       "mutating": true,
-      "schema_sha256": "0f3e680708f1aaf1151ea6fb6b3fdbe3e1ebc563222a6b075c07b7bd8ab2275b"
+      "schema_sha256": "e246051c4034ceb3f1378f1303354411a8e8956d6763acf086f73c81fbd6229a"
     },
     {
       "name": "vp_check_resume_refs",
