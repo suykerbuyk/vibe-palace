@@ -257,6 +257,91 @@ func TestConcurrentCapturesDoNotClobber(t *testing.T) {
 	}
 }
 
+// TestCaptureKeySourceOverrideIsRecordedVerbatim pins the inline-archive
+// contract: a handler that pre-mints the key (so the archive and the note share
+// one id) supplies SessionKeySource, and the note records EXACTLY that source —
+// not the "caller" the supplied-key path would otherwise infer. vaultaudit's
+// backfill predicate keys on session_key_source == "caller", so this is what
+// keeps born-linked inline pairs out of backfill recovery.
+func TestCaptureKeySourceOverrideIsRecordedVerbatim(t *testing.T) {
+	vault := testVault(t)
+
+	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project:          "test-proj",
+		Summary:          "inline capture with a pre-minted key",
+		SessionKey:       "pre-minted-key",
+		SessionKeySource: storage.KeySourceMinted,
+	})
+	if err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	if result.SessionKeySource != storage.KeySourceMinted {
+		t.Errorf("result key source = %q, want the supplied %q", result.SessionKeySource, storage.KeySourceMinted)
+	}
+
+	meta, _ := readNote(t, vault, result.NotePath)
+	if meta.SessionKeySource != storage.KeySourceMinted {
+		t.Errorf("frontmatter session_key_source = %q, want the supplied %q — a handler-minted key is masquerading as caller-supplied",
+			meta.SessionKeySource, storage.KeySourceMinted)
+	}
+}
+
+// TestCaptureKeySourceUnsetKeepsTodayBehavior is the additive-only proof: with
+// SessionKeySource left empty, a supplied key is still "caller" and a keyless
+// capture still mints with "minted" — byte-identical to the pre-override logic.
+func TestCaptureKeySourceUnsetKeepsTodayBehavior(t *testing.T) {
+	vault := testVault(t)
+
+	// Supplied key, no override → "caller", exactly as before.
+	supplied, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project:    "test-proj",
+		Summary:    "supplied key, no source override",
+		SessionKey: "caller-supplied-key",
+	})
+	if err != nil {
+		t.Fatalf("WriteSession with key: %v", err)
+	}
+	if supplied.SessionKeySource != storage.KeySourceCaller {
+		t.Errorf("result key source = %q, want %q", supplied.SessionKeySource, storage.KeySourceCaller)
+	}
+	meta, _ := readNote(t, vault, supplied.NotePath)
+	if meta.SessionKeySource != storage.KeySourceCaller {
+		t.Errorf("frontmatter session_key_source = %q, want %q", meta.SessionKeySource, storage.KeySourceCaller)
+	}
+
+	// Neither key nor override → key minted, source "minted", exactly as before.
+	minted, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project: "test-proj",
+		Summary: "no key, no source override",
+	})
+	if err != nil {
+		t.Fatalf("WriteSession without key: %v", err)
+	}
+	if minted.SessionKey == "" {
+		t.Fatal("no session_key minted for a keyless capture")
+	}
+	if minted.SessionKeySource != storage.KeySourceMinted {
+		t.Errorf("result key source = %q, want %q", minted.SessionKeySource, storage.KeySourceMinted)
+	}
+	meta, _ = readNote(t, vault, minted.NotePath)
+	if meta.SessionKeySource != storage.KeySourceMinted {
+		t.Errorf("frontmatter session_key_source = %q, want %q", meta.SessionKeySource, storage.KeySourceMinted)
+	}
+}
+
+// TestInlineProvenanceConstantValues pins the wire values of the Phase 2
+// constants. Both are stable identifiers — one lands in note frontmatter, the
+// other in the failure payload agents see — so changing either is a surface
+// change, not a refactor.
+func TestInlineProvenanceConstantValues(t *testing.T) {
+	if storage.ArchiveIDSourceInline != "inline" {
+		t.Errorf("ArchiveIDSourceInline = %q, want %q", storage.ArchiveIDSourceInline, "inline")
+	}
+	if StageTranscriptArchive != "transcript_archive" {
+		t.Errorf("StageTranscriptArchive = %q, want %q", StageTranscriptArchive, "transcript_archive")
+	}
+}
+
 // parseFPFromID is a test-local helper mirroring ParseFingerprint, kept explicit so
 // the test does not silently depend on capture's own parsing being correct.
 func parseFPFromID(sessionID string) string { return ParseFingerprint(sessionID) }

@@ -389,6 +389,14 @@ const (
 	// explicit human command, never at capture time. Distinct from "derived" so
 	// an audit (or a human) can always tell a live link from a repaired one.
 	ArchiveIDSourceBackfilled = "backfilled"
+
+	// ArchiveIDSourceInline marks an ArchiveSessionID the server MINTED for an
+	// inline archive created at capture time — nothing about it is
+	// caller-controlled, it cannot collide with a real harness id, and it is
+	// deliberately never joinable to the host's own session naming, because
+	// that information does not exist on hook-less hosts (ADR-006
+	// correct-or-absent).
+	ArchiveIDSourceInline = "inline"
 )
 
 // Values of SessionMeta.HostSource, plus the explicit unknown-host value.

@@ -61,6 +61,17 @@ type SessionParams struct {
 	// invites, which is why this exists before the MCP path is allowed to fail hard.
 	SessionKey string
 
+	// SessionKeySource, when non-empty alongside a non-empty SessionKey, is
+	// recorded on the note VERBATIM in place of the source WriteSession would
+	// otherwise infer. It exists for the inline-archive path, where the MCP
+	// handler pre-mints the key so the archive and the note share one id —
+	// without this override a handler-minted key would masquerade as
+	// caller-supplied, and vaultaudit's backfill predicate keys on
+	// session_key_source == "caller", so honest provenance is what correctly
+	// excludes born-linked inline pairs from backfill recovery. Left empty,
+	// behavior is unchanged: a supplied key is "caller", a minted one "minted".
+	SessionKeySource string
+
 	// Enricher, when non-nil, drives a synchronous LLM enrichment pass over
 	// Transcript before the note is written. This is intentionally a
 	// dependency-carrying field, NOT a bool flag: a nil Enricher means
@@ -98,8 +109,11 @@ const (
 	// ever captured, which is what a structurally-unavoidable "failure" looks like.
 	// Deleted rather than left unproduced: a stage nothing can emit is a claim the
 	// failure payload was making and never honoring.
-	StageArchiveAdapter    = "archive_adapter_mismatch"
-	StageFrictionScoring   = "friction_scoring"
+	StageArchiveAdapter  = "archive_adapter_mismatch"
+	StageFrictionScoring = "friction_scoring"
+	// StageTranscriptArchive: the inline transcript-archive write failed; the
+	// note may exist without its archive pair.
+	StageTranscriptArchive = "transcript_archive"
 	StageEnrichmentEnqueue = "enrichment_enqueue"
 	StageArchiveBacklink   = "archive_backlink"
 	StageTranscriptIndex   = "transcript_index"
@@ -197,6 +211,11 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 	sessionKey, keySource := p.SessionKey, storage.KeySourceCaller
 	if sessionKey == "" {
 		sessionKey, keySource = uuid.NewString(), storage.KeySourceMinted
+	} else if p.SessionKeySource != "" {
+		// The caller vouched for where the key came from — record it verbatim.
+		// See SessionParams.SessionKeySource for why the inline-archive path
+		// must not let a handler-minted key masquerade as caller-supplied.
+		keySource = p.SessionKeySource
 	}
 
 	meta := storage.SessionMeta{
