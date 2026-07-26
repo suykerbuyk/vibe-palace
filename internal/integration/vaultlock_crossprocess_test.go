@@ -64,9 +64,19 @@ func TestIntegration_VaultLockCrossProcess(t *testing.T) {
 	}
 
 	// Launch N concurrent child processes, each rewriting one anchor.
+	// 🔴 XDG_CONFIG_HOME ALONE DOES NOT ISOLATE THE CHILD ON WINDOWS.
+	// os.UserConfigDir — which VaultConfigFilePath calls — honors
+	// XDG_CONFIG_HOME only on Unix; on Windows it reads %AppData% and ignores
+	// XDG entirely. Without APPDATA the child escapes this sandbox, resolves the
+	// runner's real roaming profile, finds no config.toml there and exits 1. All
+	// 16 children failed that way on 2026-07-26, and the ensuing "lost update" /
+	// "an edit was clobbered" assertions read as a lock defect when no child had
+	// ever reached the lock. Both vars are set unconditionally: on Unix
+	// os.UserConfigDir never consults APPDATA, so it is inert there.
 	childEnv := append(os.Environ(),
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+xdg,
+		"APPDATA="+xdg,
 	)
 	errs := make([]error, n)
 	outs := make([]string, n)

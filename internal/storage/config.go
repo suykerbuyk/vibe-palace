@@ -366,7 +366,13 @@ func VaultConfigFilePath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return configDir + "/vibe-palace/config.toml", nil
+	// filepath.Join, NOT concatenation: os.UserConfigDir returns a
+	// backslash-separated path on Windows (%AppData%), so gluing a "/..."
+	// literal onto it yields the mixed-separator
+	// `C:\Users\x\AppData\Roaming/vibe-palace/config.toml` that showed up in the
+	// windows-lock CI failure of 2026-07-26. Join normalizes per-OS and is
+	// byte-identical to the old result on Unix.
+	return filepath.Join(configDir, "vibe-palace", "config.toml"), nil
 }
 
 // WriteScoringConfig merges scoring overrides into the project config file.
