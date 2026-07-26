@@ -69,7 +69,7 @@ This is the gate for commits.
 
 ---
 
-## Live-vault canaries (`internal/taskgraph/live_vault_test.go`, `internal/storage/tasks_live_vault_test.go`)
+## Live-vault canaries (`internal/taskgraph/live_vault_test.go`, `internal/storage/tasks_live_vault_test.go`, `internal/tools/bootstrap_live_vault_test.go`)
 
 A small class of test runs against the **operator's real vault**, resolved through
 `storage.OpenVaultGlobal()`, and **skips** when no vault is configured. It is not an
@@ -94,10 +94,33 @@ Current canaries:
 | `TestLiveVaultAmendNeverMatchesAFencedHeading` | `sectionBounds` regressing to a naive scan and splicing **into a code fence**. Not hypothetical: **22 H2 headings in this project's own task files exist only as fenced sample text** — including the `## Decision` quoted by the task that specified `amend` |
 | `TestLiveVaultAmendIsIdempotentOnRealBodies` | A retried amend **duplicating** a section on a real body instead of converging — the failure a crash-and-retry would produce |
 | `TestLiveVaultRetitleNeverDisturbsAnythingElse` | `replaceTitleLine` (whole-file, first-wins, **fence-unaware**) rewriting an H1-shaped line that is not the title. Safe only because `CreateTask` always writes `# Title` first and `validateTaskBody` refuses an unfenced H1 in a body — **that is an invariant about the CORPUS, not the function**, so only the corpus can check it. Asserts exactly one line changed per file |
+| `TestBootstrapLiveVaultFitsItsOwnBudget` | The bootstrap payload overrunning its own default budget, and — the actual gate — **shedding a rung ADR-009 classifies as CORE** (`Budget.ShedCore` non-empty, or the workflow contract excerpted). Only the real vault has a resume and a contract large enough to trip the ladder |
 
 **Rules for adding one:** it must `t.Skip` (never fail) when the vault is absent, it must never
 write, and it must assert something a fixture *structurally cannot* — otherwise it is just a slow
 unit test with a dependency on one machine.
+
+**🔴 A live-vault canary MUST run uncached, and `go test` will not do that for you.** The vault lives
+outside the module, so Go's testlog cannot observe its contents changing and will serve a **cached
+verdict** — an instrument confidently describing a vault it never opened. Measured 2026-07-26: growing
+the live `workflow.md` from 13.5 KB to 19.5 KB still reported `ok (cached)`, i.e. the canary silently
+did not run on precisely the regression it exists to catch. Relying on a human to remember `-count=1`
+is the "runs when someone REMEMBERS to run it" failure this whole class of test was built to delete.
+So the invocation is a make target, not a convention:
+
+    make live-canary    # go test -count=1 -run TestBootstrapLiveVaultFitsItsOwnBudget ./internal/tools/
+
+`make test` depends on it, so the uncached run happens on every ordinary test invocation. **Any new
+live-vault canary belongs in that target's `-run` pattern** — adding one and leaving it to `go test
+./...` re-opens the hole.
+
+**Headroom is a signal; core integrity is the gate.** An earlier plan for this canary proposed
+asserting a *token margin* against the 8,000-token budget. That was rejected on evidence: the shed
+ladder absorbs a fat contract by shedding OTHER rungs, so the total barely moves. Growing the contract
+by 6 KB moved the payload only 7,072 → 7,391 tokens (it shed `active_tasks` to pay for it), and a
+synthetic over-cap contract was excerpted at **3,850 tokens — under half the budget**. A margin would
+have been green through both. The payload can sit far under budget while the core is amputated, so the
+assertion is on `Budget.ShedCore`, not on slack. Remaining headroom is still printed, as a `t.Logf`.
 
 **A canary that finds no hazard should say so, not pass silently.** `TestLiveVaultAmendNeverMatchesAFencedHeading`
 skips (rather than passes) when the corpus contains zero fenced-only headings: a green canary with

@@ -92,6 +92,52 @@ func TestBootstrapLiveVaultFitsItsOwnBudget(t *testing.T) {
 			tokens, defaultMaxTokens, shedOf(br))
 	}
 
+	// Headroom is a SIGNAL, not an assertion — deliberately. A margin on the
+	// total measures the wrong quantity: the ladder absorbs a fat contract by
+	// shedding OTHER rungs, so the total barely moves. Measured 2026-07-26 —
+	// growing the live workflow.md by 6 KB moved the payload only 7,072 → 7,391
+	// tokens because active_tasks was shed to pay for it. A margin would have
+	// stayed green through exactly the regression it was proposed to catch.
+	t.Logf("  headroom=%d tokens (signal only — the gate is the core-integrity assertion below)",
+		defaultMaxTokens-tokens)
+
+	// 🔴 THE GATE: ADR-009 — the inviolable core is delivered WHOLE or not at all.
+	//
+	// This asserts the invariant the budget arithmetic cannot: shedRungTier
+	// (context_tools.go) classifies resume->pinned and workflow->excerpt as
+	// shedTierCore, and coreShed derives ShedCore from Shed at report time. A
+	// payload can sit comfortably under budget while shedding a core rung — that
+	// is the state the live vault is in today — so total-token slack is not
+	// evidence the contract arrived.
+	//
+	// 🔴 THIS FAILS ON THE LIVE VAULT TODAY, ON MERIT, AND THAT IS THE POINT.
+	// shed_core is ["resume->pinned"]: resume.md alone exceeds the whole 8,000-token
+	// budget, so the rung must keep firing until resume.md shrinks to ~6-10 KB
+	// (the resume-as-task-index work). Operator decision 2026-07-26: ship it red
+	// rather than skip it, because a skipped assertion is the same silent-success
+	// defect this epic exists to delete. DO NOT loosen this to make the suite
+	// green — fix the payload, or the instrument is lying again.
+	if br.Budget != nil && len(br.Budget.ShedCore) > 0 {
+		t.Errorf("bootstrap shed a CORE rung: %v (ADR-009: the core is delivered whole or the call fails loud). payload=%d tokens, full shed=%v",
+			br.Budget.ShedCore, tokens, br.Budget.Shed)
+	}
+
+	// The behavioral contract specifically must never arrive excerpted. An agent
+	// holding two-thirds of the rules does not know which third it is missing —
+	// that is the ADR-006 prose-as-enforcement trap, re-entered through the
+	// budget. Asserted separately from ShedCore so the failure names the cause.
+	//
+	// NB the diagnostic must NOT print len(br.Workflow) as "the contract size":
+	// once this rung fires that field holds the EXCERPT, so it reads as a tiny
+	// number safely under the cap — an error message arguing against itself.
+	// Report what it actually is, and point at the check that measures the source.
+	if br.Budget != nil && sliceHas(br.Budget.Shed, shedWorkflow) {
+		t.Errorf("the workflow contract was excerpted (%q in shed) — an agent cannot follow rules it did not receive. "+
+			"the served workflow field is now a %d-byte excerpt of a contract that exceeded the %d-byte cap; "+
+			"run `vp check --check workflow-caps` for the source size",
+			shedWorkflow, len(br.Workflow), bootstrapExcerptCap)
+	}
+
 	// THE ALERTS MUST SURVIVE. They are the highest-value thing in the payload and
 	// they ride in the tail, which is exactly what a host truncates first.
 	if br.PostBootstrapInstructions == "" {

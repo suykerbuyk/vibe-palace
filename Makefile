@@ -33,6 +33,21 @@ vet: ## Run go vet
 .PHONY: test
 test: build vet ## Run unit tests — fast, no model download
 	go test -race -short -cover ./...
+	@$(MAKE) --no-print-directory live-canary
+
+# The live-vault canary measures a vault that lives OUTSIDE this module, so `go
+# test` cannot observe its contents changing and will serve a CACHED verdict —
+# an instrument confidently describing a vault it did not look at. Proven: a
+# workflow.md grown 13.5 KB -> 19.5 KB still reported `ok (cached)`. It must run
+# uncached or it is not a gate. Costs ~0.03s; the rest of the suite stays cached.
+#
+# It runs LAST in `test`, not as a prerequisite. As a prerequisite a red canary
+# aborts make before the unit suite runs at all — and this canary is EXPECTED to
+# be red until resume.md shrinks (ADR-009 shed_core breach), which would leave
+# the tree with no runnable tests for the duration. Suite first, gate after.
+.PHONY: live-canary
+live-canary: ## Run the live-vault bootstrap canary uncached (skips cleanly with no vault)
+	go test -count=1 -run TestBootstrapLiveVaultFitsItsOwnBudget ./internal/tools/
 
 .PHONY: test-full
 test-full: build vet ## Run full test suite including ONNX integration tests

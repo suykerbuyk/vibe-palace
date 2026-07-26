@@ -1841,7 +1841,8 @@ All registered unconditionally (no embedder needed).
 
 ```
 make build      # go build ./...
-make test       # fast unit tests (-race -short, no model download)
+make test       # fast unit tests (-race -short, no model download) — depends on live-canary
+make live-canary # bootstrap canary, uncached (-count=1); skips cleanly with no vault
 make test-full  # full suite including ONNX integration
 make integration # integration tests only
 make install    # build + install to ~/.local/bin/vp
