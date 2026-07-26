@@ -10,7 +10,33 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
+
+// seedAllEmbeddedSkills writes every embedded skills/ file into the vault
+// Templates/ tree byte-identically, reconstructing the on-disk skill corpus
+// that `vp init` used to materialize before the override-only model. This is
+// the precondition `vp skills upgrade` reconciles against.
+func seedAllEmbeddedSkills(t *testing.T, vaultPath string) {
+	t.Helper()
+	resources, err := templates.WalkEmbedded()
+	if err != nil {
+		t.Fatalf("WalkEmbedded: %v", err)
+	}
+	for _, res := range resources {
+		if !strings.HasPrefix(res.RelPath, "skills/") {
+			continue
+		}
+		p := filepath.Join(vaultPath, "Templates", filepath.FromSlash(res.RelPath))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("mkdir skill fixture: %v", err)
+		}
+		if err := os.WriteFile(p, res.Bytes, 0o644); err != nil {
+			t.Fatalf("seed skill fixture %s: %v", res.RelPath, err)
+		}
+	}
+}
 
 // runVPWithTTY is runVP + VP_ASSUME_TTY=1 so the binary's interactive
 // prompt gate opens even though the subprocess stdin is a pipe. The
@@ -59,6 +85,15 @@ func TestIntegrationSkillUpgrade(t *testing.T) {
 		"references/reality-validation.md",
 		"references/strategic-partnerships.md",
 	}
+
+	// Under the override-only materialization model a fresh `vp init` writes
+	// no skill mirror (the embedded floor serves it). `vp skills upgrade` is
+	// a separate command that reconciles the on-disk skill corpus against
+	// the embedded corpus across ALL skills, so seed the vault with every
+	// embedded skill byte-identically first — the precondition init used to
+	// provide. (Seeding only startup-analyst would leave the other embedded
+	// skills surfacing as "new", stealing the grouped prompt's stdin.)
+	seedAllEmbeddedSkills(t, env.vaultPath)
 
 	t.Run("group_accept_with_a", func(t *testing.T) {
 		// Remove one file so plan has a "new" entry, and edit another so

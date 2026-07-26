@@ -562,12 +562,13 @@ func printSyncPlans(w *os.File, reconcilers []reconcile.Reconciler, plans []reco
 func anyActionable(plans []reconcile.Plan) bool {
 	for _, p := range plans {
 		for _, a := range p.Actions {
-			// ActionRelock is not "actionable" in the prompt sense (it never
-			// prompts), but it does carry pending work that Apply must persist
-			// — so a relock-only plan must still reach Apply rather than
-			// short-circuit on "Nothing to do". It then flows through the
-			// non-actionable passthrough in the apply loop and auto-applies.
-			if isActionable(a.Kind) || a.Kind == reconcile.ActionRelock {
+			// ActionRelock and ActionDelete (prune) are not "actionable" in
+			// the prompt sense (neither prompts), but both carry pending work
+			// that Apply must persist — so a relock- or prune-only plan must
+			// still reach Apply rather than short-circuit on "Nothing to do".
+			// They then flow through the non-actionable passthrough in the
+			// apply loop and auto-apply.
+			if isActionable(a.Kind) || a.Kind == reconcile.ActionRelock || a.Kind == reconcile.ActionDelete {
 				return true
 			}
 		}
@@ -585,12 +586,13 @@ func mergeReports(dst *reconcile.Report, src reconcile.Report) {
 	dst.Unchanged += src.Unchanged
 	dst.Skipped += src.Skipped
 	dst.Relocked += src.Relocked
+	dst.Pruned += src.Pruned
 	dst.Errors = append(dst.Errors, src.Errors...)
 }
 
 func finishSync(rep reconcile.Report) int {
-	fmt.Fprintf(os.Stdout, "Summary: created=%d updated=%d unchanged=%d skipped=%d relocked=%d\n",
-		rep.Created, rep.Updated, rep.Unchanged, rep.Skipped, rep.Relocked)
+	fmt.Fprintf(os.Stdout, "Summary: created=%d updated=%d unchanged=%d skipped=%d relocked=%d pruned=%d\n",
+		rep.Created, rep.Updated, rep.Unchanged, rep.Skipped, rep.Relocked, rep.Pruned)
 	if len(rep.Errors) > 0 {
 		for _, e := range rep.Errors {
 			slog.Error("config sync apply error", "err", e)

@@ -163,14 +163,34 @@ func (r *TemplateTreeReconciler) checkMaterialize() []check.Result {
 			})
 			continue
 		}
+		vaultExists := herr == nil
+		embSHA, ok := templates.EmbeddedSHA(res.RelPath)
+		if !ok {
+			embSHA = res.SHA256
+		}
 		entry, haveLock := lock.Entries[key]
+
+		// Override-only model: no vault mirror is the healthy state (the
+		// embedded floor serves it). A byte-identical mirror is drift
+		// pending a prune; a genuine override is in sync.
 		status := check.Info
 		summary := "drift"
-		if haveLock && vaultSHA == entry.EmbeddedSHA && res.SHA256 == entry.EmbeddedSHA {
+		switch {
+		case !vaultExists && !haveLock:
 			status = check.Pass
-			summary = "in sync"
-		} else if !haveLock && herr != nil && os.IsNotExist(herr) {
-			summary = "missing (not yet materialized)"
+			summary = "served from embedded floor"
+		case !vaultExists && haveLock:
+			// Dangling lock entry: sync will drop it. Drift, not fatal.
+			summary = "drift (dangling lock entry; embedded floor serves it)"
+		case haveLock && vaultSHA == entry.EmbeddedSHA:
+			summary = "drift (reconciler-owned mirror pending prune)"
+		case haveLock && vaultSHA == embSHA:
+			summary = "drift (byte-identical to current embedded; pending prune)"
+		case haveLock && embSHA == entry.EmbeddedSHA:
+			status = check.Pass
+			summary = "user override"
+			// default: diverged override (haveLock) or no-lock file — drift
+			// pending a prompt.
 		}
 		out = append(out, check.Result{
 			Name:    r.Name() + ":" + key,
@@ -289,68 +309,70 @@ func (r *TemplateTreeReconciler) planMaterialize() (Plan, error) {
 		}
 		entry, haveLock := lock.Entries[key]
 
-		// --- Decision table ---
+		// --- Decision table (Design B: override-only materialization) ---
+		// The embedded floor is served directly over MCP, so the vault
+		// Templates/ mirror is override-only. Byte-identical mirrors are
+		// pruned (embedded serves them); genuine overrides are kept. The
+		// KEY invariant: vault bytes still equal the lock's recorded
+		// embedded baseline ⇒ reconciler-owned (user never edited it) ⇒
+		// safe to prune; vault bytes differ from the baseline ⇒ user
+		// override ⇒ keep.
 		switch {
 		case !vaultExists:
-			// Row 1: vault missing → Create.
-			actions = append(actions, Action{
-				Kind:    ActionCreate,
-				Target:  target,
-				Summary: "materialize " + key,
-				Details: []string{
-					"embedded_sha=" + embSHA,
-					"vault_sha=",
-					"lock_sha=" + entry.EmbeddedSHA,
-				},
-			})
-		case haveLock && vaultSHA == entry.EmbeddedSHA && embSHA == entry.EmbeddedSHA:
-			// Row 2: match / match → Unchanged.
+			// Case 1: no vault mirror → the embedded floor serves it. Do
+			// nothing to disk (replaces the old Create). Drop any dangling
+			// lock entry so the persisted lock lists only real overrides.
+			if haveLock {
+				delete(lock.Entries, key)
+			}
 			actions = append(actions, Action{
 				Kind:    ActionUnchanged,
 				Target:  target,
-				Summary: key + " unchanged",
+				Summary: key + " served from embedded floor",
 			})
-		case haveLock && vaultSHA == entry.EmbeddedSHA && embSHA != entry.EmbeddedSHA:
-			// Row 3: match / differs → auto-Update (safe).
+		case haveLock && vaultSHA == entry.EmbeddedSHA:
+			// Case 2: vault bytes still equal the lock baseline →
+			// reconciler-owned mirror (covers old Row 2 all-match and old
+			// Row 3 embedded-bumped-but-vault-still-baseline). Prune.
 			actions = append(actions, Action{
-				Kind:    ActionUpdate,
+				Kind:    ActionDelete,
 				Target:  target,
-				Summary: "upgrade " + key + " (embedded bumped)",
+				Summary: "prune " + key + " (reconciler-owned mirror; embedded floor serves it)",
 				Details: []string{
 					"embedded_sha=" + embSHA,
 					"vault_sha=" + vaultSHA,
 					"lock_sha=" + entry.EmbeddedSHA,
 				},
 			})
-		case haveLock && vaultSHA != entry.EmbeddedSHA && embSHA == entry.EmbeddedSHA:
-			// Row 4: differs / match → user-edited, embedded stable → Unchanged.
+		case haveLock && vaultSHA == embSHA:
+			// Case 3: vault bytes are byte-identical to CURRENT embedded
+			// while the lock baseline is stale (old Row 4b relock case).
+			// The mirror is redundant → prune. Ordered ABOVE case 4/5,
+			// whose predicates would otherwise swallow it.
 			actions = append(actions, Action{
-				Kind:    ActionUnchanged,
+				Kind:    ActionDelete,
 				Target:  target,
-				Summary: key + " user-edited (embedded stable)",
-			})
-		case haveLock && vaultSHA == embSHA && vaultSHA != entry.EmbeddedSHA:
-			// Row 4b: vault already equals current embedded, but the lock
-			// baseline is stale (recorded an older embedded SHA). No content
-			// change is needed — only the lock entry must be refreshed. Heals
-			// the false-positive TemplateTree drift that vp check reports when
-			// a vault template was upgraded on disk out-of-band (e.g. a
-			// Surface-preflight rewrite committed without the reconciler
-			// refreshing its lock). Metadata-only: no file write, no .bak, no
-			// prompt. Must sit above Row 5, whose predicate is a superset that
-			// would otherwise swallow it.
-			actions = append(actions, Action{
-				Kind:    ActionRelock,
-				Target:  target,
-				Summary: "relock " + key + " (content current, lock stale)",
+				Summary: "prune " + key + " (byte-identical to current embedded; lock stale)",
 				Details: []string{
 					"embedded_sha=" + embSHA,
 					"vault_sha=" + vaultSHA,
 					"lock_sha=" + entry.EmbeddedSHA,
 				},
 			})
-		case haveLock && vaultSHA != entry.EmbeddedSHA && embSHA != entry.EmbeddedSHA:
-			// Row 5: differs / differs → Prompt.
+		case haveLock && embSHA == entry.EmbeddedSHA:
+			// Case 4: vault bytes differ from the baseline but embedded is
+			// stable → genuine user override, embedded unchanged. Keep
+			// (old Row 4).
+			actions = append(actions, Action{
+				Kind:    ActionUnchanged,
+				Target:  target,
+				Summary: key + " user override (kept)",
+			})
+		case haveLock:
+			// Case 5: vault bytes differ from the baseline AND embedded
+			// bumped (embSHA != baseline, since cases 2/3/4 fell through)
+			// → diverged override (user-edited AND embedded bumped).
+			// Prompt (old Row 5).
 			actions = append(actions, Action{
 				Kind:    ActionPrompt,
 				Target:  target,
@@ -362,11 +384,12 @@ func (r *TemplateTreeReconciler) planMaterialize() (Plan, error) {
 					"embedded_relpath=" + res.RelPath,
 				},
 			})
-		case !haveLock:
-			// Lock absent AND file exists. Silent-adopt pre-pass would have
-			// planted a lock entry when vaultSHA == embSHA, so reaching
-			// this branch means vaultSHA ≠ embSHA → treat as user-edited,
-			// Prompt.
+		default:
+			// Case 6: lock absent AND file exists. The silent-adopt
+			// pre-pass would have planted a lock entry when vaultSHA ==
+			// embSHA, so reaching here means vaultSHA ≠ embSHA → can't
+			// prove reconciler-owned; treat as a user override → Prompt
+			// (old no-lock branch).
 			actions = append(actions, Action{
 				Kind:    ActionPrompt,
 				Target:  target,
@@ -541,6 +564,33 @@ func (r *TemplateTreeReconciler) applyMaterialize(p Plan) (Report, error) {
 				WrittenAt:   now,
 			}
 			rep.Relocked++
+		case ActionDelete:
+			// Prune a reconciler-owned mirror so the embedded floor serves
+			// the resource. Back the file up to a sibling .bak first —
+			// mirroring the BackupPolicyAlways discipline the Update path
+			// uses — then remove the primary and drop its lock entry so the
+			// persisted lock no longer lists it. os.Remove tolerates an
+			// already-gone file (Check-mode drift may race a manual delete).
+			res, ok := byTarget[a.Target]
+			if !ok {
+				rep.Errors = append(rep.Errors, fmt.Errorf("prune: no embedded resource for %s", a.Target))
+				continue
+			}
+			if cur, rerr := os.ReadFile(a.Target); rerr == nil {
+				if werr := os.WriteFile(a.Target+".bak", cur, 0o644); werr != nil {
+					rep.Errors = append(rep.Errors, fmt.Errorf("prune backup %s: %w", a.Target+".bak", werr))
+					continue
+				}
+			} else if !os.IsNotExist(rerr) {
+				rep.Errors = append(rep.Errors, fmt.Errorf("prune read %s: %w", a.Target, rerr))
+				continue
+			}
+			if err := os.Remove(a.Target); err != nil && !os.IsNotExist(err) {
+				rep.Errors = append(rep.Errors, fmt.Errorf("prune remove %s: %w", a.Target, err))
+				continue
+			}
+			delete(state.lock.Entries, r.vaultRelFromEmbedded(res.RelPath))
+			rep.Pruned++
 		case ActionUnchanged:
 			rep.Unchanged++
 		case ActionSkip:

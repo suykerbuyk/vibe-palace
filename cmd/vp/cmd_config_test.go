@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -531,12 +532,14 @@ func TestConfigSync_YesAcceptsWithoutStdin(t *testing.T) {
 
 // --- Phase 3: TemplateTree drift prompt tests ---
 
-// syncPromptSetup runs vp init, then edits one materialized template
-// (picked by embeddedRel) so vaultSHA ≠ lockSHA. It also installs an
-// EmbeddedSHA override so the reconciler's embedded SHA differs from
-// the lock entry (simulating a binary bump). Returns vault path and
-// the absolute target path of the edited template. The override is
-// cleaned up by t.Cleanup.
+// syncPromptSetup runs vp init, then seeds a diverged TemplateTree override
+// for embeddedRel: a vault file with distinct user bytes plus a lock entry
+// whose baseline is the REAL embedded SHA, then installs an EmbeddedSHA
+// override so the reconciler's embedded SHA also differs from the baseline.
+// The result is Case 5 of the Design B decision table (vault ≠ baseline AND
+// embedded ≠ baseline → ActionPrompt). Under override-only materialization a
+// fresh init writes no mirror, so the diverged state is constructed
+// explicitly. Returns vault path and the absolute target path.
 func syncPromptSetup(t *testing.T, embeddedRel string) (vaultPath, target, userEdit string) {
 	t.Helper()
 	configDir := initTestEnv(t, false)
@@ -551,19 +554,18 @@ func syncPromptSetup(t *testing.T, embeddedRel string) (vaultPath, target, userE
 		t.Fatalf("init exit code = %d", code)
 	}
 
-	target = filepath.Join(vaultPath, "Templates", filepath.FromSlash(embeddedRel))
-	if _, err := os.Stat(target); err != nil {
-		t.Fatalf("expected materialized %s: %v", target, err)
-	}
-	// User edit: distinct bytes so vaultSHA ≠ lockSHA.
-	userEdit = "USER EDIT: " + embeddedRel + "\n"
-	if err := os.WriteFile(target, []byte(userEdit), 0o644); err != nil {
-		t.Fatalf("write user edit: %v", err)
+	// Baseline = the real embedded SHA (captured before the override).
+	realSHA, ok := templates.EmbeddedSHA(embeddedRel)
+	if !ok {
+		t.Fatalf("no embedded SHA for %q", embeddedRel)
 	}
 
-	// Embedded SHA override: flip one character of the real SHA so
-	// it differs from both the lock entry and the real embedded bytes
-	// but still passes any length checks.
+	target = filepath.Join(vaultPath, "Templates", filepath.FromSlash(embeddedRel))
+	userEdit = "USER EDIT: " + embeddedRel + "\n"
+	seedTemplateOverride(t, vaultPath, embeddedRel, []byte(userEdit), realSHA)
+
+	// Embedded SHA override: differs from both the baseline and the user
+	// bytes so the row lands on Case 5 (Prompt).
 	orig := templates.EmbeddedSHA
 	templates.EmbeddedSHA = func(rel string) (string, bool) {
 		if rel == embeddedRel {
@@ -581,6 +583,33 @@ func syncPromptSetup(t *testing.T, embeddedRel string) (vaultPath, target, userE
 	t.Cleanup(func() { _ = os.Chdir(cwd) })
 
 	return vaultPath, target, userEdit
+}
+
+// seedTemplateOverride writes data to the vault Templates/ target for
+// embeddedRel and records a lock entry with baselineSHA as the embedded
+// baseline, reconstructing a tracked override under the override-only model
+// (where a fresh init leaves no mirror to edit).
+func seedTemplateOverride(t *testing.T, vaultPath, embeddedRel string, data []byte, baselineSHA string) {
+	t.Helper()
+	key := "Templates/" + embeddedRel
+	target := filepath.Join(vaultPath, filepath.FromSlash(key))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		t.Fatalf("write override: %v", err)
+	}
+	lock, err := templates.ReadLock(vaultPath)
+	if err != nil {
+		t.Fatalf("ReadLock: %v", err)
+	}
+	if lock.Entries == nil {
+		lock.Entries = map[string]templates.LockEntry{}
+	}
+	lock.Entries[key] = templates.LockEntry{EmbeddedSHA: baselineSHA, WrittenAt: time.Now().UTC()}
+	if err := templates.WriteLock(vaultPath, lock); err != nil {
+		t.Fatalf("WriteLock: %v", err)
+	}
 }
 
 // runSyncWithStdin pipes the given input to os.Stdin for the duration
@@ -605,12 +634,13 @@ func runSyncWithStdin(t *testing.T, input string, args []string) (stdout string,
 	return stdout, code
 }
 
-// syncRelockSetup inits a vault, then corrupts a single lock entry's
-// EmbeddedSHA to a stale value while leaving the materialized file bytes
-// untouched — the false-positive TemplateTree drift state. Unlike
-// syncPromptSetup it does NOT override templates.EmbeddedSHA: the heal
-// must work against the real embedded corpus.
-func syncRelockSetup(t *testing.T, embeddedRel string) (vaultPath, target, key, freshSHA string) {
+// syncPruneSetup inits a vault, then seeds a byte-identical mirror of
+// embeddedRel (bytes == current embedded) with a STALE lock baseline. Under
+// Design B this redundant reconciler-owned mirror is pruned on the next sync
+// (Case 3 of the decision table) so the embedded floor serves it. It does
+// NOT override templates.EmbeddedSHA — the prune must work against the real
+// embedded corpus.
+func syncPruneSetup(t *testing.T, embeddedRel string) (vaultPath, target, key string) {
 	t.Helper()
 	_ = initTestEnv(t, false)
 
@@ -619,30 +649,26 @@ func syncRelockSetup(t *testing.T, embeddedRel string) (vaultPath, target, key, 
 	vaultPath = filepath.Join(t.TempDir(), "vault")
 
 	cmd := cmdInit(cli.BuildInfo{Version: "test"})
-	if code := cmd.Run([]string{projDir, "--name", "relock-tpl", "--vault-path", vaultPath, "--no-git"}); code != cli.ExitOK {
+	if code := cmd.Run([]string{projDir, "--name", "prune-tpl", "--vault-path", vaultPath, "--no-git"}); code != cli.ExitOK {
 		t.Fatalf("init exit code = %d", code)
 	}
 
-	target = filepath.Join(vaultPath, "Templates", filepath.FromSlash(embeddedRel))
-	if _, err := os.Stat(target); err != nil {
-		t.Fatalf("expected materialized %s: %v", target, err)
+	// Byte-identical mirror with an intentionally stale lock baseline.
+	var embBytes []byte
+	if rs, err := templates.WalkEmbedded(); err == nil {
+		for _, res := range rs {
+			if res.RelPath == embeddedRel {
+				embBytes = res.Bytes
+				break
+			}
+		}
 	}
-
+	if embBytes == nil {
+		t.Fatalf("could not locate %q in embedded corpus", embeddedRel)
+	}
 	key = "Templates/" + embeddedRel
-	lock, err := templates.ReadLock(vaultPath)
-	if err != nil {
-		t.Fatalf("ReadLock: %v", err)
-	}
-	entry, ok := lock.Entries[key]
-	if !ok {
-		t.Fatalf("lock missing entry for %q", key)
-	}
-	freshSHA = entry.EmbeddedSHA
-	entry.EmbeddedSHA = strings.Repeat("0", 64)
-	lock.Entries[key] = entry
-	if err := templates.WriteLock(vaultPath, lock); err != nil {
-		t.Fatalf("WriteLock: %v", err)
-	}
+	target = filepath.Join(vaultPath, filepath.FromSlash(key))
+	seedTemplateOverride(t, vaultPath, embeddedRel, embBytes, strings.Repeat("0", 64))
 
 	cwd, _ := os.Getwd()
 	if err := os.Chdir(projDir); err != nil {
@@ -650,59 +676,62 @@ func syncRelockSetup(t *testing.T, embeddedRel string) (vaultPath, target, key, 
 	}
 	t.Cleanup(func() { _ = os.Chdir(cwd) })
 
-	return vaultPath, target, key, freshSHA
+	return vaultPath, target, key
 }
 
-func TestConfigSyncRelocksStaleLock(t *testing.T) {
-	vaultPath, target, key, freshSHA := syncRelockSetup(t, "commands/wrap.md")
+// TestConfigSyncPrunesByteIdenticalMirror replaces the old relock test: a
+// byte-identical reconciler-owned mirror with a stale lock is now pruned
+// (never relocked). The vault file is removed (backed up to .bak), its lock
+// entry is dropped, and the resource resolves from the embedded floor.
+func TestConfigSyncPrunesByteIdenticalMirror(t *testing.T) {
+	vaultPath, target, key := syncPruneSetup(t, "commands/wrap.md")
 
 	before, err := os.ReadFile(target)
 	if err != nil {
 		t.Fatalf("read target: %v", err)
 	}
 
-	// --yes is non-interactive; the relock auto-applies regardless since it
-	// is never prompted. No stdin needed.
+	// The prune auto-applies (never prompted); --yes just makes it silent.
 	out, code := runSyncWithStdin(t, "", []string{
 		"--project-root", filepath.Dir(target), "--tier", "vault", "--yes",
 	})
 	if code != cli.ExitOK {
 		t.Fatalf("exit code = %d\n%s", code, out)
 	}
-	if !strings.Contains(out, "relocked=1") {
-		t.Errorf("summary missing relocked=1:\n%s", out)
+	if !strings.Contains(out, "pruned=1") {
+		t.Errorf("summary missing pruned=1:\n%s", out)
 	}
 
-	// File bytes unchanged; no .bak emitted.
-	after, err := os.ReadFile(target)
+	// File removed; its bytes preserved to .bak.
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Errorf("pruned file still present (err=%v)", err)
+	}
+	bak, err := os.ReadFile(target + ".bak")
 	if err != nil {
-		t.Fatalf("re-read target: %v", err)
+		t.Fatalf("prune should back up bytes to .bak: %v", err)
 	}
-	if string(after) != string(before) {
-		t.Errorf("relock mutated file bytes")
-	}
-	if _, err := os.Stat(target + ".bak"); err == nil {
-		t.Error("relock unexpectedly created a .bak sidecar")
+	if string(bak) != string(before) {
+		t.Error(".bak != pruned bytes")
 	}
 
-	// Lock refreshed to the real embedded SHA.
-	healed, err := templates.ReadLock(vaultPath)
+	// Lock entry dropped.
+	after, err := templates.ReadLock(vaultPath)
 	if err != nil {
-		t.Fatalf("ReadLock (healed): %v", err)
+		t.Fatalf("ReadLock (post-prune): %v", err)
 	}
-	if healed.Entries[key].EmbeddedSHA != freshSHA {
-		t.Errorf("lock SHA = %q, want %q", healed.Entries[key].EmbeddedSHA, freshSHA)
+	if _, ok := after.Entries[key]; ok {
+		t.Errorf("lock still lists pruned key %q", key)
 	}
 
-	// Idempotent: a second sync relocks nothing.
+	// Idempotent: a second sync prunes nothing.
 	out2, code2 := runSyncWithStdin(t, "", []string{
 		"--project-root", filepath.Dir(target), "--tier", "vault", "--yes",
 	})
 	if code2 != cli.ExitOK {
 		t.Fatalf("second sync exit code = %d\n%s", code2, out2)
 	}
-	if !strings.Contains(out2, "relocked=0") {
-		t.Errorf("second sync should report relocked=0:\n%s", out2)
+	if !strings.Contains(out2, "pruned=0") {
+		t.Errorf("second sync should report pruned=0:\n%s", out2)
 	}
 }
 
@@ -867,15 +896,14 @@ func TestConfigSyncTemplateDriftNewCollision(t *testing.T) {
 func TestConfigSyncTemplateBatchUppercase(t *testing.T) {
 	vaultPath, target1, _ := syncPromptSetup(t, "commands/wrap.md")
 
-	// Drift a second file by editing it and extending the SHA override
-	// to cover it as well.
+	// Seed a second diverged override so two Prompt actions are queued.
+	restartSHA, ok := templates.EmbeddedSHA("commands/restart.md")
+	if !ok {
+		t.Fatal("no embedded SHA for commands/restart.md")
+	}
 	target2 := filepath.Join(vaultPath, "Templates", "commands", "restart.md")
-	if _, err := os.Stat(target2); err != nil {
-		t.Skipf("second resource not materialized: %v", err)
-	}
-	if err := os.WriteFile(target2, []byte("USER EDIT 2\n"), 0o644); err != nil {
-		t.Fatalf("edit target2: %v", err)
-	}
+	seedTemplateOverride(t, vaultPath, "commands/restart.md", []byte("USER EDIT 2\n"), restartSHA)
+
 	orig := templates.EmbeddedSHA
 	templates.EmbeddedSHA = func(rel string) (string, bool) {
 		switch rel {

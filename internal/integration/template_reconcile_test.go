@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
@@ -36,49 +37,52 @@ import (
 func TestIntegrationTemplateMaterializeAndReconcile(t *testing.T) {
 	bin := buildVPBinary(t)
 
-	// --- Part 1: fresh init materializes Templates/ ---
+	// --- Part 1: fresh init leaves Templates/ override-only (no mirror) ---
 	env := setupFreshEnv(t)
 	runVP(t, bin, env, nil, "init", env.projectDir,
 		"--name", env.projectName, "--vault-path", env.vaultPath, "--no-git")
 
 	assertInitialMaterialization(t, env)
 
-	// --- Part 2: user edit + `vp config sync --yes` preserves edit ---
+	// --- Part 2: a genuine override survives `vp config sync --yes` ---
+	// Under override-only there is nothing on disk to edit after init, so we
+	// seed a tracked override (distinct bytes + a lock entry at the embedded
+	// baseline). The reconciler must keep it (Case 4) — no clobber, no .bak,
+	// lock entry preserved.
 	wrapPath := filepath.Join(env.vaultPath, "Templates", "commands", "wrap.md")
 	embWrap := embeddedBytesFor(t, "commands/wrap.md")
-	preEditLock, ok := readLockEntry(t, env.vaultPath, "Templates/commands/wrap.md")
+	realEmbSHA, ok := templates.EmbeddedSHA("commands/wrap.md")
 	if !ok {
-		t.Fatalf("init did not write lock entry for Templates/commands/wrap.md")
+		t.Fatal("no embedded SHA for commands/wrap.md")
 	}
-	preEditSHA := preEditLock.EmbeddedSHA
 
 	const userEdit = "# USER EDITED WRAP\n\nmy custom wrap brief\n"
-	if err := os.WriteFile(wrapPath, []byte(userEdit), 0o644); err != nil {
-		t.Fatalf("user-edit wrap.md: %v", err)
-	}
+	seedTrackedOverride(t, env.vaultPath, "commands/wrap.md", []byte(userEdit), realEmbSHA)
+
 	runVP(t, bin, env, nil, "config", "sync", "--yes",
 		"--project-root", env.projectDir)
 
 	if got, _ := os.ReadFile(wrapPath); string(got) != userEdit {
-		t.Errorf("step 2: wrap.md was clobbered by sync --yes\n got  %q\n want %q",
+		t.Errorf("step 2: override was clobbered by sync --yes\n got  %q\n want %q",
 			got, userEdit)
 	}
 	if _, err := os.Stat(wrapPath + ".bak"); err == nil {
-		t.Error("step 2: user-edited-only file must not produce .bak")
+		t.Error("step 2: kept override must not produce .bak")
 	}
 	afterSyncEntry, ok := readLockEntry(t, env.vaultPath, "Templates/commands/wrap.md")
 	if !ok {
 		t.Fatal("step 2: lock entry for wrap.md disappeared")
 	}
-	if afterSyncEntry.EmbeddedSHA != preEditSHA {
-		t.Errorf("step 2: lock should still track embedded SHA, got %q want %q",
-			afterSyncEntry.EmbeddedSHA, preEditSHA)
+	if afterSyncEntry.EmbeddedSHA != realEmbSHA {
+		t.Errorf("step 2: lock should still track embedded baseline, got %q want %q",
+			afterSyncEntry.EmbeddedSHA, realEmbSHA)
 	}
 
-	// --- Part 3: simulated binary bump → Prompt → three branches ---
-	// Each subtest replays steps 1+2 in its own vault tempdir, then
-	// corrupts the lock entry so vault_sha ≠ lock_sha and embedded_sha ≠
-	// lock_sha (row 5 of the decision table → ActionPrompt).
+	// --- Part 3: diverged override → Prompt → three branches ---
+	// Each subtest seeds a diverged override in its own vault tempdir: a
+	// vault file with user bytes plus a lock entry whose baseline is a bogus
+	// SHA, so vault_sha ≠ lock_sha AND embedded_sha ≠ lock_sha (Case 5 of
+	// the decision table → ActionPrompt).
 	const bogusSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 	t.Run("skip", func(t *testing.T) {
@@ -86,10 +90,7 @@ func TestIntegrationTemplateMaterializeAndReconcile(t *testing.T) {
 		runVP(t, bin, env, nil, "init", env.projectDir,
 			"--name", "tpl-skip", "--vault-path", env.vaultPath, "--no-git")
 		wrap := filepath.Join(env.vaultPath, "Templates", "commands", "wrap.md")
-		if err := os.WriteFile(wrap, []byte(userEdit), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		bumpLockSHA(t, env.vaultPath, "Templates/commands/wrap.md", bogusSHA)
+		seedTrackedOverride(t, env.vaultPath, "commands/wrap.md", []byte(userEdit), bogusSHA)
 
 		out := runVP(t, bin, env, []byte("s\n"),
 			"config", "sync", "--project-root", env.projectDir)
@@ -118,15 +119,7 @@ func TestIntegrationTemplateMaterializeAndReconcile(t *testing.T) {
 		runVP(t, bin, env, nil, "init", env.projectDir,
 			"--name", "tpl-ovw", "--vault-path", env.vaultPath, "--no-git")
 		wrap := filepath.Join(env.vaultPath, "Templates", "commands", "wrap.md")
-		if err := os.WriteFile(wrap, []byte(userEdit), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		// Capture the real embedded SHA before we corrupt the lock.
-		realEmbSHA, ok := templates.EmbeddedSHA("commands/wrap.md")
-		if !ok {
-			t.Fatal("no embedded SHA for commands/wrap.md")
-		}
-		bumpLockSHA(t, env.vaultPath, "Templates/commands/wrap.md", bogusSHA)
+		seedTrackedOverride(t, env.vaultPath, "commands/wrap.md", []byte(userEdit), bogusSHA)
 
 		runVP(t, bin, env, []byte("o\n"),
 			"config", "sync", "--project-root", env.projectDir)
@@ -161,10 +154,7 @@ func TestIntegrationTemplateMaterializeAndReconcile(t *testing.T) {
 		runVP(t, bin, env, nil, "init", env.projectDir,
 			"--name", "tpl-new", "--vault-path", env.vaultPath, "--no-git")
 		wrap := filepath.Join(env.vaultPath, "Templates", "commands", "wrap.md")
-		if err := os.WriteFile(wrap, []byte(userEdit), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		bumpLockSHA(t, env.vaultPath, "Templates/commands/wrap.md", bogusSHA)
+		seedTrackedOverride(t, env.vaultPath, "commands/wrap.md", []byte(userEdit), bogusSHA)
 
 		runVP(t, bin, env, []byte("n\n"),
 			"config", "sync", "--project-root", env.projectDir)
@@ -187,38 +177,42 @@ func TestIntegrationTemplateMaterializeAndReconcile(t *testing.T) {
 	})
 }
 
-// assertInitialMaterialization checks every post-`vp init` predicate from
-// step 1 of the acceptance test: wrap.md equals embedded bytes, workflow.md
-// and resume.md exist, templates.lock contains an entry per materialized
-// resource with a matching EmbeddedSHA, .gitignore contains *.bak and
-// *.new, and the current project's commands/ + skills/ README stubs exist.
-func assertInitialMaterialization(t *testing.T, env *testEnv) {
+// seedTrackedOverride writes data to the vault Templates/ target for
+// embeddedRel and records a lock entry with baselineSHA as the embedded
+// baseline — reconstructing a tracked override under the override-only
+// model, where a fresh init leaves no mirror to edit.
+func seedTrackedOverride(t *testing.T, vaultPath, embeddedRel string, data []byte, baselineSHA string) {
 	t.Helper()
-
-	// wrap.md matches embedded default byte-for-byte.
-	wrap := filepath.Join(env.vaultPath, "Templates", "commands", "wrap.md")
-	got, err := os.ReadFile(wrap)
-	if err != nil {
-		t.Fatalf("read %s: %v", wrap, err)
+	key := "Templates/" + embeddedRel
+	target := filepath.Join(vaultPath, filepath.FromSlash(key))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
 	}
-	want := embeddedBytesFor(t, "commands/wrap.md")
-	if !bytes.Equal(got, want) {
-		t.Errorf("wrap.md != embedded default (len %d vs %d)", len(got), len(want))
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		t.Fatalf("write override: %v", err)
 	}
-
-	// workflow.md + resume.md materialized.
-	for _, rel := range []string{"workflow.md", "resume.md"} {
-		p := filepath.Join(env.vaultPath, "Templates", rel)
-		if _, err := os.Stat(p); err != nil {
-			t.Errorf("expected materialized %s: %v", p, err)
-		}
-	}
-
-	// Lock file has a matching entry for every materialized resource.
-	lock, err := templates.ReadLock(env.vaultPath)
+	lock, err := templates.ReadLock(vaultPath)
 	if err != nil {
 		t.Fatalf("ReadLock: %v", err)
 	}
+	if lock.Entries == nil {
+		lock.Entries = map[string]templates.LockEntry{}
+	}
+	lock.Entries[key] = templates.LockEntry{EmbeddedSHA: baselineSHA, WrittenAt: time.Now().UTC()}
+	if err := templates.WriteLock(vaultPath, lock); err != nil {
+		t.Fatalf("WriteLock: %v", err)
+	}
+}
+
+// assertInitialMaterialization checks the override-only post-`vp init`
+// contract: NO embedded resource is mirrored into the vault Templates/ tree
+// (the embedded floor is served directly), the templates.lock is empty, the
+// vault .gitignore still carries the *.bak / *.new patterns, and the
+// current project's commands/ + skills/ README stubs exist (scaffold mode is
+// unchanged).
+func assertInitialMaterialization(t *testing.T, env *testEnv) {
+	t.Helper()
+
 	resources, err := templates.WalkEmbedded()
 	if err != nil {
 		t.Fatalf("WalkEmbedded: %v", err)
@@ -226,18 +220,23 @@ func assertInitialMaterialization(t *testing.T, env *testEnv) {
 	if len(resources) == 0 {
 		t.Fatal("no embedded resources discovered")
 	}
+
+	// No embedded resource is mirrored into the vault.
 	for _, r := range resources {
-		key := "Templates/" + r.RelPath
-		entry, ok := lock.Entries[key]
-		if !ok {
-			t.Errorf("lock missing entry for %s", key)
-			continue
+		p := filepath.Join(env.vaultPath, "Templates", filepath.FromSlash(r.RelPath))
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("override-only init should not materialize %s (err=%v)", r.RelPath, err)
 		}
-		embSHA, _ := templates.EmbeddedSHA(r.RelPath)
-		if entry.EmbeddedSHA != embSHA {
-			t.Errorf("lock entry %s sha mismatch: have %q want %q",
-				key, entry.EmbeddedSHA, embSHA)
-		}
+	}
+
+	// The lock is empty — no reconciler-owned mirror is tracked.
+	lock, err := templates.ReadLock(env.vaultPath)
+	if err != nil {
+		t.Fatalf("ReadLock: %v", err)
+	}
+	if len(lock.Entries) != 0 {
+		t.Errorf("templates.lock should be empty on a fresh override-only vault, got %d entries",
+			len(lock.Entries))
 	}
 
 	// .gitignore has *.bak and *.new canonical patterns.
@@ -251,7 +250,8 @@ func assertInitialMaterialization(t *testing.T, env *testEnv) {
 		}
 	}
 
-	// Current-project scaffold: Projects/<slug>/{commands,skills}/README.md.
+	// Current-project scaffold (unchanged by Design B):
+	// Projects/<slug>/{commands,skills}/README.md.
 	for _, kind := range []string{"commands", "skills"} {
 		p := filepath.Join(env.vaultPath, "Projects", env.projectName, kind, "README.md")
 		if _, err := os.Stat(p); err != nil {
@@ -341,29 +341,6 @@ func readLockEntry(t *testing.T, vaultRoot, key string) (templates.LockEntry, bo
 	}
 	e, ok := l.Entries[key]
 	return e, ok
-}
-
-// bumpLockSHA rewrites the templates.lock entry for key so its
-// EmbeddedSHA is sha, simulating a binary bump from the reconciler's
-// perspective (row 5 of the three-SHA decision table: vault≠lock AND
-// embedded≠lock → ActionPrompt). More robust across a process boundary
-// than the in-process templates.EmbeddedSHA function-variable override,
-// and produces the same Plan outcome.
-func bumpLockSHA(t *testing.T, vaultRoot, key, sha string) {
-	t.Helper()
-	l, err := templates.ReadLock(vaultRoot)
-	if err != nil {
-		t.Fatalf("ReadLock: %v", err)
-	}
-	entry, ok := l.Entries[key]
-	if !ok {
-		t.Fatalf("bumpLockSHA: no entry for %s", key)
-	}
-	entry.EmbeddedSHA = sha
-	l.Entries[key] = entry
-	if err := templates.WriteLock(vaultRoot, l); err != nil {
-		t.Fatalf("WriteLock: %v", err)
-	}
 }
 
 // runVP execs the built vp binary with stdin (optional) and the given

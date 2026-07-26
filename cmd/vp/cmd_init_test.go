@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
@@ -683,10 +684,12 @@ func TestInitShimsSkippedWhenNoProject(t *testing.T) {
 	}
 }
 
-// TestInitMaterializesTemplates verifies Phase 3.1: after vp init the
-// vault's Templates/ tree contains embedded resources (byte-identical),
-// templates.lock exists with an entry for each, and the vault
-// .gitignore carries the canonical *.bak / *.new patterns.
+// TestInitMaterializesTemplates verifies the Design B (override-only)
+// contract: after vp init the vault's Templates/ tree holds NO mirror of the
+// embedded corpus (the embedded floor is served directly over MCP), the
+// templates.lock is empty (no reconciler-owned mirror is tracked), yet every
+// resource still resolves from the embedded tier. The vault .gitignore still
+// carries the canonical *.bak / *.new patterns.
 func TestInitMaterializesTemplates(t *testing.T) {
 	initTestEnv(t, false)
 	projDir := t.TempDir()
@@ -699,8 +702,6 @@ func TestInitMaterializesTemplates(t *testing.T) {
 		t.Fatalf("exit code = %d", code)
 	}
 
-	// Walk the embedded corpus and assert each resource is on disk
-	// with matching bytes.
 	resources, err := templates.WalkEmbedded()
 	if err != nil {
 		t.Fatalf("WalkEmbedded: %v", err)
@@ -708,40 +709,34 @@ func TestInitMaterializesTemplates(t *testing.T) {
 	if len(resources) == 0 {
 		t.Fatal("WalkEmbedded returned zero resources")
 	}
-	cmdCount := 0
+
+	// No embedded resource is mirrored into the vault Templates/ tree.
 	for _, res := range resources {
 		target := filepath.Join(vaultDir, "Templates", filepath.FromSlash(res.RelPath))
-		got, err := os.ReadFile(target)
-		if err != nil {
-			t.Fatalf("materialized file missing %s: %v", target, err)
+		if _, err := os.Stat(target); !os.IsNotExist(err) {
+			t.Errorf("override-only init should not materialize %s (err=%v)", res.RelPath, err)
 		}
-		if string(got) != string(res.Bytes) {
-			t.Errorf("bytes mismatch for %s", res.RelPath)
-		}
-		if strings.HasPrefix(res.RelPath, "commands/") {
-			cmdCount++
-		}
-	}
-	if cmdCount == 0 {
-		t.Error("expected at least one command materialized under Templates/commands/")
 	}
 
-	// Lock file must exist and cover every materialized resource.
+	// The lock is empty — nothing reconciler-owned to track.
 	lock, err := templates.ReadLock(vaultDir)
 	if err != nil {
 		t.Fatalf("ReadLock: %v", err)
 	}
-	for _, res := range resources {
-		key := "Templates/" + res.RelPath
-		entry, ok := lock.Entries[key]
-		if !ok {
-			t.Errorf("lock missing entry for %s", key)
-			continue
-		}
-		if entry.EmbeddedSHA != res.SHA256 {
-			t.Errorf("lock sha mismatch for %s: got %s, want %s",
-				key, entry.EmbeddedSHA, res.SHA256)
-		}
+	if len(lock.Entries) != 0 {
+		t.Errorf("templates.lock should be empty on a fresh override-only vault, got %d entries", len(lock.Entries))
+	}
+
+	// The embedded floor still resolves a command byte-for-byte.
+	content, source, err := context.NewResolver(vaultDir).Resolve("command:wrap", "")
+	if err != nil {
+		t.Fatalf("resolve command:wrap: %v", err)
+	}
+	if source != "embedded" {
+		t.Errorf("command:wrap resolved from %q, want embedded", source)
+	}
+	if content == "" {
+		t.Error("command:wrap resolved empty from embedded floor")
 	}
 
 	// .gitignore must contain every canonical pattern (including

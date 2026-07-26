@@ -79,20 +79,28 @@ Use `vp_append_iteration` to append a brief entry:
 
 ## Step 6: Update knowledge.md
 
-Read the project's `knowledge.md` with `vp_get_knowledge`. Then use
-the `Edit` or `Write` file tools to add a line under an appropriate
-heading (create a `## Cancelled Plans` section if one doesn't
-exist):
+Edit `knowledge.md` **surgically**, exactly as Step 7 edits `resume.md`: read the
+raw bytes with `vp_vault_read` on `Projects/{{PROJECT}}/knowledge.md`, then make
+the change with `vp_vault_edit`, passing the `sha256` from the read as
+`expected_sha256`. Chain the sha the edit returns into any follow-up edit. On a
+sha conflict, re-read and recompose — **never force**.
+
+`{{PROJECT}}` is a placeholder token the server resolves to this project — do not
+compute the vault path or look up the project name yourself, and do **not** reach
+for `vp_get_knowledge` here: that returns the knowledge *graph*, not the prose
+file you are editing.
+
+Add a line under an appropriate heading (create a `## Cancelled Plans` section if
+one doesn't exist):
 
 ```
 - **{Task name}** cancelled (YYYY-MM-DD) — {one-sentence reason}.
   See `tasks/cancelled/{filename}`.
 ```
 
-Resolve the `knowledge.md` path as
-`<vault_path>/Projects/<project>/knowledge.md` (read `vault_path`
-from `~/.config/vibe-palace/config.toml`; get the project name from
-the first line of `vp inject` output, `# Context: {name}`).
+Anchor the `vp_vault_edit` `old_string` on the heading (or an adjacent line) so
+the insertion lands in the right place; this is a single-line addition, not a
+whole-file rewrite.
 
 This prevents future sessions — in this project **or any other** —
 from re-proposing the same work.

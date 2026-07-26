@@ -68,6 +68,16 @@ const (
 	// vp check reports when a vault template was upgraded on disk
 	// out-of-band without the reconciler refreshing its lock entry.
 	ActionRelock ActionKind = "Relock"
+	// ActionDelete: the artifact is a reconciler-owned vault mirror that
+	// is byte-identical to the canonical (embedded) source and therefore
+	// redundant — the embedded floor serves it directly. The fix is to
+	// prune the vault file (after backing it up to a sibling .bak,
+	// mirroring the update backup discipline) and drop its lock entry so
+	// the persisted lock lists only genuine user overrides. Emitted by the
+	// TemplateTree reconciler under the override-only materialization model
+	// (ADR-008 Phase 3). Never prompted: pruning a byte-identical mirror is
+	// safe because resolution falls through to the embedded tier.
+	ActionDelete ActionKind = "Delete"
 )
 
 // Action describes a single proposed change to one artifact (typically
@@ -91,6 +101,7 @@ type Report struct {
 	Unchanged int
 	Skipped   int
 	Relocked  int
+	Pruned    int
 	Errors    []error
 }
 

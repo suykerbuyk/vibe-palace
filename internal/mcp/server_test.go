@@ -25,11 +25,11 @@ func testServer(t *testing.T) *Server {
 // against accidental emptying — it must be non-empty and point clients at
 // vp_bootstrap_context.
 func TestServerInstructionsConst(t *testing.T) {
-	if serverInstructions == "" {
-		t.Fatal("serverInstructions is empty")
+	if ServerInstructions == "" {
+		t.Fatal("ServerInstructions is empty")
 	}
-	if !strings.Contains(serverInstructions, "vp_bootstrap_context") {
-		t.Errorf("serverInstructions missing vp_bootstrap_context: %q", serverInstructions)
+	if !strings.Contains(ServerInstructions, "vp_bootstrap_context") {
+		t.Errorf("ServerInstructions missing vp_bootstrap_context: %q", ServerInstructions)
 	}
 }
 

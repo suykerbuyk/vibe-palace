@@ -627,6 +627,7 @@ and operate on storage directly.
 | `vp_skill` | cmd_tools.go | Context |
 | `vp_get_skill_section` | skill_section_tool.go | Context |
 | `vp_get_doctrine` | context_query_tools.go | Context |
+| `vp_manual` | manual_tool.go | Context |
 | `vp_palace_status` | palace_tools.go | Palace |
 | `vp_list_wings` | palace_tools.go | Palace |
 | `vp_list_rooms` | palace_tools.go | Palace |

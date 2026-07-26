@@ -102,16 +102,15 @@ func TestJourney_Skill_Materialization_CrossIDE(t *testing.T) {
 	}
 
 	// --- Surface 4: MCP vp_get_skill_section returns a reference body
-	// that matches the on-disk reference file. ---
-	h := newHarness(t, false)
-	// Overlay the materialized skill into the harness vault so the
-	// in-process resolver sees the same tier-4 layout as the one `vp
-	// init` wrote.
+	// served from the embedded floor. ---
+	// Under the override-only materialization model `vp init` writes no
+	// skill mirror, so we assert the tool resolves the reference from the
+	// embedded tier (no vault overlay) and matches the embedded bytes.
 	skillRoot := filepath.Join(env.vaultPath, "Templates", "skills", skill)
-	dst := filepath.Join(h.Vault.Root, "Templates", "skills", skill)
-	if err := copyTree(skillRoot, dst); err != nil {
-		t.Fatalf("copyTree: %v", err)
+	if _, err := os.Stat(skillRoot); !os.IsNotExist(err) {
+		t.Errorf("override-only init should not materialize skill dir %s (err=%v)", skillRoot, err)
 	}
+	h := newHarness(t, false)
 	h.registerAllTools(t)
 
 	const section = "capex-opex"
@@ -129,14 +128,11 @@ func TestJourney_Skill_Materialization_CrossIDE(t *testing.T) {
 	if ref.Content == "" {
 		t.Fatal("vp_get_skill_section returned empty body")
 	}
-	// On-disk: the materialized reference must match the MCP tool output.
-	onDisk, err := os.ReadFile(filepath.Join(skillRoot, "references", section+".md"))
-	if err != nil {
-		t.Fatalf("read materialized reference: %v", err)
-	}
-	if string(onDisk) != ref.Content {
-		t.Errorf("vp_get_skill_section body != on-disk reference (%d vs %d bytes)",
-			len(ref.Content), len(onDisk))
+	// The served body must match the embedded reference byte-for-byte.
+	embRef := embeddedBytesFor(t, "skills/"+skill+"/references/"+section+".md")
+	if string(embRef) != ref.Content {
+		t.Errorf("vp_get_skill_section body != embedded reference (%d vs %d bytes)",
+			len(ref.Content), len(embRef))
 	}
 
 	// Consistency: the same skill is visible through vp_list_skills.

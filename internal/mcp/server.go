@@ -19,11 +19,14 @@ type contextKey string
 
 const vaultKey contextKey = "vault"
 
-// serverInstructions is the server-level bootstrap directive returned to MCP
+// ServerInstructions is the server-level bootstrap directive returned to MCP
 // clients in the initialize response. Hosts that surface server instructions
 // (Grok, etc.) show this on connect even before any AGENTS.md/CLAUDE.md block
 // is read, so the first message already knows to load project context.
-const serverInstructions = "Call vp_bootstrap_context at session start for full project context — resume, workflow rules, active tasks, and recent sessions. When the user types vpc-<name> (e.g. vpc-restart, vpc-wrap), call vp_cmd with name=<name> and follow the returned instructions. When the user types vps-<name>, call vp_skill with name=<name>. Call vp_capture_session at the end of each work unit. Large bodies may be delivered as vibe-palace:// resources — read them natively via resources/read or page them with vp_read_resource."
+//
+// It is exported so the capability-service tool vp_manual can echo the exact
+// string a connecting client receives, without maintaining a second copy.
+const ServerInstructions = "Call vp_bootstrap_context at session start for full project context — resume, workflow rules, active tasks, and recent sessions. When the user types vpc-<name> (e.g. vpc-restart, vpc-wrap), call vp_cmd with name=<name> and follow the returned instructions. When the user types vps-<name>, call vp_skill with name=<name>. Call vp_capture_session at the end of each work unit. Large bodies may be delivered as vibe-palace:// resources — read them natively via resources/read or page them with vp_read_resource."
 
 // VaultFromContext extracts the Vault from a handler context.
 // Returns nil if no vault is present.
@@ -79,7 +82,7 @@ func NewServer(vault *storage.Vault) *Server {
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(false, false),
 		server.WithRecovery(),
-		server.WithInstructions(serverInstructions),
+		server.WithInstructions(ServerInstructions),
 	)
 	srv := &Server{mcp: s, vault: vault}
 	srv.registry = NewRegistry(s)
