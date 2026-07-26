@@ -46,7 +46,15 @@ func TestIntegration_VaultLockCrossProcess(t *testing.T) {
 	if err := os.MkdirAll(vaultRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := `vault_path = "` + vaultRoot + `"` + "\ngit_enabled = false\n"
+	// %q, NOT raw interpolation into a TOML basic string. On Windows vaultRoot
+	// is `C:\Users\...`, and inside a double-quoted TOML value `\U` is a Unicode
+	// escape demanding eight hex digits — so the hand-built config parsed as
+	// `expected eight hexadecimal digits after '\U', but got "C:\\Us"` and every
+	// child died before reaching the lock (2026-07-26). %q escapes backslashes
+	// as `\\`, which is a valid TOML escape; this mirrors exactly what
+	// storage.GenerateConfigTOML does in production, so the fixture and the real
+	// writer cannot disagree about quoting.
+	cfg := fmt.Sprintf("vault_path = %q\ngit_enabled = false\n", vaultRoot)
 	if err := os.WriteFile(filepath.Join(xdg, "vibe-palace", "config.toml"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
