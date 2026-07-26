@@ -198,11 +198,11 @@ func TestEmbeddedWrap_PlanHygiene(t *testing.T) {
 
 	// Edit A — the Sweep Orphaned Plans step.
 	sweepPhrases := []string{
-		"Sweep Orphaned Plans", // the step heading
-		"vp_scan_plans",        // the preferred read-only reporter
-		"~/.claude/plans/*.md",   // the glob fallback for an older binary
-		"Promoted this session",  // the narrow promote-and-delete rule
-		"/restart",               // strays are restart's job, not wrap's
+		"Sweep Orphaned Plans",  // the step heading
+		"vp_scan_plans",         // the preferred read-only reporter
+		"~/.claude/plans/*.md",  // the glob fallback for an older binary
+		"Promoted this session", // the narrow promote-and-delete rule
+		"/restart",              // strays are restart's job, not wrap's
 	}
 	for _, phrase := range sweepPhrases {
 		if !strings.Contains(wrap, phrase) {

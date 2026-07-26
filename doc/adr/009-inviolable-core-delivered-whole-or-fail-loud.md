@@ -4,7 +4,13 @@
 (`e52cfe1`: honest over-budget verdict computed on the final payload +
 `budget.shed_core` core-tier report; `cffa14f`: advisory workflow-caps check).
 The fail-loud arm remains gated on the ADR-008 rollout
-(task `adr-009-arm-fail-loud-bootstrap`; see Consequences).
+(task `adr-009-arm-fail-loud-bootstrap`; see Consequences). **Still gated after
+the ADR-008 Phase 1 rollout landed 2026-07-25 (iteration 257):** that rollout cut
+the pinned core 73% but a real bootstrap still reports
+`shed_core: ["resume->pinned"]`, because the full `resume.md` (32,586 bytes,
+~8,146 tokens) is larger than the entire 8,000-token budget by itself. Arming the
+gate now would hard-fail every vibe-palace bootstrap. Clearing it needs the
+resume shrink in ADR-008 Phases 2–4, not another rollout pass.
 **Deciders:** Project owner
 **Context:** The bootstrap shed ladder trims the payload to a token budget by dropping rungs in order — and today the operating contract (`workflow`) and active project state (`resume`'s un-pinned zone, the active task list) are ordinary rungs. A shed that fits the budget by dropping them returns **success**, so an agent about to change code can receive a degraded-but-plausible payload and never know a rule or a hazard is missing.
 

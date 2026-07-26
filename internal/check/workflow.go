@@ -22,8 +22,9 @@ import (
 // internal/tools/context_tools.go, not chosen by taste:
 //
 //   - AssembleBootstrap defaults max_tokens to 8000 and estimates ~4 bytes
-//     per token, so the whole payload — workflow + resume + tasks + sessions
-//     + directive + budget report — shares a ~32,000-byte default ceiling.
+//     per token, so the whole payload (workflow, resume, tasks, sessions,
+//     directive and budget report together) shares a ~32,000-byte default
+//     ceiling.
 //   - The token shed ladder's workflow rung ("workflow->excerpt",
 //     shedToBudget) excerpts the contract ONLY when its body exceeds
 //     bootstrapExcerptCap (4,000 bytes). At or under that bound the contract

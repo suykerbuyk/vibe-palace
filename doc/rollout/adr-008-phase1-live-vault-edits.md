@@ -1,7 +1,29 @@
 # ADR-008 Phase 1 — prepared live-vault edits (apply at rollout ONLY)
 
-**Status:** prepared, NOT applied. Per iter-179 rollout discipline and the task's
-2026-07-22 triage decision, every live-vault edit below is applied only at the
+**Status: APPLIED 2026-07-25 (iteration 257). This document is now a record, not
+a plan — do not re-apply it.** Steps 1-5 below all completed: Edit A landed as
+`Projects/vibe-palace/workflow.md` (12,528 -> 13,482 bytes) and Edit B as
+`Projects/vibe-palace/resume.md` (42,307 -> 32,586 bytes), both compare-and-set
+guarded; the live canary passes at 7,457/8,000.
+
+> **⚠ The step-5 acceptance criteria below were WRONG and are superseded.** They
+> asked for a real bootstrap showing `shed_core` core-free and `workflow-caps`
+> silent. Neither is achievable by Edit A/B, and this document's own content is
+> what proves it: after Edit B the full resume is 32,586 bytes (~8,146 tokens),
+> larger than the entire 8,000-token budget on its own, so `resume->pinned` must
+> keep shedding; and Edit A's own verbatim replacement text is 13,482 bytes
+> against a 4,000-byte workflow cap, so the deliverable violates the criterion
+> the same document sets. Phase 1 cut the inviolable core 73% (13,271 -> 3,527
+> bytes of pinned resume) but did not make it FIT — ~9.7 KB of Behavioral Notes
+> moved from a pinned resume section into a bootstrap-inlined workflow.md, so
+> those bytes remain core by a different route. `adr-009-arm-fail-loud-bootstrap`
+> therefore stays gated. Do not carry this wording into Phases 2-4: state a
+> measured target with a number, or leave it to `workflow-caps` / `resume-caps`,
+> which already compute it. Full record in the task
+> `mcp-served-doctrine-and-thin-project-workflow`.
+
+Historical intent follows. Per iter-179 rollout discipline and the task's
+2026-07-22 triage decision, every live-vault edit below was applied only at the
 epic's rollout step, in this order:
 
 1. Merge the epic branch; `make install` the new binary.

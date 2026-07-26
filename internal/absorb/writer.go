@@ -511,7 +511,6 @@ func stageRewrittenFiles(projectRoot string, plan *Plan, report *WriteReport) {
 	_ = cmd.Run()
 }
 
-
 // titleCase capitalizes the first rune of each whitespace-separated word.
 // Ascii-only — project directory names don't use unicode punctuation, so
 // this avoids a dependency on golang.org/x/text/cases.

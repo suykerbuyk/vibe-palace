@@ -284,9 +284,9 @@ func TestIsSegmentPrefix(t *testing.T) {
 		a, p string
 		want bool
 	}{
-		{"/a/b", "/a/b", true},    // equal
-		{"/a/b", "/a/b/c", true},  // segment descendant
-		{"/a/b", "/a/bc", false},  // NOT a boundary — sibling-ish
+		{"/a/b", "/a/b", true},   // equal
+		{"/a/b", "/a/b/c", true}, // segment descendant
+		{"/a/b", "/a/bc", false}, // NOT a boundary — sibling-ish
 		{"/a/b", "/a/bcd/e", false},
 		{"/", "/anything/x", true}, // root is ancestor of all
 		{"/x/y", "/x", false},      // deeper is not a prefix of shallower
