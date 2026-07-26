@@ -115,12 +115,22 @@ live-vault canary belongs in that target's `-run` pattern** — adding one and l
 ./...` re-opens the hole.
 
 **Headroom is a signal; core integrity is the gate.** An earlier plan for this canary proposed
-asserting a *token margin* against the 8,000-token budget. That was rejected on evidence: the shed
+asserting a *token margin* against the then-8,000-token budget. That was rejected on evidence: the shed
 ladder absorbs a fat contract by shedding OTHER rungs, so the total barely moves. Growing the contract
 by 6 KB moved the payload only 7,072 → 7,391 tokens (it shed `active_tasks` to pay for it), and a
 synthetic over-cap contract was excerpted at **3,850 tokens — under half the budget**. A margin would
 have been green through both. The payload can sit far under budget while the core is amputated, so the
 assertion is on `Budget.ShedCore`, not on slack. Remaining headroom is still printed, as a `t.Logf`.
+
+**Postscript (260): the budget itself was the defect.** Asserting core integrity immediately exposed
+why the gate could not be satisfied — the inviolable core alone (resume 18,577 B + workflow 13,482 B
+≈ 8,015 tokens) exceeded the entire 8,000-token budget, so ADR-009 and the budget were *mutually
+unsatisfiable* and every session was silently amputating something to resolve it. Fixed by raising
+`tools.DefaultBootstrapMaxTokens` to 16,000 (sized from the measured 11,721-token everything-inline
+payload plus one growth cycle of slack), **not** by shrinking the operating contract — the contract
+sets the budget, not the reverse. The live payload now sheds nothing at all. Note the constant is the
+single source: `TestBootstrapSchemaAdvertisesTheRealDefault` and
+`TestCoreFloorMatchesBootstrapBudget` exist because that budget was once four unsynchronised literals.
 
 **A canary that finds no hazard should say so, not pass silently.** `TestLiveVaultAmendNeverMatchesAFencedHeading`
 skips (rather than passes) when the corpus contains zero fenced-only headings: a green canary with

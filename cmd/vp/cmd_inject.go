@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
@@ -18,7 +19,7 @@ import (
 
 var injectFlags = []cli.FlagDef{
 	{Name: "--project", Short: "-p", Arg: "PROJECT", Help: "Project name (default: auto-detect)"},
-	{Name: "--max-tokens", Arg: "N", Help: "Token budget for response", Default: "8000"},
+	{Name: "--max-tokens", Arg: "N", Help: "Token budget for response", Default: strconv.Itoa(tools.DefaultBootstrapMaxTokens)},
 }
 
 func cmdInject() *cli.Command {
@@ -49,7 +50,7 @@ func cmdInject() *cli.Command {
 
 			maxTokens := fv.Int("--max-tokens")
 			if maxTokens == 0 {
-				maxTokens = 8000
+				maxTokens = tools.DefaultBootstrapMaxTokens
 			}
 
 			vault, err := openProjectVault()

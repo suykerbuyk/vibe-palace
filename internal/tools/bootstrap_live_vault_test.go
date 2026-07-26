@@ -94,7 +94,9 @@ func TestBootstrapLiveVaultFitsItsOwnBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	const defaultMaxTokens = 8000
+	// The REAL default, not a copy of it — a canary asserting against its own
+	// private constant would keep passing after the budget moved.
+	const defaultMaxTokens = DefaultBootstrapMaxTokens
 	tokens := len(raw) / 4
 
 	// Record the grep, never the count: print the census, assert the invariant.

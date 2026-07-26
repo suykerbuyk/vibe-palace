@@ -903,7 +903,7 @@ func TestBootstrapAlertsSurviveDefaultBudgetWithLiveSizedResume(t *testing.T) {
 	}
 
 	tool := BootstrapContextTool(resolver, vault)
-	// No max_tokens ⇒ the DEFAULT (8000). No slim ⇒ stdio's default (false).
+	// No max_tokens ⇒ DefaultBootstrapMaxTokens. No slim ⇒ stdio's default (false).
 	br := bootstrapResult(t, tool, `{"project":"test-proj"}`)
 
 	// The temp vault is not a git repo, so vault staleness is unknown ⇒ it warns.
@@ -920,8 +920,11 @@ func TestBootstrapAlertsSurviveDefaultBudgetWithLiveSizedResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tokens := len(raw) / 4; tokens > 8000 {
-		t.Errorf("payload is %d tokens against the default budget of 8000 — the alerts are riding in a tail a host will truncate", tokens)
+	// Derived from the constant, never a literal: this assertion silently stopped
+	// meaning anything the moment the budget moved, which is how four unsynchronised
+	// copies of "8000" came to exist in the first place.
+	if tokens := len(raw) / 4; tokens > DefaultBootstrapMaxTokens {
+		t.Errorf("payload is %d tokens against the default budget of %d — the alerts are riding in a tail a host will truncate", tokens, DefaultBootstrapMaxTokens)
 	}
 	if !strings.Contains(br.Resume, "never do the bad thing") {
 		t.Error("the pinned behavioral note was shed at the default budget")
@@ -1050,7 +1053,13 @@ func TestShedRungTierClassification(t *testing.T) {
 	if len(shedRungTier) != len(allRungs) {
 		t.Errorf("shedRungTier has %d entries, want %d — every ladder rung must carry a tier", len(shedRungTier), len(allRungs))
 	}
-	wantCore := map[string]bool{shedResumePinned: true, shedWorkflow: true}
+	// 🔴 shedResumePinned left the core tier at iteration 260. It was core while
+	// resume.md's un-pinned zone still carried Current State, Open Threads and
+	// Known Issues; that boundary was re-drawn so every live-state and hazard
+	// section is pinned and the un-pinned remainder is a navigation table.
+	// The tier follows the ARTIFACT — if a resume ever un-pins live state again,
+	// this expectation and shedRungTier must both go back to core.
+	wantCore := map[string]bool{shedWorkflow: true}
 	for _, r := range allRungs {
 		tier, ok := shedRungTier[r]
 		if !ok {
@@ -1135,10 +1144,12 @@ func TestBootstrapFatWorkflowOverrideRestoredWhenBudgetMissedAnyway(t *testing.T
 // budget.shed_core reads in the same order the ladder acted.
 func TestCoreShedFiltersAndPreservesOrder(t *testing.T) {
 	got := coreShed([]string{shedRecentSessions, shedResumePinned, shedActiveTasks, shedWorkflow})
-	if want := []string{shedResumePinned, shedWorkflow}; !slices.Equal(got, want) {
+	if want := []string{shedWorkflow}; !slices.Equal(got, want) {
 		t.Errorf("coreShed = %v, want %v", got, want)
 	}
-	if got := coreShed([]string{shedRecentSessions, shedMemory, shedKGSnapshot}); len(got) != 0 {
+	// resume->pinned is context-tier since 260, so a shed naming it and nothing
+	// else must report NO core loss — the filter is tier-driven, not name-driven.
+	if got := coreShed([]string{shedRecentSessions, shedMemory, shedKGSnapshot, shedResumePinned, shedActiveTasks}); len(got) != 0 {
 		t.Errorf("context-only shed reported core rungs: %v", got)
 	}
 	if got := coreShed(nil); got != nil {
@@ -1147,10 +1158,14 @@ func TestCoreShedFiltersAndPreservesOrder(t *testing.T) {
 }
 
 // TestBootstrapShedCoreReportsTheCoreTier drives the whole tool: when the
-// ladder sheds the resume down to its pinned zone, budget.shed_core must name
-// that rung — and, MECHANISM ONLY, the shed itself must still have happened
-// exactly as before (the diary gone, the pinned zone kept). The fail-loud arm
-// that would refuse this shed is a separate, gated task.
+// ladder sheds the resume down to its pinned zone, the shed must still happen
+// exactly as before (the diary gone, the pinned zone kept) — but since
+// iteration 260 that rung is CONTEXT tier, so budget.shed_core must NOT name
+// it. A pinned zone that holds the live state is not a core loss; reporting it
+// as one is the alarm-crying-wolf failure the tier split exists to avoid.
+//
+// The subset invariant is the durable half of this test: shed_core is always a
+// strict, tier-true subset of shed, whatever the tiers happen to be.
 func TestBootstrapShedCoreReportsTheCoreTier(t *testing.T) {
 	vault, resolver := testSetup(t)
 	const diary = "un-pinned diary line that the ladder may drop"
@@ -1166,8 +1181,8 @@ func TestBootstrapShedCoreReportsTheCoreTier(t *testing.T) {
 	if br.Budget == nil || !slices.Contains(br.Budget.Shed, shedResumePinned) {
 		t.Fatalf("test premise broken: resume->pinned was not shed at max_tokens=2000: %+v", br.Budget)
 	}
-	if !slices.Contains(br.Budget.ShedCore, shedResumePinned) {
-		t.Errorf("resume->pinned (core tier) was shed but shed_core does not say so: %v", br.Budget.ShedCore)
+	if slices.Contains(br.Budget.ShedCore, shedResumePinned) {
+		t.Errorf("resume->pinned is CONTEXT tier since 260 — shedding it must not be reported as a core loss: %v", br.Budget.ShedCore)
 	}
 	// shed_core is a strict, tier-true subset of shed — never an independent list.
 	for _, r := range br.Budget.ShedCore {

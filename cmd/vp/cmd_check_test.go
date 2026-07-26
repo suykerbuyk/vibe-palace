@@ -544,10 +544,10 @@ func TestCheckResumeRefsOnlyJSON(t *testing.T) {
 	}
 }
 
-// seedWorkflowCapsVault points config at a temp vault holding one project
-// whose workflow.md is over the WorkflowMaxBytes cap and one within it.
+// seedCoreFloorVault points config at a temp vault holding one project
+// whose resume.md + workflow.md core is over the CoreMaxBytes cap and one within it.
 // Returns the vault path.
-func seedWorkflowCapsVault(t *testing.T) string {
+func seedCoreFloorVault(t *testing.T) string {
 	t.Helper()
 	configDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
@@ -569,28 +569,28 @@ func seedWorkflowCapsVault(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	write("fatwf", "# fatwf — Workflow\n\n"+strings.Repeat("x", check.WorkflowMaxBytes+1))
+	write("fatwf", "# fatwf — Workflow\n\n"+strings.Repeat("x", check.CoreMaxBytes+1))
 	write("thinwf", "# thinwf — Workflow\n\n- (none recorded yet)\n")
 	return vaultPath
 }
 
-// TestCheckWorkflowCapsOnlyHuman verifies `vp check --check workflow-caps`
+// TestCheckCoreFloorOnlyHuman verifies `vp check --check workflow-caps`
 // selects exactly the Workflow caps row, flags only the over-cap project, and
 // — like the surface preflight — never loads the embedder.
-func TestCheckWorkflowCapsOnlyHuman(t *testing.T) {
-	seedWorkflowCapsVault(t)
+func TestCheckCoreFloorOnlyHuman(t *testing.T) {
+	seedCoreFloorVault(t)
 
-	fv, _ := cli.ParseFlags(checkFlags, []string{"--check", "workflow-caps"})
+	fv, _ := cli.ParseFlags(checkFlags, []string{"--check", "core-floor"})
 	var stderr string
 	stdout := captureStdout(t, func() {
 		stderr = captureStderr(t, func() {
 			runCheck(cli.BuildInfo{Version: "test"}, fv)
 		})
 	})
-	if !strings.Contains(stdout, "[info] Workflow caps:") {
-		t.Errorf("expected an [info] Workflow caps row:\n%s", stdout)
+	if !strings.Contains(stdout, "[info] Core floor:") {
+		t.Errorf("expected an [info] Core floor row:\n%s", stdout)
 	}
-	for _, want := range []string{"1 of 2 workflow.md over cap", "fatwf:", "cap 4000 bytes"} {
+	for _, want := range []string{"1 of 2 core over cap", "fatwf:", fmt.Sprintf("cap %d bytes", check.CoreMaxBytes)} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("output missing %q:\n%s", want, stdout)
 		}
@@ -599,10 +599,10 @@ func TestCheckWorkflowCapsOnlyHuman(t *testing.T) {
 		t.Errorf("under-cap project must stay silent:\n%s", stdout)
 	}
 	if strings.Contains(stdout, "Embedder") || strings.Contains(stderr, "Embedder") {
-		t.Errorf("workflow-caps check must not load the embedder:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+		t.Errorf("core-floor check must not load the embedder:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
 	}
 	if strings.Contains(stdout, "Surface:") {
-		t.Errorf("workflow-caps selection must not run the Surface check:\n%s", stdout)
+		t.Errorf("core-floor selection must not run the Surface check:\n%s", stdout)
 	}
 }
 
@@ -610,9 +610,9 @@ func TestCheckWorkflowCapsOnlyHuman(t *testing.T) {
 // info check naming the over-cap project, and exit code 0 even with a breach
 // present (an advisory warns, never fails).
 func TestCheckWorkflowCapsOnlyJSON(t *testing.T) {
-	seedWorkflowCapsVault(t)
+	seedCoreFloorVault(t)
 
-	fv, _ := cli.ParseFlags(checkFlags, []string{"--check", "workflow-caps", "--json"})
+	fv, _ := cli.ParseFlags(checkFlags, []string{"--check", "core-floor", "--json"})
 	var code int
 	out := captureStdout(t, func() {
 		code = runCheck(cli.BuildInfo{Version: "test", Commit: "cafe"}, fv)
@@ -622,8 +622,8 @@ func TestCheckWorkflowCapsOnlyJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &rep); err != nil {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
 	}
-	if len(rep.Checks) != 1 || rep.Checks[0].Name != "Workflow caps" {
-		t.Fatalf("expected exactly one Workflow caps check, got %+v", rep.Checks)
+	if len(rep.Checks) != 1 || rep.Checks[0].Name != "Core floor" {
+		t.Fatalf("expected exactly one Core floor check, got %+v", rep.Checks)
 	}
 	if rep.Checks[0].Status != "info" {
 		t.Errorf("status = %q, want info (a cap breach warns, never fails)", rep.Checks[0].Status)
@@ -643,12 +643,12 @@ func TestCheckWorkflowCapsOnlyJSON(t *testing.T) {
 // TestCheckWorkflowCapsNoVault verifies the producer degrades to Skip (not a
 // panic or a bogus Pass) when no vault can be resolved.
 func TestCheckWorkflowCapsNoVault(t *testing.T) {
-	rs := checkProducers["workflow-caps"]("")
+	rs := checkProducers["core-floor"]("")
 	if len(rs) != 1 {
 		t.Fatalf("want one result, got %d", len(rs))
 	}
-	if rs[0].Status != check.Skip || rs[0].Name != "Workflow caps" {
-		t.Errorf("got %+v, want a skipped Workflow caps row", rs[0])
+	if rs[0].Status != check.Skip || rs[0].Name != "Core floor" {
+		t.Errorf("got %+v, want a skipped Core floor row", rs[0])
 	}
 }
 

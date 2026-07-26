@@ -251,7 +251,7 @@ var bootstrapSchema = json.RawMessage(`{
 		},
 		"max_tokens": {
 			"type": "integer",
-			"description": "Token budget for response. Default: 8000."
+			"description": "Token budget for response. Default: 16000."
 		},
 		"wing": {
 			"type": "string",
@@ -305,9 +305,47 @@ func BootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, slimDe
 // real payload sitting in resume+workflow+tasks, a ladder forbidden to touch
 // any of the three ran out of rungs and returned 2.4x over budget in silence.
 // See shedToBudget.
+// DefaultBootstrapMaxTokens is the session-start payload budget when a caller
+// names none. It is ONE constant because it used to be four literals (here, the
+// tool schema, `vp inject`, and the live canary), which is how a budget drifts.
+//
+// 🔴 RAISED 8000 -> 12000 at iteration 260, from measurement, not taste. The old
+// value was chosen by guess and was BELOW THE FLOOR: the inviolable core alone —
+// resume.md 18,577 B + workflow.md 13,482 B = 32,059 B ≈ 8,015 tokens — exceeded
+// it before a single task, the directive, or any JSON overhead. That made ADR-009
+// ("the core is delivered whole or fail loud") and the budget MUTUALLY
+// UNSATISFIABLE, and every session resolved the contradiction by amputating
+// something: first resume's un-pinned zone (the 2026-07-21 incident where a Grok
+// session repeated a disproven diagnosis it could not see corrected), then, once
+// the resume was pinned correctly, the operating contract itself.
+//
+// The budget must therefore exceed the core, by definition.
+//
+// SIZED FROM MEASUREMENT, and the first attempt was wrong: 12,000 was chosen
+// against an estimate of ~9,950 tokens everything-inline. The real figure is
+// 11,721 (live canary), which left 279 tokens of headroom — not headroom, a
+// cliff. 16,000 is 11,721 × ~1.35, and that 35% is itself derived: workflow.md
+// grew 9,427 → 13,486 B (43%) across roughly fifty iterations while nobody
+// measured it, so a budget with less slack than one growth cycle just schedules
+// the next crisis.
+//
+// A CEILING COSTS NOTHING UNTIL CONTENT GROWS INTO IT. Raising this does not add
+// a token to today's payload — the payload is what it is; the budget only decides
+// whether the ladder starts amputating. That asymmetry is why a generous ceiling
+// is the right default and a tight one is a false economy: the downside of too
+// high is a few tokens per session IF content grows, and the downside of too low
+// is a silently degraded agent. At 16,000 the payload is ~1.6% of a 1M context
+// window and ~8% of a 200K one.
+//
+// The levers that keep this honest are the core-floor check
+// (internal/check/workflow.go) and the LiveVault canary — NOT shrinking the
+// charter to fit a number, which inverts the dependency: the contract sets the
+// budget, not the reverse.
+const DefaultBootstrapMaxTokens = 16000
+
 func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, maxTokens int, wing, room string, slim bool) BootstrapResult {
 	if maxTokens == 0 {
-		maxTokens = 8000
+		maxTokens = DefaultBootstrapMaxTokens
 	}
 
 	result := BootstrapResult{
@@ -709,12 +747,33 @@ const (
 // recovers it — and the CURRENT task belongs in resume's pinned active-state,
 // not in a whole-backlog dump whose promotion would grow a core floor that must
 // shrink.
+// 🔴 shedResumePinned WAS core until iteration 260, and the reclassification is
+// a statement about the ARTIFACT, not a relaxation of ADR-009.
+//
+// ADR-009 classified this rung core for a concrete reason it states outright:
+// "resume->pinned drops resume's un-pinned zone, which today still carries Open
+// Threads and active Known Issues — live project state and live hazards." That
+// was true, and measurably so: only three IDENTITY sections carried the pin
+// marker, while Current State, Open Threads and Known Issues — 11,375 B, 41% of
+// the file — sat un-pinned and were therefore the first thing spent.
+//
+// Iteration 260 re-drew that boundary: every live-state and live-hazard section
+// is now pinned, and the three hand-maintained history indexes were deleted
+// outright (they were stale summaries of iterations.md and tasks/done|cancelled,
+// both reachable by tool). What remains un-pinned is the Reference Documents
+// navigation table. Shedding it costs a lookup, not a rule.
+//
+// So the rung is now genuinely context: the zone it reduces TO is the core. A
+// rung whose classification no longer matches what it drops is an alarm that
+// cries wolf, and this project has spent enough on instruments nobody believes.
+// If a future resume ever un-pins live state again, this must go back to core —
+// the tier follows the artifact.
 var shedRungTier = map[string]shedTier{
 	shedRecentSessions: shedTierContext,
 	shedMemory:         shedTierContext,
 	shedKGSnapshot:     shedTierContext,
 	shedCommands:       shedTierContext,
-	shedResumePinned:   shedTierCore,
+	shedResumePinned:   shedTierContext,
 	shedActiveTasks:    shedTierContext,
 	shedWorkflow:       shedTierCore,
 }

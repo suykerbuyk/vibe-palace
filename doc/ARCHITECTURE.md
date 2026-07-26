@@ -807,7 +807,7 @@ tool-registry build. Registered names:
 | `surface` | `Surface` | Whole vault — binary MCP surface vs. max `.surface` stamp |
 | `resume-caps` | `Resume caps` | Whole vault — every `Projects/*/resume.md` |
 | `resume-refs` | `Resume refs` | Whole vault — host-local plan refs in every `Projects/*/resume.md` |
-| `workflow-caps` | `Workflow caps` | Whole vault — every `Projects/*/workflow.md` vs the bootstrap-excerpt bound |
+| `core-floor` | `Core floor` | Whole vault — every project's `resume.md` + `workflow.md` vs its share of the payload budget |
 
 An unknown name exits `ExitUser` with an `unknown check` diagnostic.
 
@@ -871,20 +871,42 @@ is never misread as an opening fence). It reads **only** `resume.md` — task fi
 and everything else are out of scope. The same verdict is exposed
 host-agnostically over MCP as the read-only `vp_check_resume_refs` tool.
 
-### workflow.md cap detection (`check.CheckWorkflowCaps`)
+### Inviolable-core floor detection (`check.CheckCoreFloor`)
 
-The served workflow is a behavioral contract, and `vp_bootstrap_context`'s
-token-shed ladder may excerpt it (`workflow->excerpt`) only when its body
-exceeds `check.WorkflowMaxBytes` (4,000 bytes) — at or under that bound the
-contract ships whole on every rung of the ladder. `CheckWorkflowCaps`
-(`internal/check/workflow.go`) walks `<vault>/Projects/*/workflow.md` and
-measures each served contract against that excerpt bound: every project within
-the cap yields `Pass`, one or more over it yields a single `Info` row naming
-them. Like the resume checks it is strictly read-only and **never `Fail`** —
-trimming a fat workflow is a judgement call, and an excerptable contract is a
-tax, not a breakage. A healthy state is silent, and absence (no `Projects/`,
-no `workflow.md`) reports nothing. Selectable as `vp check --check
-workflow-caps`.
+`resume.md` and `workflow.md` together are the **ADR-009 inviolable core** — the
+two artifacts `vp_bootstrap_context` must deliver whole. `CheckCoreFloor`
+(`internal/check/workflow.go`) walks `<vault>/Projects/*/` and measures each
+project's core against `check.CoreMaxBytes`, derived from the payload budget
+rather than chosen:
+
+```
+tools.DefaultBootstrapMaxTokens (16,000) × ~4 bytes/token = 64,000 B
+− CoreContextReserveBytes (8,000 B, the sheddable context tier + overhead)
+= 56,000 B available to the core
+```
+
+`TestCoreFloorMatchesBootstrapBudget` (`internal/tools`) pins the constant to
+that derivation so the two cannot drift. The pinning test lives in `tools`
+because `check` must not import `tools` — `tools`' own tests import `check`, and
+the reverse edge would cycle.
+
+Every project within the cap yields `Pass`; one or more over it yields a single
+`Info` row naming them and splitting the total into its resume and workflow
+halves (an **absent** file reports `absent`, never `0.0 KB`, which would read as
+present-but-empty). Like the resume checks it is strictly read-only and **never
+`Fail`** — there is no typed write path to gate, so prevention is unachievable
+in-process; the un-bypassable gate is the LiveVault canary. A healthy state is
+silent. Selectable as `vp check --check core-floor`.
+
+**This replaced a workflow-only cap at iteration 260.** The predecessor measured
+`workflow.md` alone against the 4,000-byte excerpt bound. That stopped meaning
+anything once the budget rose above the core floor — the ladder rarely reaches
+the workflow rung now, so the advisory fired on contracts causing no harm. It
+also measured the wrong thing: what must fit is the core *together*, since a lean
+resume affords a fat contract and vice versa, so a workflow-only cap was never
+derivable on its own. The defect that actually bit — a core of 8,015 tokens
+against an 8,000-token budget, making ADR-009 arithmetically unsatisfiable — was
+invisible to the old check and is caught by this one.
 
 ### Orphaned-plan reporter (`internal/planscan`)
 
