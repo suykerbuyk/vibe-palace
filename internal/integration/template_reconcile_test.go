@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -384,7 +385,21 @@ func buildVPBinary(t *testing.T) string {
 			vpBinaryErr = err
 			return
 		}
+		// 🔴 THE .exe SUFFIX IS LOAD-BEARING ON WINDOWS, NOT COSMETIC. os/exec
+		// resolves an extension-less path against PATHEXT, so a binary built as
+		// plain "vp" cannot be launched at all — it fails with the misleading
+		// `executable file not found in %PATH%` even though the file is right
+		// there. That defeated the ENTIRE windows-lock job for 11+ consecutive
+		// pushes (2026-07-21 → 2026-07-26): all 16 children of
+		// TestIntegration_VaultLockCrossProcess failed to exec, and the
+		// resulting "lost update" / "an edit was clobbered" assertions read as a
+		// lock-correctness bug when nothing had ever run. Per ci.yml that job is
+		// "the sole runtime proof of the LockFileEx/UnlockFileEx path", so the
+		// Windows lock had no runtime coverage whatsoever for that entire span.
 		bin := filepath.Join(dir, "vp")
+		if runtime.GOOS == "windows" {
+			bin += ".exe"
+		}
 		cmd := exec.Command("go", "build", "-o", bin,
 			"github.com/suykerbuyk/vibe-palace/cmd/vp")
 		cmd.Stderr = os.Stderr
