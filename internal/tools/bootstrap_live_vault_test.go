@@ -39,16 +39,35 @@ import (
 // empty for six months behind a green suite. The bar, from the task: "Drive the
 // real vp_bootstrap_context against the LIVE vault and measure the returned bytes."
 func TestBootstrapLiveVaultFitsItsOwnBudget(t *testing.T) {
+	// 🔴 EXACTLY ONE SKIP IS LEGITIMATE: this host has no vault at all (CI, a
+	// fresh clone). Every OTHER way of not measuring is a FAILURE, deliberately.
+	//
+	// The reason is the lesson the windows-lock job taught this repo on
+	// 2026-07-26: `go test` prints a bare `ok` for a package whose tests all
+	// SKIPPED, so a skip is visually identical to a pass. That job sat green-ish
+	// and un-run for 20 CI runs. A canary that quietly declines to measure is
+	// worth less than no canary, because it also supplies false confidence.
+	//
+	// So once the host CLAIMS a vault, a missing root / unresolvable project /
+	// absent resume.md is a broken setup on a machine that believes it is
+	// covered — the precise silent-green state this test exists to deny. Fail.
 	root := os.Getenv("VP_LIVE_VAULT")
+	explicit := root != ""
 	if root == "" {
 		v, err := storage.OpenVaultGlobal()
 		if err != nil {
-			t.Skipf("no vault configured on this host: %v", err)
+			t.Skipf("no vault configured on this host — the one legitimate skip: %v", err)
 		}
 		root = v.Root
 	}
+	origin := "global config"
+	if explicit {
+		origin = "VP_LIVE_VAULT"
+	}
 	if _, err := os.Stat(root); err != nil {
-		t.Skipf("configured vault is not present on this host: %v", err)
+		t.Fatalf("this host claims a vault at %q (via %s) but it is not present: %v — "+
+			"the canary cannot measure, and skipping here would report a green gate that never ran",
+			root, origin, err)
 	}
 	project := os.Getenv("VP_LIVE_PROJECT")
 	if project == "" {
@@ -58,10 +77,12 @@ func TestBootstrapLiveVaultFitsItsOwnBudget(t *testing.T) {
 	resolver := vpctx.NewResolver(root)
 	dir, err := vault.ProjectDir(project)
 	if err != nil {
-		t.Skipf("project %q not resolvable in this vault: %v", project, err)
+		t.Fatalf("project %q not resolvable in the vault at %q (via %s): %v — "+
+			"set VP_LIVE_PROJECT if this vault uses a different slug", project, root, origin, err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "resume.md")); err != nil {
-		t.Skipf("project %q has no resume.md in this vault: %v", project, err)
+		t.Fatalf("project %q has no resume.md in the vault at %q: %v — "+
+			"there is nothing to measure, so this is a broken setup, not a skip", project, root, err)
 	}
 
 	// maxTokens=0 ⇒ the DEFAULT budget, and slim=false ⇒ stdio, the transport

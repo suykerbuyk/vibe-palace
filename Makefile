@@ -45,9 +45,15 @@ test: build vet ## Run unit tests — fast, no model download
 # aborts make before the unit suite runs at all — and this canary is EXPECTED to
 # be red until resume.md shrinks (ADR-009 shed_core breach), which would leave
 # the tree with no runnable tests for the duration. Suite first, gate after.
+#
+# -v IS LOAD-BEARING: `go test` prints a bare `ok` for a package whose tests all
+# SKIPPED, so without it a skipped canary is visually identical to a passing one.
+# That ambiguity is what let the windows-lock job sit un-run for 20 CI runs. With
+# -v the verdict is spelled out — PASS, FAIL or SKIP with its reason — and the
+# single -run selector keeps the output to a few lines.
 .PHONY: live-canary
-live-canary: ## Run the live-vault bootstrap canary uncached (skips cleanly with no vault)
-	go test -count=1 -run TestBootstrapLiveVaultFitsItsOwnBudget ./internal/tools/
+live-canary: ## Run the live-vault bootstrap canary uncached and verbose (SKIP is printed, not hidden)
+	go test -count=1 -v -run TestBootstrapLiveVaultFitsItsOwnBudget ./internal/tools/
 
 .PHONY: test-full
 test-full: build vet ## Run full test suite including ONNX integration tests
