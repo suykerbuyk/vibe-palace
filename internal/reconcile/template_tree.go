@@ -544,26 +544,6 @@ func (r *TemplateTreeReconciler) applyMaterialize(p Plan) (Report, error) {
 				WrittenAt:   now,
 			}
 			rep.Updated++
-		case ActionRelock:
-			// Metadata-only heal: the vault file already equals the current
-			// embedded bytes, so we refresh the stale lock entry without
-			// touching the file (no Write, no .bak, no surface stamp). The
-			// embedded SHA is derived identically to Create/Update so the
-			// next plan routes the key to Row 2 (Unchanged) — idempotent.
-			res, ok := byTarget[a.Target]
-			if !ok {
-				rep.Errors = append(rep.Errors, fmt.Errorf("relock: no embedded resource for %s", a.Target))
-				continue
-			}
-			embSHA, ok := templates.EmbeddedSHA(res.RelPath)
-			if !ok {
-				embSHA = res.SHA256
-			}
-			state.lock.Entries[r.vaultRelFromEmbedded(res.RelPath)] = templates.LockEntry{
-				EmbeddedSHA: embSHA,
-				WrittenAt:   now,
-			}
-			rep.Relocked++
 		case ActionDelete:
 			// Prune a reconciler-owned mirror so the embedded floor serves
 			// the resource. Back the file up to a sibling .bak first —

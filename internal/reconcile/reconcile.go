@@ -60,14 +60,6 @@ const (
 	// reverse-engineering from Target. Orchestrator parsers should split
 	// on the first '=' and treat missing keys as the empty value.
 	ActionPrompt ActionKind = "Prompt"
-	// ActionRelock: the artifact content already equals the canonical
-	// source, but the recorded baseline/lock SHA is stale. The fix is a
-	// metadata-only lock refresh — no file is written, no backup is taken,
-	// and the action is never prompted. Emitted by the TemplateTree
-	// reconciler to heal the false-positive TemplateTree drift that
-	// vp check reports when a vault template was upgraded on disk
-	// out-of-band without the reconciler refreshing its lock entry.
-	ActionRelock ActionKind = "Relock"
 	// ActionDelete: the artifact is a reconciler-owned vault mirror that
 	// is byte-identical to the canonical (embedded) source and therefore
 	// redundant — the embedded floor serves it directly. The fix is to
@@ -100,7 +92,6 @@ type Report struct {
 	Updated   int
 	Unchanged int
 	Skipped   int
-	Relocked  int
 	Pruned    int
 	Errors    []error
 }
