@@ -14,14 +14,31 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-// pinCoverageViolation records one project's undeclared live sections, BY NAME.
+// pinCoverageFinding records one project's undeclared live sections, BY NAME.
 // A bare count would say a resume is under-declared without saying WHERE, which
 // is a number that rots into noise — the reader cannot act on it and cannot tell
 // when it stops being true.
-type pinCoverageViolation struct {
+//
+// Core carries the project's measured inviolable core, because whether the
+// finding is EXPOSED or LATENT is decided by that measurement and by nothing
+// else — see the exposure note on CheckPinCoverage.
+type pinCoverageFinding struct {
 	Project  string
 	Sections []string
+	Core     coreMeasure
 }
+
+// exposed reports whether this project's undeclared sections are being dropped
+// FOR REAL, right now.
+//
+// 🔴 IT IS THE CORE MEASUREMENT, NOT A NEW THRESHOLD. A resume is only reduced
+// when its project's payload cannot fit — which is exactly coreMeasure.overCap,
+// the same verdict CheckCoreFloor reports, over the same bytes, against the same
+// CoreMaxBytes derived from the bootstrap budget. Inventing a second bound here
+// (a resume-only size, a section count, a name list) would have created a number
+// nothing else in the tree agrees with, and every hand-tuned number in this
+// repository has since rotted. When the budget moves, this moves with it.
+func (f pinCoverageFinding) exposed() bool { return f.Core.overCap() }
 
 // CheckPinCoverage scans every project under <vault>/Projects/ and reports the
 // ones whose resume.md holds LIVE SECTIONS IN THE SHEDDABLE ZONE: H2 sections
@@ -56,12 +73,41 @@ type pinCoverageViolation struct {
 // The exclusion stays VISIBLE rather than silent: the count of pin-less resumes
 // rides in the summary of every run, Pass or Info, so it can never quietly grow.
 //
-// Strictly READ-ONLY and advisory: Pass when every pin-declaring resume is fully
-// ruled on, Info when one or more are not. Never Fail — the same deliberate stance
-// as CheckResumeCaps and CheckCoreFloor. There is no typed write path left to gate
-// (any agent holding Bash can write a resume directly), so prevention is
-// unachievable in-process; and "unmarked" is a legitimate END STATE for genuinely
-// live content, so failing on it would be demanding a lie.
+// 🔴 EXPOSED vs LATENT — WHY THE FINDING IS SPLIT (iteration 262). The first cut
+// of this check reported every undeclared resume identically, and against the
+// live vault that was 8 of 8 projects on day one. The report was TRUE and is not
+// weakened here; what it was not, was AIMED. A row that is red for everything
+// teaches its reader to skim it, and this repository already carries a live
+// instance of that failure (the `vp init` scaffold `vault tidy` re-reports every
+// single run, which is why nobody reads tidy).
+//
+// The aim comes from asking when an undeclared section actually COSTS anything.
+// The answer is: when that project's resume is actually shed — and a resume is
+// only shed when its project's payload cannot fit, i.e. when its inviolable core
+// is over CoreMaxBytes. So each finding is classified by the measurement
+// CheckCoreFloor already makes (measureCore / coreMeasure.overCap), NOT by a new
+// threshold invented for this check:
+//
+//   - EXPOSED — core over cap, so the ladder reduces this resume and these named
+//     sections are being dropped for real. This is the row that demands action,
+//     and it is named FIRST.
+//   - LATENT — undeclared sections exist, but the core fits, so nothing is being
+//     dropped today. It becomes exposed the moment the project grows.
+//
+// Strictly READ-ONLY and advisory:
+//
+//   - Info when one or more findings are EXPOSED — real loss is happening now.
+//   - Pass when every finding is LATENT — nothing is being dropped today. But
+//     PASS IS NOT SILENCE HERE: the latent census still prints, naming every
+//     project and every section, exactly as the pin-less exclusion count does.
+//     A latent set that could grow unseen would be a defect maturing in the dark.
+//   - Pass and genuinely silent only when there are no findings at all.
+//
+// Never Fail — the same deliberate stance as CheckResumeCaps and CheckCoreFloor.
+// There is no typed write path left to gate (any agent holding Bash can write a
+// resume directly), so prevention is unachievable in-process; and "unmarked" is a
+// legitimate END STATE for genuinely live content, so failing on it would be
+// demanding a lie.
 //
 // Absence is never a violation: a missing Projects/ directory, a project with no
 // resume.md, and a resume with no H2 sections at all all report nothing.
@@ -89,7 +135,7 @@ func CheckPinCoverage(v *storage.Vault) Result {
 
 	scanned := 0 // resumes declaring a pin zone — the ones this check can rule on
 	pinless := 0 // resumes declaring none — excluded; see the doc comment above
-	var violations []pinCoverageViolation
+	var findings []pinCoverageFinding
 	for _, e := range entries {
 		name := e.Name()
 		if !e.IsDir() || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
@@ -112,24 +158,66 @@ func CheckPinCoverage(v *storage.Vault) Result {
 			continue
 		}
 		scanned++
-		if undeclared := resumezone.UndeclaredLiveSections(body); len(undeclared) > 0 {
-			violations = append(violations, pinCoverageViolation{Project: name, Sections: undeclared})
+		undeclared := resumezone.UndeclaredLiveSections(body)
+		if len(undeclared) == 0 {
+			continue
 		}
+		// The core measurement decides exposed vs latent. A project whose
+		// resume.md exists always measures, so the zero value is never used to
+		// classify a real finding.
+		core, _ := measureCore(projectsDir, name)
+		findings = append(findings, pinCoverageFinding{Project: name, Sections: undeclared, Core: core})
 	}
 
-	if len(violations) == 0 {
+	if len(findings) == 0 {
 		r.Status = Pass
 		r.Summary = fmt.Sprintf("%d resume.md fully declared%s", scanned, pinlessNote(pinless))
 		return r
 	}
 
-	sort.Slice(violations, func(i, j int) bool { return violations[i].Project < violations[j].Project })
-	r.Status = Info
-	r.Summary = fmt.Sprintf("%d of %d resume.md hold undeclared live sections%s",
-		len(violations), scanned, pinlessNote(pinless))
-	for _, viol := range violations {
+	sort.Slice(findings, func(i, j int) bool { return findings[i].Project < findings[j].Project })
+	var exposed, latent []pinCoverageFinding
+	for _, f := range findings {
+		if f.exposed() {
+			exposed = append(exposed, f)
+		} else {
+			latent = append(latent, f)
+		}
+	}
+
+	// The headline alone must say WHICH CASE the reader is in — action required,
+	// or census only. Detail lines are for the reader who has already decided to
+	// look; the summary is for the one deciding whether to.
+	if len(exposed) > 0 {
+		r.Status = Info
+		r.Summary = fmt.Sprintf("%d of %d EXPOSED — undeclared live sections being shed now; %d latent%s",
+			len(exposed), scanned, len(latent), pinlessNote(pinless))
+	} else {
+		r.Status = Pass
+		r.Summary = fmt.Sprintf("%d of %d latent — undeclared live sections, core fits, none shed%s",
+			len(latent), scanned, pinlessNote(pinless))
+	}
+
+	// EXPOSED first and unmistakably: these are the rows that cost something today.
+	if len(exposed) > 0 {
 		r.Details = append(r.Details,
-			fmt.Sprintf("  %s: %s", viol.Project, strings.Join(viol.Sections, "; ")))
+			fmt.Sprintf("EXPOSED — core over the %d-byte floor, so the ladder reduces this resume and drops these:", CoreMaxBytes))
+		for _, f := range exposed {
+			r.Details = append(r.Details,
+				fmt.Sprintf("  %s: %s  [core %s = %s + %s]",
+					f.Project, strings.Join(f.Sections, "; "), humanKB(f.Core.total()),
+					half("resume", f.Core.Resume, f.Core.HasResume),
+					half("workflow", f.Core.Workflow, f.Core.HasWorkflow)))
+		}
+	}
+	// LATENT prints on PASS runs too — an unseen census is a census that grows.
+	if len(latent) > 0 {
+		r.Details = append(r.Details,
+			"LATENT — undeclared, but the core fits, so nothing is dropped today:")
+		for _, f := range latent {
+			r.Details = append(r.Details,
+				fmt.Sprintf("  %s: %s  [core %s]", f.Project, strings.Join(f.Sections, "; "), humanKB(f.Core.total())))
+		}
 	}
 	r.Details = append(r.Details,
 		"A section carrying neither "+resumezone.ResumePinMarker+" nor "+resumezone.ResumeDisposableMarker+" is LIVE STATE:",
@@ -138,6 +226,15 @@ func CheckPinCoverage(v *storage.Vault) Result {
 		"mark "+resumezone.ResumeDisposableMarker+" what is pure navigation an agent can re-derive from a tool call.",
 		"Leaving a section unmarked is a legitimate answer for genuinely live state — but then this row",
 		"is telling you the truth: live state is sitting in the zone the ladder sheds.")
+	if len(exposed) > 0 {
+		r.Details = append(r.Details,
+			"Act on the EXPOSED projects first: their loss is not hypothetical, it is happening every bootstrap.")
+	}
+	if len(latent) > 0 {
+		r.Details = append(r.Details,
+			"LATENT is not a pass mark, it is a countdown: the same sections start dropping the day that",
+			"project's core crosses the floor (the same measurement `vp check --check core-floor` reports).")
+	}
 	return r
 }
 

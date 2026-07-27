@@ -37,8 +37,15 @@ const CoreMaxBytes = 56000
 // arithmetic above is auditable rather than a bare number.
 const CoreContextReserveBytes = 8000
 
-// coreViolation records one project whose core cannot fit the payload budget.
-type coreViolation struct {
+// coreMeasure records one project's INVIOLABLE CORE as measured on disk:
+// resume.md + workflow.md, each with a flag for whether the file is there at all.
+//
+// It is a MEASUREMENT, not a verdict — overCap turns it into one. The two are
+// separate because a second reader wants the measurement without the cap
+// framing: CheckPinCoverage asks "will this project's resume actually be shed?",
+// which is the same question as "is this core over its share of the budget?",
+// and it must ask it of the same bytes CheckCoreFloor reports on.
+type coreMeasure struct {
 	Project     string
 	Resume      int
 	Workflow    int
@@ -46,7 +53,35 @@ type coreViolation struct {
 	HasWorkflow bool
 }
 
-func (v coreViolation) total() int { return v.Resume + v.Workflow }
+func (v coreMeasure) total() int { return v.Resume + v.Workflow }
+
+// overCap reports whether this core has outgrown its share of the payload
+// budget. It is THE definition of "this project's payload cannot fit", and
+// therefore of "the shed ladder must reduce this project's resume" — every
+// caller asking either question must ask it here, so that no second threshold
+// can be invented and then rot out of step with this one.
+//
+// Strictly greater: a core of exactly CoreMaxBytes still fits.
+func (v coreMeasure) overCap() bool { return v.total() > CoreMaxBytes }
+
+// measureCore stats one project's two core artifacts. ok is false when NEITHER
+// is present — there is nothing to measure, which is not a finding of any kind.
+//
+// This is the shared half of CheckCoreFloor's scan, factored out so
+// CheckPinCoverage can derive exposure from the identical bytes rather than
+// re-implementing the walk (and drifting on which files count, whether an absent
+// file is a zero, or where the boundary sits).
+func measureCore(projectsDir, project string) (coreMeasure, bool) {
+	resume, rok := fileSize(filepath.Join(projectsDir, project, "resume.md"))
+	workflow, wok := fileSize(filepath.Join(projectsDir, project, "workflow.md"))
+	if !rok && !wok {
+		return coreMeasure{}, false
+	}
+	return coreMeasure{
+		Project: project, Resume: resume, Workflow: workflow,
+		HasResume: rok, HasWorkflow: wok,
+	}, true
+}
 
 // half renders one core artifact's contribution. An ABSENT file reports
 // "absent", never "0.0 KB" — a zero would read as a present-but-empty file and
@@ -101,25 +136,20 @@ func CheckCoreFloor(v *storage.Vault) Result {
 	}
 
 	scanned := 0
-	var violations []coreViolation
+	var violations []coreMeasure
 	for _, e := range entries {
 		name := e.Name()
 		if !e.IsDir() || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
 			continue
 		}
-		resume, rok := fileSize(filepath.Join(projectsDir, name, "resume.md"))
-		workflow, wok := fileSize(filepath.Join(projectsDir, name, "workflow.md"))
-		if !rok && !wok {
-			// Neither artifact present — nothing to measure, not a violation.
+		// Neither artifact present — nothing to measure, not a violation.
+		core, ok := measureCore(projectsDir, name)
+		if !ok {
 			continue
 		}
 		scanned++
-		viol := coreViolation{
-			Project: name, Resume: resume, Workflow: workflow,
-			HasResume: rok, HasWorkflow: wok,
-		}
-		if viol.total() > CoreMaxBytes {
-			violations = append(violations, viol)
+		if core.overCap() {
+			violations = append(violations, core)
 		}
 	}
 

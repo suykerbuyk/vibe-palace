@@ -24,6 +24,40 @@ const (
 const fullyDeclaredResume = "# proj\n\n## Behavioral Notes\n" + pin + "\n\nnever do the bad thing\n\n" +
 	"## Reference Documents\n" + disp + "\n\n| doc | tool |\n"
 
+// underDeclaredResume pins one section and leaves two live. Every project below
+// that needs a finding uses THIS EXACT BODY, so the only thing that can differ
+// between an exposed project and a latent one is the core measurement — not the
+// resume, not its size, not its name.
+const underDeclaredResume = "# proj\n\n## Behavioral Notes\n" + pin + "\n\nrules\n\n" +
+	"## Current State\n\nphase 3, mid-refactor\n\n" +
+	"## Open Threads\n\n- the thing nobody wrote down\n"
+
+// writeWorkflow writes <vault>/Projects/<slug>/workflow.md at exactly n bytes.
+//
+// It is how a test moves a project across the exposure boundary WITHOUT touching
+// its resume: exposure is a property of the CORE (resume + workflow) measured
+// against CoreMaxBytes, so padding the contract alone must be enough to flip the
+// verdict. A test that had to fatten the resume could not tell the two apart.
+func writeWorkflow(t *testing.T, vaultRoot, slug string, n int) {
+	t.Helper()
+	dir := filepath.Join(vaultRoot, "Projects", slug)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "workflow.md"), []byte(strings.Repeat("x", n)), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+}
+
+// writeExposed scaffolds a project whose resume holds undeclared live sections
+// AND whose core is over the floor — the shed ladder reduces this resume, so its
+// undeclared sections are being dropped for real.
+func writeExposed(t *testing.T, vaultRoot, slug string) {
+	t.Helper()
+	writeResume(t, vaultRoot, slug, underDeclaredResume)
+	writeWorkflow(t, vaultRoot, slug, CoreMaxBytes)
+}
+
 func TestCheckPinCoverage_EmptyVaultRootSkips(t *testing.T) {
 	r := CheckPinCoverage(storage.NewVault(""))
 	if r.Status != Skip {
@@ -99,7 +133,13 @@ func TestCheckPinCoverage_AllSectionsDeclaredIsSilent(t *testing.T) {
 // 🔴 THE REPORT MUST NAME THE SECTIONS. A count that says "2 undeclared" tells a
 // reader nothing they can act on and rots the moment a heading is renamed — the
 // exact failure mode the pin marker itself exists to avoid.
-func TestCheckPinCoverage_NamesTheUndeclaredSections(t *testing.T) {
+//
+// 🔴 AND IT MUST NAME THEM ON A PASS RUN. This project's core fits, so nothing is
+// being shed and the status is Pass — but the census still prints, by project and
+// by section. A latent set that only became visible once it turned exposed would
+// be a defect maturing in the dark, which is the whole reason the pin-less
+// exclusion count also rides in the summary of every run.
+func TestCheckPinCoverage_LatentFindingsPassButAreStillNamed(t *testing.T) {
 	vault := t.TempDir()
 	writeResume(t, vault, "leaky", "# proj\n\n## Behavioral Notes\n"+pin+"\n\nrules\n\n"+
 		"## Current State\n\nphase 3, mid-refactor\n\n"+
@@ -107,28 +147,160 @@ func TestCheckPinCoverage_NamesTheUndeclaredSections(t *testing.T) {
 		"## Open Threads\n\n- the thing nobody wrote down\n")
 
 	r := CheckPinCoverage(storage.NewVault(vault))
-	if r.Status != Info {
-		t.Fatalf("status = %v, want Info (advisory, never Fail)", r.Status)
+	if r.Status != Pass {
+		t.Fatalf("status = %v, want Pass — the core fits, so nothing is being shed", r.Status)
 	}
-	if r.Summary != "1 of 1 resume.md hold undeclared live sections" {
+	if r.Summary != "1 of 1 latent — undeclared live sections, core fits, none shed" {
 		t.Errorf("summary = %q", r.Summary)
 	}
+	if !strings.HasPrefix(r.Details[0], "LATENT") {
+		t.Errorf("details[0] = %q, want the LATENT census header", r.Details[0])
+	}
 	// Named, and in FILE order — the order a reader will walk the file in.
-	if want := "  leaky: Current State; Open Threads"; r.Details[0] != want {
-		t.Errorf("details[0] = %q, want %q", r.Details[0], want)
+	if want := "  leaky: Current State; Open Threads"; !strings.HasPrefix(r.Details[1], want) {
+		t.Errorf("details[1] = %q, want it to start %q", r.Details[1], want)
 	}
 	joined := strings.Join(r.Details, "\n")
+	if strings.Contains(joined, "EXPOSED") {
+		t.Errorf("a latent-only run must not claim anything is exposed:\n%s", joined)
+	}
 	for _, unwanted := range []string{"Behavioral Notes", "Reference Documents"} {
 		if strings.Contains(joined, unwanted) {
 			t.Errorf("a declared section was reported as undeclared (%q):\n%s", unwanted, joined)
 		}
 	}
-	// The remediation must state both rulings, so the reader is not left guessing
-	// that "fix it" means "pin everything".
+	// The remediation must state both rulings on a Pass run too, so the reader is
+	// not left guessing that "fix it" means "pin everything".
 	for _, want := range []string{"LIVE STATE", pin, disp, "/vpc-wrap"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("details missing %q:\n%s", want, joined)
 		}
+	}
+}
+
+// 🔴 EXPOSED IS THE ROW THAT DEMANDS ACTION, AND IT COMES FIRST.
+//
+// Every project here carries the SAME resume, byte for byte. The only difference
+// is workflow.md — so if the split were computed from the resume, from a size
+// threshold of this check's own invention, or from a project name, this test
+// could not pass. Exposure is the core measurement (resume + workflow vs
+// CoreMaxBytes), the identical verdict CheckCoreFloor reports.
+func TestCheckPinCoverage_ExposedIsInfoAndNamedBeforeLatent(t *testing.T) {
+	vault := t.TempDir()
+	writeExposed(t, vault, "zexposed")
+	writeExposed(t, vault, "aexposed")
+	writeResume(t, vault, "zlatent", underDeclaredResume)
+	writeResume(t, vault, "alatent", underDeclaredResume)
+
+	r := CheckPinCoverage(storage.NewVault(vault))
+	if r.Status == Fail {
+		t.Fatal("status = Fail — this advisory must never fail the build")
+	}
+	if r.Status != Info {
+		t.Fatalf("status = %v, want Info — sections are being shed for real", r.Status)
+	}
+	// The headline alone must say which case the reader is in.
+	if r.Summary != "2 of 4 EXPOSED — undeclared live sections being shed now; 2 latent" {
+		t.Errorf("summary = %q", r.Summary)
+	}
+	if !strings.HasPrefix(r.Details[0], "EXPOSED") {
+		t.Errorf("details[0] = %q, want the EXPOSED block first", r.Details[0])
+	}
+
+	joined := strings.Join(r.Details, "\n")
+	latentHeaderAt := strings.Index(joined, "\nLATENT")
+	if latentHeaderAt < 0 {
+		t.Fatalf("the latent census is missing:\n%s", joined)
+	}
+	for _, name := range []string{"aexposed:", "zexposed:"} {
+		at := strings.Index(joined, name)
+		if at < 0 {
+			t.Fatalf("%s not named:\n%s", name, joined)
+		}
+		if at > latentHeaderAt {
+			t.Errorf("%s appears below the LATENT header — exposed projects must be named first:\n%s", name, joined)
+		}
+	}
+	for _, name := range []string{"alatent:", "zlatent:"} {
+		at := strings.Index(joined, name)
+		if at < 0 {
+			t.Fatalf("%s not named:\n%s", name, joined)
+		}
+		if at < latentHeaderAt {
+			t.Errorf("%s appears above the LATENT header — a fitting core is not exposed:\n%s", name, joined)
+		}
+	}
+	// Sorted within each bucket, so the report is stable run to run.
+	if strings.Index(joined, "aexposed:") > strings.Index(joined, "zexposed:") {
+		t.Errorf("exposed bucket not sorted by project:\n%s", joined)
+	}
+	if strings.Index(joined, "alatent:") > strings.Index(joined, "zlatent:") {
+		t.Errorf("latent bucket not sorted by project:\n%s", joined)
+	}
+	// Both halves of an exposed project's core are shown, so the reader can see
+	// WHICH half to shrink rather than guessing — as CheckCoreFloor does.
+	for _, want := range []string{"resume", "workflow", "Current State; Open Threads"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("details missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+// 🔴 THE BOUNDARY IS CoreMaxBytes ITSELF — NOT A NUMBER THIS CHECK INVENTED.
+//
+// A core of exactly the cap still fits, so its undeclared sections are latent and
+// the run passes. One byte more and the ladder must reduce something, so the same
+// sections become exposed and the run reports Info. If a future edit gives this
+// check a threshold of its own, one of these two halves fails.
+func TestCheckPinCoverage_ExposureBoundaryIsTheCoreCap(t *testing.T) {
+	resumeBytes := len(underDeclaredResume)
+
+	t.Run("exactly at the cap is latent", func(t *testing.T) {
+		vault := t.TempDir()
+		writeResume(t, vault, "edge", underDeclaredResume)
+		writeWorkflow(t, vault, "edge", CoreMaxBytes-resumeBytes)
+
+		r := CheckPinCoverage(storage.NewVault(vault))
+		if r.Status != Pass {
+			t.Fatalf("status = %v, want Pass — a core of exactly %d bytes still fits", r.Status, CoreMaxBytes)
+		}
+		if !strings.Contains(strings.Join(r.Details, "\n"), "edge: Current State; Open Threads") {
+			t.Errorf("the latent census must still name it:\n%v", r.Details)
+		}
+	})
+
+	t.Run("one byte over the cap is exposed", func(t *testing.T) {
+		vault := t.TempDir()
+		writeResume(t, vault, "edge", underDeclaredResume)
+		writeWorkflow(t, vault, "edge", CoreMaxBytes-resumeBytes+1)
+
+		r := CheckPinCoverage(storage.NewVault(vault))
+		if r.Status != Info {
+			t.Fatalf("status = %v, want Info one byte over the cap", r.Status)
+		}
+		if !strings.Contains(r.Summary, "1 of 1 EXPOSED") {
+			t.Errorf("summary = %q", r.Summary)
+		}
+	})
+}
+
+// A project whose core is over the floor but whose resume is FULLY DECLARED is
+// not a finding at all. Exposure is not a violation on its own — CheckCoreFloor
+// reports that. This check only ever speaks about sections nobody has ruled on.
+func TestCheckPinCoverage_OverCapButFullyDeclaredIsSilent(t *testing.T) {
+	vault := t.TempDir()
+	writeResume(t, vault, "fatbuttidy", fullyDeclaredResume)
+	writeWorkflow(t, vault, "fatbuttidy", CoreMaxBytes)
+
+	r := CheckPinCoverage(storage.NewVault(vault))
+	if r.Status != Pass {
+		t.Fatalf("status = %v, want Pass — an over-cap core with nothing undeclared is not this row's business", r.Status)
+	}
+	if r.Summary != "1 resume.md fully declared" {
+		t.Errorf("summary = %q", r.Summary)
+	}
+	if len(r.Details) != 0 {
+		t.Errorf("healthy state must be silent, got details %v", r.Details)
 	}
 }
 
@@ -183,11 +355,11 @@ func TestCheckPinCoverage_FencedMarkerDoesNotDeclare(t *testing.T) {
 		"## How Marking Works\n\nLike this:\n\n```markdown\n## Sample\n"+disp+"\n```\n\nThat is all.\n")
 
 	r := CheckPinCoverage(storage.NewVault(vault))
-	if r.Status != Info {
-		t.Fatalf("status = %v, want Info", r.Status)
+	if r.Status != Pass {
+		t.Fatalf("status = %v, want Pass — the finding is real but this core fits", r.Status)
 	}
-	if want := "  teacher: How Marking Works"; r.Details[0] != want {
-		t.Errorf("details[0] = %q, want %q — a fenced marker was read as a real declaration", r.Details[0], want)
+	if want := "  teacher: How Marking Works"; !strings.HasPrefix(r.Details[1], want) {
+		t.Errorf("details[1] = %q, want it to start %q — a fenced marker was read as a real declaration", r.Details[1], want)
 	}
 }
 
@@ -220,11 +392,12 @@ func TestCheckPinCoverage_MixedSortedAndNeverFails(t *testing.T) {
 	if r.Status == Fail {
 		t.Fatal("status = Fail — this advisory must never fail the build")
 	}
-	if r.Status != Info {
-		t.Fatalf("status = %v, want Info", r.Status)
+	if r.Status != Pass {
+		t.Fatalf("status = %v, want Pass — every core here fits, so every finding is latent", r.Status)
 	}
-	// 3 pin-declaring resumes scanned (alpha, tidy, zeta); unmarked excluded.
-	if r.Summary != "2 of 3 resume.md hold undeclared live sections (1 declare no pin zone)" {
+	// 3 pin-declaring resumes scanned (alpha, tidy, zeta); unmarked excluded. The
+	// pin-less exclusion count rides along on this Pass run, as does the census.
+	if r.Summary != "2 of 3 latent — undeclared live sections, core fits, none shed (1 declare no pin zone)" {
 		t.Errorf("summary = %q", r.Summary)
 	}
 	joined := strings.Join(r.Details, "\n")

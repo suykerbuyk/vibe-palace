@@ -702,12 +702,28 @@ written.
 
 Covers `CheckPinCoverage`, the advisory that names the `resume.md` H2 sections
 carrying neither `vp:pin` nor `vp:disposable`. The silent cases: no vault
-configured (Skip), no `Projects/` directory, a project with **no resume.md**, and
-a resume whose every section is ruled on (one pinned, one disposable → Pass, zero
-details). The reporting case asserts the details name the offending sections **in
-file order** (`leaky: Current State; Open Threads`), never name a declared
-section, and carry both markers plus the `/vpc-wrap` pointer in the remediation —
-so "fix it" cannot be misread as "pin everything".
+configured (Skip), no `Projects/` directory, a project with **no resume.md**, a
+resume whose every section is ruled on (one pinned, one disposable → Pass, zero
+details), and `_OverCapButFullyDeclaredIsSilent` (an over-cap core with nothing
+undeclared is `CheckCoreFloor`'s business, not this row's).
+`TestCheckPinCoverage_LatentFindingsPassButAreStillNamed` asserts the reporting
+case: the details name the offending sections **in file order** (`leaky: Current
+State; Open Threads`), never name a declared section, and carry both markers plus
+the `/vpc-wrap` pointer in the remediation — so "fix it" cannot be misread as "pin
+everything" — **and all of that prints on a `Pass` run**, because that project's
+core fits, so the finding is latent rather than exposed.
+
+The exposed/latent split gets two tests, both built so that no hardcoded name or
+size could satisfy them.
+`TestCheckPinCoverage_ExposedIsInfoAndNamedBeforeLatent` gives four projects the
+**byte-identical** under-declared resume and differs only in `workflow.md`: the
+two with a fat contract are exposed (`Info`, summary `2 of 4 EXPOSED …; 2
+latent`), named first, above the `LATENT` header, with each core split into its
+resume and workflow halves; the two with none are latent, named below it; both
+buckets sorted; status never `Fail`.
+`TestCheckPinCoverage_ExposureBoundaryIsTheCoreCap` pins the boundary to
+`CoreMaxBytes` itself — a core of *exactly* the cap is latent and still censused,
+one byte more is exposed — so an invented threshold breaks one half or the other.
 
 The deliberate rulings each get a test:
 `TestCheckPinCoverage_NoPinMarkerIsExcludedNotFlagged` (a resume that pins
@@ -718,8 +734,8 @@ pins nothing already inline), `_FencedMarkerDoesNotDeclare` (a marker quoted in 
 code fence is documentation), and `_BothMarkersIsNotUndeclared` (a contradictory
 declaration is still a declaration; the pin wins). `_MixedSortedAndNeverFails`
 covers project sorting, dot/underscore directories, the scanned-vs-pin-less
-denominator, and asserts the status is never `Fail`. `_IsReadOnly` proves bytes
-and mtime are unchanged after a flagging run.
+denominator on a `Pass` run, and asserts the status is never `Fail`.
+`_IsReadOnly` proves bytes and mtime are unchanged after a flagging run.
 
 `TestCheckPinCoverage_ScaffoldTemplateLeavesLiveStateLive` is where the two
 halves meet: it runs the check's own parser over the **embedded** template and

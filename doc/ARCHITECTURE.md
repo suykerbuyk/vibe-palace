@@ -876,7 +876,7 @@ host-agnostically over MCP as the read-only `vp_check_resume_refs` tool.
 
 `resume.md` and `workflow.md` together are the **ADR-009 inviolable core** — the
 two artifacts `vp_bootstrap_context` must deliver whole. `CheckCoreFloor`
-(`internal/check/workflow.go`) walks `<vault>/Projects/*/` and measures each
+(`internal/check/core_floor.go`) walks `<vault>/Projects/*/` and measures each
 project's core against `check.CoreMaxBytes`, derived from the payload budget
 rather than chosen:
 
@@ -898,6 +898,13 @@ present-but-empty). Like the resume checks it is strictly read-only and **never
 `Fail`** — there is no typed write path to gate, so prevention is unachievable
 in-process; the un-bypassable gate is the LiveVault canary. A healthy state is
 silent. Selectable as `vp check --check core-floor`.
+
+The per-project half of that scan — `measureCore` (stat both artifacts; neither
+present means nothing to measure) and `coreMeasure.overCap()` (strictly greater
+than `CoreMaxBytes`, so the bound itself still fits) — is **shared, not copied**.
+`CheckPinCoverage` asks the same question in different words ("will this
+project's resume actually be shed?") and answers it from the same bytes and the
+same bound, so no second threshold can be invented and then rot out of step.
 
 **This replaced a workflow-only cap at iteration 260.** The predecessor measured
 `workflow.md` alone against the 4,000-byte excerpt bound. That stopped meaning
@@ -938,8 +945,8 @@ ends, preamble markers and contradictory markers, and every one of those
 disagreements is silent. So the parser moved **down** rather than being copied
 **across**, the same shape `internal/mdfence` has.
 
-`CheckPinCoverage` walks `<vault>/Projects/*/resume.md` and emits one `Info` row
-**naming** each project's undeclared sections (a bare count would rot). A resume
+`CheckPinCoverage` walks `<vault>/Projects/*/resume.md` and **names** each
+project's undeclared sections (a bare count would rot). A resume
 that pins **nothing** is a *different* condition and is deliberately excluded
 rather than flagged: with no pin zone every section is undeclared, so the finding
 would degenerate into the whole table of contents, and its remedy ("declare a pin
@@ -951,12 +958,39 @@ too. Strictly read-only and **never `Fail`** — "unmarked" is a legitimate end
 state for genuinely live content, so failing on it would be demanding a lie.
 Selectable as `vp check --check pin-coverage`.
 
+**Exposed vs latent — the aim, added at iteration 262.** The first cut reported
+every undeclared resume identically, which against the live vault was 8 of 8
+projects on day one. True, but not *aimed*: a row that is red for everything
+teaches its reader to skim it — the failure this repo already carries a live
+instance of (the `vp init` scaffold `vault tidy` re-reports every run). An
+undeclared section only costs something when that project's resume is **actually
+shed**, and a resume is only shed when the project's payload cannot fit. So each
+finding is classified by the measurement `CheckCoreFloor` already makes —
+`measureCore` + `coreMeasure.overCap()`, the same bytes against the same
+`CoreMaxBytes` — and **not** by a threshold invented here:
+
+| Class | Condition | Status contribution |
+|-------|-----------|---------------------|
+| **EXPOSED** | core **over** `CoreMaxBytes` — the ladder reduces this resume, so the named sections are dropped for real | any exposed finding ⇒ `Info` |
+| **LATENT** | undeclared sections exist, but the core fits, so nothing is dropped today | all findings latent ⇒ `Pass` |
+
+The summary alone tells the reader which case they are in (`1 of 8 EXPOSED —
+undeclared live sections being shed now; 7 latent` vs `2 of 3 latent —
+undeclared live sections, core fits, none shed`), and the exposed block is
+printed **first**, carrying each project's core split into its resume and
+workflow halves. **`Pass` is not silence here**: the latent census still prints
+every project and every section, for the same reason the pin-less exclusion count
+does — a latent set that could grow unseen is a defect maturing in the dark. The
+row is silent only when there are no findings at all. Because the split is
+derived, a change to the bootstrap budget moves it automatically.
+
 The shipped scaffold template pins `What This Project Is` and `Project-Specific
 Behavioral Notes`, marks `Reference Documents` disposable (a pure pointer table
 an agent re-derives from a tool call), and leaves `Current State` and `Open
 Threads` **unmarked on purpose** — they are live state, and every new project
 therefore reports two undeclared live sections on day one. That is the honest
-reading, not a false positive.
+reading, not a false positive: a new project's core fits, so those two sections
+appear in the **latent** census rather than as a red row demanding action.
 
 ### Orphaned-plan reporter (`internal/planscan`)
 
