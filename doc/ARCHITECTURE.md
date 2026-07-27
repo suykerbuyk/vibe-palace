@@ -1277,6 +1277,15 @@ it. ADR-009 makes it honest:
   a `resume_uri` the caller can page through `vp_read_resource` for the full
   body. A shed task list leaves `active_task_count`, so the backlog's existence
   and size survive the shed.
+- **This ladder is the ONLY reduction path, on every transport.** There was a
+  second one — a byte-axis `slim` control that cut the resume to a 4,000-byte
+  prefix, ignored the pin markers, defaulted ON for streamable-HTTP, and was
+  recorded in no field, so a payload that dropped most of a resume could return
+  `budget: null`. It also suppressed *this* ladder's report, because cutting the
+  resume first made the payload fit. It was deleted: the "host truncates large
+  inline results" bound it served was never measured, the only refusal on record
+  is ~62,463 characters (15x the cap), and payloads were under that bound with
+  or without the cut. **An absent `budget` now means nothing was reduced.**
 
 A fail-loud arm — refusing the call outright rather than shedding core —
 exists in the design but is **gated on rollout** (task

@@ -12,32 +12,25 @@ import (
 )
 
 // registerOptions holds the optional, transport-specific knobs threaded into
-// RegisterAll. It replaces the former trailing `cfg ...storage.Config`
-// variadic: Go forbids two variadics on one signature, and Phase 2 needs a
-// second optional input (the per-transport bootstrap slim default), so both are
-// folded into functional options. Callers that passed a cfg switch to
-// WithConfig; callers that passed nothing are unchanged.
+// RegisterAll, as functional options rather than a trailing variadic.
+//
+// It once carried a second knob, WithBootstrapSlimDefault, which made the
+// HTTP transport reduce every resume to a 4,000-byte prefix. It was justified
+// by "that channel truncates large inline results" — a bound nobody ever
+// measured. The only refusal on record is ~62,463 characters, 15x the cap, and
+// payloads were under it either way. Knob and mechanism were deleted together.
 type registerOptions struct {
-	cfg                  storage.Config
-	bootstrapSlimDefault bool
+	cfg storage.Config
 }
 
 // RegisterOption configures RegisterAll. The zero set of options preserves the
-// pre-Phase-2 behaviour (empty config, slim default false).
+// default behaviour (empty config).
 type RegisterOption func(*registerOptions)
 
 // WithConfig supplies the storage.Config used to build the capture indexer.
 // Mirrors the old trailing cfg argument.
 func WithConfig(cfg storage.Config) RegisterOption {
 	return func(o *registerOptions) { o.cfg = cfg }
-}
-
-// WithBootstrapSlimDefault seeds the effective-slim fallback for
-// vp_bootstrap_context when the request omits the `slim` param. stdio (local
-// Claude/Zed) leaves this false; the streamable-HTTP serve path sets it true
-// because that channel truncates large inline results.
-func WithBootstrapSlimDefault(slim bool) RegisterOption {
-	return func(o *registerOptions) { o.bootstrapSlimDefault = slim }
 }
 
 // RegisterAll registers all tools with the MCP registry.
@@ -48,7 +41,7 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 		opt(&o)
 	}
 
-	reg.MustRegister(BootstrapContextTool(resolver, vault, o.bootstrapSlimDefault))
+	reg.MustRegister(BootstrapContextTool(resolver, vault))
 	reg.MustRegister(GetCommandTool(resolver))
 	reg.MustRegister(GetSkillTool(resolver))
 	reg.MustRegister(ListCommandsTool(resolver))

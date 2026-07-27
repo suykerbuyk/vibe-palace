@@ -183,17 +183,18 @@ var commandInvocationDirective = fmt.Sprintf(
 	agentfile.CommandToolName, agentfile.SkillToolName,
 )
 
-// bootstrapExcerptCap bounds the rune-safe excerpt substituted for resume (and,
-// when oversized, workflow) on the slim byte-axis path. The full body remains
-// reachable via the resume_uri / workflow_uri the result always carries.
+// bootstrapExcerptCap bounds the rune-safe excerpt the TOKEN ladder substitutes
+// for an oversized workflow (the workflow->excerpt rung). The full body remains
+// reachable via the workflow_uri the result always carries.
+//
+// 🔴 IT IS NO LONGER A BYTE-AXIS CONSTANT. The byte axis — an unconditional
+// prefix cut of the resume, applied before the ladder and recorded nowhere — was
+// DELETED (see the axis note on AssembleBootstrap). This constant now has ONE
+// reader. Do not grow it a second one: the deleted design's core defect was that
+// a single number silently governed two mechanisms with different rules.
 const bootstrapExcerptCap = 4000
 
-// bootstrapWorkflowInlineCap is the size above which even workflow — normally
-// kept inline because it is the behavioral contract and the smaller file — is
-// excerpted on the slim path so its bytes cannot bust the channel budget.
-const bootstrapWorkflowInlineCap = 24000
-
-// bootstrapExcerptBanner prefixes a slim excerpt with a loud, unmissable
+// bootstrapExcerptBanner prefixes an excerpt with a loud, unmissable
 // pointer to the full body. The caller MUST read the URI before acting.
 func bootstrapExcerptBanner(body, uri string) string {
 	return "⚠ excerpt — full content at " + uri + ", read before acting\n\n" +
@@ -239,10 +240,6 @@ type bootstrapParams struct {
 	MaxTokens int    `json:"max_tokens,omitempty"`
 	Wing      string `json:"wing,omitempty"`
 	Room      string `json:"room,omitempty"`
-	// Slim is tri-state on the byte axis (distinct from the max_tokens token
-	// axis): nil ⇒ the per-transport default; true ⇒ excerpt resume (and
-	// oversized workflow) behind a banner+URI; false ⇒ full inline bodies.
-	Slim *bool `json:"slim,omitempty"`
 }
 
 var bootstrapSchema = json.RawMessage(`{
@@ -263,30 +260,21 @@ var bootstrapSchema = json.RawMessage(`{
 		"room": {
 			"type": "string",
 			"description": "Room slug for palace-scoped command discovery (requires wing)."
-		},
-		"slim": {
-			"type": "boolean",
-			"description": "Drop the large inline resume body for a banner-led excerpt plus resume_uri (fetch the full body via vp_read_resource). Defaults per transport when omitted."
 		}
 	},
 	"required": ["project"]
 }`)
 
 // BootstrapContextTool returns the MCP tool definition for vp_bootstrap_context.
-// slimDefault seeds the effective-slim fallback used when a request omits the
-// `slim` param; it is variadic only so the many existing constructor call sites
-// (and stdio) keep compiling with the false default — the serve path threads
-// true via RegisterAll's WithBootstrapSlimDefault option.
-func BootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, slimDefault ...bool) mcp.Tool {
-	def := false
-	if len(slimDefault) > 0 {
-		def = slimDefault[0]
-	}
+//
+// There is ONE reduction path and this description states it exactly. The old
+// `slim` param advertised a second one; it is gone (see AssembleBootstrap).
+func BootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_bootstrap_context",
-		Description: "Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive. Sheds context to fit max_tokens and REPORTS WHAT IT SHED in `budget.shed` (absent when nothing was shed). A shed resume arrives as its pinned sections only, behind a banner — read `resume_uri` for the full body. A shed task list leaves `active_task_count` — call vp_list_tasks for it.",
+		Description: "Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive. Sheds context to fit max_tokens and REPORTS WHAT IT SHED in `budget.shed` — every reduction this tool makes appears there, so an absent `budget` means nothing was reduced. A shed resume arrives as its `<!-- vp:pin -->` sections only, behind a banner — read `resume_uri` for the full body. A shed task list leaves `active_task_count` — call vp_list_tasks for it.",
 		Schema:      bootstrapSchema,
-		Handler:     bootstrapHandler(resolver, vault, def),
+		Handler:     bootstrapHandler(resolver, vault),
 	}
 }
 
@@ -294,14 +282,26 @@ func BootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, slimDe
 // Used by both the MCP tool handler and the CLI inject command.
 // When wing/room are provided, palace-scoped commands are included in discovery.
 //
-// slim is the BYTE-axis control, distinct from the maxTokens TOKEN-axis shed
-// ladder below. When slim is true, resume (and oversized workflow) are replaced
-// by banner-led, rune-safe excerpts pointing at their always-present URIs.
+// 🔴 THERE IS ONE REDUCTION AXIS. The byte axis — `slim` — was DELETED, and the
+// deletion is the point: a second, differently-ruled path is what made this
+// tool report success for work it did not do.
 //
-// The two axes remain deliberately separate — slim is an unconditional prefix
-// cut for a byte-constrained transport, while the ladder is a graduated,
-// last-resort reduction that reaches resume only after the cheap context is
-// gone, and reaches only the sections the resume did not pin.
+// What it was: an unconditional 4,000-byte prefix cut of the resume, applied
+// BEFORE the ladder, ignoring `<!-- vp:pin -->` entirely, defaulting ON for the
+// HTTP transport, and recorded in NO field — so a payload that had dropped most
+// of a resume could return `budget: null`. Worse than unrecorded: because the
+// cut made the payload fit, the ladder then shed nothing, so the byte axis
+// ERASED the honest `shed_core` report the token axis produces.
+//
+// Why it went rather than being fixed: it was built for "a host that truncates
+// large inline results", and that bound was never measured. The only refusal
+// ever observed was ~62,463 characters (iteration 257) — 15x the cap that cited
+// it — and the payload was under that bound both with the cut and without it.
+// The cut bought nothing and cost the pin markers their meaning on the one
+// transport a non-Claude host is likeliest to use. The remedy for the project
+// that actually failed was editing its resume, which is what fixed it in 257.
+//
+// The ladder below remains: graduated, last-resort, pin-aware, and reported.
 //
 // 🔴 CORRECTED at 209: this comment used to promise that the shed loop "NEVER
 // excerpts" resume/workflow. That was true, and it was the bug — with 96% of a
@@ -346,7 +346,7 @@ func BootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, slimDe
 // budget, not the reverse.
 const DefaultBootstrapMaxTokens = 16000
 
-func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, maxTokens int, wing, room string, slim bool) BootstrapResult {
+func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, maxTokens int, wing, room string) BootstrapResult {
 	if maxTokens == 0 {
 		maxTokens = DefaultBootstrapMaxTokens
 	}
@@ -362,39 +362,19 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		result.Workflow = wf
 	}
 
-	// Resume — graceful on error. The digest comes from the same read as the
-	// body and covers the FULL resume, so it is captured HERE, before the slim
-	// excerpting below: a sha of the excerpt would collide with nothing on disk
-	// and would fail every compare-and-set made by a caller that paged the full
-	// body back through resume_uri. It is empty when no project-tier resume.md
-	// exists (vault/embedded fallback) — the writer reads that as "assert absent".
+	// Resume — graceful on error. The digest comes from the same read as the body
+	// and covers the FULL resume, so a caller that pages the body back through
+	// resume_uri can still compare-and-set against disk. It is empty when no
+	// project-tier resume.md exists (vault/embedded fallback) — the writer reads
+	// that as "assert absent".
 	if resume, _, sha, err := resolver.ResolveDigest("resume", project); err == nil {
 		result.Resume = resume
 		result.ResumeSha256 = sha
 	}
 
-	// The full body is held aside for the token ladder's resume rung, which
-	// needs the WHOLE document to find its pin markers — the slim excerpt below
-	// is a prefix cut and would hide every section after the first 4 KB.
+	// The full body is held aside for the token ladder's resume rung, which needs
+	// the WHOLE document to find its pin markers.
 	fullResume := result.Resume
-
-	// Byte-axis slim: excerpt resume behind a banner+URI ONLY when it actually
-	// exceeds the cap — a resume that already fits inline (the common embedded
-	// default, well under bootstrapExcerptCap) is returned whole and must NOT be
-	// mislabeled as a truncated excerpt, or the agent wastes a vp_read_resource
-	// round-trip on content it already holds. Workflow stays inline (behavioral
-	// contract, smaller file) unless its own size busts the budget.
-	//
-	// This is the BYTE axis only. The token ladder (shedToBudget) can also reduce
-	// resume and workflow, but by different rules and only as a last resort.
-	if slim {
-		if len(result.Resume) > bootstrapExcerptCap {
-			result.Resume = bootstrapExcerptBanner(result.Resume, result.ResumeURI)
-		}
-		if len(result.Workflow) > bootstrapWorkflowInlineCap {
-			result.Workflow = bootstrapExcerptBanner(result.Workflow, result.WorkflowURI)
-		}
-	}
 
 	// Active tasks — graceful on error.
 	//
@@ -585,15 +565,15 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// after the ladder, because the ladder can itself raise an alert.
 	result.PostBootstrapInstructions = composeDirective(result.PostBootstrapInstructions, alerts)
 
-	budget := shedToBudget(&result, maxTokens, fullResume, slim)
+	budget := shedToBudget(&result, maxTokens, fullResume)
 	// ADR-009 tier report, derived from Shed so the two can never drift: which
 	// of the shed rungs were inviolable core. Reported even though the shed
 	// itself still happened — see shedRungTier for why reporting is (for now)
 	// the whole mechanism.
 	//
 	// The resume rung's tier is DERIVED HERE, from fullResume — the same whole
-	// document the ladder's resume rung reads, held aside above the byte-axis
-	// slim cut. It is a per-project verdict, not a constant: see resumeRungTier.
+	// document the ladder's resume rung reads. It is a per-project verdict, not a
+	// constant: see resumeRungTier.
 	budget.ShedCore = coreShed(budget.Shed, resumeRungTier(fullResume))
 
 	if shedTasks(budget) {
@@ -675,19 +655,18 @@ func dropRung(xs []string, drop string) []string {
 // marked resumezone.ResumePinMarker, behind a banner pointing at resume_uri. Idempotent:
 // once the resume has been reduced it will not be reduced again.
 //
-// Skipped when slim already excerpted the resume — that excerpt is SMALLER than
-// the pinned zone, so re-expanding to the zone would GROW the payload the ladder
-// is trying to shrink.
+// 🔴 THE BYTE-AXIS SKIP GUARD IS GONE. It read "skip when slim already excerpted
+// the resume — that excerpt is SMALLER than the pinned zone", and that premise
+// was FALSE for six of the eight resumes in the live vault (measured 2026-07-27;
+// rezbldr's pinned zone was 3,457 bytes UNDER the 4,000-byte excerpt). It guarded
+// a path that no longer exists; both went together.
 //
 // resume_sha256 is deliberately NOT touched: it covers the FULL RAW file, and a
 // caller that pages the whole body back through resume_uri needs the digest to
 // still match disk, or every compare-and-set it makes will fail.
-func shedResumeToPinnedZone(result *BootstrapResult, b *BootstrapBudget, fullResume string, slim bool, est func() int) int {
+func shedResumeToPinnedZone(result *BootstrapResult, b *BootstrapBudget, fullResume string, est func() int) int {
 	if fullResume == "" || sliceHasRung(b.Shed, shedResumePinned) {
 		return est()
-	}
-	if slim && len(fullResume) > bootstrapExcerptCap {
-		return est() // already reduced on the byte axis
 	}
 	zone, declared := resumezone.PinnedZone(fullResume)
 	if !declared {
@@ -861,9 +840,10 @@ func coreShed(shed []string, resumeTier shedTier) []string {
 	return out
 }
 
-// shedToBudget is the TOKEN-axis ladder (independent of the byte-axis slim
-// control, which has already run by the time we get here). It sheds, in order,
-// until the payload fits — and reports what it did.
+// shedToBudget is the ONLY reduction path. It sheds, in order, until the payload
+// fits — and reports what it did. (It used to be one of two: a byte-axis `slim`
+// cut ran before it, by different rules and recorded nowhere. That path was
+// deleted — see AssembleBootstrap.)
 //
 // THE ORDER IS THE DESIGN: least correctness-critical and cheapest to re-fetch
 // goes first.
@@ -884,7 +864,7 @@ func coreShed(shed []string, resumeTier shedTier) []string {
 // default of 8,000, of which resume+workflow+tasks were 96% — and the old loop
 // could touch NONE of those three. It shed everything it was allowed to touch,
 // came up 2.4x short, and returned anyway without a word.
-func shedToBudget(result *BootstrapResult, maxTokens int, fullResume string, slim bool) *BootstrapBudget {
+func shedToBudget(result *BootstrapResult, maxTokens int, fullResume string) *BootstrapBudget {
 	b := &BootstrapBudget{MaxTokens: maxTokens}
 
 	// The estimate is rough (4 chars ≈ 1 token) and deliberately so: an exact
@@ -934,7 +914,7 @@ func shedToBudget(result *BootstrapResult, maxTokens int, fullResume string, sli
 		tokens = est()
 	}
 	if tokens > maxTokens {
-		tokens = shedResumeToPinnedZone(result, b, fullResume, slim, est)
+		tokens = shedResumeToPinnedZone(result, b, fullResume, est)
 	}
 	if tokens > maxTokens && len(result.ActiveTasks) > 0 {
 		result.ActiveTasks = nil
@@ -1117,7 +1097,7 @@ func joinExamples(xs []string) string {
 	}
 }
 
-func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault, slimDefault bool) mcp.HandlerFunc {
+func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault) mcp.HandlerFunc {
 	return func(_ context.Context, params json.RawMessage) (any, error) {
 		var p bootstrapParams
 		if err := json.Unmarshal(params, &p); err != nil {
@@ -1130,13 +1110,7 @@ func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault, slimDefaul
 		if err := slug.Validate(p.Project); err != nil {
 			return nil, fmt.Errorf("invalid project %q: %w", p.Project, err)
 		}
-		// Resolve the tri-state slim: explicit param wins, else the
-		// per-transport default seeded at registration.
-		slim := slimDefault
-		if p.Slim != nil {
-			slim = *p.Slim
-		}
-		result := AssembleBootstrap(resolver, vault, p.Project, p.MaxTokens, p.Wing, p.Room, slim)
+		result := AssembleBootstrap(resolver, vault, p.Project, p.MaxTokens, p.Wing, p.Room)
 
 		// Session-start shim self-heal: bring this host's slash-command and
 		// skill shims into line with the vault's command set, so a command

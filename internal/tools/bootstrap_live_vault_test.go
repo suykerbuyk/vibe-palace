@@ -86,10 +86,11 @@ func TestBootstrapLiveVaultFitsItsOwnBudget(t *testing.T) {
 			"there is nothing to measure, so this is a broken setup, not a skip", project, root, err)
 	}
 
-	// maxTokens=0 ⇒ the DEFAULT budget, and slim=false ⇒ stdio, the transport
-	// every IDE agent actually uses. Both matter: the bug was invisible on the
-	// HTTP path (which passes slim=true) and only ever bit the default.
-	br := AssembleBootstrap(resolver, vault, project, 0, "", "", false)
+	// maxTokens=0 ⇒ the DEFAULT budget. This canary once measured only one of two
+	// reduction paths, because a byte-axis `slim` cut ran on the HTTP transport
+	// that no call site here could reach. That path is deleted: every transport
+	// now takes the path measured below, so this canary covers all of them.
+	br := AssembleBootstrap(resolver, vault, project, 0, "", "")
 
 	raw, err := json.Marshal(br)
 	if err != nil {

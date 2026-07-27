@@ -647,52 +647,39 @@ func TestBootstrapResumeWorkflowURIs(t *testing.T) {
 	}
 }
 
-// TestBootstrapSlimExcerptsResume verifies the byte-axis slim path: resume is
-// replaced by a banner-led, rune-safe excerpt + URI while workflow stays inline.
-func TestBootstrapSlimExcerptsResume(t *testing.T) {
+// TestBootstrapResumeIsNeverExcerptedByBytes replaces the three tests that
+// covered the deleted byte-axis `slim` path (excerpt-on-large, inline-on-small,
+// per-transport default). They asserted a mechanism that no longer exists; this
+// asserts the property that replaced it, on the same fixture that used to be cut.
+//
+// THE POINT: a resume is never reduced for its SIZE alone. Only the token ladder
+// reduces it, only under budget pressure, only to its `<!-- vp:pin -->` zone, and
+// only while saying so in budget.shed. No request shape and no transport can
+// produce a resume body that was silently prefix-cut.
+func TestBootstrapResumeIsNeverExcerptedByBytes(t *testing.T) {
 	vault, resolver := testSetup(t)
-	// A resume larger than bootstrapExcerptCap so slim must excerpt it.
 	bigResume := "# Resume\n\n" + strings.Repeat("state line for test-proj\n", 400)
 	if err := vault.WriteResume("test-proj", bigResume, ""); err != nil {
 		t.Fatal(err)
 	}
 	tool := BootstrapContextTool(resolver, vault)
 
-	br := bootstrapResult(t, tool, `{"project":"test-proj","slim":true}`)
-	if !strings.HasPrefix(br.Resume, "⚠ excerpt — full content at vibe-palace://resume/test-proj") {
-		t.Errorf("slim resume missing banner; got prefix %q", br.Resume[:min(80, len(br.Resume))])
-	}
-	if len(br.Resume) >= len(bigResume) {
-		t.Errorf("slim resume not excerpted: len %d >= full %d", len(br.Resume), len(bigResume))
-	}
-	// Workflow is the behavioral contract — it stays inline (not banner-led)
-	// since the embedded default is well under bootstrapWorkflowInlineCap.
-	if strings.HasPrefix(br.Workflow, "⚠ excerpt") {
-		t.Error("workflow should stay inline under slim, not be excerpted")
-	}
-}
-
-// TestBootstrapSlimSmallResumeStaysInline pins the fix for the unconditional
-// banner: a resume that already fits within bootstrapExcerptCap must be returned
-// whole under slim, NOT labeled as a truncated excerpt (which would lure the
-// agent into a wasted vp_read_resource fetch for content it already holds).
-func TestBootstrapSlimSmallResumeStaysInline(t *testing.T) {
-	vault, resolver := testSetup(t)
-	smallResume := "# Resume\n\nA short resume for test-proj, well under the cap.\n"
-	if len(smallResume) > bootstrapExcerptCap {
-		t.Fatalf("test fixture too large: %d > cap %d", len(smallResume), bootstrapExcerptCap)
-	}
-	if err := vault.WriteResume("test-proj", smallResume, ""); err != nil {
-		t.Fatal(err)
-	}
-	tool := BootstrapContextTool(resolver, vault, true) // HTTP default slim=true
-
-	br := bootstrapResult(t, tool, `{"project":"test-proj"}`)
-	if strings.HasPrefix(br.Resume, "⚠ excerpt") {
-		t.Errorf("small resume wrongly banner-labeled as excerpt: %q", br.Resume)
-	}
-	if br.Resume != smallResume {
-		t.Errorf("small resume not returned whole under slim:\n got %q\nwant %q", br.Resume, smallResume)
+	// The old `slim` param is gone from the schema; an unknown key must not
+	// resurrect the behavior by any route.
+	for _, params := range []string{
+		`{"project":"test-proj"}`,
+		`{"project":"test-proj","slim":true}`,
+	} {
+		br := bootstrapResult(t, tool, params)
+		if strings.HasPrefix(br.Resume, "⚠ excerpt") {
+			t.Errorf("%s: resume was byte-excerpted — the deleted slim path is back", params)
+		}
+		if br.Resume != bigResume {
+			t.Errorf("%s: resume not delivered whole: got %d bytes, want %d", params, len(br.Resume), len(bigResume))
+		}
+		if br.Budget != nil && len(br.Budget.Shed) > 0 {
+			t.Errorf("%s: nothing should have been shed under the default budget, got %v", params, br.Budget.Shed)
+		}
 	}
 }
 
@@ -708,39 +695,6 @@ func TestBootstrapRejectsInvalidProject(t *testing.T) {
 		if _, err := tool.Handler(context.Background(), params); err == nil {
 			t.Errorf("project %q: expected validation error, got nil", bad)
 		}
-	}
-}
-
-// TestBootstrapSlimPerTransportDefault pins the tri-state default: with the
-// param omitted, the per-transport default (threaded via BootstrapContextTool's
-// slimDefault) decides; an explicit slim overrides it both ways.
-func TestBootstrapSlimPerTransportDefault(t *testing.T) {
-	vault, resolver := testSetup(t)
-	bigResume := "# Resume\n\n" + strings.Repeat("state line for test-proj\n", 400)
-	if err := vault.WriteResume("test-proj", bigResume, ""); err != nil {
-		t.Fatal(err)
-	}
-
-	isExcerpt := func(br BootstrapResult) bool {
-		return strings.HasPrefix(br.Resume, "⚠ excerpt")
-	}
-
-	// HTTP transport defaults slim=true (param omitted).
-	httpTool := BootstrapContextTool(resolver, vault, true)
-	if !isExcerpt(bootstrapResult(t, httpTool, `{"project":"test-proj"}`)) {
-		t.Error("HTTP default (slimDefault=true), param omitted: expected excerpt")
-	}
-	// stdio transport defaults slim=false (param omitted).
-	stdioTool := BootstrapContextTool(resolver, vault) // slimDefault defaults false
-	if isExcerpt(bootstrapResult(t, stdioTool, `{"project":"test-proj"}`)) {
-		t.Error("stdio default (slimDefault=false), param omitted: expected full body")
-	}
-	// Explicit param overrides the transport default both ways.
-	if isExcerpt(bootstrapResult(t, httpTool, `{"project":"test-proj","slim":false}`)) {
-		t.Error("explicit slim=false over HTTP: expected full body")
-	}
-	if !isExcerpt(bootstrapResult(t, stdioTool, `{"project":"test-proj","slim":true}`)) {
-		t.Error("explicit slim=true over stdio: expected excerpt")
 	}
 }
 
@@ -775,7 +729,7 @@ func TestBootstrapUnmarkedResumeIsNeverShedAndSaysSo(t *testing.T) {
 	}
 
 	tool := BootstrapContextTool(resolver, vault)
-	br := bootstrapResult(t, tool, `{"project":"test-proj","slim":false,"max_tokens":50}`)
+	br := bootstrapResult(t, tool, `{"project":"test-proj","max_tokens":50}`)
 
 	if br.Resume != wantResume {
 		t.Errorf("resume with no %s marker was shed anyway (len %d, want %d) — the server guessed", resumezone.ResumePinMarker, len(br.Resume), len(wantResume))
@@ -814,7 +768,7 @@ func TestBootstrapShedsResumeDiaryButNeverThePinnedZone(t *testing.T) {
 	}
 
 	tool := BootstrapContextTool(resolver, vault)
-	br := bootstrapResult(t, tool, `{"project":"test-proj","slim":false,"max_tokens":2000}`)
+	br := bootstrapResult(t, tool, `{"project":"test-proj","max_tokens":2000}`)
 
 	if !strings.Contains(br.Resume, notes) {
 		t.Error("the PINNED behavioral notes were shed — the marker did not hold, and these are the notes that stop an agent corrupting the vault")
@@ -866,7 +820,7 @@ func TestBootstrapShedTaskListLeavesTheCountAndSaysWhereToLook(t *testing.T) {
 	}
 
 	tool := BootstrapContextTool(resolver, vault)
-	br := bootstrapResult(t, tool, `{"project":"test-proj","slim":false,"max_tokens":400}`)
+	br := bootstrapResult(t, tool, `{"project":"test-proj","max_tokens":400}`)
 
 	if len(br.ActiveTasks) != 0 {
 		t.Fatalf("task list survived a 400-token budget: %d tasks", len(br.ActiveTasks))
@@ -904,7 +858,7 @@ func TestBootstrapAlertsSurviveDefaultBudgetWithLiveSizedResume(t *testing.T) {
 	}
 
 	tool := BootstrapContextTool(resolver, vault)
-	// No max_tokens ⇒ DefaultBootstrapMaxTokens. No slim ⇒ stdio's default (false).
+	// No max_tokens ⇒ DefaultBootstrapMaxTokens.
 	br := bootstrapResult(t, tool, `{"project":"test-proj"}`)
 
 	// The temp vault is not a git repo, so vault staleness is unknown ⇒ it warns.
@@ -1209,7 +1163,7 @@ func TestBootstrapThinWorkflowContractSurvivesShedding(t *testing.T) {
 	vault, resolver := testSetup(t)
 	tool := BootstrapContextTool(resolver, vault)
 
-	br := bootstrapResult(t, tool, `{"project":"test-proj","slim":false,"max_tokens":50}`)
+	br := bootstrapResult(t, tool, `{"project":"test-proj","max_tokens":50}`)
 
 	if !strings.Contains(br.Workflow, "vp_get_doctrine") {
 		t.Error("the doctrine-fetch contract paragraph did not survive the shed ladder — a fresh host has no contract")
@@ -1248,7 +1202,7 @@ func TestBootstrapFatWorkflowOverrideRestoredWhenBudgetMissedAnyway(t *testing.T
 	}
 
 	tool := BootstrapContextTool(resolver, vault)
-	br := bootstrapResult(t, tool, `{"project":"test-proj","slim":false,"max_tokens":50}`)
+	br := bootstrapResult(t, tool, `{"project":"test-proj","max_tokens":50}`)
 
 	if br.Workflow != wantWorkflow {
 		t.Errorf("workflow excerpted for no benefit: still over budget, so the core-tier contract should have been restored (len %d, want %d)", len(br.Workflow), len(wantWorkflow))
@@ -1338,7 +1292,7 @@ func TestBootstrapShedCoreReportsTheCoreTier(t *testing.T) {
 			t.Fatal(err)
 		}
 		tool := BootstrapContextTool(resolver, vault)
-		br := bootstrapResult(t, tool, `{"project":"test-proj","slim":false,"max_tokens":2000}`)
+		br := bootstrapResult(t, tool, `{"project":"test-proj","max_tokens":2000}`)
 
 		if br.Budget == nil || !slices.Contains(br.Budget.Shed, shedResumePinned) {
 			t.Fatalf("test premise broken: resume->pinned was not shed at max_tokens=2000: %+v", br.Budget)
@@ -1553,17 +1507,22 @@ func TestBootstrapResumeSha256MatchesDisk(t *testing.T) {
 	}
 }
 
-// TestBootstrapSlimResumeSha256IsOfFullBody is the regression that would
-// otherwise ship silently: under slim the resume body is replaced by a banner-led
-// excerpt, but resume_sha256 must still describe the FULL file. Hashing the
-// excerpt would make a wrap that pages the full body via resume_uri and writes it
-// back conflict with itself on every attempt.
-func TestBootstrapSlimResumeSha256IsOfFullBody(t *testing.T) {
+// TestBootstrapShedResumeSha256IsOfFullBody is the regression that would
+// otherwise ship silently: when the ladder replaces the resume body with its
+// pinned zone, resume_sha256 must still describe the FULL file. Hashing the
+// delivered body would make a wrap that pages the full body via resume_uri and
+// writes it back conflict with itself on every attempt.
+//
+// MIGRATED, not deleted: this pinned the same invariant on the byte-axis `slim`
+// excerpt until that path was removed. The invariant did not go with it — the
+// ladder still substitutes a reduced body — so the test moved to the surviving
+// reduction path rather than being dropped for being red.
+func TestBootstrapShedResumeSha256IsOfFullBody(t *testing.T) {
 	vault, resolver := testSetup(t)
-	bigResume := "# Resume\n\n" + strings.Repeat("state line for test-proj\n", 400)
-	if len(bigResume) <= bootstrapExcerptCap {
-		t.Fatalf("fixture too small to be excerpted: %d <= cap %d", len(bigResume), bootstrapExcerptCap)
-	}
+	// Pinned zone + a large un-pinned remainder, so the ladder has something to
+	// shed and the delivered body is genuinely shorter than the file.
+	bigResume := "# Resume\n\n## Notes\n<!-- vp:pin -->\n\nkeep me\n\n## Diary\n\n" +
+		strings.Repeat("state line for test-proj\n", 400)
 	if err := vault.WriteResume("test-proj", bigResume, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -1572,17 +1531,18 @@ func TestBootstrapSlimResumeSha256IsOfFullBody(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	br := bootstrapResult(t, BootstrapContextTool(resolver, vault), `{"project":"test-proj","slim":true}`)
-	if !strings.HasPrefix(br.Resume, "⚠ excerpt") {
-		t.Fatalf("fixture was not excerpted, test proves nothing")
+	br := bootstrapResult(t, BootstrapContextTool(resolver, vault), `{"project":"test-proj","max_tokens":400}`)
+	if !strings.HasPrefix(br.Resume, "⚠ pinned sections only") {
+		t.Fatalf("fixture was not shed to its pinned zone, test proves nothing; got prefix %q",
+			br.Resume[:min(80, len(br.Resume))])
 	}
 
 	if want := onDiskSha(t, path); br.ResumeSha256 != want {
 		t.Errorf("resume_sha256 = %q, want sha of FULL body %q", br.ResumeSha256, want)
 	}
-	excerpt := sha256.Sum256([]byte(br.Resume))
-	if br.ResumeSha256 == hex.EncodeToString(excerpt[:]) {
-		t.Error("resume_sha256 is the sha of the EXCERPT — a CAS write of the full body would conflict with itself")
+	delivered := sha256.Sum256([]byte(br.Resume))
+	if br.ResumeSha256 == hex.EncodeToString(delivered[:]) {
+		t.Error("resume_sha256 is the sha of the DELIVERED body — a CAS write of the full body would conflict with itself")
 	}
 }
 

@@ -80,10 +80,13 @@ proceed to Step 2.
 Call `vp_bootstrap_context` to load workflow, resume, active tasks,
 and recent sessions in a single call.
 
-Under `slim`, `resume` may arrive as a banner-led **excerpt** plus a
-`resume_uri` (marked with the `⚠ excerpt` banner) rather than the full body;
-`workflow` stays inline. When `resume` is an excerpt, read its `resume_uri`
-(via `vp_read_resource`) before relying on full resume content.
+`resume` and `workflow` arrive **whole**, on every transport. The one case
+where `resume` is reduced is token-budget pressure, and it announces itself
+twice: `budget.shed` names `resume->pinned`, and the body opens with a
+`⚠ pinned sections only` banner. Only then read `resume_uri` (via
+`vp_read_resource`) for the full body. **An absent `budget` means nothing was
+reduced** — there is no longer a second, silent path that could shorten the
+resume without saying so.
 
 Then fetch the full operating doctrine with `vp_get_doctrine` (pass the
 project slug). The inline `workflow` is deliberately **thin** — it carries

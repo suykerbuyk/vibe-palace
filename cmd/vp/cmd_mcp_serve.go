@@ -158,10 +158,13 @@ func (c mcpServeConfig) startupLines() []string {
 // testable without binding a socket.
 func buildMCPServeHandler(stack *serverStack, token string, allowWrites bool) http.Handler {
 	srv := mcpkg.NewServer(stack.vault)
-	// The streamable-HTTP channel truncates large inline tool results, so this
-	// dedicated HTTP-served instance defaults vp_bootstrap_context to slim.
+	// Every transport now gets the SAME payload. This instance used to default
+	// vp_bootstrap_context to a 4,000-byte resume prefix on the claim that "the
+	// streamable-HTTP channel truncates large inline tool results" — never
+	// measured, and the reduction was invisible in the response. Deleted; the
+	// token ladder is the one reduction path and it reports what it drops.
 	tools.RegisterAll(srv.Registry(), stack.resolver, stack.vault, stack.eng,
-		tools.WithConfig(stack.cfg), tools.WithBootstrapSlimDefault(true))
+		tools.WithConfig(stack.cfg))
 	tools.RegisterResources(srv, stack.resolver, stack.vault)
 	if !allowWrites {
 		srv.DeleteTools(tools.MutatingToolNames...)

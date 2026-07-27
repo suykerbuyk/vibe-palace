@@ -53,7 +53,7 @@ func TestIntegration_MemoryFeature(t *testing.T) {
 		}
 
 		// Bootstrap recall surfaces the index entry (meta only) — generous budget.
-		bs := tools.AssembleBootstrap(h.Resolver, h.Vault, project, 64000, "", "", false)
+		bs := tools.AssembleBootstrap(h.Resolver, h.Vault, project, 64000, "", "")
 		var found bool
 		for _, m := range bs.Memory {
 			if m.Rel != rel {
@@ -171,7 +171,7 @@ func TestIntegration_MemoryFeature(t *testing.T) {
 
 		// End to end: native -> vault -> bootstrap recall. The harvested names
 		// appear in the recall index.
-		bs := tools.AssembleBootstrap(h.Resolver, h.Vault, project, 64000, "", "", false)
+		bs := tools.AssembleBootstrap(h.Resolver, h.Vault, project, 64000, "", "")
 		names := map[string]bool{}
 		for _, m := range bs.Memory {
 			names[m.Name] = true

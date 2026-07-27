@@ -118,9 +118,12 @@ func TestRenderGrokHubGolden(t *testing.T) {
 		"`vp_read_resource(uri, offset, limit)`",
 		"`offset+length`",
 		"until `eof`",
-		// Session start passes slim=true; resume excerpt + resume_uri.
+		// Session start: bodies arrive whole, and any reduction is announced.
+		// (This used to assert "with `slim=true`" — the byte-axis path that
+		// shortened the resume without recording it. Deleted with the mechanism.)
 		"call `vp_bootstrap_context`",
-		"with `slim=true`",
+		"arrive whole on every transport",
+		"`budget.shed`",
 		"`resume_uri`",
 		// Schema-loading guidance.
 		"load its schema first",

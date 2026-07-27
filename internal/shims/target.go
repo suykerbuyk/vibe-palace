@@ -324,12 +324,12 @@ it.
 
 ## Session start
 
-When restoring context (e.g. ` + "`/vpc restart`" + `), call ` + "`vp_bootstrap_context`" + `
-with ` + "`slim=true`" + `. Under slim the large ` + "`resume`" + ` body arrives as a
-banner-led excerpt plus a ` + "`resume_uri`" + ` (` + "`workflow`" + ` stays inline); read
-that ` + "`resume_uri`" + ` via ` + "`vp_read_resource`" + ` before relying on full resume
-content. The HTTP transport already defaults ` + "`slim=true`" + `, but the explicit
-flag documents intent.
+When restoring context (e.g. ` + "`/vpc restart`" + `), call ` + "`vp_bootstrap_context`" + `.
+` + "`resume`" + ` and ` + "`workflow`" + ` arrive whole on every transport. If the payload is
+over its token budget the ladder reduces ` + "`resume`" + ` to its pinned sections and
+SAYS SO — ` + "`budget.shed`" + ` names ` + "`resume->pinned`" + ` and the body opens with a
+` + "`⚠ pinned sections only`" + ` banner. Only then read ` + "`resume_uri`" + ` via
+` + "`vp_read_resource`" + `. An absent ` + "`budget`" + ` means nothing was reduced.
 
 ## After execution
 
