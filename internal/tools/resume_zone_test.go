@@ -129,6 +129,140 @@ func TestPinnedResumeZone_H3StaysWithItsParent(t *testing.T) {
 	}
 }
 
+// --- UndeclaredLiveSections -------------------------------------------------
+
+func eqStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// 🔴 ABSENCE IS NOT A VALUE.
+//
+// A resume with no markers at all has not declared that everything is sheddable
+// — it has declared nothing, and every section in it is live state until someone
+// rules otherwise. All of them must be reported, by name, in file order.
+func TestUndeclaredLiveSections_NoMarkersReportsEverySection(t *testing.T) {
+	const content = "---\ntype: project-resume\n---\n\n# proj\n\n## State\n\nnarrative\n\n## History\n\nmore\n"
+
+	got := UndeclaredLiveSections(content)
+	want := []string{"State", "History"}
+	if !eqStrings(got, want) {
+		t.Errorf("UndeclaredLiveSections = %q, want %q", got, want)
+	}
+}
+
+func TestUndeclaredLiveSections_OnlyPinnedReportsNothing(t *testing.T) {
+	const content = "# proj\n\n## Notes\n" + ResumePinMarker + "\n\nkeep\n\n## Rules\n" + ResumePinMarker + "\n\nkeep too\n"
+
+	if got := UndeclaredLiveSections(content); len(got) != 0 {
+		t.Errorf("UndeclaredLiveSections = %q, want none — every section is declared", got)
+	}
+}
+
+func TestUndeclaredLiveSections_OnlyDisposableReportsNothing(t *testing.T) {
+	const content = "# proj\n\n## Diary\n" + ResumeDisposableMarker + "\n\nrots\n\n## History\n" + ResumeDisposableMarker + "\n\nalso rots\n"
+
+	if got := UndeclaredLiveSections(content); len(got) != 0 {
+		t.Errorf("UndeclaredLiveSections = %q, want none — a disposable declaration is still a declaration", got)
+	}
+}
+
+func TestUndeclaredLiveSections_MixReportsOnlyTheUnmarked(t *testing.T) {
+	const content = "# proj\n\n## Behavioral Notes\n" + ResumePinMarker + "\n\npinned\n\n" +
+		"## Current State\n\nnobody ruled on this\n\n" +
+		"## Project History\n" + ResumeDisposableMarker + "\n\nsheddable\n\n" +
+		"## Open Questions\n\nnor this\n"
+
+	got := UndeclaredLiveSections(content)
+	want := []string{"Current State", "Open Questions"}
+	if !eqStrings(got, want) {
+		t.Errorf("UndeclaredLiveSections = %q, want %q", got, want)
+	}
+}
+
+// A marker quoted inside a code fence is documentation, not a declaration — the
+// same rule pinnedResumeZone obeys, and it must not diverge here. A resume that
+// explains the disposable marker inside a fenced example (the template will) has
+// still declared nothing about the section doing the explaining, so that section
+// is live and must be reported.
+func TestUndeclaredLiveSections_MarkerInAFenceDoesNotDeclare(t *testing.T) {
+	const content = "# proj\n\n## How Marking Works\n\nMark a section like this:\n\n```markdown\n## Some Section\n" +
+		ResumeDisposableMarker + "\n" + ResumePinMarker + "\n```\n\nThat is all.\n"
+
+	got := UndeclaredLiveSections(content)
+	want := []string{"How Marking Works"}
+	if !eqStrings(got, want) {
+		t.Errorf("UndeclaredLiveSections = %q, want %q — a fenced marker was read as a real declaration", got, want)
+	}
+}
+
+// A section carrying BOTH markers is a contradiction, and the resolution is
+// deliberate rather than incidental: the pin wins, the content is kept, and the
+// section is NOT reported as undeclared. Someone did rule on it — twice — so
+// sending the author back to it as an omission would be a false report. This
+// test exists so the tie-break cannot be changed by accident.
+func TestUndeclaredLiveSections_BothMarkersIsPinnedNotUndeclared(t *testing.T) {
+	const content = "# proj\n\n## Contradictory\n" + ResumePinMarker + "\n" + ResumeDisposableMarker + "\n\nkeep me\n\n## Plain\n\nlive\n"
+
+	got := UndeclaredLiveSections(content)
+	want := []string{"Plain"}
+	if !eqStrings(got, want) {
+		t.Errorf("UndeclaredLiveSections = %q, want %q", got, want)
+	}
+
+	zone, declared := pinnedResumeZone(content)
+	if !declared {
+		t.Fatal("declared=false — a section carrying both markers must still count as a pin declaration")
+	}
+	if !strings.Contains(zone, "keep me") {
+		t.Error("the disposable marker beat the pin marker; a contradictory declaration must resolve toward keeping content")
+	}
+}
+
+func TestUndeclaredLiveSections_NoHeadingsAtAll(t *testing.T) {
+	if got := UndeclaredLiveSections("just some prose, no headings\n"); len(got) != 0 {
+		t.Errorf("UndeclaredLiveSections = %q, want none — there are no sections to report", got)
+	}
+}
+
+// The preamble is not a section. It is unconditionally inline, it has no heading
+// of its own to name, and a marker stranded above the first H2 declares nothing
+// — so neither the preamble nor a phantom entry for it may ever be reported.
+func TestUndeclaredLiveSections_PreambleIsNeverReported(t *testing.T) {
+	const content = "---\ntype: project-resume\n---\n\n# proj — Working Context\n\nsome unmarked preamble prose\n\n## Only Section\n" + ResumePinMarker + "\n\nbody\n"
+
+	if got := UndeclaredLiveSections(content); len(got) != 0 {
+		t.Errorf("UndeclaredLiveSections = %q, want none — the preamble is not a section", got)
+	}
+
+	const stranded = "# proj\n" + ResumeDisposableMarker + "\n\n## State\n\nnarrative\n"
+	got := UndeclaredLiveSections(stranded)
+	want := []string{"State"}
+	if !eqStrings(got, want) {
+		t.Errorf("UndeclaredLiveSections = %q, want %q — a marker in the preamble must not declare the section below it", got, want)
+	}
+}
+
+// An H3 can neither be declared nor start a section: its ruling is its parent
+// H2's. Otherwise every sub-heading in a resume would be reported as undeclared
+// live state and the report would be pure noise.
+func TestUndeclaredLiveSections_H3IsNotASection(t *testing.T) {
+	const content = "# proj\n\n## Notes\n" + ResumePinMarker + "\n\n### Sub\n\nbody\n\n## Diary\n\n### Also Sub\n\nbody\n"
+
+	got := UndeclaredLiveSections(content)
+	want := []string{"Diary"}
+	if !eqStrings(got, want) {
+		t.Errorf("UndeclaredLiveSections = %q, want %q", got, want)
+	}
+}
+
 // The live template must actually declare a zone — otherwise every project
 // scaffolded from it ships a resume the ladder cannot shed, and the fix reaches
 // nobody. This is the "capability built, nothing invokes it" check, applied to

@@ -105,6 +105,10 @@
       "reason": "TEST-ONLY BY DESIGN (it takes a *testing.T), cross-package so it cannot live in a _test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — test-only intent declared here, enforced by the baseline ratchet."
     },
     {
+      "id": "uninvoked tools.UndeclaredLiveSections",
+      "reason": "REAL FINDING, owned by task template-unpins-live-state-and-nothing-checks-pin-coverage, and TRUE ONLY BETWEEN PHASES. Phase 1 lands the three-state parser (pinned / disposable / undeclared-live) and its tests; the caller that surfaces the undeclared sections — the pin-coverage check nothing performs today, which is the entire point of the task — lands in a later phase of the same plan. This is the capability-built-nothing-invokes-it shape ON PURPOSE and ON A CLOCK: the gate is right, and it is holding the plan to finishing. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — the fix is the next phase of the owning task, and this reason is the DECLARE channel recording it. When that phase wires the caller in, this entry goes STALE and the gate will fail until it is DELETED. Do not carry it forward."
+    },
+    {
       "id": "uninvoked zed.ListThreadIDs",
       "reason": "REAL FINDING, owned by the existing task zed-pane-capture-parity (Phase 1). This is the missing half of the documented Zed failure: zedAdapter.ResolveSource requires a Zed thread UUID, ListThreadIDs is the ONLY code in the tree that can enumerate one, and nothing calls it — so a thread cannot be found without hand-querying SQLite. Its doc comment cites a `--detect` smoke mode that DOES NOT EXIST anywhere in the tree. The gate rediscovered that task's root cause from source alone. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — the fix is deferred to the owning task named above; this reason is the DECLARE channel recording it."
     },
