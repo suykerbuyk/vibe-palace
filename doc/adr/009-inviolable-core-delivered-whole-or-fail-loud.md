@@ -41,6 +41,60 @@ this project**, and that task should be re-evaluated on current measurement
 rather than on this paragraph. Note it remains a vault-wide question: the
 `core-floor` check reports quantum-ng at 70.4 KB of core (resume 63.3 KB), so
 arming globally would still fail there.
+
+**🔴 AMENDED 2026-07-27 (iteration 262) — point 3 above was right about the
+document and wrong about where it wrote the answer.** `resume->pinned` is no
+longer classified by a constant at all; its tier is **derived per bootstrap**
+from the resume being served (`resumeRungTier`, `internal/tools/context_tools.go`):
+
+> Shedding the resume is a **CORE** loss unless **every un-pinned section of that
+> project's resume is positively declared disposable** (`<!-- vp:disposable -->`).
+> A section carrying neither marker is LIVE STATE, so dropping it is a core loss
+> and `budget.shed_core` says so. Anything the derivation cannot rule on — no
+> resume resolved, no H2 sections, no declared pin zone — reports **core**: absence
+> is not a value, and the direction of a wrong guess is chosen rather than left to
+> a zero value.
+
+**Why the static classification was wrong, and it was not the verdict.** The 260
+reasoning was sound and its evidence was real — vibe-palace's live-state and
+live-hazard sections had just been pinned, so its un-pinned remainder genuinely
+was a navigation table. What was wrong was the SHAPE of the answer: **a claim
+about the contents of one document, on one day, encoded as a project-agnostic
+constant.** That made one project's editorial state the reported tier for every
+project in every vault. The map even carried its own remedy — *"if a future
+resume ever un-pins live state again, this must go back to core"* — addressed to
+nobody and checked by nothing, which is the rule-with-no-reader failure this
+whole epic is named after.
+
+Measurement settled it. Once `check.CheckPinCoverage` (iteration 262) could read
+pin markers vault-wide, the constant was **false for 8 of 8 projects** in the
+live vault: every one had undeclared live sections, and the shed ladder was
+dropping them on the exposed ones while `shed_core` reported nothing. A live run
+on 2026-07-27 confirms both directions — quantum-ng (core 76.9 KB, over the
+56,000 B floor; five undeclared sections: *Current State, Project History,
+Completed Plans, Open Threads, Reference Documents*) sheds its resume and now
+reports `shed_core: ["resume->pinned"]` where it reported none; vibe-palace, which
+sheds nothing at all, still reports `budget: null`. Note vibe-palace's own resume
+is undeclared too, on one section (*Reference Documents* — the very section the
+shipped template marks `<!-- vp:disposable -->`, left unmarked in the live file),
+so the erring-downward rule would call its rung core the day its core crosses the
+floor. That is the rule working, and the remedy is one marker line.
+
+The general rule this ADR should have followed from the start: **the tier follows
+the artifact, so it must be READ from the artifact, not copied out of it into
+code.** The same discipline `internal/resumezone` exists to enforce — one
+fence-aware reader of the markers, shared by the ladder, the advisory and now the
+tier — applies to the classification too.
+
+**Scope: this is REPORTING, not enforcement.** The fail-loud arm stays gated
+(`adr-009-arm-fail-loud-bootstrap`). The ladder sheds the same rungs in the same
+order and the payload an agent receives is byte-identical; only `budget.shed_core`
+changes. The un-armed `workflow->excerpt` restore in `shedToBudget` is likewise
+unchanged — an under-declared `resume->pinned` is now a genuine, *announced*,
+un-restored core loss, and the remedy available today is to rule on the named
+sections (`vp check --check pin-coverage` lists them by heading), not to alter the
+payload.
+
 **Deciders:** Project owner
 **Context:** The bootstrap shed ladder trims the payload to a token budget by dropping rungs in order — and today the operating contract (`workflow`) and active project state (`resume`'s un-pinned zone, the active task list) are ordinary rungs. A shed that fits the budget by dropping them returns **success**, so an agent about to change code can receive a degraded-but-plausible payload and never know a rule or a hazard is missing.
 

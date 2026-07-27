@@ -1041,27 +1041,29 @@ func TestBootstrapToolSchema(t *testing.T) {
 }
 
 // TestShedRungTierClassification pins the ADR-009 tier partition as a
-// structural property: every rung carries a tier, and the core set is exactly
-// {resume->pinned, workflow->excerpt} — the two rungs that are safety surface
-// (active project state, the operating contract) rather than re-fetchable
-// context. active_tasks is deliberately context: the count survives the shed
-// and vp_list_tasks recovers the list, so nothing is silently lost.
+// structural property — and pins WHICH HALF OF IT IS ALLOWED TO BE A CONSTANT.
+//
+// Six rungs have a project-agnostic tier and live in shedRungTier, with
+// workflow->excerpt the only core one; active_tasks is deliberately context (the
+// count survives the shed and vp_list_tasks recovers the list, so nothing is
+// silently lost).
+//
+// 🔴 resume->pinned MUST NOT BE IN THAT MAP, and its absence is an assertion
+// here, not an oversight. A static entry for it encodes a claim about ONE
+// project's resume.md as a global constant — which is exactly what iteration 260
+// did, and what iteration 262's pin-coverage measurement falsified for 8 of 8
+// live projects. Its tier is derived per bootstrap by resumeRungTier and read
+// through rungTier, which is what this test checks instead.
 func TestShedRungTierClassification(t *testing.T) {
-	allRungs := []string{
+	staticRungs := []string{
 		shedRecentSessions, shedMemory, shedKGSnapshot, shedCommands,
-		shedResumePinned, shedActiveTasks, shedWorkflow,
+		shedActiveTasks, shedWorkflow,
 	}
-	if len(shedRungTier) != len(allRungs) {
-		t.Errorf("shedRungTier has %d entries, want %d — every ladder rung must carry a tier", len(shedRungTier), len(allRungs))
+	if len(shedRungTier) != len(staticRungs) {
+		t.Errorf("shedRungTier has %d entries, want %d — every rung with a project-agnostic tier must carry one, and no rung with a derived tier may", len(shedRungTier), len(staticRungs))
 	}
-	// 🔴 shedResumePinned left the core tier at iteration 260. It was core while
-	// resume.md's un-pinned zone still carried Current State, Open Threads and
-	// Known Issues; that boundary was re-drawn so every live-state and hazard
-	// section is pinned and the un-pinned remainder is a navigation table.
-	// The tier follows the ARTIFACT — if a resume ever un-pins live state again,
-	// this expectation and shedRungTier must both go back to core.
 	wantCore := map[string]bool{shedWorkflow: true}
-	for _, r := range allRungs {
+	for _, r := range staticRungs {
 		tier, ok := shedRungTier[r]
 		if !ok {
 			t.Errorf("rung %q has no ADR-009 tier — an unclassified rung sheds with no tier report", r)
@@ -1073,6 +1075,127 @@ func TestShedRungTierClassification(t *testing.T) {
 		if got := tier == shedTierCore; got != wantCore[r] {
 			t.Errorf("rung %q tier = %q, want core=%v", r, tier, wantCore[r])
 		}
+		// rungTier is the ONE reader: for a static rung it must return the map's
+		// answer regardless of what the resume verdict happened to be.
+		for _, rt := range []shedTier{shedTierCore, shedTierContext, ""} {
+			if got := rungTier(r, rt); got != tier {
+				t.Errorf("rungTier(%q, %q) = %q, want the static tier %q", r, rt, got, tier)
+			}
+		}
+	}
+
+	if tier, ok := shedRungTier[shedResumePinned]; ok {
+		t.Errorf("%q carries the static tier %q — its tier is a property of the project's resume, not of the ladder; it belongs to resumeRungTier", shedResumePinned, tier)
+	}
+	// The resume rung takes the derived verdict, whichever way it fell.
+	for _, want := range []shedTier{shedTierCore, shedTierContext} {
+		if got := rungTier(shedResumePinned, want); got != want {
+			t.Errorf("rungTier(%q, %q) = %q — the derived verdict must be honored, not overridden", shedResumePinned, want, got)
+		}
+	}
+
+	// ERR DOWNWARD. Neither an unclassified rung nor an unset resume verdict may
+	// fall through to "context": the bare map lookup this replaced returned "" for
+	// a missing key, which compares unequal to shedTierCore and would drop a new
+	// rung's shed out of shed_core in silence.
+	if got := rungTier("some_rung_added_without_a_tier", shedTierContext); got != shedTierCore {
+		t.Errorf("rungTier(unknown rung) = %q, want %q — absence is not a value", got, shedTierCore)
+	}
+	if got := rungTier(shedResumePinned, ""); got != shedTierCore {
+		t.Errorf("rungTier(%q, unset) = %q, want %q — an unmeasured resume is no answer, not a safe answer", shedResumePinned, got, shedTierCore)
+	}
+}
+
+// TestResumeRungTierDerivation covers the derivation itself, table-driven,
+// including every path that must ERR DOWNWARD to core.
+//
+// The rule under test: shedding the resume is a core loss unless EVERY un-pinned
+// section is positively declared disposable. Absence of a marker is live state,
+// and a document this cannot rule on at all is no answer rather than a safe one.
+func TestResumeRungTierDerivation(t *testing.T) {
+	const (
+		pin  = resumezone.ResumePinMarker
+		disp = resumezone.ResumeDisposableMarker
+	)
+	tests := []struct {
+		name   string
+		resume string
+		want   shedTier
+	}{{
+		name:   "one undeclared section makes the shed a core loss",
+		resume: "# R\n\n## Notes\n" + pin + "\n\nrule.\n\n## Current State\n\n- live thread\n",
+		want:   shedTierCore,
+	}, {
+		name:   "every un-pinned section declared disposable is context",
+		resume: "# R\n\n## Notes\n" + pin + "\n\nrule.\n\n## Reference\n" + disp + "\n\n| doc | tool |\n",
+		want:   shedTierContext,
+	}, {
+		name:   "one undeclared section among declared ones is still core",
+		resume: "# R\n\n## Notes\n" + pin + "\n\nrule.\n\n## Reference\n" + disp + "\n\ntable.\n\n## Open Threads\n\n- live\n",
+		want:   shedTierCore,
+	}, {
+		name:   "a resume that pins everything has nothing un-pinned to rule on",
+		resume: "# R\n\n## Notes\n" + pin + "\n\nrule.\n\n## State\n" + pin + "\n\n- live\n",
+		want:   shedTierContext,
+	}, {
+		// The pin wins over a co-located disposable marker (resumezone resolves a
+		// contradictory declaration toward keeping content), so the section is
+		// ruled-on, not undeclared.
+		name:   "a section carrying both markers is ruled on, not undeclared",
+		resume: "# R\n\n## Notes\n" + pin + "\n\nrule.\n\n## Both\n" + pin + "\n" + disp + "\n\n- content\n",
+		want:   shedTierContext,
+	}, {
+		// ERR DOWNWARD from here down. None of these can be ruled on; every one
+		// reports core.
+		name:   "a resume declaring no pin zone cannot be ruled on",
+		resume: "# R\n\n## State\n\n- live\n\n## Reference\n" + disp + "\n\ntable.\n",
+		want:   shedTierCore,
+	}, {
+		name:   "a body with no H2 sections at all",
+		resume: "---\ntype: project-resume\n---\n\n# R\n\njust a preamble.\n",
+		want:   shedTierCore,
+	}, {
+		name:   "no resume resolved at all",
+		resume: "",
+		want:   shedTierCore,
+	}, {
+		// Fence-awareness comes from resumezone, the one reader — a marker quoted
+		// as sample text declares nothing, here as everywhere else.
+		name:   "a disposable marker quoted inside a code fence declares nothing",
+		resume: "# R\n\n## Notes\n" + pin + "\n\nrule.\n\n## Current State\n\n```\n" + disp + "\n```\n\n- live thread\n",
+		want:   shedTierCore,
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resumeRungTier(tc.resume); got != tc.want {
+				t.Errorf("resumeRungTier = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResumeRungTierMatchesTheShippedTemplate is the link test between the tier
+// derivation and the artifact it rules on: a project scaffolded by `vp init`
+// leaves Current State and Open Threads deliberately UNMARKED (the template says
+// so in as many words — they are live state, not reference), so a bootstrap that
+// sheds a freshly-scaffolded resume IS a core loss and must report one.
+//
+// It exists because the falsified constant was never wrong about the mechanism,
+// only about the document — so the test that keeps it honest has to read the
+// real document.
+func TestResumeRungTierMatchesTheShippedTemplate(t *testing.T) {
+	_, resolver := testSetup(t)
+	body, _, err := resolver.Resolve("resume", "test-proj")
+	if err != nil {
+		t.Fatalf("resolve the scaffolded resume: %v", err)
+	}
+	undeclared := resumezone.UndeclaredLiveSections(body)
+	if len(undeclared) == 0 {
+		t.Fatalf("test premise broken: the shipped resume template declares every section — this test can no longer tell a derived tier from the old constant")
+	}
+	if got := resumeRungTier(body); got != shedTierCore {
+		t.Errorf("resumeRungTier on the shipped template = %q, want %q — it leaves %v undeclared, so shedding it drops live state", got, shedTierCore, undeclared)
 	}
 }
 
@@ -1143,64 +1266,140 @@ func TestBootstrapFatWorkflowOverrideRestoredWhenBudgetMissedAnyway(t *testing.T
 
 // coreShed filters to the core-classified rungs and preserves shed order, so
 // budget.shed_core reads in the same order the ladder acted.
+//
+// The filter is TIER-driven, not name-driven, and one of those tiers is now an
+// argument: the SAME shed list yields a different shed_core depending on the
+// verdict resumeRungTier reached about the project being bootstrapped. This test
+// used to assert that a shed naming resume->pinned reported no core loss at all,
+// which was the falsified constant expressed as an expectation.
 func TestCoreShedFiltersAndPreservesOrder(t *testing.T) {
-	got := coreShed([]string{shedRecentSessions, shedResumePinned, shedActiveTasks, shedWorkflow})
-	if want := []string{shedWorkflow}; !slices.Equal(got, want) {
-		t.Errorf("coreShed = %v, want %v", got, want)
+	shed := []string{shedRecentSessions, shedResumePinned, shedActiveTasks, shedWorkflow}
+
+	// Under-declared resume: the rung is core, and order is preserved — resume
+	// before workflow, exactly as the ladder acted.
+	if got, want := coreShed(shed, shedTierCore), []string{shedResumePinned, shedWorkflow}; !slices.Equal(got, want) {
+		t.Errorf("coreShed(under-declared resume) = %v, want %v", got, want)
 	}
-	// resume->pinned is context-tier since 260, so a shed naming it and nothing
-	// else must report NO core loss — the filter is tier-driven, not name-driven.
-	if got := coreShed([]string{shedRecentSessions, shedMemory, shedKGSnapshot, shedResumePinned, shedActiveTasks}); len(got) != 0 {
-		t.Errorf("context-only shed reported core rungs: %v", got)
+	// Fully-declared resume: same shed, same order, one fewer core rung.
+	if got, want := coreShed(shed, shedTierContext), []string{shedWorkflow}; !slices.Equal(got, want) {
+		t.Errorf("coreShed(fully-declared resume) = %v, want %v", got, want)
 	}
-	if got := coreShed(nil); got != nil {
+
+	// A shed of nothing but context rungs reports no core loss, whichever way the
+	// resume verdict fell — the resume rung is not in that shed to be filtered.
+	ctxOnly := []string{shedRecentSessions, shedMemory, shedKGSnapshot, shedActiveTasks}
+	for _, tier := range []shedTier{shedTierCore, shedTierContext, ""} {
+		if got := coreShed(ctxOnly, tier); len(got) != 0 {
+			t.Errorf("context-only shed reported core rungs %v at resume tier %q", got, tier)
+		}
+	}
+
+	// ERR DOWNWARD: an unset verdict is no answer, so the rung reports core.
+	if got, want := coreShed([]string{shedResumePinned}, ""), []string{shedResumePinned}; !slices.Equal(got, want) {
+		t.Errorf("coreShed(unmeasured resume) = %v, want %v", got, want)
+	}
+	if got := coreShed(nil, shedTierContext); got != nil {
 		t.Errorf("coreShed(nil) = %v, want nil", got)
 	}
 }
 
-// TestBootstrapShedCoreReportsTheCoreTier drives the whole tool: when the
-// ladder sheds the resume down to its pinned zone, the shed must still happen
-// exactly as before (the diary gone, the pinned zone kept) — but since
-// iteration 260 that rung is CONTEXT tier, so budget.shed_core must NOT name
-// it. A pinned zone that holds the live state is not a core loss; reporting it
-// as one is the alarm-crying-wolf failure the tier split exists to avoid.
+// TestBootstrapShedCoreReportsTheCoreTier drives the whole tool over BOTH sides
+// of the derived resume tier, using two fixtures that differ by ONE marker line.
 //
-// The subset invariant is the durable half of this test: shed_core is always a
-// strict, tier-true subset of shed, whatever the tiers happen to be.
+// 🔴 THIS TEST'S FIXTURE USED TO ENCODE THE FALSIFIED PREMISE, which is why the
+// expectation could not simply be flipped. It built exactly the under-declared
+// resume below — a pinned note plus a 500-line un-pinned `## Current State` —
+// and asserted that dropping it was NOT a core loss, because iteration 260 had
+// hard-coded the rung context-tier on the strength of one project's editorial
+// state. The fixture was right about what the ladder DOES and wrong about what
+// it MEANS: that section is live state, nobody ruled on it, and the ladder drops
+// it. The intent inverts.
+//
+// Both halves of the contract are asserted:
+//
+//   - THE REPORT CHANGES. shed_core names resume->pinned when a section is
+//     undeclared, and does not when every un-pinned section is declared disposable.
+//   - THE PAYLOAD DOES NOT. Same shed list, byte-identical served resume across
+//     the two runs. The tier is REPORTING ONLY — refusing to shed core is the
+//     gated sibling task adr-009-arm-fail-loud-bootstrap.
 func TestBootstrapShedCoreReportsTheCoreTier(t *testing.T) {
-	vault, resolver := testSetup(t)
 	const diary = "un-pinned diary line that the ladder may drop"
-	resume := "# Resume\n\n## Notes\n" + resumezone.ResumePinMarker + "\n\n- terse pinned note\n\n" +
-		"## Current State\n\n" + strings.Repeat("- "+diary+"\n", 500)
-	if err := vault.WriteResume("test-proj", resume, ""); err != nil {
-		t.Fatal(err)
+	// The two bodies differ only in the marker line under `## Current State`,
+	// and that line lives INSIDE the section the ladder drops — so the reduced
+	// resume the agent receives is identical text either way.
+	body := func(marker string) string {
+		return "# Resume\n\n## Notes\n" + resumezone.ResumePinMarker + "\n\n- terse pinned note\n\n" +
+			"## Current State\n" + marker + "\n\n" + strings.Repeat("- "+diary+"\n", 500)
+	}
+	run := func(t *testing.T, resume string) BootstrapResult {
+		t.Helper()
+		vault, resolver := testSetup(t)
+		if err := vault.WriteResume("test-proj", resume, ""); err != nil {
+			t.Fatal(err)
+		}
+		tool := BootstrapContextTool(resolver, vault)
+		br := bootstrapResult(t, tool, `{"project":"test-proj","slim":false,"max_tokens":2000}`)
+
+		if br.Budget == nil || !slices.Contains(br.Budget.Shed, shedResumePinned) {
+			t.Fatalf("test premise broken: resume->pinned was not shed at max_tokens=2000: %+v", br.Budget)
+		}
+		// MECHANISM ONLY, and asserted on BOTH runs: the diary goes, the pinned
+		// zone stays. Classifying the rung core must not stop the shed.
+		if strings.Contains(br.Resume, diary) {
+			t.Error("the un-pinned section survived — the tier report must NOT change shed behavior (that is the gated arm task)")
+		}
+		if !strings.Contains(br.Resume, "terse pinned note") {
+			t.Error("the pinned zone was lost — the shed changed behavior, not just reporting")
+		}
+		// shed_core is a strict, tier-true subset of shed — never an independent list.
+		for _, r := range br.Budget.ShedCore {
+			if !slices.Contains(br.Budget.Shed, r) {
+				t.Errorf("shed_core entry %q is not in shed %v — the report drifted from the ladder", r, br.Budget.Shed)
+			}
+			if rungTier(r, resumeRungTier(resume)) != shedTierCore {
+				t.Errorf("shed_core entry %q is not classified core", r)
+			}
+		}
+		return br
 	}
 
-	tool := BootstrapContextTool(resolver, vault)
-	br := bootstrapResult(t, tool, `{"project":"test-proj","slim":false,"max_tokens":2000}`)
+	var live, declared BootstrapResult
+	t.Run("undeclared live section is a core loss", func(t *testing.T) {
+		live = run(t, body(""))
+		if live.Budget == nil || !slices.Contains(live.Budget.ShedCore, shedResumePinned) {
+			t.Errorf("`## Current State` carries neither marker and was shed, yet shed_core = %v — the payload dropped live state and reported no core loss, which is the exact silence budget.shed_core exists to break", shedCoreOf(live))
+		}
+	})
+	t.Run("every un-pinned section declared disposable is not", func(t *testing.T) {
+		declared = run(t, body(resumezone.ResumeDisposableMarker))
+		if slices.Contains(shedCoreOf(declared), shedResumePinned) {
+			t.Errorf("every un-pinned section is declared disposable, so shedding the resume costs a lookup and not a rule — reporting it as a core loss is the alarm that cries wolf: %v", shedCoreOf(declared))
+		}
+	})
 
-	if br.Budget == nil || !slices.Contains(br.Budget.Shed, shedResumePinned) {
-		t.Fatalf("test premise broken: resume->pinned was not shed at max_tokens=2000: %+v", br.Budget)
+	// 🔴 REPORTING ONLY, PROVED SIDE BY SIDE. The two documents differ by one
+	// marker line inside the dropped section, so the ladder must produce the same
+	// rungs and the byte-identical resume for both; only shed_core may differ.
+	if live.Budget == nil || declared.Budget == nil {
+		return // a subtest already failed on its premise; nothing to compare
 	}
-	if slices.Contains(br.Budget.ShedCore, shedResumePinned) {
-		t.Errorf("resume->pinned is CONTEXT tier since 260 — shedding it must not be reported as a core loss: %v", br.Budget.ShedCore)
+	if live.Resume != declared.Resume {
+		t.Errorf("the served resume differs between the two tiers — the tier changed the PAYLOAD, not just the report:\n  core-tier run: %q\n  context-tier run: %q",
+			live.Resume, declared.Resume)
 	}
-	// shed_core is a strict, tier-true subset of shed — never an independent list.
-	for _, r := range br.Budget.ShedCore {
-		if !slices.Contains(br.Budget.Shed, r) {
-			t.Errorf("shed_core entry %q is not in shed %v — the report drifted from the ladder", r, br.Budget.Shed)
-		}
-		if shedRungTier[r] != shedTierCore {
-			t.Errorf("shed_core entry %q is not classified core", r)
-		}
+	if !slices.Equal(live.Budget.Shed, declared.Budget.Shed) {
+		t.Errorf("the shed ladder acted differently for the two tiers: %v vs %v — the tier must not reach the mechanism",
+			live.Budget.Shed, declared.Budget.Shed)
 	}
-	// MECHANISM ONLY: the tier report must not have changed shed behavior.
-	if strings.Contains(br.Resume, diary) {
-		t.Error("the un-pinned diary survived — classifying the rung as core must NOT stop the shed (that is the gated arm task)")
+}
+
+// shedCoreOf reads ShedCore without assuming a budget was reported, so a
+// diagnostic can never panic on the very payload it is trying to describe.
+func shedCoreOf(br BootstrapResult) []string {
+	if br.Budget == nil {
+		return nil
 	}
-	if !strings.Contains(br.Resume, "terse pinned note") {
-		t.Error("the pinned zone was lost — the shed changed behavior, not just reporting")
-	}
+	return br.Budget.ShedCore
 }
 
 // A context-only shed reports NO shed_core: the field appearing at all means
@@ -1232,6 +1431,13 @@ func TestBootstrapShedCoreAbsentWhenOnlyContextSheds(t *testing.T) {
 		t.Fatalf("test premise broken: nothing was shed: %+v", br.Budget)
 	}
 	for _, r := range br.Budget.Shed {
+		// The resume rung is checked by name rather than through the map: its
+		// tier is no longer static, and the scaffolded resume this fixture uses
+		// leaves live sections undeclared, so shedding it here would be a real
+		// core loss and would break the premise rather than the assertion.
+		if r == shedResumePinned {
+			t.Fatalf("test premise broken: the resume rung was shed at this budget")
+		}
 		if shedRungTier[r] != shedTierContext {
 			t.Fatalf("test premise broken: core rung %q was shed at this budget", r)
 		}

@@ -127,20 +127,30 @@ func TestBootstrapLiveVaultFitsItsOwnBudget(t *testing.T) {
 
 	// 🔴 THE GATE: ADR-009 — the inviolable core is delivered WHOLE or not at all.
 	//
-	// This asserts the invariant the budget arithmetic cannot: shedRungTier
-	// (context_tools.go) classifies resume->pinned and workflow->excerpt as
-	// shedTierCore, and coreShed derives ShedCore from Shed at report time. A
-	// payload can sit comfortably under budget while shedding a core rung — that
-	// is the state the live vault is in today — so total-token slack is not
-	// evidence the contract arrived.
+	// This asserts the invariant the budget arithmetic cannot. Two rungs can land
+	// in ShedCore (coreShed derives it from Shed at report time, context_tools.go):
+	// workflow->excerpt, which shedRungTier classifies core unconditionally, and
+	// resume->pinned, whose tier resumeRungTier DERIVES from the project being
+	// measured — core whenever that resume leaves H2 sections carrying neither
+	// `vp:pin` nor `vp:disposable`. A payload can sit comfortably under budget
+	// while shedding a core rung, so total-token slack is not evidence the
+	// contract arrived.
 	//
-	// 🔴 THIS FAILS ON THE LIVE VAULT TODAY, ON MERIT, AND THAT IS THE POINT.
-	// shed_core is ["resume->pinned"]: resume.md alone exceeds the whole 8,000-token
-	// budget, so the rung must keep firing until resume.md shrinks to ~6-10 KB
-	// (the resume-as-task-index work). Operator decision 2026-07-26: ship it red
-	// rather than skip it, because a skipped assertion is the same silent-success
-	// defect this epic exists to delete. DO NOT loosen this to make the suite
-	// green — fix the payload, or the instrument is lying again.
+	// 🔴 WHAT THIS GATE CATCHES DEPENDS ON THE PROJECT IT IS POINTED AT — which is
+	// the whole reason the resume tier stopped being a constant. The default is
+	// VP_LIVE_PROJECT=vibe-palace, whose payload fits the 16,000-token budget
+	// WHOLE: it sheds nothing at all, br.Budget is nil, and this assertion is
+	// green without ever exercising the tier. That is an honest green, not a
+	// loosened one — nothing is being dropped, so nothing can be dropped silently.
+	//
+	// Point it at a project that DOES shed an under-declared resume (core over the
+	// floor plus undeclared sections — `vp check --check pin-coverage` names both
+	// halves; quantum-ng is one today) and this goes RED, on merit: that project
+	// really is losing live state on every bootstrap. Ship it red. DO NOT loosen
+	// the assertion to clear it — rule on the named sections or shrink the core,
+	// or the instrument is lying again. The same call was made on 2026-07-26 when
+	// vibe-palace itself was the red one; it was cleared by redrawing the resume's
+	// pin boundary and resizing the budget from measurement, not by editing this.
 	if br.Budget != nil && len(br.Budget.ShedCore) > 0 {
 		t.Errorf("bootstrap shed a CORE rung: %v (ADR-009: the core is delivered whole or the call fails loud). payload=%d tokens, full shed=%v",
 			br.Budget.ShedCore, tokens, br.Budget.Shed)

@@ -120,7 +120,9 @@ type BootstrapBudget struct {
 	// "workflow->excerpt".
 	Shed []string `json:"shed,omitempty"`
 	// ShedCore names, in shed order, the subset of Shed that ADR-009 classifies
-	// as inviolable core rather than re-fetchable context (see shedRungTier).
+	// as inviolable core rather than re-fetchable context. Most rungs carry a
+	// project-agnostic tier (see shedRungTier); the resume rung's tier is derived
+	// per bootstrap from that project's own resume (see resumeRungTier).
 	// MECHANISM ONLY today: the tier is reported so a caller can see that safety
 	// surface — not just context — was dropped, but core rungs still shed
 	// exactly like context rungs. Refusing to shed core (fail-loud) is the gated
@@ -588,7 +590,11 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// of the shed rungs were inviolable core. Reported even though the shed
 	// itself still happened — see shedRungTier for why reporting is (for now)
 	// the whole mechanism.
-	budget.ShedCore = coreShed(budget.Shed)
+	//
+	// The resume rung's tier is DERIVED HERE, from fullResume — the same whole
+	// document the ladder's resume rung reads, held aside above the byte-axis
+	// slim cut. It is a per-project verdict, not a constant: see resumeRungTier.
+	budget.ShedCore = coreShed(budget.Shed, resumeRungTier(fullResume))
 
 	if shedTasks(budget) {
 		alerts = append(alerts, fmt.Sprintf("⚠ The active task list (%d open) was shed to fit the token budget — call `vp_list_tasks` for it.", result.ActiveTaskCount))
@@ -732,7 +738,8 @@ const (
 	shedTierContext shedTier = "context"
 )
 
-// shedRungTier classifies every ladder rung, structurally, per ADR-009.
+// shedRungTier classifies, per ADR-009, every ladder rung whose tier is a
+// genuine CONSTANT — true of every project, in every vault, on every run.
 //
 // MECHANISM ONLY (task enforce-adr-009-inviolable-bootstrap-core): the
 // classification exists and is REPORTED (BootstrapBudget.ShedCore), but it does
@@ -748,43 +755,106 @@ const (
 // recovers it — and the CURRENT task belongs in resume's pinned active-state,
 // not in a whole-backlog dump whose promotion would grow a core floor that must
 // shrink.
-// 🔴 shedResumePinned WAS core until iteration 260, and the reclassification is
-// a statement about the ARTIFACT, not a relaxation of ADR-009.
 //
-// ADR-009 classified this rung core for a concrete reason it states outright:
-// "resume->pinned drops resume's un-pinned zone, which today still carries Open
-// Threads and active Known Issues — live project state and live hazards." That
-// was true, and measurably so: only three IDENTITY sections carried the pin
-// marker, while Current State, Open Threads and Known Issues — 11,375 B, 41% of
-// the file — sat un-pinned and were therefore the first thing spent.
-//
-// Iteration 260 re-drew that boundary: every live-state and live-hazard section
-// is now pinned, and the three hand-maintained history indexes were deleted
-// outright (they were stale summaries of iterations.md and tasks/done|cancelled,
-// both reachable by tool). What remains un-pinned is the Reference Documents
-// navigation table. Shedding it costs a lookup, not a rule.
-//
-// So the rung is now genuinely context: the zone it reduces TO is the core. A
-// rung whose classification no longer matches what it drops is an alarm that
-// cries wolf, and this project has spent enough on instruments nobody believes.
-// If a future resume ever un-pins live state again, this must go back to core —
-// the tier follows the artifact.
+// 🔴 shedResumePinned IS DELIBERATELY ABSENT FROM THIS MAP. Its tier is not a
+// property of the ladder at all — it is a property of ONE project's resume.md,
+// which the ladder reads at run time. It is derived per bootstrap by
+// resumeRungTier, and read (with every rung here) through rungTier. Adding a
+// static entry back would re-commit the iteration-260 mistake documented on that
+// function. Every rung whose tier IS project-agnostic belongs right here, static
+// and readable at a glance; deriving the whole map would hide six constants to
+// express one variable.
 var shedRungTier = map[string]shedTier{
 	shedRecentSessions: shedTierContext,
 	shedMemory:         shedTierContext,
 	shedKGSnapshot:     shedTierContext,
 	shedCommands:       shedTierContext,
-	shedResumePinned:   shedTierContext,
 	shedActiveTasks:    shedTierContext,
 	shedWorkflow:       shedTierCore,
 }
 
+// resumeRungTier derives the ADR-009 tier of the resume->pinned rung for ONE
+// bootstrap, from THAT project's resume body.
+//
+// THE RULE: shedding the resume is a CORE loss unless every un-pinned section of
+// that resume has been positively declared disposable. A section carrying
+// neither marker is LIVE STATE (see resumezone.UndeclaredLiveSections) — nobody
+// ruled on it, the ladder drops it anyway, and announcing that drop is the
+// entire job of budget.shed_core.
+//
+// 🔴 IT REPLACES A CONSTANT THAT WAS ALWAYS A CLAIM ABOUT ONE DOCUMENT.
+// Iteration 260 hard-coded this rung shedTierContext and said why outright: on
+// vibe-palace's resume, every live-state and live-hazard section had just been
+// pinned, so the un-pinned remainder was a navigation table and losing it cost a
+// lookup, not a rule. That was true — OF THAT ONE FILE, ON THAT DAY. Written
+// down as a project-agnostic constant, it made one project's editorial state the
+// reported tier for every project in every vault. The moment the pin-coverage
+// check could measure it (iteration 262) it was false for 8 of 8 projects in the
+// live vault: every one of them had undeclared live sections, and the ones whose
+// core is over the floor were having them shed with shed_core reporting nothing.
+//
+// The old comment even carried its own remedy — "if a future resume ever un-pins
+// live state again, this must go back to core" — addressed to nobody, checked by
+// nothing. A rule with no reader is not a rule. This function is the reader.
+//
+// 🔴 IT ERRS DOWNWARD, ALWAYS. Any resume this cannot rule on reports CORE: no
+// resume resolved at all, a body with no H2 sections, or a body that declares no
+// pin zone. Those are not "no core content", they are NO ANSWER, and absence is
+// not a value. The cost of being wrong that way is a loud report on a rung that,
+// for a resume with no declared pin zone, shedResumeToPinnedZone cannot even
+// fire; the cost of being wrong the other way is silence over dropped live
+// state, which is the failure class this whole epic exists to delete.
+//
+// It reads the resume through the SAME two resumezone functions the ladder and
+// check.CheckPinCoverage use, so "declares a pin zone" and "undeclared live
+// section" cannot come to mean one thing in the reducer and another in the
+// report about what was reduced.
+func resumeRungTier(fullResume string) shedTier {
+	// The zone string is discarded on purpose: only `declared` is wanted, and it
+	// is the very verdict shedResumeToPinnedZone gates the shed itself on.
+	if _, declared := resumezone.PinnedZone(fullResume); !declared {
+		return shedTierCore
+	}
+	if len(resumezone.UndeclaredLiveSections(fullResume)) > 0 {
+		return shedTierCore
+	}
+	return shedTierContext
+}
+
+// rungTier is the ONE reader of a rung's ADR-009 tier: the static map for the
+// rungs whose tier is project-agnostic, and resumeTier — a per-bootstrap verdict
+// the caller gets from resumeRungTier — for the one rung whose tier is not.
+//
+// EVERYTHING IT CANNOT ANSWER IS CORE. An unknown rung, and an unset/unknown
+// resumeTier, both report core rather than falling through to the zero value.
+// The bare map lookup this replaces did the opposite: a missing key yielded ""
+// and compared unequal to shedTierCore, so a rung nobody classified would shed
+// out of shed_core in complete silence. Same rule as resumeRungTier — the
+// direction of a wrong guess is chosen, not left to a zero value.
+func rungTier(rung string, resumeTier shedTier) shedTier {
+	if rung == shedResumePinned {
+		if resumeTier == shedTierContext {
+			return shedTierContext
+		}
+		return shedTierCore
+	}
+	if t, ok := shedRungTier[rung]; ok {
+		return t
+	}
+	return shedTierCore
+}
+
 // coreShed filters shed down to the rungs classified core, preserving shed
 // order. Derived from Shed at report time so the two lists can never drift.
-func coreShed(shed []string) []string {
+//
+// resumeTier is this bootstrap's verdict on the resume rung (resumeRungTier).
+// It is a required argument rather than a defaulted one precisely because the
+// tier is a per-project fact: a caller that has not measured the resume has no
+// business asserting the rung is safe, and rungTier reads an unset value as core.
+func coreShed(shed []string, resumeTier shedTier) []string {
 	var out []string
 	for _, r := range shed {
-		if shedRungTier[r] == shedTierCore {
+		if rungTier(r, resumeTier) == shedTierCore {
 			out = append(out, r)
 		}
 	}
@@ -932,12 +1002,28 @@ func shedToBudget(result *BootstrapResult, maxTokens int, fullResume string, sli
 	// budget without them. (The cheap rungs stay shed — a smaller payload still
 	// lowers the odds a host truncates the tail, where the alerts live.)
 	//
-	// This restore is the un-armed enforcement of the ADR-009 core tier for the
-	// ONE core rung whose shed leaves core content incomplete. shedRungTier
-	// classifies two rungs core: resume->pinned DELIVERS its core whole when it
-	// sheds (the pinned zone survives by construction), so there is nothing to
-	// un-shed; workflow->excerpt is a prefix cut that can sever the contract, so
-	// it alone is put back. Since ADR-008 what that contract IS has shrunk: the
+	// This restore is the un-armed enforcement of the ADR-009 core tier, and it
+	// covers workflow->excerpt AND NOTHING ELSE. workflow->excerpt is the one
+	// rung shedRungTier classifies core unconditionally, and it is a PREFIX CUT
+	// that can sever the contract mid-rule.
+	//
+	// 🔴 resume->pinned IS NOT PUT BACK HERE, and since its tier became derived
+	// (resumeRungTier) that is a KNOWING omission, not the old claim that its
+	// shed is harmless. This comment used to assert that "shedRungTier classifies
+	// two rungs core" and that resume->pinned "DELIVERS its core whole when it
+	// sheds (the pinned zone survives by construction)" — both stopped being true.
+	// The tier is now per project, and on a project whose resume leaves live
+	// sections undeclared the rung IS core and its shed IS a real loss: the
+	// undeclared sections do not survive, by construction.
+	//
+	// It stays un-restored anyway, deliberately. Restoring it would change the
+	// payload every agent receives, and turning the tier report into a refusal is
+	// the gated sibling task adr-009-arm-fail-loud-bootstrap. Today the loss is
+	// ANNOUNCED (budget.shed_core names the rung) and never silent, and the
+	// remedy is not in this function: rule on the named sections — `vp check
+	// --check pin-coverage` lists them by heading.
+	//
+	// Since ADR-008 what that contract IS has shrunk: the
 	// doctrine is served on demand (vp_get_doctrine), and the inline workflow
 	// carries the project-specific patterns plus the minimal bootstrap-contract
 	// paragraph that points a fresh host at the doctrine surface. At the
