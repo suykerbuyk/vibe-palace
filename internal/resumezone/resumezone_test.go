@@ -1,7 +1,7 @@
 // Copyright (c) 2026 John Suykerbuyk and SykeTech LTD
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-package tools
+package resumezone
 
 import (
 	"strings"
@@ -35,7 +35,7 @@ NEVER place a .vibe-palace.toml at $HOME.
 
 | # | Summary |
 `
-	zone, declared := pinnedResumeZone(content)
+	zone, declared := PinnedZone(content)
 	if !declared {
 		t.Fatal("declared=false on a document with two pin markers")
 	}
@@ -63,7 +63,7 @@ func TestPinnedResumeZone_MarkerInAFenceIsNotADeclaration(t *testing.T) {
 	const content = "# proj\n\n## How Pinning Works\n\nMark a section like this:\n\n```markdown\n## Some Section\n" +
 		ResumePinMarker + "\n```\n\nThat is all.\n"
 
-	zone, declared := pinnedResumeZone(content)
+	zone, declared := PinnedZone(content)
 	if declared {
 		t.Errorf("a marker quoted inside a code fence was read as a real declaration; zone=%q", zone)
 	}
@@ -74,7 +74,7 @@ func TestPinnedResumeZone_MarkerInAFenceIsNotADeclaration(t *testing.T) {
 func TestPinnedResumeZone_HeadingInAFenceIsNotASection(t *testing.T) {
 	const content = "# proj\n\n## Real Section\n" + ResumePinMarker + "\n\nkeep me\n\n```markdown\n## Fake Section\n```\n\nkeep me too\n\n## Shed Me\n\ndrop me\n"
 
-	zone, declared := pinnedResumeZone(content)
+	zone, declared := PinnedZone(content)
 	if !declared {
 		t.Fatal("declared=false")
 	}
@@ -92,7 +92,7 @@ func TestPinnedResumeZone_HeadingInAFenceIsNotASection(t *testing.T) {
 func TestPinnedResumeZone_MarkerInPreambleAloneIsNotADeclaration(t *testing.T) {
 	const content = "# proj\n" + ResumePinMarker + "\n\n## State\n\nnarrative\n"
 
-	if _, declared := pinnedResumeZone(content); declared {
+	if _, declared := PinnedZone(content); declared {
 		t.Error("a marker above the first H2 was read as a zone declaration — the whole body would be shed")
 	}
 }
@@ -100,14 +100,14 @@ func TestPinnedResumeZone_MarkerInPreambleAloneIsNotADeclaration(t *testing.T) {
 func TestPinnedResumeZone_NoMarkerNoDeclaration(t *testing.T) {
 	const content = "# proj\n\n## State\n\nnarrative\n\n## History\n\nmore\n"
 
-	zone, declared := pinnedResumeZone(content)
+	zone, declared := PinnedZone(content)
 	if declared || zone != "" {
 		t.Errorf("declared=%v zone=%q, want false/empty — an unmarked resume must never be shed", declared, zone)
 	}
 }
 
 func TestPinnedResumeZone_NoHeadingsAtAll(t *testing.T) {
-	if _, declared := pinnedResumeZone("just some prose, no headings\n"); declared {
+	if _, declared := PinnedZone("just some prose, no headings\n"); declared {
 		t.Error("declared=true on a document with no H2 sections")
 	}
 }
@@ -117,7 +117,7 @@ func TestPinnedResumeZone_NoHeadingsAtAll(t *testing.T) {
 func TestPinnedResumeZone_H3StaysWithItsParent(t *testing.T) {
 	const content = "# proj\n\n## Notes\n" + ResumePinMarker + "\n\n### Sub\n\nsub body\n\n## Diary\n\n### Also Sub\n\ndrop\n"
 
-	zone, declared := pinnedResumeZone(content)
+	zone, declared := PinnedZone(content)
 	if !declared {
 		t.Fatal("declared=false")
 	}
@@ -188,7 +188,7 @@ func TestUndeclaredLiveSections_MixReportsOnlyTheUnmarked(t *testing.T) {
 }
 
 // A marker quoted inside a code fence is documentation, not a declaration — the
-// same rule pinnedResumeZone obeys, and it must not diverge here. A resume that
+// same rule PinnedZone obeys, and it must not diverge here. A resume that
 // explains the disposable marker inside a fenced example (the template will) has
 // still declared nothing about the section doing the explaining, so that section
 // is live and must be reported.
@@ -217,7 +217,7 @@ func TestUndeclaredLiveSections_BothMarkersIsPinnedNotUndeclared(t *testing.T) {
 		t.Errorf("UndeclaredLiveSections = %q, want %q", got, want)
 	}
 
-	zone, declared := pinnedResumeZone(content)
+	zone, declared := PinnedZone(content)
 	if !declared {
 		t.Fatal("declared=false — a section carrying both markers must still count as a pin declaration")
 	}
@@ -272,7 +272,7 @@ func TestResumeTemplateDeclaresAPinZone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read embedded resume template: %v", err)
 	}
-	zone, declared := pinnedResumeZone(string(raw))
+	zone, declared := PinnedZone(string(raw))
 	if !declared {
 		t.Fatal("the embedded resume template declares no pin zone — every new project would ship an unsheddable resume")
 	}

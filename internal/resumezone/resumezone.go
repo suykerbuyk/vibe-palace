@@ -1,7 +1,34 @@
 // Copyright (c) 2026 John Suykerbuyk and SykeTech LTD
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-package tools
+// Package resumezone is the ONE reader of a project resume's H2 section markers:
+// `<!-- vp:pin -->` (always inline), `<!-- vp:disposable -->` (safe to drop), and
+// the absence of both (LIVE STATE — an omission, not a decision).
+//
+// # Why it is a leaf package and not part of internal/tools
+//
+// It landed inside internal/tools, next to its first caller — the vp_bootstrap_context
+// token shed ladder. That worked for exactly one caller. The SECOND caller is
+// check.CheckPinCoverage, the advisory that names a resume's undeclared live
+// sections, and it cannot reach into tools: internal/tools already imports
+// internal/check (resume_refs_tool.go and surface_tools.go wrap check functions as
+// MCP tools), so check -> tools would cycle. `go list` confirms the direction.
+//
+// The alternative was the shape internal/check already uses for CoreMaxBytes: copy
+// the value across the wall and pin the copy with a link test. That is right for a
+// CONSTANT — one number, one edit, one comparison. It is wrong here, because what
+// would be copied is a PARSER, and a parser drifts in ways a constant cannot: two
+// walks can disagree about fences, about where a section ends, about whether a
+// preamble marker declares anything, about which marker wins when a section carries
+// both. Every one of those disagreements is silent. This project has already paid
+// twice for two private parsers of one concept (191's iteration headings, 204's
+// task header block); the doc comment on scanResumeH2 says so in as many words, and
+// says to add callers rather than a third walk.
+//
+// So the parser moved DOWN instead of being copied ACROSS — the same shape
+// internal/mdfence has, and for the same reason: one definition, importable by
+// everyone who needs it, cycle-free in every direction.
+package resumezone
 
 import (
 	"strings"
@@ -22,7 +49,7 @@ import (
 // live where the editing happens.
 //
 // The marker is an HTML comment so it renders as nothing in Obsidian and in
-// GitHub, and it is read fence-aware (see pinnedResumeZone), so a marker quoted
+// GitHub, and it is read fence-aware (see PinnedZone), so a marker quoted
 // inside a code fence is documentation, not a declaration.
 const ResumePinMarker = "<!-- vp:pin -->"
 
@@ -58,10 +85,10 @@ type resumeH2 struct {
 // scanResumeH2 splits a resume body into its H2 sections and records which
 // markers each one carries.
 //
-// It is the ONE fence-aware walk of a resume: pinnedResumeZone and
+// It is the ONE fence-aware walk of a resume: PinnedZone and
 // UndeclaredLiveSections must agree on what a section is and where it ends, or
 // the reduced document and the report about what was reduced describe different
-// documents. That divergence is precisely the failure mode this package already
+// documents. That divergence is precisely the failure mode this project already
 // paid for twice (191's iteration headings, 204's task header block) — two
 // private parsers of one concept, disagreeing where nobody looked. Add callers
 // here rather than a third walk elsewhere.
@@ -146,7 +173,7 @@ func UndeclaredLiveSections(content string) []string {
 	return out
 }
 
-// pinnedResumeZone returns the always-inline zone of a resume body: the
+// PinnedZone returns the always-inline zone of a resume body: the
 // preamble (frontmatter, H1, any leading comment) followed by every H2 section
 // that carries ResumePinMarker, in file order.
 //
@@ -162,7 +189,7 @@ func UndeclaredLiveSections(content string) []string {
 // A marker sitting in the preamble alone does NOT count as a declaration: it
 // pins nothing that was not already inline, and honoring it would shed the
 // entire body down to the frontmatter on the strength of one stray line.
-func pinnedResumeZone(content string) (zone string, declared bool) {
+func PinnedZone(content string) (zone string, declared bool) {
 	lines, sections := scanResumeH2(content)
 	if len(sections) == 0 {
 		return "", false

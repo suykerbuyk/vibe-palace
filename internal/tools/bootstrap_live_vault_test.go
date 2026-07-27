@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
+	"github.com/suykerbuyk/vibe-palace/internal/resumezone"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -172,7 +173,7 @@ func TestBootstrapLiveVaultFitsItsOwnBudget(t *testing.T) {
 	// disk and would fail every compare-and-set a writer makes after paging the
 	// body back through resume_uri.
 	if br.Budget != nil && sliceHas(br.Budget.Shed, shedResumePinned) {
-		if !strings.Contains(br.Resume, ResumePinMarker) {
+		if !strings.Contains(br.Resume, resumezone.ResumePinMarker) {
 			t.Error("resume was shed to its pinned zone but carries no pin marker — the zone splitter kept the wrong lines")
 		}
 		if !strings.Contains(br.Resume, br.ResumeURI) {

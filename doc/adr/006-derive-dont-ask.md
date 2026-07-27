@@ -265,4 +265,4 @@ That is the argument. **The ADR is not the enforcement either — the server is.
 - `doc/adr/003-vault-write-locking.md` — the lock discipline `append-iteration-server-owned` must derive *inside*.
 - `internal/sourceaudit` — DERIVE ("is it dead?") plus DECLARE (the baseline's reasons).
 - `internal/vaultaudit` — REPORT + DEFER, and an accepted-ID ratchet that forces its own record to shrink.
-- `internal/tools/resume_zone.go` — the `vp:pin` marker: DECLARE + ENFORCE, with a loud refusal to guess.
+- `internal/resumezone` — the `vp:pin` / `vp:disposable` markers: DECLARE + ENFORCE, with a loud refusal to guess. An H2 carrying NEITHER marker is undeclared LIVE STATE, and `check.CheckPinCoverage` REPORTs it by name.

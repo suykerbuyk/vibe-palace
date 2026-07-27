@@ -808,6 +808,7 @@ tool-registry build. Registered names:
 | `resume-caps` | `Resume caps` | Whole vault — every `Projects/*/resume.md` |
 | `resume-refs` | `Resume refs` | Whole vault — host-local plan refs in every `Projects/*/resume.md` |
 | `core-floor` | `Core floor` | Whole vault — every project's `resume.md` + `workflow.md` vs its share of the payload budget |
+| `pin-coverage` | `Pin coverage` | Whole vault — `Projects/*/resume.md` H2 sections carrying neither `vp:pin` nor `vp:disposable` |
 
 An unknown name exits `ExitUser` with an `unknown check` diagnostic.
 
@@ -907,6 +908,55 @@ resume affords a fat contract and vice versa, so a workflow-only cap was never
 derivable on its own. The defect that actually bit — a core of 8,015 tokens
 against an 8,000-token budget, making ADR-009 arithmetically unsatisfiable — was
 invisible to the old check and is caught by this one.
+
+### Resume pin coverage (`internal/resumezone`, `check.CheckPinCoverage`)
+
+An H2 section of a `resume.md` is in exactly **one of three states**, declared in
+the artifact by an HTML-comment marker rather than by a code-side allowlist:
+
+| Marker | State | Ladder behaviour |
+|--------|-------|------------------|
+| `<!-- vp:pin -->` | ALWAYS-INLINE | survives the shed ladder at any budget |
+| `<!-- vp:disposable -->` | SAFE TO DROP | the author has ruled it sheddable |
+| *(neither)* | **LIVE STATE** | shed today — and nobody has ruled on it |
+
+The third row is the point. With only a pin marker there are two states in the
+file but three in the author's head: pinned, deliberately sheddable, and *nobody
+has looked at this yet* — and collapsing the third into "sheddable" is exactly
+how live state gets dropped silently. Requiring a **positive declaration on the
+drop side** makes the omission visible.
+
+`internal/resumezone` is the one fence-aware reader of those markers
+(`scanResumeH2`, `PinnedZone`, `UndeclaredLiveSections`). It is a **leaf**
+package, not part of `internal/tools` where it first landed, because its second
+caller lives in `internal/check`: `internal/tools` already imports
+`internal/check` (`resume_refs_tool.go`, `surface_tools.go`), so `check -> tools`
+would cycle. The alternative — copying the parser across the wall and pinning the
+copy with a link test, the arrangement `CoreMaxBytes` uses — is right for a
+constant and wrong for a parser: two walks can disagree about fences, section
+ends, preamble markers and contradictory markers, and every one of those
+disagreements is silent. So the parser moved **down** rather than being copied
+**across**, the same shape `internal/mdfence` has.
+
+`CheckPinCoverage` walks `<vault>/Projects/*/resume.md` and emits one `Info` row
+**naming** each project's undeclared sections (a bare count would rot). A resume
+that pins **nothing** is a *different* condition and is deliberately excluded
+rather than flagged: with no pin zone every section is undeclared, so the finding
+would degenerate into the whole table of contents, and its remedy ("declare a pin
+zone") is not this check's remedy ("rule on these named sections"). It is already
+reported elsewhere — `PinnedZone` returns `declared=false`, so the ladder keeps
+such a resume whole and bootstrap reports over-budget rather than guessing. The
+exclusion is never silent: the pin-less count rides in the summary on `Pass` runs
+too. Strictly read-only and **never `Fail`** — "unmarked" is a legitimate end
+state for genuinely live content, so failing on it would be demanding a lie.
+Selectable as `vp check --check pin-coverage`.
+
+The shipped scaffold template pins `What This Project Is` and `Project-Specific
+Behavioral Notes`, marks `Reference Documents` disposable (a pure pointer table
+an agent re-derives from a tool call), and leaves `Current State` and `Open
+Threads` **unmarked on purpose** — they are live state, and every new project
+therefore reports two undeclared live sections on day one. That is the honest
+reading, not a false positive.
 
 ### Orphaned-plan reporter (`internal/planscan`)
 

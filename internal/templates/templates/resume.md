@@ -11,13 +11,30 @@ project: {{PROJECT}}
      - Active work items -> tasks/ directory
      Only current state, open threads, and pointers to deeper context belong here.
 
-     THE PIN MARKER. A section marked `<!-- vp:pin -->` is ALWAYS-INLINE: it survives
-     the vp_bootstrap_context token shed ladder no matter how tight the budget gets.
-     Everything else is shed to the resume_uri when the payload will not fit.
+     THE THREE STATES. Every `##` section below is in exactly one of three states,
+     and the state is declared HERE, in the artifact, by an HTML-comment marker on
+     the line under the heading. The two pinned sections below show the literal
+     syntax; it is not repeated inside this comment, because a marker written here
+     would close this comment block early.
+
+     vp:pin         ALWAYS-INLINE. Survives the vp_bootstrap_context token shed
+                    ladder no matter how tight the budget gets. Everything else is
+                    shed to the resume_uri when the payload will not fit.
+     vp:disposable  SAFE TO DROP. Pure navigation and pointers — an agent that loses
+                    it re-derives it from a tool call, at no cost.
+     no marker      LIVE STATE. Nobody has ruled on this section yet. Absence is NOT
+                    a value, and silence is NOT consent to drop: the section stays
+                    live until someone decides otherwise, and
+                    `vp check --check pin-coverage` names it by heading until they do.
 
      Pin ONLY what an agent must not act without — the rules that stop it corrupting
      the vault. Narrative, history and status are NOT that, and pinning them defeats
-     the mechanism: a resume that pins everything sheds nothing. -->
+     the mechanism: a resume that pins everything sheds nothing.
+
+     Mark disposable ONLY what genuinely costs nothing to lose. Current State and
+     Open Threads below are deliberately left UNMARKED: they are live state, not
+     reference, and declaring them sheddable is how a session drops the thread it
+     was about to pull. -->
 
 ## What This Project Is
 <!-- vp:pin -->
@@ -57,6 +74,13 @@ project: {{PROJECT}}
   `tasks/some-task-slug.md`.
 
 ## Reference Documents
+<!-- vp:disposable -->
+
+<!-- A pointer table, and nothing but: every row names an artifact and the tool
+     that fetches it. Losing it costs an agent nothing — the artifacts are still
+     there and the tools still list them — so it is the one section here that is
+     honestly safe to shed. Keep it that way: the moment a row carries content
+     that exists ONLY here, this marker is a lie. -->
 
 | Document | Access | Purpose |
 |----------|--------|---------|

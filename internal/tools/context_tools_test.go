@@ -19,6 +19,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/resumezone"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -777,7 +778,7 @@ func TestBootstrapUnmarkedResumeIsNeverShedAndSaysSo(t *testing.T) {
 	br := bootstrapResult(t, tool, `{"project":"test-proj","slim":false,"max_tokens":50}`)
 
 	if br.Resume != wantResume {
-		t.Errorf("resume with no %s marker was shed anyway (len %d, want %d) — the server guessed", ResumePinMarker, len(br.Resume), len(wantResume))
+		t.Errorf("resume with no %s marker was shed anyway (len %d, want %d) — the server guessed", resumezone.ResumePinMarker, len(br.Resume), len(wantResume))
 	}
 	// The contract is put back when shedding it would not have saved the payload
 	// anyway: losing the rules AND blowing the budget is worse than blowing it.
@@ -792,7 +793,7 @@ func TestBootstrapUnmarkedResumeIsNeverShedAndSaysSo(t *testing.T) {
 	if !br.Budget.OverBudget {
 		t.Errorf("over_budget=false at %d estimated tokens against max_tokens=50", br.Budget.EstimatedTokens)
 	}
-	if !strings.Contains(br.Budget.Reason, ResumePinMarker) {
+	if !strings.Contains(br.Budget.Reason, resumezone.ResumePinMarker) {
 		t.Errorf("over-budget reason does not name the missing pin marker, so nobody can act on it: %q", br.Budget.Reason)
 	}
 	if !strings.Contains(br.PostBootstrapInstructions, "over its own token budget") {
@@ -806,7 +807,7 @@ func TestBootstrapShedsResumeDiaryButNeverThePinnedZone(t *testing.T) {
 	const notes = "NEVER place a .vibe-palace.toml at $HOME"
 	const diary = "we shipped the thing and then we shipped another thing"
 	resume := "---\ntype: project-resume\n---\n\n# Resume\n\n" +
-		"## Project-Specific Behavioral Notes\n" + ResumePinMarker + "\n\n- " + notes + "\n\n" +
+		"## Project-Specific Behavioral Notes\n" + resumezone.ResumePinMarker + "\n\n- " + notes + "\n\n" +
 		"## Current State\n\n" + strings.Repeat("- "+diary+"\n", 500)
 	if err := vault.WriteResume("test-proj", resume, ""); err != nil {
 		t.Fatal(err)
@@ -847,7 +848,7 @@ func TestBootstrapShedsResumeDiaryButNeverThePinnedZone(t *testing.T) {
 // backlog and leaves no trace reads as "this project has no open work".
 func TestBootstrapShedTaskListLeavesTheCountAndSaysWhereToLook(t *testing.T) {
 	vault, resolver := testSetup(t)
-	resume := "# Resume\n\n## Notes\n" + ResumePinMarker + "\n\nterse.\n\n## Current State\n\n" +
+	resume := "# Resume\n\n## Notes\n" + resumezone.ResumePinMarker + "\n\nterse.\n\n## Current State\n\n" +
 		strings.Repeat("- narrative\n", 300)
 	if err := vault.WriteResume("test-proj", resume, ""); err != nil {
 		t.Fatal(err)
@@ -893,7 +894,7 @@ func TestBootstrapShedTaskListLeavesTheCountAndSaysWhereToLook(t *testing.T) {
 // broken — which is precisely how it stayed broken.
 func TestBootstrapAlertsSurviveDefaultBudgetWithLiveSizedResume(t *testing.T) {
 	vault, resolver := testSetup(t)
-	resume := "# Resume\n\n## Behavioral Notes\n" + ResumePinMarker + "\n\n- never do the bad thing\n\n" +
+	resume := "# Resume\n\n## Behavioral Notes\n" + resumezone.ResumePinMarker + "\n\n- never do the bad thing\n\n" +
 		"## Current State\n\n" + strings.Repeat("- narrative line that belongs in iterations.md\n", 1100)
 	if len(resume) < 50_000 {
 		t.Fatalf("test resume is %d bytes — too small to reproduce the defect", len(resume))
@@ -941,7 +942,7 @@ func TestBootstrapAlertsSurviveDefaultBudgetWithLiveSizedResume(t *testing.T) {
 // broken — and that a FRESH audit says nothing at all.
 func TestBootstrapAuditStalenessNagSurvivesTheShedLadder(t *testing.T) {
 	vault, resolver := testSetup(t)
-	resume := "# Resume\n\n## Notes\n" + ResumePinMarker + "\n\n- terse\n\n## Current State\n\n" +
+	resume := "# Resume\n\n## Notes\n" + resumezone.ResumePinMarker + "\n\n- terse\n\n## Current State\n\n" +
 		strings.Repeat("- narrative that belongs in iterations.md\n", 1200)
 	if err := vault.WriteResume("test-proj", resume, ""); err != nil {
 		t.Fatal(err)
@@ -1169,7 +1170,7 @@ func TestCoreShedFiltersAndPreservesOrder(t *testing.T) {
 func TestBootstrapShedCoreReportsTheCoreTier(t *testing.T) {
 	vault, resolver := testSetup(t)
 	const diary = "un-pinned diary line that the ladder may drop"
-	resume := "# Resume\n\n## Notes\n" + ResumePinMarker + "\n\n- terse pinned note\n\n" +
+	resume := "# Resume\n\n## Notes\n" + resumezone.ResumePinMarker + "\n\n- terse pinned note\n\n" +
 		"## Current State\n\n" + strings.Repeat("- "+diary+"\n", 500)
 	if err := vault.WriteResume("test-proj", resume, ""); err != nil {
 		t.Fatal(err)

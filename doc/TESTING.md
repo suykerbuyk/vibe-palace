@@ -698,6 +698,43 @@ underscore-prefixed directories being ignored, and an unreadable `Projects/`.
 flags a resume, its bytes, size and mtime are unchanged and no sibling file was
 written.
 
+### `internal/check/pin_coverage_test.go` — Resume Pin Coverage
+
+Covers `CheckPinCoverage`, the advisory that names the `resume.md` H2 sections
+carrying neither `vp:pin` nor `vp:disposable`. The silent cases: no vault
+configured (Skip), no `Projects/` directory, a project with **no resume.md**, and
+a resume whose every section is ruled on (one pinned, one disposable → Pass, zero
+details). The reporting case asserts the details name the offending sections **in
+file order** (`leaky: Current State; Open Threads`), never name a declared
+section, and carry both markers plus the `/vpc-wrap` pointer in the remediation —
+so "fix it" cannot be misread as "pin everything".
+
+The deliberate rulings each get a test:
+`TestCheckPinCoverage_NoPinMarkerIsExcludedNotFlagged` (a resume that pins
+nothing is a *different* condition — excluded from the scan, never named
+section-by-section, but its count rides in the summary so the exclusion cannot
+grow unseen), `_PreambleMarkerIsNotADeclaration` (a marker above the first H2
+pins nothing already inline), `_FencedMarkerDoesNotDeclare` (a marker quoted in a
+code fence is documentation), and `_BothMarkersIsNotUndeclared` (a contradictory
+declaration is still a declaration; the pin wins). `_MixedSortedAndNeverFails`
+covers project sorting, dot/underscore directories, the scanned-vs-pin-less
+denominator, and asserts the status is never `Fail`. `_IsReadOnly` proves bytes
+and mtime are unchanged after a flagging run.
+
+`TestCheckPinCoverage_ScaffoldTemplateLeavesLiveStateLive` is where the two
+halves meet: it runs the check's own parser over the **embedded** template and
+asserts the undeclared set is *exactly* `Current State`, `Open Threads` — both
+directions are defects. Marking either disposable would assert that a session's
+working context is safe to drop; a new unmarked section appearing would slip
+through unruled. It also asserts `Reference Documents` is the one section marked
+disposable.
+
+`internal/resumezone/resumezone_test.go` (moved from `internal/tools`) keeps the
+parser-level coverage: pinned-zone extraction, fence-awareness for both markers
+and for headings, H3s staying with their parent H2, the preamble never being a
+section, and `UndeclaredLiveSections` over no-markers / all-pinned /
+all-disposable / mixed inputs.
+
 ### `cmd/vp` — Flag Wiring
 
 `cmd_check_test.go` drives `vp check --json` end-to-end (JSON parse, binary

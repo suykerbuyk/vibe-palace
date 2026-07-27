@@ -19,6 +19,7 @@ import (
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
+	"github.com/suykerbuyk/vibe-palace/internal/resumezone"
 	"github.com/suykerbuyk/vibe-palace/internal/shims"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -665,7 +666,7 @@ func dropRung(xs []string, drop string) []string {
 }
 
 // shedResumeToPinnedZone replaces the resume body with the sections its author
-// marked ResumePinMarker, behind a banner pointing at resume_uri. Idempotent:
+// marked resumezone.ResumePinMarker, behind a banner pointing at resume_uri. Idempotent:
 // once the resume has been reduced it will not be reduced again.
 //
 // Skipped when slim already excerpted the resume — that excerpt is SMALLER than
@@ -682,13 +683,13 @@ func shedResumeToPinnedZone(result *BootstrapResult, b *BootstrapBudget, fullRes
 	if slim && len(fullResume) > bootstrapExcerptCap {
 		return est() // already reduced on the byte axis
 	}
-	zone, declared := pinnedResumeZone(fullResume)
+	zone, declared := resumezone.PinnedZone(fullResume)
 	if !declared {
 		// NO PIN MARKER ⇒ NOT SHEDDABLE. The server will not guess which half of
 		// an undeclared resume was safe to drop; guessing wrong drops the
 		// behavioral notes — the ones that stop an agent corrupting the vault —
 		// silently. Stay inline and say so, loudly, in the budget report.
-		b.Reason = "resume declares no " + ResumePinMarker + " zone, so it cannot be shed — see the pinned-zone marker in the resume template"
+		b.Reason = "resume declares no " + resumezone.ResumePinMarker + " zone, so it cannot be shed — see the pinned-zone marker in the resume template"
 		return est()
 	}
 	if len(zone) >= len(result.Resume) {
@@ -800,7 +801,7 @@ func coreShed(shed []string) []string {
 //  1. sessions, memory, KG, commands — cheap context, re-fetchable, no rule lives in them.
 //  5. resume down to its PINNED ZONE — the diary is a narrative and the full body is one
 //     vp_read_resource away; /vpc-restart Step 2 already instructs the agent to fetch it.
-//     The behavioral notes are marked ResumePinMarker and CANNOT be shed by this rung.
+//     The behavioral notes are marked resumezone.ResumePinMarker and CANNOT be shed by this rung.
 //  6. active_tasks — one cheap vp_list_tasks call away, and ActiveTaskCount survives, so
 //     nothing is silently lost. Note it drops the WHOLE list rather than truncating titles:
 //     a truncated title is a title that misleads, and the title is what every agent reads

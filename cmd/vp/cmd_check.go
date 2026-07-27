@@ -31,7 +31,7 @@ func cmdCheck(info cli.BuildInfo) *cli.Command {
 	return &cli.Command{
 		Name:        "check",
 		Synopsis:    "vp check [--json] [--check NAME[,NAME...]]",
-		Description: "Verify installation, config, vault, embedder, surface compatibility, project detection, and vault hygiene (stray scaffolds, resume.md size/row caps, host-local plan refs, inviolable-core size floor). Reports pass/fail status for each component. With --check, runs only the named check(s) via selective execution — skipping the expensive embedder load and tool-registry build — for fast scripting / AI preflights. Selectable names: surface, resume-caps, resume-refs, core-floor.",
+		Description: "Verify installation, config, vault, embedder, surface compatibility, project detection, and vault hygiene (stray scaffolds, resume.md size/row caps, host-local plan refs, inviolable-core size floor, resume pin-marker coverage). Reports pass/fail status for each component. With --check, runs only the named check(s) via selective execution — skipping the expensive embedder load and tool-registry build — for fast scripting / AI preflights. Selectable names: surface, resume-caps, resume-refs, core-floor, pin-coverage.",
 		Flags:       checkFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp check", Comment: "Run all installation checks"},
@@ -40,6 +40,7 @@ func cmdCheck(info cli.BuildInfo) *cli.Command {
 			{Cmd: "vp check --check resume-caps", Comment: "Warn on any project resume.md over its size/row caps"},
 			{Cmd: "vp check --check resume-refs", Comment: "Warn on any resume.md committing a host-local ~/.claude/plans/… path"},
 			{Cmd: "vp check --check core-floor", Comment: "Warn on any project whose resume.md + workflow.md core cannot fit the payload budget"},
+			{Cmd: "vp check --check pin-coverage", Comment: "Name the resume.md sections carrying neither a pin nor a disposable marker — live state in the sheddable zone"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(checkFlags, args)
@@ -74,6 +75,12 @@ var checkProducers = map[string]func(vaultRoot string) []check.Result{
 			return []check.Result{{Name: "Core floor", Status: check.Skip, Summary: "no vault configured"}}
 		}
 		return []check.Result{check.CheckCoreFloor(storage.NewVault(vaultRoot))}
+	},
+	"pin-coverage": func(vaultRoot string) []check.Result {
+		if vaultRoot == "" {
+			return []check.Result{{Name: "Pin coverage", Status: check.Skip, Summary: "no vault configured"}}
+		}
+		return []check.Result{check.CheckPinCoverage(storage.NewVault(vaultRoot))}
 	},
 }
 
@@ -254,6 +261,17 @@ func gatherCheckResults() []check.Result {
 				// on its own. Advisory only, never Fail (same stance as resume
 				// caps: no write path can prevent, so detection is on offer).
 				results = append(results, check.CheckCoreFloor(vault))
+
+				// Vault-wide: name the resume.md sections carrying neither
+				// `<!-- vp:pin -->` nor `<!-- vp:disposable -->`. Under the
+				// three-state rule an unmarked section is LIVE STATE, so this
+				// row reports live content sitting in the zone the shed ladder
+				// drops. Nothing else in the tree reads a pin marker outside
+				// the ladder itself, which is how the shipped template came to
+				// declare live state sheddable unnoticed. Advisory only, never
+				// Fail — "unmarked" is a legitimate end state for genuinely
+				// live content.
+				results = append(results, check.CheckPinCoverage(vault))
 			}
 		}
 	}
