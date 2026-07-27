@@ -48,10 +48,13 @@ type ExtractAllOptions struct {
 const DefaultMinMentions = 2
 
 // Capture-layer regex patterns, re-homed here so ExtractAll owns orchestration
-// end-to-end. These are intentionally verbatim copies of the originals in
-// internal/capture/entities.go; the goal of this refactor is to dedupe
-// orchestration, not retune detection. The capture package delegates to
-// ExtractFilesAndURLs below to preserve its public API shape for tests.
+// end-to-end. They began as verbatim copies of the capture package's originals
+// — the goal of that refactor was to dedupe orchestration, not retune detection
+// — and internal/capture/entities.go has since been deleted, so these are now
+// the sole definitions. Nothing outside this package calls ExtractFilesAndURLs;
+// re-derive before assuming a capture-side caller still exists:
+//
+//	grep -rn "ExtractFilesAndURLs" --include='*.go' . | grep -v "^./internal/kg/"
 var (
 	filePathRe = regexp.MustCompile(`(?:^|[^a-zA-Z0-9_/.-])([a-zA-Z_./][a-zA-Z0-9_/.~-]*\.(?:go|ts|tsx|js|jsx|py|rs|c|cpp|cc|cxx|h|hpp|hxx|java|kt|rb|lua|zig|nim|toml|yaml|yml|json|md|sh|sql|proto|css|html))(?:[^a-zA-Z0-9_/-]|$)`)
 	urlRe      = regexp.MustCompile(`https?://[^\s)"'>` + "`" + `]+`)

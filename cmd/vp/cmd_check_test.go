@@ -574,8 +574,8 @@ func seedCoreFloorVault(t *testing.T) string {
 	return vaultPath
 }
 
-// TestCheckCoreFloorOnlyHuman verifies `vp check --check workflow-caps`
-// selects exactly the Workflow caps row, flags only the over-cap project, and
+// TestCheckCoreFloorOnlyHuman verifies `vp check --check core-floor`
+// selects exactly the Core floor row, flags only the over-cap project, and
 // — like the surface preflight — never loads the embedder.
 func TestCheckCoreFloorOnlyHuman(t *testing.T) {
 	seedCoreFloorVault(t)
@@ -606,10 +606,10 @@ func TestCheckCoreFloorOnlyHuman(t *testing.T) {
 	}
 }
 
-// TestCheckWorkflowCapsOnlyJSON verifies the --json projection: exactly one
+// TestCheckCoreFloorOnlyJSON verifies the --json projection: exactly one
 // info check naming the over-cap project, and exit code 0 even with a breach
 // present (an advisory warns, never fails).
-func TestCheckWorkflowCapsOnlyJSON(t *testing.T) {
+func TestCheckCoreFloorOnlyJSON(t *testing.T) {
 	seedCoreFloorVault(t)
 
 	fv, _ := cli.ParseFlags(checkFlags, []string{"--check", "core-floor", "--json"})
@@ -640,9 +640,9 @@ func TestCheckWorkflowCapsOnlyJSON(t *testing.T) {
 	}
 }
 
-// TestCheckWorkflowCapsNoVault verifies the producer degrades to Skip (not a
+// TestCheckCoreFloorNoVault verifies the producer degrades to Skip (not a
 // panic or a bogus Pass) when no vault can be resolved.
-func TestCheckWorkflowCapsNoVault(t *testing.T) {
+func TestCheckCoreFloorNoVault(t *testing.T) {
 	rs := checkProducers["core-floor"]("")
 	if len(rs) != 1 {
 		t.Fatalf("want one result, got %d", len(rs))

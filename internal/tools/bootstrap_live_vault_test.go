@@ -169,7 +169,7 @@ func TestBootstrapLiveVaultFitsItsOwnBudget(t *testing.T) {
 	if br.Budget != nil && sliceHas(br.Budget.Shed, shedWorkflow) {
 		t.Errorf("the workflow contract was excerpted (%q in shed) — an agent cannot follow rules it did not receive. "+
 			"the served workflow field is now a %d-byte excerpt of a contract that exceeded the %d-byte cap; "+
-			"run `vp check --check workflow-caps` for the source size",
+			"run `vp check --check core-floor` for the source size",
 			shedWorkflow, len(br.Workflow), bootstrapExcerptCap)
 	}
 

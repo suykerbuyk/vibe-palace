@@ -49,7 +49,7 @@ its full MCP tool surface (versioned in `internal/mcp/tool_surface.golden.json`,
 | `internal/reconcile` | Check → Plan → Apply reconcilers for managed config-file tiers | (per-artifact reconcilers) |
 | `internal/templates` | Compiled-in template corpus (incl. the agent doctrine, `templates/doctrine.md`) + materialize/reconcile lifecycle | `Executor`, `Lock` |
 | `internal/worktree` | Git-worktree isolation for plan execution (`vp worktree create\|remove\|list`) | `Create`, `Remove`, `List` |
-| `internal/check` | Doctor checks for config, vault, embedder, git, agent drift, resume.md caps, workflow.md caps | `Run`, `CheckConfig`, `CheckAgentDrift`, `CheckResumeCaps`, `CheckWorkflowCaps` |
+| `internal/check` | Doctor checks for config, vault, embedder, git, agent drift, resume.md caps, the ADR-009 core floor, and resume pin coverage | `Run`, `CheckConfig`, `CheckAgentDrift`, `CheckResumeCaps`, `CheckCoreFloor`, `CheckPinCoverage` |
 | `internal/slug` | Project-slug validation and normalization | `Slugify`, `Validate` |
 
 ---

@@ -341,7 +341,7 @@ func BootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault) mcp.To
 // window and ~8% of a 200K one.
 //
 // The levers that keep this honest are the core-floor check
-// (internal/check/workflow.go) and the LiveVault canary — NOT shrinking the
+// (internal/check/core_floor.go) and the LiveVault canary — NOT shrinking the
 // charter to fit a number, which inverts the dependency: the contract sets the
 // budget, not the reverse.
 const DefaultBootstrapMaxTokens = 16000
