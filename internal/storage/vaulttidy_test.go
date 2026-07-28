@@ -100,6 +100,45 @@ func TestClassifyDirty_NegativeCasesReported(t *testing.T) {
 	}
 }
 
+// TestClassifyDirty_FilesystemProbeSkipped covers the defensive skip for
+// check.CheckVaultFilesystem's transient probe, which is the .vp-locks case
+// one layer down.
+//
+// A vault-root .vp-fs-probe-* file matches no sweepRule, so without this skip
+// it lands in Reported — and Reported dirt makes SyncFlow REFUSE TO SYNC. The
+// canonical .gitignore pattern normally keeps it out of porcelain entirely,
+// but that only helps on a vault whose .gitignore has been reconciled since
+// the pattern was added, which is no existing vault until the operator
+// deploys. Until then this skip is the only thing between a crashed check and
+// a wedged sync.
+//
+// It must be neither swept (never commit a probe) nor reported (never block a
+// sync), exactly like a lock sidecar.
+func TestClassifyDirty_FilesystemProbeSkipped(t *testing.T) {
+	vaultPath := t.TempDir()
+	probe := ".vp-fs-probe-12345-1700000000000000000-1-a:b"
+
+	swept, reported, deferred := classifyDirty(vaultPath, []PorcelainEntry{{Status: "??", Path: probe}})
+	if hasPath(swept, probe) {
+		t.Errorf("probe must never be committed, got swept=%v", swept)
+	}
+	if hasPath(reported, probe) {
+		t.Errorf("probe must never be reported — Reported dirt refuses the sync, got reported=%v", reported)
+	}
+	if hasPath(deferred, probe) {
+		t.Errorf("probe must not be deferred either, got deferred=%v", deferred)
+	}
+
+	// The skip is deliberately narrow: root-level only. A path that merely
+	// CONTAINS the prefix deeper in the tree is not a probe and still needs
+	// human eyes — default-deny is what makes tidy trustworthy.
+	nested := "Projects/p/.vp-fs-probe-12345-1-1-a:b"
+	_, reported, _ = classifyDirty(vaultPath, []PorcelainEntry{{Status: "??", Path: nested}})
+	if !hasPath(reported, nested) {
+		t.Errorf("a nested %q must still be reported — the skip must not generalize", nested)
+	}
+}
+
 // TestClassifyDirty_SurfaceStatusGate covers the H2 status gate: tracked
 // modifications of .surface (in any M form) sweep; untracked (??) reports.
 func TestClassifyDirty_SurfaceStatusGate(t *testing.T) {

@@ -72,6 +72,15 @@ func TestReconcileVaultGitignore_FreshFile(t *testing.T) {
 	if !strings.Contains(s, "\n.vp-locks/\n") && !strings.HasSuffix(s, ".vp-locks/\n") {
 		t.Errorf(".gitignore missing .vp-locks/ entry:\n%s", s)
 	}
+	// The filesystem probe (check.CheckVaultFilesystem) is the same class of
+	// host-local transient state. It is normally deleted microseconds after it
+	// is created, but a process killed mid-check leaves one behind — and an
+	// untracked vault-root file matches no sweepRule, so it becomes Reported
+	// dirt and SyncFlow refuses to sync until a human deletes a file they
+	// never created.
+	if !strings.Contains(s, "\n.vp-fs-probe-*\n") && !strings.HasSuffix(s, ".vp-fs-probe-*\n") {
+		t.Errorf(".gitignore missing .vp-fs-probe-* entry:\n%s", s)
+	}
 }
 
 // TestReconcileVaultGitignore_KeepsCommitMsgArchive guards that the vault

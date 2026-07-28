@@ -211,6 +211,20 @@ func classifyDirty(vaultPath string, entries []PorcelainEntry) (swept, reported,
 			continue
 		}
 
+		// Vault-root .vp-fs-probe-* files are the transient probes
+		// check.CheckVaultFilesystem creates and deletes to test whether the
+		// filesystem accepts ":" in a filename. Same class as .vp-locks above,
+		// and skipped for the same reason plus one that bites sooner: a probe
+		// is Reported dirt, and Reported dirt makes SyncFlow REFUSE TO SYNC.
+		// The .gitignore pattern keeps it out of porcelain — but only on a
+		// vault whose .gitignore has been reconciled since that pattern was
+		// added, which is no existing vault until the operator deploys. Until
+		// then this skip is the only thing standing between a crashed check
+		// and a wedged sync.
+		if !strings.Contains(e.Path, "/") && strings.HasPrefix(e.Path, ".vp-fs-probe-") {
+			continue
+		}
+
 		// Rename/copy always needs human eyes regardless of path.
 		if strings.ContainsAny(e.Status, "RC") {
 			reported = append(reported, e.Path)

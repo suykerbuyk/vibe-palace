@@ -166,7 +166,9 @@ func CheckTool(vault *storage.Vault) mcp.Tool {
 			"worst-of roll-up — the checks disagree about an absent vault, so KEY OFF " +
 			"THE PER-CHECK ROWS, not the aggregate. Fast: this never loads the embedder " +
 			"and never builds the tool registry. It scans the vault this server was " +
-			"started against, not the caller's working directory. Never writes.",
+			"started against, not the caller's working directory. Never writes vault " +
+			"data — the only file it ever creates is vault-filesystem's transient, " +
+			"self-deleting probe.",
 		Schema: checkSchema,
 		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
 			var args struct {

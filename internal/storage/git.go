@@ -27,6 +27,8 @@ var CanonicalGitignorePatterns = []string{
 	"*.new",
 	"# Per-path advisory write locks (vaultlock) — host-local, never synced",
 	".vp-locks/",
+	"# Transient filesystem probes (check.CheckVaultFilesystem) — host-local, never synced",
+	".vp-fs-probe-*",
 }
 
 // NOTE: the vault deliberately does NOT ignore Projects/<slug>/commit.msg.
