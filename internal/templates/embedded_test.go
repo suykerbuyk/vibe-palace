@@ -172,6 +172,98 @@ func TestEmbeddedCommands_SurfacePreflight(t *testing.T) {
 	}
 }
 
+// TestEmbeddedCommands_CheckSuiteDelivery is the delivery pin for the vp_check
+// diagnostic suite: without it a later template edit can silently drop the
+// call, the suite stops reaching any agent, and every unit test still passes —
+// which is exactly how vp_check_resume_refs shipped host-agnostic, correct, and
+// dead for months. A tool nobody calls is as dead as a check nobody runs, so
+// the invocation itself is pinned here, not just the tool's existence.
+//
+// Three properties, all load-bearing: the call is PRESENT in both gated
+// templates; it runs BEFORE the first vault-mutating step (a hygiene report
+// that arrives after the vault is written is a post-mortem); and it does NOT
+// halt on "info". That last one is the live hazard — the surface preflight's
+// contract is halt-on-"fail", and the selectable hygiene checks are Info-or-
+// Pass by design, so a template that copies the halt pattern stops the restart
+// on every vault carrying a pin-coverage finding.
+func TestEmbeddedCommands_CheckSuiteDelivery(t *testing.T) {
+	resources, err := WalkEmbedded()
+	if err != nil {
+		t.Fatalf("WalkEmbedded returned error: %v", err)
+	}
+	body := make(map[string]string)
+	for _, r := range resources {
+		body[r.RelPath] = string(r.Bytes)
+	}
+
+	// The whole call, pinned as one literal — not just the four names. It
+	// carries both halves of the selector decision: the hygiene checks are
+	// named explicitly (never the default, which is all five), and `surface`
+	// is deliberately ABSENT. vp_surface_check has already run in this same
+	// step, so selecting `surface` here would duplicate a scan and drag the
+	// only fail-capable row into an otherwise advisory result. Pinning the
+	// exact argument is what makes that omission enforceable: a looser
+	// four-name substring still matches a list that has quietly grown a
+	// fifth entry.
+	const selectors = `{"checks": ["resume-caps", "resume-refs", "core-floor", "pin-coverage"]}`
+
+	for _, rel := range []string{"commands/restart.md", "commands/wrap.md"} {
+		content, ok := body[rel]
+		if !ok {
+			t.Fatalf("embedded resource %q missing", rel)
+		}
+
+		// 1. Present at all.
+		callIdx := strings.Index(content, "vp_check")
+		if callIdx < 0 {
+			t.Errorf("%s: never invokes vp_check — the diagnostic suite reaches "+
+				"no agent from this template", rel)
+			continue
+		}
+		if strings.Contains(content, "vp_check_resume_refs") {
+			t.Errorf("%s: names vp_check_resume_refs, the per-check wrapper "+
+				"vp_check subsumed — that tool no longer exists", rel)
+		}
+
+		// 2. Before the first vault-mutating step. In both templates that is
+		// "## Step 2" (restart: Bootstrap; wrap: Capture), the same boundary
+		// TestEmbeddedCommands_SurfacePreflight uses.
+		step2Idx := strings.Index(content, "## Step 2")
+		if step2Idx < 0 || callIdx > step2Idx {
+			t.Errorf("%s: vp_check must appear before '## Step 2' "+
+				"(callIdx=%d step2Idx=%d)", rel, callIdx, step2Idx)
+		}
+
+		// 3. The block itself: explicit selectors, and info is reported
+		// rather than halted on. Scope to the invocation's own section so a
+		// nearby halt-on-"fail" preflight cannot pass or fail it by accident.
+		block := content[callIdx:]
+		if end := strings.Index(block, "\n#"); end >= 0 {
+			block = block[:end]
+		}
+		if !strings.Contains(block, selectors) {
+			t.Errorf("%s: vp_check block must pass exactly %s — omitting the "+
+				"argument (or adding `surface`) re-runs the preflight scan and "+
+				"puts the one fail-capable row into an advisory result",
+				rel, selectors)
+		}
+		for _, want := range []string{
+			`"info"`,   // the verdict the block must address by name
+			"continue", // ...and the instruction to keep going anyway
+		} {
+			if !strings.Contains(block, want) {
+				t.Errorf("%s: vp_check block must say %q — an info verdict is "+
+					"reported and the command continues", rel, want)
+			}
+		}
+		if strings.Contains(strings.ToLower(block), "halt") {
+			t.Errorf("%s: vp_check block instructs a halt — these checks are "+
+				"Info-never-Fail, and halting on info stops every vault with a "+
+				"pin-coverage finding", rel)
+		}
+	}
+}
+
 // TestEmbeddedWrap_PlanHygiene guards the plan-hygiene additions to the wrap
 // command template: a narrow "Sweep Orphaned Plans" reconcile step that prefers
 // the read-only vp_scan_plans reporter (with a glob fallback for older
@@ -210,14 +302,30 @@ func TestEmbeddedWrap_PlanHygiene(t *testing.T) {
 		}
 	}
 
-	// Edit B — the resume guardrail bullet.
+	// Edit B — the resume guardrail bullet. This once pinned the literal
+	// string `vp check --check resume-refs`, which was a MENTION of a CLI
+	// command no agent on any host runs. That mention is now folded into the
+	// Step 1 `vp_check` invocation, so the pin follows it: the bullet must
+	// still point at the check, by MCP tool name and selector. The assertion
+	// is scoped to the bullet's own text so the Step 1 call cannot satisfy it
+	// from a distance — otherwise the guardrail could vanish while the file
+	// still "contains vp_check" somewhere else entirely.
+	if !strings.Contains(wrap, "dangling by") {
+		// committed/synced resume can't point at host scratch
+		t.Fatal(`wrap.md: missing resume-guardrail phrase "dangling by"`)
+	}
+	guard := wrap[strings.Index(wrap, "dangling by"):]
+	if end := strings.Index(guard, "\n#"); end >= 0 {
+		guard = guard[:end]
+	}
 	guardPhrases := []string{
-		"dangling by",                  // committed/synced resume can't point at host scratch
-		"vp check --check resume-refs", // the new check that flags .claude/plans refs
+		"vp_check",    // the MCP tool that now carries the verdict
+		"resume-refs", // the selector that flags .claude/plans refs
 	}
 	for _, phrase := range guardPhrases {
-		if !strings.Contains(wrap, phrase) {
-			t.Errorf("wrap.md: missing resume-guardrail phrase %q", phrase)
+		if !strings.Contains(guard, phrase) {
+			t.Errorf("wrap.md: resume-guardrail bullet must name %q — the "+
+				"guardrail has to point at the check that enforces it", phrase)
 		}
 	}
 

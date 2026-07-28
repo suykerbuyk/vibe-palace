@@ -47,7 +47,45 @@ even on a cold cache.
   the version mismatch and carry the remediation (the `git pull && make
   install` upgrade, plus the at-risk override); relay them as-is rather
   than paraphrasing.
-- If `status` is `"pass"` or `"info"`, proceed to Step 2.
+- If `status` is `"pass"` or `"info"`, proceed to the hygiene checks
+  below.
+
+### Vault hygiene checks (advisory — reported, never a gate)
+
+Wrap is where `resume.md` is **written**, so this is the moment a fresh
+breach gets introduced — run the read-only diagnostic suite here, before
+capturing anything, and carry its findings into Step 3. Call `vp_check`
+(the MCP tool) with an **explicit** selector list:
+
+```json
+{"checks": ["resume-caps", "resume-refs", "core-floor", "pin-coverage"]}
+```
+
+Name those four deliberately. Do **not** omit the argument, and do
+**not** add `surface`: `vp_surface_check` already ran above, so including
+it would repeat a scan and pull the one row that can return `"fail"` into
+a result that is otherwise advisory.
+
+The result is `{status, summary, checks: [{name, status, summary,
+details[]}]}`. Report the **per-check rows** to the human — for every row
+that is not `"pass"`, give its name, its status, its summary, and its
+`details` lines verbatim. The top-level `status` is an **advisory**
+worst-of roll-up across five independent scans that disagree about an
+absent vault; key nothing off it.
+
+- 🔴 **An `"info"` verdict is a REPORT, never a gate.** These four
+  checks are Info-or-Pass by design — they do not return `"fail"`.
+  Unlike the surface preflight above, no verdict from this call ends the
+  wrap: report what it found and **continue to Step 2 regardless**.
+  Vaults carry standing `pin-coverage` and `resume-caps` findings today;
+  a wrap that refused to proceed on those would strand every host.
+- **Report, do not auto-fix.** The one exception is the `resume-refs`
+  row: you are about to edit `resume.md` in Step 3 anyway, so a
+  host-local path it names is fixed there under the guardrail bullet —
+  not silently, and not by any other rewrite of the file.
+- If the call itself errors (an older `vp` on this host may not carry
+  the tool), say so once and continue — these are diagnostics, not a
+  gate.
 
 ### Vault integrity (advisory — NOT a gate)
 
@@ -258,8 +296,12 @@ files.
   an absolute `/…/.claude/plans/…`, or the project-root `commit.msg` from
   `resume.md`. Point at the **durable** equivalent instead: a vault task slug
   (`Projects/{{PROJECT}}/tasks/…`), a `tasks/done/<slug>.md` pointer, or a
-  `doc/…` file under source control. `vp check --check resume-refs` (new this
-  release) now flags the `.claude/plans/` case.
+  `doc/…` file under source control. You do not have to eyeball this: the
+  `resume-refs` row of the `vp_check` call in Step 1 already flagged the
+  `.claude/plans/` case by line. If that row reported findings, repair
+  them **here**, in the same surgical edit pass, and say so in the report
+  — this is the one hygiene finding the wrap is allowed to fix, because
+  the wrap is what writes the file.
 
 ## Step 4: Append Iteration Narrative
 

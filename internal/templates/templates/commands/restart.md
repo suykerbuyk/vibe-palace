@@ -12,11 +12,11 @@ the session; the project's `workflow.md` (loaded by
 
 ## Step 1: Vault Sync (multi-machine)
 
-Before loading context, run the surface preflight, then sync the vault
-so you pick up the latest state from other machines. Every operation in
-this step is an MCP tool call — no Bash is required, so the step works
-identically on AI hosts without arbitrary-shell support (Claude, Grok,
-Zed).
+Before loading context, run the surface preflight, sync the vault so you
+pick up the latest state from other machines, then run the read-only
+hygiene checks over the synced result. Every operation in this step is
+an MCP tool call — no Bash is required, so the step works identically on
+AI hosts without arbitrary-shell support (Claude, Grok, Zed).
 
 ### Surface preflight (run first)
 
@@ -73,7 +73,42 @@ committed.
 If the result lists any **Reported** paths, surface them to the user
 — they are unexpected vault dirt that needs human eyes (e.g. a stray
 `Projects/<slug>/` scaffold from an accidental `vp init`). Then
-proceed to Step 2.
+run the hygiene checks below.
+
+### Vault hygiene checks (advisory — reported, never a gate)
+
+The pull and the tidy have settled the vault, so run the read-only
+diagnostic suite on the state you are about to load context from. Call
+`vp_check` (the MCP tool) with an **explicit** selector list:
+
+```json
+{"checks": ["resume-caps", "resume-refs", "core-floor", "pin-coverage"]}
+```
+
+Name those four deliberately. Do **not** omit the argument, and do
+**not** add `surface`: `vp_surface_check` already ran at the top of this
+step, so including it would repeat a scan and pull the one row that can
+return `"fail"` into a result that is otherwise advisory.
+
+The result is `{status, summary, checks: [{name, status, summary,
+details[]}]}`. Report the **per-check rows** to the human — for every
+row that is not `"pass"`, give its name, its status, its summary, and
+its `details` lines verbatim. The top-level `status` is an **advisory**
+worst-of roll-up across five independent scans that disagree about an
+absent vault; key nothing off it.
+
+- 🔴 **An `"info"` verdict is a REPORT, never a gate.** These four
+  checks are Info-or-Pass by design — they do not return `"fail"`.
+  Unlike the surface preflight above, no verdict from this call ends the
+  restart: report what it found and **continue to Step 2 regardless**.
+  Vaults carry standing `pin-coverage` and `resume-caps` findings today;
+  a restart that refused to proceed on those would strand every host.
+- **Report, do not auto-fix.** Do not rewrite `resume.md`, retune caps,
+  or add pins to close a finding as part of the restart. Surface it; the
+  human decides whether it becomes work.
+- If the call itself errors (an older `vp` on this host may not carry
+  the tool), say so once and continue — these are diagnostics, not a
+  gate.
 
 ## Step 2: Bootstrap Context
 
