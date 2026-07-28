@@ -1,6 +1,6 @@
 # Architecture: Vibe-Palace
 
-**Last updated:** 2026-07-23
+**Last updated:** 2026-07-28
 
 Vibe-palace is a compiled Go binary that serves as an MCP (Model Context
 Protocol) server for AI-assisted development. It provides context injection,
@@ -1630,7 +1630,8 @@ in un-init'd directories are intentionally skipped.
    g. Extract entities (file paths, URLs) → knowledge graph
 3. Compute friction score (0–100) from transcript
 4. Archive transcript to {vault}/Projects/{project}/transcripts/ (hook path,
-   or the MCP path's opt-in inline archive — see below)
+   or the MCP path's inline archive — default for derived hook-less hosts;
+   see below)
 5. Cross-link archive manifest ↔ session note (bidirectional): the note is
    stamped with `archive_session_id` and linked to the manifest at SessionEnd,
    after `archive.Create`; the manifest back-links the canonical note. A link
@@ -1660,24 +1661,44 @@ the host.
 
 ### Inline transcript archive on hook-less hosts
 
-Hook-less MCP hosts (Grok Build, the Zed assistant pane, `vp mcp serve` over
-HTTP) have no SessionEnd hook and no on-disk transcript, so their captures
-historically produced a note with no archive pair. `vp_capture_session`'s
-opt-in `archive_transcript` param closes that gap at capture time:
+Hook-less MCP hosts (Grok Build, the Zed assistant pane, and other clients
+without a SessionEnd hook) have no on-disk host transcript for `vp hook` to
+archive. Durability for those hosts is **MCP capture + inline archive** — not
+an alternate "shim path." Shims (`.grok/plugins/...`, `/vpc-wrap`) are UX onto
+`vp_cmd` / `vp_capture_session`; the archive is created inside the capture
+handler.
 
-- **Derived-empty gate.** The inline path fires only when the server's host
-  session-id derivation honestly came up empty. On a derivable host (Claude
-  Code) the flag is a **no-op**: the SessionEnd hook archives the
-  authoritative host transcript later, and an inline copy of the agent's own
-  rendition would be a lossy duplicate — never a competitor.
+**Default (auto-on).** When all of the following hold, `vp_capture_session`
+creates an inline archive pair even if the caller omits `archive_transcript`:
+
+1. The server cannot derive a host session id (empty archive session id).
+2. The caller supplied a **non-empty** `transcript`.
+3. The MCP initialize handshake **derived** a host in the known hook-less set
+   (`grok` / `xai` / `zed` — case-insensitive substring match; Claude-shaped
+   names never match).
+
+Unknown or declared-only hosts do **not** auto-on (declared is spoofable;
+unknown is Claude-miss-shaped). Empty transcript never archives.
+
+**Explicit force.** `archive_transcript: true` still forces inline archive
+under the derived-empty + non-empty-transcript gate on *any* host — useful for
+unknown clients or operators who want the pair regardless of handshake. On a
+derivable host (Claude Code) the flag remains a **no-op**: SessionEnd archives
+the authoritative host transcript, and an inline copy of the agent's own
+rendition would be a lossy duplicate — never a competitor. Templates
+(`wrap` / `capture`) still name `transcript` and `archive_transcript: true` so
+agents pass the content the default needs; the force is harmless on Claude.
+
+Mechanism details (unchanged from the native-capture design):
+
 - **Minted id, shared by note and archive.** The server mints the capture
   `session_key` (UUID) and uses it as the archive session id, so a retry with
   the same key converges on the same note *and* the same manifest. The mint is
   server-controlled and collision-free by construction.
 - **Born linked.** `archive.Create` runs **before** `WriteSession`, so the
   existing linking machinery (`ResolveEntry` + `LinkSessionNote`) stamps both
-  directions when the note is written — no new linking code, no deferred loop,
-  no stranded transcript for `archive-roundtrip` to find.
+  directions when the note is written — no deferred loop, no stranded
+  transcript for `archive-roundtrip` to find.
 - **Honest provenance.** The note records `archive_session_id_source: inline`
   (distinct from `derived` and `backfilled`) and `session_key_source: minted`
   — a handler-minted key must never masquerade as caller-supplied, and the
@@ -1701,6 +1722,13 @@ host provenance (above). `ResolveSource` writes the supplied bytes verbatim
 to a temp file (the same synthesize-to-temp shape as the Zed adapter) so the
 rest of the Create pipeline stays byte-oriented, and empty `SourceContent` is
 a hard error, never a fallback to some on-disk location.
+
+**Strategy A limitation (enrichment queue).** Optional LLM enrichment
+(`enrich: true` / `[enrichment]` config) can enqueue failed synthesis jobs
+under `<CWD>/.vibe-palace/enrichment-queue/`. `DrainEnrichmentQueue` runs only
+from the Claude SessionEnd hook path — hook-less hosts do not drain that queue
+automatically. Accept and document: Grok/Zed durability for notes + inline
+archives does not include automatic enrichment-queue recovery.
 
 ### Hook Installation
 
@@ -1738,8 +1766,9 @@ preflight). `DrainEnrichmentQueue` (run in the SessionEnd hook, not in
 latency-sensitive bootstrap) claims each job via atomic `.processing` rename and
 rewrites the note in place via `storage.RewriteSession`, which shares
 `buildSessionBody`/`marshalSessionFile` with the inline path so an inline-enriched
-and a drained note converge to byte-identical bodies. See ADR-005
-(`doc/adr/005-llm-enrichment-synthesis.md`) for the full rationale.
+and a drained note converge to byte-identical bodies. Hook-less hosts never run
+that drain — see the Strategy A limitation under inline archive above. See
+ADR-005 (`doc/adr/005-llm-enrichment-synthesis.md`) for the full rationale.
 
 ### Chunking Engine
 

@@ -420,6 +420,23 @@ Requires `grok` on your PATH. Verify with `grok mcp doctor` or `grok mcp list`
 natively, so the managed block gives it the same behavioral contract as Claude
 Code.
 
+**Durability is MCP-only (Strategy A).** Grok has no Claude-style SessionEnd
+`vp hook`. Session notes, transcript archives, and memory commits all go through
+MCP tools — typically `/vpc-wrap` → `vp_capture_session` (+ `vp_vault_sync`).
+There is no parallel hook path to fall back on if the agent skips wrap.
+
+| Concern | Grok / hook-less | Claude Code |
+|---------|------------------|-------------|
+| Session note | `vp_capture_session` (via wrap/capture) | Same MCP path **and** `vp hook` on SessionEnd |
+| Transcript archive | **Inline archive by default** when handshake-derived host is grok/xai/zed and `transcript` is non-empty | SessionEnd archives the host JSONL; `archive_transcript` is a no-op |
+| AI memory | `vp_memory_*` writes + wrap commits `Projects/<slug>/memory/` | Same tools + SessionEnd harvest of Claude native memory |
+| Enrichment-queue drain | Not automatic (hook-only) | `DrainEnrichmentQueue` on SessionEnd |
+
+Shims under `.grok/plugins/vibe-palace/commands/` and `.grok/skills/` are **host
+UX** onto `vp_cmd` / `vp_skill` — not a second durability mechanism. Details:
+[Ending a Session](#ending-a-session), [ARCHITECTURE inline archive](ARCHITECTURE.md#inline-transcript-archive-on-hook-less-hosts),
+and [COMMANDS durability-by-host](COMMANDS-AND-SKILLS.md#durability-by-host-claude-vs-hook-less).
+
 ### Connect Grok web (or the xAI API) to vibe-palace
 
 Everything above wires vibe-palace into a **local** host that can spawn `vp mcp`
@@ -1231,14 +1248,21 @@ want tracked) and keep the shim files force-added.
 
 ### Ending a Session
 
-Say "capture session" or "wrap up". The AI calls `vp_capture_session` with:
+Say "capture session" or "wrap up" (or type `vpc-wrap`). The AI follows the
+wrap/capture command and calls `vp_capture_session` with:
 
 - **summary** — what was accomplished
 - **tag** — implementation, debugging, refactor, exploration, etc.
 - **decisions** — key technical decisions made
 - **files_changed** — files created or modified
 - **open_threads** — unresolved items for next session
-- **transcript** (optional) — full session text, chunked and indexed
+- **transcript** — full session text when the host can supply it (chunked,
+  indexed, friction-scored; **required** for a durable archive on hook-less
+  hosts)
+- **archive_transcript** — templates pass `true` for model-facing clarity;
+  on handshake-derived grok/xai/zed the server **auto-archives** a non-empty
+  transcript even if this flag is omitted; on Claude Code the flag is a
+  **no-op** (SessionEnd owns the authoritative archive)
 
 If a transcript is provided, the capture pipeline:
 1. Detects format (plain text, markdown, JSON-RPC chat)
@@ -1248,8 +1272,21 @@ If a transcript is provided, the capture pipeline:
 4. Embeds and indexes all chunks for semantic search
 5. Extracts entities (file paths, URLs) into the knowledge graph
 6. Computes a friction score (0–100)
+7. On hook-less hosts (default) or when forced: creates a born-linked inline
+   transcript archive under `Projects/<slug>/transcripts/`
 
-The next session sees all of this via `vp_bootstrap_context`.
+**Memory.** Host-agnostic notes live at `Projects/<slug>/memory/` via
+`vp_memory_write` / `read` / `list` / `delete`. Bootstrap returns a memory
+*index* (not bodies). Wrap includes that directory in its vault sync so Grok
+and Zed persist memory without Claude's SessionEnd harvest. Harvest
+(`vp_memory_harvest` / hook SessionEnd) drains Claude native memory only —
+a no-op on non-Claude hosts.
+
+The next session sees notes, archives, and the memory index via
+`vp_bootstrap_context`. Prefer always passing `project=<slug>` on bootstrap;
+on stdio MCP the server may default from a high-confidence cwd signal
+(`.vibe-palace.toml` `[project].name` or git origin remote, and
+`Projects/<slug>/` must exist). HTTP `vp mcp serve` never cwd-defaults.
 
 ### Reviewing Past Work
 
@@ -1281,7 +1318,9 @@ tools work identically.
 ### xAI (Grok)
 
 Configure an xAI API key in your editor's provider settings. All `vp_`
-tools work identically.
+tools work identically. For Grok *Build* as a host (MCP install, shims,
+MCP-only capture), see [Grok Build (xAI)](#grok-build-xai) above — the
+provider key alone does not install hooks; durability stays on the MCP path.
 
 ---
 

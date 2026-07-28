@@ -1,6 +1,6 @@
 # Commands and Skills
 
-**Last updated:** 2026-07-23
+**Last updated:** 2026-07-28
 
 Vibe-palace lets users create custom **commands** and **skills** as plain
 markdown files. No recompilation, no config edits, no frontend-specific
@@ -446,7 +446,40 @@ managed block fires on turn 2+ at the earliest. A slash shim is
 resolved before turn 1 completes — making `/vpc-restart` the
 deterministic turn-1 bootstrap trigger. Cursor / Zed / Copilot load
 their rules files early enough that the managed-block directive does
-the job there; the two mechanisms are complementary.
+the job there; the two mechanisms are complementary. Grok Build's
+`/vpc-restart` (and the managed `AGENTS.md` block) likewise names
+`project` on the bootstrap call; on stdio the server may also default
+from a high-confidence cwd marker when the slug is omitted.
+
+### Durability by host (Claude vs hook-less)
+
+The real axis is **how a session becomes durable**, not "native vs shim."
+Shims are host UX that eventually call `vp_cmd` / `vp_capture_session`;
+they are not an alternate archive pipeline.
+
+| Host class | Authoritative archive | Capture notes | Memory commit |
+|------------|----------------------|---------------|---------------|
+| **Claude Code** (hooks) | `vp hook` SessionEnd on the host JSONL | Agent `vp_capture_session` (claim sentinel skips double-note) **or** hook auto-summary | SessionEnd harvest of Claude native memory **and** wrap's `Projects/<slug>/memory/` sync |
+| **Hook-less** (Grok Build, Zed pane, similar) | **Inline archive inside** `vp_capture_session` — **default on** when handshake-derived host ∈ {grok, xai, zed} and `transcript` is non-empty | Agent must call capture (usually via `/vpc-wrap` / `vpc-capture`); no SessionEnd fallback | `vp_memory_*` + wrap sync of `memory/` only — harvest is a clean no-op |
+| **Unknown / declared-only** | No auto inline archive; pass `archive_transcript: true` + transcript to force | Same MCP capture | Same as hook-less |
+
+**Vibe-Palace in Grok Build (index).** Install with `vp mcp install --grok`
+([Tutorial](TUTORIAL.md#grok-build-xai)). Commands arrive as
+`.grok/plugins/vibe-palace/commands/vpc-*.md` plus a `/vpc` skill hub
+(emitted by `vp init` / `vp commands upgrade` from `internal/shims` — do
+not hand-edit host-local `.grok/**` as the source of truth). Daily loop:
+
+1. `/vpc-restart` → `vp_bootstrap_context` with `project=<slug>` (stdio may
+   cwd-default when high-confidence).
+2. Work; use `vp_memory_*` for durable project memory.
+3. `/vpc-wrap` → capture with transcript → server auto-inlines the archive
+   → wrap commits resume, sessions, and `memory/`.
+
+List fields on capture (`decisions`, `files_changed`, `open_threads`) accept
+either a JSON array or a single string (coerced to a one-element list) so
+Grok shims that send a lone string do not lose the session at schema
+validation. Enrichment-queue drain remains Claude-hook-only; see
+[ARCHITECTURE](ARCHITECTURE.md#inline-transcript-archive-on-hook-less-hosts).
 
 ---
 

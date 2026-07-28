@@ -156,10 +156,11 @@ with `/vpc-restart` and the agent loads full context on turn one.
 - **Context injection** — single-call restoration of workflow, resume,
   tasks, and recent sessions via `vp_bootstrap_context`, with an honest
   token budget: the payload reports exactly what it shed to fit.
-- **Session capture** — agent-driven recording via `vp_capture_session`,
-  plus automatic host-hook capture (`vp hook` on
-  SessionEnd/Stop/PreCompact where the host supports hooks), with
-  chunking, embedding, and semantic indexing.
+- **Session capture** — agent-driven recording via `vp_capture_session`
+  (with **default inline transcript archive** on handshake-derived
+  hook-less hosts when a transcript is supplied), plus automatic
+  host-hook capture (`vp hook` on SessionEnd/Stop/PreCompact on Claude
+  Code), with chunking, embedding, and semantic indexing.
 - **Task management** — vault-resident tasks with derived epic/story
   structure, explicit cross-project addressing, and human-gated
   completion (`vp_manage_task`, `vp_list_tasks`, `vp tasks`).
@@ -232,14 +233,17 @@ through the same precedence chain.
 | Host | MCP server | Commands / skills | Automatic hook capture |
 |------|-----------|-------------------|------------------------|
 | **Claude Code** | registered by `vp` | `.claude/commands/vpc-*.md` + `.claude/skills/vps-*/SKILL.md` | ✅ `vp hook` on SessionEnd/Stop/PreCompact |
-| **Grok Build** | registered by `vp` | native `.grok/plugins/.../commands/vpc-*.md` + `.grok/skills/` + `/vpc` hub | — (capture is MCP-driven via `/vpc-wrap`) |
-| **Zed** | registered by `vp` | via `AGENTS.md` managed block → `vp_cmd` / `vp_skill` | — |
+| **Grok Build** | registered by `vp` | native `.grok/plugins/.../commands/vpc-*.md` + `.grok/skills/` + `/vpc` hub | — (MCP-only: `/vpc-wrap` → `vp_capture_session`; **inline transcript archive defaults on** when the handshake derives grok/xai and `transcript` is present) |
+| **Zed** | registered by `vp` | via `AGENTS.md` managed block → `vp_cmd` / `vp_skill` | — (same hook-less MCP path; inline archive defaults on when handshake derives zed + transcript) |
 | **Cursor** | manual MCP config | `.cursor/rules/vps-*.mdc` (skills) | — |
 | **Any MCP host** | manual MCP config | `vp_cmd` / `vp_skill` tools directly | — |
 
-Claude Code is the most exercised surface; Grok Build is verified
-MCP-first (no host hooks); Zed integration is registered but still being
-hardened toward full capture parity.
+Claude Code is the most exercised surface; Grok Build is **Strategy A
+MCP-only** (no Claude SessionEnd hooks — capture, inline archive, and
+memory commit go through MCP / wrap). Zed uses the same hook-less
+durability path. Details: [Tutorial — Grok Build](doc/TUTORIAL.md#grok-build-xai),
+[durability by host](doc/COMMANDS-AND-SKILLS.md#durability-by-host-claude-vs-hook-less),
+[inline archive](doc/ARCHITECTURE.md#inline-transcript-archive-on-hook-less-hosts).
 
 ---
 
