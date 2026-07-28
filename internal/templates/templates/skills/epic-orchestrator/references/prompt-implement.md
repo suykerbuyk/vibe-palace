@@ -32,9 +32,15 @@ once on the aggregate epic branch.
     4. GATES (run in the worktree; all must pass):
        - cd <WORKTREE_PATH> && make test
        - cd <WORKTREE_PATH> && make vet
-       - cd <WORKTREE_PATH> && gopls check -severity=hint $(git ls-files '*.go')
+       - cd <WORKTREE_PATH> && gopls check -severity=hint \
+           $(find . -name '*.go' -not -path './.git/*' -not -path './.claude/*')
          Report the count; the bar is ZERO hints IN FILES YOU CHANGED (the tree may carry
          pre-existing hints from a newer gopls — verify your change adds none).
+         Use `find`, NOT `git ls-files`: ls-files lists only TRACKED files, so running the
+         gate before `git add` silently skips the new files you just wrote — it reports
+         clean by omission, which is how two hints in a brand-new test file were once
+         reported as zero. The `.claude` prune keeps a sibling subagent worktree's copy of
+         the module out of your own gate.
        Do NOT run `make integration` (the orchestrator runs it on the integrated epic branch).
     5. Commit in the worktree on its branch with a clear conventional message. ABSOLUTELY NO AI
        attribution — no `Co-Authored-By`, no author trailer, no "Generated with" line. This
