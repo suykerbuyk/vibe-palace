@@ -240,8 +240,11 @@ through the same precedence chain.
 
 Claude Code is the most exercised surface; Grok Build is **Strategy A
 MCP-only** (no Claude SessionEnd hooks — capture, inline archive, and
-memory commit go through MCP / wrap). Zed uses the same hook-less
-durability path. Details: [Tutorial — Grok Build](doc/TUTORIAL.md#grok-build-xai),
+memory commit go through MCP / wrap). Zed is designed for the same
+hook-less durability path (unit-tested `isHooklessClient("zed")` + auto-on
+predicate); the full stdio-handshake acceptance harness currently drives
+**grok** end-to-end — Zed pane capture remains an open critical task
+(`zed-pane-capture-parity`). Details: [Tutorial — Grok Build](doc/TUTORIAL.md#grok-build-xai),
 [durability by host](doc/COMMANDS-AND-SKILLS.md#durability-by-host-claude-vs-hook-less),
 [inline archive](doc/ARCHITECTURE.md#inline-transcript-archive-on-hook-less-hosts).
 

@@ -6,6 +6,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -659,5 +660,27 @@ func TestVaultTidy_PartialPushIsAnError(t *testing.T) {
 	// the remediation differs. Distinct in the message, identical in the verdict.
 	if strings.Contains(err.Error(), "STRANDED") {
 		t.Errorf("a partial push was reported as STRANDED: %v", err)
+	}
+}
+
+func TestFormatDirtyVaultPushErrorCap(t *testing.T) {
+	paths := make([]string, dirtyPathErrorCap+3)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("p%d", i)
+	}
+	msg := formatDirtyVaultPushError(paths)
+	if !strings.Contains(msg, "…and 3 more") {
+		t.Errorf("want cap suffix, got %q", msg)
+	}
+	if strings.Contains(msg, fmt.Sprintf("p%d", dirtyPathErrorCap)) {
+		t.Errorf("capped path should not appear: %q", msg)
+	}
+	// Under cap: no suffix.
+	msg2 := formatDirtyVaultPushError([]string{"a", "b"})
+	if strings.Contains(msg2, "more") {
+		t.Errorf("unexpected suffix: %q", msg2)
+	}
+	if !strings.Contains(msg2, "a, b") {
+		t.Errorf("want paths joined: %q", msg2)
 	}
 }

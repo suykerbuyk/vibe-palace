@@ -139,42 +139,22 @@ type ProjectFile struct {
 //  2. Git remote URL heuristics (origin remote)
 //  3. Directory basename of cwd
 //
-// The returned name is validated as a slug.
+// The returned name is validated as a slug. Callers that must not invent a
+// slug on a weak signal should use DetectProjectHighConfidence instead.
 func DetectProject(cwd string) (string, error) {
+	if slug, err := DetectProjectHighConfidence(cwd); err == nil {
+		return slug, nil
+	} else if !strings.Contains(err.Error(), "no high-confidence project signal") {
+		// Invalid config name etc. — preserve DetectProject's historical
+		// fail-loud behavior rather than falling through to basename.
+		// err is non-nil here because the == nil branch returned.
+		return "", err
+	}
+
 	cwd, err := filepath.Abs(cwd)
 	if err != nil {
 		return "", fmt.Errorf("resolve cwd: %w", err)
 	}
-
-	// Strategy 1: config file walk, bounded at $HOME so a stray
-	// ~/.vibe-palace.toml does not name every directory under the home tree
-	// (see the home-marker hardening). The walk is symlink-resolved to match
-	// the resolved home boundary; the git/basename strategies below keep using
-	// the unresolved cwd, preserving their existing behavior.
-	markerStart := cwd
-	if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
-		markerStart = filepath.Clean(resolved)
-	}
-	homeBoundary, _ := resolvedHome()
-	if configPath, err := findMarkerUpward(markerStart, homeBoundary); err == nil {
-		cfg, err := ParseProjectConfig(configPath)
-		if err == nil && cfg.Name != "" {
-			if err := slugpkg.Validate(cfg.Name); err != nil {
-				return "", fmt.Errorf("project name from config: %w", err)
-			}
-			return cfg.Name, nil
-		}
-		// Config exists but has no name — fall through to git/basename.
-	}
-
-	// Strategy 2: git remote heuristics.
-	if name, err := gitRemoteName(cwd); err == nil {
-		slug := slugify(name)
-		if slug != "" && slugpkg.Validate(slug) == nil {
-			return slug, nil
-		}
-	}
-
 	// Strategy 3: directory basename.
 	slug := slugify(filepath.Base(cwd))
 	if slug == "" {
@@ -196,12 +176,19 @@ func DetectProject(cwd string) (string, error) {
 // vp_bootstrap_context) must use this, not DetectProject. A basename guess
 // almost never errors and invents phantom slugs for worktrees whose folder
 // name differs from the vault project (ADR-006: absence is not a value).
+//
+// Strategies 1–2 live only here; DetectProject calls this then adds basename.
 func DetectProjectHighConfidence(cwd string) (string, error) {
 	cwd, err := filepath.Abs(cwd)
 	if err != nil {
 		return "", fmt.Errorf("resolve cwd: %w", err)
 	}
 
+	// Strategy 1: config file walk, bounded at $HOME so a stray
+	// ~/.vibe-palace.toml does not name every directory under the home tree
+	// (see the home-marker hardening). The walk is symlink-resolved to match
+	// the resolved home boundary; git strategy below keeps using the
+	// unresolved cwd, preserving existing behavior.
 	markerStart := cwd
 	if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
 		markerStart = filepath.Clean(resolved)
@@ -218,6 +205,7 @@ func DetectProjectHighConfidence(cwd string) (string, error) {
 		// Config exists but has no usable name — fall through to git.
 	}
 
+	// Strategy 2: git remote heuristics.
 	if name, err := gitRemoteName(cwd); err == nil {
 		slug := slugify(name)
 		if slug != "" && slugpkg.Validate(slug) == nil {

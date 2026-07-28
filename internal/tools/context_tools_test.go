@@ -810,8 +810,8 @@ func TestBootstrapExplicitProjectRequiredOnHTTPPath(t *testing.T) {
 	}
 }
 
-// TestBootstrapSchemaProjectOptional pins the schema shape change: project is
-// no longer in required[], so hosts may omit it and hit the handler default path.
+// TestBootstrapSchemaProjectOptional pins the stdio schema shape: project is
+// not in required[], so hosts may omit it and hit the handler default path.
 func TestBootstrapSchemaProjectOptional(t *testing.T) {
 	vault, resolver := testSetup(t)
 	tool := BootstrapContextTool(resolver, vault)
@@ -824,11 +824,33 @@ func TestBootstrapSchemaProjectOptional(t *testing.T) {
 	}
 	for _, r := range schema.Required {
 		if r == "project" {
-			t.Error("project must not be in schema required[] after L4 (handler gates defaulting)")
+			t.Error("project must not be in stdio schema required[] after L4 (handler gates defaulting)")
 		}
 	}
 	if _, ok := schema.Properties["project"]; !ok {
 		t.Error("project property missing from schema")
+	}
+}
+
+// TestBootstrapSchemaExplicitRequiresProject pins that the HTTP/explicit
+// variant's machine-readable contract matches the runtime: project is required
+// in schema, not only in a handler error string.
+func TestBootstrapSchemaExplicitRequiresProject(t *testing.T) {
+	vault, resolver := testSetup(t)
+	tool := BootstrapContextToolExplicit(resolver, vault)
+	var schema struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(tool.Schema, &schema); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	if !slices.Contains(schema.Required, "project") {
+		t.Error("BootstrapContextToolExplicit schema must require project — otherwise schema-driven clients omit it and only learn from a runtime string")
+	}
+	// Schemas must not be identical (stdio optional vs explicit required).
+	stdio := BootstrapContextTool(resolver, vault)
+	if string(stdio.Schema) == string(tool.Schema) {
+		t.Error("stdio and explicit bootstrap schemas must differ — shared literal reopens the optional-schema/required-runtime split")
 	}
 }
 

@@ -123,10 +123,10 @@ func TestEmbeddedSHA_OverrideHook(t *testing.T) {
 
 // TestEmbeddedCommands_BootstrapNamesProject is the delivery pin for the
 // restart template's vp_bootstrap_context invocation: the template must name
-// the project parameter (with {{PROJECT}} / JSON example), not merely mention
-// the tool. Without this pin the next template edit can re-delete the argument
-// the same way the original omit shipped for months — Claude survived on
-// ambient slug leak; Grok failed the first call of /vpc-restart.
+// the project parameter with a non-empty example, not merely mention the tool.
+// The example MUST NOT use {{PROJECT}} inside the JSON fence — expandScoped
+// turns an omitted vp_cmd project into {"project":""}, which teaches a wrong
+// call (ADR-006). Use a literal placeholder the agent replaces.
 func TestEmbeddedCommands_BootstrapNamesProject(t *testing.T) {
 	resources, err := WalkEmbedded()
 	if err != nil {
@@ -143,12 +143,16 @@ func TestEmbeddedCommands_BootstrapNamesProject(t *testing.T) {
 		t.Fatal("embedded resource commands/restart.md missing")
 	}
 	// Full call literal — mention of the tool alone is not enough.
-	const bootstrapCall = `{"project": "{{PROJECT}}"}`
+	// Deliberately NOT {{PROJECT}}: empty expand must not produce a blank call.
+	const bootstrapCall = `{"project": "<slug>"}`
 	if !strings.Contains(restart, "vp_bootstrap_context") {
 		t.Error("commands/restart.md never names vp_bootstrap_context")
 	}
 	if !strings.Contains(restart, bootstrapCall) {
 		t.Errorf("commands/restart.md must invoke vp_bootstrap_context with %s — a bare call omits required project", bootstrapCall)
+	}
+	if strings.Contains(restart, `{"project": "{{PROJECT}}"}`) {
+		t.Error("commands/restart.md must not put {{PROJECT}} inside the JSON call fence — expandScoped empties it when vp_cmd omits project")
 	}
 	// Doctrine fetch in the same step must also name project for consistency.
 	if !strings.Contains(restart, "vp_get_doctrine") {

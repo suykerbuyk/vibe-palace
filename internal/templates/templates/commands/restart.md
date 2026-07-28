@@ -123,15 +123,15 @@ Call `vp_bootstrap_context` with the project slug to load workflow, resume,
 active tasks, and recent sessions in a single call:
 
 ```json
-{"project": "{{PROJECT}}"}
+{"project": "<slug>"}
 ```
 
-- **project**: `{{PROJECT}}` — always pass it when known. If expand left the
-  token empty at cold start (e.g. `vp_cmd` was called without `project`),
-  supply the slug you know, read it from `.vibe-palace.toml` `[project].name`,
-  or call `vp_list_projects`. On stdio MCP the server may derive a
-  high-confidence slug from cwd when omitted; do not rely on that when you
-  already know the project.
+- **project**: always pass the project slug when known (replace `<slug>` —
+  e.g. `vibe-palace`). Do **not** copy a blank value. If you do not know it,
+  read `.vibe-palace.toml` `[project].name` or call `vp_list_projects`. On
+  stdio MCP the server may high-confidence-default from cwd when omitted; on
+  HTTP serve (`vp mcp serve`) project is schema-required. Prefer naming it
+  explicitly either way.
 
 `resume` and `workflow` arrive **whole**, on every transport. The one case
 where `resume` is reduced is token-budget pressure, and it announces itself
@@ -144,7 +144,7 @@ resume without saying so.
 Then fetch the full operating doctrine with `vp_get_doctrine`:
 
 ```json
-{"project": "{{PROJECT}}"}
+{"project": "<slug>"}
 ```
 
 The inline `workflow` is deliberately **thin** — it carries only this

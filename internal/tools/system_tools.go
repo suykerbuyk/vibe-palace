@@ -266,7 +266,9 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 				// SyncVault already formatted it. The result body is discarded on
 				// a handler error, so the error string must carry what to act on.
 				// Refuse-on-dirt is caller friction — wrap so health stays green.
-				if res != nil && res.Refused {
+				// SyncVault never returns a nil *SyncResult (non-nil contract);
+				// Refused is the refuse-on-dirt path — caller friction.
+				if res.Refused {
 					return nil, apperr.Caller(fmt.Errorf("sync: %w", err))
 				}
 				return nil, fmt.Errorf("sync: %w", err)
@@ -365,23 +367,10 @@ func gitPush(root string, remotes []string) (string, error) {
 		return "", fmt.Errorf("git status: %w", err)
 	}
 	if dirty := bytes.TrimSpace(out); len(dirty) > 0 {
-		// Caller friction: the refuse-on-dirty guard worked. Name the dirty
-		// paths when porcelain yields them, and point at the remedies an agent
-		// can take next turn (inspect / selective commit / tidy artifacts).
-		paths := porcelainDirtyPaths(string(dirty))
-		var msg string
-		if len(paths) > 0 {
-			msg = fmt.Sprintf(
-				"vault has uncommitted changes: %s — commit or stash before pushing; "+
-					"or pass paths+message to commit specific files, call vp_vault_tidy to sweep capture artifacts, "+
-					"or vp_vault_status to inspect",
-				strings.Join(paths, ", "))
-		} else {
-			msg = "vault has uncommitted changes — commit or stash before pushing; " +
-				"or pass paths+message to commit specific files, call vp_vault_tidy to sweep capture artifacts, " +
-				"or vp_vault_status to inspect"
-		}
-		return "", apperr.Caller(fmt.Errorf("%s", msg))
+		// Caller friction: the refuse-on-dirty guard worked. Name dirty paths
+		// (capped — unbounded single-line MCP errors train agents to skim) and
+		// point at remedies an agent can take next turn.
+		return "", apperr.Caller(fmt.Errorf("%s", formatDirtyVaultPushError(porcelainDirtyPaths(string(dirty)))))
 	}
 
 	// Delegate the plain push loop to storage.PushPlain, which attempts every
@@ -405,6 +394,10 @@ func gitPush(root string, remotes []string) (string, error) {
 	}
 	return buf.String(), nil
 }
+
+// dirtyPathErrorCap bounds how many porcelain paths appear in one MCP error
+// line. Beyond this, agents skim and the legibility fix becomes noise.
+const dirtyPathErrorCap = 10
 
 // porcelainDirtyPaths extracts working-tree paths from `git status --porcelain`
 // output so refuse-on-dirty errors can name the offenders. Blank/short lines are
@@ -437,6 +430,25 @@ func porcelainDirtyPaths(porcelain string) []string {
 		paths = append(paths, path)
 	}
 	return paths
+}
+
+// formatDirtyVaultPushError builds the refuse-on-dirty push message. paths may
+// be empty (porcelain unparseable) — still actionable.
+func formatDirtyVaultPushError(paths []string) string {
+	const remedy = "commit or stash before pushing; " +
+		"or pass paths+message to commit specific files, call vp_vault_tidy to sweep capture artifacts, " +
+		"or vp_vault_status to inspect"
+	if len(paths) == 0 {
+		return "vault has uncommitted changes — " + remedy
+	}
+	shown := paths
+	suffix := ""
+	if len(paths) > dirtyPathErrorCap {
+		shown = paths[:dirtyPathErrorCap]
+		suffix = fmt.Sprintf(" …and %d more", len(paths)-dirtyPathErrorCap)
+	}
+	return fmt.Sprintf("vault has uncommitted changes: %s%s — %s",
+		strings.Join(shown, ", "), suffix, remedy)
 }
 
 // ---------------------------------------------------------------------------

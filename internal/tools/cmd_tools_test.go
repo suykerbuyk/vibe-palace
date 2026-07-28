@@ -6,10 +6,13 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 )
 
 // --- vp_cmd execute mode ---
@@ -440,5 +443,30 @@ func TestCmdToolSchemas(t *testing.T) {
 				t.Error("schema should have no required fields")
 			}
 		})
+	}
+}
+
+func TestDefaultCmdProjectHighConfidence(t *testing.T) {
+	root := t.TempDir()
+	// Vault project tree
+	if err := os.MkdirAll(filepath.Join(root, "Projects", "hc-cmd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// cwd with marker
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, project.ConfigFileName), []byte("[project]\nname = \"hc-cmd\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	if got := defaultCmdProject("", root); got != "hc-cmd" {
+		t.Errorf("defaultCmdProject = %q, want hc-cmd", got)
+	}
+	if got := defaultCmdProject("explicit", root); got != "explicit" {
+		t.Errorf("explicit wins: %q", got)
+	}
+	// No vault project dir → empty (no phantom).
+	if got := defaultCmdProject("", t.TempDir()); got != "" {
+		t.Errorf("missing Projects/slug must yield empty, got %q", got)
 	}
 }

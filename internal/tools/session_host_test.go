@@ -209,6 +209,12 @@ func TestIsHooklessClient(t *testing.T) {
 		{"zed-editor", "zed-editor", true},
 		{"claude-code", "claude-code", false},
 		{"Claude", "Claude", false},
+		// MUT-1 pin: claude guard must fire even when an allow-list token
+		// appears in the same compound name (substring allow-list would match "grok").
+		{"claude-grok-bridge", "claude-grok-bridge", false},
+		// Substring trap: English "zed" inside an unrelated client name.
+		{"optimized", "optimized", false},
+		{"authorized-client", "authorized-client", false},
 		{"unknown", "unknown", false},
 		{"cursor", "cursor", false},
 		{"http-serve", "http-serve", false},

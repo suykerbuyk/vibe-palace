@@ -242,12 +242,16 @@ type bootstrapParams struct {
 	Room      string `json:"room,omitempty"`
 }
 
-var bootstrapSchema = json.RawMessage(`{
+// bootstrapSchemaStdio is the stdio MCP schema: project is optional because the
+// handler may high-confidence-default from cwd. MUST stay separate from the
+// HTTP/explicit schema — sharing one literal made the machine-readable contract
+// say optional while HTTP runtime required it (honest-instruments defect).
+var bootstrapSchemaStdio = json.RawMessage(`{
 	"type": "object",
 	"properties": {
 		"project": {
 			"type": "string",
-			"description": "Project slug. Prefer always passing it. Optional on stdio MCP when the process cwd has a high-confidence signal (.vibe-palace.toml [project].name or git origin remote) AND Projects/<slug>/ exists in the bound vault; never derived from directory basename. Required on HTTP serve (multiplexed clients) and whenever detection is ambiguous — pass explicitly or call vp_list_projects."
+			"description": "Project slug. Prefer always passing it. Optional on stdio MCP when the process cwd has a high-confidence signal (.vibe-palace.toml [project].name or git origin remote) AND Projects/<slug>/ exists in the bound vault; never derived from directory basename. Whenever detection is ambiguous — pass explicitly or call vp_list_projects."
 		},
 		"max_tokens": {
 			"type": "integer",
@@ -264,6 +268,32 @@ var bootstrapSchema = json.RawMessage(`{
 	}
 }`)
 
+// bootstrapSchemaExplicit is the HTTP serve schema: project is required in the
+// machine-readable contract, matching the handler. Used only by
+// BootstrapContextToolExplicit / WithRequireExplicitProject.
+var bootstrapSchemaExplicit = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"project": {
+			"type": "string",
+			"description": "Project slug. Required on this transport (multiplexed HTTP serve does not default project from the server process cwd). Call vp_list_projects if unknown."
+		},
+		"max_tokens": {
+			"type": "integer",
+			"description": "Token budget for response. Default: 16000."
+		},
+		"wing": {
+			"type": "string",
+			"description": "Wing slug for palace-scoped command discovery."
+		},
+		"room": {
+			"type": "string",
+			"description": "Room slug for palace-scoped command discovery (requires wing)."
+		}
+	},
+	"required": ["project"]
+}`)
+
 // BootstrapContextTool returns the MCP tool definition for vp_bootstrap_context.
 //
 // There is ONE reduction path and this description states it exactly. The old
@@ -278,15 +308,21 @@ func BootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault) mcp.To
 
 // BootstrapContextToolExplicit is vp_bootstrap_context with no cwd defaulting —
 // project must be supplied on every call. Used by `vp mcp serve` (HTTP).
+// Its schema retains required:["project"] so schema-driven clients cannot omit
+// it and only learn the requirement from a runtime error string.
 func BootstrapContextToolExplicit(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Tool {
 	return bootstrapContextTool(resolver, vault, false)
 }
 
 func bootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, allowCwdDefault bool) mcp.Tool {
+	schema := bootstrapSchemaStdio
+	if !allowCwdDefault {
+		schema = bootstrapSchemaExplicit
+	}
 	return mcp.Tool{
 		Name:        "vp_bootstrap_context",
 		Description: "Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive. Sheds context to fit max_tokens and REPORTS WHAT IT SHED in `budget.shed` — every reduction this tool makes appears there, so an absent `budget` means nothing was reduced. A shed resume arrives as its `<!-- vp:pin -->` sections only, behind a banner — read `resume_uri` for the full body. A shed task list leaves `active_task_count` — call vp_list_tasks for it.",
-		Schema:      bootstrapSchema,
+		Schema:      schema,
 		Handler:     bootstrapHandler(resolver, vault, allowCwdDefault),
 	}
 }

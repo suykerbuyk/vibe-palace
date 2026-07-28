@@ -42,7 +42,7 @@ func TestCoreFloorMatchesBootstrapBudget(t *testing.T) {
 // how the budget came to be four unsynchronised literals in the first place.
 func TestBootstrapSchemaAdvertisesTheRealDefault(t *testing.T) {
 	want := strconv.Itoa(DefaultBootstrapMaxTokens)
-	if !strings.Contains(string(bootstrapSchema), "Default: "+want) {
+	if !strings.Contains(string(bootstrapSchemaStdio), "Default: "+want) {
 		t.Errorf("vp_bootstrap_context schema does not advertise the real default %q — "+
 			"an agent reading the schema would size its request against a stale number", want)
 	}

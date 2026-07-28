@@ -102,24 +102,31 @@ func resolveCaptureHost(ctx context.Context, clientInfo json.RawMessage) (host, 
 
 // isHooklessClient reports whether host names a known non-Claude MCP client
 // that has no SessionEnd hook and therefore needs inline transcript archive
-// for durable capture. Match is case-insensitive substring / exact against a
-// closed allow-list (grok, xai, zed). Claude-family names never match — empty
-// host session id on Claude is a derivation-miss, not hook-lessness, and
-// auto-inlining there dual-notes against SessionEnd. Unknown / declared-only
-// hosts are not auto-on either (declared is spoofable; unknown is
-// Claude-miss-shaped).
+// for durable capture.
+//
+// Match is case-insensitive **token** equality against a closed allow-list
+// (grok, xai, zed), where tokens are letter/digit runs split on any other
+// rune. Substring Contains is deliberately rejected: clientInfo.name is
+// vendor-chosen, and English words like "optimized" / "authorized" embed
+// "zed". Claude-family names never match — empty host session id on Claude
+// is a derivation-miss, not hook-lessness, and auto-inlining there dual-notes
+// against SessionEnd. The claude guard is load-bearing when an allow-list
+// entry could overlap a compound name (e.g. "claude-grok-bridge").
 func isHooklessClient(host string) bool {
 	h := strings.ToLower(strings.TrimSpace(host))
 	if h == "" {
 		return false
 	}
 	// Defensive: never auto-treat anything Claude-shaped as hook-less even if
-	// a future allow-list entry accidentally overlaps.
+	// a future allow-list entry accidentally overlaps a compound name.
 	if strings.Contains(h, "claude") {
 		return false
 	}
-	for _, needle := range []string{"grok", "xai", "zed"} {
-		if h == needle || strings.Contains(h, needle) {
+	for _, tok := range strings.FieldsFunc(h, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	}) {
+		switch tok {
+		case "grok", "xai", "zed":
 			return true
 		}
 	}

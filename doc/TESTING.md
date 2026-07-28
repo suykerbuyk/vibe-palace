@@ -6,8 +6,8 @@ This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~2743 tests** across 48 packages, including
-**106 integration tests** (the ONNX/cross-layer tests `make integration`
+The suite currently runs **~2767 tests** across 48 packages, including
+**108 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
 subtests each may fan out into — and they drift as the suite grows. Derive
@@ -87,6 +87,8 @@ merely *discusses* a header line, and the accumulated markdown weirdness of a hu
 Current canaries:
 
 | Test | What it would catch |
+|  | MCP stdio → capture → archive → storage (+ optional memory) | No* | Post-defaults hook-less path: derived , flag omitted → note + inline archive bi-link + friction + zero makeHandler WARN; Claude SessionEnd leg on a separate temp vault; structural equivalence not byte identity (*search leg needs engine; uses mock/short-safe setup) |
+|  | MCP stdio → capture | No | Unknown host without  stays thin (no auto inline archive) |
 |---|---|
 | `TestLiveVaultHasNoPhantomRelations` | `parseTaskMeta` regressing to a whole-file scan and reading a task's **body** as a real `Parent`/`Depends` — several real task files discuss the header syntax in prose and inside fences |
 | `TestLiveVaultGraphIsCleanAndTerminates` | A structural lie in the real backlog (cycle / dangling ref / retired parent with live children) — and, under a bounded timeout, a cycle being **walked instead of detected** |
@@ -257,6 +259,8 @@ context resolver, and config into a single test fixture.
 | `FrictionScoringOnCapture` | tools → capture → storage | No | `vp_capture_session` computes and persists friction score; high-friction transcript scores >= 50, smooth < 20 |
 | `FrictionScoringNoTranscript` | tools → storage | No | Session without transcript gets friction_score = 0 |
 | `FrictionTrendsEndToEnd` | tools → capture → storage | No | `vp_get_friction_trends` returns correctly aggregated weekly metrics from stored sessions |
+| `HostParityFootprint` | MCP stdio → capture → archive → storage | No | Post-defaults hook-less path: derived `clientInfo=grok`, flag omitted → note + inline archive bi-link + friction + zero makeHandler WARN; Claude SessionEnd leg on a separate temp vault; structural equivalence not byte identity |
+| `HostParityNoAutoArchiveUnknownHost` | MCP stdio → capture | No | Unknown host without `archive_transcript` stays thin (no auto inline archive) |
 | `FrictionTrendsEmpty` | tools → capture → storage | No | Trends for project with no sessions returns empty result |
 | `FrictionSearchByMinScore` | storage | No | `SearchSessions` with minFriction filter returns only sessions above threshold |
 

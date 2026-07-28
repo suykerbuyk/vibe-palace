@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 )
 
 // cmdParams is the input for vp_cmd and vp_skill.
@@ -108,12 +111,14 @@ func skillExecHandler(resolver *vpctx.Resolver) mcp.HandlerFunc {
 			return nil, err
 		}
 
+		projectSlug := defaultCmdProject(p.Project, resolver.VaultRoot())
+
 		name := strings.TrimSpace(p.Name)
 		if name == "" {
-			return buildDiscoveryList(resolver, p.Project, p.Wing, p.Room, "skill")
+			return buildDiscoveryList(resolver, projectSlug, p.Wing, p.Room, "skill")
 		}
 
-		sd, source, err := resolver.ResolveSkillDir(name, p.Project, p.Wing, p.Room)
+		sd, source, err := resolver.ResolveSkillDir(name, projectSlug, p.Wing, p.Room)
 		if err != nil {
 			// Caller fault: name is wrong. Point at discovery so the next turn
 			// can list skills without reading vp.log. apperr.Caller keeps this
@@ -123,7 +128,7 @@ func skillExecHandler(resolver *vpctx.Resolver) mcp.HandlerFunc {
 
 		return buildSkillFrame(frameParams{
 			Name:         name,
-			Project:      p.Project,
+			Project:      projectSlug,
 			Wing:         p.Wing,
 			Room:         p.Room,
 			Source:       source,
@@ -160,13 +165,18 @@ func cmdExecHandler(resolver *vpctx.Resolver, resourceType string) mcp.HandlerFu
 			return nil, err
 		}
 
+		// High-confidence cwd default so {{PROJECT}} expand is not blank when
+		// the host calls vp_cmd name=restart with no project (the /vpc-restart
+		// shim path). Never basename; never invent a phantom slug.
+		projectSlug := defaultCmdProject(p.Project, resolver.VaultRoot())
+
 		name := strings.TrimSpace(p.Name)
 		if name == "" {
-			return buildDiscoveryList(resolver, p.Project, p.Wing, p.Room, resourceType)
+			return buildDiscoveryList(resolver, projectSlug, p.Wing, p.Room, resourceType)
 		}
 
 		resource := fmt.Sprintf("%s:%s", resourceType, name)
-		content, source, err := resolver.ResolveScoped(resource, p.Project, p.Wing, p.Room)
+		content, source, err := resolver.ResolveScoped(resource, projectSlug, p.Wing, p.Room)
 		if err != nil {
 			// Caller fault: name is wrong. Point at discovery so the next turn
 			// can list commands without reading vp.log. apperr.Caller keeps this
@@ -176,7 +186,7 @@ func cmdExecHandler(resolver *vpctx.Resolver, resourceType string) mcp.HandlerFu
 
 		return buildExecutionFrame(frameParams{
 			Name:         name,
-			Project:      p.Project,
+			Project:      projectSlug,
 			Wing:         p.Wing,
 			Room:         p.Room,
 			Source:       source,
@@ -184,6 +194,32 @@ func cmdExecHandler(resolver *vpctx.Resolver, resourceType string) mcp.HandlerFu
 			ResourceType: resourceType,
 		}), nil
 	}
+}
+
+// defaultCmdProject returns explicit when set; otherwise a high-confidence
+// cwd-derived slug that already has Projects/<slug>/ under vaultRoot. Empty
+// means "leave expand blank" — never basename-guess.
+func defaultCmdProject(explicit, vaultRoot string) string {
+	if s := strings.TrimSpace(explicit); s != "" {
+		return s
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	slug, err := project.DetectProjectHighConfidence(cwd)
+	if err != nil {
+		return ""
+	}
+	if vaultRoot == "" {
+		return ""
+	}
+	dir := filepath.Join(vaultRoot, "Projects", slug)
+	fi, err := os.Stat(dir)
+	if err != nil || !fi.IsDir() {
+		return ""
+	}
+	return slug
 }
 
 // frameParams groups the arguments for buildExecutionFrame.

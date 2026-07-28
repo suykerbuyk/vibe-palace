@@ -427,3 +427,34 @@ func TestServeHTTPGracefulShutdown(t *testing.T) {
 		t.Fatal("serveHTTP did not return after context cancel")
 	}
 }
+
+// TestMCPServeBootstrapRequiresProject pins that buildMCPServeHandler's real
+// RegisterAll path wires WithRequireExplicitProject: calling
+// vp_bootstrap_context with {} must refuse. Constructing
+// BootstrapContextToolExplicit in isolation is not enough — the serve stack
+// could drop the option and only the unused-export sourceaudit would notice.
+func TestMCPServeBootstrapRequiresProject(t *testing.T) {
+	stack := newServeTestStack(t)
+	handler := buildMCPServeHandler(stack, mcpServeTestToken, false /* allowWrites */)
+
+	res, err := callToolHTTP(t, handler, mcpServeTestToken, "vp_bootstrap_context", map[string]any{})
+	if err != nil {
+		t.Fatalf("transport error: %v", err)
+	}
+	if res == nil {
+		t.Fatal("nil result")
+	}
+	if !res.IsError {
+		t.Fatalf("want isError for empty project on HTTP serve, got success: %+v", res)
+	}
+	// Schema validation or handler — either must name project.
+	text := ""
+	for _, c := range res.Content {
+		if tc, ok := c.(mcplib.TextContent); ok {
+			text += tc.Text
+		}
+	}
+	if !strings.Contains(strings.ToLower(text), "project") {
+		t.Errorf("error text must mention project, got %q", text)
+	}
+}
