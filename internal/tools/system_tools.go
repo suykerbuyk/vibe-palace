@@ -414,7 +414,7 @@ func gitPush(root string, remotes []string) (string, error) {
 func porcelainDirtyPaths(porcelain string) []string {
 	var paths []string
 	seen := map[string]bool{}
-	for _, line := range strings.Split(porcelain, "\n") {
+	for line := range strings.SplitSeq(porcelain, "\n") {
 		line = strings.TrimRight(line, "\r")
 		if len(line) < 4 {
 			continue
