@@ -265,6 +265,10 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 				// The refusal/verdict message names the dirt or failing remote;
 				// SyncVault already formatted it. The result body is discarded on
 				// a handler error, so the error string must carry what to act on.
+				// Refuse-on-dirt is caller friction — wrap so health stays green.
+				if res != nil && res.Refused {
+					return nil, apperr.Caller(fmt.Errorf("sync: %w", err))
+				}
 				return nil, fmt.Errorf("sync: %w", err)
 			}
 			return map[string]any{
@@ -360,8 +364,24 @@ func gitPush(root string, remotes []string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("git status: %w", err)
 	}
-	if len(bytes.TrimSpace(out)) > 0 {
-		return "", fmt.Errorf("vault has uncommitted changes, commit before pushing")
+	if dirty := bytes.TrimSpace(out); len(dirty) > 0 {
+		// Caller friction: the refuse-on-dirty guard worked. Name the dirty
+		// paths when porcelain yields them, and point at the remedies an agent
+		// can take next turn (inspect / selective commit / tidy artifacts).
+		paths := porcelainDirtyPaths(string(dirty))
+		var msg string
+		if len(paths) > 0 {
+			msg = fmt.Sprintf(
+				"vault has uncommitted changes: %s — commit or stash before pushing; "+
+					"or pass paths+message to commit specific files, call vp_vault_tidy to sweep capture artifacts, "+
+					"or vp_vault_status to inspect",
+				strings.Join(paths, ", "))
+		} else {
+			msg = "vault has uncommitted changes — commit or stash before pushing; " +
+				"or pass paths+message to commit specific files, call vp_vault_tidy to sweep capture artifacts, " +
+				"or vp_vault_status to inspect"
+		}
+		return "", apperr.Caller(fmt.Errorf("%s", msg))
 	}
 
 	// Delegate the plain push loop to storage.PushPlain, which attempts every
@@ -384,6 +404,39 @@ func gitPush(root string, remotes []string) (string, error) {
 		return buf.String(), fmt.Errorf("%s", v)
 	}
 	return buf.String(), nil
+}
+
+// porcelainDirtyPaths extracts working-tree paths from `git status --porcelain`
+// output so refuse-on-dirty errors can name the offenders. Blank/short lines are
+// skipped; renames contribute the destination path. Kept local to tools — the
+// wrapstate parser is deliberately package-private and this seam only needs
+// enough fidelity for a human/agent-readable error line.
+func porcelainDirtyPaths(porcelain string) []string {
+	var paths []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(porcelain, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if len(line) < 4 {
+			continue
+		}
+		// XY <path> (two status chars + space); renames are XY <old> -> <new>.
+		path := strings.TrimSpace(line[3:])
+		if path == "" {
+			continue
+		}
+		if idx := strings.Index(path, " -> "); idx >= 0 {
+			path = path[idx+len(" -> "):]
+		}
+		if len(path) >= 2 && path[0] == '"' && path[len(path)-1] == '"' {
+			path = path[1 : len(path)-1]
+		}
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	return paths
 }
 
 // ---------------------------------------------------------------------------

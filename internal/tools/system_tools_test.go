@@ -114,8 +114,15 @@ func TestVaultSync_BarePushRefusesDirty(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected bare push to refuse on dirty vault")
 	}
-	if !strings.Contains(err.Error(), "uncommitted") {
+	msg := err.Error()
+	if !strings.Contains(msg, "uncommitted") {
 		t.Errorf("error = %q, want it to mention uncommitted changes", err)
+	}
+	if !strings.Contains(msg, "dirty.txt") {
+		t.Errorf("error = %q, want it to name the dirty path dirty.txt", err)
+	}
+	if !strings.Contains(msg, "vp_vault_status") {
+		t.Errorf("error = %q, want a next-turn remedy naming vp_vault_status", err)
 	}
 }
 

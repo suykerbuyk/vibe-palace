@@ -88,8 +88,12 @@ func TestCmdExecuteNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent command")
 	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("error = %q, want 'not found'", err.Error())
+	msg := err.Error()
+	if !strings.Contains(msg, "not found") {
+		t.Errorf("error = %q, want 'not found'", msg)
+	}
+	if !strings.Contains(msg, "vp_cmd") || !strings.Contains(msg, "list") {
+		t.Errorf("error = %q, want list/discovery remedy naming vp_cmd", msg)
 	}
 }
 
@@ -211,6 +215,13 @@ func TestSkillExecuteNotFound(t *testing.T) {
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"nonexistent"}`))
 	if err == nil {
 		t.Fatal("expected error for nonexistent skill")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "not found") {
+		t.Errorf("error = %q, want 'not found'", msg)
+	}
+	if !strings.Contains(msg, "vp_skill") || !strings.Contains(msg, "list") {
+		t.Errorf("error = %q, want list/discovery remedy naming vp_skill", msg)
 	}
 }
 

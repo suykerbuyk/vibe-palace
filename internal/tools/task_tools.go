@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/taskgraph"
@@ -517,11 +518,16 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
 		}
+		// Empty-string guards (schema required only checks key presence). Caller
+		// fault: name the field and a next-turn remedy. apperr.Caller keeps the
+		// rejection out of health amber-wash.
 		if p.Project == "" {
-			return nil, fmt.Errorf("project is required")
+			return nil, apperr.Caller(fmt.Errorf(
+				"vp_manage_task: 'project' is required — pass the project slug (from vp_list_projects or vp_bootstrap_context)"))
 		}
 		if p.Task == "" {
-			return nil, fmt.Errorf("task is required")
+			return nil, apperr.Caller(fmt.Errorf(
+				"vp_manage_task: 'task' is required — pass the task slug to create or act on (from vp_list_tasks)"))
 		}
 
 		switch p.Action {

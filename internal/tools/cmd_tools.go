@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
@@ -114,7 +115,10 @@ func skillExecHandler(resolver *vpctx.Resolver) mcp.HandlerFunc {
 
 		sd, source, err := resolver.ResolveSkillDir(name, p.Project, p.Wing, p.Room)
 		if err != nil {
-			return nil, err
+			// Caller fault: name is wrong. Point at discovery so the next turn
+			// can list skills without reading vp.log. apperr.Caller keeps this
+			// out of health amber-wash (correct friction, not an internal fault).
+			return nil, apperr.Caller(fmt.Errorf("%w — call vp_skill with no name to list available skills", err))
 		}
 
 		return buildSkillFrame(frameParams{
@@ -164,7 +168,10 @@ func cmdExecHandler(resolver *vpctx.Resolver, resourceType string) mcp.HandlerFu
 		resource := fmt.Sprintf("%s:%s", resourceType, name)
 		content, source, err := resolver.ResolveScoped(resource, p.Project, p.Wing, p.Room)
 		if err != nil {
-			return nil, err
+			// Caller fault: name is wrong. Point at discovery so the next turn
+			// can list commands without reading vp.log. apperr.Caller keeps this
+			// out of health amber-wash (correct friction, not an internal fault).
+			return nil, apperr.Caller(fmt.Errorf("%w — call vp_cmd with no name to list available commands", err))
 		}
 
 		return buildExecutionFrame(frameParams{
