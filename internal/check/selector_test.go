@@ -121,6 +121,9 @@ func TestRunSelectedSkipsWithoutVault(t *testing.T) {
 		if r.Name == "Surface" {
 			continue // CheckSurface tolerates an empty root on its own terms
 		}
+		if r.Name == "Host surfaces" {
+			continue // inspects $HOME plugin trees, not the vault
+		}
 		if r.Status != Skip {
 			t.Errorf("%s with no vault = %v, want Skip", r.Name, r.Status)
 		}
@@ -181,7 +184,8 @@ func TestRunSelectedIsPure(t *testing.T) {
 func TestProducersSkipContractNamesAreStable(t *testing.T) {
 	got := names(mustRunAll(t))
 	sort.Strings(got)
-	want := []string{"Core floor", "Pin coverage", "Resume caps", "Resume refs",
+	// Host surfaces may be Skip or present depending on $HOME; always one row.
+	want := []string{"Core floor", "Host surfaces", "Pin coverage", "Resume caps", "Resume refs",
 		"Stray scaffolds", "Surface", "Vault abs paths", "Vault filesystem"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("check row names = %v, want %v", got, want)

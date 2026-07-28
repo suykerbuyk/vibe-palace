@@ -16,9 +16,9 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
-	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/hook"
+	"github.com/suykerbuyk/vibe-palace/internal/plugin"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/reconcile"
 	"github.com/suykerbuyk/vibe-palace/internal/shims"
@@ -615,238 +615,90 @@ func initAgentWiring(projectRoot string, projectReady bool) []check.Result {
 // Claude Code's `/` slash menu. Additive-by-default: stale shims (commands
 // that no longer exist) are reported but not deleted — `vp commands
 // upgrade` handles removal with explicit user consent.
+//
+// Phase 4b: per-host skip when that host's user-global surface is healthy
+// (C1 — never OR hosts together). Project-scoped commands remain MCP-only
+// under a global surface (D6).
 func initShimWiring(projectRoot string, projectReady bool) []check.Result {
 	if !projectReady {
 		return nil // agent-wiring already surfaced the skip row.
 	}
 
-	vault, err := openProjectVault()
-	if err != nil {
-		return []check.Result{{
-			Name:    "Slash-command shims",
-			Status:  check.Skip,
-			Summary: "skipped — open vault: " + err.Error(),
-		}}
+	claudeOK := plugin.ClaudeUserCommandsHealthy()
+	grokOK := shims.GrokUserCommandsHealthy()
+	opts := shims.ReconcileOptions{
+		SkipClaude: claudeOK,
+		SkipGrok:   grokOK,
 	}
-	resolver := vpctx.NewResolver(vault.Root)
-
-	// Detect the owning project so project-scoped commands get shims too
-	// (rendered with a project="<slug>" param). Empty slug -> global-only.
-	slug, _ := project.DetectProject(projectRoot)
-	summaries, err := commands.List(resolver, "command", slug, "", "", 60)
-	if err != nil {
-		return []check.Result{{
-			Name:    "Slash-command shims",
-			Status:  check.Fail,
-			Summary: "list commands: " + err.Error(),
-		}}
+	if claudeOK {
+		opts.ClaudeSkipReason = "Claude user-global cache has vpc-* (vp mcp install --claude-plugin); project .claude/commands not re-emitted — bare /vpc-* may require vibe-palace: prefix or project shims"
 	}
-	if len(summaries) == 0 {
-		return []check.Result{{
-			Name:    "Slash-command shims",
-			Status:  check.Skip,
-			Summary: "no commands available to emit",
-		}}
-	}
-
-	shimDir := filepath.Join(projectRoot, shims.ShimDir)
-	if err := os.MkdirAll(shimDir, 0o755); err != nil {
-		// Treat permission/IO errors as warn-and-continue per the plan
-		// doc — `vp init` should not fail because the user deliberately
-		// kept .claude/ read-only.
-		return []check.Result{{
-			Name:    "Slash-command shims",
-			Status:  check.Skip,
-			Summary: "skipped — create " + shims.ShimDir + ": " + err.Error(),
-		}}
-	}
-
-	plan, err := shims.Plan(summaries, projectRoot)
-	if err != nil {
-		return []check.Result{{
-			Name:    "Slash-command shims",
-			Status:  check.Fail,
-			Summary: "plan shims: " + err.Error(),
-		}}
-	}
-
-	rep, err := shims.Apply(plan, shims.ApplyOptions{AllowStaleRemoval: false})
-	if err != nil {
-		return []check.Result{{
-			Name:    "Slash-command shims",
-			Status:  check.Fail,
-			Summary: "apply shims: " + err.Error(),
-		}}
-	}
-
-	rows := []check.Result{shimReportRow("Slash-command shims", rep)}
-
-	// Grok command shims via project plugin (first-class native slash commands).
-	if shims.GrokPresent(projectRoot) {
-		rows = append(rows, applyGrokCommandShims(summaries, projectRoot))
-	}
-
-	// --- Skill shims: ClaudeSkill always; CursorRule when detected. ---
-	rows = append(rows, initSkillShimWiring(projectRoot, resolver)...)
-	return rows
-}
-
-// initSkillShimWiring emits one row per skill-shim target family
-// (ClaudeSkill always, CursorRule when shims.CursorPresent). Uses the
-// Phase-4 PlanSkills/ApplySkills entry points. Resolver is the caller's
-// already-opened vault resolver so we do not re-run openProjectVault.
-func initSkillShimWiring(projectRoot string, resolver *vpctx.Resolver) []check.Result {
-	names, err := resolver.ListResourcesScoped("skill", "", "", "")
-	if err != nil {
-		return []check.Result{{
-			Name:    "Claude skill shims",
-			Status:  check.Skip,
-			Summary: "list skills: " + err.Error(),
-		}}
-	}
-	items := make([]shims.SkillItem, 0, len(names))
-	for _, ri := range names {
-		sd, _, err := resolver.ResolveSkillDir(ri.Name, "", "", "")
-		if err != nil {
-			// Unresolvable skill — skip silently; lower tiers may have
-			// structural issues the user will see via `vp skills list`.
-			continue
-		}
-		vaultPath := filepath.Join(resolver.VaultRoot(),
-			"Templates", "skills", ri.Name, "SKILL.md")
-		items = append(items, shims.SkillItem{
-			Name:        ri.Name,
-			Frontmatter: sd.Frontmatter,
-			VaultPath:   vaultPath,
-		})
+	if grokOK {
+		opts.GrokSkipReason = "Grok user-global plugin has vpc-* (vp mcp install --grok); project .grok/plugins not re-emitted"
 	}
 
 	var rows []check.Result
-
-	// ClaudeSkill: always.
-	rows = append(rows, applySkillShimTarget(
-		"Claude skill shims", shims.ClaudeSkill, items, projectRoot))
-
-	// CursorRule: only when a Cursor project layout is present.
-	if shims.CursorPresent(projectRoot) {
-		rows = append(rows, applySkillShimTarget(
-			"Cursor rule shims", shims.CursorRule, items, projectRoot))
+	if claudeOK {
+		rows = append(rows, check.Result{
+			Name:    "Slash-command shims (Claude)",
+			Status:  check.Info,
+			Summary: "skipped — user-global Claude surface healthy",
+			Details: []string{"  " + opts.ClaudeSkipReason, "  Project-scoped commands: MCP-only under global menu (D6)"},
+		})
+	}
+	if grokOK {
+		rows = append(rows, check.Result{
+			Name:    "Slash-command shims (Grok)",
+			Status:  check.Info,
+			Summary: "skipped — user-global Grok surface healthy",
+			Details: []string{"  " + opts.GrokSkipReason, "  Project-scoped commands: MCP-only under global menu (D6)"},
+		})
 	}
 
-	// GrokSkill: only when Grok is detected. Emits both the per-persona
-	// vps-* shims AND the /vpc command hub.
-	if shims.GrokPresent(projectRoot) {
-		rows = append(rows, applyGrokShims(items, projectRoot))
+	// Still need project emit for any host that is not globally healthy
+	// (and Cursor when present — always project-local).
+	needProject := !claudeOK || (!grokOK && shims.GrokPresent(projectRoot)) || shims.CursorPresent(projectRoot)
+	if !needProject {
+		return rows
 	}
-	return rows
-}
 
-// applyGrokShims wires the Grok skill family: the per-persona vps-* shims
-// (PlanSkills) plus the single /vpc command hub (PlanGrokHub), combined into
-// one plan and applied together so both land in the same check.Result row.
-func applyGrokShims(items []shims.SkillItem, projectRoot string) check.Result {
-	const label = "Grok skill shims"
-	plan, err := shims.PlanSkills(shims.GrokSkill, items, projectRoot)
+	vault, err := openProjectVault()
 	if err != nil {
-		return check.Result{Name: label, Status: check.Fail, Summary: "plan: " + err.Error()}
+		return append(rows, check.Result{
+			Name:    "Slash-command shims",
+			Status:  check.Skip,
+			Summary: "skipped — open vault: " + err.Error(),
+		})
 	}
-	hub, err := shims.PlanGrokHub(projectRoot)
-	if err != nil {
-		return check.Result{Name: label, Status: check.Fail, Summary: "plan hub: " + err.Error()}
-	}
-	plan = append(plan, hub)
-	rep, _, err := shims.ApplySkills(plan, shims.ApplyOptions{AllowStaleRemoval: false})
-	if err != nil {
-		return check.Result{Name: label, Status: check.Fail, Summary: "apply: " + err.Error()}
+	resolver := vpctx.NewResolver(vault.Root)
+	slug, _ := project.DetectProject(projectRoot)
+
+	rep := shims.Reconcile(projectRoot, resolver, slug, opts)
+	if len(rep.Errors) > 0 {
+		// Read-only target dirs and similar stay Info/Skip-ish: Reconcile
+		// records them as Errors; surface as Info so a deliberately
+		// read-only .claude/ does not look like a hard Fail (M5).
+		return append(rows, check.Result{
+			Name:    "Slash-command shims (project)",
+			Status:  check.Info,
+			Summary: "project emit incomplete: " + strings.Join(rep.Errors, "; "),
+		})
 	}
 	summary := fmt.Sprintf(
-		"added %d, updated %d, unchanged %d, stale %d, custom %d",
-		rep.Added, rep.Updated, rep.Unchanged, rep.Stale, rep.Custom,
+		"added %d, updated %d (commands +%d skills +%d)",
+		len(rep.CommandsAdded)+len(rep.SkillsAdded),
+		len(rep.CommandsUpdated)+len(rep.SkillsUpdated),
+		len(rep.CommandsAdded), len(rep.SkillsAdded),
 	)
-	status := check.Info
-	if rep.Added > 0 || rep.Updated > 0 {
-		status = check.Pass
+	status := check.Pass
+	if rep.Empty() {
+		status = check.Info
 	}
-	row := check.Result{Name: label, Status: status, Summary: summary}
-	if rep.Stale > 0 {
-		row.Details = append(row.Details,
-			"stale shims left in place — run `vp commands upgrade` to review")
-	}
-	return row
-}
-
-// applyGrokCommandShims emits the native Grok slash command shims under
-// .grok/plugins/vibe-palace/commands/ (vpc-*.md) using the same delegation
-// content as the Claude shims. This makes Grok a first-class citizen for
-// the /vpc-<name> menu.
-func applyGrokCommandShims(summaries []commands.Summary, projectRoot string) check.Result {
-	const label = "Grok command shims"
-	plan, err := shims.PlanGrokCommands(summaries, projectRoot)
-	if err != nil {
-		return check.Result{Name: label, Status: check.Fail, Summary: "plan: " + err.Error()}
-	}
-	rep, err := shims.Apply(plan, shims.ApplyOptions{AllowStaleRemoval: false})
-	if err != nil {
-		return check.Result{Name: label, Status: check.Fail, Summary: "apply: " + err.Error()}
-	}
-	return shimReportRow(label, rep)
-}
-
-// shimReportRow builds the init status row shared by the Claude and Grok
-// command-shim apply paths from an Apply report: Pass when anything was
-// added or updated (else Info), with a stale-leftover advisory.
-func shimReportRow(label string, rep shims.Report) check.Result {
-	summary := fmt.Sprintf(
-		"added %d, updated %d, unchanged %d, stale %d, custom %d",
-		rep.Added, rep.Updated, rep.Unchanged, rep.Stale, rep.Custom,
-	)
-	status := check.Info
-	if rep.Added > 0 || rep.Updated > 0 {
-		status = check.Pass
-	}
-	row := check.Result{Name: label, Status: status, Summary: summary}
-	if rep.Stale > 0 {
-		row.Details = append(row.Details,
-			"stale shims left in place — run `vp commands upgrade` to review")
-	}
-	return row
-}
-
-func applySkillShimTarget(label string, target shims.TargetKind, items []shims.SkillItem, projectRoot string) check.Result {
-	plan, err := shims.PlanSkills(target, items, projectRoot)
-	if err != nil {
-		return check.Result{
-			Name:    label,
-			Status:  check.Fail,
-			Summary: "plan: " + err.Error(),
-		}
-	}
-	rep, _, err := shims.ApplySkills(plan, shims.ApplyOptions{AllowStaleRemoval: false})
-	if err != nil {
-		return check.Result{
-			Name:    label,
-			Status:  check.Fail,
-			Summary: "apply: " + err.Error(),
-		}
-	}
-	summary := fmt.Sprintf(
-		"added %d, updated %d, unchanged %d, stale %d, custom %d",
-		rep.Added, rep.Updated, rep.Unchanged, rep.Stale, rep.Custom,
-	)
-	status := check.Info
-	if rep.Added > 0 || rep.Updated > 0 {
-		status = check.Pass
-	}
-	row := check.Result{
-		Name:    label,
+	return append(rows, check.Result{
+		Name:    "Slash-command shims (project)",
 		Status:  status,
 		Summary: summary,
-	}
-	if rep.Stale > 0 {
-		row.Details = append(row.Details,
-			"stale shims left in place — run `vp skills upgrade` to review")
-	}
-	return row
+	})
 }
 
 // hasLegacyContent reports whether data contains any non-whitespace bytes

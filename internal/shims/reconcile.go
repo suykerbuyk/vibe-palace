@@ -42,29 +42,35 @@ func (r ReconcileReport) Empty() bool {
 		len(r.SkillsAdded) == 0 && len(r.SkillsUpdated) == 0 && len(r.Errors) == 0
 }
 
+// ReconcileOptions controls which project-tree host families Reconcile writes.
+// Per-host skips implement the Option C warn window: when a host already has
+// healthy user-global surfaces, project emission for that host is suppressed
+// without suppressing other hosts (C1).
+type ReconcileOptions struct {
+	// SkipClaude omits project .claude/commands and .claude/skills.
+	SkipClaude bool
+	// SkipGrok omits project .grok/plugins/.../commands, .grok/skills, and hub.
+	SkipGrok bool
+	// ClaudeSkipReason / GrokSkipReason are optional human labels for init rows.
+	ClaudeSkipReason string
+	GrokSkipReason   string
+}
+
 // Reconcile brings projectRoot's host shim files into alignment with the
 // vault's command and skill sets, ADDITIVELY: it creates missing shims and
 // rewrites drifted ones, but NEVER deletes a stale shim and NEVER touches a
-// hand-written (marker-less) file. Targets are gated by the project layout:
-// Claude command + skill shims always; Grok command/skill shims and the /vpc
-// hub when a Grok layout is present; Cursor rule shims when a Cursor layout is.
+// hand-written (marker-less) file.
 //
-// This is the non-interactive core shared by `vp init`, the session-start
-// vp_bootstrap_context path, and the accept-all core of `vp commands upgrade`.
-// It exists so a command added to the vault becomes typeable WITHOUT a human
-// remembering to run `vp commands upgrade`: the drift/write glue used to be
-// copied into each caller (cmd_init's initShimWiring, the upgrade plan
-// helpers), and only the interactive per-file prompting genuinely belongs in
-// the CLI.
+// Default (zero opts): Claude command + skill shims always; Grok when
+// GrokPresent; Cursor when CursorPresent. Callers that have migrated a host
+// to user-global surfaces pass SkipClaude / SkipGrok independently.
+//
+// Production callers: vp init (with per-host skips). Bootstrap no longer
+// reconciles (install-time only). vp commands upgrade keeps its own plan path.
 //
 // slug is the owning project (from project.DetectProject) so project-scoped
-// commands get shims too; an empty slug yields global-only commands. resolver
-// is the caller's already-opened vault resolver.
-//
-// Every failure lands in ReconcileReport.Errors rather than aborting: callers
-// (bootstrap especially) must never let a shim write break the operation it
-// rides on.
-func Reconcile(projectRoot string, resolver *vpctx.Resolver, slug string) ReconcileReport {
+// commands get shims too; an empty slug yields global-only commands.
+func Reconcile(projectRoot string, resolver *vpctx.Resolver, slug string, opts ReconcileOptions) ReconcileReport {
 	var r ReconcileReport
 	if projectRoot == "" || resolver == nil {
 		return r
@@ -73,27 +79,31 @@ func Reconcile(projectRoot string, resolver *vpctx.Resolver, slug string) Reconc
 	cmdAdded, cmdUpdated := map[string]bool{}, map[string]bool{}
 	skillAdded, skillUpdated := map[string]bool{}, map[string]bool{}
 
-	// --- Command shims: Claude always; Grok when a Grok layout is present. ---
+	// --- Command shims ---
 	if summaries, err := commands.List(resolver, "command", slug, "", "", 60); err != nil {
 		r.Errors = append(r.Errors, "list commands: "+err.Error())
 	} else if len(summaries) > 0 {
-		r.applyCommands("claude command shims", func() ([]Change, error) {
-			return Plan(summaries, projectRoot)
-		}, cmdAdded, cmdUpdated)
-		if GrokPresent(projectRoot) {
+		if !opts.SkipClaude {
+			r.applyCommands("claude command shims", func() ([]Change, error) {
+				return Plan(summaries, projectRoot)
+			}, cmdAdded, cmdUpdated)
+		}
+		if !opts.SkipGrok && GrokPresent(projectRoot) {
 			r.applyCommands("grok command shims", func() ([]Change, error) {
 				return PlanGrokCommands(summaries, projectRoot)
 			}, cmdAdded, cmdUpdated)
 		}
 	}
 
-	// --- Skill shims: Claude always; Cursor and Grok when detected. ---
+	// --- Skill shims ---
 	if items := r.skillItems(resolver); len(items) > 0 {
-		r.applySkills("claude skill shims", ClaudeSkill, items, projectRoot, skillAdded, skillUpdated)
+		if !opts.SkipClaude {
+			r.applySkills("claude skill shims", ClaudeSkill, items, projectRoot, skillAdded, skillUpdated)
+		}
 		if CursorPresent(projectRoot) {
 			r.applySkills("cursor rule shims", CursorRule, items, projectRoot, skillAdded, skillUpdated)
 		}
-		if GrokPresent(projectRoot) {
+		if !opts.SkipGrok && GrokPresent(projectRoot) {
 			r.applySkills("grok skill shims", GrokSkill, items, projectRoot, skillAdded, skillUpdated)
 		}
 	}

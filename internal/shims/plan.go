@@ -80,8 +80,8 @@ func Plan(summaries []commands.Summary, projectRoot string) ([]Change, error) {
 	if projectRoot == "" {
 		return nil, nil
 	}
-	shimRoot := filepath.Join(projectRoot, ShimDir)
-	return planCommandShims(summaries, shimRoot)
+	// TargetDir keeps the project-layout path API live for Claude commands.
+	return planCommandShims(summaries, TargetDir(ClaudeCommand, projectRoot, "restart"))
 }
 
 // PlanGrokCommands is the Grok equivalent of Plan. It plans native

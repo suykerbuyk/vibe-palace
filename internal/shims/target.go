@@ -113,36 +113,26 @@ type SkillItem struct {
 // its own subdirectory so references/ siblings can live alongside
 // SKILL.md if a future phase emits them.
 func TargetDir(kind TargetKind, projectRoot, name string) string {
-	switch kind {
-	case ClaudeCommand:
-		return filepath.Join(projectRoot, ShimDir)
-	case ClaudeSkill:
-		return filepath.Join(projectRoot, ClaudeSkillsDir, SkillDirName(name))
-	case CursorRule:
-		return filepath.Join(projectRoot, CursorRulesDir)
-	case GrokSkill:
-		// The /vpc hub uses the literal dir name "vpc"; every other skill
-		// gets its own vps-<name>/ subdir like ClaudeSkill.
-		if name == GrokHubName {
-			return filepath.Join(projectRoot, GrokSkillsDir, GrokHubName)
-		}
-		return filepath.Join(projectRoot, GrokSkillsDir, SkillDirName(name))
-	default:
+	f := TargetFile(kind, projectRoot, name)
+	if f == "" {
 		return ""
 	}
+	return filepath.Dir(f)
 }
 
-// TargetFile returns the absolute path of the shim file itself.
+// TargetFile returns the absolute path of the shim file itself for a
+// project-rooted layout. User-global plugin trees use skillFilePath /
+// PlanCommandsAt with an absolute CommandsDir/SkillsDir instead.
 func TargetFile(kind TargetKind, projectRoot, name string) string {
 	switch kind {
 	case ClaudeCommand:
 		return filepath.Join(projectRoot, ShimDir, Filename(name))
 	case ClaudeSkill:
-		return filepath.Join(TargetDir(kind, projectRoot, name), "SKILL.md")
+		return skillFilePath(filepath.Join(projectRoot, ClaudeSkillsDir), ClaudeSkill, name)
 	case CursorRule:
-		return filepath.Join(projectRoot, CursorRulesDir, CursorRuleFilename(name))
+		return skillFilePath(filepath.Join(projectRoot, CursorRulesDir), CursorRule, name)
 	case GrokSkill:
-		return filepath.Join(TargetDir(kind, projectRoot, name), "SKILL.md")
+		return skillFilePath(filepath.Join(projectRoot, GrokSkillsDir), GrokSkill, name)
 	default:
 		return ""
 	}

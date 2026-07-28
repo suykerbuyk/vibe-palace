@@ -81,6 +81,8 @@ var Producers = map[string]func(vaultRoot string) []Result{
 		}
 		return []Result{CheckPinCoverage(storage.NewVault(vaultRoot))}
 	},
+	// host-surfaces does not need a vault — it inspects $HOME plugin trees.
+	"host-surfaces": func(string) []Result { return CheckHostSurfaces() },
 }
 
 // ProducerOrder is the DECLARED order the producers run in when the caller does
@@ -115,6 +117,7 @@ var ProducerOrder = []string{
 	"vault-abs-paths",
 	"core-floor",
 	"pin-coverage",
+	"host-surfaces",
 }
 
 // RunSelected runs the named checks against the supplied vault root and returns

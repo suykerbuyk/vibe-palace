@@ -546,6 +546,10 @@ func TestInitForceSkipInSandboxedHome(t *testing.T) {
 // carry the shim marker, and that re-running init is a no-op (Apply records
 // every file as Unchanged).
 func TestInitEmitsShims(t *testing.T) {
+	// Isolate HOME so live user-global surfaces do not trigger the Phase 4b
+	// skip path (GlobalSurfacesHealthy).
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg"))
 	configDir := initTestEnv(t, false)
 	projDir := t.TempDir()
 	markProjectDir(t, projDir)

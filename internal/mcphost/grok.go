@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/plugin"
+	"github.com/suykerbuyk/vibe-palace/internal/shims"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 // grokServerName is the MCP server name registered in Grok's config.toml.
@@ -106,27 +108,70 @@ func (h *GrokHost) Install(_, projectRoot string, out io.Writer) error {
 		fmt.Fprintf(out, "  warning: wire AGENTS.md: %v\n", err)
 	}
 
+	// Phase 3: user-global plugin command/skill shims under ~/.grok/plugins/vibe-palace.
+	emitGrokUserSurfaces(out, projectRoot)
+
 	fmt.Fprintf(out, "vibe-palace registered with Grok (grok mcp add %s).\n", grokServerName)
 	fmt.Fprintf(out, "Verify with: grok mcp doctor\n")
 	return nil
 }
 
-// Uninstall removes the server via `grok mcp remove`. Idempotent: a remove of a
-// missing server is reported, not fatal.
+// emitGrokUserSurfaces writes thin shims into the user-global Grok plugin tree
+// (auto-trusted). Best-effort — registration still succeeds if shim write fails.
+// Vault root is global config only (M1).
+func emitGrokUserSurfaces(out io.Writer, _ string) {
+	pluginRoot := shims.GrokUserPluginDir()
+	if pluginRoot == "" {
+		fmt.Fprintf(out, "  warning: host surfaces: cannot resolve home for Grok user plugin\n")
+		return
+	}
+	vaultRoot, vaultSrc, _ := storage.ResolveGlobalVaultPath()
+	if vaultSrc != "" {
+		fmt.Fprintf(out, "  Vault for menu: %s (%s)\n", compressHome(vaultRoot), vaultSrc)
+	}
+	rep := shims.InstallGlobalSurfaces(shims.GlobalInstallOptions{
+		VaultRoot:         vaultRoot,
+		VaultSource:       vaultSrc,
+		GrokPluginRoot:    pluginRoot,
+		AllowStaleRemoval: true,
+	})
+	for _, e := range rep.Errors {
+		fmt.Fprintf(out, "  warning: host surfaces: %s\n", e)
+	}
+	wrote := rep.GrokCommands.Added+rep.GrokCommands.Updated+rep.GrokCommands.Unchanged+
+		rep.GrokSkills.Added+rep.GrokSkills.Updated+rep.GrokSkills.Unchanged+
+		rep.GrokHub.Added+rep.GrokHub.Updated+rep.GrokHub.Unchanged > 0
+	if len(rep.Errors) > 0 && !wrote {
+		return
+	}
+	fmt.Fprintf(out, "  User plugin:  %s\n", compressHome(pluginRoot))
+	fmt.Fprintf(out, "  %s\n", shims.FormatApplyCounts("Command shims", rep.GrokCommands))
+	fmt.Fprintf(out, "  %s\n", shims.FormatApplyCounts("Skill shims", rep.GrokSkills))
+	fmt.Fprintf(out, "  %s\n", shims.FormatApplyCounts("Hub", rep.GrokHub))
+	if n := rep.RemovedTotal(); n > 0 {
+		fmt.Fprintf(out, "  warning: removed %d stale managed shim file(s)\n", n)
+	}
+}
+
+// Uninstall removes the server via `grok mcp remove` and deletes the
+// user-global plugin tree (H3). Idempotent.
 func (h *GrokHost) Uninstall(out io.Writer) error {
 	if out == nil {
 		out = io.Discard
 	}
 	if _, err := h.lookPath(); err != nil {
 		fmt.Fprintf(out, "`grok` not found on PATH — nothing to remove.\n")
-		return nil
-	}
-	if cmdOut, err := h.runner("mcp", "remove", grokServerName); err != nil {
-		// Most likely "not configured" — surface but do not fail the command.
+		// Still try to clean user plugin tree if HOME is set.
+	} else if cmdOut, err := h.runner("mcp", "remove", grokServerName); err != nil {
 		fmt.Fprintf(out, "grok mcp remove %s: %s\n", grokServerName, strings.TrimSpace(string(cmdOut)))
-		return nil
+	} else {
+		fmt.Fprintf(out, "vibe-palace removed from Grok MCP config.\n")
 	}
-	fmt.Fprintf(out, "vibe-palace removed from Grok.\n")
+	if err := shims.RemoveGrokUserPlugin(); err != nil {
+		fmt.Fprintf(out, "  warning: remove user plugin tree: %v\n", err)
+	} else if dir := shims.GrokUserPluginDir(); dir != "" {
+		fmt.Fprintf(out, "  User plugin tree removed: %s\n", compressHome(dir))
+	}
 	return nil
 }
 

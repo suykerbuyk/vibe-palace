@@ -34,7 +34,7 @@
     {
       "name": "vp_check",
       "mutating": false,
-      "schema_sha256": "be035f92869323fe650adab4a8d499036191a002d55b5f787b56315141e47792"
+      "schema_sha256": "4a4e2e0fe0cdd8c9b3a0b15da1a599d08991a119a5e0b6b9673b187064b0c34c"
     },
     {
       "name": "vp_cmd",

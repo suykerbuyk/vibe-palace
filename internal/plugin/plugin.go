@@ -4,14 +4,18 @@
 // Package plugin generates and registers vibe-palace as a Claude Code plugin
 // served from a local marketplace. Registering the vibe-palace MCP server this
 // way (rather than as a bare mcpServers entry) mirrors the vibe-vault plugin
-// and makes the vp_* tools and the /vpc-* command shims available in every
-// Claude Code session, not just when a project-local .mcp.json happens to be
-// present.
+// and makes the vp_* tools available in every Claude Code session, not just
+// when a project-local .mcp.json happens to be present. Slash-command surfaces
+// (vpc-*) are refreshed into the plugin package on install; until those files
+// ship, hosts still rely on project shims or MCP tool calls.
 package plugin
 
 import (
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/suykerbuyk/vibe-palace/internal/shims"
 )
 
 const (
@@ -123,9 +127,105 @@ func ClaudePluginsDir() string {
 	return filepath.Join(home, ".claude", "plugins")
 }
 
-// CacheInstallDir returns the Claude Code cache install directory for a version.
-func CacheInstallDir(version string) string {
-	return filepath.Join(ClaudePluginsDir(), "cache", MarketplaceName, pluginName, version)
+// CacheInstallDir returns the Claude Code cache install directory for a stamp.
+// Prefer SurfaceStamp(version, commit) over the frozen product BASE_VERSION so
+// each rebuild can land a fresh cache path (Phase 0.5 / C2).
+func CacheInstallDir(stamp string) string {
+	return filepath.Join(ClaudePluginsDir(), "cache", MarketplaceName, pluginName, stamp)
+}
+
+// ClaudeCacheParent is the directory holding per-stamp cache plugin trees.
+func ClaudeCacheParent() string {
+	return filepath.Join(ClaudePluginsDir(), "cache", MarketplaceName, pluginName)
+}
+
+// ClaudeOperativePluginRoot returns the cache plugin directory Claude Code is
+// most likely to load: the newest stamp dir under the cache that has managed
+// command shims. Empty when none are healthy. Health MUST probe this path (or
+// require it), not the marketplace source alone — Claude loads the cache copy
+// (review H2).
+func ClaudeOperativePluginRoot() string {
+	parent := ClaudeCacheParent()
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return ""
+	}
+	type cand struct {
+		path string
+		mod  int64
+	}
+	var best cand
+	for _, ent := range entries {
+		if !ent.IsDir() {
+			continue
+		}
+		root := filepath.Join(parent, ent.Name())
+		if !shims.UserSurfacesOK(filepath.Join(root, shims.PluginCommandsRel)) {
+			continue
+		}
+		info, err := ent.Info()
+		mod := int64(0)
+		if err == nil {
+			mod = info.ModTime().UnixNano()
+		}
+		if best.path == "" || mod >= best.mod {
+			best = cand{path: root, mod: mod}
+		}
+	}
+	return best.path
+}
+
+// ClaudeUserCommandsHealthy is true when the operative Claude cache copy has
+// managed vpc-* command shims.
+func ClaudeUserCommandsHealthy() bool {
+	return ClaudeOperativePluginRoot() != ""
+}
+
+// SurfaceStamp returns a filesystem-safe identity for the Claude plugin cache
+// directory and plugin.json version field. The product version string alone is
+// not a refresh key: Makefile stamps main.version to a frozen BASE_VERSION
+// (0.1.0), so re-installs would always target the same cache path. Prefer the
+// build commit (ldflags main.commit), which changes every make install.
+//
+// Forms: "<version>-<commit>" when both are usable; otherwise whichever is
+// usable; "dev" as last resort. Path separators and spaces are replaced.
+func SurfaceStamp(version, commit string) string {
+	version = sanitizeStampPart(version)
+	commit = sanitizeStampPart(commit)
+	switch {
+	case commit != "" && version != "":
+		return version + "-" + commit
+	case commit != "":
+		return commit
+	case version != "":
+		return version
+	default:
+		return "dev"
+	}
+}
+
+func sanitizeStampPart(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "unknown" || s == "." || s == ".." {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '/' || r == '\\' || r == 0:
+			b.WriteByte('-')
+		case r < 32 || r == 127:
+			// drop control bytes
+		default:
+			b.WriteRune(r)
+		}
+	}
+	out := b.String()
+	if out == "." || out == ".." {
+		return ""
+	}
+	return out
 }
 
 // KnownMarketplacesPath returns the path to known_marketplaces.json.

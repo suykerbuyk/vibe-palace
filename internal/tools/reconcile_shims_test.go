@@ -4,45 +4,44 @@
 package tools
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
-
-	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
-	"github.com/suykerbuyk/vibe-palace/internal/project"
 )
 
-// TestReconcileHostShims_Guard proves the cwd guard on the bootstrap
-// self-heal: the reconcile runs ONLY when the server's working directory
-// resolves to the same project the bootstrap is for. A mismatch (server
-// started outside the project tree) must decline silently rather than scatter
-// shim files into the wrong directory.
-func TestReconcileHostShims_Guard(t *testing.T) {
-	vault := t.TempDir()
-	resolver := vpctx.NewResolver(vault)
+// TestBootstrapContext_DoesNotWriteProjectShims pins Phase 4a / D4.
+//
+// The cwd MUST resolve to the bootstrapped project so a restored
+// reconcileHostShims guard (DetectProject(cwd)==slug) would have *passed* and
+// written shims. A bare temp dir fails that guard and makes the test pass for
+// the wrong reason (review H1 / serve-wiring-test-passes-for-the-wrong-reason).
+func TestBootstrapContext_DoesNotWriteProjectShims(t *testing.T) {
+	vault, resolver := testSetup(t)
 
-	// A project dir with a known-good slug basename, so DetectProject's
-	// basename fallback yields a deterministic slug regardless of the temp
-	// path's leaf name.
-	projectDir := filepath.Join(t.TempDir(), "guarded-project")
+	// Directory basename == project slug so DetectProject basename fallback
+	// matches even without a full git remote.
+	parent := t.TempDir()
+	projectDir := filepath.Join(parent, "test-proj")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// High-confidence marker naming the same slug.
+	cfg := "name = \"test-proj\"\n"
+	if err := os.WriteFile(filepath.Join(projectDir, ".vibe-palace.toml"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir(projectDir)
 
-	want, err := project.DetectProject(projectDir)
-	if err != nil {
-		t.Fatalf("DetectProject: %v", err)
+	tool := BootstrapContextTool(resolver, vault)
+	params := json.RawMessage(`{"project":"test-proj"}`)
+	if _, err := tool.Handler(context.Background(), params); err != nil {
+		t.Fatalf("bootstrap: %v", err)
 	}
 
-	// Matching project → the guard passes and the reconcile materializes the
-	// embedded command shims (fresh emit → non-empty report).
-	if rep := reconcileHostShims(resolver, want); rep.Empty() {
-		t.Errorf("guard should have run reconcile for matching project %q", want)
-	}
-
-	// Non-matching project → the guard declines before writing anything.
-	if rep := reconcileHostShims(resolver, want+"-different"); !rep.Empty() {
-		t.Errorf("guard must decline when cwd project != bootstrap project; got %+v", rep)
+	shimDir := filepath.Join(projectDir, ".claude", "commands")
+	if _, err := os.Stat(shimDir); !os.IsNotExist(err) {
+		t.Errorf("bootstrap must not create %s even when cwd IS the project (err=%v)", shimDir, err)
 	}
 }

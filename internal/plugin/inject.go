@@ -13,9 +13,14 @@ import (
 
 // InstallToCache writes plugin.json and .mcp.json into the Claude Code plugin
 // cache directory (belt-and-suspenders alongside the marketplace source).
+// stamp is the cache directory name and plugin.json version field — pass
+// SurfaceStamp(version, commit), not the frozen product version alone.
 // Returns the install path on success.
-func InstallToCache(version string) (string, error) {
-	installDir := CacheInstallDir(version)
+func InstallToCache(stamp string) (string, error) {
+	if stamp == "" {
+		stamp = "dev"
+	}
+	installDir := CacheInstallDir(stamp)
 	pluginMetaDir := filepath.Join(installDir, ".claude-plugin")
 
 	if err := os.MkdirAll(pluginMetaDir, 0o755); err != nil {
@@ -24,7 +29,7 @@ func InstallToCache(version string) (string, error) {
 
 	manifest := map[string]any{
 		"name":        pluginName,
-		"version":     version,
+		"version":     stamp,
 		"description": pluginDescription,
 		"author":      map[string]any{"name": "vibe-palace"},
 	}
@@ -91,7 +96,7 @@ func UnregisterKnownMarketplace() error {
 
 // RegisterInstalledPlugin adds or updates our entry in installed_plugins.json,
 // preserving the schema version field and all other plugin entries.
-func RegisterInstalledPlugin(installPath, version string) error {
+func RegisterInstalledPlugin(installPath, stamp string) error {
 	path := InstalledPluginsPath()
 
 	data, err := readJSONFile(path)
@@ -108,7 +113,7 @@ func RegisterInstalledPlugin(installPath, version string) error {
 		map[string]any{
 			"scope":        "user",
 			"installPath":  installPath,
-			"version":      version,
+			"version":      stamp,
 			"installedAt":  now,
 			"lastUpdated":  now,
 			"gitCommitSha": "",

@@ -62,6 +62,13 @@ func ResolveVaultPath(cwd string) (path string, source string, err error) {
 		}
 	}
 
+	return ResolveGlobalVaultPath()
+}
+
+// ResolveGlobalVaultPath returns the vault root from the global config only
+// (no cwd walk). Use this for machine-wide artifacts such as user-global host
+// surfaces so install does not depend on which directory the operator ran from.
+func ResolveGlobalVaultPath() (path string, source string, err error) {
 	cfgPath, cerr := VaultConfigFilePath()
 	if cerr != nil {
 		return "", "", fmt.Errorf("resolve config dir: %w", cerr)

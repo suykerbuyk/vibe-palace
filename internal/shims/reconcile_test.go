@@ -22,7 +22,7 @@ func TestReconcile_FreshEmit_ThenIdempotent(t *testing.T) {
 	resolver := vpctx.NewResolver(vault)
 
 	// --- Round 1: fresh emit ---
-	rep := Reconcile(projectRoot, resolver, "")
+	rep := Reconcile(projectRoot, resolver, "", ReconcileOptions{})
 	if len(rep.Errors) != 0 {
 		t.Fatalf("round 1 unexpected errors: %v", rep.Errors)
 	}
@@ -49,7 +49,7 @@ func TestReconcile_FreshEmit_ThenIdempotent(t *testing.T) {
 	}
 
 	// --- Round 2: idempotent — nothing added/updated, and nothing to report ---
-	rep2 := Reconcile(projectRoot, resolver, "")
+	rep2 := Reconcile(projectRoot, resolver, "", ReconcileOptions{})
 	if !rep2.Empty() {
 		t.Errorf("round 2 must be a silent no-op; got %+v", rep2)
 	}
@@ -83,7 +83,7 @@ func TestReconcile_LeavesCustomAndStaleUntouched(t *testing.T) {
 		t.Fatalf("seed stale shim: %v", err)
 	}
 
-	rep := Reconcile(projectRoot, resolver, "")
+	rep := Reconcile(projectRoot, resolver, "", ReconcileOptions{})
 	if len(rep.Errors) != 0 {
 		t.Fatalf("unexpected errors: %v", rep.Errors)
 	}
@@ -109,10 +109,10 @@ func TestReconcile_LeavesCustomAndStaleUntouched(t *testing.T) {
 
 // TestReconcile_NilAndEmptyInputs guards the cheap early return.
 func TestReconcile_NilAndEmptyInputs(t *testing.T) {
-	if got := Reconcile("", vpctx.NewResolver(t.TempDir()), ""); !got.Empty() {
+	if got := Reconcile("", vpctx.NewResolver(t.TempDir()), "", ReconcileOptions{}); !got.Empty() {
 		t.Errorf("empty projectRoot must be a no-op; got %+v", got)
 	}
-	if got := Reconcile(t.TempDir(), nil, ""); !got.Empty() {
+	if got := Reconcile(t.TempDir(), nil, "", ReconcileOptions{}); !got.Empty() {
 		t.Errorf("nil resolver must be a no-op; got %+v", got)
 	}
 }

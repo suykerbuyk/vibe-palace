@@ -19,9 +19,13 @@ import (
 //	    .claude-plugin/plugin.json                 ← plugin manifest
 //	    .mcp.json                                  ← MCP server config
 //
-// Returns the marketplace root path on success. See mcpServerEntry for why the
-// MCP command is PATH-relative.
-func Generate(version string) (string, error) {
+// stamp is written into plugin.json as "version" (use SurfaceStamp). Returns
+// the marketplace root path on success. See MCPServerEntry for why the MCP
+// command is PATH-relative.
+func Generate(stamp string) (string, error) {
+	if stamp == "" {
+		stamp = "dev"
+	}
 	mktDir := MarketplaceDir()
 	plugDir := PluginDir()
 
@@ -53,7 +57,7 @@ func Generate(version string) (string, error) {
 
 	plugin := map[string]any{
 		"name":        pluginName,
-		"version":     version,
+		"version":     stamp,
 		"description": pluginDescription,
 		"author":      map[string]any{"name": "vibe-palace"},
 	}

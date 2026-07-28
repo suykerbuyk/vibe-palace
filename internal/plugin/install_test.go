@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -119,7 +120,9 @@ func TestInstallClaudePlugin_BacksUp(t *testing.T) {
 	}
 }
 
-func TestInstallClaudePlugin_Idempotent(t *testing.T) {
+func TestInstallClaudePlugin_IdempotentSettings(t *testing.T) {
+	// Second install must not rewrite settings.json when already enabled (C1:
+	// only enablement is gated). Cache/marketplace files still refresh.
 	isolateWithClaude(t)
 	if err := InstallClaudePlugin("1.0.0", io.Discard); err != nil {
 		t.Fatalf("install 1: %v", err)
@@ -136,7 +139,62 @@ func TestInstallClaudePlugin_Idempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(before) != string(after) {
-		t.Error("second install mutated settings.json (not idempotent)")
+		t.Error("second install mutated settings.json (enablement must stay gated)")
+	}
+}
+
+func TestInstallClaudePlugin_RefreshWhenAlreadyEnabled(t *testing.T) {
+	// C1: already-enabled host still gets Generate + InstallToCache + register.
+	// C2: a new stamp lands a new cache dir and prunes the old one.
+	isolateWithClaude(t)
+	if err := InstallClaudePlugin("stamp-a", io.Discard); err != nil {
+		t.Fatalf("install stamp-a: %v", err)
+	}
+	oldCache := CacheInstallDir("stamp-a")
+	if _, err := os.Stat(oldCache); err != nil {
+		t.Fatalf("stamp-a cache missing: %v", err)
+	}
+
+	// Poison marketplace MCP config so a no-op refresh would leave it wrong.
+	poison := []byte(`{"poisoned":true}` + "\n")
+	if err := os.WriteFile(MCPConfigPath(), poison, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf strings.Builder
+	if err := InstallClaudePlugin("stamp-b", &buf); err != nil {
+		t.Fatalf("install stamp-b: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "refreshed") {
+		t.Errorf("expected refresh message, got %q", out)
+	}
+	if _, err := os.Stat(CacheInstallDir("stamp-b")); err != nil {
+		t.Errorf("stamp-b cache missing after refresh: %v", err)
+	}
+	if _, err := os.Stat(oldCache); !os.IsNotExist(err) {
+		t.Errorf("stamp-a cache still present after prune: %v", err)
+	}
+	// Generate rewrote marketplace MCP config (no longer poisoned).
+	raw, err := os.ReadFile(MCPConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "poisoned") {
+		t.Error("marketplace .mcp.json still poisoned — Generate did not refresh")
+	}
+	// installed_plugins points at the new stamp.
+	ip := readJSONMap(t, InstalledPluginsPath())
+	entries, ok := ip[QualifiedName].([]any)
+	if !ok || len(entries) == 0 {
+		t.Fatalf("installed_plugins missing %q: %v", QualifiedName, ip[QualifiedName])
+	}
+	entry := entries[0].(map[string]any)
+	if entry["version"] != "stamp-b" {
+		t.Errorf("installed version = %v, want stamp-b", entry["version"])
+	}
+	if entry["installPath"] != CacheInstallDir("stamp-b") {
+		t.Errorf("installPath = %v, want %s", entry["installPath"], CacheInstallDir("stamp-b"))
 	}
 }
 

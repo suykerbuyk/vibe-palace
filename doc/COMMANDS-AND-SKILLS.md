@@ -431,8 +431,8 @@ How users trigger commands depends on their frontend:
 
 | Frontend | Invocation |
 |----------|-----------|
-| Claude Code | `/vpc-<name>` slash shims in `.claude/commands/` (e.g. `/vpc-restart`) |
-| Grok Build | Native `/vpc-<name>` slash commands via `.grok/plugins/vibe-palace/commands/vpc-<name>.md` (first-class project plugin commands); a `/vpc` skill hub is also emitted under `.grok/skills/vpc/` for the dispatcher + usage instructions |
+| Claude Code | **Preferred:** user-global plugin from `vp mcp install --claude-plugin`. Claude Code loads the **cache** copy and typically offers **`/vibe-palace:vpc-<name>`** (namespaced). Bare `/vpc-*` is the legacy **project** tree (`.claude/commands/`), still emitted by `vp init` when the Claude cache surface is **not** healthy. |
+| Grok Build | **Preferred:** user-global `~/.grok/plugins/vibe-palace/commands/vpc-*.md` (+ hub under `…/skills/vpc/`) from `vp mcp install --grok` (often bare `/vpc-*` when no collision). Legacy: project `.grok/plugins/…` still emitted by `vp init` when the Grok user plugin is **not** healthy. Note: `GrokPresent` remains host-wide (`~/.grok` or `grok` on PATH), so fallback project emit can still touch every repo until that host is migrated. |
 | Cursor | Rules file maps keywords to `vp_cmd` calls |
 | Zed | MCP-registered host: `internal/mcphost` writes a `context_servers.vibe-palace` entry in Zed settings; no shim files — commands/skills are reached via the `AGENTS.md` managed block instructing `vp_cmd` / `vp_skill` calls |
 | Custom MCP client | Direct `vp_cmd` / `vp_skill` tool calls |

@@ -314,6 +314,9 @@ func gatherCheckResults() []check.Result {
 	// Claude/Grok/Zed, reporting whether vibe-palace is registered). ---
 	results = append(results, check.CheckMCPHosts()...)
 
+	// --- User-global slash surfaces (advisory — vp mcp install emit). ---
+	results = append(results, check.CheckHostSurfaces()...)
+
 	// --- Surface compatibility — last check, mirroring the runtime gate so
 	// the binary-vs-vault verdict reads as the closing line of the report. ---
 	surfaceVault := ""

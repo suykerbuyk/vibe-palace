@@ -10,29 +10,64 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/suykerbuyk/vibe-palace/internal/shims"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 // InstallClaudePlugin deploys vibe-palace as a Claude Code plugin: it generates
-// the marketplace files, registers the marketplace + enabled plugin in
-// settings.json, and mirrors the manifests into Claude Code's plugin cache and
-// registry files (belt-and-suspenders). It does NOT touch any existing
-// mcpServers or hook entries — they coexist safely.
+// the marketplace files, mirrors them into Claude Code's plugin cache and
+// registries, and ensures settings.json enables the marketplace plugin. It
+// does NOT touch any existing mcpServers or hook entries — they coexist safely.
 //
-// Idempotent: when the plugin is already configured in settings.json the
-// function reports that and returns without rewriting. Progress is written to
-// out (pass os.Stderr from a CLI; nil discards).
-func InstallClaudePlugin(version string, out io.Writer) error {
+// stamp is the cache/plugin identity (prefer SurfaceStamp(version, commit)).
+// Progress is written to out (pass os.Stderr from a CLI; nil discards).
+//
+// Refresh vs first-enable (Phase 0.5 / C1):
+//   - Generate, InstallToCache, and registry writes ALWAYS run so a re-install
+//     after `make install` refreshes on-disk plugin files for hosts that are
+//     already configured.
+//   - settings.json enablement is gated: when the plugin is already enabled we
+//     skip mutating settings (no backup, no rewrite) and report a refresh.
+func InstallClaudePlugin(stamp string, out io.Writer) error {
 	if out == nil {
 		out = io.Discard
 	}
 	if !claudeDetected() {
 		return fmt.Errorf("~/.claude/ not found — Claude Code not detected")
 	}
+	if stamp == "" {
+		stamp = "dev"
+	}
 
-	mktDir, err := Generate(version)
+	mktDir, err := Generate(stamp)
 	if err != nil {
 		return fmt.Errorf("generate plugin: %w", err)
 	}
+
+	// Always mirror into Claude Code's internal cache + registries so an
+	// already-enabled host still picks up refreshed plugin bytes (C1).
+	var cacheDetail string
+	installPath, cacheErr := InstallToCache(stamp)
+	if cacheErr != nil {
+		fmt.Fprintf(out, "  warning: cache install: %v\n", cacheErr)
+		cacheDetail = "(cache install failed)"
+		installPath = ""
+	} else {
+		if err := pruneOtherCacheStamps(stamp); err != nil {
+			fmt.Fprintf(out, "  warning: prune old cache stamps: %v\n", err)
+		}
+		if err := RegisterKnownMarketplace(mktDir); err != nil {
+			fmt.Fprintf(out, "  warning: known_marketplaces: %v\n", err)
+		}
+		if err := RegisterInstalledPlugin(installPath, stamp); err != nil {
+			fmt.Fprintf(out, "  warning: installed_plugins: %v\n", err)
+		}
+		cacheDetail = compressHome(installPath)
+	}
+
+	// Phase 2: thin command/skill shims into the plugin package (Plan/Apply).
+	emitClaudeSurfaces(out, PluginDir(), installPath)
 
 	path, err := settingsPath()
 	if err != nil {
@@ -45,7 +80,12 @@ func InstallClaudePlugin(version string, out io.Writer) error {
 	}
 
 	if isPluginInstalled(settings) {
-		fmt.Fprintf(out, "vibe-palace plugin already configured in %s\n", compressHome(path))
+		// Refresh path: files and registries updated above; settings untouched.
+		fmt.Fprintf(out, "vibe-palace plugin refreshed (already enabled in %s):\n", compressHome(path))
+		fmt.Fprintf(out, "  Plugin files: %s\n", compressHome(mktDir))
+		fmt.Fprintf(out, "  Plugin cache: %s\n", cacheDetail)
+		fmt.Fprintf(out, "  Stamp:        %s\n", stamp)
+		fmt.Fprintf(out, "Restart Claude Code if it was already running.\n")
 		return nil
 	}
 
@@ -60,27 +100,64 @@ func InstallClaudePlugin(version string, out io.Writer) error {
 		return err
 	}
 
-	// Mirror into Claude Code's internal cache + registries (best effort).
-	var cacheDetail string
-	installPath, cacheErr := InstallToCache(version)
-	if cacheErr != nil {
-		fmt.Fprintf(out, "  warning: cache install: %v\n", cacheErr)
-		cacheDetail = "(cache install failed)"
-	} else {
-		if err := RegisterKnownMarketplace(mktDir); err != nil {
-			fmt.Fprintf(out, "  warning: known_marketplaces: %v\n", err)
-		}
-		if err := RegisterInstalledPlugin(installPath, version); err != nil {
-			fmt.Fprintf(out, "  warning: installed_plugins: %v\n", err)
-		}
-		cacheDetail = compressHome(installPath)
-	}
-
 	fmt.Fprintf(out, "vibe-palace plugin installed:\n")
 	fmt.Fprintf(out, "  Plugin files: %s\n", compressHome(mktDir))
 	fmt.Fprintf(out, "  Plugin cache: %s\n", cacheDetail)
 	fmt.Fprintf(out, "  Settings:     %s\n", compressHome(path))
+	fmt.Fprintf(out, "  Stamp:        %s\n", stamp)
 	fmt.Fprintf(out, "Restart Claude Code to activate.\n")
+	return nil
+}
+
+// emitClaudeSurfaces writes vpc-* / vps-* shims into the marketplace plugin
+// and optional cache copy. Best-effort: failures are printed, not fatal.
+// Vault root comes from global config only (machine-wide menu; M1).
+func emitClaudeSurfaces(out io.Writer, marketplacePlugin, cachePlugin string) {
+	vaultRoot, vaultSrc, _ := storage.ResolveGlobalVaultPath()
+	if vaultSrc != "" {
+		fmt.Fprintf(out, "  Vault for menu: %s (%s)\n", compressHome(vaultRoot), vaultSrc)
+	}
+	rep := shims.InstallGlobalSurfaces(shims.GlobalInstallOptions{
+		VaultRoot:         vaultRoot,
+		VaultSource:       vaultSrc,
+		ClaudePluginRoot:  marketplacePlugin,
+		ClaudeCacheRoot:   cachePlugin,
+		AllowStaleRemoval: true,
+	})
+	for _, e := range rep.Errors {
+		fmt.Fprintf(out, "  warning: host surfaces: %s\n", e)
+	}
+	// Prefer cache counts when present (operative copy); else marketplace.
+	cmd, skl := rep.ClaudeCacheCmd, rep.ClaudeCacheSkl
+	if cmd.Added+cmd.Updated+cmd.Unchanged+cmd.Removed == 0 {
+		cmd, skl = rep.ClaudeCommands, rep.ClaudeSkills
+	}
+	fmt.Fprintf(out, "  %s\n", shims.FormatApplyCounts("Command shims", cmd))
+	fmt.Fprintf(out, "  %s\n", shims.FormatApplyCounts("Skill shims", skl))
+	if n := rep.RemovedTotal(); n > 0 {
+		fmt.Fprintf(out, "  warning: removed %d stale managed shim file(s) from user-global trees\n", n)
+	}
+}
+
+// pruneOtherCacheStamps removes sibling stamp directories under the Claude
+// cache plugin tree, keeping only current. Best-effort: missing parent is fine.
+func pruneOtherCacheStamps(keep string) error {
+	parent := filepath.Join(ClaudePluginsDir(), "cache", MarketplaceName, pluginName)
+	entries, err := os.ReadDir(parent)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, ent := range entries {
+		if !ent.IsDir() || ent.Name() == keep {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(parent, ent.Name())); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

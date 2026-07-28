@@ -10,6 +10,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/mcphost"
+	"github.com/suykerbuyk/vibe-palace/internal/plugin"
 )
 
 // hasFlag reports whether name appears in args.
@@ -34,12 +35,12 @@ func cmdMCPInstall(info cli.BuildInfo) *cli.Command {
 		Name:     "mcp install",
 		Synopsis: "vp mcp install [--claude-plugin] [--grok] [--zed]",
 		Description: "Register the vibe-palace MCP server with one or more AI coding hosts, " +
-			"making the vp_* tools (and the /vpc-* shims) available in every session. " +
-			"Pass one or more host flags: --claude-plugin (Claude Code local " +
-			"plugin/marketplace), --grok (xAI Grok Build via `grok mcp add`), --zed " +
-			"(Zed editor context_servers). The same MCP server backs every host; only " +
-			"the registration differs. Each writer is idempotent and backs up any file " +
-			"it edits. Restart the host to activate.",
+			"making the vp_* tools available in every session. Re-running --claude-plugin " +
+			"refreshes on-disk plugin files even when already enabled (cache stamp uses " +
+			"build commit, not the frozen product version). Pass one or more host flags: " +
+			"--claude-plugin (Claude Code local plugin/marketplace), --grok (xAI Grok Build " +
+			"via `grok mcp add`), --zed (Zed editor context_servers). The same MCP server " +
+			"backs every host; only the registration differs. Restart the host to activate.",
 		Examples: []cli.Example{
 			{Cmd: "vp mcp install --claude-plugin", Comment: "Register the Claude Code plugin"},
 			{Cmd: "vp mcp install --grok", Comment: "Register with Grok Build via grok mcp add"},
@@ -53,9 +54,12 @@ func cmdMCPInstall(info cli.BuildInfo) *cli.Command {
 				return cli.ExitUser
 			}
 			cwd, _ := os.Getwd()
+			// SurfaceStamp prefers commit over frozen BASE_VERSION so Claude's
+			// plugin cache path actually moves on rebuild (Phase 0.5 / C2).
+			stamp := plugin.SurfaceStamp(info.Version, info.Commit)
 			failed := false
 			for _, h := range hosts {
-				if err := h.Install(info.Version, cwd, os.Stderr); err != nil {
+				if err := h.Install(stamp, cwd, os.Stderr); err != nil {
 					fmt.Fprintf(os.Stderr, "vp mcp install --%s: %v\n", h.Name(), err)
 					failed = true
 				}

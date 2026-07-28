@@ -32,34 +32,37 @@ type SkillChange struct {
 // are reported as CustomChange. Files whose names don't match the prefix
 // are ignored (other tools' territory). Stale files (marker present,
 // name no longer in items) are reported as Stale.
+//
+// Prefer PlanSkillsAt when the skills parent is not project-relative
+// (user-global plugin package).
 func PlanSkills(target TargetKind, items []SkillItem, projectRoot string) ([]SkillChange, error) {
 	if target != ClaudeSkill && target != CursorRule && target != GrokSkill {
 		return nil, fmt.Errorf("PlanSkills: unsupported target %s", target)
 	}
+	var rootDir string
+	switch target {
+	case ClaudeSkill:
+		rootDir = filepath.Join(projectRoot, ClaudeSkillsDir)
+	case GrokSkill:
+		rootDir = filepath.Join(projectRoot, GrokSkillsDir)
+	default:
+		rootDir = filepath.Join(projectRoot, CursorRulesDir)
+	}
+	return planSkillsAt(target, items, rootDir, func(name string) string {
+		return TargetFile(target, projectRoot, name)
+	})
+}
 
+// planSkillsAt is the layout-parameterized core shared by PlanSkills and
+// PlanSkillsAt. rootDir is the absolute skills/rules parent to scan.
+// pathFor names the absolute file path for a skill name under this layout.
+func planSkillsAt(target TargetKind, items []SkillItem, rootDir string, pathFor func(name string) string) ([]SkillChange, error) {
 	desired := make(map[string]SkillItem, len(items))
 	for _, it := range items {
 		desired[it.Name] = it
 	}
 
-	var (
-		rootDir string // the directory to scan for drift
-		changes []SkillChange
-	)
-
-	switch target {
-	case ClaudeSkill:
-		// .claude/skills/vps-<name>/SKILL.md — each skill owns its own
-		// subdirectory; scan for subdirs matching the prefix.
-		rootDir = filepath.Join(projectRoot, ClaudeSkillsDir)
-	case GrokSkill:
-		// .grok/skills/vps-<name>/SKILL.md — same subdir-per-skill shape as
-		// ClaudeSkill. The /vpc hub dir lacks the vps- prefix, so the prefix
-		// filter below ignores it (it is owned by PlanGrokHub, never Stale).
-		rootDir = filepath.Join(projectRoot, GrokSkillsDir)
-	default:
-		rootDir = filepath.Join(projectRoot, CursorRulesDir)
-	}
+	var changes []SkillChange
 
 	// On-disk set: name -> absolute file path.
 	onDisk := map[string]string{}
@@ -120,7 +123,7 @@ func PlanSkills(target TargetKind, items []SkillItem, projectRoot string) ([]Ski
 
 	// New / Modified / Unchanged for every desired skill.
 	for _, it := range items {
-		path := TargetFile(target, projectRoot, it.Name)
+		path := pathFor(it.Name)
 		existing, ok := onDisk[it.Name]
 		if !ok {
 			changes = append(changes, SkillChange{
@@ -172,28 +175,33 @@ func PlanSkills(target TargetKind, items []SkillItem, projectRoot string) ([]Ski
 // flags it Stale); this dedicated planner owns it instead. The returned
 // change rides ApplySkills unchanged: New/Modified flow through WireSkill →
 // RenderSkill → renderGrokHub, UnchangedChange and CustomChange are no-ops.
+//
+// Prefer PlanGrokHubAt when the skills parent is not project-relative.
 func PlanGrokHub(projectRoot string) (SkillChange, error) {
-	item := GrokHubItem()
-	path := TargetFile(GrokSkill, projectRoot, item.Name)
+	return PlanGrokHubAt(filepath.Join(projectRoot, GrokSkillsDir))
+}
+
+// planOneSkillFile classifies a single skill file path (hub or one-off).
+func planOneSkillFile(target TargetKind, item SkillItem, path string) (SkillChange, error) {
 	scan, err := ScanShim(path)
 	if err != nil {
 		return SkillChange{}, fmt.Errorf("scan %s: %w", path, err)
 	}
-	expected := ExpectedSkillSha(GrokSkill, item)
+	expected := ExpectedSkillSha(target, item)
 	switch {
 	case !scan.Exists:
-		return SkillChange{Kind: New, Target: GrokSkill, Name: item.Name, Path: path, Item: item}, nil
+		return SkillChange{Kind: New, Target: target, Name: item.Name, Path: path, Item: item}, nil
 	case !scan.HasMarker:
 		// A marker-less SKILL.md the user owns — surface, never overwrite.
-		return SkillChange{Kind: CustomChange, Target: GrokSkill, Name: item.Name, Path: path}, nil
+		return SkillChange{Kind: CustomChange, Target: target, Name: item.Name, Path: path}, nil
 	case scan.Sha == expected && scan.Version == skillShimVersion:
 		return SkillChange{
-			Kind: UnchangedChange, Target: GrokSkill, Name: item.Name,
+			Kind: UnchangedChange, Target: target, Name: item.Name,
 			Path: path, Item: item, PrevSha: scan.Sha,
 		}, nil
 	default:
 		return SkillChange{
-			Kind: Modified, Target: GrokSkill, Name: item.Name,
+			Kind: Modified, Target: target, Name: item.Name,
 			Path: path, Item: item, PrevSha: scan.Sha,
 		}, nil
 	}

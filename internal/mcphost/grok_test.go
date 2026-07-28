@@ -32,8 +32,12 @@ func fakeGrok(present bool, out string, runErr error) (*GrokHost, *[][]string) {
 }
 
 func TestGrokInstall_ArgvConstruction(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
 	dir := t.TempDir()
 	h, calls := fakeGrok(true, "", nil)
+	h.homeDir = func() (string, error) { return home, nil }
 
 	if err := h.Install("v1", dir, nil); err != nil {
 		t.Fatalf("install: %v", err)
@@ -62,6 +66,59 @@ func TestGrokInstall_ArgvConstruction(t *testing.T) {
 	// AGENTS.md ensured.
 	if _, err := os.Stat(filepath.Join(dir, "AGENTS.md")); err != nil {
 		t.Errorf("AGENTS.md not created: %v", err)
+	}
+}
+
+func TestGrokInstall_EmitsUserPluginSurfaces(t *testing.T) {
+	// H4: host wiring, not just InstallGlobalSurfaces in isolation.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	dir := t.TempDir()
+	h, _ := fakeGrok(true, "", nil)
+	h.homeDir = func() (string, error) { return home, nil }
+
+	var buf strings.Builder
+	if err := h.Install("v1", dir, &buf); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	cmdDir := filepath.Join(home, ".grok", "plugins", "vibe-palace", "commands")
+	entries, err := os.ReadDir(cmdDir)
+	if err != nil {
+		t.Fatalf("user plugin commands missing: %v\nout=%s", err, buf.String())
+	}
+	n := 0
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "vpc-") && strings.HasSuffix(e.Name(), ".md") {
+			n++
+		}
+	}
+	if n == 0 {
+		t.Fatalf("expected vpc-*.md under %s; out=%s", cmdDir, buf.String())
+	}
+	hub := filepath.Join(home, ".grok", "plugins", "vibe-palace", "skills", "vpc", "SKILL.md")
+	if _, err := os.Stat(hub); err != nil {
+		t.Errorf("hub missing: %v", err)
+	}
+}
+
+func TestGrokUninstall_RemovesUserPluginTree(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	pluginDir := filepath.Join(home, ".grok", "plugins", "vibe-palace", "commands")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "vpc-restart.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h, _ := fakeGrok(true, "", nil)
+	h.homeDir = func() (string, error) { return home, nil }
+	if err := h.Uninstall(nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".grok", "plugins", "vibe-palace")); !os.IsNotExist(err) {
+		t.Errorf("user plugin tree should be removed; err=%v", err)
 	}
 }
 
