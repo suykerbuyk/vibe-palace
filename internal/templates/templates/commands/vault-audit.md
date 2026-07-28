@@ -75,9 +75,13 @@ The dimensions catch what we already know is broken. **Go looking for what nobod
 written a check for yet.** Some angles that have paid off before:
 
 - **A capability built, and nothing invokes it.** This project's single most repeated root
-  cause. The Zed adapter, `vp check`, `vp_health`, the MCP-path claim sentinel — all built,
-  all reaching nobody. `internal/sourceaudit` now catches the source-level cases; ask what
-  it *cannot* see.
+  cause. The Zed adapter, `vp_health`, the MCP-path claim sentinel — all built, all reaching
+  nobody. `vp check` is the specimen that got **closed**: its suite reached no agent on any
+  host for months, until `vp_check` exposed it over MCP and `restart.md` and `wrap.md` were
+  made to actually call it, pinned by a regression test so a later edit cannot silently drop
+  the call. Note the shape of that fix — the diagnosis was cheap and years old; the *delivery*
+  was the work, and a second MCP wrapper would not have been it.
+  `internal/sourceaudit` now catches the source-level cases; ask what it *cannot* see.
 - **A field declared and never assigned.** `note_path` was empty on every note ever
   captured, for six months, with a green suite.
 - **A number in a document that nothing verifies.** Counts rot. Find one and check it.

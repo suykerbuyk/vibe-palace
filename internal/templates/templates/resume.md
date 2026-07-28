@@ -24,8 +24,12 @@ project: {{PROJECT}}
                     it re-derives it from a tool call, at no cost.
      no marker      LIVE STATE. Nobody has ruled on this section yet. Absence is NOT
                     a value, and silence is NOT consent to drop: the section stays
-                    live until someone decides otherwise, and
-                    `vp check --check pin-coverage` names it by heading until they do.
+                    live until someone decides otherwise, and the `pin-coverage`
+                    check names it by heading until they do. Reach that check with
+                    the `vp_check` MCP tool (selector `pin-coverage`) — that is the
+                    host-agnostic form, and the only one available to an agent
+                    without a shell; `vp check --check pin-coverage` is the CLI
+                    equivalent where one is.
 
      Pin ONLY what an agent must not act without — the rules that stop it corrupting
      the vault. Narrative, history and status are NOT that, and pinning them defeats

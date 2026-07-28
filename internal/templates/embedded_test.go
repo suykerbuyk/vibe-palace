@@ -213,11 +213,21 @@ func TestEmbeddedCommands_CheckSuiteDelivery(t *testing.T) {
 			t.Fatalf("embedded resource %q missing", rel)
 		}
 
-		// 1. Present at all.
-		callIdx := strings.Index(content, "vp_check")
-		if callIdx < 0 {
-			t.Errorf("%s: never invokes vp_check — the diagnostic suite reaches "+
+		// 1. Present at all — and present as an INVOCATION. The anchor is the
+		// full call literal, never a bare "vp_check" occurrence: this whole
+		// task exists because a MENTION of a capability reads exactly like a
+		// use of one, and an anchor that accepts prose would let the ordering
+		// and no-halt assertions below key off a sentence that merely names
+		// the tool while the real call sits somewhere else, or nowhere.
+		if !strings.Contains(content, "vp_check") {
+			t.Errorf("%s: never names vp_check — the diagnostic suite reaches "+
 				"no agent from this template", rel)
+			continue
+		}
+		callIdx := strings.Index(content, selectors)
+		if callIdx < 0 {
+			t.Errorf("%s: names vp_check but never invokes it with the explicit "+
+				"selector list %s — a mention is not a call", rel, selectors)
 			continue
 		}
 		if strings.Contains(content, "vp_check_resume_refs") {
@@ -234,18 +244,12 @@ func TestEmbeddedCommands_CheckSuiteDelivery(t *testing.T) {
 				"(callIdx=%d step2Idx=%d)", rel, callIdx, step2Idx)
 		}
 
-		// 3. The block itself: explicit selectors, and info is reported
-		// rather than halted on. Scope to the invocation's own section so a
-		// nearby halt-on-"fail" preflight cannot pass or fail it by accident.
+		// 3. The block itself: info is reported rather than halted on. Scope
+		// to the invocation's own section so a nearby halt-on-"fail" preflight
+		// cannot pass or fail it by accident.
 		block := content[callIdx:]
 		if end := strings.Index(block, "\n#"); end >= 0 {
 			block = block[:end]
-		}
-		if !strings.Contains(block, selectors) {
-			t.Errorf("%s: vp_check block must pass exactly %s — omitting the "+
-				"argument (or adding `surface`) re-runs the preflight scan and "+
-				"puts the one fail-capable row into an advisory result",
-				rel, selectors)
 		}
 		for _, want := range []string{
 			`"info"`,   // the verdict the block must address by name
@@ -261,6 +265,54 @@ func TestEmbeddedCommands_CheckSuiteDelivery(t *testing.T) {
 				"Info-never-Fail, and halting on info stops every vault with a "+
 				"pin-coverage finding", rel)
 		}
+	}
+
+	// The epic-orchestrator skill's rollout list is the third delivery site,
+	// and it is pinned here for the same reason as the two above: an unpinned
+	// delivery site is how vp_check_resume_refs died. It is NOT folded into
+	// the loop, because the ordering property does not exist here — a rollout
+	// checklist has no first-vault-mutating-step boundary to sit before, and
+	// asserting one would either be meaningless or force the shared contract
+	// to weaken for the two templates where it IS meaningful. Presence,
+	// selector list and no-halt-on-info are the properties that survive the
+	// move from a gated command to a checklist, so those are what is pinned.
+	const skill = "skills/epic-orchestrator/SKILL.md"
+	content, ok := body[skill]
+	if !ok {
+		t.Fatalf("embedded resource %q missing", skill)
+	}
+	if !strings.Contains(content, "vp_check") {
+		t.Fatalf("%s: rollout step 2 never names vp_check — it hands the agent "+
+			"a shell command instead, which no Grok or Zed host can run", skill)
+	}
+	// Anchored on the call, not on the tool name: this file also DISCUSSES
+	// vp_check in prose (the "do not port the CLI drift row to it" warning),
+	// and prose that names a tool is exactly what this pin must not accept as
+	// delivery.
+	callIdx := strings.Index(content, selectors)
+	if callIdx < 0 {
+		t.Fatalf("%s: rollout step 2 mentions vp_check but never calls it with "+
+			"the explicit selector list %s", skill, selectors)
+	}
+	block := content[callIdx:]
+	if end := strings.Index(block, "\n#"); end >= 0 {
+		block = block[:end]
+	}
+	if !strings.Contains(block, `"info"`) || !strings.Contains(block, "continue") {
+		t.Errorf("%s: vp_check step must say an \"info\" verdict is reported and "+
+			"the rollout continues", skill)
+	}
+	if strings.Contains(strings.ToLower(block), "halt") {
+		t.Errorf("%s: vp_check step instructs a halt on an Info-never-Fail check", skill)
+	}
+	// The CLI `vp check` in the same step is NOT a leftover to be "ported".
+	// The Templates/ drift row it reports comes from a reconciler the CLI runs
+	// directly (cmd/vp/cmd_check.go, reconcile.NewTemplateTree) and is not in
+	// check.Producers, so no MCP tool reports it. Pin that both survive: drop
+	// the CLI call and the rollout silently stops verifying template drift.
+	if !strings.Contains(content, "vp check") {
+		t.Errorf("%s: rollout step 2 must keep the CLI `vp check` — the Templates/ "+
+			"drift row is CLI-only and vp_check cannot substitute for it", skill)
 	}
 }
 
