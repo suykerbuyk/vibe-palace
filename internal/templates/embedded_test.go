@@ -516,3 +516,49 @@ func TestFS_ContainsTemplatesRoot(t *testing.T) {
 		t.Fatal("templates/ is empty in exported FS")
 	}
 }
+
+// TestEmbeddedCommands_InlineArchiveDelivery pins that wrap + capture name the
+// hook-less capture path: transcript (content for friction + archive) and
+// archive_transcript:true (force flag / model-facing documentation that Claude
+// no-ops when derivation works). Without this pin a later edit can drop both
+// params, L0 dies, and every unit test still passes — the same delivery failure
+// mode CheckSuiteDelivery exists to catch for vp_check.
+func TestEmbeddedCommands_InlineArchiveDelivery(t *testing.T) {
+	resources, err := WalkEmbedded()
+	if err != nil {
+		t.Fatalf("WalkEmbedded returned error: %v", err)
+	}
+	body := make(map[string]string)
+	for _, r := range resources {
+		body[r.RelPath] = string(r.Bytes)
+	}
+
+	// Pin the param names as invocation-shape anchors inside the capture-session
+	// call block — not a prose mention of "archive" somewhere else in the file.
+	for _, rel := range []string{"commands/wrap.md", "commands/capture.md"} {
+		content, ok := body[rel]
+		if !ok {
+			t.Fatalf("embedded resource %q missing", rel)
+		}
+		if !strings.Contains(content, "vp_capture_session") {
+			t.Errorf("%s: never names vp_capture_session", rel)
+			continue
+		}
+		// Scope to the capture-session invocation section so a stray prose
+		// mention elsewhere cannot satisfy the pin.
+		callIdx := strings.Index(content, "vp_capture_session")
+		block := content[callIdx:]
+		if end := strings.Index(block, "\n## "); end >= 0 {
+			block = block[:end]
+		}
+		for _, want := range []string{
+			"**transcript**",
+			"**archive_transcript**",
+			"true",
+		} {
+			if !strings.Contains(block, want) {
+				t.Errorf("%s: vp_capture_session block must name %q for hook-less durable capture", rel, want)
+			}
+		}
+	}
+}

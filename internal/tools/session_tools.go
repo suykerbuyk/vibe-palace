@@ -100,6 +100,48 @@ func resolveCaptureHost(ctx context.Context, clientInfo json.RawMessage) (host, 
 	}
 }
 
+// isHooklessClient reports whether host names a known non-Claude MCP client
+// that has no SessionEnd hook and therefore needs inline transcript archive
+// for durable capture. Match is case-insensitive substring / exact against a
+// closed allow-list (grok, xai, zed). Claude-family names never match — empty
+// host session id on Claude is a derivation-miss, not hook-lessness, and
+// auto-inlining there dual-notes against SessionEnd. Unknown / declared-only
+// hosts are not auto-on either (declared is spoofable; unknown is
+// Claude-miss-shaped).
+func isHooklessClient(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	if h == "" {
+		return false
+	}
+	// Defensive: never auto-treat anything Claude-shaped as hook-less even if
+	// a future allow-list entry accidentally overlaps.
+	if strings.Contains(h, "claude") {
+		return false
+	}
+	for _, needle := range []string{"grok", "xai", "zed"} {
+		if h == needle || strings.Contains(h, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// wantInlineTranscriptArchive decides whether this capture should create an
+// inline archive pair before WriteSession. Requires empty derived host session
+// id and a non-empty transcript, plus either an explicit archive_transcript
+// force or a positive hook-less signal (handshake-derived host in the known
+// hook-less set). Omit/false does not force; auto still applies on the
+// predicate. See Decision (2026-07-28) on capture-defaults-for-hookless-hosts.
+func wantInlineTranscriptArchive(force bool, archiveSessionID, transcript, host, hostSource string) bool {
+	if archiveSessionID != "" || strings.TrimSpace(transcript) == "" {
+		return false
+	}
+	if force {
+		return true
+	}
+	return hostSource == storage.HostSourceDerived && isHooklessClient(host)
+}
+
 // flexStringList unmarshals from either a JSON array of strings or a single JSON
 // string. Some MCP clients (Grok's capture shim, observed 2026-07-21) send the
 // list-valued capture fields — decisions, files_changed, open_threads — as one
@@ -157,12 +199,12 @@ type captureSessionParams struct {
 	// ArchiveAdapter names the adapter to resolve against. Defaults
 	// to claude-code when ArchiveSessionID is set and this is empty.
 	ArchiveAdapter string `json:"archive_adapter,omitempty"`
-	// ArchiveTranscript opts this capture into creating an INLINE transcript
-	// archive when the server cannot derive a host session id (hook-less
-	// hosts: Grok, Zed pane, HTTP serve). On a derivable host it is a no-op —
-	// the SessionEnd hook archives the authoritative host transcript later,
-	// and an inline copy of the agent's own rendition would be a lossy
-	// duplicate. Requires a non-empty Transcript.
+	// ArchiveTranscript forces an INLINE transcript archive when the server
+	// cannot derive a host session id and Transcript is non-empty. On a
+	// derivable host it is a no-op — the SessionEnd hook owns the
+	// authoritative archive. Omit/false does not force; the handler still
+	// auto-enables for handshake-derived hook-less clients (grok/xai/zed)
+	// under the same empty-id + transcript gate. Requires non-empty Transcript.
 	ArchiveTranscript bool `json:"archive_transcript,omitempty"`
 	// CWD is the working directory for writing a claim sentinel so
 	// the SessionEnd hook skips sessions already captured via MCP.
@@ -293,7 +335,7 @@ var captureSessionSchema = json.RawMessage(`{
 		},
 		"archive_transcript": {
 			"type": "boolean",
-			"description": "Opt-in: archive the supplied transcript as this capture's compressed archive pair, linked to the note at birth. Takes effect ONLY when the server cannot derive a host session id (hook-less hosts: Grok, Zed pane, HTTP serve) — on a derivable host (Claude Code) it is a no-op, because the hook archives the authoritative host transcript at SessionEnd and an inline copy would be a lossy duplicate. Requires a non-empty transcript. Default false."
+			"description": "Force-archive the supplied transcript as this capture's compressed archive pair, linked to the note at birth. Takes effect ONLY when the server cannot derive a host session id — on a derivable host (Claude Code) it is a no-op, because the hook archives the authoritative host transcript at SessionEnd. When omitted/false, the server still auto-archives for handshake-derived hook-less clients (grok/xai/zed) given a non-empty transcript; unknown or Claude-miss-shaped hosts never auto-on. Requires a non-empty transcript."
 		},
 		"cwd": {
 			"type": "string",
@@ -365,13 +407,18 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 		}
 
 		// INLINE TRANSCRIPT ARCHIVE — transcript-archive parity for hook-less
-		// hosts, opt-in via archive_transcript.
+		// hosts. Fires when wantInlineTranscriptArchive says so:
 		//
-		//   - DERIVED-EMPTY GATE: this fires only when the derivation above
-		//     honestly failed. On a derivable host (Claude Code) the SessionEnd
-		//     hook archives the AUTHORITATIVE host transcript later, and an
-		//     inline copy of the agent's own rendition would be a lossy
-		//     duplicate — so the flag is a no-op there, never a competitor.
+		//   - DERIVED-EMPTY GATE: only when the derivation above honestly
+		//     failed. On a derivable host (Claude Code) the SessionEnd hook
+		//     archives the AUTHORITATIVE host transcript later — never a
+		//     competitor for the inline path.
+		//   - POSITIVE HOOK-LESS SIGNAL or EXPLICIT FORCE: auto-on requires
+		//     handshake-derived host in the known hook-less set (grok/xai/zed).
+		//     Empty id alone is NOT enough — that shape is also Claude
+		//     derivation-miss, and auto-inlining there dual-notes against
+		//     SessionEnd. Explicit archive_transcript:true still forces under
+		//     empty-id + transcript for any host (template pin path).
 		//   - MINT, NEVER TRUST: the archive id is server-controlled — the
 		//     caller's session_key when this is a retry (retries must converge
 		//     on the SAME manifest), a fresh uuid otherwise. A minted id is
@@ -391,7 +438,7 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 		// archive inverts the priority. The stash joins result.Failures after
 		// WriteSession returns, where the accumulation lives.
 		var inlineArchiveFailure *capture.CaptureFailure
-		if p.ArchiveTranscript && sp.ArchiveSessionID == "" && strings.TrimSpace(p.Transcript) != "" {
+		if wantInlineTranscriptArchive(p.ArchiveTranscript, sp.ArchiveSessionID, p.Transcript, sp.Host, sp.HostSource) {
 			archiveID := p.SessionKey
 			if archiveID == "" {
 				// Fresh attempt: mint the id and make it the idempotency key,

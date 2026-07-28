@@ -220,18 +220,68 @@ func TestCaptureSessionInlineArchiveNoopOnDerivableHost(t *testing.T) {
 	}
 }
 
-// TestCaptureSessionInlineArchiveFlagOffUnchanged pins that omitting the flag
-// keeps today's hook-less behavior exactly: note written, no archive pair, no
-// claim, honestly unlinked frontmatter.
-func TestCaptureSessionInlineArchiveFlagOffUnchanged(t *testing.T) {
+// TestCaptureSessionInlineArchiveAutoOnDerivedGrok pins L4 auto-enable: a
+// handshake-derived hook-less host (grok) with empty session id + non-empty
+// transcript archives inline even when archive_transcript is omitted.
+func TestCaptureSessionInlineArchiveAutoOnDerivedGrok(t *testing.T) {
 	vault := testSessionVault(t)
 	stubHostSessionID(t, "")
+	stubClientInfoHost(t, "grok")
+
+	tool := CaptureSessionTool(vault, nil)
+	params, _ := json.Marshal(map[string]any{
+		"project":    "test-proj",
+		"summary":    "Derived grok host auto-archives without the flag.",
+		"transcript": sampleClaudeJSONL,
+	})
+
+	r, err := tool.Handler(context.Background(), json.RawMessage(params))
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	got := r.(captureSessionResult)
+	if got.SessionKey == "" {
+		t.Fatal("result carries no session_key")
+	}
+
+	entry, err := archive.ResolveEntry(vault.Root, "test-proj", got.SessionKey)
+	if err != nil {
+		t.Fatalf("no inline archive on derived grok auto path: %v", err)
+	}
+	if entry.Manifest.Adapter != archive.InlineAdapterName {
+		t.Errorf("manifest adapter = %q, want %q", entry.Manifest.Adapter, archive.InlineAdapterName)
+	}
+
+	meta, _, err := vault.ReadSession("test-proj", got.SessionID[:10], capture.ParseFingerprint(got.SessionID), got.Iteration)
+	if err != nil {
+		t.Fatalf("read session back: %v", err)
+	}
+	if meta.ArchiveSessionID != got.SessionKey {
+		t.Errorf("archive_session_id = %q, want session_key %q", meta.ArchiveSessionID, got.SessionKey)
+	}
+	if meta.ArchiveSessionIDSource != storage.ArchiveIDSourceInline {
+		t.Errorf("archive_session_id_source = %q, want %q", meta.ArchiveSessionIDSource, storage.ArchiveIDSourceInline)
+	}
+	if meta.Host != "grok" || meta.HostSource != storage.HostSourceDerived {
+		t.Errorf("host=%q source=%q, want grok/%s", meta.Host, meta.HostSource, storage.HostSourceDerived)
+	}
+}
+
+// TestCaptureSessionInlineArchiveAutoOffUnknownHost pins that empty session id
+// + transcript alone is NOT enough: unknown host (Claude-miss-shaped) must not
+// mint an inline archive when the flag is omitted. Replaces the old
+// FlagOffUnchanged pin whose premise (flag off = never archive) is false under
+// auto-on for derived hook-less hosts.
+func TestCaptureSessionInlineArchiveAutoOffUnknownHost(t *testing.T) {
+	vault := testSessionVault(t)
+	stubHostSessionID(t, "")
+	// clientInfoHost defaults to "" → HostUnknown / HostSourceUnknown.
 
 	cwd := t.TempDir()
 	tool := CaptureSessionTool(vault, nil)
 	params, _ := json.Marshal(map[string]any{
 		"project":    "test-proj",
-		"summary":    "Hook-less capture without the flag.",
+		"summary":    "Unknown host must not auto-archive.",
 		"transcript": sampleClaudeJSONL,
 		"cwd":        cwd,
 	})
@@ -246,7 +296,7 @@ func TestCaptureSessionInlineArchiveFlagOffUnchanged(t *testing.T) {
 	}
 
 	if names := transcriptsDirEntries(t, vault, "test-proj"); len(names) != 0 {
-		t.Errorf("archive %v created without archive_transcript", names)
+		t.Errorf("archive %v created for unknown host without archive_transcript", names)
 	}
 	if _, statErr := os.Stat(filepath.Join(cwd, ".vibe-palace")); !os.IsNotExist(statErr) {
 		t.Error("claim dir created without a derivable id")
@@ -257,8 +307,69 @@ func TestCaptureSessionInlineArchiveFlagOffUnchanged(t *testing.T) {
 		t.Fatalf("read session back: %v", err)
 	}
 	if meta.ArchiveSessionID != "" || meta.ArchiveSessionIDSource != "" || meta.Archive != "" {
-		t.Errorf("note pretends to link (id=%q source=%q archive=%q) — nothing was derivable and nothing was archived",
+		t.Errorf("note pretends to link (id=%q source=%q archive=%q) — unknown host must not auto-archive",
 			meta.ArchiveSessionID, meta.ArchiveSessionIDSource, meta.Archive)
+	}
+}
+
+// TestCaptureSessionInlineArchiveAutoOffDerivedClaude pins that a derived
+// Claude-family host never auto-archives on empty session id (derivation-miss
+// shape) when the flag is omitted — SessionEnd remains the authority.
+func TestCaptureSessionInlineArchiveAutoOffDerivedClaude(t *testing.T) {
+	vault := testSessionVault(t)
+	stubHostSessionID(t, "")
+	stubClientInfoHost(t, "claude-code")
+
+	tool := CaptureSessionTool(vault, nil)
+	params, _ := json.Marshal(map[string]any{
+		"project":    "test-proj",
+		"summary":    "Derived Claude host must not auto-archive on derivation miss.",
+		"transcript": sampleClaudeJSONL,
+	})
+
+	r, err := tool.Handler(context.Background(), json.RawMessage(params))
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	got := r.(captureSessionResult)
+
+	if names := transcriptsDirEntries(t, vault, "test-proj"); len(names) != 0 {
+		t.Errorf("archive %v created for derived claude* without force flag", names)
+	}
+	meta, _, err := vault.ReadSession("test-proj", got.SessionID[:10], capture.ParseFingerprint(got.SessionID), got.Iteration)
+	if err != nil {
+		t.Fatalf("read session back: %v", err)
+	}
+	if meta.ArchiveSessionID != "" || meta.Archive != "" {
+		t.Errorf("note links (id=%q archive=%q) — Claude derivation-miss must not mint inline",
+			meta.ArchiveSessionID, meta.Archive)
+	}
+}
+
+// TestCaptureSessionInlineArchiveExplicitTrueAnyHost pins that archive_transcript
+// true still forces under empty id + transcript even without a hook-less host
+// signal (template pin / intentional path).
+func TestCaptureSessionInlineArchiveExplicitTrueAnyHost(t *testing.T) {
+	vault := testSessionVault(t)
+	stubHostSessionID(t, "")
+	// Unknown host — no auto signal; explicit true must still force.
+	stubClientInfoHost(t, "")
+
+	tool := CaptureSessionTool(vault, nil)
+	params, _ := json.Marshal(map[string]any{
+		"project":            "test-proj",
+		"summary":            "Explicit force on unknown host.",
+		"transcript":         sampleClaudeJSONL,
+		"archive_transcript": true,
+	})
+
+	r, err := tool.Handler(context.Background(), json.RawMessage(params))
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	got := r.(captureSessionResult)
+	if _, err := archive.ResolveEntry(vault.Root, "test-proj", got.SessionKey); err != nil {
+		t.Fatalf("explicit archive_transcript:true did not create inline archive: %v", err)
 	}
 }
 

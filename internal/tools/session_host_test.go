@@ -190,3 +190,67 @@ func TestCaptureSessionHostUnknownRecorded(t *testing.T) {
 		t.Error("note claims claude-code with no evidence — the fabricated default is back")
 	}
 }
+
+func TestIsHooklessClient(t *testing.T) {
+	cases := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{"empty", "", false},
+		{"whitespace", "   ", false},
+		{"grok exact", "grok", true},
+		{"Grok case", "Grok", true},
+		{"grok-cli", "grok-cli", true},
+		{"xai exact", "xai", true},
+		{"XAI-Agent", "XAI-Agent", true},
+		{"zed exact", "zed", true},
+		{"Zed case", "Zed", true},
+		{"zed-editor", "zed-editor", true},
+		{"claude-code", "claude-code", false},
+		{"Claude", "Claude", false},
+		{"unknown", "unknown", false},
+		{"cursor", "cursor", false},
+		{"http-serve", "http-serve", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isHooklessClient(tc.host); got != tc.want {
+				t.Errorf("isHooklessClient(%q) = %v, want %v", tc.host, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWantInlineTranscriptArchive(t *testing.T) {
+	const tx = "user: hi\nassistant: hello"
+	cases := []struct {
+		name      string
+		force     bool
+		sessionID string
+		tx        string
+		host      string
+		source    string
+		want      bool
+	}{
+		{"auto grok derived", false, "", tx, "grok", storage.HostSourceDerived, true},
+		{"auto zed derived", false, "", tx, "Zed", storage.HostSourceDerived, true},
+		{"auto xai derived", false, "", tx, "xai-mcp", storage.HostSourceDerived, true},
+		{"no auto unknown", false, "", tx, storage.HostUnknown, storage.HostSourceUnknown, false},
+		{"no auto declared grok", false, "", tx, "grok", storage.HostSourceDeclared, false},
+		{"no auto derived claude", false, "", tx, "claude-code", storage.HostSourceDerived, false},
+		{"no auto empty tx", false, "", "", "grok", storage.HostSourceDerived, false},
+		{"no auto with derived id", false, "live-id", tx, "grok", storage.HostSourceDerived, false},
+		{"explicit true unknown", true, "", tx, storage.HostUnknown, storage.HostSourceUnknown, true},
+		{"explicit true no-op with id", true, "live-id", tx, "claude-code", storage.HostSourceDerived, false},
+		{"explicit false still auto grok", false, "", tx, "grok", storage.HostSourceDerived, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := wantInlineTranscriptArchive(tc.force, tc.sessionID, tc.tx, tc.host, tc.source)
+			if got != tc.want {
+				t.Errorf("wantInlineTranscriptArchive(...) = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

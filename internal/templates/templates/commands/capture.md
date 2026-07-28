@@ -15,6 +15,8 @@ a tool failure — without doing the full wrap-up sequence.
    - **decisions**: Key technical decisions made (if any)
    - **files_changed**: Files created or modified (if any)
    - **open_threads**: Unresolved items or next steps
+   - **transcript**: when the host can supply the session transcript text, pass it (required for friction scoring and durable archive content on hook-less hosts)
+   - **archive_transcript**: `true` — for hook-less hosts (Grok, Zed pane, HTTP serve) / when not relying on SessionEnd; Claude Code no-ops this when the server can derive the host session id
 
 3. Confirm the capture succeeded and report the session ID.
 

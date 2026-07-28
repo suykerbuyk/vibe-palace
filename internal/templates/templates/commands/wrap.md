@@ -110,6 +110,8 @@ Call `vp_capture_session` with:
 - **decisions**: key technical decisions made
 - **files_changed**: files created or modified
 - **open_threads**: unresolved items or follow-up work
+- **transcript**: when the host can supply the session transcript text, pass it (required for friction scoring and durable archive content on hook-less hosts)
+- **archive_transcript**: `true` — for hook-less hosts (Grok, Zed pane, HTTP serve) / when not relying on SessionEnd; Claude Code no-ops this when the server can derive the host session id
 
 Write summaries that help a developer resuming this work tomorrow.
 
