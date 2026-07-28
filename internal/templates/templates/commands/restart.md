@@ -82,10 +82,10 @@ diagnostic suite on the state you are about to load context from. Call
 `vp_check` (the MCP tool) with an **explicit** selector list:
 
 ```json
-{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "core-floor", "pin-coverage"]}
+{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage"]}
 ```
 
-Name those six deliberately. Do **not** omit the argument, and do
+Name those seven deliberately. Do **not** omit the argument, and do
 **not** add `surface`: `vp_surface_check` already ran at the top of this
 step, so including it would repeat a scan for no new information.
 
@@ -101,8 +101,8 @@ its `details` lines verbatim. The top-level `status` is an **advisory**
 worst-of roll-up across independent scans that disagree about an absent
 vault; key nothing off it.
 
-- 🔴 **An `"info"` verdict is a REPORT, never a gate.** Five of these
-  six are Info-or-Pass by design. The exception is `vault-filesystem`,
+- 🔴 **An `"info"` verdict is a REPORT, never a gate.** Six of these
+  seven are Info-or-Pass by design. The exception is `vault-filesystem`,
   which returns `"fail"` for a vault sitting on a filesystem that
   rejects `":"` in filenames (NTFS/exFAT) — a real finding, and still
   only a finding here: relocating a vault is a deliberate human move,

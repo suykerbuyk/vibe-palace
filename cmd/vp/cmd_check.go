@@ -35,7 +35,7 @@ func cmdCheck(info cli.BuildInfo) *cli.Command {
 		// typed out: a hand-written copy is a second registry of check names,
 		// and this one had already gone stale once by omitting checks the
 		// registry accepted.
-		Description: "Verify installation, config, vault, embedder, surface compatibility, project detection, and vault hygiene (vault filesystem, stray scaffolds, resume.md size/row caps, host-local plan refs, inviolable-core size floor, resume pin-marker coverage). Reports pass/fail status for each component. With --check, runs only the named check(s) via selective execution — skipping the expensive embedder load and tool-registry build — for fast scripting / AI preflights. Selectable names: " + strings.Join(check.ProducerOrder, ", ") + ".",
+		Description: "Verify installation, config, vault, embedder, surface compatibility, project detection, and vault hygiene (vault filesystem, stray scaffolds, resume.md size/row caps, host-local plan refs, host-rooted absolute paths, inviolable-core size floor, resume pin-marker coverage). Reports pass/fail status for each component. With --check, runs only the named check(s) via selective execution — skipping the expensive embedder load and tool-registry build — for fast scripting / AI preflights. Selectable names: " + strings.Join(check.ProducerOrder, ", ") + ".",
 		Flags:       checkFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp check", Comment: "Run all installation checks"},
@@ -43,6 +43,7 @@ func cmdCheck(info cli.BuildInfo) *cli.Command {
 			{Cmd: "vp check --check surface --json", Comment: "Fast surface-only preflight (used by restart/wrap)"},
 			{Cmd: "vp check --check resume-caps", Comment: "Warn on any project resume.md over its size/row caps"},
 			{Cmd: "vp check --check resume-refs", Comment: "Warn on any resume.md committing a host-local ~/.claude/plans/… path"},
+			{Cmd: "vp check --check vault-abs-paths", Comment: "Warn on any resume.md/workflow.md committing a host-rooted absolute path (/home/…, C:\\…) — true on one machine, false everywhere else"},
 			{Cmd: "vp check --check core-floor", Comment: "Warn on any project whose resume.md + workflow.md core cannot fit the payload budget"},
 			{Cmd: "vp check --check pin-coverage", Comment: "Name the resume.md sections carrying neither a pin nor a disposable marker — live state in the sheddable zone"},
 		},
@@ -218,6 +219,16 @@ func gatherCheckResults() []check.Result {
 				// /…/.claude/plans/… path) — dead weight in a shared,
 				// committed artifact. Advisory only, never Fail.
 				results = append(results, check.CheckResumeRefs(vault))
+
+				// Vault-wide: flag host-rooted absolute paths committed into
+				// the ADR-009 core (resume.md + workflow.md). The vault syncs
+				// to every machine, so such a path is a fact about the ONE host
+				// that wrote it — and a stale one that still exists as an empty
+				// directory reads as plausible instead of failing loudly, which
+				// is the iter 188 bug this check was commissioned for. Advisory
+				// only, never Fail: rewriting the pointer is a human judgement
+				// about what the document meant to say.
+				results = append(results, check.CheckVaultAbsPaths(vault))
 
 				// Vault-wide: flag workflow.md files over the bootstrap
 				// resume.md + workflow.md together — the ADR-009 inviolable

@@ -182,7 +182,7 @@ func TestProducersSkipContractNamesAreStable(t *testing.T) {
 	got := names(mustRunAll(t))
 	sort.Strings(got)
 	want := []string{"Core floor", "Pin coverage", "Resume caps", "Resume refs",
-		"Stray scaffolds", "Surface", "Vault filesystem"}
+		"Stray scaffolds", "Surface", "Vault abs paths", "Vault filesystem"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("check row names = %v, want %v", got, want)
 	}

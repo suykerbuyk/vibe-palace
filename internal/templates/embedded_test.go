@@ -196,7 +196,7 @@ func TestEmbeddedCommands_CheckSuiteDelivery(t *testing.T) {
 		body[r.RelPath] = string(r.Bytes)
 	}
 
-	// The whole call, pinned as one literal — not just the six names, and not
+	// The whole call, pinned as one literal — not just the seven names, and not
 	// a set-equality check that would accept any ordering. It carries both
 	// halves of the selector decision: the hygiene checks are named explicitly
 	// (never the default, which is the whole registry), and `surface` is
@@ -210,7 +210,7 @@ func TestEmbeddedCommands_CheckSuiteDelivery(t *testing.T) {
 	// contract with three delivery sites, and one literal is what lets a
 	// single constant here pin all of them — three near-identical spellings
 	// would need three pins and would drift apart at the first edit.
-	const selectors = `{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "core-floor", "pin-coverage"]}`
+	const selectors = `{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage"]}`
 
 	for _, rel := range []string{"commands/restart.md", "commands/wrap.md"} {
 		content, ok := body[rel]

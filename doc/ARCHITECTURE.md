@@ -823,10 +823,18 @@ tool-registry build. Registered names:
 | Name | Row | Scope |
 |------|-----|-------|
 | `surface` | `Surface` | Whole vault — binary MCP surface vs. max `.surface` stamp |
+| `vault-filesystem` | `Vault filesystem` | Whole vault — does the filesystem accept `:` in filenames (NTFS/exFAT) |
+| `stray-scaffolds` | `Stray scaffolds` | Whole vault — scaffold-only orphan projects under `Projects/` |
 | `resume-caps` | `Resume caps` | Whole vault — every `Projects/*/resume.md` |
 | `resume-refs` | `Resume refs` | Whole vault — host-local plan refs in every `Projects/*/resume.md` |
+| `vault-abs-paths` | `Vault abs paths` | Whole vault — host-rooted absolute paths in every project's `resume.md` + `workflow.md` |
 | `core-floor` | `Core floor` | Whole vault — every project's `resume.md` + `workflow.md` vs its share of the payload budget |
 | `pin-coverage` | `Pin coverage` | Whole vault — `Projects/*/resume.md` H2 sections carrying neither `vp:pin` nor `vp:disposable` |
+
+The table is ordered as `check.ProducerOrder` declares, which is the order a
+default (unfiltered) run emits. Re-derive it from that slice rather than trusting
+this table: it went stale once already, when `vault-filesystem` and
+`stray-scaffolds` joined the registry and nothing updated it here.
 
 An unknown name exits `ExitUser` with an `unknown check` diagnostic.
 
@@ -890,6 +898,46 @@ is never misread as an opening fence). It reads **only** `resume.md` — task fi
 and everything else are out of scope. The same verdict is exposed
 host-agnostically over MCP by the read-only `vp_check` tool, via its
 `resume-refs` selector.
+
+### Host-rooted absolute paths in the core (`check.CheckVaultAbsPaths`)
+
+The vault is synced to every machine and lives somewhere different on each, so a
+host-rooted absolute path committed into a synced document is a fact about the
+**one** host that wrote it. Iter 188 is the specimen: `resume.md` carried
+`Vault location: /home/johns/vibe-palace-vault`, true only on the operator's
+previous WSL host — and an **empty directory** sits at that path on the current
+machine, so the stale answer looked *plausible* instead of failing loudly.
+
+**Scope is `resume.md` + `workflow.md` only** — the ADR-009 inviolable core, and
+the only two synced docs read as CURRENT TRUTH rather than as history.
+`iterations.md` and `tasks/` are deliberately excluded: they legitimately quote
+host paths as specimens of the mistake (the task that commissioned this check
+quotes the 188 path twice, once in a blockquote where fence-awareness would not
+save it), and a check that fires on the record of a bug being fixed is one
+operators learn to skim.
+
+Detection works from an **allowlist of host-rooted prefixes**, never a denylist
+of exemptions: `/home/<user>`, `/Users/<user>`, `/mnt/<drive>`, `/root`, a
+Windows drive root (`C:\`), and the extended-length prefix (`\\?\`). Everything
+else is silent by construction — `/proc/<pid>/exe`, `/usr`, `/etc`, `/tmp` and
+`/var` never match because they are not in the set, so there is no exemption list
+to maintain and no way for a new machine-independent path to start firing when
+someone forgets to add one. Tilde paths (`~/.local/bin/vp`) are host
+*conventions* that resolve everywhere, and repo-relative paths have no root at
+all; neither is matched.
+
+It deliberately does **not** consult `os.UserHomeDir()`. Flagging the running
+host's literal `$HOME` expansion would make the verdict depend on which machine
+ran the check — the exact bug class the check exists to detect — and the case is
+already covered structurally by the prefixes above.
+
+Like its neighbours it is **fence-aware** (shared `internal/mdfence` scanner),
+strictly read-only, and **Info, never Fail**: the remedy is *resolve, don't
+recall* — `vp status` prints the path the binary resolved — and choosing what the
+document meant to say is a human judgement, not a mechanical rewrite. For that
+reason `/vpc-wrap` reports this row and does **not** auto-fix it, unlike the
+`resume-refs` row it sits beside. Exposed host-agnostically over MCP by
+`vp_check`'s `vault-abs-paths` selector.
 
 ### Inviolable-core floor detection (`check.CheckCoreFloor`)
 
