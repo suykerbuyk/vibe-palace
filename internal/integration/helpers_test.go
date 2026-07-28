@@ -4,10 +4,15 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
+	"strings"
 	"testing"
+	"time"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 
@@ -136,6 +141,10 @@ func (h *testHarness) registerAllTools(t *testing.T) {
 }
 
 // initMCP sends the initialize + notifications/initialized handshake.
+// Note: HandleMessage does not register a transport session, so the
+// clientInfo in this handshake is NOT visible to ClientInfoFromContext.
+// Tests that need handshake-derived host attribution must use the stdio
+// transport (callToolStdio) instead.
 func (h *testHarness) initMCP(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
@@ -204,6 +213,168 @@ func (h *testHarness) callToolRaw(t *testing.T, name string, args any) (text str
 	}
 
 	return result.Content[0].Text, result.IsError
+}
+
+// captureLogs installs a debug-level slog JSON handler that writes to a
+// buffer for the duration of the test, restoring the previous default on
+// cleanup. Used to assert zero mcp.makeHandler WARN on the happy path.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	handler := slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	prev := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
+}
+
+// callToolStdio drives initialize + tools/call through the REAL stdio
+// transport (Server.Listen). Unlike HandleMessage, stdio records clientInfo
+// on the session at initialize, so ClientInfoFromContext — and therefore
+// handshake-derived host attribution for capture-defaults — works.
+//
+// clientName/clientVersion become the initialize clientInfo (e.g. "grok").
+// Returns the tool result text; fails the test on protocol or tool errors.
+func (h *testHarness) callToolStdio(t *testing.T, clientName, clientVersion, name string, args any) string {
+	t.Helper()
+
+	clientReader, serverWriter := io.Pipe()
+	serverReader, clientWriter := io.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- h.Server.Listen(ctx, serverReader, serverWriter)
+	}()
+	// Ensure the server goroutine exits even on early fatal.
+	t.Cleanup(func() {
+		_ = clientWriter.Close()
+		_ = serverReader.Close()
+		cancel()
+		select {
+		case <-errCh:
+		case <-time.After(2 * time.Second):
+		}
+	})
+
+	writeLine := func(v any) {
+		t.Helper()
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal stdio message: %v", err)
+		}
+		if _, err := clientWriter.Write(append(b, '\n')); err != nil {
+			t.Fatalf("write stdio message: %v", err)
+		}
+	}
+	readRPC := func() map[string]any {
+		t.Helper()
+		// Bound the read so a hung server fails the test instead of hanging CI.
+		type res struct {
+			line string
+			err  error
+		}
+		ch := make(chan res, 1)
+		go func() {
+			// Read one newline-delimited JSON-RPC response.
+			var buf []byte
+			tmp := make([]byte, 1)
+			for {
+				n, err := clientReader.Read(tmp)
+				if n > 0 {
+					buf = append(buf, tmp[0])
+					if tmp[0] == '\n' {
+						ch <- res{line: string(buf), err: nil}
+						return
+					}
+				}
+				if err != nil {
+					ch <- res{err: err}
+					return
+				}
+			}
+		}()
+		select {
+		case r := <-ch:
+			if r.err != nil {
+				t.Fatalf("read stdio response: %v", r.err)
+			}
+			var msg map[string]any
+			if err := json.Unmarshal([]byte(strings.TrimSpace(r.line)), &msg); err != nil {
+				t.Fatalf("unmarshal stdio response %q: %v", r.line, err)
+			}
+			return msg
+		case <-time.After(10 * time.Second):
+			t.Fatal("timed out waiting for stdio response")
+			return nil
+		}
+	}
+
+	if clientName == "" {
+		clientName = "integration-test"
+	}
+	if clientVersion == "" {
+		clientVersion = "0.1.0"
+	}
+
+	writeLine(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-03-26",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": clientName, "version": clientVersion},
+		},
+	})
+	initResp := readRPC()
+	if initResp["error"] != nil {
+		t.Fatalf("initialize error: %v", initResp["error"])
+	}
+
+	writeLine(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "notifications/initialized",
+	})
+
+	writeLine(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      name,
+			"arguments": args,
+		},
+	})
+	callResp := readRPC()
+	if callResp["error"] != nil {
+		t.Fatalf("tools/call protocol error: %v", callResp["error"])
+	}
+	result, _ := callResp["result"].(map[string]any)
+	if result == nil {
+		t.Fatalf("tools/call missing result: %v", callResp)
+	}
+	if isErr, _ := result["isError"].(bool); isErr {
+		// Surface tool error text.
+		content, _ := result["content"].([]any)
+		if len(content) > 0 {
+			if c0, ok := content[0].(map[string]any); ok {
+				t.Fatalf("tool %q returned error: %v", name, c0["text"])
+			}
+		}
+		t.Fatalf("tool %q returned isError without content: %v", name, result)
+	}
+	content, _ := result["content"].([]any)
+	if len(content) == 0 {
+		t.Fatalf("tool %q returned empty content", name)
+	}
+	c0, _ := content[0].(map[string]any)
+	text, _ := c0["text"].(string)
+	if text == "" {
+		t.Fatalf("tool %q returned empty text: %v", name, content[0])
+	}
+	return text
 }
 
 // callTool sends a tools/call JSON-RPC request and returns the text content.

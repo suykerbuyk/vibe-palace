@@ -115,6 +115,11 @@ func (s *Server) contextFunc(ctx context.Context) context.Context {
 // path where VaultFromContext returned nil — so the surface gate silently
 // no-opped in every test that went through it, and the tests could not have
 // caught a gate regression.
+//
+// Note: HandleMessage does not register a transport client session, so
+// ClientInfoFromContext reports absent on this seam. Tests that need
+// handshake-derived host attribution must drive the real stdio (or streamable
+// HTTP) transport via Listen, which records clientInfo on initialize.
 func (s *Server) HandleMessage(ctx context.Context, msg json.RawMessage) mcplib.JSONRPCMessage {
 	return s.mcp.HandleMessage(s.contextFunc(ctx), msg)
 }

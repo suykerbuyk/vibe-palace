@@ -96,3 +96,5 @@ func TestClientInfoFromContextPopulated(t *testing.T) {
 		t.Errorf("info.Version = %q, want %q", info.Version, "0.191.0")
 	}
 }
+
+
