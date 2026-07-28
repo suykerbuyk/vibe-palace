@@ -95,7 +95,7 @@ func TestRegisterAll(t *testing.T) {
 		"vp_stamp_iter":           true,
 		"vp_preflight_wrap":       true,
 		"vp_surface_check":        true,
-		"vp_check_resume_refs":    true,
+		"vp_check":                true,
 		"vp_scan_plans":           true,
 	}
 	for _, tool := range tools {

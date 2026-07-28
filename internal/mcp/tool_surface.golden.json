@@ -32,9 +32,9 @@
       "schema_sha256": "e246051c4034ceb3f1378f1303354411a8e8956d6763acf086f73c81fbd6229a"
     },
     {
-      "name": "vp_check_resume_refs",
+      "name": "vp_check",
       "mutating": false,
-      "schema_sha256": "ec54b14620286ba7c24de81af74a3fa0c8215afa2dda3317f31e2392d8c9ea88"
+      "schema_sha256": "4ec3d62297e8d9304b81fec84fe814d0ddc63a1840b6aa2bb75f86d67d3a8640"
     },
     {
       "name": "vp_cmd",

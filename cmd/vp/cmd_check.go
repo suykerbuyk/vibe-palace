@@ -53,40 +53,17 @@ func cmdCheck(info cli.BuildInfo) *cli.Command {
 	}
 }
 
-// checkProducers maps a --check name to a light, dependency-light producer.
-// Designed to grow one cheap check at a time. The string arg is the resolved
-// vault path (cheap to compute; "" when unresolved — CheckSurface tolerates it).
-var checkProducers = map[string]func(vaultRoot string) []check.Result{
-	"surface": func(vaultRoot string) []check.Result { return []check.Result{check.CheckSurface(vaultRoot)} },
-	"resume-caps": func(vaultRoot string) []check.Result {
-		if vaultRoot == "" {
-			return []check.Result{{Name: "Resume caps", Status: check.Skip, Summary: "no vault configured"}}
-		}
-		return []check.Result{check.CheckResumeCaps(storage.NewVault(vaultRoot))}
-	},
-	"resume-refs": func(vaultRoot string) []check.Result {
-		if vaultRoot == "" {
-			return []check.Result{{Name: "Resume refs", Status: check.Skip, Summary: "no vault configured"}}
-		}
-		return []check.Result{check.CheckResumeRefs(storage.NewVault(vaultRoot))}
-	},
-	"core-floor": func(vaultRoot string) []check.Result {
-		if vaultRoot == "" {
-			return []check.Result{{Name: "Core floor", Status: check.Skip, Summary: "no vault configured"}}
-		}
-		return []check.Result{check.CheckCoreFloor(storage.NewVault(vaultRoot))}
-	},
-	"pin-coverage": func(vaultRoot string) []check.Result {
-		if vaultRoot == "" {
-			return []check.Result{{Name: "Pin coverage", Status: check.Skip, Summary: "no vault configured"}}
-		}
-		return []check.Result{check.CheckPinCoverage(storage.NewVault(vaultRoot))}
-	},
-}
-
-// runSelectedChecks splits a comma-separated filter, validates each name
-// against checkProducers, and collects results. Unknown name → error (caller
-// maps to ExitUser). Resolves the vault path once (cheap).
+// runSelectedChecks resolves the vault from the process working directory —
+// the CLI's contract, and the CLI's alone — and hands the root plus the raw
+// filter to the shared selector registry in internal/check.
+//
+// The registry itself (check.Producers / check.RunSelected) used to live here,
+// unexported in package main, where no MCP tool could reach it. It moved down
+// so `vp check --check` and the vp_check MCP tool dispatch one map instead of
+// two that drift. Only the cwd resolution stayed behind: check.RunSelected is
+// pure, and the MCP tool passes the vault bound at registration instead.
+//
+// Unknown name → error (caller maps to ExitUser).
 func runSelectedChecks(filter string) ([]check.Result, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -96,22 +73,7 @@ func runSelectedChecks(filter string) ([]check.Result, error) {
 	if vp, _, perr := storage.ResolveVaultPath(cwd); perr == nil {
 		vaultRoot = vp
 	}
-	var results []check.Result
-	for raw := range strings.SplitSeq(filter, ",") {
-		name := strings.TrimSpace(raw)
-		if name == "" {
-			continue
-		}
-		prod, ok := checkProducers[name]
-		if !ok {
-			return nil, fmt.Errorf("unknown check: %s", name)
-		}
-		results = append(results, prod(vaultRoot)...)
-	}
-	if len(results) == 0 {
-		return nil, fmt.Errorf("no checks selected")
-	}
-	return results, nil
+	return check.RunSelected(vaultRoot, filter)
 }
 
 // isSurfaceOnly reports whether the filter, after splitting/trimming and

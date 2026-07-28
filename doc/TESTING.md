@@ -1,13 +1,13 @@
 # Testing Strategy
 
-**Last updated:** 2026-07-26
+**Last updated:** 2026-07-27
 
 This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~2676 tests** across 47 packages, including
-**105 integration tests** (the ONNX/cross-layer tests `make integration`
+The suite currently runs **~2721 tests** across 48 packages, including
+**106 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
 subtests each may fan out into — and they drift as the suite grows. Derive
@@ -251,6 +251,7 @@ context resolver, and config into a single test fixture.
 | `HandshakeDoesNotConstructEmbedder` | MCP → tools → search → embedder | No | A real JSON-RPC `initialize` + `tools/list` against the production tool surface constructs the embedder **zero** times; the first `vp_search` constructs it exactly once, and a second search does not reconstruct it (see below) |
 | `ColdSearchBuildsIndexLazily` | MCP → tools → search → storage | No | `vp_search` and `vp_search_cross_project` return **real hits** on projects whose index has never been built — no `Rebuild`, no `IndexDrawer`, only drawers on disk (see below) |
 | `SurfaceCheck` | MCP → tools → check | No | JSON-RPC `tools/call` for `vp_surface_check` returns `status:"pass"` with the binary's surface version on a compatible vault; the fail path carries the curated remediation `details` across the wire |
+| `Check` | MCP → tools → check | No | JSON-RPC `tools/call` for `vp_check` is reachable on `tools/list` (and `vp_check_resume_refs`, which it subsumed, is gone from it); the default run covers every producer in declared order and repeats identically; the `resume-refs` selector's rows match `check.RunSelected` verdict-for-verdict — name, summary and the `details` array — proving the tool and the CLI dispatch one registry; no `Embedder` row ever crosses the wire; an unknown selector is refused rather than silently reporting a clean bill of health |
 | `BootstrapFullContext` | tools → context → storage | No | Bootstrap tool assembles workflow, commands from embedded + vault sources |
 | `BootstrapWithSessions` | storage | No | Sessions written via API are readable through list/read operations |
 | `FrictionScoringOnCapture` | tools → capture → storage | No | `vp_capture_session` computes and persists friction score; high-friction transcript scores >= 50, smooth < 20 |
@@ -652,6 +653,88 @@ reported), `_FailNewerVault` (an ahead vault → `status:"fail"` with remediatio
 non-mutating probe that `TestIntegrationSurfaceCheck` drives through the full
 JSON-RPC stack.
 
+### `internal/check/selector_test.go` — The Shared Check Selector Registry
+
+`checks-must-reach-every-agent-over-mcp` moved the `--check` selector registry
+out of `cmd/vp` (`package main`, unimportable) down into `internal/check` as
+`Producers` + `ProducerOrder` + `RunSelected(vaultRoot, filter)`, so the CLI and
+the `vp_check` MCP tool dispatch one map instead of two that drift.
+
+`TestProducerOrderCoversProducers` pins the invariant the default-all path rests
+on — every producer named exactly once in the declared order, so none can be
+added to the map yet silently never run. `TestRunSelectedDefaultsToEveryProducer`
+covers the omitted/blank filter running the whole cheap suite instead of the old
+`no checks selected` error (an MCP caller omitting an optional argument must not
+get a tool error on the happy path). `TestRunSelectedDeclaredOrder` runs the
+default sixteen times and asserts a constant order: Go randomizes map iteration
+and this is the first iteration of that map anywhere in the tree.
+`TestRunSelectedExplicitList` keeps the CLI's semantics — caller order wins,
+names are trimmed, an unknown name errors *naming the offender*, and an
+explicitly supplied list that names nothing runnable (`",,"`) still reports
+`no checks selected`. `TestRunSelectedSkipsWithoutVault` pins the shared
+degradation contract (no vault root → `Skip`, never a panic and never a bogus
+`Pass`).
+
+`TestRunSelectedIsPure` is the regression guard for the whole extraction: it
+points the process cwd — via a real `.vibe-palace.toml` — at a decoy vault whose
+resume carries a host-local plan ref, calls `RunSelected` with an **empty** root,
+and requires `Skip`. Any reintroduced `os.Getwd` / `ResolveVaultPath` inside
+`internal/check` reports the decoy's breach instead and fails the test. The same
+call against the decoy root *does* report `Info`, so the test cannot pass
+vacuously.
+
+### `internal/tools/check_tool_test.go` — `vp_check` MCP Tool
+
+`vp_check` exposes the named, embedder-free checks host-agnostically and
+**subsumed** the per-check `vp_check_resume_refs` wrapper, whose clean-pass,
+breach and empty-vault cases were ported here before that file was deleted
+(`_ResumeRefsClean`, `_ResumeRefsBreaches` — which also pins that `details`
+survives as an **array** rather than `ToJSON`'s folded string — and
+`_EmptyVaultRoot`, one of only two tests anywhere dispatching a read-only check
+tool against `Root == ""`).
+
+`_ConstructorDoesNotTouchVault` is the guard for a failure with no obvious
+connection to this tool: `registeredToolCount` and `tool_surface_golden_test.go`
+both register the entire tool set against `storage.NewVault("")` purely to count
+tools, so the constructor must stash the vault pointer and dereference nothing.
+It asserts a complete tool against an empty root *and* a byte-identical vault
+tree (path, size, SHA-256 per file) across construction;
+`_RegistersAgainstEmptyVault` drives the real `RegisterAll` against that empty
+root. `_DeterministicOrder` repeats the default dispatch and additionally
+asserts the order **is** `ProducerOrder`, not an accident. `_NeverLoadsEmbedder`
+mirrors the four `cmd_check_test.go` regressions by scanning the marshalled
+result for `Embedder` — the selector path must never reach `check.Run`, which
+would construct ONNX. `_UsesBoundVaultNotCwd` is the vault-binding regression:
+the tool is bound to one temp vault while the process cwd resolves to a
+different one, and the breach reported must come from the **bound** vault, since
+`vp mcp` is long-lived and its cwd is the host's launch directory.
+`_SelectorSubset` and `_UnknownNameErrors` cover the explicit-list path;
+`TestCheckStatusProjection` pins all four verdict strings (`check.Status` is an
+`int`, so a missed case ships bare integers to agents); and
+`TestCheckAggregateIsAdvisoryWorstOf` pins the roll-up *and* records why it is
+advisory — the checks legitimately disagree about an absent vault, so consumers
+key off the per-check rows.
+
+### `internal/tools/check_registry_test.go` — One Registry, Both Surfaces
+
+`TestCheckSelectorsAreOneRegistry` is the anti-drift test the extraction exists
+for: it compares the names the CLI accepts (enumerated from `check.Producers`)
+against the names `vp_check` **advertises** (the `enum` decoded out of the tool's
+own schema), requires `ProducerOrder` to cover the map exactly, and dispatches
+every advertised name to prove it is real. Both sides are derived from the single
+registry — a hand-written expected list would be the third copy of the concept
+and would itself go stale.
+
+`TestSurfaceSelectorOverlapIsIntentional` records a decision so it never reads as
+an oversight: `vp_check` keeps the `surface` selector **and** `vp_surface_check`
+stays registered. Filtering `surface` out would make the tool's name set diverge
+from the CLI's — the drift the shared registry prevents, reappearing as a filter
+over the shared map — while `vp_surface_check` is the preflight the surface gate
+itself depends on and carries `binary_surface` / `vault_surface` / `stamp_dir`,
+which the uniform envelope does not. The test asserts both are registered, that
+`vp_check_resume_refs` is **not**, and that the two overlapping paths return the
+same verdict.
+
 ### `internal/storage/vaultfetchage_test.go` — Network-Free Fetch Age
 
 Covers `VaultFetchAge` (pure `os.Stat` of the tracking-ref / `FETCH_HEAD`
@@ -763,7 +846,10 @@ one `Surface` check, summary total 1, real `MCPSurfaceVersion` constant with
 `tools:0` — never a false `surface:0` — and the commit echoed), the unknown-name
 `ExitUser` path, the `isSurfaceOnly` normalization table, and two full-stack
 tests driving the real `cmdCheck(info).Run([]string{...})` dispatch
-(ParseFlags → runCheck → runSelectedChecks → ToJSON).
+(ParseFlags → runCheck → runSelectedChecks → ToJSON). Since
+`checks-must-reach-every-agent-over-mcp` the producers these tests exercise are
+`check.Producers` in `internal/check`, shared with the `vp_check` MCP tool;
+`runSelectedChecks` is now only the cwd→vault-root resolution the CLI owns.
 
 The `resume-caps` producer is covered against a seeded temp vault holding one
 over-every-cap project: `--check resume-caps` human output (the `[info] Resume

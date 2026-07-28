@@ -694,11 +694,29 @@ same whole-vault surface-compatibility verdict a mutating write is gated
 against (`check.CheckSurface(vault.Root)`), so restart/wrap templates can run a
 surface preflight without shelling out to `vp check`.
 
+`vp_check` (`check_tool.go`) exposes the named, embedder-free diagnostic checks
+over MCP. It dispatches the **same registry** `vp check --check NAME[,NAME…]`
+does — `check.Producers` / `check.RunSelected` in `internal/check/selector.go` —
+so the CLI's selectable names and the tool's advertised names cannot drift; the
+registry was moved down out of `package main` for exactly that reason, and
+`RunSelected` is pure (the caller supplies the vault root, so the long-lived
+`vp mcp` process never re-resolves a vault from its launch directory). The
+`checks` argument is optional: omitted, every producer runs in the declared
+`check.ProducerOrder`, which is what makes repeat runs reproducible. The result
+is `{status, summary, checks[{name, status, summary, details[]}]}`; the
+top-level status is an **advisory** worst-of roll-up, because the checks
+legitimately disagree about an absent vault — consumers key off the rows.
+Nothing on this path reaches `check.Run`, so the embedder is never loaded.
+`vp_check` **subsumed** the former per-check `vp_check_resume_refs` wrapper
+(now removed — one shared registry beats one hand-written tool per check);
+`vp_surface_check` stays because it is the preflight the surface gate itself
+depends on and carries gate-specific fields the uniform envelope does not.
+
 The table above enumerates the primary tool surface; for brevity it omits
 several always-registered tools — the five `vp_memory_*` tools
 (`memory_tools.go`), `vp_read_resource` (`resource_read_tool.go`),
 `vp_archive_commit_log`, and the read-only probes documented in their own
-sections (`vp_check_resume_refs`, `vp_scan_plans`). The authoritative
+sections (`vp_check`, `vp_scan_plans`). The authoritative
 enumeration is the full tool surface versioned in
 `internal/mcp/tool_surface.golden.json` (`surface_version: 2`), pinned by
 `internal/tools/register_test.go` — the registry
@@ -870,7 +888,8 @@ a path documented inside a Markdown code fence is a sample, not a live pointer,
 and is skipped via the shared `internal/mdfence` scanner (so an inline code run
 is never misread as an opening fence). It reads **only** `resume.md` — task files
 and everything else are out of scope. The same verdict is exposed
-host-agnostically over MCP as the read-only `vp_check_resume_refs` tool.
+host-agnostically over MCP by the read-only `vp_check` tool, via its
+`resume-refs` selector.
 
 ### Inviolable-core floor detection (`check.CheckCoreFloor`)
 
@@ -1040,7 +1059,7 @@ other stray — other-project, `unmanaged`, `none`, `ambiguous`, or an unpromote
 this-project plan — is **reported to the human, never acted on**. Wrap also carries
 a companion resume guardrail: `resume.md` is committed and synced, so it must not
 reference a host-local `~/.claude/plans/…` (or the project-root `commit.msg`) —
-the `vp_check_resume_refs` tool / `vp check --check resume-refs` flags that.
+`vp_check` (selector `resume-refs`) / `vp check --check resume-refs` flags that.
 
 ### Plan worktree isolation (`internal/worktree`)
 

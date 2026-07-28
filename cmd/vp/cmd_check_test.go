@@ -436,7 +436,7 @@ func TestCheckResumeCapsOnlyJSON(t *testing.T) {
 // TestCheckResumeCapsNoVault verifies the producer degrades to Skip (not a
 // panic or a bogus Pass) when no vault can be resolved.
 func TestCheckResumeCapsNoVault(t *testing.T) {
-	rs := checkProducers["resume-caps"]("")
+	rs := check.Producers["resume-caps"]("")
 	if len(rs) != 1 {
 		t.Fatalf("want one result, got %d", len(rs))
 	}
@@ -643,7 +643,7 @@ func TestCheckCoreFloorOnlyJSON(t *testing.T) {
 // TestCheckCoreFloorNoVault verifies the producer degrades to Skip (not a
 // panic or a bogus Pass) when no vault can be resolved.
 func TestCheckCoreFloorNoVault(t *testing.T) {
-	rs := checkProducers["core-floor"]("")
+	rs := check.Producers["core-floor"]("")
 	if len(rs) != 1 {
 		t.Fatalf("want one result, got %d", len(rs))
 	}
@@ -655,7 +655,7 @@ func TestCheckCoreFloorNoVault(t *testing.T) {
 // TestCheckResumeRefsNoVault verifies the producer degrades to Skip when no
 // vault can be resolved.
 func TestCheckResumeRefsNoVault(t *testing.T) {
-	rs := checkProducers["resume-refs"]("")
+	rs := check.Producers["resume-refs"]("")
 	if len(rs) != 1 {
 		t.Fatalf("want one result, got %d", len(rs))
 	}
