@@ -19,18 +19,29 @@ import (
 // by "that channel truncates large inline results" — a bound nobody ever
 // measured. The only refusal on record is ~62,463 characters, 15x the cap, and
 // payloads were under it either way. Knob and mechanism were deleted together.
+//
+// requireExplicitProject disables cwd defaulting on vp_bootstrap_context for
+// multiplexed transports (HTTP serve) whose process cwd is not per-client.
 type registerOptions struct {
-	cfg storage.Config
+	cfg                    storage.Config
+	requireExplicitProject bool
 }
 
 // RegisterOption configures RegisterAll. The zero set of options preserves the
-// default behaviour (empty config).
+// default behaviour (empty config, cwd defaulting allowed on bootstrap).
 type RegisterOption func(*registerOptions)
 
 // WithConfig supplies the storage.Config used to build the capture indexer.
 // Mirrors the old trailing cfg argument.
 func WithConfig(cfg storage.Config) RegisterOption {
 	return func(o *registerOptions) { o.cfg = cfg }
+}
+
+// WithRequireExplicitProject disables cwd-based project defaulting on
+// vp_bootstrap_context. Use on multiplexed transports (vp mcp serve / HTTP)
+// where os.Getwd() is the server process cwd, not the caller's project.
+func WithRequireExplicitProject() RegisterOption {
+	return func(o *registerOptions) { o.requireExplicitProject = true }
 }
 
 // RegisterAll registers all tools with the MCP registry.
@@ -41,7 +52,11 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 		opt(&o)
 	}
 
-	reg.MustRegister(BootstrapContextTool(resolver, vault))
+	if o.requireExplicitProject {
+		reg.MustRegister(BootstrapContextToolExplicit(resolver, vault))
+	} else {
+		reg.MustRegister(BootstrapContextTool(resolver, vault))
+	}
 	reg.MustRegister(GetCommandTool(resolver))
 	reg.MustRegister(GetSkillTool(resolver))
 	reg.MustRegister(ListCommandsTool(resolver))

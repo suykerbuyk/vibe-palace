@@ -43,6 +43,11 @@ func TestManagedBlockStructure(t *testing.T) {
 	if !strings.Contains(b, "vp_bootstrap_context") {
 		t.Error("block body missing bootstrap_context reference")
 	}
+	// Must name the project parameter (invocation, not mere mention) so the
+	// managed agentfile block does not re-introduce the cold-start omit bug.
+	if !strings.Contains(b, `"project"`) {
+		t.Error(`block body missing explicit {"project":...} bootstrap invocation shape`)
+	}
 	if !strings.Contains(b, "vpc-<name>") {
 		t.Error("block body missing vpc-<name> pattern")
 	}

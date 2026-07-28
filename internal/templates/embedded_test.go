@@ -121,6 +121,45 @@ func TestEmbeddedSHA_OverrideHook(t *testing.T) {
 	}
 }
 
+// TestEmbeddedCommands_BootstrapNamesProject is the delivery pin for the
+// restart template's vp_bootstrap_context invocation: the template must name
+// the project parameter (with {{PROJECT}} / JSON example), not merely mention
+// the tool. Without this pin the next template edit can re-delete the argument
+// the same way the original omit shipped for months — Claude survived on
+// ambient slug leak; Grok failed the first call of /vpc-restart.
+func TestEmbeddedCommands_BootstrapNamesProject(t *testing.T) {
+	resources, err := WalkEmbedded()
+	if err != nil {
+		t.Fatalf("WalkEmbedded returned error: %v", err)
+	}
+	var restart string
+	for _, r := range resources {
+		if r.RelPath == "commands/restart.md" {
+			restart = string(r.Bytes)
+			break
+		}
+	}
+	if restart == "" {
+		t.Fatal("embedded resource commands/restart.md missing")
+	}
+	// Full call literal — mention of the tool alone is not enough.
+	const bootstrapCall = `{"project": "{{PROJECT}}"}`
+	if !strings.Contains(restart, "vp_bootstrap_context") {
+		t.Error("commands/restart.md never names vp_bootstrap_context")
+	}
+	if !strings.Contains(restart, bootstrapCall) {
+		t.Errorf("commands/restart.md must invoke vp_bootstrap_context with %s — a bare call omits required project", bootstrapCall)
+	}
+	// Doctrine fetch in the same step must also name project for consistency.
+	if !strings.Contains(restart, "vp_get_doctrine") {
+		t.Error("commands/restart.md never names vp_get_doctrine")
+	}
+	// Count bootstrapCall occurrences: bootstrap + doctrine both use it.
+	if n := strings.Count(restart, bootstrapCall); n < 2 {
+		t.Errorf("commands/restart.md: want >=2 occurrences of %s (bootstrap + doctrine), got %d", bootstrapCall, n)
+	}
+}
+
 // TestEmbeddedCommands_SurfacePreflight is the regression guard for the
 // mcp-surface-handshake Phase 4 preflight: both the restart and wrap command
 // templates must instruct the executor to run the read-only surface preflight

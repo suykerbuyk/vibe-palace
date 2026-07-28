@@ -19,6 +19,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/resumezone"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -690,11 +691,144 @@ func TestBootstrapRejectsInvalidProject(t *testing.T) {
 	vault, resolver := testSetup(t)
 	tool := BootstrapContextTool(resolver, vault)
 
-	for _, bad := range []string{"MyApp", "has space", "../escape", ""} {
+	// Empty string is handled by resolveBootstrapProject (cwd default / loud
+	// error), not slug.Validate — covered by the defaulting tests below.
+	for _, bad := range []string{"MyApp", "has space", "../escape"} {
 		params := json.RawMessage(`{"project":"` + bad + `"}`)
 		if _, err := tool.Handler(context.Background(), params); err == nil {
 			t.Errorf("project %q: expected validation error, got nil", bad)
 		}
+	}
+}
+
+// TestBootstrapDefaultsProjectFromHighConfidenceCwd pins L4: when project is
+// omitted on the stdio tool, a high-confidence cwd signal plus an existing
+// Projects/<slug>/ in the vault supplies the slug. Basename-only dirs must
+// never default (see TestBootstrapRefusesBasenameDefault).
+func TestBootstrapDefaultsProjectFromHighConfidenceCwd(t *testing.T) {
+	vault, resolver := testSetup(t)
+	// Seed the vault project tree the existence gate requires.
+	if err := vault.WriteResume("hc-boot", "# Resume\n", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, project.ConfigFileName)
+	if err := os.WriteFile(cfg, []byte("[project]\nname = \"hc-boot\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	tool := BootstrapContextTool(resolver, vault)
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	br, ok := result.(BootstrapResult)
+	if !ok {
+		t.Fatalf("result type = %T", result)
+	}
+	if br.Project != "hc-boot" {
+		t.Errorf("Project = %q, want hc-boot", br.Project)
+	}
+}
+
+// TestBootstrapRefusesBasenameDefault is the ADR-006 pin: DetectProject would
+// happily return the directory basename, but bootstrap must not — a wrong
+// silent default returns a successful empty-ish payload and poisons the session.
+func TestBootstrapRefusesBasenameDefault(t *testing.T) {
+	vault, resolver := testSetup(t)
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "basename-only-proj")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Even if the vault happens to have that slug, basename is not high-confidence.
+	if err := vault.WriteResume("basename-only-proj", "# R\n", ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	tool := BootstrapContextTool(resolver, vault)
+	if _, err := tool.Handler(context.Background(), json.RawMessage(`{}`)); err == nil {
+		t.Fatal("expected error when only basename is available, got nil")
+	}
+}
+
+// TestBootstrapDefaultRequiresVaultProject pins the second L4 gate: a
+// high-confidence detect whose slug has no Projects/<slug>/ must fail loud
+// rather than AssembleBootstrap's graceful empty success.
+func TestBootstrapDefaultRequiresVaultProject(t *testing.T) {
+	vault, resolver := testSetup(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, project.ConfigFileName), []byte("[project]\nname = \"no-vault-tree\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	tool := BootstrapContextTool(resolver, vault)
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("expected error when Projects/<slug>/ is absent")
+	}
+	if !strings.Contains(err.Error(), "no-vault-tree") {
+		t.Errorf("error should name detected slug, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "vp_list_projects") {
+		t.Errorf("error should tell caller how to recover, got: %v", err)
+	}
+}
+
+// TestBootstrapExplicitProjectRequiredOnHTTPPath pins that the multiplexed
+// serve tool refuses empty project even when cwd would high-confidence detect.
+func TestBootstrapExplicitProjectRequiredOnHTTPPath(t *testing.T) {
+	vault, resolver := testSetup(t)
+	if err := vault.WriteResume("hc-boot", "# Resume\n", ""); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, project.ConfigFileName), []byte("[project]\nname = \"hc-boot\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	tool := BootstrapContextToolExplicit(resolver, vault)
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("explicit tool must require project even with high-confidence cwd")
+	}
+	if !strings.Contains(err.Error(), "project is required") {
+		t.Errorf("error = %v, want project is required", err)
+	}
+	// Explicit still works.
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"project":"hc-boot"}`))
+	if err != nil {
+		t.Fatalf("explicit project: %v", err)
+	}
+	if br := result.(BootstrapResult); br.Project != "hc-boot" {
+		t.Errorf("Project = %q", br.Project)
+	}
+}
+
+// TestBootstrapSchemaProjectOptional pins the schema shape change: project is
+// no longer in required[], so hosts may omit it and hit the handler default path.
+func TestBootstrapSchemaProjectOptional(t *testing.T) {
+	vault, resolver := testSetup(t)
+	tool := BootstrapContextTool(resolver, vault)
+	var schema struct {
+		Required   []string       `json:"required"`
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(tool.Schema, &schema); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	for _, r := range schema.Required {
+		if r == "project" {
+			t.Error("project must not be in schema required[] after L4 (handler gates defaulting)")
+		}
+	}
+	if _, ok := schema.Properties["project"]; !ok {
+		t.Error("project property missing from schema")
 	}
 }
 

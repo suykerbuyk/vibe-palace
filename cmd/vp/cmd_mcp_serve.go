@@ -163,8 +163,12 @@ func buildMCPServeHandler(stack *serverStack, token string, allowWrites bool) ht
 	// streamable-HTTP channel truncates large inline tool results" — never
 	// measured, and the reduction was invisible in the response. Deleted; the
 	// token ladder is the one reduction path and it reports what it drops.
+	// Require explicit project on bootstrap: HTTP serve multiplexes clients
+	// over one long-lived process whose cwd is the operator's launch dir, not
+	// a per-call project. Stdio MCP (vp mcp) keeps high-confidence cwd defaulting.
 	tools.RegisterAll(srv.Registry(), stack.resolver, stack.vault, stack.eng,
-		tools.WithConfig(stack.cfg))
+		tools.WithConfig(stack.cfg),
+		tools.WithRequireExplicitProject())
 	tools.RegisterResources(srv, stack.resolver, stack.vault)
 	if !allowWrites {
 		srv.DeleteTools(tools.MutatingToolNames...)

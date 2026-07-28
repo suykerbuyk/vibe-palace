@@ -23,13 +23,24 @@ func testServer(t *testing.T) *Server {
 
 // TestServerInstructionsConst guards the package-level bootstrap directive
 // against accidental emptying — it must be non-empty and point clients at
-// vp_bootstrap_context.
+// vp_bootstrap_context with an explicit project parameter (the cold-start
+// path that never touches restart.md).
 func TestServerInstructionsConst(t *testing.T) {
 	if ServerInstructions == "" {
 		t.Fatal("ServerInstructions is empty")
 	}
 	if !strings.Contains(ServerInstructions, "vp_bootstrap_context") {
 		t.Errorf("ServerInstructions missing vp_bootstrap_context: %q", ServerInstructions)
+	}
+	// Must name the project parameter so hosts without ambient slug leak
+	// (Grok) do not omit a required-until-defaulted argument on first call.
+	for _, phrase := range []string{
+		"project=",
+		`"project"`,
+	} {
+		if !strings.Contains(ServerInstructions, phrase) {
+			t.Errorf("ServerInstructions missing project-param phrase %q: %q", phrase, ServerInstructions)
+		}
 	}
 }
 

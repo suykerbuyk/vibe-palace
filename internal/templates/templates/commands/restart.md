@@ -119,8 +119,19 @@ vault; key nothing off it.
 
 ## Step 2: Bootstrap Context
 
-Call `vp_bootstrap_context` to load workflow, resume, active tasks,
-and recent sessions in a single call.
+Call `vp_bootstrap_context` with the project slug to load workflow, resume,
+active tasks, and recent sessions in a single call:
+
+```json
+{"project": "{{PROJECT}}"}
+```
+
+- **project**: `{{PROJECT}}` — always pass it when known. If expand left the
+  token empty at cold start (e.g. `vp_cmd` was called without `project`),
+  supply the slug you know, read it from `.vibe-palace.toml` `[project].name`,
+  or call `vp_list_projects`. On stdio MCP the server may derive a
+  high-confidence slug from cwd when omitted; do not rely on that when you
+  already know the project.
 
 `resume` and `workflow` arrive **whole**, on every transport. The one case
 where `resume` is reduced is token-budget pressure, and it announces itself
@@ -130,11 +141,15 @@ twice: `budget.shed` names `resume->pinned`, and the body opens with a
 reduced** — there is no longer a second, silent path that could shorten the
 resume without saying so.
 
-Then fetch the full operating doctrine with `vp_get_doctrine` (pass the
-project slug). The inline `workflow` is deliberately **thin** — it carries
-only this project's patterns plus a minimal pointer at the doctrine — so
-the doctrine fetch is not optional: it is where the standing behavioral
-rules arrive.
+Then fetch the full operating doctrine with `vp_get_doctrine`:
+
+```json
+{"project": "{{PROJECT}}"}
+```
+
+The inline `workflow` is deliberately **thin** — it carries only this
+project's patterns plus a minimal pointer at the doctrine — so the doctrine
+fetch is not optional: it is where the standing behavioral rules arrive.
 
 After bootstrap and the doctrine fetch, continue loading context in the
 order below.

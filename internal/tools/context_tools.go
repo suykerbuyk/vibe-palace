@@ -247,7 +247,7 @@ var bootstrapSchema = json.RawMessage(`{
 	"properties": {
 		"project": {
 			"type": "string",
-			"description": "Project slug. Required."
+			"description": "Project slug. Prefer always passing it. Optional on stdio MCP when the process cwd has a high-confidence signal (.vibe-palace.toml [project].name or git origin remote) AND Projects/<slug>/ exists in the bound vault; never derived from directory basename. Required on HTTP serve (multiplexed clients) and whenever detection is ambiguous — pass explicitly or call vp_list_projects."
 		},
 		"max_tokens": {
 			"type": "integer",
@@ -261,20 +261,33 @@ var bootstrapSchema = json.RawMessage(`{
 			"type": "string",
 			"description": "Room slug for palace-scoped command discovery (requires wing)."
 		}
-	},
-	"required": ["project"]
+	}
 }`)
 
 // BootstrapContextTool returns the MCP tool definition for vp_bootstrap_context.
 //
 // There is ONE reduction path and this description states it exactly. The old
 // `slim` param advertised a second one; it is gone (see AssembleBootstrap).
+//
+// Cwd-based project defaulting is enabled (stdio MCP). Use
+// BootstrapContextToolExplicit when the transport multiplexes clients over one
+// process cwd (HTTP serve) and must keep project required.
 func BootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Tool {
+	return bootstrapContextTool(resolver, vault, true)
+}
+
+// BootstrapContextToolExplicit is vp_bootstrap_context with no cwd defaulting —
+// project must be supplied on every call. Used by `vp mcp serve` (HTTP).
+func BootstrapContextToolExplicit(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Tool {
+	return bootstrapContextTool(resolver, vault, false)
+}
+
+func bootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, allowCwdDefault bool) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_bootstrap_context",
 		Description: "Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive. Sheds context to fit max_tokens and REPORTS WHAT IT SHED in `budget.shed` — every reduction this tool makes appears there, so an absent `budget` means nothing was reduced. A shed resume arrives as its `<!-- vp:pin -->` sections only, behind a banner — read `resume_uri` for the full body. A shed task list leaves `active_task_count` — call vp_list_tasks for it.",
 		Schema:      bootstrapSchema,
-		Handler:     bootstrapHandler(resolver, vault),
+		Handler:     bootstrapHandler(resolver, vault, allowCwdDefault),
 	}
 }
 
@@ -1097,20 +1110,24 @@ func joinExamples(xs []string) string {
 	}
 }
 
-func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault) mcp.HandlerFunc {
+func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault, allowCwdDefault bool) mcp.HandlerFunc {
 	return func(_ context.Context, params json.RawMessage) (any, error) {
 		var p bootstrapParams
 		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, err
+		}
+		projectSlug, err := resolveBootstrapProject(p.Project, vault, allowCwdDefault)
+		if err != nil {
 			return nil, err
 		}
 		// Validate the project up front: the result advertises resume_uri /
 		// workflow_uri built from it, and those URIs are later re-validated by
 		// ResolveURI / vp_read_resource. Reject a non-slug project here so we
 		// never hand out an URI the read path will refuse.
-		if err := slug.Validate(p.Project); err != nil {
-			return nil, fmt.Errorf("invalid project %q: %w", p.Project, err)
+		if err := slug.Validate(projectSlug); err != nil {
+			return nil, fmt.Errorf("invalid project %q: %w", projectSlug, err)
 		}
-		result := AssembleBootstrap(resolver, vault, p.Project, p.MaxTokens, p.Wing, p.Room)
+		result := AssembleBootstrap(resolver, vault, projectSlug, p.MaxTokens, p.Wing, p.Room)
 
 		// Session-start shim self-heal: bring this host's slash-command and
 		// skill shims into line with the vault's command set, so a command
@@ -1118,11 +1135,54 @@ func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Handle
 		// run `vp commands upgrade`. Best-effort and additive; runs only over
 		// the MCP handler (not the shared AssembleBootstrap, so `vp inject`
 		// stays read-only).
-		if rep := reconcileHostShims(resolver, p.Project); !rep.Empty() {
+		if rep := reconcileHostShims(resolver, projectSlug); !rep.Empty() {
 			result.ShimsSynced = &rep
 		}
 		return result, nil
 	}
+}
+
+// resolveBootstrapProject returns an explicit project slug, or — when
+// allowCwdDefault is set and the argument is empty — a high-confidence
+// cwd-derived slug that already has Projects/<slug>/ in the bound vault.
+// Basename fallback is never used. HTTP serve passes allowCwdDefault=false so
+// multiplexed clients cannot inherit the server process cwd.
+func resolveBootstrapProject(explicit string, vault *storage.Vault, allowCwdDefault bool) (string, error) {
+	if s := strings.TrimSpace(explicit); s != "" {
+		return s, nil
+	}
+	if !allowCwdDefault {
+		return "", fmt.Errorf("project is required: this transport does not default project from cwd (multiplexed HTTP serve) — pass project explicitly or call vp_list_projects")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("project is required: cannot resolve cwd for defaulting (%v) — pass project explicitly or call vp_list_projects", err)
+	}
+	detected, err := project.DetectProjectHighConfidence(cwd)
+	if err != nil {
+		return "", fmt.Errorf("project is required: %w", err)
+	}
+	if !vaultProjectDirExists(vault, detected) {
+		return "", fmt.Errorf("project is required: detected %q from cwd but Projects/%s/ is absent from the vault — pass project explicitly, run vp init, or call vp_list_projects", detected, detected)
+	}
+	return detected, nil
+}
+
+// vaultProjectDirExists reports whether Projects/<slug>/ is a directory in the
+// bound vault. Used as the second gate on cwd-defaulted bootstrap so a
+// high-confidence detect that names a phantom slug fails loud instead of
+// returning a successful empty-ish payload (AssembleBootstrap is graceful on
+// missing project trees).
+func vaultProjectDirExists(vault *storage.Vault, projectSlug string) bool {
+	if vault == nil {
+		return false
+	}
+	dir, err := vault.ProjectDir(projectSlug)
+	if err != nil {
+		return false
+	}
+	fi, err := os.Stat(dir)
+	return err == nil && fi.IsDir()
 }
 
 // reconcileHostShims runs the additive shim self-heal for the bootstrap's

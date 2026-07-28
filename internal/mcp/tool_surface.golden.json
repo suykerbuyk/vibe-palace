@@ -24,7 +24,7 @@
     {
       "name": "vp_bootstrap_context",
       "mutating": false,
-      "schema_sha256": "f11e15c08c190878907a6ce195d49331f65da1955aca7b82c3694837f2ec57da"
+      "schema_sha256": "132ac16cd4114f8cdd9ee9ba5283aead4177390e744a299eff13453dc9812451"
     },
     {
       "name": "vp_capture_session",

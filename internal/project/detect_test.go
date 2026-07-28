@@ -179,6 +179,95 @@ name = "config-name"
 	}
 }
 
+// --- DetectProjectHighConfidence tests ---
+
+func TestDetectProjectHighConfidence_Config(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir, `[project]
+name = "hc-config"
+`)
+	got, err := DetectProjectHighConfidence(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "hc-config" {
+		t.Errorf("got %q, want %q", got, "hc-config")
+	}
+}
+
+func TestDetectProjectHighConfidence_GitRemote(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	initGitRepo(t, dir, "https://github.com/user/hc-git.git")
+	got, err := DetectProjectHighConfidence(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "hc-git" {
+		t.Errorf("got %q, want %q", got, "hc-git")
+	}
+}
+
+func TestDetectProjectHighConfidence_NoBasenameFallback(t *testing.T) {
+	// Bare directory with a valid basename slug must NOT succeed — that is
+	// exactly the silent wrong-default DetectProject permits and bootstrap
+	// must refuse (worktree folders ≠ vault slugs).
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "looks-like-a-project")
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := DetectProjectHighConfidence(dir)
+	if err == nil {
+		t.Fatalf("expected error for basename-only dir, got slug %q", got)
+	}
+	if got != "" {
+		t.Errorf("slug on error = %q, want empty", got)
+	}
+	// DetectProject still falls through to basename — contrast pin.
+	if low, lerr := DetectProject(dir); lerr != nil || low != "looks-like-a-project" {
+		t.Errorf("DetectProject contrast = %q, %v; want looks-like-a-project", low, lerr)
+	}
+}
+
+func TestDetectProjectHighConfidence_ConfigBeatsGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	initGitRepo(t, dir, "https://github.com/user/git-name.git")
+	writeConfig(t, dir, `[project]
+name = "config-name"
+`)
+	got, err := DetectProjectHighConfidence(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "config-name" {
+		t.Errorf("got %q, want config-name", got)
+	}
+}
+
+func TestDetectProjectHighConfidence_EmptyConfigNameFallsToGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	initGitRepo(t, dir, "https://github.com/user/from-git.git")
+	writeConfig(t, dir, `[project]
+name = ""
+`)
+	got, err := DetectProjectHighConfidence(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "from-git" {
+		t.Errorf("got %q, want from-git", got)
+	}
+}
+
 // --- ParseProjectConfig tests ---
 
 func TestParseProjectConfig_Valid(t *testing.T) {

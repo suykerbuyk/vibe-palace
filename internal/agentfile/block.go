@@ -36,10 +36,12 @@ const (
 var blockBody = "## Vibe-Palace Integration\n" +
 	"\n" +
 	"BEFORE responding to the user's first message in a new session, call\n" +
-	"`vp_bootstrap_context` to load project context, resume, active tasks,\n" +
-	"recent sessions, and the command and skill manifests. Do this even if\n" +
-	"the first message seems trivial — the returned payload shapes every\n" +
-	"subsequent response.\n" +
+	"`vp_bootstrap_context` with the project slug to load project context,\n" +
+	"resume, active tasks, recent sessions, and the command and skill\n" +
+	"manifests — for example `{\"project\":\"<slug>\"}`. Prefer always naming\n" +
+	"`project`; on stdio MCP the server may derive it from a high-confidence\n" +
+	"cwd marker when omitted. Do this even if the first message seems trivial\n" +
+	"— the returned payload shapes every subsequent response.\n" +
 	"\n" +
 	"When the user types `vpc-<name>` (for example `vpc-wrap`, `vpc-restart`),\n" +
 	"call `" + CommandToolName + "` with `name=<name>`, follow the returned\n" +

@@ -186,6 +186,48 @@ func DetectProject(cwd string) (string, error) {
 	return slug, nil
 }
 
+// DetectProjectHighConfidence determines the project name for cwd using only
+// high-confidence signals — never the directory-basename fallback that
+// DetectProject uses as strategy 3. Priority:
+//  1. .vibe-palace.toml [project].name in cwd or any parent (bounded at $HOME)
+//  2. Git origin remote repository name
+//
+// Callers that would poison a whole session on a wrong default (e.g.
+// vp_bootstrap_context) must use this, not DetectProject. A basename guess
+// almost never errors and invents phantom slugs for worktrees whose folder
+// name differs from the vault project (ADR-006: absence is not a value).
+func DetectProjectHighConfidence(cwd string) (string, error) {
+	cwd, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", fmt.Errorf("resolve cwd: %w", err)
+	}
+
+	markerStart := cwd
+	if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
+		markerStart = filepath.Clean(resolved)
+	}
+	homeBoundary, _ := resolvedHome()
+	if configPath, err := findMarkerUpward(markerStart, homeBoundary); err == nil {
+		cfg, err := ParseProjectConfig(configPath)
+		if err == nil && cfg.Name != "" {
+			if err := slugpkg.Validate(cfg.Name); err != nil {
+				return "", fmt.Errorf("project name from config: %w", err)
+			}
+			return cfg.Name, nil
+		}
+		// Config exists but has no usable name — fall through to git.
+	}
+
+	if name, err := gitRemoteName(cwd); err == nil {
+		slug := slugify(name)
+		if slug != "" && slugpkg.Validate(slug) == nil {
+			return slug, nil
+		}
+	}
+
+	return "", fmt.Errorf("no high-confidence project signal at %q (need %s [project].name or a git origin remote); pass project explicitly or call vp_list_projects", cwd, ConfigFileName)
+}
+
 // resolveDir returns the symlink-resolved, cleaned absolute form of dir — the
 // same normalization DetectSignal applies — so a force-skip or boundary
 // comparison against it is exact.
