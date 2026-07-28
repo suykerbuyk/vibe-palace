@@ -114,7 +114,7 @@ func checkStatusRank(s check.Status) int {
 // underlying checks disagree about an absent vault (with Root == "" surface
 // returns Info while resume-refs returns Skip; with a root set but vanished
 // surface returns Fail while resume-refs returns Pass), so a single verdict
-// cannot be authoritative for five independent scans. Consumers key off the
+// cannot be authoritative for a set of independent scans. Consumers key off the
 // per-check rows.
 func checkAggregateStatus(results []check.Result) check.Status {
 	worst := check.Pass

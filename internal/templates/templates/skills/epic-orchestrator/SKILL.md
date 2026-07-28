@@ -192,10 +192,12 @@ vault-tooling epic. Do not stop at "merged":**
    drift row comes from a reconciler `vp check` runs directly, it is **not** one of the selectable
    checks, and no MCP tool reports it — do not "port" it to `vp_check` and quietly lose it. Then
    call `vp_check` (the MCP tool) with
-   `{"checks": ["resume-caps", "resume-refs", "core-floor", "pin-coverage"]}` — the host-agnostic
+   `{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "core-floor", "pin-coverage"]}` — the host-agnostic
    half, and the first proof the rolled tooling reaches an agent at all rather than merely existing.
    Report the per-check rows (the top-level `status` is an advisory roll-up); an `"info"` verdict is
-   a report, not a gate, and the rollout continues to step 3. `surface` is omitted here for the same
+   a report, not a gate, and the rollout continues to step 3. `vault-filesystem` is the one row here
+   that can return `"fail"` — relocating a vault off NTFS/exFAT is a human decision, so it too is
+   reported and the rollout continues. `surface` is omitted here for the same
    reason restart and wrap omit it — step 1 already proved the install took, by a stronger signal
    than the stamp.
 3. Apply the **deferred live-vault edits** you recorded, via `vp_vault_edit` (CAS, section-scoped —

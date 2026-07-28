@@ -181,10 +181,141 @@ func TestRunSelectedIsPure(t *testing.T) {
 func TestProducersSkipContractNamesAreStable(t *testing.T) {
 	got := names(mustRunAll(t))
 	sort.Strings(got)
-	want := []string{"Core floor", "Pin coverage", "Resume caps", "Resume refs", "Surface"}
+	want := []string{"Core floor", "Pin coverage", "Resume caps", "Resume refs",
+		"Stray scaffolds", "Surface", "Vault filesystem"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("check row names = %v, want %v", got, want)
 	}
+}
+
+// TestVaultFilesystemProducer covers the `vault-filesystem` selector end to
+// end through the registry — the only way an MCP host can reach it.
+//
+// Its no-vault verdict is the interesting half. CheckVaultFilesystem guards
+// the empty root ITSELF (vaultfs.go) rather than being wrapped in a guard like
+// the vault-scoped producers, so the producer carries no `vaultRoot == ""`
+// branch of its own. That is only safe while the check's own guard returns the
+// SAME Skip/"no vault configured" row the wrappers synthesize — pin it, or a
+// future edit to vaultfs.go silently gives one selector a different
+// degradation contract from every other.
+func TestVaultFilesystemProducer(t *testing.T) {
+	t.Run("no_vault", func(t *testing.T) {
+		rs, err := RunSelected("", "vault-filesystem")
+		if err != nil {
+			t.Fatalf("RunSelected: %v", err)
+		}
+		if len(rs) != 1 {
+			t.Fatalf("want one result, got %d", len(rs))
+		}
+		if rs[0].Name != "Vault filesystem" || rs[0].Status != Skip {
+			t.Errorf("got %+v, want a skipped Vault filesystem row", rs[0])
+		}
+		if rs[0].Summary != "no vault configured" {
+			t.Errorf("summary = %q, want the shared %q wording", rs[0].Summary, "no vault configured")
+		}
+	})
+
+	t.Run("missing_root_is_skip_not_fail", func(t *testing.T) {
+		gone := filepath.Join(t.TempDir(), "not-there")
+		rs, err := RunSelected(gone, "vault-filesystem")
+		if err != nil {
+			t.Fatalf("RunSelected: %v", err)
+		}
+		if rs[0].Status != Skip {
+			t.Errorf("absent root = %v, want Skip — no vault is not evidence of a hostile filesystem: %+v",
+				rs[0].Status, rs[0])
+		}
+	})
+
+	t.Run("real_root_probes_and_cleans_up", func(t *testing.T) {
+		root := t.TempDir()
+		rs, err := RunSelected(root, "vault-filesystem")
+		if err != nil {
+			t.Fatalf("RunSelected: %v", err)
+		}
+		if rs[0].Status == Skip {
+			t.Fatalf("a present, writable root must actually probe, got %+v", rs[0])
+		}
+		// This is the ONE producer that touches the filesystem it is
+		// reporting on. It must leave nothing behind: vp_check runs it
+		// against the live vault on every MCP caller's default invocation,
+		// and a residual probe file would show up as vault dirt in the very
+		// tidy report the restart preflight reads next.
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			t.Fatalf("ReadDir: %v", err)
+		}
+		for _, e := range entries {
+			if strings.Contains(e.Name(), "vp-fs-probe") {
+				t.Errorf("probe file %q survived the check", e.Name())
+			}
+		}
+	})
+}
+
+// TestStrayScaffoldsProducer covers the `stray-scaffolds` selector through the
+// registry, including the no-vault verdict. Its underlying check dereferences
+// v.Root unconditionally, so the producer's empty-root guard is not cosmetic:
+// without it the MCP tool would panic on a host whose vault never resolved.
+func TestStrayScaffoldsProducer(t *testing.T) {
+	t.Run("no_vault", func(t *testing.T) {
+		rs, err := RunSelected("", "stray-scaffolds")
+		if err != nil {
+			t.Fatalf("RunSelected: %v", err)
+		}
+		if len(rs) != 1 {
+			t.Fatalf("want one result, got %d", len(rs))
+		}
+		if rs[0].Name != "Stray scaffolds" || rs[0].Status != Skip {
+			t.Errorf("got %+v, want a skipped Stray scaffolds row", rs[0])
+		}
+		if rs[0].Summary != "no vault configured" {
+			t.Errorf("summary = %q, want the shared %q wording", rs[0].Summary, "no vault configured")
+		}
+	})
+
+	t.Run("finds_a_scaffold_only_project", func(t *testing.T) {
+		root := t.TempDir()
+		dir := filepath.Join(root, "Projects", "ghost")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+
+		rs, err := RunSelected(root, "stray-scaffolds")
+		if err != nil {
+			t.Fatalf("RunSelected: %v", err)
+		}
+		if rs[0].Status != Info {
+			t.Fatalf("status = %v, want Info: %+v", rs[0].Status, rs[0])
+		}
+		joined := strings.Join(append([]string{rs[0].Summary}, rs[0].Details...), "\n")
+		if !strings.Contains(joined, "ghost") {
+			t.Errorf("the stray project must be NAMED, not just counted:\n%s", joined)
+		}
+	})
+
+	t.Run("clean_vault_passes", func(t *testing.T) {
+		root := t.TempDir()
+		dir := filepath.Join(root, "Projects", "real")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		for _, f := range []string{"config.toml", "resume.md"} {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o644); err != nil {
+				t.Fatalf("write %s: %v", f, err)
+			}
+		}
+		rs, err := RunSelected(root, "stray-scaffolds")
+		if err != nil {
+			t.Fatalf("RunSelected: %v", err)
+		}
+		if rs[0].Status != Pass {
+			t.Errorf("status = %v, want Pass: %+v", rs[0].Status, rs[0])
+		}
+	})
 }
 
 func mustRunAll(t *testing.T) []Result {

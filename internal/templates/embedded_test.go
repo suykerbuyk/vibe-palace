@@ -196,16 +196,21 @@ func TestEmbeddedCommands_CheckSuiteDelivery(t *testing.T) {
 		body[r.RelPath] = string(r.Bytes)
 	}
 
-	// The whole call, pinned as one literal — not just the four names. It
-	// carries both halves of the selector decision: the hygiene checks are
-	// named explicitly (never the default, which is all five), and `surface`
-	// is deliberately ABSENT. vp_surface_check has already run in this same
-	// step, so selecting `surface` here would duplicate a scan and drag the
-	// only fail-capable row into an otherwise advisory result. Pinning the
-	// exact argument is what makes that omission enforceable: a looser
-	// four-name substring still matches a list that has quietly grown a
-	// fifth entry.
-	const selectors = `{"checks": ["resume-caps", "resume-refs", "core-floor", "pin-coverage"]}`
+	// The whole call, pinned as one literal — not just the six names, and not
+	// a set-equality check that would accept any ordering. It carries both
+	// halves of the selector decision: the hygiene checks are named explicitly
+	// (never the default, which is the whole registry), and `surface` is
+	// deliberately ABSENT — vp_surface_check has already run in this same
+	// step, so selecting `surface` here would duplicate a scan for no new
+	// information. Pinning the exact argument is what makes that omission
+	// enforceable: a looser per-name substring still matches a list that has
+	// quietly grown a `surface` entry.
+	//
+	// The literal must stay BYTE-IDENTICAL in all three templates. It is one
+	// contract with three delivery sites, and one literal is what lets a
+	// single constant here pin all of them — three near-identical spellings
+	// would need three pins and would drift apart at the first edit.
+	const selectors = `{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "core-floor", "pin-coverage"]}`
 
 	for _, rel := range []string{"commands/restart.md", "commands/wrap.md"} {
 		content, ok := body[rel]

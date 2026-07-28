@@ -80,6 +80,66 @@ func TestCheckEmitsVaultProjectRow(t *testing.T) {
 	}
 }
 
+// TestCheckFullSuiteEmitsEveryProducerRow is the anti-divergence guard for the
+// one thing this package still does twice.
+//
+// `vp check --check NAME` dispatches check.Producers. `vp check` with no
+// filter does NOT: gatherCheckResults calls the underlying check functions
+// directly, because it interleaves them with reconciler rows and deliberately
+// emits Surface LAST (the closing line of the report) rather than first, which
+// is where ProducerOrder puts it. Those are two call sites for one set of
+// named checks, and the failure mode is silent: add a producer, forget
+// gatherCheckResults, and the check is reachable over MCP while `vp check`
+// — the surface a human actually reads — never mentions it.
+//
+// Rather than assert a hand-written row list (a third copy of the concept),
+// this derives the expected names from the registry itself and requires the
+// full suite to carry every one.
+func TestCheckFullSuiteEmitsEveryProducerRow(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	vpDir := filepath.Join(configDir, "vibe-palace")
+	if err := os.MkdirAll(vpDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	vaultPath := filepath.Join(configDir, "vault")
+	if err := os.MkdirAll(filepath.Join(vaultPath, "Projects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vpDir, "config.toml"),
+		[]byte("vault_path = \""+vaultPath+"\"\ngit_enabled = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	projDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projDir, project.ConfigFileName),
+		[]byte("name = \"checktest\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(projDir)
+
+	fvJSON, _ := cli.ParseFlags(checkFlags, []string{"--json"})
+	out := captureStdout(t, func() { runCheck(cli.BuildInfo{Version: "test"}, fvJSON) })
+
+	var rep check.JSONReport
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
+	}
+	got := map[string]bool{}
+	for _, c := range rep.Checks {
+		got[c.Name] = true
+	}
+
+	for _, sel := range check.ProducerOrder {
+		for _, r := range check.Producers[sel](vaultPath) {
+			if !got[r.Name] {
+				t.Errorf("selector %q produces row %q, which the full `vp check` suite never emits — "+
+					"gatherCheckResults has fallen behind check.Producers", sel, r.Name)
+			}
+		}
+	}
+}
+
 func TestCheckCommandConstructor(t *testing.T) {
 	info := cli.BuildInfo{Version: "test"}
 	cmd := cmdCheck(info)

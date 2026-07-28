@@ -29,9 +29,13 @@ var checkFlags = []cli.FlagDef{
 
 func cmdCheck(info cli.BuildInfo) *cli.Command {
 	return &cli.Command{
-		Name:        "check",
-		Synopsis:    "vp check [--json] [--check NAME[,NAME...]]",
-		Description: "Verify installation, config, vault, embedder, surface compatibility, project detection, and vault hygiene (stray scaffolds, resume.md size/row caps, host-local plan refs, inviolable-core size floor, resume pin-marker coverage). Reports pass/fail status for each component. With --check, runs only the named check(s) via selective execution — skipping the expensive embedder load and tool-registry build — for fast scripting / AI preflights. Selectable names: surface, resume-caps, resume-refs, core-floor, pin-coverage.",
+		Name:     "check",
+		Synopsis: "vp check [--json] [--check NAME[,NAME...]]",
+		// The selectable-name list is JOINED FROM check.ProducerOrder, never
+		// typed out: a hand-written copy is a second registry of check names,
+		// and this one had already gone stale once by omitting checks the
+		// registry accepted.
+		Description: "Verify installation, config, vault, embedder, surface compatibility, project detection, and vault hygiene (vault filesystem, stray scaffolds, resume.md size/row caps, host-local plan refs, inviolable-core size floor, resume pin-marker coverage). Reports pass/fail status for each component. With --check, runs only the named check(s) via selective execution — skipping the expensive embedder load and tool-registry build — for fast scripting / AI preflights. Selectable names: " + strings.Join(check.ProducerOrder, ", ") + ".",
 		Flags:       checkFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp check", Comment: "Run all installation checks"},

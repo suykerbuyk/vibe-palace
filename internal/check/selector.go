@@ -31,13 +31,26 @@ import (
 
 // Producers maps a selector name to a light, dependency-light producer.
 // Designed to grow one cheap check at a time. The string arg is the resolved
-// vault path (cheap to compute; "" when unresolved — CheckSurface tolerates it,
-// every other producer degrades to Skip).
+// vault path (cheap to compute; "" when unresolved — CheckSurface and
+// CheckVaultFilesystem tolerate it on their own terms, every other producer is
+// wrapped in a guard that degrades to Skip).
 //
 // Adding an entry here MUST also add it to ProducerOrder; TestProducerOrderCoversProducers
 // fails the build otherwise.
 var Producers = map[string]func(vaultRoot string) []Result{
 	"surface": func(vaultRoot string) []Result { return []Result{CheckSurface(vaultRoot)} },
+	// CheckVaultFilesystem takes the root directly, like CheckSurface, and
+	// already guards the empty root itself (vaultfs.go) by returning the same
+	// Skip/"no vault configured" row the wrapped producers below synthesize —
+	// so no wrapper guard is needed here, and the degradation contract still
+	// holds.
+	"vault-filesystem": func(vaultRoot string) []Result { return []Result{CheckVaultFilesystem(vaultRoot)} },
+	"stray-scaffolds": func(vaultRoot string) []Result {
+		if vaultRoot == "" {
+			return []Result{{Name: "Stray scaffolds", Status: Skip, Summary: "no vault configured"}}
+		}
+		return []Result{CheckStrayScaffolds(storage.NewVault(vaultRoot))}
+	},
 	"resume-caps": func(vaultRoot string) []Result {
 		if vaultRoot == "" {
 			return []Result{{Name: "Resume caps", Status: Skip, Summary: "no vault configured"}}
@@ -74,8 +87,23 @@ var Producers = map[string]func(vaultRoot string) []Result{
 // order was caller-specified). Without a declared order the MCP checks[] array
 // and the CLI table would reorder between identical runs, which makes agent
 // narration irreproducible and output-comparing tests flap.
+//
+// The vault-wide, structural checks come first — the filesystem probe and the
+// scaffold scan describe the vault ITSELF — and the per-project resume
+// advisories follow. That is also the relative order `vp check`'s full suite
+// emits them in (cmd/vp/cmd_check.go, gatherCheckResults), so a reader
+// comparing an MCP `checks[]` array against the CLI table sees one sequence
+// rather than two arbitrary ones.
+//
+// `surface` is the one deliberate divergence: it leads here (cheapest, and the
+// verdict everything else is read under) but the full suite emits it LAST, as
+// the closing line of the report. That is precisely why gatherCheckResults
+// cannot just dispatch this slice wholesale — doing so would reorder `vp
+// check`'s long-standing output.
 var ProducerOrder = []string{
 	"surface",
+	"vault-filesystem",
+	"stray-scaffolds",
 	"resume-caps",
 	"resume-refs",
 	"core-floor",

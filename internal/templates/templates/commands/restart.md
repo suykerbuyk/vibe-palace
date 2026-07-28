@@ -82,27 +82,34 @@ diagnostic suite on the state you are about to load context from. Call
 `vp_check` (the MCP tool) with an **explicit** selector list:
 
 ```json
-{"checks": ["resume-caps", "resume-refs", "core-floor", "pin-coverage"]}
+{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "core-floor", "pin-coverage"]}
 ```
 
-Name those four deliberately. Do **not** omit the argument, and do
+Name those six deliberately. Do **not** omit the argument, and do
 **not** add `surface`: `vp_surface_check` already ran at the top of this
-step, so including it would repeat a scan and pull the one row that can
-return `"fail"` into a result that is otherwise advisory.
+step, so including it would repeat a scan for no new information.
+
+`stray-scaffolds` is the reason the tidy step above does not have to
+keep nagging: scaffold-only orphan projects are reported **once, here**,
+where they can be acted on, instead of re-listed on every tidy until the
+operator stops reading tidy output.
 
 The result is `{status, summary, checks: [{name, status, summary,
 details[]}]}`. Report the **per-check rows** to the human — for every
 row that is not `"pass"`, give its name, its status, its summary, and
 its `details` lines verbatim. The top-level `status` is an **advisory**
-worst-of roll-up across five independent scans that disagree about an
-absent vault; key nothing off it.
+worst-of roll-up across independent scans that disagree about an absent
+vault; key nothing off it.
 
-- 🔴 **An `"info"` verdict is a REPORT, never a gate.** These four
-  checks are Info-or-Pass by design — they do not return `"fail"`.
-  Unlike the surface preflight above, no verdict from this call ends the
-  restart: report what it found and **continue to Step 2 regardless**.
-  Vaults carry standing `pin-coverage` and `resume-caps` findings today;
-  a restart that refused to proceed on those would strand every host.
+- 🔴 **An `"info"` verdict is a REPORT, never a gate.** Five of these
+  six are Info-or-Pass by design. The exception is `vault-filesystem`,
+  which returns `"fail"` for a vault sitting on a filesystem that
+  rejects `":"` in filenames (NTFS/exFAT) — a real finding, and still
+  only a finding here: relocating a vault is a deliberate human move,
+  not something a restart performs or waits on. Whatever comes back,
+  report it and **continue to Step 2 regardless**. Vaults carry standing
+  `pin-coverage` and `resume-caps` findings today; a restart that
+  refused to proceed on those would strand every host.
 - **Report, do not auto-fix.** Do not rewrite `resume.md`, retune caps,
   or add pins to close a finding as part of the restart. Surface it; the
   human decides whether it becomes work.
