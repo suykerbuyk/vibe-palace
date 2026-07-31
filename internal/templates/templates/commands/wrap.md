@@ -110,6 +110,7 @@ Call `vp_capture_session` with:
 - **decisions**: key technical decisions made
 - **files_changed**: files created or modified
 - **open_threads**: unresolved items or follow-up work
+- **model**: the model identifier you are running as — **always pass it.** The session note's DoD requires `model`, and hook-less hosts (Grok, Zed pane, HTTP serve) cannot derive it from the transcript, so your self-report is the only source there; on Claude Code the SessionEnd hook also fills it in, so supplying it is harmless
 - **transcript**: when the host can supply the session transcript text, pass it (required for friction scoring and durable archive content on hook-less hosts)
 - **archive_transcript**: `true` — for hook-less hosts (Grok, Zed pane, HTTP serve) / when not relying on SessionEnd; Claude Code no-ops this when the server can derive the host session id
 

@@ -33,8 +33,9 @@ func stampVault(vaultRoot, path string) {
 // SessionID and Adapter are optional; the adapter fills in what it
 // can from its own environment.
 type CreateOptions struct {
-	// Adapter identifies the source format. Only "claude-code" is
-	// supported today; others are planned.
+	// Adapter identifies the source format. It must name a registered
+	// adapter; RegisteredAdapterNames() is the live set — claude-code,
+	// zed, and inline today. Required.
 	Adapter string
 
 	// SessionID uniquely identifies the session within the adapter's

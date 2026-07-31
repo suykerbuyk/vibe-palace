@@ -90,5 +90,5 @@ project: {{PROJECT}}
 |----------|--------|---------|
 | resume.md | `vp_bootstrap_context` | This file — current state and navigation |
 | workflow.md | `vp_bootstrap_context` | AI workflow rules and pair programming paradigm |
-| iterations.md | `vp_get_project_context` | Append-only archive of iteration narratives |
+| iterations.md | ⚠ no reader tool | Append-only archive of iteration narratives; `vp_get_project_context` does **not** serve this file |
 | tasks/ | `vp_list_tasks` / `vp_get_task` | Active task files; tasks/done/ for completed |
