@@ -605,3 +605,90 @@ func TestEmbeddedCommands_InlineArchiveDelivery(t *testing.T) {
 		}
 	}
 }
+
+// commitMsgConsume is the handoff command both commit-preparing templates give
+// the human, pinned as ONE literal for the same reason the vp_check selector
+// list is: it is one contract with two delivery sites, and two near-identical
+// spellings would drift apart at the first edit.
+//
+// The `&& rm` is the load-bearing half. `<project_root>/commit.msg` is written
+// by an agent and read by `git commit -F`, and until this suffix existed
+// nothing ever removed it — so the file survived its commit and the NEXT
+// `git commit -F` relanded a previous session's message onto different work,
+// silently, because a stale message is valid prose about the same project and
+// the file is gitignored so `git status` never shows it. The removal gives the
+// artifact an end of life: it runs only on a successful commit, and absence is
+// then fail-loud by git's own behavior (`fatal: could not read log file`,
+// HEAD unchanged).
+const commitMsgConsume = "git commit -F commit.msg && rm commit.msg"
+
+// TestEmbeddedCommands_CommitMsgConsume pins the consume half of the commit.msg
+// lifecycle into the two templates that hand a commit command to the human.
+//
+// This is the enforcement that makes the fix a contract rather than advice. The
+// control it replaces was prose — wrap.md warned that a stale project-root copy
+// "would fall back to a stale version or fail" — and prose failed as a control
+// at least three times in one project. ADR-006 is explicit that prose is not a
+// tier; a pinned literal is.
+func TestEmbeddedCommands_CommitMsgConsume(t *testing.T) {
+	resources, err := WalkEmbedded()
+	if err != nil {
+		t.Fatalf("WalkEmbedded returned error: %v", err)
+	}
+	body := make(map[string]string)
+	for _, r := range resources {
+		body[r.RelPath] = string(r.Bytes)
+	}
+
+	for _, rel := range []string{"commands/wrap.md", "commands/stage.md"} {
+		content, ok := body[rel]
+		if !ok {
+			t.Fatalf("embedded resource %q missing", rel)
+		}
+
+		// 1. The handoff literal is present at all.
+		if !strings.Contains(content, commitMsgConsume) {
+			t.Errorf("%s: never hands the human %q — without the `&& rm` the "+
+				"message survives its commit and the next `git commit -F` "+
+				"relands it on different work", rel, commitMsgConsume)
+			continue
+		}
+
+		// 2. Every PRESCRIPTION carries it. A prescription is a fenced command
+		// block; the bare `git commit -F commit.msg` still appears legitimately
+		// in prose that DESCRIBES which file git reads, and asserting the bare
+		// form is absent everywhere would forbid those sentences. Scoping to
+		// fences is what separates "the command we tell you to run" from "the
+		// command we are talking about" — and it is what catches a NEW handoff
+		// block added later without the consume.
+		for i, block := range shellFences(content) {
+			if !strings.Contains(block, "git commit -F") {
+				continue
+			}
+			if !strings.Contains(block, "&& rm commit.msg") {
+				t.Errorf("%s: shell block #%d prescribes `git commit -F` without "+
+					"`&& rm commit.msg`:\n%s", rel, i, block)
+			}
+		}
+	}
+}
+
+// shellFences returns the bodies of every ```sh fenced block in content.
+func shellFences(content string) []string {
+	var out []string
+	rest := content
+	for {
+		start := strings.Index(rest, "```sh")
+		if start < 0 {
+			return out
+		}
+		rest = rest[start+len("```sh"):]
+		end := strings.Index(rest, "```")
+		if end < 0 {
+			// Unterminated fence: the remainder is the block.
+			return append(out, rest)
+		}
+		out = append(out, rest[:end])
+		rest = rest[end+len("```"):]
+	}
+}

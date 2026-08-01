@@ -2,9 +2,9 @@
 
 Prepare the project working tree for a commit: run a light quality gate, author
 the `commit.msg`, and stage the changed files by path — then hand off so you can
-run `git commit -F commit.msg` yourself. This is the commit-preparation subset of
-`/wrap`, extracted so a feature-branch commit gets the same authoring and staging
-without the full end-of-session coherency sequence.
+run `git commit -F commit.msg && rm commit.msg` yourself. This is the
+commit-preparation subset of `/wrap`, extracted so a feature-branch commit gets the
+same authoring and staging without the full end-of-session coherency sequence.
 
 Do not ask for confirmation — run the gate, write `commit.msg`, stage the files,
 show what changed, and note that you should review before committing.
@@ -37,11 +37,15 @@ a commit that will not exist.
 
 `git commit -F commit.msg` reads the **project-root** `commit.msg`. Author it there:
 
-1. **Read** the project-root `commit.msg` first with the `Read` tool. It usually
-   exists from a prior stage or wrap, and the `Write` tool refuses to overwrite a
-   file it has not read this session — so this Read is mandatory, and it confirms you
-   are not clobbering anything unexpected.
-2. **Write** the new message to the project-root `commit.msg`.
+**Write** the new message to the project-root `commit.msg`. In the steady state
+the file does **not** exist — the commit that read it removed it — and `Write`
+needs no prior `Read` to create a file.
+
+**If `Write` refuses because the file already exists and has not been read this
+session, that refusal is a finding, not an obstacle.** A surviving `commit.msg`
+means the last commit did not consume it, which is the state that lands a prior
+message on new work. `Read` it (that clears the refusal), tell the human what it
+says, then overwrite it.
 
 Make the message **complete and standalone**: document every code change, feature
 added, and bug or warning resolved. Don't be terse — the commit message is the
@@ -72,8 +76,18 @@ Run `git status` and report:
 - `commit.msg` authored (its first line / byte count).
 - The files staged, by path — and anything left untracked — so you can verify.
 
-Note that you should review the staged diff and `commit.msg`, then run
-`git commit -F commit.msg`. `/stage` makes no commit itself. On a multi-commit feature
-branch, repeat `/stage` + commit per commit; after the branch is merged to `main`, run
+Note that you should review the staged diff and `commit.msg`, then commit with:
+
+```sh
+git commit -F commit.msg && rm commit.msg
+```
+
+**Hand over that whole command, including the `&& rm`.** The removal is what
+consumes the message — it runs only if the commit succeeded, and it is what stops
+the next `git commit -F` from silently relanding this message on different work. A
+failed commit leaves the file in place, so nothing is lost.
+
+`/stage` makes no commit itself. On a multi-commit feature branch, repeat
+`/stage` + commit per commit; after the branch is merged to `main`, run
 `/wrap` — on the now-clean tree it is coherency-only (it records the session and syncs
 the vault without re-staging).

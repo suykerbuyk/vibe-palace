@@ -234,7 +234,7 @@
     {
       "name": "vp_preflight_wrap",
       "mutating": false,
-      "schema_sha256": "66838c875858c422c0a68167dfd0b09cef752d27261a01078ca94b59d11d1e7c"
+      "schema_sha256": "43773f1e3d2953f20c3f4cffbc689f0bbbd91f7b8baa99eee9e9ab18882dd2ee"
     },
     {
       "name": "vp_read_resource",

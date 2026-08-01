@@ -6,6 +6,8 @@ package wrapstate
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
@@ -34,8 +36,12 @@ type PreflightResult struct {
 var surfaceCheckCompatible = surface.CheckCompatible
 
 // Preflight runs /wrap's readiness probe: surface compatibility (gating,
-// errors), vault dirty (advisory warning, scoped to Projects/<project>/), and
-// project dirty (advisory warning). Pure orchestration over the three helpers.
+// errors), vault dirty (advisory warning, scoped to Projects/<project>/),
+// project dirty (advisory warning), and an unconsumed commit.msg (advisory
+// warning, clean trees only). Pure orchestration over the helpers.
+//
+// projectRoot must come from the CALLER, never from the process working
+// directory — vp mcp is long-lived and its cwd is the host's launch directory.
 //
 // project, when non-empty, scopes the vault-dirty probe to Projects/<project>/
 // so a sibling project's uncommitted writes do not falsely trip the warning.
@@ -92,18 +98,46 @@ func Preflight(vaultRoot, projectRoot, project string) PreflightResult {
 		}
 	}
 
-	// 3. Project dirty (warning, never error).
-	projectDirty, err := ProjectHasUncommittedWrites(projectRoot)
-	if err != nil {
+	// 3. Project dirty (warning, never error) and, on a CLEAN tree only, an
+	// unconsumed commit.msg. One git probe serves both: the two checks are
+	// mutually exclusive branches of the same tree state, so calling
+	// ProjectGitState once is both cheaper and impossible to leave inconsistent.
+	//
+	// GitNotARepo is silent for both, as it was before: a directory with no
+	// commits cannot have an unconsumed message for one.
+	state, err := ProjectGitState(projectRoot)
+	switch {
+	case err != nil:
 		res.Warnings = append(res.Warnings, PreflightCheckItem{
 			Check:  "project_dirty",
 			Detail: fmt.Sprintf("project git status probe failed: %v", err),
 		})
-	} else if projectDirty {
+	case state == GitDirty:
 		res.Warnings = append(res.Warnings, PreflightCheckItem{
 			Check:  "project_dirty",
 			Detail: "project has uncommitted writes — wrap will likely include them in the next commit",
 		})
+	case state == GitClean:
+		// <project_root>/commit.msg is authored by wrap Step 7 or /stage Step 3
+		// and removed by the commit that consumes it (`git commit -F commit.msg
+		// && rm commit.msg`). So it exists only while the tree is dirty —
+		// between authoring and that commit. Present on a CLEAN tree it is a
+		// message nothing consumed, and the next `git commit -F` relands it on
+		// unrelated work: silently, because a stale message is valid prose about
+		// the same project and the file is gitignored, so `git status` never
+		// shows it.
+		//
+		// The invariant is derived from state git already reports — no stamp
+		// file, no mtime heuristic, no comparison against HEAD's message text.
+		if _, serr := os.Stat(filepath.Join(projectRoot, "commit.msg")); serr == nil {
+			res.Warnings = append(res.Warnings, PreflightCheckItem{
+				Check: "commit_msg_unconsumed",
+				Detail: fmt.Sprintf("%s exists but the project tree is CLEAN — this message was "+
+					"authored and never consumed, and the next `git commit -F commit.msg` would "+
+					"reland it on different work. Read it, then either use it for this session's "+
+					"commit or delete it.", filepath.Join(projectRoot, "commit.msg")),
+			})
+		}
 	}
 
 	res.OK = len(res.Errors) == 0

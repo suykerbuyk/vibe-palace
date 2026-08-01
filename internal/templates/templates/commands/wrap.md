@@ -100,6 +100,30 @@ part of the wrap** — running `vp archive link` is the human's per-pair approva
 (ADR-007). The staleness nag surfaces at the next bootstrap regardless, so this
 is a convenience, not a requirement.
 
+### Wrap readiness probe
+
+Call `vp_preflight_wrap` with `project_path` set to the local project repo root
+(any path inside it resolves). **`project_path` is required and the project is
+never inferred from the server's working directory** — `vp mcp` is long-lived and
+its cwd is the host's launch directory, not the repo you are working in.
+
+It returns `{ok, warnings[], errors[], notes[]}`. **Only `ok: false` halts the
+wrap** — that is a surface incompatibility, the same class the preflight at the
+top of this step gates on. Warnings and notes never flip `ok`; report them and
+continue.
+
+Report every warning to the human. One of them needs an action rather than a
+mention:
+
+- **`commit_msg_unconsumed`** — `<project_root>/commit.msg` exists while the
+  project tree is **clean**. That message was authored and never consumed by a
+  commit, so the next `git commit -F commit.msg` would reland it on unrelated
+  work. **Read the file and tell the human what it says and which commit it
+  looks like it was meant for**, before Step 7 overwrites it. If this session
+  wrote project code, Step 7 replaces it and the warning is resolved by the
+  normal flow; if it did not, Step 7 self-skips and the stale file survives —
+  say so explicitly, because nothing else will.
+
 ## Step 2: Capture the Session
 
 Call `vp_capture_session` with:
@@ -339,8 +363,8 @@ done.** Nothing else counts. Not passing tests, not a clean build, not your
 own reading of the diff.
 
 Note where you are in the flow: **wrap runs BEFORE the commit.** Step 8 stages
-files and the human runs `git commit -F commit.msg` afterward. So at this
-point the work is not even committed, and "it's implemented, I'll retire it"
+files and the human commits afterward. So at this point the work is not even
+committed, and "it's implemented, I'll retire it"
 is the agent adjudicating its own completion — exactly what the operator's
 standing Rule 0 forbids: *nothing is done until the human says it is done.*
 
@@ -431,8 +455,18 @@ sync:
    history is a separate append-log, `commit-log.md` — Step 7b keeps it.
 2. **Project-root working copy** — gitignored, host-local scratch; the
    path that `git commit -F commit.msg` reads when the user runs it,
-   consumed once and never committed:
+   never committed and **removed by the commit that consumes it**:
    `<project_root>/commit.msg`
+
+   **This file has a lifecycle, and absence is its steady state.** It
+   exists only between authoring (below) and the commit that reads it —
+   the handoff command Step 11 gives the human ends in `&& rm
+   commit.msg`, so consumption removes it. A `commit.msg` sitting beside
+   a **clean** project tree is therefore an anomaly: a message that was
+   authored and never consumed, or a commit made without consuming it.
+   That is the state that lands a previous session's message on a new
+   commit, and `vp_preflight_wrap` reports it as `commit_msg_unconsumed`
+   in Step 1.
 
 ### Workflow
 
@@ -441,23 +475,30 @@ Use the typed writer `vp_ingest_commit_msg`: it reads the
 surface-stamped. Author the message once in the project root, then
 ingest — do **not** hand-copy the vault file or `cp` between the two.
 
-1. **Read** the project-root `commit.msg` first with the `Read` tool.
-   It almost always exists from a prior wrap, and the `Write` tool
-   refuses to overwrite a file it has not read this session — so this
-   Read is mandatory. It also lets you confirm you are not clobbering
-   anything unexpected before replacing it.
-2. **Write** the new message to the project-root `commit.msg` via
-   `Write`.
-3. Call **`vp_ingest_commit_msg`** with `project_path` set to the
+1. **Write** the new message to the project-root `commit.msg` via
+   `Write`. In the steady state the file does **not** exist — the
+   previous commit consumed it — and `Write` needs no prior `Read` to
+   create a file.
+
+   **If `Write` refuses because the file exists and has not been read
+   this session, that refusal is a finding, not an obstacle.** A
+   `commit.msg` surviving into this wrap means the last commit did not
+   consume it. `Read` it (that clears the refusal), then report to the
+   human what it says and which commit it appears to describe, before
+   overwriting it — the message you are about to destroy may be the only
+   record of what a mis-messaged commit was supposed to say.
+2. Call **`vp_ingest_commit_msg`** with `project_path` set to the
    local project repo root. It reads the file you just wrote and emits
    the vault copy (`<vault_path>/Projects/<project>/commit.msg`)
    atomically and surface-stamped — there is no `content` parameter,
    so the message is emitted exactly once.
-4. **Verify** both copies match (compare byte counts / first line).
+3. **Verify** both copies match (compare byte counts / first line).
    The project-root copy is what `git commit -F commit.msg` reads; the
-   vault copy is the archive Step 9 commits. A missing or stale
-   project-root copy means `git commit -F commit.msg` would fall back
-   to a stale version or fail.
+   vault copy is the archive Step 9 commits. If the project-root copy is
+   missing at commit time, `git commit -F` fails outright — `fatal: could
+   not read log file` — and nothing lands. That is the intended failure:
+   a commit with no authored message is refused rather than given a
+   stale one.
 
 The **project-root** copy is host-local scratch — never stage or
 commit it in the project repo. The **vault** copy is the committed
@@ -571,4 +612,14 @@ Report what was done:
 - Vault tidied (capture artifacts swept; any reported dirt surfaced)
 
 Note that the user should review the staged diff and the
-`commit.msg` before running `git commit -F commit.msg`.
+`commit.msg`, then commit with:
+
+```sh
+git commit -F commit.msg && rm commit.msg
+```
+
+**Hand over that whole command, including the `&& rm`.** The removal is
+what consumes the message: it runs only if the commit succeeded, and it
+is what stops the next `git commit -F` from silently relanding this
+message on different work. A failed commit leaves the file in place, so
+nothing is lost.

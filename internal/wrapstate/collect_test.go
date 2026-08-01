@@ -319,6 +319,115 @@ func TestCollect_MemoryDirtNotNagWorthy(t *testing.T) {
 	}
 }
 
+// TestPreflight_CommitMsgUnconsumed pins the commit.msg lifecycle check.
+//
+// Real git repos, not the fakeGit stub: the invariant is about actual tree
+// state, and the failure this guards against is a mechanism that looks
+// implemented while never firing. The FIRST subtest is the positive case for
+// that reason — a suite that only proves a check stays quiet passes on a dead
+// one.
+func TestPreflight_CommitMsgUnconsumed(t *testing.T) {
+	oldChk := surfaceCheckCompatible
+	surfaceCheckCompatible = func(string) error { return nil }
+	t.Cleanup(func() { surfaceCheckCompatible = oldChk })
+
+	// ignoreCommitMsg makes commit.msg gitignored and committed-clean, exactly
+	// as a managed project has it. Without this the file itself dirties the
+	// tree and the clean-tree branch is never reached.
+	ignoreCommitMsg := func(t *testing.T, dir string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("/commit.msg\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{{"add", "-A"}, {"commit", "-m", "ignore commit.msg"}} {
+			cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+	}
+	writeMsg := func(t *testing.T, dir, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, "commit.msg"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	has := func(res PreflightResult, check string) bool {
+		for _, w := range res.Warnings {
+			if w.Check == check {
+				return true
+			}
+		}
+		return false
+	}
+
+	// FIRES: clean tree + commit.msg present. This is the acceptance floor —
+	// the shape of the live specimen found during review: a message authored
+	// before HEAD, byte-identical to no landed commit, sitting beside a clean
+	// tree. Nothing consumed it, and the next `git commit -F` would reland it.
+	t.Run("fires on clean tree with an unconsumed message", func(t *testing.T) {
+		proj := realGitRepo(t, false)
+		ignoreCommitMsg(t, proj)
+		writeMsg(t, proj, "feat(x): a subject matching no landed commit\n\nbody\n")
+
+		res := Preflight(mkGitDir(t), proj, "demo")
+		if !has(res, "commit_msg_unconsumed") {
+			t.Fatalf("expected commit_msg_unconsumed warning, got warnings=%+v", res.Warnings)
+		}
+		if !res.OK {
+			t.Error("an unconsumed commit.msg is advisory — it must not flip ok off")
+		}
+	})
+
+	// SILENT while authoring. A dirty tree is the legitimate window in which
+	// the file exists: wrap Step 7 has written it and the commit has not run.
+	// Firing here would nag on every correct wrap.
+	t.Run("silent on a dirty tree", func(t *testing.T) {
+		proj := realGitRepo(t, false)
+		ignoreCommitMsg(t, proj)
+		writeMsg(t, proj, "authored, not yet committed\n")
+		if err := os.WriteFile(filepath.Join(proj, "work.txt"), []byte("in progress"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		res := Preflight(mkGitDir(t), proj, "demo")
+		if has(res, "commit_msg_unconsumed") {
+			t.Errorf("must not fire while the tree is dirty; warnings=%+v", res.Warnings)
+		}
+		if !has(res, "project_dirty") {
+			t.Errorf("expected the existing project_dirty warning; warnings=%+v", res.Warnings)
+		}
+	})
+
+	// SILENT in the steady state: the commit consumed the file.
+	t.Run("silent when the message was consumed", func(t *testing.T) {
+		proj := realGitRepo(t, false)
+		ignoreCommitMsg(t, proj)
+
+		res := Preflight(mkGitDir(t), proj, "demo")
+		if has(res, "commit_msg_unconsumed") {
+			t.Errorf("must not fire with no commit.msg present; warnings=%+v", res.Warnings)
+		}
+	})
+
+	// SILENT outside a repo. A directory with no commits cannot have a message
+	// that a commit failed to consume, and this preserves the pre-existing
+	// behavior of ProjectHasUncommittedWrites, which flattened GitNotARepo to
+	// "not dirty" and warned about nothing.
+	t.Run("silent outside a git repo", func(t *testing.T) {
+		proj := t.TempDir()
+		writeMsg(t, proj, "orphan message in a non-repo\n")
+
+		res := Preflight(mkGitDir(t), proj, "demo")
+		if has(res, "commit_msg_unconsumed") {
+			t.Errorf("must not fire outside a git repo; warnings=%+v", res.Warnings)
+		}
+		if has(res, "project_dirty") {
+			t.Errorf("a non-repo must not be reported dirty; warnings=%+v", res.Warnings)
+		}
+	})
+}
+
 func TestPreflight_MemoryDirt(t *testing.T) {
 	oldChk := surfaceCheckCompatible
 	surfaceCheckCompatible = func(string) error { return nil }

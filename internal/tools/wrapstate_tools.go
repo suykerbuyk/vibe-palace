@@ -181,36 +181,54 @@ func StampIterTool(vault *storage.Vault) mcp.Tool {
 var preflightWrapSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"project": {"type": "string", "description": "Project slug. If omitted, detected from the working directory; if detection fails the vault_dirty probe degrades to whole-vault scope."}
-	}
+		"project": {"type": "string", "description": "Project slug. If omitted, detected from project_path; if detection fails the vault_dirty probe degrades to whole-vault scope."},
+		"project_path": {"type": "string", "description": "Absolute path to the local project repo root, or any path inside it. Required — the project is NEVER inferred from the server's working directory."}
+	},
+	"required": ["project_path"]
 }`)
 
 // PreflightWrapTool runs /wrap's readiness probe.
 func PreflightWrapTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name: "vp_preflight_wrap",
-		Description: "Run /wrap's readiness probe: surface compatibility (error if " +
-			"binary < vault stamp), vault dirty (warning, scoped to " +
-			"Projects/<project>/), project dirty (warning). Returns {ok, " +
-			"warnings[], errors[]}. ok=false halts the wrap so the operator can " +
-			"resolve the incompatibility.",
+		Description: "Run /wrap's readiness probe over the repo at project_path: " +
+			"surface compatibility (error if binary < vault stamp), vault dirty " +
+			"(warning, scoped to Projects/<project>/), project dirty (warning), " +
+			"and an unconsumed commit.msg (warning — the file is present on a " +
+			"CLEAN tree, meaning a message was authored and never consumed, so " +
+			"the next `git commit -F commit.msg` would reland it on different " +
+			"work). Returns {ok, warnings[], errors[], notes[]}. Only ok=false " +
+			"halts the wrap; warnings and notes never flip it.",
 		Schema: preflightWrapSchema,
 		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
 			var args struct {
-				Project string `json:"project"`
+				Project     string `json:"project"`
+				ProjectPath string `json:"project_path"`
 			}
 			if err := unmarshalParams(params, &args); err != nil {
 				return nil, err
 			}
-
-			cwd, err := os.Getwd()
-			if err != nil {
-				return nil, fmt.Errorf("get working directory: %w", err)
+			if args.ProjectPath == "" {
+				return nil, fmt.Errorf("project_path is required")
 			}
-			projectRoot := wrapstate.ResolveProjectRoot(cwd)
+
+			// Resolve from the CALLER's path, never os.Getwd(). vp mcp is
+			// long-lived and its cwd is the host's launch directory, not the
+			// project the agent is working in — the same defect
+			// internal/check/selector.go:14-19 documents. Under the old
+			// resolution this probe reported on whichever repo the server
+			// happened to be launched from.
+			projectRoot := wrapstate.ResolveProjectRoot(args.ProjectPath)
 
 			// Best-effort project resolution: a failure must not fail the
 			// preflight — degrade to empty project (whole-vault scope).
+			//
+			// Deliberately NOT gated by project.RequireKnownProject, unlike the
+			// commit tools. That gate exists to stop a write from scaffolding a
+			// phantom Projects/<slug>/ from an unmanaged directory; this handler
+			// writes nothing at all. Adding it here would refuse a read-only
+			// probe for a hazard that cannot occur, and would break the
+			// documented degrade-to-whole-vault-scope path above.
 			slug, perr := resolveWrapProject(args.Project, projectRoot)
 			if perr != nil {
 				slug = ""
