@@ -96,6 +96,7 @@ func TestResolveURIHappyPath(t *testing.T) {
 		{"knowledge", mcp.KnowledgeURI("demo"), bodies["knowledge"]},
 		{"learning", mcp.LearningURI("cache-invalidation"), bodies["learning"]},
 		{"iteration", mcp.IterationURI("demo", 7), bodies["iteration"]},
+		{"iteration-match", mcp.IterationMatchURI("demo", 7, 0), bodies["iteration"]},
 	}
 
 	for _, tc := range cases {
@@ -269,6 +270,7 @@ func TestRegisterResourcesRoundTrip(t *testing.T) {
 		{"knowledge", mcp.KnowledgeURI("demo"), bodies["knowledge"]},
 		{"learning", mcp.LearningURI("cache-invalidation"), bodies["learning"]},
 		{"iteration", mcp.IterationURI("demo", 7), bodies["iteration"]},
+		{"iteration-match", mcp.IterationMatchURI("demo", 7, 0), bodies["iteration"]},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

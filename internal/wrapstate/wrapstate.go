@@ -185,6 +185,17 @@ type iterHeading struct {
 func scanIterHeadings(content string) []iterHeading {
 	var out []iterHeading
 	for _, l := range mdfence.OutsideFences(content) {
+		// CommonMark: 4+ leading spaces is an indented code block, not a heading.
+		// mdfence tracks backtick/tilde fences only; without this check a
+		// "### Iteration N" quoted inside an indented sample becomes a false
+		// positive (auditor inventing findings — worse than missing them).
+		indent := 0
+		for indent < len(l.Text) && l.Text[indent] == ' ' {
+			indent++
+		}
+		if indent >= 4 {
+			continue
+		}
 		trimmed := strings.TrimSpace(l.Text)
 		m := iterHeadingRe.FindStringSubmatch(trimmed)
 		if m == nil {

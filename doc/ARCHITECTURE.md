@@ -645,6 +645,7 @@ and operate on storage directly.
 | `vp_get_knowledge` | workflow_tools.go | Workflow |
 | `vp_list_projects` | workflow_tools.go | Workflow |
 | `vp_append_iteration` | workflow_tools.go | Workflow |
+| `vp_get_iteration` | get_iteration_tool.go | Workflow |
 | `vp_list_tasks` | task_tools.go | Tasks |
 | `vp_get_task` | task_tools.go | Tasks |
 | `vp_manage_task` | task_tools.go | Tasks |

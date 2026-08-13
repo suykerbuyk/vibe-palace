@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
@@ -58,10 +59,9 @@ func callGetIteration(t *testing.T, vault *storage.Vault, params map[string]any)
 	if !got.Complete {
 		t.Fatal("complete must be true")
 	}
-	// complete must be last key in marshaled object
-	if !strings.HasSuffix(strings.TrimSpace(string(b)), `"complete":true}`) &&
-		!strings.Contains(string(b), `"complete":true`) {
-		t.Fatalf("complete missing in %s", b)
+	// complete is last on the wire (doctrine; also pinned by surface_wire_order_test).
+	if !strings.HasSuffix(strings.TrimSpace(string(b)), `"complete":true}`) {
+		t.Fatalf("complete must be the last JSON key, got tail %q", string(b)[max(0, len(b)-40):])
 	}
 	return got
 }
@@ -95,8 +95,21 @@ func TestGetIteration_DuplicateN(t *testing.T) {
 	if got.Entries[0].Title != "a" || got.Entries[2].Title != "c" {
 		t.Fatalf("%+v", got.Entries)
 	}
-	if got.Entries[0].Matches != 3 || got.Entries[1].MatchIndex != 1 {
-		t.Fatalf("match meta %+v", got.Entries)
+	if got.Entries[0].Matches != 3 {
+		t.Fatalf("matches=%d", got.Entries[0].Matches)
+	}
+	if got.Entries[0].MatchIndex == nil || *got.Entries[0].MatchIndex != 0 {
+		t.Fatalf("row0 match_index must be present and 0, got %+v", got.Entries[0].MatchIndex)
+	}
+	if got.Entries[1].MatchIndex == nil || *got.Entries[1].MatchIndex != 1 {
+		t.Fatalf("row1 match_index=%v", got.Entries[1].MatchIndex)
+	}
+	// content_uri must address THIS row, not silently the last duplicate.
+	for i, e := range got.Entries {
+		wantURI := "vibe-palace://iteration/demo/128/" + itoa(i)
+		if e.ContentURI != wantURI {
+			t.Errorf("row%d uri=%s want %s", i, e.ContentURI, wantURI)
+		}
 	}
 }
 
@@ -345,5 +358,78 @@ func TestGetIteration_NModeFirstOversizeThenManifests(t *testing.T) {
 	wire, _ := json.Marshal(got)
 	if len(wire) > HostInlineCapBytes {
 		t.Fatalf("wire %d > cap", len(wire))
+	}
+}
+
+// TestIterationURI_MatchIndexByteIdentity pins the duplicate-N contract:
+// content_uri on row i must resolve to row i's body, not the last match.
+func TestIterationURI_MatchIndexByteIdentity(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedIterations(t, vault, "demo",
+		frame(128, "a", "BODY-A"),
+		frame(128, "b", "BODY-B"),
+		frame(128, "c", "BODY-C"),
+		frame(128, "d", "BODY-D"),
+	)
+	got := callGetIteration(t, vault, map[string]any{"project": "demo", "n": 128})
+	if got.Returned != 4 {
+		t.Fatalf("returned=%d", got.Returned)
+	}
+	for i, e := range got.Entries {
+		body, _, err := ResolveURI(e.ContentURI, nil, vault)
+		if err != nil {
+			t.Fatalf("row%d ResolveURI(%s): %v", i, e.ContentURI, err)
+		}
+		if body != e.Body {
+			t.Fatalf("row%d URI %s resolved to %q, want row body %q", i, e.ContentURI, body, e.Body)
+		}
+	}
+	// Bare form still means last match.
+	last, _, err := ResolveURI(mcp.IterationURI("demo", 128), nil, vault)
+	if err != nil || last != "BODY-D" {
+		t.Fatalf("bare URI last-match: got %q err %v", last, err)
+	}
+}
+
+// TestGetIteration_DefaultBudgetWireCap pins the DEFAULT max_bytes path on a
+// many-small-entry fixture. Per-row overhead is what blows the host cap; entry
+// COUNT is the variable. Round-one body-only budgeting produced 33 KB wire at
+// default on 100×120 B bodies — this must stay ≤ HostInlineCapBytes.
+func TestGetIteration_DefaultBudgetWireCap(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	var frames []string
+	body := strings.Repeat("x", 120)
+	for i := 1; i <= 100; i++ {
+		frames = append(frames, frame(i, "t"+itoa(i), body))
+	}
+	seedIterations(t, vault, "demo", frames...)
+	// Omit max_bytes → DefaultGetIterationMaxBytes.
+	got := callGetIteration(t, vault, map[string]any{"project": "demo", "recent": true})
+	if got.MaxBytes != DefaultGetIterationMaxBytes {
+		t.Fatalf("max_bytes defaulted to %d, want %d", got.MaxBytes, DefaultGetIterationMaxBytes)
+	}
+	wire, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wire) > HostInlineCapBytes {
+		t.Fatalf("default-budget wire %d exceeds host cap %d (returned=%d inlined=%d)",
+			len(wire), HostInlineCapBytes, got.Returned, got.BytesInlined)
+	}
+}
+
+func TestIterationResource_MissingFileNoAbsPath(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	_, _, err := ResolveURI(mcp.IterationURI("never-wrapped", 1), nil, vault)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, string(os.PathSeparator)+"Projects"+string(os.PathSeparator)) ||
+		strings.Contains(msg, vault.Root) {
+		t.Fatalf("absolute vault path leaked over the wire: %q", msg)
+	}
+	if !strings.Contains(msg, "no iterations.md") {
+		t.Fatalf("want clean message, got %q", msg)
 	}
 }

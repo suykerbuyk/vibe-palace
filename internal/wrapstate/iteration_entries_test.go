@@ -131,3 +131,42 @@ func TestScanIterHeadings_ExportMatchesCounter(t *testing.T) {
 		t.Fatalf("%+v", h)
 	}
 }
+
+func TestParseEntries_IndentedHeadingIgnored(t *testing.T) {
+	// 4-space indent is an indented code block, not a heading (CommonMark).
+	content := FormatIterationHeader(1, "real") + "\n\nbody\n\n" +
+		"    ### Iteration 99 — quoted in an indented sample\n"
+	got := ParseEntries(content)
+	if len(got) != 1 || got[0].N != 1 {
+		t.Fatalf("indented heading must not match: %+v", got)
+	}
+}
+
+func TestParseEntries_BodyTrailingThematicBreakPreserved(t *testing.T) {
+	// A body's own trailing "---" that is NOT the writer frame separator
+	// (writer frame is \n---\n before the NEXT header) must survive when it
+	// is part of the narrative. Between two entries the frame is stripped.
+	body := "line\n---\nmore"
+	content := "# t\n" + writerFrame(1, "one", body) + writerFrame(2, "two", "x")
+	got := ParseEntries(content)
+	if len(got) != 2 {
+		t.Fatalf("%+v", got)
+	}
+	if got[0].Body != body {
+		t.Fatalf("body thematic break stripped incorrectly: %q want %q", got[0].Body, body)
+	}
+}
+
+func TestEntryByNMatch(t *testing.T) {
+	content := writerFrame(5, "a", "A") + writerFrame(5, "b", "B") + writerFrame(5, "c", "C")
+	e, ok := EntryByNMatch(content, 5, 1)
+	if !ok || e.Body != "B" || e.Title != "b" {
+		t.Fatalf("match 1: %+v ok=%v", e, ok)
+	}
+	if _, ok := EntryByNMatch(content, 5, 3); ok {
+		t.Fatal("out of range should miss")
+	}
+	if _, ok := EntryByNMatch(content, 9, 0); ok {
+		t.Fatal("missing N")
+	}
+}

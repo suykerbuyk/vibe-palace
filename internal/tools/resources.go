@@ -51,9 +51,14 @@ const resourceMIME = "text/markdown"
 //     non-deterministic across a midnight boundary.
 type resourceType struct {
 	name     string   // first URI segment, e.g. "task"
-	template string   // RFC 6570 template, e.g. mcp.TaskURITemplate
-	vars     []string // ordered var names the template binds, e.g. {"project","slug"}
-	resolve  func(vars map[string]string, resolver *vpctx.Resolver, vault *storage.Vault) (string, error)
+	template string   // RFC 6570 template (full form when optionalVars is set)
+	vars     []string // required ordered path vars after the type, e.g. {"project","slug"}
+	// optionalVars are trailing path segments the URI may omit. When non-empty,
+	// template is the FULL form (required+optional) and shortTemplate is the
+	// bare required-only form — both are registered with MCP.
+	optionalVars  []string
+	shortTemplate string // required when optionalVars is set
+	resolve       func(vars map[string]string, resolver *vpctx.Resolver, vault *storage.Vault) (string, error)
 }
 
 // resourceTypes is the single source of truth for the resource surface.
@@ -151,27 +156,16 @@ var resourceTypes = []resourceType{
 		},
 	},
 	{
-		name: "iteration", template: mcp.IterationURITemplate, vars: []string{"project", "n"},
-		resolve: func(v map[string]string, _ *vpctx.Resolver, vault *storage.Vault) (string, error) {
-			n, err := strconv.Atoi(v["n"])
-			if err != nil || n < 1 {
-				return "", fmt.Errorf("iteration n must be a positive integer, got %q", v["n"])
-			}
-			path, err := vault.IterationsFile(v["project"])
-			if err != nil {
-				return "", err
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return "", fmt.Errorf("read iterations.md: %w", err)
-			}
-			// Last file-order match — URI addresses one body. Duplicates: last wins.
-			e, ok := wrapstate.LastEntryByN(string(data), n)
-			if !ok {
-				return "", fmt.Errorf("iteration %d not found in project %q", n, v["project"])
-			}
-			return e.Body, nil
-		},
+		// Bare form (shortTemplate): last file-order match for N.
+		// Full form (template): match is 0-based file-order index among same-N
+		// narratives — the form content_uri on tool rows must use so a handle is
+		// byte-identical to that row's body (not silently the last duplicate).
+		name:          "iteration",
+		template:      mcp.IterationMatchURITemplate,
+		shortTemplate: mcp.IterationURITemplate,
+		vars:          []string{"project", "n"},
+		optionalVars:  []string{"match"},
+		resolve:       resolveIterationResource,
 	},
 }
 
@@ -190,15 +184,30 @@ func resourceTypeByName(name string) *resourceType {
 // simple {var} expansion already won't match "/", but this is defense-in-depth
 // against traversal and empty segments.
 func (rt *resourceType) bindVars(pathSegs []string, uri string) (map[string]string, error) {
-	if len(pathSegs) != len(rt.vars) {
-		return nil, fmt.Errorf("malformed %s URI %q: want %s", rt.name, uri, rt.template)
+	min, max := len(rt.vars), len(rt.vars)+len(rt.optionalVars)
+	if len(pathSegs) < min || len(pathSegs) > max {
+		want := rt.template
+		if rt.shortTemplate != "" {
+			want = rt.shortTemplate + " or " + rt.template
+		}
+		return nil, fmt.Errorf("malformed %s URI %q: want %s", rt.name, uri, want)
 	}
-	vars := make(map[string]string, len(rt.vars))
+	vars := make(map[string]string, max)
 	for i, name := range rt.vars {
 		if err := slug.Validate(pathSegs[i]); err != nil {
 			return nil, fmt.Errorf("invalid %s in %q: %w", name, uri, err)
 		}
 		vars[name] = pathSegs[i]
+	}
+	for i, name := range rt.optionalVars {
+		si := len(rt.vars) + i
+		if si >= len(pathSegs) {
+			break
+		}
+		if err := slug.Validate(pathSegs[si]); err != nil {
+			return nil, fmt.Errorf("invalid %s in %q: %w", name, uri, err)
+		}
+		vars[name] = pathSegs[si]
 	}
 	return vars, nil
 }
@@ -244,18 +253,67 @@ func ResolveURI(uri string, resolver *vpctx.Resolver, vault *storage.Vault) (tex
 func RegisterResources(srv *mcp.Server, resolver *vpctx.Resolver, vault *storage.Vault) {
 	for i := range resourceTypes {
 		rt := &resourceTypes[i]
-		srv.AddContentResource(rt.template, rt.name, resourceMIME,
-			func(_ context.Context, vars map[string]string) (string, string, error) {
-				for _, name := range rt.vars {
-					if err := slug.Validate(vars[name]); err != nil {
+		handler := func(_ context.Context, vars map[string]string) (string, string, error) {
+			for _, name := range rt.vars {
+				if err := slug.Validate(vars[name]); err != nil {
+					return "", "", fmt.Errorf("invalid %s: %w", name, err)
+				}
+			}
+			for _, name := range rt.optionalVars {
+				if v, ok := vars[name]; ok && v != "" {
+					if err := slug.Validate(v); err != nil {
 						return "", "", fmt.Errorf("invalid %s: %w", name, err)
 					}
 				}
-				body, err := rt.resolve(vars, resolver, vault)
-				if err != nil {
-					return "", "", err
-				}
-				return body, resourceMIME, nil
-			})
+			}
+			body, err := rt.resolve(vars, resolver, vault)
+			if err != nil {
+				return "", "", err
+			}
+			return body, resourceMIME, nil
+		}
+		// Full template first (or the only one).
+		srv.AddContentResource(rt.template, rt.name, resourceMIME, handler)
+		if rt.shortTemplate != "" && rt.shortTemplate != rt.template {
+			srv.AddContentResource(rt.shortTemplate, rt.name, resourceMIME, handler)
+		}
 	}
+}
+
+// resolveIterationResource serves vibe-palace://iteration/{project}/{n}[/{match}].
+// Bare form → last file-order match. With match → that 0-based index among
+// same-N narratives (the form tool content_uri uses for byte-identity).
+func resolveIterationResource(v map[string]string, _ *vpctx.Resolver, vault *storage.Vault) (string, error) {
+	n, err := strconv.Atoi(v["n"])
+	if err != nil || n < 1 {
+		return "", fmt.Errorf("iteration n must be a positive integer, got %q", v["n"])
+	}
+	path, err := vault.IterationsFile(v["project"])
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", fmt.Errorf("project %q has no iterations.md", v["project"])
+		}
+		return "", fmt.Errorf("read iterations.md: %w", err)
+	}
+	content := string(data)
+	if ms, ok := v["match"]; ok && ms != "" {
+		idx, err := strconv.Atoi(ms)
+		if err != nil || idx < 0 {
+			return "", fmt.Errorf("iteration match must be a non-negative integer, got %q", ms)
+		}
+		e, found := wrapstate.EntryByNMatch(content, n, idx)
+		if !found {
+			return "", fmt.Errorf("iteration %d match %d not found in project %q", n, idx, v["project"])
+		}
+		return e.Body, nil
+	}
+	e, ok := wrapstate.LastEntryByN(content, n)
+	if !ok {
+		return "", fmt.Errorf("iteration %d not found in project %q", n, v["project"])
+	}
+	return e.Body, nil
 }

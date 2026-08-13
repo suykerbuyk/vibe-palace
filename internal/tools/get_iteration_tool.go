@@ -75,18 +75,23 @@ type getIterationParams struct {
 
 // iterationEntryRow is one narrative in the result. When Body is non-empty the
 // entry was inlined whole; when Body is empty the row is a manifest handle
-// (Option B) and ContentURI addresses the per-iteration resource.
+// (Option B) and ContentURI addresses that exact narrative.
 //
-// A body is never partial: whole block or handle. That is binding design law.
+// Field order is load-bearing (handle-before-bulk doctrine, 00b0623): identity
+// and content_uri MUST precede Header/Body so a host cut still leaves a
+// recovery handle. A body is never partial: whole block or handle.
 type iterationEntryRow struct {
 	N          int    `json:"n"`
 	Title      string `json:"title"`
 	Bytes      int    `json:"bytes"`
+	ContentURI string `json:"content_uri"`
+	// MatchIndex is 0-based among same-N matches. Pointer so index 0 is
+	// distinguishable from "field absent" (omitempty on a bare int erases 0).
+	// Set together with Matches when Matches > 1; both omitted otherwise.
+	MatchIndex *int   `json:"match_index,omitempty"`
+	Matches    int    `json:"matches,omitempty"`
 	Header     string `json:"header,omitempty"`
 	Body       string `json:"body,omitempty"`
-	ContentURI string `json:"content_uri"`
-	MatchIndex int    `json:"match_index,omitempty"` // 0-based among same-N matches; set when Matches > 1
-	Matches    int    `json:"matches,omitempty"`     // total same-N matches; set on every row when > 1
 }
 
 // getIterationResult is a wrapper struct (never a bare array) so complete can
@@ -346,19 +351,29 @@ func buildRecentResult(project, content string, maxBytes int) (getIterationResul
 }
 
 func entryToRow(project string, e wrapstate.Entry, inline bool, matchIndex, matchTotal int) iterationEntryRow {
+	// Multi-match rows MUST use the indexed URI so content_uri is byte-identical
+	// to this row's body (bare form resolves last-match only — wrong for row 0).
+	// Unique N uses the bare form (last == only); both resolve to the same body.
+	var uri string
+	if matchTotal > 1 {
+		uri = mcp.IterationMatchURI(project, e.N, matchIndex)
+	} else {
+		uri = mcp.IterationURI(project, e.N)
+	}
 	row := iterationEntryRow{
 		N:          e.N,
 		Title:      e.Title,
 		Bytes:      e.Bytes,
-		ContentURI: mcp.IterationURI(project, e.N),
+		ContentURI: uri,
+	}
+	if matchTotal > 1 {
+		idx := matchIndex
+		row.MatchIndex = &idx
+		row.Matches = matchTotal
 	}
 	if inline {
 		row.Header = e.Header
 		row.Body = e.Body
-	}
-	if matchTotal > 1 {
-		row.MatchIndex = matchIndex
-		row.Matches = matchTotal
 	}
 	return row
 }

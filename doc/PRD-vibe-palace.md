@@ -581,6 +581,7 @@ flowchart TD
 | `vp_get_friction_trends` | project?, weeks? | Friction and efficiency trends by ISO-calendar week (complementary to the rolling 7/30/90-day windows of the `vp trends` CLI command) |
 | `vp_get_effectiveness` | project?, weeks?, sections? | Context availability vs outcome correlation. `sections` (`overall`/`weeks`, default both) trims the payload by zeroing the unselected section (present-but-empty, not computed); orthogonal to the `weeks` bucket count |
 | `vp_append_iteration` | project?, iteration?, title (req), narrative (req), date? | Append iteration narrative |
+| `vp_get_iteration` | project (req), n? XOR recent?, max_bytes? | Structure-aware read of iterations.md (by N or recent fill); never truncates a body |
 
 ### 6.3 Search Tools (from MemPalace, new)
 

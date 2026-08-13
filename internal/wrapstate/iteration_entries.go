@@ -94,13 +94,24 @@ func EntriesByN(content string, n int) []Entry {
 }
 
 // LastEntryByN returns the last file-order match for n, if any.
-// Used by the per-iteration resource URI (one body per URI).
+// Used by the bare per-iteration resource URI (iteration/{project}/{n}).
 func LastEntryByN(content string, n int) (Entry, bool) {
 	all := EntriesByN(content, n)
 	if len(all) == 0 {
 		return Entry{}, false
 	}
 	return all[len(all)-1], true
+}
+
+// EntryByNMatch returns the matchIndex-th file-order match for n (0-based).
+// Used by iteration/{project}/{n}/{match} so content_uri is byte-identical to
+// the tool row that advertised it.
+func EntryByNMatch(content string, n, matchIndex int) (Entry, bool) {
+	all := EntriesByN(content, n)
+	if matchIndex < 0 || matchIndex >= len(all) {
+		return Entry{}, false
+	}
+	return all[matchIndex], true
 }
 
 // EntriesNewestFirst returns entries in reverse file order (newest first).
@@ -122,19 +133,19 @@ func EntriesNewestFirst(content string) []Entry {
 // header and the next: leading/trailing blank lines and a trailing "---"
 // separator line that precedes the next entry's "\n---\n" frame.
 func stripEntryBody(raw string) string {
+	// Writer frame ends the previous entry with "\n---\n" before the next
+	// header. After joining body lines that trailing separator appears as a
+	// final "\n---" (or bare "---" if the body was empty). Strip only that
+	// framing — a body's own thematic break is preserved when it is not the
+	// sole trailing separator pattern the writer emits between entries.
 	s := strings.TrimSpace(raw)
-	for {
-		switch {
-		case strings.HasSuffix(s, "\n---"):
-			s = strings.TrimSpace(strings.TrimSuffix(s, "\n---"))
-		case s == "---":
-			return ""
-		case strings.HasSuffix(s, "---") && (len(s) == 3 || s[len(s)-4] == '\n'):
-			s = strings.TrimSpace(s[:len(s)-3])
-		default:
-			return s
-		}
+	if rest, ok := strings.CutSuffix(s, "\n---"); ok {
+		return strings.TrimSpace(rest)
 	}
+	if s == "---" {
+		return ""
+	}
+	return s
 }
 
 // titleFromHeader extracts the title after "Iteration N —" / "Iteration N -".

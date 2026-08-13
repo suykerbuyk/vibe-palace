@@ -21,7 +21,12 @@ const (
 	SessionURITemplate   = ResourceScheme + "session/{project}/{session_id}"
 	KnowledgeURITemplate = ResourceScheme + "knowledge/{project}"
 	LearningURITemplate  = ResourceScheme + "learning/{slug}"
+	// IterationURITemplate is the bare form: last file-order match for N.
 	IterationURITemplate = ResourceScheme + "iteration/{project}/{n}"
+	// IterationMatchURITemplate addresses one duplicate-N narrative by
+	// 0-based match index (file order). content_uri on tool rows uses this
+	// form so a handle always resolves to that row's body.
+	IterationMatchURITemplate = ResourceScheme + "iteration/{project}/{n}/{match}"
 )
 
 // TaskURI builds the canonical URI for a task body.
@@ -72,9 +77,15 @@ func LearningURI(slug string) string {
 	return ResourceScheme + "learning/" + slug
 }
 
-// IterationURI builds the canonical URI for one iteration narrative body.
-// When iterations.md has duplicate N values, the resource resolves the last
-// file-order match (same policy as wrapstate.LastEntryByN).
+// IterationURI builds the bare form: last file-order match for iteration n.
+// Prefer IterationMatchURI when emitting content_uri from a specific row.
 func IterationURI(project string, n int) string {
 	return ResourceScheme + "iteration/" + project + "/" + strconv.Itoa(n)
+}
+
+// IterationMatchURI addresses one narrative among duplicate-N matches by
+// 0-based file-order index. Row i's content_uri must use match=i so the
+// handle is byte-identical to that row's body.
+func IterationMatchURI(project string, n, match int) string {
+	return ResourceScheme + "iteration/" + project + "/" + strconv.Itoa(n) + "/" + strconv.Itoa(match)
 }

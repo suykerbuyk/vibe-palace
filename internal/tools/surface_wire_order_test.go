@@ -186,6 +186,47 @@ func surfaceWireCases() []wireCase {
 			bulk:     []string{`"entries":`},
 			sentinel: true,
 		},
+		{
+			name: "vp_get_iteration (result)",
+			value: getIterationResult{
+				Project:       "p",
+				Mode:          "n",
+				NewestN:       1,
+				OldestN:       1,
+				Returned:      1,
+				BytesInlined:  len(body),
+				MoreAvailable: false,
+				MaxBytes:      DefaultGetIterationMaxBytes,
+				Entries: []iterationEntryRow{{
+					N:          1,
+					Title:      "t",
+					Bytes:      len(body),
+					ContentURI: "vibe-palace://iteration/p/1",
+					Header:     "## Iteration 1 — t",
+					Body:       body,
+				}},
+				Complete: true,
+			},
+			// Wrapper identity + the per-row handle must precede bulk body text.
+			handles:  []string{`"project"`, `"mode"`, `"content_uri"`, `"n"`, `"title"`, `"bytes"`},
+			bulk:     []string{`"body":`, `"header":`},
+			sentinel: true,
+		},
+		{
+			// Nested row alone — doctrine applies inside the entries array too.
+			name: "vp_get_iteration (entry row)",
+			value: iterationEntryRow{
+				N:          1,
+				Title:      "t",
+				Bytes:      len(body),
+				ContentURI: "vibe-palace://iteration/p/1",
+				Header:     "## Iteration 1 — t",
+				Body:       body,
+			},
+			handles:  []string{`"content_uri"`, `"n"`, `"title"`, `"bytes"`},
+			bulk:     []string{`"body":`, `"header":`},
+			sentinel: false,
+		},
 	}
 }
 
@@ -327,6 +368,7 @@ func TestSurfaceCompleteSentinelIsStructurallyLast(t *testing.T) {
 		{"knowledgeResult", knowledgeResult{}},
 		{"kgTripleListResult", kgTripleListResult{}},
 		{"vaultListResult", vaultListResult{}},
+		{"getIterationResult", getIterationResult{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// LAST FIELD, structurally.
