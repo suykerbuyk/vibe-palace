@@ -146,8 +146,9 @@ func TestGetIteration_RecentByteBudget(t *testing.T) {
 	if got.Entries[0].N != 2 || got.Entries[1].N != 3 {
 		t.Fatalf("order %+v", got.Entries)
 	}
-	if got.OldestN != 2 || got.NewestN != 3 {
-		t.Fatalf("oldest=%d newest=%d", got.OldestN, got.NewestN)
+	// Archive extent spans the whole file, not the returned window (2..3).
+	if got.OldestN != 1 || got.NewestN != 3 {
+		t.Fatalf("archive extent oldest=%d newest=%d want 1..3", got.OldestN, got.NewestN)
 	}
 	for _, e := range got.Entries {
 		if e.Body == "" {
@@ -172,8 +173,58 @@ func TestGetIteration_RecentOversizeNewestManifestOnly(t *testing.T) {
 	if got.Entries[0].Body != "" || got.Entries[0].N != 2 {
 		t.Fatalf("want manifest for newest: %+v", got.Entries[0])
 	}
+	if !got.Entries[0].BodyDeferred {
+		t.Fatal("body_deferred must mark the deferred newest")
+	}
+	// Older entry 1 exists beyond the window.
 	if !got.MoreAvailable {
-		t.Fatal("more_available")
+		t.Fatal("more_available: older entry exists")
+	}
+	if got.OldestN != 1 || got.NewestN != 2 {
+		t.Fatalf("archive extent oldest=%d newest=%d", got.OldestN, got.NewestN)
+	}
+}
+
+// Single-entry oversize: body deferred, more_available MUST be false.
+func TestGetIteration_SingleOversizeMoreAvailableFalse(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	big := strings.Repeat("Z", 500)
+	seedIterations(t, vault, "demo", frame(7, "only", big))
+	got := callGetIteration(t, vault, map[string]any{
+		"project": "demo", "recent": true, "max_bytes": 100,
+	})
+	if got.Returned != 1 || got.BytesInlined != 0 {
+		t.Fatalf("%+v", got)
+	}
+	if !got.Entries[0].BodyDeferred || got.Entries[0].Body != "" {
+		t.Fatalf("want deferred empty body: %+v", got.Entries[0])
+	}
+	if got.MoreAvailable {
+		t.Fatal("single-entry archive: more_available must be false (nothing older)")
+	}
+	if got.OldestN != 7 || got.NewestN != 7 {
+		t.Fatalf("extent %d..%d", got.OldestN, got.NewestN)
+	}
+}
+
+// n-mode on a middle iteration reports ARCHIVE extent, not an echo of n.
+func TestGetIteration_NModeArchiveExtent(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedIterations(t, vault, "demo",
+		frame(1, "first", "a"),
+		frame(5, "mid", "middle-body"),
+		frame(12, "last", "z"),
+	)
+	got := callGetIteration(t, vault, map[string]any{"project": "demo", "n": 5})
+	if got.Returned != 1 || got.Entries[0].Body != "middle-body" {
+		t.Fatalf("%+v", got)
+	}
+	if got.OldestN != 1 || got.NewestN != 12 {
+		t.Fatalf("archive extent must be 1..12, got oldest=%d newest=%d (must not echo n=5)",
+			got.OldestN, got.NewestN)
+	}
+	if got.MoreAvailable {
+		t.Fatal("all matches for n=5 returned; more_available false")
 	}
 }
 
@@ -431,5 +482,30 @@ func TestIterationResource_MissingFileNoAbsPath(t *testing.T) {
 	}
 	if !strings.Contains(msg, "no iterations.md") {
 		t.Fatalf("want clean message, got %q", msg)
+	}
+}
+
+func TestIterationEntryRow_DeferredFieldsPrecedeBody(t *testing.T) {
+	row := iterationEntryRow{
+		N: 1, Title: "t", Bytes: 99,
+		ContentURI:   "vibe-palace://iteration/p/1",
+		BodyDeferred: true,
+	}
+	raw, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	uri := strings.Index(s, `"content_uri"`)
+	def := strings.Index(s, `"body_deferred"`)
+	if uri < 0 || def < 0 {
+		t.Fatalf("missing handle fields: %s", s)
+	}
+	if def < uri {
+		t.Fatalf("body_deferred before content_uri unexpected order: %s", s)
+	}
+	// body/header must not appear (empty + omitempty), so handles are the whole payload.
+	if strings.Contains(s, `"body"`) || strings.Contains(s, `"header"`) {
+		t.Fatalf("deferred row must not emit empty bulk fields: %s", s)
 	}
 }

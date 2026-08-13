@@ -74,12 +74,12 @@ type getIterationParams struct {
 }
 
 // iterationEntryRow is one narrative in the result. When Body is non-empty the
-// entry was inlined whole; when Body is empty the row is a manifest handle
-// (Option B) and ContentURI addresses that exact narrative.
+// entry was inlined whole; when BodyDeferred is true the complete body lives
+// only at ContentURI (never a truncated fragment).
 //
-// Field order is load-bearing (handle-before-bulk doctrine, 00b0623): identity
-// and content_uri MUST precede Header/Body so a host cut still leaves a
-// recovery handle. A body is never partial: whole block or handle.
+// Field order is load-bearing (handle-before-bulk doctrine, 00b0623): identity,
+// content_uri, and body_deferred MUST precede Header/Body so a host cut still
+// leaves a recovery handle. A body is never partial: whole block or handle.
 type iterationEntryRow struct {
 	N          int    `json:"n"`
 	Title      string `json:"title"`
@@ -88,21 +88,34 @@ type iterationEntryRow struct {
 	// MatchIndex is 0-based among same-N matches. Pointer so index 0 is
 	// distinguishable from "field absent" (omitempty on a bare int erases 0).
 	// Set together with Matches when Matches > 1; both omitted otherwise.
-	MatchIndex *int   `json:"match_index,omitempty"`
-	Matches    int    `json:"matches,omitempty"`
-	Header     string `json:"header,omitempty"`
-	Body       string `json:"body,omitempty"`
+	MatchIndex *int `json:"match_index,omitempty"`
+	Matches    int  `json:"matches,omitempty"`
+	// BodyDeferred is true when this row's narrative was not inlined: the
+	// complete body is at ContentURI. This is NOT more_available — deferred
+	// means "this block is behind a handle"; more_available means "older
+	// archive entries exist beyond the returned window."
+	BodyDeferred bool   `json:"body_deferred,omitempty"`
+	Header       string `json:"header,omitempty"`
+	Body         string `json:"body,omitempty"`
 }
 
 // getIterationResult is a wrapper struct (never a bare array) so complete can
 // be the last field with no omitempty — the inline-delivery contract.
 type getIterationResult struct {
-	Project       string              `json:"project"`
-	Mode          string              `json:"mode"` // "n" or "recent"
-	NewestN       int                 `json:"newest_n"`
-	OldestN       int                 `json:"oldest_n"`
-	Returned      int                 `json:"returned"`
-	BytesInlined  int                 `json:"bytes_inlined"`
+	Project string `json:"project"`
+	Mode    string `json:"mode"` // "n" or "recent"
+	// NewestN / OldestN are the ARCHIVE extent: highest and lowest iteration
+	// numbers present in iterations.md (all parsed entries), not the bounds of
+	// the returned window and not an echo of a requested n. The window is
+	// fully described by Entries.
+	NewestN      int `json:"newest_n"`
+	OldestN      int `json:"oldest_n"`
+	Returned     int `json:"returned"`
+	BytesInlined int `json:"bytes_inlined"`
+	// MoreAvailable is true only when older entries exist beyond the returned
+	// window (recent: not all archive entries were selected; n: not all
+	// same-N matches were returned). It is never set because a body was
+	// deferred to content_uri — that fact is BodyDeferred on the row.
 	MoreAvailable bool                `json:"more_available"`
 	MaxBytes      int                 `json:"max_bytes"`
 	Entries       []iterationEntryRow `json:"entries"`
@@ -127,9 +140,11 @@ func GetIterationTool(vault *storage.Vault) mcp.Tool {
 		Description: "Read iteration narratives from a project's iterations.md without " +
 			"loading the whole archive. Pass n to fetch by number (all matches), or recent=true " +
 			"to fill newest-first up to max_bytes. Bodies are never truncated: an entry is " +
-			"inlined whole or returned as a manifest row with content_uri. The budget counts " +
-			"marshalled row size on the wire, not bare body length. Reports newest_n, " +
-			"oldest_n, returned, bytes_inlined, more_available. complete is always last.",
+			"inlined whole or body_deferred with content_uri. The budget counts marshalled row " +
+			"size on the wire, not bare body length. newest_n/oldest_n are the ARCHIVE extent " +
+			"(min/max iteration numbers in the file), not the returned window. more_available " +
+			"means older entries exist beyond the window — not that a body was deferred. " +
+			"complete is always last.",
 		Schema:  getIterationSchema,
 		Handler: getIterationHandler(vault),
 	}
@@ -226,9 +241,11 @@ func fillRecentByMarshalledBudget(project string, candidates []wrapstate.Entry, 
 		}
 		if len(picks) == 0 {
 			// Newest alone exceeds budget: one whole-block handle, no body.
+			// more_available only if older entries exist — not because deferred.
 			picks = append(picks, entryPick{e: e, inlined: false, idx: i})
-			return picks, true
+			return picks, len(candidates) > 1
 		}
+		// Stopped with at least one pick; remaining candidates are older.
 		return picks, true
 	}
 	return picks, false
@@ -264,7 +281,7 @@ func fillNByMarshalledBudget(project string, matches []wrapstate.Entry, maxBytes
 			used += manCost
 			continue
 		}
-		// Cannot fit another handle — stop; remaining matches are more_available.
+		// Cannot fit another handle — stop; unreturned matches ⇒ more_available.
 		return picks, true
 	}
 	return picks, false
@@ -277,9 +294,7 @@ func buildNResult(project string, n int, content string, maxBytes int) (getItera
 			"iteration %d not found in project %q", n, project))
 	}
 	picks, more := fillNByMarshalledBudget(project, matches, maxBytes)
-	if len(picks) < len(matches) {
-		more = true
-	}
+	// more is already "unreturned same-N matches exist" — do not set it for deferred bodies.
 
 	rows := make([]iterationEntryRow, 0, len(picks))
 	bytesInlined := 0
@@ -290,12 +305,13 @@ func buildNResult(project string, n int, content string, maxBytes int) (getItera
 		}
 		rows = append(rows, row)
 	}
+	oldest, newest := archiveExtent(content)
 
 	return getIterationResult{
 		Project:       project,
 		Mode:          "n",
-		NewestN:       n,
-		OldestN:       n,
+		NewestN:       newest,
+		OldestN:       oldest,
 		Returned:      len(rows),
 		BytesInlined:  bytesInlined,
 		MoreAvailable: more,
@@ -318,9 +334,7 @@ func buildRecentResult(project, content string, maxBytes int) (getIterationResul
 	}
 
 	picks, more := fillRecentByMarshalledBudget(project, newestFirst, maxBytes)
-	if len(picks) < len(newestFirst) {
-		more = true
-	}
+	// more is already "older archive entries beyond the window" from the filler.
 
 	// Emit file order (chronological ascending).
 	rows := make([]iterationEntryRow, len(picks))
@@ -332,15 +346,13 @@ func buildRecentResult(project, content string, maxBytes int) (getIterationResul
 			bytesInlined += p.e.Bytes
 		}
 	}
-
-	oldestN := rows[0].N
-	newestN := rows[len(rows)-1].N
+	oldest, newest := archiveExtent(content)
 
 	return getIterationResult{
 		Project:       project,
 		Mode:          "recent",
-		NewestN:       newestN,
-		OldestN:       oldestN,
+		NewestN:       newest,
+		OldestN:       oldest,
 		Returned:      len(rows),
 		BytesInlined:  bytesInlined,
 		MoreAvailable: more,
@@ -374,6 +386,27 @@ func entryToRow(project string, e wrapstate.Entry, inline bool, matchIndex, matc
 	if inline {
 		row.Header = e.Header
 		row.Body = e.Body
+	} else {
+		row.BodyDeferred = true
 	}
 	return row
+}
+
+// archiveExtent returns the lowest and highest iteration numbers present in
+// content (all parsed entries). Zero, zero when the archive is empty.
+func archiveExtent(content string) (oldest, newest int) {
+	entries := wrapstate.ParseEntries(content)
+	if len(entries) == 0 {
+		return 0, 0
+	}
+	oldest, newest = entries[0].N, entries[0].N
+	for _, e := range entries[1:] {
+		if e.N < oldest {
+			oldest = e.N
+		}
+		if e.N > newest {
+			newest = e.N
+		}
+	}
+	return oldest, newest
 }

@@ -214,7 +214,7 @@ func surfaceWireCases() []wireCase {
 		},
 		{
 			// Nested row alone — doctrine applies inside the entries array too.
-			name: "vp_get_iteration (entry row)",
+			name: "vp_get_iteration (entry row inlined)",
 			value: iterationEntryRow{
 				N:          1,
 				Title:      "t",
