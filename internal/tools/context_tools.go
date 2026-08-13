@@ -263,11 +263,20 @@ func bootstrapExcerptBanner(body, uri string) string {
 		runeSafeExcerpt(body, bootstrapExcerptCap)
 }
 
-// bootstrapZoneBannerLead is the opening of every pinned-zone banner, and it is
-// a CONSTANT because two things read it: the banner builder and the idempotence
-// guard on the workflow digest. A reduction that cannot recognize its own output
-// can be applied twice, and the second application would band a banner over a
-// banner.
+// bootstrapZoneBannerLead is the opening of every pinned-zone banner. It is a
+// CONSTANT so that the tests asserting a reduction DID or DID NOT fire anchor on
+// the same bytes bootstrapZoneBanner emits: a hand-copied literal in a test is a
+// second definition of the banner, and it goes green on the day the real one is
+// reworded.
+//
+// 🔴 IT IS NOT AN IDEMPOTENCE GUARD, AND THERE ISN'T ONE — deliberately. Nothing
+// in this package checks for this prefix before reducing. Both reductions are
+// made idempotent by their SIZE guard (`len(zone) >= len(body)` — see
+// digestWorkflowToPinnedZone, which explains why the zone of a zone measures
+// equal and declines), so a prefix check on top would be unreachable code
+// asserting a property the size guard already has. Covered by
+// TestBootstrapWorkflowDigestIsIdempotent. If you are here to add that check,
+// that test is where to prove it is needed first.
 const bootstrapZoneBannerLead = "⚠ pinned sections only — the full "
 
 // bootstrapZoneBanner prefixes a PINNED ZONE with the same loud pointer as an
