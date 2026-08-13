@@ -6,7 +6,7 @@ This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~2767 tests** across 48 packages, including
+The suite currently runs **~2785 tests** across 48 packages, including
 **108 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
@@ -96,7 +96,7 @@ Current canaries:
 | `TestLiveVaultAmendNeverMatchesAFencedHeading` | `sectionBounds` regressing to a naive scan and splicing **into a code fence**. Not hypothetical: **22 H2 headings in this project's own task files exist only as fenced sample text** — including the `## Decision` quoted by the task that specified `amend` |
 | `TestLiveVaultAmendIsIdempotentOnRealBodies` | A retried amend **duplicating** a section on a real body instead of converging — the failure a crash-and-retry would produce |
 | `TestLiveVaultRetitleNeverDisturbsAnythingElse` | `replaceTitleLine` (whole-file, first-wins, **fence-unaware**) rewriting an H1-shaped line that is not the title. Safe only because `CreateTask` always writes `# Title` first and `validateTaskBody` refuses an unfenced H1 in a body — **that is an invariant about the CORPUS, not the function**, so only the corpus can check it. Asserts exactly one line changed per file |
-| `TestBootstrapLiveVaultFitsItsOwnBudget` | The bootstrap payload overrunning its own default budget, and — the actual gate — **shedding a rung ADR-009 classifies as CORE** (`Budget.ShedCore` non-empty, or the workflow contract excerpted). Only the real vault has a resume and a contract large enough to trip the ladder |
+| `TestBootstrapLiveVaultFitsItsOwnBudget` | The bootstrap payload overrunning its own default budget, and — the actual gate — **shedding a rung ADR-009 classifies as CORE** (`Budget.ShedCore` non-empty, or the workflow contract excerpted). Only the real vault has a resume and a contract large enough to trip the ladder. **Second gate (inline-delivery):** the payload still says something useful after a HOST cut — it ends with the `complete` sentinel, and when it exceeds the measured 19,968-byte host-cut specimen the prefix must still carry `resume_uri`, `workflow_uri`, `resume_sha256`, `active_task_count`, `post_bootstrap_instructions` and any `budget`, while NOT carrying `complete`. Only the live vault is big enough to be cut: a fixture that overruns the cap does so because its author sized it to |
 
 **Rules for adding one:** it must `t.Skip` (never fail) when the vault is absent, it must never
 write, and it must assert something a fixture *structurally cannot* — otherwise it is just a slow
@@ -138,6 +138,32 @@ single source: `TestBootstrapSchemaAdvertisesTheRealDefault` and
 skips (rather than passes) when the corpus contains zero fenced-only headings: a green canary with
 nothing to guard is indistinguishable from a green canary that is broken, and this project has twice
 shipped an auditor that reported zero findings on a tree full of defects.
+
+---
+
+## Bootstrap wire-order and truncation tests (`internal/tools/bootstrap_wire_order_test.go`)
+
+These pin a **transport** property, not a behavioral one: `encoding/json` emits struct fields in
+declaration order, nothing on the response path re-serializes through a map (`mcplib.NewToolResultJSON`
+marshals the value directly, `vp inject` encodes it directly), so **declaration order is wire order is
+cut order**. A host with a fixed inline cap keeps a prefix and discards the rest, and the only thing
+that decides what an agent still holds is which fields were declared first.
+
+| Test | What it proves |
+|------|----------------|
+| `TestBootstrapTruncatedPrefixIsDetectable` | The headline. A real payload cut at the 19,968-byte specimen offset is **detectable from inside the truncated channel**: `complete` is absent from the prefix (and present in the whole document), while `budget`, `resume_uri`, `workflow_uri`, `resume_sha256`, `active_task_count` and `post_bootstrap_instructions` all survive. It also asserts the prefix is *not* valid JSON, so a future payload that shrinks under the cap cannot turn the test green by removing the truncation it measures |
+| `TestBootstrapInstrumentsPrecedeBulk` | The order by **byte offset** — the only property a cut respects. Every instrument and recovery handle appears before `"workflow"` and `"resume"` |
+| `TestBootstrapCompleteSentinelAlwaysEmitted` | The sentinel's three properties: no `omitempty` (a zero-value result still spells out `"complete":false`, so absence cannot be confused with a false value), **structurally last** in the struct via reflection (the guard against a future field being appended after it), and last on the wire on real payloads from both sides of the shed ladder |
+
+The fixture these use is deliberately an **over-budget** payload with a resume that declares no
+`vp:pin` zone — un-sheddable by the ladder's resume rung, so the payload stays far past the cut and
+`budget` is actually emitted. That is not contrived: it is the quantum-ng specimen the `inline-delivery`
+epic measured, a real project whose inviolable core alone is ~1.95x a real host's cap.
+
+**The 19,968-byte figure is a specimen, not a constant of the system** — one host on one day
+(three Grok results of 60.3 KB, 53.4 KB and 32.7 KB each cut at exactly 19.5 KiB, a *flat* cap rather
+than a ratio). The tests cut at an offset and assert what survives it; any offset landing inside the
+bulk proves the same property.
 
 ---
 

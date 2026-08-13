@@ -27,24 +27,70 @@ import (
 )
 
 // BootstrapResult is the response from vp_bootstrap_context.
+//
+// 🔴 DECLARATION ORDER IS WIRE ORDER IS CUT ORDER, AND THAT MAKES THIS FIELD
+// LIST A TRANSPORT CONTRACT RATHER THAN A STYLE CHOICE. encoding/json emits
+// struct fields in declaration order, and nothing on the response path
+// re-serializes through a map (mcplib.NewToolResultJSON marshals this value
+// directly; `vp inject` encodes it directly), so whatever is declared last is
+// what a host with a fixed inline cap throws away first.
+//
+// It used to be declared bulk-first: project, workflow, resume, ... and then,
+// at the very tail, the directive, the alerts and `budget`. Measured on a live
+// Grok pane 2026-08-12: three payloads of 60.3 KB, 53.4 KB and 32.7 KB were
+// each cut at exactly 19.5 KB — a FLAT cap, not a ratio — and the model
+// received `project`, a whole `workflow`, and a `resume` that stopped
+// mid-sentence. Every instrument and every recovery handle was past the cut.
+//
+// AN INSTRUMENT PLACED AFTER THE PAYLOAD IT MEASURES CANNOT REPORT ITS OWN
+// LOSS. So the order below is: identity, then the budget report, then the
+// recovery handles (URI + the digest that CAS-verifies what the URI serves),
+// then the compact alerts and the directive — and only then the bulk that a cut
+// is allowed to land in. A truncated payload now still carries everything the
+// agent needs to go and fetch what it lost.
+//
+// Changing the order of this struct changes what survives truncation. See
+// TestBootstrapInstrumentsPrecedeBulk and TestBootstrapTruncatedPrefixIsDetectable.
 type BootstrapResult struct {
-	Project                   string                 `json:"project"`
-	Workflow                  string                 `json:"workflow"`
-	Resume                    string                 `json:"resume"`
-	ResumeSha256              string                 `json:"resume_sha256"`
-	WorkflowURI               string                 `json:"workflow_uri"`
-	ResumeURI                 string                 `json:"resume_uri"`
-	ActiveTasks               []storage.TaskMeta     `json:"active_tasks"`
-	ActiveTaskCount           int                    `json:"active_task_count"`
-	RecentSessions            []sessionSummary       `json:"recent_sessions,omitempty"`
-	KGSnapshot                *storage.KGStats       `json:"kg_snapshot,omitempty"`
-	Memory                    []memorySnapshot       `json:"memory,omitempty"`
-	AvailableCommands         []commandSummary       `json:"available_commands,omitempty"`
-	AvailableSkills           []skillSummary         `json:"available_skills,omitempty"`
-	CommandInvocation         string                 `json:"command_invocation,omitempty"`
-	PostBootstrapInstructions string                 `json:"post_bootstrap_instructions,omitempty"`
-	FrictionTrend             *capture.FrictionTrend `json:"friction_trend,omitempty"`
-	VaultStaleness            *VaultStaleness        `json:"vault_staleness,omitempty"`
+	Project string `json:"project"`
+
+	// Budget reports what the token shed ladder did. NIL when nothing was shed
+	// and the payload fit — the healthy case says nothing, exactly like Health.
+	//
+	// It exists because the shed loop was a silent instrument. It would set
+	// recent_sessions to null, drop the memory index and the command list, run
+	// out of things to shed, RETURN OVER BUDGET ANYWAY, and report none of it:
+	// no error, no field, no log line. The 204 review had to INFER that a shed
+	// had happened from the wording of the directive it got back. A tool that
+	// quietly returns less than it was asked for, while reporting success, is
+	// the class this epic exists to delete — and it was living inside the shed
+	// loop the whole time.
+	//
+	// 🔴 IT LEADS THE PAYLOAD because it is the report ABOUT the payload. Last,
+	// it was the first casualty of a host cut, and its absence then meant two
+	// incompatible things at once — "vp shed nothing" and "the report was cut
+	// off" — which no agent inside the truncated channel could tell apart. First,
+	// absence means exactly one thing again.
+	Budget *BootstrapBudget `json:"budget,omitempty"`
+
+	// The recovery handles, ahead of the bulk they point at — a handle that
+	// arrives only when the body already fit is not a recovery handle.
+	//
+	// ResumeSha256 sits WITH them rather than beside Resume: it covers the FULL
+	// RAW file, so an agent that pages the body back through ResumeURI needs it
+	// to compare-and-set against disk. Stranded on the far side of the bulk it
+	// describes, it was reachable only by the sessions that never needed it.
+	ResumeURI    string `json:"resume_uri"`
+	WorkflowURI  string `json:"workflow_uri"`
+	ResumeSha256 string `json:"resume_sha256"`
+
+	// ActiveTaskCount survives the ladder even when ActiveTasks is shed, and now
+	// survives a host cut for the same reason: a backlog that leaves no trace
+	// reads as "no open tasks".
+	ActiveTaskCount int `json:"active_task_count"`
+
+	// VaultStaleness reports the network-free fetch age of the vault view.
+	VaultStaleness *VaultStaleness `json:"vault_staleness,omitempty"`
 
 	// Health rides in the payload every session already loads, so a degraded vp
 	// reaches every agent on every host WITHOUT the agent having to think to ask.
@@ -65,18 +111,51 @@ type BootstrapResult struct {
 	// ever proposed, they need a priority or a cap first.
 	AuditStaleness *vaultaudit.Staleness `json:"audit_staleness,omitempty"`
 
-	// Budget reports what the token shed ladder did. NIL when nothing was shed
-	// and the payload fit — the healthy case says nothing, exactly like Health.
+	FrictionTrend *capture.FrictionTrend `json:"friction_trend,omitempty"`
+
+	// The directive carries the alerts in prose for a reader that skims the
+	// structured fields, so it rides with them, ahead of the bulk.
+	PostBootstrapInstructions string `json:"post_bootstrap_instructions,omitempty"`
+	CommandInvocation         string `json:"command_invocation,omitempty"`
+
+	// ── THE BULK. Everything below is large, and everything below is where a
+	// host cut is allowed to land: each of these is re-fetchable through a handle
+	// declared above (resume_uri, workflow_uri, vp_list_tasks, vp_cmd/vp_skill).
+	Workflow          string             `json:"workflow"`
+	Resume            string             `json:"resume"`
+	ActiveTasks       []storage.TaskMeta `json:"active_tasks"`
+	RecentSessions    []sessionSummary   `json:"recent_sessions,omitempty"`
+	Memory            []memorySnapshot   `json:"memory,omitempty"`
+	KGSnapshot        *storage.KGStats   `json:"kg_snapshot,omitempty"`
+	AvailableCommands []commandSummary   `json:"available_commands,omitempty"`
+	AvailableSkills   []skillSummary     `json:"available_skills,omitempty"`
+
+	// 🔴 THE TERMINAL SENTINEL. LAST FIELD, NO omitempty, ALWAYS true — all three
+	// properties are the mechanism, and each one is load-bearing.
 	//
-	// It exists because the shed loop was a silent instrument. It would set
-	// recent_sessions to null, drop the memory index and the command list, run
-	// out of things to shed, RETURN OVER BUDGET ANYWAY, and report none of it:
-	// no error, no field, no log line. The 204 review had to INFER that a shed
-	// had happened from the wording of the directive it got back. A tool that
-	// quietly returns less than it was asked for, while reporting success, is
-	// the class this epic exists to delete — and it was living inside the shed
-	// loop the whole time.
-	Budget *BootstrapBudget `json:"budget,omitempty"`
+	// LAST, because its job is to be the thing a truncation removes. Reordering
+	// the instruments above makes a cut payload RECOVERABLE on a host that
+	// announces the cut; it does nothing on a host that truncates SILENTLY, and
+	// Claude Code truncates silently. `complete` present ⇒ every byte arrived.
+	// `complete` absent ⇒ the transport cut the payload, whatever the host said.
+	// Any field moved below this one re-opens the hole.
+	//
+	// NO omitempty, because ABSENCE IS THE SIGNAL. `bool` with omitempty vanishes
+	// when false, which would make "not delivered whole" and "delivered whole"
+	// produce the same bytes — the exact absent-vs-cut ambiguity that made a
+	// missing `budget` uninterpretable from inside the truncated channel.
+	//
+	// ALWAYS true, because it asserts nothing about the CONTENT. It is not "the
+	// payload is complete" in the sense of un-shed — the shed ladder reports
+	// that, honestly, in Budget. It is "this JSON document is the whole document
+	// vp emitted". A false value would be unreachable anyway: the only writer is
+	// the successful return path, and every failure path returns an error, not a
+	// half-populated result.
+	//
+	// It costs ~18 bytes and is host-independent, which is why it beats asking an
+	// agent in prose to remember that it might have been truncated (ADR-006: the
+	// agent DERIVES its delivery state instead of being told to recall a rule).
+	Complete bool `json:"complete"`
 }
 
 // BootstrapBudget is the shed ladder's own account of itself: what it dropped,
@@ -304,7 +383,7 @@ func bootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, allowC
 	}
 	return mcp.Tool{
 		Name:        "vp_bootstrap_context",
-		Description: "Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive. Sheds context to fit max_tokens and REPORTS WHAT IT SHED in `budget.shed` — every reduction this tool makes appears there, so an absent `budget` means nothing was reduced. A shed resume arrives as its `<!-- vp:pin -->` sections only, behind a banner — read `resume_uri` for the full body. A shed task list leaves `active_task_count` — call vp_list_tasks for it.",
+		Description: "Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive. Sheds context to fit max_tokens and REPORTS WHAT IT SHED in `budget.shed` — every reduction this tool makes appears there, so an absent `budget` means nothing was reduced. A shed resume arrives as its `<!-- vp:pin -->` sections only, behind a banner — read `resume_uri` for the full body. A shed task list leaves `active_task_count` — call vp_list_tasks for it. The payload ends with `complete: true`; if you do not see it, your host truncated the result — re-read the body via `resume_uri` / `workflow_uri`.",
 		Schema:      schema,
 		Handler:     bootstrapHandler(resolver, vault, allowCwdDefault),
 	}
@@ -383,10 +462,16 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		maxTokens = DefaultBootstrapMaxTokens
 	}
 
+	// Complete is set HERE, at assembly, not just before the return: the shed
+	// ladder measures the payload it is about to send (est() marshals `result`),
+	// and a sentinel attached after the last measurement would be bytes the
+	// budget never counted — the same under-measurement that let the live vault
+	// ship 8060 tokens against a budget of 8000 with over=false.
 	result := BootstrapResult{
 		Project:     project,
 		ResumeURI:   mcp.ResumeURI(project),
 		WorkflowURI: mcp.WorkflowURI(project),
+		Complete:    true,
 	}
 
 	// Workflow — graceful on error.

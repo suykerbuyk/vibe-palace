@@ -179,6 +179,40 @@ func TestBootstrapLiveVaultFitsItsOwnBudget(t *testing.T) {
 		t.Error("post_bootstrap_instructions is empty — the alerts (friction / staleness / health / over-budget) ride in it")
 	}
 
+	// 🔴 THE SECOND GATE: THE PAYLOAD SURVIVES A HOST CUT AS SOMETHING READABLE.
+	//
+	// Fitting vp's OWN budget is not delivery. This vault's payload is several
+	// times a real host's flat inline cap (57,540 bytes measured 2026-08-12
+	// against a 19,968-byte Grok cut), so on that host the model gets a PREFIX —
+	// and the only question that matters is what a prefix still says. Only the
+	// live vault is big enough to ask it; a fixture that overruns the cap
+	// overruns it because its author sized it to.
+	//
+	// The sentinel is asserted unconditionally (a payload UNDER the cap must
+	// still end with it, or the whole detect-the-cut mechanism has a hole for
+	// small projects); the prefix assertions run only when there is a cut to
+	// measure, and say so when there is not.
+	if !strings.HasSuffix(string(raw), `,"complete":true}`) {
+		t.Error("the live payload does not end with the `complete` sentinel — a truncated delivery would be indistinguishable from a whole one")
+	}
+	if len(raw) <= hostInlineCutSpecimen {
+		t.Logf("  payload fits the %d-byte host-cut specimen whole — no prefix to measure on this vault today", hostInlineCutSpecimen)
+	} else {
+		prefix := string(raw[:hostInlineCutSpecimen])
+		if strings.Contains(prefix, `"complete"`) {
+			t.Error("the sentinel is inside the truncated prefix — it is no longer the last field on the wire")
+		}
+		for _, key := range []string{`"resume_uri"`, `"workflow_uri"`, `"resume_sha256"`, `"active_task_count"`, `"post_bootstrap_instructions"`} {
+			if !strings.Contains(prefix, key) {
+				t.Errorf("%s is past the %d-byte cut on the LIVE payload (%d bytes) — the recovery handle does not reach the model that needs it",
+					key, hostInlineCutSpecimen, len(raw))
+			}
+		}
+		if br.Budget != nil && !strings.Contains(prefix, `"budget"`) {
+			t.Errorf("the live payload reports a budget that is past the %d-byte cut — the instrument cannot report its own loss", hostInlineCutSpecimen)
+		}
+	}
+
 	// A reduced resume must still be reachable and still CAS-able. resume_sha256
 	// covers the FULL RAW file; a digest of the pinned zone would match nothing on
 	// disk and would fail every compare-and-set a writer makes after paging the

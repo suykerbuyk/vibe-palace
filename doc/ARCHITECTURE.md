@@ -1359,6 +1359,44 @@ exists in the design but is **gated on rollout** (task
 `adr-009-arm-fail-loud-bootstrap`); today core rungs shed with honest
 reporting rather than refusal.
 
+#### Wire order and the `complete` sentinel (transport contract)
+
+The budget above is vp's report about *its own* reduction. It says nothing
+about what the **host** delivered, and hosts truncate. Measured 2026-08-12:
+a Grok pane cut three MCP results of 60.3 KB, 53.4 KB and 32.7 KB at exactly
+19.5 KiB each — a **flat** cap, not a ratio — and Claude Code performs the same
+truncation without narrating it.
+
+Two properties of `BootstrapResult` (`internal/tools/context_tools.go`) make a
+cut payload survivable, and **both are enforced by field declaration order**:
+
+- **Instruments and recovery handles lead.** `encoding/json` emits struct
+  fields in declaration order, and nothing on the response path re-serializes
+  through a `map` (`mcplib.NewToolResultJSON` marshals the value directly;
+  `vp inject` encodes it directly), so declaration order *is* wire order *is*
+  cut order. `project`, `budget`, `resume_uri`, `workflow_uri`,
+  `resume_sha256`, `active_task_count`, the compact alerts and
+  `post_bootstrap_instructions` are declared **before** the bulk
+  (`workflow`, `resume`, `active_tasks`, …). Every bulk field is re-fetchable
+  through a handle declared above it. `resume_sha256` sits with the URIs
+  rather than beside `resume` because an agent rehydrating from the URI needs
+  the digest to CAS-verify what it pulled.
+- **`complete: true` is the last field, and carries no `omitempty`.** Its
+  ABSENCE is the signal: present ⇒ every byte arrived; absent ⇒ the transport
+  cut the payload, whatever the host did or did not say. It asserts nothing
+  about *content* — shedding is reported by `budget` — only that this JSON
+  document is the whole document vp emitted. Reordering alone could not do
+  this job: it makes a cut *recoverable* on a host that announces the cut,
+  but leaves "vp sent none" and "it was cut off" indistinguishable on one that
+  does not. Per ADR-006 the agent DERIVES its delivery state rather than being
+  asked in prose to remember it.
+
+**Declaring any new field after `complete` re-opens the hole**, and appending
+to the end of a struct is exactly how it will be broken.
+`TestBootstrapCompleteSentinelAlwaysEmitted` asserts the last declared field
+via reflection for that reason; `TestBootstrapTruncatedPrefixIsDetectable` and
+the live-vault canary assert the property on real marshalled bytes.
+
 ### Served doctrine (ADR-008 Phase 1)
 
 The generic agent operating manual — the doctrine — is embedded in the binary
