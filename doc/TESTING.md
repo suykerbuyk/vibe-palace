@@ -6,7 +6,7 @@ This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~2785 tests** across 48 packages, including
+The suite currently runs **~2791 tests** across 48 packages, including
 **108 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
@@ -164,6 +164,25 @@ epic measured, a real project whose inviolable core alone is ~1.95x a real host'
 (three Grok results of 60.3 KB, 53.4 KB and 32.7 KB each cut at exactly 19.5 KiB, a *flat* cap rather
 than a ratio). The tests cut at an offset and assert what survives it; any offset landing inside the
 bulk proves the same property.
+
+### The same contract, generalised (`internal/tools/surface_wire_order_test.go`)
+
+The cap belongs to the **host**, so it applies to every tool result, not just bootstrap's. The
+2026-08-12 surface survey measured 19 tools over it and found **every** URI escape hatch declared
+*after* the payload it rescues — `vp_get_task` returned 192,060 bytes with `content_uri` at byte
+191,956, 172 KB past the cut. These tests pin the fixed layout for the rest of the surface.
+
+| Test | What it proves |
+|------|----------------|
+| `TestSurfaceTruncatedPrefixIsDetectable` | The headline, table-driven over 12 result structs. Each is marshalled with an over-cap bulk field, cut at the 19,968-byte specimen, and asserted: every recovery handle survives the prefix, `complete` does **not**, and the whole document ends with `,"complete":true}`. Cases that deliberately carry no sentinel (`getLearningResult`, the nested `doctrineResult`) assert its **absence**, so a future blanket "add complete everywhere" cannot land silently. Like the bootstrap version it asserts the prefix is *not* valid JSON, so a payload that shrinks under the cap cannot turn the test green by removing the truncation it measures |
+| `TestSurfaceHandlesPrecedeBulk` | The order by **byte offset**, the only property a cut respects. `content_uri`/`content_size` before `content`; `resume_uri` and `sha256` before `content`; `doctrine_uri` before the embedded body; `session_uri` before `body`; `vp_read_resource`'s whole metadata header before its `content` |
+| `TestSurfaceCompleteSentinelIsStructurallyLast` | For all 10 sentinel-carrying structs: **structurally last** via reflection (the guard against a future field being appended after it — how this WILL be broken) and no `omitempty` (a zero value still spells `"complete":false`, so absence cannot be confused with a false value) |
+| `TestSurfaceHandlersEmitHandleAndSentinel` | The gap the layout tests structurally cannot see: a perfectly ordered struct whose **handler never populates the handle** emits `"content_uri":""` and passes every offset assertion while helping nobody. Three of these URIs (`resume`, `session`, `command`) existed in `internal/mcp`, had registered resource templates, were served by `vp_read_resource`, and were minted by **no handler at all** — exactly this shape of bug. It also pins the deliberate NON-emission: a wing/room-scoped `vp_get_command` withholds the URI, because the command URI template re-resolves unscoped and would address different bytes. A missing hatch is visible; a lying one is not |
+
+These build their values **directly** rather than through handlers, on purpose: the property under
+test is the struct's declaration order, and a fixture large enough to overrun the cap through every
+one of twelve handlers would be twelve elaborate vault setups measuring the same one thing.
+`TestSurfaceHandlersEmitHandleAndSentinel` covers the handler half separately, against a real vault.
 
 ---
 

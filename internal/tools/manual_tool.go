@@ -28,12 +28,33 @@ import (
 // precedence vp_get_doctrine uses, and server_instructions echoes the exact
 // mcp.ServerInstructions string. The one place a new capability must be
 // declared is its own reg.MustRegister call — this tool reports it for free.
+// Measured 2026-08-12 on the live vault: 65,961 bytes, 3.3x a host's
+// 19,968-byte flat inline cap — bigger than vp_bootstrap_context. This is the
+// document an agent reads when it does not know what it can do, so a silent cut
+// is maximally expensive: the agent concludes the surface ends where the
+// truncation did.
+//
+// Nested `doctrine` now leads with its own `doctrine_uri` (see doctrineResult),
+// which moves the manual's only recovery handle from byte ~9,225 to the head of
+// the payload. Bounding the manual's OWN 66 KB body needs paging and is filed
+// separately; what it gets here is the ability to say it was cut.
 type ManualResult struct {
 	Doctrine           doctrineResult   `json:"doctrine"`
 	Tools              []mcp.ToolInfo   `json:"tools"`
 	Commands           []commandSummary `json:"commands"`
 	Skills             []skillSummary   `json:"skills"`
 	ServerInstructions string           `json:"server_instructions"`
+
+	// 🔴 THE TERMINAL SENTINEL — last field, no omitempty, always true on a
+	// successful return. Its ABSENCE is the signal: absent ⇒ the host cut this
+	// document, so the tool inventory you are holding is a PREFIX and the
+	// capability you are about to conclude does not exist may simply be past
+	// the cut. It is the only sentinel in this payload: doctrineResult
+	// deliberately carries none, because a sentinel nested mid-document
+	// survives the very cut it exists to detect. No omitempty because a false
+	// bool would vanish and make "cut" and "whole" serialize identically.
+	// Anything declared after this field re-opens the hole.
+	Complete bool `json:"complete"`
 }
 
 type manualParams struct {
@@ -69,7 +90,9 @@ func ManualTool(reg *mcp.Registry, resolver *vpctx.Resolver) mcp.Tool {
 			"registered tool's name, description, input schema, and mutating flag), " +
 			"the project's available commands and skills, and the server bootstrap " +
 			"instructions. Read-only superset of vp_get_doctrine. Fetch it to see " +
-			"everything the vibe-palace server can do in one call.",
+			"everything the vibe-palace server can do in one call. The result ENDS with `complete`: " +
+			"if you do not see `complete: true`, your host truncated it and the tool inventory you are holding is a prefix — " +
+			"do not conclude a capability is missing, and read the doctrine via `doctrine.doctrine_uri` with vp_read_resource.",
 		Schema:  manualSchema,
 		Handler: manualHandler(reg, resolver),
 	}
@@ -139,6 +162,7 @@ func manualHandler(reg *mcp.Registry, resolver *vpctx.Resolver) mcp.HandlerFunc 
 			Commands:           manualCmds,
 			Skills:             manualSkills,
 			ServerInstructions: mcp.ServerInstructions,
+			Complete:           true,
 		}, nil
 	}
 }

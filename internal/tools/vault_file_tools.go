@@ -78,8 +78,22 @@ var vaultListSchema = json.RawMessage(`{
 	"required": ["path"]
 }`)
 
+// Measured 2026-08-12 on the live vault: 2,898,291 bytes for one triples
+// directory with include_sha256 — 145x a host's 19,968-byte flat inline cap,
+// and there is no `limit` or paging parameter at all. Paging it is a design and
+// is filed separately; the sentinel is what it can have today.
 type vaultListResult struct {
 	Entries []vaultfs.Entry `json:"entries"`
+
+	// 🔴 THE TERMINAL SENTINEL — last field, no omitempty, always true on a
+	// successful return. Its ABSENCE is the signal: absent ⇒ the host cut this
+	// document and `entries` is a PREFIX. A truncated directory listing is
+	// read as a directory that does not contain the file you were looking for,
+	// which is how a caller concludes "not there" and writes a duplicate. No
+	// omitempty because a false bool would vanish and make "cut" and "whole"
+	// serialize identically. Anything declared after this field re-opens the
+	// hole.
+	Complete bool `json:"complete"`
 }
 
 // VaultListTool lists entries one level under a vault-relative directory.
@@ -87,9 +101,11 @@ func VaultListTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name: "vp_vault_list",
 		Description: "List entries one level under a vault-relative directory. " +
-			"Returns {entries: [{name, type, bytes, sha256?}]}. .git entries are " +
+			"Returns {entries: [{name, type, bytes, sha256?}], complete}. .git entries are " +
 			"hidden (case-insensitive). Pass include_sha256=true to compute " +
-			"per-file hashes (default off for cheap large-dir listings).",
+			"per-file hashes (default off for cheap large-dir listings). The result ENDS with " +
+			"`complete`: if you do not see `complete: true`, your host truncated it and `entries` is a " +
+			"PREFIX — do not conclude a file is absent, list a narrower path instead.",
 		Schema: vaultListSchema,
 		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
 			var args struct {
@@ -109,7 +125,7 @@ func VaultListTool(vault *storage.Vault) mcp.Tool {
 			if entries == nil {
 				entries = []vaultfs.Entry{}
 			}
-			return vaultListResult{Entries: entries}, nil
+			return vaultListResult{Entries: entries, Complete: true}, nil
 		},
 	}
 }

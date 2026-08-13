@@ -112,8 +112,25 @@ type kgStatsResult struct {
 // top-level array, which strict clients reject. (The dispatch-layer guard in
 // internal/mcp would otherwise wrap a bare slice under a generic "items" key;
 // this type gives these user-facing tools the clearer `triples` name instead.)
+//
+// Measured 2026-08-12 on the live vault: 30,008 bytes for the hottest entity on
+// proteus-rs, 1.5x a host's 19,968-byte flat inline cap. Neither tool takes a
+// `limit` AT ALL, so a caller cannot bound the result even when it wants to —
+// which is a paging design, filed separately. What it gets here is the ability
+// to say it was cut.
 type kgTripleListResult struct {
 	Triples []storage.Triple `json:"triples"`
+
+	// 🔴 THE TERMINAL SENTINEL — last field, no omitempty, always true on a
+	// successful return. Its ABSENCE is the signal: absent ⇒ the host cut this
+	// document and the triple list is a PREFIX. That is the dangerous failure
+	// for a knowledge graph specifically: a truncated answer to "what do we
+	// know about X" reads as a COMPLETE answer that X has fewer relationships
+	// than it does, and the agent reasons from an absence it invented. No
+	// omitempty because a false bool would vanish and make "cut" and "whole"
+	// serialize identically. Anything declared after this field re-opens the
+	// hole.
+	Complete bool `json:"complete"`
 }
 
 // --- Tool constructors ---
@@ -121,10 +138,11 @@ type kgTripleListResult struct {
 // KGQueryTool returns the MCP tool for vp_kg_query.
 func KGQueryTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name:        "vp_kg_query",
-		Description: "Query the knowledge graph for facts about an entity.",
-		Schema:      kgQuerySchema,
-		Handler:     kgQueryHandler(vault),
+		Name: "vp_kg_query",
+		Description: "Query the knowledge graph for facts about an entity. The result ENDS with `complete`: " +
+			"if you do not see `complete: true`, your host truncated it and `triples` is a PREFIX — do not read the missing facts as facts that do not exist.",
+		Schema:  kgQuerySchema,
+		Handler: kgQueryHandler(vault),
 	}
 }
 
@@ -153,10 +171,11 @@ func KGInvalidateTool(vault *storage.Vault) mcp.Tool {
 // KGTimelineTool returns the MCP tool for vp_kg_timeline.
 func KGTimelineTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name:        "vp_kg_timeline",
-		Description: "Get the chronological timeline of facts involving an entity.",
-		Schema:      kgTimelineSchema,
-		Handler:     kgTimelineHandler(vault),
+		Name: "vp_kg_timeline",
+		Description: "Get the chronological timeline of facts involving an entity. The result ENDS with `complete`: " +
+			"if you do not see `complete: true`, your host truncated it and `triples` is a PREFIX — do not read the missing facts as facts that do not exist.",
+		Schema:  kgTimelineSchema,
+		Handler: kgTimelineHandler(vault),
 	}
 }
 
@@ -197,7 +216,7 @@ func kgQueryHandler(vault *storage.Vault) mcp.HandlerFunc {
 		if triples == nil {
 			triples = []storage.Triple{}
 		}
-		return kgTripleListResult{Triples: triples}, nil
+		return kgTripleListResult{Triples: triples, Complete: true}, nil
 	}
 }
 
@@ -287,7 +306,7 @@ func kgTimelineHandler(vault *storage.Vault) mcp.HandlerFunc {
 		if triples == nil {
 			triples = []storage.Triple{}
 		}
-		return kgTripleListResult{Triples: triples}, nil
+		return kgTripleListResult{Triples: triples, Complete: true}, nil
 	}
 }
 

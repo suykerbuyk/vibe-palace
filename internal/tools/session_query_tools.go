@@ -148,8 +148,25 @@ type getSessionDetailParams struct {
 	SessionID string `json:"session_id"`
 }
 
+// sessionDetailResult gains the recovery handle that was MINTED and never
+// emitted: mcp.SessionURI existed, the session resource template was registered
+// in resources.go, vp_read_resource served it — and the one tool whose job is to
+// hand back a session body never told the caller the address. Measured
+// 2026-08-12 on the live vault, vp_get_session_detail returned 32,987 bytes for
+// mlnx-sw-os/2026-08-04-12a23ab8-02: 1.7x a real host's 19,968-byte flat inline
+// cap, so the body was already arriving as a prefix with no way to say so and
+// nowhere to go for the rest.
+//
+// SessionURI is declared with the metadata, above Body. Declaration order is
+// wire order is cut order (encoding/json emits in declaration order and nothing
+// on the response path re-serializes through a map), and Body is the only
+// unbounded field, so it is the one a cut is allowed to land in.
 type sessionDetailResult struct {
-	SessionID     string   `json:"session_id"`
+	SessionID string `json:"session_id"`
+	// SessionURI addresses the full session body for vp_read_resource. It leads
+	// the payload with the rest of the metadata: a handle declared below the
+	// body it rescues is reachable only when the body already fit.
+	SessionURI    string   `json:"session_uri"`
 	Project       string   `json:"project"`
 	Date          string   `json:"date"`
 	Iteration     int      `json:"iteration"`
@@ -162,6 +179,14 @@ type sessionDetailResult struct {
 	FilesChanged  []string `json:"files_changed,omitempty"`
 	OpenThreads   []string `json:"open_threads,omitempty"`
 	Body          string   `json:"body"`
+
+	// 🔴 THE TERMINAL SENTINEL — last field, no omitempty, always true on a
+	// successful return. Its ABSENCE is the signal: present ⇒ every byte
+	// arrived, absent ⇒ the host cut the document, whether or not it said so.
+	// No omitempty because a false bool would vanish and make "cut" and "whole"
+	// serialize identically. Anything declared after this field re-opens the
+	// hole — appending to the end of a struct is exactly how this breaks.
+	Complete bool `json:"complete"`
 }
 
 var getSessionDetailSchema = json.RawMessage(`{
@@ -182,10 +207,11 @@ var getSessionDetailSchema = json.RawMessage(`{
 // GetSessionDetailTool returns the MCP tool for vp_get_session_detail.
 func GetSessionDetailTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name:        "vp_get_session_detail",
-		Description: "Get full session detail including metadata and markdown body.",
-		Schema:      getSessionDetailSchema,
-		Handler:     getSessionDetailHandler(vault),
+		Name: "vp_get_session_detail",
+		Description: "Get full session detail including metadata and markdown body. The result LEADS with `session_uri` and ENDS with `complete`: " +
+			"if you do not see `complete: true`, your host truncated the body — read it in pages via `session_uri` with vp_read_resource.",
+		Schema:  getSessionDetailSchema,
+		Handler: getSessionDetailHandler(vault),
 	}
 }
 
@@ -214,6 +240,7 @@ func getSessionDetailHandler(vault *storage.Vault) mcp.HandlerFunc {
 
 		return sessionDetailResult{
 			SessionID:     meta.ID,
+			SessionURI:    mcp.SessionURI(meta.Project, meta.ID),
 			Project:       meta.Project,
 			Date:          meta.Date,
 			Iteration:     meta.Iteration,
@@ -226,6 +253,7 @@ func getSessionDetailHandler(vault *storage.Vault) mcp.HandlerFunc {
 			FilesChanged:  meta.FilesChanged,
 			OpenThreads:   meta.OpenThreads,
 			Body:          body,
+			Complete:      true,
 		}, nil
 	}
 }
@@ -328,6 +356,20 @@ type getProjectContextParams struct {
 }
 
 // ProjectContext is the response for vp_get_project_context.
+//
+// The largest measured overrun on the surface that an agent hits in ordinary
+// work: 26,172 bytes at DEFAULTS on vibe-palace and 141,562 bytes at
+// max_sessions=50 on quantum-ng, against a host's 19,968-byte flat inline cap —
+// 1.3x to 7.1x, with no unusual argument required. It is step 5 of
+// /vpc-restart, so every restart hits it.
+//
+// It gets the sentinel and NOT a recovery handle, deliberately. There is no URI
+// that addresses this result: it is a JOIN over the resume, the session index
+// and the friction metrics, computed per call, not a document that exists
+// anywhere to be paged. Giving it a hatch means designing paging (a cursor over
+// `sessions`, a byte budget), which depends on a pending operator decision on
+// what the budget tracks and is filed separately. What it can have today is the
+// ability to SAY it was cut.
 type ProjectContext struct {
 	Project   string                 `json:"project"`
 	Summary   string                 `json:"summary,omitempty"`
@@ -335,6 +377,15 @@ type ProjectContext struct {
 	Threads   []string               `json:"threads,omitempty"`
 	Decisions []string               `json:"decisions,omitempty"`
 	Friction  []capture.WeeklyMetric `json:"friction,omitempty"`
+
+	// 🔴 THE TERMINAL SENTINEL — last field, no omitempty, always true on a
+	// successful return. Its ABSENCE is the signal: absent ⇒ the host cut this
+	// document, so the `sessions`/`threads`/`decisions` lists you are holding
+	// are PREFIXES and reading them as the whole picture is the failure mode.
+	// Re-ask with a smaller `max_sessions`, or with `sections`. No omitempty
+	// because a false bool would vanish and make "cut" and "whole" serialize
+	// identically. Anything declared after this field re-opens the hole.
+	Complete bool `json:"complete"`
 }
 
 var getProjectContextSchema = json.RawMessage(`{
@@ -360,10 +411,11 @@ var getProjectContextSchema = json.RawMessage(`{
 // GetProjectContextTool returns the MCP tool for vp_get_project_context.
 func GetProjectContextTool(vault *storage.Vault, resolver *vpctx.Resolver) mcp.Tool {
 	return mcp.Tool{
-		Name:        "vp_get_project_context",
-		Description: "Get condensed project context with configurable sections: summary, sessions, threads, decisions, friction.",
-		Schema:      getProjectContextSchema,
-		Handler:     getProjectContextHandler(vault, resolver),
+		Name: "vp_get_project_context",
+		Description: "Get condensed project context with configurable sections: summary, sessions, threads, decisions, friction. The result ENDS with `complete`: " +
+			"if you do not see `complete: true`, your host truncated it and every list you are holding is a prefix — re-ask with a smaller `max_sessions` or a narrower `sections`.",
+		Schema:  getProjectContextSchema,
+		Handler: getProjectContextHandler(vault, resolver),
 	}
 }
 
@@ -396,7 +448,10 @@ func getProjectContextHandler(vault *storage.Vault, resolver *vpctx.Resolver) mc
 			}
 		}
 
-		result := ProjectContext{Project: p.Project}
+		// Complete is set at assembly, not just before the return, so every exit
+		// from this handler carries it by construction rather than by remembering
+		// to append it on each path.
+		result := ProjectContext{Project: p.Project, Complete: true}
 
 		// Summary: extract from resume.
 		if want["summary"] {

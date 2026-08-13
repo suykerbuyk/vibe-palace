@@ -121,9 +121,15 @@ func TestGetResume(t *testing.T) {
 		t.Fatalf("handler: %v", err)
 	}
 
-	rr := result.(resolveResult)
+	rr := result.(resumeResult)
 	if rr.Content == "" {
 		t.Error("expected non-empty resume from embedded defaults")
+	}
+	if want := "vibe-palace://resume/test-proj"; rr.ResumeURI != want {
+		t.Errorf("resume_uri = %q, want %q — the handle that pages the body back was minted but never emitted before", rr.ResumeURI, want)
+	}
+	if !rr.Complete {
+		t.Error("complete is false on a successful return — absence of the sentinel is the truncation signal, so it must be set on every success")
 	}
 }
 
@@ -153,7 +159,7 @@ func TestUpdateResumeThenGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get handler: %v", err)
 	}
-	rr := getResult.(resolveResult)
+	rr := getResult.(resumeResult)
 	if rr.Content != "# My Resume\nUpdated content." {
 		t.Errorf("content = %q", rr.Content)
 	}
@@ -192,7 +198,7 @@ func TestGetResumeSha256MatchesDisk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
-	rr := result.(resolveResult)
+	rr := result.(resumeResult)
 
 	if rr.Source != "project" {
 		t.Fatalf("source = %q, want project", rr.Source)
@@ -216,7 +222,7 @@ func TestGetResumeSha256EmptyWithoutProjectFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
-	rr := result.(resolveResult)
+	rr := result.(resumeResult)
 
 	if rr.Source == "project" {
 		t.Fatalf("source = project, expected a template fallback")
@@ -278,7 +284,7 @@ func TestGetResumeSha256IsOfRawBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
-	rr := result.(resolveResult)
+	rr := result.(resumeResult)
 
 	if strings.Contains(rr.Content, "{{PROJECT}}") {
 		t.Fatalf("content not expanded, fixture no longer exercises the case: %q", rr.Content)
@@ -329,7 +335,7 @@ func TestUpdateResumeCASRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get handler: %v", err)
 	}
-	rr := got.(resolveResult)
+	rr := got.(resumeResult)
 	if rr.Sha256 == "" {
 		t.Fatal("vp_get_resume returned an empty sha for an existing resume")
 	}

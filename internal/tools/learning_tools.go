@@ -80,20 +80,32 @@ type getLearningParams struct {
 	IncludeContent *bool `json:"include_content,omitempty"`
 }
 
+// getLearningResult carries the same content-URI idiom as getTaskResult, and
+// carried the same inversion: the handle was declared BELOW the body it exists
+// to rescue. Declaration order is wire order is cut order (encoding/json emits
+// in declaration order; nothing on the response path re-serializes through a
+// map), so a hatch under the bulk arrives only when the bulk already fit.
+// Learnings measure 1,237 bytes on the live vault today — comfortably under a
+// host's 19,968-byte flat cap — but the body is unbounded in principle and the
+// layout is fixed here rather than left as a size coincidence to be discovered
+// again by the first long learning. No `complete` sentinel: this task added it
+// to the tools MEASURED over the cap, and this one is two orders under it.
 type getLearningResult struct {
 	Slug        string `json:"slug"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Type        string `json:"type"`
-	// Content is the full learning body. Omitted (empty) when include_content=false.
-	Content string `json:"content,omitempty"`
 	// ContentURI and ContentSize are ALWAYS set. ContentURI addresses the full
 	// body for vp_read_resource; ContentSize is its length in bytes.
 	ContentURI  string `json:"content_uri"`
 	ContentSize int    `json:"content_size"`
 	// Excerpt is a rune-safe leading slice of the body, set only when the inline
-	// Content was dropped (include_content=false).
+	// Content was dropped (include_content=false). Bounded by learningExcerptCap,
+	// so it rides above Content with the handles rather than with the bulk.
 	Excerpt string `json:"excerpt,omitempty"`
+	// Content is the full learning body — the only unbounded field, and so the
+	// one a host cut is allowed to land in. Omitted when include_content=false.
+	Content string `json:"content,omitempty"`
 }
 
 var getLearningSchema = json.RawMessage(`{

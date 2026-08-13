@@ -1409,6 +1409,64 @@ to the end of a struct is exactly how it will be broken.
 via reflection for that reason; `TestBootstrapTruncatedPrefixIsDetectable` and
 the live-vault canary assert the property on real marshalled bytes.
 
+##### The same contract across the rest of the surface
+
+The cap is a property of the **host**, not of bootstrap, so it applies to every
+tool result. A survey against the live vault
+(`survey-mcp-surface-for-results-over-the-host-inline-cap`, 2026-08-12) measured
+all 47 non-mutating tools and found **19 over the 19,968-byte cap**, up to
+`vp_vault_read` at 189×. It also found that **every URI escape hatch on the
+surface was declared *after* the payload it rescues** — reachable exactly when
+it was not needed and gone exactly when it was. `vp_get_task` returned 192,060
+bytes with `content_uri` at byte **191,956**, 172 KB past the cut. Where a hatch
+appeared to work it worked by coincidence: the body happened to fit.
+
+Two consequences, both mechanical, both landed:
+
+- **Handles lead their bulk.** `content_uri`/`content_size` precede `content`
+  in `getTaskResult` and `getLearningResult`; `doctrine_uri` precedes the
+  embedded body in `doctrineResult` (which also fixes `vp_manual`, where it
+  nested behind 56 KB of tool inventory); `session_uri` precedes `body`;
+  `content_uri` precedes `content` for `vp_get_command`/`vp_get_skill`; and
+  `resolveResult` now declares `source`/`sha256` **above** `content`, so the
+  digest an agent needs to compare-and-set after re-paging is on the near side
+  of the cut. `vp_read_resource` needed no change — its
+  `uri, mime_type, offset, length, total_size, eof, content` layout is where
+  the pattern came from.
+- **Three URIs that were minted and never emitted are now emitted.**
+  `mcp.ResumeURI`, `mcp.SessionURI` and `mcp.CommandURI` (plus `mcp.SkillURI`,
+  which shares a handler) all existed, had registered resource templates and
+  were served by `vp_read_resource` — and no tool response ever handed one to a
+  client. `internal/sourceaudit` had been carrying all four as accepted debt;
+  emitting them removed the entries. `mcp.KnowledgeURI` stays uninvoked on
+  purpose: it addresses a Knowledge *markdown file* while `vp_get_knowledge`
+  returns *KG triples*, so emitting it would be a pointer to a different
+  document, not a recovery handle.
+
+The terminal `complete` sentinel now ends `getTaskResult`, `resumeResult`,
+`getResourceResult`, `sessionDetailResult`, `readResourceResult`,
+`ManualResult`, `ProjectContext`, `knowledgeResult`, `kgTripleListResult` and
+`vaultListResult` — every result struct in `internal/tools` for a tool measured
+over the cap. Two structural exceptions, both deliberate: `doctrineResult`
+carries none because it **nests** inside `ManualResult`, and a sentinel in the
+middle of a document survives the cut it exists to detect; `getLearningResult`
+carries none because it measures 1,237 bytes, two orders under the cap.
+
+`complete` on `vp_read_resource` is **not** a duplicate of `eof`: `eof` is about
+the *resource* (you reached its end), `complete` is about the *document* (every
+byte of this page reached you). A page can be `eof: true` and still arrive cut.
+
+**Not fixed here, and needing a paging design rather than a field move:**
+`vp_get_knowledge`, `vp_get_project_context`, `vp_kg_query`/`vp_kg_timeline`,
+`vp_vault_list` and `vp_manual` have a sentinel but still **no hatch** — no URI
+addresses a result computed per call. `vp_search`, `vp_search_cross_project`,
+`vp_search_sessions` return bare JSON **arrays** and `vp_list_tasks` returns a
+`map`, whose keys `encoding/json` sorts alphabetically — neither shape can host a
+*terminal* field at all, so both need a wrapper struct before a sentinel means
+anything. `vp_vault_read`, `vp_health` and `vp_collect_wrap_state` return domain
+structs owned by other packages and shared with the CLI. `vp_read_resource`'s
+`limit` remains unclamped.
+
 ### Served doctrine (ADR-008 Phase 1)
 
 The generic agent operating manual — the doctrine — is embedded in the binary

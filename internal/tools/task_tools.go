@@ -241,17 +241,51 @@ type getTaskParams struct {
 	IncludeContent *bool `json:"include_content,omitempty"`
 }
 
+// getTaskResult is the canonical instance of the defect this task fixes, and
+// the worst-measured one on the surface.
+//
+// 🔴 THE RECOVERY HANDLE USED TO BE DECLARED AFTER THE BODY IT RESCUES.
+// encoding/json emits struct fields in declaration order and nothing on the
+// response path re-serializes through a map (mcp.marshalResult hands the value
+// straight to mcplib.NewToolResultJSON), so declaration order is wire order is
+// CUT order on a host with a flat inline cap. Measured 2026-08-12 against the
+// live vault: vp_get_task on mlnx-sw-os/switch-image-pipeline-via-slaved-vm
+// returned 192,060 bytes with content_uri at byte 191,956 — 172 KB past the
+// 19,968-byte cut. The hatch was reachable exactly when the body already fit
+// and gone exactly when it did not.
+//
+// Worse, it made the OTHER mitigation unreachable too: include_content=false is
+// opt-in, and an agent can only opt in if it knows the handle exists — which it
+// learns from content_uri, which it never received.
+//
+// So the layout is now the one vp_read_resource has always had: address and
+// size first, body last. Field order here is a transport contract; see
+// TestSurfaceHandlesPrecedeBulk and TestSurfaceTruncatedPrefixIsDetectable.
 type getTaskResult struct {
 	Meta storage.TaskMeta `json:"meta"`
-	// Content is the full task body. Omitted (empty) when include_content=false.
-	Content string `json:"content,omitempty"`
 	// ContentURI and ContentSize are ALWAYS set. ContentURI addresses the full
-	// body for vp_read_resource; ContentSize is its length in bytes.
+	// body for vp_read_resource; ContentSize is its length in bytes, so a caller
+	// holding a truncated document can tell how much of the body it is missing.
 	ContentURI  string `json:"content_uri"`
 	ContentSize int    `json:"content_size"`
 	// Excerpt is a rune-safe leading slice of the body, set only when the inline
-	// Content was dropped (include_content=false).
+	// Content was dropped (include_content=false). Bounded by taskExcerptCap, so
+	// it rides above Content with the handles rather than with the bulk.
 	Excerpt string `json:"excerpt,omitempty"`
+	// Content is the full task body — the only unbounded field, and therefore
+	// the one a host cut is allowed to land in. Omitted (empty) when
+	// include_content=false.
+	Content string `json:"content,omitempty"`
+
+	// 🔴 THE TERMINAL SENTINEL — last field, no omitempty, always true on a
+	// successful return. Its ABSENCE is the signal: present ⇒ every byte of
+	// this document arrived, absent ⇒ the host cut it, whether or not the host
+	// said so (Claude Code truncates silently). Reordering alone only makes a
+	// cut RECOVERABLE; it does not make it DETECTABLE, and an agent that cannot
+	// detect the cut never decides to reach for content_uri. No omitempty
+	// because a false bool would vanish and make "cut" and "whole" serialize
+	// identically. Anything declared after this field re-opens the hole.
+	Complete bool `json:"complete"`
 }
 
 var getTaskSchema = json.RawMessage(`{
@@ -266,10 +300,11 @@ var getTaskSchema = json.RawMessage(`{
 
 func GetTaskTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name:        "vp_get_task",
-		Description: "Get full task detail including metadata and content.",
-		Schema:      getTaskSchema,
-		Handler:     getTaskHandler(vault),
+		Name: "vp_get_task",
+		Description: "Get full task detail including metadata and content. The result LEADS with `content_uri` + `content_size` and ENDS with `complete`: " +
+			"if you do not see `complete: true`, your host truncated the body — read it in pages via `content_uri` with vp_read_resource.",
+		Schema:  getTaskSchema,
+		Handler: getTaskHandler(vault),
 	}
 }
 
@@ -294,6 +329,7 @@ func getTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 			Meta:        meta,
 			ContentURI:  mcp.TaskURI(p.Project, p.Task),
 			ContentSize: len(content),
+			Complete:    true,
 		}
 		// Tri-state: nil/true keeps the full inline body (Claude unchanged).
 		// false drops the body for a host that truncates large results — but only

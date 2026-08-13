@@ -25,6 +25,14 @@ type readResourceParams struct {
 	Limit  int    `json:"limit,omitempty"` // default 16000
 }
 
+// readResourceResult is the layout the rest of the surface was hoisted to
+// match: every instrument and address first, the unbounded body last. It was
+// already correct — this is where the pattern came from — and it earns the
+// sentinel too, because `limit` has no upper clamp, so the designated RECOVERY
+// tool can itself be made to overflow a host cap (measured 191,927 bytes at
+// limit=10000000 on the live vault, against a 19,968-byte flat cap; the 16,000
+// default emits 16,558 with only ~3.4 KB of headroom). Clamping `limit` is a
+// separate decision and is filed separately.
 type readResourceResult struct {
 	URI       string `json:"uri"`
 	MIMEType  string `json:"mime_type"`
@@ -33,6 +41,18 @@ type readResourceResult struct {
 	TotalSize int    `json:"total_size"`
 	EOF       bool   `json:"eof"`
 	Content   string `json:"content"`
+
+	// 🔴 THE TERMINAL SENTINEL — last field, no omitempty, always true on a
+	// successful return. It answers a DIFFERENT question from `eof`, and
+	// confusing the two is the trap: `eof` is about the RESOURCE (you have
+	// reached its end), `complete` is about this DOCUMENT (every byte of this
+	// page reached you). A page can be eof=true and still arrive cut in half,
+	// and without the sentinel the caller would reassemble a body that is
+	// silently short and then compare-and-set against it. Absence is the
+	// signal — re-request this same offset with a smaller limit. No omitempty
+	// because a false bool would vanish and make "cut" and "whole" serialize
+	// identically. Anything declared after this field re-opens the hole.
+	Complete bool `json:"complete"`
 }
 
 // alignRuneBoundary backs an index off to the nearest UTF-8 rune boundary at or
@@ -100,11 +120,13 @@ func ReadResourceTool(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name: "vp_read_resource",
 		Description: "Page any vibe-palace:// resource body rune-safely. Returns " +
-			"{uri, mime_type, offset, length, total_size, eof, content}. The " +
+			"{uri, mime_type, offset, length, total_size, eof, content, complete}. The " +
 			"guaranteed fallback when a primary tool's inline body is truncated " +
 			"by the host. IMPORTANT: advance offset by the returned offset+length, " +
 			"NOT by the requested limit — pages are backed off UTF-8 rune " +
-			"boundaries so length may be slightly under limit. Read until eof.",
+			"boundaries so length may be slightly under limit. Read until eof. " +
+			"`eof` is about the RESOURCE, `complete` is about this PAGE: if you do not see " +
+			"`complete: true` your host truncated the page itself — re-request the same offset with a smaller limit.",
 		Schema:  readResourceSchema,
 		Handler: readResourceHandler(resolver, vault),
 	}
@@ -161,6 +183,7 @@ func readResourceHandler(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Han
 			TotalSize: len(content),
 			EOF:       end == len(content),
 			Content:   content[offset:end],
+			Complete:  true,
 		}, nil
 	}
 }
