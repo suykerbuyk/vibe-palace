@@ -372,8 +372,9 @@ func auditIterationHeadings(vault *storage.Vault) ([]Finding, []string, error) {
 				Dimension: DimIterationHeadings,
 				Artifact:  fmt.Sprintf("%s:%d", rel, h.Line),
 				Detail: fmt.Sprintf("iteration %d uses an H3 header; the canonical level is H2. "+
-					"The counter scans for H2, so this narrative is INVISIBLE to it — which is how "+
-					"a project with real history reports itself as fresh (191).", h.N),
+					"Mixed heading levels defeat addressing (191: a strict matcher under-counted "+
+					"history and reported a fresh project on real narratives). New narratives must "+
+					"be H2 (FormatIterationHeader); the reader stays H2+H3 tolerant so legacy is counted.", h.N),
 			})
 		}
 	}

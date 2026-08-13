@@ -6,6 +6,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,8 +119,9 @@ func TestGetIteration_RecentByteBudget(t *testing.T) {
 		frame(2, "mid", b100),
 		frame(3, "new", b100),
 	)
+	// Budget counts marshalled rows. ~100 B bodies become ~250+ B rows; 600 admits two.
 	got := callGetIteration(t, vault, map[string]any{
-		"project": "demo", "recent": true, "max_bytes": 250,
+		"project": "demo", "recent": true, "max_bytes": 600,
 	})
 	if got.Returned != 2 || got.BytesInlined != 200 {
 		t.Fatalf("returned=%d inlined=%d %+v", got.Returned, got.BytesInlined, got)
@@ -191,8 +193,13 @@ func TestGetIteration_DefaultReadCapUnchanged(t *testing.T) {
 	if HostInlineCapBytes != 19968 {
 		t.Fatalf("HostInlineCapBytes=%d", HostInlineCapBytes)
 	}
-	if MaxGetIterationMaxBytes != HostInlineCapBytes {
-		t.Fatal("clamp must equal host cap")
+	if MaxGetIterationMaxBytes >= HostInlineCapBytes {
+		t.Fatalf("MaxGetIterationMaxBytes (%d) must be strictly < HostInlineCapBytes (%d)",
+			MaxGetIterationMaxBytes, HostInlineCapBytes)
+	}
+	if MaxGetIterationMaxBytes+getIterationEnvelopeReserve != HostInlineCapBytes {
+		t.Fatalf("envelope reserve invariant broken: max=%d reserve=%d host=%d",
+			MaxGetIterationMaxBytes, getIterationEnvelopeReserve, HostInlineCapBytes)
 	}
 }
 
@@ -221,5 +228,122 @@ func TestAppendGetRoundTrip(t *testing.T) {
 	got := callGetIteration(t, vault, map[string]any{"project": "demo", "n": 1})
 	if got.Entries[0].Body != "round-trip body\nline2" {
 		t.Fatalf("body=%q", got.Entries[0].Body)
+	}
+}
+
+// TestGetIteration_WireSizeAtMaxBudget is the ratchet for the marshalled-row
+// budget. MANY SMALL entries maximise per-row overhead (the shape that blew
+// rezbldr/quantum-ng past HostInlineCapBytes when the budget counted bare
+// bodies). Break the fill to use len(Body) again and this goes red.
+func TestGetIteration_WireSizeAtMaxBudget(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	var frames []string
+	// 40 × ~450 B bodies ≈ rezbldr-like many-small density.
+	body := strings.Repeat("w", 450)
+	for i := 1; i <= 40; i++ {
+		frames = append(frames, frame(i, "t"+itoa(i), body))
+	}
+	seedIterations(t, vault, "demo", frames...)
+
+	got := callGetIteration(t, vault, map[string]any{
+		"project": "demo", "recent": true, "max_bytes": MaxGetIterationMaxBytes,
+	})
+	wire, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wire) > HostInlineCapBytes {
+		t.Fatalf("wire size %d exceeds HostInlineCapBytes %d (returned=%d bytes_inlined=%d); "+
+			"budget must count marshalled rows + envelope, not bare bodies",
+			len(wire), HostInlineCapBytes, got.Returned, got.BytesInlined)
+	}
+	if got.Returned < 2 {
+		t.Fatalf("expected multiple rows under max budget, got returned=%d", got.Returned)
+	}
+	if !got.MoreAvailable {
+		t.Fatal("40 entries should not all fit; more_available want true")
+	}
+	// Every inlined body is whole — no silent truncation.
+	for _, e := range got.Entries {
+		if e.Body != "" && e.Body != body {
+			t.Fatalf("inlined body was altered (truncated?): len=%d", len(e.Body))
+		}
+		if e.Body == "" && e.ContentURI == "" {
+			t.Fatalf("manifest row missing content_uri: %+v", e)
+		}
+	}
+}
+
+func itoa(i int) string {
+	return fmt.Sprintf("%d", i)
+}
+
+// TestGetIteration_NModeFillAndManifest applies the same whole-row budget to
+// n-mode matches. Two large same-N bodies must not both force a host breach:
+// the second becomes a manifest handle when the first fills the budget.
+func TestGetIteration_NModeFillAndManifest(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	big := strings.Repeat("B", 8000)
+	seedIterations(t, vault, "demo",
+		frame(128, "first", big),
+		frame(128, "second", big),
+		frame(128, "third", big),
+	)
+	// Budget admits roughly one marshalled ~8k body row; remainder → manifests.
+	got := callGetIteration(t, vault, map[string]any{
+		"project": "demo", "n": 128, "max_bytes": 9000,
+	})
+	if got.Returned != 3 {
+		t.Fatalf("want all 3 matches as rows (inline or manifest), got returned=%d %+v",
+			got.Returned, got.Entries)
+	}
+	inlined := 0
+	for _, e := range got.Entries {
+		if e.Body != "" {
+			inlined++
+			if e.Body != big {
+				t.Fatal("body truncated")
+			}
+		} else if e.ContentURI == "" {
+			t.Fatalf("manifest missing uri: %+v", e)
+		}
+	}
+	if inlined < 1 || inlined >= 3 {
+		t.Fatalf("want some but not all inlined under 9000 budget, inlined=%d", inlined)
+	}
+	if got.MoreAvailable {
+		t.Fatal("all matches returned as rows; more_available should be false")
+	}
+	wire, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wire) > HostInlineCapBytes {
+		t.Fatalf("n-mode wire %d > host cap %d", len(wire), HostInlineCapBytes)
+	}
+}
+
+func TestGetIteration_NModeFirstOversizeThenManifests(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	huge := strings.Repeat("H", 20000) // larger than MaxGetIterationMaxBytes as a body row
+	small := "tiny"
+	seedIterations(t, vault, "demo",
+		frame(9, "huge", huge),
+		frame(9, "a", small),
+		frame(9, "b", small),
+	)
+	got := callGetIteration(t, vault, map[string]any{
+		"project": "demo", "n": 9, "max_bytes": MaxGetIterationMaxBytes,
+	})
+	// First is manifest (cannot inline); subsequent small ones may inline or manifest.
+	if got.Returned < 1 {
+		t.Fatal("empty")
+	}
+	if got.Entries[0].Body != "" {
+		t.Fatalf("first should be manifest handle, got body len %d", len(got.Entries[0].Body))
+	}
+	wire, _ := json.Marshal(got)
+	if len(wire) > HostInlineCapBytes {
+		t.Fatalf("wire %d > cap", len(wire))
 	}
 }

@@ -162,7 +162,7 @@ func TestIterationHeadings_FlagsRealH3(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
 	mkdirs(t, vault.Root, "Projects", "p")
 	writeFile(t, vault.Root, "Projects/p/iterations.md",
-		"## Iteration 1 — fine\n\n### Iteration 2 — WRONG: the counter scans for H2 and cannot see this\n")
+		"## Iteration 1 — fine\n\n### Iteration 2 — WRONG: non-canonical H3 (191)\n")
 
 	findings, _, err := auditIterationHeadings(vault)
 	if err != nil {
@@ -171,10 +171,15 @@ func TestIterationHeadings_FlagsRealH3(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("findings = %+v, want the one real H3 heading", findings)
 	}
-	if !strings.Contains(findings[0].Detail, "INVISIBLE") {
-		t.Errorf("the finding must say WHY it matters — the narrative is invisible to the "+
-			"counter, which is how a project with real history reports itself as fresh: %q",
-			findings[0].Detail)
+	detail := findings[0].Detail
+	if !strings.Contains(detail, "canonical level is H2") {
+		t.Errorf("finding must name the canonical level: %q", detail)
+	}
+	if !strings.Contains(detail, "191") {
+		t.Errorf("finding must cite the 191 history: %q", detail)
+	}
+	if strings.Contains(detail, "INVISIBLE") {
+		t.Errorf("finding must not claim H3 is invisible to the counter (reader is H2+H3 tolerant): %q", detail)
 	}
 }
 

@@ -74,7 +74,7 @@
     {
       "name": "vp_get_iteration",
       "mutating": false,
-      "schema_sha256": "38c6b5a27cdd872cfe9811e72431945105071372b92690358f2d545e50cf1f69"
+      "schema_sha256": "3983b29432d4deb3b323d2b9c0ff9971f0ab8b5e885914a73de772dd1be0ba69"
     },
     {
       "name": "vp_get_knowledge",
