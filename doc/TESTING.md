@@ -167,6 +167,28 @@ bulk proves the same property.
 
 ---
 
+## Bootstrap delivery-doctrine tests (`internal/tools/bootstrap_doctrine_test.go`)
+
+The tests above prove the signal is *emitted*. These prove it is *taught* — a sentinel no agent
+knows how to read changes nothing, which is why the epic's own acceptance note recorded the
+measured `complete`-absent result as proof the signal arrives and explicitly **not** as proof an
+agent acts on it.
+
+Three surfaces teach the payload's delivery state and all three are pinned as one contract:
+`internal/templates/templates/commands/restart.md` (Step 2), the `vp_bootstrap_context` tool
+description, and the Grok `/vpc` hub shim (`internal/shims`). The template reaches only hosts that
+ran `/vpc-restart`; the description reaches every agent on every host; the hub fronts the exact host
+where the flat cut was measured. Fixing one is the ADR-006 failure mode.
+
+| Test | What it proves |
+|------|----------------|
+| `TestBootstrapDeliveryDoctrine_AbsentBudgetNeverStandsAlone` | No surface asserts that an absent `budget` means nothing was reduced **without conditioning it on `complete` in the same sentence**. Both readings of the unconditioned claim were observed in the field: its free contrapositive (present ⇒ reduced ⇒ truncated) makes the ladder's routine `recent_sessions` shed read as a failed bootstrap, and in a truncated channel `budget` is absent *because it was cut off*, so the rule tells the agent a silent host cut was a clean delivery. The `[^.]` sentence bound is load-bearing: a qualifier three sentences away does not rescue a rule that reads as unconditional where the agent meets it |
+| `TestBootstrapDeliveryDoctrine_RestartTeachesTheSentinel` | The positive half, anchored the way `TestEmbeddedCommands_CheckSuiteDelivery` anchors — on the **action**, not a mention. `complete` must be raised in a *bullet* inside Step 2 (prose observing that the sentinel exists is not a rule), that same bullet must carry `resume_uri`, `vp_read_resource` and `resume_sha256` and order the rehydration *before* continuing, the host axis must precede the `shed_core` axis (a `budget` rule is unreadable until you know the payload arrived), and the benign optional-rung case must be named `benign` with an explicit "do not re-fetch" |
+
+Both were confirmed RED by restoring the old wording at each of the three sites in turn.
+
+---
+
 ## ONNX Model and the Cache System
 
 ### What ONNX does

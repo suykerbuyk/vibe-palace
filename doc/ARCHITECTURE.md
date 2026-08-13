@@ -1352,7 +1352,10 @@ it. ADR-009 makes it honest:
   resume first made the payload fit. It was deleted: the "host truncates large
   inline results" bound it served was never measured, the only refusal on record
   is ~62,463 characters (15x the cap), and payloads were under that bound with
-  or without the cut. **An absent `budget` now means nothing was reduced.**
+  or without the cut. **An absent `budget` now means nothing was reduced —
+but only once `complete` has arrived.** From inside a truncated channel a
+missing `budget` is uninterpretable, because absence and excision serialize
+identically; the sentinel below is what separates them.
 
 A fail-loud arm — refusing the call outright rather than shedding core —
 exists in the design but is **gated on rollout** (task

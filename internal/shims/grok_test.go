@@ -125,6 +125,14 @@ func TestRenderGrokHubGolden(t *testing.T) {
 		"arrive whole on every transport",
 		"`budget.shed`",
 		"`resume_uri`",
+		// ...and "whole from vp" is not "whole on arrival". `budget` answers what
+		// vp shed; only the terminal `complete` sentinel answers whether the host
+		// delivered it. The hub fronts the exact host where a flat 19.5 KB inline
+		// cut was measured, so both axes are pinned here — the shed axis by
+		// `shed_core` (an optional-rung shed is benign and must not be re-fetched)
+		// and the transport axis by `complete`.
+		"`complete: true`",
+		"`shed_core`",
 		// Schema-loading guidance.
 		"load its schema first",
 		shimCloseDelim,

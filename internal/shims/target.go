@@ -315,11 +315,23 @@ it.
 ## Session start
 
 When restoring context (e.g. ` + "`/vpc restart`" + `), call ` + "`vp_bootstrap_context`" + `.
-` + "`resume`" + ` and ` + "`workflow`" + ` arrive whole on every transport. If the payload is
-over its token budget the ladder reduces ` + "`resume`" + ` to its pinned sections and
-SAYS SO — ` + "`budget.shed`" + ` names ` + "`resume->pinned`" + ` and the body opens with a
-` + "`⚠ pinned sections only`" + ` banner. Only then read ` + "`resume_uri`" + ` via
-` + "`vp_read_resource`" + `. An absent ` + "`budget`" + ` means nothing was reduced.
+Two different things shorten that result. ` + "`budget`" + ` reports what vp shed;
+` + "`complete`" + ` reports whether your host delivered every byte vp sent.
+
+Check the host axis first. ` + "`complete: true`" + ` is the payload's last field and
+carries no ` + "`omitempty`" + `, so it arrives on every whole result and on no cut one.
+If ` + "`complete`" + ` is missing, or your host printed a truncation banner, the HOST cut
+the result and the inline body is untrustworthy whatever ` + "`budget`" + ` says —
+rehydrate from ` + "`resume_uri`" + ` / ` + "`workflow_uri`" + ` via ` + "`vp_read_resource`" + `,
+CAS-verifying against ` + "`resume_sha256`" + `, BEFORE acting on any of it.
+
+Then the vp axis. Absent a shed, ` + "`resume`" + ` and ` + "`workflow`" + `
+arrive whole on every transport. ` + "`shed_core`" + `, or a ` + "`⚠ pinned sections only`" + `
+banner, means vp reduced ` + "`resume`" + ` to its pinned sections — read
+` + "`resume_uri`" + ` for the full body. ` + "`budget.shed`" + ` naming only optional
+rungs (recent_sessions, memory, kg_snapshot) is benign: continue, do not
+re-fetch, do not call it truncation. An absent ` + "`budget`" + ` means nothing was
+reduced ONLY when ` + "`complete`" + ` is present; both absent is a cut.
 
 ## After execution
 

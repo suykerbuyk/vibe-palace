@@ -133,13 +133,45 @@ active tasks, and recent sessions in a single call:
   HTTP serve (`vp mcp serve`) project is schema-required. Prefer naming it
   explicitly either way.
 
-`resume` and `workflow` arrive **whole**, on every transport. The one case
-where `resume` is reduced is token-budget pressure, and it announces itself
-twice: `budget.shed` names `resume->pinned`, and the body opens with a
-`⚠ pinned sections only` banner. Only then read `resume_uri` (via
-`vp_read_resource`) for the full body. **An absent `budget` means nothing was
-reduced** — there is no longer a second, silent path that could shorten the
-resume without saying so.
+### Read the delivery state before you read the payload
+
+Two independent things shorten this result, and they leave different marks.
+`budget` reports what **vp** shed. `complete` reports whether the **host**
+delivered every byte vp sent. Neither answers the other's question, and
+reading one as the other is how a routine shed gets narrated as a failed
+bootstrap while a silent host cut gets narrated as a clean one.
+
+Check the host axis **first** — it invalidates everything below it:
+
+- 🔴 **`complete` missing, or a host truncation banner** (`showing first
+  N KB of M KB`, or any "result truncated" notice) ⇒ **the HOST cut the
+  result.** `complete: true` is the last field of the payload and carries no
+  `omitempty`, so it arrives on every whole result and on no cut one. The
+  inline body is untrustworthy **whatever `budget` says** — the fields you
+  cannot see are the ones that would have told you what is missing.
+  **Rehydrate BEFORE continuing any restart step:** read your host's
+  persisted copy of the tool result if it keeps one, otherwise page
+  `resume_uri` and `workflow_uri` with `vp_read_resource` and CAS-verify the
+  resume against `resume_sha256`. Do not carry a cut payload into Step 3.
+- **`budget` absent AND `complete` absent** ⇒ unknown, and unknown is
+  truncated. You cannot tell "vp shed nothing" from "the report was cut off"
+  from inside a truncated channel; take the host-cut branch above.
+
+Then the vp axis, which only means anything once `complete` arrived:
+
+- **`budget.shed_core` non-empty, or the resume opens with a `⚠ pinned
+  sections only` banner** ⇒ vp deliberately reduced the resume to its
+  `<!-- vp:pin -->` sections. Read `resume_uri` (via `vp_read_resource`) for
+  the full body.
+- **`budget.shed` naming only optional rungs** (`recent_sessions`, `memory`,
+  `kg_snapshot`) with no `shed_core` ⇒ **benign.** On a project with real
+  history this is the normal case, not a failure. Continue, do **not**
+  re-fetch, and do **not** narrate it as truncation.
+- **`budget` absent AND `complete` present** ⇒ genuinely nothing was reduced.
+
+`budget` present is **not** evidence of loss, and `budget` absent is **not**
+evidence of delivery. `complete` is the only field that answers the second
+question.
 
 Then fetch the full operating doctrine with `vp_get_doctrine`:
 
