@@ -8,13 +8,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/check"
-	"github.com/suykerbuyk/vibe-palace/internal/mdfence"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
+	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
 
 // Every dimension below is EVIDENCE-BACKED: it exists because a real defect got
@@ -307,10 +306,6 @@ func auditResumeDiscipline(vault *storage.Vault) ([]Finding, []string, error) {
 	return findings, unknowns, nil
 }
 
-// iterationHeading matches a canonical narrative header. H3 is RESERVED for
-// sub-sections inside a narrative.
-var iterationH3 = regexp.MustCompile(`^###\s+Iteration\s+(\d+)`)
-
 // auditIterationHeadings: iteration narratives use the canonical H2 level.
 //
 // Earned by 191, where iterations.md held 110 H2 against 81 H3 — the counter read one
@@ -367,17 +362,18 @@ func auditIterationHeadings(vault *storage.Vault) ([]Finding, []string, error) {
 			continue
 		}
 
-		for _, line := range mdfence.OutsideFences(string(data)) {
-			m := iterationH3.FindStringSubmatch(line.Text)
-			if m == nil {
+		// One heading definition: wrapstate's fence-aware scanner (H2+H3 tolerant
+		// on read). This dimension only flags the non-canonical H3 level.
+		for _, h := range wrapstate.ScanIterHeadings(string(data)) {
+			if h.Hashes != "###" {
 				continue
 			}
 			findings = append(findings, Finding{
 				Dimension: DimIterationHeadings,
-				Artifact:  fmt.Sprintf("%s:%d", rel, line.Num),
-				Detail: fmt.Sprintf("iteration %s uses an H3 header; the canonical level is H2. "+
+				Artifact:  fmt.Sprintf("%s:%d", rel, h.Line),
+				Detail: fmt.Sprintf("iteration %d uses an H3 header; the canonical level is H2. "+
 					"The counter scans for H2, so this narrative is INVISIBLE to it — which is how "+
-					"a project with real history reports itself as fresh (191).", m[1]),
+					"a project with real history reports itself as fresh (191).", h.N),
 			})
 		}
 	}

@@ -72,6 +72,11 @@
       "schema_sha256": "c508813c37baa2a9516f5123d2e4041020a82c14f26439414310e3eee8143ec7"
     },
     {
+      "name": "vp_get_iteration",
+      "mutating": false,
+      "schema_sha256": "38c6b5a27cdd872cfe9811e72431945105071372b92690358f2d545e50cf1f69"
+    },
+    {
       "name": "vp_get_knowledge",
       "mutating": false,
       "schema_sha256": "6b612037cde8e0dd7a7971428231651778474d071df6edadc3d991968d3ebb76"

@@ -90,5 +90,5 @@ project: {{PROJECT}}
 |----------|--------|---------|
 | resume.md | `vp_bootstrap_context` | This file — current state and navigation |
 | workflow.md | `vp_bootstrap_context` | AI workflow rules and pair programming paradigm |
-| iterations.md | ⚠ **no reader exists** | Append-only archive of iteration narratives. `vp_get_project_context` does **not** serve this file — it returns summary/sessions/threads/decisions/friction — and no resource URI covers it, so the only path is `vp_vault_read` on the whole file |
+| iterations.md | `vp_get_iteration` (n or recent+max_bytes); `vibe-palace://iteration/{project}/{n}` | Append-only archive of iteration narratives. Structure-aware read — never load the whole file via `vp_vault_read` for a single N |
 | tasks/ | `vp_list_tasks` / `vp_get_task` | Active task files; tasks/done/ for completed |

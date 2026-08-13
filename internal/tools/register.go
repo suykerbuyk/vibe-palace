@@ -87,6 +87,7 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	reg.MustRegister(AuditVaultTool(vault))
 	reg.MustRegister(ArchiveLinkTool(vault))
 	reg.MustRegister(AppendIterationTool(vault))
+	reg.MustRegister(GetIterationTool(vault))
 	reg.MustRegister(ListTasksTool(vault))
 	reg.MustRegister(GetTaskTool(vault))
 	reg.MustRegister(ManageTaskTool(vault))

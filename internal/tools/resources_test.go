@@ -48,6 +48,7 @@ func resourceFixture(t *testing.T) (*vpctx.Resolver, *storage.Vault, map[string]
 		"session":   "# Session\n\nsession body\n",
 		"knowledge": "# Knowledge\n\nproject knowledge\n",
 		"learning":  "# Learning\n\nvault-wide learning\n",
+		"iteration": "iteration body only",
 	}
 
 	writeFile(t, filepath.Join(projDir, "tasks", "fix-bug.md"), bodies["task"])
@@ -68,6 +69,9 @@ func resourceFixture(t *testing.T) (*vpctx.Resolver, *storage.Vault, map[string]
 	// vp_get_learning's content), so bodies["learning"] is that body.
 	writeFile(t, filepath.Join(root, "Knowledge", "learnings", "cache-invalidation.md"),
 		"---\nname: Cache Invalidation\ndescription: vault-wide learning\ntype: reference\n---\n"+bodies["learning"])
+	// iterations.md frame matches AppendIterationOwned so the slicer returns the body.
+	writeFile(t, filepath.Join(projDir, "iterations.md"),
+		"# demo — Iteration Narratives\n\n---\n## Iteration 7 — fixture\n\n"+bodies["iteration"])
 
 	return vpctx.NewResolver(root), storage.NewVault(root), bodies
 }
@@ -91,6 +95,7 @@ func TestResolveURIHappyPath(t *testing.T) {
 		{"session", mcp.SessionURI("demo", "2026-06-20-01"), bodies["session"]},
 		{"knowledge", mcp.KnowledgeURI("demo"), bodies["knowledge"]},
 		{"learning", mcp.LearningURI("cache-invalidation"), bodies["learning"]},
+		{"iteration", mcp.IterationURI("demo", 7), bodies["iteration"]},
 	}
 
 	for _, tc := range cases {
@@ -118,6 +123,7 @@ func TestResolveURINotFound(t *testing.T) {
 
 	uris := []string{
 		mcp.TaskURI("demo", "no-such-task"),
+		mcp.IterationURI("demo", 999),
 		mcp.CommandURI("empty", "ghost"),
 		mcp.SkillURI("empty", "ghost"),
 		mcp.SessionURI("demo", "2099-01-01-09"),
@@ -262,6 +268,7 @@ func TestRegisterResourcesRoundTrip(t *testing.T) {
 		{"session", mcp.SessionURI("demo", "2026-06-20-01"), bodies["session"]},
 		{"knowledge", mcp.KnowledgeURI("demo"), bodies["knowledge"]},
 		{"learning", mcp.LearningURI("cache-invalidation"), bodies["learning"]},
+		{"iteration", mcp.IterationURI("demo", 7), bodies["iteration"]},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

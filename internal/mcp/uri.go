@@ -3,10 +3,12 @@
 
 package mcp
 
+import "strconv"
+
 // ResourceScheme is the URI scheme for vibe-palace content resources.
 const ResourceScheme = "vibe-palace://"
 
-// Resource URI templates (RFC 6570) registered with AddResourceTemplate.
+// Resource URI templates (RFC 6570) registered with AddContentResource.
 // Each first path segment is a literal resource type; the {var} slots are
 // filled by mcp-go from the matched URI and surfaced to the ResourceFunc.
 const (
@@ -19,6 +21,7 @@ const (
 	SessionURITemplate   = ResourceScheme + "session/{project}/{session_id}"
 	KnowledgeURITemplate = ResourceScheme + "knowledge/{project}"
 	LearningURITemplate  = ResourceScheme + "learning/{slug}"
+	IterationURITemplate = ResourceScheme + "iteration/{project}/{n}"
 )
 
 // TaskURI builds the canonical URI for a task body.
@@ -67,4 +70,11 @@ func KnowledgeURI(project string) string {
 // LearningURI builds the canonical URI for a vault-wide learning body.
 func LearningURI(slug string) string {
 	return ResourceScheme + "learning/" + slug
+}
+
+// IterationURI builds the canonical URI for one iteration narrative body.
+// When iterations.md has duplicate N values, the resource resolves the last
+// file-order match (same policy as wrapstate.LastEntryByN).
+func IterationURI(project string, n int) string {
+	return ResourceScheme + "iteration/" + project + "/" + strconv.Itoa(n)
 }

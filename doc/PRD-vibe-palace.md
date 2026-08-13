@@ -4098,7 +4098,7 @@ project: {{PROJECT}}
 |----------|--------|---------|
 | resume.md | `vp_get_resume` | This file — current state and navigation |
 | workflow.md | `vp_get_workflow` | AI workflow rules and pair programming paradigm |
-| iterations.md | `vp_get_project_context` | Append-only archive of iteration narratives |
+| iterations.md | `vp_get_iteration` / `vibe-palace://iteration/{project}/{n}` | Append-only archive of iteration narratives |
 | tasks/ | `vp_list_tasks` / `vp_get_task` | Active task files; tasks/done/ for completed |
 ```
 

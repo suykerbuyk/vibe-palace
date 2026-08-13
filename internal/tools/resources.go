@@ -9,12 +9,14 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"strconv"
 	"strings"
 
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
 
 // resourceMIME is the MIME type for every vibe-palace content resource. All
@@ -146,6 +148,29 @@ var resourceTypes = []resourceType{
 				return "", err
 			}
 			return learning.Content, nil
+		},
+	},
+	{
+		name: "iteration", template: mcp.IterationURITemplate, vars: []string{"project", "n"},
+		resolve: func(v map[string]string, _ *vpctx.Resolver, vault *storage.Vault) (string, error) {
+			n, err := strconv.Atoi(v["n"])
+			if err != nil || n < 1 {
+				return "", fmt.Errorf("iteration n must be a positive integer, got %q", v["n"])
+			}
+			path, err := vault.IterationsFile(v["project"])
+			if err != nil {
+				return "", err
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return "", fmt.Errorf("read iterations.md: %w", err)
+			}
+			// Last file-order match — URI addresses one body. Duplicates: last wins.
+			e, ok := wrapstate.LastEntryByN(string(data), n)
+			if !ok {
+				return "", fmt.Errorf("iteration %d not found in project %q", n, v["project"])
+			}
+			return e.Body, nil
 		},
 	},
 }
