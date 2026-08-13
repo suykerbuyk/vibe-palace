@@ -159,10 +159,21 @@ Check the host axis **first** — it invalidates everything below it:
 
 Then the vp axis, which only means anything once `complete` arrived:
 
-- **`budget.shed_core` non-empty, or the resume opens with a `⚠ pinned
+- **`budget.shed` names `resume->pinned`, or the resume opens with a `⚠ pinned
   sections only` banner** ⇒ vp deliberately reduced the resume to its
   `<!-- vp:pin -->` sections. Read `resume_uri` (via `vp_read_resource`) for
   the full body.
+- **`budget.shed` names `workflow->digest`, or the workflow opens with a
+  `⚠ pinned sections only` banner** ⇒ the same reduction, applied to the
+  workflow: you have this project's pinned rules, not its whole contract.
+  This one is **UNCONDITIONAL** — it answers a host inline cap, not
+  `max_tokens` — so it is **not** a sign the budget was tight and it says
+  nothing about the resume. Read `workflow_uri` when you need the rest.
+  A workflow that declares no pin zone arrives WHOLE and this rung is absent.
+- **`budget.shed_core` non-empty** ⇒ whichever rungs it names dropped content
+  **nobody had ruled on** — undeclared H2 sections of that document, not
+  merely reference material. Fetch that document's URI before acting on it,
+  and run `vp check --check pin-coverage` to see the sections by name.
 - **`budget.shed` naming only optional rungs** (`recent_sessions`, `memory`,
   `kg_snapshot`) with no `shed_core` ⇒ **benign.** On a project with real
   history this is the normal case, not a failure. Continue, do **not**

@@ -157,7 +157,7 @@ func TestCheckPinCoverage_LatentFindingsPassButAreStillNamed(t *testing.T) {
 		t.Errorf("details[0] = %q, want the LATENT census header", r.Details[0])
 	}
 	// Named, and in FILE order — the order a reader will walk the file in.
-	if want := "  leaky: Current State; Open Threads"; !strings.HasPrefix(r.Details[1], want) {
+	if want := "  leaky resume.md: Current State; Open Threads"; !strings.HasPrefix(r.Details[1], want) {
 		t.Errorf("details[1] = %q, want it to start %q", r.Details[1], want)
 	}
 	joined := strings.Join(r.Details, "\n")
@@ -212,7 +212,7 @@ func TestCheckPinCoverage_ExposedIsInfoAndNamedBeforeLatent(t *testing.T) {
 	if latentHeaderAt < 0 {
 		t.Fatalf("the latent census is missing:\n%s", joined)
 	}
-	for _, name := range []string{"aexposed:", "zexposed:"} {
+	for _, name := range []string{"aexposed resume.md:", "zexposed resume.md:"} {
 		at := strings.Index(joined, name)
 		if at < 0 {
 			t.Fatalf("%s not named:\n%s", name, joined)
@@ -221,7 +221,7 @@ func TestCheckPinCoverage_ExposedIsInfoAndNamedBeforeLatent(t *testing.T) {
 			t.Errorf("%s appears below the LATENT header — exposed projects must be named first:\n%s", name, joined)
 		}
 	}
-	for _, name := range []string{"alatent:", "zlatent:"} {
+	for _, name := range []string{"alatent resume.md:", "zlatent resume.md:"} {
 		at := strings.Index(joined, name)
 		if at < 0 {
 			t.Fatalf("%s not named:\n%s", name, joined)
@@ -231,10 +231,10 @@ func TestCheckPinCoverage_ExposedIsInfoAndNamedBeforeLatent(t *testing.T) {
 		}
 	}
 	// Sorted within each bucket, so the report is stable run to run.
-	if strings.Index(joined, "aexposed:") > strings.Index(joined, "zexposed:") {
+	if strings.Index(joined, "aexposed resume.md:") > strings.Index(joined, "zexposed resume.md:") {
 		t.Errorf("exposed bucket not sorted by project:\n%s", joined)
 	}
-	if strings.Index(joined, "alatent:") > strings.Index(joined, "zlatent:") {
+	if strings.Index(joined, "alatent resume.md:") > strings.Index(joined, "zlatent resume.md:") {
 		t.Errorf("latent bucket not sorted by project:\n%s", joined)
 	}
 	// Both halves of an exposed project's core are shown, so the reader can see
@@ -264,7 +264,7 @@ func TestCheckPinCoverage_ExposureBoundaryIsTheCoreCap(t *testing.T) {
 		if r.Status != Pass {
 			t.Fatalf("status = %v, want Pass — a core of exactly %d bytes still fits", r.Status, CoreMaxBytes)
 		}
-		if !strings.Contains(strings.Join(r.Details, "\n"), "edge: Current State; Open Threads") {
+		if !strings.Contains(strings.Join(r.Details, "\n"), "edge resume.md: Current State; Open Threads") {
 			t.Errorf("the latent census must still name it:\n%v", r.Details)
 		}
 	})
@@ -358,7 +358,7 @@ func TestCheckPinCoverage_FencedMarkerDoesNotDeclare(t *testing.T) {
 	if r.Status != Pass {
 		t.Fatalf("status = %v, want Pass — the finding is real but this core fits", r.Status)
 	}
-	if want := "  teacher: How Marking Works"; !strings.HasPrefix(r.Details[1], want) {
+	if want := "  teacher resume.md: How Marking Works"; !strings.HasPrefix(r.Details[1], want) {
 		t.Errorf("details[1] = %q, want it to start %q — a fenced marker was read as a real declaration", r.Details[1], want)
 	}
 }
@@ -406,10 +406,82 @@ func TestCheckPinCoverage_MixedSortedAndNeverFails(t *testing.T) {
 			t.Errorf("details must not mention %q:\n%s", skip, joined)
 		}
 	}
-	alphaAt := strings.Index(joined, "alpha:")
-	zetaAt := strings.Index(joined, "zeta:")
+	alphaAt := strings.Index(joined, "alpha resume.md:")
+	zetaAt := strings.Index(joined, "zeta resume.md:")
 	if alphaAt < 0 || zetaAt < 0 || alphaAt > zetaAt {
 		t.Errorf("violations not sorted by project (alpha@%d, zeta@%d):\n%s", alphaAt, zetaAt, joined)
+	}
+}
+
+// 🔴 A WORKFLOW.MD IS SCANNED TOO, AND ITS FINDING IS ALWAYS EXPOSED.
+//
+// The workflow digest is UNCONDITIONAL — it answers a host inline cap, not a
+// token budget — so an undeclared workflow section leaves the inline payload on
+// every bootstrap whatever the core measures. This project's core fits
+// comfortably (its resume is fully declared and there is no padding), so if
+// exposure were computed from the core, as it is for a resume, this finding
+// would be reported LATENT and the report would be telling the reader that a
+// rule dropped on every single run is not being dropped.
+func TestCheckPinCoverage_WorkflowFindingIsAlwaysExposed(t *testing.T) {
+	vault := t.TempDir()
+	writeResume(t, vault, "marked", fullyDeclaredResume)
+	writeWorkflowBody(t, vault, "marked", "# marked — Workflow\n\n"+
+		"## Behavioral Notes\n"+pin+"\n\nnever do the bad thing\n\n"+
+		"## Files\n"+disp+"\n\n- resume.md\n\n"+
+		"## Auto-memory\n\nthe paragraph nobody ruled on\n")
+
+	r := CheckPinCoverage(storage.NewVault(vault))
+	if r.Status != Info {
+		t.Fatalf("status = %v, want Info — a workflow section is being dropped on every bootstrap", r.Status)
+	}
+	if r.Summary != "1 of 2 EXPOSED — undeclared live sections being shed now; 0 latent" {
+		t.Errorf("summary = %q — both documents are scanned, and the workflow finding is exposed", r.Summary)
+	}
+	joined := strings.Join(r.Details, "\n")
+	if !strings.Contains(joined, "  marked workflow.md: Auto-memory  [workflow digest is unconditional") {
+		t.Errorf("the workflow finding is not named with its document and its reason:\n%s", joined)
+	}
+	// The declared sections must not be reported, and the resume must not be
+	// dragged into a workflow finding.
+	for _, unwanted := range []string{"Behavioral Notes", "Files", "marked resume.md"} {
+		if strings.Contains(joined, unwanted) {
+			t.Errorf("reported %q, which has been ruled on:\n%s", unwanted, joined)
+		}
+	}
+}
+
+// 🔴 A WORKFLOW THAT DECLARES NO PIN ZONE IS NOT A FINDING AND NOT AN EXCLUSION
+// COUNT EITHER — it is delivered WHOLE, which is the intended end state for the
+// nine of ten live projects carrying no markers. This is the err-downward case
+// seen from the advisory's side: nothing was dropped, so there is nothing to
+// report, and a standing amber over a healthy state teaches its reader to skim.
+func TestCheckPinCoverage_UnmarkedWorkflowIsSilent(t *testing.T) {
+	vault := t.TempDir()
+	writeResume(t, vault, "plain", fullyDeclaredResume)
+	writeWorkflowBody(t, vault, "plain", "# plain — Workflow\n\n## Files\n\n- resume.md\n\n## Rules\n\n- a rule\n")
+
+	r := CheckPinCoverage(storage.NewVault(vault))
+	if r.Status != Pass {
+		t.Fatalf("status = %v, want Pass", r.Status)
+	}
+	if r.Summary != "1 resume.md fully declared" {
+		t.Errorf("summary = %q — an unmarked workflow is neither scanned nor counted as an exclusion", r.Summary)
+	}
+	if len(r.Details) != 0 {
+		t.Errorf("healthy state must be silent, got details %v", r.Details)
+	}
+}
+
+// writeWorkflowBody writes a real workflow.md body (writeWorkflow writes N bytes
+// of padding, which declares no sections and is for moving the core measurement).
+func writeWorkflowBody(t *testing.T, vaultRoot, slug, body string) {
+	t.Helper()
+	dir := filepath.Join(vaultRoot, "Projects", slug)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "workflow.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
 	}
 }
 

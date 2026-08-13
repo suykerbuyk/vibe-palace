@@ -165,6 +165,24 @@ epic measured, a real project whose inviolable core alone is ~1.95x a real host'
 than a ratio). The tests cut at an offset and assert what survives it; any offset landing inside the
 bulk proves the same property.
 
+### The workflow digest (`internal/tools/bootstrap_workflow_digest_test.go`)
+
+The reduction that decides how much bulk sits in front of the resume. Every test
+here runs at the **default** budget on purpose: the digest answers a host inline
+cap, not `max_tokens`, so a fixture that squeezed the budget would prove the
+ladder works and say nothing about the property under test.
+
+| Test | What it proves |
+|------|----------------|
+| `TestBootstrapUndeclaredWorkflowIsDeliveredWhole` | 🔴 **The headline, and the one that protects the other nine projects.** A `workflow.md` declaring no pin zone comes back byte-for-byte identical, with no banner and — asserted separately — **no `budget` block at all**, so "nothing changed for an unmarked project" is proved rather than assumed |
+| `TestBootstrapWorkflowDigestDeliversThePinnedZone` | The happy path: pinned section survives whole, disposable section is gone, preamble is unconditionally inline, the banner names `workflow_uri` (a reduction that announces itself without saying where the rest went is half a fix), and `budget.shed` names `workflow->digest` |
+| `TestBootstrapWorkflowPreambleMarkerIsNotADeclaration` | A marker above the first H2 pins nothing already inline, so the document is still delivered whole — the ladder's rule, through the same parser |
+| `TestBootstrapWorkflowThatPinsEverythingIsNotDigested` / `…DigestIsIdempotent` | Both fall out of one size guard: the zone of a zone is that zone, so re-application measures equal and declines. Removing that guard reddens both |
+| `TestWorkflowRungTierDerivation` | The derivation table, including every path that must **err downward** to core: no pin zone, no H2 sections, no workflow at all, and a marker quoted inside a code fence |
+| `TestBootstrapWorkflowDigestTierIsDerivedNotConstant` | The same claim end-to-end through the real tool, on two workflows differing by **one marker line**: `shed_core` names the rung on the under-declared one and not on the fully-declared one. A hard-coded tier of either value reddens one half — which is the iteration-262 lesson applied before the incident rather than after |
+| `TestBootstrapDigestedWorkflowIsNeverExcerpted` | The **ladder reconciliation**, asserted rather than described: a digested workflow never also takes `workflow->excerpt`. Its `max_tokens` is chosen, not arbitrary, and the test says so — low enough to reach the rung, high enough that excerpting would *fit*, because the give-back and the ADR-009 core restore both undo a workflow shed that bought nothing, so at a hopeless budget removing the guard changes no observable byte and the test would be dead |
+| `TestBootstrapDigestPreservesTheWireOrder` | The transport contract re-asserted on a digested payload: instruments still precede the bulk by byte offset, `complete` is still last |
+
 ### The same contract, generalised (`internal/tools/surface_wire_order_test.go`)
 
 The cap belongs to the **host**, so it applies to every tool result, not just bootstrap's. The
@@ -852,10 +870,10 @@ underscore-prefixed directories being ignored, and an unreadable `Projects/`.
 flags a resume, its bytes, size and mtime are unchanged and no sibling file was
 written.
 
-### `internal/check/pin_coverage_test.go` — Resume Pin Coverage
+### `internal/check/pin_coverage_test.go` — Pin Coverage
 
-Covers `CheckPinCoverage`, the advisory that names the `resume.md` H2 sections
-carrying neither `vp:pin` nor `vp:disposable`. The silent cases: no vault
+Covers `CheckPinCoverage`, the advisory that names the `resume.md` **and
+`workflow.md`** H2 sections carrying neither `vp:pin` nor `vp:disposable`. The silent cases: no vault
 configured (Skip), no `Projects/` directory, a project with **no resume.md**, a
 resume whose every section is ruled on (one pinned, one disposable → Pass, zero
 details), and `_OverCapButFullyDeclaredIsSilent` (an over-cap core with nothing
@@ -890,6 +908,18 @@ declaration is still a declaration; the pin wins). `_MixedSortedAndNeverFails`
 covers project sorting, dot/underscore directories, the scanned-vs-pin-less
 denominator on a `Pass` run, and asserts the status is never `Fail`.
 `_IsReadOnly` proves bytes and mtime are unchanged after a flagging run.
+
+The workflow half gets the two tests that pin its asymmetry.
+`TestCheckPinCoverage_WorkflowFindingIsAlwaysExposed` builds a project whose core
+fits comfortably and whose resume is fully declared, and asserts the workflow
+finding is reported **`Info`/EXPOSED anyway**, named with its document and its
+reason (`marked workflow.md: Auto-memory  [workflow digest is unconditional …]`) —
+because the digest fires on every bootstrap whatever the core measures, so
+classifying it by the core would report a live loss as latent.
+`TestCheckPinCoverage_UnmarkedWorkflowIsSilent` is the err-downward case seen from
+the advisory's side: a `workflow.md` with no markers is delivered whole, so it is
+neither a finding nor an exclusion count, and the run is `Pass` with zero details
+and the unchanged `1 resume.md fully declared` summary.
 
 `TestCheckPinCoverage_ScaffoldTemplateLeavesLiveStateLive` is where the two
 halves meet: it runs the check's own parser over the **embedded** template and

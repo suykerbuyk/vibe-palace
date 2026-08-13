@@ -263,13 +263,27 @@ func bootstrapExcerptBanner(body, uri string) string {
 		runeSafeExcerpt(body, bootstrapExcerptCap)
 }
 
-// bootstrapZoneBanner prefixes the PINNED ZONE of a resume with the same loud
-// pointer — but does NOT truncate. The zone is already a deliberate selection
+// bootstrapZoneBannerLead is the opening of every pinned-zone banner, and it is
+// a CONSTANT because two things read it: the banner builder and the idempotence
+// guard on the workflow digest. A reduction that cannot recognize its own output
+// can be applied twice, and the second application would band a banner over a
+// banner.
+const bootstrapZoneBannerLead = "⚠ pinned sections only — the full "
+
+// bootstrapZoneBanner prefixes a PINNED ZONE with the same loud pointer as an
+// excerpt — but does NOT truncate. The zone is already a deliberate selection
 // (every section its author marked as always-inline); cutting it at
 // bootstrapExcerptCap would silently amputate the very sections the marker
 // exists to protect, which is the failure the marker was introduced to prevent.
-func bootstrapZoneBanner(zone, uri string) string {
-	return "⚠ pinned sections only — the full resume is at " + uri + ", read it before relying on project state\n\n" + zone
+//
+// ONE FUNCTION SERVES BOTH REDUCTIONS — the resume's pinned zone and the
+// workflow's digest — on purpose. An agent that has learned to read this banner
+// on a shed resume must recognize the identical shape on a digested workflow;
+// two hand-written strings would have drifted the first time either was edited.
+// doc names the document ("resume", "workflow"); rely completes "read it before
+// relying on …".
+func bootstrapZoneBanner(zone, uri, doc, rely string) string {
+	return bootstrapZoneBannerLead + doc + " is at " + uri + ", read it before relying on " + rely + "\n\n" + zone
 }
 
 // memoryRecallCap bounds how many memory index entries the bootstrap surfaces.
@@ -383,7 +397,7 @@ func bootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, allowC
 	}
 	return mcp.Tool{
 		Name:        "vp_bootstrap_context",
-		Description: "Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive. Sheds context to fit max_tokens and REPORTS WHAT IT SHED in `budget.shed` — `shed_core` (or a `⚠ pinned sections only` banner) means the resume itself was reduced; `budget.shed` naming only optional rungs (recent_sessions, memory, kg_snapshot) is benign, so do NOT re-fetch and do NOT report it as truncation. A shed resume arrives as its `<!-- vp:pin -->` sections only, behind a banner — read `resume_uri` for the full body. A shed task list leaves `active_task_count` — call vp_list_tasks for it. `budget` reports only vp's own shedding; whether every byte ARRIVED is a separate question that only `complete` answers. The payload ends with `complete: true`; if you do not see it, your HOST truncated the result and the inline body is untrustworthy whatever `budget` says — rehydrate via `resume_uri` / `workflow_uri` before acting on it. An absent `budget` means nothing was reduced ONLY when `complete` is present; both absent is a cut, not a clean run.",
+		Description: "Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive. Sheds context to fit max_tokens and REPORTS WHAT IT SHED in `budget.shed` — `shed_core` (or a `⚠ pinned sections only` banner) means the resume itself was reduced; `budget.shed` naming only optional rungs (recent_sessions, memory, kg_snapshot) is benign, so do NOT re-fetch and do NOT report it as truncation. A shed resume arrives as its `<!-- vp:pin -->` sections only, behind a banner — read `resume_uri` for the full body. `workflow->digest` means the same thing for the workflow: the project marked its always-inline rules, the rest is at `workflow_uri`, and that reduction is UNCONDITIONAL (it answers a host inline cap, not max_tokens), so it is not a sign the budget was tight. A workflow that declares no pin zone arrives WHOLE. A shed task list leaves `active_task_count` — call vp_list_tasks for it. `budget` reports only vp's own shedding; whether every byte ARRIVED is a separate question that only `complete` answers. The payload ends with `complete: true`; if you do not see it, your HOST truncated the result and the inline body is untrustworthy whatever `budget` says — rehydrate via `resume_uri` / `workflow_uri` before acting on it. An absent `budget` means nothing was reduced ONLY when `complete` is present; both absent is a cut, not a clean run.",
 		Schema:      schema,
 		Handler:     bootstrapHandler(resolver, vault, allowCwdDefault),
 	}
@@ -478,6 +492,17 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	if wf, _, err := resolver.Resolve("workflow", project); err == nil {
 		result.Workflow = wf
 	}
+
+	// The full body is held aside for the same reason fullResume is: the tier
+	// derivation below must read the WHOLE document to find its markers, and the
+	// digest just below may replace the inline copy with a subset of it.
+	fullWorkflow := result.Workflow
+
+	// 🔴 THE DIGEST RUNS HERE, ABOVE THE LADDER, NOT INSIDE IT. See
+	// digestWorkflowToPinnedZone: the constraint it answers is a host inline cap,
+	// which no token budget can see. A workflow declaring no pin zone is left
+	// WHOLE and this is a no-op.
+	workflowDigested := digestWorkflowToPinnedZone(&result)
 
 	// Resume — graceful on error. The digest comes from the same read as the body
 	// and covers the FULL resume, so a caller that pages the body back through
@@ -682,16 +707,19 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// after the ladder, because the ladder can itself raise an alert.
 	result.PostBootstrapInstructions = composeDirective(result.PostBootstrapInstructions, alerts)
 
-	budget := shedToBudget(&result, maxTokens, fullResume)
+	budget := shedToBudget(&result, maxTokens, fullResume, workflowDigested)
 	// ADR-009 tier report, derived from Shed so the two can never drift: which
 	// of the shed rungs were inviolable core. Reported even though the shed
 	// itself still happened — see shedRungTier for why reporting is (for now)
 	// the whole mechanism.
 	//
-	// The resume rung's tier is DERIVED HERE, from fullResume — the same whole
-	// document the ladder's resume rung reads. It is a per-project verdict, not a
-	// constant: see resumeRungTier.
-	budget.ShedCore = coreShed(budget.Shed, resumeRungTier(fullResume))
+	// Both per-project tiers are DERIVED HERE, from fullResume and fullWorkflow —
+	// the same whole documents the reductions themselves read. They are
+	// per-project verdicts, not constants: see resumeRungTier / workflowRungTier.
+	budget.ShedCore = coreShed(budget.Shed, derivedTiers{
+		Resume:   resumeRungTier(fullResume),
+		Workflow: workflowRungTier(fullWorkflow),
+	})
 
 	if shedTasks(budget) {
 		alerts = append(alerts, fmt.Sprintf("⚠ The active task list (%d open) was shed to fit the token budget — call `vp_list_tasks` for it.", result.ActiveTaskCount))
@@ -797,9 +825,53 @@ func shedResumeToPinnedZone(result *BootstrapResult, b *BootstrapBudget, fullRes
 	if len(zone) >= len(result.Resume) {
 		return est() // a resume that pins everything sheds nothing
 	}
-	result.Resume = bootstrapZoneBanner(zone, result.ResumeURI)
+	result.Resume = bootstrapZoneBanner(zone, result.ResumeURI, "resume", "project state")
 	b.Shed = append(b.Shed, shedResumePinned)
 	return est()
+}
+
+// digestWorkflowToPinnedZone replaces the inline workflow with the sections its
+// author marked resumezone.ResumePinMarker, behind the same banner
+// shedResumeToPinnedZone puts on a shed resume, pointing at workflow_uri.
+// It reports whether the digest was applied.
+//
+// 🔴 IT IS NOT A LADDER RUNG, AND THAT IS THE WHOLE POINT. It runs on every
+// bootstrap, at any budget, because the constraint it answers is NOT vp's token
+// budget — it is a HOST'S INLINE CAP, which vp cannot measure and the ladder
+// never sees. The epic measured a 61,747-byte payload on which the ladder shed
+// NOTHING and reported `budget: absent` while two thirds of the bytes never
+// reached the model. A reduction gated on the budget would have fired on exactly
+// none of those runs.
+//
+// 🔴 ERR DOWNWARD — A WORKFLOW THAT DECLARES NO PIN ZONE IS DELIVERED WHOLE,
+// exactly as before this function existed: no digest, no banner, no rung. Nine
+// of the ten projects in the live vault carry no markers, and a default that
+// guessed which half of an unruled contract was safe to drop would silently
+// degrade nine projects to improve one. Same rule as PinnedZone's `declared`
+// half, for the same reason: degrading to "too big, and here is why" is safe;
+// degrading to "quietly smaller" is not.
+//
+// 🔴 THE SIZE GUARD IS ALSO THE IDEMPOTENCE GUARD, and that is worth saying out
+// loud because a reader will otherwise add a second one. A workflow that pins
+// everything digests nothing — the zone is not smaller than the body. Re-running
+// this on its own OUTPUT is the same case: the zone of a zone is that zone (the
+// banner becomes preamble, which is unconditionally kept, and every surviving
+// section is pinned by construction), so the second pass measures equal and
+// declines. A banner-prefix check on top of that would be unreachable code
+// asserting a property the guard above already has.
+func digestWorkflowToPinnedZone(result *BootstrapResult) bool {
+	if result.Workflow == "" {
+		return false
+	}
+	zone, declared := resumezone.PinnedZone(result.Workflow)
+	if !declared {
+		return false
+	}
+	if len(zone) >= len(result.Workflow) {
+		return false
+	}
+	result.Workflow = bootstrapZoneBanner(zone, result.WorkflowURI, "workflow", "the project's rules")
+	return true
 }
 
 func sliceHasRung(xs []string, want string) bool {
@@ -820,8 +892,30 @@ const (
 	shedCommands       = "commands+skills"
 	shedResumePinned   = "resume->pinned"
 	shedActiveTasks    = "active_tasks"
+	shedWorkflowDigest = "workflow->digest"
 	shedWorkflow       = "workflow->excerpt"
 )
+
+// 🔴 THE TWO WORKFLOW REDUCTIONS, RECONCILED — they are MUTUALLY EXCLUSIVE by
+// construction, not two competing answers to one question.
+//
+// workflow->digest is a DELIBERATE SELECTION: the sections the author declared
+// always-inline, whole. It applies to a workflow that DECLARES a pin zone, it
+// applies unconditionally (see digestWorkflowToPinnedZone), and it is never
+// excerpted afterwards — cutting a pinned zone at bootstrapExcerptCap would
+// amputate the very sections the marker exists to protect, which is precisely
+// why bootstrapZoneBanner does not truncate.
+//
+// workflow->excerpt is a BLIND PREFIX CUT, and it survives for exactly one case:
+// a workflow that declares NOTHING. There is no selection to honour there, so
+// under real budget pressure the ladder's last resort is still the first
+// bootstrapExcerptCap bytes behind a URI — which is what nine of the ten live
+// projects get today, unchanged. Deleting the rung would have taken that last
+// resort away from every unmarked project to tidy up a name.
+//
+// So the digest sits ABOVE the excerpt in the ladder rather than replacing it:
+// strictly better where it applies, and where it does not apply nothing moved.
+// shedToBudget skips the excerpt rung whenever the digest fired.
 
 // shedTier is a rung's ADR-009 classification
 // (doc/adr/009-inviolable-core-delivered-whole-or-fail-loud.md): core rungs
@@ -852,7 +946,14 @@ const (
 // not in a whole-backlog dump whose promotion would grow a core floor that must
 // shrink.
 //
-// 🔴 shedResumePinned IS DELIBERATELY ABSENT FROM THIS MAP. Its tier is not a
+// shedWorkflow (the blind excerpt) IS static core, and that is not an oversight
+// beside its derived sibling: it can only ever fire on a workflow that declared
+// NOTHING (see the reconciliation note on the rung constants), and an unruled
+// contract is core by the same err-downward rule that makes an unruled resume
+// core. There is no document state that could make it context.
+//
+// 🔴 shedResumePinned AND shedWorkflowDigest ARE DELIBERATELY ABSENT FROM THIS
+// MAP. Their tier is not a
 // property of the ladder at all — it is a property of ONE project's resume.md,
 // which the ladder reads at run time. It is derived per bootstrap by
 // resumeRungTier, and read (with every rung here) through rungTier. Adding a
@@ -917,19 +1018,73 @@ func resumeRungTier(fullResume string) shedTier {
 	return shedTierContext
 }
 
+// workflowRungTier derives the ADR-009 tier of the workflow->digest rung for ONE
+// bootstrap, from THAT project's workflow body. It is resumeRungTier's rule,
+// applied to the other document, through the SAME two resumezone functions — so
+// "declares a pin zone" and "undeclared live section" cannot come to mean one
+// thing in the reducer and another in the report about what was reduced.
+//
+// THE RULE: digesting the workflow is a CORE loss unless every un-pinned section
+// has been positively declared disposable. A section carrying neither marker is
+// an un-ruled rule: nobody said whether an agent can act without it, the digest
+// drops it anyway, and announcing that drop is the entire job of shed_core.
+//
+// 🔴 IT IS DERIVED, NOT A CONSTANT, BECAUSE THE CONSTANT WAS MEASURED WRONG
+// ONCE ALREADY. Iteration 262 falsified exactly this shape of hard-coding on the
+// resume rung: 260 wrote down one project's editorial state as a project-agnostic
+// tier, and the moment pin coverage could measure it, it was false for 8 of 8
+// projects in the live vault. The workflow is the SAME kind of claim about the
+// same kind of file, so it gets the same treatment on day one instead of after
+// its own incident.
+//
+// 🔴 IT ERRS DOWNWARD, ALWAYS. No workflow resolved, a body with no H2 sections,
+// a body declaring no pin zone: all report CORE. Those are NO ANSWER, not "no
+// core content", and absence is not a value (ADR-006). Being wrong that way costs
+// a loud report on a rung that, for an undeclared workflow, cannot even fire —
+// digestWorkflowToPinnedZone leaves such a document whole. Being wrong the other
+// way is silence over a dropped correctness rule.
+func workflowRungTier(fullWorkflow string) shedTier {
+	if _, declared := resumezone.PinnedZone(fullWorkflow); !declared {
+		return shedTierCore
+	}
+	if len(resumezone.UndeclaredLiveSections(fullWorkflow)) > 0 {
+		return shedTierCore
+	}
+	return shedTierContext
+}
+
+// derivedTiers carries the per-bootstrap tier verdicts for the rungs whose tier
+// is a property of ONE project's documents rather than of the ladder.
+//
+// It is a struct rather than two positional arguments so a caller cannot swap
+// them silently, and its ZERO VALUE IS SAFE BY CONSTRUCTION: an unset field is
+// "", which rungTier reads as core. A caller that has measured neither document
+// asserts nothing about either.
+type derivedTiers struct {
+	Resume   shedTier
+	Workflow shedTier
+}
+
 // rungTier is the ONE reader of a rung's ADR-009 tier: the static map for the
-// rungs whose tier is project-agnostic, and resumeTier — a per-bootstrap verdict
-// the caller gets from resumeRungTier — for the one rung whose tier is not.
+// rungs whose tier is project-agnostic, and the per-bootstrap verdicts in
+// derived — from resumeRungTier and workflowRungTier — for the two rungs whose
+// tier is not.
 //
 // EVERYTHING IT CANNOT ANSWER IS CORE. An unknown rung, and an unset/unknown
-// resumeTier, both report core rather than falling through to the zero value.
-// The bare map lookup this replaces did the opposite: a missing key yielded ""
-// and compared unequal to shedTierCore, so a rung nobody classified would shed
-// out of shed_core in complete silence. Same rule as resumeRungTier — the
-// direction of a wrong guess is chosen, not left to a zero value.
-func rungTier(rung string, resumeTier shedTier) shedTier {
-	if rung == shedResumePinned {
-		if resumeTier == shedTierContext {
+// derived verdict, both report core rather than falling through to the zero
+// value. The bare map lookup this replaces did the opposite: a missing key
+// yielded "" and compared unequal to shedTierCore, so a rung nobody classified
+// would shed out of shed_core in complete silence. Same rule as resumeRungTier —
+// the direction of a wrong guess is chosen, not left to a zero value.
+func rungTier(rung string, derived derivedTiers) shedTier {
+	switch rung {
+	case shedResumePinned:
+		if derived.Resume == shedTierContext {
+			return shedTierContext
+		}
+		return shedTierCore
+	case shedWorkflowDigest:
+		if derived.Workflow == shedTierContext {
 			return shedTierContext
 		}
 		return shedTierCore
@@ -943,14 +1098,15 @@ func rungTier(rung string, resumeTier shedTier) shedTier {
 // coreShed filters shed down to the rungs classified core, preserving shed
 // order. Derived from Shed at report time so the two lists can never drift.
 //
-// resumeTier is this bootstrap's verdict on the resume rung (resumeRungTier).
-// It is a required argument rather than a defaulted one precisely because the
-// tier is a per-project fact: a caller that has not measured the resume has no
-// business asserting the rung is safe, and rungTier reads an unset value as core.
-func coreShed(shed []string, resumeTier shedTier) []string {
+// derived carries this bootstrap's verdicts on the resume rung (resumeRungTier)
+// and the workflow digest rung (workflowRungTier). It is a required argument
+// rather than a defaulted one precisely because those tiers are per-project
+// facts: a caller that has not measured the documents has no business asserting
+// either rung is safe, and rungTier reads an unset value as core.
+func coreShed(shed []string, derived derivedTiers) []string {
 	var out []string
 	for _, r := range shed {
-		if rungTier(r, resumeTier) == shedTierCore {
+		if rungTier(r, derived) == shedTierCore {
 			out = append(out, r)
 		}
 	}
@@ -981,8 +1137,20 @@ func coreShed(shed []string, resumeTier shedTier) []string {
 // default of 8,000, of which resume+workflow+tasks were 96% — and the old loop
 // could touch NONE of those three. It shed everything it was allowed to touch,
 // came up 2.4x short, and returned anyway without a word.
-func shedToBudget(result *BootstrapResult, maxTokens int, fullResume string) *BootstrapBudget {
+// workflowDigested says the caller already reduced the workflow to its pinned
+// zone above the ladder. It has two consequences and both are load-bearing: the
+// rung is REPORTED (a payload whose contract is now a digest must not return
+// `budget: absent`, which reads as "nothing was reduced" — the exact instrument
+// dishonesty this epic exists to delete), and the excerpt rung is DISABLED, so a
+// deliberate selection is never re-cut by a blind prefix.
+func shedToBudget(result *BootstrapResult, maxTokens int, fullResume string, workflowDigested bool) *BootstrapBudget {
 	b := &BootstrapBudget{MaxTokens: maxTokens}
+
+	// FIRST in shed order because it happened first — before the descent, and
+	// regardless of whether a descent was needed at all.
+	if workflowDigested {
+		b.Shed = append(b.Shed, shedWorkflowDigest)
+	}
 
 	// The estimate is rough (4 chars ≈ 1 token) and deliberately so: an exact
 	// tokenizer would tie this hot path to a model's vocabulary. It only has to
@@ -1038,7 +1206,11 @@ func shedToBudget(result *BootstrapResult, maxTokens int, fullResume string) *Bo
 		b.Shed = append(b.Shed, shedActiveTasks)
 		tokens = est()
 	}
-	if tokens > maxTokens && len(result.Workflow) > bootstrapExcerptCap {
+	// NOT REACHABLE ON A DIGESTED WORKFLOW — see the reconciliation note on the
+	// rung constants. The digest is a deliberate selection of whole sections;
+	// excerpting it would amputate pinned rules mid-sentence, which is the exact
+	// failure the marker was introduced to prevent.
+	if tokens > maxTokens && !workflowDigested && len(result.Workflow) > bootstrapExcerptCap {
 		result.Workflow = bootstrapExcerptBanner(result.Workflow, result.WorkflowURI)
 		b.Shed = append(b.Shed, shedWorkflow)
 		tokens = est()

@@ -1188,30 +1188,48 @@ func TestShedRungTierClassification(t *testing.T) {
 		// rungTier is the ONE reader: for a static rung it must return the map's
 		// answer regardless of what the resume verdict happened to be.
 		for _, rt := range []shedTier{shedTierCore, shedTierContext, ""} {
-			if got := rungTier(r, rt); got != tier {
+			if got := rungTier(r, derivedTiers{Resume: rt, Workflow: rt}); got != tier {
 				t.Errorf("rungTier(%q, %q) = %q, want the static tier %q", r, rt, got, tier)
 			}
 		}
 	}
 
-	if tier, ok := shedRungTier[shedResumePinned]; ok {
-		t.Errorf("%q carries the static tier %q — its tier is a property of the project's resume, not of the ladder; it belongs to resumeRungTier", shedResumePinned, tier)
+	for rung, from := range map[string]string{
+		shedResumePinned:   "resumeRungTier",
+		shedWorkflowDigest: "workflowRungTier",
+	} {
+		if tier, ok := shedRungTier[rung]; ok {
+			t.Errorf("%q carries the static tier %q — its tier is a property of the project's document, not of the ladder; it belongs to %s", rung, tier, from)
+		}
 	}
-	// The resume rung takes the derived verdict, whichever way it fell.
+	// Each derived rung takes ITS OWN verdict, whichever way it fell — and the
+	// two are not interchangeable: a project can declare one document fully and
+	// leave the other under-declared, which is the common state.
 	for _, want := range []shedTier{shedTierCore, shedTierContext} {
-		if got := rungTier(shedResumePinned, want); got != want {
+		if got := rungTier(shedResumePinned, derivedTiers{Resume: want}); got != want {
 			t.Errorf("rungTier(%q, %q) = %q — the derived verdict must be honored, not overridden", shedResumePinned, want, got)
 		}
+		if got := rungTier(shedWorkflowDigest, derivedTiers{Workflow: want}); got != want {
+			t.Errorf("rungTier(%q, %q) = %q — the derived verdict must be honored, not overridden", shedWorkflowDigest, want, got)
+		}
+	}
+	// Crossed wires must not read as an answer: a context verdict on the OTHER
+	// document leaves this rung unmeasured, and unmeasured is core.
+	if got := rungTier(shedWorkflowDigest, derivedTiers{Resume: shedTierContext}); got != shedTierCore {
+		t.Errorf("rungTier(%q, resume-only verdict) = %q, want %q — one document's ruling says nothing about the other", shedWorkflowDigest, got, shedTierCore)
+	}
+	if got := rungTier(shedResumePinned, derivedTiers{Workflow: shedTierContext}); got != shedTierCore {
+		t.Errorf("rungTier(%q, workflow-only verdict) = %q, want %q — one document's ruling says nothing about the other", shedResumePinned, got, shedTierCore)
 	}
 
 	// ERR DOWNWARD. Neither an unclassified rung nor an unset resume verdict may
 	// fall through to "context": the bare map lookup this replaced returned "" for
 	// a missing key, which compares unequal to shedTierCore and would drop a new
 	// rung's shed out of shed_core in silence.
-	if got := rungTier("some_rung_added_without_a_tier", shedTierContext); got != shedTierCore {
+	if got := rungTier("some_rung_added_without_a_tier", derivedTiers{Resume: shedTierContext, Workflow: shedTierContext}); got != shedTierCore {
 		t.Errorf("rungTier(unknown rung) = %q, want %q — absence is not a value", got, shedTierCore)
 	}
-	if got := rungTier(shedResumePinned, ""); got != shedTierCore {
+	if got := rungTier(shedResumePinned, derivedTiers{}); got != shedTierCore {
 		t.Errorf("rungTier(%q, unset) = %q, want %q — an unmeasured resume is no answer, not a safe answer", shedResumePinned, got, shedTierCore)
 	}
 }
@@ -1387,11 +1405,11 @@ func TestCoreShedFiltersAndPreservesOrder(t *testing.T) {
 
 	// Under-declared resume: the rung is core, and order is preserved — resume
 	// before workflow, exactly as the ladder acted.
-	if got, want := coreShed(shed, shedTierCore), []string{shedResumePinned, shedWorkflow}; !slices.Equal(got, want) {
+	if got, want := coreShed(shed, derivedTiers{Resume: shedTierCore}), []string{shedResumePinned, shedWorkflow}; !slices.Equal(got, want) {
 		t.Errorf("coreShed(under-declared resume) = %v, want %v", got, want)
 	}
 	// Fully-declared resume: same shed, same order, one fewer core rung.
-	if got, want := coreShed(shed, shedTierContext), []string{shedWorkflow}; !slices.Equal(got, want) {
+	if got, want := coreShed(shed, derivedTiers{Resume: shedTierContext}), []string{shedWorkflow}; !slices.Equal(got, want) {
 		t.Errorf("coreShed(fully-declared resume) = %v, want %v", got, want)
 	}
 
@@ -1399,16 +1417,16 @@ func TestCoreShedFiltersAndPreservesOrder(t *testing.T) {
 	// resume verdict fell — the resume rung is not in that shed to be filtered.
 	ctxOnly := []string{shedRecentSessions, shedMemory, shedKGSnapshot, shedActiveTasks}
 	for _, tier := range []shedTier{shedTierCore, shedTierContext, ""} {
-		if got := coreShed(ctxOnly, tier); len(got) != 0 {
+		if got := coreShed(ctxOnly, derivedTiers{Resume: tier}); len(got) != 0 {
 			t.Errorf("context-only shed reported core rungs %v at resume tier %q", got, tier)
 		}
 	}
 
 	// ERR DOWNWARD: an unset verdict is no answer, so the rung reports core.
-	if got, want := coreShed([]string{shedResumePinned}, ""), []string{shedResumePinned}; !slices.Equal(got, want) {
+	if got, want := coreShed([]string{shedResumePinned}, derivedTiers{}), []string{shedResumePinned}; !slices.Equal(got, want) {
 		t.Errorf("coreShed(unmeasured resume) = %v, want %v", got, want)
 	}
-	if got := coreShed(nil, shedTierContext); got != nil {
+	if got := coreShed(nil, derivedTiers{Resume: shedTierContext}); got != nil {
 		t.Errorf("coreShed(nil) = %v, want nil", got)
 	}
 }
@@ -1466,7 +1484,7 @@ func TestBootstrapShedCoreReportsTheCoreTier(t *testing.T) {
 			if !slices.Contains(br.Budget.Shed, r) {
 				t.Errorf("shed_core entry %q is not in shed %v — the report drifted from the ladder", r, br.Budget.Shed)
 			}
-			if rungTier(r, resumeRungTier(resume)) != shedTierCore {
+			if rungTier(r, derivedTiers{Resume: resumeRungTier(resume)}) != shedTierCore {
 				t.Errorf("shed_core entry %q is not classified core", r)
 			}
 		}

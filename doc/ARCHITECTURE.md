@@ -49,7 +49,7 @@ its full MCP tool surface (versioned in `internal/mcp/tool_surface.golden.json`,
 | `internal/reconcile` | Check → Plan → Apply reconcilers for managed config-file tiers | (per-artifact reconcilers) |
 | `internal/templates` | Compiled-in template corpus (incl. the agent doctrine, `templates/doctrine.md`) + materialize/reconcile lifecycle | `Executor`, `Lock` |
 | `internal/worktree` | Git-worktree isolation for plan execution (`vp worktree create\|remove\|list`) | `Create`, `Remove`, `List` |
-| `internal/check` | Doctor checks for config, vault, embedder, git, agent drift, resume.md caps, the ADR-009 core floor, and resume pin coverage | `Run`, `CheckConfig`, `CheckAgentDrift`, `CheckResumeCaps`, `CheckCoreFloor`, `CheckPinCoverage` |
+| `internal/check` | Doctor checks for config, vault, embedder, git, agent drift, resume.md caps, the ADR-009 core floor, and resume/workflow pin coverage | `Run`, `CheckConfig`, `CheckAgentDrift`, `CheckResumeCaps`, `CheckCoreFloor`, `CheckPinCoverage` |
 | `internal/slug` | Project-slug validation and normalization | `Slugify`, `Validate` |
 
 ---
@@ -829,7 +829,7 @@ tool-registry build. Registered names:
 | `resume-refs` | `Resume refs` | Whole vault — host-local plan refs in every `Projects/*/resume.md` |
 | `vault-abs-paths` | `Vault abs paths` | Whole vault — host-rooted absolute paths in every project's `resume.md` + `workflow.md` |
 | `core-floor` | `Core floor` | Whole vault — every project's `resume.md` + `workflow.md` vs its share of the payload budget |
-| `pin-coverage` | `Pin coverage` | Whole vault — `Projects/*/resume.md` H2 sections carrying neither `vp:pin` nor `vp:disposable` |
+| `pin-coverage` | `Pin coverage` | Whole vault — `Projects/*/resume.md` and `Projects/*/workflow.md` H2 sections carrying neither `vp:pin` nor `vp:disposable` |
 
 The table is ordered as `check.ProducerOrder` declares, which is the order a
 default (unfiltered) run emits. Re-derive it from that slice rather than trusting
@@ -983,16 +983,33 @@ derivable on its own. The defect that actually bit — a core of 8,015 tokens
 against an 8,000-token budget, making ADR-009 arithmetically unsatisfiable — was
 invisible to the old check and is caught by this one.
 
-### Resume pin coverage (`internal/resumezone`, `check.CheckPinCoverage`)
+### Pin coverage (`internal/resumezone`, `check.CheckPinCoverage`)
 
-An H2 section of a `resume.md` is in exactly **one of three states**, declared in
-the artifact by an HTML-comment marker rather than by a code-side allowlist:
+An H2 section of a `resume.md` **or a `workflow.md`** is in exactly **one of
+three states**, declared in the artifact by an HTML-comment marker rather than by
+a code-side allowlist:
 
-| Marker | State | Ladder behaviour |
-|--------|-------|------------------|
-| `<!-- vp:pin -->` | ALWAYS-INLINE | survives the shed ladder at any budget |
-| `<!-- vp:disposable -->` | SAFE TO DROP | the author has ruled it sheddable |
-| *(neither)* | **LIVE STATE** | shed today — and nobody has ruled on it |
+| Marker | State | Reducer behaviour |
+|--------|-------|----------------|
+| `<!-- vp:pin -->` | ALWAYS-INLINE | survives the shed ladder at any budget; is the workflow digest |
+| `<!-- vp:disposable -->` | SAFE TO DROP | the author has ruled it droppable |
+| *(neither)* | **LIVE STATE** | dropped today — and nobody has ruled on it |
+
+**Two documents, one vocabulary, one parser.** `workflow.md` joined the scan when
+bootstrap gained its workflow digest: both documents are now reduced to their
+pinned zone by the same `resumezone` functions, so the advisory about what was
+reduced has to read them the same way or it describes a document nothing else is
+looking at — the divergence this project already paid for twice (191, 204).
+
+They are **not** dropped under the same conditions, and the report says so per
+row: a resume section is dropped only under budget pressure (hence exposed vs
+latent, below), while a workflow section is dropped on **every** bootstrap,
+because the digest answers a host inline cap rather than a token budget. So a
+workflow finding is **always exposed**. Conversely a `workflow.md` declaring no
+pin zone is neither scanned nor counted as an exclusion: it is delivered whole,
+nothing is lost, and a standing amber over a healthy state teaches its reader to
+skim. A pin-less *resume* still is counted, because that one has a cost — the
+ladder refuses to shed it and bootstrap reports over-budget instead.
 
 The third row is the point. With only a pin marker there are two states in the
 file but three in the author's head: pinned, deliberately sheddable, and *nobody
@@ -1012,8 +1029,8 @@ ends, preamble markers and contradictory markers, and every one of those
 disagreements is silent. So the parser moved **down** rather than being copied
 **across**, the same shape `internal/mdfence` has.
 
-`CheckPinCoverage` walks `<vault>/Projects/*/resume.md` and **names** each
-project's undeclared sections (a bare count would rot). A resume
+`CheckPinCoverage` walks `<vault>/Projects/*/resume.md` and `*/workflow.md` and
+**names** each finding's project, document and undeclared sections (a bare count would rot). A resume
 that pins **nothing** is a *different* condition and is deliberately excluded
 rather than flagged: with no pin zone every section is undeclared, so the finding
 would degenerate into the whole table of contents, and its remedy ("declare a pin
@@ -1402,6 +1419,48 @@ cut payload survivable, and **both are enforced by field declaration order**:
   but leaves "vp sent none" and "it was cut off" indistinguishable on one that
   does not. Per ADR-006 the agent DERIVES its delivery state rather than being
   asked in prose to remember it.
+
+##### The workflow digest — a reduction that is not a ladder rung
+
+The wire order decides what survives a cut; the **digest** decides how much of
+the bulk is in front of the resume in the first place. A `workflow.md` that
+declares a `<!-- vp:pin -->` zone is delivered as that zone plus the same banner
+a shed resume carries, naming `workflow_uri`
+(`digestWorkflowToPinnedZone`, `internal/tools/context_tools.go`).
+
+It runs on **every** bootstrap, at any budget, and that is the point: the
+constraint it answers is a **host inline cap**, which vp cannot measure and the
+shed ladder never sees. The epic measured a 61,747-byte payload on which the
+ladder shed nothing and reported `budget: absent` while two thirds of the bytes
+never reached the model — a budget-gated reduction would have fired on none of
+those runs. It is still **reported** (`budget.shed` names `workflow->digest`),
+because a payload whose contract is now a digest must not answer "nothing was
+reduced".
+
+🔴 **A `workflow.md` that declares no pin zone is delivered WHOLE**, exactly as
+before the digest existed — no banner, no rung. Nine of the ten projects in the
+live vault carry no markers, and guessing which half of an unruled contract was
+safe to drop would silently degrade nine projects to improve one. Same rule as
+`PinnedZone`'s `declared` half; same rule `resumeRungTier` errs toward.
+
+**The two workflow reductions are mutually exclusive by construction.**
+`workflow->digest` is a deliberate selection of whole sections;
+`workflow->excerpt` is a blind prefix cut and now survives **only** for a
+workflow that declares nothing, where there is no selection to honour. The
+ladder skips the excerpt rung whenever the digest fired: excerpting a pinned
+zone at `bootstrapExcerptCap` would amputate exactly the sections the marker
+exists to protect, which is why `bootstrapZoneBanner` does not truncate either.
+So the digest sits *above* the excerpt in the ladder rather than replacing it —
+strictly better where it applies, and where it does not apply nothing moved.
+
+**The rung's ADR-009 tier is derived, not constant** (`workflowRungTier`):
+a declared pin zone *and* no undeclared live sections ⇒ context; anything else ⇒
+core, including a workflow that resolved to nothing. Iteration 262 falsified this
+exact shape of hard-coding on the resume rung — one project's editorial state
+written down as a property of every vault, false for 8 of 8 live projects the
+moment it could be measured — so the workflow got the derivation on day one
+rather than after its own incident. `rungTier` reads both per-project verdicts
+through `derivedTiers`, whose zero value is core in both fields.
 
 **Declaring any new field after `complete` re-opens the hole**, and appending
 to the end of a struct is exactly how it will be broken.
