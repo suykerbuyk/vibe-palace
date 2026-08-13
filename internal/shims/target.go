@@ -325,8 +325,9 @@ the result and the inline body is untrustworthy whatever ` + "`budget`" + ` says
 rehydrate from ` + "`resume_uri`" + ` / ` + "`workflow_uri`" + ` via ` + "`vp_read_resource`" + `,
 CAS-verifying against ` + "`resume_sha256`" + `, BEFORE acting on any of it.
 
-Then the vp axis. Absent a shed, ` + "`resume`" + ` and ` + "`workflow`" + `
-arrive whole on every transport. ` + "`shed_core`" + `, or a ` + "`⚠ pinned sections only`" + `
+Then the vp axis. Absent a shed, vp SENDS ` + "`resume`" + ` and ` + "`workflow`" + `
+whole — which is not the same as your host delivering them whole, which is why
+the check above comes first. ` + "`shed_core`" + `, or a ` + "`⚠ pinned sections only`" + `
 banner, means vp reduced ` + "`resume`" + ` to its pinned sections — read
 ` + "`resume_uri`" + ` for the full body. ` + "`budget.shed`" + ` naming only optional
 rungs (recent_sessions, memory, kg_snapshot) is benign: continue, do not

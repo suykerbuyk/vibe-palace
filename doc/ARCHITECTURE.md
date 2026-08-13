@@ -1344,15 +1344,24 @@ it. ADR-009 makes it honest:
   a `resume_uri` the caller can page through `vp_read_resource` for the full
   body. A shed task list leaves `active_task_count`, so the backlog's existence
   and size survive the shed.
-- **This ladder is the ONLY reduction path, on every transport.** There was a
-  second one — a byte-axis `slim` control that cut the resume to a 4,000-byte
-  prefix, ignored the pin markers, defaulted ON for streamable-HTTP, and was
-  recorded in no field, so a payload that dropped most of a resume could return
-  `budget: null`. It also suppressed *this* ladder's report, because cutting the
-  resume first made the payload fit. It was deleted: the "host truncates large
-  inline results" bound it served was never measured, the only refusal on record
-  is ~62,463 characters (15x the cap), and payloads were under that bound with
-  or without the cut. **An absent `budget` now means nothing was reduced —
+- **This ladder is the only reduction path vp CONTROLS — it is not the only one.**
+  A host's per-tool-result inline cap is a second path, external and invisible to
+  vp: measured 2026-08-12 at a flat 19.5 KB on one host, cutting a ~56 KB payload
+  mid-`resume`. vp cannot see it happen and reports `budget: absent` — truthfully
+  about its own ladder, and misleadingly about what arrived.
+- **There was also a second INTERNAL path, and it is gone.** A byte-axis `slim`
+  control cut the resume to a 4,000-byte prefix, ignored the pin markers,
+  defaulted ON for streamable-HTTP, and was recorded in no field, so a payload
+  that dropped most of a resume could return `budget: null`. It also suppressed
+  *this* ladder's report, because cutting the resume first made the payload fit.
+  It was deleted at iteration 264 on the grounds that the "host truncates large
+  inline results" bound it served had never been measured. 🔴 **That bound HAS
+  since been measured** (19.5 KB, flat, host-side) — so the deletion's stated
+  premise no longer holds, though the deletion itself still stands: a blind byte
+  prefix that reports nothing was never the right answer to a host cut. The right
+  answers are the field reorder and the `complete` sentinel below, and the
+  manifest restructure in `decide-what-the-bootstrap-budget-tracks`.
+  **An absent `budget` now means nothing was reduced —
 but only once `complete` has arrived.** From inside a truncated channel a
 missing `budget` is uninterpretable, because absence and excision serialize
 identically; the sentinel below is what separates them.

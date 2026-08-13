@@ -122,7 +122,14 @@ func TestRenderGrokHubGolden(t *testing.T) {
 		// (This used to assert "with `slim=true`" — the byte-axis path that
 		// shortened the resume without recording it. Deleted with the mechanism.)
 		"call `vp_bootstrap_context`",
-		"arrive whole on every transport",
+		// NOT "arrive whole on every transport" — that literal was retired here
+		// deliberately. It is the claim this epic disproved: a host cuts the
+		// result regardless of what vp shed, so no transport promise can be made
+		// about arrival. What vp can promise is what it SENDS. A golden asserting
+		// the old wording would have pinned a false claim in place on the one
+		// surface fronting the host where the cut was measured — the test would
+		// have been enforcing the bug.
+		"Absent a shed, vp SENDS",
 		"`budget.shed`",
 		"`resume_uri`",
 		// ...and "whole from vp" is not "whole on arrival". `budget` answers what
