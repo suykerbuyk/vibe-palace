@@ -108,8 +108,15 @@ type SessionMeta struct {
 	// default is a fabricated value indistinguishable from a measured one —
 	// which is exactly how every session was once implicitly attributed to
 	// Claude Code. The hook path writes both as well, deriving Host from the
-	// host's CLAUDE_CODE_ENTRYPOINT and recording the explicit "unknown" when
-	// it cannot.
+	// WIRE DIALECT of the hook payload it was handed — a signal that arrives on
+	// the wire and therefore cannot leak across a process boundary — and
+	// recording the explicit "unknown" when the dialect is indeterminate.
+	//
+	// ONE VOCABULARY: Host names a host APPLICATION. The MCP path's values are
+	// vendor-chosen and open-ended (whatever clientInfo.name reported); the hook
+	// can only ever write HostClaudeCode, HostGrok, or HostUnknown. It must never
+	// carry an answer to a different question — not the model, and not "how was
+	// the host invoked", which is what Entrypoint below is for.
 	//
 	// 🔴 ABSENCE CARRIES NO SINGLE MEANING, so never read one into it. A note
 	// with NO host key predates the field, OR came from a writer that makes no
@@ -123,6 +130,31 @@ type SessionMeta struct {
 	// omission, and silent. Model stays caller-declared.
 	Host       string `yaml:"host,omitempty"`
 	HostSource string `yaml:"host_source,omitempty"`
+
+	// Entrypoint records what CLAUDE_CODE_ENTRYPOINT held in the environment of
+	// the process that wrote this note. That is ALL it claims, and the field is
+	// named for what was measured rather than for what a reader might wish it
+	// meant, because the variable is not a host identity:
+	//
+	//   - Claude Code sets it to describe HOW IT WAS INVOKED ("cli", "vscode",
+	//     "sdk-*"). The value set is Anthropic's to change, not vp's to depend on.
+	//   - Environment inheritance is TRANSITIVE. Everything launched from inside
+	//     a Claude Code session inherits it — a wrapper script, a tmux pane, a
+	//     different agent entirely — so a non-empty value proves only that Claude
+	//     Code appears SOMEWHERE in this process's ancestry.
+	//
+	// Read together with Host it does carry real signal, and it is the only
+	// signal the hook has for the question host-parity actually asks. Host says
+	// which application; Entrypoint says whether that application was invoked as
+	// a CLI. "claude-code" + "cli" is a Claude Code terminal session;
+	// "claude-code" + "unknown" is Claude Code reached some other way — the Zed
+	// ACP pane does not inherit the variable (measured 2026-08-05).
+	//
+	// The hook writes it on every capture, "unknown" included, so a positive
+	// "unknown" stays distinguishable from an absent key. The MCP path never
+	// writes it: that path has no such measurement to report, and absence there
+	// means "this writer made no entrypoint claim".
+	Entrypoint string `yaml:"entrypoint,omitempty"`
 
 	// DELETED at 202: branch, domain, duration_minutes, messages, tokens_in,
 	// tokens_out, tool_uses — and needs_indexing, below.
@@ -434,6 +466,29 @@ const (
 // one host is worse than no default, because it produces a record that LOOKS
 // attributed.
 const HostUnknown = "unknown"
+
+// Host values the HOOK path can establish. The MCP path records whatever name
+// the transport handshake reported — vendor-chosen and open-ended — but the hook
+// has no handshake and infers the host from the wire dialect of its own payload,
+// so it can name exactly the two clients whose dialects vp knows how to parse.
+// Spelled once here so writer and readers cannot drift.
+//
+// 🔴 HostClaudeCode is a DERIVATION, never a fallback. ADR-006 forbids defaulting
+// to Claude Code when nothing was measured — that default is what made the Zed
+// adapter unreachable. It does not forbid CONCLUDING Claude Code from a signal
+// that was measured. The hook writes this only when the payload arrived in
+// Claude's wire dialect; an indeterminate dialect writes HostUnknown, so there is
+// still no default anywhere on the path.
+const (
+	HostClaudeCode = "claude-code"
+	HostGrok       = "grok"
+)
+
+// EntrypointUnknown is the SessionMeta.Entrypoint value written when
+// CLAUDE_CODE_ENTRYPOINT was absent from the writing process's environment.
+// Written explicitly for the same reason as HostUnknown: "we looked and found
+// nothing" must stay distinguishable from "this writer never looked".
+const EntrypointUnknown = "unknown"
 
 // ArchiveLinkResult reports what LinkArchiveToSessions did.
 type ArchiveLinkResult struct {

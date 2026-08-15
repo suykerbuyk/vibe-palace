@@ -51,7 +51,7 @@ func TestIntegrationStatusSessionsTasks(t *testing.T) {
 
 	// Sessions should list both.
 	var sessBuf bytes.Buffer
-	code = runSessions(v, proj, 10, true, &sessBuf)
+	code = runSessions(v, proj, sessionsQuery{limit: 10, asJSON: true}, &sessBuf)
 	if code != cli.ExitOK {
 		t.Fatalf("sessions exit code = %d", code)
 	}
@@ -236,7 +236,7 @@ func TestIntegrationSessionsTableFormat(t *testing.T) {
 	}, "body")
 
 	var buf bytes.Buffer
-	code := runSessions(v, proj, 10, false, &buf)
+	code := runSessions(v, proj, sessionsQuery{limit: 10, asJSON: false}, &buf)
 	if code != cli.ExitOK {
 		t.Fatalf("exit code = %d", code)
 	}

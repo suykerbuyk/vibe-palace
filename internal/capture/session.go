@@ -48,16 +48,20 @@ type SessionParams struct {
 	// records them verbatim; it never invents a host.
 	//
 	// The hook path sets both too, from a DIFFERENT signal: it has no handshake,
-	// so it reads the host's own CLAUDE_CODE_ENTRYPOINT out of its process
-	// environment (derived) and records the explicit unknown pair when there is
-	// nothing to read. Two consequences worth knowing before reading a note:
-	// the two paths write different VOCABULARIES into Host — a client name
-	// ("claude-code", "Zed") from the handshake, an entrypoint token ("cli")
-	// from the env — and an EMPTY Host still means "this writer made no claim",
-	// which is a third state distinct from the explicit unknown. See the task
-	// hook-path-writes-no-host-attribution.
+	// so it reads the WIRE DIALECT of the payload it was handed and records the
+	// explicit unknown pair when that dialect is indeterminate. Both paths write
+	// the same vocabulary — a host application name — and an EMPTY Host still
+	// means "this writer made no claim", a third state distinct from the explicit
+	// unknown. See the task hook-path-writes-no-host-attribution.
 	Host       string
 	HostSource string
+
+	// Entrypoint is the hook path's report of what CLAUDE_CODE_ENTRYPOINT held
+	// in its process environment, recorded verbatim like Host. It answers "how
+	// was the host invoked", NOT "which host" — see storage.SessionMeta for why
+	// the two must not share a field. The MCP path leaves it empty: it has no
+	// such measurement, and an empty value writes no key.
+	Entrypoint string
 
 	// SessionKey is the capture-attempt idempotency key. Supply the key a previous
 	// capture RETURNED to update that same note in place; leave it empty to mint a
@@ -242,11 +246,12 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		ArchiveSessionIDSource: p.ArchiveSessionIDSource,
 		// Host attribution is recorded VERBATIM from the params — resolution
 		// belongs to the CALLER, which is the only layer that can see the signal:
-		// the MCP handler reads the transport handshake, the hook reads its
-		// process environment. WriteSession never invents a host; empty means
+		// the MCP handler reads the transport handshake, the hook reads the wire
+		// dialect of its payload. WriteSession never invents a host; empty means
 		// that caller made no claim at all and the note carries no key.
 		Host:         p.Host,
 		HostSource:   p.HostSource,
+		Entrypoint:   p.Entrypoint,
 		Title:        title,
 		Summary:      p.Summary,
 		Tag:          p.Tag,

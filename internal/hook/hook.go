@@ -32,6 +32,55 @@ type Payload struct {
 	TranscriptPath string `json:"transcript_path"`
 	CWD            string `json:"cwd"`
 	HookEventName  string `json:"hook_event_name"`
+
+	// Dialect names which of those two wire formats this payload actually
+	// arrived in — the discriminator UnmarshalJSON used to compute and throw
+	// away. It is set ONLY by UnmarshalJSON, so a Payload built as a struct
+	// literal carries DialectUnknown, which is correct: nothing was observed.
+	Dialect string `json:"-"`
+}
+
+// Wire dialects a hook payload can arrive in. These are HOST EVIDENCE, and the
+// strongest kind this path has: the dialect is a property of the bytes the host
+// itself wrote to our stdin, so unlike an environment variable it cannot be
+// inherited by an unrelated process launched from inside a host's session. That
+// distinction is the whole reason it is recorded — see the Host resolution in
+// Run below.
+const (
+	DialectClaude  = "claude"
+	DialectGrok    = "grok"
+	DialectUnknown = ""
+)
+
+// detectDialect reports which wire format supplied this payload's fields.
+//
+// It answers on the SPELLING of the keys, not their values: Claude Code sends
+// snake_case (session_id), Grok sends camelCase (sessionId), and no client sends
+// both. A payload mixing the two is not a client vp knows — it is a synthetic or
+// malformed invocation — and returns DialectUnknown rather than picking a winner,
+// because the point of this signal is that it identifies a host and a guess
+// identifies nothing. `cwd` is spelled identically by both and contributes no
+// evidence, so it is not consulted.
+func detectDialect(snake, camel []string) string {
+	snakeSeen, camelSeen := false, false
+	for _, v := range snake {
+		if v != "" {
+			snakeSeen = true
+		}
+	}
+	for _, v := range camel {
+		if v != "" {
+			camelSeen = true
+		}
+	}
+	switch {
+	case snakeSeen && !camelSeen:
+		return DialectClaude
+	case camelSeen && !snakeSeen:
+		return DialectGrok
+	default:
+		return DialectUnknown
+	}
 }
 
 // UnmarshalJSON accepts BOTH the Claude Code (snake_case key) and Grok
@@ -62,6 +111,14 @@ func (p *Payload) UnmarshalJSON(data []byte) error {
 	p.TranscriptPath = firstNonEmpty(raw.TranscriptPath, raw.TranscriptPathCamel)
 	p.CWD = raw.CWD
 	p.HookEventName = canonicalHookEvent(firstNonEmpty(raw.HookEventName, raw.HookEventNameCamel))
+	// Keep WHICH spelling matched. This used to be computed implicitly by the
+	// firstNonEmpty calls above and discarded on the next line — transport-observed
+	// evidence about the client, thrown away by the one function in the tree that
+	// could see it.
+	p.Dialect = detectDialect(
+		[]string{raw.SessionID, raw.TranscriptPath, raw.HookEventName},
+		[]string{raw.SessionIDCamel, raw.TranscriptPathCamel, raw.HookEventNameCamel},
+	)
 	return nil
 }
 
@@ -92,6 +149,48 @@ func canonicalHookEvent(s string) string {
 	default:
 		return s
 	}
+}
+
+// resolveHookHost settles host attribution for one hook capture from the two
+// signals this path has, and keeps them in separate fields because they answer
+// separate questions.
+//
+// HOST comes from the wire dialect ONLY. The MCP path derives its host from the
+// initialize handshake; the hook has no handshake, and the dialect is its nearest
+// equivalent — evidence the transport itself carried. A Claude-shaped payload is
+// written by Claude Code, a Grok-shaped payload by Grok, and neither client can
+// produce the other's spelling.
+//
+// 🔴 The env var deliberately does NOT decide the host. It used to (2026-08-05 to
+// 2026-08-15), and that was wrong for the reason this project had already settled
+// one session earlier for HERDR_ENV: environment inheritance is TRANSITIVE, so a
+// grok pane, a wrapper script, or any agent launched from inside a Claude Code
+// session inherits CLAUDE_CODE_ENTRYPOINT=cli and would have recorded
+// host_source: derived — a confidently wrong attribution wearing a provenance
+// that says it was measured. The dialect cannot leak that way, which is exactly
+// why it is the one allowed to name the host.
+//
+// ENTRYPOINT still carries the env var, under a name that claims only what was
+// measured (see storage.SessionMeta.Entrypoint). It is written on every capture,
+// EntrypointUnknown included, so an explicit "we looked and found nothing" stays
+// distinguishable from a note whose writer never looked.
+//
+// No branch invents a value: an indeterminate dialect yields the explicit unknown
+// pair, per ADR-006.
+func resolveHookHost(dialect, envEntrypoint string) (host, hostSource, entrypoint string) {
+	host, hostSource = storage.HostUnknown, storage.HostSourceUnknown
+	switch dialect {
+	case DialectClaude:
+		host, hostSource = storage.HostClaudeCode, storage.HostSourceDerived
+	case DialectGrok:
+		host, hostSource = storage.HostGrok, storage.HostSourceDerived
+	}
+
+	entrypoint = storage.EntrypointUnknown
+	if envEntrypoint != "" {
+		entrypoint = envEntrypoint
+	}
+	return host, hostSource, entrypoint
 }
 
 // RunOptions carries configuration that is resolved once per vp
@@ -340,13 +439,7 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 	}
 
 	// 9. Capture the session, reusing the vault + enricher built above.
-	// Host attribution: derive from CLAUDE_CODE_ENTRYPOINT (CLI path only) or
-	// record explicit unknown. The env var is set by Claude Code itself on the
-	// CLI path; the ACP pane (Zed) does not inherit it. No default, no guess.
-	host, hostSource := storage.HostUnknown, storage.HostSourceUnknown
-	if v := os.Getenv("CLAUDE_CODE_ENTRYPOINT"); v != "" {
-		host, hostSource = v, storage.HostSourceDerived
-	}
+	host, hostSource, entrypoint := resolveHookHost(payload.Dialect, os.Getenv("CLAUDE_CODE_ENTRYPOINT"))
 	sessionResult, err := capture.WriteSession(ctx, vault, nil, capture.SessionParams{
 		Project:          opts.ProjectSlug,
 		Summary:          summary,
@@ -359,6 +452,7 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 		Enricher:         enricher,
 		Host:             host,
 		HostSource:       hostSource,
+		Entrypoint:       entrypoint,
 		// The hook PUSHES its key: the harness session ID it was handed. The hook
 		// captures a given session at most once, so this makes a re-run idempotent
 		// on its own terms rather than depending on the claim sentinel — which is a
