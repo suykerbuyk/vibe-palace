@@ -212,6 +212,7 @@ through the same precedence chain.
 | `/vpc-tasks-epic <slug>` | One epic's subtree, re-rooted, each task tagged with its derived role. |
 | `/vpc-tasks-standalone` | The standalone bucket — tasks that belong to no epic. |
 | `/vpc-tasks-read <name>` | Print a single task or epic body verbatim (searches active/done/cancelled). |
+| `/vpc-herdr` | Load this session's Herdr skill from the installed binary, only when the session runs inside a Herdr pane. |
 
 ### `/vps-*` skills (embedded set)
 

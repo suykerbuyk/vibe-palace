@@ -348,13 +348,13 @@ func TestListCommandsEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListResourcesScoped(command): %v", err)
 	}
-	// Embedded commands: cancel-plan, capture, execute-plan, license,
+	// Embedded commands: cancel-plan, capture, execute-plan, herdr, license,
 	// makefile, restart, review-plan, stage, tasks-epic, tasks-epics,
 	// tasks-read, tasks-standalone, vault-audit, wrap (sorted).
-	if len(resources) != 14 {
-		t.Fatalf("got %d commands, want 14: %v", len(resources), resources)
+	if len(resources) != 15 {
+		t.Fatalf("got %d commands, want 15: %v", len(resources), resources)
 	}
-	wantNames := []string{"cancel-plan", "capture", "execute-plan", "license", "makefile", "restart", "review-plan", "stage", "tasks-epic", "tasks-epics", "tasks-read", "tasks-standalone", "vault-audit", "wrap"}
+	wantNames := []string{"cancel-plan", "capture", "execute-plan", "herdr", "license", "makefile", "restart", "review-plan", "stage", "tasks-epic", "tasks-epics", "tasks-read", "tasks-standalone", "vault-audit", "wrap"}
 	for i, want := range wantNames {
 		if resources[i].Name != want {
 			t.Errorf("resources[%d].Name = %q, want %q", i, resources[i].Name, want)
@@ -381,11 +381,11 @@ func TestListCommandsMergedNoDuplicates(t *testing.T) {
 	}
 
 	// Expect: cancel-plan(embedded), capture(embedded), custom(project), deploy(vault),
-	//         execute-plan(embedded), license(embedded), makefile(embedded),
+	//         execute-plan(embedded), herdr(embedded), license(embedded), makefile(embedded),
 	//         restart(vault — shadows embedded), review-plan(embedded), stage(embedded),
 	//         tasks-epic/tasks-epics/tasks-read/tasks-standalone(embedded), wrap(embedded)
-	if len(resources) != 16 {
-		t.Fatalf("got %d resources, want 16: %v", len(resources), resources)
+	if len(resources) != 17 {
+		t.Fatalf("got %d resources, want 17: %v", len(resources), resources)
 	}
 
 	// Check restart comes from vault (override), not embedded.
@@ -602,16 +602,16 @@ func TestListResourcesScopedFullMerge(t *testing.T) {
 	}
 
 	// Expect: cancel-plan(embedded), capture(embedded), custom(project),
-	//         deploy(vault), execute-plan(embedded), gen(room),
+	//         deploy(vault), execute-plan(embedded), gen(room), herdr(embedded),
 	//         license(embedded), lint(wing), makefile(embedded),
 	//         restart(embedded), review-plan(embedded), stage(embedded),
-	//         tasks-epic/tasks-epics/tasks-read/tasks-standalone(embedded), wrap(embedded) = 18 total
-	if len(resources) != 18 {
+	//         tasks-epic/tasks-epics/tasks-read/tasks-standalone(embedded), wrap(embedded) = 19 total
+	if len(resources) != 19 {
 		names := make([]string, len(resources))
 		for i, ri := range resources {
 			names[i] = ri.Name + "(" + ri.Source + ")"
 		}
-		t.Fatalf("got %d resources %v, want 18", len(resources), names)
+		t.Fatalf("got %d resources %v, want 19", len(resources), names)
 	}
 
 	// Verify specific sources.
@@ -644,13 +644,13 @@ func TestListResourcesScopedWingOnly(t *testing.T) {
 		t.Fatalf("ListResourcesScoped: %v", err)
 	}
 
-	// Wing + project + embedded (14 embedded commands) = 16
-	if len(resources) != 16 {
+	// Wing + project + embedded (15 embedded commands) = 17
+	if len(resources) != 17 {
 		names := make([]string, len(resources))
 		for i, ri := range resources {
 			names[i] = ri.Name + "(" + ri.Source + ")"
 		}
-		t.Fatalf("got %d resources %v, want 16", len(resources), names)
+		t.Fatalf("got %d resources %v, want 17", len(resources), names)
 	}
 
 	sourceMap := make(map[string]string)

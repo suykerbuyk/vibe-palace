@@ -502,10 +502,52 @@ func bootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, allowC
 // budget, not the reverse.
 const DefaultBootstrapMaxTokens = 16000
 
+// AssembleBootstrap is the entry point for callers that carry NO transport
+// knowledge — `vp inject` and the integration harnesses. It delegates with the
+// Herdr announcement gated OFF, which is the only honest default: HERDR_ENV
+// describes whichever process happens to be running, and outside the
+// per-client stdio MCP server that process is not the agent's pane. See
+// assembleBootstrap for why the bit cannot be derived here.
 func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, maxTokens int, wing, room string) BootstrapResult {
+	return assembleBootstrap(resolver, vault, project, maxTokens, wing, room, false)
+}
+
+// assembleBootstrap is AssembleBootstrap plus the one fact this payload cannot
+// derive for itself: whether it is being assembled by the per-client stdio MCP
+// server (stdioMCP true) or by the multiplexed HTTP one `vp mcp serve` stands
+// up (false).
+//
+// 🔴 THE BIT IS PASSED IN BECAUSE NOTHING IN HERE CAN OBSERVE IT. Both
+// transports run the same binary, the same registry and the same handler; the
+// only place the difference is already recorded is registerOptions'
+// requireExplicitProject, threaded down as bootstrapHandler's allowCwdDefault
+// — the same flag, for the same reason: on stdio the process is spawned per
+// client so its environment IS the caller's, while on serve the process
+// environment belongs to whoever started the server, days ago, possibly on
+// another machine. Sniffing os.Args or stdin's file type would be guessing at a
+// fact the caller already knows for certain, so the caller states it.
+func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, maxTokens int, wing, room string, stdioMCP bool) BootstrapResult {
 	if maxTokens == 0 {
 		maxTokens = DefaultBootstrapMaxTokens
 	}
+
+	// The Herdr line is built ONCE, here, into a local that is threaded into
+	// BOTH renderPostBootstrapInstructions calls below.
+	//
+	// 🔴 IT IS A LOCAL, NOT AN APPEND TO result.PostBootstrapInstructions. That
+	// field is composed twice — the provisional compose before the shed ladder
+	// and the FINAL compose after it, which REBUILDS the directive from scratch
+	// — so anything appended to the field itself is erased by the rebuild. That
+	// is not hypothetical: it is exactly how the friction / staleness / health
+	// alerts were lost before they were moved into their own slice (see the
+	// ALERTS ARE COLLECTED SEPARATELY note below). A value the rebuild consumes
+	// as an INPUT cannot lose that fight.
+	//
+	// It is deliberately NOT an alert either. Nothing is wrong and nobody must
+	// act — see the AuditStaleness field comment: a capability announcement
+	// belongs in the capability directive, and spending an alert on one trains
+	// the reader to skim the alerts that do matter.
+	herdrLine := herdrAnnouncement(stdioMCP)
 
 	// Complete is set HERE, at assembly, not just before the return: the shed
 	// ladder measures the payload it is about to send (est() marshals `result`),
@@ -641,7 +683,7 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// the bootstrap summary. Populated server-side and excluded from truncation
 	// so the directive fires even when the command list is shed — a degraded
 	// "run vp_cmd to list commands" is still better than silent capability.
-	result.PostBootstrapInstructions = renderPostBootstrapInstructions(result.AvailableCommands, result.AvailableSkills)
+	result.PostBootstrapInstructions = renderPostBootstrapInstructions(result.AvailableCommands, result.AvailableSkills, herdrLine)
 
 	// ALERTS ARE COLLECTED SEPARATELY FROM THE DIRECTIVE, and that separation is a
 	// bug fix, not bookkeeping.
@@ -767,7 +809,7 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// content precisely when the payload was too big to fit, which is when a
 	// project is busiest. Rendering from the POST-ladder command list also means
 	// the examples can no longer point at aliases that were just shed.
-	baseDirective := renderPostBootstrapInstructions(result.AvailableCommands, result.AvailableSkills)
+	baseDirective := renderPostBootstrapInstructions(result.AvailableCommands, result.AvailableSkills, herdrLine)
 	result.PostBootstrapInstructions = composeDirective(baseDirective, alerts)
 
 	result.Budget = budget
@@ -1384,7 +1426,17 @@ func composeDirective(directive string, alerts []string) string {
 // Includes up to two live examples drawn from cmds (or a degraded fallback
 // when nothing was enumerated) so the directive stays accurate without
 // per-project hand-editing.
-func renderPostBootstrapInstructions(cmds []commandSummary, _ []skillSummary) string {
+//
+// herdrLine is appended verbatim: it is FINISHED TEXT, already built and
+// already gated by herdrAnnouncement, so this function knows nothing about
+// Herdr and carries no third state to get wrong. Empty means SILENT, and the
+// returned string is then byte-for-byte what it was before the announcement
+// existed — which TestPostBootstrapDirectiveUnchangedOutsideHerdr pins.
+//
+// The skills parameter is still deliberately unused (issue 177 — the directive
+// names skills generically and draws examples only from commands); this is not
+// the change that fixes it.
+func renderPostBootstrapInstructions(cmds []commandSummary, _ []skillSummary, herdrLine string) string {
 	const base = "After presenting this bootstrap summary, tell the user in one or two lines which commands and skills are now available and how to invoke them (`vpc-<name>`, `vps-<name>`)."
 	examples := make([]string, 0, 2)
 	for i := 0; i < len(cmds) && len(examples) < 2; i++ {
@@ -1393,9 +1445,54 @@ func renderPostBootstrapInstructions(cmds []commandSummary, _ []skillSummary) st
 		}
 	}
 	if len(examples) == 0 {
-		return base + " If no examples survived truncation, call `" + agentfile.CommandToolName + "` or `" + agentfile.SkillToolName + "` with no arguments to list them."
+		return base + " If no examples survived truncation, call `" + agentfile.CommandToolName + "` or `" + agentfile.SkillToolName + "` with no arguments to list them." + herdrLine
 	}
-	return base + " Examples from this project: " + joinExamples(examples) + "."
+	return base + " Examples from this project: " + joinExamples(examples) + "." + herdrLine
+}
+
+// herdrAnnouncement returns the finished one-sentence Herdr capability line, or
+// "" when there is nothing to announce.
+//
+// 🔴 IT RETURNS THE SENTENCE, NOT THE PANE. Threading the pane id out to the
+// renderer would make one string carry two facts — announce-or-stay-silent, and
+// which pane — and the empty string is already spoken for by the silent case.
+// That forces a sentinel for "in a pane, but Herdr exported no HERDR_PANE_ID",
+// and a magic value in a plain string parameter is a trap: passing
+// os.Getenv("HERDR_PANE_ID") straight in reads perfectly and silently suppresses
+// the announcement for exactly that case. Returning finished text keeps the only
+// distinction the parameter carries — empty or not — the one a string can state
+// honestly, and leaves renderPostBootstrapInstructions knowing nothing about
+// Herdr at all.
+//
+// The line rides the capability directive rather than the alerts slice on
+// purpose: this is "a capability is available here", not "something needs
+// looking at". The directive is also excluded from the token-shed ladder, so
+// every byte here is guaranteed-delivered weight — which is why it is one
+// sentence and not a paragraph.
+//
+// 🔴 HERDR_ENV IS ONLY EVIDENCE ON THE STDIO MCP PATH, which is what stdioMCP
+// gates. A stdio server is spawned per client by the agent's own host, so its
+// environment IS the agent's environment and HERDR_ENV=1 really does mean the
+// agent lives in that pane. `vp mcp serve` inherits the environment of whoever
+// started it — a shell that may itself have sat in a Herdr pane hours earlier,
+// on another host entirely — so the same variable there describes a pane no
+// connecting agent can see, and telling that agent to drive it would point it
+// at somebody else's terminal. Note this is the same reasoning that makes serve
+// refuse to default `project` from the process cwd (resolveBootstrapProject):
+// on a multiplexed transport, process-scoped facts are not client-scoped facts.
+//
+// The gate is HERDR_ENV alone. HERDR_PANE_ID is context, never the gate — a
+// missing id downgrades the sentence, it does not suppress it, exactly as the
+// vpc-herdr command body specifies. An id is never invented: a fabricated one is
+// indistinguishable from a measured one and would be refused by herdr (ADR-006).
+func herdrAnnouncement(stdioMCP bool) string {
+	if !stdioMCP || os.Getenv("HERDR_ENV") != "1" {
+		return ""
+	}
+	if id := strings.TrimSpace(os.Getenv("HERDR_PANE_ID")); id != "" {
+		return " This session is running inside Herdr pane " + id + ": `vpc-herdr` loads Herdr pane and agent control on demand."
+	}
+	return " This session is running inside a Herdr pane: `vpc-herdr` loads Herdr pane and agent control on demand."
 }
 
 // frictionTrendHasData reports whether a computed trend covers at least one
@@ -1439,7 +1536,13 @@ func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault, allowCwdDe
 		if err := slug.Validate(projectSlug); err != nil {
 			return nil, fmt.Errorf("invalid project %q: %w", projectSlug, err)
 		}
-		result := AssembleBootstrap(resolver, vault, projectSlug, p.MaxTokens, p.Wing, p.Room)
+		// allowCwdDefault is the transport bit, not just a defaulting knob: it is
+		// true exactly on stdio and false exactly on `vp mcp serve`, and both
+		// process-scoped facts this handler reads — the cwd and the Herdr
+		// environment — are only client-scoped on the first of those. Passing it
+		// through as stdioMCP names the bit for what it is at the seam that
+		// needs it; see herdrAnnouncement.
+		result := assembleBootstrap(resolver, vault, projectSlug, p.MaxTokens, p.Wing, p.Room, allowCwdDefault)
 
 		// Phase 4a / D4: bootstrap no longer writes project (or HOME) shims.
 		// Host surfaces refresh only via `vp mcp install` / user install paths.
