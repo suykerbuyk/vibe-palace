@@ -105,10 +105,32 @@ type BootstrapResult struct {
 	Health *vplog.Summary `json:"health,omitempty"`
 
 	// AuditStaleness nags when the vault audit has gone stale — NIL WHEN FRESH, for
-	// the same reason Health is. This payload now carries four possible alerts, and
-	// four alerts that fire on a healthy vault is how you train a reader to skim all
-	// four. Any new bootstrap alert MUST be silent in the healthy case; if a fifth is
-	// ever proposed, they need a priority or a cap first.
+	// the same reason Health is.
+	//
+	// 🔴 THE RULE IS "SILENT WHEN HEALTHY", NOT A HEADCOUNT. Alerts that fire on a
+	// healthy vault are how you train a reader to skim ALL of them — the same
+	// reasoning that killed the `partial` capture status. So any new bootstrap
+	// alert MUST be silent in the healthy case; one that cannot be needs a
+	// priority order or a cap on the set first.
+	//
+	// 📏 RECORD THE GREP, NEVER THE COUNT. This comment used to assert "four
+	// possible alerts" and the AuditStaleness site below used to call itself "the
+	// fourth" — both were stale, and they were stale in the one comment whose job
+	// is to gate additions. Caller friction was appended later and never counted,
+	// and the ladder raises two more. Derive it, do not recall it:
+	//
+	//	grep -n "alerts = append" internal/tools/context_tools.go
+	//
+	// Note the set is two CLASSES, and only the first is about the vault:
+	// CONDITION alerts (friction trend, vault staleness, health, caller friction,
+	// audit staleness) report something an operator may need to act on; DELIVERY
+	// alerts (task list shed, budget reason) report this payload's own reduction
+	// and are raised by the ladder after the condition alerts are composed.
+	//
+	// A capability announcement is NEITHER. "Feature X is available" is not a
+	// warning, nothing is wrong, and nobody must act — it belongs in the
+	// capability directive (renderPostBootstrapInstructions), which shares this
+	// field but not this channel. Do not spend an alert on one.
 	AuditStaleness *vaultaudit.Staleness `json:"audit_staleness,omitempty"`
 
 	FrictionTrend *capture.FrictionTrend `json:"friction_trend,omitempty"`
@@ -701,11 +723,16 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// 512-byte head of the newest report's frontmatter. The AUDIT may be slow; the
 	// STALENESS CHECK may not — this is the hottest path in the system.
 	//
-	// 🔴 THIS IS THE FOURTH ALERT ON THIS PAYLOAD, and it could only be added once
-	// the payload could actually deliver three (bootstrap-payload-exceeds-its-own-
-	// token-budget, landed at 209). Adding a fourth alert to a vehicle returning
-	// 2.4x over budget would not have been a feature; it would have been a fourth
-	// thing nobody reads, reporting success while being silently truncated away.
+	// 🔴 THIS ALERT COULD ONLY BE ADDED ONCE THE PAYLOAD COULD ACTUALLY DELIVER THE
+	// ONES ALREADY ON IT (bootstrap-payload-exceeds-its-own-token-budget, landed at
+	// 209). Adding an alert to a vehicle returning 2.4x over budget would not have
+	// been a feature; it would have been one more thing nobody reads, reporting
+	// success while being silently truncated away. That is the bar for the next one
+	// too — the constraint is delivery and silence-when-healthy, not a headcount.
+	//
+	// This comment used to open "THIS IS THE FOURTH ALERT ON THIS PAYLOAD" while
+	// sitting at the FIFTH append site. See AuditStaleness's field comment: record
+	// the grep, never the count.
 	if as := vaultaudit.CheckStaleness(vault, time.Now()); as.Warn {
 		result.AuditStaleness = &as
 		alerts = append(alerts, as.Message)
