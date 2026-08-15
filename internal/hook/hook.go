@@ -340,6 +340,13 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 	}
 
 	// 9. Capture the session, reusing the vault + enricher built above.
+	// Host attribution: derive from CLAUDE_CODE_ENTRYPOINT (CLI path only) or
+	// record explicit unknown. The env var is set by Claude Code itself on the
+	// CLI path; the ACP pane (Zed) does not inherit it. No default, no guess.
+	host, hostSource := storage.HostUnknown, storage.HostSourceUnknown
+	if v := os.Getenv("CLAUDE_CODE_ENTRYPOINT"); v != "" {
+		host, hostSource = v, storage.HostSourceDerived
+	}
 	sessionResult, err := capture.WriteSession(ctx, vault, nil, capture.SessionParams{
 		Project:          opts.ProjectSlug,
 		Summary:          summary,
@@ -350,6 +357,8 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 		NeedsIndexing:    true,
 		CWD:              payload.CWD,
 		Enricher:         enricher,
+		Host:             host,
+		HostSource:       hostSource,
 		// The hook PUSHES its key: the harness session ID it was handed. The hook
 		// captures a given session at most once, so this makes a re-run idempotent
 		// on its own terms rather than depending on the claim sentinel — which is a

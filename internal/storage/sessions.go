@@ -107,8 +107,15 @@ type SessionMeta struct {
 	// absence is not a value: recording "unknown" is honest, while a silent
 	// default is a fabricated value indistinguishable from a measured one —
 	// which is exactly how every session was once implicitly attributed to
-	// Claude Code. A note with NO host key predates the field or came from a
-	// writer that makes no host claim (the hook path).
+	// Claude Code. The hook path writes both as well, deriving Host from the
+	// host's CLAUDE_CODE_ENTRYPOINT and recording the explicit "unknown" when
+	// it cannot.
+	//
+	// 🔴 ABSENCE CARRIES NO SINGLE MEANING, so never read one into it. A note
+	// with NO host key predates the field, OR came from a writer that makes no
+	// host claim, OR was written by a build older than the hook-path change —
+	// and all three are live in the vault today. Only a POSITIVE value is a
+	// claim; "unknown" and absent are not evidence about which host ran.
 	//
 	// Host names the HOST, never the model. clientInfo carries no model field
 	// (mcp.Implementation is name/version/title/...), so writing this value

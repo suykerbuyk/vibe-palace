@@ -52,9 +52,16 @@ func TestWriteSessionRecordsHostVerbatim(t *testing.T) {
 	}
 }
 
-// A writer that makes no host claim (the hook path) produces a note with NO
-// host key at all — absence of the key means "no claim was made", which is
-// distinct from the MCP path's explicit "unknown".
+// A writer that makes no host claim produces a note with NO host key at all —
+// absence of the key means "no claim was made", which is distinct from the
+// explicit "unknown" both real writers record when they looked and found
+// nothing.
+//
+// This pins WriteSession's omitempty contract, and ONLY that. It names no
+// caller on purpose: the comment used to say "(the hook path)", and stayed
+// green while the hook started setting both fields — a test asserting a
+// property of a path it never exercises. Every caller in the tree now makes a
+// claim; the contract still has to hold for the one that does not.
 func TestWriteSessionNoHostClaimOmitsKey(t *testing.T) {
 	vault := testVault(t)
 

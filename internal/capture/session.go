@@ -45,8 +45,17 @@ type SessionParams struct {
 	// constants). The MCP handler always sets both — derived from the initialize
 	// handshake's clientInfo when confirmed, a caller-declared identity as
 	// fallback, storage.HostUnknown when neither exists — and WriteSession
-	// records them verbatim; it never invents a host. The hook path leaves them
-	// empty (it pushes no host claim), so hook-written notes carry no host key.
+	// records them verbatim; it never invents a host.
+	//
+	// The hook path sets both too, from a DIFFERENT signal: it has no handshake,
+	// so it reads the host's own CLAUDE_CODE_ENTRYPOINT out of its process
+	// environment (derived) and records the explicit unknown pair when there is
+	// nothing to read. Two consequences worth knowing before reading a note:
+	// the two paths write different VOCABULARIES into Host — a client name
+	// ("claude-code", "Zed") from the handshake, an entrypoint token ("cli")
+	// from the env — and an EMPTY Host still means "this writer made no claim",
+	// which is a third state distinct from the explicit unknown. See the task
+	// hook-path-writes-no-host-attribution.
 	Host       string
 	HostSource string
 
@@ -232,10 +241,10 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		ArchiveSessionID:       p.ArchiveSessionID,
 		ArchiveSessionIDSource: p.ArchiveSessionIDSource,
 		// Host attribution is recorded VERBATIM from the params — resolution
-		// (derive from the handshake, fall back to declared, record unknown)
-		// belongs to the MCP handler, which can see the transport session.
-		// WriteSession never invents a host; empty means the caller made no
-		// host claim and the note carries no key (the hook path).
+		// belongs to the CALLER, which is the only layer that can see the signal:
+		// the MCP handler reads the transport handshake, the hook reads its
+		// process environment. WriteSession never invents a host; empty means
+		// that caller made no claim at all and the note carries no key.
 		Host:         p.Host,
 		HostSource:   p.HostSource,
 		Title:        title,
