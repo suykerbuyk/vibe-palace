@@ -43,11 +43,23 @@ type serverStack struct {
 	eng      *search.Engine
 	resolver *vpctx.Resolver
 	srv      *mcpkg.Server
+	// launchCwd is the directory vault was RESOLVED FROM. Carried on the stack
+	// so a second server built from the same vault (`vp mcp serve`) arms its
+	// stale-binding gate against the same directory rather than a fresh Getwd
+	// that only happens to match.
+	launchCwd string
 }
 
 // bootstrap opens the vault and initializes the full MCP server stack.
 func bootstrap() (*serverStack, error) {
-	v, err := openProjectVault()
+	// One Getwd, used BOTH to resolve the vault and to arm the stale-binding
+	// gate, so the two can never disagree about which directory this binding
+	// came from.
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("get working directory: %w", err)
+	}
+	v, err := OpenProjectVaultAt(cwd)
 	if err != nil {
 		return nil, fmt.Errorf("open vault: %w", err)
 	}
@@ -83,17 +95,19 @@ func bootstrap() (*serverStack, error) {
 
 	resolver := vpctx.NewResolver(v.Root)
 	srv := mcpkg.NewServer(v)
+	srv.WatchVaultBinding(cwd)
 	// stdio serves local Claude/Zed — bootstrap slim default stays false.
 	tools.RegisterAll(srv.Registry(), resolver, v, eng, tools.WithConfig(cfg))
 	tools.RegisterResources(srv, resolver, v)
 
 	return &serverStack{
-		vault:    v,
-		cfg:      cfg,
-		emb:      emb,
-		eng:      eng,
-		resolver: resolver,
-		srv:      srv,
+		vault:     v,
+		cfg:       cfg,
+		emb:       emb,
+		eng:       eng,
+		resolver:  resolver,
+		srv:       srv,
+		launchCwd: cwd,
 	}, nil
 }
 

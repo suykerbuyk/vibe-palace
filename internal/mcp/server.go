@@ -94,6 +94,15 @@ func (s *Server) Registry() *Registry {
 	return s.registry
 }
 
+// WatchVaultBinding arms the stale-binding gate with the directory this
+// server's vault was resolved from, so a mid-session vault_path change cannot
+// silently keep writing the startup vault. Entry points that RESOLVE a vault
+// (cmd/vp bootstrap, `vp mcp serve`) call this; a server handed a vault
+// directly has no launch directory and stays unarmed.
+func (s *Server) WatchVaultBinding(launchCwd string) {
+	s.registry.WatchVaultBinding(launchCwd)
+}
+
 // Listen starts the MCP server on the provided reader/writer pair. It blocks
 // until the reader is closed or ctx is cancelled.
 func (s *Server) Listen(ctx context.Context, r io.Reader, w io.Writer) error {

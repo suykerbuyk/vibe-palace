@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
@@ -106,6 +108,81 @@ type Registry struct {
 	srv   *server.MCPServer
 	mu    sync.RWMutex
 	tools map[string]*registeredTool
+
+	// launchCwd is the directory this server's vault root was RESOLVED FROM,
+	// set by WatchVaultBinding. Empty leaves the stale-binding gate unarmed —
+	// a Registry whose vault was injected directly never had a launch
+	// directory, so there is nothing to compare against.
+	launchCwd string
+	// lastBindErr fingerprints the last re-resolution failure so a session with
+	// a permanently broken config logs the condition, not one line per tool
+	// call: vplog aggregates warn counts by op, and a per-call flood would
+	// swamp vp_health's summary with a single standing fault.
+	lastBindErr string
+}
+
+// WatchVaultBinding arms the stale-binding gate with the directory this
+// server's vault root was resolved from.
+//
+// Pass the SAME cwd that produced the bound vault, not a fresh os.Getwd(): the
+// guard's whole claim is "the config this binding came from still says the same
+// thing", and that claim is only meaningful against the directory the binding
+// actually came from.
+func (r *Registry) WatchVaultBinding(launchCwd string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.launchCwd = launchCwd
+}
+
+// staleBinding reports drift between the vault bound on ctx and what this
+// server's launch directory resolves to now, or nil when there is none.
+//
+// A resolution FAILURE is not drift — see storage.CheckVaultBinding. It is
+// reported and the call proceeds: a config that cannot be resolved governs
+// nothing, so the bound vault is still the only one in effect.
+func (r *Registry) staleBinding(ctx context.Context) *storage.StaleBindingError {
+	r.mu.RLock()
+	cwd := r.launchCwd
+	r.mu.RUnlock()
+	if cwd == "" {
+		return nil
+	}
+	v := VaultFromContext(ctx)
+	if v == nil {
+		return nil
+	}
+	err := storage.CheckVaultBinding(v.Root, cwd)
+	if err == nil {
+		return nil
+	}
+	var sbe *storage.StaleBindingError
+	if errors.As(err, &sbe) {
+		return sbe
+	}
+	if r.markBindErr(err.Error()) {
+		slog.Warn("mcp.staleBinding: vault re-resolution failed; keeping the startup binding",
+			"op", "mcp.staleBinding",
+			"bound", v.Root,
+			"launch_cwd", cwd,
+			"fault", "operational",
+			"err", err,
+		)
+	}
+	return nil
+}
+
+// markBindErr records msg as the current re-resolution failure and reports
+// whether it is NEW. A standing fault logs once per distinct message rather
+// than once per tool call; a change in the message (the operator edited the
+// file again) logs afresh.
+func (r *Registry) markBindErr(msg string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.lastBindErr == msg {
+		return false
+	}
+	r.lastBindErr = msg
+	return true
 }
 
 // NewRegistry creates a Registry backed by the given MCPServer.
@@ -199,7 +276,7 @@ func (r *Registry) Dispatch(ctx context.Context, name string, params json.RawMes
 		return nil, err
 	}
 
-	if gErr := r.gateIfMutating(ctx, rt); gErr != nil {
+	if gErr := r.gateIfMutating(ctx, rt, r.staleBinding(ctx)); gErr != nil {
 		return nil, gErr
 	}
 
@@ -222,15 +299,48 @@ func (r *Registry) Dispatch(ctx context.Context, name string, params json.RawMes
 // stays up and the remediation surfaces in-band as a tool error payload. Both
 // dispatch paths (makeHandler and Dispatch) route through here so neither can
 // bypass the gate.
-func (r *Registry) gateIfMutating(ctx context.Context, rt *registeredTool) error {
+//
+// drift, when non-nil, refuses the same set of tools for a second reason: the
+// vault this server bound at startup is no longer the one its launch directory
+// resolves to. Reads are deliberately left open — refusing them would take
+// vp_bootstrap_context away exactly when the agent needs to find out what is
+// wrong — and instead carry the disagreement in their own result; see
+// staleBindingNotice.
+func (r *Registry) gateIfMutating(ctx context.Context, rt *registeredTool, drift *storage.StaleBindingError) error {
 	if !rt.tool.Mutating {
 		return nil
+	}
+	if drift != nil {
+		return drift
 	}
 	root := ""
 	if v := VaultFromContext(ctx); v != nil {
 		root = v.Root
 	}
 	return surface.EnforceFailStop(root)
+}
+
+// staleBindingNotice prepends the drift banner to a tool result.
+//
+// It LEADS the content array, and both halves of that shape are load-bearing:
+//
+//   - A content item, not a field on the payload, because marshalResult emits
+//     three shapes and a stamped field would reach only one of them.
+//   - LEADING, because a host that truncates a large MCP result keeps the head,
+//     so a trailing notice would be cut precisely on the big reads where acting
+//     on the wrong vault costs most.
+//
+// Known limits: structuredContent is not stamped, so a client reading only that
+// field does not see this; and native resources/read bypasses the registry, so
+// a resource read is unstamped (vp_read_resource, being a tool, is covered).
+func staleBindingNotice(out *mcplib.CallToolResult, drift *storage.StaleBindingError) *mcplib.CallToolResult {
+	if out == nil || drift == nil {
+		return out
+	}
+	banner := mcplib.NewTextContent("⚠ " + drift.Error() +
+		"\n\nThis result was READ from the vault bound at startup. Mutating tools are refused until the server is reloaded.")
+	out.Content = append([]mcplib.Content{banner}, out.Content...)
+	return out
 }
 
 // makeHandler creates a mcp-go ToolHandlerFunc that validates parameters
@@ -322,9 +432,14 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 			return mcplib.NewToolResultError(vErr.Error()), nil
 		}
 
+		// Resolved ONCE per call and shared by the gate and the result banner, so
+		// a mutating call does not pay for two upward config walks.
+		drift := r.staleBinding(ctx)
+
 		// Surface gate: refuse mutating tools when the vault is ahead of this
-		// binary, returning the IncompatibleError remediation in-band.
-		if gErr := r.gateIfMutating(ctx, rt); gErr != nil {
+		// binary, returning the IncompatibleError remediation in-band. Also
+		// refuses every mutating tool when drift is non-nil.
+		if gErr := r.gateIfMutating(ctx, rt, drift); gErr != nil {
 			// OPERATIONAL, not caller: a vault-ahead-of-this-binary mismatch is a
 			// real condition an operator SHOULD see amber (operator decision), so
 			// this stays out of the caller-friction bucket and keeps health amber.
@@ -361,7 +476,10 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 				"fault", fault,
 				"err", hErr,
 			)
-			return mcplib.NewToolResultError(hErr.Error()), nil
+			// A handler that failed under drift may have failed BECAUSE of it —
+			// the notice rides the error result for the same reason it rides a
+			// successful one.
+			return staleBindingNotice(mcplib.NewToolResultError(hErr.Error()), drift), nil
 		}
 
 		// Convert the result to a CallToolResult.
@@ -377,6 +495,7 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 			)
 			return out, mErr
 		}
+		out = staleBindingNotice(out, drift)
 
 		resultSize := 0
 		if out != nil {

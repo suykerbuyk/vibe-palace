@@ -158,6 +158,10 @@ func (c mcpServeConfig) startupLines() []string {
 // testable without binding a socket.
 func buildMCPServeHandler(stack *serverStack, token string, allowWrites bool) http.Handler {
 	srv := mcpkg.NewServer(stack.vault)
+	// Same vault, same binding, so the same stale-binding gate: this instance is
+	// longer-lived than the stdio one, not shorter, and its clients bring no
+	// vault of their own (httpContextFunc injects the server's).
+	srv.WatchVaultBinding(stack.launchCwd)
 	// Every transport now gets the SAME payload. This instance used to default
 	// vp_bootstrap_context to a 4,000-byte resume prefix on the claim that "the
 	// streamable-HTTP channel truncates large inline tool results" — never
