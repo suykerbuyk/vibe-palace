@@ -1,6 +1,8 @@
 # ADR 009: Deliver the Inviolable Core Whole, or Fail Loud — Never Silently Truncate Operating Instructions or Active State
 
-**Status:** Accepted (2026-07-21) — partially enforced 2026-07-22
+**Status:** §1–§2 Accepted (2026-07-21); **§3 WITHDRAWN 2026-08-15 — see the
+amendment immediately below, and read it before anything else on this page.**
+Partially enforced 2026-07-22
 (`e52cfe1`: honest over-budget verdict computed on the final payload +
 `budget.shed_core` core-tier report; `cffa14f`: advisory workflow-caps check).
 The fail-loud arm remains gated on the ADR-008 rollout
@@ -11,6 +13,79 @@ the pinned core 73% but a real bootstrap still reports
 ~8,146 tokens) is larger than the entire 8,000-token budget by itself. Arming the
 gate now would hard-fail every vibe-palace bootstrap. Clearing it needs the
 resume shrink in ADR-008 Phases 2–4, not another rollout pass.
+
+---
+
+## 🔴 AMENDED 2026-08-15 (iteration 291) — §3 IS WITHDRAWN; THE BUDGET IT DEFENDS NO LONGER EXISTS
+
+**Superseding authority: `doc/PRD-vibe-palace.md` §1.10 (operator ruling, 2026-08-15).**
+There is no numeric ceiling on a session-start payload. A payload is small because it is
+an index (PRD §1.9), not because a number forces it to be. The token budget survives with
+a different subject: it measures **one iteration**, and an over-budget iteration is a
+warning that too much happened between one `/vpc-capture` and the next `/vpc-wrap`.
+
+So §3 — *"The budget stays binding — the remedy is a smaller core, never a bigger budget"* —
+is withdrawn in full. So is the iteration-261 ruling that contradicted it (*"the contract
+sets the budget, not the reverse"*). **Both were live simultaneously, in flat opposition,
+and an entire epic was built on the later one.** With no payload budget, neither has a
+subject to be right about.
+
+### What is NOT withdrawn
+
+**§1 and §2 stand as concerns.** An agent that receives a degraded-but-plausible payload
+and never learns a rule is missing is still the failure to prevent, and the 2026-07-21
+Grok incident that motivated this ADR — a shed payload, a resume fetched out of band, and
+a **disproven** diagnosis repeated from it — is still the canonical specimen. What changed
+is the remedy: not a gate over a shed ladder, but not shipping the bulk in the first place.
+
+### §3 was right about the diagnosis and we did the forbidden thing anyway
+
+This is the part worth keeping, because the ADR called its own failure and was not read:
+
+> *"a bloated instruction surface is itself a correctness hazard, because an agent handed
+> tens of KB of rules skims them … the fix is to shrink the inviolable core — **move
+> enforcement out of prose and into the server (ADR-006)**, and move the generic
+> instruction manual out of vault files and into the binary (ADR-008)."*
+
+**ADR-008 shipped. ADR-006's move never happened at scale.** Nine `check.Producers` exist
+against roughly fourteen "NEVER do X" rules still carried as prose — and at least one of
+them (*never write an absolute vault path into a vault document*) is enforced by the
+`vault-abs-paths` check **and** still shipped as a paragraph, so the project pays twice.
+Five days after this ADR was accepted, iteration 260 raised
+`DefaultBootstrapMaxTokens` 8,000 → 16,000: precisely the move §3 forbids, made because
+the core had not been shrunk the way §3 prescribed.
+
+The prescription was correct. It is now `first-principles` Phase 1, and it is the gate on
+everything else in that epic.
+
+### §2's transport clause is unimplementable as written
+
+> *"Where a transport physically cannot carry the inviolable core (a hard channel byte
+> cap), the correct behavior is the same: fail loud and halt."*
+
+**vp cannot see the transport.** It cannot detect a host inline cap, so it cannot halt on
+one. The working substitute is the agent-side `complete` sentinel (`43e79ec`): last field,
+no `omitempty`, always true — its **absence** proves the transport cut the payload.
+Verified firing correctly on a truncated payload 2026-08-15, on a host that delivered
+2,002 of 59,622 bytes and said nothing.
+
+### Consequences of this amendment
+
+- `adr-009-arm-fail-loud-bootstrap` is **cancelled** (2026-08-15). It would have armed a
+  gate over a shed ladder scheduled for deletion.
+- `workflow-digest-core-shed-makes-adr-009-arming-unclearable` is **cancelled** for the
+  same reason — the mechanism it reported on is going.
+- The shed ladder, `budget.shed_core`, the tier derivations and the `vp:pin` /
+  `vp:disposable` marker apparatus are scheduled for removal in `first-principles`
+  Phase 2. When they go, the *Consequences* section at the foot of this page describes
+  machinery that no longer exists; leave it as the record of what was tried.
+
+**Everything below this block predates the withdrawal.** It is accurate about its own
+moment and is retained because the reasoning is instructive — particularly the 262
+amendment, whose lesson (*the tier follows the artifact, so it must be READ from the
+artifact, not copied into code*) generalises well beyond the mechanism it was written for.
+
+---
 
 **🔴 SUPERSEDED 2026-07-26 (iteration 260) — the gating rationale above no longer
 holds, and the root cause was not the resume.** The blocker was diagnosed as "the
