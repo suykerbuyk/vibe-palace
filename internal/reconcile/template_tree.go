@@ -133,72 +133,14 @@ func (r *TemplateTreeReconciler) Check(_ context.Context) []check.Result {
 	return r.checkMaterialize()
 }
 
+// checkMaterialize delegates to check.TemplateDriftRows, which owns the
+// classification. It used to live here, which is exactly what kept template
+// drift out of check.Producers and therefore off the MCP surface: reconcile
+// imports check, so the registry could never reach back into this package. The
+// computation needs internal/templates, not this reconciler, so it moved to
+// where both callers can share it — one definition of drift, not two.
 func (r *TemplateTreeReconciler) checkMaterialize() []check.Result {
-	resources, err := templates.WalkEmbedded()
-	if err != nil {
-		return []check.Result{{
-			Name:   r.Name(),
-			Status: check.Fail,
-			Err:    fmt.Errorf("walk embedded: %w", err),
-		}}
-	}
-	lock, err := templates.ReadLock(r.vaultRoot)
-	if err != nil {
-		return []check.Result{{
-			Name:   r.Name(),
-			Status: check.Fail,
-			Err:    fmt.Errorf("read lock: %w", err),
-		}}
-	}
-	var out []check.Result
-	for _, res := range resources {
-		key := r.vaultRelFromEmbedded(res.RelPath)
-		target := filepath.Join(r.vaultRoot, filepath.FromSlash(key))
-		vaultSHA, herr := hashFile(target)
-		if herr != nil && !os.IsNotExist(herr) {
-			out = append(out, check.Result{
-				Name:   r.Name() + ":" + key,
-				Status: check.Fail,
-				Err:    herr,
-			})
-			continue
-		}
-		vaultExists := herr == nil
-		embSHA, ok := templates.EmbeddedSHA(res.RelPath)
-		if !ok {
-			embSHA = res.SHA256
-		}
-		entry, haveLock := lock.Entries[key]
-
-		// Override-only model: no vault mirror is the healthy state (the
-		// embedded floor serves it). A byte-identical mirror is drift
-		// pending a prune; a genuine override is in sync.
-		status := check.Info
-		summary := "drift"
-		switch {
-		case !vaultExists && !haveLock:
-			status = check.Pass
-			summary = "served from embedded floor"
-		case !vaultExists && haveLock:
-			// Dangling lock entry: sync will drop it. Drift, not fatal.
-			summary = "drift (dangling lock entry; embedded floor serves it)"
-		case haveLock && vaultSHA == entry.EmbeddedSHA:
-			summary = "drift (reconciler-owned mirror pending prune)"
-		case haveLock && vaultSHA == embSHA:
-			summary = "drift (byte-identical to current embedded; pending prune)"
-		case haveLock && embSHA == entry.EmbeddedSHA:
-			status = check.Pass
-			summary = "user override"
-			// default: diverged override (haveLock) or no-lock file — drift
-			// pending a prompt.
-		}
-		out = append(out, check.Result{
-			Name:    r.Name() + ":" + key,
-			Status:  status,
-			Summary: summary,
-		})
-	}
-	return out
+	return check.TemplateDriftRows(r.vaultRoot, r.relSubpath, r.Name())
 }
 
 func (r *TemplateTreeReconciler) checkScaffold() check.Result {

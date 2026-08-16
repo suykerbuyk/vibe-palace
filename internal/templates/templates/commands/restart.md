@@ -82,12 +82,17 @@ diagnostic suite on the state you are about to load context from. Call
 `vp_check` (the MCP tool) with an **explicit** selector list:
 
 ```json
-{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage", "stale-mcp"]}
+{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage", "template-drift", "stale-mcp"]}
 ```
 
-Name those eight deliberately. Do **not** omit the argument, and do
+Name that list deliberately. Do **not** omit the argument, and do
 **not** add `surface`: `vp_surface_check` already ran at the top of this
 step, so including it would repeat a scan for no new information.
+
+`template-drift` is why this step no longer prescribes a shell `vp check`
+alongside the MCP call: the vault's `Templates/` tree is now compared
+against the binary's embedded corpus over MCP, so a shell-less host
+reaches it too.
 
 `stray-scaffolds` is the reason the tidy step above does not have to
 keep nagging: scaffold-only orphan projects are reported **once, here**,
@@ -101,8 +106,8 @@ its `details` lines verbatim. The top-level `status` is an **advisory**
 worst-of roll-up across independent scans that disagree about an absent
 vault; key nothing off it.
 
-- 🔴 **An `"info"` verdict is a REPORT, never a gate.** Six of these
-  seven are Info-or-Pass by design. The exception is `vault-filesystem`,
+- 🔴 **An `"info"` verdict is a REPORT, never a gate.** These are
+  Info-or-Pass by design. The exception is `vault-filesystem`,
   which returns `"fail"` for a vault sitting on a filesystem that
   rejects `":"` in filenames (NTFS/exFAT) — a real finding, and still
   only a finding here: relocating a vault is a deliberate human move,

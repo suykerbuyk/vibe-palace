@@ -187,17 +187,16 @@ vault-tooling epic. Do not stop at "merged":**
    its old, now-deleted image, so a reinstall alone is a stale *process* (`readlink /proc/<pid>/exe`
    for every `pgrep -f 'vp mcp'`; `(deleted)` = that host is lying). The new tool/surface appearing
    is the positive signal it took.
-2. `vp config sync` — roll the embedded-template changes to the vault `Templates/` verbatim; confirm
-   no drift with `vp check`. That confirmation stays on the **CLI** deliberately: the `Templates/`
-   drift row comes from a reconciler `vp check` runs directly, it is **not** one of the selectable
-   checks, and no MCP tool reports it — do not "port" it to `vp_check` and quietly lose it. Then
-   call `vp_check` (the MCP tool) with
-   `{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage", "stale-mcp"]}` — the host-agnostic
+2. `vp config sync` — roll the embedded-template changes to the vault `Templates/` verbatim, then
+   confirm no drift by calling `vp_check` (the MCP tool) with
+   `{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage", "template-drift", "stale-mcp"]}` — the host-agnostic
    half, and the first proof the rolled tooling reaches an agent at all rather than merely existing.
+   `template-drift` is the row that verifies the sync took; it reads the same `Templates/` tree the
+   CLI table does, so this step no longer needs a shell and a shell-less host can run the rollout.
    Report the per-check rows (the top-level `status` is an advisory roll-up); an `"info"` verdict is
-   a report, not a gate, and the rollout continues to step 3. `vault-filesystem` is the one row here
-   that can return `"fail"` — relocating a vault off NTFS/exFAT is a human decision, so it too is
-   reported and the rollout continues. `surface` is omitted here for the same
+   a report, not a gate, and the rollout continues to step 3. `vault-filesystem` is the row here
+   most likely to return `"fail"` — relocating a vault off NTFS/exFAT is a human decision, so it too
+   is reported and the rollout continues. `surface` is omitted here for the same
    reason restart and wrap omit it — step 1 already proved the install took, by a stronger signal
    than the stamp.
 3. Apply the **deferred live-vault edits** you recorded, via `vp_vault_edit` (CAS, section-scoped —

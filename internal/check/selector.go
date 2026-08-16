@@ -81,6 +81,10 @@ var Producers = map[string]func(vaultRoot string) []Result{
 		}
 		return []Result{CheckPinCoverage(storage.NewVault(vaultRoot))}
 	},
+	// template-drift guards its own empty root (it has nothing to compare a
+	// vault copy against without one) and aggregates the per-resource rows the
+	// CLI prints into a single row — see CheckTemplateDrift.
+	"template-drift": func(vaultRoot string) []Result { return []Result{CheckTemplateDrift(vaultRoot)} },
 	// host-surfaces does not need a vault — it inspects $HOME plugin trees.
 	"host-surfaces": func(string) []Result { return CheckHostSurfaces() },
 	// stale-mcp inspects this machine's process table, not the vault.
@@ -119,6 +123,7 @@ var ProducerOrder = []string{
 	"vault-abs-paths",
 	"core-floor",
 	"pin-coverage",
+	"template-drift",
 	"host-surfaces",
 	"stale-mcp",
 }

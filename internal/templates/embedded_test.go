@@ -253,7 +253,7 @@ func TestEmbeddedCommands_CheckSuiteDelivery(t *testing.T) {
 	// contract with three delivery sites, and one literal is what lets a
 	// single constant here pin all of them — three near-identical spellings
 	// would need three pins and would drift apart at the first edit.
-	const selectors = `{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage", "stale-mcp"]}`
+	const selectors = `{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage", "template-drift", "stale-mcp"]}`
 
 	for _, rel := range []string{"commands/restart.md", "commands/wrap.md"} {
 		content, ok := body[rel]
@@ -353,14 +353,28 @@ func TestEmbeddedCommands_CheckSuiteDelivery(t *testing.T) {
 	if strings.Contains(strings.ToLower(block), "halt") {
 		t.Errorf("%s: vp_check step instructs a halt on an Info-never-Fail check", skill)
 	}
-	// The CLI `vp check` in the same step is NOT a leftover to be "ported".
-	// The Templates/ drift row it reports comes from a reconciler the CLI runs
-	// directly (cmd/vp/cmd_check.go, reconcile.NewTemplateTree) and is not in
-	// check.Producers, so no MCP tool reports it. Pin that both survive: drop
-	// the CLI call and the rollout silently stops verifying template drift.
-	if !strings.Contains(content, "vp check") {
-		t.Errorf("%s: rollout step 2 must keep the CLI `vp check` — the Templates/ "+
-			"drift row is CLI-only and vp_check cannot substitute for it", skill)
+	// Template drift is no longer CLI-only. It used to be: the row came from a
+	// reconciler cmd/vp ran directly and was absent from check.Producers, so
+	// this step had to prescribe a shell `vp check` that no Grok or Zed host
+	// can run, and this test pinned that shell call in place. The
+	// classification now lives in check.TemplateDriftRows with the reconciler
+	// delegating to it, and `template-drift` aggregates it into the registry —
+	// so the selector list above IS the drift verification.
+	//
+	// What is pinned here is the ORDERING that made drift verification
+	// meaningful: the sync must come before the check, or the check reports the
+	// pre-sync tree and passes for the wrong reason. Presence of the selector
+	// list is already asserted above; that the list names live producers is
+	// asserted in TestSelectorLiteralNamesLiveProducers, which compares it
+	// against check.Producers rather than against another literal.
+	syncIdx := strings.Index(content, "vp config sync")
+	if syncIdx < 0 {
+		t.Errorf("%s: rollout step 2 must roll templates with `vp config sync` "+
+			"before verifying drift", skill)
+	} else if syncIdx > callIdx {
+		t.Errorf("%s: `vp config sync` (idx=%d) must precede the vp_check call "+
+			"(idx=%d) — checking first reports the pre-sync tree and passes for "+
+			"the wrong reason", skill, syncIdx, callIdx)
 	}
 }
 

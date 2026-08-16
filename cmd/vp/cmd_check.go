@@ -191,13 +191,22 @@ func gatherCheckResults() []check.Result {
 		if vaultOK {
 			if vaultPath, _, perr := storage.ResolveVaultPath(cwd); perr == nil && vaultPath != "" {
 				vault = storage.NewVault(vaultPath)
-				// Phase 3: surface TemplateTree drift alongside the other
-				// reconcilers so vp check stays at parity with
-				// vp config sync --dry-run.
-				tt := reconcile.NewTemplateTree(vaultPath, "Templates", reconcile.TemplateTreeSeed{
-					Mode: reconcile.TemplateModeMaterialize,
-				})
-				results = append(results, tt.Check(ctx)...)
+				// Templates/ drift, as ONE aggregate row.
+				//
+				// This used to append the TemplateTree reconciler's
+				// per-resource rows — one per embedded template, ~38 of
+				// them, all reading "served from embedded floor" on a
+				// healthy vault. That shape is also why drift was
+				// CLI-only: the registry serves a row an agent reads,
+				// and 38 rows is not one.
+				//
+				// check.CheckTemplateDrift wraps the SAME classification
+				// (the reconciler now delegates to it too) and names the
+				// drifting resources in Details, so nothing actionable is
+				// lost — only the pass-row noise. Per-resource planning
+				// detail still lives in `vp config sync --dry-run`, which
+				// is where an operator goes to act on drift.
+				results = append(results, check.CheckTemplateDrift(vaultPath))
 
 				// Vault-wide: flag a vault sitting on a filesystem that rejects
 				// ":" in filenames (NTFS/exFAT), reported plainly here rather

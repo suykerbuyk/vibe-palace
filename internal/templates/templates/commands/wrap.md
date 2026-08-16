@@ -58,10 +58,10 @@ capturing anything, and carry its findings into Step 3. Call `vp_check`
 (the MCP tool) with an **explicit** selector list:
 
 ```json
-{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage", "stale-mcp"]}
+{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage", "template-drift", "stale-mcp"]}
 ```
 
-Name those eight deliberately. Do **not** omit the argument, and do
+Name that list deliberately. Do **not** omit the argument, and do
 **not** add `surface`: `vp_surface_check` already ran above, so including
 it would repeat a scan for no new information.
 
@@ -72,8 +72,8 @@ that is not `"pass"`, give its name, its status, its summary, and its
 worst-of roll-up across independent scans that disagree about an absent
 vault; key nothing off it.
 
-- 🔴 **An `"info"` verdict is a REPORT, never a gate.** Six of these
-  seven are Info-or-Pass by design. The exception is `vault-filesystem`,
+- 🔴 **An `"info"` verdict is a REPORT, never a gate.** These are
+  Info-or-Pass by design. The exception is `vault-filesystem`,
   which returns `"fail"` for a vault sitting on a filesystem that
   rejects `":"` in filenames (NTFS/exFAT) — a real finding, and still
   only a finding here: relocating a vault is a deliberate human move,
@@ -571,6 +571,13 @@ and `Projects/<slug>/commit-log.anchor` among the synced paths — the
 by Step 7b, and all three must be committed so the permanent history and
 its cursor advance together each wrap. (The project-root `commit.msg`
 copy stays gitignored and is never synced.)
+
+If this wrap changed any vault-served template, name `Templates/`
+explicitly among the synced paths — it is **not** in the default set. The
+binary and the vault-served templates ship together: a template supplies
+arguments the binary requires, so a new binary against an un-synced vault
+template breaks that command outright (the reverse is harmless). The
+`template-drift` row in Step 1's `vp_check` call is what reports the gap.
 
 Include `Projects/<slug>/memory/` among the synced paths — AI memory is
 user-persistent content like `resume.md` and `tasks/`, so wrap commits it
