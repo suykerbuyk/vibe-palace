@@ -303,12 +303,6 @@ func TestBootstrapIncludesCommands(t *testing.T) {
 	if !found {
 		t.Error("expected restart in AvailableCommands")
 	}
-	if br.CommandInvocation == "" {
-		t.Error("CommandInvocation should be populated when commands are present")
-	}
-	if !strings.Contains(br.CommandInvocation, "vpc-") {
-		t.Errorf("CommandInvocation missing vpc- reference: %q", br.CommandInvocation)
-	}
 }
 
 func TestBootstrapCommandsTruncationOrder(t *testing.T) {
@@ -357,26 +351,21 @@ func TestBootstrapCommandsTruncationOrder(t *testing.T) {
 	}
 }
 
-// TestCommandInvocationUsesCanonicalToolNames pairs with
-// agentfile.TestManagedBlockStructure — together they guarantee the block
-// copy and the bootstrap directive agree on the tool names, so the two
-// message surfaces the model sees can never drift apart.
-func TestCommandInvocationUsesCanonicalToolNames(t *testing.T) {
-	if !strings.Contains(commandInvocationDirective, "`"+agentfile.CommandToolName+"`") {
-		t.Errorf("directive missing canonical command tool name %q: %q",
-			agentfile.CommandToolName, commandInvocationDirective)
-	}
-	if !strings.Contains(commandInvocationDirective, "`"+agentfile.SkillToolName+"`") {
-		t.Errorf("directive missing canonical skill tool name %q: %q",
-			agentfile.SkillToolName, commandInvocationDirective)
-	}
-	// Defense in depth: the old name must not reappear via copy/paste.
-	for _, stale := range []string{"vp_get_command", "vp_get_skill"} {
-		if strings.Contains(commandInvocationDirective, stale) {
-			t.Errorf("directive contains stale tool name %q: %q", stale, commandInvocationDirective)
-		}
-	}
-}
+// TestCommandInvocationUsesCanonicalToolNames was DELETED, not silently lost,
+// and this note is here so nobody re-derives it from scratch on seeing the gap.
+//
+// It guarded commandInvocationDirective — the per-call copy of the vpc-/vps-
+// dispatch rule that rode in every bootstrap payload. That field is gone: the
+// same sentence already reaches a client twice before any tool call, via
+// mcp.ServerInstructions at initialize and via the agentfile block, and the
+// per-call third copy was the one a host preview ate.
+//
+// Its falsifiable half — no stale tool name — moved to
+// mcp.TestServerInstructionsConst, onto the copy that is now load-bearing, in
+// the same commit. Its other half did NOT move: asserting that a string built
+// from agentfile.CommandToolName contains agentfile.CommandToolName is a
+// tautology that cannot go red, and it was mutation-tested to confirm exactly
+// that before being dropped.
 
 func TestBootstrapIncludesSkills(t *testing.T) {
 	// Seed a vault-level skill — no embedded skills exist yet, so the

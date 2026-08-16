@@ -68,7 +68,6 @@ A vault-level custom command for testing.
 	var bootstrap struct {
 		Project           string `json:"project"`
 		Workflow          string `json:"workflow"`
-		CommandInvocation string `json:"command_invocation"`
 		AvailableCommands []struct {
 			Name  string `json:"name"`
 			Alias string `json:"alias"`
@@ -104,9 +103,8 @@ A vault-level custom command for testing.
 		t.Error("available_commands should include vault 'custom-cmd'")
 	}
 
-	// Phase 1 additions: every command must carry a vpc- alias, briefs
-	// must not have trailing whitespace (word-boundary truncation), and
-	// the invocation directive must be populated when commands exist.
+	// Phase 1 additions: every command must carry a vpc- alias, and briefs
+	// must not have trailing whitespace (word-boundary truncation).
 	for _, cmd := range bootstrap.AvailableCommands {
 		if cmd.Alias != "vpc-"+cmd.Name {
 			t.Errorf("alias for %q = %q, want %q", cmd.Name, cmd.Alias, "vpc-"+cmd.Name)
@@ -115,11 +113,21 @@ A vault-level custom command for testing.
 			t.Errorf("brief for %q has trailing space: %q", cmd.Name, cmd.Brief)
 		}
 	}
-	if bootstrap.CommandInvocation == "" {
-		t.Error("command_invocation should be populated when commands exist")
-	}
-	if !strings.Contains(bootstrap.CommandInvocation, "vpc-") {
-		t.Errorf("command_invocation missing vpc- reference: %q", bootstrap.CommandInvocation)
+
+	// 🔴 command_invocation MUST NOT BE ON THE WIRE. This assertion is INVERTED
+	// from what it used to be, and it is asserted HERE — against the raw text a
+	// registered tool actually returned through the MCP surface — rather than on
+	// the struct, because the struct is the thing that changed. A struct-level
+	// check would pass by construction; only the wire proves the deletion
+	// reached the transport (295: exercise the seam, not the helper).
+	//
+	// The rule it carried is not lost: mcp.ServerInstructions delivers it at
+	// initialize, before any tool call, and the agentfile block writes it into
+	// the project context file. Deleting the third, per-call copy is what this
+	// asserts stayed deleted — it is the field a host preview ate on a live
+	// restart while the other two cost the payload nothing.
+	if strings.Contains(result, `"command_invocation"`) {
+		t.Errorf("command_invocation is back on the wire — it is a constant restating what mcp.ServerInstructions already delivers at initialize, and it re-inflates the region a host preview keeps: %.400s", result)
 	}
 }
 

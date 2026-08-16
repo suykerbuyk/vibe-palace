@@ -92,6 +92,13 @@ func vaultLogPath(vault *storage.Vault) string {
 // The window vp_bootstrap_context reports health over. Kept deliberately tight:
 // bootstrap health is about "did something break in the work you are resuming",
 // not a full audit — that is what calling vp_health with a wider `hours` is for.
+//
+// ⚠ healthDisplayLimit LOOKS DEAD AND IS NOT. The bootstrap caller now clears
+// Summary.RecentWarns outright, so the list this bounds is discarded — which
+// invites the "cleanup" of passing 0 instead and deleting the constant. THAT IS
+// A BUG: Summarize treats limit <= 0 as UNLIMITED (`if limit > 0 && len(...)`,
+// internal/vplog/summary.go), so passing 0 would build the entire in-window tail
+// on the hottest path in the system, to throw it away. The bound stays.
 const (
 	healthWindowHours  = 24
 	healthDisplayLimit = 5

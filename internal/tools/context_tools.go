@@ -102,6 +102,11 @@ type BootstrapResult struct {
 	// soft signal agents learn to skim past, which is the same reasoning that
 	// killed the `partial` capture status. This field appearing AT ALL means
 	// something needs looking at.
+	//
+	// 🔴 IT CARRIES THE VERDICT, NOT THE RECORDS. `recent_warns` is cleared on
+	// the copy that ships here; vp_health serves the full tail. See the clearing
+	// site in assembleBootstrap for why — in short, an unbounded record list is
+	// the one thing that must not sit in the region a host preview keeps.
 	Health *vplog.Summary `json:"health,omitempty"`
 
 	// AuditStaleness nags when the vault audit has gone stale — NIL WHEN FRESH, for
@@ -137,8 +142,21 @@ type BootstrapResult struct {
 
 	// The directive carries the alerts in prose for a reader that skims the
 	// structured fields, so it rides with them, ahead of the bulk.
+	//
+	// 🔴 IT MUST STAY LAST IN THIS BLOCK. It is the only variable-length
+	// instrument here, so it is the only one that should absorb a host cut —
+	// everything above it is bounded, and a cut that lands in a bounded field
+	// destroys a whole instrument instead of a sentence tail.
+	//
+	// `command_invocation` used to follow it and was DELETED: a constant string,
+	// identical on every call for every project forever, restating the vpc-/vps-
+	// dispatch rule that mcp.ServerInstructions already delivers at initialize
+	// (before any tool call) and internal/agentfile writes into the project
+	// context file. Three copies of one sentence, and the per-call copy was the
+	// one a preview ate — measured on a live restart, where it was lost whole
+	// while the two that survive cost the payload nothing. Do not re-add it here;
+	// if the rule needs to change, it changes in mcp.ServerInstructions.
 	PostBootstrapInstructions string `json:"post_bootstrap_instructions,omitempty"`
-	CommandInvocation         string `json:"command_invocation,omitempty"`
 
 	// ── THE BULK. Everything below is large, and everything below is where a
 	// host cut is allowed to land: each of these is re-fetchable through a handle
@@ -258,14 +276,6 @@ func computeVaultStaleness(age time.Duration, fetchedAt time.Time, known bool) V
 // skillSummary reuses the commandSummary shape; alias semantics differ
 // (vps-<name> vs vpc-<name>) but the fields are identical.
 type skillSummary = commandSummary
-
-// commandInvocationDirective tells the AI how to interpret a "vpc-<name>" or
-// "vps-<name>" alias typed by the user. References agentfile.CommandToolName
-// so the block copy and this directive cannot drift.
-var commandInvocationDirective = fmt.Sprintf(
-	"When the user types `vpc-<name>`, call `%s` with `name=<name>` and follow the returned instructions. `vps-<name>` works the same way via `%s`.",
-	agentfile.CommandToolName, agentfile.SkillToolName,
-)
 
 // bootstrapExcerptCap bounds the rune-safe excerpt the TOKEN ladder substitutes
 // for an oversized workflow (the workflow->excerpt rung). The full body remains
@@ -663,9 +673,6 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 			}
 			result.AvailableCommands = append(result.AvailableCommands, cs)
 		}
-		if len(result.AvailableCommands) > 0 {
-			result.CommandInvocation = commandInvocationDirective
-		}
 	}
 
 	// Available skills for discovery (palace-scoped when wing/room provided).
@@ -738,6 +745,26 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// "unknown" rather than failing the bootstrap.
 	h := vplog.Summarize(vaultLogPath(vault), healthWindowHours, healthDisplayLimit)
 	if !h.Healthy() {
+		// 🔴 THE ALERT CARRIES THE VERDICT; vp_health CARRIES THE RECORDS.
+		// RecentWarns is dropped from the bootstrap copy — and ONLY from this
+		// copy, on a local value, so vp_health and the CLI still serve the full
+		// tail from the same vplog.Summarize.
+		//
+		// It was the single largest instrument in the payload: 609 B of the
+		// 2,214 B header on a live restart, 28% of everything ahead of the bulk,
+		// spent on five log records whose only differing content was a timestamp
+		// and a fault label — the message string repeated verbatim five times.
+		// Its tally already rides in WarnCounts, and healthMessage below prints
+		// that tally AND names vp_health as the reader. So the records were the
+		// one part of this field nothing else could reach, in the one region of
+		// the payload that must survive a host preview.
+		//
+		// That inversion is the point: a bounded ALERT belongs in the instrument
+		// block, an unbounded RECORD belongs behind the reader the alert names.
+		// Carrying the reader's payload in the alert's slot is what pushed the
+		// block past a host preview and cost it the fields declared after it.
+		// Re-adding a record list here re-opens that.
+		h.RecentWarns = nil
 		result.Health = &h
 		alerts = append(alerts, healthMessage(h))
 	}
@@ -1272,7 +1299,6 @@ func shedToBudget(result *BootstrapResult, maxTokens int, fullResume string, wor
 	if tokens > maxTokens && (len(result.AvailableCommands) > 0 || len(result.AvailableSkills) > 0) {
 		result.AvailableCommands = nil
 		result.AvailableSkills = nil
-		result.CommandInvocation = ""
 		b.Shed = append(b.Shed, shedCommands)
 		tokens = est()
 	}
@@ -1320,7 +1346,6 @@ func shedToBudget(result *BootstrapResult, maxTokens int, fullResume string, wor
 		{shedCommands, func() {
 			result.AvailableCommands = before.AvailableCommands
 			result.AvailableSkills = before.AvailableSkills
-			result.CommandInvocation = before.CommandInvocation
 		}},
 		{shedKGSnapshot, func() { result.KGSnapshot = before.KGSnapshot }},
 		{shedMemory, func() { result.Memory = before.Memory }},
@@ -1406,10 +1431,33 @@ func measuredTokens(result *BootstrapResult, maxTokens int) int {
 	return len(raw) / 4
 }
 
-// composeDirective joins the capability directive with any alerts (friction,
-// vault staleness, health). Alerts come LAST so they are the final thing the model
-// reads, and they are never folded into the directive string itself — see the
-// truncation path, which re-renders the directive and would otherwise erase them.
+// composeDirective joins any alerts (friction, vault staleness, health) with the
+// capability directive. They are never folded into the directive string itself —
+// see the truncation path, which re-renders the directive and would otherwise
+// erase them.
+//
+// 🔴 ALERTS COME FIRST, AND THIS ORDER IS A DELIVERY CONTRACT, NOT A READING
+// PREFERENCE. post_bootstrap_instructions is the LAST field before the bulk and
+// the only variable-length instrument in the payload, which makes it the field a
+// host preview is designed to cut into. Whatever sits at its tail is what the
+// cut destroys.
+//
+// It used to read `directive + " " + alerts`, on the reasoning that alerts last
+// are "the final thing the model reads". That is true only of a payload that
+// arrives whole. Measured on a live /vpc-restart 2026-08-16: a 2 KB host preview
+// ended inside this field at `…(guards working, not fa` — the entire capability
+// announcement survived intact and the caller-friction alert died mid-word. The
+// payload spent its surviving bytes telling the agent which commands exist and
+// lost the one sentence saying something was wrong.
+//
+// So the order is inverted: alerts, then the announcement. A cut now lands on
+// the capability announcement, which is the correct casualty — it is not an
+// alert, nothing is wrong, nobody must act on it, and every host already gets
+// the same dispatch rule from mcp.ServerInstructions at initialize. The alerts
+// are the reason this field is in the surviving region at all.
+//
+// This also means an alert must never be appended to the base directive by its
+// renderer: doing so puts it back on the far side of the cut.
 func composeDirective(directive string, alerts []string) string {
 	if len(alerts) == 0 {
 		return directive
@@ -1418,7 +1466,7 @@ func composeDirective(directive string, alerts []string) string {
 	if directive == "" {
 		return joined
 	}
-	return directive + " " + joined
+	return joined + " " + directive
 }
 
 // renderPostBootstrapInstructions returns a short directive telling the model

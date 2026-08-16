@@ -11,6 +11,7 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -26,7 +27,18 @@ const vaultKey contextKey = "vault"
 //
 // It is exported so the capability-service tool vp_manual can echo the exact
 // string a connecting client receives, without maintaining a second copy.
-const ServerInstructions = "Call vp_bootstrap_context with project=<slug> at session start for full project context — resume, workflow rules, active tasks, and recent sessions (example: {\"project\":\"<slug>\"}). Prefer always naming project; on stdio MCP the server may derive it from a high-confidence cwd marker when omitted. When the user types vpc-<name> (e.g. vpc-restart, vpc-wrap), call vp_cmd with name=<name> and follow the returned instructions. When the user types vps-<name>, call vp_skill with name=<name>. Call vp_capture_session at the end of each work unit. Large bodies may be delivered as vibe-palace:// resources — read them natively via resources/read or page them with vp_read_resource."
+//
+// 🔴 THE TOOL NAMES ARE DERIVED, NOT TYPED. This string is now the ONLY copy of
+// the vpc-/vps- dispatch rule that reaches a host at connect time — the
+// duplicate that rode in every vp_bootstrap_context payload as
+// `command_invocation` was deleted, because the same sentence arrived twice
+// before any tool call. The deleted copy was built with fmt.Sprintf from these
+// same constants and a test held it to them; this one was hand-typed and no
+// test checked it. Deleting the derived copy and leaving the typed one
+// load-bearing would have made a rename of either tool silently falsify the
+// first instruction every client reads. So it derives too, and
+// TestServerInstructionsConst holds it. Never inline "vp_cmd"/"vp_skill" here.
+const ServerInstructions = "Call vp_bootstrap_context with project=<slug> at session start for full project context — resume, workflow rules, active tasks, and recent sessions (example: {\"project\":\"<slug>\"}). Prefer always naming project; on stdio MCP the server may derive it from a high-confidence cwd marker when omitted. When the user types vpc-<name> (e.g. vpc-restart, vpc-wrap), call " + agentfile.CommandToolName + " with name=<name> and follow the returned instructions. When the user types vps-<name>, call " + agentfile.SkillToolName + " with name=<name>. Call vp_capture_session at the end of each work unit. Large bodies may be delivered as vibe-palace:// resources — read them natively via resources/read or page them with vp_read_resource."
 
 // VaultFromContext extracts the Vault from a handler context.
 // Returns nil if no vault is present.

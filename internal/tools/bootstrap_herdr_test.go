@@ -61,8 +61,9 @@ func TestPostBootstrapDirectiveAnnouncesHerdr(t *testing.T) {
 
 	// The announcement is an ADDITION, never a replacement: the command/skill
 	// directive that every session depends on has to survive it intact, and the
-	// line has to land at the END so the alerts composeDirective appends still
-	// come last.
+	// line lands at the END of the BASE directive — which composeDirective then
+	// places after the alerts, so the announcement as a whole is what a host
+	// preview cutting into this field destroys first.
 	want := directiveBase + " Examples from this project: `vpc-wrap`, `vpc-restart`." + line
 	if got != want {
 		t.Errorf("announcing directive is not the silent one plus the line:\n got %q\nwant %q", got, want)
@@ -130,39 +131,53 @@ var alertMarkers = []string{
 	"over its own token budget",        // over-budget verdict
 }
 
-// firstAlertIndex returns the offset of the earliest alert text in a composed
+// lastAlertIndex returns the offset of the LATEST alert text in a composed
 // directive, or -1 when no alert fired.
-func firstAlertIndex(directive string) int {
-	first := -1
+//
+// It REPLACED a firstAlertIndex when composeDirective put the alerts ahead of
+// the capability directive: "the announcement follows every alert" needs the
+// last one, exactly as "the announcement precedes every alert" needed the first.
+// The old helper was deleted rather than kept beside this one — an unused
+// mirror-image helper is the thing a later reader reaches for by accident, and
+// it would re-assert the pre-inversion order.
+func lastAlertIndex(directive string) int {
+	last := -1
 	for _, m := range alertMarkers {
-		if at := strings.Index(directive, m); at >= 0 && (first < 0 || at < first) {
-			first = at
+		if at := strings.Index(directive, m); at > last {
+			last = at
 		}
 	}
-	return first
+	return last
 }
 
 // TestHerdrAnnouncementRidesTheDirectiveNotTheAlerts is the CHANNEL test, and
 // the assertion is deliberately about ORDER rather than presence.
 //
-// composeDirective joins the capability directive and the alerts into the SAME
+// composeDirective joins the alerts and the capability directive into the SAME
 // field, so a test that merely greps post_bootstrap_instructions for "herdr"
 // passes identically whether the line was rendered into the directive or
 // appended to the alerts slice — it cannot tell the two designs apart, which
-// makes it worthless as a guard. The alerts are joined LAST, so the channel is
-// observable from outside: a directive-borne line precedes EVERY alert, while
-// an alert-borne one lands among them.
+// makes it worthless as a guard. Because the join has a fixed order, the channel
+// is observable from outside.
 //
-// The comparison is against the FIRST alert, not a chosen one, because "before
-// some alert" is satisfied by an announcement appended halfway down the alerts
+// 🔴 THE COMPARISON INVERTED WHEN composeDirective INVERTED. Alerts are now
+// joined FIRST (they sit in the region a host preview keeps; the announcement is
+// the correct casualty of a cut — see composeDirective). So a directive-borne
+// line now FOLLOWS every alert, where it used to precede them. The property
+// under test is unchanged — "the Herdr line rides the capability directive, not
+// the alerts slice" — only its observable signature moved, and this test moved
+// with it rather than being deleted for going red.
+//
+// The comparison is against the LAST alert, not a chosen one, because "after
+// some alert" is satisfied by an announcement inserted halfway down the alerts
 // slice — which is exactly the wrong implementation this test exists to catch.
 //
 // One case is genuinely unobservable and this test does not pretend otherwise:
-// an announcement inserted as alerts[0] produces byte-identical output, since
-// composeDirective joins with the same single space the announcement carries.
-// That shape is a design defect (an announcement occupying the alert channel,
-// per the AuditStaleness field comment) rather than a delivery defect, and no
-// assertion on the delivered string can distinguish it.
+// an announcement appended as the FINAL element of the alerts slice produces
+// byte-identical output, since composeDirective joins with the same single space
+// the announcement carries. That shape is a design defect (an announcement
+// occupying the alert channel, per the AuditStaleness field comment) rather than
+// a delivery defect, and no assertion on the delivered string can distinguish it.
 //
 // The fixture forces the over-budget alert with an impossible max_tokens so at
 // least one alert is guaranteed regardless of what the temp vault contains.
@@ -178,12 +193,12 @@ func TestHerdrAnnouncementRidesTheDirectiveNotTheAlerts(t *testing.T) {
 	if herdrAt < 0 {
 		t.Fatalf("the Herdr announcement is missing entirely:\n%s", directive)
 	}
-	alertAt := firstAlertIndex(directive)
+	alertAt := lastAlertIndex(directive)
 	if alertAt < 0 {
 		t.Fatalf("fixture raised no alert at all, so the channel is unobservable:\n%s", directive)
 	}
-	if herdrAt > alertAt {
-		t.Errorf("the Herdr line (index %d) follows the first alert (index %d), so it is riding the alerts slice rather than the capability directive:\n%s",
+	if herdrAt < alertAt {
+		t.Errorf("the Herdr line (index %d) precedes the last alert (index %d), so it is riding the alerts slice rather than the capability directive:\n%s",
 			herdrAt, alertAt, directive)
 	}
 }

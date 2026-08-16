@@ -12,6 +12,7 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -40,6 +41,32 @@ func TestServerInstructionsConst(t *testing.T) {
 	} {
 		if !strings.Contains(ServerInstructions, phrase) {
 			t.Errorf("ServerInstructions missing project-param phrase %q: %q", phrase, ServerInstructions)
+		}
+	}
+
+	// 🔴 NO STALE TOOL NAME. This is the FALSIFIABLE half of the guard that used
+	// to live on internal/tools' commandInvocationDirective, moved here in the
+	// same commit that deleted that duplicate: ServerInstructions is now the
+	// only copy of the vpc-/vps- dispatch rule a client gets at connect.
+	//
+	// The other half was deliberately NOT moved, because it does not measure
+	// anything. `strings.Contains(ServerInstructions, agentfile.CommandToolName)`
+	// is a TAUTOLOGY now that the string concatenates that same constant: renaming
+	// CommandToolName renames the string and the assertion together, in lockstep.
+	// It was written, run green, and mutation-tested by renaming the constant to
+	// "vp_command" — the suite stayed `ok` with zero FAIL lines. An assertion that
+	// cannot go red is not a weak guard, it is a decoration, and this project
+	// deletes those rather than shipping them (290/296).
+	//
+	// What actually enforces the canonical names is the DERIVATION, at compile
+	// time, in ServerInstructions itself — strictly stronger than any test, and
+	// the reason the deleted duplicate could go safely. This loop covers the one
+	// residual a compiler cannot see: a human re-typing a superseded tool name
+	// into the prose. That IS falsifiable, and it is mutation-proved.
+	for _, stale := range []string{"vp_get_command", "vp_get_skill"} {
+		if strings.Contains(ServerInstructions, stale) {
+			t.Errorf("ServerInstructions names the stale tool %q — the canonical dispatch tools are %q/%q, and this string is the FIRST instruction every client reads: %q",
+				stale, agentfile.CommandToolName, agentfile.SkillToolName, ServerInstructions)
 		}
 	}
 }

@@ -18,11 +18,22 @@ import (
 // in a way downstream tooling needs to distinguish.
 const blockVersion = 2
 
-// CommandToolName and SkillToolName are the canonical MCP tool names the
-// managed block and bootstrap directive point users at. Exporting them from
-// this package gives one source of truth that both internal/agentfile's
-// block copy and internal/tools's CommandInvocation directive reference,
-// preventing the drift that the block sha-mismatch path alone cannot catch.
+// CommandToolName and SkillToolName are the canonical MCP tool names every
+// surface that teaches vpc-/vps- dispatch points users at. Exporting them from
+// this package gives one source of truth, preventing the drift that the block
+// sha-mismatch path alone cannot catch.
+//
+// TWO consumers reference them, and this list used to name a third that no
+// longer exists: internal/tools's CommandInvocation directive, deleted with the
+// per-call `command_invocation` payload field it rendered into.
+//
+//   - this package's managed block, written into the project context file
+//   - mcp.ServerInstructions, returned in the initialize response
+//
+// mcp.ServerInstructions was hand-typing these names while the deleted directive
+// derived them. It derives them now — the deletion is what made it the surviving
+// copy, and a surviving copy that can drift is worse than the duplicate it
+// replaced.
 const (
 	CommandToolName = "vp_cmd"
 	SkillToolName   = "vp_skill"
