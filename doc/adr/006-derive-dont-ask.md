@@ -178,12 +178,13 @@ them, and *that* is the class L3/L4 deletes.
 
 **It is a correctness boundary, not a trust boundary.**
 
-## Where the children sit
+## Where the children sat
 
-The three remaining children of `derive-dont-ask-server-owned-business-logic`, each
-placed on the line by the rules above:
+The DECISION-205 children of `derive-dont-ask-server-owned-business-logic` all
+retired on `main`. The umbrella itself retired 2026-08-16 (orphans declined).
+This section is the historical placement on the line, not a work order.
 
-### `append-iteration-server-owned` → **DERIVE (L4)**
+### `append-iteration-server-owned` → **DERIVE (L4)** — shipped, retired
 
 The iteration number is computable from `iterations.md`, which the server owns and
 already locks. One correct answer, checkable. The parameter goes away.
@@ -198,29 +199,32 @@ the counter corruption of 191, **reintroduced under this ADR's own banner.**
 Keeps the optional `iteration` override the PRD already specifies: **derive when
 absent, honor when present, record that it was overridden.**
 
-### `clientinfo-seam-derive-model` → **SPLIT — and it is the case that proves the line is real**
+### `clientinfo-seam-derive-model` → **SPLIT** — host DERIVE shipped; model DECLARE
 
 Three values that look like one problem and sit on three different sides:
 
 - **The host / adapter is DERIVE.** `clientInfo.Name` is a fact the server can see —
   at the *handler* seam, never `contextFunc`, which runs before `initialize` and
-  silently yields the `claude-code` default.
+  silently yields the `claude-code` default. **Shipped.** The child is retired.
 - **The model is NOT derivable from `clientInfo`.** `clientInfo.Name` is the HOST
   (`"Zed"`), not the model (Grok). Writing it into `SessionMeta.Model` feeds
   `DetectModelRegressions` a host name as a model *identity* — **worse than the current
-  omission, and silent.** The model *is* derivable, but from the **transcript**, and
-  adapter-aware: a different derivation with a different input.
+  omission, and silent.** It *could* be derived from the **transcript** (adapter-aware).
+  That slice was **declined** as residual of this umbrella (operator, 2026-08-16):
+  runtime stays **caller-declared**. MCP copies `model`; the hook still uses path-based
+  `InspectClaudeJSONL`. Until a future task exists, the posture is **DECLARE**, not a
+  silent guess from `clientInfo`.
 - **The Zed thread ID is not derivable AT ALL.** Zed multiplexes every thread in a
   window onto one `vp mcp` process, so two threads on one folder are indistinguishable
   *in principle* — and empirically `folder_paths` is populated on 14 of 270 rows.
-  **It must be PUSHED by the extension that knows it.** That is DECLARE, and it is the
-  boundary case: here, an agent-supplied parameter is the *correct* answer.
+  **It must be PUSHED by the extension that knows it.** That is DECLARE, and it lives
+  on `zed-pane-capture-parity`, not this umbrella.
 
 **On failure: degrade with recorded provenance — never a silent default.** Record what
 was derived and *how*; on failure record `unknown`. **Never fall back to `claude-code`.**
 This is the same rule as the `ChurnKnown` fix (209): absence is not a value.
 
-### `derive-dont-ask-dead-code-sweep` → **REPORT + DEFER, with a DECLARE escape**
+### `derive-dont-ask-dead-code-sweep` → **REPORT + DEFER, with a DECLARE escape** — shipped, retired
 
 Two questions, and they are not the same question:
 
