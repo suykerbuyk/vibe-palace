@@ -240,11 +240,12 @@ func dirtyIterations() string {
 }
 
 // TestIterationHeadings_FlagsAllThreeClasses covers the widening: the dimension
-// used to test the H3 LEVEL only, which is one of three independent conditions
-// and not the one that was doing live damage. None of the three subsumes another
-// — the frame rule cannot see a malformed heading mid-body, the canonicity rule
-// cannot see an unnumbered orphan, and NEITHER can see a doubled prefix, because
-// the round-trip oracle is idempotent over that corruption.
+// used to test the H3 LEVEL only, which is one of three conditions and not the
+// one that was doing live damage. The frame rule cannot see a malformed heading
+// mid-body and the canonicity rule cannot see an unnumbered orphan, so neither of
+// those subsumes the other. The doubled-prefix rule was once equally independent
+// — the round-trip oracle was idempotent over that corruption — and is now kept
+// because it NAMES the defect, reported in preference to the generic class.
 func TestIterationHeadings_FlagsAllThreeClasses(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
 	mkdirs(t, vault.Root, "Projects", "p")
@@ -264,7 +265,7 @@ func TestIterationHeadings_FlagsAllThreeClasses(t *testing.T) {
 	}{
 		{"## 2026-06-17 Wrap", "TAIL of the previous entry"},
 		{"## Iteration 147", "not what the writer emits"},
-		{"## Iteration 40 — Iteration 40 — Global AI Eric prep addendum", "FIXED POINT"},
+		{"## Iteration 40 — Iteration 40 — Global AI Eric prep addendum", "prefix TWICE"},
 	}
 	for i, c := range cases {
 		f := findings[i]

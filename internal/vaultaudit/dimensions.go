@@ -344,9 +344,11 @@ func auditResumeDiscipline(vault *storage.Vault) ([]Finding, []string, error) {
 //   - NON-CANONICAL NUMBERED headings — "## Iteration 70: Concurrent Recording",
 //     "## Iteration 215 (revision 2) — ...", "## Iteration 147", and the legacy H3s
 //     191 earned. The ones that sit mid-body are invisible to the frame rule.
-//   - DOUBLED PREFIXES — "## Iteration 40 — Iteration 40 — ...". These PASS the
-//     canonicity oracle, because the round trip is idempotent over the corruption,
-//     so neither of the other two rules can ever find them.
+//   - DOUBLED PREFIXES — "## Iteration 40 — Iteration 40 — ...". These once PASSED
+//     the canonicity oracle, because the round trip was idempotent over the
+//     corruption and no other rule could find them. FormatIterationHeader now
+//     strips a doubled prefix, so they are non-canonical too; the class is kept
+//     because it NAMES the defect, and is reported in preference to the generic one.
 //
 // FENCE-AWARE, and that is not decoration: this project's own documents quote
 // iteration headers inside code fences as SAMPLE TEXT (the wrap template does it
@@ -443,11 +445,12 @@ func iterationHeadingDetail(d wrapstate.HeadingDefect) string {
 			"between the two halves of one contract, and drift that nothing reports gets worse."
 
 	case wrapstate.DefectDoubledPrefix:
-		return fmt.Sprintf("%q carries the \"Iteration N —\" prefix TWICE. This is invisible to every "+
-			"other rule here: titleFromHeader strips exactly one prefix and FormatIterationHeader "+
-			"re-adds exactly one, so the corruption is a FIXED POINT of the round trip and the "+
-			"canonicity oracle reports it as perfectly canonical. A check built as re-emit-and-compare "+
-			"is structurally blind to whatever it is idempotent over. Expected %s.", d.Text, d.Want)
+		return fmt.Sprintf("%q carries the \"Iteration N —\" prefix TWICE. The narrative is still "+
+			"addressable — the heading carries its number — so only the title is corrupt, and the "+
+			"repair is mechanical: drop the redundant prefix. These headings were written by handing "+
+			"FormatIterationHeader a title that already carried the prefix; the writer now strips it, "+
+			"so no new ones can appear and what is left here is archive damage. Expected %s.",
+			d.Text, d.Want)
 
 	default:
 		// Unreachable while wrapstate owns the class set; a new class must not

@@ -180,8 +180,16 @@ func isYAMLCloser(lines []string, outside []bool, p int) bool {
 //
 // It is implemented as a ROUND TRIP — parse N and the title back out, re-emit,
 // compare — rather than as a second regex, so it cannot drift away from the
-// writer. Note what that buys and what it does not: see HasDoubledPrefix for a
-// corruption this oracle is structurally incapable of seeing.
+// writer. That coupling cuts both ways, and it is the reason this oracle's reach
+// changed without a line of it being edited: a round-trip check is blind to any
+// corruption it is IDEMPOTENT over, so what it can see is decided by the writer,
+// not by the comparison.
+//
+// A doubled prefix used to be exactly such a fixed point and was reported here as
+// perfectly canonical. It no longer is: FormatIterationHeader now strips the
+// doubled prefix, so re-emitting a doubled heading no longer reproduces it and
+// this returns false. See HasDoubledPrefix — that rule survives because it NAMES
+// the corruption, not because this oracle still cannot see it.
 func IsCanonicalHeader(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	m := iterHeadingRe.FindStringSubmatch(trimmed)
@@ -203,17 +211,27 @@ var doubledPrefixRe = regexp.MustCompile(`^Iteration \d+[ \t]*[—–-][ \t]*`)
 // HasDoubledPrefix reports whether the title extracted from a heading itself
 // begins with another "Iteration N —" prefix.
 //
-// This rule exists because IsCanonicalHeader CANNOT catch it, and the reason is
-// worth stating plainly: titleFromHeader strips exactly ONE "Iteration N —"
-// prefix and FormatIterationHeader re-adds exactly ONE, so
+// This rule exists to NAME the corruption. "non-canonical-numbered" says only
+// that a line is not what the writer emits; "doubled-prefix" says what is wrong
+// with it and implies the repair, and ScanHeadingDefects tests it BEFORE the
+// generic rule so that label is the one the operator reads. Five headings in the
+// live rezbldrvault archive carry it:
 //
 //	## Iteration 40 — Iteration 40 — Global AI Eric prep addendum (...)
 //
-// is a FIXED POINT of the round trip. IsCanonicalHeader returns true for it, and
-// for the four siblings like it in the live archive. A round-trip oracle is
-// structurally blind to every corruption it is idempotent over — which is the
-// general lesson, not a quirk of this one string. Any check built as "re-emit
-// and compare" needs a companion rule for the fixed points, and this is it.
+// WHY IT ORIGINALLY EXISTED, AND WHY THAT REASON IS GONE. titleFromHeader strips
+// exactly ONE "Iteration N —" prefix, and FormatIterationHeader used to re-add
+// exactly ONE — so a doubled heading was a FIXED POINT of the round trip and
+// IsCanonicalHeader returned true for all five. This rule was the companion that
+// covered the oracle's blind spot. The writer now strips the doubled prefix, so
+// the round trip no longer reproduces the corruption and IsCanonicalHeader
+// catches these too. The rule is kept anyway, for the naming above.
+//
+// The general lesson outlives the specific fix and is why the rule is worth
+// keeping in view: a round-trip oracle is structurally blind to every corruption
+// it is idempotent over. Any check built as "re-emit and compare" is only as
+// sharp as its writer, and needs a companion rule for whatever the writer will
+// happily reproduce.
 func HasDoubledPrefix(text string) bool {
 	return doubledPrefixRe.MatchString(titleFromHeader(text))
 }
@@ -230,10 +248,20 @@ func HasDoubledPrefix(text string) bool {
 // actual output, so the drift it guards against cannot happen silently.
 const CanonicalHeaderShape = "## Iteration N — Title"
 
-// HeadingDefectClass names one of the three INDEPENDENT ways an iterations.md
-// heading fails the contract. Independent is the operative word: each class is
-// invisible to the other two, which is why all three are checked rather than
-// whichever one happened to be written first.
+// HeadingDefectClass names one of the three ways an iterations.md heading fails
+// the contract.
+//
+// The classes were once mutually invisible, and that was the argument for
+// checking all three. Two still are: a frame orphan sitting mid-body carries no
+// number, so the numbered rules cannot reach it, and a non-canonical numbered
+// heading away from a frame is invisible to the frame rule. Neither subsumes the
+// other.
+//
+// The doubled-prefix class is now OVERLAPPING rather than independent — since the
+// writer began stripping, such a heading is also non-canonical — and it is kept
+// because it NAMES the corruption where the generic class would only say the line
+// is wrong. ScanHeadingDefects therefore has to order the rules deliberately
+// rather than rely on them being disjoint; see the precedence note there.
 type HeadingDefectClass string
 
 const (
@@ -254,9 +282,18 @@ const (
 	DefectNonCanonicalNumbered HeadingDefectClass = "non-canonical-numbered"
 
 	// DefectDoubledPrefix — a title that itself begins with another
-	// "Iteration N —". These PASS IsCanonicalHeader: the round trip is
-	// idempotent over the corruption (see HasDoubledPrefix), so neither of the
-	// other two classes can find them. Five live instances in rezbldrvault.
+	// "Iteration N —". Five live instances in rezbldrvault.
+	//
+	// These USED to pass IsCanonicalHeader, because the round trip was
+	// idempotent over the corruption, and that blindness was the whole reason
+	// for the class. The writer now strips a doubled prefix, so they are also
+	// non-canonical and the generic rule would find them. The class is kept to
+	// NAME the defect and imply its repair, and ScanHeadingDefects tests it
+	// first so this label wins over "non-canonical-numbered".
+	//
+	// Not a frame orphan even when frame-adjacent: the heading carries its
+	// number (iterHeadingRe matches the first prefix), so the narrative is
+	// addressable and only the title is corrupt.
 	DefectDoubledPrefix HeadingDefectClass = "doubled-prefix"
 )
 

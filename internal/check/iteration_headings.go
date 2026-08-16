@@ -49,11 +49,17 @@ import (
 // independent classes (see wrapstate.ScanHeadingDefects): frame orphans,
 // non-canonical numbered headings, and doubled "Iteration N —" prefixes.
 //
-// All three are required and none subsumes the others. The frame rule cannot see
-// a malformed numbered heading that sits mid-body; the canonicity rule cannot
-// see an unnumbered orphan; and NEITHER can see a doubled prefix, because
-// titleFromHeader strips exactly one prefix and FormatIterationHeader re-adds
-// exactly one, making the corruption a fixed point of the round trip.
+// The first two are required and neither subsumes the other: the frame rule
+// cannot see a malformed numbered heading that sits mid-body, and the canonicity
+// rule cannot see an unnumbered orphan.
+//
+// The doubled-prefix rule used to be required for the same reason — a doubled
+// prefix was a fixed point of the round trip, so the canonicity oracle reported
+// it as perfectly canonical and no other rule could find it. FormatIterationHeader
+// now strips a doubled prefix, which closes the hole that wrote those headings and
+// incidentally gives the oracle sight of them. The rule is kept because it NAMES
+// the corruption where the canonicity class would only report that the line is
+// wrong, and it is tested first so that label is the one reported.
 //
 // It is strictly READ-ONLY: Pass when every scanned archive is clean, Info when
 // one or more carry a defective heading, Skip when no vault root is configured.
