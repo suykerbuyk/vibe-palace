@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
@@ -62,11 +63,24 @@ func cmdPlansScan() *cli.Command {
 			// still only be confirmed "managed" against a real vault, but an
 			// absent vault must not fail the read-only scan — it just degrades
 			// every marked candidate to "unmanaged".
+			//
+			// A REJECTED config is not the absent case and does not get that
+			// silence: the scan would label every candidate "unmanaged" on the
+			// strength of a vault_path that was written, ignored, and never
+			// reported. The scan still runs — it is read-only and the listing is
+			// useful — but the reason the labels are degraded is stated.
 			vaultRoot := ""
+			degraded := ""
 			cwd, cerr := os.Getwd()
 			if cerr == nil {
-				if vp, _, perr := storage.ResolveVaultPath(cwd); perr == nil {
+				vp, _, perr := storage.ResolveVaultPath(cwd)
+				switch {
+				case perr == nil:
 					vaultRoot = vp
+				case errors.Is(perr, storage.ErrSwallowedVaultPath):
+					degraded = perr.Error()
+					fmt.Fprintf(os.Stderr, "vp plans scan: %v\n", perr)
+					fmt.Fprintln(os.Stderr, "vp plans scan: every marked candidate below is reported \"unmanaged\" because of the above.")
 				}
 			}
 
@@ -75,6 +89,10 @@ func cmdPlansScan() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp plans scan: %v\n", err)
 				return cli.ExitSystem
 			}
+			// stderr does not survive a pipe into jq. Without this a --json
+			// consumer cannot tell a genuinely unmanaged tree from an
+			// unevaluated one.
+			rep.VaultUnresolved = degraded
 
 			if fv.Bool("--json") {
 				enc := json.NewEncoder(os.Stdout)

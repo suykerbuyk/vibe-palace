@@ -5,7 +5,9 @@ package check
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -111,9 +113,20 @@ func CheckConfigAt(root string) (configPath, vaultPath string, r Result) {
 	vaultPath, source, err = storage.ResolveVaultPath(root)
 	if err != nil {
 		r.Status = Fail
-		r.Summary = fmt.Sprintf("not found at %s", configPath)
-		r.Details = []string{"Run 'vp init' to create config and vault."}
 		r.Err = err
+		// Details, not Err — see WrapDetail for why Err reaches nobody.
+		//
+		// "not found / run vp init" is the right remedy ONLY when resolution
+		// failed for want of a config. A cwd .vibe-palace.toml that PARSED but
+		// was rejected has a config; telling that operator to run `vp init`
+		// sends them at the wrong file entirely.
+		if errors.Is(err, fs.ErrNotExist) || os.IsNotExist(err) {
+			r.Summary = fmt.Sprintf("not found at %s", configPath)
+			r.Details = []string{"Run 'vp init' to create config and vault."}
+			return
+		}
+		r.Summary = "vault_path could not be resolved"
+		r.Details = WrapDetail(err.Error())
 		return
 	}
 

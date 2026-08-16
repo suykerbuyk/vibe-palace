@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -74,9 +75,25 @@ func runSelectedChecks(filter string) ([]check.Result, error) {
 	if err != nil {
 		cwd = "."
 	}
+	// A REJECTED config file is reported; an ABSENT one still degrades to "".
+	//
+	// This path never runs CheckConfigAt — it dispatches the producer registry
+	// directly — so nothing else in a `vp check --check …` run would mention a
+	// rejected .vibe-palace.toml. Degrading it to "" makes every producer emit
+	// "no vault configured", which reads as an unconfigured machine rather than
+	// as a config pointing at the wrong vault: the silent-skip class this
+	// command exists to catch.
+	//
+	// The absent case must NOT be promoted to an error. An un-set-up machine
+	// has no global config, ResolveVaultPath fails, and `vp check --check
+	// surface` is exactly the preflight that has to keep working there.
 	vaultRoot := ""
-	if vp, _, perr := storage.ResolveVaultPath(cwd); perr == nil {
+	vp, _, perr := storage.ResolveVaultPath(cwd)
+	switch {
+	case perr == nil:
 		vaultRoot = vp
+	case errors.Is(perr, storage.ErrSwallowedVaultPath):
+		return nil, perr
 	}
 	return check.RunSelected(vaultRoot, filter)
 }
@@ -331,6 +348,19 @@ func gatherCheckResults() []check.Result {
 
 	// --- Surface compatibility — last check, mirroring the runtime gate so
 	// the binary-vs-vault verdict reads as the closing line of the report. ---
+	//
+	// A REJECTED config does not degrade to "": CheckSurface("") reports "no
+	// vault configured", and that is the unconfigured-machine reading this
+	// conversion exists to stop — printed here as the report's CLOSING LINE,
+	// where it would be the last thing an operator sees after Config already
+	// Failed for the real reason.
+	if _, _, perr := storage.ResolveVaultPath(cwd); errors.Is(perr, storage.ErrSwallowedVaultPath) {
+		results = append(results, check.Result{
+			Name: "Surface", Status: check.Skip,
+			Summary: "not evaluated — vault path rejected (see Config above)",
+		})
+		return results
+	}
 	surfaceVault := ""
 	if vaultPath, _, perr := storage.ResolveVaultPath(cwd); perr == nil {
 		surfaceVault = vaultPath

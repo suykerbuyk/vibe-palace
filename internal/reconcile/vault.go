@@ -77,11 +77,16 @@ func (r *VaultReconciler) gitEnabled() bool {
 func (r *VaultReconciler) Check(_ context.Context) []check.Result {
 	vaultPath, err := r.resolvedVaultPath()
 	if err != nil || vaultPath == "" {
-		return []check.Result{{
+		// Details, not Err alone — see check.WrapDetail.
+		res := check.Result{
 			Name: "Vault", Status: check.Fail,
 			Summary: "cannot resolve vault path",
 			Err:     err,
-		}}
+		}
+		if err != nil {
+			res.Details = check.WrapDetail(err.Error())
+		}
+		return []check.Result{res}
 	}
 	results := []check.Result{check.CheckVault(vaultPath)}
 	if results[0].Status == check.Pass {
@@ -96,8 +101,16 @@ func (r *VaultReconciler) Plan(_ context.Context) (Plan, error) {
 	vaultPath, err := r.resolvedVaultPath()
 	if err != nil || vaultPath == "" {
 		if !r.seed.seedSet {
+			// `vp init` is the remedy for an ABSENT config. A cwd
+			// .vibe-palace.toml that parsed and was REJECTED has a config, and
+			// sending that operator at the global one points them at the wrong
+			// file — the same misdirection CheckConfigAt used to emit.
+			summary := "vault path unresolved — run `vp init`"
+			if errors.Is(err, storage.ErrSwallowedVaultPath) {
+				summary = "vault path REJECTED, not missing: " + err.Error()
+			}
 			return Plan{Actions: []Action{{
-				Kind: ActionSkip, Summary: "vault path unresolved — run `vp init`",
+				Kind: ActionSkip, Summary: summary,
 			}}}, nil
 		}
 		return Plan{}, fmt.Errorf("resolve vault path: %w", err)

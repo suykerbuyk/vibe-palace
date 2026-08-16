@@ -1,12 +1,12 @@
 # Testing Strategy
 
-**Last updated:** 2026-08-15
+**Last updated:** 2026-08-16
 
 This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~2854 tests** across 48 packages, including
+The suite currently runs **~2881 tests** across 48 packages, including
 **108 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven

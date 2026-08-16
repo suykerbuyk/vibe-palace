@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -76,8 +77,37 @@ func runHook(info cli.BuildInfo) int {
 	}
 
 	// Open vault from the hook's CWD.
+	//
+	// The global fallback is for an ABSENT cwd override. It must NEVER run for a
+	// REJECTED one: this is the capture path that caused iteration 210, and the
+	// global vault is the LIVE vault. An operator who wrote a vault_path meant
+	// their work to go somewhere else; falling back here writes the throwaway
+	// session into real project history — the precise defect readCwdVaultPath
+	// now refuses, re-entered through the back door. Refuse and capture nothing:
+	// a lost capture is recoverable, a polluted history is not.
 	vault, err := storage.OpenVaultFromCwd(payload.CWD)
 	if err != nil {
+		if errors.Is(err, storage.ErrSwallowedVaultPath) {
+			// Alarm through the two sanctioned channels — the log and the result
+			// body — never the exit code, per the ruling below.
+			//
+			// Reaching the log takes an explicit step here. Pre-run initLogging()
+			// resolves through openProjectVault, which fails on THIS error, so no
+			// handler is attached and slog would degrade to stderr: the alarm is
+			// missing precisely when it fires. Attaching the global vault's log is
+			// not the fallback this branch refuses — it writes one diagnostic line,
+			// never session history, and vp_health reads that file.
+			if gv, gerr := storage.OpenVaultGlobal(); gerr == nil {
+				initLoggingForVault(gv)
+			}
+			slog.Error("hook: refusing to capture into the live vault",
+				"cwd", payload.CWD, "event", payload.HookEventName, "err", err)
+			res := &hook.Result{Event: payload.HookEventName, Error: err.Error()}
+			if encErr := json.NewEncoder(os.Stdout).Encode(res); encErr != nil {
+				slog.Error("hook: encode result failed", "err", encErr, "event", payload.HookEventName)
+			}
+			return cli.ExitOK
+		}
 		// Fallback: try the global vault.
 		vault, err = storage.OpenVaultGlobal()
 		if err != nil {

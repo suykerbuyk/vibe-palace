@@ -72,3 +72,38 @@ func PrintRows(w io.Writer, results []Result) int {
 func ProgressLine(w io.Writer, name, message string) {
 	fmt.Fprintf(w, "[ .. ] %-10s %s\n", name+":", message)
 }
+
+// detailWidth is the wrap column for WrapDetail. PrintRows indents Details by
+// tag+11 columns, so this leaves a normal 80-column terminal intact.
+const detailWidth = 64
+
+// WrapDetail splits a long single-line message into Details lines at word
+// boundaries.
+//
+// It exists because Result.Err is NEVER rendered — PrintRows writes Name,
+// Summary and Details only. A check that wants its error to reach the operator
+// has to place the text in Details, and an unwrapped error runs off the
+// terminal. Words longer than detailWidth are emitted on their own line rather
+// than broken, so paths and identifiers stay copy-pasteable.
+func WrapDetail(msg string) []string {
+	fields := strings.Fields(msg)
+	if len(fields) == 0 {
+		return nil
+	}
+	var (
+		out  []string
+		line string
+	)
+	for _, w := range fields {
+		switch {
+		case line == "":
+			line = w
+		case len(line)+1+len(w) <= detailWidth:
+			line += " " + w
+		default:
+			out = append(out, line)
+			line = w
+		}
+	}
+	return append(out, line)
+}

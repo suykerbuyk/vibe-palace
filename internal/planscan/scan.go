@@ -67,6 +67,15 @@ type StrayPlan struct {
 type Report struct {
 	PlansDir string      `json:"plans_dir"`
 	Strays   []StrayPlan `json:"strays"`
+
+	// VaultUnresolved states why every "managed" determination below is
+	// degraded, when the caller could not resolve a vault.
+	//
+	// Scan never sets it — it takes vaultRoot as an input and cannot know why
+	// one was not supplied. The caller sets it, because without it a piped
+	// --json consumer reads an all-"unmanaged" tree as a CLEAN result rather
+	// than an unevaluated one. Empty means the labels are trustworthy.
+	VaultUnresolved string `json:"vault_unresolved,omitempty"`
 }
 
 // Scan reads <claudeHome>/plans/*.md and reports attribution for each stray

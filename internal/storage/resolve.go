@@ -4,9 +4,11 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -105,12 +107,77 @@ func findProjectFileUpward(dir, homeBoundary string) string {
 // readCwdVaultPath decodes a .vibe-palace.toml and returns its
 // top-level vault_path value (empty if unset). Unknown top-level keys
 // and sections are tolerated.
+//
+// It REFUSES a vault_path that TOML parsed as a sub-key of a table rather
+// than a top-level key — see errSwallowedVaultPath. That is a hard error,
+// joining the malformed-TOML path this file already documents: no silent
+// fallback.
 func readCwdVaultPath(path string) (string, error) {
 	var cfg struct {
 		VaultPath string `toml:"vault_path"`
 	}
-	if _, err := toml.DecodeFile(path, &cfg); err != nil {
+	md, err := toml.DecodeFile(path, &cfg)
+	if err != nil {
 		return "", err
 	}
+	if cfg.VaultPath == "" {
+		if owner := swallowedVaultPathTable(md); owner != "" {
+			return "", errSwallowedVaultPath(owner)
+		}
+	}
 	return cfg.VaultPath, nil
+}
+
+// swallowedVaultPathTable reports the table that captured a vault_path key,
+// or "" when none did.
+//
+// vault_path is a TOP-LEVEL key, but TOML scopes every key that follows a
+// [table] header INTO that table. So the natural writing order
+//
+//	[project]
+//	name = "throwaway"
+//	vault_path = "/tmp/throwaway-vault"
+//
+// binds project.vault_path, leaves the top-level key unset, and the decode
+// succeeds with err == nil. Without this detection the caller falls through to
+// the GLOBAL config — the live vault — and writes there. Iteration 210 caught
+// that only after a throwaway run had captured into the real vault.
+//
+// MetaData.Keys reports every key the document actually defined, so the
+// swallowed case is directly observable; the decode alone cannot see it.
+func swallowedVaultPathTable(md toml.MetaData) string {
+	for _, key := range md.Keys() {
+		if len(key) < 2 || key[len(key)-1] != "vault_path" {
+			continue
+		}
+		return strings.Join(key[:len(key)-1], ".")
+	}
+	return ""
+}
+
+// ErrSwallowedVaultPath marks a .vibe-palace.toml that was FOUND and PARSED
+// but REJECTED because its vault_path landed under a table.
+//
+// Callers need this distinguishable from "no vault configured". Both arrive as
+// an error from ResolveVaultPath, but they mean opposite things: an absent
+// global config is the normal state of an un-set-up machine and diagnostics
+// must still run on it, while a rejected config file is a live misconfiguration
+// pointing at the wrong vault. Collapsing the two makes `vp check` refuse to
+// run on exactly the machine it exists to diagnose.
+var ErrSwallowedVaultPath = errors.New("vault_path swallowed by a table")
+
+// errSwallowedVaultPath builds the refusal.
+//
+// The message carries the load-bearing facts rather than a token, because this
+// error IS the rule's delivery channel — it replaced the workflow.md paragraph
+// that used to ship in every bootstrap payload and was enforced by nothing.
+// A reader who never saw that paragraph must be able to act on this text alone.
+func errSwallowedVaultPath(owner string) error {
+	return fmt.Errorf("%w: it is defined under table [%s], not at the top level, "+
+		"so it does NOT override the vault — TOML scopes every key after a [table] header "+
+		"into that table. Refusing to fall back to the global config, which is the LIVE vault: "+
+		"that fallback is silent, and it captures throwaway work into real project history "+
+		"(iteration 210). Fix: move vault_path ABOVE every table in the file, then confirm "+
+		"with `vp check`, which prints the resolved vault_path and its source",
+		ErrSwallowedVaultPath, owner)
 }
