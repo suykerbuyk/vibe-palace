@@ -397,6 +397,27 @@ func TestUpdateResumeStaleShaIsMachineParseableError(t *testing.T) {
 		t.Errorf("error %q does not carry the current sha %s", msg, currentSha)
 	}
 
+	// PHASE 1 CLAUSE 3. Two rules were deleted from workflow.md's Behavioral
+	// Notes once the code enforced them, and this refusal is the need-to-know
+	// path that replaced the prose:
+	//
+	//   - "resume.md has NO blind whole-file overwrite path" — enforced by the
+	//     required expected_sha256 (TestUpdateResumeSchemaRequiresExpectedSha)
+	//     and the assert-absent branch (TestWriteResumeCAS).
+	//   - "The CAS digest is of the RAW, PRE-EXPANSION bytes" — enforced by
+	//     ResolveDigest hashing pre-expansion bytes, pinned end-to-end by
+	//     TestIntegration_UpdateResumeStaleWriteRefused.
+	//
+	// The second one's WHY has no other home: an agent that hashed the content
+	// a reader handed it sees only "have X, expected Y" and cannot tell a lost
+	// race from a digest it was never allowed to compute. Deleting these lines
+	// silently returns that rule to prose.
+	for _, want := range []string{"vp_vault_read", "placeholder-EXPANDED", "RAW", "never from a second read"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("conflict remedy does not explain %q — the deleted Behavioral Note has no need-to-know path left: %s", want, msg)
+		}
+	}
+
 	// The embedded object must actually parse, and its current_sha256 must be
 	// the digest a retry should key on.
 	open := strings.Index(msg, "{")

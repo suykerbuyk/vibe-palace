@@ -272,7 +272,7 @@ func resumeConflictError(err error, expected string) error {
 		"conflict":        true,
 		"current_sha256":  current,
 		"expected_sha256": expected,
-		"remedy":          "re-read the resume with vp_vault_read (Projects/<project>/resume.md), recompose your edit against those raw bytes, and resubmit with the sha it returned; do not force.",
+		"remedy":          "re-read the resume with vp_vault_read (Projects/<project>/resume.md), recompose your edit against those raw bytes, and resubmit with the sha it returned; do not force. Never compute the digest yourself from content a reader returned: readers serve placeholder-EXPANDED text while every digest is over the RAW bytes, so a self-computed hash matches nothing on disk. Take the sha from vp_vault_read, never from a second read.",
 	})
 	if merr != nil {
 		return fmt.Errorf("resume compare-and-set failed: %w", err)
