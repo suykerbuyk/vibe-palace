@@ -172,15 +172,26 @@ func TestHasDoubledPrefix_AndTheOracleBlindness(t *testing.T) {
 	if !HasDoubledPrefix(doubled) {
 		t.Errorf("HasDoubledPrefix(%q) = false, want true", doubled)
 	}
-	// THIS is the assertion that justifies HasDoubledPrefix existing at all.
-	// titleFromHeader strips exactly one "Iteration N —" and
-	// FormatIterationHeader re-adds exactly one, so a doubled prefix is a FIXED
-	// POINT of the round trip and the oracle reports it as perfectly canonical.
-	// If this ever goes false the oracle grew teeth and this pin should be
-	// revisited deliberately — not deleted in passing.
-	if !IsCanonicalHeader(doubled) {
-		t.Errorf("IsCanonicalHeader(%q) = false; the round-trip oracle is supposed to be BLIND here", doubled)
+	// REVISITED DELIBERATELY. The previous version of this test asserted the
+	// OPPOSITE — that IsCanonicalHeader(doubled) is TRUE — because
+	// titleFromHeader stripped exactly one "Iteration N —" and
+	// FormatIterationHeader re-added exactly one, making a doubled prefix a
+	// FIXED POINT of the round trip. That blindness is what justified
+	// HasDoubledPrefix existing as a separate rule, and the old pin ended by
+	// saying: if this ever goes false the oracle grew teeth and the pin should
+	// be revisited deliberately, not deleted in passing.
+	//
+	// The oracle grew teeth. FormatIterationHeader now strips the doubled
+	// prefix, so the round trip no longer reproduces the corruption and the
+	// heading is correctly non-canonical. The assertion is inverted rather than
+	// removed, because which way it points is the whole record of whether the
+	// writer hole is open or closed.
+	if IsCanonicalHeader(doubled) {
+		t.Errorf("IsCanonicalHeader(%q) = true; the writer now strips the doubled prefix, so the round trip must NOT reproduce it", doubled)
 	}
+	// And the rule still earns its place: it names the corruption, where
+	// non-canonical-numbered would only say the line is not what the writer
+	// emits. ScanHeadingDefects tests it FIRST for exactly that reason.
 
 	for _, ok := range []string{
 		"## Iteration 40 — Global AI Eric prep addendum",

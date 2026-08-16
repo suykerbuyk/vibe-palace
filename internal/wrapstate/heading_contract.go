@@ -288,10 +288,22 @@ type HeadingDefect struct {
 // entry boundary the reader half could not see, and the repair that fixes the
 // frame problem fixes the canonicity problem for free.
 //
-// The doubled-prefix class is disjoint from the other two by construction (a
-// doubled heading is canonical, so it is neither an orphan nor non-canonical),
-// so its precedence never actually fires — it is declared anyway so a future
-// edit that makes the classes overlap still cannot double-report.
+// The doubled-prefix class USED to be disjoint from the other two by
+// construction: a doubled heading was canonical, so it was neither an orphan nor
+// non-canonical, and its precedence never fired. That is no longer true.
+// FormatIterationHeader now strips a doubled prefix from the title it is handed,
+// which closes the hole that wrote those five headings — and as a side effect the
+// round trip stops being a fixed point over them, so an unmigrated doubled
+// heading is now ALSO non-canonical.
+//
+// Its precedence therefore fires for real, and the order below matters: the
+// SPECIFIC rule is tested before the generic one. Test non-canonicity first and
+// every doubled heading is reported as merely "non-canonical-numbered", the
+// doubled-prefix class becomes unreachable dead code, and the operator loses the
+// one label that names what is actually wrong with the line. The five live
+// rezbldrvault cases are not frame-adjacent (their predecessor is an HTML
+// comment), so nothing upstream rescues that label — this ordering is the only
+// thing keeping it.
 //
 // # What it deliberately DOES NOT report
 //
@@ -305,8 +317,21 @@ func ScanHeadingDefects(content string) []HeadingDefect {
 	claimed := make(map[int]bool)
 	var out []HeadingDefect
 
-	// Rule 1 first, so it owns any line the numbered rules would also claim.
+	// Rule 1 first, so it owns any line the numbered rules would also claim —
+	// EXCEPT a doubled prefix, which is deliberately left for the numbered pass.
+	//
+	// Frame-orphan means "a real entry boundary the reader half cannot see". A
+	// doubled heading always carries its number ("## Iteration 40 — Iteration 40
+	// — …" matches iterHeadingRe on the FIRST prefix), so the reader addresses it
+	// perfectly well; only its title is corrupt. Since the writer started
+	// stripping, such a heading is non-canonical and therefore technically
+	// qualifies as an orphan — so without this skip it would be relabelled
+	// frame-orphan, telling the operator a narrative is unaddressable when it is
+	// not. The label has to describe the defect that is actually present.
 	for _, o := range ScanFrameOrphans(content) {
+		if HasDoubledPrefix(o.Text) {
+			continue
+		}
 		claimed[o.Line] = true
 		out = append(out, HeadingDefect{
 			Line:  o.Line,
@@ -321,20 +346,20 @@ func ScanHeadingDefects(content string) []HeadingDefect {
 			continue
 		}
 		switch {
-		case !IsCanonicalHeader(h.Text):
-			claimed[h.Line] = true
-			out = append(out, HeadingDefect{
-				Line:  h.Line,
-				Text:  h.Text,
-				Class: DefectNonCanonicalNumbered,
-				Want:  wantHeaderFor(h.Text),
-			})
 		case HasDoubledPrefix(h.Text):
 			claimed[h.Line] = true
 			out = append(out, HeadingDefect{
 				Line:  h.Line,
 				Text:  h.Text,
 				Class: DefectDoubledPrefix,
+				Want:  wantHeaderFor(h.Text),
+			})
+		case !IsCanonicalHeader(h.Text):
+			claimed[h.Line] = true
+			out = append(out, HeadingDefect{
+				Line:  h.Line,
+				Text:  h.Text,
+				Class: DefectNonCanonicalNumbered,
 				Want:  wantHeaderFor(h.Text),
 			})
 		}

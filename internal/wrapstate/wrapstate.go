@@ -218,8 +218,23 @@ func scanIterHeadings(content string) []iterHeading {
 // named no level, so the file grew both — 110 H2 against 81 H3 in vibe-palace
 // alone, the same shape as the status-line defect fixed in iteration 184: a
 // reader with a strict private definition, a writer with none.
+// It also STRIPS a leading "Iteration N —" already present in the caller's
+// title, via the one stripper in heading_contract.go. That is not defensive
+// tidying — it closes the hole that WROTE the corruption. rezbldrvault carries
+// five headings of the form "## Iteration 40 — Iteration 40 — …", and they got
+// there because this function faithfully prefixed a title that already carried
+// the prefix. The check and the one-shot migration cleaned those five up, but a
+// repair whose source is still open regenerates its own work: the next caller
+// that passes an already-prefixed title writes the sixth.
+//
+// Stripping here makes the round trip stop being a fixed point over that
+// corruption — IsCanonicalHeader now returns false for an unmigrated doubled
+// heading rather than reporting it as perfectly canonical. That is the intended
+// consequence, not a regression: the oracle gained the sight it lacked, and
+// leftover archive damage is now visible to the reader half as well as to the
+// doubled-prefix rule that was written precisely because the oracle was blind.
 func FormatIterationHeader(n int, title string) string {
-	return fmt.Sprintf("%sIteration %d — %s", IterationHeadingPrefix, n, strings.TrimSpace(title))
+	return fmt.Sprintf("%sIteration %d — %s", IterationHeadingPrefix, n, StripDoubledPrefix(title))
 }
 
 // ContainsIterationHeader reports whether content carries any iteration header

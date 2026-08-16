@@ -115,6 +115,47 @@ func TestFormatIterationHeader(t *testing.T) {
 	if got, want := FormatIterationHeader(7, "  padded  "), "## Iteration 7 — padded"; got != want {
 		t.Fatalf("FormatIterationHeader did not trim title: %q, want %q", got, want)
 	}
+	// The unpadded form is pinned deliberately: zero-padding was DECLINED by the
+	// operator, because a padded header only helps `grep | sort` over a cat-ed
+	// archive — the access path vp_get_iteration retires.
+	if got, want := FormatIterationHeader(7, "t"), "## Iteration 7 — t"; got != want {
+		t.Fatalf("FormatIterationHeader must stay unpadded: %q, want %q", got, want)
+	}
+}
+
+// TestFormatIterationHeaderStripsDoubledPrefix pins the WRITER half of the
+// doubled-prefix defect. rezbldrvault holds five headings shaped
+// "## Iteration 40 — Iteration 40 — …", and they exist because this function
+// faithfully prefixed a title that already carried the prefix. The check and the
+// one-shot migration cleaned the five up; without this strip the next caller who
+// passes an already-prefixed title writes the sixth, and the repair regenerates
+// its own work.
+func TestFormatIterationHeaderStripsDoubledPrefix(t *testing.T) {
+	// The exact shape the live archive carried.
+	if got, want := FormatIterationHeader(40, "Iteration 40 — Foo"), "## Iteration 40 — Foo"; got != want {
+		t.Errorf("FormatIterationHeader(40, %q) = %q, want %q", "Iteration 40 — Foo", got, want)
+	}
+	// Doubled more than once: a strip that fixes only the first layer leaves a
+	// heading that still fails HasDoubledPrefix while looking repaired.
+	if got, want := FormatIterationHeader(40, "Iteration 40 — Iteration 40 — Foo"), "## Iteration 40 — Foo"; got != want {
+		t.Errorf("FormatIterationHeader did not strip a twice-doubled title: %q, want %q", got, want)
+	}
+	// A DIFFERENT number in the prefix is still a doubled prefix — the corruption
+	// is the shape, not the agreement.
+	if got, want := FormatIterationHeader(41, "Iteration 40 — Foo"), "## Iteration 41 — Foo"; got != want {
+		t.Errorf("FormatIterationHeader(41, %q) = %q, want %q", "Iteration 40 — Foo", got, want)
+	}
+	// A title that merely MENTIONS an iteration mid-sentence must survive intact.
+	// The regex is anchored precisely so this is not collateral damage.
+	const mentions = "revisits the Iteration 5 — decision"
+	if got, want := FormatIterationHeader(12, mentions), "## Iteration 12 — "+mentions; got != want {
+		t.Errorf("FormatIterationHeader mangled a mid-sentence mention: %q, want %q", got, want)
+	}
+	// The composed header is canonical by construction — the writer cannot emit
+	// something its own oracle rejects.
+	if h := FormatIterationHeader(40, "Iteration 40 — Foo"); !IsCanonicalHeader(h) {
+		t.Errorf("writer emitted a header its own oracle rejects: %q", h)
+	}
 }
 
 // ContainsIterationHeader guards the tool door: the server composes the header,
