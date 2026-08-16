@@ -58,10 +58,10 @@ capturing anything, and carry its findings into Step 3. Call `vp_check`
 (the MCP tool) with an **explicit** selector list:
 
 ```json
-{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage"]}
+{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage", "stale-mcp"]}
 ```
 
-Name those seven deliberately. Do **not** omit the argument, and do
+Name those eight deliberately. Do **not** omit the argument, and do
 **not** add `surface`: `vp_surface_check` already ran above, so including
 it would repeat a scan for no new information.
 

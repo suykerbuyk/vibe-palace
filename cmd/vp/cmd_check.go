@@ -317,6 +317,9 @@ func gatherCheckResults() []check.Result {
 	// --- User-global slash surfaces (advisory — vp mcp install emit). ---
 	results = append(results, check.CheckHostSurfaces()...)
 
+	// --- Stale MCP server image (advisory — make install is not enough). ---
+	results = append(results, check.CheckStaleMCP())
+
 	// --- Surface compatibility — last check, mirroring the runtime gate so
 	// the binary-vs-vault verdict reads as the closing line of the report. ---
 	surfaceVault := ""

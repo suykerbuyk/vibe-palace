@@ -82,10 +82,10 @@ diagnostic suite on the state you are about to load context from. Call
 `vp_check` (the MCP tool) with an **explicit** selector list:
 
 ```json
-{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage"]}
+{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage", "stale-mcp"]}
 ```
 
-Name those seven deliberately. Do **not** omit the argument, and do
+Name those eight deliberately. Do **not** omit the argument, and do
 **not** add `surface`: `vp_surface_check` already ran at the top of this
 step, so including it would repeat a scan for no new information.
 

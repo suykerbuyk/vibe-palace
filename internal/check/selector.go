@@ -83,6 +83,8 @@ var Producers = map[string]func(vaultRoot string) []Result{
 	},
 	// host-surfaces does not need a vault — it inspects $HOME plugin trees.
 	"host-surfaces": func(string) []Result { return CheckHostSurfaces() },
+	// stale-mcp inspects this machine's process table, not the vault.
+	"stale-mcp": func(string) []Result { return []Result{CheckStaleMCP()} },
 }
 
 // ProducerOrder is the DECLARED order the producers run in when the caller does
@@ -118,6 +120,7 @@ var ProducerOrder = []string{
 	"core-floor",
 	"pin-coverage",
 	"host-surfaces",
+	"stale-mcp",
 }
 
 // RunSelected runs the named checks against the supplied vault root and returns
