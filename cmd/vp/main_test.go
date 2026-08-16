@@ -254,6 +254,12 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		"migrate vibevault":    true,
 		"migrate mempalace":    true,
 		"migrate kg-filenames": true,
+		// Both rewrite Projects/<slug>/iterations.md through the stamped local
+		// write path. iterations.md is the project's narrative history and the
+		// one vault file with no second copy, so a write from a binary older
+		// than the vault's surface must fail-stop, not warn.
+		"migrate iteration-headings":  true,
+		"migrate iterations-preamble": true,
 	}
 
 	reg, _, _ := testRegistry()

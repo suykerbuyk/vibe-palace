@@ -6,11 +6,13 @@ package vaultaudit
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
 
 func mkdirs(t *testing.T, root string, parts ...string) {
@@ -209,6 +211,175 @@ func TestIterationHeadings_DoesNotFlagDuplicateNumbers(t *testing.T) {
 		t.Fatalf("a repeated iteration number is a DELIBERATE pattern (multi-work-unit sessions "+
 			"write addendum narratives), not a defect. Do not re-add this rule: %+v", findings)
 	}
+}
+
+// iterEntry composes an entry exactly as storage.(*Vault).AppendIterationOwned
+// does. Fixtures go through the WRITER so they cannot describe a frame the
+// writer no longer emits.
+func iterEntry(n int, title, body string) string {
+	return "\n---\n" + wrapstate.FormatIterationHeader(n, title) + "\n\n" + body + "\n"
+}
+
+// dirtyIterations carries one instance of each of the three defect classes plus
+// the legal shapes the dimension must stay quiet about.
+func dirtyIterations() string {
+	return strings.Join([]string{
+		"# p — Iteration Narratives",
+		"",
+		"## Iteration Narratives", // a section title, not frame-adjacent
+		"",
+		iterEntry(5, "canonical", "prose\n\n## Phase 1\n\nan in-body sub-heading"),
+		"\n---\n## 2026-06-17 Wrap\n\nframe orphan: a real boundary with no number",
+		iterEntry(146, "prior", "prose\n\n## Iteration 147\n\ntitleless, and NOT frame-adjacent"),
+		"\n---\n## Iteration 40 — Iteration 40 — Global AI Eric prep addendum\n\ndoubled prefix",
+		iterEntry(200, "fenced", "sample text:\n\n```md\n### Iteration 999 — sample\n```"),
+		"\n---\nshape: bookkeeping\nsummary: a session\n---\n## Session arc\n\nunder a YAML closer",
+		iterEntry(177, "shipped", "body"),
+		iterEntry(177, "addendum: the sweep staged as commit 2", "body"),
+	}, "\n")
+}
+
+// TestIterationHeadings_FlagsAllThreeClasses covers the widening: the dimension
+// used to test the H3 LEVEL only, which is one of three independent conditions
+// and not the one that was doing live damage. None of the three subsumes another
+// — the frame rule cannot see a malformed heading mid-body, the canonicity rule
+// cannot see an unnumbered orphan, and NEITHER can see a doubled prefix, because
+// the round-trip oracle is idempotent over that corruption.
+func TestIterationHeadings_FlagsAllThreeClasses(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	mkdirs(t, vault.Root, "Projects", "p")
+	writeFile(t, vault.Root, "Projects/p/iterations.md", dirtyIterations())
+
+	findings, _, err := auditIterationHeadings(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 3 {
+		t.Fatalf("findings = %+v, want exactly the three defect classes", findings)
+	}
+
+	cases := []struct {
+		heading string
+		cite    string
+	}{
+		{"## 2026-06-17 Wrap", "TAIL of the previous entry"},
+		{"## Iteration 147", "not what the writer emits"},
+		{"## Iteration 40 — Iteration 40 — Global AI Eric prep addendum", "FIXED POINT"},
+	}
+	for i, c := range cases {
+		f := findings[i]
+		wantArtifact := "Projects/p/iterations.md:" + strconv.Itoa(iterLineOf(t, dirtyIterations(), c.heading))
+		if f.Artifact != wantArtifact {
+			t.Errorf("finding %d artifact = %q, want %q — a finding without the file and 1-indexed "+
+				"line is one nobody can act on", i, f.Artifact, wantArtifact)
+		}
+		if !strings.Contains(f.Detail, c.heading) {
+			t.Errorf("finding %d must quote the offending heading %q: %q", i, c.heading, f.Detail)
+		}
+		if !strings.Contains(f.Detail, c.cite) {
+			t.Errorf("finding %d must explain WHY this shape is a defect (%q): %q", i, c.cite, f.Detail)
+		}
+	}
+}
+
+// TestIterationHeadings_MustNotFlag names, one by one, the live-vault shapes that
+// are legal. Every entry here would be an INVENTED finding — the failure mode
+// this dimension already lost one rule to.
+func TestIterationHeadings_MustNotFlag(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	mkdirs(t, vault.Root, "Projects", "p")
+	writeFile(t, vault.Root, "Projects/p/iterations.md", dirtyIterations())
+
+	findings, _, err := auditIterationHeadings(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := ""
+	for _, f := range findings {
+		joined += f.Detail + "\n"
+	}
+	for _, quiet := range []string{
+		"## Iteration Narratives",    // a section title (recmeet L8)
+		"## Phase 1",                 // in-body sub-heading; 14 live in vibe-palace
+		"## Session arc",             // under a YAML closer; 5 live in recmeet
+		"### Iteration 999 — sample", // inside a code fence
+		"## Iteration 5 — canonical", // exactly what the writer emits
+		"## Iteration 177 — shipped", // duplicate N is DELIBERATE...
+		"## Iteration 177 — addendum: the sweep staged as commit 2", // ...and legal
+	} {
+		if strings.Contains(joined, quiet) {
+			t.Errorf("%q was flagged; it is legal archive content, not a defect:\n%s", quiet, joined)
+		}
+	}
+}
+
+// TestIterationHeadings_ReportsADoubleBreakerOnce pins the dedup. "## Iteration
+// 93: Live capture" sits on the writer's frame AND fails canonicity, so it
+// satisfies two rules and must still produce ONE finding. Two findings for one
+// line inflates every count the operator reads.
+func TestIterationHeadings_ReportsADoubleBreakerOnce(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	mkdirs(t, vault.Root, "Projects", "p")
+	content := "# p — Iteration Narratives\n" +
+		iterEntry(92, "prior", "body") +
+		"\n---\n## Iteration 93: Live capture\n\nbody-93\n"
+	writeFile(t, vault.Root, "Projects/p/iterations.md", content)
+
+	findings, _, err := auditIterationHeadings(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %+v, want ONE finding for a heading that breaks two rules", findings)
+	}
+	wantArtifact := "Projects/p/iterations.md:" + strconv.Itoa(iterLineOf(t, content, "## Iteration 93: Live capture"))
+	if findings[0].Artifact != wantArtifact {
+		t.Errorf("artifact = %q, want %q", findings[0].Artifact, wantArtifact)
+	}
+	if !strings.Contains(findings[0].Detail, "entry frame") {
+		t.Errorf("the FRAME class is the worse fact about the line and must be the one reported: %q",
+			findings[0].Detail)
+	}
+}
+
+// TestIterationHeadings_CleanArchiveIsSilent — the state the live vault is meant
+// to reach. A dimension whose value is that it stays at zero is worth having only
+// if zero is actually reachable.
+func TestIterationHeadings_CleanArchiveIsSilent(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	mkdirs(t, vault.Root, "Projects", "p")
+	writeFile(t, vault.Root, "Projects/p/iterations.md", "# p — Iteration Narratives\n"+
+		iterEntry(1, "one", "body")+
+		iterEntry(2, "two", "body\n\n## In-body section\n\nmore")+
+		iterEntry(2, "two, addendum", "body"))
+
+	findings, _, err := auditIterationHeadings(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("a clean archive produced findings: %+v", findings)
+	}
+}
+
+// iterLineOf locates a heading in the fixture independently of the scan under
+// test, so an off-by-one in the reported line fails rather than agrees.
+func iterLineOf(t *testing.T, content, heading string) int {
+	t.Helper()
+	found := 0
+	for i, l := range strings.Split(content, "\n") {
+		if strings.TrimSpace(l) != heading {
+			continue
+		}
+		if found != 0 {
+			t.Fatalf("heading %q appears twice; the fixture must be unambiguous", heading)
+		}
+		found = i + 1
+	}
+	if found == 0 {
+		t.Fatalf("heading %q is not in the fixture", heading)
+	}
+	return found
 }
 
 // TestMemoryPortability_FlagsUnportableAndCollisions: reserved chars, Windows

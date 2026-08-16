@@ -99,5 +99,10 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(mutates(cmdMigrateVibeVault()))
 	reg.Register(mutates(cmdMigrateMemPalace()))
 	reg.Register(mutates(cmdMigrateKGFilenames()))
+	// mutates(): both rewrite iterations.md — the project's narrative history,
+	// the one vault file with no second copy — so they must FAIL-STOP against a
+	// vault written by a newer binary rather than take the warn-only path.
+	reg.Register(mutates(cmdMigrateIterationHeadings()))
+	reg.Register(mutates(cmdMigrateIterationsPreamble()))
 	reg.RegisterHelp()
 }

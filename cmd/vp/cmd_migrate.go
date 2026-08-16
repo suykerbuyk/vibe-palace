@@ -27,7 +27,8 @@ func cmdMigrate() *cli.Command {
 		Name:        "migrate",
 		Synopsis:    "vp migrate <command> [flags]",
 		Description: "Import data into vibe-palace from external sources, and run in-place vault data migrations.",
-		Subcommands: []string{"migrate vibevault", "migrate mempalace", "migrate kg-filenames"},
+		Subcommands: []string{"migrate vibevault", "migrate mempalace", "migrate kg-filenames",
+			"migrate iteration-headings", "migrate iterations-preamble"},
 	}
 }
 

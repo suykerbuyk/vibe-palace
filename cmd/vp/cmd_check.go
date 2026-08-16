@@ -256,6 +256,18 @@ func gatherCheckResults() []check.Result {
 				// about what the document meant to say.
 				results = append(results, check.CheckVaultAbsPaths(vault))
 
+				// Vault-wide: flag iterations.md headings the writer would not
+				// have emitted — a framed entry that is not "## Iteration N —",
+				// a numbered heading that is not canonical, and a title that
+				// repeats its own "Iteration N —" prefix. The first class is
+				// the load-bearing one: a framed orphan is invisible to the
+				// numbered parser, so ParseEntries glues its whole narrative
+				// onto the previous entry and vp_get_iteration answers for that
+				// N with two iterations' text and reports success. Advisory
+				// only, never Fail: assigning an iteration number to an orphan
+				// is a human judgement the migration refuses to make itself.
+				results = append(results, check.CheckIterationHeadings(vault))
+
 				// Vault-wide: flag workflow.md files over the bootstrap
 				// resume.md + workflow.md together — the ADR-009 inviolable
 				// core — against the share of the bootstrap budget available

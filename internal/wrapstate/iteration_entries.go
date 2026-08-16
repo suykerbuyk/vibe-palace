@@ -43,20 +43,43 @@ func ScanIterHeadings(content string) []IterHeading {
 
 // ParseEntries returns every iteration entry in file order (append-at-EOF =
 // chronological ascending). The file preamble claiming "newest first" is false.
+//
+// An entry's body ends at whichever comes FIRST: the next numbered heading, or
+// the next frame orphan (see ScanFrameOrphans). Splitting on numbered headings
+// alone was the defect: an H2 sitting on the writer's "\n---\n" frame that is
+// not "## Iteration N" is a real entry boundary the reader could not see, so its
+// heading and its whole body were fused onto the END of the previous numbered
+// entry and served as part of it. Measured live, vp_get_iteration for N=108,
+// 110, 125, 128, 145 and 154 each over-returned exactly that way and reported
+// success.
+//
+// An unnumbered framed orphan produces no Entry — it has no N to key on — it is
+// simply excluded. Keeping this split AFTER the archive is migrated is defense
+// in depth: the next unnumbered framed wrap someone appends by hand must not be
+// able to fuse onto its predecessor either.
 func ParseEntries(content string) []Entry {
 	heads := scanIterHeadings(content)
 	if len(heads) == 0 {
 		return nil
 	}
+	orphans := ScanFrameOrphans(content)
 	lines := strings.Split(content, "\n")
 	out := make([]Entry, 0, len(heads))
 	for i, h := range heads {
 		// Header is at 1-indexed line h.line → index h.line-1.
-		// Body runs from the next line up to (but not including) the next header.
+		// Body runs from the next line up to (but not including) the next
+		// boundary, which is the earlier of the next numbered header and the
+		// next frame orphan.
 		start := h.line // 0-indexed first body line
 		end := len(lines)
 		if i+1 < len(heads) {
 			end = heads[i+1].line - 1 // 0-indexed exclusive = next header's index
+		}
+		// Strictly after h.line: a NON-canonical numbered heading (say
+		// "## Iteration 70: Title") is both a header and an orphan, and must not
+		// truncate its own body to nothing.
+		if o := nextOrphanLineAfter(orphans, h.line); o > 0 && o-1 < end {
+			end = o - 1
 		}
 		if start > end {
 			start = end
@@ -79,6 +102,18 @@ func ParseEntries(content string) []Entry {
 		})
 	}
 	return out
+}
+
+// nextOrphanLineAfter returns the 1-indexed line of the first frame orphan
+// strictly after line, or 0 when none follows. Orphans arrive in file order, so
+// the first hit is the nearest one.
+func nextOrphanLineAfter(orphans []FrameOrphan, line int) int {
+	for _, o := range orphans {
+		if o.Line > line {
+			return o.Line
+		}
+	}
+	return 0
 }
 
 // EntriesByN returns every entry whose iteration number is n, in file order.

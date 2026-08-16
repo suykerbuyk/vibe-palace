@@ -69,6 +69,12 @@ var Producers = map[string]func(vaultRoot string) []Result{
 		}
 		return []Result{CheckVaultAbsPaths(storage.NewVault(vaultRoot))}
 	},
+	"iteration-headings": func(vaultRoot string) []Result {
+		if vaultRoot == "" {
+			return []Result{{Name: "Iteration headings", Status: Skip, Summary: "no vault configured"}}
+		}
+		return []Result{CheckIterationHeadings(storage.NewVault(vaultRoot))}
+	},
 	"core-floor": func(vaultRoot string) []Result {
 		if vaultRoot == "" {
 			return []Result{{Name: "Core floor", Status: Skip, Summary: "no vault configured"}}
@@ -121,6 +127,7 @@ var ProducerOrder = []string{
 	"resume-caps",
 	"resume-refs",
 	"vault-abs-paths",
+	"iteration-headings",
 	"core-floor",
 	"pin-coverage",
 	"template-drift",

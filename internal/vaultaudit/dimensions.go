@@ -36,9 +36,15 @@ const (
 	// INTACT on disk. Earned by 186/194, and by the standing overage.
 	DimResumeDiscipline = "resume-discipline"
 
-	// DimIterationHeadings — iteration narratives are H2, and no number is used twice.
-	// Earned by 191: 110 H2 against 81 H3 meant the counter read a level nobody wrote
-	// and reported "fresh project" on 18 iterations of real history.
+	// DimIterationHeadings — every heading in iterations.md is the header the writer
+	// would have emitted: no frame orphan, no non-canonical numbered heading, no
+	// doubled "Iteration N —" prefix. Earned by 191 (110 H2 against 81 H3 meant the
+	// counter read a level nobody wrote and reported "fresh project" on 18 iterations
+	// of real history) and widened by the frame-orphan census, where six numbered
+	// entries were being served with a whole following narrative glued to their tail.
+	//
+	// It has never checked for duplicate numbers, and that is deliberate — see the
+	// prohibition on auditIterationHeadings before re-adding it.
 	DimIterationHeadings = "iteration-headings"
 
 	// DimMemoryPortability — no memory filename may be unrepresentable on NTFS/exFAT,
@@ -56,8 +62,15 @@ const (
 	EvidenceProjectTreeCoherence = `comm -3 <(ls -d Projects/*/ | xargs -n1 basename | sort) <(ls -d palace/*/ | xargs -n1 basename | sort)`
 	EvidenceKGPortability        = `find palace/*/kg/triples -name '*:*' -o -name '*' -newer /dev/null | grep ':'`
 	EvidenceResumeDiscipline     = `wc -c Projects/*/resume.md; grep -c '{{[A-Z]*}}' Projects/*/resume.md`
-	EvidenceIterationHeadings    = `grep -n '^### Iteration' Projects/*/iterations.md   # must be EMPTY: the canonical level is H2`
-	EvidenceMemoryPortability    = `find Projects/*/memory -type f -printf '%f\n' | grep -Ei '[<>:"\\|?*]|[. ]$|^(con|prn|aux|nul|com[1-9]|lpt[1-9])([.]|$)'; ` +
+	// Two of the three conditions are expressible as a grep and are recorded as one.
+	// The third is NOT: a frame orphan is defined against the writer's "---" frame and
+	// must be fence-aware and front-matter-aware, and a grep that fakes it invents
+	// findings on quoted sample text. The reproducing command for that one is the
+	// check itself, which runs the same scan the dimension does.
+	EvidenceIterationHeadings = `grep -nE '^#{2,3}[[:space:]]+Iteration [0-9]+' Projects/*/iterations.md | grep -vE ':## Iteration [0-9]+ — .' ; ` +
+		`grep -nE '^## Iteration [0-9]+ *[—–-] *Iteration [0-9]+ *[—–-]' Projects/*/iterations.md ; ` +
+		`vp check --check iteration-headings   # frame orphans: fence-aware, no grep is honest here`
+	EvidenceMemoryPortability = `find Projects/*/memory -type f -printf '%f\n' | grep -Ei '[<>:"\\|?*]|[. ]$|^(con|prn|aux|nul|com[1-9]|lpt[1-9])([.]|$)'; ` +
 		`for d in Projects/*/memory; do find "$d" -type f -printf '%f\n' | tr 'A-Z' 'a-z' | sort | uniq -d; done   # case collisions`
 )
 
@@ -306,14 +319,34 @@ func auditResumeDiscipline(vault *storage.Vault) ([]Finding, []string, error) {
 	return findings, unknowns, nil
 }
 
-// auditIterationHeadings: iteration narratives use the canonical H2 level.
+// auditIterationHeadings: every heading in iterations.md is the header the WRITER
+// would have emitted.
 //
 // Earned by 191, where iterations.md held 110 H2 against 81 H3 — the counter read one
 // level, saw a fraction of the history, and reported "fresh project" for a sibling
 // with 18 iterations of real narrative. A wrap trusting that number would have
 // renumbered from scratch ON TOP of the existing history. The live vault is now clean
-// of H3 headers, so this dimension is a REGRESSION GUARD: it exists to keep it that
-// way, and a dimension whose value is that it stays at zero is worth having.
+// of H3 headers, so that half of this dimension is a REGRESSION GUARD: it exists to
+// keep it that way, and a dimension whose value is that it stays at zero is worth
+// having.
+//
+// The H3 rule was never the whole contract, though, and the two defect classes it
+// could not see were both live. The dimension now delegates to
+// wrapstate.ScanHeadingDefects, which tests THREE independent conditions — none of
+// which subsumes another:
+//
+//   - FRAME ORPHANS. The writer composes every entry as "\n---\n" + the header +
+//     the body, so an H2 on that frame that FormatIterationHeader would not have
+//     emitted is a real entry boundary the reader cannot see. Its narrative is
+//     unaddressable by number and is served as the tail of the PREVIOUS entry:
+//     vp_get_iteration over-returned exactly that way for 108, 110, 125, 128, 145
+//     and 154 while reporting success.
+//   - NON-CANONICAL NUMBERED headings — "## Iteration 70: Concurrent Recording",
+//     "## Iteration 215 (revision 2) — ...", "## Iteration 147", and the legacy H3s
+//     191 earned. The ones that sit mid-body are invisible to the frame rule.
+//   - DOUBLED PREFIXES — "## Iteration 40 — Iteration 40 — ...". These PASS the
+//     canonicity oracle, because the round trip is idempotent over the corruption,
+//     so neither of the other two rules can ever find them.
 //
 // FENCE-AWARE, and that is not decoration: this project's own documents quote
 // iteration headers inside code fences as SAMPLE TEXT (the wrap template does it
@@ -362,23 +395,66 @@ func auditIterationHeadings(vault *storage.Vault) ([]Finding, []string, error) {
 			continue
 		}
 
-		// One heading definition: wrapstate's fence-aware scanner (H2+H3 tolerant
-		// on read). This dimension only flags the non-canonical H3 level.
-		for _, h := range wrapstate.ScanIterHeadings(string(data)) {
-			if h.Hashes != "###" {
-				continue
-			}
+		// ONE heading definition, shared with the `iteration-headings` check
+		// producer: wrapstate.ScanHeadingDefects. It is fence-aware (via the same
+		// scanner this dimension has always used), it reports each defective
+		// heading exactly once even when it breaks two rules, and it is where
+		// the three conditions are DEFINED. Re-testing any of them here would
+		// recreate the two-private-definitions defect one layer up.
+		for _, d := range wrapstate.ScanHeadingDefects(string(data)) {
 			findings = append(findings, Finding{
 				Dimension: DimIterationHeadings,
-				Artifact:  fmt.Sprintf("%s:%d", rel, h.Line),
-				Detail: fmt.Sprintf("iteration %d uses an H3 header; the canonical level is H2. "+
-					"Mixed heading levels defeat addressing (191: a strict matcher under-counted "+
-					"history and reported a fresh project on real narratives). New narratives must "+
-					"be H2 (FormatIterationHeader); the reader stays H2+H3 tolerant so legacy is counted.", h.N),
+				Artifact:  fmt.Sprintf("%s:%d", rel, d.Line),
+				Detail:    iterationHeadingDetail(d),
 			})
 		}
 	}
 	return findings, unknowns, nil
+}
+
+// iterationHeadingDetail renders one heading defect as the sentence a human
+// repairing the archive needs: what is wrong with THIS heading, which incident
+// earned the rule, and what the writer would have emitted instead.
+//
+// It decides WORDING ONLY. Every condition is tested in wrapstate; nothing here
+// classifies anything, which is what keeps this package from growing a second
+// copy of the contract. The one thing it reads off the heading text is the
+// heading LEVEL, and only to choose which incident to cite — a legacy H3 and a
+// colon-punctuated H2 are the same verdict with different history behind them.
+func iterationHeadingDetail(d wrapstate.HeadingDefect) string {
+	switch d.Class {
+	case wrapstate.DefectFrameOrphan:
+		return fmt.Sprintf("%q sits on the writer's \"---\" entry frame but is not a header "+
+			"FormatIterationHeader would emit. That makes it a REAL entry boundary the reader cannot "+
+			"see: the narrative under it is unaddressable by number AND is served as the TAIL of the "+
+			"previous entry — vp_get_iteration over-returned exactly that way for 108, 110, 125, 128, "+
+			"145 and 154, and reported success each time. Expected %s.", d.Text, d.Want)
+
+	case wrapstate.DefectNonCanonicalNumbered:
+		base := fmt.Sprintf("%q is matched by the reader but is not what the writer emits. Expected %s.",
+			d.Text, d.Want)
+		if strings.HasPrefix(strings.TrimSpace(d.Text), "###") {
+			return base + " This is the legacy H3 level; the canonical level is H2. Mixed heading " +
+				"levels defeat addressing (191: a strict matcher under-counted history and reported " +
+				"a fresh project on 18 iterations of real narrative). New narratives are composed by " +
+				"FormatIterationHeader; the reader stays H2+H3 tolerant so legacy is still counted."
+		}
+		return base + " A heading the reader can find but the writer would never have written is drift " +
+			"between the two halves of one contract, and drift that nothing reports gets worse."
+
+	case wrapstate.DefectDoubledPrefix:
+		return fmt.Sprintf("%q carries the \"Iteration N —\" prefix TWICE. This is invisible to every "+
+			"other rule here: titleFromHeader strips exactly one prefix and FormatIterationHeader "+
+			"re-adds exactly one, so the corruption is a FIXED POINT of the round trip and the "+
+			"canonicity oracle reports it as perfectly canonical. A check built as re-emit-and-compare "+
+			"is structurally blind to whatever it is idempotent over. Expected %s.", d.Text, d.Want)
+
+	default:
+		// Unreachable while wrapstate owns the class set; a new class must not
+		// vanish silently just because this switch has not been taught about it.
+		return fmt.Sprintf("%q breaks the iterations.md heading contract (%s). Expected %s.",
+			d.Text, d.Class, d.Want)
+	}
 }
 
 // relTo renders an absolute path as vault-relative. NEVER write an absolute vault

@@ -6,7 +6,7 @@ This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~2910 tests** across 49 packages, including
+The suite currently runs **~2965 tests** across 49 packages, including
 **116 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
@@ -753,6 +753,88 @@ set-difference against the snapshot, the `.vibe-palace/` anchor read/write
 round-trip, the wrap-state record shape, the `doc/TESTING.md` headline
 parse (the regexes this very headline feeds), and the preflight readiness
 matrix.
+
+---
+
+## `iterations.md` Heading-Contract Tests (`iterations-md-heading-contract`)
+
+`storage.AppendIterationOwned` composes every entry as `"\n---\n" +
+FormatIterationHeader(n, title) + body`, and the reader half only ever
+recognised `## Iteration N`. A heading that sits on that frame but is not that
+shape is a **real entry boundary the reader cannot see**: the narrative under it
+is unaddressable by number *and* is silently served as the tail of the previous
+entry. Measured live, `vp_get_iteration` for 108, 110, 125, 128, 145 and 154
+each over-returned exactly that way **and reported success**.
+
+The rules live in exactly one place (`internal/wrapstate/heading_contract.go`);
+the check producer, the audit dimension and the migration all call the same
+scan. A second private copy of the conditions is the defect the whole feature
+exists to prevent.
+
+### Contract and detection (`internal/wrapstate/heading_contract_test.go`, `internal/check/iteration_headings_test.go`)
+
+| Test | What it proves |
+|------|----------------|
+| `TestScanFrameOrphans_MustFlag` / `_MustNotFlag` | every live orphan shape is caught, and the frame rule does **not** fire on a front-matter `---`, a fenced sample, an indented block, or an H3 sub-section |
+| `TestHasDoubledPrefix_AndTheOracleBlindness` | the corruption the round-trip oracle is **structurally blind to**: `titleFromHeader` strips one prefix and `FormatIterationHeader` re-adds one, so a doubled heading is a fixed point and `IsCanonicalHeader` returns true for it |
+| `TestScanHeadingDefects_*` | each defect reported **exactly once**, frame class winning any line two rules would claim — an auditor whose counts are inflated is an auditor that gets waved off |
+| `TestCanonicalHeaderShapeMatchesTheWriter` | the prose shape quoted to humans is pinned to `FormatIterationHeader`'s real output |
+
+### Migration planner (`internal/wrapstate/heading_migration_test.go`)
+
+The planner decides what may be repaired. Its one catastrophic failure mode is
+**inventing an iteration number**, because once written a guess is
+indistinguishable from a number the operator chose — the file is the only record.
+
+| Test | What it proves |
+|------|----------------|
+| **`TestPlanRefusesOffListOrphan`** | **the anti-derivation pin.** An orphan is planted in a numeric gap, in a project the operator's table *does* cover, with an obvious max+1 available — and the plan must take none of those. Mutation-proven against the refusal branch |
+| `TestPlanRefusesDriftedAuthorizedRow` | an authorized row whose recorded text no longer matches is refused, never stamped onto whatever occupies the line now |
+| `TestPlanRefusesTitlelessNumberedHeading` | `## Iteration 147` is addressable but titleless; the number is recoverable, the title is not, and the two facts stay separable |
+| `TestNoPlaceholderTitleIsEverWritten` | over a spread of adversarial headings × four projects: never `(untitled)`, never `<title>`. The check *suggests* a placeholder for a human to read; nothing writes one, because a placeholder on disk stops reading as a placeholder |
+| `TestEveryWrittenNumberHasAProvenance` | every number written traces to one of exactly two origins — recovered from the line, or on the operator's table — and the header shape is integral (no `108.5`) |
+| `TestAuthorizedTitleDerivation` | all nine operator rows derive their expected title from the **real table**, computed rather than re-asserted from a second hardcoded list |
+| `TestAuthorizedTitleKeepsNonRedundantText` | the safety half: `## 2026-06-17 Wrap` assigned 111 must not become `Iteration 111 — 06-17 Wrap`. The leading-number rule matches the **assigned number literally**, never "leading digits" |
+| `TestApplyChangesOnlyHeadingLines` | line-by-line: only heading lines differ, and only planned ones |
+| `TestApplyRefusesAPlanFromDifferentContent` | a plan reused against changed content fails loudly instead of writing positionally |
+| `TestMigrationPreservesFileOrderAndAdjacency` | sorting was **declined** — file order is the historical record. The two 177 addendums and the two 108s (one created by the migration) stay adjacent and in file order |
+| `TestMigrationPreservesEntryBodies` | every pre-existing entry body byte-identical; the migrated orphan's own body byte-identical as its own entry |
+| `TestFormatIterationHeaderIsNotZeroPadded` | zero-padding was **declined**; `## Iteration 7 — t`, not `## Iteration 00007 — t` |
+| `TestPlanIsIdempotent` | a second run rewrites nothing and reports the rows `already-applied`, not drift — an alarm that cries wolf is one nobody reads on the day it is right |
+
+### The command seam (`cmd/vp/cmd_migrate_iteration_headings_test.go`)
+
+A helper test does not prove the path the helper is installed on. These drive
+`cmdMigrateIterationHeadings().Run` and `cmdMigrateIterationsPreamble().Run`
+against a git-clean temp vault whose fixtures place the operator's rows on
+**exactly** their recorded line numbers, so the real table is exercised rather
+than bypassed.
+
+| Test | What it proves |
+|------|----------------|
+| `TestMigrateIterationHeadingsAppliesThroughTheRealSeam` | heading-only diff on disk, clean archives untouched and unmentioned, and a `.surface` stamp — the structural proof the write went through the vault layer rather than a hand-rolled `os.WriteFile` |
+| `TestMigrateIterationHeadingsRefusesOffListOrphan` | the anti-derivation guard survives to the bytes on disk and to the operator's report |
+| `TestMigrateIterationHeadingsRefusesDriftedRow` | drift refusal at the seam |
+| `TestMigrateIterationHeadingsNeverWritesAPlaceholderTitle` | no `(untitled)`, no `<title>`, no `108.5` anywhere in any archive after an applying run |
+| `TestMigrateIterationHeadingsRefusesDirtyTree` | `--apply` refuses unless `git checkout .` is a guaranteed rollback — this rewrites the one vault file with no second copy |
+| `TestMigrateIterationHeadingsReportOnlyWritesNothing` | plan-first: the bare command writes nothing and stamps nothing |
+| `TestMigrateIterationHeadingsSummaryCounts` | per-class and per-provenance counts, plus: an operator row naming a project absent from this vault is **named**, not silently skipped |
+| `TestMigrateIterationsPreambleAtTheSeam` | the false `newest first` comment goes; rezbldr's **true** newest-first sentence survives; the archive body is undisturbed |
+
+### The false preamble (`internal/wrapstate/iterations_preamble_test.go`)
+
+Two archives opened with an HTML comment claiming `newest first`. The writer
+appends at EOF, so the claim is not stale but **backwards** — a reader that
+trusts it takes the oldest narrative believing it took the newest, and nothing
+about the result looks wrong. Three other places in the vault say `newest first`
+truthfully, which is why the match is an exact literal rather than a rule about
+sentences.
+
+| Test | What it proves |
+|------|----------------|
+| `TestRepairIterationsPreambleSparesTrueStatements` | rezbldr's scoped pre-rename sentence, the `git log` narratives, and a hand-edited variant are all left alone |
+| `TestRepairIterationsPreambleRefusesOddShapes` | two copies, or a copy quoted inside a narrative as evidence, are refused |
+| `TestAccuratePreambleSaysWhatIsTrue` | the replacement carries append-only, file-order, and `vp_get_iteration` — a comment nothing compiles needs a test to keep the next rewording from reintroducing an ordering claim |
 
 ---
 
