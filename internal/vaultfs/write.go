@@ -15,6 +15,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/scopetoken"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -58,6 +59,12 @@ func Write(vaultPath, relPath, content, expectedSha256 string) (WriteResult, err
 		replacedSha = hex.EncodeToString(sum[:])
 		if expectedSha256 != "" && replacedSha != expectedSha256 {
 			return WriteResult{}, fmt.Errorf("%w: have %s, expected %s", ErrShaConflict, replacedSha, expectedSha256)
+		}
+		// Checked whether or not a digest was supplied: an empty
+		// expectedSha256 means "no CAS" on this path, so a bake through the
+		// unguarded overwrite is the EASIER one, not an edge case.
+		if err := scopetoken.CheckWriteBack(relPath, string(existing), content); err != nil {
+			return WriteResult{}, err
 		}
 	} else if !errors.Is(rerr, fs.ErrNotExist) {
 		return WriteResult{}, fmt.Errorf("vaultfs: pre-read %s: %w", relPath, rerr)

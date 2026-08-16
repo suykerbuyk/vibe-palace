@@ -14,8 +14,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/scopetoken"
 	"github.com/suykerbuyk/vibe-palace/internal/skills"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
@@ -449,12 +449,12 @@ func (r *Resolver) ListEmbedded(resourceType string) ([]string, error) {
 }
 
 // expandScoped replaces template placeholders including wing/room.
+//
+// The vocabulary lives in internal/scopetoken, which the write-side check
+// iterates as well: a token added there reaches the expander and the guard in
+// the same edit, rather than being restated in two places that drift.
 func (r *Resolver) expandScoped(content, project, wing, room string) string {
-	s := strings.ReplaceAll(content, "{{PROJECT}}", project)
-	s = strings.ReplaceAll(s, "{{WING}}", wing)
-	s = strings.ReplaceAll(s, "{{ROOM}}", room)
-	s = strings.ReplaceAll(s, "{{DATE}}", time.Now().Format("2006-01-02"))
-	return s
+	return scopetoken.Expand(content, scopetoken.Scope{Project: project, Wing: wing, Room: room})
 }
 
 // parseResource extracts resource type, name, and directory from a resource identifier.

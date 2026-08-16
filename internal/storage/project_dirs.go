@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/scopetoken"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
@@ -85,6 +86,16 @@ func (v *Vault) WriteResume(project, content, expectedSha256 string) error {
 		current := hex.EncodeToString(sum[:])
 		if expectedSha256 == "" || current != expectedSha256 {
 			return &ResumeConflictError{Current: current, Expected: expectedSha256}
+		}
+		// A matching digest is exactly the case the bake survives: the readers
+		// serve EXPANDED bodies alongside a digest over the RAW bytes, so this
+		// check runs after the compare-and-set passes, not instead of it.
+		relPath, rerr := filepath.Rel(v.Root, path)
+		if rerr != nil {
+			relPath = path
+		}
+		if err := scopetoken.CheckWriteBack(relPath, string(existing), content); err != nil {
+			return err
 		}
 	case errors.Is(rerr, fs.ErrNotExist):
 		if expectedSha256 != "" {

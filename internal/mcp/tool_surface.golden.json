@@ -294,7 +294,7 @@
     {
       "name": "vp_update_resume",
       "mutating": true,
-      "schema_sha256": "81d159ded1a98578a67fe7a7efe4044f6b9d7e59c75be4f82ffc5fcc93f96075"
+      "schema_sha256": "575229a26158e825483083ce4f16e2167408bcbb71e3cb98a7895e1ef5449f9e"
     },
     {
       "name": "vp_vault_delete",

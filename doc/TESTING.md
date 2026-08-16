@@ -6,8 +6,8 @@ This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~2881 tests** across 48 packages, including
-**108 integration tests** (the ONNX/cross-layer tests `make integration`
+The suite currently runs **~2910 tests** across 49 packages, including
+**116 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
 subtests each may fan out into — and they drift as the suite grows. Derive
@@ -223,6 +223,44 @@ where the flat cut was measured. Fixing one is the ADR-006 failure mode.
 | `TestBootstrapDeliveryDoctrine_RestartTeachesTheSentinel` | The positive half, anchored the way `TestEmbeddedCommands_CheckSuiteDelivery` anchors — on the **action**, not a mention. `complete` must be raised in a *bullet* inside Step 2 (prose observing that the sentinel exists is not a rule), that same bullet must carry `resume_uri`, `vp_read_resource` and `resume_sha256` and order the rehydration *before* continuing, the host axis must precede the `shed_core` axis (a `budget` rule is unreadable until you know the payload arrived), and the benign optional-rung case must be named `benign` with an explicit "do not re-fetch" |
 
 Both were confirmed RED by restoring the old wording at each of the three sites in turn.
+
+---
+
+## Placeholder write-back guard (`internal/scopetoken`, `internal/integration/scopetoken_writeback_test.go`)
+
+The vault's template placeholders (`{{PROJECT}}`, `{{WING}}`, `{{ROOM}}`, `{{DATE}}`) are expanded by
+every context-serving reader while those readers' `sha256` covers the **raw** bytes. A body composed
+from one and written back therefore passes compare-and-set and bakes the expanded values onto disk.
+Both whole-file writers refuse that write; these tests are what say so.
+
+Split deliberately across two packages: the **in-package** tests range the unexported token table, so
+they cover a fifth placeholder added tomorrow without an exported list; the **integration** tests
+drive `Server.HandleMessage`, because a guard proven only through its helper is not proven on the
+path it is installed on.
+
+| Test | What it proves |
+|---|---|
+| `TestTableIsTheSingleSource` | One table backs both the expander and the guard: for **every** entry, `Expand` erases it and `Lost` reports exactly it. An earlier version could only assert "at least one loss" and stayed green while `Lost` swallowed three of four |
+| `TestLostReportsEveryDroppedPlaceholder` | Completeness on the shape a real write-back takes — one body losing every placeholder at once — in table order, with counts |
+| `TestTokensCanExpandToNothing` | The rejected design. With an empty scope, `{{PROJECT}}`/`{{WING}}`/`{{ROOM}}` all substitute the **empty string**, so a rule keyed on "the expanded value is present" is structurally blind on three of four placeholders. Counting is not a preference |
+| `TestFirstWriteIsNotRefused` | The scope boundary: the rule keys on placeholders in the **existing** bytes, which is what keeps first writes, `vp init` scaffolds and template materialization out of it |
+| `TestNonScopePlaceholdersAreNotOurs` | The false positive a `{{[A-Z_]+}}` regex would have created — the skill corpus carries many other token shapes (`{{FOCUS}}`, `{{PATH}}`, `{{SHA}}`, …) that must stay writable **and** removable |
+| `TestRefusalIsCallerClassified` | The error class at the source: `apperr.IsCaller` holds, so the MCP seam counts it as friction rather than defaulting it to `fault="internal"` and ambering `vp_health` |
+| `TestIntegration_VaultWriteRefusesTokenBake` | The original incident end-to-end: a matching digest, an expanded body, refused — and the message names every lost placeholder with counts, plus both routes out |
+| `TestIntegration_VaultWriteRefusesBakeWithoutCAS` | `vaultfs.Write` treats an empty `expected_sha256` as *no* compare-and-set, so the **easier** bake needs no digest at all. A guard that only ran under CAS would leave it open |
+| `TestIntegration_UpdateResumeRefusesTokenBake` | The second writer. `storage.WriteResume` does not call `vaultfs.Write`, and the diagnostic must survive its `%w` wrap — counts, remedy and `fault=caller` are all asserted on that path |
+| `TestIntegration_EditStillRemovesTokenDeliberately` | The escape hatch stays open. There is no opt-out parameter, so removing a placeholder on purpose goes through `vp_vault_edit` with a **raw** `old_string` — which cannot be composed from an expanded read and is its own proof of provenance |
+| `TestIntegration_EditRejectsAnExpandedAnchor` | The half of the retired prose rule that was already enforced: an anchor copied from an expanding reader cannot match where a placeholder lives |
+| `TestIntegration_WholeFileWriteKeepingTokensAccepted` | The non-regression floor — preserving the placeholders lands normally |
+
+Mutation-proved six ways, each reddening a different set: deleting either call site (disjoint sets),
+keying on expanded-value-presence, running only under CAS, dropping the `apperr.Caller` wrap, and
+dropping the counts from the message.
+
+**Two harness lessons are baked into how these were verified.** A mutation that leaves an import
+unused does not compile, so `go test` emits no `--- FAIL` at all — indistinguishable from a surviving
+guard. And a reporting pipeline can erase its own output. Print that the mutation applied, and count
+the failing names, before believing any silence.
 
 ---
 

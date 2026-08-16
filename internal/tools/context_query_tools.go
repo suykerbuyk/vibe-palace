@@ -231,7 +231,7 @@ var updateResumeSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
 		"project": {"type": "string", "description": "Project slug."},
-		"content": {"type": "string", "description": "New resume content (markdown). Compose it from the RAW bytes vp_vault_read returns, never from vp_get_resume / vp_bootstrap_context, whose bodies are placeholder-expanded ({{PROJECT}}, {{DATE}})."},
+		"content": {"type": "string", "description": "New resume content (markdown). Compose it from the RAW bytes vp_vault_read returns."},
 		"expected_sha256": {"type": "string", "description": "Compare-and-set guard: the SHA-256 vp_vault_read returned for the raw bytes you composed from. Pass the empty string ONLY to assert no resume.md exists yet (first write). Required: there is no blind-overwrite path."}
 	},
 	"required": ["project", "content", "expected_sha256"]
@@ -248,13 +248,9 @@ func UpdateResumeTool(vault *storage.Vault) mcp.Tool {
 			"full-file regeneration and migrations; for a routine edit to one " +
 			"section, prefer vp_vault_read + vp_vault_edit, which rewrites only the " +
 			"region you name. Source the body from vp_vault_read " +
-			"(Projects/<project>/resume.md) and submit the sha it returns. Do NOT " +
-			"compose the body from vp_get_resume or vp_bootstrap_context: those " +
-			"serve placeholder-EXPANDED content ({{PROJECT}}, {{DATE}}) while their " +
-			"sha is over the raw bytes, so writing that body back passes the " +
-			"compare-and-set and silently bakes the expanded values onto disk, " +
-			"destroying the live tokens. On a conflict the refusal carries the " +
-			"current sha: re-read and resubmit, never force.",
+			"(Projects/<project>/resume.md) and submit the sha it returns. On a " +
+			"conflict the refusal carries the current sha: re-read and resubmit, " +
+			"never force.",
 		Schema:  updateResumeSchema,
 		Handler: updateResumeHandler(vault),
 	}
@@ -276,7 +272,7 @@ func resumeConflictError(err error, expected string) error {
 		"conflict":        true,
 		"current_sha256":  current,
 		"expected_sha256": expected,
-		"remedy":          "re-read the resume with vp_vault_read (Projects/<project>/resume.md), recompose your edit against those raw bytes, and resubmit with the sha it returned; do not force. Do NOT recompose from vp_get_resume: its body is placeholder-expanded, so writing it back would bake {{PROJECT}}/{{DATE}} onto disk.",
+		"remedy":          "re-read the resume with vp_vault_read (Projects/<project>/resume.md), recompose your edit against those raw bytes, and resubmit with the sha it returned; do not force.",
 	})
 	if merr != nil {
 		return fmt.Errorf("resume compare-and-set failed: %w", err)
