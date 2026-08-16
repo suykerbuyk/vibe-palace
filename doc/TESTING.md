@@ -6,7 +6,7 @@ This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~2965 tests** across 49 packages, including
+The suite currently runs **~2970 tests** across 49 packages, including
 **116 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
@@ -779,6 +779,26 @@ exists to prevent.
 | `TestHasDoubledPrefix_AndTheOracleBlindness` | the corruption the round-trip oracle is **structurally blind to**: `titleFromHeader` strips one prefix and `FormatIterationHeader` re-adds one, so a doubled heading is a fixed point and `IsCanonicalHeader` returns true for it |
 | `TestScanHeadingDefects_*` | each defect reported **exactly once**, frame class winning any line two rules would claim — an auditor whose counts are inflated is an auditor that gets waved off |
 | `TestCanonicalHeaderShapeMatchesTheWriter` | the prose shape quoted to humans is pinned to `FormatIterationHeader`'s real output |
+
+### The reader seam (`internal/tools/get_iteration_orphan_test.go`)
+
+`ParseEntries` now ends a body at the earlier of the next numbered heading and
+the next frame orphan, and `heading_contract_test.go` proves that at the helper.
+A helper test does not exercise the path the helper is installed on: it would
+stay green if `vp_get_iteration` stopped calling the helper. These drive the
+real `tool.Handler` and `ResolveURI` — via the existing `callGetIteration`
+harness — over fixtures built with a new `orphanFrame` helper that composes the
+writer's frame with a heading `FormatIterationHeader` would never emit. All five
+are mutation-proven: neutralise the orphan clamp in `ParseEntries` and all five
+go red.
+
+| Test | What it proves |
+|------|----------------|
+| `TestGetIteration_OrphanNotGluedOntoPrecedingEntry` | the measured 110/111 case at the tool: `n=110` returns 110's narrative and neither the orphan's heading nor its body, `bytes` still describes the body advertised, and the orphan gains no phantom entry in the archive extent |
+| `TestGetIteration_AddendumStaysItsOwnEntry` | the 108 case. The migration made the orphan a **second canonical 108**, so the seam serves two distinct matches in file order with individual `match_index`/`content_uri`, the first is not fused to the second — and the **last** 108 still stops at the frame orphan that follows it. The trailing orphan is load-bearing: without it the fixture only re-proves numbered-heading splitting, which predates the fix and would not go red |
+| `TestGetIteration_UnnumberedOrphanIsNeverServed` | defense in depth for the next hand-appended wrap. An orphan with no recoverable number can reach a caller only as a tail on its predecessor or under a number it does not own; a sweep of every plausible `n` proves neither happens |
+| `TestIterationResource_OrphanNotGluedOnResourcePath` | the **other** seam — `vibe-palace://iteration/{project}/{n}` (bare → `LastEntryByN`, indexed → `EntryByNMatch`), the path a host follows for a `body_deferred` row. Byte-identity with the inlined tool body is asserted, so one seam cannot clamp while the other does not |
+| `TestGetIteration_RecentModeExcludesOrphan` | `recent` mode (`EntriesNewestFirst`) — the default archive read — carries no fused orphan on any row, and `bytes_inlined` equals the bodies actually delivered |
 
 ### Migration planner (`internal/wrapstate/heading_migration_test.go`)
 
