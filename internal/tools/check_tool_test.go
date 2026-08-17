@@ -399,8 +399,28 @@ func TestCheckTool_NeverLoadsEmbedder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if strings.Contains(string(raw), "Embedder") {
-		t.Fatalf("vp_check emitted an Embedder row — it must never reach check.Run:\n%s", raw)
+	// Assert on the ROW NAMES, not on a substring of the whole payload. The
+	// hazard is the embedder being LOADED, and its evidence is a row called
+	// "Embedder". A substring oracle also matches the word wherever it appears
+	// incidentally — a vault path, a summary, a detail — and t.TempDir() bakes
+	// the TEST'S OWN NAME into the path it hands out, so any check that echoes
+	// its vault root failed this for a reason that had nothing to do with the
+	// embedder. Row names cannot be fooled that way and still catch the thing.
+	var payload struct {
+		Checks []struct {
+			Name string `json:"name"`
+		} `json:"checks"`
+	}
+	if uerr := json.Unmarshal(raw, &payload); uerr != nil {
+		t.Fatalf("decode check payload: %v\n%s", uerr, raw)
+	}
+	if len(payload.Checks) == 0 {
+		t.Fatalf("vp_check returned no rows — nothing was asserted:\n%s", raw)
+	}
+	for _, row := range payload.Checks {
+		if row.Name == "Embedder" {
+			t.Fatalf("vp_check emitted an Embedder row — it must never reach check.Run:\n%s", raw)
+		}
 	}
 	for _, sel := range check.ProducerOrder {
 		if strings.Contains(strings.ToLower(sel), "embed") {

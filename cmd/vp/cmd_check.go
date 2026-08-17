@@ -230,6 +230,12 @@ func gatherCheckResults() []check.Result {
 				// than surfacing as a cryptic write failure later.
 				results = append(results, check.CheckVaultFilesystem(vaultPath))
 
+				// Vault-wide: report the writer fingerprint this host writes
+				// under, so which-notes-are-mine is COMPUTED rather than
+				// inferred. Quiet (Pass) unless this host has written nothing
+				// while other identities exist.
+				results = append(results, check.CheckWriterIdentity(vaultPath))
+
 				// Vault-wide: flag scaffold-only orphan projects (stray
 				// `vp init` / un-isolated test residue like Projects/p).
 				results = append(results, check.CheckStrayScaffolds(vault))

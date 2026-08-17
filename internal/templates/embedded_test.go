@@ -253,7 +253,7 @@ func TestEmbeddedCommands_CheckSuiteDelivery(t *testing.T) {
 	// contract with three delivery sites, and one literal is what lets a
 	// single constant here pin all of them — three near-identical spellings
 	// would need three pins and would drift apart at the first edit.
-	const selectors = `{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage", "template-drift", "stale-mcp"]}`
+	const selectors = `{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage", "template-drift", "writer-identity", "stale-mcp"]}`
 
 	for _, rel := range []string{"commands/restart.md", "commands/wrap.md"} {
 		content, ok := body[rel]

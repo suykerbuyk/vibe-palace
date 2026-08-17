@@ -93,6 +93,11 @@ var Producers = map[string]func(vaultRoot string) []Result{
 	"template-drift": func(vaultRoot string) []Result { return []Result{CheckTemplateDrift(vaultRoot)} },
 	// host-surfaces does not need a vault — it inspects $HOME plugin trees.
 	"host-surfaces": func(string) []Result { return CheckHostSurfaces() },
+	// writer-identity needs the root only to HASH it — it reports the resulting
+	// fingerprint and never the path itself.
+	"writer-identity": func(vaultRoot string) []Result {
+		return []Result{CheckWriterIdentity(vaultRoot)}
+	},
 	// stale-mcp inspects this machine's process table, not the vault.
 	"stale-mcp": func(string) []Result { return []Result{CheckStaleMCP()} },
 }
@@ -132,6 +137,7 @@ var ProducerOrder = []string{
 	"pin-coverage",
 	"template-drift",
 	"host-surfaces",
+	"writer-identity",
 	"stale-mcp",
 }
 
