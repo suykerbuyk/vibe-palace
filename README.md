@@ -220,6 +220,7 @@ through the same precedence chain.
 |-------|---------|
 | `/vps-code-digger` | Read-only codebase cartographer/auditor: onboarding maps, architecture deep-dives, severity-ranked issue register. |
 | `/vps-epic-orchestrator` | Parallel-execution orchestrator that closes a whole epic across worktrees/subagents with adversarial review and a human gate. |
+| `/vps-pair-reviewer` | Dual-agent pairing: you hold architecture and review while another agent is the implementation orchestrator. |
 | `/vps-startup-analyst` | Domain-expert persona (business-plan analysis) with reference library — a worked template for your own skill personas. |
 
 > **This table is a snapshot of the embedded floor.** The live,

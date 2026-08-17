@@ -436,8 +436,8 @@ func TestListSkillsEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListResourcesScoped(skill): %v", err)
 	}
-	// Embedded skills (directory-form): code-digger, epic-orchestrator, startup-analyst.
-	wantEmbedded := []string{"code-digger", "epic-orchestrator", "startup-analyst"}
+	// Embedded skills (directory-form): code-digger, epic-orchestrator, pair-reviewer, startup-analyst.
+	wantEmbedded := []string{"code-digger", "epic-orchestrator", "pair-reviewer", "startup-analyst"}
 	if len(resources) != len(wantEmbedded) {
 		t.Fatalf("got %d skills, want %d: %v", len(resources), len(wantEmbedded), resources)
 	}

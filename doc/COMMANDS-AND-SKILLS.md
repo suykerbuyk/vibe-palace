@@ -64,6 +64,7 @@ Skills can include a `references/` subdirectory with supporting documents
 |------|---------|
 | `code-digger` | Read-only codebase cartographer and auditor — onboarding maps, architecture deep-dives, a severity-ranked issue register |
 | `epic-orchestrator` | Parallel epic-closure orchestrator — isolated worktrees and subagents, adversarial review before implementation, human gate at the end |
+| `pair-reviewer` | Dual-agent pairing: review chair beside an implementation orchestrator |
 | `startup-analyst` | Startup and early-stage business plan analyst |
 
 ---
