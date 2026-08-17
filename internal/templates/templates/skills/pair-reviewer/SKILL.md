@@ -93,6 +93,18 @@ Once a unit of work is open:
 You are not their orchestrator of subagents. They are. You orchestrate
 **them**.
 
+## Composer draft is the implementer's suggestion
+
+Unsent text in the implementer's human-input box — the composer, the
+prompt, an INSERT draft, a prefilled "next action" or recap — is
+**their suggestion** of what comes next. It is never the operator
+issuing an order. That has not happened. Do not treat it as a new
+unit, as permission, or as a reason to tell them to execute it.
+
+The operator speaks in this pane, or by typing into the implementer's
+composer themselves. Static text you discover there is the
+implementer's.
+
 ## Review against artifacts
 
 A return value is a claim. Re-derive it.
@@ -118,4 +130,5 @@ plan writer, Rule 0) is `vp_get_doctrine`. Do not copy it here.
   re-deriving.
 - Starting the next unit while wrap is uncommitted.
 - Answering an operator-binding question to keep the queue moving.
+- Treating unsent composer text as an operator order.
 - Persisting `herdr --skill` bytes. Fetch them every session.
