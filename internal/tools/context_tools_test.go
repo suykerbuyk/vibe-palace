@@ -368,10 +368,12 @@ func TestBootstrapCommandsTruncationOrder(t *testing.T) {
 // that before being dropped.
 
 func TestBootstrapIncludesSkills(t *testing.T) {
-	// Seed a vault-level skill — no embedded skills exist yet, so the
-	// resolver's Templates/skills tier is the first place a skill can live.
+	// Seed vault-level skills. Embedded skills also exist now; the
+	// assertion is that the seeded names appear, not that they are alone.
+	// analyze carries a YAML fence — the same shape as every embedded
+	// SKILL.md — so a brief of "---" is a FAIL, not a missing description.
 	root := t.TempDir()
-	writeVaultFile(t, root, "Templates/skills/analyze/SKILL.md", "# Analyze\n\nPerform deep analysis of the codebase.")
+	writeVaultFile(t, root, "Templates/skills/analyze/SKILL.md", "---\nname: analyze\ndescription: >\n  Deep analysis.\n---\n\n# Analyze\n\nPerform deep analysis of the codebase.")
 	writeVaultFile(t, root, "Templates/skills/summarize/SKILL.md", "Summarize content concisely.")
 
 	vault := storage.NewVault(root)
@@ -400,8 +402,8 @@ func TestBootstrapIncludesSkills(t *testing.T) {
 	if _, ok := names["analyze"]; !ok {
 		t.Error("seeded skill 'analyze' missing from AvailableSkills")
 	}
-	if s := names["analyze"]; s.Brief == "" {
-		t.Error("seeded skill 'analyze' missing brief")
+	if s := names["analyze"]; s.Brief == "" || s.Brief == "---" {
+		t.Errorf("seeded skill 'analyze' brief = %q, want the body sentence not the YAML fence", s.Brief)
 	}
 }
 

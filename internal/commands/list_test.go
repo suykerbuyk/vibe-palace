@@ -43,6 +43,15 @@ func TestExtractBrief(t *testing.T) {
 		{"only headings", "# Title\n## Sub\n", 40, "(no description)"},
 		{"first body line", "# Title\n\nDo the thing.\n", 40, "Do the thing."},
 		{"truncates at word", "# T\n" + strings.Repeat("word ", 20), 20, "word word word…"},
+		// Skills (and a few commands) open with a YAML fence. The brief is
+		// the first body sentence, never the opening "---".
+		{"skill frontmatter", "---\nname: pair-reviewer\ndescription: >\n  Dual-agent pairing.\n---\n\n# Pair Reviewer\n\nYou sit in the **review chair**.\n", 60, "You sit in the **review chair**."},
+		{"command frontmatter", "---\nargument-hint: <epic-slug>\n---\n# Tasks: Epic\n\nShow the subtree of tasks rooted at an epic.\n", 60, "Show the subtree of tasks rooted at an epic."},
+		{"no frontmatter unchanged", "# Herdr\n\nHerdr is a terminal workspace manager.\n", 60, "Herdr is a terminal workspace manager."},
+		// No closing fence: parseFrontmatter leaves the bytes intact, so the
+		// brief is still the opening line. The body sentence must not win —
+		// that would mean an unclosed fence was treated as frontmatter.
+		{"unclosed fence is content", "---\nname: broken\n# Title\n\nBody after an unclosed fence.\n", 60, "---"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -82,10 +91,40 @@ func TestList_EmbeddedCommands(t *testing.T) {
 		if s.Brief == "" {
 			t.Errorf("%s: brief is empty", s.Name)
 		}
+		if s.Brief == "---" {
+			t.Errorf("%s: brief is the YAML fence", s.Name)
+		}
 	}
-	for _, want := range []string{"restart", "wrap", "capture", "stage"} {
+	for _, want := range []string{"restart", "wrap", "capture", "stage", "herdr"} {
 		if !seen[want] {
 			t.Errorf("missing expected embedded command %q", want)
+		}
+	}
+}
+
+// TestList_EmbeddedSkillsBriefIsNotFence pins the skill manifest agents read
+// after bootstrap: every embedded skill has a real brief, and pair-reviewer
+// is among them. ExtractBrief used to return "---" (the opening YAML fence)
+// for every SKILL.md, so the list looked empty of descriptions.
+func TestList_EmbeddedSkillsBriefIsNotFence(t *testing.T) {
+	r := vpctx.NewResolver(t.TempDir())
+	summaries, err := commands.List(r, "skill", "", "", "", 60)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, s := range summaries {
+		seen[s.Name] = true
+		if s.Source != "embedded" {
+			t.Errorf("%s: source=%q, want embedded", s.Name, s.Source)
+		}
+		if s.Brief == "" || s.Brief == "---" {
+			t.Errorf("%s: brief=%q, want a body sentence not the YAML fence", s.Name, s.Brief)
+		}
+	}
+	for _, want := range []string{"code-digger", "epic-orchestrator", "pair-reviewer", "startup-analyst"} {
+		if !seen[want] {
+			t.Errorf("missing expected embedded skill %q", want)
 		}
 	}
 }

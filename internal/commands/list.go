@@ -64,17 +64,14 @@ func List(resolver *vpctx.Resolver, resourceType, project, wing, room string, br
 			fmt.Sprintf("%s:%s", resourceType, ri.Name), project, wing, room,
 		)
 		if err == nil {
-			body := content
-			// Commands may carry a leading YAML frontmatter fence (e.g.
-			// argument-hint). Strip it before brief extraction so the brief
-			// never becomes "---", and lift the argument-hint for the shim.
-			// Scoped to commands so skill brief behavior is unchanged.
+			// Commands may carry argument-hint in a leading YAML fence.
+			// ExtractBrief itself skips a well-formed fence, so the brief
+			// never becomes "---" for skills or for frontmatter commands.
 			if resourceType == "command" {
-				var fm map[string]string
-				fm, body = parseFrontmatter(content)
+				fm, _ := parseFrontmatter(content)
 				s.ArgHint = strings.TrimSpace(fm["argument-hint"])
 			}
-			s.Brief = ExtractBrief(body, briefLen)
+			s.Brief = ExtractBrief(content, briefLen)
 		}
 		out = append(out, s)
 	}
@@ -131,11 +128,15 @@ func parseFrontmatter(content string) (map[string]string, string) {
 }
 
 // ExtractBrief returns the first non-blank, non-heading line from content,
-// truncated to maxLen characters. When truncation is needed the cut snaps to
-// the last whitespace before maxLen (unless that would leave less than half
-// of maxLen, in which case a mid-word cut is accepted) and an ellipsis is
-// appended so the truncation is visible.
+// truncated to maxLen characters. A well-formed leading YAML frontmatter
+// block is skipped first — otherwise every SKILL.md (and every command that
+// carries argument-hint) briefs as the opening fence, "---". An unclosed
+// fence is left intact, matching parseFrontmatter. When truncation is
+// needed the cut snaps to the last whitespace before maxLen (unless that
+// would leave less than half of maxLen, in which case a mid-word cut is
+// accepted) and an ellipsis is appended so the truncation is visible.
 func ExtractBrief(content string, maxLen int) string {
+	_, content = parseFrontmatter(content)
 	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
