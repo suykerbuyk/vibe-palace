@@ -274,8 +274,8 @@ func TestVaultStatusJSONInSync(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &rep); err != nil {
 		t.Fatalf("decode JSON: %v\n%s", err, out)
 	}
-	if rep.Version != 2 {
-		t.Errorf("Version = %d, want 2", rep.Version)
+	if rep.Version != 3 {
+		t.Errorf("Version = %d, want 3", rep.Version)
 	}
 	if rep.Branch != "main" {
 		t.Errorf("Branch = %q, want main", rep.Branch)
@@ -330,15 +330,24 @@ func TestVaultStatusLineLabels(t *testing.T) {
 		},
 		{
 			name:    "diverged",
-			st:      storage.RemoteStatusJSON{Remote: "origin", Reachable: true, Ahead: 2, BehindKnown: true, Behind: 5, Diverged: true},
+			st:      storage.RemoteStatusJSON{Remote: "origin", Reachable: true, Ahead: 2, AheadKnown: true, BehindKnown: true, Behind: 5, Diverged: true},
 			want:    "DIVERGED",
 			notWant: "in sync",
 		},
 		{
 			name:    "ahead unpushed",
-			st:      storage.RemoteStatusJSON{Remote: "origin", Reachable: true, Ahead: 1, Unpushed: true, BehindKnown: true, Behind: 0},
+			st:      storage.RemoteStatusJSON{Remote: "origin", Reachable: true, Ahead: 1, AheadKnown: true, Unpushed: true, BehindKnown: true, Behind: 0},
 			want:    "UNPUSHED",
 			notWant: "in sync",
+		},
+		{
+			// The 191 phantom, at the rendering seam. An ahead count from the
+			// cached tracking ref must NOT be rendered as the confident
+			// "UNPUSHED" an agent copies into a document.
+			name:    "ahead from a stale cache is unverified, never UNPUSHED",
+			st:      storage.RemoteStatusJSON{Remote: "origin", Reachable: true, Ahead: 1, AheadKnown: false, Unpushed: true},
+			want:    "UNVERIFIED",
+			notWant: "UNPUSHED",
 		},
 	}
 	for _, tc := range cases {

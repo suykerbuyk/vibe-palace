@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -18,14 +19,30 @@ import (
 // .git tracking refs).
 type RemoteStatus struct {
 	Remote string // remote name (e.g. "origin")
-	Ahead  int    // local commits not present on <remote>/<branch> (unpushed signal)
-	Behind int    // commits on <remote>/<branch> not present locally; meaningful only when BehindKnown
+	Ahead  int    // local commits not present on the remote branch (unpushed signal)
+	// AheadKnown reports whether Ahead was derived from the LIVE remote — a fetch
+	// in this call, or the ls-remote tip — rather than from the cached
+	// remote-tracking ref.
+	//
+	// A remote-tracking ref is a CACHE, not the remote. `git rev-list --count
+	// <remote>/<branch>..HEAD` counts against whatever that cache last saw, so a
+	// push that did not update it (pushed by URL, by another clone, or by a
+	// different remote name) leaves every already-published commit counted as
+	// unpushed. That is not hypothetical: it is reproducible in four git commands,
+	// and it is regression-pinned in internal/integration.
+	//
+	// Ahead is still reported when this is false, deliberately: a possibly-stale
+	// "you may have unpushed work" errs toward the safe side, while a confident
+	// "in sync" derived from a cache is the failure that loses commits. Callers
+	// must not render an unknown count as fact.
+	AheadKnown bool
+	Behind     int // commits on the remote branch not present locally; meaningful only when BehindKnown
 	// BehindKnown is false when no fetch was performed (cached / stale tracking
 	// ref), so a stale 0 is never mistaken for a real "behind 0". It is true only
 	// after a successful fetch in this call.
 	BehindKnown bool
-	// Diverged is true only when both sides have advanced AND the behind count is
-	// real: Ahead > 0 && Behind > 0 && BehindKnown.
+	// Diverged is true only when both sides have advanced AND BOTH counts are
+	// real: Ahead > 0 && AheadKnown && Behind > 0 && BehindKnown.
 	Diverged bool
 	// Reachable reports whether the remote answered: a successful fetch (fetch=true)
 	// or a successful ls-remote probe (fetch=false). False on network failure.
@@ -64,6 +81,45 @@ func aheadCount(vaultPath, remote, branch string) (int, error) {
 	return n, nil
 }
 
+// remoteTipSHA extracts the object id from one `git ls-remote` line, whose shape
+// is "<sha>\t<ref>". Returns "" for anything that does not look like one, so a
+// surprise in the output degrades to "ahead unknown" rather than to a wrong count.
+func remoteTipSHA(out string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	sha, _, found := strings.Cut(strings.TrimSpace(line), "\t")
+	if !found || len(sha) < 7 {
+		return ""
+	}
+	for _, r := range sha {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return ""
+		}
+	}
+	return sha
+}
+
+// aheadFromTip counts commits on HEAD that are not reachable from the LIVE remote
+// tip. It reports ok=false when the tip object is not held locally — the remote
+// has advanced somewhere we have never fetched, and the honest answer is "unknown"
+// rather than a number computed against a cache.
+//
+// No ancestry test is needed: `rev-list --count <tip>..HEAD` is the correct
+// unpushed count whether the tip is an ancestor of HEAD or the two have diverged.
+func aheadFromTip(vaultPath, tip string) (int, bool) {
+	if _, err := gitCmd(vaultPath, 10*time.Second, "cat-file", "-e", tip+"^{commit}"); err != nil {
+		return 0, false
+	}
+	out, err := gitCmd(vaultPath, 10*time.Second, "rev-list", "--count", tip+"..HEAD")
+	if err != nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(out)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
 // GetRemoteStatus reports sync state for one remote. When fetch is true it runs a
 // bounded `git fetch <remote>` first so Behind/BehindKnown are real; when false it
 // uses cached tracking refs and leaves BehindKnown=false. Read-only: never commits,
@@ -90,26 +146,60 @@ func GetRemoteStatus(vaultPath, remote, branch string, fetch bool) (RemoteStatus
 			return st, nil // Reachable stays false; nil error by contract.
 		}
 		st.Reachable = true
+		// The fetch just refreshed <remote>/<branch>, so the count below is
+		// against the live remote, not a cache.
+		st.AheadKnown = true
 	} else {
 		// Cheap reachability probe: returns the tip SHA only, transfers no objects
 		// and computes no count. NEVER use ls-remote to derive a behind count.
-		if _, err := gitCmd(vaultPath, 30*time.Second, "ls-remote", "--exit-code", remote, "HEAD"); err == nil {
+		//
+		// That prohibition is INHERITED AND NOT RELITIGATED HERE. Whether a
+		// locally-held tip could support a correct behind count is an open
+		// question this code deliberately does not answer: Behind and BehindKnown
+		// are set ONLY on the fetch path, exactly as before, and
+		// TestNoFetchPathLeavesBehindUnknown pins that.
+		//
+		// What changed is AHEAD only. The commits on HEAD but not on the live tip
+		// are exactly the unpushed ones, this probe already pays for the round
+		// trip, and deriving ahead from its answer is the difference between
+		// reporting the remote and reporting a cache of it.
+		if tip, err := gitCmd(vaultPath, 30*time.Second, "ls-remote", "--exit-code", remote, "refs/heads/"+branch); err == nil {
+			st.Reachable = true
+			if sha := remoteTipSHA(tip); sha != "" {
+				if n, ok := aheadFromTip(vaultPath, sha); ok {
+					st.Ahead = n
+					st.AheadKnown = true
+				}
+			}
+		} else if _, err := gitCmd(vaultPath, 30*time.Second, "ls-remote", "--exit-code", remote, "HEAD"); err == nil {
+			// The remote answers but has no such branch — reachable, ahead unknown.
 			st.Reachable = true
 		}
 	}
 
-	// Ahead is always computed, network-free, against the tracking ref.
-	ahead, aerr := aheadCount(vaultPath, remote, branch)
-	if aerr != nil {
-		if fetch {
-			// Fetch succeeded yet <remote>/<branch> will not resolve — unexpected.
+	if !st.AheadKnown {
+		// Fall back to the cached tracking ref. The number may be a phantom; it is
+		// reported anyway (erring toward "you may have unpushed work") but flagged
+		// by AheadKnown=false so nobody renders it as fact.
+		ahead, aerr := aheadCount(vaultPath, remote, branch)
+		if aerr != nil {
+			if fetch {
+				// Fetch succeeded yet <remote>/<branch> will not resolve — unexpected.
+				return st, fmt.Errorf("counting ahead for %s: %w", ref, aerr)
+			}
+			// fetch=false: the tracking ref may simply not exist yet (never fetched).
+			// Best-effort — leave Ahead=0 and keep reporting reachability.
+			ahead = 0
+		}
+		st.Ahead = ahead
+	} else if fetch {
+		// Fetch path: the ref is fresh, so the cached-ref count IS the live count.
+		ahead, aerr := aheadCount(vaultPath, remote, branch)
+		if aerr != nil {
 			return st, fmt.Errorf("counting ahead for %s: %w", ref, aerr)
 		}
-		// fetch=false: the tracking ref may simply not exist yet (never fetched).
-		// Best-effort — leave Ahead=0 and keep reporting reachability.
-		ahead = 0
+		st.Ahead = ahead
 	}
-	st.Ahead = ahead
 
 	if fetch {
 		// Behind is real only after a fetch refreshed the tracking ref.
@@ -121,7 +211,10 @@ func GetRemoteStatus(vaultPath, remote, branch string, fetch bool) (RemoteStatus
 		}
 	}
 
-	st.Diverged = st.Ahead > 0 && st.Behind > 0 && st.BehindKnown
+	// Diverged asserts both sides advanced, so BOTH counts must be real. An ahead
+	// count from a stale cache is exactly the phantom that made 191 report a
+	// divergence that did not exist.
+	st.Diverged = st.Ahead > 0 && st.AheadKnown && st.Behind > 0 && st.BehindKnown
 	st.LastFetched = lastFetched(vaultPath, remote, branch)
 	return st, nil
 }
@@ -178,9 +271,14 @@ func DetectVaultPathDrift(frozenRoot string) (configured string, drift bool) {
 // OMITTED (nil + omitempty) rather than serialized as a zero timestamp, and a
 // known age marshals to its RFC3339 string.
 type RemoteStatusJSON struct {
-	Remote      string     `json:"remote"`
-	Ahead       int        `json:"ahead"`
-	Unpushed    bool       `json:"unpushed"` // Ahead > 0
+	Remote string `json:"remote"`
+	Ahead  int    `json:"ahead"`
+	// AheadKnown mirrors RemoteStatus.AheadKnown: false means Ahead came from the
+	// cached remote-tracking ref and may be a phantom. Consumers writing a sync
+	// claim into a document MUST gate on this — that is the exact failure this
+	// field exists to stop.
+	AheadKnown  bool       `json:"ahead_known"`
+	Unpushed    bool       `json:"unpushed"` // Ahead > 0; see AheadKnown before trusting it
 	Behind      int        `json:"behind"`
 	BehindKnown bool       `json:"behind_known"`
 	Diverged    bool       `json:"diverged"`
@@ -222,6 +320,7 @@ func BuildStatusReport(vaultPath string, fetch bool) (StatusReport, error) {
 		rems = append(rems, RemoteStatusJSON{
 			Remote:      st.Remote,
 			Ahead:       st.Ahead,
+			AheadKnown:  st.AheadKnown,
 			Unpushed:    st.Ahead > 0,
 			Behind:      st.Behind,
 			BehindKnown: st.BehindKnown,
@@ -237,7 +336,7 @@ func BuildStatusReport(vaultPath string, fetch bool) (StatusReport, error) {
 	}
 
 	return StatusReport{
-		Version:   2,
+		Version:   3,
 		Branch:    branch,
 		VaultPath: vaultPath,
 		Remotes:   rems,

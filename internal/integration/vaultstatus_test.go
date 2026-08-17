@@ -10,14 +10,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/tools"
 )
 
-// vsGit runs an isolated git command against dir and returns its trimmed
-// combined output, failing the test on error. The environment pins
+// vsGit runs an isolated git command against dir and returns its combined
+// output VERBATIM — including the trailing newline — failing the test on error.
+// Callers comparing against an exact value must TrimSpace it; this comment used
+// to claim the trim happened here, and it never did. The environment pins
 // GIT_CONFIG_GLOBAL/SYSTEM to /dev/null so the developer's real git config never
 // leaks into the hermetic fixture, and suppresses any credential prompt.
 func vsGit(t *testing.T, dir string, args ...string) string {
@@ -143,8 +146,8 @@ func TestIntegrationVaultStatus(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildStatusReport: %v", err)
 		}
-		if report.Version != 2 {
-			t.Errorf("Version = %d, want 2", report.Version)
+		if report.Version != 3 {
+			t.Errorf("Version = %d, want 3", report.Version)
 		}
 		if report.Branch != "main" {
 			t.Errorf("Branch = %q, want main", report.Branch)
@@ -342,7 +345,7 @@ func TestIntegrationVaultStatusSections(t *testing.T) {
 		if len(report.Remotes) == 0 {
 			t.Errorf("Remotes must be populated for sync-only, got %+v", report.Remotes)
 		}
-		if report.Version != 2 || report.Branch != "main" {
+		if report.Version != 3 || report.Branch != "main" {
 			t.Errorf("Version/Branch must persist, got version=%d branch=%q", report.Version, report.Branch)
 		}
 	})
@@ -388,4 +391,192 @@ func mustReport(t *testing.T, root string, fetch bool) storage.StatusReport {
 
 func containsPath(paths []string, want string) bool {
 	return slices.Contains(paths, want)
+}
+
+// TestIntegrationPhantomUnpushedCommit is the 191 regression, driven against REAL
+// git at the seam that produced it.
+//
+// A remote-tracking ref is a CACHE, not the remote. Push by URL — which is exactly
+// what happens on this project when a session shell prefixes the push with a
+// different SSH agent socket, and equally what happens when a second clone or a
+// second remote name publishes the work — and the push SUCCEEDS while
+// origin/main is left pointing at the old tip. `git rev-list --count
+// origin/main..HEAD` then reports commits that are demonstrably on the remote as
+// unpushed.
+//
+// 191 reported four such phantom commits five times and wrote the claim into
+// resume.md before `git ls-remote` caught it; iteration 280 recorded the same
+// failure reaching a SYNCED document in another project. This test pins the fix:
+// the ahead count must come from the live remote, and must be flagged when it
+// cannot.
+func TestIntegrationPhantomUnpushedCommit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_TERMINAL_PROMPT", "0")
+
+	root, bare := vsNewVaultWithOrigin(t)
+
+	// Commit, then publish by URL so the push succeeds without updating origin/main.
+	if err := os.WriteFile(filepath.Join(root, "second.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vsGit(t, root, "add", "-A")
+	vsGit(t, root, "commit", "-m", "second")
+	vsGit(t, root, "push", bare, "main")
+
+	// Precondition: the work IS on the remote, and the cache does NOT know.
+	head := strings.TrimSpace(vsGit(t, root, "rev-parse", "HEAD"))
+	remoteTip := strings.TrimSpace(vsGit(t, bare, "rev-parse", "main"))
+	cached := strings.TrimSpace(vsGit(t, root, "rev-parse", "origin/main"))
+	if head != remoteTip {
+		t.Fatalf("fixture broken: remote tip %s != HEAD %s — nothing was published", remoteTip, head)
+	}
+	if cached == head {
+		t.Fatalf("fixture broken: origin/main already advanced to %s, so there is no stale cache to test", cached)
+	}
+
+	// The pre-fix behaviour, still observable through the raw primitive: counting
+	// against the cache claims one unpushed commit that is already published.
+	if phantom := strings.TrimSpace(vsGit(t, root, "rev-list", "--count", "origin/main..HEAD")); phantom != "1" {
+		t.Fatalf("fixture broken: cached-ref count = %s, want 1 (the phantom this test exists for)", phantom)
+	}
+
+	// The fix: no fetch, but the ls-remote tip settles it.
+	st, err := storage.GetRemoteStatus(root, "origin", "main", false)
+	if err != nil {
+		t.Fatalf("GetRemoteStatus: %v", err)
+	}
+	if !st.Reachable {
+		t.Fatal("remote unreachable — the file:// bare origin should always answer")
+	}
+	if !st.AheadKnown {
+		t.Error("AheadKnown = false, want true: ls-remote answered and the tip object is held locally, " +
+			"so the count is derivable from the LIVE remote and must not be reported as unknown")
+	}
+	if st.Ahead != 0 {
+		t.Errorf("Ahead = %d, want 0 — every commit is on the remote; this is the 191 phantom, "+
+			"reported against the cached tracking ref instead of the remote", st.Ahead)
+	}
+	if st.Diverged {
+		t.Error("Diverged = true on a fully-published branch")
+	}
+
+	// And the report the agent actually reads.
+	report, err := storage.BuildStatusReport(root, false)
+	if err != nil {
+		t.Fatalf("BuildStatusReport: %v", err)
+	}
+	origin := originRemote(t, report)
+	if origin.Unpushed {
+		t.Error("StatusReport reports unpushed=true for a fully-published vault — " +
+			"this is the field that reached a synced document at 280")
+	}
+	if !origin.AheadKnown {
+		t.Error("StatusReport ahead_known=false — a consumer cannot tell a real count from a cached one")
+	}
+}
+
+// TestIntegrationAheadUnknownWhenRemoteUnreachable pins the OTHER direction: when
+// the live remote cannot be consulted the count falls back to the cache, and it
+// must be FLAGGED rather than presented as fact. Without this, the fix above
+// would be indistinguishable from one that simply always claims to know.
+func TestIntegrationAheadUnknownWhenRemoteUnreachable(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_TERMINAL_PROMPT", "0")
+
+	root, bare := vsNewVaultWithOrigin(t)
+	if err := os.WriteFile(filepath.Join(root, "second.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vsGit(t, root, "add", "-A")
+	vsGit(t, root, "commit", "-m", "second")
+
+	// Remove the remote repo entirely: ls-remote now fails, so the live tip is
+	// unavailable and only the cached ref remains.
+	if err := os.RemoveAll(bare); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := storage.GetRemoteStatus(root, "origin", "main", false)
+	if err != nil {
+		t.Fatalf("GetRemoteStatus: %v", err)
+	}
+	if st.Reachable {
+		t.Error("Reachable = true for a deleted remote")
+	}
+	if st.AheadKnown {
+		t.Error("AheadKnown = true with no live remote to derive it from — a cached count presented as fact " +
+			"is exactly the 191 failure")
+	}
+	if st.Ahead != 1 {
+		t.Errorf("Ahead = %d, want 1: the cached count is still REPORTED (erring toward "+
+			"\"you may have unpushed work\"), it is only flagged as unverified", st.Ahead)
+	}
+}
+
+// TestNoFetchPathLeavesBehindUnknown pins that the ahead-from-ls-remote work did
+// NOT quietly extend to behind.
+//
+// The no-fetch path consults the live remote tip now, and a tip that is held
+// locally would in principle support a behind count too. That prohibition is
+// inherited ("NEVER use ls-remote to derive a behind count") and was deliberately
+// left standing rather than relitigated in a side pass. This test is what makes
+// "we did not overturn it" checkable instead of a claim in a commit message: on
+// the no-fetch path Behind stays 0 and BehindKnown stays false, even when the
+// remote is reachable, the tip is held locally, and the branch is genuinely
+// behind.
+func TestNoFetchPathLeavesBehindUnknown(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_TERMINAL_PROMPT", "0")
+
+	root, bare := vsNewVaultWithOrigin(t)
+
+	// Advance the remote from a second clone, then fetch so the tip object IS
+	// held locally — the strongest case for a behind count, and still not one.
+	other := t.TempDir()
+	vsGit(t, other, "clone", bare, ".")
+	vsGit(t, other, "config", "user.email", "other@example.com")
+	vsGit(t, other, "config", "user.name", "Other User")
+	if err := os.WriteFile(filepath.Join(other, "remote-only.md"), []byte("y\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vsGit(t, other, "add", "-A")
+	vsGit(t, other, "commit", "-m", "remote only")
+	vsGit(t, other, "push", "origin", "main")
+	vsGit(t, root, "fetch", "origin")
+
+	// Precondition: we really are behind, and we really do hold the tip.
+	if behind := strings.TrimSpace(vsGit(t, root, "rev-list", "--count", "HEAD..origin/main")); behind != "1" {
+		t.Fatalf("fixture broken: behind = %s, want 1", behind)
+	}
+
+	st, err := storage.GetRemoteStatus(root, "origin", "main", false)
+	if err != nil {
+		t.Fatalf("GetRemoteStatus: %v", err)
+	}
+	if !st.Reachable {
+		t.Fatal("fixture broken: bare origin should answer")
+	}
+	if st.BehindKnown {
+		t.Error("BehindKnown = true on the no-fetch path — the inherited " +
+			"\"NEVER use ls-remote to derive a behind count\" rule has been overturned, which is " +
+			"an operator decision and not something a change to the AHEAD derivation may make")
+	}
+	if st.Behind != 0 {
+		t.Errorf("Behind = %d on the no-fetch path, want 0 — a behind count was derived without a fetch", st.Behind)
+	}
+	if st.Diverged {
+		t.Error("Diverged = true without a real behind count")
+	}
 }

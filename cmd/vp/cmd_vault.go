@@ -473,7 +473,15 @@ func printVaultRemoteLine(st storage.RemoteStatusJSON) {
 	case st.Diverged:
 		fmt.Printf("%s: DIVERGED — ahead %d, behind %d\n", st.Remote, st.Ahead, st.Behind)
 	case st.Ahead > 0:
-		fmt.Printf("%s: ahead %d — UNPUSHED", st.Remote, st.Ahead)
+		// Only claim UNPUSHED when the count came from the live remote. A count
+		// against a stale tracking ref is the phantom that made 191 report four
+		// unpushed commits five times and write it into resume.md.
+		if st.AheadKnown {
+			fmt.Printf("%s: ahead %d — UNPUSHED", st.Remote, st.Ahead)
+		} else {
+			fmt.Printf("%s: ahead %d UNVERIFIED — from the cached tracking ref, which is not the remote; "+
+				"confirm with `git ls-remote` or a fetch before recording it", st.Remote, st.Ahead)
+		}
 		if st.BehindKnown {
 			fmt.Printf(" (behind %d)\n", st.Behind)
 		} else {

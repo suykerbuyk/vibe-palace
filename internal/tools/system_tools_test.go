@@ -433,8 +433,8 @@ func TestVaultStatusTool(t *testing.T) {
 	if err := json.Unmarshal(raw, &report); err != nil {
 		t.Fatalf("decode StatusReport: %v\n%s", err, raw)
 	}
-	if report.Version != 2 {
-		t.Errorf("Version = %d, want 2", report.Version)
+	if report.Version != 3 {
+		t.Errorf("Version = %d, want 3", report.Version)
 	}
 	if report.Branch != "main" {
 		t.Errorf("Branch = %q, want main", report.Branch)
@@ -508,7 +508,7 @@ func TestVaultStatusSections(t *testing.T) {
 		if report.Remotes == nil {
 			t.Errorf("Remotes must be populated (non-nil) for sync selection, got nil")
 		}
-		if report.Version != 2 || report.Branch != "main" {
+		if report.Version != 3 || report.Branch != "main" {
 			t.Errorf("Version/Branch must always be present, got version=%d branch=%q", report.Version, report.Branch)
 		}
 	})
@@ -521,7 +521,7 @@ func TestVaultStatusSections(t *testing.T) {
 		if report.Remotes != nil {
 			t.Errorf("Remotes must be nil for dirt selection, got %+v", report.Remotes)
 		}
-		if report.Version != 2 || report.Branch != "main" {
+		if report.Version != 3 || report.Branch != "main" {
 			t.Errorf("Version/Branch must always be present, got version=%d branch=%q", report.Version, report.Branch)
 		}
 	})

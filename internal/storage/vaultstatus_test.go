@@ -46,7 +46,7 @@ func commitLocal(t *testing.T, dir, file, content string) {
 
 // TestBuildStatusReport_InSyncWithDirt drives the whole-report assembler: a
 // repo in sync with its origin, plus one sweepable capture artifact and one
-// non-artifact dirty file, must yield Version 2, the right per-remote flags, and
+// non-artifact dirty file, must yield Version 3, the right per-remote flags, and
 // the correct Swept/Reported dirt split.
 func TestBuildStatusReport_InSyncWithDirt(t *testing.T) {
 	if !GitAvailable() {
@@ -62,8 +62,8 @@ func TestBuildStatusReport_InSyncWithDirt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildStatusReport: %v", err)
 	}
-	if rep.Version != 2 {
-		t.Errorf("Version = %d, want 2", rep.Version)
+	if rep.Version != 3 {
+		t.Errorf("Version = %d, want 3", rep.Version)
 	}
 	if rep.Branch != "main" {
 		t.Errorf("Branch = %q, want main", rep.Branch)
@@ -105,8 +105,8 @@ func TestBuildStatusReport_NoRemotes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildStatusReport: %v", err)
 	}
-	if rep.Version != 2 {
-		t.Errorf("Version = %d, want 2", rep.Version)
+	if rep.Version != 3 {
+		t.Errorf("Version = %d, want 3", rep.Version)
 	}
 	if len(rep.Remotes) != 0 {
 		t.Errorf("expected no remotes, got %#v", rep.Remotes)
