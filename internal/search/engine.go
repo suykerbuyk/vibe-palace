@@ -333,9 +333,11 @@ func (e *Engine) RemoveDrawer(project, id string) error {
 	return e.cache.Delete(project, id)
 }
 
-// Rebuild rebuilds the index for a project from scratch. Drawers whose vectors
-// are absent from the embed cache are embedded in batches — per-item embedding
-// is roughly 7x slower on the ONNX backend.
+// Rebuild rebuilds the index for a project from scratch. It walks palace
+// drawers and, as a second source, Projects/<project>/iterations.md split on
+// wrapstate H2 entries (sub-chunked at 800/100). Vectors absent from the embed
+// cache are embedded in batches — per-item embedding is roughly 7x slower on
+// the ONNX backend.
 func (e *Engine) Rebuild(ctx context.Context, project string) error {
 	wings, err := e.vault.ListWings(project)
 	if err != nil {
@@ -382,19 +384,39 @@ func (e *Engine) Rebuild(ctx context.Context, project string) error {
 		}
 	}
 
+	// Second corpus source: Projects/<p>/iterations.md at H2 boundaries
+	// (wrapstate.ParseEntries). No synthetic drawers.jsonl.
+	iterIDs, iterTexts, iterMetas, err := collectIterationCorpus(e.vault, project)
+	if err != nil {
+		return fmt.Errorf("iteration corpus: %w", err)
+	}
+	for i, id := range iterIDs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		vec, _ := e.cache.Get(project, id)
+		if vec == nil {
+			missIdx = append(missIdx, len(vecs))
+			missText = append(missText, iterTexts[i])
+		}
+		ids = append(ids, id)
+		vecs = append(vecs, vec)
+		metas = append(metas, iterMetas[i])
+	}
+
 	if err := e.embedMisses(ctx, project, ids, vecs, missIdx, missText); err != nil {
 		return err
 	}
 
-	// Live drawer IDs for this build — the reaper unlinks every .vec whose ID is
-	// not in this set.
+	// Live IDs for this build — the reaper unlinks every .vec whose ID is not
+	// in this set (drawers and iteration chunks alike).
 	live := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		live[id] = true
 	}
 
 	if len(vecs) == 0 {
-		// The project's drawers are all gone. Drop any index from a previous
+		// No drawers and no iteration chunks. Drop any index from a previous
 		// build so it stops serving hits for content that no longer exists, then
 		// reap every now-orphaned vector (live set is empty).
 		e.mu.Lock()

@@ -1560,10 +1560,16 @@ told, plausibly and silently, that the vault contains nothing.
 `internal/integration/lazy_startup_test.go` pins the positive case: a
 never-rebuilt project returns real hits through a real JSON-RPC `vp_search`.
 
-`Rebuild` embeds cache-miss drawers with `EmbedBatch` in chunks of
+`Rebuild` walks two corpus sources: palace `drawers.jsonl`, and
+`Projects/<project>/iterations.md` split on `wrapstate.ParseEntries` (H2
+iteration headers) then sub-chunked at the capture defaults (800/100). Iteration
+rows use `source_type=iteration` and a per-entry `source_ref`
+(`iteration/{n}/m/{matchIndex}`); chunk index lives on the cache ID, not the
+ref, so search dedup keeps one hit per entry. No synthetic drawers are written.
+Cache-miss vectors are embedded with `EmbedBatch` in chunks of
 `EmbedderBatchSize` (default 32), writing each vector to the embed cache as it
 lands, so a rebuild killed partway through leaves durable progress behind.
-Per-drawer embedding — the old behavior — is roughly 7x slower on the ONNX
+Per-item embedding — the old behavior — is roughly 7x slower on the ONNX
 backend.
 
 Structural boosts (configurable):
@@ -1768,9 +1774,10 @@ ADR-005 (`doc/adr/005-llm-enrichment-synthesis.md`) for the full rationale.
 ### Chunking Engine
 
 ```
-internal/capture/chunker.go
-internal/capture/detector.go
+internal/chunk/chunker.go
+internal/chunk/detector.go
 ```
+
 
 Format detection inspects the first 500 bytes:
 - **JSON-RPC**: starts with `[` or `{` and contains `"role"` — split on exchange boundaries

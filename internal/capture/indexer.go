@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/chunk"
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/kg"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
@@ -66,7 +67,7 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 		return stats, nil
 	}
 
-	chunks := Chunk(transcript, idx.chunkConfig())
+	chunks := chunk.Chunk(transcript, idx.chunkConfig())
 	if len(chunks) == 0 {
 		return stats, nil
 	}
@@ -229,8 +230,8 @@ func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp st
 }
 
 // chunkConfig returns a ChunkConfig from the indexer's config, falling back to defaults.
-func (idx *Indexer) chunkConfig() ChunkConfig {
-	cfg := DefaultChunkConfig()
+func (idx *Indexer) chunkConfig() chunk.ChunkConfig {
+	cfg := chunk.DefaultChunkConfig()
 	if idx.config.ChunkMaxChars > 0 {
 		cfg.MaxChars = idx.config.ChunkMaxChars
 	}
