@@ -36,7 +36,8 @@ func fakeTranscript(t *testing.T, sessionID string) string {
 	return f.Name()
 }
 
-// initGitRepo creates a git repo with a few commits so AutoSummary works.
+// initGitRepo creates a git repo with a few commits so archive.Create can
+// resolve gitHead (AutoSummary no longer reads git history).
 func initGitRepo(t *testing.T, dir string) {
 	t.Helper()
 	cmds := [][]string{

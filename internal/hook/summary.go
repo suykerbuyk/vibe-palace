@@ -3,36 +3,14 @@
 
 package hook
 
-import (
-	"context"
-	"os/exec"
-	"strings"
-	"time"
-)
+// autoSummaryHonest is the crash-net placeholder written by Stop/SessionEnd
+// auto-capture. It must not embed git subjects: a git log attributes prior
+// work to this session (task auto-capture-notes-…).
+const autoSummaryHonest = "Auto-captured session (no summary yet)"
 
-// AutoSummary generates a deterministic session summary from recent git
-// history in the given working directory.
+// AutoSummary returns an honest crash-net placeholder for hook auto-capture.
+// cwd is retained so call sites stay stable; it is not read.
 func AutoSummary(cwd string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "git", "-C", cwd, "log", "--oneline", "-5")
-	out, err := cmd.Output()
-	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
-		return "Auto-captured session"
-	}
-
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	trimmed := make([]string, 0, len(lines))
-	for _, l := range lines {
-		if t := strings.TrimSpace(l); t != "" {
-			trimmed = append(trimmed, t)
-		}
-	}
-
-	if len(trimmed) == 0 {
-		return "Auto-captured session"
-	}
-
-	return "Auto-captured session. Recent: " + strings.Join(trimmed, "; ")
+	_ = cwd
+	return autoSummaryHonest
 }

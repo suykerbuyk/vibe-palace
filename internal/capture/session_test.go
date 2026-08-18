@@ -169,6 +169,50 @@ func TestWriteSessionWithFriction(t *testing.T) {
 	}
 }
 
+// TestWriteSession_AutoCaptureSkipsFriction is the tag-scoped scoring guard:
+// keyword-rich transcript must not produce friction on tag:auto-capture, and
+// the same transcript must still score under any other tag.
+func TestWriteSession_AutoCaptureSkipsFriction(t *testing.T) {
+	vault := testVault(t)
+	transcript := "wrong wrong wrong undo revert go back start over try again scratch that never mind"
+
+	stub, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project:    "test-proj",
+		Summary:    "Auto-captured session (no summary yet)",
+		Tag:        storage.TagAutoCapture,
+		Transcript: transcript,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stub.FrictionScore != 0 {
+		t.Fatalf("auto-capture FrictionScore = %d, want 0 (unset / never scored)", stub.FrictionScore)
+	}
+	got, _, err := vault.ReadSession("test-proj", stub.SessionID[:10], ParseFingerprint(stub.SessionID), stub.Iteration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Breakdown != nil {
+		t.Fatalf("auto-capture Breakdown = %+v, want nil (never scored)", got.Breakdown)
+	}
+	if got.FrictionScore != 0 {
+		t.Fatalf("auto-capture FrictionScore = %d, want 0", got.FrictionScore)
+	}
+
+	real, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project:    "test-proj",
+		Summary:    "Real capture",
+		Tag:        "review",
+		Transcript: transcript,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if real.FrictionScore == 0 {
+		t.Fatal("non-auto tag must still score the same keyword-rich transcript")
+	}
+}
+
 func TestWriteSessionWithArchiveLink(t *testing.T) {
 	vault := testVault(t)
 

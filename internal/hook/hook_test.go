@@ -41,8 +41,7 @@ func TestRun_HappyPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Initialize git repo in cwd so AutoSummary works and archive.Create
-	// can resolve gitHead.
+	// Initialize git repo in cwd so archive.Create can resolve gitHead.
 	initGitRepo(t, cwd, "initial commit")
 
 	res, err := Run(context.Background(), Payload{
@@ -237,7 +236,7 @@ func TestRun_ArchiveFailureNonFatal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Initialize git repo so AutoSummary produces output.
+	// Initialize git repo so archive.Create can resolve gitHead.
 	initGitRepo(t, cwd, "init")
 
 	// Use a non-existent transcript path to trigger archive failure. SessionEnd
@@ -523,6 +522,93 @@ func TestRun_StopDoesNotArchive(t *testing.T) {
 	}
 	if res.ArchivePath != "" || res.ArchiveSkipped {
 		t.Errorf("Stop must not archive: ArchivePath=%q ArchiveSkipped=%v", res.ArchivePath, res.ArchiveSkipped)
+	}
+}
+
+// TestRun_StopAutoCaptureHonestAndUnscored is the end-to-end guard for
+// auto-capture-notes-…: Stop must write the honest placeholder (never a git
+// log of fix/revert subjects) and must not friction-score the transcript.
+func TestRun_StopAutoCaptureHonestAndUnscored(t *testing.T) {
+	vaultRoot := newGitVault(t)
+	cwd := t.TempDir()
+	writeVibeMarker(t, cwd)
+	claimDir := filepath.Join(cwd, ".vibe-palace")
+	if err := os.MkdirAll(claimDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Pin enrichment OFF at the project layer: LoadConfig merges the operator's
+	// vault-level config (which may enable a live enricher), and this test
+	// asserts the raw auto-capture write — not a post-hoc LLM rewrite.
+	vault := storage.NewVault(vaultRoot)
+	cfgPath, err := vault.ProjectConfigFile("test-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("[enrichment]\nenabled = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	initGitRepoMulti(t, cwd, []string{
+		"fix revert wrong undo never mind",
+		"failed error exception fatal",
+	})
+
+	transcriptPath := filepath.Join(t.TempDir(), "transcript.jsonl")
+	rich := `{"type":"user","message":{"role":"user","content":"wrong undo revert never mind try again error failed"}}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":"fix the failed path and revert"}}
+`
+	if err := os.WriteFile(transcriptPath, []byte(rich), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Run(context.Background(), Payload{
+		SessionID:      "stop-honest-unscored",
+		TranscriptPath: transcriptPath,
+		CWD:            cwd,
+		HookEventName:  "Stop",
+	}, RunOptions{
+		VaultRoot:   vaultRoot,
+		ProjectSlug: "test-project",
+		ClaimDir:    claimDir,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.SessionNoteID == "" {
+		t.Fatal("expected a session note")
+	}
+
+	sessDir := filepath.Join(vaultRoot, "Projects", "test-project", "sessions")
+	entries, err := os.ReadDir(sessDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("session notes = %d, want 1", len(entries))
+	}
+	body, err := os.ReadFile(filepath.Join(sessDir, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, "tag: auto-capture") {
+		t.Errorf("note missing tag: auto-capture:\n%s", text)
+	}
+	if !strings.Contains(text, autoSummaryHonest) {
+		t.Errorf("note missing honest summary %q:\n%s", autoSummaryHonest, text)
+	}
+	for _, banned := range []string{"Recent:", "friction_score:", "friction_breakdown:", "enriched_by:"} {
+		if strings.Contains(text, banned) {
+			t.Errorf("note must not contain %q:\n%s", banned, text)
+		}
+	}
+	for _, banned := range []string{"fix revert", "failed error"} {
+		if strings.Contains(text, banned) {
+			t.Errorf("note must not echo git subjects %q:\n%s", banned, text)
+		}
 	}
 }
 

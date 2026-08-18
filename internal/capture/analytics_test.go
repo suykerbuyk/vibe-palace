@@ -104,6 +104,27 @@ func TestGetFrictionWindows_Rounding(t *testing.T) {
 	}
 }
 
+// TestGetFrictionWindows_ExcludesAutoCapture pins the average: stub scores
+// must not dilute the window. Unscored non-auto notes still count as 0 — that
+// residual is not this unit (and is asserted here so a future change that
+// "fixes" it by also dropping zeros is noticed).
+func TestGetFrictionWindows_ExcludesAutoCapture(t *testing.T) {
+	sessions := []storage.SessionMeta{
+		{Date: dayBefore(1), FrictionScore: 20, Tag: "review"},
+		{Date: dayBefore(2), FrictionScore: 80, Tag: storage.TagAutoCapture},
+		{Date: dayBefore(3), FrictionScore: 40, Tag: "implementation"},
+		{Date: dayBefore(4), FrictionScore: 0, Tag: "review"}, // unscored non-auto → still in the average as 0
+	}
+	got := GetFrictionWindows(sessions, fixedNow, []int{7})
+	// auto-capture excluded: (20+40+0)/3 = 20.0 — not (20+80+40+0)/4 = 35.0
+	if got[0].SessionCount != 3 {
+		t.Fatalf("7d count = %d, want 3 (auto-capture excluded)", got[0].SessionCount)
+	}
+	if got[0].AvgFriction != 20.0 {
+		t.Fatalf("7d avg = %v, want 20.0 (stub excluded; unscored non-auto still zero)", got[0].AvgFriction)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ComputeFrictionTrend
 // ---------------------------------------------------------------------------

@@ -114,8 +114,20 @@ func parseSessionDates(sessions []storage.SessionMeta) []parsedSession {
 // (e.g. []int{7,30,90}), each the avg FrictionScore over sessions whose Date
 // falls within that many days before now. Sessions with unparseable dates are
 // skipped. Distinct from the ISO-week buckets of GetFrictionTrends.
+//
+// tag:auto-capture sessions are excluded from the average — their scores are
+// keyword hits on early-Stop transcript (and historically on git-log summaries),
+// not interaction. Unscored non-auto notes still count as 0 (FrictionScore
+// omitempty); that residual is not this unit.
 func GetFrictionWindows(sessions []storage.SessionMeta, now time.Time, windowDays []int) []FrictionWindow {
-	parsed := parseSessionDates(sessions)
+	filtered := make([]storage.SessionMeta, 0, len(sessions))
+	for _, s := range sessions {
+		if s.Tag == storage.TagAutoCapture {
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+	parsed := parseSessionDates(filtered)
 	out := make([]FrictionWindow, 0, len(windowDays))
 	for _, days := range windowDays {
 		cutoff := time.Duration(days) * 24 * time.Hour

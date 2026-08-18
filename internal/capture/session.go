@@ -343,7 +343,10 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 	}
 
 	// Score transcript friction before writing session.
-	if p.Transcript != "" {
+	// Auto-capture is a crash net, not an interaction record: scoring its
+	// early-Stop transcript measures bootstrap/resume keywords, not the session.
+	// Leave FrictionScore unset and Breakdown nil (never-scored), not a measured zero.
+	if p.Transcript != "" && p.Tag != storage.TagAutoCapture {
 		b, err := AnalyzeFrictionBreakdown(p.Transcript)
 		if err != nil {
 			// Was swallowed by an `if err == nil` with no else: the note kept a

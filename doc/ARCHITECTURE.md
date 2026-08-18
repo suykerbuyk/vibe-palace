@@ -1602,8 +1602,9 @@ Sessions are captured via two paths, both using the shared pipeline
   session id was **derived**, writes a claim sentinel so the hook path skips
   this session (a minted inline id gets no claim — no hook will ever query it).
 - **Hook path**: `vp hook` CLI — Claude Code invokes this on SessionEnd,
-  Stop, and PreCompact events. Produces a deterministic auto-summary from
-  `git log`, runs friction analysis, but defers transcript indexing
+  Stop, and PreCompact events. Writes an honest crash-net placeholder
+  (`Auto-captured session (no summary yet)`), does **not** friction-score
+  `tag:auto-capture` notes, and defers transcript indexing
   (`needs_indexing: true` in frontmatter). Skips if a claim sentinel exists.
 
 `vp hook` auto-capture requires a `.vibe-palace.toml` (run `vp init`); sessions
@@ -1732,13 +1733,14 @@ Stop, PreCompact) with a 30-second timeout.
 
 ### Session Enrichment (LLM synthesis)
 
-The hook path's deterministic auto-summary is a `git log` dump — poor memory for
-bootstrap, search, and a resuming developer. When the opt-in `[enrichment]`
-config block is enabled, an LLM synthesis pass replaces that heuristic
-summary/decisions/open-threads/tag with a real synthesis. It sits between the
-transcript and `WriteSession`, and is wired only into the SessionEnd hook and the
-`vp_capture_session` `enrich` param (default off — agent-authored `/wrap` notes
-are already good).
+The hook path's deterministic auto-summary is an honest crash-net placeholder
+(`Auto-captured session (no summary yet)`) — enough to mark that a session
+existed, not enough memory for bootstrap, search, or a resuming developer.
+When the opt-in `[enrichment]` config block is enabled, an LLM synthesis pass
+replaces that heuristic summary/decisions/open-threads/tag with a real
+synthesis. It sits between the transcript and `WriteSession`, and is wired only
+into the SessionEnd hook and the `vp_capture_session` `enrich` param (default
+off — agent-authored `/wrap` notes are already good).
 
 `internal/enrichment.ExtractPromptInput` distills the multi-MB transcript into a
 bounded `PromptInput` (user/assistant text capped at 12000 chars each, tool

@@ -9,40 +9,41 @@ import (
 	"testing"
 )
 
-func TestAutoSummary_WithGitRepo(t *testing.T) {
+func TestAutoSummary_HonestPlaceholder(t *testing.T) {
 	dir := t.TempDir()
-	initGitRepoMulti(t, dir, []string{"first commit", "second commit", "third commit"})
+	// Repo full of friction-keyword commit subjects — must NOT appear in the summary.
+	initGitRepoMulti(t, dir, []string{
+		"fix revert wrong undo never mind",
+		"failed error exception fatal",
+		"try again start over",
+	})
 
 	summary := AutoSummary(dir)
-	if !strings.HasPrefix(summary, "Auto-captured session. Recent: ") {
-		t.Fatalf("unexpected prefix: %q", summary)
+	if summary != autoSummaryHonest {
+		t.Fatalf("summary = %q, want %q", summary, autoSummaryHonest)
 	}
-	if !strings.Contains(summary, "first commit") {
-		t.Errorf("expected summary to contain 'first commit': %q", summary)
-	}
-	if !strings.Contains(summary, "third commit") {
-		t.Errorf("expected summary to contain 'third commit': %q", summary)
+	for _, banned := range []string{"Recent:", "fix", "revert", "wrong", "failed", "error"} {
+		if strings.Contains(summary, banned) {
+			t.Errorf("honest summary must not contain %q: %q", banned, summary)
+		}
 	}
 }
 
-func TestAutoSummary_WithoutGitRepo(t *testing.T) {
+func TestAutoSummary_IgnoresMissingGit(t *testing.T) {
 	dir := t.TempDir()
-	summary := AutoSummary(dir)
-	if summary != "Auto-captured session" {
-		t.Errorf("expected fallback, got %q", summary)
+	if got := AutoSummary(dir); got != autoSummaryHonest {
+		t.Errorf("no-git summary = %q, want %q", got, autoSummaryHonest)
 	}
 }
 
-func TestAutoSummary_EmptyRepo(t *testing.T) {
+func TestAutoSummary_IgnoresEmptyRepo(t *testing.T) {
 	dir := t.TempDir()
 	cmd := exec.Command("git", "-C", dir, "init")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}
-
-	summary := AutoSummary(dir)
-	if summary != "Auto-captured session" {
-		t.Errorf("expected fallback for empty repo, got %q", summary)
+	if got := AutoSummary(dir); got != autoSummaryHonest {
+		t.Errorf("empty-repo summary = %q, want %q", got, autoSummaryHonest)
 	}
 }
 
