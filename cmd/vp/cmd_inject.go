@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
@@ -19,18 +18,17 @@ import (
 
 var injectFlags = []cli.FlagDef{
 	{Name: "--project", Short: "-p", Arg: "PROJECT", Help: "Project name (default: auto-detect)"},
-	{Name: "--max-tokens", Arg: "N", Help: "Token budget for response", Default: strconv.Itoa(tools.DefaultBootstrapMaxTokens)},
 }
 
 func cmdInject() *cli.Command {
 	return &cli.Command{
 		Name:        "inject",
-		Synopsis:    "vp inject [--project P] [--max-tokens N]",
+		Synopsis:    "vp inject [--project P]",
 		Description: "Output bootstrap context as JSON for AI consumption. Provides sessions, tasks, decisions, and friction data in a structured format.",
 		Flags:       injectFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp inject", Comment: "Output context for the current project"},
-			{Cmd: "vp inject -p myapp --max-tokens 4000", Comment: "Output with a smaller token budget"},
+			{Cmd: "vp inject -p myapp", Comment: "Output context for a named project"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(injectFlags, args)
@@ -48,25 +46,20 @@ func cmdInject() *cli.Command {
 				return cli.ExitUser
 			}
 
-			maxTokens := fv.Int("--max-tokens")
-			if maxTokens == 0 {
-				maxTokens = tools.DefaultBootstrapMaxTokens
-			}
-
 			vault, err := openProjectVault()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp inject: %v\n", err)
 				return cli.ExitUser
 			}
 
-			return runInject(vault, proj, maxTokens, os.Stdout)
+			return runInject(vault, proj, os.Stdout)
 		},
 	}
 }
 
-func runInject(vault *storage.Vault, proj string, maxTokens int, out io.Writer) int {
+func runInject(vault *storage.Vault, proj string, out io.Writer) int {
 	resolver := vpctx.NewResolver(vault.Root)
-	result := tools.AssembleBootstrap(resolver, vault, proj, maxTokens, "", "")
+	result := tools.AssembleBootstrap(resolver, vault, proj, "", "")
 
 	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")

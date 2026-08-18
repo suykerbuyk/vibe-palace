@@ -24,7 +24,7 @@
     {
       "name": "vp_bootstrap_context",
       "mutating": false,
-      "schema_sha256": "c405e73a175965f167ddd3ea510d31aacdc6b0f66e10e4f77ce56ddbfc6e1fac"
+      "schema_sha256": "54db4954c6cbeece715435978624795c0e416145b4a64cfa30c70959e6f9be8c"
     },
     {
       "name": "vp_capture_session",
@@ -34,7 +34,7 @@
     {
       "name": "vp_check",
       "mutating": false,
-      "schema_sha256": "14c1ab0480bc6b2c4216b26d9af5f28a0bf033b8f401d131ee67b1109a134a14"
+      "schema_sha256": "859e64045ea1cc19aede942df43eda49d4ba7af3a413143c156e5f779cfdc0e6"
     },
     {
       "name": "vp_cmd",

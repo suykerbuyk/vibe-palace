@@ -96,7 +96,7 @@ Current canaries:
 | `TestLiveVaultAmendNeverMatchesAFencedHeading` | `sectionBounds` regressing to a naive scan and splicing **into a code fence**. Not hypothetical: **22 H2 headings in this project's own task files exist only as fenced sample text** — including the `## Decision` quoted by the task that specified `amend` |
 | `TestLiveVaultAmendIsIdempotentOnRealBodies` | A retried amend **duplicating** a section on a real body instead of converging — the failure a crash-and-retry would produce |
 | `TestLiveVaultRetitleNeverDisturbsAnythingElse` | `replaceTitleLine` (whole-file, first-wins, **fence-unaware**) rewriting an H1-shaped line that is not the title. Safe only because `CreateTask` always writes `# Title` first and `validateTaskBody` refuses an unfenced H1 in a body — **that is an invariant about the CORPUS, not the function**, so only the corpus can check it. Asserts exactly one line changed per file |
-| `TestBootstrapLiveVaultFitsItsOwnBudget` | The bootstrap payload overrunning its own default budget, and — the actual gate — **shedding a rung ADR-009 classifies as CORE** (`Budget.ShedCore` non-empty, or the workflow contract excerpted). Only the real vault has a resume and a contract large enough to trip the ladder. **Second gate (inline-delivery):** the payload still says something useful after a HOST cut — it ends with the `complete` sentinel, and when it exceeds the measured 19,968-byte host-cut specimen the prefix must still carry `resume_uri`, `workflow_uri`, `resume_sha256`, `active_task_count`, `post_bootstrap_instructions` and any `budget`, while NOT carrying `complete`. Only the live vault is big enough to be cut: a fixture that overruns the cap does so because its author sized it to |
+| `TestBootstrapLiveVaultStillRestoresASession` | A live restart coming back unusable. Asserts the payload an agent actually receives against the real vault: `resume_uri` and `workflow_uri` non-empty, resume and workflow bodies present, the wire carrying no `budget` / `shed_core` / `max_tokens` / pinned-zone banner, and `complete` last on the wire. **It asserts no size at all** — the token budget, the shed ladder and the ADR-009 tier vocabulary its predecessor measured were deleted in Phase 2 (iteration 310), and a ceiling reintroduced here would re-create the disease PRD §1.10 removes. Only the real vault has a resume and a contract large enough for assembly to go wrong on |
 
 **Rules for adding one:** it must `t.Skip` (never fail) when the vault is absent, it must never
 write, and it must assert something a fixture *structurally cannot* — otherwise it is just a slow
@@ -110,29 +110,19 @@ did not run on precisely the regression it exists to catch. Relying on a human t
 is the "runs when someone REMEMBERS to run it" failure this whole class of test was built to delete.
 So the invocation is a make target, not a convention:
 
-    make live-canary    # go test -count=1 -run TestBootstrapLiveVaultFitsItsOwnBudget ./internal/tools/
+    make live-canary    # go test -count=1 -v -run TestBootstrapLiveVaultStillRestoresASession ./internal/tools/
 
 `make test` depends on it, so the uncached run happens on every ordinary test invocation. **Any new
 live-vault canary belongs in that target's `-run` pattern** — adding one and leaving it to `go test
 ./...` re-opens the hole.
 
-**Headroom is a signal; core integrity is the gate.** An earlier plan for this canary proposed
-asserting a *token margin* against the then-8,000-token budget. That was rejected on evidence: the shed
-ladder absorbs a fat contract by shedding OTHER rungs, so the total barely moves. Growing the contract
-by 6 KB moved the payload only 7,072 → 7,391 tokens (it shed `active_tasks` to pay for it), and a
-synthetic over-cap contract was excerpted at **3,850 tokens — under half the budget**. A margin would
-have been green through both. The payload can sit far under budget while the core is amputated, so the
-assertion is on `Budget.ShedCore`, not on slack. Remaining headroom is still printed, as a `t.Logf`.
-
-**Postscript (260): the budget itself was the defect.** Asserting core integrity immediately exposed
-why the gate could not be satisfied — the inviolable core alone (resume 18,577 B + workflow 13,482 B
-≈ 8,015 tokens) exceeded the entire 8,000-token budget, so ADR-009 and the budget were *mutually
-unsatisfiable* and every session was silently amputating something to resolve it. Fixed by raising
-`tools.DefaultBootstrapMaxTokens` to 16,000 (sized from the measured 11,721-token everything-inline
-payload plus one growth cycle of slack), **not** by shrinking the operating contract — the contract
-sets the budget, not the reverse. The live payload now sheds nothing at all. Note the constant is the
-single source: `TestBootstrapSchemaAdvertisesTheRealDefault` and
-`TestCoreFloorMatchesBootstrapBudget` exist because that budget was once four unsynchronised literals.
+**No size assertion, deliberately (310).** This canary once asserted a token margin, then core
+integrity against `Budget.ShedCore`, against a payload budget of 8,000 and later 16,000. Phase 2
+deleted the budget, the ladder and the tier vocabulary outright, so none of those assertions has a
+subject any more and none was rewritten into a smaller ceiling — PRD §1.10 removes the numeric
+ceiling on a session-start payload rather than tuning it. What the canary measures now is delivery:
+the handles, the bodies, the absence of every rationing artifact, and the terminal `complete`
+sentinel. **If a budget ever grows back, it fails here first, on the live vault.**
 
 **A canary that finds no hazard should say so, not pass silently.** `TestLiveVaultAmendNeverMatchesAFencedHeading`
 skips (rather than passes) when the corpus contains zero fenced-only headings: a green canary with
@@ -153,35 +143,18 @@ that decides what an agent still holds is which fields were declared first.
 |------|----------------|
 | `TestBootstrapTruncatedPrefixIsDetectable` | The headline. A real payload cut at the 19,968-byte specimen offset is **detectable from inside the truncated channel**: `complete` is absent from the prefix (and present in the whole document), while `budget`, `resume_uri`, `workflow_uri`, `resume_sha256`, `active_task_count` and `post_bootstrap_instructions` all survive. It also asserts the prefix is *not* valid JSON, so a future payload that shrinks under the cap cannot turn the test green by removing the truncation it measures |
 | `TestBootstrapInstrumentsPrecedeBulk` | The order by **byte offset** — the only property a cut respects. Every instrument and recovery handle appears before `"workflow"` and `"resume"` |
-| `TestBootstrapCompleteSentinelAlwaysEmitted` | The sentinel's three properties: no `omitempty` (a zero-value result still spells out `"complete":false`, so absence cannot be confused with a false value), **structurally last** in the struct via reflection (the guard against a future field being appended after it), and last on the wire on real payloads from both sides of the shed ladder |
+| `TestBootstrapCompleteSentinelAlwaysEmitted` | The sentinel's three properties: no `omitempty` (a zero-value result still spells out `"complete":false`, so absence cannot be confused with a false value), **structurally last** in the struct via reflection (the guard against a future field being appended after it), and last on the wire on real marshalled payloads |
 
-The fixture these use is deliberately an **over-budget** payload with a resume that declares no
-`vp:pin` zone — un-sheddable by the ladder's resume rung, so the payload stays far past the cut and
-`budget` is actually emitted. That is not contrived: it is the quantum-ng specimen the `inline-delivery`
-epic measured, a real project whose inviolable core alone is ~1.95x a real host's cap.
+The fixture these use is deliberately a payload far larger than the cut, so there is real bulk on the
+far side of it. That is not contrived: it is the quantum-ng specimen the `inline-delivery` epic
+measured, a real project whose resume and workflow together are ~1.95x a real host's cap. Since 310
+vp reduces nothing, so every such payload reaches the host at full size and the cut is the host's
+alone — which is exactly the case these tests exist to make survivable.
 
 **The 19,968-byte figure is a specimen, not a constant of the system** — one host on one day
 (three Grok results of 60.3 KB, 53.4 KB and 32.7 KB each cut at exactly 19.5 KiB, a *flat* cap rather
 than a ratio). The tests cut at an offset and assert what survives it; any offset landing inside the
 bulk proves the same property.
-
-### The workflow digest (`internal/tools/bootstrap_workflow_digest_test.go`)
-
-The reduction that decides how much bulk sits in front of the resume. Every test
-here runs at the **default** budget on purpose: the digest answers a host inline
-cap, not `max_tokens`, so a fixture that squeezed the budget would prove the
-ladder works and say nothing about the property under test.
-
-| Test | What it proves |
-|------|----------------|
-| `TestBootstrapUndeclaredWorkflowIsDeliveredWhole` | 🔴 **The headline, and the one that protects the other nine projects.** A `workflow.md` declaring no pin zone comes back byte-for-byte identical, with no banner and — asserted separately — **no `budget` block at all**, so "nothing changed for an unmarked project" is proved rather than assumed |
-| `TestBootstrapWorkflowDigestDeliversThePinnedZone` | The happy path: pinned section survives whole, disposable section is gone, preamble is unconditionally inline, the banner names `workflow_uri` (a reduction that announces itself without saying where the rest went is half a fix), and `budget.shed` names `workflow->digest` |
-| `TestBootstrapWorkflowPreambleMarkerIsNotADeclaration` | A marker above the first H2 pins nothing already inline, so the document is still delivered whole — the ladder's rule, through the same parser |
-| `TestBootstrapWorkflowThatPinsEverythingIsNotDigested` / `…DigestIsIdempotent` | Both fall out of one size guard: the zone of a zone is that zone, so re-application measures equal and declines. Removing that guard reddens both |
-| `TestWorkflowRungTierDerivation` | The derivation table, including every path that must **err downward** to core: no pin zone, no H2 sections, no workflow at all, and a marker quoted inside a code fence |
-| `TestBootstrapWorkflowDigestTierIsDerivedNotConstant` | The same claim end-to-end through the real tool, on two workflows differing by **one marker line**: `shed_core` names the rung on the under-declared one and not on the fully-declared one. A hard-coded tier of either value reddens one half — which is the iteration-262 lesson applied before the incident rather than after |
-| `TestBootstrapDigestedWorkflowIsNeverExcerpted` | The **ladder reconciliation**, asserted rather than described: a digested workflow never also takes `workflow->excerpt`. Its `max_tokens` is chosen, not arbitrary, and the test says so — low enough to reach the rung, high enough that excerpting would *fit*, because the give-back and the ADR-009 core restore both undo a workflow shed that bought nothing, so at a hopeless budget removing the guard changes no observable byte and the test would be dead |
-| `TestBootstrapDigestPreservesTheWireOrder` | The transport contract re-asserted on a digested payload: instruments still precede the bulk by byte offset, `complete` is still last |
 
 ### The same contract, generalised (`internal/tools/surface_wire_order_test.go`)
 
@@ -1009,71 +982,6 @@ underscore-prefixed directories being ignored, and an unreadable `Projects/`.
 `TestCheckResumeCaps_IsReadOnly` proves the central constraint: after a run that
 flags a resume, its bytes, size and mtime are unchanged and no sibling file was
 written.
-
-### `internal/check/pin_coverage_test.go` — Pin Coverage
-
-Covers `CheckPinCoverage`, the advisory that names the `resume.md` **and
-`workflow.md`** H2 sections carrying neither `vp:pin` nor `vp:disposable`. The silent cases: no vault
-configured (Skip), no `Projects/` directory, a project with **no resume.md**, a
-resume whose every section is ruled on (one pinned, one disposable → Pass, zero
-details), and `_OverCapButFullyDeclaredIsSilent` (an over-cap core with nothing
-undeclared is `CheckCoreFloor`'s business, not this row's).
-`TestCheckPinCoverage_LatentFindingsPassButAreStillNamed` asserts the reporting
-case: the details name the offending sections **in file order** (`leaky: Current
-State; Open Threads`), never name a declared section, and carry both markers plus
-the `/vpc-wrap` pointer in the remediation — so "fix it" cannot be misread as "pin
-everything" — **and all of that prints on a `Pass` run**, because that project's
-core fits, so the finding is latent rather than exposed.
-
-The exposed/latent split gets two tests, both built so that no hardcoded name or
-size could satisfy them.
-`TestCheckPinCoverage_ExposedIsInfoAndNamedBeforeLatent` gives four projects the
-**byte-identical** under-declared resume and differs only in `workflow.md`: the
-two with a fat contract are exposed (`Info`, summary `2 of 4 EXPOSED …; 2
-latent`), named first, above the `LATENT` header, with each core split into its
-resume and workflow halves; the two with none are latent, named below it; both
-buckets sorted; status never `Fail`.
-`TestCheckPinCoverage_ExposureBoundaryIsTheCoreCap` pins the boundary to
-`CoreMaxBytes` itself — a core of *exactly* the cap is latent and still censused,
-one byte more is exposed — so an invented threshold breaks one half or the other.
-
-The deliberate rulings each get a test:
-`TestCheckPinCoverage_NoPinMarkerIsExcludedNotFlagged` (a resume that pins
-nothing is a *different* condition — excluded from the scan, never named
-section-by-section, but its count rides in the summary so the exclusion cannot
-grow unseen), `_PreambleMarkerIsNotADeclaration` (a marker above the first H2
-pins nothing already inline), `_FencedMarkerDoesNotDeclare` (a marker quoted in a
-code fence is documentation), and `_BothMarkersIsNotUndeclared` (a contradictory
-declaration is still a declaration; the pin wins). `_MixedSortedAndNeverFails`
-covers project sorting, dot/underscore directories, the scanned-vs-pin-less
-denominator on a `Pass` run, and asserts the status is never `Fail`.
-`_IsReadOnly` proves bytes and mtime are unchanged after a flagging run.
-
-The workflow half gets the two tests that pin its asymmetry.
-`TestCheckPinCoverage_WorkflowFindingIsAlwaysExposed` builds a project whose core
-fits comfortably and whose resume is fully declared, and asserts the workflow
-finding is reported **`Info`/EXPOSED anyway**, named with its document and its
-reason (`marked workflow.md: Auto-memory  [workflow digest is unconditional …]`) —
-because the digest fires on every bootstrap whatever the core measures, so
-classifying it by the core would report a live loss as latent.
-`TestCheckPinCoverage_UnmarkedWorkflowIsSilent` is the err-downward case seen from
-the advisory's side: a `workflow.md` with no markers is delivered whole, so it is
-neither a finding nor an exclusion count, and the run is `Pass` with zero details
-and the unchanged `1 resume.md fully declared` summary.
-
-`TestCheckPinCoverage_ScaffoldTemplateLeavesLiveStateLive` is where the two
-halves meet: it runs the check's own parser over the **embedded** template and
-asserts the undeclared set is *exactly* `Current State`, `Open Threads` — both
-directions are defects. Marking either disposable would assert that a session's
-working context is safe to drop; a new unmarked section appearing would slip
-through unruled. It also asserts `Reference Documents` is the one section marked
-disposable.
-
-`internal/resumezone/resumezone_test.go` (moved from `internal/tools`) keeps the
-parser-level coverage: pinned-zone extraction, fence-awareness for both markers
-and for headings, H3s staying with their parent H2, the preamble never being a
-section, and `UndeclaredLiveSections` over no-markers / all-pinned /
-all-disposable / mixed inputs.
 
 ### `cmd/vp` — Flag Wiring
 

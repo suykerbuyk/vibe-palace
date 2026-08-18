@@ -9,49 +9,18 @@ project: {{PROJECT}}
      - Stable architecture, design decisions, test inventories -> doc/
      - Completed iteration narratives -> iterations.md
      - Active work items -> tasks/ directory
-     Only current state, open threads, and pointers to deeper context belong here.
-
-     THE THREE STATES. Every `##` section below is in exactly one of three states,
-     and the state is declared HERE, in the artifact, by an HTML-comment marker on
-     the line under the heading. The two pinned sections below show the literal
-     syntax; it is not repeated inside this comment, because a marker written here
-     would close this comment block early.
-
-     vp:pin         ALWAYS-INLINE. Survives the vp_bootstrap_context token shed
-                    ladder no matter how tight the budget gets. Everything else is
-                    shed to the resume_uri when the payload will not fit.
-     vp:disposable  SAFE TO DROP. Pure navigation and pointers — an agent that loses
-                    it re-derives it from a tool call, at no cost.
-     no marker      LIVE STATE. Nobody has ruled on this section yet. Absence is NOT
-                    a value, and silence is NOT consent to drop: the section stays
-                    live until someone decides otherwise, and the `pin-coverage`
-                    check names it by heading until they do. Reach that check with
-                    the `vp_check` MCP tool (selector `pin-coverage`) — that is the
-                    host-agnostic form, and the only one available to an agent
-                    without a shell; `vp check --check pin-coverage` is the CLI
-                    equivalent where one is.
-
-     Pin ONLY what an agent must not act without — the rules that stop it corrupting
-     the vault. Narrative, history and status are NOT that, and pinning them defeats
-     the mechanism: a resume that pins everything sheds nothing.
-
-     Mark disposable ONLY what genuinely costs nothing to lose. Current State and
-     Open Threads below are deliberately left UNMARKED: they are live state, not
-     reference, and declaring them sheddable is how a session drops the thread it
-     was about to pull. -->
+     Only current state, open threads, and pointers to deeper context belong here. -->
 
 ## What This Project Is
-<!-- vp:pin -->
 
 <!-- Brief description of the project: purpose, stack, key commands. -->
 
 ## Project-Specific Behavioral Notes
-<!-- vp:pin -->
 
 <!-- Gotchas that must reach EVERY agent on EVERY host, because getting one wrong
      corrupts the vault or wastes a session. Keep terse. Prune a note only when it
-     becomes FALSE, never merely old. This section is load-bearing for correctness —
-     it is why the pin marker exists. -->
+     becomes FALSE, never merely old. This section is load-bearing for
+     correctness. -->
 
 ## Current State
 
@@ -78,7 +47,6 @@ project: {{PROJECT}}
   `tasks/some-task-slug.md`.
 
 ## Reference Documents
-<!-- vp:disposable -->
 
 <!-- A pointer table, and nothing but: every row names an artifact and the tool
      that fetches it. Losing it costs an agent nothing — the artifacts are still

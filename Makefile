@@ -35,25 +35,20 @@ test: build vet ## Run unit tests — fast, no model download
 	go test -race -short -cover ./...
 	@$(MAKE) --no-print-directory live-canary
 
-# The live-vault canary measures a vault that lives OUTSIDE this module, so `go
-# test` cannot observe its contents changing and will serve a CACHED verdict —
-# an instrument confidently describing a vault it did not look at. Proven: a
-# workflow.md grown 13.5 KB -> 19.5 KB still reported `ok (cached)`. It must run
-# uncached or it is not a gate. Costs ~0.03s; the rest of the suite stays cached.
+# The live-vault canaries measure a vault that lives OUTSIDE this module, so `go
+# test` cannot observe its contents changing and will serve a CACHED verdict — an
+# instrument confidently describing a vault it did not look at. Measured: a
+# workflow.md grown 13.5 KB -> 19.5 KB still reported `ok (cached)`. They must run
+# uncached or they are not a gate.
 #
-# It runs LAST in `test`, not as a prerequisite. As a prerequisite a red canary
-# aborts make before the unit suite runs at all — and this canary is EXPECTED to
-# be red until resume.md shrinks (ADR-009 shed_core breach), which would leave
-# the tree with no runnable tests for the duration. Suite first, gate after.
+# It runs LAST in `test`, not as a prerequisite: as a prerequisite a red canary
+# aborts make before the unit suite runs at all.
 #
 # -v IS LOAD-BEARING: `go test` prints a bare `ok` for a package whose tests all
 # SKIPPED, so without it a skipped canary is visually identical to a passing one.
-# That ambiguity is what let the windows-lock job sit un-run for 20 CI runs. With
-# -v the verdict is spelled out — PASS, FAIL or SKIP with its reason — and the
-# single -run selector keeps the output to a few lines.
 .PHONY: live-canary
 live-canary: ## Run the live-vault bootstrap canary uncached and verbose (SKIP is printed, not hidden)
-	go test -count=1 -v -run TestBootstrapLiveVaultFitsItsOwnBudget ./internal/tools/
+	go test -count=1 -v -run TestBootstrapLiveVaultStillRestoresASession ./internal/tools/
 
 .PHONY: test-full
 test-full: build vet ## Run full test suite including ONNX integration tests

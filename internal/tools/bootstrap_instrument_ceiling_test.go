@@ -109,15 +109,7 @@ func TestBootstrapInstrumentBlockFitsHostPreview(t *testing.T) {
 func worstCaseInstruments() BootstrapResult {
 	fetched := time.Date(2026, 8, 16, 15, 17, 8, 0, time.UTC)
 	return BootstrapResult{
-		Project: "vibe-palace",
-		Budget: &BootstrapBudget{
-			MaxTokens:       16000,
-			EstimatedTokens: 15980,
-			OverBudget:      true,
-			Shed:            []string{"recent_sessions", "memory", "kg_snapshot", "commands+skills", "resume->pinned", "active_tasks", "workflow->excerpt"},
-			ShedCore:        []string{"resume->pinned", "workflow->excerpt"},
-			Reason:          "⚠ The payload is over budget after shedding every rung: read resume_uri and workflow_uri to recover what was dropped.",
-		},
+		Project:         "vibe-palace",
 		ResumeURI:       "vibe-palace://resume/vibe-palace",
 		WorkflowURI:     "vibe-palace://workflow/vibe-palace",
 		ResumeSha256:    "b78985c0c74d8bcc25fed2ad486d16957c9f671ac1b07bfc225c0861fb3fcb44",
@@ -292,7 +284,6 @@ func TestBootstrapDirectiveIsLastInstrument(t *testing.T) {
 	bulk := offsetOf(t, raw, `"workflow":`)
 
 	for _, instrument := range []string{
-		`"budget":`,
 		`"resume_uri":`,
 		`"workflow_uri":`,
 		`"resume_sha256":`,

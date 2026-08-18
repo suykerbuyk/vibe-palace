@@ -16,51 +16,28 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
 
-// HostInlineCapBytes is the measured flat host inline cap (Grok pane, iter 287):
-// "first 19.5 KB of …" = 19,968 bytes. Named here so the iteration reader's
-// budget clamp sits next to the figure it is defending, not in a schema string.
-// resource_read_tool.go cites the same measurement for the pager's headroom.
-//
-// Standing principle: return complete information blocks, or handles to request
-// them — never truncate a narrative body to fit a budget.
-const HostInlineCapBytes = 19968
-
 // DefaultGetIterationMaxBytes is the default max_bytes when omitted. It is a
-// budget for MARSHALLED entry rows (not bare body lengths), and leaves envelope
-// headroom under HostInlineCapBytes on every measured project at the default.
+// budget for MARSHALLED entry rows, not bare body lengths.
 const DefaultGetIterationMaxBytes = 12000
 
-// MaxGetIterationMaxBytes is the hard clamp on max_bytes — the budget for the
-// sum of json.Marshal costs of the entry rows that will be emitted.
+// MaxGetIterationMaxBytes is this tool's own hard clamp on max_bytes — the
+// budget for the sum of json.Marshal costs of the entry rows it will emit.
 //
-// It is intentionally STRICTLY LESS than HostInlineCapBytes. max_bytes does
-// not include the result wrapper (project, mode, newest_n, oldest_n, returned,
-// bytes_inlined, more_available, max_bytes, entries key, complete). That
-// envelope is reserved separately as getIterationEnvelopeReserve. Setting
-// Max == HostInlineCapBytes re-created the measured breach: rezbldr reported
-// bytes_inlined 18966 (under "budget") while putting 21052 B on the wire.
+// 🔴 IT IS A SERVER-CHOSEN BOUND, NOT A HOST'S. The figure originated in a
+// measurement of one host's inline cap, and that provenance used to be encoded
+// here as an exported HostInlineCapBytes constant with the clamp derived from it
+// by subtraction. That was the defect: it made a host-specific number part of a
+// host-agnostic surface, so every other host inherited one pane's limit as
+// though it were a property of vp. The constant is deleted and nothing is
+// derived from it any more — this clamp now answers only to itself, and the
+// standing principle it serves is the one below.
 //
-// Invariant: MaxGetIterationMaxBytes + getIterationEnvelopeReserve <= HostInlineCapBytes.
+// STANDING PRINCIPLE: return complete information blocks, or handles to request
+// them — never truncate a narrative body to fit a budget. A caller that wants
+// more than this asks for the resource URI and pages it, which has no ceiling to
+// tune. Host inline limits are facts about a host: they belong in a test as a
+// named specimen, never in a shipped constant.
 const MaxGetIterationMaxBytes = 17000
-
-// getIterationEnvelopeReserve is the bytes reserved for the result wrapper
-// around the entries array so a full row budget cannot push the wire payload
-// over HostInlineCapBytes. 19968 - 17000 = 2968.
-const getIterationEnvelopeReserve = HostInlineCapBytes - MaxGetIterationMaxBytes
-
-// Compile-time guard: the two budget constants must not be equal, and the
-// reserve must be positive.
-func init() {
-	if MaxGetIterationMaxBytes >= HostInlineCapBytes {
-		panic("MaxGetIterationMaxBytes must be strictly less than HostInlineCapBytes")
-	}
-	if getIterationEnvelopeReserve <= 0 {
-		panic("getIterationEnvelopeReserve must be positive")
-	}
-	if MaxGetIterationMaxBytes+getIterationEnvelopeReserve > HostInlineCapBytes {
-		panic("MaxGetIterationMaxBytes + envelope reserve exceeds HostInlineCapBytes")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // vp_get_iteration
@@ -179,8 +156,9 @@ func getIterationHandler(vault *storage.Vault) mcp.HandlerFunc {
 		}
 		if maxBytes > MaxGetIterationMaxBytes {
 			return nil, apperr.Caller(fmt.Errorf(
-				"max_bytes %d exceeds hard clamp %d (marshalled-row budget; host cap is %d with envelope reserved); pass a smaller budget",
-				maxBytes, MaxGetIterationMaxBytes, HostInlineCapBytes))
+				"max_bytes %d exceeds this tool's clamp of %d (a budget for marshalled entry rows); "+
+					"pass a smaller budget, or page the iterations resource URI, which has no ceiling",
+				maxBytes, MaxGetIterationMaxBytes))
 		}
 
 		path, err := vault.IterationsFile(p.Project)

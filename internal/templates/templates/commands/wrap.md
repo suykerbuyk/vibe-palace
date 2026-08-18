@@ -58,7 +58,7 @@ capturing anything, and carry its findings into Step 3. Call `vp_check`
 (the MCP tool) with an **explicit** selector list:
 
 ```json
-{"checks": ["vault-filesystem", "stray-scaffolds", "surface-merge-driver", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage", "template-drift", "writer-identity", "stale-mcp"]}
+{"checks": ["vault-filesystem", "stray-scaffolds", "surface-merge-driver", "resume-caps", "resume-refs", "vault-abs-paths", "template-drift", "writer-identity", "stale-mcp"]}
 ```
 
 Name that list deliberately. Do **not** omit the argument, and do
@@ -79,7 +79,7 @@ vault; key nothing off it.
   only a finding here: relocating a vault is a deliberate human move,
   not something a wrap performs or waits on. Whatever comes back, report
   it and **continue to Step 2 regardless**. Vaults carry standing
-  `pin-coverage` and `resume-caps` findings today; a wrap that refused
+  `resume-caps` findings today; a wrap that refused
   to proceed on those would strand every host.
 - **Report, do not auto-fix.** The one exception is the `resume-refs`
   row: you are about to edit `resume.md` in Step 3 anyway, so a

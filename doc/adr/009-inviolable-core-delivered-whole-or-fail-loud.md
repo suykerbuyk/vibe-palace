@@ -1,6 +1,22 @@
 # ADR 009: Deliver the Inviolable Core Whole, or Fail Loud — Never Silently Truncate Operating Instructions or Active State
 
-**Status:** §1–§2 Accepted (2026-07-21); **§3 WITHDRAWN 2026-08-15 — see the
+**Status:** ⛔ **SUPERSEDED IN FULL — `first-principles` Phase 2, iteration 310.**
+The mechanism this ADR specified no longer exists: the shed ladder,
+`budget.shed_core`, the tier derivations, the `core-floor` and `pin-coverage`
+checks, the `vp:pin` / `vp:disposable` marker vocabulary and the payload token
+budget itself were all deleted. There is no reduction path left to make
+"whole or fail loud" a live question — bootstrap sends the bodies whole because
+there is nothing that could shed them, and the only remaining truncation risk is
+the HOST's, which `complete` reports. The task `adr-009-arm-fail-loud-bootstrap`
+that this ADR gated was cancelled with the apparatus.
+
+**This page is kept as the historical record of a decision, not as guidance.**
+Symbol names below (`shed_core`, `CoreMaxBytes`, the rung tiers) are quotations
+of deleted code; do not implement against them. The reasoning that survives is
+PRD §1.10–§1.11: no numeric ceiling on a session-start payload, and a
+correctness rule reaches an agent by being enforced in code.
+
+*Original status line, preserved:* §1–§2 Accepted (2026-07-21); **§3 WITHDRAWN 2026-08-15 — see the
 amendment immediately below, and read it before anything else on this page.**
 Partially enforced 2026-07-22
 (`e52cfe1`: honest over-budget verdict computed on the final payload +

@@ -112,7 +112,7 @@ func TestIntegrationInjectBootstrap(t *testing.T) {
 	}, "session body")
 
 	var buf bytes.Buffer
-	code := runInject(v, proj, 8000, &buf)
+	code := runInject(v, proj, &buf)
 	if code != cli.ExitOK {
 		t.Fatalf("exit code = %d", code)
 	}

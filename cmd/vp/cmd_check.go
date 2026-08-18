@@ -45,8 +45,6 @@ func cmdCheck(info cli.BuildInfo) *cli.Command {
 			{Cmd: "vp check --check resume-caps", Comment: "Warn on any project resume.md over its size/row caps"},
 			{Cmd: "vp check --check resume-refs", Comment: "Warn on any resume.md committing a host-local ~/.claude/plans/… path"},
 			{Cmd: "vp check --check vault-abs-paths", Comment: "Warn on any resume.md/workflow.md committing a host-rooted absolute path (/home/…, C:\\…) — true on one machine, false everywhere else"},
-			{Cmd: "vp check --check core-floor", Comment: "Warn on any project whose resume.md + workflow.md core cannot fit the payload budget"},
-			{Cmd: "vp check --check pin-coverage", Comment: "Name the resume.md sections carrying neither a pin nor a disposable marker — live state in the sheddable zone"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(checkFlags, args)
@@ -280,26 +278,6 @@ func gatherCheckResults() []check.Result {
 				// only, never Fail: assigning an iteration number to an orphan
 				// is a human judgement the migration refuses to make itself.
 				results = append(results, check.CheckIterationHeadings(vault))
-
-				// Vault-wide: flag workflow.md files over the bootstrap
-				// resume.md + workflow.md together — the ADR-009 inviolable
-				// core — against the share of the bootstrap budget available
-				// to it. Replaced the workflow-only cap at 260: what must fit
-				// is the core TOGETHER, so a workflow cap was not derivable
-				// on its own. Advisory only, never Fail (same stance as resume
-				// caps: no write path can prevent, so detection is on offer).
-				results = append(results, check.CheckCoreFloor(vault))
-
-				// Vault-wide: name the resume.md sections carrying neither
-				// `<!-- vp:pin -->` nor `<!-- vp:disposable -->`. Under the
-				// three-state rule an unmarked section is LIVE STATE, so this
-				// row reports live content sitting in the zone the shed ladder
-				// drops. Nothing else in the tree reads a pin marker outside
-				// the ladder itself, which is how the shipped template came to
-				// declare live state sheddable unnoticed. Advisory only, never
-				// Fail — "unmarked" is a legitimate end state for genuinely
-				// live content.
-				results = append(results, check.CheckPinCoverage(vault))
 			}
 		}
 	}

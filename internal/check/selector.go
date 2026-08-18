@@ -84,18 +84,6 @@ var Producers = map[string]func(vaultRoot string) []Result{
 		}
 		return []Result{CheckIterationHeadings(storage.NewVault(vaultRoot))}
 	},
-	"core-floor": func(vaultRoot string) []Result {
-		if vaultRoot == "" {
-			return []Result{{Name: "Core floor", Status: Skip, Summary: "no vault configured"}}
-		}
-		return []Result{CheckCoreFloor(storage.NewVault(vaultRoot))}
-	},
-	"pin-coverage": func(vaultRoot string) []Result {
-		if vaultRoot == "" {
-			return []Result{{Name: "Pin coverage", Status: Skip, Summary: "no vault configured"}}
-		}
-		return []Result{CheckPinCoverage(storage.NewVault(vaultRoot))}
-	},
 	// template-drift guards its own empty root (it has nothing to compare a
 	// vault copy against without one) and aggregates the per-resource rows the
 	// CLI prints into a single row — see CheckTemplateDrift.
@@ -143,8 +131,6 @@ var ProducerOrder = []string{
 	"resume-refs",
 	"vault-abs-paths",
 	"iteration-headings",
-	"core-floor",
-	"pin-coverage",
 	"template-drift",
 	"host-surfaces",
 	"writer-identity",

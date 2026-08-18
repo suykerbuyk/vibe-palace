@@ -251,19 +251,29 @@ func TestGetIteration_RejectBothNeither(t *testing.T) {
 	}
 }
 
+// hostInlineCapSpecimen is ONE host's measured inline cap (Grok pane, iter 287):
+// "first 19.5 KB of …" = 19,968 bytes. It lives HERE, in a test, and not as a
+// shipped constant, for the reason bootstrap_instrument_ceiling_test.go states:
+// naming a host's limit in the server surface makes one pane's number a property
+// of vp on every other host. As a specimen it still does useful work — the wire
+// assertions below check this tool stays comfortably inside a real observed
+// limit — without any shipped code deriving anything from it.
+const hostInlineCapSpecimen = 19968
+
 func TestGetIteration_DefaultReadCapUnchanged(t *testing.T) {
-	// Pin the vaultfs constants so this task cannot raise them silently.
-	// Imported via the same values the package documents.
-	if HostInlineCapBytes != 19968 {
-		t.Fatalf("HostInlineCapBytes=%d", HostInlineCapBytes)
+	// The clamp is this tool's own bound; nothing derives it from a host number
+	// any more. Pin it so it cannot drift silently, and keep it under the
+	// observed specimen so the default stays deliverable on a measured host.
+	if MaxGetIterationMaxBytes != 17000 {
+		t.Fatalf("MaxGetIterationMaxBytes=%d", MaxGetIterationMaxBytes)
 	}
-	if MaxGetIterationMaxBytes >= HostInlineCapBytes {
-		t.Fatalf("MaxGetIterationMaxBytes (%d) must be strictly < HostInlineCapBytes (%d)",
-			MaxGetIterationMaxBytes, HostInlineCapBytes)
+	if DefaultGetIterationMaxBytes >= MaxGetIterationMaxBytes {
+		t.Fatalf("default (%d) must be under the clamp (%d)",
+			DefaultGetIterationMaxBytes, MaxGetIterationMaxBytes)
 	}
-	if MaxGetIterationMaxBytes+getIterationEnvelopeReserve != HostInlineCapBytes {
-		t.Fatalf("envelope reserve invariant broken: max=%d reserve=%d host=%d",
-			MaxGetIterationMaxBytes, getIterationEnvelopeReserve, HostInlineCapBytes)
+	if MaxGetIterationMaxBytes >= hostInlineCapSpecimen {
+		t.Fatalf("clamp (%d) is not under the measured host specimen (%d)",
+			MaxGetIterationMaxBytes, hostInlineCapSpecimen)
 	}
 }
 
@@ -297,7 +307,7 @@ func TestAppendGetRoundTrip(t *testing.T) {
 
 // TestGetIteration_WireSizeAtMaxBudget is the ratchet for the marshalled-row
 // budget. MANY SMALL entries maximise per-row overhead (the shape that blew
-// rezbldr/quantum-ng past HostInlineCapBytes when the budget counted bare
+// rezbldr/quantum-ng past hostInlineCapSpecimen when the budget counted bare
 // bodies). Break the fill to use len(Body) again and this goes red.
 func TestGetIteration_WireSizeAtMaxBudget(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
@@ -316,10 +326,10 @@ func TestGetIteration_WireSizeAtMaxBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(wire) > HostInlineCapBytes {
-		t.Fatalf("wire size %d exceeds HostInlineCapBytes %d (returned=%d bytes_inlined=%d); "+
+	if len(wire) > hostInlineCapSpecimen {
+		t.Fatalf("wire size %d exceeds hostInlineCapSpecimen %d (returned=%d bytes_inlined=%d); "+
 			"budget must count marshalled rows + envelope, not bare bodies",
-			len(wire), HostInlineCapBytes, got.Returned, got.BytesInlined)
+			len(wire), hostInlineCapSpecimen, got.Returned, got.BytesInlined)
 	}
 	if got.Returned < 2 {
 		t.Fatalf("expected multiple rows under max budget, got returned=%d", got.Returned)
@@ -382,8 +392,8 @@ func TestGetIteration_NModeFillAndManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(wire) > HostInlineCapBytes {
-		t.Fatalf("n-mode wire %d > host cap %d", len(wire), HostInlineCapBytes)
+	if len(wire) > hostInlineCapSpecimen {
+		t.Fatalf("n-mode wire %d > host cap %d", len(wire), hostInlineCapSpecimen)
 	}
 }
 
@@ -407,7 +417,7 @@ func TestGetIteration_NModeFirstOversizeThenManifests(t *testing.T) {
 		t.Fatalf("first should be manifest handle, got body len %d", len(got.Entries[0].Body))
 	}
 	wire, _ := json.Marshal(got)
-	if len(wire) > HostInlineCapBytes {
+	if len(wire) > hostInlineCapSpecimen {
 		t.Fatalf("wire %d > cap", len(wire))
 	}
 }
@@ -445,7 +455,7 @@ func TestIterationURI_MatchIndexByteIdentity(t *testing.T) {
 // TestGetIteration_DefaultBudgetWireCap pins the DEFAULT max_bytes path on a
 // many-small-entry fixture. Per-row overhead is what blows the host cap; entry
 // COUNT is the variable. Round-one body-only budgeting produced 33 KB wire at
-// default on 100×120 B bodies — this must stay ≤ HostInlineCapBytes.
+// default on 100×120 B bodies — this must stay ≤ hostInlineCapSpecimen.
 func TestGetIteration_DefaultBudgetWireCap(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
 	var frames []string
@@ -463,9 +473,9 @@ func TestGetIteration_DefaultBudgetWireCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(wire) > HostInlineCapBytes {
+	if len(wire) > hostInlineCapSpecimen {
 		t.Fatalf("default-budget wire %d exceeds host cap %d (returned=%d inlined=%d)",
-			len(wire), HostInlineCapBytes, got.Returned, got.BytesInlined)
+			len(wire), hostInlineCapSpecimen, got.Returned, got.BytesInlined)
 	}
 }
 

@@ -179,14 +179,16 @@ func lastAlertIndex(directive string) int {
 // occupying the alert channel, per the AuditStaleness field comment) rather than
 // a delivery defect, and no assertion on the delivered string can distinguish it.
 //
-// The fixture forces the over-budget alert with an impossible max_tokens so at
-// least one alert is guaranteed regardless of what the temp vault contains.
+// The fixture relies on the vault-staleness alert: a temp vault has no fetch
+// history, so its age is unknown and computeVaultStaleness warns. The test
+// fails loudly below if no alert is raised at all, so a fixture that stops
+// producing one cannot quietly make this assertion vacuous.
 func TestHerdrAnnouncementRidesTheDirectiveNotTheAlerts(t *testing.T) {
 	vault, resolver := testSetup(t)
 	t.Setenv("HERDR_ENV", "1")
 	t.Setenv("HERDR_PANE_ID", "pane-7")
 
-	br := assembleBootstrap(resolver, vault, "test-proj", 1, "", "", true)
+	br := assembleBootstrap(resolver, vault, "test-proj", "", "", true)
 	directive := br.PostBootstrapInstructions
 
 	herdrAt := strings.Index(directive, "vpc-herdr")

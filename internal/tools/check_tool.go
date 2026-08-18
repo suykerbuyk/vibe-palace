@@ -36,7 +36,7 @@ import (
 
 // CheckRow is one diagnostic row: the projection of a single check.Result.
 // Details stays an ARRAY — check.ToJSON folds Summary and Details into one
-// string, which is lossy for pin-coverage's multi-line per-project remediation,
+// string, which is lossy for a check whose remediation spans several lines,
 // and check.Status is an int, so the raw Result cannot be marshalled either.
 type CheckRow struct {
 	Name    string   `json:"name"`              // human check name, e.g. "Resume refs"

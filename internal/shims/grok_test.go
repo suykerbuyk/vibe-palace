@@ -124,22 +124,21 @@ func TestRenderGrokHubGolden(t *testing.T) {
 		"call `vp_bootstrap_context`",
 		// NOT "arrive whole on every transport" — that literal was retired here
 		// deliberately. It is the claim this epic disproved: a host cuts the
-		// result regardless of what vp shed, so no transport promise can be made
+		// result regardless of what vp sent, so no transport promise can be made
 		// about arrival. What vp can promise is what it SENDS. A golden asserting
 		// the old wording would have pinned a false claim in place on the one
 		// surface fronting the host where the cut was measured — the test would
 		// have been enforcing the bug.
-		"Absent a shed, vp SENDS",
-		"`budget.shed`",
+		//
+		// Since Phase 2 there is only ONE axis to teach. vp sends the bodies
+		// whole — the shed ladder is deleted, so a short body is never vp's
+		// doing — and the only remaining question is whether the HOST delivered
+		// them, which the terminal `complete` sentinel answers. The hub fronts
+		// the exact host where a flat 19.5 KB inline cut was measured, so that
+		// sentinel and the recovery handle are what must appear here.
+		"sends `resume` and `workflow` WHOLE",
 		"`resume_uri`",
-		// ...and "whole from vp" is not "whole on arrival". `budget` answers what
-		// vp shed; only the terminal `complete` sentinel answers whether the host
-		// delivered it. The hub fronts the exact host where a flat 19.5 KB inline
-		// cut was measured, so both axes are pinned here — the shed axis by
-		// `shed_core` (an optional-rung shed is benign and must not be re-fetched)
-		// and the transport axis by `complete`.
 		"`complete: true`",
-		"`shed_core`",
 		// Schema-loading guidance.
 		"load its schema first",
 		shimCloseDelim,

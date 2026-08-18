@@ -49,7 +49,7 @@ its full MCP tool surface (versioned in `internal/mcp/tool_surface.golden.json`,
 | `internal/reconcile` | Check → Plan → Apply reconcilers for managed config-file tiers | (per-artifact reconcilers) |
 | `internal/templates` | Compiled-in template corpus (incl. the agent doctrine, `templates/doctrine.md`) + materialize/reconcile lifecycle | `Executor`, `Lock` |
 | `internal/worktree` | Git-worktree isolation for plan execution (`vp worktree create\|remove\|list`) | `Create`, `Remove`, `List` |
-| `internal/check` | Doctor checks for config, vault, embedder, git, agent drift, resume.md caps, the ADR-009 core floor, and resume/workflow pin coverage | `Run`, `CheckConfig`, `CheckAgentDrift`, `CheckResumeCaps`, `CheckCoreFloor`, `CheckPinCoverage` |
+| `internal/check` | Doctor checks for config, vault, embedder, git, agent drift, resume.md caps, host-rooted paths, template drift and the deleted `vp-surface` merge driver | `Run`, `CheckConfig`, `CheckAgentDrift`, `CheckResumeCaps`, `CheckVaultAbsPaths`, `CheckSurfaceMergeDriver` |
 | `internal/slug` | Project-slug validation and normalization | `Slugify`, `Validate` |
 
 ---
@@ -67,7 +67,7 @@ a rule that is none of these is not enforced, it is merely written down.
 | Posture | When | Example |
 |---|---|---|
 | **DERIVE** | the server can see every input, and there is one checkable answer | iteration number; `request_id`; the sync verdict (`storage.RemoteVerdict`); audit churn |
-| **DECLARE + ENFORCE** | the answer is authorial INTENT that no parsing recovers; the artifact declares it and the server refuses to guess when it is absent | the `<!-- vp:pin -->` marker in `resume.md`; a task's `Parent:`/`Depends:` lines; every `reason` in the `sourceaudit` baseline |
+| **DECLARE + ENFORCE** | the answer is authorial INTENT that no parsing recovers; the artifact declares it and the server refuses to guess when it is absent | a task's `Parent:`/`Depends:` lines; every `reason` in the `sourceaudit` baseline |
 | **REPORT + DEFER** | the answer is a trade-off or an irreversible act | the vault audit's findings; task retirement |
 
 **Err DOWNWARD.** The postures do not fail symmetrically: a REPORT that should have
@@ -829,8 +829,6 @@ tool-registry build. Registered names:
 | `resume-caps` | `Resume caps` | Whole vault — every `Projects/*/resume.md` |
 | `resume-refs` | `Resume refs` | Whole vault — host-local plan refs in every `Projects/*/resume.md` |
 | `vault-abs-paths` | `Vault abs paths` | Whole vault — host-rooted absolute paths in every project's `resume.md` + `workflow.md` |
-| `core-floor` | `Core floor` | Whole vault — every project's `resume.md` + `workflow.md` vs its share of the payload budget |
-| `pin-coverage` | `Pin coverage` | Whole vault — `Projects/*/resume.md` and `Projects/*/workflow.md` H2 sections carrying neither `vp:pin` nor `vp:disposable` |
 
 The table is ordered as `check.ProducerOrder` declares, which is the order a
 default (unfiltered) run emits. Re-derive it from that slice rather than trusting
@@ -939,143 +937,6 @@ document meant to say is a human judgement, not a mechanical rewrite. For that
 reason `/vpc-wrap` reports this row and does **not** auto-fix it, unlike the
 `resume-refs` row it sits beside. Exposed host-agnostically over MCP by
 `vp_check`'s `vault-abs-paths` selector.
-
-### Inviolable-core floor detection (`check.CheckCoreFloor`)
-
-`resume.md` and `workflow.md` together are the **ADR-009 inviolable core** — the
-two artifacts `vp_bootstrap_context` must deliver whole. `CheckCoreFloor`
-(`internal/check/core_floor.go`) walks `<vault>/Projects/*/` and measures each
-project's core against `check.CoreMaxBytes`, derived from the payload budget
-rather than chosen:
-
-```
-tools.DefaultBootstrapMaxTokens (16,000) × ~4 bytes/token = 64,000 B
-− CoreContextReserveBytes (8,000 B, the sheddable context tier + overhead)
-= 56,000 B available to the core
-```
-
-`TestCoreFloorMatchesBootstrapBudget` (`internal/tools`) pins the constant to
-that derivation so the two cannot drift. The pinning test lives in `tools`
-because `check` must not import `tools` — `tools`' own tests import `check`, and
-the reverse edge would cycle.
-
-Every project within the cap yields `Pass`; one or more over it yields a single
-`Info` row naming them and splitting the total into its resume and workflow
-halves (an **absent** file reports `absent`, never `0.0 KB`, which would read as
-present-but-empty). Like the resume checks it is strictly read-only and **never
-`Fail`** — there is no typed write path to gate, so prevention is unachievable
-in-process; the un-bypassable gate is the LiveVault canary. A healthy state is
-silent. Selectable as `vp check --check core-floor`.
-
-The per-project half of that scan — `measureCore` (stat both artifacts; neither
-present means nothing to measure) and `coreMeasure.overCap()` (strictly greater
-than `CoreMaxBytes`, so the bound itself still fits) — is **shared, not copied**.
-`CheckPinCoverage` asks the same question in different words ("will this
-project's resume actually be shed?") and answers it from the same bytes and the
-same bound, so no second threshold can be invented and then rot out of step.
-
-**This replaced a workflow-only cap at iteration 260.** The predecessor measured
-`workflow.md` alone against the 4,000-byte excerpt bound. That stopped meaning
-anything once the budget rose above the core floor — the ladder rarely reaches
-the workflow rung now, so the advisory fired on contracts causing no harm. It
-also measured the wrong thing: what must fit is the core *together*, since a lean
-resume affords a fat contract and vice versa, so a workflow-only cap was never
-derivable on its own. The defect that actually bit — a core of 8,015 tokens
-against an 8,000-token budget, making ADR-009 arithmetically unsatisfiable — was
-invisible to the old check and is caught by this one.
-
-### Pin coverage (`internal/resumezone`, `check.CheckPinCoverage`)
-
-An H2 section of a `resume.md` **or a `workflow.md`** is in exactly **one of
-three states**, declared in the artifact by an HTML-comment marker rather than by
-a code-side allowlist:
-
-| Marker | State | Reducer behaviour |
-|--------|-------|----------------|
-| `<!-- vp:pin -->` | ALWAYS-INLINE | survives the shed ladder at any budget; is the workflow digest |
-| `<!-- vp:disposable -->` | SAFE TO DROP | the author has ruled it droppable |
-| *(neither)* | **LIVE STATE** | dropped today — and nobody has ruled on it |
-
-**Two documents, one vocabulary, one parser.** `workflow.md` joined the scan when
-bootstrap gained its workflow digest: both documents are now reduced to their
-pinned zone by the same `resumezone` functions, so the advisory about what was
-reduced has to read them the same way or it describes a document nothing else is
-looking at — the divergence this project already paid for twice (191, 204).
-
-They are **not** dropped under the same conditions, and the report says so per
-row: a resume section is dropped only under budget pressure (hence exposed vs
-latent, below), while a workflow section is dropped on **every** bootstrap,
-because the digest answers a host inline cap rather than a token budget. So a
-workflow finding is **always exposed**. Conversely a `workflow.md` declaring no
-pin zone is neither scanned nor counted as an exclusion: it is delivered whole,
-nothing is lost, and a standing amber over a healthy state teaches its reader to
-skim. A pin-less *resume* still is counted, because that one has a cost — the
-ladder refuses to shed it and bootstrap reports over-budget instead.
-
-The third row is the point. With only a pin marker there are two states in the
-file but three in the author's head: pinned, deliberately sheddable, and *nobody
-has looked at this yet* — and collapsing the third into "sheddable" is exactly
-how live state gets dropped silently. Requiring a **positive declaration on the
-drop side** makes the omission visible.
-
-`internal/resumezone` is the one fence-aware reader of those markers
-(`scanResumeH2`, `PinnedZone`, `UndeclaredLiveSections`). It is a **leaf**
-package, not part of `internal/tools` where it first landed, because its second
-caller lives in `internal/check`: `internal/tools` already imports
-`internal/check` (`resume_refs_tool.go`, `surface_tools.go`), so `check -> tools`
-would cycle. The alternative — copying the parser across the wall and pinning the
-copy with a link test, the arrangement `CoreMaxBytes` uses — is right for a
-constant and wrong for a parser: two walks can disagree about fences, section
-ends, preamble markers and contradictory markers, and every one of those
-disagreements is silent. So the parser moved **down** rather than being copied
-**across**, the same shape `internal/mdfence` has.
-
-`CheckPinCoverage` walks `<vault>/Projects/*/resume.md` and `*/workflow.md` and
-**names** each finding's project, document and undeclared sections (a bare count would rot). A resume
-that pins **nothing** is a *different* condition and is deliberately excluded
-rather than flagged: with no pin zone every section is undeclared, so the finding
-would degenerate into the whole table of contents, and its remedy ("declare a pin
-zone") is not this check's remedy ("rule on these named sections"). It is already
-reported elsewhere — `PinnedZone` returns `declared=false`, so the ladder keeps
-such a resume whole and bootstrap reports over-budget rather than guessing. The
-exclusion is never silent: the pin-less count rides in the summary on `Pass` runs
-too. Strictly read-only and **never `Fail`** — "unmarked" is a legitimate end
-state for genuinely live content, so failing on it would be demanding a lie.
-Selectable as `vp check --check pin-coverage`.
-
-**Exposed vs latent — the aim, added at iteration 262.** The first cut reported
-every undeclared resume identically, which against the live vault was 8 of 8
-projects on day one. True, but not *aimed*: a row that is red for everything
-teaches its reader to skim it — the failure this repo already carries a live
-instance of (the `vp init` scaffold `vault tidy` re-reports every run). An
-undeclared section only costs something when that project's resume is **actually
-shed**, and a resume is only shed when the project's payload cannot fit. So each
-finding is classified by the measurement `CheckCoreFloor` already makes —
-`measureCore` + `coreMeasure.overCap()`, the same bytes against the same
-`CoreMaxBytes` — and **not** by a threshold invented here:
-
-| Class | Condition | Status contribution |
-|-------|-----------|---------------------|
-| **EXPOSED** | core **over** `CoreMaxBytes` — the ladder reduces this resume, so the named sections are dropped for real | any exposed finding ⇒ `Info` |
-| **LATENT** | undeclared sections exist, but the core fits, so nothing is dropped today | all findings latent ⇒ `Pass` |
-
-The summary alone tells the reader which case they are in (`1 of 8 EXPOSED —
-undeclared live sections being shed now; 7 latent` vs `2 of 3 latent —
-undeclared live sections, core fits, none shed`), and the exposed block is
-printed **first**, carrying each project's core split into its resume and
-workflow halves. **`Pass` is not silence here**: the latent census still prints
-every project and every section, for the same reason the pin-less exclusion count
-does — a latent set that could grow unseen is a defect maturing in the dark. The
-row is silent only when there are no findings at all. Because the split is
-derived, a change to the bootstrap budget moves it automatically.
-
-The shipped scaffold template pins `What This Project Is` and `Project-Specific
-Behavioral Notes`, marks `Reference Documents` disposable (a pure pointer table
-an agent re-derives from a tool call), and leaves `Current State` and `Open
-Threads` **unmarked on purpose** — they are live state, and every new project
-therefore reports two undeclared live sections on day one. That is the honest
-reading, not a false positive: a new project's core fits, so those two sections
-appear in the **latent** census rather than as a red row demanding action.
 
 ### Orphaned-plan reporter (`internal/planscan`)
 
@@ -1342,52 +1203,26 @@ A single call assembles: workflow rules, project resume, active tasks, recent
 sessions, KG snapshot, and available commands/skills. This replaces the
 multi-file CLAUDE.md pattern used by legacy systems.
 
-#### Honest context budgets (ADR-009)
+#### Whole delivery, and the one axis that remains (310)
 
-The payload is not unconditional: a token-shed ladder drops rungs until the
-result fits `max_tokens`. The ladder used to be a **silent instrument** — it
-could run out of things to shed, return over budget anyway, and report none of
-it. ADR-009 makes it honest:
+The payload is **unconditional**: `resume` and `workflow` are inlined whole, and
+there is no token budget, no shed ladder, no workflow digest and no pin/disposable
+marker vocabulary. All of it was deleted in `first-principles` Phase 2 — see
+ADR-009, which is superseded in full and kept only as a historical record.
 
-- **`budget.shed`** lists, in shed order, every rung the ladder dropped
-  (e.g. `kg_snapshot`, `commands+skills`, `resume->pinned`, `active_tasks`).
-  The `budget` block is absent entirely when nothing was shed.
-- **`budget.shed_core`** names the subset of shed rungs ADR-009 classifies as
-  CORE (e.g. `resume->pinned`) — core rungs still shed exactly like context
-  rungs today, but a core shrink is called out as such.
-- **`budget.over_budget`** is the honest verdict, computed on the **final**
-  payload as returned — a payload that still exceeds `max_tokens` after the
-  ladder shed everything it could says so. There is no false pass.
-- A shed resume arrives as its **pinned sections only**, behind a banner, with
-  a `resume_uri` the caller can page through `vp_read_resource` for the full
-  body. A shed task list leaves `active_task_count`, so the backlog's existence
-  and size survive the shed.
-- **This ladder is the only reduction path vp CONTROLS — it is not the only one.**
-  A host's per-tool-result inline cap is a second path, external and invisible to
-  vp: measured 2026-08-12 at a flat 19.5 KB on one host, cutting a ~56 KB payload
-  mid-`resume`. vp cannot see it happen and reports `budget: absent` — truthfully
-  about its own ladder, and misleadingly about what arrived.
-- **There was also a second INTERNAL path, and it is gone.** A byte-axis `slim`
-  control cut the resume to a 4,000-byte prefix, ignored the pin markers,
-  defaulted ON for streamable-HTTP, and was recorded in no field, so a payload
-  that dropped most of a resume could return `budget: null`. It also suppressed
-  *this* ladder's report, because cutting the resume first made the payload fit.
-  It was deleted at iteration 264 on the grounds that the "host truncates large
-  inline results" bound it served had never been measured. 🔴 **That bound HAS
-  since been measured** (19.5 KB, flat, host-side) — so the deletion's stated
-  premise no longer holds, though the deletion itself still stands: a blind byte
-  prefix that reports nothing was never the right answer to a host cut. The right
-  answers are the field reorder and the `complete` sentinel below, and the
-  manifest restructure in `decide-what-the-bootstrap-budget-tracks`.
-  **An absent `budget` now means nothing was reduced —
-but only once `complete` has arrived.** From inside a truncated channel a
-missing `budget` is uninterpretable, because absence and excision serialize
-identically; the sentinel below is what separates them.
+What survives is the transport contract, because the remaining risk is not vp's:
 
-A fail-loud arm — refusing the call outright rather than shedding core —
-exists in the design but is **gated on rollout** (task
-`adr-009-arm-fail-loud-bootstrap`); today core rungs shed with honest
-reporting rather than refusal.
+- **`complete`** is the last field of the payload and carries no `omitempty`, so
+  it arrives on every whole result and on no cut one. An agent that does not see
+  it knows its HOST truncated the result.
+- **`resume_uri`, `workflow_uri`, `resume_sha256`** lead the payload, ahead of the
+  bulk they point at — a recovery handle that arrives only when the body already
+  fit is not a recovery handle.
+- **Instruments before bulk.** Health, vault staleness, friction and alerts sit in
+  the region a host preview keeps, and all of them are silent when healthy.
+
+`TestBootstrapLiveVaultStillRestoresASession` asserts this against the real vault,
+including the negative half: no `budget`, `shed_core` or `max_tokens` on the wire.
 
 #### Wire order and the `complete` sentinel (transport contract)
 
@@ -1420,48 +1255,6 @@ cut payload survivable, and **both are enforced by field declaration order**:
   but leaves "vp sent none" and "it was cut off" indistinguishable on one that
   does not. Per ADR-006 the agent DERIVES its delivery state rather than being
   asked in prose to remember it.
-
-##### The workflow digest — a reduction that is not a ladder rung
-
-The wire order decides what survives a cut; the **digest** decides how much of
-the bulk is in front of the resume in the first place. A `workflow.md` that
-declares a `<!-- vp:pin -->` zone is delivered as that zone plus the same banner
-a shed resume carries, naming `workflow_uri`
-(`digestWorkflowToPinnedZone`, `internal/tools/context_tools.go`).
-
-It runs on **every** bootstrap, at any budget, and that is the point: the
-constraint it answers is a **host inline cap**, which vp cannot measure and the
-shed ladder never sees. The epic measured a 61,747-byte payload on which the
-ladder shed nothing and reported `budget: absent` while two thirds of the bytes
-never reached the model — a budget-gated reduction would have fired on none of
-those runs. It is still **reported** (`budget.shed` names `workflow->digest`),
-because a payload whose contract is now a digest must not answer "nothing was
-reduced".
-
-🔴 **A `workflow.md` that declares no pin zone is delivered WHOLE**, exactly as
-before the digest existed — no banner, no rung. Nine of the ten projects in the
-live vault carry no markers, and guessing which half of an unruled contract was
-safe to drop would silently degrade nine projects to improve one. Same rule as
-`PinnedZone`'s `declared` half; same rule `resumeRungTier` errs toward.
-
-**The two workflow reductions are mutually exclusive by construction.**
-`workflow->digest` is a deliberate selection of whole sections;
-`workflow->excerpt` is a blind prefix cut and now survives **only** for a
-workflow that declares nothing, where there is no selection to honour. The
-ladder skips the excerpt rung whenever the digest fired: excerpting a pinned
-zone at `bootstrapExcerptCap` would amputate exactly the sections the marker
-exists to protect, which is why `bootstrapZoneBanner` does not truncate either.
-So the digest sits *above* the excerpt in the ladder rather than replacing it —
-strictly better where it applies, and where it does not apply nothing moved.
-
-**The rung's ADR-009 tier is derived, not constant** (`workflowRungTier`):
-a declared pin zone *and* no undeclared live sections ⇒ context; anything else ⇒
-core, including a workflow that resolved to nothing. Iteration 262 falsified this
-exact shape of hard-coding on the resume rung — one project's editorial state
-written down as a property of every vault, false for 8 of 8 live projects the
-moment it could be measured — so the workflow got the derivation on day one
-rather than after its own incident. `rungTier` reads both per-project verdicts
-through `derivedTiers`, whose zero value is core in both fields.
 
 **Declaring any new field after `complete` re-opens the hole**, and appending
 to the end of a struct is exactly how it will be broken.

@@ -137,7 +137,7 @@ tool-surface golden test doubles as the guarantee that this dynamic manual stays
 
 **Costs / risks**
 - The bootstrap "un-sheddable workflow contract" guard (the conditional restore inside
-  `shedToBudget`) assumes the behavioral rules physically live in the inlined workflow
+  `shedToBudget`, deleted at 310) assumed the behavioral rules physically live in the inlined workflow
   body. When doctrine moves to the on-demand surface, that guard's semantics move with it:
   what the guard protects is the thin workflow's minimal bootstrap-contract paragraph (the
   pointer at `vp_get_doctrine`), riding the ADR-009 core-tier classification

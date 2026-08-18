@@ -82,7 +82,7 @@ diagnostic suite on the state you are about to load context from. Call
 `vp_check` (the MCP tool) with an **explicit** selector list:
 
 ```json
-{"checks": ["vault-filesystem", "stray-scaffolds", "surface-merge-driver", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage", "template-drift", "writer-identity", "stale-mcp"]}
+{"checks": ["vault-filesystem", "stray-scaffolds", "surface-merge-driver", "resume-caps", "resume-refs", "vault-abs-paths", "template-drift", "writer-identity", "stale-mcp"]}
 ```
 
 Name that list deliberately. Do **not** omit the argument, and do
@@ -113,7 +113,7 @@ vault; key nothing off it.
   only a finding here: relocating a vault is a deliberate human move,
   not something a restart performs or waits on. Whatever comes back,
   report it and **continue to Step 2 regardless**. Vaults carry standing
-  `pin-coverage` and `resume-caps` findings today; a restart that
+  `resume-caps` findings today; a restart that
   refused to proceed on those would strand every host.
 - **Report, do not auto-fix.** Do not rewrite `resume.md`, retune caps,
   or add pins to close a finding as part of the restart. Surface it; the
@@ -140,54 +140,25 @@ active tasks, and recent sessions in a single call:
 
 ### Read the delivery state before you read the payload
 
-Two independent things shorten this result, and they leave different marks.
-`budget` reports what **vp** shed. `complete` reports whether the **host**
-delivered every byte vp sent. Neither answers the other's question, and
-reading one as the other is how a routine shed gets narrated as a failed
-bootstrap while a silent host cut gets narrated as a clean one.
-
-Check the host axis **first** — it invalidates everything below it:
+**vp sends the bodies WHOLE.** It does not shed, excerpt or digest `resume` or
+`workflow` to fit a budget — there is no payload ceiling. So a short body is
+your HOST's doing, never vp's, and there is exactly one question to ask.
 
 - 🔴 **`complete` missing, or a host truncation banner** (`showing first
   N KB of M KB`, or any "result truncated" notice) ⇒ **the HOST cut the
   result.** `complete: true` is the last field of the payload and carries no
   `omitempty`, so it arrives on every whole result and on no cut one. The
-  inline body is untrustworthy **whatever `budget` says** — the fields you
-  cannot see are the ones that would have told you what is missing.
-  **Rehydrate BEFORE continuing any restart step:** read your host's
-  persisted copy of the tool result if it keeps one, otherwise page
-  `resume_uri` and `workflow_uri` with `vp_read_resource` and CAS-verify the
-  resume against `resume_sha256`. Do not carry a cut payload into Step 3.
-- **`budget` absent AND `complete` absent** ⇒ unknown, and unknown is
-  truncated. You cannot tell "vp shed nothing" from "the report was cut off"
-  from inside a truncated channel; take the host-cut branch above.
+  inline body is untrustworthy — the fields you cannot see are the ones that
+  would have told you what is missing. **Rehydrate BEFORE continuing any
+  restart step:** read your host's persisted copy of the tool result if it
+  keeps one, otherwise page `resume_uri` and `workflow_uri` with
+  `vp_read_resource` and CAS-verify the resume against `resume_sha256`. Do not
+  carry a cut payload into Step 3.
+- **`complete: true` present** ⇒ you have the whole document vp emitted.
 
-Then the vp axis, which only means anything once `complete` arrived:
-
-- **`budget.shed` names `resume->pinned`, or the resume opens with a `⚠ pinned
-  sections only` banner** ⇒ vp deliberately reduced the resume to its
-  `<!-- vp:pin -->` sections. Read `resume_uri` (via `vp_read_resource`) for
-  the full body.
-- **`budget.shed` names `workflow->digest`, or the workflow opens with a
-  `⚠ pinned sections only` banner** ⇒ the same reduction, applied to the
-  workflow: you have this project's pinned rules, not its whole contract.
-  This one is **UNCONDITIONAL** — it answers a host inline cap, not
-  `max_tokens` — so it is **not** a sign the budget was tight and it says
-  nothing about the resume. Read `workflow_uri` when you need the rest.
-  A workflow that declares no pin zone arrives WHOLE and this rung is absent.
-- **`budget.shed_core` non-empty** ⇒ whichever rungs it names dropped content
-  **nobody had ruled on** — undeclared H2 sections of that document, not
-  merely reference material. Fetch that document's URI before acting on it,
-  and run `vp check --check pin-coverage` to see the sections by name.
-- **`budget.shed` naming only optional rungs** (`recent_sessions`, `memory`,
-  `kg_snapshot`) with no `shed_core` ⇒ **benign.** On a project with real
-  history this is the normal case, not a failure. Continue, do **not**
-  re-fetch, and do **not** narrate it as truncation.
-- **`budget` absent AND `complete` present** ⇒ genuinely nothing was reduced.
-
-`budget` present is **not** evidence of loss, and `budget` absent is **not**
-evidence of delivery. `complete` is the only field that answers the second
-question.
+The instruments (`health`, `vault_staleness`, `friction_trend`, alerts) LEAD the
+payload deliberately, because they are what a host preview keeps. Read them
+first; they are silent when healthy, so anything you see there wants attention.
 
 Then fetch the full operating doctrine with `vp_get_doctrine`:
 

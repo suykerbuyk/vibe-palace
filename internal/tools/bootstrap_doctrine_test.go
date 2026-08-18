@@ -4,7 +4,6 @@
 package tools
 
 import (
-	"regexp"
 	"strings"
 	"testing"
 
@@ -59,7 +58,6 @@ func doctrineSites(t *testing.T) map[string]string {
 // The `[^.]` bound is what makes the assertion below meaningful: a `complete`
 // qualifier three sentences away does not rescue a rule that reads as
 // unconditional where an agent meets it.
-var unqualifiedAbsentBudget = regexp.MustCompile(`(?i)absent[^.]*budget[^.]*nothing[^.]*reduced[^.]*`)
 
 // bulletsIn splits a markdown section into its top-level `- ` bullets, keyed by
 // the byte offset each starts at. Scoping an assertion to one bullet is what
@@ -94,51 +92,6 @@ func absent(s string, want []string) []string {
 		}
 	}
 	return out
-}
-
-// flatten strips markdown emphasis and collapses whitespace, so a phrase the
-// template wrapped across a line break or bolded mid-word still reads as the
-// phrase. Without it this test would pin line wrapping, not doctrine.
-func flatten(s string) string {
-	s = strings.NewReplacer("*", "", "`", "").Replace(s)
-	return strings.ToLower(strings.Join(strings.Fields(s), " "))
-}
-
-// TestBootstrapDeliveryDoctrine_AbsentBudgetNeverStandsAlone is the delivery
-// pin for the absent-vs-cut distinction.
-//
-// The defect it prevents: every one of these three surfaces used to say, and
-// restart.md said it in bold, "an absent `budget` means nothing was reduced."
-// Both readings of that are wrong, and both were observed:
-//
-//   - The contrapositive comes free — budget present ⇒ reduced ⇒ truncated —
-//     and on any project with real history the ladder sheds `recent_sessions`
-//     on essentially every run. So `budget` is present nearly always, and an
-//     agent keying on its presence narrates a benign optional shed as a failed
-//     bootstrap and re-fetches for nothing.
-//   - Far worse: on a truncated channel `budget` is absent because it was CUT
-//     OFF, and the rule tells the agent that means nothing was reduced. The
-//     agent reads a silent host cut as a clean delivery.
-//
-// `budget` answers "what did vp shed"; `complete` (the last field of
-// BootstrapResult, no `omitempty`, guarded structurally by
-// TestBootstrapCompleteSentinelAlwaysEmitted) answers "did every byte arrive".
-// Neither answers the other's question. So the claim may appear only when it
-// is conditioned on `complete` in the same sentence — which is exactly the
-// property asserted here, rather than a ban on the words, because the
-// qualified form is true and must stay sayable.
-func TestBootstrapDeliveryDoctrine_AbsentBudgetNeverStandsAlone(t *testing.T) {
-	for name, body := range doctrineSites(t) {
-		for _, claim := range unqualifiedAbsentBudget.FindAllString(body, -1) {
-			if !strings.Contains(claim, "complete") {
-				t.Errorf("%s: asserts that an absent `budget` means nothing was "+
-					"reduced without conditioning it on `complete` in the same "+
-					"sentence — in a truncated channel `budget` is absent because "+
-					"it was CUT OFF, and this sentence tells the agent that is a "+
-					"clean delivery. Offending sentence:\n\t%q", name, claim)
-			}
-		}
-	}
 }
 
 // TestBootstrapDeliveryDoctrine_RestartTeachesTheSentinel pins the POSITIVE
@@ -203,37 +156,5 @@ func TestBootstrapDeliveryDoctrine_RestartTeachesTheSentinel(t *testing.T) {
 		t.Errorf("restart.md Step 2: the `complete` bullet never names %v — it tells "+
 			"the agent it was truncated without telling it how to recover, or "+
 			"when. Bullet at offset %d", missing, sentinel)
-	}
-
-	// 3. Host axis first. `budget` cannot be read at all until `complete` has
-	// answered whether the payload arrived, so the sentinel must precede the
-	// shed rules rather than trail them as a footnote.
-	shedCore := strings.Index(section, "shed_core")
-	if shedCore < 0 {
-		t.Fatal("restart.md Step 2: never names `shed_core` — without it there is " +
-			"no way to tell an intentional resume reduction from a benign " +
-			"optional-rung shed")
-	}
-	if sentinel > shedCore {
-		t.Errorf("restart.md Step 2: states the vp shed axis (offset %d) before the "+
-			"host `complete` axis (offset %d) — an agent reading in order applies "+
-			"`budget` rules to a payload it has not established it fully received",
-			shedCore, sentinel)
-	}
-
-	// 4. The benign case is named, and named as benign. This is the false
-	// positive half: without it the ladder's routine `recent_sessions` shed
-	// gets narrated as a failed bootstrap on nearly every run.
-	flat := flatten(section)
-	for _, want := range []string{
-		"recent_sessions", // the rung that sheds on essentially every run
-		"benign",          // ...and the verdict it must be given
-		"do not re-fetch", // ...and the action it must NOT trigger
-	} {
-		if !strings.Contains(flat, want) {
-			t.Errorf("restart.md Step 2: never says %q — the optional-rung shed is "+
-				"the common case, and an agent without this rule re-fetches and "+
-				"reports truncation on a healthy bootstrap", want)
-		}
 	}
 }

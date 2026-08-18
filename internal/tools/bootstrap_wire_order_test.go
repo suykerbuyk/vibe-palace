@@ -41,7 +41,7 @@ func overBudgetBootstrap(t *testing.T) (BootstrapResult, []byte) {
 		t.Fatal(err)
 	}
 	tool := BootstrapContextTool(resolver, vault)
-	br := bootstrapResult(t, tool, `{"project":"test-proj","max_tokens":6000}`)
+	br := bootstrapResult(t, tool, `{"project":"test-proj"}`)
 
 	raw, err := json.Marshal(br)
 	if err != nil {
@@ -51,9 +51,6 @@ func overBudgetBootstrap(t *testing.T) (BootstrapResult, []byte) {
 		t.Fatalf("test premise broken: payload is %d bytes, which already fits inside the %d-byte cut — "+
 			"nothing is being truncated, so this test would pass without measuring anything",
 			len(raw), hostInlineCutSpecimen)
-	}
-	if br.Budget == nil {
-		t.Fatalf("test premise broken: payload is %d bytes and reports no budget at all", len(raw))
 	}
 	return br, raw
 }
@@ -95,7 +92,6 @@ func TestBootstrapTruncatedPrefixIsDetectable(t *testing.T) {
 	// payload, the handles that fetch what it lost, and the count that proves a
 	// backlog exists.
 	for _, key := range []string{
-		`"budget"`,
 		`"resume_uri"`,
 		`"workflow_uri"`,
 		`"resume_sha256"`,
@@ -127,7 +123,6 @@ func TestBootstrapInstrumentsPrecedeBulk(t *testing.T) {
 	}
 
 	for _, instrument := range []string{
-		`"budget"`,
 		`"resume_uri"`,
 		`"workflow_uri"`,
 		`"resume_sha256"`,
