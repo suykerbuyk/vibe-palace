@@ -53,62 +53,18 @@ func doctrineSites(t *testing.T) map[string]string {
 	}
 }
 
-// unqualifiedAbsentBudget matches the claim "an absent `budget` means nothing
-// was reduced" and everything that follows it up to the end of its sentence.
-// The `[^.]` bound is what makes the assertion below meaningful: a `complete`
-// qualifier three sentences away does not rescue a rule that reads as
-// unconditional where an agent meets it.
-
-// bulletsIn splits a markdown section into its top-level `- ` bullets, keyed by
-// the byte offset each starts at. Scoping an assertion to one bullet is what
-// keeps it honest: the surrounding step is full of `resume_uri` and
-// `vp_read_resource` mentions, and a section-wide substring check would pass on
-// a sentinel rule that says only "you were truncated".
-func bulletsIn(section string) map[int]string {
-	out := make(map[int]string)
-	for i := 0; i+2 < len(section); {
-		start := strings.Index(section[i:], "\n- ")
-		if start < 0 {
-			break
-		}
-		start += i + 1
-		end := strings.Index(section[start+3:], "\n- ")
-		if end < 0 {
-			out[start] = section[start:]
-			break
-		}
-		out[start] = section[start : start+3+end]
-		i = start + 3
-	}
-	return out
-}
-
-// absent returns the members of want that s does not contain.
-func absent(s string, want []string) []string {
-	var out []string
-	for _, w := range want {
-		if !strings.Contains(s, w) {
-			out = append(out, w)
-		}
-	}
-	return out
-}
-
-// TestBootstrapDeliveryDoctrine_RestartTeachesTheSentinel pins the POSITIVE
-// half, and it deliberately does not settle for a mention.
+// TestBootstrapDeliveryDoctrine_RestartTeachesSentinelAndFetch pins the two
+// things Step 2 must do, and it deliberately does not settle for a mention.
 //
 // TestEmbeddedCommands_CheckSuiteDelivery is the model: it anchors on the CALL
 // because a template that NAMES a capability reads exactly like one that USES
-// it, and only the second changes what an agent does. The action here is
-// rehydration, so the sentinel bullet must carry the recovery handles and the
-// tool that pages them — a bullet that says "you were truncated" and stops
-// leaves the agent knowing it has a problem and not what to do about it.
+// it, and only the second changes what an agent does.
 //
-// Ordering is load-bearing twice over. The doctrine lives in Step 2, ahead of
-// Step 3, because a truncation discovered after the restart has continued is a
-// post-mortem. And the host axis must be stated before the vp axis, because
-// `budget` is uninterpretable until you know the payload arrived whole.
-func TestBootstrapDeliveryDoctrine_RestartTeachesTheSentinel(t *testing.T) {
+// Ordering is load-bearing. The doctrine lives in Step 2, ahead of Step 3,
+// because a truncation discovered after the restart has continued is a
+// post-mortem — and because a session that reaches Step 3 without this
+// project's rules and state in hand has already started working without them.
+func TestBootstrapDeliveryDoctrine_RestartTeachesSentinelAndFetch(t *testing.T) {
 	body := doctrineSites(t)["commands/restart.md"]
 
 	step2 := strings.Index(body, "## Step 2")
@@ -125,36 +81,49 @@ func TestBootstrapDeliveryDoctrine_RestartTeachesTheSentinel(t *testing.T) {
 			"reaches no agent from this template")
 	}
 
-	// 2. The RULE that raises the sentinel must also hand over the recovery,
-	// scoped to a single bullet so a rehydration instruction living elsewhere
-	// in the step cannot satisfy this by accident. Prose that observes the
-	// sentinel exists is not the rule; the bullet an agent acts on is.
-	want := []string{
-		"resume_uri",       // the handle
-		"vp_read_resource", // the call that pages it — the anchor, not a mention
-		"resume_sha256",    // the digest that verifies what came back
-		"before",           // ...ordered ahead of every step that reads the body
-	}
-	sentinel, missing := -1, want
-	for offset, cand := range bulletsIn(section) {
-		if !strings.Contains(cand, "`complete`") {
-			continue
+	// 2. The FETCH is mandated, unconditionally, in the step where bootstrap
+	// happens.
+	//
+	// 🔴 THIS REPLACED THE OLD ASSERTION, WHICH PINNED THE RECOVERY ONTO THE
+	// SENTINEL BULLET. That was right while the bodies arrived inline: the only
+	// reason to reach for resume_uri was that a host had cut the body you were
+	// sent. Phase 3 stopped sending them, so a rehydrate-on-truncation rule would
+	// leave an agent whose payload arrived WHOLE with no resume and no workflow
+	// at all — the failure mode is now the silent one, and conditioning the fetch
+	// on a truncation signal is exactly how it would ship.
+	//
+	// It anchors on the CALL, not a mention, for the reason
+	// TestEmbeddedCommands_CheckSuiteDelivery does: a template that NAMES a
+	// capability reads exactly like one that USES it, and only the second changes
+	// what an agent does.
+	for _, want := range []string{
+		"vp_read_resource", // the call
+		"workflow_uri",     // the project's own rules
+		"resume_uri",       // its state
+		"resume_sha256",    // the digest a later compare-and-set write keys on
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("restart.md Step 2: never names %s — the payload no longer carries the "+
+				"documents, so a restart that does not fetch them is a session with neither "+
+				"this project's rules nor its state", want)
 		}
-		short := absent(strings.ToLower(cand), want)
-		if len(short) < len(missing) {
-			sentinel, missing = offset, short
-		}
-		if len(short) == 0 {
-			break
-		}
 	}
-	if sentinel < 0 {
-		t.Fatal("restart.md Step 2: the `complete` sentinel appears in no bullet — " +
-			"prose that observes the sentinel exists is not a rule an agent acts on")
+
+	// The fetch must read as EVERY restart. A conditional fetch is the defect
+	// this replaced: it fires only when something already looks wrong, and the
+	// whole-payload case is the one that silently loses both documents.
+	if !strings.Contains(strings.ToLower(section), "every restart") {
+		t.Error("restart.md Step 2: does not say the fetch happens on EVERY restart — " +
+			"an agent reading it as a recovery step will skip it whenever the payload " +
+			"arrives clean, which is almost always")
 	}
-	if len(missing) > 0 {
-		t.Errorf("restart.md Step 2: the `complete` bullet never names %v — it tells "+
-			"the agent it was truncated without telling it how to recover, or "+
-			"when. Bullet at offset %d", missing, sentinel)
+
+	// And it must be ordered ahead of the steps that act on what it loads.
+	fetchAt := strings.Index(section, "vp_read_resource")
+	doctrineAt := strings.Index(section, "vp_get_doctrine")
+	if fetchAt < 0 || doctrineAt < 0 || fetchAt > doctrineAt {
+		t.Errorf("restart.md Step 2: the document fetch is not ordered ahead of the doctrine "+
+			"fetch (fetch=%d doctrine=%d) — the project's own rules should be in hand before "+
+			"the generic manual is", fetchAt, doctrineAt)
 	}
 }

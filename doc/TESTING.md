@@ -1,12 +1,12 @@
 # Testing Strategy
 
-**Last updated:** 2026-08-17
+**Last updated:** 2026-08-18
 
 This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~2987 tests** across 49 packages, including
+The suite currently runs **~2926 tests** across 48 packages, including
 **118 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
@@ -96,7 +96,7 @@ Current canaries:
 | `TestLiveVaultAmendNeverMatchesAFencedHeading` | `sectionBounds` regressing to a naive scan and splicing **into a code fence**. Not hypothetical: **22 H2 headings in this project's own task files exist only as fenced sample text** — including the `## Decision` quoted by the task that specified `amend` |
 | `TestLiveVaultAmendIsIdempotentOnRealBodies` | A retried amend **duplicating** a section on a real body instead of converging — the failure a crash-and-retry would produce |
 | `TestLiveVaultRetitleNeverDisturbsAnythingElse` | `replaceTitleLine` (whole-file, first-wins, **fence-unaware**) rewriting an H1-shaped line that is not the title. Safe only because `CreateTask` always writes `# Title` first and `validateTaskBody` refuses an unfenced H1 in a body — **that is an invariant about the CORPUS, not the function**, so only the corpus can check it. Asserts exactly one line changed per file |
-| `TestBootstrapLiveVaultStillRestoresASession` | A live restart coming back unusable. Asserts the payload an agent actually receives against the real vault: `resume_uri` and `workflow_uri` non-empty, resume and workflow bodies present, the wire carrying no `budget` / `shed_core` / `max_tokens` / pinned-zone banner, and `complete` last on the wire. **It asserts no size at all** — the token budget, the shed ladder and the ADR-009 tier vocabulary its predecessor measured were deleted in Phase 2 (iteration 310), and a ceiling reintroduced here would re-create the disease PRD §1.10 removes. Only the real vault has a resume and a contract large enough for assembly to go wrong on |
+| `TestBootstrapLiveVaultStillRestoresASession` | A live restart coming back unusable. Asserts the payload an agent actually receives against the real vault: the handles (`resume_uri`, `workflow_uri`, `resume_sha256`) present; **no document body** — neither a `resume` nor a `workflow` key, and no distinctive line of the live resume anywhere in the marshalled payload; `head_of_queue` non-empty when a backlog exists, every row and every session row carrying its URI; `ranking` present and naming the `structural` ranker; the wire carrying no `budget` / `shed_core` / `max_tokens` / pinned-zone banner; and `complete` last on the wire. **It asserts no size at all** — a ceiling reintroduced here would re-create the disease PRD §1.10 removes. Its body assertion was INVERTED at iteration 313: through Phase 2 it required the bodies to be present, which was that phase's gate; Phase 3 made the payload an index, and the assertion was replaced in the same commit rather than left to lie. Only the real vault has a task graph and a session corpus large enough for assembly to go wrong on |
 
 **Rules for adding one:** it must `t.Skip` (never fail) when the vault is absent, it must never
 write, and it must assert something a fixture *structurally cannot* — otherwise it is just a slow
@@ -193,7 +193,7 @@ where the flat cut was measured. Fixing one is the ADR-006 failure mode.
 | Test | What it proves |
 |------|----------------|
 | `TestBootstrapDeliveryDoctrine_AbsentBudgetNeverStandsAlone` | No surface asserts that an absent `budget` means nothing was reduced **without conditioning it on `complete` in the same sentence**. Both readings of the unconditioned claim were observed in the field: its free contrapositive (present ⇒ reduced ⇒ truncated) makes the ladder's routine `recent_sessions` shed read as a failed bootstrap, and in a truncated channel `budget` is absent *because it was cut off*, so the rule tells the agent a silent host cut was a clean delivery. The `[^.]` sentence bound is load-bearing: a qualifier three sentences away does not rescue a rule that reads as unconditional where the agent meets it |
-| `TestBootstrapDeliveryDoctrine_RestartTeachesTheSentinel` | The positive half, anchored the way `TestEmbeddedCommands_CheckSuiteDelivery` anchors — on the **action**, not a mention. `complete` must be raised in a *bullet* inside Step 2 (prose observing that the sentinel exists is not a rule), that same bullet must carry `resume_uri`, `vp_read_resource` and `resume_sha256` and order the rehydration *before* continuing, the host axis must precede the `shed_core` axis (a `budget` rule is unreadable until you know the payload arrived), and the benign optional-rung case must be named `benign` with an explicit "do not re-fetch" |
+| `TestBootstrapDeliveryDoctrine_RestartTeachesSentinelAndFetch` | Anchored the way `TestEmbeddedCommands_CheckSuiteDelivery` anchors — on the **action**, not a mention. `complete` must be raised in a *bullet* inside Step 2 (prose observing that the sentinel exists is not a rule), and Step 2 must mandate the document FETCH: `vp_read_resource`, `workflow_uri`, `resume_uri`, `resume_sha256`, the words "every restart", and the fetch ordered ahead of the `vp_get_doctrine` call. Rewritten at 313: the old assertion pinned the recovery onto the sentinel bullet, which was right while the bodies arrived inline. Once the payload became an index, a rehydrate-on-truncation rule would leave an agent whose payload arrived WHOLE with no resume and no workflow at all — conditioning the fetch on a truncation signal is exactly how that would ship |
 
 Both were confirmed RED by restoring the old wording at each of the three sites in turn.
 
@@ -1191,7 +1191,11 @@ these are pure-unit / in-process (no ONNX) and run in `make test`.
 | `TestUpdateResumeSchemaRequiresExpectedSha` (`context_query_tools_test.go`) | `expected_sha256` is `required` in the registered tool schema: an **omitted** guard is rejected by schema validation before the handler runs (a `*mcp.ValidationError` naming the property), while a **present-but-empty** guard clears validation — `required` mandates presence, not non-emptiness, which is exactly the assert-absent case and why there is deliberately no `minLength`. This is what makes "no blind path" structural rather than advisory |
 | `TestBootstrapResumeSha256MatchesDisk` (`context_tools_test.go`) | `vp_bootstrap_context`'s `resume_sha256` matches disk, so a session that bootstraps can wrap without a redundant `vp_get_resume` |
 | `TestBootstrapShedResumeSha256IsOfFullBody` (`context_tools_test.go`) | when the ladder sheds the resume to its pinned zone, the digest is still of the **full** body, computed pre-shed — a reduced delivery still yields a guard that will actually match. Migrated from the deleted byte-axis `slim` path: the mechanism went, the invariant did not |
-| `TestBootstrapResumeIsNeverExcerptedByBytes` (`context_tools_test.go`) | a resume is never reduced for its SIZE alone, on any transport or request shape — the only reduction is the token ladder's pinned-zone shed, which reports itself in `budget.shed`. Replaces the three tests that covered the deleted `slim` path |
+| `TestBootstrapCarriesNoDocumentBodyAtAnySize` (`context_tools_test.go`) | no document body is on the wire, asserted at both ends of the size range (a one-line resume and a 400-line one) plus a content check a renamed field would fail, with the handle and its digest still present. The size sweep is the point: a single fixture would pass an implementation that inlined small documents and dropped large ones, which is a size rule wearing an index's clothes. Replaces `TestBootstrapResumeIsNeverExcerptedByBytes`, whose subject — the resume arriving whole — Phase 3 removed |
+| `TestHeadOfQueueIsGraphOrderNotListOrder` (`bootstrap_rank_test.go`) | the queue comes from the task GRAPH, not the directory listing. The fixture is built so the two orders DISAGREE — `a-blocked-task` sorts first by filename and must not appear at all, `z-in-progress` sorts last and must lead — because a fixture where they agree passes with the derivation replaced by `vault.ListTasks` |
+| `TestSessionIndexRanksByRelevanceNotRecency` (`bootstrap_rank_test.go`) | the positive control for the ranker. The relevant session is written FIRST, making it the oldest, and must still come back at the top; a ranker that scored nothing and returned the newest rows passes every fixture where relevance and recency agree |
+| `TestSessionIndexCarriesNoSummaryBody` (`bootstrap_rank_test.go`) | the session row keeps the metadata a reader chooses on and drops the narrative, and always carries the URI — dropping a body without a handle deletes the session from the agent's reach |
+| `TestHeadOfQueueTermsDropNoiseWords` (`bootstrap_rank_test.go`) | the query keeps the words that discriminate and drops the ones that match every note. A query of "the"/"and"/"for" scores every candidate identically and hands the ordering back to the recency tie-break while the payload still reports itself as ranked |
 | `TestBootstrapResumeSha256EmptyWithoutProjectFile` (`context_tools_test.go`) | absent resume → empty `resume_sha256`, feeding the assert-absent create |
 
 ### `internal/integration` — Full-Stack CAS Dispatch (`resume_cas_test.go`)
@@ -1631,19 +1635,26 @@ The field appearing *at all* means something needs looking at.
 | `TestBootstrapPushesHealthWhenDegraded` (`internal/tools`) | A degraded vp **reaches the agent** without the agent asking |
 | `TestBootstrapPushesHealthWhenBlind` (`internal/tools`) | A **blind** vp reaches the agent too — blindness is not health |
 | `TestBootstrapIsSilentWhenHealthy` (`internal/tools`) | A healthy vp says **nothing** |
-| `TestBootstrapAlertsSurviveTokenTruncation` (`internal/tools`) | See below |
 
 ### The pre-existing bug §1c uncovered: alerts were dropped under token pressure
 
-The token-budget truncation sheds the command list and then **re-renders**
+The token-budget truncation shed the command list and then **re-rendered**
 `post_bootstrap_instructions`. That re-render was a blind **assignment**, which threw
-away every alert appended before it — friction, vault-staleness, and now health.
+away every alert appended before it — friction, vault-staleness, and health.
 
 So the payload discarded its warnings **exactly when it was too big to fit**, which is
-when a project is busiest and the warnings matter most. The alerts are the
-highest-value content in the payload and they were the first thing thrown away. Alerts
-are now collected separately and **re-composed**, so re-rendering the directive cannot
-erase them (`composeDirective`).
+when a project is busiest and the warnings matter most. Alerts are now collected
+separately and **re-composed**, so re-rendering the directive cannot erase them
+(`composeDirective`).
+
+`TestBootstrapAlertsSurviveTokenTruncation` was **deleted** at iteration 313, not
+renamed. It drove the handler with `{"max_tokens":1}` to force the shed path — a
+parameter Phase 2 removed. An unknown JSON key is ignored, so the call kept
+succeeding and the test kept passing while exercising the same path as
+`TestBootstrapPushesHealthWhenDegraded`. A test naming a mechanism the binary no
+longer has reads as coverage of that mechanism and is worth less than no test.
+The surviving property is covered by `TestBootstrapPushesHealthWhenDegraded` and
+`TestDirectiveCutKeepsAlertsAndLosesAnnouncement`.
 
 ---
 

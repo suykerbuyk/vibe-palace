@@ -1203,30 +1203,61 @@ A single call assembles: workflow rules, project resume, active tasks, recent
 sessions, KG snapshot, and available commands/skills. This replaces the
 multi-file CLAUDE.md pattern used by legacy systems.
 
-#### Whole delivery, and the one axis that remains (310)
+#### The payload is an index (313, PRD §1.9)
 
-The payload is **unconditional**: `resume` and `workflow` are inlined whole, and
-there is no token budget, no shed ladder, no workflow digest and no pin/disposable
-marker vocabulary. All of it was deleted in `first-principles` Phase 2 — see
-ADR-009, which is superseded in full and kept only as a historical record.
+**No document body is inlined.** `resume` and `workflow` are not fields of
+`BootstrapResult`; they are reached through `resume_uri` and `workflow_uri`, and
+`restart.md` Step 2 fetches both on every restart. There is no token budget, no
+shed ladder, no workflow digest and no pin/disposable marker vocabulary — all
+deleted in `first-principles` Phase 2 (see ADR-009, superseded in full and kept
+only as a historical record) — and nothing in the assembly path reads, computes
+or compares a payload size.
 
-What survives is the transport contract, because the remaining risk is not vp's:
+The two phases are opposite halves of one contract and it is worth keeping them
+straight: Phase 2's gate was *nothing may reduce the bodies*; Phase 3's is *no
+body is inlined at all*. The live canary asserted the first until 313 and asserts
+the second now.
+
+What the payload carries instead:
+
+- **Head of queue**, derived from the task graph — unblocked work, in-progress
+  first, then priority, then topological order — each row with its `vibe-palace://task/…`
+  handle. `active_task_count` is the whole open backlog, so a count larger than
+  the rows is the reader's signal to call `vp_list_tasks`.
+- **A session index**, ranked against the head of queue by the deterministic
+  `structural` ranker (lexical overlap on the queue's own terms, recency as the
+  tie-break). Rows carry date, iteration, title, tag and a session URI, and no
+  summary body — the ranker reads the summary to score it and leaves it on disk.
+  The semantic ranker is Phase 3 slice 2 and is deliberately not wired: the only
+  indexed corpus is session transcript chunks, and the projects with the largest
+  resumes have no drawers at all.
+- **`ranking`**, the one instrument that is never silent: which ranker ran, the
+  head-of-queue slug it ranked against, and candidates-versus-returned. An
+  ordered list that does not say what ordered it is indistinguishable from
+  recency order.
+- The memory index, KG snapshot, and the command and skill lists, all of which
+  were already indexes rather than bodies.
+
+The transport contract is unchanged, because the remaining risk is not vp's:
 
 - **`complete`** is the last field of the payload and carries no `omitempty`, so
   it arrives on every whole result and on no cut one. An agent that does not see
   it knows its HOST truncated the result.
-- **`resume_uri`, `workflow_uri`, `resume_sha256`** lead the payload, ahead of the
-  bulk they point at — a recovery handle that arrives only when the body already
-  fit is not a recovery handle.
-- **Instruments before bulk.** Health, vault staleness, friction and alerts sit in
-  the region a host preview keeps, and all of them are silent when healthy.
+- **`resume_uri`, `workflow_uri`, `resume_sha256`** lead the payload — and are now
+  the ONLY route to those documents, not merely a recovery path.
+- **Instruments before bulk.** Health, vault staleness, friction, ranking and the
+  alerts sit in the region a host preview keeps; the condition alerts are silent
+  when healthy.
 
 `TestBootstrapLiveVaultStillRestoresASession` asserts this against the real vault,
-including the negative half: no `budget`, `shed_core` or `max_tokens` on the wire.
+including both negative halves: no `budget` / `shed_core` / `max_tokens` on the
+wire, and no `resume` / `workflow` key — plus a distinctive line of the live
+resume absent from the whole marshalled payload, since a key check alone would
+pass a renamed field.
 
 #### Wire order and the `complete` sentinel (transport contract)
 
-The budget above is vp's report about *its own* reduction. It says nothing
+`ranking` above is vp's report about *its own* ordering. It says nothing
 about what the **host** delivered, and hosts truncate. Measured 2026-08-12:
 a Grok pane cut three MCP results of 60.3 KB, 53.4 KB and 32.7 KB at exactly
 19.5 KiB each — a **flat** cap, not a ratio — and Claude Code performs the same
@@ -1239,18 +1270,19 @@ cut payload survivable, and **both are enforced by field declaration order**:
   fields in declaration order, and nothing on the response path re-serializes
   through a `map` (`mcplib.NewToolResultJSON` marshals the value directly;
   `vp inject` encodes it directly), so declaration order *is* wire order *is*
-  cut order. `project`, `budget`, `resume_uri`, `workflow_uri`,
-  `resume_sha256`, `active_task_count`, the compact alerts and
-  `post_bootstrap_instructions` are declared **before** the bulk
-  (`workflow`, `resume`, `active_tasks`, …). Every bulk field is re-fetchable
-  through a handle declared above it. `resume_sha256` sits with the URIs
+  cut order. `project`, `resume_uri`, `workflow_uri`,
+  `resume_sha256`, `active_task_count`, `ranking`, the compact alerts and
+  `post_bootstrap_instructions` are declared **before** the index
+  (`head_of_queue`, `recent_sessions`, …). `head_of_queue` carries no
+  `omitempty` so it marks that boundary on every payload, including an empty
+  project's. Every index row is re-fetchable through its own URI. `resume_sha256` sits with the URIs
   rather than beside `resume` because an agent rehydrating from the URI needs
   the digest to CAS-verify what it pulled.
 - **`complete: true` is the last field, and carries no `omitempty`.** Its
   ABSENCE is the signal: present ⇒ every byte arrived; absent ⇒ the transport
   cut the payload, whatever the host did or did not say. It asserts nothing
-  about *content* — shedding is reported by `budget` — only that this JSON
-  document is the whole document vp emitted. Reordering alone could not do
+  about *content* — which rows were selected and by what is reported by
+  `ranking` — only that this JSON document is the whole document vp emitted. Reordering alone could not do
   this job: it makes a cut *recoverable* on a host that announces the cut,
   but leaves "vp sent none" and "it was cut off" indistinguishable on one that
   does not. Per ADR-006 the agent DERIVES its delivery state rather than being
@@ -1326,8 +1358,8 @@ The generic agent operating manual — the doctrine — is embedded in the binar
 at `internal/templates/templates/doctrine.md` and served **on demand** via the
 `vp_get_doctrine` MCP tool (`context_query_tools.go`) and the
 `vibe-palace://doctrine/<project>` resource. It is deliberately **not** part of
-the bootstrap payload: the doctrine is generic and stable, so paying its bytes
-on every session start would tax exactly the budget ADR-009 protects. The
+the bootstrap payload: the doctrine is generic and stable, and the payload is an
+index of what is specific to THIS project and this moment (PRD §1.9). The
 embedded `workflow.md` template is correspondingly **thin** — project-specific
 patterns plus a pointer at the doctrine — rather than carrying the full manual
 inline. Resolution follows the normal precedence tiers, so a project may

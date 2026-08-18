@@ -48,8 +48,8 @@ func TestJourney_NewProject_Bootstrap_Capture_Search(t *testing.T) {
 		"project": projectName,
 	})
 	var boot struct {
-		Project  string `json:"project"`
-		Workflow string `json:"workflow"`
+		Project     string `json:"project"`
+		WorkflowURI string `json:"workflow_uri"`
 	}
 	if err := json.Unmarshal([]byte(raw), &boot); err != nil {
 		t.Fatalf("bootstrap parse: %v (raw=%.200s)", err, raw)
@@ -57,8 +57,8 @@ func TestJourney_NewProject_Bootstrap_Capture_Search(t *testing.T) {
 	if boot.Project != projectName {
 		t.Errorf("bootstrap project = %q, want %q", boot.Project, projectName)
 	}
-	if boot.Workflow == "" {
-		t.Error("bootstrap workflow empty for fresh project")
+	if boot.WorkflowURI == "" {
+		t.Error("bootstrap workflow_uri empty for fresh project — the body is fetched through it")
 	}
 
 	// 3. vp_capture_session: write a session with transcript.

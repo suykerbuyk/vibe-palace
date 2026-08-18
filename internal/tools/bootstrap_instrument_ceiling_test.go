@@ -91,8 +91,8 @@ func TestBootstrapInstrumentBlockFitsHostPreview(t *testing.T) {
 			"instrument and destroys it whole, instead of landing in the directive where it costs a sentence tail.\nprefix: %s",
 			got, hostPreviewSpecimen, raw[:min(got, 3000)])
 	}
-	t.Logf("live bounded prefix = %d B (specimen preview %d B, margin %d B); whole block to \"workflow\": = %d B",
-		got, hostPreviewSpecimen, hostPreviewSpecimen-got, offsetOf(t, raw, `"workflow":`))
+	t.Logf("live bounded prefix = %d B (specimen preview %d B, margin %d B); whole block to %s = %d B",
+		got, hostPreviewSpecimen, hostPreviewSpecimen-got, firstBulkKey, offsetOf(t, raw, firstBulkKey))
 }
 
 // worstCaseInstruments returns a BootstrapResult with EVERY optional instrument
@@ -160,8 +160,17 @@ func worstCaseInstruments() BootstrapResult {
 			worstCaseAlerts(),
 		),
 
-		Workflow: "# workflow",
-		Resume:   "# resume",
+		Ranking: &RankingReport{
+			Ranker:        rankerStructural,
+			RankedAgainst: "commit-log-archives-orphaned-and-duplicate-commits",
+			Candidates:    597,
+			Returned:      5,
+		},
+
+		HeadOfQueue: []headOfQueueRow{{
+			Slug: "commit-log-archives-orphaned-and-duplicate-commits",
+			URI:  "vibe-palace://task/vibe-palace/commit-log-archives-orphaned-and-duplicate-commits",
+		}},
 		Complete: true,
 	}
 }
@@ -213,9 +222,9 @@ func TestBootstrapInstrumentBlockWorstCaseFitsHostPreview(t *testing.T) {
 			"deleted from the surviving prefix rather than saved.\nprefix: %s",
 			got, hostPreviewSpecimen, got-hostPreviewSpecimen, raw[:min(got, 3000)])
 	}
-	t.Logf("worst-case bounded prefix = %d B (specimen preview %d B, margin %d B); whole block to \"workflow\": = %d B; directive alone = %d B",
+	t.Logf("worst-case bounded prefix = %d B (specimen preview %d B, margin %d B); whole block to %s = %d B; directive alone = %d B",
 		got, hostPreviewSpecimen, hostPreviewSpecimen-got,
-		offsetOf(t, raw, `"workflow":`), len(worstCaseInstruments().PostBootstrapInstructions))
+		firstBulkKey, offsetOf(t, raw, firstBulkKey), len(worstCaseInstruments().PostBootstrapInstructions))
 }
 
 // TestDirectiveCutKeepsAlertsAndLosesAnnouncement reproduces the actual defect
@@ -281,13 +290,14 @@ func TestBootstrapDirectiveIsLastInstrument(t *testing.T) {
 	doc := string(raw)
 
 	directive := boundedPrefixBytes(t, raw)
-	bulk := offsetOf(t, raw, `"workflow":`)
+	bulk := offsetOf(t, raw, firstBulkKey)
 
 	for _, instrument := range []string{
 		`"resume_uri":`,
 		`"workflow_uri":`,
 		`"resume_sha256":`,
 		`"active_task_count":`,
+		`"ranking":`,
 		`"vault_staleness":`,
 		`"health":`,
 		`"audit_staleness":`,

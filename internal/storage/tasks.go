@@ -22,11 +22,10 @@ import (
 // Parent and Depends are the relationship fields. Both are OPTIONAL and both
 // carry omitempty for a reason that is load-bearing, not cosmetic: every task
 // file written before they existed has neither, and TaskMeta is marshalled into
-// vp_list_tasks, vp_get_task, vp tasks --json and vp_bootstrap_context's
-// active_tasks — the last of which is already fighting a token budget it
-// exceeds. Without omitempty, every legacy task would grow a "parent":"" and a
-// "depends":null in every one of those payloads. With it, they stay
-// byte-identical and absence means exactly what it says: standalone.
+// vp_list_tasks, vp_get_task and vp tasks --json. Without omitempty, every
+// legacy task would grow a "parent":"" and a "depends":null in every one of
+// those payloads. With it, they stay byte-identical and absence means exactly
+// what it says: standalone.
 //
 // There is deliberately NO Children field and NO IsEpic flag. TaskMeta is
 // per-file truth, and whether a task has children is a fact about the whole set.
@@ -82,12 +81,16 @@ var validStatuses = map[string]bool{
 // intent (rather than knowledge) filter it out by default.
 const StatusIcebox = "icebox"
 
+// StatusInProgress marks work already under way. Readers that order by what to
+// do NEXT put it ahead of everything not yet started.
+const StatusInProgress = "in_progress"
+
 // DropIcebox removes tasks that are known but deliberately unscheduled.
 //
 // ONE definition, reached by every reader that shows INTENT — vp tasks,
-// vp_list_tasks, and vp_bootstrap_context's active_tasks. Three callers each
-// writing their own two-line filter is how the three of them end up disagreeing
-// about what "active" means.
+// vp_list_tasks, and vp_bootstrap_context's active_task_count and head-of-queue
+// derivation. Callers each writing their own two-line filter is how they end up
+// disagreeing about what "active" means.
 func DropIcebox(tasks []TaskMeta) []TaskMeta {
 	out := make([]TaskMeta, 0, len(tasks))
 	for _, t := range tasks {

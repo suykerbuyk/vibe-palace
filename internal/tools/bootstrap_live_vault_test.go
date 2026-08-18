@@ -14,8 +14,8 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-// TestBootstrapLiveVaultStillRestoresASession is the Phase 2 gate's second
-// clause, made runnable: "a live restart still restores a working session".
+// TestBootstrapLiveVaultStillRestoresASession is the live gate on what a real
+// restart receives: "a restart on the largest live project is actionable".
 //
 // 🔴 IT MEASURES DELIVERY, NOT SIZE. Its predecessor asserted that the payload
 // fit a token budget and that no ADR-009 "core" rung was shed. Both subjects are
@@ -25,9 +25,19 @@ import (
 // purpose: re-introducing one would re-create the disease (PRD §1.10), and this
 // canary must never become the place a budget grows back.
 //
-// What is left is the only claim that still has a subject: an agent calling
-// vp_bootstrap_context against the real vault gets a payload it can act on, and
-// can tell whether it arrived whole.
+// 🔴 ITS BODY ASSERTION IS INVERTED FROM PHASE 2's, AND THAT IS THE POINT.
+// Through Phase 2 this test asserted that the resume and workflow BODIES were
+// present, which was that phase's gate: nothing may reduce them. Phase 3's gate
+// is the opposite half — no document body is inlined unconditionally, because
+// the payload is an index and the bodies are fetched through their handles (PRD
+// §1.9, epic DoD item 3). The Phase 2 assertion was a gate, never a standing
+// invariant, and it was replaced in the same commit that made it false rather
+// than left to lie.
+//
+// What is left is the claim that still has a subject: an agent calling
+// vp_bootstrap_context against the real vault gets an index it can act on,
+// knows where every body it did not receive lives, and can tell whether the
+// payload arrived whole.
 //
 // 🔴 IT AUTO-DISCOVERS THE VAULT AND RUNS IN `make test`, ON PURPOSE. The obvious
 // alternative — gate it behind an env var — makes it a test that runs when
@@ -96,16 +106,69 @@ func TestBootstrapLiveVaultStillRestoresASession(t *testing.T) {
 		t.Error("workflow_uri is empty — same hole, for the project's own rules")
 	}
 
-	// 2. The bodies arrive. Phase 2 deleted every path that could reduce them,
-	//    so an empty one here is a real regression in assembly, not a shed.
-	if strings.TrimSpace(br.Resume) == "" {
-		t.Error("resume body is empty on a project that has a resume.md — bootstrap assembled nothing")
-	}
-	if strings.TrimSpace(br.Workflow) == "" {
-		t.Error("workflow body is empty — the project's rules did not reach the payload")
+	if br.ResumeSha256 == "" {
+		t.Error("resume_sha256 is empty — a caller that pages the body back through resume_uri " +
+			"cannot compare-and-set it against disk, which is the handle's other half")
 	}
 
-	// 3. No budget field, in the payload or on the wire. This is the deletion
+	// 2. NO DOCUMENT BODY, which is Phase 3's gate and the inverse of Phase 2's.
+	//
+	//    🔴 THE KEY CHECK ALONE WOULD PASS A RENAMED FIELD, so the content check
+	//    is the one that matters: a distinctive line of the live resume must not
+	//    appear ANYWHERE in the marshalled payload. That catches a body that came
+	//    back under another name, folded into the directive, or quoted into a row.
+	for _, key := range []string{`"resume":`, `"workflow":`} {
+		if strings.Contains(wire, key) {
+			t.Errorf("the wire carries %s — bootstrap is inlining a document body again. "+
+				"The payload is an index: the bodies are reachable through resume_uri / workflow_uri "+
+				"and restart.md fetches them (PRD §1.9, first-principles DoD item 3)", key)
+		}
+	}
+	if line := distinctiveResumeLine(t, filepath.Join(dir, "resume.md")); strings.Contains(wire, line) {
+		t.Errorf("a distinctive line of the live resume is on the wire, so a body reached the payload "+
+			"under some other field: %q", line)
+	}
+
+	// 3. The index is actionable: head of queue, with a handle on every row.
+	if br.ActiveTaskCount > 0 && len(br.HeadOfQueue) == 0 {
+		t.Errorf("%d open task(s) and an EMPTY head_of_queue — the payload reports a backlog and then "+
+			"says nothing about what to do next, which is the whole point of the index", br.ActiveTaskCount)
+	}
+	for i, row := range br.HeadOfQueue {
+		if row.Slug == "" {
+			t.Errorf("head_of_queue[%d] has no slug", i)
+		}
+		if row.URI == "" {
+			t.Errorf("head_of_queue[%d] (%s) carries no uri — a row with no handle is a row whose body "+
+				"an agent cannot reach", i, row.Slug)
+		}
+	}
+	for i, s := range br.RecentSessions {
+		if s.URI == "" {
+			t.Errorf("recent_sessions[%d] (iteration %d) carries no uri — the summary was dropped from "+
+				"the row, so without a handle the session is unreachable", i, s.Iteration)
+		}
+	}
+
+	// 4. The ranking report, which is never silent: an ordered list that does not
+	//    say what ordered it is indistinguishable from recency order.
+	if br.Ranking == nil {
+		t.Fatal("ranking is absent — the payload orders rows and does not say by what")
+	}
+	if br.Ranking.Ranker != rankerStructural {
+		t.Errorf("ranking.ranker = %q, want %q — slice 1 of Phase 3 ships the deterministic ranker only",
+			br.Ranking.Ranker, rankerStructural)
+	}
+	if br.Ranking.Returned != len(br.RecentSessions) {
+		t.Errorf("ranking.returned = %d but %d session rows were emitted — the instrument does not describe "+
+			"the payload it rides with", br.Ranking.Returned, len(br.RecentSessions))
+	}
+	if br.Ranking.Candidates < br.Ranking.Returned {
+		t.Errorf("ranking.candidates (%d) < returned (%d) — the ranker cannot return more rows than it scored",
+			br.Ranking.Candidates, br.Ranking.Returned)
+	}
+
+	// 5. No budget field, in the payload or on the wire. This is the deletion
 	//    gate: if a budget ever returns, it returns here first, on the live vault.
 	if strings.Contains(wire, `"budget"`) {
 		t.Error(`the wire carries a "budget" field — the payload budget was deleted in Phase 2 ` +
@@ -117,7 +180,7 @@ func TestBootstrapLiveVaultStillRestoresASession(t *testing.T) {
 		}
 	}
 
-	// 4. The sentinel, and its position. `complete` is what lets an agent tell a
+	// 6. The sentinel, and its position. `complete` is what lets an agent tell a
 	//    whole payload from a host-cut one, and it only works LAST.
 	if !br.Complete {
 		t.Error("complete is false on a successful assembly — the sentinel's only writer is the success path")
@@ -132,6 +195,38 @@ func TestBootstrapLiveVaultStillRestoresASession(t *testing.T) {
 			"can now remove the sentinel while leaving the payload looking whole. Tail: %q", sentinel, tail)
 	}
 
-	t.Logf("live payload: %d bytes, resume %d B, workflow %d B, %d open task(s) — delivered whole, no budget",
-		len(raw), len(br.Resume), len(br.Workflow), br.ActiveTaskCount)
+	t.Logf("live payload: %d bytes — index only, no document body. head_of_queue %d of %d open task(s), "+
+		"session index %d of %d candidate(s), ranker %q, head %q",
+		len(raw), len(br.HeadOfQueue), br.ActiveTaskCount,
+		br.Ranking.Returned, br.Ranking.Candidates, br.Ranking.Ranker, br.Ranking.RankedAgainst)
+}
+
+// distinctiveResumeLine returns the longest line of the live resume, which is
+// what the body assertion above searches the payload for.
+//
+// 🔴 IT MUST FAIL, NOT SKIP, ON A RESUME WITH NOTHING DISTINCTIVE IN IT. A
+// needle short enough to appear by chance would make the assertion above
+// meaningless in the direction that matters — it would go green whether or not a
+// body was inlined. A real project resume has a long line; one that does not is
+// a broken premise, and this says so rather than measuring nothing (290, 296).
+func distinctiveResumeLine(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the live resume at %q to build the body needle: %v", path, err)
+	}
+	longest := ""
+	for line := range strings.SplitSeq(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if len(line) > len(longest) {
+			longest = line
+		}
+	}
+	const minNeedle = 40
+	if len(longest) < minNeedle {
+		t.Fatalf("the live resume's longest line is %d B (%q), under the %d B needle floor — a needle that "+
+			"short can match by accident, so the no-body assertion would prove nothing",
+			len(longest), longest, minNeedle)
+	}
+	return longest
 }

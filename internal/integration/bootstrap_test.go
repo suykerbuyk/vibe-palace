@@ -67,7 +67,7 @@ A vault-level custom command for testing.
 	// The result is JSON — parse it and verify fields.
 	var bootstrap struct {
 		Project           string `json:"project"`
-		Workflow          string `json:"workflow"`
+		WorkflowURI       string `json:"workflow_uri"`
 		AvailableCommands []struct {
 			Name  string `json:"name"`
 			Alias string `json:"alias"`
@@ -78,14 +78,12 @@ A vault-level custom command for testing.
 		t.Fatalf("parse bootstrap: %v (raw: %.200s)", err, result)
 	}
 
-	if bootstrap.Workflow == "" {
-		t.Error("workflow should be non-empty")
-	}
-	// The embedded workflow is the thin post-ADR-008 template: generic
-	// doctrine is served on demand, and the workflow's contract paragraph
-	// points at the vp_get_doctrine fetch.
-	if !strings.Contains(bootstrap.Workflow, "vp_get_doctrine") {
-		t.Error("workflow should contain the doctrine-fetch contract from the embedded template")
+	// The workflow BODY is not in the payload (first-principles Phase 3): the
+	// payload is an index and the body is fetched through its handle. What
+	// bootstrap owes the caller is the route, so that is what is asserted — and
+	// the body it serves is covered where the resource is read, not here.
+	if bootstrap.WorkflowURI == "" {
+		t.Error("workflow_uri should be non-empty — it is the only route to the project's rules")
 	}
 
 	// Verify commands include both embedded and vault commands.

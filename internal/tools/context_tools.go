@@ -62,10 +62,17 @@ type BootstrapResult struct {
 	WorkflowURI  string `json:"workflow_uri"`
 	ResumeSha256 string `json:"resume_sha256"`
 
-	// ActiveTaskCount survives the ladder even when ActiveTasks is shed, and now
-	// survives a host cut for the same reason: a backlog that leaves no trace
-	// reads as "no open tasks".
+	// ActiveTaskCount is the whole open backlog, and it sits here — ahead of the
+	// bulk, next to the handles — because a backlog that leaves no trace reads as
+	// "no open tasks". head_of_queue carries at most headOfQueueN rows; this is
+	// how a reader knows how much it is not seeing, and vp_list_tasks is where
+	// the rest lives.
 	ActiveTaskCount int `json:"active_task_count"`
+
+	// Ranking reports how the rows below were ordered and what they were ordered
+	// against. It is the one instrument that is NEVER silent — see RankingReport
+	// for why that exception is earned.
+	Ranking *RankingReport `json:"ranking,omitempty"`
 
 	// VaultStaleness reports the network-free fetch age of the vault view.
 	VaultStaleness *VaultStaleness `json:"vault_staleness,omitempty"`
@@ -136,17 +143,31 @@ type BootstrapResult struct {
 	// if the rule needs to change, it changes in mcp.ServerInstructions.
 	PostBootstrapInstructions string `json:"post_bootstrap_instructions,omitempty"`
 
-	// ── THE BULK. Everything below is large, and everything below is where a
-	// host cut is allowed to land: each of these is re-fetchable through a handle
-	// declared above (resume_uri, workflow_uri, vp_list_tasks, vp_cmd/vp_skill).
-	Workflow          string             `json:"workflow"`
-	Resume            string             `json:"resume"`
-	ActiveTasks       []storage.TaskMeta `json:"active_tasks"`
-	RecentSessions    []sessionSummary   `json:"recent_sessions,omitempty"`
-	Memory            []memorySnapshot   `json:"memory,omitempty"`
-	KGSnapshot        *storage.KGStats   `json:"kg_snapshot,omitempty"`
-	AvailableCommands []commandSummary   `json:"available_commands,omitempty"`
-	AvailableSkills   []skillSummary     `json:"available_skills,omitempty"`
+	// ── THE INDEX. Everything below is a list of ROWS, never a document body:
+	// each row names what it is and carries the handle that fetches it. This is
+	// PRD §1.9 — session start returns an index plus what is relevant to what
+	// comes next, and bulk is retrieved, never pushed.
+	//
+	// 🔴 NO DOCUMENT BODY IS INLINED HERE, UNCONDITIONALLY. `workflow` and
+	// `resume` used to lead this block as whole files — 37,060 B of a 68,977 B
+	// live payload — and are now reachable only through WorkflowURI / ResumeURI,
+	// with ResumeSha256 to compare-and-set what the URI serves. `restart.md`
+	// fetches both on every restart; it is not a recovery path any more, it is
+	// THE path. That is safe now and was not before first-principles Phase 1,
+	// which moved the rules those documents carried into check producers and tool
+	// guards: a rule an agent never fetches is a rule it breaks, so lazy delivery
+	// had to wait for enforcement to stop living in prose.
+	//
+	// HeadOfQueue carries no omitempty deliberately: it is the first key of this
+	// block on the wire, so a reader (and the wire-order tests) can find the
+	// boundary between the instruments and the index without depending on which
+	// optional lists a given project happens to populate.
+	HeadOfQueue       []headOfQueueRow `json:"head_of_queue"`
+	RecentSessions    []sessionSummary `json:"recent_sessions,omitempty"`
+	Memory            []memorySnapshot `json:"memory,omitempty"`
+	KGSnapshot        *storage.KGStats `json:"kg_snapshot,omitempty"`
+	AvailableCommands []commandSummary `json:"available_commands,omitempty"`
+	AvailableSkills   []skillSummary   `json:"available_skills,omitempty"`
 
 	// 🔴 THE TERMINAL SENTINEL. LAST FIELD, NO omitempty, ALWAYS true — all three
 	// properties are the mechanism, and each one is load-bearing.
@@ -235,13 +256,20 @@ type memorySnapshot struct {
 	Rel         string `json:"rel"`
 }
 
-// sessionSummary is a lightweight view of SessionMeta for the bootstrap response.
+// sessionSummary is one row of the session INDEX: enough to decide whether a
+// session is worth reading, plus the handle that reads it.
+//
+// It carries no Summary. The bodies were the second-largest field in the live
+// payload — 17,200 B of 68,977 B, five whole narratives — and every one of them
+// is one vp_read_resource away behind URI. rankSessions still reads the summary
+// to score relevance; that is server-side parsing (PRD §1.9), and the text it
+// scored stays where it lives.
 type sessionSummary struct {
 	Date      string `json:"date"`
 	Iteration int    `json:"iteration"`
 	Title     string `json:"title,omitempty"`
-	Summary   string `json:"summary,omitempty"`
 	Tag       string `json:"tag,omitempty"`
+	URI       string `json:"uri,omitempty"`
 }
 
 type bootstrapParams struct {
@@ -321,7 +349,7 @@ func bootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, allowC
 	}
 	return mcp.Tool{
 		Name:        "vp_bootstrap_context",
-		Description: "Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive. Bodies are delivered WHOLE — nothing is shed, excerpted, or digested to fit a budget, and there is no payload ceiling to tune. Large documents are also reachable by handle: `resume_uri` and `workflow_uri` page through vp_read_resource, and `resume_sha256` covers the FULL RAW resume so a caller can compare-and-set against disk. The payload LEADS with its instruments (health, vault staleness, friction, alerts) because those are what a host preview keeps, and it ENDS with `complete: true`: if you do not see that field, your HOST truncated the result and the inline body is untrustworthy — rehydrate via `resume_uri` / `workflow_uri` before acting on it. `active_task_count` reports the open backlog; call vp_list_tasks for the rows.",
+		Description: "Single-call context restoration, delivered as an INDEX: head of queue + session index + memory index + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive. NO DOCUMENT BODY IS INLINED — `resume` and `workflow` are NOT in this payload and never arrive by waiting; FETCH them with vp_read_resource via `resume_uri` and `workflow_uri` on every restart, and `resume_sha256` covers the FULL RAW resume so a caller can compare-and-set against disk. `head_of_queue` is what comes NEXT, derived from the task graph (unblocked, in-progress first, then priority, then dependency order), each row carrying the URI of its task body; `active_task_count` is the whole open backlog, so a count larger than the rows means more work exists — call vp_list_tasks for it. `recent_sessions` are index rows, not narratives: read one via its `uri`. `ranking` states which ranker ordered those rows, the head-of-queue slug it ranked against, and how many candidates it chose from. The payload LEADS with its instruments (health, vault staleness, friction, ranking, alerts) because those are what a host preview keeps, and it ENDS with `complete: true`: if you do not see that field, your HOST truncated the result.",
 		Schema:      schema,
 		Handler:     bootstrapHandler(resolver, vault, allowCwdDefault),
 	}
@@ -375,11 +403,8 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// the reader to skim the alerts that do matter.
 	herdrLine := herdrAnnouncement(stdioMCP)
 
-	// Complete is set HERE, at assembly, not just before the return: the shed
-	// ladder measures the payload it is about to send (est() marshals `result`),
-	// and a sentinel attached after the last measurement would be bytes the
-	// budget never counted — the same under-measurement that let the live vault
-	// ship 8060 tokens against a budget of 8000 with over=false.
+	// Complete is set HERE, at assembly, not just before the return, so no path
+	// through this function can reach a successful result without it.
 	result := BootstrapResult{
 		Project:     project,
 		ResumeURI:   mcp.ResumeURI(project),
@@ -387,64 +412,61 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		Complete:    true,
 	}
 
-	// Workflow — graceful on error.
-	if wf, _, err := resolver.Resolve("workflow", project); err == nil {
-		result.Workflow = wf
-	}
-
-	// Resume — graceful on error. The digest comes from the same read as the body
-	// and covers the FULL resume, so a caller that pages the body back through
-	// resume_uri can still compare-and-set against disk. It is empty when no
-	// project-tier resume.md exists (vault/embedded fallback) — the writer reads
-	// that as "assert absent".
-	if resume, _, sha, err := resolver.ResolveDigest("resume", project); err == nil {
-		result.Resume = resume
+	// The resume DIGEST, without the resume. ResolveDigest reads the file to hash
+	// it and hands back both; only the hash is kept, because the body's route is
+	// ResumeURI and the hash is what lets a caller that pages it back
+	// compare-and-set against disk. It is empty when no project-tier resume.md
+	// exists (vault/embedded fallback) — the writer reads that as "assert absent".
+	if _, _, sha, err := resolver.ResolveDigest("resume", project); err == nil {
 		result.ResumeSha256 = sha
 	}
 
-	// Active tasks — graceful on error.
+	// The open backlog COUNT — graceful on error.
 	//
 	// Iceboxed tasks are dropped: bootstrap carries what the project INTENDS to
 	// do, not everything it KNOWS. An agent that opens a session to a list where
 	// the critical work sits beside a dozen deliberately-unscheduled
 	// found-in-passing items has to re-derive the difference every time.
+	// storage.DropIcebox is the ONE definition of that filter, shared with
+	// vp tasks and vp_list_tasks.
 	if tasks, err := vault.ListTasks(project, false); err == nil {
-		result.ActiveTasks = storage.DropIcebox(tasks)
-		// The COUNT survives the ladder even when the list itself is shed, so a
-		// caller that gets a shed payload still knows the backlog exists and how
-		// big it is. A shed list that leaves no trace reads as "no open tasks".
-		result.ActiveTaskCount = len(result.ActiveTasks)
+		result.ActiveTaskCount = len(storage.DropIcebox(tasks))
 	}
 
-	// Recent sessions (last 5, most-recent-first) — graceful on error.
+	// Head of queue — what comes NEXT, derived from the task graph rather than
+	// asked for or guessed from recency (PRD §1.9). It is also the query the
+	// session index is ranked against, so it is built before the sessions.
+	result.HeadOfQueue = deriveHeadOfQueue(vault, project, headOfQueueN)
+	terms := headOfQueueTerms(result.HeadOfQueue)
+	ranking := RankingReport{Ranker: rankerStructural}
+	if len(result.HeadOfQueue) > 0 {
+		ranking.RankedAgainst = result.HeadOfQueue[0].Slug
+	}
+
+	// The session INDEX, ranked against the head of queue — graceful on error.
 	if sessions, err := vault.ListSessions(project, "", "", 0); err == nil {
-		// Compute the friction trend from the FULL history BEFORE the 5-session
-		// trim — computing after the trim would leave the 30d/90d windows
-		// meaningless. GetFrictionWindows always returns one window per request,
-		// so guard on real data (any window covering at least one session) rather
-		// than len(Windows): a zero-session project attaches nothing, while a
+		// Compute the friction trend from the FULL history BEFORE the index trim
+		// — computing after it would leave the 30d/90d windows meaningless.
+		// GetFrictionWindows always returns one window per request, so guard on
+		// real data (any window covering at least one session) rather than
+		// len(Windows): a zero-session project attaches nothing, while a
 		// frictionless-but-active project (RecentAvg 0, direction "stable")
 		// legitimately attaches. The omitempty pointer means nil = not attached.
 		if trend := capture.ComputeFrictionTrend(sessions, time.Now()); frictionTrendHasData(trend) {
 			result.FrictionTrend = &trend
 		}
-		if len(sessions) > 5 {
-			sessions = sessions[len(sessions)-5:]
-		}
-		// Reverse for most-recent-first.
-		for i, j := 0, len(sessions)-1; i < j; i, j = i+1, j-1 {
-			sessions[i], sessions[j] = sessions[j], sessions[i]
-		}
-		for _, s := range sessions {
-			result.RecentSessions = append(result.RecentSessions, sessionSummary{
-				Date:      s.Date,
-				Iteration: s.Iteration,
-				Title:     s.Title,
-				Summary:   s.Summary,
-				Tag:       s.Tag,
-			})
-		}
+		rows, candidates := rankSessions(project, sessions, terms, headOfQueueN)
+		result.RecentSessions = rows
+		ranking.Candidates = candidates
+		ranking.Returned = len(rows)
 	}
+
+	// The ranking report is attached UNCONDITIONALLY, including when the session
+	// listing failed and it has zero of zero to report. Attaching it only on the
+	// success path would make "the ranker found nothing" and "the ranker never
+	// ran" the same bytes — the absent-versus-empty ambiguity that made a missing
+	// `budget` uninterpretable from inside a truncated channel (286).
+	result.Ranking = &ranking
 
 	// KG snapshot — Phase 7 may not exist yet, graceful.
 	if stats, err := vault.KGStats(project); err == nil {

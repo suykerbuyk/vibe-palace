@@ -8,51 +8,74 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 // hostInlineCutSpecimen is a MEASURED specimen, not a constant of the system:
 // 19,968 bytes = 19.5 KiB, the flat inline cap a Grok pane applied on
 // 2026-08-12 to three separate MCP results of 60.3 KB, 53.4 KB and 32.7 KB. It
-// is quoted here as evidence of the CLASS — "some host cuts the payload at some
-// fixed offset" — and the tests below must not depend on this particular number
-// being right tomorrow. They cut at an offset and assert what survives it; any
-// offset landing inside the bulk would prove the same property.
+// is quoted as evidence of the CLASS — "some host cuts the payload at some fixed
+// offset" — and no test may depend on this particular number being right
+// tomorrow.
+//
+// The BOOTSTRAP tests below no longer use it: Phase 3 stopped inlining document
+// bodies, so an honest bootstrap payload does not reach 19.5 KB and cutting one
+// there would truncate nothing (see cutBootstrapAtBulk). It stays here for the
+// other surface results in surface_wire_order_test.go, which still do — a
+// vp_get_task result was measured at 192,060 B with its handle 172 KB past the
+// cut.
 const hostInlineCutSpecimen = 19968
 
-// overBudgetBootstrap builds a payload that is BIGGER than the specimen cut and
-// carries a live `budget` block, which is the state the tests below need and
-// which a comfortable payload cannot produce (budget is nil when nothing was
-// shed and the payload fit).
+// firstBulkKey is where the instrument block ends and the index begins.
+// head_of_queue is declared first in that block and carries no omitempty, so it
+// is present on every payload including an empty project's — which is what makes
+// it a usable boundary marker rather than one that moves with the vault.
+const firstBulkKey = `"head_of_queue":`
+
+// cutBootstrapAtBulk builds a real payload and truncates it exactly where the
+// index begins, returning the whole document and the surviving prefix.
 //
-// The resume declares NO pin marker on purpose: that makes it un-sheddable by
-// the ladder's resume rung (the server will not guess which half of an
-// undeclared resume was safe to drop), so the payload stays far over budget and
-// `budget` is emitted with over_budget set. That is not a contrived state — it
-// is the quantum-ng specimen the epic measured, a real project whose core alone
-// is ~1.95x a real host's cap.
-func overBudgetBootstrap(t *testing.T) (BootstrapResult, []byte) {
+// 🔴 THE CUT IS DERIVED FROM THE PAYLOAD, NOT FROM A HOST'S NUMBER, and that is
+// a Phase 3 change rather than a stylistic one. This helper used to fabricate a
+// ~60 KB un-pinned resume so the payload would exceed 19,968 B — the flat inline
+// cap a Grok pane applied on 2026-08-12 to three MCP results of 60.3 KB, 53.4 KB
+// and 32.7 KB, quoted here as evidence of the CLASS: some host keeps only a
+// fixed prefix. Phase 3 stopped inlining document bodies, so no honest payload
+// reaches that size any more and the fabrication would have had to grow into a
+// lie about what this tool returns.
+//
+// Cutting at the bulk boundary proves the same property the fixed offset did —
+// what survives when a host keeps only a prefix — and it keeps proving it on
+// every project, at every size, without depending on any host's number being
+// right tomorrow.
+func cutBootstrapAtBulk(t *testing.T) (whole string, prefix string) {
 	t.Helper()
 	vault, resolver := testSetup(t)
-	// ~60 KB of un-pinned diary, comfortably past the specimen cut so the cut
-	// lands inside `resume` exactly as it did on the live pane.
-	resume := "# Resume\n\n## Current State\n\n" +
-		strings.Repeat("- a line of project diary that nobody has ruled on yet\n", 1100)
-	if err := vault.WriteResume("test-proj", resume, ""); err != nil {
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{
+		Slug: "the-next-thing", Title: "The next thing", Content: "body", Priority: "high",
+	}); err != nil {
 		t.Fatal(err)
 	}
-	tool := BootstrapContextTool(resolver, vault)
-	br := bootstrapResult(t, tool, `{"project":"test-proj"}`)
+	if _, err := vault.WriteSession("test-proj", storage.SessionMeta{
+		Date: "2026-08-18", Title: "a session", Summary: "the next thing, worked on", Tag: "implementation",
+	}, "body"); err != nil {
+		t.Fatal(err)
+	}
 
-	raw, err := json.Marshal(br)
+	tool := BootstrapContextTool(resolver, vault)
+	raw, err := json.Marshal(bootstrapResult(t, tool, `{"project":"test-proj"}`))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if len(raw) <= hostInlineCutSpecimen {
-		t.Fatalf("test premise broken: payload is %d bytes, which already fits inside the %d-byte cut — "+
-			"nothing is being truncated, so this test would pass without measuring anything",
-			len(raw), hostInlineCutSpecimen)
+	doc := string(raw)
+
+	head, _, found := strings.Cut(doc, firstBulkKey)
+	if !found {
+		t.Fatalf("no %s key in the payload — the instrument/index boundary this cuts at does not exist, "+
+			"so nothing below measures anything; payload: %.400s", firstBulkKey, doc)
 	}
-	return br, raw
+	return doc, head
 }
 
 // TestBootstrapTruncatedPrefixIsDetectable is the headline: it reproduces the
@@ -70,37 +93,41 @@ func overBudgetBootstrap(t *testing.T) (BootstrapResult, []byte) {
 // handles must be on the near side of the cut, or detecting the truncation only
 // tells the agent it is lost without telling it where to look.
 func TestBootstrapTruncatedPrefixIsDetectable(t *testing.T) {
-	_, raw := overBudgetBootstrap(t)
-	prefix := string(raw[:hostInlineCutSpecimen])
+	whole, prefix := cutBootstrapAtBulk(t)
 
 	// The prefix really is a cut document, not a smaller whole one. Asserted so
-	// a future change that quietly shrinks the payload under the cut cannot turn
-	// this test green by removing the truncation it is measuring.
+	// a change that moves the boundary cannot turn this test green by leaving
+	// nothing truncated.
 	if json.Valid([]byte(prefix)) {
 		t.Fatal("the truncated prefix parses as valid JSON — it was not actually cut mid-document, so this test is measuring nothing")
+	}
+	if len(prefix) >= len(whole) {
+		t.Fatalf("the cut removed nothing: prefix %d B of a %d B payload", len(prefix), len(whole))
 	}
 
 	if strings.Contains(prefix, `"complete"`) {
 		t.Errorf("the %d-byte prefix already carries `complete` — the sentinel is not the last field, so a truncated payload is indistinguishable from a whole one",
-			hostInlineCutSpecimen)
+			len(prefix))
 	}
-	if !strings.Contains(string(raw), `"complete":true`) {
+	if !strings.Contains(whole, `"complete":true`) {
 		t.Error("the WHOLE payload carries no `complete`:true — absence would then mean nothing at all")
 	}
 
-	// What the agent must still hold after the cut: the report about the
-	// payload, the handles that fetch what it lost, and the count that proves a
-	// backlog exists.
+	// What the agent must still hold after the cut: the handles that fetch every
+	// body this payload deliberately does not carry, the count that proves a
+	// backlog exists, the report on how the rows below were ordered, and the
+	// directive with its alerts.
 	for _, key := range []string{
 		`"resume_uri"`,
 		`"workflow_uri"`,
 		`"resume_sha256"`,
 		`"active_task_count"`,
+		`"ranking"`,
 		`"post_bootstrap_instructions"`,
 	} {
 		if !strings.Contains(prefix, key) {
-			t.Errorf("%s did not survive the %d-byte cut — an agent in the truncated channel cannot recover what it never received",
-				key, hostInlineCutSpecimen)
+			t.Errorf("%s did not survive the cut at %d B — an agent in the truncated channel cannot recover what it never received",
+				key, len(prefix))
 		}
 	}
 }
@@ -109,8 +136,7 @@ func TestBootstrapTruncatedPrefixIsDetectable(t *testing.T) {
 // is the only property the transport actually respects. Field names and
 // omitempty flags are irrelevant to a cut; offsets are all it sees.
 func TestBootstrapInstrumentsPrecedeBulk(t *testing.T) {
-	_, raw := overBudgetBootstrap(t)
-	doc := string(raw)
+	doc, _ := cutBootstrapAtBulk(t)
 
 	// First occurrence is the key: every instrument key below is emitted in the
 	// header region, ahead of any bulk string that might quote one in prose.
@@ -127,10 +153,11 @@ func TestBootstrapInstrumentsPrecedeBulk(t *testing.T) {
 		`"workflow_uri"`,
 		`"resume_sha256"`,
 		`"active_task_count"`,
+		`"ranking"`,
 	} {
-		for _, bulk := range []string{`"workflow":`, `"resume":`} {
+		for _, bulk := range []string{firstBulkKey, `"recent_sessions":`} {
 			if at(instrument) > at(bulk) {
-				t.Errorf("%s is at byte %d, AFTER %s at byte %d — a host cut inside the bulk takes the instrument with it",
+				t.Errorf("%s is at byte %d, AFTER %s at byte %d — a host cut inside the index takes the instrument with it",
 					instrument, at(instrument), bulk, at(bulk))
 			}
 		}
@@ -164,18 +191,35 @@ func TestBootstrapCompleteSentinelAlwaysEmitted(t *testing.T) {
 			last.Name, tag)
 	}
 
-	// LAST FIELD, on the wire, on a real payload from each side of the ladder.
+	// LAST FIELD, on the wire, on a real payload — from an empty project, whose
+	// optional index lists are all omitted, and from a populated one, whose are
+	// not. Those are the two shapes the tail can differ between; the deleted
+	// `max_tokens` case that used to sit here named a parameter this binary no
+	// longer has, and an unknown JSON key is ignored, so it exercised the SAME
+	// path as the case above it while reading as a second one.
 	for _, tc := range []struct {
-		name   string
-		params string
+		name    string
+		prepare func(*testing.T, *storage.Vault)
 	}{
-		{"under budget, nothing shed", `{"project":"test-proj"}`},
-		{"shed to the floor", `{"project":"test-proj","max_tokens":1}`},
+		{"empty project, optional lists omitted", func(*testing.T, *storage.Vault) {}},
+		{"populated project, index lists present", func(t *testing.T, v *storage.Vault) {
+			if err := v.CreateTask("test-proj", storage.TaskSpec{
+				Slug: "a-task", Title: "A task", Content: "body", Priority: "high",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := v.WriteSession("test-proj", storage.SessionMeta{
+				Date: "2026-08-18", Title: "a session", Summary: "work", Tag: "implementation",
+			}, "body"); err != nil {
+				t.Fatal(err)
+			}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			vault, resolver := testSetup(t)
+			tc.prepare(t, vault)
 			tool := BootstrapContextTool(resolver, vault)
-			raw, err := json.Marshal(bootstrapResult(t, tool, tc.params))
+			raw, err := json.Marshal(bootstrapResult(t, tool, `{"project":"test-proj"}`))
 			if err != nil {
 				t.Fatalf("marshal: %v", err)
 			}

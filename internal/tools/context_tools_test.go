@@ -46,23 +46,28 @@ func TestBootstrapEmptyVault(t *testing.T) {
 	if br.Project != "test-proj" {
 		t.Errorf("Project = %q, want %q", br.Project, "test-proj")
 	}
-	// Workflow should come from embedded defaults. The embedded floor is the
-	// THIN post-ADR-008 template: the generic doctrine lives in the on-demand
-	// doctrine resource, and the workflow carries the minimal bootstrap
-	// contract pointing at it.
-	if !strings.Contains(br.Workflow, "vp_get_doctrine") {
-		t.Error("expected embedded thin workflow with the doctrine-fetch contract paragraph")
+	// The documents are reachable, not delivered: an empty project still gets
+	// both handles, because that is now the only route to either body.
+	if br.ResumeURI == "" || br.WorkflowURI == "" {
+		t.Errorf("handles missing on an empty project: resume_uri=%q workflow_uri=%q", br.ResumeURI, br.WorkflowURI)
 	}
-	// Resume should come from embedded defaults.
-	if !strings.Contains(br.Resume, "test-proj") {
-		t.Error("expected resume with expanded project name")
+	// Empty vault = no queue, no sessions, no KG.
+	if len(br.HeadOfQueue) != 0 {
+		t.Errorf("HeadOfQueue = %d, want 0", len(br.HeadOfQueue))
 	}
-	// Empty vault = no tasks, no sessions, no KG.
-	if len(br.ActiveTasks) != 0 {
-		t.Errorf("ActiveTasks = %d, want 0", len(br.ActiveTasks))
+	if br.ActiveTaskCount != 0 {
+		t.Errorf("ActiveTaskCount = %d, want 0", br.ActiveTaskCount)
 	}
 	if len(br.RecentSessions) != 0 {
 		t.Errorf("RecentSessions = %d, want 0", len(br.RecentSessions))
+	}
+	// The ranking report is never silent, even with nothing to rank: "found
+	// nothing" and "never ran" must not be the same bytes.
+	if br.Ranking == nil {
+		t.Fatal("Ranking is nil on an empty project — absence and emptiness are then indistinguishable")
+	}
+	if br.Ranking.Candidates != 0 || br.Ranking.Returned != 0 {
+		t.Errorf("Ranking = %+v, want zero candidates and zero returned", *br.Ranking)
 	}
 }
 
@@ -85,8 +90,18 @@ func TestBootstrapWithTasks(t *testing.T) {
 	}
 
 	br := result.(BootstrapResult)
-	if len(br.ActiveTasks) != 2 {
-		t.Fatalf("ActiveTasks = %d, want 2", len(br.ActiveTasks))
+	if br.ActiveTaskCount != 2 {
+		t.Fatalf("ActiveTaskCount = %d, want 2", br.ActiveTaskCount)
+	}
+	if len(br.HeadOfQueue) != 2 {
+		t.Fatalf("HeadOfQueue = %d, want 2", len(br.HeadOfQueue))
+	}
+	// Priority orders the queue: high before medium.
+	if br.HeadOfQueue[0].Slug != "fix-bug" {
+		t.Errorf("head of queue = %q, want the high-priority task fix-bug", br.HeadOfQueue[0].Slug)
+	}
+	if br.HeadOfQueue[0].URI != "vibe-palace://task/test-proj/fix-bug" {
+		t.Errorf("head-of-queue row carries uri %q, want the task handle", br.HeadOfQueue[0].URI)
 	}
 }
 
@@ -426,36 +441,57 @@ func TestBootstrapResumeWorkflowURIs(t *testing.T) {
 	}
 }
 
-// TestBootstrapResumeIsNeverExcerptedByBytes replaces the three tests that
-// covered the deleted byte-axis `slim` path (excerpt-on-large, inline-on-small,
-// per-transport default). They asserted a mechanism that no longer exists; this
-// asserts the property that replaced it, on the same fixture that used to be cut.
+// TestBootstrapCarriesNoDocumentBodyAtAnySize is Phase 3's gate in unit form:
+// the payload is an INDEX, so a resume of any size produces the same shape —
+// handles, no body.
 //
-// THE POINT: a resume is never reduced for its SIZE alone. Only the token ladder
-// reduces it, only under budget pressure, only to its `<!-- vp:pin -->` zone, and
-// only while saying so in budget.shed. No request shape and no transport can
-// produce a resume body that was silently prefix-cut.
-func TestBootstrapResumeIsNeverExcerptedByBytes(t *testing.T) {
-	vault, resolver := testSetup(t)
-	bigResume := "# Resume\n\n" + strings.Repeat("state line for test-proj\n", 400)
-	if err := vault.WriteResume("test-proj", bigResume, ""); err != nil {
-		t.Fatal(err)
-	}
-	tool := BootstrapContextTool(resolver, vault)
-
-	// The old `slim` param is gone from the schema; an unknown key must not
-	// resurrect the behavior by any route.
-	for _, params := range []string{
-		`{"project":"test-proj"}`,
-		`{"project":"test-proj","slim":true}`,
+// It replaces TestBootstrapResumeIsNeverExcerptedByBytes, which asserted the
+// resume arrived WHOLE and named the shed ladder as the one thing allowed to
+// reduce it. Both subjects are gone: the ladder was deleted in Phase 2 and the
+// body is no longer delivered at all. The fixture is deliberately kept — the
+// same 400-line resume that test used — so the property is measured on the input
+// that used to make the old mechanism fire.
+//
+// 🔴 THE SIZE SWEEP IS THE POINT, NOT DECORATION. A single fixture would pass on
+// an implementation that inlined small documents and dropped large ones, which
+// is a size rule wearing an index's clothes. Nothing here may depend on a byte
+// count (PRD §1.10), so the assertion is made at both ends of the range.
+func TestBootstrapCarriesNoDocumentBodyAtAnySize(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		resume string
+	}{
+		{"a one-line resume", "# Resume\n\nstate line for test-proj\n"},
+		{"a live-sized resume", "# Resume\n\n" + strings.Repeat("state line for test-proj\n", 400)},
 	} {
-		br := bootstrapResult(t, tool, params)
-		if strings.HasPrefix(br.Resume, "⚠ excerpt") {
-			t.Errorf("%s: resume was byte-excerpted — the deleted slim path is back", params)
-		}
-		if br.Resume != bigResume {
-			t.Errorf("%s: resume not delivered whole: got %d bytes, want %d", params, len(br.Resume), len(bigResume))
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			vault, resolver := testSetup(t)
+			if err := vault.WriteResume("test-proj", tc.resume, ""); err != nil {
+				t.Fatal(err)
+			}
+			tool := BootstrapContextTool(resolver, vault)
+			br := bootstrapResult(t, tool, `{"project":"test-proj"}`)
+
+			raw, err := json.Marshal(br)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			wire := string(raw)
+			for _, key := range []string{`"resume":`, `"workflow":`} {
+				if strings.Contains(wire, key) {
+					t.Errorf("the wire carries %s — a document body is inlined again (PRD §1.9, DoD item 3)", key)
+				}
+			}
+			// The content check, which a renamed field would still fail.
+			if strings.Contains(wire, "state line for test-proj") {
+				t.Errorf("resume text reached the payload under some other field:\n%s", wire)
+			}
+			// And the route to it is intact.
+			if br.ResumeURI == "" || br.ResumeSha256 == "" {
+				t.Errorf("body withheld without a usable handle: resume_uri=%q resume_sha256=%q",
+					br.ResumeURI, br.ResumeSha256)
+			}
+		})
 	}
 }
 
@@ -666,11 +702,12 @@ func TestBootstrapAlertsSurviveALiveSizedResume(t *testing.T) {
 			br.PostBootstrapInstructions, br.VaultStaleness.Message)
 	}
 
-	if !strings.Contains(br.Resume, "never do the bad thing") {
-		t.Error("the resume did not arrive whole")
-	}
-	if br.Resume != resume {
-		t.Errorf("resume not delivered whole: got %d bytes, want %d", len(br.Resume), len(resume))
+	// The resume is not in the payload at all any more (Phase 3), so what this
+	// still proves is the alert half: a large resume on disk does not disturb the
+	// directive. The body assertion moved to
+	// TestBootstrapCarriesNoDocumentBodyAtAnySize, which asserts its ABSENCE.
+	if br.ResumeSha256 == "" {
+		t.Error("no resume_sha256 for a project with a 50 KB resume — the handle's CAS half is missing")
 	}
 }
 
@@ -768,7 +805,7 @@ func TestBootstrapToolSchema(t *testing.T) {
 // write is keyed on.
 func TestBootstrapResumeSha256MatchesDisk(t *testing.T) {
 	vault, resolver := testSetup(t)
-	const body = "# Resume\n\nSmall enough to stay fully inline.\n"
+	const body = "# Resume\n\nThe body stays on disk; only its digest travels.\n"
 	if err := vault.WriteResume("test-proj", body, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -778,23 +815,22 @@ func TestBootstrapResumeSha256MatchesDisk(t *testing.T) {
 	}
 
 	br := bootstrapResult(t, BootstrapContextTool(resolver, vault), `{"project":"test-proj"}`)
-	if br.Resume != body {
-		t.Fatalf("resume not inline: %q", br.Resume)
-	}
 	if want := onDiskSha(t, path); br.ResumeSha256 != want {
 		t.Errorf("resume_sha256 = %q, want on-disk %q", br.ResumeSha256, want)
 	}
 }
 
 // TestBootstrapResumeSha256EmptyWithoutProjectFile pins the assert-absent signal:
-// with no Projects/<slug>/resume.md the body comes from the embedded default, so
-// there is no file to compare against and the sha must be empty.
+// with no Projects/<slug>/resume.md the resume resolves from the embedded
+// default, so there is no file to compare against and the sha must be empty. The
+// URI is still handed out — vp_read_resource serves the resolved default — so
+// the handle and its CAS half are deliberately independent.
 func TestBootstrapResumeSha256EmptyWithoutProjectFile(t *testing.T) {
 	vault, resolver := testSetup(t)
 
 	br := bootstrapResult(t, BootstrapContextTool(resolver, vault), `{"project":"test-proj"}`)
-	if br.Resume == "" {
-		t.Fatal("expected the embedded default resume")
+	if br.ResumeURI == "" {
+		t.Error("resume_uri is empty — the fetch route must exist even for an embedded-default resume")
 	}
 	if br.ResumeSha256 != "" {
 		t.Errorf("resume_sha256 = %q, want empty when no project resume.md exists", br.ResumeSha256)

@@ -161,8 +161,11 @@ func TestFullInjectCommand(t *testing.T) {
 	if result.Project != "test-proj" {
 		t.Errorf("project = %q", result.Project)
 	}
-	if len(result.ActiveTasks) != 1 {
-		t.Errorf("active_tasks = %d", len(result.ActiveTasks))
+	if result.ActiveTaskCount != 1 {
+		t.Errorf("active_task_count = %d", result.ActiveTaskCount)
+	}
+	if len(result.HeadOfQueue) != 1 {
+		t.Errorf("head_of_queue = %d", len(result.HeadOfQueue))
 	}
 }
 

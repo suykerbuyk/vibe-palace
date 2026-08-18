@@ -47,8 +47,11 @@ func TestRunInjectWithData(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	if len(result.ActiveTasks) != 1 {
-		t.Errorf("active_tasks = %d, want 1", len(result.ActiveTasks))
+	if result.ActiveTaskCount != 1 {
+		t.Errorf("active_task_count = %d, want 1", result.ActiveTaskCount)
+	}
+	if len(result.HeadOfQueue) != 1 {
+		t.Errorf("head_of_queue = %d, want 1", len(result.HeadOfQueue))
 	}
 	if len(result.RecentSessions) != 1 {
 		t.Errorf("recent_sessions = %d, want 1", len(result.RecentSessions))

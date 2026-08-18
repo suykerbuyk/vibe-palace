@@ -157,41 +157,24 @@ func TestBootstrapIsSilentWhenHealthy(t *testing.T) {
 	}
 }
 
-// TestBootstrapAlertsSurviveTokenTruncation guards a bug that PREDATES the health
-// work and was silently costing friction and vault-staleness their warnings too.
+// TestBootstrapAlertsSurviveTokenTruncation was DELETED here in
+// first-principles Phase 3, not moved and not renamed.
 //
-// The token-budget truncation sheds the command list and then RE-RENDERS
-// PostBootstrapInstructions. That re-render used to be a blind ASSIGNMENT, which
-// threw away every alert appended before it — so the payload dropped its warnings
-// exactly when it was too big to fit, i.e. on a busy project, which is precisely
-// when the warnings matter most. The alerts are the highest-value content in the
-// payload and they were the first thing discarded.
+// It drove the handler with `{"max_tokens":1}` to force the shed path and then
+// asserted the health alert survived the directive re-render that path
+// performed. Phase 2 deleted the shed ladder and the `max_tokens` parameter with
+// it — and an unknown JSON key is IGNORED, so the call kept succeeding and the
+// test kept passing while exercising exactly the same path as
+// TestBootstrapPushesHealthWhenDegraded above. A test that names a mechanism the
+// binary no longer has reads as coverage of that mechanism and is worth less
+// than no test, because it also supplies false confidence (the 290 family).
 //
-// A tiny max_tokens forces the shed path.
-func TestBootstrapAlertsSurviveTokenTruncation(t *testing.T) {
-	vault, resolver := testSetup(t)
-	now := time.Now().UTC().Format(time.RFC3339)
-	writeHealthLog(t, vault, []string{
-		fmt.Sprintf(`{"time":"%s","level":"ERROR","msg":"hook: session capture failed; no note was written"}`, now),
-	})
-
-	tool := BootstrapContextTool(resolver, vault)
-	// max_tokens tiny enough to shed commands+skills and trigger the re-render.
-	raw, err := tool.Handler(context.Background(), json.RawMessage(`{"project":"test-proj","max_tokens":1}`))
-	if err != nil {
-		t.Fatalf("bootstrap: %v", err)
-	}
-	res := raw.(BootstrapResult)
-
-	if res.Health == nil {
-		t.Fatal("health field was shed by truncation")
-	}
-	if !strings.Contains(res.PostBootstrapInstructions, "ERROR") {
-		t.Fatalf("the health alert was DISCARDED by the token-budget re-render — "+
-			"the payload drops its warnings exactly when it is busiest:\n%s",
-			res.PostBootstrapInstructions)
-	}
-}
+// The property it cared about is still enforced: alerts are collected in their
+// own slice and composed into the directive by composeDirective at the END of
+// assembly, which is what makes losing them unrepresentable. That is covered by
+// TestBootstrapPushesHealthWhenDegraded (alert reaches the directive) and by
+// TestDirectiveCutKeepsAlertsAndLosesAnnouncement (alerts lead, so a cut eats the
+// announcement instead).
 
 // TestBootstrapPushesHealthWhenBlind is the case that matters most on a fresh host
 // and on every non-MCP process: there is NO LOG. That is not health, it is blindness,

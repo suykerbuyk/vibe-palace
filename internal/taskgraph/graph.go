@@ -164,10 +164,10 @@ func (g *Graph) HasProblems() bool {
 	return len(g.Cycles) > 0 || len(g.Dangling) > 0 || len(g.StaleParents) > 0
 }
 
-// priorityRank orders priorities for deterministic tie-breaking. Unknown and
+// PriorityRank orders priorities for deterministic tie-breaking. Unknown and
 // empty priorities sort last — they are not an error (nothing has ever validated
 // the priority string), they are simply least urgent.
-func priorityRank(p string) int {
+func PriorityRank(p string) int {
 	switch p {
 	case "critical":
 		return 0
@@ -290,7 +290,7 @@ func topoSort(g *Graph, slugs []string, adj map[string][]string, indeg map[strin
 
 	less := func(a, b string) int {
 		na, nb := g.Nodes[a], g.Nodes[b]
-		if c := cmp.Compare(priorityRank(na.Meta.Priority), priorityRank(nb.Meta.Priority)); c != 0 {
+		if c := cmp.Compare(PriorityRank(na.Meta.Priority), PriorityRank(nb.Meta.Priority)); c != 0 {
 			return c
 		}
 		return cmp.Compare(a, b)
@@ -631,7 +631,7 @@ func (g *Graph) grouped(includeIcebox, includeArchived bool) []Group {
 			if !ok {
 				continue
 			}
-			bestPri = min(bestPri, priorityRank(n.Meta.Priority))
+			bestPri = min(bestPri, PriorityRank(n.Meta.Priority))
 			if i, ok := orderIdx[m]; ok {
 				bestOrder = min(bestOrder, i)
 			}

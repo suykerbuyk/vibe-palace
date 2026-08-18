@@ -125,11 +125,14 @@ func TestIntegrationInjectBootstrap(t *testing.T) {
 	if result.Project != proj {
 		t.Errorf("project = %q", result.Project)
 	}
-	if len(result.ActiveTasks) != 1 {
-		t.Errorf("active_tasks = %d", len(result.ActiveTasks))
+	if result.ActiveTaskCount != 1 {
+		t.Errorf("active_task_count = %d", result.ActiveTaskCount)
 	}
-	if result.ActiveTasks[0].Slug != "my-task" {
-		t.Errorf("task slug = %q", result.ActiveTasks[0].Slug)
+	if len(result.HeadOfQueue) != 1 {
+		t.Fatalf("head_of_queue = %d", len(result.HeadOfQueue))
+	}
+	if result.HeadOfQueue[0].Slug != "my-task" {
+		t.Errorf("head-of-queue slug = %q", result.HeadOfQueue[0].Slug)
 	}
 	if len(result.RecentSessions) != 1 {
 		t.Errorf("recent_sessions = %d", len(result.RecentSessions))

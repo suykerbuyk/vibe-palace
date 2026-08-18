@@ -7,8 +7,9 @@ behavioral rules — pair-programming paradigm, investigation-first
 workflow, task-management discipline, core principles — are the
 Vibe-Palace **doctrine**, served on demand from the binary. Fetch it
 with `vp_get_doctrine` in Step 2 below and follow it for the rest of
-the session; the project's `workflow.md` (loaded by
-`vp_bootstrap_context`) carries only project-specific patterns.
+the session; the project's `workflow.md` (FETCHED in Step 2 through
+`workflow_uri` — bootstrap no longer inlines it) carries only
+project-specific patterns.
 
 ## Step 1: Vault Sync (multi-machine)
 
@@ -122,10 +123,9 @@ vault; key nothing off it.
   the tool), say so once and continue — these are diagnostics, not a
   gate.
 
-## Step 2: Bootstrap Context
+## Step 2: Bootstrap Context, then FETCH the documents
 
-Call `vp_bootstrap_context` with the project slug to load workflow, resume,
-active tasks, and recent sessions in a single call:
+Call `vp_bootstrap_context` with the project slug:
 
 ```json
 {"project": "<slug>"}
@@ -138,27 +138,54 @@ active tasks, and recent sessions in a single call:
   HTTP serve (`vp mcp serve`) project is schema-required. Prefer naming it
   explicitly either way.
 
-### Read the delivery state before you read the payload
+### 🔴 The payload is an INDEX. The documents do not arrive — you fetch them.
 
-**vp sends the bodies WHOLE.** It does not shed, excerpt or digest `resume` or
-`workflow` to fit a budget — there is no payload ceiling. So a short body is
-your HOST's doing, never vp's, and there is exactly one question to ask.
+`resume` and `workflow` are **not fields of this payload**. Waiting for them,
+or reporting that they were "truncated", is reading a contract this tool no
+longer has. What you get is an index: instruments, handles, `head_of_queue`,
+a session index, and the command and skill lists.
+
+**Fetch both documents now, every restart — not only when something looks
+wrong.** Two calls, before Step 3:
+
+```json
+{"uri": "<workflow_uri from the payload>"}
+{"uri": "<resume_uri from the payload>"}
+```
+
+Use `vp_read_resource`, and page until `eof` is true — advance `offset` by the
+returned `offset + length`, never by the limit you asked for. `resume_sha256`
+covers the FULL RAW resume, so a later compare-and-set write can key on it.
+
+You cannot skip this. `workflow.md` carries this project's standing rules and
+`resume.md` carries its state; a restart that reads neither is a session
+operating on the doctrine alone. **The rules moved into the server before this
+delivery changed** — checks and tool guards now enforce what those documents
+used to assert in prose — which is what makes fetching-instead-of-receiving
+safe. It is not licence to skip the fetch.
+
+### Read the delivery state before you read the payload
 
 - 🔴 **`complete` missing, or a host truncation banner** (`showing first
   N KB of M KB`, or any "result truncated" notice) ⇒ **the HOST cut the
   result.** `complete: true` is the last field of the payload and carries no
   `omitempty`, so it arrives on every whole result and on no cut one. The
-  inline body is untrustworthy — the fields you cannot see are the ones that
-  would have told you what is missing. **Rehydrate BEFORE continuing any
-  restart step:** read your host's persisted copy of the tool result if it
-  keeps one, otherwise page `resume_uri` and `workflow_uri` with
-  `vp_read_resource` and CAS-verify the resume against `resume_sha256`. Do not
-  carry a cut payload into Step 3.
+  fields you cannot see are the ones that would have told you what is missing.
+  Read your host's persisted copy of the tool result if it keeps one, then
+  continue. Do not carry a cut payload into Step 3.
 - **`complete: true` present** ⇒ you have the whole document vp emitted.
 
-The instruments (`health`, `vault_staleness`, `friction_trend`, alerts) LEAD the
-payload deliberately, because they are what a host preview keeps. Read them
-first; they are silent when healthy, so anything you see there wants attention.
+The instruments (`health`, `vault_staleness`, `friction_trend`, `ranking`,
+alerts) LEAD the payload deliberately, because they are what a host preview
+keeps. Read them first; the condition alerts are silent when healthy, so
+anything you see there wants attention.
+
+`ranking` is the exception that is never silent: it names the ranker that
+ordered the rows below, the head-of-queue slug they were ranked against, and
+how many candidates it chose from. `active_task_count` larger than the number
+of `head_of_queue` rows means there is more open work than the queue shows —
+call `vp_list_tasks` for the rest. Session rows carry a `uri` and no summary:
+read one when you need the narrative.
 
 Then fetch the full operating doctrine with `vp_get_doctrine`:
 
@@ -166,12 +193,13 @@ Then fetch the full operating doctrine with `vp_get_doctrine`:
 {"project": "<slug>"}
 ```
 
-The inline `workflow` is deliberately **thin** — it carries only this
-project's patterns plus a minimal pointer at the doctrine — so the doctrine
-fetch is not optional: it is where the standing behavioral rules arrive.
+The project `workflow.md` you fetched above is deliberately **thin** — it
+carries only this project's patterns plus a minimal pointer at the doctrine —
+so the doctrine fetch is not optional: it is where the standing behavioral
+rules arrive.
 
-After bootstrap and the doctrine fetch, continue loading context in the
-order below.
+After bootstrap, the two document fetches and the doctrine fetch, continue
+loading context in the order below.
 
 ## Step 3: Sweep Orphaned Plans
 
@@ -291,7 +319,11 @@ on based on recent git history. If active task files exist,
 summarize each with its priority and status, and recommend which to
 start based on priority order and dependencies.
 
+`head_of_queue` is the server's own answer to that last question,
+derived from the task graph. Say where you agree with it and where you
+do not — it orders by structure, and you have read the bodies.
+
 After this command, follow the doctrine (fetched with `vp_get_doctrine`
 in Step 2) for the standing rules that govern the rest of the session,
-and the project's `workflow.md` (already loaded by
-`vp_bootstrap_context`) for this project's own patterns.
+and the project's `workflow.md` (fetched in Step 2 via `workflow_uri`)
+for this project's own patterns.

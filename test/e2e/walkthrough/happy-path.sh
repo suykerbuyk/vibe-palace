@@ -65,8 +65,14 @@ assert_file_exists ".vibe-palace.toml"
 # End-users normally trigger capture through their editor's MCP client
 # (vp_capture_session); we use the rig's seed_drawer helper here to
 # produce the same on-disk artifact without an MCP roundtrip. Then `vp
-# status` and `vp inject --max-tokens 2000` demonstrate that the
-# bootstrap JSON the AI sees contains a non-empty .project.
+# status` and `vp inject` demonstrate that the bootstrap JSON the AI
+# sees contains a non-empty .project.
+#
+# There is no --max-tokens flag and there is no payload ceiling to
+# demonstrate: first-principles Phase 2 deleted the token budget and the
+# shed ladder, and Phase 3 made the payload an index. This script kept
+# calling the deleted flag until CI caught it — `make test` does not run
+# this suite, so a local green hid it.
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== STEP 4: hydrate + inspect ==="
@@ -80,8 +86,8 @@ run_vp status
 assert_exit_code 0 "$LAST_EXIT_CODE"
 cat "$CASE_LOGDIR/stdout.log"
 
-echo "--- vp inject --max-tokens 2000 (truncated) ---"
-run_vp inject --max-tokens 2000
+echo "--- vp inject ---"
+run_vp inject
 assert_exit_code 0 "$LAST_EXIT_CODE"
 # Show a readable slice of the bootstrap JSON rather than the whole blob.
 head -c 400 "$CASE_LOGDIR/stdout.log"
