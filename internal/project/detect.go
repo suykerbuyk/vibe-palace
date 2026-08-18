@@ -251,7 +251,31 @@ func resolveDir(dir string) string {
 // never re-authorize a write rooted at the home tree (the residue this gate
 // exists to stop). Pass the resolved repo ROOT, not a subdirectory, so the
 // marker walk keys on the right directory.
+//
+// 🔴 An EMPTY repoRoot means "no repo context", and only the exists branch is
+// consulted. It does NOT mean "use the current directory". Callers like
+// vp_manage_task take an explicit project SLUG and no path at all, so there is
+// no repo to authorize against — and the process cwd is the wrong answer
+// twice over: `vp mcp` is long-lived and its cwd is the AI host's launch
+// directory rather than any project, and if that happens to be $HOME the
+// force-skip above would refuse every write, including for projects that
+// plainly exist. Deriving a directory from an absent one is the wrong-vault
+// class the bound-vault pattern already rules out; this makes the absence
+// explicit instead of letting filepath.Abs("") answer it.
 func RequireKnownProject(slug, vaultRoot, repoRoot string) error {
+	if strings.TrimSpace(repoRoot) == "" {
+		if fi, err := os.Stat(filepath.Join(vaultRoot, "Projects", slug)); err == nil && fi.IsDir() {
+			return nil
+		}
+		return fmt.Errorf(
+			"refusing to write vault artifacts for project %q: no Projects/%s/ in the vault.\n"+
+				"This write named the project by slug and carries no repo path, so the slug is "+
+				"the only evidence there is — and an unknown one is far more likely a typo or a "+
+				"hallucination than a new project.\n"+
+				"If the project is real, run `vp init` in its directory first; otherwise check "+
+				"the spelling against `vp_list_projects`.",
+			slug, slug)
+	}
 	resolved := resolveDir(repoRoot)
 	if isForceSkipDir(resolved) {
 		return fmt.Errorf("refusing to write vault artifacts for %q: it is the home directory or filesystem root, not a project — run `vp init` in a project directory", repoRoot)

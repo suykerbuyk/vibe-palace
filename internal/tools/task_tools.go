@@ -10,6 +10,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/taskgraph"
 )
@@ -568,6 +569,29 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 
 		switch p.Action {
 		case "create":
+			// 🔴 THE ONLY ACTION THAT CAN SCAFFOLD A PROJECT, so the only one
+			// gated. Verified rather than assumed: CreateTask is the sole task
+			// writer that reaches a directory-creating call without first
+			// requiring the task file to exist (EnsureDir, internal/storage/
+			// tasks.go). moveTask (retire/cancel) stats its source and errors
+			// "task not found"; amend / set_meta / update_status /
+			// set_relations all os.ReadFile the task first and return on
+			// error, so their atomicfile.Write — which DOES os.MkdirAll its
+			// parent — is unreachable for a project that does not exist.
+			//
+			// `project` here is a free-string slug with no accompanying path,
+			// so a typo'd or hallucinated one would otherwise materialize a
+			// phantom Projects/<slug>/ tree — the iter-245 junk-project class
+			// that RequireKnownProject was added to close, on a far more
+			// agent-trafficked tool than the commit writers it was wired into.
+			//
+			// The empty repoRoot is deliberate and load-bearing: there is no
+			// repo to authorize against, so only the Projects/<slug>/-exists
+			// arm applies. A KNOWN project that is not the caller's cwd still
+			// passes — cross-project create is a feature, not the defect.
+			if err := project.RequireKnownProject(p.Project, vault.Root, ""); err != nil {
+				return nil, apperr.Caller(err)
+			}
 			// The schema already requires `content` to be PRESENT on create; the
 			// length floor lives here because a schema minLength would report as a
 			// bare validation failure with no way to say why 200 bytes is the line.

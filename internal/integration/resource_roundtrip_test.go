@@ -65,6 +65,7 @@ func (h *testHarness) readResourceProtocol(t *testing.T, uri string) string {
 // must still be byte-identical to (a) and (b).
 func TestIntegrationResourceByteIdentity(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "resource-journey")
 	h.registerAllTools(t)
 	// Resources are registered on the Server (not the Registry), so RegisterAll
 	// does not wire them — do it explicitly for the full provider stack.

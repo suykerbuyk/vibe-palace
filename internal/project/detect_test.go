@@ -801,3 +801,47 @@ name = "x"
 		t.Errorf("got %q, want marker at %q", got, root)
 	}
 }
+
+// TestRequireKnownProject_EmptyRepoRootIgnoresCwd pins the arm that makes the
+// gate usable from a tool that has no path at all — vp_manage_task names its
+// project by slug and carries no repo root.
+//
+// 🔴 This test is the whole reason that arm exists, and it is a trap that would
+// otherwise close silently. An empty repoRoot used to fall through to
+// resolveDir(""), which is filepath.Abs("") — the PROCESS working directory.
+// Under `go test` that is the package source directory, which sits inside this
+// repository, which has a .vibe-palace.toml at its root. The marker walk would
+// find it and authorize ANY slug. A gate wired that way passes every test in
+// the suite while authorizing nothing: the green would be evidence of the bug,
+// not of the fix.
+//
+// It is also wrong in production for a second reason: `vp mcp` is long-lived
+// and its cwd is the AI host's launch directory, not a project — and if that
+// were $HOME, the force-skip would refuse writes for projects that plainly
+// exist.
+func TestRequireKnownProject_EmptyRepoRootIgnoresCwd(t *testing.T) {
+	vaultRoot := t.TempDir()
+
+	// Sanity-check the trap is real: this test's own cwd IS inside a marked
+	// repo, so a cwd-consulting implementation would authorize here.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if DetectSignal(cwd) != SignalVibeConfig {
+		t.Skipf("test cwd %s carries no marker; the trap this pins cannot be demonstrated here", cwd)
+	}
+
+	if err := RequireKnownProject("no-such-project", vaultRoot, ""); err == nil {
+		t.Error("empty repoRoot authorized an unknown slug — it consulted the process cwd, " +
+			"whose marker has nothing to do with the slug being written")
+	}
+
+	// And the exists arm still works with no repo root.
+	if err := os.MkdirAll(filepath.Join(vaultRoot, "Projects", "real-project"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireKnownProject("real-project", vaultRoot, ""); err != nil {
+		t.Errorf("empty repoRoot refused a project that exists in the vault: %v", err)
+	}
+}

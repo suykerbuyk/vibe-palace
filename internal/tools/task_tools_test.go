@@ -6,6 +6,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -123,12 +125,26 @@ func TestGetTaskNotFound(t *testing.T) {
 // unitTaskBody returns a create body that clears the handler's minimum-content
 // floor and carries no metadata header of its own (storage.CreateTask rejects a
 // body with its own H1 or **Status:** line).
+// seedProject materializes Projects/<slug>/ so a create is authorized.
+//
+// vp_manage_task's create is gated on the project already existing — the slug
+// is a free string with no accompanying path, so an unknown one is a typo or a
+// hallucination, not a new project. Before the gate these fixtures relied on
+// CreateTask lazily scaffolding the tree, which is the defect itself.
+func seedProject(t *testing.T, vault *storage.Vault, slug string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(vault.Root, "Projects", slug), 0o755); err != nil {
+		t.Fatalf("seed project %s: %v", slug, err)
+	}
+}
+
 func unitTaskBody() string {
 	return strings.Repeat("A real plan line describing what to do and why it matters.\n", 6)
 }
 
 func TestManageTaskCreate(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	seedProject(t, vault, "test-proj")
 	tool := ManageTaskTool(vault)
 
 	params, _ := json.Marshal(manageTaskParams{
@@ -420,6 +436,7 @@ func TestGetTaskExcludeContentSmallBodyStaysInline(t *testing.T) {
 // task that gets implemented wrong.
 func TestManageTaskAmend_RecordsADecisionIntoThePlan(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	seedProject(t, vault, "test-proj")
 	tool := ManageTaskTool(vault)
 
 	body := "## Diagnosis\n\nThe premise: Rebuild serves a stale vector.\n\n## Verification\n\nDrive the real tool.\n" + unitTaskBody()
@@ -739,6 +756,7 @@ func TestListTasksMutuallyExclusiveModes(t *testing.T) {
 
 func TestManageTaskAmend_RequiresSectionAndContent(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	seedProject(t, vault, "test-proj")
 	tool := ManageTaskTool(vault)
 
 	params, _ := json.Marshal(manageTaskParams{

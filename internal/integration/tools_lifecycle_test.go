@@ -17,6 +17,7 @@ import (
 // TestTaskLifecycle exercises create → list → get → update_status → retire → verify in done.
 func TestTaskLifecycle(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "test-proj")
 	h.registerAllTools(t)
 
 	// Create a task. The body must clear the handler's minimum-content floor and
@@ -95,6 +96,7 @@ func TestTaskLifecycle(t *testing.T) {
 // TestContextRoundtrip tests get_workflow, get_resume, update_resume, get_resume (verify write).
 func TestContextRoundtrip(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "test-proj")
 	h.registerAllTools(t)
 
 	// Get workflow (should return embedded default).
@@ -134,6 +136,7 @@ func TestContextRoundtrip(t *testing.T) {
 // TestProjectDiscovery creates palace dirs and verifies list_projects finds them.
 func TestProjectDiscovery(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "test-proj")
 	h.registerAllTools(t)
 
 	// Create some drawers to establish project palace dirs.
@@ -149,6 +152,7 @@ func TestProjectDiscovery(t *testing.T) {
 // TestIterationAppend appends two iterations and verifies both are in the file.
 func TestIterationAppend(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "test-proj")
 	h.registerAllTools(t)
 
 	// The server mints the number under the lock: on a fresh vault these become
@@ -186,6 +190,7 @@ func TestIterationAppend(t *testing.T) {
 // TestKnowledgeSnapshot adds triples and verifies vp_get_knowledge returns stats + triples.
 func TestKnowledgeSnapshot(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "test-proj")
 	h.registerAllTools(t)
 
 	// Add some KG data via the MCP tool.
@@ -226,6 +231,7 @@ func TestKnowledgeSnapshot(t *testing.T) {
 // TestRefreshIndex adds drawers, rebuilds the index, and verifies search finds them.
 func TestRefreshIndex(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "test-proj")
 	h.registerAllTools(t)
 
 	// Add drawers (these bypass the index).
@@ -266,6 +272,7 @@ func TestRefreshIndex(t *testing.T) {
 // error on the missing-required-fields axis), establishing a baseline.
 func TestTools_SchemaDriftMatrix(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "test-proj")
 	h.registerAllTools(t)
 	h.initMCP(t)
 

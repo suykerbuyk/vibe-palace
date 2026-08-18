@@ -26,6 +26,7 @@ import (
 //     agree on the path.
 func TestJourney_Task_Lifecycle(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "journey-task")
 	h.registerAllTools(t)
 
 	const (

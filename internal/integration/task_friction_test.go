@@ -46,6 +46,7 @@ import (
 // quiet, not just this one.
 func TestManageTaskSchema_RetireWithoutApprovalIsRefused_CANARY(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "friction-proj")
 	h.registerAllTools(t)
 
 	const project, slug = "friction-proj", "canary-task"
@@ -84,6 +85,7 @@ func TestManageTaskSchema_RetireWithoutApprovalIsRefused_CANARY(t *testing.T) {
 // conditional: `content` is required on create — and ONLY on create.
 func TestManageTaskFriction_CreateWithoutContentIsRefusedBySchema(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "friction-proj")
 	h.registerAllTools(t)
 
 	text, isErr := h.callToolRaw(t, "vp_manage_task", map[string]any{
@@ -107,6 +109,7 @@ func TestManageTaskFriction_CreateWithoutContentIsRefusedBySchema(t *testing.T) 
 // plan kept host-locally rather than the plan itself.
 func TestManageTaskFriction_CreateWithStubBodyIsRefusedByHandler(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "friction-proj")
 	h.registerAllTools(t)
 
 	for _, stub := range []string{
@@ -133,6 +136,7 @@ func TestManageTaskFriction_CreateWithStubBodyIsRefusedByHandler(t *testing.T) {
 // the friction must not have broken the ordinary path.
 func TestManageTaskFriction_CreateWithRealBodyIsAccepted(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "friction-proj")
 	h.registerAllTools(t)
 
 	raw := h.callTool(t, "vp_manage_task", map[string]any{
@@ -152,6 +156,7 @@ func TestManageTaskFriction_CreateWithRealBodyIsAccepted(t *testing.T) {
 // storage.RetireTask is UNCHANGED.
 func TestManageTaskFriction_RetireWithApprovalIsAccepted(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "friction-proj")
 	h.registerAllTools(t)
 
 	const project, slug = "friction-proj", "retire-ok"
@@ -179,6 +184,7 @@ func TestManageTaskFriction_RetireWithApprovalIsAccepted(t *testing.T) {
 // passing false explicitly is not a way through.
 func TestManageTaskFriction_RetireWithApprovalFalseIsRefused(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "friction-proj")
 	h.registerAllTools(t)
 
 	const project, slug = "friction-proj", "retire-false"
@@ -213,6 +219,7 @@ func TestManageTaskFriction_RetireWithApprovalFalseIsRefused(t *testing.T) {
 // door almost nobody walks through. Do not read it as coverage.
 func TestManageTaskFriction_UpdateStatusTerminalValuesRefused(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "friction-proj")
 	h.registerAllTools(t)
 
 	const project, slug = "friction-proj", "status-task"
@@ -243,6 +250,7 @@ func TestManageTaskFriction_UpdateStatusTerminalValuesRefused(t *testing.T) {
 // for 3c: the statuses a live task actually moves through still work.
 func TestManageTaskFriction_UpdateStatusNonTerminalAccepted(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "friction-proj")
 	h.registerAllTools(t)
 
 	const project, slug = "friction-proj", "status-ok"
@@ -278,6 +286,7 @@ func TestManageTaskFriction_UpdateStatusNonTerminalAccepted(t *testing.T) {
 // what proves it.
 func TestManageTaskFriction_SharedRequiredArrayNotBroken(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "friction-proj")
 	h.registerAllTools(t)
 
 	const project = "friction-proj"

@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -163,6 +165,19 @@ func (h *testHarness) initMCP(t *testing.T) {
 	}`))
 
 	h.mcpReady = true
+}
+
+// seedProject materializes Projects/<slug>/ in the harness vault.
+//
+// vp_manage_task's create is gated on the project already existing: the slug is
+// a free string with no accompanying path, so an unknown one is a typo or a
+// hallucination rather than a new project. These fixtures previously relied on
+// CreateTask lazily scaffolding the tree, which is the defect that gate closes.
+func (h *testHarness) seedProject(t *testing.T, slug string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(h.Vault.Root, "Projects", slug), 0o755); err != nil {
+		t.Fatalf("seed project %s: %v", slug, err)
+	}
 }
 
 // callToolRaw sends a tools/call JSON-RPC request through the REAL MCP server —
