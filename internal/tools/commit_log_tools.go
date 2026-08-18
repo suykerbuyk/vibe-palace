@@ -24,6 +24,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -109,6 +110,47 @@ func ArchiveCommitLogTool(vault *storage.Vault) mcp.Tool {
 			if err != nil {
 				return nil, err
 			}
+
+			// Refuse an anchor that does not describe this repo's history
+			// rather than emitting whatever the walk happens to produce. An
+			// anchor off the HEAD line (rebase, abandoned branch) makes
+			// <anchor>..HEAD a symmetric difference, so the walk re-yields
+			// commits already archived on the surviving line AND the anchor
+			// itself names a commit that never landed — which is how the
+			// permanent history came to record an orphan (iter 281).
+			if err := wrapstate.ValidateAnchorAgainstHEAD(runCtx, projectRoot, anchor); err != nil {
+				anchorPath, _ := vault.CommitLogAnchorFile(slug)
+				switch {
+				case errors.Is(err, wrapstate.ErrAnchorNotAncestor):
+					return nil, fmt.Errorf(
+						"%w.\n"+
+							"  anchor: %s\n"+
+							"  HEAD:   %s\n"+
+							"  file:   %s\n"+
+							"The anchor names a commit this repo has, but HEAD does not descend from it — "+
+							"a rebase or an abandoned branch left it off the line. Walking <anchor>..HEAD "+
+							"from here would re-archive commits already in commit-log.md and record a "+
+							"commit that never landed.\n"+
+							"Remediation: set the anchor to the last commit ALREADY archived that is still "+
+							"an ancestor of HEAD, then re-run. Verify with:\n"+
+							"  git merge-base --is-ancestor <sha> HEAD && echo ok\n"+
+							"Do not hand-edit commit-log.md to reconcile it; existing entries are the "+
+							"honest record of what the old writer wrote.",
+						err, anchor, head, anchorPath)
+				case errors.Is(err, wrapstate.ErrAnchorUnresolvable):
+					return nil, fmt.Errorf(
+						"%w.\n"+
+							"  anchor: %s\n"+
+							"  file:   %s\n"+
+							"This clone cannot resolve the anchor commit — it was garbage-collected, or "+
+							"this is a partial/network-isolated clone that never fetched it.\n"+
+							"Remediation: fetch the missing history, or set the anchor to a commit this "+
+							"clone holds that is an ancestor of HEAD.",
+						err, anchor, anchorPath)
+				default:
+					return nil, err
+				}
+			}
 			// First-run seed: mirror wrapstate.Collect's empty-anchor handling —
 			// the oldest root commit is the exclusive lower bound, so the very
 			// first commit is not archived, but every commit after it is (a
@@ -130,7 +172,7 @@ func ArchiveCommitLogTool(vault *storage.Vault) mcp.Tool {
 				}
 			}
 
-			appended, err := vault.ArchiveCommitBodies(slug, commits, head)
+			appended, skipped, err := vault.ArchiveCommitBodies(slug, commits, head)
 			if err != nil {
 				return nil, err
 			}
@@ -140,10 +182,15 @@ func ArchiveCommitLogTool(vault *storage.Vault) mcp.Tool {
 			return map[string]any{
 				"project":          slug,
 				"commits_archived": appended,
-				"anchor_from":      anchor,
-				"anchor_to":        head,
-				"commit_log_path":  logPath,
-				"anchor_path":      anchorPath,
+				// Commits the walk yielded that commit-log.md already held —
+				// normally another host archived them. Reported rather than
+				// silently dropped: a non-zero value is the signal that two
+				// hosts' anchors have diverged over one shared log.
+				"duplicates_skipped": skipped,
+				"anchor_from":        anchor,
+				"anchor_to":          head,
+				"commit_log_path":    logPath,
+				"anchor_path":        anchorPath,
 			}, nil
 		},
 	}

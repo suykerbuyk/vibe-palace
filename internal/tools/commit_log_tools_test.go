@@ -6,6 +6,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
 
 // archiveRepo builds a real git project repo (with a .vibe-palace.toml naming
@@ -208,5 +210,183 @@ func TestArchiveCommitLog_RefusesUnmanagedDir(t *testing.T) {
 	}
 	if _, serr := os.Stat(filepath.Join(vault.Root, "Projects", "junk-project")); !os.IsNotExist(serr) {
 		t.Errorf("vault project scaffolded despite refusal (stat err = %v)", serr)
+	}
+}
+
+// gitCommitT runs a git command that needs an author/committer identity.
+// gitT deliberately carries none, and archiveRepo's identity lives in a local
+// closure, so tests that land a commit AFTER archiveRepo returns need this.
+func gitCommitT(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
+		"GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %s: %v", args, out, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// setAnchor rewinds the host-local cursor to sha, standing in for the state a
+// SECOND host brings to a SHARED commit-log.md: its own anchor is older than
+// the log, because the log was advanced by somebody else's wrap.
+func setAnchor(t *testing.T, vault *storage.Vault, slug, sha string) {
+	t.Helper()
+	p, err := vault.CommitLogAnchorFile(slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Projects/<slug>/ is created lazily by the first archive; these fixtures
+	// set an anchor BEFORE any archive has run.
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(sha+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestArchiveCommitLog_SkipsSHAsTheLogAlreadyHolds is the Cause 1 test, and it
+// is the one TestArchiveCommitLog_Idempotent could never be.
+//
+// That test re-runs with the anchor AT HeAD, so the walk is HEAD..HEAD — empty
+// — and the append loop never executes. It proves the walk yields nothing; it
+// says nothing about what the writer does when the walk yields a SHA the file
+// already carries. This test constructs exactly that: commit-log.md is current
+// through HEAD, and then the anchor is rewound the way a second host's
+// host-local cursor legitimately is. The walk is non-empty and every SHA in it
+// is already in the shared file.
+//
+// Mutation: drop the seen-check in ArchiveCommitBodies and this goes red with
+// duplicate entries; TestArchiveCommitLog_Idempotent stays green.
+func TestArchiveCommitLog_SkipsSHAsTheLogAlreadyHolds(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	tool := ArchiveCommitLogTool(vault)
+	projDir := archiveRepo(t, "dup-proj", "feat: one\n", "feat: two\n", "feat: three\n")
+
+	first := runArchive(t, tool.Handler, projDir)
+	if first["commits_archived"] != 3 {
+		t.Fatalf("first run archived %v, want 3", first["commits_archived"])
+	}
+	logPath, _ := vault.CommitLogFile("dup-proj")
+	before, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read commit-log.md: %v", err)
+	}
+
+	// The other host's cursor: two commits behind the shared log. Still a
+	// perfectly valid ancestor of HEAD, so the anchor guard has no quarrel
+	// with it — this is the content problem, not the ancestry problem.
+	oldAnchor := gitT(t, projDir, "rev-parse", "HEAD~2")
+	setAnchor(t, vault, "dup-proj", oldAnchor)
+
+	second := runArchive(t, tool.Handler, projDir)
+	if second["commits_archived"] != 0 {
+		t.Errorf("second run archived %v, want 0 — every SHA the walk yielded was already in the log",
+			second["commits_archived"])
+	}
+	if second["duplicates_skipped"] != 2 {
+		t.Errorf("duplicates_skipped = %v, want 2", second["duplicates_skipped"])
+	}
+
+	after, _ := os.ReadFile(logPath)
+	if string(before) != string(after) {
+		t.Errorf("commit-log.md changed:\n--- before ---\n%s\n--- after ---\n%s", before, after)
+	}
+	for _, subj := range []string{"feat: one", "feat: two", "feat: three"} {
+		if n := strings.Count(string(after), subj); n != 1 {
+			t.Errorf("%q appears %d times in the permanent history, want exactly 1", subj, n)
+		}
+	}
+	// And the anchor still advanced to HEAD, so the stale cursor is repaired
+	// rather than left to re-yield the same commits at every future wrap.
+	anchor, _ := vault.ReadCommitLogAnchor("dup-proj")
+	if anchor != second["anchor_to"] {
+		t.Errorf("anchor = %q, want HEAD %v", anchor, second["anchor_to"])
+	}
+}
+
+// TestArchiveCommitLog_RefusesAnchorOffTheHeadLine is the Cause 2 positive
+// control the chair required: the anchor object EXISTS and is perfectly
+// resolvable — it is simply not an ancestor of HEAD.
+//
+// A missing-object fixture would not have caught the live defect. `git log
+// <missing>..HEAD` already exits 128, so that case was always loud. The silent
+// one is this: the walk succeeds and emits the symmetric difference, which
+// re-yields commits already archived on the surviving line. That is how iter
+// 281 recorded an orphan as landed history.
+func TestArchiveCommitLog_RefusesAnchorOffTheHeadLine(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	tool := ArchiveCommitLogTool(vault)
+	projDir := archiveRepo(t, "orphan-proj", "feat: shared base\n")
+
+	mainBranch := gitT(t, projDir, "rev-parse", "--abbrev-ref", "HEAD")
+
+	// A sibling commit on its own branch: alive (the ref holds it), reachable,
+	// and NOT an ancestor of HEAD once we go back to the main line.
+	gitCommitT(t, projDir, "checkout", "-b", "abandoned")
+	gitCommitT(t, projDir, "commit", "--allow-empty", "-m", "feat: rebased away")
+	orphan := gitT(t, projDir, "rev-parse", "HEAD")
+	gitCommitT(t, projDir, "checkout", mainBranch)
+	gitCommitT(t, projDir, "commit", "--allow-empty", "-m", "feat: survived")
+
+	// Prove the fixture really is the shape we claim before asserting on it:
+	// the object resolves, and HEAD does not descend from it.
+	gitT(t, projDir, "rev-parse", "--verify", orphan+"^{commit}")
+	if err := exec.Command("git", "-C", projDir, "merge-base", "--is-ancestor", orphan, "HEAD").Run(); err == nil {
+		t.Fatalf("fixture is wrong: %s IS an ancestor of HEAD", orphan)
+	}
+
+	setAnchor(t, vault, "orphan-proj", orphan)
+
+	params, _ := json.Marshal(map[string]string{"project_path": projDir})
+	_, err := tool.Handler(context.Background(), params)
+	if err == nil {
+		t.Fatal("expected a refusal for an anchor that is not an ancestor of HEAD")
+	}
+	if !errors.Is(err, wrapstate.ErrAnchorNotAncestor) {
+		t.Errorf("error = %v, want ErrAnchorNotAncestor", err)
+	}
+	// The refusal must carry a remediation, not just a verdict.
+	for _, want := range []string{"merge-base --is-ancestor", "Remediation", orphan} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal missing %q:\n%s", want, err)
+		}
+	}
+	// Nothing was written: a refusal that still appended would defeat itself.
+	logPath, _ := vault.CommitLogFile("orphan-proj")
+	if _, serr := os.Stat(logPath); !os.IsNotExist(serr) {
+		t.Errorf("commit-log.md was written despite the refusal (stat err = %v)", serr)
+	}
+	anchor, _ := vault.ReadCommitLogAnchor("orphan-proj")
+	if anchor != orphan {
+		t.Errorf("anchor moved on a refusal: %q", anchor)
+	}
+}
+
+// TestArchiveCommitLog_RefusesUnresolvableAnchor covers the other half of the
+// guard — the isolated-clone / gc'd sibling (277->280). It was already loud as
+// a bare `exit status 128` from the walk; the point here is that it is now a
+// DIAGNOSIS with a remediation instead of an exit code.
+func TestArchiveCommitLog_RefusesUnresolvableAnchor(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	tool := ArchiveCommitLogTool(vault)
+	projDir := archiveRepo(t, "gone-proj", "feat: only one\n")
+
+	setAnchor(t, vault, "gone-proj", "0123456789abcdef0123456789abcdef01234567")
+
+	params, _ := json.Marshal(map[string]string{"project_path": projDir})
+	_, err := tool.Handler(context.Background(), params)
+	if err == nil {
+		t.Fatal("expected a refusal for an unresolvable anchor")
+	}
+	if !errors.Is(err, wrapstate.ErrAnchorUnresolvable) {
+		t.Errorf("error = %v, want ErrAnchorUnresolvable", err)
+	}
+	if !strings.Contains(err.Error(), "Remediation") {
+		t.Errorf("refusal missing remediation:\n%s", err)
 	}
 }

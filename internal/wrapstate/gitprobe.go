@@ -5,6 +5,8 @@ package wrapstate
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -360,6 +362,45 @@ func FilesChangedSinceAnchor(ctx context.Context, projectDir, anchorSHA string) 
 		files = append(files, line)
 	}
 	return files, nil
+}
+
+// ErrAnchorUnresolvable and ErrAnchorNotAncestor classify the two ways a
+// commit-log anchor can fail to describe this repo's history.
+var (
+	ErrAnchorUnresolvable = errors.New("anchor does not resolve to a commit in this repository")
+	ErrAnchorNotAncestor  = errors.New("anchor is not an ancestor of HEAD")
+)
+
+// ValidateAnchorAgainstHEAD reports whether anchorSHA is a commit in projectDir
+// that HEAD descends from — the only condition under which `git log
+// <anchor>..HEAD` means "everything archived since the anchor".
+//
+// 🔴 Why an existence check is NOT enough. When the anchor object is missing
+// (gc'd, or absent on a fresh clone) `git log <anchor>..HEAD` already fails
+// loudly with exit 128, so that case was never the silent one. The case that
+// silently corrupts is an anchor that RESOLVES but sits off the HEAD line —
+// after a rebase or an abandoned branch. There `git log <orphan>..HEAD` happily
+// emits the symmetric difference, re-yielding commits already archived on the
+// surviving line, and the caller cannot tell that from honest new work. That is
+// how iter 281 re-archived a commit and recorded an orphan as landed history.
+//
+// The two probes are separate on purpose: `merge-base --is-ancestor` exits
+// non-zero for BOTH "not an ancestor" and "bad object", and gitCmdRunner
+// surfaces only an exit status (stderr is captured by cmd.Output and never
+// read), so a single call could not tell the operator which of the two
+// happened. Resolving first is what makes the diagnosis honest rather than a
+// guess at an exit code.
+func ValidateAnchorAgainstHEAD(ctx context.Context, projectDir, anchorSHA string) error {
+	if projectDir == "" || strings.TrimSpace(anchorSHA) == "" {
+		return nil
+	}
+	if _, err := gitCmdRunner(ctx, projectDir, "rev-parse", "--verify", "--quiet", anchorSHA+"^{commit}"); err != nil {
+		return fmt.Errorf("%w: %s", ErrAnchorUnresolvable, anchorSHA)
+	}
+	if _, err := gitCmdRunner(ctx, projectDir, "merge-base", "--is-ancestor", anchorSHA, "HEAD"); err != nil {
+		return fmt.Errorf("%w: %s", ErrAnchorNotAncestor, anchorSHA)
+	}
+	return nil
 }
 
 // OldestRootCommit returns the SHA of the oldest root commit reachable from
