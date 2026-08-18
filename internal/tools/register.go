@@ -53,9 +53,9 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	}
 
 	if o.requireExplicitProject {
-		reg.MustRegister(BootstrapContextToolExplicit(resolver, vault))
+		reg.MustRegister(BootstrapContextToolExplicit(resolver, vault, engine))
 	} else {
-		reg.MustRegister(BootstrapContextTool(resolver, vault))
+		reg.MustRegister(BootstrapContextTool(resolver, vault, engine))
 	}
 	reg.MustRegister(GetCommandTool(resolver))
 	reg.MustRegister(GetSkillTool(resolver))

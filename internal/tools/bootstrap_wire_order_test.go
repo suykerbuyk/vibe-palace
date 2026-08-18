@@ -63,7 +63,7 @@ func cutBootstrapAtBulk(t *testing.T) (whole string, prefix string) {
 		t.Fatal(err)
 	}
 
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 	raw, err := json.Marshal(bootstrapResult(t, tool, `{"project":"test-proj"}`))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -218,7 +218,7 @@ func TestBootstrapCompleteSentinelAlwaysEmitted(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			vault, resolver := testSetup(t)
 			tc.prepare(t, vault)
-			tool := BootstrapContextTool(resolver, vault)
+			tool := BootstrapContextTool(resolver, vault, nil)
 			raw, err := json.Marshal(bootstrapResult(t, tool, `{"project":"test-proj"}`))
 			if err != nil {
 				t.Fatalf("marshal: %v", err)

@@ -188,7 +188,7 @@ func TestHerdrAnnouncementRidesTheDirectiveNotTheAlerts(t *testing.T) {
 	t.Setenv("HERDR_ENV", "1")
 	t.Setenv("HERDR_PANE_ID", "pane-7")
 
-	br := assembleBootstrap(resolver, vault, "test-proj", "", "", true)
+	br := assembleBootstrap(resolver, vault, "test-proj", "", "", nil, true)
 	directive := br.PostBootstrapInstructions
 
 	herdrAt := strings.Index(directive, "vpc-herdr")

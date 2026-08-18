@@ -23,7 +23,7 @@ func bootstrapWithLog(t *testing.T, logLines []string) BootstrapResult {
 		writeHealthLog(t, vault, logLines)
 	}
 
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 	raw, err := tool.Handler(context.Background(), json.RawMessage(`{"project":"test-proj"}`))
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
@@ -99,7 +99,7 @@ func TestBootstrapHealthCarriesVerdictNotRecords(t *testing.T) {
 	writeHealthLog(t, vault, logLines)
 
 	// ── The bootstrap side: health present, records absent, on the wire.
-	raw, err := BootstrapContextTool(resolver, vault).Handler(context.Background(), json.RawMessage(`{"project":"test-proj"}`))
+	raw, err := BootstrapContextTool(resolver, vault, nil).Handler(context.Background(), json.RawMessage(`{"project":"test-proj"}`))
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}

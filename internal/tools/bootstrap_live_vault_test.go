@@ -155,9 +155,16 @@ func TestBootstrapLiveVaultStillRestoresASession(t *testing.T) {
 	if br.Ranking == nil {
 		t.Fatal("ranking is absent — the payload orders rows and does not say by what")
 	}
+	// AssembleBootstrap (inject path) passes a nil engine, so the live canary
+	// stays structural with fallback_reason=engine_nil. Semantic ranking is
+	// exercised on the MCP RegisterAll path when the process already has a warm
+	// index — never forced here (investigation E: bootstrap must not block).
 	if br.Ranking.Ranker != rankerStructural {
-		t.Errorf("ranking.ranker = %q, want %q — slice 1 of Phase 3 ships the deterministic ranker only",
+		t.Errorf("ranking.ranker = %q, want %q on the inject/canary path",
 			br.Ranking.Ranker, rankerStructural)
+	}
+	if br.Ranking.FallbackReason != fallbackEngineNil {
+		t.Errorf("ranking.fallback_reason = %q, want %q", br.Ranking.FallbackReason, fallbackEngineNil)
 	}
 	if br.Ranking.Returned != len(br.RecentSessions) {
 		t.Errorf("ranking.returned = %d but %d session rows were emitted — the instrument does not describe "+

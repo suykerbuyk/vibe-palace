@@ -76,7 +76,7 @@ func TestComputeVaultStaleness_BoundaryNoWarn(t *testing.T) {
 // present; here the vault is not a git repo so the fetch age is unknown → Warn).
 func TestBootstrapPopulatesVaultStaleness(t *testing.T) {
 	vault, resolver := testSetup(t)
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 
 	params := json.RawMessage(`{"project":"test-proj"}`)
 	result, err := tool.Handler(context.Background(), params)

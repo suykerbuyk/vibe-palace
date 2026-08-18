@@ -30,7 +30,7 @@ func testSetup(t *testing.T) (*storage.Vault, *vpctx.Resolver) {
 
 func TestBootstrapEmptyVault(t *testing.T) {
 	vault, resolver := testSetup(t)
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 
 	params := json.RawMessage(`{"project":"test-proj"}`)
 	result, err := tool.Handler(context.Background(), params)
@@ -82,7 +82,7 @@ func TestBootstrapWithTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 	params := json.RawMessage(`{"project":"test-proj"}`)
 	result, err := tool.Handler(context.Background(), params)
 	if err != nil {
@@ -132,7 +132,7 @@ func TestBootstrapWithSessions(t *testing.T) {
 		}
 	}
 
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 	params := json.RawMessage(`{"project":"test-proj"}`)
 	result, err := tool.Handler(context.Background(), params)
 	if err != nil {
@@ -175,7 +175,7 @@ func TestBootstrapFrictionTrendWarn(t *testing.T) {
 		}
 	}
 
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 	params := json.RawMessage(`{"project":"test-proj"}`)
 	result, err := tool.Handler(context.Background(), params)
 	if err != nil {
@@ -209,7 +209,7 @@ func TestBootstrapFrictionTrendWarn(t *testing.T) {
 
 func TestBootstrapNoFrictionTrendEmptyVault(t *testing.T) {
 	vault, resolver := testSetup(t)
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 	params := json.RawMessage(`{"project":"test-proj"}`)
 	result, err := tool.Handler(context.Background(), params)
 	if err != nil {
@@ -223,7 +223,7 @@ func TestBootstrapNoFrictionTrendEmptyVault(t *testing.T) {
 
 func TestBootstrapIncludesCommands(t *testing.T) {
 	vault, resolver := testSetup(t)
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 
 	params := json.RawMessage(`{"project":"test-proj"}`)
 	result, err := tool.Handler(context.Background(), params)
@@ -295,7 +295,7 @@ func TestBootstrapIncludesSkills(t *testing.T) {
 
 	vault := storage.NewVault(root)
 	resolver := vpctx.NewResolver(root)
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 
 	result, err := tool.Handler(context.Background(), json.RawMessage(`{"project":"test-proj"}`))
 	if err != nil {
@@ -326,7 +326,7 @@ func TestBootstrapIncludesSkills(t *testing.T) {
 
 func TestBootstrapPostInstructionsPopulated(t *testing.T) {
 	vault, resolver := testSetup(t)
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 
 	result, err := tool.Handler(context.Background(), json.RawMessage(`{"project":"test-proj"}`))
 	if err != nil {
@@ -372,7 +372,7 @@ func TestBootstrapSurfacesMemory(t *testing.T) {
 		}
 	}
 
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 	// Generous budget so nothing sheds.
 	result, err := tool.Handler(context.Background(), json.RawMessage(`{"project":"test-proj","max_tokens":100000}`))
 	if err != nil {
@@ -403,7 +403,7 @@ func TestBootstrapSurfacesMemory(t *testing.T) {
 
 func TestBootstrapEmptyVaultNoMemory(t *testing.T) {
 	vault, resolver := testSetup(t)
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 
 	result, err := tool.Handler(context.Background(), json.RawMessage(`{"project":"test-proj"}`))
 	if err != nil {
@@ -430,7 +430,7 @@ func bootstrapResult(t *testing.T, tool mcp.Tool, params string) BootstrapResult
 // independent of slim — they are the byte-for-byte fetch path for any host.
 func TestBootstrapResumeWorkflowURIs(t *testing.T) {
 	vault, resolver := testSetup(t)
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 
 	br := bootstrapResult(t, tool, `{"project":"test-proj"}`)
 	if br.ResumeURI != "vibe-palace://resume/test-proj" {
@@ -469,7 +469,7 @@ func TestBootstrapCarriesNoDocumentBodyAtAnySize(t *testing.T) {
 			if err := vault.WriteResume("test-proj", tc.resume, ""); err != nil {
 				t.Fatal(err)
 			}
-			tool := BootstrapContextTool(resolver, vault)
+			tool := BootstrapContextTool(resolver, vault, nil)
 			br := bootstrapResult(t, tool, `{"project":"test-proj"}`)
 
 			raw, err := json.Marshal(br)
@@ -500,7 +500,7 @@ func TestBootstrapCarriesNoDocumentBodyAtAnySize(t *testing.T) {
 // workflow_uri that the vp_read_resource path would later reject.
 func TestBootstrapRejectsInvalidProject(t *testing.T) {
 	vault, resolver := testSetup(t)
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 
 	// Empty string is handled by resolveBootstrapProject (cwd default / loud
 	// error), not slug.Validate — covered by the defaulting tests below.
@@ -530,7 +530,7 @@ func TestBootstrapDefaultsProjectFromHighConfidenceCwd(t *testing.T) {
 	}
 	t.Chdir(dir)
 
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 	result, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
@@ -560,7 +560,7 @@ func TestBootstrapRefusesBasenameDefault(t *testing.T) {
 	}
 	t.Chdir(dir)
 
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 	if _, err := tool.Handler(context.Background(), json.RawMessage(`{}`)); err == nil {
 		t.Fatal("expected error when only basename is available, got nil")
 	}
@@ -577,7 +577,7 @@ func TestBootstrapDefaultRequiresVaultProject(t *testing.T) {
 	}
 	t.Chdir(dir)
 
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
 	if err == nil {
 		t.Fatal("expected error when Projects/<slug>/ is absent")
@@ -603,7 +603,7 @@ func TestBootstrapExplicitProjectRequiredOnHTTPPath(t *testing.T) {
 	}
 	t.Chdir(dir)
 
-	tool := BootstrapContextToolExplicit(resolver, vault)
+	tool := BootstrapContextToolExplicit(resolver, vault, nil)
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
 	if err == nil {
 		t.Fatal("explicit tool must require project even with high-confidence cwd")
@@ -625,7 +625,7 @@ func TestBootstrapExplicitProjectRequiredOnHTTPPath(t *testing.T) {
 // not in required[], so hosts may omit it and hit the handler default path.
 func TestBootstrapSchemaProjectOptional(t *testing.T) {
 	vault, resolver := testSetup(t)
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 	var schema struct {
 		Required   []string       `json:"required"`
 		Properties map[string]any `json:"properties"`
@@ -648,7 +648,7 @@ func TestBootstrapSchemaProjectOptional(t *testing.T) {
 // in schema, not only in a handler error string.
 func TestBootstrapSchemaExplicitRequiresProject(t *testing.T) {
 	vault, resolver := testSetup(t)
-	tool := BootstrapContextToolExplicit(resolver, vault)
+	tool := BootstrapContextToolExplicit(resolver, vault, nil)
 	var schema struct {
 		Required []string `json:"required"`
 	}
@@ -659,7 +659,7 @@ func TestBootstrapSchemaExplicitRequiresProject(t *testing.T) {
 		t.Error("BootstrapContextToolExplicit schema must require project — otherwise schema-driven clients omit it and only learn from a runtime string")
 	}
 	// Schemas must not be identical (stdio optional vs explicit required).
-	stdio := BootstrapContextTool(resolver, vault)
+	stdio := BootstrapContextTool(resolver, vault, nil)
 	if string(stdio.Schema) == string(tool.Schema) {
 		t.Error("stdio and explicit bootstrap schemas must differ — shared literal reopens the optional-schema/required-runtime split")
 	}
@@ -689,7 +689,7 @@ func TestBootstrapAlertsSurviveALiveSizedResume(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 	br := bootstrapResult(t, tool, `{"project":"test-proj"}`)
 
 	// The temp vault is not a git repo, so vault staleness is unknown ⇒ it warns.
@@ -730,7 +730,7 @@ func TestBootstrapAuditStalenessNagReachesTheDirective(t *testing.T) {
 	seedSessionNotes(t, vault.Root, "test-proj", 120)
 	writeAuditReport(t, vault.Root, "2026-01-01", 5)
 
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 	br := bootstrapResult(t, tool, `{"project":"test-proj"}`)
 
 	if br.AuditStaleness == nil || !br.AuditStaleness.Warn {
@@ -781,7 +781,7 @@ func writeAuditReport(t *testing.T, root, date string, sessionNotes int) {
 
 func TestBootstrapToolSchema(t *testing.T) {
 	vault, resolver := testSetup(t)
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 
 	if tool.Name != "vp_bootstrap_context" {
 		t.Errorf("Name = %q, want %q", tool.Name, "vp_bootstrap_context")
@@ -814,7 +814,7 @@ func TestBootstrapResumeSha256MatchesDisk(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	br := bootstrapResult(t, BootstrapContextTool(resolver, vault), `{"project":"test-proj"}`)
+	br := bootstrapResult(t, BootstrapContextTool(resolver, vault, nil), `{"project":"test-proj"}`)
 	if want := onDiskSha(t, path); br.ResumeSha256 != want {
 		t.Errorf("resume_sha256 = %q, want on-disk %q", br.ResumeSha256, want)
 	}
@@ -828,7 +828,7 @@ func TestBootstrapResumeSha256MatchesDisk(t *testing.T) {
 func TestBootstrapResumeSha256EmptyWithoutProjectFile(t *testing.T) {
 	vault, resolver := testSetup(t)
 
-	br := bootstrapResult(t, BootstrapContextTool(resolver, vault), `{"project":"test-proj"}`)
+	br := bootstrapResult(t, BootstrapContextTool(resolver, vault, nil), `{"project":"test-proj"}`)
 	if br.ResumeURI == "" {
 		t.Error("resume_uri is empty — the fetch route must exist even for an embedded-default resume")
 	}

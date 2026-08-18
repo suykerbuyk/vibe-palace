@@ -36,7 +36,7 @@ func doctrineSites(t *testing.T) map[string]string {
 	}
 
 	vault, resolver := testSetup(t)
-	desc := BootstrapContextTool(resolver, vault).Description
+	desc := BootstrapContextTool(resolver, vault, nil).Description
 	if desc == "" {
 		t.Fatal("vp_bootstrap_context carries no description")
 	}

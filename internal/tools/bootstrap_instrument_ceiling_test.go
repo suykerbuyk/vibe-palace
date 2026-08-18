@@ -79,7 +79,7 @@ func boundedPrefixBytes(t *testing.T, raw []byte) int {
 // that a property inferred from a fixture is not a property of the tool.
 func TestBootstrapInstrumentBlockFitsHostPreview(t *testing.T) {
 	vault, resolver := testSetup(t)
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 	raw, err := json.Marshal(bootstrapResult(t, tool, `{"project":"test-proj"}`))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

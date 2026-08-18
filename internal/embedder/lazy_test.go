@@ -40,12 +40,29 @@ func TestLazyDefersConstruction(t *testing.T) {
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("constructor ran %d times before first use, want 0", got)
 	}
+	if l.Ready() {
+		t.Fatal("Ready before first use")
+	}
 
 	if _, err := l.Embed(context.Background(), "hello"); err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
 	if got := calls.Load(); got != 1 {
 		t.Errorf("constructor ran %d times after first use, want 1", got)
+	}
+	if !l.Ready() {
+		t.Fatal("Ready after successful construct")
+	}
+}
+
+func TestLazyReadyDoesNotConstruct(t *testing.T) {
+	construct, calls, _ := countingConstructor()
+	l := NewLazy(construct)
+	if l.Ready() {
+		t.Fatal("Ready true before construct")
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("Ready triggered construct (%d calls)", got)
 	}
 }
 

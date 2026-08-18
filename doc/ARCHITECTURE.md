@@ -1224,17 +1224,19 @@ What the payload carries instead:
   first, then priority, then topological order — each row with its `vibe-palace://task/…`
   handle. `active_task_count` is the whole open backlog, so a count larger than
   the rows is the reader's signal to call `vp_list_tasks`.
-- **A session index**, ranked against the head of queue by the deterministic
-  `structural` ranker (lexical overlap on the queue's own terms, recency as the
-  tie-break). Rows carry date, iteration, title, tag and a session URI, and no
-  summary body — the ranker reads the summary to score it and leaves it on disk.
-  The semantic ranker is Phase 3 slice 2 and is deliberately not wired: the only
-  indexed corpus is session transcript chunks, and the projects with the largest
-  resumes have no drawers at all.
+- **A session index**, ranked against the head of queue. Default is the
+  deterministic `structural` ranker (lexical overlap on the queue's own terms,
+  recency as the tie-break). When the process already has a warm embedder and an
+  in-memory project index, `semantic` reorders the same session rows from
+  `SearchReady` hits with `source_type=session` (iteration chunks densify the
+  corpus for `vp_search` but do not become bootstrap index rows). Bootstrap
+  never calls `ensureIndex` or forces a lazy ONNX construct — cold paths stay
+  `structural` and set `fallback_reason`. Rows carry date, iteration, title, tag
+  and a session URI, and no summary body.
 - **`ranking`**, the one instrument that is never silent: which ranker ran, the
-  head-of-queue slug it ranked against, and candidates-versus-returned. An
-  ordered list that does not say what ordered it is indistinguishable from
-  recency order.
+  head-of-queue slug it ranked against, candidates-versus-returned, and
+  `fallback_reason` when semantic could not run without blocking. An ordered
+  list that does not say what ordered it is indistinguishable from recency order.
 - The memory index, KG snapshot, and the command and skill lists, all of which
   were already indexes rather than bodies.
 

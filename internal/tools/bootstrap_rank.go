@@ -4,12 +4,14 @@
 package tools
 
 import (
+	"context"
 	"slices"
 	"sort"
 	"strings"
 	"unicode"
 
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/taskgraph"
 )
@@ -38,10 +40,9 @@ const headOfQueueN = 5
 // is 286's lesson pointed at ordering instead of at size: the instrument that
 // describes a reduction has to arrive with it.
 //
-// Ranker is "structural" — the deterministic task-graph + lexical ranker. It is
-// the only value this binary emits. Slice 2 of first-principles Phase 3 adds a
-// semantic ranker behind this same field; until it lands, a reader seeing
-// anything else is reading a payload from a newer binary.
+// Ranker is "structural" (deterministic lexical) or "semantic" (search-index
+// scores against an already-warm embedder+index). Slice 2 of first-principles
+// Phase 3 added the semantic value behind this same field.
 //
 // Candidates and Returned describe the SESSION index: how many session notes the
 // ranker scored, and how many rows it returned. They do not describe
@@ -53,6 +54,11 @@ const headOfQueueN = 5
 // that the ranker had no signal: every session then scores zero and the order
 // falls back to recency, which is exactly what the rows show.
 //
+// FallbackReason is set when the semantic path was considered but not used
+// (cold embedder, missing in-memory index, no session-typed hits, nil engine).
+// Empty when structural was the intentional result, including empty-corpus
+// projects that have nothing semantic to say.
+//
 // 🔴 IT IS NOT CALLED head_of_queue ON THE WIRE, AND THAT IS DELIBERATE. The
 // payload already has a `head_of_queue` key — the row list — and two identical
 // keys at different depths make "the first occurrence of head_of_queue" mean
@@ -60,10 +66,11 @@ const headOfQueueN = 5
 // use the bulk key as the instrument/index boundary and silently measured the
 // wrong offset until this was renamed.
 type RankingReport struct {
-	Ranker        string `json:"ranker"`
-	RankedAgainst string `json:"ranked_against,omitempty"`
-	Candidates    int    `json:"candidates"`
-	Returned      int    `json:"returned"`
+	Ranker          string `json:"ranker"`
+	RankedAgainst   string `json:"ranked_against,omitempty"`
+	Candidates      int    `json:"candidates"`
+	Returned        int    `json:"returned"`
+	FallbackReason  string `json:"fallback_reason,omitempty"`
 }
 
 // rankerStructural is the deterministic ranker: task-graph order for the queue,
@@ -72,6 +79,19 @@ type RankingReport struct {
 // indexed corpus at all — which is the majority of this vault's projects, and
 // includes the one with the largest resume.
 const rankerStructural = "structural"
+
+// rankerSemantic scores sessions via search.Engine.SearchReady against an
+// already-warm index. Bootstrap never calls ensureIndex or forces LazyEmbedder
+// construction; if either is cold, the path falls back to structural.
+const rankerSemantic = "semantic"
+
+// Fallback reasons reported on RankingReport when semantic cannot run.
+const (
+	fallbackEngineNil       = "engine_nil"
+	fallbackEmbedderNotReady = "embedder_not_ready"
+	fallbackIndexNotReady   = "index_not_ready"
+	fallbackNoSessionHits   = "no_session_hits"
+)
 
 // headOfQueueRow is one task in the derived head of queue: what the project
 // intends to do next, and the handle that fetches its body.
@@ -170,6 +190,123 @@ func inProgressRank(status string) int {
 		return 0
 	}
 	return 1
+}
+
+// rankSessionIndex chooses structural or semantic ordering for recent_sessions.
+// Semantic runs only when the engine's embedder is already warm and the project
+// index is already in memory — never ensureIndex, never LazyEmbedder construct.
+func rankSessionIndex(project string, sessions []storage.SessionMeta, terms []string, n int, eng *search.Engine) (rows []sessionSummary, report RankingReport) {
+	report = RankingReport{Ranker: rankerStructural, Candidates: len(sessions)}
+	if len(sessions) == 0 {
+		return nil, report
+	}
+
+	structuralRows, _ := rankSessions(project, sessions, terms, n)
+
+	if eng == nil {
+		report.FallbackReason = fallbackEngineNil
+		report.Returned = len(structuralRows)
+		return structuralRows, report
+	}
+	if !eng.EmbedderReady() {
+		report.FallbackReason = fallbackEmbedderNotReady
+		report.Returned = len(structuralRows)
+		return structuralRows, report
+	}
+	if !eng.HasIndex(project) {
+		report.FallbackReason = fallbackIndexNotReady
+		report.Returned = len(structuralRows)
+		return structuralRows, report
+	}
+
+	semRows, ok := rankSessionsSemantic(project, sessions, terms, n, eng)
+	if !ok {
+		report.FallbackReason = fallbackNoSessionHits
+		report.Returned = len(structuralRows)
+		return structuralRows, report
+	}
+	report.Ranker = rankerSemantic
+	report.Returned = len(semRows)
+	return semRows, report
+}
+
+// rankSessionsSemantic scores sessions from SearchReady hits whose source_type
+// is "session" and whose source_ref matches a session note id. Returns ok=false
+// when no session-typed hit maps, so the caller keeps structural order.
+func rankSessionsSemantic(project string, sessions []storage.SessionMeta, terms []string, n int, eng *search.Engine) ([]sessionSummary, bool) {
+	if len(terms) == 0 || eng == nil {
+		return nil, false
+	}
+	byID := make(map[string]storage.SessionMeta, len(sessions))
+	age := make(map[string]int, len(sessions))
+	for i, s := range sessions {
+		if s.ID == "" {
+			continue
+		}
+		byID[s.ID] = s
+		age[s.ID] = i
+	}
+	if len(byID) == 0 {
+		return nil, false
+	}
+
+	query := strings.Join(terms, " ")
+	hits, err := eng.SearchReady(context.Background(), query, search.SearchFilters{
+		Project: project,
+		Limit:   max(n*10, 20),
+	})
+	if err != nil || len(hits) == 0 {
+		return nil, false
+	}
+
+	best := make(map[string]float64, len(byID))
+	for _, h := range hits {
+		if h.SourceType != "session" || h.SourceRef == "" {
+			continue
+		}
+		if _, ok := byID[h.SourceRef]; !ok {
+			continue
+		}
+		if h.Score > best[h.SourceRef] {
+			best[h.SourceRef] = h.Score
+		}
+	}
+	if len(best) == 0 {
+		return nil, false
+	}
+
+	type scored struct {
+		meta  storage.SessionMeta
+		score float64
+		age   int
+	}
+	ranked := make([]scored, 0, len(sessions))
+	for _, s := range sessions {
+		ranked = append(ranked, scored{meta: s, score: best[s.ID], age: age[s.ID]})
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].score != ranked[j].score {
+			return ranked[i].score > ranked[j].score
+		}
+		return ranked[i].age > ranked[j].age
+	})
+	if n < len(ranked) {
+		ranked = ranked[:n]
+	}
+	rows := make([]sessionSummary, 0, len(ranked))
+	for _, r := range ranked {
+		row := sessionSummary{
+			Date:      r.meta.Date,
+			Iteration: r.meta.Iteration,
+			Title:     r.meta.Title,
+			Tag:       r.meta.Tag,
+		}
+		if r.meta.ID != "" {
+			row.URI = mcp.SessionURI(project, r.meta.ID)
+		}
+		rows = append(rows, row)
+	}
+	return rows, true
 }
 
 // rankSessions orders the session index by relevance to the head of queue and

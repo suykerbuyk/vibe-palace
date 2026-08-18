@@ -70,6 +70,14 @@ func (l *LazyEmbedder) Dimensions() (int, error) {
 	return emb.Dimensions()
 }
 
+// Ready reports whether the underlying embedder has already been constructed
+// successfully. It never triggers construction — bootstrap uses this to refuse
+// a semantic ranker path that would stall on a cold ONNX load (investigation E).
+// A failed construct leaves Ready false so callers keep falling back.
+func (l *LazyEmbedder) Ready() bool {
+	return l.built.Load() && l.emb != nil && l.err == nil
+}
+
 // Close releases the underlying embedder if — and only if — it was ever
 // constructed. Close must never trigger construction: loading a 90MB model at
 // shutdown purely to close it would defeat the point of being lazy.

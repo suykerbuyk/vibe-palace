@@ -17,6 +17,7 @@ import (
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
+	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultaudit"
@@ -330,28 +331,28 @@ var bootstrapSchemaExplicit = json.RawMessage(`{
 // Cwd-based project defaulting is enabled (stdio MCP). Use
 // BootstrapContextToolExplicit when the transport multiplexes clients over one
 // process cwd (HTTP serve) and must keep project required.
-func BootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Tool {
-	return bootstrapContextTool(resolver, vault, true)
+func BootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, engine *search.Engine) mcp.Tool {
+	return bootstrapContextTool(resolver, vault, engine, true)
 }
 
 // BootstrapContextToolExplicit is vp_bootstrap_context with no cwd defaulting —
 // project must be supplied on every call. Used by `vp mcp serve` (HTTP).
 // Its schema retains required:["project"] so schema-driven clients cannot omit
 // it and only learn the requirement from a runtime error string.
-func BootstrapContextToolExplicit(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Tool {
-	return bootstrapContextTool(resolver, vault, false)
+func BootstrapContextToolExplicit(resolver *vpctx.Resolver, vault *storage.Vault, engine *search.Engine) mcp.Tool {
+	return bootstrapContextTool(resolver, vault, engine, false)
 }
 
-func bootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, allowCwdDefault bool) mcp.Tool {
+func bootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, engine *search.Engine, allowCwdDefault bool) mcp.Tool {
 	schema := bootstrapSchemaStdio
 	if !allowCwdDefault {
 		schema = bootstrapSchemaExplicit
 	}
 	return mcp.Tool{
 		Name:        "vp_bootstrap_context",
-		Description: "Single-call context restoration, delivered as an INDEX: head of queue + session index + memory index + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive. NO DOCUMENT BODY IS INLINED — `resume` and `workflow` are NOT in this payload and never arrive by waiting; FETCH them with vp_read_resource via `resume_uri` and `workflow_uri` on every restart, and `resume_sha256` covers the FULL RAW resume so a caller can compare-and-set against disk. `head_of_queue` is what comes NEXT, derived from the task graph (unblocked, in-progress first, then priority, then dependency order), each row carrying the URI of its task body; `active_task_count` is the whole open backlog, so a count larger than the rows means more work exists — call vp_list_tasks for it. `recent_sessions` are index rows, not narratives: read one via its `uri`. `ranking` states which ranker ordered those rows, the head-of-queue slug it ranked against, and how many candidates it chose from. The payload LEADS with its instruments (health, vault staleness, friction, ranking, alerts) because those are what a host preview keeps, and it ENDS with `complete: true`: if you do not see that field, your HOST truncated the result.",
+		Description: "Single-call context restoration, delivered as an INDEX: head of queue + session index + memory index + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive. NO DOCUMENT BODY IS INLINED — `resume` and `workflow` are NOT in this payload and never arrive by waiting; FETCH them with vp_read_resource via `resume_uri` and `workflow_uri` on every restart, and `resume_sha256` covers the FULL RAW resume so a caller can compare-and-set against disk. `head_of_queue` is what comes NEXT, derived from the task graph (unblocked, in-progress first, then priority, then dependency order), each row carrying the URI of its task body; `active_task_count` is the whole open backlog, so a count larger than the rows means more work exists — call vp_list_tasks for it. `recent_sessions` are index rows, not narratives: read one via its `uri`. `ranking` states which ranker ordered those rows (structural or semantic), the head-of-queue slug it ranked against, how many candidates it chose from, and fallback_reason when semantic could not run without blocking. The payload LEADS with its instruments (health, vault staleness, friction, ranking, alerts) because those are what a host preview keeps, and it ENDS with `complete: true`: if you do not see that field, your HOST truncated the result.",
 		Schema:      schema,
-		Handler:     bootstrapHandler(resolver, vault, allowCwdDefault),
+		Handler:     bootstrapHandler(resolver, vault, engine, allowCwdDefault),
 	}
 }
 
@@ -366,7 +367,9 @@ func bootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, allowC
 // per-client stdio MCP server that process is not the agent's pane. See
 // assembleBootstrap for why the bit cannot be derived here.
 func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, wing, room string) BootstrapResult {
-	return assembleBootstrap(resolver, vault, project, wing, room, false)
+	// Inject/CLI path: no search engine → structural ranker with fallback_reason.
+	// MCP RegisterAll wires the engine through BootstrapContextTool instead.
+	return assembleBootstrap(resolver, vault, project, wing, room, nil, false)
 }
 
 // assembleBootstrap is AssembleBootstrap plus the one fact this payload cannot
@@ -383,7 +386,7 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 // environment belongs to whoever started the server, days ago, possibly on
 // another machine. Sniffing os.Args or stdin's file type would be guessing at a
 // fact the caller already knows for certain, so the caller states it.
-func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, wing, room string, stdioMCP bool) BootstrapResult {
+func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, wing, room string, engine *search.Engine, stdioMCP bool) BootstrapResult {
 
 	// The Herdr line is built ONCE, here, into a local that is threaded into
 	// BOTH renderPostBootstrapInstructions calls below.
@@ -455,10 +458,12 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		if trend := capture.ComputeFrictionTrend(sessions, time.Now()); frictionTrendHasData(trend) {
 			result.FrictionTrend = &trend
 		}
-		rows, candidates := rankSessions(project, sessions, terms, headOfQueueN)
+		rows, report := rankSessionIndex(project, sessions, terms, headOfQueueN, engine)
 		result.RecentSessions = rows
-		ranking.Candidates = candidates
-		ranking.Returned = len(rows)
+		ranking.Ranker = report.Ranker
+		ranking.Candidates = report.Candidates
+		ranking.Returned = report.Returned
+		ranking.FallbackReason = report.FallbackReason
 	}
 
 	// The ranking report is attached UNCONDITIONALLY, including when the session
@@ -777,7 +782,7 @@ func joinExamples(xs []string) string {
 	}
 }
 
-func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault, allowCwdDefault bool) mcp.HandlerFunc {
+func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault, engine *search.Engine, allowCwdDefault bool) mcp.HandlerFunc {
 	return func(_ context.Context, params json.RawMessage) (any, error) {
 		var p bootstrapParams
 		if err := json.Unmarshal(params, &p); err != nil {
@@ -800,7 +805,7 @@ func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault, allowCwdDe
 		// environment — are only client-scoped on the first of those. Passing it
 		// through as stdioMCP names the bit for what it is at the seam that
 		// needs it; see herdrAnnouncement.
-		result := assembleBootstrap(resolver, vault, projectSlug, p.Wing, p.Room, allowCwdDefault)
+		result := assembleBootstrap(resolver, vault, projectSlug, p.Wing, p.Room, engine, allowCwdDefault)
 
 		// Phase 4a / D4: bootstrap no longer writes project (or HOME) shims.
 		// Host surfaces refresh only via `vp mcp install` / user install paths.

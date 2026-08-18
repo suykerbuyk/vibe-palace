@@ -51,7 +51,7 @@ func TestHeadOfQueueIsGraphOrderNotListOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	br := bootstrapResult(t, BootstrapContextTool(resolver, vault), `{"project":"test-proj"}`)
+	br := bootstrapResult(t, BootstrapContextTool(resolver, vault, nil), `{"project":"test-proj"}`)
 
 	got := make([]string, 0, len(br.HeadOfQueue))
 	for _, row := range br.HeadOfQueue {
@@ -92,7 +92,7 @@ func TestHeadOfQueueRowsCarryTheirHandle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	br := bootstrapResult(t, BootstrapContextTool(resolver, vault), `{"project":"test-proj"}`)
+	br := bootstrapResult(t, BootstrapContextTool(resolver, vault, nil), `{"project":"test-proj"}`)
 	if len(br.HeadOfQueue) != 1 {
 		t.Fatalf("head_of_queue = %d rows, want 1", len(br.HeadOfQueue))
 	}
@@ -147,7 +147,7 @@ func TestSessionIndexRanksByRelevanceNotRecency(t *testing.T) {
 		}
 	}
 
-	br := bootstrapResult(t, BootstrapContextTool(resolver, vault), `{"project":"test-proj"}`)
+	br := bootstrapResult(t, BootstrapContextTool(resolver, vault, nil), `{"project":"test-proj"}`)
 	if len(br.RecentSessions) != 3 {
 		t.Fatalf("session index = %d rows, want 3", len(br.RecentSessions))
 	}
@@ -187,7 +187,7 @@ func TestSessionIndexCarriesNoSummaryBody(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	br := bootstrapResult(t, BootstrapContextTool(resolver, vault), `{"project":"test-proj"}`)
+	br := bootstrapResult(t, BootstrapContextTool(resolver, vault, nil), `{"project":"test-proj"}`)
 	if len(br.RecentSessions) != 1 {
 		t.Fatalf("session index = %d rows, want 1", len(br.RecentSessions))
 	}

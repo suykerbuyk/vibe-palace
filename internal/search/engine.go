@@ -138,9 +138,64 @@ func (e *Engine) ensureAllIndexes(ctx context.Context) error {
 	return nil
 }
 
+// HasIndex reports whether project already has a non-empty in-memory index.
+// It never triggers ensureIndex/Rebuild — bootstrap uses this to refuse a
+// semantic path that would block on a cold corpus build.
+func (e *Engine) HasIndex(project string) bool {
+	if e == nil {
+		return false
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	idx, ok := e.indexes[project]
+	return ok && idx != nil && idx.Len() > 0
+}
+
+// EmbedderReady reports whether embedding can proceed without forcing a lazy
+// ONNX construct. Non-lazy embedders are treated as ready when non-nil.
+func (e *Engine) EmbedderReady() bool {
+	if e == nil || e.embedder == nil {
+		return false
+	}
+	type readyReporter interface{ Ready() bool }
+	if r, ok := e.embedder.(readyReporter); ok {
+		return r.Ready()
+	}
+	return true
+}
+
 // Search performs hybrid semantic + structural search.
 // Pipeline: embed query → vector search → filter → boost → deduplicate → top-N.
 func (e *Engine) Search(ctx context.Context, query string, f SearchFilters) ([]SearchResult, error) {
+	// Build the index(es) this search reads, on first use. Must happen before
+	// e.mu is taken — Rebuild acquires it for write.
+	if f.Project != "" {
+		if err := e.ensureIndex(ctx, f.Project); err != nil {
+			return nil, fmt.Errorf("build index for %s: %w", f.Project, err)
+		}
+	} else if err := e.ensureAllIndexes(ctx); err != nil {
+		return nil, err
+	}
+	return e.searchReady(ctx, query, f)
+}
+
+// SearchReady is Search without ensureIndex/Rebuild. If the project index is
+// not already in memory, it returns (nil, nil). Bootstrap must use this — never
+// Search — so a cold embedder or first-ever rebuild cannot stall session start.
+func (e *Engine) SearchReady(ctx context.Context, query string, f SearchFilters) ([]SearchResult, error) {
+	if e == nil {
+		return nil, nil
+	}
+	if f.Project == "" {
+		return nil, fmt.Errorf("SearchReady requires a project filter")
+	}
+	if !e.EmbedderReady() || !e.HasIndex(f.Project) {
+		return nil, nil
+	}
+	return e.searchReady(ctx, query, f)
+}
+
+func (e *Engine) searchReady(ctx context.Context, query string, f SearchFilters) ([]SearchResult, error) {
 	limit := f.Limit
 	if limit <= 0 {
 		limit = e.config.SearchDefaultLimit
@@ -152,16 +207,6 @@ func (e *Engine) Search(ctx context.Context, query string, f SearchFilters) ([]S
 	queryVec, err := e.embedder.Embed(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("embed query: %w", err)
-	}
-
-	// Build the index(es) this search reads, on first use. Must happen before
-	// e.mu is taken — Rebuild acquires it for write.
-	if f.Project != "" {
-		if err := e.ensureIndex(ctx, f.Project); err != nil {
-			return nil, fmt.Errorf("build index for %s: %w", f.Project, err)
-		}
-	} else if err := e.ensureAllIndexes(ctx); err != nil {
-		return nil, err
 	}
 
 	e.mu.RLock()

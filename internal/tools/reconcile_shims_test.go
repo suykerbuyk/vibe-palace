@@ -34,7 +34,7 @@ func TestBootstrapContext_DoesNotWriteProjectShims(t *testing.T) {
 	}
 	t.Chdir(projectDir)
 
-	tool := BootstrapContextTool(resolver, vault)
+	tool := BootstrapContextTool(resolver, vault, nil)
 	params := json.RawMessage(`{"project":"test-proj"}`)
 	if _, err := tool.Handler(context.Background(), params); err != nil {
 		t.Fatalf("bootstrap: %v", err)
