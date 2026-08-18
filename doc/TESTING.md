@@ -6,7 +6,7 @@ This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~2926 tests** across 48 packages, including
+The suite currently runs **~2957 tests** across 52 packages, including
 **118 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
@@ -1057,6 +1057,21 @@ row), its `--json` projection (exactly one `Resume caps` check, `status: info`,
 `summary.fail == 0`, **`exit_code 0`** — a cap breach warns and must never fail
 the run), and the no-vault-resolved path degrading to `Skip`.
 `cmd_version_test.go` covers `vp version --surface` (`surface: <N>`).
+
+The **dirty-build stamp** (iter 321) is covered in two places, and the split is
+deliberate. `internal/cli/version_test.go` tables `BuildInfo.String()` over
+dirty / explicitly-clean / unstamped, plus `TestBuildInfoIsDirty` pinning that
+only a positive stamp counts — an unstamped build is neither dirty nor clean.
+`internal/integration/version_dirty_test.go` covers what a unit test cannot:
+`TestMakefileDerivesDirtyFromVersion` drives the real Makefile with `make -n
+install VERSION=<x>` to prove the marker is derived from `$(VERSION)` and from
+no second git call, and `TestStampedBinaryReportsDirty` builds a real binary
+with explicit ldflags and reads `vp version`. That one deliberately does **not**
+reuse `buildVPBinary`: that helper caches one binary per process behind a
+`sync.Once` and builds with no ldflags, so it could never carry a stamp.
+
+The load-bearing case is the **dirty** one. A clean-only assertion is satisfied
+by a stub that always reports clean, which is exactly the bug this replaced.
 
 ### `cmd/vp` — Tool-Surface Golden Invariant (Phase 6)
 

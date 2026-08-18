@@ -193,7 +193,7 @@ If the embedder step fails, see [Troubleshooting](#model-download-fails).
 Other useful commands:
 
 ```bash
-vp version             # print version, commit, build date
+vp version             # print version, commit, build date; DIRTY if built from uncommitted source
 vp version --surface   # print the binary's MCP tool-surface version (e.g. "surface: 1")
 vp help                # show all commands
 ```

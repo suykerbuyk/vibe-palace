@@ -17,10 +17,11 @@ var versionFlags = []cli.FlagDef{
 
 func cmdVersion(info cli.BuildInfo) *cli.Command {
 	return &cli.Command{
-		Name:        "version",
-		Synopsis:    "vp version [--surface]",
-		Description: "Print version, commit, and build date. With --surface, print the MCP tool-surface version.",
-		Flags:       versionFlags,
+		Name:     "version",
+		Synopsis: "vp version [--surface]",
+		Description: "Print version, commit, and build date. A binary built from a tree with " +
+			"uncommitted changes is marked DIRTY. With --surface, print the MCP tool-surface version.",
+		Flags: versionFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp version", Comment: "Show version information"},
 			{Cmd: "vp version --surface", Comment: "Show the MCP tool-surface version"},

@@ -15,10 +15,14 @@ var (
 	version   = "0.1.0-dev"
 	commit    = "unknown"
 	buildDate = "unknown"
+	// dirty is stamped by the Makefile from $(VERSION); see cli.BuildInfo.Dirty.
+	// It defaults to EMPTY, not "false": an un-stamped build does not know
+	// whether its source was committed, and must not claim it was.
+	dirty = ""
 )
 
 func main() {
-	info := cli.BuildInfo{Version: version, Commit: commit, BuildDate: buildDate}
+	info := cli.BuildInfo{Version: version, Commit: commit, BuildDate: buildDate, Dirty: dirty}
 	reg := cli.NewRegistry(info)
 	reg.SetPreRun(preRun)
 	registerAll(reg, info)

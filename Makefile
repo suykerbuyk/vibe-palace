@@ -7,8 +7,18 @@ PREFIX  ?= $(HOME)/.local
 
 BASE_VERSION := 0.1.0
 VERSION      ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
+# DIRTY is derived from VERSION, never from a second git invocation. VERSION
+# above is the ONE place the working tree is inspected; `git diff --quiet` here
+# would be a second derivation that can disagree with the first, which is the
+# failure mode that produced this bug (the Makefile computed --dirty and then
+# threw it away). If VERSION is overridden from the environment, DIRTY follows
+# that override rather than re-deriving behind it.
+DIRTY        := $(if $(findstring -dirty,$(VERSION)),true,false)
+
 LDFLAGS      := -X main.version=$(BASE_VERSION) \
                 -X main.commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown) \
+                -X main.dirty=$(DIRTY) \
                 -X main.buildDate=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 .DEFAULT_GOAL := help
