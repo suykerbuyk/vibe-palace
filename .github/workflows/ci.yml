@@ -5,6 +5,20 @@ on:
     branches: [main]
   pull_request:
 
+# One in-flight run per ref. A new push to main (or a new PR head) cancels the
+# CI still running for the ref's previous SHA instead of leaving it to burn a
+# runner to completion — 32165092806 was still occupying one long after a583440
+# had superseded e7b2fc9 on main and had its own full CI.
+#
+# github.ref is refs/heads/main for a main push and refs/pull/<n>/merge for a
+# pull_request, so every PR gets its own group and no PR can cancel another, or
+# main. The trade-off is accepted deliberately: a superseded main SHA loses its
+# CI verdict, which is the point — that verdict is about code main has already
+# moved past.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   vet:
     runs-on: ubuntu-latest
@@ -109,13 +123,14 @@ jobs:
 
   walkthrough-e2e:
     runs-on: ubuntu-latest
+    # Same reasoning as workflows-e2e below; this job carried the identical apt
+    # step and therefore the identical latent hang, and merely got lucky.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
       - name: Run walkthrough e2e harness
         run: make walkthrough-e2e
       - name: Upload retained tmpdir on failure
@@ -129,13 +144,18 @@ jobs:
 
   workflows-e2e:
     runs-on: ubuntu-latest
+    # The harness runs in ~40s (46s job wall-clock on 32166971383). 10 minutes is
+    # ~15x that: generous for a slow runner, and short enough that a wedged step
+    # is a red job inside ten minutes instead of occupying a runner for the
+    # GitHub default of six hours. This is a backstop against ANY stuck step, not
+    # a bound on the harness — the hang that prompted it (32165092806) was in the
+    # apt step deleted above, and the harness never started.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
       - name: Run workflows e2e harness
         run: make workflows-e2e
       - name: Upload retained tmpdir on failure

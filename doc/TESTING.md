@@ -237,6 +237,56 @@ the failing names, before believing any silence.
 
 ---
 
+## CI job shape (`.github/workflows/ci.yml`)
+
+Two properties of the workflow file are load-bearing and easy to undo by
+accident.
+
+**Every job runs under an explicit timeout where a hang has been observed.**
+GitHub's default is **six hours**. On 2026-08-18 run 32165092806 sat
+`in_progress` for over an hour on a single wedged step, and would have held the
+runner for six. `workflows-e2e` and `walkthrough-e2e` therefore carry
+`timeout-minutes: 10` — roughly 15x the ~40s the harnesses actually take, so a
+slow runner is never a false red, but a wedged step is a red job in ten minutes
+instead of a runner lost for the afternoon. The timeout is a backstop against
+**any** stuck step, not a bound on harness runtime.
+
+**One in-flight run per ref.** The workflow-level `concurrency` group is
+`${{ github.workflow }}-${{ github.ref }}` with `cancel-in-progress: true`, so a
+new push to `main` (or a new PR head) cancels the CI still running for that ref's
+previous SHA. `github.ref` is `refs/heads/main` for a main push and
+`refs/pull/<n>/merge` for a pull request, so PRs are mutually isolated and cannot
+cancel each other or `main`. The accepted trade-off is that a superseded `main`
+SHA loses its CI verdict — which is the intent, since that verdict describes code
+`main` has already moved past.
+
+### Do not add an `Install jq` step
+
+`workflows-e2e` and `walkthrough-e2e` used to run
+`sudo apt-get update && sudo apt-get install -y jq`. **That step was the hang.**
+It is also pure waste: jq ships in the `ubuntu-latest` image, so the step spent a
+five-archive `apt-get update` to print
+
+```
+jq is already the newest version (1.7.1-3ubuntu0.24.04.2).
+0 upgraded, 0 newly installed, 0 to remove and 12 not upgraded.
+```
+
+Both steps are deleted. The dependency is **not** unguarded: each harness
+preflights it directly — `test/e2e/workflows/run.sh` and
+`test/e2e/walkthrough/run.sh` both exit **127** with a message naming jq when it
+is absent from `PATH`. That is verified, not assumed: running either harness with
+jq removed from `PATH` produces
+
+```
+run.sh: 'jq' not in PATH — workflow shape-checks and summary require it
+EXIT=127
+```
+
+A failing preflight in the first second is strictly better than an apt step that
+can stall a runner, so if a future runner image ever drops jq, CI goes red
+immediately and says why.
+
 ## ONNX Model and the Cache System
 
 ### What ONNX does
