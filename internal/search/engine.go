@@ -109,7 +109,7 @@ func (e *Engine) ensureIndex(ctx context.Context, project string) error {
 	e.buildsRun[project] = b
 	e.buildMu.Unlock()
 
-	b.err = e.Rebuild(ctx, project)
+	_, b.err = e.Rebuild(ctx, project)
 
 	e.buildMu.Lock()
 	delete(e.buildsRun, project)
@@ -383,10 +383,45 @@ func (e *Engine) RemoveDrawer(project, id string) error {
 // wrapstate H2 entries (sub-chunked at 800/100). Vectors absent from the embed
 // cache are embedded in batches — per-item embedding is roughly 7x slower on
 // the ONNX backend.
-func (e *Engine) Rebuild(ctx context.Context, project string) error {
+// RebuildStats reports what a Rebuild actually did. It exists because
+// `{"status":"rebuilt"}` was returned identically after a full re-embed and
+// after walking nothing at all, so a caller could not tell an index from an
+// absence without listing the vault (iter 265).
+//
+// Every field is counted from work the rebuild was already doing; none of them
+// costs an extra walk.
+type RebuildStats struct {
+	// Drawers is how many drawer entries were walked across every wing/room.
+	Drawers int
+	// IterationChunks is how many chunks came from Projects/<p>/iterations.md,
+	// the second corpus source. It needs NO palace store, which is why
+	// "no store" and "indexed nothing" are different questions.
+	IterationChunks int
+	// Indexed is the total number of entries in the built index.
+	Indexed int
+	// Embedded is how many entries missed the vector cache and were embedded.
+	Embedded int
+	// CacheHits is Indexed - Embedded.
+	CacheHits int
+	// Reaped is how many orphaned .vec files were unlinked.
+	Reaped int
+}
+
+// Rebuild re-embeds a project's search index from its drawer store and its
+// iterations corpus, and returns what it did.
+//
+// 🔴 It does NOT refuse an empty result, deliberately. Rebuild is on the lazy
+// path: ensureIndex calls it before every cold search, so making "nothing to
+// index" an error here would turn a search against an unindexed project from
+// "No results found" into a hard failure, on both the MCP and CLI surfaces.
+// The judgement about whether an empty rebuild is acceptable belongs to the
+// CALLER that asked for one — see refreshIndexHandler, which refuses when the
+// operator asked to refresh an index and no index exists to refresh.
+func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, error) {
+	var stats RebuildStats
 	wings, err := e.vault.ListWings(project)
 	if err != nil {
-		return fmt.Errorf("list wings: %w", err)
+		return stats, fmt.Errorf("list wings: %w", err)
 	}
 
 	var ids []string
@@ -400,7 +435,7 @@ func (e *Engine) Rebuild(ctx context.Context, project string) error {
 	for _, wing := range wings {
 		rooms, err := listRooms(e.vault.Root, project, wing)
 		if err != nil {
-			return fmt.Errorf("list rooms for wing %s: %w", wing, err)
+			return stats, fmt.Errorf("list rooms for wing %s: %w", wing, err)
 		}
 
 		for _, room := range rooms {
@@ -412,8 +447,9 @@ func (e *Engine) Rebuild(ctx context.Context, project string) error {
 
 			for _, d := range drawers {
 				if err := ctx.Err(); err != nil {
-					return err
+					return stats, err
 				}
+				stats.Drawers++
 
 				// Try cache first; misses are embedded together below.
 				vec, _ := e.cache.Get(project, d.ID)
@@ -433,11 +469,12 @@ func (e *Engine) Rebuild(ctx context.Context, project string) error {
 	// (wrapstate.ParseEntries). No synthetic drawers.jsonl.
 	iterIDs, iterTexts, iterMetas, err := collectIterationCorpus(e.vault, project)
 	if err != nil {
-		return fmt.Errorf("iteration corpus: %w", err)
+		return stats, fmt.Errorf("iteration corpus: %w", err)
 	}
+	stats.IterationChunks = len(iterIDs)
 	for i, id := range iterIDs {
 		if err := ctx.Err(); err != nil {
-			return err
+			return stats, err
 		}
 		vec, _ := e.cache.Get(project, id)
 		if vec == nil {
@@ -449,8 +486,12 @@ func (e *Engine) Rebuild(ctx context.Context, project string) error {
 		metas = append(metas, iterMetas[i])
 	}
 
+	stats.Indexed = len(ids)
+	stats.Embedded = len(missIdx)
+	stats.CacheHits = stats.Indexed - stats.Embedded
+
 	if err := e.embedMisses(ctx, project, ids, vecs, missIdx, missText); err != nil {
-		return err
+		return stats, err
 	}
 
 	// Live IDs for this build — the reaper unlinks every .vec whose ID is not
@@ -470,19 +511,20 @@ func (e *Engine) Rebuild(ctx context.Context, project string) error {
 		if n, err := e.reapOrphanVectors(project, live); err != nil {
 			slog.Warn("reap orphan vectors failed", "project", project, "err", err)
 		} else if n > 0 {
+			stats.Reaped = n
 			slog.Info("reaped orphan vectors", "project", project, "count", n)
 		}
-		return nil
+		return stats, nil
 	}
 
 	dims, err := e.embedder.Dimensions()
 	if err != nil {
-		return fmt.Errorf("embedder dimensions: %w", err)
+		return stats, fmt.Errorf("embedder dimensions: %w", err)
 	}
 
 	idx := NewVectorIndex(dims)
 	if err := idx.Build(vecs, ids); err != nil {
-		return fmt.Errorf("build index: %w", err)
+		return stats, fmt.Errorf("build index: %w", err)
 	}
 
 	e.mu.Lock()
@@ -498,9 +540,10 @@ func (e *Engine) Rebuild(ctx context.Context, project string) error {
 	if n, err := e.reapOrphanVectors(project, live); err != nil {
 		slog.Warn("reap orphan vectors failed", "project", project, "err", err)
 	} else if n > 0 {
+		stats.Reaped = n
 		slog.Info("reaped orphan vectors", "project", project, "count", n)
 	}
-	return nil
+	return stats, nil
 }
 
 // detectCollision reports whether writing meta under id would overwrite an

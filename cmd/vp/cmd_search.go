@@ -97,7 +97,7 @@ func runSearch(eng *search.Engine, proj, query, wing, room string, limit int, as
 	ctx := context.Background()
 
 	// Synchronous rebuild for the target project.
-	if err := eng.Rebuild(ctx, proj); err != nil {
+	if _, err := eng.Rebuild(ctx, proj); err != nil {
 		fmt.Fprintf(os.Stderr, "vp search: rebuild index: %v\n", err)
 		return cli.ExitSystem
 	}

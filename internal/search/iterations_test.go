@@ -76,7 +76,7 @@ func TestRebuild_IndexesIterationsWithoutDrawers(t *testing.T) {
 		"",
 	}, "\n"))
 
-	if err := eng.Rebuild(ctx, "hist-only"); err != nil {
+	if _, err := eng.Rebuild(ctx, "hist-only"); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
@@ -135,7 +135,7 @@ func TestRebuild_DuplicateNDistinctMatchRefs(t *testing.T) {
 		"",
 	}, "\n"))
 
-	if err := eng.Rebuild(ctx, "dup-n"); err != nil {
+	if _, err := eng.Rebuild(ctx, "dup-n"); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
@@ -197,7 +197,7 @@ func TestRebuild_IterationChunksShareSourceRefSoDedupKeepsOne(t *testing.T) {
 		}
 	}
 
-	if err := eng.Rebuild(ctx, "chunky"); err != nil {
+	if _, err := eng.Rebuild(ctx, "chunky"); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	results, err := eng.Search(ctx, "LONG_ITERATION_CHUNK_PHRASE", SearchFilters{Project: "chunky", Limit: 10})

@@ -24,7 +24,7 @@ func TestIntegrationStorageToSearch(t *testing.T) {
 	h.addDrawer(t, "proj", "infra", "docker", "Docker containers package applications with their dependencies for deployment", "facts", "2026-04-03")
 	h.addDrawer(t, "proj", "dev", "go", "Go interfaces enable polymorphism without inheritance hierarchies", "discoveries", "2026-04-03")
 
-	if err := h.Engine.Rebuild(ctx, "proj"); err != nil {
+	if _, err := h.Engine.Rebuild(ctx, "proj"); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
@@ -109,7 +109,7 @@ func TestIntegrationStorageSearchMetadataPreservation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Engine.Rebuild(ctx, "proj"); err != nil {
+	if _, err := h.Engine.Rebuild(ctx, "proj"); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 

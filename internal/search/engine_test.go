@@ -262,7 +262,7 @@ func TestRebuild(t *testing.T) {
 	_ = addDrawer(t, v, "proj", "wing-a", "room-2", "second document", "opinions")
 	_ = addDrawer(t, v, "proj", "wing-b", "room-1", "third document", "facts")
 
-	if err := eng.Rebuild(ctx, "proj"); err != nil {
+	if _, err := eng.Rebuild(ctx, "proj"); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
@@ -401,7 +401,7 @@ func TestCollisionDetectorInRebuild(t *testing.T) {
 	eng.mu.Unlock()
 	before := eng.collisions.Load()
 
-	if err := eng.Rebuild(ctx, "proj"); err != nil {
+	if _, err := eng.Rebuild(ctx, "proj"); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	if got := eng.collisions.Load(); got <= before {
@@ -457,7 +457,7 @@ func TestRebuildReapsOrphanVectors(t *testing.T) {
 	ctx := context.Background()
 
 	addDrawer(t, v, "proj", "wing-a", "room-1", "real document", "facts")
-	if err := eng.Rebuild(ctx, "proj"); err != nil {
+	if _, err := eng.Rebuild(ctx, "proj"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -467,7 +467,7 @@ func TestRebuildReapsOrphanVectors(t *testing.T) {
 	}
 	ghostPath, _ := eng.cache.path("proj", "ghost123")
 
-	if err := eng.Rebuild(ctx, "proj"); err != nil {
+	if _, err := eng.Rebuild(ctx, "proj"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(ghostPath); !os.IsNotExist(err) {
@@ -490,7 +490,7 @@ func TestSearchDefaultLimit(t *testing.T) {
 		_ = v.AppendDrawer("proj", "wing-a", "room-1", d)
 	}
 
-	_ = eng.Rebuild(ctx, "proj")
+	_, _ = eng.Rebuild(ctx, "proj")
 
 	// Default limit is 10.
 	results, _ := eng.Search(ctx, "content", SearchFilters{Project: "proj"})
@@ -650,7 +650,7 @@ func TestRebuildBatchesEmbeddings(t *testing.T) {
 		addDrawer(t, v, "proj", "wing-a", "room-1", fmt.Sprintf("document number %d", i), "facts")
 	}
 
-	if err := eng.Rebuild(ctx, "proj"); err != nil {
+	if _, err := eng.Rebuild(ctx, "proj"); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
@@ -732,7 +732,7 @@ func TestRebuildClearsStaleIndex(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(v.Root, "palace", "proj", "drawers")); err != nil {
 		t.Fatal(err)
 	}
-	if err := eng.Rebuild(ctx, "proj"); err != nil {
+	if _, err := eng.Rebuild(ctx, "proj"); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 

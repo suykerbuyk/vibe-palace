@@ -707,16 +707,22 @@ var refreshIndexSchema = json.RawMessage(`{
 	"required": ["project"]
 }`)
 
-func RefreshIndexTool(engine *search.Engine) mcp.Tool {
+func RefreshIndexTool(engine *search.Engine, vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name:        "vp_refresh_index",
-		Description: "Rebuild the semantic search index for a project from scratch.",
-		Schema:      refreshIndexSchema,
-		Handler:     refreshIndexHandler(engine),
+		Name: "vp_refresh_index",
+		Description: "Re-embed a project's semantic search index from its existing drawer " +
+			"store and its iterations.md corpus, and report what was indexed " +
+			"(drawers, iteration_chunks, indexed, embedded, cache_hits, reaped) so a real " +
+			"rebuild is distinguishable from a no-op. It is a RE-EMBED, not a backfill: it " +
+			"cannot create drawers for a project that has none (those are written at capture " +
+			"time). Refuses when the project has no palace store AND nothing indexable, " +
+			"rather than reporting a success it did not achieve.",
+		Schema:  refreshIndexSchema,
+		Handler: refreshIndexHandler(engine, vault),
 	}
 }
 
-func refreshIndexHandler(engine *search.Engine) mcp.HandlerFunc {
+func refreshIndexHandler(engine *search.Engine, vault *storage.Vault) mcp.HandlerFunc {
 	return func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p refreshIndexParams
 		if err := json.Unmarshal(params, &p); err != nil {
@@ -725,9 +731,58 @@ func refreshIndexHandler(engine *search.Engine) mcp.HandlerFunc {
 		if p.Project == "" {
 			return nil, fmt.Errorf("project is required")
 		}
-		if err := engine.Rebuild(ctx, p.Project); err != nil {
+
+		// Ask BEFORE rebuilding. A rebuild can create palace/<project>/ as a
+		// side effect of indexing the iterations corpus, so asking afterwards
+		// answers a different question than the one the refusal turns on.
+		hadStore, err := vault.HasPalaceStore(p.Project)
+		if err != nil {
+			return nil, fmt.Errorf("check palace store: %w", err)
+		}
+
+		stats, err := engine.Rebuild(ctx, p.Project)
+		if err != nil {
 			return nil, fmt.Errorf("rebuild index: %w", err)
 		}
-		return map[string]string{"status": "rebuilt", "project": p.Project}, nil
+
+		// 🔴 The operator asked for an index and there is none. Refuse — do not
+		// report a zero-count success. `{"status":"rebuilt"}` was previously
+		// returned here having walked nothing, which is worse than a missing
+		// feature: it CLOSES the investigation. An operator clearing a
+		// project-tree-coherence finding sees success, the next audit reports
+		// the finding again, and the natural reading is that the audit is
+		// flaky rather than that this tool lied (iter 265).
+		//
+		// The condition is "no store AND nothing indexed", not "no store".
+		// Since a583440 the iterations corpus is a second source that needs no
+		// palace store, so a project with iterations.md but no drawers gets a
+		// real index from a rebuild that legitimately CREATES the store —
+		// refusing that would be this same defect inverted, reporting failure
+		// for work that was done.
+		if !hadStore && stats.Indexed == 0 {
+			return nil, fmt.Errorf(
+				"refresh index %q: nothing to refresh — no palace store at palace/%s/drawers, "+
+					"and no indexable content anywhere (0 drawers, 0 iteration chunks).\n"+
+					"This tool RE-EMBEDS an existing corpus; it is not a backfill and cannot "+
+					"create one from session history.\n"+
+					"Drawers are written at capture time (internal/capture indexes the "+
+					"transcript, never the session note), so a project captured without a "+
+					"transcript has none and there is no path that adds them after the fact.\n"+
+					"Next step: capture new work in this project normally, or delete the "+
+					"orphaned history. Do not re-run this expecting a different answer.",
+				p.Project, p.Project)
+		}
+
+		return map[string]any{
+			"status":           "rebuilt",
+			"project":          p.Project,
+			"had_palace_store": hadStore,
+			"drawers":          stats.Drawers,
+			"iteration_chunks": stats.IterationChunks,
+			"indexed":          stats.Indexed,
+			"embedded":         stats.Embedded,
+			"cache_hits":       stats.CacheHits,
+			"reaped":           stats.Reaped,
+		}, nil
 	}
 }

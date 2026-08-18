@@ -551,7 +551,7 @@ func TestRefreshIndexTool(t *testing.T) {
 	// RefreshIndexTool requires a non-nil engine. Verify the tool constructor works.
 	// We can't easily test a full rebuild without the embedder, but we verify
 	// the handler rejects empty project.
-	tool := RefreshIndexTool(nil)
+	tool := RefreshIndexTool(nil, nil)
 	if tool.Name != "vp_refresh_index" {
 		t.Fatalf("name = %q", tool.Name)
 	}

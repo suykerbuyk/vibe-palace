@@ -98,7 +98,7 @@ func TestSearchToolLimitClamping(t *testing.T) {
 		}
 		_ = vault.AppendDrawer("proj", "wing-a", "room-1", d)
 	}
-	_ = eng.Rebuild(context.Background(), "proj")
+	_, _ = eng.Rebuild(context.Background(), "proj")
 
 	tool := SearchTool(eng)
 	result, err := tool.Handler(context.Background(),

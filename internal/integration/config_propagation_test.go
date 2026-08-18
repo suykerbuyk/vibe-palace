@@ -27,7 +27,7 @@ func TestIntegrationConfigBoostValues(t *testing.T) {
 	h.addDrawer(t, "proj", "target-wing", "room", content, "facts", "2026-04-01")
 	h.addDrawer(t, "proj", "other-wing", "room", content, "facts", "2026-04-01")
 
-	if err := h.Engine.Rebuild(ctx, "proj"); err != nil {
+	if _, err := h.Engine.Rebuild(ctx, "proj"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -61,7 +61,7 @@ func TestIntegrationConfigBoostValues(t *testing.T) {
 	h2.addDrawer(t, "proj", "wing-a", "room", content, "facts", "2026-04-01")
 	h2.addDrawer(t, "proj", "wing-b", "room", content, "facts", "2026-04-01")
 
-	if err := h2.Engine.Rebuild(ctx, "proj"); err != nil {
+	if _, err := h2.Engine.Rebuild(ctx, "proj"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -130,7 +130,7 @@ func TestIntegrationConfigSearchLimit(t *testing.T) {
 			"unique content item number "+string(rune('A'+i)), "facts", "2026-04-01")
 	}
 
-	if err := h.Engine.Rebuild(ctx, "proj"); err != nil {
+	if _, err := h.Engine.Rebuild(ctx, "proj"); err != nil {
 		t.Fatal(err)
 	}
 

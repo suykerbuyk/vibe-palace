@@ -64,7 +64,7 @@ func TestIntegrationSearchSemanticRanking(t *testing.T) {
 		}
 	}
 
-	if err := eng.Rebuild(ctx, "proj"); err != nil {
+	if _, err := eng.Rebuild(ctx, "proj"); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
@@ -133,7 +133,7 @@ func TestIntegrationRebuildAndCache(t *testing.T) {
 	}
 
 	// First rebuild — embeds and caches.
-	if err := eng.Rebuild(ctx, "proj"); err != nil {
+	if _, err := eng.Rebuild(ctx, "proj"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,7 +155,7 @@ func TestIntegrationRebuildAndCache(t *testing.T) {
 	}
 
 	// Second rebuild should succeed (uses cache, no re-embedding).
-	if err := eng.Rebuild(ctx, "proj"); err != nil {
+	if _, err := eng.Rebuild(ctx, "proj"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -243,7 +243,7 @@ func TestIntegrationStructuralBoostsWithRealEmbeddings(t *testing.T) {
 		}
 	}
 
-	if err := eng.Rebuild(ctx, "proj"); err != nil {
+	if _, err := eng.Rebuild(ctx, "proj"); err != nil {
 		t.Fatal(err)
 	}
 

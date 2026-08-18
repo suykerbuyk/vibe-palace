@@ -25,7 +25,7 @@ func TestIntegrationMCPSearchEndToEnd(t *testing.T) {
 	h.addDrawer(t, "proj", "dev", "python", "Python asyncio uses async/await for cooperative multitasking", "facts", "2026-04-01")
 	h.addDrawer(t, "proj", "cooking", "italian", "Fresh pasta is made from eggs and tipo 00 flour", "facts", "2026-04-01")
 
-	if err := h.Engine.Rebuild(ctx, "proj"); err != nil {
+	if _, err := h.Engine.Rebuild(ctx, "proj"); err != nil {
 		t.Fatal(err)
 	}
 

@@ -235,6 +235,29 @@ func (v *Vault) MoveDrawer(project, wing, fromRoom, toRoom, id string) error {
 }
 
 // ListWings returns all wing slugs for a project by reading the drawers directory.
+// HasPalaceStore reports whether palace/<project>/drawers exists — i.e.
+// whether this project has ever had a drawer store materialized.
+//
+// It exists because ListWings deliberately CANNOT answer this: it returns
+// (nil, nil) both for "no store at all" and for "a store with no wings", which
+// is right for a walk and wrong for a caller that must tell an operator whether
+// there was anything to refresh. Callers that need the distinction ask here
+// FIRST — a rebuild can create the store as a side effect of indexing the
+// iterations corpus, so asking afterwards answers a different question.
+func (v *Vault) HasPalaceStore(project string) (bool, error) {
+	if err := slug.Validate(project); err != nil {
+		return false, fmt.Errorf("project: %w", err)
+	}
+	info, err := os.Stat(filepath.Join(v.Root, "palace", project, "drawers"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat drawers dir: %w", err)
+	}
+	return info.IsDir(), nil
+}
+
 func (v *Vault) ListWings(project string) ([]string, error) {
 	if err := slug.Validate(project); err != nil {
 		return nil, fmt.Errorf("project: %w", err)

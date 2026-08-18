@@ -127,6 +127,6 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 		reg.MustRegister(GetSessionDetailTool(vault))
 		reg.MustRegister(GetProjectContextTool(vault, resolver))
 		reg.MustRegister(GetEffectivenessTool(vault))
-		reg.MustRegister(RefreshIndexTool(engine))
+		reg.MustRegister(RefreshIndexTool(engine, vault))
 	}
 }
