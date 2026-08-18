@@ -49,9 +49,11 @@ func WithFsync() Option { return func(c *config) { c.fsync = true } }
 
 // Write atomically writes data to absPath: it creates parent directories,
 // writes a temp file in the same directory, optionally fsyncs, chmods, and
-// renames it over absPath. On success it best-effort stamps the surface version
-// for vaultRoot/absPath; pass vaultRoot == "" to skip stamping (non-vault
-// writes). A stamp failure is logged and never fails the write.
+// renames it over absPath (retrying the rename on the transient Windows sharing
+// failures classified by retryableRenameErr). On success it best-effort stamps
+// the surface version for vaultRoot/absPath; pass vaultRoot == "" to skip
+// stamping (non-vault writes). A stamp failure is logged and never fails the
+// write.
 func Write(vaultRoot, absPath string, data []byte, opts ...Option) error {
 	cfg := config{perm: 0o644}
 	for _, o := range opts {
@@ -98,7 +100,7 @@ func Write(vaultRoot, absPath string, data []byte, opts ...Option) error {
 	if err := os.Chmod(tmpPath, perm); err != nil {
 		return fmt.Errorf("chmod temp: %w", err)
 	}
-	if err := os.Rename(tmpPath, absPath); err != nil {
+	if err := renameWithRetry(tmpPath, absPath); err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}
 	removeTemp = false

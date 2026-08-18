@@ -61,9 +61,11 @@ func Acquire(vaultRoot, targetAbsPath string) (release func() error, err error) 
 // access before it starts a bulk rename/remove/prune: it refuses to run rather
 // than block on, or silently race, a concurrent writer.
 //
-// PLATFORM: on Windows vaultlock is a no-op stub (see ADR-003 Platform scope),
-// so TryAcquire always reports ok=true there without excluding anyone — exactly
-// as Acquire "succeeds having locked nothing" on Windows.
+// PLATFORM: this excludes on BOTH platforms. Windows is no longer a no-op stub
+// (ADR-003 amendment 2026-08-18): flock_windows.go takes a real LockFileEx
+// byte-range lock, and contention surfaces as ERROR_LOCK_VIOLATION, which maps
+// to ok=false exactly as unix EWOULDBLOCK does. A caller that refuses on
+// ok=false refuses for the same reason everywhere.
 func TryAcquire(vaultRoot, targetAbsPath string) (release func() error, ok bool, err error) {
 	f, err := openLockFile(vaultRoot, targetAbsPath)
 	if err != nil {

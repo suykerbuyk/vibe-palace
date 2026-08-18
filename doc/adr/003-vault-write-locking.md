@@ -112,6 +112,13 @@ forcing CAS would break the common blind-write path.
 
 ### Platform scope
 
+> **SUPERSEDED 2026-08-18** (see *Amendment (2026-08-18)* at the end of this
+> ADR). Windows is **no longer a no-op stub**: `flock_windows.go` implements a
+> real `LockFileEx`/`UnlockFileEx` byte-range lock, and the `windows-lock` CI
+> job proves it cross-process. Every "no-op on Windows" statement in this
+> section and in the two amendments below is **historical** — read it as what
+> was true before that landed, not as current behaviour.
+
 Unix uses a real `syscall.Flock` advisory lock; Windows is a no-op stub
 (best-effort, unprotected). The implementation is build-tagged
 (`flock_unix.go` / `flock_windows.go`). Advisory `flock` over NFS / network
@@ -163,7 +170,8 @@ vault path, not just this one.
   description, so a same-path second `Acquire` in the same process blocks
   forever. RMW sites therefore call raw `atomicfile.Write` under the held lock,
   never `lockedWrite` (which would re-acquire the same path and deadlock).
-- Protection is unix-only. On Windows the lock is a no-op, so concurrent
+- Protection is unix-only (**historical** — superseded 2026-08-18, the Windows
+  lock is real; see the final amendment). On Windows the lock is a no-op, so concurrent
   writers there remain unprotected.
 
 ## Alternatives considered
@@ -297,6 +305,8 @@ on blind whole-file overwrites, which is the separate
 > amendment.
 
 And, per *Platform scope* above: on Windows this fix protects nothing.
+(**Historical** — superseded 2026-08-18; the Windows lock is real. See the
+final amendment.)
 
 ### Consequences of the amendment
 
@@ -418,6 +428,9 @@ spurious-conflict failure the section above rejects.
 
 ### Platform caveat (unchanged, and it applies to CAS too)
 
+> **HISTORICAL — superseded 2026-08-18.** The Windows lock is real; see the
+> final amendment. The CAS reasoning below stands on its own and is unaffected.
+
 Per *Platform scope*: `vaultlock` is a no-op stub on Windows. The CAS
 **pre-read is therefore unprotected there** — the compare still happens and a
 genuinely stale write is still refused, but nothing serializes the read against
@@ -534,7 +547,9 @@ likely to do what it is told.
   prevented: `vp check --check resume-caps` (read-only) warns on size and row
   overruns, because with the typed editors gone there is no write path left to
   enforce a cap *at*.
-- **Windows protection.** Unchanged and still absent; see *Platform scope*.
+- **Windows protection.** Unchanged and still absent at the time of this
+  amendment; see *Platform scope*. (**Superseded 2026-08-18** — the Windows
+  lock is now real; see the final amendment.)
 
 ### Consequences of this amendment
 
@@ -556,6 +571,68 @@ likely to do what it is told.
 - Spurious file-granular conflicts on concurrent disjoint edits (above).
 - Anchors are composed by hand, so a careless `old_string` fails loudly rather
   than doing something clever. This is the intended posture.
+
+## Amendment (2026-08-18): Windows locking is real, and the atomic rename retries
+
+Two changes retire the *Platform scope* caveat above.
+
+### `vaultlock` is no longer a no-op on Windows
+
+`flock_windows.go` implements `flockExclusive` / `flockTryExclusive` / `funlock`
+with `LockFileEx` / `UnlockFileEx` over byte 0 of the sidecar. The sidecar is
+empty and `LockFileEx` over a zero-length range is a no-op, so byte 0 of an
+empty file is the standard idiom. `LOCKFILE_EXCLUSIVE_LOCK` without
+`LOCKFILE_FAIL_IMMEDIATELY` blocks, matching unix `LOCK_EX`; adding the flag
+gives the non-blocking form, where contention surfaces as
+`ERROR_LOCK_VIOLATION` and maps to `ok=false`.
+
+Windows byte-range locks are **per-HANDLE**, and each `Acquire` opens a fresh
+handle, so the ADR-003 "sequential locks, never nested" rule holds there too —
+via per-handle contention rather than unix's per-open-file-description
+mechanism. Same shape, same guidance.
+
+The `windows-lock` CI job is the only runtime proof, since the windows-tagged
+file is never compiled on the Linux jobs. It runs the in-process
+`TestSerialization` overlap detector and the cross-process
+`TestIntegration_VaultLockCrossProcess`, which launches sixteen real
+`vp vault edit` processes against one file.
+
+### The lock was never the flake — the rename was
+
+`TestIntegration_VaultLockCrossProcess` failed intermittently with:
+
+```
+vp vault edit: vaultfs: atomic write notes.md: rename:
+  rename <tmp>\.vp-atomic-<n> → <tmp>\vault\notes.md: Access is denied.
+lost update: DONE_004 missing
+```
+
+This reads as a lock miss and is not one. `vaultfs.Edit` holds
+`vaultlock.Acquire` across the whole read→replace→`atomicfile.Write`, and
+fifteen of sixteen children serialized correctly. The failure is in
+`atomicfile.Write`'s final rename: `MoveFileEx(MOVEFILE_REPLACE_EXISTING)` fails
+with `ERROR_ACCESS_DENIED` (5) or `ERROR_SHARING_VIOLATION` (32) when any other
+process holds a handle to the destination without `FILE_SHARE_DELETE` — a virus
+scanner or search indexer, for a few milliseconds. One child lost its write; the
+lock did its job.
+
+**Decision:** absorb the transient failure in the production write path rather
+than weaken the test. `renameWithRetry` retries those two errno values with
+bounded backoff (7 attempts, 785ms worst case, deliberately under a second);
+every other error returns immediately and unwrapped. The classifier is
+build-tagged and returns false unconditionally off Windows, so unix behaviour is
+unchanged. Go's own `cmd/go/internal/robustio` exists for exactly this failure
+mode and uses the same shape.
+
+`atomicfile` reaches `os.Rename`, the classifier and `time.Sleep` through
+unexported package vars, so the retry policy is unit-tested on Linux — the
+retry, the bound and the no-retry path are all mutation-proven there, rather
+than being a claim only the Windows runner could check.
+
+**What this does NOT change.** The locking discipline, the CAS contract, the
+sequential-locks rule and every call-site obligation are untouched. The rename
+retry is crash-atomicity plumbing, not mutual exclusion: it cannot substitute
+for a lock and no caller should treat it as one.
 
 ## References
 

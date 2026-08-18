@@ -1115,6 +1115,32 @@ The `.vp-locks` segment refusal is covered by
 |------|----------------|
 | `TestIntegration_VaultLockCrossProcess` | builds the real `vp` binary and launches N concurrent `vp vault edit` child **processes** contending on one seeded file; every fixed-width anchor is converted to its DONE marker exactly once, proving the advisory flock serializes whole-file RMW across separate OS processes (CLI vs MCP). Skipped under `-short`. |
 
+### `internal/atomicfile` — Windows Rename Retry (coverage 86.5%)
+
+The `windows-lock` job above flaked on a **rename**, not on the lock: one child
+of sixteen died in `atomicfile.Write`'s `MoveFileEx` with `Access is denied`
+while the flock had serialized every child correctly (ADR-003 amendment
+2026-08-18). These tests cover the retry that absorbs it, and they all run on
+**Linux** — the retry loop reaches `os.Rename`, the errno classifier and
+`time.Sleep` through unexported package vars, so the policy is exercised without
+a Windows runner.
+
+| Test | What it proves |
+|------|----------------|
+| `TestRenameWithRetry_RetriesThenSucceeds` | a rename failing twice with a retryable error then succeeding returns nil, and the attempt **count** proves the loop actually re-ran rather than the first call quietly succeeding. |
+| `TestRenameWithRetry_NoRetryOnPermanent` | a non-retryable error returns after exactly **one** attempt, unwrapped, so `errors.Is` still reaches the original — a permanent failure must not be sat on for 785ms. |
+| `TestRenameWithRetry_ExhaustsBound` | an always-failing retryable error gives up after the documented bound and returns the last error wrapped with `%w`. |
+| `TestRenameRetryBound` | pins the bound (7 attempts) **and** that total backoff stays under 1s, so the numbers in the source comment cannot silently drift. |
+| `TestWrite_RetriesTransientRename` / `TestWrite_PropagatesNonRetryableRename` | prove `Write` is actually wired to the retry — both go red if the call reverts to a bare `os.Rename`. |
+| `rename_other_test.go` (`!windows`) | the off-Windows classifier returns false for every error shape, including `syscall.Errno(5)`/`(32)`, so unix never sleeps on a doomed rename. |
+| `rename_windows_test.go` (`windows`) | classifies real `ERROR_ACCESS_DENIED` / `ERROR_SHARING_VIOLATION` (including through the `*os.LinkError` `os.Rename` returns) as retryable and `fs.ErrNotExist` as not. Compiled by `GOOS=windows go vet`; **runs** in the `windows-lock` CI job. |
+
+**Mutation-proven.** Reverting `Write` to a bare `os.Rename` reds
+`TestWrite_RetriesTransientRename` (`rename attempts = 0, want 3`); making the
+loop single-attempt reds `TestRenameWithRetry_RetriesThenSucceeds` and
+`TestRenameWithRetry_ExhaustsBound` (`rename attempts = 1, want the documented
+bound 7`). Both are behaviour failures, not build breaks.
+
 ---
 
 ## Resume-Editor Lost-Update Tests (`resume-md-lost-update`) — RETIRED

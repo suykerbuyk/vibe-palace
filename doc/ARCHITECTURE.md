@@ -180,7 +180,9 @@ rather than from any new persisted field.
 
 Vault writes pass through two distinct disciplines that solve two distinct
 problems. `internal/atomicfile.Write` (temp-file + `os.Rename`) gives
-**crash-atomicity** — a reader never sees a torn file. `internal/vaultlock`
+**crash-atomicity** — a reader never sees a torn file. On Windows that rename is
+retried on the transient sharing failures a scanner or indexer causes (see *The
+Windows rename retry* below). `internal/vaultlock`
 gives **mutual exclusion** — concurrent writers cannot lose each other's
 updates. Atomicity alone is not enough: two writers can each read the same
 base, compute a whole-file body, and rename over the target, with the second
@@ -240,9 +242,43 @@ therefore the *primary* discipline here, not a backstop. See ADR-003.
 
 `.vp-locks/` is host-local: registered in `storage.CanonicalGitignorePatterns`
 (never synced), refused by `vaultfs.IsRefusedWritePath`, and not indexed. The
-lock is unix-only (Windows is a no-op stub); `flock` auto-releases on process
-exit, so a leftover `.lock` marker after a crash is harmless. See ADR-003
-(`doc/adr/003-vault-write-locking.md`) for the full rationale.
+lock is **real on both platforms**: unix uses `syscall.Flock`, Windows uses a
+`LockFileEx` byte-range lock over byte 0 of the sidecar (`flock_unix.go` /
+`flock_windows.go`). Both auto-release when the handle closes or the process
+exits, so a leftover `.lock` marker after a crash is harmless. See ADR-003
+(`doc/adr/003-vault-write-locking.md`) for the full rationale — including the
+2026-08-18 amendment that retired the "Windows is a no-op stub" scope.
+
+### The Windows rename retry
+
+`atomicfile.Write` finishes with a rename of the temp file over the target. On
+unix that is POSIX `rename(2)`, which succeeds even while another process holds
+the destination open — the directory entry is replaced and the old inode lives
+until the last descriptor closes. There is nothing to retry.
+
+On Windows the same call is `MoveFileEx(..., MOVEFILE_REPLACE_EXISTING)`, and it
+**fails** when any other process holds a handle to the destination that was not
+opened with `FILE_SHARE_DELETE`. On CI runners and developer desktops that is
+routinely a virus scanner or the search indexer holding the file for a few
+milliseconds; Windows reports `ERROR_ACCESS_DENIED` (5) or
+`ERROR_SHARING_VIOLATION` (32), and the identical rename succeeds a moment
+later. This is what made the `windows-lock` CI job flake: one child of sixteen
+died in the rename, losing its update, while the lock had serialized every child
+correctly. **It was never a lock miss** — see ADR-003's 2026-08-18 amendment.
+
+`renameWithRetry` (`internal/atomicfile/rename.go`) therefore retries those two
+errno values with backoff — 7 attempts, 785ms of worst-case sleep, bounded under
+a second because a vault write is on an interactive path and an unrecoverable
+rename must surface as an error rather than a multi-second hang. Any other
+failure returns immediately and unwrapped. The classifier is build-tagged
+(`rename_windows.go` / `rename_other.go`) and returns false unconditionally off
+Windows, so unix behaviour is byte-for-byte what it was.
+
+The retry loop reaches `os.Rename`, the classifier and `time.Sleep` through
+unexported package vars, so the whole policy is exercised on any platform by
+substituting fakes — the retry, the give-up bound and the no-retry path are unit
+tests that run on the Linux CI box, not claims that only Windows could check.
+
 
 ### Memory write locking
 
