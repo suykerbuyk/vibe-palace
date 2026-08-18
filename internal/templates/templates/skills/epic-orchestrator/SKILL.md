@@ -189,7 +189,7 @@ vault-tooling epic. Do not stop at "merged":**
    is the positive signal it took.
 2. `vp config sync` — roll the embedded-template changes to the vault `Templates/` verbatim, then
    confirm no drift by calling `vp_check` (the MCP tool) with
-   `{"checks": ["vault-filesystem", "stray-scaffolds", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage", "template-drift", "writer-identity", "stale-mcp"]}` — the host-agnostic
+   `{"checks": ["vault-filesystem", "stray-scaffolds", "surface-merge-driver", "resume-caps", "resume-refs", "vault-abs-paths", "core-floor", "pin-coverage", "template-drift", "writer-identity", "stale-mcp"]}` — the host-agnostic
    half, and the first proof the rolled tooling reaches an agent at all rather than merely existing.
    `template-drift` is the row that verifies the sync took; it reads the same `Templates/` tree the
    CLI table does, so this step no longer needs a shell and a shell-less host can run the rollout.

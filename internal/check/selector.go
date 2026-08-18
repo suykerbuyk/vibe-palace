@@ -51,6 +51,15 @@ var Producers = map[string]func(vaultRoot string) []Result{
 		}
 		return []Result{CheckStrayScaffolds(storage.NewVault(vaultRoot))}
 	},
+	// surface-merge-driver scans the vault tree for a .gitattributes naming the
+	// deleted vp-surface driver. It never reads git config — see the file's
+	// scope note for why a host-local answer would be worse than none.
+	"surface-merge-driver": func(vaultRoot string) []Result {
+		if vaultRoot == "" {
+			return []Result{{Name: "Surface merge driver", Status: Skip, Summary: "no vault configured"}}
+		}
+		return []Result{CheckSurfaceMergeDriver(storage.NewVault(vaultRoot))}
+	},
 	"resume-caps": func(vaultRoot string) []Result {
 		if vaultRoot == "" {
 			return []Result{{Name: "Resume caps", Status: Skip, Summary: "no vault configured"}}
@@ -129,6 +138,7 @@ var ProducerOrder = []string{
 	"surface",
 	"vault-filesystem",
 	"stray-scaffolds",
+	"surface-merge-driver",
 	"resume-caps",
 	"resume-refs",
 	"vault-abs-paths",

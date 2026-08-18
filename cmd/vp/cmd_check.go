@@ -240,6 +240,13 @@ func gatherCheckResults() []check.Result {
 				// `vp init` / un-isolated test residue like Projects/p).
 				results = append(results, check.CheckStrayScaffolds(vault))
 
+				// Vault-wide: fail a .gitattributes naming the deleted
+				// vp-surface merge driver. git emits NO diagnostic for an
+				// attribute naming an undefined driver — it silently text
+				// merges — so this is the one vault-hygiene row that is a
+				// hard Fail rather than an advisory Info.
+				results = append(results, check.CheckSurfaceMergeDriver(vault))
+
 				// Vault-wide: flag resume.md files that have outgrown the
 				// wrap-time caps. Advisory only — with the typed resume
 				// editors retired, no write path can enforce a cap, so

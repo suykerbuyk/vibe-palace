@@ -189,7 +189,7 @@ func TestProducersSkipContractNamesAreStable(t *testing.T) {
 	sort.Strings(got)
 	// Host surfaces may be Skip or present depending on $HOME; always one row.
 	want := []string{"Core floor", "Host surfaces", "Iteration headings", "Pin coverage", "Resume caps", "Resume refs",
-		"Stale MCP", "Stray scaffolds", "Surface", "Template drift", "Vault abs paths",
+		"Stale MCP", "Stray scaffolds", "Surface", "Surface merge driver", "Template drift", "Vault abs paths",
 		"Vault filesystem", "Writer identity"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("check row names = %v, want %v", got, want)
