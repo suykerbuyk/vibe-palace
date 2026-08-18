@@ -76,7 +76,14 @@ func TestRunCommandsUpgrade_DryRun_ZeroWhenClean(t *testing.T) {
 	}
 }
 
-func TestRunCommandsUpgrade_Overwrite_AppliesAll(t *testing.T) {
+// TestRunCommandsUpgrade_Overwrite_AppliesActionable proves --overwrite
+// skips the prompt, it does not change the classification. It upgrades the
+// genuine override and leaves every command with no vault copy alone — the
+// defect must not survive behind a flag.
+//
+// Goes red if planOne's !haveVault -> ChangeNew short-circuit is restored:
+// the mirrors reappear and Templates/commands/ holds the whole corpus.
+func TestRunCommandsUpgrade_Overwrite_AppliesActionable(t *testing.T) {
 	vault := t.TempDir()
 	// Pre-seed one divergent copy so there's a guaranteed updated entry.
 	writeVaultFile(t, vault, "Templates/commands/restart.md", "stale user content\n")
@@ -94,21 +101,38 @@ func TestRunCommandsUpgrade_Overwrite_AppliesAll(t *testing.T) {
 		t.Fatalf("overwrite: exit=%d\nstderr: %s", code, errb.String())
 	}
 
-	// After apply, every embedded command has a matching vault copy.
+	// After apply the override matches embedded; everything else is still
+	// unneeded and was never materialized.
 	r := vpctx.NewResolver(vault)
 	plan, err := commands.Plan(r, commands.PlanOptions{})
 	if err != nil {
 		t.Fatalf("re-plan: %v", err)
 	}
 	for _, c := range plan {
-		if c.Kind != commands.ChangeUnchanged {
-			t.Errorf("%s: kind=%q after overwrite, want unchanged", c.Name, c.Kind)
+		want := commands.ChangeUnneeded
+		if c.Name == "restart" {
+			want = commands.ChangeUnchanged
 		}
+		if c.Kind != want {
+			t.Errorf("%s: kind=%q after overwrite, want %q", c.Name, c.Kind, want)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(vault, "Templates", "commands"))
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "restart.md" {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("Templates/commands/ = %v, want only restart.md; --overwrite "+
+			"must not re-materialize byte-identical mirrors", names)
 	}
 }
 
 func TestRunCommandsUpgrade_NonInteractive_RefusesWithoutOverwrite(t *testing.T) {
-	vault := t.TempDir() // non-empty plan (everything new)
+	vault := t.TempDir() // no vault templates; the shim plan is what is actionable
 
 	var out, errb bytes.Buffer
 	code := runCommandsUpgrade(commandsUpgradeOpts{
@@ -133,13 +157,15 @@ func TestRunCommandsUpgrade_Interactive_AcceptOne_SkipOne(t *testing.T) {
 	writeVaultFile(t, vault, "Templates/commands/restart.md", "stale restart\n")
 	writeVaultFile(t, vault, "Templates/commands/wrap.md", "stale wrap\n")
 
-	// Plan order is alphabetical: cancel-plan, capture, execute-plan, herdr,
-	// license, makefile, restart, review-plan, stage, ... , wrap. Skip
-	// positions 0-5 (cancel-plan, capture, execute-plan, herdr, license,
-	// makefile — all new); accept restart (6); skip review-plan (7). The
-	// remaining prompts (including wrap, already staged but stale) run out of
-	// input and skip, so the test asserts wrap is NOT updated.
-	input := strings.Join([]string{"s", "s", "s", "s", "s", "s", "a", "s"}, "\n") + "\n"
+	// Only the two seeded overrides are actionable, so only they prompt, in
+	// alphabetical order: restart then wrap. Accept restart, skip wrap.
+	//
+	// Before the override-only fix this needed six leading "s" keystrokes to
+	// walk past cancel-plan, capture, execute-plan, herdr, license and
+	// makefile — every one of them a byte-identical mirror the operator was
+	// being asked to write. That prompt run is what made accept-all the
+	// natural keystroke and buried the shim prompts behind 14 vault writes.
+	input := strings.Join([]string{"a", "s"}, "\n") + "\n"
 
 	var out, errb bytes.Buffer
 	code := runCommandsUpgrade(commandsUpgradeOpts{
@@ -167,6 +193,19 @@ func TestRunCommandsUpgrade_Interactive_AcceptOne_SkipOne(t *testing.T) {
 	wrap, _ := os.ReadFile(filepath.Join(vault, "Templates/commands/wrap.md"))
 	if string(wrap) != "stale wrap\n" {
 		t.Errorf("wrap should not have changed, got:\n%s", wrap)
+	}
+
+	// No third file appeared: the skipped prompts were the only two offered.
+	entries, err := os.ReadDir(filepath.Join(vault, "Templates", "commands"))
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	if len(entries) != 2 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("Templates/commands/ = %v, want only the 2 seeded files", names)
 	}
 }
 

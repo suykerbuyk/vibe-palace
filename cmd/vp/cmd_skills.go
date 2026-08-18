@@ -312,7 +312,7 @@ func runSkillsUpgrade(opts skillsUpgradeOpts) int {
 		return cli.ExitUser
 	}
 
-	added, updated, unchanged := 0, 0, 0
+	added, updated, unchanged, unneeded := 0, 0, 0, 0
 	for _, c := range plan {
 		switch c.Kind {
 		case commands.ChangeNew:
@@ -321,14 +321,17 @@ func runSkillsUpgrade(opts skillsUpgradeOpts) int {
 			updated++
 		case commands.ChangeUnchanged:
 			unchanged++
+		case commands.ChangeUnneeded:
+			// See cmd_commands.go: unneeded is not unchanged.
+			unneeded++
 		}
 	}
 
 	if opts.DryRun {
 		printSkillsUpgradePlan(opts.Stdout, plan, opts.Granular)
 		fmt.Fprintf(opts.Stdout,
-			"\nSummary (dry run): %d new, %d updated, %d unchanged.\n",
-			added, updated, unchanged)
+			"\nSummary (dry run): %d new, %d updated, %d unchanged, %d unneeded.\n",
+			added, updated, unchanged, unneeded)
 		if added+updated > 0 {
 			return cli.ExitUser
 		}
@@ -469,6 +472,8 @@ func printSkillsUpgradePlan(w io.Writer, plan []commands.Change, granular bool) 
 					rel, c.VaultHash, c.EmbeddedHash)
 			case commands.ChangeUnchanged:
 				fmt.Fprintf(w, "    unchanged %s\n", rel)
+			case commands.ChangeUnneeded:
+				fmt.Fprintf(w, "    unneeded  %s  (no local override; embedded floor serves it)\n", rel)
 			}
 		}
 	}
@@ -483,5 +488,7 @@ func printPlanLine(w io.Writer, c commands.Change) {
 			c.Name, c.VaultHash, c.EmbeddedHash)
 	case commands.ChangeUnchanged:
 		fmt.Fprintf(w, "  unchanged %s\n", c.Name)
+	case commands.ChangeUnneeded:
+		fmt.Fprintf(w, "  unneeded  %s  (no local override; embedded floor serves it)\n", c.Name)
 	}
 }

@@ -46,20 +46,27 @@ func TestIntegrationCommandsUpgradeFullLoop(t *testing.T) {
 	if kinds["wrap"] != commands.ChangeUpdated {
 		t.Errorf("wrap kind = %q, want updated", kinds["wrap"])
 	}
-	newCount := 0
-	for _, k := range kinds {
+	// Every embedded command with no vault copy is Unneeded, never New: the
+	// embedded floor serves it, so materializing a byte-identical mirror
+	// would shadow the binary (ADR-008 Phase 3). Goes red if planOne's
+	// !haveVault -> ChangeNew short-circuit is restored.
+	unneededCount := 0
+	for name, k := range kinds {
 		if k == commands.ChangeNew {
-			newCount++
+			t.Errorf("plan emitted ChangeNew for %q; kinds=%v", name, kinds)
+		}
+		if k == commands.ChangeUnneeded {
+			unneededCount++
 		}
 	}
-	if newCount == 0 {
-		t.Errorf("expected at least one new template; kinds=%v", kinds)
+	if unneededCount == 0 {
+		t.Errorf("expected at least one unneeded template; kinds=%v", kinds)
 	}
 
-	// Accept everything non-unchanged, apply, verify idempotence.
+	// Accept everything the CLI would offer, apply, verify idempotence.
 	accepted := make([]commands.Change, 0, len(plan))
 	for _, c := range plan {
-		if c.Kind != commands.ChangeUnchanged {
+		if c.Kind != commands.ChangeUnchanged && c.Kind != commands.ChangeUnneeded {
 			accepted = append(accepted, c)
 		}
 	}
@@ -67,14 +74,40 @@ func TestIntegrationCommandsUpgradeFullLoop(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 
+	// Fixed point: re-planning offers nothing. The two seeded files settle to
+	// Unchanged; every other embedded command stays Unneeded. Nothing in the
+	// plan is actionable, so a second `vp commands upgrade` writes nothing and
+	// there is no mirror for `vp config sync` to prune back off — the loop the
+	// two commands used to form is gone.
 	plan2, err := commands.Plan(r, commands.PlanOptions{})
 	if err != nil {
 		t.Fatalf("re-Plan: %v", err)
 	}
 	for _, c := range plan2 {
-		if c.Kind != commands.ChangeUnchanged {
-			t.Errorf("%s: kind=%q after Apply, want unchanged", c.Name, c.Kind)
+		switch c.Name {
+		case "restart", "wrap":
+			if c.Kind != commands.ChangeUnchanged {
+				t.Errorf("%s: kind=%q after Apply, want unchanged", c.Name, c.Kind)
+			}
+		default:
+			if c.Kind != commands.ChangeUnneeded {
+				t.Errorf("%s: kind=%q after Apply, want unneeded", c.Name, c.Kind)
+			}
 		}
+	}
+
+	// The vault grew no mirrors beyond the two the test seeded.
+	entries, err := os.ReadDir(filepath.Join(vault, "Templates", "commands"))
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	if len(entries) != 2 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("Templates/commands/ holds %d files %v, want exactly the 2 seeded",
+			len(entries), names)
 	}
 }
 

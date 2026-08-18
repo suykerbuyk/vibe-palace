@@ -1,22 +1,7 @@
 
-=== cancel-plan (new) ===
-(new file; 5863 bytes will be added)
-Accept this change? [a]ccept / [s]kip / [A]ccept-all / [q]uit: [accept] capture (new)
-[accept] execute-plan (new)
-[accept] herdr (new)
-[accept] license (new)
-[accept] makefile (new)
-[accept] restart (new)
-[accept] review-plan (new)
-[accept] stage (new)
-[accept] tasks-epic (new)
-[accept] tasks-epics (new)
-[accept] tasks-read (new)
-[accept] tasks-standalone (new)
-[accept] vault-audit (new)
-[accept] wrap (new)
-[accept] shim cancel-plan (new)
-[accept] shim capture (new)
+=== shim cancel-plan (new) ===
+<PROJECT_ROOT>/.claude/commands/vpc-cancel-plan.md will be created.
+Accept this change? [a]ccept / [s]kip / [A]ccept-all / [q]uit: [accept] shim capture (new)
 [accept] shim execute-plan (new)
 [accept] shim herdr (new)
 [accept] shim license (new)
@@ -35,4 +20,4 @@ Accept this change? [a]ccept / [s]kip / [A]ccept-all / [q]uit: [accept] capture 
 [accept] skill-shim claude-skill pair-reviewer (new)
 [accept] skill-shim claude-skill startup-analyst (new)
 
-Done. 34 accepted, 0 skipped, 0 custom (untouched). Shims: 15 added, 0 updated, 0 removed, 0 custom. Grok shims: 0 added, 0 updated, 0 removed, 0 custom. Skill shims: 4 added, 0 updated, 0 removed, 0 custom.
+Done. 19 accepted, 0 skipped, 0 custom (untouched). Shims: 15 added, 0 updated, 0 removed, 0 custom. Grok shims: 0 added, 0 updated, 0 removed, 0 custom. Skill shims: 4 added, 0 updated, 0 removed, 0 custom.

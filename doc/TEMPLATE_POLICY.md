@@ -17,6 +17,36 @@ atomic write, directory creation, and (conditional) `.bak` emission.
 | `commands.Apply` | `vp commands upgrade` | `BackupPolicyNever` | See asymmetry note below. |
 | `commands.ApplyWithBackup` | `vp skills upgrade` | `BackupPolicyRename` | See asymmetry note below. |
 
+## What gets materialized at all (override-only, iter 319)
+
+The table above says how a write is backed up. It does **not** say that a
+write happens. Since iteration 319 `commands.Plan` is **override-only**, and
+that decision comes first:
+
+- **No vault copy → `ChangeUnneeded`.** Nothing is written. The embedded floor
+  (precedence Tier 5, `internal/context/precedence.go`) already serves the
+  resource, and the bytes a write would produce are that floor verbatim. A
+  byte-identical vault copy is not a no-op: it is a Tier 4 override that
+  shadows the binary, so the next release's `wrap.md` or `restart.md` would be
+  silently ignored. `vp config sync` classifies exactly such a mirror as
+  reconciler-owned garbage and plans its deletion (ADR-008 Phase 3), so
+  writing one puts the two commands into a loop over the same paths.
+- **Vault copy differing from embedded → `ChangeUpdated`.** A genuine local
+  override. This is the only case that reaches `Apply`, and the table above is
+  what governs its `.bak`.
+- **Vault copy matching embedded → `ChangeUnchanged`.** Skipped, as before.
+
+`ChangeUnneeded` is deliberately distinct from `ChangeUnchanged`: "unchanged"
+asserts a vault copy was compared and matched, and in the unneeded case there
+is no vault copy to have compared. `Plan` therefore never emits `ChangeNew`;
+the constant remains only because `Apply`/`ApplyWithBackup` accept a
+caller-built `[]Change` and still owe a create path the correct policy (no
+prior bytes, so never a `.bak` regardless of the caller's choice).
+
+This applies to **both** surfaces — `vp commands upgrade` and `vp skills
+upgrade` share `commands.Plan`, and skills resolve through the same five-tier
+chain with the same embedded floor.
+
 ## The commands-vs-skills asymmetry
 
 **User-visible inconsistency, preserved for now:** `vp commands

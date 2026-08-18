@@ -96,24 +96,45 @@ func TestIntegrationSkillUpgrade(t *testing.T) {
 	seedAllEmbeddedSkills(t, env.vaultPath)
 
 	t.Run("group_accept_with_a", func(t *testing.T) {
-		// Remove one file so plan has a "new" entry, and edit another so
-		// plan has "updated". A single "a" on the group prompt must
-		// handle both plus the remaining unchanged neighbors quietly.
+		// Edit two files so the plan has two "updated" entries — a genuine
+		// multi-member group, which is what the single "a" is here to test.
+		// Remove a third: under the override-only rule that file is now
+		// UNNEEDED, not "new", so the upgrade must leave it deleted.
+		//
+		// Removing a mirror used to make it "new" and get it re-created. That
+		// is the defect this unit fixes, and it is the same shape as the
+		// 2026-07-31 delete/modify conflict over four re-created code-digger
+		// mirrors: `vp config sync` prunes the mirror, `vp skills upgrade`
+		// puts it back, and the two commands fight over the vault forever.
 		toRemove := filepath.Join(skillRoot, "references", "competitive-landscape.md")
 		toEdit := filepath.Join(skillRoot, "references", "funding-sources.md")
+		toEdit2 := filepath.Join(skillRoot, "references", "capex-opex.md")
 		if err := os.Remove(toRemove); err != nil {
 			t.Fatalf("remove: %v", err)
 		}
 		if err := os.WriteFile(toEdit, []byte("USER EDIT\n"), 0o644); err != nil {
 			t.Fatalf("edit: %v", err)
 		}
+		if err := os.WriteFile(toEdit2, []byte("USER EDIT 2\n"), 0o644); err != nil {
+			t.Fatalf("edit2: %v", err)
+		}
 
 		out := runVPWithTTY(t, bin, env, []byte("a\n"), "skills", "upgrade")
 		if !strings.Contains(out, "=== skill startup-analyst") {
 			t.Errorf("expected skill group header in output:\n%s", out)
 		}
-		// All 6 files exist again.
+		// The deleted mirror stays deleted: the embedded floor serves it, and
+		// re-materializing it would shadow the binary. Goes red if planOne's
+		// !haveVault -> ChangeNew short-circuit is restored.
+		if _, err := os.Stat(toRemove); !os.IsNotExist(err) {
+			t.Errorf("upgrade re-created the deleted mirror %s (stat err=%v); "+
+				"vp config sync would prune it right back", toRemove, err)
+		}
+		// Every file the vault still holds was upgraded to embedded content.
 		for _, rel := range wantFiles {
+			if rel == "references/competitive-landscape.md" {
+				continue
+			}
 			p := filepath.Join(skillRoot, filepath.FromSlash(rel))
 			if _, err := os.Stat(p); err != nil {
 				t.Errorf("missing after group-accept: %s (%v)", rel, err)
@@ -130,11 +151,19 @@ func TestIntegrationSkillUpgrade(t *testing.T) {
 	})
 
 	t.Run("granular_flag_fans_out", func(t *testing.T) {
-		// Remove all 6 files to force every file to surface as "new",
-		// then skip every prompt; output must contain 6 per-file
-		// headers and no files are written.
-		if err := os.RemoveAll(skillRoot); err != nil {
-			t.Fatalf("clear skill: %v", err)
+		// Overwrite all 6 files so every one surfaces as "updated", then skip
+		// every prompt; output must contain 6 per-file headers and no file is
+		// rewritten. Deleting them (the old setup) no longer produces prompts
+		// at all — an absent mirror is unneeded, which is the point of the
+		// group_accept assertion above.
+		for _, rel := range wantFiles {
+			p := filepath.Join(skillRoot, filepath.FromSlash(rel))
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			if err := os.WriteFile(p, []byte("USER EDIT\n"), 0o644); err != nil {
+				t.Fatalf("seed stale %s: %v", rel, err)
+			}
 		}
 		stdin := []byte(strings.Repeat("s\n", 6))
 		out := runVPWithTTY(t, bin, env, stdin, "skills", "upgrade", "--granular")
@@ -142,8 +171,12 @@ func TestIntegrationSkillUpgrade(t *testing.T) {
 		if cnt != 6 {
 			t.Errorf("expected 6 per-file headers with --granular, got %d\n%s", cnt, out)
 		}
-		if _, err := os.Stat(filepath.Join(skillRoot, "SKILL.md")); !os.IsNotExist(err) {
-			t.Errorf("granular skip wrote files (err=%v)", err)
+		got, err := os.ReadFile(filepath.Join(skillRoot, "SKILL.md"))
+		if err != nil {
+			t.Fatalf("read SKILL.md: %v", err)
+		}
+		if string(got) != "USER EDIT\n" {
+			t.Errorf("granular skip wrote files:\n%s", got)
 		}
 	})
 }

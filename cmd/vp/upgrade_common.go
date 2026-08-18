@@ -93,7 +93,11 @@ func runUpgradePrompt(plan []commands.Change, opts UpgradePromptOpts) UpgradePro
 	var groups []groupEntry
 	idx := map[string]int{}
 	for _, c := range plan {
-		if c.Kind == commands.ChangeUnchanged {
+		// Unneeded is skipped for the same reason as Unchanged: there is
+		// nothing to write, so prompting would offer the user a vault mirror
+		// of the embedded floor. That prompt is what buried the shim prompts
+		// behind 14 accept-alls.
+		if c.Kind == commands.ChangeUnchanged || c.Kind == commands.ChangeUnneeded {
 			continue
 		}
 		id := opts.GroupBy(c)

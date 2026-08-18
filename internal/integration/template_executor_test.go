@@ -82,6 +82,13 @@ func TestIntegrationTemplateExecutorBackupAsymmetry(t *testing.T) {
 // TestIntegrationTemplateExecutorNewFileNoBackup covers the new-
 // file edge case: no prior bytes exist, so neither policy leaves a
 // .bak behind regardless of which Apply variant the CLI uses.
+//
+// The Change is built here rather than taken from Plan. Plan is
+// override-only (ADR-008 Phase 3): an absent vault copy is ChangeUnneeded
+// and Apply skips it, so Plan cannot supply a create. That is the subject
+// of TestIntegrationCommandsUpgradeFullLoop; the subject HERE is the
+// executor's backup policy on a path with no prior bytes, which Apply still
+// owes any caller-built ChangeNew.
 func TestIntegrationTemplateExecutorNewFileNoBackup(t *testing.T) {
 	vault := t.TempDir()
 	r := vpctx.NewResolver(vault)
@@ -90,9 +97,10 @@ func TestIntegrationTemplateExecutorNewFileNoBackup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
-	if len(plan) != 1 || plan[0].Kind != commands.ChangeNew {
-		t.Fatalf("plan = %+v, want one New", plan)
+	if len(plan) != 1 || plan[0].Kind != commands.ChangeUnneeded {
+		t.Fatalf("plan = %+v, want one Unneeded", plan)
 	}
+	plan[0].Kind = commands.ChangeNew
 	target := plan[0].VaultPath
 
 	if err := commands.ApplyWithBackup(plan); err != nil {

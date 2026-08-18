@@ -218,7 +218,7 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 			vaultRoot)
 	}
 
-	added, updated, unchanged, custom := 0, 0, 0, 0
+	added, updated, unchanged, unneeded, custom := 0, 0, 0, 0, 0
 	for _, c := range plan {
 		switch c.Kind {
 		case commands.ChangeNew:
@@ -227,6 +227,12 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 			updated++
 		case commands.ChangeUnchanged:
 			unchanged++
+		case commands.ChangeUnneeded:
+			// Counted apart from unchanged on purpose: "unchanged" means a
+			// vault copy was compared and matched, "unneeded" means there is
+			// no vault copy and none is wanted. Folding them would report a
+			// comparison that never happened.
+			unneeded++
 		}
 	}
 	// Count vault-only (custom) templates: listed by resolver as source=vault
@@ -345,8 +351,8 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 		}
 		printSkillShimPlan(opts.Stdout, skillPlan)
 		fmt.Fprintf(opts.Stdout,
-			"\nSummary (dry run): %d new, %d updated, %d unchanged, %d custom, %d agent-file block(s) need updating, shims: %d new, %d updated, %d stale, %d custom, grok shims: %d new, %d updated, %d stale, %d custom, skill shims: %d new, %d updated, %d stale, %d custom.\n",
-			added, updated, unchanged, custom, pendingBlocks,
+			"\nSummary (dry run): %d new, %d updated, %d unchanged, %d unneeded, %d custom, %d agent-file block(s) need updating, shims: %d new, %d updated, %d stale, %d custom, grok shims: %d new, %d updated, %d stale, %d custom, skill shims: %d new, %d updated, %d stale, %d custom.\n",
+			added, updated, unchanged, unneeded, custom, pendingBlocks,
 			shimAdd, shimUpd, shimStale, shimCustom,
 			grokShimAdd, grokShimUpd, grokShimStale, grokShimCustom,
 			skillAdd, skillUpd, skillStale, skillCustom)
@@ -870,6 +876,8 @@ func printUpgradePlan(w io.Writer, plan []commands.Change) {
 				c.Name, c.VaultHash, c.EmbeddedHash)
 		case commands.ChangeUnchanged:
 			fmt.Fprintf(w, "  unchanged %s\n", c.Name)
+		case commands.ChangeUnneeded:
+			fmt.Fprintf(w, "  unneeded  %s  (no local override; embedded floor serves it)\n", c.Name)
 		}
 	}
 }
