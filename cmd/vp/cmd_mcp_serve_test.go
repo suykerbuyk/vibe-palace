@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
@@ -430,13 +432,75 @@ func TestServeHTTPGracefulShutdown(t *testing.T) {
 
 // TestMCPServeBootstrapRequiresProject pins that buildMCPServeHandler's real
 // RegisterAll path wires WithRequireExplicitProject: calling
-// vp_bootstrap_context with {} must refuse. Constructing
-// BootstrapContextToolExplicit in isolation is not enough — the serve stack
-// could drop the option and only the unused-export sourceaudit would notice.
+// vp_bootstrap_context with {} must refuse, AND refuse for that reason.
+//
+// The fixture has to make every OTHER refusal impossible, or the pin is
+// satisfied by the wrong gate. It used to be: the temp vault had no
+// Projects/<detected-slug>/, so with the option deleted the call fell through
+// to the stdio cwd-default path and vaultProjectDirExists refused instead.
+// Different gate, same IsError, and the word "project" appears in both
+// messages — so deleting the option left this test GREEN, and only the
+// unused-export sourceaudit rule noticed. That is coincidental protection: it
+// evaporates the moment anything else references the symbol.
+//
+// So: chdir to a marked fixture directory, derive the slug with the same
+// function the handler uses, seed Projects/<slug>/ so the exists-arm PASSES,
+// and assert the transport gate's own message. With the option deleted the {}
+// call now SUCCEEDS, and this test fails.
 func TestMCPServeBootstrapRequiresProject(t *testing.T) {
 	stack := newServeTestStack(t)
+
+	// A cwd the handler's own detector resolves, so the cwd-default path can
+	// get past detection. Deliberately NOT this repo: a slug read off the tree
+	// the test happens to run in makes the fixture host-dependent.
+	markedDir := t.TempDir()
+	marker := "[project]\nname = \"serve-gate-fixture\"\n"
+	if err := os.WriteFile(filepath.Join(markedDir, project.ConfigFileName), []byte(marker), 0o644); err != nil {
+		t.Fatalf("write project marker: %v", err)
+	}
+	t.Chdir(markedDir)
+
+	// Derive the slug the way resolveBootstrapProject does — never hardcoded,
+	// so a change to detection moves the fixture with it instead of silently
+	// aiming the seed at the wrong directory.
+	detected, err := project.DetectProjectHighConfidence(markedDir)
+	if err != nil {
+		t.Fatalf("fixture cwd must be detectable, or the cwd-default path stops at detection and never reaches the gate under test: %v", err)
+	}
+
+	// Seed Projects/<detected>/ so the exists-arm passes and the transport
+	// gate is the only refusal left.
+	projectDir, err := stack.vault.ProjectDir(detected)
+	if err != nil {
+		t.Fatalf("vault.ProjectDir(%q): %v", detected, err)
+	}
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("seed project dir: %v", err)
+	}
+	// Positive control on the seed itself, mirroring what vaultProjectDirExists
+	// checks (same ProjectDir derivation, same Stat + IsDir). Without this a
+	// silently-failed seed would restore the exact defect being fixed.
+	if fi, err := os.Stat(projectDir); err != nil || !fi.IsDir() {
+		t.Fatalf("seeded project dir is not a directory (stat err=%v) — the exists-arm would refuse and this test would pass for the old wrong reason", err)
+	}
+
 	handler := buildMCPServeHandler(stack, mcpServeTestToken, false /* allowWrites */)
 
+	// Anti-vacuity control: the SAME handler and the SAME fixture serve this
+	// slug when it is passed explicitly. So the refusal below cannot be the
+	// fixture failing to assemble a payload — it is the gate.
+	ctl, err := callToolHTTP(t, handler, mcpServeTestToken, "vp_bootstrap_context", map[string]any{"project": detected})
+	if err != nil {
+		t.Fatalf("control: transport error on explicit project: %v", err)
+	}
+	if ctl == nil || ctl.IsError {
+		t.Fatalf("control: explicit project must SUCCEED against this fixture, else a refusal below proves nothing: %+v", ctl)
+	}
+
+	// Half 1 — the SCHEMA. BootstrapContextToolExplicit carries
+	// required:["project"], so an omitted project is refused before the
+	// handler runs. This is what the gate actually does to {} on the wire;
+	// the handler branch below never sees this call.
 	res, err := callToolHTTP(t, handler, mcpServeTestToken, "vp_bootstrap_context", map[string]any{})
 	if err != nil {
 		t.Fatalf("transport error: %v", err)
@@ -445,16 +509,42 @@ func TestMCPServeBootstrapRequiresProject(t *testing.T) {
 		t.Fatal("nil result")
 	}
 	if !res.IsError {
-		t.Fatalf("want isError for empty project on HTTP serve, got success: %+v", res)
+		t.Fatalf("want isError for omitted project on HTTP serve — the cwd-default path resolved %q instead, so WithRequireExplicitProject is not wired: %+v", detected, res)
 	}
-	// Schema validation or handler — either must name project.
+	if text := resultText(res); !strings.Contains(strings.ToLower(text), "project") {
+		t.Errorf("schema refusal must name the missing property, got %q", text)
+	}
+
+	// Half 2 — the HANDLER. required:[] is satisfied by a present-but-empty
+	// string, so this input passes schema validation and reaches
+	// resolveBootstrapProject, where allowCwdDefault=false is the only thing
+	// standing between it and the server process cwd. Assert the REASON here:
+	// a bare "project" substring is satisfied by the cwd-default path's own
+	// refusals too, which is how this test used to pass with the gate deleted.
+	res, err = callToolHTTP(t, handler, mcpServeTestToken, "vp_bootstrap_context", map[string]any{"project": ""})
+	if err != nil {
+		t.Fatalf("transport error on empty project: %v", err)
+	}
+	if res == nil {
+		t.Fatal("nil result for empty project")
+	}
+	if !res.IsError {
+		t.Fatalf("want isError for EMPTY project on HTTP serve — an empty string passes schema, so this reaching success means the handler defaulted from cwd: %+v", res)
+	}
+	const wantReason = "this transport does not default project from cwd"
+	if text := resultText(res); !strings.Contains(strings.ToLower(text), wantReason) {
+		t.Errorf("refusal must name the transport gate (%q), got %q", wantReason, text)
+	}
+}
+
+// resultText concatenates the text content of a tool result, so an assertion
+// reads the message the client actually receives.
+func resultText(res *mcplib.CallToolResult) string {
 	text := ""
 	for _, c := range res.Content {
 		if tc, ok := c.(mcplib.TextContent); ok {
 			text += tc.Text
 		}
 	}
-	if !strings.Contains(strings.ToLower(text), "project") {
-		t.Errorf("error text must mention project, got %q", text)
-	}
+	return text
 }
