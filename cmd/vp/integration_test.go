@@ -36,7 +36,7 @@ func TestIntegrationStatusSessionsTasks(t *testing.T) {
 
 	// Status should see 2 tasks and 2 sessions.
 	var statusBuf bytes.Buffer
-	code := runStatus(v, proj, true, &statusBuf)
+	code := runStatus(v, proj, "cwd:/fixture/.vibe-palace.toml", true, &statusBuf)
 	if code != cli.ExitOK {
 		t.Fatalf("status exit code = %d", code)
 	}
@@ -76,7 +76,7 @@ func TestIntegrationStatusSessionsTasks(t *testing.T) {
 	// Retire one task and verify status reflects it.
 	v.RetireTask(proj, "implement-auth")
 	statusBuf.Reset()
-	runStatus(v, proj, true, &statusBuf)
+	runStatus(v, proj, "cwd:/fixture/.vibe-palace.toml", true, &statusBuf)
 	json.Unmarshal(statusBuf.Bytes(), &status)
 	if status.Tasks != 1 {
 		t.Errorf("after retire: status.Tasks = %d, want 1", status.Tasks)
