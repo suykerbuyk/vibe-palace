@@ -258,6 +258,17 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 	}
 
 	// Check if anything to commit.
+	//
+	// The `_` here is CORRECT and must stay. This is a PREDICATE: `--quiet`
+	// makes the exit code the entire answer, and git prints nothing to explain
+	// a difference it was told not to describe. gitCmd now attaches a line of
+	// git's output to the error it returns, which is what fixed the
+	// exit-status-128-with-no-diagnosis class — but that fix has nothing to
+	// give here, and binding `out` at the predicate sites would only invite a
+	// later sweep to interpolate empty strings into messages. The sibling
+	// predicates (`rev-parse --verify --quiet`, `ls-files --error-unmatch`,
+	// `rev-parse --is-inside-work-tree`, `ls-remote --exit-code`,
+	// `var GIT_AUTHOR_IDENT`, `diff --quiet`) are the same shape.
 	if _, err := gitCmd(vaultPath, 10*time.Second, "diff", "--cached", "--quiet"); err == nil {
 		// Exit code 0 means no staged changes.
 		return result, nil
@@ -686,5 +697,64 @@ func gitCmd(dir string, timeout time.Duration, args ...string) (string, error) {
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
 
 	out, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+	trimmed := strings.TrimSpace(string(out))
+	if err != nil {
+		// Wrap HERE, not at the call sites. exec's *ExitError renders as exactly
+		// "exit status 128" while git's own explanation — already captured, one
+		// line above — was being dropped. Attaching it at the single point where
+		// both are in hand means every existing `fmt.Errorf("...: %w", err)` site
+		// gains the diagnosis without being rewritten, and every future one is
+		// born with it. Patching the human-facing call sites individually would
+		// have left the next one to rot.
+		return trimmed, &GitError{Detail: gitDetailLine(trimmed), Err: err}
+	}
+	return trimmed, nil
+}
+
+// GitError pairs git's own message with the exit status exec reports.
+//
+// It is a POINTER type with Unwrap, so errors.As reaches it through any number
+// of fmt.Errorf("%w") wraps and errors.Is still matches the underlying
+// *exec.ExitError — callers that switch on exit status keep working.
+type GitError struct {
+	// Detail is ONE line of git's combined output (see gitDetailLine). One line
+	// on purpose: these strings reach an agent's context window, and a full
+	// multi-line rebase dump would be a regression in the other direction.
+	Detail string
+	Err    error
+}
+
+func (e *GitError) Error() string {
+	if e.Detail == "" {
+		return e.Err.Error()
+	}
+	return e.Err.Error() + ": " + e.Detail
+}
+
+// Unwrap exposes the underlying exec error so errors.Is/As continue down the
+// chain, and so a renderer that has already printed the raw output separately
+// can recover the bare cause instead of printing git's text twice.
+func (e *GitError) Unwrap() error { return e.Err }
+
+// gitDetailLine picks the single most diagnostic line out of git's combined
+// output. git marks its own failures with "fatal:" or "error:", so prefer the
+// first such line; absent one, the first non-empty line. Returns "" for empty
+// output, which makes GitError render exactly as the bare error did.
+func gitDetailLine(out string) string {
+	if out == "" {
+		return ""
+	}
+	lines := strings.Split(out, "\n")
+	for _, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(t, "fatal:") || strings.HasPrefix(t, "error:") {
+			return t
+		}
+	}
+	for _, ln := range lines {
+		if t := strings.TrimSpace(ln); t != "" {
+			return t
+		}
+	}
+	return ""
 }
