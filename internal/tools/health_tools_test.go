@@ -426,3 +426,77 @@ func TestCallerFrictionMessageSilentAtZero(t *testing.T) {
 		t.Errorf("friction line %q does not carry the count", msg)
 	}
 }
+
+// TestHealthToolAttributesWarningsToTheirProject drives the REAL vp_health
+// handler and reconstructs the iteration-263 question — "which project dominates
+// this window?" — from the tool's own output.
+//
+// That question is why this exists. vp_health is the health surface an agent
+// actually reaches; the raw log at palace/.local/vp.log is not reachable through
+// any tool an agent is likely to call. Summarize was already unmarshalling every
+// line into map[string]any and copying out only time/level/msg/fault, so the
+// project attribute sat in that map and was dropped — and the 263 attribution
+// work had to be done with `jq` over the raw log instead.
+//
+// Asserting through Handler rather than Summarize is deliberate: a summary that
+// carries the field proves nothing if the tool that hands it to an agent does
+// not. Mutation: stop copying the field in Summarize and this fails.
+func TestHealthToolAttributesWarningsToTheirProject(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	logDir := filepath.Join(vault.Root, "palace", ".local")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	var content string
+	add := func(line string) { content += line + "\n" }
+	for i := 0; i < 5; i++ {
+		add(fmt.Sprintf(`{"time":"%s","level":"WARN","msg":"search: index rebuild failed","project":"noisy-proj","fault":"internal"}`, now))
+	}
+	add(fmt.Sprintf(`{"time":"%s","level":"WARN","msg":"search: index rebuild failed","project":"quiet-proj","fault":"internal"}`, now))
+	// Most lines carry no project; the field must stay empty on those rather
+	// than being filled in with a neighbour's attribution.
+	add(fmt.Sprintf(`{"time":"%s","level":"WARN","msg":"mcp.makeHandler: handler error","fault":"internal"}`, now))
+
+	if err := os.WriteFile(filepath.Join(logDir, "vp.log"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := HealthTool(vault)
+	params, _ := json.Marshal(healthParams{Limit: 1000})
+	result, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	hr := result.(vplog.Summary)
+
+	byProject := map[string]int{}
+	unattributed := 0
+	for _, e := range hr.RecentWarns {
+		if e.Project == "" {
+			unattributed++
+			continue
+		}
+		byProject[e.Project]++
+	}
+	if byProject["noisy-proj"] != 5 {
+		t.Errorf("noisy-proj = %d, want 5 — vp_health cannot say WHICH project is failing, which is the gap that forced iteration 263 around this tool; byProject=%v", byProject["noisy-proj"], byProject)
+	}
+	if byProject["quiet-proj"] != 1 {
+		t.Errorf("quiet-proj = %d, want 1; byProject=%v", byProject["quiet-proj"], byProject)
+	}
+	if unattributed != 1 {
+		t.Errorf("unattributed = %d, want 1 — a line with no project attribute must stay empty", unattributed)
+	}
+
+	// The field must survive the tool's own JSON encoding, which is what a
+	// client actually receives.
+	blob, err := json.Marshal(hr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(blob), `"project":"noisy-proj"`) {
+		t.Errorf("encoded vp_health result does not carry the project attribution: %s", blob)
+	}
+}

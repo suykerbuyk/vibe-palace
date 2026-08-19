@@ -53,6 +53,30 @@ type Entry struct {
 	// such field. A "caller" line is a guard that WORKED — the tool correctly
 	// rejected bad input — and must not move Status off healthy; see Summarize.
 	Fault string `json:"fault,omitempty"`
+
+	// Project is the slog `project` attribute, empty on lines that carry none.
+	//
+	// It is here because WITHOUT it vp_health can say that something is failing
+	// but not WHICH PROJECT is failing, and vp_health is the only health surface
+	// an agent reaches — the raw log is not reachable through any tool an agent
+	// is likely to call. That gap has already been paid for once: the iteration
+	// 263 attribution work (establishing that 19 of 21 over-budget warnings were
+	// one project, climbing over six days) could not be done through vp_health
+	// and was done with `jq` over palace/.local/vp.log instead. An instrument
+	// that forces you around itself to answer the question it exists for is the
+	// defect class this field closes.
+	//
+	// 🔴 THIS IS AN ALLOW-LIST OF ONE, AND IT IS DELIBERATELY NOT A MAP.
+	// Summarize unmarshals every line into map[string]any, so EVERY attribute is
+	// already in hand and an open-ended Attrs bag would cost nothing to add and
+	// turn this summary into a log viewer. Each field admitted here must earn it
+	// by naming a question the summary cannot otherwise answer. Derive
+	// candidates from LIVE EMITTERS, never from the log: the log is append-only
+	// and outlives the code that wrote it, so it still carries `max_tokens`,
+	// `estimated_tokens` and `shed` on lines predating Phase 2 even though the
+	// rationing machinery that emitted them is deleted and no emitter can
+	// produce them again. Those three are fossils, not candidates.
+	Project string `json:"project,omitempty"`
 }
 
 // Summary is the health of the log: what has gone wrong recently, and how badly.
@@ -174,7 +198,8 @@ func Summarize(logPath string, hours, limit int) Summary {
 		}
 		msg, _ := raw["msg"].(string)
 		fault, _ := raw["fault"].(string)
-		inWindow = append(inWindow, Entry{Time: ts, Level: level, Msg: msg, Fault: fault})
+		project, _ := raw["project"].(string)
+		inWindow = append(inWindow, Entry{Time: ts, Level: level, Msg: msg, Fault: fault, Project: project})
 		s.WarnCounts[categorize(msg)]++
 		if fault == FaultCaller {
 			s.CallerFriction++

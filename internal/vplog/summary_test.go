@@ -4,6 +4,7 @@
 package vplog
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -228,5 +229,116 @@ func TestSummarizeCallerFaultDoesNotMaskARealError(t *testing.T) {
 	}
 	if e := s.RecentWarns; len(e) > 0 && e[0].Fault != FaultCaller {
 		t.Errorf("caller line surfaced in recent_warns without its Fault field: %+v", e[0])
+	}
+}
+
+// TestSummarizeCarriesTheProjectAttribution is the acceptance gate for
+// vp-health-drops-the-project-attribute-it-parses.
+//
+// Summarize already unmarshals every line into map[string]any, so `project` was
+// sitting in that map and being dropped while time/level/msg/fault were copied
+// out. The cost was paid once already: the iteration-263 attribution work — WHICH
+// project was responsible for a run of warnings — could not be done through
+// vp_health at all and was done with `jq` over the raw log, which no agent-facing
+// tool reaches.
+//
+// So this does not assert a struct tag. It reconstructs the 263 QUESTION —
+// "which project dominates this window?" — and answers it from Summarize output
+// alone. Mutation: stop copying the field and this fails.
+func TestSummarizeCarriesTheProjectAttribution(t *testing.T) {
+	ts := nowStamp()
+	var lines []string
+	// 19 of 21 from one project, the shape of the 263 finding.
+	for i := 0; i < 19; i++ {
+		lines = append(lines, fmt.Sprintf(
+			`{"time":%q,"level":"WARN","msg":"bootstrap: payload over budget","project":"noisy-proj","fault":"internal"}`, ts))
+	}
+	for i := 0; i < 2; i++ {
+		lines = append(lines, fmt.Sprintf(
+			`{"time":%q,"level":"WARN","msg":"bootstrap: payload over budget","project":"quiet-proj","fault":"internal"}`, ts))
+	}
+	// A line with no project at all: most log lines carry none, and the field
+	// must stay empty rather than inventing an attribution.
+	lines = append(lines, fmt.Sprintf(
+		`{"time":%q,"level":"WARN","msg":"mcp.makeHandler: handler error","fault":"internal"}`, ts))
+
+	s := Summarize(writeLog(t, lines), 24, 1000)
+
+	if len(s.RecentWarns) != 22 {
+		t.Fatalf("RecentWarns = %d entries, want 22", len(s.RecentWarns))
+	}
+
+	// The 263 question, answered from the summary and nothing else.
+	byProject := map[string]int{}
+	unattributed := 0
+	for _, e := range s.RecentWarns {
+		if e.Project == "" {
+			unattributed++
+			continue
+		}
+		byProject[e.Project]++
+	}
+	if byProject["noisy-proj"] != 19 {
+		t.Errorf("noisy-proj = %d, want 19 — vp_health cannot attribute warnings to a project, which is what forced iteration 263 to jq the raw log; byProject=%v", byProject["noisy-proj"], byProject)
+	}
+	if byProject["quiet-proj"] != 2 {
+		t.Errorf("quiet-proj = %d, want 2; byProject=%v", byProject["quiet-proj"], byProject)
+	}
+	if unattributed != 1 {
+		t.Errorf("unattributed = %d, want 1 — a line carrying no project must stay empty, never be given one", unattributed)
+	}
+}
+
+// TestSummarizeDoesNotResurrectTheRationingAttributes pins the allow-list's
+// BOUNDARY, which is the half a "does it surface project?" test cannot see.
+//
+// The task named four attributes to consider: project, max_tokens,
+// estimated_tokens and shed. Only project is live. The other three belonged to
+// the rationing machinery deleted in Phase 2 — no emitter can produce them
+// again — but the log is APPEND-ONLY and still carries them on old lines, so
+// deriving an allow-list from the log rather than from the emitters would
+// resurrect three ghosts. Entry must not grow to mirror them.
+func TestSummarizeDoesNotResurrectTheRationingAttributes(t *testing.T) {
+	ts := nowStamp()
+	// A pre-Phase-2 fossil line, exactly as such lines still appear in the log.
+	line := fmt.Sprintf(`{"time":%q,"level":"WARN","msg":"bootstrap: payload exceeds max_tokens after shedding everything sheddable","project":"fossil-proj","max_tokens":25000,"estimated_tokens":31000,"shed":true}`, ts)
+
+	s := Summarize(writeLog(t, []string{line}), 24, 20)
+	if len(s.RecentWarns) != 1 {
+		t.Fatalf("RecentWarns = %d, want 1", len(s.RecentWarns))
+	}
+	e := s.RecentWarns[0]
+	if e.Project != "fossil-proj" {
+		t.Errorf("Project = %q, want fossil-proj — the live attribute must survive even on a fossil line", e.Project)
+	}
+
+	// The Entry that reaches an agent must carry the allow-listed field and
+	// nothing else from the deleted machinery. Marshalling is the honest check:
+	// it is exactly what the tool hands out.
+	//
+	// Assert on the KEY SET, not on a substring of the blob. This fossil's own
+	// message is "payload exceeds max_tokens after shedding everything
+	// sheddable", so a substring check matches the MESSAGE and reports a field
+	// that is not there — a test failing for a reason unrelated to its claim.
+	blob, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(blob, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, ghost := range []string{"max_tokens", "estimated_tokens", "shed"} {
+		if _, present := got[ghost]; present {
+			t.Errorf("Entry carries a %q FIELD — that attribute belongs to machinery deleted in Phase 2 and only survives on old log lines; the allow-list is derived from live EMITTERS, not from the log: %s", ghost, blob)
+		}
+	}
+	// And the allow-list really is closed: only the four documented keys plus
+	// project may appear, so a later "just one more attribute" edit is caught.
+	allowed := map[string]bool{"time": true, "level": true, "msg": true, "fault": true, "project": true}
+	for k := range got {
+		if !allowed[k] {
+			t.Errorf("Entry grew an un-allow-listed field %q — Summarize holds EVERY attribute in its map[string]any, so growth here is free and turns the health summary into a log viewer: %s", k, blob)
+		}
 	}
 }
