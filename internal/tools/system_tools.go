@@ -15,6 +15,8 @@ import (
 	"sync"
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
+	"github.com/suykerbuyk/vibe-palace/internal/archive"
+	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
@@ -710,16 +712,104 @@ var refreshIndexSchema = json.RawMessage(`{
 func RefreshIndexTool(engine *search.Engine, vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name: "vp_refresh_index",
-		Description: "Re-embed a project's semantic search index from its existing drawer " +
-			"store and its iterations.md corpus, and report what was indexed " +
-			"(drawers, iteration_chunks, indexed, embedded, cache_hits, reaped) so a real " +
-			"rebuild is distinguishable from a no-op. It is a RE-EMBED, not a backfill: it " +
-			"cannot create drawers for a project that has none (those are written at capture " +
-			"time). Refuses when the project has no palace store AND nothing indexable, " +
-			"rather than reporting a success it did not achieve.",
+		Description: "Rebuild a project's semantic search index from every source it has: its " +
+			"existing drawer store, its iterations.md corpus, and a BACKFILL from any " +
+			"archived transcripts under Projects/<slug>/transcripts/. The archives are " +
+			"decompressed and fed to the same indexer capture uses, so a backfilled drawer " +
+			"is identical to one written at capture time — this is how a project with " +
+			"session history but no palace store becomes searchable. Idempotent: re-running " +
+			"re-reads the same archives without duplicating drawers. Reports what it did " +
+			"(drawers, iteration_chunks, indexed, embedded, cache_hits, reaped, plus " +
+			"archives_found, archives_ingested, archive_drawers and any archive_failures) so " +
+			"a real rebuild is distinguishable from a no-op. It cannot invent content that " +
+			"was never captured: it REFUSES when the project has no palace store, nothing " +
+			"indexable, AND no transcript archives, rather than reporting a success it did " +
+			"not achieve.",
 		Schema:  refreshIndexSchema,
 		Handler: refreshIndexHandler(engine, vault),
 	}
+}
+
+// backfillStats reports what a historical-archive ingest actually did.
+type backfillStats struct {
+	ArchivesFound    int
+	ArchivesIngested int
+	Drawers          int
+	Failures         []string
+}
+
+// backfillFromArchives turns a project's ARCHIVED TRANSCRIPTS into drawers.
+//
+// 🔴 WHY THIS IS IN THE HANDLER AND NOT IN Rebuild/ensureIndex. Piece 1 of this
+// task established that a judgement belongs to the caller that ASKED: ensureIndex
+// calls Rebuild before every cold search, so anything placed there runs because
+// somebody searched. A mass decompress-and-embed of every historical archive is
+// the last thing that should fire on a search. vp_refresh_index is the caller
+// that asked for an index; the ingest lives here and nowhere else.
+//
+// It adds no chunker, no classifier and no decompressor. archive.ListEntries
+// and archive.Extract already exist, and the text they yield is handed to the
+// SAME capture.Indexer.IndexTranscript that runs at capture time. That is not a
+// convenience — it is the correctness argument. The hook path reads the host
+// transcript file RAW (os.ReadFile -> string, internal/hook/hook.go) and passes
+// those bytes straight to IndexTranscript, and archive.Extract yields the same
+// original bytes (they are what source_sha256 covers). So a backfilled drawer is
+// byte-for-byte what capture-time indexing would have written. Introducing a
+// JSONL-to-prose transform here would have made backfilled content DIFFER from
+// captured content, which is a worse outcome than the noise it removes.
+//
+// Idempotent: storage.DrawerID is derived from the chunk content, and
+// AppendDrawer's "already exists" is skipped silently by IndexTranscript, so a
+// re-run adds nothing. Per-archive failures are collected and reported rather
+// than aborting the sweep — one unreadable archive must not strand the rest.
+func backfillFromArchives(ctx context.Context, engine *search.Engine, vault *storage.Vault, project string) (backfillStats, error) {
+	var bs backfillStats
+
+	entries, err := archive.ListEntries(vault.Root, project)
+	if err != nil {
+		return bs, fmt.Errorf("list transcript archives: %w", err)
+	}
+	bs.ArchivesFound = len(entries)
+	if len(entries) == 0 {
+		return bs, nil
+	}
+
+	cfg, err := vault.LoadConfig(project)
+	if err != nil {
+		return bs, fmt.Errorf("load config: %w", err)
+	}
+	// The engine is passed, so IndexTranscript both writes drawers AND indexes
+	// them — the backfill is self-sufficient rather than depending on the
+	// caller's Rebuild to make its work reachable.
+	//
+	// MEASURED, because the obvious worry here is wrong: Engine.IndexDrawers
+	// writes each vector to the embed cache, so the Rebuild that follows gets
+	// cache hits and embeds NOTHING extra. A counting embedder over a fixture
+	// archive reports 8 texts embedded during ingest and 8 in total after the
+	// rebuild. Passing nil to avoid a "double embed" would buy no work at all
+	// and would trade it for an ordering dependency in which backfilled drawers
+	// sit on disk unreachable by search if the Rebuild is ever reordered away.
+	indexer := capture.NewIndexer(vault, engine, engine.Embedder(), cfg)
+
+	for _, e := range entries {
+		var buf bytes.Buffer
+		if _, err := archive.Extract(e.ArchivePath, &buf); err != nil {
+			bs.Failures = append(bs.Failures, fmt.Sprintf("%s: extract: %v", filepath.Base(e.ArchivePath), err))
+			continue
+		}
+		sessionID := ""
+		if e.Manifest != nil {
+			sessionID = e.Manifest.SessionID
+		}
+		st, err := indexer.IndexTranscript(ctx, sessionID, project, buf.String())
+		if err != nil {
+			bs.Failures = append(bs.Failures, fmt.Sprintf("%s: index: %v", filepath.Base(e.ArchivePath), err))
+			continue
+		}
+		bs.ArchivesIngested++
+		bs.Drawers += st.Drawers
+	}
+	return bs, nil
 }
 
 func refreshIndexHandler(engine *search.Engine, vault *storage.Vault) mcp.HandlerFunc {
@@ -738,6 +828,16 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault) mcp.Handle
 		hadStore, err := vault.HasPalaceStore(p.Project)
 		if err != nil {
 			return nil, fmt.Errorf("check palace store: %w", err)
+		}
+
+		// Backfill BEFORE Rebuild. IndexTranscript writes drawers and indexes
+		// them, so running it first lets the subsequent Rebuild walk the new
+		// drawers too and leaves the on-disk corpus and the in-memory vector
+		// index describing the same thing. Running it after would report counts
+		// for a corpus the rebuild never saw.
+		bf, err := backfillFromArchives(ctx, engine, vault, p.Project)
+		if err != nil {
+			return nil, fmt.Errorf("backfill from archives: %w", err)
 		}
 
 		stats, err := engine.Rebuild(ctx, p.Project)
@@ -759,18 +859,20 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault) mcp.Handle
 		// real index from a rebuild that legitimately CREATES the store —
 		// refusing that would be this same defect inverted, reporting failure
 		// for work that was done.
-		if !hadStore && stats.Indexed == 0 {
+		if !hadStore && stats.Indexed == 0 && bf.ArchivesIngested == 0 {
 			return nil, fmt.Errorf(
 				"refresh index %q: nothing to refresh — no palace store at palace/%s/drawers, "+
-					"and no indexable content anywhere (0 drawers, 0 iteration chunks).\n"+
-					"This tool RE-EMBEDS an existing corpus; it is not a backfill and cannot "+
-					"create one from session history.\n"+
-					"Drawers are written at capture time (internal/capture indexes the "+
-					"transcript, never the session note), so a project captured without a "+
-					"transcript has none and there is no path that adds them after the fact.\n"+
+					"and no indexable content anywhere (0 drawers, 0 iteration chunks, "+
+					"%d transcript archives).\n"+
+					"This tool re-embeds an existing corpus and backfills from ARCHIVED "+
+					"TRANSCRIPTS under Projects/%s/transcripts/; it cannot invent content "+
+					"that was never captured.\n"+
+					"Drawers are otherwise written at capture time (internal/capture indexes "+
+					"the transcript, never the session note), so a project captured without a "+
+					"transcript AND without an archive has none.\n"+
 					"Next step: capture new work in this project normally, or delete the "+
 					"orphaned history. Do not re-run this expecting a different answer.",
-				p.Project, p.Project)
+				p.Project, p.Project, bf.ArchivesFound, p.Project)
 		}
 
 		return map[string]any{
@@ -783,6 +885,14 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault) mcp.Handle
 			"embedded":         stats.Embedded,
 			"cache_hits":       stats.CacheHits,
 			"reaped":           stats.Reaped,
+			// Backfill counts are reported separately from the rebuild's own
+			// counts: "I re-embedded 40 drawers" and "I created 12 of them from
+			// archives just now" are different claims, and collapsing them would
+			// hide whether the backfill did anything.
+			"archives_found":    bf.ArchivesFound,
+			"archives_ingested": bf.ArchivesIngested,
+			"archive_drawers":   bf.Drawers,
+			"archive_failures":  bf.Failures,
 		}, nil
 	}
 }
