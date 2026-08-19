@@ -82,8 +82,9 @@ func Write(vaultPath, relPath, content, expectedSha256 string) (WriteResult, err
 	}
 	sum := sha256.Sum256(data)
 	res := WriteResult{
-		Bytes:  int64(len(data)),
-		Sha256: hex.EncodeToString(sum[:]),
+		VaultBinding: bind(vaultPath),
+		Bytes:        int64(len(data)),
+		Sha256:       hex.EncodeToString(sum[:]),
 	}
 	if replacedSha != "" {
 		res.ReplacedSha256 = replacedSha
@@ -157,6 +158,7 @@ func Edit(vaultPath, relPath, oldString, newString string, replaceAll bool, expe
 	}
 	sum := sha256.Sum256(data)
 	return EditResult{
+		VaultBinding: bind(vaultPath),
 		Bytes:        int64(len(data)),
 		Sha256:       hex.EncodeToString(sum[:]),
 		Replacements: replacements,
@@ -211,7 +213,7 @@ func Delete(vaultPath, relPath, expectedSha256 string) (DeleteResult, error) {
 	if err := os.Remove(abs); err != nil {
 		return DeleteResult{}, fmt.Errorf("vaultfs: remove %s: %w", relPath, err)
 	}
-	return DeleteResult{Removed: true}, nil
+	return DeleteResult{VaultBinding: bind(vaultPath), Removed: true}, nil
 }
 
 // Move renames a file from fromPath to toPath under vaultPath.
@@ -269,5 +271,5 @@ func Move(vaultPath, fromPath, toPath string) (MoveResult, error) {
 	if err := os.Rename(srcAbs, dstAbs); err != nil {
 		return MoveResult{}, fmt.Errorf("vaultfs: rename %s -> %s: %w", fromPath, toPath, err)
 	}
-	return MoveResult{Moved: true}, nil
+	return MoveResult{VaultBinding: bind(vaultPath), Moved: true}, nil
 }

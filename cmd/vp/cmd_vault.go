@@ -575,11 +575,32 @@ func cmdVaultStatus() *cli.Command {
 }
 
 func vaultRoot() (string, error) {
-	v, err := storage.OpenVaultGlobal()
-	if err != nil {
-		return "", err
-	}
-	return v.Root, nil
+	root, _, err := vaultRootWithSource()
+	return root, err
+}
+
+// vaultRootWithSource resolves the GLOBAL vault root and the source that bound
+// it, in ONE call, for callers that report which vault they acted on.
+//
+// It replaces an OpenVaultGlobal -> OpenVault("") -> VaultRoot("") chain that
+// never computed a source at all. ResolveGlobalVaultPath reaches the same file
+// by the same route — VaultConfigFilePath() then VaultRoot on it — so the root
+// is unchanged and the deliberate cwd-ignoring binding this family relies on
+// (TestOpenVaultGlobal_IgnoresCwdOverride) is untouched. The only difference is
+// that the source now survives the call instead of being unavailable.
+func vaultRootWithSource() (root, source string, err error) {
+	return storage.ResolveGlobalVaultPath()
+}
+
+// reportVaultBinding prints which vault a file operation acted on, to STDERR.
+//
+// Stderr, not stdout, because `vp vault read` writes the file's bytes to stdout
+// and a binding line there would corrupt every redirect and pipe. The operator
+// at a terminal still sees it; a script reading stdout is unaffected. The --json
+// surfaces carry the same two fields in band.
+func reportVaultBinding(b vaultfs.VaultBinding) {
+	fmt.Fprintf(os.Stderr, "vault_path = %s\n", b.VaultPath)
+	fmt.Fprintf(os.Stderr, "vault_path source = %s\n", b.VaultPathSource)
 }
 
 // gitEnabledGuard wraps vaultRoot and checks that git_enabled is true.
@@ -750,14 +771,14 @@ func printVaultJSON(res any) int {
 
 var vaultReadFlags = []cli.FlagDef{
 	{Name: "--max-bytes", Arg: "N", Help: "Read cap in bytes (default 1 MiB, max 10 MiB)"},
-	{Name: "--json", Help: "Output JSON (content, bytes, sha256, mtime)"},
+	{Name: "--json", Help: "Output JSON (content, bytes, sha256, mtime, vault_path, vault_path_source)"},
 }
 
 func cmdVaultRead() *cli.Command {
 	return &cli.Command{
 		Name:        "vault read",
 		Synopsis:    "vp vault read <path> [--max-bytes N] [--json]",
-		Description: "Read a vault-relative file. Prints content; --json adds size, sha256, mtime.",
+		Description: "Read a vault-relative file. Prints content; --json adds size, sha256, mtime. Binds the GLOBAL vault_path, not a cwd .vibe-palace.toml override; the vault acted on is reported on stderr and in --json.",
 		Flags:       vaultReadFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp vault read Projects/foo/agentctx/resume.md", Comment: "Print file content"},
@@ -774,7 +795,7 @@ func cmdVaultRead() *cli.Command {
 				fmt.Fprintln(os.Stderr, "vp vault read: path argument required")
 				return cli.ExitUser
 			}
-			root, err := vaultRoot()
+			root, vaultSource, err := vaultRootWithSource()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault read: %v\n", err)
 				return cli.ExitUser
@@ -784,9 +805,11 @@ func cmdVaultRead() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault read: %v\n", err)
 				return cli.ExitSystem
 			}
+			res.VaultPathSource = vaultSource
 			if fv.Bool("--json") {
 				return printVaultJSON(res)
 			}
+			reportVaultBinding(res.VaultBinding)
 			fmt.Print(res.Content)
 			return cli.ExitOK
 		},
@@ -796,14 +819,14 @@ func cmdVaultRead() *cli.Command {
 var vaultWriteFlags = []cli.FlagDef{
 	{Name: "--content", Arg: "STR", Help: "File content (if omitted, read from stdin)"},
 	{Name: "--expected-sha256", Arg: "SHA", Help: "Compare-and-set guard: current SHA-256 must match"},
-	{Name: "--json", Help: "Output JSON result (bytes, sha256, replaced_sha256)"},
+	{Name: "--json", Help: "Output JSON result (bytes, sha256, replaced_sha256, vault_path, vault_path_source)"},
 }
 
 func cmdVaultWrite() *cli.Command {
 	return &cli.Command{
 		Name:        "vault write",
 		Synopsis:    "vp vault write <path> [--content STR | <stdin>] [--expected-sha256 SHA] [--json]",
-		Description: "Atomically write a vault-relative file. Content comes from --content or stdin. Refuses '.git' paths.",
+		Description: "Atomically write a vault-relative file. Content comes from --content or stdin. Refuses '.git' paths. Binds the GLOBAL vault_path, not a cwd .vibe-palace.toml override; the vault acted on is reported on stderr and in --json.",
 		Flags:       vaultWriteFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp vault write notes.md --content 'hello'", Comment: "Write inline content"},
@@ -829,7 +852,7 @@ func cmdVaultWrite() *cli.Command {
 				}
 				content = string(data)
 			}
-			root, err := vaultRoot()
+			root, vaultSource, err := vaultRootWithSource()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault write: %v\n", err)
 				return cli.ExitUser
@@ -839,9 +862,11 @@ func cmdVaultWrite() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault write: %v\n", err)
 				return cli.ExitSystem
 			}
+			res.VaultPathSource = vaultSource
 			if fv.Bool("--json") {
 				return printVaultJSON(res)
 			}
+			reportVaultBinding(res.VaultBinding)
 			fmt.Printf("wrote %s (%d bytes, sha256 %s)\n", pos[0], res.Bytes, res.Sha256)
 			return cli.ExitOK
 		},
@@ -853,14 +878,14 @@ var vaultEditFlags = []cli.FlagDef{
 	{Name: "--new", Arg: "STR", Help: "Replacement string (may be empty)"},
 	{Name: "--replace-all", Help: "Replace all occurrences (default: reject ambiguous multi-match)"},
 	{Name: "--expected-sha256", Arg: "SHA", Help: "Compare-and-set guard"},
-	{Name: "--json", Help: "Output JSON result (bytes, sha256, replacements)"},
+	{Name: "--json", Help: "Output JSON result (bytes, sha256, replacements, vault_path, vault_path_source)"},
 }
 
 func cmdVaultEdit() *cli.Command {
 	return &cli.Command{
 		Name:        "vault edit",
 		Synopsis:    "vp vault edit <path> --old STR --new STR [--replace-all] [--expected-sha256 SHA] [--json]",
-		Description: "Replace old_string with new_string in a vault-relative file. Multi-occurrence requires --replace-all.",
+		Description: "Replace old_string with new_string in a vault-relative file. Multi-occurrence requires --replace-all. Binds the GLOBAL vault_path, not a cwd .vibe-palace.toml override; the vault acted on is reported on stderr and in --json.",
 		Flags:       vaultEditFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp vault edit notes.md --old foo --new bar", Comment: "Replace a single occurrence"},
@@ -881,7 +906,7 @@ func cmdVaultEdit() *cli.Command {
 				fmt.Fprintln(os.Stderr, "vp vault edit: --old is required")
 				return cli.ExitUser
 			}
-			root, err := vaultRoot()
+			root, vaultSource, err := vaultRootWithSource()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault edit: %v\n", err)
 				return cli.ExitUser
@@ -891,9 +916,11 @@ func cmdVaultEdit() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault edit: %v\n", err)
 				return cli.ExitSystem
 			}
+			res.VaultPathSource = vaultSource
 			if fv.Bool("--json") {
 				return printVaultJSON(res)
 			}
+			reportVaultBinding(res.VaultBinding)
 			fmt.Printf("edited %s (%d replacement(s), %d bytes, sha256 %s)\n", pos[0], res.Replacements, res.Bytes, res.Sha256)
 			return cli.ExitOK
 		},
@@ -909,7 +936,7 @@ func cmdVaultDelete() *cli.Command {
 	return &cli.Command{
 		Name:        "vault delete",
 		Synopsis:    "vp vault delete <path> [--expected-sha256 SHA] [--json]",
-		Description: "Delete a vault-relative file (file-only). Refuses directories and '.git' paths.",
+		Description: "Delete a vault-relative file (file-only). Refuses directories and '.git' paths. Binds the GLOBAL vault_path, not a cwd .vibe-palace.toml override; the vault acted on is reported on stderr and in --json.",
 		Flags:       vaultDeleteFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp vault delete stale.md", Comment: "Delete a file"},
@@ -925,7 +952,7 @@ func cmdVaultDelete() *cli.Command {
 				fmt.Fprintln(os.Stderr, "vp vault delete: path argument required")
 				return cli.ExitUser
 			}
-			root, err := vaultRoot()
+			root, vaultSource, err := vaultRootWithSource()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault delete: %v\n", err)
 				return cli.ExitUser
@@ -935,9 +962,11 @@ func cmdVaultDelete() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault delete: %v\n", err)
 				return cli.ExitSystem
 			}
+			res.VaultPathSource = vaultSource
 			if fv.Bool("--json") {
 				return printVaultJSON(res)
 			}
+			reportVaultBinding(res.VaultBinding)
 			fmt.Printf("removed %s\n", pos[0])
 			return cli.ExitOK
 		},
@@ -952,7 +981,7 @@ func cmdVaultMove() *cli.Command {
 	return &cli.Command{
 		Name:        "vault move",
 		Synopsis:    "vp vault move <from> <to> [--json]",
-		Description: "Rename a vault-relative file. Refuses to overwrite an existing destination and '.git' paths.",
+		Description: "Rename a vault-relative file. Refuses to overwrite an existing destination and '.git' paths. Binds the GLOBAL vault_path, not a cwd .vibe-palace.toml override; the vault acted on is reported on stderr and in --json.",
 		Flags:       vaultMoveFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp vault move old.md new.md", Comment: "Rename a file"},
@@ -968,7 +997,7 @@ func cmdVaultMove() *cli.Command {
 				fmt.Fprintln(os.Stderr, "vp vault move: <from> and <to> arguments required")
 				return cli.ExitUser
 			}
-			root, err := vaultRoot()
+			root, vaultSource, err := vaultRootWithSource()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault move: %v\n", err)
 				return cli.ExitUser
@@ -978,9 +1007,11 @@ func cmdVaultMove() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault move: %v\n", err)
 				return cli.ExitSystem
 			}
+			res.VaultPathSource = vaultSource
 			if fv.Bool("--json") {
 				return printVaultJSON(res)
 			}
+			reportVaultBinding(res.VaultBinding)
 			fmt.Printf("moved %s -> %s\n", pos[0], pos[1])
 			return cli.ExitOK
 		},
@@ -988,14 +1019,14 @@ func cmdVaultMove() *cli.Command {
 }
 
 var vaultExistsFlags = []cli.FlagDef{
-	{Name: "--json", Help: "Output JSON result (exists, type)"},
+	{Name: "--json", Help: "Output JSON result (exists, type, vault_path, vault_path_source)"},
 }
 
 func cmdVaultExists() *cli.Command {
 	return &cli.Command{
 		Name:        "vault exists",
 		Synopsis:    "vp vault exists <path> [--json]",
-		Description: "Check whether a vault-relative path exists. Prints exists/type.",
+		Description: "Check whether a vault-relative path exists. Prints exists/type. Binds the GLOBAL vault_path, not a cwd .vibe-palace.toml override; the vault acted on is reported on stderr and in --json.",
 		Flags:       vaultExistsFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp vault exists notes.md", Comment: "Report existence and type"},
@@ -1011,7 +1042,7 @@ func cmdVaultExists() *cli.Command {
 				fmt.Fprintln(os.Stderr, "vp vault exists: path argument required")
 				return cli.ExitUser
 			}
-			root, err := vaultRoot()
+			root, vaultSource, err := vaultRootWithSource()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault exists: %v\n", err)
 				return cli.ExitUser
@@ -1021,9 +1052,11 @@ func cmdVaultExists() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault exists: %v\n", err)
 				return cli.ExitSystem
 			}
+			res.VaultPathSource = vaultSource
 			if fv.Bool("--json") {
 				return printVaultJSON(res)
 			}
+			reportVaultBinding(res.VaultBinding)
 			if res.Exists {
 				fmt.Printf("exists: %s\n", res.Type)
 			} else {
@@ -1042,7 +1075,7 @@ func cmdVaultSha256() *cli.Command {
 	return &cli.Command{
 		Name:        "vault sha256",
 		Synopsis:    "vp vault sha256 <path> [--json]",
-		Description: "Compute the SHA-256 of a vault-relative file. Prints the hex digest.",
+		Description: "Compute the SHA-256 of a vault-relative file. Prints the hex digest. Binds the GLOBAL vault_path, not a cwd .vibe-palace.toml override; the vault acted on is reported on stderr and in --json.",
 		Flags:       vaultSha256Flags,
 		Examples: []cli.Example{
 			{Cmd: "vp vault sha256 notes.md", Comment: "Print the file's SHA-256"},
@@ -1058,7 +1091,7 @@ func cmdVaultSha256() *cli.Command {
 				fmt.Fprintln(os.Stderr, "vp vault sha256: path argument required")
 				return cli.ExitUser
 			}
-			root, err := vaultRoot()
+			root, vaultSource, err := vaultRootWithSource()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault sha256: %v\n", err)
 				return cli.ExitUser
@@ -1068,9 +1101,11 @@ func cmdVaultSha256() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault sha256: %v\n", err)
 				return cli.ExitSystem
 			}
+			res.VaultPathSource = vaultSource
 			if fv.Bool("--json") {
 				return printVaultJSON(res)
 			}
+			reportVaultBinding(res.VaultBinding)
 			fmt.Println(res.Sha256)
 			return cli.ExitOK
 		},

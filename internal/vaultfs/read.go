@@ -67,10 +67,11 @@ func Read(vaultPath, relPath string, maxBytes int64) (Content, error) {
 	}
 	sum := sha256.Sum256(data)
 	return Content{
-		Content: string(data),
-		Bytes:   info.Size(),
-		Sha256:  hex.EncodeToString(sum[:]),
-		Mtime:   info.ModTime(),
+		VaultBinding: bind(vaultPath),
+		Content:      string(data),
+		Bytes:        info.Size(),
+		Sha256:       hex.EncodeToString(sum[:]),
+		Mtime:        info.ModTime(),
 	}, nil
 }
 
@@ -153,7 +154,7 @@ func Exists(vaultPath, relPath string) (Existence, error) {
 
 	if _, lerr := os.Lstat(joined); lerr != nil {
 		if errors.Is(lerr, fs.ErrNotExist) {
-			return Existence{Exists: false}, nil
+			return Existence{VaultBinding: bind(vaultPath), Exists: false}, nil
 		}
 		return Existence{}, fmt.Errorf("vaultfs: lstat %s: %w", relPath, lerr)
 	}
@@ -161,21 +162,21 @@ func Exists(vaultPath, relPath string) (Existence, error) {
 	real, err := filepath.EvalSymlinks(joined)
 	if err != nil {
 		// Dangling symlink (or other resolution failure): not reachable.
-		return Existence{Exists: false}, nil
+		return Existence{VaultBinding: bind(vaultPath), Exists: false}, nil
 	}
 	if !pathIsUnder(real, absVault) {
 		// Symlink escapes vault: from the vault's perspective, it's not
 		// addressable.
-		return Existence{Exists: false}, nil
+		return Existence{VaultBinding: bind(vaultPath), Exists: false}, nil
 	}
 	info, err := os.Stat(real)
 	if err != nil {
-		return Existence{Exists: false}, nil
+		return Existence{VaultBinding: bind(vaultPath), Exists: false}, nil
 	}
 	if info.IsDir() {
-		return Existence{Exists: true, Type: "dir"}, nil
+		return Existence{VaultBinding: bind(vaultPath), Exists: true, Type: "dir"}, nil
 	}
-	return Existence{Exists: true, Type: "file"}, nil
+	return Existence{VaultBinding: bind(vaultPath), Exists: true, Type: "file"}, nil
 }
 
 // Sha256 returns the SHA-256, size, and mtime of the file at relPath under
@@ -203,8 +204,9 @@ func Sha256(vaultPath, relPath string) (Sha256Result, error) {
 	}
 	sum := sha256.Sum256(data)
 	return Sha256Result{
-		Sha256: hex.EncodeToString(sum[:]),
-		Bytes:  info.Size(),
-		Mtime:  info.ModTime(),
+		VaultBinding: bind(vaultPath),
+		Sha256:       hex.EncodeToString(sum[:]),
+		Bytes:        info.Size(),
+		Mtime:        info.ModTime(),
 	}, nil
 }

@@ -42,8 +42,38 @@ var (
 	ErrShaConflict = errors.New("vaultfs: sha256 conflict (compare-and-set failed)")
 )
 
+// SourceUnknown is what a result reports when nobody told it where its vault
+// binding came from. ADR-006: absence is not a value — a result that cannot
+// name its source says so, rather than omitting the field (indistinguishable
+// from "not applicable") or guessing (a silent lie wearing the face of a
+// measurement).
+const SourceUnknown = "unknown"
+
+// VaultBinding names the vault a file operation acted on. It is embedded in
+// every file-CRUD result, so the answer to "which vault did this touch?" ships
+// with the bytes instead of requiring a `find` or a cross-check against another
+// command.
+//
+// VaultPath is set by vaultfs itself from the root it was handed, so it is the
+// vault the operation ACTUALLY used, by construction — it cannot drift from the
+// bytes it describes. VaultPathSource is a fact about how the CALLER resolved
+// that root, which vaultfs cannot know, so the caller stamps it; unstamped, it
+// reads SourceUnknown.
+//
+// Embedded, so the JSON stays flat: {"bytes":…,"vault_path":…}.
+type VaultBinding struct {
+	VaultPath       string `json:"vault_path"`
+	VaultPathSource string `json:"vault_path_source"`
+}
+
+// bind builds the binding for a result produced against vaultPath.
+func bind(vaultPath string) VaultBinding {
+	return VaultBinding{VaultPath: vaultPath, VaultPathSource: SourceUnknown}
+}
+
 // Content is the result of a successful Read.
 type Content struct {
+	VaultBinding
 	Content string    `json:"content"`
 	Bytes   int64     `json:"bytes"`
 	Sha256  string    `json:"sha256"`
@@ -60,12 +90,14 @@ type Entry struct {
 
 // Existence is the result of an Exists query.
 type Existence struct {
+	VaultBinding
 	Exists bool   `json:"exists"`
 	Type   string `json:"type"` // "file", "dir", or "" when not exists
 }
 
 // WriteResult is returned by Write.
 type WriteResult struct {
+	VaultBinding
 	Bytes          int64  `json:"bytes"`
 	Sha256         string `json:"sha256"`
 	ReplacedSha256 string `json:"replaced_sha256,omitempty"`
@@ -73,6 +105,7 @@ type WriteResult struct {
 
 // EditResult is returned by Edit.
 type EditResult struct {
+	VaultBinding
 	Bytes        int64  `json:"bytes"`
 	Sha256       string `json:"sha256"`
 	Replacements int    `json:"replacements"`
@@ -80,16 +113,19 @@ type EditResult struct {
 
 // DeleteResult is returned by Delete.
 type DeleteResult struct {
+	VaultBinding
 	Removed bool `json:"removed"`
 }
 
 // MoveResult is returned by Move.
 type MoveResult struct {
+	VaultBinding
 	Moved bool `json:"moved"`
 }
 
 // Sha256Result is returned by Sha256.
 type Sha256Result struct {
+	VaultBinding
 	Sha256 string    `json:"sha256"`
 	Bytes  int64     `json:"bytes"`
 	Mtime  time.Time `json:"mtime"`
