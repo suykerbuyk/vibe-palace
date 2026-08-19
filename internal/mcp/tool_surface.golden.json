@@ -19,7 +19,7 @@
     {
       "name": "vp_audit_vault",
       "mutating": true,
-      "schema_sha256": "b8e4ba413012992be864261c30acbe747701aa75d1b145ffaad743dc7e681ef1"
+      "schema_sha256": "99d747f74d37c4ff69cd3058d2b354b8b55c819a04b5ac5c24889c8ef2dc9bcc"
     },
     {
       "name": "vp_bootstrap_context",

@@ -9,12 +9,16 @@ import (
 )
 
 // 🔴 TestRender_UndatedReportDoesNotFakeADate pins a defect found on the tool's FIRST
-// real MCP invocation.
+// real MCP invocation: Render emitted the date field even when handed no date, so the
+// report opened with `date:` followed by nothing and a title ending in a bare em-dash —
+// a document ASSERTING it has a date and then not having one.
 //
-// vp_audit_vault renders inline with no date — deliberately, because the server has no
-// business inventing a date the caller already knows. But Render emitted the field
-// anyway, so the report opened with `date:` followed by nothing and a title ending in a
-// bare em-dash: a document ASSERTING it has a date and then not having one.
+// What is pinned here is the HOLLOW-FIELD rule, and only that. The reason Render used to
+// be handed an empty date — that the server should not invent one the caller knows — was
+// WITHDRAWN by the operator on 2026-08-19: the writer owns the calendar day and clients
+// do not send one (see vaultaudit.WriterCalendarDay). No shipping caller passes "" today.
+// The rule survives the reversal because it is about rendering, not about authority: a
+// function handed no date must say so rather than fake the field.
 //
 // A hollow field is worse than an absent one, because it looks like data — a reader
 // trusts it, and a parser reads an empty string as a value. Shipping one from THIS

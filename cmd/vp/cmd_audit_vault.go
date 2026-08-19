@@ -58,8 +58,13 @@ func cmdAuditVault() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp audit vault: %v\n", err)
 				return cli.ExitSystem
 			}
+			// The WRITER stamps the calendar day, through the same helper the MCP
+			// handler uses. This used to be an inline time.Now().Format("2006-01-02")
+			// — process-local, and a second authority that disagreed with the MCP
+			// surface for six hours every evening. Two format sites with nothing
+			// holding them together WAS the bug; there is one now.
 			return runAuditVault(vault, fv.Bool("--write"), fv.Bool("--accept"),
-				time.Now().Format("2006-01-02"), os.Stdout)
+				vaultaudit.WriterCalendarDay(time.Now()), os.Stdout)
 		},
 	}
 }

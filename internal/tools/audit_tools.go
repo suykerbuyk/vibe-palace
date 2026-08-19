@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
@@ -34,7 +35,7 @@ var auditVaultSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
 		"write": {"type": "boolean", "description": "Write the report to Audits/<date>-vault-audit.md (vault tidy sweeps it). Default false: the report is returned inline."},
-		"date": {"type": "string", "description": "Report date, YYYY-MM-DD. The SERVER has no business inventing this from its own clock when the agent knows the session date; required when write is true."}
+		"date": {"type": "string", "description": "IGNORED. Accepted for wire compatibility and never used. The WRITER stamps the report's calendar day from its own clock, in the vault's timezone (UTC until that config exists) — a client-supplied date is a second clock, and a client does not choose the calendar day of a transaction. Supplying this changes nothing; omit it."}
 	},
 	"required": []
 }`)
@@ -80,26 +81,27 @@ func auditVaultHandler(vault *storage.Vault) mcp.HandlerFunc {
 			"dimensions": summarize(report),
 		}
 
+		// 🔴 THE WRITER STAMPS THE DAY. p.Date is parsed off the wire and then
+		// deliberately DISCARDED — see WriterCalendarDay for why a client clock is not
+		// an authority, and TestAuditVault_ClientDateDoesNotWin for the pin. Read once,
+		// here, so the filename and the date rendered inside the file cannot disagree.
+		day := vaultaudit.WriterCalendarDay(time.Now())
+
 		if !p.Write {
-			out["report"] = report.Render(p.Date, vault.Root)
+			// The inline render carries the same writer day as a written one. It is
+			// never persisted, so it cannot touch the staleness anchor: CheckStaleness
+			// globs Audits/*-vault-audit.md off disk, and an inline verdict never lands
+			// there.
+			out["report"] = report.Render(day, vault.Root)
 			return out, nil
 		}
 
-		// The date is REQUIRED to write, and the server does not fall back to its own
-		// clock. A report filename and the date stamped inside it must agree, and a
-		// server that guesses can disagree with the agent that asked — across midnight,
-		// or across a timezone. Ask, do not invent.
-		if p.Date == "" {
-			return nil, fmt.Errorf("date is required when write is true (YYYY-MM-DD): the server will " +
-				"not invent a date the caller already knows")
-		}
-
-		rel := vaultaudit.ReportRelPath(p.Date)
+		rel := vaultaudit.ReportRelPath(day)
 		abs := filepath.Join(vault.Root, filepath.FromSlash(rel))
 		// atomicfile.Write with the REAL vault root, so the surface stamp fires. Pass
 		// anything else and the write silently skips the stamp — which is how the vault
 		// loses its version floor (see private-atomicwrite-copies-skip-surface-stamp).
-		if err := atomicfile.Write(vault.Root, abs, []byte(report.Render(p.Date, vault.Root))); err != nil {
+		if err := atomicfile.Write(vault.Root, abs, []byte(report.Render(day, vault.Root))); err != nil {
 			return nil, fmt.Errorf("write report: %w", err)
 		}
 		out["report_path"] = rel

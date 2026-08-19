@@ -32,11 +32,15 @@ func ReportRelPath(date string) string { return "Audits/" + date + "-vault-audit
 //
 // The date is passed in rather than read from the clock: a caller that stamps the
 // report and a caller that names the file must agree, and a function that reads the
-// clock twice can disagree with itself across midnight.
+// clock twice can disagree with itself across midnight. Both shipping callers get it
+// from WriterCalendarDay — see that function for why the WRITER owns the day and a
+// client-supplied date is not an authority.
 //
-// An EMPTY date is legitimate and renders as an UNDATED report — it is what the MCP
-// tool produces when it is asked for an inline verdict rather than a file, since the
-// server has no business inventing a date the caller already knows.
+// An EMPTY date renders as an UNDATED report. No shipping caller passes one any more:
+// the MCP handler and the CLI both stamp the writer's calendar day, on the inline path
+// as well as the written one. The undated branch survives because it is exercised
+// directly by tests, and because a rendering function that silently invented a date
+// when handed none would be the defect this package exists to catch.
 //
 // It must NOT render as an empty field. The first MCP run of this tool emitted
 // `date:` with nothing after it and a title ending in a bare em-dash: a document
