@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
+	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
@@ -785,8 +786,9 @@ func joinExamples(xs []string) string {
 func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault, engine *search.Engine, allowCwdDefault bool) mcp.HandlerFunc {
 	return func(_ context.Context, params json.RawMessage) (any, error) {
 		var p bootstrapParams
+		// Malformed params are the caller's JSON, not our state.
 		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, err
+			return nil, apperr.Caller(err)
 		}
 		projectSlug, err := resolveBootstrapProject(p.Project, vault, allowCwdDefault)
 		if err != nil {
@@ -797,7 +799,7 @@ func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault, engine *se
 		// ResolveURI / vp_read_resource. Reject a non-slug project here so we
 		// never hand out an URI the read path will refuse.
 		if err := slug.Validate(projectSlug); err != nil {
-			return nil, fmt.Errorf("invalid project %q: %w", projectSlug, err)
+			return nil, apperr.Caller(fmt.Errorf("invalid project %q: %w", projectSlug, err))
 		}
 		// allowCwdDefault is the transport bit, not just a defaulting knob: it is
 		// true exactly on stdio and false exactly on `vp mcp serve`, and both
@@ -823,18 +825,24 @@ func resolveBootstrapProject(explicit string, vault *storage.Vault, allowCwdDefa
 		return s, nil
 	}
 	if !allowCwdDefault {
-		return "", fmt.Errorf("project is required: this transport does not default project from cwd (multiplexed HTTP serve) — pass project explicitly or call vp_list_projects")
+		return "", apperr.Caller(fmt.Errorf("project is required: this transport does not default project from cwd (multiplexed HTTP serve) — pass project explicitly or call vp_list_projects"))
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
+		// DELIBERATELY NOT apperr.Caller, unlike its three siblings: os.Getwd
+		// fails when the server process's own working directory has been removed
+		// or become unreadable. That is an I/O fault in vp's environment, not a
+		// caller supplying bad input, and amber is the correct health signal for
+		// it — classifying it caller would hide a genuinely broken process
+		// behind the friction counter.
 		return "", fmt.Errorf("project is required: cannot resolve cwd for defaulting (%v) — pass project explicitly or call vp_list_projects", err)
 	}
 	detected, err := project.DetectProjectHighConfidence(cwd)
 	if err != nil {
-		return "", fmt.Errorf("project is required: %w", err)
+		return "", apperr.Caller(fmt.Errorf("project is required: %w", err))
 	}
 	if !vaultProjectDirExists(vault, detected) {
-		return "", fmt.Errorf("project is required: detected %q from cwd but Projects/%s/ is absent from the vault — pass project explicitly, run vp init, or call vp_list_projects", detected, detected)
+		return "", apperr.Caller(fmt.Errorf("project is required: detected %q from cwd but Projects/%s/ is absent from the vault — pass project explicitly, run vp init, or call vp_list_projects", detected, detected))
 	}
 	return detected, nil
 }

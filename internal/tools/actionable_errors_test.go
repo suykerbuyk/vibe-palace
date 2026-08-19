@@ -6,6 +6,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -147,5 +149,140 @@ func TestActionableErrors_SkillUnknownName(t *testing.T) {
 	}
 	if !apperr.IsCaller(err) {
 		t.Errorf("unknown skill should be apperr.Caller; got %T: %v", err, err)
+	}
+}
+
+// TestActionableErrors_BootstrapProjectRefusalsAreCallerFault closes the gap
+// de331dd left on the highest-traffic tool on the surface: vp_bootstrap_context
+// fires at every session start on every host, and its project refusals were
+// returned unwrapped, so makeHandler stamped fault=internal and vp_health went
+// amber for guards that worked.
+//
+// 🔴 THE TRAP THIS TEST IS BUILT TO AVOID. {} on BootstrapContextToolExplicit is
+// refused by the schema (required:["project"]) BEFORE any handler runs, and
+// makeHandler ALREADY stamps fault=caller on schema rejection
+// (internal/mcp/tools.go validation branch). So a Registry.Dispatch of {}
+// asserting IsCaller passes with every apperr.Caller in context_tools.go
+// deleted. That is precisely the fake-pin shape this epic just retired on
+// serve-wiring-test-passes-for-the-wrong-reason.
+//
+// So every case here calls tool.Handler DIRECTLY, bypassing schema validation,
+// and asserts the error is NOT an *mcp.ValidationError — mechanizing "we
+// actually reached resolveBootstrapProject" instead of trusting the input shape
+// to get us there.
+func TestActionableErrors_BootstrapProjectRefusalsAreCallerFault(t *testing.T) {
+	vault, resolver := testSetup(t)
+
+	// A marked cwd naming a project the vault does NOT have, so the stdio
+	// tool's cwd-default path gets past detection and is refused by the
+	// exists-arm — the live amber-wash sighting on this task.
+	const absentSlug = "amber-wash-absent"
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, project.ConfigFileName),
+		[]byte("[project]\nname = \""+absentSlug+"\"\n"), 0o644); err != nil {
+		t.Fatalf("write project marker: %v", err)
+	}
+	t.Chdir(dir)
+
+	stdio := BootstrapContextTool(resolver, vault, nil)
+	explicit := BootstrapContextToolExplicit(resolver, vault, nil)
+
+	// Guard the fixture itself: if the vault DID carry Projects/<absentSlug>/,
+	// the exists-arm case below would sail through to a successful bootstrap
+	// and silently stop testing anything.
+	if dirPath, err := vault.ProjectDir(absentSlug); err != nil {
+		t.Fatalf("vault.ProjectDir(%q): %v", absentSlug, err)
+	} else if _, err := os.Stat(dirPath); err == nil {
+		t.Fatalf("fixture vault unexpectedly has Projects/%s/ — the exists-arm case would not fire", absentSlug)
+	}
+
+	cases := []struct {
+		name   string
+		tool   mcp.Tool
+		params string
+		// substrings assert the message stayed actionable: apperr.Caller is
+		// transparent, and this task must not weaken the text de331dd wrote.
+		substrings []string
+	}{
+		{
+			name:       "transport_refusal",
+			tool:       explicit,
+			params:     `{"project":""}`,
+			substrings: []string{"project is required", "this transport does not default project from cwd"},
+		},
+		{
+			name:       "exists_arm",
+			tool:       stdio,
+			params:     `{"project":""}`,
+			substrings: []string{"project is required", absentSlug, "absent from the vault"},
+		},
+		{
+			name:       "invalid_slug",
+			tool:       stdio,
+			params:     `{"project":"Not A Slug"}`,
+			substrings: []string{"invalid project"},
+		},
+		{
+			name:       "malformed_params",
+			tool:       stdio,
+			params:     `{"project":`,
+			substrings: []string{},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := tc.tool.Handler(context.Background(), json.RawMessage(tc.params))
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			// Anti-trap control: prove we are classifying a HANDLER error. A
+			// ValidationError here would mean the schema refused first and this
+			// case proves nothing about apperr.Caller.
+			var ve *mcp.ValidationError
+			if errors.As(err, &ve) {
+				t.Fatalf("case reached schema validation, not the handler: %v", err)
+			}
+			for _, sub := range tc.substrings {
+				if !strings.Contains(err.Error(), sub) {
+					t.Errorf("error %q missing substring %q", err.Error(), sub)
+				}
+			}
+			if !apperr.IsCaller(err) {
+				t.Errorf("refusal must be apperr.Caller (fault=caller), else vp_health ambers for a guard that worked; got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+// TestBootstrapCwdFaultStaysInternal is the counterpart: the one sibling in
+// resolveBootstrapProject deliberately left UNWRAPPED. os.Getwd fails when the
+// server process's own working directory has been removed or become unreadable
+// — an I/O fault in vp's environment, not a caller supplying bad input — so
+// amber is the correct signal and classifying it caller would hide a broken
+// process behind the friction counter.
+//
+// There is no portable way to make os.Getwd fail from a test, so this pins the
+// DECISION at the source rather than the behavior: the cwd branch must not be
+// wrapped. It fails if someone later "completes" the classification by wrapping
+// all four siblings uniformly.
+func TestBootstrapCwdFaultStaysInternal(t *testing.T) {
+	src, err := os.ReadFile("context_tools.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	const marker = "cannot resolve cwd for defaulting"
+	body := string(src)
+	i := strings.Index(body, marker)
+	if i < 0 {
+		t.Fatalf("cwd-fault return not found — did the message change? update this pin with it")
+	}
+	// The return statement opens on the line carrying the marker.
+	lineStart := strings.LastIndex(body[:i], "\n") + 1
+	line := body[lineStart : strings.Index(body[i:], "\n")+i]
+	if strings.Contains(line, "apperr.Caller") {
+		t.Errorf("the os.Getwd fault is wrapped as a caller error: %q\n"+
+			"It is an I/O fault in vp's own environment; amber is correct for it. "+
+			"If this is a deliberate reversal, change the comment above it and this test together.", strings.TrimSpace(line))
 	}
 }
