@@ -39,11 +39,21 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(mutates(cmdAuditVault()))
 	reg.Register(cmdCommands())
 	reg.Register(cmdCommandsList())
-	reg.Register(cmdCommandsUpgrade())
+	// mutates(): `vp commands upgrade` and `vp skills upgrade` share one writer —
+	// commands.applyWithPolicy (internal/commands/upgrade.go) writes
+	// Change.VaultPath, a template under the vault's Templates/ tree. Both are
+	// therefore vault writers and must FAIL-STOP against a vault written by a
+	// newer binary rather than take the warn-only path. They were registered
+	// UNWRAPPED until 2026-08-19, which left the command that WRITES template
+	// mirrors ungated while `config sync`, the command that prunes them, was
+	// gated — the gate's coverage tracked whether someone typed mutates(), not
+	// what the command does.
+	reg.Register(mutates(cmdCommandsUpgrade()))
 	reg.Register(cmdSkills())
 	reg.Register(cmdSkillsList())
 	reg.Register(cmdSkillsShow())
-	reg.Register(cmdSkillsUpgrade())
+	// mutates(): same vault writer as `commands upgrade` above.
+	reg.Register(mutates(cmdSkillsUpgrade()))
 	reg.Register(cmdDiscover())
 	reg.Register(mutates(cmdDiscoverRooms()))
 	reg.Register(cmdTune())
@@ -80,9 +90,60 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(cmdWorktreeRemove())
 	reg.Register(cmdWorktreeList())
 	reg.Register(cmdVault())
+	// Registered UNWRAPPED (no mutates()) DELIBERATELY: `vault pull` and `vault
+	// push` are TRANSPORT, not authorship. Neither writes vault content bearing
+	// this binary's schema — pull applies commits authored elsewhere (its only
+	// worktree write is the `checkout HEAD --` heal that restores a stale
+	// template to its already-committed bytes), and push requires a clean tree
+	// and moves existing commits to a remote. The surface gate exists to stop an
+	// OLD binary writing OLD-schema data over a vault a NEWER binary wrote, so it
+	// belongs at the write; every authoring path below has it (vault
+	// write/edit/delete/move).
+	//
+	// Gating pull would also be self-defeating: the newer .surface stamps that
+	// raise the vault's version ARRIVE BY PULL. A host that pulled once would
+	// lock itself out of every subsequent pull and could never reach the state —
+	// or the fix — that resolves the mismatch.
 	reg.Register(cmdVaultPull())
 	reg.Register(cmdVaultPush())
-	reg.Register(mutates(cmdVaultSync()))
+	// `vault sync` is UNWRAPPED for the same reason as pull and push above, and
+	// for one sharper one: IT CONTAINS THE PULL.
+	//
+	// storage.SyncVault (internal/storage/vaultsyncflow.go:80) is TidyScan →
+	// TidyVault → Pull (:120) → push. Gating the command therefore gated the
+	// pull inside it, so a host whose binary was behind hit EnforceFailStop →
+	// ExitSystem on `vp vault sync` — the ordinary way people take updates —
+	// while `vault pull` two lines above was deliberately left open precisely so
+	// that could not happen. The lockout the pull/push rationale rules against
+	// was live in this file: the escape hatch existed and the command people
+	// actually run was not it.
+	//
+	// It records rather than authors. Measured, not assumed: SyncVault's whole
+	// file set — vaultsyncflow.go, vaulttidy.go, vaultsync.go — contains ZERO
+	// calls to surface.StampForPath or surface.WriteStamp. It stages and commits
+	// bytes already on disk and moves commits to a remote; every byte it records
+	// was authored by some earlier write that carried the gate itself.
+	//
+	// Re-derive, never cite:
+	//   grep -n 'StampForPath\|WriteStamp' internal/storage/vaultsyncflow.go \
+	//     internal/storage/vaulttidy.go internal/storage/vaultsync.go
+	reg.Register(cmdVaultSync())
+	// `vault commit` and `vault tidy` STAY WRAPPED — and this is a DEFERRAL, not
+	// a verdict. The same measurement covers them: neither stamps, so by the
+	// transport-not-authorship reading they arguably belong unwrapped beside
+	// sync. They are kept gated because they carry no lockout — neither contains
+	// a pull, so refusing them strands nobody — and because the boundary they sit
+	// on is an ARTIFACT OF GATING AT THE COMMAND LEVEL AT ALL.
+	//
+	// `move-the-surface-gate-to-the-write-chokepoint` (task, high, parent
+	// first-principles) would put the fail-stop on the vault-write primitives, at
+	// which point "is this command a mutator?" stops being a question anyone has
+	// to answer — including this one. Adjudicating a boundary we intend to delete
+	// would be a fix to a fix, which is the pattern that task exists to stop.
+	//
+	// So: do not unwrap these two as a tidy-up. Either that task lands and the
+	// annotation goes away entirely, or it is refused and this becomes a real
+	// question again.
 	reg.Register(mutates(cmdVaultCommit()))
 	reg.Register(mutates(cmdVaultTidy()))
 	reg.Register(cmdVaultStatus())

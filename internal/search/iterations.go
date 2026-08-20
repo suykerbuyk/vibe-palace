@@ -15,9 +15,9 @@ import (
 // Synthetic palace location for iteration corpus rows. Filters may use these;
 // they are not a claim about real palace taxonomy.
 const (
-	iterationWing      = "history"
-	iterationRoom      = "iterations"
-	iterationHall      = "narrative"
+	iterationWing       = "history"
+	iterationRoom       = "iterations"
+	iterationHall       = "narrative"
 	iterationSourceType = "iteration"
 )
 

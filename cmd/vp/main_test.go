@@ -225,24 +225,42 @@ func TestAllCommandsRegisterValidly(t *testing.T) {
 // registration in mutates(); the test fails both ways (a writer left unwrapped,
 // or a non-writer wrapped) so the table cannot silently drift from reality.
 //
-// Deliberately EXCLUDED: `vault pull` / `vault push` mutate on-disk vault
-// content, but that content is remote-sourced (git fetch/merge), not this
-// binary writing through the stamped local write path — a different category
-// than the fail-stop guards, so they stay unwrapped by design.
+// Deliberately EXCLUDED: `vault pull`, `vault push` and `vault sync` mutate
+// on-disk vault content, but that content is remote-sourced (git fetch/merge) or
+// already on disk (stage/commit) — not this binary writing through the stamped
+// local write path. A different category than the fail-stop guards, so they stay
+// unwrapped by design. `vault sync` joined them once it was measured that
+// SyncVault CONTAINS the pull (vaultsyncflow.go:120), so gating the command
+// gated the escape hatch pull exists to be.
+//
+// `vault commit` and `vault tidy` do not stamp either and are kept wrapped as a
+// DEFERRAL, not a verdict: they carry no lockout, and
+// move-the-surface-gate-to-the-write-chokepoint would dissolve the question
+// rather than answer it. The reasoning lives at the registration site.
 func TestMutatingCommandsAreGated(t *testing.T) {
 	wantMutating := map[string]bool{
-		"absorb":               true,
-		"archive create":       true,
-		"archive link":         true,
-		"audit rooms":          true,
-		"audit vault":          true,
-		"discover rooms":       true,
-		"tune rooms":           true,
-		"config upgrade":       true,
-		"config sync":          true,
-		"init":                 true,
-		"tasks edit":           true,
-		"vault sync":           true,
+		"absorb":         true,
+		"archive create": true,
+		"archive link":   true,
+		"audit rooms":    true,
+		"audit vault":    true,
+		"discover rooms": true,
+		"tune rooms":     true,
+		"config upgrade": true,
+		"config sync":    true,
+		// Both reach commands.applyWithPolicy, which writes Change.VaultPath —
+		// a template under the vault's Templates/ tree — through the stamped
+		// local write path. Left unwrapped until 2026-08-19, which meant the
+		// command that WRITES template mirrors was ungated while `config sync`,
+		// the command that prunes them, was gated.
+		"commands upgrade": true,
+		"skills upgrade":   true,
+		"init":             true,
+		"tasks edit":       true,
+		// "vault sync" is deliberately ABSENT: it contains the pull
+		// (storage.SyncVault, vaultsyncflow.go:120), so gating it gated the very
+		// operation `vault pull` is left ungated to protect. See the rationale at
+		// its registration site in commands.go.
 		"vault commit":         true,
 		"vault tidy":           true,
 		"vault write":          true,

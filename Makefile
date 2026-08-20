@@ -39,9 +39,41 @@ build: man ## Build all packages and generate man pages
 vet: ## Run go vet
 	go vet ./...
 
+# GO_SOURCES is the formatting gate's file list, and the two prunes are both
+# load-bearing.
+#
+# 🔴 `find`, NEVER `git ls-files`. ls-files lists only TRACKED files, so a gate
+# run before `git add` silently skips the new files just written and reports
+# CLEAN BY OMISSION — the standing rule in the project's resume, and a
+# formatting gate is exactly where it bites: new files are the ones most likely
+# to be unformatted.
+#
+# The .claude prune keeps a subagent worktree's checked-out copy of this module
+# out of the count; without it the gate reports the same file twice and can fail
+# on a tree the developer cannot edit.
+GO_SOURCES = $(shell find . -name '*.go' -not -path './.git/*' -not -path './.claude/*')
+
+.PHONY: fmt
+fmt: ## Rewrite every Go source in place with gofmt
+	@gofmt -w $(GO_SOURCES)
+
+# gofmt -l PRINTS drifted files and exits 0, so a bare `gofmt -l` in CI is a
+# reporter, not a gate — which is how a583440 and 076975e landed unformatted and
+# sat at HEAD unnoticed. Nothing in this Makefile and nothing in
+# .github/workflows ran gofmt at all before this target existed. The non-empty
+# check is what turns the report into a failure.
+.PHONY: fmt-check
+fmt-check: ## FAIL if any Go source is not gofmt-clean
+	@drift="$$(gofmt -l $(GO_SOURCES))"; \
+	if [ -n "$$drift" ]; then \
+		echo "gofmt drift — run 'make fmt':" >&2; \
+		echo "$$drift" | sed 's/^/  /' >&2; \
+		exit 1; \
+	fi
+
 ##@ Test
 .PHONY: test
-test: build vet ## Run unit tests — fast, no model download
+test: build fmt-check vet ## Run unit tests — fast, no model download
 	go test -race -short -cover ./...
 	@$(MAKE) --no-print-directory live-canary
 

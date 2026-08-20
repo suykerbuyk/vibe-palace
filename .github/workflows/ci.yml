@@ -20,6 +20,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Formatting is its own job, deliberately NOT folded into vet or test: it is
+  # seconds long and toolchain-only, so it gives a fast, unambiguous verdict
+  # instead of being buried behind a model download and a -race suite.
+  #
+  # `make fmt-check` — not a bare `gofmt -l` — because gofmt -l PRINTS drift and
+  # exits 0, which reports without failing. Nothing here ran gofmt at all before
+  # this job existed, which is how a583440 and 076975e landed unformatted and
+  # sat at HEAD. The target's file list comes from `find`, never `git ls-files`:
+  # ls-files covers only tracked files, so a new unformatted file would pass by
+  # omission.
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - run: make fmt-check
+
   vet:
     runs-on: ubuntu-latest
     steps:

@@ -66,11 +66,11 @@ const headOfQueueN = 5
 // use the bulk key as the instrument/index boundary and silently measured the
 // wrong offset until this was renamed.
 type RankingReport struct {
-	Ranker          string `json:"ranker"`
-	RankedAgainst   string `json:"ranked_against,omitempty"`
-	Candidates      int    `json:"candidates"`
-	Returned        int    `json:"returned"`
-	FallbackReason  string `json:"fallback_reason,omitempty"`
+	Ranker         string `json:"ranker"`
+	RankedAgainst  string `json:"ranked_against,omitempty"`
+	Candidates     int    `json:"candidates"`
+	Returned       int    `json:"returned"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
 }
 
 // rankerStructural is the deterministic ranker: task-graph order for the queue,
@@ -87,10 +87,10 @@ const rankerSemantic = "semantic"
 
 // Fallback reasons reported on RankingReport when semantic cannot run.
 const (
-	fallbackEngineNil       = "engine_nil"
+	fallbackEngineNil        = "engine_nil"
 	fallbackEmbedderNotReady = "embedder_not_ready"
-	fallbackIndexNotReady   = "index_not_ready"
-	fallbackNoSessionHits   = "no_session_hits"
+	fallbackIndexNotReady    = "index_not_ready"
+	fallbackNoSessionHits    = "no_session_hits"
 )
 
 // headOfQueueRow is one task in the derived head of queue: what the project

@@ -89,7 +89,7 @@ import (
 
 // Finding is one auditable defect in the source tree.
 type Finding struct {
-	Kind   string `json:"kind"`   // KindWriteOnlyField | KindUninvoked
+	Kind   string `json:"kind"`   // KindWriteOnlyField | KindUninvoked | KindUngatedVaultWriter
 	Symbol string `json:"symbol"` // "storage.SessionMeta.Branch" | "capture.AnalyzeFriction"
 	Pos    string `json:"pos"`    // file:line, for humans; NOT part of identity
 	Detail string `json:"detail"`
@@ -106,6 +106,11 @@ const (
 	// KindUninvoked: a function or method declared in non-test code and called from
 	// nowhere in non-test code. Capability built, nothing invokes it.
 	KindUninvoked = "uninvoked"
+
+	// KindUngatedVaultWriter: a command registered without mutates() whose call
+	// graph reaches a stamped vault write, so the surface compatibility gate
+	// takes the warn-only path for a write it should fail-stop.
+	KindUngatedVaultWriter = "ungated-vault-writer"
 )
 
 // ID is the finding's stable identity for baseline comparison. It deliberately
@@ -180,6 +185,7 @@ func Run(roots ...string) ([]Finding, error) {
 	var findings []Finding
 	findings = append(findings, writeOnlyFields(files)...)
 	findings = append(findings, uninvokedFuncs(files)...)
+	findings = append(findings, ungatedVaultWriters(files)...)
 
 	sort.Slice(findings, func(i, j int) bool { return findings[i].ID() < findings[j].ID() })
 	return findings, nil
@@ -565,8 +571,26 @@ func isCalled(name, declPkg string, called map[string]map[string]bool, imports m
 // simply never match an in-tree declaring package, which is the right answer.
 func importGraph(files []file) map[string]map[string]bool {
 	// dirBase → package name, learned from the files we parsed.
+	//
+	// NON-TEST files only, matching the loop below. An EXTERNAL test package
+	// (`package commands_test` in internal/commands/) declares a name no
+	// directory owns, and without this filter it overwrites the entry for its own
+	// directory — so every import resolved through that entry names a package
+	// nothing declares, and the edge is silently lost. A severed import edge
+	// produces no error: isCalled widens on ambiguity, the missing edge reads as
+	// "not called", and every rule downstream reports FEWER findings while the
+	// gate goes green.
+	//
+	// The identical bug shipped in ungated_writer.go's own graph builder during
+	// the unit that added it, where it was not masked: the rule reported four
+	// findings, looked healthy, and missed the very command it was written to
+	// catch. Here it was latent — see the segment fallback below for why — but
+	// latent is a property of today's directory layout, not of the code.
 	pkgByDirBase := map[string]string{}
 	for _, f := range files {
+		if f.isTest {
+			continue
+		}
 		pkgByDirBase[filepath.Base(filepath.Dir(f.path))] = f.ast.Name.Name
 	}
 
@@ -594,6 +618,18 @@ func importGraph(files []file) map[string]map[string]bool {
 			if real, ok := pkgByDirBase[seg]; ok {
 				out[pkg][real] = true
 			}
+			// The RAW segment, recorded unconditionally and deliberately KEPT.
+			//
+			// It looks redundant now that pkgByDirBase is correct, and removing it
+			// would make the pin above sharper. Do not: it is the only thing that
+			// resolves an import whose directory was never parsed at all — a
+			// package outside the walked file set, which is every fixture-based
+			// test that walks one temp directory while importing a sibling it did
+			// not write, and any partial walk. Deleting it trades a latent bug for
+			// a live one.
+			//
+			// Proven, not reasoned: removing this line reddens
+			// TestSegmentFallbackResolvesAnUnparsedImport.
 			out[pkg][seg] = true
 		}
 	}

@@ -265,6 +265,14 @@ func writeMultiPkgFixture(t *testing.T, srcByPkg map[string]string) string {
 	return root
 }
 
+// writeExtraFile drops an additional file into an existing fixture package dir.
+func writeExtraFile(t *testing.T, root, pkgDir, name, src string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, pkgDir, name), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // 🔴 TestDeadCodeIsNotResurrectedByASameNamedFuncElsewhere pins the 206 bug.
 //
 // The matcher is AST-only and cannot resolve what `x` is in `x.Diff()`, so it keys on
