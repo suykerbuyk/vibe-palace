@@ -14,6 +14,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/mdfence"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -863,7 +864,32 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 		return fmt.Errorf("write to dest: %w", err)
 	}
 
-	return os.Remove(srcPath)
+	// 🔴 THIS STAYS SPLIT — write-dest-then-unlink-source — and is deliberately
+	// NOT routed through vaultfs.Move.
+	//
+	// Move is os.Rename, and a rename cannot rewrite content. This operation
+	// DOES rewrite content: replaceStatusLine above stamps "retired" or
+	// "cancelled" into the body, and that new body is what lands in done/. So
+	// the only way to express this as a real move is rename-then-rewrite, which
+	// is strictly worse: a crash between the two steps leaves a file sitting in
+	// done/ still declaring itself In Progress. That is not hypothetical — it is
+	// the open bug `retired-task-files-keep-a-live-status-line`, and reordering
+	// here would widen exactly the window that produced it. The current order
+	// fails safe: the worst outcome is both copies existing, with the
+	// destination already correct.
+	//
+	// Only the removal half is F2. The destination half is F1 (lockedWrite),
+	// and the refuse-existing-destination rule stays the stat above — the same
+	// policy vaultfs.Move enforces, kept here because this does not go through
+	// vaultfs.Move. Retire/cancel semantics are unchanged by this phase.
+	//
+	// NOTE, pre-existing and NOT fixed here: this unlink holds NO lock.
+	// lockedWrite acquired and released the DESTINATION's lock; the source's is
+	// never taken, so a concurrent status update of the same task races it.
+	// Phase 3 is a routing phase — Phase 2 changed no locking either — and
+	// adding an Acquire here would be a concurrency change no test covers.
+	// Recorded rather than silently repaired.
+	return vaultfs.RemoveNoLock(srcPath)
 }
 
 // The four header field names. A task's metadata header is a contiguous run of

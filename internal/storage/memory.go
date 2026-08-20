@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 	"gopkg.in/yaml.v3"
 )
@@ -372,16 +374,26 @@ func (v *Vault) DeleteMemory(project, rel string) error {
 	if err != nil {
 		return err
 	}
-	// Serialize the unlink against a concurrent write of the same rel. There is
-	// no atomicfile delete counterpart, so acquire the per-path lock directly.
-	// Deletes deliberately do not re-stamp .surface (stamping tracks content
-	// writes, not removals — matching vaultfs.Delete).
+	// Serialize the unlink against a concurrent write of the same rel. The lock
+	// deliberately covers the unlink itself: narrowing it to the syscall would
+	// reopen the delete-vs-recreate race, and nothing tests that.
+	//
+	// 🔴 The lock is acquired HERE and not in the sink. vaultfs.RemoveNoLock
+	// takes no lock precisely so this call site cannot deadlock against itself
+	// — vaultlock.Acquire is a blocking, non-reentrant LOCK_EX (ADR-003).
+	//
+	// Deletes deliberately do not re-stamp .surface: stamping tracks content
+	// writes, not removals.
 	release, err := vaultlock.Acquire(v.Root, abs)
 	if err != nil {
 		return fmt.Errorf("delete memory file: lock %s: %w", abs, err)
 	}
 	defer release()
-	if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
+	// errors.Is, NOT os.IsNotExist: os.IsNotExist does not unwrap, so it would
+	// start reporting a missing file as an error the moment anything in the
+	// chain wraps. The idempotence promised in this function's doc comment is
+	// pinned by TestDeleteMemory's second call.
+	if err := vaultfs.RemoveNoLock(abs); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("delete memory file: %w", err)
 	}
 	return nil

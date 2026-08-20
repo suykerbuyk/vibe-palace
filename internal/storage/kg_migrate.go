@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -78,12 +79,13 @@ type projectPlan struct {
 	triplesDir string
 	scanned    int
 	alreadyOK  int
-	// renames: newPath -> the single source to os.Rename into it (target does
-	// not yet exist on disk).
+	// renames: newPath -> the single source to rename into it, through the F2
+	// sink (target does not yet exist on disk).
 	renames map[string]string
-	// collapses: newPath -> source paths to os.Remove (a SAME-body duplicate,
-	// either of a sibling source that won the rename or of a target already
-	// present on disk with a matching body). Never a differing body.
+	// collapses: newPath -> source paths to remove through the F2 sink (a
+	// SAME-body duplicate, either of a sibling source that won the rename or of
+	// a target already present on disk with a matching body). Never a differing
+	// body.
 	collapses map[string][]string
 }
 
@@ -360,9 +362,13 @@ func applyProjectPlan(pp *projectPlan) error {
 		renTargets = append(renTargets, np)
 	}
 	sort.Strings(renTargets)
+	// Through the F2 sink. The exclusion here is NOT the per-path vaultlock: the
+	// migration holds one process-wide TryAcquire on kgMigrationLockPath (:118)
+	// and refuses to run rather than block, which is coarser but stronger. The
+	// sink takes no lock of its own, so neither arrangement can deadlock.
 	for _, np := range renTargets {
 		src := pp.renames[np]
-		if err := os.Rename(src, np); err != nil {
+		if err := vaultfs.RenameNoLock(src, np); err != nil {
 			return fmt.Errorf("rename %s -> %s: %w", src, np, err)
 		}
 	}
@@ -374,7 +380,7 @@ func applyProjectPlan(pp *projectPlan) error {
 	sort.Strings(colTargets)
 	for _, np := range colTargets {
 		for _, src := range pp.collapses[np] {
-			if err := os.Remove(src); err != nil {
+			if err := vaultfs.RemoveNoLock(src); err != nil {
 				return fmt.Errorf("remove redundant %s: %w", src, err)
 			}
 		}
@@ -510,7 +516,17 @@ func formatCollisions(cs []TripleCollision) string {
 
 // pruneEmptyDirs removes empty directories strictly below root (never root
 // itself), deepest-first. Best-effort: any error (incl. a non-empty dir) is
-// ignored, since os.Remove only succeeds on an empty directory.
+// ignored, since the removal only succeeds on an empty directory.
+//
+// 🔴 THIS REMOVES DIRECTORIES, THROUGH THE SAME F2 SINK THE FILE REMOVALS USE,
+// and that is the deliberate answer rather than an oversight. The sink is
+// os.Remove, whose contract is "one entry, file or empty directory" — so
+// directories need no second primitive and get none. vaultfs.Delete refuses
+// directories, but that refusal is POLICY on the MCP/CLI surface (recursive
+// delete is out of scope for v1), enforced above the sink and not by it. A
+// caller inside storage that legitimately prunes empty directories is not
+// bound by the surface's policy, and the error-swallowing loop below is exactly
+// the "only succeeds when empty" behaviour it relies on.
 func pruneEmptyDirs(root string) {
 	var dirs []string
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -523,6 +539,6 @@ func pruneEmptyDirs(root string) {
 		return nil
 	})
 	for _, dir := range slices.Backward(dirs) {
-		_ = os.Remove(dir)
+		_ = vaultfs.RemoveNoLock(dir)
 	}
 }

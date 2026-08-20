@@ -207,10 +207,17 @@ func Delete(vaultPath, relPath, expectedSha256 string) (DeleteResult, error) {
 			return DeleteResult{}, fmt.Errorf("%w: have %s, expected %s", ErrShaConflict, current, expectedSha256)
 		}
 	}
-	// Delete uses os.Remove directly: it removes content rather than writing
-	// new content, so it does not route through atomicfile (and thus does not
-	// trigger surface stamping). Stamping tracks content-write semantics.
-	if err := os.Remove(abs); err != nil {
+	// Through the F2 sink (raw.go), not atomicfile: this removes content rather
+	// than writing new content, so it does not stamp. Stamping tracks
+	// content-write semantics.
+	//
+	// Everything above this line is the POLICY this function owns — the
+	// .git-segment refusal, ResolveSafePath containment, the lock, the
+	// directory refusal and the compare-and-set. RemoveNoLock has none of it,
+	// deliberately: it is the one sink every removal in the tree funnels
+	// through, including callers that must NOT inherit these rules (the KG
+	// prune removes empty directories, which the refusal above forbids here).
+	if err := RemoveNoLock(abs); err != nil {
 		return DeleteResult{}, fmt.Errorf("vaultfs: remove %s: %w", relPath, err)
 	}
 	return DeleteResult{VaultBinding: bind(vaultPath), Removed: true}, nil
@@ -265,10 +272,12 @@ func Move(vaultPath, fromPath, toPath string) (MoveResult, error) {
 	if err := os.MkdirAll(filepath.Dir(dstAbs), 0o755); err != nil {
 		return MoveResult{}, fmt.Errorf("vaultfs: mkdir %s parent: %w", toPath, err)
 	}
-	// Move uses os.Rename directly: it does not write new content, so it
-	// does not route through atomicfile (and thus does not trigger surface
-	// stamping). Stamping tracks content-write semantics.
-	if err := os.Rename(srcAbs, dstAbs); err != nil {
+	// Through the F2 sink (raw.go), not atomicfile: this does not write new
+	// content, so it does not stamp. Stamping tracks content-write semantics.
+	//
+	// The refuse-existing-destination rule is the stat above, not the sink:
+	// RenameNoLock is os.Rename and would happily replace the destination.
+	if err := RenameNoLock(srcAbs, dstAbs); err != nil {
 		return MoveResult{}, fmt.Errorf("vaultfs: rename %s -> %s: %w", fromPath, toPath, err)
 	}
 	return MoveResult{VaultBinding: bind(vaultPath), Moved: true}, nil

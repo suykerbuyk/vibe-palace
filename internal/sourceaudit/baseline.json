@@ -117,24 +117,12 @@
       "reason": "CORRECT AS WRITTEN — not a vault write at all. internal/absorb/writer.go:465-467 rewrites a PROJECT-REPO source file (ps.AbsPath), and passes vaultRoot=\"\" deliberately so no .surface stamp is attempted, keeping fsync + inherit-perm from the private atomicWrite it replaced. The in-tree comment at :464-466 states this. The rule cannot distinguish a deliberate \"\" from a mistaken one without type information, so this is the false-positive shape the hazard text tells you to baseline WITH THE REASON. Accepted permanently."
     },
     {
-      "id": "vault-write-outside-funnel archive.Create",
-      "reason": "REAL BYPASS — deferred to Option E Phase 2, family F1. internal/archive/archive.go:176 renames an existing manifest to a .bak sibling inside Projects/<p>/transcripts/ with a raw os.Rename. The surrounding transcript write (compressFile, :254-281) and the manifest write (manifest.go:74) are the same class and are NOT flagged here only because their destinations are laundered through struct fields, which this syntactic rule does not track — the census records them as rows 27-29. Do not read this single entry as the extent of internal/archive's debt; read the census."
-    },
-    {
       "id": "vault-write-outside-funnel check.CheckVaultFilesystem",
       "reason": "DELIBERATELY EXEMPT — a diagnostic must run when the funnel is what is being diagnosed. internal/check/vaultfs.go:141 creates a transient, self-deleting .vp-fs-probe-* at the VAULT ROOT with O_CREATE|O_WRONLY|O_EXCL to test whether the filesystem accepts ':' in a filename (the NTFS/exFAT case). Routing a filesystem-capability probe through the primitive whose correctness it is probing is circular. The same reasoning already keeps the MCP-side vp_check Mutating:false — see the sibling ungated-vault-writer main.cmdCheck entry. Census row 23."
     },
     {
       "id": "vault-write-outside-funnel check.sweepStaleProbes",
       "reason": "DELIBERATELY EXEMPT — the other half of the probe in CheckVaultFilesystem above. internal/check/vaultfs.go:94 removes vault-root entries matching the .vp-fs-probe- prefix that are older than 5 minutes, i.e. residue from a probe whose process died before its own cleanup at :172. It removes only files this package created. Same circularity rationale. Census row 23."
-    },
-    {
-      "id": "vault-write-outside-funnel storage.Vault.DeleteMemory",
-      "reason": "REAL BYPASS — deferred to Option E Phase 2, family F2. internal/storage/memory.go:384 unlinks a vault memory file with a bare os.Remove. It holds the per-path vaultlock (:379) so it is not a locking defect, but it does not route through vaultfs.Delete, and being a PURE REMOVAL with no accompanying write it is invisible to any stamp-anchored rule by construction. Census row 6. Fix = make vaultfs.Delete reachable from storage."
-    },
-    {
-      "id": "vault-write-outside-funnel storage.Vault.moveTask",
-      "reason": "REAL BYPASS — deferred to Option E Phase 2, family F2. internal/storage/tasks.go:866 unlinks the source task with os.Remove after writing the destination through lockedWrite (:863). The destination half is correctly funnelled; the removal half is not, so retire/cancel is half-covered. Census row 7. Fix = route the unlink through vaultfs.Move (which is what this operation actually is)."
     },
     {
       "id": "vault-write-outside-funnel vaultlock.openLockFile",

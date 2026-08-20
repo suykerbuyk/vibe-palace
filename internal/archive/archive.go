@@ -18,6 +18,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
 // stampVault best-effort records the MCP surface version for a successful
@@ -172,8 +173,21 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 		}
 		// Source has changed. Preserve the prior manifest as a .bak
 		// before overwriting. See ADR-001 (idempotency section).
+		//
+		// Through the F2 sink: this is a RENAME of an existing vault file, not
+		// a content write, so it belongs to the removal/rename family and not
+		// to atomicfile. The Option E census originally filed archive.Create
+		// under F1 on the strength of the MkdirAll two dozen lines up; the
+		// MkdirAll is F3 and lands in a later phase, and this line is F2.
+		//
+		// NOTE, pre-existing and NOT fixed here: internal/archive takes no
+		// vault lock anywhere, so this rename is unserialized against a
+		// concurrent writer of the same manifest. The sink takes no lock
+		// either, so routing changes nothing about that; it is recorded rather
+		// than silently repaired, because adding one here would be a
+		// concurrency change outside a routing phase.
 		bakPath := fmt.Sprintf("%s.%s.bak", manifestPath, shortHash(existing.SourceSHA256))
-		if err := os.Rename(manifestPath, bakPath); err != nil {
+		if err := vaultfs.RenameNoLock(manifestPath, bakPath); err != nil {
 			return nil, fmt.Errorf("preserve prior manifest: %w", err)
 		}
 	}

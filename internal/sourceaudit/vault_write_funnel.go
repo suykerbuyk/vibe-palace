@@ -37,7 +37,8 @@ import (
 // # What it reports
 //
 //	(a) a raw os.* CONTENT mutation whose destination resolves to a vault path,
-//	    bypassing atomicfile.Write / vaultfs.Delete / vaultfs.Move; and
+//	    bypassing atomicfile.Write (F1) or vaultfs.RemoveNoLock /
+//	    vaultfs.RenameNoLock (F2, the sink under vaultfs.Delete/Move); and
 //	(b) an atomicfile.Write whose first argument is not a recognisable vault root
 //	    — passing "" or a substitute makes the write succeed while SKIPPING the
 //	    surface stamp, which is how the vault loses its version floor.
@@ -47,6 +48,38 @@ import (
 // widespread (15 storage.EnsureDir callers), and flagging it would bury the file
 // writes in noise. Directory creation is a Phase-2 concern for the F3 family;
 // the census carries those rows.
+//
+// # Why git is absent from this rule — RULED, not overlooked
+//
+// This rule matches os.* calls, so the git channel (exec, via storage.gitCmd,
+// with cmd.Dir = vaultPath) falls outside it by mechanism. That is an accident
+// of the matcher, and an accident is not a reason — so the reason is recorded
+// here rather than left to a reader to guess or to re-litigate.
+//
+// The operator RULED the git channel OUT of the funnel on 2026-08-20, by VERB:
+//
+//	Git is exempt because it is not per-path and not lock-mediated — a merge is
+//	N files in one operation and no per-path primitive can model it. `merge`
+//	(internal/storage/vaultpull.go:153) is the one content-authoring verb, and it
+//	is exempt with that reason rather than by a claim that git never authors. Its
+//	conflicts ARE detected and surfaced: unmergedPaths at :163, skip sentinels for
+//	the remaining remotes, sweep abandoned. Transport verbs — fetch, push, rebase,
+//	commit, add, rev-list, ls-remote, diff — are transport in the ordinary sense.
+//
+// 🔴 DO NOT write "git is transport" here or anywhere else. The tree contradicts
+// it: git merge can leave conflict markers in resume.md, which is authorship by
+// any operational definition. The exemption stands on UNMODELLABILITY, not on a
+// denial that authorship happens. Writing the weaker sentence is how the
+// exemption stops being defensible the first time someone checks it.
+//
+// One more content-touching verb, so its absence is not mistaken for an
+// oversight: git checkout HEAD -- <p> (vaultpull.go:142) runs only on a path
+// that has just passed git diff --quiet <ref> -- <p> (:136), which exits 0 only
+// when the working-tree bytes are already identical to the incoming ref's. It
+// therefore writes nothing the ref does not already hold — a guarded discard
+// over exactly Templates/commands/*.md, not authorship. Its own defect is
+// diagnosability, not funnelling, and is filed as
+// `template-heal-checkout-fails-open-without-recording-why`.
 //
 // # Findings are keyed by FUNCTION, not by call site
 //
@@ -88,9 +121,16 @@ func vaultWriteFunnel(files []file) []Finding {
 			if !ok || fn.Body == nil {
 				continue
 			}
-			// Skip the funnel's own implementation: atomicfile IS the primitive,
-			// and vaultfs.Delete/Move ARE the removal family. A primitive cannot
-			// route through itself.
+			// Skip the funnel's own implementation: atomicfile IS the F1
+			// primitive and cannot route through itself.
+			//
+			// internal/vaultfs is deliberately NOT skipped, even though its
+			// raw.go now holds the F2 sink. A package-wide skip would blind this
+			// rule to a NEW raw write added anywhere in vaultfs — read.go,
+			// safety.go — which is a bigger hole than the one it would close.
+			// The sink's own two lines go unreported because they act on a bare
+			// absPath parameter carrying no vault signal, which is the same
+			// documented limit as vaultaudit.Baseline.Save, not a special case.
 			if pkg == "atomicfile" {
 				continue
 			}
