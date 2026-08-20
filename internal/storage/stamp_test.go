@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
 
 // writeFileDirect writes a precondition file straight to disk, bypassing the
@@ -51,8 +52,12 @@ func assertStamped(t *testing.T, stampDir string) {
 //     assert-absent "" guard, its only create path).
 //   - v.lockedWrite → atomicfile.Write: WriteSession, UpdateTaskStatus,
 //     RetireTask, WriteVaultProjectConfig.
-//   - v.stamp after a non-replace write: AppendIteration, AppendDrawer, the KG
-//     writers.
+//   - v.appendUnderLock (family F4, which owns the stamp): AppendIterationOwned,
+//     ArchiveCommitBodies.
+//   - v.stamp called directly after a non-replace write: AppendDrawer, the KG
+//     writers. This route is shrinking as Option E routes writers onto the
+//     primitive families; a writer still on it is one nobody has moved yet, not
+//     one that is exempt.
 //
 // Stamp-dir resolution from a path NESTED below the project root (the thing the
 // old WriteDoc case incidentally covered) is still exercised: CreateTask and
@@ -78,6 +83,18 @@ func TestEveryVaultWriterStamps(t *testing.T) {
 		}},
 		{"AppendIterationOwned", func(t *testing.T, v *Vault, vault string) string {
 			if _, _, err := v.AppendIterationOwned(proj, "t", "x", nil); err != nil {
+				t.Fatal(err)
+			}
+			return projectsRoot(vault)
+		}},
+		// ArchiveCommitBodies was NOT in this enumeration before Option E Phase 2,
+		// which is a gap worth naming: it is a stamping vault writer, and the only
+		// proof its stamp fired was reading the call site. It now stamps through
+		// v.appendUnderLock rather than by hand, so the behavioural proof matters
+		// more, not less — this case is what stops the routing silently dropping it.
+		{"ArchiveCommitBodies", func(t *testing.T, v *Vault, vault string) string {
+			if _, _, err := v.ArchiveCommitBodies(proj,
+				[]wrapstate.CommitInfo{{SHA: "abc123", Body: "subject\n\nbody"}}, "abc123"); err != nil {
 				t.Fatal(err)
 			}
 			return projectsRoot(vault)

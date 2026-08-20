@@ -89,7 +89,7 @@ import (
 
 // Finding is one auditable defect in the source tree.
 type Finding struct {
-	Kind   string `json:"kind"`   // KindWriteOnlyField | KindUninvoked | KindUngatedVaultWriter
+	Kind   string `json:"kind"`   // KindWriteOnlyField | KindUninvoked | KindUngatedVaultWriter | KindVaultWriteOutsideFunnel
 	Symbol string `json:"symbol"` // "storage.SessionMeta.Branch" | "capture.AnalyzeFriction"
 	Pos    string `json:"pos"`    // file:line, for humans; NOT part of identity
 	Detail string `json:"detail"`
@@ -111,6 +111,12 @@ const (
 	// graph reaches a stamped vault write, so the surface compatibility gate
 	// takes the warn-only path for a write it should fail-stop.
 	KindUngatedVaultWriter = "ungated-vault-writer"
+
+	// KindVaultWriteOutsideFunnel: a vault mutation that does not route through
+	// the shared write primitive (atomicfile.Write, vaultfs.Delete/Move), or an
+	// atomicfile.Write whose vaultRoot argument defeats the surface stamp. The
+	// cross-package successor to three package-local pins — see vaultWriteFunnel.
+	KindVaultWriteOutsideFunnel = "vault-write-outside-funnel"
 )
 
 // ID is the finding's stable identity for baseline comparison. It deliberately
@@ -186,6 +192,7 @@ func Run(roots ...string) ([]Finding, error) {
 	findings = append(findings, writeOnlyFields(files)...)
 	findings = append(findings, uninvokedFuncs(files)...)
 	findings = append(findings, ungatedVaultWriters(files)...)
+	findings = append(findings, vaultWriteFunnel(files)...)
 
 	sort.Slice(findings, func(i, j int) bool { return findings[i].ID() < findings[j].ID() })
 	return findings, nil

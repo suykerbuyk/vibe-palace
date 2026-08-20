@@ -143,9 +143,12 @@ func (v *Vault) AppendIterationOwned(project, title, body string, override *int)
 	// Everything below runs UNDER THE ONE LOCK: the read of the current max and
 	// the append are a single critical section, so a concurrent
 	// AppendIterationOwned cannot slip its own append in between and force a
-	// duplicate number. Keep the append inline here rather than delegating to a
-	// helper that re-acquires this lock — vaultlock.Acquire is a blocking LOCK_EX
-	// with no timeout, so re-entry would hang, not error.
+	// duplicate number.
+	//
+	// The append delegates to v.appendUnderLock, which is safe here for exactly
+	// one reason: it does NOT acquire. Never route this through a helper that
+	// takes the lock itself (v.lockedWrite is one) — vaultlock.Acquire is a
+	// blocking LOCK_EX with no timeout, so re-entry would hang, not error.
 	derived, err = wrapstate.NextIterFromIterationsMD(path)
 	if err != nil {
 		return 0, 0, fmt.Errorf("derive iteration number: %w", err)
@@ -155,20 +158,15 @@ func (v *Vault) AppendIterationOwned(project, title, body string, override *int)
 		n = *override
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		return 0, 0, fmt.Errorf("open iterations file: %w", err)
-	}
-	defer f.Close()
-	if _, err := f.Seek(0, 2); err != nil {
-		return 0, 0, fmt.Errorf("seek iterations file: %w", err)
-	}
 	header := wrapstate.FormatIterationHeader(n, title)
 	entry := "\n---\n" + header + "\n\n" + strings.TrimSpace(body) + "\n"
-	if _, err := f.WriteString(entry); err != nil {
+	// appendUnderLock does not acquire — the lock taken above is still held, and
+	// it must be: NextIterFromIterationsMD read the current max a few lines up,
+	// and that read plus this append are the one critical section that stops two
+	// callers minting the same number.
+	if err := v.appendUnderLock(path, []byte(entry)); err != nil {
 		return 0, 0, fmt.Errorf("write iteration: %w", err)
 	}
-	v.stamp(path)
 	return n, derived, nil
 }
 

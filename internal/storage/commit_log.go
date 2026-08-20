@@ -139,18 +139,12 @@ func (v *Vault) ArchiveCommitBodies(project string, commits []wrapstate.CommitIn
 		}
 
 		if appended > 0 {
-			f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-			if err != nil {
-				return 0, 0, fmt.Errorf("open commit-log: %w", err)
-			}
-			if _, err := f.WriteString(b.String()); err != nil {
-				f.Close()
+			// appendUnderLock does not acquire — the lock taken above is still
+			// held, and it must be: the dedup read a few lines up and this
+			// append are one critical section.
+			if err := v.appendUnderLock(logPath, []byte(b.String())); err != nil {
 				return 0, 0, fmt.Errorf("append commit-log: %w", err)
 			}
-			if err := f.Close(); err != nil {
-				return 0, 0, fmt.Errorf("close commit-log: %w", err)
-			}
-			v.stamp(logPath)
 		}
 	}
 
