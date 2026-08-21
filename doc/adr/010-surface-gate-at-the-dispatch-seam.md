@@ -110,11 +110,14 @@ binary-versus-vault skew that motivates the gate **largely dissolves**, and what
 remains is client-versus-server protocol compatibility: a version negotiated
 once per connection, not a filesystem stamp scanned per write.
 
-The dispatch seam is already that boundary, and already behaves correctly for
-it. `gateIfMutating` runs **before** `rt.tool.Handler` — a per-request refusal
-with no side effects, which is what an HTTP API must do. `vp mcp serve` already
-carries the shape: bearer auth, a per-request vault in the request context, and
-`MutatingToolNames` used as the authorization predicate for read-only mode.
+The dispatch seam is already that boundary, and its **ordering** is already
+right: `gateIfMutating` runs **before** `rt.tool.Handler` — a per-request
+refusal with no side effects, which is what an HTTP API must do. Its
+**granularity** is not right yet, and that is a defect this decision inherits
+rather than removes; see *The gate is per-tool, and one tool multiplexes* in
+Consequences. `vp mcp serve` already carries the shape: bearer auth, a
+per-request vault in the request context, and `MutatingToolNames` used as the
+authorization predicate for read-only mode.
 
 A write-site gate would be built deep inside the one component that survives the
 transition, guarding against a skew that can no longer occur, and would surface
@@ -158,6 +161,35 @@ exclude it explicitly.
   write path** is what makes a hosted vault tractable — transactional behaviour,
   audit logging, quota, and any non-POSIX backend all depend on it. Remaining
   routing phases should be motivated that way, or descoped honestly.
+- **The gate is per-tool, and one tool multiplexes actions — so the recovery
+  path is currently locked out.** `vp_vault_sync` is in `MutatingToolNames`
+  (`internal/tools/mutating.go:48`), the gate fires at
+  `internal/mcp/tools.go:279` before `rt.tool.Handler` at `:283`, and the
+  `switch p.Action` that would distinguish `pull` from `push` sits inside that
+  handler at `internal/tools/system_tools.go:179`. So `action: "pull"` is
+  refused identically to `action: "push"`, and a host whose binary is behind
+  the vault cannot pull over MCP at all — while the CLI equivalents are
+  registered bare (`cmd/vp/commands.go:107,108,130`) and can. `restart.md`
+  Step 1 uses the MCP call, so the operation that would deliver the fixed
+  binary is the operation being refused.
+
+  **This is a requirement on the derivation, not a footnote.** A derivation
+  that stays per-tool reproduces the lockout *exactly*: `vp_vault_sync`
+  genuinely reaches a write sink on two of its three actions, so the derived
+  answer would be `Mutating: true` and would be correct, and the recovery path
+  would stay broken. The derivation must therefore be action-granular where a
+  tool multiplexes actions, or the gate must move inside the handler for those
+  tools specifically. This is the one place where "derive the predicate" is not
+  sufficient on its own.
+
+  It does have an end-of-life: under server-owns-vault the client does not pull
+  at all, so the lockout dissolves with the transition. That is not a reason to
+  defer it. It is live for the whole local-model lifetime, it sits on the
+  restart path every agent runs, and it fails in the direction that prevents
+  its own repair. Note also that the rejected placements are worse on this
+  axis, not better — a write-site gate would refuse the pull's writes too, with
+  side effects already begun.
+
 - **The wrong-vault defect is not fixed by this decision.** `surfaceGate`
   resolves the *global* vault while a command may write a project-overridden
   one, so a redirected project is gated against a vault it is not writing.
