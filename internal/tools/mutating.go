@@ -8,6 +8,20 @@ package tools
 // gated: the dispatch choke-point refuses them when the vault's MCP surface
 // version exceeds this binary's (see internal/mcp Registry.gateIfMutating).
 //
+// 🔴 THIS LIST ANSWERS EXACTLY ONE QUESTION: *must a stale binary refuse this
+// tool?* It is the surface gate's declaration and nothing else's.
+//
+// It used to answer a second one — *may this tool be served on a read-only
+// `vp mcp serve`?* — because `vp mcp serve` filtered on it. That question now
+// has its own declaration, ReadOnlyServeToolNames in readonly_serve.go, and
+// the two are deliberately independent. Read the asymmetry note there before
+// changing either: the two predicates have OPPOSITE failure modes, this one
+// tolerates a deny-list keyed on a flag and that one does not, and they are
+// already known to diverge under the derivation work ADR-010 sets up.
+//
+// DO NOT re-point the serve filter at this list to "remove the duplication".
+// The duplication is the safety property.
+//
 // This list is the CLI/MCP analogue of the storage stamp-enumeration test: it
 // exists so the gate set is declared in ONE auditable place and pinned by a
 // completeness test (TestMutatingToolNamesMatchRegistry) that fails the build

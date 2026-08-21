@@ -776,10 +776,19 @@ be filtered independently of the local server:
   secret is never written to config. When the variable is unset the server runs
   unauthenticated and prints a loud startup warning, on the assumption that the
   operator fronts it with a tunnel or network ACL they control.
-- **Read-only by default.** The 20 vault-mutating tools (`tools.MutatingToolNames`)
-  are stripped from this instance via `Server.DeleteTools` unless `--allow-writes`
-  is passed, so they are absent from both `tools/list` and `tools/call`. Exposing
-  writes prints a second startup warning.
+- **Read-only by default, and FAIL-CLOSED.** Unless `--allow-writes` is passed,
+  this instance serves only the tools affirmatively named in
+  `tools.ReadOnlyServeToolNames`; everything else the registry holds is stripped
+  via `Server.DeleteTools`, so it is absent from both `tools/list` and
+  `tools/call`. Exposing writes prints a second startup warning.
+
+  This is a SEPARATE declaration from `tools.MutatingToolNames`, which answers
+  only the surface gate's question. The two agree today and are pinned to say
+  so, but they are independent on purpose: a false negative on the surface gate
+  is a detectable ungated write, while a false negative here publishes a write
+  tool on a surface an operator believes is read-only — so this one is an
+  allow-list and strips anything unclassified. See the asymmetry note on
+  `ReadOnlyServeToolNames` before touching either.
 - **Vault-in-context (surface-gate parity).** The handler installs
   `server.WithHTTPContextFunc` to put the `*storage.Vault` on every request
   context, exactly as the stdio transport does via `Server.contextFunc`. This is

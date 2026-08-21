@@ -5,6 +5,11 @@
 is amended to match. The derivation itself is not yet implemented — this ADR
 records the decision and its reasoning, not a landed mechanism.
 
+**Amended 2026-08-20** — see *Amendment: what planning the derivation found*. The
+ruling is unchanged; the amendment records a better mechanism than this page
+originally described, a prerequisite it did not identify, and a trap in the
+naive reading of the Decision.
+
 ## Context
 
 The MCP surface gate refuses a vault write when the vault's recorded surface
@@ -229,6 +234,92 @@ to a different decision, at the time multi-tenancy is actually built.
 implementers so the existing rule can follow `Apply`. Refused before it was
 written: it adds a *second* hand-maintained table beside the anchor set, and
 both become dead code the moment derivation lands.
+
+## Amendment (2026-08-20): what planning the derivation found
+
+Planning the derivation surfaced three things this page did not anticipate. The
+Decision stands; the path to it changes.
+
+### 1. Derivation alone UNDER-gates — the trap
+
+There are **zero funnel sinks anywhere in the pull / sync / tidy path**. A
+faithful reachability derivation therefore computes `Mutating: false` for
+`vp_vault_sync` and `vp_vault_tidy`.
+
+Read naively that looks like a bonus: the MCP-pull lockout recorded above
+dissolves on its own. It is not a bonus. It dissolves as a **side effect**,
+while `push`, `sync` and `commit` quietly lose the gate they have today, and the
+deliberate deferral on `vault commit` / `vault tidy` gets settled by accident
+rather than by a ruling.
+
+**A derivation that changes what is gated is not a refactor.** Any
+implementation must diff derived-versus-declared and require an explicit ruling
+on every disagreement, rather than adopting the derived answer because it was
+computed.
+
+### 2. The granularity defect is a class of three, and the seam already holds the answer
+
+The Consequence above names `vp_vault_sync`. Two more behave identically —
+verified at source:
+
+| tool | read-only condition | site |
+|---|---|---|
+| `vp_vault_sync` | `action: "pull"` | `internal/tools/system_tools.go:179` |
+| `vp_vault_tidy` | `dry_run: true` — `TidyScan` only, writes nothing | `internal/tools/system_tools.go:509` |
+| `vp_audit_vault` | `write: false` — *"never persisted"* | `internal/tools/audit_tools.go:90` |
+
+All three are refused whole today.
+
+**A cheaper mechanism than this ADR considered.** `Dispatch` already calls
+`validateParams(rt.compiled, params)` at `internal/mcp/tools.go:275` — *before*
+`gateIfMutating` at `:279`. Schema-validated parameters are therefore in hand at
+the seam, so a `func(params) bool` predicate can read `action` / `dry_run` /
+`write` there: still pre-handler, still no side effects, and nothing moves into
+a handler.
+
+That is strictly better than the two options this page implied (accept the
+lockout, or push the gate inside the handler for those tools). **Accepted
+2026-08-20**: the gate becomes param-aware at the seam.
+
+### 3. `Mutating` is one boolean answering two questions — splitting it is a PREREQUISITE
+
+`Mutating` drives both the surface gate (`gateIfMutating`) and the read-only
+serve filter (`cmd/vp/cmd_mcp_serve.go:178`, `srv.DeleteTools(...)` when
+`!allowWrites`). §4 above notes the flag is non-deletable; that understates it.
+
+Derivation makes the two answers **diverge** — see finding 1, where the derived
+answer for `vp_vault_sync` is `false`. Wiring a derived value into
+`MutatingToolNames` would therefore strip nothing and **silently expose
+`vp_vault_sync` and `vp_vault_tidy` on a bearer-authed read-only HTTP surface.**
+
+The two predicates have opposite failure modes. A false negative on the gate is
+an ungated write: bad, bounded, detectable after the fact. A false negative on
+the serve filter is a write tool published on a read-only surface: a security
+failure, and not detectable after the fact. **The serve filter must be
+fail-closed** — a tool is stripped unless affirmatively known read-only — while
+the gate may be derived.
+
+Splitting them is worth doing **even if derivation never lands**.
+
+### Ordering, ruled 2026-08-20
+
+1. **Split the two predicates.** Prerequisite; a pure refactor today, since both
+   answers currently agree for every tool.
+2. **Make the gate param-aware** at the Dispatch seam, closing all three
+   lockouts.
+3. **Derive the predicate** last, once it can no longer under-gate — and with
+   every derived-versus-declared disagreement ruled on explicitly.
+
+### Method note — do not trust a reachability result that has not asserted its sinks
+
+While measuring, an x/tools CHA call graph **silently dropped a declared sink**:
+`storage.appendUnderLock` was absent from the graph despite two live call sites,
+4 of 5 sinks found, cause undiagnosed. It was caught only because the count was
+printed.
+
+Any derivation must assert **sink presence as a hard error** before trusting
+reachability output. A call graph missing a sink reports the commands that reach
+it as clean, and reports it in exactly the same shape as a correct result.
 
 ## Related
 

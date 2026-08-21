@@ -175,7 +175,16 @@ func buildMCPServeHandler(stack *serverStack, token string, allowWrites bool) ht
 		tools.WithRequireExplicitProject())
 	tools.RegisterResources(srv, stack.resolver, stack.vault)
 	if !allowWrites {
-		srv.DeleteTools(tools.MutatingToolNames...)
+		// FAIL-CLOSED: strip everything not affirmatively allow-listed as
+		// read-only, computed against what this registry actually holds — not
+		// "delete the tools flagged mutating", which serves any tool nobody
+		// classified. See tools.ReadOnlyServeToolNames for why this question is
+		// declared separately from the surface gate's.
+		registered := make([]string, 0, len(srv.Registry().List()))
+		for _, ti := range srv.Registry().List() {
+			registered = append(registered, ti.Name)
+		}
+		srv.DeleteTools(tools.ToolsToStripForReadOnlyServe(registered)...)
 	}
 	return srv.StreamableHTTPHandler(token)
 }

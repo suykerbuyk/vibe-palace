@@ -124,13 +124,32 @@ func TestMCPServeBadFlags(t *testing.T) {
 }
 
 // TestMCPServeReadOnlyFiltersMutatingTools is the core security assertion: with
-// the REAL RegisterAll tool set, the default (read-only) handler exposes none of
-// the 20 MutatingToolNames over tools/list, while read tools remain present.
+// the REAL RegisterAll tool set, the default (read-only) handler exposes nothing
+// outside the read-only allow-list over tools/list, while read tools remain
+// present.
+//
+// The subset assertion is the one that matters and it is the fail-closed
+// property measured end to end, at the HTTP layer, against the production
+// handler: whatever the registry grows next, it is not served unless somebody
+// classified it. The MutatingToolNames loop below is kept as the narrower,
+// independent statement of the same thing from the other predicate's side — if
+// the two ever disagree, this test says so.
 func TestMCPServeReadOnlyFiltersMutatingTools(t *testing.T) {
 	stack := newServeTestStack(t)
 	handler := buildMCPServeHandler(stack, mcpServeTestToken, false /* allowWrites */)
 
 	names := listToolNames(t, handler, mcpServeTestToken)
+
+	allowed := make(map[string]bool, len(tools.ReadOnlyServeToolNames))
+	for _, n := range tools.ReadOnlyServeToolNames {
+		allowed[n] = true
+	}
+	for served := range names {
+		if !allowed[served] {
+			t.Errorf("read-only serve exposed %q, which is NOT in ReadOnlyServeToolNames — "+
+				"the filter failed OPEN", served)
+		}
+	}
 
 	for _, m := range tools.MutatingToolNames {
 		if names[m] {
