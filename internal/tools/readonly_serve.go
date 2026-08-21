@@ -44,6 +44,25 @@ import "sort"
 // fails OPEN: a new tool that nobody flagged is served. That is the wrong
 // direction for this question, however right it is for the other one.
 //
+// # 🔴 THIS FILTER IS NOT PARAM-AWARE, AND MUST NOT BECOME SO
+//
+// The surface gate now refines its per-tool verdict with the invocation's
+// parameters: vp_vault_sync's bare pull, vp_vault_tidy's dry run and
+// vp_audit_vault's inline render pass it, because those calls write nothing
+// (mcp.Tool.ReadOnlyWhen, internal/tools/readonly_invocation.go).
+//
+// None of those three may be added here, and this filter may not learn the same
+// trick, because the two run at different times against different information.
+// This one runs ONCE at registration — there is no invocation, no params, and
+// no way to know which mode a future call will ask for. "vp_vault_sync is
+// sometimes read-only" is not a property a startup filter can act on: serving
+// the tool serves ALL of its actions, including push. A tool that can write in
+// any mode stays stripped.
+//
+// The gate can afford to be per-request because it runs per request. If these
+// two are ever unified, it will be by someone reading "read-only" in both
+// places and assuming it means the same thing. It does not.
+//
 // # Known limit, stated rather than hidden
 //
 // Fail-closed protects against tools nobody classified. It does NOT protect

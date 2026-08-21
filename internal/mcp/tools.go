@@ -86,6 +86,37 @@ type Tool struct {
 	// when the vault's MCP surface version exceeds this binary's, so a stale
 	// host cannot corrupt a newer vault. Read-only tools leave this false.
 	Mutating bool
+	// ReadOnlyWhen refines Mutating for ONE INVOCATION. When it is non-nil and
+	// returns true for this call's schema-validated params, the surface gate
+	// passes even though the tool is registered Mutating. It never works the
+	// other way: it cannot gate a tool that is not already Mutating.
+	//
+	// It exists because the gate is per-TOOL while some tools multiplex a
+	// writing action with a non-writing one — vp_vault_sync's action:"pull",
+	// vp_vault_tidy's dry_run:true, vp_audit_vault's write:false. Refused whole,
+	// vp_vault_sync took the RECOVERY PATH with it: restart pulls the vault over
+	// this call, so a host whose binary was behind the vault could not pull the
+	// fix that would repair it. The failure ran in the direction that prevents
+	// its own repair. See doc/adr/010-surface-gate-at-the-dispatch-seam.md, the
+	// Amendment's finding 2, which rules this the mechanism.
+	//
+	// 🔴 FAIL-CLOSED, AND THAT IS THE PROPERTY TO PRESERVE. A predicate declares
+	// the NARROW case it can prove writes nothing, and everything else gates: a
+	// nil predicate, an unparseable payload, a JSON null, a discriminator that
+	// is absent or carries a value the predicate does not recognise. Never
+	// invert one to say "not a write" — an unrecognised payload would then be
+	// admitted, which is the one answer that must never be inferred from
+	// missing information. readOnlyInvocation owns the first three; the
+	// predicate owns the rest (internal/tools/readonly_invocation.go).
+	//
+	// 🔴 THIS DOES NOT REACH THE READ-ONLY SERVE FILTER, and must not be made
+	// to. That filter strips tools at REGISTRATION (cmd/vp/cmd_mcp_serve.go),
+	// where no params exist and no invocation has happened, so a sometimes-
+	// read-only tool must stay stripped there — see the asymmetry note on
+	// tools.ReadOnlyServeToolNames. The gate answers "may this call proceed?"
+	// per request; the serve filter answers "may this tool be reachable at
+	// all?" once. Only the first can be refined by params.
+	ReadOnlyWhen func(params json.RawMessage) bool
 }
 
 // ToolInfo is a read-only summary returned by Registry.List.
@@ -276,7 +307,9 @@ func (r *Registry) Dispatch(ctx context.Context, name string, params json.RawMes
 		return nil, err
 	}
 
-	if gErr := r.gateIfMutating(ctx, rt, r.staleBinding(ctx)); gErr != nil {
+	// params are schema-validated above, so the gate can read a discriminator
+	// out of them without trusting the wire. Both dispatch paths pass them.
+	if gErr := r.gateIfMutating(ctx, rt, params, r.staleBinding(ctx)); gErr != nil {
 		return nil, gErr
 	}
 
@@ -306,8 +339,19 @@ func (r *Registry) Dispatch(ctx context.Context, name string, params json.RawMes
 // vp_bootstrap_context away exactly when the agent needs to find out what is
 // wrong — and instead carry the disagreement in their own result; see
 // staleBindingNotice.
-func (r *Registry) gateIfMutating(ctx context.Context, rt *registeredTool, drift *storage.StaleBindingError) error {
+//
+// params are this invocation's schema-validated parameters. A Mutating tool
+// that declares a ReadOnlyWhen predicate is refined by it here, BEFORE either
+// refusal: an invocation that provably writes nothing is a read, and both
+// reasons this gate refuses — a vault ahead of this binary, and a vault that is
+// not the one this server bound — are reasons to refuse a WRITE. A read under
+// drift is treated exactly like any other read: admitted, and carrying the
+// drift banner in its own result.
+func (r *Registry) gateIfMutating(ctx context.Context, rt *registeredTool, params json.RawMessage, drift *storage.StaleBindingError) error {
 	if !rt.tool.Mutating {
+		return nil
+	}
+	if readOnlyInvocation(rt.tool, params) {
 		return nil
 	}
 	if drift != nil {
@@ -439,7 +483,12 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 		// Surface gate: refuse mutating tools when the vault is ahead of this
 		// binary, returning the IncompatibleError remediation in-band. Also
 		// refuses every mutating tool when drift is non-nil.
-		if gErr := r.gateIfMutating(ctx, rt, drift); gErr != nil {
+		//
+		// params are the SAME schema-validated bytes the handler will receive,
+		// so this path is param-aware on exactly the terms Dispatch is: the two
+		// dispatch paths must agree about what a single invocation is allowed
+		// to do, or a tool refused over the wire would be admitted in-process.
+		if gErr := r.gateIfMutating(ctx, rt, params, drift); gErr != nil {
 			// OPERATIONAL, not caller: a vault-ahead-of-this-binary mismatch is a
 			// real condition an operator SHOULD see amber (operator decision), so
 			// this stays out of the caller-friction bucket and keeps health amber.

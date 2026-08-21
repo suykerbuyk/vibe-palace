@@ -58,7 +58,10 @@ func AuditVaultTool(vault *storage.Vault) mcp.Tool {
 			"means the auditor could not read something and is NOT a pass.",
 		Schema:   auditVaultSchema,
 		Mutating: true, // write=true writes a report and stamps the surface
-		Handler:  auditVaultHandler(vault),
+		// An explicit write:false renders inline and persists nothing — see
+		// auditVaultReadOnly, including why an OMITTED write still gates.
+		ReadOnlyWhen: auditVaultReadOnly,
+		Handler:      auditVaultHandler(vault),
 	}
 }
 

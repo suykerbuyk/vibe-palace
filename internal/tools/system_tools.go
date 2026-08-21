@@ -150,6 +150,10 @@ func VaultSyncTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:     "vp_vault_sync",
 		Mutating: true,
+		// The bare pull writes no vault content and IS the recovery path — see
+		// vaultSyncReadOnly, which also explains why the paths list is part of
+		// the predicate and the action alone is not.
+		ReadOnlyWhen: vaultSyncReadOnly,
 		Description: "Pull, push, or sync the vault git repository with configured " +
 			"remotes. A bare sync (no paths) now tidies capture artifacts first: " +
 			"it classifies the working tree, commits ONLY capture artifacts " +
@@ -481,6 +485,8 @@ func VaultTidyTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:     "vp_vault_tidy",
 		Mutating: true,
+		// dry_run:true classifies and commits nothing — see vaultTidyReadOnly.
+		ReadOnlyWhen: vaultTidyReadOnly,
 		Description: "Scan the whole vault and commit ONLY classified capture " +
 			"artifacts (session summaries, transcript archives, knowledge-graph " +
 			"entities/triples, drawers, and tracked .surface stamps) with a " +
