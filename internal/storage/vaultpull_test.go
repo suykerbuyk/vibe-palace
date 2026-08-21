@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -402,5 +403,100 @@ func TestPullResult_Stranded(t *testing.T) {
 				t.Errorf("Stranded() = %v, want %v", got, tc.wantStrand)
 			}
 		})
+	}
+}
+
+// TestPull_FailedHealIsRecordedAndPullContinues is the guard for the heal
+// pass's diagnosability defect: a candidate path that passes the diff guard but
+// whose `checkout HEAD --` fails used to be skipped with its error DISCARDED —
+// reported in no [heal] line and in no other channel — and then went on to
+// obstruct the merge, which failed for a cause nothing explained.
+//
+// The failure is induced with a read-only Templates/commands directory, so
+// checkout cannot replace the file. That is a stand-in for the real causes the
+// old code could not distinguish (permission error, filesystem error, index
+// lock held by another process, a path that changed type) from the benign
+// untracked-path case its comment named.
+//
+// It asserts BOTH halves, and the second is the one that matters most:
+//
+//  1. the path and git's own reason are recorded in FailedHeals; and
+//  2. the pull did NOT abort — it proceeded to the merge and on to the SECOND
+//     remote. An assertion of (1) alone would pass a fail-closed
+//     implementation, which is explicitly rejected: the pull is how a host
+//     receives the very fix that would repair its own template mirror.
+func TestPull_FailedHealIsRecordedAndPullContinues(t *testing.T) {
+	if !GitAvailable() {
+		t.Skip("git not in PATH")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions do not gate writes on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits do not restrict checkout")
+	}
+
+	dir := initTestRepo(t)
+	origin := initBareRemote(t)
+	backup := initBareRemote(t)
+	gitRun(t, dir, "remote", "add", "origin", origin)
+	gitRun(t, dir, "remote", "add", "backup", backup)
+	writeFile(t, dir, phantomTemplate, "A\n")
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-m", "seed template A")
+	gitRun(t, dir, "push", "origin", "main")
+	gitRun(t, dir, "push", "backup", "main")
+
+	// Only origin advances, so only origin's ref makes the dirt a heal
+	// candidate; backup stays level with HEAD and merges cleanly.
+	advanceRemote(t, origin, phantomTemplate, "B\n")
+	writeFile(t, dir, phantomTemplate, "B\n")
+
+	// Make the checkout fail: git must replace the file in this directory, and
+	// a read-only directory denies the unlink/create it needs. HEAD holds "A"
+	// while the working tree holds "B", so the checkout is a real write, not a
+	// no-op that could succeed anyway.
+	tmplDir := filepath.Join(dir, "Templates", "commands")
+	if err := os.Chmod(tmplDir, 0o555); err != nil {
+		t.Fatalf("chmod %s: %v", tmplDir, err)
+	}
+	// Restore before TempDir cleanup, which cannot remove a read-only dir.
+	t.Cleanup(func() { _ = os.Chmod(tmplDir, 0o755) })
+
+	res, err := Pull(dir, []string{"origin", "backup"})
+	if err != nil {
+		t.Fatalf("Pull returned a top-level error; the heal pass must stay best-effort: %v", err)
+	}
+
+	// (1) The reason is recorded, against the right path.
+	if len(res.FailedHeals) != 1 {
+		t.Fatalf("expected exactly 1 FailedHeals entry, got %#v", res.FailedHeals)
+	}
+	if got := res.FailedHeals[0].Path; got != phantomTemplate {
+		t.Errorf("FailedHeals path = %q, want %q", got, phantomTemplate)
+	}
+	if strings.TrimSpace(res.FailedHeals[0].Reason) == "" {
+		t.Error("FailedHeals reason is empty: git's own sentence is the entire payload of this fix")
+	}
+	if len(res.HealedTemplates) != 0 {
+		t.Errorf("a failed heal must not be reported as healed, got %#v", res.HealedTemplates)
+	}
+
+	// (2) The pull did not abort. Both remotes were attempted, and backup was
+	// not marked with the conflict skip sentinel.
+	if _, ok := res.RemoteResults["origin"]; !ok {
+		t.Error("origin was never attempted: the pull aborted before the merge")
+	}
+	backupErr, ok := res.RemoteResults["backup"]
+	if !ok {
+		t.Fatal("backup was never attempted: the pull aborted after the failed heal")
+	}
+	if backupErr != nil {
+		t.Errorf("backup should have merged cleanly, got %v (output=%q)", backupErr, res.RemoteOutput["backup"])
+	}
+
+	// Nothing was destroyed: the un-healed dirt is still exactly as written.
+	if got := readFile(t, dir, phantomTemplate); got != "B\n" {
+		t.Errorf("un-healed working-tree content = %q, want %q", got, "B\n")
 	}
 }

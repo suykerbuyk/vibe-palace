@@ -722,6 +722,14 @@ func pushAll(root string, remotes []string, dryRun bool) int {
 // `Pulling from <remote>...` followed by git's combined output and any per-remote
 // failure. Shared by pullAll and the sync tidy path so both render identically.
 func printPullOutput(remotes []string, res *storage.PullResult) {
+	// A heal that FAILED is printed before the per-remote output so the reader
+	// meets the cause before the merge failure it explains. Only failures are
+	// rendered here: this front-end has never printed the HealedTemplates
+	// successes that the MCP front-end does, and adding them is a separate,
+	// unfiled asymmetry rather than part of this finding.
+	for _, f := range res.FailedHeals {
+		fmt.Fprintf(os.Stderr, "vp vault pull: [heal] FAILED to clear %s: %s — path is still dirty and may block the merge\n", f.Path, f.Reason)
+	}
 	for _, remote := range remotes {
 		fmt.Fprintf(os.Stderr, "Pulling from %s...\n", remote)
 		if out := strings.TrimSpace(res.RemoteOutput[remote]); out != "" {

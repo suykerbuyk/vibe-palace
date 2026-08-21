@@ -32,6 +32,38 @@ type PullResult struct {
 	// therefore discarded (reset to HEAD) so the merge could proceed. Nothing
 	// unique is lost — the dirt matched what the merge would have produced.
 	HealedTemplates []string
+	// FailedHeals is HealedTemplates' counterpart: the candidate paths whose
+	// heal was ATTEMPTED and FAILED, each carrying git's own explanation, and
+	// which were therefore still dirty when the merge ran.
+	//
+	// 🔴 THIS FIELD EXISTS BECAUSE ITS ABSENCE MADE THE MERGE FAILURE
+	// INEXPLICABLE. The checkout error used to be discarded at the `continue`:
+	// the path was not added to HealedTemplates, so it appeared in no [heal]
+	// line and in no other channel — nowhere at all. It then still obstructed
+	// the merge, and the operator was shown a merge failure whose cause had
+	// been measured and thrown away. Worse, the [heal] lines that DID print
+	// read as a complete account of the heal pass, so the reader reasonably
+	// concluded the heal had nothing to do with the failure.
+	//
+	// A path that fails on one remote and succeeds on a later one is NOT
+	// reported here — see the reconciliation at the end of Pull. Only paths
+	// that were never healed are listed, so "still an obstruction" stays true.
+	FailedHeals []HealFailure
+}
+
+// HealFailure is one candidate path whose heal checkout failed, with git's own
+// sentence for why. Per-path rather than a single error because one pull can
+// skip several paths for several different reasons.
+type HealFailure struct {
+	// Path is the vault-relative Templates/commands/*.md path.
+	Path string
+	// Reason is git's own explanation, as wrapped by gitCmd (GitError carries
+	// git's text rather than exec's bare "exit status N" — the 6343f8f
+	// pattern). The comment at the checkout site names an untracked path with
+	// no HEAD entry as the common, benign case; a permission error, a
+	// filesystem error, an index lock held by another process, or a path that
+	// changed type are not benign and were indistinguishable from it.
+	Reason string
 }
 
 // AllPulled was DELETED at 209, and its deletion is the fix, not a cleanup.
@@ -109,6 +141,10 @@ func Pull(vaultPath string, remotes []string) (*PullResult, error) {
 	// not re-probe them.
 	dirty := dirtyTemplateCommandPaths(vaultPath)
 	healed := map[string]bool{}
+	// Latest failure reason per candidate path. Reconciled against `healed`
+	// after the remote sweep so a path that failed on one remote and healed on
+	// a later one is not reported as an obstruction it no longer is.
+	healFailed := map[string]string{}
 
 	for i, remote := range remotes {
 		ref := remote + "/" + branch
@@ -137,9 +173,24 @@ func Pull(vaultPath string, remotes []string) (*PullResult, error) {
 				continue
 			}
 			// Discard the uncommitted obstruction so the merge can proceed.
-			// Fail-open: a checkout error (e.g. an untracked path with no HEAD
-			// entry) is skipped and the path is NOT reported as healed.
+			//
+			// 🔴 FAIL-OPEN IS THE RULING, NOT AN OVERSIGHT — DO NOT MAKE THIS
+			// ABORT THE PULL. A vault pull is the route by which a host
+			// RECEIVES a newer binary's fixes, including the fix that would
+			// repair whatever is wrong with its own template mirror. Aborting
+			// on one mirror's checkout failure strands exactly the host that
+			// most needs the pull to succeed — the same self-lockout hazard
+			// already ruled against when `vault sync` was unwrapped from
+			// mutates(). The heal pass is a best-effort convenience over a
+			// narrow, guarded, fully-recoverable path set and stays one.
+			//
+			// What changed: the error is no longer DISCARDED. The defect was
+			// silence, not permissiveness. The path is still skipped and still
+			// not reported as healed, but git's reason is now recorded and
+			// rendered beside the [heal] lines, so the merge failure this path
+			// goes on to cause has a stated cause.
 			if _, err := gitCmd(vaultPath, 10*time.Second, "checkout", "HEAD", "--", p); err != nil {
+				healFailed[p] = err.Error()
 				continue
 			}
 			healed[p] = true
@@ -165,6 +216,15 @@ func Pull(vaultPath string, remotes []string) (*PullResult, error) {
 				result.RemoteResults[skipped] = fmt.Errorf("skipped: prior remote left an unresolved merge conflict")
 			}
 			break
+		}
+	}
+
+	// Reconcile: report only the paths that were never healed on ANY remote,
+	// because those are the ones still obstructing. Iterating `dirty` rather
+	// than ranging the map keeps the order deterministic for callers and tests.
+	for _, p := range dirty {
+		if reason, failed := healFailed[p]; failed && !healed[p] {
+			result.FailedHeals = append(result.FailedHeals, HealFailure{Path: p, Reason: reason})
 		}
 	}
 

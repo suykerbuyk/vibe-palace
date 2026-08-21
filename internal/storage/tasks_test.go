@@ -11,6 +11,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 func TestCreateAndGetTask(t *testing.T) {
@@ -1774,5 +1777,91 @@ func TestOverwriteTaskFileNotFound(t *testing.T) {
 	err := v.OverwriteTaskFile("proj", "ghost", validTaskFile)
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("error = %v, want not found", err)
+	}
+}
+
+// TestMoveTask_UnlinkHoldsSourceLock proves moveTask's unlink is serialized
+// against the per-path lock UpdateTaskStatus holds on the SAME source path.
+//
+// Shape, and why it is deterministic rather than a timing race: the test takes
+// the source path's lock itself, then runs RetireTask in a goroutine and waits
+// for the DESTINATION file to appear. That appearance is the proof that
+// lockedWrite has completed and released the destination's lock, so the only
+// thing left in moveTask is the source acquire + unlink. On a tree where the
+// unlink holds no lock, the source file vanishes microseconds later and the
+// call returns; with the lock, both are blocked until this test releases.
+//
+// Mutation check: drop the vaultlock.Acquire around the unlink in moveTask and
+// this test goes red at "retire completed while the source lock was held".
+func TestMoveTask_UnlinkHoldsSourceLock(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "locked-task", Title: "Title", Content: "Body.", Priority: "P1"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	srcPath, err := v.TaskFile("proj", "locked-task")
+	if err != nil {
+		t.Fatalf("TaskFile: %v", err)
+	}
+	doneDir, err := v.TaskDoneDir("proj")
+	if err != nil {
+		t.Fatalf("TaskDoneDir: %v", err)
+	}
+	destPath := filepath.Join(doneDir, "locked-task.md")
+
+	release, err := vaultlock.Acquire(v.Root, srcPath)
+	if err != nil {
+		t.Fatalf("test Acquire: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- v.RetireTask("proj", "locked-task") }()
+
+	// Wait for the destination to appear: past this point the only remaining
+	// step is the source acquire + unlink.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(destPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			release()
+			t.Fatalf("destination %s never appeared; retire never reached the unlink", destPath)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// Grace window: on an unlocked unlink the source is gone almost immediately
+	// after the destination write, so this is where the mutation shows up.
+	time.Sleep(200 * time.Millisecond)
+
+	select {
+	case err := <-done:
+		release()
+		t.Fatalf("retire completed (err=%v) while the source lock was held — the unlink took no lock", err)
+	default:
+	}
+	if _, err := os.Stat(srcPath); err != nil {
+		release()
+		t.Fatalf("source %s was unlinked while its lock was held: %v", srcPath, err)
+	}
+
+	// Releasing must let the blocked unlink proceed.
+	if err := release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RetireTask after release: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("retire did not complete after the source lock was released")
+	}
+
+	if _, err := os.Stat(srcPath); !os.IsNotExist(err) {
+		t.Errorf("source should be gone after retire, stat err = %v", err)
+	}
+	if _, err := os.Stat(destPath); err != nil {
+		t.Errorf("destination should exist after retire: %v", err)
 	}
 }

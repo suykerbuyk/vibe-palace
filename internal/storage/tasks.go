@@ -881,14 +881,39 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 	// Only the removal half is F2. The destination half is F1 (lockedWrite),
 	// and the refuse-existing-destination rule stays the stat above — the same
 	// policy vaultfs.Move enforces, kept here because this does not go through
-	// vaultfs.Move. Retire/cancel semantics are unchanged by this phase.
+	// vaultfs.Move. Retire/cancel semantics are unchanged.
+
+	// 🔴 SEQUENTIAL LOCKS, NEVER NESTED (ADR-003). The source lock is acquired
+	// only AFTER lockedWrite above has taken, used and RELEASED the
+	// destination's lock. Do not hoist this acquire to the top of the function
+	// to cover the read as well: that would hold the source lock across
+	// lockedWrite's acquire of the destination, creating the first two-lock
+	// nesting in the package and with it a lock ORDER that a future caller
+	// could invert. vaultlock.Acquire is a blocking LOCK_EX with no timeout, so
+	// an inversion is a permanent hang, not a detectable error.
 	//
-	// NOTE, pre-existing and NOT fixed here: this unlink holds NO lock.
-	// lockedWrite acquired and released the DESTINATION's lock; the source's is
-	// never taken, so a concurrent status update of the same task races it.
-	// Phase 3 is a routing phase — Phase 2 changed no locking either — and
-	// adding an Acquire here would be a concurrency change no test covers.
-	// Recorded rather than silently repaired.
+	// What this closes: the unlink is now serialized against UpdateTaskStatus,
+	// which holds this same per-path lock across its whole read→rewrite
+	// (see the Acquire in UpdateTaskStatus). Before this, a status update could
+	// land its atomicfile.Write on a path this function was about to unlink and
+	// the write was lost with no error on either side.
+	//
+	// What it does NOT close, deliberately: the os.ReadFile above still runs
+	// unlocked, so a status update that lands between that read and this unlink
+	// is still lost — the body copied to the destination is the pre-update one.
+	// Closing that would require holding the source lock across lockedWrite,
+	// i.e. the nesting this comment forbids. The window narrows from
+	// read→write→unlink to read→write, and the operation was never atomic
+	// across a crash anyway (ADR-003: "Locking never claimed to fix that").
+	//
+	// vaultfs.RemoveNoLock is correct here and must stay: it is the F2 sink and
+	// deliberately never acquires, precisely so the lock can live at the call
+	// site — the same shape as storage.DeleteMemory.
+	release, err := vaultlock.Acquire(v.Root, srcPath)
+	if err != nil {
+		return fmt.Errorf("move task: lock %s: %w", srcPath, err)
+	}
+	defer release()
 	return vaultfs.RemoveNoLock(srcPath)
 }
 

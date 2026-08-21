@@ -349,6 +349,13 @@ func gitPull(root string, remotes []string) (string, error) {
 	for _, p := range res.HealedTemplates {
 		fmt.Fprintf(&buf, "[heal] discarded stale local %s (matched remote)\n", p)
 	}
+	// The counterpart line. Without it the [heal] output above reads as a
+	// complete account of the heal pass, and a merge failure caused by one of
+	// these paths looks unrelated to it. Name the path, git's own reason, and
+	// the consequence — the causal link is the entire point.
+	for _, f := range res.FailedHeals {
+		fmt.Fprintf(&buf, "[heal] FAILED to clear %s: %s — path is still dirty and may block the merge\n", f.Path, f.Reason)
+	}
 	for _, remote := range remotes {
 		fmt.Fprintf(&buf, "[pull %s] %s\n", remote, strings.TrimSpace(res.RemoteOutput[remote]))
 		if rerr := res.RemoteResults[remote]; rerr != nil {
