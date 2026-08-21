@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,18 +16,9 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
-
-// stampVault best-effort records the MCP surface version for a successful
-// vault write at path under vaultRoot. A stamp failure is logged and never
-// propagated, so it can never fail the underlying write.
-func stampVault(vaultRoot, path string) {
-	if err := surface.StampForPath(vaultRoot, path); err != nil {
-		slog.Warn("surface stamp failed", "path", path, "err", err)
-	}
-}
 
 // CreateOptions drives a single archive operation. All fields except
 // SessionID and Adapter are optional; the adapter fills in what it
@@ -194,7 +184,7 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 
 	// Compress the source into place. Write to a tmp path then rename
 	// so a crash can't leave a torn .jsonl.zst next to the manifest.
-	compressedBytes, err := compressFile(sourcePath, archivePath)
+	compressedBytes, err := compressFile(opts.VaultRoot, sourcePath, archivePath)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +212,7 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 		CapturedByHostname:  hostname,
 		VPVersion:           opts.VPVersion,
 	}
-	if err := WriteManifest(manifestPath, m); err != nil {
+	if err := WriteManifest(opts.VaultRoot, manifestPath, m); err != nil {
 		return nil, err
 	}
 
@@ -232,10 +222,15 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 		}
 	}
 
-	// Both the manifest and the .jsonl.zst live in the same transcripts
-	// dir under Projects/<slug>/, so one stamp covers the project root.
-	stampVault(opts.VaultRoot, manifestPath)
-
+	// No stamp call here any more. Both writes above — the .jsonl.zst through
+	// atomicfile.WriteStream and the manifest through atomicfile.Write — stamp
+	// structurally, and they resolve to the same Projects/<slug> stamp dir that
+	// the one hand-written call used to cover. Stamping is now a property of
+	// having written, not a line someone remembered to add after.
+	//
+	// One behaviour this improves rather than preserves: a Sign failure returns
+	// above, and used to return BEFORE the stamp, leaving a written manifest
+	// unstamped. It is stamped now, because the write stamped it.
 	return &CreateResult{
 		ManifestPath: manifestPath,
 		ArchivePath:  archivePath,
@@ -257,43 +252,40 @@ func hashFile(path string) (string, int64, error) {
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
-func compressFile(src, dst string) (int64, error) {
+// compressFile zstd-compresses src into dst and returns the compressed size.
+//
+// The temp-plus-rename it used to hand-roll now belongs to
+// atomicfile.WriteStream, which also stamps the surface. The streaming shape is
+// the whole reason that primitive exists: a transcript is the largest thing the
+// vault holds and must not be buffered whole to be written.
+//
+// What is deliberately unchanged: the zstd encoder and its defaults, the
+// io.Copy, and the absence of an fsync. The temp file's NAME did change — it is
+// the primitive's ".vp-atomic-*" in the destination directory rather than
+// dst+".tmp" — which is inherent in the primitive owning the rename, and
+// nothing reads that name.
+func compressFile(vaultRoot, src, dst string) (int64, error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return 0, fmt.Errorf("open source: %w", err)
 	}
 	defer in.Close()
 
-	tmp := dst + ".tmp"
-	out, err := os.Create(tmp)
-	if err != nil {
-		return 0, fmt.Errorf("create archive tmp: %w", err)
-	}
-
-	enc, err := zstd.NewWriter(out)
-	if err != nil {
-		out.Close()
-		os.Remove(tmp)
-		return 0, fmt.Errorf("init zstd: %w", err)
-	}
-	if _, err := io.Copy(enc, in); err != nil {
-		enc.Close()
-		out.Close()
-		os.Remove(tmp)
-		return 0, fmt.Errorf("compress: %w", err)
-	}
-	if err := enc.Close(); err != nil {
-		out.Close()
-		os.Remove(tmp)
-		return 0, fmt.Errorf("close zstd writer: %w", err)
-	}
-	if err := out.Close(); err != nil {
-		os.Remove(tmp)
-		return 0, fmt.Errorf("close archive tmp: %w", err)
-	}
-	if err := os.Rename(tmp, dst); err != nil {
-		os.Remove(tmp)
-		return 0, fmt.Errorf("commit archive: %w", err)
+	if err := atomicfile.WriteStream(vaultRoot, dst, func(w io.Writer) error {
+		enc, err := zstd.NewWriter(w)
+		if err != nil {
+			return fmt.Errorf("init zstd: %w", err)
+		}
+		if _, err := io.Copy(enc, in); err != nil {
+			enc.Close()
+			return fmt.Errorf("compress: %w", err)
+		}
+		if err := enc.Close(); err != nil {
+			return fmt.Errorf("close zstd writer: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return 0, err
 	}
 
 	st, err := os.Stat(dst)

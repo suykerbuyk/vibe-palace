@@ -163,7 +163,7 @@ func TestVerifyWithOptions_TamperedManifestAfterSigning(t *testing.T) {
 	// because it covers the manifest bytes.
 	m, _ := ReadManifest(res.ManifestPath)
 	m.Model = "claude-tampered"
-	if err := WriteManifest(res.ManifestPath, m); err != nil {
+	if err := WriteManifest(vault, res.ManifestPath, m); err != nil {
 		t.Fatal(err)
 	}
 

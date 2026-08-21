@@ -42,7 +42,9 @@ func TestLinkSessionNoteStamps(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifestPath := filepath.Join(transcripts, "2026-04-15-sess-link.manifest.json")
-	if err := WriteManifest(manifestPath, &Manifest{
+	// "" on purpose: this seed must NOT stamp, so the stamp asserted below can
+	// only have come from LinkSessionNote.
+	if err := WriteManifest("", manifestPath, &Manifest{
 		SchemaVersion: ManifestSchemaVersion,
 		Adapter:       ClaudeCodeAdapterName,
 		SessionID:     "sess-link",

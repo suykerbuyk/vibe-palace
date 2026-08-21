@@ -37,11 +37,18 @@ import (
 // # What it reports
 //
 //	(a) a raw os.* CONTENT mutation whose destination resolves to a vault path,
-//	    bypassing atomicfile.Write (F1) or vaultfs.RemoveNoLock /
-//	    vaultfs.RenameNoLock (F2, the sink under vaultfs.Delete/Move); and
-//	(b) an atomicfile.Write whose first argument is not a recognisable vault root
-//	    — passing "" or a substitute makes the write succeed while SKIPPING the
-//	    surface stamp, which is how the vault loses its version floor.
+//	    bypassing atomicfile.Write / atomicfile.WriteStream (F1) or
+//	    vaultfs.RemoveNoLock / vaultfs.RenameNoLock (F2, the sink under
+//	    vaultfs.Delete/Move); and
+//	(b) an atomicfile.Write or atomicfile.WriteStream whose first argument is not
+//	    a recognisable vault root — passing "" or a substitute makes the write
+//	    succeed while SKIPPING the surface stamp, which is how the vault loses
+//	    its version floor.
+//
+// WriteStream joined (b) in the same change that introduced it. A stamping
+// primitive the ratchet cannot see is the exact shape this rule exists to
+// prevent, and a family member added later than the rule is how a matcher keyed
+// on ONE name goes quietly out of date.
 //
 // os.MkdirAll is deliberately NOT a content verb here, inheriting the deleted
 // tools rule's reasoning: creating a vault DIRECTORY is legitimate and
@@ -153,13 +160,13 @@ func vaultWriteFunnel(files []file) []Finding {
 				}
 
 				switch {
-				// (b) atomicfile.Write with a defeated vaultRoot.
-				case recv.Name == "atomicfile" && sel.Sel.Name == "Write":
+				// (b) an atomicfile writer with a defeated vaultRoot.
+				case recv.Name == "atomicfile" && atomicfileWriters[sel.Sel.Name]:
 					stats.atomicfileWrites++
 					if !isVaultRootExpr(call.Args[0]) {
 						breachAdd(byFunc, &order, key, f, call, fmt.Sprintf(
-							"atomicfile.Write's first argument is not a recognisable vault root (%s) — %s",
-							exprSketch(call.Args[0]), funnelRootHazard))
+							"atomicfile.%s's first argument is not a recognisable vault root (%s) — %s",
+							sel.Sel.Name, exprSketch(call.Args[0]), funnelRootHazard))
 					}
 
 				// (a) raw os.* content mutation to a vault-derived destination.
@@ -203,8 +210,11 @@ func vaultWriteFunnel(files []file) []Finding {
 	//
 	// Floors are DERIVED, not remembered. Re-derive with:
 	//
-	//	grep -rn 'atomicfile\.Write(' --include='*.go' internal/ cmd/ \
+	//	grep -rnE 'atomicfile\.(Write|WriteStream)\(' --include='*.go' internal/ cmd/ \
 	//	  | grep -v '_test.go' | grep -vE ':[0-9]+:\s*//' | wc -l
+	//
+	// Both names, because both count: the floor asks whether the walk still sees
+	// the tree's vault writers, and WriteStream call sites are vault writers.
 	//
 	// If you legitimately delete writers below the floor this goes red, and that
 	// is intended: change the floor deliberately, in the same commit. Never edit
@@ -272,6 +282,15 @@ func vacuous(detail string) Finding {
 	}
 }
 
+// atomicfileWriters are the F1 family's entry points — the whole-file writers
+// that stamp. Both take the vault root as their first argument, so both are
+// subject to check (b). Keyed by name rather than hard-coded at the call site so
+// a third writer is one line here rather than a silently unpoliced primitive.
+var atomicfileWriters = map[string]bool{
+	"Write":       true,
+	"WriteStream": true,
+}
+
 // rawContentVerbs are the os primitives that change a file's CONTENT or its
 // existence. os.MkdirAll and os.Mkdir are deliberately absent — see the doc
 // comment on vaultWriteFunnel.
@@ -285,7 +304,7 @@ var rawContentVerbs = map[string]bool{
 	"Truncate":  true,
 }
 
-const funnelRootHazard = "atomicfile.Write stamps the MCP surface version for vaultRoot/path ONLY when " +
+const funnelRootHazard = "the atomicfile writers stamp the MCP surface version for vaultRoot/path ONLY when " +
 	"vaultRoot is non-empty (internal/atomicfile/atomicfile.go:57-110) — pass \"\" or any substitute for a " +
 	"VAULT destination and the write silently succeeds while skipping the stamp, which is how the vault " +
 	"loses its version floor and a host starts looking older than it is. Pass the real .Root. A genuinely " +
@@ -293,7 +312,8 @@ const funnelRootHazard = "atomicfile.Write stamps the MCP surface version for va
 	"correctly — and if that is the case here, baseline it WITH THAT REASON"
 
 const funnelBypassHazard = "vault mutations must route through the shared primitive family: " +
-	"atomicfile.Write for whole-file content, vaultfs.Delete/vaultfs.Move for removal and rename. " +
+	"atomicfile.Write (or atomicfile.WriteStream, for content too large to hold in memory) for " +
+	"whole-file content, vaultfs.Delete/vaultfs.Move for removal and rename. " +
 	"A raw primitive opts OUT of the vaultlock advisory-lock discipline (ADR-003) AND out of the surface " +
 	"stamp, so concurrent writers lose each other's edits and the vault's version floor stops rising. " +
 	"If this mutation genuinely cannot route through the family — a lock file, a probe, a stamp write that " +

@@ -50,6 +50,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+
+	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 )
 
 // Finding is one artifact failing one dimension.
@@ -146,7 +148,12 @@ func LoadBaseline(path string) (Baseline, error) {
 // Save writes the baseline sorted and indented, so it DIFFS CLEANLY in review.
 // A report that reorders its own rows between runs is not diffable, and
 // week-over-week drift is the entire point of committing this file.
-func (b Baseline) Save(path string) error {
+//
+// vaultRoot is the vault the baseline belongs to; it reaches atomicfile.Write,
+// which stamps the surface version for vaultRoot/path. Pass "" only for a
+// genuinely non-vault destination (a bare temp file in a test) — a "" for a
+// real vault path succeeds while silently skipping the stamp.
+func (b Baseline) Save(vaultRoot, path string) error {
 	out := Baseline{Dimensions: make(map[string]DimensionBaseline, len(b.Dimensions))}
 	for name, d := range b.Dimensions {
 		accepted := slices.Clone(d.Accepted)
@@ -160,10 +167,19 @@ func (b Baseline) Save(path string) error {
 	}
 	// The first baseline is written into an Audits/ directory that does not exist
 	// yet on any vault that has never been audited — which is every vault, once.
+	//
+	// atomicfile.Write would MkdirAll this itself, so the call is redundant
+	// rather than load-bearing. It stays: routing directory creation into a
+	// vault-aware primitive (the old F3 family) is OFF the plan permanently, not
+	// deferred, and deleting the line here would be the first step of exactly
+	// that work.
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create baseline dir: %w", err)
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	// Audits/baseline.json is committed, diffed and reviewed week over week, so
+	// it gets the atomic replace and the stamp rather than a raw os.WriteFile.
+	// The bytes are unchanged: MarshalIndent output plus one trailing newline.
+	return atomicfile.Write(vaultRoot, path, append(data, '\n'))
 }
 
 // Diff compares findings against the baseline and returns what the audit must

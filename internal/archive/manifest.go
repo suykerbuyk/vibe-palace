@@ -15,6 +15,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 )
 
 // ManifestSchemaVersion is the current manifest schema version.
@@ -63,15 +65,25 @@ func ReadManifest(path string) (*Manifest, error) {
 }
 
 // WriteManifest serializes a manifest to the given path with pretty
-// indentation. Callers are responsible for ensuring the parent
-// directory exists.
-func WriteManifest(path string, m *Manifest) error {
+// indentation and writes it ATOMICALLY, through atomicfile.Write: temp file,
+// same-directory rename, parent directories created on the way. It replaced a
+// bare os.WriteFile, which truncated the manifest in place and could therefore
+// leave a half-written provenance record behind a crash — for the one file that
+// indexes the transcript it accompanies.
+//
+// vaultRoot reaches atomicfile.Write's surface stamp. Pass "" for a
+// non-vault destination, or when a caller deliberately wants an UNSTAMPED
+// write (the link-stamp test seeds its manifest that way so the stamp it
+// asserts can only have come from LinkSessionNote).
+//
+// The parent directory no longer has to exist: the primitive creates it.
+func WriteManifest(vaultRoot, path string, m *Manifest) error {
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal manifest: %w", err)
 	}
 	b = append(b, '\n')
-	if err := os.WriteFile(path, b, 0o644); err != nil {
+	if err := atomicfile.Write(vaultRoot, path, b); err != nil {
 		return fmt.Errorf("write manifest %s: %w", path, err)
 	}
 	return nil

@@ -4,8 +4,6 @@
 package archive
 
 import (
-	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -14,12 +12,12 @@ import (
 // field in place. Used by vp_capture_session after writing a session
 // note so the archive -> note link is bidirectional (ADR-001 Phase 4).
 //
-// The write is non-atomic in the general sense (no fsync contract),
-// but it is crash-safe at the manifest level: a failed write leaves
-// the prior manifest intact because we rename-over via a temp file.
+// The write is crash-safe at the manifest level — a failed write leaves the
+// prior manifest intact — because WriteManifest goes through the shared
+// temp-plus-rename primitive. There is still no fsync contract.
 //
-// vaultRoot is used only to stamp the MCP surface version on success;
-// pass "" to skip stamping (e.g. manifests outside any vault).
+// vaultRoot reaches the primitive's surface stamp; pass "" to skip stamping
+// (e.g. manifests outside any vault).
 func LinkSessionNote(vaultRoot, manifestPath, vaultRelSessionNote string) error {
 	m, err := ReadManifest(manifestPath)
 	if err != nil {
@@ -29,25 +27,11 @@ func LinkSessionNote(vaultRoot, manifestPath, vaultRelSessionNote string) error 
 		return nil // idempotent no-op
 	}
 	m.VaultRelSessionNote = vaultRelSessionNote
-	if err := atomicWriteManifest(manifestPath, m); err != nil {
-		return err
-	}
-	stampVault(vaultRoot, manifestPath)
-	return nil
-}
-
-// atomicWriteManifest writes via a sibling temp file and rename so a
-// crash mid-write cannot corrupt the on-disk manifest.
-func atomicWriteManifest(path string, m *Manifest) error {
-	tmp := path + ".tmp"
-	if err := WriteManifest(tmp, m); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("rename manifest: %w", err)
-	}
-	return nil
+	// Was atomicWriteManifest: a hand-rolled WriteManifest-to-".tmp" plus
+	// os.Rename. WriteManifest now owns the temp file and the rename, so the
+	// wrapper had nothing left to do, and it stamps, so the stampVault call
+	// that used to follow this line is gone with it.
+	return WriteManifest(vaultRoot, manifestPath, m)
 }
 
 // VaultRelPath returns the vault-relative form of an absolute path,

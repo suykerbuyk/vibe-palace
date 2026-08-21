@@ -88,7 +88,7 @@ func runAuditVault(vault *storage.Vault, write, accept bool, date string, out io
 		// let the list rot back into an undifferentiated blob (the bug sourceaudit
 		// shipped and fixed at 203).
 		next := prior.Regenerate(report.Findings())
-		if err := next.Save(basePath); err != nil {
+		if err := next.Save(vault.Root, basePath); err != nil {
 			fmt.Fprintf(os.Stderr, "vp audit vault: %v\n", err)
 			return cli.ExitSystem
 		}

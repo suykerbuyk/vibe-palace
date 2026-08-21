@@ -197,10 +197,12 @@ func TestSave_IsDeterministicAndSorted(t *testing.T) {
 		"a": {Reason: "r", Accepted: []string{"y", "x"}},
 	}}
 
-	if err := base.Save(p1); err != nil {
+	// "" is the correct vault root here: a.json/b.json are bare temp files, not
+	// vault paths, and this test is about byte-reproducibility, not stamping.
+	if err := base.Save("", p1); err != nil {
 		t.Fatal(err)
 	}
-	if err := base.Save(p2); err != nil {
+	if err := base.Save("", p2); err != nil {
 		t.Fatal(err)
 	}
 

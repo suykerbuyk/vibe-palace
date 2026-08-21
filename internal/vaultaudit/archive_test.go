@@ -206,7 +206,7 @@ func TestRun_AcceptedDebtPassesButIsStillCounted(t *testing.T) {
 		DimArchiveRoundTrip: {Reason: "owned by capture-note-archive-link-never-closes",
 			Accepted: []string{stranded}},
 	}}
-	if err := base.Save(filepath.Join(vault.Root, filepath.FromSlash(BaselineRelPath))); err != nil {
+	if err := base.Save(vault.Root, filepath.Join(vault.Root, filepath.FromSlash(BaselineRelPath))); err != nil {
 		t.Fatalf("save baseline (does Audits/ exist? phase 0 wired it): %v", err)
 	}
 
@@ -247,7 +247,7 @@ func TestRun_FixingTheBugForcesTheBaselineToShrink(t *testing.T) {
 	base := Baseline{Dimensions: map[string]DimensionBaseline{
 		DimArchiveRoundTrip: {Reason: "known debt", Accepted: []string{stranded}},
 	}}
-	if err := base.Save(filepath.Join(vault.Root, filepath.FromSlash(BaselineRelPath))); err != nil {
+	if err := base.Save(vault.Root, filepath.Join(vault.Root, filepath.FromSlash(BaselineRelPath))); err != nil {
 		t.Fatal(err)
 	}
 	if report, err := Run(vault); err != nil || report.Failed() {
