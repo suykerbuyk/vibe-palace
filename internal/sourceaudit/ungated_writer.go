@@ -65,6 +65,38 @@ const (
 // ungatedVaultWriters reports a command registered WITHOUT mutates() whose call
 // graph reaches a stamped vault write.
 //
+// # RULING (2026-08-21): KEPT, with a narrowed job — it is NOT superseded
+//
+// ADR-010 said this rule would be "superseded rather than deleted" by the
+// derived predicate, and warned against leaving it green and pointless beside
+// its replacement. The derivation landed (derived_gate.go), and the honest
+// verdict is that it does NOT supersede this rule, for one measurable reason:
+// THE TWO ANCHOR SETS DO NOT COVER THE SAME MUTATIONS.
+//
+// The derivation anchors on the five funnel primitives. Two vault mutations
+// reach none of them and are visible ONLY here:
+//
+//   - surface.WriteFormat — performs its own temp-write-and-rename because
+//     internal/surface cannot import internal/atomicfile (atomicfile imports
+//     surface; the cycle is real and no placement list closes it). It is
+//     EXEMPT-A from the funnel by construction, so a command whose only vault
+//     write is a format stamp derives non-mutating.
+//   - storage.DeleteDrawer — rewrites its JSONL in place through
+//     os.OpenFile(O_RDWR), not through any funnel primitive.
+//
+// Delete this rule and those two stop being checked by anything. Its remaining
+// job is therefore precisely: BE THE ANCHOR FOR THE VAULT MUTATIONS THE FUNNEL
+// STRUCTURALLY CANNOT CONTAIN. Two of its anchors — storage.AppendDrawer and
+// the vaultfs.Delete/Move policy layer — are now genuinely redundant with F1
+// and F2 and are kept only because narrowing the set would change what this
+// rule reports, which is a behaviour change this unit was not permitted to
+// make.
+//
+// A second, weaker reason to keep it: it is syntactic, so it survives a
+// toolchain the SSA builder cannot handle. That is not hypothetical — x/tools
+// v0.43.0 panics on Go 1.27's stdlib unless the build is scoped (see
+// buildScoped). When the derivation cannot run, this rule still can.
+//
 // # Why this is not a table
 //
 // cmd/vp/main_test.go's TestMutatingCommandsAreGated pins a hand-maintained map

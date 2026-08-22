@@ -92,6 +92,20 @@ test: build fmt-check vet ## Run unit tests — fast, no model download
 live-canary: ## Run the live-vault bootstrap canary uncached and verbose (SKIP is printed, not hidden)
 	go test -count=1 -v -run TestBootstrapLiveVaultStillRestoresASession ./internal/tools/
 
+# THE ONLY THING THAT RUNS THE DERIVED-GATE RULE. That rule type-checks the whole
+# module (go/packages + SSA + a VTA call graph) to derive which commands and tools
+# reach a vault-write sink, and it self-skips under -short — which `make test` and
+# every CI job except `source-audit` pass. So if this target and its CI job go
+# away, the rule runs NOWHERE and is green by never looking.
+#
+# No -run filter: the whole package runs, because a filter is one rename away from
+# silently matching nothing. No -race either: this is single-goroutine analysis
+# over an immutable source tree, and -race costs ~5x for nothing. The `test`
+# target keeps -race for the code that actually has concurrency.
+.PHONY: source-audit
+source-audit: ## Run the source audit INCLUDING the type-checked derived-gate rule (no -short)
+	go test -count=1 ./internal/sourceaudit/
+
 .PHONY: test-full
 test-full: build vet ## Run full test suite including ONNX integration tests
 	go test -count=1 -cover ./...

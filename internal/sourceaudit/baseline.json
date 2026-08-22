@@ -1,6 +1,58 @@
 {
   "entries": [
     {
+      "id": "derived-gate-divergence cli.cmdCheck",
+      "reason": "FALSE POSITIVE via closure attribution, and the SAME artifact the sibling entry `ungated-vault-writer main.cmdCheck` records — reproduced here independently by a type-checked call graph, which is worth noting: two analyses with different anchor sets and different resolution models produce the same wrong answer for the same structural reason. The witness runs cmdCheck -> runCheck -> binaryInfo -> registeredToolCount -> tools.RegisterAll -> IngestCommitMsgTool -> [closure] -> atomicfile.Write. `vp check` COUNTS registered tools; it never invokes one. The derivation cannot tell registration from invocation because it deliberately attributes a closure's calls to the function that BUILDS it — without that edge no MCP handler is visible at all (see reachesSink). DECLARED WINS: the only vault write `vp check` performs is the transient, self-deleting .vp-fs-probe-*, and gating a diagnostic against a newer vault removes the tool an operator reaches for precisely when the surface mismatch is what they are diagnosing. Accepted."
+    },
+    {
+      "id": "derived-gate-divergence cli.cmdConfigSync",
+      "reason": "🔴 THE LOAD-BEARING UNDER-DERIVATION, and the one that refutes generating the flag from the derived answer. Derived FALSE because `vp config sync` reaches no funnel primitive: internal/reconcile writes RAW — os.WriteFile/os.Remove/os.Rename at upgrade.go:80,84,88 and template_tree.go:502,510,555 — and the package contains no atomicfile or vaultfs call at all. The call graph is not lying; the funnel genuinely does not run there. DECLARED WINS: `vp config sync --prune` PRUNES what it writes, and adopting the derived answer would silently UNGATE it. That is a coverage regression of exactly the kind that sank the original move-the-gate thesis, and ADR-010's Consequence 'No coverage is lost — vp config sync --prune and vp audit vault --accept keep the gate they have today' is FALSE for a naive derivation on this half (it holds for vp audit vault --accept only because Phase 4 routed vaultaudit.Baseline.Save through atomicfile.Write). FIX DIRECTION, owned by the plan task's Phase 1: route internal/reconcile through the funnel, after which this entry goes STALE and must be deleted. Accepted until then."
+    },
+    {
+      "id": "derived-gate-divergence cli.cmdHook",
+      "reason": "DELIBERATE, and unlike the cmdCheck/cmdMCP entries the path is GENUINE: cmdHook -> runHook -> hook.Run -> archive.Create -> vaultfs.RenameNoLock is a real vault mutation reached by a real call chain. DECLARED WINS anyway, on a ruling that predates this derivation: internal/surface/gate.go documents EnforceWarnOnly as existing 'so an out-of-date binary can never block a capture or a read'. A capture that fail-stops is a capture that is LOST, and losing history to protect a schema is the wrong trade. This is one of the two disagreements the plan task predicted would be correct rather than fixable. Accepted."
+    },
+    {
+      "id": "derived-gate-divergence cli.cmdMCP",
+      "reason": "DELIBERATE, and the decision predates this rule. internal/mcp/tools.go: 'There is deliberately NO MCP startup gate — vp is MCP-primary, so the server stays up and the remediation surfaces in-band as a tool error payload.' Writes are gated PER TOOL at Registry.gateIfMutating, which both dispatch paths route through, and since 6254549 that gate is param-aware. A CLI-level mutates() here would refuse to start the server outright, taking vp_bootstrap_context away exactly when an agent needs to discover what is wrong. HONEST NOTE ON THE PATH: the witness runs cmdMCP -> serveMCP -> bootstrap -> tools.RegisterAll -> a tool constructor -> [closure] -> atomicfile.Write, which is REGISTRATION, not invocation — the same closure-attribution artifact as cli.cmdCheck. The exemption is real; this particular path is not evidence for it. Accepted."
+    },
+    {
+      "id": "derived-gate-divergence cli.cmdMCPServe",
+      "reason": "DELIBERATE, same ruling and same artifact as cli.cmdMCP: no startup gate, per-tool gating at the dispatch seam, and a witness path that is tool REGISTRATION rather than invocation. Note the second, independent predicate that governs this command — tools.ReadOnlyServeToolNames, the fail-closed allow-list that decides which tools a read-only `vp mcp serve` may expose — is deliberately NOT derived and must stay hand-declared: a derived predicate computes FALSE for the git-channel tools, so deriving that list would publish vp_vault_sync and vp_vault_tidy on a bearer-authed read-only HTTP surface. Accepted."
+    },
+    {
+      "id": "derived-gate-divergence cli.cmdMigrate",
+      "reason": "OVER-DECLARATION, harmless, and left alone deliberately. `vp migrate` is a parent dispatch shell: its constructor returns a cli.Command carrying Name/Synopsis/Description/Subcommands and NO Run, so there is nothing for the gate to refuse and the derived FALSE is correct. Its five subcommands are each separately wrapped in mutates() and each derive TRUE, so no coverage depends on this wrapper. DECLARED WINS by inaction rather than by argument: removing mutates() here would CHANGE WHAT IS GATED, and nothing in this step is permitted to do that. If a later unit wants the tidy-up, it is a one-line change with its own ruling. Accepted."
+    },
+    {
+      "id": "derived-gate-divergence cli.cmdVaultCommit",
+      "reason": "🔴 GIT-MEDIATED — derived FALSE correctly, and gated anyway. `vp vault commit` mutates vault HISTORY exclusively through git, and the git channel is exempt from the write funnel BY VERB (a merge is N files in one operation, which no per-path primitive models; recorded on internal/sourceaudit/vault_write_funnel.go and re-ruled 2026-08-20). So it reaches no sink by the funnel's own definition, and a derivation that GENERATED the flag would silently ungate it. DECLARED WINS: git-mediated authorship is still authorship — `git merge` can leave conflict markers in resume.md — and a stale binary must refuse it. This entry, with its two siblings mcp.vp_vault_sync and mcp.vp_vault_tidy, is the reason the derivation pins rather than generates. Accepted, permanently: this one has no fix direction, because nothing here is broken."
+    },
+    {
+      "id": "derived-gate-divergence cli.cmdVaultTidy",
+      "reason": "🔴 GIT-MEDIATED — see cli.cmdVaultCommit for the full ruling. `vp vault tidy` classifies the working tree and commits capture artifacts through git; it reaches no funnel primitive. Adopting the derived FALSE would ungate it AND would settle the deliberate deferral recorded at cmd/vp/commands.go:113-115 by accident rather than by a decision. DECLARED WINS. Accepted, permanently."
+    },
+    {
+      "id": "derived-gate-divergence mcp.vp_collect_wrap_state",
+      "reason": "🔴 FALSE POSITIVE FROM A SHARED GENERIC INSTANTIATION — an imprecision of VTA that neither ADR-010 nor the plan task anticipated, both of which worried only about CHA over-approximation. The witness runs CollectWrapStateTool -> [closure] -> wrapstate.Collect -> wrapstate.OldestRootCommit -> slices.Backward[[]string string]$1 -> storage.pruneEmptyDirs$2 -> vaultfs.RemoveNoLock. `slices.Backward` is instantiated ONCE for []string and shared by its two callers in this module — wrapstate/gitprobe.go:418 and storage/kg_migrate.go:541 — so VTA merges the range-over-func yield closures of a git-log reader and a directory pruner into one node. wrapstate.Collect is read-only; it runs git probes and parses files. DECLARED WINS. GENERALISATION WORTH KEEPING: a derived verdict is only as trustworthy as its witness path, which is why the analysis emits one — this divergence is indistinguishable from a real finding without it. Accepted."
+    },
+    {
+      "id": "derived-gate-divergence mcp.vp_init",
+      "reason": "UNDER-DERIVATION, same class as cli.cmdConfigSync and a different code path. vp_init derives FALSE because initProjectHandler writes with bare os.MkdirAll + os.WriteFile (internal/tools/system_tools.go, the .vibe-palace.toml and the Projects/<slug>/ scaffold) and reaches no funnel primitive. DECLARED WINS: it creates vault structure, and a binary behind its vault must not scaffold into it. Adopting the derived answer would ungate the one tool whose whole job is creating things. FIX DIRECTION: route those writes through atomicfile, after which this entry goes stale. Note vp_init is ALSO the chicken-and-egg case the plan task records for the CLI side (cmdInit creates the vault it would be gated against) — but cmdInit is DECLARED gated and derives TRUE, so it does not appear here; only the MCP half diverges. Accepted."
+    },
+    {
+      "id": "derived-gate-divergence mcp.vp_refresh_index",
+      "reason": "🔴 THE ONE ENTRY WHERE THE DECLARED ANSWER IS NOT DEFENDED — a REAL finding, independently confirming a known open defect rather than exempting one. Derived TRUE on a genuine path: RefreshIndexTool -> refreshIndexHandler -> [closure] -> backfillFromArchives -> capture.Indexer.IndexTranscript -> storage.Vault.AppendDrawer -> atomicfile.Write. The tool is registered Mutating:false while it demonstrably writes drawers, .vec cache files, and can create palace/<slug>/ outright. This is the open task `refresh-index-reports-rebuilt-while-writing-nothing`, whose body has assigned the flag fix to 'whichever unit takes this task' since iter 322 and whose retirement was REFUSED at 339 on exactly this. It is NOT fixed here for one reason: flipping the flag moves internal/mcp/tool_surface.golden.json, which is a SURFACE change requiring its own ruling, and this step is forbidden from changing what is gated. Recorded as accepted debt with a named owner; when that task lands, this entry goes stale and must be deleted. Accepted, under protest."
+    },
+    {
+      "id": "derived-gate-divergence mcp.vp_vault_sync",
+      "reason": "🔴 GIT-MEDIATED — the sharpest instance of the ruling recorded on cli.cmdVaultCommit, because this tool sits on the recovery path. Derived FALSE: there is no funnel sink anywhere in internal/storage's vaultpull.go, vaultsync.go, vaultsyncflow.go or vaulttidy.go (verified by inspection and by this graph), so its vault writes are git's. DECLARED WINS — it commits and pushes vault history and a stale binary must refuse that. Adopting the derived answer would have LOOKED like a bonus, because the MCP-pull lockout ADR-010 records would dissolve on its own; it would have dissolved as a SIDE EFFECT while push and sync quietly lost their gate. The lockout was instead fixed deliberately in 6254549, by making the gate param-aware so action:'pull' passes while push and sync are still refused. Two ways to reach the same symptom, one of which also removes a gate: that is the whole argument for pinning rather than generating. Accepted, permanently."
+    },
+    {
+      "id": "derived-gate-divergence mcp.vp_vault_tidy",
+      "reason": "🔴 GIT-MEDIATED — see mcp.vp_vault_sync. Derived FALSE (storage.TidyScan classifies, storage.TidyVault stages and commits, both through git); DECLARED gated, and it stays gated. Its read-only invocation — dry_run:true, which returns after TidyScan having committed nothing — is admitted by the param-aware gate landed in 6254549 rather than by ungating the tool. Accepted, permanently."
+    },
+    {
       "id": "ungated-vault-writer main.cmdCheck",
       "reason": "FALSE POSITIVE via closure attribution, and separately a considered exemption. The reported path is main.cmdCheck -> main.runCheck -> main.binaryInfo -> main.registeredToolCount -> tools.RegisterAll -> a tool constructor's handler closure -> atomicfile.Write: `vp check` COUNTS registered tools, it does not invoke them. The only vault write `vp check` performs is the transient, self-deleting .vp-fs-probe-* that CheckVaultFilesystem creates to test whether the filesystem accepts ':' in a filename — internal/check/vaultfs.go records the matching decision that the MCP-side vp_check stays Mutating:false for it. Gating a diagnostic against a newer vault would remove the tool an operator reaches for precisely when the surface mismatch is what they are diagnosing. Accepted."
     },
@@ -91,6 +143,10 @@
     {
       "id": "uninvoked sourceaudit.Run",
       "reason": "TEST-ONLY BY CONSTRUCTION, same as its siblings LoadBaseline/Diff/Save/Regenerate: this gate IS a go test, so its entry point has no non-test caller. It was HIDDEN until 206 — the bare-name matcher counted every exec.Cmd.Run() in the tree as a call to it. Surfaced by the import-scoped fix. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — declared here, enforced by the baseline ratchet; do not wire a fake caller."
+    },
+    {
+      "id": "uninvoked sourceaudit.RunModule",
+      "reason": "TEST-ONLY BY CONSTRUCTION, exactly like its sibling sourceaudit.Run above: this gate IS a go test, so its entry point has no non-test caller. TestSourceAuditGate calls it. 🔴 AND IT MUST STAY THAT WAY — this is the one entry here where test-only is a REQUIREMENT rather than an accepted smell. RunModule pulls in golang.org/x/tools (go/packages, ssa, cha, vta) to build a type-checked call graph. internal/sourceaudit is not linked into cmd/vp — verified with `go list -deps ./cmd/vp`, which names neither sourceaudit nor golang.org/x/tools — so the dependency costs the shipped binary nothing, which is what ADR-010 §3 asserted and what makes deriving affordable at all. Wiring it into `vp check` to give it a 'real' caller would link an entire program-analysis toolkit into a CLI that must start in milliseconds. Do not wire a caller. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — declared here, enforced by the baseline ratchet."
     },
     {
       "id": "uninvoked storage.Vault.GetEntity",

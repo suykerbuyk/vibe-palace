@@ -10,6 +10,10 @@ ruling is unchanged; the amendment records a better mechanism than this page
 originally described, a prerequisite it did not identify, and a trap in the
 naive reading of the Decision.
 
+**Amended 2026-08-22** — see *Amendment: what building the derivation found*.
+Two statements on this page turned out to be wrong once the derivation was
+built. The Decision still stands.
+
 ## Context
 
 The MCP surface gate refuses a vault write when the vault's recorded surface
@@ -320,6 +324,82 @@ printed.
 Any derivation must assert **sink presence as a hard error** before trusting
 reachability output. A call graph missing a sink reports the commands that reach
 it as clean, and reports it in exactly the same shape as a correct result.
+
+## Amendment (2026-08-22): what building the derivation found
+
+The derivation was built (step 3 of the ordering above). It corrected two things
+this page asserted.
+
+### 1. "Derived" means PINNED, not GENERATED — because the git ruling collides with it
+
+The Decision says the predicate "becomes a fact a check derives ... with the
+derivation pinned so a divergence fails the build." That is ambiguous between
+two implementations, and only one of them is safe:
+
+- **Generate** — the derived answer becomes the flag.
+- **Pin** — the flag stays hand-declared, and a check fails the build on any
+  disagreement that nobody has ruled on in writing.
+
+**Generate is wrong**, for a reason neither this page nor the plan anticipated:
+**the git channel is exempt from the funnel** (ruled by verb, 2026-08-20). A
+tool or command whose vault writes are git-mediated therefore reaches no funnel
+sink and derives as non-mutating — *correctly, by the funnel's own definition*.
+`vp_vault_sync`, `vp_vault_tidy` and `vault commit` are exactly that shape, and
+generating would have silently ungated all three.
+
+Two rulings that were each right in isolation combine into a hole. Under **pin**
+the same disagreement becomes a required written exception — *"derives false
+because its writes are git-mediated and git is exempt from the funnel; stays
+gated"* — a reviewable artifact instead of a silent behaviour change.
+
+**Implemented as pin.** No command's or tool's effective gate changed:
+`cmd/vp/commands.go`, `internal/tools/mutating.go` and the MCP surface golden
+were all untouched by the derivation landing.
+
+### 2. `ungated-vault-writer` is KEPT, not superseded — this page predicted wrong
+
+The Consequences above state that the syntactic rule is "superseded rather than
+deleted." Measured, that is false: **the two anchor sets do not overlap.**
+`surface.WriteFormat` (the real import cycle) and `storage.DeleteDrawer`
+(`os.OpenFile(O_RDWR)`) reach no funnel primitive at all and are visible *only*
+to the syntactic rule.
+
+A second reason, and not hypothetical: the syntactic rule needs no SSA, so it
+survives a toolchain the SSA builder cannot handle — which has already happened
+once (x/tools v0.43.0 panics on Go 1.27's stdlib unless scoped to this module's
+packages).
+
+The rule's narrowed job is recorded in its own doc comment. It is not left green
+and pointless; it covers what the derivation structurally cannot see.
+
+### The derivation independently rediscovered a known defect
+
+`vp_refresh_index` derives **true** on a genuine path to `atomicfile.Write`
+while registered `Mutating: false`. That disagreement is recorded under protest:
+the declared answer is wrong and undefended, left in place only because flipping
+it moves the surface golden.
+
+It is the same defect a human refused to retire on evidence at iteration 339
+(`refresh-index-reports-rebuilt-while-writing-nothing`). A machine and a person
+reaching it independently, from different directions, is the strongest available
+evidence that the mechanism works.
+
+### Cost, and the gate that keeps it honest
+
+Type-checking the module costs ~10 s alone and ~49 s under `-race -cover`, so
+the derived-gate check self-skips under `-short`.
+
+**That skip was landed together with the thing that runs it**, because verifying
+first showed that *nothing* in CI ran the suite without `-short`: the `test` job
+is `-short`, `windows-lock` is `-short` and `-run`-filtered, and `make test-full`
+/ `make cover-full` are manual targets no workflow invokes. A bare
+`testing.Short()` skip would have left the rule running in no automated context
+at all — green, pointless, and the exact failure mode this page refuses for
+`ungated-vault-writer`.
+
+So it runs via `make source-audit` and a dedicated `source-audit` CI job on every
+push and pull request. **Delete either and the rule runs nowhere.** The syntactic
+rule stays ungated and still runs under `-short`.
 
 ## Related
 

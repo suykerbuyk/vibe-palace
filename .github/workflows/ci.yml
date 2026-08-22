@@ -69,6 +69,23 @@ jobs:
         run: go test -count=1 -short -timeout 5m -run TestCheckEmitsVaultProjectRow ./cmd/vp/
       - run: go test -short -race -cover ./...
 
+  # 🔴 THE ONLY JOB THAT RUNS WITHOUT -short, AND THAT IS ITS ENTIRE PURPOSE.
+  # The derived-gate rule in internal/sourceaudit type-checks the whole module to
+  # derive which commands and tools reach a vault-write sink, then fails on any
+  # divergence from the hand-declared answer that nobody has ruled on in writing.
+  # It costs ~10s, so it self-skips under -short — and `test` above is -short,
+  # windows-lock is -short and -run-filtered, and make test-full / cover-full are
+  # manual targets no job invokes. Delete this job and the rule runs nowhere.
+  # It needs no model cache and no -race: source analysis, single-goroutine.
+  source-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - run: make source-audit
+
   # Windows-native verification of the vaultlock byte-range lock
   # (flock_windows.go). The rest of CI is Linux-only, where the windows-tagged
   # lock file is never compiled, so this is the sole runtime proof of the

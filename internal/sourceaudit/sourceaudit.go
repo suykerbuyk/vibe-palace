@@ -182,6 +182,16 @@ func loadPackages(roots ...string) ([]file, error) {
 
 // Run performs every source audit over the given roots and returns the findings,
 // sorted by ID so the output is stable and diffable.
+// Run reports the SYNTACTIC findings over a set of source roots.
+//
+// 🔴 IT DOES NOT INCLUDE THE DERIVED GATE PREDICATE, and the split is a
+// contract difference rather than an oversight: these four rules analyse a
+// DIRECTORY OF FILES and are happy with a synthetic fixture tree, while the
+// derivation analyses A GO MODULE — it needs go.mod, a resolvable dependency
+// graph and a working toolchain to type-check against. Folding it in here made
+// every fixture-tree test fail with "no go.mod above /tmp/...", which is the
+// honest signal that one function was being asked two questions. RunModule is
+// the other question; TestSourceAuditGate runs both against this repository.
 func Run(roots ...string) ([]Finding, error) {
 	files, err := loadPackages(roots...)
 	if err != nil {

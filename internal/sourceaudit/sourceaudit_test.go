@@ -519,6 +519,18 @@ func TestSourceAuditGate(t *testing.T) {
 	}
 
 	if *updateBaseline {
+		// 🔴 REGENERATION RUNS THE TYPE-CHECKED HALF TOO, -short OR NOT.
+		// Regenerate rebuilds the file from exactly what it is handed, so
+		// regenerating from a partial finding set would DELETE every entry
+		// belonging to a rule that did not run — here, all thirteen
+		// derived-gate rulings. Regeneration is a deliberate manual act, never
+		// part of `make test`, so paying the ~10 s is correct.
+		moduleFindings, err := RunModule(repoRoots[0])
+		if err != nil {
+			t.Fatalf("audit (module): %v", err)
+		}
+		findings = append(findings, moduleFindings...)
+
 		// Regenerate, do NOT rebuild from scratch: a survivor keeps the reason a human
 		// wrote for it. Stamping TODO over every entry on each regen would erase the
 		// triage and let the list rot back into an undifferentiated blob.
@@ -538,7 +550,14 @@ func TestSourceAuditGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load baseline: %v", err)
 	}
-	added, stale := base.Diff(findings)
+	// 🔴 DIFF ONLY THE KINDS THIS TEST COMPUTED. The derived-gate rule has its
+	// own test because it is expensive and -short-gated; its entries are in the
+	// same baseline file, and Diff reports every entry it did not see a finding
+	// for as STALE. Without this partition, a `-short` run would report all
+	// thirteen derived-gate rulings as fixed-and-forgotten and fail — the
+	// baseline's honesty mechanism turned into a false alarm by a test that
+	// simply did not look. A kind is diffed by whoever computed it.
+	added, stale := base.withoutKind(KindDerivedGateDivergence).Diff(findings)
 
 	for _, f := range added {
 		t.Errorf("NEW source-audit finding (%s)\n  %s\n  at %s\n  %s\n"+
@@ -551,4 +570,63 @@ func TestSourceAuditGate(t *testing.T) {
 			"  It was fixed and the baseline was not updated. Remove it from %s.\n"+
 			"  (The baseline may only SHRINK — that is what keeps it honest.)", e.ID, baselinePath)
 	}
+}
+
+// TestDerivedGateBaselineIsCurrent is the derived half of the ratchet, split out
+// of TestSourceAuditGate because it is -short-gated and that one is not.
+//
+// It runs the same two-directional diff over the same baseline file, restricted
+// to its own kind: a NEW divergence must be ruled on in writing, and a
+// divergence that has been FIXED must have its entry removed. The baseline may
+// only shrink.
+func TestDerivedGateBaselineIsCurrent(t *testing.T) {
+	skipUnlessFullSuite(t)
+
+	findings, err := RunModule(repoRoots[0])
+	if err != nil {
+		t.Fatalf("audit (module): %v", err)
+	}
+
+	base, err := LoadBaseline(baselinePath)
+	if err != nil {
+		t.Fatalf("load baseline: %v", err)
+	}
+	added, stale := base.onlyKind(KindDerivedGateDivergence).Diff(findings)
+
+	for _, f := range added {
+		t.Errorf("NEW derived-gate divergence\n  %s\n  %s\n"+
+			"  The derived surface-gate predicate disagrees with the declared one for something nobody has "+
+			"ruled on. It is EITHER a real gating mistake OR an imprecision of the analysis — read the "+
+			"witness path above to tell which, then add it to %s WITH A REASON saying what derives, what is "+
+			"declared, and why the declared answer wins. Never adopt the derived answer silently.",
+			f.Symbol, f.Detail, baselinePath)
+	}
+	for _, e := range stale {
+		t.Errorf("STALE baseline entry: %q is recorded as an accepted divergence but the derived and declared\n"+
+			"  predicates now AGREE. Remove it from %s.\n"+
+			"  (The baseline may only SHRINK — that is what keeps it honest.)", e.ID, baselinePath)
+	}
+}
+
+// withoutKind and onlyKind partition a baseline so each gate test diffs exactly
+// the kinds it computed. They are test-only: the production Diff deliberately
+// has no notion of a partial run, because a rule that did not run is not a
+// finding that went away.
+func (b Baseline) withoutKind(kind string) Baseline {
+	return b.filterKind(kind, false)
+}
+
+func (b Baseline) onlyKind(kind string) Baseline {
+	return b.filterKind(kind, true)
+}
+
+func (b Baseline) filterKind(kind string, keep bool) Baseline {
+	prefix := kind + " "
+	var out Baseline
+	for _, e := range b.Entries {
+		if strings.HasPrefix(e.ID, prefix) == keep {
+			out.Entries = append(out.Entries, e)
+		}
+	}
+	return out
 }
