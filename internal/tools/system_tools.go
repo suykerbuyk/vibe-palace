@@ -740,6 +740,14 @@ func RefreshIndexTool(engine *search.Engine, vault *storage.Vault) mcp.Tool {
 			"not achieve.",
 		Schema:  refreshIndexSchema,
 		Handler: refreshIndexHandler(engine, vault),
+		// Mutating because it WRITES, on three independent paths: the archive
+		// backfill reaches storage.Vault.AppendDrawer -> atomicfile.Write, the
+		// embed pass writes .vec cache files on every cache miss, and Rebuild
+		// can create palace/<slug>/ outright for a project that had no store.
+		// It was registered non-mutating for a long time, and the derived call
+		// graph reported the disagreement as accepted-under-protest debt for
+		// exactly that long.
+		Mutating: true,
 	}
 }
 

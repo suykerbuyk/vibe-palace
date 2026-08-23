@@ -185,3 +185,132 @@ func TestRefreshIndexStillRefusesWhenThereIsNothingToBackfill(t *testing.T) {
 		t.Errorf("refusal still asserts no backfill path exists, which this unit made false: %q", err)
 	}
 }
+
+// --- Ratchet 1 (refresh-index-reports-rebuilt-while-writing-nothing) ---
+//
+// The task proposed asserting that a "rebuilt" status implies at least one
+// observable write under palace/<project>/. The chair RULED that expectation
+// WRONG and this test deliberately does not encode it.
+//
+// Rebuild builds the index IN MEMORY (e.indexes[project]); .vec files are
+// written only as a cache-MISS side effect. So a rebuild of a project whose
+// vectors are all cached correctly writes nothing, and the control case the
+// task recorded against `dotfiles` — healthy store, working index, zero
+// filesystem effect — was legitimate behaviour rather than the defect.
+//
+// What the status must actually mean is narrower and is what is pinned here:
+// "rebuilt" is claimed ONLY when there was something to refresh, the refusal
+// fires when there was not, and the counts that make the claim falsifiable are
+// present on the success path. That is a status that CAN fail, which was the
+// task's real complaint.
+
+// TestRefreshIndexRebuiltOnlyWhenThereWasSomethingToRefresh is the ratchet: a
+// hardcoded `{"status":"rebuilt"}` cannot satisfy both halves at once.
+func TestRefreshIndexRebuiltOnlyWhenThereWasSomethingToRefresh(t *testing.T) {
+	t.Run("nothing to refresh refuses instead of reporting rebuilt", func(t *testing.T) {
+		vault := storage.NewVault(t.TempDir())
+		cfg := storage.Config{SearchDefaultLimit: 10}
+		eng := search.NewEngine(embedder.NewMock(384), vault, cfg)
+		t.Cleanup(func() { eng.Close() })
+
+		tool := RefreshIndexTool(eng, vault)
+		params, _ := json.Marshal(refreshIndexParams{Project: "no-such-corpus"})
+		res, err := tool.Handler(context.Background(), params)
+		if err == nil {
+			t.Fatalf("want a refusal when there is nothing to refresh, got result %v", res)
+		}
+		if res != nil {
+			t.Errorf("a refusal must not also return a result: %v", res)
+		}
+	})
+
+	t.Run("something to refresh reports rebuilt with falsifiable counts", func(t *testing.T) {
+		const project = "ratchet-proj"
+		vault, eng := archivedProjectFixture(t, project,
+			`{"type":"user","message":{"content":"index the ratchet corpus"}}`+"\n")
+
+		tool := RefreshIndexTool(eng, vault)
+		params, _ := json.Marshal(refreshIndexParams{Project: project})
+		res, err := tool.Handler(context.Background(), params)
+		if err != nil {
+			t.Fatalf("refresh with an archive to ingest must succeed: %v", err)
+		}
+		m, ok := res.(map[string]any)
+		if !ok {
+			t.Fatalf("result is %T, want map[string]any", res)
+		}
+		if m["status"] != "rebuilt" {
+			t.Errorf("status = %v, want rebuilt", m["status"])
+		}
+
+		// The counts are what make "rebuilt" falsifiable. A status with no
+		// counts behind it is the unfalsifiable success this task is about.
+		for _, k := range []string{
+			"drawers", "iteration_chunks", "indexed", "embedded", "cache_hits",
+			"reaped", "archives_found", "archives_ingested", "archive_drawers",
+			"had_palace_store",
+		} {
+			if _, present := m[k]; !present {
+				t.Errorf("success payload is missing %q — the status is unfalsifiable without it", k)
+			}
+		}
+
+		// And at least one of them must be non-zero, or "rebuilt" is describing
+		// nothing. NOT a filesystem assertion: this counts work done, which is
+		// the claim the status actually makes.
+		if m["indexed"].(int) == 0 && m["archives_ingested"].(int) == 0 {
+			t.Errorf("reported rebuilt with indexed=0 and archives_ingested=0: %v", m)
+		}
+	})
+}
+
+// TestRefreshIndexCacheHitRebuildIsLegitimate is the CONTROL CASE, recorded as
+// a test so the ruling cannot be re-litigated from the symptom alone.
+//
+// A second refresh re-embeds the same corpus, so every vector is a cache hit
+// and the pass writes no new .vec file. That is a legitimate "rebuilt" —
+// indexed > 0 with embedded == 0 — and any future ratchet that demands a
+// filesystem write per rebuild would red this and be WRONG to.
+func TestRefreshIndexCacheHitRebuildIsLegitimate(t *testing.T) {
+	const project = "control-proj"
+	vault, eng := archivedProjectFixture(t, project,
+		`{"type":"user","message":{"content":"control corpus for the cache-hit ruling"}}`+"\n")
+
+	tool := RefreshIndexTool(eng, vault)
+	params, _ := json.Marshal(refreshIndexParams{Project: project})
+
+	if _, err := tool.Handler(context.Background(), params); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	res, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("second refresh must still succeed — the corpus exists: %v", err)
+	}
+	m := res.(map[string]any)
+	if m["status"] != "rebuilt" {
+		t.Fatalf("status = %v, want rebuilt on the cache-hit pass", m["status"])
+	}
+	if m["indexed"].(int) == 0 {
+		t.Fatalf("control case is degenerate: indexed = 0, so nothing was re-embedded")
+	}
+	// The point of the control: embedded may legitimately be 0 here. Assert the
+	// rebuild is still reported as real work, via the count that describes it.
+	if m["cache_hits"].(int) == 0 && m["embedded"].(int) == 0 {
+		t.Errorf("neither cache_hits nor embedded is set: %v", m)
+	}
+}
+
+// TestRefreshIndexIsRegisteredMutating pins the flag itself. The tool writes on
+// three paths — AppendDrawer via the backfill, .vec files on a cache miss, and
+// creating palace/<slug>/ — so a stale binary must refuse it, and it must never
+// be served on a read-only `vp mcp serve`.
+func TestRefreshIndexIsRegisteredMutating(t *testing.T) {
+	if tool := RefreshIndexTool(nil, nil); !tool.Mutating {
+		t.Error("vp_refresh_index must be registered Mutating: it writes drawers, .vec cache files, and can create palace/<slug>/")
+	}
+	for _, n := range ReadOnlyServeToolNames {
+		if n == "vp_refresh_index" {
+			t.Error("vp_refresh_index must not be on the read-only serve allow-list: it is a writer")
+		}
+	}
+}

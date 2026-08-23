@@ -66,13 +66,23 @@ import "sort"
 // # Known limit, stated rather than hidden
 //
 // Fail-closed protects against tools nobody classified. It does NOT protect
-// against a tool affirmatively misclassified INTO this list. There is one live
-// example: vp_refresh_index is registered non-mutating while Rebuild writes
-// .vec files, so it appears here and is served read-only today. That is the
-// open defect `refresh-index-reports-rebuilt-while-writing-nothing`; it is not
-// created by this split and is deliberately not fixed here, because changing
-// the flag moves internal/mcp/tool_surface.golden.json and that is a surface
-// change, not a refactor.
+// against a tool affirmatively misclassified INTO this list: naming a writer
+// here serves it read-only, and no property of the tool is consulted to
+// contradict that. The limit is structural and remains — what has changed is
+// that there is no longer a live example of it.
+//
+// There was one. vp_refresh_index sat in this list because it was registered
+// non-mutating, while its backfill wrote drawers, its embed pass wrote .vec
+// files, and Rebuild could create palace/<slug>/ outright. It was removed when
+// that flag was corrected. That closed the MISCLASSIFICATION, not the task it
+// came from — `refresh-index-reports-rebuilt-while-writing-nothing` still owns
+// a missing vaultaudit dimension and the drawer backfill for non-archived
+// history. The derived call graph had been reporting the disagreement as
+// accepted-under-protest debt since the derivation landed.
+//
+// The lesson that outlives the specimen: an entry earns its place here by
+// having been SHOWN to write nothing, never by inheriting a flag that happened
+// to be false.
 var ReadOnlyServeToolNames = []string{
 	"vp_bootstrap_context",
 	"vp_check",
@@ -110,9 +120,6 @@ var ReadOnlyServeToolNames = []string{
 	"vp_palace_status",
 	"vp_preflight_wrap",
 	"vp_read_resource",
-	// See the "Known limit" note above: this one is here because it is
-	// registered non-mutating, not because it has been shown to be read-only.
-	"vp_refresh_index",
 	"vp_scan_plans",
 	"vp_search",
 	"vp_search_cross_project",

@@ -61,4 +61,11 @@ var MutatingToolNames = []string{
 	"vp_init",
 	"vp_vault_sync",
 	"vp_vault_tidy",
+	// vp_refresh_index backfills archived transcripts into drawers
+	// (AppendDrawer -> atomicfile.Write), writes .vec cache files on every
+	// embed cache miss, and can create palace/<slug>/ for a project that had
+	// no store. Before it was flipped, the derived call graph flagged the
+	// disagreement every run and it was carried as accepted debt with the task
+	// `refresh-index-reports-rebuilt-while-writing-nothing` as its named owner.
+	"vp_refresh_index",
 }

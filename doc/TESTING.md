@@ -1789,6 +1789,48 @@ The surviving property is covered by `TestBootstrapPushesHealthWhenDegraded` and
 
 ---
 
+## `vp_refresh_index` — the mutating flag and a ratchet that had to be narrowed
+
+`internal/tools/refresh_index_backfill_test.go`. From
+`refresh-index-reports-rebuilt-while-writing-nothing`.
+
+### 🔴 The ratchet this task ASKED for is the wrong test — do not reinstate it
+
+The task demanded that a `"rebuilt"` status imply **at least one observable write**
+under `palace/<project>/`. That expectation is **refuted**. `Rebuild` builds the
+index IN MEMORY (`e.indexes[project]`); `.vec` files are written only as a
+cache-**MISS** side effect (`embedMisses` → `cache.Put`). A rebuild whose vectors
+are all cached correctly writes nothing, so the `dotfiles` control case the task
+filed as its sharpest evidence was legitimate behaviour.
+
+That ratchet would have gone red on correct code, and the "fix" would have been to
+make the tool write something it does not need to write.
+
+| Test | What it proves |
+|------|----------------|
+| `TestRefreshIndexRebuiltOnlyWhenThereWasSomethingToRefresh` | Ratchet 1, written to the property that IS true: `rebuilt` is claimed only when there was something to refresh, the refusal fires when there was not, and the counts that make the claim falsifiable are present with at least one non-zero. **Asserts no filesystem write** |
+| `TestRefreshIndexCacheHitRebuildIsLegitimate` | The control case, kept as a PASSING test so the refuted expectation cannot be re-derived from the symptom text. A second refresh is all cache hits: `indexed > 0` with `embedded == 0` is CORRECT |
+| `TestRefreshIndexIsRegisteredMutating` | The flag itself, plus absence from `ReadOnlyServeToolNames` |
+
+`TestRefreshIndexStillRefusesWhenThereIsNothingToBackfill` (Piece 1) remains the
+no-store half; ratchet 1 sits beside it rather than replacing it.
+
+### Why the flag is load-bearing in two places at once
+
+`vp_refresh_index` writes on three paths — the archive backfill via
+`AppendDrawer` → `atomicfile.Write`, `.vec` cache files on every embed miss, and
+`Rebuild` creating `palace/<slug>/`. Registered non-mutating, that one bit both
+under-gated the tool for a stale binary AND published a writer on the read-only
+`vp mcp serve` allow-list, which `readonly_serve.go` calls a security failure that
+is not detectable after the fact.
+
+Correcting it requires the constructor flag **and** a `MutatingToolNames` entry:
+`TestMutatingToolNamesMatchRegistry` pins that pair, and
+`TestReadOnlyServeAgreesWithSurfaceGateToday` / `TestReadOnlyServePartitionsTheRegistry`
+require the tool to move BETWEEN the two declarations rather than out of one.
+
+---
+
 ## Source Audit — the gate that would have caught `note_path` in five minutes
 
 `internal/sourceaudit` is a static analysis **of this repository's own source**, run as
