@@ -22,7 +22,7 @@ func TestRunDiscoverRooms_NoCandidates(t *testing.T) {
 	v := testVault(t)
 	cfg := storage.Config{}
 	var buf bytes.Buffer
-	code := runDiscoverRooms(v, "proj", cfg, 0, false, false, "", &buf)
+	code := runDiscoverRooms(v, "proj", cfg, 0, false, false, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d, want 0", code)
 	}
@@ -46,7 +46,7 @@ func TestRunDiscoverRooms_Estimate(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	code := runDiscoverRooms(v, "proj", cfg, 0, false, true, "", &buf)
+	code := runDiscoverRooms(v, "proj", cfg, 0, false, true, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d, want 0", code)
 	}
@@ -72,7 +72,7 @@ func TestRunDiscoverRooms_NoLLMConfig(t *testing.T) {
 	v.AppendDrawer("proj", "proj", "general", d)
 
 	var buf bytes.Buffer
-	code := runDiscoverRooms(v, "proj", cfg, 0, false, false, "", &buf)
+	code := runDiscoverRooms(v, "proj", cfg, 0, false, false, "", false, &buf)
 	if code != cli.ExitUser {
 		t.Errorf("exit code = %d, want %d (ExitUser)", code, cli.ExitUser)
 	}
@@ -100,7 +100,7 @@ func TestRunDiscoverRooms_MissingAPIKey(t *testing.T) {
 	v.AppendDrawer("proj", "proj", "general", d)
 
 	var buf bytes.Buffer
-	code := runDiscoverRooms(v, "proj", cfg, 0, false, false, "", &buf)
+	code := runDiscoverRooms(v, "proj", cfg, 0, false, false, "", false, &buf)
 	if code != cli.ExitUser {
 		t.Errorf("exit code = %d, want %d (ExitUser)", code, cli.ExitUser)
 	}
@@ -144,7 +144,7 @@ func TestRunDiscoverRooms_Export(t *testing.T) {
 
 	exportPath := filepath.Join(t.TempDir(), "report.json")
 	var buf bytes.Buffer
-	code := runDiscoverRooms(v, "proj", cfg, 0, false, false, exportPath, &buf)
+	code := runDiscoverRooms(v, "proj", cfg, 0, false, false, exportPath, false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d, want 0; output: %s", code, buf.String())
 	}
@@ -201,7 +201,7 @@ func TestRunDiscoverRooms_WithProposals(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	code := runDiscoverRooms(v, "proj", cfg, 0, false, false, "", &buf)
+	code := runDiscoverRooms(v, "proj", cfg, 0, false, false, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d, want 0; output: %s", code, buf.String())
 	}
@@ -252,7 +252,7 @@ func TestRunDiscoverRooms_Apply(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	code := runDiscoverRooms(v, "proj", cfg, 0, true, false, "", &buf)
+	code := runDiscoverRooms(v, "proj", cfg, 0, true, false, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d, want 0; output: %s", code, buf.String())
 	}
@@ -304,7 +304,7 @@ func TestRunDiscoverRooms_NoProposals(t *testing.T) {
 	v.AppendDrawer("proj", "proj", "general", d)
 
 	var buf bytes.Buffer
-	code := runDiscoverRooms(v, "proj", cfg, 0, false, false, "", &buf)
+	code := runDiscoverRooms(v, "proj", cfg, 0, false, false, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d, want 0; output: %s", code, buf.String())
 	}

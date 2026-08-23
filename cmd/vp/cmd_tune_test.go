@@ -22,7 +22,7 @@ func TestRunTuneRooms_NoSamples(t *testing.T) {
 	v := testVault(t)
 	cfg := storage.Config{}
 	var buf bytes.Buffer
-	code := runTuneRooms(v, "proj", cfg, 0, false, false, false, "", &buf)
+	code := runTuneRooms(v, "proj", cfg, 0, false, false, false, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d, want 0", code)
 	}
@@ -47,7 +47,7 @@ func TestRunTuneRooms_Estimate(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	code := runTuneRooms(v, "proj", cfg, 0, false, true, false, "", &buf)
+	code := runTuneRooms(v, "proj", cfg, 0, false, true, false, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d, want 0", code)
 	}
@@ -73,7 +73,7 @@ func TestRunTuneRooms_NoLLMConfig(t *testing.T) {
 	v.AppendDrawer("proj", "proj", "general", d)
 
 	var buf bytes.Buffer
-	code := runTuneRooms(v, "proj", cfg, 0, false, false, false, "", &buf)
+	code := runTuneRooms(v, "proj", cfg, 0, false, false, false, "", false, &buf)
 	if code != cli.ExitUser {
 		t.Errorf("exit code = %d, want %d (ExitUser)", code, cli.ExitUser)
 	}
@@ -101,7 +101,7 @@ func TestRunTuneRooms_MissingAPIKey(t *testing.T) {
 	v.AppendDrawer("proj", "proj", "general", d)
 
 	var buf bytes.Buffer
-	code := runTuneRooms(v, "proj", cfg, 0, false, false, false, "", &buf)
+	code := runTuneRooms(v, "proj", cfg, 0, false, false, false, "", false, &buf)
 	if code != cli.ExitUser {
 		t.Errorf("exit code = %d, want %d (ExitUser)", code, cli.ExitUser)
 	}
@@ -146,7 +146,7 @@ func TestRunTuneRooms_Export(t *testing.T) {
 
 	exportPath := filepath.Join(t.TempDir(), "report.json")
 	var buf bytes.Buffer
-	code := runTuneRooms(v, "proj", cfg, 0, false, false, false, exportPath, &buf)
+	code := runTuneRooms(v, "proj", cfg, 0, false, false, false, exportPath, false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d, want 0; output: %s", code, buf.String())
 	}
@@ -190,7 +190,7 @@ func TestRunTuneRooms_Verbose(t *testing.T) {
 	v.AppendDrawer("proj", "proj", "general", d)
 
 	var buf bytes.Buffer
-	code := runTuneRooms(v, "proj", cfg, 0, false, false, true, "", &buf)
+	code := runTuneRooms(v, "proj", cfg, 0, false, false, true, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d, want 0; output: %s", code, buf.String())
 	}
@@ -225,7 +225,7 @@ func TestRunTuneRooms_ApplyNoProposals(t *testing.T) {
 	v.AppendDrawer("proj", "proj", "general", d)
 
 	var buf bytes.Buffer
-	code := runTuneRooms(v, "proj", cfg, 0, true, false, false, "", &buf)
+	code := runTuneRooms(v, "proj", cfg, 0, true, false, false, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d, want 0; output: %s", code, buf.String())
 	}
@@ -284,7 +284,7 @@ func TestRunTuneRooms_Apply(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	code := runTuneRooms(v, "proj", cfg, 0, true, false, false, "", &buf)
+	code := runTuneRooms(v, "proj", cfg, 0, true, false, false, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d, want 0; output: %s", code, buf.String())
 	}
@@ -349,7 +349,7 @@ func TestRunTuneRooms_WithUnmatchedFlags(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	code := runTuneRooms(v, "proj", cfg, 0, false, false, false, "", &buf)
+	code := runTuneRooms(v, "proj", cfg, 0, false, false, false, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d, want 0; output: %s", code, buf.String())
 	}

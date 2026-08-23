@@ -25,6 +25,12 @@
 // IsRefusedWritePath enforces the refused-segment policy for ".git" and
 // ".vp-locks" (case-insensitive, segment-equality only — substring matches such
 // as "foo.git/bar" are allowed).
+//
+// RefuseDestinationInsideVault (destination.go) is the one accessor pointing the
+// other way: it takes an arbitrary operator-typed HOST path — an export
+// destination, not a vault-relative path — and refuses it when it resolves
+// inside the vault. It lives here because it reuses this file's containment
+// machinery (EvalSymlinks resolution and pathIsUnder).
 package vaultfs
 
 import (

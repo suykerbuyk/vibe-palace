@@ -767,6 +767,46 @@ incidental: `old_string` not found, `old_string` ambiguous without
 `replace_all`, and `expected_sha256` mismatch. Each is an assertion that the
 caller's model of the file is wrong — see *Resume CAS Tests*.
 
+#### Export-destination containment (`internal/vaultfs/destination_test.go`, `cmd/vp/export_guard_test.go`)
+
+`RefuseDestinationInsideVault` is the **inverse** of `ResolveSafePath`: that one
+proves a vault-relative path stays UNDER the vault, this one proves an
+operator-typed HOST path stays OUT. It backs `--export` on `audit rooms`,
+`discover rooms` and `tune rooms`, and **`--to`** on `archive extract` — four
+commands that previously handed a user path straight to `os.Create`, so an
+export could overwrite a vault document with no lock, no stamp, no containment
+and no CAS, and still report success.
+
+| Test | What it proves |
+|------|----------------|
+| `TestRefuseDestinationInsideVaultRefusesAnExistingVaultDocument` | The base case: a live document under the vault root is refused |
+| `TestRefuseDestinationInsideVaultSymlinkedRoot` | **The test that proves the predicate rather than the plumbing.** A lexical `HasPrefix` passes this wrongly. Asserted in BOTH directions — destination through the symlink with the root as realpath, and the mirror image |
+| `TestRefuseDestinationInsideVaultDestDoesNotExistYet` | Parent-resolution rung: an export target that does not exist yet is judged by the directory it would be created in |
+| `TestRefuseDestinationInsideVaultParentDoesNotExistEither` | Lexical `filepath.Clean` fallback still refuses when no part of the chain resolves |
+| `TestRefuseDestinationInsideVaultSiblingPrefixIsAllowed` | `pathIsUnder` is separator-safe: `/x/vault-backup` is NOT inside `/x/vault` |
+| `TestRefuseDestinationInsideVaultOutsideIsAllowed` | The guard does not refuse legitimate exports |
+| `TestRefuseDestinationInsideVaultRefusesTheVaultRootItself` | Equality counts as inside |
+| `TestRefuseDestinationInsideVaultRelativeDest` | **`filepath.Abs` on both sides is load-bearing.** `EvalSymlinks` preserves relativity and a relative candidate never prefix-matches an absolute root, so without `Abs` this fails OPEN — `--export Projects/x/resume.md` from inside the vault writes through |
+| `TestRefuseDestinationInsideVaultUnresolvableRootFailsClosed` | Fail-closed: an unresolvable root errors rather than returning nil, and does NOT report as the inside-vault sentinel |
+| `TestRefuseDestinationInsideVaultEmptyRootFailsClosed` | `filepath.Abs("")` succeeds as the cwd, so an empty root must be refused BEFORE `Abs` — otherwise the predicate silently answers a question about the working directory |
+
+The CLI half pins the policy the predicate cannot express on its own:
+
+| Test | What it proves |
+|------|----------------|
+| `TestAuditRoomsRefusesExportInsideVault` | Site 1 (`--export`) refuses, and asserts the target document was **not** overwritten — not merely the exit code |
+| `TestDiscoverRoomsRefusesExportInsideVault` | Site 2 (`--export`) |
+| `TestTuneRoomsRefusesExportInsideVault` | Site 3 (`--export`) |
+| `TestArchiveExtractRefusesToInsideVault` | Site 4, whose flag is **`--to`**, driven through the real command so the flag name itself is under test. A `--export`-only suite would close the class at 3 of 4 |
+| `TestAuditRoomsAllowsExportInsideVaultWithOverride` | `--allow-inside-vault` still permits a deliberate in-vault write |
+| `TestGuardUnresolvableRootIgnoresTheOverride` | **The override never gates the predicate call.** With an unresolvable root the guard returns `ExitSystem` for `allow=false` AND `allow=true`, and the remediation must NOT name the flag — offering an escape there would write the fail-open back into the message |
+| `TestGuardEmptyVaultRootIgnoresTheOverride` | Same rule for an empty vault root |
+| `TestGuardOverrideStillPermitsAResolvableInsideVaultDest` | Both directions in one test, so tightening the cannot-verify path cannot silently kill the override |
+
+Exit codes are part of the contract: `ExitUser` when the destination resolves
+inside the vault (the operator can retype it), `ExitSystem` when the vault root
+cannot be resolved (a config or runtime fault, with no override).
+
 ### `internal/wrapstate` — Wrap-State Collection (coverage 85.2%)
 
 The engine behind `vp_collect_wrap_state` / `vp_stamp_iter` /

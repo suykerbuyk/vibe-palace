@@ -19,7 +19,7 @@ func TestRunAuditRooms_Empty(t *testing.T) {
 	v := testVault(t)
 	cfg := storage.Config{}
 	var buf bytes.Buffer
-	code := runAuditRooms(v, "proj", cfg, false, false, false, "", &buf)
+	code := runAuditRooms(v, "proj", cfg, false, false, false, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d, want 0", code)
 	}
@@ -45,7 +45,7 @@ func TestRunAuditRooms_Report(t *testing.T) {
 
 	cfg := storage.Config{}
 	var buf bytes.Buffer
-	code := runAuditRooms(v, "proj", cfg, false, false, false, "", &buf)
+	code := runAuditRooms(v, "proj", cfg, false, false, false, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
 	}
@@ -68,7 +68,7 @@ func TestRunAuditRooms_JSON(t *testing.T) {
 	exportPath := t.TempDir() + "/report.json"
 	cfg := storage.Config{}
 	var buf bytes.Buffer
-	code := runAuditRooms(v, "proj", cfg, false, false, false, exportPath, &buf)
+	code := runAuditRooms(v, "proj", cfg, false, false, false, exportPath, false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
 	}
@@ -97,7 +97,7 @@ func TestRunAuditRooms_DryRun(t *testing.T) {
 
 	cfg := storage.Config{}
 	var buf bytes.Buffer
-	code := runAuditRooms(v, "proj", cfg, false, true, false, "", &buf)
+	code := runAuditRooms(v, "proj", cfg, false, true, false, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
 	}
@@ -123,7 +123,7 @@ func TestRunAuditRooms_Apply(t *testing.T) {
 
 	cfg := storage.Config{}
 	var buf bytes.Buffer
-	code := runAuditRooms(v, "proj", cfg, true, false, false, "", &buf)
+	code := runAuditRooms(v, "proj", cfg, true, false, false, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
 	}
@@ -147,7 +147,7 @@ func TestRunAuditRooms_MutualExclusive(t *testing.T) {
 	v := testVault(t)
 	cfg := storage.Config{}
 	var buf bytes.Buffer
-	code := runAuditRooms(v, "proj", cfg, true, true, false, "", &buf)
+	code := runAuditRooms(v, "proj", cfg, true, true, false, "", false, &buf)
 	if code != cli.ExitUser {
 		t.Errorf("exit code = %d, want %d", code, cli.ExitUser)
 	}
@@ -166,7 +166,7 @@ func TestRunAuditRooms_Verbose(t *testing.T) {
 
 	cfg := storage.Config{}
 	var buf bytes.Buffer
-	code := runAuditRooms(v, "proj", cfg, false, false, true, "", &buf)
+	code := runAuditRooms(v, "proj", cfg, false, false, true, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
 	}
@@ -188,7 +188,7 @@ func TestRunAuditRooms_ApplyNoMismatches(t *testing.T) {
 
 	cfg := storage.Config{}
 	var buf bytes.Buffer
-	code := runAuditRooms(v, "proj", cfg, true, false, false, "", &buf)
+	code := runAuditRooms(v, "proj", cfg, true, false, false, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
 	}
@@ -206,7 +206,7 @@ func TestRunAuditRooms_DryRunNoMismatches(t *testing.T) {
 
 	cfg := storage.Config{}
 	var buf bytes.Buffer
-	code := runAuditRooms(v, "proj", cfg, false, true, false, "", &buf)
+	code := runAuditRooms(v, "proj", cfg, false, true, false, "", false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
 	}

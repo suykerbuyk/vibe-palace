@@ -29,6 +29,7 @@ func cmdAudit() *cli.Command {
 var auditRoomsFlags = []cli.FlagDef{
 	{Name: "--project", Short: "-p", Arg: "PROJECT", Help: "Project name (default: auto-detect)"},
 	{Name: "--export", Arg: "FILE", Help: "Export report as JSON to FILE"},
+	{Name: allowInsideVaultFlag, Help: allowInsideVaultHelp},
 	{Name: "--dry-run", Help: "Preview reclassification without changes"},
 	{Name: "--apply", Help: "Apply reclassification to mismatched drawers"},
 	{Name: "--verbose", Short: "-v", Help: "Show detailed scoring for every drawer"},
@@ -75,12 +76,20 @@ func cmdAuditRooms() *cli.Command {
 
 			return runAuditRooms(vault, proj, cfg,
 				fv.Bool("--apply"), fv.Bool("--dry-run"), fv.Bool("--verbose"),
-				fv.Get("--export"), os.Stdout)
+				fv.Get("--export"), fv.Bool(allowInsideVaultFlag), os.Stdout)
 		},
 	}
 }
 
-func runAuditRooms(vault *storage.Vault, proj string, cfg storage.Config, apply, dryRun, verbose bool, exportPath string, out io.Writer) int {
+func runAuditRooms(vault *storage.Vault, proj string, cfg storage.Config, apply, dryRun, verbose bool, exportPath string, allowInsideVault bool, out io.Writer) int {
+	// Guard the export destination FIRST. It is operator input, checking it is
+	// cheap, and a refused destination means none of the work below should run.
+	if exportPath != "" {
+		if code := guardExportDestination(vault.Root, exportPath, allowInsideVault, out); code != cli.ExitOK {
+			return code
+		}
+	}
+
 	if apply && dryRun {
 		fmt.Fprintln(out, "Error: --apply and --dry-run are mutually exclusive.")
 		return cli.ExitUser

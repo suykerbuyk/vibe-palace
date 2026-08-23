@@ -31,6 +31,7 @@ var discoverRoomsFlags = []cli.FlagDef{
 	{Name: "--project", Short: "-p", Arg: "PROJECT", Help: "Project name (default: auto-detect)"},
 	{Name: "--max-samples", Short: "-n", Arg: "N", Help: "Maximum samples to evaluate (default: 50)"},
 	{Name: "--export", Arg: "FILE", Help: "Export discovery report as JSON to FILE"},
+	{Name: allowInsideVaultFlag, Help: allowInsideVaultHelp},
 	{Name: "--apply", Help: "Write proposed keywords to project config"},
 	{Name: "--estimate", Help: "Estimate token cost without calling LLM"},
 }
@@ -77,13 +78,21 @@ func cmdDiscoverRooms() *cli.Command {
 			return runDiscoverRooms(vault, proj, cfg,
 				fv.Int("--max-samples"),
 				fv.Bool("--apply"), fv.Bool("--estimate"),
-				fv.Get("--export"), os.Stdout)
+				fv.Get("--export"), fv.Bool(allowInsideVaultFlag), os.Stdout)
 		},
 	}
 }
 
 func runDiscoverRooms(vault *storage.Vault, proj string, cfg storage.Config,
-	maxSamples int, apply, estimate bool, exportPath string, out io.Writer) int {
+	maxSamples int, apply, estimate bool, exportPath string, allowInsideVault bool, out io.Writer) int {
+	// Guard the export destination FIRST. It is operator input, checking it is
+	// cheap, and this runner does LLM work below — a late guard would burn
+	// tokens and then refuse.
+	if exportPath != "" {
+		if code := guardExportDestination(vault.Root, exportPath, allowInsideVault, out); code != cli.ExitOK {
+			return code
+		}
+	}
 
 	classifier := palace.BuildClassifierFromConfig(cfg)
 

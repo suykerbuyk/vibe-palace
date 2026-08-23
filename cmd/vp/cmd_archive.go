@@ -280,6 +280,7 @@ func cmdArchiveVerify() *cli.Command {
 var archiveExtractFlags = []cli.FlagDef{
 	{Name: "--project", Short: "-p", Arg: "PROJECT", Help: "Project slug (default: auto-detect)"},
 	{Name: "--to", Arg: "PATH", Help: "Output file path, or - for stdout", Default: "-"},
+	{Name: allowInsideVaultFlag, Help: allowInsideVaultHelp},
 }
 
 func cmdArchiveExtract() *cli.Command {
@@ -307,16 +308,26 @@ func cmdArchiveExtract() *cli.Command {
 			if code != cli.ExitOK {
 				return code
 			}
+			dest := fv.Get("--to")
+			if dest == "" {
+				dest = "-"
+			}
+			// Guard the destination BEFORE resolving the source entry: the
+			// destination is operator input, checking it is cheap, and a
+			// refused destination means no work should be done at all. "-" is
+			// stdout and has no destination to guard.
+			if dest != "-" {
+				if code := guardExportDestination(vaultRoot, dest, fv.Bool(allowInsideVaultFlag), os.Stderr); code != cli.ExitOK {
+					return code
+				}
+			}
+
 			e, err := archive.ResolveEntry(vaultRoot, proj, pos[0])
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp archive extract: %v\n", err)
 				return cli.ExitUser
 			}
 
-			dest := fv.Get("--to")
-			if dest == "" {
-				dest = "-"
-			}
 			var out io.Writer = os.Stdout
 			if dest != "-" {
 				f, err := os.Create(dest)

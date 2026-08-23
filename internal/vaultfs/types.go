@@ -24,6 +24,12 @@ var (
 	// outside the vault root.
 	ErrSymlinkEscape = errors.New("vaultfs: symlink escape rejected")
 
+	// ErrDestinationInsideVault is returned by RefuseDestinationInsideVault
+	// when an export destination resolves INSIDE the vault. It is the inverse
+	// of ErrSymlinkEscape: that one guards a vault-relative path leaving the
+	// vault, this one guards an operator-typed host path entering it.
+	ErrDestinationInsideVault = errors.New("vaultfs: destination resolves inside the vault")
+
 	// ErrUnportableName is returned when a path segment cannot be represented on
 	// NTFS/exFAT — a reserved character (< > : " \ | ? *), a Windows reserved
 	// device name (CON, PRN, AUX, NUL, COM1-9, LPT1-9), a trailing dot or space,
