@@ -12,18 +12,31 @@ import (
 	"github.com/knights-analytics/hugot/pipelines"
 )
 
+// defaultMaxSeqLen is all-MiniLM-L6-v2's position-embedding table size. A
+// maxSeqLen <= 0 falls back to this rather than to "unlimited": hugot derives
+// its batch sequence length from the actual tokens produced, so an untruncated
+// input can still exceed the model's position table and panic on the shape
+// mismatch (measured 2026-08-24: a 515-token batch against a 512-position
+// model, `pipeline.RunPipeline` broadcast panic).
+const defaultMaxSeqLen = 512
+
 // ONNXEmbedder implements Embedder using the hugot pure-Go ONNX backend.
 type ONNXEmbedder struct {
-	session  *hugot.Session
-	pipeline *pipelines.FeatureExtractionPipeline
-	mu       sync.Mutex
-	dims     int
-	batchSz  int
+	session   *hugot.Session
+	pipeline  *pipelines.FeatureExtractionPipeline
+	mu        sync.Mutex
+	dims      int
+	batchSz   int
+	maxSeqLen int
 }
 
 // NewONNX creates an ONNXEmbedder. modelCacheDir is where model files are
 // downloaded and cached (e.g., {vault}/.local/models/).
 func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEmbedder, error) {
+	if maxSeqLen <= 0 {
+		maxSeqLen = defaultMaxSeqLen
+	}
+
 	session, err := hugot.NewGoSession()
 	if err != nil {
 		return nil, fmt.Errorf("create go session: %w", err)
@@ -64,11 +77,33 @@ func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEm
 	}
 
 	return &ONNXEmbedder{
-		session:  session,
-		pipeline: pipeline,
-		dims:     len(probe.Embeddings[0]),
-		batchSz:  batchSize,
+		session:   session,
+		pipeline:  pipeline,
+		dims:      len(probe.Embeddings[0]),
+		batchSz:   batchSize,
+		maxSeqLen: maxSeqLen,
 	}, nil
+}
+
+// truncateForModel bounds text to at most maxSeqLen-2 runes — a conservative
+// stand-in for token count, since word-piece tokenization cannot produce more
+// tokens than there are runes to consume. The -2 reserves room for the
+// [CLS] and [SEP] special tokens hugot adds around the content tokens: at
+// maxSeqLen itself (e.g. the 512-position default), a rune-for-rune worst
+// case can still tokenize to maxSeqLen content tokens and, with CLS+SEP,
+// overflow the position table by 2 — which is exactly the measured 515-vs-512
+// panic. No tokenizer dependency is added; the floor of 1 keeps a tiny
+// maxSeqLen (e.g. a test value of 2) from truncating to nothing.
+func (e *ONNXEmbedder) truncateForModel(text string) string {
+	limit := e.maxSeqLen - 2
+	if limit < 1 {
+		limit = 1
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit])
 }
 
 // Embed returns a normalized embedding vector for a single text.
@@ -80,7 +115,7 @@ func (e *ONNXEmbedder) Embed(ctx context.Context, text string) ([]float32, error
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	result, err := e.pipeline.RunPipeline([]string{text})
+	result, err := e.pipeline.RunPipeline([]string{e.truncateForModel(text)})
 	if err != nil {
 		return nil, fmt.Errorf("embed: %w", err)
 	}
@@ -106,9 +141,13 @@ func (e *ONNXEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 
 		end := min(start+e.batchSz, len(texts))
 		chunk := texts[start:end]
+		truncated := make([]string, len(chunk))
+		for i, t := range chunk {
+			truncated[i] = e.truncateForModel(t)
+		}
 
 		e.mu.Lock()
-		out, err := e.pipeline.RunPipeline(chunk)
+		out, err := e.pipeline.RunPipeline(truncated)
 		e.mu.Unlock()
 		if err != nil {
 			return nil, fmt.Errorf("embed batch chunk [%d:%d]: %w", start, end, err)

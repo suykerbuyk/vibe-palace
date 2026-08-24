@@ -6,6 +6,7 @@ package embedder
 import (
 	"context"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/testutil"
@@ -53,6 +54,77 @@ func TestONNXEmbed(t *testing.T) {
 	norm = math.Sqrt(norm)
 	if math.Abs(norm-1.0) > 0.01 {
 		t.Errorf("L2 norm = %f, want ~1.0", norm)
+	}
+}
+
+// TestTruncateForModelReservesSpecialTokens pins the -2 margin in
+// truncateForModel without downloading the ONNX model: at maxSeqLen=512 (the
+// MiniLM position-table default), a rune-for-rune worst-case input can
+// tokenize to maxSeqLen content tokens, and hugot then adds [CLS]+[SEP]
+// around them — overflowing the position table by 2, which is the measured
+// 515-vs-512 panic. Truncating to maxSeqLen runes (no margin) does not catch
+// this; truncating to maxSeqLen-2 does.
+func TestTruncateForModelReservesSpecialTokens(t *testing.T) {
+	e := &ONNXEmbedder{maxSeqLen: 512}
+	long := strings.Repeat("x", 600)
+
+	got := e.truncateForModel(long)
+	if n := len([]rune(got)); n > 510 {
+		t.Errorf("truncateForModel(512) kept %d runes, want <= 510 (maxSeqLen-2, room for [CLS]+[SEP])", n)
+	}
+
+	short := strings.Repeat("x", 100)
+	if got := e.truncateForModel(short); got != short {
+		t.Errorf("truncateForModel left an under-limit string unchanged? got %d runes, want %d", len([]rune(got)), len([]rune(short)))
+	}
+
+	// Floor: a maxSeqLen so small that maxSeqLen-2 would be <= 0 must not
+	// truncate to an empty string.
+	tiny := &ONNXEmbedder{maxSeqLen: 2}
+	if got := tiny.truncateForModel("hello"); len([]rune(got)) < 1 {
+		t.Errorf("truncateForModel with maxSeqLen=2 produced an empty string, want floor of 1 rune")
+	}
+}
+
+// TestONNXEmbedTruncatesOversizedInput pins the fix for
+// restart-must-not-block-on-refresh-index: NewONNX previously accepted
+// maxSeqLen and never used it, so hugot could be handed enough text to
+// tokenize past the model's position-embedding table and panic on the shape
+// mismatch (measured 2026-08-24: a 515-token batch against a 512-position
+// model). A tiny maxSeqLen against ordinary long text is the cheapest way to
+// prove truncation runs at all, without needing to reproduce the exact
+// token count that triggered the original crash.
+func TestONNXEmbedTruncatesOversizedInput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping ONNX test in short mode (requires model download)")
+	}
+	emb, err := NewONNX("sentence-transformers/all-MiniLM-L6-v2", testutil.ProjectCacheDir(t), 8, 32)
+	if err != nil {
+		t.Fatalf("NewONNX: %v", err)
+	}
+	t.Cleanup(func() { emb.Close() })
+
+	long := strings.Repeat("word ", 1000)
+
+	vec, err := emb.Embed(context.Background(), long)
+	if err != nil {
+		t.Fatalf("Embed with oversized input panicked/errored instead of truncating: %v", err)
+	}
+	if len(vec) != 384 {
+		t.Fatalf("len(vec) = %d, want 384", len(vec))
+	}
+
+	batch, err := emb.EmbedBatch(context.Background(), []string{long, long})
+	if err != nil {
+		t.Fatalf("EmbedBatch with oversized input panicked/errored instead of truncating: %v", err)
+	}
+	if len(batch) != 2 {
+		t.Fatalf("len(batch) = %d, want 2", len(batch))
+	}
+	for i, v := range batch {
+		if len(v) != 384 {
+			t.Errorf("batch[%d] len = %d, want 384", i, len(v))
+		}
 	}
 }
 

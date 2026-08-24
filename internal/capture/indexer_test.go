@@ -97,6 +97,59 @@ func TestIndexTranscriptNoEngine(t *testing.T) {
 	}
 }
 
+// countingEmbedder wraps an Embedder and counts EmbedBatch calls, so a test
+// can assert that a re-index of an already-indexed transcript makes no
+// embedding calls at all, rather than embedding vectors whose output is
+// immediately discarded by AppendDrawer/AddEntity/AddTriple dedup.
+type countingEmbedder struct {
+	embedder.Embedder
+	batchCalls int
+}
+
+func (c *countingEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	c.batchCalls++
+	return c.Embedder.EmbedBatch(ctx, texts)
+}
+
+// TestIndexTranscriptSkipsEmbedOnZeroNewDrawers pins the fix for
+// restart-must-not-block-on-refresh-index Piece 3: when every chunk in a call
+// already exists as a drawer, IndexTranscript must not call EmbedBatch at
+// all. Without this, vp_refresh_index re-embeds an already-indexed archive's
+// full text on every run for output that dedup then throws away.
+func TestIndexTranscriptSkipsEmbedOnZeroNewDrawers(t *testing.T) {
+	v := testVault(t)
+	counting := &countingEmbedder{Embedder: embedder.NewMock(384)}
+	cfg := storage.Config{SearchDefaultLimit: 10}
+	eng := search.NewEngine(counting, v, cfg)
+	t.Cleanup(func() { eng.Close() })
+	idx := NewIndexer(v, eng, counting, cfg)
+
+	transcript := "A distinctive transcript for the zero-new-drawers regression check."
+
+	first, err := idx.IndexTranscript(context.Background(), "session-01", "test-proj", transcript)
+	if err != nil {
+		t.Fatalf("first IndexTranscript: %v", err)
+	}
+	if first.Drawers == 0 {
+		t.Fatal("first call: expected at least one new drawer for a fresh transcript")
+	}
+	firstCalls := counting.batchCalls
+	if firstCalls == 0 {
+		t.Fatal("first call: expected at least one EmbedBatch call for a fresh transcript")
+	}
+
+	second, err := idx.IndexTranscript(context.Background(), "session-01", "test-proj", transcript)
+	if err != nil {
+		t.Fatalf("second IndexTranscript: %v", err)
+	}
+	if second.Drawers != 0 {
+		t.Fatalf("second call: stats.Drawers = %d, want 0 (every drawer already exists)", second.Drawers)
+	}
+	if counting.batchCalls != firstCalls {
+		t.Errorf("EmbedBatch calls = %d after re-index, want %d (no new embedding work for an already-indexed transcript)", counting.batchCalls, firstCalls)
+	}
+}
+
 func TestIndexTranscriptDuplicateIdempotent(t *testing.T) {
 	v := testVault(t)
 	eng, emb := testEngine(t, v)

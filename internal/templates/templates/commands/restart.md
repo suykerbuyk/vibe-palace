@@ -44,10 +44,18 @@ stale local template copies before the merge. It returns
 `{status, action, output}`, where `output` is the captured per-remote
 git text (`[pull <remote>] …` lines, plus any `[heal] …` lines).
 
-- If `output` shows the pull merged remote changes (anything other than
-  "Already up to date"), rebuild the semantic search index with
-  `vp_refresh_index` (pass the project slug) so newly-pulled content is
-  searchable — the MCP equivalent of the old `vp index`.
+- 🔴 **Restart never waits on the embedder.** Regardless of what `output`
+  shows — a merge, a no-op, or several files pulled — do **not** call
+  `vp_refresh_index` here. A cold embedder loads an ONNX model and can spend
+  minutes re-embedding a large corpus; structural ranking is bootstrap's
+  designed cold-start path (`ranking.fallback_reason: "embedder_not_ready"`
+  is expected, not a defect), and a pull from another machine is not a reason
+  to pay that cost before the session has even started. If the human wants
+  semantic ranking, tell them in one line that search rebuilds lazily on the
+  first `vp_search` call — do not run it for them, and do not special-case
+  "only if this project's files changed": that still blocks on a large
+  corpus. Rebuilding on purpose is `vp_refresh_index` called explicitly,
+  outside restart, by an operator who chose to pay for it.
 - If `output` shows a merge conflict or files git flags for manual
   resolution (e.g. `CONFLICT`, "Automatic merge failed"), inform the
   user before proceeding.

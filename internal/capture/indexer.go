@@ -115,6 +115,15 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 		stats.Drawers++
 	}
 
+	// Every chunk in this call already existed: there is nothing new to embed
+	// or extract entities from, and EmbedBatch's output would be discarded
+	// anyway (IndexDrawers/AddEntity/AddTriple dedup-skip on unchanged
+	// content). Skipping here is what stops a re-index of an already-indexed
+	// archive from paying full embedder + KG-extraction cost for zero result.
+	if stats.Drawers == 0 {
+		return stats, nil
+	}
+
 	// Batch embed all chunks and index them in a single engine call.
 	if idx.embedder != nil && idx.engine != nil {
 		vecs, err := idx.embedder.EmbedBatch(ctx, chunks)

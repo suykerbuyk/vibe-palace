@@ -8,11 +8,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
@@ -843,6 +845,28 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault) mcp.Handle
 			return nil, fmt.Errorf("project is required")
 		}
 
+		// A rebuild over a real corpus can run for minutes with nothing else to
+		// show for it: mcp.makeHandler's own enter/exit logging is Debug, and
+		// the default log level is Info, so a long refresh was silent until
+		// something finally Warned (measured 2026-08-24, a ~20-minute hang
+		// with no log line before the operator cancelled). These two lines are
+		// visible at the default level so "it started" and "it finished" are
+		// never in doubt; the exit line reports whatever stats were reached
+		// even on an error return.
+		start := time.Now()
+		var bf backfillStats
+		var stats search.RebuildStats
+		slog.Info("refresh index: start", "project", p.Project)
+		defer func() {
+			slog.Info("refresh index: done",
+				"project", p.Project,
+				"elapsed", time.Since(start),
+				"drawers", stats.Drawers,
+				"embedded", stats.Embedded,
+				"cache_hits", stats.CacheHits,
+			)
+		}()
+
 		// Ask BEFORE rebuilding. A rebuild can create palace/<project>/ as a
 		// side effect of indexing the iterations corpus, so asking afterwards
 		// answers a different question than the one the refusal turns on.
@@ -856,12 +880,12 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault) mcp.Handle
 		// drawers too and leaves the on-disk corpus and the in-memory vector
 		// index describing the same thing. Running it after would report counts
 		// for a corpus the rebuild never saw.
-		bf, err := backfillFromArchives(ctx, engine, vault, p.Project)
+		bf, err = backfillFromArchives(ctx, engine, vault, p.Project)
 		if err != nil {
 			return nil, fmt.Errorf("backfill from archives: %w", err)
 		}
 
-		stats, err := engine.Rebuild(ctx, p.Project)
+		stats, err = engine.Rebuild(ctx, p.Project)
 		if err != nil {
 			return nil, fmt.Errorf("rebuild index: %w", err)
 		}

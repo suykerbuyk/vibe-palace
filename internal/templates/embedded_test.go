@@ -60,6 +60,37 @@ func TestWalkEmbedded_ResourceInvariants(t *testing.T) {
 	}
 }
 
+// TestRestartTemplate_NeverRefreshesIndexAfterPull pins the wording fix for
+// restart-must-not-block-on-refresh-index: a routine vault pull must never
+// leave the restart template instructing an agent to call vp_refresh_index,
+// which loads a cold ONNX model and can run for minutes over a real corpus
+// (measured 2026-08-24: a ~20-minute hang after an ordinary pull, cancelled
+// twice by the operator). No test harness beyond a string check is needed —
+// the whole fix IS the template wording.
+func TestRestartTemplate_NeverRefreshesIndexAfterPull(t *testing.T) {
+	resources, err := WalkEmbedded()
+	if err != nil {
+		t.Fatalf("WalkEmbedded returned error: %v", err)
+	}
+	var body string
+	for _, r := range resources {
+		if r.RelPath == "commands/restart.md" {
+			body = string(r.Bytes)
+			break
+		}
+	}
+	if body == "" {
+		t.Fatal("commands/restart.md not found among embedded resources")
+	}
+
+	if strings.Contains(body, "rebuild the semantic search index with") {
+		t.Error("restart template still instructs rebuilding the index after a pull merges changes")
+	}
+	if !strings.Contains(body, "Restart never waits on the embedder") {
+		t.Error("restart template no longer states the never-block-on-refresh rule")
+	}
+}
+
 func TestEmbeddedSHA_KnownAndUnknown(t *testing.T) {
 	resources, err := WalkEmbedded()
 	if err != nil {
