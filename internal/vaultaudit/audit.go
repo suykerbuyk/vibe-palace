@@ -120,6 +120,7 @@ func Run(vault *storage.Vault) (Report, error) {
 		{DimResumeDiscipline, EvidenceResumeDiscipline, auditResumeDiscipline},
 		{DimIterationHeadings, EvidenceIterationHeadings, auditIterationHeadings},
 		{DimMemoryPortability, EvidenceMemoryPortability, auditMemoryPortability},
+		{DimTaskHeadingMarkers, EvidenceTaskHeadingMarkers, auditTaskHeadingMarkers},
 	}
 
 	report := Report{SessionNotes: SessionNoteCount(vault)}

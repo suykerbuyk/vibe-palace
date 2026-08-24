@@ -8,9 +8,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/check"
+	"github.com/suykerbuyk/vibe-palace/internal/mdfence"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
@@ -54,6 +56,34 @@ const (
 	// dimension covered Projects/*/memory/ — so a vault that synced cleanly on Linux
 	// could silently become un-checkout-able on the Windows/darwin release targets.
 	DimMemoryPortability = "memory-portability"
+
+	// DimTaskHeadingMarkers — no H2 heading in an ACTIVE task file may carry an
+	// unresolved-status marker: a token asserting an open state that a later event
+	// closes. Earned by amend-cannot-rewrite-an-h2-heading-so-stale-markers-strand
+	// and its 2026-08-23 census.
+	//
+	// The defect this reports is not cosmetic and not repairable by the writer that
+	// created it: `vp_manage_task action: amend` is KEYED on the H2 heading text, so
+	// amending under the old text replaces the body and leaves the stale heading,
+	// while amending under a corrected text APPENDS a second section and leaves both.
+	// A heading is therefore written exactly once — at create, or at the first amend
+	// that introduces it — and a status marker baked into one is false from the moment
+	// the state it names changes, permanently, with the reader obeying the heading.
+	//
+	// 🔴 SCOPE IS ACTIVE TASKS ONLY, and that is a ruling rather than a convenience.
+	// `AmendTask` resolves through the active path unconditionally, `vp tasks edit`
+	// refuses on meta.Done, and the adopted `overwrite` action is active-scoped — so a
+	// finding under tasks/done/ or tasks/cancelled/ is unrepairable by every sanctioned
+	// path and would be permanent, un-actionable red. The funnel task in done/ carries
+	// five such headings today; they are deliberately out of scope.
+	//
+	// This dimension sees CLASS A only — a claim phrased with a token. A claim
+	// carrying NO token ("The anchor set already exists — reuse it, do not
+	// re-derive it", whose body now instructs the exact opposite) is Class C, is
+	// invisible here BY CONSTRUCTION, and is answered by the topic-not-claim
+	// discipline rather than by code. Do not widen the token list to chase it; that
+	// road ends at flagging the correction idiom itself.
+	DimTaskHeadingMarkers = "task-heading-markers"
 )
 
 // Evidence commands. RECORD THE GREP, NEVER THE COUNT (invariant 3) — every number
@@ -73,6 +103,106 @@ const (
 	EvidenceMemoryPortability = `find Projects/*/memory -type f -printf '%f\n' | grep -Ei '[<>:"\\|?*]|[. ]$|^(con|prn|aux|nul|com[1-9]|lpt[1-9])([.]|$)'; ` +
 		`for d in Projects/*/memory; do find "$d" -type f -printf '%f\n' | tr 'A-Z' 'a-z' | sort | uniq -d; done   # case collisions`
 )
+
+// unresolvedStatusMarkers is the DECLARED marker set for DimTaskHeadingMarkers: the
+// tokens that assert an open state a later event closes.
+//
+// 🔴 THIS LIST IS EXTENSIBLE, NOT COMPLETE, AND SAYING SO IS PART OF THE CONTRACT.
+// The 2026-08-23 census set out with four markers (UNCOMMITTED, WIP, TODO, "not yet
+// decided") and had to grow to this eleven on a single pass over ONE project's active
+// tasks — every addition driven by a specimen rather than by enumeration. UNRESOLVED
+// in particular was invisible to the original four and sits on the positive-control
+// file. So the failure mode here is NOT the ratchet disease of too many findings; it
+// is a rule that under-fires silently and reports zero as though it had looked. That
+// is why EvidenceTaskHeadingMarkers prints this list into every report: a reader must
+// be able to see WHICH rule produced the number, and extend it.
+//
+// 🔴 MATCHING IS CASE-SENSITIVE, AS DECLARED, AND THAT IS A RULING (chair, 2026-08-23)
+// EARNED BY TWO LIVE FALSE POSITIVES. The first implementation folded case over the
+// whole alternation, which turned the shout-token BLOCKED into the ordinary English
+// word "blocked" and fired on
+// "## Inventory (live `make` blocked section + BUILDABLE RED)" — where "blocked"
+// is ADJECTIVAL, naming a section of the build rather than asserting that section's
+// own status. Each token is therefore matched exactly as it is written here: the
+// all-caps ones stay all-caps, and a title-case status tag is declared separately.
+//
+// The same pass declared the phrase "awaiting human commit" rather than a bare
+// "awaiting", for the same reason — the bare word is not a status.
+//
+// The known cost of case-sensitivity is UNDER-firing: "## blocked on the operator"
+// is not matched. That is the accepted trade, recorded rather than discovered — an
+// auditor that invents findings is worse than one that misses them
+// (internal/check/iteration_headings.go:69-73, where a rule that invented 17 findings
+// against a deliberate operator pattern was DELETED). Extend the list when a specimen
+// appears; do not reach for (?i) to catch a shape nobody has seen.
+//
+// The second false positive is why lowercase "not decided" is absent: the live heading
+// "## The open architectural choice — child 1 decides it, deliberately not decided
+// here" is PERMANENTLY TRUE. It delegates a decision to a child task rather than
+// deferring one, so it can never go stale. A pending state and a scope statement read
+// alike in prose and are opposites in fact.
+//
+// REFUTED is deliberately ABSENT. It is the token this project's correction idiom is
+// written in ("options 1 and 2 are REFUTED"), so admitting it would flag the very
+// practice of recording a reversal — the opposite of the intent. A Decision heading
+// whose trailing conclusion was later reversed but which carries no marker from this
+// list stays Class C.
+var unresolvedStatusMarkers = []string{
+	"UNCOMMITTED",
+	"UNRULED",
+	"UNRESOLVED",
+	"UNDECIDED",
+	"BLOCKED",
+	"WIP",
+	"TODO",
+	// A title-case status tag heading a section ("## Blocked on"). All-caps BLOCKED
+	// cannot see it, and it is a true positive: it goes stale the moment the task
+	// unblocks. Declared separately rather than solved with (?i), which is what
+	// produced the adjectival false positive above.
+	"Blocked on",
+	"not yet decided",
+	"NOT decided",
+	"none of these is decided",
+	"awaiting human commit",
+}
+
+// taskHeadingMarkerRE matches any declared marker as a whole word inside a heading.
+//
+// It is built FROM unresolvedStatusMarkers rather than written alongside it, so the
+// matcher and the printed evidence cannot drift apart — two hand-maintained copies of
+// one list is the defect class this vault keeps finding, and it would be absurd to
+// ship it inside the dimension that exists to report stale hand-maintained claims.
+//
+// A nil regexp (empty marker list) matches nothing. That is the mutation seam: empty
+// the list and every positive fixture must go unreported.
+var taskHeadingMarkerRE = buildMarkerRE(unresolvedStatusMarkers)
+
+func buildMarkerRE(markers []string) *regexp.Regexp {
+	if len(markers) == 0 {
+		return nil
+	}
+	parts := make([]string, 0, len(markers))
+	for _, m := range markers {
+		parts = append(parts, `\b`+regexp.QuoteMeta(m)+`\b`)
+	}
+	// NO (?i). Every token matches exactly as declared — see the ruling on
+	// unresolvedStatusMarkers. Case-folding here is what made "blocked section" a
+	// finding, and it is the one change to this function that must not be made
+	// without a specimen and a chair ruling.
+	return regexp.MustCompile(strings.Join(parts, "|"))
+}
+
+// EvidenceTaskHeadingMarkers is a var, not a const, because it is COMPOSED from the
+// marker list above. RECORD THE GREP, NEVER THE COUNT — and here the grep is only
+// honest if it names the same tokens the code matched.
+// It is `grep -E`, NOT `grep -Ei`: the matcher is case-sensitive by ruling, and an
+// evidence command that reproduces a DIFFERENT number than the code is worse than no
+// evidence command at all.
+var EvidenceTaskHeadingMarkers = `grep -nE '^## ' Projects/*/tasks/*.md | grep -E '` +
+	strings.Join(unresolvedStatusMarkers, "|") + `'` +
+	"   # markers are DECLARED AND EXTENSIBLE, never complete, and CASE-SENSITIVE as written: " +
+	strings.Join(unresolvedStatusMarkers, ", ") +
+	"   # H2 only; fence-aware; tasks/done/ and tasks/cancelled/ deliberately out of scope"
 
 // auditProjectTreeCoherence: a project present in one tree and not the other.
 //
@@ -458,6 +588,139 @@ func iterationHeadingDetail(d wrapstate.HeadingDefect) string {
 		return fmt.Sprintf("%q breaks the iterations.md heading contract (%s). Expected %s.",
 			d.Text, d.Class, d.Want)
 	}
+}
+
+// auditTaskHeadingMarkers: an H2 heading in an active task file carrying a marker
+// from unresolvedStatusMarkers.
+//
+// It walks the tasks DIRECTORY rather than a task listing, and that is load-bearing:
+// `vp_list_tasks` excludes iceboxed tasks unless include_icebox is set, and on this
+// vault the active directory held 34 files where the listing returned 25. A census
+// driven off the listing would have been blind to nine files and reported a clean
+// number — measuring the default filter, not the vault. Iceboxed tasks live in the
+// active directory, are amendable, and are in scope.
+//
+// Subdirectories are skipped, which is what excludes tasks/done/ and tasks/cancelled/.
+// See DimTaskHeadingMarkers for why that is a ruling and not an oversight.
+func auditTaskHeadingMarkers(vault *storage.Vault) ([]Finding, []string, error) {
+	projects, err := vault.ListAllProjects()
+	if err != nil {
+		return nil, nil, fmt.Errorf("enumerate projects: %w", err)
+	}
+
+	var findings []Finding
+	var unknowns []string
+
+	for _, p := range projects {
+		if !p.InProjects {
+			continue
+		}
+		tasksDir, err := vault.TasksDir(p.Slug)
+		if err != nil {
+			unknowns = append(unknowns, fmt.Sprintf("%s: cannot resolve tasks dir: %v", p.Slug, err))
+			continue
+		}
+		entries, err := os.ReadDir(tasksDir)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			unknowns = append(unknowns, fmt.Sprintf("%s: cannot read tasks dir: %v", p.Slug, err))
+			continue
+		}
+
+		for _, e := range entries {
+			// Skips done/ and cancelled/. Deliberate — see the dimension doc.
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			rel := "Projects/" + p.Slug + "/tasks/" + e.Name()
+			data, err := os.ReadFile(filepath.Join(tasksDir, e.Name()))
+			if err != nil {
+				unknowns = append(unknowns, fmt.Sprintf("%s: cannot read: %v", rel, err))
+				continue
+			}
+			for _, ln := range mdfence.OutsideFences(string(data)) {
+				text, ok := h2HeadingText(ln.Text)
+				if !ok {
+					continue
+				}
+				hits := headingMarkers(text)
+				if len(hits) == 0 {
+					continue
+				}
+				findings = append(findings, Finding{
+					Dimension: DimTaskHeadingMarkers,
+					Artifact:  fmt.Sprintf("%s:%d", rel, ln.Num),
+					Detail:    taskHeadingMarkerDetail(text, hits),
+				})
+			}
+		}
+	}
+	return findings, unknowns, nil
+}
+
+// h2HeadingText returns the text of an H2 heading, or ok=false for anything else.
+//
+// Exactly "## " at column 0. "### " does not match, by ruling: the marker rule is
+// scoped to H2 because H2 is the level `amend` is keyed on, and it is precisely the
+// unrewritability of THAT level that makes a stale marker permanent. An H3 sits
+// inside a section an amend can replace wholesale, so it is not stranded.
+//
+// Fence filtering happens before this is ever called — this project's task files
+// carry H2-shaped lines quoted inside code fences (that is why `amend` itself is
+// fence-aware), and flagging sample text would be inventing findings.
+func h2HeadingText(line string) (string, bool) {
+	if !strings.HasPrefix(line, "## ") {
+		return "", false
+	}
+	return strings.TrimSpace(line[len("## "):]), true
+}
+
+// headingMarkers returns the distinct markers present in a heading, in the order the
+// heading mentions them.
+//
+// 🔴 IT SCANS THE WHOLE HEADING, AND THE CLASS B PREFIX EXEMPTION IS PREFIX-ONLY.
+// `Decision (iter 205)` and `Phase 1 progress (2026-08-16, landed abcdef0)` are
+// provenance — they record WHEN, not what is now, so they cannot go stale and they
+// carry no marker, so they are not reported. But a provenance PREFIX does not bless
+// what follows the dash: `Decision (2026-08-01) — still UNCOMMITTED` is a finding.
+// Exempting a heading because it opens in a Class B shape is how a check blesses
+// every claim appended after it, and that is the one implementation shortcut this
+// dimension must not take.
+func headingMarkers(heading string) []string {
+	if taskHeadingMarkerRE == nil {
+		return nil
+	}
+	var out []string
+	seen := make(map[string]bool)
+	for _, m := range taskHeadingMarkerRE.FindAllString(heading, -1) {
+		// Exact-match dedupe: matching is case-sensitive, so two spellings that
+		// differ only in case are two different DECLARED markers, not one marker
+		// seen twice. Folding them here would re-introduce, in the reporting, the
+		// case-blindness the matcher was just ruled out of.
+		if seen[m] {
+			continue
+		}
+		seen[m] = true
+		out = append(out, m)
+	}
+	return out
+}
+
+// taskHeadingMarkerDetail renders one finding as the sentence a human repairing the
+// task needs: which heading, which marker, why a heading is the one place this cannot
+// be fixed in passing, and the conversion that is already proven in production.
+func taskHeadingMarkerDetail(heading string, markers []string) string {
+	return fmt.Sprintf("H2 %q carries the unresolved-status marker(s) %s. A marker asserting an open "+
+		"state is a derived value stored by hand, and a heading is the one place `vp_manage_task "+
+		"action: amend` CANNOT revise it: amend is keyed on the heading text, so amending under the "+
+		"old text leaves the stale heading and amending under a corrected one appends a second "+
+		"section and leaves both. Convert it to immutable provenance — the production pattern is "+
+		"UNCOMMITTED -> \"landed <sha>\" (iteration 304, eight headings in first-principles.md), "+
+		"which cannot go stale because it records when rather than what is now. Markers are "+
+		"DECLARED AND EXTENSIBLE, never complete: %s.",
+		heading, strings.Join(markers, ", "), strings.Join(unresolvedStatusMarkers, ", "))
 }
 
 // relTo renders an absolute path as vault-relative. NEVER write an absolute vault

@@ -439,3 +439,369 @@ func TestMemoryPortability_CleanVaultIsClean(t *testing.T) {
 		t.Fatalf("a clean memory tree produced findings: %+v", findings)
 	}
 }
+
+// --- task-heading-markers ---
+
+// seedTask writes an active task file for the marker dimension. It also creates the
+// palace/ side so ListAllProjects reports the project as present under Projects/.
+func seedTask(t *testing.T, vault *storage.Vault, project, slug, body string) {
+	t.Helper()
+	mkdirs(t, vault.Root, "Projects", project)
+	writeFile(t, vault.Root, "Projects/"+project+"/tasks/"+slug+".md", body)
+}
+
+func markerArtifacts(findings []Finding) []string {
+	out := make([]string, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, f.Artifact)
+	}
+	return out
+}
+
+// TestTaskHeadingMarkers_FindsThePositiveFixture is the defect test: the shape that
+// actually stranded eight headings in first-principles.md.
+func TestTaskHeadingMarkers_FindsThePositiveFixture(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedTask(t, vault, "p", "stale", "# T\n\n## PHASE 1 — landed in the working tree 2026-08-20, UNCOMMITTED\n\nbody\n")
+
+	findings, unknowns, err := auditTaskHeadingMarkers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknowns) != 0 {
+		t.Errorf("unexpected unknowns: %v", unknowns)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %v, want exactly the UNCOMMITTED heading", markerArtifacts(findings))
+	}
+	if want := "Projects/p/tasks/stale.md:3"; findings[0].Artifact != want {
+		t.Errorf("artifact = %q, want %q", findings[0].Artifact, want)
+	}
+	if !strings.Contains(findings[0].Detail, "landed <sha>") {
+		t.Errorf("detail must name the proven conversion; got %q", findings[0].Detail)
+	}
+	// The declared list must reach the reader, or a zero cannot be interpreted.
+	if !strings.Contains(findings[0].Detail, "EXTENSIBLE") {
+		t.Errorf("detail must frame the marker list as extensible; got %q", findings[0].Detail)
+	}
+}
+
+// TestTaskHeadingMarkers_MutationEmptyListReportsNothing is the mutation proof: the
+// matcher, not the harness, is what produces the finding. Empty the declared list and
+// the positive fixture must go unreported.
+//
+// A dimension whose test passes with the rule removed is testing its own scaffolding.
+func TestTaskHeadingMarkers_MutationEmptyListReportsNothing(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedTask(t, vault, "p", "stale", "# T\n\n## PHASE 1 — landed in the working tree 2026-08-20, UNCOMMITTED\n\nbody\n")
+
+	if findings, _, err := auditTaskHeadingMarkers(vault); err != nil || len(findings) != 1 {
+		t.Fatalf("precondition: want 1 finding before the mutation, got %v (err %v)",
+			markerArtifacts(findings), err)
+	}
+
+	saved := taskHeadingMarkerRE
+	taskHeadingMarkerRE = buildMarkerRE(nil)
+	t.Cleanup(func() { taskHeadingMarkerRE = saved })
+
+	findings, _, err := auditTaskHeadingMarkers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("with an empty marker list the dimension must report nothing; got %v",
+			markerArtifacts(findings))
+	}
+}
+
+// TestTaskHeadingMarkers_ClassBProvenanceIsNotFlagged pins the exemption. These
+// headings record WHEN, not what is now, so they cannot go stale — and the amend
+// schema itself teaches "Decision (iter 205)" as the worked example of a section
+// name, so a scanner that flags them would eat the convention the tool instructs
+// every agent to use.
+func TestTaskHeadingMarkers_ClassBProvenanceIsNotFlagged(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	body := "# T\n\n" +
+		"## Decision (iter 205)\n\nb\n\n" +
+		"## Review (2026-07-20)\n\nb\n\n" +
+		"## Phase 1 progress — real root (2026-08-16, landed abcdef0)\n\nb\n\n" +
+		"## The finding\n\nb\n\n" +
+		"## Open questions\n\nb\n\n" +
+		"## Decision (2026-08-01) — options 1 and 2 are REFUTED\n\nb\n"
+	seedTask(t, vault, "p", "clean", body)
+
+	findings, _, err := auditTaskHeadingMarkers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("provenance and topic headings must not be flagged; got %v", markerArtifacts(findings))
+	}
+}
+
+// TestTaskHeadingMarkers_ProvenancePrefixDoesNotBlessATokenAfterIt is the ruling that
+// a prefix-exemption implementation would silently break. The Class B exemption is
+// PREFIX-only: it identifies provenance, it does not license everything after the dash.
+func TestTaskHeadingMarkers_ProvenancePrefixDoesNotBlessATokenAfterIt(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedTask(t, vault, "p", "collision", "# T\n\n## Decision (2026-08-01) — still UNCOMMITTED\n\nb\n")
+
+	findings, _, err := auditTaskHeadingMarkers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("a provenance prefix must not exempt a marker after it; got %v",
+			markerArtifacts(findings))
+	}
+}
+
+// TestTaskHeadingMarkers_IsFenceAware: this project's task files quote H2-shaped lines
+// inside code fences (which is why amend itself is fence-aware). Flagging sample text
+// is inventing findings, and an auditor that invents findings is worse than one that
+// misses them.
+func TestTaskHeadingMarkers_IsFenceAware(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	body := "# T\n\n```\n## PHASE 1 — UNCOMMITTED\n```\n\n## The finding\n\nb\n"
+	seedTask(t, vault, "p", "fenced", body)
+
+	findings, _, err := auditTaskHeadingMarkers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("a heading quoted inside a fence is sample text; got %v", markerArtifacts(findings))
+	}
+}
+
+// TestTaskHeadingMarkers_H2Only: the rule is scoped to the level amend is keyed on.
+// An H3 sits inside a section an amend can replace wholesale, so it is not stranded.
+func TestTaskHeadingMarkers_H2Only(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedTask(t, vault, "p", "levels", "# Title with UNCOMMITTED\n\n### Sub — UNCOMMITTED\n\nb\n")
+
+	findings, _, err := auditTaskHeadingMarkers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("only H2 is in scope; got %v", markerArtifacts(findings))
+	}
+}
+
+// TestTaskHeadingMarkers_WordBoundary: "UNBLOCKED" is not "BLOCKED". A substring match
+// would report the exact opposite of what the heading says.
+func TestTaskHeadingMarkers_WordBoundary(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedTask(t, vault, "p", "words", "# T\n\n## Direction B is UNBLOCKED and mostly mechanical\n\nb\n")
+
+	findings, _, err := auditTaskHeadingMarkers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("word-bounded match must not fire on 'UNBLOCKED'; got %v", markerArtifacts(findings))
+	}
+}
+
+// TestTaskHeadingMarkers_LiveFalsePositivesStaySilent pins the chair ruling of
+// 2026-08-23. Both fixtures are VERBATIM live headings from Projects/quantum-ng that
+// the first implementation reported, because it folded case over the whole
+// alternation.
+//
+// They are two different mistakes and both must stay silent:
+//
+//   - "blocked" here is ADJECTIVAL — it names a section of the build, it does not
+//     assert that the section is in a blocked state.
+//   - "deliberately not decided here" is a SCOPE statement, not a pending one: the
+//     decision belongs to a child task, so the heading is permanently true and can
+//     never go stale. A pending state and a delegation read alike in prose and are
+//     opposites in fact.
+//
+// If either of these starts firing again, the matcher has been case-folded or the
+// list has been widened past what a specimen justified.
+func TestTaskHeadingMarkers_LiveFalsePositivesStaySilent(t *testing.T) {
+	for _, tc := range []struct{ name, heading string }{
+		{"adjectival blocked", "## Inventory (live `make` blocked section + BUILDABLE RED)"},
+		{"delegated decision", "## The open architectural choice — child 1 decides it, deliberately not decided here"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := storage.NewVault(t.TempDir())
+			seedTask(t, vault, "p", "fp", "# T\n\n"+tc.heading+"\n\nb\n")
+			findings, _, err := auditTaskHeadingMarkers(vault)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(findings) != 0 {
+				t.Fatalf("live false positive must stay silent: %q; got %v",
+					tc.heading, markerArtifacts(findings))
+			}
+		})
+	}
+}
+
+// TestTaskHeadingMarkers_MatchingIsCaseSensitive pins the ruling directly rather than
+// only through its consequences. Every token matches as DECLARED.
+//
+// The under-firing this accepts is real and deliberate: a lowercase "blocked on the
+// operator" is not reported. That is the recorded trade — inventing findings is the
+// worse failure, and the list is extensible when a specimen appears.
+func TestTaskHeadingMarkers_MatchingIsCaseSensitive(t *testing.T) {
+	// Build locally rather than dereferencing the package var: a nil regexp (the
+	// mutation seam) must fail this test, not PANIC it. A panic aborts the whole test
+	// binary, which hides every other failure the mutation was supposed to expose —
+	// so the mutation proof would have reported four reds instead of sixteen and the
+	// gap would have looked like coverage.
+	re := buildMarkerRE(unresolvedStatusMarkers)
+	if re == nil {
+		t.Fatal("marker regexp is nil: the declared list is empty")
+	}
+	if strings.Contains(re.String(), "(?i)") {
+		t.Fatal("the marker regexp must not case-fold: (?i) is what made 'blocked section' a finding")
+	}
+	for _, heading := range []string{
+		"## Phase 1 is uncommitted",
+		"## Scope todo",
+		"## blocked on the operator",
+	} {
+		vault := storage.NewVault(t.TempDir())
+		seedTask(t, vault, "p", "lower", "# T\n\n"+heading+"\n\nb\n")
+		findings, _, err := auditTaskHeadingMarkers(vault)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(findings) != 0 {
+			t.Errorf("tokens match as declared; %q must not fire, got %v",
+				heading, markerArtifacts(findings))
+		}
+	}
+}
+
+// TestTaskHeadingMarkers_TerminalDirectoriesAreOutOfScope pins the scope ruling. A
+// finding under done/ or cancelled/ is unrepairable by amend, vp tasks edit and
+// overwrite alike — all three are active-only — so reporting it would be permanent,
+// un-actionable red.
+func TestTaskHeadingMarkers_TerminalDirectoriesAreOutOfScope(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	mkdirs(t, vault.Root, "Projects", "p")
+	stale := "# T\n\n## THE GIT CHANNEL — UNRULED, operator's call\n\nb\n"
+	writeFile(t, vault.Root, "Projects/p/tasks/done/retired.md", stale)
+	writeFile(t, vault.Root, "Projects/p/tasks/cancelled/dropped.md", stale)
+
+	findings, _, err := auditTaskHeadingMarkers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("done/ and cancelled/ are out of scope; got %v", markerArtifacts(findings))
+	}
+}
+
+// TestTaskHeadingMarkers_CoversTheWholeCensusVocabulary: every marker the 2026-08-23
+// census had to add is matched. The original four-marker set missed UNRESOLVED, which
+// sits on the positive-control file — this is the regression pin for that.
+func TestTaskHeadingMarkers_CoversTheWholeCensusVocabulary(t *testing.T) {
+	for _, tc := range []struct{ name, heading string }{
+		{"uncommitted", "## PHASE 1 (2026-08-20, UNCOMMITTED)"},
+		{"unruled", "## THE GIT CHANNEL — UNRULED, operator's call"},
+		{"unresolved", "## Review findings — the strategic fork is UNRESOLVED"},
+		{"undecided", "## Migration flavour — UNDECIDED"},
+		{"blocked", "## Iteration 5c — confirm-run BLOCKED on credits"},
+		{"wip", "## Phase 2 WIP"},
+		{"todo", "## Scope TODO"},
+		{"Blocked on", "## Blocked on"},
+		{"not yet decided", "## Open questions for the plan — not yet decided"},
+		{"NOT decided", "## Candidate directions — NOT decided, settle before coding"},
+		{"none of these is decided", "## Options — none of these is decided"},
+		{"awaiting human commit", "## Promotion — vault to embedded, awaiting human commit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := storage.NewVault(t.TempDir())
+			seedTask(t, vault, "p", "v", "# T\n\n"+tc.heading+"\n\nb\n")
+			findings, _, err := auditTaskHeadingMarkers(vault)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(findings) != 1 {
+				t.Fatalf("marker %q must be matched in %q; got %v",
+					tc.name, tc.heading, markerArtifacts(findings))
+			}
+		})
+	}
+}
+
+// TestTaskHeadingMarkers_EvidenceNamesEveryDeclaredMarker: the evidence string is
+// composed from the same slice the matcher is built from, so the printed rule and the
+// applied rule cannot drift. Two hand-maintained copies of one list is the defect
+// class this dimension exists to report.
+func TestTaskHeadingMarkers_EvidenceNamesEveryDeclaredMarker(t *testing.T) {
+	for _, m := range unresolvedStatusMarkers {
+		if !strings.Contains(EvidenceTaskHeadingMarkers, m) {
+			t.Errorf("evidence does not name declared marker %q", m)
+		}
+	}
+	if strings.Contains(EvidenceTaskHeadingMarkers, "REFUTED") {
+		t.Error("REFUTED must not be admitted: it is the token the correction idiom is written in")
+	}
+}
+
+// TestTaskHeadingMarkers_IceboxedTasksAreInScope: iceboxed tasks sit in the ACTIVE
+// directory and are amendable, so they are in scope. This pins the reason the
+// dimension walks the directory instead of a task listing — vp_list_tasks hides the
+// icebox by default, and a census driven off it reported 25 where the directory held
+// 34.
+func TestTaskHeadingMarkers_IceboxedTasksAreInScope(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedTask(t, vault, "p", "parked",
+		"# T\n\n**Status:** icebox\n\n## Candidate directions — NOT decided, settle before coding\n\nb\n")
+
+	findings, _, err := auditTaskHeadingMarkers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("an iceboxed task is active and amendable; got %v", markerArtifacts(findings))
+	}
+}
+
+// TestTaskHeadingMarkers_CleanProjectIsSilent: the dimension must be silent when
+// healthy, and must not fall over on a project with no tasks directory at all.
+func TestTaskHeadingMarkers_CleanProjectIsSilent(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	mkdirs(t, vault.Root, "Projects", "notasks")
+	seedTask(t, vault, "p", "ok", "# T\n\n## The finding\n\nb\n\n## The fix\n\nb\n")
+
+	findings, unknowns, err := auditTaskHeadingMarkers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 || len(unknowns) != 0 {
+		t.Fatalf("clean vault must be silent; findings %v unknowns %v",
+			markerArtifacts(findings), unknowns)
+	}
+}
+
+// TestTaskHeadingMarkers_IsRegistered: a dimension nobody runs is the disease this
+// vault is named after. Run() must actually carry it.
+func TestTaskHeadingMarkers_IsRegistered(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedTask(t, vault, "p", "stale", "# T\n\n## PHASE 1 — UNCOMMITTED\n\nb\n")
+
+	rep, err := Run(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range rep.Dimensions {
+		if d.Name != DimTaskHeadingMarkers {
+			continue
+		}
+		if len(d.New) != 1 {
+			t.Fatalf("registered dimension reported New = %+v, want the one stale heading", d.New)
+		}
+		if d.Evidence != EvidenceTaskHeadingMarkers {
+			t.Error("registered dimension must carry its composed evidence string")
+		}
+		return
+	}
+	t.Fatalf("%s is not registered in Run's dims table", DimTaskHeadingMarkers)
+}
