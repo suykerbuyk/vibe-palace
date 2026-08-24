@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
@@ -388,11 +389,13 @@ type manageTaskParams struct {
 // the accidental version of that mistake. It does not remove the deliberate one.
 const minTaskContentBytes = 200
 
-// manageTaskSchema multiplexes seven actions over one tool. Two of them carry
+// manageTaskSchema multiplexes eight actions over one tool. Three of them carry
 // FRICTION — deliberately, and with a precisely bounded claim:
 //
 //   - create requires a `content` body (and the handler additionally requires it
 //     to clear minTaskContentBytes).
+//   - overwrite requires a `content` body, and the handler additionally refuses
+//     an archived task and any body that disagrees with the current header.
 //   - retire requires `approved_by_human`.
 //
 // amend carries no friction and deliberately no minimum length: a decision worth
@@ -443,10 +446,10 @@ var manageTaskSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
 		"project":  {"type": "string", "description": "Project slug."},
-		"action":   {"type": "string", "enum": ["create", "amend", "set_meta", "update_status", "set_relations", "retire", "cancel"], "description": "Action: create, amend, set_meta, update_status, set_relations, retire, or cancel."},
+		"action":   {"type": "string", "enum": ["create", "amend", "overwrite", "set_meta", "update_status", "set_relations", "retire", "cancel"], "description": "Action: create, amend, overwrite, set_meta, update_status, set_relations, retire, or cancel."},
 		"task":     {"type": "string", "description": "Task slug."},
 		"title":    {"type": "string", "description": "Task title (for create or set_meta). set_meta is the ONLY way to change a title after creation \u2014 and a title stating a premise you have since disproved keeps reaching every agent at session start as the headline, because this is the field vp_list_tasks and vp_bootstrap_context surface."},
-		"content":  {"type": "string", "description": "Task content body. REQUIRED for create (min 200 bytes of real plan, not a pointer to a plan stored elsewhere) and for amend (the section body). Do not include a '# Title' heading or '**Status:**'/'**Priority:**'/'**Parent:**'/'**Depends:**' lines; create writes those itself and amend must never touch them. For amend, do not include an '## H2' heading either — the 'section' parameter supplies it; use '###' for sub-headings."},
+		"content":  {"type": "string", "description": "Task content body. REQUIRED for create (min 200 bytes of real plan, not a pointer to a plan stored elsewhere), for amend (the section body), and for overwrite. Do not include a '# Title' heading or '**Status:**'/'**Priority:**'/'**Parent:**'/'**Depends:**' lines; create writes those itself and amend must never touch them. For amend, do not include an '## H2' heading either — the 'section' parameter supplies it; use '###' for sub-headings. \ud83d\udd34 For OVERWRITE the meaning INVERTS: content is the ENTIRE file including the '# Title' line and the whole header block, and every header field must MATCH the task as it stands \u2014 a body that changes title, status, priority, parent or depends is REFUSED, because each of those has its own action."},
 		"section":  {"type": "string", "description": "REQUIRED for amend: the H2 heading TEXT (no '##' markup) of the section to replace, or to append if absent. Amend is keyed on this so a repeated amend CONVERGES instead of duplicating the section. Use it to record decisions, review findings and reversals into a task's plan — e.g. section=\"Decision (iter 205)\"."},
 		"priority": {"type": "string", "description": "Priority: low, medium, high, critical (for create or set_meta). set_meta is the ONLY way to re-prioritize an existing task."},
 		"status":   {"type": "string", "enum": ["pending", "in_progress", "blocked", "icebox"], "description": "New status (for update_status). 'icebox' means known but deliberately not scheduled — it stays in the active directory and is hidden from default listings. Terminal states are not reachable here: use action=retire or action=cancel, which move the file."},
@@ -463,6 +466,10 @@ var manageTaskSchema = json.RawMessage(`{
 		{
 			"if":   {"properties": {"action": {"const": "amend"}}, "required": ["action"]},
 			"then": {"required": ["section", "content"]}
+		},
+		{
+			"if":   {"properties": {"action": {"const": "overwrite"}}, "required": ["action"]},
+			"then": {"required": ["content"]}
 		},
 		{
 			"if":   {"properties": {"action": {"const": "retire"}}, "required": ["action"]},
@@ -483,14 +490,19 @@ func ManageTaskTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:     "vp_manage_task",
 		Mutating: true,
-		Description: "Create, amend, update, relate, retire, or cancel a task. create requires a substantive content body; " +
+		Description: "Create, amend, overwrite, update, relate, retire, or cancel a task. create requires a substantive content body; " +
 			"retire requires approved_by_human=true, which is your own attestation that the human said the task " +
 			"is done — set it only when that is true. set_relations sets a task's parent (its epic) and/or its " +
 			"dependencies; structure is derived from those two edges, so an epic is any task others point at. " +
 			"amend is the ONLY way to change a task's PLAN: it replaces the named H2 `section` (or appends it if " +
 			"absent), so recording a decision, a review finding or a reversal converges rather than duplicating. " +
 			"Use it whenever a plan is superseded — a task whose body still states a premise you have disproved " +
-			"is a task that will be implemented wrong.",
+			"is a task that will be implemented wrong. overwrite replaces an ACTIVE task's WHOLE file and is the " +
+			"only path to text amend cannot address: the preamble above the first H2, an H2 heading's own wording, " +
+			"or a whole-file migration. Its `content` is the entire file, header block included, and every header " +
+			"field must match the task as it stands — title, status, priority, parent and depends each have their " +
+			"own action, so a body that changes one is refused rather than silently becoming a second writer. " +
+			"Prefer amend for a single section; reach for overwrite only when amend cannot express the change.",
 		Schema:  manageTaskSchema,
 		Handler: manageTaskHandler(vault),
 	}
@@ -638,6 +650,62 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 			}
 			return map[string]string{"status": "amended", "task": p.Task, "section": p.Section}, nil
 
+		case "overwrite":
+			// The whole-file writer. It is the ONLY typed path to text amend
+			// cannot address — the preamble above the first H2, an H2 heading's
+			// own wording, a whole-file migration — and under the ruled
+			// server-owns-vault architecture it is the SUCCESSOR to `vp tasks
+			// edit`, not a parallel to it: when there is no local vault for an
+			// editor to open, an absent overwrite means the preamble has no
+			// writer at all.
+			if p.Content == "" {
+				return nil, apperr.Caller(fmt.Errorf(
+					"content is required for overwrite action: it is the ENTIRE task file, " +
+						"header block included — not a section body and not a fragment"))
+			}
+
+			// Read the task as it stands. This resolves across active/done/
+			// cancelled, which is what lets the archived check below see an
+			// archived slug at all.
+			current, _, err := vault.GetTask(p.Project, p.Task)
+			if err != nil {
+				return nil, fmt.Errorf("overwrite task: %w", err)
+			}
+
+			// 🔴 ACTIVE ONLY. Vault.OverwriteTaskFile deliberately honors
+			// whatever resolveTaskFile returns and documents the archived
+			// question as the CALLER's — so the refusal lives HERE, matching
+			// the CLI's guard in cmd_tasks.go rather than duplicating a rule
+			// into the storage writer. A done/cancelled task's body is a record
+			// of what happened; editing it in place rewrites history silently.
+			if current.Done {
+				return nil, apperr.Caller(fmt.Errorf(
+					"overwrite task %q: task is archived (done/cancelled) — its body is a record of "+
+						"what happened, and rewriting it in place would silently revise history. "+
+						"Overwrite works on ACTIVE tasks only, matching `vp tasks edit`",
+					p.Task))
+			}
+
+			// 🔴 HEADER SMUGGLING. validateWholeTaskFile checks SHAPE only —
+			// one H1, one Status, one Priority, a well-formed header block. It
+			// cannot tell that the Status line says something different from
+			// the task it is replacing, because it never sees the old file.
+			//
+			// Every header field has a dedicated writer, and that disjointness
+			// is the whole design: where two writers can set one field, the
+			// reader and the writer eventually disagree about which value is
+			// real. So a body that changes one is a REJECTED BODY — never a
+			// second status writer wearing an overwrite costume.
+			proposed := storage.ParseTaskMetaFromContent(p.Task, p.Content, current.Done)
+			if err := refuseHeaderSmuggling(current, proposed); err != nil {
+				return nil, apperr.Caller(err)
+			}
+
+			if err := vault.OverwriteTaskFile(p.Project, p.Task, p.Content); err != nil {
+				return nil, fmt.Errorf("overwrite task: %w", err)
+			}
+			return map[string]string{"status": "overwritten", "task": p.Task}, nil
+
 		case "set_meta":
 			// Title and Priority are the two header fields that had no writer at all
 			// until 205: create stamped them once and nothing could ever change them.
@@ -724,8 +792,54 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 
 		default:
 			return nil, fmt.Errorf(
-				"invalid action %q: must be create, amend, set_meta, update_status, set_relations, retire, or cancel",
+				"invalid action %q: must be create, amend, overwrite, set_meta, update_status, set_relations, retire, or cancel",
 				p.Action)
 		}
 	}
+}
+
+// refuseHeaderSmuggling reports an error when a proposed whole-file overwrite
+// body disagrees with the task's current header.
+//
+// It is the guard that keeps `overwrite` from becoming a second writer for
+// fields that already have one. vp_manage_task's design is seven — now eight —
+// actions with DISJOINT write sets: title and priority belong to set_meta,
+// status to update_status, parent and depends to set_relations. A whole-file
+// writer trivially reaches all of them, so without this it would be a bypass
+// for every one of those rules at once, including the terminal-status rule that
+// keeps a "completed" task from sitting in the active directory.
+//
+// The answer is a rejected body rather than a silent revert: silently restoring
+// the old header would write something the caller did not ask for, and a caller
+// who genuinely wants a status change has an action for it.
+//
+// Depends is compared as an ordered list because that is how it is written and
+// read back; a reorder is a change to the field and belongs to set_relations
+// like any other.
+func refuseHeaderSmuggling(current, proposed storage.TaskMeta) error {
+	type field struct {
+		name   string
+		got    string
+		want   string
+		action string
+	}
+	fields := []field{
+		{"title", proposed.Title, current.Title, "set_meta"},
+		{"**Status:**", proposed.Status, current.Status, "update_status"},
+		{"**Priority:**", proposed.Priority, current.Priority, "set_meta"},
+		{"**Parent:**", proposed.Parent, current.Parent, "set_relations"},
+		{"**Depends:**", strings.Join(proposed.Depends, ", "), strings.Join(current.Depends, ", "), "set_relations"},
+	}
+	for _, f := range fields {
+		if f.got == f.want {
+			continue
+		}
+		return fmt.Errorf(
+			"overwrite refused: the body changes %s from %q to %q. "+
+				"Header fields are not overwrite's to write — %s owns this one, and two writers for "+
+				"one field is how a reader and a writer come to disagree about which value is real. "+
+				"Re-send the body with %s unchanged, then call action=%s if you meant to change it",
+			f.name, f.want, f.got, f.action, f.name, f.action)
+	}
+	return nil
 }

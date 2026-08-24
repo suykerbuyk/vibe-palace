@@ -418,7 +418,11 @@ func TestCreateTask_ConcurrentSameSlugExactlyOneWins(t *testing.T) {
 		t.Fatalf("read task: %v", err)
 	}
 	w := winners[0]
-	want := fmt.Sprintf("# %s\n\n**Status:** pending\n**Priority:** medium\n\n%s\n", title(w), body(w))
+	// The conventional first H2 is part of what CreateTask writes; build the
+	// expectation from the same constant the writer uses so this test pins the
+	// no-torn-write property rather than the heading's spelling.
+	want := fmt.Sprintf("# %s\n\n**Status:** pending\n**Priority:** medium\n\n## %s\n\n%s\n",
+		title(w), ConventionalFirstHeading, body(w))
 	if string(data) != want {
 		t.Errorf("task file is not the winner's content verbatim (torn or overwritten)\n got: %q\nwant: %q", data, want)
 	}

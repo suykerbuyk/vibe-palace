@@ -1831,6 +1831,63 @@ require the tool to move BETWEEN the two declarations rather than out of one.
 
 ---
 
+## Task-file write discipline — `overwrite`, the refuse-gate, and the conventional first heading
+
+From `task-preamble-is-unreachable-by-every-write-action`. Three surfaces, one
+rule: **every field a task carries has exactly ONE writer.**
+
+### 🔴 A fix blinded the test that proved it — read this before editing these tests
+
+`CreateTask` emits `## Context` (`storage.ConventionalFirstHeading`) FIRST, so
+everything passed as `content` lands UNDERNEATH it and **a freshly created
+task's preamble is EMPTY**.
+
+The original round-trip test edited fixture text that *read* like a preamble and
+was body text under that heading. It proved heading-wording revision and proved
+nothing about the preamble — and the landing fix is what hid it, since before the
+conventional heading that same text *would* have been preamble.
+
+The lesson generalises: **when a change moves structure, re-derive what each
+existing test actually reaches.** A test that keeps passing while measuring the
+wrong thing is worse than a missing one.
+
+### `internal/tools/task_overwrite_test.go`
+
+| Test | What it proves |
+|------|----------------|
+| `TestOverwriteRevisesThePreambleAboveTheFirstH2` | **The acceptance gate.** Asserts POSITION, not presence: `headerAndPreamble` derives the region between the header block and the first H2, a precondition asserts a created task's preamble is EMPTY, then an overwrite INSERTS a provenance line and asserts `index(line) < index("## Context")`, and a second overwrite CHANGES it. The header block must be byte-identical both times |
+| `TestOverwriteRoundTripRevisesBodyAndHeadingWording` | Whole-file round trip and revision of an H2's own WORDING — which `amend` cannot do, being keyed on that text. Renamed from `...RevisesPreambleAndHeading`, which claimed coverage it did not have |
+| `TestOverwriteRefusesArchivedTask` | Retired AND cancelled refused; file byte-identical after. The refusal is in the HANDLER — `OverwriteTaskFile` resolves all three dirs by design and documents the archived question as the caller's |
+| `TestOverwriteRefusesHeaderSmuggling` | `validateWholeTaskFile` checks SHAPE only and never sees the old file. Status, priority and title each refused, the refusal names the owning action, and the file is untouched |
+| `TestOverwriteAcceptsAnUnchangedHeader` | Negative control — a guard that refused everything would pass the row above |
+| `TestOverwriteRequiresContent` | The handler-side arm, for a direct call that bypasses schema validation |
+| `TestCreatedTaskHasTheConventionalFirstHeading` | The heading is emitted and is the FIRST H2 — for a body with no heading, a body that already opens with one (empty `## Context`, the accepted cost), and an empty body |
+
+### `internal/vaultfs/task_path_test.go`
+
+The refuse-gate is in `vaultfs`, not in the MCP tool, so `vp vault write` /
+`vp vault edit` are covered by the same rule: **a guard only an agent can trip is
+not a guard.**
+
+| Test | What it proves |
+|------|----------------|
+| `TestIsTaskFilePath` | Active, `done/`, `cancelled/` and case variants match; `notes/tasks.md`, `Knowledge/tasks/…` and a bare `tasks/` do not |
+| `TestWriteRefusesTaskPaths` / `TestEditRefusesTaskPaths` | Both writers refuse all three task dirs, name `vp_manage_task` and `overwrite`, and leave the file unchanged |
+| `TestNonTaskPathsStillWriteAndEdit` | **Positive control** — a gate that refused everything would pass every row above while breaking the vault |
+
+`OverwriteTaskFile` is NOT routed through the refusal and needs no exemption: it
+calls `atomicfile.Write` directly, which makes it the sanctioned path
+structurally rather than by a carve-out that can rot.
+
+### `internal/storage/tasks_test.go`
+
+`TestCreateTask_ConcurrentSameSlugExactlyOneWins` hand-built its expected file
+content and so encoded the absence of the heading. It now builds from
+`ConventionalFirstHeading`, keeping it a pin on the no-torn-write property rather
+than on the heading's spelling.
+
+---
+
 ## Source Audit — the gate that would have caught `note_path` in five minutes
 
 `internal/sourceaudit` is a static analysis **of this repository's own source**, run as

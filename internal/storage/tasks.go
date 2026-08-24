@@ -41,6 +41,37 @@ type TaskMeta struct {
 	Depends  []string `json:"depends,omitempty"`
 }
 
+// ConventionalFirstHeading is the H2 heading CreateTask emits between the
+// header block and the body, pinned here as ONE constant so the writer and any
+// future check cannot drift apart about what "the conventional first heading"
+// is.
+//
+// # Why it exists
+//
+// Everything between the header block and the first H2 is the PREAMBLE, and no
+// typed action could revise it: create writes it once at birth, amend is keyed
+// on an H2 heading and cannot reach above the first one, and set_meta /
+// update_status / set_relations each own a single header field. A task whose
+// body had been fully corrected still opened with its original framing, and an
+// agent reading top-down met the superseded claim first.
+//
+// Emitting this heading unconditionally makes the first prose in a task file
+// amend-addressable, which is the mechanism half of the 2026-07-27 ruling. The
+// discipline half is the rule it encodes:
+//
+//	The preamble is PROVENANCE ONLY — filing date, source, the commit or task
+//	it came out of. Anything asserting a state of the world is a CLAIM and
+//	belongs under this heading or a later one, where amend can revise it.
+//	Immutability is fine for provenance and wrong for premises.
+//
+// Do not put a task's thesis above this heading. There is no writer that can
+// take it back.
+//
+// A whole-file revision — a preamble repair, an H2 rename, a migration — goes
+// through vp_manage_task action=overwrite (Vault.OverwriteTaskFile), which is
+// the only sanctioned typed path to text amend cannot address.
+const ConventionalFirstHeading = "Context"
+
 // validStatuses is the WRITE set for UpdateTaskStatus — and ONLY the write set.
 //
 // The terminal values ("completed", "retired", "cancelled") are deliberately
@@ -655,6 +686,14 @@ func (v *Vault) CreateTask(project string, spec TaskSpec) error {
 	if len(depends) > 0 {
 		fmt.Fprintf(&buf, "**Depends:** %s\n", formatDependsList(depends))
 	}
+	// The conventional first H2, emitted UNCONDITIONALLY — including when
+	// content already opens with its own H2. See ConventionalFirstHeading: the
+	// point is that the region above the first heading is provenance-only and
+	// addressable-by-amend prose starts here, and a rule that applies only when
+	// the author forgot a heading is not a rule the reader can rely on. An
+	// author whose content opens with its own H2 gets an empty Context section,
+	// which is the cost of the guarantee and is deliberate.
+	fmt.Fprintf(&buf, "\n## %s\n", ConventionalFirstHeading)
 	if content != "" {
 		buf.WriteString("\n")
 		buf.WriteString(content)
@@ -1255,6 +1294,21 @@ func (v *Vault) OverwriteTaskFile(project, slug, content string) error {
 	}
 
 	return atomicfile.Write(v.Root, path, []byte(content))
+}
+
+// ParseTaskMetaFromContent extracts a task's header metadata from a whole task
+// file's markdown WITHOUT touching the filesystem.
+//
+// It exists for one caller shape: comparing a PROPOSED whole-file body against
+// the task currently on disk, so a writer can refuse a body that smuggles a
+// change to a header field owned by another action. slug and done describe the
+// task being compared against, not anything read out of content.
+//
+// It is the same parse the readers use, deliberately — a second, private
+// re-implementation of "what does this header say" is how a reader and a writer
+// come to disagree about which value is real.
+func ParseTaskMetaFromContent(slug, content string, done bool) TaskMeta {
+	return parseTaskMeta(slug, content, done)
 }
 
 // parseTaskMeta extracts metadata from task markdown content.

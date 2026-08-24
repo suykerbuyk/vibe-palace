@@ -198,6 +198,13 @@ carries only this project's patterns plus a minimal pointer at the doctrine —
 so the doctrine fetch is not optional: it is where the standing behavioral
 rules arrive.
 
+One of those rules bites the moment you write your first task section this
+session, so it is worth knowing before you do: **name an H2 section by its
+topic, never by a claim.** `amend` is keyed on the heading text and cannot
+rewrite it, so `## Options` survives and `## Options — none of these is
+decided` is false the moment one is. The doctrine's Task Management section
+carries the rule, the worked examples, and the preamble-is-provenance half.
+
 After bootstrap, the two document fetches and the doctrine fetch, continue
 loading context in the order below.
 

@@ -38,6 +38,15 @@ func Write(vaultPath, relPath, content, expectedSha256 string) (WriteResult, err
 	if IsRefusedWritePath(relPath) {
 		return WriteResult{}, fmt.Errorf("%w: %s", ErrRefusedPath, relPath)
 	}
+	// Task files are typed-writer-only. Gated HERE rather than in the MCP tool
+	// so the CLI `vp vault write` is covered by the same rule — a guard only an
+	// agent can trip is not a guard. Vault.OverwriteTaskFile deliberately does
+	// NOT come through here: it calls atomicfile.Write directly, which is what
+	// makes it the sanctioned exception rather than a special case carved into
+	// this refusal.
+	if IsTaskFilePath(relPath) {
+		return WriteResult{}, taskPathRefusal(relPath)
+	}
 	abs, err := ResolveSafePath(vaultPath, relPath)
 	if err != nil {
 		return WriteResult{}, err
@@ -102,6 +111,11 @@ func Write(vaultPath, relPath, content, expectedSha256 string) (WriteResult, err
 func Edit(vaultPath, relPath, oldString, newString string, replaceAll bool, expectedSha256 string) (EditResult, error) {
 	if IsRefusedWritePath(relPath) {
 		return EditResult{}, fmt.Errorf("%w: %s", ErrRefusedPath, relPath)
+	}
+	// See Write: task files are typed-writer-only, gated here so the CLI is
+	// covered too.
+	if IsTaskFilePath(relPath) {
+		return EditResult{}, taskPathRefusal(relPath)
 	}
 	abs, err := ResolveSafePath(vaultPath, relPath)
 	if err != nil {

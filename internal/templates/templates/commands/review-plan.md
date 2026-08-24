@@ -14,6 +14,13 @@ this review leans on is the Vibe-Palace doctrine, served on demand from the
 binary — if this session has not loaded it yet, fetch it with
 `vp_get_doctrine` before reviewing.
 
+**Heading discipline, because a review is where it is most often broken.** When
+you record findings as a new section, **name it by topic, never by a claim** —
+`amend` is keyed on the heading text and cannot rewrite it later, so a verdict
+baked into a heading is permanent even after the review that follows reverses
+it. A section named for what it *is about* stays true; one named for what it
+*concluded* does not. See the doctrine's Task Management section.
+
 **Where plans live.** Tasks live in the vault, under
 `Projects/<slug>/tasks/`, and are reached **only** through the MCP task tools:
 `vp_manage_task` to mutate, `vp_get_task` / `vp_list_tasks` to read. Your

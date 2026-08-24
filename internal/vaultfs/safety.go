@@ -238,3 +238,53 @@ func IsRefusedWritePath(p string) bool {
 	}
 	return false
 }
+
+// IsTaskFilePath reports whether p addresses a task file — any path under
+// Projects/<slug>/tasks/, including the done/ and cancelled/ archive
+// subdirectories.
+//
+// It backs the refuse-gate on the generic file writers. Task files have a typed
+// writer for every field they carry (vp_manage_task's actions), and the whole
+// value of that design is that each field has exactly ONE writer: where two
+// writers can set one field, the reader and the writer eventually disagree
+// about which value is real. A generic vp_vault_write or vp_vault_edit reaches
+// every one of those fields at once, which makes it a bypass for all of them
+// simultaneously — including the terminal-status rule that keeps a "completed"
+// task from sitting in the active directory, and the archived-task guard that
+// keeps a done task's body from being silently rewritten.
+//
+// That rule existed as PRD §1.11 prose and was enforced by nothing. This is the
+// prose becoming a gate.
+//
+// The archive subdirectories are INCLUDED deliberately. A done or cancelled
+// task's body is a record of what happened, and it is the one a bypass is most
+// tempting for, since no typed action reaches it at all.
+//
+// Scope note: this matches on the tasks/ segment under a Projects/<slug>/
+// prefix, so it does not refuse an unrelated "tasks" directory elsewhere in the
+// vault. Matching is case-insensitive on the fixed segments for the same
+// cross-filesystem reason IsRefusedWritePath gives.
+func IsTaskFilePath(p string) bool {
+	cleaned := filepath.Clean(p)
+	segs := strings.Split(cleaned, string(filepath.Separator))
+	// Need at least Projects/<slug>/tasks/<something>.
+	if len(segs) < 4 {
+		return false
+	}
+	if !strings.EqualFold(segs[0], "Projects") {
+		return false
+	}
+	return strings.EqualFold(segs[2], "tasks")
+}
+
+// ErrTaskPathRefused is the curated refusal for a generic write or edit aimed at
+// a task file. It names the sanctioned route rather than only saying no: a
+// refusal that does not say what to do instead gets worked around.
+func taskPathRefusal(relPath string) error {
+	return fmt.Errorf("%w: %s is a task file — the generic file tools do not write tasks. "+
+		"Every field a task carries has exactly one typed writer, and a raw write reaches all of "+
+		"them at once. Use vp_manage_task: action=amend for one H2 section, action=overwrite for "+
+		"the whole file (preamble, heading wording, migration), set_meta / update_status / "+
+		"set_relations for header fields, retire / cancel to archive it",
+		ErrRefusedPath, relPath)
+}
