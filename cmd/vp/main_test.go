@@ -278,6 +278,9 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		// than the vault's surface must fail-stop, not warn.
 		"migrate iteration-headings":  true,
 		"migrate iterations-preamble": true,
+		// Writes active task files through storage.OverwriteTaskFile — the
+		// locked, surface-stamping task writer — under --apply.
+		"migrate task-preamble": true,
 	}
 
 	reg, _, _ := testRegistry()

@@ -165,5 +165,6 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	// vault written by a newer binary rather than take the warn-only path.
 	reg.Register(mutates(cmdMigrateIterationHeadings()))
 	reg.Register(mutates(cmdMigrateIterationsPreamble()))
+	reg.Register(mutates(cmdMigrateTaskPreamble()))
 	reg.RegisterHelp()
 }
