@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -742,6 +743,10 @@ name = "dotfiles"
 
 // --- RequireKnownProject (commit-write-tools write-authorization gate) ---
 
+// TestRequireKnownProject_MarkerPresent pins the marker arm's success case:
+// the marker NAMES the slug, and no Projects/<slug>/ exists. That combination
+// is the marker-only first-ever write (`vp init` whose vault-tree creation was
+// skipped), so it must keep authorizing.
 func TestRequireKnownProject_MarkerPresent(t *testing.T) {
 	vault := t.TempDir()
 	repo := t.TempDir()
@@ -749,7 +754,81 @@ func TestRequireKnownProject_MarkerPresent(t *testing.T) {
 name = "proj"
 `)
 	if err := RequireKnownProject("proj", vault, repo); err != nil {
-		t.Errorf("marker present must authorize: %v", err)
+		t.Errorf("marker naming the slug must authorize: %v", err)
+	}
+}
+
+// TestRequireKnownProject_MarkerNameMismatchRefuses is the defect report. A
+// caller standing in a correctly-marked repo for project "real" passes slug
+// "typo"; nothing in the vault is named "typo". Authorizing here materializes
+// Projects/typo/ — the phantom-scaffold class this gate was added to close,
+// surviving inside the gate itself.
+//
+// Mutation: delete the cfg.Name == slug comparison in RequireKnownProject and
+// this goes red.
+func TestRequireKnownProject_MarkerNameMismatchRefuses(t *testing.T) {
+	vault := t.TempDir()
+	repo := t.TempDir()
+	writeConfig(t, repo, `[project]
+name = "real"
+`)
+	err := RequireKnownProject("typo", vault, repo)
+	if err == nil {
+		t.Fatal("a marker naming project \"real\" must not authorize a write for slug \"typo\" " +
+			"when no Projects/typo/ exists — that is the phantom-scaffold class")
+	}
+	// The marker was FOUND. An error claiming there is none sends the operator
+	// to `vp init`, which is the wrong repair for a slug typo.
+	if strings.Contains(err.Error(), "no "+ConfigFileName+" marker") {
+		t.Errorf("refusal says there is no marker while one was found: %v", err)
+	}
+	for _, want := range []string{"real", "typo", "Projects/typo/"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal must name %q; got: %v", want, err)
+		}
+	}
+}
+
+// TestRequireKnownProject_MarkerNameMismatchButVaultProjectExists pins the 1A
+// half that keeps a mismatch from being a hard refusal: the exists arm is
+// independent evidence, so a rename in progress (marker edited before the vault
+// directory is moved) and a deliberate cross-project write from inside a marked
+// repo both keep working.
+func TestRequireKnownProject_MarkerNameMismatchButVaultProjectExists(t *testing.T) {
+	vault := t.TempDir()
+	repo := t.TempDir()
+	writeConfig(t, repo, `[project]
+name = "real"
+`)
+	if err := os.MkdirAll(filepath.Join(vault, "Projects", "other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireKnownProject("other", vault, repo); err != nil {
+		t.Errorf("a name mismatch must FALL THROUGH to the exists arm, not refuse: %v", err)
+	}
+}
+
+// TestRequireKnownProject_MarkerWithoutUsableNameIsNotEvidence covers the third
+// state: a marker exists but names no project. Presence alone must not be the
+// fallback authorization — that is the defect one layer down.
+func TestRequireKnownProject_MarkerWithoutUsableNameIsNotEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		label string
+		body  string
+	}{
+		{"empty name", "[project]\nname = \"\"\n"},
+		{"no project block", "vault_path = \"/somewhere\"\n"},
+		{"invalid slug", "[project]\nname = \"Not A Slug\"\n"},
+		{"unparseable toml", "[project\nname = broken\n"},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			vault := t.TempDir()
+			repo := t.TempDir()
+			writeConfig(t, repo, tc.body)
+			if err := RequireKnownProject("proj", vault, repo); err == nil {
+				t.Error("a marker naming no usable project must not authorize on presence alone")
+			}
+		})
 	}
 }
 

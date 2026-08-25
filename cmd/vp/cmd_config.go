@@ -366,8 +366,99 @@ func runConfigSync(args []string) int {
 			return cli.ExitSystem
 		}
 		mergeReports(&totalReport, rep)
+		// Persist the prune immediately after the Apply that performed it,
+		// not at the end of the run: the loop can still hit an abort that
+		// returns early (the 'q' branch, and the prompt-resolver abort on the
+		// next reconciler), and a prune left uncommitted by that path is
+		// exactly the defect this closes.
+		if err := propagatePrunedMirrors(vaultPathForTemplates, filtered.Actions); err != nil {
+			fmt.Fprintf(os.Stderr, "vp config sync: propagate pruned mirrors: %v\n", err)
+			return cli.ExitSystem
+		}
 	}
 	return finishSync(totalReport)
+}
+
+// propagatePrunedMirrors commits the vault template mirrors a just-applied
+// plan pruned, so the removal survives a sync to another host.
+//
+// Without this the prune is a worktree-only operation — `internal/reconcile`
+// invokes git on no path — while the arm that puts mirrors back (a human
+// committing them) reaches git. The two are not symmetric, so a pruned mirror
+// returns on the next clone or pull and `vp config sync` reports a success the
+// vault does not keep.
+//
+// Scope is deliberately narrow, per the operator grant: the prune path of a
+// mutates()-gated reconciler command commits THE PATHS IT JUST PRUNED. It is
+// not a licence for any other reconciler action to commit, and it says nothing
+// about the project repo. Only ActionDelete targets that are actually gone
+// from disk are staged — a prune whose os.Remove failed leaves its file behind
+// and must not have a deletion committed on its behalf.
+//
+// A vault that is not a git repo is supported (GitInit is offered, never
+// required), so that case skips silently and returns nil rather than reporting
+// an error: finishSync turns a Report error into ExitSystem, and a durability
+// fix must not start failing `vp config sync` on an unversioned vault.
+func propagatePrunedMirrors(vaultPath string, applied []reconcile.Action) error {
+	if vaultPath == "" {
+		return nil
+	}
+	var paths []string
+	for _, a := range applied {
+		if a.Kind != reconcile.ActionDelete {
+			continue
+		}
+		if _, err := os.Lstat(a.Target); !os.IsNotExist(err) {
+			continue
+		}
+		rel, err := filepath.Rel(vaultPath, a.Target)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		paths = append(paths, filepath.ToSlash(rel))
+	}
+	// An empty list is the common case (most syncs prune nothing) and must not
+	// reach CommitAndPushPaths, which errors on zero paths — that would turn a
+	// no-op sync into ExitSystem.
+	if len(paths) == 0 {
+		return nil
+	}
+	if !storage.GitAvailable() || !storage.GitIsRepo(vaultPath) {
+		return nil
+	}
+	res, downgraded, err := storage.CommitAndPushPathsWithDowngrade(
+		vaultPath, prunedMirrorCommitMessage(paths), paths, true)
+	if err != nil {
+		return err
+	}
+	// CommitSHA is empty when nothing was staged — e.g. every pruned mirror
+	// was untracked, which filterStageablePaths drops. Say nothing then: a
+	// "committed" line for a commit that did not happen is the same class of
+	// dishonest instrument this task exists to fix.
+	if downgraded && res != nil && res.CommitSHA != "" {
+		fmt.Fprintf(os.Stdout, "Pruned mirrors committed locally only (no remotes configured): %d path(s)\n", len(paths))
+	}
+	return nil
+}
+
+// prunedMirrorCommitMessage composes the vault commit message for a prune.
+// Nobody reviews this message at write time — it is machine-authored
+// permanent history — which argues for it being more self-explanatory than a
+// message a human approves, not less.
+func prunedMirrorCommitMessage(paths []string) string {
+	var b strings.Builder
+	b.WriteString("chore(templates): prune vault mirrors superseded by the embedded floor\n\n")
+	b.WriteString("`vp config sync` removed these reconciler-owned template mirrors from the\n")
+	b.WriteString("vault worktree: their bytes matched the binary's embedded copy, so each one\n")
+	b.WriteString("was a Tier 4 override that shadowed the embedded resource without changing\n")
+	b.WriteString("it — and would silently shadow the next release's copy too.\n\n")
+	b.WriteString("The removal is committed here rather than left in the worktree because a\n")
+	b.WriteString("prune that stops at one host's disk is undone by the next clone or pull on\n")
+	b.WriteString("any other host.\n\n")
+	for _, p := range paths {
+		b.WriteString("- " + p + "\n")
+	}
+	return b.String()
 }
 
 // resolveTemplatePrompts rewrites any ActionPrompt in actions into a

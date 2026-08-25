@@ -232,13 +232,32 @@ func resolveDir(dir string) string {
 
 // RequireKnownProject reports whether vault artifacts may be written for slug on
 // behalf of the project rooted at repoRoot. It authorizes on EITHER signal of
-// legitimacy — an explicit .vibe-palace.toml marker at/above repoRoot, or an
-// already-existing Projects/<slug>/ directory in the vault — and refuses only
-// when BOTH are absent. It is the write-authorization gate the commit/archive
-// tools and `vp absorb` / `vp memory harvest` lacked: those tools derive a slug
-// by cwd basename and then lazily scaffold Projects/<slug>/ on first write, so
-// running one in any unmanaged directory silently materializes a phantom vault
-// project.
+// legitimacy — a .vibe-palace.toml marker at/above repoRoot whose
+// [project].name IS slug, or an already-existing Projects/<slug>/ directory in
+// the vault — and refuses only when BOTH are absent. It is the
+// write-authorization gate the commit/archive tools and `vp absorb` /
+// `vp memory harvest` lacked: those tools derive a slug by cwd basename and
+// then lazily scaffold Projects/<slug>/ on first write, so running one in any
+// unmanaged directory silently materializes a phantom vault project.
+//
+// 🔴 The marker arm turns on the NAME, never on presence. A marker is evidence
+// for exactly the project it names: standing in a correctly-marked repo for
+// project "real" and passing slug "typo" is the phantom-scaffold class this
+// gate exists to close, and presence alone would authorize it. A marker whose
+// [project].name is empty, unreadable, or not a valid slug names no project, so
+// it is not evidence either — those cases fall through to the exists check
+// rather than authorizing.
+//
+// A name MISMATCH falls through, it does not refuse: Projects/<slug>/ existing
+// is independent evidence, so a rename in progress (marker edited before the
+// vault directory is moved) and a deliberate cross-project write from inside a
+// marked repo both keep working. What no longer passes is a slug that is
+// neither the marker's project nor an existing one.
+//
+// The name check deliberately does NOT go through DetectProjectHighConfidence:
+// that falls back to the git origin basename, which would re-authorize on a
+// signal nobody wrote to name a vault project — the junk-project class again,
+// one strategy over.
 //
 // "marker OR exists" is deliberately weaker than the hook's marker-only gate:
 // the hook is opportunistic (a false negative is a harmless skipped capture),
@@ -280,13 +299,43 @@ func RequireKnownProject(slug, vaultRoot, repoRoot string) error {
 	if isForceSkipDir(resolved) {
 		return fmt.Errorf("refusing to write vault artifacts for %q: it is the home directory or filesystem root, not a project — run `vp init` in a project directory", repoRoot)
 	}
-	if DetectSignal(resolved) == SignalVibeConfig {
+	homeBoundary, _ := resolvedHome()
+	markerPath, markerErr := findMarkerUpward(resolved, homeBoundary)
+	// A marker authorizes the project it NAMES and no other. An empty,
+	// unreadable or invalid-slug name names nothing, so markerName stays empty
+	// and the arm contributes no evidence.
+	markerName := ""
+	if markerErr == nil {
+		if cfg, err := ParseProjectConfig(markerPath); err == nil {
+			if name := strings.TrimSpace(cfg.Name); slugpkg.Validate(name) == nil {
+				markerName = name
+			}
+		}
+	}
+	if markerName != "" && markerName == slug {
 		return nil
 	}
 	if fi, err := os.Stat(filepath.Join(vaultRoot, "Projects", slug)); err == nil && fi.IsDir() {
 		return nil
 	}
-	return fmt.Errorf("refusing to write vault artifacts for %q: no %s marker and no Projects/%s/ in the vault — run `vp init` first", repoRoot, ConfigFileName, slug)
+	switch {
+	case markerErr != nil:
+		return fmt.Errorf("refusing to write vault artifacts for %q: no %s marker and no Projects/%s/ in the vault — run `vp init` first", repoRoot, ConfigFileName, slug)
+	case markerName == "":
+		return fmt.Errorf(
+			"refusing to write vault artifacts for project %q: the marker %s names no usable project "+
+				"(its [project].name is empty or not a valid slug), and there is no Projects/%s/ in the vault.\n"+
+				"A marker that names no project is not evidence for this slug — set [project].name, or check "+
+				"the spelling against `vp_list_projects`.",
+			slug, markerPath, slug)
+	default:
+		return fmt.Errorf(
+			"refusing to write vault artifacts for project %q: the marker %s names project %q, not %q, "+
+				"and there is no Projects/%s/ in the vault.\n"+
+				"A marker authorizes only the project it names. If %q is real, run `vp init` in its "+
+				"directory first; otherwise check the spelling against `vp_list_projects`.",
+			slug, markerPath, markerName, slug, slug, slug)
+	}
 }
 
 // ParseProjectConfig parses a .vibe-palace.toml file and returns the project
