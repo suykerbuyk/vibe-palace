@@ -6,6 +6,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,9 +130,11 @@ func TestRefreshIndexBackfillsArchivedTranscriptsIntoSearch(t *testing.T) {
 }
 
 // TestRefreshIndexBackfillIsIdempotent pins the property that makes this safe to
-// re-run: storage.DrawerID is content-derived and AppendDrawer's "already
-// exists" is skipped, so a second refresh must add no drawers rather than
-// doubling the corpus.
+// re-run: storage.DrawerID is content-derived and AppendDrawers reports how many
+// it actually appended rather than erroring on a duplicate, so a second refresh
+// must add no drawers rather than doubling the corpus. It now also costs one
+// read per room rather than one whole-file rewrite per chunk, which is what
+// makes "safe to re-run" and "cheap to re-run" the same statement.
 func TestRefreshIndexBackfillIsIdempotent(t *testing.T) {
 	const project = "backfill-idem"
 	transcript := `{"type":"user","text":"idempotence check for the backfill sweep"}` + "\n"
@@ -159,6 +162,41 @@ func TestRefreshIndexBackfillIsIdempotent(t *testing.T) {
 	}
 	if got := m["archive_drawers"].(int); got != 0 {
 		t.Errorf("archive_drawers = %d on re-run, want 0 — a repeated backfill must not duplicate the corpus", got)
+	}
+}
+
+// TestRefreshIndexBackfillHonoursCancellation pins the only cancellation point
+// on this path. IndexTranscript's chunk/classify/append work takes no ctx at
+// all, so before the check at the top of the archive loop a client that gave up
+// — an MCP idle timeout, an operator's Ctrl-C — was released while the sweep
+// kept decompressing and writing. A cancelled context must produce an ERROR and
+// no ingested archive, never a short success whose counts describe a sweep that
+// was cut off.
+func TestRefreshIndexBackfillHonoursCancellation(t *testing.T) {
+	const project = "backfill-cancel"
+	transcript := `{"type":"user","text":"cancellation check for the backfill sweep"}` + "\n"
+	vault, eng := archivedProjectFixture(t, project, transcript)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	tool := RefreshIndexTool(eng, vault)
+	params, _ := json.Marshal(refreshIndexParams{Project: project})
+
+	_, err := tool.Handler(ctx, params)
+	if err == nil {
+		t.Fatal("a cancelled refresh must return an error, not a short success")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want it to wrap context.Canceled", err)
+	}
+	if !strings.Contains(err.Error(), "cancelled") {
+		t.Errorf("error = %q, want it to name the cancellation", err)
+	}
+
+	// Nothing was ingested, so nothing may have been written.
+	if _, statErr := os.Stat(filepath.Join(vault.Root, "palace", project, "drawers")); statErr == nil {
+		t.Error("cancelled backfill wrote drawers")
 	}
 }
 

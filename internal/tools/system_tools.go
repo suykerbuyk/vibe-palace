@@ -743,7 +743,7 @@ func RefreshIndexTool(engine *search.Engine, vault *storage.Vault) mcp.Tool {
 		Schema:  refreshIndexSchema,
 		Handler: refreshIndexHandler(engine, vault),
 		// Mutating because it WRITES, on three independent paths: the archive
-		// backfill reaches storage.Vault.AppendDrawer -> atomicfile.Write, the
+		// backfill reaches storage.Vault.AppendDrawers -> appendUnderLock, the
 		// embed pass writes .vec cache files on every cache miss, and Rebuild
 		// can create palace/<slug>/ outright for a project that had no store.
 		// It was registered non-mutating for a long time, and the derived call
@@ -781,10 +781,18 @@ type backfillStats struct {
 // JSONL-to-prose transform here would have made backfilled content DIFFER from
 // captured content, which is a worse outcome than the noise it removes.
 //
-// Idempotent: storage.DrawerID is derived from the chunk content, and
-// AppendDrawer's "already exists" is skipped silently by IndexTranscript, so a
-// re-run adds nothing. Per-archive failures are collected and reported rather
-// than aborting the sweep — one unreadable archive must not strand the rest.
+// Idempotent, and CHEAPLY so — the second half of that is the part that was
+// missing. storage.DrawerID is derived from the chunk content, and AppendDrawers
+// reports how many drawers it actually appended rather than erroring per
+// duplicate, so a re-run adds nothing. It used to add nothing at the cost of a
+// full room rescan and rewrite PER CHUNK, which is why a re-run cost the same as
+// a first run and neither could finish; the batch entry point pays one read per
+// (archive, room) and writes only when something is new.
+//
+// Per-archive failures are collected and reported rather than aborting the
+// sweep — one unreadable archive must not strand the rest. A CANCELLED context
+// is the one exception: it aborts, because continuing to write for a client
+// that has gone away is the defect, not resilience.
 func backfillFromArchives(ctx context.Context, engine *search.Engine, vault *storage.Vault, project string) (backfillStats, error) {
 	var bs backfillStats
 
@@ -814,7 +822,20 @@ func backfillFromArchives(ctx context.Context, engine *search.Engine, vault *sto
 	// sit on disk unreachable by search if the Rebuild is ever reordered away.
 	indexer := capture.NewIndexer(vault, engine, engine.Embedder(), cfg)
 
-	for _, e := range entries {
+	// 🔴 THE ONLY CANCELLATION POINT ON THIS PATH. Nothing below observes ctx
+	// except the embedder: IndexTranscript's chunk, classify and append work
+	// takes no ctx at all. Without this check a client that gave up — an MCP
+	// idle timeout, an operator's Ctrl-C — was released while this loop kept
+	// decompressing and writing archives nobody was waiting for. Checked at the
+	// TOP of the iteration so a cancellation costs at most the archive already
+	// in flight, and reported as an error rather than a short success so the
+	// counts never describe a sweep that was cut off.
+	start := time.Now()
+	for i, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return bs, fmt.Errorf("backfill cancelled after %d/%d archives: %w", i, len(entries), err)
+		}
+
 		var buf bytes.Buffer
 		if _, err := archive.Extract(e.ArchivePath, &buf); err != nil {
 			bs.Failures = append(bs.Failures, fmt.Sprintf("%s: extract: %v", filepath.Base(e.ArchivePath), err))
@@ -831,6 +852,19 @@ func backfillFromArchives(ctx context.Context, engine *search.Engine, vault *sto
 		}
 		bs.ArchivesIngested++
 		bs.Drawers += st.Drawers
+
+		// Per-archive, at Info, because the enclosing start/done pair cannot
+		// distinguish a slow sweep from a stuck one — and "hung or just slow?"
+		// being unanswerable is what cost an hour of re-runs here. One line per
+		// archive is bounded by the archive count, not by the chunk count.
+		slog.Info("refresh index: archive ingested",
+			"project", project,
+			"archive", i+1,
+			"of", len(entries),
+			"session_id", sessionID,
+			"drawers", st.Drawers,
+			"elapsed", time.Since(start),
+		)
 	}
 	return bs, nil
 }

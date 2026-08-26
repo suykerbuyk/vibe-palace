@@ -102,17 +102,33 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 		locs[i] = drawerLoc{drawer: d, room: room}
 	}
 
-	// Store drawers in the vault (JSONL).
+	// Store drawers in the vault (JSONL), ONE BATCH PER ROOM.
+	//
+	// 🔴 NOT a per-chunk loop over AppendDrawer, and that is the point of this
+	// shape. AppendDrawer reads and scans the entire room file to check for a
+	// duplicate ID, so calling it per chunk costs O(chunks × drawers already in
+	// the room) — MEASURED at 33 ms per chunk against this project's 19 MB
+	// `general` room, which is why a backfill of the archives never finished.
+	// Grouping first turns one archive into at most one read and one append per
+	// room it touches. Duplicates stay a SILENT SKIP, exactly as they were when
+	// this loop matched on "already exists": AppendDrawers reports the count it
+	// actually appended rather than erroring, so re-indexing an archive that is
+	// already filed is a no-op that writes nothing.
+	roomOrder := make([]string, 0, len(locs))
+	byRoom := make(map[string][]storage.Drawer, len(locs))
 	for i := range locs {
-		err := idx.vault.AppendDrawer(project, wing, locs[i].room, locs[i].drawer)
-		if err != nil {
-			// Duplicate drawers are expected on re-index — skip silently.
-			if strings.Contains(err.Error(), "already exists") {
-				continue
-			}
-			return stats, fmt.Errorf("append drawer %d: %w", i, err)
+		room := locs[i].room
+		if _, ok := byRoom[room]; !ok {
+			roomOrder = append(roomOrder, room)
 		}
-		stats.Drawers++
+		byRoom[room] = append(byRoom[room], locs[i].drawer)
+	}
+	for _, room := range roomOrder {
+		n, err := idx.vault.AppendDrawers(project, wing, room, byRoom[room])
+		if err != nil {
+			return stats, fmt.Errorf("append drawers to %s: %w", room, err)
+		}
+		stats.Drawers += n
 	}
 
 	// Every chunk in this call already existed: there is nothing new to embed

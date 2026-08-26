@@ -46,10 +46,18 @@ var vaultMutationSinks = []string{
 	// records a data-format migration is invisible to the stamp anchor.
 	"surface.WriteFormat",
 
-	// The palace drawer store mutates in place rather than through atomicfile:
-	// DeleteDrawer rewrites the JSONL with os.OpenFile(O_RDWR) and AppendDrawer
-	// appends. Neither stamps. `vp audit rooms --apply` reaches both through
-	// Vault.MoveDrawer, which is the reason its registration is wrapped.
+	// The palace drawer store does not reach the whole-file replace primitive:
+	// DeleteDrawer rewrites the JSONL with os.OpenFile(O_RDWR), and AppendDrawer
+	// delegates to AppendDrawers, which appends through F4 (appendUnderLock).
+	// `vp audit rooms --apply` reaches both through Vault.MoveDrawer, which is
+	// the reason its registration is wrapped.
+	//
+	// 🔴 The anchor stays on the NAME AppendDrawer even though the singular
+	// entry point is now a thin wrapper, because narrowing or renaming an anchor
+	// changes what this rule reports. It is not the only thing holding the
+	// drawer path: AppendDrawers reaches surface.StampForPath via
+	// appendUnderLock -> v.stamp, so the first anchor in this list covers it
+	// too, and the derived gate anchors F4 directly.
 	"storage.AppendDrawer",
 	"storage.DeleteDrawer",
 }

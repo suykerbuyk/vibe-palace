@@ -399,7 +399,7 @@ func reachesSink(g *callgraph.Graph, allFns map[*ssa.Function]bool, sinkSet map[
 // A derived verdict nobody can inspect is not evidence — it is an assertion
 // with a call graph behind it. The path is what lets a reviewer tell a real
 // reachability (vp_refresh_index -> backfillFromArchives -> IndexTranscript ->
-// AppendDrawer -> atomicfile.Write) from an artifact of the analysis
+// AppendDrawers -> appendUnderLock) from an artifact of the analysis
 // (vp_collect_wrap_state, which reaches a remover only through a generic
 // instantiation shared with an unrelated caller).
 func witnessPath(g *callgraph.Graph, allFns map[*ssa.Function]bool, root *ssa.Function, sinkSet map[string]bool) []string {

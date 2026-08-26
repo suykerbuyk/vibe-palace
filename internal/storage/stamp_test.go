@@ -54,10 +54,11 @@ func assertStamped(t *testing.T, stampDir string) {
 //     RetireTask, WriteVaultProjectConfig.
 //   - v.appendUnderLock (family F4, which owns the stamp): AppendIterationOwned,
 //     ArchiveCommitBodies.
-//   - v.stamp called directly after a non-replace write: AppendDrawer, the KG
-//     writers. This route is shrinking as Option E routes writers onto the
-//     primitive families; a writer still on it is one nobody has moved yet, not
-//     one that is exempt.
+//   - v.stamp called directly after a non-replace write: the KG writers. This
+//     route is shrinking as Option E routes writers onto the primitive families;
+//     a writer still on it is one nobody has moved yet, not one that is exempt.
+//     AppendDrawer left this route when the drawer store moved onto F4 — it now
+//     stamps through v.appendUnderLock, like the two writers above it.
 //
 // Stamp-dir resolution from a path NESTED below the project root (the thing the
 // old WriteDoc case incidentally covered) is still exercised: CreateTask and
