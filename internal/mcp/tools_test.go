@@ -808,8 +808,24 @@ func TestMakeHandlerRecoversPanic(t *testing.T) {
 	if !strings.Contains(out, `"request_id":"req-42"`) {
 		t.Errorf("panic log missing request_id correlation; full output:\n%s", out)
 	}
-	if !strings.Contains(out, "intentional") {
+	// Keyed on the ATTRIBUTE, not on a bare substring of the blob. A
+	// Contains(out, "intentional") passes if the text lands under ANY key, so it
+	// could not tell the `panic` attribute from the `err` one — and both are
+	// asserted below for different reasons.
+	if !strings.Contains(out, `"panic":"intentional"`) {
 		t.Errorf("panic log missing panic message; full output:\n%s", out)
+	}
+	// 🔴 THE RED CLASS MUST CARRY A REASON.
+	//
+	// This is the only makeHandler site that logs at ERROR, so it is the only
+	// one that can drive vp_health's status to "errors". vplog.Entry admits
+	// `err` to its allow-list and copies it straight through; a site that
+	// attaches only `panic` therefore reaches an agent as the loudest signal in
+	// the payload with no cause attached. The WARN sites all attach `err`; this
+	// one now does too, on the same key, so the reader stays a copy rather than
+	// a translation table.
+	if !strings.Contains(out, `"err":"intentional"`) {
+		t.Errorf("panic log missing err attr — a recovered panic is the ONLY ERROR-level makeHandler line, and vplog.Entry surfaces `err`, so without it vp_health goes red carrying no reason; full output:\n%s", out)
 	}
 }
 

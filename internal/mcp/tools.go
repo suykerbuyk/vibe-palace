@@ -430,6 +430,23 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 
 		defer func() {
 			if rec := recover(); rec != nil {
+				// 🔴 BOTH `panic` AND `err`, AND THE DUPLICATION IS DELIBERATE.
+				//
+				// This is the ONLY makeHandler site that logs at ERROR, so it is
+				// the only one that can drive vp_health's status to "errors" —
+				// the red class. Every WARN site here attaches `err`, and
+				// vplog.Entry admits `err` to its allow-list; this site attached
+				// only `panic`, so the loudest signal an agent can see was the
+				// one carrying no reason. A reader that mapped `panic` into the
+				// `err` field would fix that by making the allow-list a
+				// translation table; emitting the reason on the field every
+				// other failure already uses is the smaller change and keeps the
+				// reader a straight copy.
+				//
+				// `panic` STAYS. It is what marks this as a recovered panic
+				// rather than a returned error, and TestMakeHandlerRecoversPanic
+				// asserts on it — dropping it would trade one regression for
+				// another.
 				slog.Error("mcp.makeHandler: panic recovered",
 					"op", "mcp.makeHandler",
 					"tool", toolName,
@@ -437,6 +454,7 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 					"session_id", sessionID,
 					"elapsed_ms", time.Since(start).Milliseconds(),
 					"panic", fmt.Sprintf("%v", rec),
+					"err", fmt.Sprintf("%v", rec),
 				)
 				result = mcplib.NewToolResultError(fmt.Sprintf("handler panic: %v", rec))
 				err = nil

@@ -289,6 +289,73 @@ func TestSummarizeCarriesTheProjectAttribution(t *testing.T) {
 	}
 }
 
+// TestSummarizeCarriesTheHandlerReasonAndTool pins the CLIENT-VISIBLE output for
+// the dominant warning category, which is the half a status/count test cannot
+// see.
+//
+// Before this, vp_health could report that N mcp.makeHandler calls failed and
+// could not say why any of them did or which tool they were. warn_counts
+// answered "what category dominates"; nothing answered "why". The reason was on
+// the log line the whole time — every makeHandler WARN site attaches `err`, and
+// all six attach `tool` — and Summarize parsed the line into map[string]any and
+// dropped both.
+//
+// Asserts on the MARSHALLED entry, not on the struct: marshalling is exactly
+// what the tool hands a client, and `omitempty` means a struct field and a wire
+// field are not the same claim. Dropping either copy assignment in Summarize
+// turns the corresponding lookup red here.
+func TestSummarizeCarriesTheHandlerReasonAndTool(t *testing.T) {
+	ts := nowStamp()
+	lines := []string{
+		// A real handler failure, shaped as this vault's log actually records
+		// one: slog renders the error VALUE as its Error() string, so `err` is
+		// a plain JSON string and needs no unwrapping.
+		fmt.Sprintf(`{"time":%q,"level":"WARN","msg":"mcp.makeHandler: handler error","op":"mcp.makeHandler","tool":"vp_vault_edit","request_id":"513a18cb","session_id":"stdio","elapsed_ms":1,"fault":"caller","err":"vaultfs: edit Projects/vibe-palace/resume.md: old_string not found"}`, ts),
+		// A line from outside the dispatch seam: no tool, no err. Both fields
+		// must stay EMPTY — an absent attribute is honest absence, never a
+		// value to invent.
+		fmt.Sprintf(`{"time":%q,"level":"WARN","msg":"capture: enrich queue drained with failures","project":"vibe-palace","fault":"internal"}`, ts),
+	}
+
+	s := Summarize(writeLog(t, lines), 24, 20)
+	if len(s.RecentWarns) != 2 {
+		t.Fatalf("RecentWarns = %d entries, want 2", len(s.RecentWarns))
+	}
+
+	blob, err := json.Marshal(s.RecentWarns[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(blob, &got); err != nil {
+		t.Fatal(err)
+	}
+
+	const wantErr = "vaultfs: edit Projects/vibe-palace/resume.md: old_string not found"
+	if got["err"] != wantErr {
+		t.Errorf("err = %v, want %q — the reason the handler failed is on the log line and must reach the client; without it vp_health reports a count and withholds the cause: %s", got["err"], wantErr, blob)
+	}
+	if got["tool"] != "vp_vault_edit" {
+		t.Errorf("tool = %v, want vp_vault_edit — categorize() buckets all six makeHandler sites under one key, so the tool name is the only thing that says WHICH handler: %s", got["tool"], blob)
+	}
+
+	// The absence half. omitempty means these keys must not appear at all,
+	// rather than appear empty.
+	quiet, err := json.Marshal(s.RecentWarns[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotQuiet map[string]any
+	if err := json.Unmarshal(quiet, &gotQuiet); err != nil {
+		t.Fatal(err)
+	}
+	for _, absent := range []string{"err", "tool"} {
+		if v, present := gotQuiet[absent]; present {
+			t.Errorf("a non-dispatch line carries %q = %v — most log lines are not tool calls and carry neither attribute; an empty value here must be an ABSENT key, not an invented one: %s", absent, v, quiet)
+		}
+	}
+}
+
 // TestSummarizeDoesNotResurrectTheRationingAttributes pins the allow-list's
 // BOUNDARY, which is the half a "does it surface project?" test cannot see.
 //
@@ -333,9 +400,19 @@ func TestSummarizeDoesNotResurrectTheRationingAttributes(t *testing.T) {
 			t.Errorf("Entry carries a %q FIELD — that attribute belongs to machinery deleted in Phase 2 and only survives on old log lines; the allow-list is derived from live EMITTERS, not from the log: %s", ghost, blob)
 		}
 	}
-	// And the allow-list really is closed: only the four documented keys plus
-	// project may appear, so a later "just one more attribute" edit is caught.
-	allowed := map[string]bool{"time": true, "level": true, "msg": true, "fault": true, "project": true}
+	// And the allow-list really is closed: only the SEVEN documented keys may
+	// appear, so a later "just one more attribute" edit is caught.
+	//
+	// Widened from five to seven when `err` and `tool` were admitted. The
+	// widening is the point of keeping this half: admitting a member is a
+	// deliberate edit here, with the new key typed out, and anything that
+	// arrives without one fails. Deleting this loop to make an addition pass is
+	// the failure mode — it would leave the presence checks above, which only
+	// prove that what was added is there, never that nothing else came with it.
+	allowed := map[string]bool{
+		"time": true, "level": true, "msg": true,
+		"fault": true, "project": true, "err": true, "tool": true,
+	}
 	for k := range got {
 		if !allowed[k] {
 			t.Errorf("Entry grew an un-allow-listed field %q — Summarize holds EVERY attribute in its map[string]any, so growth here is free and turns the health summary into a log viewer: %s", k, blob)

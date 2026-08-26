@@ -66,7 +66,15 @@ type Entry struct {
 	// that forces you around itself to answer the question it exists for is the
 	// defect class this field closes.
 	//
-	// 🔴 THIS IS AN ALLOW-LIST OF ONE, AND IT IS DELIBERATELY NOT A MAP.
+	// 🔴 THIS IS AN ALLOW-LIST, AND IT IS DELIBERATELY NOT A MAP.
+	// It admits THREE attributes and no others: `project` (which), `err` (why)
+	// and `tool` (which handler) — each documented on its own field below with
+	// the question it answers. It began as an allow-list of one; that it has
+	// grown twice is not licence to stop justifying members, it is the reason
+	// the boundary is pinned by a test (TestSummarizeDoesNotResurrectThe-
+	// RationingAttributes asserts the CLOSED key set, not just the presence of
+	// what was added).
+	//
 	// Summarize unmarshals every line into map[string]any, so EVERY attribute is
 	// already in hand and an open-ended Attrs bag would cost nothing to add and
 	// turn this summary into a log viewer. Each field admitted here must earn it
@@ -77,6 +85,50 @@ type Entry struct {
 	// rationing machinery that emitted them is deleted and no emitter can
 	// produce them again. Those three are fossils, not candidates.
 	Project string `json:"project,omitempty"`
+
+	// Err is the slog `err` attribute: WHY the line was logged, empty on lines
+	// that carry none.
+	//
+	// It is here because `project` answered WHICH and `msg` answers WHAT, and
+	// neither answers WHY. The dominant warning category on this vault is
+	// `mcp.makeHandler` — the MCP dispatch seam, internal/mcp/tools.go — whose
+	// sites all attach `err` and whose summary carried a count and a category
+	// prefix and nothing else. An agent reading vp_health could see that N
+	// handler calls failed and had no way to learn what any of them said,
+	// which is the same instrument-forces-you-around-itself defect Project
+	// closes, one question over.
+	//
+	// 🔴 THE FIRST FREE-TEXT MEMBER, AND THE ONLY BOUND ON IT IS `limit`.
+	// Every other admitted field is a TOKEN: a fault taxonomy value, a project
+	// slug, a tool name. Err is unbounded prose formatted by whatever produced
+	// the error — this vault's log already holds 523-byte specimens, and the
+	// surface-gate site logs a whole IncompatibleError remediation. Nothing
+	// truncates it here on purpose: a half-printed reason is worse than a long
+	// one, and the caller already states how many records it wants. So the
+	// `limit` argument to Summarize is what holds this field, and a caller
+	// raising limit to its 1000 ceiling is choosing a large payload knowingly.
+	// vp_bootstrap_context does not pay it at all — it clears RecentWarns and
+	// carries only the verdict (internal/tools/context_tools.go).
+	//
+	// slog's JSONHandler renders an `error` value as its Error() string rather
+	// than marshalling the struct, so `raw["err"]` really is a string on the
+	// wire and this needs no unwrapping.
+	Err string `json:"err,omitempty"`
+
+	// Tool is the slog `tool` attribute — the MCP tool name — empty on lines
+	// that carry none.
+	//
+	// It is the other half of Err's question. "A handler failed, and here is
+	// what it said" is only actionable with WHICH HANDLER, and the category
+	// prefix cannot supply it: categorize() buckets all six makeHandler sites
+	// under one key by design.
+	//
+	// 🔴 EMPTY IS HONEST ABSENCE, NOT A BUG. Only the makeHandler seam attaches
+	// `tool`; mcp.staleBinding, capture and bootstrap emitters do not, and they
+	// are not tool dispatches — there is no tool to name. An empty Tool means
+	// the line did not come from a tool call, exactly as an empty Project means
+	// the line was not about a project. Do not "fix" it by inventing a value.
+	Tool string `json:"tool,omitempty"`
 }
 
 // Summary is the health of the log: what has gone wrong recently, and how badly.
@@ -199,7 +251,17 @@ func Summarize(logPath string, hours, limit int) Summary {
 		msg, _ := raw["msg"].(string)
 		fault, _ := raw["fault"].(string)
 		project, _ := raw["project"].(string)
-		inWindow = append(inWindow, Entry{Time: ts, Level: level, Msg: msg, Fault: fault, Project: project})
+		// errMsg, not err: `err` is already live in this scope (os.Stat above,
+		// and the Unmarshal if-init a few lines up), so `err, _ := ...` would
+		// compile while shadowing both.
+		errMsg, _ := raw["err"].(string)
+		// Copied straight through. The panic-recovered ERROR site attaches its
+		// own `err` at the emitter (internal/mcp/tools.go) precisely so this
+		// reader does not have to translate `panic` into `err` — an allow-list
+		// that renames keys is a translation table, which is the thing this
+		// field's doc comment refuses to become.
+		toolName, _ := raw["tool"].(string)
+		inWindow = append(inWindow, Entry{Time: ts, Level: level, Msg: msg, Fault: fault, Project: project, Err: errMsg, Tool: toolName})
 		s.WarnCounts[categorize(msg)]++
 		if fault == FaultCaller {
 			s.CallerFriction++
