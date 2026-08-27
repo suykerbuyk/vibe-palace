@@ -732,11 +732,14 @@ func RefreshIndexTool(engine *search.Engine, vault *storage.Vault) mcp.Tool {
 			"archived transcripts under Projects/<slug>/transcripts/. The archives are " +
 			"decompressed and fed to the same indexer capture uses, so a backfilled drawer " +
 			"is identical to one written at capture time — this is how a project with " +
-			"session history but no palace store becomes searchable. Idempotent: re-running " +
-			"re-reads the same archives without duplicating drawers. Reports what it did " +
-			"(drawers, iteration_chunks, indexed, embedded, cache_hits, reaped, plus " +
-			"archives_found, archives_ingested, archive_drawers and any archive_failures) so " +
-			"a real rebuild is distinguishable from a no-op. It cannot invent content that " +
+			"session history but no palace store becomes searchable. The first run over an " +
+			"archive decompresses it; later runs SKIP any archive whose source_sha256 is " +
+			"already recorded in palace/<slug>/ingested-archives.jsonl, so a re-run neither " +
+			"re-reads them nor duplicates drawers. Reports what it did (drawers, " +
+			"iteration_chunks, indexed, embedded, cache_hits, reaped, plus archives_found, " +
+			"archives_ingested, archives_skipped, archive_drawers and any archive_failures) " +
+			"so a real rebuild is distinguishable from a no-op and a skip is never counted " +
+			"as an ingest. It cannot invent content that " +
 			"was never captured: it REFUSES when the project has no palace store, nothing " +
 			"indexable, AND no transcript archives, rather than reporting a success it did " +
 			"not achieve.",
@@ -754,9 +757,15 @@ func RefreshIndexTool(engine *search.Engine, vault *storage.Vault) mcp.Tool {
 }
 
 // backfillStats reports what a historical-archive ingest actually did.
+//
+// Ingested and Skipped are separate counts and must stay separate: reporting a
+// skip as an ingest would say "I read 373 archives" about a run that opened
+// none of them, which is the same class of false success this tool was already
+// caught making once.
 type backfillStats struct {
 	ArchivesFound    int
 	ArchivesIngested int
+	ArchivesSkipped  int
 	Drawers          int
 	Failures         []string
 }
@@ -822,6 +831,23 @@ func backfillFromArchives(ctx context.Context, engine *search.Engine, vault *sto
 	// sit on disk unreachable by search if the Rebuild is ever reordered away.
 	indexer := capture.NewIndexer(vault, engine, engine.Embedder(), cfg)
 
+	// The ingest ledger, read ONCE for the whole sweep. This is what makes run
+	// two cheap: without it every run decompressed all 373 archives and walked
+	// IndexTranscript over every chunk of them, only to discover at the end
+	// that every drawer was already filed. The set is a few hundred hashes and
+	// is discarded when this function returns — it is a loop variable, not a
+	// cache with a lifetime.
+	//
+	// A ledger that cannot be READ is not a reason to refuse the sweep: the
+	// worst case is the behaviour that existed before it, so it degrades to a
+	// full reingest rather than to a failure.
+	ingested, err := vault.IngestedArchives(project)
+	if err != nil {
+		slog.Warn("refresh index: ingest ledger unreadable, reingesting everything",
+			"project", project, "err", err)
+		ingested = map[string]struct{}{}
+	}
+
 	// 🔴 THE ONLY CANCELLATION POINT ON THIS PATH. Nothing below observes ctx
 	// except the embedder: IndexTranscript's chunk, classify and append work
 	// takes no ctx at all. Without this check a client that gave up — an MCP
@@ -836,14 +862,29 @@ func backfillFromArchives(ctx context.Context, engine *search.Engine, vault *sto
 			return bs, fmt.Errorf("backfill cancelled after %d/%d archives: %w", i, len(entries), err)
 		}
 
+		sourceSHA, sessionID := "", ""
+		if e.Manifest != nil {
+			sourceSHA = e.Manifest.SourceSHA256
+			sessionID = e.Manifest.SessionID
+		}
+
+		// Skip BEFORE the decompress. Extracting and then discovering every
+		// chunk is a duplicate is the expensive half of the old behaviour, and
+		// it is the half the ledger exists to delete.
+		if sourceSHA != "" {
+			if _, done := ingested[sourceSHA]; done {
+				bs.ArchivesSkipped++
+				slog.Debug("refresh index: archive already ingested",
+					"project", project, "archive", i+1, "of", len(entries),
+					"session_id", sessionID, "source_sha256", sourceSHA)
+				continue
+			}
+		}
+
 		var buf bytes.Buffer
 		if _, err := archive.Extract(e.ArchivePath, &buf); err != nil {
 			bs.Failures = append(bs.Failures, fmt.Sprintf("%s: extract: %v", filepath.Base(e.ArchivePath), err))
 			continue
-		}
-		sessionID := ""
-		if e.Manifest != nil {
-			sessionID = e.Manifest.SessionID
 		}
 		st, err := indexer.IndexTranscript(ctx, sessionID, project, buf.String())
 		if err != nil {
@@ -852,6 +893,36 @@ func backfillFromArchives(ctx context.Context, engine *search.Engine, vault *sto
 		}
 		bs.ArchivesIngested++
 		bs.Drawers += st.Drawers
+
+		// Record AFTER a successful ingest, and record it even when the archive
+		// yielded ZERO new drawers — "already filed by capture" is exactly as
+		// ingested as "filed by this run", and the whole point is to not open
+		// this file again. The ordering is deliberate: a crash between the
+		// ingest and this write costs a reingest, which IndexTranscript makes
+		// harmless, whereas writing first would let a crash mark an archive
+		// done that was never read.
+		if sourceSHA == "" {
+			// Nothing to key on. Ingest it every time and say so, rather than
+			// writing a row that can never match.
+			slog.Warn("refresh index: archive has no source_sha256, cannot be skipped on a later run",
+				"project", project, "archive", i+1, "of", len(entries), "session_id", sessionID)
+		} else if err := vault.RecordIngestedArchive(project, storage.IngestedArchive{
+			SourceSHA256: sourceSHA,
+			SessionID:    sessionID,
+		}); err != nil {
+			// The ingest itself SUCCEEDED, so this is not an archive failure
+			// and must not be counted as one. It costs a reingest next run, and
+			// the operator should see why.
+			slog.Warn("refresh index: ingest succeeded but ledger write failed",
+				"project", project, "session_id", sessionID, "err", err)
+			bs.Failures = append(bs.Failures,
+				fmt.Sprintf("%s: ledger: %v (archive was ingested; it will be re-ingested next run)",
+					filepath.Base(e.ArchivePath), err))
+		} else {
+			// Guard the sweep against itself: two archives can carry the same
+			// bytes, and the second must skip rather than reingest.
+			ingested[sourceSHA] = struct{}{}
+		}
 
 		// Per-archive, at Info, because the enclosing start/done pair cannot
 		// distinguish a slow sweep from a stuck one — and "hung or just slow?"
@@ -938,7 +1009,13 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault) mcp.Handle
 		// real index from a rebuild that legitimately CREATES the store —
 		// refusing that would be this same defect inverted, reporting failure
 		// for work that was done.
-		if !hadStore && stats.Indexed == 0 && bf.ArchivesIngested == 0 {
+		// ArchivesSkipped counts here as evidence, not just ArchivesIngested: an
+		// archive the ledger already covers is content this project HAS, so a
+		// second run over a project whose every archive is ingested must not
+		// suddenly report "nothing to refresh" for the corpus the first run
+		// filed. Without that term the ledger would turn a success into a
+		// refusal on the very next call.
+		if !hadStore && stats.Indexed == 0 && bf.ArchivesIngested == 0 && bf.ArchivesSkipped == 0 {
 			return nil, fmt.Errorf(
 				"refresh index %q: nothing to refresh — no palace store at palace/%s/drawers, "+
 					"and no indexable content anywhere (0 drawers, 0 iteration chunks, "+
@@ -970,8 +1047,13 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault) mcp.Handle
 			// hide whether the backfill did anything.
 			"archives_found":    bf.ArchivesFound,
 			"archives_ingested": bf.ArchivesIngested,
-			"archive_drawers":   bf.Drawers,
-			"archive_failures":  bf.Failures,
+			// Archives the ingest ledger already covers, which were never
+			// opened on this call. Reported beside ingested rather than folded
+			// into it: "found 373, ingested 0, skipped 373" is the shape of a
+			// healthy second run, and it is unreadable if the two collapse.
+			"archives_skipped": bf.ArchivesSkipped,
+			"archive_drawers":  bf.Drawers,
+			"archive_failures": bf.Failures,
 		}, nil
 	}
 }

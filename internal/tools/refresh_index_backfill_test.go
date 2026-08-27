@@ -130,11 +130,16 @@ func TestRefreshIndexBackfillsArchivedTranscriptsIntoSearch(t *testing.T) {
 }
 
 // TestRefreshIndexBackfillIsIdempotent pins the property that makes this safe to
-// re-run: storage.DrawerID is content-derived and AppendDrawers reports how many
-// it actually appended rather than erroring on a duplicate, so a second refresh
-// must add no drawers rather than doubling the corpus. It now also costs one
-// read per room rather than one whole-file rewrite per chunk, which is what
-// makes "safe to re-run" and "cheap to re-run" the same statement.
+// re-run: a second refresh must add no drawers rather than doubling the corpus.
+//
+// 🔴 THE MECHANISM CHANGED AND SO DID THIS TEST. It used to assert
+// archives_ingested == 1 on the re-run, because the sweep re-read every archive
+// every time and idempotence was carried entirely by content-derived DrawerIDs.
+// The ingest ledger now skips an archive it has already ingested, so the re-run
+// reports a SKIP and never opens the file — the corpus-level property is
+// unchanged, the work behind it is not. The drawer-level dedup is still there
+// underneath (AppendDrawers reports its count rather than erroring per
+// duplicate) and is what makes a reingest after a crash harmless.
 func TestRefreshIndexBackfillIsIdempotent(t *testing.T) {
 	const project = "backfill-idem"
 	transcript := `{"type":"user","text":"idempotence check for the backfill sweep"}` + "\n"
@@ -157,8 +162,14 @@ func TestRefreshIndexBackfillIsIdempotent(t *testing.T) {
 		t.Fatalf("second refresh: %v", err)
 	}
 	m := second.(map[string]any)
-	if got := m["archives_ingested"]; got != 1 {
-		t.Errorf("archives_ingested = %v, want 1 — the archive is still found and read on a re-run", got)
+	if got := m["archives_found"]; got != 1 {
+		t.Errorf("archives_found = %v, want 1 — the archive is still found on a re-run", got)
+	}
+	if got := m["archives_skipped"]; got != 1 {
+		t.Errorf("archives_skipped = %v, want 1 — the ledger already covers it", got)
+	}
+	if got := m["archives_ingested"]; got != 0 {
+		t.Errorf("archives_ingested = %v, want 0 — a skip must not be reported as an ingest", got)
 	}
 	if got := m["archive_drawers"].(int); got != 0 {
 		t.Errorf("archive_drawers = %d on re-run, want 0 — a repeated backfill must not duplicate the corpus", got)
@@ -350,5 +361,256 @@ func TestRefreshIndexIsRegisteredMutating(t *testing.T) {
 		if n == "vp_refresh_index" {
 			t.Error("vp_refresh_index must not be on the read-only serve allow-list: it is a writer")
 		}
+	}
+}
+
+// --- the archive ingest ledger (run two) ------------------------------------
+
+// readLedger returns the raw ledger rows for a project, or nil when the file
+// does not exist.
+func readLedger(t *testing.T, vault *storage.Vault, project string) []storage.IngestedArchive {
+	t.Helper()
+	path, err := vault.IngestedArchivesFile(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("read ledger: %v", err)
+	}
+	var rows []storage.IngestedArchive
+	for _, line := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec storage.IngestedArchive
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("ledger line %q does not parse: %v", line, err)
+		}
+		rows = append(rows, rec)
+	}
+	return rows
+}
+
+// fixtureManifest returns the single manifest of a fixture project.
+func fixtureManifest(t *testing.T, vault *storage.Vault, project string) (*archive.Manifest, string) {
+	t.Helper()
+	entries, err := archive.ListEntries(vault.Root, project)
+	if err != nil {
+		t.Fatalf("ListEntries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("fixture holds %d archives, want exactly 1", len(entries))
+	}
+	return entries[0].Manifest, entries[0].ManifestPath
+}
+
+// TestRefreshIndexBackfillWritesLedgerRow: a successful ingest must record the
+// archive's CONTENT HASH, which is the only key that survives a session being
+// re-archived with new bytes.
+func TestRefreshIndexBackfillWritesLedgerRow(t *testing.T) {
+	const project = "ledger-write"
+	transcript := `{"type":"user","text":"the ledger records the content hash"}` + "\n"
+	vault, eng := archivedProjectFixture(t, project, transcript)
+
+	man, _ := fixtureManifest(t, vault, project)
+	if man.SourceSHA256 == "" {
+		t.Fatal("fixture manifest carries no source_sha256")
+	}
+
+	tool := RefreshIndexTool(eng, vault)
+	params, _ := json.Marshal(refreshIndexParams{Project: project})
+	if _, err := tool.Handler(context.Background(), params); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+
+	rows := readLedger(t, vault, project)
+	if len(rows) != 1 {
+		t.Fatalf("ledger holds %d rows, want 1: %+v", len(rows), rows)
+	}
+	if rows[0].SourceSHA256 != man.SourceSHA256 {
+		t.Errorf("ledger row keyed on %q, want the manifest's source_sha256 %q",
+			rows[0].SourceSHA256, man.SourceSHA256)
+	}
+	if rows[0].SessionID != man.SessionID {
+		t.Errorf("ledger row session_id = %q, want %q", rows[0].SessionID, man.SessionID)
+	}
+}
+
+// TestRefreshIndexBackfillSkipsWithoutExtracting is the point of this unit, and
+// the assertion is deliberately NOT "the second run added no drawers" — that
+// was already true before the ledger, because the drawers were already filed.
+// It proves the archive was never OPENED: the .jsonl.zst is deleted between the
+// runs, so a second run that still extracts reports an extract failure, and one
+// that consults the ledger reports a skip and never touches the file.
+func TestRefreshIndexBackfillSkipsWithoutExtracting(t *testing.T) {
+	const project = "ledger-skip"
+	transcript := `{"type":"user","text":"run two must not decompress this archive"}` + "\n"
+	vault, eng := archivedProjectFixture(t, project, transcript)
+
+	tool := RefreshIndexTool(eng, vault)
+	params, _ := json.Marshal(refreshIndexParams{Project: project})
+
+	first, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	fm := first.(map[string]any)
+	if got := fm["archives_ingested"]; got != 1 {
+		t.Fatalf("first run archives_ingested = %v, want 1", got)
+	}
+	if got := fm["archives_skipped"]; got != 0 {
+		t.Fatalf("first run archives_skipped = %v, want 0", got)
+	}
+
+	// Remove the archive body. The manifest stays, so the entry is still FOUND;
+	// only reading it is now impossible.
+	_, manifestPath := fixtureManifest(t, vault, project)
+	archivePath := strings.TrimSuffix(manifestPath, ".manifest.json") + ".jsonl.zst"
+	if err := os.Remove(archivePath); err != nil {
+		t.Fatalf("remove archive body: %v", err)
+	}
+
+	second, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("second refresh: %v", err)
+	}
+	sm := second.(map[string]any)
+	if got := sm["archives_found"]; got != 1 {
+		t.Errorf("second run archives_found = %v, want 1", got)
+	}
+	if got := sm["archives_skipped"]; got != 1 {
+		t.Errorf("second run archives_skipped = %v, want 1 — the ledger must skip it", got)
+	}
+	if got := sm["archives_ingested"]; got != 0 {
+		t.Errorf("second run archives_ingested = %v, want 0 — a skip is not an ingest", got)
+	}
+	if got := sm["archive_drawers"].(int); got != 0 {
+		t.Errorf("second run archive_drawers = %d, want 0", got)
+	}
+	// The proof: extracting a deleted file cannot succeed, so an empty failure
+	// list means no extract was attempted.
+	if fails, _ := sm["archive_failures"].([]string); len(fails) != 0 {
+		t.Errorf("second run reported %v — it opened the archive instead of skipping it", fails)
+	}
+	if rows := readLedger(t, vault, project); len(rows) != 1 {
+		t.Errorf("ledger holds %d rows after two runs, want 1", len(rows))
+	}
+}
+
+// TestRefreshIndexBackfillIngestsArchiveWithNoSHA: an archive whose manifest
+// carries no source_sha256 cannot be keyed, so it must be ingested every run —
+// and must NOT leave a row keyed on "", which would grow the ledger while
+// skipping nothing.
+func TestRefreshIndexBackfillIngestsArchiveWithNoSHA(t *testing.T) {
+	const project = "ledger-nosha"
+	transcript := `{"type":"user","text":"this manifest loses its hash"}` + "\n"
+	vault, eng := archivedProjectFixture(t, project, transcript)
+
+	// Strip the hash from the manifest on disk, keeping every other field.
+	_, manifestPath := fixtureManifest(t, vault, project)
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	m["source_sha256"] = ""
+	patched, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, patched, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := RefreshIndexTool(eng, vault)
+	params, _ := json.Marshal(refreshIndexParams{Project: project})
+
+	first, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	if got := first.(map[string]any)["archives_ingested"]; got != 1 {
+		t.Fatalf("archives_ingested = %v, want 1 — an unkeyable archive is still ingested", got)
+	}
+	if rows := readLedger(t, vault, project); len(rows) != 0 {
+		t.Fatalf("ledger holds %d rows, want 0 — an empty key must never be written: %+v", len(rows), rows)
+	}
+
+	// And it is ingested AGAIN next run, rather than silently skipped.
+	second, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("second refresh: %v", err)
+	}
+	sm := second.(map[string]any)
+	if got := sm["archives_ingested"]; got != 1 {
+		t.Errorf("second run archives_ingested = %v, want 1 — nothing can skip it", got)
+	}
+	if got := sm["archives_skipped"]; got != 0 {
+		t.Errorf("second run archives_skipped = %v, want 0", got)
+	}
+}
+
+// failingEmbedder makes capture.Indexer.IndexTranscript fail after the drawers
+// are written, which is the realistic partial-ingest shape.
+type failingEmbedder struct{ embedder.Embedder }
+
+func (failingEmbedder) EmbedBatch(context.Context, []string) ([][]float32, error) {
+	return nil, errors.New("embedder is down")
+}
+
+// TestRefreshIndexBackfillDoesNotRecordAFailedIngest: the ledger is a claim
+// that an archive was fully ingested. Recording one for a failed IndexTranscript
+// would strand its content permanently — every later run would skip an archive
+// that never finished.
+func TestRefreshIndexBackfillDoesNotRecordAFailedIngest(t *testing.T) {
+	const project = "ledger-fail"
+	transcript := `{"type":"user","text":"the embedder fails partway through this ingest"}` + "\n"
+	vault, _ := archivedProjectFixture(t, project, transcript)
+
+	cfg := storage.Config{SearchDefaultLimit: 10}
+	eng := search.NewEngine(failingEmbedder{embedder.NewMock(384)}, vault, cfg)
+	t.Cleanup(func() { eng.Close() })
+
+	// The sweep is called directly rather than through the tool: a broken
+	// embedder also fails engine.Rebuild, and the handler would return that
+	// error instead of the backfill's own accounting, which is the thing under
+	// test here.
+	bs, err := backfillFromArchives(context.Background(), eng, vault, project)
+	if err != nil {
+		t.Fatalf("backfillFromArchives: %v", err)
+	}
+	if bs.ArchivesFound != 1 {
+		t.Fatalf("ArchivesFound = %d, want 1", bs.ArchivesFound)
+	}
+	if bs.ArchivesIngested != 0 {
+		t.Errorf("ArchivesIngested = %d, want 0 — the ingest failed", bs.ArchivesIngested)
+	}
+	if len(bs.Failures) != 1 || !strings.Contains(bs.Failures[0], "index:") {
+		t.Errorf("Failures = %v, want one index failure", bs.Failures)
+	}
+	if rows := readLedger(t, vault, project); len(rows) != 0 {
+		t.Fatalf("ledger holds %d rows after a failed ingest, want 0: %+v", len(rows), rows)
+	}
+
+	// And the archive is genuinely retried once the embedder recovers, rather
+	// than stranded by a row that should never have been written.
+	healthy := search.NewEngine(embedder.NewMock(384), vault, cfg)
+	t.Cleanup(func() { healthy.Close() })
+	retry, err := backfillFromArchives(context.Background(), healthy, vault, project)
+	if err != nil {
+		t.Fatalf("retry backfillFromArchives: %v", err)
+	}
+	if retry.ArchivesIngested != 1 {
+		t.Errorf("retry ArchivesIngested = %d, want 1 — a failed ingest must not be skipped later", retry.ArchivesIngested)
+	}
+	if rows := readLedger(t, vault, project); len(rows) != 1 {
+		t.Errorf("ledger holds %d rows after the retry, want 1", len(rows))
 	}
 }
