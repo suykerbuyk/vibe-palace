@@ -68,4 +68,10 @@ var MutatingToolNames = []string{
 	// disagreement every run and it was carried as accepted debt with the task
 	// `refresh-index-reports-rebuilt-while-writing-nothing` as its named owner.
 	"vp_refresh_index",
+	// vp_vault_split is gated on the TOOL, not on today's single action. Its
+	// implemented action (plan) writes nothing and is admitted per-invocation by
+	// vaultSplitReadOnly; apply, verify and purge will write, and declaring the
+	// tool mutating now means the gate is already in place when they land rather
+	// than being a step someone has to remember. See vault_split.go.
+	"vp_vault_split",
 }

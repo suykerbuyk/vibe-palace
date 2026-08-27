@@ -112,11 +112,19 @@ type SessionMeta struct {
 	// the wire and therefore cannot leak across a process boundary — and
 	// recording the explicit "unknown" when the dialect is indeterminate.
 	//
-	// ONE VOCABULARY: Host names a host APPLICATION. The MCP path's values are
-	// vendor-chosen and open-ended (whatever clientInfo.name reported); the hook
-	// can only ever write HostClaudeCode, HostGrok, or HostUnknown. It must never
-	// carry an answer to a different question — not the model, and not "how was
-	// the host invoked", which is what Entrypoint below is for.
+	// ONE VOCABULARY: Host names a host APPLICATION, and both writers close onto
+	// the declared set below — HostClaudeCode, HostGrok, HostZed, HostXAI, or
+	// HostUnknown. The hook reaches only the first two (its signal is the payload
+	// dialect); the MCP path normalizes the vendor-chosen clientInfo.name onto
+	// the set and fails closed to HostUnknown. It must never carry an answer to a
+	// different question — not the model, and not "how was the host invoked",
+	// which is what Entrypoint below is for.
+	//
+	// 🔴 NOTES WRITTEN BEFORE THE MCP PATH CLOSED ITS VOCABULARY carry raw
+	// clientInfo.name values that are NOT in the set ("grok-shell-vibe-palace",
+	// "capture-oneshot", "cli"). They are deliberately not backfilled — an
+	// attribution that was never captured cannot be invented — so a reader
+	// grouping by this field must expect values outside the set from older notes.
 	//
 	// 🔴 ABSENCE CARRIES NO SINGLE MEANING, so never read one into it. A note
 	// with NO host key predates the field, OR came from a writer that makes no
@@ -467,21 +475,34 @@ const (
 // attributed.
 const HostUnknown = "unknown"
 
-// Host values the HOOK path can establish. The MCP path records whatever name
-// the transport handshake reported — vendor-chosen and open-ended — but the hook
-// has no handshake and infers the host from the wire dialect of its own payload,
-// so it can name exactly the two clients whose dialects vp knows how to parse.
-// Spelled once here so writer and readers cannot drift.
+// The DECLARED host vocabulary — the complete set of positive Host values any
+// writer may record, alongside HostUnknown. Spelled once here so writers and
+// readers cannot drift.
+//
+// BOTH paths now close onto this set. The hook has no handshake and infers the
+// host from the wire dialect of its own payload, so it can only ever reach
+// HostClaudeCode or HostGrok. The MCP path derives from the initialize
+// handshake's clientInfo.name, which is vendor-chosen and open-ended — it
+// NORMALIZES that name onto this set and fails closed to HostUnknown, rather
+// than passing the raw name through. Before that normalization the vault
+// accumulated client-INSTANCE names ("grok-shell-vibe-palace",
+// "capture-oneshot") in a field that names a host APPLICATION, so the two
+// writers disagreed about what the value meant and any per-host count silently
+// split. HostZed and HostXAI are reachable only from the MCP path: no hook
+// payload dialect names them.
 //
 // 🔴 HostClaudeCode is a DERIVATION, never a fallback. ADR-006 forbids defaulting
 // to Claude Code when nothing was measured — that default is what made the Zed
 // adapter unreachable. It does not forbid CONCLUDING Claude Code from a signal
 // that was measured. The hook writes this only when the payload arrived in
-// Claude's wire dialect; an indeterminate dialect writes HostUnknown, so there is
-// still no default anywhere on the path.
+// Claude's wire dialect; an indeterminate dialect writes HostUnknown, and an
+// unrecognized client name normalizes to HostUnknown, so there is still no
+// default anywhere on either path.
 const (
 	HostClaudeCode = "claude-code"
 	HostGrok       = "grok"
+	HostZed        = "zed"
+	HostXAI        = "xai"
 )
 
 // EntrypointUnknown is the SessionMeta.Entrypoint value written when

@@ -72,8 +72,86 @@ func declaredClientName(raw json.RawMessage) string {
 	return ""
 }
 
+// hostVocabulary is the ONE declared client-name vocabulary, keyed by the
+// token a vendor-chosen clientInfo.name may carry, and it answers BOTH
+// questions asked of that name: which host application it is, and whether that
+// host is hook-less. It exists once because two copies of this table are how a
+// normalizer and an auto-inline predicate come to disagree about the same
+// client — the normalizer sending "Zed" to unknown while the predicate still
+// calls it hook-less would silently drop the inline archive that is Zed's only
+// durable capture.
+//
+// Keys are TOKENS, not names: matching is token equality over letter/digit
+// runs (see hostNameTokens), never substring. clientInfo.name is vendor-chosen
+// and English words embed these tokens — "optimized" and "authorized" both
+// contain "zed".
+var hostVocabulary = map[string]struct {
+	// host is the canonical storage.Host* value this token names.
+	host string
+	// hookless reports whether that host has no SessionEnd hook and therefore
+	// needs an inline transcript archive for durable capture.
+	hookless bool
+}{
+	"claude": {host: storage.HostClaudeCode, hookless: false},
+	"grok":   {host: storage.HostGrok, hookless: true},
+	"zed":    {host: storage.HostZed, hookless: true},
+	"xai":    {host: storage.HostXAI, hookless: true},
+}
+
+// hostNameTokens splits a client name into lowercase letter/digit runs — the
+// single splitter both the normalizer and the hook-less predicate match on, so
+// they cannot tokenize the same name differently.
+func hostNameTokens(name string) []string {
+	h := strings.ToLower(strings.TrimSpace(name))
+	if h == "" {
+		return nil
+	}
+	return strings.FieldsFunc(h, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	})
+}
+
+// resolveHostName maps a vendor-chosen client name onto the declared closed
+// vocabulary, reporting the canonical host and whether it is hook-less.
+//
+// FAIL CLOSED: a name carrying no known token, or carrying two tokens that
+// name DIFFERENT hosts, resolves to storage.HostUnknown — never a pass-through
+// of the raw name and never a guess between the two. ADR-006 is DECLARE+ENFORCE:
+// an unrecognized client is honestly unknown, which is what the vault's
+// "grok-shell-vibe-palace" and "capture-oneshot" values should always have been.
+//
+// Claude wins outright over any other token in the same name. That is the
+// existing load-bearing guard, not a new rule: "claude-grok-bridge" is a Claude
+// host, and auto-inlining there would dual-note against the SessionEnd hook
+// that Claude-shaped hosts do fire.
+func resolveHostName(name string) (host string, hookless bool) {
+	found := ""
+	foundHookless := false
+	for _, tok := range hostNameTokens(name) {
+		entry, ok := hostVocabulary[tok]
+		if !ok {
+			continue
+		}
+		if entry.host == storage.HostClaudeCode {
+			return entry.host, entry.hookless
+		}
+		if found != "" && found != entry.host {
+			// Two different hosts named by one client name: nothing was
+			// established, so say so rather than picking a winner.
+			return storage.HostUnknown, false
+		}
+		found, foundHookless = entry.host, entry.hookless
+	}
+	if found == "" {
+		return storage.HostUnknown, false
+	}
+	return found, foundHookless
+}
+
 // resolveCaptureHost settles the host attribution for one capture:
-// DERIVED-WINS, declared as fallback, explicit unknown when neither exists.
+// DERIVED-WINS, declared as fallback, explicit unknown when neither exists —
+// and the chosen name is NORMALIZED onto the declared vocabulary before it is
+// written.
 //
 // The handshake-derived value is authoritative because the transport saw the
 // client name itself; a caller-declared client_info could claim anything, so
@@ -83,54 +161,50 @@ func declaredClientName(raw json.RawMessage) string {
 // recorded somewhere. Per ADR-006 the empty case records storage.HostUnknown,
 // never a default host: absence is not a value, and a fabricated host is
 // indistinguishable from a measured one.
+//
+// NORMALIZATION does not change the provenance branch — which of derived /
+// declared / unknown fires is decided first, on the RAW name, and only the name
+// is then closed onto the vocabulary. So a handshake that reported an
+// unrecognized client writes host "unknown" with source "derived": the writer
+// did look, and a reader can still tell that from the source=unknown case where
+// nothing identified itself at all. The raw name is debug-logged rather than
+// persisted — no reader needs it, and a second field holding a client-instance
+// name would reopen the vocabulary this closes.
 func resolveCaptureHost(ctx context.Context, clientInfo json.RawMessage) (host, source string) {
 	derived := strings.TrimSpace(clientInfoHost(ctx))
 	declared := declaredClientName(clientInfo)
+	var raw string
 	switch {
 	case derived != "":
 		if declared != "" && declared != derived {
 			slog.Debug("vp_capture_session: caller-declared client_info loses to handshake-derived host",
 				"derived", derived, "declared", declared)
 		}
-		return derived, storage.HostSourceDerived
+		raw, source = derived, storage.HostSourceDerived
 	case declared != "":
-		return declared, storage.HostSourceDeclared
+		raw, source = declared, storage.HostSourceDeclared
 	default:
 		return storage.HostUnknown, storage.HostSourceUnknown
 	}
+	host, _ = resolveHostName(raw)
+	if host != raw {
+		slog.Debug("vp_capture_session: client name normalized onto the declared host vocabulary",
+			"raw", raw, "host", host, "host_source", source)
+	}
+	return host, source
 }
 
 // isHooklessClient reports whether host names a known non-Claude MCP client
 // that has no SessionEnd hook and therefore needs inline transcript archive
 // for durable capture.
 //
-// Match is case-insensitive **token** equality against a closed allow-list
-// (grok, xai, zed), where tokens are letter/digit runs split on any other
-// rune. Substring Contains is deliberately rejected: clientInfo.name is
-// vendor-chosen, and English words like "optimized" / "authorized" embed
-// "zed". Claude-family names never match — empty host session id on Claude
-// is a derivation-miss, not hook-lessness, and auto-inlining there dual-notes
-// against SessionEnd. The claude guard is load-bearing when an allow-list
-// entry could overlap a compound name (e.g. "claude-grok-bridge").
+// It reads the same hostVocabulary table the normalizer does, so it accepts
+// either a raw clientInfo.name ("zed-editor") or an already-normalized value
+// ("zed") and answers identically — which matters because the capture path now
+// hands it a normalized host while its own contract is stated over raw names.
 func isHooklessClient(host string) bool {
-	h := strings.ToLower(strings.TrimSpace(host))
-	if h == "" {
-		return false
-	}
-	// Defensive: never auto-treat anything Claude-shaped as hook-less even if
-	// a future allow-list entry accidentally overlaps a compound name.
-	if strings.Contains(h, "claude") {
-		return false
-	}
-	for _, tok := range strings.FieldsFunc(h, func(r rune) bool {
-		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
-	}) {
-		switch tok {
-		case "grok", "xai", "zed":
-			return true
-		}
-	}
-	return false
+	_, hookless := resolveHostName(host)
+	return hookless
 }
 
 // wantInlineTranscriptArchive decides whether this capture should create an

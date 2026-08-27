@@ -61,12 +61,35 @@ func TestResolveCaptureHost(t *testing.T) {
 		wantHost   string
 		wantSource string
 	}{
-		{"derived only", "Zed", "", "Zed", storage.HostSourceDerived},
-		{"derived wins over declared", "Zed", `{"name":"grok-cli"}`, "Zed", storage.HostSourceDerived},
-		{"derived wins over matching declared", "Zed", `{"name":"Zed"}`, "Zed", storage.HostSourceDerived},
-		{"declared fallback", "", `{"name":"grok-cli"}`, "grok-cli", storage.HostSourceDeclared},
+		{"derived only", "Zed", "", storage.HostZed, storage.HostSourceDerived},
+		{"derived wins over declared", "Zed", `{"name":"grok-cli"}`, storage.HostZed, storage.HostSourceDerived},
+		{"derived wins over matching declared", "Zed", `{"name":"Zed"}`, storage.HostZed, storage.HostSourceDerived},
+		{"declared fallback", "", `{"name":"grok-cli"}`, storage.HostGrok, storage.HostSourceDeclared},
 		{"neither is explicit unknown", "", "", storage.HostUnknown, storage.HostSourceUnknown},
 		{"unparseable declared is unknown", "", `{broken`, storage.HostUnknown, storage.HostSourceUnknown},
+
+		// The three specimens the live vault already holds, which are the whole
+		// reason this normalization exists. Before it, each was written through
+		// verbatim, so one agent on one machine was recorded as two hosts.
+		{"specimen grok-shell-vibe-palace", "grok-shell-vibe-palace", "", storage.HostGrok, storage.HostSourceDerived},
+		{"specimen capture-oneshot", "capture-oneshot", "", storage.HostUnknown, storage.HostSourceDerived},
+		{"specimen Zed", "Zed", "", storage.HostZed, storage.HostSourceDerived},
+
+		// An unrecognized DECLARED name closes the same way, and keeps the
+		// provenance that says a caller — not the transport — supplied it.
+		{"unrecognized declared normalizes", "", `{"name":"capture-oneshot"}`, storage.HostUnknown, storage.HostSourceDeclared},
+
+		// host=unknown with source=derived is NOT the same record as the
+		// source=unknown case above: the writer looked and the client named
+		// itself something outside the vocabulary. Only the second means
+		// nothing identified itself at all.
+		{"unrecognized derived keeps derived provenance", "cursor", "", storage.HostUnknown, storage.HostSourceDerived},
+
+		// Fail closed on an ambiguous name rather than picking a winner.
+		{"two hosts in one name is unknown", "grok-zed-bridge", "", storage.HostUnknown, storage.HostSourceDerived},
+
+		// Claude wins outright, so a compound name is never auto-inlined.
+		{"claude compound normalizes to claude-code", "claude-grok-bridge", "", storage.HostClaudeCode, storage.HostSourceDerived},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -119,8 +142,12 @@ func TestCaptureSessionHostDerivedWins(t *testing.T) {
 		"transcript": "user: hi\nassistant: hello",
 		"client_info": {"name": "some-claimed-host", "version": "9.9"}
 	}`)
-	if meta.Host != "Zed" {
-		t.Errorf("host = %q, want %q — the declared claim must lose to the derived value", meta.Host, "Zed")
+	// "Zed" is the RAW handshake name; storage.HostZed is what the note must
+	// carry after normalization. The claim under test is still DERIVED-WINS —
+	// "some-claimed-host" would normalize to unknown, so a note carrying zed
+	// can only have come from the derived side.
+	if meta.Host != storage.HostZed {
+		t.Errorf("host = %q, want %q — the declared claim must lose to the derived value", meta.Host, storage.HostZed)
 	}
 	if meta.HostSource != storage.HostSourceDerived {
 		t.Errorf("host_source = %q, want %q", meta.HostSource, storage.HostSourceDerived)
@@ -138,8 +165,8 @@ func TestCaptureSessionHostDeclaredFallback(t *testing.T) {
 		"summary": "Captured with only a caller-declared identity.",
 		"client_info": {"name": "grok-cli", "version": "1.0"}
 	}`)
-	if meta.Host != "grok-cli" {
-		t.Errorf("host = %q, want %q", meta.Host, "grok-cli")
+	if meta.Host != storage.HostGrok {
+		t.Errorf("host = %q, want %q", meta.Host, storage.HostGrok)
 	}
 	if meta.HostSource != storage.HostSourceDeclared {
 		t.Errorf("host_source = %q, want %q", meta.HostSource, storage.HostSourceDeclared)
@@ -193,6 +220,53 @@ func TestCaptureSessionHostUnknownRecorded(t *testing.T) {
 	}
 	if strings.Contains(body, "host: claude-code") {
 		t.Error("note claims claude-code with no evidence — the fabricated default is back")
+	}
+}
+
+// The load-bearing invariant of the ONE-TABLE rule: whatever
+// resolveCaptureHost writes must still reach the same auto-inline verdict the
+// RAW client name would have. Two copies of the vocabulary would break exactly
+// here — a normalizer sending "Zed" to unknown while the predicate still calls
+// the raw name hook-less silently drops the inline archive that is the native
+// Zed pane's ONLY durable capture, and the capture would report success.
+//
+// This is asserted over the normalize→predicate composition, not over either
+// half alone, because each half is independently correct in that failure.
+func TestNormalizedHostKeepsAutoInlineVerdict(t *testing.T) {
+	cases := []struct {
+		raw          string
+		wantHost     string
+		wantHookless bool
+	}{
+		{"Zed", storage.HostZed, true},
+		{"zed-editor", storage.HostZed, true},
+		{"grok-shell-vibe-palace", storage.HostGrok, true},
+		{"grok-cli", storage.HostGrok, true},
+		{"xai-mcp", storage.HostXAI, true},
+		{"capture-oneshot", storage.HostUnknown, false},
+		{"claude-code", storage.HostClaudeCode, false},
+		{"claude-grok-bridge", storage.HostClaudeCode, false},
+		{"optimized", storage.HostUnknown, false},
+	}
+	const tx = "user: hi\nassistant: hello"
+	for _, tc := range cases {
+		t.Run(tc.raw, func(t *testing.T) {
+			stubClientInfoHost(t, tc.raw)
+			host, source := resolveCaptureHost(context.Background(), nil)
+			if host != tc.wantHost {
+				t.Fatalf("host = %q, want %q", host, tc.wantHost)
+			}
+			// The raw name and the normalized name must agree, or the table
+			// has been forked.
+			if raw, norm := isHooklessClient(tc.raw), isHooklessClient(host); raw != norm {
+				t.Errorf("isHooklessClient disagrees across normalization: raw %q = %v, normalized %q = %v",
+					tc.raw, raw, host, norm)
+			}
+			if got := wantInlineTranscriptArchive(false, "", tx, host, source); got != tc.wantHookless {
+				t.Errorf("wantInlineTranscriptArchive(host=%q from raw %q) = %v, want %v",
+					host, tc.raw, got, tc.wantHookless)
+			}
+		})
 	}
 }
 
