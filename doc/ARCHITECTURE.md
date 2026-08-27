@@ -1708,9 +1708,12 @@ the host.
 
 ### Inline transcript archive on hook-less hosts
 
-Hook-less MCP hosts (Grok Build, the Zed assistant pane, and other clients
-without a SessionEnd hook) have no on-disk host transcript for `vp hook` to
-archive. Durability for those hosts is **MCP capture + inline archive** — not
+Hook-less MCP hosts (the Zed **native** pane, Grok Build where its hook wiring
+is absent, and other clients without a SessionEnd hook) have no on-disk host
+transcript for `vp hook` to archive. A Claude-shaped **ACP** agent in Zed's
+agent panel is *not* in this class — it inherits Claude Code's hook path — and
+neither is a Grok install whose hook wiring is present; `vp hook` reads Grok's
+own wire dialect. Durability for those hosts is **MCP capture + inline archive** — not
 an alternate "shim path." Shims (`.grok/plugins/...`, `/vpc-wrap`) are UX onto
 `vp_cmd` / `vp_capture_session`; the archive is created inside the capture
 handler.
@@ -1721,11 +1724,21 @@ creates an inline archive pair even if the caller omits `archive_transcript`:
 1. The server cannot derive a host session id (empty archive session id).
 2. The caller supplied a **non-empty** `transcript`.
 3. The MCP initialize handshake **derived** a host in the known hook-less set
-   (`grok` / `xai` / `zed` — case-insensitive substring match; Claude-shaped
-   names never match).
+   (`grok` / `xai` / `zed` — case-insensitive **token** match, never substring;
+   Claude-shaped names never match).
+
+   Token, not substring, is load-bearing: the client name is vendor-chosen, and
+   English words like `optimized` and `authorized` embed `zed`. The name is split
+   on non-alphanumeric runs and each token compared whole, with a `claude` guard
+   above the list so a compound name like `claude-grok-bridge` cannot match.
 
 Unknown or declared-only hosts do **not** auto-on (declared is spoofable;
-unknown is Claude-miss-shaped). Empty transcript never archives.
+unknown is Claude-miss-shaped). Empty transcript never archives — and on a
+**derived hook-less** host it is a loud failure rather than a quiet success:
+no SessionEnd will archive that session later, so the capture reports
+`transcript_archive_unreachable` instead of letting the note be born
+permanently archive-less. Unknown and declared-only hosts stay quiet, because
+absence of a derived identity is not evidence the host is hook-less.
 
 **Explicit force.** `archive_transcript: true` still forces inline archive
 under the derived-empty + non-empty-transcript gate on *any* host — useful for
@@ -1753,7 +1766,10 @@ Mechanism details (unchanged from the native-capture design):
   never treats a born-linked inline pair as recoverable debt.
 - **The note always lands.** A failed inline `archive.Create` is stashed as a
   `transcript_archive` entry in the incomplete-capture error payload; capture
-  proceeds and the note is written unlinked.
+  proceeds and the note is written unlinked. The same holds for the
+  `transcript_archive_unreachable` case above: the note is capture's one
+  irreplaceable output, so the loss is reported beside it, never instead of it,
+  and the payload carries the `session_key` a retry needs.
 - **No claim sentinel.** Claims are keyed by the *host's* session id — the id
   the SessionEnd hook queries — so only a derived id can ever match one. The
   sentinel is written for derived ids only; a minted id would be a sentinel

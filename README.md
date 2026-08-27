@@ -144,6 +144,9 @@ vp init
 slash-command and skill shims (`.claude/commands/vpc-*.md`,
 `.claude/skills/vps-*/SKILL.md`, and Grok/Cursor equivalents where
 detected) so your editor discovers the full vibe-palace command catalog.
+It also installs the `commit.msg` post-commit reaper described under
+[Commands and Skills](#commands-and-skills), unless the repo already has a
+post-commit hook of its own.
 
 Then add `vibe-palace` to your editor's MCP config (see the
 [Tutorial](doc/TUTORIAL.md) for per-editor setup). Start a new session
@@ -153,14 +156,20 @@ with `/vpc-restart` and the agent loads full context on turn one.
 
 ## What You Get
 
-- **Context injection** — single-call restoration of workflow, resume,
-  tasks, and recent sessions via `vp_bootstrap_context`, with an honest
-  token budget: the payload reports exactly what it shed to fit.
-- **Session capture** — agent-driven recording via `vp_capture_session`
-  (with **default inline transcript archive** on handshake-derived
-  hook-less hosts when a transcript is supplied), plus automatic
-  host-hook capture (`vp hook` on SessionEnd/Stop/PreCompact on Claude
-  Code), with chunking, embedding, and semantic indexing.
+- **Context injection** — single-call restoration via
+  `vp_bootstrap_context`. The payload is an **index**, not documents: head
+  of queue, a session index, instruments, and the handles (`resume_uri`,
+  `workflow_uri`) the agent fetches the bodies through. It ends with
+  `complete: true`, so a truncated result is detectable rather than
+  plausible.
+- **Session capture** — agent-driven recording via `vp_capture_session`,
+  plus automatic host-hook capture (`vp hook` on
+  SessionEnd/Stop/PreCompact), with chunking, embedding, and semantic
+  indexing. On a handshake-derived hook-less host an **inline transcript
+  archive is default-on** when a transcript is supplied — and when one is
+  **not**, the capture **fails loud** instead of reporting success: no hook
+  will archive that session later, so the note would otherwise be born
+  permanently archive-less.
 - **Task management** — vault-resident tasks with derived epic/story
   structure, explicit cross-project addressing, and human-gated
   completion (`vp_manage_task`, `vp_list_tasks`, `vp tasks`).
@@ -200,7 +209,7 @@ through the same precedence chain.
 |---------|---------|
 | `/vpc-restart` | Turn-1 session bootstrap: vault sync, orphan-plan sweep, context load, doctrine fetch. |
 | `/vpc-wrap` | Session wrap: quality gate, capture the session, update resume, stage files, sync the vault. |
-| `/vpc-stage` | Commit prep only: light quality gate, author `commit.msg`, stage changed files by path. |
+| `/vpc-stage` | Commit prep only: light quality gate, author `commit.msg`, stage changed files by path (never `git add -A`). |
 | `/vpc-capture` | Mid-session checkpoint without the full wrap sequence. |
 | `/vpc-review-plan` | Critical senior-staff architecture review of a task plan before implementation. |
 | `/vpc-execute-plan` | Execute an approved plan in an isolated git worktree, one subagent per phase; human ff-only merge. |
@@ -213,6 +222,35 @@ through the same precedence chain.
 | `/vpc-tasks-standalone` | The standalone bucket — tasks that belong to no epic. |
 | `/vpc-tasks-read <name>` | Print a single task or epic body verbatim (searches active/done/cancelled). |
 | `/vpc-herdr` | Load this session's Herdr skill from the installed binary, only when the session runs inside a Herdr pane. |
+
+**The `commit.msg` lifecycle, and why it has two halves.** `/vpc-wrap` and
+`/vpc-stage` author `commit.msg` at the project root and print
+`git commit -F commit.msg && rm commit.msg`. **The printed `&& rm` is still the
+command to run** — it is what consumes the message. But a procedure the operator
+must remember is not enforcement: omit the `rm` (muscle memory, an IDE commit, a
+copied older line) and the file survives, so the *next* `git commit -F` relands
+that message onto different work.
+
+A **post-commit git hook** closes that. After a successful commit it compares
+`git stripspace` of the new `HEAD` message against `git stripspace` of
+`commit.msg`, and deletes the file only when they match — proof the commit just
+consumed it, never a timer. An unrelated `git commit -m "typo"` does not match,
+so the hook cannot destroy a message you have written and not yet committed. It
+is plain `sh` + `git` (it never shells out to `vp`), and git ignores
+post-commit's exit status, so a failed reap can never block or slow a commit.
+
+`vp init` installs it, `vp commands upgrade` installs it, and `/vpc-wrap`
+installs it on the repo it is authoring a message for — that last one is the
+reach into an existing clone, which never re-runs `vp init`. **Your clone does
+not necessarily have it**: run `vp check` and read the *Git commit.msg hook*
+row, which is advisory (a repo without it is the pre-hook status quo, not
+damage). The hook **refuses** rather than clobbers — a foreign post-commit hook
+or a repo-wide `core.hooksPath` is reported and left alone, because that is a
+directory the repo does not own.
+
+This is a **git** hook. It is unrelated to `vp hook`, which means AI-host
+session hooks (SessionEnd/Stop/PreCompact); the two vocabularies must not be
+mixed.
 
 ### `/vps-*` skills (embedded set)
 
@@ -235,18 +273,36 @@ through the same precedence chain.
 | Host | MCP server | Commands / skills | Automatic hook capture |
 |------|-----------|-------------------|------------------------|
 | **Claude Code** | registered by `vp` | `.claude/commands/vpc-*.md` + `.claude/skills/vps-*/SKILL.md` | ✅ `vp hook` on SessionEnd/Stop/PreCompact |
-| **Grok Build** | registered by `vp` | native `.grok/plugins/.../commands/vpc-*.md` + `.grok/skills/` + `/vpc` hub | — (MCP-only: `/vpc-wrap` → `vp_capture_session`; **inline transcript archive defaults on** when the handshake derives grok/xai and `transcript` is present) |
-| **Zed** | registered by `vp` | via `AGENTS.md` managed block → `vp_cmd` / `vp_skill` | — (same hook-less MCP path; inline archive defaults on when handshake derives zed + transcript) |
+| **Grok Build** | registered by `vp` | native `.grok/plugins/.../commands/vpc-*.md` + `.grok/skills/` + `/vpc` hub | ✅ **when wired** — `vp hook` accepts Grok's own wire dialect; vibe-palace does not assume it, so MCP capture stays the mechanism to rely on (**inline archive defaults on** for handshake-derived grok/xai with a `transcript`) |
+| **Zed — Claude-shaped ACP agent** (the supported Zed path) | registered by `vp` | via `AGENTS.md` managed block → `vp_cmd` / `vp_skill` | ✅ full Claude hook path, **fired by archiving the thread** — not by idling, `restart`, or `exit` |
+| **Zed — native pane** (Zed's default) | registered by `vp` | same managed block | — MCP-only: inline archive when `transcript` is supplied; **fails loud** when it is not |
 | **Cursor** | manual MCP config | `.cursor/rules/vps-*.mdc` (skills) | — |
 | **Any MCP host** | manual MCP config | `vp_cmd` / `vp_skill` tools directly | — |
 
-Claude Code is the most exercised surface; Grok Build is **Strategy A
-MCP-only** (no Claude SessionEnd hooks — capture, inline archive, and
-memory commit go through MCP / wrap). Zed is designed for the same
-hook-less durability path (unit-tested `isHooklessClient("zed")` + auto-on
-predicate); the full stdio-handshake acceptance harness currently drives
-**grok** end-to-end — Zed pane capture remains an open critical task
-(`zed-pane-capture-parity`). Details: [Tutorial — Grok Build](doc/TUTORIAL.md#grok-build-xai),
+Claude Code is the most exercised surface.
+
+**Grok Build is not structurally hook-less.** `vp hook` reads Grok's hook
+payloads — Grok sends `sessionId` where Claude Code sends `session_id`, and
+that spelling is what names the host (`internal/hook`) — so a Grok session
+reaches the hook path when the host's hook wiring is present. What vibe-palace
+relies on is still MCP capture (`/vpc-wrap` → `vp_capture_session`), which is
+why grok stays in the inline-archive allow-list.
+
+**On Zed, durability depends on which pane you work in, and that is a choice
+you make outside vibe-palace.** A **Claude-shaped** ACP agent configured under
+Zed's `agent_servers` inherits Claude Code's hook path and reaches the full
+durable footprint with no vibe-palace change. **This is not a property of
+ACP** — the agent must be Claude-shaped; `gemini` configured and ended the
+same way produced nothing. And the session closes when you **archive the
+thread**: that is what fires `SessionEnd`. Zed's **native** pane is the
+default, is MCP-only, and is not the supported path.
+
+Zed is **not** a first-class host and no Zed extension ships:
+`doc/PRD-vibe-palace-zed-assistant.md` describes an unbuilt design and carries
+a banner saying so. The native pane's remaining gap is tracked as
+`zed-pane-capture-parity` (open, **high**, scoped to the native pane).
+Details: [Tutorial — Zed](doc/TUTORIAL.md#zed),
+[Tutorial — Grok Build](doc/TUTORIAL.md#grok-build-xai),
 [durability by host](doc/COMMANDS-AND-SKILLS.md#durability-by-host-claude-vs-hook-less),
 [inline archive](doc/ARCHITECTURE.md#inline-transcript-archive-on-hook-less-hosts).
 
