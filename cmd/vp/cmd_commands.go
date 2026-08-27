@@ -642,6 +642,14 @@ func applyAndReport(w, errw io.Writer, projectRoot string, accepted []commands.C
 		if err := storage.ReconcileProjectGitignore(projectRoot); err != nil {
 			slog.Error("project gitignore reconcile error", "err", err)
 		}
+		// Same reason, same posture: install the post-commit commit.msg
+		// reaper so an existing clone gets it without a full re-init. It is
+		// idempotent and refuses rather than clobbers, so it is safe on the
+		// upgrade path; a refusal is logged, never fatal.
+		if rep := storage.InstallPostCommitHook(projectRoot); rep.Status != storage.HookInstalled &&
+			rep.Status != storage.HookCurrent {
+			slog.Warn("post-commit hook not installed", "reason", rep.Detail)
+		}
 	}
 	fmt.Fprintf(w,
 		"\nDone. %d accepted, %d skipped, %d custom (untouched). Shims: %d added, %d updated, %d removed, %d custom. Grok shims: %d added, %d updated, %d removed, %d custom. Skill shims: %d added, %d updated, %d removed, %d custom.\n",

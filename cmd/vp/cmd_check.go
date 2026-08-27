@@ -339,6 +339,14 @@ func gatherCheckResults() []check.Result {
 	// vp commands upgrade, surfaced here when canonical entries are missing). ---
 	results = append(results, check.CheckProjectGitignore(cwd))
 
+	// --- Git post-commit hook (advisory — installed by vp init /
+	// vp commands upgrade / wrap-time ingest, surfaced here when absent).
+	//
+	// This is the only surface that reports it: the MCP vp_check runs the
+	// vault-bound producer registry, which has no project repo in hand and
+	// must not consult the server's cwd. ---
+	results = append(results, check.CheckGitPostCommitHook(cwd))
+
 	// --- MCP host registration (advisory — one row per detected host:
 	// Claude/Grok/Zed, reporting whether vibe-palace is registered). ---
 	results = append(results, check.CheckMCPHosts()...)

@@ -101,6 +101,13 @@ func cmdInit(info cli.BuildInfo) *cli.Command {
 			// ignored. Non-fatal: a failure here must not abort init.
 			results = append(results, initProjectGitignore(projectDir, projectReady))
 
+			// --- Phase 6: Git post-commit hook (commit.msg reaper) ---
+			// vp hands the operator `git commit -F commit.msg && rm
+			// commit.msg`; the hook makes the removal happen when they omit
+			// the `&& rm`. Non-fatal, and every refusal is a row, not an
+			// abort.
+			results = append(results, initGitPostCommitHook(projectDir, projectReady))
+
 			printInitStatus(os.Stdout, info.Version, results)
 			return projectCode
 		},
@@ -796,6 +803,39 @@ func initProjectGitignore(projectRoot string, projectReady bool) check.Result {
 		Name:    "Project .gitignore",
 		Status:  check.Pass,
 		Summary: "host-local vp artifacts ignored",
+	}
+}
+
+// initGitPostCommitHook installs the post-commit hook that deletes the
+// project-root commit.msg once the commit that consumed it has landed. It
+// mirrors initProjectGitignore's posture exactly — writes into the project
+// tree, idempotent, non-fatal, one row.
+//
+// This is a GIT hook and has nothing to do with initHookWiring above, which
+// wires AI-host session hooks into ~/.claude/settings.json. The two vocabularies
+// are deliberately kept apart; see internal/storage/githook.go.
+//
+// A refusal (a foreign post-commit hook, or a repo with core.hooksPath set) is
+// an Info row naming the reason, never a Fail: neither is repairable by init and
+// both are the human's call.
+func initGitPostCommitHook(projectRoot string, projectReady bool) check.Result {
+	const name = "Git commit.msg hook"
+	if !projectReady {
+		return check.Result{
+			Name:    name,
+			Status:  check.Skip,
+			Summary: "skipped — no project config",
+		}
+	}
+	rep := storage.InstallPostCommitHook(projectRoot)
+	switch rep.Status {
+	case storage.HookInstalled, storage.HookCurrent:
+		return check.Result{Name: name, Status: check.Pass, Summary: rep.Detail}
+	case storage.HookNoRepo:
+		return check.Result{Name: name, Status: check.Skip, Summary: rep.Detail}
+	default:
+		slog.Warn("post-commit hook not installed", "reason", rep.Detail)
+		return check.Result{Name: name, Status: check.Info, Summary: rep.Detail}
 	}
 }
 

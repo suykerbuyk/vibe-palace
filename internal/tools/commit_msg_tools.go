@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,6 +36,32 @@ var ingestCommitMsgSchema = json.RawMessage(`{
 	"required": ["project_path"]
 }`)
 
+// hookStatusString renders a storage.HookStatus for the MCP result. The wire
+// vocabulary is closed and stable; an unknown value is reported as such rather
+// than silently mapped onto a neighbouring state.
+func hookStatusString(s storage.HookStatus) string {
+	switch s {
+	case storage.HookInstalled:
+		return "installed"
+	case storage.HookCurrent:
+		return "current"
+	case storage.HookMissing:
+		return "missing"
+	case storage.HookStale:
+		return "stale"
+	case storage.HookForeign:
+		return "foreign"
+	case storage.HookSharedHooksPath:
+		return "shared_hooks_path"
+	case storage.HookNoRepo:
+		return "no_repo"
+	case storage.HookError:
+		return "error"
+	default:
+		return "unknown"
+	}
+}
+
 // IngestCommitMsgTool reads <project_path>/commit.msg off disk and writes the
 // stamped vault copy at Projects/<slug>/commit.msg.
 func IngestCommitMsgTool(vault *storage.Vault) mcp.Tool {
@@ -48,7 +75,12 @@ func IngestCommitMsgTool(vault *storage.Vault) mcp.Tool {
 			"emitted exactly once. project_path is the local project repo root " +
 			"(read with normal filesystem I/O, not vault-relative). If project is " +
 			"omitted it is detected from project_path. Errors if commit.msg is " +
-			"missing or empty. Returns {project, vault_path, bytes_written}.",
+			"missing or empty. Also installs the project's post-commit hook that " +
+			"deletes commit.msg once the commit consuming it lands, so the " +
+			"trailing `&& rm commit.msg` stops being load-bearing; that install " +
+			"is idempotent, refuses a foreign hook or a repo with core.hooksPath " +
+			"set, and never fails the ingest. Returns {project, vault_path, " +
+			"bytes_written, commit_msg_hook{status, detail}}.",
 		Schema: ingestCommitMsgSchema,
 		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
 			var args struct {
@@ -120,10 +152,30 @@ func IngestCommitMsgTool(vault *storage.Vault) mcp.Tool {
 				return nil, fmt.Errorf("write vault commit.msg: %w", err)
 			}
 
+			// Install the post-commit reaper on the repo this message is being
+			// authored for. This is the wrap-time reach into an EXISTING clone:
+			// such a clone never re-runs `vp init`, and the hook is what makes
+			// the `&& rm commit.msg` optional rather than load-bearing.
+			//
+			// It belongs on THIS tool and not on a preflight because this is the
+			// commit.msg lifecycle: the tool that publishes the message installs
+			// the thing that consumes it. Idempotent, refuses rather than
+			// clobbers, and never fails the ingest — a hook that could not be
+			// installed is reported, not raised, because the message itself
+			// landed.
+			hookRep := storage.InstallPostCommitHook(root)
+			if hookRep.Status != storage.HookInstalled && hookRep.Status != storage.HookCurrent {
+				slog.Warn("post-commit hook not installed", "reason", hookRep.Detail, "root", root)
+			}
+
 			return map[string]any{
 				"project":       slug,
 				"vault_path":    dest,
 				"bytes_written": len(data),
+				"commit_msg_hook": map[string]any{
+					"status": hookStatusString(hookRep.Status),
+					"detail": hookRep.Detail,
+				},
 			}, nil
 		},
 	}

@@ -130,8 +130,12 @@ walkthrough-e2e: ## Run canonical walkthrough (prints transcript on pass)
 workflows-e2e: ## Run multi-iteration workflow measurement rig
 	bash test/e2e/workflows/run.sh
 
+.PHONY: githook-e2e
+githook-e2e: ## Run bash e2e for the git post-commit commit.msg reaper (real commits)
+	bash test/e2e/githook/run.sh
+
 .PHONY: e2e
-e2e: init-e2e dispatch-e2e walkthrough-e2e workflows-e2e ## Run all e2e tiers
+e2e: init-e2e dispatch-e2e githook-e2e walkthrough-e2e workflows-e2e ## Run all e2e tiers
 
 .PHONY: cover
 cover: ## Generate HTML coverage report (short mode)

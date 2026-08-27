@@ -401,6 +401,47 @@ func CheckProjectGitignore(projectRoot string) Result {
 	return r
 }
 
+// CheckGitPostCommitHook reports whether the project repo carries the
+// vibe-palace post-commit hook that reaps a consumed commit.msg. It is the
+// REPORT half of the pair — `vp init` and `vp commands upgrade` are the repair
+// halves, exactly as CheckProjectGitignore above reports what those two
+// reconcile. An existing clone never re-runs `vp init`, so without this row a
+// missing hook is invisible: git emits no diagnostic for a hook that is not
+// there.
+//
+// Advisory (Info), never Fail. A repo without the hook is not damaged — it is
+// the pre-hook status quo, where the operator must remember `&& rm commit.msg`.
+// That is the distinction from CheckSurfaceMergeDriver, the one hard Fail in
+// this file: that check reports LEFTOVER DAMAGE from a deleted feature, where
+// git silently text-merges a file it was told to merge specially. Absence of an
+// improvement and presence of a silent breakage are not the same severity.
+//
+// A refusal (foreign hook, shared core.hooksPath) is reported as Info too, with
+// the reason: those are states a human decides about, and neither `vp init` nor
+// this check will ever write through them.
+func CheckGitPostCommitHook(projectRoot string) Result {
+	r := Result{Name: "Git commit.msg hook"}
+	rep := storage.InspectPostCommitHook(projectRoot)
+	switch rep.Status {
+	case storage.HookCurrent:
+		r.Status = Pass
+		r.Summary = rep.Detail
+	case storage.HookNoRepo:
+		r.Status = Skip
+		r.Summary = rep.Detail
+	case storage.HookMissing, storage.HookStale:
+		r.Status = Info
+		r.Summary = rep.Detail
+		r.Details = append(r.Details,
+			"  a leftover commit.msg relands its message on the NEXT `git commit -F`",
+			"Run `vp init` (or `vp commands upgrade`) to install it; `/wrap` installs it too.")
+	default:
+		r.Status = Info
+		r.Summary = rep.Detail
+	}
+	return r
+}
+
 func hasNonWhitespace(data []byte) bool {
 	for _, b := range data {
 		if b != ' ' && b != '\t' && b != '\n' && b != '\r' {

@@ -720,3 +720,73 @@ func TestCheckStrayScaffolds_NoneClean(t *testing.T) {
 		t.Fatalf("status = %v, want Pass (summary=%q)", r.Status, r.Summary)
 	}
 }
+
+// --- Git post-commit hook (commit.msg reaper) ---
+//
+// gitRepoForHookCheck mints a throwaway repo with the host's global/system git
+// config neutralized: an operator with core.hooksPath set globally would
+// otherwise push every case onto the refusal branch and pass for the wrong
+// reason.
+func gitRepoForHookCheck(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	c := exec.Command("git", "init", "-q", ".")
+	c.Dir = dir
+	c.Env = append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	return dir
+}
+
+func TestCheckGitPostCommitHook_Missing(t *testing.T) {
+	r := CheckGitPostCommitHook(gitRepoForHookCheck(t))
+	if r.Status != Info {
+		t.Errorf("missing hook: want Info, got %v (%s)", r.Status, r.Summary)
+	}
+	if len(r.Details) == 0 {
+		t.Error("a missing hook must carry the remedy line — the row is the only place an existing clone learns about it")
+	}
+}
+
+func TestCheckGitPostCommitHook_Installed(t *testing.T) {
+	dir := gitRepoForHookCheck(t)
+	if rep := storage.InstallPostCommitHook(dir); rep.Status != storage.HookInstalled {
+		t.Fatalf("install: %v (%s)", rep.Status, rep.Detail)
+	}
+	r := CheckGitPostCommitHook(dir)
+	if r.Status != Pass {
+		t.Errorf("installed hook: want Pass, got %v (%s)", r.Status, r.Summary)
+	}
+}
+
+// A non-repo is a Skip, not a finding: `vp check` runs from any directory and
+// must not report a missing git hook where there is no git.
+func TestCheckGitPostCommitHook_NotARepoIsSkip(t *testing.T) {
+	r := CheckGitPostCommitHook(t.TempDir())
+	if r.Status != Skip {
+		t.Errorf("non-repo: want Skip, got %v (%s)", r.Status, r.Summary)
+	}
+}
+
+// A refusal is reported, never Fail, and it must name the reason — a silent
+// Pass here would claim a hook that was never installed.
+func TestCheckGitPostCommitHook_ForeignHookIsReported(t *testing.T) {
+	dir := gitRepoForHookCheck(t)
+	hooks := filepath.Join(dir, ".git", "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooks, "post-commit"),
+		[]byte("#!/bin/sh\necho not ours\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := CheckGitPostCommitHook(dir)
+	if r.Status != Info {
+		t.Errorf("foreign hook: want Info, got %v (%s)", r.Status, r.Summary)
+	}
+	if !strings.Contains(r.Summary, "refusing") {
+		t.Errorf("summary must say the hook was refused, got %q", r.Summary)
+	}
+}

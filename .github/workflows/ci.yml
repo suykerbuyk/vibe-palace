@@ -157,6 +157,24 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
+  githook-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Run git post-commit hook e2e harness
+        run: make githook-e2e
+      - name: Upload retained tmpdir on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: githook-e2e-tmpdir
+          path: /tmp/vp-e2e-githook.*
+          retention-days: 3
+          if-no-files-found: ignore
+
   walkthrough-e2e:
     runs-on: ubuntu-latest
     # Same reasoning as workflows-e2e below; this job carried the identical apt
