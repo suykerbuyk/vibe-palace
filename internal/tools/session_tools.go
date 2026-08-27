@@ -444,7 +444,19 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 		// irreplaceable output, and a capture that loses the note over a failed
 		// archive inverts the priority. The stash joins result.Failures after
 		// WriteSession returns, where the accumulation lives.
+		//
+		// THE ELSE BRANCH IS WHERE THE SILENT LOSS LIVED. When the predicate
+		// says no on a derived hook-less host with no derivable session id and
+		// no transcript, this capture has no archive and no way to ever get
+		// one: the inline path has nothing to write, and there is no SessionEnd
+		// hook to write it later. Before this it returned status: ok and said
+		// nothing, which is the same "reports success for work it did not do"
+		// the adapter mismatch above was already made loud for. See
+		// capture.StageTranscriptArchiveUnreachable for why this is NOT the
+		// deleted StageArchiveResolve — a missing archive in general is still
+		// deferred and still Debug.
 		var inlineArchiveFailure *capture.CaptureFailure
+		var archiveUnreachable *capture.CaptureFailure
 		if wantInlineTranscriptArchive(p.ArchiveTranscript, sp.ArchiveSessionID, p.Transcript, sp.Host, sp.HostSource) {
 			archiveID := p.SessionKey
 			if archiveID == "" {
@@ -476,6 +488,25 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 				sp.ArchiveSessionIDSource = storage.ArchiveIDSourceInline
 				sp.ArchiveAdapter = archive.InlineAdapterName
 			}
+		} else if sp.HostSource == storage.HostSourceDerived &&
+			isHooklessClient(sp.Host) &&
+			sp.ArchiveSessionID == "" &&
+			strings.TrimSpace(p.Transcript) == "" {
+			// All three terms are load-bearing. HostSourceDerived: a DECLARED
+			// host could claim anything, and refusing a capture on a caller's
+			// own claim is a denial of service the transport never confirmed.
+			// Empty ArchiveSessionID: a derived id means a hook DID resolve, so
+			// the archive is deferred, not absent. Empty transcript: a non-empty
+			// one is archived inline by the branch above and nothing is lost.
+			archiveUnreachable = &capture.CaptureFailure{
+				Stage: capture.StageTranscriptArchiveUnreachable,
+				Err: fmt.Sprintf("host %q was derived as hook-less, so no SessionEnd hook will "+
+					"archive this session later, and no transcript was supplied to archive inline: "+
+					"this note will never have a transcript archive. Retry with the same session_key "+
+					"and the session transcript in `transcript` to archive it alongside the note.", sp.Host),
+			}
+			slog.Warn("vp_capture_session: transcript archive unreachable",
+				"host", sp.Host, "host_source", sp.HostSource)
 		}
 
 		// Opt-in LLM enrichment. Resolve an Enricher from config only when the
@@ -504,6 +535,9 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 		// and the note had to land before there was a result to append to.
 		if inlineArchiveFailure != nil {
 			result.Failures = append(result.Failures, *inlineArchiveFailure)
+		}
+		if archiveUnreachable != nil {
+			result.Failures = append(result.Failures, *archiveUnreachable)
 		}
 
 		// Write claim sentinel so the SessionEnd hook skips this session.

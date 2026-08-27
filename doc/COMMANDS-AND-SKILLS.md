@@ -436,7 +436,7 @@ How users trigger commands depends on their frontend:
 | Claude Code | **Preferred:** user-global plugin from `vp mcp install --claude-plugin`. Claude Code loads the **cache** copy and typically offers **`/vibe-palace:vpc-<name>`** (namespaced). Bare `/vpc-*` is the legacy **project** tree (`.claude/commands/`), still emitted by `vp init` when the Claude cache surface is **not** healthy. |
 | Grok Build | **Preferred:** user-global `~/.grok/plugins/vibe-palace/commands/vpc-*.md` (+ hub under `…/skills/vpc/`) from `vp mcp install --grok` (often bare `/vpc-*` when no collision). Legacy: project `.grok/plugins/…` still emitted by `vp init` when the Grok user plugin is **not** healthy. Note: `GrokPresent` remains host-wide (`~/.grok` or `grok` on PATH), so fallback project emit can still touch every repo until that host is migrated. |
 | Cursor | Rules file maps keywords to `vp_cmd` calls |
-| Zed | MCP-registered host: `internal/mcphost` writes a `context_servers.vibe-palace` entry in Zed settings; no shim files — commands/skills are reached via the `AGENTS.md` managed block instructing `vp_cmd` / `vp_skill` calls |
+| Zed | MCP-registered host: `internal/mcphost` writes a `context_servers.vibe-palace` entry in Zed settings; no shim files — commands/skills are reached via the `AGENTS.md` managed block instructing `vp_cmd` / `vp_skill` calls. **Invocation works in either pane; durability does not — see [Durability by host](#durability-by-host-claude-vs-hook-less).** |
 | Custom MCP client | Direct `vp_cmd` / `vp_skill` tool calls |
 | CLI fallback | `vp inject` prints context; `vp commands restart` outputs the command via CLI |
 
@@ -462,8 +462,37 @@ they are not an alternate archive pipeline.
 | Host class | Authoritative archive | Capture notes | Memory commit |
 |------------|----------------------|---------------|---------------|
 | **Claude Code** (hooks) | `vp hook` SessionEnd on the host JSONL | Agent `vp_capture_session` (claim sentinel skips double-note) **or** hook auto-summary | SessionEnd harvest of Claude native memory **and** wrap's `Projects/<slug>/memory/` sync |
-| **Hook-less** (Grok Build, Zed pane, similar) | **Inline archive inside** `vp_capture_session` — **default on** when handshake-derived host ∈ {grok, xai, zed} and `transcript` is non-empty | Agent must call capture (usually via `/vpc-wrap` / `vpc-capture`); no SessionEnd fallback | `vp_memory_*` + wrap sync of `memory/` only — harvest is a clean no-op |
+| **Zed, Claude-shaped ACP agent** (the supported Zed path) | `vp hook` SessionEnd, same as a Claude Code terminal session — **fired by ARCHIVING THE THREAD**, not by idling, `restart`, or `exit` | Full footprint with no vibe-palace change: note, `model`, friction, transcript at the standard Claude path, born bi-directional archive link | Same as Claude Code |
+| **Hook-less MCP capture** (Zed **native** pane; Grok when its hook wiring is absent) | **Inline archive inside** `vp_capture_session` — **default on** when handshake-derived host ∈ {grok, xai, zed} and `transcript` is non-empty. With **no** transcript the capture **fails loud**: nothing can archive it later | Agent must call capture (usually via `/vpc-wrap` / `vpc-capture`); no SessionEnd fallback | `vp_memory_*` + wrap sync of `memory/` only — harvest is a clean no-op |
 | **Unknown / declared-only** | No auto inline archive; pass `archive_transcript: true` + transcript to force | Same MCP capture | Same as hook-less |
+
+**Vibe-Palace in Zed (what the operator must do).** Zed is the one host where durability
+depends on a choice the operator makes outside vibe-palace, and neither half is
+discoverable:
+
+1. **Configure a Claude-shaped ACP agent** under Zed's `agent_servers` (e.g.
+   `claude-acp`) and work in the agent panel. That pane reaches the full durable
+   footprint with no vibe-palace change. **This is not a property of ACP** — a
+   Claude-shaped agent inherits Claude Code's hook path, ACP itself supplies nothing, and
+   `gemini` configured and ended the same way produced **nothing**. Name the
+   Claude-shaped agent specifically; do not generalize to "an ACP agent".
+2. **Archive the thread to close the session.** Archiving is what ends the ACP session
+   and fires `SessionEnd`, which flushes the transcript archive within seconds. Idling
+   does not (measured: 12m43s, no archive); `restart` and `exit` do not. Threads left
+   open leave every transcript archive deferred indefinitely — while the session note,
+   which lands at `Stop`, makes it look like capture worked.
+
+The enabling mechanism is `claude-agent-acp` loading
+`settingSources: ["user","project","local"]`, which brings `~/.claude/settings.json` and
+its `vp hook` entries into scope. That is an **upstream implementation detail of a
+third-party package**, not a contract vibe-palace controls — treat a change to it as a
+regression risk.
+
+**The native pane is Zed's default and is not the supported path.** It is MCP-only, so it
+falls in the hook-less row above: durable only when the agent passes `transcript`, and a
+transcript-less capture there now fails loud instead of reporting success. Zed is not a
+first-class host; `doc/PRD-vibe-palace-zed-assistant.md` describes an unbuilt extension
+and is bannered accordingly.
 
 **Vibe-Palace in Grok Build (index).** Install with `vp mcp install --grok`
 ([Tutorial](TUTORIAL.md#grok-build-xai)). Commands arrive as

@@ -373,6 +373,37 @@ once opt-out is wired up).
 
 ### Zed
 
+**The supported Zed path is a Claude-shaped ACP agent in the agent panel — not the
+native pane.** Two facts have to reach you here, because neither is discoverable:
+
+1. **Configure a Claude-shaped ACP agent** under Zed's `agent_servers` (e.g.
+   `claude-acp`). It reaches the same durable footprint as a Claude Code terminal
+   session — session note, `model`, friction score, transcript at the standard Claude
+   path, and a born bi-directional archive link — with no vibe-palace change at all.
+   **This does not follow from ACP.** A Claude-shaped agent inherits Claude Code's hook
+   path; ACP itself supplies nothing, and `gemini` configured the same way and ended the
+   same way produced **nothing**. Configure the Claude-shaped agent specifically.
+2. **Archive the thread when you are done.** Archiving is what ends the ACP session and
+   fires `SessionEnd`, which flushes the transcript archive within seconds. Idle time
+   does **not** do it (measured: 12m43s undisturbed, no archive), and neither `restart`
+   nor `exit` does it. Leave threads open and every transcript archive stays deferred
+   indefinitely — while the session note, which lands at `Stop`, makes it look like
+   capture worked.
+
+The mechanism behind fact 1 is that `claude-agent-acp` loads
+`settingSources: ["user","project","local"]`, which brings `~/.claude/settings.json` —
+and its `vp hook` entries — into scope. That is an **upstream implementation detail of a
+third-party package**, not a contract vibe-palace controls; treat a future change to it
+as a regression risk.
+
+**The native pane remains Zed's default and is not the supported path.** It reaches
+vibe-palace over MCP only, so it has no `SessionEnd` hook: a capture there is durable
+only if the agent passes `transcript`, and a capture with no transcript now **fails
+loud** rather than reporting success for an archive that will never exist.
+
+The MCP registration below is still what wires `vp` into Zed, and it is needed for both
+panes.
+
 The one-command path is `vp mcp install --zed`. It surgically adds the
 `context_servers` entry below to `~/.config/zed/settings.json` using a
 comment-preserving JWCC editor (tailscale/hujson), so your existing comments
@@ -395,8 +426,15 @@ To wire it by hand instead, add to `~/.config/zed/settings.json` (or
 
 No `env` block is needed: Zed launches the server with its own inherited
 environment, so provider keys (e.g. `XAI_API_KEY`) flow through from the shell
-that started Zed. Works with Claude, Gemini, and Grok via Zed's provider
-settings — provider configuration is Zed's concern, not vibe-palace's.
+that started Zed. Provider configuration is Zed's concern, not vibe-palace's.
+
+**The MCP tools reach any provider Zed supports; DURABILITY DOES NOT.** Those are
+separate questions, and reading the first as the second is the mistake this section
+exists to prevent. `vp_cmd`, `vp_skill` and `vp_capture_session` are callable from any
+Zed provider that can call tools. Whether the session survives depends on the hook path,
+which only a **Claude-shaped ACP agent** inherits — the `gemini` negative control ended
+identically and produced nothing durable. Do not generalize from "the tools work" to
+"the session is captured".
 
 ### Grok Build (xAI)
 
@@ -420,15 +458,23 @@ Requires `grok` on your PATH. Verify with `grok mcp doctor` or `grok mcp list`
 natively, so the managed block gives it the same behavioral contract as Claude
 Code.
 
-**Durability is MCP-only (Strategy A).** Grok has no Claude-style SessionEnd
-`vp hook`. Session notes, transcript archives, and memory commits all go through
-MCP tools — typically `/vpc-wrap` → `vp_capture_session` (+ `vp_vault_sync`).
-There is no parallel hook path to fall back on if the agent skips wrap.
+**Durability is MCP-first, and the hook path is not closed to Grok.** Session notes,
+transcript archives, and memory commits normally go through MCP tools — typically
+`/vpc-wrap` → `vp_capture_session` (+ `vp_vault_sync`) — so treat MCP capture as the
+mechanism you rely on: if the agent skips wrap, nothing else is guaranteed to run.
+
+**Corrected 2026-08-27 — Grok is not structurally hook-less.** This paragraph used to
+say Grok has no Claude-style SessionEnd `vp hook`. `vp hook` accepts Grok's own wire
+dialect (`internal/hook`: Grok sends `sessionId`, Claude Code sends `session_id`, and the
+spelling is what names the host), and Grok's hook wiring lives in
+`~/.claude/settings.json`. So a Grok session **can** reach the hook path when that wiring
+is present. What remains true is that vibe-palace does not assume it: the MCP capture path
+still treats grok as hook-less for the inline-archive default below.
 
 | Concern | Grok / hook-less | Claude Code |
 |---------|------------------|-------------|
 | Session note | `vp_capture_session` (via wrap/capture) | Same MCP path **and** `vp hook` on SessionEnd |
-| Transcript archive | **Inline archive by default** when handshake-derived host is grok/xai/zed and `transcript` is non-empty | SessionEnd archives the host JSONL; `archive_transcript` is a no-op |
+| Transcript archive | **Inline archive by default** when handshake-derived host is grok/xai/zed and `transcript` is non-empty. Omit the transcript on one of those hosts and the capture **fails loud** — no hook will archive it later, so the note would otherwise be born permanently archive-less | SessionEnd archives the host JSONL; `archive_transcript` is a no-op |
 | AI memory | `vp_memory_*` writes + wrap commits `Projects/<slug>/memory/` | Same tools + SessionEnd harvest of Claude native memory |
 | Enrichment-queue drain | Not automatic (hook-only) | `DrainEnrichmentQueue` on SessionEnd |
 
@@ -1098,6 +1144,13 @@ verification, see `doc/verify-skill-delivery.md`.
 | Zed + Gemini / Copilot Chat | Trigger phrase (managed block) + user-paste fallback        | Partial       | Awareness works from the managed block; user pastes `SKILL.md` contents if MCP isn't wired. |
 | Any MCP-capable host        | Trigger phrase + `vp_skill` MCP                             | Yes, on trigger | Works anywhere `vp mcp` can be registered. Provider-level tool-use policy applies. |
 
+**This table is about skill DELIVERY, not durability.** A row saying skills reach a
+surface says nothing about whether a session captured there survives. In particular the
+two Zed rows describe `vp_skill` invocation only: durable capture on Zed depends on
+running a **Claude-shaped ACP agent** (see [§ Zed](#zed)), and the native pane — whichever
+provider is selected in it — does not inherit that. Do not read either Zed row as "Zed
+captures sessions".
+
 Commands and skills look alike on the wire (`vpc-` vs `vps-`, both
 trigger an MCP tool call) but they have very different **lifetimes**.
 
@@ -1257,8 +1310,9 @@ wrap/capture command and calls `vp_capture_session` with:
 - **files_changed** — files created or modified
 - **open_threads** — unresolved items for next session
 - **transcript** — full session text when the host can supply it (chunked,
-  indexed, friction-scored; **required** for a durable archive on hook-less
-  hosts)
+  indexed, friction-scored). **Required** for a durable archive on a
+  handshake-derived hook-less host, and enforced there: omitting it makes the
+  capture fail loud rather than report success for an archive that will never exist
 - **archive_transcript** — templates pass `true` for model-facing clarity;
   on handshake-derived grok/xai/zed the server **auto-archives** a non-empty
   transcript even if this flag is omitted; on Claude Code the flag is a

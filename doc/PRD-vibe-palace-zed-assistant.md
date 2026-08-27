@@ -1,5 +1,28 @@
 # PRD: Vibe-Palace Zed Assistant (Option 3 — Native Panel + Command Palette)
 
+> **⛔ NOT SHIPPED, NOT STARTED, AND CONTINGENT ON A CAPABILITY THAT RESOLVED NEGATIVE.**
+> Banner added 2026-08-27. Everything below it is a 2026-07-12 design document, and nothing
+> in it describes software that exists: no Rust extension was written, and `make build`
+> produces no `zed-vp` artifact.
+>
+> **Read "Design locked — ready for implementation", "frozen for implementation", and
+> "first-class citizen" below as statements about a DESIGN, never about a shipped
+> capability.** They record what a review concluded on 2026-07-12. They are not a status.
+>
+> **The capability the design rests on resolved to the NEGATIVE.** `zed_extension_api`
+> exposes no active-thread id and no thread lifecycle, and Zed has no hook mechanism — so
+> the extension cannot publish a session identity or observe a session ending, which is
+> what the panel status header and any durable-capture role would have required. The
+> upstream posture is to revive PR #52729, not to file a new request. Measurement:
+> `zed-pane-capture-parity`, `## Zed host capability research (2026-07-30)`.
+>
+> **The supported Zed path today is a Claude-shaped ACP agent in the Zed agent panel** —
+> not this extension, and not the native pane. See [TUTORIAL § Zed](TUTORIAL.md#zed) and
+> [COMMANDS-AND-SKILLS § Durability by host](COMMANDS-AND-SKILLS.md#durability-by-host-claude-vs-hook-less).
+>
+> **Zed is not a first-class host.** The native pane is still Zed's default and is still
+> lossy. Do not cite §1 below as evidence that it is not.
+
 **Version:** 0.2  
 **Date:** 2026-07-12  
 **Status:** Design locked — ready for implementation  

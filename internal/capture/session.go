@@ -127,11 +127,26 @@ const (
 	// StageTranscriptArchive: the inline transcript-archive write failed; the
 	// note may exist without its archive pair.
 	StageTranscriptArchive = "transcript_archive"
-	StageEnrichmentEnqueue = "enrichment_enqueue"
-	StageArchiveBacklink   = "archive_backlink"
-	StageTranscriptIndex   = "transcript_index"
-	StageClaimSentinel     = "claim_sentinel"
-	StageEnricherInit      = "enricher_init"
+	// StageTranscriptArchiveUnreachable: this capture will NEVER have a
+	// transcript archive, and nothing later can create one.
+	//
+	// 🔴 THIS IS NOT StageArchiveResolve COMING BACK. That stage was deleted at
+	// 210 because it fired on every session ever captured: at capture time the
+	// archive ordinarily does not exist YET, the hook writes it at SessionEnd,
+	// and hook.go closes the link from the archive side. A missing archive is
+	// still DEFERRED and still logs at Debug — do not change that.
+	//
+	// This stage is the disjoint case: the host was derived from the initialize
+	// handshake as HOOK-LESS, so there is no SessionEnd to defer to, and no
+	// transcript was supplied for the inline path to archive. Nothing is
+	// pending; the archive is simply never coming. That is a wrong-thing, not a
+	// not-yet — the same footing the adapter mismatch earns its loudness on.
+	StageTranscriptArchiveUnreachable = "transcript_archive_unreachable"
+	StageEnrichmentEnqueue            = "enrichment_enqueue"
+	StageArchiveBacklink              = "archive_backlink"
+	StageTranscriptIndex              = "transcript_index"
+	StageClaimSentinel                = "claim_sentinel"
+	StageEnricherInit                 = "enricher_init"
 )
 
 // The key-source and archive-id-source constants (KeySourceCaller,

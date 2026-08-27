@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
+	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/hook"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -209,5 +210,110 @@ func TestCaptureSessionClaimSurvivesTheErrorPath(t *testing.T) {
 	if !hook.IsClaimed(claimDir, sessionID) {
 		t.Fatal("no claim was written on the error path — the SessionEnd hook will now " +
 			"re-capture this session and duplicate its note")
+	}
+}
+
+// TestCaptureSessionFailsHardWhenNoArchiveIsPossible pins the branch that used to
+// be the silent one: a Zed native pane, derived from the initialize handshake as
+// hook-less, capturing with no transcript.
+//
+// wantInlineTranscriptArchive correctly says NO here — there are no bytes to
+// archive, and TestWantInlineTranscriptArchive's "no auto empty tx zed" row keeps
+// that answer pinned. The loss is that nothing else will ever write one either:
+// there is no SessionEnd hook on this host, so the note is born permanently
+// archive-less. Before this it returned {"status":"ok"} and said nothing.
+//
+// This is deliberately NOT the deleted StageArchiveResolve (210): that fired on
+// every session because a missing archive is ordinarily DEFERRED. Here there is
+// nothing to defer to. TestCaptureSessionInlineArchiveAutoOffDerivedClaude and
+// TestCaptureSessionInlineArchiveNoopOnDerivableHost hold the other side —
+// Claude Code, the majority host, must stay quiet.
+func TestCaptureSessionFailsHardWhenNoArchiveIsPossible(t *testing.T) {
+	vault := testSessionVault(t)
+	stubHostSessionID(t, "")     // no derivable host session id
+	stubClientInfoHost(t, "Zed") // handshake-derived hook-less host
+
+	tool := CaptureSessionTool(vault, nil)
+	params, _ := json.Marshal(map[string]any{
+		"project": "test-proj",
+		"summary": "a Zed native-pane capture with no transcript to archive",
+	})
+
+	result, err := tool.Handler(context.Background(), json.RawMessage(params))
+	if err == nil {
+		t.Fatalf("capture can never have a transcript archive and returned success: %+v", result)
+	}
+
+	msg := err.Error()
+	brace := strings.Index(msg, "{")
+	if brace < 0 {
+		t.Fatalf("error carries no JSON payload, so a retry cannot be mechanical: %s", msg)
+	}
+	var payload struct {
+		Captured   bool     `json:"captured"`
+		NotePath   string   `json:"note_path"`
+		SessionKey string   `json:"session_key"`
+		Lost       []string `json:"lost"`
+		Remedy     string   `json:"remedy"`
+	}
+	if uerr := json.Unmarshal([]byte(msg[brace:]), &payload); uerr != nil {
+		t.Fatalf("error payload is not JSON: %v (%s)", uerr, msg)
+	}
+
+	// The stage must NAME this loss, or an agent cannot tell it from a failed
+	// inline write (which is retryable for a different reason).
+	var found bool
+	for _, stage := range payload.Lost {
+		if stage == capture.StageTranscriptArchiveUnreachable {
+			found = true
+		}
+		if stage == "archive_resolve" {
+			t.Errorf("StageArchiveResolve is back; 210 deleted it and this branch is not its revival")
+		}
+	}
+	if !found {
+		t.Errorf("lost = %v, want it to name %q", payload.Lost, capture.StageTranscriptArchiveUnreachable)
+	}
+
+	// The note is capture's one irreplaceable output and must still have landed.
+	if !payload.Captured {
+		t.Error(`payload says captured=false, but the note WAS written`)
+	}
+	if payload.NotePath == "" {
+		t.Fatal("payload names no note_path, so the agent cannot find the note that DID land")
+	}
+	abs := filepath.Join(vault.Root, filepath.FromSlash(payload.NotePath))
+	if _, statErr := os.Stat(abs); statErr != nil {
+		t.Errorf("payload's note_path does not exist: %v", statErr)
+	}
+	// Without the key the documented remedy (retry WITH a transcript) would
+	// write a second note instead of completing this one.
+	if payload.SessionKey == "" {
+		t.Error("payload carries no session_key — the retry that supplies a transcript would duplicate the note")
+	}
+}
+
+// TestCaptureSessionQuietWhenTranscriptIsArchivedInline is the negative control for
+// the test above, on the SAME host. Supplying the transcript is the documented
+// remedy, so it must actually clear the failure — otherwise the loud branch is
+// unactionable and agents learn to skim it, which is precisely how 210 happened.
+func TestCaptureSessionQuietWhenTranscriptIsArchivedInline(t *testing.T) {
+	vault := testSessionVault(t)
+	stubHostSessionID(t, "")
+	stubClientInfoHost(t, "Zed")
+
+	tool := CaptureSessionTool(vault, nil)
+	params, _ := json.Marshal(map[string]any{
+		"project":    "test-proj",
+		"summary":    "the same Zed pane, this time with a transcript",
+		"transcript": sampleClaudeJSONL,
+	})
+
+	r, err := tool.Handler(context.Background(), json.RawMessage(params))
+	if err != nil {
+		t.Fatalf("supplying the transcript is the documented remedy and it still failed: %v", err)
+	}
+	if got := r.(captureSessionResult); got.Status != "ok" {
+		t.Errorf("status = %q, want ok", got.Status)
 	}
 }

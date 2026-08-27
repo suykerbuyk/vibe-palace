@@ -109,9 +109,14 @@ func TestCaptureSessionHostDerivedWins(t *testing.T) {
 	stubHostSessionID(t, "")
 	stubClientInfoHost(t, "Zed")
 
+	// The transcript is load-bearing FIXTURE, not subject: "Zed" is a derived
+	// hook-less host, so a capture with no transcript now fails loud (it can
+	// never have an archive — see TestCaptureSessionFailsHardWhenNoArchiveIsPossible).
+	// Supplying one keeps this test about attribution instead of archiving.
 	meta := captureAndReadMeta(t, `{
 		"project": "test-proj",
 		"summary": "Captured over MCP from a handshake-identified host.",
+		"transcript": "user: hi\nassistant: hello",
 		"client_info": {"name": "some-claimed-host", "version": "9.9"}
 	}`)
 	if meta.Host != "Zed" {
@@ -246,6 +251,13 @@ func TestWantInlineTranscriptArchive(t *testing.T) {
 		{"no auto declared grok", false, "", tx, "grok", storage.HostSourceDeclared, false},
 		{"no auto derived claude", false, "", tx, "claude-code", storage.HostSourceDerived, false},
 		{"no auto empty tx", false, "", "", "grok", storage.HostSourceDerived, false},
+		// The silent branch this predicate CANNOT cover: a derived Zed native
+		// pane with no transcript. There is nothing to archive inline, so false
+		// is correct here and stays correct — you cannot archive empty bytes.
+		// The loss is real all the same, because no SessionEnd hook will write
+		// one later either, so the CALLER fails loud on exactly this input. See
+		// TestCaptureSessionFailsHardWhenNoArchiveIsPossible.
+		{"no auto empty tx zed", false, "", "", "Zed", storage.HostSourceDerived, false},
 		{"no auto with derived id", false, "live-id", tx, "grok", storage.HostSourceDerived, false},
 		{"explicit true unknown", true, "", tx, storage.HostUnknown, storage.HostSourceUnknown, true},
 		{"explicit true no-op with id", true, "live-id", tx, "claude-code", storage.HostSourceDerived, false},
