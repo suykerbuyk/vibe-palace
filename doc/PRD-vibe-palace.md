@@ -205,17 +205,37 @@ the machine the agent runs on — it needs to be readable by the MCP server. Any
 step that reads a host's filesystem, computes a vault path, or depends on a
 host's on-disk layout fails this test.
 
-**Known failures as of 2026-08-15**, each owed a fix or an explicit exemption:
+**The 2026-08-15 failures, and what became of each** (disposition recorded
+2026-08-27). Two were deleted; the rest are salvage, exempted here in writing:
 
-| Failure | Where |
-|---|---|
-| Sweeping a host-local plan/scratch directory | `restart` command, Step 3 |
-| "Read your host's persisted copy of the tool result" as a truncation remedy | `restart` command, Step 2 |
-| Draining host-local memory into the vault | SessionEnd harvest, `internal/memory/harvest.go` |
-| Reading host-local transcripts | `vp hook` |
+| Host-local read | Where | Disposition |
+|---|---|---|
+| Sweeping a host-local plan/scratch directory | `restart` command, Step 3 | **DELETED.** The step no longer walks a directory: plans are vault tasks, listed with `vp_list_tasks` and written with `vp_manage_task`. |
+| "Read your host's persisted copy of the tool result" as a truncation remedy | `restart` command, Step 2 | **DELETED.** A cut INDEX is answered by re-calling `vp_bootstrap_context`; the documents are fetched by URI and end with `eof`. |
+| Sweeping the same directory late in a session | `wrap` command, Step 6b; `review-plan` command | **EXEMPT — Claude-colocated salvage.** |
+| Reporting on that directory over MCP | `vp_scan_plans` | **EXEMPT — Claude-colocated salvage.** |
+| Draining host-local memory into the vault | SessionEnd harvest, `internal/memory/harvest.go`; `vp_memory_harvest` | **EXEMPT — Claude-colocated salvage.** |
+| Reading host-local transcripts | `vp hook` | **EXEMPT — Claude-colocated salvage.** |
 
-The last two are **salvage paths** and may be exempted as such — but the
-exemption must be written down, not inferred from the fact that they exist.
+**What the exemption means, since it must be written down rather than inferred
+from the fact that the code exists.** Every exempt row reads a Claude Code
+layout that only exists on a machine where Claude Code ran, and each one is
+*recovering* context that host already wrote somewhere else — it is not the
+route by which context arrives. Each has a network-clean counterpart that is the
+real path, and the salvage runs beside it, never instead of it:
+
+- memory is written by `vp_memory_*`, and the harvest only drains what a host
+  wrote before that rule reached the agent;
+- a transcript reaches the vault as inline bytes on `vp_capture_session`, and
+  `vp hook`'s `os.ReadFile` only serves the host that has one on disk;
+- a plan reaches the vault as a task through `vp_manage_task`, and the scan only
+  reports scratch files that never made it.
+
+So an exempt path is allowed to find nothing. Reached over the network the
+directory is absent, empty, or belongs to the wrong machine, and every one of
+these degrades to a no-op rather than to a wrong answer — which is the property
+that makes the exemption safe. **A feature whose only route is one of these rows
+is not exempt; it fails §1.8.**
 
 ### 1.9 Context Is Retrieved, Not Delivered
 

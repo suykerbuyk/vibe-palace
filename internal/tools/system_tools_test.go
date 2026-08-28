@@ -394,6 +394,47 @@ func TestVaultSyncNonGitDir(t *testing.T) {
 	}
 }
 
+// TestVaultSync_ZeroRemotesRefused pins the empty-remote refusal on the bare
+// pull/push/sync path. A real git repo with a commit and NO remote is the case
+// storage.ListRemotes reports as `(nil, nil)` — a valid, error-free listing of
+// nothing — so a handler that only checks `err` walks the pull and push loops
+// over zero remotes and returns `status: "ok"` for a sync that contacted
+// nothing. That is the honest-instruments failure exactly: success reported for
+// work not done.
+//
+// Both halves are asserted deliberately. A test that only checked
+// `ListRemotes(root)` returned no error would pass on the bug — it would be
+// pinning the lister's contract, which is fine as it stands, instead of the
+// call site's policy, which is what this refusal is.
+func TestVaultSync_ZeroRemotesRefused(t *testing.T) {
+	root := initVaultRepo(t) // a real repo, one commit, no remote
+	tool := VaultSyncTool(storage.NewVault(root))
+
+	for _, action := range []string{"pull", "push", "sync"} {
+		t.Run(action, func(t *testing.T) {
+			params, _ := json.Marshal(vaultSyncParams{Action: action})
+			res, err := tool.Handler(context.Background(), params)
+			if err == nil {
+				t.Fatalf("action %q on a remote-less vault: expected a refusal, got result %v", action, res)
+			}
+			if !strings.Contains(err.Error(), "no git remotes configured") {
+				t.Errorf("action %q: error %q must name the missing remotes", action, err)
+			}
+			// The verdict is the error. A result body alongside it would be a
+			// second, contradictory answer for the same call.
+			if m, ok := res.(map[string]any); ok && m["status"] == "ok" {
+				t.Errorf("action %q refused but still returned status \"ok\": %v", action, m)
+			}
+		})
+	}
+
+	// --no-tidy takes a different branch to the same loops; it must refuse too.
+	params, _ := json.Marshal(vaultSyncParams{Action: "sync", NoTidy: true})
+	if res, err := tool.Handler(context.Background(), params); err == nil {
+		t.Fatalf("sync no_tidy on a remote-less vault: expected a refusal, got result %v", res)
+	}
+}
+
 func TestVaultSyncInvalidAction(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
 	tool := VaultSyncTool(vault)

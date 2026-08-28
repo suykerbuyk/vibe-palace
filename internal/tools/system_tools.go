@@ -238,9 +238,17 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 			}, nil
 		}
 
-		remotes, err := gitRemoteList(root)
+		// storage.ListRemotes is the ONE remote lister. It reports an empty repo
+		// as `(nil, nil)` — right for a status reader, fatal here: every branch
+		// below iterates `remotes`, so zero remotes would pull nothing, push
+		// nothing, and return `status: "ok"` for a sync that moved no bytes.
+		// The refusal is this call site's job, not the lister's.
+		remotes, err := storage.ListRemotes(root)
 		if err != nil {
 			return nil, fmt.Errorf("discover remotes: %w", err)
+		}
+		if len(remotes) == 0 {
+			return nil, fmt.Errorf("no git remotes configured in %s", root)
 		}
 
 		// Bare sync now tidies capture artifacts first (classify → refuse-on-dirt →
@@ -316,24 +324,6 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 			"output": output.String(),
 		}, nil
 	}
-}
-
-func gitRemoteList(root string) ([]string, error) {
-	cmd := exec.Command("git", "-C", root, "remote")
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("git remote: %w (is %s a git repo?)", err, root)
-	}
-	var remotes []string
-	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			remotes = append(remotes, line)
-		}
-	}
-	if len(remotes) == 0 {
-		return nil, fmt.Errorf("no git remotes configured in %s", root)
-	}
-	return remotes, nil
 }
 
 func gitPull(root string, remotes []string) (string, error) {

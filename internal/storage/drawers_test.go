@@ -116,36 +116,6 @@ func TestListDrawers(t *testing.T) {
 	}
 }
 
-func TestListDrawersByWing(t *testing.T) {
-	v := testVault(t)
-	rooms := []string{"room-1", "room-2"}
-	for _, room := range rooms {
-		d := Drawer{Content: "content-" + room, Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}
-		if err := v.AppendDrawer("proj", "wing-a", room, d); err != nil {
-			t.Fatalf("AppendDrawer(%q): %v", room, err)
-		}
-	}
-
-	got, err := v.ListDrawersByWing("proj", "wing-a")
-	if err != nil {
-		t.Fatalf("ListDrawersByWing: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("ListDrawersByWing returned %d drawers, want 2", len(got))
-	}
-}
-
-func TestListDrawersByWingEmpty(t *testing.T) {
-	v := testVault(t)
-	got, err := v.ListDrawersByWing("proj", "nonexistent")
-	if err != nil {
-		t.Fatalf("ListDrawersByWing: %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("expected empty slice, got %d drawers", len(got))
-	}
-}
-
 func TestDeleteDrawer(t *testing.T) {
 	v := testVault(t)
 	d1 := Drawer{Content: "keep", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}

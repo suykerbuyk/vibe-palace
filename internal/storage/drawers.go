@@ -202,36 +202,6 @@ func (v *Vault) ListDrawers(project, wing, room string) ([]Drawer, error) {
 	return v.readDrawerFile(project, wing, room)
 }
 
-// ListDrawersByWing returns all drawers across all rooms in a wing.
-func (v *Vault) ListDrawersByWing(project, wing string) ([]Drawer, error) {
-	if err := validateSlugs(project, wing); err != nil {
-		return nil, err
-	}
-
-	wingDir := filepath.Join(v.Root, "palace", project, "drawers", wing)
-	entries, err := os.ReadDir(wingDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read wing dir: %w", err)
-	}
-
-	var all []Drawer
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		room := e.Name()
-		drawers, err := v.readDrawerFile(project, wing, room)
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, drawers...)
-	}
-	return all, nil
-}
-
 // DeleteDrawer removes a drawer by ID, rewriting the JSONL file without it.
 // Uses atomic temp-file + rename to prevent data loss on crash.
 func (v *Vault) DeleteDrawer(project, wing, room, id string) error {

@@ -36,9 +36,8 @@ func NewCwdProject(root string, seed CwdProjectSeed) *CwdProjectReconciler {
 	return &CwdProjectReconciler{root: root, seed: seed}
 }
 
-func (r *CwdProjectReconciler) Name() string       { return "CwdProject" }
-func (r *CwdProjectReconciler) Tier() Tier         { return TierProject }
-func (r *CwdProjectReconciler) Requires() []string { return []string{"GlobalConfig"} }
+func (r *CwdProjectReconciler) Name() string { return "CwdProject" }
+func (r *CwdProjectReconciler) Tier() Tier   { return TierProject }
 
 func (r *CwdProjectReconciler) configPath() string {
 	return filepath.Join(r.root, ".vibe-palace.toml")

@@ -1055,32 +1055,6 @@ func (v *Vault) ListSessions(project, dateFrom, dateTo string, limit int) ([]Ses
 	return result, nil
 }
 
-// SearchSessions returns sessions matching a text query and/or minimum
-// friction score. The query matches against title, summary, and decisions
-// (case-insensitive). Pass empty query and 0 minFriction to match all.
-func (v *Vault) SearchSessions(query, project string, minFriction, limit int) ([]SessionMeta, error) {
-	all, err := v.ListSessions(project, "", "", 0)
-	if err != nil {
-		return nil, err
-	}
-
-	lowerQuery := strings.ToLower(query)
-	var result []SessionMeta
-	for _, meta := range all {
-		if minFriction > 0 && meta.FrictionScore < minFriction {
-			continue
-		}
-		if query != "" && !sessionMatchesQuery(meta, lowerQuery) {
-			continue
-		}
-		result = append(result, meta)
-		if limit > 0 && len(result) >= limit {
-			break
-		}
-	}
-	return result, nil
-}
-
 // NextIteration returns the next available iteration number for a
 // project+date combination (1-based). It is max(NN)+1 over the matching files
 // — not count+1 — so a gap in the iteration set (e.g. 01 and 03 present, 02
@@ -1155,20 +1129,4 @@ func ParseFrontmatter(data []byte) (SessionMeta, string, error) {
 		return SessionMeta{}, "", fmt.Errorf("parse frontmatter YAML: %w", err)
 	}
 	return meta, body, nil
-}
-
-// sessionMatchesQuery checks if any searchable field contains the query.
-func sessionMatchesQuery(meta SessionMeta, lowerQuery string) bool {
-	if strings.Contains(strings.ToLower(meta.Title), lowerQuery) {
-		return true
-	}
-	if strings.Contains(strings.ToLower(meta.Summary), lowerQuery) {
-		return true
-	}
-	for _, d := range meta.Decisions {
-		if strings.Contains(strings.ToLower(d), lowerQuery) {
-			return true
-		}
-	}
-	return false
 }

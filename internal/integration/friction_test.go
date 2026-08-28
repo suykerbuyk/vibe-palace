@@ -219,10 +219,16 @@ func TestIntegrationFrictionTrendsEmpty(t *testing.T) {
 	}
 }
 
-// TestIntegrationFrictionSearchByMinScore verifies that SearchSessions
-// correctly filters by minimum friction score.
+// TestIntegrationFrictionSearchByMinScore verifies that min_friction filtering
+// works on the path a caller actually takes: the vp_search_sessions handler.
+//
+// It used to assert on storage.Vault.SearchSessions — an accessor no product
+// surface ever called, whose matcher and limit handling had already drifted from
+// the handler's. That accessor is deleted; an integration test pointed at code
+// nothing reaches is false confidence, not coverage.
 func TestIntegrationFrictionSearchByMinScore(t *testing.T) {
 	h := newHarness(t, false)
+	h.registerAllTools(t)
 
 	// Write sessions with different friction scores.
 	for _, s := range []struct {
@@ -245,13 +251,24 @@ func TestIntegrationFrictionSearchByMinScore(t *testing.T) {
 		}
 	}
 
-	// Search with minFriction = 50.
-	results, err := h.Vault.SearchSessions("", "search-proj", 50, 0)
-	if err != nil {
-		t.Fatalf("SearchSessions: %v", err)
+	result := h.callTool(t, "vp_search_sessions", map[string]any{
+		"project":      "search-proj",
+		"min_friction": 50,
+	})
+
+	// The server wraps a tool's array result in an items envelope.
+	var payload struct {
+		Items []struct {
+			Title         string `json:"title"`
+			FrictionScore int    `json:"friction_score"`
+		} `json:"items"`
 	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, result)
+	}
+	results := payload.Items
 	if len(results) != 2 {
-		t.Fatalf("expected 2 sessions with friction >= 50, got %d", len(results))
+		t.Fatalf("expected 2 sessions with friction >= 50, got %d: %s", len(results), result)
 	}
 	for _, r := range results {
 		if r.FrictionScore < 50 {

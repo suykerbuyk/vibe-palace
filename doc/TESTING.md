@@ -1964,10 +1964,13 @@ health. *That is the disease, inside the tool built to cure it.*
 A method reached only through an interface has no direct call site, so it looks
 uninvoked. The tempting fix — **exempt every method that satisfies an interface** — is
 **wrong**, and triaging the first baseline proved it: six `reconcile.*.Requires()`
-methods satisfy `reconcile.Reconciler`, an interface the tree genuinely uses, and they
-declare a dependency graph that the driver loop re-derives by hand in a `switch` and
-**never once reads**. The blanket rule would have hidden all six. An interface method
+methods satisfied `reconcile.Reconciler`, an interface the tree genuinely uses, and
+declared a dependency graph that the driver loop re-derived by hand in a `switch` and
+**never once read**. The blanket rule would have hidden all six. An interface method
 nobody dispatches on is not noise; it is this project's signature bug wearing a contract.
+(The six were later deleted — the protocol went, the hand-written order stayed — so the
+fixture in `TestInTreeInterfaceMethodNobodyCallsIsStillFlagged` is now the only copy of
+that shape.)
 
 Exempting on *"tests call it"* is equally wrong, and for the same reason: **every dead
 functional option in the tree has a passing unit test.** That rule turns the gate from

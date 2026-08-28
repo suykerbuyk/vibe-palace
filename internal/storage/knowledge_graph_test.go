@@ -12,7 +12,24 @@ import (
 	"testing"
 )
 
-func TestAddAndGetEntity(t *testing.T) {
+// tripleAt reads one triple through the LIVE readers — KGTriplePath, the path
+// builder every triple writer uses, and readTripleFile, the reader QueryEntity
+// uses. Vault.GetTriple was a third copy of this read with no production caller
+// and was deleted; pointing the tests here keeps one definition, not two.
+func tripleAt(t *testing.T, v *Vault, project, subject, predicate, object string) Triple {
+	t.Helper()
+	path, err := v.KGTriplePath(project, subject, predicate, object)
+	if err != nil {
+		t.Fatalf("KGTriplePath: %v", err)
+	}
+	tr, err := readTripleFile(path)
+	if err != nil {
+		t.Fatalf("readTripleFile: %v", err)
+	}
+	return tr
+}
+
+func TestAddEntityRoundTrip(t *testing.T) {
 	v := testVault(t)
 	e := Entity{
 		ID:        "e1",
@@ -25,10 +42,14 @@ func TestAddAndGetEntity(t *testing.T) {
 		t.Fatalf("AddEntity: %v", err)
 	}
 
-	got, err := v.GetEntity("proj", "e1")
+	ents, err := v.ListEntities("proj")
 	if err != nil {
-		t.Fatalf("GetEntity: %v", err)
+		t.Fatalf("ListEntities: %v", err)
 	}
+	if len(ents) != 1 {
+		t.Fatalf("ListEntities returned %d entities, want 1", len(ents))
+	}
+	got := ents[0]
 	if got.Name != "Kai" {
 		t.Errorf("Name = %q, want %q", got.Name, "Kai")
 	}
@@ -145,14 +166,6 @@ func TestListEntitiesEmpty(t *testing.T) {
 	}
 }
 
-func TestGetEntityNotFound(t *testing.T) {
-	v := testVault(t)
-	_, err := v.GetEntity("proj", "nonexist")
-	if err == nil {
-		t.Error("GetEntity should return error for nonexistent entity")
-	}
-}
-
 func TestAddAndGetTriple(t *testing.T) {
 	v := testVault(t)
 	tr := Triple{
@@ -167,10 +180,7 @@ func TestAddAndGetTriple(t *testing.T) {
 		t.Fatalf("AddTriple: %v", err)
 	}
 
-	got, err := v.GetTriple("proj", "Kai", "works on", "Orion")
-	if err != nil {
-		t.Fatalf("GetTriple: %v", err)
-	}
+	got := tripleAt(t, v, "proj", "Kai", "works on", "Orion")
 	if got.Subject != "Kai" {
 		t.Errorf("Subject = %q, want %q", got.Subject, "Kai")
 	}
@@ -204,10 +214,7 @@ func TestAddTripleDedup(t *testing.T) {
 		t.Errorf("error %q should contain \"already exists\" for uniform dedup signal", err)
 	}
 
-	got, err := v.GetTriple("proj", "Kai", "works on", "Orion")
-	if err != nil {
-		t.Fatalf("GetTriple after duplicate attempt: %v", err)
-	}
+	got := tripleAt(t, v, "proj", "Kai", "works on", "Orion")
 	if got.ExtractedAt != first.ExtractedAt {
 		t.Errorf("ExtractedAt = %q, want %q (file should not have been overwritten)",
 			got.ExtractedAt, first.ExtractedAt)
@@ -286,9 +293,8 @@ func TestConcurrentAddTripleDedup(t *testing.T) {
 	if wins != 1 {
 		t.Errorf("got %d successful creates, want 1 (create-once must hold)", wins)
 	}
-	if _, err := v.GetTriple(project, "Kai", "works on", "Orion"); err != nil {
-		t.Fatalf("GetTriple after concurrent create: %v", err)
-	}
+	// Fatals unless the one winning create left a readable triple behind.
+	tripleAt(t, v, project, "Kai", "works on", "Orion")
 }
 
 func TestQueryEntityOut(t *testing.T) {
@@ -390,10 +396,7 @@ func TestInvalidateTriple(t *testing.T) {
 		t.Fatalf("InvalidateTriple: %v", err)
 	}
 
-	got, err := v.GetTriple("proj", "Kai", "works on", "Orion")
-	if err != nil {
-		t.Fatalf("GetTriple: %v", err)
-	}
+	got := tripleAt(t, v, "proj", "Kai", "works on", "Orion")
 	if got.ValidTo != "2025-12-31" {
 		t.Errorf("ValidTo = %q, want %q", got.ValidTo, "2025-12-31")
 	}
@@ -471,10 +474,14 @@ func TestEntityWithProperties(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := v.GetEntity("proj", "e1")
+	ents, err := v.ListEntities("proj")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("ListEntities: %v", err)
 	}
+	if len(ents) != 1 {
+		t.Fatalf("ListEntities returned %d entities, want 1", len(ents))
+	}
+	got := ents[0]
 	if got.Properties["role"] != "engineer" {
 		t.Errorf("Properties[role] = %q, want %q", got.Properties["role"], "engineer")
 	}

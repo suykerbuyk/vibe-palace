@@ -137,12 +137,8 @@ func TestIntegrationSessionCaptureWithoutTranscript(t *testing.T) {
 	}
 
 	// Verify no drawers were created.
-	wings, _ := h.Vault.ListWings("test-proj")
-	for _, wing := range wings {
-		drawers, _ := h.Vault.ListDrawersByWing("test-proj", wing)
-		if len(drawers) > 0 {
-			t.Errorf("expected no drawers without transcript, found %d in wing %s", len(drawers), wing)
-		}
+	if total, _ := countAllDrawers(t, h.Vault, "test-proj"); total > 0 {
+		t.Errorf("expected no drawers without transcript, found %d", total)
 	}
 }
 

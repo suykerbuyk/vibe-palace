@@ -31,11 +31,19 @@ func bigTranscript(n int) string {
 func countDrawers(t *testing.T, v *storage.Vault, project string) int {
 	t.Helper()
 	wing := palace.DetectWing(project, "")
-	ds, err := v.ListDrawersByWing(project, wing)
+	rooms, err := v.ListRooms(project, wing)
 	if err != nil {
-		t.Fatalf("ListDrawersByWing: %v", err)
+		t.Fatalf("ListRooms: %v", err)
 	}
-	return len(ds)
+	var n int
+	for _, room := range rooms {
+		ds, err := v.ListDrawers(project, wing, room)
+		if err != nil {
+			t.Fatalf("ListDrawers(%s): %v", room, err)
+		}
+		n += len(ds)
+	}
+	return n
 }
 
 // TestIndexTranscriptReindexAddsNothing is the backfill's load-bearing

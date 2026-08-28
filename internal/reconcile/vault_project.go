@@ -25,9 +25,8 @@ func NewVaultProject(v *storage.Vault, slug string) *VaultProjectReconciler {
 	return &VaultProjectReconciler{vault: v, slug: slug}
 }
 
-func (r *VaultProjectReconciler) Name() string       { return "VaultProject" }
-func (r *VaultProjectReconciler) Tier() Tier         { return TierProject }
-func (r *VaultProjectReconciler) Requires() []string { return []string{"Vault"} }
+func (r *VaultProjectReconciler) Name() string { return "VaultProject" }
+func (r *VaultProjectReconciler) Tier() Tier   { return TierProject }
 
 // Check reports the vault-project config's presence as an Info row — it is
 // always Info/Skip and never causes a failure.

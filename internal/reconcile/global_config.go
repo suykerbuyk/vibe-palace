@@ -40,9 +40,8 @@ func NewGlobalConfig(root string, seed GlobalSeed) *GlobalConfigReconciler {
 	return &GlobalConfigReconciler{root: root, seed: seed}
 }
 
-func (r *GlobalConfigReconciler) Name() string       { return "GlobalConfig" }
-func (r *GlobalConfigReconciler) Tier() Tier         { return TierGlobal }
-func (r *GlobalConfigReconciler) Requires() []string { return nil }
+func (r *GlobalConfigReconciler) Name() string { return "GlobalConfig" }
+func (r *GlobalConfigReconciler) Tier() Tier   { return TierGlobal }
 
 // Check runs CheckConfigAt and, when the config file exists,
 // CheckConfigStaleness — mirroring today's vp check rows.

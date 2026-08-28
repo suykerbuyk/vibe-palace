@@ -118,27 +118,27 @@ func TestRenderGrokHubGolden(t *testing.T) {
 		"`vp_read_resource(uri, offset, limit)`",
 		"`offset+length`",
 		"until `eof`",
-		// Session start: bodies arrive whole, and any reduction is announced.
-		// (This used to assert "with `slim=true`" — the byte-axis path that
-		// shortened the resume without recording it. Deleted with the mechanism.)
+		// Session start. Two claims, and no third.
 		"call `vp_bootstrap_context`",
-		// NOT "arrive whole on every transport" — that literal was retired here
-		// deliberately. It is the claim this epic disproved: a host cuts the
-		// result regardless of what vp sent, so no transport promise can be made
-		// about arrival. What vp can promise is what it SENDS. A golden asserting
-		// the old wording would have pinned a false claim in place on the one
-		// surface fronting the host where the cut was measured — the test would
-		// have been enforcing the bug.
-		//
-		// Since Phase 2 there is only ONE axis to teach. vp sends the bodies
-		// whole — the shed ladder is deleted, so a short body is never vp's
-		// doing — and the only remaining question is whether the HOST delivered
-		// them, which the terminal `complete` sentinel answers. The hub fronts
-		// the exact host where a flat 19.5 KB inline cut was measured, so that
-		// sentinel and the recovery handle are what must appear here.
-		"sends `resume` and `workflow` WHOLE",
+		// 1. The payload is an INDEX and the documents are FETCHED. The hub
+		// used to say vp "sends `resume` and `workflow` WHOLE" — true when the
+		// payload inlined them, and stale since Phase 3 stopped sending them at
+		// all. A promise about how vp sends a body it no longer sends is the
+		// worst kind of stale instruction: it reads as reassurance, so an agent
+		// that never sees the bodies concludes its host ate them and goes
+		// looking for a copy instead of calling `vp_read_resource`.
+		"are NOT fields of it",
+		"`vp_read_resource`",
 		"`resume_uri`",
+		// 2. The INDEX itself can still be cut by the host, and `complete` is
+		// what says so. NOT "arrive whole on every transport" — that literal was
+		// retired here deliberately: a host cuts the result regardless of what
+		// vp sent, so no transport promise can be made about arrival. The hub
+		// fronts the exact host where a flat 19.5 KB inline cut was measured, so
+		// the sentinel and the recovery move are what must appear here — and the
+		// recovery is re-calling the tool, never reading a host-local copy.
 		"`complete: true`",
+		"call `vp_bootstrap_context` again",
 		// Schema-loading guidance.
 		"load its schema first",
 		shimCloseDelim,
@@ -148,8 +148,9 @@ func TestRenderGrokHubGolden(t *testing.T) {
 			t.Errorf("GrokHub render missing %q in:\n%s", m, out)
 		}
 	}
-	// The hub must not hardcode a project anywhere, nor the Claude-only keys.
-	for _, banned := range []string{"user-invocable", "argument-hint", "grok-first-class-citizen"} {
+	// The hub must not hardcode a project anywhere, nor the Claude-only keys —
+	// and must not re-acquire the retired "sends them WHOLE" claim.
+	for _, banned := range []string{"user-invocable", "argument-hint", "grok-first-class-citizen", "WHOLE"} {
 		if strings.Contains(out, banned) {
 			t.Errorf("GrokHub render unexpectedly contains %q", banned)
 		}

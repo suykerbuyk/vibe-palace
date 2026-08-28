@@ -90,9 +90,6 @@ func TestTemplateTree_Metadata(t *testing.T) {
 	if r.Tier() != TierVault {
 		t.Errorf("Tier = %s", r.Tier())
 	}
-	if got := r.Requires(); len(got) != 1 || got[0] != "Vault" {
-		t.Errorf("Requires = %v", got)
-	}
 
 	p := NewTemplateTree(t.TempDir(), "Projects/foo", TemplateTreeSeed{Mode: TemplateModeScaffold})
 	if p.Name() != "TemplateTree:Projects/foo" {

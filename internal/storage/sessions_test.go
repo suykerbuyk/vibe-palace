@@ -163,49 +163,6 @@ func TestListSessionsEmpty(t *testing.T) {
 	}
 }
 
-func TestSearchSessions(t *testing.T) {
-	v := testVault(t)
-	v.WriteSession("proj", SessionMeta{Date: "2026-03-15", Title: "Auth refactor", Summary: "Rewrote auth middleware", FrictionScore: 40}, "")
-	v.WriteSession("proj", SessionMeta{Date: "2026-03-16", Title: "Bug fix", Summary: "Fixed login timeout", FrictionScore: 10}, "")
-	v.WriteSession("proj", SessionMeta{Date: "2026-03-17", Title: "Feature work", Summary: "Added dashboard", Decisions: []string{"Use auth tokens"}, FrictionScore: 25}, "")
-
-	// Text search.
-	got, err := v.SearchSessions("auth", "proj", 0, 0)
-	if err != nil {
-		t.Fatalf("SearchSessions: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("search 'auth' returned %d, want 2", len(got))
-	}
-
-	// Friction filter.
-	got, err = v.SearchSessions("", "proj", 25, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("friction>=25 returned %d, want 2", len(got))
-	}
-
-	// Combined.
-	got, err = v.SearchSessions("auth", "proj", 30, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("combined search returned %d, want 1", len(got))
-	}
-
-	// With limit.
-	got, err = v.SearchSessions("", "proj", 0, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 {
-		t.Errorf("limited search returned %d, want 1", len(got))
-	}
-}
-
 func TestWriteSessionInvalidDate(t *testing.T) {
 	v := testVault(t)
 	meta := SessionMeta{Date: "not-a-date"}

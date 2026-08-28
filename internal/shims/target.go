@@ -315,15 +315,17 @@ it.
 ## Session start
 
 When restoring context (e.g. ` + "`/vpc restart`" + `), call ` + "`vp_bootstrap_context`" + `.
-Your HOST can still cut that result. ` + "`complete: true`" + ` is the payload's last field and
-carries no ` + "`omitempty`" + `, so it arrives on every whole result and on no cut one.
-If ` + "`complete`" + ` is missing, or your host printed a truncation banner, the HOST cut
-the result and the inline body is untrustworthy — rehydrate from ` + "`resume_uri`" + ` /
-` + "`workflow_uri`" + ` via ` + "`vp_read_resource`" + `, CAS-verifying against ` + "`resume_sha256`" + `,
-BEFORE acting on any of it.
+What comes back is an INDEX: instruments, handles, head of queue, a session
+index. ` + "`resume`" + ` and ` + "`workflow`" + ` are NOT fields of it and never arrive by
+waiting — FETCH each one with ` + "`vp_read_resource`" + ` from ` + "`resume_uri`" + ` /
+` + "`workflow_uri`" + `, paging by the returned ` + "`offset+length`" + ` until ` + "`eof`" + `, and
+CAS-verify any later write against ` + "`resume_sha256`" + `.
 
-vp itself sends ` + "`resume`" + ` and ` + "`workflow`" + ` WHOLE. It does not shed, excerpt or
-digest them to fit a budget, so a short body is your host's doing, never vp's.
+Your HOST can still cut the index itself. ` + "`complete: true`" + ` is the payload's
+last field and carries no ` + "`omitempty`" + `, so it arrives on every whole result and
+on no cut one. If ` + "`complete`" + ` is missing, or your host printed a truncation
+banner, the HOST cut the result: call ` + "`vp_bootstrap_context`" + ` again rather than
+acting on the handles you can still see.
 
 ## After execution
 

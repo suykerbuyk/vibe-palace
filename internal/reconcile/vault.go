@@ -38,9 +38,8 @@ func NewVault(root string, seed VaultSeed) *VaultReconciler {
 	return &VaultReconciler{root: root, seed: seed}
 }
 
-func (r *VaultReconciler) Name() string       { return "Vault" }
-func (r *VaultReconciler) Tier() Tier         { return TierVault }
-func (r *VaultReconciler) Requires() []string { return []string{"GlobalConfig"} }
+func (r *VaultReconciler) Name() string { return "Vault" }
+func (r *VaultReconciler) Tier() Tier   { return TierVault }
 
 func (r *VaultReconciler) resolvedVaultPath() (string, error) {
 	if r.seed.seedSet && r.seed.VaultPath != "" {

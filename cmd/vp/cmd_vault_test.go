@@ -15,40 +15,46 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-func TestGitRemotes(t *testing.T) {
-	// Create a temp git repo.
-	dir := t.TempDir()
-	run := func(args ...string) {
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	run("init")
-	run("remote", "add", "origin", "https://example.com/repo.git")
-	run("remote", "add", "backup", "https://backup.example.com/repo.git")
-
-	remotes, err := gitRemotes(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(remotes) != 2 {
-		t.Errorf("expected 2 remotes, got %d: %v", len(remotes), remotes)
-	}
-}
-
-func TestGitRemotesNoRemotes(t *testing.T) {
-	dir := t.TempDir()
-	cmd := exec.Command("git", "-C", dir, "init")
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
+// TestVaultRemoteCommandsRefuseZeroRemotes pins the empty-remote refusal at the
+// three CLI call sites. It replaces TestGitRemotes/TestGitRemotesNoRemotes,
+// which tested a second copy of `git remote` that no longer exists: the listing
+// itself is storage.ListRemotes and is covered by storage.TestListRemotes.
+//
+// What is NOT covered there is the half that matters here. ListRemotes reports
+// a repo with no remotes as `(nil, nil)` — no error — so a call site that only
+// checks `err` inherits an empty slice, pullAll/pushAll iterate zero remotes,
+// and the command exits OK having contacted nothing. Asserting the refusal is
+// the point; asserting `err == nil` from the lister would pin the bug.
+func TestVaultRemoteCommandsRefuseZeroRemotes(t *testing.T) {
+	vaultDir := setupTestVaultEnv(t)
+	cmd := exec.Command("git", "-C", vaultDir, "init", "-b", "main")
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}
 
-	_, err := gitRemotes(dir)
-	if err == nil {
-		t.Error("expected error for no remotes")
+	// Guard the guard: a repo with no remotes must reach the call sites as an
+	// empty slice and no error, or this test would pass for the wrong reason.
+	remotes, err := storage.ListRemotes(vaultDir)
+	if err != nil || len(remotes) != 0 {
+		t.Fatalf("ListRemotes on zero-remote repo = (%v, %v), want (empty, nil)", remotes, err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		run  func() int
+	}{
+		{"pull", func() int { return cmdVaultPull().Run(nil) }},
+		{"push", func() int { return cmdVaultPush().Run(nil) }},
+		{"sync", func() int { return cmdVaultSync().Run(nil) }},
+		{"sync --no-tidy", func() int { return cmdVaultSync().Run([]string{"--no-tidy"}) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if code := tc.run(); code != cli.ExitSystem {
+				t.Errorf("vp vault %s on a remote-less vault: exit code = %d, want %d",
+					tc.name, code, cli.ExitSystem)
+			}
+		})
 	}
 }
 

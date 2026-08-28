@@ -98,20 +98,6 @@ func (v *Vault) AddEntity(project string, e Entity) error {
 	return nil
 }
 
-// GetEntity retrieves an entity by ID.
-func (v *Vault) GetEntity(project, id string) (Entity, error) {
-	entities, err := v.ListEntities(project)
-	if err != nil {
-		return Entity{}, err
-	}
-	for _, e := range entities {
-		if e.ID == id {
-			return e, nil
-		}
-	}
-	return Entity{}, fmt.Errorf("entity %q not found", id)
-}
-
 // ListEntities returns all entities for a project.
 func (v *Vault) ListEntities(project string) ([]Entity, error) {
 	path, err := v.KGEntitiesFile(project)
@@ -184,25 +170,6 @@ func (v *Vault) AddTriple(project string, t Triple) error {
 	return nil
 }
 
-// GetTriple reads a triple by its subject, predicate, and object.
-func (v *Vault) GetTriple(project, subject, predicate, object string) (Triple, error) {
-	path, err := v.KGTriplePath(project, subject, predicate, object)
-	if err != nil {
-		return Triple{}, err
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return Triple{}, fmt.Errorf("read triple: %w", err)
-	}
-
-	var t Triple
-	if err := json.Unmarshal(data, &t); err != nil {
-		return Triple{}, fmt.Errorf("parse triple: %w", err)
-	}
-	return t, nil
-}
-
 // QueryEntity returns triples involving the named entity, filtered by
 // direction ("out", "in", or "both") and temporal validity (asOf date).
 func (v *Vault) QueryEntity(project, name, asOf, direction string) ([]Triple, error) {
@@ -269,14 +236,9 @@ func (v *Vault) InvalidateTriple(project, subject, predicate, object, ended stri
 	}
 	defer release()
 
-	data, err := os.ReadFile(path)
+	t, err := readTripleFile(path)
 	if err != nil {
-		return fmt.Errorf("read triple: %w", err)
-	}
-
-	var t Triple
-	if err := json.Unmarshal(data, &t); err != nil {
-		return fmt.Errorf("parse triple: %w", err)
+		return err
 	}
 
 	t.ValidTo = ended

@@ -29,7 +29,7 @@ embedder model, so it stays near-instant even on a cold cache.
 
 - If `status` is `"fail"`, the vault was last written by a newer `vp`
   binary than this host has installed. **Halt the entire restart** — do
-  not pull, tidy, bootstrap context, sweep plans, or retire tasks — and
+  not pull, tidy, bootstrap context, or retire tasks — and
   surface the tool's `details` lines to the human verbatim. They name
   the version mismatch and carry the remediation (the `git pull && make
   install` upgrade, plus the at-risk override); relay them as-is rather
@@ -179,8 +179,12 @@ safe. It is not licence to skip the fetch.
   result.** `complete: true` is the last field of the payload and carries no
   `omitempty`, so it arrives on every whole result and on no cut one. The
   fields you cannot see are the ones that would have told you what is missing.
-  Read your host's persisted copy of the tool result if it keeps one, then
-  continue. Do not carry a cut payload into Step 3.
+  **Re-call `vp_bootstrap_context`.** Do not go looking for the result
+  somewhere else on this host — a persisted copy is host-local state, and a
+  restart that reads one works only on the machine the agent happens to run on.
+  The payload is an index of handles, so re-calling is cheap; the documents
+  themselves are fetched by URI above and cannot be cut without `eof` saying so.
+  Do not carry a cut payload into Step 3.
 - **`complete: true` present** ⇒ you have the whole document vp emitted.
 
 The instruments (`health`, `vault_staleness`, `friction_trend`, `ranking`,
@@ -216,76 +220,20 @@ carries the rule, the worked examples, and the preamble-is-provenance half.
 After bootstrap, the two document fetches and the doctrine fetch, continue
 loading context in the order below.
 
-## Step 3: Sweep Orphaned Plans
+## Step 3: Plans Live in the Vault
 
-Check your host's local plan/scratch directory for plan files from
-prior sessions (on Claude Code this is `~/.claude/plans/`; other hosts
-have their own, and some have none — if there is no such directory,
-skip this step). That directory is **scratch only, never the source of
-truth**: plans live in the vault, reached only through `vp_manage_task`.
-Use the Glob tool with pattern `*.md` and path set to the absolute
-expansion of that directory — do **not** put the full path in the
-pattern when also setting path.
+There is nothing to sweep here. A plan is a **task**, and tasks live in the
+vault under `Projects/<slug>/tasks/`, reached only through `vp_list_tasks`,
+`vp_get_task` and `vp_manage_task`.
 
-For each file found:
+**Do not walk a host directory looking for plan files.** A restart that globs
+a host-local plan/scratch area reads the filesystem of the machine the *agent*
+happens to run on, which is not where the vault lives — the MCP server may be
+reached over the network with the vault mounted beside it. That step failed the
+network test, and it is deleted rather than fixed.
 
-- Read the plan to determine whether it belongs to the current
-  project (look for references to project files, directories, or the
-  project name).
-- If it belongs to a **different** project, leave it where it is.
-- If it belongs to **this** project, create it as a task with a
-  descriptive slug derived from the plan title (rules below), then
-  delete the original scratch file.
-
-### Slugification rules
-
-1. Find the first markdown heading (`# ...` or `## ...`).
-2. Strip common prefixes: `Plan:`, `Task:`, `Feature:`, `Bug:`,
-   `Fix:`, `Implementation Plan:`.
-3. Lowercase the remaining text.
-4. Replace spaces and underscores with hyphens.
-5. Remove all characters except `a-z`, `0-9`, and `-`.
-6. Collapse consecutive hyphens; trim leading/trailing hyphens.
-7. Truncate to 60 characters (break at a hyphen boundary if possible).
-8. Fallback: if no heading or the result is empty, use the original
-   filename without `.md`.
-
-Example: `# Plan: Deprecate Agentctx Symlinks` →
-`deprecate-agentctx-symlinks`.
-
-### Strip the plan's metadata block before creating the task
-
-**This is mandatory — skipping it makes the create call fail.** Agent-written
-plans idiomatically open with a metadata block:
-
-    # Some Plan Title
-    **Status:** Draft
-    **Priority:** High
-
-`vp_manage_task` with `action: create` **supplies that block itself**, and it
-**rejects** any `content` that carries its own `**Status:**` line or its own
-top-level `# ` heading. So before you pass the plan body:
-
-- **Delete the leading metadata block** — the `# Title` line, the
-  `**Status:**` line, and the `**Priority:**` line — and pass only the body
-  that follows.
-- Keep the title's meaning in the **slug** (and, if you like, in a `## `
-  subheading inside the body).
-- (H1-shaped shell comments *inside* a fenced code block — ``` or ~~~ — are
-  fine and are not treated as headings.)
-
-**Why:** two `**Status:**` lines in one task file means the reader and the
-writer disagree about which one is real. `vp_get_task` and `vp_list_tasks`
-would report one status while `vp_manage_task update_status` rewrites the
-other. The create call refuses the duplicate rather than letting the file rot.
-
-Then use `vp_manage_task` with `action: create`, `task` set to the derived
-slug, and `content` set to the **stripped** plan body.
-
-Plans **must** live in the vault under `Projects/<slug>/tasks/`, reached only
-via the MCP task tools — never in a host's local plan/scratch directory.
-Summarize each plan's disposition (created as task, other project,
-etc.) when done.
+List the open plans with `vp_list_tasks`, and write a new one with
+`vp_manage_task` `action: create`.
 
 ## Step 4: Report Retirement Candidates (never retire)
 

@@ -97,30 +97,6 @@
       "reason": "REAL FINDING, owned by task aaak-compression-subsystem-unreachable. It is the ONLY non-test caller of palace.Compress, so with it dead the ENTIRE AAAK compression subsystem is unreachable from production code (Compress, EntityRegistry, NewEntityRegistry, detectEntities, AAKResult, DrawerMetadata). AAAK is a named architectural pillar — package doc, doc/ARCHITECTURE.md, PRD Task 6.3 ('compact digests for context loading') — and nothing produces or consumes a digest. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — the owning task's DECISION (205) was to PARK the subsystem: keep the code, stop the docs claiming it runs. That park is authorial intent no parse recovers; this entry declares it, and the baseline ratchet (Baseline.Diff + TestSourceAuditGate: the baseline may only SHRINK) enforces it mechanically — reaping AAAK makes this entry go stale and fails the build. Do not reap; do not remove this entry."
     },
     {
-      "id": "uninvoked reconcile.CwdProjectReconciler.Requires",
-      "reason": "REAL FINDING, owned by task reconcile-requires-declares-a-graph-nobody-reads. Requires() is part of the reconcile.Reconciler interface and the tree really binds these types to it — but NO non-test code ever calls it. cmd/vp/cmd_config.go re-derives the same dependency order by hand in a switch. Two encodings of one graph; nothing catches drift. NOTE: this is precisely the finding a blanket 'exempt interface methods' rule would have hidden — see stdlibContracts in sourceaudit.go. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — the fix is deferred to the owning task named above; this reason is the DECLARE channel recording it."
-    },
-    {
-      "id": "uninvoked reconcile.GlobalConfigReconciler.Requires",
-      "reason": "REAL FINDING, owned by task reconcile-requires-declares-a-graph-nobody-reads. See reconcile.CwdProjectReconciler.Requires. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — fix deferred to the owning task; declared here."
-    },
-    {
-      "id": "uninvoked reconcile.TemplateTreeReconciler.Requires",
-      "reason": "REAL FINDING, owned by task reconcile-requires-declares-a-graph-nobody-reads. See reconcile.CwdProjectReconciler.Requires. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — fix deferred to the owning task; declared here."
-    },
-    {
-      "id": "uninvoked reconcile.VaultProjectReconciler.Requires",
-      "reason": "REAL FINDING, owned by task reconcile-requires-declares-a-graph-nobody-reads. See reconcile.CwdProjectReconciler.Requires. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — fix deferred to the owning task; declared here."
-    },
-    {
-      "id": "uninvoked reconcile.VaultReconciler.Requires",
-      "reason": "REAL FINDING, owned by task reconcile-requires-declares-a-graph-nobody-reads. See reconcile.CwdProjectReconciler.Requires. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — fix deferred to the owning task; declared here."
-    },
-    {
-      "id": "uninvoked reconcile.VaultSettingsReconciler.Requires",
-      "reason": "REAL FINDING, owned by task reconcile-requires-declares-a-graph-nobody-reads. See reconcile.CwdProjectReconciler.Requires. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — fix deferred to the owning task; declared here."
-    },
-    {
       "id": "uninvoked sourceaudit.Baseline.Diff",
       "reason": "TEST-ONLY BY CONSTRUCTION. This gate IS a go test, so its own baseline machinery can have no non-test caller — the analyzer is flagging itself. Accepted, and the irony is noted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — test-only-by-construction is structural intent no parse recovers; declared here, enforced by the baseline ratchet. Do NOT wire a fake production caller to clear this."
     },
@@ -143,22 +119,6 @@
     {
       "id": "uninvoked sourceaudit.RunModule",
       "reason": "TEST-ONLY BY CONSTRUCTION, exactly like its sibling sourceaudit.Run above: this gate IS a go test, so its entry point has no non-test caller. TestSourceAuditGate calls it. 🔴 AND IT MUST STAY THAT WAY — this is the one entry here where test-only is a REQUIREMENT rather than an accepted smell. RunModule pulls in golang.org/x/tools (go/packages, ssa, cha, vta) to build a type-checked call graph. internal/sourceaudit is not linked into cmd/vp — verified with `go list -deps ./cmd/vp`, which names neither sourceaudit nor golang.org/x/tools — so the dependency costs the shipped binary nothing, which is what ADR-010 §3 asserted and what makes deriving affordable at all. Wiring it into `vp check` to give it a 'real' caller would link an entire program-analysis toolkit into a CLI that must start in milliseconds. Do not wire a caller. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — declared here, enforced by the baseline ratchet."
-    },
-    {
-      "id": "uninvoked storage.Vault.GetEntity",
-      "reason": "REAL FINDING, owned by task storage-accessors-reimplemented-by-their-callers. Zero non-test callers; AddEntity hand-rolls the same find-entity-by-ID scan, and vp_kg_stats aggregates ListEntities itself. Built for a get-entity surface that never shipped. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — the fix is deferred to the owning task named above; this reason is the DECLARE channel recording it."
-    },
-    {
-      "id": "uninvoked storage.Vault.GetTriple",
-      "reason": "REAL FINDING, owned by task storage-accessors-reimplemented-by-their-callers. THREE copies of 'read a triple from a path' exist: GetTriple (dead), the inline read inside InvalidateTriple (live), and readTripleFile (live, used by QueryEntity). Collapse to one. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — fix deferred to the owning task; declared here."
-    },
-    {
-      "id": "uninvoked storage.Vault.ListDrawersByWing",
-      "reason": "REAL FINDING, owned by task storage-accessors-reimplemented-by-their-callers. Reimplemented as ListRooms+ListDrawers at FIVE sites. Worse, internal/search/engine.go carries a private near-copy of storage.Vault.ListRooms that SKIPS the slug validation the storage version performs — two definitions, one unvalidated. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — fix deferred to the owning task; declared here."
-    },
-    {
-      "id": "uninvoked storage.Vault.SearchSessions",
-      "reason": "REAL FINDING, owned by task storage-accessors-reimplemented-by-their-callers. The worst of the batch: vp_search_sessions EXISTS and does not call this — it re-does the same friction/query/limit loop inline and duplicates the matcher. The two HAVE ALREADY DIVERGED (the tool has a tag filter and clamps limit; storage's does neither). And internal/integration/friction_test.go tests the DEAD path, giving false confidence that the shipped path is covered. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — fix deferred to the owning task; declared here."
     },
     {
       "id": "uninvoked testutil.ProjectCacheDir",

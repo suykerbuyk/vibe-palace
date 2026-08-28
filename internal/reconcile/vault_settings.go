@@ -22,9 +22,8 @@ func NewVaultSettings(v *storage.Vault) *VaultSettingsReconciler {
 	return &VaultSettingsReconciler{vault: v}
 }
 
-func (r *VaultSettingsReconciler) Name() string       { return "VaultSettings" }
-func (r *VaultSettingsReconciler) Tier() Tier         { return TierVault }
-func (r *VaultSettingsReconciler) Requires() []string { return []string{"Vault"} }
+func (r *VaultSettingsReconciler) Name() string { return "VaultSettings" }
+func (r *VaultSettingsReconciler) Tier() Tier   { return TierVault }
 
 func (r *VaultSettingsReconciler) Check(_ context.Context) []check.Result {
 	if r.vault == nil {

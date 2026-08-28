@@ -15,7 +15,6 @@ import (
 	"sync/atomic"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
-	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -433,7 +432,7 @@ func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, err
 	var missText []string
 
 	for _, wing := range wings {
-		rooms, err := listRooms(e.vault.Root, project, wing)
+		rooms, err := e.vault.ListRooms(project, wing)
 		if err != nil {
 			return stats, fmt.Errorf("list rooms for wing %s: %w", wing, err)
 		}
@@ -741,24 +740,4 @@ func dedup(results []SearchResult) []SearchResult {
 
 	_ = keptChunks // reserved for future chunk-aware dedup
 	return out
-}
-
-// listRooms returns room slug names under a wing's drawer directory.
-func listRooms(vaultRoot, project, wing string) ([]string, error) {
-	wingDir := filepath.Join(vaultRoot, "palace", project, "drawers", wing)
-	entries, err := os.ReadDir(wingDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read wing dir: %w", err)
-	}
-
-	var rooms []string
-	for _, e := range entries {
-		if e.IsDir() && slug.Validate(e.Name()) == nil {
-			rooms = append(rooms, e.Name())
-		}
-	}
-	return rooms, nil
 }

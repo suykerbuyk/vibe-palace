@@ -105,10 +105,6 @@ func (r *TemplateTreeReconciler) Tier() Tier {
 	return TierVault
 }
 
-// Requires declares that the Vault reconciler must run first so the
-// vault directory exists before we materialize into it.
-func (r *TemplateTreeReconciler) Requires() []string { return []string{"Vault"} }
-
 // subpathAbs is <vaultRoot>/<relSubpath>.
 func (r *TemplateTreeReconciler) subpathAbs() string {
 	return filepath.Join(r.vaultRoot, filepath.FromSlash(r.relSubpath))

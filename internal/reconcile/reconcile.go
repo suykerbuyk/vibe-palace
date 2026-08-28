@@ -102,7 +102,6 @@ type Report struct {
 type Reconciler interface {
 	Name() string
 	Tier() Tier
-	Requires() []string
 	Check(ctx context.Context) []check.Result
 	Plan(ctx context.Context) (Plan, error)
 	Apply(ctx context.Context, p Plan) (Report, error)

@@ -525,13 +525,12 @@ func TestReconcilerMetadata(t *testing.T) {
 		r    Reconciler
 		name string
 		tier Tier
-		req  []string
 	}{
-		{NewGlobalConfig(root, GlobalSeed{}), "GlobalConfig", TierGlobal, nil},
-		{NewVault(root, VaultSeed{}), "Vault", TierVault, []string{"GlobalConfig"}},
-		{NewVaultSettings(v), "VaultSettings", TierVault, []string{"Vault"}},
-		{NewCwdProject(root, CwdProjectSeed{}), "CwdProject", TierProject, []string{"GlobalConfig"}},
-		{NewVaultProject(v, "x"), "VaultProject", TierProject, []string{"Vault"}},
+		{NewGlobalConfig(root, GlobalSeed{}), "GlobalConfig", TierGlobal},
+		{NewVault(root, VaultSeed{}), "Vault", TierVault},
+		{NewVaultSettings(v), "VaultSettings", TierVault},
+		{NewCwdProject(root, CwdProjectSeed{}), "CwdProject", TierProject},
+		{NewVaultProject(v, "x"), "VaultProject", TierProject},
 	}
 	for _, c := range cases {
 		if c.r.Name() != c.name {
@@ -539,16 +538,6 @@ func TestReconcilerMetadata(t *testing.T) {
 		}
 		if c.r.Tier() != c.tier {
 			t.Errorf("%s Tier(): got %q want %q", c.name, c.r.Tier(), c.tier)
-		}
-		gotReq := c.r.Requires()
-		if len(gotReq) != len(c.req) {
-			t.Errorf("%s Requires(): got %v want %v", c.name, gotReq, c.req)
-			continue
-		}
-		for i := range gotReq {
-			if gotReq[i] != c.req[i] {
-				t.Errorf("%s Requires()[%d]: got %q want %q", c.name, i, gotReq[i], c.req[i])
-			}
 		}
 	}
 }

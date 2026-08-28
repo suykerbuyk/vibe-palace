@@ -136,10 +136,7 @@ func TestConcurrentInvalidateTriple(t *testing.T) {
 	}
 	wg.Wait()
 
-	got, err := v.GetTriple(project, "alice", "uses", "go")
-	if err != nil {
-		t.Fatalf("GetTriple after concurrent invalidate: %v", err)
-	}
+	got := tripleAt(t, v, project, "alice", "uses", "go")
 	if got.ValidTo != ended {
 		t.Errorf("ValidTo = %q, want %q", got.ValidTo, ended)
 	}
@@ -164,10 +161,7 @@ func TestConcurrentInvalidateTriple(t *testing.T) {
 	wg.Wait()
 
 	for i := range distinctN {
-		tr, err := v.GetTriple(project, fmt.Sprintf("s%d", i), "p", "o")
-		if err != nil {
-			t.Fatalf("GetTriple %d: %v", i, err)
-		}
+		tr := tripleAt(t, v, project, fmt.Sprintf("s%d", i), "p", "o")
 		want := fmt.Sprintf("2026-06-%02d", (i%28)+1)
 		if tr.ValidTo != want {
 			t.Errorf("triple %d ValidTo = %q, want %q", i, tr.ValidTo, want)

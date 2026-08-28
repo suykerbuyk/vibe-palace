@@ -60,11 +60,13 @@
 // A method reached only through an interface has no direct call site and so looks
 // uninvoked. The tempting fix — exempt every method that satisfies some interface —
 // is WRONG, and triaging the first baseline proved it: six reconcile.*.Requires()
-// methods satisfy reconcile.Reconciler, an interface the tree genuinely uses, and
-// they declare a dependency graph that the driver loop re-derives by hand in a
-// switch and never once reads. The blanket rule would have hidden all six. An
-// interface method nobody dispatches on is not noise; it is this project's signature
-// bug wearing a contract.
+// methods satisfied reconcile.Reconciler, an interface the tree genuinely uses, and
+// declared a dependency graph that the driver loop re-derived by hand in a switch and
+// never once read. The blanket rule would have hidden all six. An interface method
+// nobody dispatches on is not noise; it is this project's signature bug wearing a
+// contract. (Those six were deleted once the finding was actioned — the protocol went,
+// the hand-written order stayed. The shape is preserved as a fixture in
+// TestInTreeInterfaceMethodNobodyCallsIsStillFlagged, which is what pins this rule.)
 //
 // So the exemption keys on WHERE THE DISPATCHER LIVES (see stdlibContracts):
 //
@@ -668,10 +670,11 @@ type stdlibContract struct {
 //
 // It is tempting to exempt any method that satisfies any interface. Do not. That
 // rule would have hidden the single most valuable finding in the first triage: six
-// reconcile.*.Requires() methods that satisfy reconcile.Reconciler — an interface
+// reconcile.*.Requires() methods that satisfied reconcile.Reconciler — an interface
 // the tree really uses — declaring a dependency graph that the driver loop
-// (cmd/vp/cmd_config.go) re-derives by hand in a switch and NEVER READS. Satisfying
-// an interface nobody dispatches on is not an exemption; it is the bug.
+// (cmd/vp/cmd_config.go) re-derived by hand in a switch and NEVER READ. Satisfying an
+// interface nobody dispatches on is not an exemption; it is the bug. Those six have
+// since been deleted; the shape survives as this rule's fixture.
 //
 // The line that actually separates noise from bugs is WHERE THE DISPATCHER LIVES:
 //

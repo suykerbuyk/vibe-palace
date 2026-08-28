@@ -153,12 +153,18 @@ func countAllDrawers(t *testing.T, vault *storage.Vault, project string) (int, [
 	var total int
 	var all []storage.Drawer
 	for _, wing := range wings {
-		drawers, err := vault.ListDrawersByWing(project, wing)
+		rooms, err := vault.ListRooms(project, wing)
 		if err != nil {
 			t.Fatal(err)
 		}
-		total += len(drawers)
-		all = append(all, drawers...)
+		for _, room := range rooms {
+			drawers, err := vault.ListDrawers(project, wing, room)
+			if err != nil {
+				t.Fatal(err)
+			}
+			total += len(drawers)
+			all = append(all, drawers...)
+		}
 	}
 	return total, all
 }

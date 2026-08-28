@@ -240,10 +240,15 @@ func Make(err error) error { return &wrapErr{err: err} }
 //
 // The tempting rule — "exempt any method that satisfies an interface" — would have
 // hidden the most valuable finding in the entire first triage: six
-// reconcile.*.Requires() methods that satisfy reconcile.Reconciler (an interface the
-// tree really uses) and declare a dependency graph that the driver loop re-derives by
-// hand in a switch and NEVER READS. Satisfying an interface nobody dispatches on is
-// not an exemption; it is this project's signature bug wearing a contract.
+// reconcile.*.Requires() methods that satisfied reconcile.Reconciler (an interface the
+// tree really uses) and declared a dependency graph that the driver loop re-derived by
+// hand in a switch and NEVER READ. Satisfying an interface nobody dispatches on is not
+// an exemption; it is this project's signature bug wearing a contract.
+//
+// Those six methods are GONE — the finding was actioned by deleting the protocol, not
+// by making it load-bearing — so the fixture below is now the only place that shape
+// exists. That is deliberate: it is what keeps the rule pinned after its motivating
+// specimen was fixed.
 //
 // So: plant exactly that shape — an in-tree interface, a real implementation of it, a
 // driver that holds the interface and calls only SOME of its methods — and demand the
@@ -437,8 +442,8 @@ func Drive() string {
 	}
 	if !flagged {
 		t.Fatalf("did NOT flag an in-tree interface method that no driver ever calls. The exemption has "+
-			"overreached: this is the reconcile.Requires() shape, six real instances of which declared a "+
-			"dependency graph nothing read. Blanket-exempting interface methods hides this class.\ngot: %v",
+			"overreached: this is the reconcile.Requires() shape, six real instances of which once declared "+
+			"a dependency graph nothing read. Blanket-exempting interface methods hides this class.\ngot: %v",
 			ids(findings))
 	}
 }

@@ -63,7 +63,13 @@ func cmdVaultPull() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault pull: %v\n", err)
 				return cli.ExitUser
 			}
-			remotes, err := gitRemotes(root)
+			// storage.ListRemotes reports an empty repo as `(nil, nil)`. Refuse it
+			// here: pullAll/pushAll iterate the slice, so zero remotes would exit OK
+			// having contacted nothing.
+			remotes, err := storage.ListRemotes(root)
+			if err == nil && len(remotes) == 0 {
+				err = fmt.Errorf("no git remotes configured in %s", root)
+			}
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault pull: %v\n", err)
 				return cli.ExitSystem
@@ -94,7 +100,13 @@ func cmdVaultPush() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault push: %v\n", err)
 				return cli.ExitUser
 			}
-			remotes, err := gitRemotes(root)
+			// storage.ListRemotes reports an empty repo as `(nil, nil)`. Refuse it
+			// here: pullAll/pushAll iterate the slice, so zero remotes would exit OK
+			// having contacted nothing.
+			remotes, err := storage.ListRemotes(root)
+			if err == nil && len(remotes) == 0 {
+				err = fmt.Errorf("no git remotes configured in %s", root)
+			}
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault push: %v\n", err)
 				return cli.ExitSystem
@@ -130,7 +142,13 @@ func cmdVaultSync() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault sync: %v\n", err)
 				return cli.ExitUser
 			}
-			remotes, err := gitRemotes(root)
+			// storage.ListRemotes reports an empty repo as `(nil, nil)`. Refuse it
+			// here: pullAll/pushAll iterate the slice, so zero remotes would exit OK
+			// having contacted nothing.
+			remotes, err := storage.ListRemotes(root)
+			if err == nil && len(remotes) == 0 {
+				err = fmt.Errorf("no git remotes configured in %s", root)
+			}
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault sync: %v\n", err)
 				return cli.ExitSystem
@@ -619,24 +637,6 @@ func gitEnabledGuard() (string, error) {
 		return "", fmt.Errorf("git is disabled (git_enabled = false in config)")
 	}
 	return root, nil
-}
-
-func gitRemotes(root string) ([]string, error) {
-	cmd := exec.Command("git", "-C", root, "remote")
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("git remote: %w", err)
-	}
-	var remotes []string
-	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			remotes = append(remotes, line)
-		}
-	}
-	if len(remotes) == 0 {
-		return nil, fmt.Errorf("no git remotes configured in %s", root)
-	}
-	return remotes, nil
 }
 
 func pullAll(root string, remotes []string, dryRun bool) int {

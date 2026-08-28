@@ -103,14 +103,7 @@ and internal/auth/jwt.go wraps the RS256 signing.
 		t.Fatal("expected at least one wing after import")
 	}
 
-	totalDrawers := 0
-	for _, wing := range wings {
-		drawers, err := h.Vault.ListDrawersByWing("test-project", wing)
-		if err != nil {
-			t.Fatalf("ListDrawersByWing(%s): %v", wing, err)
-		}
-		totalDrawers += len(drawers)
-	}
+	totalDrawers, _ := countAllDrawers(t, h.Vault, "test-project")
 	if totalDrawers == 0 {
 		t.Fatal("expected drawers in storage after import")
 	}
