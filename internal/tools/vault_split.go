@@ -28,29 +28,22 @@ import (
 // vp_vault_split moves a declared set of project slugs out of the bound vault
 // and into a NEW standalone vault, so a mixed vault can be separated into
 // publishable and proprietary halves. The design lives in the task
-// `split-and-merge-standalone-vaults`; this file is SLICE 1 of it and
-// implements exactly one action: `plan`.
+// `split-and-merge-standalone-vaults`. This file holds `plan`, which mints the
+// manifest; vault_split_apply.go holds `apply`, `verify` and `purge`, the three
+// actions that touch a filesystem.
 //
-// 🔴 THE SCHEMA ADVERTISES ONLY WHAT IS BUILT. The full design names four
-// actions (plan / apply / verify / purge) and a sibling tool vp_vault_merge.
-// None of the other three are here, so none of them appear in the action enum.
-// A tool that lists an action it cannot perform is the honest-instruments
-// defect in its purest form — the surface reporting a capability the code does
-// not have — and it would also let a caller reach a `manifest_sha256` parameter
-// nothing reads. Widening the enum is slice 2's job, and it moves
-// schema_sha256, which is a golden regeneration and NOT an MCPSurfaceVersion
-// bump.
+// 🔴 THE SCHEMA ADVERTISES ONLY WHAT IS BUILT. The design also names a sibling
+// tool, vp_vault_merge. It is NOT here, and no part of this tool pretends
+// otherwise — no merge arm in the dispatch, no merge-shaped parameter nothing
+// reads. A surface that lists a capability the code does not have is the
+// honest-instruments defect in its purest form.
 //
-// 🔴 REGISTERED Mutating: true THOUGH SLICE 1 WRITES NOTHING, refined to
-// read-only per invocation by vaultSplitReadOnly. The declaration describes the
-// TOOL, which will write as soon as `apply` lands; the predicate describes the
-// CALL. Declaring it non-mutating now and remembering to flip it later is the
-// order that gets forgotten, and the failure is silent — an ungated writer.
-// Because the flag is forward-looking, the derived-gate analysis will report
-// mcp.vp_vault_split as "declared gated, reaches NO funnel sink" until `apply`
-// lands. That divergence is the same shape as the accepted mcp.vp_vault_sync
-// entry and is expected here; it is a chair/operator ruling, not something this
-// file silences.
+// 🔴 REGISTERED Mutating: true, refined to read-only per invocation by
+// vaultSplitReadOnly. The declaration describes the TOOL, which writes on two
+// of its four actions; the predicate describes the CALL, and names only the
+// actions proven to write nothing. That order was chosen before `apply`
+// existed, precisely so that adding it could not silently produce an ungated
+// writer.
 
 // splitSubtractSet names the paths that are hashed by NOBODY and copied by
 // NOBODY: {.surface, **/.local, .vp-locks, commit-log.anchor}.
@@ -177,34 +170,36 @@ type vaultSplitParams struct {
 	Destination      string   `json:"destination"`
 	IncludeLearnings bool     `json:"include_learnings"`
 	IncludeAudits    bool     `json:"include_audits"`
+	ManifestSHA256   string   `json:"manifest_sha256"`
 }
 
 var vaultSplitSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action": {"type": "string", "enum": ["plan"], "description": "Action. Only \"plan\" exists today: it reads the source vault and returns a manifest digest, writing nothing. apply/verify/purge are designed but not implemented, and are deliberately absent from this enum rather than present and refused."},
+		"action": {"type": "string", "enum": ["plan", "apply", "verify", "purge"], "description": "Action. \"plan\" reads the source vault and returns a manifest digest, writing nothing. \"apply\" scaffolds the destination and copies the manifest into it, never touching the source. \"verify\" proves the destination holds exactly the manifest and nothing else, writing nothing. \"purge\" removes the source slug trees, and only after re-running verify against the destination. apply, verify and purge all require manifest_sha256."},
 		"slugs": {"type": "array", "items": {"type": "string"}, "description": "Allow-list of project slugs to split out. Inclusion is an allow-list, never \"everything except\": there is no exclude parameter and there will not be one. An unknown slug is a refusal, not an empty selection."},
-		"destination": {"type": "string", "description": "Absolute host path of the new standalone vault. It must not resolve inside the bound vault. plan does not create it; it validates it here so a later apply cannot start against a destination that was always going to be refused."},
+		"destination": {"type": "string", "description": "Absolute host path of the new standalone vault. It must not resolve inside the bound vault. plan does not create it; apply refuses a destination that exists at all, because a pre-created directory is never stamped with the vault data format and would be born format 0."},
 		"include_learnings": {"type": "boolean", "description": "Include Knowledge/learnings/*.md in the manifest. Default false. Learnings carry no project field, so copy-none is the fail-closed default."},
-		"include_audits": {"type": "boolean", "description": "Include Audits/ in the manifest. Default false. Audit reports name slugs across the whole vault."}
+		"include_audits": {"type": "boolean", "description": "Include Audits/ in the manifest. Default false. Audit reports name slugs across the whole vault."},
+		"manifest_sha256": {"type": "string", "description": "The digest action \"plan\" returned. Required by apply, verify and purge. The manifest itself stays server-side: each of those actions re-derives it from the source and refuses unless the digest matches, so a source that changed after the plan was approved cannot be copied or deleted."}
 	},
 	"required": ["action", "slugs", "destination"]
 }`)
 
-// vaultSplitReadOnly admits action:"plan", which reads the source vault and
-// returns a digest.
+// vaultSplitReadOnly admits the two actions that write nothing: "plan", which
+// walks and hashes the source and returns a digest, and "verify", which walks
+// and hashes an already-populated destination and compares it to that digest.
+//
+// It is an ALLOW-LIST of the actions proven read-only, never a deny-list of the
+// ones known to write. The difference is the whole safety property: a fifth
+// action added tomorrow is refused by a stale binary until someone deliberately
+// names it here, whereas a deny-list would admit it by default and the mistake
+// would be silent.
 //
 // It is written against the same params struct the handler decodes, so a field
-// rename breaks the compile rather than quietly flipping the answer, and it
-// names the ONE value it can prove writes nothing. Today that value is the only
-// one the schema admits, which makes the predicate look redundant — it is not.
-// It is the half that must already be in place when `apply` widens the enum,
-// because the order "add the writing action, then remember the predicate" is
-// the order in which the predicate is forgotten, and forgetting it here fails
-// in the safe direction (a refused plan) while forgetting it there fails in the
-// unsafe one.
+// rename breaks the compile rather than quietly flipping the answer.
 var vaultSplitReadOnly = readOnlyIf(func(p vaultSplitParams) bool {
-	return p.Action == "plan"
+	return p.Action == "plan" || p.Action == "verify"
 })
 
 // VaultSplitTool registers vp_vault_split.
@@ -212,20 +207,38 @@ func VaultSplitTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:     "vp_vault_split",
 		Mutating: true,
-		// action:"plan" reads and hashes; it creates nothing — see
-		// vaultSplitReadOnly for why the predicate exists before it is needed.
+		// plan and verify read and hash; apply and purge write. The predicate
+		// names the two that write nothing — see vaultSplitReadOnly.
 		ReadOnlyWhen: vaultSplitReadOnly,
-		Description: "Plan the split of a declared set of project slugs out of " +
-			"the bound vault into a new standalone vault. ONLY action \"plan\" is " +
-			"implemented: it verifies the source vault's data format, walks the " +
-			"allow-listed palace/<slug> and Projects/<slug> trees, refuses any " +
-			"non-regular file it finds there rather than skipping or following " +
-			"it, hashes what would travel minus {.surface, **/.local, .vp-locks, " +
+		// 🔴 THIS TEXT IS PART OF THE SURFACE, AND IT MUST TRACK THE HANDLER IN
+		// BOTH DIRECTIONS. Naming a capability the code does not have is the
+		// defect this project's honest-instruments epic is named for; DENYING a
+		// capability the schema advertises is the same lie told backwards, and
+		// it is the easier one to leave behind, because widening an enum feels
+		// like the whole change. Nothing pins description text against
+		// behaviour — the golden covers name, mutating and schema_sha256 only —
+		// so this is a discipline, not a check.
+		Description: "Split a declared set of project slugs out of the bound " +
+			"vault into a NEW standalone vault. Four actions. \"plan\" verifies " +
+			"the source vault's data format, walks the allow-listed " +
+			"palace/<slug> and Projects/<slug> trees, refuses any non-regular " +
+			"file it finds there rather than skipping or following it, hashes " +
+			"what would travel minus {.surface, **/.local, .vp-locks, " +
 			"commit-log.anchor}, reports every vault-global artifact left behind " +
 			"and every slug present in only one of the two trees, and returns a " +
-			"manifest_sha256. It writes nothing, creates no destination, and " +
-			"never mutates the source. Inclusion is an allow-list: an unknown " +
-			"slug is a refusal and there is no exclude parameter.",
+			"manifest_sha256; it writes nothing and creates no destination. " +
+			"\"apply\" re-hashes the source against that digest, scaffolds the " +
+			"destination as a fresh format-1 vault with no remotes and no git " +
+			"history, and copies the manifest into it; it refuses a destination " +
+			"that exists at all, and it NEVER mutates the source. \"verify\" " +
+			"proves the destination holds exactly the manifest and nothing " +
+			"else — content both directions, allow-list membership by directory " +
+			"read, vault-global artifacts absent unless included, no remotes — " +
+			"and writes nothing. \"purge\" removes the source slug trees, and " +
+			"only after re-running verify itself. apply, verify and purge all " +
+			"require the manifest_sha256 that plan returned. Inclusion is an " +
+			"allow-list: an unknown slug is a refusal and there is no exclude " +
+			"parameter. Merging two vaults is not part of this tool.",
 		Schema:  vaultSplitSchema,
 		Handler: vaultSplitHandler(vault),
 	}
@@ -259,55 +272,69 @@ type vaultSplitPlanResult struct {
 }
 
 func vaultSplitHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p vaultSplitParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
 		}
 
-		// The enum admits only "plan", but the handler re-checks rather than
-		// trusting it: the schema is one validator away from the handler, and a
-		// tool whose refusal depends on a schema it does not read is a tool that
-		// silently gains an action the day the schema is widened.
-		if p.Action != "plan" {
+		// The handler re-checks the action rather than trusting the enum: the
+		// schema is one validator away from the handler, and a tool whose
+		// refusal depends on a schema it does not read is a tool that silently
+		// gains an action the day the schema is widened. vp_vault_merge is
+		// named in the design and is NOT here, which is why this switch has no
+		// merge arm to forget.
+		switch p.Action {
+		case "plan":
+			return vaultSplitPlan(vault, p)
+		case "apply":
+			return vaultSplitApply(ctx, vault, p)
+		case "verify":
+			return vaultSplitVerify(vault, p)
+		case "purge":
+			return vaultSplitPurge(vault, p)
+		default:
 			return nil, apperr.Caller(fmt.Errorf(
-				"invalid action %q: only %q is implemented (apply, verify and purge are designed but not built)",
-				p.Action, "plan"))
+				"invalid action %q: expected one of plan, apply, verify, purge", p.Action))
 		}
-
-		m, err := buildSplitManifest(vault, p)
-		if err != nil {
-			return nil, err
-		}
-
-		format, err := surface.ReadFormat(vault.Root)
-		if err != nil {
-			return nil, fmt.Errorf("read source vault format: %w", err)
-		}
-
-		var files int
-		var bytes int64
-		for _, e := range m.Entries {
-			files++
-			bytes += e.Size
-		}
-
-		return &vaultSplitPlanResult{
-			Action:         "plan",
-			Destination:    p.Destination,
-			Slugs:          m.Slugs,
-			SourceFormat:   format,
-			Files:          files,
-			Bytes:          bytes,
-			Trees:          m.Trees,
-			SubtractSet:    splitSubtractSet,
-			VaultGlobal:    m.Global,
-			Drift:          m.Drift,
-			Notes:          splitPlanNotes(m),
-			ManifestSHA256: m.SHA256,
-			Complete:       true,
-		}, nil
 	}
+}
+
+// vaultSplitPlan is the read-and-hash half: it validates, inventories and
+// returns a digest, and creates nothing.
+func vaultSplitPlan(vault *storage.Vault, p vaultSplitParams) (*vaultSplitPlanResult, error) {
+	m, err := buildSplitManifest(vault, p)
+	if err != nil {
+		return nil, err
+	}
+
+	format, err := surface.ReadFormat(vault.Root)
+	if err != nil {
+		return nil, fmt.Errorf("read source vault format: %w", err)
+	}
+
+	var files int
+	var bytes int64
+	for _, e := range m.Entries {
+		files++
+		bytes += e.Size
+	}
+
+	return &vaultSplitPlanResult{
+		Action:         "plan",
+		Destination:    p.Destination,
+		Slugs:          m.Slugs,
+		SourceFormat:   format,
+		Files:          files,
+		Bytes:          bytes,
+		Trees:          m.Trees,
+		SubtractSet:    splitSubtractSet,
+		VaultGlobal:    m.Global,
+		Drift:          m.Drift,
+		Notes:          splitPlanNotes(m),
+		ManifestSHA256: m.SHA256,
+		Complete:       true,
+	}, nil
 }
 
 // splitPlanNotes are the things an operator must be told rather than left to

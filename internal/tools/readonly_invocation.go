@@ -41,12 +41,19 @@ var ParamAwareToolNames = []string{
 	"vp_audit_vault",
 	"vp_vault_sync",
 	"vp_vault_tidy",
-	// vp_vault_split's only implemented action, plan, reads and hashes the
-	// source vault and returns a digest. The predicate lives with the tool
-	// (vault_split.go) because that is where the params struct it decodes is;
-	// the entry is here because this list is the auditable declaration of which
-	// tools a stale binary will admit on some invocations.
+	// vp_vault_split admits two of its four actions: plan, which walks and
+	// hashes the source vault and returns a digest, and verify, which walks and
+	// hashes an already-populated destination and compares it to that digest.
+	// apply and purge write and are never admitted. The predicate lives with the
+	// tool (vault_split.go) because that is where the params struct it decodes
+	// is; the entry is here because this list is the auditable declaration of
+	// which tools a stale binary will admit on some invocations.
 	"vp_vault_split",
+	// vp_vault_merge admits two of its three actions: plan, which walks the
+	// source vault and the untouched parts of the destination and returns a
+	// digest, and verify, which re-derives that digest and compares the
+	// destination against it. apply writes and is never admitted.
+	"vp_vault_merge",
 }
 
 // readOnlyIf adapts a typed decision over a tool's own params struct into the

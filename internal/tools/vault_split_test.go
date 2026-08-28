@@ -298,19 +298,47 @@ func TestVaultSplitPlan_Format0SourceRefuses(t *testing.T) {
 	}
 }
 
-// TestVaultSplitPlan_NonPlanActionRefuses pins that the handler re-checks the
+// TestVaultSplitUnimplementedActionRefuses pins that the handler re-checks the
 // action rather than trusting the enum. A tool whose refusal lives only in a
 // schema silently gains an action the day the schema is widened.
-func TestVaultSplitPlan_NonPlanActionRefuses(t *testing.T) {
+//
+// 🔴 IT NAMES ONLY ACTIONS THAT MUST STAY REFUSED. It used to loop apply,
+// verify and purge, which was true when they did not exist and became a FALSE
+// GREEN the moment they did: those three now refuse for a missing
+// manifest_sha256, so the test kept passing while the claim in its own name had
+// stopped being the reason. A test that survives the change it was meant to
+// detect is worse than no test, because the suite reports coverage for it.
+//
+// So the cases here are the ones the widened enum still excludes: "merge",
+// which the design names and this tool deliberately does not implement;
+// arbitrary garbage; and the empty string, which is what an omitted
+// discriminator decodes to. The missing-digest refusal that apply, verify and
+// purge actually give is pinned separately, in vault_split_apply_test.go.
+func TestVaultSplitUnimplementedActionRefuses(t *testing.T) {
 	root := splitFixtureVault(t, "alpha")
-	dest := filepath.Join(t.TempDir(), "new-vault")
 
-	for _, action := range []string{"apply", "verify", "purge", ""} {
-		p := splitPlanParams(dest, "alpha")
-		p.Action = action
-		if _, err := callSplit(t, root, p); err == nil {
-			t.Errorf("action %q was accepted; only plan is implemented", action)
-		}
+	for _, action := range []string{"merge", "sync", "Plan", "", "plan "} {
+		t.Run("action="+action, func(t *testing.T) {
+			dest := filepath.Join(t.TempDir(), "new-vault")
+			p := splitPlanParams(dest, "alpha")
+			p.Action = action
+
+			_, err := callSplit(t, root, p)
+			if err == nil {
+				t.Fatalf("action %q was accepted; it is not implemented", action)
+			}
+			if !apperr.IsCaller(err) {
+				t.Errorf("an unimplemented action is a CALLER fault, got: %v", err)
+			}
+			// The refusal names what IS implemented rather than only what is
+			// not, so a caller learns the surface from the error.
+			if !strings.Contains(err.Error(), "plan, apply, verify, purge") {
+				t.Errorf("refusal must name the implemented actions, got: %v", err)
+			}
+			if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+				t.Errorf("a refused action must create nothing at %s", dest)
+			}
+		})
 	}
 }
 

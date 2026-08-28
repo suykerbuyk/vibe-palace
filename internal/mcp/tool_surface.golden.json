@@ -317,6 +317,11 @@
       "schema_sha256": "3171358a30eb98615a436fa08794342aac594a13274a206b7c6e3a4fce3c5629"
     },
     {
+      "name": "vp_vault_merge",
+      "mutating": true,
+      "schema_sha256": "0de0c9a60564ad7d8b0d8b4d2907bdd31aec30538c5937bf4c4e2a96c7592f1c"
+    },
+    {
       "name": "vp_vault_move",
       "mutating": true,
       "schema_sha256": "1680621c5d8ce90bc633cc4da2def2b2fd6deb59fc6b53aad93f5fbf0db4cb93"
@@ -334,7 +339,7 @@
     {
       "name": "vp_vault_split",
       "mutating": true,
-      "schema_sha256": "815f04119ca65659e340e082e24ec9ec12d7235b227adb40707020945017116f"
+      "schema_sha256": "098ff9e5d7ddd3e257c67537e439d04c36090cff45904c9384a2908b83a2f128"
     },
     {
       "name": "vp_vault_status",

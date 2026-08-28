@@ -68,10 +68,21 @@ var MutatingToolNames = []string{
 	// disagreement every run and it was carried as accepted debt with the task
 	// `refresh-index-reports-rebuilt-while-writing-nothing` as its named owner.
 	"vp_refresh_index",
-	// vp_vault_split is gated on the TOOL, not on today's single action. Its
-	// implemented action (plan) writes nothing and is admitted per-invocation by
-	// vaultSplitReadOnly; apply, verify and purge will write, and declaring the
-	// tool mutating now means the gate is already in place when they land rather
-	// than being a step someone has to remember. See vault_split.go.
+	// vp_vault_split is gated on the TOOL, which writes on two of its four
+	// actions: apply scaffolds a destination vault and copies a project's whole
+	// history into it, and purge removes the source trees. The two that write
+	// nothing — plan and verify — are admitted per-invocation by
+	// vaultSplitReadOnly. The declaration was made before apply existed, which
+	// is why adding it required no change here: a gate that has to be remembered
+	// at the moment a writer lands is a gate that is forgotten. See
+	// vault_split.go and vault_split_apply.go.
 	"vp_vault_split",
+	// vp_vault_merge is gated on the TOOL, which writes on one of its three
+	// actions: apply copies a project's whole history out of another vault and
+	// into this one. plan and verify write nothing and are admitted
+	// per-invocation by vaultMergeReadOnly. Unlike its sibling this flag was
+	// never forward-looking — the writer landed with the tool — so the derived
+	// call graph agrees with it from the first commit and no baseline entry was
+	// ever needed. See vault_merge.go.
+	"vp_vault_merge",
 }
