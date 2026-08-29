@@ -191,7 +191,7 @@ func TestListResourcesSkillsMerged(t *testing.T) {
 	}
 	sort.Strings(names)
 	// Two synthetic skills (project + vault tiers) plus the embedded seeds.
-	wantAll := []string{"code-digger", "epic-orchestrator", "local-skill", "pair-reviewer", "startup-analyst", "vault-skill"}
+	wantAll := []string{"chair", "code-digger", "epic-orchestrator", "local-skill", "pair-reviewer", "second-opinion", "startup-analyst", "vault-skill"}
 	if !equalSorted(names, wantAll) {
 		t.Errorf("names = %v, want %v", names, wantAll)
 	}
@@ -201,7 +201,7 @@ func TestListResourcesSkillsMerged(t *testing.T) {
 	if bySource["vault-skill"] != "vault" {
 		t.Errorf("vault-skill source = %q, want vault", bySource["vault-skill"])
 	}
-	for _, name := range []string{"code-digger", "epic-orchestrator", "pair-reviewer", "startup-analyst"} {
+	for _, name := range []string{"chair", "code-digger", "epic-orchestrator", "pair-reviewer", "second-opinion", "startup-analyst"} {
 		if bySource[name] != "embedded" {
 			t.Errorf("%s source = %q, want embedded", name, bySource[name])
 		}

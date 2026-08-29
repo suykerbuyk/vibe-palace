@@ -122,7 +122,7 @@ func TestList_EmbeddedSkillsBriefIsNotFence(t *testing.T) {
 			t.Errorf("%s: brief=%q, want a body sentence not the YAML fence", s.Name, s.Brief)
 		}
 	}
-	for _, want := range []string{"code-digger", "epic-orchestrator", "pair-reviewer", "startup-analyst"} {
+	for _, want := range []string{"chair", "code-digger", "epic-orchestrator", "pair-reviewer", "second-opinion", "startup-analyst"} {
 		if !seen[want] {
 			t.Errorf("missing expected embedded skill %q", want)
 		}

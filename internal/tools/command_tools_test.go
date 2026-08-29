@@ -228,7 +228,7 @@ func TestListSkillsEmpty(t *testing.T) {
 	for _, ri := range r.Resources {
 		got[ri.Name] = true
 	}
-	wantEmbedded := []string{"code-digger", "epic-orchestrator", "pair-reviewer", "startup-analyst"}
+	wantEmbedded := []string{"chair", "code-digger", "epic-orchestrator", "pair-reviewer", "second-opinion", "startup-analyst"}
 	for _, want := range wantEmbedded {
 		if !got[want] {
 			t.Errorf("embedded skill %q missing from list; got %v", want, r.Resources)
@@ -253,8 +253,8 @@ func TestListSkillsFromVault(t *testing.T) {
 
 	r := result.(listResourceResult)
 	// Two vault-tier skills plus the embedded seeds.
-	if len(r.Resources) != 6 {
-		t.Fatalf("got %d skills, want 6", len(r.Resources))
+	if len(r.Resources) != 8 {
+		t.Fatalf("got %d skills, want 8", len(r.Resources))
 	}
 }
 

@@ -62,9 +62,11 @@ Skills can include a `references/` subdirectory with supporting documents
 
 | Name | Purpose |
 |------|---------|
+| `chair` | Visible Herdr orchestration: the Chair over one or more implementor panes; pulls in `restart` and `herdr` if this session has not already run them |
 | `code-digger` | Read-only codebase cartographer and auditor — onboarding maps, architecture deep-dives, a severity-ranked issue register |
 | `epic-orchestrator` | Parallel epic-closure orchestrator — isolated worktrees and subagents, adversarial review before implementation, human gate at the end |
 | `pair-reviewer` | Dual-agent pairing: review chair beside an implementation orchestrator |
+| `second-opinion` | Adversarial review by a different model, headless; findings are witness statements until re-derived from source |
 | `startup-analyst` | Startup and early-stage business plan analyst |
 
 ---

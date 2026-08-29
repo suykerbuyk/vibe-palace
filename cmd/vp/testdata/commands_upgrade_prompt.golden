@@ -15,9 +15,11 @@ Accept this change? [a]ccept / [s]kip / [A]ccept-all / [q]uit: [accept] shim cap
 [accept] shim tasks-standalone (new)
 [accept] shim vault-audit (new)
 [accept] shim wrap (new)
+[accept] skill-shim claude-skill chair (new)
 [accept] skill-shim claude-skill code-digger (new)
 [accept] skill-shim claude-skill epic-orchestrator (new)
 [accept] skill-shim claude-skill pair-reviewer (new)
+[accept] skill-shim claude-skill second-opinion (new)
 [accept] skill-shim claude-skill startup-analyst (new)
 
-Done. 19 accepted, 0 skipped, 0 custom (untouched). Shims: 15 added, 0 updated, 0 removed, 0 custom. Grok shims: 0 added, 0 updated, 0 removed, 0 custom. Skill shims: 4 added, 0 updated, 0 removed, 0 custom.
+Done. 21 accepted, 0 skipped, 0 custom (untouched). Shims: 15 added, 0 updated, 0 removed, 0 custom. Grok shims: 0 added, 0 updated, 0 removed, 0 custom. Skill shims: 6 added, 0 updated, 0 removed, 0 custom.
