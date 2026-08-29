@@ -487,6 +487,115 @@ func nowDate() string {
 	return time.Now().UTC().Format("2006-01-02")
 }
 
+func TestScoreUnscoredNotesFromTranscript_WrapNotStub(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	const sid = "sess-friction"
+	today := nowDate()
+
+	if _, err := vault.WriteSession("p", storage.SessionMeta{
+		Date: today, Tag: storage.TagAutoCapture, ArchiveSessionID: sid, Summary: "stub",
+	}, "stub body"); err != nil {
+		t.Fatalf("WriteSession(stub): %v", err)
+	}
+	if _, err := vault.WriteSession("p", storage.SessionMeta{
+		Date: today, Tag: "implementation", ArchiveSessionID: sid, Summary: "wrap",
+	}, "wrap body"); err != nil {
+		t.Fatalf("WriteSession(wrap): %v", err)
+	}
+
+	n, err := ScoreUnscoredNotesFromTranscript(vault, "p", sid, "user: that is wrong\n")
+	if err != nil {
+		t.Fatalf("ScoreUnscoredNotesFromTranscript: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("updated %d notes, want 1 (wrap only)", n)
+	}
+
+	notes, err := vault.ListSessions("p", "", "", 0)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	var stub, wrap storage.SessionMeta
+	for _, note := range notes {
+		switch note.Tag {
+		case storage.TagAutoCapture:
+			stub = note
+		case "implementation":
+			wrap = note
+		}
+	}
+	if stub.ID == "" || wrap.ID == "" {
+		t.Fatalf("missing notes: stub=%q wrap=%q", stub.ID, wrap.ID)
+	}
+	if stub.Breakdown != nil {
+		t.Fatal("auto-capture stub must stay never-scored")
+	}
+	if stub.FrictionScore != 0 {
+		t.Fatalf("stub FrictionScore=%d, want 0", stub.FrictionScore)
+	}
+	if wrap.Breakdown == nil {
+		t.Fatal("wrap note must carry a breakdown (never-scored vs measured-zero)")
+	}
+	if wrap.FrictionScore < 8 {
+		t.Fatalf("wrap FrictionScore=%d, want >= 8 from 'wrong'", wrap.FrictionScore)
+	}
+
+	n2, err := ScoreUnscoredNotesFromTranscript(vault, "p", sid, "user: that is wrong\n")
+	if err != nil {
+		t.Fatalf("second ScoreUnscoredNotesFromTranscript: %v", err)
+	}
+	if n2 != 0 {
+		t.Fatalf("second pass updated %d, want 0 (idempotent)", n2)
+	}
+}
+
+func TestScoreUnscoredNotesFromTranscript_HookIdentitySkipSurvivesRetag(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	const sid = "sess-hook-id"
+	today := nowDate()
+	if _, err := vault.WriteSession("p", storage.SessionMeta{
+		Date: today, Tag: "exploration", ArchiveSessionID: sid, SessionKey: sid, Summary: "retagged stub",
+	}, "stub"); err != nil {
+		t.Fatalf("WriteSession(stub): %v", err)
+	}
+	if _, err := vault.WriteSession("p", storage.SessionMeta{
+		Date: today, Tag: "implementation", ArchiveSessionID: sid, SessionKey: "minted-key", Summary: "wrap",
+	}, "wrap"); err != nil {
+		t.Fatalf("WriteSession(wrap): %v", err)
+	}
+	n, err := ScoreUnscoredNotesFromTranscript(vault, "p", sid, "user: that is wrong\n")
+	if err != nil {
+		t.Fatalf("ScoreUnscoredNotesFromTranscript: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("updated %d, want 1 (wrap only; hook identity skip)", n)
+	}
+}
+
+func TestScoreUnscoredNotesFromTranscript_EmptyIsNoop(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	const sid = "sess-empty"
+	if _, err := vault.WriteSession("p", storage.SessionMeta{
+		Date: nowDate(), Tag: "implementation", ArchiveSessionID: sid,
+	}, "wrap"); err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	n, err := ScoreUnscoredNotesFromTranscript(vault, "p", sid, "   \n")
+	if err != nil {
+		t.Fatalf("empty transcript: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("empty transcript updated %d, want 0", n)
+	}
+	notes, err := vault.ListSessions("p", "", "", 0)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if notes[0].Breakdown != nil {
+		t.Fatal("empty transcript must not invent a measured-zero breakdown")
+	}
+}
+
 // TestGetFrictionTrends_ExcludesAutoCapture pins the tag:auto-capture skip.
 // An auto-capture note's FrictionScore is a keyword hit on early-Stop
 // transcript, not interaction, so it must not move the weekly average or the

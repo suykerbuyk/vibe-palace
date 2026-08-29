@@ -466,7 +466,7 @@ they are not an alternate archive pipeline.
 | Host class | Authoritative archive | Capture notes | Memory commit |
 |------------|----------------------|---------------|---------------|
 | **Claude Code** (hooks) | `vp hook` SessionEnd on the host JSONL | Agent `vp_capture_session` (claim sentinel skips double-note) **or** hook auto-summary | SessionEnd harvest of Claude native memory **and** wrap's `Projects/<slug>/memory/` sync |
-| **Zed, Claude-shaped ACP agent** (the supported Zed path) | `vp hook` SessionEnd, same as a Claude Code terminal session — **fired by ARCHIVING THE THREAD**, not by idling, `restart`, or `exit` | Full footprint with no vibe-palace change: note, `model`, friction, transcript at the standard Claude path, born bi-directional archive link | Same as Claude Code |
+| **Zed, Claude-shaped ACP agent** (the supported Zed path) | `vp hook` SessionEnd — **fired by ARCHIVING THE THREAD**, not by idling, `restart`, or `exit`. SessionEnd flushes the `.zst` and closes the note↔manifest link (manifest prefers the wrap note over the Stop stub) | **Stop** writes the attributed note (`host`/`entrypoint`), with no archive yet. Friction is scored at SessionEnd from the complete transcript onto wrap notes that were never scored — not at Stop (early JSONL is bootstrap; auto-capture is not an interaction record). `model` comes from the Claude JSONL | Same as Claude Code |
 | **Grok Build** | `vp hook` SessionEnd — **Grok is NOT hook-less** (measured 2026-08-15). It reads Claude's `~/.claude/settings.json`, so the `vp hook` entries there fire for it; `grep -rln "vp hook" ~/.grok/` returns nothing, and the pane's status line reports `stop [hooks: 1]` | Hook auto-summary lands with no agent capture call; agent `vp_capture_session` still supported. Inline archive also available on the MCP path | `vp_memory_*` + wrap sync of `memory/`; Claude-native harvest is a clean no-op |
 | **Hook-less MCP capture** (Zed **native** pane) | **Inline archive inside** `vp_capture_session` — **default on** when handshake-derived host ∈ {grok, xai, zed} and `transcript` is non-empty. With **no** transcript the capture **fails loud**: nothing can archive it later | Agent must call capture (usually via `/vpc-wrap` / `vpc-capture`); no SessionEnd fallback | `vp_memory_*` + wrap sync of `memory/` only — harvest is a clean no-op |
 | **Unknown / declared-only** | No auto inline archive; pass `archive_transcript: true` + transcript to force | Same MCP capture | Same as hook-less |
@@ -482,10 +482,11 @@ discoverable:
    `gemini` configured and ended the same way produced **nothing**. Name the
    Claude-shaped agent specifically; do not generalize to "an ACP agent".
 2. **Archive the thread to close the session.** Archiving is what ends the ACP session
-   and fires `SessionEnd`, which flushes the transcript archive within seconds. Idling
-   does not (measured: 12m43s, no archive); `restart` and `exit` do not. Threads left
-   open leave every transcript archive deferred indefinitely — while the session note,
-   which lands at `Stop`, makes it look like capture worked.
+   and fires `SessionEnd`, which flushes the `.zst` transcript, closes the note↔manifest
+   link, and scores friction on wrap notes that were never scored. Idling does not
+   (measured: 12m43s, no archive); `restart` and `exit` do not. Threads left open leave
+   every transcript archive **and** the wrap-note friction score deferred indefinitely —
+   while the session note, which lands at `Stop`, makes it look like capture worked.
 
 The enabling mechanism is `claude-agent-acp` loading
 `settingSources: ["user","project","local"]`, which brings `~/.claude/settings.json` and

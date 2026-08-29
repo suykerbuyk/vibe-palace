@@ -21,6 +21,21 @@ type WeeklyMetric struct {
 	MaxFriction  int     `json:"max_friction"`
 }
 
+// ScoreUnscoredNotesFromTranscript fills friction on wrap notes of one host
+// session that were never scored. Empty / whitespace-only transcripts are a
+// no-op (never a measured zero invented from absence). Auto-capture stubs are
+// skipped by the storage writer — they are not an interaction record.
+func ScoreUnscoredNotesFromTranscript(vault *storage.Vault, project, archiveSessionID, transcript string) (int, error) {
+	if strings.TrimSpace(transcript) == "" {
+		return 0, nil
+	}
+	b, err := AnalyzeFrictionBreakdown(transcript)
+	if err != nil {
+		return 0, err
+	}
+	return vault.ScoreUnscoredNotes(project, archiveSessionID, b.Total(), b)
+}
+
 // AnalyzeFrictionBreakdown scores a transcript and returns the four capped
 // friction sub-scores. A nil return is never produced for a non-error path; an
 // empty transcript yields a non-nil all-zero breakdown (a measured zero).

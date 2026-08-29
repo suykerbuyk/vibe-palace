@@ -212,10 +212,13 @@ type Result struct {
 	// LinkedNotes counts the session notes whose archive: field this run pointed at
 	// the transcript. Zero is the steady state once a session is linked (the link is
 	// idempotent and rewrites nothing), so this reports work DONE, not health.
-	LinkedNotes   int            `json:"linked_notes,omitempty"`
-	ClaimedSkip   bool           `json:"claimed_skip"`
-	MemoryHarvest *memory.Result `json:"memory_harvest,omitempty"`
-	Error         string         `json:"error,omitempty"`
+	LinkedNotes int `json:"linked_notes,omitempty"`
+	// FrictionScored counts wrap notes this run wrote a friction breakdown onto.
+	// Zero is the steady state (already scored, or only an auto-capture stub).
+	FrictionScored int            `json:"friction_scored,omitempty"`
+	ClaimedSkip    bool           `json:"claimed_skip"`
+	MemoryHarvest  *memory.Result `json:"memory_harvest,omitempty"`
+	Error          string         `json:"error,omitempty"`
 
 	// Failures lists the capture stages this run lost. On the hook path a loss
 	// is reported here and in vp.log — never as a non-zero exit. The hook has no
@@ -408,6 +411,31 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 			res.LinkedNotes = len(link.Updated)
 			slog.Info("hook: linked session notes to transcript",
 				"updated", len(link.Updated), "canonical", link.Canonical.NotePath, "archive", archiveRel)
+		}
+	}
+
+	// 7c. SCORE WRAP NOTES FROM THE COMPLETE TRANSCRIPT. Stop writes the
+	// auto-capture stub with TagAutoCapture, which WriteSession refuses to score
+	// (early-Stop JSONL is bootstrap keywords, not interaction). The wrap note
+	// is often captured over MCP with no transcript at all, so it is born
+	// never-scored. SessionEnd / PreCompact is the first moment the complete
+	// transcript exists AND the claim gate is about to skip recapture — if
+	// scoring does not happen here, friction_score stays absent forever.
+	//
+	// Runs BEFORE the claim gate so an MCP-captured (claimed) session still
+	// gets scored. Non-fatal: a scoring miss must not cost the note or the
+	// archive. Idempotent: notes that already carry a breakdown are left
+	// untouched. Auto-capture stubs are skipped.
+	if payload.HookEventName == "SessionEnd" || payload.HookEventName == "PreCompact" {
+		if payload.TranscriptPath == "" {
+			slog.Debug("hook: skipping friction backfill (no transcript path)")
+		} else if data, rerr := os.ReadFile(payload.TranscriptPath); rerr != nil {
+			slog.Warn("hook: could not read transcript for friction backfill (non-fatal)", "err", rerr)
+		} else if n, serr := capture.ScoreUnscoredNotesFromTranscript(vault, opts.ProjectSlug, payload.SessionID, string(data)); serr != nil {
+			slog.Warn("hook: friction backfill failed (non-fatal)", "err", serr)
+		} else if n > 0 {
+			res.FrictionScored = n
+			slog.Info("hook: scored friction from complete transcript", "updated", n)
 		}
 	}
 

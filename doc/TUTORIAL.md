@@ -377,18 +377,18 @@ once opt-out is wired up).
 native pane.** Two facts have to reach you here, because neither is discoverable:
 
 1. **Configure a Claude-shaped ACP agent** under Zed's `agent_servers` (e.g.
-   `claude-acp`). It reaches the same durable footprint as a Claude Code terminal
-   session — session note, `model`, friction score, transcript at the standard Claude
-   path, and a born bi-directional archive link — with no vibe-palace change at all.
-   **This does not follow from ACP.** A Claude-shaped agent inherits Claude Code's hook
-   path; ACP itself supplies nothing, and `gemini` configured the same way and ended the
+   `claude-acp`). It inherits Claude Code's hook path — not because it is ACP, but
+   because `claude-agent-acp` loads `settingSources: ["user","project","local"]`.
+   ACP itself supplies nothing, and `gemini` configured the same way and ended the
    same way produced **nothing**. Configure the Claude-shaped agent specifically.
 2. **Archive the thread when you are done.** Archiving is what ends the ACP session and
-   fires `SessionEnd`, which flushes the transcript archive within seconds. Idle time
-   does **not** do it (measured: 12m43s undisturbed, no archive), and neither `restart`
-   nor `exit` does it. Leave threads open and every transcript archive stays deferred
-   indefinitely — while the session note, which lands at `Stop`, makes it look like
-   capture worked.
+   fires `SessionEnd`, which flushes the `.zst` transcript, closes the note↔manifest
+   link (manifest prefers the wrap note over the Stop stub), and scores friction on
+   wrap notes that were never scored. Idle time does **not** do it (measured: 12m43s
+   undisturbed, no archive), and neither `restart` nor `exit` does it. **Stop** writes
+   the attributed session note earlier, with no archive and no friction yet. Leave
+   threads open and the archive **and** the wrap-note friction score stay deferred —
+   while the Stop note makes it look like capture worked.
 
 The mechanism behind fact 1 is that `claude-agent-acp` loads
 `settingSources: ["user","project","local"]`, which brings `~/.claude/settings.json` —

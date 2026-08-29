@@ -276,3 +276,71 @@ func TestRun_SessionEnd_ManifestPointsAtTheWrapNote_NotTheStub(t *testing.T) {
 			tagOfNote(linked, got), got, wrapPath)
 	}
 }
+
+// TestRun_SessionEnd_ScoresWrapNoteNotStub is the ACP residual: Stop writes an
+// auto-capture stub (never scored), MCP wrap lands with no transcript (never
+// scored), SessionEnd archives and used to return at the claim gate without
+// scoring anyone. Friction must land on the wrap from the complete transcript
+// and must not land on the stub. A second SessionEnd must not rewrite.
+func TestRun_SessionEnd_ScoresWrapNoteNotStub(t *testing.T) {
+	f := newLinkFixture(t)
+	const sessionID = "sess-friction-backfill"
+
+	high := []byte(`{"type":"user","message":{"role":"user","content":"that is wrong"}}` + "\n")
+	if err := os.WriteFile(f.transcript, high, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if stop := f.run(t, sessionID, "Stop"); stop.SessionNoteID == "" {
+		t.Fatal("Stop: expected a session note")
+	}
+
+	vault := storage.NewVault(f.vaultRoot)
+	if _, err := capture.WriteSession(context.Background(), vault, nil, capture.SessionParams{
+		Project:          "test-project",
+		Summary:          "the wrap with no transcript",
+		Tag:              "implementation",
+		ArchiveSessionID: sessionID,
+		CWD:              f.cwd,
+	}); err != nil {
+		t.Fatalf("wrap capture: %v", err)
+	}
+
+	end := f.run(t, sessionID, "SessionEnd")
+	if !end.ClaimedSkip {
+		t.Fatal("expected the Stop claim to skip recapture at SessionEnd")
+	}
+	if end.FrictionScored != 1 {
+		t.Fatalf("FrictionScored=%d, want 1", end.FrictionScored)
+	}
+
+	notes, err := vault.ListSessions("test-project", "", "", 0)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	var stub, wrap storage.SessionMeta
+	for _, n := range notes {
+		if n.Tag == "implementation" {
+			wrap = n
+			continue
+		}
+		stub = n
+	}
+	if stub.ID == "" || wrap.ID == "" {
+		t.Fatalf("missing notes: stub=%q wrap=%q tags stub=%q wrap=%q", stub.ID, wrap.ID, stub.Tag, wrap.Tag)
+	}
+	if stub.Breakdown != nil {
+		t.Fatal("auto-capture stub must stay never-scored")
+	}
+	if wrap.Breakdown == nil {
+		t.Fatal("wrap note must carry a breakdown after SessionEnd")
+	}
+	if wrap.FrictionScore < 8 {
+		t.Fatalf("wrap FrictionScore=%d, want >= 8 from 'wrong'", wrap.FrictionScore)
+	}
+
+	again := f.run(t, sessionID, "SessionEnd")
+	if again.FrictionScored != 0 {
+		t.Fatalf("second SessionEnd scored %d, want 0", again.FrictionScored)
+	}
+}

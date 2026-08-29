@@ -644,6 +644,83 @@ func preferCanonical(curMeta SessionMeta, cur SessionRef, nextMeta SessionMeta, 
 	return next.Iteration > cur.Iteration
 }
 
+// ScoreUnscoredNotes writes a precomputed friction breakdown onto every note of
+// one host session that has never been scored, except the auto-capture stub.
+//
+// The stub is skipped because it is a crash-net, not an interaction record:
+// WriteSession already refuses to score TagAutoCapture (early-Stop transcripts
+// measure bootstrap/resume keywords). Filling it here would launder that skip.
+// Wrap notes captured without a transcript (the MCP path on a claimed session)
+// stay never-scored until a preserve-now hook event (SessionEnd / PreCompact)
+// has the complete transcript; this is that write.
+//
+// Nil breakdown is refused: a nil pointer means "never scored", and writing it
+// would be a no-op that looks like success. An all-zero non-nil breakdown is a
+// measured frictionless session and is accepted.
+//
+// Idempotent: a note whose Breakdown is already non-nil is left untouched, so a
+// second SessionEnd does not rewrite a real score. Same lock order as
+// LinkArchiveToSessions (directory, then note path).
+func (v *Vault) ScoreUnscoredNotes(project, archiveSessionID string, score int, breakdown *FrictionBreakdown) (int, error) {
+	if archiveSessionID == "" {
+		return 0, fmt.Errorf("archive session id is empty")
+	}
+	if breakdown == nil {
+		return 0, fmt.Errorf("friction breakdown is nil")
+	}
+
+	dir, err := v.SessionDir(project)
+	if err != nil {
+		return 0, err
+	}
+
+	release, err := vaultlock.Acquire(v.Root, dir)
+	if err != nil {
+		return 0, fmt.Errorf("storage: lock sessions dir: %w", err)
+	}
+	defer func() { _ = release() }()
+
+	matches, err := filepath.Glob(filepath.Join(dir, "*.md"))
+	if err != nil {
+		return 0, fmt.Errorf("glob sessions: %w", err)
+	}
+
+	updated := 0
+	for _, m := range matches {
+		if frontmatterFieldFromHead(m, "archive_session_id") != archiveSessionID {
+			continue
+		}
+		stem := strings.TrimSuffix(filepath.Base(m), ".md")
+		date, fp, iteration, ok := parseSessionStem(stem)
+		if !ok {
+			continue
+		}
+		meta, body, rerr := v.ReadSession(project, date, fp, iteration)
+		if rerr != nil {
+			return updated, fmt.Errorf("read session %s: %w", stem, rerr)
+		}
+		if meta.Tag == TagAutoCapture {
+			continue
+		}
+		// The hook pushes session_key = host session id. That identity survives
+		// an enrichment retag of the stub; TagAutoCapture alone does not.
+		if meta.SessionKey != "" && meta.SessionKey == meta.ArchiveSessionID {
+			continue
+		}
+		if meta.Breakdown != nil {
+			continue
+		}
+		cp := *breakdown
+		meta.Breakdown = &cp
+		meta.FrictionScore = score
+		if werr := v.RewriteSession(project, date, fp, iteration, meta, body); werr != nil {
+			return updated, fmt.Errorf("score session %s: %w", stem, werr)
+		}
+		updated++
+	}
+	return updated, nil
+}
+
 // CallerKeyedNote is one session note whose capture key was PUSHED by the hook
 // (session_key_source: caller) and that carries no archive_session_id. Such a
 // note's session_key IS the harness session id — the hook passed
