@@ -487,6 +487,90 @@ func TestEmbeddedWrap_PlanHygiene(t *testing.T) {
 	}
 }
 
+// TestEmbeddedWrap_WrapStateInvocations is the delivery pin for the wrap-state
+// subsystem. All three tools were registered, fully implemented, and pinned in
+// tool_surface.golden.json while NO template called any of them — roughly 2,262
+// LOC of engine that no agent could reach, and every unit test stayed green
+// throughout. That is the failure mode this test exists for, so it anchors on
+// the CALL and its required argument, never on a prose mention: a template that
+// merely names a tool delivers exactly as much as one that does not.
+//
+// Ordering is load-bearing too. Collect must run before Step 2 so its record is
+// available while the narrative is written, and the stamp must come after
+// Step 4, because the iteration number it writes is the one vp_append_iteration
+// MINTS — stamping earlier writes a number the server may not agree with.
+func TestEmbeddedWrap_WrapStateInvocations(t *testing.T) {
+	resources, err := WalkEmbedded()
+	if err != nil {
+		t.Fatalf("WalkEmbedded returned error: %v", err)
+	}
+	var wrap string
+	for _, r := range resources {
+		if r.RelPath == "commands/wrap.md" {
+			wrap = string(r.Bytes)
+			break
+		}
+	}
+	if wrap == "" {
+		t.Fatal("embedded resource commands/wrap.md missing or empty")
+	}
+
+	// Each tool must be CALLED, and each call must carry project_path — the
+	// argument that stops the tool resolving the repo from the long-lived
+	// server's cwd. A call without it reports on the wrong repository.
+	for _, tc := range []struct{ tool, call string }{
+		{"vp_preflight_wrap", "Call `vp_preflight_wrap` with `project_path`"},
+		{"vp_collect_wrap_state", "call `vp_collect_wrap_state`"},
+		{"vp_stamp_iter", "call `vp_stamp_iter` with"},
+	} {
+		if !strings.Contains(wrap, tc.call) {
+			t.Errorf("wrap.md: %s is never invoked — want %q. A registered tool no "+
+				"template calls reaches no agent at all", tc.tool, tc.call)
+		}
+		// project_path is asserted inside the call's own section, so a mention
+		// of the argument somewhere else in the file cannot satisfy it.
+		block := wrap[strings.Index(wrap, tc.call):]
+		if end := strings.Index(block, "\n## "); end >= 0 {
+			block = block[:end]
+		}
+		if !strings.Contains(block, "project_path") {
+			t.Errorf("wrap.md: the %s call must pass project_path — without it the "+
+				"tool resolves the repo from the server's cwd", tc.tool)
+		}
+	}
+
+	collectIdx := strings.Index(wrap, "vp_collect_wrap_state")
+	step2Idx := strings.Index(wrap, "## Step 2: Capture the Session")
+	stampIdx := strings.Index(wrap, "vp_stamp_iter")
+	step4Idx := strings.Index(wrap, "## Step 4: Append Iteration Narrative")
+	step5Idx := strings.Index(wrap, "## Step 5: Update Stable Docs")
+	if collectIdx < 0 || step2Idx < 0 || collectIdx > step2Idx {
+		t.Errorf("wrap.md: vp_collect_wrap_state must be called before Step 2 so the "+
+			"record is in hand while the narrative is written (collect=%d step2=%d)",
+			collectIdx, step2Idx)
+	}
+	if stampIdx < 0 || step4Idx < 0 || step5Idx < 0 || !(step4Idx < stampIdx && stampIdx < step5Idx) {
+		t.Errorf("wrap.md: vp_stamp_iter must be called inside Step 4, after "+
+			"vp_append_iteration mints the number (step4=%d stamp=%d step5=%d)",
+			step4Idx, stampIdx, step5Idx)
+	}
+
+	// The anchors are host-local by operator decision: .vibe-palace/ stays
+	// gitignored, so the staging step must say so. Without this the natural
+	// next edit is `git add -f`, which is the option that was NOT chosen.
+	stageIdx := strings.Index(wrap, "## Step 8: Stage Project Files")
+	if stageIdx < 0 {
+		t.Fatal("wrap.md: Step 8 (Stage Project Files) missing")
+	}
+	stage := wrap[stageIdx:]
+	if end := strings.Index(stage, "\n## "); end >= 0 {
+		stage = stage[:end]
+	}
+	if !strings.Contains(stage, ".vibe-palace/") {
+		t.Error("wrap.md: Step 8 must name .vibe-palace/ as something never staged")
+	}
+}
+
 // TestEmbeddedDoctrine_GenericAndHostNeutral pins the ADR-008 doctrine split:
 // the embedded doctrine.md carries the generic manual (the sections extracted
 // from the old fat workflow template) and stays host-agnostic — it names MCP

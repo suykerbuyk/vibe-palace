@@ -4,11 +4,13 @@
 package wrapstate
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 )
@@ -77,10 +79,17 @@ func StampIter(in StampInput) (StampResult, error) {
 }
 
 // writeTasksSnapshot enumerates the live state of the vault-side tasks/ tree
-// and writes the resulting slug sets to snapshotPath as JSON. The snapshot's
-// anchor_sha records the prior wrap's anchor (best-effort, debugging aid). A
-// missing vault tasks directory degrades to an empty-snapshot write rather
-// than erroring. Returns the byte count written.
+// and writes the resulting slug sets to snapshotPath as JSON. A missing vault
+// tasks directory degrades to an empty-snapshot write rather than erroring.
+// Returns the byte count written.
+//
+// anchor_sha records HEAD at the moment of the stamp, and it is load-bearing,
+// not a debugging aid: it is the ONLY record of where this wrap ended, because
+// .vibe-palace/ is gitignored (operator decision, 2026-08-29) and so
+// LastIterAnchorSha — `git log -- .vibe-palace/last-iter` over an untracked
+// file — is empty forever. Collect reads this field to bound its window; see
+// the cascade there. It used to store LastIterAnchorSha, which meant every
+// stamp wrote an empty string and every collect scanned the whole history.
 func writeTasksSnapshot(in StampInput, snapshotPath string) (int, error) {
 	active, done, cancelled, err := EnumerateLiveTasksFS(in.TasksDir)
 	if err != nil {
@@ -96,7 +105,11 @@ func writeTasksSnapshot(in StampInput, snapshotPath string) (int, error) {
 		cancelled = []string{}
 	}
 
-	anchorSHA, _ := LastIterAnchorSha(in.ProjectRoot)
+	// HeadSHA is the existing probe; "" on an unborn branch or a non-repo,
+	// which Collect treats as "no anchor" exactly as a missing snapshot is.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	anchorSHA, _ := HeadSHA(ctx, in.ProjectRoot)
 
 	snap := Snapshot{
 		IterN:     in.Iter,

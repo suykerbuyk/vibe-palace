@@ -486,3 +486,55 @@ func TestGetFrictionTrends_MaxWeeks(t *testing.T) {
 func nowDate() string {
 	return time.Now().UTC().Format("2006-01-02")
 }
+
+// TestGetFrictionTrends_ExcludesAutoCapture pins the tag:auto-capture skip.
+// An auto-capture note's FrictionScore is a keyword hit on early-Stop
+// transcript, not interaction, so it must not move the weekly average or the
+// weekly max. Remove the skip in GetFrictionTrends and this test goes RED.
+func TestGetFrictionTrends_ExcludesAutoCapture(t *testing.T) {
+	root := t.TempDir()
+	vault := storage.NewVault(root)
+
+	today := nowDate()
+	for _, score := range []int{20, 40} {
+		meta := storage.SessionMeta{
+			Date:          today,
+			Summary:       fmt.Sprintf("interactive session with score %d", score),
+			FrictionScore: score,
+		}
+		if _, err := vault.WriteSession("test-proj", meta, "body"); err != nil {
+			t.Fatalf("WriteSession: %v", err)
+		}
+	}
+
+	// A high-scoring auto-capture note in the same week. If it were counted the
+	// average would be 60.0 and the max 120.
+	stub := storage.SessionMeta{
+		Date:          today,
+		Summary:       "auto-capture stub",
+		Tag:           storage.TagAutoCapture,
+		FrictionScore: 120,
+	}
+	if _, err := vault.WriteSession("test-proj", stub, "body"); err != nil {
+		t.Fatalf("WriteSession(auto-capture): %v", err)
+	}
+
+	metrics, err := GetFrictionTrends(vault, "test-proj", 4)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(metrics) != 1 {
+		t.Fatalf("expected 1 week, got %d: %+v", len(metrics), metrics)
+	}
+
+	m := metrics[0]
+	if m.SessionCount != 2 {
+		t.Errorf("expected 2 sessions (auto-capture excluded), got %d", m.SessionCount)
+	}
+	if m.AvgFriction != 30.0 {
+		t.Errorf("expected avg 30.0 (auto-capture excluded), got %.1f", m.AvgFriction)
+	}
+	if m.MaxFriction != 40 {
+		t.Errorf("expected max 40 (auto-capture excluded), got %d", m.MaxFriction)
+	}
+}

@@ -183,6 +183,79 @@ func TestPreflightWrapTool_IgnoresServerCwd(t *testing.T) {
 	}
 }
 
+// TestCollectWrapStateTool_IgnoresServerCwd mirrors
+// TestPreflightWrapTool_IgnoresServerCwd for the collect tool, which resolved
+// its repo from os.Getwd() until this change. `vp mcp` is long-lived and its
+// cwd is the host's launch directory, so the wrap record described whichever
+// repo the server started in — and on a host launched inside the project the
+// two coincide, which is how it passed review.
+//
+// The branch name is the probe: it is read from the resolved repo and from
+// nowhere else, so a handler keying off cwd cannot report the right one.
+func TestCollectWrapStateTool_IgnoresServerCwd(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	tool := CollectWrapStateTool(vault)
+
+	seedIterations := func(slug string) {
+		t.Helper()
+		iterPath, err := vault.IterationsFile(slug)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(iterPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(iterPath, []byte("## Iteration 1 — seed\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	here := newGitProjectDir(t, "here")
+	there := newGitProjectDir(t, "there")
+	seedIterations("here")
+	seedIterations("there")
+	gitRun(t, there, "checkout", "-b", "the-other-branch")
+
+	branchFor := func(t *testing.T, cwd, projectPath string) string {
+		t.Helper()
+		t.Chdir(cwd)
+		params, _ := json.Marshal(map[string]any{"project_path": projectPath})
+		res, err := tool.Handler(context.Background(), params)
+		if err != nil {
+			t.Fatalf("handler: %v", err)
+		}
+		return res.(wrapstate.Result).Branch
+	}
+
+	// cwd is one repo, project_path is the other. The old resolution reported
+	// the cwd's branch here.
+	if got := branchFor(t, here, there); got != "the-other-branch" {
+		t.Errorf("branch = %q, want %q — the record must key off project_path, not the server cwd", got, "the-other-branch")
+	}
+	// Inverse, so a handler that simply ignored project_path cannot pass.
+	if got := branchFor(t, there, here); got == "the-other-branch" {
+		t.Errorf("branch = %q — the record followed the server cwd", got)
+	}
+
+	// project_path is required, exactly as it is on vp_preflight_wrap.
+	if _, err := tool.Handler(context.Background(), json.RawMessage(`{}`)); err == nil {
+		t.Error("missing project_path: expected an error")
+	}
+}
+
+// gitRun runs one git command in dir, failing the test on error.
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
 func gitCommitAll(t *testing.T, dir string) {
 	t.Helper()
 	for _, args := range [][]string{{"add", "-A"}, {"commit", "-m", "ignore commit.msg"}} {
@@ -202,7 +275,6 @@ func TestCollectWrapStateTool_Smoke(t *testing.T) {
 	tool := CollectWrapStateTool(vault)
 
 	projDir := newGitProjectDir(t, "demo")
-	t.Chdir(projDir)
 
 	// Seed iterations.md in the vault.
 	iterPath, err := vault.IterationsFile("demo")
@@ -216,7 +288,7 @@ func TestCollectWrapStateTool_Smoke(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	params, _ := json.Marshal(map[string]any{"project": "demo"})
+	params, _ := json.Marshal(map[string]any{"project": "demo", "project_path": projDir})
 	res, err := tool.Handler(context.Background(), params)
 	if err != nil {
 		t.Fatalf("handler: %v", err)

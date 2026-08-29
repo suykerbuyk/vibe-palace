@@ -399,7 +399,9 @@ parameters) in `doc/PRD-vibe-palace.md` §6.8–6.11; the families are:
   `<project>/commit.msg` off disk and writes a stamped vault copy.
 - **Wrap state** (§6.11): `vp_collect_wrap_state`, `vp_stamp_iter`,
   `vp_preflight_wrap` — readiness and bookkeeping driven by `.vibe-palace/`
-  anchors (see `doc/adr/002-wrap-state-anchors.md`).
+  anchors, which are host-local and never committed; the wrap window comes from
+  the `anchor_sha` the stamp records (see
+  `doc/adr/002-wrap-state-anchors.md` and its 2026-08-29 amendment).
 
 The CLI mirrors the vault-CRUD family: `vp vault read|write|edit|delete|move|exists|sha256`,
 plus `vp vault commit --paths <p1,p2,...> --message <msg> [--push]` for the

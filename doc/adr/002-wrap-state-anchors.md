@@ -36,15 +36,16 @@ vibe-vault's `.vibe-vault/`, vibe-palace stamps under `.vibe-palace/`:
 
 ```
 <projectRoot>/.vibe-palace/
-  last-iter                   # canonical iteration anchor (committed)
+  last-iter                   # canonical iteration anchor (host-local)
   last-tasks-snapshot.json    # task-set snapshot for delta computation
 ```
 
 `vp_stamp_iter` writes both atomically at the end of a wrap. `last-iter`
-is the canonical project-side anchor for the pipeline; once committed, the
-commit that touched it becomes the reference point for the next cycle.
+is the canonical project-side anchor for the pipeline.
 `last-tasks-snapshot.json` records the active / done / cancelled task slug
-sets (plus the anchor SHA) as of that stamp.
+sets (plus the anchor SHA) as of that stamp. Both files are host-local and
+never committed — see the Amendment below for how the reference point is
+carried without them.
 
 ### `task_deltas` via filesystem set-difference
 
@@ -65,7 +66,8 @@ cancelled.
 The commit list is `git log <anchorSHA>..HEAD` in the project repo, where
 `anchorSHA` is the SHA of the most recent commit that touched
 `.vibe-palace/last-iter`. Files changed use `git diff --name-only` over the
-same range.
+same range. **Superseded by the Amendment below**: on a host-local anchor that
+`git log` is always empty, so the SHA comes from the snapshot instead.
 
 On the **first run** the iter stamp is not yet tracked, so the anchor SHA
 is empty — the canonical "no prior wrap" signal. Rather than report zero
@@ -111,8 +113,10 @@ avoids baking a presentation format into the tool contract.
 - First-run behavior is well defined: full history via the root-commit
   fallback, all-added task deltas, no errors.
 - Collection is read-only and prompt-proof, safe to call speculatively.
-- The anchors are plain files the project can commit, so the reference
-  point travels with the repo across machines.
+- The anchors sit beside the code they describe, in the same working tree
+  the commits/files probe reads. (The original form of this bullet claimed
+  the anchors were committed and travelled with the repo; withdrawn by the
+  Amendment below.)
 
 **Negative / trade-offs:**
 
@@ -140,6 +144,66 @@ avoids baking a presentation format into the tool contract.
   file is a simpler, repo-independent record of the task set.
 - **Port `render_wrap_text`.** Rejected: it was retired upstream and would
   pin a presentation format into the tool; agents render the narrative.
+
+## Amendment (2026-08-29)
+
+Operator decision on the vault task
+`wrap-state-tools-orphaned-and-anchor-gitignored`, which found that this ADR and
+the project `.gitignore` had specified opposite things since 2026-06-06 and that
+the contradiction is why the anchor never advanced.
+
+**Two claims above are WITHDRAWN:**
+
+- `last-iter … (committed)` in the Decision's directory listing.
+- *"The anchors are plain files the project can commit, so the reference point
+  travels with the repo across machines"* in the Consequences.
+
+They were never true of any shipped tree. `CanonicalProjectGitignorePatterns`
+carries the exact line `/.vibe-palace/`, and `ReconcileProjectGitignore`
+re-injects it whenever `vp init` or `vp commands upgrade` runs — so a `.gitignore`
+edited to track the anchors is undone by the next reconcile. The decision is to
+keep the ignore rule and correct this document, not the reverse.
+
+### The contract now
+
+**Both anchor files are host-local.** `.vibe-palace/` is one host-local
+directory with several occupants — the two wrap anchors, the `claimed-<uuid>`
+capture sentinels, and the ADR-005 enrichment queue — and the same
+`/.vibe-palace/` ignore pattern covers all of them.
+
+That shared occupancy is the reason the fork was settled this way. Concurrent
+agent panes in one working tree each write capture sentinels into that
+directory, while only the orchestrating pane wraps. Un-ignoring the anchors
+means punching a hole in a pattern the reconciler owns and that a dozen
+concurrent writers depend on, to gain a property (below) that is obtainable
+without it.
+
+**`last-iter` is not a git object.** Nothing reads its history, because an
+untracked file has none.
+
+**The reference point is `anchor_sha` in `last-tasks-snapshot.json`** — the
+project's `git rev-parse HEAD` as of the stamp. `vp_stamp_iter` records it;
+`vp_collect_wrap_state` prefers it when `git log … -- .vibe-palace/last-iter`
+comes back empty, which on a host-local anchor is always. The wrap window is
+therefore *"since the commit that was HEAD at the last stamp"* — the same
+"since the last wrap" property the Context asked for, carried in the snapshot
+rather than in the git graph.
+
+**First wrap is unchanged.** With no snapshot, and so no `anchor_sha`, the
+engine still falls back to the oldest root commit and walks the whole history.
+That path is the one the Decision already describes and it keeps working.
+
+### What this costs, and what it does not
+
+The withdrawn property was real: a host that clones the repo fresh has no
+anchor, so its first wrap reads as a first wrap and sees the full history.
+That is the accepted trade. It is bounded — the fallback is defined, not an
+error — and it is the same behaviour a genuinely new project gets.
+
+The Alternatives are **not** reopened by this. *"Store anchors in the vault"*
+was rejected because the commits/files probe is about the project repo's
+history and the anchor belongs beside the code; that reasoning is about
+*location*, not about tracking, and it survives intact.
 
 ## References
 

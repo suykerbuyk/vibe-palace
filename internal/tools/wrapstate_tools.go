@@ -17,7 +17,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
@@ -42,8 +41,10 @@ func resolveWrapProject(explicit, dir string) (string, error) {
 var collectWrapStateSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"project": {"type": "string", "description": "Project slug. If omitted, detected from the working directory."}
-	}
+		"project": {"type": "string", "description": "Project slug. If omitted, detected from project_path."},
+		"project_path": {"type": "string", "description": "Absolute path to the local project repo root, or any path inside it. Required — the project is NEVER inferred from the server's working directory."}
+	},
+	"required": ["project_path"]
 }`)
 
 // CollectWrapStateTool returns the full wrap-state record for the current
@@ -59,22 +60,33 @@ func CollectWrapStateTool(vault *storage.Vault) mcp.Tool {
 			"cancelled via .vibe-palace/last-tasks-snapshot.json diff), test_counts " +
 			"(parsed best-effort from doc/TESTING.md headline), " +
 			"vault_has_uncommitted_writes, project_has_uncommitted_writes, and shape " +
-			"(fresh-feature | planning | bookkeeping). Used by /wrap to compose the " +
-			"iter narrative inline.",
+			"(fresh-feature | planning | bookkeeping). last_iter_anchor_sha is the " +
+			"anchor the commit/file window was actually measured from, and is EMPTY " +
+			"on a first wrap — the window then covers the whole history. " +
+			"project_path is required and must be absolute. Used by /wrap to compose " +
+			"the iter narrative inline.",
 		Schema: collectWrapStateSchema,
 		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
 			var args struct {
-				Project string `json:"project"`
+				Project     string `json:"project"`
+				ProjectPath string `json:"project_path"`
 			}
 			if err := unmarshalParams(params, &args); err != nil {
 				return nil, err
 			}
-
-			cwd, err := os.Getwd()
-			if err != nil {
-				return nil, fmt.Errorf("get working directory: %w", err)
+			if args.ProjectPath == "" {
+				return nil, fmt.Errorf("project_path is required")
 			}
-			projectRoot := wrapstate.ResolveProjectRoot(cwd)
+
+			// Resolve from the CALLER's path, never os.Getwd() — the same fix
+			// vp_preflight_wrap carries, for the same reason: vp mcp is
+			// long-lived and its cwd is the host's launch directory, so this
+			// record used to describe whichever repo the server was started
+			// from. Like preflight, and unlike the commit tools, it is NOT
+			// gated by project.RequireKnownProject: that gate stops a WRITE
+			// from scaffolding a phantom project, and this handler writes
+			// nothing.
+			projectRoot := wrapstate.ResolveProjectRoot(args.ProjectPath)
 
 			slug, err := resolveWrapProject(args.Project, projectRoot)
 			if err != nil {

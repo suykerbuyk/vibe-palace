@@ -124,6 +124,29 @@ mention:
   normal flow; if it did not, Step 7 self-skips and the stale file survives —
   say so explicitly, because nothing else will.
 
+### Wrap-state record
+
+With the probe done, call `vp_collect_wrap_state` — same `project_path`, same
+rule: **it is required, and the project is never inferred from the server's
+working directory.** It reports what actually changed since the last wrap:
+`iter_n` (a preview — Step 4 mints the real one), `branch`,
+`last_iter_anchor_sha`, `commits_since_last_iter`, `files_changed`,
+`task_deltas`, `test_counts` and `shape`.
+
+**This record is the raw material for Step 4's narrative.** Write the iteration
+from what it reports rather than from memory of the session — the commit list
+and the file list are the two things an agent most reliably misremembers.
+
+It is a report, never a gate: if the call errors, say so in one line and carry
+on with the wrap.
+
+Read `last_iter_anchor_sha` before trusting the window. It is the anchor the
+commits and files were measured from, and it is **empty on a first wrap** —
+which means the window is the entire history, not one session's work. That is
+information, not a failure; say so rather than narrating a hundred commits as
+this session's output.
+
+
 ## Step 2: Capture the Session
 
 Call `vp_capture_session` with:
@@ -351,6 +374,22 @@ written. Supply the optional `iteration` override ONLY to backfill a specific
 number; if it disagrees with what the server would mint, the result reports
 both `overridden` and `derived_n`.
 
+### Stamp the anchor — every wrap
+
+Once `vp_append_iteration` has returned `iter_n`, call `vp_stamp_iter` with
+`project_path` and **that returned number** (never one you computed). It writes
+`.vibe-palace/last-iter` and refreshes `.vibe-palace/last-tasks-snapshot.json`,
+whose `anchor_sha` records the current HEAD.
+
+**Every wrap stamps.** That snapshot is what bounds the next wrap's window;
+skip it and the next `vp_collect_wrap_state` measures from the wrap before
+this one, silently reporting a window twice as wide as the work.
+
+`.vibe-palace/` is gitignored on purpose — it also holds host-local capture
+sentinels — so the anchors stay on this machine. **Do not `git add` them**, and
+do not un-ignore the directory to make them travel.
+
+
 ## Step 5: Update Stable Docs (if changed)
 
 If stable project documentation changed (architecture, design
@@ -550,6 +589,11 @@ path by name. Untracked files unrelated to the task (stray
 `temp.txt`, etc.) must not be staged. After staging, run
 `git status` and report what is staged vs. left untracked so the
 user can verify before committing.
+
+**Never stage `.vibe-palace/`.** The iteration anchors Step 4 stamped live
+there, alongside host-local capture sentinels, and the directory is gitignored
+by design — `git add` refuses it without `-f`, and `-f` is not the workaround.
+The anchors are deliberately host-local.
 
 Only the vault repo has standing permission for autonomous commits
 and `git add -A`.

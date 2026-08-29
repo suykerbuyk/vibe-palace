@@ -5,9 +5,10 @@ The mechanism this ADR specified no longer exists: the shed ladder,
 `budget.shed_core`, the tier derivations, the `core-floor` and `pin-coverage`
 checks, the `vp:pin` / `vp:disposable` marker vocabulary and the payload token
 budget itself were all deleted. There is no reduction path left to make
-"whole or fail loud" a live question — bootstrap sends the bodies whole because
-there is nothing that could shed them, and the only remaining truncation risk is
-the HOST's, which `complete` reports. The task `adr-009-arm-fail-loud-bootstrap`
+"whole or fail loud" a live question — bootstrap is an INDEX that inlines no
+body at all (Phase 3), `resume` and `workflow` are fetched by URI with
+`vp_read_resource`, and the only remaining truncation risk is the HOST's, which
+`complete` reports. The task `adr-009-arm-fail-loud-bootstrap`
 that this ADR gated was cancelled with the apparatus.
 
 **This page is kept as the historical record of a decision, not as guidance.**

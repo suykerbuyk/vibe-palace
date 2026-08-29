@@ -704,3 +704,142 @@ func TestGitStateString(t *testing.T) {
 		}
 	}
 }
+
+// TestStampThenCollect_WindowIsStampedHead is the load-bearing test for the
+// host-local anchor (operator decision, 2026-08-29). It runs against REAL git,
+// with `.vibe-palace/` untracked exactly as it is in production — which is the
+// whole point, because the defect's signature is that a fixture repo which
+// tracked the anchor would have passed while the live repo never could.
+//
+// LastIterAnchorSha is `git log -- .vibe-palace/last-iter`, so on an untracked
+// anchor it is empty forever and Collect fell through to the oldest root
+// commit: every wrap reported the ENTIRE history as its window, and had done
+// since the subsystem shipped. The stamped snapshot's anchor_sha is the
+// host-local record that replaces it.
+//
+// Remove the snapshot fallback in Collect and this goes red twice over: the
+// window widens to every commit, and last_iter_anchor_sha empties.
+func TestStampThenCollect_WindowIsStampedHead(t *testing.T) {
+	projectRoot := realGitRepo(t, false)
+	vaultRoot := t.TempDir()
+
+	commit := func(msg string) {
+		t.Helper()
+		cmd := exec.Command("git", "-C", projectRoot, "commit", "--allow-empty", "-m", msg)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git commit %q: %v\n%s", msg, err, out)
+		}
+	}
+	head := func() string {
+		t.Helper()
+		out, err := exec.Command("git", "-C", projectRoot, "rev-parse", "HEAD").Output()
+		if err != nil {
+			t.Fatalf("rev-parse HEAD: %v", err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	// Some history BEFORE the wrap, so a root-commit fallback is visibly wider
+	// than the correct window rather than coincidentally the same size.
+	commit("before one")
+	commit("before two")
+
+	iterPath := filepath.Join(vaultRoot, "Projects", "demo", "iterations.md")
+	if err := os.MkdirAll(filepath.Dir(iterPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(iterPath, []byte("## Iteration 7 — prior\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tasksDir := filepath.Join(vaultRoot, "Projects", "demo", "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The wrap stamps here.
+	stampedAt := head()
+	if _, err := StampIter(StampInput{
+		Project:     "demo",
+		ProjectRoot: projectRoot,
+		TasksDir:    tasksDir,
+		Iter:        7,
+	}); err != nil {
+		t.Fatalf("StampIter: %v", err)
+	}
+
+	// The anchor is genuinely untracked — the production condition. If this
+	// ever fails, the test has drifted into the fixture that would have hidden
+	// the bug.
+	if out, _ := exec.Command("git", "-C", projectRoot, "log", "-n", "1", "--format=%H",
+		"--", AnchorDir+"/"+AnchorFile).Output(); strings.TrimSpace(string(out)) != "" {
+		t.Fatal("precondition failed: .vibe-palace/last-iter is TRACKED in this fixture")
+	}
+
+	snap, err := ReadSnapshot(projectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.AnchorSHA != stampedAt {
+		t.Errorf("snapshot anchor_sha = %q, want HEAD at stamp time %q", snap.AnchorSHA, stampedAt)
+	}
+
+	// One commit lands after the stamp. That, and only that, is the next
+	// wrap's window.
+	commit("after the stamp")
+
+	res, err := Collect(context.Background(), CollectInput{
+		VaultRoot:      vaultRoot,
+		Project:        "demo",
+		IterationsPath: iterPath,
+		TasksDir:       tasksDir,
+		ProjectRoot:    projectRoot,
+	})
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	if res.LastIterAnchorSha != stampedAt {
+		t.Errorf("LastIterAnchorSha = %q, want the stamped HEAD %q", res.LastIterAnchorSha, stampedAt)
+	}
+	if n := len(res.CommitsSinceLastIter); n != 1 {
+		t.Errorf("commits since last iter = %d, want 1 — the window is the whole history again: %+v",
+			n, res.CommitsSinceLastIter)
+	} else if res.CommitsSinceLastIter[0].Subject != "after the stamp" {
+		t.Errorf("windowed commit = %q, want %q", res.CommitsSinceLastIter[0].Subject, "after the stamp")
+	}
+}
+
+// TestCollect_FirstWrapReportsNoAnchor pins the other half: with nothing
+// stamped, the window still falls back to the root commit, but the REPORTED
+// anchor stays empty. Stuffing the root SHA into last_iter_anchor_sha would
+// make "bounded by the previous wrap" and "the entire history" read alike.
+func TestCollect_FirstWrapReportsNoAnchor(t *testing.T) {
+	projectRoot := realGitRepo(t, false)
+	vaultRoot := t.TempDir()
+
+	iterPath := filepath.Join(vaultRoot, "Projects", "demo", "iterations.md")
+	if err := os.MkdirAll(filepath.Dir(iterPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(iterPath, []byte("## Iteration 1 — prior\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tasksDir := filepath.Join(vaultRoot, "Projects", "demo", "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Collect(context.Background(), CollectInput{
+		VaultRoot:      vaultRoot,
+		Project:        "demo",
+		IterationsPath: iterPath,
+		TasksDir:       tasksDir,
+		ProjectRoot:    projectRoot,
+	})
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if res.LastIterAnchorSha != "" {
+		t.Errorf("LastIterAnchorSha = %q on a first wrap, want empty", res.LastIterAnchorSha)
+	}
+}

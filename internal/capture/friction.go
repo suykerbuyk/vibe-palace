@@ -161,6 +161,10 @@ func countTokens(text string) int {
 
 // GetFrictionTrends returns weekly friction aggregations for a project.
 // The weeks parameter controls how many weeks back to look (default 8, max 52).
+//
+// tag:auto-capture sessions are excluded, the same predicate GetFrictionWindows
+// applies: their scores are keyword hits on early-Stop transcript, not
+// interaction.
 func GetFrictionTrends(vault *storage.Vault, project string, weeks int) ([]WeeklyMetric, error) {
 	if weeks <= 0 {
 		weeks = 8
@@ -196,6 +200,9 @@ func GetFrictionTrends(vault *storage.Vault, project string, weeks int) ([]Weekl
 	buckets := make(map[string]*bucket)
 
 	for _, s := range sessions {
+		if s.Tag == storage.TagAutoCapture {
+			continue
+		}
 		t, err := time.Parse("2006-01-02", s.Date)
 		if err != nil {
 			slog.Warn("friction: unparseable session date", "date", s.Date, "err", err)

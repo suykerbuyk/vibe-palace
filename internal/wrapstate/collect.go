@@ -91,9 +91,30 @@ func Collect(ctx context.Context, in CollectInput) (Result, error) {
 	if err != nil {
 		return res, fmt.Errorf("last iter anchor sha: %w", err)
 	}
+
+	// The snapshot is read HERE, not with the task deltas below, because its
+	// anchor_sha is the second candidate for the scan window.
+	snapshot, err := ReadSnapshot(in.ProjectRoot)
+	if err != nil {
+		return res, fmt.Errorf("read last tasks snapshot: %w", err)
+	}
+
+	// Two anchors, in order. LastIterAnchorSha is `git log -- last-iter`, so it
+	// answers only where .vibe-palace/ is tracked; where it is gitignored
+	// (this project, by operator decision 2026-08-29) it is empty forever, and
+	// the snapshot's anchor_sha — HEAD at the last stamp, host-local — is the
+	// real record of where the previous wrap ended.
+	if anchorSHA == "" {
+		anchorSHA = snapshot.AnchorSHA
+	}
+
+	// The reported field is the anchor ACTUALLY used, and stays EMPTY on a
+	// first wrap. The root SHA below is a fallback for the scan, never an
+	// anchor: writing it here would make "window bounded by the previous wrap"
+	// and "window is the entire history" indistinguishable to every reader.
 	res.LastIterAnchorSha = anchorSHA
 
-	// commits/files since anchor — fall back to oldest root commit when no
+	// commits/files since anchor — fall back to oldest root commit when neither
 	// anchor exists (first wrap, project never stamped).
 	scanFrom := anchorSHA
 	if scanFrom == "" {
@@ -121,12 +142,8 @@ func Collect(ctx context.Context, in CollectInput) (Result, error) {
 	}
 	res.FilesChanged = files
 
-	// task_deltas — set-difference of last-tasks-snapshot.json against the
-	// live tasks/ tree. Bootstraps gracefully when the snapshot is absent.
-	snapshot, err := ReadSnapshot(in.ProjectRoot)
-	if err != nil {
-		return res, fmt.Errorf("read last tasks snapshot: %w", err)
-	}
+	// task_deltas — set-difference of last-tasks-snapshot.json (read above)
+	// against the live tasks/ tree. Bootstraps gracefully when absent.
 	active, done, cancelled, err := EnumerateLiveTasksFS(in.TasksDir)
 	if err != nil {
 		return res, fmt.Errorf("enumerate live tasks: %w", err)

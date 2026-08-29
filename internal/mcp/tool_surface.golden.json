@@ -44,7 +44,7 @@
     {
       "name": "vp_collect_wrap_state",
       "mutating": false,
-      "schema_sha256": "9e50baddde52376829e9d13689f138d0c4517a2064d2fa252c0eb841a0da44a7"
+      "schema_sha256": "15f610fbbc57599f94811a0ee899e3182ebfbee45283b37aed1471c4858ea9c8"
     },
     {
       "name": "vp_find_tunnels",

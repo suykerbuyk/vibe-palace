@@ -14,7 +14,7 @@ import (
 
 // manPageDate is the date stamped into every generated page; bump it when
 // regenerating after a CLI-facing change so pages carry the generation date.
-const manPageDate = "2026-07-23"
+const manPageDate = "2026-08-29"
 
 // TestGenerateManPages generates man pages from command metadata.
 // By default it writes to t.TempDir() to validate formatting.

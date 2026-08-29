@@ -663,147 +663,104 @@ flowchart TD
 
 ## 6. MCP Tool Surface
 
-> **🔴 THE GROUPINGS BELOW ARE THE DESIGN; THE TOOL LISTS ARE STALE AND MUST NOT
-> BE TRUSTED (2026-08-15).** Measured at the split: this section names 59 tools
-> while the shipped surface carries 69. It is a hand-maintained index of data
-> that lives authoritatively in a generated file — the same rot that consumed
-> `resume.md`'s history tables, which were deleted at iteration 260 for exactly
-> this reason.
->
-> **Record the query, never the answer:**
->
-> ```sh
-> jq -r '.tools[].name' internal/mcp/tool_surface.golden.json   # the surface
-> vp_manual                                                     # per-tool detail
-> ```
->
-> Read the subsections for what each GROUP is for and why the boundaries fall
-> where they do. Do not read them for what exists. Replacing these enumerations
-> with the derivation is owed work — §1.11's requirement applied to this document.
+**The groupings below are the design. The surface itself is DERIVED — this
+document does not enumerate it.**
+
+```sh
+jq -r '.tools[].name' internal/mcp/tool_surface.golden.json   # the surface
+vp_manual                                                     # per-tool detail
+```
+
+The golden is generated from the live registry and `internal/tools/register_test.go`
+enforces the pair, so it cannot drift from what ships. A table here can, and did:
+when this section was measured at the 2026-08-15 split it named 59 tools against
+a shipped 69, and the enumerations were kept anyway. The counters went with the
+tables. **This is §1.11 applied to this document** — the registry enforces
+itself, so the prose that restated it was not a second control, only a second
+answer.
+
+Read the subsections for what each GROUP is for and why the boundaries fall
+where they do. That is the part a generated file cannot tell you.
 
 ### 6.1 Context Tools (from VibeVault, enhanced)
 
-> **12 of 12 implemented.**
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `vp_bootstrap_context` | project?, max_tokens?, wing?, room? | Single-call context restoration: workflow + resume + tasks + recent sessions + KG snapshot + available commands + available skills + a `friction_trend` field (rolling 7/30/90-day windows, direction, warn flag) computed from the loaded history + a network-free `vault_staleness` field (`last_fetched`, `age_hours`, `warn`, `message`) derived from the local tracking-ref/`FETCH_HEAD` mtime (NO network — reports fetch AGE, not a commits-behind count) that warns when the vault hasn't been fetched in >24h or was never fetched + post-bootstrap capability-announcement directive (with an actionable nudge appended when friction is rising and elevated, and the staleness message when the vault is stale). Precedence-aware. |
-| `vp_get_workflow` | project? | Workflow rules with precedence resolution (project > vault > embedded) |
-| `vp_get_resume` | project? | Current project state and open threads |
-| `vp_update_resume` | project?, section, content | Update a section of resume.md |
-| `vp_get_knowledge` | project? | Curated project knowledge (knowledge.md) |
-| `vp_get_command` | command, project? | Retrieve a command definition with precedence resolution |
-| `vp_get_skill` | skill, project? | Retrieve a skill definition with precedence resolution |
-| `vp_get_skill_section` | name (req), section (req), project?, wing?, room? | Fetch a single reference file from a directory-form skill (e.g. references/<section>.md), pulled on demand after a skill is activated |
-| `vp_list_commands` | project? | List available commands for current project |
-| `vp_list_skills` | project? | List available skills for current project |
-| `vp_cmd` | name?, project? | Execute a command by name (with LLM-agnostic execution framing), or list available commands when called with no arguments. Portable across all MCP clients. |
-| `vp_skill` | name?, project? | Activate a skill by name (with behavioral framing), or list available skills when called with no arguments. Portable across all MCP clients. |
+Session-start restoration and precedence-resolved reads: what is true for this
+project right now. **Precedence is the group's boundary** — every read here
+resolves through the §1.3 hierarchy (project > vault > embedded), so a caller
+never has to know which tier answered. §1.9 governs the shape: session start
+returns an INDEX plus what is relevant to the work ahead, and bulk bodies are
+fetched by URI on demand rather than pushed.
 
 ### 6.2 Session Tools (from VibeVault, model-agnostic)
 
-> **8 of 8 implemented.**
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `vp_capture_session` | summary (req), title?, tag?, model?, decisions?, files_changed?, open_threads?, transcript? | Record a session. Auto-chunks and indexes transcript if provided, and records the `friction_breakdown` sub-scores plus the `model` (the SessionEnd hook extracts model from the live transcript; the MCP path uses the supplied `model`). |
-| `vp_list_projects` | — | All projects with session counts and date ranges |
-| `vp_get_project_context` | project?, sections?, max_tokens? | Condensed context: sessions, threads, decisions, friction |
-| `vp_search_sessions` | query?, project?, date_from?, date_to?, min_friction?, max_results? | Search session metadata |
-| `vp_get_session_detail` | project, date, iteration? | Full session markdown |
-| `vp_get_friction_trends` | project?, weeks? | Friction and efficiency trends by ISO-calendar week (complementary to the rolling 7/30/90-day windows of the `vp trends` CLI command) |
-| `vp_get_effectiveness` | project?, weeks?, sections? | Context availability vs outcome correlation. `sections` (`overall`/`weeks`, default both) trims the payload by zeroing the unselected section (present-but-empty, not computed); orthogonal to the `weeks` bucket count |
-| `vp_append_iteration` | project?, iteration?, title (req), narrative (req), date? | Append iteration narrative |
-| `vp_get_iteration` | project (req), n? XOR recent?, max_bytes? | Structure-aware read of iterations.md (by N or recent fill); never truncates a body |
+Recording and querying the session history — captures, iteration narratives,
+per-project rollups, and the friction and effectiveness instruments derived from
+them. Carried over from VibeVault and generalized so that any MCP host can
+record a session, not only the one whose hook format the capture path grew up
+in; that generalization is what §1.5 asks for, and host parity is measured
+against it rather than assumed.
 
 ### 6.3 Search Tools (from MemPalace, new)
 
-> **2 of 2 implemented.**
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `vp_search` | query (req), project?, wing?, room?, hall?, date_from?, date_to?, limit? | Semantic + structural hybrid search across all stored content |
-| `vp_search_cross_project` | query (req), limit? | Search across all projects (read-only) |
+Retrieval across stored content, semantic and structural. Cross-project read
+access (§1.4) lives here — it is the one place the project scope is
+deliberately widened, and it is read-only.
 
 ### 6.4 Task Tools (from VibeVault)
 
-> **3 of 3 implemented.**
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `vp_list_tasks` | project?, include_done? | List tasks with status and priority |
-| `vp_get_task` | task (req), project? | Full task file content |
-| `vp_manage_task` | task (req), action (req: create/update_status/retire/cancel), status?, content? | Task lifecycle management |
+The task graph: the vault's record of planned, active, and retired work, and the
+source `head_of_queue` is derived from. **Mutation is one tool with an action
+enum, not a family of verbs**, because each header field has exactly one writer;
+where two actions can write one field, a reader and a writer eventually disagree
+about which value is real. The doctrine's Task Management section owns that
+table and the rules that go with it.
 
 ### 6.5 Knowledge Graph Tools (from MemPalace, new)
 
-> **5 of 5 implemented.**
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `vp_kg_query` | entity (req), project?, as_of?, direction? | Query entity relationships |
-| `vp_kg_add` | subject (req), predicate (req), object (req), project?, valid_from?, confidence?, source? | Add a temporal fact |
-| `vp_kg_invalidate` | subject (req), predicate (req), object (req), project?, ended? | End a fact's validity |
-| `vp_kg_timeline` | entity?, project? | Chronological entity story |
-| `vp_kg_stats` | project? | Entity, triple, and relationship type counts |
+Temporal triples — subject/predicate/object facts carrying validity intervals,
+so a fact can end without being erased. Separate from search because a KG answer
+is derived from explicit assertions and their timestamps, never from similarity:
+the two groups answer different questions and must not be reconciled into one.
 
 ### 6.6 Palace Navigation Tools (from MemPalace, new)
 
-> **5 of 5 implemented.**
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `vp_palace_status` | project?, sections? | Palace overview: wings, rooms, drawer counts. `sections` (`stats`/`per_wing`/`tunnels`, default all) trims the payload by zeroing the unselected section (present-but-empty, not computed — a zeroed `stats` reads as an empty palace, so don't mistake it for real data) |
-| `vp_list_wings` | project? | All wings with drawer counts |
-| `vp_list_rooms` | project?, wing? | Rooms in a wing with counts |
-| `vp_traverse` | start_room (req), project?, max_hops? | Walk the room graph (BFS) |
-| `vp_find_tunnels` | project?, wing_a?, wing_b? | Cross-wing room connections |
+The spatial metaphor over stored content — wings, rooms, drawers, and the
+tunnels between them. Read-only structural traversal. The boundary against
+search is that **navigation follows declared structure while search ranks**; a
+traversal returns what is actually connected, not what is merely similar.
 
 ### 6.7 System Tools
 
-> **6 of 6 implemented.**
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `vp_init` | project?, domain?, tags? | Initialize project (create .vibe-palace.toml + vault dir) |
-| `vp_vault_sync` | action (req: pull/push/sync), paths?, message?, no_tidy? | Pull/push/sync vault git remotes. Optional `paths` (with `message`) commits only the listed vault-relative files (commit-then-push) instead of a blanket sync. A bare `sync` (no paths) now **tidies capture artifacts by default** — it commits the sweepable artifacts, then pulls and pushes, refusing up front only on genuine non-artifact dirt (pending user memory does not block; an in-flight transcript whose manifest is not yet on disk is deferred). `no_tidy:true` restores the raw pull+push that refuses on *any* dirt; `push` (no paths) still refuses on a dirty vault |
-| `vp_vault_status` | refresh?, sections? | Read-only vault sync + working-tree dirt report (per-remote ahead/unpushed/behind/diverged/reachable + Swept/Reported dirt). `refresh` runs a bounded per-remote fetch for real behind counts; never commits, pushes, or mutates the tree. `sections` (`sync`/`dirt`, default both) trims the payload by zeroing the unselected section (present-but-empty, not computed); the tidy scan always runs regardless |
-| `vp_surface_check` | project? | Read-only surface preflight (non-mutating): reports whether this binary's MCP surface version is compatible with the vault (binary ≥ max `.surface` stamp) — the SAME whole-vault verdict a mutating write is gated against, curated remediation included. Returns `{status (pass\|fail\|info), summary, details[] (upgrade/override lines on fail), binary_surface, vault_surface, stamp_dir}`. Lets command templates run a surface preflight without shelling out to `vp check`. `project` is accepted for parity but does not narrow the whole-vault scan |
-| `vp_refresh_index` | project? | Rebuild session index and re-embed if needed |
-| `vp_health` | project (req), hours?, limit? | Runtime health: recent warnings/errors from the vp log file. `hours` (default 24, max 720) widens the look-back window for BOTH warn_counts and recent_warns; `limit` (default 20, max 1000) caps ONLY the recent_warns list — warn_counts still tallies every WARN/ERROR in the window |
+The binary and the vault as artifacts rather than as content: initialization,
+git sync and status, health, diagnostics, index maintenance, and the surface
+compatibility preflight. These are the tools a command template runs before it
+trusts anything else.
 
 ### 6.8 Vault File CRUD Tools (write/wrap surface)
 
-> **8 of 8 implemented.**
+Generic, schema-agnostic file access over vault-relative paths. This group
+exists to close the MCP-First gap (§1.1): an agent completes an entire wrap
+without shelling out to a filesystem, on a host that has no shell at all. Paths
+are always vault-relative and the server resolves them — a caller never computes
+one.
 
-Generic, schema-agnostic file access over vault-relative paths. These close
-the MCP-First gap (§1.1) by letting an agent complete the entire wrap without
-shelling out to the filesystem. `vp_vault_write` bypasses schema validation —
-prefer the typed/surgical writers (§6.10, task tools, commit ingest) and
-reserve raw write for files with no typed writer.
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `vp_vault_read` | path (req) | Read a file at a vault-relative path |
-| `vp_vault_list` | path? | List entries one level under a vault-relative directory |
-| `vp_vault_exists` | path (req) | Check whether a vault-relative path exists |
-| `vp_vault_sha256` | path (req) | Compute SHA-256 of a vault-relative file without reading it back |
-| `vp_vault_write` | path (req), content (req) | Atomically write content to a vault-relative file (no schema validation) |
-| `vp_vault_edit` | path (req), old_string (req), new_string (req) | Replace old_string with new_string in a vault-relative file |
-| `vp_vault_delete` | path (req) | Delete a file at a vault-relative path |
-| `vp_vault_move` | from_path (req), to_path (req) | Rename a vault-relative file |
+Raw write bypasses schema validation, so it is the fallback and never the
+default: typed writers first (tasks, iteration narratives, commit ingest,
+memory), raw write only for files that have no typed writer. Task paths are
+refused outright at the `vaultfs` layer rather than in the MCP tool, so the CLI
+is covered by the same guard — a guard only an agent can trip is not a guard.
 
 ### 6.9 Commit Lifecycle Tools
 
-> **1 of 1 implemented.**
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `vp_ingest_commit_msg` | project? | Read `<project_path>/commit.msg` off disk and write a stamped copy into the vault |
+Moving a commit message out of the project repo and into the vault's permanent
+history. A group of one, kept separate because it is the only surface that
+**crosses the boundary between the project's git repo and the vault** — the two
+have different lifetimes, different remotes, and can be written by different
+identities.
 
 ### 6.10 Resume Surgical-Edit Tools — REMOVED
 
-> **0 of 6 implemented. Withdrawn.**
+> **Withdrawn.**
 
 Six typed editors for `resume.md`'s `## Open Threads` and `### Carried forward`
 sections (`vp_thread_insert`/`_replace`/`_remove`,
@@ -820,48 +777,23 @@ Edit `resume.md` through `vp_update_resume` (compare-and-set on
 
 ### 6.11 Wrap-State Tools
 
-> **3 of 3 implemented.**
+Wrap readiness and bookkeeping driven from anchors under `.vibe-palace/` (see
+ADR 002 and its 2026-08-29 amendment): which iteration this is, what changed
+since the last anchor, and whether the preconditions for a wrap hold. The group
+exists so that a wrap's readiness is **derived from a recorded stamp rather than
+recalled by the agent running it**.
 
-Drive `/wrap`'s readiness and bookkeeping from anchors under
-`.vibe-palace/` (see ADR 002).
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `vp_collect_wrap_state` | project? | Full wrap-state record: iteration, files changed / commits since the last anchor, task deltas, and parsed test counts |
-| `vp_stamp_iter` | project?, iteration? | Write the current iteration number to `.vibe-palace/last-iter` and snapshot the task set |
-| `vp_preflight_wrap` | project? | Readiness probe: surface compatibility plus required-anchor and shape checks before a wrap |
+The anchors are **host-local and never committed** — `.vibe-palace/` is
+gitignored, shared with the capture sentinels and the ADR-005 enrichment queue.
+The reference point is the `anchor_sha` the stamp records, not a commit that
+touched a tracked file.
 
 ### 6.12 Learnings Tools (cross-project, read-only)
 
-> **2 of 2 implemented.**
-
-Read-only access to vault-wide cross-project "learnings" — curated lessons
-stored as flat-frontmatter markdown under `Knowledge/learnings/`, shared across
-every project (not project-scoped). Ported from VibeVault; like VibeVault, there
-is no create/add path — learnings are authored out-of-band and only read here.
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `vp_list_learnings` | filter_type? (user\|feedback\|reference) | List learning metadata (slug, name, description, type), sorted by slug; optional type filter |
-| `vp_get_learning` | slug (req), include_content? | Fetch a single learning. Always returns `content_uri` (`vibe-palace://learning/<slug>`) + `content_size`; tri-state `include_content` (nil/true ⇒ inline body; false + large body ⇒ excerpt + content_uri). Unknown slug errors with the available slugs listed |
-
-**Total (sum of the per-section labels above): 55 implemented (Phases 1–10,
-12–18, plus the restore-mcp-vault-surface write/wrap surface, the cross-project
-learnings read tools, and the `vp_surface_check` read-only surface preflight)** —
-40 prior tools plus 15 new ones across vault CRUD (8), commit lifecycle (1),
-wrap state (3), learnings (2), and the surface preflight (1). The six resume
-surgical editors of §6.10 were withdrawn (see that section).
-(vs VibeVault's 16 + MemPalace's 19 = 35, with dedup, consolidation, and the
-Phase 12–18 + write-surface + learnings + surface-preflight additions.)
-
-> Ground truth is the golden surface, not this document:
-> `internal/mcp/tool_surface.golden.json` records every registered tool
-> (`jq '.tools | length'` for the count) and `internal/tools/register_test.go`
-> enforces it. Registration is smaller without a search engine — the
-> search-gated tools require an embedder. The section tables above enumerate
-> the surface as it was designed phase by phase and lag the registry; when
-> reconciling, count from the golden. Totals recorded in this PRD's prose
-> (55/62/etc.) are historical.
+Vault-wide cross-project "learnings" — curated lessons stored as
+flat-frontmatter markdown under `Knowledge/learnings/`, shared across every
+project rather than project-scoped. Ported from VibeVault, and **read-only by
+design**: learnings are authored out-of-band, so there is no create path here.
 
 ---
 

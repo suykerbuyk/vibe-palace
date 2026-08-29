@@ -817,6 +817,10 @@ round-trip, the wrap-state record shape, the `doc/TESTING.md` headline
 parse (the regexes this very headline feeds), and the preflight readiness
 matrix.
 
+The anchors are host-local (ADR-002's 2026-08-29 amendment), so a test that
+walks the wrap window has to seed the snapshot `anchor_sha` — committing
+`last-iter` in a fixture repo would exercise a path no real host takes.
+
 ---
 
 ## `iterations.md` Heading-Contract Tests (`iterations-md-heading-contract`)
