@@ -269,6 +269,38 @@ func TestListThreadIDs_OrdersByUpdatedDesc(t *testing.T) {
 	}
 }
 
+func TestListThreads_IncludesSummaryAndRespectsLimit(t *testing.T) {
+	db := makeTestDB(t,
+		testRow{ID: "old", Summary: "first", UpdatedAt: "2026-01-01T00:00:00Z", Data: minimalThread(t, SupportedThreadVersion)},
+		testRow{ID: "new", Summary: "latest", UpdatedAt: "2026-04-01T00:00:00Z", Data: minimalThread(t, SupportedThreadVersion)},
+		testRow{ID: "mid", Summary: "middle", UpdatedAt: "2026-03-01T00:00:00Z", Data: minimalThread(t, SupportedThreadVersion)},
+	)
+	rows, err := ListThreads(db, 2)
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("len = %d, want 2", len(rows))
+	}
+	if rows[0].ID != "new" || rows[0].Summary != "latest" {
+		t.Errorf("rows[0] = %+v, want id=new summary=latest", rows[0])
+	}
+	if rows[1].ID != "mid" {
+		t.Errorf("rows[1].ID = %q, want mid", rows[1].ID)
+	}
+}
+
+func TestListThreads_EmptyDB(t *testing.T) {
+	db := makeTestDB(t)
+	rows, err := ListThreads(db, 0)
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("empty db: got %d rows", len(rows))
+	}
+}
+
 func TestDefaultDBPath_PerOS(t *testing.T) {
 	t.Setenv("ZED_THREADS_DB", "")
 	got := DefaultDBPath()

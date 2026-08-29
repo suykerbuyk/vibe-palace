@@ -727,6 +727,8 @@ func TestEmbeddedCommands_InlineArchiveDelivery(t *testing.T) {
 			"**transcript**",
 			"**archive_transcript**",
 			"true",
+			"vp archive threads --adapter zed",
+			"Never pass the thread id as `session_key`",
 		} {
 			if !strings.Contains(block, want) {
 				t.Errorf("%s: vp_capture_session block must name %q for hook-less durable capture", rel, want)

@@ -20,6 +20,7 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(mutates(cmdAbsorb()))
 	reg.Register(cmdArchive())
 	reg.Register(mutates(cmdArchiveCreate(info)))
+	reg.Register(cmdArchiveThreads())
 	reg.Register(cmdArchiveList())
 	reg.Register(cmdArchiveVerify())
 	reg.Register(cmdArchiveExtract())

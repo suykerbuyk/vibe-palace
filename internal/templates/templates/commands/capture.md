@@ -19,6 +19,8 @@ a tool failure — without doing the full wrap-up sequence.
    - **transcript**: when the host can supply the session transcript text, pass it (required for friction scoring and durable archive content on hook-less hosts)
    - **archive_transcript**: `true` — for hook-less hosts (Grok, Zed pane, HTTP serve) / when not relying on SessionEnd; Claude Code no-ops this when the server can derive the host session id
 
+   **Native Zed pane (handshake `host: zed`, no SessionEnd):** you almost never have transcript text. Capture anyway — the note will carry `host: zed`; `transcript_archive_unreachable` without a transcript is expected, not a reason to skip the note. Then list native threads with `vp archive threads --adapter zed` and **ask the human which thread id is this session** — never pick the most recently updated row (ADR-006). With a declared id: `vp archive create --adapter zed --session-id <id> -p {{PROJECT}}`. **Never pass the thread id as `session_key`** — a native thread appends across work units and that key would overwrite the note.
+
 3. Confirm the capture succeeded and report the session ID.
 
 Unlike `/wrap`, this does NOT update the resume, retire tasks, or signal

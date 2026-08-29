@@ -86,7 +86,7 @@ func TestGenerateManPages(t *testing.T) {
 // parent whose subcommands are absent here emits a page with no child sections.
 func knownCommands() []string {
 	return []string{
-		"archive", "archive create", "archive list", "archive verify",
+		"archive", "archive create", "archive threads", "archive list", "archive verify",
 		"archive extract", "archive backfill", "archive link",
 		"audit", "audit rooms", "audit vault",
 		"check", "commands", "commands list", "commands upgrade",

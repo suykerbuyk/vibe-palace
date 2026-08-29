@@ -145,16 +145,26 @@ func QueryThread(dbPath, threadID string) (*Thread, error) {
 	return parseThread(id, summary, updatedAt, data)
 }
 
-// ListThreadIDs returns thread IDs in reverse-chronological order
-// (most recently updated first). Used by --detect smoke mode.
-func ListThreadIDs(dbPath string, limit int) ([]string, error) {
+// ThreadListRow is one native-panel thread as listed from threads.db
+// without decompressing the payload. The CLI uses this so an operator
+// can DECLARE a thread id; the agent must not pick the newest row.
+type ThreadListRow struct {
+	ID        string `json:"id"`
+	Summary   string `json:"summary"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// ListThreads returns native-panel threads in reverse-chronological
+// order (most recently updated first). limit <= 0 means no limit.
+// Listing does not decompress the data BLOB.
+func ListThreads(dbPath string, limit int) ([]ThreadListRow, error) {
 	db, err := openDB(dbPath)
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
 
-	q := `SELECT id FROM threads ORDER BY updated_at DESC`
+	q := `SELECT id, COALESCE(summary, ''), COALESCE(updated_at, '') FROM threads ORDER BY updated_at DESC`
 	args := []any{}
 	if limit > 0 {
 		q += ` LIMIT ?`
@@ -162,19 +172,39 @@ func ListThreadIDs(dbPath string, limit int) ([]string, error) {
 	}
 	rows, err := db.Query(q, args...)
 	if err != nil {
-		return nil, fmt.Errorf("query thread ids: %w", err)
+		return nil, fmt.Errorf("query threads: %w", err)
 	}
 	defer rows.Close()
 
-	var ids []string
+	var out []ThreadListRow
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan id: %w", err)
+		var r ThreadListRow
+		if err := rows.Scan(&r.ID, &r.Summary, &r.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan thread: %w", err)
 		}
-		ids = append(ids, id)
+		out = append(out, r)
 	}
-	return ids, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []ThreadListRow{}
+	}
+	return out, nil
+}
+
+// ListThreadIDs returns thread IDs in reverse-chronological order
+// (most recently updated first). Convenience wrapper over ListThreads.
+func ListThreadIDs(dbPath string, limit int) ([]string, error) {
+	rows, err := ListThreads(dbPath, limit)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(rows))
+	for i, r := range rows {
+		ids[i] = r.ID
+	}
+	return ids, nil
 }
 
 func parseThread(id, summary, updatedAt string, data []byte) (*Thread, error) {

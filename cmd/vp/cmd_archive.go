@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
+	zedreader "github.com/suykerbuyk/vibe-palace/internal/archive/zed"
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -24,7 +25,7 @@ func cmdArchive() *cli.Command {
 		Name:        "archive",
 		Synopsis:    "vp archive <command> [flags]",
 		Description: "Archive AI session transcripts with provenance manifests. See doc/adr/001-transcript-archive.md.",
-		Subcommands: []string{"archive create", "archive list", "archive verify", "archive extract", "archive backfill", "archive link"},
+		Subcommands: []string{"archive create", "archive threads", "archive list", "archive verify", "archive extract", "archive backfill", "archive link"},
 	}
 }
 
@@ -115,6 +116,92 @@ func cmdArchiveCreate(info cli.BuildInfo) *cli.Command {
 			return cli.ExitOK
 		},
 	}
+}
+
+// -------- archive threads --------
+
+// archive threads is READ-ONLY: it lists native Zed panel threads from
+// threads.db so an operator can DECLARE which id to archive. It never
+// writes the vault and must not pick a thread for the caller.
+
+var archiveThreadsFlags = []cli.FlagDef{
+	{Name: "--adapter", Arg: "NAME", Help: "Source adapter (only zed lists native-panel threads)", Default: archive.ZedAdapterName},
+	{Name: "--source", Arg: "PATH", Help: "Override threads.db path (default: Zed's per-OS location, or $ZED_THREADS_DB)"},
+	{Name: "--last", Short: "-n", Arg: "N", Help: "Max threads to show (default 20; 0 = all)"},
+	{Name: "--json", Help: "Output JSON"},
+}
+
+func cmdArchiveThreads() *cli.Command {
+	return &cli.Command{
+		Name:     "archive threads",
+		Synopsis: "vp archive threads --adapter zed [--last N] [--source PATH] [--json]",
+		Description: "List native Zed agent-panel threads from threads.db (most recently updated first). " +
+			"Read-only. The id you pass to `vp archive create --adapter zed --session-id` must be " +
+			"declared by a human — never pick the newest row. ACP / Claude-shaped threads are not " +
+			"in this store.",
+		Flags: archiveThreadsFlags,
+		Examples: []cli.Example{
+			{Cmd: "vp archive threads --adapter zed", Comment: "List recent native Zed threads"},
+			{Cmd: "vp archive threads --adapter zed --json --last 5", Comment: "Last 5 threads as JSON"},
+		},
+		Run: func(args []string) int {
+			fv, err := cli.ParseFlags(archiveThreadsFlags, args)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp archive threads: %v\n", err)
+				return cli.ExitUser
+			}
+			limit := 20
+			if fv.IsSet("--last") {
+				limit = fv.Int("--last")
+			}
+			return runArchiveThreads(fv.Get("--adapter"), fv.Get("--source"), limit, fv.Bool("--json"), os.Stdout)
+		},
+	}
+}
+
+func runArchiveThreads(adapter, source string, limit int, asJSON bool, stdout io.Writer) int {
+	if adapter == "" {
+		adapter = archive.ZedAdapterName
+	}
+	if adapter != archive.ZedAdapterName {
+		fmt.Fprintf(os.Stderr, "vp archive threads: adapter %q has no native-panel thread list (use --adapter zed)\n", adapter)
+		return cli.ExitUser
+	}
+	dbPath := source
+	if dbPath == "" {
+		dbPath = zedreader.DefaultDBPath()
+	}
+	if dbPath == "" {
+		fmt.Fprintln(os.Stderr, "vp archive threads: could not resolve threads.db (set --source or ZED_THREADS_DB)")
+		return cli.ExitUser
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		fmt.Fprintf(os.Stderr, "vp archive threads: %v\n", err)
+		return cli.ExitUser
+	}
+	rows, err := zedreader.ListThreads(dbPath, limit)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vp archive threads: %v\n", err)
+		return cli.ExitSystem
+	}
+	if asJSON {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(rows); err != nil {
+			fmt.Fprintf(os.Stderr, "vp archive threads: %v\n", err)
+			return cli.ExitSystem
+		}
+		return cli.ExitOK
+	}
+	if len(rows) == 0 {
+		fmt.Fprintln(stdout, "No native Zed threads found.")
+		return cli.ExitOK
+	}
+	fmt.Fprintf(stdout, "%-36s  %-32s  %s\n", "ID", "UPDATED", "SUMMARY")
+	for _, r := range rows {
+		fmt.Fprintf(stdout, "%-36s  %-32s  %s\n", r.ID, r.UpdatedAt, r.Summary)
+	}
+	return cli.ExitOK
 }
 
 // -------- archive list --------
