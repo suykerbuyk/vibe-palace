@@ -674,6 +674,20 @@ func TestEmbeddedWorkflow_ThinWithDoctrineContract(t *testing.T) {
 			t.Errorf("%s: does not point at the vp_get_doctrine surface", rel)
 		}
 	}
+
+	reviewPlan, ok := body["commands/review-plan.md"]
+	if !ok {
+		t.Fatal("embedded resource commands/review-plan.md missing")
+	}
+	if !strings.Contains(reviewPlan, "action: amend") {
+		t.Error("review-plan.md: no record-via-amend step — findings will strand in chat or /tmp")
+	}
+	if !strings.Contains(reviewPlan, "op: replaced") {
+		t.Error("review-plan.md: must tell the agent that a same-name amend replaces")
+	}
+	if strings.Contains(reviewPlan, "/tmp") && !strings.Contains(reviewPlan, "Never write the review to `/tmp`") {
+		t.Error("review-plan.md: mentions /tmp without forbidding it")
+	}
 }
 
 func TestFS_ContainsTemplatesRoot(t *testing.T) {

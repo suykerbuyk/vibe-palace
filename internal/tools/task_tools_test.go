@@ -449,7 +449,8 @@ func TestManageTaskAmend_RecordsADecisionIntoThePlan(t *testing.T) {
 	}
 
 	// Amend twice with the SAME section: the second must replace, not duplicate.
-	for _, decision := range []string{"Provisional.", "REVERSED: the key is already a content hash."} {
+	wantOp := []string{storage.AmendAppended, storage.AmendReplaced}
+	for i, decision := range []string{"Provisional.", "REVERSED: the key is already a content hash."} {
 		p, _ := json.Marshal(manageTaskParams{
 			Project: "test-proj", Action: "amend", Task: "t",
 			Section: "Decision (205)", Content: decision,
@@ -461,6 +462,9 @@ func TestManageTaskAmend_RecordsADecisionIntoThePlan(t *testing.T) {
 		m, ok := result.(map[string]string)
 		if !ok || m["status"] != "amended" || m["section"] != "Decision (205)" {
 			t.Errorf("amend result = %#v, want status=amended, section=Decision (205)", result)
+		}
+		if m["op"] != wantOp[i] {
+			t.Errorf("amend %d op = %q, want %q — collision must be visible", i, m["op"], wantOp[i])
 		}
 	}
 

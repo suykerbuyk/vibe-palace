@@ -205,6 +205,37 @@ include:
 End with a clear recommendation: proceed as-is, revise the plan
 first, or investigate further before deciding.
 
+Do not stop after the chat summary. Step 6 records the findings in
+the vault. A review that exists only in this conversation is not a
+review — it is the `/tmp` strand this command exists to prevent.
+
+## Step 6: Record findings in the vault
+
+Findings land via `vp_manage_task` `action=amend` on the task you
+reviewed, not a temp file, not a parallel doc, not a session-note
+open thread you will "promote later".
+
+```
+vp_manage_task
+  action: amend
+  project: <slug>
+  task: <task-slug>
+  section: Review (YYYY-MM-DD)
+  content: <structured review body>
+```
+
+- The `section` parameter supplies the H2. **Do not put a `##` heading
+  in `content`.** Use `###` for sub-headings.
+- Name the section by topic and date — `Review (2026-08-29)` — never
+  by a claim (`Review — none of this is decided`). `amend` is keyed on
+  that heading and cannot rewrite it later.
+- A same-name re-run **replaces** the earlier body. The result includes
+  `op: replaced` or `op: appended` so you can see which happened. If
+  you meant to keep the previous record, use a distinct dated heading
+  (`Review (2026-08-29b)`), not a second amend of the same name.
+- Never write the review to `/tmp` or a host-local scratch file. Under
+  a thin client that file is gone when the session ends.
+
 ## Anti-Patterns to Avoid in the Review
 
 - **Do not praise the plan.** Focus only on problems and

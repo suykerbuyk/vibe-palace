@@ -119,7 +119,8 @@ func TestLiveVaultAmendNeverDisturbsTheHeaderBlock(t *testing.T) {
 		// Exercise both paths on every real file: replace each existing section,
 		// and append one that cannot already exist.
 		for _, section := range append(real, "Canary Section That Cannot Exist") {
-			after := parseTaskMeta(slug, upsertSection(content, section, "CANARY BODY"), false)
+			out, _ := upsertSection(content, section, "CANARY BODY")
+			after := parseTaskMeta(slug, out, false)
 
 			if after.Status != before.Status {
 				t.Errorf("%s: amending %q changed Status %q -> %q", slug, section, before.Status, after.Status)
@@ -165,7 +166,7 @@ func TestLiveVaultAmendNeverMatchesAFencedHeading(t *testing.T) {
 			}
 
 			// And the append path must leave the fenced sample byte-identical.
-			out := upsertSection(content, section, "CANARY BODY")
+			out, _ := upsertSection(content, section, "CANARY BODY")
 			if !strings.Contains(out, "## "+section) {
 				t.Errorf("%s: amend of fenced-only heading %q produced no section at all", slug, section)
 			}
@@ -190,8 +191,8 @@ func TestLiveVaultAmendIsIdempotentOnRealBodies(t *testing.T) {
 		real, _ := headingsIn(content)
 
 		for _, section := range append(real, "Canary Section That Cannot Exist") {
-			once := upsertSection(content, section, "CANARY BODY")
-			twice := upsertSection(once, section, "CANARY BODY")
+			once, _ := upsertSection(content, section, "CANARY BODY")
+			twice, _ := upsertSection(once, section, "CANARY BODY")
 			if once != twice {
 				t.Errorf("%s: amending %q twice is not idempotent — a retry would duplicate the section", slug, section)
 			}

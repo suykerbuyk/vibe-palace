@@ -460,49 +460,53 @@ func replaceTitleLine(content, title string) string {
 //
 // Active tasks only. A retired task's plan is history, and history is append-only
 // (iterations.md), not amendable.
-func (v *Vault) AmendTask(project, taskSlug, section, body string) error {
+func (v *Vault) AmendTask(project, taskSlug, section, body string) (op string, err error) {
 	section = strings.TrimSpace(section)
 	if section == "" {
-		return fmt.Errorf("amend %q: section is required — it names the H2 heading to replace or append", taskSlug)
+		return "", fmt.Errorf("amend %q: section is required — it names the H2 heading to replace or append", taskSlug)
 	}
 	if strings.ContainsAny(section, "\r\n") {
-		return fmt.Errorf("amend %q: section must be a single line, got %q", taskSlug, section)
+		return "", fmt.Errorf("amend %q: section must be a single line, got %q", taskSlug, section)
 	}
 	if strings.HasPrefix(section, "#") {
-		return fmt.Errorf(
+		return "", fmt.Errorf(
 			"amend %q: section is the heading TEXT, not the markup — pass %q, not %q",
 			taskSlug, strings.TrimLeft(strings.TrimSpace(section), "# "), section)
 	}
 	if strings.TrimSpace(body) == "" {
-		return fmt.Errorf("amend %q: body is required — an empty section records nothing", taskSlug)
+		return "", fmt.Errorf("amend %q: body is required — an empty section records nothing", taskSlug)
 	}
 	if err := validateTaskBody(body); err != nil {
-		return err
+		return "", err
 	}
 	if err := validateAmendBody(body); err != nil {
-		return err
+		return "", err
 	}
 
 	path, err := v.TaskFile(project, taskSlug)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	release, err := vaultlock.Acquire(v.Root, path)
 	if err != nil {
-		return fmt.Errorf("lock task: %w", err)
+		return "", fmt.Errorf("lock task: %w", err)
 	}
 	defer release()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("task %q not found in project %q (amend works on ACTIVE tasks only)", taskSlug, project)
+			return "", fmt.Errorf("task %q not found in project %q (amend works on ACTIVE tasks only)", taskSlug, project)
 		}
-		return fmt.Errorf("read task: %w", err)
+		return "", fmt.Errorf("read task: %w", err)
 	}
 
-	return atomicfile.Write(v.Root, path, []byte(upsertSection(string(data), section, body)))
+	next, op := upsertSection(string(data), section, body)
+	if err := atomicfile.Write(v.Root, path, []byte(next)); err != nil {
+		return "", err
+	}
+	return op, nil
 }
 
 // validateAmendBody refuses an H2 inside an amend body.
@@ -576,16 +580,25 @@ func sectionBounds(content, section string) (start, end int, found bool) {
 // Unlike upsertHeaderField, this normalizes the file to exactly one trailing
 // newline. A body edit already rewrites whole lines, and CreateTask writes that
 // shape anyway, so converging on it is predictable rather than lossy.
-func upsertSection(content, section, body string) string {
+const (
+	// AmendAppended is the op when amend added a new H2 because the heading
+	// was absent. AmendReplaced is the op when it overwrote an existing one.
+	// Convergence is still the design — reporting which branch ran is what
+	// makes a section-name collision visible instead of silent.
+	AmendAppended = "appended"
+	AmendReplaced = "replaced"
+)
+
+func upsertSection(content, section, body string) (result, op string) {
 	rendered := "## " + section + "\n\n" + strings.TrimRight(body, "\n")
 
 	start, end, found := sectionBounds(content, section)
 	if !found {
 		base := strings.TrimRight(content, "\n")
 		if base == "" {
-			return rendered + "\n"
+			return rendered + "\n", AmendAppended
 		}
-		return base + "\n\n" + rendered + "\n"
+		return base + "\n\n" + rendered + "\n", AmendAppended
 	}
 
 	lines := strings.Split(content, "\n")
@@ -596,7 +609,7 @@ func upsertSection(content, section, body string) string {
 		out = append(out, "") // blank line before the section that follows
 		out = append(out, lines[end:]...)
 	}
-	return strings.TrimRight(strings.Join(out, "\n"), "\n") + "\n"
+	return strings.TrimRight(strings.Join(out, "\n"), "\n") + "\n", AmendReplaced
 }
 
 // CreateTask creates a new task markdown file in the project's tasks directory.

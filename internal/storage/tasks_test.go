@@ -1072,8 +1072,12 @@ func amendFixture(t *testing.T) *Vault {
 
 func TestAmendTaskAppendsWhenSectionAbsent(t *testing.T) {
 	v := amendFixture(t)
-	if err := v.AmendTask("proj", "t", "Decision (205)", "Option B. The re-key is unjustified."); err != nil {
+	op, err := v.AmendTask("proj", "t", "Decision (205)", "Option B. The re-key is unjustified.")
+	if err != nil {
 		t.Fatalf("AmendTask: %v", err)
+	}
+	if op != AmendAppended {
+		t.Fatalf("op = %q, want %q", op, AmendAppended)
 	}
 	_, body, err := v.GetTask("proj", "t")
 	if err != nil {
@@ -1094,9 +1098,17 @@ func TestAmendTaskAppendsWhenSectionAbsent(t *testing.T) {
 // than append-only. A retried amend must CONVERGE, not accumulate.
 func TestAmendTaskIsIdempotent(t *testing.T) {
 	v := amendFixture(t)
-	for range 3 {
-		if err := v.AmendTask("proj", "t", "Decision", "Ship it."); err != nil {
+	for i := range 3 {
+		op, err := v.AmendTask("proj", "t", "Decision", "Ship it.")
+		if err != nil {
 			t.Fatalf("AmendTask: %v", err)
+		}
+		want := AmendReplaced
+		if i == 0 {
+			want = AmendAppended
+		}
+		if op != want {
+			t.Fatalf("amend %d op = %q, want %q", i, op, want)
 		}
 	}
 	_, body, err := v.GetTask("proj", "t")
@@ -1113,7 +1125,7 @@ func TestAmendTaskIsIdempotent(t *testing.T) {
 
 func TestAmendTaskReplacesInPlaceAndKeepsNeighbours(t *testing.T) {
 	v := amendFixture(t)
-	if err := v.AmendTask("proj", "t", "Diagnosis", "REVERSED: the premise was false."); err != nil {
+	if _, err := v.AmendTask("proj", "t", "Diagnosis", "REVERSED: the premise was false."); err != nil {
 		t.Fatalf("AmendTask: %v", err)
 	}
 	_, body, err := v.GetTask("proj", "t")
@@ -1144,7 +1156,7 @@ func TestAmendTaskNeverTouchesHeaderBlock(t *testing.T) {
 	if err := v.UpdateTaskStatus("proj", "t", "in_progress"); err != nil {
 		t.Fatalf("UpdateTaskStatus: %v", err)
 	}
-	if err := v.AmendTask("proj", "t", "Decision", "Recorded."); err != nil {
+	if _, err := v.AmendTask("proj", "t", "Decision", "Recorded."); err != nil {
 		t.Fatalf("AmendTask: %v", err)
 	}
 	meta, body, err := v.GetTask("proj", "t")
@@ -1182,7 +1194,7 @@ func TestAmendTaskIsFenceAware(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	if err := v.AmendTask("proj", "t", "Decision", "The real decision."); err != nil {
+	if _, err := v.AmendTask("proj", "t", "Decision", "The real decision."); err != nil {
 		t.Fatalf("AmendTask: %v", err)
 	}
 
@@ -1210,7 +1222,7 @@ func TestAmendTaskH3DoesNotTerminateSection(t *testing.T) {
 	if err := v.CreateTask("proj", TaskSpec{Slug: "t", Title: "T", Content: body, Priority: "high"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if err := v.AmendTask("proj", "t", "Plan", "### Phase 1\n\nnew one\n\n### Phase 2\n\nnew two"); err != nil {
+	if _, err := v.AmendTask("proj", "t", "Plan", "### Phase 1\n\nnew one\n\n### Phase 2\n\nnew two"); err != nil {
 		t.Fatalf("AmendTask: %v", err)
 	}
 	_, got, err := v.GetTask("proj", "t")
@@ -1243,7 +1255,7 @@ func TestAmendTaskRejectsMetadataAndH2InBody(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			v := amendFixture(t)
-			err := v.AmendTask("proj", "t", "Decision", tc.body)
+			_, err := v.AmendTask("proj", "t", "Decision", tc.body)
 			if err == nil {
 				t.Fatalf("AmendTask(%q) succeeded, want rejection", tc.body)
 			}
@@ -1258,7 +1270,7 @@ func TestAmendTaskRejectsMetadataAndH2InBody(t *testing.T) {
 func TestAmendTaskAcceptsMetadataShapesInsideFences(t *testing.T) {
 	v := amendFixture(t)
 	body := "The header syntax is:\n\n```markdown\n**Status:** pending\n**Parent:** epic\n## Example\n```\n\nQuoted, not applied."
-	if err := v.AmendTask("proj", "t", "Decision", body); err != nil {
+	if _, err := v.AmendTask("proj", "t", "Decision", body); err != nil {
 		t.Fatalf("AmendTask rejected a fenced example: %v", err)
 	}
 	meta, got, err := v.GetTask("proj", "t")
@@ -1284,7 +1296,7 @@ func TestAmendTaskRejectsBadSection(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			v := amendFixture(t)
-			err := v.AmendTask("proj", "t", tc.section, tc.body)
+			_, err := v.AmendTask("proj", "t", tc.section, tc.body)
 			if err == nil {
 				t.Fatal("AmendTask succeeded, want rejection")
 			}
@@ -1297,7 +1309,7 @@ func TestAmendTaskRejectsBadSection(t *testing.T) {
 
 func TestAmendTaskNotFound(t *testing.T) {
 	v := testVault(t)
-	err := v.AmendTask("proj", "nope", "Decision", "x")
+	_, err := v.AmendTask("proj", "nope", "Decision", "x")
 	if err == nil {
 		t.Fatal("AmendTask on a missing task succeeded, want error")
 	}
@@ -1316,7 +1328,7 @@ func TestAmendTaskConcurrentDifferentSectionsBothSurvive(t *testing.T) {
 	errs := make([]error, len(sections))
 	for i, s := range sections {
 		wg.Go(func() {
-			errs[i] = v.AmendTask("proj", "t", s, fmt.Sprintf("body of %s", s))
+			_, errs[i] = v.AmendTask("proj", "t", s, fmt.Sprintf("body of %s", s))
 		})
 	}
 	wg.Wait()
@@ -1346,13 +1358,13 @@ func TestAmendTaskConcurrentDifferentSectionsBothSurvive(t *testing.T) {
 // GetTask after an amend must yield the same metadata the writers set.
 func TestAmendTaskRoundTripsThroughParser(t *testing.T) {
 	v := amendFixture(t)
-	if err := v.AmendTask("proj", "t", "Decision", "Recorded."); err != nil {
+	if _, err := v.AmendTask("proj", "t", "Decision", "Recorded."); err != nil {
 		t.Fatalf("AmendTask: %v", err)
 	}
 	if err := v.SetTaskRelations("proj", "t", TaskRelations{Depends: &[]string{"a", "b"}}); err != nil {
 		t.Fatalf("SetTaskRelations after amend: %v", err)
 	}
-	if err := v.AmendTask("proj", "t", "Decision", "Re-recorded."); err != nil {
+	if _, err := v.AmendTask("proj", "t", "Decision", "Re-recorded."); err != nil {
 		t.Fatalf("second AmendTask: %v", err)
 	}
 	meta, got, err := v.GetTask("proj", "t")
