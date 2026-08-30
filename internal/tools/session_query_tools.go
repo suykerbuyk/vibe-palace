@@ -589,16 +589,15 @@ func getEffectivenessHandler(vault *storage.Vault) mcp.HandlerFunc {
 			weeks = 52
 		}
 
-		// Compute date range.
-		now := time.Now().UTC()
-		dateFrom := now.AddDate(0, 0, -weeks*7).Format("2006-01-02")
+		loc := vault.CalendarLocation()
+		dateFrom := time.Now().In(loc).AddDate(0, 0, -weeks*7).Format("2006-01-02")
 
 		sessions, err := vault.ListSessions(p.Project, dateFrom, "", 0)
 		if err != nil {
 			return nil, fmt.Errorf("list sessions: %w", err)
 		}
 
-		result := capture.ComputeEffectiveness(p.Project, sessions)
+		result := capture.ComputeEffectiveness(p.Project, sessions, loc)
 
 		// Optional post-filter: when a narrowing sections selector is supplied,
 		// ZERO the unselected section's field (present-but-empty, not an absent

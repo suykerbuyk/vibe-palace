@@ -5,6 +5,7 @@ package capture
 
 import (
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -19,7 +20,7 @@ func TestComputeEffectiveness_ContextDelta(t *testing.T) {
 		// No context: friction 5 -> outcome 95.
 		{Date: "2026-01-08", Iteration: 1, FrictionScore: 5},
 	}
-	res := ComputeEffectiveness("test-proj", sessions)
+	res := ComputeEffectiveness("test-proj", sessions, time.UTC)
 
 	if res.Project != "test-proj" {
 		t.Errorf("project = %q", res.Project)
@@ -44,7 +45,7 @@ func TestComputeEffectiveness_ContextDelta(t *testing.T) {
 }
 
 func TestComputeEffectiveness_Empty(t *testing.T) {
-	res := ComputeEffectiveness("p", nil)
+	res := ComputeEffectiveness("p", nil, time.UTC)
 	if res.Overall.TotalSessions != 0 {
 		t.Errorf("total = %d, want 0", res.Overall.TotalSessions)
 	}
@@ -59,7 +60,7 @@ func TestComputeEffectiveness_WeekBucketingAndSkipBadDate(t *testing.T) {
 		{Date: "2026-01-13", Iteration: 1, FrictionScore: 20, Decisions: []string{"d"}},
 		{Date: "garbage", Iteration: 1, FrictionScore: 99},
 	}
-	res := ComputeEffectiveness("p", sessions)
+	res := ComputeEffectiveness("p", sessions, time.UTC)
 	if len(res.Weeks) != 2 {
 		t.Fatalf("weeks = %d, want 2 (bad date skipped)", len(res.Weeks))
 	}

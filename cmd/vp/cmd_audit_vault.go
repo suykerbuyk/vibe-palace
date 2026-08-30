@@ -64,7 +64,7 @@ func cmdAuditVault() *cli.Command {
 			// surface for six hours every evening. Two format sites with nothing
 			// holding them together WAS the bug; there is one now.
 			return runAuditVault(vault, fv.Bool("--write"), fv.Bool("--accept"),
-				vaultaudit.WriterCalendarDay(time.Now()), os.Stdout)
+				vault.CalendarDay(time.Now()), os.Stdout)
 		},
 	}
 }

@@ -16,7 +16,7 @@ import (
 // What is pinned here is the HOLLOW-FIELD rule, and only that. The reason Render used to
 // be handed an empty date — that the server should not invent one the caller knows — was
 // WITHDRAWN by the operator on 2026-08-19: the writer owns the calendar day and clients
-// do not send one (see vaultaudit.WriterCalendarDay). No shipping caller passes "" today.
+// do not send one (see storage.Vault.CalendarDay). No shipping caller passes "" today.
 // The rule survives the reversal because it is about rendering, not about authority: a
 // function handed no date must say so rather than fake the field.
 //

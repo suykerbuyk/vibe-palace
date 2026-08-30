@@ -33,7 +33,7 @@ func ReportRelPath(date string) string { return "Audits/" + date + "-vault-audit
 // The date is passed in rather than read from the clock: a caller that stamps the
 // report and a caller that names the file must agree, and a function that reads the
 // clock twice can disagree with itself across midnight. Both shipping callers get it
-// from WriterCalendarDay — see that function for why the WRITER owns the day and a
+// from storage.Vault.CalendarDay — see that method for why the WRITER owns the day and a
 // client-supplied date is not an authority.
 //
 // An EMPTY date renders as an UNDATED report. No shipping caller passes one any more:
@@ -55,7 +55,7 @@ func (r Report) Render(date, vaultRoot string) string {
 		b.WriteString("---\ntype: vault-audit\n---\n\n")
 		b.WriteString("# Vault Audit — undated\n\n")
 		b.WriteString("*This report was rendered inline and carries no date. Write it with " +
-			"`vp audit vault --write` (or `vp_audit_vault` with `write` and `date`) to stamp and " +
+			"`vp audit vault --write` (or `vp_audit_vault` with `write: true`) to stamp and " +
 			"commit it, which is what makes `git log -p Audits/` show drift.*\n\n")
 	} else {
 		// session_notes is the CHURN ANCHOR the staleness nag subtracts from. It is

@@ -66,6 +66,20 @@ func TestCheckStaleness_SilentWhenFresh(t *testing.T) {
 	}
 }
 
+func TestCheckStaleness_IgnoresClockToml(t *testing.T) {
+	v := stalenessVault(t, 5, "---\ntype: vault-audit\ndate: 2026-08-12\nsession_notes: 5\n---\n\n# Vault Audit\n")
+	now := time.Date(2026, 8, 19, 4, 0, 0, 0, time.UTC)
+	without := CheckStaleness(v, now)
+	if err := os.WriteFile(filepath.Join(v.Root, "clock.toml"), []byte("timezone = \"America/Denver\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	with := CheckStaleness(v, now)
+	if with.AgeDays != without.AgeDays {
+		t.Errorf("AgeDays with clock.toml = %v, without = %v — the file must not be an authority",
+			with.AgeDays, without.AgeDays)
+	}
+}
+
 func TestCheckStaleness_NagsOnChurn(t *testing.T) {
 	v := stalenessVault(t, 60, "---\ntype: vault-audit\ndate: 2026-07-01\nsession_notes: 8\n---\n\n# Vault Audit\n")
 

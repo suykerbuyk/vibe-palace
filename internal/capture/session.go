@@ -99,6 +99,13 @@ type SessionParams struct {
 	// non-empty EnrichedBy drives the provenance fence in buildSessionBody and
 	// the enriched_by/enriched_at frontmatter fields.
 	EnrichedBy string
+
+	// Now is the capture-time instant. Zero means time.Now(). Calendar day is
+	// derived from this instant via vault.CalendarDay — callers do not pass a
+	// date string. A session_key retry still computes a day here; RewriteSession
+	// pins identity to the original path, so a midnight-crossing retry does not
+	// rename the note.
+	Now time.Time
 }
 
 // CaptureFailure names one thing the capture pipeline could not do. Stage is a
@@ -219,8 +226,11 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		slog.Warn(msg, append([]any{"err", err, "stage", stage, "project", p.Project}, args...)...)
 	}
 
-	now := time.Now().UTC()
-	date := now.Format("2006-01-02")
+	now := p.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	date := vault.CalendarDay(now)
 
 	title := p.Title
 	if title == "" {

@@ -85,10 +85,11 @@ func auditVaultHandler(vault *storage.Vault) mcp.HandlerFunc {
 		}
 
 		// 🔴 THE WRITER STAMPS THE DAY. p.Date is parsed off the wire and then
-		// deliberately DISCARDED — see WriterCalendarDay for why a client clock is not
-		// an authority, and TestAuditVault_ClientDateDoesNotWin for the pin. Read once,
-		// here, so the filename and the date rendered inside the file cannot disagree.
-		day := vaultaudit.WriterCalendarDay(time.Now())
+		// deliberately DISCARDED — see storage.Vault.CalendarDay for why a client clock
+		// is not an authority, and TestAuditVault_ClientDateDoesNotWin for the pin.
+		// Read once, here, so the filename and the date rendered inside the file cannot
+		// disagree.
+		day := vault.CalendarDay(time.Now())
 
 		if !p.Write {
 			// The inline render carries the same writer day as a written one. It is

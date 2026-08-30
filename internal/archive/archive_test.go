@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 // sampleClaudeJSONL is a minimal fixture resembling a Claude Code
@@ -159,6 +161,43 @@ func TestCreate_IdempotentOnSameSource(t *testing.T) {
 	}
 	if !res3.Skipped {
 		t.Fatal("identical opts must be Skipped=true")
+	}
+}
+
+func TestCreate_StemUsesProcessLocalCalendarDay(t *testing.T) {
+	denver, err := time.LoadLocation("America/Denver")
+	if err != nil {
+		t.Skipf("no tzdata for America/Denver on this host: %v", err)
+	}
+	tmp := t.TempDir()
+	vault := filepath.Join(tmp, "vault")
+	if err := os.MkdirAll(vault, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vault, "clock.toml"), []byte("timezone = \"America/Denver\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcPath, _, _ := writeSource(t, tmp)
+	evening := time.Date(2026, 8, 12, 22, 57, 0, 0, denver)
+
+	res, err := Create(CreateOptions{
+		Adapter:     ClaudeCodeAdapterName,
+		SessionID:   "sess-local",
+		SourcePath:  srcPath,
+		VaultRoot:   vault,
+		ProjectSlug: "demo",
+		Now:         evening,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	want := storage.CalendarDay(evening) + "-sess-local"
+	if !strings.Contains(res.ArchivePath, want) {
+		t.Errorf("archive path = %s, want stem %s", res.ArchivePath, want)
+	}
+	_, off := time.Now().Zone()
+	if off == 0 && strings.Contains(res.ArchivePath, "2026-08-12-sess-local") {
+		t.Error("clock.toml forced America/Denver on a UTC-offset host — the OS zone must win")
 	}
 }
 

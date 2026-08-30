@@ -44,7 +44,7 @@ type OverallEffectiveness struct {
 // outcome (100 - FrictionScore) split by whether the session carried rich
 // context (any decisions or files changed). The caller is responsible for
 // loading and date-filtering the session slice; this function is pure.
-func ComputeEffectiveness(project string, sessions []storage.SessionMeta) EffectivenessResult {
+func ComputeEffectiveness(project string, sessions []storage.SessionMeta, loc *time.Location) EffectivenessResult {
 	// Group sessions by ISO week.
 	type weekBucket struct {
 		weekStart  string
@@ -54,9 +54,12 @@ func ComputeEffectiveness(project string, sessions []storage.SessionMeta) Effect
 		noCtxCount int
 	}
 	buckets := make(map[string]*weekBucket)
+	if loc == nil {
+		loc = time.UTC
+	}
 
 	for _, s := range sessions {
-		t, err := time.Parse("2006-01-02", s.Date)
+		t, err := time.ParseInLocation("2006-01-02", s.Date, loc)
 		if err != nil {
 			slog.Warn("effectiveness: unparseable session date", "date", s.Date, "err", err)
 			continue

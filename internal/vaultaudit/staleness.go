@@ -99,7 +99,7 @@ func CheckStaleness(vault *storage.Vault, now time.Time) Staleness {
 	}
 
 	s := Staleness{LastAudit: lastDate, ChurnKnown: anchored}
-	if t, err := time.Parse("2006-01-02", lastDate); err == nil {
+	if t, err := vault.ParseCalendarDay(lastDate); err == nil {
 		s.AgeDays = now.Sub(t).Hours() / 24
 	}
 

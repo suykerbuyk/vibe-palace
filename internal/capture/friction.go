@@ -188,8 +188,9 @@ func GetFrictionTrends(vault *storage.Vault, project string, weeks int) ([]Weekl
 		weeks = 52
 	}
 
-	now := time.Now().UTC()
-	// Find the Monday of the current week.
+	loc := vault.CalendarLocation()
+	now := time.Now().In(loc)
+	// Find the Monday of the current week in the vault calendar.
 	weekday := now.Weekday()
 	if weekday == time.Sunday {
 		weekday = 7
@@ -218,7 +219,7 @@ func GetFrictionTrends(vault *storage.Vault, project string, weeks int) ([]Weekl
 		if s.Tag == storage.TagAutoCapture {
 			continue
 		}
-		t, err := time.Parse("2006-01-02", s.Date)
+		t, err := time.ParseInLocation("2006-01-02", s.Date, loc)
 		if err != nil {
 			slog.Warn("friction: unparseable session date", "date", s.Date, "err", err)
 			continue

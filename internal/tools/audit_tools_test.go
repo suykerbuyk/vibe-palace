@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
-	"github.com/suykerbuyk/vibe-palace/internal/vaultaudit"
 )
 
 // runAuditVaultTool drives the real MCP handler and returns its result map.
@@ -49,7 +48,8 @@ func TestAuditVault_WriteWithoutADateSucceeds(t *testing.T) {
 			"no date is the normal case now, not a refusal", out)
 	}
 
-	want := vaultaudit.WriterCalendarDay(time.Now())
+	now := time.Now()
+	want := vault.CalendarDay(now)
 	if !strings.Contains(rel, want) {
 		t.Errorf("report_path = %q, want it to carry the writer's calendar day %q", rel, want)
 	}
@@ -80,7 +80,8 @@ func TestAuditVault_ClientDateDoesNotWin(t *testing.T) {
 			"calendar day; a client cannot choose the day of a transaction", rel)
 	}
 
-	want := vaultaudit.WriterCalendarDay(time.Now())
+	now := time.Now()
+	want := vault.CalendarDay(now)
 	if !strings.Contains(rel, want) {
 		t.Errorf("report_path = %q, want the writer's calendar day %q — the client date was "+
 			"rejected but the writer day did not replace it", rel, want)
@@ -104,7 +105,8 @@ func TestAuditVault_InlineRenderCarriesTheWriterDay(t *testing.T) {
 	if strings.Contains(body, "1999-01-01") {
 		t.Errorf("the inline render carries the CLIENT's date:\n%s", firstNLines(body, 6))
 	}
-	if want := vaultaudit.WriterCalendarDay(time.Now()); !strings.Contains(body, want) {
+	now := time.Now()
+	if want := vault.CalendarDay(now); !strings.Contains(body, want) {
 		t.Errorf("the inline render does not carry the writer day %q:\n%s", want, firstNLines(body, 6))
 	}
 }

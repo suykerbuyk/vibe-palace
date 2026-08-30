@@ -73,7 +73,7 @@ func runTrends(vault *storage.Vault, proj string, asJSON bool, out io.Writer) in
 		return cli.ExitSystem
 	}
 
-	windows := capture.GetFrictionWindows(sessions, time.Now(), []int{7, 30, 90})
+	windows := capture.GetFrictionWindows(sessions, time.Now(), vault.CalendarLocation(), []int{7, 30, 90})
 	density := capture.GetCorrectionDensitySeries(sessions)
 	regressions := capture.DetectModelRegressions(sessions)
 

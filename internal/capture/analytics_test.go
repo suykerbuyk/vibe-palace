@@ -23,7 +23,7 @@ func dayBefore(n int) string {
 // ---------------------------------------------------------------------------
 
 func TestGetFrictionWindows_Empty(t *testing.T) {
-	got := GetFrictionWindows(nil, fixedNow, []int{7, 30, 90})
+	got := GetFrictionWindows(nil, fixedNow, time.UTC, []int{7, 30, 90})
 	if len(got) != 3 {
 		t.Fatalf("len = %d, want 3", len(got))
 	}
@@ -41,7 +41,7 @@ func TestGetFrictionWindows_OrderAndBuckets(t *testing.T) {
 		{Date: dayBefore(20), FrictionScore: 60}, // in 30/90
 		{Date: dayBefore(80), FrictionScore: 80}, // in 90 only
 	}
-	got := GetFrictionWindows(sessions, fixedNow, []int{7, 30, 90})
+	got := GetFrictionWindows(sessions, fixedNow, time.UTC, []int{7, 30, 90})
 
 	want := []struct {
 		days  int
@@ -64,7 +64,7 @@ func TestGetFrictionWindows_BoundaryInclusive(t *testing.T) {
 	// Exactly 7 days before noon-now: now.Sub(date) = 7d + 12h > 7d*24h, so it
 	// falls OUTSIDE the 7-day window but inside 30/90.
 	sessions := []storage.SessionMeta{{Date: dayBefore(7), FrictionScore: 50}}
-	got := GetFrictionWindows(sessions, fixedNow, []int{7, 30})
+	got := GetFrictionWindows(sessions, fixedNow, time.UTC, []int{7, 30})
 	if got[0].SessionCount != 0 {
 		t.Errorf("7d count = %d, want 0 (7-days-ago noon is >7*24h before now)", got[0].SessionCount)
 	}
@@ -74,7 +74,7 @@ func TestGetFrictionWindows_BoundaryInclusive(t *testing.T) {
 
 	// A session dated today is delta>=0 and well within all windows.
 	today := []storage.SessionMeta{{Date: dayBefore(0), FrictionScore: 10}}
-	g2 := GetFrictionWindows(today, fixedNow, []int{7})
+	g2 := GetFrictionWindows(today, fixedNow, time.UTC, []int{7})
 	if g2[0].SessionCount != 1 {
 		t.Errorf("today 7d count = %d, want 1", g2[0].SessionCount)
 	}
@@ -85,7 +85,7 @@ func TestGetFrictionWindows_SkipsUnparseable(t *testing.T) {
 		{Date: "not-a-date", FrictionScore: 99},
 		{Date: dayBefore(1), FrictionScore: 30},
 	}
-	got := GetFrictionWindows(sessions, fixedNow, []int{7})
+	got := GetFrictionWindows(sessions, fixedNow, time.UTC, []int{7})
 	if got[0].SessionCount != 1 || got[0].AvgFriction != 30.0 {
 		t.Errorf("got %+v, want count=1 avg=30.0", got[0])
 	}
@@ -97,7 +97,7 @@ func TestGetFrictionWindows_Rounding(t *testing.T) {
 		{Date: dayBefore(2), FrictionScore: 11},
 		{Date: dayBefore(3), FrictionScore: 11},
 	}
-	got := GetFrictionWindows(sessions, fixedNow, []int{7})
+	got := GetFrictionWindows(sessions, fixedNow, time.UTC, []int{7})
 	// (10+11+11)/3 = 10.666... -> 10.7
 	if got[0].AvgFriction != 10.7 {
 		t.Errorf("avg = %v, want 10.7", got[0].AvgFriction)
@@ -115,7 +115,7 @@ func TestGetFrictionWindows_ExcludesAutoCapture(t *testing.T) {
 		{Date: dayBefore(3), FrictionScore: 40, Tag: "implementation"},
 		{Date: dayBefore(4), FrictionScore: 0, Tag: "review"}, // unscored non-auto → still in the average as 0
 	}
-	got := GetFrictionWindows(sessions, fixedNow, []int{7})
+	got := GetFrictionWindows(sessions, fixedNow, time.UTC, []int{7})
 	// auto-capture excluded: (20+40+0)/3 = 20.0 — not (20+80+40+0)/4 = 35.0
 	if got[0].SessionCount != 3 {
 		t.Fatalf("7d count = %d, want 3 (auto-capture excluded)", got[0].SessionCount)
@@ -132,7 +132,7 @@ func TestGetFrictionWindows_ExcludesAutoCapture(t *testing.T) {
 func TestComputeFrictionTrend_Unknown(t *testing.T) {
 	// Only sessions older than 7 days -> 7-day window empty -> unknown.
 	sessions := []storage.SessionMeta{{Date: dayBefore(20), FrictionScore: 40}}
-	tr := ComputeFrictionTrend(sessions, fixedNow)
+	tr := ComputeFrictionTrend(sessions, fixedNow, time.UTC)
 	if tr.Direction != "unknown" {
 		t.Errorf("direction = %q, want unknown", tr.Direction)
 	}
@@ -149,7 +149,7 @@ func TestComputeFrictionTrend_Improving(t *testing.T) {
 		{Date: dayBefore(20), FrictionScore: 90},
 		{Date: dayBefore(25), FrictionScore: 90},
 	}
-	tr := ComputeFrictionTrend(sessions, fixedNow)
+	tr := ComputeFrictionTrend(sessions, fixedNow, time.UTC)
 	if tr.Direction != "improving" {
 		t.Errorf("direction = %q, want improving", tr.Direction)
 	}
@@ -169,7 +169,7 @@ func TestComputeFrictionTrend_WorseningAndWarn(t *testing.T) {
 		{Date: dayBefore(20), FrictionScore: 30},
 		{Date: dayBefore(25), FrictionScore: 30},
 	}
-	tr := ComputeFrictionTrend(sessions, fixedNow)
+	tr := ComputeFrictionTrend(sessions, fixedNow, time.UTC)
 	if tr.Direction != "worsening" {
 		t.Errorf("direction = %q, want worsening", tr.Direction)
 	}
@@ -190,7 +190,7 @@ func TestComputeFrictionTrend_WorseningNoWarnBelowFloor(t *testing.T) {
 		{Date: dayBefore(20), FrictionScore: 5},
 		{Date: dayBefore(25), FrictionScore: 5},
 	}
-	tr := ComputeFrictionTrend(sessions, fixedNow)
+	tr := ComputeFrictionTrend(sessions, fixedNow, time.UTC)
 	if tr.Direction != "worsening" {
 		t.Errorf("direction = %q, want worsening", tr.Direction)
 	}
@@ -207,12 +207,31 @@ func TestComputeFrictionTrend_Stable(t *testing.T) {
 		{Date: dayBefore(20), FrictionScore: 41},
 		{Date: dayBefore(25), FrictionScore: 39},
 	}
-	tr := ComputeFrictionTrend(sessions, fixedNow)
+	tr := ComputeFrictionTrend(sessions, fixedNow, time.UTC)
 	if tr.Direction != "stable" {
 		t.Errorf("direction = %q, want stable", tr.Direction)
 	}
 	if tr.Warn {
 		t.Error("stable should not warn")
+	}
+}
+
+func TestGetFrictionWindows_ParsesInVaultLocation(t *testing.T) {
+	denver, err := time.LoadLocation("America/Denver")
+	if err != nil {
+		t.Skipf("no tzdata for America/Denver on this host: %v", err)
+	}
+	// 2026-08-19 04:00 UTC = 2026-08-18 22:00 MDT.
+	now := time.Date(2026, 8, 19, 4, 0, 0, 0, time.UTC)
+	sessions := []storage.SessionMeta{{Date: "2026-08-12", FrictionScore: 10}}
+
+	utc := GetFrictionWindows(sessions, now, time.UTC, []int{7})
+	if utc[0].SessionCount != 0 {
+		t.Errorf("UTC parse: 7d count = %d, want 0 (Aug 12 00:00 UTC is >7*24h before Aug 19 04:00 UTC)", utc[0].SessionCount)
+	}
+	den := GetFrictionWindows(sessions, now, denver, []int{7})
+	if den[0].SessionCount != 1 {
+		t.Errorf("Denver parse: 7d count = %d, want 1 (Aug 12 00:00 MDT is inside 7d of Aug 18 22:00 MDT)", den[0].SessionCount)
 	}
 }
 

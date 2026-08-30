@@ -97,10 +97,13 @@ type parsedSession struct {
 
 // parseSessionDates parses each session's YYYY-MM-DD Date, skipping (and
 // warn-logging) any that fail to parse, mirroring GetFrictionTrends.
-func parseSessionDates(sessions []storage.SessionMeta) []parsedSession {
+func parseSessionDates(sessions []storage.SessionMeta, loc *time.Location) []parsedSession {
+	if loc == nil {
+		loc = time.UTC
+	}
 	out := make([]parsedSession, 0, len(sessions))
 	for _, s := range sessions {
-		d, err := time.Parse("2006-01-02", s.Date)
+		d, err := time.ParseInLocation("2006-01-02", s.Date, loc)
 		if err != nil {
 			slog.Warn("analytics: unparseable session date", "date", s.Date, "err", err)
 			continue
@@ -119,7 +122,7 @@ func parseSessionDates(sessions []storage.SessionMeta) []parsedSession {
 // keyword hits on early-Stop transcript (and historically on git-log summaries),
 // not interaction. Unscored non-auto notes still count as 0 (FrictionScore
 // omitempty); that residual is not this unit.
-func GetFrictionWindows(sessions []storage.SessionMeta, now time.Time, windowDays []int) []FrictionWindow {
+func GetFrictionWindows(sessions []storage.SessionMeta, now time.Time, loc *time.Location, windowDays []int) []FrictionWindow {
 	filtered := make([]storage.SessionMeta, 0, len(sessions))
 	for _, s := range sessions {
 		if s.Tag == storage.TagAutoCapture {
@@ -127,7 +130,7 @@ func GetFrictionWindows(sessions []storage.SessionMeta, now time.Time, windowDay
 		}
 		filtered = append(filtered, s)
 	}
-	parsed := parseSessionDates(filtered)
+	parsed := parseSessionDates(filtered, loc)
 	out := make([]FrictionWindow, 0, len(windowDays))
 	for _, days := range windowDays {
 		cutoff := time.Duration(days) * 24 * time.Hour
@@ -151,8 +154,8 @@ func GetFrictionWindows(sessions []storage.SessionMeta, now time.Time, windowDay
 // ComputeFrictionTrend builds the 7/30/90-day windows and derives a direction
 // by comparing the 7-day average against the 30-day average, plus a warn flag +
 // human message when recent friction is both elevated and rising.
-func ComputeFrictionTrend(sessions []storage.SessionMeta, now time.Time) FrictionTrend {
-	windows := GetFrictionWindows(sessions, now, []int{7, 30, 90})
+func ComputeFrictionTrend(sessions []storage.SessionMeta, now time.Time, loc *time.Location) FrictionTrend {
+	windows := GetFrictionWindows(sessions, now, loc, []int{7, 30, 90})
 	recent := windows[0]   // 7-day
 	baseline := windows[1] // 30-day
 

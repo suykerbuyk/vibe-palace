@@ -456,7 +456,7 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		// len(Windows): a zero-session project attaches nothing, while a
 		// frictionless-but-active project (RecentAvg 0, direction "stable")
 		// legitimately attaches. The omitempty pointer means nil = not attached.
-		if trend := capture.ComputeFrictionTrend(sessions, time.Now()); frictionTrendHasData(trend) {
+		if trend := capture.ComputeFrictionTrend(sessions, time.Now(), vault.CalendarLocation()); frictionTrendHasData(trend) {
 			result.FrictionTrend = &trend
 		}
 		rows, report := rankSessionIndex(project, sessions, terms, headOfQueueN, engine)

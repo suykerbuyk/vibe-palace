@@ -78,7 +78,7 @@ func runFriction(vault *storage.Vault, proj string, top int, asJSON bool, out io
 		return cli.ExitSystem
 	}
 
-	recent := capture.GetFrictionWindows(sessions, time.Now(), []int{7})[0]
+	recent := capture.GetFrictionWindows(sessions, time.Now(), vault.CalendarLocation(), []int{7})[0]
 	topSessions := capture.TopFrictionSessions(sessions, top)
 
 	if asJSON {

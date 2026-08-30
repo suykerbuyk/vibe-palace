@@ -17,6 +17,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
@@ -66,8 +67,9 @@ type CreateOptions struct {
 	// manifest for schema forensics.
 	VPVersion string
 
-	// Now is the capture-time clock. Injectable for tests; defaults
-	// to time.Now() in UTC when zero.
+	// Now is the capture-time instant. Injectable for tests; defaults
+	// to time.Now() when zero. Calendar day for the archive stem is derived
+	// via storage.Vault.CalendarDay; CapturedAt is the instant in UTC RFC3339.
 	Now time.Time
 
 	// Sign, when Enabled, triggers a detached signature over the
@@ -118,9 +120,7 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 		return nil, fmt.Errorf("project slug is required")
 	}
 	if opts.Now.IsZero() {
-		opts.Now = time.Now().UTC()
-	} else {
-		opts.Now = opts.Now.UTC()
+		opts.Now = time.Now()
 	}
 
 	a, err := LookupAdapter(opts.Adapter)
@@ -145,7 +145,8 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 		return nil, fmt.Errorf("create transcripts dir: %w", err)
 	}
 
-	base := fmt.Sprintf("%s-%s", opts.Now.Format("2006-01-02"), opts.SessionID)
+	day := storage.NewVault(opts.VaultRoot).CalendarDay(opts.Now)
+	base := fmt.Sprintf("%s-%s", day, opts.SessionID)
 	archivePath := filepath.Join(transcriptsDir, base+".jsonl.zst")
 	manifestPath := filepath.Join(transcriptsDir, base+".manifest.json")
 
@@ -208,7 +209,7 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 		GitHead:             gitHead(opts.SourceCWD),
 		ProjectSlug:         opts.ProjectSlug,
 		VaultRelSessionNote: opts.VaultRelSessionNote,
-		CapturedAt:          opts.Now.Format(time.RFC3339),
+		CapturedAt:          opts.Now.UTC().Format(time.RFC3339),
 		CapturedByHostname:  hostname,
 		VPVersion:           opts.VPVersion,
 	}

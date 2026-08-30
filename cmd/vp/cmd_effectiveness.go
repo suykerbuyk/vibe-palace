@@ -64,7 +64,7 @@ func runEffectiveness(vault *storage.Vault, proj string, asJSON bool, out io.Wri
 		return cli.ExitSystem
 	}
 
-	result := capture.ComputeEffectiveness(proj, sessions)
+	result := capture.ComputeEffectiveness(proj, sessions, vault.CalendarLocation())
 
 	if asJSON {
 		enc := json.NewEncoder(out)
