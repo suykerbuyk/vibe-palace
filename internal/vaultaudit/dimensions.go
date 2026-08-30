@@ -94,6 +94,41 @@ const (
 	// wings × rooms × drawers and finds nothing there. This dimension is the inverse of
 	// that one, not a duplicate: coherence audits presence, this audits contents.
 	DimPalaceStoreDrawers = "palace-store-drawers"
+
+	// DimTaskPreamble — an ACTIVE task file may not carry text between its header
+	// block and its first H2. Earned by
+	// vaultaudit-does-not-flag-a-claim-bearing-preamble: the preamble is the region
+	// `vp_manage_task action: overwrite` was built to repair, and until now NOTHING
+	// measured it. A claim parked above the first heading reaches every agent at
+	// session start, and no instrument reported it.
+	//
+	// 🔴 IT IS NOT A DUPLICATE OF DimTaskHeadingMarkers, AND THE TWO ARE DISJOINT BY
+	// CONSTRUCTION. That one walks H2 heading TEXT for unresolved-status tokens; this
+	// one reads the region ABOVE the first H2, which by definition contains no H2 and
+	// which that dimension therefore cannot see at all. Neither can ever report the
+	// same byte as the other.
+	//
+	// The predicate is storage.MovePreambleUnderContext, whose rewritten string is
+	// DISCARDED here — only the outcome matters. That is deliberate: the migrator
+	// moves ALL preamble text with no claim-versus-provenance classifier (no such rule
+	// survives contact with real files — see its doc comment), which is exactly what
+	// makes a NON-EMPTY preamble mechanically the finding. A "claim-bearing" heuristic
+	// would be unmutatable, and there is no such predicate in this tree to borrow.
+	//
+	// PreambleEmpty is the shape CreateTask produces unconditionally, so the
+	// structural zero is already guaranteed for every task born from here on.
+	//
+	// PreambleSkippedNoH2 is reported as its OWN class with a DISTINCT detail, never
+	// folded into the ordinary non-empty case. Under that outcome the region
+	// definition degenerates — "everything above the first H2" becomes the entire body
+	// — so there is no measured preamble to report, and a detail that reported one
+	// would be describing a region the predicate refused to define.
+	//
+	// 🔴 SCOPE IS ACTIVE TASKS ONLY, on the same ruling DimTaskHeadingMarkers records:
+	// OverwriteTaskFile and every other sanctioned task writer refuse an archived
+	// task, so a finding under tasks/done/ or tasks/cancelled/ would be unrepairable by
+	// every path and would be permanent, un-actionable red.
+	DimTaskPreamble = "task-preamble"
 )
 
 // Evidence commands. RECORD THE GREP, NEVER THE COUNT (invariant 3) — every number
@@ -122,6 +157,16 @@ const (
 	EvidencePalaceStoreDrawers = `for d in palace/*/; do s=$(basename "$d"); ` +
 		`find "palace/$s/drawers" -name drawers.jsonl -size +0c -print -quit 2>/dev/null | grep -q . || echo "$s"; ` +
 		`done   # palace/ projects with an empty or absent drawer store; iterations.md is a separate corpus`
+	// The migrator's own dry run. This is the strongest evidence command available to
+	// this dimension: it is an INDEPENDENT second walk over the same corpus by a
+	// different caller — cmd/vp/cmd_migrate_task_preamble.go enumerates Projects/*/tasks
+	// itself, while this dimension goes through vault.ListAllProjects — running the same
+	// predicate, so the two agreeing is a real cross-check rather than one
+	// implementation quoting itself. A shell grep cannot stand in here: the region is
+	// defined against storage.headerBlock and is fence-aware, and a grep faking either
+	// invents findings on the markdown these task bodies routinely quote.
+	EvidenceTaskPreamble = `vp migrate task-preamble   # REPORT ONLY, writes nothing. ` +
+		`MOVE rows are this dimension's findings; SKIP rows are its no-H2 class`
 )
 
 // unresolvedStatusMarkers is the DECLARED marker set for DimTaskHeadingMarkers: the
@@ -885,6 +930,200 @@ func taskHeadingMarkerDetail(heading string, markers []string) string {
 		"which cannot go stale because it records when rather than what is now. Markers are "+
 		"DECLARED AND EXTENSIBLE, never complete: %s.",
 		heading, strings.Join(markers, ", "), strings.Join(unresolvedStatusMarkers, ", "))
+}
+
+// auditTaskPreamble: an ACTIVE task file carrying anything between its header block
+// and its first H2.
+//
+// The walk is auditTaskHeadingMarkers' walk, structurally line for line, and for the
+// same reasons: the tasks DIRECTORY rather than a task listing (vp_list_tasks hides
+// the icebox by default, and an iceboxed task is an active file with a preamble),
+// subdirectories never descended (which is what excludes tasks/done/ and
+// tasks/cancelled/ — a ruling, see the dimension doc), and a read error recorded as an
+// UNKNOWN rather than as either a finding or a pass.
+//
+// The predicate is storage.MovePreambleUnderContext and nothing else. Its rewritten
+// string is DISCARDED — only the outcome is read, so this dimension can never write,
+// and it can never disagree with the migrator about what a preamble is.
+func auditTaskPreamble(vault *storage.Vault) ([]Finding, []string, error) {
+	projects, err := vault.ListAllProjects()
+	if err != nil {
+		return nil, nil, fmt.Errorf("enumerate projects: %w", err)
+	}
+
+	var findings []Finding
+	var unknowns []string
+
+	for _, p := range projects {
+		if !p.InProjects {
+			continue
+		}
+		tasksDir, err := vault.TasksDir(p.Slug)
+		if err != nil {
+			unknowns = append(unknowns, fmt.Sprintf("%s: cannot resolve tasks dir: %v", p.Slug, err))
+			continue
+		}
+		entries, err := os.ReadDir(tasksDir)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			unknowns = append(unknowns, fmt.Sprintf("%s: cannot read tasks dir: %v", p.Slug, err))
+			continue
+		}
+
+		for _, e := range entries {
+			// Skips done/ and cancelled/. Deliberate — see the dimension doc.
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			rel := "Projects/" + p.Slug + "/tasks/" + e.Name()
+			data, err := os.ReadFile(filepath.Join(tasksDir, e.Name()))
+			if err != nil {
+				unknowns = append(unknowns, fmt.Sprintf("%s: cannot read: %v", rel, err))
+				continue
+			}
+
+			before := string(data)
+			after, outcome := storage.MovePreambleUnderContext(before)
+			switch outcome {
+			case storage.PreambleEmpty:
+				// The structural zero CreateTask produces. Not a finding.
+				continue
+			case storage.PreambleSkippedNoH2:
+				findings = append(findings, Finding{
+					Dimension: DimTaskPreamble,
+					Artifact:  rel,
+					Detail:    taskPreambleNoH2Detail(before),
+				})
+			default:
+				findings = append(findings, Finding{
+					Dimension: DimTaskPreamble,
+					Artifact:  rel,
+					Detail:    taskPreambleDetail(taskPreambleText(before, after)),
+				})
+			}
+		}
+	}
+	return findings, unknowns, nil
+}
+
+// firstUnfencedH2 returns the 1-indexed line number of the first H2 OUTSIDE a code
+// fence, or 0 when the content has none.
+//
+// The H2 test matches storage.isH2Line — "## " after trimming leading space, so an
+// indented heading still counts — and the fence filter is mdfence. That pair is
+// exactly what MovePreambleUnderContext uses to locate the boundary; any other rule
+// here would answer a different question than the predicate answered.
+func firstUnfencedH2(content string) int {
+	for _, l := range mdfence.OutsideFences(content) {
+		if strings.HasPrefix(strings.TrimSpace(l.Text), "## ") {
+			return l.Num
+		}
+	}
+	return 0
+}
+
+// taskPreambleText recovers the text the migrator would move, by reading the
+// migrator's OWN output rather than re-deriving the region here.
+//
+// MovePreambleUnderContext copies the header block through byte-for-byte and then
+// writes the conventional heading, so the longest run of leading LINES that `before`
+// and `after` share IS that header block — give or take one blank line, which the trim
+// below removes either way. The region runs from there to the first unfenced H2, and
+// the migrator trims it the same way before moving it.
+//
+// 🔴 THE ALTERNATIVE WAS TO RE-IMPLEMENT headerBlock's "**Field:**" RUN HERE, and it is
+// refused. That would put a second hand-maintained copy of a storage rule inside the
+// dimension whose whole subject is text drifting out of agreement with the writer that
+// produced it. storage exports no accessor for the boundary, and this dimension is not
+// a reason to add one — the detail only needs a size and an excerpt.
+func taskPreambleText(before, after string) string {
+	h2 := firstUnfencedH2(before)
+	if h2 <= 1 {
+		return ""
+	}
+	beforeLines := strings.Split(before, "\n")
+	afterLines := strings.Split(after, "\n")
+	end := h2 - 1 // 0-indexed line of the first H2; the region ends just above it
+	start := 0
+	for start < end && start < len(afterLines) && beforeLines[start] == afterLines[start] {
+		start++
+	}
+	return strings.TrimSpace(strings.Join(beforeLines[start:end], "\n"))
+}
+
+// taskPreambleDetail renders one non-empty preamble as the sentence a human repairing
+// the task needs: how large the region is, enough of it to recognise without opening
+// the file, and which writer can actually reach it.
+//
+// Size and excerpt are RECOMPUTED on every run rather than recorded anywhere, for the
+// reason DimKGPortability's doc gives about counts: a number written down once is false
+// by the next run, and a detail a reader cannot reproduce is a census, not evidence.
+func taskPreambleDetail(preamble string) string {
+	return fmt.Sprintf("A non-empty preamble sits between the header block and the first H2: "+
+		"%d line(s), %d byte(s), opening %q. That region carries no H2 of its own, so no section "+
+		"name addresses it and `vp_manage_task action: amend` — which is keyed on heading text — "+
+		"can never revise it; only `action: overwrite` or `vp migrate task-preamble --apply` can "+
+		"reach it. Whatever it asserts is served to every agent at session start, ahead of a body "+
+		"that may already have superseded it. Move it under \"## %s\" and the file returns to the "+
+		"structural zero CreateTask already guarantees for every new task.",
+		len(strings.Split(preamble, "\n")), len(preamble),
+		firstLineExcerpt(preamble, 72), storage.ConventionalFirstHeading)
+}
+
+// taskPreambleNoH2Detail renders the PreambleSkippedNoH2 class, which
+// MovePreambleUnderContext returns from TWO distinct paths
+// (internal/storage/preamble_migrate.go:88-102) and which this must not describe
+// falsely:
+//
+//   - firstH2 < 0 — no "## " outside a code fence anywhere in the file. A "## " that
+//     appears only INSIDE a fence is sample text, and task bodies quote markdown
+//     constantly, so it does not count as a heading.
+//   - firstH2 < hdrEnd — an unfenced "## " DOES exist, but above the end of the header
+//     block. The migrator calls that degenerate and leaves it alone "rather than
+//     guessing what the file meant".
+//
+// 🔴 A DETAIL SAYING "THIS FILE HAS NO ## HEADING" WOULD BE FALSE ON THE SECOND PATH,
+// and a finding that asserts something untrue about its own artifact is the precise
+// defect class this dimension exists to close. What the two paths share — and what this
+// says — is that there is no USABLE first H2 above which a preamble region could be
+// defined, so the region degenerates and the file is left alone.
+func taskPreambleNoH2Detail(content string) string {
+	where := "there is no \"## \" heading outside a code fence anywhere in the file " +
+		"(a \"## \" inside a fence is sample text, not a heading)"
+	if n := firstUnfencedH2(content); n > 0 {
+		where = fmt.Sprintf("an unfenced \"## \" heading DOES exist, at line %d, but it sits ABOVE the "+
+			"end of the header block (the H1 and the contiguous \"**Field:**\" run below it), so it "+
+			"cannot bound a region that begins beneath that block — the migrator leaves such a file "+
+			"alone rather than guess what it meant", n)
+	}
+	return fmt.Sprintf("No usable first H2: %s. \"Everything above the first H2\" therefore "+
+		"degenerates to the ENTIRE task body, so there is NO measured preamble here and none is "+
+		"reported — `vp migrate task-preamble` SKIPS this file rather than rewrite a whole task body "+
+		"end to end, which is not what moving a preamble means. The repair is to give the file a real "+
+		"first heading (\"## %s\") with `vp_manage_task action: overwrite`; the body then becomes "+
+		"addressable by `amend`, and this dimension can measure the region for the first time. "+
+		"CreateTask emits the conventional heading unconditionally and a whole-file write with no "+
+		"unfenced \"## \" is now refused, so nothing new can join this class.",
+		where, storage.ConventionalFirstHeading)
+}
+
+// firstLineExcerpt is the truncated first non-blank line of a region: enough for a
+// reader to recognise the text without opening the file, and no more. The truncation is
+// hard rather than generous — a detail is ONE LINE in a report, not a document.
+func firstLineExcerpt(s string, max int) string {
+	var line string
+	for _, l := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(l); t != "" {
+			line = t
+			break
+		}
+	}
+	if r := []rune(line); len(r) > max {
+		return string(r[:max]) + "…"
+	}
+	return line
 }
 
 // relTo renders an absolute path as vault-relative. NEVER write an absolute vault

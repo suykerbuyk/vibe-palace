@@ -1119,3 +1119,405 @@ func TestPalaceStoreDrawers_IsRegistered(t *testing.T) {
 	}
 	t.Fatalf("%s is not registered in Run's dims table", DimPalaceStoreDrawers)
 }
+
+// --- task-preamble ---
+
+// preambleArtifacts renders a finding set as its artifacts, so a failure message names
+// the files rather than dumping every detail paragraph.
+func preambleArtifacts(findings []Finding) []string {
+	out := make([]string, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, f.Artifact)
+	}
+	return out
+}
+
+// TestTaskPreamble_CreateTaskShapeIsNotFlagged is the POSITIVE CONTROL, and it is what
+// ties this dimension to a guarantee rather than to a taste.
+//
+// It does not hand-write the "good" shape — it calls the real CreateTask, which emits
+// the conventional first heading unconditionally. If that writer ever starts leaving
+// text above the first H2, this test fails and the dimension's premise fails with it.
+func TestTaskPreamble_CreateTaskShapeIsNotFlagged(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	mkdirs(t, vault.Root, "Projects", "p")
+	if err := vault.CreateTask("p", storage.TaskSpec{
+		Slug:     "born-clean",
+		Title:    "Born clean",
+		Content:  "The finding, stated once.",
+		Priority: "medium",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, unknowns, err := auditTaskPreamble(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 || len(unknowns) != 0 {
+		t.Fatalf("a task written by CreateTask has an empty preamble and must not be flagged; "+
+			"findings %v unknowns %v", preambleArtifacts(findings), unknowns)
+	}
+}
+
+// TestTaskPreamble_ProseAboveTheFirstH2IsFlagged is the ANTI-VACUITY test: the
+// dimension must actually fire on the shape it exists for, exactly once, on the right
+// artifact.
+func TestTaskPreamble_ProseAboveTheFirstH2IsFlagged(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedTask(t, vault, "p", "framed",
+		"# T\n\n**Status:** pending\n**Priority:** medium\n\n"+
+			"Filed 2026-07-30 from the host-parity Option C decision. The anchor set already "+
+			"exists — reuse it, do not re-derive it.\n\n## Context\n\nbody\n")
+
+	findings, unknowns, err := auditTaskPreamble(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknowns) != 0 {
+		t.Errorf("unexpected unknowns: %v", unknowns)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %v, want exactly the one task with a preamble",
+			preambleArtifacts(findings))
+	}
+	if findings[0].Artifact != "Projects/p/tasks/framed.md" {
+		t.Errorf("artifact = %q, want the vault-relative task path — it is the baseline's key "+
+			"and must be stable", findings[0].Artifact)
+	}
+	// The detail must be recognisable without opening the file, and must not read as
+	// the degenerate no-H2 class.
+	if !strings.Contains(findings[0].Detail, "Filed 2026-07-30") {
+		t.Errorf("detail must excerpt the preamble's first non-blank line; got %q",
+			findings[0].Detail)
+	}
+	if strings.Contains(findings[0].Detail, "No usable first H2") {
+		t.Errorf("a measured preamble must not be reported as the degenerate class; got %q",
+			findings[0].Detail)
+	}
+}
+
+// TestTaskPreamble_NoUnfencedH2IsItsOwnClass pins PATH 1 of PreambleSkippedNoH2: no
+// "## " outside a fence anywhere in the file. The region definition degenerates to the
+// whole body, so the detail may NOT report a measured preamble.
+func TestTaskPreamble_NoUnfencedH2IsItsOwnClass(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedTask(t, vault, "p", "headless",
+		"# T\n\n**Status:** pending\n\nA whole body of prose with no heading anywhere in it.\n")
+
+	findings, unknowns, err := auditTaskPreamble(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknowns) != 0 {
+		t.Errorf("unexpected unknowns: %v", unknowns)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %v, want the one headless task", preambleArtifacts(findings))
+	}
+	d := findings[0].Detail
+	if !strings.Contains(d, "No usable first H2") || !strings.Contains(d, "ENTIRE task body") {
+		t.Errorf("the no-H2 detail must say the region is degenerate — the whole body — rather "+
+			"than report a measured preamble; got %q", d)
+	}
+	if !strings.Contains(d, "anywhere in the file") {
+		t.Errorf("path 1 must say there is no unfenced heading anywhere in the file; got %q", d)
+	}
+	if strings.Contains(d, "A non-empty preamble sits") {
+		t.Errorf("the degenerate class must never render as the ordinary non-empty case; got %q", d)
+	}
+}
+
+// 🔴 TestTaskPreamble_H2AboveTheHeaderBlockIsAlsoDegenerate pins PATH 2 of
+// PreambleSkippedNoH2 (preamble_migrate.go:99-102): an unfenced "## " that sits ABOVE
+// the end of the header block. The migrator returns the SAME outcome, but the file
+// plainly HAS a heading — so a detail saying "no ## heading anywhere" would be false
+// about its own artifact, which is the defect class this dimension exists to close.
+//
+// It asserts the DETAIL TEXT, not the outcome, because the outcome cannot tell the two
+// paths apart and the report is what a human reads.
+func TestTaskPreamble_H2AboveTheHeaderBlockIsAlsoDegenerate(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	// headerBlock anchors on the FIRST H1 and then consumes the contiguous
+	// "**Field:**" run below it, so an H2 standing above the title lands above hdrEnd
+	// — which is the only way firstH2 < hdrEnd can hold, since a "## " line is not a
+	// header field and would otherwise terminate the run rather than sit inside it.
+	seedTask(t, vault, "p", "heading-above-title",
+		"## Stray\n\n# T\n\n**Status:** pending\n**Priority:** medium\n\nbody\n")
+
+	findings, unknowns, err := auditTaskPreamble(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknowns) != 0 {
+		t.Errorf("unexpected unknowns: %v", unknowns)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %v, want the one degenerate task", preambleArtifacts(findings))
+	}
+	d := findings[0].Detail
+	if !strings.Contains(d, "No usable first H2") {
+		t.Errorf("path 2 is the degenerate class and must say so; got %q", d)
+	}
+	if strings.Contains(d, "anywhere in the file") {
+		t.Errorf("this file HAS an unfenced \"## \" — claiming otherwise is a finding asserting "+
+			"something untrue about its own artifact; got %q", d)
+	}
+	if !strings.Contains(d, "at line 1") || !strings.Contains(d, "ABOVE the end of the header block") {
+		t.Errorf("path 2 must locate the heading it found and say why it is unusable; got %q", d)
+	}
+}
+
+// TestTaskPreamble_MutationMovingThePreambleDownClearsTheFinding is the MUTATION PROOF:
+// the RULE tracks the actual region, not the harness. Seed a preamble, assert exactly
+// one finding; rewrite the SAME file with the same prose moved down under "## Context",
+// and assert silence. Nothing about the vault, the project or the filename changes.
+func TestTaskPreamble_MutationMovingThePreambleDownClearsTheFinding(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	const prose = "Do not absorb this into the sibling slug; it is a standing directive."
+	seedTask(t, vault, "p", "same-file",
+		"# T\n\n**Status:** pending\n\n"+prose+"\n\n## Context\n\nbody\n")
+
+	findings, _, err := auditTaskPreamble(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("precondition: a preamble must produce exactly one finding; got %v",
+			preambleArtifacts(findings))
+	}
+
+	// Same file, same prose, moved under the conventional heading.
+	writeFile(t, vault.Root, "Projects/p/tasks/same-file.md",
+		"# T\n\n**Status:** pending\n\n## Context\n\n"+prose+"\n\nbody\n")
+
+	findings, unknowns, err := auditTaskPreamble(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 || len(unknowns) != 0 {
+		t.Fatalf("moving the SAME prose under a heading must clear the finding; findings %v "+
+			"unknowns %v", preambleArtifacts(findings), unknowns)
+	}
+}
+
+// TestTaskPreamble_DoneAndCancelledAreOutOfScope pins the SCOPE RULING, not a
+// convenience. OverwriteTaskFile — the only writer that can repair a preamble — is
+// active-only, so a finding under tasks/done/ or tasks/cancelled/ would be permanent,
+// un-actionable red. Subdirectories are never descended.
+func TestTaskPreamble_DoneAndCancelledAreOutOfScope(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	fat := "# T\n\n**Status:** done\n\nA very fat preamble that nothing can ever repair.\n\n" +
+		"## Context\n\nbody\n"
+	writeFile(t, vault.Root, "Projects/p/tasks/done/finished.md", fat)
+	writeFile(t, vault.Root, "Projects/p/tasks/cancelled/dropped.md", fat)
+
+	findings, unknowns, err := auditTaskPreamble(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 || len(unknowns) != 0 {
+		t.Fatalf("archived tasks are unrepairable and deliberately out of scope; findings %v "+
+			"unknowns %v", preambleArtifacts(findings), unknowns)
+	}
+}
+
+// TestTaskPreamble_FencedH2IsTheDegenerateClass: fence-awareness is not implemented
+// here — it comes from the predicate, which scans mdfence.OutsideFences. A "## " that
+// appears ONLY inside a code fence never sets firstH2, so the file falls into the no-H2
+// class rather than being treated as having a heading. This asserts the behaviour
+// MovePreambleUnderContext actually has.
+func TestTaskPreamble_FencedH2IsTheDegenerateClass(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedTask(t, vault, "p", "quoted",
+		"# T\n\n**Status:** pending\n\nProse, then a quoted markdown sample:\n\n"+
+			"```markdown\n## Context\n\nnot a real heading\n```\n\nmore prose\n")
+
+	// The predicate's own verdict, asserted directly rather than assumed.
+	body, err := os.ReadFile(filepath.Join(vault.Root, "Projects", "p", "tasks", "quoted.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, outcome := storage.MovePreambleUnderContext(string(body)); outcome != storage.PreambleSkippedNoH2 {
+		t.Fatalf("MovePreambleUnderContext outcome = %v, want PreambleSkippedNoH2 — a fenced "+
+			"\"## \" is sample text, not a heading", outcome)
+	}
+
+	findings, unknowns, err := auditTaskPreamble(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknowns) != 0 {
+		t.Errorf("unexpected unknowns: %v", unknowns)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %v, want the one file whose only \"## \" is fenced",
+			preambleArtifacts(findings))
+	}
+	d := findings[0].Detail
+	if !strings.Contains(d, "No usable first H2") || !strings.Contains(d, "anywhere in the file") {
+		t.Errorf("a fenced-only \"## \" is path 1 of the degenerate class; got %q", d)
+	}
+}
+
+// TestTaskPreamble_UnreadableTasksDirIsUnknownNotPass: unknown is not a shade of pass
+// (audit.go:21-25). A tasks directory the auditor cannot walk produces neither a
+// finding nor a clean bill.
+func TestTaskPreamble_UnreadableTasksDirIsUnknownNotPass(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory modes, so chmod 0 cannot make the walk undecidable")
+	}
+	vault := storage.NewVault(t.TempDir())
+	seedTask(t, vault, "p", "framed", "# T\n\nprose above the heading\n\n## Context\n\nbody\n")
+
+	dir := filepath.Join(vault.Root, "Projects", "p", "tasks")
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	// Restore before TempDir cleanup, which cannot remove an unreadable directory.
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	findings, unknowns, err := auditTaskPreamble(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("a directory the auditor could not read must not produce a finding; got %v",
+			preambleArtifacts(findings))
+	}
+	if len(unknowns) != 1 || !strings.Contains(unknowns[0], "p") {
+		t.Fatalf("unknowns = %v, want the project the auditor could not look at", unknowns)
+	}
+}
+
+// TestTaskPreamble_UnreadableTaskFileIsUnknownNotPass: same ruling one level down — an
+// individual file the auditor cannot open is UNKNOWN, never a silent pass.
+func TestTaskPreamble_UnreadableTaskFileIsUnknownNotPass(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file modes, so chmod 0 cannot make the read fail")
+	}
+	vault := storage.NewVault(t.TempDir())
+	seedTask(t, vault, "p", "opaque", "# T\n\nprose above the heading\n\n## Context\n\nbody\n")
+
+	file := filepath.Join(vault.Root, "Projects", "p", "tasks", "opaque.md")
+	if err := os.Chmod(file, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(file, 0o644) })
+
+	findings, unknowns, err := auditTaskPreamble(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("a file the auditor could not read must not produce a finding; got %v",
+			preambleArtifacts(findings))
+	}
+	if len(unknowns) != 1 || !strings.Contains(unknowns[0], "Projects/p/tasks/opaque.md") {
+		t.Fatalf("unknowns = %v, want the unreadable task file", unknowns)
+	}
+}
+
+// TestTaskPreamble_IsRegistered: a dimension nobody runs is the disease this vault is
+// named after, and `dims` is a HAND-EDITED literal — without this the whole dimension
+// could be written, unit-tested and silently never executed.
+func TestTaskPreamble_IsRegistered(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedTask(t, vault, "p", "framed",
+		"# T\n\n**Status:** pending\n\nprose above the first heading\n\n## Context\n\nbody\n")
+
+	rep, err := Run(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range rep.Dimensions {
+		if d.Name != DimTaskPreamble {
+			continue
+		}
+		if len(d.New) != 1 {
+			t.Fatalf("registered dimension reported New = %+v, want the one preamble", d.New)
+		}
+		if d.Evidence != EvidenceTaskPreamble {
+			t.Error("registered dimension must carry its own evidence string")
+		}
+		return
+	}
+	t.Fatalf("%s is not registered in Run's dims table", DimTaskPreamble)
+}
+
+// TestTaskPreamble_IsDisjointFromTaskHeadingMarkers pins the non-duplication claim in
+// DimTaskPreamble's doc as a property rather than a paragraph: the two dimensions read
+// disjoint regions, so one file can hold both defects and each is reported once, by the
+// dimension that owns it.
+func TestTaskPreamble_IsDisjointFromTaskHeadingMarkers(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedTask(t, vault, "p", "both",
+		"# T\n\n**Status:** pending\n\npreamble prose\n\n## PHASE 1 — UNCOMMITTED\n\nbody\n")
+
+	pre, _, err := auditTaskPreamble(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mark, _, err := auditTaskHeadingMarkers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pre) != 1 {
+		t.Fatalf("task-preamble must report the region above the first H2; got %v",
+			preambleArtifacts(pre))
+	}
+	if len(mark) != 1 {
+		t.Fatalf("task-heading-markers must still report the heading; got %v",
+			markerArtifacts(mark))
+	}
+	if !strings.Contains(pre[0].Detail, "preamble prose") {
+		t.Errorf("task-preamble's detail must describe the preamble, not the heading; got %q",
+			pre[0].Detail)
+	}
+	if strings.Contains(pre[0].Detail, "UNCOMMITTED") {
+		t.Errorf("task-preamble may not see heading text — the two regions are disjoint by "+
+			"construction; got %q", pre[0].Detail)
+	}
+}
+
+// TestTaskPreambleText_RecoversExactlyWhatTheMigratorWrote pins the ONE inference in
+// this dimension: taskPreambleText reads the region back out of the migrator's own
+// before/after pair instead of re-deriving storage's header-block rule locally. If that
+// inference is wrong, every detail's size and excerpt describe a region nobody moved.
+//
+// The assertion is byte-exact and independent of the detail wording: whatever is
+// recovered must be precisely the text `after` carries under the conventional heading.
+// It runs over every preamble SHAPE the migrator distinguishes — a new heading inserted,
+// an existing one prepended into, no header fields at all, and a second H1 heading the
+// region (the shape five live recmeet tasks actually have).
+func TestTaskPreambleText_RecoversExactlyWhatTheMigratorWrote(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"new context heading inserted",
+			"# T\n\n**Status:** pending\n**Priority:** medium\n\nframing prose\n\n## The finding\n\nbody\n"},
+		{"prepended into an existing context heading",
+			"# T\n\n**Status:** pending\n\nframing prose\n\n## Context\n\nalready here\n"},
+		{"no header fields at all",
+			"# T\n\nframing prose\n\n## The finding\n\nbody\n"},
+		{"region opens with a second H1",
+			"# Task: t\n\n**Status:** pending\n\n# Imported title\n\nframing prose\n\n## The finding\n\nbody\n"},
+		{"multi-paragraph region",
+			"# T\n\n**Status:** pending\n\npara one\n\npara two\n\n- a bullet\n\n## The finding\n\nbody\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			after, outcome := storage.MovePreambleUnderContext(tc.body)
+			if outcome != storage.PreambleMovedIntoNewContext &&
+				outcome != storage.PreambleMovedIntoExistingContext {
+				t.Fatalf("fixture precondition: outcome = %v, want a MOVE", outcome)
+			}
+			got := taskPreambleText(tc.body, after)
+			if got == "" {
+				t.Fatal("recovered nothing from a file the migrator moved text out of")
+			}
+			want := "## " + storage.ConventionalFirstHeading + "\n\n" + got
+			if !strings.Contains(after, want) {
+				t.Errorf("recovered region is not what the migrator wrote under the heading.\n"+
+					"recovered: %q\nafter:     %q", got, after)
+			}
+		})
+	}
+}

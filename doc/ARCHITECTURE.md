@@ -2209,7 +2209,7 @@ takes `--project`; it is a different thing from the vault audit below.
 design intent and reports **pass / fail / unknown per dimension**. Full rationale
 in ADR-007; the mechanics:
 
-- **Eight dimensions** (the registry is `dims` in `internal/vaultaudit/audit.go`;
+- **Nine dimensions** (the registry is `dims` in `internal/vaultaudit/audit.go`;
   this list is derived from it): `archive-roundtrip` (every transcript manifest
   back-links to a session note that exists), `project-tree-coherence` (every project
   appears in both `palace/` and `Projects/`), `kg-portability` (KG triple filenames are
@@ -2221,7 +2221,12 @@ in ADR-007; the mechanics:
   `palace-store-drawers` (a project with a `palace/` store actually holds drawer
   records — the INVERSE of `project-tree-coherence`, which sees only whether the two
   trees agree a project exists, so a store present in both trees with an absent or
-  empty `drawers/` passes it while `vp search` walks nothing there).
+  empty `drawers/` passes it while `vp search` walks nothing there),
+  `task-preamble` (no active task file carries text between its header block and its
+  first H2 — the region `vp_manage_task action: overwrite` exists to repair, disjoint
+  by construction from `task-heading-markers`, which reads heading TEXT; the predicate
+  is `storage.MovePreambleUnderContext`, whose rewritten string is discarded, and a
+  file with no usable first H2 is reported as its own degenerate class).
 - **Advisory — a FAIL exits 0.** It reports; it never blocks. An audit that
   failed the build is an audit people learn to disable.
 - **Vault-global — no `project` parameter.** Scoping it per-project is how a
