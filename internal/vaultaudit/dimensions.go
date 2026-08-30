@@ -274,8 +274,22 @@ var EvidenceTaskHeadingMarkers = `grep -nE '^## ' Projects/*/tasks/*.md | grep -
 //
 // This dimension costs nothing — phase 2's union enumerator already computes the
 // answer — and NOTHING ELSE IN THE SYSTEM would ever report it. A project with
-// history and no palace/ store is unsearchable; a palace/ store with no history is a
-// leftover. Both are real drift.
+// history and no palace/ store has no drawer index; a palace/ store with no history
+// is a leftover. Both are real drift.
+//
+// 🔴 IT KNOWS TREE MEMBERSHIP AND NOTHING ELSE, SO IT MAY NEVER CLAIM A PROJECT IS
+// UNSEARCHABLE. It reads ListAllProjects / Complete / InProjects and opens no file, so
+// it cannot see whether search would return hits: search.Rebuild indexes drawers,
+// Projects/<slug>/iterations.md AND the bodies of Projects/<slug>/sessions/*.md, and
+// drops the index only when ALL THREE come back empty. A project with no palace/ store
+// but a populated iterations.md or session notes is searchable, and this dimension has
+// no way to tell that case from the genuinely empty one.
+//
+// The detail therefore reports the missing DRAWER index, which is exactly what a
+// missing palace/ store proves, and stops there. It said "UNSEARCHABLE" until the note
+// corpus landed and made the word false; do not restore it, and do not repair it by
+// teaching this dimension to read those files — an auditor that opens the corpus to
+// justify its own adjective is a different, more expensive dimension.
 func auditProjectTreeCoherence(vault *storage.Vault) ([]Finding, []string, error) {
 	projects, err := vault.ListAllProjects()
 	if err != nil {
@@ -291,7 +305,7 @@ func auditProjectTreeCoherence(vault *storage.Vault) ([]Finding, []string, error
 		switch {
 		case p.InProjects:
 			detail = "has session history under Projects/ but NO palace/ store — its sessions were " +
-				"never drawer-indexed, so they are UNSEARCHABLE"
+				"never drawer-indexed, so the drawer half of `vp search` covers nothing for it"
 		default:
 			detail = "has a palace/ store but NO history under Projects/ — a leftover, or a project " +
 				"whose history was never written"
@@ -322,11 +336,16 @@ func auditProjectTreeCoherence(vault *storage.Vault) ([]Finding, []string, error
 // INDEPENDENT ingest sources for search.Rebuild (see the "Second corpus source" and
 // "Third corpus source" blocks in internal/search/engine.go), and the index is dropped
 // only when ALL THREE sources come back empty (Rebuild's `len(vecs) == 0` branch) — so
-// an empty drawer store does not imply an unsearchable project. DimProjectTreeCoherence
-// gets to say UNSEARCHABLE because a project with no palace/ store has no drawer index
-// at all; this dimension does not. Report what is missing (the drawer half), never the
-// consequence that would follow only if the other corpora were also empty. A future
-// reader will otherwise "fix" this wording back.
+// an empty drawer store does not imply an unsearchable project. Report what is missing
+// (the drawer half), never the consequence that would follow only if the other corpora
+// were also empty. A future reader will otherwise "fix" this wording back.
+//
+// NEITHER DOES DimProjectTreeCoherence, and this comment used to say it did. It read
+// "coherence gets to say UNSEARCHABLE because a project with no palace/ store has no
+// drawer index at all" — true about the drawer index, false about searchability once
+// the note corpus landed, and standing licence for the next reader to restore the word
+// one function up. The restraint is the same for both dimensions and for the same
+// reason: neither opens a corpus file, so neither can know what search would return.
 //
 // 🔴 THE GATE IS p.InPalace ALONE — p.InProjects is deliberately NOT required. A
 // palace store with no history under Projects/ is already a project-tree-coherence

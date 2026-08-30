@@ -55,9 +55,22 @@ func TestProjectTreeCoherence_FindsBothDirections(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("findings = %+v, want exactly the two single-tree projects", got)
 	}
-	if !strings.Contains(got["history-only"], "UNSEARCHABLE") {
-		t.Errorf("a project with history and no palace/ store is unsearchable; detail = %q",
-			got["history-only"])
+	// The finding stays; the adjective does not. This fixture has no palace/ store AND
+	// no iterations.md AND no sessions/ notes, so it is in fact unsearchable — and the
+	// detail still may not say so, because the dimension reads only tree membership and
+	// could not have known. A sibling project with notes would be searchable and would
+	// produce this identical detail. Asserting the WORDS, not just the finding count, is
+	// what stops the claim being restored on a fixture that happens to make it true.
+	if !strings.Contains(got["history-only"], "NO palace/ store") {
+		t.Errorf("a project with history and no palace/ store must still be reported, and the "+
+			"detail must name the missing store; detail = %q", got["history-only"])
+	}
+	for _, banned := range []string{"UNSEARCHABLE", "unsearchable", "no searchable corpus"} {
+		if strings.Contains(got["history-only"], banned) {
+			t.Errorf("this dimension knows tree membership only — search.Rebuild also indexes "+
+				"iterations.md and session-note bodies, so it cannot claim %q; detail = %q",
+				banned, got["history-only"])
+		}
 	}
 	if _, ok := got["phantom"]; !ok {
 		t.Error("a palace/ store with no history is a leftover and must be reported")
