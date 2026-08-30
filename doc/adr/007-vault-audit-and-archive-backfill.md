@@ -30,16 +30,21 @@ that no instrument ever checked against the artifact. The audit is the instrumen
 ## Decision: the audit is advisory, vault-global, and its `unknown` is not a `pass`
 
 `vp audit vault` (and the MCP `vp_audit_vault`) scans the whole vault against
-design intent and reports **pass / fail / unknown per dimension**. Five dimensions
-ship today (`internal/vaultaudit`):
+design intent and reports **pass / fail / unknown per dimension**.
 
-| Dimension | Checks |
-|---|---|
-| `archive-roundtrip` | every transcript manifest back-links to a session note that exists on disk |
-| `project-tree-coherence` | every project appears in BOTH `palace/` and `Projects/` (a one-tree project is drift) |
-| `kg-portability` | KG triple filenames are representable on NTFS/exFAT (the Windows blocker) |
-| `resume-discipline` | no `resume.md` exceeds the size cap |
-| `iteration-headings` | `iterations.md` headers are canonical H2, so the counter derives correctly |
+**The dimensions that ship are the `dims` literal inside `Run`, in
+`internal/vaultaudit/audit.go`. Read it; this ADR deliberately does not restate it.**
+Each entry is a name, the evidence command that reproduces its numbers, and the function
+that runs it, and every dimension carries its own doc comment explaining the defect it
+was earned by.
+
+This ADR used to carry a table of the dimensions and a sentence counting them. Both were
+a **stored copy of a derived set**, and they went stale the first time a dimension was
+added — which is the same defect class this audit exists to report, sitting in the
+document that specifies the audit. Replacing the count with a fresher count would buy one
+dimension's worth of accuracy and then rot again, so the fix is the pointer, not a new
+census. A reader who needs the roster runs `vp audit vault`, which prints every dimension
+it actually executed.
 
 Three properties are load-bearing, and each is a scar:
 
