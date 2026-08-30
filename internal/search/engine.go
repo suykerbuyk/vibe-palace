@@ -378,10 +378,11 @@ func (e *Engine) RemoveDrawer(project, id string) error {
 }
 
 // Rebuild rebuilds the index for a project from scratch. It walks palace
-// drawers and, as a second source, Projects/<project>/iterations.md split on
-// wrapstate H2 entries (sub-chunked at 800/100). Vectors absent from the embed
-// cache are embedded in batches — per-item embedding is roughly 7x slower on
-// the ONNX backend.
+// drawers; as a second source, Projects/<project>/iterations.md split on
+// wrapstate H2 entries; and as a third, the BODIES of
+// Projects/<project>/sessions/*.md (both sub-chunked at 800/100). Vectors
+// absent from the embed cache are embedded in batches — per-item embedding is
+// roughly 7x slower on the ONNX backend.
 // RebuildStats reports what a Rebuild actually did. It exists because
 // `{"status":"rebuilt"}` was returned identically after a full re-embed and
 // after walking nothing at all, so a caller could not tell an index from an
@@ -396,6 +397,12 @@ type RebuildStats struct {
 	// the second corpus source. It needs NO palace store, which is why
 	// "no store" and "indexed nothing" are different questions.
 	IterationChunks int
+	// NoteChunks is how many chunks came from Projects/<p>/sessions/*.md
+	// bodies, the third corpus source. Like the iteration corpus it needs no
+	// palace store; unlike the drawer corpus it is not written by capture, so
+	// it is the only thing that makes a project captured as NOTES ONLY — no
+	// transcript, no archive — reachable from `vp search`.
+	NoteChunks int
 	// Indexed is the total number of entries in the built index.
 	Indexed int
 	// Embedded is how many entries missed the vector cache and were embedded.
@@ -406,8 +413,8 @@ type RebuildStats struct {
 	Reaped int
 }
 
-// Rebuild re-embeds a project's search index from its drawer store and its
-// iterations corpus, and returns what it did.
+// Rebuild re-embeds a project's search index from its drawer store, its
+// iterations corpus and its session-note corpus, and returns what it did.
 //
 // 🔴 It does NOT refuse an empty result, deliberately. Rebuild is on the lazy
 // path: ensureIndex calls it before every cold search, so making "nothing to
@@ -485,6 +492,29 @@ func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, err
 		metas = append(metas, iterMetas[i])
 	}
 
+	// Third corpus source: the BODIES of Projects/<p>/sessions/*.md. No
+	// synthetic drawers.jsonl, and deliberately not routed through
+	// capture.IndexTranscript — so no knowledge-graph facts are extracted from
+	// wrap prose, structurally rather than by a flag.
+	noteIDs, noteTexts, noteMetas, err := collectNoteCorpus(e.vault, project)
+	if err != nil {
+		return stats, fmt.Errorf("note corpus: %w", err)
+	}
+	stats.NoteChunks = len(noteIDs)
+	for i, id := range noteIDs {
+		if err := ctx.Err(); err != nil {
+			return stats, err
+		}
+		vec, _ := e.cache.Get(project, id)
+		if vec == nil {
+			missIdx = append(missIdx, len(vecs))
+			missText = append(missText, noteTexts[i])
+		}
+		ids = append(ids, id)
+		vecs = append(vecs, vec)
+		metas = append(metas, noteMetas[i])
+	}
+
 	stats.Indexed = len(ids)
 	stats.Embedded = len(missIdx)
 	stats.CacheHits = stats.Indexed - stats.Embedded
@@ -494,16 +524,17 @@ func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, err
 	}
 
 	// Live IDs for this build — the reaper unlinks every .vec whose ID is not
-	// in this set (drawers and iteration chunks alike).
+	// in this set (drawer, iteration and note chunks alike).
 	live := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		live[id] = true
 	}
 
 	if len(vecs) == 0 {
-		// No drawers and no iteration chunks. Drop any index from a previous
-		// build so it stops serving hits for content that no longer exists, then
-		// reap every now-orphaned vector (live set is empty).
+		// No drawers, no iteration chunks and no note chunks. Drop any index
+		// from a previous build so it stops serving hits for content that no
+		// longer exists, then reap every now-orphaned vector (live set is
+		// empty).
 		e.mu.Lock()
 		delete(e.indexes, project)
 		e.mu.Unlock()

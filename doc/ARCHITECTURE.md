@@ -1317,8 +1317,9 @@ What the payload carries instead:
   deterministic `structural` ranker (lexical overlap on the queue's own terms,
   recency as the tie-break). When the process already has a warm embedder and an
   in-memory project index, `semantic` reorders the same session rows from
-  `SearchReady` hits with `source_type=session` (iteration chunks densify the
-  corpus for `vp_search` but do not become bootstrap index rows). Bootstrap
+  `SearchReady` hits with `source_type=session` (iteration and session-note
+  chunks densify the corpus for `vp_search` but do not become bootstrap index
+  rows). Bootstrap
   never calls `ensureIndex` or forces a lazy ONNX construct — cold paths stay
   `structural` and set `fallback_reason`. Rows carry date, iteration, title, tag
   and a session URI, and no summary body.
@@ -1651,12 +1652,33 @@ told, plausibly and silently, that the vault contains nothing.
 `internal/integration/lazy_startup_test.go` pins the positive case: a
 never-rebuilt project returns real hits through a real JSON-RPC `vp_search`.
 
-`Rebuild` walks two corpus sources: palace `drawers.jsonl`, and
+`Rebuild` walks three corpus sources: palace `drawers.jsonl`;
 `Projects/<project>/iterations.md` split on `wrapstate.ParseEntries` (H2
-iteration headers) then sub-chunked at the capture defaults (800/100). Iteration
+iteration headers); and the **bodies** of `Projects/<project>/sessions/*.md`
+split with `storage.ParseFrontmatter`. The two non-drawer sources are
+sub-chunked at the capture defaults (800/100). Iteration
 rows use `source_type=iteration` and a per-entry `source_ref`
-(`iteration/{n}/m/{matchIndex}`); chunk index lives on the cache ID, not the
-ref, so search dedup keeps one hit per entry. No synthetic drawers are written.
+(`iteration/{n}/m/{matchIndex}`); session-note rows use
+`source_type=session-note` — deliberately distinct from the transcript corpus's
+`source_type=session` — at the synthetic location `wing=history`,
+`room=session-notes`, `hall=narrative`, with a per-note `source_ref`
+(`sessions/{stem}.md`). In both, chunk index lives on the cache ID, not the
+ref, so search dedup keeps one hit per entry. No synthetic drawers are written
+by either.
+
+The note source is what makes a project captured as **notes only** — no
+transcript, no archive, no drawer store — reachable from `vp search`; capture
+indexes the transcript and never the note (`internal/capture/indexer.go`), so
+those projects previously had nothing the index could ingest. Its reach is
+wider than that: any project with session notes gains note rows, whether or not
+it also has drawers. Note IDs are `note.{project}.{stem}.c{i}` — keyed on
+IDENTITY, not on content like `storage.DrawerID` — so a note chunk can never
+share a key with a transcript chunk, and equally, two notes carrying identical
+text produce two separate rows. The note corpus is **additive** and does not
+dedup against transcripts. Because nothing routes through
+`capture.IndexTranscript`, the note pass extracts **no knowledge-graph facts**
+from wrap prose; that is structural, not a flag.
+
 Cache-miss vectors are embedded with `EmbedBatch` in chunks of
 `EmbedderBatchSize` (default 32), writing each vector to the embed cache as it
 lands, so a rebuild killed partway through leaves durable progress behind.

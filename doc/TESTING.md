@@ -688,7 +688,7 @@ contract holds against the real binary.
 > `make test` is `-short -race` (the ONNX tests skip) and `make integration` runs
 > without `-race`. Do not combine `-race` with the ONNX tests in this package.
 
-### `internal/search/` — Search Engine Tests (coverage 88.2%)
+### `internal/search/` — Search Engine Tests (coverage 86.9%)
 
 | Test | ONNX? | What it proves |
 |------|-------|----------------|
@@ -702,6 +702,15 @@ contract holds against the real binary.
 | `TestSearchPropagatesBuildError` | No | A failed build is **returned** to the caller, never swallowed into an empty result |
 | `TestRebuildBatchesEmbeddings` | No | `Rebuild` embeds cache misses via `EmbedBatch` in `EmbedderBatchSize` chunks, not one drawer at a time |
 | `TestRebuildClearsStaleIndex` | No | A rebuild of a now-empty project drops its index, so it stops serving hits for deleted content |
+| `TestCollectNoteCorpus_IndexesBodyNotFrontmatter` | No | The **third** corpus source (`internal/search/notes.go`) indexes the BODY of `Projects/<p>/sessions/*.md` and nothing else — a frontmatter-only string must appear in **no** indexed text, since `vp_search_sessions` already serves frontmatter off disk. Also pins the synthetic location (`history` / `session-notes` / `narrative`, `source_type=session-note`) and that the wing is **not** a project slug, which `palace.DetectWing` returns for every transcript drawer |
+| `TestCollectNoteCorpus_IDsUniqueAndStable` | No | Ids are unique across notes AND chunks and identical across two calls, so a rebuild reuses the embed cache; chunks of one note share a `source_ref` so search dedup keeps one hit per note |
+| `TestCollectNoteCorpus_EmptyBodyContributesNothing` | No | An empty or whitespace-only body is skipped — an empty chunk in the index is a hit with no content. Non-vacuous: the same project with one real body yields exactly one row |
+| `TestCollectNoteCorpus_NoSessionDirIsEmpty` | No | A missing `sessions/` directory is empty-and-nil, matching `collectIterationCorpus`'s missing-file convention rather than inventing a third one |
+| `TestCollectNoteCorpus_UnparseableNoteIsSkipped` | No | A note whose frontmatter will not parse contributes nothing **without failing the rebuild**, matching what the iteration source does when `ParseEntries` yields no entries. An I/O failure still fails the whole rebuild, matching its `os.ReadFile` |
+| `TestNoteCacheID_KeyedOnIdentityNotContent` | No | The honest residual, both halves: ids are `note.{project}.{stem}.c{i}` — keyed on IDENTITY, the opposite trade from `DrawerID = md5(wing+content)` — so a note chunk can never share a key with a transcript chunk, **and** two notes carrying identical text still produce two separate rows. The note corpus is additive and does not dedup against transcripts |
+| `TestRebuild_NoteOnlyProjectIsSearchable` | No | The point of the change: a project captured as notes only — no transcript, no archive, no drawer store — becomes reachable from `vp search`, with `source_type=session-note`, the note's date, and a `source_ref` that navigates back to the file |
+| 🔴 `TestRebuild_NoteCorpusWritesNoKnowledgeGraphAndNoDrawers` | No | **The load-bearing test, and it pins a ruling.** The note pass must never invent knowledge-graph facts from wrap prose. Achieved STRUCTURALLY — nothing calls `capture.IndexTranscript`, so `extractEntities` is not on the path — rather than by a boolean a later edit could flip. Asserts on the FILESYSTEM after a real `Rebuild` over a note-only project: no KG entity file, no `kg/` file anywhere under `palace/`, and no `drawers.jsonl` anywhere; re-asserted after a second rebuild. Non-vacuous: fails first if `NoteChunks == 0`. The prose is deliberately dense in the entity shapes capture's extractor keys on, so a KG write would have something to find |
+| `TestRebuild_NoteChunksSurviveAlongsideIterations` | No | The note source is a THIRD corpus, additive rather than a replacement: a project with both iterations and notes gets `Indexed == IterationChunks + NoteChunks` and both hits come back |
 
 ### `internal/search/` — Recall Harness (`recall_test.go`)
 
@@ -1844,6 +1853,21 @@ make the tool write something it does not need to write.
 
 `TestRefreshIndexStillRefusesWhenThereIsNothingToBackfill` (Piece 1) remains the
 no-store half; ratchet 1 sits beside it rather than replacing it.
+
+### The session-note corpus narrowed the refusal — `refresh_index_notes_test.go`
+
+From `session-notes-without-transcript-have-no-index-backfill`. `Rebuild` gained
+a **third** corpus source (the bodies of `Projects/<slug>/sessions/*.md`), so a
+project captured as notes only — no transcript, no archive, no drawer store — now
+has indexable content and the refusal must no longer fire for it. The refusal's
+message also had to be corrected: its corpus enumeration was short by one source,
+and its "delete the orphaned history" advice became actively harmful.
+
+| Test | What it proves |
+|------|----------------|
+| 🔴 `TestRefreshIndexNoLongerRefusesANoteOnlyProject` | Drives the refusal **branch**, not its wording: `stats.Indexed` moves off zero, so `!hadStore && stats.Indexed == 0 && …` is unreachable for this project and the tool takes the success path. Asserts the search hit comes back with `source_type=session-note` and a navigable `source_ref`, and that the note pass created neither a drawer store nor a `kg/` directory. Carries no "unreachable before the refresh" control, unlike the archive test — `Engine.Search` calls `ensureIndex`, so the note corpus is reachable from the FIRST search with no explicit refresh at all |
+| `TestRefreshIndexStillRefusesAProjectWithNoNotesEither` | Keeps the refusal **reachable** — a refusal that can never fire is the failure mode one layer below the one this change fixes. Fixture asserted empty on all four axes (no store, no notes, no iterations, no archives). Also pins the corrected message: it enumerates `0 session-note chunks`, no longer advises deleting history the note corpus can index, and keeps the principle that the tool "cannot invent content that was never captured" |
+| `TestRefreshIndexNoteCorpusIsNotLimitedToNoteOnlyProjects` | The widened blast radius, pinned honestly: a project with iterations **and** notes gets both, `indexed == iteration_chunks + note_chunks`. Nothing in this change may claim the note source affects only note-only projects |
 
 ### Why the flag is load-bearing in two places at once
 

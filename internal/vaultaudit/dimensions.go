@@ -152,11 +152,12 @@ const (
 	// two findings' DETAILS carry that, because a shell one-liner that split them would
 	// be longer than the rule it reproduces. It approximates "no drawer RECORDS" as "no
 	// non-empty drawers.jsonl", which is exact for every store this vault has produced.
-	// It deliberately ignores Projects/<slug>/iterations.md: that is a SEPARATE ingest
-	// source for search.Rebuild and does not fill an empty drawer store.
+	// It deliberately ignores Projects/<slug>/iterations.md and
+	// Projects/<slug>/sessions/*.md: those are SEPARATE ingest sources for search.Rebuild
+	// and neither fills an empty drawer store.
 	EvidencePalaceStoreDrawers = `for d in palace/*/; do s=$(basename "$d"); ` +
 		`find "palace/$s/drawers" -name drawers.jsonl -size +0c -print -quit 2>/dev/null | grep -q . || echo "$s"; ` +
-		`done   # palace/ projects with an empty or absent drawer store; iterations.md is a separate corpus`
+		`done   # palace/ projects with an empty or absent drawer store; iterations.md and sessions/ are separate corpora`
 	// The migrator's own dry run. This is the strongest evidence command available to
 	// this dimension: it is an INDEPENDENT second walk over the same corpus by a
 	// different caller — cmd/vp/cmd_migrate_task_preamble.go enumerates Projects/*/tasks
@@ -317,13 +318,15 @@ func auditProjectTreeCoherence(vault *storage.Vault) ([]Finding, []string, error
 //
 // 🔴 THE WORDING OF BOTH DETAILS IS DELIBERATELY RESTRAINED, AND MUST STAY THAT WAY.
 // Neither may claim the project is UNSEARCHABLE or has no searchable corpus.
-// Projects/<slug>/iterations.md is an INDEPENDENT ingest source for search.Rebuild
-// (internal/search/engine.go:467-486), and the index is dropped only when BOTH sources
-// come back empty (:497-504) — so an empty drawer store does not imply an unsearchable
-// project. DimProjectTreeCoherence gets to say UNSEARCHABLE because a project with no
-// palace/ store has no drawer index at all; this dimension does not. Report what is
-// missing (the drawer half), never the consequence that would follow only if the other
-// corpus were also empty. A future reader will otherwise "fix" this wording back.
+// Projects/<slug>/iterations.md AND the bodies of Projects/<slug>/sessions/*.md are
+// INDEPENDENT ingest sources for search.Rebuild (see the "Second corpus source" and
+// "Third corpus source" blocks in internal/search/engine.go), and the index is dropped
+// only when ALL THREE sources come back empty (Rebuild's `len(vecs) == 0` branch) — so
+// an empty drawer store does not imply an unsearchable project. DimProjectTreeCoherence
+// gets to say UNSEARCHABLE because a project with no palace/ store has no drawer index
+// at all; this dimension does not. Report what is missing (the drawer half), never the
+// consequence that would follow only if the other corpora were also empty. A future
+// reader will otherwise "fix" this wording back.
 //
 // 🔴 THE GATE IS p.InPalace ALONE — p.InProjects is deliberately NOT required. A
 // palace store with no history under Projects/ is already a project-tree-coherence
@@ -403,19 +406,22 @@ func auditPalaceStoreDrawers(vault *storage.Vault) ([]Finding, []string, error) 
 //     both trees. A palace store with no Projects/ history is NOT Complete(), so
 //     coherence reports it too — loudly, and first.
 //   - "iterations.md may still be indexed" presumes a Projects/<slug>/ tree to hold
-//     one. A palace-only project has no such file to be searchable by instead.
+//     one. A palace-only project has no such file to be searchable by instead — and
+//     for the same reason it has no Projects/<slug>/sessions/ notes either.
 //
 // The gate above is p.InPalace alone and stays that way; this is how the detail tells
 // the truth for both shapes that gate admits.
 func storeContextNote(p storage.ProjectPresence) string {
 	if !p.InProjects {
 		return fmt.Sprintf("project-tree-coherence reports this project separately, for having no "+
-			"history under Projects/ at all — and there is no Projects/%s/iterations.md to carry "+
-			"the corpus instead, so nothing indexes it.", p.Slug)
+			"history under Projects/ at all — and there is neither a Projects/%s/iterations.md "+
+			"nor a Projects/%s/sessions/ to carry the corpus instead, so nothing indexes it.",
+			p.Slug, p.Slug)
 	}
 	return fmt.Sprintf("project-tree-coherence cannot see this: the project is present in both "+
 		"trees, so it is Complete(). This is NOT a claim that the project is unsearchable — "+
-		"Projects/%s/iterations.md is a separate ingest source and may still be indexed.", p.Slug)
+		"Projects/%s/iterations.md and the bodies of Projects/%s/sessions/*.md are separate "+
+		"ingest sources and may still be indexed.", p.Slug, p.Slug)
 }
 
 // countDrawerRecords walks one project's drawer store the way search.Rebuild does and

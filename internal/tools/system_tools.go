@@ -718,15 +718,19 @@ func RefreshIndexTool(engine *search.Engine, vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name: "vp_refresh_index",
 		Description: "Rebuild a project's semantic search index from every source it has: its " +
-			"existing drawer store, its iterations.md corpus, and a BACKFILL from any " +
+			"existing drawer store, its iterations.md corpus, the BODIES of its session " +
+			"notes under Projects/<slug>/sessions/, and a BACKFILL from any " +
 			"archived transcripts under Projects/<slug>/transcripts/. The archives are " +
 			"decompressed and fed to the same indexer capture uses, so a backfilled drawer " +
 			"is identical to one written at capture time — this is how a project with " +
-			"session history but no palace store becomes searchable. The first run over an " +
+			"session history but no palace store becomes searchable. The note bodies need " +
+			"no store and no archive at all, which is how a project captured as NOTES ONLY " +
+			"becomes searchable. The first run over an " +
 			"archive decompresses it; later runs SKIP any archive whose source_sha256 is " +
 			"already recorded in palace/<slug>/ingested-archives.jsonl, so a re-run neither " +
 			"re-reads them nor duplicates drawers. Reports what it did (drawers, " +
-			"iteration_chunks, indexed, embedded, cache_hits, reaped, plus archives_found, " +
+			"iteration_chunks, note_chunks, indexed, embedded, cache_hits, reaped, plus " +
+			"archives_found, " +
 			"archives_ingested, archives_skipped, archive_drawers and any archive_failures) " +
 			"so a real rebuild is distinguishable from a no-op and a skip is never counted " +
 			"as an ingest. It cannot invent content that " +
@@ -963,8 +967,12 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault) mcp.Handle
 		}()
 
 		// Ask BEFORE rebuilding. A rebuild can create palace/<project>/ as a
-		// side effect of indexing the iterations corpus, so asking afterwards
-		// answers a different question than the one the refusal turns on.
+		// side effect of indexing the iterations or session-note corpus (both
+		// write .vec files under palace/<project>/.local/embed-cache), so
+		// asking afterwards answers a different question than the one the
+		// refusal turns on. Neither of those corpora writes palace/<project>/
+		// drawers, which is what HasPalaceStore actually stats — the ordering
+		// is defensive, and the third corpus source does not weaken it.
 		hadStore, err := vault.HasPalaceStore(p.Project)
 		if err != nil {
 			return nil, fmt.Errorf("check palace store: %w", err)
@@ -998,7 +1006,10 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault) mcp.Handle
 		// palace store, so a project with iterations.md but no drawers gets a
 		// real index from a rebuild that legitimately CREATES the store —
 		// refusing that would be this same defect inverted, reporting failure
-		// for work that was done.
+		// for work that was done. The session-note corpus is a third such
+		// source, and it widens that reach past note-only projects: ANY project
+		// with session notes now has indexable content here, whether or not it
+		// also has drawers, iterations or archives.
 		// ArchivesSkipped counts here as evidence, not just ArchivesIngested: an
 		// archive the ledger already covers is content this project HAS, so a
 		// second run over a project whose every archive is ingested must not
@@ -1009,16 +1020,23 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault) mcp.Handle
 			return nil, fmt.Errorf(
 				"refresh index %q: nothing to refresh — no palace store at palace/%s/drawers, "+
 					"and no indexable content anywhere (0 drawers, 0 iteration chunks, "+
-					"%d transcript archives).\n"+
-					"This tool re-embeds an existing corpus and backfills from ARCHIVED "+
+					"0 session-note chunks, %d transcript archives).\n"+
+					"This tool re-embeds an existing corpus, indexes the BODIES of any "+
+					"session notes under Projects/%s/sessions/, and backfills from ARCHIVED "+
 					"TRANSCRIPTS under Projects/%s/transcripts/; it cannot invent content "+
 					"that was never captured.\n"+
-					"Drawers are otherwise written at capture time (internal/capture indexes "+
-					"the transcript, never the session note), so a project captured without a "+
-					"transcript AND without an archive has none.\n"+
-					"Next step: capture new work in this project normally, or delete the "+
-					"orphaned history. Do not re-run this expecting a different answer.",
-				p.Project, p.Project, bf.ArchivesFound, p.Project)
+					"Drawers are written at capture time from the TRANSCRIPT "+
+					"(internal/capture indexes the transcript, never the session note), so "+
+					"a project captured without a transcript and without an archive has no "+
+					"drawers. That is why the note bodies are a SEPARATE corpus source: a "+
+					"note IS captured content, so indexing it invents nothing, and a "+
+					"project with notes but no transcript is searchable through them. This "+
+					"project has neither.\n"+
+					"Next step: capture new work in this project normally. Do NOT delete "+
+					"the history — a session note here would make this project searchable "+
+					"on the next refresh, so the absence is of content, not of a repair "+
+					"path.",
+				p.Project, p.Project, bf.ArchivesFound, p.Project, p.Project)
 		}
 
 		return map[string]any{
@@ -1027,6 +1045,7 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault) mcp.Handle
 			"had_palace_store": hadStore,
 			"drawers":          stats.Drawers,
 			"iteration_chunks": stats.IterationChunks,
+			"note_chunks":      stats.NoteChunks,
 			"indexed":          stats.Indexed,
 			"embedded":         stats.Embedded,
 			"cache_hits":       stats.CacheHits,
