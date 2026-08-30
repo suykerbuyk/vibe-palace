@@ -47,55 +47,156 @@ type KGStats struct {
 	PredicateTypes []string `json:"predicate_types"`
 }
 
-// AddEntity appends an entity to the entities JSONL file.
-// Rejects duplicates by ID.
+// maxEntityLine caps a single entities JSONL record for the dedup scan.
+// bufio.Scanner's 64 KB default is well above a normal entity — a name, a
+// type, and a small properties map — but an entity carrying a large property
+// value, or a torn append that concatenates two records into one oversized
+// line, exceeds it. The default turns that into bufio.ErrTooLong, and because
+// the scan runs on the WRITE path, one such line fails EVERY subsequent
+// AddEntity for that project rather than just being skipped; ListEntities
+// breaks on the same line. The ceiling stays finite so a corrupt file cannot
+// drive an unbounded allocation.
+//
+// It is deliberately a SEPARATE constant from maxDrawerLine (drawers.go),
+// which exists for the same reason on the drawer file: the two files hold
+// independent record shapes, and sharing one constant would couple a future
+// change to drawer size to the entity reader and back.
+const maxEntityLine = 1 << 20
+
+// AddEntity appends an entity to the entities JSONL file, rejecting duplicates
+// by ID.
+//
+// It is the n=1 wrapper over AddEntities, and it exists for the callers whose
+// contract is the ERROR rather than the count: the MCP kg_add tool ensures its
+// subject and object entities exist and treats "already exists" as success,
+// and the mempalace importer reports it the same way. AddEntities deliberately
+// does not error on a duplicate, because its caller is a bulk ingest for which
+// a duplicate is the normal case, not a failure.
+//
+// 🔴 The "already exists" substring is a load-bearing contract; callers match
+// on it with strings.Contains. Do not reword it.
 func (v *Vault) AddEntity(project string, e Entity) error {
-	path, err := v.KGEntitiesFile(project)
+	n, err := v.AddEntities(project, []Entity{e})
 	if err != nil {
 		return err
 	}
+	if n == 0 {
+		return fmt.Errorf("entity %q already exists", e.ID)
+	}
+	return nil
+}
+
+// AddEntities appends every entity in es that is not already filed for the
+// project, and returns how many it actually appended. Duplicates — against
+// what is on disk OR against an earlier entry in es — are skipped silently.
+//
+// # Why this is the batch shape and not a loop over AddEntity
+//
+// The per-entity entry point costs O(entities already filed): it reads the
+// whole entities JSONL and unmarshals every line to check for a duplicate ID,
+// then used to copy that whole buffer plus one line back out through
+// atomicfile.Write. Callers invoke it in a loop — the capture indexer once per
+// extracted entity, the mempalace importer once per exported entity — so
+// writing N entities cost O(N²) bytes in both directions. This entry point
+// pays the scan ONCE per (project, batch) and appends the new lines in ONE
+// write, which removes the quadratic term without a sidecar index file, a
+// persistent ID cache, or any new state to keep coherent. The `seen` set below
+// lives for the duration of one call and is discarded with it.
+//
+// # The write is an append, not a whole-file replace
+//
+// It routes to appendUnderLock (family F4) rather than atomicfile.Write. The
+// lock is acquired HERE and held across the read→dedup→append sequence, which
+// is exactly the contract F4 documents: it does not acquire, and a second
+// acquire on the same path would block forever. Do not move the acquire into
+// the primitive, and do not call it from a caller that is not already holding.
+func (v *Vault) AddEntities(project string, es []Entity) (int, error) {
+	if len(es) == 0 {
+		return 0, nil
+	}
+
+	path, err := v.KGEntitiesFile(project)
+	if err != nil {
+		return 0, err
+	}
+	// appendUnderLock opens with O_CREATE but does not create parent
+	// directories the way atomicfile.Write does, so the kg directory is still
+	// this caller's job.
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("ensure kg dir: %w", err)
+		return 0, fmt.Errorf("ensure kg dir: %w", err)
 	}
 
 	release, err := vaultlock.Acquire(v.Root, path)
 	if err != nil {
-		return fmt.Errorf("lock entities file: %w", err)
+		return 0, fmt.Errorf("lock entities file: %w", err)
 	}
 	defer release()
 
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("read entities file: %w", err)
+		return 0, fmt.Errorf("read entities file: %w", err)
 	}
 
+	// One scan of the file, not one per entity. A line that does not parse is
+	// skipped rather than failing the append: it contributes no ID to dedup
+	// against, which is the same thing the per-line `continue` did before.
+	seen := make(map[string]struct{})
 	scanner := bufio.NewScanner(bytes.NewReader(existing))
+	scanner.Buffer(make([]byte, 0, 64*1024), maxEntityLine)
 	for scanner.Scan() {
 		var cur Entity
 		if err := json.Unmarshal(scanner.Bytes(), &cur); err != nil {
 			continue
 		}
-		if cur.ID == e.ID {
-			return fmt.Errorf("entity %q already exists", e.ID)
-		}
+		seen[cur.ID] = struct{}{}
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("scan entities file: %w", err)
-	}
-
-	line, err := json.Marshal(e)
-	if err != nil {
-		return fmt.Errorf("marshal entity: %w", err)
+		return 0, fmt.Errorf("scan entities file: %w", err)
 	}
 
 	var buf bytes.Buffer
-	buf.Write(existing)
-	buf.Write(line)
-	buf.WriteByte('\n')
-	if err := atomicfile.Write(v.Root, path, buf.Bytes()); err != nil {
-		return fmt.Errorf("write entity: %w", err)
+	appended := 0
+	for _, e := range es {
+		if _, dup := seen[e.ID]; dup {
+			continue
+		}
+		seen[e.ID] = struct{}{}
+		line, err := json.Marshal(e)
+		if err != nil {
+			return 0, fmt.Errorf("marshal entity: %w", err)
+		}
+		buf.Write(line)
+		buf.WriteByte('\n')
+		appended++
 	}
-	return nil
+
+	// Every entity in the batch was already filed. Write nothing at all: this
+	// is what makes a re-run of an already-ingested transcript cost one read
+	// rather than one read plus a whole-file rewrite.
+	if appended == 0 {
+		return 0, nil
+	}
+
+	// 🔴 Heal a missing final newline before appending onto it. Every writer
+	// here terminates its lines, so a file that does not end in '\n' ends in a
+	// TORN record — the failure mode an append primitive has and a whole-file
+	// replace does not. Appending straight onto it would concatenate the torn
+	// bytes with the first new record and lose BOTH.
+	//
+	// This matters MORE here than it does for drawers: readDrawerFile SKIPS a
+	// malformed line, so an unhealed torn write there costs one row, whereas
+	// ListEntities returns an error on the first line that does not parse — so
+	// the same damage makes the ENTIRE knowledge graph unreadable, not one
+	// record. Separating them costs one byte.
+	out := buf.Bytes()
+	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
+		out = append([]byte{'\n'}, out...)
+	}
+
+	if err := v.appendUnderLock(path, out); err != nil {
+		return 0, fmt.Errorf("write entity: %w", err)
+	}
+	return appended, nil
 }
 
 // ListEntities returns all entities for a project.
@@ -116,6 +217,10 @@ func (v *Vault) ListEntities(project string) ([]Entity, error) {
 
 	var entities []Entity
 	scanner := bufio.NewScanner(f)
+	// Same ceiling as the dedup scan in AddEntities: the reader and the writer
+	// must agree on what a readable line is, or a record one of them accepts is
+	// an unrecoverable error to the other.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxEntityLine)
 	for scanner.Scan() {
 		var e Entity
 		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {

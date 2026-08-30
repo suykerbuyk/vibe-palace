@@ -2106,9 +2106,20 @@ installed correctly?"
 ### Existing Storage Layer
 
 The storage layer (`internal/storage/knowledge_graph.go`) provides full KG
-CRUD: `AddEntity`, `GetEntity`, `ListEntities`, `AddTriple`, `QueryEntity`,
-`InvalidateTriple`, `Timeline`, `KGStats`. Entities are stored in JSONL,
-triples as individual JSON files keyed by `{subj}--{pred}--{obj}`.
+CRUD: `AddEntities`, `AddEntity`, `GetEntity`, `ListEntities`, `AddTriple`,
+`QueryEntity`, `InvalidateTriple`, `Timeline`, `KGStats`. Entities are stored
+in JSONL, triples as individual JSON files keyed by `{subj}--{pred}--{obj}`.
+
+`AddEntities(project, []Entity)` is the entity write path: it takes the
+per-path lock, reads and scans `entities.jsonl` **once** to build the dedup
+set, and appends only the new lines through `appendUnderLock` (family F4) — so
+a batch of N entities costs one read and one write instead of N of each. It
+returns the number actually appended and skips duplicates silently, whether
+they are already on disk or repeated inside the same batch; an all-duplicate
+batch writes nothing at all. `AddEntity` is the n=1 wrapper that turns a skip
+back into the `entity %q already exists` error the interactive `vp_kg_add`
+tool matches on. This mirrors `AppendDrawers`/`AppendDrawer` in
+`internal/storage/drawers.go`, for the same reason.
 
 ### Entity Detection (`internal/kg/entity_detector.go`)
 

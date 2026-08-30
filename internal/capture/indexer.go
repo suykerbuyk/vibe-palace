@@ -29,11 +29,13 @@ type Indexer struct {
 }
 
 // IndexStats reports per-call counts of newly-written artifacts.
-// Counts exclude artifacts skipped due to dedup ("already exists").
+// Counts exclude artifacts skipped due to dedup: the batch writers report the
+// skips as the gap between the batch size and the returned count, and
+// AddTriple reports them as an error containing "already exists".
 // Callers that don't accumulate may discard with `_, err := ...`.
 type IndexStats struct {
 	Drawers  int // drawers appended via vault.AppendDrawer (excludes dedup skips)
-	Entities int // entities added via vault.AddEntity (excludes dedup skips)
+	Entities int // entities added via vault.AddEntities (excludes dedup skips)
 	Triples  int // triples added via vault.AddTriple (mentioned_in + relationship; excludes dedup skips)
 }
 
@@ -133,7 +135,7 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 
 	// Every chunk in this call already existed: there is nothing new to embed
 	// or extract entities from, and EmbedBatch's output would be discarded
-	// anyway (IndexDrawers/AddEntity/AddTriple dedup-skip on unchanged
+	// anyway (IndexDrawers/AddEntities/AddTriple dedup-skip on unchanged
 	// content). Skipping here is what stops a re-index of an already-indexed
 	// archive from paying full embedder + KG-extraction cost for zero result.
 	if stats.Drawers == 0 {
@@ -172,9 +174,11 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 }
 
 // extractEntities runs the unified kg.ExtractAll pass and writes every
-// deduplicated entity + relationship to the KG in a single loop. Returns
-// per-call counts of newly-written entities and triples; dedup skips
-// (errors containing "already exists") do not increment.
+// deduplicated entity + relationship to the KG. Entities go out in ONE
+// AddEntities batch; triples still go one AddTriple at a time. Returns
+// per-call counts of newly-written entities and triples; dedup skips do not
+// increment — the batch reports them as a count, and AddTriple reports them as
+// an error containing "already exists".
 //
 // KG writes are best-effort per PRD: failures do not propagate to the
 // caller, but every failure is captured via slog.Warn so maintainers have
@@ -191,25 +195,41 @@ func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp st
 
 	result := kg.ExtractAll(transcript, today, kg.ExtractAllOptions{})
 
+	// Entities are written in ONE batch, hoisted out of the per-entity loop
+	// below. AddEntity reads and scans the whole entities file to dedup, so
+	// calling it once per extracted entity cost O(entities in the graph) per
+	// entity — the quadratic term this batch removes. The triples still go one
+	// at a time because AddTriple is a different shape: one JSON file per
+	// triple, deduped by path collision, with no whole-file scan to amortize.
+	ents := make([]storage.Entity, 0, len(result.Entities))
 	for _, ent := range result.Entities {
-		err := idx.vault.AddEntity(project, storage.Entity{
+		ents = append(ents, storage.Entity{
 			ID:        slug.Slugify(ent.Type + "-" + ent.Name),
 			Name:      ent.Name,
 			Type:      ent.Type,
 			CreatedAt: timestamp,
 		})
-		switch {
-		case err == nil:
-			stats.Entities++
-		case strings.Contains(err.Error(), "already exists"):
-			slog.Debug("kg: duplicate entity skipped",
-				"entity", ent.Name, "source", ent.Source)
-		default:
-			slog.Warn("kg: add entity failed",
-				"entity", ent.Name, "source", ent.Source, "err", err)
+	}
+	// KG writes are best-effort per PRD: a failure here must NOT propagate to
+	// the caller, so it is logged once and the triple pass still runs.
+	added, err := idx.vault.AddEntities(project, ents)
+	if err != nil {
+		slog.Warn("kg: add entities failed", "project", project,
+			"batch", len(ents), "err", err)
+	} else {
+		// stats.Entities is documented as excluding dedup skips, and the batch
+		// count is exactly the newly-written ones. Per-entity identity is no
+		// longer available at this point, so the skip log reports what is
+		// actually known: how many of the batch were already filed.
+		stats.Entities += added
+		if skipped := len(ents) - added; skipped > 0 {
+			slog.Debug("kg: duplicate entities skipped",
+				"project", project, "skipped", skipped, "batch", len(ents))
 		}
+	}
 
-		err = idx.vault.AddTriple(project, storage.Triple{
+	for _, ent := range result.Entities {
+		err := idx.vault.AddTriple(project, storage.Triple{
 			Subject:       ent.Name,
 			Predicate:     "mentioned_in",
 			Object:        sessionID,

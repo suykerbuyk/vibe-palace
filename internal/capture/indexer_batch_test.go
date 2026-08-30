@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"slices"
 	"strings"
 	"testing"
 
@@ -133,6 +134,111 @@ func TestIndexTranscriptDoesNotAppendPerChunk(t *testing.T) {
 	}
 }
 
+// entityTranscript produces a transcript that is BOTH big enough to chunk into
+// many drawers and dense enough to yield KG entities: every file path below is
+// mentioned more than once, so it clears kg.DefaultMinMentions.
+func entityTranscript(n int) string {
+	var b strings.Builder
+	for i := range n {
+		b.WriteString("We edited internal/storage/knowledge_graph.go and then retested ")
+		b.WriteString("internal/storage/knowledge_graph.go end to end. ")
+		b.WriteString("The change to internal/capture/indexer.go was reviewed, and ")
+		b.WriteString("internal/capture/indexer.go now batches its writes. ")
+		b.WriteString("Filler for chunk ")
+		b.WriteString(strings.Repeat("y", 1+i%19))
+		b.WriteString(" so the chunker produces distinct drawers. ")
+	}
+	return b.String()
+}
+
+// TestIndexTranscriptBatchesEntities is the entity half of this file. It has a
+// prerequisite that is easy to get wrong: IndexTranscript RETURNS EARLY when
+// stats.Drawers == 0, so a transcript that appends no new drawers never reaches
+// the entity pass and the test would measure nothing. The first assertion is
+// therefore that new drawers landed.
+func TestIndexTranscriptBatchesEntities(t *testing.T) {
+	v := testVault(t)
+	eng, emb := testEngine(t, v)
+	idx := NewIndexer(v, eng, emb, storage.Config{})
+
+	st, err := idx.IndexTranscript(context.Background(), "session-ent", "test-proj", entityTranscript(30))
+	if err != nil {
+		t.Fatalf("IndexTranscript: %v", err)
+	}
+	if st.Drawers == 0 {
+		t.Fatal("no new drawers — IndexTranscript returned before the entity pass, " +
+			"so this test measured nothing")
+	}
+	if st.Entities == 0 {
+		t.Fatal("stats.Entities = 0 — the batch wrote no entities at all")
+	}
+
+	got, err := v.ListEntities("test-proj")
+	if err != nil {
+		t.Fatalf("ListEntities: %v", err)
+	}
+	// stats.Entities excludes dedup skips, and this is the first pass, so the
+	// count and the corpus must agree exactly.
+	if len(got) != st.Entities {
+		t.Fatalf("stats.Entities = %d but the graph holds %d entities", st.Entities, len(got))
+	}
+	for _, want := range []string{
+		"internal/storage/knowledge_graph.go",
+		"internal/capture/indexer.go",
+	} {
+		if !slices.ContainsFunc(got, func(e storage.Entity) bool { return e.Name == want }) {
+			t.Errorf("entity %q missing from the graph", want)
+		}
+	}
+
+	// A second, longer transcript that repeats the same entities must add no
+	// new ones: the batch dedups against what is on disk, and stats.Entities
+	// must not count the skips.
+	st2, err := idx.IndexTranscript(context.Background(), "session-ent-2", "test-proj",
+		entityTranscript(30)+entityTranscript(10))
+	if err != nil {
+		t.Fatalf("second IndexTranscript: %v", err)
+	}
+	if st2.Drawers == 0 {
+		t.Fatal("second pass added no drawers — it never reached the entity pass")
+	}
+	if st2.Entities != 0 {
+		t.Errorf("second pass reported %d new entities, want 0 (all already filed)", st2.Entities)
+	}
+	after, err := v.ListEntities("test-proj")
+	if err != nil {
+		t.Fatalf("ListEntities: %v", err)
+	}
+	if len(after) != len(got) {
+		t.Errorf("second pass changed the graph: %d -> %d entities", len(got), len(after))
+	}
+}
+
+// TestExtractEntitiesDoesNotAddPerEntity is the structural pin. AddEntity reads
+// and scans the entire entities file, so calling it once per extracted entity
+// cost O(entities in the graph) per entity. A behavioural test cannot tell one
+// read from thirty; the shape is pinned here.
+func TestExtractEntitiesDoesNotAddPerEntity(t *testing.T) {
+	fn := findFuncDecl(t, "indexer.go", "extractEntities")
+
+	if n := countSelectorCalls(fn, "AddEntity"); n != 0 {
+		t.Errorf("extractEntities makes %d AddEntity (singular) calls, want 0 — "+
+			"the per-entity entry point rescans the whole entities file every time", n)
+	}
+	if n := countSelectorCalls(fn, "AddEntities"); n != 1 {
+		t.Errorf("extractEntities makes %d AddEntities calls, want exactly 1", n)
+	}
+	if selectorCallInsideLoop(fn, "AddEntities") {
+		t.Error("extractEntities calls AddEntities inside a loop — the quadratic term is back")
+	}
+	// AddTriple is deliberately still per-entity: it is one JSON file per
+	// triple, deduped by path collision, with no whole-file scan to amortize.
+	if n := countSelectorCalls(fn, "AddTriple"); n != 2 {
+		t.Errorf("extractEntities makes %d AddTriple calls, want 2 "+
+			"(mentioned_in + relationship) — AddTriple was out of scope for the batch", n)
+	}
+}
+
 // --- tiny AST helpers -------------------------------------------------------
 
 func findFuncDecl(t *testing.T, file, name string) *ast.FuncDecl {
@@ -193,6 +299,34 @@ func rangesOverLocsAndAppends(fn *ast.FuncDecl) bool {
 			}
 			return true
 		})
+		return true
+	})
+	return found
+}
+
+// selectorCallInsideLoop reports whether a call named <anything>.<sel>(...)
+// appears inside a for/range body in fn.
+func selectorCallInsideLoop(fn *ast.FuncDecl, sel string) bool {
+	found := false
+	inspect := func(body ast.Node) {
+		ast.Inspect(body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if se, ok := call.Fun.(*ast.SelectorExpr); ok && se.Sel.Name == sel {
+				found = true
+			}
+			return true
+		})
+	}
+	ast.Inspect(fn, func(node ast.Node) bool {
+		switch loop := node.(type) {
+		case *ast.ForStmt:
+			inspect(loop.Body)
+		case *ast.RangeStmt:
+			inspect(loop.Body)
+		}
 		return true
 	})
 	return found

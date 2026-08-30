@@ -216,31 +216,44 @@ func ImportMemPalace(
 		})
 	}
 
-	// Step 5: import entities.
-	for _, e := range export.Entities {
-		if opts.DryRun {
-			result.EntitiesCreated++
-			continue
+	// Step 5: import entities, in ONE batch.
+	//
+	// This is an unbounded bulk import, and the per-entity AddEntity reads and
+	// scans the whole entities file to dedup — so a loop over it cost O(N²)
+	// for an export of N entities. AddEntities pays the scan once and skips
+	// duplicates silently, so the "already exists" branch this loop used to
+	// carry is now just the gap between len(ents) and the returned count.
+	//
+	// The tradeoff, stated rather than hidden: a marshal failure inside the
+	// batch aborts the WHOLE batch, where the per-entity loop recorded one
+	// ImportError and carried on with the rest. storage.Entity marshals a
+	// string/string map and four strings, so there is no value that can fail
+	// json.Marshal here, but the batch shape is the reason that is worth
+	// saying out loud.
+	if opts.DryRun {
+		result.EntitiesCreated += len(export.Entities)
+	} else {
+		ents := make([]storage.Entity, 0, len(export.Entities))
+		for _, e := range export.Entities {
+			ents = append(ents, storage.Entity{
+				ID:         e.ID,
+				Name:       e.Name,
+				Type:       e.Type,
+				Properties: e.Properties,
+				CreatedAt:  e.CreatedAt,
+			})
 		}
-		se := storage.Entity{
-			ID:         e.ID,
-			Name:       e.Name,
-			Type:       e.Type,
-			Properties: e.Properties,
-			CreatedAt:  e.CreatedAt,
-		}
-		addErr := vault.AddEntity("mempalace", se)
+		added, addErr := vault.AddEntities("mempalace", ents)
 		if addErr != nil {
-			if strings.Contains(addErr.Error(), "already exists") {
-				continue
-			}
 			result.Errors = append(result.Errors, ImportError{
 				Project: "mempalace",
 				Err:     addErr,
 			})
-			continue
 		}
-		result.EntitiesCreated++
+		// EntitiesCreated stays "newly created": the batch count already
+		// excludes both the entities already in the graph and any duplicate
+		// IDs inside the export itself.
+		result.EntitiesCreated += added
 	}
 
 	// Step 6: import triples.
