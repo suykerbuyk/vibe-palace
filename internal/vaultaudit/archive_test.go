@@ -29,6 +29,11 @@ func seedManifest(t *testing.T, vault *storage.Vault, p, sessionID, noteRel stri
 	if err := os.MkdirAll(filepath.Join(vault.Root, "palace", p), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// And give that store a real drawer RECORD, for the same reason: palace-store-drawers
+	// reports a store holding nothing to search, which is real drift it correctly finds —
+	// so a fixture with an empty store would make these archive tests fail for a reason
+	// that has nothing to do with archives.
+	seedArchiveDrawer(t, vault, p)
 	stem := "2026-07-14-" + sessionID
 	m := archive.Manifest{
 		SchemaVersion:       1,
@@ -50,6 +55,30 @@ func seedManifest(t *testing.T, vault *storage.Vault, p, sessionID, noteRel stri
 		t.Fatal(err)
 	}
 	return "Projects/" + p + "/transcripts/" + stem + ".manifest.json"
+}
+
+// seedArchiveDrawer writes one drawer record into a project's palace/ store so the
+// fixture is coherent for EVERY dimension Run() executes, not just the archive ones.
+func seedArchiveDrawer(t *testing.T, vault *storage.Vault, p string) {
+	t.Helper()
+	dir := filepath.Join(vault.Root, "palace", p, "drawers", "architecture", "decisions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "fixture drawer"
+	line, err := json.Marshal(storage.Drawer{
+		ID:         storage.DrawerID("architecture", content),
+		Hall:       "sessions",
+		Content:    content,
+		SourceType: "session",
+		FiledAt:    "2026-07-14T01:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "drawers.jsonl"), append(line, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // seedNote writes a session note so a manifest's back-link can resolve.

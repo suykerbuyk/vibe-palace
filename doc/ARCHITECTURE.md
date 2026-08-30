@@ -2198,11 +2198,19 @@ takes `--project`; it is a different thing from the vault audit below.
 design intent and reports **pass / fail / unknown per dimension**. Full rationale
 in ADR-007; the mechanics:
 
-- **Five dimensions:** `archive-roundtrip` (every transcript manifest back-links
-  to a session note that exists), `project-tree-coherence` (every project appears
-  in both `palace/` and `Projects/`), `kg-portability` (KG triple filenames are
+- **Eight dimensions** (the registry is `dims` in `internal/vaultaudit/audit.go`;
+  this list is derived from it): `archive-roundtrip` (every transcript manifest
+  back-links to a session note that exists), `project-tree-coherence` (every project
+  appears in both `palace/` and `Projects/`), `kg-portability` (KG triple filenames are
   NTFS/exFAT-safe), `resume-discipline` (no `resume.md` over the size cap),
-  `iteration-headings` (canonical H2 so the iteration counter derives correctly).
+  `iteration-headings` (canonical H2 so the iteration counter derives correctly),
+  `memory-portability` (no memory filename is unrepresentable on NTFS/exFAT, and none
+  collide case-insensitively in one directory), `task-heading-markers` (no H2 in an
+  active task file carries an unresolved-status marker `amend` can never revise),
+  `palace-store-drawers` (a project with a `palace/` store actually holds drawer
+  records — the INVERSE of `project-tree-coherence`, which sees only whether the two
+  trees agree a project exists, so a store present in both trees with an absent or
+  empty `drawers/` passes it while `vp search` walks nothing there).
 - **Advisory — a FAIL exits 0.** It reports; it never blocks. An audit that
   failed the build is an audit people learn to disable.
 - **Vault-global — no `project` parameter.** Scoping it per-project is how a

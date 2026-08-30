@@ -2011,7 +2011,8 @@ off and then catches nothing at all.
 
 `internal/vaultaudit` is the runtime sibling of the source audit: where `sourceaudit`
 checks the repo's own source, the vault audit checks the **live vault** against design
-intent (five dimensions; see ADR-007). Its tests carry the same doctrine — *an auditor
+intent (eight dimensions; the registry is `dims` in `audit.go` — see ADR-007). Its
+tests carry the same doctrine — *an auditor
 validated only by its own logic is the thing this epic exists to prevent* — so the
 central test is a **mutation test**, exactly as in `sourceaudit`.
 
@@ -2021,7 +2022,7 @@ central test is a **mutation test**, exactly as in `sourceaudit`.
 | `TestArchiveRoundTrip_CleanVaultIsClean` (`archive_test.go`) | a fully-linked vault produces no findings — trustworthy only *because* the mutation test above can fail |
 | `TestRun_FixingTheBugForcesTheBaselineToShrink` (`archive_test.go`) | linking a stranded-but-accepted manifest turns its baseline entry STALE — the ratchet, exercised end to end |
 | `TestRun_LiveVaultCanary` (`archive_test.go`) | the audit runs against the **real vault** in `make test` — the discipline the whole epic rests on |
-| `dimensions_test.go` | project-tree-coherence, KG-portability, resume-discipline, iteration-headings each find their planted defect and pass a clean fixture |
+| `dimensions_test.go` | project-tree-coherence, KG-portability, resume-discipline, iteration-headings, memory-portability, task-heading-markers, palace-store-drawers each find their planted defect and pass a clean fixture; palace-store-drawers additionally pins that an ABSENT `drawers/` and a PRESENT-BUT-EMPTY one produce **distinguishable details**, that a populated `Projects/<slug>/iterations.md` (a separate ingest corpus) does **not** silence the finding, that an unreadable store lands in `unknowns` rather than passing, and — the mutation test — that emptying a populated drawer set is what produces the finding; `TestPalaceStoreDrawers_PalaceOnlyProjectDetailTellsTheTruth` asserts the detail's WORDS, not just the count, because the gate admits a palace-only project for which the two-tree explanation would be false; `TestPalaceStoreDrawers_IsRegistered` proves `Run`'s hand-edited `dims` literal actually carries it |
 | `baseline_test.go` | `(Dimension, Artifact)` identity; an accepted pair is `accepted` not `new`; a **fixed** accepted entry goes **STALE and FAILS** (the may-only-shrink ratchet); `Regenerate` preserves reasons |
 | `staleness_test.go` | the nag is **silent when fresh** and trips on churn/age — a missing anchor must read as *unknown*, never `0` (the 209 `ABSENCE IS NOT A VALUE` bug) |
 

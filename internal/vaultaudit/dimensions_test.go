@@ -4,6 +4,7 @@
 package vaultaudit
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -804,4 +805,317 @@ func TestTaskHeadingMarkers_IsRegistered(t *testing.T) {
 		return
 	}
 	t.Fatalf("%s is not registered in Run's dims table", DimTaskHeadingMarkers)
+}
+
+// --- palace-store-drawers ---
+
+// seedPalaceProject creates BOTH trees for a project, which is the shape the defect
+// lives in: present in palace/ and in Projects/, so ProjectPresence.Complete() is true
+// and project-tree-coherence stays silent about it.
+func seedPalaceProject(t *testing.T, vault *storage.Vault, project string) {
+	t.Helper()
+	mkdirs(t, vault.Root, "palace", project)
+	mkdirs(t, vault.Root, "Projects", project)
+}
+
+// seedDrawer appends one real Drawer RECORD to a room's drawers.jsonl. It writes the
+// record rather than an empty file on purpose — the dimension counts records, and a
+// helper that only made files could not tell the two apart.
+func seedDrawer(t *testing.T, vault *storage.Vault, project, wing, room, content string) {
+	t.Helper()
+	d := storage.Drawer{
+		ID:         storage.DrawerID(wing, content),
+		Hall:       "sessions",
+		Content:    content,
+		SourceType: "session",
+		FiledAt:    "2026-08-30T00:00:00Z",
+	}
+	line, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, vault.Root, "palace/"+project+"/drawers/"+wing+"/"+room+"/drawers.jsonl", string(line)+"\n")
+}
+
+func drawerArtifacts(findings []Finding) []string {
+	out := make([]string, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, f.Artifact)
+	}
+	return out
+}
+
+// TestPalaceStoreDrawers_AbsentDrawersDirIsFound is the day-one specimen: the live
+// vault's atlassian-vault has palace/<slug>/kg and no drawers directory at all, sits
+// in BOTH trees, and is therefore invisible to project-tree-coherence.
+func TestPalaceStoreDrawers_AbsentDrawersDirIsFound(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedPalaceProject(t, vault, "hollow")
+	writeFile(t, vault.Root, "palace/hollow/kg/entities.jsonl", "")
+
+	findings, unknowns, err := auditPalaceStoreDrawers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknowns) != 0 {
+		t.Errorf("unexpected unknowns: %v", unknowns)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %v, want exactly the store with no drawers directory",
+			drawerArtifacts(findings))
+	}
+	if findings[0].Artifact != "hollow" {
+		t.Errorf("artifact = %q, want the project slug (one finding per project, matching "+
+			"project-tree-coherence's granularity)", findings[0].Artifact)
+	}
+	if !strings.Contains(findings[0].Detail, "is absent") {
+		t.Errorf("the ABSENT detail must say the drawers directory is absent, or a reader "+
+			"cannot tell it from the present-but-empty case; got %q", findings[0].Detail)
+	}
+	// The wording ruling: iterations.md is an independent ingest source for
+	// search.Rebuild, so an empty drawer store does NOT prove the project unsearchable.
+	if strings.Contains(findings[0].Detail, "UNSEARCHABLE") {
+		t.Errorf("this dimension may not claim UNSEARCHABLE — Projects/<slug>/iterations.md "+
+			"is a separate corpus; got %q", findings[0].Detail)
+	}
+}
+
+// TestPalaceStoreDrawers_PresentButEmptyIsFound pins the OTHER half of the
+// discriminator. ListWings returns (nil, nil) for both "absent" and "present and
+// empty", so without HasPalaceStore these two findings would be indistinguishable.
+func TestPalaceStoreDrawers_PresentButEmptyIsFound(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedPalaceProject(t, vault, "empty")
+	mkdirs(t, vault.Root, "palace", "empty", "drawers")
+	// A wing and a room that exist as directories, plus a zero-length drawers.jsonl.
+	// Files are not records: this store still holds nothing to search.
+	writeFile(t, vault.Root, "palace/empty/drawers/architecture/decisions/drawers.jsonl", "")
+
+	findings, unknowns, err := auditPalaceStoreDrawers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknowns) != 0 {
+		t.Errorf("unexpected unknowns: %v", unknowns)
+	}
+	if len(findings) != 1 || findings[0].Artifact != "empty" {
+		t.Fatalf("findings = %v, want exactly the empty store", drawerArtifacts(findings))
+	}
+	if !strings.Contains(findings[0].Detail, "PRESENT BUT EMPTY") {
+		t.Errorf("the EMPTY detail must distinguish itself from the absent case; got %q",
+			findings[0].Detail)
+	}
+	if strings.Contains(findings[0].Detail, "is absent") {
+		t.Errorf("the empty case must not report the directory as absent; got %q",
+			findings[0].Detail)
+	}
+	if strings.Contains(findings[0].Detail, "UNSEARCHABLE") {
+		t.Errorf("this dimension may not claim UNSEARCHABLE; got %q", findings[0].Detail)
+	}
+}
+
+// TestPalaceStoreDrawers_PopulatedStoreIsSilent: one real drawer record is enough.
+func TestPalaceStoreDrawers_PopulatedStoreIsSilent(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedPalaceProject(t, vault, "full")
+	seedDrawer(t, vault, "full", "architecture", "decisions", "a real drawer")
+
+	findings, unknowns, err := auditPalaceStoreDrawers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 || len(unknowns) != 0 {
+		t.Fatalf("a populated store must be silent; findings %v unknowns %v",
+			drawerArtifacts(findings), unknowns)
+	}
+}
+
+// TestPalaceStoreDrawers_NoPalaceTreeIsNotOurs: a project with history and no palace/
+// store is project-tree-coherence's finding. Reporting it here too would be a
+// duplicate rather than the inverse.
+func TestPalaceStoreDrawers_NoPalaceTreeIsNotOurs(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	mkdirs(t, vault.Root, "Projects", "history-only")
+	writeFile(t, vault.Root, "Projects/history-only/iterations.md", "## Iteration 1 — x\n")
+
+	findings, unknowns, err := auditPalaceStoreDrawers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 || len(unknowns) != 0 {
+		t.Fatalf("!InPalace is project-tree-coherence's finding, not ours; findings %v unknowns %v",
+			drawerArtifacts(findings), unknowns)
+	}
+	// And the OTHER dimension must still own it, or the hole moved rather than closed.
+	coherence, _, err := auditProjectTreeCoherence(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(coherence) != 1 {
+		t.Fatalf("project-tree-coherence must still report the palace-less project; got %+v", coherence)
+	}
+}
+
+// 🔴 TestPalaceStoreDrawers_PalaceOnlyProjectDetailTellsTheTruth pins the OTHER shape
+// the p.InPalace gate admits: a palace store with no Projects/ tree at all.
+//
+// The detail must not claim project-tree-coherence is blind here — coherence reports
+// this project too, because it is not Complete() — and must not offer iterations.md as
+// the corpus that might still cover it, because there is no Projects/<slug>/ tree to
+// hold one. Both sentences are true for a two-tree project and false for this one, so
+// a single fixed detail string cannot serve both. Assert the words, not just the
+// count: a finding that fires with a false explanation is the defect class this
+// dimension exists to catch, one layer down.
+func TestPalaceStoreDrawers_PalaceOnlyProjectDetailTellsTheTruth(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	mkdirs(t, vault.Root, "palace", "leftover")
+
+	findings, unknowns, err := auditPalaceStoreDrawers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknowns) != 0 {
+		t.Errorf("unexpected unknowns: %v", unknowns)
+	}
+	if len(findings) != 1 || findings[0].Artifact != "leftover" {
+		t.Fatalf("a palace-only project still has an empty drawer store; findings = %v",
+			drawerArtifacts(findings))
+	}
+
+	detail := findings[0].Detail
+	if strings.Contains(detail, "cannot see this") || strings.Contains(detail, "both trees") {
+		t.Errorf("project-tree-coherence is NOT blind to a palace-only project — it reports it "+
+			"for being incomplete. Detail must not claim otherwise: %q", detail)
+	}
+	if strings.Contains(detail, "may still be indexed") {
+		t.Errorf("there is no Projects/leftover/iterations.md to index, so the detail must not "+
+			"offer it as a corpus that might still cover the project: %q", detail)
+	}
+	if strings.Contains(detail, "UNSEARCHABLE") {
+		t.Errorf("this dimension never claims unsearchability in those terms: %q", detail)
+	}
+
+	// The premise the branch rests on: coherence really does own this project too.
+	coherence, _, err := auditProjectTreeCoherence(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(coherence) != 1 || coherence[0].Artifact != "leftover" {
+		t.Fatalf("precondition: project-tree-coherence must report the palace-only project, "+
+			"or this test is asserting against a premise that does not hold; got %+v", coherence)
+	}
+}
+
+// 🔴 TestPalaceStoreDrawers_IterationsCorpusDoesNotSilenceIt is the Critical the plan
+// review raised, pinned. Projects/<slug>/iterations.md is a SEPARATE ingest source for
+// search.Rebuild (internal/search/engine.go:467-486) — it is NOT the drawer store, it
+// does not fill one, and a populated one must not suppress this finding. The live
+// specimen atlassian-vault has a 26KB iterations.md and no drawers directory at all.
+func TestPalaceStoreDrawers_IterationsCorpusDoesNotSilenceIt(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedPalaceProject(t, vault, "atlassian-vault")
+	writeFile(t, vault.Root, "Projects/atlassian-vault/iterations.md",
+		strings.Repeat("## Iteration 1 — a real, indexed narrative\n\nbody\n\n", 200))
+
+	findings, unknowns, err := auditPalaceStoreDrawers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknowns) != 0 {
+		t.Errorf("unexpected unknowns: %v", unknowns)
+	}
+	if len(findings) != 1 || findings[0].Artifact != "atlassian-vault" {
+		t.Fatalf("a populated iterations.md is a DIFFERENT corpus and must not silence an empty "+
+			"drawer store; findings = %v", drawerArtifacts(findings))
+	}
+}
+
+// TestPalaceStoreDrawers_UnreadableStoreIsUnknownNotPass: unknown is not a shade of
+// pass (audit.go:21-25). A store the auditor cannot walk is neither reported as a
+// finding nor counted as clean.
+func TestPalaceStoreDrawers_UnreadableStoreIsUnknownNotPass(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory modes, so chmod 0 cannot make the walk undecidable")
+	}
+	vault := storage.NewVault(t.TempDir())
+	seedPalaceProject(t, vault, "blind")
+	seedDrawer(t, vault, "blind", "architecture", "decisions", "a real drawer")
+
+	dir := filepath.Join(vault.Root, "palace", "blind", "drawers")
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	// Restore before TempDir cleanup, which cannot remove an unreadable directory.
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	findings, unknowns, err := auditPalaceStoreDrawers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("a store the auditor could not read must not produce a finding; got %v",
+			drawerArtifacts(findings))
+	}
+	if len(unknowns) != 1 || !strings.Contains(unknowns[0], "blind") {
+		t.Fatalf("unknowns = %v, want the project the auditor could not look at", unknowns)
+	}
+}
+
+// TestPalaceStoreDrawers_MutationEmptyingTheStoreProducesTheFinding is the mutation
+// proof: the RULE produces the finding, not the harness. Seed a store WITH drawers and
+// assert silence; empty the drawer set and assert exactly one finding.
+func TestPalaceStoreDrawers_MutationEmptyingTheStoreProducesTheFinding(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedPalaceProject(t, vault, "p")
+	seedDrawer(t, vault, "p", "architecture", "decisions", "a real drawer")
+
+	findings, _, err := auditPalaceStoreDrawers(vault)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("precondition: a populated store must be silent; got %v (err %v)",
+			drawerArtifacts(findings), err)
+	}
+
+	// Truncate the record set, leaving the file and the whole directory tree in place.
+	// Files are not records — this is the exact mutation the dimension must catch.
+	writeFile(t, vault.Root, "palace/p/drawers/architecture/decisions/drawers.jsonl", "")
+
+	findings, unknowns, err := auditPalaceStoreDrawers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknowns) != 0 {
+		t.Errorf("unexpected unknowns: %v", unknowns)
+	}
+	if len(findings) != 1 || findings[0].Artifact != "p" {
+		t.Fatalf("emptying the drawer set must produce exactly one finding; got %v",
+			drawerArtifacts(findings))
+	}
+	if !strings.Contains(findings[0].Detail, "PRESENT BUT EMPTY") {
+		t.Errorf("detail = %q, want the present-but-empty wording", findings[0].Detail)
+	}
+}
+
+// TestPalaceStoreDrawers_IsRegistered: dims is a hand-edited literal, so a dimension
+// can be written, unit-tested, and silently never run. Run() must actually carry it.
+func TestPalaceStoreDrawers_IsRegistered(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedPalaceProject(t, vault, "hollow")
+
+	rep, err := Run(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range rep.Dimensions {
+		if d.Name != DimPalaceStoreDrawers {
+			continue
+		}
+		if len(d.New) != 1 {
+			t.Fatalf("registered dimension reported New = %+v, want the one empty store", d.New)
+		}
+		if d.Evidence != EvidencePalaceStoreDrawers {
+			t.Error("registered dimension must carry its evidence string")
+		}
+		return
+	}
+	t.Fatalf("%s is not registered in Run's dims table", DimPalaceStoreDrawers)
 }

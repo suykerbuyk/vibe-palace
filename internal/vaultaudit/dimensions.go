@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -84,6 +85,15 @@ const (
 	// discipline rather than by code. Do not widen the token list to chase it; that
 	// road ends at flagging the correction idiom itself.
 	DimTaskHeadingMarkers = "task-heading-markers"
+
+	// DimPalaceStoreDrawers — a project with a palace/ store must actually hold
+	// drawer records. Earned by palace-store-exists-with-empty-drawers-passes-coherence:
+	// DimProjectTreeCoherence asks only whether the two trees agree a project EXISTS,
+	// so a project present in BOTH trees whose palace/<slug>/ carries no drawers at all
+	// is Complete() == true and produces no finding — while `vp search` walks
+	// wings × rooms × drawers and finds nothing there. This dimension is the inverse of
+	// that one, not a duplicate: coherence audits presence, this audits contents.
+	DimPalaceStoreDrawers = "palace-store-drawers"
 )
 
 // Evidence commands. RECORD THE GREP, NEVER THE COUNT (invariant 3) — every number
@@ -102,6 +112,16 @@ const (
 		`vp check --check iteration-headings   # frame orphans: fence-aware, no grep is honest here`
 	EvidenceMemoryPortability = `find Projects/*/memory -type f -printf '%f\n' | grep -Ei '[<>:"\\|?*]|[. ]$|^(con|prn|aux|nul|com[1-9]|lpt[1-9])([.]|$)'; ` +
 		`for d in Projects/*/memory; do find "$d" -type f -printf '%f\n' | tr 'A-Z' 'a-z' | sort | uniq -d; done   # case collisions`
+	// Prints every palace/ project whose drawer store holds nothing to walk. It does
+	// NOT distinguish an absent drawers/ directory from a present-but-empty one — the
+	// two findings' DETAILS carry that, because a shell one-liner that split them would
+	// be longer than the rule it reproduces. It approximates "no drawer RECORDS" as "no
+	// non-empty drawers.jsonl", which is exact for every store this vault has produced.
+	// It deliberately ignores Projects/<slug>/iterations.md: that is a SEPARATE ingest
+	// source for search.Rebuild and does not fill an empty drawer store.
+	EvidencePalaceStoreDrawers = `for d in palace/*/; do s=$(basename "$d"); ` +
+		`find "palace/$s/drawers" -name drawers.jsonl -size +0c -print -quit 2>/dev/null | grep -q . || echo "$s"; ` +
+		`done   # palace/ projects with an empty or absent drawer store; iterations.md is a separate corpus`
 )
 
 // unresolvedStatusMarkers is the DECLARED marker set for DimTaskHeadingMarkers: the
@@ -237,6 +257,150 @@ func auditProjectTreeCoherence(vault *storage.Vault) ([]Finding, []string, error
 		})
 	}
 	return findings, nil, nil
+}
+
+// auditPalaceStoreDrawers: a project with a palace/ store that holds NO drawer
+// records.
+//
+// DimProjectTreeCoherence answers "do the two trees agree this project exists?" and
+// stops there. A project present in BOTH trees satisfies it — ProjectPresence.Complete
+// is true — even when palace/<slug>/ has no drawers directory at all, or has one with
+// nothing in it. `vp search` walks exactly ListWings × ListRooms × ListDrawers, the
+// composition below, so that store contributes NOTHING and the audit says nothing.
+// This is the inverse of coherence, not a duplicate of it: coherence audits presence,
+// this audits contents.
+//
+// 🔴 THE WORDING OF BOTH DETAILS IS DELIBERATELY RESTRAINED, AND MUST STAY THAT WAY.
+// Neither may claim the project is UNSEARCHABLE or has no searchable corpus.
+// Projects/<slug>/iterations.md is an INDEPENDENT ingest source for search.Rebuild
+// (internal/search/engine.go:467-486), and the index is dropped only when BOTH sources
+// come back empty (:497-504) — so an empty drawer store does not imply an unsearchable
+// project. DimProjectTreeCoherence gets to say UNSEARCHABLE because a project with no
+// palace/ store has no drawer index at all; this dimension does not. Report what is
+// missing (the drawer half), never the consequence that would follow only if the other
+// corpus were also empty. A future reader will otherwise "fix" this wording back.
+//
+// 🔴 THE GATE IS p.InPalace ALONE — p.InProjects is deliberately NOT required. A
+// palace store with no history under Projects/ is already a project-tree-coherence
+// finding, and the overlap is accepted on purpose: the two details say DIFFERENT
+// things ("no history was ever written here" versus "the drawer store is empty"), and
+// suppressing this one on that project would make the dimension's answer depend on an
+// unrelated tree.
+//
+// HasPalaceStore is asked FIRST and is the discriminator. ListWings returns (nil, nil)
+// for BOTH "no drawers directory" and "a drawers directory with no wings"
+// (internal/storage/drawers.go:296-315), so without that stat the two findings could
+// not be told apart. A project the auditor could not look at lands in unknowns and is
+// neither reported nor passed — unknown is not a shade of pass (audit.go:21-25).
+func auditPalaceStoreDrawers(vault *storage.Vault) ([]Finding, []string, error) {
+	projects, err := vault.ListAllProjects()
+	if err != nil {
+		return nil, nil, fmt.Errorf("enumerate projects: %w", err)
+	}
+
+	var findings []Finding
+	var unknowns []string
+
+	for _, p := range projects {
+		if !p.InPalace {
+			// No palace tree at all is project-tree-coherence's finding, not ours.
+			continue
+		}
+
+		has, err := vault.HasPalaceStore(p.Slug)
+		if err != nil {
+			// Could not even stat the store. Say so; do not report, do not pass.
+			unknowns = append(unknowns, fmt.Sprintf("%s: cannot stat %s: %v",
+				p.Slug, path.Join("palace", p.Slug, "drawers"), err))
+			continue
+		}
+		if !has {
+			findings = append(findings, Finding{
+				Dimension: DimPalaceStoreDrawers,
+				Artifact:  p.Slug,
+				Detail: fmt.Sprintf("has a palace/ store but NO drawers directory (%s is absent), so "+
+					"its sessions were never drawer-indexed and the drawer half of `vp search` "+
+					"covers nothing for it. %s", path.Join("palace", p.Slug, "drawers"),
+					storeContextNote(p)),
+			})
+			continue
+		}
+
+		// The store exists. Walk the SAME composition search.Rebuild walks and count
+		// actual Drawer records — a zero-length or absent drawers.jsonl contributes
+		// zero, which is the whole point: files are not records.
+		records, blind := countDrawerRecords(vault, p.Slug)
+		if blind != "" {
+			unknowns = append(unknowns, blind)
+			continue
+		}
+		if records == 0 {
+			findings = append(findings, Finding{
+				Dimension: DimPalaceStoreDrawers,
+				Artifact:  p.Slug,
+				Detail: fmt.Sprintf("has a palace/ store whose drawers directory is PRESENT BUT EMPTY "+
+					"(%s exists and the wing × room × drawer walk yields 0 drawer records), so its "+
+					"sessions were never drawer-indexed and the drawer half of `vp search` covers "+
+					"nothing for it. %s", path.Join("palace", p.Slug, "drawers"),
+					storeContextNote(p)),
+			})
+		}
+	}
+	return findings, unknowns, nil
+}
+
+// storeContextNote spells out, for ONE project, what an empty drawer store does and
+// does not imply. It branches on p.InProjects because BOTH of the sentences it can
+// emit are false for a palace-only project, and a detail that asserts them anyway
+// would be the same false report this dimension exists to catch:
+//
+//   - "project-tree-coherence cannot see this" is only true when the project is in
+//     both trees. A palace store with no Projects/ history is NOT Complete(), so
+//     coherence reports it too — loudly, and first.
+//   - "iterations.md may still be indexed" presumes a Projects/<slug>/ tree to hold
+//     one. A palace-only project has no such file to be searchable by instead.
+//
+// The gate above is p.InPalace alone and stays that way; this is how the detail tells
+// the truth for both shapes that gate admits.
+func storeContextNote(p storage.ProjectPresence) string {
+	if !p.InProjects {
+		return fmt.Sprintf("project-tree-coherence reports this project separately, for having no "+
+			"history under Projects/ at all — and there is no Projects/%s/iterations.md to carry "+
+			"the corpus instead, so nothing indexes it.", p.Slug)
+	}
+	return fmt.Sprintf("project-tree-coherence cannot see this: the project is present in both "+
+		"trees, so it is Complete(). This is NOT a claim that the project is unsearchable — "+
+		"Projects/%s/iterations.md is a separate ingest source and may still be indexed.", p.Slug)
+}
+
+// countDrawerRecords walks one project's drawer store the way search.Rebuild does and
+// returns how many Drawer RECORDS it holds. A non-empty second return is the reason
+// the walk is undecidable, in which case the count is meaningless and the caller must
+// record an unknown rather than a pass.
+//
+// It counts records, not files: a room whose drawers.jsonl is absent or zero-length
+// contributes nothing, which is exactly the hole this dimension exists to report.
+func countDrawerRecords(vault *storage.Vault, slug string) (int, string) {
+	wings, err := vault.ListWings(slug)
+	if err != nil {
+		return 0, fmt.Sprintf("%s: cannot list wings: %v", slug, err)
+	}
+
+	records := 0
+	for _, wing := range wings {
+		rooms, err := vault.ListRooms(slug, wing)
+		if err != nil {
+			return 0, fmt.Sprintf("%s: cannot list rooms in wing %s: %v", slug, wing, err)
+		}
+		for _, room := range rooms {
+			drawers, err := vault.ListDrawers(slug, wing, room)
+			if err != nil {
+				return 0, fmt.Sprintf("%s: cannot list drawers in %s/%s: %v", slug, wing, room, err)
+			}
+			records += len(drawers)
+		}
+	}
+	return records, ""
 }
 
 // portabilityHostile are the characters that make a filename unusable on NTFS/exFAT.
