@@ -84,9 +84,13 @@ routes them all through `vaultlock.Acquire(v.Root, path)`:
 - RMW sites (`DeleteDrawer`, `InvalidateTriple`, `UpdateTaskStatus`,
   `WriteScoringConfig`) acquire the lock at the top, spanning their read, then
   call raw `atomicfile.Write` under it.
-- Append writers (`AppendIteration`, `AppendDrawer`, `AddEntity`) acquire the
-  sidecar lock instead of flocking the target fd — so `AppendDrawer` and
-  `DeleteDrawer` finally interlock on the same lock object.
+- Append writers (`AppendIterationOwned`, `AppendDrawers`, `AddEntities`) acquire
+  the sidecar lock instead of flocking the target fd — so an append and
+  `DeleteDrawer` finally interlock on the same lock object. `AppendDrawer` and
+  `AddEntity` are the n=1 wrappers over the batch forms and acquire **nothing**
+  themselves; the lock is taken one level down. Lock the batch function when you
+  add a caller, and do not add an acquire to a wrapper: it would take the same
+  path's lock twice, which is a permanent self-deadlock rather than an error.
 
 The `canonicalKey` policy mirrors `vaultfs.ResolveSafePath`'s
 `EvalSymlinks` → parent-fallback → lexical-clean cascade, so a path supplied by
