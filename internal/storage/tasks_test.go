@@ -1595,10 +1595,16 @@ func TestResolveTaskFileNotFound(t *testing.T) {
 }
 
 // validTaskFile is the canonical shape CreateTask writes: one title, one Status,
-// one Priority, contiguous, then a body.
+// one Priority, contiguous, then the conventional first H2 and a body under it.
+//
+// 🔴 The H2 is not decoration. CreateTask emits "## Context"
+// (ConventionalFirstHeading) unconditionally, and validateWholeTaskFile refuses a
+// file with no H2 at all — so a fixture without one is not "the shape CreateTask
+// writes", it is a shape no writer can produce and the validator rejects.
 const validTaskFile = "# Task Title\n\n" +
 	"**Status:** pending\n" +
 	"**Priority:** P1\n\n" +
+	"## " + ConventionalFirstHeading + "\n\n" +
 	"Body prose goes here.\n"
 
 // TestValidateWholeTaskFileValid proves a normal well-formed task passes.
@@ -1614,7 +1620,7 @@ func TestValidateWholeTaskFileTwoStatus(t *testing.T) {
 	content := "# Task Title\n\n" +
 		"**Status:** pending\n" +
 		"**Status:** blocked\n" +
-		"**Priority:** P1\n\nBody.\n"
+		"**Priority:** P1\n\n## Context\n\nBody.\n"
 	err := validateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "two Status lines") {
 		t.Fatalf("error = %v, want 'two Status lines'", err)
@@ -1624,7 +1630,7 @@ func TestValidateWholeTaskFileTwoStatus(t *testing.T) {
 // TestValidateWholeTaskFileTwoTitles proves a second H1 is rejected by name.
 func TestValidateWholeTaskFileTwoTitles(t *testing.T) {
 	content := "# Task Title\n# Second Title\n\n" +
-		"**Status:** pending\n**Priority:** P1\n\nBody.\n"
+		"**Status:** pending\n**Priority:** P1\n\n## Context\n\nBody.\n"
 	err := validateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "two title lines") {
 		t.Fatalf("error = %v, want 'two title lines'", err)
@@ -1637,7 +1643,7 @@ func TestValidateWholeTaskFileTwoPriority(t *testing.T) {
 	content := "# Task Title\n\n" +
 		"**Status:** pending\n" +
 		"**Priority:** P1\n" +
-		"**Priority:** P2\n\nBody.\n"
+		"**Priority:** P2\n\n## Context\n\nBody.\n"
 	err := validateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "two Priority lines") {
 		t.Fatalf("error = %v, want 'two Priority lines'", err)
@@ -1647,7 +1653,7 @@ func TestValidateWholeTaskFileTwoPriority(t *testing.T) {
 // TestValidateWholeTaskFileMissingField proves a file missing a required header
 // field is rejected and names the field.
 func TestValidateWholeTaskFileMissingField(t *testing.T) {
-	content := "# Task Title\n\n**Status:** pending\n\nBody, no priority.\n"
+	content := "# Task Title\n\n**Status:** pending\n\n## Context\n\nBody, no priority.\n"
 	err := validateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "missing Priority") {
 		t.Fatalf("error = %v, want 'missing Priority'", err)
@@ -1656,7 +1662,7 @@ func TestValidateWholeTaskFileMissingField(t *testing.T) {
 
 // TestValidateWholeTaskFileMissingTitle proves a headerless file is rejected.
 func TestValidateWholeTaskFileMissingTitle(t *testing.T) {
-	content := "**Status:** pending\n**Priority:** P1\n\nNo title here.\n"
+	content := "**Status:** pending\n**Priority:** P1\n\n## Context\n\nNo title here.\n"
 	err := validateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "missing title") {
 		t.Fatalf("error = %v, want 'missing title'", err)
@@ -1668,6 +1674,7 @@ func TestValidateWholeTaskFileMissingTitle(t *testing.T) {
 func TestValidateWholeTaskFileUnterminatedFence(t *testing.T) {
 	content := "# Task Title\n\n" +
 		"**Status:** pending\n**Priority:** P1\n\n" +
+		"## Context\n\n" +
 		"```go\nnever closed\n"
 	err := validateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "unterminated code fence") {
@@ -1680,7 +1687,7 @@ func TestValidateWholeTaskFileUnterminatedFence(t *testing.T) {
 func TestValidateWholeTaskFileMalformedHeaderBlock(t *testing.T) {
 	content := "# Task Title\n\n" +
 		"**Status:** pending\n\n" + // blank line breaks the contiguous run
-		"**Priority:** P1\n\nBody.\n"
+		"**Priority:** P1\n\n## Context\n\nBody.\n"
 	err := validateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "malformed header block") {
 		t.Fatalf("error = %v, want 'malformed header block'", err)
@@ -1691,9 +1698,16 @@ func TestValidateWholeTaskFileMalformedHeaderBlock(t *testing.T) {
 // lines that live INSIDE a fenced code block — the whole reason it drives
 // mdfence. A closed fence containing a second "# H1" and a second "**Status:**"
 // must not be read as duplicate header material.
+//
+// The fixture carries its own UNFENCED "## Context" so this test still fails for
+// its own reason: without it the file would be refused for having no H2, and a
+// green result would prove nothing about fence awareness. The mirror case — an
+// H2 that exists ONLY inside a fence — is
+// TestValidateWholeTaskFileFencedH2DoesNotCount.
 func TestValidateWholeTaskFileFenceAware(t *testing.T) {
 	content := "# Task Title\n\n" +
 		"**Status:** pending\n**Priority:** P1\n\n" +
+		"## Context\n\n" +
 		"Example task markdown:\n\n" +
 		"```md\n" +
 		"# Not A Real Title\n" +
@@ -1706,6 +1720,90 @@ func TestValidateWholeTaskFileFenceAware(t *testing.T) {
 	}
 }
 
+// TestValidateWholeTaskFileNoH2 proves the refusal this rule exists for: a file
+// whose header is perfectly well formed but whose entire body sits above the
+// first heading, because there is no heading. Every byte of that prose is
+// unreachable to amend, which matches on an exact "## " heading line.
+func TestValidateWholeTaskFileNoH2(t *testing.T) {
+	content := "# Task Title\n\n" +
+		"**Status:** pending\n**Priority:** P1\n\n" +
+		"All of this prose is unaddressable.\n\nSo is this.\n"
+	err := validateWholeTaskFile(content)
+	if err == nil || !strings.Contains(err.Error(), "missing section") {
+		t.Fatalf("error = %v, want 'missing section'", err)
+	}
+}
+
+// TestValidateWholeTaskFileFencedH2DoesNotCount proves the H2 requirement is
+// fence-aware like every other rule in the function. A task body that quotes a
+// task's own markdown inside a fence carries a "## " line that amend can never
+// match, so it must not satisfy the requirement.
+//
+// MUTATION anchor: count H2s over the raw content instead of
+// mdfence.OutsideFences and this reds.
+func TestValidateWholeTaskFileFencedH2DoesNotCount(t *testing.T) {
+	content := "# Task Title\n\n" +
+		"**Status:** pending\n**Priority:** P1\n\n" +
+		"Example task markdown:\n\n" +
+		"```md\n" +
+		"## Context\n" +
+		"body under it\n" +
+		"```\n"
+	err := validateWholeTaskFile(content)
+	if err == nil || !strings.Contains(err.Error(), "missing section") {
+		t.Fatalf("error = %v, want 'missing section'", err)
+	}
+}
+
+// TestValidateWholeTaskFileManyH2 proves there is NO upper bound on H2s. Only
+// zero is the defect — a task with many sections is the normal shape, and a rule
+// that demanded exactly one would refuse nearly every real task file.
+func TestValidateWholeTaskFileManyH2(t *testing.T) {
+	content := "# Task Title\n\n" +
+		"**Status:** pending\n**Priority:** P1\n\n" +
+		"## Context\n\nWhy.\n\n" +
+		"## Decision\n\nWhat.\n\n" +
+		"## Notes\n\nHow.\n"
+	if err := validateWholeTaskFile(content); err != nil {
+		t.Fatalf("multiple H2 sections rejected: %v", err)
+	}
+}
+
+// TestCreateTaskOutputPassesWholeFileValidation ties the new rule to its reason
+// at BOTH ends: CreateTask establishes the H2 guarantee at birth
+// (ConventionalFirstHeading, emitted unconditionally) and validateWholeTaskFile
+// is what stops a later whole-file overwrite from undoing it. If the two ever
+// disagree — a CreateTask that stopped emitting the heading, or a validator that
+// demanded a shape CreateTask does not write — this reds.
+func TestCreateTaskOutputPassesWholeFileValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"empty body", ""},
+		{"body with no heading of its own", "Just prose.\n"},
+		{"body that already opens with an H2", "## Their Own Heading\n\nSome prose.\n"},
+		{"body quoting a fenced H2", "Sample:\n\n```md\n## Fenced\n```\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := testVault(t)
+			if err := v.CreateTask("proj", TaskSpec{
+				Slug: "task", Title: "T", Priority: "P1", Content: tc.content,
+			}); err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+			_, body, err := v.GetTask("proj", "task")
+			if err != nil {
+				t.Fatalf("GetTask: %v", err)
+			}
+			if err := validateWholeTaskFile(body); err != nil {
+				t.Fatalf("CreateTask wrote a file validateWholeTaskFile refuses: %v\nfile:\n%s", err, body)
+			}
+		})
+	}
+}
+
 // TestOverwriteTaskFileWritesValid proves a valid whole-file overwrite persists
 // and re-reads verbatim, and that the surface stamp lands (v.Root was passed).
 func TestOverwriteTaskFileWritesValid(t *testing.T) {
@@ -1715,7 +1813,7 @@ func TestOverwriteTaskFileWritesValid(t *testing.T) {
 	}
 
 	newContent := "# New Title\n\n" +
-		"**Status:** in_progress\n**Priority:** P0\n\nRewritten body.\n"
+		"**Status:** in_progress\n**Priority:** P0\n\n## Context\n\nRewritten body.\n"
 	if err := v.OverwriteTaskFile("proj", "task", newContent); err != nil {
 		t.Fatalf("OverwriteTaskFile: %v", err)
 	}
@@ -1747,7 +1845,7 @@ func TestOverwriteTaskFileRejectsInvalid(t *testing.T) {
 		t.Fatalf("read before: %v", err)
 	}
 
-	bad := "# T\n\n**Status:** a\n**Status:** b\n**Priority:** P1\n"
+	bad := "# T\n\n**Status:** a\n**Status:** b\n**Priority:** P1\n\n## Context\n\nBody.\n"
 	if err := v.OverwriteTaskFile("proj", "task", bad); err == nil {
 		t.Fatal("OverwriteTaskFile accepted invalid content")
 	}

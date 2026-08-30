@@ -1156,6 +1156,12 @@ func validateTaskBody(content string) error {
 //     first, because an open fence swallows the trailing header and would
 //     otherwise masquerade as a "missing field"),
 //   - exactly one "# " H1 title line,
+//   - at least one "## " H2 heading (no upper bound — many sections is normal;
+//     only ZERO is the defect). amend is keyed on an exact "## " heading match,
+//     so a body with no H2 has no addressable section and every word of its
+//     prose is unreachable to every later write. CreateTask guarantees the
+//     heading at birth (ConventionalFirstHeading, emitted unconditionally); this
+//     check is what keeps a whole-file write from undoing that guarantee,
 //   - exactly one "**Status:**" line and exactly one "**Priority:**" line,
 //   - those Status and Priority lines lie inside the one contiguous "**Field:**"
 //     run following the title (a well-formed header block — a stray field marooned
@@ -1167,11 +1173,14 @@ func validateWholeTaskFile(content string) error {
 
 	outside := mdfence.OutsideFences(content)
 	lines := make([]string, len(outside))
-	var h1, status, priority int
+	var h1, h2, status, priority int
 	for i, l := range outside {
 		lines[i] = l.Text
 		if isH1Line(l.Text) {
 			h1++
+		}
+		if isH2Line(l.Text) {
+			h2++
 		}
 		if isStatusLine(l.Text) {
 			status++
@@ -1186,6 +1195,12 @@ func validateWholeTaskFile(content string) error {
 		return errors.New("missing title: no \"# \" H1 heading outside code fences")
 	case h1 > 1:
 		return fmt.Errorf("two title lines: found %d \"# \" H1 headings, want exactly one", h1)
+	}
+	// An `if` rather than a switch, unlike its neighbours: they each carry a
+	// zero case AND a duplicate case, and this rule has no upper bound to pair
+	// with — many sections is the normal shape of a task file.
+	if h2 == 0 {
+		return errors.New("missing section: no \"## \" H2 heading outside code fences, so no part of the body is addressable by amend")
 	}
 	switch {
 	case status == 0:

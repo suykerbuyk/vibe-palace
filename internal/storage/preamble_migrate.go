@@ -32,9 +32,22 @@ const (
 	// because these files are fine. Rewriting a whole task body end-to-end is
 	// not what "move the preamble" means, and a migration that silently did it
 	// would be indistinguishable from a bug. Skip, report as its own class,
-	// leave the bytes alone. The separate defect — with no H2 present, amend can
-	// never match a section, so every amend APPENDS — is filed as
-	// `tasks-with-no-h2-make-amend-always-append` and is not this pass's to fix.
+	// leave the bytes alone.
+	//
+	// The separate defect is NOT that "every amend appends". upsertSection
+	// appends only when sectionBounds misses, so the FIRST amend of a given
+	// section name appends that H2 after the unsectioned prose and every LATER
+	// amend of the same name replaces it — pinned by
+	// TestAmendTaskAppendsWhenSectionAbsent and TestAmendTaskIsIdempotent. What
+	// actually persists is that the ORIGINAL unsectioned prose stays
+	// permanently unreachable: no section name addresses it, so no amend can
+	// ever revise it. Only a whole-file overwrite can.
+	//
+	// That is also the only path that can reintroduce the class — CreateTask
+	// emits ConventionalFirstHeading unconditionally, so no task is born
+	// without an H2 — and validateWholeTaskFile now refuses a whole-file write
+	// with no "## " heading outside code fences. The files this branch skips
+	// are the pre-existing ones; nothing new joins them.
 	PreambleSkippedNoH2
 )
 
