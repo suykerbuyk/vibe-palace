@@ -41,7 +41,7 @@ updates, architecture reviews, dependency audits, release checklists.
 | `tasks-epic <slug>` | One epic's subtree re-rooted, each task tagged with its derived role |
 | `tasks-standalone` | Tasks with no parent and no children — the no-epic bucket |
 | `tasks-read <name>` | Print one task/epic body verbatim; searches `active`/`done`/`cancelled` |
-| `herdr` | Load the session's Herdr skill from the installed binary (`herdr --skill`), gated on running inside a Herdr pane |
+| `herdr` | Load the session's Herdr skill from the installed binary (`herdr --skill`). Inside a Herdr pane, or from outside with an operator-named persistent session (`herdr --session <name>`) |
 
 The four `tasks-*` commands are thin wrappers over the `vp_list_tasks` /
 `vp_get_task` MCP tools (see [MCP Tools](#mcp-tools) below).

@@ -690,6 +690,55 @@ func TestEmbeddedWorkflow_ThinWithDoctrineContract(t *testing.T) {
 	}
 }
 
+// TestHerdrChair_NamedSessionOutsideGate: a Zed Agent Panel / Zed-terminal
+// Chair must be allowed to drive an operator-named herdr --session. The old
+// gate stopped the moment HERDR_ENV was unset, so vpc-herdr/vps-chair could
+// not seat the thin bridge. Bare herdr pane list from outside still hits
+// default and remains forbidden.
+func TestHerdrChair_NamedSessionOutsideGate(t *testing.T) {
+	resources, err := WalkEmbedded()
+	if err != nil {
+		t.Fatalf("WalkEmbedded: %v", err)
+	}
+	body := make(map[string]string)
+	for _, r := range resources {
+		body[r.RelPath] = string(r.Bytes)
+	}
+	herdr, ok := body["commands/herdr.md"]
+	if !ok {
+		t.Fatal("commands/herdr.md missing")
+	}
+	if !strings.Contains(herdr, `test "${HERDR_ENV:-}" = 1`) {
+		t.Error("herdr.md dropped the HERDR_ENV check")
+	}
+	if !strings.Contains(herdr, "herdr --session <name>") {
+		t.Error("herdr.md: no named-session CLI prefix — outside Chair will grab default")
+	}
+	if !strings.Contains(herdr, "still a guess") {
+		t.Error("herdr.md: must refuse to guess a session name")
+	}
+	if !strings.Contains(herdr, "herdr pane list --session") {
+		t.Error("herdr.md: must show the wrong --session placement so agents do not use it")
+	}
+
+	chair, ok := body["skills/chair/SKILL.md"]
+	if !ok {
+		t.Fatal("skills/chair/SKILL.md missing")
+	}
+	if strings.Contains(chair, "say you cannot drive panes and stop there") {
+		t.Error("chair skill still hard-stops outside Herdr — named-session seating is dead")
+	}
+	if !strings.Contains(chair, "herdr --session <name>") {
+		t.Error("chair skill: no --session prefix for outside Chair")
+	}
+	if !strings.Contains(chair, "no Self pane") && !strings.Contains(chair, "not in the roster") {
+		t.Error("chair skill: outside Chair must not treat itself as a Herdr pane")
+	}
+	if !strings.Contains(chair, "operator Terminal") && !strings.Contains(herdr, "focused pane of that session") {
+		t.Error("outside Chair must not treat pane current --current as Self")
+	}
+}
+
 func TestFS_ContainsTemplatesRoot(t *testing.T) {
 	fsys := FS()
 	// Reading through the exported FS should locate at least one

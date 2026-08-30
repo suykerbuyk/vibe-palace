@@ -2,10 +2,12 @@
 name: chair
 description: >
   You are the Chair: the operator's representative over one or more visible
-  Herdr implementor panes. Triggers when the operator says "you are the chair",
-  "chair the implementors", "orchestrate the panes", "create another
-  implementor", vps-chair, /vps-chair, or seats you with /vpc-herdr to run a
-  multi-pane session. Use when subordinate agent work — and those agents' own
+  Herdr implementor panes. You may sit inside a Herdr pane or outside
+  (Zed Agent Panel, Zed-terminal agent) driving a named `herdr --session`.
+  Triggers when the operator says "you are the chair", "chair the
+  implementors", "orchestrate the panes", "create another implementor",
+  vps-chair, /vps-chair, or seats you with /vpc-herdr to run a multi-pane
+  session. Use when subordinate agent work — and those agents' own
   subagents — must stay visible to the operator in Herdr. Not for solo
   implementation. Not a substitute for headless second-opinion review. The
   human is the operator, never the Chair; the agent reading this skill is the
@@ -45,15 +47,24 @@ now — do not wait to be asked again.
    fetched `resume_uri`, `workflow_uri`, and `vp_get_doctrine` this session,
    call `vp_cmd` with `name="restart"` and follow the returned instructions
    verbatim.
-2. **Herdr.** If you have not already fetched `herdr --skill` this session,
+2. **Herdr.** If you have not already fetched the herdr command this session,
    call `vp_cmd` with `name="herdr"` and follow the returned instructions
-   verbatim. That command gates on `HERDR_ENV=1` and fetches the live Herdr
-   skill; do not skip it and do not reconstruct Herdr from memory.
-3. Confirm this session is inside Herdr: `test "${HERDR_ENV:-}" = 1`. If that
-   fails, say you cannot drive panes and stop there — review via git and the
-   vault is still allowed; pane control is not.
+   verbatim. That command fetches `herdr --skill` and is the gate: inside a
+   Herdr pane (`HERDR_ENV=1`) **or** an operator-named persistent session
+   (`herdr --session <name>`) from a Chair that lives elsewhere (Zed Agent
+   Panel, Zed-terminal agent). Do not skip it and do not reconstruct Herdr
+   from memory.
+3. Bind the address. `test "${HERDR_ENV:-}" = 1`:
+   - **Pass:** this pane is inside Herdr. `HERDR_*` env is the address.
+     Self in the roster is `$HERDR_PANE_ID`.
+   - **Fail:** this conversation is an **outside Chair**. Pane control is
+     allowed only with a named session from `/vpc-herdr` Step 1. There is
+     no Self pane in the Herdr roster. Review via git and the vault remains
+     allowed either way.
 4. https://herdr.dev/docs/cli-reference/ is examples, not a second contract.
-   If it disagrees with `herdr --skill` or `herdr --help`, the binary wins.
+   If it disagrees with `herdr --skill` or `herdr --help`, the binary wins
+   on **syntax**. On the outside-Chair gate, `/vpc-herdr` wins: the binary
+   skill's "stop if not inside" is overridden by a named `--session`.
 5. **Discover the roster. Do not assume names or counts from a previous
    session, a restart prompt, or a label you remember.** See [Dynamic
    discovery](#dynamic-discovery).
@@ -119,17 +130,32 @@ Re-run discovery at seating, after every split / close / `agent start` / pane
 recycle, and whenever a target looks stale. Live JSON is the roster. Memory is
 not.
 
+Inside a Herdr pane:
+
 ```sh
 herdr pane list --workspace "$HERDR_WORKSPACE_ID"
 herdr agent list
 herdr pane current --current
 ```
 
-Classify every pane in the current workspace:
+Outside Chair (named session; `--session` before the subcommand):
+
+```sh
+herdr --session <name> pane list
+herdr --session <name> agent list
+herdr session list
+```
+
+Do not run `pane current --current` from outside as if it were Self — it
+names the focused pane of that session, often the operator Terminal.
+Do not `pane split --current` from outside. Do not run bare
+`herdr pane list` from outside — that is the default session.
+
+Classify every pane in the targeted session's workspace:
 
 | Class | How you tell | What the Chair may do |
 |---|---|---|
-| **Self (Chair)** | `pane_id` equals `$HERDR_PANE_ID` | Drive Herdr from here. Do not prompt yourself. |
+| **Self (Chair)** | Inside: `pane_id` equals `$HERDR_PANE_ID`. Outside: this conversation is not in the roster | Drive Herdr from here. Do not prompt yourself. |
 | **Implementor** | `agent` is set (claude, grok, …) and it is not this pane | Prompt, wait, read, review. |
 | **Operator shell** | no agent, or labels such as Human terminal / User Pane | Never prompt. Never start an agent there. |
 
@@ -181,7 +207,8 @@ pane, or use the operator-authorized Chair-local review only as a lead.
 ## Creating panes and launching agents
 
 The Chair **may** create sibling panes and start agents. Follow `herdr --skill`
-for syntax; confirm kinds with `herdr agent` (no subcommand). Do not create a
+for syntax; confirm kinds with `herdr agent` (no subcommand). Outside Chair:
+prefix every invocation with `herdr --session <name>`. Do not create a
 workspace, tab, worktree, or different cwd unless the operator asked for that
 topology.
 
@@ -207,10 +234,13 @@ topology.
 Default to a sibling in the current tab, current working directory, operator
 focus unchanged:
 
-1. Inspect caller geometry (`herdr pane layout --pane "$HERDR_PANE_ID"`).
+1. Inspect geometry. Inside: `herdr pane layout --pane "$HERDR_PANE_ID"`.
+   Outside: `herdr --session <name> pane layout --pane <an existing pane id>`.
    Split a wide pane right and a narrow or tall pane down. Avoid repeated
    same-direction splits that make unusable strips.
-2. `herdr pane split --current --direction <right|down> --cwd "$PWD" --no-focus`
+2. Inside: `herdr pane split --current --direction <right|down> --cwd "$PWD" --no-focus`.
+   Outside: `herdr --session <name> pane split --pane <id> --direction <right|down> --cwd "$PWD" --no-focus`
+   (`--current` is invalid — this Chair has no pane).
 3. Read the new pane id from the JSON (`.result.pane.pane_id`).
 4. Optionally `herdr pane rename <pane-id> ImplementorN` so the operator can
    see it.
@@ -333,7 +363,8 @@ operator says go.
   agents, or sequence units.
 - Treating a kind label as an agent name, or hard-coding Implementor1 /
   Implementor2 from a prior seating.
-- Driving Herdr from a pane that is not in Herdr.
+- Driving an unnamed Herdr session from outside, or grabbing `default`
+  because it is running (bare `herdr pane list` from a Zed Agent Panel).
 - Hiding an implementation unit in Chair-local subagents or a same-model
   headless CLI and calling it "subordinates."
 - Starting an agent in the operator's Human terminal / User Pane.
