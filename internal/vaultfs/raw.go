@@ -54,13 +54,17 @@ import (
 //	                                 Pre-existing; see the note at its call site
 //	storage.applyProjectPlan         the migration-wide TryAcquire, not per-path
 //	storage.pruneEmptyDirs           the migration-wide TryAcquire, not per-path
-//	archive.Create                   NOTHING — internal/archive takes no vault
-//	                                 lock anywhere. Pre-existing
+//	archive.Create                   per-path vaultlock on the MANIFEST, held
+//	                                 across the read-then-.bak-rename window
+//	                                 this sink serves (ADR-003; archive/lock.go)
 //
-// Two of seven hold the per-path lock. A name claiming all seven do would be a
-// hand-maintained assertion about behaviour, free to disagree with it — which
-// is the thing being deleted, not a thing to add. NoLock describes the
-// primitive's own behaviour instead, and cannot rot.
+// The sink itself acquires nothing, ever; exclusion is per-caller, and the table
+// above is the record of it. A NAME claiming every caller holds the lock would
+// be a hand-maintained assertion about behaviour, free to disagree with it —
+// which is the thing being deleted, not a thing to add. So would a tally in this
+// paragraph, which is why there is none: the rows carry the fact, and a row
+// changes with the caller it describes. NoLock describes the primitive's own
+// behaviour instead, and cannot rot.
 //
 // # What the sink deliberately does NOT do
 //

@@ -415,6 +415,12 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 	// LinkSessionNote's was thrown away with `_ =`. The manifest back-link is
 	// what makes a transcript discoverable FROM the archive side, so losing it
 	// quietly is how a transcript becomes unreachable while capture says ok.
+	//
+	// LOCKING POSTURE: BLOCKING. LinkSessionNote holds the manifest's per-path
+	// vaultlock across its read-modify-write (ADR-003); capture is fail-stop and
+	// carries a request context, so waiting on a contended manifest is correct
+	// here. internal/hook uses archive.TryLinkSessionNote instead because it has
+	// no timeout at all — do not copy this call onto such a path.
 	if archiveEntry != nil {
 		if err := archive.LinkSessionNote(vault.Root, archiveEntry.ManifestPath, ref.NotePath); err != nil {
 			lose(StageArchiveBacklink, err, "capture: archive manifest back-link failed; transcript is reachable from the note but not the reverse",

@@ -295,6 +295,15 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 	// pre-existing manifest, and a re-run must still be able to link.
 	var archiveManifestPath string
 	if payload.HookEventName == "SessionEnd" || payload.HookEventName == "PreCompact" {
+		// LockNonBlocking is NOT optional here. archive.Create serializes its
+		// manifest read-modify-write on a bare LOCK_EX with no timeout (ADR-003),
+		// and THIS PATH HAS NO TIMEOUT EITHER: cmdHook is registered UNWRAPPED in
+		// cmd/vp/commands.go and cmd_hook.go passes context.Background() into
+		// Run. A blocking acquire under contention would not degrade the capture,
+		// it would hang SessionEnd forever with no error and no log — strictly
+		// worse than losing the archive, which this project has already ruled is
+		// the trade never to take. Refusing instead lands in the non-fatal warn
+		// immediately below, exactly like any other archive failure.
 		archiveResult, archiveErr := archive.Create(archive.CreateOptions{
 			Adapter:     archive.ClaudeCodeAdapterName,
 			SessionID:   payload.SessionID,
@@ -303,6 +312,7 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 			VaultRoot:   opts.VaultRoot,
 			ProjectSlug: opts.ProjectSlug,
 			VPVersion:   opts.VPVersion,
+			LockPosture: archive.LockNonBlocking,
 		})
 		if archiveErr != nil {
 			slog.Warn("hook: archive failed (non-fatal)", "err", archiveErr)
@@ -404,7 +414,14 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 		default:
 			// Back-link (transcript -> note). Points at the note a human would want to
 			// land on, never the auto-capture stub when a real one exists.
-			if err := archive.LinkSessionNote(opts.VaultRoot, archiveManifestPath, link.Canonical.NotePath); err != nil {
+			// TryLinkSessionNote, not LinkSessionNote: same non-negotiable reason
+			// as the archive.Create call above. The blocking form is a
+			// timeout-free LOCK_EX and this path has no timeout, so contention
+			// there would wedge SessionEnd instead of costing it a back-link.
+			// A refusal (archive.ErrManifestLocked) lands in the non-fatal warn
+			// immediately below, which is where every other link failure already
+			// goes.
+			if err := archive.TryLinkSessionNote(opts.VaultRoot, archiveManifestPath, link.Canonical.NotePath); err != nil {
 				slog.Warn("hook: archive manifest back-link failed; transcript is reachable from the note but not the reverse (non-fatal)",
 					"err", err, "manifest", archiveManifestPath, "note_path", link.Canonical.NotePath)
 			}

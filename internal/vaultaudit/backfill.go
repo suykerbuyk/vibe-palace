@@ -152,8 +152,11 @@ type ApplyBackfillResult struct {
 // Sequence: stamp + forward-link every caller-keyed note of the session under
 // the sessions-directory lock (storage.BackfillArchiveLink), then — after that
 // lock is released — write the manifest back-link to the canonical note
-// (archive.LinkSessionNote, which takes no vaultlock). Sequential, never
-// nested.
+// (archive.LinkSessionNote, which takes the MANIFEST's own per-path vaultlock).
+// Sequential, never nested — and now load-bearing rather than incidental: both
+// locks are blocking, timeout-free LOCK_EX, so holding the sessions-directory
+// lock across the manifest acquire would create a real lock order for a future
+// writer to invert. Release, then link.
 func ApplyBackfill(v *storage.Vault, project, sessionID string) (*ApplyBackfillResult, error) {
 	if project == "" {
 		return nil, fmt.Errorf("project is required")
@@ -237,6 +240,12 @@ func ApplyBackfill(v *storage.Vault, project, sessionID string) (*ApplyBackfillR
 	}
 	res.Canonical = link.Canonical.NotePath
 
+	// LOCKING POSTURE: BLOCKING. LinkSessionNote takes the MANIFEST's per-path
+	// vaultlock across its read-modify-write. The sessions-directory lock taken
+	// by BackfillArchiveLink above has ALREADY BEEN RELEASED by the time control
+	// reaches here — that is the sequential-never-nested invariant this function
+	// documents, and it is what makes a blocking acquire safe rather than a
+	// lock-order hazard. Do not hoist this call under that lock.
 	if err := archive.LinkSessionNote(v.Root, target.ManifestPath, link.Canonical.NotePath); err != nil {
 		return nil, fmt.Errorf("write manifest back-link: %w", err)
 	}

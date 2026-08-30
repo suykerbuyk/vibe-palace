@@ -205,8 +205,11 @@ lock file.
 
 The interlock claim above holds only while every writer of a path takes the
 lock — an advisory lock excludes nobody else. So **vault I/O stays in
-`internal/storage` / `internal/vaultfs`, where the `Acquire` sites live**: a
-higher layer must never read-and-write a vault file itself. The surgical
+`internal/storage` / `internal/vaultfs`, where nearly every `Acquire` site
+lives**: a higher layer must never read-and-write a vault file itself, and the
+few packages that own a file class outright (`internal/absorb`, and
+`internal/archive` for transcript manifests — see *Archive manifest locking*
+below) take the same per-path lock rather than an exception. The surgical
 `resume.md` editors (`vp_thread_*`, `vp_carried_*`) once did exactly that and
 silently lost updates; they were routed through a locked combinator
 (`storage.EditResume`) and then **deleted outright**, along with that combinator
@@ -291,6 +294,47 @@ holds `LockMemory(rel)` across the whole per-file decision and writes through
 `WriteMemoryUnlocked` (`internal/storage/memory.go`) — the same function as
 `WriteMemory` minus the acquire, which under a held lock would be a blocking,
 timeout-free self-deadlock (see the `lockedWrite` rule above).
+
+### Archive manifest locking, and the hook's posture split
+
+Transcript manifests (`Projects/<slug>/transcripts/*.manifest.json`) have
+exactly **two** read-modify-write sites, and both take the per-path lock keyed
+on the **manifest path** (`internal/archive/lock.go`):
+
+- `archive.Create` — across `ReadManifest` → the three-field idempotency
+  compare → the `<name>.manifest.json.<prev-hash>.bak` rename → `compressFile` →
+  `WriteManifest` (and on through `Sign`). Unserialized, two writers racing one
+  session with a changed source computed the *same* `.bak` name, so the second
+  silently replaced the first's preservation — and a racer that read *after* the
+  first's rename found no manifest, took no `.bak` arm at all, and overwrote the
+  record preserving nothing.
+- `archive.LinkSessionNote` / `TryLinkSessionNote` — across
+  `ReadManifest` → mutate → `WriteManifest`. The window that matters is a linker
+  reading *before* a concurrent `Create`'s rename and writing its stale body back
+  afterwards, rolling that `Create`'s record out from under the archive actually
+  on disk.
+
+The lock is **not** inside `WriteManifest`. That primitive is shared by both
+paths and sits under `vaultaudit.ApplyBackfill`'s documented *sessions-directory
+lock, release, then manifest link — sequential, never nested* sequence; a
+non-reentrant, timeout-free `LOCK_EX` inside the shared primitive would convert
+that ordering into a live lock-order constraint. The `NoLock` rename sink
+(`vaultfs.RenameNoLock`) likewise still acquires nothing — the exclusion lives
+in the caller.
+
+**The posture differs by entry point, and this is the load-bearing part.**
+`archive.CreateOptions.LockPosture` defaults (zero value) to `LockBlocking`, and
+`LinkSessionNote` is the blocking form, because the MCP server, `vp archive
+create`, `vp archive link` and `internal/capture` are all fail-stop and can
+afford to wait. `internal/hook` is not: `cmdHook` is registered **unwrapped** in
+`cmd/vp/commands.go` and `cmd/vp/cmd_hook.go` passes `context.Background()` into
+`hook.Run`, so nothing on that path has a timeout. A blocking acquire there
+would not degrade a capture — it would hang `SessionEnd` with no error and no
+log, which is worse than losing the archive. The hook therefore passes
+`LockPosture: archive.LockNonBlocking` and calls `TryLinkSessionNote`, and
+routes the resulting `archive.ErrManifestLocked` into the non-fatal warn branches
+it already had. A future caller that copies the blocking default onto a
+timeout-free path reintroduces that hang.
 
 ### Repo-root commit lock
 

@@ -543,6 +543,11 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 				sp.SessionKey = archiveID
 				sp.SessionKeySource = storage.KeySourceMinted
 			}
+			// LOCKING POSTURE: BLOCKING (the CreateOptions zero value). This is
+			// the MCP server, which is fail-stop and has a request context — it
+			// can afford to wait on a contended manifest, exactly as every other
+			// vault writer reached from this surface does. Do not copy this
+			// omission onto a path with no timeout; see archive.LockPosture.
 			if _, aerr := archive.Create(archive.CreateOptions{
 				Adapter:       archive.InlineAdapterName,
 				SessionID:     archiveID,

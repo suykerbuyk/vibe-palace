@@ -77,6 +77,22 @@ type CreateOptions struct {
 	// the caller — an unsigned archive is usable but misses the
 	// anchoring guarantee, so silently skipping would be surprising.
 	Sign SignOptions
+
+	// LockPosture selects how Create serializes on the MANIFEST PATH against a
+	// concurrent writer of the same manifest (ADR-003; see lock.go).
+	//
+	// The ZERO VALUE is LockBlocking, and that is deliberate: every caller that
+	// predates this locking is fail-stop and can afford to wait, so leaving the
+	// field unset preserves their semantics exactly.
+	//
+	// 🔴 LockBlocking is a bare LOCK_EX with NO TIMEOUT. Set LockNonBlocking
+	// when — and only when — the caller has no timeout and no cancellation of
+	// its own, so that contention cannot hang it forever. Today that is
+	// internal/hook: cmdHook is registered UNWRAPPED and cmd_hook.go passes
+	// context.Background(), so a blocked acquire would wedge SessionEnd with no
+	// error and no log. A future caller that copies the blocking default onto
+	// such a path reintroduces exactly that hang.
+	LockPosture LockPosture
 }
 
 // CreateResult reports what an archive operation produced or found.
@@ -150,6 +166,31 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 	archivePath := filepath.Join(transcriptsDir, base+".jsonl.zst")
 	manifestPath := filepath.Join(transcriptsDir, base+".manifest.json")
 
+	// SERIALIZE THE READ-THEN-ACT WINDOW (ADR-003). Everything from the
+	// ReadManifest below through WriteManifest is one read-modify-write of
+	// manifestPath, and two writers racing it with a changed source did real
+	// damage: both computed the SAME .bak name from the same prior hash, so the
+	// second silently replaced the first's preservation — and a racer that read
+	// AFTER the first's rename found no manifest at all, took no .bak arm, and
+	// overwrote the record preserving nothing.
+	//
+	// The lock is keyed on the manifest path and taken HERE, not inside
+	// WriteManifest: that primitive is shared with LinkSessionNote and with
+	// vaultaudit's sequential-never-nested backfill sequence, and a
+	// non-reentrant, timeout-free LOCK_EX inside it would convert a documented
+	// ordering into a live lock-order constraint.
+	//
+	// Deliberately AFTER the MkdirAll above: directory creation is not part of
+	// the window, and locking it would only widen the hold.
+	//
+	// Held through Sign as well as WriteManifest, so a detached signature is
+	// never computed over a manifest another writer is mid-replacing.
+	release, lerr := lockManifest(opts.VaultRoot, manifestPath, opts.LockPosture)
+	if lerr != nil {
+		return nil, lerr
+	}
+	defer release()
+
 	// Idempotency check: same (session_id, adapter, source hash)?
 	if existing, err := ReadManifest(manifestPath); err == nil {
 		if existing.Adapter == opts.Adapter &&
@@ -171,12 +212,16 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 		// under F1 on the strength of the MkdirAll two dozen lines up; the
 		// MkdirAll is F3 and lands in a later phase, and this line is F2.
 		//
-		// NOTE, pre-existing and NOT fixed here: internal/archive takes no
-		// vault lock anywhere, so this rename is unserialized against a
-		// concurrent writer of the same manifest. The sink takes no lock
-		// either, so routing changes nothing about that; it is recorded rather
-		// than silently repaired, because adding one here would be a
-		// concurrency change outside a routing phase.
+		// SERIALIZED as of the per-manifest lock taken above (ADR-003). This
+		// rename used to be unserialized against a concurrent writer of the same
+		// manifest — recorded here rather than repaired, because a concurrency
+		// change did not belong in a routing phase. It has since been ruled on:
+		// Create holds the manifest's vaultlock across the whole
+		// ReadManifest -> compare -> rename -> write window, so exactly one
+		// writer can reach this arm per source change.
+		//
+		// The SINK still takes no lock, and that is unchanged and load-bearing
+		// (see internal/vaultfs/raw.go). The exclusion lives in this caller.
 		bakPath := fmt.Sprintf("%s.%s.bak", manifestPath, shortHash(existing.SourceSHA256))
 		if err := vaultfs.RenameNoLock(manifestPath, bakPath); err != nil {
 			return nil, fmt.Errorf("preserve prior manifest: %w", err)

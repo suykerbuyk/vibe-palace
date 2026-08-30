@@ -86,6 +86,11 @@ func cmdArchiveCreate(info cli.BuildInfo) *cli.Command {
 				return cli.ExitUser
 			}
 
+			// LOCKING POSTURE: BLOCKING (the CreateOptions zero value).
+			// `vp archive create` is mutates()-wrapped and already fail-stop, so
+			// waiting on a contended manifest is the right trade — it is what
+			// every other vault-mutating subcommand does. The hook is the one
+			// caller that must NOT wait; see archive.LockPosture.
 			res, err := archive.Create(archive.CreateOptions{
 				Adapter:     adapter,
 				SessionID:   sessionID,

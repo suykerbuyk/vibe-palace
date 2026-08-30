@@ -12,10 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/memorytestutil"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // fakeTranscript is a minimal Claude Code JSONL transcript.
@@ -791,5 +793,104 @@ func initGitRepo(t *testing.T, dir, msg string) {
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("%v: %v\n%s", args, err, out)
 		}
+	}
+}
+
+// TestRun_ArchiveManifestLockContentionIsNonFatal is the test that proves a
+// contended vault lock cannot lose a SessionEnd.
+//
+// archive.Create serializes its manifest read-modify-write on a bare LOCK_EX
+// with NO TIMEOUT (ADR-003). This path has no timeout either: cmdHook is
+// registered UNWRAPPED in cmd/vp/commands.go and cmd/vp/cmd_hook.go passes
+// context.Background() into Run. So the hook asks for LockNonBlocking, and a
+// miss must land in the warn branch that every other archive failure already
+// takes — never in a wait.
+//
+// The test holds the manifest lock from the outside, runs a full SessionEnd, and
+// asserts three things: Run succeeds, the archive failure is REPORTED rather
+// than swallowed, and the session note is still written. The watchdog is the
+// heart of it — a blocking posture here does not fail this test, it hangs it.
+func TestRun_ArchiveManifestLockContentionIsNonFatal(t *testing.T) {
+	vaultRoot := t.TempDir()
+	cwd := t.TempDir()
+	writeVibeMarker(t, cwd)
+	claimDir := filepath.Join(cwd, ".vibe-palace")
+	if err := os.MkdirAll(claimDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	transcriptPath := filepath.Join(t.TempDir(), "transcript.jsonl")
+	if err := os.WriteFile(transcriptPath, []byte(fakeTranscript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	initGitRepo(t, cwd, "initial commit")
+
+	// Reconstruct the manifest path archive.Create will target and take its lock
+	// first, exactly as a concurrent `vp archive create` or MCP capture would.
+	const sessionID = "locked-session"
+	day := storage.NewVault(vaultRoot).CalendarDay(time.Now())
+	transcriptsDir := filepath.Join(vaultRoot, "Projects", "test-project", "transcripts")
+	if err := os.MkdirAll(transcriptsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(transcriptsDir, day+"-"+sessionID+".manifest.json")
+
+	release, err := vaultlock.Acquire(vaultRoot, manifestPath)
+	if err != nil {
+		t.Fatalf("hold manifest lock: %v", err)
+	}
+	defer release()
+
+	type outcome struct {
+		res *Result
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		r, e := Run(context.Background(), Payload{
+			SessionID:      sessionID,
+			TranscriptPath: transcriptPath,
+			CWD:            cwd,
+			HookEventName:  "SessionEnd",
+		}, RunOptions{
+			VaultRoot:   vaultRoot,
+			ProjectSlug: "test-project",
+			VPVersion:   "test-0.1",
+			ClaimDir:    claimDir,
+		})
+		done <- outcome{r, e}
+	}()
+
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(25 * time.Second):
+		t.Fatal("hook.Run did not return while the archive manifest lock was held — " +
+			"the hook must use archive.LockNonBlocking; a blocking LOCK_EX has no " +
+			"timeout and would wedge SessionEnd forever with no error and no log")
+	}
+
+	if got.err != nil {
+		t.Fatalf("hook.Run failed on archive lock contention: %v — a contended lock "+
+			"must cost the archive, never the session", got.err)
+	}
+	if !strings.Contains(got.res.Error, "locked by another writer") {
+		t.Errorf("result.Error = %q, want the recognizable archive.ErrManifestLocked "+
+			"text — the refusal must be reported, not swallowed", got.res.Error)
+	}
+	if got.res.ArchivePath != "" {
+		t.Errorf("ArchivePath = %q, want empty: the archive was refused", got.res.ArchivePath)
+	}
+
+	// The session itself survived: the note landed.
+	if got.res.SessionNoteID == "" {
+		t.Error("SessionNoteID is empty — the SessionEnd was lost to a lock miss")
+	}
+	sessDir := filepath.Join(vaultRoot, "Projects", "test-project", "sessions")
+	entries, err := os.ReadDir(sessDir)
+	if err != nil {
+		t.Fatalf("read sessions dir: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Error("no session note written — the SessionEnd was lost to a lock miss")
 	}
 }

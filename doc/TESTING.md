@@ -1218,6 +1218,32 @@ The `.vp-locks` segment refusal is covered by
 | `TestConcurrentAppendIteration` | N distinct markers appended concurrently to one iterations file all survive with separators intact |
 | `TestConcurrentAddEntity` | N distinct entities added concurrently to one JSONL file all survive and the file stays well-formed JSONL |
 
+### `internal/archive` — Manifest Lock and the Hook Posture Split (`-race`)
+
+`lock_test.go`. Two sites lock, both keyed on the **manifest path**
+(`internal/archive/lock.go`); the lock is deliberately *not* inside
+`WriteManifest`, which both sites and `vaultaudit.ApplyBackfill`'s
+sequential-never-nested sequence share. Every test here runs under a watchdog
+(`mustFinishWithin`), because the failure these tests guard is a timeout-free
+`LOCK_EX` that **hangs** rather than errors — without the watchdog a regression
+wedges the package instead of naming itself.
+
+| Test | What it proves |
+|------|----------------|
+| `TestCreate_ConcurrentChangedSourcePreservesExactlyOneBak` | 8 goroutines archive one session with a CHANGED source against one vault, over 4 independent rounds: exactly one `.bak` survives, it holds the PRIOR hash, the live manifest holds the NEW one, and no racer errors. Unlocked, racers derive the same `.bak` name and collide on the rename (or read past it and preserve nothing). Non-vacuity: at least one racer must report `Skipped=false`, so a build where every racer deduped cannot pass by never reaching the arm |
+| `TestLinkSessionNote_ConcurrentLinkersLeaveACoherentManifest` | 16 concurrent linkers on one manifest leave it readable, with a `vault_rel_session_note` some linker actually wrote and every untouched field (`session_id`, `source_sha256`) intact — never a splice of two |
+| `TestLinkSessionNote_ConcurrentWithCreateNeverRollsBackTheRecord` | the lost-update case that needs the lock: a linker reading *before* a concurrent `Create`'s rename and writing *after* it resurrects the old `source_sha256` over an archive whose bytes on disk are the new ones — coherent and wrong. The linkers loop **until `Create` finishes** rather than a fixed count, because `Create` hashes and compresses megabytes before the write they must straddle and a fixed burst is over long before it; a floor on the observed op count keeps the assertion non-vacuous |
+| `TestCreate_NonBlockingPostureRefusesOnHeldLock` | with the manifest lock held from outside, `LockPosture: LockNonBlocking` returns an error wrapping `ErrManifestLocked`, leaves **no** `.bak`, and does not rewrite the manifest. Under `LockBlocking` this call never returns — which is what the watchdog reports |
+| `TestTryLinkSessionNote_RefusesOnHeldLock` | the same refusal for the link path, and a refused link writes nothing |
+| `TestLinkSessionNote_BlockingFormActuallyBlocks` | the OTHER direction of the split: against a held lock the blocking form is still waiting after 250 ms, then completes and lands its value once the lock is released. Without it, a change that quietly made every site non-blocking would still pass the two refusal tests while the CLI/MCP path started dropping writes |
+| `TestCreate_ThenLinkSessionNote_NoSelfDeadlock` | `Create` → `LinkSessionNote` → `Create` (through the `.bak` arm) → `LinkSessionNote`, sequentially in one process, completes. `flock` does not recurse, so anyone who moved the acquire down into the shared `WriteManifest` would deadlock here permanently rather than fail |
+
+`internal/hook`:
+
+| Test | What it proves |
+|------|----------------|
+| `TestRun_ArchiveManifestLockContentionIsNonFatal` | **the test that proves a contended lock cannot lose a SessionEnd.** The manifest lock is held from outside; a full `SessionEnd` still returns, reports the refusal in `Result.Error`, sets no `ArchivePath`, and writes its session note. `cmdHook` is registered UNWRAPPED and `cmd_hook.go` passes `context.Background()`, so there is no timeout on that path — mutating the posture to `LockBlocking` does not fail this test, it **hangs** it, and the watchdog is what turns that into a legible failure |
+
 ### `internal/integration` — Cross-Process (`-short`-skipped, `make integration`)
 
 | Test | What it proves |
