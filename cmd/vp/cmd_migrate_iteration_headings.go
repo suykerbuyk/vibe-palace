@@ -171,7 +171,7 @@ func runIterationHeadingMigration(root string, apply bool, out io.Writer) (itera
 		}
 	}
 
-	fmt.Fprintf(out, "Vault: %s\n", root)
+	printVaultRoot(out, root)
 	if apply {
 		fmt.Fprintln(out, "Mode:  APPLY — heading lines will be rewritten.")
 	} else {

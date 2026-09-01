@@ -239,9 +239,9 @@ func Delete(vaultPath, relPath, expectedSha256 string) (DeleteResult, error) {
 
 // Move renames a file from fromPath to toPath under vaultPath.
 //
-// Both endpoints are subject to .git-segment refusal. fromPath == toPath
-// returns an error (caller bug, fail loud). Refuses to overwrite an existing
-// destination.
+// Both endpoints are subject to .git-segment refusal and to the task-path
+// refuse-gate. fromPath == toPath returns an error (caller bug, fail loud).
+// Refuses to overwrite an existing destination.
 //
 // Implementation note: parent directories on the destination side are
 // created implicitly via os.MkdirAll on the destination's parent so callers
@@ -252,6 +252,31 @@ func Move(vaultPath, fromPath, toPath string) (MoveResult, error) {
 	}
 	if IsRefusedWritePath(toPath) {
 		return MoveResult{}, fmt.Errorf("%w: %s", ErrRefusedPath, toPath)
+	}
+	// See Write: task files are typed-writer-only, gated here so the CLI is
+	// covered too. BOTH endpoints, for different reasons — the source is the
+	// bypass, the destination is the smuggling route.
+	//
+	// A move rewrites no bytes, so it is not obvious that it belongs behind a
+	// gate whose stated reason is one-typed-writer-per-field. It belongs because
+	// a task's LOCATION is such a field in all but name: retire and cancel are
+	// the only sanctioned actions that change which directory a task lives in,
+	// and they rewrite the Status line in the same operation. A generic move
+	// reaches the location without the writer that owns it, which manufactures
+	// the `retired-task-files-keep-a-live-status-line` inconsistency through a
+	// supported tool, resurrects an archived body past the archived-task guard,
+	// or — moving OUT of tasks/ — leaves the file freely writable by Write.
+	//
+	// 🔴 Delete is deliberately NOT gated, and this is a decision rather than an
+	// omission. See vaultSplitPurge (internal/tools/vault_split_apply.go:753)
+	// for the committed rationale: removing a file mutates no field, and purge
+	// walks regular files through Delete, so gating it would leave a verified
+	// purge unable to complete with no sanctioned alternative.
+	if IsTaskFilePath(fromPath) {
+		return MoveResult{}, taskPathRefusal(fromPath)
+	}
+	if IsTaskFilePath(toPath) {
+		return MoveResult{}, taskPathRefusal(toPath)
 	}
 	if filepath.Clean(fromPath) == filepath.Clean(toPath) {
 		return MoveResult{}, fmt.Errorf("vaultfs: move source and destination are the same path: %s", fromPath)

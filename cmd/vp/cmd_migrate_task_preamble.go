@@ -132,7 +132,7 @@ func runTaskPreambleMigration(root, only string, apply bool, out io.Writer) (tas
 		return sum, err
 	}
 
-	fmt.Fprintf(out, "Vault: %s\n", root)
+	printVaultRoot(out, root)
 	if apply {
 		fmt.Fprintln(out, "Mode:  APPLY — task files will be rewritten.")
 	} else {

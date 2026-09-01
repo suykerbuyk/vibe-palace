@@ -105,7 +105,7 @@ func runIterationsPreambleMigration(root string, apply bool, out io.Writer) (ite
 		}
 	}
 
-	fmt.Fprintf(out, "Vault: %s\n", root)
+	printVaultRoot(out, root)
 	if apply {
 		fmt.Fprintln(out, "Mode:  APPLY — the false preamble comment will be replaced.")
 	} else {

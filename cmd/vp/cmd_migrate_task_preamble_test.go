@@ -88,6 +88,12 @@ func TestMigrateTaskPreambleReportOnlyWritesNothing(t *testing.T) {
 	if !strings.Contains(out.String(), "REPORT ONLY") {
 		t.Errorf("report must say it wrote nothing: %s", out.String())
 	}
+	// The root line routes through printVaultRoot now. It must still be the
+	// report's first line, byte-identical to what this command emitted before
+	// the four call sites were unified onto one helper.
+	if got, want := out.String(), "Vault: "+root+"\n"; !strings.HasPrefix(got, want) {
+		t.Errorf("report must open with %q; got:\n%s", want, got)
+	}
 }
 
 // TestMigrateTaskPreambleApplyMovesTheText is the acceptance gate, and the

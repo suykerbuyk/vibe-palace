@@ -174,6 +174,11 @@ func cmdVaultSync() *cli.Command {
 					fmt.Fprintf(os.Stderr, "vp vault sync: %v\n", err)
 					return cli.ExitSystem
 				}
+				// Above the dirt list, same contract as `vault tidy`. `root`
+				// is the value gitEnabledGuard bound at the top of this Run —
+				// not a re-resolution. Only the --dry-run tidy path prints a
+				// dirt list, so this is the only sync branch that needs it.
+				printVaultRoot(os.Stdout, root)
 				printTidyList("Would sweep", scan.Swept)
 				printTidyReported(scan)
 				if code := pullAll(root, remotes, true); code != cli.ExitOK {
@@ -310,6 +315,22 @@ var vaultTidyFlags = []cli.FlagDef{
 	{Name: "--no-push", Help: "Commit the swept artifacts locally without pushing to remotes"},
 }
 
+// printVaultRoot renders the vault a command acted on, above the paths it
+// qualifies. It is the ONLY definition of this line: `vault status`, `vault
+// tidy`, `vault sync --dry-run` and the three migrate commands all route here,
+// so the spelling cannot drift between surfaces.
+//
+// Callers pass the root they ALREADY resolved. Do not re-resolve inside this
+// helper: a second resolution can bind a different vault than the one that
+// produced the output being qualified.
+//
+// It takes an io.Writer because the call sites disagree about their sink —
+// `vault status` and the vault subcommands write to stdout, while the migrate
+// family writes to an injected writer its tests capture.
+func printVaultRoot(w io.Writer, root string) {
+	fmt.Fprintf(w, "Vault: %s\n", root)
+}
+
 // printTidyList prints a counted, indented "label (N):" block for a set of
 // tidy paths. An empty set still prints its header (with count 0) so the
 // sweep/report split is always visible.
@@ -379,6 +400,13 @@ func cmdVaultTidy() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault tidy: %v\n", err)
 				return cli.ExitUser
 			}
+
+			// Printed once, BEFORE the dry-run/apply split, so it is the first
+			// line of output on either path and sits above every relative path
+			// the command goes on to print. A root rendered below the paths it
+			// qualifies does not close the reporting gap. This is the root
+			// gitEnabledGuard already bound — never a second resolution.
+			printVaultRoot(os.Stdout, root)
 
 			// --dry-run: classify only, never commit.
 			if fv.Bool("--dry-run") {
@@ -563,7 +591,7 @@ func cmdVaultStatus() *cli.Command {
 			}
 
 			// Human-readable.
-			fmt.Printf("Vault: %s\n", report.VaultPath)
+			printVaultRoot(os.Stdout, report.VaultPath)
 			fmt.Printf("Branch: %s\n", report.Branch)
 			if len(report.Remotes) == 0 {
 				fmt.Println("Remotes: none configured")
