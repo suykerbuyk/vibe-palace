@@ -884,13 +884,6 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 		return err
 	}
 
-	// Update status in file before moving.
-	data, err := os.ReadFile(srcPath)
-	if err != nil {
-		return fmt.Errorf("read task: %w", err)
-	}
-	updated := replaceStatusLine(string(data), status)
-
 	destDir, err := destFn(project)
 	if err != nil {
 		return err
@@ -901,72 +894,110 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 
 	destPath := filepath.Join(destDir, slug+".md")
 
-	// Never overwrite an existing destination. lockedWrite is an unconditional
-	// atomic overwrite, so a re-retire of a duplicate slug would clobber the
-	// historical done/ (or cancelled/) record in place. That is the actual
-	// data-loss mechanism; surface it as a bug state rather than destroy the
-	// prior record.
+	// 🔴 REWRITE-THEN-RENAME. The status line is stamped IN PLACE at the active
+	// path, and only then is the file renamed into the archive directory. The
+	// rename is the operation's atomic commit point, because the content is
+	// already final before the file moves. Adopted 2026-09-01; this replaced a
+	// write-destination-then-unlink-source ordering.
+	//
+	// 🔴 RENAME-THEN-REWRITE REMAINS REJECTED, and that is a different ordering
+	// from this one. Renaming first would put the file in done/ and only then
+	// stamp it, so a crash between the steps leaves an archived file still
+	// declaring itself in progress — which is the defect
+	// `retired-task-files-keep-a-live-status-line` is about, manufactured by
+	// design. The earlier comment here rejected rename-then-rewrite for exactly
+	// that reason and was right to; it simply never considered the opposite
+	// order. Do not "simplify" this into vaultfs.Move: Move is a bare rename and
+	// cannot stamp the status line at all.
+	//
+	// The three orderings, by what a crash leaves behind:
+	//
+	//   write-dest, unlink-source  two copies; resolveTaskFile searches active
+	//   (the previous order)       first, so the task reads as NOT retired even
+	//                              though a correct done/ copy exists — the
+	//                              retire silently appears not to have happened.
+	//   rename, then rewrite       one copy in done/ declaring itself active.
+	//   (rejected, stays so)       Undetectable from inside the file.
+	//   rewrite, then rename       one copy in tasks/ carrying a terminal
+	//   (adopted)                  status — an obviously mid-retire state, and
+	//                              repairable by completing the rename.
+	//
+	// Never two copies, and the crash signature is now something a rule can
+	// state: an ACTIVE task whose body says retired/cancelled cannot have come
+	// from a sanctioned writer, because UpdateTaskStatus refuses terminal values.
+	//
+	// 🔴 THE REFUSE-EXISTING-DESTINATION CHECK MUST STAY AHEAD OF THE REWRITE.
+	// Under the previous order the stat merely had to precede the destination
+	// write. Here it has to precede the stamp, because the stamp mutates the
+	// SOURCE: refusing after it would leave an active task carrying a terminal
+	// status — the same broken state a crash produces, reached through an
+	// ordinary refusal. TestRetireRefusalLeavesSourceBodyUnstamped pins this.
+	//
+	// 🔴 ONE LOCK, SO THERE IS NO ORDER TO INVERT (ADR-003, "sequential locks,
+	// never nested"). The source path's lock is held across read → stamp →
+	// rename, and no second lock is taken: the destination is created by the
+	// rename itself, which is atomic and has no partial-content window for a
+	// lock to protect. The previous order needed two locks — the destination's
+	// inside lockedWrite, then the source's around the unlink — and carried a
+	// comment forbidding anyone from hoisting the second across the first. That
+	// hazard is gone rather than managed: a function that takes one lock cannot
+	// invert an order.
+	//
+	// This also CLOSES the race the previous comment recorded as deliberately
+	// left open: the read now happens under the same lock as the write, so a
+	// concurrent UpdateTaskStatus can no longer land between them and be lost.
+	// It could not be closed before without creating the forbidden nesting.
+	//
+	// Inside the lock, write with atomicfile.Write and NEVER lockedWrite:
+	// lockedWrite re-acquires the same per-path lock and vaultlock.Acquire is a
+	// blocking LOCK_EX with no timeout, so re-entry is a permanent self-deadlock
+	// rather than an error (ADR-003, "never lockedWrite under a held lock").
+	// vaultfs.RenameNoLock is the F2 sink and likewise never acquires, which is
+	// what lets the lock live here at the call site.
+	release, err := vaultlock.Acquire(v.Root, srcPath)
+	if err != nil {
+		return fmt.Errorf("move task: lock %s: %w", srcPath, err)
+	}
+	defer release()
+
+	// Never overwrite an existing destination. A re-retire of a duplicate slug
+	// would otherwise clobber the historical done/ (or cancelled/) record —
+	// os.Rename replaces its destination silently, so this stat is the only
+	// thing standing between a duplicate slug and a destroyed record. Surface it
+	// as a bug state rather than lose the prior record.
 	if _, err := os.Stat(destPath); err == nil {
 		return fmt.Errorf("cannot move task %q to %q: a task of that slug already exists there — refusing to overwrite the existing record", slug, destPath)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("stat dest: %w", err)
 	}
 
-	if err := v.lockedWrite(destPath, []byte(updated)); err != nil {
-		return fmt.Errorf("write to dest: %w", err)
-	}
-
-	// 🔴 THIS STAYS SPLIT — write-dest-then-unlink-source — and is deliberately
-	// NOT routed through vaultfs.Move.
-	//
-	// Move is os.Rename, and a rename cannot rewrite content. This operation
-	// DOES rewrite content: replaceStatusLine above stamps "retired" or
-	// "cancelled" into the body, and that new body is what lands in done/. So
-	// the only way to express this as a real move is rename-then-rewrite, which
-	// is strictly worse: a crash between the two steps leaves a file sitting in
-	// done/ still declaring itself In Progress. That is not hypothetical — it is
-	// the open bug `retired-task-files-keep-a-live-status-line`, and reordering
-	// here would widen exactly the window that produced it. The current order
-	// fails safe: the worst outcome is both copies existing, with the
-	// destination already correct.
-	//
-	// Only the removal half is F2. The destination half is F1 (lockedWrite),
-	// and the refuse-existing-destination rule stays the stat above — the same
-	// policy vaultfs.Move enforces, kept here because this does not go through
-	// vaultfs.Move. Retire/cancel semantics are unchanged.
-
-	// 🔴 SEQUENTIAL LOCKS, NEVER NESTED (ADR-003). The source lock is acquired
-	// only AFTER lockedWrite above has taken, used and RELEASED the
-	// destination's lock. Do not hoist this acquire to the top of the function
-	// to cover the read as well: that would hold the source lock across
-	// lockedWrite's acquire of the destination, creating the first two-lock
-	// nesting in the package and with it a lock ORDER that a future caller
-	// could invert. vaultlock.Acquire is a blocking LOCK_EX with no timeout, so
-	// an inversion is a permanent hang, not a detectable error.
-	//
-	// What this closes: the unlink is now serialized against UpdateTaskStatus,
-	// which holds this same per-path lock across its whole read→rewrite
-	// (see the Acquire in UpdateTaskStatus). Before this, a status update could
-	// land its atomicfile.Write on a path this function was about to unlink and
-	// the write was lost with no error on either side.
-	//
-	// What it does NOT close, deliberately: the os.ReadFile above still runs
-	// unlocked, so a status update that lands between that read and this unlink
-	// is still lost — the body copied to the destination is the pre-update one.
-	// Closing that would require holding the source lock across lockedWrite,
-	// i.e. the nesting this comment forbids. The window narrows from
-	// read→write→unlink to read→write, and the operation was never atomic
-	// across a crash anyway (ADR-003: "Locking never claimed to fix that").
-	//
-	// vaultfs.RemoveNoLock is correct here and must stay: it is the F2 sink and
-	// deliberately never acquires, precisely so the lock can live at the call
-	// site — the same shape as storage.DeleteMemory.
-	release, err := vaultlock.Acquire(v.Root, srcPath)
+	data, err := os.ReadFile(srcPath)
 	if err != nil {
-		return fmt.Errorf("move task: lock %s: %w", srcPath, err)
+		// The pre-lock stat found the file; losing it here means a concurrent
+		// archive of the same slug won the lock. Report it as the same
+		// already-archived state that stat reports, not as a read fault.
+		if os.IsNotExist(err) {
+			return fmt.Errorf("task %q not found (may already be %s)", slug, status)
+		}
+		return fmt.Errorf("read task: %w", err)
 	}
-	defer release()
-	return vaultfs.RemoveNoLock(srcPath)
+	updated := replaceStatusLine(string(data), status)
+
+	// Step 1 — stamp the terminal status while the file is still active.
+	// atomicfile.Write is atomic per file, so this either lands whole or leaves
+	// the source untouched; there is no half-stamped body.
+	if err := atomicfile.Write(v.Root, srcPath, []byte(updated)); err != nil {
+		return fmt.Errorf("stamp %s status on %q: %w", status, slug, err)
+	}
+
+	// Step 2 — the commit. A crash before this leaves an active task carrying a
+	// terminal status, which is recoverable by completing this rename.
+	if err := vaultfs.RenameNoLock(srcPath, destPath); err != nil {
+		return fmt.Errorf(
+			"archive task %q: status was stamped %s but the move to %s failed, so the task is still in the active directory: %w",
+			slug, status, destPath, err)
+	}
+	return nil
 }
 
 // The four header field names. A task's metadata header is a contiguous run of

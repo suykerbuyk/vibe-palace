@@ -1894,20 +1894,32 @@ func TestOverwriteTaskFileNotFound(t *testing.T) {
 	}
 }
 
-// TestMoveTask_UnlinkHoldsSourceLock proves moveTask's unlink is serialized
-// against the per-path lock UpdateTaskStatus holds on the SAME source path.
+// TestArchiveMakesNoProgressWhileSourceLockHeld proves that an externally held
+// lock on a task's ACTIVE path serializes the WHOLE archive operation — not
+// merely its final step.
 //
-// Shape, and why it is deterministic rather than a timing race: the test takes
-// the source path's lock itself, then runs RetireTask in a goroutine and waits
-// for the DESTINATION file to appear. That appearance is the proof that
-// lockedWrite has completed and released the destination's lock, so the only
-// thing left in moveTask is the source acquire + unlink. On a tree where the
-// unlink holds no lock, the source file vanishes microseconds later and the
-// call returns; with the lock, both are blocked until this test releases.
+// It replaces TestMoveTask_UnlinkHoldsSourceLock, deleted 2026-09-01 when
+// moveTask became rewrite-then-rename. That test was structurally obsolete, not
+// wrong: it waited for the DESTINATION file to appear and only then asserted the
+// source survived, which required an observable window where the destination
+// EXISTS and the source STILL EXISTS. The old write-dest-then-unlink-source
+// ordering produced exactly that window; rewrite-then-rename never can, because
+// the destination comes into being at the rename, which is the last instruction.
+// Coverage was not dropped — it was strengthened, and this is where it moved.
 //
-// Mutation check: drop the vaultlock.Acquire around the unlink in moveTask and
-// this test goes red at "retire completed while the source lock was held".
-func TestMoveTask_UnlinkHoldsSourceLock(t *testing.T) {
+// The property is now STRONGER than the one the old test could observe. Under
+// the old ordering the destination write happened OUTSIDE the source lock and
+// only the unlink was serialized, so a concurrent holder of that lock could not
+// stop the archive from writing. Now the destination stat, the read, the stamp
+// and the rename all run under the single source lock, so a holder blocks the
+// entire operation. The unstamped-source assertion below is the new half: it
+// proves the STAMP itself is serialized, which the old ordering could not claim.
+//
+// Mutation check: move the vaultlock.Acquire in moveTask below the
+// atomicfile.Write and this test goes red at "source body was stamped while its
+// lock was held" — the stamp escapes the critical section while the rename
+// stays inside it.
+func TestArchiveMakesNoProgressWhileSourceLockHeld(t *testing.T) {
 	v := testVault(t)
 	if err := v.CreateTask("proj", TaskSpec{Slug: "locked-task", Title: "Title", Content: "Body.", Priority: "P1"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -1922,44 +1934,62 @@ func TestMoveTask_UnlinkHoldsSourceLock(t *testing.T) {
 	}
 	destPath := filepath.Join(doneDir, "locked-task.md")
 
+	before, err := os.ReadFile(srcPath)
+	if err != nil {
+		t.Fatalf("read source before: %v", err)
+	}
+
 	release, err := vaultlock.Acquire(v.Root, srcPath)
 	if err != nil {
 		t.Fatalf("test Acquire: %v", err)
 	}
+	released := false
+	unlock := func() {
+		if !released {
+			released = true
+			_ = release()
+		}
+	}
+	defer unlock()
 
 	done := make(chan error, 1)
 	go func() { done <- v.RetireTask("proj", "locked-task") }()
 
-	// Wait for the destination to appear: past this point the only remaining
-	// step is the source acquire + unlink.
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, err := os.Stat(destPath); err == nil {
-			break
+	// Hold the lock and assert NO observable progress for the whole window,
+	// polling rather than sleeping once: a violation that appears transiently
+	// and is then overwritten would slip past a single end-of-window check.
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			unlock()
+			t.Fatalf("retire completed (err=%v) while the source lock was held — the archive took no lock", err)
+		default:
 		}
-		if time.Now().After(deadline) {
-			release()
-			t.Fatalf("destination %s never appeared; retire never reached the unlink", destPath)
+		if _, statErr := os.Stat(destPath); statErr == nil {
+			unlock()
+			t.Fatalf("destination %s appeared while the source lock was held", destPath)
+		}
+		// The new half: the stamp is inside the critical section too, so the
+		// body must still carry its non-terminal status.
+		now, readErr := os.ReadFile(srcPath)
+		if readErr != nil {
+			unlock()
+			t.Fatalf("source %s vanished while its lock was held: %v", srcPath, readErr)
+		}
+		if string(now) != string(before) {
+			unlock()
+			t.Fatalf("source body was stamped while its lock was held:\ngot:  %q\nwant: %q", now, before)
+		}
+		if meta := parseTaskMeta("locked-task", string(now), false); meta.Status == "retired" {
+			unlock()
+			t.Fatal("source carries a terminal status while its lock was held — the stamp escaped the critical section")
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
 
-	// Grace window: on an unlocked unlink the source is gone almost immediately
-	// after the destination write, so this is where the mutation shows up.
-	time.Sleep(200 * time.Millisecond)
-
-	select {
-	case err := <-done:
-		release()
-		t.Fatalf("retire completed (err=%v) while the source lock was held — the unlink took no lock", err)
-	default:
-	}
-	if _, err := os.Stat(srcPath); err != nil {
-		release()
-		t.Fatalf("source %s was unlinked while its lock was held: %v", srcPath, err)
-	}
-
-	// Releasing must let the blocked unlink proceed.
+	// Releasing must let the whole blocked archive proceed.
+	released = true
 	if err := release(); err != nil {
 		t.Fatalf("release: %v", err)
 	}
@@ -1972,10 +2002,15 @@ func TestMoveTask_UnlinkHoldsSourceLock(t *testing.T) {
 		t.Fatal("retire did not complete after the source lock was released")
 	}
 
+	// And the final state is the ordinary one: moved, stamped, source gone.
 	if _, err := os.Stat(srcPath); !os.IsNotExist(err) {
 		t.Errorf("source should be gone after retire, stat err = %v", err)
 	}
-	if _, err := os.Stat(destPath); err != nil {
-		t.Errorf("destination should exist after retire: %v", err)
+	archived, err := os.ReadFile(destPath)
+	if err != nil {
+		t.Fatalf("destination should exist after retire: %v", err)
+	}
+	if meta := parseTaskMeta("locked-task", string(archived), true); meta.Status != "retired" {
+		t.Errorf("archived body status = %q, want %q", meta.Status, "retired")
 	}
 }
