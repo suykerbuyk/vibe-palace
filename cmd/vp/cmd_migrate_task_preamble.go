@@ -36,6 +36,36 @@ import (
 // See storage.MovePreambleUnderContext. There is no claim/provenance
 // classifier, deliberately: no rule separating the two survives contact with
 // real files. Moving everything makes "non-empty preamble" itself the finding.
+//
+// # ANY failure exits non-zero — partial failure is a failure
+//
+// This command used to print "  !!" per refused write, append the plan, and
+// return `sum, nil` regardless, so a run in which every single write was refused
+// still exited 0 under a trailing "Applied 0 rewrite(s)." Any caller keying off
+// the exit code — a script, a CI step, an operator reading $? — was told a
+// migration that wrote nothing had worked.
+//
+// The contract here is the sibling's, ported rather than redesigned:
+// `vp migrate task-status` exits non-zero when `sum.Failed > 0`, pinned by
+// TestMigrateTaskStatusExitsNonZeroWhenEveryWriteFailed. Two consequences are
+// deliberate and are the whole of the design decision:
+//
+//   - PARTIAL failure exits non-zero too, not just total failure. The exit code
+//     answers "did the migration do what it was asked?", and a run that moved 5
+//     of 7 preambles did not. It also leaves the vault PARTIALLY migrated, which
+//     is precisely the state a human has to look at — non-zero is the signal to
+//     go read the report. Re-running after fixing the refusals is safe: the pass
+//     converges (TestMigrateTaskPreambleApplyMovesTheText pins that), so nothing
+//     is lost by treating "some refused" as loudly as "all refused".
+//   - A READ error counts as a failure, the same as a refused write. A file the
+//     migration could not open is a file it did not handle, and swallowing that
+//     is the same defect one branch over.
+//
+// The INVERSE must not be conflated with either: a run with NO work to do — no
+// MOVE rows at all — exits 0. A migration with nothing to migrate is not a
+// failed migration, and `Failed` counts only attempts that went wrong, never
+// candidates that never existed. TestMigrateTaskPreambleNothingToMigrateExitsZero
+// pins that half.
 
 var migrateTaskPreambleFlags = []cli.FlagDef{
 	{Name: "--vault", Arg: "PATH", Help: "Vault root to scan and repair (default: the configured vault_path)"},
@@ -67,7 +97,8 @@ func cmdMigrateTaskPreamble() *cli.Command {
 			"that end-to-end is not what this command means.\n\n" +
 			"Writes go through the locked, surface-stamping task writer, never the generic vault file " +
 			"tools (which refuse task paths). Under --apply the vault git working tree must be clean, " +
-			"so `git checkout .` is a guaranteed rollback.",
+			"so `git checkout .` is a guaranteed rollback. A run in which any file failed exits " +
+			"non-zero; a run with nothing to migrate exits 0.",
 		Flags: migrateTaskPreambleFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp migrate task-preamble", Comment: "Report what would move; writes nothing"},
@@ -85,8 +116,16 @@ func cmdMigrateTaskPreamble() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp migrate task-preamble: %v\n", err)
 				return cli.ExitUser
 			}
-			if _, err := runTaskPreambleMigration(root, fv.Get("--project"), fv.Bool("--apply"), os.Stdout); err != nil {
+			sum, err := runTaskPreambleMigration(root, fv.Get("--project"), fv.Bool("--apply"), os.Stdout)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp migrate task-preamble: %v\n", err)
+				return cli.ExitSystem
+			}
+			// 🔴 A run that failed a write must not exit 0. See the
+			// "ANY failure exits non-zero" section at the top of this file for
+			// why partial failure is included and why an empty run is not.
+			if sum.Failed > 0 {
+				fmt.Fprintf(os.Stderr, "vp migrate task-preamble: %d file(s) failed\n", sum.Failed)
 				return cli.ExitSystem
 			}
 			return cli.ExitOK
@@ -102,6 +141,7 @@ type taskPreamblePlan struct {
 	Outcome storage.PreambleOutcome
 	Moved   int // bytes of preamble text moved (0 for empty/skipped)
 	Applied bool
+	Failed  bool
 }
 
 type taskPreambleSummary struct {
@@ -110,7 +150,11 @@ type taskPreambleSummary struct {
 	Moved   int
 	Skipped int
 	Applied int
-	Plans   []taskPreamblePlan
+	// Failed counts ATTEMPTS that went wrong — read errors and refused writes.
+	// It never counts a file the migration had no work for, which is what keeps
+	// "nothing to migrate" (exit 0) distinct from "everything refused".
+	Failed int
+	Plans  []taskPreamblePlan
 }
 
 // runTaskPreambleMigration is the whole command, injectable for tests.
@@ -164,7 +208,11 @@ func runTaskPreambleMigration(root, only string, apply bool, out io.Writer) (tas
 			taskSlug := strings.TrimSuffix(name, ".md")
 			data, ferr := os.ReadFile(filepath.Join(dir, name))
 			if ferr != nil {
+				// A file that could not be READ is a file the migration did not
+				// handle. Counting it matches the sibling and keeps the exit
+				// code honest about the run as a whole, not just its writes.
 				fmt.Fprintf(out, "  !! %s/%s: read: %v\n", slug, taskSlug, ferr)
+				sum.Failed++
 				continue
 			}
 			sum.Scanned++
@@ -190,6 +238,8 @@ func runTaskPreambleMigration(root, only string, apply bool, out io.Writer) (tas
 				if apply {
 					if werr := vault.OverwriteTaskFile(slug, taskSlug, after); werr != nil {
 						fmt.Fprintf(out, "  !! %s/%s: write: %v\n", slug, taskSlug, werr)
+						plan.Failed = true
+						sum.Failed++
 						sum.Plans = append(sum.Plans, plan)
 						continue
 					}
@@ -208,6 +258,9 @@ func runTaskPreambleMigration(root, only string, apply bool, out io.Writer) (tas
 		fmt.Fprintf(out, "Applied %d rewrite(s).\n", sum.Applied)
 	} else if sum.Moved > 0 {
 		fmt.Fprintln(out, "Nothing was written. Re-run with --apply to write.")
+	}
+	if sum.Failed > 0 {
+		fmt.Fprintf(out, "%d file(s) FAILED.\n", sum.Failed)
 	}
 	return sum, nil
 }
