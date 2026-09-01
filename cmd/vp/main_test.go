@@ -286,6 +286,10 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		// and leaves the archived question to its caller, so scope is enforced
 		// here rather than in storage.
 		"migrate task-status": true,
+		// Same writer again, and the only caller that reaches ACTIVE, done/ and
+		// cancelled/ alike: the header classes it reports span all three, and a
+		// legacy header is not made harmless by the directory it sits in.
+		"migrate task-header": true,
 	}
 
 	reg, _, _ := testRegistry()

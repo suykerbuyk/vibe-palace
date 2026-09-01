@@ -1531,3 +1531,216 @@ func globTaskMeta(dir string, done bool) ([]TaskMeta, error) {
 	}
 	return result, nil
 }
+
+// ---------------------------------------------------------------------------
+// Legacy header classification.
+//
+// A task file written before the current header contract carries its status as a
+// BARE, un-bolded "Status: value" line directly under the title, where the
+// contract wants "**Status:** value" inside the contiguous field run. Every
+// predicate in this package requires the bolded form — headerFieldValue is THE
+// definition and it is prefix-matched on "**Status:**" — so the legacy line is
+// invisible to the parser, to the writers, and to the detectors alike.
+//
+// It is not invisible to headerBlock. A bare line sitting between the title and
+// the field run is not isHeaderFieldLine, so it ends the block before it starts
+// and validateWholeTaskFile refuses the file at "no \"**Field:**\" run follows
+// the title". That is why no whole-file writer can repair these files, including
+// the migrations built to repair them.
+//
+// 🔴 This classifier sits IN FRONT of validateWholeTaskFile and never weakens it.
+// A repair built on it must produce a file the validator ACCEPTS, and prove that
+// by asking the validator rather than by comparing bytes.
+
+// legacyStatusValue returns the value of a BARE "Status: value" line, and
+// ok=false for any other line.
+//
+// The bolded form belongs to headerFieldValue and is not matched here. Neither
+// is "Status::Skipped" — a Rust path expression that appears mid-sentence in a
+// real archived task and that a naive "^Status:" match reads as a header line.
+// The discriminator is that the key must be followed by whitespace or by end of
+// line, which is the whole of the difference between a field and a code snippet.
+//
+// Leading whitespace is tolerated for the same reason headerFieldValue tolerates
+// it: it is the shape this markdown has always used. Tolerating it is safe only
+// because ScanLegacyHeader adds the structural guard below; this predicate alone
+// is NOT sufficient to identify a header line.
+func legacyStatusValue(line string) (string, bool) {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(line), fieldStatus+":")
+	if !ok {
+		return "", false
+	}
+	if rest != "" && rest[0] != ' ' && rest[0] != '\t' {
+		return "", false
+	}
+	return strings.TrimSpace(rest), true
+}
+
+// LegacyHeaderClass names the shape of a task file's status declaration.
+type LegacyHeaderClass int
+
+const (
+	// LegacyHeaderClean — no bare legacy status line outside fences. The file
+	// may still be invalid for other reasons; this classifier does not judge.
+	LegacyHeaderClean LegacyHeaderClass = iota
+
+	// LegacyHeaderBoth — a bare legacy line AND a bolded field. The bare line
+	// carries the surviving true value; the bolded field carries the stale one.
+	// This is the only class with a provably lossless mechanical repair.
+	LegacyHeaderBoth
+
+	// LegacyHeaderBareOnly — a bare legacy line and NO bolded field, so the bare
+	// line is the file's ONLY status declaration. Deleting it destroys the
+	// status and leaves the file refused at validateWholeTaskFile's "missing
+	// Status" arm rather than repaired. The repair is PROMOTION, and it needs a
+	// prose-continuation rule because these values are free prose that wraps
+	// across lines. Separate task; reported here, never written.
+	LegacyHeaderBareOnly
+
+	// LegacyHeaderMultiTitle — more than one H1 outside fences. The second title
+	// opens an intact legacy document whose own header disagrees with the first,
+	// so choosing between them is a judgment call per file rather than a
+	// migration. Separate task; reported here, never written.
+	//
+	// This class WINS over the other three, and that is load-bearing: at least
+	// one real file carries a modern bolded field belonging to the prepended
+	// header and a bare legacy line belonging to the document underneath it.
+	// Classified as Both, its repair would carry the legacy document's status
+	// onto the modern header — a destructive edit across two unrelated records.
+	LegacyHeaderMultiTitle
+)
+
+// String renders the class for operator-facing reports.
+func (c LegacyHeaderClass) String() string {
+	switch c {
+	case LegacyHeaderClean:
+		return "clean"
+	case LegacyHeaderBoth:
+		return "both"
+	case LegacyHeaderBareOnly:
+		return "bare-only"
+	case LegacyHeaderMultiTitle:
+		return "multi-title"
+	}
+	return "unknown"
+}
+
+// LegacyHeaderScan is one task file's classification plus the line numbers a
+// repair needs. Line numbers are 1-indexed and count EVERY line of the file,
+// fenced ones included, so they address the file the way an editor does; zero
+// means absent.
+type LegacyHeaderScan struct {
+	Class     LegacyHeaderClass
+	TitleLine int
+	BareLine  int
+	BareValue string
+	BoldLine  int
+	BoldValue string
+}
+
+// ScanLegacyHeader classifies a whole task file.
+//
+// Fence-awareness is load-bearing rather than defensive: the task files that
+// DOCUMENT this defect quote its specimens inside code fences, so a fence-blind
+// scan reports those tasks as instances of the bug and a fence-blind repair
+// rewrites them. Fence detection is mdfence's, never a local reimplementation.
+//
+// The legacy line is identified STRUCTURALLY, never by line number: it is a bare
+// status line, outside fences, whose nearest preceding non-blank unfenced line is
+// the title. Position varies across the real corpus — directly under the title,
+// one blank line below it, and further down again in a file that opens with a
+// YAML block — so a rule keyed on a fixed line number misses most of the
+// population, while a bare "^Status:" match with no structural guard picks up
+// body prose and code. Both halves of that trade were measured before this
+// predicate was written.
+func ScanLegacyHeader(content string) LegacyHeaderScan {
+	var scan LegacyHeaderScan
+
+	outside := mdfence.OutsideFences(content)
+	h1Count := 0
+	prevNonBlank := -1
+
+	for i, l := range outside {
+		trimmed := strings.TrimSpace(l.Text)
+
+		if isH1Line(trimmed) {
+			h1Count++
+			if scan.TitleLine == 0 {
+				scan.TitleLine = l.Num
+			}
+		}
+		if v, ok := headerFieldValue(l.Text, fieldStatus); ok && scan.BoldLine == 0 {
+			scan.BoldLine = l.Num
+			scan.BoldValue = v
+		}
+		// The structural guard. A bare status line is a header field only
+		// directly under the title; anywhere else in the file it is prose.
+		if v, ok := legacyStatusValue(l.Text); ok && scan.BareLine == 0 &&
+			prevNonBlank >= 0 && isH1Line(strings.TrimSpace(outside[prevNonBlank].Text)) {
+			scan.BareLine = l.Num
+			scan.BareValue = v
+		}
+
+		if trimmed != "" {
+			prevNonBlank = i
+		}
+	}
+
+	switch {
+	case h1Count > 1:
+		scan.Class = LegacyHeaderMultiTitle
+	case scan.BareLine == 0:
+		scan.Class = LegacyHeaderClean
+	case scan.BoldLine == 0:
+		scan.Class = LegacyHeaderBareOnly
+	default:
+		scan.Class = LegacyHeaderBoth
+	}
+	return scan
+}
+
+// RepairLegacyBothHeader rewrites a LegacyHeaderBoth file into the current
+// contract: it DROPS the bare legacy line and carries that line's value onto the
+// bolded field, which held the stale one.
+//
+// 🔴 Both edits are ONE write, deliberately. The bare line is the true value and
+// the bolded field is the lie, so a two-step that dropped the bare line first
+// would leave the file asserting only the falsehood, and a crash between the
+// steps would make that permanent. This is the same reasoning that made archiving
+// rewrite-then-rename with a single atomic commit point.
+//
+// The value is carried across VERBATIM and is not normalized to a terminal
+// token. Making an archived file's status agree with its directory is
+// `vp migrate task-status`, which already exists and is precisely what this
+// repair unblocks — one concern per command, so the two cannot drift into two
+// definitions of the same thing.
+//
+// Every other class is refused. BareOnly needs promotion rather than deletion,
+// and MultiTitle needs a per-file judgment call; both are separate tasks, and
+// refusing here is what keeps this unit inside its scope.
+func RepairLegacyBothHeader(content string) (string, error) {
+	scan := ScanLegacyHeader(content)
+	if scan.Class != LegacyHeaderBoth {
+		return "", fmt.Errorf("legacy header repair handles %s files only, got %s", LegacyHeaderBoth, scan.Class)
+	}
+
+	lines := strings.Split(content, "\n")
+	if scan.BareLine < 1 || scan.BareLine > len(lines) || scan.BoldLine < 1 || scan.BoldLine > len(lines) {
+		return "", fmt.Errorf("legacy header repair: line out of range (bare %d, bold %d, file has %d lines)",
+			scan.BareLine, scan.BoldLine, len(lines))
+	}
+
+	// Set the bolded field FIRST, by its pre-removal index, then drop the bare
+	// line. Doing it in this order is correct whichever line comes first.
+	lines[scan.BoldLine-1] = "**" + fieldStatus + ":** " + scan.BareValue
+	repaired := strings.Join(slices.Delete(lines, scan.BareLine-1, scan.BareLine), "\n")
+
+	// The oracle. This classifier sits in front of the validator and defers to
+	// it; a repair whose output the validator would refuse is a bug in the
+	// repair. Asking here is what stops this from becoming a second, weaker
+	// definition of a well-formed task file.
+	if err := validateWholeTaskFile(repaired); err != nil {
+		return "", fmt.Errorf("legacy header repair produced an invalid task file: %w", err)
+	}
+	return repaired, nil
+}

@@ -168,5 +168,6 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(mutates(cmdMigrateIterationsPreamble()))
 	reg.Register(mutates(cmdMigrateTaskPreamble()))
 	reg.Register(mutates(cmdMigrateTaskStatus()))
+	reg.Register(mutates(cmdMigrateTaskHeader()))
 	reg.RegisterHelp()
 }

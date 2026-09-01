@@ -139,9 +139,12 @@ func cmdMigrateTaskStatus() *cli.Command {
 				return cli.ExitSystem
 			}
 			// 🔴 A run that failed every write must not exit 0. The sibling
-			// `migrate task-preamble` prints "  !!" per failure and still
-			// returns nil, so a migration that wrote NOTHING reports success —
-			// a separate, unfiled finding, deliberately not fixed from here.
+			// `migrate task-preamble` once printed "  !!" per failure and still
+			// returned nil, so a migration that wrote NOTHING reported success.
+			// That was filed as
+			// `migrate-task-preamble-exits-zero-on-total-write-failure` and has
+			// since been fixed: it now keeps its own Failed counter and exits
+			// non-zero the same way. The rule belongs to both commands.
 			if sum.Failed > 0 {
 				fmt.Fprintf(os.Stderr, "vp migrate task-status: %d file(s) failed\n", sum.Failed)
 				return cli.ExitSystem

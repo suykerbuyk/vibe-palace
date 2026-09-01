@@ -2014,3 +2014,221 @@ func TestArchiveMakesNoProgressWhileSourceLockHeld(t *testing.T) {
 		t.Errorf("archived body status = %q, want %q", meta.Status, "retired")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Legacy header classification.
+//
+// The specimens below are the SHAPES measured on the live corpus, not invented
+// ones. Every fixture in cmd_migrate_task_status_test.go was "# T", blank,
+// "**Status:**" — the shape CreateTask writes — which is exactly why a live
+// --apply failed 7 of 7 against shapes no fixture carried.
+
+// legacyBoth is the BOTH class: an un-bolded legacy line holding the TRUE value,
+// above a bolded field holding a stale one.
+const legacyBoth = "# Task 3.5: Portable Command Execution\n" +
+	"Status: Done\n" +
+	"\n" +
+	"**Status:** pending\n" +
+	"**Priority:** high\n\n" +
+	"## Summary\n\nBody.\n"
+
+// TestScanLegacyHeaderClassifiesTheMeasuredShapes drives one table over every
+// shape the corpus actually carries, including the ones a naive detector gets
+// wrong in each direction.
+func TestScanLegacyHeaderClassifiesTheMeasuredShapes(t *testing.T) {
+	cases := []struct {
+		name     string
+		content  string
+		want     LegacyHeaderClass
+		wantBare int // 1-indexed; 0 = no legacy line found
+	}{
+		{
+			name:     "both, legacy line directly under the title",
+			content:  legacyBoth,
+			want:     LegacyHeaderBoth,
+			wantBare: 2,
+		},
+		{
+			name: "both, a blank line between the title and the legacy line",
+			content: "# T\n\nStatus: Done\n\n**Status:** In Progress\n" +
+				"**Priority:** medium\n\n## Context\n\nBody.\n",
+			want:     LegacyHeaderBoth,
+			wantBare: 3,
+		},
+		{
+			name: "bare-only, no bolded field anywhere",
+			content: "# T\n\nStatus: Planned (reviewed, revised)\n\n" +
+				"## Context\n\nBody.\n",
+			want:     LegacyHeaderBareOnly,
+			wantBare: 3,
+		},
+		{
+			name: "title offset by a YAML block still finds the legacy line",
+			content: "---\ntype: task\npriority: high\n---\n\n" +
+				"# Plan: Phase E\nStatus: Cutover IN PROGRESS\n\n" +
+				"**Status:** pending\n**Priority:** high\n\n## Context\n\nBody.\n",
+			want:     LegacyHeaderBoth,
+			wantBare: 7,
+		},
+		{
+			name:    "clean, the shape CreateTask writes",
+			content: validTaskFile,
+			want:    LegacyHeaderClean,
+		},
+		{
+			name: "body prose beginning with the word Status is NOT a header line",
+			content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n" +
+				"## Implementation plan\n\n" +
+				"Status: **design only — not implemented.** Stop until the chair accepts.\n",
+			want: LegacyHeaderClean,
+		},
+		{
+			name: "a Rust path expression is NOT a header line",
+			content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n## Wiring\n\n" +
+				"Wiring: replace `SubCheck::new(\"field-names\",\n" +
+				"Status::Skipped, \"deferred\")` with check_field_names().\n",
+			want: LegacyHeaderClean,
+		},
+		{
+			name: "multi-title wins over a bolded field plus a legacy line",
+			content: "# Salvage HNSW recall harness\n\n" +
+				"**Status:** retired\n**Priority:** medium\n\n" +
+				"# Plan: Salvage HNSW Recall Harness\n\n" +
+				"Status: Planned, architecture-reviewed.\n\n## Context\n\nBody.\n",
+			want: LegacyHeaderMultiTitle,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ScanLegacyHeader(tc.content)
+			if got.Class != tc.want {
+				t.Errorf("class = %s, want %s (scan %+v)", got.Class, tc.want, got)
+			}
+			if tc.wantBare != 0 && got.BareLine != tc.wantBare {
+				t.Errorf("BareLine = %d, want %d", got.BareLine, tc.wantBare)
+			}
+		})
+	}
+}
+
+// TestScanLegacyHeaderIgnoresFencedSpecimens is the self-inflicted-wound test.
+// The two live task files that DOCUMENT this defect quote its specimens inside
+// code fences. A fence-blind scan classifies those tasks as instances of the bug
+// and a fence-blind repair rewrites the very files describing it.
+func TestScanLegacyHeaderIgnoresFencedSpecimens(t *testing.T) {
+	content := "# One shared classifier for legacy task headers\n\n" +
+		"**Status:** pending\n" +
+		"**Priority:** medium\n\n" +
+		"## The two shapes, measured\n\n" +
+		"```\n" + legacyBoth + "```\n\n" +
+		"Prose after the fence.\n"
+
+	got := ScanLegacyHeader(content)
+	if got.Class != LegacyHeaderClean {
+		t.Fatalf("class = %s, want %s — a fenced specimen was read as structure (scan %+v)",
+			got.Class, LegacyHeaderClean, got)
+	}
+	if got.BareLine != 0 {
+		t.Errorf("BareLine = %d, want 0: the fenced legacy line is sample text", got.BareLine)
+	}
+}
+
+// TestRepairLegacyBothHeaderCarriesTheTrueValueInOneWrite proves the repair
+// drops the bare line AND carries its value onto the bolded field. A result that
+// did only the first half would leave the file asserting the falsehood alone.
+func TestRepairLegacyBothHeaderCarriesTheTrueValueInOneWrite(t *testing.T) {
+	got, err := RepairLegacyBothHeader(legacyBoth)
+	if err != nil {
+		t.Fatalf("RepairLegacyBothHeader: %v", err)
+	}
+
+	if strings.Contains(got, "\nStatus: Done") {
+		t.Errorf("the bare legacy line survived:\n%s", got)
+	}
+	if strings.Contains(got, "**Status:** pending") {
+		t.Errorf("the STALE value survived — dropping the bare line alone leaves "+
+			"the file asserting only the falsehood:\n%s", got)
+	}
+	if !strings.Contains(got, "**Status:** Done") {
+		t.Errorf("the true value was not carried onto the bolded field:\n%s", got)
+	}
+
+	// The oracle: assert the validator's verdict, never a byte comparison.
+	if err := validateWholeTaskFile(got); err != nil {
+		t.Fatalf("repaired file is one validateWholeTaskFile refuses: %v\nfile:\n%s", err, got)
+	}
+}
+
+// TestRepairLegacyBothHeaderRefusesEveryOtherClass is the guard that keeps this
+// unit inside the scope the operator split it to. BareOnly needs PROMOTION —
+// deleting its only status declaration leaves the file refused at the "missing
+// Status" arm rather than repaired — and MultiTitle needs a per-file judgment.
+func TestRepairLegacyBothHeaderRefusesEveryOtherClass(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    LegacyHeaderClass
+	}{
+		{"bare-only", "# T\n\nStatus: Planned\n\n## Context\n\nBody.\n", LegacyHeaderBareOnly},
+		{"clean", validTaskFile, LegacyHeaderClean},
+		{
+			name: "multi-title",
+			content: "# First\n\n**Status:** retired\n**Priority:** medium\n\n" +
+				"# Second\n\nStatus: Planned\n\n## Context\n\nBody.\n",
+			want: LegacyHeaderMultiTitle,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := RepairLegacyBothHeader(tc.content)
+			if err == nil {
+				t.Fatalf("repair accepted a %s file; it must refuse every class but %s",
+					tc.want, LegacyHeaderBoth)
+			}
+			if !strings.Contains(err.Error(), tc.want.String()) {
+				t.Errorf("error should name the class it refused (%s), got: %v", tc.want, err)
+			}
+		})
+	}
+}
+
+// TestRepairLegacyBothHeaderIsIdempotent proves a second pass over a repaired
+// file finds nothing to do. The repaired file is Clean, so the repair refuses it
+// — which is how the command reports "nothing to do" rather than rewriting.
+func TestRepairLegacyBothHeaderIsIdempotent(t *testing.T) {
+	once, err := RepairLegacyBothHeader(legacyBoth)
+	if err != nil {
+		t.Fatalf("first repair: %v", err)
+	}
+	if got := ScanLegacyHeader(once).Class; got != LegacyHeaderClean {
+		t.Fatalf("repaired file classifies as %s, want %s", got, LegacyHeaderClean)
+	}
+	if _, err := RepairLegacyBothHeader(once); err == nil {
+		t.Fatal("a second repair succeeded; a repaired file must have nothing left to repair")
+	}
+}
+
+// TestBareOnlyDeletionWouldNotRepairPinsTheReasonForTheSplit records WHY
+// BARE-ONLY is a different repair rather than the same one. Deleting the bare
+// line — the disposition the original plan proposed for the whole population —
+// leaves a file the validator still refuses, now at a different arm. The test
+// performs that deletion by hand precisely because no shipped code may do it.
+func TestBareOnlyDeletionWouldNotRepairPinsTheReasonForTheSplit(t *testing.T) {
+	content := "# T\n\nStatus: Planned (reviewed, revised)\n\n## Context\n\nBody.\n"
+	if got := ScanLegacyHeader(content).Class; got != LegacyHeaderBareOnly {
+		t.Fatalf("fixture classifies as %s, want %s", got, LegacyHeaderBareOnly)
+	}
+
+	lines := strings.Split(content, "\n")
+	deleted := strings.Join(slices.Delete(lines, 2, 3), "\n")
+
+	err := validateWholeTaskFile(deleted)
+	if err == nil {
+		t.Fatal("deleting the only status line produced a file the validator ACCEPTS; " +
+			"if this ever passes, the split between BOTH and BARE-ONLY needs revisiting")
+	}
+	if !strings.Contains(err.Error(), "missing Status") {
+		t.Errorf("want the 'missing Status' arm, got: %v", err)
+	}
+}

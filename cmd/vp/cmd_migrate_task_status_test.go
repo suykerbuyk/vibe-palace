@@ -243,10 +243,12 @@ func TestMigrateTaskStatusRefusesASlugPresentInBothDirs(t *testing.T) {
 	}
 }
 
-// TestMigrateTaskStatusExitsNonZeroWhenEveryWriteFailed is the class the sibling
-// `migrate task-preamble` does not cover: it prints "  !!" per failure and still
-// returns nil, so a run that wrote NOTHING exits 0 and says "Applied 0". This
-// command must not inherit that.
+// TestMigrateTaskStatusExitsNonZeroWhenEveryWriteFailed pins the rule that a run
+// which wrote NOTHING must not report success. It was written while the sibling
+// `migrate task-preamble` printed "  !!" per failure and still returned nil,
+// exiting 0 while saying "Applied 0" — the defect this command was built not to
+// inherit. That sibling has since been fixed and carries its own equivalent pin,
+// so this is now one of two tests on the same rule rather than the only one.
 func TestMigrateTaskStatusExitsNonZeroWhenEveryWriteFailed(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	for _, d := range []string{"tasks", "tasks/done"} {
