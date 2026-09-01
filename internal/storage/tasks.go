@@ -117,6 +117,55 @@ const StatusIcebox = "icebox"
 // do NEXT put it ahead of everything not yet started.
 const StatusInProgress = "in_progress"
 
+// StatusRetired and StatusCancelled are the two TERMINAL status values. They are
+// deliberately absent from validStatuses — UpdateTaskStatus must not stamp them
+// in place, because a task reaches a terminal state by MOVING (see moveTask).
+//
+// They exist as constants so terminality has exactly ONE definition. Before this
+// they were bare literals inside RetireTask and CancelTask, which meant any
+// reader wanting to ask "is this status terminal?" had to hardcode a second copy
+// — and a detector whose copy drifts from the writer's stops seeing the very
+// disagreement it exists to report.
+const (
+	StatusRetired   = "retired"
+	StatusCancelled = "cancelled"
+)
+
+// IsTerminalStatus reports whether a Status VALUE names an archived state.
+//
+// 🔴 CASE-INSENSITIVE ON THE VALUE, DELIBERATELY, and that is not the same
+// looseness iteration 347 ruled against. There the case-folded thing was a
+// shout-TOKEN scanned across free prose, so folding it turned BLOCKED into the
+// English word "blocked" and fired on ordinary sentences. Here the input is a
+// single header FIELD VALUE that has already been isolated by a case-SENSITIVE
+// key match, and the real corpus spells its values inconsistently — "In Progress"
+// and "in_progress" both appear on disk. Folding the value reads legacy files
+// correctly; folding the key would be the 347 defect.
+func IsTerminalStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case StatusRetired, StatusCancelled:
+		return true
+	}
+	return false
+}
+
+// TaskStatusValue returns the value of a task **Status:** line, and ok=false for
+// any other line.
+//
+// It is the narrow export of headerFieldValue — narrow on purpose. A caller
+// outside this package needs to ask "is this line the status, and what does it
+// say?" without owning a second definition of what a metadata line looks like:
+// headerFieldValue is THE definition for the parser, the writers and the
+// validator, and a detector matching a near-copy is how a reader and a writer
+// come to disagree about which lines are metadata. Exporting the whole
+// field-agnostic helper would invite exactly that drift for the other three
+// fields, so this exposes the one field with an outside reader.
+//
+// The key match is case-SENSITIVE and anchored, like every other use.
+func TaskStatusValue(line string) (string, bool) {
+	return headerFieldValue(line, fieldStatus)
+}
+
 // DropIcebox removes tasks that are known but deliberately unscheduled.
 //
 // ONE definition, reached by every reader that shows INTENT — vp tasks,
@@ -862,12 +911,12 @@ func (v *Vault) UpdateTaskStatus(project, slug, status string) error {
 
 // RetireTask moves a task to the done/ directory with status "retired".
 func (v *Vault) RetireTask(project, slug string) error {
-	return v.moveTask(project, slug, v.TaskDoneDir, "retired")
+	return v.moveTask(project, slug, v.TaskDoneDir, StatusRetired)
 }
 
 // CancelTask moves a task to the cancelled/ directory with status "cancelled".
 func (v *Vault) CancelTask(project, slug string) error {
-	return v.moveTask(project, slug, v.TaskCancelledDir, "cancelled")
+	return v.moveTask(project, slug, v.TaskCancelledDir, StatusCancelled)
 }
 
 // moveTask updates a task's status and moves it to a destination directory.

@@ -123,6 +123,7 @@ func Run(vault *storage.Vault) (Report, error) {
 		{DimTaskHeadingMarkers, EvidenceTaskHeadingMarkers, auditTaskHeadingMarkers},
 		{DimPalaceStoreDrawers, EvidencePalaceStoreDrawers, auditPalaceStoreDrawers},
 		{DimTaskPreamble, EvidenceTaskPreamble, auditTaskPreamble},
+		{DimTaskStatusDirectory, EvidenceTaskStatusDirectory, auditTaskStatusDirectory},
 	}
 
 	report := Report{SessionNotes: SessionNoteCount(vault)}

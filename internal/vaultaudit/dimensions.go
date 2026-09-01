@@ -129,6 +129,44 @@ const (
 	// task, so a finding under tasks/done/ or tasks/cancelled/ would be unrepairable by
 	// every path and would be permanent, un-actionable red.
 	DimTaskPreamble = "task-preamble"
+
+	// DimTaskStatusDirectory — a task file's **Status:** value must agree with the
+	// directory it sits in. The DIRECTORY is authoritative (resolveTaskFile derives
+	// `done` from it and hands it to parseTaskMeta), so a disagreeing Status line is
+	// the file stating something false about itself. Every current reader is right
+	// anyway; the exposure is any future consumer that keys off `status` rather than
+	// `done`, which inherits the lie.
+	//
+	// TWO rules, and the second one is why this dimension could not have been written
+	// before 2026-09-01:
+	//
+	//  1. ARCHIVED directory, NON-TERMINAL status. A file in done/ or cancelled/
+	//     whose status is not retired/cancelled. The original finding: legacy residue
+	//     from a bulk migration that predates the current writer.
+	//  2. ACTIVE directory, TERMINAL status. A file in tasks/ whose body says retired
+	//     or cancelled. This is the rewrite-then-rename crash signature: the stamp
+	//     landed and the rename did not. It is REPAIRABLE BY COMPLETING THE RENAME,
+	//     and the finding says so rather than only reporting disagreement.
+	//
+	// Rule 2 is worth having independently of crashes. UpdateTaskStatus refuses
+	// terminal values by design (they are absent from validStatuses), so an active
+	// task carrying one cannot have arrived through any sanctioned writer at all.
+	//
+	// 🔴 SCOPE IS BOTH DIRECTIONS, which is why this one is NOT active-only like its
+	// two siblings above. Their archived findings are unrepairable by every sanctioned
+	// path, so reporting them would be permanent red. This dimension's rule-1 findings
+	// have a repair — the done/-scoped tool built as Phase 2 of
+	// `retired-task-files-keep-a-live-status-line` — so the ruling those siblings
+	// record does not reach here. Do not "align" this with them by dropping rule 1.
+	//
+	// 🔴 ABSENT STATUS IS NOT A FINDING, and that is a ruling. Most archived files
+	// predate the header block and carry no **Status:** line at all. Absence is the
+	// older FORMAT, not a live CLAIM, and a rule that flagged it would emit dozens of
+	// un-actionable red rows beside a handful of real ones — which is exactly what the
+	// 2026-08-31 review said made this plan unexecutable. The class is surfaced in
+	// EvidenceTaskStatusDirectory as its own derivation instead, so a reader can
+	// measure it without the audit failing over it.
+	DimTaskStatusDirectory = "task-status-directory"
 )
 
 // Evidence commands. RECORD THE GREP, NEVER THE COUNT (invariant 3) — every number
@@ -168,6 +206,25 @@ const (
 	// invents findings on the markdown these task bodies routinely quote.
 	EvidenceTaskPreamble = `vp migrate task-preamble   # REPORT ONLY, writes nothing. ` +
 		`MOVE rows are this dimension's findings; SKIP rows are its no-H2 class`
+	// THREE derivations, because the third class must be measurable WITHOUT being a
+	// finding. Lines 1 and 2 reproduce the two rules; line 3 is the absent-status
+	// population, which this dimension deliberately never reports (see
+	// DimTaskStatusDirectory) and which a reader still needs a way to size.
+	//
+	// -i on the VALUE only. The **Status:** key is matched case-sensitively — folding
+	// it would be the iteration-347 defect, where a case-folded token started matching
+	// prose. The value is folded because the real corpus spells it inconsistently:
+	// "In Progress" and "in_progress" both appear on disk.
+	//
+	// The greps are line-oriented and therefore fence-BLIND, while the dimension is
+	// fence-aware. On a file whose only **Status:**-shaped line is quoted inside a code
+	// fence the two disagree, and the dimension is the one to believe. That is the same
+	// honest gap EvidenceIterationHeadings records for its third condition.
+	EvidenceTaskStatusDirectory = `grep -l -m1 -iE '^\*\*Status:\*\* *(retired|cancelled)' ` +
+		`Projects/*/tasks/done/*.md Projects/*/tasks/cancelled/*.md 2>/dev/null | ` +
+		`comm -13 - <(grep -l '^\*\*Status:\*\*' Projects/*/tasks/done/*.md Projects/*/tasks/cancelled/*.md 2>/dev/null | sort)   # rule 1: archived, non-terminal ; ` +
+		`grep -n -iE '^\*\*Status:\*\* *(retired|cancelled)' Projects/*/tasks/*.md 2>/dev/null   # rule 2: active, terminal ; ` +
+		`grep -L '^\*\*Status:\*\*' Projects/*/tasks/done/*.md Projects/*/tasks/cancelled/*.md 2>/dev/null   # NOT a finding: the absent-status class`
 )
 
 // unresolvedStatusMarkers is the DECLARED marker set for DimTaskHeadingMarkers: the
@@ -1161,4 +1218,150 @@ func relTo(root, abs string) string {
 		return abs
 	}
 	return filepath.ToSlash(rel)
+}
+
+// taskStatusScan is one task file's Status reading: the value, the 1-indexed line
+// it was found on, and whether a status line exists at all.
+//
+// 🔴 FENCE-AWARE, AND THIS DELIBERATELY DIVERGES FROM parseTaskMeta. The reader
+// (storage.parseTaskMeta) scans the whole file fence-BLIND, which is safe for it
+// because CreateTask always writes the real header above any body. A DETECTOR
+// cannot take that shortcut: this project's task files quote metadata-shaped lines
+// inside code fences constantly, and flagging one would be inventing a finding
+// against sample text. Where the two disagree, the file's only Status-shaped line
+// is fenced sample text, and the honest reading is "this file makes no claim".
+//
+// FIRST-wins outside fences, matching what replaceStatusLine rewrites and what
+// parseTaskMeta reports — a detector that read a different line than the writer
+// writes would report disagreements nobody can act on.
+type taskStatusScan struct {
+	value   string
+	line    int
+	present bool
+}
+
+// scanTaskStatus reads the first unfenced **Status:** line from a task body.
+func scanTaskStatus(body string) taskStatusScan {
+	for _, ln := range mdfence.OutsideFences(body) {
+		// The KEY match is case-SENSITIVE and anchored, reusing the package-wide
+		// definition of a metadata line rather than a second regexp. Loosening the
+		// key into prose is the iteration-347 defect; the VALUE is folded later, by
+		// storage.IsTerminalStatus.
+		v, ok := storage.TaskStatusValue(ln.Text)
+		if !ok {
+			continue
+		}
+		return taskStatusScan{value: v, line: ln.Num, present: true}
+	}
+	return taskStatusScan{}
+}
+
+// auditTaskStatusDirectory implements DimTaskStatusDirectory. See that constant
+// for the two rules and for why the absent-status class is not one of them.
+//
+// It walks the DIRECTORIES, never vp_list_tasks. The listing hides the icebox and
+// resolves through readers that already derive `done` from the directory — so a
+// listing-based check would be handed the directory's answer for both halves of a
+// comparison whose whole point is that the two can disagree.
+func auditTaskStatusDirectory(vault *storage.Vault) ([]Finding, []string, error) {
+	projects, err := vault.ListAllProjects()
+	if err != nil {
+		return nil, nil, fmt.Errorf("enumerate projects: %w", err)
+	}
+
+	var findings []Finding
+	var unknowns []string
+
+	for _, p := range projects {
+		if !p.InProjects {
+			continue
+		}
+		activeDir, aerr := vault.TasksDir(p.Slug)
+		doneDir, derr := vault.TaskDoneDir(p.Slug)
+		cancelledDir, cerr := vault.TaskCancelledDir(p.Slug)
+		if aerr != nil || derr != nil || cerr != nil {
+			unknowns = append(unknowns, fmt.Sprintf("%s: cannot resolve task dirs: %v %v %v", p.Slug, aerr, derr, cerr))
+			continue
+		}
+
+		for _, d := range []struct {
+			abs      string
+			rel      string
+			archived bool
+		}{
+			{activeDir, "Projects/" + p.Slug + "/tasks", false},
+			{doneDir, "Projects/" + p.Slug + "/tasks/done", true},
+			{cancelledDir, "Projects/" + p.Slug + "/tasks/cancelled", true},
+		} {
+			entries, rerr := os.ReadDir(d.abs)
+			if os.IsNotExist(rerr) {
+				continue
+			}
+			if rerr != nil {
+				unknowns = append(unknowns, fmt.Sprintf("%s: cannot read dir: %v", d.rel, rerr))
+				continue
+			}
+			for _, e := range entries {
+				// Subdirectories are skipped: done/ and cancelled/ are reached as
+				// their own rows above, so descending here would double-count them.
+				if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+					continue
+				}
+				rel := d.rel + "/" + e.Name()
+				data, ferr := os.ReadFile(filepath.Join(d.abs, e.Name()))
+				if ferr != nil {
+					unknowns = append(unknowns, fmt.Sprintf("%s: cannot read: %v", rel, ferr))
+					continue
+				}
+				scan := scanTaskStatus(string(data))
+				if !scan.present {
+					// The absent-status class. NOT a finding, by ruling — see
+					// DimTaskStatusDirectory. Absence is the older format, not a claim.
+					continue
+				}
+				terminal := storage.IsTerminalStatus(scan.value)
+				switch {
+				case d.archived && !terminal:
+					findings = append(findings, Finding{
+						Dimension: DimTaskStatusDirectory,
+						Artifact:  fmt.Sprintf("%s:%d", rel, scan.line),
+						Detail:    archivedNonTerminalDetail(scan.value),
+					})
+				case !d.archived && terminal:
+					findings = append(findings, Finding{
+						Dimension: DimTaskStatusDirectory,
+						Artifact:  fmt.Sprintf("%s:%d", rel, scan.line),
+						Detail:    activeTerminalDetail(scan.value),
+					})
+				}
+			}
+		}
+	}
+	return findings, unknowns, nil
+}
+
+// archivedNonTerminalDetail renders a rule-1 finding: the file is in the archive
+// and its body still claims a live state.
+func archivedNonTerminalDetail(value string) string {
+	return fmt.Sprintf(
+		"archived task carries the non-terminal status %q. The DIRECTORY is authoritative — resolveTaskFile "+
+			"derives `done` from it — so every current reader is correct and this is the file stating something "+
+			"false about ITSELF. The exposure is any consumer that keys off `status` rather than `done`. This is "+
+			"legacy residue from a bulk migration, not a live regression: the archive writer stamps %q/%q "+
+			"correctly today, and since 2026-09-01 it does so BEFORE the file moves. Repairable only by a "+
+			"done/-scoped writer, because every typed task writer refuses an archived task.",
+		value, storage.StatusRetired, storage.StatusCancelled)
+}
+
+// activeTerminalDetail renders a rule-2 finding: the interrupted-archive signature.
+func activeTerminalDetail(value string) string {
+	return fmt.Sprintf(
+		"ACTIVE task carries the terminal status %q, which no sanctioned writer can produce: UpdateTaskStatus "+
+			"refuses terminal values by design. This is the interrupted-archive signature — moveTask stamps the "+
+			"status in place and THEN renames (rewrite-then-rename, 2026-09-01), so a failure between the two "+
+			"steps leaves exactly this. REPAIR BY COMPLETING THE RENAME: move the file into tasks/done/ for %q "+
+			"or tasks/cancelled/ for %q, which is what the interrupted operation was about to do. Do not instead "+
+			"rewrite the status back to a live value — that would discard a retire the operator had already "+
+			"approved.",
+		value, storage.StatusRetired, storage.StatusCancelled)
 }

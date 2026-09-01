@@ -281,6 +281,11 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		// Writes active task files through storage.OverwriteTaskFile — the
 		// locked, surface-stamping task writer — under --apply.
 		"migrate task-preamble": true,
+		// Same writer, opposite scope: the only caller that deliberately writes
+		// ARCHIVED task files. OverwriteTaskFile resolves all three directories
+		// and leaves the archived question to its caller, so scope is enforced
+		// here rather than in storage.
+		"migrate task-status": true,
 	}
 
 	reg, _, _ := testRegistry()
