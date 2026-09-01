@@ -2275,8 +2275,9 @@ takes `--project`; it is a different thing from the vault audit below.
 design intent and reports **pass / fail / unknown per dimension**. Full rationale
 in ADR-007; the mechanics:
 
-- **Nine dimensions** (the registry is `dims` in `internal/vaultaudit/audit.go`;
-  this list is derived from it): `archive-roundtrip` (every transcript manifest
+- **The dimensions** (the registry is `dims` in `internal/vaultaudit/audit.go`;
+  this list is derived from it, and the COUNT is deliberately not restated here —
+  ADR-007 is exactly about not storing a value the registry already holds): `archive-roundtrip` (every transcript manifest
   back-links to a session note that exists), `project-tree-coherence` (every project
   appears in both `palace/` and `Projects/`), `kg-portability` (KG triple filenames are
   NTFS/exFAT-safe), `resume-discipline` (no `resume.md` over the size cap),

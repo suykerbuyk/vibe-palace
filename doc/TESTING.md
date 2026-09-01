@@ -2061,7 +2061,8 @@ off and then catches nothing at all.
 
 `internal/vaultaudit` is the runtime sibling of the source audit: where `sourceaudit`
 checks the repo's own source, the vault audit checks the **live vault** against design
-intent (nine dimensions; the registry is `dims` in `audit.go` — see ADR-007). Its
+intent (the registry is `dims` in `audit.go`; the count is deliberately not restated
+here — see ADR-007). Its
 tests carry the same doctrine — *an auditor
 validated only by its own logic is the thing this epic exists to prevent* — so the
 central test is a **mutation test**, exactly as in `sourceaudit`.
