@@ -4,6 +4,7 @@
 package main
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
@@ -22,8 +23,18 @@ func TestCmdHookReturnsValidCommand(t *testing.T) {
 	if cmd.Description == "" {
 		t.Error("Description is empty")
 	}
-	if len(cmd.Subcommands) != 2 {
-		t.Errorf("Subcommands = %v, want 2 entries", cmd.Subcommands)
+	// Subcommands is registry-derived, so the expectation is too: a hardcoded 2
+	// pinned the number rather than the children, and needed editing whenever a
+	// real child was added.
+	reg := registeredCommand(t, "hook")
+	want := registeredChildren(t, "hook")
+	if !slices.Equal(reg.Subcommands, want) {
+		t.Errorf("Subcommands = %v, want %v", reg.Subcommands, want)
+	}
+	for _, name := range []string{"hook install", "hook uninstall"} {
+		if !slices.Contains(reg.Subcommands, name) {
+			t.Errorf("hook does not list %q", name)
+		}
 	}
 	if cmd.Run == nil {
 		t.Error("Run is nil")

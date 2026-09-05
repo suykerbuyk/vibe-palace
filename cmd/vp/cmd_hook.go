@@ -41,7 +41,6 @@ func cmdHook(info cli.BuildInfo) *cli.Command {
 		Name:           "hook",
 		Synopsis:       "vp hook",
 		Description:    "Claude Code hook handler. Reads hook JSON from stdin and archives the session transcript. Also supports install/uninstall subcommands.",
-		Subcommands:    []string{"hook install", "hook uninstall"},
 		BareInvocation: true,
 		Run: func(args []string) int {
 			return runHook(info)
@@ -59,6 +58,27 @@ func runHook(info cli.BuildInfo) int {
 	}
 	if fi.Mode()&os.ModeCharDevice != 0 {
 		// Interactive terminal — print usage.
+		//
+		// 🔴 NOTE: THIS CHILD LIST IS HAND-MAINTAINED, AND IT IS THE LAST ONE.
+		// Every parent's Subcommands is now DERIVED by the registry
+		// (cli.Registry.linkSubcommands) and the fifteen literals that used to
+		// declare it are gone — including this file's. A reader landing here
+		// would reasonably assume this string is derived too. It is not: it is a
+		// stored copy of what `hook install` / `hook uninstall` register, and it
+		// will go stale the way `vp migrate`'s literal did.
+		//
+		// It stays because reaching the registry from here is disproportionate to
+		// a stderr line: the Run closure receives args and runHook receives a
+		// cli.BuildInfo, and neither carries a registry handle, so deriving this
+		// would mean threading the registry into Run — a signature change to the
+		// cli framework for one usage message.
+		//
+		// Note also that this is not a second rendering of the parent help but a
+		// REPLACEMENT for it: `hook` sets BareInvocation, so dispatchCommand
+		// routes a bare `vp hook` to Run instead of rendering the derived parent
+		// listing, and this branch fires only when stdin is a terminal. The
+		// derived list is still one command away — `vp help hook` prints it — and
+		// the registry, not this string, is the source of truth.
 		fmt.Fprintln(os.Stderr, "Usage: vp hook\n\nReads Claude Code hook JSON from stdin.\nSubcommands: hook install, hook uninstall")
 		return cli.ExitOK
 	}

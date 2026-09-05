@@ -147,8 +147,11 @@ func TestSkillsCommandMetadata(t *testing.T) {
 	if cs.Run != nil {
 		t.Error("cmdSkills Run should be nil — parent help is rendered by the dispatcher")
 	}
-	if len(cs.Subcommands) == 0 {
-		t.Error("cmdSkills should declare its Subcommands so the dispatcher can render help")
+	// Subcommands is derived by the registry, not declared by the constructor —
+	// so the dispatcher's parent/leaf branch is asked of a REGISTERED command.
+	if len(registeredCommand(t, "skills").Subcommands) == 0 {
+		t.Error("the registry did not populate skills' Subcommands, so the dispatcher would " +
+			"treat this parent as a leaf and call its nil Run")
 	}
 	cl := cmdSkillsList()
 	if cl.Name != "skills list" {

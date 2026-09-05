@@ -22,7 +22,6 @@ func cmdAudit() *cli.Command {
 		Name:        "audit",
 		Synopsis:    "vp audit <command> [flags]",
 		Description: "Audit palace classification quality, or the whole vault against design intent.",
-		Subcommands: []string{"audit rooms", "audit vault"},
 	}
 }
 

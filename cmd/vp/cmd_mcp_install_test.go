@@ -10,10 +10,11 @@ import (
 )
 
 func TestMCPHasInstallSubcommands(t *testing.T) {
-	cmd := cmdMCP()
-	if !cmd.BareInvocation {
+	if !cmdMCP().BareInvocation {
 		t.Error("mcp should set BareInvocation so bare `vp mcp` still serves")
 	}
+	// Subcommands is registry-derived; an unregistered command's copy is empty.
+	cmd := registeredCommand(t, "mcp")
 	want := map[string]bool{"mcp install": false, "mcp uninstall": false}
 	for _, s := range cmd.Subcommands {
 		if _, ok := want[s]; ok {

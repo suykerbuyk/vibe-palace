@@ -25,7 +25,6 @@ func cmdArchive() *cli.Command {
 		Name:        "archive",
 		Synopsis:    "vp archive <command> [flags]",
 		Description: "Archive AI session transcripts with provenance manifests. See doc/adr/001-transcript-archive.md.",
-		Subcommands: []string{"archive create", "archive threads", "archive list", "archive verify", "archive extract", "archive backfill", "archive link"},
 	}
 }
 

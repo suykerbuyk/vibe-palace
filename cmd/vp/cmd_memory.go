@@ -17,7 +17,6 @@ func cmdMemory() *cli.Command {
 		Name:        "memory",
 		Synopsis:    "vp memory <command> [flags]",
 		Description: "Manage Claude native auto-memory. Memories live host-local under ~/.claude until harvested into the synced vault at Projects/<project>/memory/.",
-		Subcommands: []string{"memory harvest"},
 	}
 }
 

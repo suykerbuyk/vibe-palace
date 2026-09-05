@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -551,5 +552,120 @@ func TestBareInvocationKnownSubcommandUnchanged(t *testing.T) {
 	}
 	if len(*calls) != 0 {
 		t.Errorf("parent Run should not be called when two-word lookup hits, got %d calls", len(*calls))
+	}
+}
+
+// TestRegisterPopulatesSubcommandsFromTheRegistry pins the derivation itself:
+// a parent's Subcommands is what is registered under it, in registration order,
+// and no constructor has to restate it.
+func TestRegisterPopulatesSubcommandsFromTheRegistry(t *testing.T) {
+	r := NewRegistry(BuildInfo{})
+	parent := &Command{Name: "vault"}
+	r.Register(parent)
+	r.Register(&Command{Name: "vault pull", Run: func([]string) int { return 0 }})
+	r.Register(&Command{Name: "vault push", Run: func([]string) int { return 0 }})
+	// A command that merely shares a prefix is NOT a child.
+	r.Register(&Command{Name: "vaultish", Run: func([]string) int { return 0 }})
+
+	want := []string{"vault pull", "vault push"}
+	if got := parent.Subcommands; !slices.Equal(got, want) {
+		t.Errorf("Subcommands = %v, want %v", got, want)
+	}
+}
+
+// TestRegisterIsOrderIndependent is constraint 2, pinned rather than assumed.
+//
+// 🔴 Registration order puts every parent before its children today — measured
+// 0 of 51 the other way — so a one-directional append would pass on the current
+// registerAll and silently drop a child the first time someone reordered it.
+// With the literals deleted there would be no hand-written list left for a reader
+// to notice was short, and the consequence is worse than a missing help entry:
+// a parent whose Subcommands is empty looks like a LEAF to dispatchCommand, which
+// calls a Run that is nil for 12 of the 15 parents.
+//
+// So the invariant is REMOVED rather than documented. This drives the same four
+// commands in both orders and demands the identical result.
+func TestRegisterIsOrderIndependent(t *testing.T) {
+	build := func(childrenFirst bool) []string {
+		r := NewRegistry(BuildInfo{})
+		parent := &Command{Name: "archive"}
+		kids := []*Command{
+			{Name: "archive create", Run: func([]string) int { return 0 }},
+			{Name: "archive list", Run: func([]string) int { return 0 }},
+			{Name: "archive verify", Run: func([]string) int { return 0 }},
+		}
+		if childrenFirst {
+			for _, k := range kids {
+				r.Register(k)
+			}
+			r.Register(parent)
+		} else {
+			r.Register(parent)
+			for _, k := range kids {
+				r.Register(k)
+			}
+		}
+		return parent.Subcommands
+	}
+	parentFirst, childrenFirst := build(false), build(true)
+	if !slices.Equal(parentFirst, childrenFirst) {
+		t.Errorf("registration order changed the derived list:\n parent first:   %v\n children first: %v",
+			parentFirst, childrenFirst)
+	}
+	if len(parentFirst) != 3 {
+		t.Errorf("derived %d children, want 3: %v", len(parentFirst), parentFirst)
+	}
+}
+
+// TestRegisterInterleavedOrderStillCollectsEveryChild covers the case neither
+// pure ordering reaches: some children registered before the parent and some
+// after, which is what a partial reordering of registerAll would produce.
+func TestRegisterInterleavedOrderStillCollectsEveryChild(t *testing.T) {
+	r := NewRegistry(BuildInfo{})
+	r.Register(&Command{Name: "config upgrade", Run: func([]string) int { return 0 }})
+	parent := &Command{Name: "config"}
+	r.Register(parent)
+	r.Register(&Command{Name: "config sync", Run: func([]string) int { return 0 }})
+
+	want := []string{"config upgrade", "config sync"}
+	if !slices.Equal(parent.Subcommands, want) {
+		t.Errorf("Subcommands = %v, want %v (registration order, both sides of the parent)",
+			parent.Subcommands, want)
+	}
+}
+
+// TestRegisterDoesNotClobberACallerSuppliedList keeps the derivation ADDITIVE.
+// An out-of-tree caller that still declares a literal keeps it; a name already
+// present is not listed twice.
+func TestRegisterDoesNotClobberACallerSuppliedList(t *testing.T) {
+	r := NewRegistry(BuildInfo{})
+	parent := &Command{Name: "tune", Subcommands: []string{"tune legacy"}}
+	r.Register(parent)
+	r.Register(&Command{Name: "tune rooms", Run: func([]string) int { return 0 }})
+	r.Register(&Command{Name: "tune rooms", Run: func([]string) int { return 0 }}) // re-registered
+
+	want := []string{"tune legacy", "tune rooms"}
+	if !slices.Equal(parent.Subcommands, want) {
+		t.Errorf("Subcommands = %v, want %v", parent.Subcommands, want)
+	}
+}
+
+// TestDerivedSubcommandsKeepAParentOutOfTheLeafPath is the consequence test for
+// why this runs inside Register instead of a finalize pass a caller must
+// remember. A pure parent with an empty Subcommands is dispatched as a leaf and
+// its nil Run panics; deriving at registration means there is no window in which
+// the field is empty.
+func TestDerivedSubcommandsKeepAParentOutOfTheLeafPath(t *testing.T) {
+	r := NewRegistry(BuildInfo{})
+	var out, errOut bytes.Buffer
+	r.SetOutput(&out, &errOut)
+	r.Register(&Command{Name: "migrate", Synopsis: "vp migrate <command>"}) // no Run, like 12 real parents
+	r.Register(&Command{Name: "migrate task-status", Run: func([]string) int { return 0 }})
+
+	if code := r.Dispatch([]string{"migrate"}); code != ExitOK {
+		t.Errorf("bare parent dispatch = %d, want ExitOK", code)
+	}
+	if !strings.Contains(out.String(), "migrate task-status") {
+		t.Errorf("parent help does not list its derived child:\n%s", out.String())
 	}
 }

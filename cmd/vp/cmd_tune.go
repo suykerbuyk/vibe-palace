@@ -23,7 +23,6 @@ func cmdTune() *cli.Command {
 		Name:        "tune",
 		Synopsis:    "vp tune <command> [flags]",
 		Description: "LLM-assisted classification tuning.",
-		Subcommands: []string{"tune rooms"},
 	}
 }
 

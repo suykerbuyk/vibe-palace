@@ -27,7 +27,6 @@ func cmdConfig() *cli.Command {
 		Name:        "config",
 		Synopsis:    "vp config <command>",
 		Description: "Manage the global vibe-palace configuration.",
-		Subcommands: []string{"config upgrade", "config sync"},
 	}
 }
 

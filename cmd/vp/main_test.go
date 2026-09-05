@@ -306,3 +306,136 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 }
 
 // Command-specific tests are in cmd_*_test.go files.
+
+// subcommandOmissions reports, per parent, the registered children missing from
+// that parent's Subcommands list.
+//
+// It is the completeness check this task's option 2 describes, extracted so it
+// can be driven over a SYNTHETIC registry as well as the real one. The
+// expectation is derived from what is registered — "record the query, never the
+// answer" applied to a Go literal.
+func subcommandOmissions(reg *cli.Registry) map[string][]string {
+	listed := map[string]map[string]bool{}
+	registered := map[string]bool{}
+	var order []string
+	reg.Each(func(c *cli.Command) {
+		registered[c.Name] = true
+		order = append(order, c.Name)
+		set := map[string]bool{}
+		for _, s := range c.Subcommands {
+			set[s] = true
+		}
+		listed[c.Name] = set
+	})
+
+	omissions := map[string][]string{}
+	for _, name := range order {
+		parent, _, ok := strings.Cut(name, " ")
+		if !ok || !registered[parent] {
+			continue
+		}
+		if !listed[parent][name] {
+			omissions[parent] = append(omissions[parent], name)
+		}
+	}
+	return omissions
+}
+
+// TestEveryRegisteredChildIsListedByItsParent is the invariant `vp migrate
+// task-status` broke: a command registered under a parent must be discoverable
+// from that parent.
+//
+// Under the registry-derived field this holds by construction, which is the
+// point — the check is kept as a REGRESSION pin, so that anything which stops
+// populating the field (a reverted derivation, a one-directional append, a
+// reintroduced hand-maintained literal that goes short) fails here rather than
+// shipping a command nobody can find. TestSubcommandOmissionsDetectsAnOmission
+// is what proves this check can actually fail.
+func TestEveryRegisteredChildIsListedByItsParent(t *testing.T) {
+	reg, _, _ := testRegistry()
+	omissions := subcommandOmissions(reg)
+	for parent, missing := range omissions {
+		t.Errorf("parent %q omits registered child(ren) %v — the command runs but is "+
+			"undiscoverable from its own parent's help", parent, missing)
+	}
+	// Guard against the check silently examining nothing.
+	kids := 0
+	reg.Each(func(c *cli.Command) {
+		if strings.Contains(c.Name, " ") {
+			kids++
+		}
+	})
+	if kids == 0 {
+		t.Fatal("no two-word commands found; the completeness check examined nothing")
+	}
+}
+
+// TestSubcommandOmissionsDetectsAnOmission is the acceptance criterion this
+// task's Acceptance section asks for, met the only way it still can be.
+//
+// 🔴 THE ORIGINAL CRITERION CANNOT BE SATISFIED. It required the check to be shown
+// red "against the current omission before the omission is repaired", and the
+// repair (6fdf569) already consumed the only live specimen. Worse, a check that
+// could only ever go red against one file in one moment of history would go green
+// forever afterwards and prove nothing about the next omission.
+//
+// So the omission is SYNTHETIC and deliberate: a parent whose list is short by one
+// registered child, which is exactly the shape `vp migrate` had. Built by taking
+// the field out of the registry's hands after registration, because the derivation
+// makes the defect unconstructible through Register — which is the whole benefit,
+// and also why the check needs a fixture to be provable at all.
+func TestSubcommandOmissionsDetectsAnOmission(t *testing.T) {
+	reg := cli.NewRegistry(cli.BuildInfo{})
+	parent := &cli.Command{Name: "migrate", Synopsis: "vp migrate <command>"}
+	reg.Register(parent)
+	reg.Register(&cli.Command{Name: "migrate task-preamble", Run: func([]string) int { return 0 }})
+	reg.Register(&cli.Command{Name: "migrate task-status", Run: func([]string) int { return 0 }})
+
+	if got := subcommandOmissions(reg); len(got) != 0 {
+		t.Fatalf("a freshly registered set already reports omissions %v; the fixture is not "+
+			"isolating the defect", got)
+	}
+
+	// The defect: the field no longer says what the registry knows.
+	parent.Subcommands = []string{"migrate task-preamble"}
+
+	got := subcommandOmissions(reg)
+	missing, ok := got["migrate"]
+	if !ok {
+		t.Fatalf("the completeness check did not notice a parent short by one child; it reports %v", got)
+	}
+	if len(missing) != 1 || missing[0] != "migrate task-status" {
+		t.Errorf("omissions = %v, want exactly [migrate task-status]", missing)
+	}
+}
+
+// registeredCommand returns a command AS THE REGISTRY SEES IT.
+//
+// 🔴 Command constructors no longer declare Subcommands — the registry derives it
+// at registration (see cli.Registry.linkSubcommands). A test that calls a
+// constructor directly and reads that field is reading a command that has never
+// been registered, so the field is empty and the assertion is meaningless. Ask
+// the registry instead.
+func registeredCommand(t *testing.T, name string) *cli.Command {
+	t.Helper()
+	reg, _, _ := testRegistry()
+	cmd, ok := reg.Lookup(name)
+	if !ok {
+		t.Fatalf("command %q is not registered", name)
+	}
+	return cmd
+}
+
+// registeredChildren returns the two-word commands registered under parent, in
+// registration order — the expectation DERIVED rather than restated.
+func registeredChildren(t *testing.T, parent string) []string {
+	t.Helper()
+	reg, _, _ := testRegistry()
+	var kids []string
+	reg.Each(func(c *cli.Command) {
+		if p, _, ok := strings.Cut(c.Name, " "); ok && p == parent {
+			kids = append(kids, c.Name)
+		}
+	})
+	return kids
+}

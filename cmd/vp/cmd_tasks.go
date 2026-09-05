@@ -35,7 +35,6 @@ func cmdTasks() *cli.Command {
 			"always appears above the task it blocks. An epic is any task something names as its " +
 			"parent. Iceboxed tasks are hidden by default; the count of what was hidden is always " +
 			"shown.",
-		Subcommands:    []string{"tasks epics", "tasks edit"},
 		BareInvocation: true,
 		Flags:          tasksFlags,
 		Examples: []cli.Example{

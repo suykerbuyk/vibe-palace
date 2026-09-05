@@ -34,11 +34,6 @@ func cmdVault() *cli.Command {
 		Name:        "vault",
 		Synopsis:    "vp vault <command> [flags]",
 		Description: "Manage the vault git repository. The vault stores all palace data in a git-tracked directory for versioning and multi-machine sync.",
-		Subcommands: []string{
-			"vault pull", "vault push", "vault sync", "vault commit", "vault tidy",
-			"vault status", "vault read", "vault write", "vault edit", "vault delete",
-			"vault move", "vault exists", "vault sha256",
-		},
 	}
 }
 

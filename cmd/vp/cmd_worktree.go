@@ -34,7 +34,6 @@ func cmdWorktree() *cli.Command {
 			"multiple plans proceed without contending for the main checkout; the human then " +
 			"fast-forward-merges each finished branch to main and coordinates the ordering. These " +
 			"commands never merge and never touch main.",
-		Subcommands: []string{"worktree create", "worktree remove", "worktree list"},
 	}
 }
 

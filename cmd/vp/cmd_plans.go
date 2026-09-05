@@ -23,7 +23,6 @@ func cmdPlans() *cli.Command {
 		Name:        "plans",
 		Synopsis:    "vp plans <command> [flags]",
 		Description: "Read-only reporting over Claude Code's flat ~/.claude/plans directory.",
-		Subcommands: []string{"plans scan"},
 	}
 }
 

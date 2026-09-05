@@ -43,7 +43,6 @@ func cmdCommands() *cli.Command {
 		Name:        "commands",
 		Synopsis:    "vp commands <command> [flags]",
 		Description: "List the commands available for this project and upgrade vault-level copies against embedded defaults.",
-		Subcommands: []string{"commands list", "commands upgrade"},
 	}
 }
 

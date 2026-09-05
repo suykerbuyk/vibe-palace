@@ -139,7 +139,7 @@ func TestDefaultDBPathHonoredWhenSourceEmpty(t *testing.T) {
 }
 
 func TestCmdArchiveParentListsThreads(t *testing.T) {
-	parent := cmdArchive()
+	parent := registeredCommand(t, "archive")
 	found := false
 	for _, s := range parent.Subcommands {
 		if s == "archive threads" {

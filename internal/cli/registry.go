@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -54,10 +55,72 @@ func (r *Registry) runCmd(cmd *Command, args []string) int {
 	return cmd.Run(args)
 }
 
-// Register adds a command to the registry.
+// Register adds a command to the registry and maintains the parent/child link
+// that Command.Subcommands expresses.
 func (r *Registry) Register(cmd *Command) {
 	r.commands[cmd.Name] = cmd
 	r.order = append(r.order, cmd.Name)
+	r.linkSubcommands(cmd)
+}
+
+// linkSubcommands makes Command.Subcommands a DERIVED view of what is registered
+// rather than a hand-maintained copy of it.
+//
+// # Why the field is populated and not replaced by an accessor
+//
+// 🔴 Subcommands IS LOAD-BEARING FOR DISPATCH, NOT ONLY FOR HELP.
+// dispatchCommand branches on len(cmd.Subcommands) == 0 to decide leaf-versus-
+// parent, and BareInvocation is documented as having no effect when it is empty.
+// So the registry fills the field in and every existing reader — dispatch, help,
+// the man-page generator, the registry invariant tests — keeps working unchanged.
+// Swapping it for a Children() accessor would change dispatch, which is a
+// different and much larger change than deleting fifteen literals.
+//
+// # Why this runs inside Register and not in a finalize pass
+//
+// A finalize pass would be a call site, and a call site can be forgotten. The
+// cost of forgetting it is not a missing help entry: with Subcommands empty a
+// parent looks like a LEAF, so dispatch calls Run — and 12 of the 15 parents
+// have a nil Run. Measured: `vp migrate` with an empty Subcommands panics with a
+// nil pointer dereference. Doing the work here means there is no step to omit.
+//
+// # Why it is order-independent rather than relying on registration order
+//
+// Registration order happens to put every parent before its children today
+// (measured: 0 of 51 children registered first), so a one-directional append
+// would work. It is not pinned anywhere, though, and a future reordering of
+// registerAll would silently drop a child — reintroducing the exact defect this
+// replaces, with no literal left for a reader to notice was short. So both
+// directions are handled: a child joins an already-registered parent, and a
+// parent adopts children registered before it. The invariant is removed rather
+// than asserted, and TestRegisterIsOrderIndependent pins that.
+//
+// Entries are appended in REGISTRATION order, which reproduces all fifteen
+// hand-written literals byte for byte (measured 15/15) — so this introduces no
+// ordering decision and changes no help output. Appending is additive and never
+// clears what a caller supplied: an out-of-tree caller that still declares a
+// literal keeps it, and a duplicate is not added.
+func (r *Registry) linkSubcommands(cmd *Command) {
+	if parent, _, ok := strings.Cut(cmd.Name, " "); ok {
+		if p, registered := r.commands[parent]; registered {
+			p.Subcommands = appendUnique(p.Subcommands, cmd.Name)
+		}
+		return
+	}
+	for _, name := range r.order {
+		if parent, _, ok := strings.Cut(name, " "); ok && parent == cmd.Name {
+			cmd.Subcommands = appendUnique(cmd.Subcommands, name)
+		}
+	}
+}
+
+// appendUnique appends name unless it is already present, so re-registering a
+// command cannot double-list it under its parent.
+func appendUnique(list []string, name string) []string {
+	if slices.Contains(list, name) {
+		return list
+	}
+	return append(list, name)
 }
 
 // Lookup finds a command by name.

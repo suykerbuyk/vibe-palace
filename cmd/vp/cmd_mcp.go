@@ -26,7 +26,6 @@ func cmdMCP() *cli.Command {
 			{Cmd: "vp mcp install --grok", Comment: "Register vibe-palace with Grok Build"},
 			{Cmd: "vp mcp install --zed", Comment: "Register vibe-palace with Zed"},
 		},
-		Subcommands: []string{"mcp serve", "mcp install", "mcp uninstall"},
 		// vp mcp (bare) starts the stdio server; install/uninstall are
 		// subcommands. BareInvocation routes the bare form back to Run while
 		// still erroring on unknown subcommand tokens.

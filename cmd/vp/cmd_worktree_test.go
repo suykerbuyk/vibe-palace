@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
@@ -85,12 +86,25 @@ func TestCmdWorktreeRemoveArgError(t *testing.T) {
 	}
 }
 
+// TestCmdWorktreeParentHasSubcommands asserts the parent lists exactly the
+// children registered under it.
+//
+// It used to assert a hardcoded 3, which is the stored-count antipattern one
+// layer up: it would have passed unchanged if a wrong child were swapped in, and
+// it had to be edited whenever a real child was added. The expectation is now
+// derived from the registry, which is also where the field itself comes from.
 func TestCmdWorktreeParentHasSubcommands(t *testing.T) {
-	c := cmdWorktree()
-	if c.Run != nil {
+	if cmdWorktree().Run != nil {
 		t.Error("parent worktree command should have no Run")
 	}
-	if len(c.Subcommands) != 3 {
-		t.Errorf("subcommands = %d, want 3", len(c.Subcommands))
+	c := registeredCommand(t, "worktree")
+	want := registeredChildren(t, "worktree")
+	if !slices.Equal(c.Subcommands, want) {
+		t.Errorf("Subcommands = %v, want %v", c.Subcommands, want)
+	}
+	for _, name := range []string{"worktree create", "worktree remove", "worktree list"} {
+		if !slices.Contains(c.Subcommands, name) {
+			t.Errorf("worktree does not list %q", name)
+		}
 	}
 }

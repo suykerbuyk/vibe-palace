@@ -23,7 +23,6 @@ func cmdDiscover() *cli.Command {
 		Name:        "discover",
 		Synopsis:    "vp discover <command> [flags]",
 		Description: "LLM-assisted keyword discovery for room classification.",
-		Subcommands: []string{"discover rooms"},
 	}
 }
 
