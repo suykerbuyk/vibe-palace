@@ -758,11 +758,18 @@ func TestMigrateTaskHeaderBannerNamesTheCommitStepAndNotTidy(t *testing.T) {
 			t.Errorf("the banner omits %q, so the printed sequence is not the runnable one:\n%s", want, got)
 		}
 	}
-	// The whole-tree caveat: step 1 commits only this run's writes, and step 2
-	// gates on the entire vault.
-	if !strings.Contains(got, "WHOLE vault tree") {
-		t.Errorf("the banner does not warn that step 2 needs the whole tree clean, so an operator "+
-			"with unrelated dirt will see exit 2 and blame this command:\n%s", got)
+	// 🔴 THIS ASSERTION WAS INVERTED ON 2026-09-05 AND THE INVERSION IS THE POINT.
+	// It used to require the banner warn that step 2 gated on the WHOLE vault tree.
+	// `task-status` now checks only the file it is about to rewrite
+	// (`migration-clean-tree-gate-is-repo-wide-not-write-scoped`), so step 1 — which
+	// commits exactly what this run wrote — is sufficient, and the old caveat would
+	// send an operator to stash work that no longer blocks anything.
+	if !strings.Contains(got, "Step 1 commits exactly what this run wrote") {
+		t.Errorf("the banner does not tell the operator step 1 is sufficient for step 2:\n%s", got)
+	}
+	if strings.Contains(got, "WHOLE vault tree") {
+		t.Errorf("the banner still claims step 2 needs the whole tree clean; that gate was narrowed "+
+			"to the write set and the claim now sends operators to stash for nothing:\n%s", got)
 	}
 	if strings.Contains(got, "vault tidy") {
 		t.Errorf("the banner names `vault tidy` as the commit step; tidy classifies task files as "+

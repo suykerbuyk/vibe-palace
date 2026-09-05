@@ -511,6 +511,30 @@ func HasUncommittedChanges(vaultPath string, relPaths ...string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
+// GitPathIsTracked reports whether the vault-relative path has an entry in the
+// index (`git ls-files --error-unmatch -- <path>`). Returns false (not an error)
+// when vaultPath is not a git repo, matching HasUncommittedChanges' shape.
+//
+// 🔴 IT EXISTS BECAUSE `git checkout -- a b c` IS ALL-OR-NOTHING OVER ITS
+// PATHSPECS. One path git has never seen makes the whole command a pathspec error
+// that restores NOTHING, while an operator who ran it reasonably believes the undo
+// happened. Any caller printing a rollback command has to filter its path list
+// through this first; "the file is on disk" is not the predicate, because an
+// untracked file is on disk and still has no committed state to return to.
+func GitPathIsTracked(vaultPath, relPath string) (bool, error) {
+	if _, err := gitCmd(vaultPath, 5*time.Second, "rev-parse", "--is-inside-work-tree"); err != nil {
+		return false, nil
+	}
+	if _, err := gitCmd(vaultPath, 10*time.Second, "ls-files", "--error-unmatch", "--", relPath); err != nil {
+		// --error-unmatch exits non-zero for an untracked path. That is the
+		// ANSWER, not a failure, and it is indistinguishable here from a real
+		// git fault — which is why the false is returned plainly rather than
+		// wrapped as an error a caller would have to decide how to treat.
+		return false, nil
+	}
+	return true, nil
+}
+
 // filterStageablePaths partitions paths into those safe to `git add` (keep) and
 // those that would make `git add -- <path>` fatal because they match nothing in
 // BOTH the worktree and the index (skipped).

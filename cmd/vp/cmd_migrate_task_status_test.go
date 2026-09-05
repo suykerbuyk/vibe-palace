@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -282,17 +283,182 @@ func TestMigrateTaskStatusExitsNonZeroWhenEveryWriteFailed(t *testing.T) {
 	}
 }
 
-// TestMigrateTaskStatusApplyRefusesDirtyVault matches the sibling's guard: under
-// --apply the tree must be clean so `git checkout .` is a guaranteed rollback.
-func TestMigrateTaskStatusApplyRefusesDirtyVault(t *testing.T) {
+// TestMigrateTaskStatusApplyIgnoresAnotherProjectsDirt is THE discriminating test,
+// and it is the shape that actually fired on 2026-09-05.
+//
+// The old precondition was `GitStatusClean` over the whole vault, and a vault holds
+// every project. So a vibe-palace migration was refused because a dotfiles task
+// file was open in another session — dirt in a directory this command never reads
+// and never writes. Neither session was doing anything wrong and no discipline
+// inside the migrating project could have prevented it.
+//
+// 🔴 THE DIRT MUST LIVE IN A DIFFERENT PROJECT. A fixture that dirtied this
+// command's OWN target directory would go green under the old whole-tree gate too
+// (by refusing) and under the new per-file check (by skipping), so it discriminates
+// nothing. The other project is what makes this test able to fail.
+func TestMigrateTaskStatusApplyIgnoresAnotherProjectsDirt(t *testing.T) {
+	root := tsVault(t)
+	target := tsWrite(t, root, "Projects/proj/tasks/done/stale.md", tsHeader+"\n## Context\n\nBody.\n")
+	tsWrite(t, root, "Projects/other/tasks/in-flight.md", tsHeader+"\n## Context\n\nCommitted.\n")
+	tsGitInit(t, root)
+
+	// Another project, another session, actively being written.
+	tsWrite(t, root, "Projects/other/tasks/in-flight.md", tsHeader+"\n## Context\n\nMid-edit.\n")
+
+	var out bytes.Buffer
+	sum, err := runTaskStatusMigration(root, "proj", true, &out)
+	if err != nil {
+		t.Fatalf("another project's dirt must not refuse the run: %v\n%s", err, out.String())
+	}
+	if sum.Applied != 1 || sum.Dirty != 0 || sum.Failed != 0 {
+		t.Fatalf("Applied = %d, Dirty = %d, Failed = %d, want 1/0/0; out:\n%s",
+			sum.Applied, sum.Dirty, sum.Failed, out.String())
+	}
+	if _, v, _ := findStatusLineOutsideFences(tsRead(t, target)); v != "retired" {
+		t.Errorf("target status = %q, want \"retired\"", v)
+	}
+	// And the other session's work is exactly as it left it.
+	if got := tsRead(t, filepath.Join(root, "Projects", "other", "tasks", "in-flight.md")); !strings.Contains(got, "Mid-edit.") {
+		t.Errorf("the other project's in-flight file was disturbed:\n%s", got)
+	}
+}
+
+// TestMigrateTaskStatusSkipsAFileWithUncommittedChanges is the half of the old gate
+// that SURVIVED, narrowed to the path it is actually about.
+//
+// This repair is lossy per file: the value it overwrites exists nowhere in the file
+// afterwards and git history is its only copy. So overwriting a file that carries
+// uncommitted operator edits destroys work no `git checkout` can separate out. The
+// file is skipped and named; every other file in the run is still repaired.
+func TestMigrateTaskStatusSkipsAFileWithUncommittedChanges(t *testing.T) {
+	root := tsVault(t)
+	dirty := tsWrite(t, root, "Projects/proj/tasks/done/dirty.md", tsHeader+"\n## Context\n\nBody.\n")
+	clean := tsWrite(t, root, "Projects/proj/tasks/done/clean.md", tsHeader+"\n## Context\n\nBody.\n")
+	tsGitInit(t, root)
+
+	edited := tsHeader + "\n## Context\n\nOperator edit in flight.\n"
+	tsWrite(t, root, "Projects/proj/tasks/done/dirty.md", edited)
+
+	var out bytes.Buffer
+	sum, err := runTaskStatusMigration(root, "proj", true, &out)
+	if err != nil {
+		t.Fatalf("a dirty FILE is a skip, not a run failure: %v\n%s", err, out.String())
+	}
+	if sum.Dirty != 1 || sum.Applied != 1 {
+		t.Fatalf("Dirty = %d, Applied = %d, want 1 and 1; out:\n%s", sum.Dirty, sum.Applied, out.String())
+	}
+	// 🔴 A dirty skip is NOT a Failed. The two have opposite remediations — a
+	// refused shadow needs a human, a dirty file heals on the operator's next
+	// commit — and counting them together is how a report stops saying what to do.
+	if sum.Failed != 0 {
+		t.Errorf("Failed = %d, want 0: a documented, self-healing skip is not a failure", sum.Failed)
+	}
+	// The skipped file is byte-identical to what the operator left.
+	if got := tsRead(t, dirty); got != edited {
+		t.Errorf("the skipped file was rewritten; the operator's edit is gone:\n%s", got)
+	}
+	if _, v, _ := findStatusLineOutsideFences(tsRead(t, clean)); v != "retired" {
+		t.Errorf("clean.md status = %q, want \"retired\": one dirty file must not stop the run", v)
+	}
+	// The report has to NAME it, or the operator cannot act on the count.
+	got := out.String()
+	for _, want := range []string{"SKIP", "Projects/proj/tasks/done/dirty.md", "commit or stash"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the report omits %q, so the skip is a number with no remedy:\n%s", want, got)
+		}
+	}
+}
+
+// TestMigrateTaskStatusApplyRefusesANonGitVault pins the floor the narrowing kept.
+// Without git there is no copy of the prior status ANYWHERE, so the recoverability
+// argument has nothing to stand on and --apply refuses outright.
+func TestMigrateTaskStatusApplyRefusesANonGitVault(t *testing.T) {
 	root := tsVault(t)
 	tsWrite(t, root, "Projects/proj/tasks/done/stale.md", tsHeader+"\n## Context\n\nBody.\n")
-	tsGitInit(t, root)
-	tsWrite(t, root, "Projects/proj/tasks/done/stale.md", tsHeader+"\n## Context\n\nDirty.\n")
 
 	var out bytes.Buffer
 	if _, err := runTaskStatusMigration(root, "proj", true, &out); err == nil {
-		t.Fatal("apply on a dirty vault tree must refuse")
+		t.Fatal("--apply on a non-git vault must refuse: git history is the only copy of the value being overwritten")
+	}
+}
+
+// TestMigrateTaskStatusRollbackIsScopedToTheWriteSet is the rollback half of the
+// acceptance, and it drives the PRINTED paths through a real `git checkout --`
+// rather than asserting on the text.
+//
+// 🔴 THE CRITERION IS "DOES NOT REVERT ANYONE ELSE'S WORK", NOT "LEAVES NO
+// HALF-WRITTEN FILE". The second is a property of atomicfile's tmp+fsync+rename: it
+// is true today, was true under the old whole-tree gate, and would be true if the
+// gate were deleted outright — so a test asserting it goes green whatever ships and
+// discriminates nothing. What the narrowing can actually break is the SCOPE of the
+// undo, which is what this measures: the run's own writes come back, and another
+// session's in-flight work is untouched by the rollback the operator was handed.
+func TestMigrateTaskStatusRollbackIsScopedToTheWriteSet(t *testing.T) {
+	root := tsVault(t)
+	target := tsWrite(t, root, "Projects/proj/tasks/done/stale.md", tsHeader+"\n## Context\n\nBody.\n")
+	other := tsWrite(t, root, "Projects/other/tasks/in-flight.md", tsHeader+"\n## Context\n\nCommitted.\n")
+	// A stamp BEHIND the binary, tracked from the start — the live-vault shape.
+	// Behind, so the writer actually rewrites it and the rollback has something to
+	// restore; tracked, so `git checkout --` can accept it as a pathspec.
+	stamp := tsWrite(t, root, "Projects/proj/.surface", "surface = 1\n")
+	// tsGitInit already stages and commits everything, so the tree starts clean.
+	tsGitInit(t, root)
+	stampBefore := tsRead(t, stamp)
+
+	before := tsRead(t, target)
+	inFlight := tsHeader + "\n## Context\n\nAnother session, mid-edit.\n"
+	tsWrite(t, root, "Projects/other/tasks/in-flight.md", inFlight)
+
+	var out bytes.Buffer
+	sum, err := runTaskStatusMigration(root, "proj", true, &out)
+	if err != nil {
+		t.Fatalf("apply run: %v\n%s", err, out.String())
+	}
+	if sum.Applied != 1 {
+		t.Fatalf("Applied = %d, want 1; out:\n%s", sum.Applied, out.String())
+	}
+	if len(sum.AppliedPaths) == 0 {
+		t.Fatal("the run recorded no written paths, so the printed rollback would be empty")
+	}
+	// The stamp the locked writer touched belongs in the list: it is a byte this
+	// run wrote, and an undo that omitted it leaves the stamp advanced.
+	if !slices.Contains(sum.AppliedPaths, "Projects/proj/.surface") {
+		t.Errorf("AppliedPaths = %v, missing the .surface stamp the writer touches", sum.AppliedPaths)
+	}
+	if tsRead(t, target) == before {
+		t.Fatal("the target was not rewritten, so the rollback proves nothing")
+	}
+
+	// Run exactly the undo the banner hands the operator.
+	args := append([]string{"-C", root, "checkout", "--"}, sum.AppliedPaths...)
+	cmd := exec.Command("git", args...)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
+	if co, cerr := cmd.CombinedOutput(); cerr != nil {
+		t.Fatalf("the printed rollback does not run: %v: %s", cerr, co)
+	}
+
+	if got := tsRead(t, target); got != before {
+		t.Errorf("the scoped rollback did not restore the file this run wrote:\n%s", got)
+	}
+	if got := tsRead(t, stamp); got != stampBefore {
+		t.Errorf("the scoped rollback left the .surface stamp advanced:\n got: %q\nwant: %q", got, stampBefore)
+	}
+	// 🔴 The whole point of naming paths instead of `.`: the other session's
+	// in-flight work survives the undo.
+	if got := tsRead(t, other); got != inFlight {
+		t.Errorf("the rollback reverted another session's in-flight work:\n%s", got)
+	}
+
+	// And the banner prints that list, scoped, without offering the whole-tree form.
+	report := out.String()
+	if !strings.Contains(report, "git -C "+root+" checkout --") {
+		t.Errorf("the report does not print a runnable scoped rollback:\n%s", report)
+	}
+	if !strings.Contains(report, "Projects/proj/tasks/done/stale.md") {
+		t.Errorf("the rollback list does not name the file it wrote:\n%s", report)
+	}
+	if strings.Contains(report, "git checkout .\n") {
+		t.Errorf("the report offers a whole-tree checkout, which reverts other sessions' work:\n%s", report)
 	}
 }
 
@@ -423,5 +589,49 @@ func TestMigrateTaskStatusLeavesTheOtherTerminalValueAlone(t *testing.T) {
 	}
 	if got := tsRead(t, p); got != body {
 		t.Errorf("a repair rewrote history the audit does not flag\n got: %q\nwant: %q", got, body)
+	}
+}
+
+// TestMigrateTaskStatusRollbackOmitsAnUntrackedStamp is the pin on the one path
+// that would turn the printed undo into a no-op.
+//
+// 🔴 `git checkout -- a b c` IS ALL-OR-NOTHING OVER ITS PATHSPECS. A project
+// written into for the first time has no committed `.surface`, and naming an
+// untracked path makes the WHOLE command a pathspec error — restoring none of the
+// task files either, while an operator who pasted it believes the run was undone.
+// So the rollback list carries only what git can act on, and the newly created
+// stamp (which has no committed state to return to, and is regenerable) is left
+// out deliberately.
+//
+// This is measured by RUNNING the printed command, not by reading the list: the
+// list looking right is exactly the failure mode.
+func TestMigrateTaskStatusRollbackOmitsAnUntrackedStamp(t *testing.T) {
+	root := tsVault(t)
+	target := tsWrite(t, root, "Projects/proj/tasks/done/stale.md", tsHeader+"\n## Context\n\nBody.\n")
+	// No .surface committed: the migration's own write creates it.
+	tsGitInit(t, root)
+	before := tsRead(t, target)
+
+	var out bytes.Buffer
+	sum, err := runTaskStatusMigration(root, "proj", true, &out)
+	if err != nil {
+		t.Fatalf("apply run: %v\n%s", err, out.String())
+	}
+	if sum.Applied != 1 {
+		t.Fatalf("Applied = %d, want 1; out:\n%s", sum.Applied, out.String())
+	}
+	if slices.Contains(sum.AppliedPaths, "Projects/proj/.surface") {
+		t.Fatalf("AppliedPaths names an untracked stamp (%v); `git checkout --` would fail on it and "+
+			"restore nothing", sum.AppliedPaths)
+	}
+
+	args := append([]string{"-C", root, "checkout", "--"}, sum.AppliedPaths...)
+	cmd := exec.Command("git", args...)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
+	if co, cerr := cmd.CombinedOutput(); cerr != nil {
+		t.Fatalf("the printed rollback does not run: %v: %s", cerr, co)
+	}
+	if got := tsRead(t, target); got != before {
+		t.Errorf("the rollback did not restore the task file:\n%s", got)
 	}
 }

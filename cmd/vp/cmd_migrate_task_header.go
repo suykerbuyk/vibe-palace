@@ -495,13 +495,20 @@ func taskHeaderRelPath(project, sub, name string) string {
 // the .surface stamp the writer touches alongside it.
 //
 // 🔴 THE STAMP IS NOT OPTIONAL AND ITS OMISSION IS INVISIBLE UNTIL THE OPERATOR
-// IS STUCK. Projects/<p>/.surface is TRACKED in the vault, every schema-bearing
-// write restamps it, and the paired command gates on a whole-vault clean tree —
-// so a commit instruction naming only the task files leaves the stamp dirty and
-// `migrate task-status` still exits 2. The first version of this banner did
-// exactly that; the test that drives the PRINTED paths through
-// storage.CommitAndPushPaths is what caught it, and a test that had cleaned the
-// tree with `git add -A` would not have.
+// IS STUCK. Projects/<p>/.surface is TRACKED in the vault and every schema-bearing
+// write restamps it, so a commit instruction naming only the task files leaves the
+// stamp dirty — a run the operator was told was fully committed, and was not. The
+// first version of this banner did exactly that; the test that drives the PRINTED
+// paths through storage.CommitAndPushPaths is what caught it, and a test that had
+// cleaned the tree with `git add -A` would not have.
+//
+// 🔴 THE ORIGINAL REASON WAS SHARPER AND IS NOW FALSE — the conclusion survives it.
+// This used to read "and the paired command gates on a whole-vault clean tree, so
+// `migrate task-status` still exits 2". That gate was narrowed to the write set on
+// 2026-09-05, and task-status no longer looks at the stamp at all. An incomplete
+// commit list is still wrong; it is just no longer wrong by blocking the next
+// command. Do not delete the stamp from this list on the strength of the retracted
+// half.
 //
 // The stamp path comes from surface.StampPath rather than a joined literal, so
 // this does not own a second copy of the stamp filename.
@@ -540,18 +547,19 @@ func taskHeaderPrioritySourceTally(out io.Writer, sum taskHeaderSummary) {
 //
 // 🔴 IT PRINTS THE COMMIT STEP, AND THAT STEP IS NOT OPTIONAL PADDING. The writes
 // this command just made are what dirty the vault, and `vp migrate task-status`
-// gates on a WHOLE-VAULT clean tree (requireCleanVaultTree -> GitStatusClean), so
-// it exits 2 on exactly the state this command guarantees. An earlier version of
-// this banner said "RUN NEXT: vp migrate task-status --apply" and an operator
-// following it literally would see that exit 2 and reasonably read it as the
-// repair having failed.
+// refuses to overwrite a task file carrying uncommitted changes — which is exactly
+// the state this command guarantees for every file it repaired. An earlier version
+// of this banner said "RUN NEXT: vp migrate task-status --apply" and an operator
+// following it literally would have watched the paired repair skip every file it
+// was supposed to fix.
 //
-// The asymmetry is deliberate on both sides and worth naming: THIS command
-// documents why it has no clean-tree precondition (a live agent session
-// re-dirties the vault within seconds), and it now hands off to a sibling that
-// has one. Scoping that sibling's gate to the paths it writes is the real fix and
-// is a filed open item; it is not this change's to make. What this change owes
-// the operator is an instruction that runs.
+// The asymmetry between the two commands is deliberate and worth naming: THIS
+// command has no precondition at all because its repairs are byte-preserving,
+// while `task-status` is lossy per file and so checks each file for uncommitted
+// changes before rewriting it. That sibling's gate USED to be a whole-vault clean
+// tree, which is what made this banner's caveat necessary; it was narrowed to the
+// write set on 2026-09-05 (`migration-clean-tree-gate-is-repo-wide-not-write-scoped`),
+// which is why the caveat below now says the opposite of what it once did.
 //
 // `vp vault tidy` is NOT the commit step and must not be suggested: its sweep
 // rules cover session summaries, transcripts, KG files, drawers, audits and
@@ -602,13 +610,16 @@ func taskHeaderPairingBanner(out io.Writer, apply bool, sum taskHeaderSummary) {
 	}
 	fmt.Fprintln(out, "  2. vp migrate task-status --apply")
 	fmt.Fprintln(out, "  3. vp audit vault          # expect no net new findings")
-	// The honest limit of this instruction. Step 2 gates on the WHOLE vault being
-	// clean, and this command can only name what IT wrote — anything another
-	// session left dirty has to be dealt with too, which is the standing open
-	// item about that precondition being unsatisfiable in a live session.
-	fmt.Fprintln(out, "\nStep 2 requires the WHOLE vault tree to be clean, and step 1 commits only what "+
-		"this run wrote.\nCommit or stash anything else dirty first (vp vault status) or step 2 will "+
-		"exit 2 on someone else's work.")
+	// 🔴 THIS CAVEAT WAS ONCE THE OPPOSITE, AND THE CHANGE IS THE POINT. It used to
+	// warn that step 2 gated on the WHOLE vault being clean, so an operator with
+	// unrelated dirt would run step 1, see step 2 exit 2, and reasonably blame this
+	// command. `task-status` now checks each file immediately before rewriting it,
+	// so step 1 — which commits exactly what THIS run wrote — is sufficient on its
+	// own. Keep this text tied to that behaviour: if the sibling's precondition
+	// ever widens again, this instruction stops running.
+	fmt.Fprintln(out, "\nStep 1 commits exactly what this run wrote, which is all step 2 needs: "+
+		"task-status\nchecks only the file it is about to rewrite, so unrelated dirt elsewhere in the "+
+		"vault\n(other projects, other sessions) no longer blocks it.")
 }
 
 // taskHeaderSignOff is one file this command will not write, plus the evidence an
