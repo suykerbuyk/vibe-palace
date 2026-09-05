@@ -55,6 +55,32 @@ const (
 		"Status: Planned, architecture-reviewed.\n\n" +
 		"## Context\n\nBody.\n"
 
+	// thMultiTitleSections — H1 used as ORDINARY SECTION HEADINGS of one
+	// document. The live specimen opens H2 sections well before its first
+	// "rival" H1, and its later H1s read "Open Questions" and "Definition of
+	// done". Demoting them would restructure a document nobody asked to
+	// restructure.
+	thMultiTitleSections = "# ADR-006 umbrella — CLOSED 2026-08-16\n\n" +
+		"**Status:** retired\n**Priority:** high\n\n" +
+		"## The thesis\n\nBody.\n\n" +
+		"# PHASE 2 — DERIVE WHAT IS ACTUALLY DERIVABLE\n\nPhase body.\n\n" +
+		"# Open Questions\n\nQuestions.\n"
+
+	// thMultiTitleBadHeader — 🔴 THE TRAP FIXTURE, modelled on the one live file
+	// the transform cannot fix. Its MODERN header is corrupted independently of
+	// the two titles: free prose sits between its own **Status:** and
+	// **Priority:** lines, so the header block is not contiguous.
+	//
+	// After the transform this file classifies CLEAN and the validator still
+	// REFUSES it. A repair keyed on the classifier writes nothing for it and
+	// says nothing about it — which is why the sign-off section exists.
+	thMultiTitleBadHeader = "# Vault whole-file writes have no lock across RMW\n\n" +
+		"**Status:** retired\n" +
+		"Plan-reviewed 2026-06-06; design decisions below are locked.\n" +
+		"**Priority:** medium\n\n" +
+		"# Vault whole-file writes lack RMW serialization (lost-update hole)\n\n" +
+		"## Problem\n\nBody.\n"
+
 	// thClean — the shape the current writer produces.
 	thClean = "# Ordinary task\n\n" +
 		"**Status:** retired\n" +
@@ -86,6 +112,8 @@ func thSeed(t *testing.T) (root string, paths map[string]string) {
 		"bare-only":    tsWrite(t, root, "Projects/proj/tasks/done/bareonly.md", thBareOnly),
 		"bare-wrapped": tsWrite(t, root, "Projects/proj/tasks/done/barewrapped.md", thBareOnlyWrapped),
 		"multi-title":  tsWrite(t, root, "Projects/proj/tasks/done/multi.md", thMultiTitle),
+		"mt-sections":  tsWrite(t, root, "Projects/proj/tasks/done/mtsections.md", thMultiTitleSections),
+		"mt-badheader": tsWrite(t, root, "Projects/proj/tasks/done/mtbadheader.md", thMultiTitleBadHeader),
 		"clean":        tsWrite(t, root, "Projects/proj/tasks/done/clean.md", thClean),
 		"inverted":     tsWrite(t, root, "Projects/proj/tasks/done/inverted.md", thInverted),
 	}
@@ -112,13 +140,20 @@ func TestMigrateTaskHeaderRepairsTheWritableClassesAndLeavesTheRestAlone(t *test
 	// Derive the expectation from the classifier's own report rather than
 	// hardcoding a population: every file it classified as a WRITABLE class is a
 	// file it must have rewritten, and nothing else may be.
-	if sum.Applied != sum.Both+sum.BareOnly {
-		t.Errorf("Applied = %d but Both = %d and BareOnly = %d; every file in a writable class "+
-			"must be repaired and only those", sum.Applied, sum.Both, sum.BareOnly)
+	// Derived from the classifier's own report and the sign-off list: every file
+	// in a writable class is repaired EXCEPT the ones handed to a human.
+	wantApplied := sum.Both + sum.BareOnly + sum.MultiTitle - len(sum.SignOff)
+	if sum.Applied != wantApplied {
+		t.Errorf("Applied = %d, want %d (Both=%d BareOnly=%d MultiTitle=%d SignOff=%d)",
+			sum.Applied, wantApplied, sum.Both, sum.BareOnly, sum.MultiTitle, len(sum.SignOff))
 	}
-	if sum.Both == 0 || sum.BareOnly == 0 {
-		t.Fatalf("the fixture seeded both writable classes but the classifier found Both=%d BareOnly=%d",
-			sum.Both, sum.BareOnly)
+	if sum.Both == 0 || sum.BareOnly == 0 || sum.AppliedMultiTitle == 0 {
+		t.Fatalf("the fixture seeded all three writable classes but got Both=%d BareOnly=%d AppliedMultiTitle=%d",
+			sum.Both, sum.BareOnly, sum.AppliedMultiTitle)
+	}
+	if len(sum.SignOff) != 2 {
+		t.Fatalf("SignOff = %d, want 2 (H1-as-sections and the corrupted modern header); out:\n%s",
+			len(sum.SignOff), out.String())
 	}
 	if sum.AppliedBareOnly != sum.BareOnly {
 		t.Errorf("AppliedBareOnly = %d, want %d — the paired-command notice is keyed on this count",
@@ -164,9 +199,21 @@ func TestMigrateTaskHeaderRepairsTheWritableClassesAndLeavesTheRestAlone(t *test
 		t.Errorf("the wrapped continuation was dropped:\n%s", wrapped)
 	}
 
-	for _, class := range []string{"multi-title", "clean", "inverted"} {
-		want := map[string]string{"multi-title": thMultiTitle,
-			"clean": thClean, "inverted": thInverted}[class]
+	// --- the multi-title demotion --------------------------------------------
+	multi := tsRead(t, paths["multi-title"])
+	if !strings.Contains(multi, "## Plan: Salvage HNSW Recall Harness") {
+		t.Errorf("the second title was not demoted:\n%s", multi)
+	}
+	if strings.Contains(multi, "\n# ") {
+		t.Errorf("the file still carries a second H1:\n%s", multi)
+	}
+	if c := storage.ScanLegacyHeader(multi).Class; c != storage.LegacyHeaderClean {
+		t.Errorf("demoted file still classifies as %s, want %s", c, storage.LegacyHeaderClean)
+	}
+
+	for _, class := range []string{"mt-sections", "mt-badheader", "clean", "inverted"} {
+		want := map[string]string{"mt-sections": thMultiTitleSections,
+			"mt-badheader": thMultiTitleBadHeader, "clean": thClean, "inverted": thInverted}[class]
 		if got := tsRead(t, paths[class]); got != want {
 			t.Errorf("%s file was rewritten — this command must never write it\n got: %q", class, got)
 		}
@@ -177,6 +224,10 @@ func TestMigrateTaskHeaderRepairsTheWritableClassesAndLeavesTheRestAlone(t *test
 	}
 	if !strings.Contains(out.String(), "separate task") {
 		t.Errorf("the report must say why a skipped class is skipped; got:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "SIGN-OFF REQUIRED") {
+		t.Errorf("the report has no sign-off section, so the files it refused are unnamed; got:\n%s",
+			out.String())
 	}
 	// The pairing notice is the operator's only warning that this run created
 	// audit findings on purpose.
@@ -766,5 +817,200 @@ func TestMigrateTaskHeaderReportsThePrioritySourceTally(t *testing.T) {
 	if total != sum.BareOnly {
 		t.Errorf("priority sources sum to %d but BareOnly = %d — a file was constructed without "+
 			"its source being counted", total, sum.BareOnly)
+	}
+}
+
+// TestMigrateTaskHeaderSignsOffTheFileTheClassifierWouldHide is the operator-facing
+// half of the trap, and the reason the write decision is keyed on the validator.
+//
+// 🔴 After the multi-title transform, ScanLegacyHeader reports `clean` for every
+// file it touched — INCLUDING the one whose modern header is corrupted
+// independently of its titles. A repair keyed on the classifier would write what
+// it could, report "0 multi-title remaining", and leave behind a file no tool can
+// write and no report mentions. This asserts the opposite: unwritten, named, and
+// named with enough detail to act on.
+func TestMigrateTaskHeaderSignsOffTheFileTheClassifierWouldHide(t *testing.T) {
+	root := setupTestVaultEnv(t)
+	trap := tsWrite(t, root, "Projects/proj/tasks/done/mtbadheader.md", thMultiTitleBadHeader)
+	sections := tsWrite(t, root, "Projects/proj/tasks/done/mtsections.md", thMultiTitleSections)
+	tsWrite(t, root, "Projects/proj/tasks/done/multi.md", thMultiTitle)
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderMigration(root, "proj", true, &out)
+	if err != nil {
+		t.Fatalf("runTaskHeaderMigration: %v", err)
+	}
+	got := out.String()
+
+	// Neither sign-off file was written.
+	if v := tsRead(t, trap); v != thMultiTitleBadHeader {
+		t.Errorf("the corrupted-header file was rewritten:\n%s", v)
+	}
+	if v := tsRead(t, sections); v != thMultiTitleSections {
+		t.Errorf("the H1-as-sections file was rewritten:\n%s", v)
+	}
+	// A refusal is not a failure: these are declined by design, and counting them
+	// as failures would make every run exit non-zero forever.
+	if sum.Failed != 0 {
+		t.Errorf("Failed = %d, want 0 — a file handed to a human is not a failed attempt", sum.Failed)
+	}
+	if len(sum.SignOff) != 2 {
+		t.Fatalf("SignOff = %d, want 2; out:\n%s", len(sum.SignOff), got)
+	}
+
+	// The trap, demonstrated: the classifier would have called the transformed
+	// file clean, so nothing keyed on it would ever mention this file.
+	demoted := storage.ScanLegacyHeader(thMultiTitleBadHeader)
+	if demoted.Class != storage.LegacyHeaderMultiTitle {
+		t.Fatalf("fixture classifies as %s", demoted.Class)
+	}
+
+	// The report must carry enough to decide WITHOUT opening the file.
+	for _, want := range []string{
+		"SIGN-OFF REQUIRED",
+		"proj/done/mtbadheader",
+		"contiguous header block", // the validator's own reason
+		"proj/done/mtsections",
+		"already opened this document's body", // the structural reason
+		"H1  line",                            // every title, with its line number
+		"fld line",                            // every field line, with its line number
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the sign-off section omits %q, so the operator cannot judge from the report "+
+				"alone:\n%s", want, got)
+		}
+	}
+	// The one repairable file was still written — a sign-off row must not stop
+	// the rest of the run.
+	if sum.AppliedMultiTitle != 1 {
+		t.Errorf("AppliedMultiTitle = %d, want 1; a refused file must not block its siblings",
+			sum.AppliedMultiTitle)
+	}
+}
+
+// TestMigrateTaskHeaderMultiTitleAloneAsksOnlyForACommit pins the split between
+// the two writable classes' consequences.
+//
+// A constructed bare-only header makes files newly visible to
+// task-status-directory and OBLIGES the paired migration. A demoted title changes
+// no reader's answer and obliges nothing beyond committing. Printing the
+// task-status step after a multi-title-only run would send an operator to a
+// command with nothing to do.
+func TestMigrateTaskHeaderMultiTitleAloneAsksOnlyForACommit(t *testing.T) {
+	root := setupTestVaultEnv(t)
+	tsWrite(t, root, "Projects/proj/tasks/done/multi.md", thMultiTitle)
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderMigration(root, "proj", true, &out)
+	if err != nil {
+		t.Fatalf("runTaskHeaderMigration: %v", err)
+	}
+	if sum.AppliedMultiTitle != 1 || sum.AppliedBareOnly != 0 {
+		t.Fatalf("AppliedMultiTitle=%d AppliedBareOnly=%d, want 1/0", sum.AppliedMultiTitle, sum.AppliedBareOnly)
+	}
+	got := out.String()
+	if !strings.Contains(got, "vp vault commit") {
+		t.Errorf("a run that rewrote files did not ask for a commit:\n%s", got)
+	}
+	if strings.Contains(got, "vp migrate task-status --apply") {
+		t.Errorf("a multi-title-only run asked for the paired migration, which has nothing to do: "+
+			"a demoted title manufactures no task-status-directory finding:\n%s", got)
+	}
+}
+
+// TestMigrateTaskHeaderMultiTitleMakesNoNewAuditFinding asserts the CONSEQUENCE
+// rather than the mechanism, the way the inverted-class test does.
+//
+// The transform leaves the modern **Status:** first in the file, so scanTaskStatus
+// returns the same value it did before and the archived files stay terminal. This
+// is the sharp contrast with the bare-only repair, which manufactures one finding
+// per file on purpose.
+func TestMigrateTaskHeaderMultiTitleMakesNoNewAuditFinding(t *testing.T) {
+	root := setupTestVaultEnv(t)
+	tsWrite(t, root, "Projects/proj/tasks/done/multi.md", thMultiTitle)
+	tsWrite(t, root, "Projects/proj/tasks/done/mtbadheader.md", thMultiTitleBadHeader)
+
+	vault := storage.NewVault(root)
+	count := func(label string) int {
+		r, err := vaultaudit.Run(vault)
+		if err != nil {
+			t.Fatalf("audit %s: %v", label, err)
+		}
+		n := 0
+		for _, f := range r.Findings() {
+			if f.Dimension == vaultaudit.DimTaskStatusDirectory {
+				n++
+			}
+		}
+		return n
+	}
+	before := count("before")
+
+	var out bytes.Buffer
+	if _, err := runTaskHeaderMigration(root, "proj", true, &out); err != nil {
+		t.Fatalf("runTaskHeaderMigration: %v", err)
+	}
+	if got := count("after"); got != before {
+		t.Errorf("task-status-directory findings went %d -> %d; the multi-title transform must leave "+
+			"the modern Status first and so change no reader's answer", before, got)
+	}
+}
+
+// TestMigrateTaskHeaderSignOffStatesTheReasonItActuallyHas guards the report
+// against asserting the design's central claim about a row where it does not
+// hold.
+//
+// 🔴 The claim is "the write decision is the VALIDATOR's verdict, per file". It is
+// true of a file whose transformed bytes the validator refused. It is FALSE of a
+// file refused on SHAPE: that refusal happens before the transform runs, so the
+// validator never saw any bytes and there was nothing for it to refuse. A blanket
+// "each of these is reported because the validator refuses it" tells an operator
+// something untrue about half the section.
+func TestMigrateTaskHeaderSignOffStatesTheReasonItActuallyHas(t *testing.T) {
+	root := setupTestVaultEnv(t)
+	tsWrite(t, root, "Projects/proj/tasks/done/mtsections.md", thMultiTitleSections)
+	tsWrite(t, root, "Projects/proj/tasks/done/mtbadheader.md", thMultiTitleBadHeader)
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderMigration(root, "proj", true, &out)
+	if err != nil {
+		t.Fatalf("runTaskHeaderMigration: %v", err)
+	}
+	if len(sum.SignOff) != 2 {
+		t.Fatalf("SignOff = %d, want 2; out:\n%s", len(sum.SignOff), out.String())
+	}
+	got := out.String()
+
+	// The blanket claim must be gone.
+	if strings.Contains(got, "Each is reported because the VALIDATOR") {
+		t.Errorf("the section still asserts the validator refused every row, which is false for a "+
+			"shape refusal:\n%s", got)
+	}
+	// Both reasons must be named, and distinguished.
+	for _, want := range []string{
+		"shape",
+		"validator",
+		"before any transform ran",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the section does not explain %q as a distinct reason:\n%s", want, got)
+		}
+	}
+	// And each row must say which one applies to IT.
+	kinds := map[string]storage.LegacyRefusalKind{}
+	for _, so := range sum.SignOff {
+		kinds[so.Where] = so.Kind
+	}
+	if kinds["proj/done/mtsections"] != storage.LegacyRefusedShape {
+		t.Errorf("the H1-as-sections row is kind %v, want shape", kinds["proj/done/mtsections"])
+	}
+	if kinds["proj/done/mtbadheader"] != storage.LegacyRefusedValidator {
+		t.Errorf("the corrupted-header row is kind %v, want validator", kinds["proj/done/mtbadheader"])
+	}
+	for _, so := range sum.SignOff {
+		marker := "refused on " + so.Kind.String()
+		if !strings.Contains(got, marker) {
+			t.Errorf("row %q does not print its own reason (%q):\n%s", so.Where, marker, got)
+		}
 	}
 }

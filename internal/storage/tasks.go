@@ -2088,3 +2088,309 @@ func frontmatterBlock(content string) (string, bool) {
 	}
 	return front[:end], true
 }
+
+// ---------------------------------------------------------------------------
+// The multi-title repair: demote the second title, relabel the fields under it.
+
+const (
+	// legacyStatusRelabel and legacyPriorityRelabel are what a demoted legacy
+	// header block's own field lines become.
+	//
+	// 🔴 THIS LABEL IS INVENTED, AND IT IS INVENTED ONCE. Fencing the legacy
+	// block, blockquoting it, or stripping its "**" markers would all satisfy the
+	// validator equally well — the choice between them is a ONE-TIME CONVENTION,
+	// not a per-file judgment, which is the distinction that decides whether this
+	// class is mechanical at all. The rationale, so the next reader does not
+	// re-litigate it:
+	//
+	//   - It preserves the value VERBATIM and legibly. Fencing would turn the
+	//     whole legacy block into a code block and change how its prose renders;
+	//     blockquoting changes rendering too, on text nobody asked to restyle.
+	//   - It stays greppable as a field-that-was. Stripping the "**" would leave a
+	//     bare "Status:" line indistinguishable from prose to a human — and one
+	//     that would classify as a LEGACY header line again the moment anything
+	//     promoted the demoted heading back to an H1.
+	//   - It cannot be mistaken for a field by any reader here. headerFieldValue
+	//     is prefix-matched on "**Status:**" and legacyStatusValue on "Status:",
+	//     anchored after trimming; neither matches "**Legacy status:**".
+	legacyStatusRelabel   = "**Legacy status:**"
+	legacyPriorityRelabel = "**Legacy priority:**"
+)
+
+// LegacyRefusalKind names WHY a repair declined a file. The two reasons are not
+// interchangeable and an operator-facing report must not blur them: a SHAPE
+// refusal happens BEFORE the transform runs, so the validator never sees any
+// bytes and there is nothing for it to have refused.
+type LegacyRefusalKind int
+
+const (
+	// LegacyRefusedNone — the repair succeeded.
+	LegacyRefusedNone LegacyRefusalKind = iota
+	// LegacyRefusedShape — the file is not the shape this repair serves. Decided
+	// from the file's own structure, before any transform is attempted.
+	LegacyRefusedShape
+	// LegacyRefusedValidator — the transform ran and validateWholeTaskFile
+	// refused its output, so the defect is not the one being repaired.
+	LegacyRefusedValidator
+)
+
+// String renders the refusal for operator-facing reports.
+func (k LegacyRefusalKind) String() string {
+	switch k {
+	case LegacyRefusedShape:
+		return "shape"
+	case LegacyRefusedValidator:
+		return "validator"
+	}
+	return "none"
+}
+
+// LegacyH1 is one unfenced H1 line: where it is and what it says. Reported for a
+// file the repair refuses, so an operator can judge the shape without opening it.
+type LegacyH1 struct {
+	Line int
+	Text string
+}
+
+// LegacyMultiTitleRepair is the outcome of a multi-title repair, carried as a
+// struct so the report can describe both the write it plans AND the file it
+// refuses. Titles and FieldLines are populated even when the repair fails —
+// they are the sign-off detail.
+type LegacyMultiTitleRepair struct {
+	Content string // empty when the repair is refused
+	Titles  []LegacyH1
+	// FieldLines are every unfenced **Status:**/**Priority:** line in the ORIGINAL
+	// file. A refusal is usually about where these sit relative to each other, and
+	// line numbers are what make that judgeable from the report alone.
+	FieldLines         []LegacyH1
+	DemotedTitle       string
+	RelabelledStatus   int
+	RelabelledPriority int
+	// Refusal says which kind of refusal produced the accompanying error, so the
+	// report can state the reason it actually has rather than a blanket claim.
+	Refusal LegacyRefusalKind
+}
+
+// RepairLegacyMultiTitleHeader rewrites a LegacyHeaderMultiTitle file whose shape
+// is a modern header block PREPENDED above one intact legacy document: the second
+// H1 is demoted to an H2, and the legacy field lines beneath it are relabelled.
+//
+// # Why this is mechanical, when the filed plan said it was a judgment call
+//
+// The filed reason for refusing automation was that the two headers disagree and
+// choosing between them is a per-file judgment. The premise is true and the
+// conclusion does not follow, because THIS TRANSFORM DOES NOT CHOOSE. Both values
+// survive verbatim: the modern one stays a field, the legacy one becomes prose
+// under a demoted heading that `amend` can address. Nothing is deleted and no
+// value is preferred.
+//
+// The precedence it encodes is not inferred from shape — it is the status quo,
+// verifiable today. Every reader already returns the MODERN header's values for
+// these files, because parseTaskMeta is first-wins and the modern block is first.
+// The legacy values are invisible to every reader now and stay invisible after.
+// That is the line between this and the BOTH repair iteration 378 corrected: that
+// one CHANGED the value every reader saw, on a premise inferred from shape.
+//
+// # TWO PRECONDITIONS, each with its own reason
+//
+// Both are refusals in the safe direction, and each exists for a different
+// reason, so neither is the other's spare.
+//
+//  1. NOTHING OF THE FIRST DOCUMENT'S BODY MAY PRECEDE THE SECOND TITLE — no
+//     unfenced H2 between them. This is what "PREPENDED" means, spelled as a
+//     predicate. A rival document's title arrives before the first document has
+//     any sections; a SECTION HEADING that happens to be written as an H1
+//     arrives after them. The wedges that do occur between the two titles in the
+//     real corpus are prose, blockquotes and stranded YAML — never a section.
+//
+//  2. EXACTLY TWO UNFENCED H1s. This one is a precondition of the TRANSFORM
+//     rather than of the class: the relabel step is defined as "the fields below
+//     the demoted title", and with a third title it would relabel a third
+//     document's fields too. Nothing measured says that is right, so it is
+//     refused rather than guessed.
+//
+// Neither rule names a file. Both happen to fire on the same single live
+// specimen — one whose demoted headings would read "## Open Questions",
+// "## Definition of done", "## Revised sequencing" — but a rule that named that
+// file would be an exception wearing a rule's clothes, and would not survive the
+// next vault.
+//
+// # 🔴 THE VALIDATOR DECIDES, NEVER THE CLASSIFIER
+//
+// ScanLegacyHeader returns `clean` for every file this transform touches,
+// INCLUDING one whose output validateWholeTaskFile still refuses — the classifier
+// asks "how many titles", and one title is one title whether or not the header
+// block beneath it is well formed. A repair keyed on the classifier going clean
+// would write nothing for that file AND drop it from the only report that names
+// it, leaving a file no tool can write and no tool mentions. So the verdict here
+// is the VALIDATOR's, per file, and a refusal is a reported row rather than a
+// silence.
+func RepairLegacyMultiTitleHeader(content string) (LegacyMultiTitleRepair, error) {
+	var out LegacyMultiTitleRepair
+
+	scan := ScanLegacyHeader(content)
+	if scan.Class != LegacyHeaderMultiTitle {
+		out.Refusal = LegacyRefusedShape
+		return out, fmt.Errorf("legacy multi-title repair handles %s files only, got %s",
+			LegacyHeaderMultiTitle, scan.Class)
+	}
+
+	unfenced := mdfence.OutsideFences(content)
+	firstH2 := 0
+	for _, l := range unfenced {
+		trimmed := strings.TrimSpace(l.Text)
+		switch {
+		case isH1Line(trimmed):
+			out.Titles = append(out.Titles, LegacyH1{Line: l.Num, Text: trimmed})
+		case isH2Line(trimmed):
+			if firstH2 == 0 {
+				firstH2 = l.Num
+			}
+		case isStatusLine(trimmed), isPriorityLine(trimmed):
+			out.FieldLines = append(out.FieldLines, LegacyH1{Line: l.Num, Text: trimmed})
+		}
+	}
+
+	// Order matters: ask whether the file IS this shape before asking whether the
+	// transform can express it. A document using H1 for its sections fails both
+	// tests, and "this is not a prepended header" is the reason that describes it.
+	if len(out.Titles) > 1 && !secondTitleOpensADocument(unfenced, out.Titles[1].Line, firstH2) {
+		out.Refusal = LegacyRefusedShape
+		return out, fmt.Errorf("the H1 at line %d cannot be shown to open a document of its own: it "+
+			"carries no header material before the next heading (no bolded field line, no bare "+
+			"\"Status:\" line), and %s. A task document begins with one or the other, so this H1 may be "+
+			"a SECTION written at the wrong level and demoting it could restructure the document",
+			out.Titles[1].Line, precedingSectionNote(unfenced, out.Titles[1].Line, firstH2))
+	}
+	if len(out.Titles) != 2 {
+		out.Refusal = LegacyRefusedShape
+		return out, fmt.Errorf("legacy multi-title repair handles a modern header prepended above ONE "+
+			"legacy document, which is exactly two titles; this file has %d unfenced H1 lines, and the "+
+			"relabel step is defined relative to ONE demoted title", len(out.Titles))
+	}
+
+	second := out.Titles[1]
+	lines := strings.Split(content, "\n")
+	if second.Line < 1 || second.Line > len(lines) {
+		out.Refusal = LegacyRefusedShape
+		return out, fmt.Errorf("legacy multi-title repair: title line out of range (%d, file has %d lines)",
+			second.Line, len(lines))
+	}
+
+	// Demote by inserting a '#' AT the existing marker rather than at the start of
+	// the line, so an indented H1 (which isH1Line accepts, because it trims) stays
+	// indented instead of becoming "# # Title".
+	lines[second.Line-1] = demoteH1(lines[second.Line-1])
+	out.DemotedTitle = strings.TrimSpace(lines[second.Line-1])
+
+	outsideFences := make(map[int]bool, len(lines))
+	for _, l := range unfenced {
+		outsideFences[l.Num] = true
+	}
+	// Relabel only BELOW the demoted title: everything above it belongs to the
+	// modern header block, whose fields are the ones every reader already returns.
+	for i := second.Line; i < len(lines); i++ {
+		if !outsideFences[i+1] {
+			continue
+		}
+		trimmed := strings.TrimSpace(lines[i])
+		switch {
+		case isStatusLine(trimmed):
+			lines[i] = strings.Replace(lines[i], "**"+fieldStatus+":**", legacyStatusRelabel, 1)
+			out.RelabelledStatus++
+		case isPriorityLine(trimmed):
+			lines[i] = strings.Replace(lines[i], "**"+fieldPriority+":**", legacyPriorityRelabel, 1)
+			out.RelabelledPriority++
+		}
+	}
+
+	repaired := strings.Join(lines, "\n")
+
+	// The oracle, and the trap. A file can reach here classifying `clean` and
+	// still be refused — its modern header may be malformed for reasons that have
+	// nothing to do with a second title.
+	if err := validateWholeTaskFile(repaired); err != nil {
+		out.Refusal = LegacyRefusedValidator
+		return out, fmt.Errorf("demoting the second title leaves a file validateWholeTaskFile still "+
+			"refuses, so the defect is not the two titles: %w", err)
+	}
+	out.Content = repaired
+	return out, nil
+}
+
+// demoteH1 turns an H1 line into an H2 by doubling its leading hash, preserving
+// whatever indentation the line carries.
+func demoteH1(line string) string {
+	at := strings.Index(line, "#")
+	if at < 0 {
+		return line
+	}
+	return line[:at] + "#" + line[at:]
+}
+
+// headingTextAt returns the text of the unfenced line with the given 1-indexed
+// number, for a refusal message that names the heading it is talking about.
+func headingTextAt(unfenced []mdfence.Line, num int) string {
+	for _, l := range unfenced {
+		if l.Num == num {
+			return strings.TrimSpace(l.Text)
+		}
+	}
+	return ""
+}
+
+// secondTitleOpensADocument answers the ONE question the multi-title shape rule
+// asks: can the H1 at titleLine be shown to begin a document of its own, rather
+// than being a section of the document above it written at the wrong level?
+//
+// A task document begins one of two ways, and either is sufficient evidence:
+//
+//	A. IT OWNS HEADER MATERIAL. A bolded "**Field:**" line or a bare legacy
+//	   "Status:" line appears under the title, before the next heading of any
+//	   level. That is what the top of a task file looks like, in both the modern
+//	   and the legacy dialect.
+//	B. NOTHING OF THE DOCUMENT ABOVE PRECEDES IT. The file's FIRST H2 comes after
+//	   this title, so the document above contributed only a header — which is what
+//	   "PREPENDED" means. A file with no H2 at all fails this: it has no section
+//	   anywhere, so this title is not shown to open one either.
+//
+// 🔴 BOTH DISJUNCTS ARE LOAD-BEARING, and the corpus proves each direction rather
+// than the pair agreeing by luck. Measured over the live class of 33: A holds for
+// 30, B for 32, A-or-B for 32, and NEITHER for exactly one — the document that
+// uses H1 for its section headings. A alone wrongly refuses two live files whose
+// legacy half carries no header block at all; B alone wrongly refuses a genuine
+// prepended-over file whose modern half has a section of its own, and lets
+// through a section-headed document that simply has no H2 to give it away.
+//
+// This is ONE question with two positive answers, not two refusal rules stacked.
+// Anything that shows a document starting here is enough; nothing showing it is
+// the refusal.
+func secondTitleOpensADocument(unfenced []mdfence.Line, titleLine, firstH2 int) bool {
+	for _, l := range unfenced {
+		if l.Num <= titleLine {
+			continue
+		}
+		trimmed := strings.TrimSpace(l.Text)
+		if isH1Line(trimmed) || isH2Line(trimmed) {
+			break
+		}
+		if isHeaderFieldLine(trimmed) {
+			return true
+		}
+		if _, ok := legacyStatusValue(trimmed); ok {
+			return true
+		}
+	}
+	return firstH2 != 0 && firstH2 > titleLine
+}
+
+// precedingSectionNote renders the half of a shape refusal that says WHY evidence
+// B is absent, which is different in the two cases and matters to whoever reads
+// the row.
+func precedingSectionNote(unfenced []mdfence.Line, titleLine, firstH2 int) string {
+	if firstH2 == 0 {
+		return "the file carries no \"## \" heading anywhere, so no section begins here either"
+	}
+	return fmt.Sprintf("section heading %q at line %d already opened this document's body",
+		headingTextAt(unfenced, firstH2), firstH2)
+}

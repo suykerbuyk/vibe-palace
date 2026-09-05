@@ -114,7 +114,7 @@ func cmdMigrateTaskHeader() *cli.Command {
 			"before it starts — and every whole-file writer goes through that validator, so no " +
 			"other tool can repair these files.\n\n" +
 			"PLAN-FIRST: the bare command REPORTS and writes nothing; pass --apply to write.\n\n" +
-			"FIVE CLASSES are reported and TWO are written. \"both\" (a true bare line above " +
+			"FIVE CLASSES are reported and THREE are written. \"both\" (a true bare line above " +
 			"a stale bolded field) is repaired by dropping the bare line and carrying its value " +
 			"onto the bolded field, in a SINGLE write — a two-step would leave the file asserting " +
 			"only the stale value, and a crash between the steps would make that permanent. " +
@@ -124,8 +124,11 @@ func cmdMigrateTaskHeader() *cli.Command {
 			"**Priority:** (defaulting to \"medium\" when the file states none), and any remaining " +
 			"prose from the legacy run is RELOCATED verbatim under a body heading rather than " +
 			"flattened onto the field. \"multi-title\" (a modern header prepended above an intact " +
-			"legacy document) needs a per-file judgment call between two disagreeing headers and " +
-			"is reported, never written. \"inverted\" (a bolded value that is already terminal " +
+			"legacy document) is repaired by DEMOTING the second title to an H2 and relabelling the " +
+			"legacy **Status:**/**Priority:** lines beneath it to **Legacy status:**/**Legacy " +
+			"priority:**, which preserves both values instead of choosing between them; a file whose " +
+			"later H1s are ordinary section headings, or whose transformed bytes the validator still " +
+			"refuses, is listed for SIGN-OFF instead of written. \"inverted\" (a bolded value that is already terminal " +
 			"beside a non-terminal bare line) would have a correct status overwritten and is " +
 			"reported, never written. \"clean\" files are left alone.\n\n" +
 			"🔴 PAIRED COMMAND: a bare-only repair makes files VISIBLE to the " +
@@ -144,7 +147,7 @@ func cmdMigrateTaskHeader() *cli.Command {
 		Examples: []cli.Example{
 			{Cmd: "vp migrate task-header", Comment: "Report every class across the vault; writes nothing"},
 			{Cmd: "vp migrate task-header -p vibe-palace", Comment: "Report for one project"},
-			{Cmd: "vp migrate task-header -p vibe-palace --apply", Comment: "Repair the \"both\" and \"bare-only\" classes in one project"},
+			{Cmd: "vp migrate task-header -p vibe-palace --apply", Comment: "Repair every repairable class in one project; the rest are listed for sign-off"},
 			{Cmd: "vp migrate task-status -p vibe-palace --apply", Comment: "The mandatory second half after a bare-only repair"},
 		},
 		Run: func(args []string) int {
@@ -201,6 +204,15 @@ type taskHeaderSummary struct {
 	// are the writes that make files newly visible to DimTaskStatusDirectory and
 	// so the ones that oblige the operator to run the paired command.
 	AppliedBareOnly int
+	// AppliedMultiTitle counts the demoted second titles. Tracked apart from
+	// AppliedBareOnly because the two have OPPOSITE audit consequences: a
+	// constructed header manufactures task-status-directory findings, a demoted
+	// title manufactures none (the modern Status stays first, so every reader's
+	// answer is unchanged). Only one of them obliges the paired command.
+	AppliedMultiTitle int
+	// SignOff are the files this command REFUSES to write and hands to a human,
+	// with the detail needed to decide without opening them.
+	SignOff []taskHeaderSignOff
 	// AppliedPaths are the vault-relative paths this run WROTE, in write order.
 	// They are what the operator has to commit before the paired command will
 	// run, and printing them exactly is the difference between an instruction
@@ -232,7 +244,8 @@ func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskH
 
 	printVaultRoot(out, root)
 	if apply {
-		fmt.Fprintln(out, "Mode:  APPLY — \"both\" files will be rewritten; every other class is reported only.")
+		fmt.Fprintln(out, "Mode:  APPLY — repairable \"both\", \"bare-only\" and \"multi-title\" files will be "+
+			"rewritten; every other file is reported only.")
 	} else {
 		fmt.Fprintln(out, "Mode:  REPORT ONLY — nothing is written. Pass --apply to write.")
 	}
@@ -322,8 +335,55 @@ func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskH
 					continue
 				case storage.LegacyHeaderMultiTitle:
 					sum.MultiTitle++
-					fmt.Fprintf(out, "  SKIP  %s\n        multi-title: two headers disagree; the choice is per-file — separate task.\n",
-						taskHeaderWhere(project, sub, taskSlug))
+
+					// Planned before the apply branch, like the bare-only case, so
+					// the report describes the same transform the write performs.
+					//
+					// 🔴 A REFUSAL HERE IS A REPORTED ROW, NEVER A SILENCE. The
+					// classifier returns `clean` for every one of these files
+					// after the transform, including the ones the validator still
+					// refuses — so keying anything off the classifier would drop
+					// a file that needs a human out of the only report that names
+					// it. The verdict is the repair's, which is the validator's.
+					mfix, merr := storage.RepairLegacyMultiTitleHeader(before)
+					if merr != nil {
+						sum.SignOff = append(sum.SignOff, taskHeaderSignOff{
+							Where:      taskHeaderWhere(project, sub, taskSlug),
+							Kind:       mfix.Refusal,
+							Reason:     merr.Error(),
+							Titles:     mfix.Titles,
+							FieldLines: mfix.FieldLines,
+						})
+						fmt.Fprintf(out, "  HUMAN %s\n        multi-title: %v\n",
+							taskHeaderWhere(project, sub, taskSlug), merr)
+						sum.Plans = append(sum.Plans, plan)
+						continue
+					}
+					fmt.Fprintf(out, "  FIX   %s\n        multi-title: demote the second title to %q%s\n",
+						taskHeaderWhere(project, sub, taskSlug), mfix.DemotedTitle,
+						taskHeaderRelabelNote(mfix))
+
+					if !apply {
+						sum.Plans = append(sum.Plans, plan)
+						continue
+					}
+					if taskHeaderShadowed(out, root, project, sub, taskSlug, name) {
+						plan.Failed = true
+						sum.Failed++
+						sum.Plans = append(sum.Plans, plan)
+						continue
+					}
+					if werr := vault.OverwriteTaskFile(project, taskSlug, mfix.Content); werr != nil {
+						fmt.Fprintf(out, "  !!    %s: write: %v\n", taskHeaderWhere(project, sub, taskSlug), werr)
+						plan.Failed = true
+						sum.Failed++
+						sum.Plans = append(sum.Plans, plan)
+						continue
+					}
+					plan.Applied = true
+					sum.Applied++
+					sum.AppliedMultiTitle++
+					taskHeaderRecordWrite(&sum, root, project, sub, name)
 					sum.Plans = append(sum.Plans, plan)
 					continue
 				case storage.LegacyHeaderInverted:
@@ -381,14 +441,16 @@ func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskH
 		sum.Scanned, sum.Clean, sum.Both, sum.BareOnly, sum.MultiTitle, sum.Inverted)
 	if apply {
 		fmt.Fprintf(out, "Applied %d rewrite(s).\n", sum.Applied)
-	} else if sum.Both > 0 || sum.BareOnly > 0 {
-		fmt.Fprintln(out, "Re-run with --apply to write the \"both\" and \"bare-only\" repairs.")
+	} else if sum.Both > 0 || sum.BareOnly > 0 || sum.MultiTitle > len(sum.SignOff) {
+		fmt.Fprintln(out, "Re-run with --apply to write the \"both\", \"bare-only\" and repairable "+
+			"\"multi-title\" files.")
 	}
-	if sum.MultiTitle > 0 || sum.Inverted > 0 {
-		fmt.Fprintln(out, "multi-title and inverted are reported by design: each needs a per-file judgment "+
-			"call, filed separately. This command will never write them.")
+	if sum.Inverted > 0 {
+		fmt.Fprintln(out, "inverted is reported by design: a bolded value that is already terminal cannot "+
+			"be adjudicated mechanically, and it is filed separately. This command will never write it.")
 	}
 	taskHeaderPrioritySourceTally(out, sum)
+	taskHeaderSignOffSection(out, sum)
 	taskHeaderPairingBanner(out, apply, sum)
 	if sum.Failed > 0 {
 		fmt.Fprintf(out, "%d file(s) FAILED.\n", sum.Failed)
@@ -498,7 +560,7 @@ func taskHeaderPrioritySourceTally(out io.Writer, sum taskHeaderSummary) {
 // than as a directory, because a directory would also stage whatever else is
 // dirty under it, which is the "never git add -A" rule one level up.
 func taskHeaderPairingBanner(out io.Writer, apply bool, sum taskHeaderSummary) {
-	if sum.AppliedBareOnly == 0 {
+	if len(sum.AppliedPaths) == 0 {
 		if !apply && sum.BareOnly > 0 {
 			fmt.Fprintf(out, "%d bare-only file(s) would become task-status-directory findings on --apply; "+
 				"vp migrate task-status --apply is the mandatory second half, and it needs a clean vault "+
@@ -506,9 +568,20 @@ func taskHeaderPairingBanner(out io.Writer, apply bool, sum taskHeaderSummary) {
 		}
 		return
 	}
-	fmt.Fprintf(out, "\n🔴 %d constructed header(s) are now VISIBLE to the task-status-directory audit "+
-		"dimension, and none of the legacy values is terminal. This run also dirtied the vault, and the "+
-		"paired command refuses a dirty tree — so RUN ALL THREE, IN ORDER:\n\n", sum.AppliedBareOnly)
+	// The two writable classes have OPPOSITE audit consequences, so the banner
+	// asks for different things. A constructed bare-only header makes a file
+	// visible to task-status-directory for the first time and OBLIGES the paired
+	// migration; a demoted title changes no reader's answer and obliges nothing
+	// beyond the commit. Printing the task-status step after a multi-title-only
+	// run would send an operator to a command with nothing to do.
+	if sum.AppliedBareOnly > 0 {
+		fmt.Fprintf(out, "\n🔴 %d constructed header(s) are now VISIBLE to the task-status-directory audit "+
+			"dimension, and none of the legacy values is terminal. This run also dirtied the vault, and the "+
+			"paired command refuses a dirty tree — so RUN ALL THREE, IN ORDER:\n\n", sum.AppliedBareOnly)
+	} else {
+		fmt.Fprintf(out, "\n%d file(s) were rewritten, which dirtied the vault. COMMIT THEM:\n\n",
+			len(sum.AppliedPaths))
+	}
 	// 🔴 THE --paths VALUE IS QUOTED, AND THAT IS NOT COSMETIC. The list is printed
 	// over backslash-continued lines to stay readable; a shell removes the
 	// backslash-newline but KEEPS the indentation that follows, so an unquoted
@@ -517,9 +590,16 @@ func taskHeaderPairingBanner(out io.Writer, apply bool, sum taskHeaderSummary) {
 	// Measured: it committed 1 of 68 paths and the paired command still exited 2.
 	// Inside quotes the spaces survive into a single argument, and the flag
 	// parser trims each comma-separated entry.
-	fmt.Fprintf(out, "  1. vp vault commit --message %q \\\n       --paths \"%s\"\n",
-		"migrate task-header: construct legacy task headers",
+	step := "  1. "
+	if sum.AppliedBareOnly == 0 {
+		step = "  "
+	}
+	fmt.Fprintf(out, "%svp vault commit --message %q \\\n       --paths \"%s\"\n",
+		step, "migrate task-header: normalize legacy task headers",
 		strings.Join(sum.AppliedPaths, ",\\\n                "))
+	if sum.AppliedBareOnly == 0 {
+		return
+	}
 	fmt.Fprintln(out, "  2. vp migrate task-status --apply")
 	fmt.Fprintln(out, "  3. vp audit vault          # expect no net new findings")
 	// The honest limit of this instruction. Step 2 gates on the WHOLE vault being
@@ -529,4 +609,71 @@ func taskHeaderPairingBanner(out io.Writer, apply bool, sum taskHeaderSummary) {
 	fmt.Fprintln(out, "\nStep 2 requires the WHOLE vault tree to be clean, and step 1 commits only what "+
 		"this run wrote.\nCommit or stash anything else dirty first (vp vault status) or step 2 will "+
 		"exit 2 on someone else's work.")
+}
+
+// taskHeaderSignOff is one file this command will not write, plus the evidence an
+// operator needs to decide what to do with it.
+type taskHeaderSignOff struct {
+	Where string
+	// Kind is WHY, and it is carried rather than inferred from the message: a
+	// shape refusal and a validator refusal are different claims about the file,
+	// and only one of them is the design's "the validator decides" contract.
+	Kind       storage.LegacyRefusalKind
+	Reason     string
+	Titles     []storage.LegacyH1
+	FieldLines []storage.LegacyH1
+}
+
+// taskHeaderRelabelNote renders the field-relabel half of a multi-title plan line.
+func taskHeaderRelabelNote(fix storage.LegacyMultiTitleRepair) string {
+	n := fix.RelabelledStatus + fix.RelabelledPriority
+	if n == 0 {
+		return " (its legacy block owns no field lines)"
+	}
+	return fmt.Sprintf(" and relabel %d legacy field line(s) beneath it", n)
+}
+
+// taskHeaderSignOffSection prints the files that need a human.
+//
+// 🔴 THIS SECTION EXISTS BECAUSE THE CLASSIFIER CANNOT SEE ANY OF IT. It counts
+// titles, so a repair keyed on it going `clean` would write what it could, report
+// nothing remaining, and leave these files unnamed — no tool able to write them
+// and no tool mentioning them.
+//
+// 🔴 IT REPORTS TWO DIFFERENT REASONS AND MUST NOT BLUR THEM. The design's claim
+// is "the write decision is the VALIDATOR's verdict, per file", and that claim is
+// true of a row refused AFTER the transform ran. It is FALSE of a row refused on
+// SHAPE: that decision is made from the file's own structure before any transform
+// exists, so the validator never saw those bytes and there was nothing for it to
+// refuse. An earlier version of this header asserted the validator reason for
+// every row; it was wrong for half of them.
+//
+// The detail is chosen so the decision can be made from the report alone: the
+// reason in the refusing check's own words, every unfenced H1 with its line
+// number (which is what distinguishes "two documents" from "H1 used as section
+// structure"), and every **Status:**/**Priority:** line with its line number
+// (which is what makes a non-contiguous header block visible without opening the
+// file).
+func taskHeaderSignOffSection(out io.Writer, sum taskHeaderSummary) {
+	if len(sum.SignOff) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "\n🔴 SIGN-OFF REQUIRED — %d file(s) this command refuses to write, "+
+		"for TWO different reasons:\n"+
+		"    shape     — not a modern header prepended above one legacy document. Decided from the "+
+		"file's own structure,\n                  before any transform ran, so the validator never saw "+
+		"these bytes.\n"+
+		"    validator — the transform ran and validateWholeTaskFile refused its output, so the defect "+
+		"is not the two titles.\n"+
+		"Neither is visible to the classifier, which counts titles; a repair keyed on it would report "+
+		"nothing remaining.\n", len(sum.SignOff))
+	for _, so := range sum.SignOff {
+		fmt.Fprintf(out, "\n  %s  [refused on %s]\n      why: %s\n", so.Where, so.Kind, so.Reason)
+		for _, t := range so.Titles {
+			fmt.Fprintf(out, "      H1  line %-5d %s\n", t.Line, t.Text)
+		}
+		for _, f := range so.FieldLines {
+			fmt.Fprintf(out, "      fld line %-5d %s\n", f.Line, f.Text)
+		}
+	}
 }

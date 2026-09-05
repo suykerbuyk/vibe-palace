@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/mdfence"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -2795,5 +2796,487 @@ func TestFrontmatterReadersShareOneKeyDefinition(t *testing.T) {
 				t.Errorf("frontmatterFieldFromHead = %q but frontmatterField = %q", viaHead, direct)
 			}
 		})
+	}
+}
+
+// The multi-title fixtures are the LIVE shapes. The canonical one is 24 of the
+// 33 files in the class: a five-line modern header, then a rival titled block
+// carrying its own bolded fields.
+const (
+	// mtCanonical — H1 / blank / Status / Priority / blank / rival H1 with its
+	// own fields. The dominant shape on disk.
+	mtCanonical = "# Refresh per-project skill shims on upgrade\n\n" +
+		"**Status:** retired\n**Priority:** medium\n\n" +
+		"# Refresh per-project skill shims on upgrade (not only vp init)\n\n" +
+		"**Status:** pending — investigated 2026-06-07\n" +
+		"**Priority:** medium\n\n" +
+		"## Problem\n\nBody.\n"
+
+	// mtYAMLWedge — a stranded YAML block between the two titles, carrying a
+	// THIRD status syntax. It is not frontmatter: it does not start at line 1.
+	// Four live files have this.
+	mtYAMLWedge = "# Add vp_list_learnings / vp_get_learning\n\n" +
+		"**Status:** retired\n**Priority:** medium\n\n" +
+		"---\ntype: task\nstatus: reviewed-ready-to-implement\npriority: medium\n---\n\n" +
+		"# Plan: Add cross-project \"learnings\" support\n\n" +
+		"**Status:** Reviewed twice — 2026-06-20\n**Priority:** medium\n\n" +
+		"## Context\n\nBody.\n"
+
+	// mtBareLegacySecond — the second title's block uses the BARE legacy syntax,
+	// not the bolded one, so there is nothing under it to relabel.
+	mtBareLegacySecond = "# Salvage HNSW constitution recall harness\n\n" +
+		"**Status:** retired\n**Priority:** medium\n\n" +
+		"# Plan: Salvage HNSW Recall Harness into vibe-palace\n\n" +
+		"Status: Planned, architecture-reviewed.\n" +
+		"Not started. Spun out of `hnsw-library-bug-fixes`.\n\n" +
+		"## Background\n\nBody.\n"
+
+	// mtSectionHeadings — H1 used as ORDINARY SECTION HEADINGS of one document.
+	// The live specimen opens H2 sections at line 18 and its first "rival" H1 is
+	// at line 57, reading "PHASE 1 — MOVED OUT"; later ones read "Open
+	// Questions" and "Definition of done".
+	mtSectionHeadings = "# ADR-006 umbrella — CLOSED 2026-08-16\n\n" +
+		"**Status:** retired\n**Priority:** high\n**Parent:** honest-instruments\n\n" +
+		"## The thesis\n\nBody.\n\n" +
+		"# PHASE 2 — DERIVE WHAT IS ACTUALLY DERIVABLE\n\nPhase body.\n\n" +
+		"# Open Questions\n\nQuestions.\n\n" +
+		"# Definition of done\n\nDone when.\n"
+
+	// mtSectionsTwoTitlesOnly — trips ONLY the prepended-over rule: exactly two
+	// H1s, but an H2 opened the body before the second one arrives. Without this
+	// fixture the prepend rule would be untested, because the live specimen trips
+	// the title-count rule as well.
+	mtSectionsTwoTitlesOnly = "# One document with a mis-levelled section\n\n" +
+		"**Status:** retired\n**Priority:** medium\n\n" +
+		"## Context\n\nBody.\n\n" +
+		"# Definition of done\n\nDone when.\n"
+
+	// mtThreeTitles — trips ONLY the title-count rule: three rival titles, none
+	// preceded by an H2. Without this fixture the count rule would be untested
+	// for the same reason.
+	mtThreeTitles = "# First\n\n**Status:** retired\n**Priority:** medium\n\n" +
+		"# Second\n\n**Status:** pending\n**Priority:** high\n\n" +
+		"# Third\n\n**Status:** blocked\n**Priority:** low\n\n" +
+		"## Body\n\nBody.\n"
+
+	// mtCorruptModernHeader — 🔴 THE TRAP. Its MODERN header is non-contiguous:
+	// free prose sits between its own **Status:** and **Priority:** lines. After
+	// the transform this file classifies CLEAN and the validator still REFUSES
+	// it, so a repair keyed on the classifier writes nothing for it and says
+	// nothing about it.
+	mtCorruptModernHeader = "# Vault whole-file writes have no lock across read-modify-write\n\n" +
+		"**Status:** retired\n" +
+		"Plan-reviewed 2026-06-06; design decisions below are locked.\n" +
+		"No code written.\n" +
+		"**Priority:** medium\n\n" +
+		"# Vault whole-file writes lack RMW serialization (lost-update hole)\n\n" +
+		"## Problem\n\nBody.\n"
+)
+
+// TestRepairLegacyMultiTitleDemotesAndRelabels is the acceptance test, and it
+// asserts the ORACLE's verdict rather than bytes.
+func TestRepairLegacyMultiTitleDemotesAndRelabels(t *testing.T) {
+	cases := []struct {
+		name         string
+		content      string
+		wantDemoted  string
+		wantStatus   int
+		wantPriority int
+	}{
+		{"canonical rival block", mtCanonical,
+			"## Refresh per-project skill shims on upgrade (not only vp init)", 1, 1},
+		{"stranded YAML wedge between the titles", mtYAMLWedge,
+			"## Plan: Add cross-project \"learnings\" support", 1, 1},
+		{"second block uses the bare legacy syntax", mtBareLegacySecond,
+			"## Plan: Salvage HNSW Recall Harness into vibe-palace", 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ScanLegacyHeader(tc.content).Class; got != LegacyHeaderMultiTitle {
+				t.Fatalf("fixture classifies as %s, want %s", got, LegacyHeaderMultiTitle)
+			}
+			got, err := RepairLegacyMultiTitleHeader(tc.content)
+			if err != nil {
+				t.Fatalf("RepairLegacyMultiTitleHeader: %v", err)
+			}
+			if err := validateWholeTaskFile(got.Content); err != nil {
+				t.Fatalf("transformed file is one validateWholeTaskFile refuses: %v\nfile:\n%s", err, got.Content)
+			}
+			if got.DemotedTitle != tc.wantDemoted {
+				t.Errorf("DemotedTitle = %q, want %q", got.DemotedTitle, tc.wantDemoted)
+			}
+			if got.RelabelledStatus != tc.wantStatus || got.RelabelledPriority != tc.wantPriority {
+				t.Errorf("relabelled {status:%d priority:%d}, want {%d %d}",
+					got.RelabelledStatus, got.RelabelledPriority, tc.wantStatus, tc.wantPriority)
+			}
+			// The legacy values survive, verbatim, as prose.
+			for _, l := range strings.Split(tc.content, "\n") {
+				trimmed := strings.TrimSpace(l)
+				if !isStatusLine(trimmed) && !isPriorityLine(trimmed) {
+					continue
+				}
+				value := trimmed[strings.Index(trimmed, ":**")+3:]
+				if !strings.Contains(got.Content, strings.TrimSpace(value)) {
+					t.Errorf("a header value was lost: %q\nfile:\n%s", value, got.Content)
+				}
+			}
+		})
+	}
+}
+
+// TestRepairLegacyMultiTitleChangesNoReadersAnswer is the argument the whole
+// design rests on, made a measurement.
+//
+// The filed plan refused automation because "the two headers disagree, and
+// choosing between them is a judgment call per file". The premise is true; the
+// conclusion does not follow, because this transform DOES NOT CHOOSE. parseTaskMeta
+// is first-wins and the modern block is first, so every reader already returns the
+// modern values and the legacy ones are invisible. If that ever stops being true,
+// this test fails and the design's justification is gone with it.
+func TestRepairLegacyMultiTitleChangesNoReadersAnswer(t *testing.T) {
+	for _, tc := range []struct{ name, content string }{
+		{"canonical", mtCanonical},
+		{"yaml wedge", mtYAMLWedge},
+		{"bare legacy second block", mtBareLegacySecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := RepairLegacyMultiTitleHeader(tc.content)
+			if err != nil {
+				t.Fatalf("RepairLegacyMultiTitleHeader: %v", err)
+			}
+			before := parseTaskMeta("s", tc.content, true)
+			after := parseTaskMeta("s", got.Content, true)
+			if before.Status != after.Status || before.Priority != after.Priority ||
+				before.Title != after.Title || before.Parent != after.Parent ||
+				strings.Join(before.Depends, ",") != strings.Join(after.Depends, ",") {
+				t.Errorf("a reader's answer CHANGED — the transform chose a value, which is the one "+
+					"thing it must not do:\n before {%q %q %q}\n after  {%q %q %q}",
+					before.Status, before.Priority, before.Title,
+					after.Status, after.Priority, after.Title)
+			}
+		})
+	}
+}
+
+// TestRepairLegacyMultiTitleRefusesWhatIsNotAPrependedHeader pins the two
+// preconditions SEPARATELY. The one live specimen trips both, so a single
+// fixture would leave one rule permanently untested and free to rot.
+func TestRepairLegacyMultiTitleRefusesWhatIsNotAPrependedHeader(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{"H1 used as section headings, live shape", mtSectionHeadings, "already opened this document's body"},
+		{"exactly two titles, but a section opened the body first",
+			mtSectionsTwoTitlesOnly, "already opened this document's body"},
+		{"three rival titles, no section before the second", mtThreeTitles, "unfenced H1 lines"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ScanLegacyHeader(tc.content).Class; got != LegacyHeaderMultiTitle {
+				t.Fatalf("fixture classifies as %s, want %s", got, LegacyHeaderMultiTitle)
+			}
+			_, err := RepairLegacyMultiTitleHeader(tc.content)
+			if err == nil {
+				t.Fatal("the repair restructured a document that is not a prepended header")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error should say %q, got: %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestRepairLegacyMultiTitleTrapClassifierSaysCleanValidatorRefuses is the
+// single most important test in this unit.
+//
+// 🔴 After the transform, ScanLegacyHeader returns `clean` for EVERY file it
+// touches — including this one, whose modern header is corrupted independently of
+// its two titles. The classifier is honest (it counts titles, and one title is one
+// title), but a repair keyed on it would write nothing here AND report nothing,
+// leaving a file no tool can write and no tool mentions.
+//
+// The assertion is the trap itself: classifier clean, validator refusing, repair
+// refusing with the validator's own words.
+func TestRepairLegacyMultiTitleTrapClassifierSaysCleanValidatorRefuses(t *testing.T) {
+	if got := ScanLegacyHeader(mtCorruptModernHeader).Class; got != LegacyHeaderMultiTitle {
+		t.Fatalf("fixture classifies as %s, want %s", got, LegacyHeaderMultiTitle)
+	}
+
+	// What a classifier-keyed repair would have believed.
+	demotedOnly := demoteH1Everywhere(mtCorruptModernHeader)
+	if got := ScanLegacyHeader(demotedOnly).Class; got != LegacyHeaderClean {
+		t.Fatalf("the trap does not reproduce: classifier says %s after the transform, want %s",
+			got, LegacyHeaderClean)
+	}
+	if err := validateWholeTaskFile(demotedOnly); err == nil {
+		t.Fatal("the trap does not reproduce: the validator ACCEPTS the transformed file, so " +
+			"classifier and validator agree and there is nothing to guard against")
+	}
+
+	// What this repair actually does: refuse, in the validator's words.
+	_, err := RepairLegacyMultiTitleHeader(mtCorruptModernHeader)
+	if err == nil {
+		t.Fatal("the repair wrote a file the validator refuses")
+	}
+	if !strings.Contains(err.Error(), "contiguous header block") {
+		t.Errorf("the refusal must carry the VALIDATOR's reason so an operator can act on it, got: %v", err)
+	}
+}
+
+// demoteH1Everywhere is the classifier-satisfying transform WITHOUT the
+// validator gate — the thing this unit must not be. It exists only so the trap
+// test can demonstrate what such a repair would have concluded.
+func demoteH1Everywhere(content string) string {
+	lines := strings.Split(content, "\n")
+	seen := 0
+	for _, l := range mdfence.OutsideFences(content) {
+		if !isH1Line(l.Text) {
+			continue
+		}
+		seen++
+		if seen > 1 {
+			lines[l.Num-1] = demoteH1(lines[l.Num-1])
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// TestRepairLegacyMultiTitleRefusesEveryOtherClass is the scope guard.
+func TestRepairLegacyMultiTitleRefusesEveryOtherClass(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    LegacyHeaderClass
+	}{
+		{"both", legacyBoth, LegacyHeaderBoth},
+		{"clean", validTaskFile, LegacyHeaderClean},
+		{"inverted", legacyInverted, LegacyHeaderInverted},
+		{"bare-only", boMinimal, LegacyHeaderBareOnly},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := RepairLegacyMultiTitleHeader(tc.content)
+			if err == nil {
+				t.Fatalf("the multi-title repair accepted a %s file", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want.String()) {
+				t.Errorf("error should name the class it refused (%s), got: %v", tc.want, err)
+			}
+		})
+	}
+}
+
+// TestRepairLegacyMultiTitleIsIdempotent proves a transformed file has left the
+// population: one title remains, so the classifier no longer reports it and the
+// repair refuses a second pass.
+func TestRepairLegacyMultiTitleIsIdempotent(t *testing.T) {
+	for _, tc := range []struct{ name, content string }{
+		{"canonical", mtCanonical},
+		{"yaml wedge", mtYAMLWedge},
+		{"bare legacy second block", mtBareLegacySecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			once, err := RepairLegacyMultiTitleHeader(tc.content)
+			if err != nil {
+				t.Fatalf("first repair: %v", err)
+			}
+			if got := ScanLegacyHeader(once.Content).Class; got != LegacyHeaderClean {
+				t.Fatalf("transformed file classifies as %s, want %s:\n%s", got, LegacyHeaderClean, once.Content)
+			}
+			if _, err := RepairLegacyMultiTitleHeader(once.Content); err == nil {
+				t.Error("a second repair succeeded; a transformed file must have nothing left to repair")
+			}
+		})
+	}
+}
+
+// TestRepairLegacyMultiTitleIgnoresFencedSpecimens is the self-inflicted wound:
+// the task files documenting this defect quote two-H1 specimens inside fences.
+func TestRepairLegacyMultiTitleIgnoresFencedSpecimens(t *testing.T) {
+	content := "# A per-file proposal for multi-title task files\n\n" +
+		"**Status:** pending\n**Priority:** medium\n\n" +
+		"## The shape, quoted\n\n" +
+		"```\n" + mtCanonical + "```\n\nProse after the fence.\n"
+
+	if got := ScanLegacyHeader(content).Class; got != LegacyHeaderClean {
+		t.Fatalf("class = %s, want %s — a fenced specimen was read as structure", got, LegacyHeaderClean)
+	}
+	if _, err := RepairLegacyMultiTitleHeader(content); err == nil {
+		t.Fatal("the repair rewrote a file whose only second title is a fenced quotation")
+	}
+}
+
+// TestRepairLegacyMultiTitleRelabelIsInvisibleToEveryFieldReader pins the one
+// invented thing. "**Legacy status:**" must not be readable as a field by any
+// predicate in this package — otherwise the relabel would create the duplicate it
+// exists to remove.
+func TestRepairLegacyMultiTitleRelabelIsInvisibleToEveryFieldReader(t *testing.T) {
+	line := legacyStatusRelabel + " In Progress — investigated 2026-06-07"
+	if isStatusLine(line) {
+		t.Errorf("%q reads as a **Status:** line", line)
+	}
+	if isHeaderFieldLine(line) {
+		t.Errorf("%q reads as a header field line", line)
+	}
+	if _, ok := legacyStatusValue(line); ok {
+		t.Errorf("%q reads as a BARE legacy status line", line)
+	}
+	if _, ok := TaskStatusValue(line); ok {
+		t.Errorf("%q is visible to the exported status reader the audit uses", line)
+	}
+	pline := legacyPriorityRelabel + " medium"
+	if isPriorityLine(pline) || isHeaderFieldLine(pline) {
+		t.Errorf("%q reads as a **Priority:** line", pline)
+	}
+}
+
+// TestDemoteH1PreservesIndentation guards the one-character edit. isH1Line trims
+// before testing, so an indented "  # Title" is an H1; prepending a hash at the
+// START of the line would produce "# # Title", which is still an H1 and would
+// leave the file with two titles after a repair that reported success.
+func TestDemoteH1PreservesIndentation(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"# Title", "## Title"},
+		{"  # Title", "  ## Title"},
+		{"\t# Title", "\t## Title"},
+	} {
+		if got := demoteH1(tc.in); got != tc.want {
+			t.Errorf("demoteH1(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		if isH1Line(demoteH1(tc.in)) {
+			t.Errorf("demoteH1(%q) is still an H1", tc.in)
+		}
+	}
+}
+
+const (
+	// mtSectionH1NoH2Anywhere — 🔴 FIX 1's shape. H1 used as a SECTION heading in
+	// a document that has no H2 at all, so nothing gives it away structurally.
+	// This is the derive-dont-ask harm in a file that merely lacks the H2 that
+	// exposed it. No live file has this shape; the command runs against vaults
+	// this measurement never saw.
+	mtSectionH1NoH2Anywhere = "# Port the surface handshake\n\n" +
+		"**Status:** retired\n**Priority:** medium\n\n" +
+		"# Background\n\n" +
+		"Prose about the background, written by an author who used H1 for sections.\n"
+
+	// mtH2InModernPreamble — 🔴 FIX 2's shape. A GENUINE prepended-over file whose
+	// MODERN half carries a section of its own before the legacy title arrives.
+	// The legacy title owns its own header block, which is what shows it opens a
+	// document; refusing this file would be an over-refusal.
+	mtH2InModernPreamble = "# Modern title\n\n" +
+		"**Status:** retired\n**Priority:** medium\n\n" +
+		"## Review notes\n\nA section belonging to the modern half.\n\n" +
+		"# Legacy document title\n\n" +
+		"**Status:** In Progress\n**Priority:** high\n\n" +
+		"## Problem\n\nBody.\n"
+)
+
+// TestRepairLegacyMultiTitleAsksOneQuestionOfTheSecondTitle is the coherent form
+// of the shape rule, and it replaces two patches that agreed by luck.
+//
+// THE QUESTION IS SINGULAR: can this H1 be shown to OPEN A DOCUMENT OF ITS OWN?
+// A task document starts one of two ways, and either is enough:
+//
+//	A. it owns header material — a bolded field line or a bare legacy "Status:"
+//	   line — before the next heading of any level; or
+//	B. it is followed by the file's FIRST H2, meaning no section of the first
+//	   document precedes it.
+//
+// Neither signal alone is sufficient, and the corpus proves both directions:
+// A alone wrongly refuses two live files whose legacy half carries no header
+// block (mcp-execute-plan-no-truncation, vault-write-concurrency); B alone
+// wrongly refuses a prepended-over file whose modern half has a section. Measured
+// over the live class: A holds for 30, B for 32, A-or-B for 32, and NEITHER for
+// exactly one — the document that uses H1 for its section headings.
+func TestRepairLegacyMultiTitleAsksOneQuestionOfTheSecondTitle(t *testing.T) {
+	cases := []struct {
+		name       string
+		content    string
+		wantRepair bool
+		wantErr    string
+	}{
+		{
+			name:       "evidence A only: a section precedes the legacy title, which owns a header block",
+			content:    mtH2InModernPreamble,
+			wantRepair: true,
+		},
+		{
+			name:       "evidence B only: no header block under the legacy title, but no section precedes it",
+			content:    mtBareLegacySecond,
+			wantRepair: true,
+		},
+		{
+			name:    "NEITHER: sections already opened, and the later H1 owns no header",
+			content: mtSectionHeadings,
+			wantErr: "cannot be shown to open a document",
+		},
+		{
+			name:    "NEITHER: no H2 anywhere, so the later H1 opens no section either",
+			content: mtSectionH1NoH2Anywhere,
+			wantErr: "cannot be shown to open a document",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ScanLegacyHeader(tc.content).Class; got != LegacyHeaderMultiTitle {
+				t.Fatalf("fixture classifies as %s, want %s", got, LegacyHeaderMultiTitle)
+			}
+			got, err := RepairLegacyMultiTitleHeader(tc.content)
+			if tc.wantRepair {
+				if err != nil {
+					t.Fatalf("a genuine prepended-over file was refused: %v", err)
+				}
+				if verr := validateWholeTaskFile(got.Content); verr != nil {
+					t.Fatalf("transformed file is one the validator refuses: %v", verr)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("the repair restructured a document whose later H1 is a section heading")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error should say %q, got: %v", tc.wantErr, err)
+			}
+			if got.Refusal != LegacyRefusedShape {
+				t.Errorf("Refusal = %v, want %v — the caller must be able to tell a SHAPE refusal "+
+					"from a validator one, because the validator never saw these bytes",
+					got.Refusal, LegacyRefusedShape)
+			}
+		})
+	}
+}
+
+// TestRepairLegacyMultiTitleReportsWhichRefusalItMade pins the distinction the
+// operator-facing text depends on.
+//
+// A SHAPE refusal happens BEFORE the transform runs, so the validator never sees
+// any bytes and there is nothing for it to have refused. A VALIDATOR refusal
+// happens after. Reporting both as "the validator refuses it" asserts the
+// design's central claim about a row where it does not hold.
+func TestRepairLegacyMultiTitleReportsWhichRefusalItMade(t *testing.T) {
+	shape, err := RepairLegacyMultiTitleHeader(mtSectionHeadings)
+	if err == nil {
+		t.Fatal("expected a shape refusal")
+	}
+	if shape.Refusal != LegacyRefusedShape {
+		t.Errorf("Refusal = %v, want %v", shape.Refusal, LegacyRefusedShape)
+	}
+
+	val, err := RepairLegacyMultiTitleHeader(mtCorruptModernHeader)
+	if err == nil {
+		t.Fatal("expected a validator refusal")
+	}
+	if val.Refusal != LegacyRefusedValidator {
+		t.Errorf("Refusal = %v, want %v", val.Refusal, LegacyRefusedValidator)
+	}
+
+	ok, err := RepairLegacyMultiTitleHeader(mtCanonical)
+	if err != nil {
+		t.Fatalf("RepairLegacyMultiTitleHeader: %v", err)
+	}
+	if ok.Refusal != LegacyRefusedNone {
+		t.Errorf("Refusal = %v on success, want %v", ok.Refusal, LegacyRefusedNone)
 	}
 }
