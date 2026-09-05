@@ -30,8 +30,8 @@ import (
 //
 // # Scope, and why it is narrower than the population
 //
-// The corpus carries four classes (`storage.ScanLegacyHeader`) and only ONE has a
-// provably lossless mechanical repair. This command REPORTS all four and WRITES
+// The corpus carries five classes (`storage.ScanLegacyHeader`) and only ONE has a
+// provably lossless mechanical repair. This command REPORTS all five and WRITES
 // only `LegacyHeaderBoth`, where a true un-bolded value sits above a stale bolded
 // one so carrying it across loses nothing.
 //
@@ -40,9 +40,13 @@ import (
 // population would destroy the status and leave the file refused at the
 // validator's "missing Status" arm instead of repaired. Its repair is PROMOTION,
 // and the values are free prose that wraps across lines. MULTI-TITLE needs a
-// per-file judgment call between two disagreeing headers. Both are separate
-// tasks, and the refusal in `storage.RepairLegacyBothHeader` is what keeps this
-// command inside that split rather than relying on anyone remembering it.
+// per-file judgment call between two disagreeing headers. INVERTED carries a
+// bolded value that is already terminal, so the Both repair would overwrite a
+// correct "retired"/"cancelled" with the legacy line — manufacturing the very
+// finding `vaultaudit.DimTaskStatusDirectory` rule 1 exists to report. All three
+// are separate tasks, and the refusal in `storage.RepairLegacyBothHeader` is what
+// keeps this command inside that split rather than relying on anyone remembering
+// it.
 //
 // # Plan-first
 //
@@ -158,10 +162,11 @@ type taskHeaderSummary struct {
 	Scanned int
 	Clean   int
 	// Reported per class. Both is the only one this command can write; the
-	// other two are counted so the report sizes the work it is NOT doing.
+	// others are counted so the report sizes the work it is NOT doing.
 	Both       int
 	BareOnly   int
 	MultiTitle int
+	Inverted   int
 	Applied    int
 	// Failed counts ATTEMPTS that went wrong — read errors, refused shadows and
 	// failed writes — never a class this command declines to repair by design.
@@ -239,6 +244,15 @@ func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskH
 						taskHeaderWhere(project, sub, taskSlug))
 					sum.Plans = append(sum.Plans, plan)
 					continue
+				case storage.LegacyHeaderInverted:
+					// Printed with BOTH values because the whole point of the
+					// class is that a human has to decide which one is true.
+					sum.Inverted++
+					fmt.Fprintf(out, "  SKIP  %s\n        inverted: bolded %q is already terminal and bare %q is not; "+
+						"repairing would overwrite the terminal status — separate task.\n",
+						taskHeaderWhere(project, sub, taskSlug), scan.BoldValue, scan.BareValue)
+					sum.Plans = append(sum.Plans, plan)
+					continue
 				}
 
 				sum.Both++
@@ -286,15 +300,15 @@ func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskH
 	}
 
 	fmt.Fprintln(out)
-	fmt.Fprintf(out, "Scanned %d file(s): %d clean, %d both, %d bare-only, %d multi-title.\n",
-		sum.Scanned, sum.Clean, sum.Both, sum.BareOnly, sum.MultiTitle)
+	fmt.Fprintf(out, "Scanned %d file(s): %d clean, %d both, %d bare-only, %d multi-title, %d inverted.\n",
+		sum.Scanned, sum.Clean, sum.Both, sum.BareOnly, sum.MultiTitle, sum.Inverted)
 	if apply {
 		fmt.Fprintf(out, "Applied %d rewrite(s).\n", sum.Applied)
 	} else if sum.Both > 0 {
 		fmt.Fprintln(out, "Re-run with --apply to write the \"both\" repairs.")
 	}
-	if sum.BareOnly > 0 || sum.MultiTitle > 0 {
-		fmt.Fprintln(out, "bare-only and multi-title are reported by design: each needs its own repair, "+
+	if sum.BareOnly > 0 || sum.MultiTitle > 0 || sum.Inverted > 0 {
+		fmt.Fprintln(out, "bare-only, multi-title and inverted are reported by design: each needs its own repair, "+
 			"filed separately. This command will never write them.")
 	}
 	if sum.Failed > 0 {

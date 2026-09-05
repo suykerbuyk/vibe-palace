@@ -2232,3 +2232,88 @@ func TestBareOnlyDeletionWouldNotRepairPinsTheReasonForTheSplit(t *testing.T) {
 		t.Errorf("want the 'missing Status' arm, got: %v", err)
 	}
 }
+
+// legacyInverted is the shape that breaks the both-class premise: the BOLDED
+// value is a correct terminal status and the bare legacy line is prose.
+//
+// 🔴 The **Priority:** line is the whole point of this fixture, not filler. The
+// live specimen that exposed this class (done/phase-d-parallel-operation) has no
+// priority field, so validateWholeTaskFile refuses its repaired bytes at the
+// missing-Priority arm — an UNRELATED guard that happens to point the same way.
+// A fixture without a priority line would therefore pass for the wrong reason
+// and would keep passing if the class were deleted. This one carries a valid
+// priority field so nothing but the class itself can stop the repair.
+const legacyInverted = "# Plan: Phase D — Parallel Operation\n" +
+	"Status: Closed — operator accepted retrospective 2026-06-06; advancing to Phase E\n" +
+	"**Status:** retired\n" +
+	"**Priority:** medium\n\n" +
+	"## Context\n\nBody.\n"
+
+// TestScanLegacyHeaderSeparatesTheInvertedShape pins the discriminator: a bolded
+// value that is already TERMINAL means the repair's premise — bare is true,
+// bolded is stale — is unproven for that file, so it is not a repair candidate.
+//
+// The premise held for all 17 files repaired in vault 7a8393741, which is exactly
+// the kind of run that turns an assumption into an unexamined one. It is derived
+// here rather than assumed.
+func TestScanLegacyHeaderSeparatesTheInvertedShape(t *testing.T) {
+	if got := ScanLegacyHeader(legacyInverted).Class; got != LegacyHeaderInverted {
+		t.Fatalf("inverted file classified %s, want %s", got, LegacyHeaderInverted)
+	}
+	// The ordinary both shape must NOT be swept into the new class: its bolded
+	// value is non-terminal, so the premise still holds and it stays repairable.
+	if got := ScanLegacyHeader(legacyBoth).Class; got != LegacyHeaderBoth {
+		t.Fatalf("ordinary both file classified %s, want %s", got, LegacyHeaderBoth)
+	}
+}
+
+// TestRepairLegacyBothHeaderRefusesTheInvertedShape is the defect test.
+//
+// 🔴 It must RED against 6fdf569, and it does: there the file classifies Both,
+// the repair carries the bare PROSE onto the bolded field, and the shape oracle
+// accepts the result because a sentence is a structurally valid field value. The
+// file then sits in done/ asserting a status IsTerminalStatus rejects — the exact
+// finding task-status-directory rule 1 exists to report, manufactured by the tool
+// meant to help clear it.
+func TestRepairLegacyBothHeaderRefusesTheInvertedShape(t *testing.T) {
+	repaired, err := RepairLegacyBothHeader(legacyInverted)
+	if err == nil {
+		t.Fatalf("repair accepted an inverted file and produced:\n%s", repaired)
+	}
+	if !strings.Contains(err.Error(), LegacyHeaderInverted.String()) {
+		t.Errorf("error should name the class it refused (%s), got: %v", LegacyHeaderInverted, err)
+	}
+}
+
+// TestInvertedRepairWouldReplaceATerminalStatus records WHY the class exists, in
+// the terms the failure would actually take. It asserts the property directly —
+// a terminal status must never come out non-terminal — so it keeps meaning
+// something if the class boundary is later moved or widened.
+func TestInvertedRepairWouldReplaceATerminalStatus(t *testing.T) {
+	scan := ScanLegacyHeader(legacyInverted)
+	if !IsTerminalStatus(scan.BoldValue) {
+		t.Fatalf("fixture is not inverted: bolded value %q is not terminal", scan.BoldValue)
+	}
+	if IsTerminalStatus(scan.BareValue) {
+		t.Fatalf("fixture is not inverted: bare value %q is terminal too", scan.BareValue)
+	}
+	// Whatever the repair does with this file, it must not be "emit the bare
+	// value as the status" — that is the write this class exists to prevent.
+	if repaired, err := RepairLegacyBothHeader(legacyInverted); err == nil {
+		got, ok := TaskStatusValue(statusLineOf(t, repaired))
+		if ok && !IsTerminalStatus(got) {
+			t.Fatalf("repair replaced terminal %q with non-terminal %q", scan.BoldValue, got)
+		}
+	}
+}
+
+// statusLineOf returns the first bolded status line of a task file.
+func statusLineOf(t *testing.T, content string) string {
+	t.Helper()
+	for line := range strings.SplitSeq(content, "\n") {
+		if _, ok := TaskStatusValue(line); ok {
+			return line
+		}
+	}
+	return ""
+}

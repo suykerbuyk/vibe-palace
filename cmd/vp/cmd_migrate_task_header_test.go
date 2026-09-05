@@ -11,6 +11,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultaudit"
 )
 
 // The fixtures below are the SHAPES measured on the live corpus, not invented
@@ -48,6 +49,20 @@ const (
 		"**Status:** retired\n" +
 		"**Priority:** medium\n\n" +
 		"## Context\n\nBody.\n"
+
+	// thInverted — the both shape with its premise reversed: the BOLDED value is
+	// a correct terminal status and the bare line is prose.
+	//
+	// 🔴 The **Priority:** line is load-bearing. The live specimen that exposed
+	// this class carries no priority field, so validateWholeTaskFile refuses its
+	// repaired bytes at the missing-Priority arm — an unrelated guard pointing
+	// the same way by luck. A fixture without it would pass for the wrong reason
+	// and keep passing if the class were deleted.
+	thInverted = "# Plan: Phase D — Parallel Operation\n" +
+		"Status: Closed — operator accepted retrospective 2026-06-06\n" +
+		"**Status:** retired\n" +
+		"**Priority:** medium\n\n" +
+		"## Context\n\nBody.\n"
 )
 
 // thSeed lays down one specimen of every class and returns the vault root plus
@@ -60,6 +75,7 @@ func thSeed(t *testing.T) (root string, paths map[string]string) {
 		"bare-only":   tsWrite(t, root, "Projects/proj/tasks/done/bareonly.md", thBareOnly),
 		"multi-title": tsWrite(t, root, "Projects/proj/tasks/done/multi.md", thMultiTitle),
 		"clean":       tsWrite(t, root, "Projects/proj/tasks/done/clean.md", thClean),
+		"inverted":    tsWrite(t, root, "Projects/proj/tasks/done/inverted.md", thInverted),
 	}
 	return root, paths
 }
@@ -110,15 +126,16 @@ func TestMigrateTaskHeaderRepairsBothAndLeavesEveryOtherClassAlone(t *testing.T)
 		t.Errorf("repaired file still classifies as %s, want %s", c, storage.LegacyHeaderClean)
 	}
 
-	for _, class := range []string{"bare-only", "multi-title", "clean"} {
-		want := map[string]string{"bare-only": thBareOnly, "multi-title": thMultiTitle, "clean": thClean}[class]
+	for _, class := range []string{"bare-only", "multi-title", "clean", "inverted"} {
+		want := map[string]string{"bare-only": thBareOnly, "multi-title": thMultiTitle,
+			"clean": thClean, "inverted": thInverted}[class]
 		if got := tsRead(t, paths[class]); got != want {
 			t.Errorf("%s file was rewritten — this command must never write it\n got: %q", class, got)
 		}
 	}
-	if sum.BareOnly == 0 || sum.MultiTitle == 0 {
-		t.Errorf("BareOnly = %d, MultiTitle = %d; both classes must be REPORTED, not silently dropped",
-			sum.BareOnly, sum.MultiTitle)
+	if sum.BareOnly == 0 || sum.MultiTitle == 0 || sum.Inverted == 0 {
+		t.Errorf("BareOnly = %d, MultiTitle = %d, Inverted = %d; every unrepairable class must be "+
+			"REPORTED, not silently dropped", sum.BareOnly, sum.MultiTitle, sum.Inverted)
 	}
 	if !strings.Contains(out.String(), "separate task") {
 		t.Errorf("the report must say why a skipped class is skipped; got:\n%s", out.String())
@@ -338,5 +355,70 @@ func TestMigrateTaskHeaderFixturesAreTheClassesTheyClaim(t *testing.T) {
 		if got := storage.ScanLegacyHeader(tc.content).Class; got != tc.want {
 			t.Errorf("%s fixture classifies as %s, want %s", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestMigrateTaskHeaderRefusesTheInvertedShapeAndMakesNoNewFinding is the
+// acceptance test for the inverted class, and it asserts the consequence rather
+// than the mechanism.
+//
+// The failure this class prevents is not "a file was rewritten" — it is "a
+// repair manufactured work for a sibling tool". So the assertion is made against
+// vaultaudit.DimTaskStatusDirectory itself: after --apply, the dimension must
+// report nothing new. Checking the bytes by eye would pass on a rewrite that
+// happened to look plausible; checking the dimension cannot.
+func TestMigrateTaskHeaderRefusesTheInvertedShapeAndMakesNoNewFinding(t *testing.T) {
+	root, paths := thSeed(t)
+
+	before, err := vaultaudit.Run(storage.NewVault(root))
+	if err != nil {
+		t.Fatalf("audit before: %v", err)
+	}
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderMigration(root, "proj", true, &out)
+	if err != nil {
+		t.Fatalf("runTaskHeaderMigration: %v", err)
+	}
+
+	// An unrepairable class is REPORTED, never ATTEMPTED. Counting it as a
+	// failure would make every run of this command exit non-zero forever, which
+	// is what the live vault did while its one inverted file classified "both".
+	if sum.Failed != 0 {
+		t.Errorf("Failed = %d, want 0 — a class declined by design is not a failed attempt; out:\n%s",
+			sum.Failed, out.String())
+	}
+	if sum.Inverted != 1 {
+		t.Fatalf("Inverted = %d, want 1; out:\n%s", sum.Inverted, out.String())
+	}
+
+	if got := tsRead(t, paths["inverted"]); got != thInverted {
+		t.Fatalf("the inverted file was rewritten; this command must never write it:\n%s", got)
+	}
+	// The report must name BOTH values: the whole reason the file is skipped is
+	// that a human has to decide which of the two is true.
+	for _, want := range []string{"inverted", "retired", "Closed — operator accepted"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("report omits %q — the operator cannot judge the file from it; out:\n%s", want, out.String())
+		}
+	}
+
+	// --- the consequence -----------------------------------------------------
+	after, err := vaultaudit.Run(storage.NewVault(root))
+	if err != nil {
+		t.Fatalf("audit after: %v", err)
+	}
+	count := func(r vaultaudit.Report) int {
+		n := 0
+		for _, f := range r.Findings() {
+			if f.Dimension == vaultaudit.DimTaskStatusDirectory {
+				n++
+			}
+		}
+		return n
+	}
+	if got, want := count(after), count(before); got > want {
+		t.Errorf("task-status-directory findings rose from %d to %d — the repair manufactured "+
+			"the exact defect the sibling dimension exists to report", want, got)
 	}
 }

@@ -1608,6 +1608,30 @@ const (
 	// Classified as Both, its repair would carry the legacy document's status
 	// onto the modern header — a destructive edit across two unrelated records.
 	LegacyHeaderMultiTitle
+
+	// LegacyHeaderInverted — a bare legacy line AND a bolded field, exactly like
+	// Both, except that the BOLDED value is already a terminal status. That
+	// inverts the premise the Both repair rests on.
+	//
+	// 🔴 The Both repair carries the bare value onto the bolded field because the
+	// bare line is assumed authoritative and the bolded one stale. That direction
+	// is an ASSUMPTION inferred from SHAPE, not a derivation — nothing measures
+	// which value is true, and nothing can: which of two values is correct is not
+	// a question a shape validator has an opinion about. The assumption held for
+	// all 17 files repaired in vault 7a8393741, which is exactly the kind of run
+	// that turns an assumption into an unexamined one.
+	//
+	// Where the bolded value is terminal, carrying the bare value forward would
+	// overwrite a clean "retired"/"cancelled" with whatever the legacy line says —
+	// on the real specimen, a sentence. The file would stop reading as terminal
+	// while sitting in done/, manufacturing the exact finding
+	// vaultaudit.DimTaskStatusDirectory rule 1 exists to report.
+	//
+	// So this class decides NOTHING about which value is true. It records that the
+	// premise is unproven for this file and hands the judgment to a human, the way
+	// BareOnly and MultiTitle already do. Separate task; reported here, never
+	// written.
+	LegacyHeaderInverted
 )
 
 // String renders the class for operator-facing reports.
@@ -1621,6 +1645,8 @@ func (c LegacyHeaderClass) String() string {
 		return "bare-only"
 	case LegacyHeaderMultiTitle:
 		return "multi-title"
+	case LegacyHeaderInverted:
+		return "inverted"
 	}
 	return "unknown"
 }
@@ -1693,6 +1719,17 @@ func ScanLegacyHeader(content string) LegacyHeaderScan {
 		scan.Class = LegacyHeaderClean
 	case scan.BoldLine == 0:
 		scan.Class = LegacyHeaderBareOnly
+	case IsTerminalStatus(scan.BoldValue):
+		// The bolded value is already terminal, so the Both repair's premise —
+		// bare is true, bolded is stale — is unproven for this file and the
+		// repair would overwrite a correct terminal status. Classified apart and
+		// never written; see LegacyHeaderInverted.
+		//
+		// The discriminator is deliberately just this one predicate. A file whose
+		// bare and bolded values are BOTH terminal would be trivially lossless to
+		// repair, and there is no such file in the corpus — building the rule for
+		// it would be building a rule for an empty set.
+		scan.Class = LegacyHeaderInverted
 	default:
 		scan.Class = LegacyHeaderBoth
 	}
@@ -1716,8 +1753,9 @@ func ScanLegacyHeader(content string) LegacyHeaderScan {
 // definitions of the same thing.
 //
 // Every other class is refused. BareOnly needs promotion rather than deletion,
-// and MultiTitle needs a per-file judgment call; both are separate tasks, and
-// refusing here is what keeps this unit inside its scope.
+// MultiTitle needs a per-file judgment call, and Inverted carries a terminal
+// bolded value this repair would destroy; each is a separate task, and refusing
+// here is what keeps this unit inside its scope.
 func RepairLegacyBothHeader(content string) (string, error) {
 	scan := ScanLegacyHeader(content)
 	if scan.Class != LegacyHeaderBoth {
