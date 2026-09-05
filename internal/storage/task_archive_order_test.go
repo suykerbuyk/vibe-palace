@@ -17,6 +17,14 @@ import (
 // These tests exist because the ordering is only observable when something goes
 // wrong. In the success case the reorder is invisible, which is itself an
 // assertion worth making — see the first test.
+//
+// Every fixture below passes a body with NO heading of its own. CreateTask emits
+// the conventional first H2 itself and now REFUSES a body that repeats it
+// (validateTaskBody's conventional-heading arm), so the "## Context\n\n…" bodies
+// these fixtures used to carry would be rejected — and, before the refusal
+// existed, they were quietly building the two-sections-one-key file that arm was
+// added to prevent. The archive ordering these tests measure does not depend on
+// the body's shape.
 
 // archiveSlugCopies counts the file copies of a slug across all three task
 // directories. The whole point of the ordering is that this is never 2.
@@ -61,7 +69,7 @@ func TestArchiveSuccessStateIsUnchangedByTheReorder(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			v := testVault(t)
 			if err := v.CreateTask("proj", TaskSpec{
-				Slug: "my-task", Title: "My Task", Content: "## Context\n\nBody text.\n", Priority: "medium",
+				Slug: "my-task", Title: "My Task", Content: "Body text.\n", Priority: "medium",
 			}); err != nil {
 				t.Fatalf("CreateTask: %v", err)
 			}
@@ -118,7 +126,7 @@ func TestArchiveSuccessStateIsUnchangedByTheReorder(t *testing.T) {
 func TestArchiveCrashBetweenStampAndRename(t *testing.T) {
 	v := testVault(t)
 	if err := v.CreateTask("proj", TaskSpec{
-		Slug: "my-task", Title: "My Task", Content: "## Context\n\nBody.\n", Priority: "medium",
+		Slug: "my-task", Title: "My Task", Content: "Body.\n", Priority: "medium",
 	}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -190,7 +198,7 @@ func TestRetireRefusalLeavesSourceBodyUnstamped(t *testing.T) {
 	// the active file is created first and the historical record planted after.
 	// The result is the duplicate-slug state a re-retire has to refuse.
 	if err := v.CreateTask("proj", TaskSpec{
-		Slug: "my-task", Title: "My Task", Content: "## Context\n\nActive body.\n", Priority: "medium",
+		Slug: "my-task", Title: "My Task", Content: "Active body.\n", Priority: "medium",
 	}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}

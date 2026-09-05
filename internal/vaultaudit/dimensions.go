@@ -169,6 +169,71 @@ const (
 	DimTaskStatusDirectory = "task-status-directory"
 )
 
+// 🔴 THERE IS DELIBERATELY NO DUPLICATE-H2 DIMENSION, AND ITS ABSENCE IS A RULING.
+//
+// # The load-bearing fact: THE CLASS IS CLOSED
+//
+// CreateTask emits storage.ConventionalFirstHeading unconditionally, and a body
+// that carried the same heading used to produce a file with two sections under one
+// amend key — the second permanently unreachable, since sectionBounds resolves the
+// first. That is now refused at the door by validateTaskBody's fifth arm, so NO NEW
+// INSTANCE CAN BE BORN. Everything below follows from that one fact.
+//
+// A dimension over a closed class is a permanent detector for a finite, already
+// enumerated backlog. Repair the outstanding files and it reports zero forever; a
+// detector whose steady state is zero over a class that cannot grow is pure
+// carrying cost — a scan, a registry row, a golden and a test, all to re-answer a
+// question whose answer is fixed. That is the whole reason there is no dimension
+// here, and it is an argument about the CLASS, not about the findings.
+//
+// # The remaining population is finite, enumerated, and mostly archived
+//
+// RECORD THE DERIVATION, NEVER THE COUNT. Walk Projects/*/tasks{,/done,/cancelled}/*.md,
+// collect H2 texts through mdfence.OutsideFences, and report every file where one
+// text repeats. Measured that way when the refusal shipped, the class was a handful
+// of files: all but one under done/ or cancelled/, plus EXACTLY ONE active —
+// quantum-ng/tasks/nested-gro-pullrate-root-cause.md, another project's file.
+//
+// 🔴 THAT ACTIVE FILE IS UNREPAIRED AND DELIBERATELY OUT OF SCOPE HERE. It belongs
+// to another project and the task that shipped this refusal does not reach it. It is
+// recorded so it reads as a known instance rather than an oversight.
+//
+// # DimTaskHeadingMarkers and DimTaskPreamble are cited here ONLY TO SAY THEY DO
+// # NOT APPLY
+//
+// Those two record the un-actionable-red rule: a finding no sanctioned path can
+// repair is permanent red and must not be reported. THAT RULE DOES NOT BITE HERE,
+// and the note must not pretend it does. The one active instance is repairable
+// TODAY by vp_manage_task action=overwrite, so a finding on it would be actionable;
+// and nobody has ruled that it stays — no operator decision covers it. An earlier
+// draft of this note asserted both the opposite of that and rested the ruling on it.
+// It was wrong on the facts, and citing a rule that does not bite is worse than
+// citing none: the next reader checks the citation, finds it hollow, and concludes
+// the conclusion came first. The conclusion is unchanged; its reason is the closed
+// class above.
+//
+// # Do not finish this by symmetry with DimTaskStatusDirectory
+//
+// That one reports in BOTH directions, and it is the obvious template to copy. It
+// does not transfer, and the difference is what the stale artifact still DOES.
+// There the wrong value was actively re-exported by every status-keyed reader, so
+// leaving it shipped a false answer on every read. Here the duplicate heading is
+// inert — fully readable, and unreachable only to a writer that is itself refused
+// on archived tasks. Nothing reads it wrong.
+//
+// # If this is reopened
+//
+// The sequencing the sibling task earned the hard way applies: a repair path first,
+// a dimension second — never a dimension alone. And the closed-class argument at the
+// top has to be refuted, not just outweighed: it is only true while the create-time
+// refusal stands.
+//
+// 🔴 WHATEVER RE-MEASURES THIS MUST BE FENCE-AWARE — a bare grep is not. A
+// fence-blind scan reports the very task that filed this defect as an instance of
+// itself, because its reproduction section quotes the colliding pair inside a fence,
+// and it names one more archived file on the same mistake. Fence-blind, the active
+// population reads as two files instead of one.
+
 // Evidence commands. RECORD THE GREP, NEVER THE COUNT (invariant 3) — every number
 // in the report carries the command that reproduces it, or it rots by the next run.
 const (

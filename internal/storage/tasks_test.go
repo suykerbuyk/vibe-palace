@@ -3280,3 +3280,151 @@ func TestRepairLegacyMultiTitleReportsWhichRefusalItMade(t *testing.T) {
 		t.Errorf("Refusal = %v on success, want %v", ok.Refusal, LegacyRefusedNone)
 	}
 }
+
+// TestCreateTaskRefusesABodyRepeatingTheConventionalHeading is THE discriminating
+// test for the option that shipped, and it is written to be RED under the two
+// options that were not taken.
+//
+// 🔴 IT ASSERTS AN ERROR *AND* THAT NO FILE EXISTS. Both halves are load-bearing.
+// The alternatives considered were "detect the collision and skip the emit" and
+// "splice the author's section under the emitted heading"; both CREATE THE TASK
+// successfully and both produce a file with exactly one conventional heading. So
+// every assertion about the resulting file's content is GREEN under all three
+// options and discriminates nothing — the only observable that separates refusal
+// from adaptation is that refusal leaves no task behind.
+//
+// The body shapes cover the widened predicate: the heading may sit anywhere, not
+// only at the top.
+func TestCreateTaskRefusesABodyRepeatingTheConventionalHeading(t *testing.T) {
+	heading := "## " + ConventionalFirstHeading
+	for _, tc := range []struct {
+		name, content string
+	}{
+		{"body opens with it", heading + "\n\nFiled 2026-09-05.\n"},
+		{"body carries it after another section", "## Design\n\nPlan.\n\n" + heading + "\n\nFiled.\n"},
+		{"body carries it after prose", "Framing.\n\n" + heading + "\n\nFiled.\n"},
+		{"indented, since the check trims", "  " + heading + "\n\nFiled.\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := testVault(t)
+			err := v.CreateTask("proj", TaskSpec{
+				Slug: "task", Title: "T", Priority: "medium", Content: tc.content,
+			})
+			if err == nil {
+				t.Fatal("CreateTask accepted a body repeating the conventional heading; the file it " +
+					"wrote carries two sections under one amend key")
+			}
+			if !strings.Contains(err.Error(), ConventionalFirstHeading) {
+				t.Errorf("error = %v, want it to name %q so the author can act on it", err, ConventionalFirstHeading)
+			}
+			// The half that options 2 and 4 fail: no task was created.
+			if _, _, gerr := v.GetTask("proj", "task"); gerr == nil {
+				t.Error("a refused create left a task file behind")
+			}
+		})
+	}
+}
+
+// TestCreateTaskAcceptsAFencedConventionalHeading proves the rule is fence-aware,
+// and the specimen is not hypothetical.
+//
+// A fence-blind form of this rule would have refused the creation of the very
+// task that filed this defect: its reproduction section quotes a `## Context`
+// pair inside a `~~~md` fence. Measured over the live vault at the time of this
+// change, a fence-blind duplicate scan reports two more files than a fence-aware
+// one, and one of those two is an ACTIVE file — so fence-blindness overstates the
+// active population by 100%. Inside a fence nothing is structure, which is the
+// same rule the four metadata arms already obey.
+func TestCreateTaskAcceptsAFencedConventionalHeading(t *testing.T) {
+	heading := "## " + ConventionalFirstHeading
+	for _, tc := range []struct {
+		name, content string
+	}{
+		{"backtick fence", "The collision looks like:\n\n```md\n" + heading + "\n\n" + heading + "\n```\n\nQuoted, not applied.\n"},
+		{"tilde fence", "Reproduction:\n\n~~~md\n" + heading + "\n~~~\n\nProse.\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := testVault(t)
+			if err := v.CreateTask("proj", TaskSpec{
+				Slug: "task", Title: "T", Priority: "medium", Content: tc.content,
+			}); err != nil {
+				t.Fatalf("CreateTask refused a FENCED sample heading: %v", err)
+			}
+			_, body, err := v.GetTask("proj", "task")
+			if err != nil {
+				t.Fatalf("GetTask: %v", err)
+			}
+			if err := validateWholeTaskFile(body); err != nil {
+				t.Fatalf("the accepted file does not validate: %v\n%s", err, body)
+			}
+		})
+	}
+}
+
+// TestConventionalHeadingRefusalMatchesSectionBoundsEquality is the anti-second-
+// definition pin, and it is why the refusal matches EXACTLY rather than folding
+// case the way refuseLegacySectionCollision does.
+//
+// A refusal has to be keyed on the same notion of "same heading" as the resolver
+// it protects. sectionBounds compares `"## " + section` with `==`, so a body
+// heading that differs only in case is a DIFFERENT amend key and strands nothing;
+// refusing it would reject a body that produces the documented, accepted outcome.
+// Two definitions that agree only on today's inputs are still two definitions, so
+// this drives both over the same set rather than asserting the property in prose.
+func TestConventionalHeadingRefusalMatchesSectionBoundsEquality(t *testing.T) {
+	for _, heading := range []string{
+		"## " + ConventionalFirstHeading,
+		"## " + strings.ToLower(ConventionalFirstHeading),
+		"## " + strings.ToUpper(ConventionalFirstHeading),
+		"## " + ConventionalFirstHeading + " and more",
+		"### " + ConventionalFirstHeading,
+	} {
+		t.Run(heading, func(t *testing.T) {
+			refused := isConventionalFirstHeadingLine(heading)
+
+			// Does this heading actually collide? Build the file create WOULD
+			// have written, then ask the RESOLVER twice: locate the first
+			// section by the conventional name, and re-run over everything after
+			// it. A second hit means two sections share one key, so the second is
+			// unreachable by every section name for the life of the file — which
+			// is the defect itself, measured through sectionBounds rather than by
+			// restating its equality rule here.
+			file := "# T\n\n**Status:** pending\n**Priority:** medium\n\n" +
+				"## " + ConventionalFirstHeading + "\n\n" + heading + "\n\nAuthor prose.\n"
+			_, end, found := sectionBounds(file, ConventionalFirstHeading)
+			if !found {
+				t.Fatalf("sectionBounds cannot find the emitted heading at all in:\n%s", file)
+			}
+			lines := strings.Split(file, "\n")
+			var strands bool
+			if end < len(lines) {
+				_, _, strands = sectionBounds(strings.Join(lines[end:], "\n"), ConventionalFirstHeading)
+			}
+
+			if refused != strands {
+				t.Errorf("isConventionalFirstHeadingLine(%q) = %v but sectionBounds says it strands = %v — "+
+					"the refusal and the resolver disagree about which headings are the same heading",
+					heading, refused, strands)
+			}
+		})
+	}
+}
+
+// TestAmendBodyWithTheConventionalHeadingIsStillRefused records what the fifth arm
+// does to the OTHER caller of validateTaskBody.
+//
+// AmendTask calls validateTaskBody before validateAmendBody, and validateAmendBody
+// already refuses EVERY H2 in an amend body. So this arm changes no amend outcome,
+// only the message for one particular H2 — which is why its remedy text also names
+// the "###" fix. Pinned so a later reader does not read the reordering as free.
+func TestAmendBodyWithTheConventionalHeadingIsStillRefused(t *testing.T) {
+	v := amendFixture(t)
+	body := "Prose.\n\n## " + ConventionalFirstHeading + "\n\nmore\n"
+	_, err := v.AmendTask("proj", "t", "Decision", body)
+	if err == nil {
+		t.Fatal("an amend body carrying an H2 must be refused")
+	}
+	if !strings.Contains(err.Error(), "###") {
+		t.Errorf("the refusal must point an amend caller at the sub-heading fix, got: %v", err)
+	}
+}

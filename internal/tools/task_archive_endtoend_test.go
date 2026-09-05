@@ -33,8 +33,15 @@ func TestManageTaskArchiveEndToEndPlacementAndStamp(t *testing.T) {
 	} {
 		t.Run(tc.action, func(t *testing.T) {
 			vault := storage.NewVault(t.TempDir())
+			// The body carries NO heading of its own: create emits the
+			// conventional first H2 itself, and a body repeating it is refused
+			// (validateTaskBody's conventional-heading arm). This fixture used
+			// to pass "## Context\n\nBody.\n" and so built, as a side effect, the
+			// exact two-sections-one-key file that refusal exists to prevent —
+			// which is what the new arm caught. The placement and stamping this
+			// test is about are unaffected by the body's shape.
 			if err := vault.CreateTask("test-proj", storage.TaskSpec{
-				Slug: "my-task", Title: "My Task", Content: "## Context\n\nBody.\n", Priority: "medium",
+				Slug: "my-task", Title: "My Task", Content: "Body.\n", Priority: "medium",
 			}); err != nil {
 				t.Fatalf("CreateTask: %v", err)
 			}

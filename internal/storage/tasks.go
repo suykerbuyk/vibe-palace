@@ -755,6 +755,18 @@ func (v *Vault) CreateTask(project string, spec TaskSpec) error {
 	// the author forgot a heading is not a rule the reader can rely on. An
 	// author whose content opens with its own H2 gets an empty Context section,
 	// which is the cost of the guarantee and is deliberate.
+	//
+	// 🔴 THAT COST HAS A BOUND NOW, AND THE SENTENCE ABOVE NO LONGER STATES THE
+	// WHOLE RULE. An empty section is still what a DIFFERENTLY named first H2
+	// buys, and it is still deliberate. But a body carrying an H2 named
+	// ConventionalFirstHeading itself bought something else entirely: two
+	// sections under ONE amend key, with sectionBounds resolving the first — so
+	// the author's prose was unreachable by that name for the life of the file,
+	// and an amend on it would overwrite the emitted empty section while
+	// reporting success. That shape is no longer a cost paid here; it is refused
+	// at the door by validateTaskBody's conventional-heading arm, which runs
+	// before any of this. The emit below stays unconditional, which is what
+	// keeps the guarantee a guarantee.
 	fmt.Fprintf(&buf, "\n## %s\n", ConventionalFirstHeading)
 	if content != "" {
 		buf.WriteString("\n")
@@ -1163,7 +1175,7 @@ func headerBlock(lines []string) (start, end int) {
 }
 
 // validateTaskBody rejects a caller-supplied task body that carries its own
-// metadata header.
+// metadata header, or the one H2 heading CreateTask writes for itself.
 //
 // CreateTask writes "# Title", "**Status:**" and "**Priority:**" itself. A body
 // that repeats them yields a file with two H1s and two status lines — and since
@@ -1201,8 +1213,13 @@ func headerBlock(lines []string) (start, end int) {
 // candidate the parser could find — a SILENT RELATIONSHIP nobody wrote. The
 // header block (see headerBlock) already prevents the parser from reading it;
 // this closes the shortest door as well, so the two defences are independent.
+//
+// The FIFTH arm extends the same rule from the header block to the one HEADING
+// the writer owns — see isConventionalFirstHeadingLine for why it is here, why
+// it refuses rather than adapts, and why it matches exactly.
 func validateTaskBody(content string) error {
 	const remedy = "strip the leading metadata block from content: create supplies the \"# Title\" heading and the \"**Status:**\", \"**Priority:**\", \"**Parent:**\" and \"**Depends:**\" lines itself"
+	const headingRemedy = "create writes that heading itself, immediately above your content — rename this one, move its prose beneath the emitted heading, or use \"###\" if it was meant as a sub-heading"
 	for _, l := range mdfence.OutsideFences(content) {
 		trimmed := strings.TrimSpace(l.Text)
 		switch {
@@ -1214,9 +1231,106 @@ func validateTaskBody(content string) error {
 			return fmt.Errorf("task content line %d is a depends line (%q): %s", l.Num, trimmed, remedy)
 		case isH1Line(trimmed):
 			return fmt.Errorf("task content line %d is an H1 heading (%q): %s", l.Num, trimmed, remedy)
+		case isConventionalFirstHeadingLine(trimmed):
+			return fmt.Errorf("task content line %d repeats the conventional first heading (%q), and a "+
+				"file with two %q sections strands the second from amend, which resolves the first: %s",
+				l.Num, trimmed, ConventionalFirstHeading, headingRemedy)
 		}
 	}
 	return nil
+}
+
+// isConventionalFirstHeadingLine reports whether a body line is an H2 whose text
+// is exactly ConventionalFirstHeading — the heading CreateTask emits for itself.
+//
+// # Why refusing is the fix, and not skipping the emit
+//
+// The alternative that looks cheapest is to detect the collision and suppress
+// the unconditional emit at CreateTask. It is not free: it reintroduces exactly
+// the conditional the emit's own comment argues against. The guarantee's whole
+// value is that it holds without the reader checking — "a rule that applies only
+// when the author forgot a heading is not a rule the reader can rely on" — and
+// making the emit depend on author input converts the guarantee into a
+// convention. validateWholeTaskFile's zero-H2 refusal is built on that guarantee
+// holding unconditionally.
+//
+// Splicing the author's same-named section under the emitted heading fails the
+// same way from the other side: `create` would become a section-merging writer,
+// which it is not, and it must detect the same-named section to do it. Both
+// alternatives are also indistinguishable in the resulting FILE — for a
+// colliding body each produces one heading with the author's prose beneath it —
+// so no assertion about the artifact can tell them apart or pin them.
+//
+// Refusing is the only shape that leaves the emit statement unconditional, and
+// it deletes the collision at the one moment it is free to fix: before the file
+// exists. That matters because repair does not scale here. A collision is a
+// two-line diff only while the file has no history; once amended it needs a
+// whole-file rewrite, and once archived it is reachable only by a migrate-family
+// caller built for it.
+//
+// # ANYWHERE, not just the first H2
+//
+// The collision does not require the body to OPEN with the heading. A body
+// shaped `## Design … ## Context` produces the same two-sections-one-key file,
+// and the live corpus carries a specimen whose occurrences sit at lines 7 and 11
+// with a non-empty first section. A first-H2 predicate would miss it.
+//
+// # EXACT match, and this deliberately DIVERGES from refuseLegacySectionCollision
+//
+// That sibling (further down this file) folds case. This one must not, and the
+// reason is that a refusal has to be keyed on the same equality as the resolver
+// it protects. sectionBounds matches `"## " + section` with `==` — case
+// SENSITIVE — so `## context` and `## Context` are two distinct amend keys and
+// strand nothing. Folding case here would refuse a body that produces exactly
+// the documented, accepted outcome (an empty Context section beside a
+// differently-keyed one), and over-rejection at create is paid by the author.
+//
+// 🔴 THE COUPLING IS PINNED BY TEST, NOT BY THIS PARAGRAPH. Two definitions of
+// "same heading" that agree only on today's data are still two definitions;
+// TestConventionalHeadingRefusalMatchesSectionBoundsEquality drives both this
+// predicate and sectionBounds over the same inputs so they cannot drift.
+//
+// # PREVENTION ONLY — the files that already collide are deliberately left
+//
+// This rule stops new collisions and repairs none of the existing ones. That is
+// a decision, not an omission, and it is NOT symmetric with the sibling ruling on
+// archived task files whose "**Status:**" line disagreed with their directory.
+//
+// The difference is what the stale artifact still DOES. There, the wrong value
+// was actively re-exported — `vp tasks --json` and every status-keyed reader kept
+// handing a "pending" archived task to callers — so leaving it was shipping a
+// false answer on every read. Here the second heading is INERT: amend is refused
+// on archived tasks outright, so the destroy-the-prose hazard cannot fire on
+// them, and the duplicate section is fully readable to a human. Nothing reads it
+// wrong; it is only unreachable to one writer that is itself refused.
+//
+// 🔴 THAT INERTNESS ARGUMENT COVERS THE ARCHIVED FILES ONLY, and the distinction
+// is worth keeping straight. An ACTIVE instance is amendable, so the hazard is
+// live for it — an amend keyed on the conventional name resolves the first of the
+// two sections, and what that costs depends on whether the first one holds prose.
+// When this shipped the class held exactly one active file, in ANOTHER project,
+// outside this task's reach; it is enumerated as a known out-of-scope instance in
+// internal/vaultaudit/dimensions.go's no-dimension ruling rather than left to look
+// overlooked. Do not infer from this paragraph that every remaining instance is
+// harmless — infer that the archived ones are, and re-derive the active set.
+//
+// So do not "finish this by symmetry" with a repair migration. If one is ever
+// wanted, the case has to be made on its own facts.
+//
+// Re-derive the population fence-aware, never fence-blind and never cited: walk
+// Projects/*/tasks{,/done,/cancelled}/*.md, collect outside-fence H2 texts via
+// mdfence.OutsideFences, and report files where one text repeats. A fence-blind
+// grep overstates it — the task that filed this defect quotes the colliding pair
+// inside a fence and a blind scan reports the file as an instance of itself.
+//
+// # It is reached from AmendTask too, and that is harmless
+//
+// validateTaskBody guards both CreateTask and AmendTask. An amend body carrying
+// any H2 at all is already refused by validateAmendBody, so this arm changes no
+// amend outcome — only which message a body carrying this particular H2 gets,
+// which is why the remedy text above also names the "###" fix.
+func isConventionalFirstHeadingLine(trimmed string) bool {
+	return trimmed == "## "+ConventionalFirstHeading
 }
 
 // validateWholeTaskFile validates a COMPLETE task file — header and body
