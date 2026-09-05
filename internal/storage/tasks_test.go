@@ -2317,3 +2317,483 @@ func statusLineOf(t *testing.T, content string) string {
 	}
 	return ""
 }
+
+// The bare-only fixtures are the LIVE shapes, copied from the corpus rather than
+// invented. Every one of the five layouts below is a real file: a one-line run,
+// a run with a bare Priority, a wrapped value with the Priority underneath it,
+// a YAML-frontmatter file whose priority exists only there, and the run whose
+// value CONTAINS "Key:"-shaped lines. The reason a live --apply once failed 7 of
+// 7 is that every fixture in the tree was the shape the current writer produces.
+const (
+	// boMinimal — the dominant layout: one blank line after the title, a
+	// one-line status, and no priority anywhere in the file.
+	boMinimal = "# Documentation accuracy pass — tutorial\n\n" +
+		"Status: Complete\n\n" +
+		"## Context\n\nBody.\n"
+
+	// boGapZeroWithPriority — the status abuts the title with no blank line, and
+	// the run carries a bare Priority. Both layouts exist on disk; neither is
+	// rare.
+	boGapZeroWithPriority = "# Phase 10: Help and manpages\n" +
+		"Status: Complete\n" +
+		"Priority: high\n\n" +
+		"## Context\n\nBody.\n"
+
+	// boWrappedThenPriority — friction-analytics-port. The status value wraps
+	// over three lines and the bare Priority sits UNDER the wrap, so a repair
+	// that stopped at the status line's end would miss it.
+	boWrappedThenPriority = "# Port friction analytics\n\n" +
+		"Status: In Progress — refined 2026-06-21; two architecture reviews folded into the\n" +
+		"numbered Phases 2026-06-23 (review #2 below + Grok cross-review); operator-approved.\n" +
+		"Ready to implement.\n" +
+		"Priority: Medium\n\n" +
+		"## Context\n\nBody.\n"
+
+	// boFrontmatter — the only file in the class with YAML frontmatter, and the
+	// only one whose priority exists solely there. Its frontmatter `status`
+	// DISAGREES with its bare Status line, which is why the repair reads only
+	// `priority` from the block and leaves the rest alone.
+	boFrontmatter = "---\ntype: task\nstatus: planned-awaiting-approval\npriority: high\n" +
+		"created: 2026-06-06\n---\n\n" +
+		"# Plan: Phase E — Plugin/Marketplace Build\n" +
+		"Status: Cutover IN PROGRESS (2026-06-06). DONE: PR #3 merged to main.\n\n" +
+		"## Context\n\nBody.\n"
+
+	// boKeyShapedProse — vpc-slash-command-shims, the shape that refutes a
+	// "value ends at the next Key: line" rule. "Design decision:" and
+	// "Depends on:" are line-initial and Key:-shaped, and both are mid-sentence
+	// prose inside ONE status value — the following line continues each of them.
+	boKeyShapedProse = "# Slash-command shims\n\n" +
+		"Status: Phases 1–3 complete (Phase 3 landed 2026-04-13, iteration 56).\n" +
+		"Phase 1 shipped `internal/shims/`; 31 unit tests, 82.7% coverage.\n" +
+		"Design decision: no `commandsUpgradeOpts`-style opts struct for init\n" +
+		"— existing XDG-isolation test harness suffices. Phases 4–5 remain.\n" +
+		"Depends on: existing `vp init`, `vp commands upgrade`, agent-file wiring,\n" +
+		"and the embedded command template set.\n\n" +
+		"## Context\n\nBody.\n"
+
+	// boScopeKey — vp-absorb-legacy-claude-md. Here a Key:-shaped line IS a real
+	// second legacy field, and its own value wraps. Same line shape as
+	// boKeyShapedProse, opposite meaning: this pair is why the repair never
+	// decides between them.
+	boScopeKey = "# Absorb legacy CLAUDE.md\n" +
+		"Status: Not started. Test case: `/home/johns/code/checkers01/CLAUDE.md`.\n" +
+		"Scope: CLAUDE.md first, then AGENTS.md, .cursorrules, .rules, copilot\n" +
+		"instructions — all in the same command.\n\n" +
+		"## Context\n\nBody.\n"
+)
+
+// TestRepairLegacyBareOnlyHeaderConstructsAHeaderTheValidatorAccepts is the
+// acceptance test for the whole unit, and it asserts the ORACLE's verdict rather
+// than bytes.
+//
+// 🔴 The no-priority case is the one that refutes the plan this task was filed
+// with. Promoting Status alone — what "promotion, not deletion" was read to mean
+// — leaves the file refused at the missing-PRIORITY arm, because every file in
+// this class carries zero bolded fields of any kind. The deliverable is header
+// CONSTRUCTION, and this row is what proves it.
+func TestRepairLegacyBareOnlyHeaderConstructsAHeaderTheValidatorAccepts(t *testing.T) {
+	cases := []struct {
+		name         string
+		content      string
+		wantStatus   string
+		wantPriority string
+		wantSource   LegacyPrioritySource
+	}{
+		{
+			name:         "no priority in any form: the supplied default",
+			content:      boMinimal,
+			wantStatus:   "Complete",
+			wantPriority: LegacyPriorityDefault,
+			wantSource:   PriorityFromDefault,
+		},
+		{
+			name:         "bare Priority in the run, status abutting the title",
+			content:      boGapZeroWithPriority,
+			wantStatus:   "Complete",
+			wantPriority: "high",
+			wantSource:   PriorityFromRun,
+		},
+		{
+			name:         "wrapped status with the Priority underneath the wrap",
+			content:      boWrappedThenPriority,
+			wantStatus:   "In Progress — refined 2026-06-21; two architecture reviews folded into the",
+			wantPriority: "Medium",
+			wantSource:   PriorityFromRun,
+		},
+		{
+			name:         "priority only in YAML frontmatter",
+			content:      boFrontmatter,
+			wantStatus:   "Cutover IN PROGRESS (2026-06-06). DONE: PR #3 merged to main.",
+			wantPriority: "high",
+			wantSource:   PriorityFromFrontmatter,
+		},
+		{
+			name:         "a second legacy key in the run does not become a field",
+			content:      boScopeKey,
+			wantStatus:   "Not started. Test case: `/home/johns/code/checkers01/CLAUDE.md`.",
+			wantPriority: LegacyPriorityDefault,
+			wantSource:   PriorityFromDefault,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := RepairLegacyBareOnlyHeader(tc.content)
+			if err != nil {
+				t.Fatalf("RepairLegacyBareOnlyHeader: %v", err)
+			}
+			if err := validateWholeTaskFile(got.Content); err != nil {
+				t.Fatalf("constructed file is one validateWholeTaskFile refuses: %v\nfile:\n%s", err, got.Content)
+			}
+			if got.Status != tc.wantStatus {
+				t.Errorf("Status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if got.Priority != tc.wantPriority {
+				t.Errorf("Priority = %q, want %q", got.Priority, tc.wantPriority)
+			}
+			if got.PrioritySource != tc.wantSource {
+				t.Errorf("PrioritySource = %q, want %q", got.PrioritySource, tc.wantSource)
+			}
+			if !strings.Contains(got.Content, "**Status:** "+tc.wantStatus) {
+				t.Errorf("the constructed Status field is missing:\n%s", got.Content)
+			}
+			if !strings.Contains(got.Content, "**Priority:** "+tc.wantPriority) {
+				t.Errorf("the constructed Priority field is missing:\n%s", got.Content)
+			}
+			// The parser must read back exactly what was constructed. A header
+			// the validator accepts but the reader parses differently would be
+			// two definitions of the same block.
+			meta := parseTaskMeta("t", got.Content, true)
+			if meta.Status != tc.wantStatus || meta.Priority != tc.wantPriority {
+				t.Errorf("parseTaskMeta read back {Status:%q Priority:%q}, want {%q %q}",
+					meta.Status, meta.Priority, tc.wantStatus, tc.wantPriority)
+			}
+		})
+	}
+}
+
+// TestRepairLegacyBareOnlyHeaderKeepsEveryByteOfAKeyShapedValue is the pin for
+// the refutation recorded in RepairLegacyBareOnlyHeader's doc comment.
+//
+// The plan this was built from specified that a value "ends at the next line
+// opening a new Key: field". Applied to this real file that rule truncates a
+// multi-line status value at "Design decision:", which is mid-sentence prose —
+// the NEXT line continues it with an em-dash. The rule is not implementable,
+// because boScopeKey carries the identical line shape as a genuine second field.
+// So the boundary is never decided: everything after the value's first line is
+// relocated verbatim, and this test asserts not one byte was dropped.
+func TestRepairLegacyBareOnlyHeaderKeepsEveryByteOfAKeyShapedValue(t *testing.T) {
+	got, err := RepairLegacyBareOnlyHeader(boKeyShapedProse)
+	if err != nil {
+		t.Fatalf("RepairLegacyBareOnlyHeader: %v", err)
+	}
+
+	// Every continuation line of the original run, including the two Key:-shaped
+	// ones, must still be present.
+	for _, want := range []string{
+		"Phase 1 shipped `internal/shims/`; 31 unit tests, 82.7% coverage.",
+		"Design decision: no `commandsUpgradeOpts`-style opts struct for init",
+		"— existing XDG-isolation test harness suffices. Phases 4–5 remain.",
+		"Depends on: existing `vp init`, `vp commands upgrade`, agent-file wiring,",
+		"and the embedded command template set.",
+	} {
+		if !strings.Contains(got.Content, want) {
+			t.Errorf("a line of the legacy run was DROPPED: %q\nfile:\n%s", want, got.Content)
+		}
+	}
+
+	// The Key:-shaped lines must NOT have become header fields. Depends in
+	// particular has exactly one writer and it is set_relations.
+	meta := parseTaskMeta("t", got.Content, true)
+	if len(meta.Depends) != 0 {
+		t.Errorf("Depends = %v — a prose line was read as a relation nobody wrote", meta.Depends)
+	}
+	if got.PrioritySource != PriorityFromDefault {
+		t.Errorf("PrioritySource = %q; no Priority key is present in this run", got.PrioritySource)
+	}
+
+	// And the Status FIELD is the first line only — never the flattened value.
+	if !strings.Contains(got.Content, "**Status:** Phases 1–3 complete (Phase 3 landed 2026-04-13, iteration 56).\n") {
+		t.Errorf("the Status field is not the value's first line:\n%s", got.Content)
+	}
+	if strings.Contains(got.Content, "**Status:** Phases 1–3 complete (Phase 3 landed 2026-04-13, iteration 56). Phase 1") {
+		t.Errorf("the wrapped value was FLATTENED onto the field; migrate task-status "+
+			"replaces the whole value and would destroy it:\n%s", got.Content)
+	}
+}
+
+// TestRepairLegacyBareOnlyHeaderRelocatesOverflowUnderAnAddressableHeading
+// asserts the DESTINATION of the relocated prose, not merely that the file is
+// valid. Prose parked above the first H2 is unreachable to amend forever, which
+// is the same defect the task-preamble dimension exists to report — so a repair
+// that "kept every byte" by leaving them in the preamble would be trading one
+// unreachable region for another.
+func TestRepairLegacyBareOnlyHeaderRelocatesOverflowUnderAnAddressableHeading(t *testing.T) {
+	got, err := RepairLegacyBareOnlyHeader(boWrappedThenPriority)
+	if err != nil {
+		t.Fatalf("RepairLegacyBareOnlyHeader: %v", err)
+	}
+	if got.Relocated != 3 {
+		t.Fatalf("Relocated = %d, want 3 (the Status line and its two continuation lines)", got.Relocated)
+	}
+
+	lines := strings.Split(got.Content, "\n")
+	headingAt, proseAt, nextH2At := -1, -1, -1
+	for i, l := range lines {
+		switch {
+		case strings.TrimSpace(l) == legacyHeaderSectionHeading:
+			headingAt = i
+		case strings.HasPrefix(l, "numbered Phases 2026-06-23"):
+			proseAt = i
+		case isH2Line(l) && headingAt >= 0 && i > headingAt && nextH2At < 0:
+			nextH2At = i
+		}
+	}
+	if headingAt < 0 {
+		t.Fatalf("no %q section was written:\n%s", legacyHeaderSectionHeading, got.Content)
+	}
+	if proseAt < 0 {
+		t.Fatalf("the relocated prose is missing entirely:\n%s", got.Content)
+	}
+	if proseAt < headingAt {
+		t.Errorf("the continuation landed at line %d, ABOVE the heading at %d — that is the "+
+			"preamble, which amend cannot reach:\n%s", proseAt, headingAt, got.Content)
+	}
+	if nextH2At >= 0 && proseAt > nextH2At {
+		t.Errorf("the continuation landed under a LATER section (%d) than %q (%d)",
+			proseAt, legacyHeaderSectionHeading, headingAt)
+	}
+	// The heading names a topic. A heading carrying a claim cannot be revised —
+	// amend is keyed on its text — which is the rule the doctrine states.
+	for _, claim := range []string{"TODO", "WIP", "BLOCKED", "not yet", "UNCOMMITTED"} {
+		if strings.Contains(legacyHeaderSectionHeading, claim) {
+			t.Errorf("the relocation heading asserts %q; a heading is written once and cannot be revised", claim)
+		}
+	}
+}
+
+// TestRepairLegacyBareOnlyHeaderRelocatesTheStatusLineItself is the correction
+// to the plan's overflow-only boundary, and it is a LOSS test rather than a
+// shape test.
+//
+// The plan relocated the value's second line onward because
+// `vp migrate task-status` — the mandatory next command — replaces the WHOLE
+// Status value with a terminal token. That reasoning is right and stops one line
+// short: the FIRST line is handed to exactly that field, so the paired run
+// destroys it. Measured on a copy of the live vault, one file's 236-byte
+// upstream-PR provenance survived nowhere afterwards, and another's relocated
+// block opened mid-sentence.
+//
+// So the assertion is: after simulating what task-status does to the field, the
+// legacy value is still in the file.
+func TestRepairLegacyBareOnlyHeaderRelocatesTheStatusLineItself(t *testing.T) {
+	for _, tc := range []struct{ name, content, value string }{
+		{"one-line status", boMinimal, "Complete"},
+		{"status plus a bare Priority", boGapZeroWithPriority, "Complete"},
+		{"wrapped status", boWrappedThenPriority, "In Progress — refined 2026-06-21; two architecture reviews folded into the"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := RepairLegacyBareOnlyHeader(tc.content)
+			if err != nil {
+				t.Fatalf("RepairLegacyBareOnlyHeader: %v", err)
+			}
+			if got.Relocated == 0 {
+				t.Fatalf("nothing was relocated, so the legacy value exists only in the field "+
+					"that the paired command overwrites:\n%s", got.Content)
+			}
+
+			// What migrate task-status does next, through the same writer.
+			stamped := replaceStatusLine(got.Content, StatusRetired)
+			if !strings.Contains(stamped, "**Status:** "+StatusRetired) {
+				t.Fatalf("the simulation did not stamp the field:\n%s", stamped)
+			}
+			if !strings.Contains(stamped, tc.value) {
+				t.Errorf("the legacy status value %q did not survive the paired command — "+
+					"relocating only the OVERFLOW hands the value's first line to the very "+
+					"field that command replaces:\n%s", tc.value, stamped)
+			}
+			// And it survives somewhere amend can reach.
+			if !strings.Contains(stamped, legacyHeaderSectionHeading) {
+				t.Errorf("no %q section carries it:\n%s", legacyHeaderSectionHeading, stamped)
+			}
+		})
+	}
+}
+
+// TestRepairLegacyBareOnlyHeaderRefusesEveryOtherClass is the scope guard. Each
+// other class has its own disposition and its own task; a repair that widened
+// quietly would be writing files nobody reviewed.
+func TestRepairLegacyBareOnlyHeaderRefusesEveryOtherClass(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    LegacyHeaderClass
+	}{
+		{"both", legacyBoth, LegacyHeaderBoth},
+		{"clean", validTaskFile, LegacyHeaderClean},
+		{"inverted", legacyInverted, LegacyHeaderInverted},
+		{
+			name: "multi-title",
+			content: "# First\n\n**Status:** retired\n**Priority:** medium\n\n" +
+				"# Second\n\nStatus: Planned\n\n## Context\n\nBody.\n",
+			want: LegacyHeaderMultiTitle,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := RepairLegacyBareOnlyHeader(tc.content)
+			if err == nil {
+				t.Fatalf("the bare-only repair accepted a %s file", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want.String()) {
+				t.Errorf("error should name the class it refused (%s), got: %v", tc.want, err)
+			}
+		})
+	}
+}
+
+// TestRepairLegacyBareOnlyHeaderIsIdempotent proves a repaired file has left the
+// population. The relocated prose still contains a line beginning "Status:", and
+// the classifier must not read it as a legacy header line — its structural guard
+// requires the nearest preceding non-blank line to be the title, and after the
+// repair it is an H2.
+func TestRepairLegacyBareOnlyHeaderIsIdempotent(t *testing.T) {
+	for _, tc := range []struct{ name, content string }{
+		{"minimal", boMinimal},
+		{"wrapped", boWrappedThenPriority},
+		{"key-shaped prose", boKeyShapedProse},
+		{"frontmatter", boFrontmatter},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			once, err := RepairLegacyBareOnlyHeader(tc.content)
+			if err != nil {
+				t.Fatalf("first repair: %v", err)
+			}
+			if got := ScanLegacyHeader(once.Content).Class; got != LegacyHeaderClean {
+				t.Fatalf("repaired file classifies as %s, want %s:\n%s", got, LegacyHeaderClean, once.Content)
+			}
+			if _, err := RepairLegacyBareOnlyHeader(once.Content); err == nil {
+				t.Error("a second repair succeeded; a repaired file must have nothing left to repair")
+			}
+		})
+	}
+}
+
+// TestRepairLegacyBareOnlyHeaderIgnoresFencedSpecimens is the self-inflicted
+// wound. The task files that DOCUMENT this defect quote its specimens inside
+// code fences — this one included — and a fence-blind repair rewrites the very
+// files describing the bug.
+func TestRepairLegacyBareOnlyHeaderIgnoresFencedSpecimens(t *testing.T) {
+	content := "# Promote a bare legacy Status line\n\n" +
+		"**Status:** pending\n**Priority:** medium\n\n" +
+		"## The shape, quoted\n\n" +
+		"```\n" + boMinimal + "```\n\nProse after the fence.\n"
+
+	if got := ScanLegacyHeader(content).Class; got != LegacyHeaderClean {
+		t.Fatalf("class = %s, want %s — a fenced specimen was read as structure", got, LegacyHeaderClean)
+	}
+	if _, err := RepairLegacyBareOnlyHeader(content); err == nil {
+		t.Fatal("the repair rewrote a file whose only legacy header is a fenced quotation")
+	}
+}
+
+// TestRepairLegacyBareOnlyHeaderRefusesARelocationHeadingCollision keeps the
+// repair from stranding a section that already exists. A second H2 by the same
+// name is unreachable to amend, which takes the first match — the defect this
+// project already has filed against CreateTask's unconditional "## Context".
+func TestRepairLegacyBareOnlyHeaderRefusesARelocationHeadingCollision(t *testing.T) {
+	content := "# Wrapped status beside an existing section\n\n" +
+		"Status: In Progress — this value wraps onto\n" +
+		"a second line, so prose must be relocated.\n\n" +
+		legacyHeaderSectionHeading + "\n\nSomething a human already wrote here.\n"
+
+	if got := ScanLegacyHeader(content).Class; got != LegacyHeaderBareOnly {
+		t.Fatalf("fixture classifies as %s, want %s", got, LegacyHeaderBareOnly)
+	}
+	_, err := RepairLegacyBareOnlyHeader(content)
+	if err == nil {
+		t.Fatal("the repair added a second section by a name the file already uses")
+	}
+	if !strings.Contains(err.Error(), legacyHeaderSectionHeading) {
+		t.Errorf("the refusal should name the colliding heading, got: %v", err)
+	}
+}
+
+// TestFrontmatterValueReadsOnlyATerminatedOpeningBlock pins the delimiter policy
+// this function owns. The list is not claimed to be closed — an earlier version
+// of this comment said "the two ways this reader could be wrong" and a review
+// promptly found three more, which is the same defect shape as a heading that
+// asserts a claim instead of naming a topic.
+//
+// The nested-key row is the one that matters most: it is the guarantee a
+// hand-rolled copy of the key match had silently dropped, and it belongs to
+// frontmatterField now rather than to this function.
+func TestFrontmatterValueReadsOnlyATerminatedOpeningBlock(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+		wantOK  bool
+	}{
+		{"the live shape", boFrontmatter, "high", true},
+		{"a --- rule in the body is not frontmatter",
+			"# T\n\n---\npriority: high\n---\n", "", false},
+		{"a key below the closing delimiter is body content",
+			"---\ntype: task\n---\n\npriority: high\n", "", false},
+		{"no frontmatter at all", boMinimal, "", false},
+		{"an UNTERMINATED block does not run to EOF",
+			"---\ntype: task\n\n# T\n\npriority: critical\n", "", false},
+		{"a NESTED key is not top-level",
+			"---\ntype: task\nmeta:\n  priority: critical\n---\n\n# T\n", "", false},
+		{"the key match is case-sensitive, like every other in this package",
+			"---\nPriority: HIGH\n---\n\n# T\n", "", false},
+		{"a quoted scalar is unquoted",
+			"---\npriority: \"high\"\n---\n\n# T\n", "high", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v, ok := frontmatterValue(tc.content, "priority")
+			if v != tc.want || ok != tc.wantOK {
+				t.Errorf("frontmatterValue = (%q, %v), want (%q, %v)", v, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
+// TestFrontmatterReadersShareOneKeyDefinition is the anti-drift pin. Two readers
+// of one file format existed in this package and one was a looser copy of the
+// other; they now share frontmatterField, and this drives BOTH over the same
+// inputs so a future edit to either cannot quietly re-open the gap.
+func TestFrontmatterReadersShareOneKeyDefinition(t *testing.T) {
+	cases := []struct{ name, front, want string }{
+		{"top-level", "type: task\npriority: high", "high"},
+		{"nested is not top-level", "meta:\n  priority: critical", ""},
+		{"case-sensitive", "Priority: HIGH", ""},
+		{"quoted", "priority: 'high'", "high"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			direct := frontmatterField(tc.front, "priority")
+			if direct != tc.want {
+				t.Errorf("frontmatterField = %q, want %q", direct, tc.want)
+			}
+			// The task-file reader must agree, wrapped in its own delimiters.
+			viaTask, _ := frontmatterValue("---\n"+tc.front+"\n---\n\n# T\n", "priority")
+			if viaTask != direct {
+				t.Errorf("frontmatterValue = %q but frontmatterField = %q — the two readers "+
+					"disagree about what a key is, which is the drift the shared definition exists to stop",
+					viaTask, direct)
+			}
+			// ...and so must the path-based reader, over the same bytes.
+			dir := t.TempDir()
+			p := filepath.Join(dir, "n.md")
+			if err := os.WriteFile(p, []byte("---\n"+tc.front+"\n---\n\nbody\n"), 0o644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if viaHead := frontmatterFieldFromHead(p, "priority"); viaHead != direct {
+				t.Errorf("frontmatterFieldFromHead = %q but frontmatterField = %q", viaHead, direct)
+			}
+		})
+	}
+}

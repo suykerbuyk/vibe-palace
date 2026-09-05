@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -32,6 +33,16 @@ const (
 	// value is free prose. Deleting it would destroy the status.
 	thBareOnly = "# Documentation accuracy pass\n" +
 		"Status: Planned (reviewed, revised)\n\n" +
+		"## Context\n\nBody.\n"
+
+	// thBareOnlyWrapped — the bare-only shape whose value WRAPS, plus a bare
+	// Priority line sitting under the wrap. Half the work of the bare-only
+	// repair is deciding where the continuation goes, and a fixture with a
+	// one-line value never reaches that half.
+	thBareOnlyWrapped = "# Port friction analytics\n\n" +
+		"Status: In Progress — refined 2026-06-21; two architecture reviews folded into the\n" +
+		"numbered Phases 2026-06-23 (review #2 below + Grok cross-review); operator-approved.\n" +
+		"Priority: Medium\n\n" +
 		"## Context\n\nBody.\n"
 
 	// thMultiTitle — a modern header prepended above an intact legacy document
@@ -71,20 +82,22 @@ func thSeed(t *testing.T) (root string, paths map[string]string) {
 	t.Helper()
 	root = setupTestVaultEnv(t)
 	paths = map[string]string{
-		"both":        tsWrite(t, root, "Projects/proj/tasks/done/both.md", thBoth),
-		"bare-only":   tsWrite(t, root, "Projects/proj/tasks/done/bareonly.md", thBareOnly),
-		"multi-title": tsWrite(t, root, "Projects/proj/tasks/done/multi.md", thMultiTitle),
-		"clean":       tsWrite(t, root, "Projects/proj/tasks/done/clean.md", thClean),
-		"inverted":    tsWrite(t, root, "Projects/proj/tasks/done/inverted.md", thInverted),
+		"both":         tsWrite(t, root, "Projects/proj/tasks/done/both.md", thBoth),
+		"bare-only":    tsWrite(t, root, "Projects/proj/tasks/done/bareonly.md", thBareOnly),
+		"bare-wrapped": tsWrite(t, root, "Projects/proj/tasks/done/barewrapped.md", thBareOnlyWrapped),
+		"multi-title":  tsWrite(t, root, "Projects/proj/tasks/done/multi.md", thMultiTitle),
+		"clean":        tsWrite(t, root, "Projects/proj/tasks/done/clean.md", thClean),
+		"inverted":     tsWrite(t, root, "Projects/proj/tasks/done/inverted.md", thInverted),
 	}
 	return root, paths
 }
 
-// TestMigrateTaskHeaderRepairsBothAndLeavesEveryOtherClassAlone is the scope
-// test. The operator split this work deliberately: only the "both" class has a
-// provably lossless repair, and a command that quietly widened to the others
-// would be writing files nobody reviewed.
-func TestMigrateTaskHeaderRepairsBothAndLeavesEveryOtherClassAlone(t *testing.T) {
+// TestMigrateTaskHeaderRepairsTheWritableClassesAndLeavesTheRestAlone is the
+// scope test. Two classes have a repair — "both" carries a value across, and
+// "bare-only" constructs the whole header block — and a command that quietly
+// widened to the two that need a per-file judgment call would be writing files
+// nobody reviewed.
+func TestMigrateTaskHeaderRepairsTheWritableClassesAndLeavesTheRestAlone(t *testing.T) {
 	root, paths := thSeed(t)
 
 	var out bytes.Buffer
@@ -97,14 +110,19 @@ func TestMigrateTaskHeaderRepairsBothAndLeavesEveryOtherClassAlone(t *testing.T)
 	}
 
 	// Derive the expectation from the classifier's own report rather than
-	// hardcoding a population: every file it classified as "both" is a file it
-	// must have rewritten, and nothing else may be.
-	if sum.Applied != sum.Both {
-		t.Errorf("Applied = %d but Both = %d; every both-class file must be repaired and only those",
-			sum.Applied, sum.Both)
+	// hardcoding a population: every file it classified as a WRITABLE class is a
+	// file it must have rewritten, and nothing else may be.
+	if sum.Applied != sum.Both+sum.BareOnly {
+		t.Errorf("Applied = %d but Both = %d and BareOnly = %d; every file in a writable class "+
+			"must be repaired and only those", sum.Applied, sum.Both, sum.BareOnly)
 	}
-	if sum.Both == 0 {
-		t.Fatal("the fixture seeded a both-class file but the classifier found none")
+	if sum.Both == 0 || sum.BareOnly == 0 {
+		t.Fatalf("the fixture seeded both writable classes but the classifier found Both=%d BareOnly=%d",
+			sum.Both, sum.BareOnly)
+	}
+	if sum.AppliedBareOnly != sum.BareOnly {
+		t.Errorf("AppliedBareOnly = %d, want %d — the paired-command notice is keyed on this count",
+			sum.AppliedBareOnly, sum.BareOnly)
 	}
 
 	got := tsRead(t, paths["both"])
@@ -126,19 +144,44 @@ func TestMigrateTaskHeaderRepairsBothAndLeavesEveryOtherClassAlone(t *testing.T)
 		t.Errorf("repaired file still classifies as %s, want %s", c, storage.LegacyHeaderClean)
 	}
 
-	for _, class := range []string{"bare-only", "multi-title", "clean", "inverted"} {
-		want := map[string]string{"bare-only": thBareOnly, "multi-title": thMultiTitle,
+	// --- the bare-only construction ------------------------------------------
+	bare := tsRead(t, paths["bare-only"])
+	if !strings.Contains(bare, "**Status:** Planned (reviewed, revised)") {
+		t.Errorf("the legacy value was not carried onto a constructed Status field:\n%s", bare)
+	}
+	if !strings.Contains(bare, "**Priority:** medium") {
+		t.Errorf("no Priority field was constructed, so the file is still one the validator "+
+			"refuses — the whole reason this is construction and not promotion:\n%s", bare)
+	}
+	if c := storage.ScanLegacyHeader(bare).Class; c != storage.LegacyHeaderClean {
+		t.Errorf("constructed file still classifies as %s, want %s", c, storage.LegacyHeaderClean)
+	}
+	wrapped := tsRead(t, paths["bare-wrapped"])
+	if !strings.Contains(wrapped, "**Priority:** Medium") {
+		t.Errorf("the bare Priority under the wrap was not read:\n%s", wrapped)
+	}
+	if !strings.Contains(wrapped, "numbered Phases 2026-06-23") {
+		t.Errorf("the wrapped continuation was dropped:\n%s", wrapped)
+	}
+
+	for _, class := range []string{"multi-title", "clean", "inverted"} {
+		want := map[string]string{"multi-title": thMultiTitle,
 			"clean": thClean, "inverted": thInverted}[class]
 		if got := tsRead(t, paths[class]); got != want {
 			t.Errorf("%s file was rewritten — this command must never write it\n got: %q", class, got)
 		}
 	}
-	if sum.BareOnly == 0 || sum.MultiTitle == 0 || sum.Inverted == 0 {
-		t.Errorf("BareOnly = %d, MultiTitle = %d, Inverted = %d; every unrepairable class must be "+
-			"REPORTED, not silently dropped", sum.BareOnly, sum.MultiTitle, sum.Inverted)
+	if sum.MultiTitle == 0 || sum.Inverted == 0 {
+		t.Errorf("MultiTitle = %d, Inverted = %d; every unrepairable class must be "+
+			"REPORTED, not silently dropped", sum.MultiTitle, sum.Inverted)
 	}
 	if !strings.Contains(out.String(), "separate task") {
 		t.Errorf("the report must say why a skipped class is skipped; got:\n%s", out.String())
+	}
+	// The pairing notice is the operator's only warning that this run created
+	// audit findings on purpose.
+	if !strings.Contains(out.String(), "vp migrate task-status --apply") {
+		t.Errorf("the report does not name the mandatory paired command; got:\n%s", out.String())
 	}
 }
 
@@ -417,8 +460,311 @@ func TestMigrateTaskHeaderRefusesTheInvertedShapeAndMakesNoNewFinding(t *testing
 		}
 		return n
 	}
-	if got, want := count(after), count(before); got > want {
-		t.Errorf("task-status-directory findings rose from %d to %d — the repair manufactured "+
-			"the exact defect the sibling dimension exists to report", want, got)
+	// The rise must be EXACTLY the headers this run constructed on purpose. The
+	// bare-only repair knowingly makes its files visible to this dimension for
+	// the first time — that is the pairing the report announces — so a blanket
+	// "must not rise" would now be measuring the wrong thing. What must still
+	// hold is that the INVERTED file contributed none of it.
+	if got, want := count(after), count(before)+sum.AppliedBareOnly; got != want {
+		t.Errorf("task-status-directory findings went %d -> %d with %d constructed header(s); "+
+			"want exactly %d — anything more means a repair manufactured a finding nobody planned",
+			count(before), got, sum.AppliedBareOnly, want)
+	}
+	for _, f := range after.Findings() {
+		if f.Dimension == vaultaudit.DimTaskStatusDirectory && strings.Contains(f.Artifact, "inverted") {
+			t.Errorf("the inverted file produced a task-status-directory finding (%s); it was "+
+				"never written, so it cannot have gained one", f.Artifact)
+		}
+	}
+}
+
+// TestMigrateTaskHeaderPairedWithTaskStatusReturnsTheAuditToBaseline is the
+// acceptance test for the CONSEQUENCE of the bare-only repair, and it is the
+// reason the two commands are documented as one operation.
+//
+// 🔴 The rise is not a bug and the test asserts it happens. DimTaskStatusDirectory
+// skips a file whose status is absent — absence is the older format, not a claim —
+// so a bare-only file in done/ is invisible to it. Constructing the header makes
+// the file's claim readable for the first time, and since none of the legacy
+// values is terminal, every constructed header is immediately a rule-1 finding.
+// Running the pass alone therefore leaves the audit worse, which is exactly what
+// a reviewer would see and mistake for a defect.
+//
+// The second half closes it. This drives both commands in order and asserts the
+// dimension returns to its baseline — and that the relocated prose is still there
+// afterwards, which is the pin for why a flattened value was rejected: task-status
+// replaces the WHOLE Status value, so prose flattened onto the field would be
+// destroyed by the very command that has to run next.
+func TestMigrateTaskHeaderPairedWithTaskStatusReturnsTheAuditToBaseline(t *testing.T) {
+	root := setupTestVaultEnv(t)
+	tsWrite(t, root, "Projects/proj/tasks/done/bareonly.md", thBareOnly)
+	wrappedPath := tsWrite(t, root, "Projects/proj/tasks/done/barewrapped.md", thBareOnlyWrapped)
+	// The real vault gitignores the advisory lock dir; a test vault that does
+	// not is not modelling the thing this test reasons about.
+	tsWrite(t, root, ".gitignore", ".vp-locks/\n")
+	tsGitInit(t, root)
+
+	vault := storage.NewVault(root)
+	count := func(label string) int {
+		r, err := vaultaudit.Run(vault)
+		if err != nil {
+			t.Fatalf("audit %s: %v", label, err)
+		}
+		n := 0
+		for _, f := range r.Findings() {
+			if f.Dimension == vaultaudit.DimTaskStatusDirectory {
+				n++
+			}
+		}
+		return n
+	}
+
+	baseline := count("before")
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderMigration(root, "proj", true, &out)
+	if err != nil {
+		t.Fatalf("runTaskHeaderMigration: %v", err)
+	}
+	if sum.Failed != 0 {
+		t.Fatalf("Failed = %d, want 0; out:\n%s", sum.Failed, out.String())
+	}
+	if sum.AppliedBareOnly != 2 {
+		t.Fatalf("AppliedBareOnly = %d, want 2; out:\n%s", sum.AppliedBareOnly, out.String())
+	}
+
+	// Half one: the findings appear, on purpose.
+	if got, want := count("after header"), baseline+sum.AppliedBareOnly; got != want {
+		t.Fatalf("findings = %d after constructing %d header(s), want %d — if this ever comes back "+
+			"EQUAL to the baseline, the constructed status is not reaching the dimension and the "+
+			"pairing below is proving nothing", got, sum.AppliedBareOnly, want)
+	}
+
+	// Half two, reached the way the BANNER says to reach it.
+	//
+	// 🔴 This deliberately does NOT `git add -A`. The paired command gates on a
+	// whole-vault clean tree, and the 34 writes half one just made are what
+	// dirty it — so a test that cleaned the tree by any means of its own would
+	// pass while the printed instruction failed, which is exactly the defect a
+	// review found here. The commit below is driven from the paths the banner
+	// PRINTS, through the same storage.CommitAndPushPaths that
+	// `vp vault commit --paths` calls.
+	printed := taskHeaderPrintedCommitPaths(t, out.String())
+	if len(printed) <= sum.AppliedBareOnly {
+		t.Fatalf("the banner printed %d path(s) for %d written file(s) — it must also name the "+
+			".surface stamp each write restamps, or the tree stays dirty:\n%s",
+			len(printed), sum.AppliedBareOnly, out.String())
+	}
+	if _, err := storage.CommitAndPushPaths(root, "construct legacy task headers", printed, false); err != nil {
+		t.Fatalf("committing exactly the paths the banner printed failed: %v", err)
+	}
+	if clean, err := storage.GitStatusClean(root); err != nil || !clean {
+		t.Fatalf("the vault is still dirty after committing the printed paths (clean=%v err=%v); "+
+			"the paired command will refuse", clean, err)
+	}
+
+	var statusOut bytes.Buffer
+	ssum, err := runTaskStatusMigration(root, "proj", true, &statusOut)
+	if err != nil {
+		t.Fatalf("runTaskStatusMigration: %v", err)
+	}
+	if ssum.Failed != 0 {
+		t.Fatalf("task-status Failed = %d, want 0; out:\n%s", ssum.Failed, statusOut.String())
+	}
+	if got := count("after status"); got != baseline {
+		t.Errorf("findings = %d after the paired run, want the baseline %d — the pair does not "+
+			"close what the first half opens", got, baseline)
+	}
+
+	// --- the reason flattening was rejected ----------------------------------
+	after := tsRead(t, wrappedPath)
+	if !strings.Contains(after, "**Status:** retired") {
+		t.Fatalf("task-status did not stamp the constructed field:\n%s", after)
+	}
+	for _, want := range []string{
+		// The value's FIRST line. Relocating only the overflow hands this one to
+		// the field task-status has just replaced, so it would be gone here.
+		"Status: In Progress — refined 2026-06-21; two architecture reviews folded into the",
+		// ...and its continuation, which flattening would have cost.
+		"numbered Phases 2026-06-23 (review #2 below + Grok cross-review); operator-approved.",
+	} {
+		if !strings.Contains(after, want) {
+			t.Errorf("the legacy header did not survive migrate task-status — %q is gone. "+
+				"replaceStatusLine replaces the WHOLE Status value, so anything left in that "+
+				"field is destroyed by the mandatory second half:\n%s", want, after)
+		}
+	}
+	// The same loss, on a file whose status never wrapped at all.
+	plain := tsRead(t, filepath.Join(root, "Projects/proj/tasks/done/bareonly.md"))
+	if !strings.Contains(plain, "Status: Planned (reviewed, revised)") {
+		t.Errorf("a one-line legacy status was destroyed by the pair; it survives nowhere:\n%s", plain)
+	}
+	if !strings.Contains(after, "**Priority:** Medium") {
+		t.Errorf("the constructed Priority field did not survive the paired run:\n%s", after)
+	}
+}
+
+// TestMigrateTaskHeaderBareOnlyReportNamesThePrioritySource keeps the operator
+// able to review what they are about to authorize. "medium" READ from a file and
+// "medium" SUPPLIED for a file that states none are different facts, and only one
+// of them is a decision. A report that printed the value alone would hide which.
+func TestMigrateTaskHeaderBareOnlyReportNamesThePrioritySource(t *testing.T) {
+	root := setupTestVaultEnv(t)
+	tsWrite(t, root, "Projects/proj/tasks/done/supplied.md", thBareOnly)
+	tsWrite(t, root, "Projects/proj/tasks/done/stated.md", thBareOnlyWrapped)
+
+	var out bytes.Buffer
+	if _, err := runTaskHeaderMigration(root, "proj", false, &out); err != nil {
+		t.Fatalf("runTaskHeaderMigration: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		string(storage.PriorityFromDefault),
+		string(storage.PriorityFromRun),
+		"relocating the 1-line legacy run",
+		"relocating the 2-line legacy run",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the plan does not report %q; out:\n%s", want, got)
+		}
+	}
+	// Report-only must still say nothing was written.
+	if strings.Contains(got, "Applied") {
+		t.Errorf("a report-only run claimed to have applied something; out:\n%s", got)
+	}
+}
+
+// taskHeaderPrintedCommitPaths extracts the --paths argument out of the pairing
+// banner THE WAY A SHELL WOULD, and that is the point of it.
+//
+// The test must consume the same string the operator pastes, not a struct field
+// that could be right while the print is wrong. It models two shell rules:
+// backslash-newline is a line continuation and disappears, and the indentation
+// that follows it does NOT — it survives inside the argument. That second rule
+// is what makes the surrounding double quotes load-bearing: without them the
+// value word-splits and `--paths` gets only the first entry. Measured before the
+// quotes were added: 1 of 68 paths committed, exit 0, paired command still
+// refused.
+func taskHeaderPrintedCommitPaths(t *testing.T, out string) []string {
+	t.Helper()
+	_, after, ok := strings.Cut(out, "--paths ")
+	if !ok {
+		t.Fatalf("the banner names no --paths to commit:\n%s", out)
+	}
+	after, _, _ = strings.Cut(after, "\n  2.")
+
+	// A quoted value is what survives the paste. Refuse to parse an unquoted one
+	// rather than silently reading what the shell would not.
+	quoted, ok := strings.CutPrefix(strings.TrimSpace(after), `"`)
+	if !ok {
+		t.Fatalf("the --paths value is not quoted; a shell would word-split it at the "+
+			"continuation indentation and commit only the first entry:\n%s", out)
+	}
+	value, ok := strings.CutSuffix(strings.TrimSpace(quoted), `"`)
+	if !ok {
+		t.Fatalf("the --paths value has no closing quote:\n%s", out)
+	}
+
+	// What the shell hands the process: continuations removed, indentation kept.
+	value = strings.ReplaceAll(value, "\\\n", "")
+	var paths []string
+	for p := range strings.SplitSeq(value, ",") {
+		// The flag parser trims each entry; do the same, and only that.
+		if p = strings.TrimSpace(p); p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths
+}
+
+// TestMigrateTaskHeaderBannerNamesTheCommitStepAndNotTidy pins the two halves of
+// the instruction that a review found unrunnable.
+//
+// The banner must name a commit step, because migrate task-status refuses the
+// dirty tree this command's own writes create. And it must NOT name
+// `vp vault tidy` for that step: tidy's sweep rules cover sessions, transcripts,
+// KG files, drawers, audits and .surface stamps and carry no Projects/*/tasks/**
+// pattern, so it would report these files as dirt and commit none of them.
+func TestMigrateTaskHeaderBannerNamesTheCommitStepAndNotTidy(t *testing.T) {
+	root := setupTestVaultEnv(t)
+	tsWrite(t, root, "Projects/proj/tasks/done/bareonly.md", thBareOnly)
+	tsGitInit(t, root)
+
+	var out bytes.Buffer
+	if _, err := runTaskHeaderMigration(root, "proj", true, &out); err != nil {
+		t.Fatalf("runTaskHeaderMigration: %v", err)
+	}
+	got := out.String()
+
+	for _, want := range []string{
+		"vp vault commit",
+		"--paths",
+		"Projects/proj/tasks/done/bareonly.md",
+		"vp migrate task-status --apply",
+		"vp audit vault",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the banner omits %q, so the printed sequence is not the runnable one:\n%s", want, got)
+		}
+	}
+	// The whole-tree caveat: step 1 commits only this run's writes, and step 2
+	// gates on the entire vault.
+	if !strings.Contains(got, "WHOLE vault tree") {
+		t.Errorf("the banner does not warn that step 2 needs the whole tree clean, so an operator "+
+			"with unrelated dirt will see exit 2 and blame this command:\n%s", got)
+	}
+	if strings.Contains(got, "vault tidy") {
+		t.Errorf("the banner names `vault tidy` as the commit step; tidy classifies task files as "+
+			"REPORTED dirt, never swept, so it would commit nothing:\n%s", got)
+	}
+	// Order matters: committing after the migration is the whole point.
+	commitAt := strings.Index(got, "vp vault commit")
+	statusAt := strings.Index(got, "vp migrate task-status --apply")
+	auditAt := strings.Index(got, "vp audit vault")
+	if !(commitAt < statusAt && statusAt < auditAt) {
+		t.Errorf("the three steps are not printed in runnable order (commit=%d status=%d audit=%d):\n%s",
+			commitAt, statusAt, auditAt, got)
+	}
+}
+
+// TestMigrateTaskHeaderReportsThePrioritySourceTally keeps the one FABRICATED
+// value in this operation countable in a line rather than greppable across a
+// several-hundred-line report. The operator authorized "medium" as a policy for
+// the files that state no priority; how many files that turned out to be is the
+// number they need to see.
+func TestMigrateTaskHeaderReportsThePrioritySourceTally(t *testing.T) {
+	root := setupTestVaultEnv(t)
+	tsWrite(t, root, "Projects/proj/tasks/done/supplied.md", thBareOnly)
+	tsWrite(t, root, "Projects/proj/tasks/done/stated.md", thBareOnlyWrapped)
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderMigration(root, "proj", false, &out)
+	if err != nil {
+		t.Fatalf("runTaskHeaderMigration: %v", err)
+	}
+	if got, want := sum.PrioritySources[storage.PriorityFromDefault], 1; got != want {
+		t.Errorf("PriorityFromDefault = %d, want %d", got, want)
+	}
+	if got, want := sum.PrioritySources[storage.PriorityFromRun], 1; got != want {
+		t.Errorf("PriorityFromRun = %d, want %d", got, want)
+	}
+	// The tally must name the fabricated value, not just count it.
+	for _, want := range []string{
+		"Priority sources:",
+		"1 SUPPLIED DEFAULT",
+		strconv.Quote(storage.LegacyPriorityDefault),
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the tally omits %q:\n%s", want, out.String())
+		}
+	}
+	// A tally is only useful if it sums to the class.
+	total := 0
+	for _, n := range sum.PrioritySources {
+		total += n
+	}
+	if total != sum.BareOnly {
+		t.Errorf("priority sources sum to %d but BareOnly = %d — a file was constructed without "+
+			"its source being counted", total, sum.BareOnly)
 	}
 }

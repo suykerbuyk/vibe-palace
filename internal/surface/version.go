@@ -275,6 +275,28 @@ func ResolveStampDir(vaultPath, writePath string) (string, error) {
 	}
 }
 
+// StampPath returns the vault-relative path of the .surface stamp a write to
+// writePath will touch, or "" when that write is stamped nowhere.
+//
+// It exists so a caller that has to NAME the files a write dirties — an operator
+// instruction to commit them, say — does not have to join ResolveStampDir with a
+// literal ".surface" and thereby own a second copy of the stamp filename.
+func StampPath(vaultPath, writePath string) (string, error) {
+	dir, err := ResolveStampDir(vaultPath, writePath)
+	if err != nil || dir == "" {
+		return "", err
+	}
+	absVault, err := filepath.Abs(vaultPath)
+	if err != nil {
+		return "", fmt.Errorf("abs vault path: %w", err)
+	}
+	rel, err := filepath.Rel(absVault, filepath.Join(dir, stampFilename))
+	if err != nil {
+		return "", fmt.Errorf("relativize stamp path: %w", err)
+	}
+	return filepath.ToSlash(rel), nil
+}
+
 // warnUnrecognizedTopOnce emits the unrecognized-vault-path warning for the
 // given top-level directory at most once per process.
 func warnUnrecognizedTopOnce(top, writePath string) {

@@ -254,6 +254,28 @@ func frontmatterFieldFromHead(path, field string) string {
 	if end := strings.Index(front, "\n---\n"); end >= 0 {
 		front = front[:end]
 	}
+	return frontmatterField(front, field)
+}
+
+// frontmatterField extracts one TOP-LEVEL scalar from the text BETWEEN a
+// frontmatter block's delimiters. It is the shared half of the two readers in
+// this package, and it is deliberately the KEY-MATCHING half.
+//
+// The delimiter policy is NOT shared, because the two callers legitimately
+// differ: frontmatterFieldFromHead reads a bounded window off disk and tolerates
+// a block whose closing delimiter falls outside it, while frontmatterValue has
+// the whole file and refuses an unterminated block outright. Deciding what
+// counts as a KEY is the part that must not be answered twice — a second copy of
+// that is how two readers of one file format drift apart (see mdfence, whose
+// naive fence check had been copied three times before one definition replaced
+// them).
+//
+// TOP-LEVEL ONLY, and that is the guarantee, not an accident: the match is
+// CutPrefix on the raw line, so "  priority: critical" nested under a "meta:"
+// key does not match and neither does a body line indented under anything else.
+// A TrimSpace here would silently drop that guarantee. The key match is
+// case-SENSITIVE for the same reason every other key match in this package is.
+func frontmatterField(front, field string) string {
 	for line := range strings.SplitSeq(front, "\n") {
 		rest, ok := strings.CutPrefix(line, field+":")
 		if !ok {

@@ -1566,7 +1566,20 @@ func globTaskMeta(dir string, done bool) ([]TaskMeta, error) {
 // because ScanLegacyHeader adds the structural guard below; this predicate alone
 // is NOT sufficient to identify a header line.
 func legacyStatusValue(line string) (string, bool) {
-	rest, ok := strings.CutPrefix(strings.TrimSpace(line), fieldStatus+":")
+	return legacyFieldValue(line, fieldStatus)
+}
+
+// legacyFieldValue is the field-agnostic form of legacyStatusValue, and the ONE
+// definition of "a bare legacy header line" for this package. The bare-only
+// repair needs the same predicate for Priority that the classifier uses for
+// Status, and a near-copy is how a classifier and a repair come to disagree
+// about which lines are header fields.
+//
+// It is LINE-ANCHORED, which is load-bearing rather than tidy: real legacy
+// status values carry colons mid-sentence ("Test case: ...", "DONE: ..."), and a
+// colon scan that is not anchored splits a value in half at the first of them.
+func legacyFieldValue(line, field string) (string, bool) {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(line), field+":")
 	if !ok {
 		return "", false
 	}
@@ -1592,9 +1605,13 @@ const (
 	// LegacyHeaderBareOnly — a bare legacy line and NO bolded field, so the bare
 	// line is the file's ONLY status declaration. Deleting it destroys the
 	// status and leaves the file refused at validateWholeTaskFile's "missing
-	// Status" arm rather than repaired. The repair is PROMOTION, and it needs a
-	// prose-continuation rule because these values are free prose that wraps
-	// across lines. Separate task; reported here, never written.
+	// Status" arm rather than repaired.
+	//
+	// The repair is CONSTRUCTION, not promotion, and that distinction was
+	// measured rather than assumed: every file in the class carries zero bolded
+	// header fields of any kind, so promoting Status alone still leaves the file
+	// refused — at the missing-PRIORITY arm instead. See
+	// RepairLegacyBareOnlyHeader, which builds the whole header block.
 	LegacyHeaderBareOnly
 
 	// LegacyHeaderMultiTitle — more than one H1 outside fences. The second title
@@ -1752,10 +1769,10 @@ func ScanLegacyHeader(content string) LegacyHeaderScan {
 // repair unblocks — one concern per command, so the two cannot drift into two
 // definitions of the same thing.
 //
-// Every other class is refused. BareOnly needs promotion rather than deletion,
-// MultiTitle needs a per-file judgment call, and Inverted carries a terminal
-// bolded value this repair would destroy; each is a separate task, and refusing
-// here is what keeps this unit inside its scope.
+// Every other class is refused. BareOnly has no bolded field to carry a value
+// onto and is repaired by RepairLegacyBareOnlyHeader, MultiTitle needs a
+// per-file judgment call, and Inverted carries a terminal bolded value this
+// repair would destroy; refusing here is what keeps each repair to one class.
 func RepairLegacyBothHeader(content string) (string, error) {
 	scan := ScanLegacyHeader(content)
 	if scan.Class != LegacyHeaderBoth {
@@ -1781,4 +1798,293 @@ func RepairLegacyBothHeader(content string) (string, error) {
 		return "", fmt.Errorf("legacy header repair produced an invalid task file: %w", err)
 	}
 	return repaired, nil
+}
+
+// ---------------------------------------------------------------------------
+// The bare-only repair: header-block CONSTRUCTION.
+
+const (
+	// LegacyPriorityDefault is the priority supplied to a bare-only file that
+	// carries none in any form. Exported so the operator-facing report NAMES the
+	// value it is about to fabricate instead of restating a literal that could
+	// drift from this one. It is an OPERATOR DECISION (2026-09-05), not a
+	// derivation: 17 of the 34 files in the live class state no priority
+	// anywhere, and the alternative — repairing only the files whose every field
+	// is derivable — was put to the operator and declined in favour of full
+	// coverage. Re-derive the split with `vp migrate task-header`; never quote a
+	// count from a comment.
+	LegacyPriorityDefault = "medium"
+
+	// legacyHeaderSectionHeading is where a wrapped legacy value's remainder
+	// lands. Named by TOPIC and not by a claim, because amend is keyed on
+	// heading text and cannot revise it later.
+	legacyHeaderSectionHeading = "## Legacy header"
+
+	legacyHeaderSectionProvenance = "The pre-contract header run, relocated verbatim when the bolded header " +
+		"fields above were constructed from it. Nothing here was edited."
+
+	// legacyHeaderSectionFrontmatterNote is appended for the one file shape that
+	// carries legacy status in TWO places. Not touching the YAML block is the
+	// right call — it is a third header format with its own readers — but the
+	// sentence above, unqualified, tells a reader that all pre-contract header
+	// material is in this section, and for such a file it is not. The clause is
+	// conditional rather than universal so it stays true per file instead of
+	// being noise on the 33 that have no frontmatter.
+	legacyHeaderSectionFrontmatterNote = " The YAML frontmatter block above the title is a separate " +
+		"legacy format and was left where it is; it may carry its own status and priority keys."
+)
+
+// LegacyPrioritySource names where a constructed **Priority:** value came from.
+// The report prints it because "medium" that was READ from the file and "medium"
+// that was SUPPLIED for it are different facts, and only one of them is an
+// operator decision the reviewer needs to see.
+type LegacyPrioritySource string
+
+const (
+	// PriorityFromRun — a bare "Priority:" line inside the legacy header run.
+	PriorityFromRun LegacyPrioritySource = "the legacy run"
+	// PriorityFromFrontmatter — a "priority:" key in YAML frontmatter, which is
+	// a THIRD header format the classifier does not read. Exactly one file in
+	// the live class has it, and it has no bare Priority line.
+	PriorityFromFrontmatter LegacyPrioritySource = "YAML frontmatter"
+	// PriorityFromDefault — nothing in the file states one; LegacyPriorityDefault
+	// was supplied.
+	PriorityFromDefault LegacyPrioritySource = "supplied default"
+)
+
+// LegacyBareOnlyRepair is the outcome of constructing a header block, carried as
+// a struct so the report can name WHAT was written and where each value came
+// from without re-deriving any of it. A caller re-deriving the priority source
+// from the bytes would be a second definition of the rule below.
+type LegacyBareOnlyRepair struct {
+	Content        string
+	Status         string
+	Priority       string
+	PrioritySource LegacyPrioritySource
+	Relocated      int // lines of the legacy run moved into the body (the whole run bar a consumed Priority)
+}
+
+// RepairLegacyBareOnlyHeader builds a valid modern header block for a
+// LegacyHeaderBareOnly file, in ONE write, validated against
+// validateWholeTaskFile as the oracle.
+//
+// # Why this is CONSTRUCTION and not promotion
+//
+// The obvious repair — bold the bare Status line — produces a file the validator
+// still refuses. Every file in the live class carries ZERO bolded header fields
+// of any kind, so a promoted Status leaves "missing Priority" behind it. The
+// deliverable is therefore the whole block: a Status field, a Priority field,
+// and a decision about where the rest of the legacy run goes.
+//
+// # The run, and the rule that is NOT applied to it
+//
+// The run is the contiguous non-blank stretch beginning at the bare Status line
+// and ending at the first blank line — the same contiguous-run shape headerBlock
+// enforces for the modern header. It is fence-aware: a fence opening inside the
+// run ends it, because a fenced line is not structure.
+//
+// 🔴 THIS DELIBERATELY DOES NOT SPLIT THE RUN INTO FIELDS AT EVERY "Key:" LINE,
+// and that is a correction to the plan it was built from. The corpus proves the
+// boundary is undecidable: "Scope:" opening a real second legacy field and
+// "Design decision:" opening a mid-sentence prose line are the SAME line shape,
+// in two files, meaning opposite things. A value-boundary rule keyed on that
+// shape truncates a 22-line status value at its 13th line.
+//
+// The boundary is made IRRELEVANT instead of guessed. Only two values are
+// extracted — the Status value's first line, and a Priority line — and
+// everything else in the run travels verbatim into the body. Whether a given
+// line is "continuation" or "another legacy key" changes nothing about where it
+// ends up, so the question never has to be answered. Created:, Scope:,
+// "Design decision:" and "Depends on:" all ride along; no modern field is
+// invented for them, because Parent and Depends have exactly one writer and it
+// is set_relations.
+//
+// # The legacy run is RELOCATED, never flattened
+//
+// Joining a wrapped value onto one field line would be lossless for exactly one
+// command: `vp migrate task-status` replaces the WHOLE Status value with a
+// terminal token, so a flattened 22-line implementation history is destroyed on
+// the next run. The run is relocated under an H2 instead, where it survives —
+// and survives addressably, because amend reaches an H2 section and reaches
+// nothing above the first one.
+//
+// The run is relocated ENTIRE, its Status line included. See the comment at the
+// relocation itself for why the plan's overflow-only boundary loses the value's
+// first line to the very command the relocation exists to protect against.
+//
+// # The consequence this repair CREATES, and the pairing it requires
+//
+// None of the legacy values is terminal, and the whole live class sits in done/.
+// DimTaskStatusDirectory skips a file with no bolded Status line — absence is the
+// older format, not a claim — so these files are invisible to it today and become
+// rule-1 findings the moment the field exists. `vp migrate task-status` is the
+// second half of the pair and must run immediately after; the caller says so in
+// its own help, and a test drives both and asserts the findings return to
+// baseline.
+func RepairLegacyBareOnlyHeader(content string) (LegacyBareOnlyRepair, error) {
+	var out LegacyBareOnlyRepair
+
+	scan := ScanLegacyHeader(content)
+	if scan.Class != LegacyHeaderBareOnly {
+		return out, fmt.Errorf("legacy bare-only repair handles %s files only, got %s",
+			LegacyHeaderBareOnly, scan.Class)
+	}
+
+	lines := strings.Split(content, "\n")
+	if scan.BareLine < 1 || scan.BareLine > len(lines) {
+		return out, fmt.Errorf("legacy bare-only repair: line out of range (bare %d, file has %d lines)",
+			scan.BareLine, len(lines))
+	}
+
+	unfenced := make(map[int]bool, len(lines))
+	for _, l := range mdfence.OutsideFences(content) {
+		unfenced[l.Num] = true
+	}
+
+	runStart := scan.BareLine - 1
+	runEnd := runStart
+	for runEnd < len(lines) && strings.TrimSpace(lines[runEnd]) != "" && unfenced[runEnd+1] {
+		runEnd++
+	}
+
+	// The Status value comes from the classifier, never from a second parse of
+	// the same line.
+	out.Status = scan.BareValue
+
+	// 🔴 THE WHOLE RUN IS RELOCATED, INCLUDING THE STATUS LINE ITSELF, and that
+	// is a correction to the plan this was built from rather than an extension
+	// of it. That plan relocated only the OVERFLOW — the value's second line
+	// onward — on the stated ground that `vp migrate task-status` replaces the
+	// whole Status value and would destroy anything flattened onto the field.
+	// The reasoning is right and it was applied one line short: the value's
+	// FIRST line is handed to that same field, so the mandatory paired command
+	// destroys it too.
+	//
+	// Measured on a copy of the live vault, running both halves in order:
+	// hnsw-library-bug-fixes-and-hardening's 236-byte upstream-PR provenance
+	// survived nowhere in the file afterwards, and friction-analytics-port's
+	// relocated block opened mid-sentence with its first clause gone. Relocating
+	// the run entire is what makes the legacy header survive the operation it is
+	// half of, and it also stops the relocated block being a fragment.
+	//
+	// The Priority line is the ONE exception, and for the opposite reason:
+	// task-status does not touch Priority, so a consumed Priority value is
+	// preserved by the header field itself and duplicating it would be noise.
+	//
+	// First-wins on that key, and an EMPTY value does not count as one: falling
+	// through to the supplied default beats writing a blank field. A second
+	// Priority line, if a vault this measurement did not cover has one, stays in
+	// the relocated block where a human can see it.
+	relocated := make([]string, 0, runEnd-runStart)
+	relocated = append(relocated, lines[runStart])
+	for i := runStart + 1; i < runEnd; i++ {
+		if v, ok := legacyFieldValue(lines[i], fieldPriority); ok && v != "" && out.Priority == "" {
+			out.Priority, out.PrioritySource = v, PriorityFromRun
+			continue
+		}
+		relocated = append(relocated, lines[i])
+	}
+	if out.Priority == "" {
+		if v, ok := frontmatterValue(content, "priority"); ok && v != "" {
+			out.Priority, out.PrioritySource = v, PriorityFromFrontmatter
+		} else {
+			out.Priority, out.PrioritySource = LegacyPriorityDefault, PriorityFromDefault
+		}
+	}
+	out.Relocated = len(relocated)
+
+	repaired := make([]string, 0, len(lines)+6)
+	repaired = append(repaired, lines[:runStart]...)
+	repaired = append(repaired,
+		"**"+fieldStatus+":** "+out.Status,
+		"**"+fieldPriority+":** "+out.Priority)
+	// Unconditional: `relocated` is seeded with the run's Status line, so there is
+	// always a section to write and always a collision to check for. An earlier
+	// `if len(relocated) > 0` here was dead — it dated from the overflow-only
+	// boundary, where a one-line run relocated nothing — and a guard suggesting a
+	// path that cannot exist is worse than no guard.
+	if err := refuseLegacySectionCollision(content); err != nil {
+		return out, err
+	}
+	provenance := legacyHeaderSectionProvenance
+	if _, hasFrontmatter := frontmatterBlock(content); hasFrontmatter {
+		provenance += legacyHeaderSectionFrontmatterNote
+	}
+	repaired = append(repaired, "", legacyHeaderSectionHeading, "", provenance, "")
+	repaired = append(repaired, relocated...)
+	repaired = append(repaired, lines[runEnd:]...)
+	out.Content = strings.Join(repaired, "\n")
+
+	// The oracle. This repair sits IN FRONT of the validator and never weakens
+	// it; a constructed file the validator would refuse is a bug here.
+	if err := validateWholeTaskFile(out.Content); err != nil {
+		return out, fmt.Errorf("legacy bare-only repair produced an invalid task file: %w", err)
+	}
+	return out, nil
+}
+
+// refuseLegacySectionCollision refuses a file that already carries an H2 by the
+// relocation heading's name. Emitting a second one would leave the pre-existing
+// section unreachable — amend is keyed on heading text and takes the FIRST match
+// — which is the stranding defect this project already has filed against
+// CreateTask's unconditional "## Context".
+//
+// No file in the live class collides today (derive: `vp migrate task-header`,
+// then grep the reported files). This refuses rather than skips the check
+// because the command runs against vaults that measurement did not cover, and
+// the failure it prevents is silent.
+func refuseLegacySectionCollision(content string) error {
+	for _, l := range mdfence.OutsideFences(content) {
+		if isH2Line(l.Text) && strings.EqualFold(strings.TrimSpace(l.Text), legacyHeaderSectionHeading) {
+			return fmt.Errorf("legacy bare-only repair: line %d already carries the %q heading the "+
+				"relocated prose would use, and a second one would strand it from amend", l.Num, legacyHeaderSectionHeading)
+		}
+	}
+	return nil
+}
+
+// frontmatterValue reads one key from a YAML frontmatter block, which is a THIRD
+// header format some legacy task files carry above their title.
+//
+// It owns only the DELIMITER policy; the key match is frontmatterField's, shared
+// with frontmatterFieldFromHead. An earlier version of this function hand-rolled
+// the key match too, and justified it by claiming a YAML dependency would be a
+// larger surface than the question. That was WRONG TWICE: gopkg.in/yaml.v3 is
+// already a direct dependency (go.mod) and ParseFrontmatter in this same package
+// already calls yaml.Unmarshal, so nothing was being avoided; and the copy was
+// LOOSER than the definition it duplicated, matching on a TrimSpace'd key so a
+// nested "  priority:" under a "meta:" block read as top-level. Recorded because
+// the refuted reasoning is the useful part.
+//
+// The policy, and why it is stricter than its sibling's: the block must OPEN the
+// file, so a "---" rule further down the body is not mistaken for one, and it
+// must be CLOSED. An unterminated block is not treated as running to EOF —
+// that would read the entire task body as metadata. frontmatterFieldFromHead
+// tolerates the unterminated case because its window is bounded by a fixed read
+// size and narrowing it would change a live session-reading path; this caller
+// has the whole file and no such excuse.
+func frontmatterValue(content, key string) (string, bool) {
+	front, ok := frontmatterBlock(content)
+	if !ok {
+		return "", false
+	}
+	v := frontmatterField(front, key)
+	return v, v != ""
+}
+
+// frontmatterBlock returns the text between a task file's frontmatter
+// delimiters. It is the delimiter policy in one place, so "is there a
+// frontmatter block" and "what does it say" cannot come to disagree — the
+// relocation provenance note is emitted on the first question and the priority
+// is read from the second.
+func frontmatterBlock(content string) (string, bool) {
+	front, ok := strings.CutPrefix(content, "---\n")
+	if !ok {
+		return "", false
+	}
+	end := strings.Index(front, "\n---")
+	if end < 0 {
+		return "", false
+	}
+	return front[:end], true
 }

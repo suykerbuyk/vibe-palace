@@ -8,11 +8,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
 // The pass that normalizes a task header written before the current contract.
@@ -30,23 +32,37 @@ import (
 //
 // # Scope, and why it is narrower than the population
 //
-// The corpus carries five classes (`storage.ScanLegacyHeader`) and only ONE has a
-// provably lossless mechanical repair. This command REPORTS all five and WRITES
-// only `LegacyHeaderBoth`, where a true un-bolded value sits above a stale bolded
-// one so carrying it across loses nothing.
+// The corpus carries five classes (`storage.ScanLegacyHeader`). This command
+// REPORTS all five and WRITES two, each through its own repair in
+// `internal/storage`, each refusing every class but its own:
 //
-// BARE-ONLY is not a smaller version of that. Its bare line is the file's only
-// status declaration, so the deletion an earlier plan proposed for the whole
-// population would destroy the status and leave the file refused at the
-// validator's "missing Status" arm instead of repaired. Its repair is PROMOTION,
-// and the values are free prose that wraps across lines. MULTI-TITLE needs a
-// per-file judgment call between two disagreeing headers. INVERTED carries a
-// bolded value that is already terminal, so the Both repair would overwrite a
-// correct "retired"/"cancelled" with the legacy line — manufacturing the very
-// finding `vaultaudit.DimTaskStatusDirectory` rule 1 exists to report. All three
-// are separate tasks, and the refusal in `storage.RepairLegacyBothHeader` is what
-// keeps this command inside that split rather than relying on anyone remembering
-// it.
+//   - BOTH — a true un-bolded value sits above a stale bolded one, so carrying it
+//     across and dropping the bare line loses nothing.
+//   - BARE-ONLY — there is no bolded field to carry anything onto, so the repair
+//     CONSTRUCTS the header block. It is not a smaller version of the Both
+//     repair, and it is not the deletion an earlier plan proposed for the whole
+//     population: deleting the bare line destroys the file's only status and
+//     leaves it refused at the validator's "missing Status" arm instead of
+//     repaired.
+//
+// MULTI-TITLE needs a per-file judgment call between two disagreeing headers.
+// INVERTED carries a bolded value that is already terminal, so the Both repair
+// would overwrite a correct "retired"/"cancelled" with the legacy line —
+// manufacturing the very finding `vaultaudit.DimTaskStatusDirectory` rule 1
+// exists to report. Both are separate tasks, and the refusals in
+// `storage.RepairLegacyBothHeader` / `storage.RepairLegacyBareOnlyHeader` are
+// what keep this command inside that split rather than relying on anyone
+// remembering it.
+//
+// # The bare-only repair MANUFACTURES work for a sibling, and says so
+//
+// None of the legacy bare values is terminal, and the live class sits entirely in
+// `done/`. `DimTaskStatusDirectory` skips a file whose status is absent — absence
+// is the older format, not a claim — so every one of those files is invisible to
+// it today and becomes a rule-1 finding the moment the field exists. That is not
+// a defect in the repair; it is the finding surfacing at last. But it means
+// `vp migrate task-status` is the mandatory SECOND HALF of the operation, and
+// this command's report says so after any run that constructed a header.
 //
 // # Plan-first
 //
@@ -98,14 +114,25 @@ func cmdMigrateTaskHeader() *cli.Command {
 			"before it starts — and every whole-file writer goes through that validator, so no " +
 			"other tool can repair these files.\n\n" +
 			"PLAN-FIRST: the bare command REPORTS and writes nothing; pass --apply to write.\n\n" +
-			"FOUR CLASSES are reported and exactly ONE is written. \"both\" (a true bare line above " +
+			"FIVE CLASSES are reported and TWO are written. \"both\" (a true bare line above " +
 			"a stale bolded field) is repaired by dropping the bare line and carrying its value " +
 			"onto the bolded field, in a SINGLE write — a two-step would leave the file asserting " +
 			"only the stale value, and a crash between the steps would make that permanent. " +
-			"\"bare-only\" (the bare line is the file's ONLY status) needs PROMOTION rather than " +
-			"deletion and is reported, never written. \"multi-title\" (a modern header prepended " +
-			"above an intact legacy document) needs a per-file judgment call between two " +
-			"disagreeing headers and is reported, never written. \"clean\" files are left alone.\n\n" +
+			"\"bare-only\" (the bare line is the file's ONLY status, and the file has no bolded " +
+			"field at all) is repaired by CONSTRUCTING the header block: the Status value's first " +
+			"line becomes **Status:**, a bare \"Priority:\" line or a YAML priority becomes " +
+			"**Priority:** (defaulting to \"medium\" when the file states none), and any remaining " +
+			"prose from the legacy run is RELOCATED verbatim under a body heading rather than " +
+			"flattened onto the field. \"multi-title\" (a modern header prepended above an intact " +
+			"legacy document) needs a per-file judgment call between two disagreeing headers and " +
+			"is reported, never written. \"inverted\" (a bolded value that is already terminal " +
+			"beside a non-terminal bare line) would have a correct status overwritten and is " +
+			"reported, never written. \"clean\" files are left alone.\n\n" +
+			"🔴 PAIRED COMMAND: a bare-only repair makes files VISIBLE to the " +
+			"task-status-directory audit dimension for the first time — none of the legacy values " +
+			"is terminal and the class sits in done/, so each repaired file becomes a rule-1 " +
+			"finding. Run `vp migrate task-status --apply` immediately after this command's " +
+			"--apply, then re-run `vp audit vault` and confirm no net new findings.\n\n" +
 			"Scope is every task directory — active, done/ and cancelled/ — because the classes " +
 			"span all three. Writes go through the locked, surface-stamping task writer, never the " +
 			"generic vault file tools (which refuse task paths), and the repaired file is checked " +
@@ -117,7 +144,8 @@ func cmdMigrateTaskHeader() *cli.Command {
 		Examples: []cli.Example{
 			{Cmd: "vp migrate task-header", Comment: "Report every class across the vault; writes nothing"},
 			{Cmd: "vp migrate task-header -p vibe-palace", Comment: "Report for one project"},
-			{Cmd: "vp migrate task-header -p vibe-palace --apply", Comment: "Repair the \"both\" class in one project"},
+			{Cmd: "vp migrate task-header -p vibe-palace --apply", Comment: "Repair the \"both\" and \"bare-only\" classes in one project"},
+			{Cmd: "vp migrate task-status -p vibe-palace --apply", Comment: "The mandatory second half after a bare-only repair"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(migrateTaskHeaderFlags, args)
@@ -161,13 +189,28 @@ type taskHeaderPlan struct {
 type taskHeaderSummary struct {
 	Scanned int
 	Clean   int
-	// Reported per class. Both is the only one this command can write; the
-	// others are counted so the report sizes the work it is NOT doing.
+	// Reported per class. Both and BareOnly are the two this command can write;
+	// MultiTitle and Inverted are counted so the report sizes the work it is NOT
+	// doing.
 	Both       int
 	BareOnly   int
 	MultiTitle int
 	Inverted   int
 	Applied    int
+	// AppliedBareOnly counts the constructed headers specifically, because they
+	// are the writes that make files newly visible to DimTaskStatusDirectory and
+	// so the ones that oblige the operator to run the paired command.
+	AppliedBareOnly int
+	// AppliedPaths are the vault-relative paths this run WROTE, in write order.
+	// They are what the operator has to commit before the paired command will
+	// run, and printing them exactly is the difference between an instruction
+	// that works and one that names a directory holding other people's dirt.
+	AppliedPaths []string
+	// PrioritySources tallies where each constructed **Priority:** came from.
+	// The supplied-default count is the one genuinely fabricated value in the
+	// whole operation, and an operator should not have to grep a 480-line report
+	// to learn how many there were.
+	PrioritySources map[storage.LegacyPrioritySource]int
 	// Failed counts ATTEMPTS that went wrong — read errors, refused shadows and
 	// failed writes — never a class this command declines to repair by design.
 	Failed int
@@ -180,7 +223,7 @@ type taskHeaderSummary struct {
 // built from the active graph and hides both the icebox and every archived file,
 // which is most of this population.
 func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskHeaderSummary, error) {
-	var sum taskHeaderSummary
+	sum := taskHeaderSummary{PrioritySources: map[storage.LegacyPrioritySource]int{}}
 
 	projects, err := taskPreambleProjects(root, only)
 	if err != nil {
@@ -234,8 +277,47 @@ func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskH
 					continue
 				case storage.LegacyHeaderBareOnly:
 					sum.BareOnly++
-					fmt.Fprintf(out, "  SKIP  %s\n        bare-only: %q is this file's ONLY status. Promotion, not deletion — separate task.\n",
-						taskHeaderWhere(project, sub, taskSlug), scan.BareValue)
+
+					// Planned BEFORE the apply branch so the report describes the
+					// same construction the write performs — including the
+					// priority SOURCE, because "medium" that was read from the
+					// file and "medium" that was supplied for it are different
+					// facts and only one of them is an operator decision.
+					fix, rerr := storage.RepairLegacyBareOnlyHeader(before)
+					if rerr != nil {
+						fmt.Fprintf(out, "  !!    %s: %v\n", taskHeaderWhere(project, sub, taskSlug), rerr)
+						plan.Failed = true
+						sum.Failed++
+						sum.Plans = append(sum.Plans, plan)
+						continue
+					}
+					sum.PrioritySources[fix.PrioritySource]++
+					fmt.Fprintf(out, "  FIX   %s\n        bare-only: construct the header block — "+
+						"**Status:** %q, **Priority:** %q (%s), relocating the %d-line legacy run into the body\n",
+						taskHeaderWhere(project, sub, taskSlug), fix.Status, fix.Priority,
+						fix.PrioritySource, fix.Relocated)
+
+					if !apply {
+						sum.Plans = append(sum.Plans, plan)
+						continue
+					}
+					if taskHeaderShadowed(out, root, project, sub, taskSlug, name) {
+						plan.Failed = true
+						sum.Failed++
+						sum.Plans = append(sum.Plans, plan)
+						continue
+					}
+					if werr := vault.OverwriteTaskFile(project, taskSlug, fix.Content); werr != nil {
+						fmt.Fprintf(out, "  !!    %s: write: %v\n", taskHeaderWhere(project, sub, taskSlug), werr)
+						plan.Failed = true
+						sum.Failed++
+						sum.Plans = append(sum.Plans, plan)
+						continue
+					}
+					plan.Applied = true
+					sum.Applied++
+					sum.AppliedBareOnly++
+					taskHeaderRecordWrite(&sum, root, project, sub, name)
 					sum.Plans = append(sum.Plans, plan)
 					continue
 				case storage.LegacyHeaderMultiTitle:
@@ -264,13 +346,7 @@ func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskH
 					continue
 				}
 
-				// 🔴 The shadow guard. Vault.resolveTaskFile searches active
-				// FIRST, so overwriting an ARCHIVED slug that also exists under
-				// tasks/ would silently rewrite the active file instead. Refuse
-				// rather than guess which one the operator meant.
-				if sub != "" && fileExists(filepath.Join(root, "Projects", project, "tasks", name)) {
-					fmt.Fprintf(out, "  !!    %s: an ACTIVE task of the same slug exists; refusing (the writer resolves active first)\n",
-						taskHeaderWhere(project, sub, taskSlug))
+				if taskHeaderShadowed(out, root, project, sub, taskSlug, name) {
 					plan.Failed = true
 					sum.Failed++
 					sum.Plans = append(sum.Plans, plan)
@@ -294,6 +370,7 @@ func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskH
 				}
 				plan.Applied = true
 				sum.Applied++
+				taskHeaderRecordWrite(&sum, root, project, sub, name)
 				sum.Plans = append(sum.Plans, plan)
 			}
 		}
@@ -304,13 +381,15 @@ func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskH
 		sum.Scanned, sum.Clean, sum.Both, sum.BareOnly, sum.MultiTitle, sum.Inverted)
 	if apply {
 		fmt.Fprintf(out, "Applied %d rewrite(s).\n", sum.Applied)
-	} else if sum.Both > 0 {
-		fmt.Fprintln(out, "Re-run with --apply to write the \"both\" repairs.")
+	} else if sum.Both > 0 || sum.BareOnly > 0 {
+		fmt.Fprintln(out, "Re-run with --apply to write the \"both\" and \"bare-only\" repairs.")
 	}
-	if sum.BareOnly > 0 || sum.MultiTitle > 0 || sum.Inverted > 0 {
-		fmt.Fprintln(out, "bare-only, multi-title and inverted are reported by design: each needs its own repair, "+
-			"filed separately. This command will never write them.")
+	if sum.MultiTitle > 0 || sum.Inverted > 0 {
+		fmt.Fprintln(out, "multi-title and inverted are reported by design: each needs a per-file judgment "+
+			"call, filed separately. This command will never write them.")
 	}
+	taskHeaderPrioritySourceTally(out, sum)
+	taskHeaderPairingBanner(out, apply, sum)
 	if sum.Failed > 0 {
 		fmt.Fprintf(out, "%d file(s) FAILED.\n", sum.Failed)
 	}
@@ -325,4 +404,129 @@ func taskHeaderWhere(project, sub, slug string) string {
 		return project + "/" + slug
 	}
 	return project + "/" + sub + "/" + slug
+}
+
+// taskHeaderShadowed is the shadow guard, shared by both repairs.
+//
+// 🔴 Vault.resolveTaskFile searches active FIRST, so overwriting an ARCHIVED
+// slug that also exists under tasks/ would silently rewrite the active file
+// instead. Refuse rather than guess which one the operator meant.
+func taskHeaderShadowed(out io.Writer, root, project, sub, slug, name string) bool {
+	if sub == "" || !fileExists(filepath.Join(root, "Projects", project, "tasks", name)) {
+		return false
+	}
+	fmt.Fprintf(out, "  !!    %s: an ACTIVE task of the same slug exists; refusing (the writer resolves active first)\n",
+		taskHeaderWhere(project, sub, slug))
+	return true
+}
+
+// taskHeaderRelPath renders a task file's vault-relative path — what
+// `vp vault commit --paths` takes, and what the pairing banner has to print.
+func taskHeaderRelPath(project, sub, name string) string {
+	if sub == "" {
+		return "Projects/" + project + "/tasks/" + name
+	}
+	return "Projects/" + project + "/tasks/" + sub + "/" + name
+}
+
+// taskHeaderRecordWrite appends the paths one write dirtied: the task file, and
+// the .surface stamp the writer touches alongside it.
+//
+// 🔴 THE STAMP IS NOT OPTIONAL AND ITS OMISSION IS INVISIBLE UNTIL THE OPERATOR
+// IS STUCK. Projects/<p>/.surface is TRACKED in the vault, every schema-bearing
+// write restamps it, and the paired command gates on a whole-vault clean tree —
+// so a commit instruction naming only the task files leaves the stamp dirty and
+// `migrate task-status` still exits 2. The first version of this banner did
+// exactly that; the test that drives the PRINTED paths through
+// storage.CommitAndPushPaths is what caught it, and a test that had cleaned the
+// tree with `git add -A` would not have.
+//
+// The stamp path comes from surface.StampPath rather than a joined literal, so
+// this does not own a second copy of the stamp filename.
+func taskHeaderRecordWrite(sum *taskHeaderSummary, root, project, sub, name string) {
+	sum.AppliedPaths = append(sum.AppliedPaths, taskHeaderRelPath(project, sub, name))
+
+	stamp, err := surface.StampPath(root, filepath.Join(root, "Projects", project, "tasks", sub, name))
+	if err != nil || stamp == "" {
+		return
+	}
+	if !slices.Contains(sum.AppliedPaths, stamp) {
+		sum.AppliedPaths = append(sum.AppliedPaths, stamp)
+	}
+}
+
+// taskHeaderPrioritySourceTally prints where the constructed priorities came
+// from, in aggregate.
+//
+// The supplied-default count is the reason this exists. It is the one value in
+// the whole operation that is INVENTED rather than read, the operator authorized
+// it as a policy rather than file by file, and leaving it visible only per-file
+// means learning "half the class got a fabricated priority" requires grepping a
+// several-hundred-line report.
+func taskHeaderPrioritySourceTally(out io.Writer, sum taskHeaderSummary) {
+	if sum.BareOnly == 0 {
+		return
+	}
+	fmt.Fprintf(out, "Priority sources: %d from the legacy run, %d from YAML frontmatter, %d SUPPLIED DEFAULT (%q).\n",
+		sum.PrioritySources[storage.PriorityFromRun],
+		sum.PrioritySources[storage.PriorityFromFrontmatter],
+		sum.PrioritySources[storage.PriorityFromDefault],
+		storage.LegacyPriorityDefault)
+}
+
+// taskHeaderPairingBanner prints the mandatory second half of the operation.
+//
+// 🔴 IT PRINTS THE COMMIT STEP, AND THAT STEP IS NOT OPTIONAL PADDING. The writes
+// this command just made are what dirty the vault, and `vp migrate task-status`
+// gates on a WHOLE-VAULT clean tree (requireCleanVaultTree -> GitStatusClean), so
+// it exits 2 on exactly the state this command guarantees. An earlier version of
+// this banner said "RUN NEXT: vp migrate task-status --apply" and an operator
+// following it literally would see that exit 2 and reasonably read it as the
+// repair having failed.
+//
+// The asymmetry is deliberate on both sides and worth naming: THIS command
+// documents why it has no clean-tree precondition (a live agent session
+// re-dirties the vault within seconds), and it now hands off to a sibling that
+// has one. Scoping that sibling's gate to the paths it writes is the real fix and
+// is a filed open item; it is not this change's to make. What this change owes
+// the operator is an instruction that runs.
+//
+// `vp vault tidy` is NOT the commit step and must not be suggested: its sweep
+// rules cover session summaries, transcripts, KG files, drawers, audits and
+// .surface stamps — no Projects/*/tasks/** pattern — so it would REPORT these
+// files as dirt and commit none of them. The paths are printed exactly, rather
+// than as a directory, because a directory would also stage whatever else is
+// dirty under it, which is the "never git add -A" rule one level up.
+func taskHeaderPairingBanner(out io.Writer, apply bool, sum taskHeaderSummary) {
+	if sum.AppliedBareOnly == 0 {
+		if !apply && sum.BareOnly > 0 {
+			fmt.Fprintf(out, "%d bare-only file(s) would become task-status-directory findings on --apply; "+
+				"vp migrate task-status --apply is the mandatory second half, and it needs a clean vault "+
+				"tree — see the banner this prints after an --apply.\n", sum.BareOnly)
+		}
+		return
+	}
+	fmt.Fprintf(out, "\n🔴 %d constructed header(s) are now VISIBLE to the task-status-directory audit "+
+		"dimension, and none of the legacy values is terminal. This run also dirtied the vault, and the "+
+		"paired command refuses a dirty tree — so RUN ALL THREE, IN ORDER:\n\n", sum.AppliedBareOnly)
+	// 🔴 THE --paths VALUE IS QUOTED, AND THAT IS NOT COSMETIC. The list is printed
+	// over backslash-continued lines to stay readable; a shell removes the
+	// backslash-newline but KEEPS the indentation that follows, so an unquoted
+	// value word-splits and `--paths` receives only the text up to the first
+	// space. Pasted unquoted, this command commits ONE file and reports success.
+	// Measured: it committed 1 of 68 paths and the paired command still exited 2.
+	// Inside quotes the spaces survive into a single argument, and the flag
+	// parser trims each comma-separated entry.
+	fmt.Fprintf(out, "  1. vp vault commit --message %q \\\n       --paths \"%s\"\n",
+		"migrate task-header: construct legacy task headers",
+		strings.Join(sum.AppliedPaths, ",\\\n                "))
+	fmt.Fprintln(out, "  2. vp migrate task-status --apply")
+	fmt.Fprintln(out, "  3. vp audit vault          # expect no net new findings")
+	// The honest limit of this instruction. Step 2 gates on the WHOLE vault being
+	// clean, and this command can only name what IT wrote — anything another
+	// session left dirty has to be dealt with too, which is the standing open
+	// item about that precondition being unsatisfiable in a live session.
+	fmt.Fprintln(out, "\nStep 2 requires the WHOLE vault tree to be clean, and step 1 commits only what "+
+		"this run wrote.\nCommit or stash anything else dirty first (vp vault status) or step 2 will "+
+		"exit 2 on someone else's work.")
 }
