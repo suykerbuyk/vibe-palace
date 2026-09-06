@@ -257,20 +257,28 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 		return nil, fmt.Errorf("git add: %w", err)
 	}
 
-	// Check if anything to commit.
+	// Check if anything to commit — ASKED ABOUT OUR PATHS, not the whole index.
 	//
-	// The `_` here is CORRECT and must stay. This is a PREDICATE: `--quiet`
-	// makes the exit code the entire answer, and git prints nothing to explain
-	// a difference it was told not to describe. gitCmd now attaches a line of
-	// git's output to the error it returns, which is what fixed the
-	// exit-status-128-with-no-diagnosis class — but that fix has nothing to
-	// give here, and binding `out` at the predicate sites would only invite a
-	// later sweep to interpolate empty strings into messages. The sibling
-	// predicates (`rev-parse --verify --quiet`, `ls-files --error-unmatch`,
+	// 🔴 THE PREDICATE AND THE COMMIT MUST ASK THE SAME QUESTION, and they used
+	// not to. This read `git diff --cached --quiet` over the entire index while
+	// the commit below recorded the entire index, so the two agreed — by both
+	// being wrong. Now the commit is pathspec-scoped, and a whole-index
+	// predicate here would answer "yes, something is staged" on the benign case
+	// where OUR paths are unchanged and somebody else's content is staged, then
+	// send a scoped commit off to find nothing of its own and fail. A no-op must
+	// stay a no-op.
+	//
+	// The `_` is CORRECT and must stay. This is a PREDICATE: `--quiet` makes the
+	// exit code the entire answer, and git prints nothing to explain a
+	// difference it was told not to describe. The sibling predicates
+	// (`rev-parse --verify --quiet`, `ls-files --error-unmatch`,
 	// `rev-parse --is-inside-work-tree`, `ls-remote --exit-code`,
-	// `var GIT_AUTHOR_IDENT`, `diff --quiet`) are the same shape.
-	if _, err := gitCmd(vaultPath, 10*time.Second, "diff", "--cached", "--quiet"); err == nil {
-		// Exit code 0 means no staged changes.
+	// `var GIT_AUTHOR_IDENT`) are the same shape.
+	staged, derr := stagedChangesIn(vaultPath, keep)
+	if derr != nil {
+		return nil, derr
+	}
+	if !staged {
 		return result, nil
 	}
 
@@ -281,9 +289,9 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 	}
 	fullMsg := fmt.Sprintf("%s\n\n[%s]", message, hostname)
 
-	// Commit.
-	if _, err := gitCmd(vaultPath, 10*time.Second, "commit", "-m", fullMsg); err != nil {
-		return nil, fmt.Errorf("git commit: %w", err)
+	// Commit ONLY the paths this call was given. See commitOnlyPaths.
+	if err := commitOnlyPaths(vaultPath, fullMsg, keep); err != nil {
+		return nil, err
 	}
 
 	// The index critical section is done — release before the network push so
@@ -603,6 +611,152 @@ func stageInBatches(vaultPath string, paths []string) error {
 		bytes += cost
 	}
 	return flush()
+}
+
+// chunkPaths splits paths into groups whose combined argv-path bytes stay under
+// stageBatchByteBudget. Extracted so the staging pass and the "is anything of
+// ours staged?" predicate chunk identically — two different splits over one path
+// list is a way for the two to disagree about the same set.
+func chunkPaths(paths []string) [][]string {
+	var out [][]string
+	batch := make([]string, 0, len(paths))
+	bytes := 0
+	for _, p := range paths {
+		cost := len(p) + 1
+		if len(batch) > 0 && bytes+cost > stageBatchByteBudget {
+			out = append(out, batch)
+			batch = make([]string, 0, len(paths))
+			bytes = 0
+		}
+		batch = append(batch, p)
+		bytes += cost
+	}
+	if len(batch) > 0 {
+		out = append(out, batch)
+	}
+	return out
+}
+
+// stagedChangesIn reports whether any of the given paths differs between the
+// index and HEAD — the scoped form of the "anything to commit?" question.
+//
+// Chunked for the same argv reason stageInBatches is, and `git diff` is the one
+// command in this file that CANNOT take --pathspec-from-file (it rejects the
+// flag with a usage error, exit 129), so the path list has to ride in argv here.
+// Any chunk reporting a difference is enough: the question is existential.
+func stagedChangesIn(vaultPath string, paths []string) (bool, error) {
+	for _, chunk := range chunkPaths(paths) {
+		args := make([]string, 0, len(chunk)+4)
+		args = append(args, "diff", "--cached", "--quiet", "--")
+		args = append(args, chunk...)
+		if _, err := gitCmd(vaultPath, 10*time.Second, args...); err != nil {
+			// Non-zero exit from --quiet means "there IS a difference". It is
+			// also what a genuine failure looks like, which is acceptable here:
+			// the false positive costs one commit attempt that then reports its
+			// own error, whereas treating a failure as "nothing to commit" would
+			// silently skip a write the caller believes landed.
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// commitOnlyPaths runs `git commit` restricted to the given paths.
+//
+// 🔴 THIS IS THE HALF THAT MAKES THE FUNCTION'S NAME TRUE. Staging was always
+// scoped — `git add -- <paths>`, never `git add -A`, and that invariant is
+// asserted in several places. The commit was not: `git commit -m <msg>` with no
+// pathspec records EVERYTHING IN THE INDEX. So content a human had already
+// staged, or that another tool left staged, rode out under whichever
+// machine-authored message this caller supplied — tidy's "sweep N capture
+// artifacts", the memory harvest's, or a task writer's "vault: amend task p/s".
+// A commit message asserting machine provenance over unreviewed human content is
+// exactly the outcome the tidy carve-out was rejected for producing on purpose;
+// it was reachable by accident through every caller that had scoped its paths
+// correctly.
+//
+// 🔴 THE PATHSPEC RIDES IN A FILE, NOT IN ARGV. A commit cannot be split into
+// batches the way staging can — it is one atomic operation over the whole set —
+// so the chunking that keeps `git add` under MAX_ARG_LEN has no equivalent here,
+// and a large sweep (tidy over a busy vault) would push a multi-thousand-path
+// argv at the kernel. --pathspec-from-file with --pathspec-file-nul removes the
+// ceiling entirely and is byte-exact for any path.
+//
+// The file is written OUTSIDE the vault. A scratch file inside it would be
+// untracked dirt for the duration of the commit — which is dirt this very
+// subsystem classifies, reports, and refuses to sync on.
+//
+// Paths left staged that are NOT in this list stay staged. That is deliberate:
+// they are someone else's in-flight work, and quietly un-staging them would be a
+// different way of taking it away from them.
+//
+// # Two measured behaviour changes, both accepted
+//
+// 🔴 A MERGE OR CHERRY-PICK IN PROGRESS NOW REFUSES, WHERE THE UNSCOPED FORM
+// COMMITTED. Measured on git 2.55.0: with MERGE_HEAD present, git rejects a
+// pathspec commit with `fatal: cannot do a partial commit during a merge.` (exit
+// 128) unconditionally — even with zero conflicts left and even when the
+// pathspec names a file the merge never touched. CHERRY_PICK_HEAD behaves the
+// same; rebase and revert are not guarded by git.
+//
+// Refusing is the CORRECT outcome and must not be "fixed" by falling back to the
+// unscoped commit. A merge in progress is the state in which the index is MOST
+// likely to hold content this caller never chose, so the fallback would
+// reintroduce the exact defect this function exists to close, precisely where it
+// does the most damage: a human's half-finished merge, committed as a merge
+// commit, under a message reading "vault tidy: sweep N capture artifacts".
+//
+// git's own sentence is left to surface rather than wrapped in a hand-written
+// one. It is a single accurate line that names what to finish, and
+// TestCommitPathSurfacesGitsOwnDiagnosis is the standing gate that git's
+// diagnosis reaches the caller instead of a bare exit code.
+//
+// 🔴 IT COMMITS WORKTREE CONTENT FOR THE NAMED PATHS, NOT INDEX CONTENT. That is
+// what a pathspec commit means (`-- <paths>` is byte-identical to `--only --
+// <paths>`; verified, same commit hash). In this function's sequence the
+// distinction is inert, because `git add -- <paths>` runs immediately above and
+// makes index and worktree identical for exactly these paths. What it leaves is
+// a narrow window: an external writer touching one of our paths between the add
+// and the commit has its edit committed rather than ignored. The window is
+// milliseconds, inside the vault commit lock that serialises every vp committer,
+// and it replaces a strictly worse hazard — committing the ENTIRE index, every
+// time, with no window at all because it was unconditional.
+//
+// The scoped predicate above and this commit can therefore only disagree if the
+// tree changes underneath them, which is a race the caller should see as an
+// error rather than as silence. No "nothing to commit" special case is written
+// here for that reason: git reports it with no fatal:/error: prefix, so
+// tolerating it would mean matching on prose, and turning a genuine race into a
+// silent no-op is the wrong direction for a function whose whole job is making a
+// write durable.
+func commitOnlyPaths(vaultPath, message string, paths []string) error {
+	f, err := os.CreateTemp("", "vp-commit-pathspec-*")
+	if err != nil {
+		return fmt.Errorf("git commit: create pathspec file: %w", err)
+	}
+	name := f.Name()
+	defer os.Remove(name)
+
+	var buf strings.Builder
+	for _, p := range paths {
+		buf.WriteString(p)
+		buf.WriteByte(0)
+	}
+	if _, err := f.WriteString(buf.String()); err != nil {
+		f.Close()
+		return fmt.Errorf("git commit: write pathspec file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("git commit: close pathspec file: %w", err)
+	}
+
+	if _, err := gitCmd(vaultPath, 10*time.Second,
+		"commit", "-m", message,
+		"--pathspec-from-file="+name, "--pathspec-file-nul",
+	); err != nil {
+		return fmt.Errorf("git commit: %w", err)
+	}
+	return nil
 }
 
 // forceWithLease pushes branch to remote with a lease keyed to expectedSHA.

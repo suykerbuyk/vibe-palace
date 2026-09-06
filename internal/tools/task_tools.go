@@ -636,7 +636,8 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 			if err := vault.CreateTask(p.Project, spec); err != nil {
 				return nil, fmt.Errorf("create task: %w", err)
 			}
-			return map[string]string{"status": "created", "task": p.Task}, nil
+			return taskWriteResult(vault, p.Project, p.Task, "create",
+				map[string]any{"status": "created", "task": p.Task}), nil
 
 		case "amend":
 			// No length floor here, unlike create. See the note on manageTaskSchema.
@@ -650,7 +651,8 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 			if err != nil {
 				return nil, fmt.Errorf("amend task: %w", err)
 			}
-			return map[string]string{"status": "amended", "task": p.Task, "section": p.Section, "op": op}, nil
+			return taskWriteResult(vault, p.Project, p.Task, "amend",
+				map[string]any{"status": "amended", "task": p.Task, "section": p.Section, "op": op}), nil
 
 		case "overwrite":
 			// The whole-file writer. It is the ONLY typed path to text amend
@@ -706,7 +708,8 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 			if err := vault.OverwriteTaskFile(p.Project, p.Task, p.Content); err != nil {
 				return nil, fmt.Errorf("overwrite task: %w", err)
 			}
-			return map[string]string{"status": "overwritten", "task": p.Task}, nil
+			return taskWriteResult(vault, p.Project, p.Task, "overwrite",
+				map[string]any{"status": "overwritten", "task": p.Task}), nil
 
 		case "set_meta":
 			// Title and Priority are the two header fields that had no writer at all
@@ -726,14 +729,14 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 			if err := vault.SetTaskMeta(p.Project, p.Task, edit); err != nil {
 				return nil, fmt.Errorf("set task meta: %w", err)
 			}
-			result := map[string]string{"status": "meta_set", "task": p.Task}
+			result := map[string]any{"status": "meta_set", "task": p.Task}
 			if p.Title != "" {
 				result["title"] = p.Title
 			}
 			if p.Priority != "" {
 				result["priority"] = p.Priority
 			}
-			return result, nil
+			return taskWriteResult(vault, p.Project, p.Task, "set_meta", result), nil
 
 		case "update_status":
 			if p.Status == "" {
@@ -742,7 +745,8 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 			if err := vault.UpdateTaskStatus(p.Project, p.Task, p.Status); err != nil {
 				return nil, fmt.Errorf("update task status: %w", err)
 			}
-			return map[string]string{"status": p.Status, "task": p.Task}, nil
+			return taskWriteResult(vault, p.Project, p.Task, "update_status",
+				map[string]any{"status": p.Status, "task": p.Task}), nil
 
 		case "set_relations":
 			if p.Parent == nil && p.DependsOn == nil {
@@ -764,7 +768,7 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 			if p.DependsOn != nil {
 				result["depends_on"] = *p.DependsOn
 			}
-			return result, nil
+			return taskWriteResult(vault, p.Project, p.Task, "set_relations", result), nil
 
 		case "retire":
 			// The schema requires approved_by_human to be PRESENT on retire; this
@@ -784,13 +788,15 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 			if err := vault.RetireTask(p.Project, p.Task); err != nil {
 				return nil, fmt.Errorf("retire task: %w", err)
 			}
-			return map[string]string{"status": "retired", "task": p.Task}, nil
+			return taskWriteResult(vault, p.Project, p.Task, "retire",
+				map[string]any{"status": "retired", "task": p.Task}), nil
 
 		case "cancel":
 			if err := vault.CancelTask(p.Project, p.Task); err != nil {
 				return nil, fmt.Errorf("cancel task: %w", err)
 			}
-			return map[string]string{"status": "cancelled", "task": p.Task}, nil
+			return taskWriteResult(vault, p.Project, p.Task, "cancel",
+				map[string]any{"status": "cancelled", "task": p.Task}), nil
 
 		default:
 			return nil, fmt.Errorf(

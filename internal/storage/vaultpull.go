@@ -236,7 +236,7 @@ func Pull(vaultPath string, remotes []string) (*PullResult, error) {
 // tidy's whole-vault porcelain scanner/parser rather than rolling a new parser.
 // Best-effort: a scan failure yields nil (the heal pass is never a hard gate).
 func dirtyTemplateCommandPaths(vaultPath string) []string {
-	raw, err := scanPorcelain(vaultPath)
+	raw, err := scanPorcelain(vaultPath, DefaultTidyScanTimeout)
 	if err != nil {
 		return nil
 	}

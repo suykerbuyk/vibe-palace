@@ -6,6 +6,7 @@ package tools
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -105,6 +106,31 @@ func TestBootstrapInstrumentBlockFitsHostPreview(t *testing.T) {
 // needs what it carries. A ceiling measured on a healthy vault would pass every
 // day and fail on the only day it mattered.
 //
+// worstCaseDirtPaths returns exactly vaultDirtSampleN paths at the width real
+// vault paths run to, so the ceiling test costs what the live payload costs.
+//
+// The seed paths are the live specimens the task records — a sibling project's
+// task file and this project's own — and the list is padded, never truncated, if
+// the constant is raised past them. Rounding UP is the rule this whole fixture
+// follows: a fixture that understates the field it models reports a bound the
+// tool does not have.
+func worstCaseDirtPaths() []string {
+	seeds := []string{
+		"Projects/dotfiles/tasks/fetch-bins-install-bin-version-blind-root-cause.md",
+		"Projects/vibe-palace/tasks/task-writes-leave-the-vault-dirty-with-no-sweeper.md",
+		"Projects/vibe-palace/tasks/surface-mismatch-consumers-drop-the-remediation.md",
+	}
+	out := make([]string, 0, vaultDirtSampleN)
+	for i := range vaultDirtSampleN {
+		if i < len(seeds) {
+			out = append(out, seeds[i])
+			continue
+		}
+		out = append(out, fmt.Sprintf("Projects/vibe-palace/tasks/a-realistically-long-task-slug-number-%02d.md", i))
+	}
+	return out
+}
+
 // Values are shaped from the live 2026-08-16 payload, rounded UP, never down.
 func worstCaseInstruments() BootstrapResult {
 	fetched := time.Date(2026, 8, 16, 15, 17, 8, 0, time.UTC)
@@ -114,6 +140,27 @@ func worstCaseInstruments() BootstrapResult {
 		WorkflowURI:     "vibe-palace://workflow/vibe-palace",
 		ResumeSha256:    "b78985c0c74d8bcc25fed2ad486d16957c9f671ac1b07bfc225c0861fb3fcb44",
 		ActiveTaskCount: 33,
+		// ONE of the two stop-class alerts. SurfaceMismatch is deliberately
+		// LEFT NIL, so this fixture understates the true worst case by the
+		// 851 B a populated one marshals to: adding it puts the bounded prefix
+		// at 2,671 B against the 2,000 B ceiling, which is a pre-existing
+		// overrun this instrument did not cause and cannot fix — shrinking
+		// SurfaceMismatch belongs to the task that owns it. Recorded, not
+		// hidden, and tracked as
+		// `the-instrument-ceiling-fixture-is-a-hand-maintained-list`. Do not
+		// close the gap by raising hostPreviewSpecimen.
+		//
+		// 🔴 THE SAMPLE IS DERIVED FROM vaultDirtSampleN, NEVER HAND-LISTED.
+		// Two literals sat here, so raising the constant 2 -> 5 grew the real
+		// payload and left the fixture — and therefore the ceiling — measuring
+		// the old arithmetic. Deriving it is what makes the ceiling above
+		// enforce the sentence vaultDirtSampleN's own comment writes about
+		// cost per sample.
+		VaultDirt: &VaultDirt{
+			Count:       9,
+			SamplePaths: worstCaseDirtPaths(),
+			Message:     vaultDirtMessage(9),
+		},
 		VaultStaleness: &VaultStaleness{
 			LastFetched: &fetched,
 			AgeHours:    72.5,
@@ -190,6 +237,7 @@ func worstCaseCommands() []commandSummary {
 //	grep -n "alerts = append" internal/tools/context_tools.go
 func worstCaseAlerts() []string {
 	return []string{
+		vaultDirtMessage(9),
 		"⚠ Recent friction is rising: 31.6 over 7d against 26.9 over 90d. Call vp_trends for the breakdown.",
 		"⚠ The vault last fetched 72h ago — another machine may have written since. Run vp_vault_sync with action pull before trusting resume.md.",
 		"🔴 vp health is ERRORS in the last 24h (mcp.makeHandler x10, storage.lockedWrite x3, capture.ingest x2). Something failed and was recorded but not surfaced. Call vp_health for the full list before trusting recent captures.",
@@ -298,6 +346,7 @@ func TestBootstrapDirectiveIsLastInstrument(t *testing.T) {
 		`"resume_sha256":`,
 		`"active_task_count":`,
 		`"ranking":`,
+		`"vault_dirt":`,
 		`"vault_staleness":`,
 		`"health":`,
 		`"audit_staleness":`,

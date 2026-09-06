@@ -106,6 +106,22 @@ type BootstrapResult struct {
 	// so the word "surface" never appeared at all.
 	SurfaceMismatch *SurfaceMismatch `json:"surface_mismatch,omitempty"`
 
+	// VaultDirt reports that the vault worktree carries uncommitted non-artifact
+	// changes — NIL WHEN CLEAN, for the same reason the fields around it are.
+	//
+	// It is declared here, directly under SurfaceMismatch, because it is the
+	// second of the two conditions on this payload that stop the session from
+	// doing its work rather than merely advising it. A surface mismatch refuses
+	// every mutating tool; this refuses every DURABLE one — vp_vault_sync will
+	// not commit sessions, transcripts, drawers or KG triples while it holds, so
+	// a session that ignores it does its work and then cannot save any of it.
+	//
+	// 🔴 IT IS BOUNDED ON PURPOSE AND MUST STAY SO. Count, plus a sample of
+	// vaultDirtSampleN paths, plus one line; the enumeration lives behind
+	// vp_vault_tidy, which the message names. See the Health field's note on RecentWarns for what
+	// happens when a record list is carried in an alert's slot.
+	VaultDirt *VaultDirt `json:"vault_dirt,omitempty"`
+
 	// Health rides in the payload every session already loads, so a degraded vp
 	// reaches every agent on every host WITHOUT the agent having to think to ask.
 	// "Who calls vp_health?" was the wrong question: every pull-based answer is a
@@ -593,6 +609,31 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 			result.SurfaceMismatch = &sm
 			alerts = append(alerts, sm.Message)
 		}
+	}
+
+	// Uncommitted vault dirt — SECOND, and second for the same reason the
+	// surface mismatch is first. Append order is delivery order and the alerts
+	// lead the directive, so a host cut reaches the LAST append first. These two
+	// are the alerts that report a stop rather than advice: the one above says
+	// no mutating tool will run, this one says nothing the session produces can
+	// be saved. A stale audit, a slow fetch and a friction trend are all things
+	// a session can proceed past; these are not.
+	//
+	// 🔴 SILENT WHEN CLEAN, gated on genuine dirt and NOT on tidy's Reported
+	// catch-all — Reported includes deliberately-pending user memory, which is
+	// present on a perfectly healthy vault. See VaultDirt for why that
+	// distinction is the whole difference between an alert and noise.
+	//
+	// It is the most expensive check on this path and the only one that shells
+	// out: one `git status --porcelain -z -uall` over the whole vault, measured
+	// at ~56-62 ms warm on the operator's 64,893-file vault against a handshake
+	// optimized to ~0.012 s. That cost was priced and accepted with the option
+	// (task `task-writes-leave-the-vault-dirty-with-no-sweeper`, Operator
+	// decision 2026-09-06). It is bounded by vaultDirtScanBudget and degrades to
+	// silence rather than to a slow handshake.
+	if vd := computeVaultDirt(vault.Root); vd != nil {
+		result.VaultDirt = vd
+		alerts = append(alerts, vd.Message)
 	}
 
 	// Surface the proactive friction nudge in the directive itself. The directive

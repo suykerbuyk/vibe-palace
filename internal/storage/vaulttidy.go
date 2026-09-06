@@ -300,8 +300,8 @@ func matchRule(vaultRelPath string) *SweepRule {
 // scanPorcelain runs the whole-vault status scan. -uall surfaces files inside
 // untracked directories (not just the directory). Output is raw (NOT trimmed)
 // because records are NUL-delimited. Mirrors gitCmd's prompt-suppressing env.
-func scanPorcelain(vaultPath string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func scanPorcelain(vaultPath string, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "-C", vaultPath, "status", "--porcelain", "-z", "-uall")
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
@@ -317,7 +317,30 @@ func scanPorcelain(vaultPath string) (string, error) {
 // probes remotes — it is the read-only classification path shared with
 // TidyVault (one classification code path) and backs `--dry-run`.
 func TidyScan(vaultPath string) (*TidyResult, error) {
-	raw, err := scanPorcelain(vaultPath)
+	return TidyScanWithTimeout(vaultPath, DefaultTidyScanTimeout)
+}
+
+// DefaultTidyScanTimeout is the budget TidyScan gives `git status`. It is
+// generous because the callers that use it — `vp vault tidy`, vp_vault_tidy,
+// SyncVault — are operator-initiated and would rather wait than mis-report a
+// vault as clean.
+//
+// 🔴 A CALLER ON A LATENCY-CRITICAL PATH MUST NOT INHERIT IT. See
+// TidyScanWithTimeout.
+const DefaultTidyScanTimeout = 30 * time.Second
+
+// TidyScanWithTimeout is TidyScan with a caller-chosen budget for the single
+// `git status` it shells out to.
+//
+// It exists for the bootstrap dirt alert, which runs on the hottest path in the
+// system (the session handshake, measured at ~0.012 s) and must be BEST-EFFORT:
+// a scan that cannot finish inside its budget has to degrade to "no signal"
+// rather than hold the handshake for the default half-minute. The classification
+// is unchanged and shared — there is still exactly one classifier — so the
+// bootstrap alert and SyncVault's refusal gate cannot come to different verdicts
+// about the same worktree.
+func TidyScanWithTimeout(vaultPath string, timeout time.Duration) (*TidyResult, error) {
+	raw, err := scanPorcelain(vaultPath, timeout)
 	if err != nil {
 		return nil, err
 	}

@@ -159,7 +159,7 @@ func TestManageTaskCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
-	m := result.(map[string]string)
+	m := result.(map[string]any)
 	if m["status"] != "created" {
 		t.Errorf("status = %q", m["status"])
 	}
@@ -191,7 +191,7 @@ func TestManageTaskUpdateStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
-	m := result.(map[string]string)
+	m := result.(map[string]any)
 	if m["status"] != "in_progress" {
 		t.Errorf("status = %q", m["status"])
 	}
@@ -459,7 +459,7 @@ func TestManageTaskAmend_RecordsADecisionIntoThePlan(t *testing.T) {
 		if err != nil {
 			t.Fatalf("amend: %v", err)
 		}
-		m, ok := result.(map[string]string)
+		m, ok := result.(map[string]any)
 		if !ok || m["status"] != "amended" || m["section"] != "Decision (205)" {
 			t.Errorf("amend result = %#v, want status=amended, section=Decision (205)", result)
 		}

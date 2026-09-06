@@ -49,6 +49,27 @@ func genuineDirt(reported, userContent []string) []string {
 	return dirt
 }
 
+// GenuineDirt is the exported reading of the same set difference, taken from a
+// TidyResult.
+//
+// 🔴 IT EXISTS SO THE BOOTSTRAP DIRT ALERT AND THIS FILE'S REFUSAL GATE CANNOT
+// DISAGREE. The alert's whole claim is "a sync would refuse right now"; a second
+// hand-rolled `Reported minus memory` filter in internal/tools would make that
+// claim by coincidence rather than by construction, and would drift the first
+// time either side's classification changed. internal/wrapstate/gitprobe.go is
+// the standing evidence that this happens — it is a second, project-scoped dirt
+// classifier that does not use sweepRules and disagrees with this one.
+//
+// The receiver is a *TidyResult rather than the two slices because that is the
+// only shape a caller outside this package can obtain, and it makes the subset
+// relationship (ReportedUserContent ⊂ Reported) impossible to get wrong.
+func (r *TidyResult) GenuineDirt() []string {
+	if r == nil {
+		return nil
+	}
+	return genuineDirt(r.Reported, r.ReportedUserContent)
+}
+
 // SyncVault runs a full vault sync: classify the working tree, refuse up front
 // if it carries genuine (non-artifact, non-memory) dirt, commit the sweepable
 // capture artifacts LOCALLY, pull each remote, re-assert the tree is clean, and
@@ -94,7 +115,7 @@ func SyncVault(vaultPath string, remotes []string) (*SyncResult, error) {
 
 	// 2. Refuse-on-dirt BEFORE any network I/O (finding L1). Genuine dirt is
 	// reported paths that are not deliberately-pending user memory.
-	result.GenuineDirt = genuineDirt(scan.Reported, scan.ReportedUserContent)
+	result.GenuineDirt = scan.GenuineDirt()
 	if len(result.GenuineDirt) > 0 {
 		result.Refused = true
 		return result, fmt.Errorf(
@@ -132,7 +153,7 @@ func SyncVault(vaultPath string, remotes []string) (*SyncResult, error) {
 	if err != nil {
 		return result, err
 	}
-	postDirt := genuineDirt(rescan.Reported, rescan.ReportedUserContent)
+	postDirt := rescan.GenuineDirt()
 	unmerged := unmergedPaths(vaultPath)
 	if len(postDirt) > 0 || len(unmerged) > 0 {
 		return result, fmt.Errorf(

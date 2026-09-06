@@ -102,8 +102,27 @@ func TestCommitPathSurfacesGitsOwnDiagnosis(t *testing.T) {
 	msg := err.Error()
 
 	// git's own diagnosis, not merely "some text".
-	if !strings.Contains(msg, "unmerged") {
-		t.Errorf("error must carry git's own explanation (expected it to mention \"unmerged\"); got %q", msg)
+	//
+	// 🔴 THE ASSERTION MOVED OFF THE SAMPLE WORD ONTO THE PROPERTY, because the
+	// sample word was never the subject. This used to require the literal
+	// "unmerged", which was the wording of the sentence git happened to emit for
+	// a PATHSPEC-LESS commit. CommitAndPushPaths now commits with an explicit
+	// pathspec (see commitOnlyPaths — a pathspec-less commit records the whole
+	// index, which swept content the caller never named), and git refuses the
+	// same conflicted repo with a different sentence. Measured on git 2.55.0
+	// against this exact fixture:
+	//
+	//	git commit -m msg                 -> error: Committing is not possible because you have unmerged files. … fatal: Exiting because of an unresolved conflict.
+	//	git commit -m msg -- other.txt    -> fatal: cannot do a partial commit during a merge.
+	//
+	// Both are exit 128, both refuse, both are git's OWN words — which is the
+	// only thing this test was ever defending. Both also contain "merge", so the
+	// check below still goes red under the mutation it exists for: restore
+	// `return trimmed, err` in gitCmd and the message collapses to
+	// "git commit: exit status 128", which carries neither the word nor any
+	// explanation, and is caught again by the suffix assertion below.
+	if !strings.Contains(msg, "merge") {
+		t.Errorf("error must carry git's own explanation of the refusal (expected it to mention \"merge\"); got %q", msg)
 	}
 	// The defect itself: an error that is ONLY an exit code.
 	if !strings.Contains(msg, "exit status") {

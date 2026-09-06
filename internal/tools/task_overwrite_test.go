@@ -86,7 +86,7 @@ func TestOverwriteRoundTripRevisesBodyAndHeadingWording(t *testing.T) {
 	if err != nil {
 		t.Fatalf("overwrite: %v", err)
 	}
-	if m, ok := res.(map[string]string); !ok || m["status"] != "overwritten" {
+	if m, ok := res.(map[string]any); !ok || m["status"] != "overwritten" {
 		t.Errorf("result = %v, want status=overwritten", res)
 	}
 
