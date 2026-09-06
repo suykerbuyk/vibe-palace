@@ -91,7 +91,7 @@ import (
 
 // Finding is one auditable defect in the source tree.
 type Finding struct {
-	Kind   string `json:"kind"`   // KindWriteOnlyField | KindUninvoked | KindUngatedVaultWriter | KindVaultWriteOutsideFunnel
+	Kind   string `json:"kind"`   // KindWriteOnlyField | KindUninvoked | KindUngatedVaultWriter | KindVaultWriteOutsideFunnel | KindSurfaceRemediationLost
 	Symbol string `json:"symbol"` // "storage.SessionMeta.Branch" | "capture.AnalyzeFriction"
 	Pos    string `json:"pos"`    // file:line, for humans; NOT part of identity
 	Detail string `json:"detail"`
@@ -119,6 +119,13 @@ const (
 	// atomicfile.Write whose vaultRoot argument defeats the surface stamp. The
 	// cross-package successor to three package-local pins — see vaultWriteFunnel.
 	KindVaultWriteOutsideFunnel = "vault-write-outside-funnel"
+
+	// KindSurfaceRemediationLost: a second copy of the surface-mismatch
+	// remediation prose, or a consumer that binds *surface.IncompatibleError and
+	// never reaches the way out. A stranded host's only route back is text; a
+	// message built from the error's numeric fields is accurate, well-formed and
+	// useless. See surfaceRemediation.
+	KindSurfaceRemediationLost = "surface-remediation-lost"
 )
 
 // ID is the finding's stable identity for baseline comparison. It deliberately
@@ -187,7 +194,7 @@ func loadPackages(roots ...string) ([]file, error) {
 // Run reports the SYNTACTIC findings over a set of source roots.
 //
 // 🔴 IT DOES NOT INCLUDE THE DERIVED GATE PREDICATE, and the split is a
-// contract difference rather than an oversight: these four rules analyse a
+// contract difference rather than an oversight: the syntactic rules analyse a
 // DIRECTORY OF FILES and are happy with a synthetic fixture tree, while the
 // derivation analyses A GO MODULE — it needs go.mod, a resolvable dependency
 // graph and a working toolchain to type-check against. Folding it in here made
@@ -205,6 +212,7 @@ func Run(roots ...string) ([]Finding, error) {
 	findings = append(findings, uninvokedFuncs(files)...)
 	findings = append(findings, ungatedVaultWriters(files)...)
 	findings = append(findings, vaultWriteFunnel(files)...)
+	findings = append(findings, surfaceRemediation(files)...)
 
 	sort.Slice(findings, func(i, j int) bool { return findings[i].ID() < findings[j].ID() })
 	return findings, nil

@@ -41,10 +41,27 @@ func CheckSurface(vaultRoot string) Result {
 		r.Status = Fail
 		r.Summary = fmt.Sprintf("binary v%d < vault v%d at %s",
 			ie.BinarySurface, ie.VaultSurface, ie.StampDir)
-		r.Details = []string{
-			"Upgrade:  cd ~/code/vibe-palace && git pull && make install",
-			"Override (at risk):  VP_SURFACE_GATE=warn <command>",
-		}
+		// 🔴 SOURCED FROM THE ERROR, NOT RE-TYPED. These two lines were a
+		// hand-written copy of the producer's prose, and they had already
+		// drifted from it: `action:` had become `Upgrade:`,
+		// `<original-command>` had become `<command>`, and both the framing
+		// line ("if you cannot upgrade right now…") and the last-writer line
+		// were absent. Nothing pinned the copy — check/json_test.go uses a
+		// synthetic fixture — so the drift was invisible for as long as it
+		// existed.
+		//
+		// This is also the site that makes the assertions one layer out MEAN
+		// something. tools/surface_tools.go relays r.Details verbatim, and both
+		// tools/surface_tools_test.go and internal/integration/surfacecheck_test.go
+		// assert the remediation substrings against it. While these were
+		// literals, deleting the remediation from version.go left every one of
+		// those tests green — the coverage was real and pointed at nothing.
+		//
+		// r.Err below is NOT a second route to this text: check/format.go:82-85
+		// records that Result.Err is never rendered (PrintRows emits Name,
+		// Summary and Details; check/json.go joins Summary + Details). On the
+		// `vp check` path, Details is the operator's ONLY route to the remedy.
+		r.Details = ie.Remediation()
 		r.Err = err
 		return r
 	}

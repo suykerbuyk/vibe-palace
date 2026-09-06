@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -66,18 +67,14 @@ func TestEnforceFailStop_WarnEnvBypasses(t *testing.T) {
 	if retErr != nil {
 		t.Fatalf("VP_SURFACE_GATE=warn should return nil, got %v", retErr)
 	}
-	if out == "" {
-		t.Fatal("warn bypass should print remediation to stderr")
-	}
+	assertCarriesRemediation(t, out, "the VP_SURFACE_GATE=warn bypass")
 }
 
 func TestEnforceWarnOnly_AlwaysNilWithWarning(t *testing.T) {
 	t.Setenv("VP_SURFACE_QUIET", "")
 	vault := aheadVault(t)
 	out := captureGateStderr(t, func() { EnforceWarnOnly(vault) })
-	if out == "" {
-		t.Fatal("warn-only should print remediation on mismatch")
-	}
+	assertCarriesRemediation(t, out, "the warn-only gate")
 }
 
 func TestEnforceWarnOnly_QuietSuppresses(t *testing.T) {
@@ -93,5 +90,40 @@ func TestEnforceWarnOnly_CompatibleSilent(t *testing.T) {
 	out := captureGateStderr(t, func() { EnforceWarnOnly(t.TempDir()) })
 	if out != "" {
 		t.Fatalf("compatible vault should be silent, got %q", out)
+	}
+}
+
+// assertCarriesRemediation is the real assertion these two tests used to make
+// only in their names.
+//
+// 🔴 THEY BOTH CHECKED `out != ""`. These are the ONE path that passes the
+// producer's Error() through verbatim to a human — the gate's own stderr — and
+// a consumer there could have printed "nope" and stayed green. That is the same
+// weak-assertion class as the consumers that re-rendered the error from its
+// struct fields: coverage that is real, and pointed at nothing.
+//
+// It asserts every remediation line rather than two substrings, so a gate that
+// carried half the prose fails here rather than passing on the half it kept.
+func assertCarriesRemediation(t *testing.T, out, who string) {
+	t.Helper()
+	if out == "" {
+		t.Fatalf("%s printed NOTHING to stderr — a stranded host's only route back is text", who)
+	}
+	for _, want := range []struct{ text, why string }{
+		{"git pull && make install", "the upgrade command — the ONLY way out of the failure"},
+		{"VP_SURFACE_GATE=warn", "the at-risk override, for a host that cannot upgrade now"},
+		{"MCP surface", "what kind of mismatch this is"},
+	} {
+		if !strings.Contains(out, want.text) {
+			t.Errorf("%s printed to stderr WITHOUT %q (%s).\nstderr:\n%s", who, want.text, want.why, out)
+		}
+	}
+	// Every line, not just the two probes above: the gate prints Error() whole,
+	// so anything Remediation() says must arrive.
+	ie := &IncompatibleError{}
+	for _, line := range ie.Remediation() {
+		if !strings.Contains(out, line) {
+			t.Errorf("%s dropped remediation line %q.\nstderr:\n%s", who, line, out)
+		}
 	}
 }

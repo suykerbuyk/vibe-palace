@@ -379,20 +379,78 @@ type IncompatibleError struct {
 	LastWriter    string // optional, may be empty
 }
 
+// Remediation returns the way out, one line per element, and it is THE ONLY
+// PLACE THIS PROSE EXISTS.
+//
+// # Why a method and not a constant
+//
+// A stranded host's only route back is TEXT. It cannot pull its way out — pulling
+// raises the vault floor further, and the fix is a new binary, not new vault
+// content — and the MCP server it is talking to is the thing that is out of date.
+// So every consumer of an IncompatibleError owes the operator these lines, and the
+// consumers that re-rendered them from the struct fields instead were shipping
+// messages that are accurate, well-formed, and useless.
+//
+// The prose used to live in two independently maintained copies (here and a
+// hand-written literal in internal/check/surface.go) and THEY HAD ALREADY
+// DRIFTED: `action:` became `Upgrade:`, `<original-command>` became `<command>`,
+// and the framing line was dropped entirely. Nothing pinned the copy, so nothing
+// noticed. One source of prose makes that divergence structurally impossible —
+// which is the half of the problem a method can actually solve. The other half
+// (a consumer that simply declines to call it) is not expressible in Go and is
+// enforced by internal/sourceaudit's surface-remediation rule instead.
+//
+// # The indentation contract
+//
+// Lines carry their RELATIVE indentation and no leading margin. Error() adds a
+// uniform four-space margin to each; a list consumer (check.Result.Details,
+// vp_surface_check's details[], the bootstrap alert) takes them as-is. That is
+// what lets Error()'s rendered bytes stay unchanged while the same strings serve
+// a JSON array.
+//
+// Three tests hold this down, and it is worth naming which does what, because
+// this comment previously credited TestStrandedHostCanReadItsWayOut with pinning
+// the rendered bytes and that test asserts SUBSTRINGS. Under substrings alone the
+// last-writer margin could go from four spaces to eight with the whole suite
+// green:
+//
+//   - TestErrorRendersExactBytes pins the rendered BYTES, both LastWriter states.
+//   - TestRemediationContentIsPinned pins the CONTENT of these lines, stated
+//     independently — every other assertion in the repo derives its expectation
+//     from this function and so would not notice a deleted line.
+//   - TestRemediationIsErrorsOnlyProseSource pins the RELATIONSHIP: Error()'s tail
+//     is exactly these lines under the margin, and nothing else.
+func (e *IncompatibleError) Remediation() []string {
+	return []string{
+		"action:    cd ~/code/vibe-palace && git pull && make install",
+		"if you cannot upgrade right now (deploy host, network outage):",
+		"   VP_SURFACE_GATE=warn <original-command>   (proceed at risk)",
+	}
+}
+
 // Error renders the standard remediation message.
+//
+// 🔴 THE RENDERED BYTES ARE A PINNED CONTRACT. Remediation() was extracted from
+// this function ADDITIVELY: the header line, the last-writer line and the
+// four-space margin below reproduce what this rendered before the extraction,
+// byte for byte, and TestErrorRendersExactBytes pins exactly that — including
+// this margin, which no substring assertion can see. Change the tail by changing
+// Remediation(), never by re-inlining it here.
 func (e *IncompatibleError) Error() string {
 	writer := e.LastWriter
 	if writer == "" {
 		writer = "unknown"
 	}
+	var tail strings.Builder
+	for _, line := range e.Remediation() {
+		tail.WriteString("\n    ")
+		tail.WriteString(line)
+	}
 	return fmt.Sprintf(
 		"vp: this binary supports MCP surface v%d; vault target '%s' is at v%d\n"+
-			"    last writer: %s (best-effort, not enforced)\n"+
-			"    action:    cd ~/code/vibe-palace && git pull && make install\n"+
-			"    if you cannot upgrade right now (deploy host, network outage):\n"+
-			"       VP_SURFACE_GATE=warn <original-command>   (proceed at risk)",
+			"    last writer: %s (best-effort, not enforced)",
 		e.BinarySurface, e.StampDir, e.VaultSurface, writer,
-	)
+	) + tail.String()
 }
 
 // ErrNoVault is returned by CheckCompatible when vaultPath is empty — no vault

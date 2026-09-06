@@ -60,10 +60,28 @@ func Preflight(vaultRoot, projectRoot, project string) PreflightResult {
 	if err := surfaceCheckCompatible(vaultRoot); err != nil {
 		var ie *surface.IncompatibleError
 		if errors.As(err, &ie) {
+			// 🔴 THE ERROR'S OWN TEXT, NOT A RE-RENDER OF ITS FIELDS.
+			//
+			// This used to build the detail by hand from BinarySurface /
+			// VaultSurface / StampDir, producing "binary v2 < vault v3 at
+			// <dir>" — accurate, well-formed, and USELESS. PreflightCheckItem
+			// carries only Check and Detail, so the error is retained nowhere
+			// else; ok:false halts /vpc-wrap, and that one string is the whole
+			// of what the agent can relay. A stranded host was told what was
+			// wrong and never what to do, on a path whose own template calls
+			// this "the same class the preflight at the top of this step gates
+			// on" — where vp_surface_check DOES carry the remedy.
+			//
+			// ie.Error() is the pass-through: it renders the version gap AND
+			// the remediation, from surface's single source of that prose.
+			//
+			// 🔴 DO NOT reach for check.CheckSurface's Details instead. It is
+			// an import cycle — internal/check/iteration_headings.go already
+			// imports this package — and it would re-introduce a second copy of
+			// the prose, which is the defect, not the fix.
 			res.Errors = append(res.Errors, PreflightCheckItem{
-				Check: "surface",
-				Detail: fmt.Sprintf("binary v%d < vault v%d at %s",
-					ie.BinarySurface, ie.VaultSurface, ie.StampDir),
+				Check:  "surface",
+				Detail: ie.Error(),
 			})
 		} else {
 			res.Errors = append(res.Errors, PreflightCheckItem{

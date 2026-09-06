@@ -501,7 +501,22 @@ func TestPreflight_Matrix(t *testing.T) {
 		}
 	})
 
-	// Surface incompatible ⇒ error, ok=false.
+	// Surface incompatible ⇒ error, ok=false, AND THE WAY OUT.
+	//
+	// 🔴 THIS SUBTEST USED TO PIN THE DEFECT. It asserted
+	// Contains(Detail, "v1 < vault v9") — the hand-rendered form the preflight
+	// built from the error's struct fields — so the one thing a stranded host
+	// actually needs was not merely unasserted, it was asserted ABSENT by
+	// implication: any fix that carried the remediation through would have had
+	// to delete this line to pass. A test that pins the stripped form is worse
+	// than no test, because it reads like coverage.
+	//
+	// Note the substring did not survive the fix and could not have: the
+	// producer phrases the gap as "supports MCP surface v1; vault target '…' is
+	// at v9", which does not contain "v1 < vault v9" at all. The assertions
+	// below are on the REMEDY, which is the property this path owes its caller —
+	// ok:false halts /vpc-wrap and this Detail is the whole of what the agent
+	// can relay.
 	t.Run("surface incompatible", func(t *testing.T) {
 		oldChk := surfaceCheckCompatible
 		surfaceCheckCompatible = func(string) error {
@@ -515,10 +530,72 @@ func TestPreflight_Matrix(t *testing.T) {
 			t.Error("incompatible surface should set ok=false")
 		}
 		if len(res.Errors) != 1 || res.Errors[0].Check != "surface" {
-			t.Errorf("errors = %+v", res.Errors)
+			t.Fatalf("errors = %+v", res.Errors)
 		}
-		if !strings.Contains(res.Errors[0].Detail, "v1 < vault v9") {
-			t.Errorf("detail = %q", res.Errors[0].Detail)
+		detail := res.Errors[0].Detail
+
+		// The diagnosis: both versions and the offending stamp dir.
+		for _, want := range []string{"v1", "v9", "/v/Projects/demo"} {
+			if !strings.Contains(detail, want) {
+				t.Errorf("detail omits %q — the operator cannot tell a one-version lag from a five:\n%s",
+					want, detail)
+			}
+		}
+
+		// The remedy. Sourced from the producer, so this fails if the preflight
+		// goes back to re-rendering the struct fields.
+		for _, want := range []struct{ text, why string }{
+			{"git pull && make install", "the upgrade command — the ONLY way out"},
+			{"VP_SURFACE_GATE=warn", "the at-risk override, for a host that cannot upgrade now"},
+		} {
+			if !strings.Contains(detail, want.text) {
+				t.Errorf("preflight's surface error omits %q (%s). ok:false halts the wrap and this "+
+					"string is all the agent can relay, so a stranded host has no path out.\nDetail:\n%s",
+					want.text, want.why, detail)
+			}
+		}
+
+		// Every remediation line, not just the two substrings above: a
+		// consumer that carried half the prose would pass the loop above.
+		ie := &surface.IncompatibleError{BinarySurface: 1, VaultSurface: 9, StampDir: "/v/Projects/demo"}
+		for _, line := range ie.Remediation() {
+			if !strings.Contains(detail, line) {
+				t.Errorf("detail drops remediation line %q:\n%s", line, detail)
+			}
+		}
+	})
+
+	// The OTHER direction, and it is not redundant with "all clean" above.
+	//
+	// "No errors" and "no remediation prose anywhere in the result" are
+	// different claims: a preflight that appended the remedy as a WARNING or a
+	// NOTE on a healthy vault would keep ok:true and len(Errors)==0 while
+	// training every reader to skim the field that matters. This asserts the
+	// silence itself.
+	t.Run("compatible surface says nothing about remediation", func(t *testing.T) {
+		oldChk := surfaceCheckCompatible
+		surfaceCheckCompatible = func(string) error { return nil }
+		t.Cleanup(func() { surfaceCheckCompatible = oldChk })
+		fakeGit(t, func([]string) (string, error) { return "", nil })
+
+		res := Preflight(t.TempDir(), mkGitDir(t), "demo")
+		if !res.OK {
+			t.Fatalf("compatible surface should keep ok=true: %+v", res)
+		}
+		var all []PreflightCheckItem
+		all = append(all, res.Errors...)
+		all = append(all, res.Warnings...)
+		all = append(all, res.Notes...)
+		for _, item := range all {
+			if item.Check == "surface" {
+				t.Errorf("compatible vault emitted a surface item: %+v", item)
+			}
+			for _, probe := range []string{"git pull && make install", "VP_SURFACE_GATE=warn"} {
+				if strings.Contains(item.Detail, probe) {
+					t.Errorf("compatible vault carries remediation prose %q in %s: %q",
+						probe, item.Check, item.Detail)
+				}
+			}
 		}
 	})
 

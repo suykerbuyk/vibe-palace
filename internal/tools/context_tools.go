@@ -6,6 +6,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultaudit"
 	"github.com/suykerbuyk/vibe-palace/internal/vplog"
 )
@@ -78,6 +80,31 @@ type BootstrapResult struct {
 
 	// VaultStaleness reports the network-free fetch age of the vault view.
 	VaultStaleness *VaultStaleness `json:"vault_staleness,omitempty"`
+
+	// SurfaceMismatch reports that the VAULT IS AHEAD OF THIS BINARY — NIL WHEN
+	// COMPATIBLE, for the same reason Health and AuditStaleness are.
+	//
+	// It is declared here, high in the instrument block, because it is the one
+	// condition on this payload that makes the session itself unable to proceed:
+	// every mutating tool is refused by the surface gate, and the way out is a
+	// new binary, which is not something the agent can derive from a truncated
+	// message. An instrument that survives the cut is the whole point of this
+	// region.
+	//
+	// 🔴 IT IS STRICTLY THE WEAKER OF TWO ADVISORY SURFACES, AND IS ADDED ON
+	// THOSE TERMS. It reports a mismatch that PREDATES session start; it cannot
+	// see one that arises mid-session (a sibling host writing a v4 stamp an hour
+	// in), and it is not a substitute for the runtime gate. That limitation is
+	// ruled on in the task `a-stale-binary-can-still-write-vault-artifacts` — do
+	// not re-argue it here, and do not widen this field to try to cover it.
+	//
+	// Before it existed, a stranded host's first call of the session said NOTHING
+	// about the mismatch: the only thing that ever appeared was the generic
+	// "vp logged warnings in the last 24h (mcp.makeHandler ×1)" health line, and
+	// only AFTER a mutating call had already been refused — vplog categorises
+	// "surface gate refused" down to a bucket it shares with schema rejections,
+	// so the word "surface" never appeared at all.
+	SurfaceMismatch *SurfaceMismatch `json:"surface_mismatch,omitempty"`
 
 	// Health rides in the payload every session already loads, so a degraded vp
 	// reaches every agent on every host WITHOUT the agent having to think to ask.
@@ -534,6 +561,39 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// Keeping them in their own slice and composing at the end makes that
 	// unrepresentable: re-rendering the directive can no longer drop them.
 	var alerts []string
+
+	// Surface mismatch — the vault is ahead of this binary, and it LEADS.
+	//
+	// Order within the alert slice is delivery order (composeDirective joins in
+	// append order, and the alerts themselves lead the directive), so the first
+	// append is the last thing a host cut can reach. This one goes first because
+	// it is the only alert here that says the session cannot do its work at all:
+	// every mutating tool will be refused, and the remedy is a new binary. A
+	// stale audit or a slow fetch is advice; this is a stop.
+	//
+	// 🔴 SILENT WHEN COMPATIBLE, and only IncompatibleError fires it.
+	// CheckCompatible also reports ErrNoVault (a normal pre-`vp init` state) and
+	// *VaultUnreachableError (a different condition with a different remedy —
+	// vault_path, not `make install`). Neither is a surface mismatch, and
+	// spending this alert on them is how a reader is trained to skim all of
+	// them.
+	//
+	// It is cheap enough for the hottest path in the system: four globs plus a
+	// stamp read per match, less than the audit-staleness check already here.
+	if err := surface.CheckCompatible(vault.Root); err != nil {
+		var ie *surface.IncompatibleError
+		if errors.As(err, &ie) {
+			sm := SurfaceMismatch{
+				BinarySurface: ie.BinarySurface,
+				VaultSurface:  ie.VaultSurface,
+				StampDir:      ie.StampDir,
+				Remediation:   ie.Remediation(),
+			}
+			sm.Message = surfaceMismatchMessage(ie)
+			result.SurfaceMismatch = &sm
+			alerts = append(alerts, sm.Message)
+		}
+	}
 
 	// Surface the proactive friction nudge in the directive itself. The directive
 	// is excluded from the token-shed truncation below, so appending the trend's

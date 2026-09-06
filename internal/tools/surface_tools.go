@@ -95,6 +95,25 @@ func SurfaceCheckTool(vault *storage.Vault) mcp.Tool {
 			if errors.As(r.Err, &ie) {
 				out.VaultSurface = ie.VaultSurface
 				out.StampDir = ie.StampDir
+
+				// 🔴 DETAILS ARE RE-SOURCED FROM THE ERROR, NOT LEFT TO ARRIVE
+				// TRANSITIVELY. The value is identical to r.Details — CheckSurface
+				// now fills those from this same Remediation() — so this changes no
+				// bytes. What it changes is the CAUSAL LINK.
+				//
+				// This tool's own description promises "the curated remediation",
+				// and both surface_tools_test.go and internal/integration's
+				// surfacecheck_test.go assert the remediation substrings against
+				// out.Details. While the prose was a hand-written literal in
+				// internal/check, DELETING THE REMEDIATION FROM version.go LEFT
+				// EVERY ONE OF THOSE ASSERTIONS GREEN: the coverage was real and
+				// pointed at nothing. Reading it from the error is what makes those
+				// tests fail when the producer loses it.
+				//
+				// It is also what internal/sourceaudit's surface-remediation rule
+				// (b) requires of any function that binds this error: reach
+				// Remediation() or Error(), or explain in the baseline why not.
+				out.Details = ie.Remediation()
 			}
 
 			return out, nil
