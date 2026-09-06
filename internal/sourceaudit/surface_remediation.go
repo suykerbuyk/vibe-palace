@@ -127,18 +127,14 @@ func surfaceRemediation(files []file) []Finding {
 		})
 
 		// ---- (b) a consumer that binds the error and never reaches the remedy.
-		for _, decl := range f.ast.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
-			}
-			bindings := incompatibleBindings(fn)
+		for _, s := range bindingScopes(f) {
+			bindings := s.bindings()
 			stats.bindings += len(bindings)
 			for _, b := range bindings {
-				if reachesRemedy(fn, b) {
+				if s.reachesRemedy(b) {
 					continue
 				}
-				surfaceAdd(byKey, &order, pkg+"."+funcName(fn), f, b.pos, fmt.Sprintf(
+				surfaceAdd(byKey, &order, pkg+"."+s.name, f, b.pos, fmt.Sprintf(
 					"binds *surface.IncompatibleError as %q via errors.As but never reaches "+
 						".Remediation() or .Error() on the path where the binding SUCCEEDED — %s",
 					b.name, remediationOmissionHazard))
@@ -212,8 +208,15 @@ func surfaceRemediation(files []file) []Finding {
 	if stats.bindings < bindingFloor {
 		out = append(out, surfaceVacuous("bindings", fmt.Sprintf(
 			"resolved only %d binding(s) of *surface.IncompatibleError, expected at least "+
-				"%d — the type may have been RENAMED, in which case half (b) of this rule is matching "+
-				"nothing and a passing verdict is vacuous", stats.bindings, bindingFloor)))
+				"%d — half (b) of this rule is matching less than it did and a passing verdict may be "+
+				"vacuous. TWO CAUSES, and they need different fixes. Either the type was RENAMED, in "+
+				"which case no binding is recognised anywhere; or a consumer was REFACTORED INTO A "+
+				"BINDING SPELLING THIS RULE DOES NOT RECOGNISE, in which case the other consumers are "+
+				"still policed and one is silently exempt. The recognised spellings and the ones "+
+				"deliberately left out are recorded under the task slug "+
+				"%q — read that before investigating anything else, because the message you are "+
+				"reading names VACUITY while the actual defect may be an unrecognised spelling",
+			stats.bindings, bindingFloor, surfaceSpellingTask)))
 	}
 
 	return out
@@ -276,6 +279,14 @@ var remediationProbes = []string{
 	"git pull && make install",
 }
 
+// surfaceSpellingTask is the record of which binding spellings this rule
+// recognises, which were closed, and which were deliberately left. The vacuity
+// message names it because a count below the floor reports VACUITY while the real
+// cause may be a consumer refactored into a spelling the rule cannot see — and a
+// reader who takes the message at face value investigates a rename that never
+// happened.
+const surfaceSpellingTask = "seven-binding-spellings-the-remediation-rule-cannot-see"
+
 // isRemediationProducer identifies the ONE file allowed to hold this prose.
 //
 // Keyed on PACKAGE NAME + BASE NAME rather than on the walk-relative path,
@@ -296,7 +307,129 @@ type asBinding struct {
 	pos    token.Pos  // where to anchor the finding
 }
 
-// incompatibleBindings finds every place a function binds *surface.IncompatibleError.
+// bindingScope is ONE body the consumer half runs over, plus the two pieces of
+// context that a body cannot supply for itself: the parameters that may already
+// hold the binding target, and the local name(s) this FILE's `errors` import goes
+// by.
+//
+// 🔴 IT CARRIES A PARAMS LIST AND A BODY RATHER THAN AN *ast.FuncDecl, AND THAT IS
+// THE POINT. A FuncLit has no *ast.FuncDecl and never will, so keying the walk on
+// one made a package-level `var X = func(...) {…}` structurally unreachable. The
+// alternative — a second walk for literals — is the two-copies defect THIS RULE
+// EXISTS TO DETECT, one layer out: two places deciding "is this errors.As" rot
+// apart exactly the way two copies of the remediation prose did. One
+// implementation, taking what it actually needs.
+type bindingScope struct {
+	name    string          // how a finding names this body: funcName, or the var's name
+	params  *ast.FieldList  // may be nil
+	body    *ast.BlockStmt  // never nil
+	errPkgs map[string]bool // local names of the "errors" import in this file
+}
+
+// bindingScopes enumerates every body in a file that the consumer half must walk.
+//
+// FuncDecls, and the func literals held by PACKAGE-LEVEL declarations. Literals
+// NESTED INSIDE a FuncDecl are deliberately NOT enumerated here: the statement
+// walk already descends into them through their *ast.BlockStmt, with the enclosing
+// function's success scoping intact, so enumerating them again would report the
+// same binding twice under the same key. The package-level ones had no enclosing
+// walk at all, which is the entire gap.
+func bindingScopes(f file) []bindingScope {
+	errPkgs := errorsPkgNames(f.ast)
+	var out []bindingScope
+	for _, decl := range f.ast.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if d.Body == nil {
+				continue
+			}
+			out = append(out, bindingScope{
+				name:    funcName(d),
+				params:  d.Type.Params,
+				body:    d.Body,
+				errPkgs: errPkgs,
+			})
+
+		case *ast.GenDecl:
+			// `var X = func(err error) string { … }` — an *ast.ValueSpec whose value
+			// is a literal. The finding is keyed by the VAR's name, because that is
+			// what a reader greps for and what keeps the baseline diffable.
+			for _, spec := range d.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, val := range vs.Values {
+					name := filepath.Base(f.path)
+					if i < len(vs.Names) {
+						name = vs.Names[i].Name
+					}
+					for _, lit := range outermostFuncLits(val) {
+						out = append(out, bindingScope{
+							name:    name,
+							params:  lit.Type.Params,
+							body:    lit.Body,
+							errPkgs: errPkgs,
+						})
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// outermostFuncLits returns the func literals in an expression that are not nested
+// inside another one — `var X = wrap(func(){…})` counts, and a closure declared
+// inside that literal does not, because walking the outer body reaches it.
+func outermostFuncLits(e ast.Expr) []*ast.FuncLit {
+	var out []*ast.FuncLit
+	ast.Inspect(e, func(n ast.Node) bool {
+		lit, ok := n.(*ast.FuncLit)
+		if !ok {
+			return true
+		}
+		if lit.Body != nil {
+			out = append(out, lit)
+		}
+		return false
+	})
+	return out
+}
+
+// errorsPkgNames resolves the local name(s) the "errors" import goes by IN THIS
+// FILE.
+//
+// Hard-coding the identifier `errors` meant `import stderrors "errors"` evaded
+// half (b) COMPLETELY — not a missed edge, a one-word rename that turns the whole
+// consumer arm off for a file while every test stays green. Resolution is per-file
+// because that is the scope of an import name.
+//
+// A blank import cannot be called, and a dot import leaves no receiver to match on;
+// neither yields a name. When a file imports errors under no name at all the set
+// falls back to the default so behaviour is unchanged for the ordinary case.
+func errorsPkgNames(f *ast.File) map[string]bool {
+	names := map[string]bool{}
+	for _, imp := range f.Imports {
+		if imp.Path == nil || imp.Path.Value != `"errors"` {
+			continue
+		}
+		if imp.Name == nil {
+			names["errors"] = true
+			continue
+		}
+		if imp.Name.Name == "_" || imp.Name.Name == "." {
+			continue
+		}
+		names[imp.Name.Name] = true
+	}
+	if len(names) == 0 {
+		names["errors"] = true
+	}
+	return names
+}
+
+// bindings finds every place this body binds *surface.IncompatibleError.
 //
 // Both the qualified form (*surface.IncompatibleError, every consumer package) and
 // the bare form (*IncompatibleError, internal/surface itself) are recognised.
@@ -324,6 +457,24 @@ type asBinding struct {
 // worse than no rule — this file says so about the if/else form, and it was true of
 // the switch form at the same time.
 //
+// A later pass closed four more, all recorded as MISSES under
+// seven-binding-spellings-the-remediation-rule-cannot-see — the defect present in
+// full, the rule green:
+//
+//	func f(err error, ie *surface.IncompatibleError)  // S1 — the target is a PARAMETER,
+//	                                                  //      so it was never `declared`
+//	e := err.(*surface.IncompatibleError)             // S2 — a PLAIN assertion statement;
+//	                                                  //      the success scope is the REST
+//	                                                  //      of the list, because the wrong
+//	                                                  //      type panics rather than falling
+//	                                                  //      through
+//	var X = func(err error) { … }                     // S3 — no *ast.FuncDecl exists
+//	stderrors.As(err, &ie)                            // S4 — an aliased errors import
+//
+// S1, S3 and S4 are all closed by bindingScope carrying params, a body and the
+// file's errors names instead of an *ast.FuncDecl. The fifth miss, a SHADOWED
+// source identifier, belongs to reachesRemedy and is handled there.
+//
 // # 🔴 EACH BINDING CARRIES ITS SUCCESS SCOPE, AND THE NEGATED FORM INVERTS IT
 //
 // Only the branch where the type test SUCCEEDED is the path on which the remedy is
@@ -342,8 +493,8 @@ type asBinding struct {
 // it does not, control reaches the following statements on BOTH paths, so those
 // statements are a superset of the success path — accepting them can only cause a
 // missed finding, never a false one, which is the bias this whole package keeps.
-func incompatibleBindings(fn *ast.FuncDecl) []asBinding {
-	declared := declaredIncompatibleIdents(fn)
+func (s bindingScope) bindings() []asBinding {
+	declared := s.declaredIdents()
 
 	var out []asBinding
 	seen := map[string]bool{}
@@ -380,7 +531,7 @@ func incompatibleBindings(fn *ast.FuncDecl) []asBinding {
 				add(asBinding{name: tb.name, source: tb.source, scope: scope, pos: v.Pos()})
 			}
 			// errors.As anywhere in the condition, negated or not.
-			if call, negated, ok := errorsAsInCond(v.Cond, declared); ok {
+			if call, negated, ok := s.errorsAsInCond(v.Cond, declared); ok {
 				scope := v.Body.List
 				if negated {
 					scope = elseThenRest(v, rest)
@@ -391,6 +542,30 @@ func incompatibleBindings(fn *ast.FuncDecl) []asBinding {
 					scope:  scope,
 					pos:    call.Pos(),
 				})
+			}
+
+		case *ast.AssignStmt:
+			// S2: `e := err.(*T)` as a PLAIN STATEMENT — no comma-ok, no if-init, so
+			// typeAssertBinding was never consulted and the whole form was invisible.
+			//
+			// 🔴 THE SUCCESS SCOPE IS THE REST OF THIS LIST, and that is not a
+			// widening of the scope semantics — it is those semantics applied to a
+			// statement that has no failure branch to confuse them with. A
+			// single-value assertion PANICS on the wrong type, so every statement
+			// after it runs only where the assertion succeeded. That is the same
+			// reason elseThenRest is the success path of a negated guard.
+			//
+			// The comma-ok form reached here has an `ok` the walk cannot see tested,
+			// so it gets a NIL scope — whole-body search, source renders rejected —
+			// which is exactly how the bool-temp `ok := errors.As(…)` shape is
+			// already treated. Guessing at a scope we cannot prove is how the
+			// original defect got in.
+			if tb, ok := typeAssertBinding(v); ok {
+				b := asBinding{name: tb.name, source: tb.source, pos: v.Pos()}
+				if tb.okName == "" {
+					b.scope = rest
+				}
+				add(b)
 			}
 
 		case *ast.TypeSwitchStmt:
@@ -420,7 +595,7 @@ func incompatibleBindings(fn *ast.FuncDecl) []asBinding {
 					continue
 				}
 				for _, cond := range cc.List {
-					if call, negated, ok := errorsAsInCond(cond, declared); ok && !negated {
+					if call, negated, ok := s.errorsAsInCond(cond, declared); ok && !negated {
 						add(asBinding{
 							name:   asTargetName(call),
 							source: identName(call.Args[0]),
@@ -452,14 +627,14 @@ func incompatibleBindings(fn *ast.FuncDecl) []asBinding {
 			walkStmt(st, list[i+1:])
 		}
 	}
-	walkList(fn.Body.List)
+	walkList(s.body.List)
 
 	// A bare errors.As with no enclosing conditional at all — the value is bound
 	// and the whole remainder of the function is the success path as far as syntax
 	// can tell. Scope nil means "the whole body".
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
+	ast.Inspect(s.body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
-		if !ok || !isErrorsAs(call) {
+		if !ok || !s.isErrorsAs(call) {
 			return true
 		}
 		name := asTargetName(call)
@@ -475,14 +650,38 @@ func incompatibleBindings(fn *ast.FuncDecl) []asBinding {
 	return out
 }
 
-// declaredIncompatibleIdents collects identifiers a function declares as
-// *surface.IncompatibleError, in either spelling that reaches errors.As:
+// declaredIdents collects identifiers this body has available as
+// *surface.IncompatibleError, in every spelling that reaches errors.As:
 //
+//	func f(ie *surface.IncompatibleError)  (a PARAMETER — S1)
 //	var ie *surface.IncompatibleError      (an *ast.ValueSpec with an explicit Type)
 //	ie := &surface.IncompatibleError{}     (an *ast.AssignStmt — E4)
-func declaredIncompatibleIdents(fn *ast.FuncDecl) map[string]bool {
+//
+// 🔴 PARAMETERS COUNT, AND SEEDING THEM HERE IS WHY THIS IS ONE WALK AND NOT TWO.
+// Walking the body alone meant a consumer handed the target as an argument bound
+// it with errors.As and the rule saw nothing at all — not a weaker finding, NO
+// finding, because errorsAsInCond refuses a target it cannot see declared. The
+// declaration set is the only thing that had to widen; every spelling of the
+// binding itself already funnels through this map.
+//
+// Naming a parameter of the type does NOT by itself make a binding — a renderer
+// that simply takes `ie *surface.IncompatibleError` and calls Remediation() has
+// bound nothing. It only becomes one when errors.As, a type switch or an assertion
+// puts the error into it.
+func (s bindingScope) declaredIdents() map[string]bool {
 	declared := map[string]bool{}
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
+	if s.params != nil {
+		for _, field := range s.params.List {
+			star, ok := field.Type.(*ast.StarExpr)
+			if !ok || !isIncompatibleErrorType(star.X) {
+				continue
+			}
+			for _, name := range field.Names {
+				declared[name.Name] = true
+			}
+		}
+	}
+	ast.Inspect(s.body, func(n ast.Node) bool {
 		switch v := n.(type) {
 		case *ast.ValueSpec:
 			// `var ie *surface.IncompatibleError` — an explicit type.
@@ -535,8 +734,15 @@ func isIncompatibleErrorValue(e ast.Expr) bool {
 	return false
 }
 
-// isErrorsAs reports whether a call is errors.As(src, &target).
-func isErrorsAs(call *ast.CallExpr) bool {
+// isErrorsAs reports whether a call is errors.As(src, &target), under whatever
+// local name this file's "errors" import goes by.
+//
+// 🔴 THIS IS THE ONE DEFINITION, and it stays the one definition. Everything that
+// needs to know "is this errors.As" — the condition walk, the bare-call sweep, and
+// reachesRemedy's own skip of the binding call — asks here. A second copy that
+// happened to still say `errors` would leave half the rule blind to an aliased
+// import while the other half saw it, which is worse than either answer alone.
+func (s bindingScope) isErrorsAs(call *ast.CallExpr) bool {
 	if len(call.Args) != 2 {
 		return false
 	}
@@ -545,7 +751,7 @@ func isErrorsAs(call *ast.CallExpr) bool {
 		return false
 	}
 	recv, ok := sel.X.(*ast.Ident)
-	return ok && recv.Name == "errors"
+	return ok && s.errPkgs[recv.Name]
 }
 
 // asTargetName returns the identifier an errors.As call binds into, from its
@@ -561,7 +767,7 @@ func asTargetName(call *ast.CallExpr) string {
 // errorsAsInCond finds a qualifying errors.As inside a condition and reports
 // whether it sits under a logical NOT — the guard-clause form, whose success path
 // is the opposite of its body.
-func errorsAsInCond(cond ast.Expr, declared map[string]bool) (call *ast.CallExpr, negated, ok bool) {
+func (s bindingScope) errorsAsInCond(cond ast.Expr, declared map[string]bool) (call *ast.CallExpr, negated, ok bool) {
 	var walk func(e ast.Expr, neg bool)
 	walk = func(e ast.Expr, neg bool) {
 		if ok {
@@ -580,7 +786,7 @@ func errorsAsInCond(cond ast.Expr, declared map[string]bool) (call *ast.CallExpr
 			walk(v.X, neg)
 			walk(v.Y, neg)
 		case *ast.CallExpr:
-			if !isErrorsAs(v) {
+			if !s.isErrorsAs(v) {
 				return
 			}
 			if name := asTargetName(v); name != "" && declared[name] {
@@ -599,11 +805,17 @@ type assertBinding struct {
 	source string // the asserted expression, when it is an identifier: `err`
 }
 
-// typeAssertBinding recognises `e, ok := err.(*surface.IncompatibleError)` in an
-// if-statement's Init. okName is returned so the caller can read the CONDITION's
-// polarity: `if …; ok {` and `if …; !ok {` have opposite success paths.
-func typeAssertBinding(init ast.Stmt) (assertBinding, bool) {
-	as, isAssign := init.(*ast.AssignStmt)
+// typeAssertBinding recognises `e, ok := err.(*surface.IncompatibleError)` — in an
+// if-statement's Init, or as a PLAIN STATEMENT in a list. okName is returned so the
+// caller can read the CONDITION's polarity: `if …; ok {` and `if …; !ok {` have
+// opposite success paths, and an EMPTY okName means the single-value form, which
+// has no failure path at all because it panics.
+//
+// It takes an ast.Stmt rather than an *ast.IfStmt precisely so that both callers
+// share it: the assertion is the same assertion wherever it is written, and a
+// second recogniser for the statement form is the two-copies defect again.
+func typeAssertBinding(stmt ast.Stmt) (assertBinding, bool) {
+	as, isAssign := stmt.(*ast.AssignStmt)
 	if !isAssign || len(as.Lhs) == 0 || len(as.Rhs) != 1 {
 		return assertBinding{}, false
 	}
@@ -714,10 +926,10 @@ func isIncompatibleErrorType(e ast.Expr) bool {
 // message assembled from BinarySurface / VaultSurface / StampDir reads the fields
 // and lets the value die in the function — accurate, well-formed, and useless. That
 // remains the one shape this reports.
-func reachesRemedy(fn *ast.FuncDecl, b asBinding) bool {
+func (s bindingScope) reachesRemedy(b asBinding) bool {
 	scope := b.scope
 	if scope == nil {
-		scope = fn.Body.List
+		scope = s.body.List
 	}
 	found := false
 	inspect := func(n ast.Node) bool {
@@ -727,7 +939,7 @@ func reachesRemedy(fn *ast.FuncDecl, b asBinding) bool {
 		switch v := n.(type) {
 		// Rendering.
 		case *ast.CallExpr:
-			if isErrorsAs(v) {
+			if s.isErrorsAs(v) {
 				// The binding's own call: `&ie` here is the bind, not an escape.
 				return true
 			}
@@ -757,8 +969,19 @@ func reachesRemedy(fn *ast.FuncDecl, b asBinding) bool {
 				// bool (`ok := errors.As(…)`) or with a negated case clause. The
 				// bound identifier's own methods stay acceptable at any scope,
 				// because a call on `ie` can only happen where `ie` is real.
+				//
+				// 🔴 AND THE SOURCE MUST STILL BE THE SOURCE AT THAT LINE. `err`
+				// is the most re-declared name in Go; a `err := …` in the success
+				// scope makes the following `err.Error()` render a DIFFERENT
+				// error, and the rule accepted it as the remedy — the same
+				// accurate, well-formed, useless message this whole rule is about,
+				// certified compliant by its own name check. The shadow test is
+				// positional rather than "declared anywhere in the scope",
+				// because a redeclaration inside a nested block does not govern a
+				// render outside it, and rejecting that would redden correct code.
 				found = recv.Name == b.name ||
-					(b.scope != nil && b.source != "" && recv.Name == b.source)
+					(b.scope != nil && b.source != "" && recv.Name == b.source &&
+						!shadowedAt(scope, b.source, v.Pos()))
 			}
 
 		// Handing it on.
@@ -806,6 +1029,159 @@ func reachesRemedy(fn *ast.FuncDecl, b asBinding) bool {
 		}
 	}
 	return found
+}
+
+// shadowedAt reports whether `name` has been RE-DECLARED, at a point that governs
+// pos, between the start of the success scope and pos itself.
+//
+// This exists for one shape: `err` is the most re-declared identifier in Go, and
+// the source arm accepts `err.Error()` as the remedy. An inner `err := …` in the
+// success scope makes the following `err.Error()` render an unrelated error, and
+// the rule certified that as compliant — the accurate, well-formed, useless
+// message it exists to catch, wearing the right name.
+//
+// 🔴 IT IS POSITIONAL, NOT "DECLARED ANYWHERE IN THE SCOPE", and the difference is
+// the usual asymmetry: a shadow it fails to see costs a MISSED finding, while a
+// shadow it imagines costs a FALSE POSITIVE on correct code — and the documented
+// escape from a false positive is a baseline entry exempting that function from
+// half (b) forever. So only declarations that demonstrably govern pos count: a `:=`
+// or `var` earlier in the SAME list, or a declaring header (an if/for/switch init,
+// a range clause, a type-switch assign, a select comm clause) of a statement pos
+// sits inside. A closure parameter is deliberately not tracked — that is the safe
+// direction, and inventing scope resolution here would be a second type checker.
+func shadowedAt(list []ast.Stmt, name string, pos token.Pos) bool {
+	for _, st := range list {
+		if st == nil {
+			continue
+		}
+		// A declaration earlier in this list governs everything after it.
+		if st.End() <= pos && declaresIdent(st, name) {
+			return true
+		}
+		if pos < st.Pos() || pos > st.End() {
+			continue
+		}
+		// pos sits INSIDE this statement, so the statement's own header counts.
+		if headerDeclaresIdent(st, name) {
+			return true
+		}
+		for _, inner := range nestedStmtLists(st) {
+			if shadowedAt(inner, name, pos) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// declaresIdent reports whether a statement DECLARES name — `:=` or `var`.
+// Assignment to an existing variable is not a declaration and does not shadow:
+// `err = other` leaves err the same variable, and the source arm's claim is about
+// which variable the render reads, not what it holds.
+func declaresIdent(st ast.Stmt, name string) bool {
+	switch v := st.(type) {
+	case *ast.AssignStmt:
+		if v.Tok != token.DEFINE {
+			return false
+		}
+		for _, l := range v.Lhs {
+			if identName(l) == name {
+				return true
+			}
+		}
+	case *ast.DeclStmt:
+		gd, ok := v.Decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.VAR {
+			return false
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, n := range vs.Names {
+				if n.Name == name {
+					return true
+				}
+			}
+		}
+	case *ast.LabeledStmt:
+		return declaresIdent(v.Stmt, name)
+	}
+	return false
+}
+
+// headerDeclaresIdent reports whether a compound statement's own header declares
+// name — `if err := f(); …`, `for err := range …`, `switch err := x.(type)`,
+// `select { case err := <-ch: }`. Those govern the whole statement, so a render
+// anywhere inside it reads the shadow rather than the bound source.
+func headerDeclaresIdent(st ast.Stmt, name string) bool {
+	switch v := st.(type) {
+	case *ast.IfStmt:
+		return v.Init != nil && declaresIdent(v.Init, name)
+	case *ast.ForStmt:
+		return v.Init != nil && declaresIdent(v.Init, name)
+	case *ast.SwitchStmt:
+		return v.Init != nil && declaresIdent(v.Init, name)
+	case *ast.TypeSwitchStmt:
+		return (v.Init != nil && declaresIdent(v.Init, name)) ||
+			(v.Assign != nil && declaresIdent(v.Assign, name))
+	case *ast.RangeStmt:
+		return v.Tok == token.DEFINE &&
+			(identName(v.Key) == name || identName(v.Value) == name)
+	case *ast.CommClause:
+		return v.Comm != nil && declaresIdent(v.Comm, name)
+	case *ast.LabeledStmt:
+		return headerDeclaresIdent(v.Stmt, name)
+	}
+	return false
+}
+
+// nestedStmtLists returns the statement lists a compound statement governs, so the
+// shadow search can descend along the path that actually contains the render.
+// Case and comm clauses are returned as statements in their switch's list and then
+// unpacked on the next level down, which keeps their own headers in play.
+func nestedStmtLists(st ast.Stmt) [][]ast.Stmt {
+	switch v := st.(type) {
+	case *ast.BlockStmt:
+		return [][]ast.Stmt{v.List}
+	case *ast.IfStmt:
+		var out [][]ast.Stmt
+		if v.Body != nil {
+			out = append(out, v.Body.List)
+		}
+		if v.Else != nil {
+			out = append(out, []ast.Stmt{v.Else})
+		}
+		return out
+	case *ast.ForStmt:
+		if v.Body != nil {
+			return [][]ast.Stmt{v.Body.List}
+		}
+	case *ast.RangeStmt:
+		if v.Body != nil {
+			return [][]ast.Stmt{v.Body.List}
+		}
+	case *ast.SwitchStmt:
+		if v.Body != nil {
+			return [][]ast.Stmt{v.Body.List}
+		}
+	case *ast.TypeSwitchStmt:
+		if v.Body != nil {
+			return [][]ast.Stmt{v.Body.List}
+		}
+	case *ast.SelectStmt:
+		if v.Body != nil {
+			return [][]ast.Stmt{v.Body.List}
+		}
+	case *ast.CaseClause:
+		return [][]ast.Stmt{v.Body}
+	case *ast.CommClause:
+		return [][]ast.Stmt{v.Body}
+	case *ast.LabeledStmt:
+		return [][]ast.Stmt{{v.Stmt}}
+	}
+	return nil
 }
 
 // escapesAs reports whether an expression hands the bound value itself onward, as

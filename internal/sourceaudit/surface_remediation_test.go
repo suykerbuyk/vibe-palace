@@ -23,6 +23,8 @@ import (
 	"errors"
 	"fmt"
 
+	stderrors "errors"
+
 	"example.com/surface"
 )
 
@@ -346,6 +348,109 @@ func EscapesVariadic(err, other error) error {
 	}
 	return nil
 }
+
+// ---- Third pass: the five BINDING SPELLINGS the rule could not see. Each was
+// ---- filed in seven-binding-spellings-the-remediation-rule-cannot-see as a MISS —
+// ---- the defect is present in full and the rule stayed green — and each is paired
+// ---- with the correct code one keystroke away, because a widening that fires on
+// ---- the defect and on its compliant twin buys nothing.
+
+// OMISSION (S1): the binding target arrives as a PARAMETER, so it was never in
+// declared and errors.As was not recognised as binding anything.
+func ParamTargetRerendersFromFields(err error, ie *surface.IncompatibleError) string {
+	if errors.As(err, &ie) {
+		return fmt.Sprintf("binary v%d < vault v%d", ie.BinarySurface, ie.VaultSurface)
+	}
+	return ""
+}
+
+// CLEAN (S1): the same parameter binding, rendering the way out.
+func ParamTargetRenders(err error, ie *surface.IncompatibleError) string {
+	if errors.As(err, &ie) {
+		return ie.Error()
+	}
+	return ""
+}
+
+// OMISSION (S2): a PLAIN type assertion statement — no comma-ok, no if-init, so
+// typeAssertBinding was never consulted. It panics when the type is wrong, which
+// is precisely why the success scope is the REST OF THE LIST.
+func PlainTypeAssertRerendersFromFields(err error) string {
+	e := err.(*surface.IncompatibleError)
+	return fmt.Sprintf("binary v%d < vault v%d at %s", e.BinarySurface, e.VaultSurface, e.StampDir)
+}
+
+// CLEAN (S2): the same plain assertion, rendering the way out.
+func PlainTypeAssertRenders(err error) string {
+	e := err.(*surface.IncompatibleError)
+	return e.Error()
+}
+
+// OMISSION (S3): the binding lives in a package-level var holding a FUNC LITERAL.
+// The decl loop visited only *ast.FuncDecl, so this body was never walked at all.
+var FuncLitRerendersFromFields = func(err error) string {
+	var ie *surface.IncompatibleError
+	if errors.As(err, &ie) {
+		return fmt.Sprintf("binary v%d < vault v%d", ie.BinarySurface, ie.VaultSurface)
+	}
+	return ""
+}
+
+// CLEAN (S3): the same func literal, rendering the way out.
+var FuncLitRenders = func(err error) string {
+	var ie *surface.IncompatibleError
+	if errors.As(err, &ie) {
+		return ie.Error()
+	}
+	return ""
+}
+
+// OMISSION (S4): the errors package under an ALIAS. isErrorsAs hard-coded the
+// identifier "errors", so a one-word import rename evaded half (b) entirely.
+func AliasedErrorsRerendersFromFields(err error) string {
+	var ie *surface.IncompatibleError
+	if stderrors.As(err, &ie) {
+		return fmt.Sprintf("binary v%d < vault v%d", ie.BinarySurface, ie.VaultSurface)
+	}
+	return err.Error()
+}
+
+// CLEAN (S4): the same aliased call, rendering the way out.
+func AliasedErrorsRenders(err error) string {
+	var ie *surface.IncompatibleError
+	if stderrors.As(err, &ie) {
+		return ie.Error()
+	}
+	return ""
+}
+
+// OMISSION (S5): err is SHADOWED inside the success scope, so the err.Error() the
+// source arm accepted renders a DIFFERENT error — an accurate, well-formed,
+// useless message, satisfying the rule with text that never carried the remedy.
+func ShadowedSourceRerendersFromFields(err error) string {
+	var ie *surface.IncompatibleError
+	if errors.As(err, &ie) {
+		err := fmt.Errorf("binary v%d < vault v%d", ie.BinarySurface, ie.VaultSurface)
+		return err.Error()
+	}
+	return ""
+}
+
+// CLEAN (S5): err is shadowed in a NESTED block that does not govern the render,
+// so the outer err.Error() still delivers the producer's bytes. Rejecting a source
+// render merely because the name is redeclared SOMEWHERE in the scope would redden
+// this, and a shadow check that is not scope-aware is a false positive generator.
+func ShadowedElsewhereStillRenders(err error) string {
+	var ie *surface.IncompatibleError
+	if errors.As(err, &ie) {
+		if other := errors.New("unrelated"); other != nil {
+			err := other
+			_ = err
+		}
+		return err.Error()
+	}
+	return ""
+}
 `
 
 func surfaceIDs(t *testing.T) []string {
@@ -393,6 +498,14 @@ func TestSurfaceRemediationFlagsBothHalves(t *testing.T) {
 		{"fixture.NegatedTypeAssertRerendersFromFields", "a negated type assertion — the ELSE arm is the success path"},
 		{"fixture.VarInitNoTypeRerendersFromFields", "var x = &T{} — a ValueSpec with no explicit type, in the gap between the var and := handling"},
 		{"fixture.SameNameSecondRerendersFromFields", "two bindings into the same name; deduping by name alone dropped the second"},
+
+		// Third pass: the five binding SPELLINGS filed as misses. Each carries the
+		// defect in full and each walked past the rule untouched.
+		{"fixture.ParamTargetRerendersFromFields", "(S1) the binding target is a PARAMETER — declaredIncompatibleIdents walked the body only, so errors.As bound nothing the rule could see"},
+		{"fixture.PlainTypeAssertRerendersFromFields", "(S2) a PLAIN type assertion statement — typeAssertBinding was consulted only from an if-init, so the whole statement form was invisible"},
+		{"fixture.FuncLitRerendersFromFields", "(S3) a binding inside a package-level var holding a FUNC LITERAL — the decl loop visited only *ast.FuncDecl, so the body was never walked"},
+		{"fixture.AliasedErrorsRerendersFromFields", "(S4) an ALIASED errors import — isErrorsAs hard-coded the identifier `errors`, so a one-word rename evaded half (b) entirely"},
+		{"fixture.ShadowedSourceRerendersFromFields", "(S5) err SHADOWED inside the success scope — the source arm accepted an err.Error() that renders a different error entirely"},
 	} {
 		if !slices.Contains(got, want.symbol) {
 			t.Errorf("%s should have been flagged: %s. A ratchet that cannot see the defect it was "+
@@ -436,6 +549,16 @@ func TestSurfaceRemediationDoesNotFlagCleanCode(t *testing.T) {
 		{"fixture.EscapesPositionally", "a POSITIONAL struct literal — there is no KeyValueExpr to match"},
 		{"fixture.EscapesOverChannel", "the value escapes over a channel"},
 		{"fixture.EscapesVariadic", "escapes through a variadic spread"},
+
+		// 🔴 Third pass: the compliant TWIN of every newly recognised spelling. A
+		// widening that fires on the defect and on its correct twin has bought
+		// nothing — it has only moved the erosion from missed findings to
+		// permanent baseline exemptions on correct code.
+		{"fixture.ParamTargetRenders", "(S1) the parameter binding, rendering the way out"},
+		{"fixture.PlainTypeAssertRenders", "(S2) the plain type assertion, rendering the way out"},
+		{"fixture.FuncLitRenders", "(S3) the func literal, rendering the way out"},
+		{"fixture.AliasedErrorsRenders", "(S4) the aliased errors call, rendering the way out"},
+		{"fixture.ShadowedElsewhereStillRenders", "(S5) err is shadowed in a NESTED block that does not govern the render, so the outer err.Error() still delivers the producer's bytes"},
 	} {
 		if slices.Contains(got, unwanted.symbol) {
 			t.Errorf("%s is correct code and the rule flagged it (%s) — a noisy gate is a disabled "+
