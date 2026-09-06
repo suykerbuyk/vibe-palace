@@ -78,8 +78,10 @@ type BootstrapResult struct {
 	// for why that exception is earned.
 	Ranking *RankingReport `json:"ranking,omitempty"`
 
-	// VaultStaleness reports the network-free fetch age of the vault view.
-	VaultStaleness *VaultStaleness `json:"vault_staleness,omitempty"`
+	// ── STOP-CLASS INSTRUMENTS. SurfaceMismatch and VaultDirt are the two
+	// conditions that stop a session from doing its work rather than advising
+	// it, and they are the two that SUPPRESS the advisory block below. Both are
+	// computed unconditionally and can hold at once.
 
 	// SurfaceMismatch reports that the VAULT IS AHEAD OF THIS BINARY — NIL WHEN
 	// COMPATIBLE, for the same reason Health and AuditStaleness are.
@@ -122,6 +124,38 @@ type BootstrapResult struct {
 	// happens when a record list is carried in an alert's slot.
 	VaultDirt *VaultDirt `json:"vault_dirt,omitempty"`
 
+	// ── ADVISORY INSTRUMENTS BEGIN. Everything from here to ADVISORY INSTRUMENTS
+	// END is ADVISORY: it reports something an operator may want to act on, in a
+	// session that can still do its work.
+	//
+	// 🔴 EVERY FIELD IN THIS REGION IS SUPPRESSED WHENEVER A STOP-CLASS FIELD
+	// ABOVE IS SET. See the advisory gate in assembleBootstrap for the reasoning
+	// and the measurements; in short, this region has a byte budget and the
+	// stop-class instruments plus all of these do not fit inside a host preview.
+	// Their absence therefore does NOT mean the condition is healthy when
+	// SurfaceMismatch or VaultDirt is present — the ordinary "nil means healthy"
+	// reading applies only to a payload with no stop-class field on it.
+	//
+	// VaultStaleness was moved DOWN here, from above SurfaceMismatch, so that
+	// declaration order says what this comment says. It sat inside the advisory
+	// region while being declared ahead of both stop-class fields, which made
+	// "a new alert added below this line inherits the gate" false for the two
+	// fields it actually enclosed. The move is wire-safe precisely because the
+	// gate exists: an advisory and a stop-class field are never on one payload,
+	// so no reader can observe the reordering.
+	//
+	// The gate also suppresses one alert that has NO field here at all: the
+	// caller-friction line (callerFrictionMessage), which is directive-only and
+	// carries no JSON tag. It is invisible to the derived instrument guard for
+	// that reason — the guard keys off declarations — so it is named here.
+	//
+	// A new alert added below this line inherits the gate. One that must survive
+	// a stop belongs above it, and must be shown to fit the ceiling in the
+	// stop-class branch of bootstrap_instrument_ceiling_test.go.
+
+	// VaultStaleness reports the network-free fetch age of the vault view.
+	VaultStaleness *VaultStaleness `json:"vault_staleness,omitempty"`
+
 	// Health rides in the payload every session already loads, so a degraded vp
 	// reaches every agent on every host WITHOUT the agent having to think to ask.
 	// "Who calls vp_health?" was the wrong question: every pull-based answer is a
@@ -148,6 +182,13 @@ type BootstrapResult struct {
 	// alert MUST be silent in the healthy case; one that cannot be needs a
 	// priority order or a cap on the set first.
 	//
+	// THE PRIORITY ORDER THIS SENTENCE ANTICIPATED NOW EXISTS. It is the advisory
+	// gate in assembleBootstrap, and it was added because the set outgrew the
+	// region rather than because any single alert misbehaved: silence-when-healthy
+	// bounds how OFTEN the block is wide, and nothing bounded how wide. A new
+	// alert must still be silent when healthy AND must name which side of that
+	// gate it sits on.
+	//
 	// 📏 RECORD THE GREP, NEVER THE COUNT. This comment used to assert "four
 	// possible alerts" and the AuditStaleness site below used to call itself "the
 	// fourth" — both were stale, and they were stale in the one comment whose job
@@ -168,7 +209,12 @@ type BootstrapResult struct {
 	// field but not this channel. Do not spend an alert on one.
 	AuditStaleness *vaultaudit.Staleness `json:"audit_staleness,omitempty"`
 
+	// FrictionTrend is computed early, with the session listing it derives from,
+	// and CLEARED by the advisory gate rather than skipped. It is the one
+	// advisory whose cost is already sunk by the time the gate is reached.
 	FrictionTrend *capture.FrictionTrend `json:"friction_trend,omitempty"`
+
+	// ── ADVISORY INSTRUMENTS END.
 
 	// The directive carries the alerts in prose for a reader that skims the
 	// structured fields, so it rides with them, ahead of the bulk.
@@ -557,25 +603,28 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		}
 	}
 
-	// PostBootstrapInstructions tells the model to announce capabilities after
-	// the bootstrap summary. Populated server-side and excluded from truncation
-	// so the directive fires even when the command list is shed — a degraded
-	// "run vp_cmd to list commands" is still better than silent capability.
-	result.PostBootstrapInstructions = renderPostBootstrapInstructions(result.AvailableCommands, result.AvailableSkills, herdrLine)
-
 	// ALERTS ARE COLLECTED SEPARATELY FROM THE DIRECTIVE, and that separation is a
 	// bug fix, not bookkeeping.
 	//
 	// The friction, staleness and health warnings used to be appended straight onto
-	// PostBootstrapInstructions — and the token-budget truncation below RE-RENDERS
-	// that field with a blind assignment when it sheds the command list, which
-	// silently DISCARDED every warning appended before it. So the payload dropped its
-	// alerts exactly when it was too big, i.e. on a busy project, which is precisely
-	// when they matter. The alerts are the highest-value thing in this payload and
-	// they were the first thing thrown away.
+	// PostBootstrapInstructions — and the token-budget shed ladder RE-RENDERED that
+	// field with a blind assignment when it shed the command list, which silently
+	// DISCARDED every warning appended before it. So the payload dropped its alerts
+	// exactly when it was too big, i.e. on a busy project, which is precisely when
+	// they matter. The alerts are the highest-value thing in this payload and they
+	// were the first thing thrown away.
 	//
-	// Keeping them in their own slice and composing at the end makes that
-	// unrepresentable: re-rendering the directive can no longer drop them.
+	// Keeping them in their own slice and composing ONCE, at the single exit in
+	// finishBootstrap, makes that unrepresentable: there is no re-render left to
+	// drop them.
+	//
+	// A PROVISIONAL COMPOSE USED TO SIT HERE and was DELETED. It assigned the
+	// directive from the command list before the alerts existed, so the ladder
+	// would have something to shed against; the ladder is gone (ADR-009), both
+	// returns below now overwrite the field through finishBootstrap, and what was
+	// left was a dead store that made this function look like it composed the
+	// directive twice. A second composition is exactly the shape the paragraph
+	// above is about — do not re-add one.
 	var alerts []string
 
 	// Surface mismatch — the vault is ahead of this binary, and it LEADS.
@@ -634,6 +683,78 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	if vd := computeVaultDirt(vault.Root); vd != nil {
 		result.VaultDirt = vd
 		alerts = append(alerts, vd.Message)
+	}
+
+	// ── THE ADVISORY GATE ────────────────────────────────────────────────────
+	//
+	// 🔴 STOP-CLASS AND ADVISORY INSTRUMENTS DO NOT COEXIST IN THE BOUNDED
+	// PREFIX. Everything above this line is stop-class; everything below it is
+	// advisory, and when a stop is firing the advisories are not attached and
+	// their alert lines are not appended.
+	//
+	// This is a BYTE BUDGET, enforced because the region has one. Measured on
+	// the worst case with every field populated, the bounded prefix ran to
+	// 2,731 B against a 2,000 B host preview — 731 B over — and the overflow did
+	// not land on the advisories. It landed on `post_bootstrap_instructions`,
+	// which started 731 B PAST the cut, so the payload that carried every alert
+	// in prose delivered none of them. The two stop-class structs survived only
+	// by the luck of being declared early.
+	//
+	// Shrinking the stop-class instruments was measured and rejected: the whole
+	// budget left for SurfaceMismatch was 134 B, and its minimum possible form —
+	// three facts, no Message, no Remediation — costs 161 B. It does not fit
+	// even after being gutted of the remedy that is the only reason it exists.
+	// Removing it instead put the cut mid-diagnosis with no structured field
+	// behind it and no remedy anywhere in the surviving payload, which is the
+	// pre-012c2ae failure restored. (Chair ruling 2026-09-06, option (d), on
+	// `the-instrument-ceiling-fixture-is-a-hand-maintained-list`.)
+	//
+	// 🔴 THE JUSTIFICATION IS ACTIONABILITY, NOT ARITHMETIC. A stop-class alert
+	// says the session cannot do its work: SurfaceMismatch means every mutating
+	// tool is refused and the remedy is a new binary; VaultDirt means nothing the
+	// session produces can be saved. Against either of those, a friction trend
+	// and a stale audit are not merely lower priority — they are not actionable
+	// at all until the stop clears. The AuditStaleness field comment already
+	// wrote the escape hatch this uses: an alert that cannot be silent in the
+	// healthy case "needs a priority order or a cap on the set first".
+	//
+	// NOTHING IS LOST WITHOUT A NAMED READER. Each suppressed instrument has a
+	// tool that serves it in full — vp_health, vp_trends, vp_vault_sync,
+	// `vp audit vault` — and the stop-class alert the reader DOES get is the one
+	// thing they must act on first. The next handshake, after the stop clears,
+	// carries the advisories again.
+	//
+	// 🔴 FIVE ALERTS ARE SUPPRESSED HERE, NOT FOUR. The four advisory STRUCTS have
+	// JSON tags and are therefore visible to the derived instrument guard in
+	// bootstrap_instrument_ceiling_test.go. callerFrictionMessage is not: it is
+	// DIRECTIVE-ONLY, appended below with no field of its own, so no declaration
+	// exists for that guard to key off. It is named here and in the ADVISORY
+	// INSTRUMENTS BEGIN block because a reader auditing this gate from either end
+	// would otherwise count four and miss it.
+	//
+	// 🔴 IT MUST NOT BE CLOSED BY RELOCATING ADVISORY CONTENT ONTO THE DIRECTIVE.
+	// The directive is the field a cut EATS, so anything moved there in the name
+	// of saving it is deleted from the surviving prefix rather than saved. The
+	// suppressed alerts are suppressed, not rehoused.
+	//
+	// Ranking and the handle fields (project, the URIs, the digest,
+	// active_task_count) are NOT advisory and stay on every payload: they are how
+	// a reader reaches the bulk at all.
+	//
+	// Both stop-class fields are still computed above, unconditionally — they can
+	// fire together, and a reader stranded on a dirty vault needs both. The
+	// advisories below are SKIPPED, not computed-then-dropped, which also takes
+	// vplog.Summarize, VaultFetchAge and the audit staleness glob off the
+	// handshake on exactly the sessions that are already in trouble.
+	if result.SurfaceMismatch != nil || result.VaultDirt != nil {
+		// FrictionTrend is the one advisory computed earlier, as a byproduct of
+		// the session listing this payload already needed. Clearing it here is
+		// what keeps the gate ONE decision in ONE place: the alternative is a
+		// second copy of this condition up at the compute site, which is the
+		// duplicated-predicate defect this file has unwound before.
+		result.FrictionTrend = nil
+
+		return finishBootstrap(result, alerts, herdrLine)
 	}
 
 	// Surface the proactive friction nudge in the directive itself. The directive
@@ -736,15 +857,28 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		alerts = append(alerts, as.Message)
 	}
 
-	// FINAL compose. RE-COMPOSE, DO NOT RE-ASSIGN: this used to be a blind
-	// assignment inside the shed loop, which threw away the friction / staleness
-	// / health alerts appended above — dropping the payload's most important
-	// content precisely when the payload was too big to fit, which is when a
-	// project is busiest. Rendering from the POST-ladder command list also means
-	// the examples can no longer point at aliases that were just shed.
+	return finishBootstrap(result, alerts, herdrLine)
+}
+
+// finishBootstrap composes the directive and returns the payload. It is the ONE
+// exit from assembleBootstrap, shared by the advisory-gate return above and the
+// full path below it.
+//
+// 🔴 IT IS A FUNCTION SO THERE IS ONLY ONE OF IT. The advisory gate introduced a
+// second return, and an inlined copy of this composition on that path would be a
+// second place for the directive to be built — which is precisely how the blind
+// re-assignment described below got away with dropping every alert. One exit,
+// one composition, no copy to disagree.
+//
+// RE-COMPOSE, DO NOT RE-ASSIGN: this used to be a blind assignment inside the
+// shed loop, which threw away the friction / staleness / health alerts appended
+// by the caller — dropping the payload's most important content precisely when
+// the payload was too big to fit, which is when a project is busiest. Rendering
+// from the POST-ladder command list also means the examples can no longer point
+// at aliases that were just shed.
+func finishBootstrap(result BootstrapResult, alerts []string, herdrLine string) BootstrapResult {
 	baseDirective := renderPostBootstrapInstructions(result.AvailableCommands, result.AvailableSkills, herdrLine)
 	result.PostBootstrapInstructions = composeDirective(baseDirective, alerts)
-
 	return result
 }
 

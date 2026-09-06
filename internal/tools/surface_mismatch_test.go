@@ -21,6 +21,16 @@ import (
 // exactly what every un-upgraded host sees the moment a newer one writes — and
 // returns the bootstrap payload it would receive on the FIRST call of a session,
 // before any tool has been attempted.
+//
+// 🔴 IT ASSERTS THAT WHAT IT RETURNS IS THE STOP-CLASS PAYLOAD, and that check
+// is here rather than in each caller on purpose. Every test below measures a
+// delivery contract — the remedy reaches the structured field, the alert leads
+// the directive — and after the advisory gate those contracts hold on the shape
+// production actually ships when stranded, which carries no advisory
+// instruments. Measured on a mixed payload they would be asserting properties of
+// a document vp never emits. The gate itself is pinned in
+// bootstrap_advisory_gate_test.go; this is the guarantee that these tests are
+// standing on it.
 func strandedBootstrap(t *testing.T) BootstrapResult {
 	t.Helper()
 	root := t.TempDir()
@@ -28,7 +38,17 @@ func strandedBootstrap(t *testing.T) BootstrapResult {
 	if err := surface.WriteStamp(filepath.Join(root, "Projects", "test-proj"), surface.MCPSurfaceVersion+1, "tester"); err != nil {
 		t.Fatalf("stamp ahead vault: %v", err)
 	}
-	return runBootstrap(t, vault, vpctx.NewResolver(root))
+	br := runBootstrap(t, vault, vpctx.NewResolver(root))
+
+	if br.SurfaceMismatch == nil {
+		t.Fatal("a vault AHEAD of this binary produced no surface_mismatch, so this is not the stop-class " +
+			"payload and nothing below is measuring the shape a stranded host receives")
+	}
+	if present := advisoryFieldsPresent(br); len(present) > 0 {
+		t.Fatalf("the stranded payload carries advisory instrument(s) %v — the tests below measure "+
+			"delivery on the STOP-CLASS branch, and a mixed payload is not a shape vp emits", present)
+	}
+	return br
 }
 
 func runBootstrap(t *testing.T, vault *storage.Vault, resolver *vpctx.Resolver) BootstrapResult {
