@@ -494,9 +494,9 @@ func ManageTaskTool(vault *storage.Vault) mcp.Tool {
 			"retire requires approved_by_human=true, which is your own attestation that the human said the task " +
 			"is done — set it only when that is true. set_relations sets a task's parent (its epic) and/or its " +
 			"dependencies; structure is derived from those two edges, so an epic is any task others point at. " +
-			"amend is the ONLY way to change a task's PLAN: it replaces the named H2 `section` (or appends it if " +
-			"absent). The result's `op` is `replaced` or `appended` — a same-name re-run converges by replacing, " +
-			"and that collision is now visible instead of silent. " +
+			"amend is the SECTION writer and the normal way to change a task's PLAN: it replaces the named H2 " +
+			"`section` (or appends it if absent). The result's `op` is `replaced` or `appended` — a same-name " +
+			"re-run converges by replacing, and that collision is now visible instead of silent. " +
 			"Use it whenever a plan is superseded — a task whose body still states a premise you have disproved " +
 			"is a task that will be implemented wrong. overwrite replaces an ACTIVE task's WHOLE file and is the " +
 			"only path to text amend cannot address: the preamble above the first H2, an H2 heading's own wording, " +

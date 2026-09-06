@@ -37,7 +37,54 @@ import (
 // every host ran the surface-v1 binary: the KG triple-filename migration and
 // the armed data-format axis changed what gets written into the vault, so an
 // older binary must gate against a vault a v2 host has written.
-const MCPSurfaceVersion int = 2
+//
+// Bumped 2->3 (2026-09-05). Five distinct on-disk shapes moved while the
+// counter stood still. Each is something a v2 binary either never writes or
+// cannot read, so a v2 host must gate against a vault a v3 host has touched:
+//
+//   - SESSION-NOTE FRONTMATTER GAINED KEYS. `host` and `host_source` (1963057),
+//     then `entrypoint` (9ad131b). SessionMeta is yaml.Marshal'd straight to
+//     disk, so these are new lines in every note a v3 binary writes, and
+//     c894fc0 then changed the VALUE vocabulary so one client writes different
+//     bytes than it did a week earlier.
+//   - A NEW ARTIFACT WITH NO v2 READER: palace/<project>/ingested-archives.jsonl
+//     (c46f6be). A v2 binary neither emits it nor knows to skip what it records.
+//   - CreateTask EMITS AN UNCONDITIONAL `## Context` (b22fd8a), so every task
+//     file written from there forward carries a section a v2 binary never
+//     produced; d55c96b then rewrote the existing ones to match.
+//   - Audits/baseline.json GAINED `measured` (b621a18). This one is the sharpest,
+//     because it is silent in the WRITE direction: a v2 binary parses the file
+//     and ignores the key, then drops the whole block on its next
+//     `vp audit vault --accept` with no error.
+//   - EVERY DATE-STAMPED VAULT FILENAME MOVED FROM UTC TO THE WRITER'S LOCAL
+//     ZONE (182be37) — session notes, transcript stems, manifests, audit
+//     reports. Two binaries in different zones disagree about a file's NAME,
+//     which no content check can reconcile after the fact.
+//
+// 🔴 RE-DERIVE THIS LIST, DO NOT EXTEND IT BY MEMORY. The commits above were
+// each confirmed against their diffs, and three plausible-sounding candidates
+// were REJECTED on inspection: e4f0f16 (archive-manifest serialisation) is
+// locking only and changes no bytes, 0bfbf3a touches internal/storage/drawers.go
+// but changes no drawer write shape, and ba79454's internal/storage/tasks.go
+// half is a detector, not a writer. A commit that touches a writer is not a
+// commit that changes what the writer writes. The queries that find the real
+// ones:
+//
+//	git log -S'yaml:"' -- internal/storage/sessions.go
+//	git log -S'json:"' -- internal/vaultaudit/baseline.go internal/archive/manifest.go
+//
+// and the audit dimension set is the `dims` literal in internal/vaultaudit/audit.go
+// — never a count written down here, which is the claim 9b19134 deleted from two
+// documents for rotting.
+//
+// 🔴 A BUMP STRANDS EVERY HOST THAT HAS NOT RUN `make install`, vault-wide and
+// at once: CheckCompatible takes the MAX across every stamp, so the first v3
+// write anywhere raises the floor for everybody. That is the intended effect,
+// and it is why the remediation text in IncompatibleError.Error() below is a
+// TESTED contract rather than a convenience — a stranded host has to be able to
+// read its way out. `vp check --check writer-identity` derives how many hosts
+// that is; do not record the number here.
+const MCPSurfaceVersion int = 3
 
 // Stamp models the on-disk .surface TOML file recording the latest writer.
 type Stamp struct {

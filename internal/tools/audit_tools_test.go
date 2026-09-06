@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultaudit"
 )
 
 // runAuditVaultTool drives the real MCP handler and returns its result map.
@@ -141,4 +142,28 @@ func firstNLines(s string, n int) string {
 		lines = lines[:n]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// TestAuditVaultTool_DescriptionNamesEveryDimension pins the DERIVATION, not the wording.
+//
+// This description used to name five dimensions against a registry of ten, and nothing
+// caught it: the surface golden covers a tool's name, mutating flag and schema digest and
+// NOT its Description (the standing "nothing pins a tool's Description against its
+// behaviour" gap). The description is now built from vaultaudit.DimensionNames at
+// construction time, so the two cannot disagree — this test is what proves the wiring is
+// still in place, and it starts failing the moment someone replaces the fmt.Sprintf with
+// a typed-out list again.
+func TestAuditVaultTool_DescriptionNamesEveryDimension(t *testing.T) {
+	tool := AuditVaultTool(storage.NewVault(t.TempDir()))
+
+	names := vaultaudit.DimensionNames()
+	if len(names) == 0 {
+		t.Fatal("vaultaudit.DimensionNames returned nothing — the registry is empty")
+	}
+	for _, name := range names {
+		if !strings.Contains(tool.Description, name) {
+			t.Errorf("vp_audit_vault description omits dimension %q\n  description: %s",
+				name, tool.Description)
+		}
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
@@ -50,9 +51,14 @@ func cmdAuditVault() *cli.Command {
 	return &cli.Command{
 		Name:     "audit vault",
 		Synopsis: "vp audit vault [--write] [--accept [--raise]]",
-		Description: "Audit the WHOLE VAULT against design intent: transcript round-trips, project-tree " +
-			"coherence, KG portability, resume discipline, iteration headings. Reports pass/fail/unknown " +
-			"per dimension against the accepted-debt baseline. Advisory — it never blocks.",
+		// Dimensions are DERIVED from vaultaudit's registry, never listed here. This
+		// description named five of them against a registry of ten; its MCP twin named
+		// the same five, and so did the vault-audit command template. One registry,
+		// three prose copies, all three stale — see vaultaudit.DimensionNames.
+		Description: fmt.Sprintf(
+			"Audit the WHOLE VAULT against design intent, reporting pass/fail/unknown per dimension "+
+				"against the accepted-debt baseline. Dimensions: %s. Advisory — it never blocks.",
+			strings.Join(vaultaudit.DimensionNames(), ", ")),
 		Flags: auditVaultFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp audit vault", Comment: "Audit the vault and print the report"},

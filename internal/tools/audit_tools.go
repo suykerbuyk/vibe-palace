@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
@@ -51,11 +52,20 @@ type auditVaultParams struct {
 func AuditVaultTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name: "vp_audit_vault",
-		Description: "Audit the WHOLE VAULT against design intent — transcript round-trips, project-tree " +
-			"coherence, KG portability, resume discipline, iteration headings — reporting pass/fail/unknown " +
-			"per dimension against the accepted-debt baseline (Audits/baseline.json). Takes NO project " +
-			"parameter: it is vault-global by design. ADVISORY: it reports, it never blocks. `unknown` " +
-			"means the auditor could not read something and is NOT a pass.",
+		// The dimension list is DERIVED from vaultaudit's registry at construction
+		// time, never typed out here. It used to name five dimensions against a
+		// registry of ten, and it was wrong from the moment the sixth landed —
+		// nothing could have caught that, because the surface golden covers a tool's
+		// name, mutating flag and schema digest and NOT its Description. That gap is
+		// real and stays open in general; for THIS tool it is closed by construction,
+		// because there is no longer a second copy of the list to disagree with the
+		// first.
+		Description: fmt.Sprintf(
+			"Audit the WHOLE VAULT against design intent, reporting pass/fail/unknown per dimension "+
+				"against the accepted-debt baseline (Audits/baseline.json). Dimensions: %s. Takes NO "+
+				"project parameter: it is vault-global by design. ADVISORY: it reports, it never "+
+				"blocks. `unknown` means the auditor could not read something and is NOT a pass.",
+			strings.Join(vaultaudit.DimensionNames(), ", ")),
 		Schema:   auditVaultSchema,
 		Mutating: true, // write=true writes a report and stamps the surface
 		// An explicit write:false renders inline and persists nothing — see

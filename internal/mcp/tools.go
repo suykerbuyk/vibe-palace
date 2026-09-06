@@ -145,6 +145,14 @@ type Registry struct {
 	// a Registry whose vault was injected directly never had a launch
 	// directory, so there is nothing to compare against.
 	launchCwd string
+	// staleBinaryTold latches the stale-image advisory so it fires ONCE per
+	// server process rather than once per mutating call. A warning on every
+	// write is the ignorable warning this advisory exists to avoid being.
+	staleBinaryTold bool
+	// selfImageReplaced answers "has MY executable been replaced on disk". It is
+	// a field rather than a direct call so a test can drive the condition
+	// without unlinking a real binary; nil means the production predicate.
+	selfImageReplaced func() (bool, string)
 	// lastBindErr fingerprints the last re-resolution failure so a session with
 	// a permanently broken config logs the condition, not one line per tool
 	// call: vplog aggregates warn counts by op, and a per-call flood would
@@ -213,6 +221,27 @@ func (r *Registry) markBindErr(msg string) bool {
 		return false
 	}
 	r.lastBindErr = msg
+	return true
+}
+
+// markStaleBinaryOnce reports whether the stale-image advisory still needs to
+// be delivered, latching it closed on the first true. It mirrors markBindErr:
+// a STANDING condition is announced once, not re-announced on every call.
+//
+// Scope is the SERVER PROCESS, not the MCP session, and that is a deliberate
+// limit rather than an oversight. On stdio — the transport every AI host uses —
+// one process serves exactly one session, so the two coincide. On a multiplexed
+// `vp mcp serve` they do not, and a second client would not be told. Keying on
+// server.ClientSessionFromContext was rejected: it returns "" on the
+// HandleMessage seam (so every in-process caller would share one key) and it
+// grows an unbounded map on a long-lived server. A stated limit beats a leak.
+func (r *Registry) markStaleBinaryOnce() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.staleBinaryTold {
+		return false
+	}
+	r.staleBinaryTold = true
 	return true
 }
 
@@ -309,8 +338,16 @@ func (r *Registry) Dispatch(ctx context.Context, name string, params json.RawMes
 
 	// params are schema-validated above, so the gate can read a discriminator
 	// out of them without trusting the wire. Both dispatch paths pass them.
-	if gErr := r.gateIfMutating(ctx, rt, params, r.staleBinding(ctx)); gErr != nil {
+	advisory, gErr := r.gateIfMutating(ctx, rt, params, r.staleBinding(ctx))
+	if gErr != nil {
 		return nil, gErr
+	}
+	// This path has no result envelope to carry a banner — it returns the
+	// handler's own value — so the advisory reaches the operator through the
+	// log, which vp_health aggregates. The DECISION is shared with the wire
+	// path; only the rendering differs.
+	if advisory != "" {
+		logStaleBinaryAdvisory(rt.tool.Name, advisory)
 	}
 
 	return rt.tool.Handler(ctx, params)
@@ -347,21 +384,75 @@ func (r *Registry) Dispatch(ctx context.Context, name string, params json.RawMes
 // not the one this server bound — are reasons to refuse a WRITE. A read under
 // drift is treated exactly like any other read: admitted, and carrying the
 // drift banner in its own result.
-func (r *Registry) gateIfMutating(ctx context.Context, rt *registeredTool, params json.RawMessage, drift *storage.StaleBindingError) error {
+// It returns an ADVISORY alongside its refusal decision. The advisory is
+// non-empty at most once per server process, and only for a call that is about
+// to WRITE: this binary's own executable has been replaced on disk, so the
+// write will use paths the installed binary may no longer have. That condition
+// does NOT refuse — operator ruling, 2026-09-05: advise before mutating, then
+// let the operator decide whether to proceed or stop and upgrade. Losing work
+// to protect a schema is the trade gate.go already refuses to make.
+//
+// 🔴 The advisory is computed HERE, inside the gate, precisely because both
+// dispatch paths call this function. Computing it at a call site would put it
+// on one path and not the other — the defect shape this file already warns
+// about two comments up, where the two paths must agree about what a single
+// invocation may do. What the paths may legitimately differ on is RENDERING:
+// only makeHandler has a result envelope to hang a banner on.
+func (r *Registry) gateIfMutating(ctx context.Context, rt *registeredTool, params json.RawMessage, drift *storage.StaleBindingError) (string, error) {
 	if !rt.tool.Mutating {
-		return nil
+		return "", nil
 	}
 	if readOnlyInvocation(rt.tool, params) {
-		return nil
+		return "", nil
 	}
 	if drift != nil {
-		return drift
+		return "", drift
 	}
 	root := ""
 	if v := VaultFromContext(ctx); v != nil {
 		root = v.Root
 	}
-	return surface.EnforceFailStop(root)
+	if err := surface.EnforceFailStop(root); err != nil {
+		return "", err
+	}
+	// The write is going to happen. Advise, do not refuse.
+	probe := r.selfImageReplaced
+	if probe == nil {
+		probe = surface.SelfImageReplaced
+	}
+	if replaced, image := probe(); replaced && r.markStaleBinaryOnce() {
+		return surface.StaleBinaryAdvisory(image), nil
+	}
+	return "", nil
+}
+
+// logStaleBinaryAdvisory records the advisory at WARN with fault="operational".
+//
+// Operational, not caller: a server running a replaced image is a real
+// condition an operator SHOULD see amber, and it is nobody's calling mistake.
+// The amber is also the second delivery channel — vp_health aggregates it, and
+// vp_bootstrap_context surfaces a health alert from that — so the advisory
+// reaches a human even on a path that cannot carry a banner.
+func logStaleBinaryAdvisory(tool, advisory string) {
+	slog.Warn("mcp: vault write by a replaced binary image",
+		"op", "mcp.staleBinary",
+		"tool", tool,
+		"fault", "operational",
+		"advisory", advisory,
+	)
+}
+
+// staleBinaryNotice prepends the stale-image advisory to a tool result.
+//
+// It LEADS the content array for the same reason staleBindingNotice does: a
+// host that truncates a large result keeps the head, so a trailing notice is
+// cut exactly on the big writes where acting on a stale binary costs most.
+func staleBinaryNotice(out *mcplib.CallToolResult, advisory string) *mcplib.CallToolResult {
+	if out == nil || advisory == "" {
+		return out
+	}
+	out.Content = append([]mcplib.Content{mcplib.NewTextContent(advisory)}, out.Content...)
+	return out
 }
 
 // staleBindingNotice prepends the drift banner to a tool result.
@@ -506,7 +597,8 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 		// so this path is param-aware on exactly the terms Dispatch is: the two
 		// dispatch paths must agree about what a single invocation is allowed
 		// to do, or a tool refused over the wire would be admitted in-process.
-		if gErr := r.gateIfMutating(ctx, rt, params, drift); gErr != nil {
+		advisory, gErr := r.gateIfMutating(ctx, rt, params, drift)
+		if gErr != nil {
 			// OPERATIONAL, not caller: a vault-ahead-of-this-binary mismatch is a
 			// real condition an operator SHOULD see amber (operator decision), so
 			// this stays out of the caller-friction bucket and keeps health amber.
@@ -549,6 +641,12 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 			return staleBindingNotice(mcplib.NewToolResultError(hErr.Error()), drift), nil
 		}
 
+		// The write happened. If this binary's image was replaced under it, say
+		// so — once per process, leading the content array, never as a refusal.
+		if advisory != "" {
+			logStaleBinaryAdvisory(toolName, advisory)
+		}
+
 		// Convert the result to a CallToolResult.
 		out, mErr := marshalResult(raw)
 		if mErr != nil {
@@ -563,6 +661,11 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 			return out, mErr
 		}
 		out = staleBindingNotice(out, drift)
+		// The stale-image advisory rides the SUCCESSFUL result, because the
+		// whole point is that the write was not refused. It is applied after
+		// the drift banner so that, in the impossible-but-cheap case of both,
+		// the one that describes THIS binary leads.
+		out = staleBinaryNotice(out, advisory)
 
 		resultSize := 0
 		if out != nil {

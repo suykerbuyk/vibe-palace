@@ -150,3 +150,25 @@ func TestAuditVault_SynopsisNamesEveryFlag(t *testing.T) {
 		}
 	}
 }
+
+// TestAuditVault_DescriptionNamesEveryDimension is the CLI twin of the MCP tool's
+// derivation pin, and it exists for the same reason: this description named the same
+// stale five dimensions its MCP sibling did, from a separate copy of the list. Both now
+// build from vaultaudit.DimensionNames, and this fails if either stops.
+//
+// It mirrors TestAuditVault_SynopsisNamesEveryFlag above — same shape, same argument: a
+// help string that enumerates something the code already holds must be derived from it,
+// or it is a second answer waiting to disagree with the first.
+func TestAuditVault_DescriptionNamesEveryDimension(t *testing.T) {
+	desc := cmdAuditVault().Description
+
+	names := vaultaudit.DimensionNames()
+	if len(names) == 0 {
+		t.Fatal("vaultaudit.DimensionNames returned nothing — the registry is empty")
+	}
+	for _, name := range names {
+		if !strings.Contains(desc, name) {
+			t.Errorf("vp audit vault description omits dimension %q\n  description: %s", name, desc)
+		}
+	}
+}

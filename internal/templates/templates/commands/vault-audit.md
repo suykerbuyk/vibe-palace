@@ -4,8 +4,11 @@ Audit the whole vault. **The mechanical part is already code** — run it, read 
 the part code cannot do.
 
 **This command is NOT the checks.** `vp audit vault` (CLI) and `vp_audit_vault` (MCP) run
-every mechanical dimension: transcript round-trips, project-tree coherence, KG
-portability, resume discipline, iteration headings. Your job is **Layer 2** — the
+every mechanical dimension the registry holds. **The dimensions are deliberately not
+listed here** — the report names every one of them, in a table and then a section apiece
+carrying the command that reproduces its numbers, so read them off the run rather than
+off this page. A list written here could only ever be one dimension behind the registry,
+and was: it named five against a registry of ten. Your job is **Layer 2** — the
 adversarial posture, the invariant nobody has written yet.
 
 ---

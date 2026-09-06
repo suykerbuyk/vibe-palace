@@ -817,7 +817,7 @@ func TestTaskHeadingMarkers_IsRegistered(t *testing.T) {
 		}
 		return
 	}
-	t.Fatalf("%s is not registered in Run's dims table", DimTaskHeadingMarkers)
+	t.Fatalf("%s is not registered in Run's dimensions registry", DimTaskHeadingMarkers)
 }
 
 // --- palace-store-drawers ---
@@ -1108,7 +1108,7 @@ func TestPalaceStoreDrawers_MutationEmptyingTheStoreProducesTheFinding(t *testin
 	}
 }
 
-// TestPalaceStoreDrawers_IsRegistered: dims is a hand-edited literal, so a dimension
+// TestPalaceStoreDrawers_IsRegistered: the dimensions registry is a hand-edited literal, so a dimension
 // can be written, unit-tested, and silently never run. Run() must actually carry it.
 func TestPalaceStoreDrawers_IsRegistered(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
@@ -1130,7 +1130,7 @@ func TestPalaceStoreDrawers_IsRegistered(t *testing.T) {
 		}
 		return
 	}
-	t.Fatalf("%s is not registered in Run's dims table", DimPalaceStoreDrawers)
+	t.Fatalf("%s is not registered in Run's dimensions registry", DimPalaceStoreDrawers)
 }
 
 // --- task-preamble ---
@@ -1432,7 +1432,7 @@ func TestTaskPreamble_UnreadableTaskFileIsUnknownNotPass(t *testing.T) {
 }
 
 // TestTaskPreamble_IsRegistered: a dimension nobody runs is the disease this vault is
-// named after, and `dims` is a HAND-EDITED literal — without this the whole dimension
+// named after, and `dimensions` is a HAND-EDITED literal — without this the whole dimension
 // could be written, unit-tested and silently never executed.
 func TestTaskPreamble_IsRegistered(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
@@ -1455,7 +1455,7 @@ func TestTaskPreamble_IsRegistered(t *testing.T) {
 		}
 		return
 	}
-	t.Fatalf("%s is not registered in Run's dims table", DimTaskPreamble)
+	t.Fatalf("%s is not registered in Run's dimensions registry", DimTaskPreamble)
 }
 
 // TestTaskPreamble_IsDisjointFromTaskHeadingMarkers pins the non-duplication claim in

@@ -101,6 +101,66 @@ func (r Report) Failed() bool {
 	return false
 }
 
+// auditDimension is one entry in the dimension registry: the name the report and the
+// baseline key on, the command a reader runs to reproduce its numbers, and the scan.
+type auditDimension struct {
+	name     string
+	evidence string
+	run      func(*storage.Vault) ([]Finding, []string, error)
+}
+
+// dimensions is THE dimension registry. Every entry is EVIDENCE-BACKED — it exists
+// because a real defect got through — and carries the command that reproduces its
+// numbers. Order is fixed so the report is DIFFABLE: a report that reorders its own
+// rows between runs destroys the week-over-week drift signal that is the point of
+// committing it.
+//
+// It is package-level, not a local in Run, so that the two surfaces which DESCRIBE
+// this audit can derive their wording from it instead of restating it. Three places
+// once named five of these dimensions in prose — the CLI description, the MCP tool
+// description, and the vault-audit command template — and all three were wrong the
+// moment a sixth landed. See DimensionNames.
+var dimensions = []auditDimension{
+	{DimArchiveRoundTrip, EvidenceArchiveRoundTrip, auditArchiveRoundTrip},
+	{DimProjectTreeCoherence, EvidenceProjectTreeCoherence, auditProjectTreeCoherence},
+	{DimKGPortability, EvidenceKGPortability, auditKGPortability},
+	{DimResumeDiscipline, EvidenceResumeDiscipline, auditResumeDiscipline},
+	{DimIterationHeadings, EvidenceIterationHeadings, auditIterationHeadings},
+	{DimMemoryPortability, EvidenceMemoryPortability, auditMemoryPortability},
+	{DimTaskHeadingMarkers, EvidenceTaskHeadingMarkers, auditTaskHeadingMarkers},
+	{DimPalaceStoreDrawers, EvidencePalaceStoreDrawers, auditPalaceStoreDrawers},
+	{DimTaskPreamble, EvidenceTaskPreamble, auditTaskPreamble},
+	{DimTaskStatusDirectory, EvidenceTaskStatusDirectory, auditTaskStatusDirectory},
+}
+
+// DimensionNames returns the registry's dimension names in report order.
+//
+// It exists so a human-facing DESCRIPTION of this audit can be built from the
+// registry rather than written beside it. A name list stated in prose is the
+// stored-derived-value defect ADR-007 is about: it can only ever drift out of
+// agreement with the thing it describes, and it had — three surfaces named five
+// dimensions against a registry of ten.
+//
+// GENERATING IS CORRECT HERE, AND THAT IS NOT THE DEFAULT. The source-audit
+// ungated-vault-writer rule is a PIN precisely because generating its answer would
+// be WRONG: its anchor set and the derived predicate's do not cover the same
+// mutations, so a generated list would silently drop two writers. This has no such
+// gap. Run ranges over exactly this slice, and a dimension whose scan ERRORS still
+// emits a row — as StatusUnknown, never absent, by explicit decision in Run. So
+// every registry entry always produces a report row, and the derived list cannot
+// overstate what the audit does.
+//
+// The returned slice is a copy: a caller that sorted or truncated the registry in
+// place would silently reorder the report, which is the diffability property the
+// fixed order exists to protect.
+func DimensionNames() []string {
+	names := make([]string, len(dimensions))
+	for i, d := range dimensions {
+		names[i] = d.name
+	}
+	return names
+}
+
 // Run executes every dimension against the vault and diffs the results against the
 // baseline.
 //
@@ -115,30 +175,8 @@ func Run(vault *storage.Vault) (Report, error) {
 		return Report{}, err
 	}
 
-	// The dimension registry. Every entry is EVIDENCE-BACKED — it exists because a
-	// real defect got through — and carries the command that reproduces its numbers.
-	// Order is fixed so the report is DIFFABLE: a report that reorders its own rows
-	// between runs destroys the week-over-week drift signal that is the point of
-	// committing it.
-	dims := []struct {
-		name     string
-		evidence string
-		run      func(*storage.Vault) ([]Finding, []string, error)
-	}{
-		{DimArchiveRoundTrip, EvidenceArchiveRoundTrip, auditArchiveRoundTrip},
-		{DimProjectTreeCoherence, EvidenceProjectTreeCoherence, auditProjectTreeCoherence},
-		{DimKGPortability, EvidenceKGPortability, auditKGPortability},
-		{DimResumeDiscipline, EvidenceResumeDiscipline, auditResumeDiscipline},
-		{DimIterationHeadings, EvidenceIterationHeadings, auditIterationHeadings},
-		{DimMemoryPortability, EvidenceMemoryPortability, auditMemoryPortability},
-		{DimTaskHeadingMarkers, EvidenceTaskHeadingMarkers, auditTaskHeadingMarkers},
-		{DimPalaceStoreDrawers, EvidencePalaceStoreDrawers, auditPalaceStoreDrawers},
-		{DimTaskPreamble, EvidenceTaskPreamble, auditTaskPreamble},
-		{DimTaskStatusDirectory, EvidenceTaskStatusDirectory, auditTaskStatusDirectory},
-	}
-
 	report := Report{SessionNotes: SessionNoteCount(vault)}
-	for _, d := range dims {
+	for _, d := range dimensions {
 		findings, unknowns, err := d.run(vault)
 		if err != nil {
 			// A dimension that cannot run at all is UNKNOWN, not absent. Dropping it

@@ -183,9 +183,11 @@ with `/vpc-restart` and the agent loads full context on turn one.
 - **Friction tracking** — automated session difficulty scoring with
   trend analysis (`vp friction`, `vp trends`, `vp effectiveness`).
 - **Vault integrity audit** — `vp audit vault` checks the whole vault
-  against design intent (transcript round-trips, project-tree coherence,
-  KG portability, resume discipline) against an accepted-debt baseline
-  that may only shrink (see ADR-007).
+  against design intent, across every dimension the audit registry holds,
+  against an accepted-debt baseline that may only shrink (see ADR-007).
+  The dimensions are deliberately not listed here: the report names each
+  one and prints the command that reproduces its numbers, so `vp audit
+  vault` is the live list.
 - **Worktree isolation** — `vp worktree create|remove|list` gives plan
   execution its own branch + working tree, keeping agent edits off your
   checkout until a human merges.

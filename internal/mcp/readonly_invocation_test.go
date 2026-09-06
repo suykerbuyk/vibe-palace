@@ -244,7 +244,7 @@ func TestParamAwareGateFailsClosed(t *testing.T) {
 			// Bypass Register's `{}` substitution for the empty-params case by
 			// calling the gate directly: the point is the helper's own contract.
 			rt := &registeredTool{tool: tl}
-			if err := (&Registry{}).gateIfMutating(ctx, rt, tc.params, nil); err == nil {
+			if _, err := (&Registry{}).gateIfMutating(ctx, rt, tc.params, nil); err == nil {
 				t.Fatalf("%s: gate admitted an unanswerable payload", tc.name)
 			}
 		})
@@ -288,10 +288,10 @@ func TestParamAwareGateReadPassesUnderStaleBinding(t *testing.T) {
 	rt := &registeredTool{tool: multiplexTool("mux", &ran)}
 	reg := &Registry{}
 
-	if err := reg.gateIfMutating(ctx, rt, json.RawMessage(`{"mode":"read"}`), drift); err != nil {
+	if _, err := reg.gateIfMutating(ctx, rt, json.RawMessage(`{"mode":"read"}`), drift); err != nil {
 		t.Fatalf("read-only invocation refused under drift: %v", err)
 	}
-	if err := reg.gateIfMutating(ctx, rt, json.RawMessage(`{"mode":"write"}`), drift); err == nil {
+	if _, err := reg.gateIfMutating(ctx, rt, json.RawMessage(`{"mode":"write"}`), drift); err == nil {
 		t.Fatal("writing invocation must still be refused under drift")
 	}
 }
