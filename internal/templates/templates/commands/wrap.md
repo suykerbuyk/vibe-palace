@@ -63,7 +63,9 @@ capturing anything, and carry its findings into Step 3. Call `vp_check`
 
 Name that list deliberately. Do **not** omit the argument, and do
 **not** add `surface`: `vp_surface_check` already ran above, so including
-it would repeat a scan for no new information.
+it would repeat a scan for no new information. Two of the rows are about the
+file Step 3 is about to **write** — `resume-caps` and `resume-refs` — so a
+defect in `resume.md` is reported *before* you edit it, not a wrap later.
 
 The result is `{status, summary, checks: [{name, status, summary,
 details[]}]}`. Report the **per-check rows** to the human — for every row
@@ -168,34 +170,54 @@ Write summaries that help a developer resuming this work tomorrow.
 ## Step 3: Update Resume
 
 **Prune before you append.** `resume.md` must stay a thin gateway — every
-wrap that only adds bloats it and taxes `vp_bootstrap_context` at session
-start. The full record already lives elsewhere (`iterations.md`,
-`tasks/done/`, `tasks/cancelled/`), so the gateway's growing sections are
-**bounded** — trim them *every* wrap, BEFORE adding anything new. Compressing
-rows is not enough; these tables are append-only by nature and must be
-**capped**, or they regrow indefinitely:
+wrap that only adds bloats it, and every restart pays for it: bootstrap
+returns an index, and `resume_uri` is fetched in full on top of that. The full
+record already lives elsewhere (`iterations.md`, `tasks/done/`,
+`tasks/cancelled/`), so trim *every* wrap, BEFORE adding anything new.
 
-- **Project History** — keep only the **most recent 15 rows**. Delete older
-  rows outright; their full narrative is already in `iterations.md`. Compress
-  any surviving row that spills past one line to the
-  `| # | Summary | Key Changes |` one-liner.
-- **Completed Plans** — keep only the **most recent ~12 rows**, each a true
-  **one line** (`| Task | Iteration | File |`). If a cell has grown into a
-  paragraph, cut it to the slug plus a few words — the full content is in
-  `tasks/done/<slug>.md`. Delete older rows; the directory is the index.
+> 🔴 **THE RESUME'S SECTIONS ARE WHATEVER IT ALREADY HAS. Never create one it
+> does not carry.** Projects diverge here on purpose: some keep hand-maintained
+> history tables, others deleted them as derivable and replaced them with a
+> section that records the *query* instead (`## History — derived, not stored`).
+> Both are correct. Adding a table back to a resume that deliberately removed it
+> re-creates the rot that removal was the fix for — and this command is the
+> mechanism that would do it. **Read the file first (step 1 below) and edit only
+> the headings you actually find.**
+
+**Do not restate the caps here — you already have them.** Step 1's `vp_check`
+call included the `resume-caps` row, and that row reports both the live caps and
+this project's actual breach, derived server-side from
+`check.ResumeMaxBytes` / `ResumeMaxHistoryRows` / `ResumeMaxCompletedRows`
+(`internal/check/resume.go`). Use what it returned. If it reported a breach,
+prune toward it in this pass; if it reported none, do not invent a target.
+
+- **`resume-caps` is Info, never Fail** — it is a detection threshold, not a
+  gate, and a resume over cap does not block a wrap. Prune because the row says
+  so, and say in the Step 11 report what you trimmed and what you left.
+- **Never shrink by dropping information.** Relocate it — `doc/` for stable
+  reference, `iterations.md` for narrative, `tasks/<slug>.md` for active work —
+  or delete it because it is *false*, never because it is long. A pointer that
+  survives is worth more than a paragraph that was cut to hit a number.
+
+Then, for the sections this resume actually has:
+
+- **Any history/completed/cancelled TABLE the file already carries** — hold it
+  to the row cap the `resume-caps` row named, deleting the oldest rows
+  outright; their full narrative is already in `iterations.md` and the
+  `tasks/done/` and `tasks/cancelled/` directories are the real indexes.
+  Compress any surviving row that spills past one line. **If the file has no
+  such table, it has none by choice — skip this bullet entirely.**
 - **Known Issues** — **delete** an entry the moment it is resolved. NEVER keep
   a "RESOLVED iter N …" narrative inline; that is history, and history lives
   in `iterations.md`. This section holds only *currently-open* issues.
 - **Open Threads** — delete every thread now done or cancelled. Do **not**
-  leave a `~~struck-through~~` "DONE iter N" entry inline; move its pointer to
-  **Completed Plans** / **Cancelled Plans** and its narrative to
-  `iterations.md`. Open Threads holds only genuinely-open work.
-- **Current State** — keep to terse bullets + pointers (counts, what's live,
-  links to `doc/`); move per-iteration detail to `iterations.md`.
-
-Target: keep `resume.md` **under ~25 KB**. Pruning to the caps above is not
-optional and is never deferred to "later" — a wrap that adds a row without
-trimming past-cap rows is the bug this section exists to prevent.
+  leave a `~~struck-through~~` "DONE iter N" entry inline; its narrative goes to
+  `iterations.md`, and the durable pointer is the task file itself
+  (`tasks/done/<slug>.md`, `tasks/cancelled/<slug>.md`) — which
+  `vp_list_tasks` already indexes. Open Threads holds only genuinely-open work.
+- **Current State** — keep to terse bullets + pointers (what's live, links to
+  `doc/`); move per-iteration detail to `iterations.md`. **Record the query,
+  never the answer** — a count written here is wrong by the next iteration.
 
 ### How to write resume.md: read raw, edit surgically, re-chain the sha
 
@@ -293,7 +315,7 @@ new_string: ""
 its leading cell text, and emit the whole replacement row:
 
 ```
-old_string: "| resume-cas-hardening | 44 | tasks/active/resume-cas-hardening.md |"
+old_string: "| resume-cas-hardening | 44 | tasks/resume-cas-hardening.md |"
 new_string: "| resume-cas-hardening | 45 | tasks/done/resume-cas-hardening.md |"
 ```
 
@@ -318,24 +340,19 @@ architecture) and bring the gateway sections current.
 decisions, or module tables to `resume.md` — those belong in `doc/`
 files.
 
-- **Project History** — add **one terse row** (shape 1). The table is a
-  scannable **index**, not a diary — the full narrative goes ONLY to
-  `iterations.md` (Step 4), never duplicated here. Format:
-  `| # | Summary | Key Changes |` where Summary is the feature/phase in a few
-  words and Key Changes is a short comma-list of the most salient artifacts.
-  Keep the whole row to a single line of a few hundred characters at most.
-  **Do not paste the iteration narrative into this table** — that is what
-  bloats `resume.md` and taxes every `vp_bootstrap_context` at session start.
-  After adding the row, delete the overflow rows (shape 2) to hold the
-  **15-row cap** (see *Prune before you append*).
+- **A history / completed / cancelled table — ONLY if this resume already has
+  one.** These tables are a legacy shape: they are hand-maintained indexes of
+  data that `vp_list_tasks`, `tasks/done/` and `tasks/cancelled/` already hold
+  authoritatively, and the seed resume no longer creates them. **Never add one
+  to a resume that does not have it** — a project that replaced them with a
+  section recording the *query* (`## History — derived, not stored`) did that
+  deliberately, and re-adding a row is the drift, not the update.
+  Where such a table *is* present, keep it a scannable index and not a diary:
+  add at most one terse single-line row, never paste the iteration narrative or
+  task body into it (`iterations.md` and `tasks/done/<slug>.md` hold those),
+  and then delete overflow rows (shape 2) to hold the row cap the `resume-caps`
+  row reported in Step 1.
 - **Quick Reference** — update only if build/test/run commands changed.
-- **Completed Plans** — when a task is retired (Step 6), add a one-line row
-  `| Task | Iteration | File |` pointing at `tasks/done/<slug>.md` (shape 1).
-  The full task content moves to `tasks/done/`; the narrative goes to
-  `iterations.md` (Step 4). Do not paste task content here. Then delete the
-  overflow rows (shape 2) to hold the **~12-row cap**.
-- **Cancelled Plans** — when a plan is cancelled, add a row with the
-  rejection reason and the `tasks/cancelled/<slug>.md` pointer (shape 1).
 - **Open Threads** — add genuinely-open follow-up bullets (shape 1);
   **delete** a bullet (shape 2) the moment it is done or cancelled, instead
   of striking it through.
@@ -419,9 +436,12 @@ So:
   when the human actually said so in this session. It is an attestation you
   are making, not a check being run on you — asserting it falsely just means
   you lied in the record.
-- After an approved retirement, add its one-line row to the **Completed
-  Plans** table in `resume.md` (Step 3, *What goes in, what stays out* —
-  a shape-1 `vp_vault_edit`, not a whole-file rewrite).
+- After an approved retirement, **delete the task's Open Threads bullet** from
+  `resume.md` if it has one (Step 3, shape 2). Do **not** record the retirement
+  anywhere else in the resume: `moveTask` has already stamped the terminal
+  status and moved the file to `tasks/done/<slug>.md`, and `vp_list_tasks
+  include_done` indexes it from there. Add a completed-plans row **only** if
+  this resume already carries that legacy table — see Step 3.
 
 ## Step 6b: Sweep Orphaned Plans
 
@@ -618,12 +638,14 @@ by Step 7b, and all three must be committed so the permanent history and
 its cursor advance together each wrap. (The project-root `commit.msg`
 copy stays gitignored and is never synced.)
 
-If this wrap changed any vault-served template, name `Templates/`
-explicitly among the synced paths — it is **not** in the default set. The
-binary and the vault-served templates ship together: a template supplies
-arguments the binary requires, so a new binary against an un-synced vault
-template breaks that command outright (the reverse is harmless). The
-`template-drift` row in Step 1's `vp_check` call is what reports the gap.
+**A template is never edited here, and `Templates/` is not a wrap concern.**
+Templates are served from the binary's embedded corpus; a vault `Templates/`
+mirror is an override, and on most vaults there is none. Editing one is not part
+of a wrap — the sanctioned route is to edit the Go-embedded copy under
+`internal/templates/templates/`, then `make install`, then `vp config sync`.
+The `template-drift` row in Step 1's `vp_check` call reports any gap and
+**carries that ordering rule in its own `details`** — relay those lines rather
+than restating them here.
 
 Include `Projects/<slug>/memory/` among the synced paths — AI memory is
 user-persistent content like `resume.md` and `tasks/`, so wrap commits it
