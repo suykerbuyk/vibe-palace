@@ -63,6 +63,15 @@ type Finding struct {
 	Dimension string
 	Artifact  string
 	Detail    string
+
+	// Measure is the magnitude that makes this artifact wrong, for a dimension whose
+	// predicate IS a magnitude. ZERO means "this dimension does not measure" — the
+	// artifact identifier fully determines the defect, and there is no number that
+	// could have drifted. Most dimensions are categorical and leave it zero.
+	//
+	// It carries no JSON tag because Finding is never serialized; the baseline records
+	// the accepted magnitude separately, in DimensionBaseline.Measured.
+	Measure int64
 }
 
 // DimensionBaseline is the accepted debt for one dimension: the shared reason, and
@@ -77,14 +86,67 @@ type DimensionBaseline struct {
 	Reason   string            `json:"reason"`
 	Accepted []string          `json:"accepted"`
 	Except   map[string]string `json:"except,omitempty"`
+
+	// Measured is the magnitude each accepted artifact was accepted AT, for a
+	// dimension that measures. It is a SIDECAR keyed by artifact rather than a wider
+	// element type on Accepted, so `accepted` stays an array of strings and `except`
+	// an object of strings: a binary that predates this field parses the file and
+	// ignores the key, where a widened element type would make LoadBaseline hard-error.
+	//
+	// An artifact with no entry here is accepted at an UNRECORDED magnitude, which is
+	// a finding rather than a blanket pass — see classify.
+	Measured map[string]int64 `json:"measured,omitempty"`
 }
 
-// accepts reports whether this dimension's baseline covers the artifact.
-func (d DimensionBaseline) accepts(artifact string) bool {
-	if _, ok := d.Except[artifact]; ok {
-		return true
+// acceptance is how a dimension's baseline covers one finding.
+type acceptance int
+
+const (
+	acceptedFully         acceptance = iota // covered by path, and within its recorded magnitude
+	notAccepted                             // in neither Accepted nor Except
+	measurementUnrecorded                   // accepted by path, but nothing bounds its magnitude
+	grownPastRecord                         // accepted by path, and now larger than what was accepted
+)
+
+// classify decides how this dimension's baseline covers a finding.
+//
+// There is ONE predicate here on purpose. Diff takes the complement of accepts() and
+// newDimensionResult takes accepts() itself, so the two are exact complements by
+// construction. A second predicate beside this one is precisely how a grown artifact
+// ends up reported as NEW *and* counted as accepted in the same run, appearing twice
+// in Report.Findings() and doubling the report's counts.
+//
+// Except is consulted FIRST and short-circuits the path test, because an artifact in
+// Except need not also appear in Accepted. The magnitude test then applies to BOTH
+// arms: Except carries a free-text reason with no room for a number, so keying the
+// measurement off the artifact instead is what stops Except being a bypass.
+func (d DimensionBaseline) classify(f Finding) acceptance {
+	_, excepted := d.Except[f.Artifact]
+	if !excepted && !slices.Contains(d.Accepted, f.Artifact) {
+		return notAccepted
 	}
-	return slices.Contains(d.Accepted, artifact)
+	// Accepted by path. A dimension that reports no magnitude is fully covered there:
+	// Measure == 0 means "this dimension does not measure", and a categorical artifact
+	// has no number that could have drifted. WITHOUT this arm, every accepted artifact
+	// in every categorical dimension becomes measurementUnrecorded the day this lands
+	// — the whole baseline turns red at once.
+	if f.Measure == 0 {
+		return acceptedFully
+	}
+	recorded, ok := d.Measured[f.Artifact]
+	if !ok {
+		return measurementUnrecorded
+	}
+	if f.Measure > recorded {
+		return grownPastRecord
+	}
+	return acceptedFully
+}
+
+// accepts reports whether this dimension's baseline covers the finding — by path AND,
+// where the dimension measures, at no more than the magnitude that was accepted.
+func (d DimensionBaseline) accepts(f Finding) bool {
+	return d.classify(f) == acceptedFully
 }
 
 // all returns every artifact this baseline accepts, from both Accepted and Except.
@@ -159,7 +221,7 @@ func (b Baseline) Save(vaultRoot, path string) error {
 		accepted := slices.Clone(d.Accepted)
 		slices.Sort(accepted)
 		accepted = slices.Compact(accepted)
-		out.Dimensions[name] = DimensionBaseline{Reason: d.Reason, Accepted: accepted, Except: d.Except}
+		out.Dimensions[name] = DimensionBaseline{Reason: d.Reason, Accepted: accepted, Except: d.Except, Measured: d.Measured}
 	}
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
@@ -196,8 +258,28 @@ func (b Baseline) Diff(findings []Finding) (added []Finding, stale []StaleEntry)
 		}
 		present[f.Dimension][f.Artifact] = true
 
-		if !b.Dimensions[f.Dimension].accepts(f.Artifact) {
+		// Annotating Detail is safe and is the established idiom here: finding
+		// identity is (Dimension, Artifact), so a richer Detail cannot churn the
+		// accepted baseline (see archive.go's note on the same move).
+		d := b.Dimensions[f.Dimension]
+		switch d.classify(f) {
+		case notAccepted:
 			added = append(added, f)
+		case grownPastRecord:
+			grown := f
+			grown.Detail = fmt.Sprintf("%s — GREW PAST ITS ACCEPTED MEASUREMENT: %d recorded, %d now. "+
+				"An accepted measurement may only shrink. Bring it back under the recorded value, or "+
+				"re-record it deliberately with `vp audit vault --accept --raise`.",
+				f.Detail, d.Measured[f.Artifact], f.Measure)
+			added = append(added, grown)
+		case measurementUnrecorded:
+			bare := f
+			bare.Detail = fmt.Sprintf("%s — ACCEPTED WITH NO RECORDED MEASUREMENT; it measures %d now. "+
+				"The path was accepted before magnitudes were recorded, so nothing bounds its growth. "+
+				"Re-accept to record it; this is reported until the baseline is upgraded, not once.",
+				f.Detail, f.Measure)
+			added = append(added, bare)
+		case acceptedFully:
 		}
 	}
 
@@ -231,7 +313,23 @@ func (b Baseline) Diff(findings []Finding) (added []Finding, stale []StaleEntry)
 // Survivors keep their dimension's reason. Fixed findings drop out — the baseline
 // may only shrink. A genuinely NEW dimension arrives marked UNTRIAGED, so an
 // unexplained dimension can never masquerade as an explained one.
-func (b Baseline) Regenerate(findings []Finding) Baseline {
+//
+// The same "may only shrink" rule governs recorded measurements, and it is the whole
+// point of the guard: --accept is WHOLE-REPORT, so if a measurement were sourced from
+// the finding in hand, an operator accepting an unrelated finding in a different
+// dimension would silently re-record every measured artifact at its current size and
+// erase the ratchet — invisibly, as a side effect of a command typed for something
+// else. So a surviving artifact keeps min(prior, current), and raising is explicit.
+//
+// raise names the findings whose measurement may go UP — the run's NEW set, threaded
+// in from `--accept --raise`. It is a second parameter rather than a second method
+// because a raising and a non-raising Regenerate that can drift apart is two
+// definitions of one rule. Pass nil to raise nothing.
+func (b Baseline) Regenerate(findings, raise []Finding) Baseline {
+	raising := make(map[[2]string]bool, len(raise))
+	for _, f := range raise {
+		raising[[2]string{f.Dimension, f.Artifact}] = true
+	}
 	out := Baseline{Dimensions: map[string]DimensionBaseline{}}
 	for _, f := range findings {
 		d, ok := out.Dimensions[f.Dimension]
@@ -257,9 +355,40 @@ func (b Baseline) Regenerate(findings []Finding) Baseline {
 					d.Except = nil
 				}
 			}
+			// Same rule, same reason, for recorded magnitudes: a measurement for an
+			// artifact that is no longer a finding is stale debt. Dropping it here is
+			// what PRUNES the map — there is no second sweep, and there must not be
+			// one. An artifact that goes STALE loses its Accepted entry and its
+			// measurement together.
+			if existed && len(prior.Measured) > 0 {
+				d.Measured = map[string]int64{}
+				for _, g := range findings {
+					if g.Dimension != f.Dimension {
+						continue
+					}
+					if m, has := prior.Measured[g.Artifact]; has {
+						d.Measured[g.Artifact] = m
+					}
+				}
+				if len(d.Measured) == 0 {
+					d.Measured = nil
+				}
+			}
 		}
 		if _, overridden := d.Except[f.Artifact]; !overridden {
 			d.Accepted = append(d.Accepted, f.Artifact)
+		}
+		// PER-FINDING, deliberately. The carry-forward blocks above run once per
+		// dimension, under the `!ok` guard; recording a magnitude has to see every
+		// finding, or only the dimension's first artifact ever gets a measurement.
+		if f.Measure > 0 {
+			if d.Measured == nil {
+				d.Measured = map[string]int64{}
+			}
+			recorded, has := d.Measured[f.Artifact]
+			if !has || f.Measure < recorded || raising[[2]string{f.Dimension, f.Artifact}] {
+				d.Measured[f.Artifact] = f.Measure
+			}
 		}
 		out.Dimensions[f.Dimension] = d
 	}

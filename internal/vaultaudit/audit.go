@@ -78,6 +78,17 @@ func (r Report) Findings() []Finding {
 	return out
 }
 
+// NewFindings returns every NEW finding across every dimension — the raise set for
+// `vp audit vault --accept --raise`. It is deliberately NOT Findings(): raising is
+// scoped to what this run reported, never to the whole accepted backlog.
+func (r Report) NewFindings() []Finding {
+	var out []Finding
+	for _, d := range r.Dimensions {
+		out = append(out, d.New...)
+	}
+	return out
+}
+
 // Failed reports whether any dimension found NEW drift or STALE debt. It does NOT
 // gate anything — the audit is advisory (operator decision, 204). It exists so a
 // caller can decide how loudly to render the report.
@@ -159,7 +170,7 @@ func newDimensionResult(name, evidence string, base Baseline, findings []Finding
 
 	accepted := make([]Finding, 0, len(findings))
 	for _, f := range findings {
-		if base.Dimensions[f.Dimension].accepts(f.Artifact) {
+		if base.Dimensions[f.Dimension].accepts(f) {
 			accepted = append(accepted, f)
 		}
 	}

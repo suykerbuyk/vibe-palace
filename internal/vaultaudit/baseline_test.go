@@ -111,7 +111,7 @@ func TestRegenerate_PreservesReasons(t *testing.T) {
 		},
 	}}
 
-	out := base.Regenerate([]Finding{f("d", "a"), f("d", "odd"), f("d", "new")})
+	out := base.Regenerate([]Finding{f("d", "a"), f("d", "odd"), f("d", "new")}, nil)
 
 	got := out.Dimensions["d"]
 	if got.Reason != "a human wrote this, at some cost" {
@@ -136,7 +136,7 @@ func TestRegenerate_DropsFixedFindings(t *testing.T) {
 		},
 	}}
 
-	out := base.Regenerate([]Finding{f("d", "a")})
+	out := base.Regenerate([]Finding{f("d", "a")}, nil)
 
 	got := out.Dimensions["d"]
 	if len(got.Accepted) != 1 || got.Accepted[0] != "a" {
@@ -150,7 +150,7 @@ func TestRegenerate_DropsFixedFindings(t *testing.T) {
 // TestRegenerate_NewDimensionIsUntriaged: an unexplained dimension must never be able
 // to masquerade as an explained one.
 func TestRegenerate_NewDimensionIsUntriaged(t *testing.T) {
-	out := Baseline{}.Regenerate([]Finding{f("fresh", "a")})
+	out := Baseline{}.Regenerate([]Finding{f("fresh", "a")}, nil)
 
 	if got := out.Dimensions["fresh"].Reason; got != ReasonUntriaged {
 		t.Fatalf("reason = %q, want the UNTRIAGED marker", got)

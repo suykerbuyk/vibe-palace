@@ -796,6 +796,7 @@ func auditResumeDiscipline(vault *storage.Vault) ([]Finding, []string, error) {
 			findings = append(findings, Finding{
 				Dimension: DimResumeDiscipline,
 				Artifact:  rel,
+				Measure:   int64(len(data)),
 				Detail: fmt.Sprintf("%d bytes against a %d-byte cap (%.1fx) — resume.md is a GATEWAY, "+
 					"not a diary, and every byte here is paid for by every session's bootstrap",
 					len(data), check.ResumeMaxBytes, float64(len(data))/float64(check.ResumeMaxBytes)),

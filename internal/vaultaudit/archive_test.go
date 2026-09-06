@@ -301,7 +301,7 @@ func TestRun_FixingTheBugForcesTheBaselineToShrink(t *testing.T) {
 	}
 
 	// And the operator's remedy is a regen, which drops the repaired entry.
-	regen := base.Regenerate(report.Findings())
+	regen := base.Regenerate(report.Findings(), nil)
 	if len(regen.Dimensions[DimArchiveRoundTrip].Accepted) != 0 {
 		t.Fatalf("regen kept a repaired artifact: %+v — the baseline may only SHRINK",
 			regen.Dimensions[DimArchiveRoundTrip].Accepted)
