@@ -13,7 +13,7 @@ where `<slug>` is the plan's task slug. This creates a sibling worktree at `../w
 So concurrent runs stay visible and you have a clean merge queue:
 
 - `vp_manage_task update_status` → `in_progress` for the plan's task.
-- `vp_manage_task amend` a `## Execution` section onto that task noting the branch (`plan/<slug>`) and the worktree path. `amend` converges on the heading, so a re-run updates the section instead of duplicating it.
+- `vp_manage_task amend` an `Execution` section onto that task noting the branch (`plan/<slug>`) and the worktree path. `section` takes the heading **text** — `Execution` — never the `##` markup, which the call rejects outright. `amend` converges on the heading, so a re-run updates the section instead of duplicating it.
 
 The vault task file is the one writer surface for this — the `vp worktree` command itself writes nothing to the vault.
 

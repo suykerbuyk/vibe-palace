@@ -54,14 +54,12 @@ Wait for their response before continuing.
 Use `vp_get_task` to read the task file. The body may arrive as a `content_uri`
 (with `include_content=false`) rather than inline; read the resource
 (`resources/read`) or page it via `vp_read_resource` to get the full body before
-editing. Make these changes:
+editing. Make this change:
 
-1. Update the **Status** line to `Cancelled (rev N+1)` (increment
-   the existing rev).
-2. Add a **Cancelled** date line (today's date, format: YYYY-MM-DD).
-3. Add a `## Cancellation Rationale` section immediately after the
-   metadata block (Status/Created/Priority lines), containing the
-   approved rationale.
+1. Add a `## Cancellation Rationale` section immediately after the
+   metadata block (the `**Status:**` and `**Priority:**` lines, plus any
+   `**Parent:**`/`**Depends:**` lines), containing the approved
+   rationale.
 
 ## Step 4: Move to cancelled/
 

@@ -23,9 +23,16 @@ a rule that exists only in `description` reaches no agent.
 
 ## Setup
 
-1. Confirm this session is inside Herdr: `test "${HERDR_ENV:-}" = 1`. If that
-   fails, say you cannot drive the other pane and stop there — review via git
-   and the vault is still allowed; pane control is not.
+1. Bind the address. `test "${HERDR_ENV:-}" = 1`:
+   - **Pass:** this pane is inside Herdr. `HERDR_*` env is the address; Self
+     in the roster is `$HERDR_PANE_ID`.
+   - **Fail:** this conversation is outside Herdr, and there is no Self pane
+     in the roster. Pane control is still allowed with an operator-named
+     persistent session — prefix every invocation `herdr --session <name>`
+     (see `/vpc-herdr` Step 1; do not pick the name yourself). Only grabbing
+     the focused or default session from outside stays forbidden. Without a
+     named session you cannot drive the other pane: say so. Review via git
+     and the vault remains allowed either way.
 2. Run `herdr --skill` (from `PATH`, or `$HERDR_BIN_PATH` when that is set)
    and treat its stdout as this session's Herdr skill — the instructions for
    driving the Herdr terminal multiplexer. Follow that text for the rest of
@@ -35,7 +42,9 @@ a rule that exists only in `description` reaches no agent.
    subcommand) rather than guessing.
 3. https://herdr.dev/docs/cli-reference/ is a browseable examples page, not
    a second contract. If it disagrees with `herdr --skill` or `herdr --help`,
-   the binary wins.
+   the binary wins on **syntax**. On the outside-reviewer gate, `/vpc-herdr`
+   wins: the binary skill's "stop if not inside" is overridden by a named
+   `--session`.
 4. Discover live agents with `herdr agent list` / `herdr pane list`. Target a
    **pane id** or a unique live agent name. A kind label (`claude`, `grok`)
    is not a target.
@@ -125,7 +134,7 @@ plan writer, Rule 0) is `vp_get_doctrine`. Do not copy it here.
 
 - Doing the implementation yourself because you would be faster.
 - Treating a kind label as an agent name.
-- Driving Herdr from a pane that is not in Herdr.
+- Driving Herdr from outside a pane without an operator-named session.
 - Trusting "zero X remain" / "tests pass" / "already wrapped" without
   re-deriving.
 - Starting the next unit while wrap is uncommitted.
