@@ -420,7 +420,7 @@ func runTaskStatusMigration(root, only string, apply bool, out io.Writer) (taskS
 					}
 
 					after := replaceLine(before, lineNum, "**Status:** "+ad.status)
-					if werr := vault.OverwriteTaskFile(slug, taskSlug, after); werr != nil {
+					if werr := vault.OverwriteTaskFileRewritingHeader(slug, taskSlug, after); werr != nil {
 						fmt.Fprintf(out, "  !!    %s/%s: write: %v\n", slug, taskSlug, werr)
 						plan.Failed = true
 						sum.Failed++

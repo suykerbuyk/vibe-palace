@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/mdfence"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
@@ -1486,8 +1487,48 @@ func unbalancedFence(content string) bool {
 // Whether writing to an ARCHIVED task (done/ or cancelled/) is permitted is the
 // CALLER's concern — the CLI refuses archived slugs. This writer honors whatever
 // path resolveTaskFile returns.
+//
+// The HEADER is not the caller's concern, and that asymmetry is deliberate. A
+// body that changes a header field is REFUSED here, for every caller, because
+// the refusal was previously an MCP-handler-local rule while `vp tasks edit`
+// reached this same writer with no header diff at all — so a hand-edited
+// Status/Parent/Depends line saved cleanly through the CLI and was refused
+// through MCP. One rule on the writer both surfaces already call is the whole
+// point; a second copy beside the CLI would be the defect, not the fix.
+//
+// Migrations that exist to rewrite headers call
+// OverwriteTaskFileRewritingHeader instead. That is an explicit, greppable
+// opt-in rather than a boolean at the call site: a reader can see which callers
+// are allowed to move a header field and which are not.
 func (v *Vault) OverwriteTaskFile(project, slug, content string) error {
-	path, _, err := v.resolveTaskFile(project, slug)
+	return v.overwriteTaskFile(project, slug, content, headerMustMatch)
+}
+
+// OverwriteTaskFileRewritingHeader is OverwriteTaskFile with the header-change
+// refusal lifted. It is for the `vp migrate task-*` commands, whose entire
+// purpose is repairing a malformed or legacy header block — the one class of
+// caller for which "the header must not move" is the wrong rule.
+//
+// It is deliberately a separate, awkwardly-named entry point rather than a
+// parameter. Adding a migration is then a decision someone makes on purpose and
+// a reviewer can find with one grep, which is the property a bare `true`
+// argument at a call site does not have.
+func (v *Vault) OverwriteTaskFileRewritingHeader(project, slug, content string) error {
+	return v.overwriteTaskFile(project, slug, content, headerMayChange)
+}
+
+// headerPolicy selects whether a whole-file overwrite may move a header field.
+type headerPolicy int
+
+const (
+	// headerMustMatch refuses any body whose header differs from disk.
+	headerMustMatch headerPolicy = iota
+	// headerMayChange permits it — migrations repairing a header block.
+	headerMayChange
+)
+
+func (v *Vault) overwriteTaskFile(project, slug, content string, policy headerPolicy) error {
+	path, done, err := v.resolveTaskFile(project, slug)
 	if err != nil {
 		return err
 	}
@@ -1515,7 +1556,88 @@ func (v *Vault) OverwriteTaskFile(project, slug, content string) error {
 		return err
 	}
 
+	// ORDER IS DELIBERATE: shape first, then the header compare. The MCP handler
+	// used to run its header check BEFORE validation, so a body that is both
+	// shape-invalid and header-smuggling now reports the shape error where it
+	// once reported the smuggle. That is the correct way round — refuseHeaderChange
+	// reads the proposed header through parseTaskMeta, whose Parent/Depends bind
+	// to headerBlock, and on a malformed file that block is not trustworthy. A
+	// compare over an unvalidated parse can read body prose as metadata and
+	// refuse (or clear) the wrong field.
+	//
+	// The compare then runs INSIDE the held lock, against the bytes just read
+	// from disk. The MCP handler compared against a snapshot it took before the
+	// lock was acquired, which left a window where a concurrent writer could
+	// move a field between the compare and the write.
+	if policy == headerMustMatch {
+		onDisk := ParseTaskMetaFromContent(slug, string(current), done)
+		proposed := ParseTaskMetaFromContent(slug, content, done)
+		// Wrapped at its SOURCE, per apperr's contract: a guard correctly
+		// rejecting bad input is the caller's fault, never a system-health
+		// problem. errors.As survives the %w wrapping every surface applies,
+		// so both the MCP handler and the CLI get the classification without
+		// either of them knowing this rule exists.
+		if err := refuseHeaderChange(onDisk, proposed); err != nil {
+			return apperr.Caller(err)
+		}
+	}
+
 	return atomicfile.Write(v.Root, path, []byte(content))
+}
+
+// HeaderChangeError is the typed refusal a whole-file overwrite returns when the
+// proposed body moves a header field. It is typed so a surface can classify it:
+// this is a caller's malformed request, never an internal fault.
+type HeaderChangeError struct {
+	// Field is the header field as it appears in the file ("title",
+	// "**Status:**", …) so the message names what the caller actually typed.
+	Field string
+	// Was and Now are the on-disk and proposed values.
+	Was, Now string
+	// Action is the vp_manage_task action that DOES own Field.
+	Action string
+}
+
+func (e *HeaderChangeError) Error() string {
+	return fmt.Sprintf(
+		"overwrite refused: the body changes %s from %q to %q. "+
+			"Header fields are not overwrite's to write — %s owns this one, and two writers for "+
+			"one field is how a reader and a writer come to disagree about which value is real. "+
+			"Re-send the body with %s unchanged, then call action=%s if you meant to change it",
+		e.Field, e.Was, e.Now, e.Action, e.Field, e.Action)
+}
+
+// refuseHeaderChange reports a HeaderChangeError when a proposed whole-file
+// overwrite body disagrees with the task's current header.
+//
+// It is the guard that keeps `overwrite` from becoming a second writer for
+// fields that already have one. vp_manage_task's design is eight actions with
+// DISJOINT write sets: title and priority belong to set_meta, status to
+// update_status, parent and depends to set_relations. A whole-file writer
+// trivially reaches all of them, so without this it would be a bypass for every
+// one of those rules at once, including the terminal-status rule that keeps a
+// "completed" task from sitting in the active directory.
+//
+// The answer is a rejected body rather than a silent revert: silently restoring
+// the old header would write something the caller did not ask for, and a caller
+// who genuinely wants a status change has an action for it.
+//
+// Depends is compared as an ordered list because that is how it is written and
+// read back; a reorder is a change to the field and belongs to set_relations
+// like any other.
+func refuseHeaderChange(onDisk, proposed TaskMeta) error {
+	for _, f := range []HeaderChangeError{
+		{"title", onDisk.Title, proposed.Title, "set_meta"},
+		{"**Status:**", onDisk.Status, proposed.Status, "update_status"},
+		{"**Priority:**", onDisk.Priority, proposed.Priority, "set_meta"},
+		{"**Parent:**", onDisk.Parent, proposed.Parent, "set_relations"},
+		{"**Depends:**", formatDependsList(onDisk.Depends), formatDependsList(proposed.Depends), "set_relations"},
+	} {
+		if f.Was != f.Now {
+			return &HeaderChangeError{Field: f.Field, Was: f.Was, Now: f.Now, Action: f.Action}
+		}
+	}
+	return nil
 }
 
 // ParseTaskMetaFromContent extracts a task's header metadata from a whole task

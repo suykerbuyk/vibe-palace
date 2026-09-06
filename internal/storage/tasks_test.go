@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/mdfence"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
@@ -1813,8 +1815,13 @@ func TestOverwriteTaskFileWritesValid(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	newContent := "# New Title\n\n" +
-		"**Status:** in_progress\n**Priority:** P0\n\n## Context\n\nRewritten body.\n"
+	// The header must MATCH the task on disk: OverwriteTaskFile refuses a body
+	// that moves a header field, and this test is about the write mechanic, not
+	// that rule (TestOverwriteTaskFileRefusesAHeaderChange owns it). CreateTask
+	// wrote title "Old" and priority "P1" with the default status, so the body
+	// below restates them verbatim and changes only prose.
+	newContent := "# Old\n\n" +
+		"**Status:** pending\n**Priority:** P1\n\n## Context\n\nRewritten body.\n"
 	if err := v.OverwriteTaskFile("proj", "task", newContent); err != nil {
 		t.Fatalf("OverwriteTaskFile: %v", err)
 	}
@@ -3426,5 +3433,229 @@ func TestAmendBodyWithTheConventionalHeadingIsStillRefused(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "###") {
 		t.Errorf("the refusal must point an amend caller at the sub-heading fix, got: %v", err)
+	}
+}
+
+// TestOverwriteTaskFileRefusesAHeaderChange is the A7 guard: the header-change
+// refusal lives on the WRITER, so every caller inherits it.
+//
+// It used to live in the MCP handler alone, and that was the gap — `vp tasks
+// edit` reached this same writer with no header diff, so a hand-edited Status
+// line saved cleanly through the CLI while MCP refused it. Two surfaces, one
+// rule, and only one of them enforcing it. Testing it HERE, at the writer, is
+// the point: a test against either surface would pass again if the rule were
+// re-copied into that surface only.
+func TestOverwriteTaskFileRefusesAHeaderChange(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		old, new   string
+		wantField  string
+		wantAction string
+	}{
+		{"status", "**Status:** pending", "**Status:** in_progress", "**Status:**", "update_status"},
+		{"priority", "**Priority:** high", "**Priority:** low", "**Priority:**", "set_meta"},
+		{"title", "# Original", "# Smuggled", "title", "set_meta"},
+		{"parent", "**Parent:** epic-a", "**Parent:** epic-b", "**Parent:**", "set_relations"},
+		{"depends", "**Depends:** dep-one, dep-two", "**Depends:** dep-one", "**Depends:**", "set_relations"},
+		// A reorder is a change to the field like any other: Depends is written
+		// and read back as an ordered list, so set_relations owns a reshuffle.
+		{"depends reorder", "**Depends:** dep-one, dep-two", "**Depends:** dep-two, dep-one", "**Depends:**", "set_relations"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := testVault(t)
+			parent := "epic-a"
+			if err := v.CreateTask("proj", TaskSpec{
+				Slug: "task", Title: "Original", Priority: "high",
+				Parent: parent, Depends: []string{"dep-one", "dep-two"},
+				Content: "Original body.\n",
+			}); err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+			_, before, err := v.GetTask("proj", "task")
+			if err != nil {
+				t.Fatalf("GetTask: %v", err)
+			}
+
+			smuggled := strings.Replace(before, tc.old, tc.new, 1)
+			if smuggled == before {
+				t.Fatalf("test bug: %q not present in the fixture:\n%s", tc.old, before)
+			}
+
+			err = v.OverwriteTaskFile("proj", "task", smuggled)
+			if err == nil {
+				t.Fatalf("expected a refusal for a body that changes %s", tc.wantField)
+			}
+			if !strings.Contains(err.Error(), tc.wantField) {
+				t.Errorf("refusal must name the field %q, got: %v", tc.wantField, err)
+			}
+			// A refusal that only says no gets worked around. It has to point at
+			// the action that DOES own the field.
+			if !strings.Contains(err.Error(), tc.wantAction) {
+				t.Errorf("refusal must name the owning action %q, got: %v", tc.wantAction, err)
+			}
+
+			// Typed, so a surface can classify it without parsing prose.
+			var hce *HeaderChangeError
+			if !errors.As(err, &hce) {
+				t.Errorf("refusal must be a *HeaderChangeError, got %T", err)
+			}
+			// Marked at its source: a guard rejecting bad input is the caller's
+			// fault, and must not be counted against system health.
+			if !apperr.IsCaller(err) {
+				t.Errorf("refusal must be classified apperr.Caller, got %v", err)
+			}
+
+			// Refused WITHOUT touching the file.
+			_, after, err2 := v.GetTask("proj", "task")
+			if err2 != nil {
+				t.Fatalf("GetTask after refusal: %v", err2)
+			}
+			if after != before {
+				t.Errorf("a refused overwrite modified the file on disk:\n--- before ---\n%s\n--- after ---\n%s", before, after)
+			}
+		})
+	}
+}
+
+// TestOverwriteTaskFileAcceptsABodyOnlyChange is the other half: the refusal must
+// not have made the writer useless. Rewriting prose beneath an unchanged header
+// is exactly what overwrite is FOR — the preamble and an H2's own wording are
+// what amend structurally cannot reach.
+func TestOverwriteTaskFileAcceptsABodyOnlyChange(t *testing.T) {
+	v := testVault(t)
+	parent := "epic-a"
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task", Title: "Original", Priority: "high",
+		Parent: parent, Depends: []string{"dep-one", "dep-two"},
+		Content: "Original body.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	_, before, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+
+	rewritten := strings.Replace(before, "Original body.", "Rewritten body, same header.", 1)
+	if rewritten == before {
+		t.Fatal("test bug: body marker not found in the fixture")
+	}
+	if err := v.OverwriteTaskFile("proj", "task", rewritten); err != nil {
+		t.Fatalf("body-only overwrite refused: %v", err)
+	}
+
+	_, after, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if after != rewritten {
+		t.Errorf("body-only overwrite did not persist verbatim:\n%s", after)
+	}
+}
+
+// TestOverwriteTaskFileRewritingHeaderIsTheMigrationOptOut pins the escape hatch
+// the `vp migrate task-*` commands need, and pins that it is an OPT-IN.
+//
+// Three migrations exist to repair a malformed header block, so "the header must
+// not move" is the wrong rule for exactly those callers. The opt-out is a
+// separate, awkwardly-named method rather than a boolean argument so that adding
+// a fourth is a deliberate act a reviewer can find with one grep.
+func TestOverwriteTaskFileRewritingHeaderIsTheMigrationOptOut(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task", Title: "Original", Priority: "high",
+		Content: "Body.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	_, before, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+
+	repaired := strings.Replace(before, "**Status:** pending", "**Status:** in_progress", 1)
+	if repaired == before {
+		t.Fatal("test bug: status line not found in the fixture")
+	}
+
+	// The strict writer refuses it...
+	if err := v.OverwriteTaskFile("proj", "task", repaired); err == nil {
+		t.Fatal("the strict writer accepted a header change")
+	}
+	// ...and the migration writer is the one door that takes it.
+	if err := v.OverwriteTaskFileRewritingHeader("proj", "task", repaired); err != nil {
+		t.Fatalf("migration writer refused a header repair: %v", err)
+	}
+
+	_, after, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if !strings.Contains(after, "**Status:** in_progress") {
+		t.Errorf("header repair did not persist:\n%s", after)
+	}
+}
+
+// TestLegacyHeaderRepairsMoveOnlyTheFieldsTheyClaim is the ratchet under
+// OverwriteTaskFileRewritingHeader's opt-out.
+//
+// That opt-out is FILE-WIDE: it lifts the header-change refusal for every field,
+// not just the one the calling migration repairs. That is safe today only
+// because of what these repair functions actually construct — a review found
+// that a future edit which also normalized, say, Title would sail through with
+// nothing failing. This is that nothing.
+//
+// It does NOT widen the writer's design; it pins the assumption the widened
+// permission rests on. If a repair starts moving a field it never claimed, this
+// reddens and the opt-out gets revisited rather than silently covering it.
+func TestLegacyHeaderRepairsMoveOnlyTheFieldsTheyClaim(t *testing.T) {
+	// A legacy-Both file that also carries Parent and Depends, so a repair that
+	// disturbed either would be visible. The bare "Status: Done" line above the
+	// modern block is the legacy defect being repaired.
+	const withEdges = "# Task 3.5: Portable Command Execution\n" +
+		"Status: Done\n" +
+		"\n" +
+		"**Status:** pending\n" +
+		"**Priority:** high\n" +
+		"**Parent:** epic-a\n" +
+		"**Depends:** dep-one, dep-two\n\n" +
+		"## Summary\n\nBody.\n"
+
+	// NB: on a legacy-Both file the bare "Status: Done" line terminates the
+	// header block, so Parent/Depends do not PARSE before the repair — which is
+	// exactly why this asserts on the TEXT. The claim under test is that the
+	// repair does not disturb lines it never claimed, and the text is where that
+	// is visible; a parse-vs-parse comparison would read empty-to-empty and pass
+	// while the lines were being dropped.
+	for _, line := range []string{
+		"# Task 3.5: Portable Command Execution",
+		"**Priority:** high",
+		"**Parent:** epic-a",
+		"**Depends:** dep-one, dep-two",
+	} {
+		if !strings.Contains(withEdges, line) {
+			t.Fatalf("test bug: fixture lacks %q", line)
+		}
+	}
+
+	repaired, err := RepairLegacyBothHeader(withEdges)
+	if err != nil {
+		t.Fatalf("RepairLegacyBothHeader: %v", err)
+	}
+
+	// The field it EXISTS to move: the true value was the bare line's.
+	if !strings.Contains(repaired, "**Status:** Done") {
+		t.Errorf("repair did not carry the true status into the modern field:\n%s", repaired)
+	}
+	// Every line it never claimed must survive byte-for-byte.
+	for _, line := range []string{
+		"# Task 3.5: Portable Command Execution",
+		"**Priority:** high",
+		"**Parent:** epic-a",
+		"**Depends:** dep-one, dep-two",
+	} {
+		if !strings.Contains(repaired, line) {
+			t.Errorf("repair moved or dropped a line it does not own: %q\n%s", line, repaired)
+		}
 	}
 }

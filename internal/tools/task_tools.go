@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
@@ -690,21 +689,17 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 					p.Task))
 			}
 
-			// 🔴 HEADER SMUGGLING. validateWholeTaskFile checks SHAPE only —
-			// one H1, one Status, one Priority, a well-formed header block. It
-			// cannot tell that the Status line says something different from
-			// the task it is replacing, because it never sees the old file.
+			// 🔴 HEADER SMUGGLING is refused by the WRITER, not here.
+			// storage.OverwriteTaskFile compares the proposed header against
+			// disk and returns a *storage.HeaderChangeError already marked
+			// apperr.Caller, so the %w wrap below preserves the classification.
 			//
-			// Every header field has a dedicated writer, and that disjointness
-			// is the whole design: where two writers can set one field, the
-			// reader and the writer eventually disagree about which value is
-			// real. So a body that changes one is a REJECTED BODY — never a
-			// second status writer wearing an overwrite costume.
-			proposed := storage.ParseTaskMetaFromContent(p.Task, p.Content, current.Done)
-			if err := refuseHeaderSmuggling(current, proposed); err != nil {
-				return nil, apperr.Caller(err)
-			}
-
+			// This used to be a handler-local pre-check, and that was the
+			// defect: `vp tasks edit` reached the same writer with no header
+			// diff, so a hand-edited Status line saved cleanly through the CLI
+			// and was refused through MCP. One rule on the shared writer covers
+			// both surfaces; a second copy beside the CLI would have been a
+			// second implementation to drift.
 			if err := vault.OverwriteTaskFile(p.Project, p.Task, p.Content); err != nil {
 				return nil, fmt.Errorf("overwrite task: %w", err)
 			}
@@ -804,50 +799,4 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 				p.Action)
 		}
 	}
-}
-
-// refuseHeaderSmuggling reports an error when a proposed whole-file overwrite
-// body disagrees with the task's current header.
-//
-// It is the guard that keeps `overwrite` from becoming a second writer for
-// fields that already have one. vp_manage_task's design is seven — now eight —
-// actions with DISJOINT write sets: title and priority belong to set_meta,
-// status to update_status, parent and depends to set_relations. A whole-file
-// writer trivially reaches all of them, so without this it would be a bypass
-// for every one of those rules at once, including the terminal-status rule that
-// keeps a "completed" task from sitting in the active directory.
-//
-// The answer is a rejected body rather than a silent revert: silently restoring
-// the old header would write something the caller did not ask for, and a caller
-// who genuinely wants a status change has an action for it.
-//
-// Depends is compared as an ordered list because that is how it is written and
-// read back; a reorder is a change to the field and belongs to set_relations
-// like any other.
-func refuseHeaderSmuggling(current, proposed storage.TaskMeta) error {
-	type field struct {
-		name   string
-		got    string
-		want   string
-		action string
-	}
-	fields := []field{
-		{"title", proposed.Title, current.Title, "set_meta"},
-		{"**Status:**", proposed.Status, current.Status, "update_status"},
-		{"**Priority:**", proposed.Priority, current.Priority, "set_meta"},
-		{"**Parent:**", proposed.Parent, current.Parent, "set_relations"},
-		{"**Depends:**", strings.Join(proposed.Depends, ", "), strings.Join(current.Depends, ", "), "set_relations"},
-	}
-	for _, f := range fields {
-		if f.got == f.want {
-			continue
-		}
-		return fmt.Errorf(
-			"overwrite refused: the body changes %s from %q to %q. "+
-				"Header fields are not overwrite's to write — %s owns this one, and two writers for "+
-				"one field is how a reader and a writer come to disagree about which value is real. "+
-				"Re-send the body with %s unchanged, then call action=%s if you meant to change it",
-			f.name, f.want, f.got, f.action, f.name, f.action)
-	}
-	return nil
 }

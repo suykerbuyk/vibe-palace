@@ -537,7 +537,10 @@ func cmdTasksEdit() *cli.Command {
 		Synopsis: "vp tasks edit <slug> [--project P]",
 		Description: "Open a task's whole file in $VISUAL (else $EDITOR) and write the result " +
 			"back under lock, validated as a whole. Refuses archived (done/cancelled) tasks — " +
-			"their body is history. On identical content it is a no-op; on invalid content the " +
+			"their body is history. Refuses a body that changes a HEADER field (title, Status, " +
+			"Priority, Parent, Depends): each has its own writer, and the refusal names the one " +
+			"that owns the field you changed. Edit the body freely; change a header field with " +
+			"the action that owns it. On identical content it is a no-op; on invalid content the " +
 			"edit is preserved in a temp file whose path is printed so nothing is lost.",
 		Flags: tasksEditFlags,
 		Examples: []cli.Example{

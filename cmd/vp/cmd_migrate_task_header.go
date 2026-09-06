@@ -320,7 +320,7 @@ func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskH
 						sum.Plans = append(sum.Plans, plan)
 						continue
 					}
-					if werr := vault.OverwriteTaskFile(project, taskSlug, fix.Content); werr != nil {
+					if werr := vault.OverwriteTaskFileRewritingHeader(project, taskSlug, fix.Content); werr != nil {
 						fmt.Fprintf(out, "  !!    %s: write: %v\n", taskHeaderWhere(project, sub, taskSlug), werr)
 						plan.Failed = true
 						sum.Failed++
@@ -421,7 +421,7 @@ func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskH
 					sum.Plans = append(sum.Plans, plan)
 					continue
 				}
-				if werr := vault.OverwriteTaskFile(project, taskSlug, after); werr != nil {
+				if werr := vault.OverwriteTaskFileRewritingHeader(project, taskSlug, after); werr != nil {
 					fmt.Fprintf(out, "  !!    %s: write: %v\n", taskHeaderWhere(project, sub, taskSlug), werr)
 					plan.Failed = true
 					sum.Failed++

@@ -562,3 +562,90 @@ func TestRunTasksEditNoSuchTask(t *testing.T) {
 		t.Errorf("expected no-such-task error, got %q", errOut.String())
 	}
 }
+
+// TestRunTasksEditRefusesAHeaderChange is the A7 regression test at the surface
+// that had the gap.
+//
+// `vp tasks edit` hands the whole file to $EDITOR and writes back whatever comes
+// out. Until the refusal moved onto storage.OverwriteTaskFile, nothing here
+// compared the returned header against disk, so a hand-edited Status/Parent/
+// Depends line saved cleanly through the CLI while the identical body was
+// refused through MCP. This test edits header lines the way a human with an
+// editor actually would — with sed, on the real file the command hands over.
+//
+// It deliberately asserts NO new code in cmd_tasks.go: the refusal arrives
+// because runTasksEdit calls the common writer. If someone "fixes" a future gap
+// by adding a second header diff here, this test still passes and the duplicate
+// goes unnoticed — which is why the writer-level test is the primary one and
+// this is the surface proof.
+func TestRunTasksEditRefusesAHeaderChange(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		sed        string
+		wantField  string
+		wantAction string
+	}{
+		{"status", `s/^\*\*Status:\*\* .*/**Status:** in_progress/`, "**Status:**", "update_status"},
+		{"parent", `s/^\*\*Parent:\*\* .*/**Parent:** other-epic/`, "**Parent:**", "set_relations"},
+		{"title", `s/^# .*/# Smuggled Title/`, "title", "set_meta"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := testVault(t)
+			mkTask(t, v, "test-proj", "hdr", "epic-a")
+			_, before, err := v.GetTask("test-proj", "hdr")
+			if err != nil {
+				t.Fatalf("GetTask: %v", err)
+			}
+
+			dir := t.TempDir()
+			stub := writeStubEditor(t, dir, "sed -i '"+tc.sed+"' \"$1\"\n")
+			t.Setenv("VISUAL", "")
+			t.Setenv("EDITOR", stub)
+
+			var out, errOut bytes.Buffer
+			if code := runTasksEdit(v, "test-proj", "hdr", &out, &errOut); code != cli.ExitUser {
+				t.Fatalf("exit = %d, want ExitUser; stdout=%q stderr=%q", code, out.String(), errOut.String())
+			}
+			es := errOut.String()
+			if !strings.Contains(es, tc.wantField) {
+				t.Errorf("CLI refusal must name the field %q, got %q", tc.wantField, es)
+			}
+			if !strings.Contains(es, tc.wantAction) {
+				t.Errorf("CLI refusal must name the owning action %q, got %q", tc.wantAction, es)
+			}
+
+			// The live file must be untouched by a rejected edit.
+			_, after, err := v.GetTask("test-proj", "hdr")
+			if err != nil {
+				t.Fatalf("GetTask after refusal: %v", err)
+			}
+			if after != before {
+				t.Errorf("a refused CLI edit modified the file:\n--- before ---\n%s\n--- after ---\n%s", before, after)
+			}
+		})
+	}
+}
+
+// TestRunTasksEditStillWritesABodyOnlyChange proves the CLI did not become
+// read-only: an edit that leaves the header alone still saves.
+func TestRunTasksEditStillWritesABodyOnlyChange(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "bodyonly", "epic-a")
+
+	dir := t.TempDir()
+	stub := writeStubEditor(t, dir, "printf '\\nAppended prose.\\n' >> \"$1\"\n")
+	t.Setenv("VISUAL", "")
+	t.Setenv("EDITOR", stub)
+
+	var out, errOut bytes.Buffer
+	if code := runTasksEdit(v, "test-proj", "bodyonly", &out, &errOut); code != cli.ExitOK {
+		t.Fatalf("exit = %d, want ExitOK; stderr=%q", code, errOut.String())
+	}
+	_, content, err := v.GetTask("test-proj", "bodyonly")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content, "Appended prose.") {
+		t.Errorf("body-only CLI edit did not persist:\n%s", content)
+	}
+}
