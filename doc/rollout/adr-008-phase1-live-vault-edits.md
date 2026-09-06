@@ -22,6 +22,26 @@ guarded; the live canary passes at 7,457/8,000.
 > which already compute it. Full record in the task
 > `mcp-served-doctrine-and-thin-project-workflow`.
 
+> **⚠ The verbatim edit text below asserts that `amend` is the ONLY way to change
+> a task's PLAN. That was true when this was applied and is FALSE at HEAD** — it
+> appears twice, in Edit A's Project-Specific Workflow Rules and in the B2 block
+> quoting the text it replaced. `vp_manage_task` now exposes **eight** actions,
+> not seven: `overwrite` was added 2026-08-19 and is the typed path to what
+> `amend` structurally cannot reach — the preamble above the first H2, an H2
+> heading's own wording, and whole-file migration. It is refused on a done or
+> cancelled task, so an archived body still cannot be silently revised. `amend`
+> remains the SECTION writer and the normal way to change a plan; it is no longer
+> the only one.
+>
+> **The quoted text is deliberately left as written.** This document is a record
+> of what was applied, and correcting a verbatim block in place would make it
+> claim it applied text it never applied. Read the blocks below as of 2026-07-25
+> and this note as of 2026-09-05. The live copies are what needed repair: the
+> tool's own description was corrected in `0d5c88f`, and the embedded
+> `doctrine.md` and `workflow.md` templates already say "the normal way". The
+> remaining live instance is `Projects/vibe-palace/workflow.md` in the vault,
+> which is not reachable from this repository.
+
 Historical intent follows. Per iter-179 rollout discipline and the task's
 2026-07-22 triage decision, every live-vault edit below was applied only at the
 epic's rollout step, in this order:
