@@ -642,3 +642,48 @@ func TestCountSectionTableRowsRealFenceStillHidesRows(t *testing.T) {
 		t.Errorf("got %d data rows, want 1 — a fenced table must not inflate the count", got)
 	}
 }
+
+// TestTypedResumeWriteIgnoresTheCap pins the claim the ResumeMaxBytes doc
+// comment makes about its own reach: a typed, compare-and-set-guarded write
+// path exists (vp_update_resume, over (*storage.Vault).WriteResume), and it
+// does NOT consult the cap.
+//
+// This is the X16 correction's proof. The comment previously read "there is no
+// typed write path left to gate", which was false — vp_update_resume has been
+// registered mutating since 52cfa11. The accurate statement is that the one
+// typed path does not consult the cap, and that statement is only worth making
+// if something reddens when it stops being true. Adding a size refusal to
+// WriteResume fails this test, which is the intended signal to revisit the
+// comment rather than leave it stale a second time.
+func TestTypedResumeWriteIgnoresTheCap(t *testing.T) {
+	root := t.TempDir()
+	vault := &storage.Vault{Root: root}
+
+	over := "# Over cap\n\n" + strings.Repeat("x", ResumeMaxBytes+1)
+
+	// Empty expectedSha256 is the assert-absent first write.
+	if err := vault.WriteResume("fat", over, ""); err != nil {
+		t.Fatalf("typed resume write refused an over-cap body: %v", err)
+	}
+
+	path, err := vault.ResumeFile("fat")
+	if err != nil {
+		t.Fatalf("resolve resume path: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back resume: %v", err)
+	}
+	if len(got) != len(over) {
+		t.Fatalf("typed write truncated to the cap: wrote %d bytes, read back %d", len(over), len(got))
+	}
+	if len(got) <= ResumeMaxBytes {
+		t.Fatalf("fixture is not over cap: %d bytes vs cap %d", len(got), ResumeMaxBytes)
+	}
+
+	// The reader is the only thing that reacts, and it reacts with Info.
+	res := CheckResumeCaps(vault)
+	if res.Status != Info {
+		t.Fatalf("over-cap resume: got status %v, want Info — the cap is detection, never a gate", res.Status)
+	}
+}

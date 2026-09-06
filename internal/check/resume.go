@@ -19,12 +19,19 @@ import (
 // ("Prune before you append"): resume.md is a thin gateway, not an archive —
 // the full record lives in iterations.md, tasks/done/ and tasks/cancelled/.
 //
-// These are DETECTION thresholds, not enforcement. There is no typed write
-// path left to gate: routine resume edits go through the generic
-// vp_vault_read + vp_vault_edit pair, and any agent holding Bash can write
-// the file directly regardless. Prevention is unachievable in-process;
-// detection is achievable, so a violation is reported as Info — never Fail —
-// and CheckResumeCaps never writes, moves, or repairs anything.
+// These are DETECTION thresholds, not enforcement. A typed write path DOES
+// exist — vp_update_resume is registered mutating and is compare-and-set
+// guarded through (*storage.Vault).WriteResume — but it does not consult
+// these constants: an over-cap resume writes through it and succeeds. Nor
+// does the generic vp_vault_write / vp_vault_edit pair that routine section
+// edits go through, and any agent holding Bash writes the file directly
+// regardless. So gating the typed path would not make prevention achievable,
+// because it is not the path most resume edits take; detection is achievable
+// on every path, so a violation is reported as Info — never Fail — and
+// CheckResumeCaps never writes, moves, or repairs anything.
+//
+// TestTypedResumeWriteIgnoresTheCap pins the "does not consult" half: adding
+// a cap refusal to WriteResume without revisiting this comment reddens it.
 const (
 	// ResumeMaxBytes is the stated size target for a single resume.md.
 	ResumeMaxBytes = 25 * 1024
