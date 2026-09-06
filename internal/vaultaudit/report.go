@@ -6,6 +6,8 @@ package vaultaudit
 import (
 	"fmt"
 	"strings"
+
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
 // ReportRelPath returns where a report for the given date lands, vault-relative.
@@ -90,6 +92,8 @@ func (r Report) Render(date, vaultRoot string) string {
 	}
 	b.WriteString("\n")
 
+	r.renderUnknownDimensions(&b)
+
 	for _, d := range r.Dimensions {
 		fmt.Fprintf(&b, "## `%s` — %s\n\n", d.Name, statusBadge(d.Status))
 		fmt.Fprintf(&b, "**Verify, never trust this report:**\n\n```sh\n%s\n```\n\n", d.Evidence)
@@ -139,6 +143,74 @@ func (r Report) Render(date, vaultRoot string) string {
 		"**A ratchet-less audit is a rubber stamp with extra steps.**\n")
 
 	return b.String()
+}
+
+// renderUnknownDimensions emits the STALE-BINARY block, and writes nothing when the
+// binary is current.
+//
+// It sits directly under the dimension table because the first thing it has to
+// correct is what the reader just read: the table is not the audit's scope, it is the
+// scope of the binary that produced it, and those differ right now.
+//
+// LOUD, AND STILL NOT A VERDICT. The headline above is computed by totals() from the
+// rows that exist, and this block deliberately does not touch it — the audit stays
+// advisory (operator decision, 204) and the dispatch-seam surface gate stays the one
+// place a stale binary is refused. A second gate here would be two answers to one
+// question, and the first one to be wrong at a bad moment gets both disabled.
+//
+// The wording has to carry the mechanism, not just the fact, because the failure is
+// INVISIBLE by construction: an unknown dimension gets no row, its stale entries are
+// computed inside Baseline.Diff and then dropped by newDimensionResult's
+// `s.Dimension == name` filter, and Failed() therefore sees nothing. A reader who is
+// told only "some dimensions were skipped" will reasonably assume the ✅ above still
+// covers what it lists. It does — and that is the trap. It covers less than the vault.
+func (r Report) renderUnknownDimensions(b *strings.Builder) {
+	if len(r.UnknownDimensions) == 0 {
+		return
+	}
+
+	fmt.Fprintf(b, "## 🔴🔴 THIS BINARY IS BEHIND THE VAULT — %d dimension(s) DID NOT RUN\n\n",
+		len(r.UnknownDimensions))
+	fmt.Fprintf(b, "`%s` records accepted debt for dimension(s) this binary's registry does not "+
+		"contain. The baseline is written by whichever `vp` last accepted findings, so a key with "+
+		"no registry entry can only mean **the vault has seen a newer `vp` than this one**.\n\n",
+		BaselineRelPath)
+	for _, name := range r.UnknownDimensions {
+		fmt.Fprintf(b, "- `%s`\n", name)
+	}
+	b.WriteString("\n")
+	b.WriteString("**What that means for everything above.** These dimensions have NO ROW in the " +
+		"table — they were never run, so there is nothing to tabulate. Their accepted artifacts do " +
+		"not surface as `STALE` either: those entries are computed and then discarded, because a " +
+		"stale entry is only kept for the dimension currently being built. **So the verdict above " +
+		"can read ✅ PASS while this report is silently partial.** It is a verdict about what this " +
+		"binary can see, not about the vault.\n\n")
+	b.WriteString("**About `vp audit vault --accept`.** Accepting rebuilds the baseline from the " +
+		"findings of the dimensions that RAN, and a dimension that never ran produces no findings " +
+		"— so its entire entry (the reason a human wrote, its accepted list, its exceptions, its " +
+		"recorded measurements) is exactly what a regeneration drops. **A `vp` older than this one " +
+		"deletes it.** This binary does not: `Baseline.Regenerate` carries an unrecognised " +
+		"dimension's entry through verbatim, precisely because it never ran and therefore proved " +
+		"nothing about it. Re-run the audit from an up-to-date binary anyway — the report is " +
+		"recoverable by re-running, **the baseline is not**, and a partial report is not worth " +
+		"accepting.\n\n")
+	// The way out is NOT written here. It is sourced from the one place that prose
+	// lives — surface.(*IncompatibleError).Remediation() — because the last time this
+	// text existed in two copies they had already drifted (`action:` became
+	// `Upgrade:`, `<original-command>` became `<command>`, the framing line vanished)
+	// and nothing noticed. A stranded operator's only route back is text, so a second
+	// copy here would be a message that is well-formed, plausible, and wrong.
+	// A bare fence, not ```sh: Remediation() is a mixed block — one command line and
+	// two lines of prose framing it — and labelling it as shell would be a small lie
+	// told by the highlighter about text a stranded reader has to follow exactly.
+	b.WriteString("**Fix it** — the standard stale-binary remediation, the same lines the surface " +
+		"gate prints:\n\n```\n")
+	for _, line := range (&surface.IncompatibleError{}).Remediation() {
+		b.WriteString(line + "\n")
+	}
+	b.WriteString("```\n\n")
+	b.WriteString("Then re-run the audit from the up-to-date binary. Only that report covers the " +
+		"whole vault.\n\n")
 }
 
 // totals sums the report. Accepted is counted because a dimension carrying 82

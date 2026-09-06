@@ -73,7 +73,7 @@ import (
 //	git log -S'yaml:"' -- internal/storage/sessions.go
 //	git log -S'json:"' -- internal/vaultaudit/baseline.go internal/archive/manifest.go
 //
-// and the audit dimension set is the `dims` literal in internal/vaultaudit/audit.go
+// and the audit dimension set is vaultaudit.DimensionNames() in internal/vaultaudit/audit.go
 // — never a count written down here, which is the claim 9b19134 deleted from two
 // documents for rotting.
 //

@@ -62,6 +62,27 @@ type Report struct {
 	// subtracts from to compute churn — without it, the next bootstrap can only ask
 	// "how OLD is the last audit", never "how much has HAPPENED since it".
 	SessionNotes int
+
+	// UnknownDimensions names the baseline keys this binary's registry does not
+	// know — proof this binary is BEHIND THE VAULT. See Baseline.UnknownDimensions.
+	//
+	// It is carried on the report because without it the report is SILENTLY PARTIAL,
+	// and silently is the whole problem. Run only ever builds a row per KNOWN
+	// dimension (the loop below), so an unknown dimension has no row at all. Its
+	// accepted artifacts do produce stale entries inside Baseline.Diff — that loop
+	// ranges over every baseline key — but newDimensionResult then keeps only the
+	// entries whose Dimension equals the KNOWN dimension it is building (the
+	// `s.Dimension == name` filter that builds ownStale, below in this file; a line
+	// number is not recorded here because a recorded one rots), and no known name
+	// ever equals an unknown one. So those stale entries are COMPUTED AND DISCARDED,
+	// Failed() sees nothing, and the report can render `✅ PASS — no new drift`
+	// while whole dimensions of accepted debt went unexamined.
+	//
+	// There is therefore no pre-existing signal for this field to decorate. It is
+	// the ONLY signal, which is exactly why it is loud in Render — and why it still
+	// must not become a verdict: this field EXPLAINS a partial audit, it does not
+	// fail one. Gating belongs at the dispatch seam, where it already is.
+	UnknownDimensions []string
 }
 
 // Findings returns every finding across every dimension — the input to
@@ -175,7 +196,13 @@ func Run(vault *storage.Vault) (Report, error) {
 		return Report{}, err
 	}
 
-	report := Report{SessionNotes: SessionNoteCount(vault)}
+	// The unknown set comes off the baseline that was JUST LOADED, not off a second
+	// read: a re-read could see a different file, and a report that disagreed with
+	// the record it diffed against would be reporting on a vault that never existed.
+	report := Report{
+		SessionNotes:      SessionNoteCount(vault),
+		UnknownDimensions: base.UnknownDimensions(),
+	}
 	for _, d := range dimensions {
 		findings, unknowns, err := d.run(vault)
 		if err != nil {

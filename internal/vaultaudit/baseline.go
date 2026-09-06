@@ -47,6 +47,7 @@ package vaultaudit
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -314,6 +315,13 @@ func (b Baseline) Diff(findings []Finding) (added []Finding, stale []StaleEntry)
 // may only shrink. A genuinely NEW dimension arrives marked UNTRIAGED, so an
 // unexplained dimension can never masquerade as an explained one.
 //
+// ONE ENTRY IS EXEMPT FROM THE SHRINK RULE, and only one: a dimension whose key this
+// binary's registry does not know (Baseline.UnknownDimensions). It produced no
+// findings because it NEVER RAN, not because it was fixed, and the two are
+// indistinguishable from the findings alone. Its entry is carried through verbatim.
+// See the block at the end of this function for why that is not a softening of the
+// ratchet.
+//
 // The same "may only shrink" rule governs recorded measurements, and it is the whole
 // point of the guard: --accept is WHOLE-REPORT, so if a measurement were sourced from
 // the finding in hand, an operator accepting an unrelated finding in a different
@@ -396,6 +404,58 @@ func (b Baseline) Regenerate(findings, raise []Finding) Baseline {
 		slices.Sort(d.Accepted)
 		d.Accepted = slices.Compact(d.Accepted)
 		out.Dimensions[name] = d
+	}
+
+	// A DIMENSION THIS BINARY DOES NOT KNOW NEVER RAN, SO IT PROVED NOTHING, SO ITS
+	// ENTRY MAY NOT BE DROPPED.
+	//
+	// The distinction against the shrink rule is the whole of it, and it is not a
+	// softening of that rule:
+	//
+	//   - A dimension this binary KNOWS that produced no findings is GENUINELY FIXED.
+	//     It still drops, exactly as before. That is the ratchet, and it survives
+	//     this change untouched.
+	//   - A dimension this binary DOES NOT KNOW produced no findings because IT WAS
+	//     NEVER ASKED. "No findings" and "no evidence" render identically here, and
+	//     treating the second as the first is how a regeneration deletes triage.
+	//
+	// Without this, an operator on a `vp` older than the vault who types
+	// `vp audit vault --accept` PERMANENTLY DESTROYS the human-written reasons,
+	// accepted lists, exceptions and measurements of every dimension their binary
+	// predates — silently, as a side effect of a command typed for something else.
+	// The report that run also mangles is recoverable by re-running from a current
+	// binary. This file is not: the prior contents are gone the moment Save returns.
+	//
+	// The `produced` guard keeps the shrink rule authoritative wherever it can speak.
+	// If the findings DID carry this dimension, the binary demonstrably knows about
+	// it after all (Regenerate is a pure function and a caller may pass anything), and
+	// the freshly built entry — which reflects real evidence — must win over a
+	// verbatim carry-forward of the old one.
+	//
+	// The entry is deep-copied rather than aliased. Regenerate returns a NEW baseline
+	// and every other entry in it is freshly allocated; one entry secretly sharing the
+	// caller's maps would let a later Save or edit of the result mutate the input.
+	for _, name := range b.UnknownDimensions() {
+		if _, produced := out.Dimensions[name]; produced {
+			continue
+		}
+		prior := b.Dimensions[name]
+		// STRUCT COPY, THEN CLONE THE REFERENCE TYPES — never a field-by-field
+		// construction. A hand-enumerated copy silently drops any field added to
+		// DimensionBaseline later, and it would drop it on the ONE path nobody
+		// exercises: this branch runs only on a binary older than the vault, so the
+		// loss would ship undetected by every test written on a current one. That is
+		// the hand-maintained-list defect ADR-007 is about, in the one place where
+		// nobody would see it rot. Assignment carries every field, present and future.
+		//
+		// The clones exist only to break aliasing with the input. Both helpers return
+		// nil for a nil argument, so the nil-versus-empty distinction the omitempty
+		// tags encode survives the copy unchanged.
+		carried := prior
+		carried.Accepted = slices.Clone(prior.Accepted)
+		carried.Except = maps.Clone(prior.Except)
+		carried.Measured = maps.Clone(prior.Measured)
+		out.Dimensions[name] = carried
 	}
 	return out
 }
