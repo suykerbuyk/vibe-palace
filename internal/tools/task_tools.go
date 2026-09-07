@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
@@ -375,6 +377,23 @@ type manageTaskParams struct {
 	// ApprovedByHuman is ATTESTATION, not AUTHORIZATION. See the friction note
 	// on manageTaskSchema.
 	ApprovedByHuman bool `json:"approved_by_human,omitempty"`
+	// ToProject is the DESTINATION project of action=move.
+	//
+	// 🔴 IT REACHED manageTaskSchema LAST, AFTER THE ARM WORKED, and the order
+	// was the point. THE SCHEMA ADVERTISES ONLY WHAT IS BUILT
+	// (internal/tools/vault_split.go:34-38): a surface that lists a capability
+	// the code does not have is the honest-instruments defect in its purest
+	// form. Through the refuse-only phase this field and the `move` enum entry
+	// were both deliberately absent, so validateParams rejected action=move
+	// against the enum before the handler could run and the arm was reachable
+	// only in-process. It is on the wire now because the arm now performs the
+	// whole operation — rename, destination provenance, source tombstone — and
+	// not one step before.
+	//
+	// A plain string, not a pointer: unlike parent and depends_on it is not
+	// tri-state. There is no "clear the destination" — a move without one is
+	// not a move.
+	ToProject string `json:"to_project,omitempty"`
 }
 
 // minTaskContentBytes is the floor a create body must clear.
@@ -388,7 +407,7 @@ type manageTaskParams struct {
 // the accidental version of that mistake. It does not remove the deliberate one.
 const minTaskContentBytes = 200
 
-// manageTaskSchema multiplexes eight actions over one tool. Three of them carry
+// manageTaskSchema multiplexes nine actions over one tool. Three of them carry
 // FRICTION — deliberately, and with a precisely bounded claim:
 //
 //   - create requires a `content` body (and the handler additionally requires it
@@ -396,6 +415,11 @@ const minTaskContentBytes = 200
 //   - overwrite requires a `content` body, and the handler additionally refuses
 //     an archived task and any body that disagrees with the current header.
 //   - retire requires `approved_by_human`.
+//
+// `move` requires `to_project`, which is a REQUIRED PARAMETER rather than
+// friction: a move with no destination is not a move. The refusals that make it
+// safe — archived source, dangling edge, occupied destination — live in
+// storage.MoveTaskToProject, where they can measure the vault.
 //
 // amend carries no friction and deliberately no minimum length: a decision worth
 // recording is often one line ("Option B; the re-key is unjustified"), and a
@@ -445,7 +469,7 @@ var manageTaskSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
 		"project":  {"type": "string", "description": "Project slug."},
-		"action":   {"type": "string", "enum": ["create", "amend", "overwrite", "set_meta", "update_status", "set_relations", "retire", "cancel"], "description": "Action: create, amend, overwrite, set_meta, update_status, set_relations, retire, or cancel."},
+		"action":   {"type": "string", "enum": ["create", "amend", "overwrite", "set_meta", "update_status", "set_relations", "retire", "cancel", "move"], "description": "Action: create, amend, overwrite, set_meta, update_status, set_relations, retire, cancel, or move."},
 		"task":     {"type": "string", "description": "Task slug."},
 		"title":    {"type": "string", "description": "Task title (for create or set_meta). set_meta is the ONLY way to change a title after creation \u2014 and a title stating a premise you have since disproved keeps reaching every agent at session start as the headline, because this is the field vp_list_tasks and vp_bootstrap_context surface."},
 		"content":  {"type": "string", "description": "Task content body. REQUIRED for create (min 200 bytes of real plan, not a pointer to a plan stored elsewhere), for amend (the section body), and for overwrite. Do not include a '# Title' heading or '**Status:**'/'**Priority:**'/'**Parent:**'/'**Depends:**' lines; create writes those itself and amend must never touch them. For amend, do not include an '## H2' heading either — the 'section' parameter supplies it; use '###' for sub-headings. \ud83d\udd34 For OVERWRITE the meaning INVERTS: content is the ENTIRE file including the '# Title' line and the whole header block, and every header field must MATCH the task as it stands \u2014 a body that changes title, status, priority, parent or depends is REFUSED, because each of those has its own action."},
@@ -454,7 +478,8 @@ var manageTaskSchema = json.RawMessage(`{
 		"status":   {"type": "string", "enum": ["pending", "in_progress", "blocked", "icebox"], "description": "New status (for update_status). 'icebox' means known but deliberately not scheduled — it stays in the active directory and is hidden from default listings. Terminal states are not reachable here: use action=retire or action=cancel, which move the file."},
 		"parent":   {"type": "string", "description": "Slug of this task's parent (for create or set_relations). An EPIC is simply a task that others name as their parent — there is no separate epic type. Pass \"\" with set_relations to clear it."},
 		"depends_on": {"type": "array", "items": {"type": "string"}, "description": "Slugs this task depends on (for create or set_relations). A dependency on a retired or cancelled task counts as SATISFIED. Pass [] with set_relations to clear."},
-		"approved_by_human": {"type": "boolean", "description": "REQUIRED for retire, and must be true. Set this ONLY when the human has actually said the task is done. Nothing verifies this — it is your own attestation, not an authorization check."}
+		"approved_by_human": {"type": "boolean", "description": "REQUIRED for retire, and must be true. Set this ONLY when the human has actually said the task is done. Nothing verifies this — it is your own attestation, not an authorization check."},
+		"to_project": {"type": "string", "description": "REQUIRED for move, and meaningless for every other action: the DESTINATION project slug (from vp_list_projects) to move the task INTO. 'project' names where the task is NOW. Only ACTIVE tasks move — an archived body is the record of what happened in the project it happened in. The move is REFUSED if the task's parent or any depends_on slug does not resolve in the destination (fix it first with action=set_relations, or move the counterpart across too), and refused if a task of the same slug already lives there. On success it appends a \"Moved from <source>\" section to the task in the destination and files a tombstone at Projects/<source>/tasks/cancelled/<task>.md recording where the work went."}
 	},
 	"required": ["project", "action", "task"],
 	"allOf": [
@@ -481,6 +506,10 @@ var manageTaskSchema = json.RawMessage(`{
 		{
 			"if":   {"properties": {"action": {"const": "set_meta"}}, "required": ["action"]},
 			"then": {"anyOf": [{"required": ["title"]}, {"required": ["priority"]}]}
+		},
+		{
+			"if":   {"properties": {"action": {"const": "move"}}, "required": ["action"]},
+			"then": {"required": ["to_project"]}
 		}
 	]
 }`)
@@ -489,7 +518,7 @@ func ManageTaskTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:     "vp_manage_task",
 		Mutating: true,
-		Description: "Create, amend, overwrite, update, relate, retire, or cancel a task. create requires a substantive content body; " +
+		Description: "Create, amend, overwrite, update, relate, retire, cancel, or move a task between projects. create requires a substantive content body; " +
 			"retire requires approved_by_human=true, which is your own attestation that the human said the task " +
 			"is done — set it only when that is true. set_relations sets a task's parent (its epic) and/or its " +
 			"dependencies; structure is derived from those two edges, so an epic is any task others point at. " +
@@ -502,7 +531,11 @@ func ManageTaskTool(vault *storage.Vault) mcp.Tool {
 			"or a whole-file migration. Its `content` is the entire file, header block included, and every header " +
 			"field must match the task as it stands — title, status, priority, parent and depends each have their " +
 			"own action, so a body that changes one is refused rather than silently becoming a second writer. " +
-			"Prefer amend for a single section; reach for overwrite only when amend cannot express the change.",
+			"Prefer amend for a single section; reach for overwrite only when amend cannot express the change. " +
+			"move relocates an ACTIVE task into another project named by `to_project` and records where it went at " +
+			"BOTH ends: a \"Moved from <source>\" section on the task in the destination, and a tombstone at " +
+			"Projects/<source>/tasks/cancelled/<task>.md. It NEVER writes parent or depends_on — an edge that would " +
+			"dangle in the destination is refused and names set_relations as the owner of the fix.",
 		Schema:  manageTaskSchema,
 		Handler: manageTaskHandler(vault),
 	}
@@ -581,15 +614,29 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 
 		switch p.Action {
 		case "create":
-			// 🔴 THE ONLY ACTION THAT CAN SCAFFOLD A PROJECT, so the only one
-			// gated. Verified rather than assumed: CreateTask is the sole task
-			// writer that reaches a directory-creating call without first
-			// requiring the task file to exist (EnsureDir, internal/storage/
-			// tasks.go). moveTask (retire/cancel) stats its source and errors
-			// "task not found"; amend / set_meta / update_status /
-			// set_relations all os.ReadFile the task first and return on
-			// error, so their atomicfile.Write — which DOES os.MkdirAll its
-			// parent — is unreachable for a project that does not exist.
+			// 🔴 ONE OF THE TWO ACTIONS THAT CAN SCAFFOLD A PROJECT, so one of
+			// the two that are gated. The other is `move`, whose DESTINATION
+			// side reaches the same directory-creating call for a project that
+			// need not exist; it carries the identical RequireKnownProject
+			// call on `to_project`. This comment named create as the ONLY such
+			// action and justified it by enumeration — true until move existed,
+			// and rewritten here in the change that made it false rather than
+			// left for a later audit to trust.
+			//
+			// Verified rather than assumed, and the enumeration is why the list
+			// is exactly these two. CreateTask and MoveTaskToProject are the
+			// only task writers that reach a directory-creating call (EnsureDir,
+			// internal/storage/tasks.go) without first requiring a file to exist
+			// at the path they create: create's project may be brand new, and
+			// move's DESTINATION project may be. Every other action is closed by
+			// construction — moveTask (retire/cancel) stats its source, errors
+			// "task not found", and creates only inside the source's own
+			// project; move's own SOURCE side stats the active task file for the
+			// same reason and so cannot scaffold either; amend / set_meta /
+			// update_status / set_relations / overwrite all read the task file
+			// first and return on error, so their atomicfile.Write — which DOES
+			// os.MkdirAll its parent — is unreachable for a project that does
+			// not exist.
 			//
 			// `project` here is a free-string slug with no accompanying path,
 			// so a typo'd or hallucinated one would otherwise materialize a
@@ -793,9 +840,181 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 			return taskWriteResult(vault, p.Project, p.Task, "cancel",
 				map[string]any{"status": "cancelled", "task": p.Task}), nil
 
+		case "move":
+			// Relocate an ACTIVE task from `project` into `to_project` and
+			// record where it went, at BOTH ends.
+			//
+			// 🔴 THE ORDER IS RENAME → DESTINATION PROVENANCE → SOURCE
+			// TOMBSTONE, AND IT IS NOT NEGOTIABLE. Each step completes before
+			// the next begins, and nothing writes content before the move.
+			// Writing first and renaming after is the rename-then-rewrite shape
+			// `moveTask`'s own 🔴 comment rejects, whose failure mode is the
+			// live open bug `retired-task-files-keep-a-live-status-line`: a
+			// surviving file left asserting something untrue. Here it would be
+			// worse — a task carrying "Moved from X" while still sitting in X.
+			//
+			// 🔴 THE RESIDUAL IS KNOWN AND ACCEPTED. DO NOT "FIX" IT. A crash
+			// (or a failure) between the rename and either provenance write
+			// leaves the task CORRECTLY MOVED and merely MISSING its note: the
+			// destination file is the real task in the real place, the source
+			// simply carries no tombstone. That is recoverable — re-run the two
+			// typed writes by hand, or file the tombstone with `create` +
+			// `cancel` — and, decisively, NOTHING IN THE VAULT STATES ANYTHING
+			// FALSE at any instant of the sequence. Every reordering that would
+			// close this window buys it back as a window in which a file
+			// asserts a move that has not happened, which is the strictly worse
+			// trade this project has already ruled on twice. A missing record
+			// is recoverable; a false record is believed.
+			//
+			// That is also why the provenance writes below report their outcome
+			// as DATA rather than as the handler's error. By the time they run
+			// the rename is done and committed; returning an error would tell
+			// the caller the MOVE failed, which is false, and both reactions to
+			// that lie are harmful — a retry gets "not found in the active
+			// tasks of <source>" and the agent then holds two contradictory
+			// failures for one successful move, while abandoning leaves the
+			// agent believing a task it can no longer find is still where it
+			// was. Same contract, and for the same reasons, as commitTaskWrite.
+			//
+			// 🔴 SEQUENTIAL LOCKS, NEVER NESTED (ADR-003). Each call below —
+			// MoveTaskToProject, AmendTask, CreateTask, CancelTask — takes and
+			// releases its OWN per-path lock and returns before the next is
+			// made. No lock is held while another is acquired. vaultlock.Acquire
+			// is a blocking LOCK_EX with no LOCK_NB and no timeout, so an
+			// inverted order would be a permanent HANG rather than a detectable
+			// error; keeping the calls strictly sequential is what makes an
+			// inversion unrepresentable rather than merely avoided.
+			if p.ToProject == "" {
+				return nil, apperr.Caller(fmt.Errorf(
+					"move requires 'to_project': the project slug to move the task INTO " +
+						"(from vp_list_projects). 'project' names where the task is now"))
+			}
+
+			// 🔴 MANDATORY, NOT OPTIONAL. See the enumeration on the create arm:
+			// this is the second of the two actions that can scaffold a project,
+			// because MoveTaskToProject's destination side reaches EnsureDir for
+			// a project that need not exist. Without this gate a typo'd
+			// to_project would materialize a phantom Projects/<typo>/tasks/ tree
+			// and move a real task into it, which is the iter-245 junk-project
+			// class with a live task inside it.
+			//
+			// The empty repoRoot is the same deliberate form create uses and for
+			// the same reason: there is no repo to authorize against, so only the
+			// Projects/<slug>/-exists arm applies. The SOURCE project needs no
+			// gate — an unknown one has no active task file, and the move stats
+			// for that before it creates anything.
+			if err := project.RequireKnownProject(p.ToProject, vault.Root, ""); err != nil {
+				return nil, apperr.Caller(err)
+			}
+
+			// STEP 1 — the rename. It is the commit point of the whole
+			// sequence: atomic, content-free, and the only step whose failure
+			// means nothing happened at all. So it is the only one that returns
+			// an error.
+			if err := vault.MoveTaskToProject(p.Project, p.Task, p.ToProject); err != nil {
+				return nil, fmt.Errorf("move task: %w", err)
+			}
+
+			result := map[string]any{
+				"status":       "moved",
+				"task":         p.Task,
+				"from_project": p.Project,
+				"to_project":   p.ToProject,
+			}
+
+			// One provenance record, composed once, rendered at both ends, from
+			// ONE clock read — so the destination section and the source
+			// tombstone cannot disagree about the day or the commit. The WRITER
+			// owns the clock (ADR-006): no caller supplies a date.
+			prov := vault.NewMoveProvenance(p.Project, p.ToProject, p.Task, time.Now())
+
+			// STEP 2 — destination provenance. AmendTask resolves the ACTIVE
+			// path of the project it is GIVEN, so passing to_project reaches
+			// the file the rename just created.
+			//
+			// The heading is provenance, never a claim: amend is keyed on the
+			// heading text and cannot revise it, so a heading is written once
+			// and is permanent. See MoveProvenance.DestinationHeading.
+			if _, err := vault.AmendTask(p.ToProject, p.Task, prov.DestinationHeading(), prov.DestinationBody()); err != nil {
+				result["provenance"] = "failed"
+				result["provenance_error"] = fmt.Sprintf(
+					"%v — THE TASK IS MOVED AND IS SAFE at Projects/%s/tasks/%s.md; only the provenance "+
+						"note failed. Do NOT re-send the move (it would refuse: the task is no longer in %q). "+
+						"Record it by hand with vp_manage_task action=amend project=%s task=%s section=%q",
+					err, p.ToProject, p.Task, p.Project, p.ToProject, p.Task, prov.DestinationHeading())
+			} else {
+				result["provenance"] = "written"
+				result["provenance_section"] = prov.DestinationHeading()
+			}
+
+			// 🔴 THE COMMIT SEAM IS PER-PROJECT AND THIS WRITE DIRTIES TWO.
+			// commitTaskWrite probes ONE project's three task paths, so a single
+			// call would record half a rename and leave the other half as dirt —
+			// and an uncommitted task file makes vp_vault_sync refuse, which
+			// wedges sessions, drawers and KG triples too. Both halves are
+			// committed, DESTINATION FIRST: that order never produces a commit in
+			// which the task exists nowhere, whereas source-first does. The
+			// second half routes through taskWriteResult like every other
+			// mutating action, so this action does not escape the seam.
+			//
+			// It runs HERE, after step 2 and before step 3, so the destination
+			// commit carries the moved file WITH its provenance section rather
+			// than committing the bare rename and leaving the amend as dirt.
+			// The source-side commit at the end covers both halves of the
+			// source's change — the deletion the rename left and the tombstone
+			// step 3 files — because they are two of the same three task paths
+			// commitTaskWrite already probes.
+			destCommit := commitTaskWrite(vault, p.ToProject, p.Task, "move")
+			for k, v := range destCommit {
+				result["destination_"+k] = v
+			}
+
+			// STEP 3 — the source tombstone, as TWO typed calls in this order:
+			// create it in the source project (the slug is free there because
+			// the rename removed the file), then cancel it, which is what lands
+			// it in tasks/cancelled/ — the directory this project already treats
+			// as the home of "why something is not here". Filing it by writing
+			// straight into cancelled/ would be a second implementation of what
+			// CancelTask owns.
+			if err := vault.CreateTask(p.Project, prov.TombstoneSpec()); err != nil {
+				result["tombstone"] = "failed"
+				result["tombstone_error"] = fmt.Sprintf(
+					"%v — THE TASK IS MOVED AND IS SAFE at Projects/%s/tasks/%s.md; only the source-side "+
+						"record failed, so %q now has no note of where %q went. Do NOT re-send the move. "+
+						"File the record by hand with vp_manage_task action=create then action=cancel, both "+
+						"on project=%s task=%s",
+					err, p.ToProject, p.Task, p.Project, p.Task, p.Project, p.Task)
+			} else if err := vault.CancelTask(p.Project, p.Task); err != nil {
+				// The tombstone exists but is still ACTIVE in the source
+				// project. Its BODY says it is a tombstone, so nothing here
+				// asserts the task is live — but it will show in the source's
+				// open backlog until the cancel is completed, and that is what
+				// this message tells the caller to do.
+				result["tombstone"] = "uncancelled"
+				result["tombstone_error"] = fmt.Sprintf(
+					"%v — THE TASK IS MOVED AND IS SAFE at Projects/%s/tasks/%s.md, and the source-side "+
+						"record was written, but it is still in %s's ACTIVE tasks instead of cancelled/. "+
+						"Finish it with vp_manage_task action=cancel project=%s task=%s",
+					err, p.ToProject, p.Task, p.Project, p.Project, p.Task)
+			} else {
+				result["tombstone"] = "written"
+				result["tombstone_path"] = path.Join("Projects", p.Project, "tasks", "cancelled", p.Task+".md")
+			}
+
+			return taskWriteResult(vault, p.Project, p.Task, "move", result), nil
+
 		default:
+			// 🔴 THIS LIST MUST MATCH manageTaskSchema's action enum. The enum
+			// is what validateParams rejects against, so this branch is only
+			// reachable for a name the enum ACCEPTS but the switch above does
+			// not handle — or by a Dispatch-free caller invoking the handler
+			// directly. Either way a caller who gets here is reading this
+			// sentence to find out what it may say instead, so a list missing
+			// an action the tool actually has sends them away from a working
+			// capability. `move` was added to the enum and to this list in the
+			// same change, for exactly that reason.
 			return nil, fmt.Errorf(
-				"invalid action %q: must be create, amend, overwrite, set_meta, update_status, set_relations, retire, or cancel",
+				"invalid action %q: must be create, amend, overwrite, set_meta, update_status, set_relations, retire, cancel, or move",
 				p.Action)
 		}
 	}

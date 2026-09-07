@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
@@ -1060,6 +1061,335 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 			slug, status, destPath, err)
 	}
 	return nil
+}
+
+// MoveTaskToProject relocates an ACTIVE task file out of one project's tasks/
+// directory and into another's, changing nothing inside the file.
+//
+// 🔴 IT IS A BARE RENAME AND STAYS ONE. It either performs a correct relocation
+// or it refuses. It writes NO provenance, NO tombstone and NO header field;
+// every case it cannot perform honestly is a refusal that names what to do
+// instead. The provenance a completed move records at both ends is composed by
+// MoveProvenance and SEQUENCED by the vp_manage_task `move` arm, after this
+// returns — see the ordering note there. Do not fold those writes in here: a
+// content write inside this function would give the rename something to order
+// against, and the only orders available are the two `moveTask`'s own 🔴 comment
+// rejects.
+//
+// 🔴 IT NEVER WRITES parent OR depends_on. SetTaskRelations is the sole writer
+// for both, and a second writer for one field is how a reader and a writer come
+// to disagree about which value is real. So an edge that would DANGLE in the
+// destination is REFUSED rather than rewritten — which is also what keeps this
+// operation a single rename with no content write to order against it.
+//
+// The source is Vault.TaskFile's path, which is the ACTIVE path unconditionally
+// and never consults the archive. A done/ or cancelled/ task is therefore
+// refused BY CONSTRUCTION rather than by a separate rule: an archived body is
+// the record of what happened, and relocating it would move that record out
+// from under the project it happened in.
+//
+// 🔴 ONE LOCK, ON THE SOURCE, SO THERE IS NO ORDER TO INVERT (ADR-003,
+// "sequential locks, never nested"). It is held across read → check → rename,
+// and NO destination lock is taken: the destination is created by the rename
+// itself, which is atomic and has no partial-content window for a lock to
+// protect. vaultlock.Acquire is a blocking LOCK_EX with no LOCK_NB and no
+// timeout, so an inverted order would be a PERMANENT HANG rather than a
+// detectable error — and a function that takes one lock cannot invert one. This
+// is moveTask's discipline, copied deliberately; see the long block there.
+// Inside the lock, never call lockedWrite — it re-acquires this same per-path
+// lock and self-deadlocks — and nothing here writes content anyway.
+//
+// 🔴 THE REFUSE-EXISTING-DESTINATION STAT IS POLICY HERE, AND STAYS AHEAD OF THE
+// RENAME. vaultfs.RenameNoLock is a bare os.Rename, which replaces its
+// destination SILENTLY (raw.go says so, and says the rule belongs to each
+// caller); the stat is the only thing standing between a duplicate slug and a
+// destroyed task in the destination project.
+//
+// It does not go through vaultfs.Move, and that is not an oversight: Move
+// REFUSES both endpoints via IsTaskFilePath, because a task's location is a
+// field with typed writers. This IS one of those typed writers, so it works in
+// absolute paths against the F2 sink directly — the same shape moveTask uses
+// for its own rename. A second rename-policy implementation is one too many.
+//
+// Nothing here stamps .surface. A rename writes no content, which is the F2
+// sink's documented behaviour and the same choice moveTask makes.
+func (v *Vault) MoveTaskToProject(fromProject, slug, toProject string) error {
+	if err := validateSlugs(fromProject, slug, toProject); err != nil {
+		return err
+	}
+	if fromProject == toProject {
+		return fmt.Errorf(
+			"move task %q: source and destination project are both %q — there is nothing to move",
+			slug, fromProject)
+	}
+
+	// ACTIVE path only. See the archived note above.
+	srcPath, err := v.TaskFile(fromProject, slug)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(srcPath); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat task: %w", err)
+		}
+		// Say WHY it is not there when the answer is knowable: an archived slug
+		// resolves in done/ or cancelled/, and "not found" would send the caller
+		// hunting for a file that is sitting right there.
+		if archived, _, rerr := v.resolveTaskFile(fromProject, slug); rerr == nil {
+			return fmt.Errorf(
+				"cannot move task %q out of project %q: it is archived at %s, and an archived body is the "+
+					"record of what happened in THAT project — moving it would relocate the record. "+
+					"Only ACTIVE tasks move between projects",
+				slug, fromProject, archived)
+		}
+		return fmt.Errorf("task %q not found in the active tasks of project %q", slug, fromProject)
+	}
+
+	destDir, err := v.TasksDir(toProject)
+	if err != nil {
+		return err
+	}
+	destPath := filepath.Join(destDir, slug+".md")
+
+	release, err := vaultlock.Acquire(v.Root, srcPath)
+	if err != nil {
+		return fmt.Errorf("move task: lock %s: %w", srcPath, err)
+	}
+	defer release()
+
+	data, err := os.ReadFile(srcPath)
+	if err != nil {
+		// The pre-lock stat found the file; losing it here means a concurrent
+		// archive or move of the same slug won the lock.
+		if os.IsNotExist(err) {
+			return fmt.Errorf("task %q not found in the active tasks of project %q", slug, fromProject)
+		}
+		return fmt.Errorf("read task: %w", err)
+	}
+
+	// The edge check reads the source under the same lock that holds the rename,
+	// so a concurrent SetTaskRelations cannot land between the check and the
+	// move. It only ever REFUSES; nothing is written back.
+	if missing := v.danglingTaskEdges(toProject, parseTaskMeta(slug, string(data), false)); len(missing) > 0 {
+		return fmt.Errorf(
+			"cannot move task %q from project %q to %q: %s, and project %q has no task of that slug — "+
+				"the edge would dangle the moment the file landed.\n"+
+				"This action NEVER writes parent or depends_on: set_relations is the sole writer for both, "+
+				"and a second writer for one field is how a reader and a writer come to disagree about which "+
+				"value is real.\n"+
+				"Fix the edge first with vp_manage_task action=set_relations — clear it, or re-point it at a "+
+				"task that does live in %q — or move the counterpart task across as well, then re-run the move",
+			slug, fromProject, toProject, strings.Join(missing, "; "), toProject, toProject)
+	}
+
+	// Only now may a directory be created: a refusal above must leave the
+	// destination project's tree exactly as it found it.
+	if err := EnsureDir(destDir); err != nil {
+		return fmt.Errorf("ensure dest dir: %w", err)
+	}
+
+	if _, err := os.Stat(destPath); err == nil {
+		return fmt.Errorf(
+			"cannot move task %q into project %q: %s already exists — refusing to overwrite the task that is "+
+				"already there. Rename or archive one of the two, then re-run the move",
+			slug, toProject, destPath)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat dest: %w", err)
+	}
+
+	// The commit point. It is the only mutation this function performs, and it
+	// is atomic, so there is no half-moved state for a crash to leave behind.
+	if err := vaultfs.RenameNoLock(srcPath, destPath); err != nil {
+		return fmt.Errorf(
+			"move task %q from project %q to %q failed, so the task is still in %s: %w",
+			slug, fromProject, toProject, fromProject, err)
+	}
+	return nil
+}
+
+// danglingTaskEdges describes the parent and depends_on entries of meta that do
+// NOT resolve to a task in project. An empty result means every edge the task
+// carries would still point at something.
+//
+// 🔴 RESOLUTION IS ACTIVE + ARCHIVED — resolveTaskFile's three directories —
+// because that is the set every other reader of an edge already uses:
+// taskgraph.BuildFromVault builds from ListTasks(project, true), and
+// vp_manage_task's own schema states that "a dependency on a retired or
+// cancelled task counts as SATISFIED". An active-only rule here would refuse a
+// move whose counterpart is merely finished, which is not a dangling edge by
+// anyone else's definition — and a second definition of "resolves" is the same
+// two-readers-disagreeing defect as a second writer.
+func (v *Vault) danglingTaskEdges(project string, meta TaskMeta) []string {
+	var missing []string
+	if meta.Parent != "" {
+		if _, _, err := v.resolveTaskFile(project, meta.Parent); err != nil {
+			missing = append(missing, fmt.Sprintf("its parent is %q", meta.Parent))
+		}
+	}
+	for _, dep := range meta.Depends {
+		if _, _, err := v.resolveTaskFile(project, dep); err != nil {
+			missing = append(missing, fmt.Sprintf("it depends on %q", dep))
+		}
+	}
+	return missing
+}
+
+// MoveProvenance is the record a completed cross-project move leaves at BOTH
+// ends: a section appended to the moved task in the DESTINATION project, and a
+// tombstone task filed in the SOURCE project's cancelled/ directory.
+//
+// 🔴 IT IS A COMPOSER, NOT A WRITER. Nothing here touches the filesystem, and
+// MoveTaskToProject does not call it. The move stays a bare rename with no
+// content write to order against it, and the SEQUENCE — rename, then
+// destination provenance, then source tombstone — is assembled by the
+// vp_manage_task `move` arm out of ordinary typed calls (AmendTask, CreateTask,
+// CancelTask), each of which takes and releases its OWN lock, one at a time.
+// That is what keeps this operation inside ADR-003's sequential-locks rule: no
+// lock here is ever held while another is acquired, and vaultlock.Acquire is a
+// blocking LOCK_EX with no timeout, so an inverted order would be a permanent
+// hang rather than a detectable error.
+//
+// Putting the PROSE here rather than in the handler is deliberate: what a move
+// records is a property of the operation, and a second copy of these words
+// living beside a second caller is how two callers come to write two different
+// histories for one event.
+type MoveProvenance struct {
+	// FromProject is where the task WAS. ToProject is where it now is.
+	FromProject string
+	ToProject   string
+	// Slug is the task's slug, which the move does not change: it is free in
+	// the source project precisely because the rename removed the file, which
+	// is what lets the tombstone take it.
+	Slug string
+	// Day is the calendar day the writer stamped, via CalendarDay. The WRITER
+	// owns the clock (ADR-006); no caller supplies a date.
+	Day string
+	// Commit is the vault commit the move was made against — the vault's HEAD
+	// as it stood when the provenance was composed. It is EMPTY when the vault
+	// is not a git repository or git could not answer, and the rendered prose
+	// then says so rather than inventing a value. A provenance note that
+	// fabricates a commit is worse than one that admits it has none.
+	Commit string
+}
+
+// NewMoveProvenance composes the record for one move. `now` is a parameter so a
+// test can pin an instant and so one logical operation cannot disagree with
+// itself by reading the clock twice.
+//
+// The HEAD read is best-effort and never fails the move: by the time this runs
+// the rename has already happened, so an unavailable git is a missing field in a
+// note, not a reason to refuse work that is already done.
+func (v *Vault) NewMoveProvenance(fromProject, toProject, taskSlug string, now time.Time) MoveProvenance {
+	head, err := gitCmd(v.Root, 10*time.Second, "rev-parse", "HEAD")
+	if err != nil {
+		head = ""
+	}
+	return MoveProvenance{
+		FromProject: fromProject,
+		ToProject:   toProject,
+		Slug:        taskSlug,
+		Day:         v.CalendarDay(now),
+		Commit:      head,
+	}
+}
+
+// DestinationHeading is the H2 heading text of the section appended to the moved
+// task in the destination project.
+//
+// 🔴 IT NAMES AN ORIGIN, NEVER A STATUS, AND THAT IS FORCED BY HOW AMEND WORKS.
+// AmendTask is KEYED on the heading text and cannot revise it, so a heading is
+// written once and is effectively permanent. "Moved from <source-project>" is a
+// fact about an event that happened on a date: nothing that occurs later can
+// make it untrue. A heading that asserted a STATE instead — "Relocated",
+// "Awaiting re-triage", "Now owned by X" — would be equally permanent and would
+// go stale the moment the state changed, leaving a heading the file's own body
+// contradicts and no typed action able to fix it (overwrite is the only reach,
+// and reaching for a whole-file rewrite to correct a heading is the cost this
+// avoids).
+//
+// A task moved A → B → C therefore accumulates TWO sections, "Moved from A" and
+// "Moved from B". That is a history, not a duplicate, and is the intended
+// behaviour.
+//
+// The one case that CONVERGES rather than accumulates is a return trip: A → B →
+// A → B re-amends "Moved from A" and replaces the earlier one. That is amend's
+// keyed idempotence doing exactly its job, and the surviving section still
+// describes the move that put the file where it is — so the file never asserts
+// anything false; it simply does not keep the date of a superseded move from the
+// same origin. The source-side tombstones keep that trail.
+func (p MoveProvenance) DestinationHeading() string {
+	return "Moved from " + p.FromProject
+}
+
+// DestinationBody is the section body appended to the moved task. It records the
+// source project, the day, and the commit the move was made against.
+//
+// It carries no H2 of its own — the heading comes from DestinationHeading via
+// amend's `section` parameter, and a second H2 inside the body would split the
+// section so a later amend could not replace it whole (validateAmendBody refuses
+// one). It carries no header field lines either, so it cannot smuggle a second
+// writer for Status, Parent or Depends past validateTaskBody.
+func (p MoveProvenance) DestinationBody() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "This task was moved out of project `%s` and into project `%s` on %s%s.\n",
+		p.FromProject, p.ToProject, p.Day, p.commitClause())
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "The move relocated the file and changed nothing inside it; this section is the only "+
+		"thing the move added. A tombstone recording the same relocation was filed in the source project at "+
+		"`Projects/%s/tasks/cancelled/%s.md`, so a reader who follows a stale reference into `%s` is told "+
+		"where the work went instead of finding nothing.\n",
+		p.FromProject, p.Slug, p.FromProject)
+	return b.String()
+}
+
+// TombstoneSpec is the task filed in the SOURCE project to record where the task
+// went. The arm creates it and then cancels it, which is what lands it at
+// Projects/<source>/tasks/cancelled/<slug>.md — the directory this project
+// already treats as the home of "why something is not here".
+//
+// The title is PROVENANCE for the same reason the destination heading is: "Moved
+// to <destination>" is an event, and set_meta is the only thing that could ever
+// revise it. It deliberately does NOT copy the live task's title, which belongs
+// to the live task and can be changed there without this record becoming wrong.
+//
+// The spec carries NO parent and NO depends. A tombstone is a record, not a node
+// of the plan, and giving it edges would make the source project's graph assert
+// structure that moved away. Its VALUE to the graph is the opposite and is
+// passive: because resolveTaskFile searches cancelled/ too, a task still left
+// behind in the source project naming this slug as a parent or a dependency
+// resolves to this record rather than dangling.
+//
+// The body is prose a reader can act on, not padding to clear CreateTask's
+// content floor — it names the destination project, the destination path, the
+// day, the commit, and what a reader should do instead of touching this file.
+func (p MoveProvenance) TombstoneSpec() TaskSpec {
+	var b strings.Builder
+	fmt.Fprintf(&b, "This task is no longer in `%s`. On %s it was moved to project `%s`%s, and its file "+
+		"now lives at `Projects/%s/tasks/%s.md`, which is where its plan, its status and its edges are "+
+		"maintained from now on.\n",
+		p.FromProject, p.Day, p.ToProject, p.commitClause(), p.ToProject, p.Slug)
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "This file is a tombstone, not the task. It exists so that a reader who follows a slug, "+
+		"a link or a stale reference into `%s` finds out WHERE the work went instead of finding nothing, and "+
+		"so that anything still naming `%s` as a parent or a dependency resolves to a record rather than "+
+		"dangling. Do not amend it and do not reopen it: amend, retire and cancel belong to the live task in "+
+		"`%s`.\n",
+		p.FromProject, p.Slug, p.ToProject)
+	return TaskSpec{
+		Slug:     p.Slug,
+		Title:    "Moved to " + p.ToProject,
+		Content:  b.String(),
+		Priority: "medium",
+	}
+}
+
+// commitClause renders the against-which-commit half of a provenance sentence,
+// or says plainly that there is none. It never invents a value.
+func (p MoveProvenance) commitClause() string {
+	if p.Commit == "" {
+		return " (the vault is not a git repository, so there is no commit to record it against)"
+	}
+	return ", against vault commit " + p.Commit
 }
 
 // The four header field names. A task's metadata header is a contiguous run of
