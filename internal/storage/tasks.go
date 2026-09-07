@@ -1088,22 +1088,55 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 // the record of what happened, and relocating it would move that record out
 // from under the project it happened in.
 //
-// 🔴 ONE LOCK, ON THE SOURCE, SO THERE IS NO ORDER TO INVERT (ADR-003,
-// "sequential locks, never nested"). It is held across read → check → rename,
-// and NO destination lock is taken: the destination is created by the rename
-// itself, which is atomic and has no partial-content window for a lock to
-// protect. vaultlock.Acquire is a blocking LOCK_EX with no LOCK_NB and no
-// timeout, so an inverted order would be a PERMANENT HANG rather than a
-// detectable error — and a function that takes one lock cannot invert one. This
-// is moveTask's discipline, copied deliberately; see the long block there.
-// Inside the lock, never call lockedWrite — it re-acquires this same per-path
-// lock and self-deadlocks — and nothing here writes content anyway.
+// 🔴 ONE LOCK, ON THE DESTINATION, SO THERE IS NO ORDER TO INVERT (ADR-003,
+// "sequential locks, never nested"). It is held across stat → rename, and NO
+// source lock is taken.
+//
+// THE DESTINATION IS THE LOCKED PATH BECAUSE THE DESTINATION IS THE FILE THE
+// POLICY IS ABOUT. This operation is MANY SOURCES, ONE DESTINATION: a slug is
+// unique only within a project, so the SAME slug can stand in every project at
+// once, and two moves of that slug out of two DIFFERENT source projects into
+// ONE destination project resolve to the IDENTICAL destPath. A lock on the
+// source does not serialise them at all — vaultlock keys on a sha256 of the
+// path, the two srcPaths differ, so they hash to two different lock files and
+// neither move ever sees the other. Both stat the absent destination, both
+// proceed, and the second os.Rename DESTROYS the task the first just placed.
+// The refuse-existing stat and the rename must therefore sit in the SAME
+// critical section, on the one path they are both about.
+//
+// 🔴 DO NOT "RESTORE" THE SOURCE LOCK, and do not read moveTask as a precedent
+// for one. moveTask moves Projects/P/tasks/<slug>.md to
+// Projects/P/tasks/done/<slug>.md — SAME project, SAME slug — so its
+// destination is uniquely determined by its source and no second source can
+// ever contend for that destination; locking the source there IS locking the
+// destination. This function is the opposite case, and only one of its two
+// endpoints is shared.
+//
+// 🔴 ONE LOCK ONLY. DO NOT ADD A SECOND AND DO NOT NEST. vaultlock.Acquire is a
+// blocking LOCK_EX with no LOCK_NB and no timeout (vaultlock/flock_unix.go), so
+// an inverted order would be a PERMANENT HANG rather than a detectable error,
+// and a function that takes one lock cannot invert one. Inside the lock, never
+// call lockedWrite — it re-acquires this same per-path lock and self-deadlocks
+// — and nothing here writes content anyway.
+// TestMoveTaskDestinationIsTheLockedPath and TestMoveTaskSourceIsNotLocked pin
+// both halves: that the destination blocks, and that the source does not.
+//
+// 🔴 THE RESIDUAL THIS ACCEPTS, DELIBERATELY — DO NOT CLOSE IT WITH A SECOND
+// LOCK. With the lock on the destination, the source read that feeds the
+// dangling-edge check is NOT under a lock, so a concurrent SetTaskRelations on
+// the source can land between that read and the rename and leave the check
+// stale. That trade is correct and is not a defect to be "fixed": a stale edge
+// check lands a DANGLING EDGE in the destination — a reported PROBLEMS entry,
+// visible to the audit and repairable with set_relations — whereas an
+// unserialised destination lands a DESTROYED TASK. A missing or incorrect
+// record is recoverable; a destroyed one is not.
 //
 // 🔴 THE REFUSE-EXISTING-DESTINATION STAT IS POLICY HERE, AND STAYS AHEAD OF THE
-// RENAME. vaultfs.RenameNoLock is a bare os.Rename, which replaces its
-// destination SILENTLY (raw.go says so, and says the rule belongs to each
-// caller); the stat is the only thing standing between a duplicate slug and a
-// destroyed task in the destination project.
+// RENAME AND UNDER THE SAME LOCK AS IT. vaultfs.RenameNoLock is a bare
+// os.Rename, which replaces its destination SILENTLY (raw.go says so, and says
+// the rule belongs to each caller); the stat is the only thing standing between
+// a duplicate slug and a destroyed task in the destination project, and it is
+// only that if nothing can slip between it and the rename.
 //
 // It does not go through vaultfs.Move, and that is not an oversight: Move
 // REFUSES both endpoints via IsTaskFilePath, because a task's location is a
@@ -1151,25 +1184,26 @@ func (v *Vault) MoveTaskToProject(fromProject, slug, toProject string) error {
 	}
 	destPath := filepath.Join(destDir, slug+".md")
 
-	release, err := vaultlock.Acquire(v.Root, srcPath)
-	if err != nil {
-		return fmt.Errorf("move task: lock %s: %w", srcPath, err)
-	}
-	defer release()
-
 	data, err := os.ReadFile(srcPath)
 	if err != nil {
-		// The pre-lock stat found the file; losing it here means a concurrent
-		// archive or move of the same slug won the lock.
+		// The stat above found the file; losing it here means a concurrent
+		// archive or move of the same slug got to it first.
 		if os.IsNotExist(err) {
 			return fmt.Errorf("task %q not found in the active tasks of project %q", slug, fromProject)
 		}
 		return fmt.Errorf("read task: %w", err)
 	}
 
-	// The edge check reads the source under the same lock that holds the rename,
-	// so a concurrent SetTaskRelations cannot land between the check and the
-	// move. It only ever REFUSES; nothing is written back.
+	// 🔴 THIS READ IS DELIBERATELY UNLOCKED, AND THE STALENESS IT ADMITS IS THE
+	// ACCEPTED RESIDUAL OF PUTTING THE ONE LOCK ON THE DESTINATION. A concurrent
+	// SetTaskRelations on the source can land between this read and the rename
+	// below, so the edge check can be stale. DO NOT close that by also locking
+	// the source: the worst this residual produces is a DANGLING EDGE in the
+	// destination — a reported PROBLEMS entry, visible and repairable with
+	// set_relations — while an unserialised destination produces a DESTROYED
+	// TASK. A missing or incorrect record is recoverable; a destroyed one is
+	// not, so the lock goes where destruction is possible. The check only ever
+	// REFUSES; nothing is written back.
 	if missing := v.danglingTaskEdges(toProject, parseTaskMeta(slug, string(data), false)); len(missing) > 0 {
 		return fmt.Errorf(
 			"cannot move task %q from project %q to %q: %s, and project %q has no task of that slug — "+
@@ -1181,6 +1215,22 @@ func (v *Vault) MoveTaskToProject(fromProject, slug, toProject string) error {
 				"task that does live in %q — or move the counterpart task across as well, then re-run the move",
 			slug, fromProject, toProject, strings.Join(missing, "; "), toProject, toProject)
 	}
+
+	// 🔴 THE ONE LOCK, AND IT IS ON THE DESTINATION. Every remaining step — the
+	// refuse-existing stat and the rename that acts on its answer — happens
+	// under it, because a check in one critical section and an act in another
+	// is not a check at all. Many sources share one destPath; see the
+	// many-sources-one-destination block on this function, and do not move this
+	// back to srcPath. Nothing below acquires a second lock.
+	//
+	// EnsureDir sits inside the lock safely: the lock sidecar lives at
+	// <root>/.vp-locks/<sha256>.lock, which is independent of destDir, so
+	// locking a path whose parent does not exist yet is fine.
+	release, err := vaultlock.Acquire(v.Root, destPath)
+	if err != nil {
+		return fmt.Errorf("move task: lock %s: %w", destPath, err)
+	}
+	defer release()
 
 	// Only now may a directory be created: a refusal above must leave the
 	// destination project's tree exactly as it found it.
@@ -1197,8 +1247,12 @@ func (v *Vault) MoveTaskToProject(fromProject, slug, toProject string) error {
 		return fmt.Errorf("stat dest: %w", err)
 	}
 
-	// The commit point. It is the only mutation this function performs, and it
-	// is atomic, so there is no half-moved state for a crash to leave behind.
+	// The commit point, under the destination lock taken above and in the same
+	// critical section as the stat that cleared it. It is the only mutation this
+	// function performs, and it is atomic, so there is no half-moved state for a
+	// crash to leave behind. RenameNoLock is os.Rename and replaces its
+	// destination silently, which is exactly why the stat may not be separated
+	// from it.
 	if err := vaultfs.RenameNoLock(srcPath, destPath); err != nil {
 		return fmt.Errorf(
 			"move task %q from project %q to %q failed, so the task is still in %s: %w",

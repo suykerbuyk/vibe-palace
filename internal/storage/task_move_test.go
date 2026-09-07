@@ -7,7 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // MoveTaskToProject is PHASE 1 of the cross-project move: a correct relocation,
@@ -365,5 +369,262 @@ func TestMoveTaskToProjectRefusesMissingSource(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("message = %v, want a not-found refusal", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// THE LOCK SITE. The three tests below exist because "dest exists ⇒ refuse and
+// the destination bytes are unchanged" — TestMoveTaskToProjectRefusesOccupied-
+// Destination, above — is NECESSARY BUT NOT SUFFICIENT: it passes with the lock
+// on the WRONG path, because a single-threaded refusal never exercises the
+// window. The defect this operation is exposed to is many sources, ONE shared
+// destination, and only the destination lock closes it. So the lock SITE is
+// what these pin: A that the destination is locked, B that the source is not,
+// C that the collision the lock exists for is representable and survives.
+// ---------------------------------------------------------------------------
+
+// moveLockTestVault builds a source project holding `slug` and a destination
+// project that ALREADY EXISTS on disk (via an unrelated anchor task).
+//
+// The destination directory must exist before the test takes its own lock:
+// vaultlock's canonicalKey EvalSymlinks-resolves the PARENT of a path that does
+// not exist yet and falls back to a lexical clean when the parent is missing
+// too. Both spellings are stable, but they are not necessarily the SAME key, so
+// a test that locked destPath before its parent directory existed could hash to
+// a different lock file than MoveTaskToProject does after EnsureDir — and would
+// then pass or fail for a reason that has nothing to do with the lock site.
+func moveLockTestVault(t *testing.T, from, to, slug string) (v *Vault, srcPath, destPath string) {
+	t.Helper()
+	v = moveTestVault(t, from, to, plainTask(slug), plainTask("dest-anchor"))
+	srcPath, err := v.TaskFile(from, slug)
+	if err != nil {
+		t.Fatalf("TaskFile(src): %v", err)
+	}
+	destPath, err = v.TaskFile(to, slug)
+	if err != nil {
+		t.Fatalf("TaskFile(dest): %v", err)
+	}
+	if !exists(filepath.Dir(destPath)) {
+		t.Fatalf("destination tasks dir %s does not exist — the lock keys would not be comparable", filepath.Dir(destPath))
+	}
+	return v, srcPath, destPath
+}
+
+// TestMoveTaskDestinationIsTheLockedPath is the PRIMARY PIN on the lock site,
+// and it is deterministic: no goroutine racing is needed to make it correct.
+// The test itself takes the destination's lock and holds it, then asserts that
+// MoveTaskToProject CANNOT FINISH while it is held, and DOES finish once it is
+// released.
+//
+// 🔴 THIS IS THE TEST THAT DISCRIMINATES. If the implementation locked srcPath
+// instead — which is what it did before, and what a later reader is most likely
+// to "restore" — the move would sail straight past a lock held on destPath and
+// complete inside the window, and the blocked-window assertion below fails
+// immediately. An occupied-destination test cannot tell those two
+// implementations apart; this one can only pass for the correct one.
+func TestMoveTaskDestinationIsTheLockedPath(t *testing.T) {
+	v, _, destPath := moveLockTestVault(t, "src-proj", "dst-proj", "wanderer")
+
+	release, err := vaultlock.Acquire(v.Root, destPath)
+	if err != nil {
+		t.Fatalf("test could not take the destination lock: %v", err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			_ = release()
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- v.MoveTaskToProject("src-proj", "wanderer", "dst-proj")
+	}()
+
+	// The move must be BLOCKED on the destination lock for as long as the test
+	// holds it. vaultlock.Acquire is a blocking LOCK_EX with no timeout, so a
+	// correct implementation cannot get past it and nothing arrives here.
+	select {
+	case err := <-done:
+		t.Fatalf("MoveTaskToProject COMPLETED (err=%v) while the test held the lock on the DESTINATION path %s. "+
+			"The one lock is not on the destination — this is the many-sources-one-destination race: two moves "+
+			"of the same slug out of two different source projects both stat an absent destination, both "+
+			"proceed, and the second os.Rename destroys the task the first placed", err, destPath)
+	case <-time.After(200 * time.Millisecond):
+		// Correct: still blocked.
+	}
+
+	released = true
+	if err := release(); err != nil {
+		t.Fatalf("release destination lock: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("move failed after the destination lock was released: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("MoveTaskToProject never completed after the destination lock was released — it is waiting on " +
+			"a lock nothing will free, which is what a nested or inverted acquisition looks like")
+	}
+
+	if !exists(destPath) {
+		t.Errorf("move reported success but %s is not there", destPath)
+	}
+}
+
+// TestMoveTaskSourceIsNotLocked is the OTHER half of the pin, and it exists to
+// keep this operation SINGLE-LOCKED. Holding the source path's lock must not
+// stop the move: if it ever does, someone has added a second Acquire (or
+// restored the old one), and this operation now holds two locks with an order
+// that can be inverted. vaultlock.Acquire is a blocking LOCK_EX with no timeout,
+// so an inversion is a PERMANENT HANG rather than a detectable error — the
+// cheapest defence is to have no second lock at all, which is what this test
+// keeps true.
+func TestMoveTaskSourceIsNotLocked(t *testing.T) {
+	v, srcPath, destPath := moveLockTestVault(t, "src-proj", "dst-proj", "wanderer")
+
+	release, err := vaultlock.Acquire(v.Root, srcPath)
+	if err != nil {
+		t.Fatalf("test could not take the source lock: %v", err)
+	}
+	defer func() { _ = release() }()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- v.MoveTaskToProject("src-proj", "wanderer", "dst-proj")
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("move failed while the source lock was held: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("MoveTaskToProject BLOCKED on a lock held over the SOURCE path %s. The operation is supposed "+
+			"to take exactly ONE lock, on the destination; a second lock here means there is now a lock ORDER, "+
+			"and vaultlock.Acquire has no timeout, so inverting it is a permanent hang", srcPath)
+	}
+
+	if exists(srcPath) {
+		t.Errorf("source copy still present at %s", srcPath)
+	}
+	if !exists(destPath) {
+		t.Errorf("destination %s is not there", destPath)
+	}
+}
+
+// TestMoveTaskConcurrentSameSlugFromTwoProjects makes the collision the lock
+// exists for REPRESENTABLE: project-a and project-b each hold a task with the
+// SAME slug, and both are moved into project-c at once. Their source paths
+// differ, so they hash to DIFFERENT lock files — which is exactly why a source
+// lock cannot serialise them and why the destination is the locked path.
+//
+// The assertions are about survival, not about who wins: exactly one move
+// succeeds, the destination holds the WINNER's bytes whole, and the LOSER's
+// task is still sitting untouched in its own project. On the source-locked
+// implementation the second rename replaces the first task's file and the
+// loser's source is gone, so both of the last two assertions redden.
+//
+// 🔴 THIS ONE IS PROBABILISTIC, WHICH IS WHY IT IS NOT THE PRIMARY PIN. It is
+// a real two-goroutine race, so on the source-locked implementation it fails
+// only when the two threads actually interleave — measured at roughly 3% of
+// runs on the machine this was written on, where BOTH moves returned nil and
+// the second rename had silently destroyed the first task. A once-per-CI-run
+// 3% detector is a reason to keep this test, not a reason to trust it: the
+// DETERMINISTIC pin is TestMoveTaskDestinationIsTheLockedPath above.
+//
+// Runs under -race.
+func TestMoveTaskConcurrentSameSlugFromTwoProjects(t *testing.T) {
+	const slug = "contested"
+
+	v := testVault(t)
+	sources := [2]string{"project-a", "project-b"}
+	var srcPaths [2]string
+	var srcBytes [2][]byte
+
+	for i, proj := range sources {
+		spec := plainTask(slug)
+		spec.Title = "Contested task as it stands in " + proj
+		spec.Content = "This body belongs to " + proj + " and must never be half-written or lost.\n"
+		if err := v.CreateTask(proj, spec); err != nil {
+			t.Fatalf("CreateTask %s/%s: %v", proj, slug, err)
+		}
+		p, err := v.TaskFile(proj, slug)
+		if err != nil {
+			t.Fatalf("TaskFile(%s): %v", proj, err)
+		}
+		srcPaths[i] = p
+		srcBytes[i] = mustReadFile(t, p)
+	}
+	if string(srcBytes[0]) == string(srcBytes[1]) {
+		t.Fatal("the two source tasks are byte-identical, so the winner could not be identified — the test " +
+			"would pass on an implementation that destroyed one of them")
+	}
+
+	// project-c must already exist, so the move is not also racing a first-ever
+	// directory creation. An unrelated anchor task is how a project comes to
+	// exist here.
+	if err := v.CreateTask("project-c", plainTask("dest-anchor")); err != nil {
+		t.Fatalf("CreateTask project-c/dest-anchor: %v", err)
+	}
+	destPath, err := v.TaskFile("project-c", slug)
+	if err != nil {
+		t.Fatalf("TaskFile(dest): %v", err)
+	}
+
+	var errs [2]error
+	var wg sync.WaitGroup
+	wg.Add(len(sources))
+	for i, proj := range sources {
+		go func(i int, proj string) {
+			defer wg.Done()
+			errs[i] = v.MoveTaskToProject(proj, slug, "project-c")
+		}(i, proj)
+	}
+	wg.Wait()
+
+	winner, loser := -1, -1
+	failures := 0
+	for i := range errs {
+		if errs[i] == nil {
+			winner = i
+		} else {
+			failures++
+			loser = i
+		}
+	}
+	if failures != 1 || winner < 0 {
+		t.Fatalf("expected EXACTLY ONE move to succeed and one to be refused; got project-a=%v project-b=%v. "+
+			"Two successes mean both renames ran and the second destroyed the first task", errs[0], errs[1])
+	}
+	if !strings.Contains(errs[loser].Error(), "already exists") {
+		t.Errorf("the losing move was refused for the wrong reason: %v", errs[loser])
+	}
+
+	// The destination must hold the WINNER's bytes, whole. A torn or replaced
+	// file is the destroyed-task outcome this lock exists to prevent.
+	got := mustReadFile(t, destPath)
+	if string(got) != string(srcBytes[winner]) {
+		t.Errorf("destination does not hold %s's task intact.\n want: %q\n  got: %q",
+			sources[winner], srcBytes[winner], got)
+	}
+
+	// The LOSER was refused, so its task never moved: it is still in its own
+	// project, byte-identical. This is the half that catches a move that
+	// half-ran — renamed away and then reported a failure.
+	if !exists(srcPaths[loser]) {
+		t.Fatalf("%s's task is GONE from %s: the refused move removed it anyway, which is a destroyed record",
+			sources[loser], srcPaths[loser])
+	}
+	if got := mustReadFile(t, srcPaths[loser]); string(got) != string(srcBytes[loser]) {
+		t.Errorf("%s's task was disturbed by the refused move.\n before: %q\n  after: %q",
+			sources[loser], srcBytes[loser], got)
+	}
+
+	// And the winner really did leave its own project.
+	if exists(srcPaths[winner]) {
+		t.Errorf("%s's task is still at %s after a successful move", sources[winner], srcPaths[winner])
 	}
 }
