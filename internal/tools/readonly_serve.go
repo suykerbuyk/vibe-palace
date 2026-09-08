@@ -117,6 +117,7 @@ var ReadOnlyServeToolNames = []string{
 	"vp_manual",
 	"vp_memory_list",
 	"vp_memory_read",
+	"vp_palace_query",
 	"vp_palace_status",
 	"vp_preflight_wrap",
 	"vp_read_resource",

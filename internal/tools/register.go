@@ -69,6 +69,7 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	reg.MustRegister(ListRoomsTool(vault))
 	reg.MustRegister(TraverseTool(vault))
 	reg.MustRegister(FindTunnelsTool(vault))
+	reg.MustRegister(PalaceQueryTool(vault))
 	reg.MustRegister(HealthTool(vault))
 	reg.MustRegister(KGQueryTool(vault))
 	reg.MustRegister(KGAddTool(vault))
