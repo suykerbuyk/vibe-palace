@@ -16,12 +16,12 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-// palaceBackfillDecisionsName is the tool's wire name. It is a constant because
-// it is spelled in three places that must agree — the mcp.Tool value, the
-// MutatingToolNames entry that surface-gates it, and the test that pins the two
-// against each other — and a drift between the first two is silent: the tool
-// registers, the gate never matches it, and a stale binary writes into a newer
-// vault.
+// palaceBackfillDecisionsName is the tool's wire name. Tests and
+// MutatingToolNames cite this constant. The mcp.Tool Name field MUST still
+// be the string literal (see PalaceBackfillDecisionsTool): sourceaudit
+// toolConstructors only sees ast.BasicLit names, so a constant here would
+// make the derived gate miss the constructor (CI: constructors 73 vs
+// registered 74).
 const palaceBackfillDecisionsName = "vp_palace_backfill_decisions"
 
 // palaceBackfillDecisionsSchema is a literal: there is no enum to inject and no
@@ -326,7 +326,7 @@ func backfillProjectDecisions(vault *storage.Vault, project string, apply bool) 
 // nil-engine path too.
 func PalaceBackfillDecisionsTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name: palaceBackfillDecisionsName,
+		Name: "vp_palace_backfill_decisions",
 		Description: "Walk a project's historical session notes and file the YAML `decisions:` entries of each one as palace decision drawers, so decisions recorded before the live capture path filed them become answerable by vp_palace_query. " +
 			"Only the frontmatter `decisions:` list is read — never the summary, the open threads, or the body prose. " +
 			"Each drawer is stamped with its own note's calendar day, not the day of the backfill, and re-running is a no-op: the append dedups on content. " +
