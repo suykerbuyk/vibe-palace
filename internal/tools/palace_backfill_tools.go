@@ -93,9 +93,24 @@ func (c *palaceBackfillCounts) add(o palaceBackfillCounts) {
 }
 
 // palaceBackfillProject is one project's row.
+//
+// 🔴 Error carries the reason THIS project's walk stopped, and its presence is
+// the whole reason the run does not abort on it. An `all: true, apply: true`
+// run walks projects in order and writes as it goes, so a failure on the fourth
+// project happens AFTER the first three have already committed drawers to disk.
+// Returning (nil, err) there would hand the operator an error and no record of
+// what landed — and the recovery from that is to re-run a mutating tool blind,
+// which is the one thing a backfill's report exists to make unnecessary. The
+// counts on this row are the PARTIAL tally the walker had reached when it
+// failed; those drawers are real and already written, so they are reported
+// rather than thrown away.
+//
+// omitempty, so a clean row stays silent and a reader scanning for trouble sees
+// only the rows that have any.
 type palaceBackfillProject struct {
 	Project string `json:"project"`
 	palaceBackfillCounts
+	Error string `json:"error,omitempty"`
 }
 
 // palaceBackfillDecisionsResult is the run report.
@@ -356,17 +371,31 @@ func palaceBackfillDecisionsHandler(vault *storage.Vault) mcp.HandlerFunc {
 			Projects: make([]palaceBackfillProject, 0, len(projects)),
 			Complete: true,
 		}
+		// A project that fails does NOT end the run. Each project is an
+		// independent walk against its own sessions directory and its own room
+		// file, so a failure in one says nothing about the next — and under
+		// apply the earlier ones have already written. The error goes on that
+		// project's row and the walk continues; backfillProjectDecisions
+		// returns the counts it reached alongside its error, so the partial
+		// tally is added to the run total rather than discarded.
 		for _, project := range projects {
 			counts, err := backfillProjectDecisions(vault, project, p.Apply)
-			if err != nil {
-				return nil, fmt.Errorf("backfill %s: %w", project, err)
-			}
-			result.Projects = append(result.Projects, palaceBackfillProject{
+			row := palaceBackfillProject{
 				Project:              project,
 				palaceBackfillCounts: counts,
-			})
+			}
+			if err != nil {
+				row.Error = err.Error()
+			}
+			result.Projects = append(result.Projects, row)
 			result.add(counts)
 		}
+
+		// complete:true even when a row carries an error. The sentinel answers
+		// "did this document arrive whole", not "did every project succeed" —
+		// dropping it on a partial failure would tell the operator the report
+		// was TRUNCATED, which is the one reading that makes the per-project
+		// errors below it unsafe to trust.
 		return result, nil
 	}
 }

@@ -610,3 +610,165 @@ func TestPalaceBackfillRegistersWithoutAnEngine(t *testing.T) {
 	})
 	wantPQContents(t, callPalaceQuery(t, vault, map[string]any{"project": pbProject}), pbDecision)
 }
+
+// --- Per-project rows carry their own tally ---
+
+// TestPalaceBackfillRowsCarryTheirOwnCounts pins the EMBEDDED counts on each
+// project row, not just the run total.
+//
+// The two projects are given different decision counts on purpose. A row list
+// that is present but zeroed — the shape a refactor produces when it builds the
+// rows from the project names and forgets to copy the tally — passes every
+// total-only assertion in this file, because the totals are accumulated
+// separately. So is a row list that reports the run total on every row. Both
+// die here, and only here.
+func TestPalaceBackfillRowsCarryTheirOwnCounts(t *testing.T) {
+	vault := newTestVault(t)
+
+	// Slugs chosen so ListAllProjects' sort puts "pb-a" before "pb-b"; the row
+	// order is asserted, because a report whose rows are not in a stable order
+	// cannot be diffed across two runs.
+	pbWriteNote(t, vault, "pb-a", "2026-03-15-01.md",
+		pbNote("2026-03-15-01", "2026-03-15", "", []string{"alpha one"}))
+	pbWriteNote(t, vault, "pb-b", "2026-03-16-01.md",
+		pbNote("2026-03-16-01", "2026-03-16", "", []string{"beta one", "beta two", "beta three"}))
+
+	res := callBackfill(t, vault, map[string]any{"all": true, "apply": true})
+
+	if len(res.Projects) != 2 {
+		t.Fatalf("rows = %d, want 2: %+v", len(res.Projects), res.Projects)
+	}
+	if res.Projects[0].Project != "pb-a" || res.Projects[1].Project != "pb-b" {
+		t.Fatalf("row order = %q, %q, want pb-a, pb-b",
+			res.Projects[0].Project, res.Projects[1].Project)
+	}
+
+	wantBackfillCounts(t, res.Projects[0].palaceBackfillCounts, palaceBackfillCounts{
+		NotesScanned: 1, DecisionsFound: 1, Appended: 1,
+	})
+	wantBackfillCounts(t, res.Projects[1].palaceBackfillCounts, palaceBackfillCounts{
+		NotesScanned: 1, DecisionsFound: 3, Appended: 3,
+	})
+
+	// The total is the sum of the rows, which is the property that makes
+	// reporting both of them non-redundant.
+	wantBackfillCounts(t, res.palaceBackfillCounts, palaceBackfillCounts{
+		NotesScanned: 2, DecisionsFound: 4, Appended: 4,
+	})
+}
+
+// --- A mixed batch reports both halves ---
+
+// TestPalaceBackfillMixedBatchCountsNewAndDuplicate covers the run that is
+// neither all-new nor all-duplicate: one apply in which some drawers land and
+// others are skipped because they are already on disk.
+//
+// It is the case that separates `appended` from `decisions_found`. A run that
+// reported appended = len(built) would claim 4 here; one that reported 0
+// whenever anything was skipped would claim 0. Both are wrong in the direction
+// an operator cannot detect, because either number is plausible on its own —
+// only the pair, summing to what was built, says what actually happened.
+func TestPalaceBackfillMixedBatchCountsNewAndDuplicate(t *testing.T) {
+	vault := newTestVault(t)
+
+	pbWriteNote(t, vault, pbProject, "2026-03-15-01.md",
+		pbNote(pbSessionID, pbDate, "", []string{"decision one", "decision two"}))
+
+	first := callBackfill(t, vault, map[string]any{"project": pbProject, "apply": true})
+	wantBackfillCounts(t, first.palaceBackfillCounts, palaceBackfillCounts{
+		NotesScanned: 1, DecisionsFound: 2, Appended: 2,
+	})
+
+	// A second note repeats one decision verbatim and adds one that is new.
+	// DrawerID is md5(wing+content) (internal/storage/drawers.go:44-47), so the
+	// repeat collides with what the first run wrote no matter which session
+	// recorded it — the source_ref differs, the id does not.
+	pbWriteNote(t, vault, pbProject, "2026-03-16-01.md",
+		pbNote("2026-03-16-01", "2026-03-16", "", []string{"decision two", "decision three"}))
+
+	second := callBackfill(t, vault, map[string]any{"project": pbProject, "apply": true})
+
+	if second.Appended == 0 {
+		t.Errorf("appended = 0 for a run that wrote a new decision: %s",
+			pbCounts(second.palaceBackfillCounts))
+	}
+	if second.SkippedDup == 0 {
+		t.Errorf("skipped_dup = 0 for a run that re-walked two filed decisions: %s",
+			pbCounts(second.palaceBackfillCounts))
+	}
+	if got := second.Appended + second.SkippedDup; got != second.DecisionsFound {
+		t.Errorf("appended+skipped_dup = %d, want decisions_found = %d: %s",
+			got, second.DecisionsFound, pbCounts(second.palaceBackfillCounts))
+	}
+
+	// Exact shape: both notes are walked, so four drawers are built; three
+	// distinct contents exist and two of them were already filed.
+	wantBackfillCounts(t, second.palaceBackfillCounts, palaceBackfillCounts{
+		NotesScanned: 2, DecisionsFound: 4, Appended: 1, SkippedDup: 3,
+	})
+}
+
+// --- A failing project does not erase the ones already written ---
+
+// TestPalaceBackfillFailedProjectKeepsEarlierRows is the report-integrity
+// property of an apply run over several projects.
+//
+// The failure is induced where a real one lives: the room's parent directory is
+// occupied by a FILE, so AppendDrawers cannot create it. That happens on the
+// SECOND project, after the first has already committed drawers — which is the
+// only arrangement that can tell "kept walking and reported" apart from "gave
+// up and returned an error". Written against a handler that returns (nil, err)
+// on the first failing project, callBackfill t.Fatals on the error and this
+// test cannot pass.
+func TestPalaceBackfillFailedProjectKeepsEarlierRows(t *testing.T) {
+	vault := newTestVault(t)
+
+	pbWriteNote(t, vault, "pb-a", "2026-03-15-01.md",
+		pbNote("2026-03-15-01", "2026-03-15", "", []string{"the one that lands"}))
+	pbWriteNote(t, vault, "pb-b", "2026-03-16-01.md",
+		pbNote("2026-03-16-01", "2026-03-16", "", []string{"the one that cannot"}))
+
+	// pb-b's wing is its own slug, and DecisionRoom is the room the writer
+	// would create. Put a regular file exactly where that directory belongs.
+	roomDir, err := vault.DrawerDir("pb-b", "pb-b", capture.DecisionRoom)
+	if err != nil {
+		t.Fatalf("DrawerDir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(roomDir), 0o755); err != nil {
+		t.Fatalf("mkdir wing: %v", err)
+	}
+	if err := os.WriteFile(roomDir, []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatalf("occupy room path: %v", err)
+	}
+
+	res := callBackfill(t, vault, map[string]any{"all": true, "apply": true})
+
+	if !res.Complete {
+		t.Error("complete = false; the sentinel reports truncation, not per-project failure")
+	}
+	if len(res.Projects) != 2 {
+		t.Fatalf("rows = %d, want 2 — the failing project must not erase the one before it: %+v",
+			len(res.Projects), res.Projects)
+	}
+
+	good, bad := res.Projects[0], res.Projects[1]
+	if good.Project != "pb-a" || bad.Project != "pb-b" {
+		t.Fatalf("rows = %q, %q, want pb-a, pb-b", good.Project, bad.Project)
+	}
+	if good.Error != "" {
+		t.Errorf("pb-a error = %q, want none", good.Error)
+	}
+	if good.Appended != 1 {
+		t.Errorf("pb-a appended = %d, want 1 — its write happened before pb-b failed", good.Appended)
+	}
+	if bad.Error == "" {
+		t.Error("pb-b error is empty; a project whose append failed must say so on its row")
+	}
+
+	// The committed work is still reachable through the query, which is the
+	// operator's actual question after a partial run: what landed?
+	hits := callPalaceQuery(t, vault, map[string]any{"project": "pb-a"})
+	if len(hits.Drawers) != 1 {
+		t.Fatalf("query returned %d drawers for pb-a, want 1", len(hits.Drawers))
+	}
+}
