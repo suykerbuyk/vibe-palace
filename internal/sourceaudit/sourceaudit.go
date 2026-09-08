@@ -48,7 +48,12 @@
 //
 //   - Field names are not unique across structs, so `Foo.Name = x` counts as an
 //     assignment to every `Name` field in the repo. A write-only field that shares
-//     its name with an assigned field elsewhere will be missed.
+//     its name with an assigned field elsewhere will be missed. This holds for the
+//     SELECTOR forms only: a composite literal names its own type, so `T{Name: x}`
+//     is recorded against T alone (see writeOnlyFields — that collision masked a
+//     true baseline entry, which is why the precision is spent there). The residual
+//     is that literals are keyed by TYPE NAME, not package-qualified, so two
+//     identically-named structs in different packages still share an entry.
 //   - A function called only via reflection looks uninvoked. Those are recorded in
 //     the baseline with a reason rather than special-cased.
 //
@@ -236,9 +241,41 @@ type serializedField struct {
 //   - the target of an increment:      x.Field++
 //   - the operand of a unary &:        &x.Field  (it may be written through)
 //
-// Assignment is tracked by BARE FIELD NAME, not by (struct, field). That is a
-// deliberate conservative bias: it can only make us miss a finding, never invent
-// one. See the package doc.
+// Assignment is tracked at the finest grain the AST actually offers, which is not
+// the same grain for every form:
+//
+//   - A composite literal NAMES ITS OWN TYPE, so `T{Field: v}` is recorded against
+//     (T, Field). No type resolution is needed to know what was constructed; the
+//     type is right there in the syntax.
+//   - Everything else — `x.Field = v`, `x.Field++`, `&x.Field` — resolves only to a
+//     BARE FIELD NAME, because there is nothing in the AST that says what type `x`
+//     is. Those stay bare, and a bare name counts as assigned everywhere.
+//
+// The bare half is a deliberate conservative bias: it can only make us miss a
+// finding, never invent one. See the package doc.
+//
+// # The qualified half exists because the bare half MASKED A REAL FINDING
+//
+// Keying composite literals by bare name too was not merely imprecise, it was
+// actively destructive. A struct in internal/tools declared a field named `Paths`;
+// one composite literal assigning it marked EVERY `Paths` in the repository as
+// assigned, including internal/skills.SkillFrontmatter.Paths — a deliberately-kept
+// baseline entry whose reason says in terms "Do not 'fix' the code to clear this."
+// The gate then went red on that entry as STALE and demanded its removal. A false
+// negative that hides a finding is bad; one that rewrites the baseline corrupts the
+// ratchet, and the error message points at the wrong file.
+//
+// The fix costs no new information. The baseline key is already fully qualified
+// (pkg.Struct.Field), and the composite-literal type was already being computed
+// here and then thrown away. So it is kept. This is the same shape as the
+// import-scoping rule in uninvokedFuncs: apply precision exactly where the AST
+// supplies it, and stay conservative everywhere else.
+//
+// It does NOT close the selector case. `x.Field = v` still needs full type
+// resolution, which is a type-checking pass and a different change; that path keeps
+// the bare-name fallback and the documented bias above. An element of `[]T{{...}}`
+// or `map[K]T{...}` names no type of its own either, so it falls back to the bare
+// name for the same reason.
 //
 // # Only structs the code CONSTRUCTS are audited, and that is the whole trick
 //
@@ -260,8 +297,12 @@ type serializedField struct {
 // NotePath sat among them, tagged, serialized, and never set — for six months.
 func writeOnlyFields(files []file) []Finding {
 	var declared []serializedField
+	// assigned["Date"] = true — the conservative bare-name fallback. It holds the
+	// forms whose receiver type the AST cannot name: `x.Field = v`, `x.Field++`,
+	// `&x.Field`, and a composite literal that elides its own type.
 	assigned := map[string]bool{}
 	// litKeys["SessionMeta"]["Date"] = true — keyed composite literals, per TYPE.
+	// This is the precise half, and it is what the decision below consults FIRST.
 	litKeys := map[string]map[string]bool{}
 
 	for _, f := range files {
@@ -313,10 +354,13 @@ func writeOnlyFields(files []file) []Finding {
 		ast.Inspect(f.ast, func(n ast.Node) bool {
 			switch node := n.(type) {
 			case *ast.CompositeLit:
-				// The literal names its own type, so record the keys AGAINST THAT TYPE.
-				// This is the precise signal; the bare-name `assigned` map below is the
-				// conservative fallback for `x.Field = v`, whose receiver type we cannot
-				// resolve without full type information.
+				// The literal names its own type, so record the keys AGAINST THAT TYPE
+				// and NOT by bare name. Recording both was the collision that masked
+				// skills.SkillFrontmatter.Paths — see the doc above.
+				//
+				// A literal that elides its type (an element of []T{{...}} or
+				// map[K]T{...}) names nothing to qualify against, so it falls back to
+				// the bare-name map, same as a selector assignment.
 				typeName := typeNameOf(node.Type)
 				for _, elt := range node.Elts {
 					kv, ok := elt.(*ast.KeyValueExpr)
@@ -327,13 +371,14 @@ func writeOnlyFields(files []file) []Finding {
 					if !ok {
 						continue
 					}
-					assigned[id.Name] = true
-					if typeName != "" {
-						if litKeys[typeName] == nil {
-							litKeys[typeName] = map[string]bool{}
-						}
-						litKeys[typeName][id.Name] = true
+					if typeName == "" {
+						assigned[id.Name] = true
+						continue
 					}
+					if litKeys[typeName] == nil {
+						litKeys[typeName] = map[string]bool{}
+					}
+					litKeys[typeName][id.Name] = true
 				}
 			case *ast.AssignStmt:
 				for _, lhs := range node.Lhs {
@@ -359,6 +404,11 @@ func writeOnlyFields(files []file) []Finding {
 
 	var out []Finding
 	for _, d := range declared {
+		// The precise signal first: a composite literal OF THIS TYPE set this field.
+		if litKeys[d.structName][d.fieldName] {
+			continue
+		}
+		// Then the conservative fallback, which cannot say WHICH type was written.
 		if assigned[d.fieldName] {
 			continue
 		}

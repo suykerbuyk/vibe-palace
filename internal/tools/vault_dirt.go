@@ -77,15 +77,17 @@ type VaultDirt struct {
 	// flag, because a stored derived value is a second source of a fact that
 	// already has one.
 	//
-	// 🔴 THE GO NAME IS NOT `Paths`, AND RENAMING IT BACK BREAKS AN UNRELATED
-	// AUDIT. sourceaudit's write-only-field rule tracks assignment by BARE FIELD
-	// NAME across the whole tree, a documented conservative bias (see its package
-	// doc). A composite literal setting `Paths:` here would mark every `Paths`
-	// field in the repo as assigned and silently retire the standing
-	// `write-only-field skills.SkillFrontmatter.Paths` baseline entry — a
-	// deliberately-kept false positive with a long recorded reason, which would
-	// vanish because of a name collision rather than because anything was fixed.
-	// The JSON name stays `paths`, which is what a reader of the payload sees.
+	// The Go name says `Sample` because that is what the field IS — the JSON name
+	// stays `paths`, which is what a reader of the payload sees. This is now an
+	// ordinary naming preference and nothing depends on it. It used to be
+	// load-bearing: sourceaudit's write-only-field rule recorded composite-literal
+	// assignments by BARE FIELD NAME, so setting `Paths:` here marked every `Paths`
+	// field in the repository as assigned and silently retired the standing
+	// `write-only-field skills.SkillFrontmatter.Paths` baseline entry. That rule now
+	// qualifies composite literals by type, and the collision is pinned by
+	// TestCompositeLiteralDoesNotMaskASameNamedFieldInAnotherPackage rather than by
+	// this paragraph — a constraint enforced by a comment in another package is not
+	// enforced at all.
 	SamplePaths []string `json:"paths"`
 
 	// Message is the one-line human form that rides in the alert slot of
@@ -97,7 +99,7 @@ type VaultDirt struct {
 // vaultDirtMessage renders the alert line.
 //
 // It deliberately does NOT inline the paths. They are already in the structured
-// Paths field, which sits ahead of the directive in declaration order and so
+// SamplePaths field, which sits ahead of the directive in declaration order and so
 // survives a host cut that the directive absorbs — repeating them here would
 // spend the bounded prefix twice on one fact. What the prose carries instead is
 // the part no field can express: what a reader must not conclude (that this is

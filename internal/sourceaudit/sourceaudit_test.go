@@ -26,6 +26,27 @@ func writeFixture(t *testing.T, src string) string {
 	return dir
 }
 
+// writeFixtureTree drops a MULTI-PACKAGE throwaway tree in a temp dir and returns
+// its root. Keys are directory names, values are that directory's single source
+// file — one package per directory, the way Go requires.
+//
+// The single-package writeFixture above cannot express a CROSS-PACKAGE collision,
+// which is the whole subject of the tests that use this.
+func writeFixtureTree(t *testing.T, pkgs map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+	for dir, src := range pkgs {
+		full := filepath.Join(root, dir)
+		if err := os.MkdirAll(full, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(full, "fixture.go"), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
 func ids(findings []Finding) []string {
 	out := make([]string, 0, len(findings))
 	for _, f := range findings {
@@ -112,6 +133,138 @@ func Handle(raw []byte) string {
 				"struct is ever hand-assigned, so this would fire on every MCP params type in the tree "+
 				"and get the gate switched off", f.Symbol)
 		}
+	}
+}
+
+// TestCompositeLiteralDoesNotMaskASameNamedFieldInAnotherPackage is the
+// regression fixture for the collision that made this rule RETIRE A TRUE
+// FINDING.
+//
+// The live instance: internal/tools declared a field named `Paths` and set it in
+// a composite literal. Assignment was recorded by bare name, so that one literal
+// marked every `Paths` in the repository as assigned — including
+// internal/skills.SkillFrontmatter.Paths, a deliberately-kept baseline entry
+// whose recorded reason says in terms "Do not 'fix' the code to clear this."
+// The gate then failed demanding the removal of that entry, naming the wrong
+// package in its message.
+//
+// The shape reproduced here is exactly that: two packages, two identically-named
+// serialized fields, one genuinely write-only and one assigned. The write-only
+// one must survive as a finding, and the assigned one must not become one.
+func TestCompositeLiteralDoesNotMaskASameNamedFieldInAnotherPackage(t *testing.T) {
+	root := writeFixtureTree(t, map[string]string{
+		// The victim: Kept is CONSTRUCTED (Name is set in a literal of its own
+		// type), and Paths is tagged, serialized and never assigned anywhere.
+		"kept": `package kept
+
+type Kept struct {
+	Name  string   ` + "`yaml:\"name\"`" + `
+	Paths []string ` + "`yaml:\"paths,omitempty\"`" + `
+}
+
+func Build() Kept { return Kept{Name: "x"} }
+
+func Read(k Kept) []string { return k.Paths }
+`,
+		// The collider: a DIFFERENT package, a DIFFERENT struct, the SAME field
+		// name — set in a composite literal that names its own type.
+		"collide": `package collide
+
+type Other struct {
+	Paths []string ` + "`json:\"paths\"`" + `
+}
+
+func Build() Other { return Other{Paths: []string{"a"}} }
+`,
+	})
+
+	findings, err := Run(root)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if !slices.Contains(ids(findings), "write-only-field kept.Kept.Paths") {
+		t.Errorf("kept.Kept.Paths is write-only and was NOT reported — a composite literal in an "+
+			"unrelated package assigning a field of the same name masked it. This is the collision that "+
+			"made the gate demand the removal of a true baseline entry: the finding vanishes because of a "+
+			"NAME, not because anything was fixed.\ngot: %v", ids(findings))
+	}
+	if slices.Contains(ids(findings), "write-only-field collide.Other.Paths") {
+		t.Errorf("collide.Other.Paths IS assigned, by a composite literal of its own type, and was "+
+			"reported anyway — qualification went the wrong way and the rule now cries wolf.\ngot: %v",
+			ids(findings))
+	}
+}
+
+// TestBareNameFallbackStillMasksAcrossPackages pins the HONEST LIMIT, and it is
+// deliberately asserting a false negative.
+//
+// Type qualification is available only where the AST names a type. Two forms name
+// none, and both keep the conservative bare-name fallback:
+//
+//   - a selector assignment `x.Paths = v`, whose receiver type needs a full
+//     type-checking pass to resolve; and
+//   - an element of `[]T{{...}}` / `map[K]T{...}`, which elides its own type.
+//
+// Both mask a same-named field in another package, and that is the documented
+// bias: under-report rather than false-positive, because a noisy gate is a
+// disabled gate. If someone tightens either one, this test fails and forces the
+// package doc's "Honest limits" section to be rewritten in the same change —
+// which is the point. It is not a claim that the limit is desirable.
+func TestBareNameFallbackStillMasksAcrossPackages(t *testing.T) {
+	cases := map[string]string{
+		"selector assignment": `package collide
+
+type Other struct {
+	Paths []string ` + "`json:\"paths\"`" + `
+	Name  string   ` + "`json:\"name\"`" + `
+}
+
+func Build() Other {
+	o := Other{Name: "x"}
+	o.Paths = []string{"a"}
+	return o
+}
+`,
+		"elided composite literal": `package collide
+
+type Other struct {
+	Paths []string ` + "`json:\"paths\"`" + `
+	Name  string   ` + "`json:\"name\"`" + `
+}
+
+func Build() []Other { return []Other{{Name: "x"}, {Paths: []string{"a"}}} }
+`,
+	}
+
+	for name, collider := range cases {
+		t.Run(name, func(t *testing.T) {
+			root := writeFixtureTree(t, map[string]string{
+				"kept": `package kept
+
+type Kept struct {
+	Name  string   ` + "`yaml:\"name\"`" + `
+	Paths []string ` + "`yaml:\"paths,omitempty\"`" + `
+}
+
+func Build() Kept { return Kept{Name: "x"} }
+
+func Read(k Kept) []string { return k.Paths }
+`,
+				"collide": collider,
+			})
+
+			findings, err := Run(root)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if slices.Contains(ids(findings), "write-only-field kept.Kept.Paths") {
+				t.Errorf("kept.Kept.Paths was reported, so this form no longer feeds the bare-name "+
+					"fallback. That may well be an improvement — but the package doc's \"Honest limits\" "+
+					"section still tells the reader it does, and writeOnlyFields' own doc still says this "+
+					"form resolves to a bare name. Update both in this change.\ngot: %v", ids(findings))
+			}
+		})
 	}
 }
 
