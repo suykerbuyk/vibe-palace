@@ -54,6 +54,7 @@
 package vaultaudit
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -343,8 +344,17 @@ func (b Baseline) Save(vaultRoot, path string) error {
 			PriorAccepted: priorAccepted,
 		}
 	}
-	data, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
+	// 🔴 MUST NOT HTML-ESCAPE — the identical block sourceaudit.Baseline.Save
+	// carries, for the identical reason: json.MarshalIndent has no SetEscapeHTML
+	// knob and always rewrites `<`, `>` and `&`, so a regenerated baseline never
+	// round-trips to the committed bytes and every -update-baseline run drags
+	// unrelated escape churn into someone's diff. Both writers move together.
+	// Precedent: internal/archive/zed_adapter.go's synthesizeJSONL.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(out); err != nil {
 		return err
 	}
 	// The first baseline is written into an Audits/ directory that does not exist
@@ -360,8 +370,10 @@ func (b Baseline) Save(vaultRoot, path string) error {
 	}
 	// Audits/baseline.json is committed, diffed and reviewed week over week, so
 	// it gets the atomic replace and the stamp rather than a raw os.WriteFile.
-	// The bytes are unchanged: MarshalIndent output plus one trailing newline.
-	return atomicfile.Write(vaultRoot, path, append(data, '\n'))
+	// Encoder.Encode already terminates with a newline, so the buffer goes out
+	// as-is — the old code appended one to MarshalIndent's newline-less output,
+	// and appending here too would add a blank line that was never there.
+	return atomicfile.Write(vaultRoot, path, buf.Bytes())
 }
 
 // Diff compares findings against the baseline and returns what the audit must

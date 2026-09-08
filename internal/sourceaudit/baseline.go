@@ -4,6 +4,7 @@
 package sourceaudit
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -46,13 +47,31 @@ func LoadBaseline(path string) (Baseline, error) {
 }
 
 // Save writes the baseline, sorted and indented so it diffs cleanly in review.
+//
+// 🔴 IT MUST NOT HTML-ESCAPE. json.MarshalIndent has no SetEscapeHTML knob and
+// always rewrites `<`, `>` and `&` as \u003c / \u003e / \u0026. Reason strings
+// here carry raw `<` and `>` (re-derive: `grep -c '<' internal/sourceaudit/baseline.json`),
+// so a MarshalIndent regeneration rewrote lines that no human had touched: anyone
+// running -update-baseline for a real reason got that churn mixed into their diff
+// and had to notice, diagnose and revert it. Committed once, the escaped spelling
+// becomes the new baseline and the churn ping-pongs on whoever last ran what.
+//
+// Encoder.Encode already terminates with a newline, so nothing is appended here —
+// appending one too would add a blank line MarshalIndent's output did not have.
+//
+// vaultaudit.Baseline.Save carries the IDENTICAL block for the identical reason.
+// Both writers move together; fixing one leaves the other as a silent instance.
+// Precedent: internal/archive/zed_adapter.go's synthesizeJSONL.
 func (b Baseline) Save(path string) error {
 	sort.Slice(b.Entries, func(i, j int) bool { return b.Entries[i].ID < b.Entries[j].ID })
-	data, err := json.MarshalIndent(b, "", "  ")
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(b); err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	return os.WriteFile(path, buf.Bytes(), 0o644)
 }
 
 // reasonTODO marks an entry nobody has triaged yet. It is deliberately ugly: an
