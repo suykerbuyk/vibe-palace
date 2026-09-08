@@ -197,7 +197,7 @@ func ResolvePalaceQuery(in PalaceQueryInput) (storage.DrawerQuery, error) {
 	// handful of real decisions under session text that happened to contain
 	// the same words.
 	if len(q.SourceTypes) == 0 {
-		q.SourceTypes = []string{"decision"}
+		q.SourceTypes = []string{storage.SourceTypeDecision}
 	}
 
 	// --- The default-room prune ---
@@ -246,7 +246,7 @@ func onlyDecisionSourceType(sourceTypes []string) bool {
 		return false
 	}
 	for _, st := range sourceTypes {
-		if st != "decision" {
+		if st != storage.SourceTypeDecision {
 			return false
 		}
 	}

@@ -120,6 +120,18 @@ func CollectDiscoveryCandidates(
 			}
 
 			for _, d := range drawers {
+				// Skip before any accumulation, not merely before the
+				// re-score. A decision drawer's room was asserted by its
+				// writer, so it can never be a legitimate mismatch candidate —
+				// and allDrawers is the cross-validation corpus, where a
+				// decision drawer sitting in the fixed "decisions" room would
+				// count as a regression against every keyword proposed for
+				// every other room. Neither the LLM nor the validator has any
+				// business judging it.
+				if isDecisionDrawer(d) {
+					continue
+				}
+
 				allDrawers = append(allDrawers, drawerWithRoom{
 					Drawer: d, Wing: wing, Room: room,
 				})

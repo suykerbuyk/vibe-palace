@@ -562,3 +562,43 @@ func appendDrawer(t *testing.T, vault *storage.Vault, project, wing, room, conte
 	t.Fatal("drawer not found after append")
 	return storage.Drawer{}
 }
+
+func TestCollectDiscoveryCandidates_SkipsDecisionDrawers(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+
+	appendDrawer(t, vault, "proj", "proj", "general",
+		"Set up the CI/CD pipeline with kubernetes and docker for deployment automation")
+	// A decision drawer sits in the fixed "decisions" room, which the
+	// classifier can never name — so without the skip it is an automatic
+	// mismatch and would be sampled for LLM keyword extraction.
+	dec := addDecisionDrawer(t, vault, "proj", "proj",
+		"Decided to standardize on kubernetes and docker for every deployment we ship")
+
+	rc := NewRoomClassifier(nil, 0)
+	candidates, allDrawers, err := CollectDiscoveryCandidates(vault, rc,
+		DiscoverOptions{Project: "proj", MaxSamples: 10})
+	if err != nil {
+		t.Fatalf("CollectDiscoveryCandidates: %v", err)
+	}
+
+	for _, c := range candidates {
+		if c.DrawerID == dec.ID {
+			t.Fatalf("decision drawer %s filed as discovery candidate (room %s)",
+				dec.ID, c.CurrentRoom)
+		}
+	}
+	if len(candidates) != 1 {
+		t.Errorf("candidates = %d, want 1 (the general drawer only)", len(candidates))
+	}
+
+	// It is also kept out of the cross-validation corpus, where it would count
+	// as a regression against every keyword proposed for any other room.
+	for _, d := range allDrawers {
+		if d.Drawer.ID == dec.ID {
+			t.Fatalf("decision drawer %s included in cross-validation corpus", dec.ID)
+		}
+	}
+	if len(allDrawers) != 1 {
+		t.Errorf("allDrawers = %d, want 1", len(allDrawers))
+	}
+}

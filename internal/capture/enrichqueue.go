@@ -222,6 +222,30 @@ func DrainEnrichmentQueue(ctx context.Context, vault *storage.Vault, cwd string,
 			continue
 		}
 
+		// File the freshly-enriched decisions into the palace. This is the
+		// path that MATTERS for the hook: internal/hook/hook.go passes no
+		// Decisions to WriteSession at all, so a hook-captured note has none
+		// until an enrichment produces them — and when the inline enricher
+		// misses, that happens HERE, not at capture. A WriteSession-only
+		// ingest would file nothing for the entire hook production path.
+		//
+		// The stamp is NOW, not the note's date: this is when the drawer was
+		// filed, which is what filed_at means. Widening a historical note's
+		// date onto its drawers is a different task's job — do not reach for
+		// item.Date here.
+		//
+		// ON ERROR: warn and CONTINUE. Deliberately NOT requeue(). The note was
+		// already rewritten successfully a few lines up; requeueing would send
+		// this job back through enricher.Enrich on the next drain — real LLM
+		// work, real money — and rewrite an already-correct note, all because a
+		// drawer append failed. The enrichment is done. A missing drawer is a
+		// retrieval loss, not an enrichment loss, and it must not be paid for
+		// by redoing the enrichment.
+		if _, dferr := fileDecisionDrawers(vault, item.Project, meta.ID, time.Now().UTC().Format(time.RFC3339), meta.Decisions); dferr != nil {
+			slog.Warn("enrichment drain: filing decision drawers failed; note is enriched but its decisions will not answer a palace query",
+				"err", dferr, "project", item.Project, "note_path", item.NotePath)
+		}
+
 		_ = os.Remove(procPath)
 		drained++
 	}

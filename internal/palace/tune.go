@@ -192,6 +192,18 @@ func collectGeneralDrawers(vault *storage.Vault, classifier *RoomClassifier, opt
 			continue // general room may not exist
 		}
 		for _, d := range drawers {
+			// Defensive only — this is NOT the load-bearing skip. This
+			// function reads exactly one room, "general", and capture files
+			// every decision drawer into the fixed "decisions" room, so under
+			// that rule no decision drawer can reach this loop at all. The
+			// check is here so the invariant "a decision drawer is never
+			// re-scored" holds by construction rather than by the coincidence
+			// that two room names differ; it costs one field comparison. The
+			// skip that actually does work is in RunAudit.
+			if isDecisionDrawer(d) {
+				continue
+			}
+
 			res := classifier.ClassifyWithScores(d.Content, d.SourceRef, opts.Keywords)
 			results = append(results, DrawerAudit{
 				ID:          d.ID,

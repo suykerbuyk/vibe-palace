@@ -247,3 +247,110 @@ func TestAuditReport_Candidates(t *testing.T) {
 		t.Errorf("NewScore = %f, want > 0", c.NewScore)
 	}
 }
+
+// addDecisionDrawer files a drawer the way capture files a decision — into the
+// fixed "decisions" room, tagged with storage.SourceTypeDecision — and returns
+// it as stored so callers can assert against its generated ID.
+func addDecisionDrawer(t *testing.T, v *storage.Vault, project, wing, content string) storage.Drawer {
+	t.Helper()
+	d := storage.Drawer{
+		Content:    content,
+		Hall:       HallDecisions,
+		SourceType: storage.SourceTypeDecision,
+		FiledAt:    "2026-04-10T10:00:00Z",
+	}
+	if err := v.AppendDrawer(project, wing, "decisions", d); err != nil {
+		t.Fatalf("AppendDrawer(decision): %v", err)
+	}
+	stored, err := v.ListDrawers(project, wing, "decisions")
+	if err != nil {
+		t.Fatalf("ListDrawers(decisions): %v", err)
+	}
+	for _, s := range stored {
+		if s.Content == content {
+			return s
+		}
+	}
+	t.Fatal("decision drawer not found after append")
+	return storage.Drawer{}
+}
+
+func TestRunAudit_DecisionDrawerNeverProposedForMove(t *testing.T) {
+	v := auditVault(t)
+	addDrawer(t, v, "proj", "wing", "devops", "Set up the kubernetes cluster for deployment.")
+	// The classifier can never return "decisions", so without the skip this
+	// drawer is a guaranteed mismatch and --apply would move it out of the
+	// room the palace query prunes to.
+	dec := addDecisionDrawer(t, v, "proj", "wing",
+		"Decided to standardize on the kubernetes cluster for every deployment.")
+
+	rc := NewRoomClassifier(nil, 0)
+	report, err := RunAudit(v, rc, AuditOptions{Project: "proj"})
+	if err != nil {
+		t.Fatalf("RunAudit: %v", err)
+	}
+	for _, m := range report.Mismatches {
+		if m.ID == dec.ID {
+			t.Fatalf("decision drawer %s reported as mismatch (%s -> %s)",
+				dec.ID, m.CurrentRoom, m.BestRoom)
+		}
+	}
+	for _, c := range report.Candidates() {
+		if c.DrawerID == dec.ID {
+			t.Fatalf("decision drawer %s produced move candidate %s -> %s",
+				dec.ID, c.FromRoom, c.ToRoom)
+		}
+	}
+}
+
+// TestRunAudit_DecisionDrawerExcludedFromArithmetic pins the skip to the TOP of
+// the audit's drawer loop, above report.TotalDrawers++. A skip placed lower —
+// merely before the classify call — still suppresses the move proposal, so
+// TestRunAudit_DecisionDrawerNeverProposedForMove keeps passing while every
+// percentage in the report silently drifts. This test is what reddens.
+func TestRunAudit_DecisionDrawerExcludedFromArithmetic(t *testing.T) {
+	v := auditVault(t)
+	addDrawer(t, v, "proj", "wing", "devops", "Set up the kubernetes cluster for deployment.")
+	addDrawer(t, v, "proj", "wing", "general", "the sky is blue and water is wet")
+	addDecisionDrawer(t, v, "proj", "wing",
+		"Decided to standardize on the kubernetes cluster for every deployment.")
+
+	rc := NewRoomClassifier(nil, 0)
+	report, err := RunAudit(v, rc, AuditOptions{Project: "proj"})
+	if err != nil {
+		t.Fatalf("RunAudit: %v", err)
+	}
+
+	// TotalDrawers is the divisor for every percentage below.
+	if report.TotalDrawers != 2 {
+		t.Errorf("TotalDrawers = %d, want 2 (decision drawer must not count)",
+			report.TotalDrawers)
+	}
+
+	// No "decisions" row, and the two real rooms split the corpus evenly.
+	if len(report.Distributions) != 2 {
+		t.Errorf("Distributions = %d, want 2: %+v",
+			len(report.Distributions), report.Distributions)
+	}
+	for _, d := range report.Distributions {
+		if d.Room == "decisions" {
+			t.Errorf("distribution contains a decisions row: %+v", d)
+			continue
+		}
+		if d.Count != 1 {
+			t.Errorf("%s count = %d, want 1", d.Room, d.Count)
+		}
+		if d.Percent < 49.9 || d.Percent > 50.1 {
+			t.Errorf("%s percent = %.2f, want 50.00", d.Room, d.Percent)
+		}
+	}
+
+	// GeneralPercent uses the same divisor.
+	if report.GeneralCount != 1 {
+		t.Errorf("GeneralCount = %d, want 1", report.GeneralCount)
+	}
+	if report.GeneralPercent < 49.9 || report.GeneralPercent > 50.1 {
+		t.Errorf("GeneralPercent = %.2f, want 50.00 (decision drawer must not "+
+			"inflate the divisor)", report.GeneralPercent)
+	}
+}

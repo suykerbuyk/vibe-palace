@@ -154,6 +154,10 @@ const (
 	StageTranscriptIndex              = "transcript_index"
 	StageClaimSentinel                = "claim_sentinel"
 	StageEnricherInit                 = "enricher_init"
+	// StagePalaceDecisionIngest: the note's decisions were not filed into the
+	// palace as drawers. The note itself carries them and is untouched; what is
+	// lost is their retrievability through a palace query.
+	StagePalaceDecisionIngest = "palace_decision_ingest"
 )
 
 // The key-source and archive-id-source constants (KeySourceCaller,
@@ -440,6 +444,53 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 	if p.Transcript != "" && indexer != nil && !p.NeedsIndexing {
 		if _, err := indexer.IndexTranscript(ctx, ref.ID, p.Project, p.Transcript); err != nil {
 			lose(StageTranscriptIndex, err, "capture: transcript indexing failed; this session will not be semantically searchable")
+		}
+	}
+
+	// File the note's decisions into the palace as one drawer each, so a
+	// deterministic palace query can retrieve them. Best-effort like everything
+	// past the write: an unwritable drawers.jsonl must not cost us a captured
+	// session, so this can only ever ADD to Failures.
+	//
+	// It runs with NO indexer guard on purpose. internal/hook/hook.go calls
+	// WriteSession(ctx, vault, nil, ...) — a nil indexer is the ordinary
+	// production path, not a degraded one — and decisions must be filed on it
+	// too. This ingest touches the indexer not at all.
+	//
+	// # Why it re-reads instead of using the local meta
+	//
+	// UpsertSessionByKey does not hand the merged metadata back. When it
+	// resolves an EXISTING note (updated == true) it runs mergeCaptureMeta,
+	// which in the `merged.EnrichedBy == "" && old.EnrichedBy != ""` branch
+	// REPLACES the incoming decisions with the note's existing enriched ones.
+	// So after that call meta.Decisions is still the CALLER's list, and on that
+	// branch the caller's list is precisely what was NOT written. Filing from
+	// it would put drawers in the palace for decisions no note ever contained
+	// — invented memory, which is worse than missing memory.
+	//
+	// A fresh mint (updated == false) has no old note to merge against, so the
+	// local meta IS what landed and the read would be pure cost. Hence the
+	// split. Do NOT "simplify" this to always use meta.Decisions, and do NOT
+	// fall back to it when the re-read fails: the re-read exists because the
+	// local value may be wrong, so a fallback would file exactly the garbage
+	// this branch is here to avoid. File nothing and record the loss.
+	filedAt := now.UTC().Format(time.RFC3339)
+	decisions := meta.Decisions
+	fileDecisions := true
+	if updated {
+		merged, _, rerr := vault.ReadSession(p.Project, ref.Date, ref.Fingerprint, ref.Iteration)
+		if rerr != nil {
+			lose(StagePalaceDecisionIngest, rerr, "capture: re-read of updated note failed; its decisions were not filed into the palace",
+				"note_path", ref.NotePath)
+			fileDecisions = false
+		} else {
+			decisions = merged.Decisions
+		}
+	}
+	if fileDecisions {
+		if _, derr := fileDecisionDrawers(vault, p.Project, ref.ID, filedAt, decisions); derr != nil {
+			lose(StagePalaceDecisionIngest, derr, "capture: filing decision drawers failed; this session's decisions will not answer a palace query",
+				"note_path", ref.NotePath)
 		}
 	}
 

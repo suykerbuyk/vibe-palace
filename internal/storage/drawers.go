@@ -31,6 +31,26 @@ type Drawer struct {
 	AddedBy    string `json:"added_by,omitempty"`
 }
 
+// SourceTypeDecision marks a drawer that holds one decision recorded on a
+// session note, as opposed to a slice of transcript. It is a VALUE of the
+// Drawer.SourceType field above, which is why it lives here and not beside the
+// writer that files it: several packages need the same spelling and they
+// cannot all reach one another. capture writes it, internal/tools defaults an
+// unqualified palace query's source-type filter to it, and the palace's
+// re-scoring passes — the room audit and keyword discovery — test for it to
+// decline to reclassify a decision, whose room its writer asserted rather than
+// inferred. capture already imports palace, so palace can never reach back
+// for a capture-side constant; storage is the one package they all already
+// depend on, and this is a value of the Drawer.SourceType field regardless.
+//
+// Sharing it rather than spelling "decision" at each site is not tidiness. A
+// drift in ANY one of those sites does not fail loudly: the writer files under
+// a type the reader does not ask for, the default query matches nothing, and
+// the caller is handed an empty result that is indistinguishable at the wire
+// from an honestly-empty palace. The reader believes "no decisions recorded".
+// One constant makes them agree by construction.
+const SourceTypeDecision = "decision"
+
 // maxDrawerLine caps a single JSONL record for both the dedup scan and the
 // reader. bufio.Scanner's 64 KB default is well above a chunker-sized drawer
 // (max_chars 800), but a torn append can concatenate two records into one
