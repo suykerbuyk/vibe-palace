@@ -38,14 +38,24 @@ func ListProjectsTool(vault *storage.Vault) mcp.Tool {
 
 // projectDrift is one project that exists in only ONE of the vault's two trees.
 // It is reported, never silently resolved: a project with history and no palace/
-// store has no drawer index, and a palace/ store with no history is a leftover.
-// Both are real drift, and this enumerator is the only thing positioned to see them.
+// store has no drawer index, and a palace/ store with no history has no
+// Projects/<slug>/ tree to hold an iterations.md or session notes. Both are real
+// drift, and this enumerator is the only thing positioned to see them.
 //
 // This said "is unsearchable" until search.Rebuild gained the iterations and
 // session-note corpora, which index a project that has no palace/ store at all.
 // Like the vaultaudit dimension it mirrors, this enumerator reads tree membership
 // and opens no corpus file, so it cannot know what search would return — the honest
 // claim is the missing drawer index, which is what the absent store actually proves.
+//
+// It also said the store-only half "is a leftover", the same sentence as
+// auditProjectTreeCoherence and removed with it on 2026-09-08. That word is a
+// recommendation to delete, not a membership fact, and the two directions are not
+// symmetric: a missing store can be rebuilt from the history still on disk, while a
+// drawer store with no Projects/ history is the only copy of that content in the
+// vault. Operator ruling (task single-tree-project-drift-has-no-disposition): the
+// store-only population is KEPT and no tool disposes of it. This struct reports
+// membership — two booleans and a slug — and prescribes nothing.
 type projectDrift struct {
 	Slug       string `json:"slug"`
 	InPalace   bool   `json:"in_palace"`

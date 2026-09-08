@@ -72,8 +72,27 @@ func TestProjectTreeCoherence_FindsBothDirections(t *testing.T) {
 				banned, got["history-only"])
 		}
 	}
+	// The store-only half gets the same treatment, and for a second reason on top of
+	// the first. Its detail said "a leftover, or a project whose history was never
+	// written" until 2026-09-08 — a recommendation to delete, dressed as a membership
+	// report, and the direction it points is the unrecoverable one: a drawer store with
+	// no Projects/ history is the only copy of that content in the vault. Pin the WORDS.
+	// A count-only assertion passes just as happily with the disposition restored.
 	if _, ok := got["phantom"]; !ok {
-		t.Error("a palace/ store with no history is a leftover and must be reported")
+		t.Fatal("a palace/ store with no history under Projects/ must still be reported")
+	}
+	if !strings.Contains(got["phantom"], "NO history under Projects/") {
+		t.Errorf("the store-only detail must name what is MISSING — the history, not a verdict "+
+			"on the store; detail = %q", got["phantom"])
+	}
+	for _, banned := range []string{"leftover", "delete", "UNSEARCHABLE", "unsearchable"} {
+		if strings.Contains(got["phantom"], banned) {
+			t.Errorf("this dimension reports tree membership and may not prescribe a disposition "+
+				"or claim unsearchability: %q appears in detail = %q\n"+
+				"  Operator ruling 2026-09-08 (single-tree-project-drift-has-no-disposition): the "+
+				"store-only population is KEPT. Nothing reconstructs a drawer store, so a reader "+
+				"who acts on that word destroys the sole copy.", banned, got["phantom"])
+		}
 	}
 	if _, wrong := got["both"]; wrong {
 		t.Error("a project in BOTH trees is coherent and must not be flagged")

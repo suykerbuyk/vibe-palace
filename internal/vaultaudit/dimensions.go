@@ -397,7 +397,21 @@ var EvidenceTaskHeadingMarkers = `grep -nE '^## ' Projects/*/tasks/*.md | grep -
 // This dimension costs nothing — phase 2's union enumerator already computes the
 // answer — and NOTHING ELSE IN THE SYSTEM would ever report it. A project with
 // history and no palace/ store has no drawer index; a palace/ store with no history
-// is a leftover. Both are real drift.
+// has no Projects/<slug>/ tree to hold an iterations.md or session notes. Both are
+// real drift.
+//
+// 🔴 IT REPORTS MEMBERSHIP AND MAY NEVER PRESCRIBE A DISPOSITION. The store-only
+// detail read "a leftover, or a project whose history was never written" until
+// 2026-09-08. "Leftover" is not a membership fact; it is a recommendation to delete,
+// and this dimension has no standing to make one — an audit does not get to make that
+// call (ADR-006). The stakes are asymmetric and only in one direction: a missing store
+// can be rebuilt from the history that is still there, while a drawer store with no
+// Projects/ history is the ONLY copy of that content in the vault and nothing
+// reconstructs it. A reader who takes "leftover" at face value deletes the sole copy.
+// Operator ruling 2026-09-08 (task single-tree-project-drift-has-no-disposition): the
+// store-only population is KEPT, there is no disposition tool, and this detail says
+// what is missing and stops. Do not restore the word, and do not replace it with
+// another that carries the same instruction.
 //
 // 🔴 IT KNOWS TREE MEMBERSHIP AND NOTHING ELSE, SO IT MAY NEVER CLAIM A PROJECT IS
 // UNSEARCHABLE. It reads ListAllProjects / Complete / InProjects and opens no file, so
@@ -429,8 +443,14 @@ func auditProjectTreeCoherence(vault *storage.Vault) ([]Finding, []string, error
 			detail = "has session history under Projects/ but NO palace/ store — its sessions were " +
 				"never drawer-indexed, so the drawer half of `vp search` covers nothing for it"
 		default:
-			detail = "has a palace/ store but NO history under Projects/ — a leftover, or a project " +
-				"whose history was never written"
+			// The mirror of the sentence above, and restrained for the same reason: name
+			// what is missing and stop. Both Projects/-resident corpora — iterations.md
+			// (search.Rebuild's second source) and the bodies of sessions/*.md (its third)
+			// — need a Projects/<slug>/ tree, so an absent one is exactly what this proves.
+			detail = fmt.Sprintf("has a palace/ store but NO history under Projects/ — %s is "+
+				"absent, so it has no iterations.md and no session notes, and the two "+
+				"Projects/-resident corpora of `vp search` cover nothing for it",
+				path.Join("Projects", p.Slug))
 		}
 		findings = append(findings, Finding{
 			Dimension: DimProjectTreeCoherence,
