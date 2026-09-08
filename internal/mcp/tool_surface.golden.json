@@ -232,6 +232,11 @@
       "schema_sha256": "c2ae3284137b6d8f523e3eeaf92ece071ad3a2f01483410cf809221aa8525003"
     },
     {
+      "name": "vp_palace_backfill_decisions",
+      "mutating": true,
+      "schema_sha256": "5b7acf4191ba2b57199d10a578d2f42532e51f48508c536b3fce133c7f58aa39"
+    },
+    {
       "name": "vp_palace_query",
       "mutating": false,
       "schema_sha256": "ba1f2f31a24b977bc3b669ae33d1364cce5a1997b1d53fbf6592122d21ccd7e3"

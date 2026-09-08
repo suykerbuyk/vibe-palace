@@ -162,14 +162,40 @@ func DecisionFiledAt(noteDate string) (string, error) {
 	return day.UTC().Format(time.RFC3339), nil
 }
 
-// fileDecisionDrawers files a session note's decisions into DecisionRoom, one
-// drawer per decision, and returns how many were appended.
+// DecisionDrawersForNote builds — and does NOT file — the decision drawers of
+// ONE session note, returning the wing they belong in alongside them.
+//
+// # Why this is exported, and why it is separate from the append
+//
+// There are two writers of decision drawers and they batch at different
+// granularities. The live path (fileDecisionDrawers, below) handles one note
+// per capture and appends immediately. The backfill
+// (vp_palace_backfill_decisions, internal/tools/palace_backfill_tools.go) walks
+// every historical note of a project and must accumulate across ALL of them
+// before it appends, because AppendDrawers rescans the whole room file on each
+// call and a per-note append would be quadratic in the size of the room.
+//
+// That difference is in the APPEND, not in the BUILD, and the build is the half
+// that must not fork. Every field this function feeds into DecisionDrawer
+// participates in the drawer's identity: the wing and the content decide
+// storage.DrawerID, and the wing, session id, content and index decide the
+// SourceRef. Two builders that disagree about ANY of them — a different wing
+// rule, a renumbering around a blank entry, a filed_at derived some other way —
+// produce a DIFFERENT id and a DIFFERENT ref for the same decision of the same
+// note. Nothing errors: AppendDrawers dedups on the id, so the backfilled
+// drawer and the live one simply fail to recognise each other and the room ends
+// up holding both copies, each with its own search identity. Exporting the one
+// builder makes the two paths agree by construction, which is the same argument
+// DecisionRoom, DecisionDrawer and DecisionFiledAt are each already made on.
+//
+// A malformed noteDate is returned as an ERROR and never widened some other
+// way; see DecisionFiledAt for why there is no wall-clock fallback.
 //
 // # Indices are positions in the slice, and skipped blanks leave a hole
 //
 // n is the index of the decision in the SLICE PASSED IN, not a counter of
-// drawers written. An entry that is empty after TrimSpace is skipped and its
-// index is simply not used: ["a", "  ", "c"] files refs .../0 and .../2, never
+// drawers built. An entry that is empty after TrimSpace is skipped and its
+// index is simply not used: ["a", "  ", "c"] yields refs .../0 and .../2, never
 // .../0 and .../1. That costs nothing and buys a real property — the ref is a
 // stable pointer back to the note's Nth decision, so a reader holding a drawer
 // can go to the note and find the line it came from. Renumbering around the
@@ -177,6 +203,37 @@ func DecisionFiledAt(noteDate string) (string, error) {
 // under a DIFFERENT ref depending on whether some unrelated earlier entry
 // happened to be blank on that capture, which turns a re-file into a duplicate
 // drawer rather than the intended no-op.
+func DecisionDrawersForNote(project, sessionID, noteDate string, decisions []string) (string, []storage.Drawer, error) {
+	// Widen here rather than at each call site, so the two writers and the
+	// backfill cannot drift into three different notions of filed_at.
+	filedAt, err := DecisionFiledAt(noteDate)
+	if err != nil {
+		return "", nil, err
+	}
+
+	// DetectWing(project, "") is the project's own wing — the same wing
+	// capture's transcript indexer files into, so a session's decisions and its
+	// tape sit under one roof and a wing-scoped query sees both. It is resolved
+	// before the drawers are built because the source_ref discriminator is keyed
+	// on it, exactly as the drawer id will be.
+	wing := palace.DetectWing(project, "")
+
+	ds := make([]storage.Drawer, 0, len(decisions))
+	for n, d := range decisions {
+		if strings.TrimSpace(d) == "" {
+			continue
+		}
+		ds = append(ds, DecisionDrawer(wing, sessionID, d, filedAt, n))
+	}
+	return wing, ds, nil
+}
+
+// fileDecisionDrawers files a session note's decisions into DecisionRoom, one
+// drawer per decision, and returns how many were appended.
+//
+// It is DecisionDrawersForNote plus the append, and it owns nothing else: the
+// index rule, the wing rule and the filed_at rule all live up there so the
+// backfill inherits exactly this behaviour.
 //
 // # One batched append
 //
@@ -193,26 +250,9 @@ func fileDecisionDrawers(vault *storage.Vault, project, sessionID, noteDate stri
 		return 0, nil
 	}
 
-	// Widen here rather than at each call site, so the two writers and the
-	// backfill cannot drift into three different notions of filed_at.
-	filedAt, err := DecisionFiledAt(noteDate)
+	wing, ds, err := DecisionDrawersForNote(project, sessionID, noteDate, decisions)
 	if err != nil {
 		return 0, err
-	}
-
-	// DetectWing(project, "") is the project's own wing — the same wing
-	// capture's transcript indexer files into, so a session's decisions and its
-	// tape sit under one roof and a wing-scoped query sees both. It is resolved
-	// before the drawers are built because the source_ref discriminator is keyed
-	// on it, exactly as the drawer id will be.
-	wing := palace.DetectWing(project, "")
-
-	ds := make([]storage.Drawer, 0, len(decisions))
-	for n, d := range decisions {
-		if strings.TrimSpace(d) == "" {
-			continue
-		}
-		ds = append(ds, DecisionDrawer(wing, sessionID, d, filedAt, n))
 	}
 	if len(ds) == 0 {
 		return 0, nil
