@@ -376,7 +376,12 @@ type IncompatibleError struct {
 	BinarySurface int
 	VaultSurface  int
 	StampDir      string // worst (highest) stamp's directory
-	LastWriter    string // optional, may be empty
+
+	// LastWriter is LEGACY-ONLY and is empty for every stamp a current binary
+	// wrote: WriteStamp persists Surface alone, so this is populated only when
+	// CheckCompatible decoded an older on-disk stamp that still carried the
+	// field. Error() renders its line only when it is non-empty.
+	LastWriter string
 }
 
 // Remediation returns the way out, one line per element, and it is THE ONLY
@@ -414,7 +419,8 @@ type IncompatibleError struct {
 // last-writer margin could go from four spaces to eight with the whole suite
 // green:
 //
-//   - TestErrorRendersExactBytes pins the rendered BYTES, both LastWriter states.
+//   - TestErrorRendersExactBytes pins the rendered BYTES for both LastWriter states —
+//     the populated one that renders the line, and the empty one that omits it.
 //   - TestRemediationContentIsPinned pins the CONTENT of these lines, stated
 //     independently — every other assertion in the repo derives its expectation
 //     from this function and so would not notice a deleted line.
@@ -431,26 +437,34 @@ func (e *IncompatibleError) Remediation() []string {
 // Error renders the standard remediation message.
 //
 // 🔴 THE RENDERED BYTES ARE A PINNED CONTRACT. Remediation() was extracted from
-// this function ADDITIVELY: the header line, the last-writer line and the
-// four-space margin below reproduce what this rendered before the extraction,
-// byte for byte, and TestErrorRendersExactBytes pins exactly that — including
-// this margin, which no substring assertion can see. Change the tail by changing
-// Remediation(), never by re-inlining it here.
+// this function ADDITIVELY: the header line and the four-space margin below
+// reproduce what this rendered before the extraction, byte for byte, and
+// TestErrorRendersExactBytes pins exactly that — including this margin, which no
+// substring assertion can see. Change the tail by changing Remediation(), never
+// by re-inlining it here.
+//
+// # Why the last-writer line is conditional
+//
+// It renders only when LastWriter is populated, which no stamp written by a
+// current binary can be: WriteStamp persists Surface alone (see its comment), so
+// the field survives only to decode LEGACY on-disk stamps that still carry it.
+// Rendering it unconditionally meant substituting "unknown" — one of five lines
+// that was guaranteed content-free on every mismatch a current vault can
+// produce, and that the next reader would take for real provenance. Omitting it
+// is not the same as deleting it: a legacy stamp still decodes, and its writer
+// is still worth naming when triaging which host raised the floor.
 func (e *IncompatibleError) Error() string {
-	writer := e.LastWriter
-	if writer == "" {
-		writer = "unknown"
+	var msg strings.Builder
+	fmt.Fprintf(&msg, "vp: this binary supports MCP surface v%d; vault target '%s' is at v%d",
+		e.BinarySurface, e.StampDir, e.VaultSurface)
+	if e.LastWriter != "" {
+		fmt.Fprintf(&msg, "\n    last writer: %s (best-effort, not enforced)", e.LastWriter)
 	}
-	var tail strings.Builder
 	for _, line := range e.Remediation() {
-		tail.WriteString("\n    ")
-		tail.WriteString(line)
+		msg.WriteString("\n    ")
+		msg.WriteString(line)
 	}
-	return fmt.Sprintf(
-		"vp: this binary supports MCP surface v%d; vault target '%s' is at v%d\n"+
-			"    last writer: %s (best-effort, not enforced)",
-		e.BinarySurface, e.StampDir, e.VaultSurface, writer,
-	) + tail.String()
+	return msg.String()
 }
 
 // ErrNoVault is returned by CheckCompatible when vaultPath is empty — no vault

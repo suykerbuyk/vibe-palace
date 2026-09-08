@@ -403,10 +403,20 @@ func TestCheckCompatible_EveryStampedRootGates(t *testing.T) {
 	}
 }
 
-func TestIncompatibleError_UnknownWriterFallback(t *testing.T) {
+// TestIncompatibleError_EmptyWriterOmitsLine is the inverse of the fallback this
+// used to assert. WriteStamp persists Surface alone, so an empty LastWriter is
+// the ONLY state a current stamp reaches — and substituting "unknown" spent a
+// line of the message on text that can never carry provenance.
+func TestIncompatibleError_EmptyWriterOmitsLine(t *testing.T) {
 	e := &IncompatibleError{BinarySurface: 1, VaultSurface: 2, StampDir: "/v/Projects/foo"}
-	if !strings.Contains(e.Error(), "last writer: unknown") {
-		t.Fatalf("empty LastWriter should render as 'unknown': %q", e.Error())
+	if strings.Contains(e.Error(), "last writer:") {
+		t.Fatalf("empty LastWriter should omit the provenance line entirely: %q", e.Error())
+	}
+
+	// The decode path is still live, so a legacy stamp's writer must still render.
+	e.LastWriter = "abc1234"
+	if !strings.Contains(e.Error(), "last writer: abc1234 (best-effort, not enforced)") {
+		t.Fatalf("a populated LastWriter (legacy on-disk stamp) must still render: %q", e.Error())
 	}
 }
 

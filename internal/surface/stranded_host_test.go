@@ -21,6 +21,15 @@ import (
 // This asserts the PRODUCER, which was previously pinned for the override line
 // and not for the upgrade command — so the upgrade half could have been deleted
 // with the whole suite staying green.
+//
+// It also pins what the message must NOT say. The stamp below is written by
+// WriteStamp, which persists Surface alone, so CheckCompatible carries no
+// provenance into the error — and the message used to spend one of its five
+// lines telling the stranded operator "last writer: unknown". That line was
+// content-free on every mismatch this scenario (or any current vault) can
+// produce, which made this test's coverage narrower than its name: it pinned
+// four real lines and one placeholder. The absence assertion is what keeps the
+// placeholder from coming back.
 func TestStrandedHostCanReadItsWayOut(t *testing.T) {
 	root := t.TempDir()
 	// A vault one version AHEAD of this binary: exactly what every un-upgraded
@@ -44,6 +53,14 @@ func TestStrandedHostCanReadItsWayOut(t *testing.T) {
 			t.Errorf("the stranded-host message omits %q (%s).\nFull message:\n%s",
 				want.text, want.why, msg)
 		}
+	}
+
+	// No stamp a current binary writes can populate LastWriter, so a provenance
+	// line here would be a placeholder the operator reads as provenance.
+	if strings.Contains(msg, "last writer:") {
+		t.Errorf("the stranded-host message renders a last-writer line for a stamp written by "+
+			"this binary, which persists no provenance — so the line can only say \"unknown\".\n"+
+			"Full message:\n%s", msg)
 	}
 }
 
@@ -173,15 +190,20 @@ func TestErrorRendersExactBytes(t *testing.T) {
 		want string
 	}{
 		{
-			name: "empty LastWriter renders unknown",
+			// The state EVERY current stamp produces: WriteStamp persists Surface
+			// alone, so this is what a real mismatch renders. The line is absent,
+			// not "unknown" — a placeholder here is dead text on every mismatch a
+			// current vault can raise.
+			name: "empty LastWriter omits the line",
 			err:  &IncompatibleError{BinarySurface: 2, VaultSurface: 3, StampDir: "/v/Projects/dotfiles"},
 			want: "vp: this binary supports MCP surface v2; vault target '/v/Projects/dotfiles' is at v3\n" +
-				"    last writer: unknown (best-effort, not enforced)\n" +
 				"    action:    cd ~/code/vibe-palace && git pull && make install\n" +
 				"    if you cannot upgrade right now (deploy host, network outage):\n" +
 				"       VP_SURFACE_GATE=warn <original-command>   (proceed at risk)",
 		},
 		{
+			// The legacy-stamp state: ReadStamp still decodes an on-disk stamp that
+			// carries provenance, and that writer is still worth naming.
 			name: "populated LastWriter renders verbatim",
 			err:  &IncompatibleError{BinarySurface: 1, VaultSurface: 9, StampDir: "d", LastWriter: "abc1234"},
 			want: "vp: this binary supports MCP surface v1; vault target 'd' is at v9\n" +
