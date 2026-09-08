@@ -5,9 +5,11 @@ package capture
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,7 +69,7 @@ func TestFileDecisionDrawersReportsAppendFailure(t *testing.T) {
 	breakDecisionRoom(t, vault, "test-proj")
 
 	n, err := fileDecisionDrawers(vault, "test-proj", "2026-06-21-abcd1234-01",
-		"2026-06-21T00:00:00Z", []string{"a decision"})
+		"2026-06-21", []string{"a decision"})
 	if err == nil {
 		t.Fatalf("append over a directory returned nil error (n=%d); the failure injection no longer works", n)
 	}
@@ -109,14 +111,12 @@ func TestWriteSessionFilesDecisionDrawersWithNilIndexer(t *testing.T) {
 	if d.Hall != palace.HallDecisions {
 		t.Errorf("hall = %q, want %q", d.Hall, palace.HallDecisions)
 	}
-	if d.SourceRef != "session/"+result.SessionID+"#decision/0" {
-		t.Errorf("source_ref = %q, want session/%s#decision/0", d.SourceRef, result.SessionID)
-	}
+	assertRefShape(t, ds, result.SessionID, []int{0})
 	if d.AddedBy != "capture" {
 		t.Errorf("added_by = %q, want capture", d.AddedBy)
 	}
-	if d.FiledAt == "" {
-		t.Error("filed_at is empty")
+	if want := result.SessionID[:10] + "T00:00:00Z"; d.FiledAt != want {
+		t.Errorf("filed_at = %q, want %q (the note's day)", d.FiledAt, want)
 	}
 	if _, perr := time.Parse(time.RFC3339, d.FiledAt); perr != nil {
 		t.Errorf("filed_at %q is not RFC3339: %v", d.FiledAt, perr)
@@ -178,17 +178,7 @@ func TestDecisionSourceRefsAreUniquePerDecision(t *testing.T) {
 	if len(ds) != 3 {
 		t.Fatalf("filed %d drawers, want 3: %+v", len(ds), ds)
 	}
-	want := []string{
-		"session/" + result.SessionID + "#decision/0",
-		"session/" + result.SessionID + "#decision/1",
-		"session/" + result.SessionID + "#decision/2",
-	}
-	got := sourceRefs(ds)
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("source_ref[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
+	assertRefShape(t, ds, result.SessionID, []int{0, 1, 2})
 }
 
 // TestBlankDecisionsSkippedWithoutRenumbering: a blank entry is skipped and its
@@ -211,16 +201,7 @@ func TestBlankDecisionsSkippedWithoutRenumbering(t *testing.T) {
 	if len(ds) != 2 {
 		t.Fatalf("filed %d drawers, want 2: %+v", len(ds), ds)
 	}
-	want := []string{
-		"session/" + result.SessionID + "#decision/0",
-		"session/" + result.SessionID + "#decision/2",
-	}
-	got := sourceRefs(ds)
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("source_ref[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
+	assertRefShape(t, ds, result.SessionID, []int{0, 2})
 }
 
 // TestWriteSessionDecisionAppendFailureIsAccumulated: the note is capture's one
@@ -309,8 +290,12 @@ func TestDrainFilesDecisionDrawers(t *testing.T) {
 	if ds[0].SourceType != storage.SourceTypeDecision {
 		t.Errorf("source_type = %q, want %q", ds[0].SourceType, storage.SourceTypeDecision)
 	}
-	if ds[0].SourceRef != "session/"+result.SessionID+"#decision/0" {
-		t.Errorf("source_ref = %q, want session/%s#decision/0", ds[0].SourceRef, result.SessionID)
+	assertRefShape(t, ds, result.SessionID, []int{0})
+
+	// The drain's stamp is the NOTE's day, not the day the drain happened to
+	// run — the whole reason a queued job cannot use wall-clock.
+	if want := result.SessionID[:10] + "T00:00:00Z"; ds[0].FiledAt != want {
+		t.Errorf("filed_at = %q, want %q (the note's day)", ds[0].FiledAt, want)
 	}
 }
 
@@ -472,9 +457,7 @@ func TestDecisionRoomDoesNotDependOnContent(t *testing.T) {
 		t.Errorf("hall = %q, want %q — the hall is hardcoded, never DetectHall'd",
 			ds[0].Hall, palace.HallDecisions)
 	}
-	if ds[0].SourceRef != decisionSourceRef(res.SessionID, 0) {
-		t.Errorf("source_ref = %q, want %q", ds[0].SourceRef, decisionSourceRef(res.SessionID, 0))
-	}
+	assertRefShape(t, ds, res.SessionID, []int{0})
 
 	// And nothing was filed into the room the classifier would have chosen.
 	devops, err := vault.ListDrawers("test-proj", palace.DetectWing("test-proj", ""), "devops")
@@ -483,5 +466,139 @@ func TestDecisionRoomDoesNotDependOnContent(t *testing.T) {
 	}
 	if len(devops) != 0 {
 		t.Errorf("devops room holds %d drawers, want 0: %+v", len(devops), devops)
+	}
+}
+
+// assertRefShape checks the drawers' source refs against the ref contract:
+// "session/{id}#decision/{n}/{drawerID}", one per expected index, in index
+// order.
+//
+// The last segment is asserted to be the drawer's OWN id rather than a literal,
+// which is the point of that segment: decisionSourceRef derives it with the
+// same storage.DrawerID(wing, content) that AppendDrawers stamps onto the
+// drawer, so a search hit names the drawer it came from. Spelling the hash out
+// as a constant here would assert only that md5 is md5.
+func assertRefShape(t *testing.T, ds []storage.Drawer, sessionID string, wantIdx []int) {
+	t.Helper()
+	if len(ds) != len(wantIdx) {
+		t.Fatalf("got %d drawers, want %d: %+v", len(ds), len(wantIdx), ds)
+	}
+	byRef := make(map[string]storage.Drawer, len(ds))
+	for _, d := range ds {
+		byRef[d.SourceRef] = d
+	}
+	got := sourceRefs(ds)
+	sort.Strings(got)
+	for i, n := range wantIdx {
+		prefix := fmt.Sprintf("session/%s#decision/%d/", sessionID, n)
+		if !strings.HasPrefix(got[i], prefix) {
+			t.Errorf("source_ref[%d] = %q, want prefix %q", i, got[i], prefix)
+			continue
+		}
+		d := byRef[got[i]]
+		if suffix := strings.TrimPrefix(got[i], prefix); suffix != d.ID {
+			t.Errorf("source_ref[%d] discriminator = %q, want the drawer's own id %q",
+				i, suffix, d.ID)
+		}
+	}
+}
+
+// TestDecisionFiledAtIsTheNoteDayNotWallClock pins filed_at to the note's
+// calendar day. The stamp is what a date-bounded palace query filters on, and
+// the note's day is what the session id is built from, so the two must agree —
+// a drawer stamped with the moment it happened to be written is unreachable
+// through the obvious query for its own session.
+func TestDecisionFiledAtIsTheNoteDayNotWallClock(t *testing.T) {
+	vault := testVault(t)
+
+	res, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project:   "test-proj",
+		Summary:   "one decision",
+		Decisions: []string{"Stamp drawers with the note's day"},
+	})
+	if err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+
+	ds := listDecisionDrawers(t, vault, "test-proj")
+	if len(ds) != 1 {
+		t.Fatalf("filed %d drawers, want 1", len(ds))
+	}
+	// The session id opens with the note's calendar day; the drawer's stamp
+	// must be midnight UTC on exactly that day.
+	day := res.SessionID[:10]
+	if want := day + "T00:00:00Z"; ds[0].FiledAt != want {
+		t.Errorf("filed_at = %q, want %q (the note's day, not wall-clock)", ds[0].FiledAt, want)
+	}
+}
+
+// TestDecisionFiledAtRejectsAMalformedDay pins the refusal rather than a
+// fallback. Falling back to time.Now() on an unparseable day would reintroduce
+// the wall-clock stamp DecisionFiledAt exists to prevent, on the one input
+// nobody is watching.
+func TestDecisionFiledAtRejectsAMalformedDay(t *testing.T) {
+	for _, bad := range []string{"", "2026-6-1", "2026-06-21T00:00:00Z", "not-a-day"} {
+		if got, err := DecisionFiledAt(bad); err == nil {
+			t.Errorf("DecisionFiledAt(%q) = %q, want an error", bad, got)
+		}
+	}
+	got, err := DecisionFiledAt("2026-06-21")
+	if err != nil {
+		t.Fatalf("DecisionFiledAt(valid): %v", err)
+	}
+	if got != "2026-06-21T00:00:00Z" {
+		t.Errorf("DecisionFiledAt = %q, want 2026-06-21T00:00:00Z", got)
+	}
+}
+
+// TestRevisedDecisionAtSameIndexGetsItsOwnRef is the regression for the ref's
+// content discriminator. A recapture that REVISES the decision at position 0
+// files a second drawer — different content, so the append cannot dedup it —
+// and both are indexed by Engine.Rebuild. Sharing "#decision/0" would put them
+// in the same dedup bucket, where search hands back whichever scores higher:
+// possibly the superseded text, with the current decision missing entirely.
+func TestRevisedDecisionAtSameIndexGetsItsOwnRef(t *testing.T) {
+	vault := testVault(t)
+	const key = "revise-key-1"
+
+	first, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project:    "test-proj",
+		Summary:    "first pass",
+		Decisions:  []string{"Use the wall clock for filed_at"},
+		SessionKey: key,
+	})
+	if err != nil {
+		t.Fatalf("WriteSession(first): %v", err)
+	}
+
+	second, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project:    "test-proj",
+		Summary:    "revised pass",
+		Decisions:  []string{"Use the note's day for filed_at"},
+		SessionKey: key,
+	})
+	if err != nil {
+		t.Fatalf("WriteSession(second): %v", err)
+	}
+	if !second.Updated {
+		t.Fatalf("second capture minted a new note; the revision path was not exercised")
+	}
+
+	ds := listDecisionDrawers(t, vault, "test-proj")
+	if len(ds) != 2 {
+		t.Fatalf("filed %d drawers, want 2 (superseded + revised): %+v", len(ds), ds)
+	}
+	refs := map[string]bool{}
+	for _, d := range ds {
+		if refs[d.SourceRef] {
+			t.Fatalf("two drawers share source_ref %q; search dedup would hide one", d.SourceRef)
+		}
+		refs[d.SourceRef] = true
+		// Both are at index 0 of their own capture, so the index alone would
+		// have collided — the discriminator is what separates them.
+		prefix := fmt.Sprintf("session/%s#decision/0/", first.SessionID)
+		if !strings.HasPrefix(d.SourceRef, prefix) {
+			t.Errorf("source_ref %q lacks prefix %q", d.SourceRef, prefix)
+		}
 	}
 }

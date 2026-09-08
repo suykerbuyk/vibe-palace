@@ -229,10 +229,13 @@ func DrainEnrichmentQueue(ctx context.Context, vault *storage.Vault, cwd string,
 		// misses, that happens HERE, not at capture. A WriteSession-only
 		// ingest would file nothing for the entire hook production path.
 		//
-		// The stamp is NOW, not the note's date: this is when the drawer was
-		// filed, which is what filed_at means. Widening a historical note's
-		// date onto its drawers is a different task's job — do not reach for
-		// item.Date here.
+		// The stamp is the NOTE's day, never wall-clock. This is precisely the
+		// path where the two come apart: a job enqueued at capture drains on a
+		// LATER run — the hook drains at SessionEnd, which can be days after the
+		// note was written — so time.Now() here would give Monday's decision
+		// Thursday's stamp, and a query bounded by the session's own date would
+		// not return it. meta is the note we just rewrote, so meta.Date is its
+		// day; fileDecisionDrawers widens it. See DecisionFiledAt.
 		//
 		// ON ERROR: warn and CONTINUE. Deliberately NOT requeue(). The note was
 		// already rewritten successfully a few lines up; requeueing would send
@@ -241,7 +244,7 @@ func DrainEnrichmentQueue(ctx context.Context, vault *storage.Vault, cwd string,
 		// drawer append failed. The enrichment is done. A missing drawer is a
 		// retrieval loss, not an enrichment loss, and it must not be paid for
 		// by redoing the enrichment.
-		if _, dferr := fileDecisionDrawers(vault, item.Project, meta.ID, time.Now().UTC().Format(time.RFC3339), meta.Decisions); dferr != nil {
+		if _, dferr := fileDecisionDrawers(vault, item.Project, meta.ID, meta.Date, meta.Decisions); dferr != nil {
 			slog.Warn("enrichment drain: filing decision drawers failed; note is enriched but its decisions will not answer a palace query",
 				"err", dferr, "project", item.Project, "note_path", item.NotePath)
 		}

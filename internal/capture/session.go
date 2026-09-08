@@ -474,7 +474,10 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 	// fall back to it when the re-read fails: the re-read exists because the
 	// local value may be wrong, so a fallback would file exactly the garbage
 	// this branch is here to avoid. File nothing and record the loss.
-	filedAt := now.UTC().Format(time.RFC3339)
+	// The stamp is the NOTE's calendar day, not now.UTC(): ref.Date is the day
+	// the session id and the note filename are built from, so a date-bounded
+	// palace query and the drawer's own source_ref agree about which session it
+	// came from. fileDecisionDrawers widens it. See DecisionFiledAt.
 	decisions := meta.Decisions
 	fileDecisions := true
 	if updated {
@@ -488,7 +491,7 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		}
 	}
 	if fileDecisions {
-		if _, derr := fileDecisionDrawers(vault, p.Project, ref.ID, filedAt, decisions); derr != nil {
+		if _, derr := fileDecisionDrawers(vault, p.Project, ref.ID, ref.Date, decisions); derr != nil {
 			lose(StagePalaceDecisionIngest, derr, "capture: filing decision drawers failed; this session's decisions will not answer a palace query",
 				"note_path", ref.NotePath)
 		}
