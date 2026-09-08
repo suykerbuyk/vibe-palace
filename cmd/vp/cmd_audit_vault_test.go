@@ -4,9 +4,11 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -170,5 +172,144 @@ func TestAuditVault_DescriptionNamesEveryDimension(t *testing.T) {
 		if !strings.Contains(desc, name) {
 			t.Errorf("vp audit vault description omits dimension %q\n  description: %s", name, desc)
 		}
+	}
+}
+
+// TestAuditVault_ReacceptWithoutAcceptIsAUsageError — same shape and same argument as
+// its --raise twin above: an override that silently overrides nothing leaves the
+// operator believing they cleared a refusal that was never evaluated.
+func TestAuditVault_ReacceptWithoutAcceptIsAUsageError(t *testing.T) {
+	if code := cmdAuditVault().Run([]string{"--reaccept"}); code != cli.ExitUser {
+		t.Fatalf("exit = %d, want ExitUser — --reaccept alone must not be a silent no-op", code)
+	}
+}
+
+// 🔴 TestRunAuditVault_AcceptRefusesARecrossedArtifact is the defect closed, driven
+// through the real CLI path. The baseline below is the shape a DROP leaves behind: the
+// artifact accepts nothing any more, and the only thing that survived is the record
+// that it was once accepted. A plain --accept must refuse, and must write NOTHING —
+// a refusal that had already half-written the baseline would be worse than no refusal.
+func TestRunAuditVault_AcceptRefusesARecrossedArtifact(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	rel := seedOverCapResume(t, vault, "alpha", check.ResumeMaxBytes+5000)
+
+	prior := vaultaudit.Baseline{Dimensions: map[string]vaultaudit.DimensionBaseline{
+		vaultaudit.DimResumeDiscipline: {
+			Reason:        "accepted debt",
+			Accepted:      []string{},
+			PriorAccepted: []string{rel},
+		},
+	}}
+	basePath := filepath.Join(vault.Root, filepath.FromSlash(vaultaudit.BaselineRelPath))
+	if err := prior.Save(vault.Root, basePath); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(basePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if code := runAuditVault(vault, auditVaultOpts{accept: true}, "2026-09-07", io.Discard); code != cli.ExitUser {
+		t.Fatalf("exit = %d, want ExitUser — accepting a re-crossing without --reaccept re-arms "+
+			"the ratchet at the new figure with nothing recording that this has happened before", code)
+	}
+
+	after, err := os.ReadFile(basePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("the refused run still wrote the baseline:\n--- before ---\n%s\n--- after ---\n%s",
+			before, after)
+	}
+}
+
+// TestRunAuditVault_AcceptReacceptAcceptsARecrossedArtifact — the override works, and
+// it does NOT erase the history it overrode. A second re-crossing must meet the same
+// refusal as the first; an override that cleared the record would make the third
+// crossing look like a first, which is the failure this whole change is about.
+func TestRunAuditVault_AcceptReacceptAcceptsARecrossedArtifact(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	rel := seedOverCapResume(t, vault, "alpha", check.ResumeMaxBytes+5000)
+
+	prior := vaultaudit.Baseline{Dimensions: map[string]vaultaudit.DimensionBaseline{
+		vaultaudit.DimResumeDiscipline: {
+			Reason:        "accepted debt",
+			Accepted:      []string{},
+			PriorAccepted: []string{rel},
+		},
+	}}
+	basePath := filepath.Join(vault.Root, filepath.FromSlash(vaultaudit.BaselineRelPath))
+	if err := prior.Save(vault.Root, basePath); err != nil {
+		t.Fatal(err)
+	}
+
+	code := runAuditVault(vault, auditVaultOpts{accept: true, reaccept: true}, "2026-09-07", io.Discard)
+	if code != cli.ExitOK {
+		t.Fatalf("exit = %d, want ExitOK — --reaccept is the sanctioned way through the refusal", code)
+	}
+
+	got := loadTestBaseline(t, vault).Dimensions[vaultaudit.DimResumeDiscipline]
+	if !slices.Contains(got.Accepted, rel) {
+		t.Fatalf("accepted = %v, want the re-crossing accepted", got.Accepted)
+	}
+	if !slices.Contains(got.PriorAccepted, rel) {
+		t.Fatalf("prior_accepted = %v, want the history RETAINED — the override is a licence to "+
+			"accept, never an erasure of the record that made it necessary", got.PriorAccepted)
+	}
+}
+
+// TestRunAuditVault_AcceptRecordsPriorAcceptanceForAFirstCrossing — the other end of
+// the same rule. The first --accept of an artifact with no history must SUCCEED (that
+// is today's path, unchanged) and must leave the record behind, or the refusal above
+// can never fire on any artifact this binary accepted.
+func TestRunAuditVault_AcceptRecordsPriorAcceptanceForAFirstCrossing(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	rel := seedOverCapResume(t, vault, "alpha", check.ResumeMaxBytes+500)
+
+	if code := runAuditVault(vault, auditVaultOpts{accept: true}, "2026-09-07", io.Discard); code != cli.ExitOK {
+		t.Fatalf("exit = %d, want ExitOK — a first acceptance has no history to refuse", code)
+	}
+
+	got := loadTestBaseline(t, vault).Dimensions[vaultaudit.DimResumeDiscipline]
+	if !slices.Contains(got.PriorAccepted, rel) {
+		t.Fatalf("prior_accepted = %v, want the first acceptance recorded — without this the "+
+			"refusal is unreachable for every artifact accepted from here on", got.PriorAccepted)
+	}
+}
+
+// 🔴 TestRunAuditVault_ReportWarnsBeforeTheRefusalRefuses — the two halves of this
+// guard must agree, and only an end-to-end render proves they do. The refusal fires on
+// a command the operator types LATER; if the report they read first says nothing about
+// the artifact's history, the refusal arrives out of nowhere and reads as a bug in the
+// tool rather than as the escalation it is. Asserting the annotation at the Diff layer
+// does not prove it survives into the rendered document.
+func TestRunAuditVault_ReportWarnsBeforeTheRefusalRefuses(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	rel := seedOverCapResume(t, vault, "alpha", check.ResumeMaxBytes+5000)
+
+	prior := vaultaudit.Baseline{Dimensions: map[string]vaultaudit.DimensionBaseline{
+		vaultaudit.DimResumeDiscipline: {
+			Reason:        "accepted debt",
+			Accepted:      []string{},
+			PriorAccepted: []string{rel},
+		},
+	}}
+	basePath := filepath.Join(vault.Root, filepath.FromSlash(vaultaudit.BaselineRelPath))
+	if err := prior.Save(vault.Root, basePath); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if code := runAuditVault(vault, auditVaultOpts{}, "2026-09-07", &out); code != cli.ExitOK {
+		t.Fatalf("exit = %d, want ExitOK — the audit is advisory and never blocks", code)
+	}
+
+	body := out.String()
+	if !strings.Contains(body, "ACCEPTED BEFORE, DROPPED, AND BACK") {
+		t.Fatalf("the rendered report does not warn that %s has crossed before:\n%s", rel, body)
+	}
+	if !strings.Contains(body, "--reaccept") {
+		t.Fatalf("the rendered report names no way through the refusal it is warning about:\n%s", body)
 	}
 }

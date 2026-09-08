@@ -21,6 +21,7 @@ var auditVaultFlags = []cli.FlagDef{
 	{Name: "--write", Help: "Write the report to Audits/<date>-vault-audit.md (default: print to stdout)"},
 	{Name: "--accept", Help: "Accept every current finding into the baseline. THE BASELINE MAY ONLY SHRINK: this is for the FIRST run on a vault, not for silencing new drift"},
 	{Name: "--raise", Help: "With --accept: re-record the measurement of every artifact in THIS run's NEW set. Without it an accepted measurement may only shrink, so a grown artifact keeps reporting — which is the point"},
+	{Name: "--reaccept", Help: "With --accept: allow accepting an artifact that was accepted before, dropped out, and has crossed again. Without it --accept REFUSES that artifact, so a re-crossing cannot be waved through as if it were the first"},
 }
 
 // auditVaultOpts carries the flags into runAuditVault.
@@ -29,9 +30,10 @@ var auditVaultFlags = []cli.FlagDef{
 // site is a swap waiting to happen, and the two that matter here are the ones that
 // WRITE to the baseline.
 type auditVaultOpts struct {
-	write  bool
-	accept bool
-	raise  bool
+	write    bool
+	accept   bool
+	raise    bool
+	reaccept bool
 }
 
 // cmdAuditVault is the VAULT-GLOBAL audit.
@@ -50,7 +52,7 @@ type auditVaultOpts struct {
 func cmdAuditVault() *cli.Command {
 	return &cli.Command{
 		Name:     "audit vault",
-		Synopsis: "vp audit vault [--write] [--accept [--raise]]",
+		Synopsis: "vp audit vault [--write] [--accept [--raise] [--reaccept]]",
 		// Dimensions are DERIVED from vaultaudit's registry, never listed here. This
 		// description named five of them against a registry of ten; its MCP twin named
 		// the same five, and so did the vault-audit command template. One registry,
@@ -65,6 +67,7 @@ func cmdAuditVault() *cli.Command {
 			{Cmd: "vp audit vault --write", Comment: "Write the report into Audits/ (committed by vault tidy)"},
 			{Cmd: "vp audit vault --accept", Comment: "Accept current findings as known debt (first run only)"},
 			{Cmd: "vp audit vault --accept --raise", Comment: "Also re-record the measurement of every NEW finding, so a grown artifact stops reporting"},
+			{Cmd: "vp audit vault --accept --reaccept", Comment: "Accept an artifact that was accepted before, repaired, and has crossed again — deliberately, on the record"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(auditVaultFlags, args)
@@ -76,6 +79,10 @@ func cmdAuditVault() *cli.Command {
 				write:  fv.Bool("--write"),
 				accept: fv.Bool("--accept"),
 				raise:  fv.Bool("--raise"),
+				// --reaccept is a LICENCE, not an instruction: it does nothing on a
+				// run with no re-crossing to refuse, exactly as --raise does nothing
+				// on a run with no measurement to raise.
+				reaccept: fv.Bool("--reaccept"),
 			}
 			// Fail closed, and BEFORE the vault is opened: --raise alone reads as
 			// "re-record the measurements" and would otherwise do nothing at all,
@@ -83,6 +90,13 @@ func cmdAuditVault() *cli.Command {
 			// and it did not. An argument error must not need a vault to be reported.
 			if opts.raise && !opts.accept {
 				fmt.Fprintln(os.Stderr, "vp audit vault: --raise only means anything with --accept")
+				return cli.ExitUser
+			}
+			// SAME SHAPE, SAME REASON. --reaccept alone reads as "let the re-crossing
+			// through" and would silently do nothing, leaving the operator believing
+			// they had overridden a refusal that was never even evaluated.
+			if opts.reaccept && !opts.accept {
+				fmt.Fprintln(os.Stderr, "vp audit vault: --reaccept only means anything with --accept")
 				return cli.ExitUser
 			}
 			vault, err := openProjectVault()
@@ -123,6 +137,40 @@ func runAuditVault(vault *storage.Vault, opts auditVaultOpts, date string, out i
 		var raise []vaultaudit.Finding
 		if opts.raise {
 			raise = report.NewFindings()
+		}
+		// 🔴 THE REFUSAL, BEFORE ANYTHING IS WRITTEN. An artifact accepted before,
+		// repaired, and back over the line is a re-crossing, and a plain --accept
+		// would re-arm the baseline at the new figure with nothing recording that
+		// this has happened before. Enforce it rather than describe it: a reason
+		// string saying "third crossing — remediate instead" rots, and rotting
+		// reason strings are the defect class this dimension exists to report.
+		//
+		// It refuses the WHOLE run, not just the offending artifact, because
+		// --accept is itself whole-report: a partial accept would write a baseline
+		// the operator did not ask for and did not see. Nothing has been written at
+		// this point, so the refusal costs them a re-run and no state.
+		//
+		// AND --reaccept IS THEREFORE A WHOLE-RUN LICENCE, WHERE --raise IS SCOPED TO
+		// THIS RUN'S NEW SET. The asymmetry is deliberate, not an oversight, and it
+		// turns on whether the operator can see what they are sanctioning. --raise
+		// must be scoped because it acts on artifacts NOBODY MENTIONED: unscoped, it
+		// would silently re-record every measured artifact in the vault as a side
+		// effect of a command typed about something else. --reaccept cannot do that.
+		// It only takes effect after this refusal has printed every artifact it
+		// covers, by name, and sent the operator away to re-run — so the licence is
+		// granted against a list they have just read. If a run ever carries enough
+		// re-crossings that a blanket licence stops being reviewable, scope it then,
+		// with the operator ruling on the shape.
+		if refused := prior.Reacceptances(report.Findings()); len(refused) > 0 && !opts.reaccept {
+			fmt.Fprintln(os.Stderr, "vp audit vault: REFUSING --accept — these artifacts were accepted "+
+				"before, dropped out, and are findings again:")
+			for _, f := range refused {
+				fmt.Fprintf(os.Stderr, "  %s: %s\n", f.Dimension, f.Artifact)
+			}
+			fmt.Fprintln(os.Stderr, "Accepting them again would re-arm the baseline at the current figure "+
+				"with no trace that they have been here before. Remediate them, or re-accept "+
+				"deliberately with `vp audit vault --accept --reaccept`. Nothing was written.")
+			return cli.ExitUser
 		}
 		next := prior.Regenerate(report.Findings(), raise)
 		if err := next.Save(vault.Root, basePath); err != nil {

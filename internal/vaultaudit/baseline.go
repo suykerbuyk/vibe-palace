@@ -29,10 +29,19 @@
 //   - STALE: an accepted entry that is NO LONGER a finding. Fixed, still recorded.
 //
 // Without STALE, the baseline rots into a lie — you fix something, the list keeps
-// claiming it is broken, and the list stops meaning anything. With it, THE
-// BASELINE CAN ONLY SHRINK. This is what makes fixing a bug mechanically compel
-// the record to be corrected: when the archive-link backfill lands, the accepted
-// entries stop being findings and the audit demands their removal.
+// claiming it is broken, and the list stops meaning anything. With it, THE ACCEPTED
+// SET CAN ONLY SHRINK. This is what makes fixing a bug mechanically compel the record
+// to be corrected: when the archive-link backfill lands, the accepted entries stop
+// being findings and the audit demands their removal.
+//
+// "The accepted set", not "the file". One field is deliberately exempt, and reading
+// the rule as covering the whole file will make that field look like a bug:
+// DimensionBaseline.PriorAccepted retains the IDENTITY of what a dimension has
+// accepted before, and survives the drop that prunes everything else. Without it an
+// artifact that crosses, is accepted, is repaired, and crosses again is indistinguish-
+// able from one crossing for the first time — so `--accept` re-arms the ratchet at the
+// new, higher figure in silence. Nothing about what was ACCEPTED survives; only that
+// it once was.
 //
 // # Advisory, never blocking
 //
@@ -97,6 +106,71 @@ type DimensionBaseline struct {
 	// An artifact with no entry here is accepted at an UNRECORDED magnitude, which is
 	// a finding rather than a blanket pass — see classify.
 	Measured map[string]int64 `json:"measured,omitempty"`
+
+	// PriorAccepted names every artifact this dimension has EVER accepted, and it is
+	// the ONE part of a baseline entry that SURVIVES an entry going STALE.
+	//
+	// Everything else here is shrink-only: an artifact that stops being a finding loses
+	// its Accepted entry and its Measured magnitude together, because a baseline that
+	// keeps claiming a fixed thing is broken stops meaning anything. That rule has a
+	// hole. An artifact that crosses, is accepted, is repaired, drops out, and later
+	// crosses AGAIN comes back as a plain NEW finding with no memory that it was ever
+	// accepted — so a plain `--accept` re-arms the ratchet at the new, higher figure,
+	// silently, and nothing records that this is the second or the third crossing.
+	// Retaining the IDENTITY across the drop is what closes it: `vp audit vault
+	// --accept` refuses an artifact named here and demands an explicit `--reaccept`.
+	// The refusal is the remedy — see Reacceptances.
+	//
+	// 🔴 IT IS AN IDENTITY SET: NOT A COUNTER, AND NOT A SURVIVING HIGH-WATER MARK.
+	// Both were evaluated and rejected (2026-09-07). A counter bakes "stop at the third
+	// crossing" — an operator policy that has already varied once — into the file
+	// format, where a number that should stay a human instruction cannot be varied per
+	// artifact. A surviving magnitude answers "has this regressed past where we once
+	// accepted it", which is not the question the escalation rule asks. Do not widen
+	// this field to either shape.
+	//
+	// 🔴 DO NOT REPURPOSE Measured FOR THIS, AND DO NOT MAKE Measured SURVIVE STALE.
+	// Measured's pruning IS the shrink-only ratchet the sibling change rests on. One
+	// map cannot both survive a drop and be pruned by one; that is why this is a second
+	// structure rather than a wider first one.
+	//
+	// A record is only ever ADDED for a magnitude-bearing finding in a dimension named
+	// by dimensionsRecordingPriorAcceptance — today resume-discipline alone. Be precise
+	// about what that gate does and does not cover: an entry that already exists is
+	// carried, saved and enforced for ANY dimension, so a set hand-written into the
+	// file works. The gate stops this file GROWING one, not the rest of the code
+	// honouring one. A never-pruned set added on every categorical dimension would be a
+	// permanently growing suppression record that no rule reads.
+	//
+	// 🔴 IT IS NEVER PRUNED, BY ANY PATH, AND THAT IS THE DESIGN. The consequence is
+	// worth stating rather than discovering: an artifact whose project is deleted keeps
+	// its entry in the committed file forever, and if that slug is ever REUSED the new
+	// project's genuine first crossing is refused as a re-crossing. That is a visible,
+	// one-command false positive (`--reaccept`) against a silent false negative
+	// (forgetting a real crossing), and this task exists because the silent one is
+	// worse. Do not add a pruning path to fix the cosmetics.
+	PriorAccepted []string `json:"prior_accepted,omitempty"`
+}
+
+// dimensionsRecordingPriorAcceptance names the dimensions whose baseline retains
+// DimensionBaseline.PriorAccepted across a drop.
+//
+// It is a POLICY and is deliberately NOT derived from the registry: every dimension is
+// audited, and only a dimension whose predicate is a pure MAGNITUDE can drop below its
+// threshold and come back. resume-discipline is the only one today, and designing for
+// "every dimension that might one day measure" would be designing for no instance at
+// all. Add a key here when a second such dimension actually exists.
+//
+// The keys are pinned against the registry by a test, so this cannot drift into naming
+// a dimension that no longer runs.
+var dimensionsRecordingPriorAcceptance = map[string]bool{
+	DimResumeDiscipline: true,
+}
+
+// recordsPriorAcceptance reports whether accepting a finding in this dimension should
+// leave a record that survives the artifact later dropping out.
+func recordsPriorAcceptance(dimension string) bool {
+	return dimensionsRecordingPriorAcceptance[dimension]
 }
 
 // acceptance is how a dimension's baseline covers one finding.
@@ -148,6 +222,37 @@ func (d DimensionBaseline) classify(f Finding) acceptance {
 // where the dimension measures, at no more than the magnitude that was accepted.
 func (d DimensionBaseline) accepts(f Finding) bool {
 	return d.classify(f) == acceptedFully
+}
+
+// reaccepting reports whether this finding is a RE-CROSSING: not accepted by the
+// baseline as it stands, but named in the record of what this dimension has accepted
+// before.
+//
+// It is deliberately built on classify rather than beside it. notAccepted is the only
+// arm that can be a re-crossing — grownPastRecord and measurementUnrecorded both mean
+// the path is accepted RIGHT NOW, which is the continuous-acceptance case `--raise`
+// answers, and acceptedFully is not a finding to refuse at all.
+func (d DimensionBaseline) reaccepting(f Finding) bool {
+	return d.classify(f) == notAccepted && slices.Contains(d.PriorAccepted, f.Artifact)
+}
+
+// Reacceptances returns every finding that `vp audit vault --accept` must REFUSE
+// unless the operator also passes --reaccept: an artifact that has been accepted
+// before, dropped out, and is a finding again.
+//
+// It is the ONE predicate behind both readers — the CLI's refusal and Diff's
+// annotation on the report — for the same reason classify is the one predicate behind
+// Diff and newDimensionResult: a second copy of this rule is how the report ends up
+// promising something the command then does not do.
+func (b Baseline) Reacceptances(findings []Finding) []Finding {
+	var out []Finding
+	for _, f := range findings {
+		if b.Dimensions[f.Dimension].reaccepting(f) {
+			out = append(out, f)
+		}
+	}
+	slices.SortFunc(out, func(x, y Finding) int { return compare2(x.Dimension, x.Artifact, y.Dimension, y.Artifact) })
+	return out
 }
 
 // all returns every artifact this baseline accepts, from both Accepted and Except.
@@ -222,7 +327,21 @@ func (b Baseline) Save(vaultRoot, path string) error {
 		accepted := slices.Clone(d.Accepted)
 		slices.Sort(accepted)
 		accepted = slices.Compact(accepted)
-		out.Dimensions[name] = DimensionBaseline{Reason: d.Reason, Accepted: accepted, Except: d.Except, Measured: d.Measured}
+		// Sorted and compacted on the SAME terms as Accepted, and for the same reason:
+		// this file is diffed week over week, and a set whose order came from map
+		// iteration would churn the diff on every run while meaning the same thing.
+		// slices.Clone returns nil for nil, so a dimension that records nothing keeps
+		// its legacy on-disk shape and `omitempty` drops the key entirely.
+		priorAccepted := slices.Clone(d.PriorAccepted)
+		slices.Sort(priorAccepted)
+		priorAccepted = slices.Compact(priorAccepted)
+		out.Dimensions[name] = DimensionBaseline{
+			Reason:        d.Reason,
+			Accepted:      accepted,
+			Except:        d.Except,
+			Measured:      d.Measured,
+			PriorAccepted: priorAccepted,
+		}
 	}
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
@@ -265,7 +384,15 @@ func (b Baseline) Diff(findings []Finding) (added []Finding, stale []StaleEntry)
 		d := b.Dimensions[f.Dimension]
 		switch d.classify(f) {
 		case notAccepted:
-			added = append(added, f)
+			fresh := f
+			if d.reaccepting(f) {
+				fresh.Detail = fmt.Sprintf("%s — ACCEPTED BEFORE, DROPPED, AND BACK: this artifact "+
+					"has crossed and been accepted at least once already, was repaired, and is a "+
+					"finding again. `vp audit vault --accept` REFUSES it; re-accepting is deliberate, "+
+					"`vp audit vault --accept --reaccept`, and the record of the earlier acceptance "+
+					"survives that.", f.Detail)
+			}
+			added = append(added, fresh)
 		case grownPastRecord:
 			grown := f
 			grown.Detail = fmt.Sprintf("%s — GREW PAST ITS ACCEPTED MEASUREMENT: %d recorded, %d now. "+
@@ -315,12 +442,25 @@ func (b Baseline) Diff(findings []Finding) (added []Finding, stale []StaleEntry)
 // may only shrink. A genuinely NEW dimension arrives marked UNTRIAGED, so an
 // unexplained dimension can never masquerade as an explained one.
 //
-// ONE ENTRY IS EXEMPT FROM THE SHRINK RULE, and only one: a dimension whose key this
-// binary's registry does not know (Baseline.UnknownDimensions). It produced no
-// findings because it NEVER RAN, not because it was fixed, and the two are
-// indistinguishable from the findings alone. Its entry is carried through verbatim.
-// See the block at the end of this function for why that is not a softening of the
-// ratchet.
+// TWO THINGS ARE EXEMPT FROM THE SHRINK RULE, and both are carried by the blocks at
+// the end of this function rather than by the main loop:
+//
+//   - A dimension whose key this binary's registry does not know
+//     (Baseline.UnknownDimensions). It produced no findings because it NEVER RAN, not
+//     because it was fixed, and the two are indistinguishable from the findings alone.
+//     Its entry is carried through verbatim.
+//   - DimensionBaseline.PriorAccepted, the record of what a dimension has accepted
+//     before. It exists precisely to outlive the drop, so that an artifact returning
+//     after a repair is not mistaken for a first crossing. Everything else about a
+//     dropped entry — its accepted paths, its exceptions, its measurements — still
+//     goes, so neither exemption softens the ratchet.
+//
+// The first is carried entirely by the block at the end of this function. The second
+// takes TWO carries, because a drop has two shapes and only one of them is visible
+// down there: an artifact repaired while ANOTHER artifact keeps its dimension alive is
+// carried in the main loop's `!ok` branch, and a dimension whose every artifact was
+// repaired never reaches the main loop at all and is rebuilt as a stub at the end.
+// Both are needed; the second alone was the shape the first round of tests missed.
 //
 // The same "may only shrink" rule governs recorded measurements, and it is the whole
 // point of the guard: --accept is WHOLE-REPORT, so if a measurement were sourced from
@@ -382,6 +522,16 @@ func (b Baseline) Regenerate(findings, raise []Finding) Baseline {
 					d.Measured = nil
 				}
 			}
+			// AND THE EXACT OPPOSITE RULE FOR PriorAccepted, one block below the
+			// pruning it must not be mistaken for: it is carried WHOLE, with no
+			// still-a-finding filter, because an artifact that stopped being a
+			// finding is precisely the case this record exists to remember. The
+			// carry is unconditional — a dimension dropping out of
+			// dimensionsRecordingPriorAcceptance must stop ADDING to the record,
+			// never silently delete what is already in it.
+			if existed {
+				d.PriorAccepted = slices.Clone(prior.PriorAccepted)
+			}
 		}
 		if _, overridden := d.Except[f.Artifact]; !overridden {
 			d.Accepted = append(d.Accepted, f.Artifact)
@@ -398,11 +548,34 @@ func (b Baseline) Regenerate(findings, raise []Finding) Baseline {
 				d.Measured[f.Artifact] = f.Measure
 			}
 		}
+		// PER-FINDING, and gated on BOTH the dimension and the finding's shape.
+		//
+		// The dimension half is the policy. The `Measure > 0` half is what the policy
+		// is actually about: only a MAGNITUDE can fall below a threshold and come
+		// back, so only a magnitude-bearing finding can ever be re-crossed. It is not
+		// redundant with the dimension gate, and the difference is already scheduled
+		// to matter — auditResumeDiscipline's doc records a placeholder-token check
+		// that is deliberately unimplemented for now, and when it lands it will emit
+		// CATEGORICAL findings (Measure == 0) on this same artifact key. Without this
+		// half, those would silently start arming a refusal built for magnitudes.
+		//
+		// An artifact already in the set is re-appended and deduplicated by the sort
+		// below, so a re-acceptance under --reaccept keeps the history rather than
+		// erasing it.
+		//
+		// An artifact covered by Except rather than Accepted IS recorded, deliberately
+		// — classify treats both arms as accepted, and an artifact accepted through a
+		// one-off reason has been accepted. See TestRegenerate_AnExceptedArtifactIsRecorded.
+		if recordsPriorAcceptance(f.Dimension) && f.Measure > 0 {
+			d.PriorAccepted = append(d.PriorAccepted, f.Artifact)
+		}
 		out.Dimensions[f.Dimension] = d
 	}
 	for name, d := range out.Dimensions {
 		slices.Sort(d.Accepted)
 		d.Accepted = slices.Compact(d.Accepted)
+		slices.Sort(d.PriorAccepted)
+		d.PriorAccepted = slices.Compact(d.PriorAccepted)
 		out.Dimensions[name] = d
 	}
 
@@ -455,7 +628,43 @@ func (b Baseline) Regenerate(findings, raise []Finding) Baseline {
 		carried.Accepted = slices.Clone(prior.Accepted)
 		carried.Except = maps.Clone(prior.Except)
 		carried.Measured = maps.Clone(prior.Measured)
+		carried.PriorAccepted = slices.Clone(prior.PriorAccepted)
 		out.Dimensions[name] = carried
+	}
+
+	// A DIMENSION THAT PRODUCED NO FINDINGS AT ALL STILL KEEPS ITS PRIOR-ACCEPTANCE
+	// RECORD, AND NOTHING ELSE.
+	//
+	// This is the drop half of the whole change, and it is easy to miss: the loop that
+	// builds `out` ranges over FINDINGS, so a dimension whose every accepted artifact
+	// was repaired simply never appears — its reason, its accepted paths and its
+	// measurements all vanish together, which is the shrink rule working. Without this
+	// pass, PriorAccepted would vanish with them on the one run it exists to survive,
+	// and a re-crossing months later would look exactly like a first crossing.
+	//
+	// What survives is deliberately a STUB, not the old entry: it accepts nothing.
+	// Accepted is an empty slice rather than nil so the file reads `"accepted": []` —
+	// "this dimension accepts nothing now" — instead of a null a reviewer has to
+	// interpret. Except and Measured are dropped, so the shrink rule is untouched: a
+	// repaired artifact keeps neither its acceptance nor its magnitude. Reason is kept
+	// because it is human-written triage, and destroying it on a drop is the
+	// regenerate-stamps-UNTRIAGED defect in a different costume.
+	//
+	// It runs AFTER the unknown-dimension carry above, and skips anything already
+	// present, so it can neither pre-empt that verbatim copy nor mislead its
+	// `produced` guard into reading a stub as real evidence.
+	for name, prior := range b.Dimensions {
+		if len(prior.PriorAccepted) == 0 {
+			continue
+		}
+		if _, produced := out.Dimensions[name]; produced {
+			continue
+		}
+		out.Dimensions[name] = DimensionBaseline{
+			Reason:        prior.Reason,
+			Accepted:      []string{},
+			PriorAccepted: slices.Clone(prior.PriorAccepted),
+		}
 	}
 	return out
 }
