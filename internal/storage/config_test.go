@@ -269,6 +269,11 @@ max_tokens = 4096
 }
 
 func TestConfigPalaceLLMEmpty(t *testing.T) {
+	// Isolate from any host global ~/.config/vibe-palace/config.toml (which
+	// on developer machines may have [palace.llm] configured). Point XDG to
+	// an empty temp dir so LoadConfig sees only embedded defaults.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
 	v := testVault(t)
 
 	cfg, err := v.LoadConfig("")
