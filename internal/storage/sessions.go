@@ -5,13 +5,16 @@ package storage
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
@@ -533,7 +536,7 @@ const (
 // nothing" must stay distinguishable from "this writer never looked".
 const EntrypointUnknown = "unknown"
 
-// ArchiveLinkResult reports what LinkArchiveToSessions did.
+// ArchiveLinkResult reports what TryLinkArchiveToSessions did.
 type ArchiveLinkResult struct {
 	// Updated names every note whose archive: field now points at the manifest.
 	// Empty when the notes already carried it — the operation is idempotent, and
@@ -548,7 +551,7 @@ type ArchiveLinkResult struct {
 	Found     bool
 }
 
-// LinkArchiveToSessions closes the note <-> transcript loop for one host session:
+// TryLinkArchiveToSessions closes the note <-> transcript loop for one host session:
 // it stamps archiveRel onto the archive: field of EVERY note captured from that
 // session, and reports which of them the manifest should point back at.
 //
@@ -582,7 +585,43 @@ type ArchiveLinkResult struct {
 // calls RewriteSession, which takes the NOTE-PATH lock. That nesting is the same
 // one UpsertSessionByKey documents and is safe; INVERTING it is a permanent hang,
 // because vaultlock.Acquire is a blocking LOCK_EX with no LOCK_NB and no timeout.
-func (v *Vault) LinkArchiveToSessions(project, archiveSessionID, archiveRel string) (ArchiveLinkResult, error) {
+//
+// # WHY THIS IS NON-BLOCKING, WITH BOUNDED RETRY, AND HAS NO BLOCKING SIBLING
+//
+// internal/hook is this function's ONLY caller, once per SessionEnd, and that
+// hook has no timeout and no cancellation of its own (cmd/vp/cmd_hook.go passes
+// context.Background()). A blocking Acquire on the sessions-directory lock is
+// fine when only one session ends at a time. It is not fine under a
+// Chair-orchestrated multi-pane workflow where several subordinate panes'
+// SessionEnd hooks land on the SAME project within the same fraction of a
+// second (a batch of Implementor panes finishing together): those hooks would
+// then queue on one directory lock, and a hook still waiting when Claude
+// Code's own hook-execution timeout fires is killed — silently, with no log,
+// because it never reaches any of this function's error-handling paths. That
+// is a strictly worse outcome than a clean, logged refusal: it is how a note
+// that WOULD have derived cleanly (an exact session_key match, per ADR-007)
+// never got the chance to try.
+//
+// This trades a blocking wait for a bounded number of short, jittered
+// non-blocking attempts (sessionsDirLockAttempts, starting at
+// sessionsDirLockBaseWait and doubling), enough to absorb the sub-second
+// contention of several hooks landing together without ever approaching a hook
+// timeout. If every attempt finds the lock held, it gives up and returns an
+// error wrapping ErrSessionsDirLocked — a contention outcome, never a
+// corruption, exactly like archive.ErrManifestLocked. Nothing here weakens the
+// exact-match predicate ADR-007 requires; it only changes whether a hook that
+// hits a slow moment gets a logged miss instead of no chance at all. A session
+// this misses is not lost: it stays an ordinary stranded-but-recoverable entry,
+// closeable later by `vp archive backfill` / `vp archive link` exactly as
+// today.
+//
+// 🔴 THIS PACKAGE DELIBERATELY HAS NO BLOCKING FORM. One existed as
+// LinkArchiveToSessions until this function's only caller (the hook) moved off
+// it — at that point it had zero production callers (source-audit's
+// capability-built-nothing-invokes-it class) and was deleted rather than kept
+// as an unused parallel API. Do not re-add a blocking sibling speculatively;
+// add it only alongside a real caller that needs to wait rather than retry.
+func (v *Vault) TryLinkArchiveToSessions(project, archiveSessionID, archiveRel string) (ArchiveLinkResult, error) {
 	if archiveSessionID == "" {
 		return ArchiveLinkResult{}, fmt.Errorf("archive session id is empty")
 	}
@@ -595,9 +634,9 @@ func (v *Vault) LinkArchiveToSessions(project, archiveSessionID, archiveRel stri
 		return ArchiveLinkResult{}, err
 	}
 
-	release, err := vaultlock.Acquire(v.Root, dir)
+	release, err := acquireSessionsDirLockNonBlocking(v.Root, dir)
 	if err != nil {
-		return ArchiveLinkResult{}, fmt.Errorf("storage: lock sessions dir: %w", err)
+		return ArchiveLinkResult{}, err
 	}
 	defer func() { _ = release() }()
 
@@ -649,11 +688,54 @@ func (v *Vault) LinkArchiveToSessions(project, archiveSessionID, archiveRel stri
 	return res, nil
 }
 
+// sessionsDirLockAttempts and sessionsDirLockBaseWait bound
+// TryLinkArchiveToSessions's retry: 3 attempts at 50ms/100ms/200ms (each plus up
+// to 50% jitter) is worst-case ~350ms of added latency, chosen to clear the
+// sub-second contention window of several SessionEnd hooks landing together
+// without meaningfully risking a hook-execution timeout budget (typically many
+// seconds). Re-derive, never assume, before changing either constant: they are a
+// deliberate trade against a timeout this package does not own or control.
+const (
+	sessionsDirLockAttempts = 3
+	sessionsDirLockBaseWait = 50 * time.Millisecond
+)
+
+// ErrSessionsDirLocked reports that TryLinkArchiveToSessions found the
+// project's sessions-directory lock already held by another writer through
+// every retry, and gave up rather than waiting further. A contention outcome,
+// never a corruption — nothing was read and nothing written. Mirrors
+// archive.ErrManifestLocked one layer up.
+var ErrSessionsDirLocked = errors.New("storage: sessions directory is locked by another writer")
+
+// acquireSessionsDirLockNonBlocking is the one place TryLinkArchiveToSessions
+// takes the sessions-directory lock: a bounded number of non-blocking attempts
+// with short, jittered backoff, never a plain blocking Acquire — see
+// TryLinkArchiveToSessions's doc comment for why no blocking form exists here.
+func acquireSessionsDirLockNonBlocking(root, dir string) (release func() error, err error) {
+	var lastErr error
+	for attempt := 0; attempt < sessionsDirLockAttempts; attempt++ {
+		rel, ok, terr := vaultlock.TryAcquire(root, dir)
+		if terr != nil {
+			return nil, fmt.Errorf("storage: lock sessions dir: %w", terr)
+		}
+		if ok {
+			return rel, nil
+		}
+		lastErr = fmt.Errorf("%w: %s", ErrSessionsDirLocked, dir)
+		if attempt < sessionsDirLockAttempts-1 {
+			wait := sessionsDirLockBaseWait << attempt
+			wait += time.Duration(rand.Int63n(int64(wait)/2 + 1))
+			time.Sleep(wait)
+		}
+	}
+	return nil, lastErr
+}
+
 // preferCanonical reports whether candidate (nextMeta, next) should displace the
 // incumbent (curMeta, cur) as the note a transcript points back at. A real note
 // always beats the auto-capture stub; between two of the same kind, the later
-// (date, iteration) wins. See LinkArchiveToSessions for why this must not depend
-// on filesystem mtime or on the order the hook happened to see events in.
+// (date, iteration) wins. See TryLinkArchiveToSessions for why this must not
+// depend on filesystem mtime or on the order the hook happened to see events in.
 func preferCanonical(curMeta SessionMeta, cur SessionRef, nextMeta SessionMeta, next SessionRef) bool {
 	curStub := curMeta.Tag == TagAutoCapture
 	nextStub := nextMeta.Tag == TagAutoCapture
@@ -682,7 +764,7 @@ func preferCanonical(curMeta SessionMeta, cur SessionRef, nextMeta SessionMeta, 
 //
 // Idempotent: a note whose Breakdown is already non-nil is left untouched, so a
 // second SessionEnd does not rewrite a real score. Same lock order as
-// LinkArchiveToSessions (directory, then note path).
+// TryLinkArchiveToSessions (directory, then note path).
 func (v *Vault) ScoreUnscoredNotes(project, archiveSessionID string, score int, breakdown *FrictionBreakdown) (int, error) {
 	if archiveSessionID == "" {
 		return 0, fmt.Errorf("archive session id is empty")
@@ -805,7 +887,7 @@ func (v *Vault) ListCallerKeyedUnstampedNotes(project string) ([]CallerKeyedNote
 // recovered archive_session_id, provenance "backfilled") onto every note whose
 // caller-pushed session_key equals sessionID, and reports which note the
 // manifest should point back at. It is the after-the-fact sibling of
-// LinkArchiveToSessions, which handles the live path where the note already
+// TryLinkArchiveToSessions, which handles the live path where the note already
 // carries archive_session_id.
 //
 // The match predicate is deliberately NARROWER than "key equals id":
@@ -822,9 +904,9 @@ func (v *Vault) ListCallerKeyedUnstampedNotes(project string) ([]CallerKeyedNote
 // Idempotent end to end: a re-run matches the same notes, finds them stamped,
 // and writes nothing.
 //
-// LOCK ORDER — DIRECTORY BEFORE FILE, exactly as LinkArchiveToSessions: one
+// LOCK ORDER — DIRECTORY BEFORE FILE, exactly as TryLinkArchiveToSessions: one
 // sessions-directory lock spans the whole scan-and-write, with the note-path
-// lock nested inside via RewriteSession. It does NOT call LinkArchiveToSessions
+// lock nested inside via RewriteSession. It does NOT call TryLinkArchiveToSessions
 // (which re-acquires the directory lock — a permanent hang, since
 // vaultlock.Acquire is a blocking LOCK_EX with no LOCK_NB and no timeout).
 func (v *Vault) BackfillArchiveLink(project, sessionID, archiveRel string) (ArchiveLinkResult, error) {
@@ -893,7 +975,7 @@ func (v *Vault) BackfillArchiveLink(project, sessionID, archiveRel string) (Arch
 			changed = true
 		}
 		// Never re-point a note that already links SOMEWHERE: the live path
-		// (LinkArchiveToSessions) may have linked it to a different manifest of
+		// (TryLinkArchiveToSessions) may have linked it to a different manifest of
 		// this session, and a backfill that fights the live writer converges on
 		// whichever ran last — the thrash preferCanonical exists to prevent.
 		if meta.Archive == "" {

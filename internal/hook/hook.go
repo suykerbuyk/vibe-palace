@@ -400,10 +400,21 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 	// never silent either.
 	if archiveManifestPath != "" {
 		archiveRel := archive.VaultRelPath(opts.VaultRoot, archiveManifestPath)
-		link, linkErr := vault.LinkArchiveToSessions(opts.ProjectSlug, payload.SessionID, archiveRel)
+		// TryLinkArchiveToSessions, not LinkArchiveToSessions: this hook has no
+		// timeout and no cancellation, and the sessions-directory lock is
+		// blocking with no timeout of its own. Several subordinate panes'
+		// SessionEnd hooks landing on the SAME project within the same
+		// fraction of a second (a Chair-orchestrated batch finishing
+		// together) would otherwise queue on that one lock, and a hook still
+		// waiting when Claude Code's own hook timeout fires is killed
+		// silently — worse than the logged, non-fatal miss below. A session
+		// missed here is not lost: it stays an ordinary, recoverable stranded
+		// entry, closeable later via `vp archive backfill` / `vp archive
+		// link` (ADR-007).
+		link, linkErr := vault.TryLinkArchiveToSessions(opts.ProjectSlug, payload.SessionID, archiveRel)
 		switch {
 		case linkErr != nil:
-			slog.Warn("hook: could not link session notes to transcript (non-fatal)",
+			slog.Warn("hook: could not link session notes to transcript (non-fatal, recoverable via vp archive backfill)",
 				"err", linkErr, "archive_session_id", payload.SessionID, "archive", archiveRel)
 		case !link.Found:
 			// No note carries this session id. Expected and fine: a session captured
