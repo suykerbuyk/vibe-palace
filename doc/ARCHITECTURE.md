@@ -402,6 +402,31 @@ max_tokens = 4096
 Key type: `storage.Config` — a flat struct populated by decoding TOML at each
 level in sequence. `GetConfigValue(project, key)` returns value + source level.
 
+### Absent means "inherit" — a key present at its zero value does not
+
+Each tier's on-disk file only overrides the keys it actually contains: `LoadConfig`
+decodes tier N into the same `tomlConfig` used for tier N-1, so a key **absent**
+from tier N's TOML source leaves the prior tier's decoded value untouched, while a
+key **present** — even at the type's zero value (`git_enabled = false`,
+`http_port = 0`, an empty `[palace.llm]` block) — overwrites it. This is why
+`vault_project_template.toml`'s per-project overrides ship entirely commented
+out: an uncommented `# vault_path = ""` would pin every project to an empty
+vault path rather than leaving it to inherit.
+
+Any writer that reads a project's `config.toml`, needs to change only one
+section of it, and re-encodes the result must preserve this distinction — a
+full decode into `tomlConfig` (a plain, non-pointer struct) followed by a
+full re-encode turns every field the file never mentioned into an explicit,
+present zero value, silently breaking inheritance for that project from then
+on. `WriteScoringConfig` (`internal/storage/config.go`) is the one writer of
+this shape; it sidesteps the problem structurally by decoding into
+`map[string]any` instead of `tomlConfig` — a Go map decoded from TOML only
+ever contains the keys the source text actually had, so a key this function
+never touches (anything outside `[palace.scoring]`) cannot become present at
+a zero value no matter how large the schema grows. A new writer that follows
+the decode-mutate-reencode pattern against the full `tomlConfig` struct
+should use the same map-based approach rather than reintroducing this bug.
+
 ---
 
 ## Vault Housekeeping (tidy)

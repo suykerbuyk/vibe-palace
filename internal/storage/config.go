@@ -379,6 +379,16 @@ func VaultConfigFilePath() (string, error) {
 // Creates the file and parent directories if they don't exist. Uses atomic
 // temp-file + os.Rename. Idempotent: skips keywords already present at the
 // same weight tier.
+//
+// Decodes the existing file into a map[string]any rather than tomlConfig
+// and only ever touches the palace.scoring subtree of that map. A Go map
+// decoded from TOML only ever contains the keys that were actually present
+// in the source text — there is no zero-value to distinguish from "absent"
+// in the first place — so a key this function never mentions (vault_path,
+// git_enabled, [palace.llm], ...) cannot be turned into an explicit zero
+// value by this write, no matter how many other fields the schema grows.
+// Everything outside this function (tomlConfig, flatten, LoadConfig) is
+// unrelated to this guarantee and untouched by it.
 func (v *Vault) WriteScoringConfig(project string, rooms map[string]ScoringRoomOverride, minScore float64) error {
 	cfgPath, err := v.ProjectConfigFile(project)
 	if err != nil {
@@ -398,32 +408,50 @@ func (v *Vault) WriteScoringConfig(project string, rooms map[string]ScoringRoomO
 	}
 	defer release()
 
-	// Load existing config if present.
-	var tc tomlConfig
+	// Load existing config if present. m only ever holds keys that were
+	// actually present in the file — a fresh-create starts as an empty map,
+	// not a zero-value schema.
+	m := map[string]any{}
 	if _, statErr := os.Stat(cfgPath); statErr == nil {
-		if _, err := toml.DecodeFile(cfgPath, &tc); err != nil {
+		if _, err := toml.DecodeFile(cfgPath, &m); err != nil {
 			return fmt.Errorf("decode existing config %s: %w", cfgPath, err)
 		}
 	}
 
-	// Merge scoring overrides.
-	if tc.Palace.Scoring.Rooms == nil {
-		tc.Palace.Scoring.Rooms = make(map[string]tomlRoomScoring)
+	// Navigate/create the palace.scoring.rooms path with checked type
+	// assertions: a config file that (incorrectly) has e.g.
+	// `palace = "not a table"` must fail clearly here, not panic on the
+	// next assertion.
+	palaceTable, err := ensureTable(m, "palace")
+	if err != nil {
+		return fmt.Errorf("config %s: %w", cfgPath, err)
 	}
+	scoringTable, err := ensureTable(palaceTable, "scoring")
+	if err != nil {
+		return fmt.Errorf("config %s: %w", cfgPath, err)
+	}
+	roomsTable, err := ensureTable(scoringTable, "rooms")
+	if err != nil {
+		return fmt.Errorf("config %s: %w", cfgPath, err)
+	}
+
+	// Merge scoring overrides.
 	for room, ov := range rooms {
-		existing := tc.Palace.Scoring.Rooms[room]
-		existing.High = mergeKeywordTier(existing.High, ov.High)
-		existing.Medium = mergeKeywordTier(existing.Medium, ov.Medium)
-		existing.Low = mergeKeywordTier(existing.Low, ov.Low)
-		tc.Palace.Scoring.Rooms[room] = existing
+		roomTable, err := ensureTable(roomsTable, room)
+		if err != nil {
+			return fmt.Errorf("config %s: %w", cfgPath, err)
+		}
+		mergeTierInto(roomTable, "high", ov.High)
+		mergeTierInto(roomTable, "medium", ov.Medium)
+		mergeTierInto(roomTable, "low", ov.Low)
 	}
 	if minScore > 0 {
-		tc.Palace.Scoring.MinScore = minScore
+		scoringTable["min_score"] = minScore
 	}
 
 	// Atomic write via the shared primitive (temp + rename + surface stamp).
 	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(tc); err != nil {
+	if err := toml.NewEncoder(&buf).Encode(m); err != nil {
 		return fmt.Errorf("encode config: %w", err)
 	}
 	if err := atomicfile.Write(v.Root, cfgPath, buf.Bytes()); err != nil {
@@ -432,6 +460,65 @@ func (v *Vault) WriteScoringConfig(project string, rooms map[string]ScoringRoomO
 
 	slog.Info("wrote scoring config", "path", cfgPath, "rooms", len(rooms))
 	return nil
+}
+
+// ensureTable returns the map[string]any stored at key in m, creating and
+// inserting an empty one if key is absent. Returns an error if key is
+// present but holds something other than a table, so a malformed config
+// (e.g. `palace = "not a table"`) surfaces as a clear error rather than a
+// panic on the next assertion.
+func ensureTable(m map[string]any, key string) (map[string]any, error) {
+	existing, present := m[key]
+	if !present {
+		t := map[string]any{}
+		m[key] = t
+		return t, nil
+	}
+	t, ok := existing.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("[%s] is not a table", key)
+	}
+	return t, nil
+}
+
+// mergeTierInto merges additions into room[key] (a keyword tier array),
+// reusing mergeKeywordTier's dedup semantics. A nil/empty additions list is
+// a no-op — an absent tier key stays absent, matching the pre-fix struct
+// writer, which never emitted `high = []` for a tier no caller populated.
+func mergeTierInto(room map[string]any, key string, additions []string) {
+	if len(additions) == 0 {
+		return
+	}
+	merged := mergeKeywordTier(tierToStrings(room[key]), additions)
+	room[key] = stringsToTier(merged)
+}
+
+// tierToStrings converts a decoded TOML array value (a []any of string, as
+// produced by decoding an array into map[string]any) to a []string. Returns
+// nil for an absent or non-array value — a fresh tier, or one a caller
+// somehow overwrote with a non-array, is treated as starting empty.
+func tierToStrings(v any) []string {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, e := range arr {
+		if s, ok := e.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// stringsToTier converts a []string back to the []any shape the TOML
+// encoder expects for an array value living under a map[string]any tree.
+func stringsToTier(ss []string) []any {
+	out := make([]any, len(ss))
+	for i, s := range ss {
+		out[i] = s
+	}
+	return out
 }
 
 // mergeKeywordTier adds new keywords to an existing tier, skipping duplicates.
