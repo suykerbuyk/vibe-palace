@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -600,7 +601,7 @@ func writeVaultTierConfig(t *testing.T, content string) {
 }
 
 const vaultTierFixture = `
-git_enabled = false
+git_enabled = true
 http_port = 9001
 vault_path = "/vault-tier-path"
 
@@ -613,8 +614,8 @@ max_tokens = 2048
 
 func assertVaultTierInherited(t *testing.T, cfg Config) {
 	t.Helper()
-	if cfg.GitEnabled {
-		t.Errorf("GitEnabled = true, want false (vault tier)")
+	if !cfg.GitEnabled {
+		t.Errorf("GitEnabled = false, want true (vault tier)")
 	}
 	if cfg.HTTPPort != 9001 {
 		t.Errorf("HTTPPort = %d, want 9001 (vault tier)", cfg.HTTPPort)
@@ -921,8 +922,8 @@ batch_size = 64
 	if cfg.VaultPath != "/vault-tier-path" {
 		t.Errorf("VaultPath = %q, want vault-tier value (absent in project)", cfg.VaultPath)
 	}
-	if cfg.GitEnabled {
-		t.Errorf("GitEnabled = true, want false (absent, vault tier)")
+	if !cfg.GitEnabled {
+		t.Errorf("GitEnabled = false, want true (absent, vault tier)")
 	}
 	if cfg.PalaceLLM.Endpoint != "https://vault-tier-llm.example" {
 		t.Errorf("PalaceLLM.Endpoint = %q, want vault-tier value (absent in project)", cfg.PalaceLLM.Endpoint)
@@ -946,6 +947,11 @@ batch_size = 64
 // behavior change from the pre-fix struct writer (which emitted a spurious
 // zeroed [meta] and every other field); confirm it's harmless by reloading.
 func TestWriteScoringConfig_FreshCreateOnlyHasScoringKeys(t *testing.T) {
+	// Sandbox against the real machine's global config: this test asserts
+	// the embedded default HTTPPort (7423) survives untouched, which only
+	// holds if there's no real ~/.config/vibe-palace/config.toml on the
+	// developer's machine shadowing it.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	v := testVault(t)
 
 	rooms := map[string]ScoringRoomOverride{"ml": {High: []string{"transformer"}}}
@@ -985,4 +991,234 @@ func TestWriteScoringConfig_FreshCreateOnlyHasScoringKeys(t *testing.T) {
 	if cfg.HTTPPort != 7423 {
 		t.Errorf("HTTPPort = %d, want embedded default 7423", cfg.HTTPPort)
 	}
+}
+
+// TestWriteScoringConfig_NoOpDoesNotTouchFile covers Fix 2: a call with an
+// empty rooms map AND minScore at the "no override" sentinel (<= 0) has
+// nothing to write, and must not create a file (or gain empty
+// [palace]/[palace.scoring]/[palace.scoring.rooms] headers in an existing
+// one) that wasn't already there.
+func TestWriteScoringConfig_NoOpDoesNotTouchFile(t *testing.T) {
+	t.Run("no config file stays absent", func(t *testing.T) {
+		v := testVault(t)
+
+		if err := v.WriteScoringConfig("proj", map[string]ScoringRoomOverride{}, 0); err != nil {
+			t.Fatalf("WriteScoringConfig: %v", err)
+		}
+
+		cfgPath, err := v.ProjectConfigFile("proj")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, statErr := os.Stat(cfgPath); !os.IsNotExist(statErr) {
+			t.Errorf("expected no config file to be created, stat err = %v", statErr)
+		}
+	})
+
+	t.Run("negative minScore is also a no-op", func(t *testing.T) {
+		v := testVault(t)
+
+		if err := v.WriteScoringConfig("proj", map[string]ScoringRoomOverride{}, -1); err != nil {
+			t.Fatalf("WriteScoringConfig: %v", err)
+		}
+
+		cfgPath, err := v.ProjectConfigFile("proj")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, statErr := os.Stat(cfgPath); !os.IsNotExist(statErr) {
+			t.Errorf("expected no config file to be created, stat err = %v", statErr)
+		}
+	})
+
+	t.Run("existing config file is byte-identical after a no-op call", func(t *testing.T) {
+		v := testVault(t)
+
+		projDir := filepath.Join(v.Root, "Projects", "proj")
+		if err := os.MkdirAll(projDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		cfgPath := filepath.Join(projDir, "config.toml")
+		before := []byte("log_level = \"trace\"\nhttp_port = 8888\n")
+		if err := os.WriteFile(cfgPath, before, 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := v.WriteScoringConfig("proj", map[string]ScoringRoomOverride{}, 0); err != nil {
+			t.Fatalf("WriteScoringConfig: %v", err)
+		}
+
+		after, err := os.ReadFile(cfgPath)
+		if err != nil {
+			t.Fatalf("read project config: %v", err)
+		}
+		if !bytes.Equal(before, after) {
+			t.Errorf("no-op call mutated the file:\nbefore:\n%s\nafter:\n%s", before, after)
+		}
+	})
+}
+
+// TestWriteScoringConfig_MalformedTierScalar covers Fix 1: a tier value that
+// decodes to a scalar instead of an array (`high = "oops-not-an-array"`)
+// must produce a clear error instead of silently overwriting whatever was
+// there.
+func TestWriteScoringConfig_MalformedTierScalar(t *testing.T) {
+	v := testVault(t)
+
+	projDir := filepath.Join(v.Root, "Projects", "proj")
+	os.MkdirAll(projDir, 0755)
+	cfgPath := filepath.Join(projDir, "config.toml")
+	original := "[palace.scoring.rooms.ml]\nhigh = \"oops-not-an-array\"\n"
+	os.WriteFile(cfgPath, []byte(original), 0644)
+
+	rooms := map[string]ScoringRoomOverride{"ml": {High: []string{"transformer"}}}
+	err := v.WriteScoringConfig("proj", rooms, 0)
+	if err == nil {
+		t.Fatal("expected error for non-array tier value, got nil")
+	}
+	if !strings.Contains(err.Error(), "high") {
+		t.Errorf("error should mention 'high': %v", err)
+	}
+
+	data, readErr := os.ReadFile(cfgPath)
+	if readErr != nil {
+		t.Fatalf("read project config: %v", readErr)
+	}
+	if string(data) != original {
+		t.Errorf("original malformed value should survive a failed write, got:\n%s", data)
+	}
+}
+
+// TestWriteScoringConfig_MalformedTierSubTable covers the sub-table variant
+// of Fix 1: `[palace.scoring.rooms.ml.high]` written as a table instead of
+// an array must error, not silently destroy the sub-table's contents.
+func TestWriteScoringConfig_MalformedTierSubTable(t *testing.T) {
+	v := testVault(t)
+
+	projDir := filepath.Join(v.Root, "Projects", "proj")
+	os.MkdirAll(projDir, 0755)
+	cfgPath := filepath.Join(projDir, "config.toml")
+	original := "[palace.scoring.rooms.ml.high]\nweight = 5\n"
+	os.WriteFile(cfgPath, []byte(original), 0644)
+
+	rooms := map[string]ScoringRoomOverride{"ml": {High: []string{"transformer"}}}
+	err := v.WriteScoringConfig("proj", rooms, 0)
+	if err == nil {
+		t.Fatal("expected error for sub-table tier value, got nil")
+	}
+	if !strings.Contains(err.Error(), "high") {
+		t.Errorf("error should mention 'high': %v", err)
+	}
+
+	data, readErr := os.ReadFile(cfgPath)
+	if readErr != nil {
+		t.Fatalf("read project config: %v", readErr)
+	}
+	if string(data) != original {
+		t.Errorf("original sub-table should survive a failed write, got:\n%s", data)
+	}
+}
+
+// TestWriteScoringConfig_MixedTypeTierArray covers the mixed-type array
+// case of Fix 1 (`high = ["neural network", 42, true]`): this pins the
+// chosen behavior — a clear error — so a non-string element can never again
+// be silently dropped from the tier.
+func TestWriteScoringConfig_MixedTypeTierArray(t *testing.T) {
+	v := testVault(t)
+
+	projDir := filepath.Join(v.Root, "Projects", "proj")
+	os.MkdirAll(projDir, 0755)
+	cfgPath := filepath.Join(projDir, "config.toml")
+	original := "[palace.scoring.rooms.ml]\nhigh = [\"neural network\", 42, true]\n"
+	os.WriteFile(cfgPath, []byte(original), 0644)
+
+	rooms := map[string]ScoringRoomOverride{"ml": {High: []string{"transformer"}}}
+	err := v.WriteScoringConfig("proj", rooms, 0)
+	if err == nil {
+		t.Fatal("expected error for mixed-type tier array, got nil")
+	}
+	if !strings.Contains(err.Error(), "high") {
+		t.Errorf("error should mention 'high': %v", err)
+	}
+
+	data, readErr := os.ReadFile(cfgPath)
+	if readErr != nil {
+		t.Fatalf("read project config: %v", readErr)
+	}
+	if string(data) != original {
+		t.Errorf("original mixed-type array should survive a failed write, got:\n%s", data)
+	}
+}
+
+// TestWriteScoringConfig_PreservesNonScoringFloatField covers Fix 4: a
+// generic float config field OUTSIDE the scoring section — [search]
+// structural_boost_wing — through the same absent/explicit-zero/
+// explicit-real-value permutations already covered for min_score, since a
+// float zero value is exactly the shape the original bug silently produced.
+func TestWriteScoringConfig_PreservesNonScoringFloatField(t *testing.T) {
+	t.Run("absent inherits from vault tier", func(t *testing.T) {
+		writeVaultTierConfig(t, "[search]\nstructural_boost_wing = 0.42\n")
+		v := testVault(t)
+
+		projDir := filepath.Join(v.Root, "Projects", "proj")
+		os.MkdirAll(projDir, 0755)
+		os.WriteFile(filepath.Join(projDir, "config.toml"), []byte("[meta]\nversion_major = 1\n"), 0644)
+
+		rooms := map[string]ScoringRoomOverride{"ml": {High: []string{"transformer"}}}
+		if err := v.WriteScoringConfig("proj", rooms, 0); err != nil {
+			t.Fatalf("WriteScoringConfig: %v", err)
+		}
+
+		cfg, err := v.LoadConfig("proj")
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.BoostWing != 0.42 {
+			t.Errorf("BoostWing = %f, want 0.42 (inherited from vault tier)", cfg.BoostWing)
+		}
+	})
+
+	t.Run("explicit zero survives", func(t *testing.T) {
+		writeVaultTierConfig(t, "[search]\nstructural_boost_wing = 0.42\n")
+		v := testVault(t)
+
+		projDir := filepath.Join(v.Root, "Projects", "proj")
+		os.MkdirAll(projDir, 0755)
+		os.WriteFile(filepath.Join(projDir, "config.toml"), []byte("[search]\nstructural_boost_wing = 0.0\n"), 0644)
+
+		rooms := map[string]ScoringRoomOverride{"ml": {High: []string{"transformer"}}}
+		if err := v.WriteScoringConfig("proj", rooms, 0); err != nil {
+			t.Fatalf("WriteScoringConfig: %v", err)
+		}
+
+		cfg, err := v.LoadConfig("proj")
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.BoostWing != 0 {
+			t.Errorf("BoostWing = %f, want 0 (explicit project override preserved)", cfg.BoostWing)
+		}
+	})
+
+	t.Run("explicit real value survives", func(t *testing.T) {
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		v := testVault(t)
+
+		projDir := filepath.Join(v.Root, "Projects", "proj")
+		os.MkdirAll(projDir, 0755)
+		os.WriteFile(filepath.Join(projDir, "config.toml"), []byte("[search]\nstructural_boost_wing = 0.77\n"), 0644)
+
+		rooms := map[string]ScoringRoomOverride{"ml": {High: []string{"transformer"}}}
+		if err := v.WriteScoringConfig("proj", rooms, 0); err != nil {
+			t.Fatalf("WriteScoringConfig: %v", err)
+		}
+
+		cfg, err := v.LoadConfig("proj")
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.BoostWing != 0.77 {
+			t.Errorf("BoostWing = %f, want 0.77 (explicit project override preserved)", cfg.BoostWing)
+		}
+	})
 }

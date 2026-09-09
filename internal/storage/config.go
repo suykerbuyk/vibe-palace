@@ -390,6 +390,15 @@ func VaultConfigFilePath() (string, error) {
 // Everything outside this function (tomlConfig, flatten, LoadConfig) is
 // unrelated to this guarantee and untouched by it.
 func (v *Vault) WriteScoringConfig(project string, rooms map[string]ScoringRoomOverride, minScore float64) error {
+	// A true no-op: nothing to merge and no min_score override to set. Bail
+	// out before any file I/O or table navigation so a call like this never
+	// creates a config file (or empty [palace]/[palace.scoring]/
+	// [palace.scoring.rooms] headers in an existing one) that wasn't there
+	// before.
+	if len(rooms) == 0 && minScore <= 0 {
+		return nil
+	}
+
 	cfgPath, err := v.ProjectConfigFile(project)
 	if err != nil {
 		return fmt.Errorf("project config path: %w", err)
@@ -441,9 +450,15 @@ func (v *Vault) WriteScoringConfig(project string, rooms map[string]ScoringRoomO
 		if err != nil {
 			return fmt.Errorf("config %s: %w", cfgPath, err)
 		}
-		mergeTierInto(roomTable, "high", ov.High)
-		mergeTierInto(roomTable, "medium", ov.Medium)
-		mergeTierInto(roomTable, "low", ov.Low)
+		if err := mergeTierInto(roomTable, "high", ov.High); err != nil {
+			return fmt.Errorf("config %s: room %q: %w", cfgPath, room, err)
+		}
+		if err := mergeTierInto(roomTable, "medium", ov.Medium); err != nil {
+			return fmt.Errorf("config %s: room %q: %w", cfgPath, room, err)
+		}
+		if err := mergeTierInto(roomTable, "low", ov.Low); err != nil {
+			return fmt.Errorf("config %s: room %q: %w", cfgPath, room, err)
+		}
 	}
 	if minScore > 0 {
 		scoringTable["min_score"] = minScore
@@ -485,30 +500,53 @@ func ensureTable(m map[string]any, key string) (map[string]any, error) {
 // reusing mergeKeywordTier's dedup semantics. A nil/empty additions list is
 // a no-op — an absent tier key stays absent, matching the pre-fix struct
 // writer, which never emitted `high = []` for a tier no caller populated.
-func mergeTierInto(room map[string]any, key string, additions []string) {
+//
+// If room[key] is already present but isn't something that can be read back
+// as a keyword array (a scalar, a sub-table, or an array containing a
+// non-string element), this returns an error rather than silently
+// overwriting or truncating whatever was actually there — the map-based
+// rewrite must not destroy data the old struct-based writer would have
+// rejected cleanly at decode time.
+func mergeTierInto(room map[string]any, key string, additions []string) error {
 	if len(additions) == 0 {
-		return
+		return nil
 	}
-	merged := mergeKeywordTier(tierToStrings(room[key]), additions)
+	existing, err := tierToStrings(room[key])
+	if err != nil {
+		return fmt.Errorf("[%s] %w", key, err)
+	}
+	merged := mergeKeywordTier(existing, additions)
 	room[key] = stringsToTier(merged)
+	return nil
 }
 
 // tierToStrings converts a decoded TOML array value (a []any of string, as
-// produced by decoding an array into map[string]any) to a []string. Returns
-// nil for an absent or non-array value — a fresh tier, or one a caller
-// somehow overwrote with a non-array, is treated as starting empty.
-func tierToStrings(v any) []string {
+// produced by decoding an array into map[string]any) to a []string.
+//
+// v == nil means the key was absent from the source file — that's not an
+// error, just a fresh tier starting empty. Any other shape that isn't a
+// clean array of strings (a scalar like `high = "oops"`, a sub-table like
+// `[palace.scoring.rooms.ml.high]`, or an array with a non-string element
+// like `high = ["x", 42]`) is a real data-integrity problem: returning nil
+// for it would let the caller silently overwrite or truncate whatever was
+// actually on disk, so this returns an error instead.
+func tierToStrings(v any) ([]string, error) {
+	if v == nil {
+		return nil, nil
+	}
 	arr, ok := v.([]any)
 	if !ok {
-		return nil
+		return nil, fmt.Errorf("is not an array of strings (got %T)", v)
 	}
 	out := make([]string, 0, len(arr))
-	for _, e := range arr {
-		if s, ok := e.(string); ok {
-			out = append(out, s)
+	for i, e := range arr {
+		s, ok := e.(string)
+		if !ok {
+			return nil, fmt.Errorf("element %d is not a string (got %T)", i, e)
 		}
+		out = append(out, s)
 	}
-	return out
+	return out, nil
 }
 
 // stringsToTier converts a []string back to the []any shape the TOML
