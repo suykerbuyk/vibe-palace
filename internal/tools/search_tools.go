@@ -97,10 +97,13 @@ func SearchTool(engine *search.Engine) mcp.Tool {
 // SearchCrossProjectTool returns the MCP tool for vp_search_cross_project.
 func SearchCrossProjectTool(engine *search.Engine) mcp.Tool {
 	return mcp.Tool{
-		Name:        "vp_search_cross_project",
-		Description: "Cross-project semantic search across all indexed projects. Read-only.",
-		Schema:      crossSearchSchema,
-		Handler:     crossSearchHandler(engine),
+		Name: "vp_search_cross_project",
+		Description: "Cross-project semantic search across every project in the vault — the union of " +
+			"palace/ stores and Projects/ history, so a project captured as session notes only is " +
+			"covered. Builds any project's index on first use, and fails naming the project if one " +
+			"cannot be built. Writes only host-local embedding-cache state.",
+		Schema:  crossSearchSchema,
+		Handler: crossSearchHandler(engine),
 	}
 }
 

@@ -106,14 +106,15 @@ The vault contains two top-level trees with different purposes:
 ```
 {vault}/
 ├── palace/                         # Knowledge (content, vectors, models)
-│   ├── .local/
-│   │   └── models/                 # ONNX model cache (vault-wide)
+│   ├── .local/                     # Vault-wide machine-local state (gitignored)
+│   │   ├── models/                 # ONNX model cache
+│   │   └── embed-cache/{project}/  # Embedding vectors, one .vec per chunk
 │   └── {project}/
 │       ├── drawers/{wing}/{room}/drawers.jsonl
 │       ├── kg/
 │       │   ├── entities.jsonl
 │       │   └── triples/{subj}--{pred}--{obj}.json
-│       └── .local/                 # Machine-local state (embed cache)
+│       └── .local/                 # Machine-local: imported-sessions.jsonl only
 └── Projects/                       # Workflow (sessions, tasks, config)
     └── {project}/
         ├── config.toml             # Project-level config overrides
@@ -138,9 +139,9 @@ with captured sessions and can be rebuilt from source.
 
 **What counts as a palace store.** A `palace/<slug>/` directory is a store only
 if it holds at least one regular file outside its top-level `.local/`. Every
-project enumerator applies that one predicate (`storage.listPalaceStores`, behind
-`Vault.ListProjects` and `Vault.ListAllProjects`), so `vp_list_projects`, the
-vault audit and cross-project search agree. The reason is git: `.local/` is
+project enumerator applies that one predicate (`storage.listPalaceStores`,
+behind `Vault.ListAllProjects`, the only project enumerator), so
+`vp_list_projects`, the vault audit and cross-project search agree. The reason is git: `.local/` is
 gitignored and git cannot carry an empty directory, so a directory holding only
 those is a fact about one host. A pull that deletes a project removes its tracked
 files and leaves the ignored `.local/` — and the directory around it — on every
@@ -1750,8 +1751,12 @@ built and never rebuilt from disk.
 
 A cross-project search — one with no `Project` filter — iterates every index in
 the engine, so it calls `ensureAllIndexes`, which builds every project the vault
-knows about. That is the expensive case, and it is paid only by callers who
-actually ask for it.
+knows about: the union of both trees (`Vault.ListAllProjects`), because two of
+`Rebuild`'s three corpora live under `Projects/` and a project captured as notes
+only has no `palace/` store at all. That is the expensive case, and it is paid
+only by callers who actually ask for it. One project that fails to build fails
+the whole search, naming the project — a result that silently dropped it would
+present itself as complete.
 
 A build **failure is returned to the caller**, never swallowed. This is
 load-bearing: before `ensureIndex` existed, a search against a project with no
@@ -1812,9 +1817,108 @@ internal/search/cache.go
 ```
 
 Pre-computed vectors are cached on disk at
-`palace/{project}/.local/embed-cache/{drawer_id}.vec` (raw little-endian
-float32). The cache avoids redundant ONNX inference during `Rebuild()`.
-Deleting the cache forces re-embedding but loses no data.
+`palace/.local/embed-cache/{project}/{drawer_id}.vec` (raw little-endian
+float32; `storage.Vault.EmbedCacheDir`). The cache avoids redundant ONNX
+inference during `Rebuild()`. Deleting the cache forces re-embedding but loses
+no data.
+
+**Why it lives under `palace/.local/`.** It used to live at
+`palace/{project}/.local/embed-cache/`, inside the project's synced directory,
+while the vault's gitignore keeps `.local/` out of the repository. A pull that
+deleted a project removed every tracked file and left the ignored cache — and
+the `palace/{project}/` around it — on every host that had ever embedded
+something for it, and every enumerator then counted that husk as a store. A
+search of a notes-only project also created `palace/{project}/` outright. Under
+`palace/.local/`, which no enumerator walks and the canonical gitignore already
+covers, a `Put` cannot create or change anything under `palace/{project}/` or
+`Projects/{project}/` for any slug, with no existence check on the embedding
+path.
+
+**The one-time sweep.** The first cache operation on each `EmbedCache` instance
+runs `storage.Vault.SweepEmbedCaches` once (a per-instance `sync.Once`, lazy so
+constructing an engine does no I/O):
+
+1. *Migrate and heal.* When any legacy cache exists, git is asked once
+   (`Vault.TrackedPalaceLocalFiles`, a read-only `git ls-files`) which slugs have
+   tracked files under `.local/`. The canonical gitignore covers `palace/.local/`
+   but not `palace/*/.local/`, so a vault can have committed legacy vectors, and
+   moving them would leave deletions in the working tree that block sync — from a
+   read-only search. Such a slug is left exactly as it is and logged at Warn; a
+   vault that is not a repository tracks nothing; and if git cannot answer inside
+   a repository, this stage is skipped for the run. Every other real directory
+   `palace/{slug}/` (never a symlink) holding a real `.local/` has its legacy
+   `.local/embed-cache/` renamed whole into the new layout, or merged file by
+   file when the target exists or the rename is impossible (EXDEV when
+   `palace/.local` is its own mount) — through `os.Link`, which never
+   overwrites, so a vector a newer process already wrote wins, and through a
+   temp-file copy (mode 0644, as `Put` writes) where the filesystem cannot
+   link, so such a host still heals. A copy temporary a crash left behind is
+   collected by a later sweep once it is ten minutes old; a younger one may
+   belong to a running sweep and is left.
+   Only regular `*.vec` files move; anything else stays, and keeps its
+   directory. A target that is a symlink is never followed. Then the legacy
+   `embed-cache/`, `.local/` and `palace/{slug}/` are removed with
+   non-recursive `os.Remove`, on every run, so a crash between the rename and
+   the removals is finished next time. Anything real beside the cache —
+   drawers, `kg/`, `.surface`, `imported-sessions.jsonl` — keeps its directory.
+2. *Reap orphaned caches.* `palace/.local/embed-cache/{slug}/` for a slug that
+   exists nowhere on this host loses its `*.vec` files and then the directory.
+   Each slug is judged against the live tree after the cache directory was read,
+   and kept whenever `palace/{slug}` or `Projects/{slug}` exists at all (a
+   symlink, a junction, a case-insensitive match). Nothing is reaped when the
+   listing fails, lists zero projects, or `Projects/` itself is absent;
+   symlinked cache directories are never followed.
+3. *Report* moved, merged, dropped, healed and reaped counts (logged at Info),
+   tracked slugs and per-slug errors (Warn). A failure leaves the legacy file in
+   place, where the `palace-local-only` check row shows it.
+
+`EmbedCache.Put` retries its write once, after re-creating the directory, when
+it fails with ENOENT: `rename(2)` onto an empty directory succeeds by replacing
+it, so a sweep's whole-directory rename can pull the directory a Put has just
+made out from under its open. The retry lands the vector in the renamed
+directory.
+
+The sweep runs from a read-only `vp_search` too. Operator decision 2026-09-10
+rules it exempt from the read-only-serve contract: everything it touches is
+host-local, gitignored, regenerable derived state (`internal/tools/readonly_serve.go`).
+`vp_vault_split`'s purge removes the purged slug's cache at the new location,
+and does it first: a refusal there must land while the slug's real trees still
+exist, because once they are gone the manifest no longer binds and purge cannot
+be re-run.
+
+**Stale-MCP caveat.** A long-lived `vp mcp` from before the upgrade keeps
+reading and writing the legacy path until it is restarted: it cold-misses every
+vector a newer process moved, re-embeds it, and writes it back at the legacy
+path, which the next new-binary process start merges again. The cost is
+bounded but real on a large corpus, so restart long-lived `vp mcp` servers
+after installing; `vp check --check stale-mcp` names them.
+
+**Known limitations.**
+
+- `CanonicalGitignorePatterns` ignores `palace/.local/` but not
+  `palace/*/.local/`, so on a vault reconciled only by vp an
+  `imported-sessions.jsonl` marker is still Reported dirt that blocks sync.
+  Out of scope here; the embed cache no longer contributes to it.
+- Note and iteration cache IDs are positional, so an edited note keeps its old
+  vector. This predates the move.
+- Three narrow races, documented in `embedcache_sweep.go`, none of which loses
+  content: a sweep landing between the vibe-vault migrator's
+  `EnsureDir(.local)` and its marker write makes that write fail (the command is
+  idempotent on re-run); a capture into a legacy husk racing the first sweep's
+  `Remove(palace/{slug})` can fail its `MkdirAll` (the session is reported not
+  searchable); and a git checkout or pull that revives a husked slug, racing
+  that same removal, can die with "cannot create directory", because git's
+  checkout path does not retry the mkdir (re-running the pull finishes it). All
+  three need the first sweep on a host that still has legacy husks.
+- The orphan reap has no grace window. A project absent from both trees at the
+  moment its cache is judged — briefly, during a rebase that replays the commit
+  creating it, a checkout of an older commit, or `git stash -u` — loses its
+  vectors and pays a re-embed on the next miss. Two vaults sharing one
+  `palace/.local` through a symlink reap each other's caches on every start.
+- The source audit's funnel rule does not see the sweep's raw `os.Rename` /
+  `os.Remove`: their destinations are parameters, which the syntactic rule
+  cannot resolve. The reason they are raw is recorded in the file's header
+  instead, and accepted knowingly.
 
 ---
 

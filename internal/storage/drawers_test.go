@@ -377,7 +377,23 @@ func TestListRoomsEmpty(t *testing.T) {
 	}
 }
 
-func TestListProjects(t *testing.T) {
+// palaceStores returns the slugs ListAllProjects reports as palace/ stores.
+func palaceStores(t *testing.T, v *Vault) []string {
+	t.Helper()
+	all, err := v.ListAllProjects()
+	if err != nil {
+		t.Fatalf("ListAllProjects: %v", err)
+	}
+	var out []string
+	for _, p := range all {
+		if p.InPalace {
+			out = append(out, p.Slug)
+		}
+	}
+	return out
+}
+
+func TestListAllProjects_DrawerStoresArePalaceStores(t *testing.T) {
 	v := testVault(t)
 	d := Drawer{Content: "c1", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}
 
@@ -389,26 +405,16 @@ func TestListProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	projects, err := v.ListProjects()
-	if err != nil {
-		t.Fatalf("ListProjects: %v", err)
-	}
-	if len(projects) != 2 {
-		t.Fatalf("got %d projects, want 2", len(projects))
-	}
-	found := map[string]bool{}
-	for _, p := range projects {
-		found[p] = true
-	}
-	if !found["proj-a"] || !found["proj-b"] {
-		t.Errorf("projects = %v, want proj-a and proj-b", projects)
+	projects := palaceStores(t, v)
+	if len(projects) != 2 || projects[0] != "proj-a" || projects[1] != "proj-b" {
+		t.Errorf("palace stores = %v, want [proj-a proj-b]", projects)
 	}
 }
 
-func TestListProjectsSkipsLocal(t *testing.T) {
+func TestListAllProjects_SkipsPalaceLocal(t *testing.T) {
 	v := testVault(t)
-	// Create palace/.local directory — should be skipped.
-	if err := os.MkdirAll(filepath.Join(v.Root, "palace", ".local"), 0755); err != nil {
+	// palace/.local is vault-wide machine-local state — never a project.
+	if err := os.MkdirAll(filepath.Join(v.Root, "palace", ".local", "embed-cache", "x"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	d := Drawer{Content: "c1", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}
@@ -416,23 +422,15 @@ func TestListProjectsSkipsLocal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	projects, err := v.ListProjects()
-	if err != nil {
-		t.Fatalf("ListProjects: %v", err)
-	}
-	if len(projects) != 1 || projects[0] != "real-proj" {
-		t.Errorf("projects = %v, want [real-proj]", projects)
+	if projects := palaceStores(t, v); len(projects) != 1 || projects[0] != "real-proj" {
+		t.Errorf("palace stores = %v, want [real-proj]", projects)
 	}
 }
 
-func TestListProjectsEmpty(t *testing.T) {
+func TestListAllProjects_EmptyPalace(t *testing.T) {
 	v := testVault(t)
-	projects, err := v.ListProjects()
-	if err != nil {
-		t.Fatalf("ListProjects: %v", err)
-	}
-	if projects != nil {
-		t.Errorf("expected nil for empty palace, got %v", projects)
+	if projects := palaceStores(t, v); projects != nil {
+		t.Errorf("expected no stores for an empty palace, got %v", projects)
 	}
 }
 

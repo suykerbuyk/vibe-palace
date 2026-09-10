@@ -46,7 +46,7 @@ func newDivergentVault(t *testing.T) *Vault {
 	seed("palace", "mandelbulb", "kg", "entities.jsonl")
 
 	// Projects/ only — history captured, never drawer-indexed. This is the
-	// class ListProjects is blind to (live vault: 73 session notes).
+	// class a palace/-only enumerator is blind to (live vault: 73 session notes).
 	mk("Projects", "rusty-can", "sessions")
 
 	// Noise that must be filtered identically in both trees.
@@ -78,19 +78,19 @@ func TestListAllProjects_UnionOfBothTrees(t *testing.T) {
 	}
 }
 
-// TestListAllProjects_SeesWhatListProjectsCannot is the regression that matters:
-// it pins the exact blind spot REVERSAL 1 found. A Projects/-only project is
-// invisible to ListProjects, and a vault-global caller that reaches for
-// ListProjects audits a corpus it never looked at.
-func TestListAllProjects_SeesWhatListProjectsCannot(t *testing.T) {
+// TestListAllProjects_SeesWhatAPalaceOnlyEnumeratorCannot is the regression that
+// matters: it pins the exact blind spot REVERSAL 1 found. A Projects/-only project
+// is invisible to a palace/-only enumeration (the since-deleted ListProjects), and a
+// vault-global caller that reaches for one audits a corpus it never looked at.
+func TestListAllProjects_SeesWhatAPalaceOnlyEnumeratorCannot(t *testing.T) {
 	v := newDivergentVault(t)
 
-	palaceOnly, err := v.ListProjects()
+	palaceOnly, err := listPalaceStores(filepath.Join(v.Root, "palace"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if slices.Contains(palaceOnly, "rusty-can") {
-		t.Fatal("premise broken: ListProjects is supposed to be blind to Projects/-only projects")
+		t.Fatal("premise broken: a palace/-only enumeration is supposed to be blind to Projects/-only projects")
 	}
 
 	all, err := v.ListAllProjects()
@@ -103,15 +103,15 @@ func TestListAllProjects_SeesWhatListProjectsCannot(t *testing.T) {
 	}
 }
 
-// TestListAllProjects_FilterMatchesListProjects pins the two enumerators to ONE
-// filter. If they disagreed about what counts as a project (a slug rule applied
-// in one tree and not the other), the union would report drift that is really
-// just an inconsistent filter -- an auditor inventing findings is worse than one
-// that misses them, because it trains you to wave off the real ones.
-func TestListAllProjects_FilterMatchesListProjects(t *testing.T) {
+// TestListAllProjects_PalaceHalfIsListPalaceStores pins the palace/ half of the
+// union to ONE filter. If two paths disagreed about what counts as a project (a
+// slug rule applied in one tree and not the other), the union would report drift
+// that is really just an inconsistent filter -- an auditor inventing findings is
+// worse than one that misses them, because it trains you to wave off the real ones.
+func TestListAllProjects_PalaceHalfIsListPalaceStores(t *testing.T) {
 	v := newDivergentVault(t)
 
-	fromListProjects, err := v.ListProjects()
+	fromListProjects, err := listPalaceStores(filepath.Join(v.Root, "palace"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestListAllProjects_FilterMatchesListProjects(t *testing.T) {
 	}
 
 	if !slices.Equal(fromListProjects, fromUnion) {
-		t.Fatalf("the two enumerators disagree about palace/: ListProjects=%v union(InPalace)=%v",
+		t.Fatalf("the two paths disagree about palace/: listPalaceStores=%v union(InPalace)=%v",
 			fromListProjects, fromUnion)
 	}
 
@@ -175,7 +175,7 @@ func TestListAllProjects_MissingTreesAreNotErrors(t *testing.T) {
 }
 
 // TestListAllProjects_LiveVaultCanary runs the enumerator against a REAL vault
-// and reports what ListProjects cannot see. It is opt-in:
+// and reports what a palace/-only enumeration cannot see. It is opt-in:
 //
 //	VP_LIVE_VAULT=~/obsidian/vibe-palace-vault go test ./internal/storage/ -run LiveVaultCanary -v -count=1
 //
@@ -195,9 +195,9 @@ func TestListAllProjects_LiveVaultCanary(t *testing.T) {
 	}
 	v := &Vault{Root: root}
 
-	palaceOnly, err := v.ListProjects()
+	palaceOnly, err := listPalaceStores(filepath.Join(root, "palace"))
 	if err != nil {
-		t.Fatalf("ListProjects: %v", err)
+		t.Fatalf("listPalaceStores: %v", err)
 	}
 	all, err := v.ListAllProjects()
 	if err != nil {
@@ -215,7 +215,7 @@ func TestListAllProjects_LiveVaultCanary(t *testing.T) {
 		case !p.InPalace:
 			invisible++
 			notes, _ := filepath.Glob(filepath.Join(root, "Projects", p.Slug, "sessions", "*.md"))
-			t.Logf("INVISIBLE to ListProjects: %-20s %d session notes", p.Slug, len(notes))
+			t.Logf("INVISIBLE to palace/ alone: %-20s %d session notes", p.Slug, len(notes))
 		case !p.InProjects:
 			phantom++
 			t.Logf("phantom (palace/ only, no history): %s", p.Slug)
@@ -224,11 +224,11 @@ func TestListAllProjects_LiveVaultCanary(t *testing.T) {
 	t.Logf("union=%d  palace-only-enumerator=%d  invisible=%d  phantom=%d",
 		len(all), len(palaceOnly), invisible, phantom)
 
-	// Every project ListProjects found must still be in the union. A union that
+	// Every palace/ store must still be in the union. A union that
 	// drops a project is worse than the blind spot it replaces.
 	for _, s := range palaceOnly {
 		if !slices.ContainsFunc(all, func(p ProjectPresence) bool { return p.Slug == s }) {
-			t.Errorf("union dropped %q, which ListProjects found", s)
+			t.Errorf("union dropped %q, which palace/ holds", s)
 		}
 	}
 }
@@ -324,13 +324,13 @@ func TestPresenceRule_PalaceStoreNeedsAFileOutsideLocal(t *testing.T) {
 		t.Fatalf("stores = %v, want %v", got, want)
 	}
 
-	lp, err := v.ListProjects()
+	lp, err := listPalaceStores(filepath.Join(root, "palace"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	slices.Sort(lp)
 	if !slices.Equal(lp, want) {
-		t.Fatalf("ListProjects = %v, want the same stores as ListAllProjects %v", lp, want)
+		t.Fatalf("listPalaceStores = %v, want the same stores as ListAllProjects %v", lp, want)
 	}
 }
 

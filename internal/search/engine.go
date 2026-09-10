@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -124,14 +123,27 @@ func (e *Engine) ensureIndex(ctx context.Context, project string) error {
 // ensureAllIndexes materializes every known project's index. Cross-project
 // search iterates e.indexes directly, so without this a cold engine would
 // silently return no results.
+//
+// "Every known project" is the union of both trees (ListAllProjects), not just
+// the palace/ stores. Rebuild reads two Projects/-resident corpora —
+// iterations.md and session-note bodies — that need no palace/ store, so a
+// project captured as notes only is searchable, and a cross-project search that
+// enumerated palace/ alone never reached it. (It used to reach one only on a
+// host where someone had searched that project directly first, because that
+// search conjured a palace/<slug>/ holding the embed cache. The cache no longer
+// lives there.)
+//
+// A build failure for any one project still fails the whole search, naming the
+// project. A cross-project result that silently dropped a project would present
+// itself as complete.
 func (e *Engine) ensureAllIndexes(ctx context.Context) error {
-	projects, err := e.vault.ListProjects()
+	projects, err := e.vault.ListAllProjects()
 	if err != nil {
 		return fmt.Errorf("list projects: %w", err)
 	}
 	for _, p := range projects {
-		if err := e.ensureIndex(ctx, p); err != nil {
-			return fmt.Errorf("build index for %s: %w", p, err)
+		if err := e.ensureIndex(ctx, p.Slug); err != nil {
+			return fmt.Errorf("build index for %s: %w", p.Slug, err)
 		}
 	}
 	return nil
@@ -617,11 +629,11 @@ func (e *Engine) detectCollision(id string, meta drawerMeta) bool {
 // exists today, but a future delete would leak .vec files without it. Must be
 // called with no engine lock held (RemoveDrawer takes e.mu).
 func (e *Engine) reapOrphanVectors(project string, live map[string]bool) (int, error) {
-	localDir, err := e.vault.LocalDir(project)
+	cacheDir, err := e.cache.dir(project)
 	if err != nil {
-		return 0, fmt.Errorf("local dir: %w", err)
+		return 0, fmt.Errorf("embed cache dir: %w", err)
 	}
-	entries, err := os.ReadDir(filepath.Join(localDir, "embed-cache"))
+	entries, err := os.ReadDir(cacheDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, nil

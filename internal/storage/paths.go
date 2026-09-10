@@ -106,6 +106,13 @@ func (v *Vault) KGTriplePath(project, subject, predicate, object string) (string
 
 // LocalDir returns the path to a project's machine-local directory:
 // {vault}/palace/{project}/.local
+//
+// It now holds only the vibe-vault migrator's imported-sessions.jsonl. The
+// embed cache used to live here too and moved to EmbedCacheDir, because a
+// gitignored cache inside a synced project directory outlives a pulled
+// deletion of that project and leaves a directory every enumerator counted as
+// a store. A .local found here holding an embed-cache/ is pre-migration state
+// that SweepEmbedCaches moves.
 func (v *Vault) LocalDir(project string) (string, error) {
 	if err := slug.Validate(project); err != nil {
 		return "", fmt.Errorf("project: %w", err)
@@ -117,6 +124,21 @@ func (v *Vault) LocalDir(project string) (string, error) {
 // {vault}/palace/.local
 func (v *Vault) VaultLocalDir() string {
 	return filepath.Join(v.Root, "palace", ".local")
+}
+
+// EmbedCacheDir returns the directory holding a project's cached embedding
+// vectors: {vault}/palace/.local/embed-cache/{project}
+//
+// It lives under the vault-wide palace/.local/, which no project enumerator
+// walks and the canonical gitignore already covers, so writing a vector can
+// never create or change anything under palace/{project}/ or
+// Projects/{project}/ — for any slug, with no existence check on the embedding
+// path.
+func (v *Vault) EmbedCacheDir(project string) (string, error) {
+	if err := slug.Validate(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.VaultLocalDir(), "embed-cache", project), nil
 }
 
 // EnsureDir creates the directory tree at path if it does not exist.

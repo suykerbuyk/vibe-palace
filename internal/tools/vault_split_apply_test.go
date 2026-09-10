@@ -505,6 +505,9 @@ func TestVaultSplitVerify_MissingDestinationRefuses(t *testing.T) {
 // radius: an unrequested project must be exactly as it was.
 func TestVaultSplitPurge_RemovesSourceTreesAfterVerify(t *testing.T) {
 	root := splitFixtureVault(t, "alpha", "beta")
+	// Each slug's embed cache in the new layout, outside both of its trees.
+	writeSplitFile(t, root, "palace/.local/embed-cache/alpha/d1.vec", "cache")
+	writeSplitFile(t, root, "palace/.local/embed-cache/beta/d1.vec", "cache")
 	dest := splitDest(t)
 	p := splitPlannedParams(t, root, dest, "alpha")
 
@@ -526,8 +529,9 @@ func TestVaultSplitPurge_RemovesSourceTreesAfterVerify(t *testing.T) {
 		t.Error("purge reported removing no files")
 	}
 
-	// The allow-listed trees are gone, root and all.
-	for _, rel := range []string{"palace/alpha", "Projects/alpha"} {
+	// The allow-listed trees are gone, root and all — the slug's embed cache
+	// included, or a slug reused on this host would be served its old vectors.
+	for _, rel := range []string{"palace/alpha", "Projects/alpha", "palace/.local/embed-cache/alpha"} {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); !os.IsNotExist(err) {
 			t.Errorf("%s must be gone after purge (stat err: %v)", rel, err)
 		}
@@ -538,15 +542,47 @@ func TestVaultSplitPurge_RemovesSourceTreesAfterVerify(t *testing.T) {
 		t.Error("purge must remove subtract-set files inside a purged tree")
 	}
 
-	// The unrequested project is untouched.
+	// The unrequested project is untouched, its embed cache included.
 	if after := snapshotTree(t, filepath.Join(root, "Projects", "beta")); !equalStringMaps(betaBefore, after) {
 		t.Error("purge must not touch a project outside the allow-list")
+	}
+	if _, err := os.Stat(filepath.Join(root, "palace", ".local", "embed-cache", "beta", "d1.vec")); err != nil {
+		t.Errorf("purge must not touch another slug's embed cache: %v", err)
 	}
 
 	// The destination still holds everything.
 	for _, rel := range []string{"Projects/alpha/resume.md", "palace/alpha/kg/entities.jsonl"} {
 		if _, err := os.Stat(filepath.Join(dest, filepath.FromSlash(rel))); err != nil {
 			t.Errorf("destination lost %s: %v", rel, err)
+		}
+	}
+}
+
+// TestVaultSplitPurge_CacheRefusalLeavesTheRealTrees: the embed cache is purged
+// first, so when it refuses — here a symlink purge cannot classify — the slug's
+// real trees are still in place and purge can be re-run. Purged last, the same
+// refusal would land after the content was gone, when the manifest no longer
+// binds and nothing can finish the job.
+func TestVaultSplitPurge_CacheRefusalLeavesTheRealTrees(t *testing.T) {
+	root := splitFixtureVault(t, "alpha")
+	writeSplitFile(t, root, "palace/.local/embed-cache/alpha/d1.vec", "cache")
+	if err := os.Symlink(t.TempDir(), filepath.Join(root, "palace", ".local", "embed-cache", "alpha", "link.vec")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	dest := splitDest(t)
+	p := splitPlannedParams(t, root, dest, "alpha")
+	p.Action = "apply"
+	if _, err := callSplit(t, root, p); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	p.Action = "purge"
+	if _, err := callSplit(t, root, p); err == nil {
+		t.Fatal("purge must refuse a cache entry it cannot classify")
+	}
+	for _, rel := range []string{"palace/alpha/kg/entities.jsonl", "Projects/alpha/resume.md"} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
+			t.Errorf("%s must survive a refused cache purge: %v", rel, err)
 		}
 	}
 }

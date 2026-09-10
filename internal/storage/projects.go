@@ -30,16 +30,18 @@ import (
 // never written. Neither tree is a superset of the other, so NEITHER ALONE
 // ENUMERATES THE VAULT.
 //
-// ListProjects (drawers.go) reads only palace/. That is correct for search,
-// which indexes drawers — but any caller asking "what is in this vault?" and
-// reaching for it gets a subset and cannot tell. That is how a vault-global
-// audit reports a clean bill of health for a corpus it never looked at.
+// ListAllProjects is therefore the only enumerator. A palace/-only one
+// (ListProjects) existed for search, and every caller that reached for it to ask
+// "what is in this vault?" got a subset and could not tell — which is how a
+// vault-global audit reports a clean bill of health for a corpus it never looked
+// at. Cross-project search was its last caller; it now enumerates the union too,
+// because two of search's three corpora live under Projects/.
 //
 // # What counts as a palace store
 //
 // A palace/<slug>/ directory is a STORE only if it holds at least one regular
-// file outside its top-level .local/. Both enumerators route palace/ through
-// the one predicate that says so (listPalaceStores), so they cannot disagree.
+// file outside its top-level .local/. palace/ is enumerated only through the
+// one predicate that says so (listPalaceStores), so no caller can disagree.
 //
 // The reason is git. .local/ is machine-local state the vault's gitignore
 // keeps out of the repository, and git cannot carry an empty directory at all.
@@ -153,7 +155,7 @@ func listProjectDirs(dir string) ([]string, error) {
 // listPalaceStores returns the valid slugs under palaceDir that are palace
 // STORES: listProjectDirs' naming rule, then the presence rule of
 // palaceDirHoldsFileOutsideLocal. It is the only way palace/ is enumerated, so
-// ListProjects and ListAllProjects apply one rule and cannot disagree.
+// every caller applies one rule and none can disagree with another.
 //
 // A directory the predicate cannot decide COUNTS AS A STORE. "I could not look"
 // is never allowed to mean "absent": a store dropped from the enumeration

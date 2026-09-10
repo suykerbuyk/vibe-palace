@@ -884,13 +884,17 @@ func RefreshIndexTool(engine *search.Engine, vault *storage.Vault) mcp.Tool {
 			"as an ingest. It cannot invent content that " +
 			"was never captured: it REFUSES when the project has no palace store, nothing " +
 			"indexable, AND no transcript archives, rather than reporting a success it did " +
-			"not achieve.",
+			"not achieve. Refreshing a notes-only project indexes its notes without creating " +
+			"palace/<slug>/ (the embed cache lives under palace/.local/), so it does not " +
+			"clear that project's project-tree-coherence finding.",
 		Schema:  refreshIndexSchema,
 		Handler: refreshIndexHandler(engine, vault),
-		// Mutating because it WRITES, on three independent paths: the archive
-		// backfill reaches storage.Vault.AppendDrawers -> appendUnderLock, the
-		// embed pass writes .vec cache files on every cache miss, and Rebuild
-		// can create palace/<slug>/ outright for a project that had no store.
+		// Mutating because it WRITES, on two independent paths: the archive
+		// backfill reaches storage.Vault.AppendDrawers -> appendUnderLock, and
+		// the embed pass writes .vec cache files on every cache miss. Rebuild
+		// used to be a third — it could create palace/<slug>/ outright for a
+		// project that had no store, because the embed cache lived there — and
+		// no longer is: the cache lives under palace/.local/embed-cache/.
 		// It was registered non-mutating for a long time, and the derived call
 		// graph reported the disagreement as accepted-under-protest debt for
 		// exactly that long.
@@ -1114,13 +1118,13 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault) mcp.Handle
 			)
 		}()
 
-		// Ask BEFORE rebuilding. A rebuild can create palace/<project>/ as a
-		// side effect of indexing the iterations or session-note corpus (both
-		// write .vec files under palace/<project>/.local/embed-cache), so
-		// asking afterwards answers a different question than the one the
-		// refusal turns on. Neither of those corpora writes palace/<project>/
-		// drawers, which is what HasPalaceStore actually stats — the ordering
-		// is defensive, and the third corpus source does not weaken it.
+		// Ask BEFORE rebuilding. The backfill below writes drawers, so asking
+		// afterwards answers a different question than the one the refusal
+		// turns on. A rebuild itself no longer creates anything under
+		// palace/<project>/ — the embed cache moved to
+		// palace/.local/embed-cache/<project>/ — and none of its corpora ever
+		// wrote palace/<project>/drawers, which is what HasPalaceStore stats.
+		// The ordering stays, as defence.
 		hadStore, err := vault.HasPalaceStore(p.Project)
 		if err != nil {
 			return nil, fmt.Errorf("check palace store: %w", err)
@@ -1152,7 +1156,7 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault) mcp.Handle
 		// The condition is "no store AND nothing indexed", not "no store".
 		// Since a583440 the iterations corpus is a second source that needs no
 		// palace store, so a project with iterations.md but no drawers gets a
-		// real index from a rebuild that legitimately CREATES the store —
+		// real index from a rebuild, with no store before or after it —
 		// refusing that would be this same defect inverted, reporting failure
 		// for work that was done. The session-note corpus is a third such
 		// source, and it widens that reach past note-only projects: ANY project

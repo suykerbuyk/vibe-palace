@@ -83,6 +83,24 @@ import "sort"
 // The lesson that outlives the specimen: an entry earns its place here by
 // having been SHOWN to write nothing, never by inheriting a flag that happened
 // to be false.
+//
+// # The one ruled exemption: host-local derived state
+//
+// vp_search and vp_search_cross_project are not strictly write-nothing. A
+// cache miss writes a .vec vector under palace/.local/embed-cache/<slug>/, and
+// the first cache operation of each engine runs the one-time embed-cache sweep
+// (storage.SweepEmbedCaches), which renames legacy caches into that directory,
+// removes the directories the move empties, and reaps caches for slugs in
+// neither tree. Operator decision 2026-09-10 rules both exempt from this
+// contract: everything they write or remove is host-local, regenerable derived
+// state that git does not track — palace/.local/ is in the canonical gitignore,
+// and the sweep asks git (one read-only `git ls-files`) before it moves a legacy
+// palace/<slug>/.local/ cache, leaving any slug with a tracked file untouched —
+// so a read-only client cannot change anything another host, or this vault's
+// history, will ever see. The exemption is that narrow. Before the cache moved it did not
+// hold: a search could create palace/<slug>/ for a notes-only project, and
+// every project enumerator counted that directory as a store. Any other write
+// from a tool in this list is still a misclassification.
 var ReadOnlyServeToolNames = []string{
 	"vp_bootstrap_context",
 	"vp_check",

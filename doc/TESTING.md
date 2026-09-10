@@ -339,18 +339,27 @@ Cache lifecycle:
 - `make dist-clean` — deletes `.cache/` entirely (forces re-download)
 - `git clean -fxd` — also deletes the cache (it's gitignored)
 
-### Embed cache: `palace/{project}/.local/embed-cache/`
+### Embed cache: `palace/.local/embed-cache/{project}/`
 
 Separate from the model cache, the **embed cache** stores pre-computed
 embedding vectors for drawer content that has already been embedded. This
 is a second-level cache used by `search.Engine.Rebuild()`:
 
 ```
-palace/my-project/.local/embed-cache/
+palace/.local/embed-cache/my-project/
   a1b2c3d4.vec    ← raw little-endian float32 (1536 bytes for 384 dims)
   e5f6g7h8.vec
   ...
 ```
+
+It lived at `palace/{project}/.local/embed-cache/` until 2026-09-10. The first
+cache operation of each `EmbedCache` sweeps that legacy layout into the new one
+(see ARCHITECTURE, "Embed Cache"), so a test that seeds a vector at the old
+path is simulating a binary from before the move — which is exactly what
+`TestEmbedCache_LegacyVectorsAreCacheHitsAfterMigration` and the legacy leg of
+`TestIntegrationPulledDeletionLeavesNoHusk` do. A test that expects to watch a
+sweep must build a FRESH `EmbedCache` (or engine): the sweep is a per-instance
+`sync.Once`, and the harness engine's may already have fired.
 
 When rebuilding a project's search index, the engine checks the embed
 cache before calling the embedder. On a hit, it skips inference entirely.
@@ -400,6 +409,9 @@ context resolver, and config into a single test fixture.
 | `ColdSearchBuildsIndexLazily` | MCP → tools → search → storage | No | `vp_search` and `vp_search_cross_project` return **real hits** on projects whose index has never been built — no `Rebuild`, no `IndexDrawer`, only drawers on disk (see below) |
 | `SurfaceCheck` | MCP → tools → check | No | JSON-RPC `tools/call` for `vp_surface_check` returns `status:"pass"` with the binary's surface version on a compatible vault; the fail path carries the curated remediation `details` across the wire |
 | `Check` | MCP → tools → check | No | JSON-RPC `tools/call` for `vp_check` is reachable on `tools/list` (and `vp_check_resume_refs`, which it subsumed, is gone from it); the default run covers every producer in declared order and repeats identically; the `resume-refs` selector's rows match `check.RunSelected` verdict-for-verdict — name, summary and the `details` array — proving the tool and the CLI dispatch one registry; no `Embedder` row ever crosses the wire; an unknown selector is refused rather than silently reporting a clean bill of health |
+| `EmbedCacheLivesOutsideProjectTrees` | MCP → tools → search → storage → vaultaudit | No | `vp_search_cross_project` runs FIRST, on a harness engine that has never indexed the notes-only project (asserted), and must return a hit from it — reverting `ensureAllIndexes` to a palace-only enumeration turns it red; then `vp_search` on the notes-only project writes its vector at `palace/.local/embed-cache/notesonly/note.notesonly.<stem>.c0.vec` and creates no `palace/notesonly`; `project-tree-coherence` still reports the project; `palace-local-only` passes (`embed_cache_layout_test.go`) |
+| `PulledDeletionLeavesNoHusk` | git → storage.Pull → search → check → vaultaudit | No | The incident end to end, with **host B = the harness root** `git init`-ed in place and a bare remote, and host A a plain clone never opened as a vault (the harness cannot root a vault at a clone). Legacy leg: a vector at the OLD path survives A's pulled deletion as a husk, which `ListAllProjects` and both audit dimensions ignore and `vp_check palace-local-only` reports; one search on a FRESH engine heals the husk and reaps its cache (a keeper project keeps the reaper's zero-projects guard from declining). New-layout leg: the same pulled deletion leaves no `palace/stub2` at all, and the next sweep reaps its cache. Git runs with `GIT_CONFIG_GLOBAL=/dev/null`; `PullResult.RemoteResults` is checked, since `Pull` reports per-remote failure there (`embed_cache_layout_test.go`) |
+| `ConcurrentSweepsConverge` | search → storage | No | Four engines, each with its own sweep Once, search at the same instant over a vault in the legacy layout (two real stores, a notes-only phantom, an incident-shape husk, a crash-state empty `.local`): every search succeeds, every known project's vector ends at the new path byte-identical, no legacy cache survives, husks heal, real stores keep their drawers (`embed_cache_layout_test.go`) |
 | `LocalOnlyPalaceDirIsNotAStore` | MCP → tools → storage → check → vaultaudit | No | A hand-seeded legacy husk (`palace/stub/.local/embed-cache/x.vec`) and an empty subtree (`palace/empty/drawers/w/r/`) are absent from `vp_list_projects`' `projects` and `drift`; `vp_check {checks:["palace-local-only"]}` returns one Info row naming both with what each holds and no disposition word; `vaultaudit.Run` reports neither under `palace-store-drawers` or `project-tree-coherence`, and still reports a notes-only project under `project-tree-coherence` (`palace_presence_test.go`) |
 | `BootstrapFullContext` | tools → context → storage | No | Bootstrap tool assembles workflow, commands from embedded + vault sources |
 | `BootstrapWithSessions` | storage | No | Sessions written via API are readable through list/read operations |
@@ -712,6 +724,13 @@ contract holds against the real binary.
 | `TestRebuild_NoteOnlyProjectIsSearchable` | No | The point of the change: a project captured as notes only — no transcript, no archive, no drawer store — becomes reachable from `vp search`, with `source_type=session-note`, the note's date, and a `source_ref` that navigates back to the file |
 | 🔴 `TestRebuild_NoteCorpusWritesNoKnowledgeGraphAndNoDrawers` | No | **The load-bearing test, and it pins a ruling.** The note pass must never invent knowledge-graph facts from wrap prose. Achieved STRUCTURALLY — nothing calls `capture.IndexTranscript`, so `extractEntities` is not on the path — rather than by a boolean a later edit could flip. Asserts on the FILESYSTEM after a real `Rebuild` over a note-only project: no KG entity file, no `kg/` file anywhere under `palace/`, and no `drawers.jsonl` anywhere; re-asserted after a second rebuild. Non-vacuous: fails first if `NoteChunks == 0`. The prose is deliberately dense in the entity shapes capture's extractor keys on, so a KG write would have something to find |
 | `TestRebuild_NoteChunksSurviveAlongsideIterations` | No | The note source is a THIRD corpus, additive rather than a replacement: a project with both iterations and notes gets `Indexed == IterationChunks + NoteChunks` and both hits come back |
+| `TestSearchCrossProject_BuildFailureNamesTheProject` / `_UnreadableVaultIsAnError` | No | Widening the enumeration kept the error contract: one project that cannot be built fails the whole cross-project search naming it, and an enumeration that could not look is an error, never an empty result |
+| `TestSearchCrossProject_CoversProjectsOnlyProject` | No | Cross-project search enumerates the union of both trees, so a notes-only project (no `palace/` store) is hit — and indexing it creates no `palace/<slug>/`. Reverting `ensureAllIndexes` to a `palace/`-only enumeration turns it red |
+| `TestEmbedCachePut_NeverCreatesAProjectTree` (`cache_test.go`) | No | A `Put` on a slug with no tree lands at `palace/.local/embed-cache/<slug>/<id>.vec` and leaves `palace/<slug>` and `Projects/<slug>` absent. Pointing `path()` back at `LocalDir` turns it red |
+| `TestEmbedCache_LegacyVectorsAreCacheHitsAfterMigration` (`cache_test.go`) | No | Vectors seeded at the legacy path are migrated by the first cache operation and served as hits: `Rebuild` reports `Embedded == 0`, the embedder runs no batch, and the emptied legacy `.local` is healed away |
+| `TestEmbedCachePut_RetriesWhenItsDirectoryVanishes` (`cache_test.go`) | No | Through the `cacheWriteFile` seam, Put's first write finds its directory removed and fails with ENOENT; Put must re-create the directory, write once more, and serve the vector. Removing the retry from Put turns it red |
+| `TestEmbedCache_SweepsOncePerInstance` / `_SweepFailureIsNotFatal` / `_RefusesInvalidSlug` (`cache_test.go`) | No | The sweep Once is per instance (a second op does not re-sweep; a fresh instance does); an unreadable `palace/` fails the sweep without failing the cache; an invalid slug is refused on every operation |
+| `TestEmbedCache_ConcurrentInstancesConverge` (`cache_test.go`) | No | Six `EmbedCache` instances — each its own Once — sweep and `Put` at once under `-race`: every legacy vector ends at the new path with its bytes, every `Put` is readable, and the husks are healed |
 
 ### `internal/search/` — Recall Harness (`recall_test.go`)
 
@@ -1197,7 +1216,8 @@ reports the complement.
 directory, an empty `drawers/` or `kg/` subtree, and `.local` plus an empty
 subtree are **not** stores; a `kg/` file, a lone `.surface`, a zero-length
 `drawers.jsonl` and a nested (non-top-level) `.local/` file **are**; `palace/.local`
-is never a project; and `ListProjects` and `ListAllProjects` agree. Deleting the
+is never a project; and `ListAllProjects` agrees with `listPalaceStores`, the only
+path palace/ is enumerated through. Deleting the
 predicate turns the `.local`-only case red. `TestPresenceRule_UnreadableDirCountsAsStore`
 pins that an unwalkable directory is counted rather than dropped, and does not
 fail the enumeration. `TestPalaceNonStores_IsTheComplement` asserts that
@@ -1230,6 +1250,76 @@ git a broken `.git` and requires the could-not-check wording, and
 `TestCheckPalaceLocalOnly_NeverWrites` hashes the whole tree before and after; an
 unreadable `palace/` is Info, never Fail; and the registry producer skips with
 `no vault configured` like every vault-scoped producer.
+
+### `internal/storage/embedcache_sweep_test.go` — the one-time layout sweep
+
+`SweepEmbedCaches` moves legacy `palace/<slug>/.local/embed-cache/` caches to
+`palace/.local/embed-cache/<slug>/`, heals the directories that leaves empty, and
+reaps caches for slugs in neither tree. Pinned: the move is byte-identical; a
+merge into an existing target never overwrites (`os.Link` refuses, the new-layout
+vector wins, the legacy copy is counted `Dropped`); a husk heals; **crash
+states** — an empty `.local` left after the rename, and a half-drained legacy
+directory — are finished by the next run; a `palace/<slug>/` holding drawers,
+`kg/`, `.surface` or `.local/imported-sessions.jsonl` is never removed; a
+directory without `.local/` is never touched even when empty; a second run and a
+vault with no `palace/` are no-ops; an unreadable `palace/` is an error. Reaping:
+an orphaned cache is removed while one belonging to a project in either tree
+survives (the fixtures seed a keeper project); `TestSweepEmbedCaches_ReapGuards`
+pins that **zero projects** and an **enumeration error** each reap nothing, and
+that a non-vector file blocks its directory's removal. `_NeverFollowsSymlinks`
+covers a symlinked `palace/<slug>/` pointing at a real store with a cache inside
+(untouched, and its new-layout cache not reaped) and a symlinked cache
+directory. `_OddShapesAreLeftAlone` covers a file where the legacy cache or the
+target should be, and a non-regular entry inside a legacy cache.
+`_FailuresLeaveTheLegacyCacheInPlace` drives each failure branch with file
+modes — an unstatable or unwritable target, an unreadable or unwritable legacy
+directory, a file where the cache root goes, a heal blocked by permissions — and
+asserts each is reported per slug and leaves the legacy vector where it was.
+`paths_test.go`'s `TestEmbedCacheDir` pins the path and the slug validation.
+`_ConcurrentSweepsConverge` runs six sweepers alongside writers that do exactly
+what `EmbedCache.Put` does — `MkdirAll`, `WriteFile`, one retry on ENOENT —
+checks every write's error, and requires every written vector present with its
+bytes, no legacy cache, husks healed and real stores intact. It clears `PATH`
+so the tracked-file probe spawns no git: a git process delays each sweeper long
+enough that the writers finish first and the rename-over-an-empty-directory race
+is never reached. Measured on 2026-09-10: with the writers' retry removed it
+fails 72 of 1000 runs; with it, 0 of 1000 without `-race` and 0 of 100 with
+`-race`. (Real `EmbedCache` Puts cannot be imported here; `search`'s
+`TestEmbedCache_ConcurrentInstancesConverge` races them.)
+
+Git tracking: `_TrackedLegacyIsLeftAlone` commits one slug's legacy vector and
+requires that slug untouched and reported while an untracked slug beside it
+migrates; `_OutsideARepositoryNothingIsTracked` covers a non-repository and a
+repository that ignores `palace/*/.local/`; `_GitFailureSkipsTheMigration` gives
+git a broken `.git` and requires stage 1 skipped (and reaping still run). Through
+test seams for `os.Rename`/`os.Link`: `_CopyFallbackWhenLinkAndRenameAreRefused`
+(an EXDEV-style refusal of both still heals the husk by copying, with no temp
+file left, the new-layout copy winning, and copied vectors at mode 0644);
+`_RemovesOnlyStaleCopyTemps` (a crash's hour-old `.sweep-*.tmp` is collected, a
+fresh one a running sweep may own is kept, a look-alike name is kept, and an
+orphan held only by a stale temporary is then reaped); `_OneFailureDoesNotStopTheMerge`;
+and `_TargetVanishingMidMergeIsRecreated` (the branch a concurrent reap
+reaches). `_MergeLeavesForeignFilesAndSymlinkedTargets` pins that only regular
+`*.vec` files move and a symlinked target is never followed.
+`_NeverFollowsSymlinks` also covers a real `palace/<slug>/` whose `.local` is a
+symlink (turning the `Lstat` into `Stat` turns it red). The reap:
+`_ReapNeedsAProjectsTree` (a dangling `Projects/` reaps nothing),
+`_ReapKeepsAnythingThatExists` (a slug that exists only as a dangling symlink
+keeps its cache), and `_ReapKeepsAProjectBornDuringTheSweep`, which pins through
+the cache-read seam that a project appearing just before the read keeps its
+cache. That property used to depend on reading the cache before listing
+projects; with the per-slug existence check, swapping the two reads is an
+equivalent mutant, so the test pins the property rather than the order.
+
+### `internal/tools/vault_split_apply_test.go` — purge reaps the moved cache
+
+`TestVaultSplitPurge_RemovesSourceTreesAfterVerify` seeds each slug's cache at
+the new location and asserts purge removes the purged slug's
+`palace/.local/embed-cache/<slug>/` and leaves the other slug's in place.
+`TestVaultSplitPurge_CacheRefusalLeavesTheRealTrees` puts a symlink purge cannot
+classify in the cache and requires the refusal to leave `palace/alpha` and
+`Projects/alpha` intact: the cache is purged first, because once the real trees
+are gone the manifest no longer binds and purge cannot be re-run.
 
 ### `internal/tools/vault_merge_test.go` — collision text for a non-store
 

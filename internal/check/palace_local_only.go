@@ -89,7 +89,7 @@ func palaceLocalOnlyTracking(v *storage.Vault, dirs []storage.PalaceNonStore) (m
 	for _, d := range dirs {
 		if tracked[d.Slug] > 0 {
 			return tracked, "git tracks the .local/ files counted below, so those are synced to every host " +
-				"that pulls"
+				"that pulls; the embed-cache sweep leaves such a directory in place"
 		}
 	}
 	return tracked, "git tracks no file in any of them, so none of this is synced to another host"

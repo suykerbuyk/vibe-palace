@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
@@ -154,10 +155,18 @@ the request context. We touched internal/auth/middleware.go for this.
 		t.Errorf("DrawersCreated = 0, want > 0")
 	}
 
-	// Discover the destination slug dir under palace/.
-	palaceDirs, err := filepath.Glob(filepath.Join(dstDir, "palace", "*"))
+	// Discover the destination slug dir under palace/. palace/.local is
+	// vault-wide machine-local state (the embed cache lives there), never a
+	// slug, and filepath.Glob's "*" matches a leading dot.
+	matches, err := filepath.Glob(filepath.Join(dstDir, "palace", "*"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	var palaceDirs []string
+	for _, m := range matches {
+		if !strings.HasPrefix(filepath.Base(m), ".") {
+			palaceDirs = append(palaceDirs, m)
+		}
 	}
 	if len(palaceDirs) == 0 {
 		t.Fatal("no destination palace/<slug>/ directory created")

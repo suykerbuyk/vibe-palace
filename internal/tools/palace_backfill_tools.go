@@ -159,11 +159,11 @@ type palaceBackfillDecisionsResult struct {
 //
 // # Why ListAllProjects and not ListProjects
 //
-// storage.ListProjects enumerates palace/ — the drawer store — and this walk
-// reads Projects/<slug>/sessions. Those two trees are not supersets of each
-// other, and the asymmetry is exactly the population this backfill exists for:
-// a project whose notes were captured before it was ever drawer-indexed has
-// sessions and NO palace/ dir, so ListProjects would skip precisely the
+// storage.ListProjects (since deleted) enumerated palace/ — the drawer store —
+// and this walk reads Projects/<slug>/sessions. Those two trees are not
+// supersets of each other, and the asymmetry is exactly the population this
+// backfill exists for: a project whose notes were captured before it was ever
+// drawer-indexed has sessions and NO palace/ dir, so ListProjects skipped precisely the
 // projects with the most decisions to recover, and would report a clean zero
 // while doing it. ListAllProjects returns the union with presence flags;
 // InProjects is the half that can possibly hold a session note.

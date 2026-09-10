@@ -851,11 +851,11 @@ vault/
 │   │   │       └── {subj}--{pred}--{obj}.json
 │   │   │
 │   │   └── .local/                    ← gitignored, machine-local
-│   │       ├── hnsw.idx              ← rebuilt from drawers
-│   │       └── embed-cache/          ← speeds up rebuild
-│   │           └── {drawer-id}.vec
+│   │       └── imported-sessions.jsonl ← vibe-vault migration ledger
 │   │
 │   └── .local/                        ← vault-wide, gitignored
+│       ├── embed-cache/               ← speeds up rebuild
+│       │   └── {project}/{drawer-id}.vec
 │       └── cross-project.idx          ← cross-project search index
 │
 ├── Projects/                          ← unchanged from VibeVault
@@ -1063,12 +1063,17 @@ The HNSW vector index is the only binary artifact in the system. It is:
 - **Distance metric:** L2 (Euclidean), matching ChromaDB default
 - **Capacity:** Tested to 1M+ vectors with sub-millisecond search
 
-**Embedding cache:** `palace/{project}/.local/embed-cache/{drawer-id}.vec`
+**Embedding cache:** `palace/.local/embed-cache/{project}/{drawer-id}.vec`
 
 Optional binary cache of pre-computed embeddings (gitignored). Speeds up HNSW
 rebuild — only re-embed drawers whose IDs are not in the cache. Since embeddings
 are deterministic (same text + same model = same vector), the cache is a pure
 performance optimization, never authoritative.
+
+It lives under the vault-wide `palace/.local/`, not inside `palace/{project}/`.
+A gitignored cache inside a synced project directory survives a pulled deletion
+of that project and leaves a directory behind on every host that ever embedded
+it (the 2026-09-10 embed-cache relocation; see ARCHITECTURE "Embed Cache").
 
 **Startup rebuild strategy:**
 

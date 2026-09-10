@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -597,6 +598,76 @@ func TestCrossProjectSearchLazyBuildsAllIndexes(t *testing.T) {
 	}
 	if !seen["proj-a"] || !seen["proj-b"] {
 		t.Errorf("expected hits from both projects, got %v", seen)
+	}
+}
+
+// TestSearchCrossProject_CoversProjectsOnlyProject: cross-project search
+// enumerates every project in the vault, not just palace/ stores. A project
+// captured as session notes only has no palace/ store at all, and Rebuild's
+// note corpus makes it searchable — so a cross-project search that enumerated
+// palace/ alone never reached it. Reverting ensureAllIndexes to a palace/-only
+// enumeration turns this red.
+func TestSearchCrossProject_CoversProjectsOnlyProject(t *testing.T) {
+	eng, v := testEngine(t)
+	ctx := context.Background()
+
+	addDrawer(t, v, "withstore", "wing-1", "room-1", "gearbox bearings wear out", "facts")
+	writeSessionNote(t, v.Root, "notesonly", "2026-09-10-aaaa0000-01", "2026-09-10", "Gearbox",
+		"The gearbox rebuild replaced every bearing.")
+
+	results, err := eng.Search(ctx, "gearbox bearing", SearchFilters{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, r := range results {
+		seen[r.Project] = true
+	}
+	if !seen["notesonly"] {
+		t.Fatalf("cross-project search missed the notes-only project; projects hit = %v", seen)
+	}
+	if !seen["withstore"] {
+		t.Errorf("cross-project search missed the palace store; projects hit = %v", seen)
+	}
+	if _, err := os.Stat(filepath.Join(v.Root, "palace", "notesonly")); !os.IsNotExist(err) {
+		t.Errorf("indexing a notes-only project created palace/notesonly (stat err %v)", err)
+	}
+}
+
+// TestSearchCrossProject_BuildFailureNamesTheProject: widening enumeration to
+// every project does not change the error contract. One project that cannot be
+// built fails the whole cross-project search, naming it, rather than returning a
+// partial result that presents itself as complete.
+func TestSearchCrossProject_BuildFailureNamesTheProject(t *testing.T) {
+	eng, v, emb := countingEngine(t, storage.Config{})
+	emb.batchFail = true
+	writeSessionNote(t, v.Root, "notesonly", "2026-09-10-aaaa0000-01", "2026-09-10", "t", "some body text")
+
+	_, err := eng.Search(context.Background(), "body", SearchFilters{})
+	if err == nil || !strings.Contains(err.Error(), "build index for notesonly") {
+		t.Fatalf("err = %v, want the failing project named", err)
+	}
+}
+
+// TestSearchCrossProject_UnreadableVaultIsAnError: an enumeration that could not
+// look is an error, never an empty result.
+func TestSearchCrossProject_UnreadableVaultIsAnError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	eng, v := testEngine(t)
+	projects := filepath.Join(v.Root, "Projects")
+	if err := os.MkdirAll(projects, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(projects, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(projects, 0o755) })
+
+	if _, err := eng.Search(context.Background(), "q", SearchFilters{}); err == nil ||
+		!strings.Contains(err.Error(), "list projects") {
+		t.Fatalf("err = %v, want the enumeration failure", err)
 	}
 }
 

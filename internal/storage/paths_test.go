@@ -156,6 +156,24 @@ func TestVaultLocalDir(t *testing.T) {
 	}
 }
 
+// TestEmbedCacheDir: the cache lives under the vault-wide palace/.local/, never
+// under palace/<project>/, and the slug is validated before it becomes a path.
+func TestEmbedCacheDir(t *testing.T) {
+	v := NewVault("/vault")
+	got, err := v.EmbedCacheDir("recmeet")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := filepath.Join("/vault", "palace", ".local", "embed-cache", "recmeet"); got != want {
+		t.Errorf("EmbedCacheDir = %q, want %q", got, want)
+	}
+	for _, bad := range []string{"BAD", "", "../escape"} {
+		if _, err := v.EmbedCacheDir(bad); err == nil {
+			t.Errorf("EmbedCacheDir(%q) should return an error", bad)
+		}
+	}
+}
+
 func TestEnsureDir(t *testing.T) {
 	base := t.TempDir()
 

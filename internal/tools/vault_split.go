@@ -60,9 +60,11 @@ import (
 //
 //   - .surface   — a stamp about the binary that last wrote THIS vault. A
 //     destination inherits nothing from it and must stamp itself on first write.
-//   - **/.local  — machine-local state: the vault-wide palace/.local and, the
-//     one the gitignore line does NOT reach, the per-project
-//     palace/{p}/.local/embed-cache. Caches rebuild; they never travel.
+//   - **/.local  — machine-local state: the vault-wide palace/.local (which
+//     holds the embed cache at palace/.local/embed-cache/{p}) and, the one the
+//     gitignore line does NOT reach, the per-project palace/{p}/.local — now
+//     only imported-sessions.jsonl, plus any embed-cache left from before the
+//     cache moved. Caches rebuild; they never travel.
 //   - .vp-locks  — host-local advisory write locks.
 //   - commit-log.anchor — the SHA of a source-vault commit. A fresh destination
 //     has no such commit, so the value is a dangling reference on arrival.

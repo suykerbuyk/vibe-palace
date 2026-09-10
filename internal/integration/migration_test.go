@@ -14,6 +14,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/migrate"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 // TestIntegrationVibeVaultImportToSearch proves that ImportVibeVault feeds
@@ -327,11 +328,13 @@ func TestIntegrationMemPalaceImportToSearch(t *testing.T) {
 	}
 
 	// Prove drawers landed in storage under "mempalace" project.
-	projects, err := h.Vault.ListProjects()
+	projects, err := h.Vault.ListAllProjects()
 	if err != nil {
-		t.Fatalf("ListProjects: %v", err)
+		t.Fatalf("ListAllProjects: %v", err)
 	}
-	foundMempalace := slices.Contains(projects, "mempalace")
+	foundMempalace := slices.ContainsFunc(projects, func(p storage.ProjectPresence) bool {
+		return p.Slug == "mempalace" && p.InPalace
+	})
 	if !foundMempalace {
 		t.Fatal("expected 'mempalace' project in vault after import")
 	}

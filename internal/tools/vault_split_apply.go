@@ -776,17 +776,30 @@ func vaultSplitPurge(vault *storage.Vault, p vaultSplitParams) (*vaultSplitPurge
 	// The compare-and-set guard for each file that travelled. Rows outside the
 	// slug trees — an included learning, an audit report — are in this map but
 	// are never looked up, because the walk below only ever enters
-	// palace/<slug> and Projects/<slug>. Vault-global artifacts are not this
+	// palace/<slug>, Projects/<slug> and the slug's embed cache under
+	// palace/.local/embed-cache/<slug>. Vault-global artifacts are not this
 	// action's to remove.
 	hashes := make(map[string]string, len(m.Entries))
 	for _, e := range m.Entries {
 		hashes[e.Path] = e.SHA256
 	}
 
+	// The slug's embed cache lives outside both of its own trees
+	// (storage.Vault.EmbedCacheDir). It never travels, but purge used to remove
+	// it along with palace/<slug>/, and leaving it now would serve old vectors to
+	// a slug later reused on this host: note and iteration cache IDs are
+	// positional, and the orphan reaper keeps any ID that is live again.
+	//
+	// It is purged FIRST. It is the tree most likely to refuse — a concurrent
+	// Put can repopulate it between the walk and the directory removal — and a
+	// refusal must land while the real trees still exist: once they are gone,
+	// the manifest no longer binds and purge cannot be re-run. An absent tree is
+	// nothing to do (splitPurgeTree), so purge also tolerates the real trees
+	// being gone already.
 	var files, dirs int
 	var bytes int64
 	for _, s := range m.Slugs {
-		for _, tree := range []string{"palace/" + s, "Projects/" + s} {
+		for _, tree := range []string{"palace/.local/embed-cache/" + s, "palace/" + s, "Projects/" + s} {
 			f, d, b, err := splitPurgeTree(vault.Root, tree, hashes)
 			if err != nil {
 				return nil, err

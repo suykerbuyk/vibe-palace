@@ -44,8 +44,8 @@ const EvidenceArchiveRoundTrip = `jq -r 'select(.vault_rel_session_note == null 
 // transcripts — the wrong direction on both counts.
 //
 // The vault is enumerated with ListAllProjects (the UNION of palace/ and Projects/),
-// never ListProjects: the latter reads only palace/ and is blind to 5 projects and 73
-// session notes in the live vault. An auditor that cannot see 73 notes is not an
+// never a palace/-only enumeration (the since-deleted ListProjects), which was blind to
+// 5 projects and 73 session notes in the live vault. An auditor that cannot see 73 notes is not an
 // auditor.
 //
 // A project whose transcripts directory cannot be READ is reported as unknown, never

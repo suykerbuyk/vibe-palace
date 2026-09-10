@@ -319,9 +319,9 @@ func (v *Vault) MoveDrawer(project, wing, fromRoom, toRoom, id string) error {
 // (nil, nil) both for "no store at all" and for "a store with no wings", which
 // is right for a walk and wrong for a caller that must tell an operator whether
 // there was anything to refresh. Callers that need the distinction ask here
-// FIRST — a rebuild can create palace/<project>/ as a side effect of indexing
-// the iterations or session-note corpus, so asking afterwards answers a
-// different question.
+// FIRST — a refresh backfills drawers from archives before it rebuilds, so
+// asking afterwards answers a different question. (A rebuild no longer creates
+// palace/<project>/ at all: the embed cache lives under palace/.local/.)
 func (v *Vault) HasPalaceStore(project string) (bool, error) {
 	if err := slug.Validate(project); err != nil {
 		return false, fmt.Errorf("project: %w", err)
@@ -387,24 +387,6 @@ func (v *Vault) ListRooms(project, wing string) ([]string, error) {
 		}
 	}
 	return rooms, nil
-}
-
-// ListProjects returns the project slugs that have a palace/ store — the
-// drawer + knowledge-graph tree. It is what search wants, because search indexes
-// drawers and drawers live there. A palace/<slug>/ holding nothing outside its
-// machine-local .local/ is not a store (projects.go, listPalaceStores).
-//
-// It is NOT an enumeration of the vault. A project's sessions live under
-// Projects/<slug>/, and many projects appear in one tree and not the other, so
-// this returns a SUBSET and cannot tell you it did. Any caller asking "what is
-// in this vault?" wants ListAllProjects (projects.go), which returns the union
-// of both trees and records which one each project came from.
-func (v *Vault) ListProjects() ([]string, error) {
-	projects, err := listPalaceStores(filepath.Join(v.Root, "palace"))
-	if err != nil {
-		return nil, fmt.Errorf("read palace dir: %w", err)
-	}
-	return projects, nil
 }
 
 // readDrawerFile reads and parses all drawers from a room's JSONL file.
