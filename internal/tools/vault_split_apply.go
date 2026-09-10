@@ -59,8 +59,9 @@ import (
 //
 //   - .git, .gitignore   — reconcile.NewVault's git init and gitignore
 //   - .vibe-palace       — the data-format stamp, and templates.lock
-//   - Templates          — reconcile.NewTemplateTree's directory (Design B:
-//     the directory exists and stays EMPTY; the embedded floor serves)
+//   - Templates          — tolerated, never created: under Design B the
+//     override-only reconcile writes no template, so a fresh destination has
+//     no Templates/ directory at all and the embedded floor serves
 //   - palace, Projects   — the two trees the copy writes into
 //   - .surface           — atomicfile's own stamp, if a write resolves the
 //     destination root as its stamp directory
@@ -289,18 +290,20 @@ func vaultSplitApply(ctx context.Context, vault *storage.Vault, p vaultSplitPara
 // and reconcile the vault it is splitting FROM. Passing dest is the fail-closed
 // argument, and VaultPath: dest plus WithCreate() is what makes it binding.
 //
-// 🔴 Vault.Apply RETURNS (Report, nil) ALWAYS (vault.go:169-211). Its failures —
-// mkdir, git init, and the data-format stamp — land in Report.Errors, and the
-// stamp failure in particular still increments Created. So err is not the
-// channel here, Report.Errors is, and ANY entry in it aborts before a single
-// byte is copied. That is stricter than cmd_init.go:228-240, which triages the
-// same slice by error prefix and treats a failed stamp as non-fatal; a CLI that
-// keeps going leaves a human looking at the terminal, and this does not.
+// 🔴 VaultReconciler.Apply RETURNS (Report, nil) ALWAYS. Its failures — mkdir,
+// git init, the .gitignore write or top-up, and the data-format stamp — land in
+// Report.Errors, and the stamp failure in particular still increments Created.
+// So err is not the channel here, Report.Errors is, and ANY entry in it aborts
+// before a single byte is copied. That is stricter than initGlobal in
+// cmd/vp/cmd_init.go, which triages the same slice by error prefix and treats a
+// failed stamp as non-fatal; a CLI that keeps going leaves a human looking at
+// the terminal, and this does not.
 //
 // TemplateTree does NOT follow that rule and must not be handled as though it
-// did: its Apply returns a real error for walk-embedded and prompt failures
-// (template_tree.go:428-443) and puts write/lock failures in Report.Errors
-// (:523-526). Both channels abort, exactly as cmd_init.go:271-288 does.
+// did: applyMaterialize returns a real error for walk-embedded and prompt
+// failures and puts write/lock failures in Report.Errors. Both channels abort
+// here: a destination whose templates reconcile failed in either way is not
+// one to copy into.
 func splitScaffoldDestination(ctx context.Context, dest string) error {
 	vr := reconcile.NewVault(dest, reconcile.VaultSeed{
 		VaultPath: dest,
@@ -327,13 +330,11 @@ func splitScaffoldDestination(ctx context.Context, dest string) error {
 	}
 
 	// Materialize mode on a fresh destination writes no resource files. Design B
-	// is override-only (template_tree.go:254-274, pinned by
+	// is override-only (planMaterialize's decision table, case 1, pinned by
 	// TestTemplateTree_MaterializeFreshVault): every embedded resource is
 	// ActionUnchanged, "served from embedded floor", Created is 0 and the lock
 	// stays empty. What this call is actually here for is the gitignore and lock
-	// reconciliation inside Apply. AutoAccept is deliberately unset — the field
-	// is unread (template_tree.go:51-56) and setting it would read as though a
-	// prompt were being suppressed.
+	// reconciliation inside Apply.
 	tt := reconcile.NewTemplateTree(dest, "Templates", reconcile.TemplateTreeSeed{
 		Mode: reconcile.TemplateModeMaterialize,
 	})
@@ -658,8 +659,8 @@ func splitLeakGateMembership(dest string, slugs []string, p vaultSplitParams) []
 //
 // 🔴 TEMPLATES IS CHECKED AS "EMPTY", NEVER AS "MATCHES THE EMBEDDED CORPUS". A
 // fresh vault's Templates/ tree is empty by design — materialize mode is
-// override-only (template_tree.go:254-274) and every embedded resource resolves
-// through the precedence chain's embedded tier instead. File-comparing the
+// override-only (planMaterialize's decision table) and every embedded resource
+// resolves through the precedence chain's embedded tier instead. File-comparing the
 // destination against templates.WalkEmbedded() would therefore FAIL VERIFY ON A
 // CORRECT DESTINATION, and the obvious way to make it pass — copying the corpus
 // onto disk — shadows the binary and is exactly what `vp config sync` prunes.

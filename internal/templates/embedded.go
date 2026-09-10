@@ -1,11 +1,11 @@
 // Copyright (c) 2026 John Suykerbuyk and SykeTech LTD
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// Package templates owns the compiled-in template corpus and the
-// filesystem lifecycle helpers that materialize and reconcile it into
-// the vault. Phase 0 of the materialize-and-reconcile-vault-templates
-// epic lands enumeration primitives only; lock-file and reconciler
-// work arrives in later phases.
+// Package templates owns the compiled-in template corpus — the embedded
+// floor every command and skill resolves from when no override exists —
+// and the helpers the override-only vault reconcile is built on: corpus
+// enumeration and hashing, the templates.lock sidecar, the template
+// write Executor, and the per-project README stubs.
 package templates
 
 import (

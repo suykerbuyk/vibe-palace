@@ -155,13 +155,29 @@ func CheckTemplateDrift(vaultRoot string) Result {
 // templateDriftRemedy is the rollout-ordering rule this check replaced. It used
 // to be a paragraph in a project's workflow.md, shipped in every bootstrap
 // payload and enforced by nothing.
+//
+// It speaks to TWO audiences, and says which is which, because vp_check serves
+// the same row to both. Addressed only to a vibe-palace contributor, "never edit
+// the vault mirror" read to an operator as "you cannot customise a template";
+// addressed only to an operator, it would drop the ordering rule a contributor
+// needs. The customisation half names what is actually unsafe today — a vault
+// Templates/ file that shadows a built-in, which `vp config sync --yes` and the
+// upgrade commands' reset both discard — and what is not: a new vault-wide
+// name, which no reconciler or upgrade command iterates.
 var templateDriftRemedy = []string{
-	"The binary and the vault-served templates ship TOGETHER: a template supplies",
-	"arguments the binary requires (Templates/commands/wrap.md supplies the",
-	"expected_sha256 vp_update_resume demands), so a NEW binary against an",
-	"un-synced vault template breaks that command outright. The reverse is harmless.",
-	"Edit ONLY the Go-embedded copy under internal/templates/templates/ (doctrine.md",
-	"and commands/ included), then `make install`, then `vp config sync` — in that",
-	"order. Never edit the vault mirror and never hand-edit templates.lock.",
+	"CHANGING VIBE-PALACE ITSELF: the binary and the vault-served templates ship",
+	"TOGETHER — a template supplies arguments the binary requires (commands/wrap.md",
+	"supplies the expected_sha256 vp_update_resume demands), so a NEW binary served",
+	"a stale vault copy breaks that command outright. The reverse is harmless. Edit",
+	"ONLY the Go-embedded copy under internal/templates/templates/ (doctrine.md and",
+	"commands/ included), then `make install`, then `vp config sync` — in that order.",
+	"Never hand-edit templates.lock.",
+	"CUSTOMISING A BUILT-IN command or skill: put your copy under",
+	"Projects/<slug>/commands/ or Projects/<slug>/skills/, which no reconciler and",
+	"no upgrade command touches. An override of a built-in under vault Templates/ is",
+	"currently unsafe: `vp config sync --yes` (or its o/O answer) replaces it with the",
+	"embedded copy and the next sync prunes it, and the upgrade commands' reset",
+	"replaces it too (task vault-template-override-is-discarded-by-config-sync).",
+	"A NEW vault-wide command or skill under Templates/ is safe — nothing touches it.",
 	"A byte-identical mirror is drift pending a prune, not an error.",
 }

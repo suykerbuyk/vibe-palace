@@ -5,8 +5,11 @@ package reconcile
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/check"
@@ -589,6 +592,8 @@ func TestApplyCountsByActionKind(t *testing.T) {
 			want: Report{Unchanged: 1, Skipped: 1},
 		},
 		{
+			// An Update with no writer behind it (only .gitignore has one) is
+			// an error, never a phantom Updated.
 			name: "Vault unchanged+update+skip",
 			r:    NewVault(t.TempDir(), VaultSeed{}),
 			p: Plan{Actions: []Action{
@@ -596,7 +601,7 @@ func TestApplyCountsByActionKind(t *testing.T) {
 				{Kind: ActionUpdate, Target: "y"},
 				{Kind: ActionSkip, Target: "z"},
 			}},
-			want: Report{Unchanged: 1, Updated: 1, Skipped: 1},
+			want: Report{Unchanged: 1, Skipped: 1, Errors: make([]error, 1)},
 		},
 		{
 			name: "VaultProject skip",
@@ -655,5 +660,244 @@ func TestCwdProject_CheckReturnsRow(t *testing.T) {
 	}
 	if rows[0].Status != check.Info {
 		t.Errorf("expected Info row, got %v", rows[0].Status)
+	}
+}
+
+// seededVaultWithGitignore creates an existing vault whose .gitignore holds
+// body, and returns the vault path and a seeded (init-mode) Vault reconciler.
+func seededVaultWithGitignore(t *testing.T, body string) (string, *VaultReconciler) {
+	t.Helper()
+	tmp := t.TempDir()
+	vaultPath := filepath.Join(tmp, "vault")
+	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vaultPath, ".gitignore"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return vaultPath, NewVault(tmp, VaultSeed{VaultPath: vaultPath, GitEnabled: false}.WithCreate())
+}
+
+// gitignoreAction returns the single action a Vault plan carries for
+// .gitignore, failing when there is not exactly one.
+func gitignoreAction(t *testing.T, p Plan) Action {
+	t.Helper()
+	var found []Action
+	for _, a := range p.Actions {
+		if filepath.Base(a.Target) == ".gitignore" {
+			found = append(found, a)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want exactly one .gitignore action, got %+v", p.Actions)
+	}
+	return found[0]
+}
+
+func TestVaultPlan_GitignoreMissingCanonicalLines_PlansUpdate(t *testing.T) {
+	// One canonical line present, so the expected missing set is every other.
+	_, r := seededVaultWithGitignore(t, "custom/\n"+storage.CanonicalGitignorePatterns[0]+"\n")
+	p, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	a := gitignoreAction(t, p)
+	if a.Kind != ActionUpdate {
+		t.Fatalf("kind = %s, want Update: %+v", a.Kind, a)
+	}
+	want := storage.CanonicalGitignorePatterns[1:]
+	if strings.Join(a.Details, "|") != strings.Join(want, "|") {
+		t.Errorf("Details = %v, want the missing lines %v", a.Details, want)
+	}
+	if !strings.Contains(a.Summary, fmt.Sprintf("+%d canonical", len(want))) {
+		t.Errorf("Summary %q does not name the count %d", a.Summary, len(want))
+	}
+}
+
+func TestVaultPlan_GitignoreComplete_Unchanged(t *testing.T) {
+	_, r := seededVaultWithGitignore(t, strings.Join(storage.CanonicalGitignorePatterns, "\n")+"\n")
+	p, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if a := gitignoreAction(t, p); a.Kind != ActionUnchanged {
+		t.Fatalf("kind = %s, want Unchanged: %+v", a.Kind, a)
+	}
+}
+
+// TestVaultPlan_GitignoreUnreadable_PlansSkip pins that an unreadable present
+// .gitignore is a Skip carrying the reason, never a Plan error: a Plan error
+// would abort every tier of `vp config sync` before any Apply ran.
+func TestVaultPlan_GitignoreUnreadable_PlansSkip(t *testing.T) {
+	tmp := t.TempDir()
+	vaultPath := filepath.Join(tmp, "vault")
+	if err := os.MkdirAll(filepath.Join(vaultPath, ".gitignore"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := NewVault(tmp, VaultSeed{VaultPath: vaultPath}.WithCreate())
+	p, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan returned an error, want a Skip action: %v", err)
+	}
+	a := gitignoreAction(t, p)
+	if a.Kind != ActionSkip {
+		t.Fatalf("kind = %s, want Skip: %+v", a.Kind, a)
+	}
+	if !strings.Contains(a.Summary, "cannot read vault .gitignore") {
+		t.Errorf("Skip summary does not carry the reason: %q", a.Summary)
+	}
+
+}
+
+// TestVaultPlan_VaultPathIsAFile_PlansSkip pins that a vault path which exists
+// but is not a directory is reported as exactly that, and that planning stops
+// there instead of reporting an unreadable .gitignore beneath a file.
+func TestVaultPlan_VaultPathIsAFile_PlansSkip(t *testing.T) {
+	tmp := t.TempDir()
+	notDir := filepath.Join(tmp, "notadir")
+	if err := os.WriteFile(notDir, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, seed := range []VaultSeed{VaultSeed{VaultPath: notDir}.WithCreate(), {}} {
+		if !seed.seedSet {
+			// Sync mode resolves the path from the global config.
+			cfg := xdgTempHome(t)
+			if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cfg, []byte(`vault_path = "`+notDir+`"`+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		p, err := NewVault(tmp, seed).Plan(context.Background())
+		if err != nil {
+			t.Fatalf("Plan: %v", err)
+		}
+		if len(p.Actions) != 1 || p.Actions[0].Kind != ActionSkip ||
+			!strings.Contains(p.Actions[0].Summary, "vault path is not a directory") {
+			t.Errorf("seedSet=%v: want one Skip naming the vault path, got %+v", seed.seedSet, p.Actions)
+		}
+	}
+}
+
+func TestVaultApply_GitignoreUpdate_PreservesCustomLines(t *testing.T) {
+	seed := "# mine\ncustom/\n" + storage.CanonicalGitignorePatterns[0] + "\n"
+	vaultPath, r := seededVaultWithGitignore(t, seed)
+	p, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	rep, err := r.Apply(context.Background(), p)
+	if err != nil || len(rep.Errors) > 0 {
+		t.Fatalf("Apply: err=%v errors=%v", err, rep.Errors)
+	}
+	if rep.Updated != 1 {
+		t.Errorf("Updated = %d, want 1", rep.Updated)
+	}
+	wantNote := fmt.Sprintf("vault .gitignore: added %d canonical line(s)", len(storage.CanonicalGitignorePatterns)-1)
+	if len(rep.Notes) != 1 || rep.Notes[0] != wantNote {
+		t.Errorf("Notes = %v, want [%q]", rep.Notes, wantNote)
+	}
+	data, err := os.ReadFile(filepath.Join(vaultPath, ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), seed) {
+		t.Errorf("custom lines not preserved verbatim at the top:\n%s", data)
+	}
+	missing, err := storage.MissingVaultGitignorePatterns(vaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != 0 {
+		t.Errorf("still missing after Apply: %v", missing)
+	}
+	p2, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("re-Plan: %v", err)
+	}
+	if a := gitignoreAction(t, p2); a.Kind != ActionUnchanged {
+		t.Errorf("re-Plan kind = %s, want Unchanged", a.Kind)
+	}
+}
+
+// TestVaultApply_GitignoreUpdate_NoteCountsWhatWasWritten pins that the
+// "added N" note reports the lines the locked write actually appended, not the
+// count the Plan estimated: another writer adds some lines between Plan and
+// Apply, so the two numbers differ and only one of them is true.
+func TestVaultApply_GitignoreUpdate_NoteCountsWhatWasWritten(t *testing.T) {
+	vaultPath, r := seededVaultWithGitignore(t, "custom/\n")
+	p, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	planned := len(gitignoreAction(t, p).Details)
+	if planned != len(storage.CanonicalGitignorePatterns) {
+		t.Fatalf("planned %d missing lines, want the whole canonical set (%d)", planned, len(storage.CanonicalGitignorePatterns))
+	}
+
+	// Another writer lands three canonical lines after Plan, before Apply.
+	const landedMeanwhile = 3
+	gi := filepath.Join(vaultPath, ".gitignore")
+	extra := strings.Join(storage.CanonicalGitignorePatterns[:landedMeanwhile], "\n") + "\n"
+	f, err := os.OpenFile(gi, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(extra); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := r.Apply(context.Background(), p)
+	if err != nil || len(rep.Errors) > 0 {
+		t.Fatalf("Apply: err=%v errors=%v", err, rep.Errors)
+	}
+	want := fmt.Sprintf("vault .gitignore: added %d canonical line(s)", planned-landedMeanwhile)
+	if len(rep.Notes) != 1 || rep.Notes[0] != want {
+		t.Errorf("Notes = %v, want [%q] — the planned count was %d", rep.Notes, want, planned)
+	}
+}
+
+// TestVaultApply_GitignoreUpdate_Accounting pins the two ways an Update can end
+// other than a write: a failed write is an Error and is NOT counted as Updated,
+// and a file some other writer already completed is Unchanged. Neither leaves
+// an "added" note.
+func TestVaultApply_GitignoreUpdate_Accounting(t *testing.T) {
+	vaultPath, r := seededVaultWithGitignore(t, "custom/\n")
+	p, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	gi := filepath.Join(vaultPath, ".gitignore")
+
+	// Already completed between Plan and Apply → nothing written, Unchanged.
+	if err := storage.ReconcileVaultGitignore(vaultPath); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := r.Apply(context.Background(), p)
+	if err != nil || len(rep.Errors) > 0 {
+		t.Fatalf("Apply: err=%v errors=%v", err, rep.Errors)
+	}
+	if rep.Updated != 0 || rep.Unchanged == 0 || len(rep.Notes) != 0 {
+		t.Errorf("already-complete file: got %+v, want Updated=0, no note, and the action counted Unchanged", rep)
+	}
+
+	// Gone between Plan and Apply → an error prefixed for initGlobal's triage.
+	if err := os.Remove(gi); err != nil {
+		t.Fatal(err)
+	}
+	rep, err = r.Apply(context.Background(), p)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if rep.Updated != 0 || len(rep.Notes) != 0 {
+		t.Errorf("failed write counted as Updated or noted: %+v", rep)
+	}
+	var ve *VaultApplyError
+	if len(rep.Errors) != 1 || !errors.As(rep.Errors[0], &ve) || ve.Artifact != VaultArtifactGitignore {
+		t.Errorf("want one VaultApplyError for the .gitignore, got %v", rep.Errors)
 	}
 }

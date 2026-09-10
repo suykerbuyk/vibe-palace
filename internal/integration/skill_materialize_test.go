@@ -18,7 +18,8 @@ import (
 //
 //  1. A fresh `vp init` writes NO skill mirror — the embedded floor serves
 //     every startup-analyst file (SKILL.md + 5 references) directly, and the
-//     templates.lock has no entry for them.
+//     templates.lock has no entry for them (init has no Templates pass, so it
+//     does not create the lock at all; ReadLock reads that as empty).
 //  2. The `vp_skill` MCP tool still returns the SKILL.md body for
 //     startup-analyst, resolved from the embedded tier.
 //  3. A genuine override of one reference (distinct bytes + a lock entry

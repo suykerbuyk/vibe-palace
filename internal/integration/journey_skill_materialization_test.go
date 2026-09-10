@@ -24,8 +24,9 @@ import (
 //   - .cursor/rules/vps-<name>.mdc exists (the "Cursor skills" surface).
 //   - An agent-file (AGENTS.md or CLAUDE.md) in the project root contains
 //     a vibe-palace managed block listing or referencing the skill.
-//   - vp_get_skill_section returns a reference body that also appears in
-//     the materialized Templates/skills/<name>/references/ directory.
+//   - vp_get_skill_section returns a reference body that matches the
+//     embedded copy — there is no Templates/skills/<name>/ mirror to
+//     compare against, since vault Templates/ is override-only.
 func TestJourney_Skill_Materialization_CrossIDE(t *testing.T) {
 	bin := buildVPBinary(t)
 	env := setupFreshEnv(t)

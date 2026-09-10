@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 func TestGitAvailable(t *testing.T) {
@@ -593,5 +595,176 @@ func TestReconcileVaultGitignore_AddsTrailingNewline(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("expected foo/ once, got %d:\n%s", n, data)
+	}
+}
+
+func TestMissingVaultGitignorePatterns(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".gitignore")
+
+	// Missing file → full canonical set, in declaration order.
+	missing, err := MissingVaultGitignorePatterns(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(missing, "|") != strings.Join(CanonicalGitignorePatterns, "|") {
+		t.Errorf("missing-file: want the full canonical set, got %v", missing)
+	}
+
+	// Partial file → only the absent lines, in declaration order. The seed
+	// keeps every other canonical line, so the expectation is derived rather
+	// than restated.
+	var seed, want []string
+	for i, p := range CanonicalGitignorePatterns {
+		if i%2 == 0 {
+			seed = append(seed, p)
+		} else {
+			want = append(want, p)
+		}
+	}
+	if err := os.WriteFile(path, []byte("custom/\n"+strings.Join(seed, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missing, err = MissingVaultGitignorePatterns(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(missing, "|") != strings.Join(want, "|") {
+		t.Errorf("partial-file: want %v, got %v", want, missing)
+	}
+
+	// Complete file → none missing.
+	if err := ReconcileVaultGitignore(dir); err != nil {
+		t.Fatal(err)
+	}
+	missing, err = MissingVaultGitignorePatterns(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != 0 {
+		t.Errorf("complete-file: want 0 missing, got %v", missing)
+	}
+
+	// Unreadable (a directory where the file should be) → an error, never a
+	// silent "nothing missing".
+	dirCase := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dirCase, ".gitignore"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MissingVaultGitignorePatterns(dirCase); err == nil {
+		t.Error("a directory at .gitignore: want a read error, got nil")
+	}
+}
+
+func TestTopUpVaultGitignore_AppendsMissingAndKeepsCustomLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".gitignore")
+	// Custom line first, one canonical line present, no trailing newline.
+	seed := "custom/\n" + CanonicalGitignorePatterns[1]
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	added, err := TopUpVaultGitignore(dir)
+	if err != nil {
+		t.Fatalf("TopUpVaultGitignore: %v", err)
+	}
+	if want := len(CanonicalGitignorePatterns) - 1; added != want {
+		t.Errorf("added = %d, want %d", added, want)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), seed+"\n") {
+		t.Errorf("seed content not preserved verbatim at the top:\n%s", data)
+	}
+	if strings.HasSuffix(string(data), "\n\n") || !strings.HasSuffix(string(data), "\n") {
+		t.Errorf("want exactly one trailing newline:\n%q", data)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	count := map[string]int{}
+	for _, l := range lines {
+		count[l]++
+	}
+	for _, p := range CanonicalGitignorePatterns {
+		if count[p] != 1 {
+			t.Errorf("canonical line %q appears %d times, want 1:\n%s", p, count[p], data)
+		}
+	}
+}
+
+func TestTopUpVaultGitignore_CompleteFileIsNotRewritten(t *testing.T) {
+	dir := t.TempDir()
+	if err := ReconcileVaultGitignore(dir); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, ".gitignore")
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	added, err := TopUpVaultGitignore(dir)
+	if err != nil {
+		t.Fatalf("TopUpVaultGitignore: %v", err)
+	}
+	if added != 0 {
+		t.Errorf("added = %d on a complete file, want 0", added)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The writer replaces by rename, so a rewrite — even of identical bytes —
+	// changes the inode.
+	if !os.SameFile(before, after) {
+		t.Error("complete .gitignore was rewritten")
+	}
+}
+
+func TestTopUpVaultGitignore_MissingFileIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := TopUpVaultGitignore(dir); err == nil {
+		t.Fatal("want an error for an absent .gitignore, got nil")
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".gitignore")); !os.IsNotExist(err) {
+		t.Errorf("top-up must not create the file (stat err=%v)", err)
+	}
+}
+
+// TestTopUpVaultGitignore_HoldsTheVaultLock proves the read-modify-write runs
+// under the per-path vaultlock: while another holder has the lock, the top-up
+// must not complete; once it is released, it does.
+func TestTopUpVaultGitignore_HoldsTheVaultLock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".gitignore")
+	if err := os.WriteFile(path, []byte("custom/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	release, err := vaultlock.Acquire(dir, path)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := TopUpVaultGitignore(dir)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		release()
+		t.Fatalf("top-up completed while the lock was held (err=%v)", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("TopUpVaultGitignore: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("top-up did not complete after the lock was released")
 	}
 }

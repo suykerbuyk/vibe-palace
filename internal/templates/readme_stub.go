@@ -21,18 +21,21 @@ and returns the first match it finds:
 When wing and room aren't set, the resolver collapses to the 3-tier
 subset: Project > Vault > Embedded.
 
-Drop a command override here as ` + "`<slug>.md`" + ` — for example,
-` + "`wrap.md`" + ` shadows the vault-level wrap command with whatever
-markdown you author here. The filename (minus the extension) is the
-slug the CLI looks up.
+This project directory (Projects/<slug>/commands/) is where to
+customise: drop an override here as ` + "`<slug>.md`" + ` — ` + "`wrap.md`" + `
+shadows the built-in wrap command. No reconciler or upgrade command
+touches it.
+` + "`<vault>/Templates/`" + ` holds only files you write; it is empty by
+default, and an override of a built-in there is currently discarded by
+` + "`vp config sync --yes`" + `.
 
-To see what an embedded default looks like before you edit it, check
-the materialized copy at ` + "`<vault>/Templates/commands/<slug>.md`" + `.
+To start from a built-in, fetch it with the ` + "`vp_get_command`" + ` MCP
+tool or copy internal/templates/templates/commands/<slug>.md from a
+vibe-palace checkout.
 
 Promotion back into the ` + "`vibe-palace`" + ` source tree is a manual git
 operation — ` + "`vp`" + ` does not know where your source checkout lives at
-runtime. See doc/ARCHITECTURE.md for the materialize → edit → promote
-workflow.
+runtime. See doc/ARCHITECTURE.md for the override → promote workflow.
 `
 
 // skillsReadmeStub is the README body written into scaffolded skills/
@@ -64,13 +67,15 @@ omits ` + "`references/capex-opex.md`" + `, the resolver will fetch that one
 file from the next tier down. Flat-file skills (` + "`<slug>.md`" + `
 without a directory) are not supported.
 
-To see what an embedded default looks like before you edit it, check
-the materialized copy at ` + "`<vault>/Templates/skills/<slug>/`" + `.
+This project directory is where to customise; no reconciler or
+upgrade command touches it. ` + "`<vault>/Templates/`" + ` holds only files
+you write; it is empty by default, and an override of a built-in there
+is currently discarded by ` + "`vp config sync --yes`" + `. To start from a
+built-in, print it with ` + "`vp skills show <slug> [--section NAME]`" + `.
 
 Promotion back into the ` + "`vibe-palace`" + ` source tree is a manual git
 operation — ` + "`vp`" + ` does not know where your source checkout lives at
-runtime. See doc/ARCHITECTURE.md for the materialize → edit → promote
-workflow.
+runtime. See doc/ARCHITECTURE.md for the override → promote workflow.
 `
 
 // RenderReadmeStub returns the canonical README body for a scaffolded

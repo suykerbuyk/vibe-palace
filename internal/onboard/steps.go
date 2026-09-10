@@ -240,8 +240,7 @@ func stepProjectScaffold(ctx context.Context, req Request) []Outcome {
 		return []Outcome{{Status: Fail, Summary: "open vault: " + err.Error()}}
 	}
 	tt := reconcile.NewTemplateTree(vault.Root, "Projects/"+req.Slug, reconcile.TemplateTreeSeed{
-		Mode:       reconcile.TemplateModeScaffold,
-		AutoAccept: true,
+		Mode: reconcile.TemplateModeScaffold,
 	})
 	plan, err := tt.Plan(ctx)
 	if err != nil {

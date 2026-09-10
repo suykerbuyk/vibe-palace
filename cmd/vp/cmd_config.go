@@ -120,7 +120,7 @@ func cmdConfigSync() *cli.Command {
 	return &cli.Command{
 		Name:        "config sync",
 		Synopsis:    "vp config sync [--dry-run] [--tier TIER] [--yes] [--project-root PATH] [--cwd DIR | --project SLUG]",
-		Description: "Reconcile managed config files (global / vault / project tiers) against their canonical schemas. Idempotent on repeat runs. Does not touch agent-files or slash-command shims — those are handled by `vp commands upgrade`.",
+		Description: "Reconcile managed config files (global / vault / project tiers) against their canonical schemas. Idempotent on repeat runs. The vault tier also tops up the vault .gitignore and reconciles vault Templates/ override-only: a byte-identical mirror of an embedded template is pruned and the deletion committed to the vault repo, a tracked override is kept, and a diverged override prompts skip/overwrite/.new (--yes overwrites). Does not touch agent-files or slash-command shims — those are handled by `vp commands upgrade`.",
 		Flags:       configSyncFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp config sync --dry-run", Comment: "Preview drift across all tiers"},

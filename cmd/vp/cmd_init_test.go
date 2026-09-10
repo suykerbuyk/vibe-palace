@@ -4,6 +4,9 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +15,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
+	"github.com/suykerbuyk/vibe-palace/internal/reconcile"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
@@ -567,6 +571,10 @@ func TestInitStatusTableRendered(t *testing.T) {
 			t.Errorf("missing %q in output:\n%s", frag, out)
 		}
 	}
+	// init has no Templates pass, so a first install has no Templates row.
+	if strings.Contains(out, "] Templates:") {
+		t.Errorf("unexpected Templates row:\n%s", out)
+	}
 }
 
 // TestInitFreshThenIdempotent proves the three-stage sequence from the
@@ -903,47 +911,35 @@ func TestInitShimsSkippedWhenNoProject(t *testing.T) {
 	}
 }
 
-// TestInitMaterializesTemplates verifies the Design B (override-only)
-// contract: after vp init the vault's Templates/ tree holds NO mirror of the
-// embedded corpus (the embedded floor is served directly over MCP), the
-// templates.lock is empty (no reconciler-owned mirror is tracked), yet every
-// resource still resolves from the embedded tier. The vault .gitignore still
-// carries the canonical *.bak / *.new patterns.
-func TestInitMaterializesTemplates(t *testing.T) {
+// TestInitWritesNoTemplatesTree pins that `vp init` has no Templates pass at
+// all. Templates/ is override-only (ADR-008): the embedded floor is served
+// directly, so a fresh install has nothing to put there — and init does not
+// even create the directory or the lock, because it never writes, prunes or
+// reconciles that tree. `vp config sync` owns it. The vault .gitignore still carries every
+// canonical pattern, now written by the Vault step alone.
+func TestInitWritesNoTemplatesTree(t *testing.T) {
 	initTestEnv(t, false)
 	projDir := t.TempDir()
 	markProjectDir(t, projDir)
 	vaultDir := filepath.Join(t.TempDir(), "vault")
 
-	cmd := cmdInit(cli.BuildInfo{Version: "test"})
-	code := cmd.Run([]string{projDir, "--name", "tpl-test", "--vault-path", vaultDir, "--no-git"})
-	if code != cli.ExitOK {
-		t.Fatalf("exit code = %d", code)
-	}
-
-	resources, err := templates.WalkEmbedded()
-	if err != nil {
-		t.Fatalf("WalkEmbedded: %v", err)
-	}
-	if len(resources) == 0 {
-		t.Fatal("WalkEmbedded returned zero resources")
-	}
-
-	// No embedded resource is mirrored into the vault Templates/ tree.
-	for _, res := range resources {
-		target := filepath.Join(vaultDir, "Templates", filepath.FromSlash(res.RelPath))
-		if _, err := os.Stat(target); !os.IsNotExist(err) {
-			t.Errorf("override-only init should not materialize %s (err=%v)", res.RelPath, err)
+	out := captureStdout(t, func() {
+		cmd := cmdInit(cli.BuildInfo{Version: "test"})
+		if code := cmd.Run([]string{projDir, "--name", "tpl-test", "--vault-path", vaultDir, "--no-git"}); code != cli.ExitOK {
+			t.Fatalf("exit code = %d", code)
 		}
-	}
+	})
 
-	// The lock is empty — nothing reconciler-owned to track.
-	lock, err := templates.ReadLock(vaultDir)
-	if err != nil {
-		t.Fatalf("ReadLock: %v", err)
+	// Stat, not ReadLock: ReadLock returns an empty lock for an absent file,
+	// so it cannot tell "not created" from "created empty".
+	if _, err := os.Stat(filepath.Join(vaultDir, "Templates")); !os.IsNotExist(err) {
+		t.Errorf("init created <vault>/Templates (stat err=%v); it must not touch that tree", err)
 	}
-	if len(lock.Entries) != 0 {
-		t.Errorf("templates.lock should be empty on a fresh override-only vault, got %d entries", len(lock.Entries))
+	if _, err := os.Stat(filepath.Join(vaultDir, templates.LockRelPath)); !os.IsNotExist(err) {
+		t.Errorf("init created %s (stat err=%v); nothing needs it until `vp config sync`", templates.LockRelPath, err)
+	}
+	if strings.Contains(out, "] Templates:") {
+		t.Errorf("init still renders a Templates row:\n%s", out)
 	}
 
 	// The embedded floor still resolves a command byte-for-byte.
@@ -958,8 +954,8 @@ func TestInitMaterializesTemplates(t *testing.T) {
 		t.Error("command:wrap resolved empty from embedded floor")
 	}
 
-	// .gitignore must contain every canonical pattern (including
-	// *.bak / *.new added for the template reconciler).
+	// .gitignore must contain every canonical pattern (including the *.bak /
+	// *.new sidecar patterns) — the Vault step wrote it.
 	giData, err := os.ReadFile(filepath.Join(vaultDir, ".gitignore"))
 	if err != nil {
 		t.Fatalf("read .gitignore: %v", err)
@@ -970,11 +966,404 @@ func TestInitMaterializesTemplates(t *testing.T) {
 			t.Errorf(".gitignore missing pattern %q; got:\n%s", want, gi)
 		}
 	}
-	// Spot-check the two added in Phase 3.
-	for _, want := range []string{"*.bak", "*.new"} {
-		if !strings.Contains(gi, want) {
-			t.Errorf(".gitignore missing %q; got:\n%s", want, gi)
+}
+
+// TestInitIgnoresVaultTemplateOverrides is the regression lock for defect A:
+// a first install onto a vault that already holds Templates/ files must not
+// fail on them, must not prune them, and must not touch them at all.
+//
+// At 2581f4b this exited 2 — "[FAIL] Templates: template_tree Apply: received
+// ActionPrompt ... orchestrator must resolve Prompt actions before Apply" —
+// with the global config already written, so the next run took the
+// config-exists gate and exited 0 without ever looking again. The mirror is
+// chosen to sort BEFORE both Prompt resources, so that old pass had already
+// pruned it by the time it failed: the byte-identity assertion bites there
+// too, not only the exit code.
+func TestInitIgnoresVaultTemplateOverrides(t *testing.T) {
+	initTestEnv(t, false)
+	projDir := t.TempDir()
+	markProjectDir(t, projDir)
+	vaultDir := filepath.Join(t.TempDir(), "vault")
+
+	resources, err := templates.WalkEmbedded()
+	if err != nil {
+		t.Fatalf("WalkEmbedded: %v", err)
+	}
+	// Plan order is WalkEmbedded order, so the first command sorts before the
+	// others in the plan.
+	var cmds []templates.Resource
+	for _, res := range resources {
+		if strings.HasPrefix(res.RelPath, "commands/") {
+			cmds = append(cmds, res)
 		}
+	}
+	if len(cmds) < 3 {
+		t.Fatalf("need at least 3 embedded commands to seed three cases, have %d", len(cmds))
+	}
+	embSHA := func(res templates.Resource) string {
+		if sha, ok := templates.EmbeddedSHA(res.RelPath); ok {
+			return sha
+		}
+		return res.SHA256
+	}
+	mirror, stale, noLock := cmds[0], cmds[1], cmds[len(cmds)-1]
+
+	// Case 2: a byte-identical mirror whose lock entry is the embedded baseline.
+	seedTemplateOverride(t, vaultDir, mirror.RelPath, mirror.Bytes, embSHA(mirror))
+	// Case 5: a tracked override whose baseline is stale — bytes differ from
+	// both the baseline and the current embedded copy.
+	staleBaseline := strings.Repeat("0", len(embSHA(stale)))
+	seedTemplateOverride(t, vaultDir, stale.RelPath, []byte("# my tracked override\n"), staleBaseline)
+	// Case 6: an override with no lock entry at all.
+	noLockPath := filepath.Join(vaultDir, "Templates", filepath.FromSlash(noLock.RelPath))
+	if err := os.WriteFile(noLockPath, []byte("# my hand-written override\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	seeded := map[string][]byte{}
+	for _, res := range []templates.Resource{mirror, stale, noLock} {
+		p := filepath.Join(vaultDir, "Templates", filepath.FromSlash(res.RelPath))
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seeded[p] = b
+	}
+	lockPath := filepath.Join(vaultDir, templates.LockRelPath)
+	lockBefore, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var code int
+	out := captureStdout(t, func() {
+		code = cmdInit(cli.BuildInfo{Version: "test"}).Run(
+			[]string{projDir, "--name", "overrides", "--vault-path", vaultDir, "--no-git"})
+	})
+	// Errorf, not Fatalf: at 2581f4b the file assertions below are the ones
+	// that show what the old pass did before it failed (it pruned the mirror),
+	// so they must still run when the exit code is wrong.
+	if code != cli.ExitOK {
+		t.Errorf("first install over a vault with Templates/ overrides: exit = %d, want ExitOK\n%s", code, out)
+	}
+	if strings.Contains(out, "] Templates:") {
+		t.Errorf("init rendered a Templates row:\n%s", out)
+	}
+	for _, want := range []string{"[pass] Project config", "[pass] Vault project"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("onboarding did not run: missing %q\n%s", want, out)
+		}
+	}
+
+	for p, want := range seeded {
+		got, err := os.ReadFile(p)
+		if err != nil {
+			t.Errorf("seeded %s is gone: %v", p, err)
+			continue
+		}
+		if string(got) != string(want) {
+			t.Errorf("seeded %s was rewritten", p)
+		}
+	}
+	_ = filepath.WalkDir(filepath.Join(vaultDir, "Templates"), func(p string, d fs.DirEntry, err error) error {
+		if err == nil && (strings.HasSuffix(p, ".bak") || strings.HasSuffix(p, ".new")) {
+			t.Errorf("init left a sidecar under Templates/: %s", p)
+		}
+		return nil
+	})
+	lockAfter, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("templates.lock is gone: %v", err)
+	}
+	if string(lockAfter) != string(lockBefore) {
+		t.Errorf("templates.lock was rewritten:\nbefore:\n%s\nafter:\n%s", lockBefore, lockAfter)
+	}
+}
+
+// TestInitTopsUpExistingVaultGitignore pins the one effect of the deleted
+// Templates pass that had to survive it: a first install onto an existing
+// vault whose .gitignore lacks canonical lines gets them — now from the Vault
+// step, reported as a Details line, and only when something was added.
+func TestInitTopsUpExistingVaultGitignore(t *testing.T) {
+	initTestEnv(t, false)
+	projDir := t.TempDir()
+	markProjectDir(t, projDir)
+	vaultDir := filepath.Join(t.TempDir(), "vault")
+	if err := os.MkdirAll(vaultDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// One custom line first, then half the canonical set.
+	var seedLines []string
+	for i, p := range storage.CanonicalGitignorePatterns {
+		if i%2 == 0 {
+			seedLines = append(seedLines, p)
+		}
+	}
+	const custom = "my-scratch/"
+	gi := filepath.Join(vaultDir, ".gitignore")
+	if err := os.WriteFile(gi, []byte(custom+"\n"+strings.Join(seedLines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantAdded := len(storage.CanonicalGitignorePatterns) - len(seedLines)
+	args := []string{projDir, "--name", "topup", "--vault-path", vaultDir, "--no-git"}
+
+	out := captureStdout(t, func() {
+		if code := cmdInit(cli.BuildInfo{Version: "test"}).Run(args); code != cli.ExitOK {
+			t.Fatalf("exit = %d", code)
+		}
+	})
+	detail := fmt.Sprintf("vault .gitignore: added %d canonical line(s)", wantAdded)
+	if !strings.Contains(out, detail) {
+		t.Errorf("Vault row missing %q:\n%s", detail, out)
+	}
+	data, err := os.ReadFile(gi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first, _, _ := strings.Cut(string(data), "\n"); first != custom {
+		t.Errorf("custom line moved or was lost; first line = %q:\n%s", first, data)
+	}
+	missing, err := storage.MissingVaultGitignorePatterns(vaultDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != 0 {
+		t.Errorf("canonical lines still missing after init: %v", missing)
+	}
+
+	// A second first install — global config removed so the Vault step runs
+	// again — finds nothing to add: no Details line, and no rewrite.
+	cfgPath, err := storage.VaultConfigFilePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(gi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out2 := captureStdout(t, func() {
+		if code := cmdInit(cli.BuildInfo{Version: "test"}).Run(args); code != cli.ExitOK {
+			t.Fatalf("second run exit = %d", code)
+		}
+	})
+	if strings.Contains(out2, "vault .gitignore: added") {
+		t.Errorf("second run reported a top-up that had nothing to add:\n%s", out2)
+	}
+	after, err := os.Stat(gi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The writer replaces by rename, so any rewrite changes the inode.
+	if !os.SameFile(before, after) {
+		t.Error("a complete vault .gitignore was rewritten")
+	}
+}
+
+// TestInitResolvesARelativeVaultPath pins that a relative --vault-path is made
+// absolute before anything uses it, exactly as initProject resolves it. The
+// Vault step's .gitignore top-up runs under vaultlock, which refuses a relative
+// root, so without this a first install onto an existing vault with a partial
+// .gitignore exited 2 ("vaultlock: vaultRoot must be absolute"); and the global
+// config recorded the relative path verbatim, so it named a different vault
+// from every other working directory.
+func TestInitResolvesARelativeVaultPath(t *testing.T) {
+	configDir, _ := initTestEnv(t, false)
+	projDir := t.TempDir()
+	markProjectDir(t, projDir)
+	base := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(base, "relvault"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "relvault", ".gitignore"), []byte("my-custom-line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(base)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantVault := filepath.Join(cwd, "relvault")
+
+	var code int
+	out := captureStdout(t, func() {
+		code = cmdInit(cli.BuildInfo{Version: "test"}).Run(
+			[]string{projDir, "--name", "relvault", "--vault-path", "relvault", "--no-git"})
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("relative --vault-path first install: exit = %d, want ExitOK\n%s", code, out)
+	}
+	missing, err := storage.MissingVaultGitignorePatterns(wantVault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != 0 {
+		t.Errorf("vault .gitignore not topped up; still missing %v", missing)
+	}
+	cfg, err := os.ReadFile(filepath.Join(configDir, "vibe-palace", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cfg), `vault_path = "`+wantVault+`"`) {
+		t.Errorf("global config does not record the absolute vault path %q:\n%s", wantVault, cfg)
+	}
+}
+
+// TestInitFailsWhenVaultPathIsARegularFile pins the message for a vault path
+// that exists but is not a directory: it names the vault path, rather than
+// reporting an unreadable ".gitignore" beneath a file.
+func TestInitFailsWhenVaultPathIsARegularFile(t *testing.T) {
+	initTestEnv(t, false)
+	projDir := t.TempDir()
+	markProjectDir(t, projDir)
+	notADir := filepath.Join(t.TempDir(), "vault")
+	if err := os.WriteFile(notADir, []byte("i am a file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var code int
+	out := captureStdout(t, func() {
+		code = cmdInit(cli.BuildInfo{Version: "test"}).Run(
+			[]string{projDir, "--name", "filevault", "--vault-path", notADir, "--no-git"})
+	})
+	if code != cli.ExitSystem {
+		t.Errorf("exit = %d, want ExitSystem\n%s", code, out)
+	}
+	if !strings.Contains(out, "[FAIL] Vault") || !strings.Contains(out, "vault path is not a directory") {
+		t.Errorf("want a [FAIL] Vault row naming the vault path:\n%s", out)
+	}
+	if strings.Contains(out, ".gitignore") {
+		t.Errorf("the failure blames .gitignore rather than the vault path:\n%s", out)
+	}
+}
+
+// TestClassifyVaultStep_TriagesByIdentityNotMessage pins that the Vault step's
+// fatal/non-fatal split keys on reconcile.VaultApplyError's Artifact, never on
+// message text, and that anything unrecognised fails. A reworded or re-wrapped
+// message must not be able to downgrade a failed vault write to a log line.
+func TestClassifyVaultStep_TriagesByIdentityNotMessage(t *testing.T) {
+	gitignoreErr := &reconcile.VaultApplyError{
+		Artifact: reconcile.VaultArtifactGitignore, Op: "some entirely reworded operation", Err: errors.New("boom"),
+	}
+	cases := []struct {
+		name    string
+		err     error
+		fatal   bool
+		gitInit bool
+	}{
+		{"typed .gitignore error, reworded", gitignoreErr, true, false},
+		{"typed .gitignore error, re-wrapped", fmt.Errorf("different words entirely: %w", gitignoreErr), true, false},
+		{"untyped error that LOOKS like the stamp", errors.New("stamp vault data format: nope"), true, false},
+		{"untyped error of any wording", errors.New("anything at all"), true, false},
+		{"typed data-format stamp error", &reconcile.VaultApplyError{
+			Artifact: reconcile.VaultArtifactFormatStamp, Op: "x", Err: errors.New("y")}, false, false},
+		{"typed git init error", &reconcile.VaultApplyError{
+			Artifact: reconcile.VaultArtifactGit, Op: "x", Err: errors.New("y")}, false, true},
+		// Tolerance must survive wrapping too. A plain type assertion would
+		// see these as unrecognised and fail the step; errors.As finds the
+		// typed error inside the wrap.
+		{"typed data-format stamp error, re-wrapped", fmt.Errorf("while creating the vault: %w",
+			&reconcile.VaultApplyError{Artifact: reconcile.VaultArtifactFormatStamp, Op: "x", Err: errors.New("y")}), false, false},
+		{"typed git init error, re-wrapped", fmt.Errorf("while creating the vault: %w",
+			&reconcile.VaultApplyError{Artifact: reconcile.VaultArtifactGit, Op: "x", Err: errors.New("y")}), false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := classifyVaultStep(reconcile.Plan{}, reconcile.Report{Errors: []error{tc.err}})
+			if got := len(out.failures) > 0 || out.mkdirErr != ""; got != tc.fatal {
+				t.Errorf("fatal = %v, want %v (outcome %+v)", got, tc.fatal, out)
+			}
+			if got := out.gitInitErr != ""; got != tc.gitInit {
+				t.Errorf("git-init advisory = %v, want %v (outcome %+v)", got, tc.gitInit, out)
+			}
+		})
+	}
+
+	// A Skip in init's seeded plan is something the reconciler could not act on.
+	out := classifyVaultStep(reconcile.Plan{Actions: []reconcile.Action{
+		{Kind: reconcile.ActionSkip, Summary: "cannot read vault .gitignore: x"},
+	}}, reconcile.Report{})
+	if len(out.failures) != 1 {
+		t.Errorf("a planned Skip must fail the step, got %+v", out)
+	}
+	// Notes pass through only as reported.
+	out = classifyVaultStep(reconcile.Plan{}, reconcile.Report{Notes: []string{"vault .gitignore: added 3 canonical line(s)"}})
+	if len(out.notes) != 1 || len(out.failures) != 0 {
+		t.Errorf("notes: got %+v", out)
+	}
+}
+
+// TestInitFailsWhenVaultGitignoreCannotBeReconciled pins the exit code the
+// deleted Templates pass used to supply by accident. That pass re-ran the
+// .gitignore write and turned its failure into "[FAIL] Templates" and exit 2;
+// with the pass gone, the Vault step must fail on its own — a [FAIL] Vault row
+// and ExitSystem, never a Details line under [pass] (operator ruling, 2581f4b).
+func TestInitFailsWhenVaultGitignoreCannotBeReconciled(t *testing.T) {
+	cases := []struct {
+		name string
+		seed func(t *testing.T, vaultDir string)
+		want string
+	}{
+		{
+			// Unreadable: Plan returns a Skip carrying the reason.
+			name: "unreadable",
+			seed: func(t *testing.T, vaultDir string) {
+				if err := os.MkdirAll(filepath.Join(vaultDir, ".gitignore"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "cannot read vault .gitignore",
+		},
+		{
+			// Readable but the top-up cannot be written: the vault root is
+			// read-only, so neither the lock nor the temp file can be created.
+			name: "top-up write fails",
+			seed: func(t *testing.T, vaultDir string) {
+				if os.Geteuid() == 0 {
+					t.Skip("root ignores directory permissions")
+				}
+				if err := os.WriteFile(filepath.Join(vaultDir, ".gitignore"), []byte("custom/\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(vaultDir, 0o555); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(vaultDir, 0o755) })
+			},
+			want: "top up .gitignore",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			initTestEnv(t, false)
+			projDir := t.TempDir()
+			markProjectDir(t, projDir)
+			vaultDir := filepath.Join(t.TempDir(), "vault")
+			if err := os.MkdirAll(vaultDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			tc.seed(t, vaultDir)
+
+			var code int
+			out := captureStdout(t, func() {
+				code = cmdInit(cli.BuildInfo{Version: "test"}).Run(
+					[]string{projDir, "--name", "gifail", "--vault-path", vaultDir, "--no-git"})
+			})
+			if code != cli.ExitSystem {
+				t.Errorf("exit = %d, want ExitSystem\n%s", code, out)
+			}
+			if !strings.Contains(out, "[FAIL] Vault") {
+				t.Errorf("want a [FAIL] Vault row:\n%s", out)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("Vault row does not carry %q:\n%s", tc.want, out)
+			}
+			if strings.Contains(out, "[pass] Vault") {
+				t.Errorf("a failed .gitignore reconcile rendered under [pass]:\n%s", out)
+			}
+		})
 	}
 }
 
@@ -1211,9 +1600,9 @@ func TestInitShimVaultFollowsTheProjectDirNotTheProcessCwd(t *testing.T) {
 		t.Fatalf("seed init exit = %d", code)
 	}
 
-	// A second project bound to vault B. Global init is done, so vault B gets
-	// no materialize pass — seed both vaults' command surfaces by hand so each
-	// carries a name the other cannot produce.
+	// A second project bound to vault B. init has no Templates pass (and
+	// Templates/ is override-only anyway) — seed both vaults' command surfaces
+	// by hand so each carries a name the other cannot produce.
 	otherVault := filepath.Join(t.TempDir(), "other-vault")
 	seedCommand := func(vaultRoot, name string) {
 		t.Helper()

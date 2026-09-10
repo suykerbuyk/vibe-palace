@@ -32,14 +32,19 @@ func stampVaultWrite(vaultRoot, path string) {
 }
 
 // TemplateMode selects which flavour of tree a TemplateTreeReconciler
-// operates on: a full materialize of the embedded corpus (vault
-// Templates/) or a per-project scaffold (just directories + README
+// operates on: the override-only reconcile of vault Templates/ against the
+// embedded corpus, or a per-project scaffold (just directories + README
 // stubs).
 type TemplateMode string
 
 const (
-	// TemplateModeMaterialize copies every embedded resource into
-	// <vault>/<relSubpath>/ and tracks its SHA in templates.lock.
+	// TemplateModeMaterialize reconciles <vault>/<relSubpath>/ against the
+	// embedded corpus OVERRIDE-ONLY (ADR-008, Design B). It never writes a
+	// template on its own: an absent vault file is served from the embedded
+	// floor, a byte-identical mirror is pruned, and a genuine override is kept
+	// — or, when the embedded copy moved under it, prompted. templates.lock
+	// records the baseline that makes a prune safe. The name predates Design B
+	// and is kept because it is the mode's identifier, not its description.
 	TemplateModeMaterialize TemplateMode = "materialize"
 	// TemplateModeScaffold creates commands/ and skills/ subdirectories
 	// with README stubs but does not materialize any embedded content.
@@ -50,20 +55,15 @@ const (
 type TemplateTreeSeed struct {
 	// Mode picks materialize vs scaffold semantics.
 	Mode TemplateMode
-	// AutoAccept short-circuits the Prompt branch: when true, any
-	// Create actions emitted by Plan are applied without prompting.
-	// vp init sets this on empty vaults so first-run materialize runs
-	// unattended. It has no effect in scaffold mode (scaffold never
-	// prompts).
-	AutoAccept bool
 }
 
 // TemplateTreeReconciler implements the Reconciler interface against
 // the embedded templates corpus and the templates.lock sidecar.
 //
 // Layout:
-//   - Mode=Materialize, relSubpath="Templates": every embedded resource
-//     is copied into <vaultRoot>/Templates/<rel>. Lock keys are the
+//   - Mode=Materialize, relSubpath="Templates": each embedded resource is
+//     reconciled against <vaultRoot>/Templates/<rel>, which holds only the
+//     overrides an operator wrote. Nothing is copied in. Lock keys are the
 //     full vault-relative path (e.g. "Templates/commands/wrap.md").
 //   - Mode=Scaffold, relSubpath="Projects/<slug>": commands/ and
 //     skills/ subdirectories with README stubs. No lock tracking; the
@@ -175,7 +175,7 @@ type templateTreePlanState struct {
 }
 
 // Plan emits the decision-table actions for materialize mode; for
-// scaffold mode it emits at most 3 Create actions (two directories +
+// scaffold mode it emits at most 4 Create actions (two directories +
 // two READMEs — one per subdir).
 func (r *TemplateTreeReconciler) Plan(_ context.Context) (Plan, error) {
 	if r.seed.Mode == TemplateModeScaffold {
@@ -208,13 +208,13 @@ func (r *TemplateTreeReconciler) planMaterialize() (Plan, error) {
 		target := filepath.Join(r.vaultRoot, filepath.FromSlash(key))
 		vaultSHA, herr := hashFile(target)
 		if herr != nil {
-			// ENOENT is the normal "not yet materialized" case — the
-			// main decision-table loop below will emit a Create. Any
-			// other error (permission, IO) is unexpected and worth
-			// logging: silent-adopt would skip it here and the main
-			// loop would then classify the file as user-edited
-			// (producing a confusing Prompt row) without any
-			// diagnostic trail.
+			// ENOENT is the normal case — no override exists, and the
+			// main decision-table loop below plans case 1 (served from
+			// the embedded floor). Any other error (permission, IO) is
+			// unexpected and worth logging: silent-adopt would skip it
+			// here and the main loop would then classify the file as
+			// user-edited (producing a confusing Prompt row) without
+			// any diagnostic trail.
 			if !os.IsNotExist(herr) {
 				slog.Error("silent-adopt hash failed",
 					"path", target, "err", herr, "reconciler", r.Name())

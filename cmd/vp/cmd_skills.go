@@ -372,9 +372,9 @@ func runSkillsUpgrade(opts skillsUpgradeOpts) int {
 		Stderr:       opts.Stderr,
 	})
 
-	// Write-back: the commands.Apply path handles .bak emission for
-	// user-modified vault copies via writeAtomicWithBackup — this is
-	// the same Apply used by commands.
+	// Write-back: commands.ApplyWithBackup is commands.Apply with
+	// templates.BackupPolicyRename, so a vault copy being reset keeps its
+	// prior bytes as a sibling .bak (commands.Apply keeps none).
 	if err := commands.ApplyWithBackup(promptRes.Accepted); err != nil {
 		fmt.Fprintf(opts.Stderr, "apply skills: %v\n", err)
 		return cli.ExitSystem

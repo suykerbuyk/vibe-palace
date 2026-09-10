@@ -32,9 +32,15 @@ func grokOff(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 }
 
+// TestRunCommandsUpgrade_DryRun_NonZeroOnPendingWork pins WHICH row is the
+// pending work. It is not the templates: with no vault copy, every embedded
+// command is "unneeded" — override-only, the embedded floor serves it, and
+// upgrade never writes one. What makes the dry-run exit ExitUser on an empty
+// project is the shim half: the project has no .claude/commands/vpc-*.md yet.
+// grokOff pins the host so a grok binary on PATH cannot add or remove rows.
 func TestRunCommandsUpgrade_DryRun_NonZeroOnPendingWork(t *testing.T) {
+	grokOff(t)
 	vault := t.TempDir()
-	// No vault copies exist → every embedded command is "new".
 	var out, errb bytes.Buffer
 	code := runCommandsUpgrade(commandsUpgradeOpts{
 		DryRun:              true,
@@ -47,8 +53,27 @@ func TestRunCommandsUpgrade_DryRun_NonZeroOnPendingWork(t *testing.T) {
 	if code != cli.ExitUser {
 		t.Fatalf("dry-run with pending work: exit=%d, want ExitUser", code)
 	}
-	if !strings.Contains(out.String(), "new") {
-		t.Errorf("dry-run output missing 'new' entries:\n%s", out.String())
+	var templateRow, shimRow bool
+	for _, line := range strings.Split(out.String(), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		if f[0] == "unneeded" && f[1] == "wrap" {
+			templateRow = true
+		}
+		if f[0] == "new" && strings.HasSuffix(f[1], filepath.Join(".claude", "commands", "vpc-wrap.md")) {
+			shimRow = true
+		}
+		if f[0] == "new" && f[1] == "wrap" {
+			t.Errorf("an absent vault template planned as new; override-only never writes one:\n%s", line)
+		}
+	}
+	if !templateRow {
+		t.Errorf("dry-run missing the 'unneeded  wrap' template row:\n%s", out.String())
+	}
+	if !shimRow {
+		t.Errorf("dry-run missing the pending 'new …/vpc-wrap.md' shim row:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), "Summary (dry run):") {
 		t.Errorf("dry-run missing summary line:\n%s", out.String())

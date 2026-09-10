@@ -794,6 +794,32 @@ func TestOnboardRun_WarnsAboutUpgradeCommands(t *testing.T) {
 		}
 	}
 
+	// Onboarding READS vault Templates/ — the shim steps resolve vault-wide
+	// commands and skills through it — so the advisory must not claim otherwise.
+	for _, line := range text {
+		if strings.Contains(line, "never reads") {
+			t.Errorf("advisory claims init never reads something; the shim steps read vault Templates/: %q", line)
+		}
+	}
+
+	// Templates/ is override-only, so a file there is the operator's own: each
+	// Templates line must describe what the command does to it — a RESET to the
+	// embedded copy — and must not send the operator to run it against "drift",
+	// which is an instruction to discard their override.
+	for _, half := range []string{"Templates/commands", "Templates/skills"} {
+		for _, line := range text {
+			if !strings.Contains(line, half) {
+				continue
+			}
+			if !strings.Contains(line, "reset") {
+				t.Errorf("advisory line for %s does not say it resets the file: %q", half, line)
+			}
+			if strings.Contains(line, "drift: run") {
+				t.Errorf("advisory line for %s still says \"drift: run\": %q", half, line)
+			}
+		}
+	}
+
 	// And the advisory must reach the rendered table, not just the struct.
 	var rendered strings.Builder
 	for _, r := range Rows(res) {

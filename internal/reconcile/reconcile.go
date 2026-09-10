@@ -37,11 +37,17 @@ const (
 	// mode with no seed and nothing to fix).
 	ActionSkip ActionKind = "Skip"
 	// ActionPrompt: ambiguous reconcile — the orchestrator must collect a
-	// user choice and REWRITE this action into a concrete Create / Update /
-	// Skip (possibly with a different Target, e.g. "<path>.new") BEFORE
-	// calling Apply. Reconciler Apply implementations MUST return an error
-	// if they observe an ActionPrompt — it is defense-in-depth against a
-	// misbehaving orchestrator.
+	// user choice and resolve this action BEFORE calling Apply. Reconciler
+	// Apply implementations MUST return an error if they observe an
+	// ActionPrompt — it is defense-in-depth against a misbehaving
+	// orchestrator.
+	//
+	// `vp config sync` (resolveTemplatePrompts) is the one orchestrator, and
+	// it resolves each answer differently: `s` DROPS the action, `o` rewrites
+	// it to an Update of the same Target, and `n` writes the "<path>.new"
+	// sidecar itself and then drops the action — Apply looks embedded bytes
+	// up by the original Target, so a Target rewritten to the sidecar path
+	// would miss. No answer produces a Create.
 	//
 	// For the TemplateTree reconciler, Action.Details carries the three
 	// SHAs and the embedded resource identity needed to render a
@@ -94,6 +100,10 @@ type Report struct {
 	Skipped   int
 	Pruned    int
 	Errors    []error
+	// Notes are human-readable outcome lines a caller may surface verbatim,
+	// written only for work that actually happened (e.g. how many lines a
+	// write really added, as opposed to what the Plan estimated).
+	Notes []string
 }
 
 // Reconciler is the Check → Plan → Apply contract each config-tier adapter

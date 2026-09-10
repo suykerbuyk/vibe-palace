@@ -95,7 +95,11 @@ func (r *VaultReconciler) Check(_ context.Context) []check.Result {
 }
 
 // Plan reports one action per missing artifact: the vault dir, git init,
-// and .gitignore. Existing items report Unchanged.
+// and .gitignore. Existing items report Unchanged, with one exception: a
+// present .gitignore that lacks canonical lines plans an Update that tops it
+// up (Details lists the missing lines), and one that cannot be read plans a
+// Skip naming the read error rather than failing the whole Plan — a Plan error
+// would abort every tier of `vp config sync` before any Apply.
 func (r *VaultReconciler) Plan(_ context.Context) (Plan, error) {
 	vaultPath, err := r.resolvedVaultPath()
 	if err != nil || vaultPath == "" {
@@ -117,7 +121,7 @@ func (r *VaultReconciler) Plan(_ context.Context) (Plan, error) {
 	var actions []Action
 
 	// Vault directory itself.
-	if _, statErr := os.Stat(vaultPath); errors.Is(statErr, os.ErrNotExist) {
+	if info, statErr := os.Stat(vaultPath); errors.Is(statErr, os.ErrNotExist) {
 		if r.seed.seedSet {
 			actions = append(actions, Action{
 				Kind: ActionCreate, Target: vaultPath,
@@ -132,6 +136,15 @@ func (r *VaultReconciler) Plan(_ context.Context) (Plan, error) {
 		}
 	} else if statErr != nil {
 		return Plan{}, fmt.Errorf("stat vault: %w", statErr)
+	} else if !info.IsDir() {
+		// Name the real problem. Planning on past this point would report it
+		// as an unreadable .gitignore (stat …/.gitignore: not a directory),
+		// blaming a file that cannot exist rather than the vault path.
+		actions = append(actions, Action{
+			Kind: ActionSkip, Target: vaultPath,
+			Summary: "vault path is not a directory: " + vaultPath,
+		})
+		return Plan{Actions: actions}, nil
 	} else {
 		actions = append(actions, Action{
 			Kind: ActionUnchanged, Target: vaultPath,
@@ -140,18 +153,7 @@ func (r *VaultReconciler) Plan(_ context.Context) (Plan, error) {
 	}
 
 	// .gitignore
-	gitignore := filepath.Join(vaultPath, ".gitignore")
-	if _, statErr := os.Stat(gitignore); errors.Is(statErr, os.ErrNotExist) {
-		actions = append(actions, Action{
-			Kind: ActionCreate, Target: gitignore,
-			Summary: "write vault .gitignore",
-		})
-	} else if statErr == nil {
-		actions = append(actions, Action{
-			Kind: ActionUnchanged, Target: gitignore,
-			Summary: ".gitignore present",
-		})
-	}
+	actions = append(actions, planVaultGitignore(vaultPath))
 
 	// git init (only when enabled and not yet a repo)
 	if r.gitEnabled() {
@@ -165,6 +167,73 @@ func (r *VaultReconciler) Plan(_ context.Context) (Plan, error) {
 	return Plan{Actions: actions}, nil
 }
 
+// planVaultGitignore plans the one .gitignore action: Create when absent,
+// Update when present but missing canonical lines, Unchanged when complete,
+// and Skip — carrying the error — when it cannot be stat'ed or read.
+func planVaultGitignore(vaultPath string) Action {
+	gitignore := filepath.Join(vaultPath, ".gitignore")
+	if _, statErr := os.Stat(gitignore); errors.Is(statErr, os.ErrNotExist) {
+		return Action{
+			Kind: ActionCreate, Target: gitignore,
+			Summary: "write vault .gitignore",
+		}
+	} else if statErr != nil {
+		return Action{
+			Kind: ActionSkip, Target: gitignore,
+			Summary: "cannot read vault .gitignore: " + statErr.Error(),
+		}
+	}
+	missing, err := storage.MissingVaultGitignorePatterns(vaultPath)
+	switch {
+	case err != nil:
+		return Action{
+			Kind: ActionSkip, Target: gitignore,
+			Summary: "cannot read vault .gitignore: " + err.Error(),
+		}
+	case len(missing) > 0:
+		return Action{
+			Kind: ActionUpdate, Target: gitignore,
+			Summary: fmt.Sprintf("top up vault .gitignore (+%d canonical line(s))", len(missing)),
+			Details: missing,
+		}
+	default:
+		return Action{
+			Kind: ActionUnchanged, Target: gitignore,
+			Summary: ".gitignore present",
+		}
+	}
+}
+
+// VaultArtifact names the part of the vault a VaultReconciler.Apply failure
+// concerns. The zero value means unclassified.
+type VaultArtifact string
+
+const (
+	VaultArtifactDir         VaultArtifact = "vault directory"
+	VaultArtifactGitignore   VaultArtifact = "vault .gitignore"
+	VaultArtifactGit         VaultArtifact = "vault git repository"
+	VaultArtifactFormatStamp VaultArtifact = "vault data-format stamp"
+)
+
+// VaultApplyError is the type of every error VaultReconciler.Apply puts in
+// Report.Errors. It exists so a caller triages a failure by errors.As on
+// Artifact, never by matching message text: the message is for humans and may
+// be reworded, and a triage keyed on its prefix turns that reword into a
+// silent downgrade from [FAIL] to a log line. Error() keeps the wording these
+// failures have always had ("mkdir vault: …", "write .gitignore: …").
+type VaultApplyError struct {
+	Artifact VaultArtifact
+	Op       string
+	Err      error
+}
+
+func (e *VaultApplyError) Error() string { return e.Op + ": " + e.Err.Error() }
+func (e *VaultApplyError) Unwrap() error { return e.Err }
+
+func vaultApplyErr(artifact VaultArtifact, op string, err error) error {
+	return &VaultApplyError{Artifact: artifact, Op: op, Err: err}
+}
+
 func (r *VaultReconciler) Apply(_ context.Context, p Plan) (Report, error) {
 	var rep Report
 	for _, a := range p.Actions {
@@ -173,18 +242,18 @@ func (r *VaultReconciler) Apply(_ context.Context, p Plan) (Report, error) {
 			switch filepath.Base(a.Target) {
 			case ".gitignore":
 				if err := storage.ReconcileVaultGitignore(filepath.Dir(a.Target)); err != nil {
-					rep.Errors = append(rep.Errors, fmt.Errorf("write .gitignore: %w", err))
+					rep.Errors = append(rep.Errors, vaultApplyErr(VaultArtifactGitignore, "write .gitignore", err))
 					continue
 				}
 			case ".git":
 				if err := storage.GitInit(filepath.Dir(a.Target)); err != nil {
-					rep.Errors = append(rep.Errors, fmt.Errorf("git init: %w", err))
+					rep.Errors = append(rep.Errors, vaultApplyErr(VaultArtifactGit, "git init", err))
 					continue
 				}
 			default:
 				// vault directory itself
 				if err := os.MkdirAll(a.Target, 0o755); err != nil {
-					rep.Errors = append(rep.Errors, fmt.Errorf("mkdir vault: %w", err))
+					rep.Errors = append(rep.Errors, vaultApplyErr(VaultArtifactDir, "mkdir vault", err))
 					continue
 				}
 				// Born-current: a freshly CREATED vault is already in the current
@@ -193,12 +262,42 @@ func (r *VaultReconciler) Apply(_ context.Context, p Plan) (Report, error) {
 				// existing vault, which could falsely mark unmigrated data as
 				// migrated. Non-fatal: a stamp hiccup must not abort vault init.
 				if err := surface.WriteFormat(a.Target, surface.RequiredDataFormat); err != nil {
-					rep.Errors = append(rep.Errors, fmt.Errorf("stamp vault data format: %w", err))
+					rep.Errors = append(rep.Errors, vaultApplyErr(VaultArtifactFormatStamp, "stamp vault data format", err))
 				}
 			}
 			rep.Created++
 		case ActionUpdate:
+			// The only Update this reconciler plans is the .gitignore top-up.
+			// It is a read-modify-write of a shared, git-tracked vault file,
+			// so it goes through the locked funnel (storage.LockedUpdate, via
+			// TopUpVaultGitignore) rather than ReconcileVaultGitignore's raw
+			// temp+rename, which the Create branch above keeps because it only
+			// ever meets an absent file. The missing set is re-derived under
+			// the lock; if another writer already added it, nothing is written
+			// and the action counts as Unchanged.
+			if filepath.Base(a.Target) != ".gitignore" {
+				// Nothing else has an Update writer. Counting one as Updated
+				// would report a success that wrote nothing.
+				// The zero Artifact is "unclassified", which a caller must
+				// treat as a failure.
+				rep.Errors = append(rep.Errors, vaultApplyErr("", "update",
+					fmt.Errorf("no Update writer for %s", a.Target)))
+				continue
+			}
+			added, err := storage.TopUpVaultGitignore(filepath.Dir(a.Target))
+			if err != nil {
+				rep.Errors = append(rep.Errors, vaultApplyErr(VaultArtifactGitignore, "top up .gitignore", err))
+				continue
+			}
+			if added == 0 {
+				rep.Unchanged++
+				continue
+			}
 			rep.Updated++
+			// The count is the one the locked write actually added, not the
+			// plan-time estimate: another writer may have added some between
+			// Plan and Apply.
+			rep.Notes = append(rep.Notes, fmt.Sprintf("vault .gitignore: added %d canonical line(s)", added))
 		case ActionUnchanged:
 			rep.Unchanged++
 		case ActionSkip:

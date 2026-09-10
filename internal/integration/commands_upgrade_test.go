@@ -15,10 +15,10 @@ import (
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 )
 
-// TestIntegrationCommandsUpgradeFullLoop exercises the full surface:
-// seed a vault with one unchanged, one user-edited, and one missing command;
-// Plan reports the three kinds; dry-run summary is correct; Apply writes
-// exactly the accepted changes; re-Plan shows everything unchanged.
+// TestIntegrationCommandsUpgradeFullLoop exercises the full surface: seed a
+// vault with one byte-identical command and one user-edited one, and leave
+// every other command absent; Plan reports unchanged / updated / unneeded;
+// Apply writes exactly the accepted change; re-Plan offers nothing.
 func TestIntegrationCommandsUpgradeFullLoop(t *testing.T) {
 	vault := t.TempDir()
 	r := vpctx.NewResolver(vault)
@@ -75,10 +75,12 @@ func TestIntegrationCommandsUpgradeFullLoop(t *testing.T) {
 	}
 
 	// Fixed point: re-planning offers nothing. The two seeded files settle to
-	// Unchanged; every other embedded command stays Unneeded. Nothing in the
-	// plan is actionable, so a second `vp commands upgrade` writes nothing and
-	// there is no mirror for `vp config sync` to prune back off — the loop the
-	// two commands used to form is gone.
+	// Unchanged; every other embedded command stays Unneeded, so a second
+	// `vp commands upgrade` writes nothing — upgrade never CREATES a mirror,
+	// which is what used to make it fight `vp config sync`. The two files it
+	// reset ARE now byte-identical to embedded, i.e. mirrors: `vp config sync`
+	// prunes them, and upgrade does not put them back. That is the reset
+	// discarding the wrap.md override, which is why the upgrade advisory says so.
 	plan2, err := commands.Plan(r, commands.PlanOptions{})
 	if err != nil {
 		t.Fatalf("re-Plan: %v", err)

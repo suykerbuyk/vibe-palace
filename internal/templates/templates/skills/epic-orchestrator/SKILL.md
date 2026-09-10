@@ -187,7 +187,8 @@ vault-tooling epic. Do not stop at "merged":**
    its old, now-deleted image, so a reinstall alone is a stale *process* (`readlink /proc/<pid>/exe`
    for every `pgrep -f 'vp mcp'`; `(deleted)` = that host is lying). The new tool/surface appearing
    is the positive signal it took.
-2. `vp config sync` — roll the embedded-template changes to the vault `Templates/` verbatim, then
+2. `vp config sync` — prune any vault `Templates/` mirror the new binary's embedded corpus
+   supersedes (the healthy state is no mirror at all; the embedded floor serves every template), then
    confirm no drift by calling `vp_check` (the MCP tool) with
    `{"checks": ["vault-filesystem", "stray-scaffolds", "surface-merge-driver", "resume-caps", "resume-refs", "vault-abs-paths", "template-drift", "writer-identity", "stale-mcp"]}` — the host-agnostic
    half, and the first proof the rolled tooling reaches an agent at all rather than merely existing.

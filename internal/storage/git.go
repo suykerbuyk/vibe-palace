@@ -94,18 +94,62 @@ func ReconcileProjectGitignore(projectRoot string) error {
 		CanonicalProjectGitignorePatterns, true)
 }
 
+// TopUpVaultGitignore appends every CanonicalGitignorePatterns line missing
+// from an EXISTING <vaultRoot>/.gitignore, preserving the file's content and
+// order verbatim, and returns how many lines it added. When nothing is missing
+// the file is not touched at all.
+//
+// Unlike ReconcileVaultGitignore — which creates the file and always rewrites
+// it — this is a genuine read-modify-write of a shared, git-tracked vault file,
+// so it runs inside LockedUpdate: the missing set is computed from bytes read
+// under the per-path lock, and no other LOCKED writer of the file can land an
+// edit between that read and the write (ADR-003). The raw writer,
+// ReconcileVaultGitignore, takes no lock, so it is not excluded; routing it
+// through the funnel is owned by template-tree-raw-vault-writes-bypass-the-lock-funnel.
+// A missing file is an error here, not a create; the Vault reconciler plans a
+// Create for that case.
+func TopUpVaultGitignore(vaultRoot string) (int, error) {
+	path := filepath.Join(vaultRoot, ".gitignore")
+	added := 0
+	err := LockedUpdate(vaultRoot, path, func(current []byte) ([]byte, error) {
+		out, n := appendMissingGitignoreLines(current, CanonicalGitignorePatterns)
+		if n == 0 {
+			return nil, nil
+		}
+		added = n
+		return out, nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return added, nil
+}
+
+// MissingVaultGitignorePatterns returns the canonical vault patterns that are
+// absent from <vaultRoot>/.gitignore, in declaration order. A missing file
+// yields the full canonical set. It is read-only and underpins the Vault
+// reconciler's top-up plan.
+func MissingVaultGitignorePatterns(vaultRoot string) ([]string, error) {
+	return missingGitignorePatterns(filepath.Join(vaultRoot, ".gitignore"), CanonicalGitignorePatterns)
+}
+
 // MissingProjectGitignorePatterns returns the canonical project-root
 // patterns that are absent from <projectRoot>/.gitignore, in declaration
 // order. A missing file yields the full canonical set. It is read-only
 // and underpins the advisory `vp check` row.
 func MissingProjectGitignorePatterns(projectRoot string) ([]string, error) {
-	path := filepath.Join(projectRoot, ".gitignore")
+	return missingGitignorePatterns(filepath.Join(projectRoot, ".gitignore"), CanonicalProjectGitignorePatterns)
+}
+
+// missingGitignorePatterns is the shared read-only core of the two Missing*
+// helpers: the canonical lines absent from path, in declaration order.
+func missingGitignorePatterns(path string, canonical []string) ([]string, error) {
 	present, err := gitignorePresentLines(path)
 	if err != nil {
 		return nil, err
 	}
 	var missing []string
-	for _, p := range CanonicalProjectGitignorePatterns {
+	for _, p := range canonical {
 		if _, ok := present[p]; !ok {
 			missing = append(missing, p)
 		}
@@ -134,25 +178,11 @@ func gitignorePresentLines(path string) (map[string]struct{}, error) {
 	return present, nil
 }
 
-// reconcileGitignore is the shared mechanism behind the vault and
-// project-root reconcilers. It ensures every pattern in canonical is
-// present in path as an exact line, preserving existing content verbatim
-// and appending missing canonical lines at EOF in declaration order. The
-// file is written atomically (sibling tmp-file + rename, 0o644, exactly
-// one trailing newline).
-//
-// When skipWhenComplete is true and no canonical line was missing, the
-// function returns without touching the file at all — no write, no mtime
-// change. When false, the file is always (re)written, normalizing the
-// trailing newline even on a no-additions run.
-func reconcileGitignore(path string, canonical []string, skipWhenComplete bool) error {
-	var existing []byte
-	if data, err := os.ReadFile(path); err == nil {
-		existing = data
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("read gitignore %s: %w", path, err)
-	}
-
+// appendMissingGitignoreLines returns existing with every canonical line it
+// lacks appended at EOF in declaration order, normalized to exactly one
+// trailing newline, plus how many lines were appended. Existing lines —
+// comments, blanks, custom patterns, their order — are kept verbatim.
+func appendMissingGitignoreLines(existing []byte, canonical []string) ([]byte, int) {
 	// Split into lines without losing empty trailing lines. We strip the
 	// final newline (if any) before splitting so an empty file becomes
 	// []string{} rather than []string{""}.
@@ -176,12 +206,33 @@ func reconcileGitignore(path string, canonical []string, skipWhenComplete bool) 
 		present[p] = struct{}{}
 		added++
 	}
+	return []byte(strings.Join(lines, "\n") + "\n"), added
+}
 
+// reconcileGitignore is the shared mechanism behind the vault and
+// project-root reconcilers. It ensures every pattern in canonical is
+// present in path as an exact line, preserving existing content verbatim
+// and appending missing canonical lines at EOF in declaration order. The
+// file is written atomically (sibling tmp-file + rename, 0o644, exactly
+// one trailing newline).
+//
+// When skipWhenComplete is true and no canonical line was missing, the
+// function returns without touching the file at all — no write, no mtime
+// change. When false, the file is always (re)written, normalizing the
+// trailing newline even on a no-additions run.
+func reconcileGitignore(path string, canonical []string, skipWhenComplete bool) error {
+	var existing []byte
+	if data, err := os.ReadFile(path); err == nil {
+		existing = data
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read gitignore %s: %w", path, err)
+	}
+
+	out, added := appendMissingGitignoreLines(existing, canonical)
 	if skipWhenComplete && added == 0 {
 		return nil
 	}
 
-	out := strings.Join(lines, "\n") + "\n"
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".gitignore.*.tmp")
 	if err != nil {
@@ -193,7 +244,7 @@ func reconcileGitignore(path string, canonical []string, skipWhenComplete bool) 
 			_ = os.Remove(tmpName)
 		}
 	}()
-	if _, err := tmp.WriteString(out); err != nil {
+	if _, err := tmp.Write(out); err != nil {
 		tmp.Close()
 		return fmt.Errorf("write tmp gitignore: %w", err)
 	}

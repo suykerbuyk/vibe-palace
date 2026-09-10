@@ -56,7 +56,7 @@ func TestExecutor_Write_OverwriteNeverNoBackup(t *testing.T) {
 
 // TestExecutor_Write_BackupAlwaysCopiesPriorBytes proves
 // BackupPolicyAlways writes a .bak containing the pre-existing bytes
-// (init-materialize + skills-upgrade contract).
+// (the template reconciler's Update — `vp config sync`'s `o` answer).
 func TestExecutor_Write_BackupAlwaysCopiesPriorBytes(t *testing.T) {
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "f.md")

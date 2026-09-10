@@ -61,15 +61,14 @@ func runVPWithTTY(t *testing.T, bin string, env *testEnv, stdin []byte, args ...
 }
 
 // TestIntegrationSkillUpgrade exercises the two-SHA `vp skills upgrade`
-// path end to end: bump the lock SHA to force an upgrade, run `vp skills
-// upgrade` with stdin "a\n", and verify every file in the group lands
-// and the lock refreshes on the next `vp config sync`.
+// path end to end: seed vault skill copies that differ from embedded, run
+// `vp skills upgrade` with stdin "a\n", and verify every file in the group is
+// reset to the embedded bytes. `vp skills upgrade` never reads or writes
+// templates.lock; the lock belongs to `vp config sync`.
 //
 // Also proves:
 //   - a dirty vault edit on a reference triggers the .bak sidecar.
 //   - `--granular` fans out to 6 per-file prompts.
-//   - the three-SHA materialize path (via `vp init` + `vp config sync`)
-//     continues to cover skills, reusing existing lock bookkeeping.
 func TestIntegrationSkillUpgrade(t *testing.T) {
 	bin := buildVPBinary(t)
 	env := setupFreshEnv(t)

@@ -18,14 +18,16 @@ import (
 )
 
 // TestIntegrationTemplateMaterializeAndReconcile is the full-stack,
-// acceptance-criteria gate for the materialize-and-reconcile-vault-templates
-// epic. It drives the real `vp` CLI binary (built once per test run) end to
-// end: fresh `vp init` materializes Templates/, a user edit to wrap.md
-// survives a subsequent `vp config sync --yes`, and a simulated embedded
-// bump (achieved by corrupting the lock entry's SHA so vault≠lock and
-// embedded≠lock simultaneously) exercises each of the three Prompt
-// branches — skip / overwrite+.bak / write-as-.new — verifying the vault
-// state predicates for each.
+// acceptance-criteria gate for the override-only vault Templates/ reconcile
+// (ADR-008, Design B). It drives the real `vp` CLI binary (built once per test
+// run) end to end: a fresh `vp init` leaves Templates/ alone entirely (no
+// directory, no lock), a tracked override of wrap.md survives a subsequent
+// `vp config sync --yes`, a simulated embedded bump (achieved by corrupting
+// the lock entry's SHA so vault≠lock and embedded≠lock simultaneously)
+// exercises each of the three Prompt branches — skip / overwrite+.bak /
+// write-as-.new — verifying the vault state predicates for each, and a first
+// install onto a vault that already holds an override neither fails nor
+// touches it.
 //
 // We shell out to the built `vp` binary rather than importing unexported
 // `cmd/vp` helpers: cmd/vp is package main and not importable from
@@ -43,7 +45,7 @@ func TestIntegrationTemplateMaterializeAndReconcile(t *testing.T) {
 	runVP(t, bin, env, nil, "init", env.projectDir,
 		"--name", env.projectName, "--vault-path", env.vaultPath, "--no-git")
 
-	assertInitialMaterialization(t, env)
+	assertInitLeavesTemplatesUntouched(t, env)
 
 	// --- Part 2: a genuine override survives `vp config sync --yes` ---
 	// Under override-only there is nothing on disk to edit after init, so we
@@ -150,6 +152,73 @@ func TestIntegrationTemplateMaterializeAndReconcile(t *testing.T) {
 		}
 	})
 
+	// A first install onto a vault that ALREADY holds a Templates/ override —
+	// a hand-written wrap.md with no lock entry, decision-table case 6 — and a
+	// .gitignore missing canonical lines. At 2581f4b init's Templates pass
+	// returned "received ActionPrompt ... orchestrator must resolve Prompt
+	// actions before Apply" and exited 2; runVP fails the test on any non-zero
+	// exit, so that is the regression assertion. init must also top the
+	// .gitignore up (the one job of the deleted pass that survives, now in the
+	// Vault step) without the surface stamp's unrecognized-path warning.
+	t.Run("first-install-ignores-vault-overrides", func(t *testing.T) {
+		env := setupFreshEnv(t)
+		wrap := filepath.Join(env.vaultPath, "Templates", "commands", "wrap.md")
+		if err := os.MkdirAll(filepath.Dir(wrap), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(wrap, []byte(userEdit), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gi := filepath.Join(env.vaultPath, ".gitignore")
+		if err := os.WriteFile(gi, []byte("my-scratch/\n*.bak\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		out := runVP(t, bin, env, nil, "init", env.projectDir,
+			"--name", "tpl-first", "--vault-path", env.vaultPath, "--no-git")
+
+		if got, err := os.ReadFile(wrap); err != nil || string(got) != userEdit {
+			t.Errorf("first install touched the override: err=%v\n got  %q\n want %q", err, got, userEdit)
+		}
+		for _, side := range []string{".bak", ".new"} {
+			if _, err := os.Stat(wrap + side); err == nil {
+				t.Errorf("first install wrote %s", wrap+side)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(env.vaultPath, templates.LockRelPath)); !os.IsNotExist(err) {
+			t.Errorf("first install created templates.lock (stat err=%v)", err)
+		}
+		if strings.Contains(out, "] Templates:") {
+			t.Errorf("init rendered a Templates row:\n%s", out)
+		}
+		if !strings.Contains(out, "vault .gitignore: added") {
+			t.Errorf("init did not report the .gitignore top-up:\n%s", out)
+		}
+		if strings.Contains(out, "unrecognized path") {
+			t.Errorf("the .gitignore top-up tripped the surface stamp's unrecognized-path warning:\n%s", out)
+		}
+		giData, err := os.ReadFile(gi)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(string(giData), "my-scratch/\n*.bak\n") {
+			t.Errorf(".gitignore seed not preserved at the top:\n%s", giData)
+		}
+		for _, pat := range []string{"*.new", ".vp-locks/", "palace/.local/"} {
+			if !containsLine(string(giData), pat) {
+				t.Errorf(".gitignore not topped up with %q:\n%s", pat, giData)
+			}
+		}
+
+		// The override is still there for its real owner: `vp config sync`
+		// sees it and plans the diverged-override Prompt.
+		plan := runVP(t, bin, env, nil, "config", "sync", "--dry-run",
+			"--project-root", env.projectDir)
+		if !strings.Contains(plan, "Templates/commands/wrap.md diverged (no lock") {
+			t.Errorf("config sync --dry-run does not see the override:\n%s", plan)
+		}
+	})
+
 	t.Run("new", func(t *testing.T) {
 		env := setupFreshEnv(t)
 		runVP(t, bin, env, nil, "init", env.projectDir,
@@ -205,14 +274,22 @@ func seedTrackedOverride(t *testing.T, vaultPath, embeddedRel string, data []byt
 	}
 }
 
-// assertInitialMaterialization checks the override-only post-`vp init`
-// contract: NO embedded resource is mirrored into the vault Templates/ tree
-// (the embedded floor is served directly), the templates.lock is empty, the
-// vault .gitignore still carries the *.bak / *.new patterns, and the
-// current project's commands/ + skills/ README stubs exist (scaffold mode is
-// unchanged).
-func assertInitialMaterialization(t *testing.T, env *testEnv) {
+// assertInitLeavesTemplatesUntouched checks the post-`vp init` contract: init
+// has no Templates pass, so there is no Templates/ directory and no
+// templates.lock at all; NO embedded resource is mirrored (the embedded floor
+// is served directly); the vault .gitignore still carries the *.bak / *.new
+// patterns; and the current project's commands/ + skills/ README stubs exist
+// (scaffold mode is unchanged).
+func assertInitLeavesTemplatesUntouched(t *testing.T, env *testEnv) {
 	t.Helper()
+
+	// Stat, not ReadLock: ReadLock returns an empty lock for an absent file.
+	if _, err := os.Stat(filepath.Join(env.vaultPath, "Templates")); !os.IsNotExist(err) {
+		t.Errorf("init created <vault>/Templates (stat err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(env.vaultPath, templates.LockRelPath)); !os.IsNotExist(err) {
+		t.Errorf("init created %s (stat err=%v)", templates.LockRelPath, err)
+	}
 
 	resources, err := templates.WalkEmbedded()
 	if err != nil {

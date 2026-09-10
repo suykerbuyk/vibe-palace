@@ -13,18 +13,20 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 )
 
-// Executor is the central plan/apply surface for materializing
-// embedded template bytes onto disk. Three callers delegate here:
+// Executor is the central plan/apply surface for writing embedded
+// template bytes onto disk. Three callers delegate here:
 //
-//   - reconcile.TemplateTree.Apply (vp init materialize): uses
-//     BackupPolicyAlways so a dirty user-edit is preserved as .bak
-//     before an embedded bump lands.
+//   - reconcile.TemplateTree.Apply (`vp config sync`, and vault split):
+//     its Update — the `o` answer to a diverged-override prompt — uses
+//     BackupPolicyAlways so the operator's bytes are kept as .bak before
+//     the embedded copy replaces them. Its Create branch is unreachable
+//     from any Plan since ADR-008's override-only Design B.
 //   - commands.Apply (vp commands upgrade): uses BackupPolicyNever.
 //   - commands.ApplyWithBackup (vp skills upgrade): uses
-//     BackupPolicyAlways.
+//     BackupPolicyRename.
 //
-// The asymmetry between commands and skills (commands=never,
-// skills=always) predates this extraction; see
+// The asymmetry between commands and skills (commands keep no .bak,
+// skills keep one) predates this extraction; see
 // doc/TEMPLATE_POLICY.md for the rationale and follow-up flag.
 //
 // The walk primitive (WalkEmbedded) is already in embedded.go; the
@@ -49,7 +51,8 @@ const (
 	BackupPolicyNever BackupPolicy = iota
 	// BackupPolicyAlways writes a .bak of the pre-existing bytes
 	// before overwriting. New files (no existing target) produce no
-	// .bak. skills upgrade and init materialize use this.
+	// .bak. The template reconciler's Update (`vp config sync`, `o`)
+	// uses this.
 	BackupPolicyAlways
 	// BackupPolicyRename, like BackupPolicyAlways, preserves the
 	// pre-existing bytes to a sibling .bak, but does so via rename

@@ -139,6 +139,13 @@ func validatePositionalProjectPath(args []string) (int, string) {
 // initGlobal creates the global config and vault directory if they don't
 // exist, returning a result row for each logical step plus an exit code.
 // Delegates the underlying writes to the GlobalConfig and Vault reconcilers.
+//
+// It owns exactly those two things. It never reads, writes, prunes or reports
+// on <vault>/Templates/: that tree is override-only (ADR-008) and belongs to
+// `vp config sync`, which reconciles it, and to `vp commands upgrade` /
+// `vp skills upgrade`, which offer to reset existing copies. A first install
+// onto a vault that already holds overrides therefore cannot fail on them, and
+// the CLI matches the MCP vp_init tool, which never had a Templates pass.
 func initGlobal(fv *cli.FlagValues) ([]check.Result, int) {
 	var results []check.Result
 
@@ -163,8 +170,22 @@ func initGlobal(fv *cli.FlagValues) ([]check.Result, int) {
 		return results, cli.ExitOK
 	}
 
+	// Resolved exactly as initProject resolves it: expanded and absolute. A
+	// relative --vault-path used to be recorded verbatim in the global config
+	// (so it meant a different vault from every other cwd), and the Vault
+	// reconciler's locked .gitignore top-up refuses a relative root outright —
+	// vaultlock anchors its lock files at an absolute vault root.
 	vaultPath := fv.Get("--vault-path")
-	if vaultPath == "" {
+	if vaultPath != "" {
+		abs, aerr := expandAndAbsPath(vaultPath)
+		if aerr != nil {
+			results = append(results, check.Result{
+				Name: "Global config", Status: check.Fail, Summary: "resolve --vault-path: " + aerr.Error(),
+			})
+			return results, cli.ExitUser
+		}
+		vaultPath = abs
+	} else {
 		home, herr := os.UserHomeDir()
 		if herr != nil {
 			results = append(results, check.Result{
@@ -221,24 +242,17 @@ func initGlobal(fv *cli.FlagValues) ([]check.Result, int) {
 		results = append(results, check.Result{Name: "Vault", Status: check.Fail, Summary: fmt.Sprintf("create vault: %v", err)})
 		return results, cli.ExitSystem
 	}
-	gitInitErr := ""
-	for _, e := range rep.Errors {
-		es := e.Error()
-		switch {
-		case strings.HasPrefix(es, "git init"):
-			gitInitErr = es
-		case strings.HasPrefix(es, "mkdir vault"):
-			results = append(results, check.Result{Name: "Vault", Status: check.Fail, Summary: es})
-			return results, cli.ExitSystem
-		default:
-			// .gitignore failures are non-fatal — log only, mirroring the
-			// pre-reconciler init path.
-			slog.Error("vault reconciler error", "err", es)
-		}
+	out := classifyVaultStep(vPlan, rep)
+	if out.mkdirErr != "" {
+		results = append(results, check.Result{Name: "Vault", Status: check.Fail, Summary: out.mkdirErr})
+		return results, cli.ExitSystem
+	}
+	if len(out.failures) == 0 {
+		vaultRow.Details = append(vaultRow.Details, out.notes...)
 	}
 	if gitWanted && gitOK {
-		if gitInitErr != "" {
-			vaultRow.Details = append(vaultRow.Details, "git init failed: "+gitInitErr)
+		if out.gitInitErr != "" {
+			vaultRow.Details = append(vaultRow.Details, "git init failed: "+out.gitInitErr)
 		} else {
 			for _, a := range vPlan.Actions {
 				if a.Kind == reconcile.ActionCreate && filepath.Base(a.Target) == ".git" {
@@ -248,47 +262,73 @@ func initGlobal(fv *cli.FlagValues) ([]check.Result, int) {
 			}
 		}
 	}
+	if len(out.failures) > 0 {
+		vaultRow.Status = check.Fail
+		vaultRow.Details = append(vaultRow.Details, out.failures...)
+		results = append(results, vaultRow)
+		return results, cli.ExitSystem
+	}
 	results = append(results, vaultRow)
-
-	// --- TemplateTree (materialize) ---
-	// Phase 3: after the vault directory exists, copy every embedded
-	// template resource into <vault>/Templates/ and seed the lock file.
-	// AutoAccept=true so the fresh-vault Create actions run unattended.
-	tt := reconcile.NewTemplateTree(vaultPath, "Templates", reconcile.TemplateTreeSeed{
-		Mode:       reconcile.TemplateModeMaterialize,
-		AutoAccept: true,
-	})
-	ttPlan, err := tt.Plan(ctx)
-	if err != nil {
-		results = append(results, check.Result{
-			Name: "Templates", Status: check.Fail, Summary: err.Error(),
-		})
-		return results, cli.ExitSystem
-	}
-	ttRep, err := tt.Apply(ctx, ttPlan)
-	if err != nil {
-		results = append(results, check.Result{
-			Name: "Templates", Status: check.Fail, Summary: err.Error(),
-		})
-		return results, cli.ExitSystem
-	}
-	if len(ttRep.Errors) > 0 {
-		// Log every error so a multi-failure Apply leaves a complete
-		// forensic trail; the Fail row only surfaces the first.
-		for _, e := range ttRep.Errors {
-			slog.Error("templates materialize apply error", "err", e)
-		}
-		results = append(results, check.Result{
-			Name: "Templates", Status: check.Fail, Summary: ttRep.Errors[0].Error(),
-		})
-		return results, cli.ExitSystem
-	}
-	results = append(results, check.Result{
-		Name:    "Templates",
-		Status:  check.Pass,
-		Summary: fmt.Sprintf("%d templates materialized", ttRep.Created),
-	})
 	return results, cli.ExitOK
+}
+
+// vaultStepOutcome is initGlobal's reading of the Vault reconciler's Plan and
+// Report.
+type vaultStepOutcome struct {
+	mkdirErr   string   // the vault directory itself could not be created
+	gitInitErr string   // advisory: rendered as a Details line under [pass]
+	failures   []string // the step failed: [FAIL] Vault and ExitSystem
+	notes      []string // work that happened, for the row's Details
+}
+
+// classifyVaultStep triages the Vault step by error IDENTITY, never by message
+// text. Tolerating a failure is the exception and has to be named: a
+// reconcile.VaultApplyError for the git repository (a Details line under
+// [pass], as it has always been) or for the data-format stamp (logged — a
+// stamp hiccup must not abort vault init). Everything else fails the step: a
+// .gitignore that could not be created or topped up, and any error this
+// function does not recognise, however it is worded. The old triage matched
+// message prefixes, so rewording "top up .gitignore" in another package would
+// have silently turned a failed vault write into a log line under [pass].
+//
+// A .gitignore failure is a FAILED step, not hygiene: the canonical lines keep
+// host-local .bak/.new sidecars, .vp-locks/ and palace/.local/ out of the vault
+// repo, and every other host inherits whatever this one commits (operator
+// ruling, 2581f4b: a failed vault-side step exits non-zero). It used to exit 2
+// anyway, one step later, when the Templates pass re-ran the same write — that
+// pass is gone, so the Vault step has to say it.
+//
+// A Skip in init's seeded plan is a failure too: in that mode the reconciler
+// plans a Skip only for something it cannot act on — an unreadable .gitignore,
+// or a vault path that is not a directory.
+func classifyVaultStep(p reconcile.Plan, rep reconcile.Report) vaultStepOutcome {
+	var out vaultStepOutcome
+	for _, a := range p.Actions {
+		if a.Kind == reconcile.ActionSkip {
+			out.failures = append(out.failures, a.Summary)
+		}
+	}
+	for _, e := range rep.Errors {
+		var ve *reconcile.VaultApplyError
+		if !errors.As(e, &ve) {
+			out.failures = append(out.failures, e.Error())
+			continue
+		}
+		switch ve.Artifact {
+		case reconcile.VaultArtifactGit:
+			out.gitInitErr = e.Error()
+		case reconcile.VaultArtifactFormatStamp:
+			slog.Error("vault reconciler error", "err", e)
+		case reconcile.VaultArtifactDir:
+			if out.mkdirErr == "" {
+				out.mkdirErr = e.Error()
+			}
+		default:
+			out.failures = append(out.failures, e.Error())
+		}
+	}
+	out.notes = rep.Notes
+	return out
 }
 
 // errOrFirst returns err.Error() if err is non-nil, else the first error

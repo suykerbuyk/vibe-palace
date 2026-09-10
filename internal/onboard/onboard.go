@@ -23,10 +23,14 @@
 //
 // # What this package does NOT own
 //
-// The installation bootstrap — global config, vault creation, Templates/
-// materialize — stays in cmd/vp. Those are "does this machine have a
-// vibe-palace at all", not "is this project onboarded", and the MCP tool
-// answers the first question by refusing rather than by creating.
+// The installation bootstrap — global config and vault creation — stays in
+// cmd/vp. Those are "does this machine have a vibe-palace at all", not "is
+// this project onboarded", and the MCP tool answers the first question by
+// refusing rather than by creating. Neither side writes, prunes or reconciles
+// vault Templates/, which is override-only and belongs to `vp config sync` and
+// the upgrade commands. Onboarding does READ it: the shim steps list commands
+// and skills through the resolver, whose vault tier is Templates/, which is how
+// a vault-wide new command reaches every project as a shim.
 //
 // It also owns no writer of its own: every step drives a reconciler or helper
 // that already exists in a shared package. A step body here is orchestration
@@ -383,22 +387,33 @@ func Run(ctx context.Context, req Request, scope Scope) (Result, error) {
 //
 //   - `vp commands upgrade` owns stale-shim REMOVAL (init is additive by
 //     default: shims.Reconcile reports a stale .claude/commands/vpc-*.md and
-//     leaves it) and vault Templates/commands/ drift.
-//   - `vp skills upgrade` owns vault Templates/skills/ drift. It owns nothing
-//     else: cmd/vp/cmd_skills.go imports neither internal/shims nor
-//     internal/storage, so it touches no agent file, no shim, no .gitignore
-//     and no git hook.
+//     leaves it), and offers to RESET a vault Templates/commands/ file that
+//     overrides a built-in command.
+//   - `vp skills upgrade` offers the same reset for vault Templates/skills/.
+//     It owns nothing else: cmd/vp/cmd_skills.go imports neither
+//     internal/shims nor internal/storage, so it touches no agent file, no
+//     shim, no .gitignore and no git hook.
+//
+// It says "reset", not "run it against drift". Templates/ is override-only
+// (ADR-008): a file there is something the operator wrote, and accepting the
+// reset replaces it with the embedded copy — commands with no .bak at all.
+// Telling an operator to run a command "for drift" was an instruction to
+// discard their override. Only a file that shadows a built-in is offered; a
+// new vault-wide command or skill is never touched by either command.
 //
 // Naming only `vp commands upgrade` here would pin a known bug — it does not
 // own Templates/skills — which is why each half names its own command.
 func upgradeAdvisory() Advisory {
 	return Advisory{
 		Name: "Upgrade policy",
-		Summary: "`vp init` reconciles; it never upgrades a drifted template and never removes a stale shim. " +
+		Summary: "`vp init` is additive: it never removes a stale shim and never writes, prunes or reconciles vault Templates/. " +
 			"Two other commands do, and they own different halves",
 		Details: []string{
-			"stale .claude/commands/vpc-*.md shims and vault Templates/commands/ drift: run `vp commands upgrade`",
-			"vault Templates/skills/ drift: run `vp skills upgrade`",
+			"stale .claude/commands/vpc-*.md shims: `vp commands upgrade` removes them. It also offers to reset each " +
+				"vault Templates/commands/ override of a built-in command to the embedded copy — accepting discards " +
+				"that override, with no .bak",
+			"vault Templates/skills/ overrides of built-in skills: `vp skills upgrade` offers to reset each to the " +
+				"embedded copy (a .bak is kept)",
 		},
 	}
 }
