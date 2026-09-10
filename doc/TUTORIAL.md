@@ -80,11 +80,33 @@ vp init — vibe-palace 0.1.0-dev
 [pass] Global config: /home/you/.config/vibe-palace/config.toml
 [pass] Vault:     /home/you/vibe-palace-vault
                   git repository initialized
-[pass] Project config: /home/you/code/myapp/.vibe-palace.toml (myapp, go.mod detected)
-[skip] Agent wiring: Phase 2 — CLAUDE.md / AGENTS.md bootstrap snippet not yet written
+[pass] Templates: 0 templates materialized
+[pass] Project config: created /home/you/code/myapp/.vibe-palace.toml (myapp, go.mod detected)
+[pass] Vault project: /home/you/vibe-palace-vault/Projects/myapp/config.toml
+[pass] Project templates: scaffolded Projects/myapp/{commands,skills}/
+[pass] Agent wiring: AGENTS.md — block added
+[skip] Agent wiring: .github/copilot-instructions.md — .github/ not present; create the dir to wire
+[pass] Slash-command shims (project): added 22, updated 0 (commands +15 skills +7)
+[pass] Hook wiring: vp hook installed
+[pass] Project .gitignore: host-local vp artifacts ignored
+[skip] Git commit.msg hook: /home/you/code/myapp is not a git repository — no hook to install
+[info] Upgrade policy: `vp init` reconciles; it never upgrades a drifted template and never removes a stale shim. Two other commands do, and they own different halves
+                  stale .claude/commands/vpc-*.md shims and vault Templates/commands/ drift: run `vp commands upgrade`
+                  vault Templates/skills/ drift: run `vp skills upgrade`
 
-Summary: 3 ok, 1 skip. Re-run `vp init` anytime — it is idempotent.
+Summary: 11 ok, 2 skip. Re-run `vp init` anytime — it is idempotent.
 ```
+
+Every onboarding step gets its own row, including the ones that had none
+before: the vault-side `Vault project` and `Project templates` writes, the
+project `.gitignore`, and the `commit.msg` git hook. A row is never omitted
+because a step succeeded quietly — a missing row would be indistinguishable
+from a step that never ran.
+
+The closing `Upgrade policy` row is an advisory, not a step: it states what
+`vp init` deliberately does **not** do. Onboarding reconciles, but it never
+upgrades a drifted template and never removes a stale shim; those two jobs
+belong to `vp commands upgrade` and `vp skills upgrade` respectively.
 
 The `Project config` row reports which signal marked the directory as a
 project: `.git`, `.vibe-palace.toml`, or one of the supported ecosystem
@@ -92,8 +114,39 @@ manifests (`go.mod`, `package.json`, `Cargo.toml`, `pyproject.toml`,
 `pom.xml`). Directories without any of these — including your `$HOME`
 and the filesystem root — are force-skipped with a clear reason.
 
-Re-running `vp init` in the same directory is safe: already-present
-files report `[info]` and nothing is overwritten.
+Re-running `vp init` in the same directory is safe: nothing is
+overwritten, and no row claims work it did not do.
+
+It is **not** a no-op, and the rows say which is which. Every step runs
+again and reconciles; a step that found its artifact already in place says
+so — `[info] Project templates: … already present — nothing to scaffold` —
+while a step that reconciled a file in place still reports `[pass]` with a
+summary that describes the state it left, not work performed:
+
+```
+vp init — vibe-palace 0.1.0-dev
+
+[info] Global config: /home/you/.config/vibe-palace/config.toml (already exists, skipped)
+[info] Vault:     already configured
+[pass] Project config: /home/you/code/myapp/.vibe-palace.toml (myapp, .vibe-palace.toml detected)
+[pass] Vault project: /home/you/vibe-palace-vault/Projects/myapp/config.toml
+[info] Project templates: Projects/myapp/{commands,skills}/ already present — nothing to scaffold
+[info] Agent wiring: AGENTS.md — block unchanged
+[skip] Agent wiring: .github/copilot-instructions.md — .github/ not present; create the dir to wire
+[info] Slash-command shims (project): added 0, updated 0 (commands +0 skills +0)
+[info] Hook wiring: vp hook already installed
+[pass] Project .gitignore: host-local vp artifacts ignored
+[skip] Git commit.msg hook: /home/you/code/myapp is not a git repository — no hook to install
+
+Summary: 10 ok, 2 skip. Re-run `vp init` anytime — it is idempotent.
+```
+
+(The `Upgrade policy` advisory prints on this run too; it is elided above.)
+
+An earlier release short-circuited the project steps entirely once
+`.vibe-palace.toml` existed, which is why a project first onboarded by
+something other than `vp init` could stay half-scaffolded forever. The
+steps run every time now.
 
 ### Verify Installation
 

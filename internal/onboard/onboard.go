@@ -180,7 +180,31 @@ type Result struct {
 	// A surface that reports Complete is saying "there is nothing left for a
 	// human to do on another machine".
 	Complete bool
+	// Failed names, in step-table order and once each, every step that
+	// produced a Fail outcome. Empty means NOTHING WENT WRONG in the work
+	// this surface actually did.
+	//
+	// It answers a different question from Complete, and the difference is
+	// the whole reason it exists. Complete asks "did this surface do
+	// everything the tool can do", and for any surface with a narrowed Scope
+	// the answer is a CONSTANT false — ScopeForMCP always omits hook-wiring
+	// and command-shims, so an MCP caller reading Complete learns nothing
+	// about its own call. Failed asks "did any step I was allowed to run go
+	// wrong", which is the question a caller actually has, and its answer
+	// varies with the run.
+	//
+	// A surface that reports a failure signal derived from Omitted rather
+	// than from this list is reconstructing the original defect — an
+	// unconditional verdict that cannot distinguish a healthy run from a
+	// broken one — in a new field.
+	Failed []string
 }
+
+// OK reports that no step this surface RAN failed. It is the one-bit form of
+// Failed, and it is the bit a caller keys off. It is deliberately silent about
+// Omissions: a step this surface may not run did not go wrong, it was never
+// attempted, and conflating the two is what makes a verdict constant.
+func (r Result) OK() bool { return len(r.Failed) == 0 }
 
 // Scope decides which sides a surface may write.
 //
@@ -330,13 +354,22 @@ func Run(ctx context.Context, req Request, scope Scope) (Result, error) {
 
 	res.Advisories = []Advisory{upgradeAdvisory()}
 
-	res.Complete = len(res.Omitted) == 0
+	// Failed is derived from the rows, in step-table order, deduped: a step
+	// that emits several rows (command-shims emits one per host surface) must
+	// not be named twice, and the order must not depend on map iteration.
+	failedSet := map[string]bool{}
 	for _, oc := range res.Outcomes {
 		if oc.Status == Fail {
-			res.Complete = false
-			break
+			failedSet[oc.Step] = true
 		}
 	}
+	for _, step := range steps {
+		if failedSet[step.Name] {
+			res.Failed = append(res.Failed, step.Name)
+		}
+	}
+
+	res.Complete = len(res.Omitted) == 0 && res.OK()
 	return res, nil
 }
 

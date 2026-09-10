@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/suykerbuyk/vibe-palace/internal/check"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 )
 
 // rowName maps a step's stable identity to the status-table row it renders
@@ -89,6 +90,23 @@ func Rows(res Result) []check.Result {
 	return rows
 }
 
+// hookEventNames is the slash-joined list of hook events stepHookWiring
+// installs, as it appears in the hook-wiring Remedy.
+//
+// It named "SessionStart/SessionEnd" for as long as the remedy existed, and
+// vibe-palace has never written a SessionStart hook: hook.ValidEvents is
+// SessionEnd, Stop and PreCompact. Omission's doc comment makes naming the
+// missing artifact MANDATORY, so a remedy pointing at an entry that will never
+// appear is a contract breach, not a typo — the operator runs the remedy,
+// greps the settings file for the named entry, does not find it, and cannot
+// tell whether the repair worked.
+//
+// TestRemedy_HookEventsMatchValidEvents derives the expected set from
+// hook.ValidEvents and fails in BOTH directions, so adding or removing a hook
+// event without touching this line is a red test rather than a lie in a
+// remedy.
+const hookEventNames = "SessionEnd/Stop/PreCompact"
+
 // stepArtifact names, per step, the concrete thing that is MISSING when the
 // step does not run. A remedy that says "run vp init" without naming the
 // artifact leaves the operator unable to tell whether the repair worked.
@@ -109,9 +127,15 @@ func stepArtifact(step, dir string) string {
 	case "agent-wiring":
 		return "the managed vibe-palace block in " + filepath.Join(dir, "AGENTS.md") + " (and any CLAUDE.md beside it)"
 	case "command-shims":
-		return filepath.Join(dir, ".claude", "commands", "vpc-*.md")
+		// BOTH halves. The step drives shims.Reconcile, which emits command
+		// shims AND skill shims (internal/shims/target.go's ClaudeSkillsDir),
+		// and remedyCaveat three lines below already talks about the skill
+		// shims — so naming only the commands left the caveat referring to an
+		// artifact the remedy never mentioned.
+		return filepath.Join(dir, ".claude", "commands", "vpc-*.md") +
+			" and " + filepath.Join(dir, ".claude", "skills", "vps-*", "SKILL.md")
 	case "hook-wiring":
-		return "the vp SessionStart/SessionEnd entries in ~/.claude/settings.json"
+		return "the vp " + hookEventNames + " entries in ~/.claude/settings.json"
 	case "project-gitignore":
 		return filepath.Join(dir, ".gitignore")
 	case "git-post-commit-hook":
@@ -147,9 +171,20 @@ func omitForSide(step Step, req Request) Omission {
 		reason = "this surface may not write host-global state: " + rowNameFor(step.Name) +
 			" rewrites the RUNNING host's ~/.claude/settings.json, which over MCP is the server operator's, not yours"
 	case SideWorkingTree:
-		if req.ProjectDir == "" {
+		// Three cases, not two. HasRootedSignal fails for a directory that is
+		// absent just as it fails for one that is present but unmarked, and
+		// telling an operator whose path does not exist that it "carries no
+		// .vibe-palace.toml, .git or known manifest" sends them to look for
+		// markers in a directory they cannot open. `vp init` never creates
+		// that directory, so "create it, then re-run" is the actual repair.
+		switch {
+		case req.ProjectDir == "":
 			reason = "no project directory was supplied, so nothing in a working tree can be written"
-		} else {
+		case !project.IsDir(req.ProjectDir):
+			reason = fmt.Sprintf(
+				"%s does not exist on this server, and onboarding never creates a project directory",
+				req.ProjectDir)
+		default:
 			reason = fmt.Sprintf(
 				"%s is not provably a project root here (no .vibe-palace.toml, .git or known manifest in that directory)",
 				req.ProjectDir)

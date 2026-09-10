@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -1218,4 +1219,150 @@ func initTreeDiff(before, after map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// topLevelVerdict is the vp_init result MINUS the per-step detail: exactly what
+// a caller sees before it decides whether it has to walk steps[] at all.
+//
+// json.Marshal orders map keys, so the rendering is stable and two runs that
+// differ nowhere but in steps[] render identically here.
+func topLevelVerdict(t *testing.T, res initResult) string {
+	t.Helper()
+	b, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	delete(m, "steps")
+	delete(m, "omitted")
+	delete(m, "advisories")
+	out, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("re-marshal: %v", err)
+	}
+	return string(out)
+}
+
+// TestInitProject_FailureIsVisibleAtTopLevel is the F1 regression lock.
+//
+// The tool's Description used to tell callers to KEY OFF `complete` AND
+// `omitted`, and both are CONSTANT over MCP: ScopeForMCP always omits
+// hook-wiring and command-shims, so len(omitted) >= 2 always, `complete` is
+// always false, and `status` is always "partial". A healthy run and a run in
+// which the vault write FAILED — leaving Projects/<slug>/ absent entirely —
+// returned byte-identical top-level results, so a caller following the
+// documented contract to the letter learned nothing. That is the same
+// unconditional-verdict defect this tool's rewrite exists to delete, relocated
+// from `status` into `complete`.
+//
+// The assertion is deliberately on the WHOLE top level rather than on `ok`
+// alone: it fails for any future change that reintroduces a constant verdict,
+// not only for the removal of the field that fixes it today.
+func TestInitProject_FailureIsVisibleAtTopLevel(t *testing.T) {
+	sandboxHostEnv(t)
+
+	// One project directory, two vaults. Everything the caller supplied is
+	// identical across the runs, so any difference in the verdict is a
+	// difference in what actually happened on the server.
+	projDir := markProjectTree(t, filepath.Join(t.TempDir(), "verdict"))
+
+	healthyVault := t.TempDir()
+	healthy := callInit(t, InitProjectTool(storage.NewVault(healthyVault)),
+		initParams{Path: projDir, Name: "verdict"})
+
+	// A vault whose Projects/ is a regular FILE: the vault-project write fails
+	// for a reason the server cannot paper over, and nothing lands under
+	// Projects/<slug>/ at all.
+	brokenVault := t.TempDir()
+	if err := os.WriteFile(filepath.Join(brokenVault, "Projects"), []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatalf("seed broken vault: %v", err)
+	}
+	broken := callInit(t, InitProjectTool(storage.NewVault(brokenVault)),
+		initParams{Path: projDir, Name: "verdict"})
+
+	// The fixture has to actually break, or the test proves nothing.
+	sawFail := false
+	for _, row := range broken.Steps {
+		if row.Step == "vault-project" && row.Status == "fail" {
+			sawFail = true
+		}
+	}
+	if !sawFail {
+		t.Fatalf("fixture did not fail vault-project; steps = %+v", broken.Steps)
+	}
+	// Nothing landed under Projects/<slug>/ — the whole subtree is unreachable
+	// through a regular file, so the stat fails with ENOTDIR rather than
+	// ENOENT; what matters is that no directory exists there.
+	if fi, err := os.Stat(filepath.Join(brokenVault, "Projects", "verdict")); err == nil && fi.IsDir() {
+		t.Fatalf("fixture left Projects/verdict behind")
+	}
+
+	// THE ASSERTION. Without a failure signal these two strings are equal.
+	if got, want := topLevelVerdict(t, broken), topLevelVerdict(t, healthy); got == want {
+		t.Errorf("a failed run and a healthy run return the same top-level result — "+
+			"a caller cannot tell them apart without walking steps[]:\n  %s", got)
+	}
+
+	if !healthy.OK || len(healthy.Failed) != 0 {
+		t.Errorf("healthy run: ok = %v failed = %v, want true/[]", healthy.OK, healthy.Failed)
+	}
+	if broken.OK {
+		t.Error("broken run reports ok = true")
+	}
+	if !slices.Contains(broken.Failed, "vault-project") {
+		t.Errorf("broken run failed = %v, want it to name vault-project", broken.Failed)
+	}
+
+	// And the fields the Description now tells callers NOT to key off are
+	// indeed identical across the two runs. This is not decoration: it is the
+	// evidence for that instruction, and it fails if either ever becomes
+	// informative, at which point the Description is the thing to fix.
+	if healthy.Status != broken.Status || healthy.Complete != broken.Complete {
+		t.Errorf("status/complete differ across the two runs (%q/%v vs %q/%v) — "+
+			"the Description says they are constant by construction",
+			healthy.Status, healthy.Complete, broken.Status, broken.Complete)
+	}
+	if healthy.Status != "partial" || healthy.Complete {
+		t.Errorf("healthy run: status = %q complete = %v, want partial/false", healthy.Status, healthy.Complete)
+	}
+}
+
+// TestInitProject_StepsCarryCreated is F5: Outcome.Created had no production
+// reader at all, so the caller best placed to use it — an MCP client asking
+// "did I create this, or was it already here?" — could not see it.
+func TestInitProject_StepsCarryCreated(t *testing.T) {
+	sandboxHostEnv(t)
+	vault := storage.NewVault(t.TempDir())
+	tool := InitProjectTool(vault)
+	projDir := markProjectTree(t, filepath.Join(t.TempDir(), "createdness"))
+
+	first := callInit(t, tool, initParams{Path: projDir, Name: "createdness"})
+	var firstCreated []string
+	for _, row := range first.Steps {
+		if row.Created {
+			firstCreated = append(firstCreated, row.Step)
+		}
+	}
+	if !slices.Contains(firstCreated, "vault-project") {
+		t.Errorf("fresh run created = %v, want it to include vault-project", firstCreated)
+	}
+
+	second := callInit(t, tool, initParams{Path: projDir, Name: "createdness"})
+	for _, row := range second.Steps {
+		if row.Created {
+			t.Errorf("converged re-run still claims created on %s: %s", row.Step, row.Summary)
+		}
+	}
+
+	// The field has to survive the wire, not merely the struct.
+	b, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"created":true`) {
+		t.Errorf("no step row marshalled created=true:\n%s", b)
+	}
 }

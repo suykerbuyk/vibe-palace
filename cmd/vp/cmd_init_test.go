@@ -626,7 +626,13 @@ func TestInitFreshThenIdempotent(t *testing.T) {
 	for _, want := range []string{
 		"[pass] Project config",
 		"[pass] Vault project",
-		"[pass] Project templates",
+		// [info], not [pass], and the wording is the point. The step RAN — it
+		// is no longer gated away — and it reports what it found rather than
+		// what it would have done: "scaffolded …" printed unconditionally is a
+		// claim about work this run did not do, which is the same
+		// report-more-than-you-did defect in miniature.
+		"[info] Project templates",
+		"already present — nothing to scaffold",
 	} {
 		if !strings.Contains(out2, want) {
 			t.Errorf("stage 2 missing %q:\n%s", want, out2)
@@ -636,6 +642,8 @@ func TestInitFreshThenIdempotent(t *testing.T) {
 		"[skip] Vault project",
 		"[skip] Project templates",
 		"vp config sync --tier project --cwd",
+		// The converged run must not claim it scaffolded anything.
+		"scaffolded Projects/alpha",
 	} {
 		if strings.Contains(out2, unwanted) {
 			t.Errorf("stage 2 still carries the deleted marker gate's %q:\n%s", unwanted, out2)

@@ -51,7 +51,7 @@ func HasRootedSignal(dir string) bool {
 	if isForceSkipDir(resolved) {
 		return false
 	}
-	if !isDir(resolved) {
+	if !IsDir(resolved) {
 		return false
 	}
 
@@ -72,10 +72,15 @@ func HasRootedSignal(dir string) bool {
 	return false
 }
 
-// isDir reports whether p exists and is a directory. A caller that hands us a
+// IsDir reports whether p exists and is a directory. A caller that hands us a
 // FILE path must not pass the gate: every artifact the working-tree steps write
 // is created relative to a directory.
-func isDir(p string) bool {
+//
+// It is exported because HasRootedSignal collapses "absent" and "present but
+// unmarked" into one false, and a caller that has to EXPLAIN the false — the
+// omission reason in internal/onboard — needs the same existence predicate
+// rather than a second derivation of it.
+func IsDir(p string) bool {
 	info, err := os.Stat(p)
 	return err == nil && info.IsDir()
 }

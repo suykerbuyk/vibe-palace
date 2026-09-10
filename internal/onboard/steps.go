@@ -257,11 +257,35 @@ func stepProjectScaffold(ctx context.Context, req Request) []Outcome {
 		slog.Error("project scaffold apply error", "project", req.Slug, "err", rep.Errors[0])
 		return []Outcome{{Status: Info, Summary: fmt.Sprintf("scaffold apply error: %v", rep.Errors[0])}}
 	}
-	return []Outcome{{
-		Status:  Pass,
-		Created: rep.Created > 0,
-		Summary: fmt.Sprintf("scaffolded Projects/%s/{commands,skills}/", req.Slug),
-	}}
+	// The row must not out-claim the report. "scaffolded" was printed
+	// unconditionally, so a converged re-init — every action Unchanged,
+	// rep.Created == 0 — announced work it had not done. While the marker gate
+	// existed that row was suppressed on a re-init and the wording was only
+	// ever seen when it was true; deleting the gate made the claim print on
+	// EVERY run, which is the "report more than you did" defect this package
+	// exists to eliminate.
+	//
+	// The shape is its siblings': stepCwdProject separates created from
+	// updated from unchanged, and stepCommandShims downgrades a
+	// nothing-happened run to Info.
+	switch {
+	case rep.Created > 0:
+		return []Outcome{{
+			Status:  Pass,
+			Created: true,
+			Summary: fmt.Sprintf("scaffolded Projects/%s/{commands,skills}/", req.Slug),
+		}}
+	case rep.Updated > 0:
+		return []Outcome{{
+			Status:  Pass,
+			Summary: fmt.Sprintf("updated Projects/%s/{commands,skills}/", req.Slug),
+		}}
+	default:
+		return []Outcome{{
+			Status:  Info,
+			Summary: fmt.Sprintf("Projects/%s/{commands,skills}/ already present — nothing to scaffold", req.Slug),
+		}}
+	}
 }
 
 // stepAgentWiring detects agent instruction files under the project root,

@@ -60,11 +60,18 @@ var initSchema = json.RawMessage(`{
 }`)
 
 // initStepRow is one onboarding step's rendered outcome.
+//
+// Created is carried without omitempty on purpose. The question it answers —
+// "did this call bring the artifact into existence, or was it already here?" —
+// is one only a caller can ask, and an absent key would be indistinguishable
+// from a false one. It is a POSITIVE claim only; see onboard.Outcome.Created
+// for why a false does not mean "nothing was written".
 type initStepRow struct {
 	Step    string   `json:"step"`
 	Name    string   `json:"name"`
 	Status  string   `json:"status"`
 	Summary string   `json:"summary"`
+	Created bool     `json:"created"`
 	Details []string `json:"details,omitempty"`
 }
 
@@ -90,10 +97,24 @@ type initAdvisoryRow struct {
 // unconditional success claim is the defect this tool's rewrite exists to
 // delete; the missing scaffold was only its symptom.
 type initResult struct {
-	Status   string `json:"status"`
-	Project  string `json:"project"`
-	Path     string `json:"path,omitempty"`
-	Complete bool   `json:"complete"`
+	Status  string `json:"status"`
+	Project string `json:"project"`
+	Path    string `json:"path,omitempty"`
+	// OK is the field a caller keys off, and it is the only top-level field
+	// whose value depends on how THIS call went.
+	//
+	// Status and Complete answer "did this surface do everything the tool can
+	// do", and over MCP that answer is a CONSTANT: ScopeForMCP always omits
+	// hook-wiring and command-shims, so Complete is always false and Status is
+	// always "partial" — on a flawless run and on one where the vault write
+	// failed alike. Keying off either yields zero bits of information, which
+	// is the same unconditional-verdict defect this tool's rewrite exists to
+	// delete, and it is why OK exists rather than being derived from them.
+	OK bool `json:"ok"`
+	// Failed names the steps that produced a fail row, in step-table order.
+	// Empty exactly when OK is true.
+	Failed   []string `json:"failed"`
+	Complete bool     `json:"complete"`
 	// Steps and Omitted together account for EVERY step in
 	// onboard.Steps(); onboard.Run refuses to return a Result where they do
 	// not.
@@ -115,17 +136,24 @@ func InitProjectTool(vault *storage.Vault) mcp.Tool {
 			"tool never creates that directory and never walks up to an ancestor to " +
 			"find one. Host-global state is NEVER written: hook wiring rewrites " +
 			"~/.claude/settings.json, which over MCP is the server operator's home " +
-			"rather than yours, and the .claude/commands/vpc-*.md command shims " +
-			"decide what to emit by reading that same home, so both are always " +
-			"omitted. Upgrading is a different job and a different command: agent " +
-			"files and shims are `vp commands upgrade`'s (it also removes stale " +
-			"shims, which onboarding never does), and vault Templates/skills " +
-			"belongs to `vp skills upgrade`. Returns {status, project, complete, " +
-			"steps[], omitted[], advisories[]} where each omitted entry carries the " +
+			"rather than yours, and the .claude/commands/vpc-*.md command shims and " +
+			".claude/skills/vps-*/SKILL.md skill shims decide what to emit by " +
+			"reading that same home, so both are always omitted. Upgrading is a " +
+			"different job and a different command: agent files and shims are " +
+			"`vp commands upgrade`'s (it also removes stale shims, which onboarding " +
+			"never does), and vault Templates/skills belongs to `vp skills upgrade`. " +
+			"Returns {ok, failed[], status, project, complete, steps[], omitted[], " +
+			"advisories[]}. KEY OFF `ok`: it is false exactly when some step this " +
+			"call actually RAN failed, and `failed[]` names those steps. Do NOT key " +
+			"off `status` or `complete` — over MCP hook-wiring and command-shims are " +
+			"omitted on every call, so BY CONSTRUCTION `status` is always `partial` " +
+			"and `complete` is always false, on a flawless run and a broken one " +
+			"alike; they tell you only that a remote surface cannot finish the job " +
+			"alone. `omitted[]` is that unfinished remainder: each entry carries the " +
 			"verbatim command, the host it must run on, and the artifact that is " +
-			"still missing. KEY OFF `complete` AND `omitted`, NOT `status`: over " +
-			"MCP at least two steps are always omitted, so `status` is `partial` on " +
-			"every successful call and `initialized` is unreachable by design.",
+			"still missing. Each `steps[]` row also carries `created`, true when " +
+			"that step brought its artifact into existence rather than finding it " +
+			"already there.",
 		Schema:  initSchema,
 		Handler: initProjectHandler(vault),
 	}
@@ -195,6 +223,8 @@ func initProjectHandler(vault *storage.Vault) mcp.HandlerFunc {
 			Status:   "partial",
 			Project:  res.Slug,
 			Path:     p.Path,
+			OK:       res.OK(),
+			Failed:   append(make([]string, 0, len(res.Failed)), res.Failed...),
 			Complete: res.Complete,
 			Steps:    make([]initStepRow, 0, len(res.Outcomes)),
 			Omitted:  make([]initOmissionRow, 0, len(res.Omitted)),
@@ -208,6 +238,7 @@ func initProjectHandler(vault *storage.Vault) mcp.HandlerFunc {
 				Name:    oc.Name,
 				Status:  checkStatusString(oc.Status),
 				Summary: oc.Summary,
+				Created: oc.Created,
 				Details: oc.Details,
 			})
 		}

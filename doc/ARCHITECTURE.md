@@ -1513,6 +1513,17 @@ already-done: `vp init` once had exactly that (a marker gate that fired on the
 presence of `.vibe-palace.toml`), and it is what left every MCP-initialized
 project permanently half-scaffolded.
 
+**A narrowed scope pins `Complete` false, so it is not a failure signal.**
+`Result.Complete` answers "did this surface do everything the tool can do", and
+`ScopeForMCP` always omits `hook-wiring` and `command-shims` — so over MCP the
+answer is a constant `false` whatever happened, and `vp_init`'s `status` is
+correspondingly always `"partial"`. `Result.Failed` (and its one-bit form
+`Result.OK()`) answers the question a caller actually has — "did any step I was
+allowed to run go wrong" — and is what the `vp_init` result exposes as `ok` and
+`failed[]`. Deriving a verdict from `Complete` or `Omitted` instead
+reconstructs the unconditional `{"status": "initialized"}` this tool's rewrite
+exists to delete.
+
 **`vp commands upgrade` and `vp skills upgrade` are NOT callers of
 `internal/onboard`.** They are a separate *upgrade* policy layered over the
 same shared writers (`internal/shims`, `internal/commands`,

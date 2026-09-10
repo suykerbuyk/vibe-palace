@@ -10,12 +10,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/suykerbuyk/vibe-palace/internal/hook"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -316,6 +318,15 @@ func TestOnboardRun_SkipsStepWhosePrerequisiteFailed(t *testing.T) {
 	}
 	if res.Complete {
 		t.Error("Complete = true with a failed step")
+	}
+	// Complete is not a failure signal — a surface with a narrowed Scope pins
+	// it false for reasons that have nothing to do with a failure — so the
+	// failure has to be readable on its own field.
+	if res.OK() {
+		t.Error("OK() = true with a failed step")
+	}
+	if got := res.Failed; !slices.Equal(got, []string{"vault-project"}) {
+		t.Errorf("Failed = %v, want [vault-project]", got)
 	}
 
 	// Nothing was scaffolded into a project whose config write just failed.
@@ -792,5 +803,238 @@ func TestOnboardRun_WarnsAboutUpgradeCommands(t *testing.T) {
 		if !strings.Contains(rendered.String(), want) {
 			t.Errorf("Rows() dropped %q from the rendered table", want)
 		}
+	}
+}
+
+// TestOnboardRun_HealthyRunReportsNoFailure is the other half of
+// TestOnboardRun_SkipsStepWhosePrerequisiteFailed: the failure signal has to be
+// SILENT when nothing failed, or it is as useless as the constant it replaced.
+//
+// It runs under ScopeForMCP deliberately. Under ScopeCLI, Complete already
+// carries the answer; under a narrowed scope Complete is pinned false by the
+// omissions and OK is the only field left that varies with the run.
+func TestOnboardRun_HealthyRunReportsNoFailure(t *testing.T) {
+	sandboxHost(t)
+	req, _ := newRequest(t, true)
+
+	res, err := Run(context.Background(), req, ScopeForMCP(req))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	assertEveryStepAccountedFor(t, res)
+
+	if !res.OK() || len(res.Failed) != 0 {
+		t.Errorf("healthy run: OK = %v Failed = %v, want true/[]", res.OK(), res.Failed)
+	}
+	if res.Complete {
+		t.Error("Complete = true under ScopeForMCP, which always omits hook-wiring and command-shims")
+	}
+	if len(res.Omitted) < 2 {
+		t.Errorf("ScopeForMCP omitted %d steps, want at least hook-wiring and command-shims", len(res.Omitted))
+	}
+}
+
+// TestOnboardRun_FailedIsDedupedAndInTableOrder pins the two properties a
+// caller can act on: a step is named ONCE however many rows it emits, and the
+// order is the step table's rather than a map's.
+func TestOnboardRun_FailedIsDedupedAndInTableOrder(t *testing.T) {
+	sandboxHost(t)
+	req, _ := newRequest(t, true)
+
+	// agent-wiring is the multi-row step that has no prerequisite, so failing
+	// it cannot cascade into the Skip rows that would confuse the ordering
+	// assertion. cwd-project runs BEFORE it in the table.
+	swapStepTable(t, func(steps []Step) {
+		for i := range steps {
+			switch steps[i].Name {
+			case "agent-wiring":
+				steps[i].Run = func(context.Context, Request) []Outcome {
+					return []Outcome{
+						{Status: Fail, Summary: "forced: AGENTS.md"},
+						{Status: Fail, Summary: "forced: CLAUDE.md"},
+					}
+				}
+			case "cwd-project":
+				steps[i].Run = func(context.Context, Request) []Outcome {
+					return []Outcome{{Status: Fail, Summary: "forced: .vibe-palace.toml"}}
+				}
+			}
+		}
+	})
+
+	res, err := Run(context.Background(), req, ScopeCLI)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := res.Failed; !slices.Equal(got, []string{"cwd-project", "agent-wiring"}) {
+		t.Errorf("Failed = %v, want [cwd-project agent-wiring] — deduped, in step-table order", got)
+	}
+}
+
+// TestOnboardRun_ConvergedScaffoldDoesNotClaimItScaffolded is F4.
+//
+// stepProjectScaffold printed "scaffolded Projects/<slug>/{commands,skills}/"
+// unconditionally. While the marker gate existed a re-init never reached the
+// step, so the claim was only ever seen when it was true; deleting the gate
+// made an inaccurate claim print on EVERY run after the first.
+func TestOnboardRun_ConvergedScaffoldDoesNotClaimItScaffolded(t *testing.T) {
+	sandboxHost(t)
+	req, _ := newRequest(t, true)
+
+	res1, err := Run(context.Background(), req, ScopeCLI)
+	if err != nil {
+		t.Fatalf("run 1: %v", err)
+	}
+	first := outcomesFor(res1, "project-scaffold")
+	if len(first) != 1 {
+		t.Fatalf("run 1 project-scaffold produced %d rows, want 1: %+v", len(first), first)
+	}
+	if first[0].Status != Pass || !first[0].Created {
+		t.Fatalf("run 1 project-scaffold = %v created=%v, want Pass/true", first[0].Status, first[0].Created)
+	}
+	if !strings.Contains(first[0].Summary, "scaffolded") {
+		t.Errorf("run 1 must say it scaffolded: %q", first[0].Summary)
+	}
+
+	res2, err := Run(context.Background(), req, ScopeCLI)
+	if err != nil {
+		t.Fatalf("run 2: %v", err)
+	}
+	second := outcomesFor(res2, "project-scaffold")
+	if len(second) != 1 {
+		t.Fatalf("run 2 project-scaffold produced %d rows, want 1: %+v", len(second), second)
+	}
+	if second[0].Created {
+		t.Error("run 2 project-scaffold claims Created over a converged tree")
+	}
+	if strings.Contains(second[0].Summary, "scaffolded") {
+		t.Errorf("run 2 claims work it did not do: %q", second[0].Summary)
+	}
+	if !strings.Contains(second[0].Summary, "already present") {
+		t.Errorf("run 2 summary does not say the tree was already there: %q", second[0].Summary)
+	}
+	// Info, like stepCommandShims' rep.Empty() branch: a Pass over a step that
+	// did nothing reads as work performed.
+	if second[0].Status != Info {
+		t.Errorf("run 2 project-scaffold status = %v, want Info", second[0].Status)
+	}
+}
+
+// hookEventClause extracts the slash-separated event list a remedy names, or ""
+// when the text names no hook entries at all.
+var hookEventClause = regexp.MustCompile(`the vp ([A-Za-z/]+) entries in ~/\.claude/settings\.json`)
+
+// TestRemedy_HookEventsMatchValidEvents is the guard for F3.
+//
+// render.go named "SessionStart/SessionEnd" for as long as the remedy existed
+// and vibe-palace has never installed a SessionStart hook — a grep for it over
+// the whole tree hit that one line and nothing else. Omission's doc comment
+// makes naming the missing artifact MANDATORY, so a remedy pointing at an entry
+// that will never appear in settings.json is a contract breach: the operator
+// runs the remedy, greps for what they were told to expect, and cannot tell
+// whether the repair worked.
+//
+// The expectation is DERIVED from hook.ValidEvents and checked in both
+// directions, so adding or retiring a hook event without updating the remedy
+// fails here rather than shipping a lie.
+func TestRemedy_HookEventsMatchValidEvents(t *testing.T) {
+	want := make([]string, 0, len(hook.ValidEvents))
+	for ev := range hook.ValidEvents {
+		want = append(want, ev)
+	}
+	slices.Sort(want)
+
+	checked := 0
+	check := func(where, text string) {
+		m := hookEventClause.FindStringSubmatch(text)
+		if m == nil {
+			// Only strings that actually name settings.json entries are in
+			// scope; a remedy that names none is not making the claim.
+			if strings.Contains(text, "settings.json") && strings.Contains(text, "the vp ") {
+				t.Errorf("%s names settings.json entries in a shape this guard cannot read: %q", where, text)
+			}
+			return
+		}
+		checked++
+		got := strings.Split(m[1], "/")
+		slices.Sort(got)
+		if !slices.Equal(got, want) {
+			t.Errorf("%s names hook events %v, but hook.ValidEvents is %v", where, got, want)
+		}
+	}
+
+	for _, dir := range []string{"/tmp/example-project", ""} {
+		check("stepArtifact(hook-wiring)", stepArtifact("hook-wiring", dir))
+		for _, om := range allOmissions(dir) {
+			check("omission "+om.Step+".Reason", om.Reason)
+			check("omission "+om.Step+".Remedy", om.Remedy)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no remedy named any settings.json hook entry; the guard proves nothing")
+	}
+}
+
+// TestOnboardOmission_CommandShimsRemedyNamesBothShimKinds is the other half of
+// F3: shims.Reconcile writes command shims AND skill shims, and the remedy
+// named only the commands while remedyCaveat two sentences later talked about
+// the skill shims the operator had never been told about.
+func TestOnboardOmission_CommandShimsRemedyNamesBothShimKinds(t *testing.T) {
+	const dir = "/tmp/example-project"
+	found := 0
+	for _, om := range allOmissions(dir) {
+		if om.Step != "command-shims" {
+			continue
+		}
+		found++
+		for _, want := range []string{
+			filepath.Join(dir, ".claude", "commands", "vpc-*.md"),
+			filepath.Join(dir, ".claude", "skills", "vps-*", "SKILL.md"),
+		} {
+			if !strings.Contains(om.Remedy, want) {
+				t.Errorf("command-shims remedy does not name %q: %q", want, om.Remedy)
+			}
+		}
+	}
+	if found == 0 {
+		t.Fatal("no command-shims omission was produced; the test proves nothing")
+	}
+}
+
+// TestOnboardOmission_AbsentDirectoryIsNotCalledUnmarked is F7.
+//
+// HasRootedSignal returns false both for a directory that carries no marker and
+// for one that does not exist, and the reason string collapsed the two: an
+// operator whose path is absent was told to look for a .vibe-palace.toml, .git
+// or manifest inside a directory they cannot open.
+func TestOnboardOmission_AbsentDirectoryIsNotCalledUnmarked(t *testing.T) {
+	absent := filepath.Join(t.TempDir(), "no-such-dir")
+
+	unmarked := t.TempDir() // exists, carries no marker
+
+	reasonFor := func(dir string) string {
+		for _, om := range allOmissions(dir) {
+			if om.Side == SideWorkingTree {
+				return om.Reason
+			}
+		}
+		t.Fatalf("no working-tree omission produced for %q", dir)
+		return ""
+	}
+
+	gotAbsent := reasonFor(absent)
+	if !strings.Contains(gotAbsent, "does not exist") {
+		t.Errorf("absent directory reason does not say so: %q", gotAbsent)
+	}
+	if strings.Contains(gotAbsent, "not provably a project root") {
+		t.Errorf("absent directory is described as an unmarked one: %q", gotAbsent)
+	}
+
+	gotUnmarked := reasonFor(unmarked)
+	if !strings.Contains(gotUnmarked, "not provably a project root") {
+		t.Errorf("unmarked directory reason changed: %q", gotUnmarked)
+	}
+	if strings.Contains(gotUnmarked, "does not exist") {
+		t.Errorf("an existing directory is described as absent: %q", gotUnmarked)
 	}
 }
