@@ -101,7 +101,7 @@ func cmdInit(info cli.BuildInfo) *cli.Command {
 				return cli.ExitSystem
 			}
 			results = append(results, onboard.Rows(res)...)
-			if stepFailed(res, "cwd-project") {
+			if exitWorthyFailure(res) != "" {
 				projectCode = cli.ExitSystem
 			}
 
@@ -407,16 +407,38 @@ func initProject(fv *cli.FlagValues) (onboard.Request, []check.Result, int, bool
 	}, results, cli.ExitOK, true
 }
 
-// stepFailed reports whether the named onboarding step produced a Fail row.
-// `vp init`'s exit code has always been the cwd-project write's exit code, and
-// moving the write into a step must not change that.
-func stepFailed(res onboard.Result, step string) bool {
+// exitWorthyFailure names the first failed step that must make `vp init` exit
+// non-zero, or "" when the run is clean enough to report success.
+//
+// Two classes qualify, and the boundary is deliberate (operator ruling,
+// 2026-09-10):
+//
+//   - cwd-project, because the project marker is what `vp init` fundamentally
+//     exists to write, and this has always been the exit code's meaning.
+//   - any SideVault step, because a failed vault-project or project-scaffold
+//     means the vault was NOT written — and before this change that failure
+//     rendered as a Details line under a [pass] row, so nothing surfaced it at
+//     all. Promoting it to a [FAIL] row while still exiting 0 would leave the
+//     table saying FAIL, the summary counting a FAIL, and `vp init && ...`
+//     seeing success.
+//
+// Working-tree and host-global steps stay ADVISORY. A missing ~/.claude or an
+// unwritable AGENTS.md is a row the operator should read, not a reason to break
+// a build that only needed the vault side to land.
+func exitWorthyFailure(res onboard.Result) string {
+	side := make(map[string]onboard.Side, len(onboard.Steps()))
+	for _, st := range onboard.Steps() {
+		side[st.Name] = st.Side
+	}
 	for _, oc := range res.Outcomes {
-		if oc.Step == step && oc.Status == check.Fail {
-			return true
+		if oc.Status != check.Fail {
+			continue
+		}
+		if oc.Step == "cwd-project" || side[oc.Step] == onboard.SideVault {
+			return oc.Step
 		}
 	}
-	return false
+	return ""
 }
 
 // printInitStatus renders the end-of-run status table. Mirrors check.Print's

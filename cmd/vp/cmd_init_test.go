@@ -1252,3 +1252,53 @@ func TestInitShimVaultFollowsTheProjectDirNotTheProcessCwd(t *testing.T) {
 		t.Error("shims came from the PROCESS CWD's vault: vpc-only-in-cwd-vault.md was emitted into a project bound to another vault")
 	}
 }
+
+// TestInitExitsNonZeroOnVaultSideFailure pins the operator ruling of
+// 2026-09-10: a failed SideVault step must make `vp init` exit non-zero.
+//
+// Before internal/onboard, a vault-project failure rendered as a Details line
+// appended to a [pass] row, so nothing surfaced it. Promoting it to its own
+// [FAIL] row while still exiting 0 would leave the table saying FAIL, the
+// summary counting a FAIL, and `vp init && ...` seeing success.
+//
+// Working-tree and host-global failures stay advisory and are NOT covered here
+// -- that asymmetry is the ruling, not an oversight.
+func TestInitExitsNonZeroOnVaultSideFailure(t *testing.T) {
+	configDir, _ := initTestEnv(t, false)
+
+	// A vault_path pointing at a regular file: the marker writes fine, so
+	// cwd-project passes, and the vault side is what fails.
+	notAVault := filepath.Join(t.TempDir(), "notavault")
+	if err := os.WriteFile(notAVault, []byte("i am a file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vpDir := filepath.Join(configDir, "vibe-palace")
+	if err := os.MkdirAll(vpDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `vault_path = "` + notAVault + `"` + "\ngit_enabled = false\n"
+	if err := os.WriteFile(filepath.Join(vpDir, "config.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	markProjectDir(t, dir)
+
+	var code int
+	out := captureStdout(t, func() {
+		cmd := cmdInit(cli.BuildInfo{Version: "test"})
+		code = cmd.Run([]string{dir, "--name", "vaultfail"})
+	})
+
+	if code == cli.ExitOK {
+		t.Errorf("exit code = ExitOK, want non-zero when a vault-side step failed\n%s", out)
+	}
+	if !strings.Contains(out, "[FAIL]") {
+		t.Errorf("expected a [FAIL] row in the table, got:\n%s", out)
+	}
+	// The marker itself must still have been written -- this is a vault-side
+	// failure, not a cwd-project one, which is the whole point of the case.
+	if _, err := os.Stat(filepath.Join(dir, project.ConfigFileName)); err != nil {
+		t.Errorf("project marker should still exist: %v", err)
+	}
+}
