@@ -49,9 +49,10 @@ func assertStamped(t *testing.T, stampDir string) {
 // callers, deleted) were removed:
 //
 //   - atomicfile.Write called directly under a held lock: WriteResume (with the
-//     assert-absent "" guard, its only create path).
+//     assert-absent "" guard, its only create path), and WriteVaultProjectConfig
+//     (which took the lock itself when its already-exists stat moved inside it).
 //   - v.lockedWrite → atomicfile.Write: WriteSession, UpdateTaskStatus,
-//     RetireTask, WriteVaultProjectConfig.
+//     RetireTask.
 //   - v.appendUnderLock (family F4, which owns the stamp): AppendIterationOwned,
 //     ArchiveCommitBodies.
 //   - v.stamp called directly after a non-replace write: the KG writers. This

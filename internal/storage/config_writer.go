@@ -9,6 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 //go:embed config/cwd_project_template.toml
@@ -105,11 +108,29 @@ func WriteCwdProjectConfig(dir, name, domain string, tags []string, vaultPath st
 // from the embedded vault-project template. Refuses to overwrite an
 // existing file. Returns (path, wrote, err) where wrote=false and
 // err=nil if the file already existed. Uses atomic temp+rename.
+//
+// The "already exists" stat runs INSIDE the per-path advisory lock. Outside it
+// the check is a TOCTOU: two concurrent callers both see "not there", both
+// report wrote=true, and one silently overwrites the other — breaking the
+// refuse-to-overwrite contract callers rely on. This is character for character
+// the CreateTask defect recorded in ADR-003 ("CreateTask TOCTOU"), fixed the
+// same way.
+//
+// Because the lock is already held here, the write is a raw atomicfile.Write
+// and must stay one: v.lockedWrite would re-acquire this same per-path lock,
+// and vaultlock.Acquire is a blocking LOCK_EX with no timeout, so that is a
+// permanent self-deadlock rather than an error.
 func (v *Vault) WriteVaultProjectConfig(slug string) (string, bool, error) {
 	cfgPath, err := v.ProjectConfigFile(slug)
 	if err != nil {
 		return "", false, err
 	}
+
+	release, err := vaultlock.Acquire(v.Root, cfgPath)
+	if err != nil {
+		return "", false, fmt.Errorf("storage: lock %s: %w", cfgPath, err)
+	}
+	defer release()
 
 	if _, err := os.Stat(cfgPath); err == nil {
 		return cfgPath, false, nil
@@ -117,7 +138,7 @@ func (v *Vault) WriteVaultProjectConfig(slug string) (string, bool, error) {
 		return "", false, fmt.Errorf("stat config: %w", err)
 	}
 
-	if err := v.lockedWrite(cfgPath, []byte(vaultProjectTemplate)); err != nil {
+	if err := atomicfile.Write(v.Root, cfgPath, []byte(vaultProjectTemplate)); err != nil {
 		return "", false, fmt.Errorf("write vault project config: %w", err)
 	}
 	return cfgPath, true, nil

@@ -11,11 +11,13 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
-// This file holds the two shared vault write primitives, deliberately side by
+// This file holds the shared vault write primitives, deliberately side by
 // side, because THE ONE THING A READER MUST NOT GET WRONG IS WHICH OF THEM
 // TAKES THE LOCK:
 //
 //   - lockedWrite  ACQUIRES the per-path lock, then does a whole-file replace.
+//   - LockedUpdate ACQUIRES the per-path lock, then does read → transform →
+//     replace, all inside the one critical section.
 //   - appendUnderLock does NOT acquire anything. The caller must already hold it.
 //
 // Getting that backwards does not produce an error. vaultlock.Acquire is a
@@ -34,6 +36,54 @@ func (v *Vault) lockedWrite(absPath string, data []byte, opts ...atomicfile.Opti
 	}
 	defer release()
 	return atomicfile.Write(v.Root, absPath, data, opts...)
+}
+
+// LockedUpdate is the read-modify-write counterpart to lockedWrite: it holds the
+// per-path advisory lock across the WHOLE read → transform → write sequence, so
+// no other vault writer of absPath (CLI vs MCP, or a concurrent goroutine) can
+// land an edit in the window between the read and the write. Locking only the
+// final write is too late — the lost-update window opens at the read (ADR-003).
+//
+// It is a package function rather than a *Vault method because its callers
+// outside this package hold a bare vault root string, and taking vaultRoot
+// explicitly makes it read like the two primitives it is composed of:
+// vaultlock.Acquire(vaultRoot, absPath) and atomicfile.Write(vaultRoot, absPath).
+//
+// 🔴 It calls atomicfile.Write DIRECTLY, and must keep doing so. Routing the
+// write through v.lockedWrite would re-acquire the SAME per-path lock while this
+// function still holds it, and vaultlock.Acquire is a blocking LOCK_EX with no
+// timeout — the result is a permanent self-deadlock, not an error anyone can see
+// or recover from. See the file header above and ADR-003, "RMW callers must not
+// double-acquire".
+//
+// transform receives the current file bytes and returns the bytes to write.
+// Returning a NIL slice with a nil error means "nothing to do": the file is left
+// untouched and LockedUpdate returns nil, which is what lets a caller decide
+// whether a write is needed from content it could only read under the lock.
+// Returning an EMPTY, non-nil slice writes an empty file. A transform error is
+// returned unwrapped, so callers keep their own error vocabulary.
+//
+// atomicfile.Write owns the temp file, the rename and the surface stamp, so
+// callers must not hand-roll a sidecar .tmp and must not stamp again afterwards.
+func LockedUpdate(vaultRoot, absPath string, transform func(current []byte) ([]byte, error), opts ...atomicfile.Option) error {
+	release, err := vaultlock.Acquire(vaultRoot, absPath)
+	if err != nil {
+		return fmt.Errorf("storage: lock %s: %w", absPath, err)
+	}
+	defer release()
+
+	current, err := os.ReadFile(absPath)
+	if err != nil {
+		return fmt.Errorf("storage: read %s: %w", absPath, err)
+	}
+	next, err := transform(current)
+	if err != nil {
+		return err
+	}
+	if next == nil {
+		return nil
+	}
+	return atomicfile.Write(vaultRoot, absPath, next, opts...)
 }
 
 // appendUnderLock appends data to the vault file at absPath and records the

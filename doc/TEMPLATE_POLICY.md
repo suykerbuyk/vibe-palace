@@ -17,6 +17,20 @@ atomic write, directory creation, and (conditional) `.bak` emission.
 | `commands.Apply` | `vp commands upgrade` | `BackupPolicyNever` | See asymmetry note below. |
 | `commands.ApplyWithBackup` | `vp skills upgrade` | `BackupPolicyRename` | See asymmetry note below. |
 
+## Outside the golden path: `reconcile.applyUpgrade`
+
+`internal/reconcile.applyUpgrade` — the config **schema upgrade** path behind
+`vp config sync` / `vp config upgrade` — is the one template-adjacent writer
+that never routed through `templates.Executor.Write`. It does not materialize
+template bytes onto disk; it merges the *missing canonical keys* from a template
+into a config the user already owns. It therefore has its own `.bak` rule, and
+the two halves are deliberately asymmetric:
+
+| Branch | Target | `.bak`? | Rationale |
+|---|---|---|---|
+| vault (`vaultRoot != ""`) | `{vault}/Projects/<slug>/config.toml` | **No** | `*.bak` is in `storage.CanonicalGitignorePatterns`, so a `.bak` written inside the vault is never committed and never synced — it is host-local litter, not a durable backup. The recoverable pre-image is the committed `config.toml` itself. The write goes through `storage.LockedUpdate` → `atomicfile.Write`, which owns the temp file and the rename; the old fixed-name `config.toml.tmp` is gone too, because a shared sidecar name is exactly what two concurrent upgraders collide on. |
+| host-local (`vaultRoot == ""`) | CWD project config, global config | **Yes** | These files live outside the vault. Nothing commits them and nothing syncs them, so the `.bak` is the only pre-image they have. This branch keeps its raw `backup` + temp + rename verbatim and is deliberately **not** routed through `atomicfile` — it must not inherit atomicfile's permission/fsync semantics or the vault surface stamp. |
+
 ## What gets materialized at all (override-only, iter 319)
 
 The table above says how a write is backed up. It does **not** say that a

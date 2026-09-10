@@ -174,6 +174,21 @@ vault path, not just this one.
   description, so a same-path second `Acquire` in the same process blocks
   forever. RMW sites therefore call raw `atomicfile.Write` under the held lock,
   never `lockedWrite` (which would re-acquire the same path and deadlock).
+
+  The named RMW sites are the task and session writers in `internal/storage`
+  (see `tasks.go`, `sessions.go`) and — since the config-upgrade path was routed
+  through the funnel — **the vault branch of `internal/reconcile`'s
+  `applyUpgrade`**. That branch reads a `Projects/<slug>/config.toml`, computes
+  the missing canonical keys from what it read, and writes the result back: a
+  textbook read-modify-write whose lost-update window opens at the read, not at
+  the write. It runs the whole sequence inside `storage.LockedUpdate`, which
+  acquires the per-path lock once and then reaches `atomicfile.Write` directly.
+  `LockedUpdate` therefore carries the same prohibition as every other RMW site:
+  it must never be re-pointed at `lockedWrite`, because that second `Acquire` on
+  the same path is a permanent hang, not an error. The *host-local* branch of
+  `applyUpgrade` (CWD project config, global config, `vaultRoot == ""`) is
+  deliberately outside all of this — those files are not vault files, so they
+  take no lock and keep their own raw backup-and-rename.
 - Protection is unix-only (**historical** — superseded 2026-08-18, the Windows
   lock is real; see the final amendment). On Windows the lock is a no-op, so concurrent
   writers there remain unprotected.
