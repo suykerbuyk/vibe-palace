@@ -80,7 +80,6 @@ vp init — vibe-palace 0.1.0-dev
 [pass] Global config: /home/you/.config/vibe-palace/config.toml
 [pass] Vault:     /home/you/vibe-palace-vault
                   git repository initialized
-[pass] Templates: 0 templates materialized
 [pass] Project config: created /home/you/code/myapp/.vibe-palace.toml (myapp, go.mod detected)
 [pass] Vault project: /home/you/vibe-palace-vault/Projects/myapp/config.toml
 [pass] Project templates: scaffolded Projects/myapp/{commands,skills}/
@@ -90,11 +89,11 @@ vp init — vibe-palace 0.1.0-dev
 [pass] Hook wiring: vp hook installed
 [pass] Project .gitignore: host-local vp artifacts ignored
 [skip] Git commit.msg hook: /home/you/code/myapp is not a git repository — no hook to install
-[info] Upgrade policy: `vp init` reconciles; it never upgrades a drifted template and never removes a stale shim. Two other commands do, and they own different halves
-                  stale .claude/commands/vpc-*.md shims and vault Templates/commands/ drift: run `vp commands upgrade`
-                  vault Templates/skills/ drift: run `vp skills upgrade`
+[info] Upgrade policy: `vp init` is additive: it never removes a stale shim and never writes, prunes or reconciles vault Templates/. Two other commands do, and they own different halves
+                  stale .claude/commands/vpc-*.md shims: `vp commands upgrade` removes them. It also offers to reset each vault Templates/commands/ override of a built-in command to the embedded copy — accepting discards that override, with no .bak
+                  vault Templates/skills/ overrides of built-in skills: `vp skills upgrade` offers to reset each to the embedded copy (a .bak is kept)
 
-Summary: 11 ok, 2 skip. Re-run `vp init` anytime — it is idempotent.
+Summary: 10 ok, 2 skip. Re-run `vp init` anytime — it is idempotent.
 ```
 
 Every onboarding step gets its own row, including the ones that had none
@@ -103,10 +102,21 @@ project `.gitignore`, and the `commit.msg` git hook. A row is never omitted
 because a step succeeded quietly — a missing row would be indistinguishable
 from a step that never ran.
 
+There is no `Templates` row. `vp init` never writes, prunes or reconciles
+your vault's `Templates/` directory — a fresh install does not even create
+it. Every built-in command and skill is served from the copy compiled into
+the `vp` binary; `Templates/` holds only files you write yourself (see
+[Customizing a command template](#customizing-a-command-template)). It does
+*read* it: a vault-wide command or skill you add there is resolved into this
+project's `vpc-*`/`vps-*` shims like any built-in.
+
 The closing `Upgrade policy` row is an advisory, not a step: it states what
-`vp init` deliberately does **not** do. Onboarding reconciles, but it never
-upgrades a drifted template and never removes a stale shim; those two jobs
-belong to `vp commands upgrade` and `vp skills upgrade` respectively.
+`vp init` deliberately does **not** do. Onboarding is additive: it never
+removes a stale shim — `vp commands upgrade` does — and never writes,
+prunes or reconciles `Templates/`. The two upgrade commands can *reset* a `Templates/` file that
+overrides a built-in back to the embedded copy: `vp commands upgrade` for
+`Templates/commands/` (no `.bak` is kept) and `vp skills upgrade` for
+`Templates/skills/` (a `.bak` is kept).
 
 The `Project config` row reports which signal marked the directory as a
 project: `.git`, `.vibe-palace.toml`, or one of the supported ecosystem
@@ -893,6 +903,12 @@ vp config sync --tier global # reconcile a single tier
 - Never changes your existing values (drift fills come in as commented defaults)
 - Walks all five reconcilers (global config, vault dir, vault settings, cwd
   project config, vault-project config) by default
+- Tops up the vault `.gitignore` with any canonical line it lacks, shown
+  as `[Update] Vault: top up vault .gitignore (+N canonical line(s))`
+- Reconciles vault `Templates/` override-only — prunes byte-identical
+  mirrors of built-ins, including any an older release left behind (see
+  [Upgrading skills](#upgrading-skills) for what each command does to
+  `Templates/`)
 - Is idempotent — re-running on a synced tree is a no-op
 - Does **not** touch agent files (`CLAUDE.md` etc.) or slash-command shims —
   those are owned by `vp commands upgrade`
@@ -928,10 +944,13 @@ vp commands list --json               # machine-readable (for scripting)
 vp commands list --project myapp      # include project-tier overrides
 ```
 
-When vibe-palace releases update the embedded templates, `vp commands
-upgrade` reconciles them against your vault-level copies (tier 4 —
-`{vault}/Templates/commands/`). Project/wing/room overrides are never
-touched.
+`vp commands upgrade` compares each embedded command with your
+vault-level copy (tier 4 — `{vault}/Templates/commands/`), where one
+exists. A command with no vault copy is reported `unneeded` and is never
+written: the embedded floor already serves it. Accepting a change to a
+vault copy that does exist *replaces* it with the embedded bytes and keeps
+no `.bak` — so on a file you customised, accepting discards your
+override. Project/wing/room overrides are never touched.
 
 ```bash
 vp commands upgrade --dry-run         # preview the plan; non-zero exit if work is pending
@@ -988,18 +1007,31 @@ lost. The on-disk surface stays bounded to a single `.bak` per file;
 snapshot with git before running upgrade when you want multi-generation
 history.
 
-Note the two complementary upgrade entry points:
+What each command does to your vault's `Templates/` directory:
 
-- **`vp init` / `vp config sync`** run the three-SHA materialize-and-
-  reconcile path (same path as any template refresh): vault SHA vs lock
-  SHA vs embedded SHA, with skip / overwrite+`.bak` / `.new` sidecar
-  prompts when the vault has drifted.
+- **`vp init`** never writes, prunes or reconciles it, and a fresh
+  install does not create the directory. Its shim step does read it, so
+  a vault-wide command or skill you add there gets a shim in each
+  project you initialise.
+- **`vp config sync`** runs the override-only reconcile, comparing the
+  vault SHA, the SHA recorded in `.vibe-palace/templates.lock`, and the
+  embedded SHA. A byte-identical mirror of a built-in is pruned (and on a
+  git vault the deletion is committed to the vault repo); an override
+  whose embedded copy has not changed since the lock recorded it is kept;
+  a diverged override prompts `s`kip / `o`verwrite / `n`ew-sidecar.
+  `--yes` answers `o`. Files with names no built-in uses are never
+  touched.
 - **`vp commands upgrade` / `vp skills upgrade`** run the two-SHA
-  interactive diff path: embedded vs vault, with unified diffs and
-  accept/skip/accept-all/quit prompts. Use this when you want to review
-  the change surface rather than silently reconcile.
+  interactive diff path — embedded vs vault, with unified diffs and
+  accept/skip/accept-all/quit prompts — and only ever offer to *reset* a
+  vault copy that already exists back to the embedded bytes. They never
+  create one.
 
-Both paths converge on the same vault content; they differ only in UX.
+A first `vp init` onto an older vault that still holds byte-identical
+mirrors leaves them where they are. The `template-drift` check (in
+`vp check`, and the restart/wrap selector calls) reports each one as
+drift pending a prune — an `[info]`, not an error — until you run
+`vp config sync`.
 
 Man pages are available for all commands: `man vp`, `man vp-search`,
 `man vp-commands`, `man vp-commands-upgrade`, `man vp-skills`,
@@ -1008,93 +1040,103 @@ Man pages are available for all commands: `man vp`, `man vp-search`,
 ### Customizing a command template
 
 The command templates shipped inside `vp` are the *floor* — a default.
-Your vault is the primary editable surface. This walkthrough shows the
-full materialize-edit-reconcile loop.
+Your project's `Projects/<slug>/commands/` and `Projects/<slug>/skills/`
+directories in the vault are the editable surface. This walkthrough
+shows where a default comes from, how to override it, and why the
+vault-wide `Templates/` tier is not the place to override a built-in
+today.
 
-**1. Materialize on init.** A fresh `vp init` writes every embedded
-command into your vault:
+**1. Nothing is materialized.** A fresh `vp init` writes no template
+into your vault — the resolver serves every command and skill from the
+copy compiled into `vp`:
 
 ```bash
 vp init
-ls ~/vibe-palace-vault/Templates/commands/
-# → cancel-plan.md  capture.md  execute-plan.md  license.md  makefile.md  restart.md  review-plan.md  wrap.md
-cat ~/vibe-palace-vault/.vibe-palace/templates.lock
-# → one entry per materialized file, keyed by vault-relative path
-grep -E '\*\.(bak|new)' ~/vibe-palace-vault/.gitignore
-# → *.bak and *.new present
+ls ~/vibe-palace-vault/Templates
+# → ls: cannot access '…/Templates': No such file or directory
+vp commands list
+# → every built-in reports tier `embedded`
 ```
 
-`vp init` also scaffolds `<vault>/Projects/<your-slug>/commands/` and
-`<vault>/Projects/<your-slug>/skills/` with README stubs explaining
-the 5-tier precedence.
+`vp init` does scaffold `<vault>/Projects/<your-slug>/commands/` and
+`<vault>/Projects/<your-slug>/skills/`, each with a README stub
+explaining the 5-tier precedence.
 
-**2. Edit freely.** Open a template and change its phrasing:
+**2. Override for one project.** Put your own copy at the project tier.
+Three ways to fetch the default to start from, before you override it:
+
+- the `vp_get_command` MCP tool, for a command;
+- `vp skills show <name>` (add `--section NAME` for one reference), for
+  a skill;
+- the source file under `internal/templates/templates/` in a
+  vibe-palace checkout.
 
 ```bash
-$EDITOR ~/vibe-palace-vault/Templates/commands/wrap.md
-```
-
-**3. Your edit survives `vp config sync`.** As long as the embedded
-default is unchanged, the reconciler sees `vault ≠ lock` and
-`embedded == lock` — the "user-edited, binary-stable" row of the
-decision table — and reports the file as `Unchanged`:
-
-```bash
-vp config sync --dry-run
-# → Templates/commands/wrap.md ... Unchanged
-```
-
-**4. Simulating a binary bump.** Suppose a future `vp` release ships a
-rewritten `wrap.md`. On the next `vp config sync`, both your vault copy
-*and* the new embedded default have diverged from the lock SHA — the
-"both diverged" row. The reconciler emits a Prompt action:
-
-```
-=== TemplateTree:Templates Prompt ===
-Templates/commands/wrap.md diverged (user-edited AND embedded bumped)
-  embedded_sha=c7f0...
-  vault_sha=ae12...
-  lock_sha=3b88...
-  embedded_relpath=commands/wrap.md
-[s]kip / [o]verwrite (writes .bak) / [n]ew-sidecar — uppercase for all remaining items, [q]uit:
-```
-
-**5. The three options.** Each answer produces a different vault
-state. Uppercase `S`/`O`/`N` applies the choice to every remaining
-Prompt row in the same run.
-
-- `s` — vault file unchanged. No `.bak`, no `.new`. Lock entry is
-  left as-is, so the same Prompt will fire again next sync.
-- `o` — vault file replaced by the new embedded bytes. The previous
-  vault content is moved to `wrap.md.bak` (overwriting any prior
-  `.bak`). Lock entry updated to the new embedded SHA. After this
-  run, the file is back on the "user never edited" track.
-- `n` — vault file unchanged. The new embedded bytes are written
-  side-by-side to `wrap.md.new` for manual review. Lock entry is left
-  as-is. You can diff `wrap.md` against `wrap.md.new` at your leisure,
-  pick the parts you want, and delete the `.new` when done.
-
-**6. Per-project override.** To diverge permanently for one project
-without touching the vault-level template, create a file at the
-project tier:
-
-```bash
-cp ~/vibe-palace-vault/Templates/commands/wrap.md \
-   ~/vibe-palace-vault/Projects/myapp/commands/wrap.md
 $EDITOR ~/vibe-palace-vault/Projects/myapp/commands/wrap.md
+vp commands list --project myapp
+# → wrap … project
 ```
 
-The project-level file shadows the vault-level `Templates/` copy for
-`myapp` only. Other projects continue to resolve `wrap.md` from
-`<vault>/Templates/commands/`. `vp config sync` in scaffold mode never
-overwrites project-tier overrides — it only ensures the directory and
-README stub exist.
+The project-level file shadows the built-in for `myapp` only; other
+projects keep resolving `wrap` from the embedded floor. No reconciler
+and no upgrade command ever writes to the project tier — `vp config
+sync` in scaffold mode only ensures the directory and README stub exist.
+
+**3. The vault-wide tier, `Templates/`.** A file under
+`<vault>/Templates/commands/` or `<vault>/Templates/skills/` applies to
+every project. What happens to it depends on its name:
+
+- **A new name** — a command or skill no built-in uses, such as
+  `Templates/commands/mycmd.md` — is safe. Nothing iterates it: `vp
+  config sync` and both upgrade commands walk the embedded corpus only.
+  This is the only way to publish a command to every project, and
+  `vp commands list` shows it at tier `vault`.
+- **An override of a built-in** — `Templates/commands/wrap.md` — is
+  **currently unsafe**. With no lock entry the reconciler cannot tell it
+  from a stale mirror, so every `vp config sync` stops on it:
+
+  ```
+  === TemplateTree:Templates Prompt ===
+  Templates/commands/wrap.md diverged (no lock, bytes differ from embedded)
+    embedded_sha=c7f0...
+    vault_sha=ae12...
+    lock_sha=
+    embedded_relpath=commands/wrap.md
+  [s]kip / [o]verwrite (writes .bak) / [n]ew-sidecar — uppercase for all remaining items, [q]uit:
+  ```
+
+  `--yes` (or `o`/`O`) replaces it with the embedded bytes, and so does
+  accepting `vp commands upgrade`'s reset. The file is then a
+  byte-identical mirror, so the *next* sync prunes it and, on a git
+  vault, commits and pushes the deletion. The lock entry and the `.bak`
+  that would have let you recover never leave the host that wrote them.
+  Tracked as `vault-template-override-is-discarded-by-config-sync`;
+  until it lands, override built-ins at the project tier.
+
+**4. The three prompt answers.** Uppercase `S`/`O`/`N` applies the
+choice to every remaining Prompt row in the same run. The same prompt
+also fires, with `diverged (user-edited AND embedded bumped)`, for a
+tracked override whose embedded copy changed in a new release.
+
+- `s` — vault file unchanged. No `.bak`, no `.new`. The lock is left
+  as-is, so the same Prompt fires again on the next sync.
+- `o` — vault file replaced by the embedded bytes. Your previous
+  content is *copied* to `wrap.md.bak` (overwriting any prior `.bak`),
+  and the lock records the embedded SHA. The file is now a reconciler-
+  owned mirror, so the next sync prunes it — and that prune writes the
+  file's current, embedded bytes to `wrap.md.bak`, overwriting the copy
+  of yours. Save the `.bak` somewhere else before the next sync if you
+  want to keep it.
+- `n` — vault file unchanged. The embedded bytes are written
+  side-by-side to `wrap.md.new` for manual review. The lock is left
+  as-is. Diff `wrap.md` against `wrap.md.new`, take the parts you want,
+  and delete the `.new` when done.
 
 **Promoting back to the `vp` source tree.** Vibe-palace cannot automate
 promotion because at runtime it does not know where your vibe-palace
-source checkout lives. To land a vault-side edit as the new embedded
-floor for the next release, manually copy the edited file from
-`<vault>/Templates/commands/<name>.md` to
+source checkout lives. To land an override as the new embedded floor
+for the next release, copy your override — from
+`<vault>/Projects/<slug>/commands/<name>.md` — to
 `<vp-repo>/internal/templates/templates/commands/<name>.md` and commit
 it like any other source change.
 

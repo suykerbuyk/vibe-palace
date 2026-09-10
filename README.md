@@ -315,61 +315,55 @@ Details: [Tutorial — Zed](doc/TUTORIAL.md#zed),
 ## Customizing Commands and Skills
 
 Vibe-palace ships its command and skill catalog compiled into the `vp`
-binary. These embedded templates are the **floor** — a last-resort
-default. Your vault is the primary editable surface.
+binary. These embedded templates are the **floor** — the default every
+command and skill resolves from. Your project's `Projects/<slug>/`
+directory in the vault is where you customise them.
 
-- **`<vault>/Templates/commands/`** — materialized from the embedded
-  defaults the first time you run `vp init`. Edit files here freely:
-  a `templates.lock` sidecar (`<vault>/.vibe-palace/templates.lock`)
-  records the embedded SHA that shipped with your binary, so
-  `vp commands upgrade` can tell a user edit apart from a binary
-  bump. `<vault>/Templates/workflow.md` and
-  `<vault>/Templates/resume.md` are materialized the same way.
 - **`<vault>/Projects/<slug>/commands/`** — per-project override
-  directory, scaffolded with a README stub. A file here shadows the
-  vault-level `Templates/` copy for that project only, letting one
-  project diverge permanently without affecting the others.
-  `skills/` works the same way.
+  directory, scaffolded by `vp init` with a README stub. A file here
+  shadows the built-in for that project only, letting one project
+  diverge permanently without affecting the others. No reconciler and
+  no upgrade command ever writes here. `skills/` works the same way.
+- **`<vault>/Templates/`** — the vault-wide tier, **empty by default**.
+  `vp init` never writes it; the embedded floor serves every built-in,
+  including the `workflow.md` and `resume.md` templates. A file with a
+  **new name** here — a command or skill no built-in uses — applies to
+  every project and is safe: nothing iterates it. An **override of a
+  built-in** here is currently unsafe: `vp config sync --yes` replaces
+  it with the embedded copy and the next sync prunes it (tracked as
+  `vault-template-override-is-discarded-by-config-sync`). Override
+  built-ins at the project tier.
 
 **Precedence (first match wins):** room > wing > project > vault >
 embedded. For example,
 `<vault>/Projects/myapp/commands/wrap.md` takes precedence over
-`<vault>/Templates/commands/wrap.md`, which shadows the embedded
-`wrap.md` baked into the binary.
+`<vault>/Templates/commands/wrap.md` (if one exists), which shadows the
+embedded `wrap.md` baked into the binary.
 
-### Three-SHA reconciliation (a vignette)
+### What each command does to `Templates/`
 
-You installed vibe-palace last month. `vp init` wrote the command
-templates into `<vault>/Templates/commands/` and recorded their
-SHAs in `templates.lock`.
+- **`vp init`** — never writes, prunes or reconciles `Templates/`. It
+  only reads it, to give each project a shim for your vault-wide
+  commands and skills.
+- **`vp config sync`** — the override-only reconcile. It prunes a
+  byte-identical mirror of a built-in (committing the deletion on a git
+  vault), keeps an override whose embedded copy has not changed, and
+  prompts `[s]kip / [o]verwrite (writes .bak) / [n]ew-sidecar` on a
+  diverged one. Its `<vault>/.vibe-palace/templates.lock` sidecar records
+  the embedded baseline that makes a prune safe; vp never stages it to
+  git, so it is host-local in practice.
+- **`vp commands upgrade` / `vp skills upgrade`** — offer to reset an
+  existing vault copy of a built-in to the embedded bytes (commands keep
+  no `.bak`; skills keep one). They never create a copy.
 
-Since then you've edited `wrap.md` to add a team-specific
-integration-test gate. Your vault's `wrap.md` now differs from the
-lock SHA — that's a **user edit**.
+The full walkthrough is in
+[Tutorial — Customizing a command template](doc/TUTORIAL.md#customizing-a-command-template).
 
-Today you upgrade `vp` to a new release. The new binary ships a
-revised embedded `wrap.md`. The embedded SHA now also differs from
-the lock SHA — that's a **binary bump**.
-
-When you run `vp commands upgrade`:
-
-- For files you never touched (same vault SHA as lock), it
-  auto-updates to the new embedded version and writes a `.bak` of
-  the previous vault content.
-- For files where both you **and** the embedded default have
-  diverged from the recorded lock SHA (like your `wrap.md`), it
-  prompts: `[s]kip / [o]verwrite (writes .bak) / [n]ew-sidecar`.
-  Uppercase `S`/`O`/`N` applies the choice to every remaining
-  conflict.
-
-No magic. No merge. You stay in control of anything you've changed,
-and get everything you haven't for free.
-
-### Promoting vault edits back to source
+### Promoting overrides back to source
 
 Vibe-palace does not know where your `vp` source checkout lives, so
-promotion is manual on purpose: copy the file from
-`<vault>/Templates/commands/<name>.md` to
+promotion is manual on purpose: copy your override from
+`<vault>/Projects/<slug>/commands/<name>.md` to
 `internal/templates/templates/commands/<name>.md` in your
 vibe-palace checkout and commit. The next `vp` build ships your
 edit as the new embedded floor for everyone.

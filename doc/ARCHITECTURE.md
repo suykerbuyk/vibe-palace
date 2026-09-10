@@ -47,7 +47,7 @@ its full MCP tool surface (versioned in `internal/mcp/tool_surface.golden.json`,
 | `internal/skills` | Directory-form persona artifacts: SKILL.md frontmatter parser/resolver | `Frontmatter` |
 | `internal/commands` | Shared command list/upgrade surface over the Resolver | `List`, `Upgrade`, `Diff` |
 | `internal/reconcile` | Check → Plan → Apply reconcilers for managed config-file tiers | (per-artifact reconcilers) |
-| `internal/templates` | Compiled-in template corpus (incl. the agent doctrine, `templates/doctrine.md`) + materialize/reconcile lifecycle | `Executor`, `Lock` |
+| `internal/templates` | Compiled-in template corpus (incl. the agent doctrine, `templates/doctrine.md`) + override-only reconcile and lock helpers | `Executor`, `Lock` |
 | `internal/worktree` | Git-worktree isolation for plan execution (`vp worktree create\|remove\|list`) | `Create`, `Remove`, `List` |
 | `internal/check` | Doctor checks for config, vault, embedder, git, agent drift, resume.md caps, host-rooted paths, template drift and the deleted `vp-surface` merge driver | `Run`, `CheckConfig`, `CheckAgentDrift`, `CheckResumeCaps`, `CheckVaultAbsPaths`, `CheckSurfaceMergeDriver` |
 | `internal/slug` | Project-slug validation and normalization | `Slugify`, `Validate` |
@@ -978,11 +978,11 @@ this table: it went stale once when `vault-filesystem` and `stray-scaffolds`
 joined the registry, and again as six more producers joined without a row here.
 
 `palace-local-only` is deliberately **absent from the delivery check lists** in
-the restart and wrap commands and the epic-orchestrator skill. `vp config sync`
-materializes the embedded templates into the vault's `Templates/` tier, which the
-resolver serves ahead of the embedded copy, so a selector named there reaches every
-host that reads the vault — including one on an older binary, where `vp_check`
-refuses an unknown name. It runs in the full `vp check` suite and on an explicit
+the restart and wrap commands and the epic-orchestrator skill. A vault copy of
+those templates under `Templates/` — an override, or a mirror not yet pruned by
+`vp config sync` — is served ahead of the embedded copy, so a selector named there
+reaches every host that reads the vault, including one on an older binary, where
+`vp_check` refuses an unknown name. It runs in the full `vp check` suite and on an explicit
 `vp_check {checks:["palace-local-only"]}`.
 
 An unknown name exits `ExitUser` with an `unknown check` diagnostic.
@@ -1234,23 +1234,32 @@ embedded tree via `internal/templates.FS()`.
 
 ### Materialize-and-reconcile loop
 
-The embedded tier is the *floor*, not the authoritative source for a
-populated vault. Templates flow through four stations:
+The embedded tier is the *floor*, and on a healthy vault it is the only
+copy of any built-in. Vault `Templates/` is **override-only**
+(ADR-008, Design B): it holds files an operator wrote, never a
+reconciler-owned mirror. Templates flow through four stations:
 
 1. **Embedded-in-binary.** `internal/templates/templates/` is baked into
    every `vp` build. `internal/templates.WalkEmbedded()` enumerates
-   every resource as `(RelPath, Bytes, SHA256)`.
-2. **Materialize on `vp init`.** First-run `vp init` walks the embedded
-   set and writes every resource into `<vault>/Templates/` (the
-   `TemplateTreeReconciler` running in `Materialize` mode). It also
-   scaffolds `<vault>/Projects/<slug>/{commands,skills}/` with a README
-   stub (`Scaffold` mode — directory + README, no per-file copy), writes
-   the `<vault>/.vibe-palace/templates.lock` sidecar, and adds `*.bak`
-   and `*.new` to `<vault>/.gitignore` via
-   `storage.ReconcileVaultGitignore`. It also reconciles the *consuming
-   project's* repo-root `.gitignore` via
-   `storage.ReconcileProjectGitignore`, appending the host-local AI
-   artifacts vp writes into the project tree
+   every resource as `(RelPath, Bytes, SHA256)`, and the resolver serves
+   each one directly from its embedded tier.
+2. **`vp init` does not reconcile `Templates/`.** It never writes, prunes
+   or reconciles `<vault>/Templates/`, and a fresh install creates
+   neither that directory nor `templates.lock`. (Onboarding's shim steps
+   do read it, through the resolver's vault tier, which is how a
+   vault-wide new command reaches every project.) So a first install onto
+   a vault that already holds overrides cannot fail on them, and the CLI
+   matches the MCP `vp_init` tool, which never had a Templates pass. What
+   init does do: the Vault reconciler writes `<vault>/.gitignore` with
+   `storage.CanonicalGitignorePatterns` (including `*.bak` and `*.new`)
+   on a new vault, and tops up a present one with any canonical line it
+   lacks through `storage.TopUpVaultGitignore` — a locked
+   read-modify-write (`storage.LockedUpdate`). Onboarding scaffolds
+   `<vault>/Projects/<slug>/{commands,skills}/` with a README stub
+   (`TemplateTreeReconciler` in `Scaffold` mode — directory + README, no
+   per-file copy). It also reconciles the *consuming project's* repo-root
+   `.gitignore` via `storage.ReconcileProjectGitignore`, appending the
+   host-local AI artifacts vp writes into the project tree
    (`storage.CanonicalProjectGitignorePatterns`: `/CLAUDE.md`,
    `/AGENTS.md`, `/commit.msg`, `/.claude/`, `/.grok/`, `/.vibe-palace/`)
    so they are never committed. `AGENTS.md` is a host-local vp-managed
@@ -1262,72 +1271,89 @@ populated vault. Templates flow through four stations:
    on `vp commands upgrade` so existing projects self-heal, and
    `vp check` surfaces an advisory (`Info`, never `Fail`) when canonical
    entries are missing.
-3. **User edits freely.** The vault is git-managed. Users treat
-   `<vault>/Templates/commands/*.md` as source-of-truth for their
-   personal command phrasing.
-4. **Reconcile on `vp config sync`.** Default scope is all-projects.
-   The reconciler reads the lock, hashes each vault file, and consults
-   the current embedded SHA for each resource. Drift resolves via the
-   three-SHA decision table below. Manual copy-back to the vibe-palace
-   source checkout is how a vault-side edit becomes the next release's
+3. **Users override where it is safe.** The editable surface is the
+   project tier, `<vault>/Projects/<slug>/{commands,skills}/`, which no
+   reconciler or upgrade command writes. A *new* name under
+   `<vault>/Templates/` is the vault-wide tier and is equally safe —
+   nothing iterates it. An override of a *built-in* under `Templates/` is
+   currently unsafe (see `vault-template-override-is-discarded-by-config-sync`):
+   no writer records a lock baseline for it, so it prompts on every sync,
+   and an `o` answer turns it into a mirror the next sync prunes.
+4. **Reconcile on `vp config sync`.** The `TemplateTreeReconciler` in
+   `Materialize` mode reads the lock, hashes each vault file, and
+   consults the current embedded SHA for each resource; the decision
+   table below resolves each one. Manual copy-back to the vibe-palace
+   source checkout is how an override becomes the next release's
    embedded floor — `vp` cannot automate this because at runtime it
    does not know where the user's source checkout lives.
 
 #### The three-SHA decision table
 
-For each `(lock entry, vault file SHA, embedded file SHA)` triple, the
-reconciler picks one action:
+For each embedded resource, `planMaterialize` compares the vault file,
+its lock entry and the current embedded SHA, and picks the first
+matching case:
 
-| Vault vs lock | Embedded vs lock | Action |
-|---|---|---|
-| missing       | —                | **Create** (write embedded, record lock) |
-| match         | match            | **Unchanged** |
-| match         | differs          | **Update** (safe: user never edited) |
-| differs       | match            | **Unchanged** (user-edited, embedded stable) |
-| differs       | differs          | **Prompt** (skip / overwrite + `.bak` / write `.new`) |
-| lock missing  | vault exists (bytes == embedded) | **Silent adopt** (write lock entry, no prompt) |
-| lock missing  | vault exists (bytes ≠ embedded)  | Treat as user-edited → **Prompt** |
+| Condition | Action |
+|---|---|
+| vault file absent | **Unchanged** — served from the embedded floor (a dangling lock entry is dropped) |
+| lock present, vault == lock | **Delete** — prune the reconciler-owned mirror |
+| lock present, vault == embedded | **Delete** — prune (byte-identical to current embedded; lock stale) |
+| lock present, embedded == lock | **Unchanged** — user override, kept |
+| lock present, otherwise | **Prompt** — diverged (user-edited AND embedded bumped) |
+| no lock, vault ≠ embedded | **Prompt** — diverged (no lock, bytes differ from embedded) |
 
-`ActionPrompt` carries all three SHAs in its `Details` so the
-orchestrator can render the three-option menu without re-reading files.
-The orchestrator rewrites the user's choice (`s`/`o`/`n` or uppercase
-batch variants `S`/`O`/`N`) into a concrete Create / Update /
-WriteAsNew action before Apply runs — Apply itself never touches
-stdin/stdout.
+No row plans a Create or an Update: nothing is ever copied into the
+vault on its own. A prune backs the file up to a sibling `.bak` before
+removing it, and `vp config sync` then commits the deletion to the vault
+repo (`propagatePrunedMirrors`), so it survives a pull on another host.
+
+`ActionPrompt` carries all three SHAs and the embedded relpath in its
+`Details`, so the orchestrator can render the menu without re-reading
+files. `vp config sync` (`resolveTemplatePrompts`) resolves each answer
+before Apply runs — Apply itself never touches stdin/stdout, and returns
+an error if it ever sees a Prompt. `s` drops the action; `o` rewrites it
+to an Update of the same target, which the Executor applies with a
+`.bak` copy of the previous bytes; `n` writes a `.new` sidecar directly
+and drops the action. No answer produces a Create; the Create branch of
+`applyMaterialize` is unreachable from any Plan. Uppercase `S`/`O`/`N`
+apply the choice to every remaining Prompt, and `--yes` answers `o`.
 
 #### Role of `templates.lock`
 
 `<vault>/.vibe-palace/templates.lock` (TOML, keyed by vault-relative
-path) records the embedded SHA each resource was last materialized or
-reconciled against. Without it, the reconciler cannot distinguish "user
-edited this file" from "embedded default changed under a file the user
-never touched" — every binary bump would degrade into a prompt-per-file
-UX. The lock makes the auto-Update branch safe: `vault == lock` is
-unambiguous evidence the user has not edited the file, so replacing it
-with the new embedded bytes (after writing `.bak`) cannot clobber user
-intent.
+path) records the embedded SHA a vault file was last written from. It is
+what makes a **prune** safe: `vault == lock` is unambiguous evidence the
+file still holds the bytes a reconciler wrote, so deleting it (the
+embedded floor serves it) cannot discard user intent. There is no
+auto-Update branch any more. A missing lock reads as an empty one
+(`templates.ReadLock`), and `vp init` never creates it; the first
+`vp config sync` does. vp never stages the lock to git, so it is
+host-local in practice — a tracked override on one host has no lock
+entry on the next.
 
 #### Two upgrade entry points
 
-The codebase exposes **two** upgrade surfaces with deliberately
-different UX contracts:
+The codebase exposes **two** reconcile surfaces with deliberately
+different UX contracts, and `vp init` is neither:
 
-1. **Three-SHA reconcile** (`vp config sync`, `vp init`) —
-   `internal/reconcile/template_tree.go`. Compares vault SHA, lock SHA,
-   and embedded SHA for every materialized file (commands + skills).
-   When the vault has drifted and the embedded floor has also shifted,
-   it prompts `[s]kip / [o]verwrite (writes .bak) / [n]ew-sidecar`.
-   Runs automatically on `vp init` and `vp config sync`.
+1. **Three-SHA reconcile** (`vp config sync`, and vault split's
+   destination scaffold) — `internal/reconcile/template_tree.go`. Runs
+   the decision table above over every embedded resource (commands +
+   skills): prunes mirrors, keeps overrides, and prompts
+   `[s]kip / [o]verwrite (writes .bak) / [n]ew-sidecar` on a diverged one.
 2. **Two-SHA diff** (`vp commands upgrade`, `vp skills upgrade`) —
-   `internal/commands/upgrade.go`. Compares embedded vs vault only,
-   renders a unified diff per change, and prompts
-   `[a]ccept / [s]kip / [A]ccept-all / [q]uit`. Skills collapse per-file
-   changes into one prompt per skill directory unless `--granular` is
-   passed. Invoked interactively by the user.
+   `internal/commands/upgrade.go`. Compares embedded vs an *existing*
+   vault copy only (an absent one is `unneeded`, never created), renders
+   a unified diff per change, and prompts
+   `[a]ccept / [s]kip / [A]ccept-all / [q]uit`. Accepting resets the
+   vault copy to the embedded bytes — with no `.bak` for commands
+   (`BackupPolicyNever`) and a renamed `.bak` for skills
+   (`BackupPolicyRename`). Skills collapse per-file changes into one
+   prompt per skill directory unless `--granular` is passed. Invoked
+   interactively by the user.
 
-Both paths resolve to the same vault content; they differ in whether
-drift is handled silently (path 1 adopts matches, prompts on conflict)
-or explicitly (path 2 always shows a diff and asks). The shared prompt
+They do not converge on the same vault content: path 2's reset leaves a
+byte-identical mirror, which path 1 then prunes. The shared prompt
 loop — `runUpgradePrompt` in `cmd/vp/upgrade_common.go` — is used by
 both `vp commands upgrade` and `vp skills upgrade`; identity `GroupBy`
 preserves the per-change prompt for commands while the skills path uses
@@ -1335,16 +1361,17 @@ preserves the per-change prompt for commands while the skills path uses
 
 #### Silent-adopt pre-pass
 
-On the first post-upgrade sync against a vault that predates this
-feature (or on any vault with an absent lock), a naive implementation
-would emit a Prompt for every vault file that exists but has no lock
-entry. To avoid that prompt-storm, `Plan` runs a pre-pass: for every
-existing file under the reconciler's `relSubpath`, it compares the
-vault SHA to the current embedded SHA. Byte-identical files get a lock
-entry written silently — no prompt, no `.bak`. Only genuinely divergent
-files fall through to the Prompt path. "Vault bytes == embedded bytes"
-is unambiguous evidence the user has not edited the file, so adoption
-is safe.
+On the first sync against a vault that predates the lock (or on any
+vault with an absent lock), a naive implementation would emit a Prompt
+for every vault file that exists but has no lock entry. To avoid that
+prompt-storm, `Plan` runs a pre-pass: for every embedded resource whose
+vault file exists without a lock entry, it compares the vault SHA to the
+current embedded SHA. A byte-identical file gets a lock entry in memory
+— no prompt — and the main loop then classifies it `vault == lock` and
+**prunes** it: an adopted file is a mirror, and the embedded floor
+serves it. Only genuinely divergent files fall through to the Prompt
+path. "Vault bytes == embedded bytes" is unambiguous evidence the user
+has not edited the file, so adoption is safe.
 
 ### Bootstrap Context
 
@@ -1562,12 +1589,16 @@ exists to delete.
 
 **`vp commands upgrade` and `vp skills upgrade` are NOT callers of
 `internal/onboard`.** They are a separate *upgrade* policy layered over the
-same shared writers (`internal/shims`, `internal/commands`,
-`reconcile.TemplateTree`): onboarding reconciles toward the current schema and
-is additive, while upgrade presents drift interactively and may REMOVE a stale
-shim. Onboarding therefore ends with an advisory naming both of them against
-the halves they actually own — stale shims and `Templates/commands` drift are
-`vp commands upgrade`'s; `Templates/skills` drift is `vp skills upgrade`'s.
+shared writers in `internal/shims` and `internal/commands` — not over
+`reconcile.TemplateTree`, which only `vp config sync` and vault split drive:
+onboarding reconciles toward the current schema and is additive, while
+upgrade presents changes interactively, may REMOVE a stale shim, and may
+RESET an existing vault `Templates/` copy of a built-in to the embedded
+bytes. Onboarding never writes, prunes or reconciles `Templates/` (its shim
+steps only read it through the resolver), and ends with an advisory
+naming both commands against the halves they actually own — stale shims and
+`Templates/commands` resets are `vp commands upgrade`'s; `Templates/skills`
+resets are `vp skills upgrade`'s.
 
 ### Commands and Skills
 
@@ -1647,20 +1678,21 @@ MCP, which is the universal fallback documented in
 `doc/verify-skill-delivery.md`.
 
 **Upgrade.** Skills flow through both upgrade entry points
-described above. Three-SHA reconcile (`vp init`, `vp config sync`)
-keeps `<vault>/Templates/skills/` materialized and in sync with the
-embedded floor, using the lock sidecar to distinguish user edits
-from binary bumps. Two-SHA interactive diff (`vp skills upgrade`)
-compares embedded vs vault directly and groups every file under a
-skill directory into a single `a`/`s`/`A`/`q` prompt — a six-file
-skill like `startup-analyst` becomes one decision, with `--granular`
-available when per-file review is actually wanted. The shim side is
-kept in lockstep via `vp commands upgrade`'s `PlanSkills` /
+described above. Three-SHA reconcile (`vp config sync`) reconciles
+vault skill overrides under `<vault>/Templates/skills/` override-only:
+it prunes byte-identical mirrors, keeps a tracked override, and prompts
+on a diverged one, using the lock sidecar to tell a reconciler-written
+file from a user edit. Two-SHA interactive diff (`vp skills upgrade`)
+compares embedded vs an existing vault copy directly and groups every
+file under a skill directory into a single `a`/`s`/`A`/`q` prompt — a
+six-file skill like `startup-analyst` becomes one decision, with
+`--granular` available when per-file review is actually wanted. The
+shim side is kept in lockstep via `vp commands upgrade`'s `PlanSkills` /
 `ApplySkills` pair, which re-renders `.claude/skills/` and
 `.cursor/rules/` entries whenever the SHA-token inputs change. The
-resolver is the source of truth, the shims are the IDE-native
-surfaces, and the two upgrade paths keep both sides coherent without
-ever committing to the user's behalf.
+resolver is the source of truth, and the shims are the IDE-native
+surfaces. Neither upgrade command commits to the vault repo; `vp config
+sync` commits exactly the mirror deletions it prunes.
 
 ---
 

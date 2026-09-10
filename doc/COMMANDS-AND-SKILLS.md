@@ -107,7 +107,17 @@ completely replaces the lower-tier version — there is no inheritance or
 merging.
 
 To add a vault-wide command that applies to all projects, place it in
-`Templates/commands/`.
+`Templates/commands/` under a name no built-in uses. Nothing iterates such a
+file — `vp config sync` and both upgrade commands walk only the embedded
+corpus — so it is safe, and it is the only way to publish a command to every
+project.
+
+**Do not override a built-in in `Templates/`.** A `Templates/` file at the
+same path as an embedded template is currently unsafe: `vp config sync --yes`
+(or its `o`/`O` answer) and the upgrade commands' reset replace it with the
+embedded copy, and the next sync prunes it and commits the deletion. Tracked
+as `vault-template-override-is-discarded-by-config-sync`. Override a built-in
+at the project tier instead.
 
 To scope a command to a specific wing or room, place it in the appropriate
 subdirectory under `commands/{wing}/.wing/` or `commands/{wing}/{room}/`.
@@ -118,7 +128,9 @@ subdirectory under `commands/{wing}/.wing/` or `commands/{wing}/{room}/`.
 
 ### 1. Choose a location
 
-- **All projects**: `{vault}/Templates/commands/{name}.md`
+- **All projects**: `{vault}/Templates/commands/{name}.md` — for a *new*
+  name only; see [Override behavior](#override-behavior) for why a built-in
+  is not overridden here
 - **One project**: `{vault}/Projects/{project}/commands/{name}.md`
 - **One wing**: `{vault}/Projects/{project}/commands/{wing}/.wing/{name}.md`
 - **One room**: `{vault}/Projects/{project}/commands/{wing}/{room}/{name}.md`
@@ -163,6 +175,11 @@ Save this as `audit-deps.md` and it's immediately available.
         checklist.md
         framework.md
 ```
+
+This is the vault-wide location, for a skill with a **new** name. To
+override a built-in skill, use `{vault}/Projects/{project}/skills/{name}/`
+instead — a `Templates/skills/` copy of a built-in is currently discarded by
+`vp config sync --yes` (see [Override behavior](#override-behavior)).
 
 Skills are always **directory-form** — a `{name}/` subdirectory
 containing `SKILL.md` (and optionally a `references/` tree). Flat-file
@@ -524,28 +541,18 @@ validation. Enrichment-queue drain remains Claude-hook-only; see
 
 ```
 {vault}/
-├── Templates/
-│   ├── commands/               # Vault-wide commands
-│   │   ├── cancel-plan.md
-│   │   ├── capture.md
-│   │   ├── execute-plan.md
-│   │   ├── license.md
-│   │   ├── makefile.md
-│   │   ├── restart.md
-│   │   ├── review-plan.md
-│   │   ├── stage.md
-│   │   ├── vault-audit.md
-│   │   └── wrap.md
-│   └── skills/                 # Vault-wide skills
-│       └── startup-analyst/
+├── Templates/                  # Overrides YOU author — empty by default
+│   ├── commands/               # Vault-wide commands (illustrative)
+│   │   └── audit-deps.md       # a NEW name: safe, applies to every project
+│   └── skills/                 # Vault-wide skills (illustrative)
+│       └── my-reviewer/        # a NEW name: safe
 │           ├── SKILL.md
 │           └── references/
-│               ├── capex-opex.md
-│               └── competitive-landscape.md
+│               └── checklist.md
 └── Projects/
     └── {project}/
         ├── commands/           # Project overrides + palace-scoped
-        │   ├── restart.md      # Project scope (overrides Templates)
+        │   ├── restart.md      # Project scope (overrides the built-in)
         │   └── backend/        # Wing directory
         │       ├── .wing/
         │       │   └── deploy.md   # Wing scope (backend wing)
@@ -553,6 +560,11 @@ validation. Enrichment-queue drain remains Claude-hook-only; see
         │           └── validate.md # Room scope (backend/api room)
         └── skills/             # Same layout as commands/
 ```
+
+`vp init` never creates `Templates/`; every built-in is served from the
+embedded defaults below. The files shown under it are illustrative. An
+override of a built-in belongs under `Projects/{project}/`, not
+`Templates/` — see [Override behavior](#override-behavior).
 
 Embedded defaults (compiled into `vp`):
 

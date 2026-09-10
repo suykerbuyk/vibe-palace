@@ -1,19 +1,26 @@
 # Template Write Policy
 
 This document captures the centralized `.bak` (backup) policy for
-every code path that materializes embedded template bytes onto disk.
+every code path that writes embedded template bytes onto disk.
 
 ## Golden path
 
-Every template-write in the project routes through
-`internal/templates.Executor.Write`. The caller passes a
+Every write of embedded template bytes over a vault template routes
+through `internal/templates.Executor.Write`. The caller passes a
 `WriteOptions{Backup: BackupPolicy}` value; the Executor owns the
 atomic write, directory creation, and (conditional) `.bak` emission.
 
+Three template-adjacent writes do **not**, and are named here so the
+sentence above stays true: `applyMaterialize`'s prune writes its `.bak`
+with a raw `os.WriteFile` and removes the primary with a raw
+`os.Remove`, and `vp config sync`'s `resolveTemplatePrompts` writes the
+`n` answer's `.new` sidecar directly. Routing them through the lock
+funnel is owned by `template-tree-raw-vault-writes-bypass-the-lock-funnel`.
+
 | Caller | Command surface | Policy | Rationale |
 |---|---|---|---|
-| `reconcile.TemplateTree.Apply` (Update action) | `vp init` materialize | `BackupPolicyAlways` | The reconciler's Update path only fires after the decision table classifies a file as safely auto-upgradeable (vault matches lock, embedded bumped). Preserving the pre-existing bytes as `.bak` is cheap insurance against a corrupted lock entry mis-classifying a user edit as safe to overwrite. |
-| `reconcile.TemplateTree.Apply` (Create action) | `vp init` materialize | `BackupPolicyNever` | Fresh materialization — nothing to preserve. |
+| `reconcile.TemplateTree.Apply` (Update action) | `vp config sync`, the `o` answer to a diverged-override Prompt (and `--yes`) | `BackupPolicyAlways` | No Plan emits an Update since ADR-008's override-only Design B; the only Update is the orchestrator's rewrite of an `o` answer. The file is by definition an operator's override, so its bytes are copied to `.bak` before the embedded copy replaces them. |
+| `reconcile.TemplateTree.Apply` (Create action) | unreachable from any Plan since ADR-008 Phase 3 | `BackupPolicyNever` | An absent vault file is served from the embedded floor, never created; the branch remains only for a caller-built Plan. |
 | `commands.Apply` | `vp commands upgrade` | `BackupPolicyNever` | See asymmetry note below. |
 | `commands.ApplyWithBackup` | `vp skills upgrade` | `BackupPolicyRename` | See asymmetry note below. |
 
@@ -115,14 +122,16 @@ Time Machine, etc.) before invoking `vp * upgrade`.
 ## What lives where
 
 - `internal/templates/executor.go` — `Executor.Write`, `HashFile`,
-  and `Classify` helpers. This is the single template-write primitive.
+  and `Classify` helpers. This is the single template-write primitive
+  (see the raw exceptions named under *Golden path*).
 - `internal/templates/embedded.go` — `WalkEmbedded`,
   `EmbeddedSHA`, and the `Resource` value type. Unchanged by this
   refactor.
 - `internal/reconcile/template_tree.go` — still owns the
-  materialize decision table, the silent-adopt pre-pass, and lock-
-  file integration. Delegates every individual write to
-  `templates.Executor.Write`.
+  override-only decision table, the silent-adopt pre-pass, and lock-
+  file integration. Delegates every template-byte write to
+  `templates.Executor.Write`; the prune's `.bak` and remove are the raw
+  exceptions named under *Golden path*.
 - `internal/commands/upgrade.go` — `Plan`, `Apply`, and
   `ApplyWithBackup` collapse into a shared `applyWithPolicy` helper
   that picks the `BackupPolicy` and delegates to

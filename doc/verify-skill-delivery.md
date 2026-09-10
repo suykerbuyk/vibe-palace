@@ -92,10 +92,12 @@ been proven.
 - `SKILL.md` missing → run `vp init` again; confirm the project's
   `.claude/skills/` is not gitignored away.
 - Frontmatter `description:` field empty → Claude Code's skill
-  picker won't surface the skill; re-render via
-  `vp skills upgrade --only startup-analyst`.
+  picker won't surface the skill; re-render the shim via
+  `vp commands upgrade`. Skill shims are rendered by its
+  `PlanSkills`/`ApplySkills` half — `vp skills upgrade` resets vault
+  `Templates/skills/` copies and never touches a shim.
 - `sha=` marker in the shim doesn't match the current template —
-  stale shim. `vp skills upgrade` will flag it; accept the rewrite.
+  stale shim. `vp commands upgrade` will flag it; accept the rewrite.
 - Claude ignores the trigger and answers as a generic assistant →
   the managed block in `CLAUDE.md` / `AGENTS.md` was not loaded
   (Claude Code only reads it after turn 1; use `/vpc-restart` as
@@ -138,7 +140,7 @@ neither exists, create `.cursor/rules/` (empty) and re-run `vp init`.
 - `.cursor/rules/` does not exist → shim not rendered (`vp init`
   reports `[skip] Cursor shims: .cursor/ not present`). Create the
   directory and re-run `vp init`.
-- Stale `sha=` in the shim → `vp skills upgrade` will re-render.
+- Stale `sha=` in the shim → `vp commands upgrade` will re-render.
 - MCP not configured in Cursor → rule body still has the skill
   description and trigger instructions; persona should still
   adopt, but reference fetches will fail (user must paste).
