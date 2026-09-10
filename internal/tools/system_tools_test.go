@@ -17,17 +17,59 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-// sandboxHostEnv points HOME (and USERPROFILE, which is what os.UserHomeDir
-// reads on Windows — a .goreleaser.yml target — rather than HOME) plus
-// XDG_CONFIG_HOME at fresh temp dirs. Tests in this file drive tools that
-// walk up to the home boundary and read the global config; without this they
-// would resolve against the developer's real ~ and ~/.config/vibe-palace.
+// sandboxHostEnv redirects every host-global root the tools in this file can
+// reach at fresh temp dirs.
+//
+// Defense in depth, deliberately: no tool exercised here reads a host global
+// today — internal/tools production code has no os.UserHomeDir call and the
+// handlers take an explicit *storage.Vault — so with TMPDIR under /tmp the
+// marker walk never reaches $HOME. A developer whose TMPDIR lives under $HOME
+// would resolve against their real tree, and any future test that drives a
+// tool up to the home boundary gets isolation without having to know it needed
+// asking for.
+//
+// XDG_CACHE_HOME is deliberately NOT redirected here: nothing in this package
+// constructs an ONNX embedder (check_tool.go never calls check.Run for exactly
+// that reason), so there is no model cache to preserve. See
+// cmd/vp/testhelper_test.go's hostCacheDir if that ever changes.
+//
+// Four vars, because os.UserHomeDir and os.UserConfigDir resolve differently
+// per GOOS — HOME/USERPROFILE for the former, XDG_CONFIG_HOME/APPDATA for the
+// latter. cmd/vp/cmd_init_test.go's initTestEnv documents the full matrix.
 func sandboxHostEnv(t *testing.T) {
 	t.Helper()
 	home := t.TempDir()
+	configDir := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("APPDATA", configDir)
+}
+
+// TestSandboxHostEnvSandboxesHostGlobals is the regression lock on the helper
+// above: if it ever stops redirecting one of the four vars, a tool that walks
+// to the home boundary would resolve against the developer's real tree.
+func TestSandboxHostEnvSandboxesHostGlobals(t *testing.T) {
+	real, _ := os.UserHomeDir()
+	sandboxHostEnv(t)
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	if real != "" && home == real {
+		t.Errorf("os.UserHomeDir() = %q, the real home", home)
+	}
+	if os.Getenv("USERPROFILE") != home {
+		t.Errorf("USERPROFILE = %q, want %q", os.Getenv("USERPROFILE"), home)
+	}
+	configDir := os.Getenv("XDG_CONFIG_HOME")
+	if configDir == "" || configDir == home {
+		t.Errorf("XDG_CONFIG_HOME = %q, want its own sandboxed dir", configDir)
+	}
+	if os.Getenv("APPDATA") != configDir {
+		t.Errorf("APPDATA = %q, want %q", os.Getenv("APPDATA"), configDir)
+	}
 }
 
 // initVaultRepo creates a git repo (with identity + seed commit) to use as a

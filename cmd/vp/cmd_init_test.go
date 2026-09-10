@@ -26,14 +26,30 @@ func markProjectDir(t *testing.T, dir string) {
 	}
 }
 
-// initTestEnv isolates an init test from the developer's real machine. It
-// points XDG_CONFIG_HOME at a fresh temp dir so the host's own
-// ~/.config/vibe-palace/config.toml is never read or written, and HOME at a
-// second fresh temp dir so `vp init` — which reaches hook.Install() and
-// rewrites ~/.claude/settings.json — cannot touch the developer's real home.
-// USERPROFILE is set to the same dir because that, not HOME, is what
-// os.UserHomeDir reads on Windows, which .goreleaser.yml builds for; the
-// assignment is inert on Linux and macOS.
+// initTestEnv isolates an init test from the developer's real machine.
+//
+// Three host-global roots must be redirected, because os.UserHomeDir and
+// os.UserConfigDir each resolve differently per GOOS and .goreleaser.yml
+// builds linux, darwin and windows:
+//
+//   - HOME redirects os.UserHomeDir on Unix, which is how `vp init` reaches
+//     hook.Install() and rewrites ~/.claude/settings.json. USERPROFILE is
+//     the Windows spelling of the same thing.
+//   - XDG_CONFIG_HOME redirects the global config on Linux ONLY. On macOS
+//     os.UserConfigDir reads ~/Library/Application Support and on Windows
+//     %AppData%; neither consults XDG. macOS is covered anyway because that
+//     path hangs off HOME — Windows is not.
+//   - APPDATA is therefore required for the Windows global config. See
+//     internal/integration/vaultlock_crossprocess_test.go, which sets it
+//     after all 16 children escaped an XDG-only sandbox on 2026-07-26.
+//
+// Every var is set unconditionally; the ones that do not apply to the
+// running GOOS are inert rather than wrong.
+//
+// Scope: this closes the ~/.claude and global-config routes. It does NOT
+// make cmd/vp hermetic outright — cmd_check_test.go spawns the real `grok`
+// binary, which still writes the developer's ~/.grok. That is tracked by
+// check-tests-spawn-the-real-grok-binary-and-write-host-state.
 //
 // Both dirs are returned. Tests whose premise is "run vp init at a path
 // equal to $HOME" must use the returned homeDir rather than installing a
@@ -47,6 +63,7 @@ func initTestEnv(t *testing.T, preCreateConfig bool) (configDir, homeDir string)
 	configDir = t.TempDir()
 	homeDir = t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("APPDATA", configDir)
 	t.Setenv("HOME", homeDir)
 	t.Setenv("USERPROFILE", homeDir)
 
@@ -82,6 +99,16 @@ func TestInitTestEnvSandboxesHostGlobals(t *testing.T) {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != configDir {
 		t.Errorf("XDG_CONFIG_HOME = %q, want the sandboxed %q", xdg, configDir)
 	}
+	// APPDATA is what os.UserConfigDir reads on Windows and USERPROFILE what
+	// os.UserHomeDir reads there; neither XDG_CONFIG_HOME nor HOME reaches
+	// them, so the lock has to cover both explicitly or the Windows half of
+	// the sandbox can rot without any test noticing.
+	if appData := os.Getenv("APPDATA"); appData != configDir {
+		t.Errorf("APPDATA = %q, want the sandboxed %q", appData, configDir)
+	}
+	if userProfile := os.Getenv("USERPROFILE"); userProfile != homeDir {
+		t.Errorf("USERPROFILE = %q, want the sandboxed %q", userProfile, homeDir)
+	}
 	if realHome == "" {
 		t.Skip("real home dir unknown; cannot assert isolation from it")
 	}
@@ -90,6 +117,36 @@ func TestInitTestEnvSandboxesHostGlobals(t *testing.T) {
 	}
 	if configDir == filepath.Join(realHome, ".config") {
 		t.Errorf("sandboxed config dir %q is the real one", configDir)
+	}
+}
+
+// TestSetupTestVaultEnvSandboxesHostGlobals is the same lock for the other
+// cmd/vp helper. setupTestVaultEnv returns only the vault root, so the
+// assertions read the environment rather than a returned path.
+func TestSetupTestVaultEnvSandboxesHostGlobals(t *testing.T) {
+	setupTestVaultEnv(t)
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	if realHome != "" && home == realHome {
+		t.Errorf("os.UserHomeDir() = %q, the real home", home)
+	}
+	if os.Getenv("USERPROFILE") != home {
+		t.Errorf("USERPROFILE = %q, want %q", os.Getenv("USERPROFILE"), home)
+	}
+	configDir := os.Getenv("XDG_CONFIG_HOME")
+	if configDir == "" || (realHome != "" && configDir == filepath.Join(realHome, ".config")) {
+		t.Errorf("XDG_CONFIG_HOME = %q, want a sandboxed dir", configDir)
+	}
+	if os.Getenv("APPDATA") != configDir {
+		t.Errorf("APPDATA = %q, want %q", os.Getenv("APPDATA"), configDir)
+	}
+	// The cache pin is the one deliberate exception — see hostCacheDir.
+	if hostCacheDir != "" && os.Getenv("XDG_CACHE_HOME") != hostCacheDir {
+		t.Errorf("XDG_CACHE_HOME = %q, want the pinned %q",
+			os.Getenv("XDG_CACHE_HOME"), hostCacheDir)
 	}
 }
 
@@ -278,25 +335,6 @@ func TestInitSkipsExistingConfig(t *testing.T) {
 	after, _ := os.ReadFile(globalConfig)
 	if string(before) != string(after) {
 		t.Error("global config was overwritten, should have been skipped")
-	}
-}
-
-func TestInitSkipsProjectInHomeDir(t *testing.T) {
-	// home is the sandboxed HOME initTestEnv installed, so the init run
-	// below happens against a tmpdir, never the developer's real home.
-	_, home := initTestEnv(t, true)
-
-	cmd := cmdInit(cli.BuildInfo{Version: "test"})
-	code := cmd.Run([]string{home, "--name", "test"})
-	if code != cli.ExitOK {
-		t.Errorf("exit code = %d", code)
-	}
-
-	// Must NOT create .vibe-palace.toml in home.
-	if _, err := os.Stat(filepath.Join(home, project.ConfigFileName)); err == nil {
-		// Clean up if accidentally created.
-		os.Remove(filepath.Join(home, project.ConfigFileName))
-		t.Error("should not create project config in $HOME")
 	}
 }
 
@@ -562,6 +600,13 @@ func TestInitDetectsManifestOnlyProject(t *testing.T) {
 // the user's $HOME, project init is force-skipped regardless of any
 // project signals present. initTestEnv sandboxes $HOME to a tmpdir so the
 // test does not touch the developer's real home.
+//
+// This is the sole cover for the force-skip branch. A second test,
+// TestInitSkipsProjectInHomeDir, was deleted once HOME became sandboxed:
+// it planted no project signal, so it exercised the "no signal" skip and
+// never the $HOME one its name claimed. Planting a signal to fix it would
+// have made it a duplicate of this test, which asserts the stronger
+// property — the skip fires even WITH a go.mod present.
 func TestInitForceSkipInSandboxedHome(t *testing.T) {
 	_, fakeHome := initTestEnv(t, true)
 
@@ -712,9 +757,13 @@ func TestInitShimsCustomFileLeftAlone(t *testing.T) {
 }
 
 // TestInitShimsSkippedWhenNoProject verifies initShimWiring emits no row
-// when the project config could not be created (e.g. running at $HOME).
-// The agent-wiring skip row is the user-visible signal; the shim row must
-// stay silent rather than echo a redundant skip.
+// when the project config could not be created — here because the target dir
+// carries no project signal. (It does NOT reach the $HOME force-skip: the
+// sandboxed home is a bare tmpdir, so DetectSignal returns SignalNone from
+// the marker walk, never from isForceSkipDir. TestInitForceSkipInSandboxedHome
+// is the cover for that branch.) The agent-wiring skip row is the
+// user-visible signal; the shim row must stay silent rather than echo a
+// redundant skip.
 func TestInitShimsSkippedWhenNoProject(t *testing.T) {
 	_, fakeHome := initTestEnv(t, true)
 
