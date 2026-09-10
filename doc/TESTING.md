@@ -400,6 +400,7 @@ context resolver, and config into a single test fixture.
 | `ColdSearchBuildsIndexLazily` | MCP → tools → search → storage | No | `vp_search` and `vp_search_cross_project` return **real hits** on projects whose index has never been built — no `Rebuild`, no `IndexDrawer`, only drawers on disk (see below) |
 | `SurfaceCheck` | MCP → tools → check | No | JSON-RPC `tools/call` for `vp_surface_check` returns `status:"pass"` with the binary's surface version on a compatible vault; the fail path carries the curated remediation `details` across the wire |
 | `Check` | MCP → tools → check | No | JSON-RPC `tools/call` for `vp_check` is reachable on `tools/list` (and `vp_check_resume_refs`, which it subsumed, is gone from it); the default run covers every producer in declared order and repeats identically; the `resume-refs` selector's rows match `check.RunSelected` verdict-for-verdict — name, summary and the `details` array — proving the tool and the CLI dispatch one registry; no `Embedder` row ever crosses the wire; an unknown selector is refused rather than silently reporting a clean bill of health |
+| `LocalOnlyPalaceDirIsNotAStore` | MCP → tools → storage → check → vaultaudit | No | A hand-seeded legacy husk (`palace/stub/.local/embed-cache/x.vec`) and an empty subtree (`palace/empty/drawers/w/r/`) are absent from `vp_list_projects`' `projects` and `drift`; `vp_check {checks:["palace-local-only"]}` returns one Info row naming both with what each holds and no disposition word; `vaultaudit.Run` reports neither under `palace-store-drawers` or `project-tree-coherence`, and still reports a notes-only project under `project-tree-coherence` (`palace_presence_test.go`) |
 | `BootstrapFullContext` | tools → context → storage | No | Bootstrap tool assembles workflow, commands from embedded + vault sources |
 | `BootstrapWithSessions` | storage | No | Sessions written via API are readable through list/read operations |
 | `FrictionScoringOnCapture` | tools → capture → storage | No | `vp_capture_session` computes and persists friction score; high-friction transcript scores >= 50, smooth < 20 |
@@ -1181,6 +1182,63 @@ Rationale and the two scenarios that decided it are recorded in
 `tasks/done/mcp-pull-parity-and-bashless-preflight.md`.
 
 ---
+
+## Palace Store Presence Tests
+
+A `palace/<slug>/` is a store only if it holds a regular file outside its
+top-level `.local/` (see ARCHITECTURE, "What counts as a palace store"). The
+tests pin the predicate, its one consumer on each side, and the instrument that
+reports the complement.
+
+### `internal/storage/projects_test.go` — the presence rule
+
+`TestPresenceRule_PalaceStoreNeedsAFileOutsideLocal` enumerates every shape:
+`.local`-only (an embed-cache husk, an `imported-sessions.jsonl` marker), a bare
+directory, an empty `drawers/` or `kg/` subtree, and `.local` plus an empty
+subtree are **not** stores; a `kg/` file, a lone `.surface`, a zero-length
+`drawers.jsonl` and a nested (non-top-level) `.local/` file **are**; `palace/.local`
+is never a project; and `ListProjects` and `ListAllProjects` agree. Deleting the
+predicate turns the `.local`-only case red. `TestPresenceRule_UnreadableDirCountsAsStore`
+pins that an unwalkable directory is counted rather than dropped, and does not
+fail the enumeration. `TestPalaceNonStores_IsTheComplement` asserts that
+`PalaceNonStores` and `InPalace` partition `palace/`, and pins the per-directory
+summary (`.local/` entries with file counts, empty subtree, `Projects/` presence);
+the remaining `PalaceNonStores_*` tests cover an absent `palace/`, an unreadable
+one (an error), and an uncountable `.local/` subtree (reported as `-1`).
+`TestTrackedPalaceLocalFiles*` pins the one `git ls-files` behind every "tracked"
+claim: it counts only files under a slug's top-level `.local/` (not untracked
+ones, not `palace/.local`, not a nested `.local`), an empty map outside any
+repository, an error for a `.git` git cannot read, and — with `GIT_DIR`,
+`GIT_WORK_TREE` and `GIT_INDEX_FILE` pointing at another repository — still the
+vault's own answer. The
+`newDivergentVault` fixture seeds real files, because a bare `palace/<slug>/` is
+no longer a store.
+
+### `internal/check/palace_local_only_test.go` — the `palace-local-only` row
+
+Pass on a clean vault and on one with no `palace/`; one Info row per non-store
+shape with its exact detail line (`embed-cache/ (2 files)`,
+`imported-sessions.jsonl`, `(empty)`, `(empty subtree only)`, `Projects/<slug>/:
+present|absent`); `TestCheckPalaceLocalOnly_PrescribesNoDisposition` matches
+`rm`, `rmdir`, `delete`, `deletion`, `remove`, `removal`, `discard`, `purge`, `wipe`,
+`leftover`, `residue`, `clean up` and `prune` on **word boundaries**, so a slug such
+as `platform` cannot trip it; the tracking line claims "not tracked" only when git
+was asked and said so — `_TrackedFilesAreNamed` commits a `.local/` file and
+requires its count on that directory's line, `_TrackingUnknownMakesNoClaim` gives
+git a broken `.git` and requires the could-not-check wording, and
+`_EmptyDirsNeedNoGit` covers the case git cannot carry at all;
+`TestCheckPalaceLocalOnly_NeverWrites` hashes the whole tree before and after; an
+unreadable `palace/` is Info, never Fail; and the registry producer skips with
+`no vault configured` like every vault-scoped producer.
+
+### `internal/tools/vault_merge_test.go` — collision text for a non-store
+
+`TestVaultMergePlan_LocalOnlyCollisionSaysSo`: a destination whose
+`palace/<slug>/` holds only `.local/` state still refuses the colliding slug —
+membership is the rule — and the refusal now says the directory is host-local
+state and names `vp check --check palace-local-only`; a directory of empty
+subdirectories is described as that, not as machine-local state; a real store
+collision carries no such sentence.
 
 ## Vault-Write-Concurrency Tests
 
@@ -2073,7 +2131,7 @@ central test is a **mutation test**, exactly as in `sourceaudit`.
 | `TestArchiveRoundTrip_CleanVaultIsClean` (`archive_test.go`) | a fully-linked vault produces no findings — trustworthy only *because* the mutation test above can fail |
 | `TestRun_FixingTheBugForcesTheBaselineToShrink` (`archive_test.go`) | linking a stranded-but-accepted manifest turns its baseline entry STALE — the ratchet, exercised end to end |
 | `TestRun_LiveVaultCanary` (`archive_test.go`) | the audit runs against the **real vault** in `make test` — the discipline the whole epic rests on |
-| `dimensions_test.go` | project-tree-coherence, KG-portability, resume-discipline, iteration-headings, memory-portability, task-heading-markers, palace-store-drawers each find their planted defect and pass a clean fixture; palace-store-drawers additionally pins that an ABSENT `drawers/` and a PRESENT-BUT-EMPTY one produce **distinguishable details**, that a populated `Projects/<slug>/iterations.md` (a separate ingest corpus) does **not** silence the finding, that an unreadable store lands in `unknowns` rather than passing, and — the mutation test — that emptying a populated drawer set is what produces the finding; `TestPalaceStoreDrawers_PalaceOnlyProjectDetailTellsTheTruth` asserts the detail's WORDS, not just the count, because the gate admits a palace-only project for which the two-tree explanation would be false; `TestPalaceStoreDrawers_IsRegistered` proves `Run`'s hand-edited `dims` literal actually carries it; `task-preamble` pins that a task written by the real `storage.CreateTask` is **not** flagged (the positive control that ties the dimension to a writer's guarantee rather than to taste), that prose above the first H2 **is** flagged exactly once on the vault-relative artifact, that both paths of `PreambleSkippedNoH2` — no unfenced `## ` anywhere, and an unfenced `## ` sitting ABOVE the header block — render **distinguishable details** that are each true of their own file (asserted on the detail TEXT, since the outcome cannot tell them apart), that a `## ` appearing only inside a code fence falls into that degenerate class because fence-awareness comes from the predicate rather than from a local re-implementation, that `tasks/done/` and `tasks/cancelled/` are out of scope because `OverwriteTaskFile` is active-only and a finding there would be unrepairable, that an unreadable tasks dir or task file lands in `unknowns` rather than passing, that the region is disjoint from `task-heading-markers` on a file carrying both defects, and — the mutation test, `TestTaskPreamble_MutationMovingThePreambleDownClearsTheFinding` — that moving the SAME prose down under `## Context` in the SAME file clears the finding, which is what proves the rule tracks the region and not the harness; `TestTaskPreamble_IsRegistered` proves `dims` carries it, and `TestTaskPreambleText_RecoversExactlyWhatTheMigratorWrote` pins the dimension's one inference — that the detail's size and excerpt are read back out of the migrator's own before/after pair rather than from a second local copy of `storage`'s header-block rule |
+| `dimensions_test.go` | `TestEvidence_ReproducesTheGoRule` runs `EvidenceProjectTreeCoherence` and `EvidencePalaceStoreDrawers` under bash on a fixture holding every shape the Go side filters (a `.local`-only husk, an empty subtree, an invalid slug, symlinked project directories, a zero-length `drawers.jsonl`) and requires each to print exactly the dimension's artifacts; the commands use no GNU-only `find` (no `-quit`, no trailing-slash start path) so BSD `find` agrees. project-tree-coherence, KG-portability, resume-discipline, iteration-headings, memory-portability, task-heading-markers, palace-store-drawers each find their planted defect and pass a clean fixture; palace-store-drawers additionally pins that an ABSENT `drawers/` and a PRESENT-BUT-EMPTY one produce **distinguishable details**, that a populated `Projects/<slug>/iterations.md` (a separate ingest corpus) does **not** silence the finding, that an unreadable store lands in `unknowns` rather than passing, and — the mutation test — that emptying a populated drawer set is what produces the finding; `TestPalaceStoreDrawers_PalaceOnlyProjectDetailTellsTheTruth` asserts the detail's WORDS, not just the count, because the gate admits a palace-only project for which the two-tree explanation would be false; `TestPalaceStoreDrawers_IsRegistered` proves `Run`'s hand-edited `dims` literal actually carries it; `TestPalaceStoreDrawers_LocalOnlyDirIsNotAStore` pins the population split — a `.local`-only or empty-subtree `palace/` directory is reported by neither `palace-store-drawers` nor `project-tree-coherence` — and `TestPalaceStoreDrawers_KGOnlyStoreStillReported` pins that a real kg-only store still is, with a detail that names every drawer source as fact and says neither "never drawer-indexed" nor "UNSEARCHABLE" (fixtures seed a real file, since a bare directory is not a store); `task-preamble` pins that a task written by the real `storage.CreateTask` is **not** flagged (the positive control that ties the dimension to a writer's guarantee rather than to taste), that prose above the first H2 **is** flagged exactly once on the vault-relative artifact, that both paths of `PreambleSkippedNoH2` — no unfenced `## ` anywhere, and an unfenced `## ` sitting ABOVE the header block — render **distinguishable details** that are each true of their own file (asserted on the detail TEXT, since the outcome cannot tell them apart), that a `## ` appearing only inside a code fence falls into that degenerate class because fence-awareness comes from the predicate rather than from a local re-implementation, that `tasks/done/` and `tasks/cancelled/` are out of scope because `OverwriteTaskFile` is active-only and a finding there would be unrepairable, that an unreadable tasks dir or task file lands in `unknowns` rather than passing, that the region is disjoint from `task-heading-markers` on a file carrying both defects, and — the mutation test, `TestTaskPreamble_MutationMovingThePreambleDownClearsTheFinding` — that moving the SAME prose down under `## Context` in the SAME file clears the finding, which is what proves the rule tracks the region and not the harness; `TestTaskPreamble_IsRegistered` proves `dims` carries it, and `TestTaskPreambleText_RecoversExactlyWhatTheMigratorWrote` pins the dimension's one inference — that the detail's size and excerpt are read back out of the migrator's own before/after pair rather than from a second local copy of `storage`'s header-block rule |
 | `baseline_test.go` | `(Dimension, Artifact)` identity; an accepted pair is `accepted` not `new`; a **fixed** accepted entry goes **STALE and FAILS** (the may-only-shrink ratchet); `Regenerate` preserves reasons |
 | `staleness_test.go` | the nag is **silent when fresh** and trips on churn/age — a missing anchor must read as *unknown*, never `0` (the 209 `ABSENCE IS NOT A VALUE` bug) |
 

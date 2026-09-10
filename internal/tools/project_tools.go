@@ -30,7 +30,8 @@ func ListProjectsTool(vault *storage.Vault) mcp.Tool {
 		Name: "vp_list_projects",
 		Description: "List every project in the vault — the union of the palace/ store and the " +
 			"Projects/ history tree. A project present in only one tree is reported in drift; " +
-			"drift is absent when the two trees agree.",
+			"drift is absent when the two trees agree. A palace/ directory holding no file " +
+			"outside machine-local .local/ is not a store.",
 		Schema:  listProjectsSchema,
 		Handler: listProjectsHandler(vault),
 	}

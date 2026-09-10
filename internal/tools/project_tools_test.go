@@ -29,14 +29,24 @@ func TestListProjectsEmpty(t *testing.T) {
 	}
 }
 
+// seedPalaceStore makes palace/<slug>/ a store: one regular file outside
+// .local/. A bare directory is not one under the presence rule.
+func seedPalaceStore(t *testing.T, root, slug string) {
+	t.Helper()
+	dir := filepath.Join(root, "palace", slug, "kg")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "entities.jsonl"), nil, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
 func TestListProjectsPopulated(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	// Create palace dirs for two projects.
+	// Create palace stores for two projects.
 	for _, proj := range []string{"alpha", "beta"} {
-		dir := filepath.Join(vault.Root, "palace", proj)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			t.Fatalf("MkdirAll: %v", err)
-		}
+		seedPalaceStore(t, vault.Root, proj)
 	}
 
 	tool := ListProjectsTool(vault)
@@ -63,10 +73,17 @@ func TestListProjectsUnionOfBothTrees(t *testing.T) {
 			t.Fatalf("MkdirAll: %v", err)
 		}
 	}
-	mk("palace", "both")
+	seedPalaceStore(t, vault.Root, "both")
 	mk("Projects", "both")
-	mk("palace", "palace-only")
+	seedPalaceStore(t, vault.Root, "palace-only")
 	mk("Projects", "projects-only", "sessions") // the previously-invisible class
+	// Neither is a store: .local/ is machine-local and git cannot carry an
+	// empty directory, so neither may appear in projects or drift.
+	mk("palace", "husk", ".local", "embed-cache")
+	if err := os.WriteFile(filepath.Join(vault.Root, "palace", "husk", ".local", "embed-cache", "a.vec"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mk("palace", "empty", "drawers", "w", "r")
 
 	result, err := ListProjectsTool(vault).Handler(context.Background(), json.RawMessage(`{}`))
 	if err != nil {
@@ -114,10 +131,9 @@ func TestListProjectsUnionOfBothTrees(t *testing.T) {
 // silent when healthy.
 func TestListProjectsDriftSilentWhenTreesAgree(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	for _, tree := range []string{"palace", "Projects"} {
-		if err := os.MkdirAll(filepath.Join(vault.Root, tree, "tidy"), 0o755); err != nil {
-			t.Fatalf("MkdirAll: %v", err)
-		}
+	seedPalaceStore(t, vault.Root, "tidy")
+	if err := os.MkdirAll(filepath.Join(vault.Root, "Projects", "tidy"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
 	}
 
 	result, err := ListProjectsTool(vault).Handler(context.Background(), json.RawMessage(`{}`))

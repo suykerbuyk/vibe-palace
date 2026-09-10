@@ -238,6 +238,11 @@ func gatherCheckResults() []check.Result {
 				// `vp init` / un-isolated test residue like Projects/p).
 				results = append(results, check.CheckStrayScaffolds(vault))
 
+				// Vault-wide, host-local: palace/<slug>/ directories holding
+				// nothing outside machine-local .local/ — what a pulled
+				// deletion leaves behind. Report-only, never Fail.
+				results = append(results, check.CheckPalaceLocalOnly(vault))
+
 				// Vault-wide: fail a .gitattributes naming the deleted
 				// vp-surface merge driver. git emits NO diagnostic for an
 				// attribute naming an undefined driver — it silently text

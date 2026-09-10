@@ -586,7 +586,8 @@ func splitDestInventory(dest string, p vaultSplitParams, slugs []string) ([]spli
 //
 // 🔴 IT IS ReadDir, NOT ListAllProjects. ListAllProjects keeps only directories
 // whose names pass slug.Validate and silently drops everything else
-// (projects.go:103-126) — files, symlinks, invalid-slug directories. That is the
+// (listProjectDirs) — files, symlinks, invalid-slug directories, and under
+// palace/ any directory holding no file outside .local/. That is the
 // right filter for the DRIFT report, which is asking which projects exist. It is
 // the wrong one for a leak assertion, because it applies the same slug filter
 // the copy path already applied: a bug that wrote a non-slug name into the

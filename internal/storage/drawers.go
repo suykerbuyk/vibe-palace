@@ -391,7 +391,8 @@ func (v *Vault) ListRooms(project, wing string) ([]string, error) {
 
 // ListProjects returns the project slugs that have a palace/ store — the
 // drawer + knowledge-graph tree. It is what search wants, because search indexes
-// drawers and drawers live there.
+// drawers and drawers live there. A palace/<slug>/ holding nothing outside its
+// machine-local .local/ is not a store (projects.go, listPalaceStores).
 //
 // It is NOT an enumeration of the vault. A project's sessions live under
 // Projects/<slug>/, and many projects appear in one tree and not the other, so
@@ -399,7 +400,7 @@ func (v *Vault) ListRooms(project, wing string) ([]string, error) {
 // in this vault?" wants ListAllProjects (projects.go), which returns the union
 // of both trees and records which one each project came from.
 func (v *Vault) ListProjects() ([]string, error) {
-	projects, err := listProjectDirs(filepath.Join(v.Root, "palace"))
+	projects, err := listPalaceStores(filepath.Join(v.Root, "palace"))
 	if err != nil {
 		return nil, fmt.Errorf("read palace dir: %w", err)
 	}

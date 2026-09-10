@@ -51,6 +51,15 @@ var Producers = map[string]func(vaultRoot string) []Result{
 		}
 		return []Result{CheckStrayScaffolds(storage.NewVault(vaultRoot))}
 	},
+	// palace-local-only is stray-scaffolds' palace-side sibling: host-local,
+	// report-only, and deliberately absent from the delivery check lists — see
+	// CheckPalaceLocalOnly for why.
+	"palace-local-only": func(vaultRoot string) []Result {
+		if vaultRoot == "" {
+			return []Result{{Name: "Palace local-only", Status: Skip, Summary: "no vault configured"}}
+		}
+		return []Result{CheckPalaceLocalOnly(storage.NewVault(vaultRoot))}
+	},
 	// surface-merge-driver scans the vault tree for a .gitattributes naming the
 	// deleted vp-surface driver. It never reads git config — see the file's
 	// scope note for why a host-local answer would be worse than none.
@@ -126,6 +135,7 @@ var ProducerOrder = []string{
 	"surface",
 	"vault-filesystem",
 	"stray-scaffolds",
+	"palace-local-only",
 	"surface-merge-driver",
 	"resume-caps",
 	"resume-refs",

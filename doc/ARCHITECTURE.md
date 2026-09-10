@@ -136,6 +136,25 @@ The vault contains two top-level trees with different purposes:
 knowledge graph entities/triples, and machine-local caches. This data grows
 with captured sessions and can be rebuilt from source.
 
+**What counts as a palace store.** A `palace/<slug>/` directory is a store only
+if it holds at least one regular file outside its top-level `.local/`. Every
+project enumerator applies that one predicate (`storage.listPalaceStores`, behind
+`Vault.ListProjects` and `Vault.ListAllProjects`), so `vp_list_projects`, the
+vault audit and cross-project search agree. The reason is git: `.local/` is
+gitignored and git cannot carry an empty directory, so a directory holding only
+those is a fact about one host. A pull that deletes a project removes its tracked
+files and leaves the ignored `.local/` — and the directory around it — on every
+host that had cached anything for it; counting that husk as a store made the
+enumeration and every audit built on it host-dependent. A directory the predicate
+cannot read counts as a store, never as absent. The complement is reported, not
+hidden: `Vault.PalaceNonStores` returns it and the `palace-local-only` check row
+names each directory, what its `.local/` holds, whether `Projects/<slug>/` exists
+and — from one read-only `git ls-files` — how many of its `.local/` files git
+tracks; it prescribes nothing. `.local/` is ignored only where the vault's
+gitignore says so: the canonical patterns cover `palace/.local/` but not
+`palace/*/.local/`, so a vault can have committed such a file, and then it is
+synced. The row claims "not tracked" only when git was asked and agreed.
+
 **Projects/** stores workflow artifacts — session markdown files, task
 plans, and per-project configuration overrides. This is the collaboration
 layer between human and AI.
@@ -931,23 +950,39 @@ implies `Run != nil`.
 set; the five reconciled artifacts come from their reconcilers' `Check()`
 methods so `vp check` and `vp config sync --dry-run` see the same world.
 
-`--check NAME[,NAME...]` runs only the named check(s) via the `checkProducers`
-map — a selective-execution path that skips the expensive embedder load and
-tool-registry build. Registered names:
+`--check NAME[,NAME...]` runs only the named check(s) via the `check.Producers`
+map (`internal/check/selector.go`) — a selective-execution path that skips the
+expensive embedder load and tool-registry build. The `vp_check` MCP tool
+dispatches the same map. Registered names:
 
 | Name | Row | Scope |
 |------|-----|-------|
 | `surface` | `Surface` | Whole vault — binary MCP surface vs. max `.surface` stamp |
 | `vault-filesystem` | `Vault filesystem` | Whole vault — does the filesystem accept `:` in filenames (NTFS/exFAT) |
 | `stray-scaffolds` | `Stray scaffolds` | Whole vault — scaffold-only orphan projects under `Projects/` |
+| `palace-local-only` | `Palace local-only` | Whole vault, this host only — `palace/<slug>/` directories holding no file outside machine-local `.local/` |
+| `surface-merge-driver` | `Surface merge driver` | Whole vault — a `.gitattributes` naming the deleted `vp-surface` merge driver |
 | `resume-caps` | `Resume caps` | Whole vault — every `Projects/*/resume.md` |
 | `resume-refs` | `Resume refs` | Whole vault — host-local plan refs in every `Projects/*/resume.md` |
 | `vault-abs-paths` | `Vault abs paths` | Whole vault — host-rooted absolute paths in every project's `resume.md` + `workflow.md` |
+| `iteration-headings` | `Iteration headings` | Whole vault — non-canonical iteration H2s in every `Projects/*/iterations.md` |
+| `template-drift` | `Template drift` | Whole vault — vault `Templates/` copies vs. the embedded templates |
+| `host-surfaces` | `Host surfaces` | This host — plugin trees under `$HOME` |
+| `writer-identity` | `Writer identity` | This host — the writer fingerprint it writes under |
+| `stale-mcp` | `Stale MCP` | This host — running `vp mcp` processes whose image was replaced |
 
 The table is ordered as `check.ProducerOrder` declares, which is the order a
 default (unfiltered) run emits. Re-derive it from that slice rather than trusting
-this table: it went stale once already, when `vault-filesystem` and
-`stray-scaffolds` joined the registry and nothing updated it here.
+this table: it went stale once when `vault-filesystem` and `stray-scaffolds`
+joined the registry, and again as six more producers joined without a row here.
+
+`palace-local-only` is deliberately **absent from the delivery check lists** in
+the restart and wrap commands and the epic-orchestrator skill. `vp config sync`
+materializes the embedded templates into the vault's `Templates/` tier, which the
+resolver serves ahead of the embedded copy, so a selector named there reaches every
+host that reads the vault — including one on an older binary, where `vp_check`
+refuses an unknown name. It runs in the full `vp check` suite and on an explicit
+`vp_check {checks:["palace-local-only"]}`.
 
 An unknown name exits `ExitUser` with an `unknown check` diagnostic.
 
@@ -2353,7 +2388,8 @@ in ADR-007; the mechanics:
   this list is derived from it, and the COUNT is deliberately not restated here —
   ADR-007 is exactly about not storing a value the registry already holds): `archive-roundtrip` (every transcript manifest
   back-links to a session note that exists), `project-tree-coherence` (every project
-  appears in both `palace/` and `Projects/`), `kg-portability` (KG triple filenames are
+  appears in both `palace/` and `Projects/`, where a `palace/` directory counts only
+  if it is a store), `kg-portability` (KG triple filenames are
   NTFS/exFAT-safe), `resume-discipline` (no `resume.md` over the size cap),
   `iteration-headings` (canonical H2 so the iteration counter derives correctly),
   `memory-portability` (no memory filename is unrepresentable on NTFS/exFAT, and none
@@ -2362,7 +2398,10 @@ in ADR-007; the mechanics:
   `palace-store-drawers` (a project with a `palace/` store actually holds drawer
   records — the INVERSE of `project-tree-coherence`, which sees only whether the two
   trees agree a project exists, so a store present in both trees with an absent or
-  empty `drawers/` passes it while `vp search` walks nothing there),
+  empty `drawers/` passes it while `vp search` walks nothing there; its population
+  is real stores only, so a `palace/<slug>/` holding nothing outside machine-local
+  `.local/` — a host-local husk — is reported by neither dimension, and the
+  `palace-local-only` check row owns it instead),
   `task-preamble` (no active task file carries text between its header block and its
   first H2 — the region `vp_manage_task action: overwrite` exists to repair, disjoint
   by construction from `task-heading-markers`, which reads heading TEXT; the predicate

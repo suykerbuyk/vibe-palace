@@ -212,6 +212,53 @@ func TestVaultMergePlan_SameSlugRefuses(t *testing.T) {
 	}
 }
 
+// TestVaultMergePlan_LocalOnlyCollisionSaysSo: a destination palace/<slug>/
+// holding only machine-local .local/ state is not a project to any enumerator,
+// so vp_list_projects omits it — yet the collision rule is membership, and it
+// still refuses. The refusal must say what the colliding directory is, or it
+// names a project the caller was just told does not exist. The refusal itself
+// is unchanged.
+func TestVaultMergePlan_LocalOnlyCollisionSaysSo(t *testing.T) {
+	source := mergeSourceVault(t, "alpha", "beta")
+	dest := mergeDestVault(t, "gamma")
+	writeSplitFile(t, dest, "palace/alpha/.local/embed-cache/d1.vec", "cache")
+
+	_, err := callMerge(t, dest, mergeParams(source, "alpha"))
+	if err == nil {
+		t.Fatal("a slug present in the destination's palace/ must still refuse")
+	}
+	if !strings.Contains(err.Error(), "already exist in the destination") {
+		t.Errorf("refusal must still name the collision, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "palace/alpha/ holds only machine-local state on this host") ||
+		!strings.Contains(err.Error(), "vp check --check palace-local-only") {
+		t.Errorf("refusal must say the colliding directory is host-local state, got: %v", err)
+	}
+
+	// A real destination project gets no such sentence.
+	_, err = callMerge(t, dest, mergeParams(source, "gamma"))
+	if err == nil {
+		t.Fatal("gamma is not in the source, so this must refuse for another reason")
+	}
+	if strings.Contains(err.Error(), "machine-local state") {
+		t.Errorf("a refusal that is not about a local-only directory must not say so: %v", err)
+	}
+	if note := mergeLocalOnlyCollisionNote(dest, []string{"gamma"}); note != "" {
+		t.Errorf("a real store collision carries no local-only note, got %q", note)
+	}
+
+	// An empty directory tree has no .local/ at all, so "machine-local state"
+	// would be false for it; the note says what it is.
+	if err := os.MkdirAll(filepath.Join(dest, "palace", "beta", "drawers", "w"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	note := mergeLocalOnlyCollisionNote(dest, []string{"beta"})
+	if !strings.Contains(note, "palace/beta/ holds no file, only empty directories, on this host") ||
+		strings.Contains(note, "machine-local") {
+		t.Errorf("empty-tree collision note = %q", note)
+	}
+}
+
 // TestVaultMergePlan_UnknownSlugRefuses pins the allow-list's other failure
 // mode: a slug that is in neither tree of the SOURCE.
 func TestVaultMergePlan_UnknownSlugRefuses(t *testing.T) {

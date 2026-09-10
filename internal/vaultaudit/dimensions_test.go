@@ -6,7 +6,9 @@ package vaultaudit
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -38,10 +40,11 @@ func writeFile(t *testing.T, root, rel, body string) {
 // is drift, and NOTHING ELSE in the system would ever report it.
 func TestProjectTreeCoherence_FindsBothDirections(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	mkdirs(t, vault.Root, "palace", "both")
+	// A palace/ store holds a regular file outside .local/ (the presence rule).
+	writeFile(t, vault.Root, "palace/both/kg/entities.jsonl", "")
 	mkdirs(t, vault.Root, "Projects", "both")
-	mkdirs(t, vault.Root, "palace", "phantom")             // store, no history
-	mkdirs(t, vault.Root, "Projects", "history-only", "s") // history, no store
+	writeFile(t, vault.Root, "palace/phantom/kg/entities.jsonl", "") // store, no history
+	mkdirs(t, vault.Root, "Projects", "history-only", "s")           // history, no store
 
 	findings, _, err := auditProjectTreeCoherence(vault)
 	if err != nil {
@@ -844,9 +847,13 @@ func TestTaskHeadingMarkers_IsRegistered(t *testing.T) {
 // seedPalaceProject creates BOTH trees for a project, which is the shape the defect
 // lives in: present in palace/ and in Projects/, so ProjectPresence.Complete() is true
 // and project-tree-coherence stays silent about it.
+//
+// The palace/ half carries one regular file (a .surface stamp, which every vp-written
+// store has) because a bare directory is not a store under the presence rule — git
+// cannot carry it, so counting it would make the answer host-dependent.
 func seedPalaceProject(t *testing.T, vault *storage.Vault, project string) {
 	t.Helper()
-	mkdirs(t, vault.Root, "palace", project)
+	writeFile(t, vault.Root, "palace/"+project+"/.surface", "")
 	mkdirs(t, vault.Root, "Projects", project)
 }
 
@@ -1000,7 +1007,7 @@ func TestPalaceStoreDrawers_NoPalaceTreeIsNotOurs(t *testing.T) {
 // dimension exists to catch, one layer down.
 func TestPalaceStoreDrawers_PalaceOnlyProjectDetailTellsTheTruth(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	mkdirs(t, vault.Root, "palace", "leftover")
+	writeFile(t, vault.Root, "palace/leftover/kg/entities.jsonl", "")
 
 	findings, unknowns, err := auditPalaceStoreDrawers(vault)
 	if err != nil {
@@ -1025,6 +1032,14 @@ func TestPalaceStoreDrawers_PalaceOnlyProjectDetailTellsTheTruth(t *testing.T) {
 	}
 	if strings.Contains(detail, "UNSEARCHABLE") {
 		t.Errorf("this dimension never claims unsearchability in those terms: %q", detail)
+	}
+	// A palace-only store has no sessions, so "its sessions were never drawer-indexed"
+	// was false here; and neither backfill source can reach it without a Projects/ tree.
+	if strings.Contains(detail, "never drawer-indexed") {
+		t.Errorf("a palace-only store has no sessions to index: %q", detail)
+	}
+	if !strings.Contains(detail, "Both backfill sources need a Projects/leftover/ tree") {
+		t.Errorf("the detail must state that both backfill sources need a Projects/ tree: %q", detail)
 	}
 
 	// The premise the branch rests on: coherence really does own this project too.
@@ -1124,6 +1139,64 @@ func TestPalaceStoreDrawers_MutationEmptyingTheStoreProducesTheFinding(t *testin
 	}
 	if !strings.Contains(findings[0].Detail, "PRESENT BUT EMPTY") {
 		t.Errorf("detail = %q, want the present-but-empty wording", findings[0].Detail)
+	}
+}
+
+// TestPalaceStoreDrawers_LocalOnlyDirIsNotAStore pins the population split. A
+// palace/<slug>/ holding only machine-local .local/ state (the husk a pulled deletion
+// leaves on every host that ever cached a vector for it), or only empty directories, is
+// not a store: neither palace-store-drawers nor project-tree-coherence may report it,
+// because git carries none of it and the finding would exist on one host and not
+// another for the same commit. `vp check --check palace-local-only` owns it.
+func TestPalaceStoreDrawers_LocalOnlyDirIsNotAStore(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	writeFile(t, vault.Root, "palace/husk/.local/embed-cache/abc.vec", "x")
+	writeFile(t, vault.Root, "palace/marker/.local/imported-sessions.jsonl", "{}\n")
+	mkdirs(t, vault.Root, "palace", "hollow", "drawers", "w", "r")
+
+	drawers, unknowns, err := auditPalaceStoreDrawers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(drawers) != 0 || len(unknowns) != 0 {
+		t.Errorf("palace-store-drawers reported non-stores: findings %v unknowns %v",
+			drawerArtifacts(drawers), unknowns)
+	}
+	coherence, _, err := auditProjectTreeCoherence(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(coherence) != 0 {
+		t.Errorf("project-tree-coherence reported non-stores: %+v", coherence)
+	}
+}
+
+// TestPalaceStoreDrawers_KGOnlyStoreStillReported: the presence rule narrows the
+// population to real stores and nothing more. A kg-only store in both trees still has
+// an empty drawer half, and the detail states facts: no "never drawer-indexed" (a claim
+// about history the dimension cannot see) and no "UNSEARCHABLE".
+func TestPalaceStoreDrawers_KGOnlyStoreStillReported(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	writeFile(t, vault.Root, "palace/kgonly/kg/entities.jsonl", "{}\n")
+	mkdirs(t, vault.Root, "Projects", "kgonly")
+
+	findings, _, err := auditPalaceStoreDrawers(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 || findings[0].Artifact != "kgonly" {
+		t.Fatalf("a kg-only store must still be reported; findings = %v", drawerArtifacts(findings))
+	}
+	d := findings[0].Detail
+	for _, banned := range []string{"never drawer-indexed", "UNSEARCHABLE", "delete", "leftover"} {
+		if strings.Contains(d, banned) {
+			t.Errorf("detail must not say %q: %q", banned, d)
+		}
+	}
+	for _, source := range []string{"capture from transcripts", "vp_refresh_index", "vp_palace_backfill_decisions"} {
+		if !strings.Contains(d, source) {
+			t.Errorf("detail must name the drawer source %q as fact: %q", source, d)
+		}
 	}
 }
 
@@ -1549,6 +1622,85 @@ func TestTaskPreambleText_RecoversExactlyWhatTheMigratorWrote(t *testing.T) {
 			if !strings.Contains(after, want) {
 				t.Errorf("recovered region is not what the migrator wrote under the heading.\n"+
 					"recovered: %q\nafter:     %q", got, after)
+			}
+		})
+	}
+}
+
+// evidenceSlugs runs an evidence command under bash in root and returns the slugs
+// it prints, one per line, sorted. comm's second-column tab is trimmed.
+func evidenceSlugs(t *testing.T, root, command string) []string {
+	t.Helper()
+	cmd := exec.Command("bash", "-c", command)
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("evidence command failed: %v\n%s", err, command)
+	}
+	var got []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			got = append(got, line)
+		}
+	}
+	slices.Sort(got)
+	return got
+}
+
+// TestEvidence_ReproducesTheGoRule: RECORD THE GREP, NEVER THE COUNT is only
+// honest if the grep reproduces the rule. On a fixture carrying every shape the
+// Go side filters — a .local-only husk, an empty subtree, an invalid slug, a
+// symlinked project directory, a zero-length drawers.jsonl — both evidence
+// commands must print exactly the artifacts the dimensions report. The commands
+// avoid GNU-only find (-quit, trailing-slash start paths) so BSD find agrees.
+func TestEvidence_ReproducesTheGoRule(t *testing.T) {
+	for _, tool := range []string{"bash", "find", "comm", "head", "sort"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s not available", tool)
+		}
+	}
+	vault := storage.NewVault(t.TempDir())
+	root := vault.Root
+	writeFile(t, root, "palace/store/kg/entities.jsonl", "")
+	mkdirs(t, root, "Projects", "store")
+	seedDrawer(t, vault, "full", "w", "r", "a real drawer")
+	mkdirs(t, root, "Projects", "full")
+	writeFile(t, root, "palace/zero/drawers/w/r/drawers.jsonl", "")
+	writeFile(t, root, "palace/storeonly/.surface", "")
+	writeFile(t, root, "palace/husk/.local/embed-cache/x.vec", "x")
+	mkdirs(t, root, "palace", "empty", "drawers", "w")
+	writeFile(t, root, "palace/Bad_Slug/kg/entities.jsonl", "")
+	mkdirs(t, root, "Projects", "Not A Slug")
+	mkdirs(t, root, "Projects", "notesonly", "sessions")
+	outside := t.TempDir()
+	writeFile(t, outside, "kg/entities.jsonl", "")
+	if err := os.Symlink(outside, filepath.Join(root, "palace", "linked")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "Projects", "linked")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []struct {
+		name     string
+		evidence string
+		audit    func(*storage.Vault) ([]Finding, []string, error)
+	}{
+		{DimProjectTreeCoherence, EvidenceProjectTreeCoherence, auditProjectTreeCoherence},
+		{DimPalaceStoreDrawers, EvidencePalaceStoreDrawers, auditPalaceStoreDrawers},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			findings, _, err := c.audit(vault)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := drawerArtifacts(findings)
+			slices.Sort(want)
+			if len(want) == 0 {
+				t.Fatal("precondition: the fixture must produce findings, or agreement is vacuous")
+			}
+			if got := evidenceSlugs(t, root, c.evidence); !slices.Equal(got, want) {
+				t.Errorf("evidence prints %v, the dimension reports %v", got, want)
 			}
 		})
 	}

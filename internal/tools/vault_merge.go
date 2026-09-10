@@ -460,8 +460,8 @@ func buildMergeManifest(vault *storage.Vault, p vaultMergeParams, beforeCopy boo
 				"than resolved. Iteration numbers are minted independently in each vault, "+
 				"so a union would renumber iterations and break every citation naming one. "+
 				"Moving work between projects is the task `first-class-task-migrate-action`, "+
-				"which merge points at and does not absorb",
-			strings.Join(collide, ", ")))
+				"which merge points at and does not absorb%s",
+			strings.Join(collide, ", "), mergeLocalOnlyCollisionNote(dest, collide)))
 	}
 
 	m := &mergeManifest{
@@ -621,7 +621,8 @@ func mergeCheckSource(destRoot, source string) error {
 //
 // 🔴 ReadDir, NOT ListAllProjects. ListAllProjects keeps only directories whose
 // names pass slug.Validate and silently drops files, symlinks and invalid-slug
-// directories (projects.go:103-126) — the right filter for a DRIFT report,
+// directories (listProjectDirs), and under palace/ it also drops any directory
+// holding no file outside .local/ (the presence rule) — the right filter for a DRIFT report,
 // the wrong one for a collision or leak assertion, because it applies the same
 // slug filter the copy path already applied and would report clean by
 // construction. palace/.local is skipped: it is vault-wide machine-local state,
@@ -644,6 +645,43 @@ func mergeDestTreeNames(dest string) (map[string]bool, error) {
 		}
 	}
 	return names, nil
+}
+
+// mergeLocalOnlyCollisionNote explains a collision with a slug that no
+// enumerator counts as a project: its palace/<slug>/ holds no regular file
+// outside machine-local .local/ — either only .local/ state, or nothing but
+// empty directories — and it has no Projects/<slug>/ tree. vp_list_projects
+// omits such a slug, so without this sentence the refusal names a project the
+// caller was just told does not exist.
+//
+// It only ANNOTATES. The refusal stands — the directory is still there, and the
+// collision rule is membership, deliberately wider than ListAllProjects — and a
+// failure to read the non-stores leaves the refusal text as it was.
+func mergeLocalOnlyCollisionNote(dest string, collide []string) string {
+	nonStores, err := storage.NewVault(dest).PalaceNonStores()
+	if err != nil {
+		return ""
+	}
+	colliding := make(map[string]bool, len(collide))
+	for _, s := range collide {
+		colliding[s] = true
+	}
+	var notes []string
+	for _, ns := range nonStores {
+		if !colliding[ns.Slug] || ns.InProjects {
+			continue
+		}
+		what := "holds only machine-local state"
+		if !ns.HasLocal {
+			what = "holds no file, only empty directories,"
+		}
+		notes = append(notes, fmt.Sprintf("palace/%s/ %s on this host; "+
+			"see `vp check --check palace-local-only`", ns.Slug, what))
+	}
+	if len(notes) == 0 {
+		return ""
+	}
+	return ". " + strings.Join(notes, ". ")
 }
 
 // mergeWalkClass inventories one vault-global class in the SOURCE, applying the

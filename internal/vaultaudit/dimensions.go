@@ -237,9 +237,21 @@ const (
 // Evidence commands. RECORD THE GREP, NEVER THE COUNT (invariant 3) — every number
 // in the report carries the command that reproduces it, or it rots by the next run.
 const (
-	EvidenceProjectTreeCoherence = `comm -3 <(ls -d Projects/*/ | xargs -n1 basename | sort) <(ls -d palace/*/ | xargs -n1 basename | sort)`
-	EvidenceKGPortability        = `find palace/*/kg/triples -name '*:*' -o -name '*' -newer /dev/null | grep ':'`
-	EvidenceResumeDiscipline     = `wc -c Projects/*/resume.md; grep -c '{{[A-Z]*}}' Projects/*/resume.md`
+	// evidenceSlugDir is the filter listProjectDirs applies, in POSIX shell: a real
+	// directory (not a symlink) whose name is a valid slug. $d is the path, $s the name.
+	evidenceSlugDir = `[ -d "$d" ] && [ ! -L "$d" ] || continue; case $s in *[!a-z0-9-]*|-*|*-|*--*) continue;; esac; `
+	// evidencePalaceStore is the presence rule: a regular file somewhere under $d
+	// outside its top-level .local/. The start path carries no trailing slash, and
+	// there is no -quit, so GNU and BSD find print the same paths and the prune
+	// matches on both.
+	evidencePalaceStore = `[ -n "$(find "$d" -path "$d/.local" -prune -o -type f -print | head -n 1)" ]`
+
+	// Both halves apply listProjectDirs' filter, and the palace/ half adds the
+	// presence rule (storage/projects.go).
+	EvidenceProjectTreeCoherence = `comm -3 <(for d in Projects/*; do s=${d#Projects/}; ` + evidenceSlugDir + `echo "$s"; done | sort) ` +
+		`<(for d in palace/*; do s=${d#palace/}; ` + evidenceSlugDir + evidencePalaceStore + ` && echo "$s"; done | sort)`
+	EvidenceKGPortability    = `find palace/*/kg/triples -name '*:*' -o -name '*' -newer /dev/null | grep ':'`
+	EvidenceResumeDiscipline = `wc -c Projects/*/resume.md; grep -c '{{[A-Z]*}}' Projects/*/resume.md`
 	// Two of the three conditions are expressible as a grep and are recorded as one.
 	// The third is NOT: a frame orphan is defined against the writer's "---" frame and
 	// must be fence-aware and front-matter-aware, and a grep that fakes it invents
@@ -258,8 +270,12 @@ const (
 	// It deliberately ignores Projects/<slug>/iterations.md and
 	// Projects/<slug>/sessions/*.md: those are SEPARATE ingest sources for search.Rebuild
 	// and neither fills an empty drawer store.
-	EvidencePalaceStoreDrawers = `for d in palace/*/; do s=$(basename "$d"); ` +
-		`find "palace/$s/drawers" -name drawers.jsonl -size +0c -print -quit 2>/dev/null | grep -q . || echo "$s"; ` +
+	//
+	// The first tests are listProjectDirs' filter and the presence rule: a palace/
+	// directory holding no regular file outside its top-level .local/ is not a store,
+	// and is not this dimension's.
+	EvidencePalaceStoreDrawers = `for d in palace/*; do s=${d#palace/}; ` + evidenceSlugDir + evidencePalaceStore + ` || continue; ` +
+		`find "$d/drawers" -name drawers.jsonl -size +0c -print 2>/dev/null | head -n 1 | grep -q . || echo "$s"; ` +
 		`done   # palace/ projects with an empty or absent drawer store; iterations.md and sessions/ are separate corpora`
 	// The migrator's own dry run. This is the strongest evidence command available to
 	// this dimension: it is an INDEPENDENT second walk over the same corpus by a
@@ -489,6 +505,12 @@ func auditProjectTreeCoherence(vault *storage.Vault) ([]Finding, []string, error
 // one function up. The restraint is the same for both dimensions and for the same
 // reason: neither opens a corpus file, so neither can know what search would return.
 //
+// p.InPalace applies the presence rule (storage/projects.go): a palace/<slug>/ holding
+// no regular file outside its machine-local .local/ is not a store, so it is not in
+// this population at all. Such a directory is host-local — git carries none of it — and
+// `vp check --check palace-local-only` reports it instead. Counting it here made this
+// dimension's answer differ between hosts on the same commit.
+//
 // 🔴 THE GATE IS p.InPalace ALONE — p.InProjects is deliberately NOT required. A
 // palace store with no history under Projects/ is already a project-tree-coherence
 // finding, and the overlap is accepted on purpose: the two details say DIFFERENT
@@ -528,9 +550,8 @@ func auditPalaceStoreDrawers(vault *storage.Vault) ([]Finding, []string, error) 
 				Dimension: DimPalaceStoreDrawers,
 				Artifact:  p.Slug,
 				Detail: fmt.Sprintf("has a palace/ store but NO drawers directory (%s is absent), so "+
-					"its sessions were never drawer-indexed and the drawer half of `vp search` "+
-					"covers nothing for it. %s", path.Join("palace", p.Slug, "drawers"),
-					storeContextNote(p)),
+					"the drawer half of `vp search` covers nothing for it. %s %s",
+					path.Join("palace", p.Slug, "drawers"), drawerSourcesNote, storeContextNote(p)),
 			})
 			continue
 		}
@@ -548,15 +569,23 @@ func auditPalaceStoreDrawers(vault *storage.Vault) ([]Finding, []string, error) 
 				Dimension: DimPalaceStoreDrawers,
 				Artifact:  p.Slug,
 				Detail: fmt.Sprintf("has a palace/ store whose drawers directory is PRESENT BUT EMPTY "+
-					"(%s exists and the wing × room × drawer walk yields 0 drawer records), so its "+
-					"sessions were never drawer-indexed and the drawer half of `vp search` covers "+
-					"nothing for it. %s", path.Join("palace", p.Slug, "drawers"),
-					storeContextNote(p)),
+					"(%s exists and the wing × room × drawer walk yields 0 drawer records), so the "+
+					"drawer half of `vp search` covers nothing for it. %s %s",
+					path.Join("palace", p.Slug, "drawers"), drawerSourcesNote, storeContextNote(p)),
 			})
 		}
 	}
 	return findings, unknowns, nil
 }
+
+// drawerSourcesNote names every writer of drawer records, as plain fact. The details
+// used to say the project's "sessions were never drawer-indexed", which is false for a
+// store with no Projects/ tree — there are no sessions to index — and read as an
+// instruction to index. This says where drawers come from and stops: which source, if
+// any, applies to a given store is the reader's call.
+const drawerSourcesNote = "Drawers are written by capture from transcripts, by vp_refresh_index's " +
+	"backfill from Projects/<slug>/transcripts/ archives, and by vp_palace_backfill_decisions " +
+	"from session-note decisions."
 
 // storeContextNote spells out, for ONE project, what an empty drawer store does and
 // does not imply. It branches on p.InProjects because BOTH of the sentences it can
@@ -576,8 +605,9 @@ func storeContextNote(p storage.ProjectPresence) string {
 	if !p.InProjects {
 		return fmt.Sprintf("project-tree-coherence reports this project separately, for having no "+
 			"history under Projects/ at all — and there is neither a Projects/%s/iterations.md "+
-			"nor a Projects/%s/sessions/ to carry the corpus instead, so nothing indexes it.",
-			p.Slug, p.Slug)
+			"nor a Projects/%s/sessions/ to carry the corpus instead, so nothing indexes it. "+
+			"Both backfill sources need a Projects/%s/ tree.",
+			p.Slug, p.Slug, p.Slug)
 	}
 	return fmt.Sprintf("project-tree-coherence cannot see this: the project is present in both "+
 		"trees, so it is Complete(). This is NOT a claim that the project is unsearchable — "+
