@@ -26,13 +26,29 @@ func markProjectDir(t *testing.T, dir string) {
 	}
 }
 
-// initTestEnv sets up an isolated XDG_CONFIG_HOME so init tests don't
-// touch the real config. If preCreateConfig is true, writes a minimal
-// config so global init is skipped (tests that focus on project init).
-func initTestEnv(t *testing.T, preCreateConfig bool) string {
+// initTestEnv isolates an init test from the developer's real machine. It
+// points XDG_CONFIG_HOME at a fresh temp dir so the host's own
+// ~/.config/vibe-palace/config.toml is never read or written, and HOME at a
+// second fresh temp dir so `vp init` — which reaches hook.Install() and
+// rewrites ~/.claude/settings.json — cannot touch the developer's real home.
+// USERPROFILE is set to the same dir because that, not HOME, is what
+// os.UserHomeDir reads on Windows, which .goreleaser.yml builds for; the
+// assignment is inert on Linux and macOS.
+//
+// Both dirs are returned. Tests whose premise is "run vp init at a path
+// equal to $HOME" must use the returned homeDir rather than installing a
+// home of their own: two homes disagreeing would silently flip them onto the
+// opposite branch while still passing.
+//
+// If preCreateConfig is true, writes a minimal config so global init is
+// skipped (tests that focus on project init).
+func initTestEnv(t *testing.T, preCreateConfig bool) (configDir, homeDir string) {
 	t.Helper()
-	configDir := t.TempDir()
+	configDir = t.TempDir()
+	homeDir = t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
 
 	if preCreateConfig {
 		vpDir := filepath.Join(configDir, "vibe-palace")
@@ -41,7 +57,40 @@ func initTestEnv(t *testing.T, preCreateConfig bool) string {
 		content := `vault_path = "` + vaultDir + `"` + "\ngit_enabled = true\n"
 		os.WriteFile(filepath.Join(vpDir, "config.toml"), []byte(content), 0o644)
 	}
-	return configDir
+	return configDir, homeDir
+}
+
+// realHome is the process's actual home directory, captured at package init
+// — i.e. before any test's t.Setenv can shadow it. Nothing in cmd/vp reads
+// HOME at init time, so evaluating it here is safe.
+var realHome, _ = os.UserHomeDir()
+
+// TestInitTestEnvSandboxesHostGlobals is the regression lock on the harness
+// itself: if initTestEnv ever stops sandboxing HOME, `vp init` in the tests
+// below would reach hook.Install() and rewrite the developer's real
+// ~/.claude/settings.json.
+func TestInitTestEnvSandboxesHostGlobals(t *testing.T) {
+	configDir, homeDir := initTestEnv(t, false)
+
+	got, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	if got != homeDir {
+		t.Errorf("os.UserHomeDir() = %q, want the sandboxed %q", got, homeDir)
+	}
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != configDir {
+		t.Errorf("XDG_CONFIG_HOME = %q, want the sandboxed %q", xdg, configDir)
+	}
+	if realHome == "" {
+		t.Skip("real home dir unknown; cannot assert isolation from it")
+	}
+	if homeDir == realHome {
+		t.Errorf("sandboxed home %q is the real home %q", homeDir, realHome)
+	}
+	if configDir == filepath.Join(realHome, ".config") {
+		t.Errorf("sandboxed config dir %q is the real one", configDir)
+	}
 }
 
 func TestInitCreatesConfig(t *testing.T) {
@@ -79,7 +128,7 @@ func TestInitCreatesConfig(t *testing.T) {
 // After a successful init, the vault-project config.toml exists and
 // carries the [meta] block. This covers the Fix 1b wiring in cmd_init.
 func TestInitWritesVaultProjectConfig(t *testing.T) {
-	configDir := initTestEnv(t, true)
+	configDir, _ := initTestEnv(t, true)
 	// Read the vault path set by initTestEnv.
 	globalData, err := os.ReadFile(filepath.Join(configDir, "vibe-palace", "config.toml"))
 	if err != nil {
@@ -190,7 +239,7 @@ func TestInitBadFlags(t *testing.T) {
 }
 
 func TestInitGlobalAndProject(t *testing.T) {
-	configDir := initTestEnv(t, false) // no pre-created config
+	configDir, _ := initTestEnv(t, false) // no pre-created config
 	projDir := t.TempDir()
 	markProjectDir(t, projDir)
 	vaultDir := filepath.Join(t.TempDir(), "vault")
@@ -215,7 +264,7 @@ func TestInitGlobalAndProject(t *testing.T) {
 }
 
 func TestInitSkipsExistingConfig(t *testing.T) {
-	configDir := initTestEnv(t, true) // pre-create config
+	configDir, _ := initTestEnv(t, true) // pre-create config
 
 	// Read the existing config content.
 	globalConfig := filepath.Join(configDir, "vibe-palace", "config.toml")
@@ -233,12 +282,9 @@ func TestInitSkipsExistingConfig(t *testing.T) {
 }
 
 func TestInitSkipsProjectInHomeDir(t *testing.T) {
-	initTestEnv(t, true)
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("cannot determine home dir")
-	}
+	// home is the sandboxed HOME initTestEnv installed, so the init run
+	// below happens against a tmpdir, never the developer's real home.
+	_, home := initTestEnv(t, true)
 
 	cmd := cmdInit(cli.BuildInfo{Version: "test"})
 	code := cmd.Run([]string{home, "--name", "test"})
@@ -255,7 +301,7 @@ func TestInitSkipsProjectInHomeDir(t *testing.T) {
 }
 
 func TestInitVaultPathFlag(t *testing.T) {
-	configDir := initTestEnv(t, false)
+	configDir, _ := initTestEnv(t, false)
 	vaultDir := filepath.Join(t.TempDir(), "custom-vault")
 
 	cmd := cmdInit(cli.BuildInfo{Version: "test"})
@@ -293,7 +339,7 @@ func TestInitVaultPathFlag(t *testing.T) {
 // records the override only in the cwd .vibe-palace.toml, leaving global
 // untouched (matching the work/personal split use case).
 func TestInitVaultPathWritesCwdOverride(t *testing.T) {
-	configDir := initTestEnv(t, true) // global config already exists
+	configDir, _ := initTestEnv(t, true) // global config already exists
 	altVault := filepath.Join(t.TempDir(), "alt-vault")
 
 	projDir := t.TempDir()
@@ -333,7 +379,7 @@ func TestInitVaultPathWritesCwdOverride(t *testing.T) {
 }
 
 func TestInitNoGitFlag(t *testing.T) {
-	configDir := initTestEnv(t, false)
+	configDir, _ := initTestEnv(t, false)
 	projDir := t.TempDir()
 	vaultDir := filepath.Join(t.TempDir(), "vault")
 
@@ -514,12 +560,10 @@ func TestInitDetectsManifestOnlyProject(t *testing.T) {
 
 // TestInitForceSkipInSandboxedHome verifies that when cwd resolves to
 // the user's $HOME, project init is force-skipped regardless of any
-// project signals present. We sandbox $HOME to a tmpdir so the test
-// does not touch the developer's real home.
+// project signals present. initTestEnv sandboxes $HOME to a tmpdir so the
+// test does not touch the developer's real home.
 func TestInitForceSkipInSandboxedHome(t *testing.T) {
-	fakeHome := t.TempDir()
-	t.Setenv("HOME", fakeHome)
-	initTestEnv(t, true)
+	_, fakeHome := initTestEnv(t, true)
 
 	// Even with a go.mod present, running init *at* $HOME must skip.
 	if err := os.WriteFile(filepath.Join(fakeHome, "go.mod"), []byte("module x\n"), 0o644); err != nil {
@@ -546,11 +590,10 @@ func TestInitForceSkipInSandboxedHome(t *testing.T) {
 // carry the shim marker, and that re-running init is a no-op (Apply records
 // every file as Unchanged).
 func TestInitEmitsShims(t *testing.T) {
-	// Isolate HOME so live user-global surfaces do not trigger the Phase 4b
-	// skip path (GlobalSurfacesHealthy).
-	t.Setenv("HOME", t.TempDir())
+	// initTestEnv isolates HOME so live user-global surfaces do not trigger
+	// the Phase 4b skip path (GlobalSurfacesHealthy).
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg"))
-	configDir := initTestEnv(t, false)
+	configDir, _ := initTestEnv(t, false)
 	projDir := t.TempDir()
 	markProjectDir(t, projDir)
 	vaultDir := filepath.Join(t.TempDir(), "vault")
@@ -673,9 +716,7 @@ func TestInitShimsCustomFileLeftAlone(t *testing.T) {
 // The agent-wiring skip row is the user-visible signal; the shim row must
 // stay silent rather than echo a redundant skip.
 func TestInitShimsSkippedWhenNoProject(t *testing.T) {
-	initTestEnv(t, true)
-	fakeHome := t.TempDir()
-	t.Setenv("HOME", fakeHome)
+	_, fakeHome := initTestEnv(t, true)
 
 	out := captureStdout(t, func() {
 		cmd := cmdInit(cli.BuildInfo{Version: "test"})
@@ -767,7 +808,7 @@ func TestInitMaterializesTemplates(t *testing.T) {
 // creates Projects/<slug>/commands/ and Projects/<slug>/skills/ with
 // README stubs rendered via templates.RenderReadmeStub.
 func TestInitScaffoldsCurrentProject(t *testing.T) {
-	configDir := initTestEnv(t, true)
+	configDir, _ := initTestEnv(t, true)
 	globalData, _ := os.ReadFile(filepath.Join(configDir, "vibe-palace", "config.toml"))
 	vaultDir := ""
 	for line := range strings.SplitSeq(string(globalData), "\n") {
@@ -810,7 +851,7 @@ func TestInitScaffoldsCurrentProject(t *testing.T) {
 // override file in Projects/<slug>/commands/foo.md must survive vp
 // init. Scaffold mode is write-if-absent.
 func TestInitScaffoldPreservesUserOverrides(t *testing.T) {
-	configDir := initTestEnv(t, true)
+	configDir, _ := initTestEnv(t, true)
 	globalData, _ := os.ReadFile(filepath.Join(configDir, "vibe-palace", "config.toml"))
 	vaultDir := ""
 	for line := range strings.SplitSeq(string(globalData), "\n") {
@@ -884,11 +925,9 @@ func captureStderr(t *testing.T, fn func()) string {
 // into initProject, the short-circuit assertions below will fail because
 // initGlobal would have already written the config + vault.
 func TestInitBogusPositionalFailsBeforeWrites(t *testing.T) {
-	configDir := initTestEnv(t, false) // no pre-existing global config
-	// Redirect HOME so the default-vault fallback can't clobber the
-	// developer's real $HOME if the fix ever regresses.
-	fakeHome := t.TempDir()
-	t.Setenv("HOME", fakeHome)
+	// initTestEnv redirects HOME so the default-vault fallback can't clobber
+	// the developer's real $HOME if the fix ever regresses.
+	configDir, fakeHome := initTestEnv(t, false) // no pre-existing global config
 
 	bogus := filepath.Join(t.TempDir(), "does-not-exist")
 
@@ -926,7 +965,6 @@ func TestInitPositionalPermissionDeniedReturnsSystemExit(t *testing.T) {
 		t.Skip("running as root — mode 0o000 does not deny root")
 	}
 	initTestEnv(t, false)
-	t.Setenv("HOME", t.TempDir())
 
 	// Build an unreadable parent with an inaccessible child path.
 	parent := filepath.Join(t.TempDir(), "locked")

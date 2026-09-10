@@ -17,6 +17,19 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
+// sandboxHostEnv points HOME (and USERPROFILE, which is what os.UserHomeDir
+// reads on Windows — a .goreleaser.yml target — rather than HOME) plus
+// XDG_CONFIG_HOME at fresh temp dirs. Tests in this file drive tools that
+// walk up to the home boundary and read the global config; without this they
+// would resolve against the developer's real ~ and ~/.config/vibe-palace.
+func sandboxHostEnv(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+}
+
 // initVaultRepo creates a git repo (with identity + seed commit) to use as a
 // vault root in vault-sync tests.
 func initVaultRepo(t *testing.T) string {
@@ -53,6 +66,7 @@ func gitT(t *testing.T, dir string, args ...string) string {
 }
 
 func TestVaultSync_PathsCommitLocal(t *testing.T) {
+	sandboxHostEnv(t)
 	root := initVaultRepo(t)
 	vault := storage.NewVault(root)
 	tool := VaultSyncTool(vault)
@@ -84,6 +98,7 @@ func TestVaultSync_PathsCommitLocal(t *testing.T) {
 }
 
 func TestVaultSync_PathsRequireMessage(t *testing.T) {
+	sandboxHostEnv(t)
 	root := initVaultRepo(t)
 	vault := storage.NewVault(root)
 	tool := VaultSyncTool(vault)
@@ -96,6 +111,7 @@ func TestVaultSync_PathsRequireMessage(t *testing.T) {
 // TestVaultSync_BarePushRefusesDirty pins the H2 invariant: a bare push (no
 // paths) must refuse to run on a dirty vault.
 func TestVaultSync_BarePushRefusesDirty(t *testing.T) {
+	sandboxHostEnv(t)
 	root := initVaultRepo(t)
 	// Configure a remote so remote discovery succeeds and we reach the guard.
 	bare := t.TempDir()
@@ -130,6 +146,7 @@ func TestVaultSync_BarePushRefusesDirty(t *testing.T) {
 // TestVaultTidy_DryRunClassifiesNoCommit verifies dry_run returns the
 // swept/reported split without creating a commit.
 func TestVaultTidy_DryRunClassifiesNoCommit(t *testing.T) {
+	sandboxHostEnv(t)
 	root := initVaultRepo(t)
 	headBefore := gitT(t, root, "rev-parse", "HEAD")
 	vault := storage.NewVault(root)
@@ -167,6 +184,7 @@ func TestVaultTidy_DryRunClassifiesNoCommit(t *testing.T) {
 // TestVaultTidy_SweepCommitsLocal verifies a real (push=false) sweep commits
 // the artifacts, reports the rest, and leaves reported dirt in the worktree.
 func TestVaultTidy_SweepCommitsLocal(t *testing.T) {
+	sandboxHostEnv(t)
 	root := initVaultRepo(t)
 	vault := storage.NewVault(root)
 	tool := VaultTidyTool(vault)
@@ -205,6 +223,7 @@ func TestVaultTidy_SweepCommitsLocal(t *testing.T) {
 // artifact → pulls → pushes, returning committed:true, and the artifact reaches
 // the bare remote.
 func TestVaultSync_BareTidiesAndPushes(t *testing.T) {
+	sandboxHostEnv(t)
 	root := initVaultRepo(t)
 	bare := t.TempDir()
 	gitT(t, bare, "init", "--bare", "-b", "main")
@@ -253,6 +272,7 @@ func TestVaultSync_BareTidiesAndPushes(t *testing.T) {
 // with genuine non-artifact dirt returns an error naming the file, before any
 // network I/O, and nothing is pushed.
 func TestVaultSync_BareRefusesGenuineDirt(t *testing.T) {
+	sandboxHostEnv(t)
 	root := initVaultRepo(t)
 	bare := t.TempDir()
 	gitT(t, bare, "init", "--bare", "-b", "main")
@@ -286,6 +306,7 @@ func TestVaultSync_BareRefusesGenuineDirt(t *testing.T) {
 // vault it takes the raw pull+push path, whose clean-state guard refuses on the
 // (uncommitted, unswept) dirt rather than tidying it.
 func TestVaultSync_NoTidyIsRawRefusal(t *testing.T) {
+	sandboxHostEnv(t)
 	root := initVaultRepo(t)
 	bare := t.TempDir()
 	gitT(t, bare, "init", "--bare", "-b", "main")
@@ -308,6 +329,7 @@ func TestVaultSync_NoTidyIsRawRefusal(t *testing.T) {
 }
 
 func TestInitProjectSuccess(t *testing.T) {
+	sandboxHostEnv(t)
 	vault := storage.NewVault(t.TempDir())
 	tool := InitProjectTool(vault)
 
@@ -344,6 +366,7 @@ func TestInitProjectSuccess(t *testing.T) {
 }
 
 func TestInitProjectRelativePath(t *testing.T) {
+	sandboxHostEnv(t)
 	vault := storage.NewVault(t.TempDir())
 	tool := InitProjectTool(vault)
 
@@ -354,6 +377,7 @@ func TestInitProjectRelativePath(t *testing.T) {
 }
 
 func TestInitProjectAlreadyExists(t *testing.T) {
+	sandboxHostEnv(t)
 	vault := storage.NewVault(t.TempDir())
 	tool := InitProjectTool(vault)
 
@@ -368,6 +392,7 @@ func TestInitProjectAlreadyExists(t *testing.T) {
 }
 
 func TestInitProjectAutoDetectName(t *testing.T) {
+	sandboxHostEnv(t)
 	vault := storage.NewVault(t.TempDir())
 	tool := InitProjectTool(vault)
 
@@ -385,6 +410,7 @@ func TestInitProjectAutoDetectName(t *testing.T) {
 }
 
 func TestVaultSyncNonGitDir(t *testing.T) {
+	sandboxHostEnv(t)
 	vault := storage.NewVault(t.TempDir())
 	tool := VaultSyncTool(vault)
 
@@ -407,6 +433,7 @@ func TestVaultSyncNonGitDir(t *testing.T) {
 // pinning the lister's contract, which is fine as it stands, instead of the
 // call site's policy, which is what this refusal is.
 func TestVaultSync_ZeroRemotesRefused(t *testing.T) {
+	sandboxHostEnv(t)
 	root := initVaultRepo(t) // a real repo, one commit, no remote
 	tool := VaultSyncTool(storage.NewVault(root))
 
@@ -436,6 +463,7 @@ func TestVaultSync_ZeroRemotesRefused(t *testing.T) {
 }
 
 func TestVaultSyncInvalidAction(t *testing.T) {
+	sandboxHostEnv(t)
 	vault := storage.NewVault(t.TempDir())
 	tool := VaultSyncTool(vault)
 
@@ -448,6 +476,7 @@ func TestVaultSyncInvalidAction(t *testing.T) {
 // TestVaultStatusTool verifies the read-only status tool: it is non-mutating and
 // its handler returns a versioned StatusReport that round-trips through JSON.
 func TestVaultStatusTool(t *testing.T) {
+	sandboxHostEnv(t)
 	root := initVaultRepo(t)
 	vault := storage.NewVault(root)
 	tool := VaultStatusTool(vault)
@@ -535,6 +564,7 @@ func hasKey(t *testing.T, raw []byte, k string) bool {
 // never an absent key), always keeps Version/Branch/VaultPath, and rejects unknown
 // section names with a clean error.
 func TestVaultStatusSections(t *testing.T) {
+	sandboxHostEnv(t)
 	root := initVaultRepo(t)
 	vault := storage.NewVault(root)
 
@@ -589,6 +619,7 @@ func TestVaultStatusSections(t *testing.T) {
 }
 
 func TestRefreshIndexTool(t *testing.T) {
+	sandboxHostEnv(t)
 	// RefreshIndexTool requires a non-nil engine. Verify the tool constructor works.
 	// We can't easily test a full rebuild without the embedder, but we verify
 	// the handler rejects empty project.
@@ -631,6 +662,7 @@ func containsStr(s, sub string) bool {
 // DISCARDED on a handler error (196), so everything the caller needs to act has to
 // ride in the error string itself.
 func TestVaultTidy_StrandedIsAnError(t *testing.T) {
+	sandboxHostEnv(t)
 	root := initVaultRepo(t)
 	// A configured remote pointing at a path that does not exist: push + fetch
 	// both fail, so the commit lands locally but reaches no remote.
@@ -673,6 +705,7 @@ func TestVaultTidy_StrandedIsAnError(t *testing.T) {
 // bar this task demands ("a real vault with two remotes, one of them unreachable").
 // It was here the whole time, arriving at the wrong conclusion.
 func TestVaultTidy_PartialPushIsAnError(t *testing.T) {
+	sandboxHostEnv(t)
 	root := initVaultRepo(t)
 	good := t.TempDir()
 	gitT(t, good, "init", "--bare", "-b", "main")
@@ -705,6 +738,7 @@ func TestVaultTidy_PartialPushIsAnError(t *testing.T) {
 }
 
 func TestFormatDirtyVaultPushErrorCap(t *testing.T) {
+	sandboxHostEnv(t)
 	paths := make([]string, dirtyPathErrorCap+3)
 	for i := range paths {
 		paths[i] = fmt.Sprintf("p%d", i)

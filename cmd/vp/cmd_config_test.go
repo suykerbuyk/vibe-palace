@@ -542,7 +542,7 @@ func TestConfigSync_YesAcceptsWithoutStdin(t *testing.T) {
 // explicitly. Returns vault path and the absolute target path.
 func syncPromptSetup(t *testing.T, embeddedRel string) (vaultPath, target, userEdit string) {
 	t.Helper()
-	configDir := initTestEnv(t, false)
+	configDir, _ := initTestEnv(t, false)
 	_ = configDir
 
 	projDir := t.TempDir()
@@ -642,7 +642,7 @@ func runSyncWithStdin(t *testing.T, input string, args []string) (stdout string,
 // embedded corpus.
 func syncPruneSetup(t *testing.T, embeddedRel string) (vaultPath, target, key string) {
 	t.Helper()
-	_ = initTestEnv(t, false)
+	_, _ = initTestEnv(t, false)
 
 	projDir := t.TempDir()
 	markProjectDir(t, projDir)
