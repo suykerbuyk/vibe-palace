@@ -96,6 +96,10 @@ type Stamp struct {
 // stampFilename is the per-directory record relative to a stamp directory.
 const stampFilename = ".surface"
 
+// vaultGitignoreName is the vault-root .gitignore, which ResolveStampDir
+// excludes by exact vault-relative path. See the exclusion block there.
+const vaultGitignoreName = ".gitignore"
+
 // ReadStamp reads the .surface file from stampDir.
 //
 // A missing file returns Stamp{Surface: 0}, nil. Malformed TOML returns a
@@ -206,9 +210,9 @@ var stampedDirs sync.Map // map[string]struct{}
 // use as a best-effort side effect after a write.
 //
 // Returns nil (no-op) when the write is outside the vault, under an excluded
-// path (.local/.git/.bak/.surface), or already stamped this process. Stamp
-// errors are returned for the caller to log; callers must NOT fail the primary
-// write on a stamp error.
+// path (.local/.git/.bak/.surface, or the vault-root .gitignore), or already
+// stamped this process. Stamp errors are returned for the caller to log;
+// callers must NOT fail the primary write on a stamp error.
 func StampForPath(vaultPath, writePath string) error {
 	stampDir, err := ResolveStampDir(vaultPath, writePath)
 	if err != nil {
@@ -246,6 +250,7 @@ var (
 //   - writePath is outside vaultPath (host-local write)
 //   - writePath is under an excluded segment: .local (machine-local),
 //     .git, or has a .bak / .surface basename (non-schema / self)
+//   - writePath is exactly <vault>/.gitignore (non-schema; see below)
 //   - writePath is under vaultPath but the top-level dir is not
 //     Projects / palace / Templates / Audits (a stderr warning fires once per
 //     process per top-level name)
@@ -294,6 +299,19 @@ func ResolveStampDir(vaultPath, writePath string) (string, error) {
 		if seg == ".local" || seg == ".git" {
 			return "", nil
 		}
+	}
+	// The vault-root .gitignore is git hygiene, not schema content: no reader
+	// parses it against a surface version, so there is nothing to stamp. The
+	// Vault reconciler tops it up through storage.LockedUpdate, which reaches
+	// atomicfile.Write and so asks for a stamp; without this exclusion that
+	// deliberate write fell through to the unrecognized-top warning below,
+	// whose value is that it fires only for writes nobody planned for.
+	//
+	// Matched by EXACT vault-relative path, one segment. A .gitignore anywhere
+	// else keeps the rule for its location: stamped under a recognized root,
+	// warned about under an unrecognized one.
+	if len(parts) == 1 && parts[0] == vaultGitignoreName {
+		return "", nil
 	}
 
 	top := parts[0]

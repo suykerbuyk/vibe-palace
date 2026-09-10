@@ -198,6 +198,85 @@ func TestResolveStampDir_UnrecognizedWarnsOnce(t *testing.T) {
 	}
 }
 
+// captureUnrecognizedWarnings runs fn with os.Stderr redirected and the
+// once-per-top warning state reset, and returns what fn wrote to stderr.
+func captureUnrecognizedWarnings(t *testing.T, fn func()) string {
+	t.Helper()
+	resetUnrecognizedTopWarnForTest()
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+	fn()
+	w.Close()
+	os.Stderr = orig
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("read captured stderr: %v", err)
+	}
+	return buf.String()
+}
+
+// TestStampForPath_VaultRootGitignoreIsQuietNoStamp pins the exclusion the
+// Vault reconciler's locked .gitignore top-up relies on: the write reaches
+// StampForPath through atomicfile.Write, and must produce neither a stamp nor
+// the unrecognized-path warning.
+func TestStampForPath_VaultRootGitignoreIsQuietNoStamp(t *testing.T) {
+	resetStampCacheForTest()
+	vault := t.TempDir()
+	out := captureUnrecognizedWarnings(t, func() {
+		if err := StampForPath(vault, filepath.Join(vault, ".gitignore")); err != nil {
+			t.Fatalf("StampForPath: %v", err)
+		}
+	})
+	if strings.Contains(out, "unrecognized path") {
+		t.Errorf("vault-root .gitignore write warned: %q", out)
+	}
+	var stamps []string
+	_ = filepath.WalkDir(vault, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && d.Name() == stampFilename {
+			stamps = append(stamps, p)
+		}
+		return nil
+	})
+	if len(stamps) != 0 {
+		t.Errorf("vault-root .gitignore write produced stamp(s): %v", stamps)
+	}
+}
+
+// TestResolveStampDir_GitignoreExclusionIsExactlyTheVaultRoot proves the
+// exclusion above is one path, not a rule about dotfiles or about .gitignore
+// files in general: everything else resolves exactly as it did before it.
+func TestResolveStampDir_GitignoreExclusionIsExactlyTheVaultRoot(t *testing.T) {
+	vault := t.TempDir()
+
+	// A .gitignore under a recognized root is ordinary content there: stamped.
+	got, err := ResolveStampDir(vault, filepath.Join(vault, "Projects/foo/.gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(vault, "Projects/foo"); got != want {
+		t.Errorf("Projects/foo/.gitignore resolved to %q, want %q", got, want)
+	}
+
+	// Under an unrecognized top, and for any other vault-root file (dotfile or
+	// not), the diagnostic still fires — once per top-level name.
+	for _, rel := range []string{"Bogus/thing.md", "Other/.gitignore", ".gitattributes", "notes.md"} {
+		out := captureUnrecognizedWarnings(t, func() {
+			got, err := ResolveStampDir(vault, filepath.Join(vault, rel))
+			if err != nil || got != "" {
+				t.Fatalf("%s: got=%q err=%v, want no stamp dir", rel, got, err)
+			}
+		})
+		if c := strings.Count(out, "unrecognized path"); c != 1 {
+			t.Errorf("%s: warning fired %d times, want 1; output=%q", rel, c, out)
+		}
+	}
+}
+
 func TestStampForPath_StampsCorrectRoot(t *testing.T) {
 	resetStampCacheForTest()
 	vault := t.TempDir()
