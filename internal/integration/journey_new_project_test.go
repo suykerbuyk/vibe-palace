@@ -5,6 +5,7 @@ package integration
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,7 +14,8 @@ import (
 // TestJourney_NewProject_Bootstrap_Capture_Search exercises the canonical
 // "new project" agent flow at the MCP protocol boundary:
 //
-//  1. vp_init creates the project config + vault dirs.
+//  1. vp_init onboards the project: the project config in the working tree,
+//     and the FULL vault scaffold (config.toml, tasks/, commands/, skills/).
 //  2. vp_bootstrap_context returns baseline workflow/resume for the project.
 //  3. vp_capture_session writes a session with a transcript (which is
 //     chunked + indexed into the search engine).
@@ -30,17 +32,78 @@ func TestJourney_NewProject_Bootstrap_Capture_Search(t *testing.T) {
 
 	projectName := "journey-newproj"
 	projectDir := filepath.Join(t.TempDir(), projectName)
+	// The directory must EXIST and carry a project signal. It used to be a
+	// path that was never created — the journey passed only because the
+	// handler's os.MkdirAll conjured it into being on the server's disk, which
+	// is precisely the silent remote misuse that line has been deleted for.
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "go.mod"), []byte("module journey\n"), 0o644); err != nil {
+		t.Fatalf("mark project dir: %v", err)
+	}
 
-	// 1. vp_init: initialize project.
+	// 1. vp_init: onboard the project.
 	raw := h.callTool(t, "vp_init", map[string]any{
 		"path": projectDir,
 		"name": projectName,
 	})
-	if !strings.Contains(raw, "initialized") {
-		t.Fatalf("vp_init: %s", raw)
+	// NOT "initialized": over MCP, hook-wiring and command-shims are always
+	// omitted (they belong to the server operator's host, not the caller's), so
+	// status is "partial" on every successful call and `complete` is the field
+	// that carries meaning.
+	var initRes struct {
+		Status   string `json:"status"`
+		Project  string `json:"project"`
+		Complete bool   `json:"complete"`
+		Steps    []struct {
+			Step   string `json:"step"`
+			Status string `json:"status"`
+		} `json:"steps"`
+		Omitted []struct {
+			Step   string `json:"step"`
+			Remedy string `json:"remedy"`
+		} `json:"omitted"`
 	}
-	if !strings.Contains(raw, projectName) {
+	if err := json.Unmarshal([]byte(raw), &initRes); err != nil {
+		t.Fatalf("vp_init parse: %v (raw=%.300s)", err, raw)
+	}
+	if initRes.Status != "partial" || initRes.Complete {
+		t.Fatalf("vp_init status = %q complete = %v, want partial/false: %s",
+			initRes.Status, initRes.Complete, raw)
+	}
+	if initRes.Project != projectName {
 		t.Fatalf("vp_init result missing project name %q: %s", projectName, raw)
+	}
+	for _, st := range initRes.Steps {
+		if st.Status == "fail" {
+			t.Errorf("vp_init step %s failed: %s", st.Step, raw)
+		}
+	}
+	if len(initRes.Omitted) == 0 {
+		t.Error("vp_init reported no omissions; hook-wiring and command-shims are always omitted over MCP")
+	}
+	for _, om := range initRes.Omitted {
+		if om.Remedy == "" {
+			t.Errorf("omission %q carries no remedy", om.Step)
+		}
+	}
+
+	// The vault scaffold an MCP-only client must be able to produce for
+	// itself. Before this was wired to internal/onboard the tool wrote a
+	// two-line marker and two task directories, claimed "initialized", and
+	// left the vault side of the project permanently missing.
+	for _, rel := range []string{
+		"config.toml",
+		filepath.Join("tasks", "done"),
+		filepath.Join("tasks", "cancelled"),
+		filepath.Join("commands", "README.md"),
+		filepath.Join("skills", "README.md"),
+	} {
+		p := filepath.Join(h.Vault.Root, "Projects", projectName, rel)
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("vp_init left the vault scaffold incomplete: %s missing (%v)", p, err)
+		}
 	}
 
 	// 2. vp_bootstrap_context: fetch baseline context for the new project.

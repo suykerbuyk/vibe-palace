@@ -5,14 +5,19 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/onboard"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -370,29 +375,70 @@ func TestVaultSync_NoTidyIsRawRefusal(t *testing.T) {
 	}
 }
 
+// markProjectTree makes dir an existing directory that passes
+// project.HasRootedSignal, which is the gate every working-tree step is behind.
+func markProjectTree(t *testing.T, dir string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	return dir
+}
+
+// callInit drives the tool and returns the typed result.
+func callInit(t *testing.T, tool mcp.Tool, p initParams) initResult {
+	t.Helper()
+	params, _ := json.Marshal(p)
+	result, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	res, ok := result.(initResult)
+	if !ok {
+		t.Fatalf("result type = %T, want initResult", result)
+	}
+	return res
+}
+
+// omittedSteps returns the omitted step names, sorted.
+func omittedSteps(res initResult) []string {
+	var out []string
+	for _, om := range res.Omitted {
+		out = append(out, om.Step)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func TestInitProjectSuccess(t *testing.T) {
 	sandboxHostEnv(t)
 	vault := storage.NewVault(t.TempDir())
 	tool := InitProjectTool(vault)
 
-	projDir := filepath.Join(t.TempDir(), "my-project")
+	// The directory must EXIST and be a project: the handler no longer
+	// os.MkdirAll's it, because a remote caller naming a path on the server's
+	// disk is not evidence that a project belongs there.
+	projDir := markProjectTree(t, filepath.Join(t.TempDir(), "my-project"))
 
-	params, _ := json.Marshal(initParams{
+	res := callInit(t, tool, initParams{
 		Path:   projDir,
 		Name:   "my-project",
 		Domain: "work",
 		Tags:   []string{"go", "cli"},
 	})
-	result, err := tool.Handler(context.Background(), params)
-	if err != nil {
-		t.Fatalf("handler: %v", err)
+	// "partial", not "initialized": hook-wiring and command-shims are always
+	// omitted over MCP, so Complete is unreachable by design.
+	if res.Status != "partial" || res.Complete {
+		t.Errorf("status = %q complete = %v, want partial/false", res.Status, res.Complete)
 	}
-	m := result.(map[string]string)
-	if m["status"] != "initialized" {
-		t.Errorf("status = %q", m["status"])
+	if res.Project != "my-project" {
+		t.Errorf("project = %q", res.Project)
 	}
-	if m["project"] != "my-project" {
-		t.Errorf("project = %q", m["project"])
+	if len(res.Steps) == 0 {
+		t.Error("no step rows returned")
 	}
 
 	// Verify config file was created.
@@ -418,18 +464,37 @@ func TestInitProjectRelativePath(t *testing.T) {
 	}
 }
 
+// TestInitProjectAlreadyExists is INVERTED, deliberately, and the inversion is
+// the point of the change rather than a side effect of it.
+//
+// The handler used to refuse outright when .vibe-palace.toml existed. That
+// refusal is what prevented an MCP-only client from ever healing itself: the
+// tool wrote a two-line marker and two task directories, and then that marker
+// was the reason it would never touch the project again — and the CLI's own
+// marker gate said the same thing. The same setup must now SUCCEED and
+// reconcile.
 func TestInitProjectAlreadyExists(t *testing.T) {
 	sandboxHostEnv(t)
-	vault := storage.NewVault(t.TempDir())
+	vaultDir := t.TempDir()
+	vault := storage.NewVault(vaultDir)
 	tool := InitProjectTool(vault)
 
-	projDir := t.TempDir()
+	projDir := markProjectTree(t, filepath.Join(t.TempDir(), "test"))
 	configPath := filepath.Join(projDir, project.ConfigFileName)
 	os.WriteFile(configPath, []byte("[project]\nname = \"test\"\n"), 0644)
 
-	params, _ := json.Marshal(initParams{Path: projDir, Name: "test"})
-	if _, err := tool.Handler(context.Background(), params); err == nil {
-		t.Fatal("expected error for existing config")
+	res := callInit(t, tool, initParams{Path: projDir, Name: "test"})
+	if res.Project != "test" {
+		t.Errorf("project = %q", res.Project)
+	}
+	for _, row := range res.Steps {
+		if row.Status == "fail" {
+			t.Errorf("step %s failed: %s", row.Step, row.Summary)
+		}
+	}
+	// The vault scaffold the old refusal made unreachable.
+	if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "test", "config.toml")); err != nil {
+		t.Errorf("vault project config still missing after re-init: %v", err)
 	}
 }
 
@@ -438,16 +503,13 @@ func TestInitProjectAutoDetectName(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
 	tool := InitProjectTool(vault)
 
-	projDir := filepath.Join(t.TempDir(), "cool-app")
+	// Detection is allowed only behind the rooted-signal gate; see
+	// TestVpInit_RefusesNestedNonProject for the other half of that rule.
+	projDir := markProjectTree(t, filepath.Join(t.TempDir(), "cool-app"))
 
-	params, _ := json.Marshal(initParams{Path: projDir})
-	result, err := tool.Handler(context.Background(), params)
-	if err != nil {
-		t.Fatalf("handler: %v", err)
-	}
-	m := result.(map[string]string)
-	if m["project"] != "cool-app" {
-		t.Errorf("project = %q, want cool-app", m["project"])
+	res := callInit(t, tool, initParams{Path: projDir})
+	if res.Project != "cool-app" {
+		t.Errorf("project = %q, want cool-app", res.Project)
 	}
 }
 
@@ -800,4 +862,360 @@ func TestFormatDirtyVaultPushErrorCap(t *testing.T) {
 	if !strings.Contains(msg2, "a, b") {
 		t.Errorf("want paths joined: %q", msg2)
 	}
+}
+
+// TestVpInit_MCP_ProducesFullVaultScaffold asserts ON DISK what the tool used
+// to claim in a string.
+//
+// The old handler returned {"status":"initialized"} unconditionally, having
+// written a hand-rolled two-line .vibe-palace.toml and two task directories
+// with discarded mkdir errors. Projects/<slug>/config.toml and the
+// commands/skills scaffold were never created at all — and the marker it wrote
+// then told the CLI there was nothing left to do.
+func TestVpInit_MCP_ProducesFullVaultScaffold(t *testing.T) {
+	sandboxHostEnv(t)
+	vaultDir := t.TempDir()
+	tool := InitProjectTool(storage.NewVault(vaultDir))
+	projDir := markProjectTree(t, filepath.Join(t.TempDir(), "scaffolded"))
+
+	res := callInit(t, tool, initParams{Path: projDir, Name: "scaffolded"})
+	for _, row := range res.Steps {
+		if row.Status == "fail" {
+			t.Errorf("step %s failed: %s", row.Step, row.Summary)
+		}
+	}
+
+	root := filepath.Join(vaultDir, "Projects", "scaffolded")
+	for _, rel := range []string{
+		"config.toml",
+		filepath.Join("tasks", "done"),
+		filepath.Join("tasks", "cancelled"),
+		filepath.Join("commands", "README.md"),
+		filepath.Join("skills", "README.md"),
+	} {
+		if _, err := os.Stat(filepath.Join(root, rel)); err != nil {
+			t.Errorf("vault scaffold missing Projects/scaffolded/%s: %v", rel, err)
+		}
+	}
+}
+
+// TestVpInit_MCP_Idempotent: two identical calls, and the tree after the second
+// equals the tree after the first.
+func TestVpInit_MCP_Idempotent(t *testing.T) {
+	sandboxHostEnv(t)
+	vaultDir := t.TempDir()
+	tool := InitProjectTool(storage.NewVault(vaultDir))
+	projDir := markProjectTree(t, filepath.Join(t.TempDir(), "twice"))
+
+	p := initParams{Path: projDir, Name: "twice", Domain: "work"}
+	callInit(t, tool, p)
+	vault1 := initTreeSnapshot(t, vaultDir)
+	proj1 := initTreeSnapshot(t, projDir)
+
+	res2 := callInit(t, tool, p)
+	for _, row := range res2.Steps {
+		if row.Status == "fail" {
+			t.Errorf("second call step %s failed: %s", row.Step, row.Summary)
+		}
+	}
+	if d := initTreeDiff(vault1, initTreeSnapshot(t, vaultDir)); len(d) > 0 {
+		t.Errorf("second call changed the vault tree:\n  %s", strings.Join(d, "\n  "))
+	}
+	if d := initTreeDiff(proj1, initTreeSnapshot(t, projDir)); len(d) > 0 {
+		t.Errorf("second call changed the project tree:\n  %s", strings.Join(d, "\n  "))
+	}
+}
+
+// TestVpInit_DoesNotCreateProjectDir pins the deletion of os.MkdirAll(p.Path).
+//
+// That one line is what made remote misuse SILENT: a caller naming a path that
+// does not exist on the server got a directory conjured into being on the
+// server's disk, plus a success string, and no indication that the project they
+// meant lives on a different machine entirely.
+func TestVpInit_DoesNotCreateProjectDir(t *testing.T) {
+	sandboxHostEnv(t)
+	vaultDir := t.TempDir()
+	tool := InitProjectTool(storage.NewVault(vaultDir))
+	projDir := filepath.Join(t.TempDir(), "never-created")
+
+	res := callInit(t, tool, initParams{Path: projDir, Name: "never-created"})
+
+	if _, err := os.Stat(projDir); !os.IsNotExist(err) {
+		t.Errorf("handler created %s on the server's disk (stat err = %v)", projDir, err)
+	}
+	// The vault side still ran.
+	if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "never-created", "config.toml")); err != nil {
+		t.Errorf("vault side did not run: %v", err)
+	}
+	// And EVERY working-tree step is accounted for as an omission.
+	omitted := map[string]bool{}
+	for _, om := range res.Omitted {
+		omitted[om.Step] = true
+	}
+	for _, st := range onboard.Steps() {
+		if st.Side == onboard.SideVault {
+			continue
+		}
+		if !omitted[st.Name] {
+			t.Errorf("step %q writes %s but was not reported as omitted", st.Name, st.Side)
+		}
+	}
+}
+
+// TestVpInit_RefusesNestedNonProject is the slug gate.
+//
+// project.DetectProject walks UPWARD until the home boundary. Without the
+// rooted-signal gate, vp_init{path: "<tmp>/repo/vendor/x"} fails the
+// working-tree gate for vendor/x and still writes vault artifacts under the
+// ANCESTOR's slug — a whole project's worth of vault state created under a name
+// the caller never asked for.
+func TestVpInit_RefusesNestedNonProject(t *testing.T) {
+	sandboxHostEnv(t)
+	vaultDir := t.TempDir()
+	tool := InitProjectTool(storage.NewVault(vaultDir))
+
+	tmp := t.TempDir()
+	repo := markProjectTree(t, filepath.Join(tmp, "repo"))
+	if err := os.WriteFile(filepath.Join(repo, project.ConfigFileName),
+		[]byte("[project]\nname = \"repo\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(repo, "vendor", "x")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("no-name-is-refused", func(t *testing.T) {
+		params, _ := json.Marshal(initParams{Path: nested})
+		if _, err := tool.Handler(context.Background(), params); err == nil {
+			t.Fatal("expected a refusal: the slug would have been walked up to from the ancestor")
+		} else if !strings.Contains(err.Error(), "name is required") {
+			t.Errorf("refusal does not say what the caller must supply: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "repo")); !os.IsNotExist(err) {
+			t.Errorf("vault artifacts written under the ANCESTOR's slug (stat err = %v)", err)
+		}
+	})
+
+	t.Run("explicit-name-omits-the-working-tree", func(t *testing.T) {
+		res := callInit(t, tool, initParams{Path: nested, Name: "vendored"})
+		omitted := map[string]bool{}
+		for _, om := range res.Omitted {
+			omitted[om.Step] = true
+		}
+		for _, st := range onboard.Steps() {
+			if st.Side == onboard.SideVault {
+				continue
+			}
+			if !omitted[st.Name] {
+				t.Errorf("step %q was not omitted for a non-project path", st.Name)
+			}
+		}
+		entries, err := os.ReadDir(nested)
+		if err != nil {
+			t.Fatalf("read %s: %v", nested, err)
+		}
+		if len(entries) != 0 {
+			var names []string
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			t.Errorf("handler wrote into a non-project directory: %v", names)
+		}
+		if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "repo")); !os.IsNotExist(err) {
+			t.Errorf("vault artifacts written under the ANCESTOR's slug (stat err = %v)", err)
+		}
+	})
+}
+
+// TestVpInit_NeverWritesHostGlobal is the SideHostGlobal contract, asserted at
+// the tool boundary rather than in internal/onboard.
+//
+// Over MCP, ~/.claude/settings.json is the SERVER OPERATOR's file, never the
+// caller's. Both the step that writes it and the step that merely READS it to
+// decide what to write into the caller's project must be omitted.
+func TestVpInit_NeverWritesHostGlobal(t *testing.T) {
+	sandboxHostEnv(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	settings := filepath.Join(home, ".claude", "settings.json")
+
+	tool := InitProjectTool(storage.NewVault(t.TempDir()))
+	projDir := markProjectTree(t, filepath.Join(t.TempDir(), "hostsafe"))
+	res := callInit(t, tool, initParams{Path: projDir, Name: "hostsafe"})
+
+	if _, err := os.Stat(settings); !os.IsNotExist(err) {
+		t.Errorf("vp_init touched the host's %s (stat err = %v)", settings, err)
+	}
+	omitted := map[string]bool{}
+	for _, om := range res.Omitted {
+		omitted[om.Step] = true
+	}
+	for _, want := range []string{"hook-wiring", "command-shims"} {
+		if !omitted[want] {
+			t.Errorf("step %q is not in Omitted: %v", want, omittedSteps(res))
+		}
+	}
+}
+
+// TestVpInit_VaultOnly_ReportsIncomplete: the expected set is DERIVED from
+// onboard.Steps(), never spelled out. A literal list would keep passing after
+// someone added a ninth step that writes the caller's working tree.
+func TestVpInit_VaultOnly_ReportsIncomplete(t *testing.T) {
+	wantOmitted := func() map[string]bool {
+		out := map[string]bool{}
+		for _, st := range onboard.Steps() {
+			if st.Side == onboard.SideWorkingTree || st.Side == onboard.SideHostGlobal || st.ReadsHostGlobal {
+				out[st.Name] = true
+			}
+		}
+		return out
+	}()
+
+	cases := []struct {
+		name  string
+		build func(t *testing.T) initParams
+	}{
+		{"no-path", func(*testing.T) initParams { return initParams{Name: "x"} }},
+		{"non-project-path", func(t *testing.T) initParams {
+			dir := t.TempDir() // exists, but carries no project signal
+			return initParams{Path: filepath.Join(dir, "plain"), Name: "x"}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sandboxHostEnv(t)
+			vaultDir := t.TempDir()
+			tool := InitProjectTool(storage.NewVault(vaultDir))
+
+			res := callInit(t, tool, tc.build(t))
+			if res.Complete {
+				t.Error("complete = true; a surface that cannot write the working tree is not done")
+			}
+			if res.Status != "partial" {
+				t.Errorf("status = %q, want partial", res.Status)
+			}
+			got := map[string]bool{}
+			for _, om := range res.Omitted {
+				got[om.Step] = true
+			}
+			for step := range wantOmitted {
+				if !got[step] {
+					t.Errorf("step %q must be omitted on a vault-only call; got %v", step, omittedSteps(res))
+				}
+			}
+			// The vault side still ran and produced its artifacts.
+			if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "x", "config.toml")); err != nil {
+				t.Errorf("vault side did not run: %v", err)
+			}
+		})
+	}
+}
+
+// TestVpInitDescription_NamesEveryOmittedClass makes the Description carry its
+// own weight.
+//
+// An agent reads Description, not this test file. A tool whose result says
+// "omitted: hook-wiring" and whose Description never mentions that host-global
+// state is off the table forces the agent to discover the boundary by being
+// surprised at it.
+//
+// The per-step phrases live in a table the test itself checks for coverage, so
+// adding a step that ScopeForMCP can exclude fails here until the Description
+// says something about it.
+func TestVpInitDescription_NamesEveryOmittedClass(t *testing.T) {
+	desc := InitProjectTool(storage.NewVault(t.TempDir())).Description
+
+	// One required phrase per step ScopeForMCP can exclude.
+	want := map[string][]string{
+		"cwd-project":          {".vibe-palace.toml"},
+		"agent-wiring":         {"AGENTS.md"},
+		"command-shims":        {"vpc-*.md", "reading that same home"},
+		"hook-wiring":          {"~/.claude/settings.json", "never"},
+		"project-gitignore":    {".gitignore"},
+		"git-post-commit-hook": {"commit.msg"},
+	}
+
+	for _, st := range onboard.Steps() {
+		excludable := st.Side != onboard.SideVault || st.ReadsHostGlobal
+		if !excludable {
+			continue
+		}
+		phrases, ok := want[st.Name]
+		if !ok {
+			t.Errorf("step %q can be excluded by ScopeForMCP but this test names no phrase for it — "+
+				"add one AND make sure vp_init's Description says something about it", st.Name)
+			continue
+		}
+		for _, ph := range phrases {
+			if !strings.Contains(desc, ph) {
+				t.Errorf("Description does not mention %q for omitted step %q:\n%s", ph, st.Name, desc)
+			}
+		}
+	}
+
+	// And the two things an agent must not key off the wrong field for.
+	for _, ph := range []string{"complete", "omitted", "vp commands upgrade", "vp skills upgrade"} {
+		if !strings.Contains(desc, ph) {
+			t.Errorf("Description does not mention %q:\n%s", ph, desc)
+		}
+	}
+}
+
+// initTreeSnapshot maps every path under root to a content digest, EXCLUDING
+// .surface: that file stamps a timestamp and the writing binary's identity, so
+// it differs between two runs by construction.
+func initTreeSnapshot(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, rerr := filepath.Rel(root, p)
+		if rerr != nil {
+			return rerr
+		}
+		if rel == "." {
+			return nil
+		}
+		if d.IsDir() {
+			out[filepath.ToSlash(rel)+"/"] = "<dir>"
+			return nil
+		}
+		if d.Name() == ".surface" {
+			return nil
+		}
+		data, readErr := os.ReadFile(p)
+		if readErr != nil {
+			return readErr
+		}
+		sum := sha256.Sum256(data)
+		out[filepath.ToSlash(rel)] = hex.EncodeToString(sum[:])
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot %s: %v", root, err)
+	}
+	return out
+}
+
+func initTreeDiff(before, after map[string]string) []string {
+	var out []string
+	for k, v := range after {
+		if old, ok := before[k]; !ok {
+			out = append(out, "added: "+k)
+		} else if old != v {
+			out = append(out, "changed: "+k)
+		}
+	}
+	for k := range before {
+		if _, ok := after[k]; !ok {
+			out = append(out, "removed: "+k)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

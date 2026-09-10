@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -20,6 +19,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/onboard"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
@@ -40,52 +40,131 @@ type initParams struct {
 	Tags   []string `json:"tags,omitempty"`
 }
 
+// initSchema deliberately marks NOTHING required.
+//
+// `path` used to be required, which encoded the wrong model: the server's
+// filesystem is not the caller's, so a path is a claim about THIS machine that
+// the caller usually cannot verify. It is optional now, and when it is absent
+// (or names something that is not a project) the vault side still runs and
+// every working-tree step is reported as an Omission. `name` becomes required
+// in exactly that case, because the slug can no longer be detected and must
+// never be walked up to from an ancestor.
 var initSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"path":   {"type": "string", "description": "Absolute path to the project directory."},
-		"name":   {"type": "string", "description": "Project name slug (default: auto-detect)."},
+		"path":   {"type": "string", "description": "Absolute path to a project directory. It must already be an existing project directory on the server's filesystem — this tool never creates it, and it must carry .vibe-palace.toml, .git or a known manifest in that directory ITSELF. Omit it to run vault-side onboarding only."},
+		"name":   {"type": "string", "description": "Project name slug. Required when path is omitted or does not name a project directory on the server; the slug is never inferred from an ancestor directory."},
 		"domain": {"type": "string", "description": "Domain (e.g. work, personal, opensource)."},
 		"tags":   {"type": "array", "items": {"type": "string"}, "description": "Project tags."}
-	},
-	"required": ["path"]
+	}
 }`)
+
+// initStepRow is one onboarding step's rendered outcome.
+type initStepRow struct {
+	Step    string   `json:"step"`
+	Name    string   `json:"name"`
+	Status  string   `json:"status"`
+	Summary string   `json:"summary"`
+	Details []string `json:"details,omitempty"`
+}
+
+// initOmissionRow is one step this SURFACE may not run, with the remedy.
+type initOmissionRow struct {
+	Step   string `json:"step"`
+	Side   string `json:"side"`
+	Reason string `json:"reason"`
+	Remedy string `json:"remedy"`
+}
+
+// initAdvisoryRow is run-level guidance belonging to no single step.
+type initAdvisoryRow struct {
+	Name    string   `json:"name"`
+	Summary string   `json:"summary"`
+	Details []string `json:"details,omitempty"`
+}
+
+// initResult is what vp_init returns.
+//
+// The old result was map[string]string{"status": "initialized", ...},
+// unconditionally, whatever the handler had actually managed to write. That
+// unconditional success claim is the defect this tool's rewrite exists to
+// delete; the missing scaffold was only its symptom.
+type initResult struct {
+	Status   string `json:"status"`
+	Project  string `json:"project"`
+	Path     string `json:"path,omitempty"`
+	Complete bool   `json:"complete"`
+	// Steps and Omitted together account for EVERY step in
+	// onboard.Steps(); onboard.Run refuses to return a Result where they do
+	// not.
+	Steps      []initStepRow     `json:"steps"`
+	Omitted    []initOmissionRow `json:"omitted"`
+	Advisories []initAdvisoryRow `json:"advisories,omitempty"`
+}
 
 func InitProjectTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name:        "vp_init",
-		Mutating:    true,
-		Description: "Initialize a new vibe-palace project: create .vibe-palace.toml and vault directories.",
-		Schema:      initSchema,
-		Handler:     initProjectHandler(vault),
+		Name:     "vp_init",
+		Mutating: true,
+		Description: "Onboard a project into THIS server's vault. Vault-side onboarding " +
+			"(Projects/<slug>/config.toml, tasks/{done,cancelled}, and the " +
+			"commands/ + skills/ scaffold) always runs. Working-tree steps — " +
+			".vibe-palace.toml, the AGENTS.md/CLAUDE.md managed block, the project " +
+			".gitignore and the commit.msg git hook — run ONLY when `path` names a " +
+			"directory that is already a project on the SERVER's filesystem; this " +
+			"tool never creates that directory and never walks up to an ancestor to " +
+			"find one. Host-global state is NEVER written: hook wiring rewrites " +
+			"~/.claude/settings.json, which over MCP is the server operator's home " +
+			"rather than yours, and the .claude/commands/vpc-*.md command shims " +
+			"decide what to emit by reading that same home, so both are always " +
+			"omitted. Upgrading is a different job and a different command: agent " +
+			"files and shims are `vp commands upgrade`'s (it also removes stale " +
+			"shims, which onboarding never does), and vault Templates/skills " +
+			"belongs to `vp skills upgrade`. Returns {status, project, complete, " +
+			"steps[], omitted[], advisories[]} where each omitted entry carries the " +
+			"verbatim command, the host it must run on, and the artifact that is " +
+			"still missing. KEY OFF `complete` AND `omitted`, NOT `status`: over " +
+			"MCP at least two steps are always omitted, so `status` is `partial` on " +
+			"every successful call and `initialized` is unreachable by design.",
+		Schema:  initSchema,
+		Handler: initProjectHandler(vault),
 	}
 }
 
 func initProjectHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p initParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
 		}
-		if p.Path == "" {
-			return nil, fmt.Errorf("path is required")
-		}
-		if !filepath.IsAbs(p.Path) {
-			return nil, fmt.Errorf("path must be absolute, got %q", p.Path)
-		}
-		if strings.Contains(p.Path, "..") {
-			return nil, fmt.Errorf("path must not contain '..'")
+		if p.Path != "" {
+			if !filepath.IsAbs(p.Path) {
+				return nil, fmt.Errorf("path must be absolute, got %q", p.Path)
+			}
+			if hasDotDotSegment(p.Path) {
+				return nil, fmt.Errorf("path must not contain a '..' segment, got %q", p.Path)
+			}
 		}
 
-		configPath := filepath.Join(p.Path, project.ConfigFileName)
-		if _, err := os.Stat(configPath); err == nil {
-			return nil, fmt.Errorf("%s already exists at %s", project.ConfigFileName, p.Path)
-		}
+		// THE GATE, and it must come before any use of p.Path for identity.
+		//
+		// project.DetectProject walks UPWARD until it hits the home boundary, so
+		// asking it for a slug at a path that is not itself a project answers
+		// with an ANCESTOR's slug. Without this, vp_init {path: ".../repo/vendor/x"}
+		// fails the rooted-signal gate for the working tree and still writes
+		// vault artifacts under the enclosing repo's name.
+		rooted := project.HasRootedSignal(p.Path)
 
 		name := p.Name
 		if name == "" {
-			detected, err := project.DetectProject(p.Path)
-			if err == nil {
+			if !rooted {
+				return nil, fmt.Errorf(
+					"name is required: %q is not a project directory on this server "+
+						"(no .vibe-palace.toml, .git or known manifest in that directory itself), "+
+						"so the project slug cannot be detected — pass an explicit name",
+					p.Path)
+			}
+			if detected, derr := project.DetectProject(p.Path); derr == nil && detected != "" {
 				name = detected
 			} else {
 				name = filepath.Base(p.Path)
@@ -95,35 +174,73 @@ func initProjectHandler(vault *storage.Vault) mcp.HandlerFunc {
 			return nil, fmt.Errorf("invalid project name %q: %w", name, err)
 		}
 
-		// Write .vibe-palace.toml.
-		content := fmt.Sprintf("[project]\nname = %q\n", name)
-		if p.Domain != "" {
-			content += fmt.Sprintf("domain = %q\n", p.Domain)
+		req := onboard.Request{
+			// The vault this server was STARTED against, never one re-resolved
+			// from p.Path: that binding is the whole premise of the tool.
+			OpenVault:  func() (*storage.Vault, error) { return vault, nil },
+			Slug:       name,
+			ProjectDir: p.Path,
+			Domain:     p.Domain,
+			Tags:       p.Tags,
 		}
-		if len(p.Tags) > 0 {
-			quoted := make([]string, len(p.Tags))
-			for i, tag := range p.Tags {
-				quoted[i] = fmt.Sprintf("%q", tag)
-			}
-			content += fmt.Sprintf("tags = [%s]\n", strings.Join(quoted, ", "))
-		}
-
-		if err := os.MkdirAll(p.Path, 0755); err != nil {
-			return nil, fmt.Errorf("create project dir: %w", err)
-		}
-		if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
-			return nil, fmt.Errorf("write config: %w", err)
+		res, err := onboard.Run(ctx, req, onboard.ScopeForMCP(req))
+		if err != nil {
+			// An accounting failure: some step produced neither an outcome nor
+			// an omission. That is the one shape a result table cannot show, so
+			// it is an error rather than a partial result.
+			return nil, fmt.Errorf("onboard: %w", err)
 		}
 
-		// Create vault directories.
-		tasksDir, err := vault.TasksDir(name)
-		if err == nil {
-			os.MkdirAll(filepath.Join(tasksDir, "done"), 0755)
-			os.MkdirAll(filepath.Join(tasksDir, "cancelled"), 0755)
+		out := initResult{
+			Status:   "partial",
+			Project:  res.Slug,
+			Path:     p.Path,
+			Complete: res.Complete,
+			Steps:    make([]initStepRow, 0, len(res.Outcomes)),
+			Omitted:  make([]initOmissionRow, 0, len(res.Omitted)),
 		}
-
-		return map[string]string{"status": "initialized", "project": name, "path": p.Path}, nil
+		if res.Complete {
+			out.Status = "initialized"
+		}
+		for _, oc := range res.Outcomes {
+			out.Steps = append(out.Steps, initStepRow{
+				Step:    oc.Step,
+				Name:    oc.Name,
+				Status:  checkStatusString(oc.Status),
+				Summary: oc.Summary,
+				Details: oc.Details,
+			})
+		}
+		for _, om := range res.Omitted {
+			out.Omitted = append(out.Omitted, initOmissionRow{
+				Step:   om.Step,
+				Side:   om.Side.String(),
+				Reason: om.Reason,
+				Remedy: om.Remedy,
+			})
+		}
+		for _, ad := range res.Advisories {
+			out.Advisories = append(out.Advisories, initAdvisoryRow{
+				Name:    ad.Name,
+				Summary: ad.Summary,
+				Details: ad.Details,
+			})
+		}
+		return out, nil
 	}
+}
+
+// hasDotDotSegment reports whether p contains a ".." PATH SEGMENT.
+//
+// The predicate used to be strings.Contains(p, ".."), which refuses legitimate
+// paths like /home/x/foo..bar while catching nothing a segment check misses.
+func hasDotDotSegment(p string) bool {
+	for seg := range strings.SplitSeq(filepath.ToSlash(p), "/") {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

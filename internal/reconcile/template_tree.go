@@ -5,7 +5,9 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -542,14 +544,35 @@ func (r *TemplateTreeReconciler) applyScaffold(p Plan) (Report, error) {
 					rep.Errors = append(rep.Errors, fmt.Errorf("unknown readme kind for %s", a.Target))
 					continue
 				}
-				// Write-if-absent only; race-safety via O_EXCL would be
-				// nicer, but scaffold mode runs serially per reconciler.
-				if _, err := os.Stat(a.Target); err == nil {
-					rep.Unchanged++
+				// Write-if-absent, and the absence check IS the write.
+				//
+				// This used to be a stat/WriteFile pair, with a comment saying
+				// "race-safety via O_EXCL would be nicer, but scaffold mode
+				// runs serially per reconciler". That premise was already
+				// thin, and it is now false outright: `vp init` and the vp_init
+				// MCP tool both drive internal/onboard, so two processes can
+				// scaffold the same Projects/<slug> concurrently and interleave
+				// between the stat and the write. O_EXCL is the option the old
+				// comment named and declined; take it.
+				//
+				// EEXIST is the concurrent-loser path and counts as Unchanged
+				// rather than an error — the other writer created the same
+				// stub, which is the outcome this branch wanted anyway.
+				f, err := os.OpenFile(a.Target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+				if err != nil {
+					if errors.Is(err, fs.ErrExist) {
+						rep.Unchanged++
+						continue
+					}
+					rep.Errors = append(rep.Errors, fmt.Errorf("write %s: %w", a.Target, err))
 					continue
 				}
-				if err := os.WriteFile(a.Target, []byte(body), 0o644); err != nil {
-					rep.Errors = append(rep.Errors, fmt.Errorf("write %s: %w", a.Target, err))
+				_, werr := f.Write([]byte(body))
+				if cerr := f.Close(); werr == nil {
+					werr = cerr
+				}
+				if werr != nil {
+					rep.Errors = append(rep.Errors, fmt.Errorf("write %s: %w", a.Target, werr))
 					continue
 				}
 				stampVaultWrite(r.vaultRoot, a.Target)

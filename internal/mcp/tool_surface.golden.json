@@ -134,7 +134,7 @@
     {
       "name": "vp_init",
       "mutating": true,
-      "schema_sha256": "cb5f4cce83aefdb05fe5af6d450e4b7d57a0f6f111220916efd78eeef35391d2"
+      "schema_sha256": "60326541ce12efa27873dc7a2ae1ff3b9abbe037539ac19d1da7e5d435ad189b"
     },
     {
       "name": "vp_kg_add",

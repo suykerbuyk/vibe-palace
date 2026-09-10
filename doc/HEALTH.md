@@ -367,7 +367,7 @@ for a second layer of tests beyond the existing lower-layer asserts.
 tools per test, matching what an agent does in a real session:
 
 1. `TestJourney_NewProject_Bootstrap_Capture_Search`
-   — `vp_init_project` → `vp_bootstrap_context` → `vp_capture_session`
+   — `vp_init` → `vp_bootstrap_context` → `vp_capture_session`
    → `vp_search` finds the captured content.
 2. `TestJourney_CommandDiscovery_And_Execution`
    — `vp_bootstrap_context` → `vp_list_commands` → `vp_get_command`
