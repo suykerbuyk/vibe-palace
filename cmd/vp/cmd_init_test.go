@@ -467,6 +467,22 @@ func captureStdout(t *testing.T, fn func()) string {
 
 // TestInitStatusTableRendered verifies that vp init writes a status table
 // with the expected [pass|skip] rows and summary line to stdout.
+//
+// # The byte-compatibility promise was dropped when onboarding moved to
+// # internal/onboard, and these are the rows that changed
+//
+// The step table made three things visible that the old inline orchestration
+// hid, and each is asserted below rather than left to be discovered:
+//
+//  1. VAULT-PROJECT IS ITS OWN ROW. It used to be a Details line appended to
+//     the Project config row, and ONLY on failure — a successful
+//     vault-project write rendered nothing at all. It is a Step now, so it
+//     gets a row in both directions.
+//  2. PROJECT-SCAFFOLD GAINS A SKIP. It already had a "Project templates" row,
+//     but when vault-project failed the old code simply did not render one
+//     (cmd_init.go's `if vaultProjectOK` guard). With Needs it produces a Skip
+//     naming the prerequisite.
+//  3. A RE-INIT REPORTS THREE OMISSIONS. See TestInitFreshThenIdempotent.
 func TestInitStatusTableRendered(t *testing.T) {
 	initTestEnv(t, false)
 	projDir := t.TempDir()
@@ -486,6 +502,13 @@ func TestInitStatusTableRendered(t *testing.T) {
 		"[pass] Vault",
 		"[pass] Project config",
 		"go.mod detected",
+		// CHANGED: promoted from a failure-only Details line on Project config
+		// to a row of its own, present on success too.
+		"[pass] Vault project",
+		"Projects/alpha/config.toml",
+		// Unchanged in the happy path — pinned here because change (2) above
+		// gives this row a second, Skip spelling.
+		"[pass] Project templates",
 		// init manages AGENTS.md as a host-local bootstrap shim, so even a
 		// fresh tmpdir reports an Agent wiring row for it. The copilot
 		// candidate still produces a [skip] row (.github/ absent).
@@ -545,8 +568,30 @@ func TestInitFreshThenIdempotent(t *testing.T) {
 	if !strings.Contains(out2, "[info] Global config") {
 		t.Errorf("stage 2 missing [info] Global config row:\n%s", out2)
 	}
-	if !strings.Contains(out2, "[info] Project config") {
-		t.Errorf("stage 2 missing [info] Project config row:\n%s", out2)
+	// CHANGED, deliberately: the re-init branch used to render ONE [info]
+	// Project config row and nothing else about project config. The marker
+	// gate now declares the three project-config steps as onboard Omissions
+	// instead of returning early, so all three are ACCOUNTED FOR — each gets a
+	// [skip] row naming the command, the host and the artifact. The behaviour
+	// is identical (nothing is re-touched); what changed is that the run says
+	// so out loud instead of producing a silently shorter table.
+	for _, want := range []string{
+		"[skip] Project config",
+		"(already exists, skipped)",
+		"[skip] Vault project",
+		"[skip] Project templates",
+		"vp config sync --tier project --cwd",
+	} {
+		if !strings.Contains(out2, want) {
+			t.Errorf("stage 2 missing %q:\n%s", want, out2)
+		}
+	}
+	// The five downstream steps still RUN on a re-init — that is what makes
+	// `vp init` idempotent rather than inert.
+	for _, want := range []string{"Agent wiring", "Slash-command shims", "Project .gitignore"} {
+		if !strings.Contains(out2, want) {
+			t.Errorf("stage 2 missing downstream row %q:\n%s", want, out2)
+		}
 	}
 }
 

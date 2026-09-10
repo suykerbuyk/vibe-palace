@@ -13,15 +13,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
-	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
-	"github.com/suykerbuyk/vibe-palace/internal/hook"
-	"github.com/suykerbuyk/vibe-palace/internal/plugin"
+	"github.com/suykerbuyk/vibe-palace/internal/onboard"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/reconcile"
-	"github.com/suykerbuyk/vibe-palace/internal/shims"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -81,32 +77,33 @@ func cmdInit(info cli.BuildInfo) *cli.Command {
 				return globalCode
 			}
 
-			// --- Phase 2: Project init (if appropriate) ---
-			projectDir, projectReady, projectResults, projectCode := initProject(fv)
+			// --- Phases 2-6: project onboarding ---
+			// One call, not five: internal/onboard owns the step table, the
+			// order, the prerequisites and — the reason it exists — which
+			// SURFACE each step writes, so a non-CLI caller can be denied a
+			// step out loud instead of quietly doing less.
+			req, preOmitted, projectResults, projectCode, proceed := initProject(fv)
 			results = append(results, projectResults...)
+			if !proceed {
+				printInitStatus(os.Stdout, info.Version, results)
+				return projectCode
+			}
 
-			// --- Phase 2: Agent-file wiring ---
-			results = append(results, initAgentWiring(projectDir, projectReady)...)
-
-			// --- Phase 3: Slash-command shim emission ---
-			results = append(results, initShimWiring(projectDir, projectReady)...)
-
-			// --- Phase 4: Hook wiring ---
-			results = append(results, initHookWiring(projectDir, projectReady)...)
-
-			// --- Phase 5: Project-root .gitignore reconcile ---
-			// vp writes host-local AI artifacts (CLAUDE.md, .claude/, .grok/,
-			// .vibe-palace/, commit.msg) into the project tree; none should be
-			// committed. Reconcile the project repo-root .gitignore so they are
-			// ignored. Non-fatal: a failure here must not abort init.
-			results = append(results, initProjectGitignore(projectDir, projectReady))
-
-			// --- Phase 6: Git post-commit hook (commit.msg reaper) ---
-			// vp hands the operator `git commit -F commit.msg && rm
-			// commit.msg`; the hook makes the removal happen when they omit
-			// the `&& rm`. Non-fatal, and every refusal is a row, not an
-			// abort.
-			results = append(results, initGitPostCommitHook(projectDir, projectReady))
+			res, err := onboard.Run(context.Background(), req, onboard.ScopeCLI, preOmitted...)
+			if err != nil {
+				// An accounting failure, never a step failure. It means a step
+				// fell through every branch and produced no row at all, which
+				// is the one outcome a status table cannot show.
+				results = append(results, check.Result{
+					Name: "Onboarding", Status: check.Fail, Summary: err.Error(),
+				})
+				printInitStatus(os.Stdout, info.Version, results)
+				return cli.ExitSystem
+			}
+			results = append(results, onboard.Rows(res)...)
+			if stepFailed(res, "cwd-project") {
+				projectCode = cli.ExitSystem
+			}
 
 			printInitStatus(os.Stdout, info.Version, results)
 			return projectCode
@@ -307,14 +304,18 @@ func errOrFirst(err error, errs []error) string {
 	return ""
 }
 
-// initProject creates a .vibe-palace.toml in the target directory if project
-// signals are present. Returns the resolved project dir, whether the project
-// is ready for downstream wiring (config present or just created), one or
-// more status rows, and an exit code. The cwd-project and vault-project
-// writes are delegated to the CwdProject and VaultProject reconcilers; this
-// function still owns project-signal detection and the [pass|info|skip]
-// row vocabulary that init has always rendered.
-func initProject(fv *cli.FlagValues) (string, bool, []check.Result, int) {
+// initProject resolves the project directory, applies the two gates that
+// decide whether onboarding may run there at all, resolves identity, and
+// builds the onboard.Request the step table is driven with.
+//
+// It performs NO writes of its own any more: cwd-project, vault-project and
+// project-scaffold are steps in internal/onboard, alongside the five wiring
+// steps that used to be phases 2-6 below.
+//
+// Returns the request, any Omissions the CALLER has already accounted for, the
+// rows produced before onboarding starts, an exit code, and whether onboarding
+// should run at all.
+func initProject(fv *cli.FlagValues) (onboard.Request, []onboard.Omission, []check.Result, int, bool) {
 	var results []check.Result
 
 	dir := "."
@@ -324,8 +325,13 @@ func initProject(fv *cli.FlagValues) (string, bool, []check.Result, int) {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		results = append(results, check.Result{Name: "Project config", Status: check.Fail, Summary: err.Error()})
-		return dir, false, results, cli.ExitSystem
+		return onboard.Request{}, nil, results, cli.ExitSystem, false
 	}
+
+	// The one vault resolver every step shares. It walks up from the PROJECT
+	// directory rather than the process cwd — see the comment on the shim step
+	// in internal/onboard/steps.go.
+	openVault := func() (*storage.Vault, error) { return OpenProjectVaultAt(dir) }
 
 	signal := project.DetectSignal(dir)
 	if signal == project.SignalNone {
@@ -334,7 +340,7 @@ func initProject(fv *cli.FlagValues) (string, bool, []check.Result, int) {
 			Status:  check.Skip,
 			Summary: "not a project directory (no .git, .vibe-palace.toml, or known manifest)",
 		})
-		return dir, false, results, cli.ExitOK
+		return onboard.Request{}, nil, results, cli.ExitOK, false
 	}
 
 	configPath := filepath.Join(dir, project.ConfigFileName)
@@ -343,12 +349,14 @@ func initProject(fv *cli.FlagValues) (string, bool, []check.Result, int) {
 		// Don't re-touch vault-project artifacts here; that's `vp config
 		// sync`'s job and the existing init contract treats this branch as
 		// a no-op.
-		results = append(results, check.Result{
-			Name:    "Project config",
-			Status:  check.Info,
-			Summary: configPath + " (already exists, skipped)",
-		})
-		return dir, true, results, cli.ExitOK
+		//
+		// Expressed as Omissions rather than as a bare early return so the
+		// three steps stay ACCOUNTED FOR: onboard.Run refuses a run in which
+		// a step is neither an outcome nor an omission, and the operator gets
+		// told where to go instead of silently getting a shorter table.
+		name, _ := project.DetectProject(dir)
+		req := onboard.Request{OpenVault: openVault, Slug: name, ProjectDir: dir}
+		return req, alreadyConfigured(dir, configPath), results, cli.ExitOK, true
 	}
 
 	name := fv.Get("--name")
@@ -364,11 +372,13 @@ func initProject(fv *cli.FlagValues) (string, bool, []check.Result, int) {
 			Status:  check.Fail,
 			Summary: fmt.Sprintf("invalid project name %q: %v", name, err),
 		})
-		return dir, false, results, cli.ExitUser
+		return onboard.Request{}, nil, results, cli.ExitUser, false
 	}
 
 	var vaultPathOverride string
 	if vp := fv.Get("--vault-path"); vp != "" {
+		// expandAndAbsPath stays CLI-side: --vault-path is a flag, and four
+		// other cmd/vp callers use it.
 		expanded, err := expandAndAbsPath(vp)
 		if err != nil {
 			results = append(results, check.Result{
@@ -376,7 +386,7 @@ func initProject(fv *cli.FlagValues) (string, bool, []check.Result, int) {
 				Status:  check.Fail,
 				Summary: "resolve --vault-path: " + err.Error(),
 			})
-			return dir, false, results, cli.ExitUser
+			return onboard.Request{}, nil, results, cli.ExitUser, false
 		}
 		vaultPathOverride = expanded
 	}
@@ -390,453 +400,55 @@ func initProject(fv *cli.FlagValues) (string, bool, []check.Result, int) {
 		}
 	}
 
-	ctx := context.Background()
-
-	// --- CwdProject reconciler ---
-	cw := reconcile.NewCwdProject(dir, reconcile.CwdProjectSeed{
-		Name:              name,
+	return onboard.Request{
+		OpenVault:         openVault,
+		Slug:              name,
+		ProjectDir:        dir,
 		Domain:            fv.Get("--domain"),
 		Tags:              tagsList,
 		VaultPathOverride: vaultPathOverride,
-	}.WithCreate())
-	cwPlan, err := cw.Plan(ctx)
-	if err != nil {
-		results = append(results, check.Result{Name: "Project config", Status: check.Fail, Summary: err.Error()})
-		return dir, false, results, cli.ExitSystem
-	}
-	if rep, err := cw.Apply(ctx, cwPlan); err != nil || len(rep.Errors) > 0 {
-		results = append(results, check.Result{
-			Name: "Project config", Status: check.Fail,
-			Summary: errOrFirst(err, rep.Errors),
-		})
-		return dir, false, results, cli.ExitSystem
-	}
-
-	row := check.Result{
-		Name:    "Project config",
-		Status:  check.Pass,
-		Summary: fmt.Sprintf("%s (%s, %s detected)", configPath, name, signal),
-	}
-
-	// --- VaultProject reconciler --- best-effort, mirrors prior behavior:
-	// failures here are surfaced as a Detail line, not as a row failure.
-	var scaffoldRow *check.Result
-	if vault, verr := storage.OpenVaultFromCwd(dir); verr == nil {
-		vp := reconcile.NewVaultProject(vault, name)
-		vpPlan, perr := vp.Plan(ctx)
-		vaultProjectOK := true
-		if perr != nil {
-			slog.Error("vault-project plan", "project", name, "err", perr)
-			row.Details = append(row.Details, "vault-project config write failed — see logs")
-			vaultProjectOK = false
-		} else {
-			rep, aerr := vp.Apply(ctx, vpPlan)
-			if aerr != nil {
-				slog.Error("vault-project apply", "project", name, "err", aerr)
-				row.Details = append(row.Details, "vault-project config write failed — see logs")
-				vaultProjectOK = false
-			}
-			for _, e := range rep.Errors {
-				slog.Error("vault-project apply error", "project", name, "err", e)
-				row.Details = append(row.Details, "vault-project config write failed — see logs")
-				vaultProjectOK = false
-				break
-			}
-		}
-
-		// Phase 4: scaffold Projects/<name>/{commands,skills}/ + READMEs.
-		// Best-effort — scaffold failure shouldn't block init of the
-		// project config itself; surface as an Info row and log details.
-		if vaultProjectOK {
-			tt := reconcile.NewTemplateTree(vault.Root, "Projects/"+name, reconcile.TemplateTreeSeed{
-				Mode:       reconcile.TemplateModeScaffold,
-				AutoAccept: true,
-			})
-			ttPlan, ttErr := tt.Plan(ctx)
-			if ttErr != nil {
-				slog.Error("project scaffold plan", "project", name, "err", ttErr)
-				scaffoldRow = &check.Result{
-					Name:    "Project templates",
-					Status:  check.Info,
-					Summary: fmt.Sprintf("scaffold plan failed: %v", ttErr),
-				}
-			} else {
-				ttRep, ttErr := tt.Apply(ctx, ttPlan)
-				switch {
-				case ttErr != nil:
-					slog.Error("project scaffold apply", "project", name, "err", ttErr)
-					scaffoldRow = &check.Result{
-						Name:    "Project templates",
-						Status:  check.Info,
-						Summary: fmt.Sprintf("scaffold apply failed: %v", ttErr),
-					}
-				case len(ttRep.Errors) > 0:
-					slog.Error("project scaffold apply error", "project", name, "err", ttRep.Errors[0])
-					scaffoldRow = &check.Result{
-						Name:    "Project templates",
-						Status:  check.Info,
-						Summary: fmt.Sprintf("scaffold apply error: %v", ttRep.Errors[0]),
-					}
-				default:
-					scaffoldRow = &check.Result{
-						Name:    "Project templates",
-						Status:  check.Pass,
-						Summary: fmt.Sprintf("scaffolded Projects/%s/{commands,skills}/", name),
-					}
-				}
-			}
-		}
-	}
-
-	results = append(results, row)
-	if scaffoldRow != nil {
-		results = append(results, *scaffoldRow)
-	}
-	return dir, true, results, cli.ExitOK
+	}, nil, results, cli.ExitOK, true
 }
 
-// initAgentWiring detects agent instruction files in projectRoot, writes the
-// vibe-palace managed block into each, and returns one status row per
-// (canonical) target plus one row per deliberate skip. When the project
-// itself is not ready (no config was written and none pre-existed), a single
-// skip row directs the user to set up the project first.
-func initAgentWiring(projectRoot string, projectReady bool) []check.Result {
-	if !projectReady {
-		return []check.Result{{
-			Name:    "Agent wiring",
-			Status:  check.Skip,
-			Summary: "skipped — no project config; run `vp init` inside a project directory",
-		}}
-	}
-
-	// Guarantee AGENTS.md *exists* so the WireAll pass below wires it and
-	// reports it. AGENTS.md is a host-local vp-managed bootstrap shim
-	// (gitignored, like CLAUDE.md) and the cross-host behavioral baseline;
-	// WireAll only wires *pre-existing* agent files, so a fresh project would
-	// otherwise never get one. We create an EMPTY file (not the managed block
-	// itself) so WireAll remains the sole wirer and honestly reports "block
-	// added" on a fresh init rather than "unchanged". Non-fatal: a failure must
-	// not abort init — log and let WireAll proceed.
-	agentsPath := filepath.Join(projectRoot, "AGENTS.md")
-	if _, err := os.Stat(agentsPath); os.IsNotExist(err) {
-		if werr := os.WriteFile(agentsPath, []byte{}, 0o644); werr != nil {
-			slog.Error("create AGENTS.md baseline", "err", werr)
-		}
-	}
-
-	// Snapshot legacy-content flags before WireAll rewrites files, so the
-	// Init summary can suggest `vp absorb` when pre-existing content needs
-	// migration. Detect runs once here, and WireAll re-runs Detect internally
-	// — cheap (a few os.Stat calls) and keeps the orchestrator's surface
-	// focused on wiring rather than reporting.
-	preTargets, _ := agentfile.Detect(projectRoot)
-	driftSet := make(map[string]bool, len(preTargets))
-	for _, t := range preTargets {
-		if data, err := os.ReadFile(t.Path); err == nil && hasLegacyContent(data) {
-			driftSet[t.DisplayName] = true
-		}
-	}
-
-	outcomes, skips, err := agentfile.WireAll(projectRoot)
-	var rows []check.Result
-	if err != nil {
-		return []check.Result{{
-			Name:    "Agent wiring",
-			Status:  check.Fail,
-			Summary: err.Error(),
-		}}
-	}
-
-	if len(outcomes) == 0 {
-		rows = append(rows, check.Result{
-			Name:    "Agent wiring",
-			Status:  check.Skip,
-			Summary: "no agent file found; create CLAUDE.md/AGENTS.md and re-run `vp init`",
-		})
-	}
-
-	var driftFiles []string
-	for _, oc := range outcomes {
-		t := oc.Target
-		display := t.DisplayName
-		if len(t.Aliases) > 0 {
-			display += " (→ " + strings.Join(t.Aliases, ", ") + ")"
-		}
-		if driftSet[t.DisplayName] {
-			driftFiles = append(driftFiles, t.DisplayName)
-		}
-		if oc.Err != nil {
-			rows = append(rows, check.Result{
-				Name:    "Agent wiring",
-				Status:  check.Fail,
-				Summary: display + ": " + oc.Err.Error(),
-			})
-			continue
-		}
-		switch oc.Result.Kind {
-		case agentfile.Added:
-			rows = append(rows, check.Result{
-				Name:    "Agent wiring",
-				Status:  check.Pass,
-				Summary: display + " — block added",
-			})
-		case agentfile.Updated:
-			summary := display + " — block updated"
-			if oc.Result.PrevSha != "" {
-				summary += " (was " + oc.Result.PrevSha + ")"
-			}
-			rows = append(rows, check.Result{
-				Name:    "Agent wiring",
-				Status:  check.Pass,
-				Summary: summary,
-			})
-		case agentfile.Unchanged:
-			rows = append(rows, check.Result{
-				Name:    "Agent wiring",
-				Status:  check.Info,
-				Summary: display + " — block unchanged",
-			})
-		}
-	}
-
-	for _, s := range skips {
-		rows = append(rows, check.Result{
-			Name:    "Agent wiring",
-			Status:  check.Skip,
-			Summary: s.DisplayName + " — " + s.Reason,
-		})
-	}
-	if len(driftFiles) > 0 {
-		rows = append(rows, check.Result{
-			Name:    "Agent wiring",
-			Status:  check.Info,
-			Summary: "legacy content detected in " + strings.Join(driftFiles, ", "),
-			Details: []string{"run `vp absorb` to migrate existing content into the vault"},
-		})
-	}
-	return rows
-}
-
-// initShimWiring emits one .claude/commands/vpc-<name>.md shim per
-// vibe-palace command into projectRoot, surfacing the command set in
-// Claude Code's `/` slash menu. Additive-by-default: stale shims (commands
-// that no longer exist) are reported but not deleted — `vp commands
-// upgrade` handles removal with explicit user consent.
+// alreadyConfigured is the marker gate's vehicle: the three project-config
+// steps that `vp init` has never re-run once <dir>/.vibe-palace.toml exists.
 //
-// Phase 4b: per-host skip when that host's user-global surface is healthy
-// (C1 — never OR hosts together). Project-scoped commands remain MCP-only
-// under a global surface (D6).
-func initShimWiring(projectRoot string, projectReady bool) []check.Result {
-	if !projectReady {
-		return nil // agent-wiring already surfaced the skip row.
+// Every Remedy names the verbatim command, the host it has to run on, and the
+// artifact in question — an Omission whose remedy is "run vp init" tells an
+// operator on another machine nothing at all.
+func alreadyConfigured(dir, configPath string) []onboard.Omission {
+	cmd := "run `vp config sync --tier project --cwd " + dir + "`"
+	host := " on the machine that owns " + dir
+	const reason = "skipped — the project is already configured; `vp init` treats a re-init as a no-op here"
+	return []onboard.Omission{
+		{
+			Step:   "cwd-project",
+			Reason: configPath + " (already exists, skipped)",
+			Remedy: cmd + host + " — it reconciles the existing " + configPath + " against the current schema instead of rewriting it.",
+		},
+		{
+			Step:   "vault-project",
+			Reason: reason,
+			Remedy: cmd + host + " — it writes Projects/<slug>/config.toml in the vault.",
+		},
+		{
+			Step:   "project-scaffold",
+			Reason: reason,
+			Remedy: cmd + host + " — it creates Projects/<slug>/{commands,skills}/ in the vault.",
+		},
 	}
-
-	claudeOK := plugin.ClaudeUserCommandsHealthy()
-	grokOK := shims.GrokUserCommandsHealthy()
-	opts := shims.ReconcileOptions{
-		SkipClaude: claudeOK,
-		SkipGrok:   grokOK,
-	}
-	if claudeOK {
-		opts.ClaudeSkipReason = "Claude user-global cache has vpc-* (vp mcp install --claude-plugin); project .claude/commands not re-emitted — bare /vpc-* may require vibe-palace: prefix or project shims"
-	}
-	if grokOK {
-		opts.GrokSkipReason = "Grok user-global plugin has vpc-* (vp mcp install --grok); project .grok/plugins not re-emitted"
-	}
-
-	var rows []check.Result
-	if claudeOK {
-		rows = append(rows, check.Result{
-			Name:    "Slash-command shims (Claude)",
-			Status:  check.Info,
-			Summary: "skipped — user-global Claude surface healthy",
-			Details: []string{"  " + opts.ClaudeSkipReason, "  Project-scoped commands: MCP-only under global menu (D6)"},
-		})
-	}
-	if grokOK {
-		rows = append(rows, check.Result{
-			Name:    "Slash-command shims (Grok)",
-			Status:  check.Info,
-			Summary: "skipped — user-global Grok surface healthy",
-			Details: []string{"  " + opts.GrokSkipReason, "  Project-scoped commands: MCP-only under global menu (D6)"},
-		})
-	}
-
-	// Still need project emit for any host that is not globally healthy
-	// (and Cursor when present — always project-local).
-	needProject := !claudeOK || (!grokOK && shims.GrokPresent(projectRoot)) || shims.CursorPresent(projectRoot)
-	if !needProject {
-		return rows
-	}
-
-	vault, err := openProjectVault()
-	if err != nil {
-		return append(rows, check.Result{
-			Name:    "Slash-command shims",
-			Status:  check.Skip,
-			Summary: "skipped — open vault: " + err.Error(),
-		})
-	}
-	resolver := vpctx.NewResolver(vault.Root)
-	slug, _ := project.DetectProject(projectRoot)
-
-	rep := shims.Reconcile(projectRoot, resolver, slug, opts)
-	if len(rep.Errors) > 0 {
-		// Read-only target dirs and similar stay Info/Skip-ish: Reconcile
-		// records them as Errors; surface as Info so a deliberately
-		// read-only .claude/ does not look like a hard Fail (M5).
-		return append(rows, check.Result{
-			Name:    "Slash-command shims (project)",
-			Status:  check.Info,
-			Summary: "project emit incomplete: " + strings.Join(rep.Errors, "; "),
-		})
-	}
-	summary := fmt.Sprintf(
-		"added %d, updated %d (commands +%d skills +%d)",
-		len(rep.CommandsAdded)+len(rep.SkillsAdded),
-		len(rep.CommandsUpdated)+len(rep.SkillsUpdated),
-		len(rep.CommandsAdded), len(rep.SkillsAdded),
-	)
-	status := check.Pass
-	if rep.Empty() {
-		status = check.Info
-	}
-	return append(rows, check.Result{
-		Name:    "Slash-command shims (project)",
-		Status:  status,
-		Summary: summary,
-	})
 }
 
-// hasLegacyContent reports whether data contains any non-whitespace bytes
-// outside the managed vibe-palace block. Used by init to suggest `vp
-// absorb`.
-func hasLegacyContent(data []byte) bool {
-	start, end := agentfile.FindBlock(data)
-	var outside []byte
-	if start < 0 {
-		outside = data
-	} else {
-		outside = append([]byte{}, data[:start]...)
-		if end <= len(data) {
-			outside = append(outside, data[end:]...)
-		}
-	}
-	for _, b := range outside {
-		if b != ' ' && b != '\t' && b != '\n' && b != '\r' {
+// stepFailed reports whether the named onboarding step produced a Fail row.
+// `vp init`'s exit code has always been the cwd-project write's exit code, and
+// moving the write into a step must not change that.
+func stepFailed(res onboard.Result, step string) bool {
+	for _, oc := range res.Outcomes {
+		if oc.Step == step && oc.Status == check.Fail {
 			return true
 		}
 	}
 	return false
-}
-
-// initHookWiring ensures vp hook entries are installed in
-// ~/.claude/settings.json, replacing any legacy vv hook entries.
-func initHookWiring(_ string, projectReady bool) []check.Result {
-	if !projectReady {
-		return nil
-	}
-	status, err := hook.Status()
-	if err != nil {
-		return []check.Result{{
-			Name:    "Hook wiring",
-			Status:  check.Skip,
-			Summary: "could not check hook status: " + err.Error(),
-		}}
-	}
-	if status.Installed && !status.LegacyPresent && !status.Stale {
-		return []check.Result{{
-			Name:    "Hook wiring",
-			Status:  check.Info,
-			Summary: "vp hook already installed",
-		}}
-	}
-	changed, err := hook.Install()
-	if err != nil {
-		return []check.Result{{
-			Name:    "Hook wiring",
-			Status:  check.Fail,
-			Summary: "hook install: " + err.Error(),
-		}}
-	}
-	msg := "vp hook installed"
-	if status.LegacyPresent {
-		msg += " (vv hook preserved — both will fire)"
-	}
-	if !changed {
-		return []check.Result{{
-			Name:    "Hook wiring",
-			Status:  check.Info,
-			Summary: msg,
-		}}
-	}
-	return []check.Result{{
-		Name:    "Hook wiring",
-		Status:  check.Pass,
-		Summary: msg,
-	}}
-}
-
-// initProjectGitignore reconciles the project repo-root .gitignore so the
-// host-local AI artifacts vp writes into the project tree (CLAUDE.md,
-// commit.msg, .claude/, .grok/, .vibe-palace/) are never committed. It is
-// append-only and idempotent. Failures are non-fatal — they surface as an
-// Info row and are logged, mirroring how the vault .gitignore reconcile is
-// treated, so a gitignore hiccup never aborts init.
-func initProjectGitignore(projectRoot string, projectReady bool) check.Result {
-	if !projectReady {
-		return check.Result{
-			Name:    "Project .gitignore",
-			Status:  check.Skip,
-			Summary: "skipped — no project config",
-		}
-	}
-	if err := storage.ReconcileProjectGitignore(projectRoot); err != nil {
-		slog.Error("project gitignore reconcile error", "err", err)
-		return check.Result{
-			Name:    "Project .gitignore",
-			Status:  check.Info,
-			Summary: "could not reconcile .gitignore: " + err.Error(),
-		}
-	}
-	return check.Result{
-		Name:    "Project .gitignore",
-		Status:  check.Pass,
-		Summary: "host-local vp artifacts ignored",
-	}
-}
-
-// initGitPostCommitHook installs the post-commit hook that deletes the
-// project-root commit.msg once the commit that consumed it has landed. It
-// mirrors initProjectGitignore's posture exactly — writes into the project
-// tree, idempotent, non-fatal, one row.
-//
-// This is a GIT hook and has nothing to do with initHookWiring above, which
-// wires AI-host session hooks into ~/.claude/settings.json. The two vocabularies
-// are deliberately kept apart; see internal/storage/githook.go.
-//
-// A refusal (a foreign post-commit hook, or a repo with core.hooksPath set) is
-// an Info row naming the reason, never a Fail: neither is repairable by init and
-// both are the human's call.
-func initGitPostCommitHook(projectRoot string, projectReady bool) check.Result {
-	const name = "Git commit.msg hook"
-	if !projectReady {
-		return check.Result{
-			Name:    name,
-			Status:  check.Skip,
-			Summary: "skipped — no project config",
-		}
-	}
-	rep := storage.InstallPostCommitHook(projectRoot)
-	switch rep.Status {
-	case storage.HookInstalled, storage.HookCurrent:
-		return check.Result{Name: name, Status: check.Pass, Summary: rep.Detail}
-	case storage.HookNoRepo:
-		return check.Result{Name: name, Status: check.Skip, Summary: rep.Detail}
-	default:
-		slog.Warn("post-commit hook not installed", "reason", rep.Detail)
-		return check.Result{Name: name, Status: check.Info, Summary: rep.Detail}
-	}
 }
 
 // printInitStatus renders the end-of-run status table. Mirrors check.Print's
