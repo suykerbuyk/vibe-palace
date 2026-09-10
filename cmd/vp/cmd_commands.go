@@ -738,9 +738,12 @@ func planShims(resolver *vpctx.Resolver, projectRoot, only string) ([]shims.Chan
 
 // planSkillShims builds the combined per-project skill-shim plan across every
 // detected skill target (ClaudeSkill always; CursorRule when a Cursor layout
-// is present). Mirrors initSkillShimWiring in cmd_init.go for the item set and
-// target selection, but returns a flat plan so runCommandsUpgrade can present,
-// prompt, and apply it through the same UX as command shims. When only is
+// is present). Builds the same item set and target selection that onboarding's
+// shim step drives through shims.Reconcile (internal/onboard/steps.go), but
+// returns a flat plan so runCommandsUpgrade can present, prompt, and apply it
+// through the same UX as command shims. NOTE the two are not equivalent:
+// shims.Reconcile suppresses the Claude targets when the host's user-global
+// Claude surface is healthy, and this plan does not. When only is
 // non-empty the plan is filtered to the matching skill name so a targeted
 // upgrade does not sweep in unrelated skills.
 func planSkillShims(resolver *vpctx.Resolver, projectRoot, only string) ([]shims.SkillChange, error) {
@@ -791,8 +794,8 @@ func planSkillShims(resolver *vpctx.Resolver, projectRoot, only string) ([]shims
 }
 
 // skillShimItems resolves the skill set into the SkillItem inputs the
-// ClaudeSkill/CursorRule renderers need. Mirrors the item-building loop in
-// initSkillShimWiring: unresolvable skills are skipped silently.
+// ClaudeSkill/CursorRule renderers need. Same item-building contract as
+// shims.Reconcile's skillItems: unresolvable skills are skipped silently.
 func skillShimItems(resolver *vpctx.Resolver) ([]shims.SkillItem, error) {
 	names, err := resolver.ListResourcesScoped("skill", "", "", "")
 	if err != nil {

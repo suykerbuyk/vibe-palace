@@ -129,6 +129,28 @@ type Outcome struct {
 	Status  check.Status
 	Summary string
 	Details []string
+	// Created marks an outcome that brought an artifact INTO EXISTENCE, as
+	// distinct from finding it already there.
+	//
+	// It is a POSITIVE claim only, and deliberately so: a writer that cannot
+	// report what it did (storage.ReconcileProjectGitignore returns an error
+	// and nothing else) leaves it false. So "no Created outcome" means "no
+	// step REPORTED a creation", never "nothing was written". Convergence
+	// tests read it — a second identical run must report none — and the
+	// renderer ignores it.
+	Created bool
+}
+
+// Advisory is guidance that belongs to the RUN rather than to any one step.
+//
+// It exists because `vp init` reconciles but never UPGRADES and never REMOVES,
+// and the operator cannot infer that from a table of things that went fine.
+// An Advisory is not an Omission: nothing was refused and nothing is missing
+// from this surface's contract. It is the boundary of what onboarding MEANS.
+type Advisory struct {
+	Name    string
+	Summary string
+	Details []string
 }
 
 // Omission is a step a SURFACE MAY NOT RUN. It is not a failure and not a
@@ -151,6 +173,9 @@ type Result struct {
 	Slug     string
 	Outcomes []Outcome
 	Omitted  []Omission
+	// Advisories are run-level rows that belong to no step and therefore take
+	// no part in accounting. They render after the step rows.
+	Advisories []Advisory
 	// Complete is true only when every step was in scope AND none failed.
 	// A surface that reports Complete is saying "there is nothing left for a
 	// human to do on another machine".
@@ -192,34 +217,21 @@ func Steps() []Step { return slices.Clone(stepTable) }
 
 // Run executes the step table under scope.
 //
-// preOmitted lets the CALLER declare steps it has already accounted for and
-// that must therefore not run. It has exactly one user today: `vp init`'s
-// "the project already carries a .vibe-palace.toml" early return, which has
-// never re-touched the project-config artifacts on a re-init. When that gate
-// is deleted, this argument goes with it. Passing an Omission for an unknown
-// step is a programming error and is reported as one.
+// There is deliberately NO way for a caller to declare a step pre-accounted-for
+// and skip it. `vp init` used to do exactly that — a marker gate that returned
+// three Omissions the moment <dir>/.vibe-palace.toml existed, so a re-init never
+// re-touched the project-config artifacts — and the MCP-thin projects that gate
+// left permanently half-scaffolded are why it is gone. A surface may decline a
+// SIDE (that is Scope, and it is stated out loud); it may not decline a step
+// because it thinks the work is already done.
 //
 // The returned error is an ACCOUNTING failure, not a step failure: step
 // failures are rows. Run refuses to hand back a Result in which some step is
 // neither in Outcomes nor in Omitted, because that is exactly the shape of the
 // bug this package exists to prevent — a surface that quietly did less than it
 // was asked and reported success.
-func Run(ctx context.Context, req Request, scope Scope, preOmitted ...Omission) (Result, error) {
+func Run(ctx context.Context, req Request, scope Scope) (Result, error) {
 	steps := Steps()
-	known := make(map[string]Step, len(steps))
-	for _, s := range steps {
-		known[s.Name] = s
-	}
-
-	pre := make(map[string]Omission, len(preOmitted))
-	for _, om := range preOmitted {
-		s, ok := known[om.Step]
-		if !ok {
-			return Result{}, fmt.Errorf("onboard: pre-omitted step %q is not in the step table", om.Step)
-		}
-		om.Side = s.Side
-		pre[om.Step] = om
-	}
 
 	res := Result{Slug: req.Slug}
 
@@ -252,10 +264,6 @@ func Run(ctx context.Context, req Request, scope Scope, preOmitted ...Omission) 
 	succeeded := map[string]bool{}
 
 	for _, step := range steps {
-		if om, ok := pre[step.Name]; ok {
-			res.Omitted = append(res.Omitted, om)
-			continue
-		}
 		if !scope[step.Side] {
 			res.Omitted = append(res.Omitted, omitForSide(step, req))
 			continue
@@ -320,6 +328,8 @@ func Run(ctx context.Context, req Request, scope Scope, preOmitted ...Omission) 
 		return Result{}, err
 	}
 
+	res.Advisories = []Advisory{upgradeAdvisory()}
+
 	res.Complete = len(res.Omitted) == 0
 	for _, oc := range res.Outcomes {
 		if oc.Status == Fail {
@@ -328,6 +338,36 @@ func Run(ctx context.Context, req Request, scope Scope, preOmitted ...Omission) 
 		}
 	}
 	return res, nil
+}
+
+// upgradeAdvisory is the row that took over from the marker gate's remedies.
+//
+// Until that gate was deleted, a re-init returned three Omissions whose Remedy
+// pointed the operator at `vp config sync`. The gate is gone and a re-init now
+// reconciles those artifacts for real — but the operator still has to be told
+// what `vp init` deliberately does NOT do, and that the two halves of it have
+// DIFFERENT owners:
+//
+//   - `vp commands upgrade` owns stale-shim REMOVAL (init is additive by
+//     default: shims.Reconcile reports a stale .claude/commands/vpc-*.md and
+//     leaves it) and vault Templates/commands/ drift.
+//   - `vp skills upgrade` owns vault Templates/skills/ drift. It owns nothing
+//     else: cmd/vp/cmd_skills.go imports neither internal/shims nor
+//     internal/storage, so it touches no agent file, no shim, no .gitignore
+//     and no git hook.
+//
+// Naming only `vp commands upgrade` here would pin a known bug — it does not
+// own Templates/skills — which is why each half names its own command.
+func upgradeAdvisory() Advisory {
+	return Advisory{
+		Name: "Upgrade policy",
+		Summary: "`vp init` reconciles; it never upgrades a drifted template and never removes a stale shim. " +
+			"Two other commands do, and they own different halves",
+		Details: []string{
+			"stale .claude/commands/vpc-*.md shims and vault Templates/commands/ drift: run `vp commands upgrade`",
+			"vault Templates/skills/ drift: run `vp skills upgrade`",
+		},
+	}
 }
 
 // firstUnmet returns the first prerequisite that did not succeed, or "".

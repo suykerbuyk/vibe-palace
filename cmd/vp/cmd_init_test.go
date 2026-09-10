@@ -245,16 +245,60 @@ func TestInitWithDomainAndTags(t *testing.T) {
 	}
 }
 
-func TestInitRefusesOverwrite(t *testing.T) {
+// TestInitFailsOnMalformedMarker is the CLI-side twin of
+// internal/onboard's TestOnboardRun_MalformedMarkerFails.
+//
+// It was TestInitRefusesOverwrite, and both its name and its premise stopped
+// being true when the marker gate came out. The gate returned ExitOK the
+// moment a .vibe-palace.toml existed, whatever was in it; the fixture's file
+// contains the single word "exists", which is not valid TOML. With the gate
+// gone, Plan sees a file missing every canonical key and plans an Update, and
+// storage.PresentKeys — a line scanner — cannot tell the difference. So the
+// same fixture now exercises the parse gate instead: a Fail row naming the
+// file and the verbatim parse error, and a non-zero exit.
+//
+// The setup is kept verbatim on purpose. It is the exact shape an operator
+// produces by hand-editing the marker and getting it wrong.
+func TestInitFailsOnMalformedMarker(t *testing.T) {
 	initTestEnv(t, true)
 	dir := t.TempDir()
 	// Create existing project config.
 	os.WriteFile(filepath.Join(dir, project.ConfigFileName), []byte("exists"), 0o644)
 
-	cmd := cmdInit(cli.BuildInfo{Version: "test"})
-	code := cmd.Run([]string{dir, "--name", "test"})
-	if code != cli.ExitOK {
-		t.Errorf("exit code = %d, want %d (should skip existing project)", code, cli.ExitOK)
+	var code int
+	out := captureStdout(t, func() {
+		cmd := cmdInit(cli.BuildInfo{Version: "test"})
+		code = cmd.Run([]string{dir, "--name", "test"})
+	})
+	if code == cli.ExitOK {
+		t.Errorf("exit code = %d, want non-OK: the marker does not parse", code)
+	}
+	if !strings.Contains(out, "[FAIL] Project config") {
+		t.Errorf("expected a [FAIL] Project config row:\n%s", out)
+	}
+	// Two DISTINCT failures, not one. cwd-project names the file the operator
+	// can fix; vault-project names the vault that could not be opened because
+	// of it. Collapsing them would send the operator to repair the wrong thing.
+	if !strings.Contains(out, "[FAIL] Vault project") {
+		t.Errorf("expected a separate [FAIL] Vault project row:\n%s", out)
+	}
+	cfgPath := filepath.Join(dir, project.ConfigFileName)
+	if !strings.Contains(out, cfgPath) {
+		t.Errorf("Fail row does not name the file to fix (%s):\n%s", cfgPath, out)
+	}
+	if !strings.Contains(out, "not valid TOML") {
+		t.Errorf("Fail row does not say the file is unparseable:\n%s", out)
+	}
+	// The operator's bytes survive, in place or as the .bak the host-local
+	// upgrade branch writes before appending.
+	recovered := false
+	for _, p := range []string{cfgPath, cfgPath + ".bak"} {
+		if data, err := os.ReadFile(p); err == nil && string(data) == "exists" {
+			recovered = true
+		}
+	}
+	if !recovered {
+		t.Errorf("original bytes not recoverable from %s or its .bak", cfgPath)
 	}
 }
 
@@ -568,22 +612,50 @@ func TestInitFreshThenIdempotent(t *testing.T) {
 	if !strings.Contains(out2, "[info] Global config") {
 		t.Errorf("stage 2 missing [info] Global config row:\n%s", out2)
 	}
-	// CHANGED, deliberately: the re-init branch used to render ONE [info]
-	// Project config row and nothing else about project config. The marker
-	// gate now declares the three project-config steps as onboard Omissions
-	// instead of returning early, so all three are ACCOUNTED FOR — each gets a
-	// [skip] row naming the command, the host and the artifact. The behaviour
-	// is identical (nothing is re-touched); what changed is that the run says
-	// so out loud instead of producing a silently shorter table.
+	// CHANGED, deliberately, and this is the whole point of deleting the
+	// marker gate. Stage 2 used to render three [skip] rows: the gate saw
+	// <dir>/.vibe-palace.toml, declared the project onboarded, and returned
+	// three Omissions pointing at `vp config sync`. That is what made `vp init`
+	// a permanent no-op over any project whose marker was written by something
+	// other than `vp init` — every project the MCP vp_init tool ever touched.
+	//
+	// The three project-config steps now RUN on a re-init and report the truth:
+	// nothing to do. [info] Global config above stays a skip row, because that
+	// is a DIFFERENT gate (does this machine have a vibe-palace at all) and it
+	// is deliberately kept — see TestInitSkipsExistingConfig.
 	for _, want := range []string{
-		"[skip] Project config",
-		"(already exists, skipped)",
+		"[pass] Project config",
+		"[pass] Vault project",
+		"[pass] Project templates",
+	} {
+		if !strings.Contains(out2, want) {
+			t.Errorf("stage 2 missing %q:\n%s", want, out2)
+		}
+	}
+	for _, unwanted := range []string{
 		"[skip] Vault project",
 		"[skip] Project templates",
 		"vp config sync --tier project --cwd",
 	} {
+		if strings.Contains(out2, unwanted) {
+			t.Errorf("stage 2 still carries the deleted marker gate's %q:\n%s", unwanted, out2)
+		}
+	}
+	// The vault-side artifacts a re-init used to skip must be present and
+	// unchanged — the file-level statement of the same property.
+	for _, rel := range []string{
+		filepath.Join("Projects", "alpha", "config.toml"),
+		filepath.Join("Projects", "alpha", "commands", "README.md"),
+		filepath.Join("Projects", "alpha", "skills", "README.md"),
+	} {
+		if _, err := os.Stat(filepath.Join(vaultDir, rel)); err != nil {
+			t.Errorf("stage 2: vault artifact %s missing: %v", rel, err)
+		}
+	}
+	// And the advisory says what a re-init deliberately does NOT do.
+	for _, want := range []string{"vp commands upgrade", "vp skills upgrade"} {
 		if !strings.Contains(out2, want) {
-			t.Errorf("stage 2 missing %q:\n%s", want, out2)
+			t.Errorf("stage 2 missing upgrade advisory %q:\n%s", want, out2)
 		}
 	}
 	// The five downstream steps still RUN on a re-init — that is what makes
@@ -1102,5 +1174,73 @@ func TestInitPositionalValidDirStillWorks(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(dir, project.ConfigFileName)); err != nil {
 		t.Errorf(".vibe-palace.toml missing on happy-path init: %v", err)
+	}
+}
+
+// TestInitShimVaultFollowsTheProjectDirNotTheProcessCwd covers the behaviour
+// change d55774b made and nothing asserted.
+//
+// The slash-command shim step used to resolve its vault with openProjectVault()
+// — a walk up from the PROCESS CWD. So `vp init /some/other/project` mirrored
+// the command surface of whatever vault the shell happened to be standing in,
+// into a project bound to a different one. The step takes req.OpenVault() now,
+// which walks up from the PROJECT DIRECTORY.
+//
+// The two vaults are made distinguishable by seeding each with a command
+// template the other does not have, so the assertion is "which vault's commands
+// landed", not "did anything land".
+func TestInitShimVaultFollowsTheProjectDirNotTheProcessCwd(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg"))
+	initTestEnv(t, false)
+
+	// A fully initialised project bound to vault A, which we then stand in.
+	cwdVault := filepath.Join(t.TempDir(), "cwd-vault")
+	cwdProj := t.TempDir()
+	markProjectDir(t, cwdProj)
+	if code := cmdInit(cli.BuildInfo{Version: "test"}).Run(
+		[]string{cwdProj, "--name", "cwdproj", "--vault-path", cwdVault, "--no-git"},
+	); code != cli.ExitOK {
+		t.Fatalf("seed init exit = %d", code)
+	}
+
+	// A second project bound to vault B. Global init is done, so vault B gets
+	// no materialize pass — seed both vaults' command surfaces by hand so each
+	// carries a name the other cannot produce.
+	otherVault := filepath.Join(t.TempDir(), "other-vault")
+	seedCommand := func(vaultRoot, name string) {
+		t.Helper()
+		dir := filepath.Join(vaultRoot, "Templates", "commands")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		body := "# " + name + "\n\nSeeded for the vault-binding assertion.\n"
+		if err := os.WriteFile(filepath.Join(dir, name+".md"), []byte(body), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+	seedCommand(cwdVault, "only-in-cwd-vault")
+	seedCommand(otherVault, "only-in-other-vault")
+
+	otherProj := t.TempDir()
+	markProjectDir(t, otherProj)
+
+	t.Chdir(cwdProj)
+	if code := cmdInit(cli.BuildInfo{Version: "test"}).Run(
+		[]string{otherProj, "--name", "otherproj", "--vault-path", otherVault, "--no-git"},
+	); code != cli.ExitOK {
+		t.Fatalf("init exit = %d", code)
+	}
+
+	shimDir := filepath.Join(otherProj, ".claude", "commands")
+	if _, err := os.Stat(filepath.Join(shimDir, "vpc-only-in-other-vault.md")); err != nil {
+		entries, _ := os.ReadDir(shimDir)
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("shims did not come from the PROJECT's vault: vpc-only-in-other-vault.md missing (%v); dir holds %v", err, names)
+	}
+	if _, err := os.Stat(filepath.Join(shimDir, "vpc-only-in-cwd-vault.md")); err == nil {
+		t.Error("shims came from the PROCESS CWD's vault: vpc-only-in-cwd-vault.md was emitted into a project bound to another vault")
 	}
 }

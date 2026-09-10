@@ -1484,6 +1484,44 @@ override the embedded doctrine with its own copy; the tool's result always
 carries the `doctrine_uri` so a host whose channel truncates the inline body
 can page the full text.
 
+### Onboarding a project (`internal/onboard`)
+
+`internal/onboard.Steps()` is the single definition of what `vp init` MEANS,
+and both surfaces that onboard a project — the `vp init` CLI command and the
+`vp_init` MCP tool — drive that one table. Neither owns a step list of its own,
+so "the MCP tool does less than the CLI" can only ever be a statement about
+scope, never an accident of two code paths drifting.
+
+Each `Step` carries two tags and nothing else that a surface may reason about:
+
+- **`Side`** — which surface the step WRITES: the vault, the project working
+  tree, or the RUNNING host's user globals (`~/.claude/settings.json`). Over
+  MCP the last of those is the *server operator's* machine, never the caller's.
+- **`ReadsHostGlobal`** — the step writes some other side, but decides WHAT to
+  write by inspecting the running host's home. `command-shims` is the whole
+  reason the tag exists: it emits project-local shims, but skips a host whose
+  user-global command surface is already healthy.
+
+**Those two tags are the only legitimate reasons a surface may skip a step.**
+A surface declares a `Scope` over `Side`, and every step the scope excludes is
+reported as an `Omission` carrying a `Reason` and a `Remedy` that names the
+verbatim command, the host it must run on, and the artifact that is missing.
+`onboard.Run` refuses to return a `Result` in which any step is neither an
+outcome nor an omission — a surface cannot quietly do less and report success.
+There is deliberately no mechanism for a caller to declare a step
+already-done: `vp init` once had exactly that (a marker gate that fired on the
+presence of `.vibe-palace.toml`), and it is what left every MCP-initialized
+project permanently half-scaffolded.
+
+**`vp commands upgrade` and `vp skills upgrade` are NOT callers of
+`internal/onboard`.** They are a separate *upgrade* policy layered over the
+same shared writers (`internal/shims`, `internal/commands`,
+`reconcile.TemplateTree`): onboarding reconciles toward the current schema and
+is additive, while upgrade presents drift interactively and may REMOVE a stale
+shim. Onboarding therefore ends with an advisory naming both of them against
+the halves they actually own — stale shims and `Templates/commands` drift are
+`vp commands upgrade`'s; `Templates/skills` drift is `vp skills upgrade`'s.
+
 ### Commands and Skills
 
 **Commands** are instructions for the AI to execute immediately (e.g.,

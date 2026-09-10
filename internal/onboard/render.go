@@ -76,6 +76,16 @@ func Rows(res Result) []check.Result {
 			rows = append(rows, row)
 		}
 	}
+	// Advisories render last and always as Info: nothing failed, nothing was
+	// refused, and a Skip here would read as "vp init did not get to it".
+	for _, ad := range res.Advisories {
+		rows = append(rows, check.Result{
+			Name:    ad.Name,
+			Status:  check.Info,
+			Summary: ad.Summary,
+			Details: ad.Details,
+		})
+	}
 	return rows
 }
 
@@ -152,7 +162,7 @@ func omitForSide(step Step, req Request) Omission {
 		Side:   step.Side,
 		Reason: reason,
 		Remedy: remedyCommand(step, req) + " " + ownerHost(step.Side, req.ProjectDir) +
-			" — it writes " + stepArtifact(step.Name, req.ProjectDir) + ".",
+			" — it writes " + stepArtifact(step.Name, req.ProjectDir) + "." + remedyCaveat(step.Name),
 	}
 }
 
@@ -169,8 +179,32 @@ func omitForHostRead(step Step, req Request) Omission {
 		Reason: rowNameFor(step.Name) +
 			" decides what to write by inspecting the RUNNING host's ~/.claude and ~/.grok, which over MCP is the server operator's home rather than yours",
 		Remedy: remedyCommand(step, req) + " " + ownerHost(step.Side, req.ProjectDir) +
-			" — it writes " + stepArtifact(step.Name, req.ProjectDir) + " against YOUR host's command surface.",
+			" — it writes " + stepArtifact(step.Name, req.ProjectDir) +
+			" against YOUR host's command surface." + remedyCaveat(step.Name),
 	}
+}
+
+// remedyCaveat is the "and what you get is not exactly what you missed" half of
+// a Remedy.
+//
+// Only command-shims has one, and it is not cosmetic. An operator handed a
+// remedy will reach for `vp commands upgrade` whether or not the remedy names
+// it, and the two commands do NOT write the same set: shims.Reconcile
+// suppresses the Claude command shims (internal/shims/reconcile.go, the
+// !opts.SkipClaude guard) and the Claude skill shims (the same guard over the
+// skill items) whenever the host's user-global Claude surface is already
+// healthy, while `vp commands upgrade` plans them unconditionally
+// (cmd/vp/cmd_commands.go's planShims and planSkillShims). So the substitute
+// over-delivers, and a remedy that let the operator discover that by finding
+// unexpected files in their repo would be the same silent-divergence failure
+// this package exists to prevent.
+func remedyCaveat(step string) string {
+	if step != "command-shims" {
+		return ""
+	}
+	return " NOTE: `vp commands upgrade` also emits these shims, but it writes a SUPERSET — " +
+		"`vp init` suppresses the Claude command and skill shims when your user-global Claude " +
+		"surface is already healthy, and `vp commands upgrade` always plans them."
 }
 
 // remedyCommand is the verbatim command that performs the omitted step.

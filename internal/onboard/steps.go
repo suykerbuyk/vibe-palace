@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/BurntSushi/toml"
+
 	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/hook"
@@ -104,7 +106,31 @@ func errOrFirst(err error, errs []error) string {
 }
 
 // stepCwdProject writes <project>/.vibe-palace.toml via the CwdProject
-// reconciler.
+// reconciler, then PARSES the result.
+//
+// # Why the parse is not a nicety
+//
+// storage.PresentKeys (internal/storage/configupgrade.go) is a LINE SCANNER,
+// not a TOML parse. Given a .vibe-palace.toml that is not valid TOML it finds
+// no keys at all, so every canonical key reads as missing, storage.UpgradeConfig
+// appends the template blocks to the malformed text, and
+// CwdProjectReconciler.Apply reports Updated over a file that is still invalid.
+// storage.ResolveVaultPath then fails at toml.DecodeFile and the vault never
+// opens — a run that reported success end to end, followed by a project that
+// cannot resolve its own vault.
+//
+// So a clean Apply is not proof the file parses. Failure is an outcome, never
+// an absence: on a decode error this returns Fail naming the file and the
+// VERBATIM parse error, and never Pass.
+//
+// This is a DISTINCT failure from OpenVault failing. Both exist and both are
+// reachable in the same run; collapsing them would send the operator to repair
+// the vault when the thing they can actually fix is a file in their own repo.
+//
+// The operator's original bytes survive either way: an untouched file is
+// untouched, and the host-local branch of reconcile.applyUpgrade writes
+// <path>.bak before it appends (ruling 5 dropped .bak only on the VAULT
+// branch, where the committed config is the pre-image).
 func stepCwdProject(ctx context.Context, req Request) []Outcome {
 	configPath := filepath.Join(req.ProjectDir, project.ConfigFileName)
 
@@ -123,13 +149,49 @@ func stepCwdProject(ctx context.Context, req Request) []Outcome {
 	if err != nil {
 		return []Outcome{{Status: Fail, Summary: err.Error()}}
 	}
-	if rep, err := cw.Apply(ctx, plan); err != nil || len(rep.Errors) > 0 {
+	rep, err := cw.Apply(ctx, plan)
+	if err != nil || len(rep.Errors) > 0 {
 		return []Outcome{{Status: Fail, Summary: errOrFirst(err, rep.Errors)}}
 	}
-	return []Outcome{{
-		Status:  Pass,
-		Summary: fmt.Sprintf("%s (%s, %s detected)", configPath, req.Slug, signal),
-	}}
+
+	if perr := decodeTOMLFile(configPath); perr != nil {
+		return []Outcome{{
+			Status:  Fail,
+			Summary: configPath + " is not valid TOML: " + perr.Error(),
+			Details: []string{
+				"vp cannot resolve this project's vault until the file parses — fix it by hand and re-run `vp init`.",
+				"Your bytes are preserved: the file is untouched, or its pre-image is beside it as " +
+					configPath + ".bak if this run appended the missing schema blocks.",
+			},
+		}}
+	}
+
+	switch {
+	case rep.Created > 0:
+		return []Outcome{{
+			Created: true,
+			Status:  Pass,
+			Summary: fmt.Sprintf("created %s (%s, %s detected)", configPath, req.Slug, signal),
+		}}
+	case rep.Updated > 0:
+		return []Outcome{{
+			Status:  Pass,
+			Summary: fmt.Sprintf("updated %s (%s, %s detected)", configPath, req.Slug, signal),
+		}}
+	default:
+		return []Outcome{{
+			Status:  Pass,
+			Summary: fmt.Sprintf("%s (%s, %s detected)", configPath, req.Slug, signal),
+		}}
+	}
+}
+
+// decodeTOMLFile parses path as TOML and returns the parse error verbatim.
+// The decoded value is discarded: the question is only "does this parse".
+func decodeTOMLFile(path string) error {
+	var probe map[string]any
+	_, err := toml.DecodeFile(path, &probe)
+	return err
 }
 
 // stepVaultProject writes {vault}/Projects/{slug}/config.toml plus the
@@ -166,7 +228,7 @@ func stepVaultProject(ctx context.Context, req Request) []Outcome {
 	if cfgPath, cerr := vault.ProjectConfigFile(req.Slug); cerr == nil {
 		summary = cfgPath
 	}
-	return []Outcome{{Status: Pass, Summary: summary}}
+	return []Outcome{{Status: Pass, Summary: summary, Created: rep.Created > 0}}
 }
 
 // stepProjectScaffold creates Projects/<slug>/{commands,skills}/ with README
@@ -197,6 +259,7 @@ func stepProjectScaffold(ctx context.Context, req Request) []Outcome {
 	}
 	return []Outcome{{
 		Status:  Pass,
+		Created: rep.Created > 0,
 		Summary: fmt.Sprintf("scaffolded Projects/%s/{commands,skills}/", req.Slug),
 	}}
 }
@@ -264,7 +327,7 @@ func stepAgentWiring(_ context.Context, req Request) []Outcome {
 		}
 		switch oc.Result.Kind {
 		case agentfile.Added:
-			rows = append(rows, Outcome{Status: Pass, Summary: display + " — block added"})
+			rows = append(rows, Outcome{Status: Pass, Created: true, Summary: display + " — block added"})
 		case agentfile.Updated:
 			summary := display + " — block updated"
 			if oc.Result.PrevSha != "" {
@@ -406,6 +469,7 @@ func stepCommandShims(_ context.Context, req Request) []Outcome {
 	return append(rows, Outcome{
 		Name:    "Slash-command shims (project)",
 		Status:  status,
+		Created: len(rep.CommandsAdded)+len(rep.SkillsAdded) > 0,
 		Summary: summary,
 	})
 }
@@ -432,7 +496,7 @@ func stepHookWiring(_ context.Context, _ Request) []Outcome {
 	if !changed {
 		return []Outcome{{Status: Info, Summary: msg}}
 	}
-	return []Outcome{{Status: Pass, Summary: msg}}
+	return []Outcome{{Status: Pass, Created: true, Summary: msg}}
 }
 
 // stepProjectGitignore reconciles the project repo-root .gitignore so the
@@ -464,7 +528,9 @@ func stepProjectGitignore(_ context.Context, req Request) []Outcome {
 func stepGitPostCommitHook(_ context.Context, req Request) []Outcome {
 	rep := storage.InstallPostCommitHook(req.ProjectDir)
 	switch rep.Status {
-	case storage.HookInstalled, storage.HookCurrent:
+	case storage.HookInstalled:
+		return []Outcome{{Status: Pass, Created: true, Summary: rep.Detail}}
+	case storage.HookCurrent:
 		return []Outcome{{Status: Pass, Summary: rep.Detail}}
 	case storage.HookNoRepo:
 		return []Outcome{{Status: Skip, Summary: rep.Detail}}

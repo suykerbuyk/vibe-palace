@@ -82,14 +82,14 @@ func cmdInit(info cli.BuildInfo) *cli.Command {
 			// order, the prerequisites and — the reason it exists — which
 			// SURFACE each step writes, so a non-CLI caller can be denied a
 			// step out loud instead of quietly doing less.
-			req, preOmitted, projectResults, projectCode, proceed := initProject(fv)
+			req, projectResults, projectCode, proceed := initProject(fv)
 			results = append(results, projectResults...)
 			if !proceed {
 				printInitStatus(os.Stdout, info.Version, results)
 				return projectCode
 			}
 
-			res, err := onboard.Run(context.Background(), req, onboard.ScopeCLI, preOmitted...)
+			res, err := onboard.Run(context.Background(), req, onboard.ScopeCLI)
 			if err != nil {
 				// An accounting failure, never a step failure. It means a step
 				// fell through every branch and produced no row at all, which
@@ -304,18 +304,31 @@ func errOrFirst(err error, errs []error) string {
 	return ""
 }
 
-// initProject resolves the project directory, applies the two gates that
-// decide whether onboarding may run there at all, resolves identity, and
-// builds the onboard.Request the step table is driven with.
+// initProject resolves the project directory, applies the ONE gate that decides
+// whether onboarding may run there at all, resolves identity, and builds the
+// onboard.Request the step table is driven with.
 //
-// It performs NO writes of its own any more: cwd-project, vault-project and
+// It performs NO writes of its own: cwd-project, vault-project and
 // project-scaffold are steps in internal/onboard, alongside the five wiring
 // steps that used to be phases 2-6 below.
 //
-// Returns the request, any Omissions the CALLER has already accounted for, the
-// rows produced before onboarding starts, an exit code, and whether onboarding
-// should run at all.
-func initProject(fv *cli.FlagValues) (onboard.Request, []onboard.Omission, []check.Result, int, bool) {
+// # There used to be a SECOND gate here, and deleting it is the point
+//
+// `vp init` returned early the moment <dir>/.vibe-palace.toml existed, on the
+// premise that a project carrying a marker is a project that has been
+// onboarded. That premise was false for every project the MCP vp_init tool
+// touched: it wrote a two-line marker and two task directories and nothing
+// else, and the marker it wrote then told `vp init` there was nothing left to
+// do. A CLI run against such a project was a permanent no-op, so the vault
+// config.toml and the commands/skills scaffold could never appear.
+//
+// The DetectSignal gate below is a different gate and stays. It answers "is
+// this a project directory at all", which is a question about the directory,
+// not a claim about work already done.
+//
+// Returns the request, the rows produced before onboarding starts, an exit
+// code, and whether onboarding should run at all.
+func initProject(fv *cli.FlagValues) (onboard.Request, []check.Result, int, bool) {
 	var results []check.Result
 
 	dir := "."
@@ -325,7 +338,7 @@ func initProject(fv *cli.FlagValues) (onboard.Request, []onboard.Omission, []che
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		results = append(results, check.Result{Name: "Project config", Status: check.Fail, Summary: err.Error()})
-		return onboard.Request{}, nil, results, cli.ExitSystem, false
+		return onboard.Request{}, results, cli.ExitSystem, false
 	}
 
 	// The one vault resolver every step shares. It walks up from the PROJECT
@@ -340,23 +353,7 @@ func initProject(fv *cli.FlagValues) (onboard.Request, []onboard.Omission, []che
 			Status:  check.Skip,
 			Summary: "not a project directory (no .git, .vibe-palace.toml, or known manifest)",
 		})
-		return onboard.Request{}, nil, results, cli.ExitOK, false
-	}
-
-	configPath := filepath.Join(dir, project.ConfigFileName)
-	if _, err := os.Stat(configPath); err == nil {
-		// Config already exists — the project is ready for agent wiring.
-		// Don't re-touch vault-project artifacts here; that's `vp config
-		// sync`'s job and the existing init contract treats this branch as
-		// a no-op.
-		//
-		// Expressed as Omissions rather than as a bare early return so the
-		// three steps stay ACCOUNTED FOR: onboard.Run refuses a run in which
-		// a step is neither an outcome nor an omission, and the operator gets
-		// told where to go instead of silently getting a shorter table.
-		name, _ := project.DetectProject(dir)
-		req := onboard.Request{OpenVault: openVault, Slug: name, ProjectDir: dir}
-		return req, alreadyConfigured(dir, configPath), results, cli.ExitOK, true
+		return onboard.Request{}, results, cli.ExitOK, false
 	}
 
 	name := fv.Get("--name")
@@ -372,7 +369,7 @@ func initProject(fv *cli.FlagValues) (onboard.Request, []onboard.Omission, []che
 			Status:  check.Fail,
 			Summary: fmt.Sprintf("invalid project name %q: %v", name, err),
 		})
-		return onboard.Request{}, nil, results, cli.ExitUser, false
+		return onboard.Request{}, results, cli.ExitUser, false
 	}
 
 	var vaultPathOverride string
@@ -386,7 +383,7 @@ func initProject(fv *cli.FlagValues) (onboard.Request, []onboard.Omission, []che
 				Status:  check.Fail,
 				Summary: "resolve --vault-path: " + err.Error(),
 			})
-			return onboard.Request{}, nil, results, cli.ExitUser, false
+			return onboard.Request{}, results, cli.ExitUser, false
 		}
 		vaultPathOverride = expanded
 	}
@@ -407,36 +404,7 @@ func initProject(fv *cli.FlagValues) (onboard.Request, []onboard.Omission, []che
 		Domain:            fv.Get("--domain"),
 		Tags:              tagsList,
 		VaultPathOverride: vaultPathOverride,
-	}, nil, results, cli.ExitOK, true
-}
-
-// alreadyConfigured is the marker gate's vehicle: the three project-config
-// steps that `vp init` has never re-run once <dir>/.vibe-palace.toml exists.
-//
-// Every Remedy names the verbatim command, the host it has to run on, and the
-// artifact in question — an Omission whose remedy is "run vp init" tells an
-// operator on another machine nothing at all.
-func alreadyConfigured(dir, configPath string) []onboard.Omission {
-	cmd := "run `vp config sync --tier project --cwd " + dir + "`"
-	host := " on the machine that owns " + dir
-	const reason = "skipped — the project is already configured; `vp init` treats a re-init as a no-op here"
-	return []onboard.Omission{
-		{
-			Step:   "cwd-project",
-			Reason: configPath + " (already exists, skipped)",
-			Remedy: cmd + host + " — it reconciles the existing " + configPath + " against the current schema instead of rewriting it.",
-		},
-		{
-			Step:   "vault-project",
-			Reason: reason,
-			Remedy: cmd + host + " — it writes Projects/<slug>/config.toml in the vault.",
-		},
-		{
-			Step:   "project-scaffold",
-			Reason: reason,
-			Remedy: cmd + host + " — it creates Projects/<slug>/{commands,skills}/ in the vault.",
-		},
-	}
+	}, results, cli.ExitOK, true
 }
 
 // stepFailed reports whether the named onboarding step produced a Fail row.

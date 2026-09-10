@@ -5,12 +5,16 @@ package onboard
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -385,4 +389,408 @@ func TestOnboardRun_OpenVaultFailureIsARow(t *testing.T) {
 		t.Error("Complete = true despite a Fail row")
 	}
 	assertEveryStepAccountedFor(t, res)
+}
+
+// treeSnapshot maps every file under root to the sha256 of its content, and
+// every directory to an empty marker so a directory created without content
+// still shows up in a diff.
+//
+// .surface is EXCLUDED. It is the vault write stamp: it records a timestamp and
+// the identity of the writing binary, so it differs between two runs by
+// construction. Including it would make "the second run changed nothing" a
+// claim no correct implementation could ever satisfy.
+func treeSnapshot(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, rerr := filepath.Rel(root, p)
+		if rerr != nil {
+			return rerr
+		}
+		if rel == "." {
+			return nil
+		}
+		if d.IsDir() {
+			out[filepath.ToSlash(rel)+"/"] = "<dir>"
+			return nil
+		}
+		if d.Name() == ".surface" {
+			return nil
+		}
+		data, readErr := os.ReadFile(p)
+		if readErr != nil {
+			return readErr
+		}
+		sum := sha256.Sum256(data)
+		out[filepath.ToSlash(rel)] = hex.EncodeToString(sum[:])
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot %s: %v", root, err)
+	}
+	return out
+}
+
+// diffSnapshots renders the difference between two snapshots, newest first.
+func diffSnapshots(before, after map[string]string) []string {
+	var out []string
+	for k, v := range after {
+		if old, ok := before[k]; !ok {
+			out = append(out, "added: "+k)
+		} else if old != v {
+			out = append(out, "changed: "+k)
+		}
+	}
+	for k := range before {
+		if _, ok := after[k]; !ok {
+			out = append(out, "removed: "+k)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+func createdSteps(res Result) []string {
+	var out []string
+	for _, oc := range res.Outcomes {
+		if oc.Created {
+			out = append(out, oc.Step)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+func outcomesFor(res Result, step string) []Outcome {
+	var out []Outcome
+	for _, oc := range res.Outcomes {
+		if oc.Step == step {
+			out = append(out, oc)
+		}
+	}
+	return out
+}
+
+// TestOnboardRun_MalformedMarkerFails is the assertion the marker gate used to
+// make unnecessary and its deletion made load-bearing.
+//
+// storage.PresentKeys is a line scanner. Given a .vibe-palace.toml that is not
+// valid TOML it finds NO keys, so every canonical key reads as missing,
+// storage.UpgradeConfig appends the template blocks to the malformed text, and
+// CwdProjectReconciler.Apply reports Updated over a file that is still invalid.
+// A step that trusted Apply's return value would render [pass] over a project
+// whose vault can never be resolved.
+func TestOnboardRun_MalformedMarkerFails(t *testing.T) {
+	sandboxHost(t)
+	req, _ := newRequest(t, true)
+
+	cfgPath := filepath.Join(req.ProjectDir, ".vibe-palace.toml")
+	const malformed = "this is not valid toml = = =\n[unclosed\n"
+	if err := os.WriteFile(cfgPath, []byte(malformed), 0o644); err != nil {
+		t.Fatalf("seed malformed marker: %v", err)
+	}
+
+	res, err := Run(context.Background(), req, ScopeCLI)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	assertEveryStepAccountedFor(t, res)
+
+	rows := outcomesFor(res, "cwd-project")
+	if len(rows) != 1 {
+		t.Fatalf("cwd-project produced %d rows, want 1: %+v", len(rows), rows)
+	}
+	if rows[0].Status != Fail {
+		t.Fatalf("cwd-project status = %v, want Fail — a clean Apply is not proof the file parses", rows[0].Status)
+	}
+	if rows[0].Created {
+		t.Error("a failed cwd-project must not claim it created anything")
+	}
+	if !strings.Contains(rows[0].Summary, cfgPath) {
+		t.Errorf("Fail row does not name the file the operator has to fix: %q", rows[0].Summary)
+	}
+	// The VERBATIM parse error, not a paraphrase: "invalid TOML" tells the
+	// operator nothing about which line to open.
+	var probe map[string]any
+	_, parseErr := toml.Decode(malformed, &probe)
+	if parseErr == nil {
+		t.Fatal("fixture is valid TOML; the test proves nothing")
+	}
+	if !strings.Contains(rows[0].Summary, parseErr.Error()) {
+		t.Errorf("Fail row does not carry the parse error %q: %q", parseErr, rows[0].Summary)
+	}
+	if res.Complete {
+		t.Error("Complete = true with a failed cwd-project")
+	}
+
+	// The operator's bytes survive: either untouched in place, or as the .bak
+	// the host-local branch of reconcile.applyUpgrade writes before appending.
+	recovered := false
+	for _, p := range []string{cfgPath, cfgPath + ".bak"} {
+		if data, rerr := os.ReadFile(p); rerr == nil && string(data) == malformed {
+			recovered = true
+		}
+	}
+	if !recovered {
+		t.Errorf("the operator's original bytes are not recoverable from %s or %s.bak", cfgPath, cfgPath)
+	}
+}
+
+// TestOnboardRun_SameBinaryTwiceConverges is the property `vp init` has always
+// CLAIMED ("Re-run `vp init` anytime — it is idempotent") and, before the
+// marker gate came out, delivered by refusing to do the work at all.
+//
+// The three assertions are deliberately in this shape:
+//
+//   - run 1 must report at least one Created outcome. "Run 1 wrote nothing new"
+//     would be the wrong assertion — onboarding a fresh project is supposed to
+//     create things, and a test that forbade it would pass over a broken run.
+//   - run 2 must report NO Created and no Fail.
+//   - the tree after run 2 is byte-identical to the tree after run 1. This is
+//     the real property; the Created flags only say who noticed.
+func TestOnboardRun_SameBinaryTwiceConverges(t *testing.T) {
+	sandboxHost(t)
+	req, vaultDir := newRequest(t, true)
+
+	res1, err := Run(context.Background(), req, ScopeCLI)
+	if err != nil {
+		t.Fatalf("run 1: %v", err)
+	}
+	assertEveryStepAccountedFor(t, res1)
+	if got := createdSteps(res1); len(got) == 0 {
+		t.Fatalf("run 1 reported no Created outcome at all; onboarding a fresh project must create something")
+	}
+	for _, oc := range res1.Outcomes {
+		if oc.Status == Fail {
+			t.Fatalf("run 1 Fail row on %s: %s", oc.Step, oc.Summary)
+		}
+	}
+
+	vault1 := treeSnapshot(t, vaultDir)
+	proj1 := treeSnapshot(t, req.ProjectDir)
+
+	res2, err := Run(context.Background(), req, ScopeCLI)
+	if err != nil {
+		t.Fatalf("run 2: %v", err)
+	}
+	assertEveryStepAccountedFor(t, res2)
+	if got := createdSteps(res2); len(got) > 0 {
+		t.Errorf("run 2 reported Created for %v; a converged run creates nothing", got)
+	}
+	for _, oc := range res2.Outcomes {
+		if oc.Status == Fail {
+			t.Errorf("run 2 Fail row on %s: %s", oc.Step, oc.Summary)
+		}
+	}
+
+	if d := diffSnapshots(vault1, treeSnapshot(t, vaultDir)); len(d) > 0 {
+		t.Errorf("run 2 changed the vault tree:\n  %s", strings.Join(d, "\n  "))
+	}
+	if d := diffSnapshots(proj1, treeSnapshot(t, req.ProjectDir)); len(d) > 0 {
+		t.Errorf("run 2 changed the project tree:\n  %s", strings.Join(d, "\n  "))
+	}
+}
+
+// TestOnboardRun_ConvergesStaleProject is the regression the whole task exists
+// for, stated on the shape the OLD MCP vp_init actually left behind: a two-line
+// .vibe-palace.toml, Projects/<slug>/tasks/{done,cancelled}, and nothing else.
+//
+// Run 1 must MUTATE. A test asserting "a stale project is left alone" would be
+// asserting the bug: the marker gate saw the two-line file, declared the
+// project onboarded, and made `vp init` a permanent no-op over a vault subtree
+// that had no config.toml and no commands/skills scaffold at all.
+func TestOnboardRun_ConvergesStaleProject(t *testing.T) {
+	sandboxHost(t)
+	req, vaultDir := newRequest(t, true)
+
+	// The MCP-thin shape, verbatim: the hand-rolled body the old handler wrote
+	// and the two task dirs it mkdir'd with discarded errors.
+	cfgPath := filepath.Join(req.ProjectDir, ".vibe-palace.toml")
+	if err := os.WriteFile(cfgPath, []byte("[project]\nname = \"alpha\"\n"), 0o644); err != nil {
+		t.Fatalf("seed marker: %v", err)
+	}
+	for _, sub := range []string{"done", "cancelled"} {
+		if err := os.MkdirAll(filepath.Join(vaultDir, "Projects", "alpha", "tasks", sub), 0o755); err != nil {
+			t.Fatalf("seed tasks/%s: %v", sub, err)
+		}
+	}
+	cfgVault := filepath.Join(vaultDir, "Projects", "alpha", "config.toml")
+	if _, err := os.Stat(cfgVault); !os.IsNotExist(err) {
+		t.Fatalf("fixture already has %s; the premise is wrong", cfgVault)
+	}
+
+	res1, err := Run(context.Background(), req, ScopeCLI)
+	if err != nil {
+		t.Fatalf("run 1: %v", err)
+	}
+	assertEveryStepAccountedFor(t, res1)
+	for _, oc := range res1.Outcomes {
+		if oc.Status == Fail {
+			t.Fatalf("run 1 Fail row on %s: %s", oc.Step, oc.Summary)
+		}
+	}
+
+	// The three artifacts the stale shape is missing.
+	for _, want := range []string{
+		filepath.Join(vaultDir, "Projects", "alpha", "config.toml"),
+		filepath.Join(vaultDir, "Projects", "alpha", "commands", "README.md"),
+		filepath.Join(vaultDir, "Projects", "alpha", "skills", "README.md"),
+	} {
+		if _, err := os.Stat(want); err != nil {
+			t.Errorf("run 1 left the stale project unrepaired: %s missing (%v)", want, err)
+		}
+	}
+	if got := createdSteps(res1); !slices.Contains(got, "vault-project") {
+		t.Errorf("run 1 Created steps = %v, want vault-project among them", got)
+	}
+
+	vault1 := treeSnapshot(t, vaultDir)
+	proj1 := treeSnapshot(t, req.ProjectDir)
+
+	res2, err := Run(context.Background(), req, ScopeCLI)
+	if err != nil {
+		t.Fatalf("run 2: %v", err)
+	}
+	if got := createdSteps(res2); len(got) > 0 {
+		t.Errorf("run 2 reported Created for %v; the repair must converge", got)
+	}
+	if d := diffSnapshots(vault1, treeSnapshot(t, vaultDir)); len(d) > 0 {
+		t.Errorf("run 2 changed the vault tree:\n  %s", strings.Join(d, "\n  "))
+	}
+	if d := diffSnapshots(proj1, treeSnapshot(t, req.ProjectDir)); len(d) > 0 {
+		t.Errorf("run 2 changed the project tree:\n  %s", strings.Join(d, "\n  "))
+	}
+}
+
+// allOmissions builds every Omission the table can produce, over both builders
+// and both project-dir shapes, so a remedy assertion covers the whole space
+// rather than whichever ones one scope happens to emit.
+func allOmissions(dir string) []Omission {
+	req := Request{ProjectDir: dir, Slug: "alpha"}
+	var out []Omission
+	for _, step := range Steps() {
+		out = append(out, omitForSide(step, req))
+		if step.ReadsHostGlobal {
+			out = append(out, omitForHostRead(step, req))
+		}
+	}
+	return out
+}
+
+// TestOnboardOmissions_AllCarryARemedy asserts on the CONTENT of every Remedy,
+// not on its presence. An Omission whose remedy is "" or "TODO" is worse than
+// no omission at all: it tells the operator something is missing and then
+// refuses to say what to do about it.
+func TestOnboardOmissions_AllCarryARemedy(t *testing.T) {
+	for _, dir := range []string{"/tmp/example-project", ""} {
+		for _, om := range allOmissions(dir) {
+			r := strings.TrimSpace(om.Remedy)
+			switch {
+			case r == "":
+				t.Errorf("omission %q (dir=%q) has an empty remedy", om.Step, dir)
+				continue
+			case strings.EqualFold(r, "todo"), strings.EqualFold(r, "n/a"), strings.EqualFold(r, om.Step):
+				t.Errorf("omission %q (dir=%q) remedy is a placeholder: %q", om.Step, dir, r)
+				continue
+			}
+			if !strings.Contains(r, "vp ") {
+				t.Errorf("omission %q (dir=%q) remedy names no `vp` command: %q", om.Step, dir, r)
+			}
+			if !strings.Contains(r, "on the machine") {
+				t.Errorf("omission %q (dir=%q) remedy names no host: %q", om.Step, dir, r)
+			}
+			if !strings.Contains(r, " — it ") {
+				t.Errorf("omission %q (dir=%q) remedy names no artifact: %q", om.Step, dir, r)
+			}
+		}
+	}
+}
+
+// TestOnboardOmission_CommandShimsRemedyStatesTheOverdelivery pins the one
+// remedy whose substitute is not equivalent.
+//
+// shims.Reconcile suppresses the Claude command shims and the Claude skill
+// shims whenever the host's user-global Claude surface is healthy; `vp commands
+// upgrade` plans them unconditionally. An operator who follows the remedy and
+// then finds files they were not told to expect has been surprised by their own
+// repair, which is the failure mode this package's whole vocabulary exists to
+// prevent.
+func TestOnboardOmission_CommandShimsRemedyStatesTheOverdelivery(t *testing.T) {
+	found := 0
+	for _, om := range allOmissions("/tmp/example-project") {
+		if om.Step != "command-shims" {
+			continue
+		}
+		found++
+		for _, want := range []string{"vp commands upgrade", "SUPERSET", "user-global Claude"} {
+			if !strings.Contains(om.Remedy, want) {
+				t.Errorf("command-shims remedy does not mention %q: %q", want, om.Remedy)
+			}
+		}
+	}
+	if found == 0 {
+		t.Fatal("no command-shims omission was produced; the test proves nothing")
+	}
+}
+
+// TestOnboardRun_WarnsAboutUpgradeCommands pins the advisory to BOTH commands
+// against the right halves.
+//
+// A row naming only `vp commands upgrade` would pin a known bug: `vp skills
+// upgrade` owns Templates/skills, and cmd/vp/cmd_skills.go imports neither
+// internal/shims nor internal/storage — it touches no agent file, no shim, no
+// .gitignore and no git hook. Sending an operator with skill-template drift to
+// `vp commands upgrade` sends them to a command that cannot fix it.
+func TestOnboardRun_WarnsAboutUpgradeCommands(t *testing.T) {
+	sandboxHost(t)
+	req, _ := newRequest(t, true)
+
+	res, err := Run(context.Background(), req, ScopeCLI)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Advisories) == 0 {
+		t.Fatal("Run produced no advisory; a re-init that silently declines to upgrade is the old bug in a new place")
+	}
+
+	var text []string
+	for _, ad := range res.Advisories {
+		text = append(text, ad.Summary)
+		text = append(text, ad.Details...)
+	}
+
+	// Each half must be stated on the SAME line as its own command, and that
+	// line must not name the other one — otherwise "both commands appear
+	// somewhere in the blob" would pass over a row that pairs them wrongly.
+	cases := []struct{ half, cmd, notCmd string }{
+		{"Templates/commands", "vp commands upgrade", "vp skills upgrade"},
+		{"vpc-*.md", "vp commands upgrade", "vp skills upgrade"},
+		{"Templates/skills", "vp skills upgrade", "vp commands upgrade"},
+	}
+	for _, tc := range cases {
+		ok := false
+		for _, line := range text {
+			if strings.Contains(line, tc.half) && strings.Contains(line, tc.cmd) && !strings.Contains(line, tc.notCmd) {
+				ok = true
+			}
+		}
+		if !ok {
+			t.Errorf("no advisory line pairs %q with %q (and only that command):\n  %s",
+				tc.half, tc.cmd, strings.Join(text, "\n  "))
+		}
+	}
+
+	// And the advisory must reach the rendered table, not just the struct.
+	var rendered strings.Builder
+	for _, r := range Rows(res) {
+		rendered.WriteString(r.Name + " " + r.Summary + " " + strings.Join(r.Details, " ") + "\n")
+	}
+	for _, want := range []string{"vp commands upgrade", "vp skills upgrade"} {
+		if !strings.Contains(rendered.String(), want) {
+			t.Errorf("Rows() dropped %q from the rendered table", want)
+		}
+	}
 }
