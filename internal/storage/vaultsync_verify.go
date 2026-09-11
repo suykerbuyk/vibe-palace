@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -36,7 +37,10 @@ var pruneBeforeStageHook = func() {}
 // tip's blob.
 type PruneVerifier struct {
 	// Accept reports whether content at rel is vp's (a mirror the embedded
-	// floor serves). content is exact bytes — never whitespace-trimmed.
+	// floor serves). content is the bytes git would check out: the worktree
+	// file as it is, and a committed or remote copy with the repository's
+	// clean/smudge filters applied (git-crypt, LFS, any filter driver) — so it
+	// is compared like with like — and never whitespace-trimmed.
 	Accept func(rel string, content []byte) bool
 	// Message composes the commit message from the paths the commit carries,
 	// so the message can never list a path the commit does not.
@@ -217,6 +221,17 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 
 	headBefore, _ := gitCmd(vaultPath, 10*time.Second, "rev-parse", "HEAD")
 
+	// Every committed or remote copy is read as git would check it out. A
+	// filter driver that cannot be listed leaves nothing verifiable: every
+	// path is deferred, and nothing is removed or restored.
+	drivers, derr := filterDrivers(vaultPath)
+	if derr != nil {
+		for _, rel := range paths {
+			out.deferOn(rel, derr)
+		}
+		return nil, out, out.err()
+	}
+
 	// Classify. Only restores write here, and only over a file that still
 	// holds vp's bytes.
 	type candidate struct {
@@ -257,7 +272,11 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 			cands = append(cands, candidate{rel: rel, present: present})
 			continue
 		}
-		blob, err := gitBlob(vaultPath, headOID)
+		// The restore below is reached only after this read SUCCEEDED and its
+		// content failed Accept. A read that fails — a filter that cannot run
+		// included — defers the path: restoring through a broken filter would
+		// write its cleaned bytes (ciphertext, an LFS pointer) over the file.
+		blob, err := gitCheckoutContent(vaultPath, "HEAD", rel, drivers)
 		if err != nil {
 			out.deferOn(rel, err)
 			continue
@@ -269,7 +288,7 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 				out.Gone = append(out.Gone, rel)
 				continue
 			}
-			if _, err := gitCmd(vaultPath, 10*time.Second, "--literal-pathspecs", "checkout", "HEAD", "--", rel); err != nil {
+			if _, err := gitCmd(vaultPath, 10*time.Second, append(requiredFilterArgs(drivers), "--literal-pathspecs", "checkout", "HEAD", "--", rel)...); err != nil {
 				out.deferOn(rel, fmt.Errorf("restore from HEAD: %w", err))
 				continue
 			}
@@ -329,7 +348,7 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 			case len(unverified) > 0:
 				out.keep(c.rel, "prune deferred: remote not verified ("+strings.Join(unverified, ", ")+
 					" could not be fetched, or has no "+branch+"), so a newer override there cannot be ruled out")
-			case remoteAllows(vaultPath, remotes, branch, c.rel, v, &out):
+			case remoteAllows(vaultPath, remotes, branch, c.rel, drivers, v, &out):
 				kept = append(kept, c)
 			}
 		}
@@ -410,10 +429,10 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 		if now, _ := gitCmd(vaultPath, 10*time.Second, "rev-parse", "HEAD"); now != headBefore {
 			var still []string
 			for _, rel := range stage {
-				oid, found, err := treeEntryOID(vaultPath, "HEAD", rel)
+				_, found, err := treeEntryOID(vaultPath, "HEAD", rel)
 				var blob []byte
 				if err == nil && found {
-					blob, err = gitBlob(vaultPath, oid)
+					blob, err = gitCheckoutContent(vaultPath, "HEAD", rel, drivers)
 				}
 				switch {
 				case err != nil:
@@ -488,13 +507,18 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 // bytes there. A tip holding anything else keeps the path, and a git error
 // reading it defers the path; both are recorded in out. A remote whose
 // tracking ref does not resolve (never fetched) says nothing either way.
-func remoteAllows(vaultPath string, remotes []string, branch, rel string, v PruneVerifier, out *PruneOutcome) bool {
+//
+// A tip is read as git would check it out (gitCheckoutContent), with the
+// attributes of the WORKTREE's .gitattributes: `cat-file --filters` never
+// reads a revision's own. A tip whose attributes differ is therefore read with
+// the local ones, which can only make its bytes fail Accept — toward keep.
+func remoteAllows(vaultPath string, remotes []string, branch, rel string, drivers []string, v PruneVerifier, out *PruneOutcome) bool {
 	for _, remote := range remotes {
 		ref := remote + "/" + branch
 		if _, err := gitCmd(vaultPath, 10*time.Second, "rev-parse", "--verify", "--quiet", ref); err != nil {
 			continue
 		}
-		oid, found, err := treeEntryOID(vaultPath, ref, rel)
+		_, found, err := treeEntryOID(vaultPath, ref, rel)
 		if err != nil {
 			out.deferOn(rel, err)
 			return false
@@ -502,7 +526,7 @@ func remoteAllows(vaultPath string, remotes []string, branch, rel string, v Prun
 		if !found {
 			continue
 		}
-		blob, err := gitBlob(vaultPath, oid)
+		blob, err := gitCheckoutContent(vaultPath, ref, rel, drivers)
 		if err != nil {
 			out.deferOn(rel, err)
 			return false
@@ -532,9 +556,31 @@ func PruneMirrorsVerifiedWithDowngrade(vaultPath string, paths []string, push bo
 	return res, out, downgraded, err
 }
 
+// ReadCommittedContent returns HEAD's copy of a vault-relative path as git
+// would check it out — the repository's clean/smudge filters applied, exactly
+// as the verified prune compares it — read-only: no index write, no identity,
+// no lock. found is false when HEAD does not hold the path. Any git failure,
+// including a filter that cannot run, is an error, never "absent".
+func ReadCommittedContent(vaultPath, rel string) (content []byte, found bool, err error) {
+	if _, found, err = treeEntryOID(vaultPath, "HEAD", rel); err != nil || !found {
+		return nil, found, err
+	}
+	drivers, err := filterDrivers(vaultPath)
+	if err != nil {
+		return nil, false, err
+	}
+	content, err = gitCheckoutContent(vaultPath, "HEAD", rel, drivers)
+	if err != nil {
+		return nil, false, err
+	}
+	return content, true, nil
+}
+
 // ReadCommittedBlob returns HEAD's committed bytes for a vault-relative path,
-// read-only: no index write, no identity, no lock. found is false when HEAD
-// does not hold the path. Any git failure is an error, never "absent".
+// raw — the blob as stored, no filter applied — read-only: no index write, no
+// identity, no lock. found is false when HEAD does not hold the path. Any git
+// failure is an error, never "absent". A caller comparing content with what
+// vp serves wants ReadCommittedContent; this one answers "is it tracked?".
 func ReadCommittedBlob(vaultPath, rel string) (blob []byte, found bool, err error) {
 	oid, found, err := treeEntryOID(vaultPath, "HEAD", rel)
 	if err != nil || !found {
@@ -615,4 +661,98 @@ func gitBlob(vaultPath, oid string) ([]byte, error) {
 		return nil, fmt.Errorf("git cat-file blob %s: %w", oid, &GitError{Detail: detail, Err: err})
 	}
 	return out, nil
+}
+
+// filterDrivers lists the filter drivers configured for vaultPath's repository
+// that transform content on checkout: every driver with a
+// filter.<driver>.smudge or filter.<driver>.process key, in any config file
+// git reads there. A driver name may itself contain dots; only the "filter."
+// prefix and the final ".smudge"/".process" are stripped. No such key is an
+// empty list; any other git failure is an error.
+func filterDrivers(vaultPath string) ([]string, error) {
+	stdout, stderr, err := gitExact(vaultPath, 10*time.Second,
+		"config", "--name-only", "--get-regexp", `^filter\..+\.(smudge|process)$`)
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 1 && len(bytes.TrimSpace(stderr)) == 0 {
+			return nil, nil // exit 1 with nothing said: no such key
+		}
+		return nil, fmt.Errorf("list filter drivers: %w", &GitError{Detail: gitDetailLine(strings.TrimSpace(string(stderr))), Err: err})
+	}
+	seen := map[string]bool{}
+	var drivers []string
+	for line := range strings.SplitSeq(string(stdout), "\n") {
+		name := strings.TrimPrefix(strings.TrimSpace(line), "filter.")
+		i := strings.LastIndex(name, ".")
+		if i <= 0 {
+			continue
+		}
+		d := name[:i]
+		if strings.Contains(d, "=") {
+			// `git -c filter.<d>.required=true` splits at the first '=', so
+			// such a driver cannot be forced to fail loudly. Nothing read
+			// through it could be trusted.
+			return nil, fmt.Errorf("filter driver %q: a name containing '=' cannot be required with git -c, so its output cannot be verified", d)
+		}
+		if !seen[d] {
+			seen[d] = true
+			drivers = append(drivers, d)
+		}
+	}
+	return drivers, nil
+}
+
+// requiredFilterArgs is `-c filter.<d>.required=true` for every driver. A
+// driver that is not required fails OPEN: git 2.55, measured, exits 0 from
+// `cat-file --filters` (and checkout writes) the CLEANED bytes — ciphertext, an
+// LFS pointer, rot13 — when its smudge command is missing or exits non-zero.
+// Forced required, the same failure is a non-zero exit. git-crypt and
+// `git lfs install` set the flag themselves; custom filters usually do not.
+func requiredFilterArgs(drivers []string) []string {
+	args := make([]string, 0, 2*len(drivers))
+	for _, d := range drivers {
+		args = append(args, "-c", "filter."+d+".required=true")
+	}
+	return args
+}
+
+// gitCheckoutContent returns rev's copy of the vault-relative path rel as git
+// would check it out: `git cat-file --filters <rev>:./<rel>`, run in the vault,
+// with every driver in drivers forced required. The "./" form resolves rel
+// against the vault even when the vault is nested below its repository's root;
+// `<rev>:<rel>` would name the wrong path there, and --path= silently returns
+// the cleaned bytes. The bytes are exact, never trimmed.
+//
+// Any non-zero exit, and any output on stderr, is an error: a filter that
+// complains and exits 0 anyway has not produced bytes anyone should compare.
+// The caller must have checked that rev holds rel (treeEntryOID).
+func gitCheckoutContent(vaultPath, rev, rel string, drivers []string) ([]byte, error) {
+	spec := rev + ":./" + rel
+	args := append(requiredFilterArgs(drivers), "cat-file", "--filters", spec)
+	stdout, stderr, err := gitExact(vaultPath, 60*time.Second, args...)
+	detail := gitDetailLine(strings.TrimSpace(string(stderr)))
+	if err != nil {
+		return nil, fmt.Errorf("git cat-file --filters %s: %w", spec, &GitError{Detail: detail, Err: err})
+	}
+	if detail != "" {
+		return nil, fmt.Errorf("git cat-file --filters %s: %w", spec,
+			&GitError{Detail: detail, Err: errors.New("git reported a problem on stderr")})
+	}
+	return stdout, nil
+}
+
+// gitExact runs git in dir and returns its stdout exactly as written and its
+// stderr separately — never combined, never trimmed. gitCmd combines the two,
+// which is right for a message and wrong for content: a filter's warning would
+// otherwise be read as part of the file.
+func gitExact(dir string, timeout time.Duration, args ...string) (stdout, stderr []byte, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	stdout, err = cmd.Output()
+	return stdout, errBuf.Bytes(), err
 }

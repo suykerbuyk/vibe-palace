@@ -486,7 +486,7 @@ func pruneOnGitVault(vaultPath string, tt *reconcile.TemplateTreeReconciler, app
 		Message: func(committed []string) string {
 			basisOf := map[string]string{}
 			for _, rel := range committed {
-				if blob, found, rerr := storage.ReadCommittedBlob(vaultPath, rel); rerr == nil && found {
+				if blob, found, rerr := storage.ReadCommittedContent(vaultPath, rel); rerr == nil && found {
 					basisOf[rel] = basisByRel[rel][shaOf(blob)]
 				}
 			}
