@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
@@ -102,9 +103,9 @@ func TestCheckTemplateDriftReportsDivergedMirror(t *testing.T) {
 			"reports a count without the path is not actionable\nDetails: %v",
 			key, got.Details)
 	}
-	if !strings.Contains(got.Summary, "1 of ") {
-		t.Errorf("diverged mirror: Summary = %q, want it to report 1 drifting "+
-			"template of the corpus total", got.Summary)
+	if !strings.HasPrefix(got.Summary, "1 override(s) of built-ins kept (of ") {
+		t.Errorf("diverged mirror: Summary = %q, want it to report 1 kept "+
+			"override of the corpus total", got.Summary)
 	}
 }
 
@@ -158,5 +159,141 @@ func TestTemplateDriftProducerReachesRegistry(t *testing.T) {
 	}
 	if results[0].Status != Info {
 		t.Errorf("status = %v, want Info for a diverged mirror", results[0].Status)
+	}
+}
+
+// lockAt plants a templates.lock entry for "Templates/"+relPath.
+func lockAt(t *testing.T, vaultRoot, relPath, sha string) {
+	t.Helper()
+	l, err := templates.ReadLock(vaultRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Entries["Templates/"+relPath] = templates.LockEntry{EmbeddedSHA: sha, WrittenAt: time.Now().UTC()}
+	if err := templates.WriteLock(vaultRoot, l); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTemplateDriftOverrideRowsAreInfo pins the M3 ruling: an operator's
+// override of a built-in is reported as Info, never Pass, in every lock state
+// — so it stays visible to restart and wrap, which is the only notice an
+// operator gets that their copy shadows the binary's. Mirror rows keep their
+// "drift ... pending prune" wording, and a lock-less byte-identical copy is a
+// mirror (sync's silent-adopt pre-pass prunes it), not an override.
+func TestTemplateDriftOverrideRowsAreInfo(t *testing.T) {
+	resources, err := templates.WalkEmbedded()
+	if err != nil || len(resources) < 5 {
+		t.Fatalf("need at least five embedded resources: %v", err)
+	}
+	emb := func(i int) (string, string, string) {
+		r := resources[i]
+		sha, _ := templates.EmbeddedSHA(r.RelPath)
+		return r.RelPath, sha, string(r.Bytes)
+	}
+	vault := t.TempDir()
+
+	case4, sha4, _ := emb(0) // lock at the embedded SHA, bytes differ
+	writeTemplateMirror(t, vault, case4, "mine 4\n")
+	lockAt(t, vault, case4, sha4)
+
+	case5, _, _ := emb(1) // lock at an older baseline, bytes differ
+	writeTemplateMirror(t, vault, case5, "mine 5\n")
+	lockAt(t, vault, case5, strings.Repeat("b", 64))
+
+	case6, _, _ := emb(2) // no lock, bytes differ
+	writeTemplateMirror(t, vault, case6, "mine 6\n")
+
+	mirror, sha7, body7 := emb(3) // lock at the embedded SHA, bytes equal it
+	writeTemplateMirror(t, vault, mirror, body7)
+	lockAt(t, vault, mirror, sha7)
+
+	adopt, _, body8 := emb(4) // no lock, bytes equal the embedded copy
+	writeTemplateMirror(t, vault, adopt, body8)
+
+	want := map[string]string{
+		case4:  "operator override of a built-in (kept; shadows embedded " + sha4[:12] + ")",
+		case5:  "operator override of a built-in (kept; the embedded copy changed since this host's lock baseline)",
+		case6:  "override of a built-in with no lock entry on this host (kept)",
+		mirror: "drift (reconciler-owned mirror pending prune)",
+		adopt:  "drift (byte-identical to current embedded; pending prune)",
+	}
+	for _, row := range TemplateDriftRows(vault, "Templates", "Templates") {
+		rel := strings.TrimPrefix(row.Name, "Templates:Templates/")
+		w, ok := want[rel]
+		if !ok {
+			if row.Status != Pass {
+				t.Errorf("%s: status %v, want Pass (nothing on disk)", rel, row.Status)
+			}
+			continue
+		}
+		if row.Status != Info {
+			t.Errorf("%s: status %v, want Info", rel, row.Status)
+		}
+		if row.Summary != w {
+			t.Errorf("%s: summary %q, want %q", rel, row.Summary, w)
+		}
+	}
+
+	agg := CheckTemplateDrift(vault)
+	wantSummary := "3 override(s) of built-ins kept, 2 mirror(s) pending a prune (of "
+	if agg.Status != Info || !strings.HasPrefix(agg.Summary, wantSummary) {
+		t.Errorf("aggregate = %v %q, want Info %q...", agg.Status, agg.Summary, wantSummary)
+	}
+	for rel := range want {
+		var named bool
+		for _, d := range agg.Details {
+			named = named || strings.Contains(d, "Templates/"+rel+":")
+		}
+		if !named {
+			t.Errorf("aggregate Details never name %s", rel)
+		}
+	}
+}
+
+// TestCheckTemplateDriftSummaryOmitsZeroHalves: a vault holding only a mirror
+// (or only a dangling lock entry) says so, and says nothing about overrides.
+func TestCheckTemplateDriftSummaryOmitsZeroHalves(t *testing.T) {
+	resources, err := templates.WalkEmbedded()
+	if err != nil || len(resources) < 2 {
+		t.Fatal(err)
+	}
+	vault := t.TempDir()
+	writeTemplateMirror(t, vault, resources[0].RelPath, string(resources[0].Bytes))
+	got := CheckTemplateDrift(vault)
+	if !strings.HasPrefix(got.Summary, "1 mirror(s) pending a prune (of ") {
+		t.Errorf("mirror only: %q", got.Summary)
+	}
+
+	vault2 := t.TempDir()
+	lockAt(t, vault2, resources[1].RelPath, strings.Repeat("c", 64))
+	got = CheckTemplateDrift(vault2)
+	if !strings.HasPrefix(got.Summary, "1 dangling lock entr(y/ies) pending a sync (of ") {
+		t.Errorf("dangling only: %q", got.Summary)
+	}
+}
+
+// TestTemplateDriftRemedyStaysTruthful pins the remedy to what is true after
+// the override loss was closed: it no longer says `vp config sync` replaces an
+// override, it still steers to the project tier, it names the remaining risk
+// and its task, and it never calls a vault override of a built-in safe.
+func TestTemplateDriftRemedyStaysTruthful(t *testing.T) {
+	text := strings.Join(templateDriftRemedy, " ")
+	for _, want := range []string{
+		"Projects/<slug>/commands/",
+		"no longer overwrites one",
+		"restored from HEAD",
+		"upgrade-overwrite-resets-vault-template-overrides",
+		"template-provenance-manifest-retires-the-host-local-lock",
+		"still not recommended",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("remedy does not say %q", want)
+		}
+	}
+	for _, bad := range []string{"o/O answer", "vault-template-override-is-discarded-by-config-sync", "currently unsafe"} {
+		if strings.Contains(text, bad) {
+			t.Errorf("remedy still says %q", bad)
+		}
 	}
 }
