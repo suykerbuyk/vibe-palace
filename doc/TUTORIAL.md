@@ -1099,7 +1099,11 @@ has no vault override; the built-in already serves it`, or names the
 project-tier override that serves it for the current project instead.
 
 `--dry-run` prints each file's diff (vault → embedded) and the exact
-backup name it would get, and writes nothing.
+backup name it would get, and writes nothing. It runs the same checks as
+the real reset — the symlink refusal, the git identity and staged-change
+preflights — so it refuses where the real run would, with the same exit
+status, and it says `would commit …` for a removal an earlier run left
+uncommitted.
 
 A reset **removes** the file, so the embedded built-in serves it again.
 It never writes the embedded bytes into `Templates/`. Before removing a
@@ -1154,7 +1158,7 @@ shape:
 
 - **A vault that is its own git repository.** The removal of each
   tracked file is committed locally, never pushed, with the subject
-  `chore(templates): remove N operator-reset override(s) of built-ins`.
+  `chore(templates): operator reset of N vault Templates/ file(s)`.
   The body names the invocation, each path and its backup, and the
   host, and says that the committed copy of each file is in the commit's
   parent and the working-tree bytes at reset time are in the backup.
@@ -1166,7 +1170,12 @@ shape:
 - **The commit fails** (a pre-commit hook refuses it, say). The removal
   is left unstaged, and the reset prints `removed, not committed` with
   the manual commit and restore commands and exits 2. Running the same
-  reset again finishes the commit.
+  reset again finishes the commit — also when the deletion is left
+  staged (after `git rm`, or when unstaging it failed): a staged
+  deletion holds no bytes. The finishing commit names the backup the
+  first run wrote. If a commit lands but something else puts a file back
+  in HEAD meanwhile, the reset says which commit landed and names only
+  the files left.
 - **A vault nested in another repository** (a project or dotfiles
   repo). vp never commits it. The file is removed and backed up, and the
   output says the deletion is left in that repository's working tree for

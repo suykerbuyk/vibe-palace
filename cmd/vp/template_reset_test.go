@@ -240,9 +240,10 @@ func TestCommandsResetOnGitVaultCommitsTheRemoval(t *testing.T) {
 	host, _ := os.Hostname()
 	bak := templates.BackupName("Templates/commands/wrap.md", []byte(myWrap))
 	for _, want := range []string{
-		"chore(templates): remove 1 operator-reset override(s) of built-ins",
+		"chore(templates): operator reset of 1 vault Templates/ file(s)",
 		"`vp commands reset wrap` removed these vault Templates/ files at the operator's request",
-		"The committed copy of each is in\nthis commit's parent; the working-tree bytes at reset time are in the\nbackup named below, on host " + host,
+		"vp removed only the files\nnamed.",
+		"The committed copy of each is in this commit's parent; the\nworking-tree bytes at reset time are in the backup named beside it, on\nhost " + host,
 		"- Templates/commands/wrap.md (backup: " + bak + ")",
 	} {
 		if !strings.Contains(msg, want) {
@@ -349,8 +350,228 @@ func TestCommandsResetCommitFailureUnstages(t *testing.T) {
 	if parent := strings.TrimSpace(gitInVault(t, vaultPath, "rev-parse", "HEAD~1")); parent != head {
 		t.Errorf("unexpected history: HEAD~1=%s, want %s", parent, head)
 	}
-	if !strings.Contains(gitInVault(t, vaultPath, "log", "-1", "--format=%B"), "removed earlier and left uncommitted") {
-		t.Error("the finishing commit does not say the file was removed earlier")
+	// L3: the finishing commit is the durable pointer to the bytes, so it
+	// names the backup the first run wrote.
+	bak := templates.BackupName("Templates/commands/wrap.md", []byte(myWrap))
+	if msg := gitInVault(t, vaultPath, "log", "-1", "--format=%B"); !strings.Contains(msg,
+		"- Templates/commands/wrap.md (removed by an earlier reset and left uncommitted; backup: "+bak+")") {
+		t.Errorf("the finishing commit does not name the earlier backup:\n%s", msg)
+	}
+}
+
+// TestCommandsResetFinishesAStagedDeletion is review L2: a pending removal
+// whose deletion is STAGED (`git rm`, or a CommitRemovals whose own unstage
+// failed) holds no bytes, so the rerun commits it instead of refusing it as
+// "a staged change", and the finishing commit says no backup is on the host.
+func TestCommandsResetFinishesAStagedDeletion(t *testing.T) {
+	vaultPath, _, _ := gitResetVault(t)
+	gitInVault(t, vaultPath, "rm", "-q", "Templates/commands/wrap.md")
+	head := strings.TrimSpace(gitInVault(t, vaultPath, "rev-parse", "HEAD"))
+
+	out, errOut, code := runReset(t, vaultPath, "command", false, "wrap")
+	if code != cli.ExitOK {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+	if strings.Contains(errOut, "staged change") {
+		t.Errorf("a staged deletion was refused as a staged change:\n%s", errOut)
+	}
+	if parent := strings.TrimSpace(gitInVault(t, vaultPath, "rev-parse", "HEAD~1")); parent != head {
+		t.Errorf("not one commit on %s", head)
+	}
+	if names := strings.TrimSpace(gitInVault(t, vaultPath, "show", "--name-status", "--format=", "HEAD")); names != "D\tTemplates/commands/wrap.md" {
+		t.Errorf("the commit carries %q", names)
+	}
+	if msg := gitInVault(t, vaultPath, "log", "-1", "--format=%B"); !strings.Contains(msg, "removed earlier and left uncommitted; no backup of it is on this host") {
+		t.Errorf("message:\n%s", msg)
+	}
+	if st := strings.TrimSpace(gitInVault(t, vaultPath, "status", "--porcelain")); st != "" {
+		t.Errorf("status not clean: %q", st)
+	}
+}
+
+// TestCommandsResetStillRefusesAStagedModificationOfAPendingPath: only a
+// staged DELETION is accepted for a pending removal; staged bytes are not.
+func TestCommandsResetStillRefusesAStagedModificationOfAPendingPath(t *testing.T) {
+	vaultPath, _, _ := gitResetVault(t)
+	putVaultFile(t, vaultPath, "Templates/commands/wrap.md", "# staged, then removed from the worktree\n")
+	gitInVault(t, vaultPath, "add", "Templates/commands/wrap.md")
+	if err := os.Remove(filepath.Join(vaultPath, "Templates", "commands", "wrap.md")); err != nil {
+		t.Fatal(err)
+	}
+	head := strings.TrimSpace(gitInVault(t, vaultPath, "rev-parse", "HEAD"))
+	_, errOut, code := runReset(t, vaultPath, "command", false, "wrap")
+	if code != cli.ExitSystem || !strings.Contains(errOut, "the index holds a staged change") {
+		t.Errorf("exit %d\n%s", code, errOut)
+	}
+	if got := strings.TrimSpace(gitInVault(t, vaultPath, "rev-parse", "HEAD")); got != head {
+		t.Error("HEAD moved")
+	}
+}
+
+// TestSkillsResetOneFileNeverMislabelsBuiltins is review L1: resetting one
+// file of a skill must not call the skill's other built-in files "not a
+// built-in file", and leaves them alone; a genuinely extra file is listed.
+func TestSkillsResetOneFileNeverMislabelsBuiltins(t *testing.T) {
+	vault := t.TempDir()
+	putVaultFile(t, vault, "Templates/skills/startup-analyst/SKILL.md", bodyOnlySkillOverride(t, "startup-analyst"))
+	capex := putVaultFile(t, vault, "Templates/skills/startup-analyst/references/capex-opex.md", "my capex\n")
+	putVaultFile(t, vault, "Templates/skills/startup-analyst/references/my-notes.md", "mine\n")
+	for _, dry := range []bool{true, false} {
+		out, errOut, code := runReset(t, vault, "skill", dry, "startup-analyst/SKILL.md")
+		if code != cli.ExitOK {
+			t.Fatalf("dry=%v: exit %d\n%s", dry, code, errOut)
+		}
+		if strings.Contains(out, "capex-opex.md: not a built-in file") {
+			t.Errorf("dry=%v: a built-in reference was called not a built-in file:\n%s", dry, out)
+		}
+		if !strings.Contains(out, "left Templates/skills/startup-analyst/references/my-notes.md: not a built-in file") {
+			t.Errorf("dry=%v: the genuine extra is not listed:\n%s", dry, out)
+		}
+	}
+	assertFileBytes(t, capex, "my capex\n")
+}
+
+// TestSkillsResetSaysNothingToResetOncePerName: a skill named whole with some
+// files reset says nothing about its other built-in files, and a skill with no
+// vault copy at all gets one line, not one per file.
+func TestSkillsResetSaysNothingToResetOncePerName(t *testing.T) {
+	vault := t.TempDir()
+	putVaultFile(t, vault, "Templates/skills/startup-analyst/SKILL.md", bodyOnlySkillOverride(t, "startup-analyst"))
+	out, _, code := runReset(t, vault, "skill", false, "startup-analyst")
+	if code != cli.ExitOK || strings.Contains(out, "nothing to reset") {
+		t.Errorf("exit %d; per-file nothing-to-reset noise:\n%s", code, out)
+	}
+	out, _, _ = runReset(t, vault, "skill", false, "startup-analyst")
+	if c := strings.Count(out, "nothing to reset:"); c != 1 || !strings.Contains(out, "nothing to reset: startup-analyst has no vault override") {
+		t.Errorf("%d nothing-to-reset lines, want 1 naming the skill:\n%s", c, out)
+	}
+}
+
+// TestCommandsResetDryRunMatchesTheRealRun is review L4: the dry run runs the
+// same path checks, pending classification and git preflights as the real
+// run, so it refuses where the real run refuses, with the same exit status,
+// and writes nothing.
+func TestCommandsResetDryRunMatchesTheRealRun(t *testing.T) {
+	t.Run("symlinked-skill-directory", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlinks need a privilege on Windows")
+		}
+		vault := t.TempDir()
+		putVaultFile(t, vault, "Projects/p/skills/chair/SKILL.md", "---\nname: chair\n---\nproject chair\n")
+		if err := os.MkdirAll(filepath.Join(vault, "Templates", "skills"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(vault, "Projects", "p", "skills", "chair"), filepath.Join(vault, "Templates", "skills", "chair")); err != nil {
+			t.Fatal(err)
+		}
+		before := linkDigest(t, vault)
+		dryOut, dryErr, dry := runReset(t, vault, "skill", true, "chair")
+		_, realErr, real := runReset(t, vault, "skill", false, "chair")
+		if dry != cli.ExitUser || real != cli.ExitUser {
+			t.Errorf("dry exit %d, real exit %d, want both %d", dry, real, cli.ExitUser)
+		}
+		if !strings.Contains(dryErr, "symlink") || !strings.Contains(realErr, "symlink") {
+			t.Errorf("dry:\n%s\nreal:\n%s", dryErr, realErr)
+		}
+		if strings.Contains(dryOut, "would reset") {
+			t.Errorf("the dry run previewed a reset the real run refuses:\n%s", dryOut)
+		}
+		if linkDigest(t, vault) != before {
+			t.Error("the vault changed")
+		}
+	})
+	t.Run("pending-removal", func(t *testing.T) {
+		vaultPath, _, _ := gitResetVault(t)
+		if err := os.Remove(filepath.Join(vaultPath, "Templates", "commands", "wrap.md")); err != nil {
+			t.Fatal(err)
+		}
+		head := strings.TrimSpace(gitInVault(t, vaultPath, "rev-parse", "HEAD"))
+		out, errOut, code := runReset(t, vaultPath, "command", true, "wrap")
+		if code != cli.ExitOK {
+			t.Fatalf("exit %d\n%s", code, errOut)
+		}
+		for _, want := range []string{
+			"would commit Templates/commands/wrap.md: already removed from the worktree",
+			"would commit the removal of the tracked files locally (not pushed)",
+			"(dry run: nothing was written)",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("dry run lacks %q:\n%s", want, out)
+			}
+		}
+		if strings.Contains(out, "nothing to reset") {
+			t.Errorf("the dry run says nothing to reset for a pending removal:\n%s", out)
+		}
+		if got := strings.TrimSpace(gitInVault(t, vaultPath, "rev-parse", "HEAD")); got != head {
+			t.Error("the dry run committed")
+		}
+	})
+	t.Run("tracked-override", func(t *testing.T) {
+		vaultPath, _, _ := gitResetVault(t)
+		before := treeDigest(t, filepath.Join(vaultPath, "Templates"))
+		out, errOut, code := runReset(t, vaultPath, "command", true, "wrap")
+		if code != cli.ExitOK || !strings.Contains(out, "would commit the removal of the tracked files locally (not pushed)") {
+			t.Errorf("exit %d\n%s\n%s", code, out, errOut)
+		}
+		if treeDigest(t, filepath.Join(vaultPath, "Templates")) != before {
+			t.Error("the dry run changed Templates/")
+		}
+	})
+	t.Run("no-identity", func(t *testing.T) {
+		vaultPath, _, _ := gitResetVault(t)
+		isolateGitIdentity(t, vaultPath)
+		_, dryErr, dry := runReset(t, vaultPath, "command", true, "wrap")
+		_, _, real := runReset(t, vaultPath, "command", false, "wrap")
+		if dry != cli.ExitSystem || real != cli.ExitSystem || !strings.Contains(dryErr, "identity") {
+			t.Errorf("dry exit %d, real exit %d\n%s", dry, real, dryErr)
+		}
+		if _, err := os.Stat(filepath.Join(vaultPath, "Templates", "commands", "wrap.md")); err != nil {
+			t.Errorf("the file was removed: %v", err)
+		}
+	})
+	t.Run("staged-change", func(t *testing.T) {
+		vaultPath, _, _ := gitResetVault(t)
+		putVaultFile(t, vaultPath, "Templates/commands/wrap.md", "# a staged edit\n")
+		gitInVault(t, vaultPath, "add", "Templates/commands/wrap.md")
+		_, dryErr, dry := runReset(t, vaultPath, "command", true, "wrap")
+		if dry != cli.ExitSystem || !strings.Contains(dryErr, "staged change") {
+			t.Errorf("dry exit %d\n%s", dry, dryErr)
+		}
+	})
+}
+
+// TestCommitTemplateResetReportsACommitThatLeftPathsInHEAD is review L5: when
+// the commit lands but HEAD still holds a path, the landed commit is reported
+// as committed and the manual commands name only the paths left.
+func TestCommitTemplateResetReportsACommitThatLeftPathsInHEAD(t *testing.T) {
+	vaultPath, _, _ := gitResetVault(t)
+	putVaultFile(t, vaultPath, "Templates/commands/restart.md", "# restart override\n")
+	gitInVault(t, vaultPath, "add", "Templates/commands/restart.md")
+	gitInVault(t, vaultPath, "commit", "-qm", "restart override")
+	if err := os.Remove(filepath.Join(vaultPath, "Templates", "commands", "wrap.md")); err != nil {
+		t.Fatal(err)
+	}
+	// restart.md is still present, so the commit cannot remove it: the
+	// timeable stand-in for a writer racing the commit.
+	var out, errb bytes.Buffer
+	code := commitTemplateReset(vaultPath, storage.VaultGitOK, []resetCommitEntry{
+		{Rel: "Templates/commands/wrap.md", Backup: "b"},
+		{Rel: "Templates/commands/restart.md", Backup: "c"},
+	}, true, "vp commands reset", "vp commands reset wrap restart", &out, &errb)
+	if code != cli.ExitSystem {
+		t.Errorf("exit %d", code)
+	}
+	if !strings.Contains(out.String(), "committed the removal locally as ") {
+		t.Errorf("the landed commit is not reported:\n%s", out.String())
+	}
+	e := errb.String()
+	if strings.Contains(e, "removed, not committed") {
+		t.Errorf("a landed commit is reported as not committed:\n%s", e)
+	}
+	if !strings.Contains(e, "HEAD still holds Templates/commands/restart.md") ||
+		!strings.Contains(e, "checkout HEAD -- Templates/commands/restart.md\n") ||
+		strings.Contains(e, "checkout HEAD -- Templates/commands/wrap.md") {
+		t.Errorf("the manual commands do not name only the path left:\n%s", e)
 	}
 }
 
@@ -746,14 +967,16 @@ func TestTemplateResetCommitMessageShapes(t *testing.T) {
 	msg := templateResetCommitMessage("vp skills reset chair", []resetCommitEntry{
 		{Rel: "Templates/skills/chair/SKILL.md", Mirror: true},
 		{Rel: "Templates/skills/chair/references/x.md", Pending: true},
+		{Rel: "Templates/skills/chair/references/z.md", Pending: true, Backups: []string{"Templates/skills/chair/references/z.md.00112233aabb.bak"}},
 		{Rel: "Templates/skills/chair/references/y.md", Backup: "Templates/skills/chair/references/y.md.0123456789ab.bak"},
 	}, "hostA")
 	for _, want := range []string{
-		"chore(templates): remove 3 operator-reset override(s) of built-ins",
+		"chore(templates): operator reset of 4 vault Templates/ file(s)",
 		"`vp skills reset chair` removed",
-		"on host hostA.",
+		"host hostA.",
 		"- Templates/skills/chair/SKILL.md (identical to the built-in; no backup needed)",
-		"- Templates/skills/chair/references/x.md (removed earlier and left uncommitted",
+		"- Templates/skills/chair/references/x.md (removed earlier and left uncommitted; no backup of it is on this host)",
+		"- Templates/skills/chair/references/z.md (removed by an earlier reset and left uncommitted; backup: Templates/skills/chair/references/z.md.00112233aabb.bak)",
 		"- Templates/skills/chair/references/y.md (backup: Templates/skills/chair/references/y.md.0123456789ab.bak)",
 	} {
 		if !strings.Contains(msg, want) {

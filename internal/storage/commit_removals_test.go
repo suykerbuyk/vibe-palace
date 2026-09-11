@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -191,10 +192,12 @@ func TestCommitRemovals_ReportsPathStillInHEAD(t *testing.T) {
 	if res == nil || res.CommitSHA == "" {
 		t.Errorf("res = %+v, want the commit that did land", res)
 	}
-	for _, want := range []string{"T/keep.md", "commit the removal by hand", "git -C " + dir + " commit"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error lacks %q: %v", want, err)
-		}
+	var left *RemovalsLeftInHEADError
+	if !errors.As(err, &left) || left.SHA != res.CommitSHA || strings.Join(left.Paths, ",") != "T/keep.md" {
+		t.Fatalf("err = %#v, want a *RemovalsLeftInHEADError naming only T/keep.md and the landed commit", err)
+	}
+	if !strings.Contains(err.Error(), "does not remove T/keep.md") {
+		t.Errorf("error text: %v", err)
 	}
 	if strings.Contains(err.Error(), "T/wrap.md") {
 		t.Errorf("the committed removal is reported as missing: %v", err)
@@ -286,5 +289,60 @@ func TestGitTopLevelAndPathIgnored(t *testing.T) {
 	}
 	if _, err := GitPathIgnored(t.TempDir(), "x.bak"); err == nil {
 		t.Error("outside a repository: no error")
+	}
+}
+
+// TestCommitRemovals_CommitsAStagedDeletion is review L2's storage half: a
+// path already staged for deletion (`git rm`, or an earlier call whose own
+// unstage failed) cannot be `git add`ed, but holds no bytes, so it is
+// committed as it stands — and on a refused commit it is unstaged like any
+// other, leaving " D".
+func TestCommitRemovals_CommitsAStagedDeletion(t *testing.T) {
+	dir := committedRepo(t, map[string]string{"T/wrap.md": "mine\n", "T/other.md": "o\n"})
+	gitRun(t, dir, "rm", "-q", "T/wrap.md")
+	if err := os.Remove(filepath.Join(dir, "T", "other.md")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := CommitRemovals(dir, "remove", []string{"T/wrap.md", "T/other.md"})
+	if err != nil || res.CommitSHA == "" {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	if names := gitRun(t, dir, "show", "--name-status", "--format=", "HEAD"); names != "D\tT/other.md\nD\tT/wrap.md" {
+		t.Errorf("commit carries %q", names)
+	}
+	if len(res.SkippedPaths) != 0 {
+		t.Errorf("a staged deletion was reported skipped: %v", res.SkippedPaths)
+	}
+
+	dir = committedRepo(t, map[string]string{"T/wrap.md": "mine\n"})
+	failingPreCommit(t, dir)
+	gitRun(t, dir, "rm", "-q", "T/wrap.md")
+	if _, err := CommitRemovals(dir, "remove", []string{"T/wrap.md"}); err == nil {
+		t.Fatal("no error from a refused commit")
+	}
+	if st := gitRun(t, dir, "status", "--porcelain", "--", "T/wrap.md"); st != "D T/wrap.md" {
+		t.Errorf("status = %q, want the staged deletion left unstaged", st)
+	}
+}
+
+func TestStagedDeletion(t *testing.T) {
+	dir := committedRepo(t, map[string]string{"T/a.md": "a\n", "T/b.md": "b\n", "T/c.md": "c\n"})
+	gitRun(t, dir, "rm", "-q", "T/a.md")
+	if err := os.Remove(filepath.Join(dir, "T", "b.md")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "T/c.md", "edited\n")
+	gitRun(t, dir, "add", "T/c.md")
+	for rel, want := range map[string]bool{"T/a.md": true, "T/b.md": false, "T/c.md": false, "T/none.md": false} {
+		got, err := StagedDeletion(dir, rel)
+		if err != nil || got != want {
+			t.Errorf("StagedDeletion(%s) = %v, %v; want %v", rel, got, err, want)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git", "index"), []byte("not an index"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StagedDeletion(dir, "T/a.md"); err == nil {
+		t.Error("a corrupt index read as no staged deletion")
 	}
 }

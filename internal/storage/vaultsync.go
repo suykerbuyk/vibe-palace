@@ -320,6 +320,19 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 // and to make the unstage itself fail.
 var commitRemovalsBeforeUnstageHook = func() {}
 
+// RemovalsLeftInHEADError is CommitRemovals' error when its commit landed but
+// HEAD still holds some of the paths it was asked to remove — a race with a
+// writer outside vp. The commit (SHA) carries the other paths; only Paths are
+// left for the operator.
+type RemovalsLeftInHEADError struct {
+	SHA   string
+	Paths []string
+}
+
+func (e *RemovalsLeftInHEADError) Error() string {
+	return fmt.Sprintf("commit %s does not remove %s", e.SHA, strings.Join(e.Paths, ", "))
+}
+
 // CommitRemovals commits the removal of rels — vault-relative, forward-slash
 // paths of tracked files an operator asked vp to remove — as one local commit
 // carrying exactly those paths. It never pushes: the operator's next `vp vault
@@ -328,18 +341,24 @@ var commitRemovalsBeforeUnstageHook = func() {}
 // remote meets this commit at the next pull as a modify/delete conflict, which
 // storage.Pull leaves for the operator.
 //
+// A path may be removed from the worktree only (" D") or already staged for
+// deletion ("D ", e.g. by `git rm`, or by an earlier CommitRemovals whose
+// unstage failed): a staged deletion holds no bytes, so it is committed as it
+// stands, without the `git add` that would fatal on it.
+//
 // The whole stage→commit sequence runs under the vault commit lock, as every vp
 // committer's does. On any stage or commit failure — a pre-commit hook that
-// refuses, say — exactly rels are unstaged before the lock is released, so the
-// removals stay unstaged in the worktree (` D`). Left staged, the next `vp
-// config sync` would read vp's own deletion as someone else's staged change and
-// defer it on every run; unstaged, it classifies the path as gone. If the
-// unstage itself fails, the error says so and names the manual command.
+// refuses, say — exactly its paths are unstaged before the lock is released, so
+// each removal is left as an unstaged " D". Left staged, the next `vp config
+// sync` would read vp's own deletion as someone else's staged change and defer
+// it on every run; unstaged, it classifies the path as gone. If the unstage
+// itself fails, the error says so and names the manual command.
 //
-// A path git no longer tracks (another committer got there first) is dropped
-// before staging; if none is left the call is a no-op. After the commit each
-// path is looked up in HEAD again, and one still there is an error naming the
-// manual commit.
+// A path git no longer tracks — absent from the worktree, the index and HEAD,
+// because another committer got there first — is dropped; if none is left the
+// call is a no-op. After the commit each path is looked up in HEAD again, and
+// any still there are returned as a *RemovalsLeftInHEADError alongside the
+// result naming the commit that did land.
 //
 // vaultPath must be the root of its own repository. vp never commits into a
 // repository that merely encloses the vault; that caller must not call this.
@@ -348,9 +367,19 @@ func CommitRemovals(vaultPath, message string, rels []string) (*PushResult, erro
 		return nil, fmt.Errorf("no paths specified")
 	}
 	result := &PushResult{}
-	keep, skipped := filterStageablePaths(vaultPath, rels)
-	result.SkippedPaths = skipped
-	if len(keep) == 0 {
+	stage, skipped := filterStageablePaths(vaultPath, rels)
+	// Of the paths `git add` cannot take, a path HEAD still holds is a staged
+	// deletion: it is committed without staging.
+	var stagedDeletions []string
+	for _, rel := range skipped {
+		if _, found, err := ReadCommittedBlob(vaultPath, rel); err == nil && found {
+			stagedDeletions = append(stagedDeletions, rel)
+			continue
+		}
+		result.SkippedPaths = append(result.SkippedPaths, rel)
+	}
+	commit := append(append([]string(nil), stage...), stagedDeletions...)
+	if len(commit) == 0 {
 		return result, nil
 	}
 	if err := checkIdentity(vaultPath); err != nil {
@@ -372,16 +401,18 @@ func CommitRemovals(vaultPath, message string, rels []string) (*PushResult, erro
 
 	fail := func(err error) (*PushResult, error) {
 		commitRemovalsBeforeUnstageHook()
-		if _, rerr := gitCmd(vaultPath, 10*time.Second, append([]string{"--literal-pathspecs", "reset", "-q", "--"}, keep...)...); rerr != nil {
+		if _, rerr := gitCmd(vaultPath, 10*time.Second, append([]string{"--literal-pathspecs", "reset", "-q", "--"}, commit...)...); rerr != nil {
 			err = fmt.Errorf("%w (and unstaging the removal failed: %v — run: git -C %s reset -q -- %s)",
-				err, rerr, vaultPath, strings.Join(keep, " "))
+				err, rerr, vaultPath, strings.Join(commit, " "))
 		}
 		return nil, err
 	}
-	if err := stageInBatches(vaultPath, keep); err != nil {
-		return fail(fmt.Errorf("git add: %w", err))
+	if len(stage) > 0 {
+		if err := stageInBatches(vaultPath, stage); err != nil {
+			return fail(fmt.Errorf("git add: %w", err))
+		}
 	}
-	staged, err := stagedChangesIn(vaultPath, keep)
+	staged, err := stagedChangesIn(vaultPath, commit)
 	if err != nil {
 		return fail(err)
 	}
@@ -392,7 +423,7 @@ func CommitRemovals(vaultPath, message string, rels []string) (*PushResult, erro
 	if hostname == "" {
 		hostname = "unknown"
 	}
-	if err := commitOnlyPaths(vaultPath, fmt.Sprintf("%s\n\n[%s]", message, hostname), keep); err != nil {
+	if err := commitOnlyPaths(vaultPath, fmt.Sprintf("%s\n\n[%s]", message, hostname), commit); err != nil {
 		return fail(err)
 	}
 	unlock()
@@ -400,14 +431,13 @@ func CommitRemovals(vaultPath, message string, rels []string) (*PushResult, erro
 	sha, _ := gitCmd(vaultPath, 10*time.Second, "rev-parse", "--short", "HEAD")
 	result.CommitSHA = sha
 	var still []string
-	for _, rel := range keep {
+	for _, rel := range commit {
 		if _, found, err := ReadCommittedBlob(vaultPath, rel); err != nil || found {
 			still = append(still, rel)
 		}
 	}
 	if len(still) > 0 {
-		return result, fmt.Errorf("commit %s does not remove %s — commit the removal by hand: git -C %s commit -m %q -- %s",
-			sha, strings.Join(still, ", "), vaultPath, "remove reset template override", strings.Join(still, " "))
+		return result, &RemovalsLeftInHEADError{SHA: sha, Paths: still}
 	}
 	return result, nil
 }
@@ -435,6 +465,22 @@ func StagedChange(vaultPath, rel string) (bool, error) {
 		return false, err
 	}
 	return inHead != inIndex || headOID != indexOID, nil
+}
+
+// StagedDeletion reports whether the index holds a staged deletion of rel:
+// HEAD has the path and the index does not. It is the one staged change that
+// holds no bytes — committing it loses nothing a backup would need. Any git
+// failure is an error.
+func StagedDeletion(vaultPath, rel string) (bool, error) {
+	_, inHead, err := treeEntryOID(vaultPath, "HEAD", rel)
+	if err != nil {
+		return false, err
+	}
+	_, inIndex, err := indexEntryOID(vaultPath, rel)
+	if err != nil {
+		return false, err
+	}
+	return inHead && !inIndex, nil
 }
 
 // GitTopLevel returns the top level of the work tree dir is in. For a vault

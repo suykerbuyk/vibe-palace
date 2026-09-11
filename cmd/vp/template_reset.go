@@ -116,9 +116,21 @@ type resetTarget struct {
 	rel    string
 }
 
-// runTemplateReset validates every name, preflights git, resets, commits and
-// reports. Exit status: 0 on success (including "nothing to reset"), 1 for a
-// usage problem or a refused path, 2 when anything could not be done.
+// resetPlan is everything a reset — or its dry run — decided before writing.
+type resetPlan struct {
+	present  []commands.Change // vault copy exists: removed by the reset
+	pending  []resetTarget     // absent from the worktree, still in HEAD: commit only
+	absent   []resetTarget     // nothing to do
+	tracked  map[string]bool   // present rels HEAD holds (own repository only)
+	gitState storage.VaultGit
+}
+
+// runTemplateReset validates every name, checks every path, preflights git,
+// then resets, commits and reports — or, with --dry-run, reports what the reset
+// would do after the SAME checks and preflights, so a dry run refuses exactly
+// where the real run would, with the same exit status. Exit status: 0 on
+// success (including "nothing to reset"), 1 for a usage problem or a refused
+// path, 2 when anything could not be done.
 func runTemplateReset(opts templateResetOpts) int {
 	verb := resetVerb(opts.ResourceType)
 	if len(opts.Names) == 0 {
@@ -139,8 +151,10 @@ func runTemplateReset(opts templateResetOpts) int {
 
 	// 1. Every name is validated before anything is read for writing: one
 	// unknown name refuses the whole invocation. Overlapping names (chair and
-	// chair/SKILL.md) are de-duplicated.
-	var unknown []string
+	// chair/SKILL.md) are de-duplicated; each name remembers the paths it
+	// selected, so "nothing to reset" is said once per name.
+	var unknown, names []string
+	nameRels := map[string][]string{}
 	seen := map[string]bool{}
 	var changes []commands.Change
 	for _, raw := range opts.Names {
@@ -157,7 +171,11 @@ func runTemplateReset(opts templateResetOpts) int {
 			fmt.Fprintf(opts.Stderr, "%s: %v\nNothing was changed.\n", verb, err)
 			return cli.ExitSystem
 		}
+		if _, dup := nameRels[name]; !dup {
+			names = append(names, name)
+		}
 		for _, c := range plan {
+			nameRels[name] = append(nameRels[name], vaultRel(vaultRoot, c.VaultPath))
 			if !seen[c.VaultPath] {
 				seen[c.VaultPath] = true
 				changes = append(changes, c)
@@ -174,97 +192,48 @@ func runTemplateReset(opts templateResetOpts) int {
 	}
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Name < changes[j].Name })
 
-	var present []commands.Change
-	var absent []resetTarget
+	plan := resetPlan{tracked: map[string]bool{}}
 	for _, c := range changes {
-		rel, _ := filepath.Rel(vaultRoot, c.VaultPath)
 		if c.Kind == commands.ChangeUnneeded {
-			absent = append(absent, resetTarget{change: c, rel: filepath.ToSlash(rel)})
+			plan.absent = append(plan.absent, resetTarget{change: c, rel: vaultRel(vaultRoot, c.VaultPath)})
 			continue
 		}
-		present = append(present, c)
+		plan.present = append(plan.present, c)
 	}
 	slug, _ := project.DetectProjectHighConfidence(mustGetwd())
 
-	if opts.DryRun {
-		printResetDryRun(opts.Stdout, present)
-		for _, t := range absent {
-			fmt.Fprintf(opts.Stdout, "nothing to reset: %s\n", nothingToResetReason(resolver, t.change, slug))
+	// 2. Every path is checked before any write: a symlink in any component,
+	// or a non-regular file, refuses the whole invocation (Reset repeats this
+	// as its own phase 1a; a dry run stops here too).
+	if err := commands.CheckResetPaths(plan.present); err != nil {
+		fmt.Fprintf(opts.Stderr, "%s: %v\nNothing was removed.\n", verb, err)
+		if errors.Is(err, commands.ErrUnsafeResetPath) {
+			return cli.ExitUser
 		}
-		printExtraSkillFiles(opts.Stdout, vaultRoot, opts.ResourceType, changes)
+		return cli.ExitSystem
+	}
+
+	// 3. Git preflight, before any write.
+	if code := preflightTemplateReset(vaultRoot, verb, &plan, opts.Stderr); code != cli.ExitOK {
+		return code
+	}
+
+	if opts.DryRun {
+		printResetDryRun(opts.Stdout, plan.present)
+		for _, t := range plan.pending {
+			fmt.Fprintf(opts.Stdout, "would commit %s: already removed from the worktree, but the removal was never committed\n", t.rel)
+		}
+		if plan.gitState == storage.VaultGitOK && (len(plan.pending) > 0 || anyTracked(plan.tracked)) {
+			fmt.Fprintln(opts.Stdout, "would commit the removal of the tracked files locally (not pushed)")
+		}
+		printNothingToReset(opts.Stdout, resolver, opts.ResourceType, names, nameRels, plan, slug)
+		printExtraSkillFiles(opts.Stdout, resolver, vaultRoot, opts.ResourceType, changes)
+		fmt.Fprintln(opts.Stdout, "(dry run: nothing was written)")
 		return cli.ExitOK
 	}
 
-	// 2. Git preflight, before any write.
-	gitState, gitErr := storage.InspectVaultGit(vaultRoot)
-	if gitState == storage.VaultGitBroken {
-		fmt.Fprintf(opts.Stderr, "%s: the vault's git repository cannot be used (%v); refusing before any change.\n", verb, gitErr)
-		return cli.ExitSystem
-	}
-	tracked := map[string]bool{}
-	var pending []resetTarget
-	if gitState == storage.VaultGitOK {
-		needIdentity := false
-		for _, c := range present {
-			rel := vaultRel(vaultRoot, c.VaultPath)
-			_, found, err := storage.ReadCommittedBlob(vaultRoot, rel)
-			if err != nil {
-				fmt.Fprintf(opts.Stderr, "%s: cannot read HEAD's copy of %s (%v); refusing before any change.\n", verb, rel, err)
-				return cli.ExitSystem
-			}
-			tracked[rel] = found
-			needIdentity = needIdentity || found
-		}
-		// A named built-in whose vault file is gone from the worktree but still
-		// in HEAD is a pending, uncommitted removal — left by a reset whose
-		// commit failed, say. The operator named it, so the reset finishes it.
-		var stillAbsent []resetTarget
-		for _, t := range absent {
-			_, found, err := storage.ReadCommittedBlob(vaultRoot, t.rel)
-			if err != nil {
-				fmt.Fprintf(opts.Stderr, "%s: cannot read HEAD's copy of %s (%v); refusing before any change.\n", verb, t.rel, err)
-				return cli.ExitSystem
-			}
-			if found {
-				pending = append(pending, t)
-				needIdentity = true
-				continue
-			}
-			stillAbsent = append(stillAbsent, t)
-		}
-		absent = stillAbsent
-		if needIdentity {
-			if err := storage.CheckCommitIdentity(vaultRoot); err != nil {
-				fmt.Fprintf(opts.Stderr, "%s: %v\nThe removal could not be committed, so nothing was changed.\n", verb, err)
-				return cli.ExitSystem
-			}
-		}
-		staged := func(rel string) bool {
-			s, err := storage.StagedChange(vaultRoot, rel)
-			if err != nil {
-				fmt.Fprintf(opts.Stderr, "%s: cannot read the index for %s (%v); refusing before any change.\n", verb, rel, err)
-				return true
-			}
-			if s {
-				fmt.Fprintf(opts.Stderr, "%s: the index holds a staged change for %s. Committing its removal would drop the staged bytes, which no backup holds; commit or unstage it first (git -C %s restore --staged -- %s). Nothing was changed.\n",
-					verb, rel, vaultRoot, rel)
-			}
-			return s
-		}
-		for _, c := range present {
-			if staged(vaultRel(vaultRoot, c.VaultPath)) {
-				return cli.ExitSystem
-			}
-		}
-		for _, t := range pending {
-			if staged(t.rel) {
-				return cli.ExitSystem
-			}
-		}
-	}
-
-	// 3. Reset: every path checked, every backup written, then the removals.
-	outcomes, err := commands.Reset(present)
+	// 4. Reset: every path checked again, every backup written, then removals.
+	outcomes, err := commands.Reset(plan.present)
 	if err != nil {
 		fmt.Fprintf(opts.Stderr, "%s: %v\nNothing was removed.\n", verb, err)
 		if errors.Is(err, commands.ErrUnsafeResetPath) {
@@ -280,7 +249,7 @@ func runTemplateReset(opts templateResetOpts) int {
 		case o.Removed:
 			fmt.Fprintf(opts.Stdout, "reset %s: removed your override; the built-in now serves it (%s)%s\n",
 				o.Rel, resetBackupPhrase(o), higherTierNote(resolver, opts.ResourceType, o.Name, slug))
-			if tracked[o.Rel] {
+			if plan.tracked[o.Rel] {
 				committable = append(committable, resetCommitEntry{Rel: o.Rel, Backup: o.Backup, Mirror: o.Mirror})
 			}
 		case o.AlreadyGone:
@@ -296,23 +265,21 @@ func runTemplateReset(opts templateResetOpts) int {
 			fmt.Fprintln(opts.Stderr)
 			code = cli.ExitSystem
 		}
-		if o.Backup != "" && !o.BackupReused && gitState == storage.VaultGitOK {
+		if o.Backup != "" && !o.BackupReused && plan.gitState == storage.VaultGitOK {
 			if ignored, err := storage.GitPathIgnored(vaultRoot, o.Backup); err == nil && !ignored {
 				fmt.Fprintf(opts.Stderr, "warning: git does not ignore the backup %s, so it shows as untracked; `vp config sync` restores the vault's canonical ignore lines (*.bak).\n", o.Backup)
 			}
 		}
 	}
-	for _, t := range pending {
+	for _, t := range plan.pending {
 		fmt.Fprintf(opts.Stdout, "reset %s: already removed from the worktree, but the removal was never committed; committing it now\n", t.rel)
-		committable = append(committable, resetCommitEntry{Rel: t.rel, Pending: true})
+		committable = append(committable, resetCommitEntry{Rel: t.rel, Pending: true, Backups: existingBackups(vaultRoot, t.rel)})
 	}
-	for _, t := range absent {
-		fmt.Fprintf(opts.Stdout, "nothing to reset: %s\n", nothingToResetReason(resolver, t.change, slug))
-	}
-	printExtraSkillFiles(opts.Stdout, vaultRoot, opts.ResourceType, changes)
+	printNothingToReset(opts.Stdout, resolver, opts.ResourceType, names, nameRels, plan, slug)
+	printExtraSkillFiles(opts.Stdout, resolver, vaultRoot, opts.ResourceType, changes)
 
-	// 4. Commit (vault's own repository only), per the vault's git shape.
-	if c := commitTemplateReset(vaultRoot, gitState, committable, removedAny(outcomes), verb, invocation, opts.Stdout, opts.Stderr); c != cli.ExitOK {
+	// 5. Commit (vault's own repository only), per the vault's git shape.
+	if c := commitTemplateReset(vaultRoot, plan.gitState, committable, removedAny(outcomes), verb, invocation, opts.Stdout, opts.Stderr); c != cli.ExitOK {
 		code = c
 	}
 
@@ -320,6 +287,142 @@ func runTemplateReset(opts templateResetOpts) int {
 		fmt.Fprintln(opts.Stdout, "Shims in each project may still carry the removed override's text (command brief / skill description). Run `vp commands upgrade --overwrite` (or `vp init`) in each project.")
 	}
 	return code
+}
+
+// preflightTemplateReset inspects the vault's git shape and refuses, before
+// anything is written, what the commit could not carry: an unreadable
+// repository, no identity when a tracked file would be committed, or a staged
+// change on a target. It fills plan.gitState, plan.tracked and plan.pending
+// (a named built-in absent from the worktree but still in HEAD: a removal left
+// uncommitted, which the reset finishes). A staged DELETION of a pending
+// target is accepted — it holds no bytes, and it is the removal about to be
+// committed (the state CommitRemovals leaves if its own unstage fails).
+func preflightTemplateReset(vaultRoot, verb string, plan *resetPlan, errw io.Writer) int {
+	gitState, gitErr := storage.InspectVaultGit(vaultRoot)
+	plan.gitState = gitState
+	if gitState == storage.VaultGitBroken {
+		fmt.Fprintf(errw, "%s: the vault's git repository cannot be used (%v); refusing before any change.\n", verb, gitErr)
+		return cli.ExitSystem
+	}
+	if gitState != storage.VaultGitOK {
+		return cli.ExitOK
+	}
+	needIdentity := false
+	for _, c := range plan.present {
+		rel := vaultRel(vaultRoot, c.VaultPath)
+		_, found, err := storage.ReadCommittedBlob(vaultRoot, rel)
+		if err != nil {
+			fmt.Fprintf(errw, "%s: cannot read HEAD's copy of %s (%v); refusing before any change.\n", verb, rel, err)
+			return cli.ExitSystem
+		}
+		plan.tracked[rel] = found
+		needIdentity = needIdentity || found
+	}
+	var stillAbsent []resetTarget
+	for _, t := range plan.absent {
+		_, found, err := storage.ReadCommittedBlob(vaultRoot, t.rel)
+		if err != nil {
+			fmt.Fprintf(errw, "%s: cannot read HEAD's copy of %s (%v); refusing before any change.\n", verb, t.rel, err)
+			return cli.ExitSystem
+		}
+		if found {
+			plan.pending = append(plan.pending, t)
+			needIdentity = true
+			continue
+		}
+		stillAbsent = append(stillAbsent, t)
+	}
+	plan.absent = stillAbsent
+	if needIdentity {
+		if err := storage.CheckCommitIdentity(vaultRoot); err != nil {
+			fmt.Fprintf(errw, "%s: %v\nThe removal could not be committed, so nothing was changed.\n", verb, err)
+			return cli.ExitSystem
+		}
+	}
+	refuse := func(rel string, err error) int {
+		if err != nil {
+			fmt.Fprintf(errw, "%s: cannot read the index for %s (%v); refusing before any change.\n", verb, rel, err)
+		} else {
+			fmt.Fprintf(errw, "%s: the index holds a staged change for %s. Committing its removal would drop the staged bytes, which no backup holds; commit or unstage it first (git -C %s restore --staged -- %s). Nothing was changed.\n",
+				verb, rel, vaultRoot, rel)
+		}
+		return cli.ExitSystem
+	}
+	for _, c := range plan.present {
+		rel := vaultRel(vaultRoot, c.VaultPath)
+		if staged, err := storage.StagedChange(vaultRoot, rel); err != nil || staged {
+			return refuse(rel, err)
+		}
+	}
+	for _, t := range plan.pending {
+		staged, err := storage.StagedChange(vaultRoot, t.rel)
+		if err != nil {
+			return refuse(t.rel, err)
+		}
+		if !staged {
+			continue
+		}
+		deletion, err := storage.StagedDeletion(vaultRoot, t.rel)
+		if err != nil || !deletion {
+			return refuse(t.rel, err)
+		}
+	}
+	return cli.ExitOK
+}
+
+func anyTracked(tracked map[string]bool) bool {
+	for _, t := range tracked {
+		if t {
+			return true
+		}
+	}
+	return false
+}
+
+// printNothingToReset says "nothing to reset" once per NAME whose every
+// selected file has no vault copy and no pending removal. A skill named whole
+// with some files reset says nothing about its other built-in files: that
+// they have no vault copy is the normal case, not news.
+func printNothingToReset(w io.Writer, resolver *vpctx.Resolver, resourceType string, names []string, nameRels map[string][]string, plan resetPlan, slug string) {
+	absent := map[string]bool{}
+	for _, t := range plan.absent {
+		absent[t.rel] = true
+	}
+	for _, name := range names {
+		all := len(nameRels[name]) > 0
+		for _, rel := range nameRels[name] {
+			all = all && absent[rel]
+		}
+		if all {
+			fmt.Fprintf(w, "nothing to reset: %s\n",
+				nothingToResetReason(resolver, commands.Change{ResourceType: resourceType, Name: name}, slug))
+		}
+	}
+}
+
+// existingBackups lists the content-named backups (<rel>.<12 hex>.bak) beside
+// rel, as vault-relative paths — what an earlier reset of it left.
+func existingBackups(vaultRoot, rel string) []string {
+	dir := filepath.Join(vaultRoot, filepath.FromSlash(path.Dir(rel)))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	prefix := path.Base(rel) + "."
+	var out []string
+	for _, e := range entries {
+		n := e.Name()
+		if !strings.HasPrefix(n, prefix) || !strings.HasSuffix(n, ".bak") {
+			continue
+		}
+		mid := strings.TrimSuffix(strings.TrimPrefix(n, prefix), ".bak")
+		if len(mid) != 12 || strings.Trim(mid, "0123456789abcdef") != "" {
+			continue
+		}
+		out = append(out, path.Join(path.Dir(rel), n))
+	}
+	sort.Strings(out)
+	return out
 }
 
 func resetNoun(resourceType string) string {
@@ -403,17 +506,23 @@ func servingTier(resolver *vpctx.Resolver, resourceType, name, slug string) (tie
 }
 
 // printExtraSkillFiles lists the files a vault skill directory holds that are
-// not built-in files: a reset never removes them.
-func printExtraSkillFiles(w io.Writer, vaultRoot, resourceType string, changes []commands.Change) {
+// not built-in files of that skill — every file the binary embeds for it
+// counts as built-in, named or not — because a reset never removes them.
+func printExtraSkillFiles(w io.Writer, resolver *vpctx.Resolver, vaultRoot, resourceType string, changes []commands.Change) {
 	if resourceType != "skill" {
 		return
 	}
-	builtin := map[string]bool{}
 	skills := map[string]bool{}
 	for _, c := range changes {
-		builtin[vaultRel(vaultRoot, c.VaultPath)] = true
 		skill, _, _ := strings.Cut(c.Name, "/")
 		skills[skill] = true
+	}
+	builtin := map[string]bool{}
+	embedded, _ := resolver.ListEmbedded("skill")
+	for _, n := range embedded {
+		if skill, _, _ := strings.Cut(n, "/"); skills[skill] {
+			builtin["Templates/skills/"+n] = true
+		}
 	}
 	var names []string
 	for s := range skills {
@@ -438,9 +547,6 @@ func printExtraSkillFiles(w io.Writer, vaultRoot, resourceType string, changes [
 // printResetDryRun prints, for each file a reset would remove, its diff (vault
 // → embedded) and the exact backup name it would get. It writes nothing.
 func printResetDryRun(w io.Writer, changes []commands.Change) {
-	if len(changes) == 0 {
-		return
-	}
 	for _, c := range changes {
 		rel := vaultRel(c.VaultRoot, c.VaultPath)
 		if c.Kind == commands.ChangeUnchanged {
@@ -450,7 +556,6 @@ func printResetDryRun(w io.Writer, changes []commands.Change) {
 		fmt.Fprintf(w, "would reset %s: remove it; backup: %s\n", rel, templates.BackupName(rel, []byte(c.VaultContent)))
 		fmt.Fprint(w, commands.RenderUnified("vault/"+rel, "embedded/"+rel, c.VaultContent, c.EmbeddedContent))
 	}
-	fmt.Fprintln(w, "(dry run: nothing was written)")
 }
 
 // resetCommitEntry is one path a reset commit carries.
@@ -459,8 +564,10 @@ type resetCommitEntry struct {
 	Backup string
 	Mirror bool
 	// Pending: removed from the worktree by an earlier run whose commit did
-	// not land; this run only commits it.
+	// not land; this run only commits it. Backups names the content-named
+	// backups found beside it, which that earlier run may have written.
 	Pending bool
+	Backups []string
 }
 
 // commitTemplateReset commits a reset's removals according to the vault's git
@@ -481,9 +588,18 @@ func commitTemplateReset(vaultRoot string, gitState storage.VaultGit, entries []
 			host = "unknown"
 		}
 		res, err := storage.CommitRemovals(vaultRoot, templateResetCommitMessage(invocation, entries, host), rels)
-		if err != nil {
+		var left *storage.RemovalsLeftInHEADError
+		switch {
+		case errors.As(err, &left):
+			// The commit landed; only some paths are still in HEAD.
+			fmt.Fprintf(w, "committed the removal locally as %s (not pushed; `vp vault sync` publishes it)\n", left.SHA)
+			fmt.Fprintf(errw, "%s: but HEAD still holds %s — something changed it while the commit ran.\n", verb, strings.Join(left.Paths, ", "))
+			fmt.Fprintf(errw, "  To commit the rest: git -C %s commit -m \"chore(templates): finish an operator reset\" -- %s\n", vaultRoot, strings.Join(left.Paths, " "))
+			fmt.Fprintf(errw, "  To restore the rest instead: git -C %s checkout HEAD -- %s\n", vaultRoot, strings.Join(left.Paths, " "))
+			return cli.ExitSystem
+		case err != nil:
 			fmt.Fprintf(errw, "%s: removed, not committed: %v\n", verb, err)
-			fmt.Fprintf(errw, "  To commit the removal: git -C %s commit -m \"chore(templates): remove operator-reset override(s)\" -- %s\n", vaultRoot, strings.Join(rels, " "))
+			fmt.Fprintf(errw, "  To commit the removal: git -C %s commit -m \"chore(templates): finish an operator reset\" -- %s\n", vaultRoot, strings.Join(rels, " "))
 			fmt.Fprintf(errw, "  To undo it instead:    git -C %s checkout HEAD -- %s\n", vaultRoot, strings.Join(rels, " "))
 			fmt.Fprintln(errw, "  Running the same reset again also finishes the commit.")
 			return cli.ExitSystem
@@ -510,19 +626,21 @@ func commitTemplateReset(vaultRoot string, gitState storage.VaultGit, entries []
 }
 
 // templateResetCommitMessage is the reset commit's message: what was removed,
-// at whose request, and where each file's bytes still are.
+// at whose request, and where each file's bytes still are. The subject counts
+// files, not overrides: a named byte-identical mirror is removed too.
 func templateResetCommitMessage(invocation string, entries []resetCommitEntry, host string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "chore(templates): remove %d operator-reset override(s) of built-ins\n\n", len(entries))
-	fmt.Fprintf(&b, "`%s` removed these vault Templates/ files at the operator's request.\n", invocation)
-	b.WriteString("Each was a vault copy of a built-in; the embedded copy serves it again.\n")
-	b.WriteString("vp removed only the files it was named. The committed copy of each is in\n")
-	b.WriteString("this commit's parent; the working-tree bytes at reset time are in the\n")
-	fmt.Fprintf(&b, "backup named below, on host %s.\n\n", host)
+	fmt.Fprintf(&b, "chore(templates): operator reset of %d vault Templates/ file(s)\n\n", len(entries))
+	fmt.Fprintf(&b, "`%s` removed these vault Templates/ files at the operator's request,\n", invocation)
+	b.WriteString("so the embedded built-in serves each again. vp removed only the files\n")
+	b.WriteString("named. The committed copy of each is in this commit's parent; the\n")
+	fmt.Fprintf(&b, "working-tree bytes at reset time are in the backup named beside it, on\nhost %s.\n\n", host)
 	for _, e := range entries {
 		switch {
+		case e.Pending && len(e.Backups) > 0:
+			fmt.Fprintf(&b, "- %s (removed by an earlier reset and left uncommitted; backup: %s)\n", e.Rel, strings.Join(e.Backups, ", "))
 		case e.Pending:
-			fmt.Fprintf(&b, "- %s (removed earlier and left uncommitted; no working-tree bytes to back up)\n", e.Rel)
+			fmt.Fprintf(&b, "- %s (removed earlier and left uncommitted; no backup of it is on this host)\n", e.Rel)
 		case e.Mirror:
 			fmt.Fprintf(&b, "- %s (identical to the built-in; no backup needed)\n", e.Rel)
 		default:

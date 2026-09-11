@@ -82,20 +82,9 @@ type ResetOutcome struct {
 // touches the project, wing or room tiers, and never commits: committing the
 // removal is the caller's (storage.CommitRemovals).
 func Reset(changes []Change) ([]ResetOutcome, error) {
-	type target struct {
-		c   Change
-		rel string
-	}
-	var targets []target
-	for _, c := range changes {
-		if c.Kind != ChangeOverride && c.Kind != ChangeUnchanged {
-			continue
-		}
-		rel, err := filepath.Rel(c.VaultRoot, c.VaultPath)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", c.VaultPath, err)
-		}
-		targets = append(targets, target{c: c, rel: filepath.ToSlash(rel)})
+	targets, err := resetTargets(changes)
+	if err != nil {
+		return nil, err
 	}
 
 	// Phase 1a: every path is checked before anything is written.
@@ -157,6 +146,45 @@ func Reset(changes []Change) ([]ResetOutcome, error) {
 		}
 	}
 	return outcomes, nil
+}
+
+type resetTarget struct {
+	c   Change
+	rel string
+}
+
+// resetTargets is the entries of changes Reset acts on — those whose vault
+// copy exists — with their vault-relative paths.
+func resetTargets(changes []Change) ([]resetTarget, error) {
+	var targets []resetTarget
+	for _, c := range changes {
+		if c.Kind != ChangeOverride && c.Kind != ChangeUnchanged {
+			continue
+		}
+		rel, err := filepath.Rel(c.VaultRoot, c.VaultPath)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", c.VaultPath, err)
+		}
+		targets = append(targets, resetTarget{c: c, rel: filepath.ToSlash(rel)})
+	}
+	return targets, nil
+}
+
+// CheckResetPaths runs Reset's phase-1 path checks alone and writes nothing:
+// the error Reset would refuse with (ErrUnsafeResetPath for a symlink in any
+// component or a non-regular file), or nil. A dry run calls it so its preview
+// refuses exactly where the real run would.
+func CheckResetPaths(changes []Change) error {
+	targets, err := resetTargets(changes)
+	if err != nil {
+		return err
+	}
+	for _, t := range targets {
+		if err := checkResetPath(t.c.VaultRoot, t.rel); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // checkResetPath refuses rel unless the path to it, under the vault root with

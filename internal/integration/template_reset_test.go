@@ -142,7 +142,7 @@ func TestIntegrationTemplateResetViaBinary(t *testing.T) {
 		if st := gitIn(t, env.vaultPath, "status", "--porcelain", "--", "Templates/"); st != "" {
 			t.Errorf("Templates/ is dirty: %q", st)
 		}
-		if subj := gitIn(t, env.vaultPath, "log", "-1", "--format=%s"); subj != "chore(templates): remove 1 operator-reset override(s) of built-ins" {
+		if subj := gitIn(t, env.vaultPath, "log", "-1", "--format=%s"); subj != "chore(templates): operator reset of 1 vault Templates/ file(s)" {
 			t.Errorf("subject = %q", subj)
 		}
 		if got := gitIn(t, origin, "rev-parse", "main"); got != tip {

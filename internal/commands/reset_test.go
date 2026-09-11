@@ -433,3 +433,30 @@ func digest(t *testing.T, root string) string {
 	}
 	return b.String()
 }
+
+// TestCheckResetPaths: the check-only phase 1 a dry run calls refuses exactly
+// what Reset refuses, and writes nothing.
+func TestCheckResetPaths(t *testing.T) {
+	vault := t.TempDir()
+	putFile(t, vault, "Templates/commands/wrap.md", "# mine\n")
+	if err := CheckResetPaths(planFor(t, vault, "command", "wrap")); err != nil {
+		t.Errorf("a plain override: %v", err)
+	}
+	if err := CheckResetPaths(planFor(t, vault, "command", "restart")); err != nil {
+		t.Errorf("no vault copy: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	target := putFile(t, vault, "Projects/p/commands/restart.md", "# project\n")
+	if err := os.Symlink(target, filepath.Join(vault, "Templates", "commands", "restart.md")); err != nil {
+		t.Fatal(err)
+	}
+	before := digest(t, vault)
+	if err := CheckResetPaths(planFor(t, vault, "command", "restart")); !errors.Is(err, ErrUnsafeResetPath) {
+		t.Errorf("err = %v, want ErrUnsafeResetPath", err)
+	}
+	if digest(t, vault) != before {
+		t.Error("CheckResetPaths wrote something")
+	}
+}
