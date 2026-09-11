@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -530,84 +529,20 @@ func TestConfigSync_YesAcceptsWithoutStdin(t *testing.T) {
 	}
 }
 
-// --- Phase 3: TemplateTree drift prompt tests ---
-
-// syncPromptSetup runs vp init, then seeds a diverged TemplateTree override
-// for embeddedRel: a vault file with distinct user bytes plus a lock entry
-// whose baseline is the REAL embedded SHA, then installs an EmbeddedSHA
-// override so the reconciler's embedded SHA also differs from the baseline.
-// The result is Case 5 of the Design B decision table (vault ≠ baseline AND
-// embedded ≠ baseline → ActionPrompt). Under override-only materialization a
-// fresh init writes no mirror, so the diverged state is constructed
-// explicitly. Returns vault path and the absolute target path.
-func syncPromptSetup(t *testing.T, embeddedRel string) (vaultPath, target, userEdit string) {
-	t.Helper()
-	_, _ = initTestEnv(t, false)
-
-	projDir := t.TempDir()
-	markProjectDir(t, projDir)
-	vaultPath = filepath.Join(t.TempDir(), "vault")
-
-	cmd := cmdInit(cli.BuildInfo{Version: "test"})
-	if code := cmd.Run([]string{projDir, "--name", "sync-tpl", "--vault-path", vaultPath, "--no-git"}); code != cli.ExitOK {
-		t.Fatalf("init exit code = %d", code)
-	}
-
-	// Baseline = the real embedded SHA (captured before the override).
-	realSHA, ok := templates.EmbeddedSHA(embeddedRel)
-	if !ok {
-		t.Fatalf("no embedded SHA for %q", embeddedRel)
-	}
-
-	target = filepath.Join(vaultPath, "Templates", filepath.FromSlash(embeddedRel))
-	userEdit = "USER EDIT: " + embeddedRel + "\n"
-	seedTemplateOverride(t, vaultPath, embeddedRel, []byte(userEdit), realSHA)
-
-	// Embedded SHA override: differs from both the baseline and the user
-	// bytes so the row lands on Case 5 (Prompt).
-	orig := templates.EmbeddedSHA
-	templates.EmbeddedSHA = func(rel string) (string, bool) {
-		if rel == embeddedRel {
-			return strings.Repeat("a", 64), true
-		}
-		return orig(rel)
-	}
-	t.Cleanup(func() { templates.EmbeddedSHA = orig })
-
-	// chdir into projDir so DetectProject works for CwdProject tier.
-	cwd, _ := os.Getwd()
-	if err := os.Chdir(projDir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(cwd) })
-
-	return vaultPath, target, userEdit
-}
+// --- Phase 3: TemplateTree override-only reconcile tests ---
 
 // seedTemplateOverride writes data to the vault Templates/ target for
-// embeddedRel and records a lock entry with baselineSHA as the embedded
-// baseline, reconstructing a tracked override under the override-only model
-// (where a fresh init leaves no mirror to edit).
-func seedTemplateOverride(t *testing.T, vaultPath, embeddedRel string, data []byte, baselineSHA string) {
+// embeddedRel and nothing else. Provenance is decided by the binary alone (the
+// frozen shipped-version manifest), so no host-local state accompanies it: a
+// copy of the embedded bytes is a mirror, anything else an override.
+func seedTemplateOverride(t *testing.T, vaultPath, embeddedRel string, data []byte) {
 	t.Helper()
-	key := "Templates/" + embeddedRel
-	target := filepath.Join(vaultPath, filepath.FromSlash(key))
+	target := filepath.Join(vaultPath, "Templates", filepath.FromSlash(embeddedRel))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(target, data, 0o644); err != nil {
 		t.Fatalf("write override: %v", err)
-	}
-	lock, err := templates.ReadLock(vaultPath)
-	if err != nil {
-		t.Fatalf("ReadLock: %v", err)
-	}
-	if lock.Entries == nil {
-		lock.Entries = map[string]templates.LockEntry{}
-	}
-	lock.Entries[key] = templates.LockEntry{EmbeddedSHA: baselineSHA, WrittenAt: time.Now().UTC()}
-	if err := templates.WriteLock(vaultPath, lock); err != nil {
-		t.Fatalf("WriteLock: %v", err)
 	}
 }
 
@@ -634,9 +569,8 @@ func runSyncWithStdin(t *testing.T, input string, args []string) (stdout string,
 }
 
 // syncPruneSetup inits a vault, then seeds a byte-identical mirror of
-// embeddedRel (bytes == current embedded) with a STALE lock baseline. Under
-// Design B this redundant reconciler-owned mirror is pruned on the next sync
-// (Case 3 of the decision table) so the embedded floor serves it. It does
+// embeddedRel (bytes == current embedded). Under Design B this redundant
+// mirror is pruned on the next sync so the embedded floor serves it. It does
 // NOT override templates.EmbeddedSHA — the prune must work against the real
 // embedded corpus.
 func syncPruneSetup(t *testing.T, embeddedRel string) (vaultPath, target, key string) {
@@ -667,7 +601,7 @@ func syncPruneSetup(t *testing.T, embeddedRel string) (vaultPath, target, key st
 	}
 	key = "Templates/" + embeddedRel
 	target = filepath.Join(vaultPath, filepath.FromSlash(key))
-	seedTemplateOverride(t, vaultPath, embeddedRel, embBytes, strings.Repeat("0", 64))
+	seedTemplateOverride(t, vaultPath, embeddedRel, embBytes)
 
 	cwd, _ := os.Getwd()
 	if err := os.Chdir(projDir); err != nil {
@@ -678,13 +612,11 @@ func syncPruneSetup(t *testing.T, embeddedRel string) (vaultPath, target, key st
 	return vaultPath, target, key
 }
 
-// TestConfigSyncPrunesByteIdenticalMirror replaces the old relock test: a
-// byte-identical reconciler-owned mirror with a stale lock is now pruned
-// (never relocked). The vault file is removed with no .bak (its bytes are an
-// embedded copy), its lock entry is dropped, and the resource resolves from
-// the embedded floor.
+// TestConfigSyncPrunesByteIdenticalMirror: a byte-identical mirror is pruned
+// with no .bak (its bytes are the embedded copy), no templates.lock is
+// written, and the resource resolves from the embedded floor.
 func TestConfigSyncPrunesByteIdenticalMirror(t *testing.T) {
-	vaultPath, target, key := syncPruneSetup(t, "commands/wrap.md")
+	vaultPath, target, _ := syncPruneSetup(t, "commands/wrap.md")
 
 	// The prune auto-applies (never prompted); --yes just makes it silent.
 	out, code := runSyncWithStdin(t, "", []string{
@@ -696,6 +628,9 @@ func TestConfigSyncPrunesByteIdenticalMirror(t *testing.T) {
 	if !strings.Contains(out, "pruned=1") {
 		t.Errorf("summary missing pruned=1:\n%s", out)
 	}
+	if !strings.Contains(out, "prune Templates/commands/wrap.md (byte-identical, line endings aside, to the current embedded copy)") {
+		t.Errorf("no current-copy prune row:\n%s", out)
+	}
 
 	// File removed, and no .bak written for it.
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
@@ -704,14 +639,8 @@ func TestConfigSyncPrunesByteIdenticalMirror(t *testing.T) {
 	if _, err := os.Stat(target + ".bak"); !os.IsNotExist(err) {
 		t.Errorf("prune wrote a .bak (err=%v)", err)
 	}
-
-	// Lock entry dropped.
-	after, err := templates.ReadLock(vaultPath)
-	if err != nil {
-		t.Fatalf("ReadLock (post-prune): %v", err)
-	}
-	if _, ok := after.Entries[key]; ok {
-		t.Errorf("lock still lists pruned key %q", key)
+	if _, err := os.Stat(filepath.Join(vaultPath, ".vibe-palace", "templates.lock")); !os.IsNotExist(err) {
+		t.Errorf("the sync wrote the retired templates.lock (err=%v)", err)
 	}
 
 	// Idempotent: a second sync prunes nothing.
@@ -723,177 +652,6 @@ func TestConfigSyncPrunesByteIdenticalMirror(t *testing.T) {
 	}
 	if !strings.Contains(out2, "pruned=0") {
 		t.Errorf("second sync should report pruned=0:\n%s", out2)
-	}
-}
-
-func TestConfigSyncTemplateDriftSkip(t *testing.T) {
-	vaultPath, target, userEdit := syncPromptSetup(t, "commands/wrap.md")
-
-	_, code := runSyncWithStdin(t, "s\n", []string{
-		"--project-root", filepath.Dir(target), "--tier", "vault",
-	})
-	if code != cli.ExitOK {
-		t.Errorf("exit code = %d", code)
-	}
-	got, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("read target: %v", err)
-	}
-	if string(got) != userEdit {
-		t.Errorf("skip: target bytes changed — got %q want %q", got, userEdit)
-	}
-	if _, err := os.Stat(target + ".bak"); err == nil {
-		t.Error("skip: unexpected .bak present")
-	}
-	if _, err := os.Stat(target + ".new"); err == nil {
-		t.Error("skip: unexpected .new present")
-	}
-	_ = vaultPath
-}
-
-func TestConfigSyncTemplateDriftNew(t *testing.T) {
-	_, target, userEdit := syncPromptSetup(t, "commands/wrap.md")
-
-	var embBytes []byte
-	if rs, err := templates.WalkEmbedded(); err == nil {
-		for _, res := range rs {
-			if res.RelPath == "commands/wrap.md" {
-				embBytes = res.Bytes
-				break
-			}
-		}
-	}
-
-	_, code := runSyncWithStdin(t, "n\n", []string{
-		"--project-root", filepath.Dir(target), "--tier", "vault",
-	})
-	if code != cli.ExitOK {
-		t.Errorf("exit code = %d", code)
-	}
-	got, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("read target: %v", err)
-	}
-	if string(got) != userEdit {
-		t.Errorf("new: target bytes changed — got %q want %q", got, userEdit)
-	}
-	newPath := target + ".new"
-	newBytes, err := os.ReadFile(newPath)
-	if err != nil {
-		t.Fatalf(".new missing: %v", err)
-	}
-	if string(newBytes) != string(embBytes) {
-		t.Error(".new: should contain embedded bytes")
-	}
-}
-
-// TestConfigSyncTemplateDriftNewCollision verifies that when a stale
-// <target>.new already exists prior to the 'n' prompt answer, the old
-// .new is rotated to <target>.new.bak before the fresh sidecar is
-// written. Phase 5 explicitly requires preserving the previous sidecar
-// body — the ".new is a transient review artifact" contract keeps a
-// one-level undo for that artifact too.
-func TestConfigSyncTemplateDriftNewCollision(t *testing.T) {
-	_, target, _ := syncPromptSetup(t, "commands/wrap.md")
-
-	// Plant a pre-existing .new with distinct bytes.
-	newPath := target + ".new"
-	priorNew := []byte("STALE .new CONTENT — must be rotated\n")
-	if err := os.WriteFile(newPath, priorNew, 0o644); err != nil {
-		t.Fatalf("plant prior .new: %v", err)
-	}
-
-	var embBytes []byte
-	if rs, err := templates.WalkEmbedded(); err == nil {
-		for _, res := range rs {
-			if res.RelPath == "commands/wrap.md" {
-				embBytes = res.Bytes
-				break
-			}
-		}
-	}
-	if embBytes == nil {
-		t.Fatal("could not locate commands/wrap.md in embedded corpus")
-	}
-
-	_, code := runSyncWithStdin(t, "n\n", []string{
-		"--project-root", filepath.Dir(target), "--tier", "vault",
-	})
-	if code != cli.ExitOK {
-		t.Errorf("exit code = %d", code)
-	}
-
-	got, err := os.ReadFile(newPath)
-	if err != nil {
-		t.Fatalf("read %s: %v", newPath, err)
-	}
-	if string(got) != string(embBytes) {
-		t.Error(".new: expected fresh embedded bytes")
-	}
-	bak, err := os.ReadFile(newPath + ".bak")
-	if err != nil {
-		t.Fatalf("read %s.bak: %v", newPath, err)
-	}
-	if string(bak) != string(priorNew) {
-		t.Errorf(".new.bak: expected prior .new bytes\n got: %q\nwant: %q", bak, priorNew)
-	}
-}
-
-// TestConfigSyncTemplateBatchUppercase verifies that the S/N letters set
-// a batch mode honored for remaining Prompt actions. We drift two
-// resources and feed a single uppercase letter.
-func TestConfigSyncTemplateBatchUppercase(t *testing.T) {
-	for _, letter := range []string{"S", "N"} {
-		t.Run(letter, func(t *testing.T) {
-			vaultPath, target1, _ := syncPromptSetup(t, "commands/wrap.md")
-
-			// Seed a second diverged override so two Prompt actions are queued.
-			restartSHA, ok := templates.EmbeddedSHA("commands/restart.md")
-			if !ok {
-				t.Fatal("no embedded SHA for commands/restart.md")
-			}
-			target2 := filepath.Join(vaultPath, "Templates", "commands", "restart.md")
-			seedTemplateOverride(t, vaultPath, "commands/restart.md", []byte("USER EDIT 2\n"), restartSHA)
-
-			orig := templates.EmbeddedSHA
-			templates.EmbeddedSHA = func(rel string) (string, bool) {
-				switch rel {
-				case "commands/wrap.md", "commands/restart.md":
-					return strings.Repeat("b", 64), true
-				}
-				return orig(rel)
-			}
-			t.Cleanup(func() { templates.EmbeddedSHA = orig })
-
-			// A single uppercase answer covers both Prompt actions: the
-			// second prompt is never shown, so stdin needs one line.
-			out, code := runSyncWithStdin(t, letter+"\n", []string{
-				"--project-root", filepath.Dir(target1), "--tier", "vault",
-			})
-			if code != cli.ExitOK {
-				t.Errorf("exit code = %d", code)
-			}
-			if n := strings.Count(out, "[s]kip — keep your file"); n != 1 {
-				t.Errorf("menu shown %d times, want 1 (the batch letter answers the rest):\n%s", n, out)
-			}
-			// Both files must retain user-edit bytes, whichever letter.
-			for _, tgt := range []string{target1, target2} {
-				b, _ := os.ReadFile(tgt)
-				if !strings.HasPrefix(string(b), "USER EDIT") {
-					t.Errorf("%s not preserved: %s", tgt, b)
-				}
-				if _, err := os.Stat(tgt + ".bak"); err == nil {
-					t.Errorf("%s.bak unexpectedly present after %s", tgt, letter)
-				}
-				_, err := os.Stat(tgt + ".new")
-				if letter == "N" && err != nil {
-					t.Errorf("%s.new missing after N: %v", tgt, err)
-				}
-				if letter == "S" && err == nil {
-					t.Errorf("%s.new unexpectedly present after S", tgt)
-				}
-			}
-		})
 	}
 }
 

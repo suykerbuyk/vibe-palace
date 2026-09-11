@@ -934,13 +934,11 @@ func TestInitWritesNoTemplatesTree(t *testing.T) {
 		}
 	})
 
-	// Stat, not ReadLock: ReadLock returns an empty lock for an absent file,
-	// so it cannot tell "not created" from "created empty".
 	if _, err := os.Stat(filepath.Join(vaultDir, "Templates")); !os.IsNotExist(err) {
 		t.Errorf("init created <vault>/Templates (stat err=%v); it must not touch that tree", err)
 	}
-	if _, err := os.Stat(filepath.Join(vaultDir, templates.LockRelPath)); !os.IsNotExist(err) {
-		t.Errorf("init created %s (stat err=%v); nothing needs it until `vp config sync`", templates.LockRelPath, err)
+	if _, err := os.Stat(filepath.Join(vaultDir, ".vibe-palace", "templates.lock")); !os.IsNotExist(err) {
+		t.Errorf("init created the retired .vibe-palace/templates.lock (stat err=%v); no vp from this release writes it", err)
 	}
 	if strings.Contains(out, "] Templates:") {
 		t.Errorf("init still renders a Templates row:\n%s", out)
@@ -980,9 +978,9 @@ func TestInitWritesNoTemplatesTree(t *testing.T) {
 // ActionPrompt ... orchestrator must resolve Prompt actions before Apply" —
 // with the global config already written, so the next run took the
 // config-exists gate and exited 0 without ever looking again. The mirror is
-// chosen to sort BEFORE both Prompt resources, so that old pass had already
-// pruned it by the time it failed: the byte-identity assertion bites there
-// too, not only the exit code.
+// chosen to sort BEFORE both overrides, so that old pass had already pruned it
+// by the time it failed: the byte-identity assertion bites there too, not only
+// the exit code.
 func TestInitIgnoresVaultTemplateOverrides(t *testing.T) {
 	initTestEnv(t, false)
 	projDir := t.TempDir()
@@ -1004,21 +1002,13 @@ func TestInitIgnoresVaultTemplateOverrides(t *testing.T) {
 	if len(cmds) < 3 {
 		t.Fatalf("need at least 3 embedded commands to seed three cases, have %d", len(cmds))
 	}
-	embSHA := func(res templates.Resource) string {
-		if sha, ok := templates.EmbeddedSHA(res.RelPath); ok {
-			return sha
-		}
-		return res.SHA256
-	}
 	mirror, stale, noLock := cmds[0], cmds[1], cmds[len(cmds)-1]
 
-	// Case 2: a byte-identical mirror whose lock entry is the embedded baseline.
-	seedTemplateOverride(t, vaultDir, mirror.RelPath, mirror.Bytes, embSHA(mirror))
-	// Case 5: a tracked override whose baseline is stale — bytes differ from
-	// both the baseline and the current embedded copy.
-	staleBaseline := strings.Repeat("0", len(embSHA(stale)))
-	seedTemplateOverride(t, vaultDir, stale.RelPath, []byte("# my tracked override\n"), staleBaseline)
-	// Case 6: an override with no lock entry at all.
+	// A byte-identical mirror, which a sync would prune.
+	seedTemplateOverride(t, vaultDir, mirror.RelPath, mirror.Bytes)
+	// An operator's override.
+	seedTemplateOverride(t, vaultDir, stale.RelPath, []byte("# my tracked override\n"))
+	// A second, hand-written override.
 	noLockPath := filepath.Join(vaultDir, "Templates", filepath.FromSlash(noLock.RelPath))
 	if err := os.WriteFile(noLockPath, []byte("# my hand-written override\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1033,9 +1023,13 @@ func TestInitIgnoresVaultTemplateOverrides(t *testing.T) {
 		}
 		seeded[p] = b
 	}
-	lockPath := filepath.Join(vaultDir, templates.LockRelPath)
-	lockBefore, err := os.ReadFile(lockPath)
-	if err != nil {
+	// A retired templates.lock an old binary left: init must not touch it.
+	lockPath := filepath.Join(vaultDir, ".vibe-palace", "templates.lock")
+	lockBefore := []byte("[entries]\n  [entries.\"Templates/" + stale.RelPath + "\"]\n    embedded_sha = \"" + strings.Repeat("0", 64) + "\"\n")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockPath, lockBefore, 0o644); err != nil {
 		t.Fatal(err)
 	}
 

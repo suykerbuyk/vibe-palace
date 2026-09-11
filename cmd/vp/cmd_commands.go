@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
@@ -206,11 +207,16 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 	// the reset verb that removes it on request. An override is therefore not
 	// pending work — though the shim drift it causes (a changed brief) is, and
 	// is counted with the shims below.
-	overrides, unchanged, unneeded, custom := 0, 0, 0, 0
+	// A stale copy (an earlier shipped version of a built-in) is neither: it
+	// is vp's bytes, which `vp config sync` prunes, and it shadows the
+	// current built-in until then — reported, never counted as kept.
+	overrides, stale, unchanged, unneeded, custom := 0, 0, 0, 0, 0
 	for _, c := range plan {
 		switch c.Kind {
 		case commands.ChangeOverride:
 			overrides++
+		case commands.ChangeStale:
+			stale++
 		case commands.ChangeUnchanged:
 			unchanged++
 		case commands.ChangeUnneeded:
@@ -337,8 +343,8 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 		}
 		printSkillShimPlan(opts.Stdout, skillPlan)
 		fmt.Fprintf(opts.Stdout,
-			"\nSummary (dry run): %d override(s) kept, %d unchanged, %d unneeded, %d custom, %d agent-file block(s) need updating, shims: %d new, %d updated, %d stale, %d custom, grok shims: %d new, %d updated, %d stale, %d custom, skill shims: %d new, %d updated, %d stale, %d custom.\n",
-			overrides, unchanged, unneeded, custom, pendingBlocks,
+			"\nSummary (dry run): %d override(s) kept, %d stale cop(y/ies) pending a prune by vp config sync, %d unchanged, %d unneeded, %d custom, %d agent-file block(s) need updating, shims: %d new, %d updated, %d stale, %d custom, grok shims: %d new, %d updated, %d stale, %d custom, skill shims: %d new, %d updated, %d stale, %d custom.\n",
+			overrides, stale, unchanged, unneeded, custom, pendingBlocks,
 			shimAdd, shimUpd, shimStale, shimCustom,
 			grokShimAdd, grokShimUpd, grokShimStale, grokShimCustom,
 			skillAdd, skillUpd, skillStale, skillCustom)
@@ -358,9 +364,10 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 		// Non-interactive and not --overwrite: refuse to silently write.
 		// But we still proceed if there is nothing to do.
 		if pendingBlocks+pendingShims+pendingSkillShims == 0 {
-			if overrides > 0 {
-				fmt.Fprintf(opts.Stdout, "Agent blocks and shims match; %d override(s) of built-ins kept. Nothing to do.\n", overrides)
-			} else {
+			switch {
+			case overrides > 0 || stale > 0:
+				fmt.Fprintf(opts.Stdout, "Agent blocks and shims match; %s. Nothing to do.\n", keptAndStale(overrides, stale))
+			default:
 				fmt.Fprintln(opts.Stdout, "All embedded templates, agent blocks, and shims match. Nothing to do.")
 			}
 			return cli.ExitOK
@@ -416,7 +423,7 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 		case "q":
 			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
 			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, acceptedBlocks, nil, nil, nil,
-				acceptedCount, skippedCount, custom, overrides, shimCustom, grokShimCustom, skillCustom)
+				acceptedCount, skippedCount, custom, overrides, stale, shimCustom, grokShimCustom, skillCustom)
 		}
 	}
 
@@ -465,7 +472,7 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 		case "q":
 			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
 			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, acceptedBlocks, acceptedShims, nil, nil,
-				acceptedCount, skippedCount, custom, overrides, shimCustom, grokShimCustom, skillCustom)
+				acceptedCount, skippedCount, custom, overrides, stale, shimCustom, grokShimCustom, skillCustom)
 		}
 	}
 
@@ -510,7 +517,7 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 		case "q":
 			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
 			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, acceptedBlocks, acceptedShims, acceptedGrokShims, nil,
-				acceptedCount, skippedCount, custom, overrides, shimCustom, grokShimCustom, skillCustom)
+				acceptedCount, skippedCount, custom, overrides, stale, shimCustom, grokShimCustom, skillCustom)
 		}
 	}
 
@@ -558,18 +565,18 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 		case "q":
 			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
 			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, acceptedBlocks, acceptedShims, acceptedGrokShims, acceptedSkillShims,
-				acceptedCount, skippedCount, custom, overrides, shimCustom, grokShimCustom, skillCustom)
+				acceptedCount, skippedCount, custom, overrides, stale, shimCustom, grokShimCustom, skillCustom)
 		}
 	}
 
 	return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, acceptedBlocks, acceptedShims, acceptedGrokShims, acceptedSkillShims,
-		acceptedCount, skippedCount, custom, overrides, shimCustom, grokShimCustom, skillCustom)
+		acceptedCount, skippedCount, custom, overrides, stale, shimCustom, grokShimCustom, skillCustom)
 }
 
 // applyAndReport applies the accepted vp-owned changes — agent blocks, shims,
 // the project .gitignore and the commit hook — and prints the Done line. It
 // writes nothing under the vault's Templates/: overrides is only counted.
-func applyAndReport(w, errw io.Writer, projectRoot string, acceptedBlocks []commands.BlockChange, acceptedShims, acceptedGrokShims []shims.Change, acceptedSkillShims []shims.SkillChange, acceptedCount, skippedCount, custom, overrides, shimCustom, grokShimCustom, skillCustom int) int {
+func applyAndReport(w, errw io.Writer, projectRoot string, acceptedBlocks []commands.BlockChange, acceptedShims, acceptedGrokShims []shims.Change, acceptedSkillShims []shims.SkillChange, acceptedCount, skippedCount, custom, overrides, stale, shimCustom, grokShimCustom, skillCustom int) int {
 	if err := commands.ApplyAgentBlocks(acceptedBlocks); err != nil {
 		fmt.Fprintf(errw, "apply agent blocks: %v\n", err)
 		return cli.ExitSystem
@@ -615,10 +622,25 @@ func applyAndReport(w, errw io.Writer, projectRoot string, acceptedBlocks []comm
 		rep.Added, rep.Updated, rep.Removed, shimCustom,
 		grokRep.Added, grokRep.Updated, grokRep.Removed, grokShimCustom,
 		skillRep.Added, skillRep.Updated, skillRep.Removed, skillCustom)
-	if overrides > 0 {
-		fmt.Fprintf(w, "%d override(s) of built-ins kept.\n", overrides)
+	if overrides > 0 || stale > 0 {
+		fmt.Fprintf(w, "%s.\n", keptAndStale(overrides, stale))
 	}
 	return cli.ExitOK
+}
+
+// keptAndStale is the upgrade commands' report of vault Templates/ copies of
+// built-ins: the overrides kept, and the stale copies (earlier shipped
+// versions) that shadow the current built-in until `vp config sync` prunes
+// them. Either half is omitted when zero.
+func keptAndStale(overrides, stale int) string {
+	var halves []string
+	if overrides > 0 {
+		halves = append(halves, fmt.Sprintf("%d override(s) of built-ins kept", overrides))
+	}
+	if stale > 0 {
+		halves = append(halves, fmt.Sprintf("%d stale cop(y/ies) of built-ins pending a prune by vp config sync", stale))
+	}
+	return strings.Join(halves, "; ")
 }
 
 func printBlockPlan(w io.Writer, changes []commands.BlockChange) {
@@ -841,6 +863,8 @@ func printUpgradePlan(w io.Writer, plan []commands.Change) {
 		case commands.ChangeOverride:
 			fmt.Fprintf(w, "  override  %s  (vault %s, embedded %s; kept — vp commands reset %s removes it)\n",
 				c.Name, c.VaultHash, c.EmbeddedHash, c.Name)
+		case commands.ChangeStale:
+			fmt.Fprintf(w, "  %s\n", staleLine("Templates/commands/"+c.Name+".md"))
 		case commands.ChangeUnchanged:
 			fmt.Fprintf(w, "  unchanged %s\n", c.Name)
 		case commands.ChangeUnneeded:
@@ -849,10 +873,22 @@ func printUpgradePlan(w io.Writer, plan []commands.Change) {
 	}
 }
 
+// staleLine is the one row for a stale copy, in the dry-run plan and in the
+// report alike.
+func staleLine(rel string) string {
+	return "[stale] " + rel + " — an earlier shipped version of the built-in; vp config sync prunes it"
+}
+
 // printCommandKeepLines prints one [keep] line per vault Templates/commands/
-// override of a built-in: what it is, and the only command that removes it.
+// override of a built-in — what it is, and the only command that removes it —
+// and one [stale] line per earlier shipped version, which `vp config sync`
+// prunes.
 func printCommandKeepLines(w io.Writer, plan []commands.Change) {
 	for _, c := range plan {
+		if c.Kind == commands.ChangeStale {
+			fmt.Fprintln(w, staleLine("Templates/commands/"+c.Name+".md"))
+			continue
+		}
 		if c.Kind != commands.ChangeOverride {
 			continue
 		}

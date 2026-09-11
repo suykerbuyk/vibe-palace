@@ -149,6 +149,38 @@ import (
 // residual windows: a lagging host that runs `vp commands upgrade --overwrite`
 // before it pulls the stamp, and VP_SURFACE_GATE=warn.
 //
+// Kept at 5 (2026-09-11, operator) by
+// template-provenance-manifest-retires-the-host-local-lock — decided by
+// hazard, not by the letter of ADR-008. What a binary does to vault Templates/
+// changed again: provenance is a frozen shipped-version manifest instead of the
+// host-local templates.lock, which is retired (no longer read or written, and
+// removed when untracked and un-ignored on a vault that is its own repository);
+// an earlier shipped version and a CRLF mirror are pruned with no backup; a
+// pending removal of vp-shipped bytes is committed; the keep/.new prompt and
+// its .new sidecar are gone. ADR-008's letter ("any change to what/where
+// instruction files are written") reads as "bump"; the review's independent
+// pass read it that way, and the divergence is recorded. The rule above, and
+// the 3->4 and 4->5 precedent — an OLD binary destroys what the new one keeps,
+// and only the gate stops it — find no hazard:
+//
+//   - A v5 binary removes only its own embedded copy or its lock baselines —
+//     vp-built bytes either way. It never overwrites, never resets without a
+//     name, and verifies against HEAD and every remote tip before a removal.
+//   - Every state this binary leaves is one v5 produces and reads itself: an
+//     absent file, a committed deletion, a removed untracked host-local lock,
+//     or an untouched tracked or ignored one. A v5 host that loses its
+//     untracked lock re-adopts and re-prompts (and keeps): churn, never loss.
+//   - The hazards that remain — earlier-version and CRLF pruning — are this
+//     binary's own policy, which no gate can stop.
+//   - Removals stamp nothing, so a bump would not even take effect on its own.
+//   - Recorded residual, not a gate: once a later release edits a
+//     post-boundary built-in, a lagging v5 host prunes an unedited copy of the
+//     version it embeds, which this binary's successor keeps as operator
+//     content — vp-shipped bytes, the documented "edit before syncing" misfire.
+//
+// The three queries below, re-run over 2c4ef40..this change, return nothing
+// and list no commit.
+//
 // 🔴 RE-DERIVE THIS LIST, DO NOT EXTEND IT BY MEMORY. The commits above were
 // each confirmed against their diffs, and three plausible-sounding candidates
 // were REJECTED on inspection: e4f0f16 (archive-manifest serialisation) is

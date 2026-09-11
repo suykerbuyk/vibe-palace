@@ -6,9 +6,9 @@ package check
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
@@ -70,10 +70,10 @@ func TestCheckTemplateDriftCleanVaultPasses(t *testing.T) {
 // TestCheckTemplateDriftReportsDivergedMirror is the branch that matters, and it
 // is written to FAIL if the producer stops detecting drift.
 //
-// A mirror whose bytes differ from the embedded corpus, with no lock entry, is
-// the rollout-ordering hazard this check replaced a prose paragraph with: the
-// vault serves a template the binary did not ship, so a command can be handed
-// arguments the binary no longer accepts.
+// A vault copy whose bytes the binary did not ship is the rollout-ordering
+// hazard this check replaced a prose paragraph with: the vault serves a
+// template the binary did not ship, so a command can be handed arguments the
+// binary no longer accepts.
 func TestCheckTemplateDriftReportsDivergedMirror(t *testing.T) {
 	vault := t.TempDir()
 	rel := anEmbeddedTemplate(t)
@@ -162,85 +162,147 @@ func TestTemplateDriftProducerReachesRegistry(t *testing.T) {
 	}
 }
 
-// lockAt plants a templates.lock entry for "Templates/"+relPath.
-func lockAt(t *testing.T, vaultRoot, relPath, sha string) {
+// earlierRestart is the committed earlier-version fixture (the templates
+// package's TestEarlierFixtureIsAShippedVersion pins it).
+func earlierRestart(t *testing.T) string {
 	t.Helper()
-	l, err := templates.ReadLock(vaultRoot)
+	b, err := os.ReadFile(filepath.Join("..", "templates", "testdata", "earlier", "commands", "restart.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	l.Entries["Templates/"+relPath] = templates.LockEntry{EmbeddedSHA: sha, WrittenAt: time.Now().UTC()}
-	if err := templates.WriteLock(vaultRoot, l); err != nil {
-		t.Fatal(err)
-	}
+	return string(b)
 }
 
-// TestTemplateDriftOverrideRowsAreInfo pins the M3 ruling: an operator's
-// override of a built-in is reported as Info, never Pass, in every lock state
-// — so it stays visible to restart and wrap, which is the only notice an
-// operator gets that their copy shadows the binary's. Mirror rows keep their
-// "drift ... pending prune" wording, and a lock-less byte-identical copy is a
-// mirror (sync's silent-adopt pre-pass prunes it), not an override.
-func TestTemplateDriftOverrideRowsAreInfo(t *testing.T) {
-	resources, err := templates.WalkEmbedded()
-	if err != nil || len(resources) < 5 {
-		t.Fatalf("need at least five embedded resources: %v", err)
+func embeddedBody(t *testing.T, rel string) string {
+	t.Helper()
+	rs, err := templates.WalkEmbedded()
+	if err != nil {
+		t.Fatal(err)
 	}
-	emb := func(i int) (string, string, string) {
-		r := resources[i]
-		sha, _ := templates.EmbeddedSHA(r.RelPath)
-		return r.RelPath, sha, string(r.Bytes)
+	for _, r := range rs {
+		if r.RelPath == rel {
+			return string(r.Bytes)
+		}
 	}
+	t.Fatalf("no embedded %s", rel)
+	return ""
+}
+
+// TestTemplateDriftRowsClassify: every row is classified by provenance alone —
+// no lock is read — and an operator's override is Info, never Pass, so it
+// stays visible to restart and wrap (the M3 ruling).
+func TestTemplateDriftRowsClassify(t *testing.T) {
+	wrap := embeddedBody(t, "commands/wrap.md")
+	capture := embeddedBody(t, "commands/capture.md")
 	vault := t.TempDir()
+	writeTemplateMirror(t, vault, "commands/wrap.md", wrap)
+	writeTemplateMirror(t, vault, "commands/capture.md", strings.ReplaceAll(capture, "\n", "\r\n"))
+	writeTemplateMirror(t, vault, "commands/restart.md", earlierRestart(t))
+	writeTemplateMirror(t, vault, "workflow.md", "# my workflow\n")
+	wfSHA, _ := templates.EmbeddedSHA("workflow.md")
 
-	case4, sha4, _ := emb(0) // lock at the embedded SHA, bytes differ
-	writeTemplateMirror(t, vault, case4, "mine 4\n")
-	lockAt(t, vault, case4, sha4)
-
-	case5, _, _ := emb(1) // lock at an older baseline, bytes differ
-	writeTemplateMirror(t, vault, case5, "mine 5\n")
-	lockAt(t, vault, case5, strings.Repeat("b", 64))
-
-	case6, _, _ := emb(2) // no lock, bytes differ
-	writeTemplateMirror(t, vault, case6, "mine 6\n")
-
-	mirror, sha7, body7 := emb(3) // lock at the embedded SHA, bytes equal it
-	writeTemplateMirror(t, vault, mirror, body7)
-	lockAt(t, vault, mirror, sha7)
-
-	adopt, _, body8 := emb(4) // no lock, bytes equal the embedded copy
-	writeTemplateMirror(t, vault, adopt, body8)
-
-	want := map[string]string{
-		case4:  "operator override of a built-in (kept; shadows embedded " + sha4[:12] + ")",
-		case5:  "operator override of a built-in (kept; the embedded copy changed since this host's lock baseline)",
-		case6:  "override of a built-in with no lock entry on this host (kept)",
-		mirror: "drift (reconciler-owned mirror pending prune)",
-		adopt:  "drift (byte-identical to current embedded; pending prune)",
+	want := map[string]struct {
+		status  Status
+		summary string
+	}{
+		"commands/wrap.md":    {Info, "drift (byte-identical to the current embedded copy; pending prune)"},
+		"commands/capture.md": {Info, "drift (identical, line endings aside, to the current embedded copy; pending prune)"},
+		"commands/restart.md": {Info, "drift (an earlier shipped version of commands/restart.md; pending prune — it shadows the current built-in until then)"},
+		"workflow.md":         {Info, "operator override of a built-in (kept; shadows embedded " + wfSHA[:12] + ")"},
 	}
 	for _, row := range TemplateDriftRows(vault, "Templates", "Templates") {
 		rel := strings.TrimPrefix(row.Name, "Templates:Templates/")
 		w, ok := want[rel]
 		if !ok {
-			if row.Status != Pass {
-				t.Errorf("%s: status %v, want Pass (nothing on disk)", rel, row.Status)
+			if row.Status != Pass || row.Summary != "served from embedded floor" {
+				t.Errorf("%s: %v %q, want Pass (nothing on disk)", rel, row.Status, row.Summary)
 			}
 			continue
 		}
-		if row.Status != Info {
-			t.Errorf("%s: status %v, want Info", rel, row.Status)
-		}
-		if row.Summary != w {
-			t.Errorf("%s: summary %q, want %q", rel, row.Summary, w)
+		if row.Status != w.status || row.Summary != w.summary {
+			t.Errorf("%s: %v %q\n want %v %q", rel, row.Status, row.Summary, w.status, w.summary)
 		}
 	}
 
+	t.Run("not reached directly", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlinks need a privilege on Windows")
+		}
+		vault := t.TempDir()
+		elsewhere := filepath.Join(vault, "Elsewhere")
+		if err := os.MkdirAll(elsewhere, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(elsewhere, "wrap.md"), []byte(wrap), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(vault, "Templates"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(elsewhere, filepath.Join(vault, "Templates", "commands")); err != nil {
+			t.Fatal(err)
+		}
+		var seen bool
+		for _, row := range TemplateDriftRows(vault, "Templates", "Templates") {
+			if row.Name != "Templates:Templates/commands/wrap.md" {
+				continue
+			}
+			seen = true
+			if row.Status != Info || !strings.HasPrefix(row.Summary, NotReachedDirectly+" (") ||
+				!strings.Contains(row.Summary, "symlink (Templates/commands)") {
+				t.Errorf("row = %v %q", row.Status, row.Summary)
+			}
+		}
+		if !seen {
+			t.Fatal("no row for Templates/commands/wrap.md")
+		}
+		agg := CheckTemplateDrift(vault)
+		if agg.Status != Info || !strings.Contains(agg.Summary, "override(s) of built-ins kept") {
+			t.Errorf("aggregate = %v %q: a path never followed is counted with the kept overrides", agg.Status, agg.Summary)
+		}
+	})
+
+	t.Run("unreadable", func(t *testing.T) {
+		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+			t.Skip("unreadable-file fixture needs a non-root POSIX user")
+		}
+		vault := t.TempDir()
+		writeTemplateMirror(t, vault, "commands/wrap.md", wrap)
+		p := filepath.Join(vault, "Templates", "commands", "wrap.md")
+		if err := os.Chmod(p, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(p, 0o644) })
+		agg := CheckTemplateDrift(vault)
+		if agg.Status != Fail || !strings.HasPrefix(agg.Summary, "1 of ") {
+			t.Errorf("aggregate = %v %q, want Fail", agg.Status, agg.Summary)
+		}
+	})
+
+	t.Run("vault root unresolvable", func(t *testing.T) {
+		rows := TemplateDriftRows(filepath.Join(t.TempDir(), "gone"), "Templates", "Templates")
+		for _, r := range rows {
+			if r.Status != Fail || r.Err == nil {
+				t.Fatalf("%s: %v, want Fail with an error", r.Name, r.Status)
+			}
+		}
+	})
+}
+
+// TestCheckTemplateDriftSummary: the halves are overrides kept and mirrors
+// pending a prune — an earlier shipped version counts with the mirrors — and
+// there is no "dangling lock entry" half any more.
+func TestCheckTemplateDriftSummary(t *testing.T) {
+	vault := t.TempDir()
+	writeTemplateMirror(t, vault, "commands/wrap.md", embeddedBody(t, "commands/wrap.md"))
+	writeTemplateMirror(t, vault, "commands/restart.md", earlierRestart(t))
+	writeTemplateMirror(t, vault, "commands/capture.md", "# my capture\n")
 	agg := CheckTemplateDrift(vault)
-	wantSummary := "3 override(s) of built-ins kept, 2 mirror(s) pending a prune (of "
-	if agg.Status != Info || !strings.HasPrefix(agg.Summary, wantSummary) {
-		t.Errorf("aggregate = %v %q, want Info %q...", agg.Status, agg.Summary, wantSummary)
+	want := "1 override(s) of built-ins kept, 2 mirror(s) pending a prune (of "
+	if agg.Status != Info || !strings.HasPrefix(agg.Summary, want) {
+		t.Errorf("aggregate = %v %q, want Info %q...", agg.Status, agg.Summary, want)
 	}
-	for rel := range want {
+	for _, rel := range []string{"commands/wrap.md", "commands/restart.md", "commands/capture.md"} {
 		var named bool
 		for _, d := range agg.Details {
 			named = named || strings.Contains(d, "Templates/"+rel+":")
@@ -249,53 +311,112 @@ func TestTemplateDriftOverrideRowsAreInfo(t *testing.T) {
 			t.Errorf("aggregate Details never name %s", rel)
 		}
 	}
+	if strings.Contains(agg.Summary, "dangling") {
+		t.Errorf("a dangling half survived: %q", agg.Summary)
+	}
 }
 
 // TestCheckTemplateDriftSummaryOmitsZeroHalves: a vault holding only a mirror
-// (or only a dangling lock entry) says so, and says nothing about overrides.
+// says so, and says nothing about overrides; one holding only an override says
+// nothing about mirrors.
 func TestCheckTemplateDriftSummaryOmitsZeroHalves(t *testing.T) {
-	resources, err := templates.WalkEmbedded()
-	if err != nil || len(resources) < 2 {
-		t.Fatal(err)
-	}
 	vault := t.TempDir()
-	writeTemplateMirror(t, vault, resources[0].RelPath, string(resources[0].Bytes))
-	got := CheckTemplateDrift(vault)
-	if !strings.HasPrefix(got.Summary, "1 mirror(s) pending a prune (of ") {
+	writeTemplateMirror(t, vault, "commands/restart.md", earlierRestart(t))
+	if got := CheckTemplateDrift(vault); !strings.HasPrefix(got.Summary, "1 mirror(s) pending a prune (of ") {
 		t.Errorf("mirror only: %q", got.Summary)
 	}
-
 	vault2 := t.TempDir()
-	lockAt(t, vault2, resources[1].RelPath, strings.Repeat("c", 64))
-	got = CheckTemplateDrift(vault2)
-	if !strings.HasPrefix(got.Summary, "1 dangling lock entr(y/ies) pending a sync (of ") {
-		t.Errorf("dangling only: %q", got.Summary)
+	writeTemplateMirror(t, vault2, "commands/restart.md", "# mine\n")
+	if got := CheckTemplateDrift(vault2); !strings.HasPrefix(got.Summary, "1 override(s) of built-ins kept (of ") {
+		t.Errorf("override only: %q", got.Summary)
 	}
 }
 
-// TestTemplateDriftRemedyStaysTruthful pins the remedy to what is true after
-// both override losses were closed: it no longer says `vp config sync`
-// replaces an override or that an upgrade's --overwrite resets one, it says
-// the upgrade commands never reset one and names the reset verbs, it still
-// steers to the project tier, it names the one remaining risk and its task,
-// and it never calls a vault override of a built-in safe.
+// TestCheckTemplateDriftReportsARetainedLock: a retired templates.lock that
+// sync left (tracked, ignored, or on a non-git vault) is reported once, with
+// the wording that stays true on a mixed fleet — "no vp from this release
+// reads it", never "nothing reads it".
+func TestCheckTemplateDriftReportsARetainedLock(t *testing.T) {
+	writeLock := func(t *testing.T, vault string) {
+		t.Helper()
+		p := filepath.Join(vault, ".vibe-palace", "templates.lock")
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("[entries]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lockDetail := func(r Result) int {
+		n := 0
+		for _, d := range r.Details {
+			if strings.Contains(d, ".vibe-palace/templates.lock") {
+				n++
+				if !strings.Contains(d, "no vp from this release reads it") {
+					t.Errorf("lock detail wording: %q", d)
+				}
+			}
+		}
+		return n
+	}
+
+	t.Run("lock only", func(t *testing.T) {
+		vault := t.TempDir()
+		writeLock(t, vault)
+		got := CheckTemplateDrift(vault)
+		if got.Status != Info || !strings.HasSuffix(got.Summary, "templates in sync; a retired templates.lock is present") {
+			t.Errorf("%v %q", got.Status, got.Summary)
+		}
+		if lockDetail(got) != 1 {
+			t.Errorf("Details = %v", got.Details)
+		}
+	})
+	t.Run("lock and a mirror", func(t *testing.T) {
+		vault := t.TempDir()
+		writeLock(t, vault)
+		writeTemplateMirror(t, vault, "commands/restart.md", earlierRestart(t))
+		got := CheckTemplateDrift(vault)
+		if got.Status != Info || !strings.HasPrefix(got.Summary, "1 mirror(s) pending a prune (of ") ||
+			!strings.HasSuffix(got.Summary, "; a retired templates.lock is present") {
+			t.Errorf("%v %q", got.Status, got.Summary)
+		}
+		if lockDetail(got) != 1 {
+			t.Errorf("Details = %v", got.Details)
+		}
+	})
+	t.Run("no lock", func(t *testing.T) {
+		vault := t.TempDir()
+		writeTemplateMirror(t, vault, "commands/restart.md", earlierRestart(t))
+		got := CheckTemplateDrift(vault)
+		if lockDetail(got) != 0 || strings.Contains(got.Summary, "templates.lock") {
+			t.Errorf("a lock was reported where none exists: %q %v", got.Summary, got.Details)
+		}
+	})
+}
+
+// TestTemplateDriftRemedyStaysTruthful pins the remedy to what is true once
+// provenance is the frozen shipped-version manifest: no host-local lock, no
+// prompt, nothing to regenerate; the upgrade commands never reset an override
+// and the reset verbs are named; an unedited copy of a shipped version is vp's.
 func TestTemplateDriftRemedyStaysTruthful(t *testing.T) {
 	text := strings.Join(templateDriftRemedy, " ")
 	for _, want := range []string{
 		"Projects/<slug>/commands/",
-		"no longer overwrites one",
+		"never overwrites one",
+		"never prompts about one",
 		"restored from HEAD",
 		"the upgrade commands never reset one",
 		"`vp commands reset NAME`",
 		"keeps a backup",
-		"template-provenance-manifest-retires-the-host-local-lock",
-		"still not recommended",
+		"shipped.txt is frozen",
+		"edit a copy before syncing",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("remedy does not say %q", want)
 		}
 	}
 	for _, bad := range []string{
+		"templates.lock", "prompts on every sync", "-update-golden", "regenerate",
 		"o/O answer", "vault-template-override-is-discarded-by-config-sync", "currently unsafe",
 		"upgrade-overwrite-resets-vault-template-overrides", "--overwrite",
 	} {

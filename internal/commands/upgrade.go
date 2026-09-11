@@ -8,10 +8,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
+	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
 
 // matchesOnly decides whether the given resource name matches an --only
@@ -44,9 +46,16 @@ const (
 	// changes one; only an explicit, named `vp commands reset` / `vp skills
 	// reset` removes it (Reset), keeping a backup.
 	ChangeOverride ChangeKind = "override"
-	// ChangeUnchanged means the embedded template matches the vault copy: a
-	// byte-identical mirror.
+	// ChangeUnchanged means the vault copy is the embedded template, line
+	// endings aside (templates.ClassifyVaultCopy: current): a mirror.
 	ChangeUnchanged ChangeKind = "unchanged"
+	// ChangeStale means the vault copy is an earlier shipped version of the
+	// built-in (templates.ClassifyVaultCopy: earlier; a row of the frozen
+	// shipped.txt manifest). It is vp's bytes, not an operator's override:
+	// `vp config sync` prunes it, and until then it shadows the current
+	// built-in. It is not pending work for the upgrade commands and is not
+	// counted as an override kept; a reset removes it without a backup.
+	ChangeStale ChangeKind = "stale"
 	// ChangeUnneeded means no vault copy exists and none is wanted: the
 	// embedded floor (precedence Tier 5, internal/context/precedence.go)
 	// already serves this resource, and the bytes a write would produce are
@@ -81,6 +90,10 @@ type Change struct {
 	// vault-relative paths — the locked vaultfs primitives it removes and backs
 	// up through take (root, rel) — and derives rel from the two.
 	VaultRoot string
+	// EmbeddedRel is the built-in's path under the embedded templates root
+	// ("commands/wrap.md", "skills/chair/SKILL.md"): what the vault copy's
+	// provenance is judged against.
+	EmbeddedRel string
 }
 
 // PlanOptions configures which templates Upgrade considers.
@@ -104,12 +117,15 @@ type PlanOptions struct {
 // so callers can report them; filtering is the caller's responsibility.
 //
 // Plan is override-only, matching the `vp config sync` Templates reconciler
-// (ADR-008 Phase 3): a template with no vault copy is ChangeUnneeded, never
-// work to do. A vault copy that DIFFERS from embedded — a genuine local
-// override — is ChangeOverride, and a plan is only ever a report of it: no
-// caller writes embedded bytes over an override. The upgrade commands list
-// overrides as kept, and the reset commands hand the named ones to Reset,
-// which removes them (keeping a backup) so the embedded floor serves them.
+// (ADR-008 Phase 3), and classifies a vault copy exactly as that reconciler
+// does (templates.ClassifyVaultCopy): no vault copy is ChangeUnneeded, never
+// work to do; the current embedded copy (line endings aside) is
+// ChangeUnchanged; an earlier shipped version is ChangeStale, vp's bytes that
+// `vp config sync` prunes; anything else — a genuine local override — is
+// ChangeOverride, and a plan is only ever a report of it: no caller writes
+// embedded bytes over an override. The upgrade commands list overrides as
+// kept, and the reset commands hand the named ones to Reset, which removes
+// them (keeping a backup of an override) so the embedded floor serves them.
 func Plan(resolver *vpctx.Resolver, opts PlanOptions) ([]Change, error) {
 	types := opts.ResourceTypes
 	if len(types) == 0 {
@@ -163,6 +179,10 @@ func planOne(resolver *vpctx.Resolver, resourceType, name string) (Change, error
 		return Change{}, err
 	}
 
+	embeddedRel, err := filepath.Rel(filepath.Join(resolver.VaultRoot(), "Templates"), vaultPath)
+	if err != nil {
+		return Change{}, fmt.Errorf("%s: %w", vaultPath, err)
+	}
 	c := Change{
 		Name:            name,
 		ResourceType:    resourceType,
@@ -170,6 +190,7 @@ func planOne(resolver *vpctx.Resolver, resourceType, name string) (Change, error
 		EmbeddedHash:    shortHash(embedded),
 		VaultPath:       vaultPath,
 		VaultRoot:       resolver.VaultRoot(),
+		EmbeddedRel:     filepath.ToSlash(embeddedRel),
 	}
 	if !haveVault {
 		// No vault copy means no local override: the embedded floor already
@@ -182,9 +203,12 @@ func planOne(resolver *vpctx.Resolver, resourceType, name string) (Change, error
 	}
 	c.VaultContent = vaultContent
 	c.VaultHash = shortHash(vaultContent)
-	if c.EmbeddedHash == c.VaultHash {
+	switch templates.ClassifyVaultCopy(c.EmbeddedRel, []byte(vaultContent)) {
+	case templates.ProvenanceCurrent:
 		c.Kind = ChangeUnchanged
-	} else {
+	case templates.ProvenanceEarlier:
+		c.Kind = ChangeStale
+	default:
 		c.Kind = ChangeOverride
 	}
 	return c, nil

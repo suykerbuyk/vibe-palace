@@ -5,6 +5,8 @@ package reconcile
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,12 +14,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/check"
-	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
 // stampVaultWrite best-effort records the MCP surface version for a successful
@@ -40,11 +41,13 @@ type TemplateMode string
 const (
 	// TemplateModeMaterialize reconciles <vault>/<relSubpath>/ against the
 	// embedded corpus OVERRIDE-ONLY (ADR-008, Design B). It never writes a
-	// template on its own: an absent vault file is served from the embedded
-	// floor, a byte-identical mirror is pruned, and a genuine override is kept
-	// — or, when the embedded copy moved under it, prompted. templates.lock
-	// records the baseline that makes a prune safe. The name predates Design B
-	// and is kept because it is the mode's identifier, not its description.
+	// template and never prompts: an absent vault file is served from the
+	// embedded floor, a copy the binary can prove is vp's — the current
+	// embedded copy or an earlier shipped version, line endings aside
+	// (templates.ClassifyVaultCopy) — is pruned, and anything else is an
+	// operator's override, kept. No host-local state is read or written. The
+	// name predates Design B and is kept because it is the mode's identifier,
+	// not its description.
 	TemplateModeMaterialize TemplateMode = "materialize"
 	// TemplateModeScaffold creates commands/ and skills/ subdirectories
 	// with README stubs but does not materialize any embedded content.
@@ -55,36 +58,35 @@ const (
 type TemplateTreeSeed struct {
 	// Mode picks materialize vs scaffold semantics.
 	Mode TemplateMode
-	// ExternalPrune hands every Delete to the caller: materialize Apply
-	// neither removes the file nor drops its lock entry. `vp config sync`
-	// sets it on a git vault, where a prune is only safe once HEAD (and each
-	// remote tip) has been checked, and its lock entry may only go once the
-	// removal is committed — see storage.PruneMirrorsVerified and
-	// ForgetPruned.
+	// ExternalPrune hands every Delete to the caller: materialize Apply does
+	// not remove the file. `vp config sync` sets it on a git vault, where a
+	// prune is only safe once HEAD (and each remote tip) has been checked —
+	// see storage.PruneMirrorsVerified.
 	ExternalPrune bool
+	// PendingRemovals are tracked files under the tree that were removed from
+	// the worktree and whose removal is not committed, keyed by vault-relative
+	// path ("Templates/commands/wrap.md"), each with HEAD's copy as git would
+	// check it out (storage.UncommittedRemovals). A path whose committed copy
+	// is vp-shipped plans a Delete, so the caller's verified prune commits the
+	// removal; one whose committed copy is operator content plans Unchanged
+	// with the ways to finish or undo it. `vp config sync` fills it only on a
+	// vault that is its own repository.
+	PendingRemovals map[string][]byte
 }
 
 // TemplateTreeReconciler implements the Reconciler interface against
-// the embedded templates corpus and the templates.lock sidecar.
+// the embedded templates corpus.
 //
 // Layout:
 //   - Mode=Materialize, relSubpath="Templates": each embedded resource is
 //     reconciled against <vaultRoot>/Templates/<rel>, which holds only the
-//     overrides an operator wrote. Nothing is copied in. Lock keys are the
-//     full vault-relative path (e.g. "Templates/commands/wrap.md").
+//     overrides an operator wrote. Nothing is copied in.
 //   - Mode=Scaffold, relSubpath="Projects/<slug>": commands/ and
-//     skills/ subdirectories with README stubs. No lock tracking; the
-//     stubs are write-if-absent.
+//     skills/ subdirectories with README stubs, write-if-absent.
 type TemplateTreeReconciler struct {
 	vaultRoot  string
 	relSubpath string
 	seed       TemplateTreeSeed
-
-	// planState carries the merged lock (including silent-adopted
-	// entries) from Plan to Apply. Scoped to this reconciler instance
-	// so parallel reconcilers can't race on a shared map. Nil until
-	// Plan runs; Apply falls back to re-reading the lock if absent.
-	planState *templateTreePlanState
 }
 
 // NewTemplateTree builds a reconciler for the template tree at
@@ -119,15 +121,17 @@ func (r *TemplateTreeReconciler) subpathAbs() string {
 	return filepath.Join(r.vaultRoot, filepath.FromSlash(r.relSubpath))
 }
 
-// vaultRelFromEmbedded computes the vault-relative lock/target key for
-// an embedded resource (e.g. "commands/wrap.md" → "Templates/commands/wrap.md").
+// vaultRelFromEmbedded computes the vault-relative target key for an
+// embedded resource (e.g. "commands/wrap.md" → "Templates/commands/wrap.md").
 func (r *TemplateTreeReconciler) vaultRelFromEmbedded(embeddedRel string) string {
 	return r.relSubpath + "/" + embeddedRel
 }
 
-// hashFile delegates to templates.HashFile so the reconciler and the rest of
-// the template code share one hash primitive for on-disk bytes.
-func hashFile(path string) (string, error) { return templates.HashFile(path) }
+// pruneBeforeRemoveHook runs after a prune's bytes are re-read and accepted
+// and immediately before the compare-and-set removal. Production leaves it a
+// no-op; a test edits the file from it, which is otherwise a race no test can
+// time.
+var pruneBeforeRemoveHook = func(key string) {}
 
 // Check returns one check.Result per embedded resource for
 // materialize mode; one aggregate row for scaffold mode.
@@ -173,15 +177,7 @@ func (r *TemplateTreeReconciler) checkScaffold() check.Result {
 	}
 }
 
-// templateTreePlanState is what Plan collects for Apply: the action
-// list plus the merged-lock snapshot that captures silent adoptions.
-// We stash it on the reconciler (by key) so Apply can pick it up
-// without needing to round-trip it through the Plan type.
-type templateTreePlanState struct {
-	lock templates.Lock
-}
-
-// Plan emits the decision-table actions for materialize mode; for
+// Plan emits the provenance-table actions for materialize mode; for
 // scaffold mode it emits at most 4 Create actions (two directories +
 // two READMEs — one per subdir).
 func (r *TemplateTreeReconciler) Plan(_ context.Context) (Plan, error) {
@@ -191,181 +187,157 @@ func (r *TemplateTreeReconciler) Plan(_ context.Context) (Plan, error) {
 	return r.planMaterialize()
 }
 
+// planMaterialize classifies every embedded resource's vault copy by
+// provenance — the binary alone, no host-local state:
+//
+//	vault copy                         action     why
+//	absent, not pending                Unchanged  served from the embedded floor
+//	absent, pending, HEAD vp-shipped   Delete     the verified prune commits it
+//	absent, pending, HEAD operator     Unchanged  names the reset verb / restore
+//	not reached directly               Unchanged  kept, never followed
+//	current (line endings aside)       Delete     prune
+//	earlier shipped version            Delete     prune; recoverable from history
+//	operator                           Unchanged  an override, kept
+//	unreadable                         Plan error
+//
+// It never plans a Create, an Update or a prompt. A Delete's Details carry
+// embedded_relpath=, provenance=, vault_sha= (the raw sha256 of the worktree
+// bytes, empty when absent), key= (the ProvenanceKey a shipped.txt row
+// matches) and, on a pending row, pending=true.
 func (r *TemplateTreeReconciler) planMaterialize() (Plan, error) {
 	resources, err := templates.WalkEmbedded()
 	if err != nil {
 		return Plan{}, fmt.Errorf("walk embedded: %w", err)
-	}
-	lock, err := templates.ReadLock(r.vaultRoot)
-	if err != nil {
-		return Plan{}, fmt.Errorf("read lock: %w", err)
-	}
-
-	// ---- Silent-adopt pre-pass ----
-	// For any resource that has no lock entry but whose vault file's
-	// bytes match the embedded bytes exactly, record the lock entry
-	// in-memory immediately. Plan therefore emits no Prompt for that
-	// row and Apply has a pre-populated lock snapshot to persist.
-	now := time.Now().UTC()
-	for _, res := range resources {
-		key := r.vaultRelFromEmbedded(res.RelPath)
-		if _, ok := lock.Entries[key]; ok {
-			continue
-		}
-		target := filepath.Join(r.vaultRoot, filepath.FromSlash(key))
-		vaultSHA, herr := hashFile(target)
-		if herr != nil {
-			// ENOENT is the normal case — no override exists, and the
-			// main decision-table loop below plans case 1 (served from
-			// the embedded floor). Any other error (permission, IO) is
-			// unexpected and worth logging: silent-adopt would skip it
-			// here and the main loop would then classify the file as
-			// user-edited (producing a confusing Prompt row) without
-			// any diagnostic trail.
-			if !os.IsNotExist(herr) {
-				slog.Error("silent-adopt hash failed",
-					"path", target, "err", herr, "reconciler", r.Name())
-			}
-			continue
-		}
-		// Use the test-injectable EmbeddedSHA so overrides flow through.
-		embSHA, ok := templates.EmbeddedSHA(res.RelPath)
-		if !ok {
-			embSHA = res.SHA256
-		}
-		if vaultSHA == embSHA {
-			lock.Entries[key] = templates.LockEntry{
-				EmbeddedSHA: embSHA,
-				WrittenAt:   now,
-			}
-		}
 	}
 
 	var actions []Action
 	for _, res := range resources {
 		key := r.vaultRelFromEmbedded(res.RelPath)
 		target := filepath.Join(r.vaultRoot, filepath.FromSlash(key))
-		embSHA, ok := templates.EmbeddedSHA(res.RelPath)
-		if !ok {
-			embSHA = res.SHA256
-		}
-		vaultSHA, herr := hashFile(target)
-		vaultExists := herr == nil
-		if herr != nil && !os.IsNotExist(herr) {
-			return Plan{}, fmt.Errorf("hash %s: %w", target, herr)
-		}
-		entry, haveLock := lock.Entries[key]
 
-		// --- Decision table (Design B: override-only materialization) ---
-		// The embedded floor is served directly over MCP, so the vault
-		// Templates/ mirror is override-only. Byte-identical mirrors are
-		// pruned (embedded serves them); genuine overrides are kept. The
-		// KEY invariant: vault bytes still equal the lock's recorded
-		// embedded baseline ⇒ reconciler-owned (user never edited it) ⇒
-		// safe to prune; vault bytes differ from the baseline ⇒ user
-		// override ⇒ keep.
-		switch {
-		case !vaultExists && haveLock:
-			// Case 1b: no vault file, but a lock entry. Either a prune whose
-			// removal was never committed (a git failure after the remove —
-			// the entry is only dropped once the outcome is known), or a file
-			// someone else removed. Plan a Delete of the absent file: on a git
-			// vault the verified prune commits the removal when HEAD's copy is
-			// vp's and leaves it alone otherwise; either way the entry goes.
-			actions = append(actions, Action{
-				Kind:    ActionDelete,
-				Target:  target,
-				Summary: "prune " + key + " (already removed from the worktree)",
-				Details: []string{
-					"embedded_sha=" + embSHA,
-					"vault_sha=",
-					"lock_sha=" + entry.EmbeddedSHA,
-				},
-			})
-		case !vaultExists:
-			// Case 1: no vault mirror → the embedded floor serves it. Do
-			// nothing to disk (replaces the old Create).
+		// A symlink anywhere in the path, a special file, or on Windows a
+		// spelling the disk does not share: kept, never followed. Reading or
+		// removing through it would act on a file this tree does not own.
+		if err := vaultfs.CheckDirectPath(r.vaultRoot, key); err != nil {
+			if !errors.Is(err, vaultfs.ErrIndirectPath) {
+				return Plan{}, fmt.Errorf("inspect %s: %w", target, err)
+			}
 			actions = append(actions, Action{
 				Kind:    ActionUnchanged,
 				Target:  target,
-				Summary: key + " served from embedded floor",
+				Summary: key + " is " + check.NotReachedDirectly,
+				Details: []string{"reason=" + err.Error()},
 			})
-		case haveLock && vaultSHA == entry.EmbeddedSHA:
-			// Case 2: vault bytes still equal the lock baseline →
-			// reconciler-owned mirror (covers old Row 2 all-match and old
-			// Row 3 embedded-bumped-but-vault-still-baseline). Prune.
+			continue
+		}
+
+		data, err := os.ReadFile(target)
+		if errors.Is(err, os.ErrNotExist) {
+			head, pending := r.seed.PendingRemovals[key]
+			if !pending {
+				actions = append(actions, Action{
+					Kind:    ActionUnchanged,
+					Target:  target,
+					Summary: key + " served from embedded floor",
+				})
+				continue
+			}
+			// Removed from the worktree before this sync, and never
+			// committed. The verified prune finishes it only when the
+			// committed copy is vp-shipped bytes.
+			prov := templates.ClassifyVaultCopy(res.RelPath, head)
+			if prov == templates.ProvenanceOperator {
+				actions = append(actions, Action{
+					Kind:    ActionUnchanged,
+					Target:  target,
+					Summary: key + " removed from the worktree; the committed copy is operator content — " + finishOperatorRemoval(r.vaultRoot, key, res.RelPath),
+				})
+				continue
+			}
+			actions = append(actions, Action{
+				Kind:   ActionDelete,
+				Target: target,
+				Summary: "prune " + key + " (removed from the worktree before this sync and not committed; the committed copy is " +
+					committedBasis(prov, res.RelPath) + ")",
+				Details: pruneDetails(res.RelPath, prov, nil, head, true),
+			})
+			continue
+		}
+		if err != nil {
+			return Plan{}, fmt.Errorf("read %s: %w", target, err)
+		}
+
+		switch prov := templates.ClassifyVaultCopy(res.RelPath, data); prov {
+		case templates.ProvenanceCurrent:
 			actions = append(actions, Action{
 				Kind:    ActionDelete,
 				Target:  target,
-				Summary: "prune " + key + " (reconciler-owned mirror; embedded floor serves it)",
-				Details: []string{
-					"embedded_sha=" + embSHA,
-					"vault_sha=" + vaultSHA,
-					"lock_sha=" + entry.EmbeddedSHA,
-				},
+				Summary: "prune " + key + " (byte-identical, line endings aside, to the current embedded copy)",
+				Details: pruneDetails(res.RelPath, prov, data, data, false),
 			})
-		case haveLock && vaultSHA == embSHA:
-			// Case 3: vault bytes are byte-identical to CURRENT embedded
-			// while the lock baseline is stale (old Row 4b relock case).
-			// The mirror is redundant → prune. Ordered ABOVE case 4/5,
-			// whose predicates would otherwise swallow it.
+		case templates.ProvenanceEarlier:
 			actions = append(actions, Action{
 				Kind:    ActionDelete,
 				Target:  target,
-				Summary: "prune " + key + " (byte-identical to current embedded; lock stale)",
-				Details: []string{
-					"embedded_sha=" + embSHA,
-					"vault_sha=" + vaultSHA,
-					"lock_sha=" + entry.EmbeddedSHA,
-				},
+				Summary: "prune " + key + " (matched an earlier shipped version of " + res.RelPath + "; recoverable from vibe-palace history)",
+				Details: pruneDetails(res.RelPath, prov, data, data, false),
 			})
-		case haveLock && embSHA == entry.EmbeddedSHA:
-			// Case 4: vault bytes differ from the baseline but embedded is
-			// stable → genuine user override, embedded unchanged. Keep
-			// (old Row 4).
+		default:
 			actions = append(actions, Action{
 				Kind:    ActionUnchanged,
 				Target:  target,
 				Summary: key + " operator override of a built-in (kept)",
 			})
-		case haveLock:
-			// Case 5: vault bytes differ from the baseline AND embedded
-			// bumped (embSHA != baseline, since cases 2/3/4 fell through)
-			// → diverged override (user-edited AND embedded bumped).
-			// Prompt (old Row 5).
-			actions = append(actions, Action{
-				Kind:    ActionPrompt,
-				Target:  target,
-				Summary: key + " diverged (user-edited AND embedded bumped)",
-				Details: []string{
-					"embedded_sha=" + embSHA,
-					"vault_sha=" + vaultSHA,
-					"lock_sha=" + entry.EmbeddedSHA,
-					"embedded_relpath=" + res.RelPath,
-				},
-			})
-		default:
-			// Case 6: lock absent AND file exists. The silent-adopt
-			// pre-pass would have planted a lock entry when vaultSHA ==
-			// embSHA, so reaching here means vaultSHA ≠ embSHA → can't
-			// prove reconciler-owned; treat as a user override → Prompt
-			// (old no-lock branch).
-			actions = append(actions, Action{
-				Kind:    ActionPrompt,
-				Target:  target,
-				Summary: key + " diverged (no lock, bytes differ from embedded)",
-				Details: []string{
-					"embedded_sha=" + embSHA,
-					"vault_sha=" + vaultSHA,
-					"lock_sha=",
-					"embedded_relpath=" + res.RelPath,
-				},
-			})
 		}
 	}
-
-	r.planState = &templateTreePlanState{lock: lock}
 	return Plan{Actions: actions}, nil
+}
+
+// pruneDetails is a Delete's Details. worktree is the file's bytes (nil when
+// absent: vault_sha= is then empty); keyed is the copy the classification
+// judged — the worktree bytes, or HEAD's copy for a pending removal.
+func pruneDetails(embeddedRel string, prov templates.Provenance, worktree, keyed []byte, pending bool) []string {
+	vaultSHA := ""
+	if worktree != nil {
+		sum := sha256.Sum256(worktree)
+		vaultSHA = hex.EncodeToString(sum[:])
+	}
+	d := []string{
+		"embedded_relpath=" + embeddedRel,
+		"provenance=" + prov.String(),
+		"vault_sha=" + vaultSHA,
+		"key=" + templates.ProvenanceKey(keyed),
+	}
+	if pending {
+		d = append(d, "pending=true")
+	}
+	return d
+}
+
+// committedBasis names what a committed copy is, in the words a pending
+// prune row and its commit use.
+func committedBasis(prov templates.Provenance, embeddedRel string) string {
+	if prov == templates.ProvenanceEarlier {
+		return "an earlier shipped version of " + embeddedRel
+	}
+	return "the current embedded copy"
+}
+
+// finishOperatorRemoval tells the operator how to finish, or undo, a removal
+// of operator content they left uncommitted. vp never commits it: the grant
+// covers vp-shipped bytes only.
+func finishOperatorRemoval(vaultRoot, key, embeddedRel string) string {
+	restore := "or restore it with git -C " + vaultRoot + " checkout HEAD -- " + key
+	var verb string
+	switch {
+	case strings.HasPrefix(embeddedRel, "commands/"):
+		verb = "vp commands reset " + strings.TrimSuffix(strings.TrimPrefix(embeddedRel, "commands/"), ".md")
+	case strings.HasPrefix(embeddedRel, "skills/"):
+		verb = "vp skills reset " + strings.TrimPrefix(embeddedRel, "skills/")
+	default:
+		return "finish removing it with git -C " + vaultRoot + " commit -m \"chore(templates): remove an override\" -- " + key + ", " + restore
+	}
+	return "finish removing it with " + verb + " (commits the removal; a backup an earlier reset wrote stays beside it), " + restore
 }
 
 func (r *TemplateTreeReconciler) planScaffold() (Plan, error) {
@@ -402,10 +374,9 @@ func (r *TemplateTreeReconciler) planScaffold() (Plan, error) {
 	return Plan{Actions: actions}, nil
 }
 
-// Apply executes a Plan. For materialize mode, the in-memory lock
-// snapshot carried from Plan is updated per action and persisted at
-// end; the only file operation it performs is a verified prune. For
-// scaffold mode, Apply is a straight mkdir/write loop.
+// Apply executes a Plan. For materialize mode the only file operation it
+// performs is a verified prune; for scaffold mode, Apply is a straight
+// mkdir/write loop.
 func (r *TemplateTreeReconciler) Apply(_ context.Context, p Plan) (Report, error) {
 	if r.seed.Mode == TemplateModeScaffold {
 		return r.applyScaffold(p)
@@ -413,170 +384,112 @@ func (r *TemplateTreeReconciler) Apply(_ context.Context, p Plan) (Report, error
 	return r.applyMaterialize(p)
 }
 
-// applyMaterialize never writes a template. `vp config sync` used to
-// resolve a diverged override's `o` answer (and --yes) into an Update that
-// overwrote the operator's bytes with the embedded copy; the next sync then
-// classified the result as a reconciler-owned mirror, pruned it, and committed
-// and pushed the deletion — the operator's override was gone on every host.
-// No Plan emits Create or Update in this mode and no orchestrator answer
-// produces one any more, so either kind reaching here is a defect in the
-// caller and is reported as an error rather than executed.
+// applyMaterialize never writes a template. `vp config sync` used to resolve
+// a diverged override's `o` answer (and --yes) into an Update that overwrote
+// the operator's bytes with the embedded copy; the next sync then classified
+// the result as a reconciler-owned mirror, pruned it, and committed and pushed
+// the deletion — the operator's override was gone on every host. No Plan emits
+// Create or Update in this mode, so either kind reaching here is a defect in
+// the caller and is reported as an error rather than executed. It writes no
+// lock and no .gitignore: the Vault reconciler's locked top-up owns that file.
 //
-// The one file operation left is the prune, and it is verified twice: at Plan
-// time (the decision table) and again immediately before os.Remove, against
-// the SHAs the plan recorded (see PruneBasis). A file edited in between —
-// the orchestrator can sit on a prompt for as long as the operator likes — is
-// kept, not removed. With ExternalPrune (a git vault) Apply leaves every
-// Delete to the caller, which must also check the committed copy first.
+// The one file operation left is the prune, and it is verified three times:
+// at Plan time (the provenance table), again immediately before the removal
+// (PruneAccepts on freshly read bytes, reached directly), and by the removal
+// itself — vaultfs.Delete, a compare-and-set on those bytes under the path's
+// advisory lock, so an edit landing between the re-read and the remove is
+// kept. With ExternalPrune (a git vault) Apply leaves every Delete to the
+// caller, which must also check the committed copy first.
+//
+// No .bak is written. The bytes removed are provably vp-shipped: the current
+// embedded copy, or a frozen shipped.txt row whose blob is in vibe-palace's
+// history. A .bak already beside the file belongs to an earlier overwrite or
+// a reset, and is never touched.
 func (r *TemplateTreeReconciler) applyMaterialize(p Plan) (Report, error) {
 	var rep Report
-
-	// Ensure the canonical gitignore patterns are in place before any
-	// sidecars appear. Done once per Apply, not per action.
-	if err := storage.ReconcileVaultGitignore(r.vaultRoot); err != nil {
-		rep.Errors = append(rep.Errors, fmt.Errorf("reconcile gitignore: %w", err))
-	}
-
-	var state templateTreePlanState
-	if r.planState != nil {
-		state = *r.planState
-	}
-	if state.lock.Entries == nil {
-		// Plan wasn't called (or was called on a different instance):
-		// re-read the lock so Apply can still merge correctly.
-		if l, err := templates.ReadLock(r.vaultRoot); err == nil {
-			state.lock = l
-		} else {
-			state.lock.Entries = map[string]templates.LockEntry{}
-		}
-	}
-
-	// Map each target back to its lock key so a prune can drop its entry.
-	resources, err := templates.WalkEmbedded()
-	if err != nil {
-		return rep, fmt.Errorf("walk embedded: %w", err)
-	}
-	byTarget := make(map[string]templates.Resource, len(resources))
-	for _, res := range resources {
-		key := r.vaultRelFromEmbedded(res.RelPath)
-		target := filepath.Join(r.vaultRoot, filepath.FromSlash(key))
-		byTarget[target] = res
-	}
-
 	for _, a := range p.Actions {
 		switch a.Kind {
-		case ActionPrompt:
-			return rep, fmt.Errorf("template_tree Apply: received ActionPrompt for %s — orchestrator must resolve Prompt actions before Apply", a.Target)
 		case ActionCreate, ActionUpdate:
 			rep.Errors = append(rep.Errors, fmt.Errorf("template_tree Apply: unexpected %s for %s — the Templates reconcile never writes a template", a.Kind, a.Target))
 		case ActionDelete:
-			// Prune a reconciler-owned mirror so the embedded floor serves
-			// the resource, then drop its lock entry so the persisted lock no
-			// longer lists it.
-			//
-			// No .bak is written. The bytes removed are provably an embedded
-			// copy (the re-hash below), so a backup would preserve nothing —
-			// and a .bak already beside the file belongs to an earlier
-			// overwrite or upgrade reset, which is exactly the copy of the
-			// operator's bytes the old prune backup used to overwrite.
-			res, ok := byTarget[a.Target]
-			if !ok {
-				rep.Errors = append(rep.Errors, fmt.Errorf("prune: no embedded resource for %s", a.Target))
-				continue
-			}
-			accept := PruneBasis(a)
-			if len(accept) == 0 {
-				rep.Errors = append(rep.Errors, fmt.Errorf("prune %s: the plan recorded no SHA to verify the file against; kept", a.Target))
+			embeddedRel := a.Detail("embedded_relpath")
+			if embeddedRel == "" {
+				rep.Errors = append(rep.Errors, fmt.Errorf("prune %s: the plan recorded no embedded_relpath to verify the file against; kept", a.Target))
 				continue
 			}
 			if r.seed.ExternalPrune {
-				// The caller removes it, after checking HEAD and the remotes,
-				// and drops the lock entry once the outcome is known.
+				// The caller removes it, after checking HEAD and the remotes.
 				continue
 			}
-			// Re-hash immediately before the remove. This closes the
-			// Plan→Apply window: the orchestrator may block on a prompt
-			// between the two, and an edit made meanwhile must be kept, not
-			// removed. A file already gone (a concurrent sync, a manual rm)
-			// needs no removal: its entry goes, and it is not counted as
-			// pruned, because this run removed nothing.
-			cur, herr := hashFile(a.Target)
-			switch {
-			case herr != nil && !os.IsNotExist(herr):
-				rep.Errors = append(rep.Errors, fmt.Errorf("prune read %s: %w", a.Target, herr))
+			key := r.vaultRelFromEmbedded(embeddedRel)
+			if err := vaultfs.CheckDirectPath(r.vaultRoot, key); err != nil {
+				if errors.Is(err, vaultfs.ErrIndirectPath) {
+					rep.Skipped++
+					rep.Notes = append(rep.Notes, key+" is no longer reached directly; kept")
+				} else {
+					rep.Errors = append(rep.Errors, fmt.Errorf("prune inspect %s: %w", a.Target, err))
+				}
 				continue
-			case herr != nil:
-				delete(state.lock.Entries, r.vaultRelFromEmbedded(res.RelPath))
+			}
+			// A file already gone (a concurrent sync, a manual rm) needs no
+			// removal, and is not counted as pruned: this run removed nothing.
+			data, err := os.ReadFile(a.Target)
+			switch {
+			case errors.Is(err, os.ErrNotExist):
 				rep.Unchanged++
 				continue
-			case accept[cur] == "":
+			case err != nil:
+				rep.Errors = append(rep.Errors, fmt.Errorf("prune read %s: %w", a.Target, err))
+				continue
+			case !PruneAccepts(a, data):
 				rep.Skipped++
-				rep.Notes = append(rep.Notes, r.vaultRelFromEmbedded(res.RelPath)+" changed since plan; kept")
+				rep.Notes = append(rep.Notes, key+" changed since plan; kept")
 				continue
 			}
-			if err := os.Remove(a.Target); err != nil && !os.IsNotExist(err) {
-				rep.Errors = append(rep.Errors, fmt.Errorf("prune remove %s: %w", a.Target, err))
+			pruneBeforeRemoveHook(key)
+			sum := sha256.Sum256(data)
+			if _, err := vaultfs.Delete(r.vaultRoot, key, hex.EncodeToString(sum[:])); err != nil {
+				switch {
+				case errors.Is(err, vaultfs.ErrShaConflict):
+					rep.Skipped++
+					rep.Notes = append(rep.Notes, key+" changed since plan; kept")
+				case errors.Is(err, vaultfs.ErrFileNotFound):
+					rep.Unchanged++
+				default:
+					rep.Errors = append(rep.Errors, fmt.Errorf("prune remove %s: %w", a.Target, err))
+				}
 				continue
 			}
-			delete(state.lock.Entries, r.vaultRelFromEmbedded(res.RelPath))
 			rep.Pruned++
+			if a.Detail("provenance") == templates.ProvenanceEarlier.String() {
+				// No backup is kept, so the outcome is the audit record.
+				rep.Notes = append(rep.Notes, "pruned "+key+" (earlier shipped version of "+embeddedRel+"; no backup)")
+			}
 		case ActionUnchanged:
 			rep.Unchanged++
 		case ActionSkip:
 			rep.Skipped++
 		}
 	}
-
-	if err := templates.WriteLock(r.vaultRoot, state.lock); err != nil {
-		rep.Errors = append(rep.Errors, fmt.Errorf("write lock: %w", err))
-	}
 	return rep, nil
 }
 
-// PruneBasis is the one definition of the bytes a prune may remove: each SHA
-// the Plan recorded in a Delete's Details, mapped to the words a commit
-// message uses for it. The embedded SHA is vp's by definition; a lock
-// baseline is vp's because templates.lock's only writer records the embedded
-// SHA of what it wrote. An empty value (lock_sha= on a lock-less row)
-// contributes nothing, and when both are one SHA the current embedded copy
-// names it. The Apply re-hash and `vp config sync`'s HEAD and remote checks
-// all read this, so they cannot drift apart.
-func PruneBasis(a Action) map[string]string {
-	basis := map[string]string{}
-	if v := a.Detail("lock_sha"); v != "" {
-		basis[v] = "lock-recorded embedded version"
-	}
-	if v := a.Detail("embedded_sha"); v != "" {
-		basis[v] = "current embedded copy"
-	}
-	return basis
-}
-
-// ForgetPruned drops the lock entries for vault-relative keys whose prune
-// outcome is known and final: removed and committed, never tracked, or gone
-// by someone else's hand. It is the other half of ExternalPrune; entries of
-// restored or kept files stay, so a restored override remains a silent keep
-// rather than a Prompt on every sync.
-func (r *TemplateTreeReconciler) ForgetPruned(keys []string) error {
-	if len(keys) == 0 {
-		return nil
-	}
-	lock, err := templates.ReadLock(r.vaultRoot)
-	if err != nil {
-		return err
-	}
-	for _, k := range keys {
-		delete(lock.Entries, k)
-	}
-	return templates.WriteLock(r.vaultRoot, lock)
+// PruneAccepts is the one accept rule for a Templates prune: content may be
+// removed at a's path only when a names the built-in it prunes
+// (embedded_relpath=) and content classifies as vp's there — the current
+// embedded copy or an earlier shipped version, line endings aside. The Apply
+// re-check and `vp config sync`'s worktree, HEAD and remote-tip checks all
+// call it, so they cannot drift apart. A Delete without embedded_relpath —
+// the retired-lock removal, say — is never a prune.
+func PruneAccepts(a Action, content []byte) bool {
+	rel := a.Detail("embedded_relpath")
+	return rel != "" && templates.ClassifyVaultCopy(rel, content) != templates.ProvenanceOperator
 }
 
 func (r *TemplateTreeReconciler) applyScaffold(p Plan) (Report, error) {
 	var rep Report
 	for _, a := range p.Actions {
 		switch a.Kind {
-		case ActionPrompt:
-			return rep, fmt.Errorf("template_tree Apply (scaffold): unexpected ActionPrompt for %s", a.Target)
 		case ActionCreate:
 			base := filepath.Base(a.Target)
 			if base == "README.md" {

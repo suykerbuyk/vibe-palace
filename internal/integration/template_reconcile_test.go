@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
@@ -21,23 +20,17 @@ import (
 // acceptance-criteria gate for the override-only vault Templates/ reconcile
 // (ADR-008, Design B). It drives the real `vp` CLI binary (built once per test
 // run) end to end: a fresh `vp init` leaves Templates/ alone entirely (no
-// directory, no lock), a tracked override of wrap.md survives a subsequent
-// `vp config sync --yes`, a simulated embedded bump (achieved by corrupting
-// the lock entry's SHA so vault≠lock and embedded≠lock simultaneously)
-// exercises the Prompt — skip, write-as-.new, and an `o` that is no longer an
-// answer — verifying the vault state predicates for each, and a first install
-// onto a vault that already holds an override neither fails nor touches it.
-// TestIntegrationTemplateOverrideSurvivesSync covers the lock-less and git
-// paths that used to lose the override.
+// directory, no lock), an override of wrap.md survives a subsequent
+// `vp config sync --yes` with no lock written, and a first install onto a
+// vault that already holds an override neither fails nor touches it.
+// TestIntegrationTemplateOverrideSurvivesSync covers the git paths that used
+// to lose the override, and TestIntegrationTemplateProvenance the
+// shipped-version manifest that decides what is vp's.
 //
 // We shell out to the built `vp` binary rather than importing unexported
 // `cmd/vp` helpers: cmd/vp is package main and not importable from
 // internal/integration, and building+exec-ing the binary is the most
-// faithful end-to-end surface. Embedded-bump simulation via lock
-// corruption is equivalent to the function-variable override described in
-// the plan — it produces the same row-5 "differs/differs → Prompt"
-// decision without requiring in-process code injection across a process
-// boundary.
+// faithful end-to-end surface.
 func TestIntegrationTemplateMaterializeAndReconcile(t *testing.T) {
 	bin := buildVPBinary(t)
 
@@ -50,20 +43,14 @@ func TestIntegrationTemplateMaterializeAndReconcile(t *testing.T) {
 
 	// --- Part 2: a genuine override survives `vp config sync --yes` ---
 	// Under override-only there is nothing on disk to edit after init, so we
-	// seed a tracked override (distinct bytes + a lock entry at the embedded
-	// baseline). The reconciler must keep it (Case 4) — no clobber, no .bak,
-	// lock entry preserved.
+	// plant an override (bytes vp never shipped). The reconciler must keep it
+	// — no clobber, no .bak, no prompt, and no templates.lock written.
 	wrapPath := filepath.Join(env.vaultPath, "Templates", "commands", "wrap.md")
-	embWrap := embeddedBytesFor(t, "commands/wrap.md")
-	realEmbSHA, ok := templates.EmbeddedSHA("commands/wrap.md")
-	if !ok {
-		t.Fatal("no embedded SHA for commands/wrap.md")
-	}
 
 	const userEdit = "# USER EDITED WRAP\n\nmy custom wrap brief\n"
-	seedTrackedOverride(t, env.vaultPath, "commands/wrap.md", []byte(userEdit), realEmbSHA)
+	seedTrackedOverride(t, env.vaultPath, "commands/wrap.md", []byte(userEdit))
 
-	runVP(t, bin, env, nil, "config", "sync", "--yes",
+	out := runVP(t, bin, env, nil, "config", "sync", "--yes",
 		"--project-root", env.projectDir)
 
 	if got, _ := os.ReadFile(wrapPath); string(got) != userEdit {
@@ -73,85 +60,18 @@ func TestIntegrationTemplateMaterializeAndReconcile(t *testing.T) {
 	if _, err := os.Stat(wrapPath + ".bak"); err == nil {
 		t.Error("step 2: kept override must not produce .bak")
 	}
-	afterSyncEntry, ok := readLockEntry(t, env.vaultPath, "Templates/commands/wrap.md")
-	if !ok {
-		t.Fatal("step 2: lock entry for wrap.md disappeared")
+	if !strings.Contains(out, "Templates/commands/wrap.md operator override of a built-in (kept)") {
+		t.Errorf("step 2: no kept-override row:\n%s", out)
 	}
-	if afterSyncEntry.EmbeddedSHA != realEmbSHA {
-		t.Errorf("step 2: lock should still track embedded baseline, got %q want %q",
-			afterSyncEntry.EmbeddedSHA, realEmbSHA)
+	if strings.Contains(out, "[Prompt]") {
+		t.Errorf("step 2: sync prompted about an override:\n%s", out)
 	}
-
-	// --- Part 3: diverged override → Prompt → keep / .new / `o` rejected ---
-	// Each subtest seeds a diverged override in its own vault tempdir: a
-	// vault file with user bytes plus a lock entry whose baseline is a bogus
-	// SHA, so vault_sha ≠ lock_sha AND embedded_sha ≠ lock_sha (Case 5 of
-	// the decision table → ActionPrompt).
-	const bogusSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-
-	t.Run("skip", func(t *testing.T) {
-		env := setupFreshEnv(t)
-		runVP(t, bin, env, nil, "init", env.projectDir,
-			"--name", "tpl-skip", "--vault-path", env.vaultPath, "--no-git")
-		wrap := filepath.Join(env.vaultPath, "Templates", "commands", "wrap.md")
-		seedTrackedOverride(t, env.vaultPath, "commands/wrap.md", []byte(userEdit), bogusSHA)
-
-		out := runVP(t, bin, env, []byte("s\n"),
-			"config", "sync", "--project-root", env.projectDir)
-		if !strings.Contains(out, "diverged") {
-			t.Errorf("skip: expected prompt output to mention divergence\n%s", out)
-		}
-
-		if got, _ := os.ReadFile(wrap); string(got) != userEdit {
-			t.Errorf("skip: wrap.md changed\n got  %q\n want %q", got, userEdit)
-		}
-		if _, err := os.Stat(wrap + ".bak"); err == nil {
-			t.Error("skip: must not write .bak")
-		}
-		if _, err := os.Stat(wrap + ".new"); err == nil {
-			t.Error("skip: must not write .new")
-		}
-		entry, _ := readLockEntry(t, env.vaultPath, "Templates/commands/wrap.md")
-		if entry.EmbeddedSHA != bogusSHA {
-			t.Errorf("skip: lock entry should remain pre-decision (bogus) SHA; got %q want %q",
-				entry.EmbeddedSHA, bogusSHA)
-		}
-	})
-
-	// `o` (overwrite) was the first link of the chain that lost an override on
-	// every host. It is no longer an answer: the menu re-prompts, EOF means
-	// keep, and nothing is written.
-	t.Run("o-is-not-an-answer", func(t *testing.T) {
-		env := setupFreshEnv(t)
-		runVP(t, bin, env, nil, "init", env.projectDir,
-			"--name", "tpl-ovw", "--vault-path", env.vaultPath, "--no-git")
-		wrap := filepath.Join(env.vaultPath, "Templates", "commands", "wrap.md")
-		seedTrackedOverride(t, env.vaultPath, "commands/wrap.md", []byte(userEdit), bogusSHA)
-
-		out := runVP(t, bin, env, []byte("o\n"),
-			"config", "sync", "--project-root", env.projectDir)
-		if !strings.Contains(out, "Please answer s, n, S, N, or q.") {
-			t.Errorf("o was accepted as an answer:\n%s", out)
-		}
-		if !strings.Contains(out, "[keep] Templates/commands/wrap.md — ") {
-			t.Errorf("no [keep] line after the rejected o:\n%s", out)
-		}
-		if got, _ := os.ReadFile(wrap); string(got) != userEdit {
-			t.Errorf("o: wrap.md changed\n got  %q\n want %q", got, userEdit)
-		}
-		for _, side := range []string{".bak", ".new"} {
-			if _, err := os.Stat(wrap + side); err == nil {
-				t.Errorf("o: wrote %s", side)
-			}
-		}
-		entry, _ := readLockEntry(t, env.vaultPath, "Templates/commands/wrap.md")
-		if entry.EmbeddedSHA != bogusSHA {
-			t.Errorf("o: lock entry changed to %q", entry.EmbeddedSHA)
-		}
-	})
+	if _, err := os.Stat(filepath.Join(env.vaultPath, retiredLockRel)); !os.IsNotExist(err) {
+		t.Errorf("step 2: sync wrote %s (stat err=%v)", retiredLockRel, err)
+	}
 
 	// A first install onto a vault that ALREADY holds a Templates/ override —
-	// a hand-written wrap.md with no lock entry, decision-table case 6 — and a
+	// a hand-written wrap.md — and a
 	// .gitignore missing canonical lines. At 2581f4b init's Templates pass
 	// returned "received ActionPrompt ... orchestrator must resolve Prompt
 	// actions before Apply" and exited 2; runVP fails the test on any non-zero
@@ -183,7 +103,7 @@ func TestIntegrationTemplateMaterializeAndReconcile(t *testing.T) {
 				t.Errorf("first install wrote %s", wrap+side)
 			}
 		}
-		if _, err := os.Stat(filepath.Join(env.vaultPath, templates.LockRelPath)); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(env.vaultPath, retiredLockRel)); !os.IsNotExist(err) {
 			t.Errorf("first install created templates.lock (stat err=%v)", err)
 		}
 		if strings.Contains(out, "] Templates:") {
@@ -209,66 +129,31 @@ func TestIntegrationTemplateMaterializeAndReconcile(t *testing.T) {
 		}
 
 		// The override is still there for its real owner: `vp config sync`
-		// sees it and plans the diverged-override Prompt.
+		// sees it and keeps it — no prompt, no lock.
 		plan := runVP(t, bin, env, nil, "config", "sync", "--dry-run",
 			"--project-root", env.projectDir)
-		if !strings.Contains(plan, "Templates/commands/wrap.md diverged (no lock") {
+		if !strings.Contains(plan, "Templates/commands/wrap.md operator override of a built-in (kept)") {
 			t.Errorf("config sync --dry-run does not see the override:\n%s", plan)
-		}
-	})
-
-	t.Run("new", func(t *testing.T) {
-		env := setupFreshEnv(t)
-		runVP(t, bin, env, nil, "init", env.projectDir,
-			"--name", "tpl-new", "--vault-path", env.vaultPath, "--no-git")
-		wrap := filepath.Join(env.vaultPath, "Templates", "commands", "wrap.md")
-		seedTrackedOverride(t, env.vaultPath, "commands/wrap.md", []byte(userEdit), bogusSHA)
-
-		runVP(t, bin, env, []byte("n\n"),
-			"config", "sync", "--project-root", env.projectDir)
-
-		if got, _ := os.ReadFile(wrap); string(got) != userEdit {
-			t.Errorf("new: wrap.md must remain user's edit\n got  %q\n want %q",
-				got, userEdit)
-		}
-		sidecar, err := os.ReadFile(wrap + ".new")
-		if err != nil {
-			t.Fatalf("new: expected wrap.md.new, got err: %v", err)
-		}
-		if !bytes.Equal(sidecar, embWrap) {
-			t.Errorf("new: .new sidecar bytes != embedded defaults (len=%d vs %d)",
-				len(sidecar), len(embWrap))
-		}
-		if _, err := os.Stat(wrap + ".bak"); err == nil {
-			t.Error("new: must not write .bak")
 		}
 	})
 }
 
+// retiredLockRel is where vp binaries before the shipped-version manifest kept
+// the host-local templates.lock. No vp from this release reads or writes it.
+const retiredLockRel = ".vibe-palace/templates.lock"
+
 // seedTrackedOverride writes data to the vault Templates/ target for
-// embeddedRel and records a lock entry with baselineSHA as the embedded
-// baseline — reconstructing a tracked override under the override-only
-// model, where a fresh init leaves no mirror to edit.
-func seedTrackedOverride(t *testing.T, vaultPath, embeddedRel string, data []byte, baselineSHA string) {
+// embeddedRel: an operator's override under the override-only model, where a
+// fresh init leaves no mirror to edit. It plants the file only — provenance is
+// decided by the binary alone, and no host-local lock exists to record it.
+func seedTrackedOverride(t *testing.T, vaultPath, embeddedRel string, data []byte) {
 	t.Helper()
-	key := "Templates/" + embeddedRel
-	target := filepath.Join(vaultPath, filepath.FromSlash(key))
+	target := filepath.Join(vaultPath, "Templates", filepath.FromSlash(embeddedRel))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(target, data, 0o644); err != nil {
 		t.Fatalf("write override: %v", err)
-	}
-	lock, err := templates.ReadLock(vaultPath)
-	if err != nil {
-		t.Fatalf("ReadLock: %v", err)
-	}
-	if lock.Entries == nil {
-		lock.Entries = map[string]templates.LockEntry{}
-	}
-	lock.Entries[key] = templates.LockEntry{EmbeddedSHA: baselineSHA, WrittenAt: time.Now().UTC()}
-	if err := templates.WriteLock(vaultPath, lock); err != nil {
-		t.Fatalf("WriteLock: %v", err)
 	}
 }
 
@@ -281,12 +166,11 @@ func seedTrackedOverride(t *testing.T, vaultPath, embeddedRel string, data []byt
 func assertInitLeavesTemplatesUntouched(t *testing.T, env *testEnv) {
 	t.Helper()
 
-	// Stat, not ReadLock: ReadLock returns an empty lock for an absent file.
 	if _, err := os.Stat(filepath.Join(env.vaultPath, "Templates")); !os.IsNotExist(err) {
 		t.Errorf("init created <vault>/Templates (stat err=%v)", err)
 	}
-	if _, err := os.Stat(filepath.Join(env.vaultPath, templates.LockRelPath)); !os.IsNotExist(err) {
-		t.Errorf("init created %s (stat err=%v)", templates.LockRelPath, err)
+	if _, err := os.Stat(filepath.Join(env.vaultPath, retiredLockRel)); !os.IsNotExist(err) {
+		t.Errorf("init created %s (stat err=%v)", retiredLockRel, err)
 	}
 
 	resources, err := templates.WalkEmbedded()
@@ -303,16 +187,6 @@ func assertInitLeavesTemplatesUntouched(t *testing.T, env *testEnv) {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Errorf("override-only init should not materialize %s (err=%v)", r.RelPath, err)
 		}
-	}
-
-	// The lock is empty — no reconciler-owned mirror is tracked.
-	lock, err := templates.ReadLock(env.vaultPath)
-	if err != nil {
-		t.Fatalf("ReadLock: %v", err)
-	}
-	if len(lock.Entries) != 0 {
-		t.Errorf("templates.lock should be empty on a fresh override-only vault, got %d entries",
-			len(lock.Entries))
 	}
 
 	// .gitignore has *.bak and *.new canonical patterns.
@@ -405,18 +279,6 @@ func embeddedBytesFor(t *testing.T, relPath string) []byte {
 	}
 	t.Fatalf("no embedded resource %q", relPath)
 	return nil
-}
-
-// readLockEntry loads the lock sidecar and returns the entry for the
-// given vault-relative path. Absent entries return ok=false.
-func readLockEntry(t *testing.T, vaultRoot, key string) (templates.LockEntry, bool) {
-	t.Helper()
-	l, err := templates.ReadLock(vaultRoot)
-	if err != nil {
-		t.Fatalf("ReadLock: %v", err)
-	}
-	e, ok := l.Entries[key]
-	return e, ok
 }
 
 // runVP execs the built vp binary with stdin (optional) and the given

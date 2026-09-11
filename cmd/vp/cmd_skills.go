@@ -367,11 +367,14 @@ func runSkillsUpgrade(opts skillsUpgradeOpts) int {
 		return cli.ExitUser
 	}
 
-	overrides, unchanged, unneeded := 0, 0, 0
+	overrides, stale, unchanged, unneeded := 0, 0, 0, 0
 	for _, c := range plan {
 		switch c.Kind {
 		case commands.ChangeOverride:
 			overrides++
+		case commands.ChangeStale:
+			// vp's bytes pending a prune by vp config sync; not kept.
+			stale++
 		case commands.ChangeUnchanged:
 			unchanged++
 		case commands.ChangeUnneeded:
@@ -387,23 +390,36 @@ func runSkillsUpgrade(opts skillsUpgradeOpts) int {
 	if opts.DryRun {
 		printSkillsUpgradePlan(opts.Stdout, plan, opts.Granular)
 		fmt.Fprintf(opts.Stdout,
-			"\nSummary (dry run): %d override(s) kept, %d unchanged, %d unneeded.\n",
-			overrides, unchanged, unneeded)
+			"\nSummary (dry run): %d override(s) kept, %d stale cop(y/ies) pending a prune by vp config sync, %d unchanged, %d unneeded.\n",
+			overrides, stale, unchanged, unneeded)
 		return cli.ExitOK
 	}
 
 	printSkillKeepLines(opts.Stdout, plan, opts.Granular)
-	if overrides == 0 {
+	switch {
+	case overrides == 0 && stale == 0:
 		fmt.Fprintln(opts.Stdout, "No vault Templates/skills override of a built-in skill. Nothing to do.")
-		return cli.ExitOK
+	case overrides == 0:
+		fmt.Fprintf(opts.Stdout, "\nNo vault Templates/skills override of a built-in skill; %d stale cop(y/ies) of built-in skill files pending a prune by vp config sync. Nothing was written.\n", stale)
+	default:
+		fmt.Fprintf(opts.Stdout, "\nDone. %d override file(s) of built-in skills kept; nothing was written.\n", overrides)
+		if stale > 0 {
+			fmt.Fprintf(opts.Stdout, "%d stale cop(y/ies) of built-in skill files pending a prune by vp config sync.\n", stale)
+		}
 	}
-	fmt.Fprintf(opts.Stdout, "\nDone. %d override file(s) of built-in skills kept; nothing was written.\n", overrides)
 	return cli.ExitOK
 }
 
 // printSkillKeepLines prints the [keep] report: one line per skill with an
-// override, naming the files that differ, or one line per file when granular.
+// override, naming the files that differ, or one line per file when granular;
+// and one [stale] line per earlier shipped version of a built-in skill file,
+// which `vp config sync` prunes.
 func printSkillKeepLines(w io.Writer, plan []commands.Change, granular bool) {
+	for _, c := range plan {
+		if c.Kind == commands.ChangeStale {
+			fmt.Fprintln(w, staleLine("Templates/skills/"+c.Name))
+		}
+	}
 	if granular {
 		for _, c := range plan {
 			if c.Kind != commands.ChangeOverride {
@@ -479,6 +495,8 @@ func printPlanLine(w io.Writer, indent, label, skill string, c commands.Change) 
 	case commands.ChangeOverride:
 		fmt.Fprintf(w, "%soverride  %s  (vault %s, embedded %s; kept — vp skills reset %s removes it)\n",
 			indent, label, c.VaultHash, c.EmbeddedHash, skill)
+	case commands.ChangeStale:
+		fmt.Fprintf(w, "%s%s\n", indent, staleLine("Templates/skills/"+c.Name))
 	case commands.ChangeUnchanged:
 		fmt.Fprintf(w, "%sunchanged %s\n", indent, label)
 	case commands.ChangeUnneeded:

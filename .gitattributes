@@ -1,0 +1,4 @@
+# Template sources and the frozen shipped-version manifest stay LF on every
+# checkout, core.autocrlf=true included: the manifest's content hash is pinned
+# (TestShippedManifestIsFrozen), and every key is an LF digest.
+internal/templates/** text eol=lf

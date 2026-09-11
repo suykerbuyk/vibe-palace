@@ -16,27 +16,6 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
 
-// TestHashFile verifies the sha256 helper against known input.
-func TestHashFile(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "f")
-	if err := os.WriteFile(p, []byte("abc"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got, err := templates.HashFile(p)
-	if err != nil {
-		t.Fatalf("HashFile: %v", err)
-	}
-	// sha256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
-	want := "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-	if got != want {
-		t.Errorf("hash = %s, want %s", got, want)
-	}
-	if _, err := templates.HashFile(filepath.Join(dir, "nope")); !os.IsNotExist(err) {
-		t.Errorf("missing file err = %v, want IsNotExist", err)
-	}
-}
-
 // TestBackupNameIsContentAddressed pins the name: "<rel>.<sha12>.bak", with the
 // twelve hex characters checked against an independently computed digest, a
 // ".bak" suffix and no ':' (Windows-safe).

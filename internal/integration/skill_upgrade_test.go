@@ -64,8 +64,9 @@ func runVPWithTTY(t *testing.T, bin string, env *testEnv, stdin []byte, args ...
 // through the binary, with the interactive gate forced open. It is report-only:
 // it lists each vault override of a built-in skill as [keep], never prompts,
 // never consumes stdin, and writes nothing — the backup assertion it used to
-// carry now belongs to `vp skills reset` (template_reset_test.go). It never
-// reads or writes templates.lock; the lock belongs to `vp config sync`.
+// carry now belongs to `vp skills reset` (template_reset_test.go). It keeps no
+// host-local state: the retired templates.lock is read and written by no vp
+// from this release.
 func TestIntegrationSkillUpgrade(t *testing.T) {
 	bin := buildVPBinary(t)
 	env := setupFreshEnv(t)

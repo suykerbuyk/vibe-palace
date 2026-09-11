@@ -4,9 +4,13 @@
 // Package templates owns the compiled-in template corpus — the embedded
 // floor every command and skill resolves from when no override exists —
 // and the helpers the override-only vault reconcile is built on: corpus
-// enumeration and hashing, the templates.lock sidecar, the never-overwriting
+// enumeration and hashing, provenance (provenance.go: whether a vault copy is
+// the current embedded copy, an earlier shipped version from the frozen
+// shipped.txt manifest, or an operator's override), the never-overwriting
 // backup a template reset keeps (backup.go), and the per-project README stubs.
-// Nothing here writes embedded bytes into a vault's Templates/.
+// Nothing here writes embedded bytes into a vault's Templates/, and nothing
+// reads or writes host-local state: the retired .vibe-palace/templates.lock is
+// read by no vp from this release.
 package templates
 
 import (
@@ -85,20 +89,21 @@ func WalkEmbedded() ([]Resource, error) {
 }
 
 // realEmbeddedSHA is the production implementation backing the
-// EmbeddedSHA function variable. It returns the hex sha256 of the
-// embedded resource at relPath (no "templates/" prefix) or
-// ("", false) when no such resource exists.
+// EmbeddedSHA function variable. It returns the ProvenanceKey of the
+// embedded resource at relPath (no "templates/" prefix) or ("", false)
+// when no such resource exists. The embedded corpus holds no CR, so the key
+// equals the plain sha256 of every template today.
 func realEmbeddedSHA(relPath string) (string, bool) {
 	data, err := fs.ReadFile(defaultTemplates, path.Join(embeddedRoot, relPath))
 	if err != nil {
 		return "", false
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), true
+	return ProvenanceKey(data), true
 }
 
-// EmbeddedSHA looks up the hex sha256 of an embedded resource by its
-// root-relative path. Declared as a package-level function variable
-// so tests can override it (restore via defer) without rebuilding
+// EmbeddedSHA looks up the ProvenanceKey of an embedded resource by its
+// root-relative path: the key a vault copy must match to be the CURRENT
+// embedded copy (ClassifyVaultCopy). Declared as a package-level function
+// variable so tests can override it (restore via defer) without rebuilding
 // the binary — same convention as time.Now injection in the stdlib.
 var EmbeddedSHA func(relPath string) (string, bool) = realEmbeddedSHA

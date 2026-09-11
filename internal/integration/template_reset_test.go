@@ -50,7 +50,7 @@ func TestIntegrationTemplateResetViaBinary(t *testing.T) {
 	}
 	// gitVault turns an initialised vault into its own repository with an
 	// origin and production's canonical .gitignore — which is what keeps the
-	// backups (*.bak) and the lock sidecars out of `vp vault sync`'s way.
+	// reset's backups (*.bak) out of `vp vault sync`'s way.
 	gitVault := func(t *testing.T, env *testEnv) string {
 		putFile(t, env.vaultPath, ".gitignore", strings.Join(storage.CanonicalGitignorePatterns, "\n")+"\n")
 		return gitifyVaultWithOrigin(t, env.vaultPath)
@@ -175,8 +175,6 @@ func TestIntegrationTemplateResetViaBinary(t *testing.T) {
 		env := fresh(t)
 		putFile(t, env.vaultPath, "Templates/commands/wrap.md", "# my wrap override\n")
 		gitVault(t, env)
-		embSHA, _ := templates.EmbeddedSHA("commands/wrap.md")
-		seedTrackedOverride(t, env.vaultPath, "commands/wrap.md", []byte("# my wrap override\n"), embSHA)
 		if err := os.WriteFile(filepath.Join(env.vaultPath, ".git", "hooks", "pre-commit"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -198,8 +196,6 @@ func TestIntegrationTemplateResetViaBinary(t *testing.T) {
 		const mine = "# my wrap override\n"
 		putFile(t, env.vaultPath, "Templates/commands/wrap.md", mine)
 		gitVault(t, env)
-		embSHA, _ := templates.EmbeddedSHA("commands/wrap.md")
-		seedTrackedOverride(t, env.vaultPath, "commands/wrap.md", []byte(mine), embSHA)
 		runVP(t, bin, env, nil, "commands", "reset", "wrap")
 		head := gitIn(t, env.vaultPath, "rev-parse", "HEAD")
 		for i := 0; i < 2; i++ {

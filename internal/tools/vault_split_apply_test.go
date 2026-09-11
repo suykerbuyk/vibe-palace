@@ -356,6 +356,24 @@ func TestVaultSplitApply_DestinationTreesAreExactlyTheAllowList(t *testing.T) {
 			t.Errorf("destination holds %s, which was never in the allow-list", rel)
 		}
 	}
+
+	// The scaffold runs no Templates reconcile: no templates.lock (retired —
+	// no vp from this release reads or writes one), and no Templates/ tree.
+	// The canonical .gitignore is the Vault reconciler's Create.
+	for _, rel := range []string{".vibe-palace/templates.lock", "Templates"} {
+		if _, err := os.Stat(filepath.Join(dest, filepath.FromSlash(rel))); !os.IsNotExist(err) {
+			t.Errorf("destination holds %s (err=%v)", rel, err)
+		}
+	}
+	gi, err := os.ReadFile(filepath.Join(dest, ".gitignore"))
+	if err != nil {
+		t.Fatalf("destination .gitignore: %v", err)
+	}
+	for _, line := range []string{"*.bak", ".vp-locks/"} {
+		if !strings.Contains(string(gi), line+"\n") {
+			t.Errorf("destination .gitignore lacks the canonical %q:\n%s", line, gi)
+		}
+	}
 }
 
 // TestVaultSplitApply_CopiesTheManifestAndNothingElse pins the subtract set

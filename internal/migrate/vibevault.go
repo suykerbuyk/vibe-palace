@@ -336,8 +336,7 @@ func ImportVibeVault(
 // orchestration path for `<vault>/Projects/<slug>/config.toml`; migrate
 // no longer calls storage.WriteVaultProjectConfig directly.
 //
-// The reconciler's Plan does not currently emit ActionPrompt for this
-// tier, so migrate runs non-interactively with no ActionPrompt callback.
+// No reconciler prompts; migrate runs non-interactively.
 // Returns the first error encountered in Apply's Report, if any.
 func reconcileVaultProject(ctx context.Context, vault *storage.Vault, projSlug string) error {
 	r := reconcile.NewVaultProject(vault, projSlug)

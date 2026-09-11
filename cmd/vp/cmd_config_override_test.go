@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"os"
 	"path/filepath"
@@ -14,10 +13,8 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
-	"github.com/suykerbuyk/vibe-palace/internal/reconcile"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
-	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
 
 // `vp config sync` must never lose an operator's vault Templates/ override.
@@ -98,8 +95,9 @@ func syncVault(t *testing.T, projDir, stdin string, extra ...string) string {
 }
 
 // TestConfigSyncYesTwiceKeepsOverride is the filed chain without git: two
-// --yes syncs over lock-less overrides of a command and of a root-level
-// resource. --yes used to answer every diverged-override Prompt "overwrite".
+// --yes syncs over overrides of a command and of a root-level resource. --yes
+// used to answer every diverged-override Prompt "overwrite"; there is no
+// prompt now, and each override plans an Unchanged keep row.
 func TestConfigSyncYesTwiceKeepsOverride(t *testing.T) {
 	vaultPath, projDir := overrideVault(t)
 	wrap := putVaultFile(t, vaultPath, "Templates/commands/wrap.md", myWrap)
@@ -111,8 +109,11 @@ func TestConfigSyncYesTwiceKeepsOverride(t *testing.T) {
 			t.Errorf("sync %d touched a template:\n%s", i, out)
 		}
 		for _, rel := range []string{"Templates/commands/wrap.md", "Templates/workflow.md"} {
-			if !strings.Contains(out, "[keep] "+rel+" — ") {
-				t.Errorf("sync %d printed no [keep] line for %s:\n%s", i, rel, out)
+			if !strings.Contains(out, "[Unchanged] TemplateTree:Templates: "+rel+" operator override of a built-in (kept)") {
+				t.Errorf("sync %d printed no keep row for %s:\n%s", i, rel, out)
+			}
+			if strings.Contains(out, "[Prompt]") || strings.Contains(out, "[keep]") {
+				t.Errorf("sync %d prompted or resolved a prompt:\n%s", i, out)
 			}
 		}
 	}
@@ -120,33 +121,6 @@ func TestConfigSyncYesTwiceKeepsOverride(t *testing.T) {
 	assertFileBytes(t, workflow, myWorkflow)
 	assertNoSidecars(t, wrap)
 	assertNoSidecars(t, workflow)
-}
-
-// TestConfigSyncOAnswerIsNotAccepted replaces the old overwrite test: `o` is
-// no longer an answer. The menu re-prompts, EOF then means keep, and the
-// diverged override is untouched.
-func TestConfigSyncOAnswerIsNotAccepted(t *testing.T) {
-	vaultPath, target, userEdit := syncPromptSetup(t, "commands/wrap.md")
-	before, _ := templates.ReadLock(vaultPath)
-
-	out, code := runSyncWithStdin(t, "o\n", []string{
-		"--project-root", filepath.Dir(target), "--tier", "vault",
-	})
-	if code != cli.ExitOK {
-		t.Fatalf("exit code = %d\n%s", code, out)
-	}
-	if !strings.Contains(out, "Please answer s, n, S, N, or q.") {
-		t.Errorf("o was not rejected:\n%s", out)
-	}
-	if !strings.Contains(out, "[keep] Templates/commands/wrap.md — ") {
-		t.Errorf("EOF after the rejected o did not keep the file:\n%s", out)
-	}
-	assertFileBytes(t, target, userEdit)
-	assertNoSidecars(t, target)
-	after, _ := templates.ReadLock(vaultPath)
-	if after.Entries["Templates/commands/wrap.md"] != before.Entries["Templates/commands/wrap.md"] {
-		t.Error("the lock entry for the kept override changed")
-	}
 }
 
 // TestConfigSyncKeepsOverrideOnGitVaultWithRemote: the same two --yes syncs
@@ -173,16 +147,12 @@ func TestConfigSyncKeepsOverrideOnGitVaultWithRemote(t *testing.T) {
 	assertFileBytes(t, filepath.Join(hostB, "Templates", "workflow.md"), myWorkflow)
 }
 
-// seedCommittedOverrideUnderMirror commits an override of embeddedRel, then
-// puts the embedded bytes in the worktree with a lock entry at the embedded
-// SHA: the state an old binary's `o`/--yes sync, or an upgrade reset, leaves.
+// seedCommittedOverrideUnderMirror puts the embedded bytes in the worktree
+// over a committed override of embeddedRel: the state an old binary's
+// `o`/--yes sync, or an upgrade reset, leaves.
 func seedCommittedOverrideUnderMirror(t *testing.T, vaultPath, embeddedRel string) {
 	t.Helper()
-	sha, ok := templates.EmbeddedSHA(embeddedRel)
-	if !ok {
-		t.Fatalf("no embedded %s", embeddedRel)
-	}
-	seedTemplateOverride(t, vaultPath, embeddedRel, embeddedTemplateBytes(t, embeddedRel), sha)
+	seedTemplateOverride(t, vaultPath, embeddedRel, embeddedTemplateBytes(t, embeddedRel))
 }
 
 // TestConfigSyncRestoresCommittedOverrideFromHEAD is the answerless path: no
@@ -209,12 +179,10 @@ func TestConfigSyncRestoresCommittedOverrideFromHEAD(t *testing.T) {
 	if st := gitInVault(t, vaultPath, "status", "--porcelain", "--", "Templates/"); strings.TrimSpace(st) != "" {
 		t.Errorf("Templates/ is dirty after the restore: %q", st)
 	}
-	// The restored override keeps its lock entry, so the next sync keeps it
-	// silently (case 4) instead of prompting on every run.
-	if l, _ := templates.ReadLock(vaultPath); l.Entries["Templates/commands/wrap.md"].EmbeddedSHA == "" {
-		t.Error("the restored override lost its lock entry")
-	}
-	if again := syncVault(t, projDir, ""); strings.Contains(again, "Prompt") || !strings.Contains(again, "Nothing to do") {
+	// The restored override is operator content by its bytes alone, so the
+	// next sync keeps it silently instead of prompting on every run.
+	if again := syncVault(t, projDir, ""); strings.Contains(again, "restored") || strings.Contains(again, "[Delete]") ||
+		!strings.Contains(again, "[Unchanged] TemplateTree:Templates: Templates/commands/wrap.md operator override of a built-in (kept)") {
 		t.Errorf("the restored override is not a silent keep on the next sync:\n%s", again)
 	}
 	if got := strings.TrimSpace(gitInVault(t, vaultPath, "rev-parse", "HEAD")); got != head {
@@ -223,18 +191,14 @@ func TestConfigSyncRestoresCommittedOverrideFromHEAD(t *testing.T) {
 	if got := strings.TrimSpace(gitInVault(t, origin, "rev-parse", "main")); got != head {
 		t.Errorf("origin tip moved to %s", got)
 	}
-	// The dirt a vault sync would refuse on holds no Templates/ path. (The
-	// host-local templates.lock is still untracked dirt on a canonically
-	// configured vault — recorded in template-provenance-manifest-retires-
-	// the-host-local-lock — so the assertion is scoped to Templates/.)
+	// Nothing a vault sync would refuse on: no Templates/ path, and no
+	// host-local templates.lock (no vp from this release writes one).
 	scan, err := storage.TidyScan(vaultPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range scan.GenuineDirt() {
-		if strings.HasPrefix(p, "Templates/") {
-			t.Errorf("vault sync would refuse on %s", p)
-		}
+	if dirt := scan.GenuineDirt(); len(dirt) != 0 {
+		t.Errorf("vault sync would refuse on %v", dirt)
 	}
 }
 
@@ -289,6 +253,9 @@ func TestConfigSyncPruneCommitsOnlyVerifiedMirrors(t *testing.T) {
 	}
 	if strings.Contains(msg, "restart.md") {
 		t.Errorf("message lists the restored path:\n%s", msg)
+	}
+	if strings.Contains(msg, "templates.lock") {
+		t.Errorf("message still cites a lock baseline:\n%s", msg)
 	}
 	if strings.Contains(msg, "Tier 4 override") {
 		t.Errorf("message still asserts the old unconditional claim:\n%s", msg)
@@ -376,9 +343,9 @@ func TestConfigSyncVerifiesPruneOnLinkedWorktreeVault(t *testing.T) {
 }
 
 // runSyncAnsweringPrompt runs runConfigSync with stdin and stdout on pipes. The
-// moment the Templates prompt appears on stdout, onPrompt runs and then answer
-// is written to stdin — so onPrompt acts in exactly the window between Plan
-// and Apply that a real operator's hesitation opens.
+// moment a reconciler's accept/skip prompt appears on stdout, onPrompt runs and
+// then answer is written to stdin — so onPrompt acts in exactly the window
+// between Plan and Apply that a real operator's hesitation opens.
 func runSyncAnsweringPrompt(t *testing.T, args []string, onPrompt func(), answer string) (string, int) {
 	t.Helper()
 	inR, inW, err := os.Pipe()
@@ -431,15 +398,21 @@ func runSyncAnsweringPrompt(t *testing.T, args []string, onPrompt func(), answer
 }
 
 // TestConfigSyncEditWhilePromptWaitsIsKept: a mirror planned for a prune is
-// edited while the sync waits on another file's prompt. The prune re-hashes
-// before it removes, so the edit is kept. Before, it was removed and survived
-// only in the prune's .bak — which this change deletes, so without the
-// re-hash the edit would be lost outright.
+// edited while the sync waits on another reconciler's prompt — the Vault
+// reconciler's .gitignore top-up, the one prompt left in a vault-tier sync.
+// The prune re-reads and re-checks the file before it removes it (and removes
+// through a compare-and-set), so the edit is kept. There is no prune .bak, so
+// without the re-check the edit would be lost outright.
 func TestConfigSyncEditWhilePromptWaitsIsKept(t *testing.T) {
 	vaultPath, projDir := overrideVault(t)
-	sha, _ := templates.EmbeddedSHA("commands/wrap.md")
-	seedTemplateOverride(t, vaultPath, "commands/wrap.md", embeddedTemplateBytes(t, "commands/wrap.md"), sha)
-	putVaultFile(t, vaultPath, "Templates/commands/restart.md", "# my restart override\n")
+	var lines []string
+	for _, l := range storage.CanonicalGitignorePatterns {
+		if l != ".vp-fs-probe-*" {
+			lines = append(lines, l)
+		}
+	}
+	putVaultFile(t, vaultPath, ".gitignore", strings.Join(lines, "\n")+"\n")
+	seedTemplateOverride(t, vaultPath, "commands/wrap.md", embeddedTemplateBytes(t, "commands/wrap.md"))
 	wrap := filepath.Join(vaultPath, "Templates", "commands", "wrap.md")
 	const edit = "# operator edit made while the prompt waited\n"
 
@@ -448,9 +421,12 @@ func TestConfigSyncEditWhilePromptWaitsIsKept(t *testing.T) {
 			if err := os.WriteFile(wrap, []byte(edit), 0o644); err != nil {
 				t.Error(err)
 			}
-		}, "s\n")
+		}, "a\n")
 	if code != cli.ExitOK {
 		t.Fatalf("exit=%d\n%s", code, out)
+	}
+	if !strings.Contains(out, "top up vault .gitignore") {
+		t.Fatalf("fixture: the Vault reconciler did not prompt for the .gitignore top-up:\n%s", out)
 	}
 	if !strings.Contains(out, "Templates/commands/wrap.md changed since plan; kept") {
 		t.Errorf("no changed-since-plan line:\n%s", out)
@@ -549,7 +525,7 @@ func isolateGitIdentity(t *testing.T, vaultPath string) {
 
 // TestConfigSyncGitFailureRemovesNothing is review H1: a git failure used to
 // strike after the prune had removed the file, leaving a committed override
-// deleted with its lock entry gone. Now nothing is removed until git has
+// deleted with nothing telling anyone. Now nothing is removed until git has
 // answered, a committed override is restored in place, and a mirror whose
 // removal cannot be committed is kept — with a non-zero exit either way.
 func TestConfigSyncGitFailureRemovesNothing(t *testing.T) {
@@ -569,8 +545,6 @@ func TestConfigSyncGitFailureRemovesNothing(t *testing.T) {
 			vaultPath, projDir := overrideVault(t)
 			putVaultFile(t, vaultPath, "Templates/commands/wrap.md", string(embeddedTemplateBytes(t, "commands/wrap.md")))
 			gitifyVault(t, vaultPath)
-			sha, _ := templates.EmbeddedSHA("commands/wrap.md")
-			seedTemplateOverride(t, vaultPath, "commands/wrap.md", embeddedTemplateBytes(t, "commands/wrap.md"), sha)
 			wrap := filepath.Join(vaultPath, "Templates", "commands", "wrap.md")
 			tc.breakGit(t, vaultPath)
 
@@ -591,9 +565,6 @@ func TestConfigSyncGitFailureRemovesNothing(t *testing.T) {
 			if _, err := os.Stat(wrap); err != nil {
 				t.Errorf("the file was removed: %v", err)
 			}
-			if l, _ := templates.ReadLock(vaultPath); l.Entries["Templates/commands/wrap.md"].EmbeddedSHA == "" {
-				t.Error("the lock entry was dropped although nothing was pruned")
-			}
 		})
 	}
 }
@@ -607,8 +578,6 @@ func TestConfigSyncRemoteOverrideBlocksPrune(t *testing.T) {
 	vaultPath, projDir := overrideVault(t)
 	putVaultFile(t, vaultPath, "Templates/commands/wrap.md", string(embeddedTemplateBytes(t, "commands/wrap.md")))
 	origin := gitifyVault(t, vaultPath)
-	sha, _ := templates.EmbeddedSHA("commands/wrap.md")
-	seedTemplateOverride(t, vaultPath, "commands/wrap.md", embeddedTemplateBytes(t, "commands/wrap.md"), sha)
 	head := strings.TrimSpace(gitInVault(t, vaultPath, "rev-parse", "HEAD"))
 
 	hostB := cloneVault(t, origin)
@@ -641,8 +610,6 @@ func TestConfigSyncRejectedPushIsReported(t *testing.T) {
 	vaultPath, projDir := overrideVault(t)
 	putVaultFile(t, vaultPath, "Templates/commands/wrap.md", string(embeddedTemplateBytes(t, "commands/wrap.md")))
 	origin := gitifyVault(t, vaultPath)
-	sha, _ := templates.EmbeddedSHA("commands/wrap.md")
-	seedTemplateOverride(t, vaultPath, "commands/wrap.md", embeddedTemplateBytes(t, "commands/wrap.md"), sha)
 	if err := os.WriteFile(filepath.Join(origin, "hooks", "pre-receive"), []byte("#!/bin/sh\necho refused >&2\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -660,15 +627,15 @@ func TestConfigSyncRejectedPushIsReported(t *testing.T) {
 	}
 }
 
-// TestConfigSyncRetriesAnUncommittedPrune is case 1b end to end: a mirror whose
-// removal was never committed (the entry is kept for exactly this) has its
-// removal committed by the next sync, rather than being forgotten.
+// TestConfigSyncRetriesAnUncommittedPrune: a mirror whose removal was never
+// committed (a stage or commit failure, a reset whose commit failed) is left
+// " D" in the worktree. No host-local lock remembers it; the next sync lists
+// it (storage.UncommittedRemovals), sees that the committed copy is vp's, and
+// commits the removal — saying in the message that it found it pending.
 func TestConfigSyncRetriesAnUncommittedPrune(t *testing.T) {
 	vaultPath, projDir := overrideVault(t)
 	wrap := putVaultFile(t, vaultPath, "Templates/commands/wrap.md", string(embeddedTemplateBytes(t, "commands/wrap.md")))
 	gitifyVault(t, vaultPath)
-	sha, _ := templates.EmbeddedSHA("commands/wrap.md")
-	seedTemplateOverride(t, vaultPath, "commands/wrap.md", embeddedTemplateBytes(t, "commands/wrap.md"), sha)
 	if err := os.Remove(wrap); err != nil {
 		t.Fatal(err)
 	}
@@ -676,11 +643,19 @@ func TestConfigSyncRetriesAnUncommittedPrune(t *testing.T) {
 	if names := strings.TrimSpace(gitInVault(t, vaultPath, "show", "--name-status", "--format=", "HEAD")); names != "D\tTemplates/commands/wrap.md" {
 		t.Errorf("the pending removal was not committed (%q):\n%s", names, out)
 	}
+	if !strings.Contains(out, "prune Templates/commands/wrap.md (removed from the worktree before this sync and not committed; the committed copy is the current embedded copy)") {
+		t.Errorf("no pending-removal row:\n%s", out)
+	}
 	if !strings.Contains(out, "pruned=0") {
 		t.Errorf("an already-removed file was counted as pruned:\n%s", out)
 	}
-	if l, _ := templates.ReadLock(vaultPath); l.Entries["Templates/commands/wrap.md"].EmbeddedSHA != "" {
-		t.Error("the entry survived a committed removal")
+	msg := gitInVault(t, vaultPath, "log", "-1", "--format=%B")
+	if !strings.Contains(msg, "vp found these removals already pending in the worktree") ||
+		!strings.Contains(msg, "- Templates/commands/wrap.md (current embedded copy)") {
+		t.Errorf("the commit does not say it found the removal pending:\n%s", msg)
+	}
+	if st := strings.TrimSpace(gitInVault(t, vaultPath, "status", "--porcelain", "--", "Templates/")); st != "" {
+		t.Errorf("Templates/ is dirty: %q", st)
 	}
 }
 
@@ -748,12 +723,15 @@ func TestConfigSyncNeverWritesAnEnclosingRepo(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = os.Chdir(cwd) })
-			sha, _ := templates.EmbeddedSHA("commands/wrap.md")
-			seedTemplateOverride(t, vaultPath, "commands/wrap.md", []byte(emb), sha)
+			seedTemplateOverride(t, vaultPath, "commands/wrap.md", []byte(emb))
 			if tracked {
-				rsha, _ := templates.EmbeddedSHA("commands/restart.md")
-				seedTemplateOverride(t, vaultPath, "commands/restart.md", embeddedTemplateBytes(t, "commands/restart.md"), rsha)
+				seedTemplateOverride(t, vaultPath, "commands/restart.md", embeddedTemplateBytes(t, "commands/restart.md"))
 			}
+			// A leftover templates.lock, untracked and not ignored by the
+			// enclosing repository in the tracked shape: the retired-lock
+			// removal runs only on a vault that is its own repository, so it
+			// is left here.
+			lock := putVaultFile(t, vaultPath, ".vibe-palace/templates.lock", "[entries]\n")
 
 			state := func() string {
 				return strings.Join([]string{
@@ -771,6 +749,10 @@ func TestConfigSyncNeverWritesAnEnclosingRepo(t *testing.T) {
 
 			if after := state(); after != before {
 				t.Errorf("the enclosing repository changed:\n--- before\n%s\n--- after\n%s\n--- sync\n%s", before, after, out)
+			}
+			assertFileBytes(t, lock, "[entries]\n")
+			if strings.Contains(out, "retired") {
+				t.Errorf("a nested vault's templates.lock was planned for removal:\n%s", out)
 			}
 			wrap := filepath.Join(vaultPath, "Templates", "commands", "wrap.md")
 			restart := filepath.Join(vaultPath, "Templates", "commands", "restart.md")
@@ -800,8 +782,6 @@ func TestConfigSyncCommitFailureSelfHeals(t *testing.T) {
 	vaultPath, projDir := overrideVault(t)
 	putVaultFile(t, vaultPath, "Templates/commands/wrap.md", string(embeddedTemplateBytes(t, "commands/wrap.md")))
 	gitifyVault(t, vaultPath)
-	sha, _ := templates.EmbeddedSHA("commands/wrap.md")
-	seedTemplateOverride(t, vaultPath, "commands/wrap.md", embeddedTemplateBytes(t, "commands/wrap.md"), sha)
 	hook := filepath.Join(vaultPath, ".git", "hooks", "pre-commit")
 	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -822,6 +802,7 @@ func TestConfigSyncCommitFailureSelfHeals(t *testing.T) {
 	if err := os.Remove(hook); err != nil {
 		t.Fatal(err)
 	}
+	// The failed prune left " D": the next sync finds it pending and commits it.
 	syncVault(t, projDir, "", "--yes")
 	if names := strings.TrimSpace(gitInVault(t, vaultPath, "show", "--name-status", "--format=", "HEAD")); names != "D\tTemplates/commands/wrap.md" {
 		t.Errorf("the next sync did not commit the removal: %q", names)
@@ -836,8 +817,6 @@ func TestConfigSyncUnreachableRemoteDefersPrune(t *testing.T) {
 	vaultPath, projDir := overrideVault(t)
 	putVaultFile(t, vaultPath, "Templates/commands/wrap.md", string(embeddedTemplateBytes(t, "commands/wrap.md")))
 	gitifyVault(t, vaultPath)
-	sha, _ := templates.EmbeddedSHA("commands/wrap.md")
-	seedTemplateOverride(t, vaultPath, "commands/wrap.md", embeddedTemplateBytes(t, "commands/wrap.md"), sha)
 	gitInVault(t, vaultPath, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "offline.git"))
 	head := strings.TrimSpace(gitInVault(t, vaultPath, "rev-parse", "HEAD"))
 
@@ -860,52 +839,14 @@ func TestConfigSyncUnreachableRemoteDefersPrune(t *testing.T) {
 	}
 }
 
-// TestResolveTemplatePromptsEdges covers the resolver's non-happy paths: q
-// aborts, an uppercase N writes a .new for every remaining Prompt, and a
-// Prompt missing its embedded relpath (or naming no resource) is skipped
-// without writing anything.
-func TestResolveTemplatePromptsEdges(t *testing.T) {
+// TestVaultRelOfOutsideTheVault: a path outside the vault, or no vault, is
+// rendered as given.
+func TestVaultRelOfOutsideTheVault(t *testing.T) {
 	dir := t.TempDir()
-	tt := reconcile.NewTemplateTree(dir, "Templates", reconcile.TemplateTreeSeed{Mode: reconcile.TemplateModeMaterialize})
-	prompt := func(name string, details ...string) reconcile.Action {
-		return reconcile.Action{Kind: reconcile.ActionPrompt, Target: filepath.Join(dir, "Templates", name), Summary: "Templates/" + name + " diverged", Details: details}
-	}
-	var w bytes.Buffer
-	batch := ""
-	if _, abort := resolveTemplatePrompts(tt, []reconcile.Action{prompt("a.md")}, bufio.NewReader(strings.NewReader("q\n")), &batch, dir, &w); !abort {
-		t.Error("q did not abort")
-	}
-
-	batch = ""
-	actions := []reconcile.Action{
-		prompt("commands/wrap.md", "embedded_relpath=commands/wrap.md"),
-		prompt("commands/restart.md", "embedded_relpath=commands/restart.md"),
-		prompt("commands/none.md"),
-		prompt("commands/ghost.md", "embedded_relpath=commands/no-such-template.md"),
-		{Kind: reconcile.ActionUnchanged, Target: "x"},
-	}
-	var errOut string
-	var resolved []reconcile.Action
-	errOut = captureStderr(t, func() {
-		resolved, _ = resolveTemplatePrompts(tt, actions, bufio.NewReader(strings.NewReader("N\n")), &batch, dir, &w)
-	})
-	if len(resolved) != 1 || batch != "n" {
-		t.Errorf("resolved=%v batch=%q", resolved, batch)
-	}
-	for _, name := range []string{"wrap.md", "restart.md"} {
-		if _, err := os.Stat(filepath.Join(dir, "Templates", "commands", name+".new")); err != nil {
-			t.Errorf("N did not write %s.new: %v", name, err)
-		}
-	}
-	for _, name := range []string{"none.md", "ghost.md"} {
-		if _, err := os.Stat(filepath.Join(dir, "Templates", "commands", name+".new")); err == nil {
-			t.Errorf("wrote a sidecar for %s", name)
-		}
-	}
-	if !strings.Contains(errOut, "missing embedded_relpath") || !strings.Contains(errOut, "no embedded resource") {
-		t.Errorf("stderr = %q", errOut)
-	}
 	if vaultRelOf(dir, "/elsewhere/x.md") != "/elsewhere/x.md" || vaultRelOf("", "y") != "y" {
 		t.Error("vaultRelOf rewrote a path outside the vault")
+	}
+	if got := vaultRelOf(dir, filepath.Join(dir, "Templates", "a.md")); got != "Templates/a.md" {
+		t.Errorf("vaultRelOf = %q", got)
 	}
 }

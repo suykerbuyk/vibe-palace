@@ -250,10 +250,15 @@ func runTemplateReset(opts templateResetOpts) int {
 	for _, o := range outcomes {
 		switch {
 		case o.Removed:
-			fmt.Fprintf(opts.Stdout, "reset %s: removed your override; the built-in now serves it (%s)%s\n",
-				o.Rel, resetBackupPhrase(o), higherTierNote(resolver, opts.ResourceType, o.Name, slug))
+			what := "removed your override"
+			if o.Mirror {
+				what = "removed it" // vp-shipped bytes, not an override
+			}
+			fmt.Fprintf(opts.Stdout, "reset %s: %s; the built-in now serves it (%s)%s\n",
+				o.Rel, what, resetBackupPhrase(o), higherTierNote(resolver, opts.ResourceType, o.Name, slug))
 			if plan.tracked[o.Rel] {
-				committable = append(committable, resetCommitEntry{Rel: o.Rel, Backup: o.Backup, Mirror: o.Mirror})
+				committable = append(committable, resetCommitEntry{Rel: o.Rel, Backup: o.Backup, Mirror: o.Mirror,
+					Provenance: o.Provenance, LineEndings: o.LineEndings})
 			}
 		case o.AlreadyGone:
 			fmt.Fprintf(opts.Stdout, "reset %s: already gone; nothing was removed\n", o.Rel)
@@ -457,11 +462,26 @@ func removedAny(outcomes []commands.ResetOutcome) bool {
 func resetBackupPhrase(o commands.ResetOutcome) string {
 	switch {
 	case o.Mirror:
-		return "identical to the built-in; no backup needed"
+		return shippedPhrase(o.Rel, o.Provenance, o.LineEndings)
 	case o.BackupReused:
 		return "backup: " + o.Backup + ", which already held these bytes"
 	default:
 		return "backup: " + o.Backup
+	}
+}
+
+// shippedPhrase says what vp-shipped bytes a reset removed without a backup:
+// the built-in itself, or an earlier shipped version of it, which is
+// recoverable from vibe-palace's history.
+func shippedPhrase(rel string, prov templates.Provenance, lineEndings bool) string {
+	switch {
+	case prov == templates.ProvenanceEarlier:
+		return "a copy of an earlier shipped version of " + strings.TrimPrefix(rel, "Templates/") +
+			"; no backup needed — recoverable from vibe-palace history"
+	case lineEndings:
+		return "identical, line endings aside, to the built-in; no backup needed"
+	default:
+		return "identical to the built-in; no backup needed"
 	}
 }
 
@@ -548,12 +568,19 @@ func printExtraSkillFiles(w io.Writer, resolver *vpctx.Resolver, vaultRoot, reso
 }
 
 // printResetDryRun prints, for each file a reset would remove, its diff (vault
-// → embedded) and the exact backup name it would get. It writes nothing.
+// → embedded) and the exact backup name it would get — or, for vp-shipped
+// bytes (a mirror, an earlier shipped version), that it needs no backup,
+// exactly as the real run decides. It writes nothing.
 func printResetDryRun(w io.Writer, changes []commands.Change) {
 	for _, c := range changes {
 		rel := vaultRel(c.VaultRoot, c.VaultPath)
-		if c.Kind == commands.ChangeUnchanged {
-			fmt.Fprintf(w, "would reset %s: remove it (identical to the built-in; no backup needed)\n", rel)
+		switch c.Kind {
+		case commands.ChangeUnchanged:
+			fmt.Fprintf(w, "would reset %s: remove it (%s)\n", rel,
+				shippedPhrase(rel, templates.ProvenanceCurrent, c.VaultContent != c.EmbeddedContent))
+			continue
+		case commands.ChangeStale:
+			fmt.Fprintf(w, "would reset %s: remove it (%s)\n", rel, shippedPhrase(rel, templates.ProvenanceEarlier, false))
 			continue
 		}
 		fmt.Fprintf(w, "would reset %s: remove it; backup: %s\n", rel, templates.BackupName(rel, []byte(c.VaultContent)))
@@ -565,7 +592,11 @@ func printResetDryRun(w io.Writer, changes []commands.Change) {
 type resetCommitEntry struct {
 	Rel    string
 	Backup string
-	Mirror bool
+	// Mirror: vp-shipped bytes, removed with no backup; Provenance and
+	// LineEndings say which (see commands.ResetOutcome).
+	Mirror      bool
+	Provenance  templates.Provenance
+	LineEndings bool
 	// Pending: removed from the worktree by an earlier run whose commit did
 	// not land; this run only commits it. Backups names the content-named
 	// backups found beside it, which that earlier run may have written.
@@ -636,8 +667,23 @@ func templateResetCommitMessage(invocation string, entries []resetCommitEntry, h
 	fmt.Fprintf(&b, "chore(templates): operator reset of %d vault Templates/ file(s)\n\n", len(entries))
 	fmt.Fprintf(&b, "`%s` removed these vault Templates/ files at the operator's request,\n", invocation)
 	b.WriteString("so the embedded built-in serves each again. vp removed only the files\n")
-	b.WriteString("named. The committed copy of each is in this commit's parent; the\n")
-	fmt.Fprintf(&b, "working-tree bytes at reset time are in the backup named beside it, on\nhost %s.\n\n", host)
+	var backedUp, shipped bool
+	for _, e := range entries {
+		backedUp = backedUp || e.Backup != "" || len(e.Backups) > 0
+		shipped = shipped || (e.Mirror && !e.Pending)
+	}
+	if backedUp {
+		b.WriteString("named. The committed copy of each is in this commit's parent; the\n")
+		fmt.Fprintf(&b, "working-tree bytes at reset time are in the backup named beside it, on\nhost %s.\n", host)
+	} else {
+		fmt.Fprintf(&b, "named, on host %s. The committed copy of each is in this commit's parent.\n", host)
+	}
+	if shipped {
+		b.WriteString("A file whose line says \"no backup needed\" held vp-shipped bytes — the\n")
+		b.WriteString("built-in's, or an earlier shipped version's, recoverable from the binary\n")
+		b.WriteString("or from vibe-palace's history — so none was written.\n")
+	}
+	b.WriteString("\n")
 	for _, e := range entries {
 		switch {
 		case e.Pending && len(e.Backups) > 0:
@@ -645,7 +691,7 @@ func templateResetCommitMessage(invocation string, entries []resetCommitEntry, h
 		case e.Pending:
 			fmt.Fprintf(&b, "- %s (removed earlier and left uncommitted; no backup of it is on this host)\n", e.Rel)
 		case e.Mirror:
-			fmt.Fprintf(&b, "- %s (identical to the built-in; no backup needed)\n", e.Rel)
+			fmt.Fprintf(&b, "- %s (%s)\n", e.Rel, shippedPhrase(e.Rel, e.Provenance, e.LineEndings))
 		default:
 			fmt.Fprintf(&b, "- %s (backup: %s)\n", e.Rel, e.Backup)
 		}

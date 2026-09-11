@@ -11,20 +11,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/suykerbuyk/vibe-palace/internal/check"
 	vpcontext "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
 
-// seedOverride writes data to the vault target for embeddedRel and plants a
-// templates.lock entry recording baselineSHA as the embedded baseline. It
-// simulates a vault that already tracks a resource — either a genuine user
-// override (data differs from baselineSHA's bytes) or a legacy
-// reconciler-owned mirror (data hashes to baselineSHA). Returns the absolute
-// target path and the vault-relative lock key.
-func seedOverride(t *testing.T, root, embeddedRel string, data []byte, baselineSHA string) (target, key string) {
+// seedOverride writes data to the vault Templates/ target for embeddedRel and
+// nothing else: no host-local state records anything about it. Returns the
+// absolute target path and the vault-relative key.
+func seedOverride(t *testing.T, root, embeddedRel string, data []byte) (target, key string) {
 	t.Helper()
 	key = "Templates/" + embeddedRel
 	target = filepath.Join(root, filepath.FromSlash(key))
@@ -34,42 +29,32 @@ func seedOverride(t *testing.T, root, embeddedRel string, data []byte, baselineS
 	if err := os.WriteFile(target, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	lock, err := templates.ReadLock(root)
-	if err != nil {
-		t.Fatalf("ReadLock: %v", err)
-	}
-	if lock.Entries == nil {
-		lock.Entries = map[string]templates.LockEntry{}
-	}
-	lock.Entries[key] = templates.LockEntry{EmbeddedSHA: baselineSHA, WrittenAt: time.Now().UTC()}
-	if err := templates.WriteLock(root, lock); err != nil {
-		t.Fatalf("WriteLock: %v", err)
-	}
 	return target, key
 }
 
-// embeddedSHAFor returns the current embedded SHA for a templates-root
-// relative path, honoring any test override of templates.EmbeddedSHA.
-func embeddedSHAFor(t *testing.T, embeddedRel string) string {
+// earlierRestart is the committed earlier-version fixture: the version of
+// commands/restart.md just before its current one (templates package,
+// TestEarlierFixtureIsAShippedVersion pins it).
+func earlierRestart(t *testing.T) []byte {
 	t.Helper()
-	sha, ok := templates.EmbeddedSHA(embeddedRel)
-	if !ok {
-		t.Fatalf("no embedded SHA for %q", embeddedRel)
+	b, err := os.ReadFile(filepath.Join("..", "templates", "testdata", "earlier", "commands", "restart.md"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	return sha
+	return b
+}
+
+// assertNoLock fails if the retired templates.lock exists under root.
+func assertNoLock(t *testing.T, root string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(root, ".vibe-palace", "templates.lock")); !os.IsNotExist(err) {
+		t.Errorf("a templates.lock was written (err=%v)", err)
+	}
 }
 
 func shaBytes(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
-}
-
-// restoreEmbeddedSHA returns a cleanup func that restores the original
-// templates.EmbeddedSHA after a test override.
-func restoreEmbeddedSHA(t *testing.T) func() {
-	t.Helper()
-	orig := templates.EmbeddedSHA
-	return func() { templates.EmbeddedSHA = orig }
 }
 
 // findAction returns the first Action whose Target has the given suffix.
@@ -104,8 +89,7 @@ func TestTemplateTree_Metadata(t *testing.T) {
 // contract: a fresh vault gets NO Templates/ mirror — the embedded floor
 // serves every resource directly over MCP. Plan must emit only "served from
 // embedded floor" (ActionUnchanged) rows, Apply must write nothing (Created
-// == 0, Pruned == 0), no file may land under Templates/, and the lock must
-// end empty.
+// == 0, Pruned == 0): no file under Templates/, no lock, no .gitignore.
 func TestTemplateTree_MaterializeFreshVault(t *testing.T) {
 	root := t.TempDir()
 	r := NewTemplateTree(root, "Templates", TemplateTreeSeed{Mode: TemplateModeMaterialize})
@@ -114,7 +98,6 @@ func TestTemplateTree_MaterializeFreshVault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
-	// Every action is a non-writing "served from embedded floor" row.
 	if len(plan.Actions) == 0 {
 		t.Fatal("expected served-from-embedded actions, got none")
 	}
@@ -136,148 +119,26 @@ func TestTemplateTree_MaterializeFreshVault(t *testing.T) {
 	if rep.Created != 0 || rep.Updated != 0 || rep.Pruned != 0 {
 		t.Errorf("fresh vault must produce zero writes/prunes, got %+v", rep)
 	}
-
-	// No file was materialized under Templates/.
-	if entries, err := os.ReadDir(filepath.Join(root, "Templates")); err == nil {
-		var files []string
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		var names []string
 		for _, e := range entries {
-			if e.Name() != ".surface" {
-				files = append(files, e.Name())
-			}
+			names = append(names, e.Name())
 		}
-		if len(files) != 0 {
-			t.Errorf("fresh vault materialized files under Templates/: %v", files)
-		}
+		t.Errorf("Apply wrote into a fresh vault: %v", names)
 	}
-
-	// Lock ends empty — no reconciler-owned mirror is tracked.
-	lock, err := templates.ReadLock(root)
-	if err != nil {
-		t.Fatalf("ReadLock: %v", err)
-	}
-	if len(lock.Entries) != 0 {
-		t.Errorf("lock should be empty on a fresh override-only vault, got %d entries", len(lock.Entries))
-	}
-
-	// Gitignore still gets the canonical sidecar patterns (a per-Apply
-	// side effect independent of materialization).
-	data, err := os.ReadFile(filepath.Join(root, ".gitignore"))
-	if err != nil {
-		t.Fatalf("read .gitignore: %v", err)
-	}
-	if !strings.Contains(string(data), "*.bak") || !strings.Contains(string(data), "*.new") {
-		t.Errorf("gitignore missing sidecar patterns:\n%s", data)
-	}
-
-	// Idempotent re-run: still all Unchanged, still zero writes.
-	plan2, _ := r.Plan(context.Background())
-	for _, a := range plan2.Actions {
-		if a.Kind != ActionUnchanged {
-			t.Errorf("re-run expected Unchanged, got %s for %s", a.Kind, a.Target)
-		}
-	}
-	rep2, err := r.Apply(context.Background(), plan2)
-	if err != nil {
-		t.Fatalf("Apply re-run: %v", err)
-	}
-	if rep2.Created != 0 || rep2.Updated != 0 || rep2.Pruned != 0 {
-		t.Errorf("re-run should not create/update/prune: %+v", rep2)
-	}
+	assertNoLock(t, root)
 
 	// The embedded floor still resolves every resource (e.g. commands/wrap).
 	content, source, err := vpcontext.NewResolver(root).Resolve("command:wrap", "")
 	if err != nil {
 		t.Fatalf("resolve command:wrap: %v", err)
 	}
-	if source != "embedded" {
-		t.Errorf("command:wrap resolved from %q, want embedded", source)
-	}
-	if content == "" {
-		t.Error("command:wrap resolved empty content")
-	}
-}
-
-// TestTemplateTree_PrunesByteIdenticalStaleLock covers the old relock
-// scenario under Design B: a vault file whose bytes equal the CURRENT
-// embedded bytes but whose lock baseline is stale is a redundant
-// reconciler-owned mirror. Rather than refresh the lock (old ActionRelock),
-// Plan now prunes it (ActionDelete) so the embedded floor serves it. No .bak
-// is written (the pruned bytes are an embedded copy), the lock entry is
-// dropped, and a second plan is idempotent.
-func TestTemplateTree_PrunesByteIdenticalStaleLock(t *testing.T) {
-	root := t.TempDir()
-	r := NewTemplateTree(root, "Templates", TemplateTreeSeed{Mode: TemplateModeMaterialize})
-
-	// Seed a byte-identical mirror of commands/wrap.md with a STALE lock
-	// baseline (all-zeros) so vaultSHA == embSHA but vaultSHA != baseline.
-	embBytes := embeddedBytesForRel(t, "commands/wrap.md")
-	target, key := seedOverride(t, root, "commands/wrap.md", embBytes, strings.Repeat("0", 64))
-
-	// Check reports drift (byte-identical mirror pending prune).
-	if got := checkSummaryFor(r.Check(context.Background()), r.Name()+":"+key); !strings.HasPrefix(got, "drift") {
-		t.Fatalf("pre-prune check summary = %q, want a drift row", got)
-	}
-
-	plan, err := r.Plan(context.Background())
-	if err != nil {
-		t.Fatalf("Plan (stale lock): %v", err)
-	}
-	a, ok := findAction(plan, filepath.Join("Templates", "commands", "wrap.md"))
-	if !ok {
-		t.Fatalf("no action for wrap.md")
-	}
-	if a.Kind != ActionDelete {
-		t.Fatalf("expected ActionDelete (prune), got %s", a.Kind)
-	}
-
-	rep, err := r.Apply(context.Background(), plan)
-	if err != nil {
-		t.Fatalf("Apply (prune): %v", err)
-	}
-	if len(rep.Errors) > 0 {
-		t.Fatalf("Apply errors: %v", rep.Errors)
-	}
-	if rep.Pruned != 1 {
-		t.Errorf("Pruned = %d, want 1", rep.Pruned)
-	}
-
-	// The mirror file is gone, and no .bak was written for it.
-	if _, err := os.Stat(target); !os.IsNotExist(err) {
-		t.Errorf("pruned file still present (err=%v)", err)
-	}
-	if _, err := os.Stat(target + ".bak"); !os.IsNotExist(err) {
-		t.Errorf("prune wrote a .bak (err=%v) — the bytes are an embedded copy, so a backup preserves nothing", err)
-	}
-
-	// Lock entry was dropped.
-	after, err := templates.ReadLock(root)
-	if err != nil {
-		t.Fatalf("ReadLock (post-prune): %v", err)
-	}
-	if _, ok := after.Entries[key]; ok {
-		t.Errorf("lock still lists pruned key %q", key)
-	}
-
-	// Resolution now falls through to the embedded floor.
-	_, source, err := vpcontext.NewResolver(root).Resolve("command:wrap", "")
-	if err != nil {
-		t.Fatalf("resolve command:wrap after prune: %v", err)
-	}
-	if source != "embedded" {
-		t.Errorf("post-prune command:wrap resolved from %q, want embedded", source)
-	}
-
-	// Idempotent: a second plan routes the (now absent) key to Unchanged.
-	plan2, err := r.Plan(context.Background())
-	if err != nil {
-		t.Fatalf("Plan (post-prune): %v", err)
-	}
-	a2, ok := findAction(plan2, filepath.Join("Templates", "commands", "wrap.md"))
-	if !ok {
-		t.Fatalf("no action for wrap.md post-prune")
-	}
-	if a2.Kind != ActionUnchanged {
-		t.Errorf("post-prune expected ActionUnchanged, got %s", a2.Kind)
+	if source != "embedded" || content == "" {
+		t.Errorf("command:wrap resolved from %q (%d bytes), want embedded", source, len(content))
 	}
 }
 
@@ -298,357 +159,64 @@ func embeddedBytesForRel(t *testing.T, embeddedRel string) []byte {
 	return nil
 }
 
-// checkSummaryFor returns the Summary of the check.Result with the given
-// Name, or "" if absent.
-func checkSummaryFor(results []check.Result, name string) string {
-	for _, res := range results {
-		if res.Name == name {
-			return res.Summary
-		}
-	}
-	return ""
-}
-
-// TestTemplateTree_BinaryBumpedUserUntouched: under Design B an embedded
-// bump on a reconciler-owned mirror the user never edited (old Row 3
-// auto-Update) becomes a PRUNE — the mirror still equals the lock baseline,
-// so it is reconciler-owned and the (now-bumped) embedded floor serves the
-// new version directly. No in-vault upgrade write happens.
-func TestTemplateTree_BinaryBumpedUserUntouched(t *testing.T) {
-	root := t.TempDir()
-	r := NewTemplateTree(root, "Templates", TemplateTreeSeed{Mode: TemplateModeMaterialize})
-
-	// Seed a reconciler-owned mirror: bytes == embedded, baseline == the
-	// real embedded SHA (so it is provably unedited).
-	embBytes := embeddedBytesForRel(t, "commands/wrap.md")
-	baseline := embeddedSHAFor(t, "commands/wrap.md")
-	target, key := seedOverride(t, root, "commands/wrap.md", embBytes, baseline)
-
-	// Simulate a binary bump: override EmbeddedSHA for wrap.md.
-	defer restoreEmbeddedSHA(t)()
-	orig := templates.EmbeddedSHA
-	templates.EmbeddedSHA = func(rel string) (string, bool) {
-		if rel == "commands/wrap.md" {
-			return strings.Repeat("a", 64), true
-		}
-		return orig(rel)
-	}
-
-	plan, err := r.Plan(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	a, ok := findAction(plan, filepath.Join("Templates", "commands", "wrap.md"))
-	if !ok {
-		t.Fatal("no action for wrap.md")
-	}
-	if a.Kind != ActionDelete {
-		t.Errorf("expected Delete (prune), got %s", a.Kind)
-	}
-
-	rep, err := r.Apply(context.Background(), plan)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rep.Pruned != 1 {
-		t.Errorf("Pruned = %d, want 1", rep.Pruned)
-	}
-	if _, err := os.Stat(target); !os.IsNotExist(err) {
-		t.Errorf("mirror not pruned (err=%v)", err)
-	}
-	if _, err := os.Stat(target + ".bak"); !os.IsNotExist(err) {
-		t.Errorf("prune wrote a .bak (err=%v)", err)
-	}
-
-	// Lock entry dropped — embedded floor now owns the resource.
-	lock, _ := templates.ReadLock(root)
-	if _, ok := lock.Entries[key]; ok {
-		t.Errorf("lock still lists pruned key %q", key)
-	}
-}
-
-// TestTemplateTree_UserEditedBinaryStable: a genuine user override (vault
-// bytes differ from the lock baseline) with embedded stable is KEPT (Case 4)
-// — not pruned. The override file and its lock entry survive Apply.
-func TestTemplateTree_UserEditedBinaryStable(t *testing.T) {
-	root := t.TempDir()
-	r := NewTemplateTree(root, "Templates", TemplateTreeSeed{Mode: TemplateModeMaterialize})
-
-	// Seed a genuine override: distinct bytes, baseline == the real
-	// embedded SHA (embedded stable, user edited).
-	userBytes := []byte("user edit\n")
-	baseline := embeddedSHAFor(t, "commands/wrap.md")
-	target, key := seedOverride(t, root, "commands/wrap.md", userBytes, baseline)
-
-	plan, _ := r.Plan(context.Background())
-	a, ok := findAction(plan, filepath.Join("Templates", "commands", "wrap.md"))
-	if !ok {
-		t.Fatal("no action for wrap.md")
-	}
-	if a.Kind != ActionUnchanged {
-		t.Errorf("expected Unchanged (kept), got %s", a.Kind)
-	}
-	if !strings.Contains(a.Summary, "operator override of a built-in (kept)") {
-		t.Errorf("summary = %q, want 'operator override of a built-in (kept)'", a.Summary)
-	}
-
-	rep, err := r.Apply(context.Background(), plan)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rep.Pruned != 0 {
-		t.Errorf("override must not be pruned, Pruned = %d", rep.Pruned)
-	}
-	// Override file survives byte-for-byte.
-	got, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("override clobbered/removed: %v", err)
-	}
-	if string(got) != string(userBytes) {
-		t.Errorf("override bytes changed: %q", got)
-	}
-	// Lock entry for the override survives.
-	lock, _ := templates.ReadLock(root)
-	if _, ok := lock.Entries[key]; !ok {
-		t.Errorf("lock entry for override %q dropped", key)
-	}
-	// The override wins resolution over the embedded floor.
-	content, source, err := vpcontext.NewResolver(root).Resolve("command:wrap", "")
-	if err != nil {
-		t.Fatalf("resolve command:wrap: %v", err)
-	}
-	if source != "vault" {
-		t.Errorf("override should resolve from vault, got %q", source)
-	}
-	if content != string(userBytes) {
-		t.Errorf("resolved content = %q, want the override bytes", content)
-	}
-}
-
-// TestTemplateTree_BothDivergedPrompt: a tracked override that is both
-// user-edited (vault != baseline) AND embedded-bumped (embedded != baseline)
-// is ambiguous → Prompt (Case 5), and Apply must reject the raw Prompt.
-func TestTemplateTree_BothDivergedPrompt(t *testing.T) {
-	root := t.TempDir()
-	r := NewTemplateTree(root, "Templates", TemplateTreeSeed{Mode: TemplateModeMaterialize})
-
-	// Seed a tracked override with baseline == real embedded SHA.
-	userBytes := []byte("user edit\n")
-	baseline := embeddedSHAFor(t, "commands/wrap.md")
-	target, _ := seedOverride(t, root, "commands/wrap.md", userBytes, baseline)
-	_ = target
-
-	// Binary bump: embedded now differs from the baseline too.
-	defer restoreEmbeddedSHA(t)()
-	orig := templates.EmbeddedSHA
-	bumped := strings.Repeat("b", 64)
-	templates.EmbeddedSHA = func(rel string) (string, bool) {
-		if rel == "commands/wrap.md" {
-			return bumped, true
-		}
-		return orig(rel)
-	}
-
-	plan2, _ := r.Plan(context.Background())
-	a, ok := findAction(plan2, filepath.Join("Templates", "commands", "wrap.md"))
-	if !ok {
-		t.Fatal("missing action")
-	}
-	if a.Kind != ActionPrompt {
-		t.Fatalf("expected Prompt, got %s", a.Kind)
-	}
-	// Details carry all three SHAs.
-	want := map[string]string{
-		"embedded_sha": bumped,
-		"vault_sha":    shaBytes(userBytes),
-	}
-	got := map[string]string{}
-	for _, d := range a.Details {
-		k, v, ok := strings.Cut(d, "=")
-		if !ok {
-			t.Errorf("malformed detail %q", d)
-		}
-		got[k] = v
-	}
-	if got["embedded_sha"] != want["embedded_sha"] {
-		t.Errorf("embedded_sha mismatch: got %q want %q", got["embedded_sha"], want["embedded_sha"])
-	}
-	if got["vault_sha"] != want["vault_sha"] {
-		t.Errorf("vault_sha mismatch: got %q want %q", got["vault_sha"], want["vault_sha"])
-	}
-	if got["lock_sha"] == "" {
-		t.Error("lock_sha should be non-empty for this row")
-	}
-
-	// Apply MUST reject Prompt.
-	if _, err := r.Apply(context.Background(), plan2); err == nil {
-		t.Error("Apply should reject ActionPrompt")
-	}
-}
-
-// TestTemplateTree_SilentAdoptOnPopulatedVault: a legacy full-corpus vault
-// (every embedded file mirrored byte-identically, no lock) is now PRUNED
-// under Design B. The silent-adopt pre-pass plants a lock entry per
-// byte-identical file, which flows straight into the prune case: every
-// mirror file is deleted (with no .bak) and the lock ends empty. No Prompt is
-// emitted on this path.
-func TestTemplateTree_SilentAdoptOnPopulatedVault(t *testing.T) {
-	root := t.TempDir()
-	// Pre-populate Templates/ manually with the embedded bytes, but no
-	// lock file.
-	resources, err := templates.WalkEmbedded()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, res := range resources {
-		target := filepath.Join(root, "Templates", filepath.FromSlash(res.RelPath))
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(target, res.Bytes, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	r := NewTemplateTree(root, "Templates", TemplateTreeSeed{Mode: TemplateModeMaterialize})
-	plan, err := r.Plan(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	// No Prompts; every byte-identical mirror is a prune.
-	prunes := 0
-	for _, a := range plan.Actions {
-		if a.Kind == ActionPrompt {
-			t.Errorf("unexpected Prompt on silent-adopt path: %s", a.Target)
-		}
-		if a.Kind != ActionDelete {
-			t.Errorf("expected Delete (prune), got %s for %s", a.Kind, a.Target)
-			continue
-		}
-		prunes++
-	}
-	if prunes != len(resources) {
-		t.Errorf("prune actions = %d, want %d", prunes, len(resources))
-	}
-
-	rep, err := r.Apply(context.Background(), plan)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rep.Pruned != len(resources) {
-		t.Errorf("Pruned = %d, want %d", rep.Pruned, len(resources))
-	}
-	// Every mirror file is gone (with no .bak); the lock ends empty.
-	for _, res := range resources {
-		target := filepath.Join(root, "Templates", filepath.FromSlash(res.RelPath))
-		if _, err := os.Stat(target); !os.IsNotExist(err) {
-			t.Errorf("mirror %s not pruned (err=%v)", res.RelPath, err)
-		}
-		if _, err := os.Stat(target + ".bak"); !os.IsNotExist(err) {
-			t.Errorf("prune wrote a .bak for %s (err=%v)", res.RelPath, err)
-		}
-	}
-	lock, _ := templates.ReadLock(root)
-	if len(lock.Entries) != 0 {
-		t.Errorf("lock entries = %d, want 0 after pruning byte-identical mirrors", len(lock.Entries))
-	}
-}
-
 // TestTemplateTree_PruneMirrorKeepOverride is the focused Design B
-// acceptance test: in one vault holding both a reconciler-owned mirror and a
-// genuine override, Plan prunes the mirror and keeps the override, and after
-// Apply the pruned resource resolves from the embedded floor while the
-// override still wins from the vault.
+// acceptance test, with no lock anywhere: in one vault holding a mirror, an
+// earlier shipped version and a genuine override, Plan prunes the first two
+// and keeps the override, and after Apply the pruned resources resolve from
+// the embedded floor while the override still wins from the vault.
 func TestTemplateTree_PruneMirrorKeepOverride(t *testing.T) {
 	root := t.TempDir()
 	r := NewTemplateTree(root, "Templates", TemplateTreeSeed{Mode: TemplateModeMaterialize})
 
-	// Mirror: commands/wrap.md byte-identical to embedded, baseline == its
-	// real embedded SHA → reconciler-owned → prune.
-	wrapEmb := embeddedBytesForRel(t, "commands/wrap.md")
-	wrapBaseline := embeddedSHAFor(t, "commands/wrap.md")
-	wrapTarget, wrapKey := seedOverride(t, root, "commands/wrap.md", wrapEmb, wrapBaseline)
-
-	// Override: commands/restart.md with distinct bytes, baseline == its
-	// real embedded SHA → genuine override → keep.
-	restartBaseline := embeddedSHAFor(t, "commands/restart.md")
-	restartBytes := []byte("# MY CUSTOM RESTART\n")
-	restartTarget, restartKey := seedOverride(t, root, "commands/restart.md", restartBytes, restartBaseline)
+	wrapTarget, _ := seedOverride(t, root, "commands/wrap.md", embeddedBytesForRel(t, "commands/wrap.md"))
+	restartTarget, _ := seedOverride(t, root, "commands/restart.md", earlierRestart(t))
+	captureBytes := []byte("# MY CUSTOM CAPTURE\n")
+	captureTarget, _ := seedOverride(t, root, "commands/capture.md", captureBytes)
 
 	plan, err := r.Plan(context.Background())
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
-	wrapAct, _ := findAction(plan, filepath.Join("Templates", "commands", "wrap.md"))
-	if wrapAct.Kind != ActionDelete {
-		t.Errorf("mirror expected Delete, got %s", wrapAct.Kind)
-	}
-	restartAct, _ := findAction(plan, filepath.Join("Templates", "commands", "restart.md"))
-	if restartAct.Kind != ActionUnchanged {
-		t.Errorf("override expected Unchanged, got %s", restartAct.Kind)
-	}
-
-	if _, err := r.Apply(context.Background(), plan); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-
-	// Mirror pruned; override survives.
-	if _, err := os.Stat(wrapTarget); !os.IsNotExist(err) {
-		t.Errorf("mirror not pruned (err=%v)", err)
-	}
-	if got, err := os.ReadFile(restartTarget); err != nil || string(got) != string(restartBytes) {
-		t.Errorf("override not preserved: got=%q err=%v", got, err)
-	}
-
-	// Lock lists only the override.
-	lock, _ := templates.ReadLock(root)
-	if _, ok := lock.Entries[wrapKey]; ok {
-		t.Errorf("lock still lists pruned mirror %q", wrapKey)
-	}
-	if _, ok := lock.Entries[restartKey]; !ok {
-		t.Errorf("lock dropped override %q", restartKey)
-	}
-
-	// Resolution: pruned wrap → embedded; override restart → vault.
-	res := vpcontext.NewResolver(root)
-	if _, src, err := res.Resolve("command:wrap", ""); err != nil || src != "embedded" {
-		t.Errorf("command:wrap src=%q err=%v, want embedded", src, err)
-	}
-	if content, src, err := res.Resolve("command:restart", ""); err != nil || src != "vault" || content != string(restartBytes) {
-		t.Errorf("command:restart src=%q content=%q err=%v, want vault + override bytes", src, content, err)
-	}
-}
-
-func TestTemplateTree_LockAbsentNonEmbeddedBytesPrompt(t *testing.T) {
-	root := t.TempDir()
-	// Pre-populate with NON-embedded bytes.
-	resources, _ := templates.WalkEmbedded()
-	target := filepath.Join(root, "Templates", filepath.FromSlash(resources[0].RelPath))
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(target, []byte("not the embedded bytes\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	r := NewTemplateTree(root, "Templates", TemplateTreeSeed{Mode: TemplateModeMaterialize})
-	plan, _ := r.Plan(context.Background())
-	a, ok := findAction(plan, filepath.FromSlash(resources[0].RelPath))
-	if !ok {
-		t.Fatal("missing action")
-	}
-	if a.Kind != ActionPrompt {
-		t.Errorf("expected Prompt, got %s", a.Kind)
-	}
-	// lock_sha should be empty.
-	var lockSHA string
-	for _, d := range a.Details {
-		if after, ok0 := strings.CutPrefix(d, "lock_sha="); ok0 {
-			lockSHA = after
+	for suffix, want := range map[string]ActionKind{
+		filepath.Join("Templates", "commands", "wrap.md"):    ActionDelete,
+		filepath.Join("Templates", "commands", "restart.md"): ActionDelete,
+		filepath.Join("Templates", "commands", "capture.md"): ActionUnchanged,
+	} {
+		if a, _ := findAction(plan, suffix); a.Kind != want {
+			t.Errorf("%s planned %s, want %s", suffix, a.Kind, want)
 		}
 	}
-	if lockSHA != "" {
-		t.Errorf("lock_sha should be empty, got %q", lockSHA)
+
+	rep, err := r.Apply(context.Background(), plan)
+	if err != nil || len(rep.Errors) > 0 {
+		t.Fatalf("Apply: %v %v", err, rep.Errors)
+	}
+	if rep.Pruned != 2 {
+		t.Errorf("Pruned = %d, want 2", rep.Pruned)
+	}
+	for _, gone := range []string{wrapTarget, restartTarget} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s not pruned (err=%v)", gone, err)
+		}
+		for _, side := range []string{".bak", ".new"} {
+			if _, err := os.Stat(gone + side); !os.IsNotExist(err) {
+				t.Errorf("%s%s written (err=%v)", gone, side, err)
+			}
+		}
+	}
+	if got, err := os.ReadFile(captureTarget); err != nil || string(got) != string(captureBytes) {
+		t.Errorf("override not preserved: got=%q err=%v", got, err)
+	}
+	assertNoLock(t, root)
+
+	res := vpcontext.NewResolver(root)
+	for _, name := range []string{"command:wrap", "command:restart"} {
+		if _, src, err := res.Resolve(name, ""); err != nil || src != "embedded" {
+			t.Errorf("%s src=%q err=%v, want embedded", name, src, err)
+		}
+	}
+	if content, src, err := res.Resolve("command:capture", ""); err != nil || src != "vault" || content != string(captureBytes) {
+		t.Errorf("command:capture src=%q content=%q err=%v, want vault + override bytes", src, content, err)
 	}
 }
 

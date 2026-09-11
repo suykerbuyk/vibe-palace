@@ -7,7 +7,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -34,7 +33,7 @@ func TestMaterializeWritesNoStamp(t *testing.T) {
 	root := t.TempDir()
 	r := NewTemplateTree(root, "Templates", TemplateTreeSeed{Mode: TemplateModeMaterialize})
 
-	target, _ := seedOverride(t, root, "commands/wrap.md", []byte("# override\n"), strings.Repeat("e", 64))
+	target, _ := seedOverride(t, root, "commands/wrap.md", []byte("# override\n"))
 	plan := Plan{Actions: []Action{{Kind: ActionUpdate, Target: target, Summary: "overwrite"}}}
 	rep, err := r.Apply(context.Background(), plan)
 	if err != nil {

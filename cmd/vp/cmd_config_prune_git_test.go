@@ -127,7 +127,7 @@ func TestConfigSyncPrunePropagatesToAnotherHost(t *testing.T) {
 		t.Fatalf("exit code = %d\n%s", code, out)
 	}
 	if !strings.Contains(out, "pruned=1") {
-		t.Fatalf("summary missing pruned=1 — the fixture did not classify Case 2/3 Delete:\n%s", out)
+		t.Fatalf("summary missing pruned=1 — the fixture did not classify as a current-copy Delete:\n%s", out)
 	}
 
 	// THE assertion: a second, independent clone must not carry the mirror.
@@ -221,7 +221,7 @@ func TestConfigSyncPruneOfUntrackedMirrorDoesNotPoisonTheBatch(t *testing.T) {
 	// A second byte-identical mirror, seeded AFTER the seed commit, so it is
 	// pruned in the same batch while never having been tracked.
 	seedTemplateOverride(t, vaultPath, "commands/restart.md",
-		embeddedTemplateBytes(t, "commands/restart.md"), strings.Repeat("0", 64))
+		embeddedTemplateBytes(t, "commands/restart.md"))
 
 	out, code := runSyncWithStdin(t, "", []string{
 		"--project-root", filepath.Dir(target), "--tier", "vault", "--yes",

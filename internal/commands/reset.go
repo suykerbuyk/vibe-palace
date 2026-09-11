@@ -39,9 +39,16 @@ type ResetOutcome struct {
 	Backup string
 	// BackupReused is true when a backup holding these bytes already existed.
 	BackupReused bool
-	// Mirror is true when the file held exactly the embedded bytes, so no
-	// backup was needed.
+	// Mirror is true when the file held vp-shipped bytes — the current
+	// embedded copy or an earlier shipped version, line endings aside — so no
+	// backup was needed: they are recoverable from the binary or from
+	// vibe-palace's history. Provenance says which.
 	Mirror bool
+	// Provenance is what the removed bytes were (templates.ClassifyVaultCopy).
+	Provenance templates.Provenance
+	// LineEndings is true for a current mirror whose bytes differ from the
+	// embedded copy only in line endings (a CRLF checkout).
+	LineEndings bool
 	// Removed is true when this call removed the file.
 	Removed bool
 	// AlreadyGone is true when the file had disappeared by the time it was
@@ -56,10 +63,10 @@ type ResetOutcome struct {
 }
 
 // Reset removes the vault Templates/ copies in changes, so the embedded floor
-// serves each resource again, and keeps a backup of every one that was not a
-// byte-identical mirror. changes come from Plan; only entries whose vault copy
-// exists (ChangeOverride, ChangeUnchanged) are acted on, and the rest are
-// ignored.
+// serves each resource again, and keeps a backup of every one that was not
+// vp-shipped bytes. changes come from Plan; only entries whose vault copy
+// exists (ChangeOverride, ChangeUnchanged, ChangeStale) are acted on, and the
+// rest are ignored.
 //
 // It works in two phases, so a failure before the first removal changes
 // nothing but backups:
@@ -68,10 +75,11 @@ type ResetOutcome struct {
 //     one reached through a symlink in any path component — the file, a
 //     Templates/skills/<skill> directory, Templates/commands — or that is not
 //     a regular file refuses the whole call with ErrUnsafeResetPath. Then each
-//     file's bytes are re-read (the plan's copy is not trusted); bytes equal to
-//     the embedded template are a mirror and need no backup, and anything else
-//     is kept by templates.PreserveBackup. Any failure returns an error, and
-//     nothing is removed.
+//     file's bytes are re-read (the plan's copy is not trusted); vp-shipped
+//     bytes — the current embedded copy or an earlier shipped version, line
+//     endings aside (templates.ClassifyVaultCopy) — are a mirror and need no
+//     backup, and anything else is kept by templates.PreserveBackup. Any
+//     failure returns an error, and nothing is removed.
 //  2. Remove. Each file goes through vaultfs.Delete — the locked removal
 //     primitive — compare-and-set on the bytes just backed up, so an edit made
 //     after the backup is kept (Kept) rather than lost. A removal failure is
@@ -109,8 +117,10 @@ func Reset(changes []Change) ([]ResetOutcome, error) {
 			return nil, fmt.Errorf("read %s: %w", t.rel, err)
 		}
 		data[i] = b
-		if string(b) == t.c.EmbeddedContent {
+		o.Provenance = templates.ClassifyVaultCopy(strings.TrimPrefix(t.rel, "Templates/"), b)
+		if o.Provenance != templates.ProvenanceOperator {
 			o.Mirror = true
+			o.LineEndings = o.Provenance == templates.ProvenanceCurrent && t.c.EmbeddedContent != "" && string(b) != t.c.EmbeddedContent
 		} else {
 			bk, err := templates.PreserveBackup(t.c.VaultRoot, t.rel, b)
 			if err != nil {
@@ -158,7 +168,7 @@ type resetTarget struct {
 func resetTargets(changes []Change) ([]resetTarget, error) {
 	var targets []resetTarget
 	for _, c := range changes {
-		if c.Kind != ChangeOverride && c.Kind != ChangeUnchanged {
+		if c.Kind != ChangeOverride && c.Kind != ChangeUnchanged && c.Kind != ChangeStale {
 			continue
 		}
 		rel, err := filepath.Rel(c.VaultRoot, c.VaultPath)
@@ -187,57 +197,17 @@ func CheckResetPaths(changes []Change) error {
 	return nil
 }
 
-// checkResetPath refuses rel unless the path to it, under the vault root with
-// symlinks resolved, is the path itself — no component of it a symlink — and
-// the file, if present, is a regular file.
-//
-// The comparison is made under the RESOLVED vault root, so a vault whose root
-// directory is itself a symlink (a supported layout; see
-// internal/vaultfs/raw.go) is not refused wholesale: only links inside the
-// vault are.
+// checkResetPath refuses rel unless it is reached directly
+// (vaultfs.CheckDirectPath: no symlink in any component, a regular file when
+// present, the resolved path the path itself). A refusal is ErrUnsafeResetPath
+// wrapping vaultfs.ErrIndirectPath, so callers keep keying on the reset's own
+// sentinel; an absent path is nil.
 func checkResetPath(vaultRoot, rel string) error {
-	realRoot, err := filepath.EvalSymlinks(vaultRoot)
-	if err != nil {
-		return fmt.Errorf("resolve vault root: %w", err)
+	err := vaultfs.CheckDirectPath(vaultRoot, rel)
+	if errors.Is(err, vaultfs.ErrIndirectPath) {
+		return fmt.Errorf("%w: %w", ErrUnsafeResetPath, err)
 	}
-	abs := filepath.Join(realRoot, filepath.FromSlash(rel))
-
-	// Walk each component with Lstat: the first symlink is the one to name.
-	cur := realRoot
-	for part := range strings.SplitSeq(filepath.ToSlash(filepath.Clean(filepath.FromSlash(rel))), "/") {
-		cur = filepath.Join(cur, part)
-		fi, err := os.Lstat(cur)
-		if errors.Is(err, os.ErrNotExist) {
-			return nil // nothing further down to follow or remove
-		}
-		if err != nil {
-			return fmt.Errorf("inspect %s: %w", rel, err)
-		}
-		if fi.Mode()&os.ModeSymlink != 0 {
-			comp, _ := filepath.Rel(realRoot, cur)
-			return fmt.Errorf("%w: %s is reached through a symlink (%s); vp does not follow or remove it",
-				ErrUnsafeResetPath, rel, filepath.ToSlash(comp))
-		}
-		if cur == abs && !fi.Mode().IsRegular() {
-			return fmt.Errorf("%w: %s is not a regular file (%s); vp does not remove it",
-				ErrUnsafeResetPath, rel, fi.Mode().Type())
-		}
-	}
-
-	// The resolved path must be the path itself. This catches what the walk
-	// cannot name. On Windows EvalSymlinks also normalises letter case and
-	// short (8.3) names, so a vault path spelled differently from the disk is
-	// refused here too — fail-safe: nothing is removed or written.
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return fmt.Errorf("resolve %s: %w", rel, err)
-	}
-	if resolved != filepath.Clean(abs) {
-		return fmt.Errorf("%w: %s resolves to %s, not to itself — a symlink, or on Windows a letter-case "+
-			"or short-name difference in the path; vp does not follow or remove it",
-			ErrUnsafeResetPath, rel, resolved)
-	}
-	return nil
+	return err
 }
 
 // ShimSourceRemoved reports whether any outcome removed a file that project

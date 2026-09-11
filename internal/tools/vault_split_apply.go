@@ -21,7 +21,6 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/reconcile"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
-	"github.com/suykerbuyk/vibe-palace/internal/templates"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
@@ -58,7 +57,7 @@ import (
 // Every entry is something the destination recipe itself creates:
 //
 //   - .git, .gitignore   — reconcile.NewVault's git init and gitignore
-//   - .vibe-palace       — the data-format stamp, and templates.lock
+//   - .vibe-palace       — the data-format stamp (vault.toml)
 //   - Templates          — tolerated, never created: under Design B the
 //     override-only reconcile writes no template, so a fresh destination has
 //     no Templates/ directory at all and the embedded floor serves
@@ -299,11 +298,11 @@ func vaultSplitApply(ctx context.Context, vault *storage.Vault, p vaultSplitPara
 // failed stamp as non-fatal; a CLI that keeps going leaves a human looking at
 // the terminal, and this does not.
 //
-// TemplateTree does NOT follow that rule and must not be handled as though it
-// did: applyMaterialize returns a real error for walk-embedded and prompt
-// failures and puts write/lock failures in Report.Errors. Both channels abort
-// here: a destination whose templates reconcile failed in either way is not
-// one to copy into.
+// The Templates reconcile is not run here. Under Design B it writes nothing on
+// a fresh destination (every embedded resource is served from the embedded
+// floor), and the canonical .gitignore it used to reconcile is the Vault
+// reconciler's Create above. A destination has no Templates/ until an
+// operator writes an override.
 func splitScaffoldDestination(ctx context.Context, dest string) error {
 	vr := reconcile.NewVault(dest, reconcile.VaultSeed{
 		VaultPath: dest,
@@ -329,26 +328,6 @@ func splitScaffoldDestination(ctx context.Context, dest string) error {
 				"host path before retrying)", errors.Join(rep.Errors...))
 	}
 
-	// Materialize mode on a fresh destination writes no resource files. Design B
-	// is override-only (planMaterialize's decision table, case 1, pinned by
-	// TestTemplateTree_MaterializeFreshVault): every embedded resource is
-	// ActionUnchanged, "served from embedded floor", Created is 0 and the lock
-	// stays empty. What this call is actually here for is the gitignore and lock
-	// reconciliation inside Apply.
-	tt := reconcile.NewTemplateTree(dest, "Templates", reconcile.TemplateTreeSeed{
-		Mode: reconcile.TemplateModeMaterialize,
-	})
-	ttPlan, err := tt.Plan(ctx)
-	if err != nil {
-		return fmt.Errorf("plan destination templates: %w", err)
-	}
-	ttRep, err := tt.Apply(ctx, ttPlan)
-	if err != nil {
-		return fmt.Errorf("reconcile destination templates: %w", err)
-	}
-	if len(ttRep.Errors) > 0 {
-		return fmt.Errorf("reconcile destination templates: %w", errors.Join(ttRep.Errors...))
-	}
 	return nil
 }
 
@@ -684,15 +663,6 @@ func splitLeakGateGlobal(dest string, p vaultSplitParams) []string {
 			problems = append(problems, fmt.Sprintf(
 				"destination %s holds %d non-regular entr(ies)", r.Path, r.NonRegular))
 		}
-	}
-
-	lock, err := templates.ReadLock(dest)
-	if err != nil {
-		problems = append(problems, fmt.Sprintf("read destination templates lock: %v", err))
-	} else if len(lock.Entries) > 0 {
-		problems = append(problems, fmt.Sprintf(
-			"destination templates lock has %d entr(ies): a fresh vault materializes "+
-				"nothing and its lock stays empty", len(lock.Entries)))
 	}
 	return problems
 }

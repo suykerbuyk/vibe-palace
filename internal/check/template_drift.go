@@ -4,12 +4,14 @@
 package check
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
 // Template drift — the vault's Templates/ tree against the binary's embedded
@@ -40,8 +42,7 @@ type driftKind int
 
 const (
 	driftNone     driftKind = iota // no vault file; the embedded floor serves it
-	driftMirror                    // a vp-written mirror pending a prune
-	driftDangling                  // a lock entry whose file is gone
+	driftMirror                    // vp-shipped bytes (current or earlier) pending a prune
 	driftOverride                  // an operator's override of a built-in, kept
 	driftFailed                    // unreadable
 )
@@ -67,6 +68,11 @@ func TemplateDriftRows(vaultRoot, relSubpath, namePrefix string) []Result {
 	return out
 }
 
+// templateDriftRows classifies each copy by provenance — the binary alone,
+// no host-local state (templates.ClassifyVaultCopy) — exactly as `vp config
+// sync`'s reconcile does: a copy of the current embedded copy or of an earlier
+// shipped version is drift pending a prune; anything else is an operator's
+// override, kept; a path not reached directly is kept and never followed.
 func templateDriftRows(vaultRoot, relSubpath, namePrefix string) []driftRow {
 	resources, err := templates.WalkEmbedded()
 	if err != nil {
@@ -76,77 +82,86 @@ func templateDriftRows(vaultRoot, relSubpath, namePrefix string) []driftRow {
 			Err:    fmt.Errorf("walk embedded: %w", err),
 		}}}
 	}
-	lock, err := templates.ReadLock(vaultRoot)
-	if err != nil {
-		return []driftRow{{kind: driftFailed, Result: Result{
-			Name:   namePrefix,
-			Status: Fail,
-			Err:    fmt.Errorf("read lock: %w", err),
-		}}}
-	}
 
 	out := make([]driftRow, 0, len(resources))
 	for _, res := range resources {
 		key := relSubpath + "/" + res.RelPath
-		target := filepath.Join(vaultRoot, filepath.FromSlash(key))
-		vaultSHA, herr := templates.HashFile(target)
-		if herr != nil && !os.IsNotExist(herr) {
-			out = append(out, driftRow{kind: driftFailed, Result: Result{
-				Name:   namePrefix + ":" + key,
-				Status: Fail,
-				Err:    herr,
+		name := namePrefix + ":" + key
+		fail := func(err error) {
+			out = append(out, driftRow{kind: driftFailed, Result: Result{Name: name, Status: Fail, Err: err}})
+		}
+		if err := vaultfs.CheckDirectPath(vaultRoot, key); err != nil {
+			if !errors.Is(err, vaultfs.ErrIndirectPath) {
+				fail(err)
+				continue
+			}
+			out = append(out, driftRow{kind: driftOverride, Result: Result{
+				Name:    name,
+				Status:  Info,
+				Summary: NotReachedDirectly + " (" + err.Error() + ")",
 			}})
 			continue
 		}
-		vaultExists := herr == nil
-		embSHA, ok := templates.EmbeddedSHA(res.RelPath)
-		if !ok {
-			embSHA = res.SHA256
+		data, err := os.ReadFile(filepath.Join(vaultRoot, filepath.FromSlash(key)))
+		if errors.Is(err, os.ErrNotExist) {
+			out = append(out, driftRow{kind: driftNone, Result: Result{
+				Name:    name,
+				Status:  Pass,
+				Summary: "served from embedded floor",
+			}})
+			continue
 		}
-		entry, haveLock := lock.Entries[key]
+		if err != nil {
+			fail(err)
+			continue
+		}
 
-		// Override-only model: no vault mirror is the healthy state (the
-		// embedded floor serves it). A byte-identical mirror is drift
-		// pending a prune. An operator's override is kept — and reported as
-		// Info, never Pass, so an override that shadows a built-in stays
-		// visible to every restart and wrap that runs this check.
-		status := Info
+		// Override-only model: no vault copy is the healthy state (the
+		// embedded floor serves it). vp-shipped bytes are drift pending a
+		// prune. An operator's override is kept — and reported as Info, never
+		// Pass, so an override that shadows a built-in stays visible to every
+		// restart and wrap that runs this check.
 		kind := driftOverride
 		var summary string
-		switch {
-		case !vaultExists && !haveLock:
-			status = Pass
-			kind = driftNone
-			summary = "served from embedded floor"
-		case !vaultExists && haveLock:
-			// Dangling lock entry: sync will drop it. Drift, not fatal.
-			kind = driftDangling
-			summary = "drift (dangling lock entry; embedded floor serves it)"
-		case haveLock && vaultSHA == entry.EmbeddedSHA:
+		switch templates.ClassifyVaultCopy(res.RelPath, data) {
+		case templates.ProvenanceCurrent:
 			kind = driftMirror
-			summary = "drift (reconciler-owned mirror pending prune)"
-		case haveLock && vaultSHA == embSHA:
+			summary = "drift (byte-identical to the current embedded copy; pending prune)"
+			if string(data) != string(res.Bytes) {
+				summary = "drift (identical, line endings aside, to the current embedded copy; pending prune)"
+			}
+		case templates.ProvenanceEarlier:
 			kind = driftMirror
-			summary = "drift (byte-identical to current embedded; pending prune)"
-		case !haveLock && vaultSHA == embSHA:
-			// The sync's silent-adopt pre-pass makes this a prune.
-			kind = driftMirror
-			summary = "drift (byte-identical to current embedded; pending prune)"
-		case haveLock && embSHA == entry.EmbeddedSHA:
-			summary = "operator override of a built-in (kept; shadows embedded " + shortSHA(embSHA) + ")"
-		case haveLock:
-			summary = "operator override of a built-in (kept; the embedded copy changed since this host's lock baseline)"
+			summary = "drift (an earlier shipped version of " + res.RelPath +
+				"; pending prune — it shadows the current built-in until then)"
 		default:
-			summary = "override of a built-in with no lock entry on this host (kept)"
+			emb, ok := templates.EmbeddedSHA(res.RelPath)
+			if !ok {
+				emb = res.SHA256
+			}
+			summary = "operator override of a built-in (kept; shadows embedded " + shortSHA(emb) + ")"
 		}
 		out = append(out, driftRow{kind: kind, Result: Result{
-			Name:    namePrefix + ":" + key,
-			Status:  status,
+			Name:    name,
+			Status:  Info,
 			Summary: summary,
 		}})
 	}
 	return out
 }
+
+// NotReachedDirectly is the row a vault Templates/ path gets when a symlink
+// sits in its path, it is a special file, or (on Windows) its spelling differs
+// from the disk's: vp keeps it and never follows it — neither the check nor the
+// prune reads through it. Shared with the reconciler so both say it one way.
+const NotReachedDirectly = "not reached directly (a symlink in its path, a special file, or on Windows a " +
+	"letter-case or short-name difference); kept, never followed"
+
+// retiredLockDetail is the template-drift detail for a
+// .vibe-palace/templates.lock still on disk: `vp config sync` removes an
+// untracked, un-ignored one on a git vault of its own, and leaves a tracked
+// or ignored one, and any on a non-git vault, where lagging hosts may share it.
+const retiredLockDetail = "  .vibe-palace/templates.lock: a retired templates.lock is present; no vp from this release reads it — delete it when every host runs this release"
 
 // shortSHA is the first 12 hex digits of a SHA, for a row a human reads.
 func shortSHA(sha string) string {
@@ -173,9 +188,11 @@ func CheckTemplateDrift(vaultRoot string) Result {
 	}
 
 	rows := templateDriftRows(vaultRoot, "Templates", "Templates")
+	_, lerr := os.Lstat(filepath.Join(vaultRoot, ".vibe-palace", "templates.lock"))
+	retiredLock := lerr == nil
 
 	var noted, failed []string
-	var overrides, mirrors, dangling int
+	var overrides, mirrors int
 	for _, row := range rows {
 		switch row.Status {
 		case Fail:
@@ -188,9 +205,10 @@ func CheckTemplateDrift(vaultRoot string) Result {
 			overrides++
 		case driftMirror:
 			mirrors++
-		case driftDangling:
-			dangling++
 		}
+	}
+	if retiredLock {
+		noted = append(noted, retiredLockDetail)
 	}
 
 	if len(failed) > 0 {
@@ -211,11 +229,16 @@ func CheckTemplateDrift(vaultRoot string) Result {
 	if mirrors > 0 {
 		halves = append(halves, fmt.Sprintf("%d mirror(s) pending a prune", mirrors))
 	}
-	if dangling > 0 {
-		halves = append(halves, fmt.Sprintf("%d dangling lock entr(y/ies) pending a sync", dangling))
+	switch {
+	case len(halves) > 0:
+		r.Summary = fmt.Sprintf("%s (of %d)", strings.Join(halves, ", "), len(rows))
+		if retiredLock {
+			r.Summary += "; a retired templates.lock is present"
+		}
+	default:
+		r.Summary = fmt.Sprintf("%d templates in sync; a retired templates.lock is present", len(rows))
 	}
 	r.Status = Info
-	r.Summary = fmt.Sprintf("%s (of %d)", strings.Join(halves, ", "), len(rows))
 	r.Details = append(noted, templateDriftRemedy...)
 	return r
 }
@@ -228,14 +251,12 @@ func CheckTemplateDrift(vaultRoot string) Result {
 // the same row to both. Addressed only to a vibe-palace contributor, "never edit
 // the vault mirror" read to an operator as "you cannot customise a template";
 // addressed only to an operator, it would drop the ordering rule a contributor
-// needs. The customisation half steers to the project tier, and says exactly
-// which risks to a vault Templates/ override of a built-in are closed (`vp
-// config sync` no longer overwrites one or commits its removal; the upgrade
-// commands never reset one) and which remains (a lock-less host's prompt). It
-// names the reset verbs as the one way to remove an override, keeping a
-// backup. It must not call that tier safe: reversing the steer is a recorded
-// operator decision that belongs to
-// template-provenance-manifest-retires-the-host-local-lock.
+// needs. The customisation half steers to the project tier and says what vp
+// does to a vault Templates/ override of a built-in: nothing — `vp config sync`
+// judges it by the binary alone (the frozen shipped-version manifest, no
+// host-local lock), never overwrites it, never prompts about it and never
+// commits its removal; the upgrade commands never reset one. It names the reset
+// verbs as the one way to remove an override, keeping a backup.
 var templateDriftRemedy = []string{
 	"CHANGING VIBE-PALACE ITSELF: the binary and the vault-served templates ship",
 	"TOGETHER — a template supplies arguments the binary requires (commands/wrap.md",
@@ -243,18 +264,19 @@ var templateDriftRemedy = []string{
 	"a stale vault copy breaks that command outright. The reverse is harmless. Edit",
 	"ONLY the Go-embedded copy under internal/templates/templates/ (doctrine.md and",
 	"commands/ included), then `make install`, then `vp config sync` — in that order.",
-	"Never hand-edit templates.lock.",
+	"internal/templates/shipped.txt is frozen: a template edit needs nothing else.",
 	"CUSTOMISING A BUILT-IN command or skill: put your copy under",
 	"Projects/<slug>/commands/ or Projects/<slug>/skills/, which no reconciler and",
-	"no upgrade command touches. An override of a built-in under vault Templates/ is",
-	"still not recommended. `vp config sync` no longer overwrites one, and never",
-	"commits its removal (a committed override is restored from HEAD); the upgrade",
-	"commands never reset one, in any mode. But a host whose templates.lock does not",
-	"record it prompts on every sync (task",
-	"template-provenance-manifest-retires-the-host-local-lock).",
+	"no upgrade command touches. An override of a built-in under vault Templates/",
+	"shadows the built-in for every project. `vp config sync` keeps it — it never",
+	"overwrites one, never prompts about one, and never commits its removal (a",
+	"committed override is restored from HEAD) — and the upgrade commands never",
+	"reset one, in any mode. A copy identical, line endings aside, to the current or",
+	"an earlier shipped version of the built-in is vp's, not an override, and is",
+	"pruned: edit a copy before syncing.",
 	"To remove an override on purpose: `vp commands reset NAME` / `vp skills reset",
 	"NAME` — it removes the file so the built-in serves it, and keeps a backup.",
 	"A NEW vault-wide command or skill under Templates/ is safe — nothing touches it.",
-	"A byte-identical mirror is drift pending a prune, not an error. An override of",
-	"a built-in is reported here so it stays visible, not because it is wrong.",
+	"A mirror is drift pending a prune, not an error. An override of a built-in is",
+	"reported here so it stays visible, not because it is wrong.",
 }

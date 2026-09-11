@@ -89,14 +89,3 @@ func PreserveBackup(vaultRoot, rel string, data []byte) (Backup, error) {
 	}
 	return Backup{Rel: name, Reused: true}, nil
 }
-
-// HashFile returns the hex sha256 of a file on disk. A missing file
-// returns ("", err) with an error that satisfies os.IsNotExist.
-func HashFile(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
-}

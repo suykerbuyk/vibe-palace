@@ -23,6 +23,13 @@ import (
 var CanonicalGitignorePatterns = []string{
 	"# Machine-local data — not synced between machines.",
 	"palace/.local/",
+	// The header string is kept VERBATIM although no vp from this release
+	// writes a reconcile sidecar: every entry is an exact-line presence
+	// requirement, so rewording it would append a line to every vault's
+	// .gitignore. "*.bak" still covers the content-named backups a
+	// `vp commands reset` / `vp skills reset` keeps, and old binaries' .bak
+	// files; "*.new" covers the .new / .new.bak sidecars an old binary's
+	// keep/.new prompt wrote, which may still sit in a vault.
 	"# Template reconcile sidecars",
 	"*.bak",
 	"*.new",

@@ -37,51 +37,27 @@ const (
 	// ActionSkip: cannot act because a required input is missing (e.g. sync
 	// mode with no seed and nothing to fix).
 	ActionSkip ActionKind = "Skip"
-	// ActionPrompt: ambiguous reconcile — the orchestrator must collect a
-	// user choice and resolve this action BEFORE calling Apply. Reconciler
-	// Apply implementations MUST return an error if they observe an
-	// ActionPrompt — it is defense-in-depth against a misbehaving
-	// orchestrator.
+	// ActionDelete: the artifact is a vault Templates/ copy the binary can
+	// prove is vp's — the current embedded copy, or an earlier shipped version
+	// from the frozen shipped.txt manifest, line endings aside
+	// (templates.ClassifyVaultCopy) — and therefore redundant: the embedded
+	// floor serves the resource directly. The fix is to prune the vault file.
+	// Emitted by the TemplateTree reconciler under the override-only model
+	// (ADR-008 Phase 3), and never prompted: nothing it removes is operator
+	// content.
 	//
-	// `vp config sync` (resolveTemplatePrompts) is the one orchestrator. It
-	// has two answers and both DROP the action: `s` keeps the operator's file
-	// and does nothing else, and `n` writes the "<path>.new" sidecar itself
-	// first. No answer produces a Create or an Update — the Templates
-	// reconcile never writes a template, and its Apply reports either kind as
-	// an error. (An `o`/overwrite answer existed until it was found to be the
-	// first step of a chain that deleted the operator's override on every
-	// host.)
+	// Details carry "embedded_relpath=" (the built-in it prunes),
+	// "provenance=" (current or earlier), "vault_sha=" (the raw sha256 of the
+	// worktree bytes; empty when the file is already absent), "key=" (the
+	// ProvenanceKey a shipped.txt row matches) and, for a removal already
+	// pending in the worktree, "pending=true". Apply re-reads the file and
+	// re-checks it with PruneAccepts immediately before removing it, and
+	// `vp config sync` checks the committed copy and every remote tip with
+	// the same rule before it commits the removal.
 	//
-	// For the TemplateTree reconciler, Action.Details carries the three
-	// SHAs and the embedded resource identity needed to render a
-	// meaningful menu, write a `.new` sidecar, and produce a
-	// `vp check --dry-run` row. The Details slice contains, in order:
-	//
-	//   "embedded_sha=<hex>"
-	//   "vault_sha=<hex>"
-	//   "lock_sha=<hex>"
-	//   "embedded_relpath=<embedded-relative-path>"
-	//
-	// Any SHA may be the empty string after the `=` (e.g. lock_sha=
-	// when no lock entry exists). embedded_relpath is always non-empty
-	// for TemplateTree Prompts and is how the orchestrator recovers the
-	// embedded byte source for the `.new` sidecar branch without
-	// reverse-engineering from Target. Orchestrator parsers should split
-	// on the first '=' and treat missing keys as the empty value.
-	ActionPrompt ActionKind = "Prompt"
-	// ActionDelete: the artifact is a reconciler-owned vault mirror that
-	// is byte-identical to the canonical (embedded) source and therefore
-	// redundant — the embedded floor serves it directly. The fix is to
-	// prune the vault file and drop its lock entry so the persisted lock
-	// lists only genuine user overrides. Emitted by the TemplateTree
-	// reconciler under the override-only materialization model (ADR-008
-	// Phase 3). Never prompted: pruning a byte-identical mirror is safe
-	// because resolution falls through to the embedded tier.
-	//
-	// Details carry "embedded_sha=" and "lock_sha=": the SHAs that prove the
-	// bytes are vp's. Apply re-hashes the file against them immediately
-	// before removing it, and `vp config sync` checks the committed copy
-	// against the same pair before it commits the removal.
+	// (A reconciler prompt, ActionPrompt, existed until the shipped-version
+	// manifest retired templates.lock: with provenance decided by the binary
+	// alone, an operator's copy is always kept and there is nothing to ask.)
 	ActionDelete ActionKind = "Delete"
 )
 
@@ -95,8 +71,8 @@ type Action struct {
 }
 
 // Detail returns the value of the first "<key>=<value>" entry in Details, or
-// "" when the key is absent. The TemplateTree reconciler's Prompt and Delete
-// rows carry their SHAs this way (see ActionPrompt).
+// "" when the key is absent. The TemplateTree reconciler's Delete rows carry
+// their provenance this way (see ActionDelete).
 func (a Action) Detail(key string) string {
 	prefix := key + "="
 	for _, d := range a.Details {

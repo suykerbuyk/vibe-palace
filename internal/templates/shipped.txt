@@ -1,0 +1,225 @@
+# internal/templates/shipped.txt — the shipped-version manifest.
+#
+# Every version of every built-in template that a vp binary could ever have
+# written into a vault's Templates/, one row per (version, relpath), in
+# sha256sum format: "<ProvenanceKey>  <relpath under internal/templates/templates/>".
+# `vp config sync` prunes a vault Templates/ copy whose bytes, line endings
+# aside, match a row for its own relpath: those bytes are vp-shipped, and
+# recoverable from vibe-palace's git history. The current embedded copy is
+# matched live (templates.EmbeddedSHA) and is not a row.
+#
+# FROZEN. It is never regenerated, and a template edit needs nothing beyond
+# the Go-embedded copy. A change to this file is a deliberate, reviewed edit
+# that updates frozenManifestSHA256 (shipped_test.go) in the same commit.
+#
+# The boundary is 1f3bb62: the last commit on main before a4179a5 removed the
+# last writer of template bytes into a vault (the upgrade commands' reset).
+# The writers were TemplateTree materialize (7e5b96d..807bae7), config sync's
+# `o`/--yes overwrite (until 5aa68ee), `vp commands upgrade` (44df171..a4179a5)
+# and `vp skills upgrade` (a7e24c9..a4179a5). After the boundary no vp binary
+# writes a template into Templates/, so no later version can reach a vault from
+# vp: a copy of one is operator-placed, kept, and reported by vp_check.
+#
+# Key: sha256 of the bytes after one CRLF->LF pass (templates.ProvenanceKey).
+# No row's blob holds a CR, so every row equals a plain sha256sum.
+#
+# Residuals, all failing toward keep: versions that existed only in
+# rebased-away commits, fixups or dirty `make install` builds before the
+# boundary; mirrors written by pre-vibe-palace (vibe-vault) binaries, whose
+# history starts at f9f5b17; and a built-in later removed from the corpus,
+# whose rows are never consulted because the reconcile walks only the current
+# relpaths. Rows under old relpaths (commands/vp-*.md) stay: they are part of
+# the derivation.
+#
+# Derivation. Run it once in a full clone with tags fetched (git fetch --tags).
+# It fails closed: a revision that does not resolve is a non-zero exit, never
+# zero rows. The rows below, with every "#" line stripped, equal its output:
+# 174 rows over 46 relpaths. With revs="1f3bb62" alone it yields 172; the two
+# rows marked "# extra:" come from the tag pre-rebase-501c96e, whose commit is
+# not an ancestor of 1f3bb62 but whose build was installed.
+#
+#   set -eu -o pipefail
+#   revs="1f3bb62 pre-rebase-501c96e"
+#   for r in $revs; do git rev-parse -q --verify "$r^{commit}" >/dev/null || { echo "derive: $r does not resolve (git fetch --tags)" >&2; exit 1; }; done
+#   git rev-list --full-history $revs -- internal/templates/templates internal/context/templates \
+#    | while read -r c; do git ls-tree -r "$c" -- internal/templates/templates/ internal/context/templates/ || exit 1; done \
+#    | awk '$2=="blob" && $4 ~ /\.md$/ {sub("^internal/(templates|context)/templates/","",$4); print $3" "$4}' | LC_ALL=C sort -u \
+#    | while read -r oid rel; do s=$(git cat-file blob "$oid" | sha256sum) || exit 1; printf '%s  %s\n' "${s%% *}" "$rel"; done \
+#    | LC_ALL=C sort -k2,2 -k1,1 -u
+#
+13b6be92cb362231dcff951a72cbd9394d38d4eea832dc92309ef711ee0f256f  commands/cancel-plan.md
+306788f868a818f08dbae8a52995d07ea47a97608a06fcf514a74a4d3a73f0c2  commands/cancel-plan.md
+5df992680edce89f97ea44d3b8457ac60ef316c10097f961e89889cc44c54d8e  commands/cancel-plan.md
+91446292fdbffbfe14d716aee9192b10ffa82491ef9951c77ed5d5582e4a8533  commands/cancel-plan.md
+b9c681a449e33bb4582cd1cdc4bef209ab9b64e4450ac18e44b3b22786be62a0  commands/cancel-plan.md
+d83afc14a09a089ea953651a0d8960b64a33781541255700c77d48701a280b58  commands/cancel-plan.md
+f468f7885ac387032a165083e5d89c4f4916877e4f570e37e2dcd6ef5a8e904a  commands/cancel-plan.md
+fc667be07a6ea4ea0d74406320155ac89da47b34cd6c112f4aba79181aa3c964  commands/cancel-plan.md
+# extra: tag pre-rebase-501c96e (commit 501c96e, 2026-07-30; on the github remote since 2026-09-11), blob 17505a1e135686913bb14a1e1845fac6b4c89e25
+3a237999814fd03956a59518ae505f55b170daa11c774c4074348562b35a1c47  commands/capture.md
+4be8c3300be5631a5a3acfce2a1317e8f223710c789af7f18b045619e5021ec5  commands/capture.md
+7d77f5d7ef47d559e3f9be1fc1a15b6b5278ae820fff73001230389b0564b125  commands/capture.md
+9e3236eb80173e810216dc3bf230ddace16253f48c3153df88e73b9f8158f0a0  commands/capture.md
+b693b49ba8bec5d7a66f5810828c394c63412667056946d146216cb6f6358951  commands/capture.md
+d49febb762023edd2a115d76c96e039de0d6928c96642cbb5effe93197f5904c  commands/capture.md
+4b6025660c750a1db69ceaed9e1cec47de1973984c50503840b2b6fb2b43c9e3  commands/execute-plan.md
+881cdb79d07d56c21cc9f075818af4c47a91fd39f7e892280260b857694dd373  commands/execute-plan.md
+b23afa4f3d9dc4f1f335c92916ae05e70d7fba7d3dba7b8a412cde3bccb14bbb  commands/execute-plan.md
+e649e80c1d4122a9bf1eada582d636b06fe0cf788f5f07875b65749125053995  commands/execute-plan.md
+8e8d2dcc7db87202eb90b9f5d769ac29bedb527f049d923a60d1e3f4c2234898  commands/herdr.md
+ba221bc0ec926ac6010902ef269632103518d10fb73b0cf7b748e4295ee12448  commands/herdr.md
+e125b32a88976f3d6e9c6137fb5a69fbbd44e52bf5720e7999c9d2d86edad329  commands/license.md
+74adcd76ada9305453d07bc5e35c2952fb9f8e13b1fb90a25ca86d57ba798ffe  commands/makefile.md
+1b3741c91d706a4f4115d63461fd9067db098ec6c175482a4fcb6de630662df3  commands/restart.md
+26c7eb31377805d0592b492ae8088614aa00a89260a58c07ee60ddc153df0a8a  commands/restart.md
+3f4e5f53e82cc3ebf7a0edef21b13dbf4a28fb91d732a4f8058fa1d0fb5d51ac  commands/restart.md
+4cdd28dbc1f6bb2c52cb6587fe47a8f6154f2ae892448191c58a55a84fc4bce3  commands/restart.md
+4e87be0a9c73eec607ae9a19f8d3ad052eb670aed4e413587d638904a4bb52ae  commands/restart.md
+5647a8a07a96f1611b6f9d31569b3b42d265975d7b9d568cce92821c04e61797  commands/restart.md
+67a886651e178591208d6b7028d6d09b26f121597aca47e404bfda00efcf5c0a  commands/restart.md
+69050e0ce459f4a6b0f940a74c860216d49cd5e346c82f093e8e436143614cb3  commands/restart.md
+6b06dcccc57f1debde3c1cec5ea3c719ba792a4538e0f58d38a4a29c7780ebe3  commands/restart.md
+6c2481056e78bdcd584b3b8aef2f5be38e673146631df4f204223e2874b50ba4  commands/restart.md
+758ef25aa5f0ea68cab67899f47c00df74df9e3870606dad4886df89a0170c91  commands/restart.md
+78efd91af31102b02c552799c02482ac148b23b79e2cebe834d7fe3d0ed63225  commands/restart.md
+809648088c19f537dc6b9355b6a3f95f0b73d1a7c0855f414c02aa2773a603d9  commands/restart.md
+8667812c5d47e49f42e3a001b9b8462eb3935044b503adf3221fdc6ec8d72765  commands/restart.md
+8b885d09a577eeda891b471e04813c542b87829bf6d8af102af47fdfec04dc79  commands/restart.md
+920cda2b85d3fdfd5c4f0d04d78a56742a5b953be71561ef2a66f6f38da09114  commands/restart.md
+92723add3689d788b3ddeb163739e0adb9a2614668a8586add845122746472f1  commands/restart.md
+92c1a3e7683e4c9e81a247aef9c46b71f733478ae13d9878d9754650719a6921  commands/restart.md
+97132aeffee163249babb1e34667af717eb03b083b01bb1d854d0ffefc1a88ca  commands/restart.md
+a30e3c8b7705511e5a59c4a40348e2f0f2d508a752eec03455d84001f4f3ad16  commands/restart.md
+ba691f9be74804d39f5f7afb215da192d92f936e542724b0aa1adffdafa857e3  commands/restart.md
+d0c1b944763e7d0ec77094d6a69fc85ba4888540525dd24b2c25f616a4c099f3  commands/restart.md
+d2472d2715c7a6fd6444ea952d864dfe9c8d05274ab352e9d0ba82b493710832  commands/restart.md
+dd7eca5bd3aeb0da8675e3d1661c4c84d87858d0e8d2c9b2d0efdf71d0262bbd  commands/restart.md
+e42d6884669a42eb4a578a535c431b43c71ee4bbfc5fd89e0e6c04ad63645226  commands/restart.md
+ee9ee25c848251132ae145f8e691fd1f220320dd885e5ad32786d30cc1c13f81  commands/restart.md
+f26955fef8cbbb139d631e02909242498bac23272648f3059f3bf2fb9cabf1fc  commands/restart.md
+028242ed600b3b559a7debd69e6dbfd9bd813a5ecd8b1081240efd2909616bc4  commands/review-plan.md
+75419e8a61bf9ad12e4a16304de5f9570dba4b2d29b30dd0caf1e85e9161665a  commands/review-plan.md
+c1fbf72f78822d2a5676feead765219433b39282b185dac5addfa7775597f1e1  commands/review-plan.md
+df222d1b29ada8261e70bc4a5b47c2bb2200f6143dab45deb6ab162d8de9436f  commands/review-plan.md
+e6efe34d6cf315abc68494f8e95024d9a0b72906854f588f46da9284858dbcc4  commands/review-plan.md
+eb511caf8483d5a3662d3d337ef1c2b195b60fd4a133d47e6096daa65f14cd51  commands/review-plan.md
+f611bf61d8dedbbf8f0f0b64d7b147f05b774f0760db503336639091f6cccf7e  commands/review-plan.md
+645d7cf18a34cb9384900fa1bac42b040276abb5a37f5c473774802523942618  commands/stage.md
+82a9069bf5fd0576936013142882f42a91d57a9d69fc3f08c7580f8a2a2d9d90  commands/stage.md
+f191f7d58dc4b6a6107b2098a2d4845e90387e024bd8ba4e710423266cbafa01  commands/stage.md
+511dbca863ec2925e1226c9ceb9f7e35621579f1019a908b7e0fc513f562d774  commands/tasks-epic.md
+986610cd7d1c9d12b9d804cec37e7aa55be1773088fa54083c110c69b2f9b51f  commands/tasks-epics.md
+c2444627c2c6c6e93a5814806af953348c976d076f0e844c2b691835aa408730  commands/tasks-read.md
+bb07af63a6ef24fd508606e15c31bae6aef170338540c988ab41ef5b53fe8943  commands/tasks-standalone.md
+5abcaf17b5ced0b1b0f3b04144c529b51fb9758eb837e071c44f82b706662591  commands/vault-audit.md
+9f19edba90a0ff5cf2f2a53cbd2e14b871d2403c95ddcd0bbec3da48c821a9b5  commands/vault-audit.md
+f181fa5e27349736fb62f1edb7b6c29490e99f84915acbf7ea3a388475dd79b4  commands/vault-audit.md
+f48a8ece61c98f714363bc69e5a7aed04081da34b15f0bc5b9c98ffd07890239  commands/vault-audit.md
+5df992680edce89f97ea44d3b8457ac60ef316c10097f961e89889cc44c54d8e  commands/vp-cancel-plan.md
+7d77f5d7ef47d559e3f9be1fc1a15b6b5278ae820fff73001230389b0564b125  commands/vp-capture.md
+d0c1b944763e7d0ec77094d6a69fc85ba4888540525dd24b2c25f616a4c099f3  commands/vp-restart.md
+eb511caf8483d5a3662d3d337ef1c2b195b60fd4a133d47e6096daa65f14cd51  commands/vp-review-plan.md
+69f5885313d9d268ee4f6c7b2ac58499ada4073f7a5fee73a3e7d94993df9373  commands/vp-wrap.md
+08b5662018c99e033d2d1553623f0e07dcddaafd0e2f12ae7da7c22da892c4ac  commands/wrap.md
+08c5466fdba2cc5b45b0ca7b9eb51485e39ef2dc4b357c01f0e3724abc9b3e91  commands/wrap.md
+0b557f4686e820ad206efef9c9c24ac73165f7ab5eb5983835c608576c64dd70  commands/wrap.md
+0e3b3f6c717212500cdb5028411b95e23ff8e9665e4fa9ebc0fa3def1b857052  commands/wrap.md
+0e5bc45e25d903d4047dd2305f999093ff7d1ac2f7872ff920270c4001bde7e7  commands/wrap.md
+22f9185308a5263de4ed7aa1cbaaffe2c0546664f26e89826ee4de8e9fa32f5b  commands/wrap.md
+2548caa4a59b8a5d4d31d5540e3ec8f90d75d1617229f9fd4f894758550762be  commands/wrap.md
+2951371ed705779c4aec293a1226636bc44b19dd26a5efc95ae59a8401e89e13  commands/wrap.md
+# extra: tag pre-rebase-501c96e (commit 501c96e, 2026-07-30; on the github remote since 2026-09-11), blob 3924d6ca85fa89d5b298dd57191112bddafa8427
+2f13399366aef10ebc04d2ecd2eba3344557435637ba15faa924a3e2cf5aa8ea  commands/wrap.md
+2f3eed0a56000c7ce3560eb60457b6edf41b892b780729a9d918af102a7aba33  commands/wrap.md
+301db931c7d61009794c921dc196fcee9da65e93b794e16e4cb391a68addcc3e  commands/wrap.md
+36a83d0b03c420a62506e0ec71990b0d960116fb0cf963755e4cfbeb8081ce28  commands/wrap.md
+445a9806504827bba7347f3753ebf70b581582839c53fc9e5f5661c4152016e6  commands/wrap.md
+4616598c411530fa2a321100fd161d76908c72386ee8b3be27d1b2a0ef8be80a  commands/wrap.md
+4c91c8b4097daace4d05ce02886f7cc609d3eca5c0ec2db38deac5f7f2c0738e  commands/wrap.md
+4fadefd99071ca7c2be338d1f8290e0e2c13fb95971ccc61b7131831083fac9a  commands/wrap.md
+4fb2f7f3b539439b523a2f251997fc53a565b886d1b50c73ede48d754937cdde  commands/wrap.md
+60317f866be7ac4d4801c5aa90caa70205561cbd1cd68cc6adc5e0903e8b2639  commands/wrap.md
+604f2a35583a656d6c1ffca9363539e2838487004f4f51292679fa64bafa4cc7  commands/wrap.md
+65ebe81f1032c6af11920aa523f8473ade2d04ebe6557a398346ebb8a0a2495a  commands/wrap.md
+69f5885313d9d268ee4f6c7b2ac58499ada4073f7a5fee73a3e7d94993df9373  commands/wrap.md
+6ba535a6abe1634f78c985eb7384f9e0c604819ec99d1e8c77e215a36a5fbc7e  commands/wrap.md
+757c1a86f879c4b9901a85d9b5b6b99f6b3e1b873c8796e26432f57850b650f2  commands/wrap.md
+78d360ab8bfe7dbbb715b46349bcab1abd1c13d2b994ea2749d62cdffe5d8310  commands/wrap.md
+842362008f823532dd1893926d464248b4553f08f08045eb29078d92cc1b579f  commands/wrap.md
+92f99e6784321e8788b5550c10e2d6aeb43c4e2eace12818d626ae27d32c909c  commands/wrap.md
+a0e699496071e47ee8dc489785245acc686f306e29e13b66818092e0dd0a4799  commands/wrap.md
+a36330d8de32b9846d215fc59a020e39b949b4cdb9aa7d812ff8a7f5021312a2  commands/wrap.md
+a455e9047af736f85466fb55e6d813053777f874b7f0571b144798f0e0755c68  commands/wrap.md
+a682977875a71aad8102bc6d21fc47463c979de57a07d86cf035e9712a2c5806  commands/wrap.md
+b7d24c1c07026504f793e7c35633e08c11586655c764eadf515382a226e04573  commands/wrap.md
+c75a7bd762b8a3db32fa974db252a5fbc874b128a2cb6790f30bd29261e8ac29  commands/wrap.md
+c96fbcb35aa51ea3d9b618634945ca9406882fd03c538d4d37790d22ec5cbc43  commands/wrap.md
+dc6e21ddd62ad7afc7c4131c7d19198fc01a78b4af3f01dd9a9ea527b215cece  commands/wrap.md
+e8418f3bd1912378312c1756e01cc048f62bfd548e29861509a8e7b1defc5ff0  commands/wrap.md
+eafcf4917091c36ba0febb370abc5134efb0633eb8a6cd826e4d2fdc0d13e678  commands/wrap.md
+f452c3d8898d92a213c19332de1aedef90a207ea6a1c543b1fd93351b7b3b6c1  commands/wrap.md
+fb25c241b8de0fc73f651ff31e5ededec3aadc551499b885c18147dfc36baa97  commands/wrap.md
+0268f8312cd5b8e53067001b820ee4e013506b8ab4df6a623af4509ac49510ba  doctrine.md
+4b24edcf496ddcfba1f66d62e0ab8ec246a642bfb877fa8e7c7e74b84eaf7f73  doctrine.md
+de9561d4fb8843695c6b91247b0459e8129d7c2e556cccdf952c4636c43e1cb4  enrichment.md
+5e18ea965596f3b824b1f4d69c1cc4f57972ab2fd62790be5a1ff06754760524  resume.md
+6118bef374d47e9e7f14bb684fccdec956983577e404b50a0a7a34e6b9e83ab0  resume.md
+7aa7a06976dfe5f3f4fbacd4def87868c2479ebbca10aeeab5fb2348d84b1ee0  resume.md
+b3be157307957a0f461d79c2bea48d0816b3d8bf35d43bd3d8feda40a9e3f1c8  resume.md
+cc8a7a773ca08282037f23290627f39fc082cbbfebfef63b55899073c54bcd9f  resume.md
+e5a64270c8e61ce1ebd5bb8074be1408a22c31cad7446210f75e8e69bfd37ed1  resume.md
+e7fdc1b8e357a0b130938c6f312d465c7fda7b44e5474a8cc8d9edbea0f66092  resume.md
+fd04ee5964ffa31395478719f79bcb57380bd25e457d6301f996eed150a5ba6a  resume.md
+fde089fe35884a632b42a9975f54d60f1c486cb9ce1ef0dd2abac2cbb1bed828  resume.md
+9b1385fa78dfc0f7ca6ac21741d83845b3864ddf2fc76e4bc3605f0c85a6ed95  skills/chair/SKILL.md
+b0490aeb6979aed72a43402a70e3a04601e700f3b76679fbbed9e5b83fd03756  skills/chair/SKILL.md
+c65e6aaa8b289c6f0214300b29e7bd10be0ccc6ff13d1de46c9bc33c8165bd0b  skills/code-digger/SKILL.md
+cf0ec2d3827c51b82cefaa0134dd68223fbcb5e6b790855fdd1e940f1cfdf904  skills/code-digger/SKILL.md
+f1c04b2ef24bdc2512f407522a1bab5df36be4987d3dfc572163059dde95f91b  skills/code-digger/SKILL.md
+84e33395935eaa8fc6c630ce03b0e85aab9c74e54fa6cd3220225a8f25b2569a  skills/code-digger/references/artifact-escalation.md
+c280e974224844d824be7b7130bd0cd0ca38d31d9c4cd6a31677090578c98b0e  skills/code-digger/references/artifact-issue-register.md
+c31eeb0085724dd08f5800864b09c1e49e6b65ccb6141dcce3dea5e5c10a5285  skills/code-digger/references/artifact-issue-register.md
+ee6f72cc2c922220a9533fc8bc582dcbfa239e8075daf2ce5217636f5d0ca248  skills/code-digger/references/artifact-issue-register.md
+b7cce9cb5b810f94724dc4e0592e1d1fca8bc2e00649db561411f0b74ff94dac  skills/code-digger/references/artifact-loc-census.md
+896c9e31458e6ae473bff772d93dd3faccee7bc517a1a23ae1526693d6429fc0  skills/code-digger/references/artifact-synthesis.md
+d42d7a472e36afee5336fc7cd9cc8e0373dac040ce2bbf72085cdc89f66341da  skills/code-digger/references/prompt-adversarial-audit.md
+1202ad1a9a73b1f356b4a51d67a2e0d1b8fec8c2ee613ccfcdfd5fd87203c87a  skills/code-digger/references/prompt-breadth-doc.md
+423bf866c2d569ebfadfa0a7680e3aab99ade5ef2fb1848125a74bfef9fdc284  skills/code-digger/references/prompt-breadth-doc.md
+b555b9c1524d517adb4c085d2ba5c2f85aca0db41ba744461ee71fc90f9730f4  skills/code-digger/references/prompt-breadth-doc.md
+126abbcdc89d06567954a5d9f0bfc3e8ea1004783ad875815b0a9b2f1d8fafe2  skills/code-digger/references/prompt-deep-dive.md
+53edb7444671dd696114fe50556e93f0ea053c7aa4f8b94ba96d13ed6dea8f98  skills/code-digger/references/prompt-deep-dive.md
+bbef13f2cd58956c5940209f52f75cf8b2d5c04dc6cd812e189805e10f78b39c  skills/code-digger/references/prompt-deep-dive.md
+e5cd50be8f96a789983669e5fd8874af04532accd14a677c3e9499faa56821fb  skills/code-digger/references/prompt-loc-census.md
+4aed192be1136fd48883653e6dc85a700c24b12eb2c853cb17f7e7b42a8fcf29  skills/code-digger/references/subagent-harness.md
+0a10e432e68084246b008fe13850ac8004c4285fbf3cdf2217979485ed495b17  skills/epic-orchestrator/SKILL.md
+10a847fbfa16e0355e3035f633928812e1e1e2acbf5feddd0309e5a64952e4be  skills/epic-orchestrator/SKILL.md
+31cd21793fccc8c7d30d4c1438f6fe502191fdd0a0adb39a081550dd9c26dc1b  skills/epic-orchestrator/SKILL.md
+7aca0f21e2d6e7f5bdaaaa3228da3f390404599f14511a6dbca1aa08af1c9b1b  skills/epic-orchestrator/SKILL.md
+835f496d1152d8a71594fcba19d6a65654ed55866b717b34aa37284bc28ed8e9  skills/epic-orchestrator/SKILL.md
+84b55c0b7c607b0c8613f1d291aa5ee0e3889db05734877175644ac08c353d37  skills/epic-orchestrator/SKILL.md
+9a0ba0e1dde257130f7445777f1661f9c8b936f8f6502fffe8279efc93b1e728  skills/epic-orchestrator/SKILL.md
+af98de9c134d611182cd382fc56f9961abdeacc1bf2e9428afbdb1888bbdc690  skills/epic-orchestrator/SKILL.md
+b449e0dfd0da56b63fe4ad3550cf800de20e4292b0ede2b6d1ed29145ae22730  skills/epic-orchestrator/SKILL.md
+fb7a6da69d454fd8c8297095524bddf347effaaf9e0b567ec6d55bd38345a4a6  skills/epic-orchestrator/SKILL.md
+fefd3e5c0565b77cc947a2cbefd97d1cd218ed017a276de544396b1b478d20d6  skills/epic-orchestrator/SKILL.md
+59469024bc55aa33bc5c254d23a94a2a257cfc33f05c226db7af897b96be8e11  skills/epic-orchestrator/references/prompt-implement.md
+d2ffc9a6dc2fa9084552e36fbe0ea669cd998a938cbecfdc4662ab1cc508099b  skills/epic-orchestrator/references/prompt-implement.md
+2818fc1974d71d31b37715b65256c0351403217e41d5ac3d25a962755d09344d  skills/epic-orchestrator/references/prompt-review.md
+28be7e611408981f156246f4492adcaf40d12e697015cd6e692a962ac174b9dd  skills/pair-reviewer/SKILL.md
+ba29f1ff8732dec44d541ee0d92da01b1b353f88df040daa0926e4802c60ac90  skills/pair-reviewer/SKILL.md
+d858a289d89a1d91672283b1f79a54d94306cf5a6e1aa1cc6cbb6d73ebb456e7  skills/pair-reviewer/SKILL.md
+d6aec7dac608fb1e510abdff29623ce3f6c12bb042ef0ffcd9f6091dbce58f0c  skills/second-opinion/SKILL.md
+193c0b2d2e57502d2b530968e926f3c2695ed6168921724dbed5c8981ac1171b  skills/startup-analyst/SKILL.md
+9d373825213a16dda5a116c4300e6461f8c9cb9d417b89c48a75fc35e2ac92ed  skills/startup-analyst/SKILL.md
+d82b65045731f5a60cd32b932cd4c37325bb07ae58968d4319430fb8b23d7aaa  skills/startup-analyst/references/capex-opex.md
+67a72a3d800b1700ce5022e938371d854fc8ea8604506c572b94c1ff7d331252  skills/startup-analyst/references/competitive-landscape.md
+565f135355e17ee5b0ce07f90aad00a7628a7f5e8bd94aeee03f0b9765b9e876  skills/startup-analyst/references/funding-sources.md
+e7e58b0669914df318f0e07b48f796d89461ec3a5d3d433cc0eca0bd1918c8c9  skills/startup-analyst/references/reality-validation.md
+800c7f5b6c6f8d65e544dab142124351ce50fa69ef408c0f4584f892a7a18c8f  skills/startup-analyst/references/strategic-partnerships.md
+42ef17daea3b285a56aed11b7bb3cc0f4be23c421b1322f317773301089b1976  workflow.md
+6ad26fd211c5e8d67f9de2c162d863729848ae88ece9229c6e191b22c75afca5  workflow.md
+af2525a44e2161d913d5df2a4b018cd114671879f75941166a8f4b0653bbc812  workflow.md
+c1fd2432e839c7d4250aa500b265c2243d6210c250f521eda3b3c7a762a0d1fc  workflow.md
+d3b3902009e0066b11c8b2c6e18d4c8e534741b95257618b2eac3218a78c9b29  workflow.md
+e0f0de09edde6028683271d6566ba240bed9f04ab910887c97d94a83d95a96f2  workflow.md
+fd20c350ab3da66709d55a4a2bc11fb20f369a623eb1b66486424e80879006d6  workflow.md

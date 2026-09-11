@@ -174,7 +174,7 @@ func TestSkillsResetRemovesEveryOverrideFileWithBackups(t *testing.T) {
 		assertFileBytes(t, backupPath(vault, filepath.ToSlash(rel), body), body)
 	}
 	assertAbsent(t, mirror)
-	if !strings.Contains(out, "reality-validation.md: removed your override; the built-in now serves it (identical to the built-in; no backup needed)") {
+	if !strings.Contains(out, "reality-validation.md: removed it; the built-in now serves it (identical to the built-in; no backup needed)") {
 		t.Errorf("no mirror line:\n%s", out)
 	}
 	assertFileBytes(t, extra, "mine\n")
@@ -287,16 +287,15 @@ func TestCommandsResetUntrackedOverrideNeedsNoCommit(t *testing.T) {
 
 // TestCommandsResetCommitFailureUnstages is H1 with N2: a refused commit
 // leaves the removal unstaged, exits 2 with the manual commands, and the next
-// config sync neither defers nor restores it and drops the lock entry. With
-// the hook gone, running the same reset again finishes the commit.
+// config sync neither defers, restores nor commits it (the committed copy is
+// operator content) and writes no templates.lock. With the hook gone, running
+// the same reset again finishes the commit.
 func TestCommandsResetCommitFailureUnstages(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell hooks need a POSIX shell")
 	}
 	vaultPath, projDir, _ := gitResetVault(t)
 	wrap := filepath.Join(vaultPath, "Templates", "commands", "wrap.md")
-	sha, _ := templates.EmbeddedSHA("commands/wrap.md")
-	seedTemplateOverride(t, vaultPath, "commands/wrap.md", []byte(myWrap), sha)
 	head := strings.TrimSpace(gitInVault(t, vaultPath, "rev-parse", "HEAD"))
 	hook := filepath.Join(vaultPath, ".git", "hooks", "pre-commit")
 	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
@@ -330,9 +329,13 @@ func TestCommandsResetCommitFailureUnstages(t *testing.T) {
 		t.Errorf("the next sync deferred or restored the reset:\n%s", out)
 	}
 	assertAbsent(t, wrap)
-	if l, _ := templates.ReadLock(vaultPath); l.Entries["Templates/commands/wrap.md"].EmbeddedSHA != "" {
-		t.Error("the lock entry survived")
+	if !strings.Contains(out, "Templates/commands/wrap.md removed from the worktree; the committed copy is operator content — finish removing it with vp commands reset wrap") {
+		t.Errorf("the pending removal of operator content is not named with its reset verb:\n%s", out)
 	}
+	if got := strings.TrimSpace(gitInVault(t, vaultPath, "rev-parse", "HEAD")); got != head {
+		t.Errorf("the sync committed a removal of operator content: %s", gitInVault(t, vaultPath, "log", "-1", "--stat"))
+	}
+	assertAbsent(t, filepath.Join(vaultPath, ".vibe-palace", "templates.lock"))
 
 	if err := os.Remove(hook); err != nil {
 		t.Fatal(err)
@@ -538,6 +541,23 @@ func TestCommandsResetDryRunMatchesTheRealRun(t *testing.T) {
 			t.Errorf("dry exit %d\n%s", dry, dryErr)
 		}
 	})
+	t.Run("stale-copy", resetStaleCopyDryRunMatchesTheRealRun)
+	t.Run("crlf-mirror", func(t *testing.T) {
+		vault := t.TempDir()
+		crlf := strings.ReplaceAll(string(embeddedTemplateBytes(t, "commands/restart.md")), "\n", "\r\n")
+		putVaultFile(t, vault, "Templates/commands/restart.md", crlf)
+		dry, _, _ := runReset(t, vault, "command", true, "restart")
+		if !strings.Contains(dry, "would reset Templates/commands/restart.md: remove it (identical, line endings aside, to the built-in; no backup needed)") {
+			t.Errorf("dry run:\n%s", dry)
+		}
+		out, _, code := runReset(t, vault, "command", false, "restart")
+		if code != cli.ExitOK || !strings.Contains(out, "removed it; the built-in now serves it (identical, line endings aside, to the built-in; no backup needed)") {
+			t.Errorf("exit %d\n%s", code, out)
+		}
+		if baks := bakFilesUnder(t, filepath.Join(vault, "Templates")); len(baks) != 0 {
+			t.Errorf("a backup was written: %v", baks)
+		}
+	})
 }
 
 // TestCommitTemplateResetReportsACommitThatLeftPathsInHEAD is review L5: when
@@ -577,12 +597,10 @@ func TestCommitTemplateResetReportsACommitThatLeftPathsInHEAD(t *testing.T) {
 
 // TestConfigSyncDoesNotUndoAReset is the collision pin (a regression pin: Task
 // A's HEAD restore already leaves an absent path alone). A committed override
-// with a lock entry at the embedded SHA is reset; two syncs, with and without
-// --yes, neither restore it nor move HEAD, and the lock entry goes.
+// is reset; two syncs, with and without --yes, neither restore it nor move
+// HEAD, and no templates.lock exists afterwards.
 func TestConfigSyncDoesNotUndoAReset(t *testing.T) {
 	vaultPath, projDir, _ := gitResetVault(t)
-	sha, _ := templates.EmbeddedSHA("commands/wrap.md")
-	seedTemplateOverride(t, vaultPath, "commands/wrap.md", []byte(myWrap), sha)
 	if _, errOut, code := runReset(t, vaultPath, "command", false, "wrap"); code != cli.ExitOK {
 		t.Fatalf("reset: exit %d\n%s", code, errOut)
 	}
@@ -597,9 +615,7 @@ func TestConfigSyncDoesNotUndoAReset(t *testing.T) {
 	if got := strings.TrimSpace(gitInVault(t, vaultPath, "rev-parse", "HEAD")); got != head {
 		t.Errorf("HEAD moved after the reset commit: %s", gitInVault(t, vaultPath, "log", "-1", "--stat"))
 	}
-	if l, _ := templates.ReadLock(vaultPath); l.Entries["Templates/commands/wrap.md"].EmbeddedSHA != "" {
-		t.Error("the lock entry survived")
-	}
+	assertAbsent(t, filepath.Join(vaultPath, ".vibe-palace", "templates.lock"))
 }
 
 func TestCommandsResetRefusesWithoutIdentity(t *testing.T) {
@@ -985,6 +1001,27 @@ func TestTemplateResetCommitMessageShapes(t *testing.T) {
 	}
 	if strings.HasSuffix(msg, "\n") {
 		t.Error("trailing newline")
+	}
+
+	// vp-shipped lines, and a commit with no backup at all: its preamble
+	// names none.
+	msg = templateResetCommitMessage("vp commands reset restart wrap", []resetCommitEntry{
+		{Rel: "Templates/commands/restart.md", Mirror: true, Provenance: templates.ProvenanceEarlier},
+		{Rel: "Templates/commands/wrap.md", Mirror: true, Provenance: templates.ProvenanceCurrent, LineEndings: true},
+	}, "hostB")
+	for _, want := range []string{
+		"chore(templates): operator reset of 2 vault Templates/ file(s)",
+		"named, on host hostB. The committed copy of each is in this commit's parent.",
+		"held vp-shipped bytes",
+		"- Templates/commands/restart.md (a copy of an earlier shipped version of commands/restart.md; no backup needed — recoverable from vibe-palace history)",
+		"- Templates/commands/wrap.md (identical, line endings aside, to the built-in; no backup needed)",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message lacks %q:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "backup named beside it") {
+		t.Errorf("a backup-less commit names a backup:\n%s", msg)
 	}
 }
 

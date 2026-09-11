@@ -459,8 +459,8 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 	// A stage or commit failure must not leave vp's own deletion in the
 	// index: the next sync would read it as someone else's staged change and
 	// keep deferring it forever. Unstage exactly the paths staged here; the
-	// removal stays in the worktree, the lock entry stays, and the next sync
-	// commits it (case 1b).
+	// removal stays in the worktree (" D"), and the next sync finds it pending
+	// (UncommittedRemovals) and commits it.
 	fail := func(err error) (*PushResult, PruneOutcome, error) {
 		if _, rerr := gitCmd(vaultPath, 10*time.Second, append([]string{"--literal-pathspecs", "reset", "-q", "--"}, stage...)...); rerr != nil {
 			err = fmt.Errorf("%w (and unstaging the removal failed: %v)", err, rerr)
@@ -755,4 +755,148 @@ func gitExact(dir string, timeout time.Duration, args ...string) (stdout, stderr
 	cmd.Stderr = &errBuf
 	stdout, err = cmd.Output()
 	return stdout, errBuf.Bytes(), err
+}
+
+// UncommittedRemovals lists the tracked files under the vault-relative
+// directory dir that were removed from the worktree and whose removal is not
+// committed — ` D` in `git status` — each with HEAD's copy as git would check it
+// out (ReadCommittedContent). It is read-only.
+//
+// It is how `vp config sync` finishes a prune whose commit did not land (a
+// stage or commit failure, a reset whose commit failed, a deletion by hand)
+// without host-local state: the caller classifies each HEAD copy and plans the
+// commit only for vp-shipped bytes. want, when non-nil, restricts the list to
+// the paths it accepts, BEFORE anything is read — so a broken filter on a file
+// the caller would never act on cannot fail the whole list.
+//
+// Listed only when all of these hold, so the list can never turn into a
+// mass-deletion commit:
+//
+//   - `git ls-files -v --deleted` lists it (out-of-cone sparse entries and
+//     staged deletions are never listed);
+//   - it is not assume-unchanged (a lowercase tag) or skip-worktree (S) —
+//     `git status` hides those, and staging one may be a no-op;
+//   - HEAD holds it (an added-then-deleted index entry has nothing to commit);
+//   - the index holds exactly HEAD's blob (a staged change followed by a
+//     worktree deletion is someone's work in progress, and the prune would
+//     defer it on every sync anyway).
+//
+// stdout and stderr are read separately: a hint on stderr is never a path.
+// Keys are vault-relative with forward slashes. Any git failure is an error.
+func UncommittedRemovals(vaultPath, dir string, want func(rel string) bool) (map[string][]byte, error) {
+	stdout, stderr, err := gitExact(vaultPath, 30*time.Second,
+		"--literal-pathspecs", "ls-files", "-v", "--deleted", "-z", "--", dir)
+	if err != nil {
+		return nil, fmt.Errorf("list uncommitted removals under %s: %w", dir,
+			&GitError{Detail: gitDetailLine(strings.TrimSpace(string(stderr))), Err: err})
+	}
+	var rels []string
+	seen := map[string]bool{}
+	for entry := range strings.SplitSeq(string(stdout), "\x00") {
+		tag, rel, ok := strings.Cut(entry, " ")
+		if !ok || rel == "" || len(tag) != 1 {
+			continue
+		}
+		if tag == "S" || strings.ToLower(tag) == tag {
+			continue // skip-worktree, or assume-unchanged
+		}
+		if want != nil && !want(rel) {
+			continue
+		}
+		if !seen[rel] {
+			seen[rel] = true
+			rels = append(rels, rel)
+		}
+	}
+	out := map[string][]byte{}
+	if len(rels) == 0 {
+		return out, nil
+	}
+	if born, err := headExists(vaultPath); err != nil || !born {
+		return out, err // no HEAD: nothing is committed to remove
+	}
+	for _, rel := range rels {
+		headOID, inHead, err := treeEntryOID(vaultPath, "HEAD", rel)
+		if err != nil {
+			return nil, err
+		}
+		if !inHead {
+			continue
+		}
+		indexOID, inIndex, err := indexEntryOID(vaultPath, rel)
+		if err != nil {
+			return nil, err
+		}
+		if !inIndex || indexOID != headOID {
+			continue
+		}
+		content, found, err := ReadCommittedContent(vaultPath, rel)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			out[rel] = content
+		}
+	}
+	return out, nil
+}
+
+// RetiredTemplatesLockRel is where vp binaries before
+// template-provenance-manifest-retires-the-host-local-lock kept the
+// host-local templates.lock. No vp from this release reads or writes it.
+const RetiredTemplatesLockRel = ".vibe-palace/templates.lock"
+
+// RetiredTemplatesLock reports whether the vault holds the retired
+// .vibe-palace/templates.lock and whether `vp config sync` may remove it:
+// only when it is a regular file reached directly, UNTRACKED — in neither the
+// index nor HEAD, so a `git rm --cached` lock HEAD still holds is tracked — and
+// NOT ignored. Such a lock is host-local dirt that no vp from this release
+// reads, and on a canonically configured git vault it makes `vp vault sync`
+// refuse. A tracked lock is shared state and an ignored one is the operator's
+// choice; both are left. content is the bytes read, for a compare-and-set
+// removal. Any git failure is an error, never "removable".
+func RetiredTemplatesLock(vaultPath string) (content []byte, removable bool, err error) {
+	rel := RetiredTemplatesLockRel
+	if derr := vaultfs.CheckDirectPath(vaultPath, rel); derr != nil {
+		if errors.Is(derr, vaultfs.ErrIndirectPath) {
+			return nil, false, nil
+		}
+		return nil, false, derr
+	}
+	content, err = os.ReadFile(filepath.Join(vaultPath, filepath.FromSlash(rel)))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if _, inIndex, err := indexEntryOID(vaultPath, rel); err != nil || inIndex {
+		return content, false, err
+	}
+	if born, err := headExists(vaultPath); err != nil {
+		return content, false, err
+	} else if born {
+		if _, inHead, err := treeEntryOID(vaultPath, "HEAD", rel); err != nil || inHead {
+			return content, false, err
+		}
+	}
+	ignored, err := GitPathIgnored(vaultPath, rel)
+	if err != nil || ignored {
+		return content, false, err
+	}
+	return content, true, nil
+}
+
+// headExists reports whether HEAD names a commit. An unborn branch (a fresh
+// `git init`) is false, not an error; any other failure is an error.
+func headExists(vaultPath string) (bool, error) {
+	_, stderr, err := gitExact(vaultPath, 10*time.Second, "rev-parse", "-q", "--verify", "HEAD^{commit}")
+	if err == nil {
+		return true, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 && len(bytes.TrimSpace(stderr)) == 0 {
+		return false, nil
+	}
+	return false, &GitError{Detail: gitDetailLine(strings.TrimSpace(string(stderr))), Err: err}
 }

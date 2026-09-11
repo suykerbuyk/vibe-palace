@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
@@ -17,15 +16,14 @@ import (
 // the Design B (override-only) model end to end:
 //
 //  1. A fresh `vp init` writes NO skill mirror — the embedded floor serves
-//     every startup-analyst file (SKILL.md + 5 references) directly, and the
-//     templates.lock has no entry for them (init has no Templates pass, so it
-//     does not create the lock at all; ReadLock reads that as empty).
+//     every startup-analyst file (SKILL.md + 5 references) directly, and no
+//     host-local templates.lock is written (none is read or written by any
+//     vp from this release).
 //  2. The `vp_skill` MCP tool still returns the SKILL.md body for
 //     startup-analyst, resolved from the embedded tier.
-//  3. A genuine override of one reference (distinct bytes + a lock entry
-//     recording the embedded baseline) SURVIVES a sync (Case 4 keep) and
-//     wins resolution, while non-overridden references keep resolving from
-//     embedded.
+//  3. A genuine override of one reference (bytes vp never shipped) SURVIVES
+//     a sync — it is operator content, kept — and wins resolution, while
+//     non-overridden references keep resolving from embedded.
 func TestIntegrationSkillMaterializeAndReconcile(t *testing.T) {
 	bin := buildVPBinary(t)
 
@@ -50,16 +48,8 @@ func TestIntegrationSkillMaterializeAndReconcile(t *testing.T) {
 		}
 	}
 
-	// The lock has no reconciler-owned skill entries.
-	lock, err := templates.ReadLock(env.vaultPath)
-	if err != nil {
-		t.Fatalf("ReadLock: %v", err)
-	}
-	for _, rel := range wantFiles {
-		key := "Templates/skills/startup-analyst/" + rel
-		if _, ok := lock.Entries[key]; ok {
-			t.Errorf("lock unexpectedly tracks non-overridden %s", key)
-		}
+	if _, err := os.Stat(filepath.Join(env.vaultPath, retiredLockRel)); !os.IsNotExist(err) {
+		t.Errorf("init wrote %s (stat err=%v)", retiredLockRel, err)
 	}
 
 	// Sanity: the WalkEmbedded resource set still contains all six paths —
@@ -89,8 +79,8 @@ func TestIntegrationSkillMaterializeAndReconcile(t *testing.T) {
 	}
 
 	// --- Part 3: a genuine reference override survives a sync. ---
-	// Seed an override (distinct bytes + a lock entry at the embedded
-	// baseline) so the reconciler classifies it as a kept user override.
+	// Seed an override (bytes vp never shipped): the reconciler classifies it
+	// as operator content and keeps it.
 	const capexRel = "skills/startup-analyst/references/capex-opex.md"
 	const userEdit = "# USER EDITED CAPEX\n\ncustom notes\n"
 	seedIntegrationOverride(t, env.vaultPath, capexRel, []byte(userEdit))
@@ -109,17 +99,9 @@ func TestIntegrationSkillMaterializeAndReconcile(t *testing.T) {
 	if _, err := os.Stat(capexPath + ".bak"); err == nil {
 		t.Error("kept override should not produce .bak (embedded stable)")
 	}
-	// The override's lock entry survives at the embedded baseline.
-	lock2, _ := templates.ReadLock(env.vaultPath)
-	key := "Templates/" + capexRel
-	entry, ok := lock2.Entries[key]
-	if !ok {
-		t.Fatalf("lock entry disappeared for %s", key)
-	}
-	embSHA, _ := templates.EmbeddedSHA(capexRel)
-	if entry.EmbeddedSHA != embSHA {
-		t.Errorf("lock should still track embedded baseline; got %q want %q",
-			entry.EmbeddedSHA, embSHA)
+	// Keeping it wrote no host-local state.
+	if _, err := os.Stat(filepath.Join(env.vaultPath, retiredLockRel)); !os.IsNotExist(err) {
+		t.Errorf("sync wrote %s (stat err=%v)", retiredLockRel, err)
 	}
 	// A non-overridden reference still resolves from the embedded floor.
 	compRel := "skills/startup-analyst/references/competitive-landscape.md"
@@ -130,32 +112,15 @@ func TestIntegrationSkillMaterializeAndReconcile(t *testing.T) {
 }
 
 // seedIntegrationOverride writes data to the vault Templates/ target for
-// embeddedRel and records a lock entry with the CURRENT embedded SHA as the
-// baseline — reconstructing a genuine user override under the override-only
-// model, where a fresh init leaves no mirror to edit.
+// embeddedRel — a genuine user override under the override-only model, where a
+// fresh init leaves no mirror to edit. It plants the file only.
 func seedIntegrationOverride(t *testing.T, vaultPath, embeddedRel string, data []byte) {
 	t.Helper()
-	key := "Templates/" + embeddedRel
-	target := filepath.Join(vaultPath, filepath.FromSlash(key))
+	target := filepath.Join(vaultPath, "Templates", filepath.FromSlash(embeddedRel))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(target, data, 0o644); err != nil {
 		t.Fatalf("write override: %v", err)
-	}
-	embSHA, ok := templates.EmbeddedSHA(embeddedRel)
-	if !ok {
-		t.Fatalf("no embedded SHA for %q", embeddedRel)
-	}
-	lock, err := templates.ReadLock(vaultPath)
-	if err != nil {
-		t.Fatalf("ReadLock: %v", err)
-	}
-	if lock.Entries == nil {
-		lock.Entries = map[string]templates.LockEntry{}
-	}
-	lock.Entries[key] = templates.LockEntry{EmbeddedSHA: embSHA, WrittenAt: time.Now().UTC()}
-	if err := templates.WriteLock(vaultPath, lock); err != nil {
-		t.Fatalf("WriteLock: %v", err)
 	}
 }

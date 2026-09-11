@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
 
 // TestIntegrationTemplateOverrideSurvivesSync drives the real `vp` binary
@@ -21,7 +19,9 @@ import (
 //
 //   - two `--yes` syncs over lock-less overrides (the first overwrote them,
 //     the second pruned the result and pushed the deletion);
-//   - a second host whose templates.lock lacks the entry the first host has;
+//   - a second host, a fresh clone with no host-local state (the retired
+//     templates.lock never travelled, so an override prompted there on every
+//     sync until provenance moved into the binary);
 //   - an answerless sync over a mirror an old binary (or an upgrade reset)
 //     left on top of a committed override — no --yes and no answer needed.
 //
@@ -74,24 +74,17 @@ func TestIntegrationTemplateOverrideSurvivesSync(t *testing.T) {
 
 	t.Run("two-host-override-survives", func(t *testing.T) {
 		const mine = "# my wrap override\n"
-		embSHA, ok := templates.EmbeddedSHA("commands/wrap.md")
-		if !ok {
-			t.Fatal("no embedded SHA for commands/wrap.md")
-		}
 
-		// Host A keeps the override: its lock records the embedded baseline.
-		// The lock is written AFTER the commit, as on a real host, where vp's
-		// committers never stage it — so it does not travel to host B.
+		// Host A commits the override and syncs.
 		a := setupFreshEnv(t)
 		runVP(t, bin, a, nil, "init", a.projectDir,
 			"--name", a.projectName, "--vault-path", a.vaultPath, "--no-git")
 		putFile(t, a.vaultPath, "Templates/commands/wrap.md", mine)
 		origin := gitifyVaultWithOrigin(t, a.vaultPath)
-		seedTrackedOverride(t, a.vaultPath, "commands/wrap.md", []byte(mine), embSHA)
 		tip := gitIn(t, origin, "rev-parse", "main")
 		runVP(t, bin, a, nil, "config", "sync", "--yes", "--project-root", a.projectDir)
 
-		// Host B is a fresh clone: no lock, so the override is case 6 there.
+		// Host B is a fresh clone with no host-local state at all.
 		b := setupFreshEnv(t)
 		cmd := exec.Command("git", "clone", "-q", origin, b.vaultPath)
 		cmd.Env = gitEnv()
@@ -104,14 +97,17 @@ func TestIntegrationTemplateOverrideSurvivesSync(t *testing.T) {
 		gitIn(t, b.vaultPath, "config", "user.name", "Host B")
 		runVP(t, bin, b, nil, "init", b.projectDir,
 			"--name", b.projectName, "--vault-path", b.vaultPath, "--no-git")
-		if _, err := os.Stat(filepath.Join(b.vaultPath, templates.LockRelPath)); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(b.vaultPath, retiredLockRel)); !os.IsNotExist(err) {
 			t.Fatalf("fixture: host B must start without a templates.lock (err=%v)", err)
 		}
 		for i := 1; i <= 2; i++ {
 			out := runVP(t, bin, b, nil, "config", "sync", "--yes", "--project-root", b.projectDir)
-			if !strings.Contains(out, "[keep] Templates/commands/wrap.md — ") {
-				t.Errorf("host B sync %d did not keep the override:\n%s", i, out)
+			if !strings.Contains(out, "Templates/commands/wrap.md operator override of a built-in (kept)") || strings.Contains(out, "[Prompt]") {
+				t.Errorf("host B sync %d did not keep the override silently:\n%s", i, out)
 			}
+		}
+		if _, err := os.Stat(filepath.Join(b.vaultPath, retiredLockRel)); !os.IsNotExist(err) {
+			t.Errorf("host B wrote a templates.lock (err=%v)", err)
 		}
 
 		if got := gitIn(t, origin, "rev-parse", "main"); got != tip {
@@ -136,10 +132,8 @@ func TestIntegrationTemplateOverrideSurvivesSync(t *testing.T) {
 		head := gitIn(t, env.vaultPath, "rev-parse", "HEAD")
 
 		// What an old binary's `o`/--yes sync or an upgrade reset leaves: the
-		// embedded bytes over the committed override, with a lock entry at the
-		// embedded SHA.
-		embSHA, _ := templates.EmbeddedSHA("commands/wrap.md")
-		seedTrackedOverride(t, env.vaultPath, "commands/wrap.md", embeddedBytesFor(t, "commands/wrap.md"), embSHA)
+		// embedded bytes over the committed override.
+		seedTrackedOverride(t, env.vaultPath, "commands/wrap.md", embeddedBytesFor(t, "commands/wrap.md"))
 
 		// No --yes, and stdin is /dev/null: nobody answers anything.
 		out := runVP(t, bin, env, nil, "config", "sync", "--project-root", env.projectDir)
@@ -170,22 +164,17 @@ func TestIntegrationTemplateOverrideSurvivesSync(t *testing.T) {
 // these left a deletion (H1) or a stranded, silent prune commit (M1).
 func TestIntegrationTemplatePruneFailsSafe(t *testing.T) {
 	bin := buildVPBinary(t)
-	embSHA, ok := templates.EmbeddedSHA("commands/wrap.md")
-	if !ok {
-		t.Fatal("no embedded SHA for commands/wrap.md")
-	}
 	emb := embeddedBytesFor(t, "commands/wrap.md")
 
 	// mirrorVault: a git vault with a bare origin whose committed wrap.md is
-	// the embedded copy, with this host's lock entry recording it — a prune
-	// the sync will attempt and, with git healthy, commit.
+	// the embedded copy — a prune the sync will attempt and, with git
+	// healthy, commit.
 	mirrorVault := func(t *testing.T) (*testEnv, string) {
 		env := setupFreshEnv(t)
 		runVP(t, bin, env, nil, "init", env.projectDir,
 			"--name", env.projectName, "--vault-path", env.vaultPath, "--no-git")
 		putFile(t, env.vaultPath, "Templates/commands/wrap.md", string(emb))
 		origin := gitifyVaultWithOrigin(t, env.vaultPath)
-		seedTrackedOverride(t, env.vaultPath, "commands/wrap.md", emb, embSHA)
 		return env, origin
 	}
 	wrapOf := func(env *testEnv) string {
