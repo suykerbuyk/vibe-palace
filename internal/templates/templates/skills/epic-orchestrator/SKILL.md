@@ -207,7 +207,8 @@ vault-tooling epic. Do not stop at "merged":**
    directly, not reached by `config sync`).
 4. **Now** implement/finish the deferred live-vault-*measured* members against the now-live vault.
 5. Verify the alignment: no template mirror pending a prune (a kept override's `info` row is
-   expected), no surviving stale claim, no stray `.bak`.
+   expected), no surviving stale claim, no stray `.new` sidecar. `*.bak` files are an operator's
+   backups (a template reset keeps one per removed override) — never delete them.
 
 ---
 

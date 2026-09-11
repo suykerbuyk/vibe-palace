@@ -94,8 +94,9 @@ been proven.
 - Frontmatter `description:` field empty → Claude Code's skill
   picker won't surface the skill; re-render the shim via
   `vp commands upgrade`. Skill shims are rendered by its
-  `PlanSkills`/`ApplySkills` half — `vp skills upgrade` resets vault
-  `Templates/skills/` copies and never touches a shim.
+  `PlanSkills`/`ApplySkills` half — `vp skills upgrade` only reports
+  vault `Templates/skills/` overrides and never touches a shim.
+  Resetting a vault skill override is `vp skills reset NAME`.
 - `sha=` marker in the shim doesn't match the current template —
   stale shim. `vp commands upgrade` will flag it; accept the rewrite.
 - Claude ignores the trigger and answers as a generic assistant →

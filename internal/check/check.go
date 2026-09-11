@@ -394,7 +394,11 @@ func CheckAgentDrift(projectRoot string) Result {
 // is missing any of the canonical vp-owned host-local artifact patterns
 // (CLAUDE.md, commit.msg, .claude/, .grok/, .vibe-palace/). This is an
 // advisory check (Status: Info) — never Fail — pointing the user at
-// `vp commands upgrade` (or `vp init`) to self-heal. A clean file is Pass.
+// `vp commands upgrade --overwrite` (or `vp init`) to self-heal. A clean file
+// is Pass. The remedy names --overwrite because a non-TTY run without it
+// reconciles nothing, and it is safe to name: since
+// upgrade-overwrite-resets-vault-template-overrides, --overwrite accepts only
+// vp-owned changes and never resets a vault Templates/ override.
 func CheckProjectGitignore(projectRoot string) Result {
 	r := Result{Name: "Project .gitignore", Status: Pass}
 	missing, err := storage.MissingProjectGitignorePatterns(projectRoot)
@@ -413,7 +417,7 @@ func CheckProjectGitignore(projectRoot string) Result {
 		r.Details = append(r.Details, "  "+m)
 	}
 	r.Details = append(r.Details,
-		"Run `vp commands upgrade` (or `vp init`) to reconcile the project .gitignore.")
+		"Run `vp commands upgrade --overwrite` (or `vp init`) to reconcile the project .gitignore.")
 	return r
 }
 
@@ -450,7 +454,7 @@ func CheckGitPostCommitHook(projectRoot string) Result {
 		r.Summary = rep.Detail
 		r.Details = append(r.Details,
 			"  a leftover commit.msg relands its message on the NEXT `git commit -F`",
-			"Run `vp init` (or `vp commands upgrade`) to install it; `/wrap` installs it too.")
+			"Run `vp commands upgrade --overwrite` (or `vp init`) to install it; `/wrap` installs it too.")
 	default:
 		r.Status = Info
 		r.Summary = rep.Detail

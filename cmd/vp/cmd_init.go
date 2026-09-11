@@ -142,8 +142,9 @@ func validatePositionalProjectPath(args []string) (int, string) {
 //
 // It owns exactly those two things. It never reads, writes, prunes or reports
 // on <vault>/Templates/: that tree is override-only (ADR-008) and belongs to
-// `vp config sync`, which reconciles it, and to `vp commands upgrade` /
-// `vp skills upgrade`, which offer to reset existing copies. A first install
+// `vp config sync`, which reconciles it, and to `vp commands reset` /
+// `vp skills reset`, which remove a named override (keeping a backup) on the
+// operator's request — the upgrade commands only report one. A first install
 // onto a vault that already holds overrides therefore cannot fail on them, and
 // the CLI matches the MCP vp_init tool, which never had a Templates pass.
 func initGlobal(fv *cli.FlagValues) ([]check.Result, int) {

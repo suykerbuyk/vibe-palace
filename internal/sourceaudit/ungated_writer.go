@@ -131,22 +131,26 @@ const (
 //     imported package name from a local variable;
 //   - recv.M(...) where recv's package is recoverable syntactically: either it
 //     was assigned from a constructor in the SAME body
-//     (exec := templates.NewExecutor(); exec.Write(...)), or its type is DECLARED
+//     (exec := pkg.NewThing(); exec.Write(...)), or its type is DECLARED
 //     — a method receiver, a parameter, a result, or a `var x pkg.T` local.
 //     Parameters matter most: `func runTasksEdit(vault *storage.Vault, ...)` is
 //     the dominant idiom in this tree, and without the declared-type arm
 //     `vp tasks edit` was invisible.
 //
 // That third form is on the CRITICAL PATH, not a peripheral nicety: the chain
-// this rule exists to trace is
+// this rule was written to trace was
 //
 //	main.cmdCommandsUpgrade -> main.runCommandsUpgrade -> main.applyAndReport
 //	  -> commands.Apply -> commands.applyWithPolicy
 //	  -> templates.Executor.Write   <-- METHOD CALL, receiver type not recoverable
 //	  -> atomicfile.Write -> surface.StampForPath
 //
-// and without local constructor inference it breaks at exactly that hop and the
-// rule never fires on the defect it was written for. It resolves structurally
+// and without local constructor inference it broke at exactly that hop and the
+// rule never fired on the defect it was written for. (That chain is gone:
+// upgrade-overwrite-resets-vault-template-overrides deleted commands.Apply and
+// templates.Executor, and `vp commands upgrade` no longer writes the vault. The
+// synthetic fixture in ungated_writer_test.go keeps its shape, because the
+// method-call hop is still the case this form exists for.) It resolves structurally
 // here, so no edge is hand-modelled — but the reach is one function body wide,
 // and a future writer reached through a struct field will be MISSED.
 //

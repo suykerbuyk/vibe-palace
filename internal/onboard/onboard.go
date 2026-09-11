@@ -382,38 +382,34 @@ func Run(ctx context.Context, req Request, scope Scope) (Result, error) {
 // Until that gate was deleted, a re-init returned three Omissions whose Remedy
 // pointed the operator at `vp config sync`. The gate is gone and a re-init now
 // reconciles those artifacts for real — but the operator still has to be told
-// what `vp init` deliberately does NOT do, and that the two halves of it have
-// DIFFERENT owners:
+// what `vp init` deliberately does NOT do, and who does it:
 //
 //   - `vp commands upgrade` owns stale-shim REMOVAL (init is additive by
 //     default: shims.Reconcile reports a stale .claude/commands/vpc-*.md and
-//     leaves it), and offers to RESET a vault Templates/commands/ file that
-//     overrides a built-in command.
-//   - `vp skills upgrade` offers the same reset for vault Templates/skills/.
-//     It owns nothing else: cmd/vp/cmd_skills.go imports neither
-//     internal/shims nor internal/storage, so it touches no agent file, no
-//     shim, no .gitignore and no git hook.
+//     leaves it). It never touches vault Templates/.
+//   - A vault Templates/commands/ or Templates/skills/ file that overrides a
+//     built-in is the operator's (ADR-008: Templates/ is override-only). No
+//     upgrade changes one, in any mode; the only thing that removes one is an
+//     explicit, named reset — `vp commands reset NAME` / `vp skills reset
+//     NAME` — which keeps a backup named by the file's content. A new
+//     vault-wide command or skill is never touched by either.
 //
-// It says "reset", not "run it against drift". Templates/ is override-only
-// (ADR-008): a file there is something the operator wrote, and accepting the
-// reset replaces it with the embedded copy — commands with no .bak at all.
-// Telling an operator to run a command "for drift" was an instruction to
-// discard their override. Only a file that shadows a built-in is offered; a
-// new vault-wide command or skill is never touched by either command.
-//
-// Naming only `vp commands upgrade` here would pin a known bug — it does not
-// own Templates/skills — which is why each half names its own command.
+// Until upgrade-overwrite-resets-vault-template-overrides the upgrade
+// commands offered that reset themselves, and `--overwrite` — their non-TTY
+// path — accepted it for every override, commands with no .bak at all. Each
+// Templates line therefore names its own reset verb and says a backup is
+// kept, so no line can be read as "run the upgrade against drift".
 func upgradeAdvisory() Advisory {
 	return Advisory{
 		Name: "Upgrade policy",
 		Summary: "`vp init` is additive: it never removes a stale shim and never writes, prunes or reconciles vault Templates/. " +
-			"Two other commands do, and they own different halves",
+			"Stale shims are `vp commands upgrade`'s; a vault Templates/ override of a built-in is changed by nothing but an explicit reset",
 		Details: []string{
-			"stale .claude/commands/vpc-*.md shims: `vp commands upgrade` removes them. It also offers to reset each " +
-				"vault Templates/commands/ override of a built-in command to the embedded copy — accepting discards " +
-				"that override, with no .bak",
-			"vault Templates/skills/ overrides of built-in skills: `vp skills upgrade` offers to reset each to the " +
-				"embedded copy (a .bak is kept)",
+			"stale .claude/commands/vpc-*.md shims: `vp commands upgrade` removes them; it never touches vault Templates/",
+			"vault Templates/commands/ overrides of built-in commands: nothing resets one unless you name it — " +
+				"`vp commands reset NAME` removes it (a backup is kept)",
+			"vault Templates/skills/ overrides of built-in skills: nothing resets one unless you name it — " +
+				"`vp skills reset NAME` removes it (a backup is kept)",
 		},
 	}
 }

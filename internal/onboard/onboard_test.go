@@ -747,14 +747,10 @@ func TestOnboardOmission_CommandShimsRemedyStatesTheOverdelivery(t *testing.T) {
 	}
 }
 
-// TestOnboardRun_WarnsAboutUpgradeCommands pins the advisory to BOTH commands
-// against the right halves.
-//
-// A row naming only `vp commands upgrade` would pin a known bug: `vp skills
-// upgrade` owns Templates/skills, and cmd/vp/cmd_skills.go imports neither
-// internal/shims nor internal/storage — it touches no agent file, no shim, no
-// .gitignore and no git hook. Sending an operator with skill-template drift to
-// `vp commands upgrade` sends them to a command that cannot fix it.
+// TestOnboardRun_WarnsAboutUpgradeCommands pins the advisory's three halves to
+// their owners: stale shims to `vp commands upgrade`, and each vault
+// Templates/ override of a built-in to its own reset verb. No upgrade resets
+// an override any more, so no Templates line may name an upgrade command.
 func TestOnboardRun_WarnsAboutUpgradeCommands(t *testing.T) {
 	sandboxHost(t)
 	req, _ := newRequest(t, true)
@@ -777,9 +773,9 @@ func TestOnboardRun_WarnsAboutUpgradeCommands(t *testing.T) {
 	// line must not name the other one — otherwise "both commands appear
 	// somewhere in the blob" would pass over a row that pairs them wrongly.
 	cases := []struct{ half, cmd, notCmd string }{
-		{"Templates/commands", "vp commands upgrade", "vp skills upgrade"},
-		{"vpc-*.md", "vp commands upgrade", "vp skills upgrade"},
-		{"Templates/skills", "vp skills upgrade", "vp commands upgrade"},
+		{"Templates/commands", "vp commands reset", "vp skills reset"},
+		{"vpc-*.md", "vp commands upgrade", "vp skills"},
+		{"Templates/skills", "vp skills reset", "vp commands reset"},
 	}
 	for _, tc := range cases {
 		ok := false
@@ -803,16 +799,19 @@ func TestOnboardRun_WarnsAboutUpgradeCommands(t *testing.T) {
 	}
 
 	// Templates/ is override-only, so a file there is the operator's own: each
-	// Templates line must describe what the command does to it — a RESET to the
-	// embedded copy — and must not send the operator to run it against "drift",
-	// which is an instruction to discard their override.
+	// Templates line must name the explicit reset that removes it and say a
+	// backup is kept, must not name an upgrade command (none resets one), and
+	// must not send the operator to run anything against "drift".
 	for _, half := range []string{"Templates/commands", "Templates/skills"} {
 		for _, line := range text {
 			if !strings.Contains(line, half) {
 				continue
 			}
-			if !strings.Contains(line, "reset") {
-				t.Errorf("advisory line for %s does not say it resets the file: %q", half, line)
+			if !strings.Contains(line, "reset NAME") || !strings.Contains(line, "a backup is kept") {
+				t.Errorf("advisory line for %s does not name the reset and its backup: %q", half, line)
+			}
+			if strings.Contains(line, "upgrade") {
+				t.Errorf("advisory line for %s names an upgrade command: %q", half, line)
 			}
 			if strings.Contains(line, "drift: run") {
 				t.Errorf("advisory line for %s still says \"drift: run\": %q", half, line)
@@ -825,7 +824,7 @@ func TestOnboardRun_WarnsAboutUpgradeCommands(t *testing.T) {
 	for _, r := range Rows(res) {
 		rendered.WriteString(r.Name + " " + r.Summary + " " + strings.Join(r.Details, " ") + "\n")
 	}
-	for _, want := range []string{"vp commands upgrade", "vp skills upgrade"} {
+	for _, want := range []string{"vp commands upgrade", "vp commands reset", "vp skills reset"} {
 		if !strings.Contains(rendered.String(), want) {
 			t.Errorf("Rows() dropped %q from the rendered table", want)
 		}

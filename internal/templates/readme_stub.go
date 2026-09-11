@@ -26,9 +26,10 @@ customise: drop an override here as ` + "`<slug>.md`" + ` — ` + "`wrap.md`" + 
 shadows the built-in wrap command. No reconciler or upgrade command
 touches it.
 ` + "`<vault>/Templates/`" + ` holds only files you write; it is empty by
-default. An override of a built-in there can be reset to the embedded
-copy by ` + "`vp commands upgrade --overwrite`" + `, and an unedited copy of
-a built-in is identical to it and is pruned — edit it before syncing.
+default. An override of a built-in there is never reset by
+` + "`vp commands upgrade`" + `; ` + "`vp commands reset <slug>`" + ` removes it on
+request and keeps a backup. An unedited copy of a built-in is
+identical to it and is pruned — edit it before syncing.
 
 To start from a built-in, fetch it with the ` + "`vp_get_command`" + ` MCP
 tool or copy internal/templates/templates/commands/<slug>.md from a
@@ -70,10 +71,11 @@ without a directory) are not supported.
 
 This project directory is where to customise; no reconciler or
 upgrade command touches it. ` + "`<vault>/Templates/`" + ` holds only files
-you write; it is empty by default. An override of a built-in there can
-be reset to the embedded copy by ` + "`vp skills upgrade --overwrite`" + `,
-and an unedited copy of a built-in is identical to it and is pruned —
-edit it before syncing. To start from a built-in, print it with
+you write; it is empty by default. An override of a built-in there is
+never reset by ` + "`vp skills upgrade`" + `; ` + "`vp skills reset <slug>`" + `
+removes it on request and keeps a backup. An unedited copy of a
+built-in is identical to it and is pruned — edit it before syncing.
+To start from a built-in, print it with
 ` + "`vp skills show <slug> [--section NAME]`" + `.
 
 Promotion back into the ` + "`vibe-palace`" + ` source tree is a manual git

@@ -125,8 +125,8 @@ func (r *TemplateTreeReconciler) vaultRelFromEmbedded(embeddedRel string) string
 	return r.relSubpath + "/" + embeddedRel
 }
 
-// hashFile delegates to templates.HashFile so the reconciler and the
-// templates.Executor share one hash primitive for on-disk bytes.
+// hashFile delegates to templates.HashFile so the reconciler and the rest of
+// the template code share one hash primitive for on-disk bytes.
 func hashFile(path string) (string, error) { return templates.HashFile(path) }
 
 // Check returns one check.Result per embedded resource for
@@ -642,6 +642,7 @@ func (r *TemplateTreeReconciler) applyScaffold(p Plan) (Report, error) {
 	return rep, nil
 }
 
-// atomicWriteFile was the reconciler's private atomic-write helper.
-// It has been promoted to templates.Executor.Write (internal atomic
-// primitive); this file's three call sites now delegate.
+// atomicWriteFile was the reconciler's private atomic-write helper. It became
+// templates.Executor.Write, which was deleted with the upgrade reset
+// (upgrade-overwrite-resets-vault-template-overrides); the Templates reconcile
+// writes no template bytes.

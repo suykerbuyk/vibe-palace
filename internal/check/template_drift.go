@@ -229,11 +229,13 @@ func CheckTemplateDrift(vaultRoot string) Result {
 // the vault mirror" read to an operator as "you cannot customise a template";
 // addressed only to an operator, it would drop the ordering rule a contributor
 // needs. The customisation half steers to the project tier, and says exactly
-// which risk to a vault Templates/ override of a built-in is closed (`vp config
-// sync` no longer overwrites one or commits its removal) and which remains (the
-// upgrade commands' --overwrite reset, and a lock-less host's prompt). It must
-// not call that tier safe: reversing the steer is a recorded operator decision
-// that belongs to template-provenance-manifest-retires-the-host-local-lock.
+// which risks to a vault Templates/ override of a built-in are closed (`vp
+// config sync` no longer overwrites one or commits its removal; the upgrade
+// commands never reset one) and which remains (a lock-less host's prompt). It
+// names the reset verbs as the one way to remove an override, keeping a
+// backup. It must not call that tier safe: reversing the steer is a recorded
+// operator decision that belongs to
+// template-provenance-manifest-retires-the-host-local-lock.
 var templateDriftRemedy = []string{
 	"CHANGING VIBE-PALACE ITSELF: the binary and the vault-served templates ship",
 	"TOGETHER — a template supplies arguments the binary requires (commands/wrap.md",
@@ -246,11 +248,12 @@ var templateDriftRemedy = []string{
 	"Projects/<slug>/commands/ or Projects/<slug>/skills/, which no reconciler and",
 	"no upgrade command touches. An override of a built-in under vault Templates/ is",
 	"still not recommended. `vp config sync` no longer overwrites one, and never",
-	"commits its removal (a committed override is restored from HEAD), but",
-	"`vp commands upgrade --overwrite` / `vp skills upgrade --overwrite` reset it to",
-	"the embedded copy (task upgrade-overwrite-resets-vault-template-overrides), and",
-	"a host whose templates.lock does not record it prompts on every sync (task",
+	"commits its removal (a committed override is restored from HEAD); the upgrade",
+	"commands never reset one, in any mode. But a host whose templates.lock does not",
+	"record it prompts on every sync (task",
 	"template-provenance-manifest-retires-the-host-local-lock).",
+	"To remove an override on purpose: `vp commands reset NAME` / `vp skills reset",
+	"NAME` — it removes the file so the built-in serves it, and keeps a backup.",
 	"A NEW vault-wide command or skill under Templates/ is safe — nothing touches it.",
 	"A byte-identical mirror is drift pending a prune, not an error. An override of",
 	"a built-in is reported here so it stays visible, not because it is wrong.",

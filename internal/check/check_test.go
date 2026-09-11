@@ -708,6 +708,13 @@ func TestCheckProjectGitignore_Missing(t *testing.T) {
 	if len(r.Details) == 0 {
 		t.Error("expected details listing missing entries")
 	}
+	// A non-TTY `vp commands upgrade` without --overwrite reconciles nothing,
+	// so the remedy must name the flag — which, since
+	// upgrade-overwrite-resets-vault-template-overrides, never resets a
+	// Templates/ override.
+	if last := r.Details[len(r.Details)-1]; !strings.Contains(last, "vp commands upgrade --overwrite") {
+		t.Errorf("remedy = %q, want it to name `vp commands upgrade --overwrite`", last)
+	}
 }
 
 func TestCheckProjectGitignore_Clean(t *testing.T) {
@@ -823,6 +830,9 @@ func TestCheckGitPostCommitHook_Missing(t *testing.T) {
 	}
 	if len(r.Details) == 0 {
 		t.Error("a missing hook must carry the remedy line — the row is the only place an existing clone learns about it")
+	}
+	if !strings.Contains(strings.Join(r.Details, "\n"), "vp commands upgrade --overwrite") {
+		t.Errorf("remedy does not name `vp commands upgrade --overwrite`: %v", r.Details)
 	}
 }
 

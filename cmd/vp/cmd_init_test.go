@@ -673,7 +673,7 @@ func TestInitFreshThenIdempotent(t *testing.T) {
 		}
 	}
 	// And the advisory says what a re-init deliberately does NOT do.
-	for _, want := range []string{"vp commands upgrade", "vp skills upgrade"} {
+	for _, want := range []string{"vp commands upgrade", "vp commands reset", "vp skills reset"} {
 		if !strings.Contains(out2, want) {
 			t.Errorf("stage 2 missing upgrade advisory %q:\n%s", want, out2)
 		}

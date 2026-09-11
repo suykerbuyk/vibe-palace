@@ -46,9 +46,9 @@ over stdio JSON-RPC 2.0.
 | `internal/agentfile` | Detect well-known agent instruction files and wire in a managed bootstrap block | `Detect`, `Wire`, `WireAll` |
 | `internal/shims` | Emit Claude Code slash-command shims into `.claude/commands/` | `Plan`, `Apply`, `Shim` |
 | `internal/skills` | Directory-form persona artifacts: SKILL.md frontmatter parser/resolver | `Frontmatter` |
-| `internal/commands` | Shared command list/upgrade surface over the Resolver | `List`, `Upgrade`, `Diff` |
+| `internal/commands` | Shared command list/upgrade/reset surface over the Resolver | `List`, `Plan`, `Reset`, `RenderUnified` |
 | `internal/reconcile` | Check → Plan → Apply reconcilers for managed config-file tiers | (per-artifact reconcilers) |
-| `internal/templates` | Compiled-in template corpus (incl. the agent doctrine, `templates/doctrine.md`) + override-only reconcile and lock helpers | `Executor`, `Lock` |
+| `internal/templates` | Compiled-in template corpus (incl. the agent doctrine, `templates/doctrine.md`) + override-only reconcile, lock and reset-backup helpers | `PreserveBackup`, `BackupName`, `Lock` |
 | `internal/worktree` | Git-worktree isolation for plan execution (`vp worktree create\|remove\|list`) | `Create`, `Remove`, `List` |
 | `internal/check` | Doctor checks for config, vault, embedder, git, agent drift, resume.md caps, host-rooted paths, template drift and the deleted `vp-surface` merge driver | `Run`, `CheckConfig`, `CheckAgentDrift`, `CheckResumeCaps`, `CheckVaultAbsPaths`, `CheckSurfaceMergeDriver` |
 | `internal/slug` | Project-slug validation and normalization | `Slugify`, `Validate` |
@@ -1278,12 +1278,12 @@ reconciler-owned mirror. Templates flow through four stations:
    reconciler or upgrade command writes. A *new* name under
    `<vault>/Templates/` is the vault-wide tier and is equally safe —
    nothing iterates it. An override of a *built-in* under `Templates/` is
-   no longer lost by `vp config sync` (below), but is still not
-   recommended: no writer records a lock baseline for it, so it prompts
-   on every sync on a host whose lock lacks it
-   (`template-provenance-manifest-retires-the-host-local-lock`), and the
-   upgrade commands' `--overwrite` resets it to the embedded copy
-   (`upgrade-overwrite-resets-vault-template-overrides`).
+   no longer lost by `vp config sync` (below), and the upgrade commands
+   never change one, but it is still not recommended: no writer records
+   a lock baseline for it, so it prompts on every interactive sync on a
+   host whose lock lacks it
+   (`template-provenance-manifest-retires-the-host-local-lock`). Only a
+   named `vp commands reset` / `vp skills reset` removes one.
 4. **Reconcile on `vp config sync`.** The `TemplateTreeReconciler` in
    `Materialize` mode reads the lock, hashes each vault file, and
    consults the current embedded SHA for each resource; the decision
@@ -1316,8 +1316,10 @@ prune, and it removes only bytes provably vp's. The Delete action's
 `Details` carry `embedded_sha=` and `lock_sha=`; `reconcile.PruneBasis`
 is the one definition of that accept set, and every check below reads
 it. No `.bak` is written — the bytes removed are an embedded copy — and
-a `.bak` already beside the file (an earlier overwrite's or an upgrade
-reset's copy of the operator's bytes) is left byte-for-byte. Who
+a `.bak` already beside the file is left byte-for-byte: the bare
+`<file>.bak` an older binary's overwrite or upgrade reset wrote, or a
+`<file>.<sha12>.bak` a named reset wrote (a reset never writes the bare
+`.bak`). Who
 removes the file depends on how git sees the vault
 (`storage.InspectVaultGit`, which looks for a `.git` directory *or*
 file at the vault and every directory above it, then asks git):
@@ -1444,7 +1446,8 @@ entry on the next, where it is a case-6 Prompt that every answer keeps.
 #### Two upgrade entry points
 
 The codebase exposes **two** reconcile surfaces with deliberately
-different UX contracts, and `vp init` is neither:
+different UX contracts, and `vp init` is neither. A third, named verb is
+the only thing that removes an override:
 
 1. **Three-SHA reconcile** (`vp config sync`, and vault split's
    destination scaffold) — `internal/reconcile/template_tree.go`. Runs
@@ -1452,26 +1455,40 @@ different UX contracts, and `vp init` is neither:
    skills): prunes mirrors, keeps overrides, and prompts
    `[s]kip — keep your file / [n]ew-sidecar` on a diverged one. It never
    writes a template.
-2. **Two-SHA diff** (`vp commands upgrade`, `vp skills upgrade`) —
-   `internal/commands/upgrade.go`. Compares embedded vs an *existing*
-   vault copy only (an absent one is `unneeded`, never created), renders
-   a unified diff per change, and prompts
-   `[a]ccept / [s]kip / [A]ccept-all / [q]uit`. Accepting resets the
-   vault copy to the embedded bytes — with no `.bak` for commands
-   (`BackupPolicyNever`) and a renamed `.bak` for skills
-   (`BackupPolicyRename`). Skills collapse per-file changes into one
-   prompt per skill directory unless `--granular` is passed. Invoked
-   interactively by the user.
+2. **Two-SHA report** (`vp commands upgrade`, `vp skills upgrade`) —
+   `commands.Plan` in `internal/commands/upgrade.go`. Compares embedded
+   vs an *existing* vault copy only (an absent one is `unneeded`, never
+   created) and only reports it: each override of a built-in
+   (`ChangeOverride`) is listed as `[keep]` with the reset that removes
+   it. Neither command writes or removes a `Templates/` file, in any
+   mode. `vp skills upgrade` is report-only as a whole — one line per
+   skill directory unless `--granular` is passed, it never reads stdin,
+   and every mode exits 0. `vp commands upgrade` still prompts
+   `[a]ccept / [s]kip / [A]ccept-all / [q]uit`, but only for vp-owned
+   project files: the command, Grok and skill shims, the agent-file
+   blocks, the project `.gitignore` and the hook. `--overwrite` accepts
+   those and nothing else. Neither command reaches a vault-write sink,
+   so both are registered without the surface gate's mutating wrapper.
+3. **Named reset** (`vp commands reset NAME...`, `vp skills reset
+   NAME...`) — `cmd/vp/template_reset.go` over `commands.Reset` in
+   `internal/commands/reset.go`. Removes the named overrides so the
+   embedded floor serves them; it never writes embedded bytes into
+   `Templates/`. Every name is validated and every path checked (a
+   symlink in any component refuses the whole call) before anything is
+   written. Every non-mirror is backed up to a content-named
+   `<file>.<sha12>.bak` (`templates.PreserveBackup`, never overwritten)
+   before any removal, and each removal is compare-and-set on the
+   backed-up bytes through `vaultfs.Delete`. On a vault that is its own
+   git repository the removal is committed locally through
+   `storage.CommitRemovals`, never pushed; a vault nested in another
+   repository is never committed. Both verbs are registered as mutating,
+   so the surface gate covers them.
 
-They do not converge on the same vault content: path 2's reset leaves a
-byte-identical mirror, which path 1 then prunes — and, when the reset
-override was committed, restores from HEAD in place instead of removing
-it, undoing the reset (`upgrade-overwrite-resets-vault-template-overrides`
-decides what a reset should mean). The shared prompt
-loop — `runUpgradePrompt` in `cmd/vp/upgrade_common.go` — is used by
-both `vp commands upgrade` and `vp skills upgrade`; identity `GroupBy`
-preserves the per-change prompt for commands while the skills path uses
-`skillGroupID` to collapse files under each skill directory.
+The three converge: path 2 writes nothing, and path 3 removes the file
+instead of leaving a byte-identical mirror, so the next `vp config sync`
+classifies a reset path as gone and never restores it. (Before, path 2's
+`--overwrite` reset left a mirror that path 1 pruned, or — for a
+committed override — restored from HEAD in place, undoing the reset.)
 
 #### Silent-adopt pre-pass
 
@@ -1701,18 +1718,20 @@ allowed to run go wrong" — and is what the `vp_init` result exposes as `ok` an
 reconstructs the unconditional `{"status": "initialized"}` this tool's rewrite
 exists to delete.
 
-**`vp commands upgrade` and `vp skills upgrade` are NOT callers of
-`internal/onboard`.** They are a separate *upgrade* policy layered over the
-shared writers in `internal/shims` and `internal/commands` — not over
-`reconcile.TemplateTree`, which only `vp config sync` and vault split drive:
-onboarding reconciles toward the current schema and is additive, while
-upgrade presents changes interactively, may REMOVE a stale shim, and may
-RESET an existing vault `Templates/` copy of a built-in to the embedded
-bytes. Onboarding never writes, prunes or reconciles `Templates/` (its shim
-steps only read it through the resolver), and ends with an advisory
-naming both commands against the halves they actually own — stale shims and
-`Templates/commands` resets are `vp commands upgrade`'s; `Templates/skills`
-resets are `vp skills upgrade`'s.
+**`vp commands upgrade`, `vp skills upgrade` and the reset verbs are NOT
+callers of `internal/onboard`.** The upgrade commands are a separate
+*upgrade* policy layered over the shared writers in `internal/shims` and
+`internal/commands` — not over `reconcile.TemplateTree`, which only
+`vp config sync` and vault split drive: onboarding reconciles toward the
+current schema and is additive, while `vp commands upgrade` presents
+changes interactively and may REMOVE a stale shim. Neither upgrade command
+changes a vault `Templates/` file; only a named `vp commands reset` /
+`vp skills reset` removes an override of a built-in. Onboarding never
+writes, prunes or reconciles `Templates/` (its shim steps only read it
+through the resolver), and ends with an advisory naming each command
+against what it actually owns — stale shims are `vp commands upgrade`'s;
+`Templates/commands` resets are `vp commands reset`'s; `Templates/skills`
+resets are `vp skills reset`'s.
 
 ### Commands and Skills
 
@@ -1796,17 +1815,21 @@ described above. Three-SHA reconcile (`vp config sync`) reconciles
 vault skill overrides under `<vault>/Templates/skills/` override-only:
 it prunes byte-identical mirrors, keeps a tracked override, and prompts
 on a diverged one, using the lock sidecar to tell a reconciler-written
-file from a user edit. Two-SHA interactive diff (`vp skills upgrade`)
-compares embedded vs an existing vault copy directly and groups every
-file under a skill directory into a single `a`/`s`/`A`/`q` prompt — a
-six-file skill like `startup-analyst` becomes one decision, with
-`--granular` available when per-file review is actually wanted. The
+file from a user edit. The two-SHA report (`vp skills upgrade`)
+compares embedded vs an existing vault copy directly and only reports:
+one `[keep]` line per skill directory with an override, naming the files
+that differ (one line per file with `--granular`). It writes nothing and
+prompts for nothing. `vp skills reset NAME` — a skill, meaning every
+built-in file under it, or one file such as `chair/references/x.md` —
+removes an override on request, keeping a content-named backup. The
 shim side is kept in lockstep via `vp commands upgrade`'s `PlanSkills` /
 `ApplySkills` pair, which re-renders `.claude/skills/` and
 `.cursor/rules/` entries whenever the SHA-token inputs change. The
 resolver is the source of truth, and the shims are the IDE-native
 surfaces. Neither upgrade command commits to the vault repo; `vp config
-sync` commits exactly the mirror deletions it prunes.
+sync` commits exactly the mirror deletions it prunes, and a named reset
+commits exactly the removals it made, locally, on a vault that is its
+own repository.
 
 ---
 

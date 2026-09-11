@@ -4,8 +4,9 @@
 // Package templates owns the compiled-in template corpus — the embedded
 // floor every command and skill resolves from when no override exists —
 // and the helpers the override-only vault reconcile is built on: corpus
-// enumeration and hashing, the templates.lock sidecar, the template
-// write Executor, and the per-project README stubs.
+// enumeration and hashing, the templates.lock sidecar, the never-overwriting
+// backup a template reset keeps (backup.go), and the per-project README stubs.
+// Nothing here writes embedded bytes into a vault's Templates/.
 package templates
 
 import (

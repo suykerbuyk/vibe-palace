@@ -89,9 +89,10 @@ vp init — vibe-palace 0.1.0-dev
 [pass] Hook wiring: vp hook installed
 [pass] Project .gitignore: host-local vp artifacts ignored
 [skip] Git commit.msg hook: /home/you/code/myapp is not a git repository — no hook to install
-[info] Upgrade policy: `vp init` is additive: it never removes a stale shim and never writes, prunes or reconciles vault Templates/. Two other commands do, and they own different halves
-                  stale .claude/commands/vpc-*.md shims: `vp commands upgrade` removes them. It also offers to reset each vault Templates/commands/ override of a built-in command to the embedded copy — accepting discards that override, with no .bak
-                  vault Templates/skills/ overrides of built-in skills: `vp skills upgrade` offers to reset each to the embedded copy (a .bak is kept)
+[info] Upgrade policy: `vp init` is additive: it never removes a stale shim and never writes, prunes or reconciles vault Templates/. Stale shims are `vp commands upgrade`'s; a vault Templates/ override of a built-in is changed by nothing but an explicit reset
+                  stale .claude/commands/vpc-*.md shims: `vp commands upgrade` removes them; it never touches vault Templates/
+                  vault Templates/commands/ overrides of built-in commands: nothing resets one unless you name it — `vp commands reset NAME` removes it (a backup is kept)
+                  vault Templates/skills/ overrides of built-in skills: nothing resets one unless you name it — `vp skills reset NAME` removes it (a backup is kept)
 
 Summary: 10 ok, 2 skip. Re-run `vp init` anytime — it is idempotent.
 ```
@@ -113,10 +114,11 @@ project's `vpc-*`/`vps-*` shims like any built-in.
 The closing `Upgrade policy` row is an advisory, not a step: it states what
 `vp init` deliberately does **not** do. Onboarding is additive: it never
 removes a stale shim — `vp commands upgrade` does — and never writes,
-prunes or reconciles `Templates/`. The two upgrade commands can *reset* a `Templates/` file that
-overrides a built-in back to the embedded copy: `vp commands upgrade` for
-`Templates/commands/` (no `.bak` is kept) and `vp skills upgrade` for
-`Templates/skills/` (a `.bak` is kept).
+prunes or reconciles `Templates/`. Neither upgrade command changes a
+`Templates/` file either. Only a reset you name removes an override of a
+built-in: `vp commands reset NAME` for `Templates/commands/` and
+`vp skills reset NAME` for `Templates/skills/`, each keeping a backup
+first (see [Resetting an override](#resetting-an-override)).
 
 The `Project config` row reports which signal marked the directory as a
 project: `.git`, `.vibe-palace.toml`, or one of the supported ecosystem
@@ -951,33 +953,53 @@ vp commands list --json               # machine-readable (for scripting)
 vp commands list --project myapp      # include project-tier overrides
 ```
 
-`vp commands upgrade` compares each embedded command with your
+`vp commands upgrade` brings this project's vp-owned files up to date:
+the `.claude/commands/vpc-*.md` shims (and the Grok twins), the `vps-*`
+skill shims, the managed blocks in agent files, the project `.gitignore`
+and the commit hook. It also compares each embedded command with your
 vault-level copy (tier 4 — `{vault}/Templates/commands/`), where one
-exists. A command with no vault copy is reported `unneeded` and is never
-written: the embedded floor already serves it. Accepting a change to a
-vault copy that does exist *replaces* it with the embedded bytes and keeps
-no `.bak` — so on a file you customised, accepting discards your
-override. Project/wing/room overrides are never touched.
+exists, but only to report it: it never writes or removes a
+`Templates/` file, in any mode. A command with no vault copy is reported
+`unneeded`. A vault copy that differs from the built-in is an override,
+and it is listed as kept, byte for byte:
 
-```bash
-vp commands upgrade --dry-run         # preview the plan; non-zero exit if work is pending
-vp commands upgrade                   # interactive: unified diff + accept/skip per file
-vp commands upgrade --overwrite       # accept every change (required in non-TTY)
-vp commands upgrade --only restart    # target a single template
+```
+[keep] Templates/commands/wrap.md — override of a built-in (vault 6b8e659, embedded 4c91c8b); vp commands upgrade never resets one — to remove it: vp commands reset wrap
 ```
 
-In interactive mode you'll be prompted per template:
+An override is not pending work. The shim drift it can cause is: an
+override that changes a command's brief (its first paragraph) makes that
+command's shim in each project stale, and refreshing the shim is work
+the upgrade offers. Removing an override is a separate, named operation
+— see [Resetting an override](#resetting-an-override).
+Project/wing/room overrides are never touched.
+
+```bash
+vp commands upgrade --dry-run         # preview the plan; non-zero exit if shim or agent-file work is pending
+vp commands upgrade                   # interactive: accept/skip per shim and agent-file change
+vp commands upgrade --overwrite       # accept every shim and agent-file change (required in non-TTY); never resets a Templates/ override
+vp commands upgrade --only restart    # consider only the restart command's shims and vault copy
+```
+
+In interactive mode you'll be prompted per change:
 
 - `a` — accept this change
 - `s` — skip it
 - `A` — accept this and every remaining change
 - `q` — abort without applying further changes
 
-The vault is git-managed. After an upgrade, review with `git -C <vault>
-diff` and commit as you prefer — the upgrader never commits on your
-behalf. If the vault has uncommitted changes under `Templates/commands/`
-or `Projects/*/commands/` when you run upgrade, a warning lists them so
-you can stash or commit first.
+Without a terminal and without `--overwrite`, the `[keep]` lines print
+first. Then, if shim or agent-file work is pending, the command refuses
+with `Re-run with --overwrite to accept every shim and agent-file change
+(it never resets a Templates/ override), or --dry-run to preview.` and
+exits 1; otherwise it prints `Nothing to do` and exits 0. In a
+`--dry-run`, an override's row reads `override  wrap  (vault 6b8e659,
+embedded 4c91c8b; kept — vp commands reset wrap removes it)` and the
+summary starts `N override(s) kept`.
+
+The upgrade commands commit nothing: they write no vault file. The
+reset verbs are the ones that commit, locally, on a vault that is its
+own git repository.
 
 `vp commands upgrade` also surfaces stale vibe-palace managed blocks in
 agent files (CLAUDE.md, AGENTS.md, …). When the block template's sha
@@ -987,32 +1009,32 @@ path as `vp init`.
 ### Upgrading skills
 
 Directory-form skills (SKILL.md + `references/*.md`) have their own
-two-SHA upgrade path that mirrors commands:
+report, `vp skills upgrade`. It compares each built-in skill file with
+your vault-level copy (`{vault}/Templates/skills/`), where one exists,
+and only reports: it never writes or removes a `Templates/` file, never
+reads stdin, and exits 0 in every mode. The skill *shims* in each
+project are refreshed by `vp commands upgrade`.
 
 ```bash
-vp skills upgrade --dry-run          # preview the plan (grouped per skill)
-vp skills upgrade                    # interactive: one prompt per skill directory
-vp skills upgrade --overwrite        # accept every change (required in non-TTY)
+vp skills upgrade --dry-run          # show the comparison as a plan table (grouped per skill)
+vp skills upgrade                    # list the vault's skill overrides, one line per skill
+vp skills upgrade --overwrite        # nothing to accept: prints a note and reports as usual
 vp skills upgrade --only startup-analyst   # scope to a single skill
-vp skills upgrade --granular         # prompt per file instead of per skill
+vp skills upgrade --granular         # list per file instead of per skill
 ```
 
-By default the interactive loop **groups every file under a skill
-directory into a single prompt**: SKILL.md plus every reference share
-one `a`/`s`/`A`/`q` choice. For a six-file skill like `startup-analyst`
-(SKILL.md + 5 references) you review a single diff summary and make a
-single decision. This keeps bulk upgrades tractable when embedded
-refreshes touch many references at once.
+Each skill with an override gets one `[keep]` line naming the files
+that differ:
 
-Pass `--granular` to restore the per-file prompt. This is the right
-choice when you want to accept a SKILL.md change but hand-merge a
-specific reference, or vice versa.
+```
+[keep] Templates/skills/chair/ — override of a built-in (1 file(s) differ: SKILL.md); vp skills upgrade never resets one — to remove it: vp skills reset chair
+```
 
-When the vault copy of a skill file has been hand-edited, accepting the
-upgrade writes the pre-change content to a sibling `.bak` so nothing is
-lost. The on-disk surface stays bounded to a single `.bak` per file;
-snapshot with git before running upgrade when you want multi-generation
-history.
+With `--granular` there is one line per file. `--overwrite` is accepted
+for compatibility and prints `--overwrite: nothing to accept — vp skills
+upgrade never resets an override; use vp skills reset NAME`. Removing a
+skill override is `vp skills reset NAME` — see
+[Resetting an override](#resetting-an-override).
 
 What each command does to your vault's `Templates/` directory:
 
@@ -1033,11 +1055,15 @@ What each command does to your vault's `Templates/` directory:
   changed since the lock recorded it is kept; a diverged override
   prompts `s`kip (keep) / `n`ew-sidecar, and `--yes` answers `s`. Files
   with names no built-in uses are never touched.
-- **`vp commands upgrade` / `vp skills upgrade`** run the two-SHA
-  interactive diff path — embedded vs vault, with unified diffs and
-  accept/skip/accept-all/quit prompts — and only ever offer to *reset* a
-  vault copy that already exists back to the embedded bytes. They never
-  create one.
+- **`vp commands upgrade` / `vp skills upgrade`** compare embedded vs
+  vault and only report: each override of a built-in is listed as
+  `[keep]` with the reset that removes it. They never write or remove a
+  `Templates/` file, in any mode.
+- **`vp commands reset NAME...` / `vp skills reset NAME...`** remove the
+  overrides you name, so the built-in serves them again, after keeping a
+  content-named backup of each. They never write embedded bytes into
+  `Templates/`. On a vault that is its own git repository the removal is
+  committed locally. See [Resetting an override](#resetting-an-override).
 
 A first `vp init` onto an older vault that still holds byte-identical
 mirrors leaves them where they are. The `template-drift` check (in
@@ -1047,8 +1073,123 @@ drift pending a prune — an `[info]`, not an error — until you run
 too, so an override that shadows the binary's copy stays visible.
 
 Man pages are available for all commands: `man vp`, `man vp-search`,
-`man vp-commands`, `man vp-commands-upgrade`, `man vp-skills`,
-`man vp-skills-upgrade`, etc. Install with `make man`.
+`man vp-commands`, `man vp-commands-upgrade`, `man vp-commands-reset`,
+`man vp-skills`, `man vp-skills-upgrade`, `man vp-skills-reset`, etc.
+Install with `make man`.
+
+### Resetting an override
+
+The upgrade commands never remove a vault `Templates/` override of a
+built-in. To remove one, name it:
+
+```bash
+vp commands reset wrap                    # remove Templates/commands/wrap.md
+vp commands reset wrap restart --dry-run  # print each diff and backup name; write nothing
+vp skills reset chair                     # every built-in file under Templates/skills/chair/
+vp skills reset chair/references/x.md     # one file of a skill
+```
+
+The names are the consent. There is no prompt, and a reset behaves the
+same in a terminal and in a pipe. Every name is checked before anything
+is written: one unknown name refuses the whole invocation (exit 1) and
+nothing changes. A vault-wide command or skill with a new name is not an
+override of a built-in, so there is nothing to reset it to; it is yours
+to delete. A name with no vault override prints `nothing to reset: wrap
+has no vault override; the built-in already serves it`, or names the
+project-tier override that serves it for the current project instead.
+
+`--dry-run` prints each file's diff (vault → embedded) and the exact
+backup name it would get, and writes nothing.
+
+A reset **removes** the file, so the embedded built-in serves it again.
+It never writes the embedded bytes into `Templates/`. Before removing a
+file it keeps a backup named by the file's content,
+`<file>.<first 12 hex of its sha256>.bak`:
+
+```
+reset Templates/commands/wrap.md: removed your override; the built-in now serves it (backup: Templates/commands/wrap.md.3f9a0c1d2e4b.bak)
+```
+
+- A backup is created with a locked create that never replaces a file.
+  When a backup holding the same bytes is already there, it is reused
+  and nothing new is written, so resetting identical bytes twice keeps
+  one backup.
+- When a file with different bytes already has that name (an edited
+  backup, say), the reset refuses and removes nothing. Move or rename
+  that backup and run the reset again.
+- The bare `<file>.bak` is never written, and `.bak` files an older
+  binary left are never touched.
+- A byte-identical mirror of a built-in is removed with no backup.
+- On a git vault backups are gitignored (`*.bak` is a canonical ignore
+  line) and stay on the host that made them. A vault replicated by a
+  file-sync tool carries them to every host; that is harmless, since
+  older binaries only ever write the fixed `<file>.bak` name.
+
+The reset works in two phases. First every path is checked and every
+backup written; a failure there stops the reset with nothing removed.
+Then each file is removed, but only if it still holds the bytes just
+backed up: a file edited in between is kept, and the reset exits 2. A
+removal that fails leaves that file and its backup in place and exits 2;
+running the same reset again finishes it and reuses the backup.
+
+A path reached through a symlink anywhere — the file,
+`Templates/skills/<skill>`, `Templates/commands` — is refused before
+anything is written (exit 1): vp does not follow or remove a link. On
+Windows a path whose letter case or short (8.3) name differs from the
+disk is refused too, as a fail-safe. Files you added to a skill
+directory that are not built-in files are left in place and listed.
+Project, wing and room overrides and `templates.lock` are never touched.
+
+After it removes a command file or a `SKILL.md`, the reset prints:
+
+```
+Shims in each project may still carry the removed override's text (command brief / skill description). Run `vp commands upgrade --overwrite` (or `vp init`) in each project.
+```
+
+Shims are per project and a reset is vault-wide, so do that in every
+project.
+
+**Committing the removal.** What happens next depends on the vault's git
+shape:
+
+- **A vault that is its own git repository.** The removal of each
+  tracked file is committed locally, never pushed, with the subject
+  `chore(templates): remove N operator-reset override(s) of built-ins`.
+  The body names the invocation, each path and its backup, and the
+  host, and says that the committed copy of each file is in the commit's
+  parent and the working-tree bytes at reset time are in the backup.
+  `vp vault sync` publishes the commit. Before anything is written the
+  reset checks that git has an identity (when a tracked file would be
+  committed) and that the index holds no staged change for any target —
+  a commit would take staged bytes no backup holds. Either problem
+  refuses the reset with nothing changed.
+- **The commit fails** (a pre-commit hook refuses it, say). The removal
+  is left unstaged, and the reset prints `removed, not committed` with
+  the manual commit and restore commands and exits 2. Running the same
+  reset again finishes the commit.
+- **A vault nested in another repository** (a project or dotfiles
+  repo). vp never commits it. The file is removed and backed up, and the
+  output says the deletion is left in that repository's working tree for
+  its owner to commit. Do not run `vp vault sync` there until
+  `vault-sync-pushes-the-enclosing-repo-of-a-nested-vault` lands.
+- **Git not on PATH**, though the vault has a `.git`. The reset happens
+  and warns `not committed`; exit 0.
+- **An unreadable repository.** The reset is refused before any write;
+  exit 2.
+- **Not a git vault.** The removal and the backup are the whole reset.
+
+The reset does not fetch. If a remote holds a newer override of the same
+file, it meets your commit at the next pull as a modify/delete conflict,
+which is left for you to resolve.
+
+The next `vp config sync` never restores a reset file: it treats the
+path as gone. One wrinkle: when this host's `templates.lock` had an
+entry for the reset path, that sync drops the entry and rewrites
+`.vibe-palace/templates.lock`, which a canonically configured vault does
+not ignore, so `vp vault sync` then refuses on it. That is the lock-dirt
+defect tracked as
+`template-provenance-manifest-retires-the-host-local-lock`; the reset
+triggers it, it does not cause it.
 
 ### Customizing a command template
 
@@ -1121,15 +1262,12 @@ every project. What happens to it depends on its name:
   ```
 
   `vp config sync` never writes over a template: every answer, and
-  `--yes`, keeps yours (`n` only adds a `.new` beside it). Two risks remain, and they are why the project
-  tier is the place to customise a built-in:
-
-  - `vp commands upgrade --overwrite` / `vp skills upgrade --overwrite`
-    reset the override to the embedded bytes (commands keep no `.bak`).
-    Tracked as `upgrade-overwrite-resets-vault-template-overrides`.
-  - A host whose `templates.lock` does not record the override prompts
-    on every sync. Tracked as
-    `template-provenance-manifest-retires-the-host-local-lock`.
+  `--yes`, keeps yours (`n` only adds a `.new` beside it), and the
+  upgrade commands never change it either. One risk remains, and it is
+  why the project tier is the place to customise a built-in: a host
+  whose `templates.lock` does not record the override prompts on every
+  interactive sync. Tracked as
+  `template-provenance-manifest-retires-the-host-local-lock`.
 
   If something does reset a *committed* override to the embedded bytes,
   the next `vp config sync` checks HEAD's copy before removing
@@ -1142,8 +1280,11 @@ every project. What happens to it depends on its name:
   if a remote cannot be reached, it is deferred too. A vault inside
   another repository (a project or dotfiles repo) never has that
   repository committed to or pushed: a tracked mirror there is kept. To drop an override on purpose,
-  `git rm` it and commit. An unedited copy of a built-in is identical to
-  it and is pruned, so edit before syncing.
+  name it: `vp commands reset wrap` (or `vp skills reset NAME`) removes
+  it, keeps a backup, and commits the removal on a vault that is its own
+  repository (see [Resetting an override](#resetting-an-override)). An
+  unedited copy of a built-in is identical to it and is pruned, so edit
+  before syncing.
 
 **4. The prompt answers.** Uppercase `S`/`N` applies the choice to every
 remaining Prompt row in the same run. The same prompt also fires, with
@@ -1189,9 +1330,9 @@ or the upgrade commands.
    restore. An unneeded restore of the *current* embedded copy is a
    mirror the next sync prunes. An older embedded version is not: on a
    host whose lock does not record it, it is kept and prompts on every
-   sync while shadowing the built-in with stale bytes — delete such a
-   restore by hand (`git rm` and commit) once you have confirmed it is
-   not yours.
+   sync while shadowing the built-in with stale bytes — remove such a
+   restore with `vp commands reset NAME` / `vp skills reset NAME` once
+   you have confirmed it is not yours.
 4. A non-git vault, or an override never committed: after one sync by
    an older binary, `<path>.bak` holds your override — rename it back.
    After two, the `.bak` holds embedded bytes and the override cannot be
@@ -1199,6 +1340,46 @@ or the upgrade commands.
 5. Older binaries leave `*.new`, `*.new.bak`, prune `.bak` files holding
    embedded bytes, and `.vibe-palace/templates.lock` on each host. They
    stay until you remove them.
+
+**Changed in this release: vault `Templates/` overrides and the upgrade
+commands.** Requires `make install` on every host (MCP surface v5).
+
+- `vp commands upgrade` and `vp skills upgrade` no longer reset a vault
+  `Templates/` override of a built-in, in any mode. `--overwrite` now
+  accepts only vp-owned changes: command and skill shims, agent-file
+  managed blocks, the project `.gitignore` and the commit hook. Each
+  override is listed as `[keep]` and left byte-for-byte. Before,
+  `--overwrite` — the documented non-TTY path, and where `vp check`
+  remedies lead — replaced every override with the embedded copy,
+  keeping no backup for commands and one overwritable `.bak` for skills.
+- Resetting an override is an explicit, named operation:
+  `vp commands reset NAME` / `vp skills reset NAME`. `--dry-run`
+  previews it. It removes the file, so the built-in serves it, instead
+  of writing a copy of the built-in into `Templates/`. Afterwards run
+  `vp commands upgrade --overwrite` (or `vp init`) in each project, so
+  its shims stop carrying the removed override's text.
+- Backups are never overwritten, for commands and skills alike. Each is
+  named by its content, `<file>.<first 12 hex of its sha256>.bak`, so
+  resetting identical bytes twice reuses one backup. A different file
+  never takes an existing name. The bare `<file>.bak` is not used, and
+  existing `.bak` files are left untouched. On a git vault backups are
+  gitignored and stay on the host; a vault replicated by a file-sync
+  tool carries them to every host. This replaces the policy recorded in
+  `doc/TEMPLATE_POLICY.md` (commands: none; skills: one `.bak`, replaced
+  by the next reset).
+- On a git vault that is its own repository, the removal is committed
+  locally, scoped to the removed files, with a message naming the
+  files, the backups and the host; `vp vault sync` publishes it. vp
+  never commits into a repository that encloses the vault.
+- `vp skills upgrade` now only reports.
+- Existing `Projects/<slug>/{commands,skills}/README.md` stubs keep
+  their old wording. vp writes a stub only when it is absent, so delete
+  one to get the new text.
+- `MCPSurfaceVersion` rises from 4 to 5. Once an upgraded host makes a
+  stamped write (a task write or session capture; a reset or
+  `vp commands upgrade` stamps nothing) and a lagging host has pulled
+  it, that lagging host is refused on vault writes (exit 2,
+  `git pull && make install`).
 
 **Promoting back to the `vp` source tree.** Vibe-palace cannot automate
 promotion because at runtime it does not know where your vibe-palace

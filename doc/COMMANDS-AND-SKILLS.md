@@ -115,13 +115,19 @@ project.
 **Do not override a built-in in `Templates/`.** `vp config sync` no longer
 loses a `Templates/` file at the same path as an embedded template: it never
 writes one, `--yes` keeps it, and a prune never commits the deletion of a
-committed override — it restores HEAD's copy instead. But the upgrade
-commands' `--overwrite` still resets such a file to the embedded copy
-(`upgrade-overwrite-resets-vault-template-overrides`), and a host whose
-`templates.lock` lacks it prompts on every sync
+committed override — it restores HEAD's copy instead. The upgrade commands
+never change one either: they list it as `[keep]`. The risk that remains is
+that a host whose `templates.lock` lacks it prompts on every interactive sync
 (`template-provenance-manifest-retires-the-host-local-lock`). An unedited copy
 of a built-in is identical to it and is pruned, so edit before syncing.
 Override a built-in at the project tier instead.
+
+To remove a vault override of a built-in, name it: `vp commands reset NAME`
+(or `vp skills reset NAME` for a skill or one skill file). The reset removes
+the file so the built-in serves it again, keeps a backup named by the file's
+content (`<file>.<sha12>.bak`, never overwritten), and on a vault that is its
+own git repository commits the removal locally. `--dry-run` previews it. See
+[Resetting an override](TUTORIAL.md#resetting-an-override).
 
 To scope a command to a specific wing or room, place it in the appropriate
 subdirectory under `commands/{wing}/.wing/` or `commands/{wing}/{room}/`.
@@ -182,9 +188,9 @@ Save this as `audit-deps.md` and it's immediately available.
 
 This is the vault-wide location, for a skill with a **new** name. To
 override a built-in skill, use `{vault}/Projects/{project}/skills/{name}/`
-instead — a `Templates/skills/` copy of a built-in can still be reset to the
-embedded copy by `vp skills upgrade --overwrite` (see
-[Override behavior](#override-behavior)).
+instead — a `Templates/skills/` copy of a built-in is still not recommended
+(see [Override behavior](#override-behavior)); `vp skills reset NAME`
+removes one.
 
 Skills are always **directory-form** — a `{name}/` subdirectory
 containing `SKILL.md` (and optionally a `references/` tree). Flat-file

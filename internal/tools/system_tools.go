@@ -141,7 +141,8 @@ func InitProjectTool(vault *storage.Vault) mcp.Tool {
 			"reading that same home, so both are always omitted. Upgrading is a " +
 			"different job and a different command: agent files and shims are " +
 			"`vp commands upgrade`'s (it also removes stale shims, which onboarding " +
-			"never does), and vault Templates/skills belongs to `vp skills upgrade`. " +
+			"never does), and removing a vault Templates/ override of a built-in is " +
+			"`vp commands reset` / `vp skills reset` (a backup is kept). " +
 			"Returns {ok, failed[], status, project, complete, steps[], omitted[], " +
 			"advisories[]}. KEY OFF `ok`: it is false exactly when some step this " +
 			"call actually RAN failed, and `failed[]` names those steps. Do NOT key " +

@@ -33,19 +33,20 @@ func TestRenderReadmeStub(t *testing.T) {
 // fetched, and the project tier as the place to customise. There is no
 // materialized copy under <vault>/Templates/ to point at.
 //
-// It also pins the Templates/ warning to what is still true. `vp config sync`
-// no longer discards an override, so the stub must not say it does; the
-// upgrade command's --overwrite reset still can, and an unedited copy of a
-// built-in is byte-identical to it and is pruned.
+// It also pins the Templates/ warning to what is still true. Neither `vp
+// config sync` nor an upgrade command discards an override any more, so the
+// stub must not say either does; the reset verb removes one on request and
+// keeps a backup, and an unedited copy of a built-in is byte-identical to it
+// and is pruned.
 func TestRenderReadmeStub_PointsAtRealSources(t *testing.T) {
 	for _, tc := range []struct {
 		kind  string
 		wants []string
 	}{
 		{"commands", []string{"vp_get_command", "Projects/<slug>/", "override → promote",
-			"vp commands upgrade --overwrite", "edit it before syncing"}},
+			"never reset by", "vp commands reset <slug>", "keeps a backup", "edit it before syncing"}},
 		{"skills", []string{"vp skills show", "override → promote",
-			"vp skills upgrade --overwrite", "edit it before syncing"}},
+			"never reset by", "vp skills reset <slug>", "keeps a backup", "edit it before syncing"}},
 	} {
 		stub := RenderReadmeStub(tc.kind)
 		for _, w := range tc.wants {
@@ -53,8 +54,10 @@ func TestRenderReadmeStub_PointsAtRealSources(t *testing.T) {
 				t.Errorf("%s stub does not mention %q:\n%s", tc.kind, w, stub)
 			}
 		}
-		if strings.Contains(stub, "discarded by") {
-			t.Errorf("%s stub still says vp config sync discards an override:\n%s", tc.kind, stub)
+		for _, bad := range []string{"discarded by", "reset to the embedded copy by", "--overwrite"} {
+			if strings.Contains(stub, bad) {
+				t.Errorf("%s stub still says %q:\n%s", tc.kind, bad, stub)
+			}
 		}
 		if n := strings.Count(stub, "\n"); n > 40 {
 			t.Errorf("%s stub is %d lines; keep it at 40 or fewer so it gets read", tc.kind, n)

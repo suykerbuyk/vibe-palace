@@ -47,6 +47,8 @@ assert_file_exists "$HOME/vibe-palace-vault/Projects/reinit-case/commands/README
 assert_file_exists "$HOME/vibe-palace-vault/Projects/reinit-case/skills/README.md"
 
 # The re-init now says out loud what it deliberately does NOT do, and names
-# both owners — `vp commands upgrade` does not own Templates/skills.
+# the owners: `vp commands upgrade` for stale shims, and the explicit reset
+# verbs for a vault Templates/ override (no upgrade resets one).
 assert_grep "vp commands upgrade" "$CASE_LOGDIR/stdout.log"
-assert_grep "vp skills upgrade" "$CASE_LOGDIR/stdout.log"
+assert_grep "vp commands reset" "$CASE_LOGDIR/stdout.log"
+assert_grep "vp skills reset" "$CASE_LOGDIR/stdout.log"

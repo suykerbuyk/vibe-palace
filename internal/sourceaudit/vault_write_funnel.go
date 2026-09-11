@@ -417,9 +417,10 @@ var vaultRootIdentNames = map[string]bool{
 //   - filepath.Join(<vault-rooted>, …), including nested joins;
 //   - a suffix concatenation of a vault path — `dst+".bak"`, `logPath+".1"`,
 //     `configPath+".tmp"`. This one matters more than it looks: the backup and
-//     temp siblings are how three of the census's bypasses actually write
-//     (internal/templates/executor.go:106, internal/reconcile/upgrade.go:80,84,
-//     internal/vplog/vplog.go:52), and a rule blind to it would call them clean.
+//     temp siblings are how the census's bypasses actually wrote
+//     (internal/reconcile/upgrade.go:80,84, internal/vplog/vplog.go:52; a third,
+//     templates.Executor's rename to dst+".bak", was deleted with the upgrade
+//     reset), and a rule blind to it would call them clean.
 func isVaultPathExpr(e ast.Expr, known map[string]bool) bool {
 	switch v := e.(type) {
 	case *ast.Ident:

@@ -274,16 +274,20 @@ func TestCheckTemplateDriftSummaryOmitsZeroHalves(t *testing.T) {
 }
 
 // TestTemplateDriftRemedyStaysTruthful pins the remedy to what is true after
-// the override loss was closed: it no longer says `vp config sync` replaces an
-// override, it still steers to the project tier, it names the remaining risk
-// and its task, and it never calls a vault override of a built-in safe.
+// both override losses were closed: it no longer says `vp config sync`
+// replaces an override or that an upgrade's --overwrite resets one, it says
+// the upgrade commands never reset one and names the reset verbs, it still
+// steers to the project tier, it names the one remaining risk and its task,
+// and it never calls a vault override of a built-in safe.
 func TestTemplateDriftRemedyStaysTruthful(t *testing.T) {
 	text := strings.Join(templateDriftRemedy, " ")
 	for _, want := range []string{
 		"Projects/<slug>/commands/",
 		"no longer overwrites one",
 		"restored from HEAD",
-		"upgrade-overwrite-resets-vault-template-overrides",
+		"the upgrade commands never reset one",
+		"`vp commands reset NAME`",
+		"keeps a backup",
 		"template-provenance-manifest-retires-the-host-local-lock",
 		"still not recommended",
 	} {
@@ -291,7 +295,10 @@ func TestTemplateDriftRemedyStaysTruthful(t *testing.T) {
 			t.Errorf("remedy does not say %q", want)
 		}
 	}
-	for _, bad := range []string{"o/O answer", "vault-template-override-is-discarded-by-config-sync", "currently unsafe"} {
+	for _, bad := range []string{
+		"o/O answer", "vault-template-override-is-discarded-by-config-sync", "currently unsafe",
+		"upgrade-overwrite-resets-vault-template-overrides", "--overwrite",
+	} {
 		if strings.Contains(text, bad) {
 			t.Errorf("remedy still says %q", bad)
 		}

@@ -331,13 +331,14 @@ directory in the vault is where you customise them.
   every project and is safe: nothing iterates it. An **override of a
   built-in** here is still not recommended. `vp config sync` no longer
   overwrites one and never commits its removal — a committed override
-  is restored from HEAD — but `vp commands upgrade --overwrite` /
-  `vp skills upgrade --overwrite` reset it to the embedded copy
-  (`upgrade-overwrite-resets-vault-template-overrides`), and a host
-  whose `templates.lock` lacks it prompts on every sync
+  is restored from HEAD — and the upgrade commands never change one.
+  The risk that remains: a host whose `templates.lock` lacks it
+  prompts on every interactive sync
   (`template-provenance-manifest-retires-the-host-local-lock`). An
   unedited copy of a built-in is identical to it and is pruned, so edit
-  before syncing. Override built-ins at the project tier.
+  before syncing. Override built-ins at the project tier. To remove a
+  vault override, name it: `vp commands reset NAME` /
+  `vp skills reset NAME`.
 
 **Precedence (first match wins):** room > wing > project > vault >
 embedded. For example,
@@ -361,9 +362,17 @@ embedded `wrap.md` baked into the binary.
   instead, and a prune git cannot verify is deferred. Its `<vault>/.vibe-palace/templates.lock` sidecar
   records the embedded baseline that makes a prune safe; vp never stages
   it to git, so it is host-local in practice.
-- **`vp commands upgrade` / `vp skills upgrade`** — offer to reset an
-  existing vault copy of a built-in to the embedded bytes (commands keep
-  no `.bak`; skills keep one). They never create a copy.
+- **`vp commands upgrade` / `vp skills upgrade`** — never write or
+  remove a `Templates/` file, in any mode. They list each override of a
+  built-in as `[keep]` and name the reset that removes it.
+  `--overwrite` accepts only vp-owned changes (shims, agent-file
+  blocks, the project `.gitignore`, the commit hook).
+- **`vp commands reset NAME...` / `vp skills reset NAME...`** — remove
+  the named overrides, so the built-in serves them again. Each is first
+  backed up to `<file>.<sha12>.bak`, a name derived from its bytes that
+  is never overwritten. On a vault that is its own git repository the
+  removal is committed locally; `vp vault sync` publishes it.
+  `--dry-run` previews it.
 
 The full walkthrough is in
 [Tutorial — Customizing a command template](doc/TUTORIAL.md#customizing-a-command-template).

@@ -25,9 +25,10 @@ var updateGolden = flag.Bool("update-golden", false,
 //
 // The commands path of `vp commands upgrade` must remain byte-identical
 // across refactors; that's why a golden is the only defensible
-// assertion — the refactor in Phase 5 of vps-skill-artifacts-cross-ide
-// threads the same prompt sequence through the shared runUpgradePrompt
-// helper, and any drift is caught here.
+// assertion. It survived upgrade-overwrite-resets-vault-template-overrides
+// unchanged — that change deleted the template prompt loop
+// (runUpgradePrompt), but this vault has no override, so the loop never
+// printed anything here.
 //
 // The golden is ALSO the operator-facing record of the override-only fix.
 // It used to open with 15 "(new)" vault-template prompts — byte-identical

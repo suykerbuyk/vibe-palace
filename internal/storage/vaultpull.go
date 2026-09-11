@@ -120,8 +120,10 @@ func (r *PullResult) Stranded() bool {
 // remote ref (`git diff --quiet <remote>/<branch> -- <path>` exits 0) has its
 // uncommitted dirt discarded (`git checkout HEAD -- <path>`) so it cannot trip
 // the "local changes would be overwritten by merge" abort. This is the common
-// failure mode where `vp commands upgrade` wrote older template bytes over a
-// newer committed copy: the stale local bytes match the remote the merge is
+// failure mode where a v4 or older `vp commands upgrade` wrote older template
+// bytes over a newer committed copy (from v5 the upgrade commands write nothing
+// under Templates/, but older binaries on lagging hosts still can, and their
+// dirt still arrives here): the stale local bytes match the remote the merge is
 // about to bring in, so dropping them loses nothing. The heal pass is fail-open
 // — any error skips the path, never fatal — and a genuinely-edited template
 // (diff nonzero) is left untouched for the merge to handle.

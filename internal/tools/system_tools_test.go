@@ -1157,7 +1157,7 @@ func TestVpInitDescription_NamesEveryOmittedClass(t *testing.T) {
 	}
 
 	// And the two things an agent must not key off the wrong field for.
-	for _, ph := range []string{"complete", "omitted", "vp commands upgrade", "vp skills upgrade"} {
+	for _, ph := range []string{"complete", "omitted", "vp commands upgrade", "vp commands reset", "vp skills reset"} {
 		if !strings.Contains(desc, ph) {
 			t.Errorf("Description does not mention %q:\n%s", ph, desc)
 		}
