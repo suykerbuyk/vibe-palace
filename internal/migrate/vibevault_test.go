@@ -814,3 +814,29 @@ Identical body text for deduplication testing purposes.
 		}
 	}
 }
+
+// TestImportVibeVault_DryRunNilEngineAndEmbedder pins the contract the CLI
+// relies on: a dry run takes nil for both, never reaches the indexer (not for
+// sessions, not for knowledge.md), and still counts every session.
+func TestImportVibeVault_DryRunNilEngineAndEmbedder(t *testing.T) {
+	vault, _, _, cfg := setupTestVault(t)
+	knowledgePath := filepath.Join(vault.Root, "Projects", "test-project", "knowledge.md")
+	if err := os.WriteFile(knowledgePath, []byte("# Project Knowledge\n\nImportant domain facts."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ImportVibeVault(context.Background(), vault, vault, nil, nil, cfg, ImportOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("dry run with nil engine/embedder: %v", err)
+	}
+	if result.SessionsImported != 3 {
+		t.Errorf("SessionsImported = %d, want 3", result.SessionsImported)
+	}
+	if result.DrawersCreated != 0 || result.EntitiesCreated != 0 || result.TriplesCreated != 0 {
+		t.Errorf("dry run indexed: drawers/entities/triples = %d/%d/%d, want 0/0/0",
+			result.DrawersCreated, result.EntitiesCreated, result.TriplesCreated)
+	}
+	if len(result.Errors) != 0 {
+		t.Errorf("unexpected errors: %v", result.Errors)
+	}
+}

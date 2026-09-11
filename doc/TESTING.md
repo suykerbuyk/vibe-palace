@@ -331,6 +331,14 @@ upstream data race in `go-huggingface/hub` during concurrent file downloads
 that triggers under `go test -race` on cold cache only. This is not
 actionable and does not affect inference.
 
+Under `-short`, the only route to that download is the two `vp check`
+full-suite tests, `TestCheckEmitsVaultProjectRow` and
+`TestCheckFullSuiteEmitsEveryProducerRow`: `vp check`'s Embedder row constructs
+the model, and those tests read the host's `~/.cache/huggingface`. That is why
+CI caches that directory and warms it in a step outside `-race`. The migrate and
+search tests no longer reach the model at all (see "Model-free migrate and
+search tests").
+
 **Warm cache** (subsequent runs): hugot loads the model directly from
 disk. No network access. This is the normal path in development.
 
@@ -1539,6 +1547,95 @@ editors. `vp_vault_edit` is not an arbitrary substitute: it is the tool
 that realistically races a whole-file rewrite in production. A second
 `vp_update_resume` would only prove CAS against itself; a *different-writer*
 racer is the shape the 179 hole actually had.
+
+---
+
+## Model-free migrate and search tests
+
+`vp migrate` and `vp search` used to build the ONNX embedder before validating
+their inputs, so `--dry-run`, a mistyped `--export-path` or `--vault-path`, or an
+unknown project paid for a ~90 MB model download before failing (or before
+answering `No results found.`). Now every input is validated first, a dry run
+passes a nil engine and embedder, and the model is constructed only where a run
+will actually embed.
+
+### The seam and the guard
+
+Every CLI construction routes through one package variable,
+`newVaultEmbedder` (`cmd/vp/embedder.go`). `setupTestVaultEnv` installs
+`forbidVaultEmbedder`, so a test built on it that constructs the model **fails**
+(through `Errorf`, since the MCP lazy path can construct off the test
+goroutine). A test that needs an embedder substitutes one with
+`stubVaultEmbedder(t, emb)`, which returns a construction counter. Both helpers
+call `t.Setenv` before touching the variable, so a test that has called
+`t.Parallel` panics instead of racing on it. `setupTestVaultEnv` also puts
+`XDG_CACHE_HOME` under its sandboxed home; the old pin to the host cache is
+gone.
+
+**What the guard covers, exactly:** the seam-routed sites — `setupEmbedder`
+(both migrate subcommands), `vp search`, and `bootstrap()` (which captures the
+constructor once, before its lazy closure). `vp check`'s Embedder row constructs
+through `check.CheckEmbedder` → `embedder.NewONNX`, bypasses the seam, and is
+**unguarded**. No `setupTestVaultEnv` test reaches it today; one that drove
+`runCheck` against its valid temp vault would cold-download into its temp home.
+
+### `cmd/vp/cmd_migrate_test.go` (all under the guard)
+
+| Test | What it proves |
+|------|----------------|
+| `TestMigrateMemPalaceMissingExportBuildsNoEmbedder` | A missing export exits 1 with `read export file`, dry run and real run alike |
+| `TestMigrateMemPalaceDirectoryExportIsUserError` | A directory as `--export-path` exits 1 |
+| `TestMigrateMemPalaceMalformedExportBuildsNoEmbedder` | `{` exits 1 with `parse export JSON` |
+| `TestMigrateMemPalaceUnreadableExportIsSystemError` | A mode-000 export stays exit 2: the exit-1 mapping covers not-found, directory, and malformed JSON only |
+| `TestMigrateMemPalaceDryRunBuildsNoEmbedder` | A valid dry run reports the export's counts and writes no `palace/mempalace` |
+| `TestMigrateMemPalaceRealRunBuildsEmbedderOnce` | A real run constructs exactly once and writes drawers |
+| `TestMigrateMemPalaceNoEmbeddableDrawersBuildsNoEmbedder` | An export whose only drawer is blank imports its entities and triples with zero constructions |
+| `TestMigrateVibeVaultDryRunBuildsNoEmbedder` | A seeded dry run names the session, counts it, and writes no import marker |
+| `TestMigrateVibeVaultMissingSourceBuildsNoEmbedder` | A `--vault-path` with no `Projects/` exits 1 for `--dry-run`, for `--yes`, and on the **prompt path** (neither flag, stdin a pipe) — where it must say `has no Projects/` and never `requires --yes`, pinning that the check runs before the confirmation gate |
+| `TestMigrateVibeVaultInPlaceEmptyVaultMessage` | An in-place run names the configured vault and never blames `--vault-path` |
+| `TestMigrateVibeVaultSourceProjectsIsFileIsUserError` / `…StatFailureIsSystemError` | A `Projects` file exits 1; an unstat-able source (ENOTDIR) exits 2 |
+| `TestMigrateVibeVaultRealRunBuildsEmbedderOnce` / `…NoSessionsBuildsNoEmbedder` | A real run constructs once; `--agentctx --no-sessions` never |
+
+### `cmd/vp/cmd_search_test.go` (all under the guard, each in a temp cwd)
+
+| Test | What it proves |
+|------|----------------|
+| `TestSearchInvalidProjectSlugBuildsNoEmbedder` | `-p "../Bad Slug"` exits 1 |
+| `TestSearchUnknownProjectBuildsNoEmbedder` | A well-formed `-p` the vault does not hold exits 1 and names it |
+| `TestSearchNotesOnlyProjectReachesEmbedder` | A notes-only project (no palace store) is a real target: the check admits exactly what search indexes (`ListAllProjects`) |
+| `TestSearchUnknownDetectedProjectBuildsNoEmbedder` | With no `-p`, a cwd-detected slug the vault lacks exits 1 and the message says it was detected. The test `t.Chdir`s into `<tmp>/unknownrepo`: from the package's own cwd, detection yields `vibe-palace` and the test would prove nothing |
+| `TestSearchDetectedProjectReachesEmbedder` | A marker naming a seeded project reaches the embedder once |
+| `TestSearchUnreadableProjectsIsSystemError` | An unlistable `Projects/` exits 2 — "could not look" is not "absent" |
+
+### Harness and library
+
+| Test | What it proves |
+|------|----------------|
+| `TestForbidVaultEmbedderRecordsAndRestores` | Through a recorder: the forbidden seam reports an error naming `stubVaultEmbedder`, returns the sentinel, and is restored by cleanup |
+| `TestSetupTestVaultEnvInstallsEmbedderForbid` | The guard is installed by the harness itself — removing the call turns this red |
+| `TestEmbedderSeamHelpersRefuseParallel` | Both helpers panic under `t.Parallel` before swapping the variable |
+| `internal/migrate`: `TestLoadMemPalaceExport`, `TestMemPalaceExportEmbeddableDrawers` | The loader's error classes (`fs.ErrNotExist`, `fs.ErrInvalid`, `*json.SyntaxError`, `*json.UnmarshalTypeError`) and the one blank-drawer predicate |
+| `internal/migrate`: `TestImportMemPalace_DryRunEmbedsNothing` | Zero `EmbedBatch` calls under `DryRun`, and dry-run counts equal a real run's — **on a fresh vault with unique IDs only** |
+| `internal/migrate`: `TestImportMemPalace_DryRunNilEngineAndEmbedder`, `TestImportVibeVault_DryRunNilEngineAndEmbedder` | Both importers accept nil/nil under `DryRun` |
+
+### `internal/integration/migrate_no_model_test.go` — the real binary, dead proxy
+
+`TestIntegrationMigrateLoadsNoModel` runs the built `vp` with an explicit
+environment (temp `HOME`, config and cache dirs; `HTTPS_PROXY`/`HTTP_PROXY` at
+`http://127.0.0.1:1`) for: mempalace missing export / valid export `--dry-run`
+(exit 1 / 0), vibevault missing source / seeded `--dry-run` (1 / 0), and
+`vp search` with a bad slug, an unknown `-p`, and an unknown cwd-detected
+project (all 1). The observable is the HF hub cache directory — neither
+`<XDG_CACHE_HOME>/huggingface` nor `<HOME>/.cache/huggingface` may appear —
+never elapsed time. `palace/.local/models` is only a secondary: a failed
+download never creates it. A regression costs ~20 s per subtest (hugot's retry
+loop) before it goes red. It is not `-short`-gated.
+
+For a manual full-package check where unprivileged user namespaces exist, run
+`go test -race -short ./cmd/vp/` under
+`unshare -rn sh -c 'ip link set lo up && exec env -i …'` with a cold `HOME`.
+Bring loopback up, or about ten unrelated `httptest`/MCP-serve tests fail. CI
+runners generally lack user namespaces, so this is manual only.
 
 ---
 

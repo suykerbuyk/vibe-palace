@@ -307,8 +307,12 @@ func TestIntegrationMemPalaceImportToSearch(t *testing.T) {
 	}
 
 	// Run the import.
+	mpExport, err := migrate.LoadMemPalaceExport(exportPath)
+	if err != nil {
+		t.Fatalf("LoadMemPalaceExport: %v", err)
+	}
 	result, err := migrate.ImportMemPalace(
-		context.Background(), h.Vault, h.Engine, h.Embedder, exportPath,
+		context.Background(), h.Vault, h.Engine, h.Embedder, mpExport,
 		migrate.ImportOptions{},
 	)
 	if err != nil {
@@ -440,9 +444,13 @@ func TestIntegrationMemPalaceIdempotent(t *testing.T) {
 	os.WriteFile(exportPath, data, 0o644)
 
 	ctx := context.Background()
+	mpExport, err := migrate.LoadMemPalaceExport(exportPath)
+	if err != nil {
+		t.Fatalf("LoadMemPalaceExport: %v", err)
+	}
 
 	// First import.
-	r1, err := migrate.ImportMemPalace(ctx, h.Vault, h.Engine, h.Embedder, exportPath, migrate.ImportOptions{})
+	r1, err := migrate.ImportMemPalace(ctx, h.Vault, h.Engine, h.Embedder, mpExport, migrate.ImportOptions{})
 	if err != nil {
 		t.Fatalf("first import: %v", err)
 	}
@@ -453,7 +461,7 @@ func TestIntegrationMemPalaceIdempotent(t *testing.T) {
 	drawers1, _ := countAllDrawers(t, h.Vault, "mempalace")
 
 	// Second import — AppendDrawer dedup should prevent new drawers.
-	r2, err := migrate.ImportMemPalace(ctx, h.Vault, h.Engine, h.Embedder, exportPath, migrate.ImportOptions{})
+	r2, err := migrate.ImportMemPalace(ctx, h.Vault, h.Engine, h.Embedder, mpExport, migrate.ImportOptions{})
 	if err != nil {
 		t.Fatalf("second import: %v", err)
 	}

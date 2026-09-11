@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -67,33 +68,89 @@ type memPalaceTriple struct {
 	SourceSession string  `json:"source_session"`
 }
 
+// embedText is the text a drawer contributes to embedding: its content with
+// surrounding whitespace trimmed. A drawer whose embedText is empty is skipped
+// by the import and needs no model — EmbeddableDrawers and the import's
+// work-collection step both decide through this one method.
+func (d memPalaceDrawer) embedText() string {
+	return strings.TrimSpace(d.Content)
+}
+
 const embedBatchSize = 32
 
-// ImportMemPalace reads a JSON export file produced by the MemPalace Python
-// export script and imports its drawers, entities, and triples into the vault
-// under the project "mempalace".
+// MemPalaceExport is a parsed MemPalace JSON export, produced by
+// LoadMemPalaceExport and consumed by ImportMemPalace. It is deliberately
+// opaque: the JSON shape stays unexported, so a caller can only load it, ask
+// how many drawers need the embedding model, and import it.
+//
+// Loading is split from importing so a caller can validate its input before
+// paying for anything expensive: a missing or malformed export fails in
+// LoadMemPalaceExport, before the caller has constructed an embedder.
+type MemPalaceExport struct {
+	data memPalaceExport
+	path string
+}
+
+// LoadMemPalaceExport reads and parses the MemPalace JSON export at path.
+//
+// Error classes, which the CLI maps to exit codes:
+//   - a missing file wraps fs.ErrNotExist;
+//   - a directory wraps fs.ErrInvalid (checked by Stat, so it is portable where
+//     os.ReadFile on a directory is not);
+//   - malformed JSON wraps *json.SyntaxError or *json.UnmarshalTypeError;
+//   - any other failure (permission, I/O) is returned wrapped as-is.
+//
+// Read failures carry the "read export file:" prefix and parse failures the
+// "parse export JSON:" prefix.
+func LoadMemPalaceExport(path string) (*MemPalaceExport, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("read export file: %w", err)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("read export file: %s is a directory: %w", path, fs.ErrInvalid)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read export file: %w", err)
+	}
+	var data memPalaceExport
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, fmt.Errorf("parse export JSON: %w", err)
+	}
+	return &MemPalaceExport{data: data, path: path}, nil
+}
+
+// EmbeddableDrawers counts the drawers ImportMemPalace would embed — those
+// whose content is non-blank. Zero means a real import needs no embedding
+// model: entities and triples are written without one.
+func (e *MemPalaceExport) EmbeddableDrawers() int {
+	n := 0
+	for _, d := range e.data.Drawers {
+		if d.embedText() != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// ImportMemPalace imports a loaded MemPalace export's drawers, entities, and
+// triples into the vault under the project "mempalace".
+//
+// engine and emb may be nil. A dry run embeds nothing and writes nothing, so
+// it needs neither; a real run without them writes drawers unindexed.
 func ImportMemPalace(
 	ctx context.Context,
 	vault *storage.Vault,
 	engine *search.Engine,
 	emb embedder.Embedder,
-	exportPath string,
+	mpExport *MemPalaceExport,
 	opts ImportOptions,
 ) (ImportResult, error) {
 	var result ImportResult
+	export := mpExport.data
 
-	// Step 1: read and unmarshal the export file.
-	data, err := os.ReadFile(exportPath)
-	if err != nil {
-		return result, fmt.Errorf("read export file: %w", err)
-	}
-
-	var export memPalaceExport
-	if err := json.Unmarshal(data, &export); err != nil {
-		return result, fmt.Errorf("parse export JSON: %w", err)
-	}
-
-	// Step 2: collect non-empty drawer contents for batch embedding.
+	// Step 1: collect non-empty drawer contents for batch embedding.
 	type drawerWork struct {
 		index int
 		wing  string
@@ -103,7 +160,7 @@ func ImportMemPalace(
 	var texts []string
 	var work []drawerWork
 	for i, d := range export.Drawers {
-		content := strings.TrimSpace(d.Content)
+		content := d.embedText()
 		if content == "" {
 			continue
 		}
@@ -116,9 +173,10 @@ func ImportMemPalace(
 		work = append(work, drawerWork{index: i, wing: wing, room: room})
 	}
 
-	// Step 3: batch embed.
+	// Step 2: batch embed. A dry run never embeds: no dry-run count reads a
+	// vector, so the vectors would be computed only to be thrown away.
 	var allVecs [][]float32
-	if len(texts) > 0 && emb != nil {
+	if len(texts) > 0 && emb != nil && !opts.DryRun {
 		for start := 0; start < len(texts); start += embedBatchSize {
 			if err := ctx.Err(); err != nil {
 				return result, err
@@ -132,7 +190,7 @@ func ImportMemPalace(
 		}
 	}
 
-	// Step 4: import drawers.
+	// Step 3: import drawers.
 	for wi, w := range work {
 		if err := ctx.Err(); err != nil {
 			return result, err
@@ -178,7 +236,7 @@ func ImportMemPalace(
 			}
 			result.Errors = append(result.Errors, ImportError{
 				Project: "mempalace",
-				File:    exportPath,
+				File:    mpExport.path,
 				Err:     appendErr,
 			})
 			progress(opts, ProgressEvent{
@@ -200,7 +258,7 @@ func ImportMemPalace(
 			}}); idxErr != nil {
 				result.Errors = append(result.Errors, ImportError{
 					Project: "mempalace",
-					File:    exportPath,
+					File:    mpExport.path,
 					Err:     idxErr,
 				})
 			}
@@ -216,7 +274,7 @@ func ImportMemPalace(
 		})
 	}
 
-	// Step 5: import entities, in ONE batch.
+	// Step 4: import entities, in ONE batch.
 	//
 	// This is an unbounded bulk import, and the per-entity AddEntity reads and
 	// scans the whole entities file to dedup — so a loop over it cost O(N²)
@@ -256,7 +314,7 @@ func ImportMemPalace(
 		result.EntitiesCreated += added
 	}
 
-	// Step 6: import triples.
+	// Step 5: import triples.
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, t := range export.Triples {
 		if opts.DryRun {

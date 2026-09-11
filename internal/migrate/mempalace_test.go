@@ -6,8 +6,12 @@ package migrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
@@ -89,6 +93,16 @@ func testFixture() memPalaceExport {
 	}
 }
 
+// mustLoadExport loads the export at path, failing the test on error.
+func mustLoadExport(t *testing.T, path string) *MemPalaceExport {
+	t.Helper()
+	export, err := LoadMemPalaceExport(path)
+	if err != nil {
+		t.Fatalf("LoadMemPalaceExport: %v", err)
+	}
+	return export
+}
+
 func setupTest(t *testing.T) (string, *storage.Vault, *search.Engine, *embedder.MockEmbedder, string) {
 	t.Helper()
 	tmpDir := t.TempDir()
@@ -109,7 +123,7 @@ func TestImportMemPalace_Basic(t *testing.T) {
 	fixture := testFixture()
 	writeExportJSON(t, exportPath, fixture)
 
-	result, err := ImportMemPalace(context.Background(), vault, engine, emb, exportPath, ImportOptions{})
+	result, err := ImportMemPalace(context.Background(), vault, engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
 	if err != nil {
 		t.Fatalf("ImportMemPalace: %v", err)
 	}
@@ -134,7 +148,7 @@ func TestImportMemPalace_Idempotent(t *testing.T) {
 	writeExportJSON(t, exportPath, fixture)
 
 	// First import.
-	result1, err := ImportMemPalace(context.Background(), vault, engine, emb, exportPath, ImportOptions{})
+	result1, err := ImportMemPalace(context.Background(), vault, engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
 	if err != nil {
 		t.Fatalf("first import: %v", err)
 	}
@@ -143,7 +157,7 @@ func TestImportMemPalace_Idempotent(t *testing.T) {
 	}
 
 	// Second import: content-addressed dedup should skip all drawers.
-	result2, err := ImportMemPalace(context.Background(), vault, engine, emb, exportPath, ImportOptions{})
+	result2, err := ImportMemPalace(context.Background(), vault, engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
 	if err != nil {
 		t.Fatalf("second import: %v", err)
 	}
@@ -157,7 +171,7 @@ func TestImportMemPalace_DryRun(t *testing.T) {
 	fixture := testFixture()
 	writeExportJSON(t, exportPath, fixture)
 
-	result, err := ImportMemPalace(context.Background(), vault, engine, emb, exportPath, ImportOptions{DryRun: true})
+	result, err := ImportMemPalace(context.Background(), vault, engine, emb, mustLoadExport(t, exportPath), ImportOptions{DryRun: true})
 	if err != nil {
 		t.Fatalf("ImportMemPalace dry run: %v", err)
 	}
@@ -173,7 +187,7 @@ func TestImportMemPalace_DryRun(t *testing.T) {
 	}
 
 	// Verify nothing was actually written: a real import should still create 3.
-	result2, err := ImportMemPalace(context.Background(), vault, engine, emb, exportPath, ImportOptions{})
+	result2, err := ImportMemPalace(context.Background(), vault, engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
 	if err != nil {
 		t.Fatalf("post-dry-run import: %v", err)
 	}
@@ -206,7 +220,7 @@ func TestImportMemPalace_WingRoomMapping(t *testing.T) {
 	}
 	writeExportJSON(t, exportPath, export)
 
-	result, err := ImportMemPalace(context.Background(), vault, nil, emb, exportPath, ImportOptions{})
+	result, err := ImportMemPalace(context.Background(), vault, nil, emb, mustLoadExport(t, exportPath), ImportOptions{})
 	if err != nil {
 		t.Fatalf("ImportMemPalace: %v", err)
 	}
@@ -228,28 +242,6 @@ func TestImportMemPalace_WingRoomMapping(t *testing.T) {
 	}
 }
 
-func TestImportMemPalace_BadJSON(t *testing.T) {
-	_, vault, engine, emb, exportPath := setupTest(t)
-
-	if err := os.WriteFile(exportPath, []byte(`{bad json`), 0o644); err != nil {
-		t.Fatalf("write bad JSON: %v", err)
-	}
-
-	_, err := ImportMemPalace(context.Background(), vault, engine, emb, exportPath, ImportOptions{})
-	if err == nil {
-		t.Fatal("expected error for bad JSON, got nil")
-	}
-}
-
-func TestImportMemPalace_NonExistentFile(t *testing.T) {
-	_, vault, engine, emb, _ := setupTest(t)
-
-	_, err := ImportMemPalace(context.Background(), vault, engine, emb, "/no/such/file.json", ImportOptions{})
-	if err == nil {
-		t.Fatal("expected error for non-existent file, got nil")
-	}
-}
-
 func TestImportMemPalace_CancelledContext(t *testing.T) {
 	_, vault, engine, emb, exportPath := setupTest(t)
 
@@ -260,7 +252,7 @@ func TestImportMemPalace_CancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err := ImportMemPalace(ctx, vault, engine, emb, exportPath, ImportOptions{})
+	_, err := ImportMemPalace(ctx, vault, engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
 	if err == nil {
 		t.Fatal("expected context cancellation error, got nil")
 	}
@@ -277,7 +269,7 @@ func TestImportMemPalace_EmptyExport(t *testing.T) {
 	}
 	writeExportJSON(t, exportPath, export)
 
-	result, err := ImportMemPalace(context.Background(), vault, engine, emb, exportPath, ImportOptions{})
+	result, err := ImportMemPalace(context.Background(), vault, engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
 	if err != nil {
 		t.Fatalf("ImportMemPalace empty: %v", err)
 	}
@@ -292,5 +284,159 @@ func TestImportMemPalace_EmptyExport(t *testing.T) {
 	}
 	if len(result.Errors) != 0 {
 		t.Errorf("unexpected errors: %v", result.Errors)
+	}
+}
+
+// TestLoadMemPalaceExport pins the loader's error classes. The CLI maps them
+// to exit codes (cmd/vp/cmd_migrate.go's migrateInputExit): not-found, a
+// directory, and malformed JSON are the operator's to retype, so each must be
+// recognisable through errors.Is / errors.As rather than by message.
+func TestLoadMemPalaceExport(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	t.Run("ok", func(t *testing.T) {
+		p := filepath.Join(dir, "ok.json")
+		writeExportJSON(t, p, testFixture())
+		export, err := LoadMemPalaceExport(p)
+		if err != nil {
+			t.Fatalf("LoadMemPalaceExport: %v", err)
+		}
+		if got := len(export.data.Drawers); got != 3 {
+			t.Errorf("drawers = %d, want 3", got)
+		}
+		if export.path != p {
+			t.Errorf("path = %q, want %q", export.path, p)
+		}
+	})
+
+	var syn *json.SyntaxError
+	var typ *json.UnmarshalTypeError
+	cases := []struct {
+		name   string
+		path   string
+		prefix string
+		class  func(error) bool
+	}{
+		{"missing", filepath.Join(dir, "nope.json"), "read export file:",
+			func(err error) bool { return errors.Is(err, fs.ErrNotExist) }},
+		{"directory", dir, "read export file:",
+			func(err error) bool { return errors.Is(err, fs.ErrInvalid) }},
+		{"malformed", write("bad.json", "{"), "parse export JSON:",
+			func(err error) bool { return errors.As(err, &syn) }},
+		{"wrong type", write("array.json", "[]"), "parse export JSON:",
+			func(err error) bool { return errors.As(err, &typ) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			export, err := LoadMemPalaceExport(tc.path)
+			if err == nil {
+				t.Fatalf("LoadMemPalaceExport(%q) = %v, want an error", tc.path, export)
+			}
+			if !strings.HasPrefix(err.Error(), tc.prefix) {
+				t.Errorf("error %q lacks prefix %q", err, tc.prefix)
+			}
+			if !tc.class(err) {
+				t.Errorf("error %q (%T) is not of the expected class", err, errors.Unwrap(err))
+			}
+		})
+	}
+}
+
+func TestMemPalaceExportEmbeddableDrawers(t *testing.T) {
+	cases := []struct {
+		name    string
+		drawers []memPalaceDrawer
+		want    int
+	}{
+		{"none", nil, 0},
+		{"blank only", []memPalaceDrawer{{ID: "a", Content: ""}, {ID: "b", Content: " \n\t"}}, 0},
+		{"mixed", []memPalaceDrawer{{ID: "a", Content: "text"}, {ID: "b", Content: "  "}, {ID: "c", Content: " more "}}, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			export := &MemPalaceExport{data: memPalaceExport{Drawers: tc.drawers}}
+			if got := export.EmbeddableDrawers(); got != tc.want {
+				t.Errorf("EmbeddableDrawers() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// countingEmbedder wraps an embedder and counts EmbedBatch calls.
+type countingEmbedder struct {
+	embedder.Embedder
+	batches atomic.Int32
+}
+
+func (c *countingEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	c.batches.Add(1)
+	return c.Embedder.EmbedBatch(ctx, texts)
+}
+
+// TestImportMemPalace_DryRunEmbedsNothing pins that a dry run never calls the
+// embedder, even when handed one, and that its counts match a real run's.
+//
+// The count equality holds ONLY on a fresh vault with unique IDs: dry-run
+// counts are len(work)/len(entities)/len(triples) and have never reflected ID
+// dedupe, so a dry run over an already-imported vault over-reports.
+func TestImportMemPalace_DryRunEmbedsNothing(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := storage.NewVault(tmpDir)
+	emb := &countingEmbedder{Embedder: embedder.NewMock(384)}
+	engine := search.NewEngine(emb, vault, storage.Config{VaultPath: tmpDir})
+	exportPath := filepath.Join(tmpDir, "export.json")
+	writeExportJSON(t, exportPath, testFixture())
+	export := mustLoadExport(t, exportPath)
+
+	dry, err := ImportMemPalace(context.Background(), vault, engine, emb, export, ImportOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if n := emb.batches.Load(); n != 0 {
+		t.Fatalf("dry run called EmbedBatch %d times, want 0", n)
+	}
+
+	live, err := ImportMemPalace(context.Background(), vault, engine, emb, export, ImportOptions{})
+	if err != nil {
+		t.Fatalf("real run: %v", err)
+	}
+	if emb.batches.Load() == 0 {
+		t.Error("real run never called EmbedBatch; the counter proves nothing")
+	}
+	if dry.DrawersCreated != live.DrawersCreated ||
+		dry.EntitiesCreated != live.EntitiesCreated ||
+		dry.TriplesCreated != live.TriplesCreated {
+		t.Errorf("dry-run counts %d/%d/%d != real-run counts %d/%d/%d (fresh vault, unique IDs)",
+			dry.DrawersCreated, dry.EntitiesCreated, dry.TriplesCreated,
+			live.DrawersCreated, live.EntitiesCreated, live.TriplesCreated)
+	}
+}
+
+// TestImportMemPalace_DryRunNilEngineAndEmbedder pins the contract the CLI
+// relies on: a dry run takes nil for both and still reports full counts.
+func TestImportMemPalace_DryRunNilEngineAndEmbedder(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := storage.NewVault(tmpDir)
+	exportPath := filepath.Join(tmpDir, "export.json")
+	writeExportJSON(t, exportPath, testFixture())
+
+	result, err := ImportMemPalace(context.Background(), vault, nil, nil, mustLoadExport(t, exportPath), ImportOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("dry run with nil engine/embedder: %v", err)
+	}
+	if result.DrawersCreated != 3 || result.EntitiesCreated != 1 || result.TriplesCreated != 1 {
+		t.Errorf("counts = %d/%d/%d, want 3/1/1",
+			result.DrawersCreated, result.EntitiesCreated, result.TriplesCreated)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "palace", "mempalace")); !os.IsNotExist(err) {
+		t.Errorf("dry run wrote palace/mempalace (stat err %v)", err)
 	}
 }

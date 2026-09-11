@@ -36,8 +36,7 @@ import (
 //
 // XDG_CACHE_HOME is deliberately NOT redirected here: nothing in this package
 // constructs an ONNX embedder (check_tool.go never calls check.Run for exactly
-// that reason), so there is no model cache to preserve. See
-// cmd/vp/testhelper_test.go's hostCacheDir if that ever changes.
+// that reason), so there is no model cache to reach.
 //
 // Four vars, because os.UserHomeDir and os.UserConfigDir resolve differently
 // per GOOS — HOME/USERPROFILE for the former, XDG_CONFIG_HOME/APPDATA for the

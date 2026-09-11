@@ -72,6 +72,10 @@ type ImportError struct {
 
 // ImportOptions configures a migration run.
 type ImportOptions struct {
+	// DryRun reports what would be imported without writing anything. A dry
+	// run embeds nothing either: no dry-run count depends on a vector, so both
+	// importers accept a nil engine and a nil embedder under DryRun, and the
+	// CLI passes nil for both rather than loading the model.
 	DryRun bool
 	// Strict aborts the import on the first frontmatter parse error.
 	// When false (default), parse errors are recorded as parse_failed

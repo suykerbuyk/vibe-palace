@@ -6,9 +6,11 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,7 +34,7 @@ func cmdMigrate() *cli.Command {
 
 var migrateVibeVaultFlags = []cli.FlagDef{
 	{Name: "--vault-path", Arg: "PATH", Help: "SOURCE VibeVault root to read sessions from (default: the configured vault). Writes always land in the configured vault_path, never here."},
-	{Name: "--dry-run", Help: "Preview import; prompts for conflict resolution like a real run. Use --yes to auto-accept defaults."},
+	{Name: "--dry-run", Help: "Preview import; prompts for conflict resolution like a real run. Use --yes to auto-accept defaults. Loads no embedding model."},
 	{Name: "--strict", Help: "Abort on the first frontmatter parse error (default: log file path, skip the session, continue)"},
 	{Name: "--yes", Short: "-y", Help: "Accept default slug-rename suggestions without prompting"},
 	{Name: "--slug-map", Arg: "OLD=NEW[,OLD=NEW...]", Help: "Pre-specify slug renames; uncovered collisions fall back to interactive or auto"},
@@ -56,7 +58,9 @@ func cmdMigrateVibeVault() *cli.Command {
 			"(~/.config/vibe-palace/config.toml). When --vault-path is omitted, source and destination " +
 			"are the same configured vault. Every run prints a Source/Destination/Same-vault banner to " +
 			"stderr before scanning; a real (non-dry-run) cross-vault import requires confirmation " +
-			"(--yes, or an interactive [y/N] prompt on a TTY).",
+			"(--yes, or an interactive [y/N] prompt on a TTY). A source with no Projects/ directory " +
+			"is refused (exit 1) before that confirmation and before any model loads. --dry-run " +
+			"loads no embedding model, so a preview never downloads it.",
 		Flags: migrateVibeVaultFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp migrate vibevault", Comment: "Import sessions in place: source and destination are the configured vault"},
@@ -118,6 +122,14 @@ func cmdMigrateVibeVault() *cli.Command {
 			// Banner on every run (real and dry), before any other output.
 			fmt.Fprint(os.Stderr, migrateBanner(resolvedSource, resolvedDest))
 
+			// The source must hold a Projects/ directory. Checked before the
+			// confirmation gate, so an operator is never asked to approve a
+			// write from a source that cannot supply one, and before the
+			// embedder, so a typo in --vault-path costs nothing.
+			if code := checkMigrateSource(resolvedSource, vaultPath != ""); code != cli.ExitOK {
+				return code
+			}
+
 			// Real-run cross-vault confirmation gate (before the embedder
 			// loads, so an abort costs nothing).
 			proceed, abortMsg := confirmCrossVaultWrite(
@@ -155,14 +167,15 @@ func cmdMigrateVibeVault() *cli.Command {
 			}
 
 			// Engine and model cache bind to the DESTINATION. An
-			// agentctx-only run (--no-sessions) indexes nothing, so it
-			// skips the embedder entirely (no ~90MB model load).
+			// agentctx-only run (--no-sessions) indexes nothing, and a dry
+			// run reports counts without embedding, so both skip the
+			// embedder entirely (no ~90MB model load) and pass nil.
 			var (
 				emb     embedder.Embedder
 				eng     *search.Engine
 				cleanup = func() {}
 			)
-			if !noSessions {
+			if !noSessions && !dryRun {
 				emb, eng, cleanup, err = setupEmbedder(dest, cfg)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
@@ -172,7 +185,7 @@ func cmdMigrateVibeVault() *cli.Command {
 			defer cleanup()
 
 			if dryRun {
-				fmt.Fprintln(os.Stderr, "Dry run — no data will be written.")
+				fmt.Fprintln(os.Stderr, dryRunNotice)
 			}
 			fmt.Fprintln(os.Stderr, "Scanning projects...")
 
@@ -269,15 +282,18 @@ func isStdinTTY() bool {
 
 var migrateMemPalaceFlags = []cli.FlagDef{
 	{Name: "--export-path", Arg: "PATH", Help: "Path to MemPalace JSON export file"},
-	{Name: "--dry-run", Help: "Show what would be imported without writing"},
+	{Name: "--dry-run", Help: "Show what would be imported without writing or loading the embedding model"},
 }
 
 func cmdMigrateMemPalace() *cli.Command {
 	return &cli.Command{
-		Name:        "migrate mempalace",
-		Synopsis:    "vp migrate mempalace --export-path PATH [--dry-run]",
-		Description: "Import data from a MemPalace JSON export into the palace.",
-		Flags:       migrateMemPalaceFlags,
+		Name:     "migrate mempalace",
+		Synopsis: "vp migrate mempalace --export-path PATH [--dry-run]",
+		Description: "Import data from a MemPalace JSON export into the palace. The export is " +
+			"read and parsed before anything else happens: a missing, directory, or malformed " +
+			"export exits 1 without loading the embedding model. --dry-run never loads the model, " +
+			"and neither does a real import whose drawers are all blank.",
+		Flags: migrateMemPalaceFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp migrate mempalace --export-path ~/export.json", Comment: "Import from MemPalace export"},
 			{Cmd: "vp migrate mempalace --export-path ~/export.json --dry-run", Comment: "Preview import without writing"},
@@ -296,26 +312,43 @@ func cmdMigrateMemPalace() *cli.Command {
 				return cli.ExitUser
 			}
 
+			// Parse the export first: a missing or malformed file is the
+			// cheapest failure there is, and must not wait on a model load.
+			export, err := migrate.LoadMemPalaceExport(exportPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp migrate mempalace: %v\n", err)
+				return migrateInputExit(err)
+			}
+
 			dest, cfg, err := openMigrateDestination()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
 				return cli.ExitUser
 			}
 
-			emb, eng, cleanup, err := setupEmbedder(dest, cfg)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
-				return cli.ExitSystem
+			// Only a real run with something to embed needs the model. A dry
+			// run embeds nothing, and entities and triples need no vectors.
+			var (
+				emb     embedder.Embedder
+				eng     *search.Engine
+				cleanup = func() {}
+			)
+			if !dryRun && export.EmbeddableDrawers() > 0 {
+				emb, eng, cleanup, err = setupEmbedder(dest, cfg)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
+					return cli.ExitSystem
+				}
 			}
 			defer cleanup()
 
 			if dryRun {
-				fmt.Fprintln(os.Stderr, "Dry run — no data will be written.")
+				fmt.Fprintln(os.Stderr, dryRunNotice)
 			}
 			fmt.Fprintln(os.Stderr, "Importing MemPalace data...")
 
 			result, err := migrate.ImportMemPalace(
-				context.Background(), dest, eng, emb, exportPath,
+				context.Background(), dest, eng, emb, export,
 				migrate.ImportOptions{
 					DryRun:   dryRun,
 					Progress: migrateProgressFunc(),
@@ -362,6 +395,56 @@ func openMigrateSource(vaultPath string, dest *storage.Vault) (*storage.Vault, e
 		return nil, fmt.Errorf("resolve --vault-path: %w", err)
 	}
 	return storage.NewVault(resolved), nil
+}
+
+// dryRunNotice is the stderr line both migrate subcommands print on a dry
+// run. It names the model because not loading it is the point: a preview must
+// never cost a ~90 MB download.
+const dryRunNotice = "Dry run — no data will be written and the embedding model is not loaded."
+
+// migrateInputExit maps an error from reading a migration's INPUT — the
+// mempalace export's load, or the vibevault source's Projects/ stat — to an
+// exit code. Not-found, a directory where a file was expected (fs.ErrInvalid),
+// and malformed JSON are the operator's to fix by retyping: ExitUser.
+// Everything else (permission, I/O, ENOTDIR) is ExitSystem, per
+// internal/cli/command.go.
+//
+// It is scoped to those two input checks. Applied to an import's own errors it
+// would misreport, say, a mid-import ENOENT from a vault write as a user error.
+func migrateInputExit(err error) int {
+	var syn *json.SyntaxError
+	var typ *json.UnmarshalTypeError
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrInvalid) ||
+		errors.As(err, &syn) || errors.As(err, &typ) {
+		return cli.ExitUser
+	}
+	return cli.ExitSystem
+}
+
+// checkMigrateSource confirms the vibevault source root holds a Projects/
+// directory, printing the refusal and returning its exit code when it does
+// not (cli.ExitOK when it does). viaFlag says whether the root came from
+// --vault-path, so the message blames the flag only when the operator typed
+// one; an in-place run names the configured vault instead.
+func checkMigrateSource(root string, viaFlag bool) int {
+	projectsDir := filepath.Join(root, "Projects")
+	info, err := os.Stat(projectsDir)
+	if err == nil && !info.IsDir() {
+		err = fmt.Errorf("%s is not a directory: %w", projectsDir, fs.ErrInvalid)
+	}
+	if err == nil {
+		return cli.ExitOK
+	}
+	code := migrateInputExit(err)
+	switch {
+	case code != cli.ExitUser:
+		fmt.Fprintf(os.Stderr, "vp migrate: source vault %s: %v\n", root, err)
+	case viaFlag:
+		fmt.Fprintf(os.Stderr, "vp migrate: source vault %s has no Projects/ directory (check --vault-path)\n", root)
+	default:
+		fmt.Fprintf(os.Stderr, "vp migrate: configured vault %s has no Projects/ directory; nothing to import\n", root)
+	}
+	return code
 }
 
 // migrateBanner formats the source/destination summary printed before
@@ -433,13 +516,12 @@ func parseCommaList(s string) []string {
 	return out
 }
 
-// setupEmbedder creates an ONNX embedder and search engine for migration.
+// setupEmbedder creates the vault's embedder (through newVaultEmbedder) and a
+// search engine for migration. Callers invoke it only for a real run that will
+// embed, and only after every input has been validated: it loads the model,
+// which on a cold cache is a ~90 MB download.
 func setupEmbedder(vault *storage.Vault, cfg storage.Config) (embedder.Embedder, *search.Engine, func(), error) {
-	modelDir := vault.VaultLocalDir() + "/models"
-	emb, err := embedder.NewONNX(
-		cfg.EmbedderModel, modelDir,
-		cfg.EmbedderMaxSeqLen, cfg.EmbedderBatchSize,
-	)
+	emb, err := newVaultEmbedder(vault, cfg)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("embedder: %w", err)
 	}

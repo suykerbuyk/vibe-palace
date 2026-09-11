@@ -92,8 +92,11 @@ func ImportVibeVault(
 	result.SlugRemap = remap
 
 	// Step 2: create a single indexer for the entire run. All indexer
-	// writes land in the DESTINATION vault. Skipped (and engine/emb may be
-	// nil) when SkipSessions is set — an agentctx-only run needs no model.
+	// writes land in the DESTINATION vault. Skipped when SkipSessions is set
+	// — an agentctx-only run needs no model. engine/emb may be nil under
+	// SkipSessions OR DryRun: a dry run continues past every session before
+	// IndexTranscript and never indexes knowledge.md, and NewIndexer only
+	// stores its arguments.
 	var indexer *capture.Indexer
 	if !opts.SkipSessions {
 		indexer = capture.NewIndexer(destination, engine, emb, cfg)

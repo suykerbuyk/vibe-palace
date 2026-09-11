@@ -147,10 +147,12 @@ func TestSetupTestVaultEnvSandboxesHostGlobals(t *testing.T) {
 	if os.Getenv("APPDATA") != configDir {
 		t.Errorf("APPDATA = %q, want %q", os.Getenv("APPDATA"), configDir)
 	}
-	// The cache pin is the one deliberate exception — see hostCacheDir.
-	if hostCacheDir != "" && os.Getenv("XDG_CACHE_HOME") != hostCacheDir {
-		t.Errorf("XDG_CACHE_HOME = %q, want the pinned %q",
-			os.Getenv("XDG_CACHE_HOME"), hostCacheDir)
+	// The model cache is sandboxed with the rest: no setupTestVaultEnv test
+	// may construct the model (forbidVaultEmbedder), so there is nothing a
+	// host cache would keep warm.
+	if want := filepath.Join(home, ".cache"); os.Getenv("XDG_CACHE_HOME") != want {
+		t.Errorf("XDG_CACHE_HOME = %q, want %q under the sandboxed home",
+			os.Getenv("XDG_CACHE_HOME"), want)
 	}
 }
 

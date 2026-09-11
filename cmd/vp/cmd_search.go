@@ -9,15 +9,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
-	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
+	"github.com/suykerbuyk/vibe-palace/internal/slug"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 var searchFlags = []cli.FlagDef{
-	{Name: "--project", Short: "-p", Arg: "PROJECT", Help: "Project name (default: auto-detect)"},
+	{Name: "--project", Short: "-p", Arg: "PROJECT", Help: "Project name (default: auto-detect from the current directory). Must name a project in the vault; an unknown one exits 1."},
 	{Name: "--wing", Short: "-w", Arg: "WING", Help: "Filter by wing"},
 	{Name: "--room", Short: "-r", Arg: "ROOM", Help: "Filter by room"},
 	{Name: "--limit", Short: "-n", Arg: "N", Help: "Max results", Default: "10"},
@@ -26,10 +28,13 @@ var searchFlags = []cli.FlagDef{
 
 func cmdSearch() *cli.Command {
 	return &cli.Command{
-		Name:        "search",
-		Synopsis:    "vp search <query> [flags]",
-		Description: "Semantic search across palace content.",
-		Flags:       searchFlags,
+		Name:     "search",
+		Synopsis: "vp search <query> [flags]",
+		Description: "Semantic search across palace content. The project — named by --project or " +
+			"detected from the current directory — must exist in the vault (a Projects/<slug>/ " +
+			"directory or a palace store); an unknown or malformed project exits 1 before the " +
+			"embedding model loads.",
+		Flags: searchFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp search \"database migrations\"", Comment: "Search current project"},
 			{Cmd: "vp search \"auth\" -p myapp -n 5", Comment: "Search specific project"},
@@ -49,7 +54,8 @@ func cmdSearch() *cli.Command {
 			query := positional[0]
 
 			proj := fv.Get("--project")
-			if proj == "" {
+			detected := proj == ""
+			if detected {
 				proj, _ = project.DetectProject(".")
 			}
 			if proj == "" {
@@ -69,11 +75,13 @@ func cmdSearch() *cli.Command {
 				return cli.ExitUser
 			}
 
-			modelDir := vault.VaultLocalDir() + "/models"
-			emb, err := embedder.NewONNX(
-				cfg.EmbedderModel, modelDir,
-				cfg.EmbedderMaxSeqLen, cfg.EmbedderBatchSize,
-			)
+			// Validate the project before the model loads: a typo must not
+			// cost a ~90 MB download to be answered "No results found.".
+			if code := requireSearchProject(vault, proj, detected); code != cli.ExitOK {
+				return code
+			}
+
+			emb, err := newVaultEmbedder(vault, cfg)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp search: embedder: %v\n", err)
 				return cli.ExitSystem
@@ -91,6 +99,45 @@ func cmdSearch() *cli.Command {
 			return runSearch(eng, proj, query, fv.Get("--wing"), fv.Get("--room"), limit, fv.Bool("--json"), os.Stdout)
 		},
 	}
+}
+
+// requireSearchProject refuses a search scoped to a project the vault does not
+// hold, printing why and returning the exit code (cli.ExitOK when proj
+// exists). A search of a project that does not exist is an error whichever way
+// the project was named; answering it with empty results is a silent skip
+// dressed as success.
+//
+// "Exists" is the predicate search itself uses: membership in
+// ListAllProjects, the union of Projects/<slug>/ directories and palace stores
+// that cross-project search enumerates. A notes-only project is in; a
+// .local-only palace husk is out; so is a symlinked Projects/<slug>, which the
+// enumeration does not follow.
+//
+// A flagged slug is syntax-checked first. A detected one already was, by
+// DetectProject, so only membership applies to it — and its refusal names the
+// detection, because the operator never typed the slug that failed.
+func requireSearchProject(vault *storage.Vault, proj string, detected bool) int {
+	if !detected {
+		if err := slug.Validate(proj); err != nil {
+			fmt.Fprintf(os.Stderr, "vp search: --project: %v\n", err)
+			return cli.ExitUser
+		}
+	}
+	projects, err := vault.ListAllProjects()
+	if err != nil {
+		// "I could not look" is not "absent".
+		fmt.Fprintf(os.Stderr, "vp search: list projects: %v\n", err)
+		return cli.ExitSystem
+	}
+	if slices.ContainsFunc(projects, func(p storage.ProjectPresence) bool { return p.Slug == proj }) {
+		return cli.ExitOK
+	}
+	if detected {
+		fmt.Fprintf(os.Stderr, "vp search: no project %q in vault %s (detected from the current directory); run 'vp init' here or pass --project\n", proj, vault.Root)
+	} else {
+		fmt.Fprintf(os.Stderr, "vp search: --project %q: no such project in vault %s\n", proj, vault.Root)
+	}
+	return cli.ExitUser
 }
 
 func runSearch(eng *search.Engine, proj, query, wing, room string, limit int, asJSON bool, out io.Writer) int {

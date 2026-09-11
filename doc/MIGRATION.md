@@ -139,7 +139,23 @@ vp migrate mempalace --export-path PATH [--dry-run]
 - Progress reporting: session count, drawer count, entity count
 - `--dry-run` reports what would be imported without writing. It
   prompts for slug-collision resolution just like a real run; use
-  `--yes` to auto-accept default rename suggestions.
+  `--yes` to auto-accept default rename suggestions. A dry run **loads no
+  embedding model**, so previewing an import never pays for the ~90 MB model
+  download.
+  - Inputs are validated before any model loads: the MemPalace export is read
+    and parsed, and the vibevault source's `Projects/` directory is checked
+    (before the cross-vault confirmation prompt, too). A missing, directory, or
+    malformed export, and a source with no `Projects/` directory, exit **1**.
+    Other I/O failures (a permission error, say) exit 2.
+  - A real MemPalace import loads the model only when some drawer has non-blank
+    content; an export of entities and triples alone needs none.
+  - What a dry run does **not** prove: a MemPalace dry run no longer runs the
+    drawers' text through the embedder, so it cannot show that every drawer
+    embeds cleanly.
+  - MemPalace dry-run counts ignore ID dedupe: over a vault that already holds
+    the export, the dry run over-reports what a real run would create. A
+    vibevault dry run does honour the session import markers, so its session
+    counts are exact.
 - Individual item failures are reported but don't abort the import
 - Safe to re-run (idempotent by session ID)
 

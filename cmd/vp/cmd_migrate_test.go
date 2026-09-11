@@ -5,14 +5,17 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/migrate"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -350,23 +353,420 @@ func TestIsStdinTTY_Runs(t *testing.T) {
 	_ = isStdinTTY()
 }
 
-func TestMigrateMemPalaceDryRun(t *testing.T) {
-	setupTestVaultEnv(t)
-	cmd := cmdMigrateMemPalace()
-	code := cmd.Run([]string{"--export-path", "/nonexistent/export.json", "--dry-run"})
-	// Should get past flag parsing + vault open; fails at embedder or import.
-	if code == cli.ExitUser {
-		t.Errorf("should not be ExitUser (flags valid)")
+// ── Model-free migrate tests ────────────────────────────────────────────────
+//
+// Every test below runs under setupTestVaultEnv, so forbidVaultEmbedder is on:
+// a test that reaches the ONNX model fails, which is the "no construction"
+// assertion none of them has to spell out. A test that needs an embedder
+// substitutes a mock with stubVaultEmbedder and asserts its count.
+
+// writeMemPalaceExportFile writes a MemPalace JSON export and returns its path.
+func writeMemPalaceExportFile(t *testing.T, dir string, drawers, entities, triples []map[string]any) string {
+	t.Helper()
+	data, err := json.Marshal(map[string]any{
+		"exported_at": "2026-09-10T00:00:00Z",
+		"drawers":     drawers,
+		"entities":    entities,
+		"triples":     triples,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "export.json")
+	if err := os.WriteFile(p, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+var (
+	testExportDrawers = []map[string]any{
+		{"id": "d1", "wing": "technical", "room": "go", "content": "Wrote a worker pool.", "filed_at": "2026-09-01T00:00:00Z"},
+		{"id": "d2", "wing": "memory", "room": "", "content": "Remembered the garden.", "filed_at": "2026-09-02T00:00:00Z"},
+	}
+	testExportEntities = []map[string]any{{"id": "e1", "name": "Go", "type": "language"}}
+	testExportTriples  = []map[string]any{{"subject": "go", "predicate": "used_in", "object": "pool", "confidence": 0.9}}
+)
+
+// seedVibeVaultSource creates Projects/p/sessions/s1.md (and knowledge.md)
+// under root, the minimal vibevault source with one importable session.
+func seedVibeVaultSource(t *testing.T, root string) {
+	t.Helper()
+	sessDir := filepath.Join(root, "Projects", "p", "sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	session := "---\nsession_id: \"s1\"\nproject: p\ndate: \"2026-09-01\"\ntitle: \"One\"\nsummary: \"A session\"\ntag: implementation\n---\n## Transcript\n\nImplemented the worker pool and its tests.\n"
+	if err := os.WriteFile(filepath.Join(sessDir, "s1.md"), []byte(session), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	knowledge := "# Knowledge\n\nThe pool is bounded."
+	if err := os.WriteFile(filepath.Join(root, "Projects", "p", "knowledge.md"), []byte(knowledge), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestMigrateVibeVaultDryRun(t *testing.T) {
+// withPipeStdin swaps os.Stdin for the read end of a closed pipe for the rest
+// of the test: non-TTY, and EOF on read, so a prompt can never block.
+func withPipeStdin(t *testing.T) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	orig := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() {
+		os.Stdin = orig
+		r.Close()
+	})
+}
+
+func TestMigrateMemPalaceMissingExportBuildsNoEmbedder(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"dry run", []string{"--dry-run"}},
+		{"real run", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupTestVaultEnv(t)
+			args := append([]string{"--export-path", filepath.Join(t.TempDir(), "nope.json")}, tc.args...)
+			var code int
+			stderr := captureStderr(t, func() { code = cmdMigrateMemPalace().Run(args) })
+			if code != cli.ExitUser {
+				t.Errorf("exit code = %d, want ExitUser (%d); stderr:\n%s", code, cli.ExitUser, stderr)
+			}
+			if !strings.Contains(stderr, "read export file") {
+				t.Errorf("stderr lacks %q:\n%s", "read export file", stderr)
+			}
+		})
+	}
+}
+
+func TestMigrateMemPalaceDirectoryExportIsUserError(t *testing.T) {
 	setupTestVaultEnv(t)
-	cmd := cmdMigrateVibeVault()
-	// --dry-run should get past flag parsing and vault opening but fail at embedder.
-	code := cmd.Run([]string{"--dry-run"})
-	// Expect ExitSystem (embedder fails in test) or ExitOK (if dry-run short-circuits).
-	if code == cli.ExitUser {
-		t.Errorf("should not be ExitUser (flags are valid)")
+	var code int
+	stderr := captureStderr(t, func() {
+		code = cmdMigrateMemPalace().Run([]string{"--export-path", t.TempDir()})
+	})
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser (%d); stderr:\n%s", code, cli.ExitUser, stderr)
+	}
+	if !strings.Contains(stderr, "is a directory") {
+		t.Errorf("stderr lacks %q:\n%s", "is a directory", stderr)
+	}
+}
+
+func TestMigrateMemPalaceMalformedExportBuildsNoEmbedder(t *testing.T) {
+	setupTestVaultEnv(t)
+	p := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(p, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var code int
+	stderr := captureStderr(t, func() { code = cmdMigrateMemPalace().Run([]string{"--export-path", p}) })
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser (%d); stderr:\n%s", code, cli.ExitUser, stderr)
+	}
+	if !strings.Contains(stderr, "parse export JSON") {
+		t.Errorf("stderr lacks %q:\n%s", "parse export JSON", stderr)
+	}
+}
+
+// TestMigrateMemPalaceUnreadableExportIsSystemError pins the other side of
+// the exit mapping: a file that exists but cannot be read is not a typo, so it
+// stays ExitSystem.
+func TestMigrateMemPalaceUnreadableExportIsSystemError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 000 does not deny reads on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-000 file")
+	}
+	setupTestVaultEnv(t)
+	p := writeMemPalaceExportFile(t, t.TempDir(), testExportDrawers, nil, nil)
+	if err := os.Chmod(p, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(p, 0o644) })
+	var code int
+	stderr := captureStderr(t, func() { code = cmdMigrateMemPalace().Run([]string{"--export-path", p}) })
+	if code != cli.ExitSystem {
+		t.Errorf("exit code = %d, want ExitSystem (%d); stderr:\n%s", code, cli.ExitSystem, stderr)
+	}
+}
+
+func TestMigrateMemPalaceDryRunBuildsNoEmbedder(t *testing.T) {
+	vaultDir := setupTestVaultEnv(t)
+	p := writeMemPalaceExportFile(t, t.TempDir(), testExportDrawers, testExportEntities, testExportTriples)
+	var code int
+	stderr := captureStderr(t, func() {
+		code = cmdMigrateMemPalace().Run([]string{"--export-path", p, "--dry-run"})
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want ExitOK; stderr:\n%s", code, stderr)
+	}
+	for _, want := range []string{
+		"the embedding model is not loaded",
+		"Would import: 0 projects, 0 sessions imported, 0 skipped, 2 drawers, 1 entities, 1 triples",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, stderr)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(vaultDir, "palace", "mempalace")); !os.IsNotExist(err) {
+		t.Errorf("dry run wrote palace/mempalace (stat err %v)", err)
+	}
+}
+
+func TestMigrateMemPalaceRealRunBuildsEmbedderOnce(t *testing.T) {
+	vaultDir := setupTestVaultEnv(t)
+	constructed := stubVaultEmbedder(t, embedder.NewMock(384))
+	p := writeMemPalaceExportFile(t, t.TempDir(), testExportDrawers, testExportEntities, testExportTriples)
+	var code int
+	stderr := captureStderr(t, func() { code = cmdMigrateMemPalace().Run([]string{"--export-path", p}) })
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want ExitOK; stderr:\n%s", code, stderr)
+	}
+	if *constructed != 1 {
+		t.Errorf("embedder constructed %d times, want 1", *constructed)
+	}
+	wings, err := storage.NewVault(vaultDir).ListWings("mempalace")
+	if err != nil || len(wings) == 0 {
+		t.Errorf("no drawers on disk after a real import: wings=%v err=%v", wings, err)
+	}
+}
+
+// TestMigrateMemPalaceNoEmbeddableDrawersBuildsNoEmbedder: an export whose only
+// drawer is blank has nothing to embed, so a REAL run still loads no model —
+// entities and triples need no vectors.
+func TestMigrateMemPalaceNoEmbeddableDrawersBuildsNoEmbedder(t *testing.T) {
+	setupTestVaultEnv(t)
+	constructed := stubVaultEmbedder(t, embedder.NewMock(384))
+	blank := []map[string]any{{"id": "blank", "wing": "memory", "room": "x", "content": "   "}}
+	p := writeMemPalaceExportFile(t, t.TempDir(), blank, testExportEntities, testExportTriples)
+	var code int
+	stderr := captureStderr(t, func() { code = cmdMigrateMemPalace().Run([]string{"--export-path", p}) })
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want ExitOK; stderr:\n%s", code, stderr)
+	}
+	if *constructed != 0 {
+		t.Errorf("embedder constructed %d times, want 0 (nothing to embed)", *constructed)
+	}
+	if want := "0 drawers, 1 entities, 1 triples"; !strings.Contains(stderr, want) {
+		t.Errorf("stderr lacks %q:\n%s", want, stderr)
+	}
+}
+
+func TestMigrateVibeVaultDryRunBuildsNoEmbedder(t *testing.T) {
+	vaultDir := setupTestVaultEnv(t)
+	seedVibeVaultSource(t, vaultDir)
+	var code int
+	stderr := captureStderr(t, func() { code = cmdMigrateVibeVault().Run([]string{"--dry-run"}) })
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want ExitOK; stderr:\n%s", code, stderr)
+	}
+	for _, want := range []string{
+		"the embedding model is not loaded",
+		"    s1 [1/1]",
+		"1 sessions imported",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, stderr)
+		}
+	}
+	marker := filepath.Join(vaultDir, "palace", "p", ".local", "imported-sessions.jsonl")
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("dry run wrote the import marker (stat err %v)", err)
+	}
+}
+
+// TestMigrateVibeVaultMissingSourceBuildsNoEmbedder refuses a source with no
+// Projects/ before anything else — including the cross-vault confirmation.
+// The "prompt path" row is the one that pins that ORDER: neither --dry-run nor
+// --yes, stdin a non-TTY pipe. Were the check below confirmCrossVaultWrite,
+// that row would still exit ExitUser, but with the gate's "requires --yes"
+// refusal — so only stderr tells the two orders apart.
+func TestMigrateVibeVaultMissingSourceBuildsNoEmbedder(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		pipedStdin bool
+	}{
+		{"dry run", []string{"--dry-run"}, false},
+		{"real run with --yes", []string{"--yes"}, false},
+		{"real run, prompt path", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupTestVaultEnv(t)
+			if tc.pipedStdin {
+				withPipeStdin(t)
+			}
+			args := append([]string{"--vault-path", filepath.Join(t.TempDir(), "nope")}, tc.args...)
+			var code int
+			stderr := captureStderr(t, func() { code = cmdMigrateVibeVault().Run(args) })
+			if code != cli.ExitUser {
+				t.Errorf("exit code = %d, want ExitUser (%d); stderr:\n%s", code, cli.ExitUser, stderr)
+			}
+			if !strings.Contains(stderr, "has no Projects/") || !strings.Contains(stderr, "(check --vault-path)") {
+				t.Errorf("stderr lacks the missing-source refusal:\n%s", stderr)
+			}
+			if strings.Contains(stderr, "requires --yes") {
+				t.Errorf("the confirmation gate ran before the source check:\n%s", stderr)
+			}
+		})
+	}
+}
+
+func TestMigrateVibeVaultInPlaceEmptyVaultMessage(t *testing.T) {
+	vaultDir := setupTestVaultEnv(t)
+	var code int
+	stderr := captureStderr(t, func() { code = cmdMigrateVibeVault().Run([]string{"--dry-run"}) })
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser (%d); stderr:\n%s", code, cli.ExitUser, stderr)
+	}
+	wantAbs, _ := expandAndAbsPath(vaultDir)
+	if want := "configured vault " + wantAbs + " has no Projects/"; !strings.Contains(stderr, want) {
+		t.Errorf("stderr lacks %q:\n%s", want, stderr)
+	}
+	if strings.Contains(stderr, "--vault-path") {
+		t.Errorf("an in-place run blamed --vault-path, which was never given:\n%s", stderr)
+	}
+}
+
+// TestMigrateVibeVaultSourceProjectsIsFileIsUserError: a Projects that is a
+// file, not a directory, is the same operator mistake as a missing one.
+func TestMigrateVibeVaultSourceProjectsIsFileIsUserError(t *testing.T) {
+	setupTestVaultEnv(t)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "Projects"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var code int
+	stderr := captureStderr(t, func() {
+		code = cmdMigrateVibeVault().Run([]string{"--vault-path", src, "--dry-run"})
+	})
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser (%d); stderr:\n%s", code, cli.ExitUser, stderr)
+	}
+	if !strings.Contains(stderr, "has no Projects/") {
+		t.Errorf("stderr lacks the missing-source refusal:\n%s", stderr)
+	}
+}
+
+// TestMigrateVibeVaultSourceStatFailureIsSystemError: a source whose Projects/
+// cannot even be stat'd (here ENOTDIR: the --vault-path is a file) is not
+// "absent", so it stays ExitSystem — the exit-1 mapping covers not-found and
+// not-a-directory only.
+func TestMigrateVibeVaultSourceStatFailureIsSystemError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stat through a regular file reports not-found on Windows")
+	}
+	setupTestVaultEnv(t)
+	file := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var code int
+	stderr := captureStderr(t, func() {
+		code = cmdMigrateVibeVault().Run([]string{"--vault-path", file, "--dry-run"})
+	})
+	if code != cli.ExitSystem {
+		t.Errorf("exit code = %d, want ExitSystem (%d); stderr:\n%s", code, cli.ExitSystem, stderr)
+	}
+}
+
+func TestMigrateVibeVaultRealRunBuildsEmbedderOnce(t *testing.T) {
+	vaultDir := setupTestVaultEnv(t)
+	seedVibeVaultSource(t, vaultDir)
+	constructed := stubVaultEmbedder(t, embedder.NewMock(384))
+	var code int
+	stderr := captureStderr(t, func() { code = cmdMigrateVibeVault().Run([]string{"--yes"}) })
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want ExitOK; stderr:\n%s", code, stderr)
+	}
+	if *constructed != 1 {
+		t.Errorf("embedder constructed %d times, want 1", *constructed)
+	}
+	if !strings.Contains(stderr, "1 sessions imported") {
+		t.Errorf("stderr lacks %q:\n%s", "1 sessions imported", stderr)
+	}
+}
+
+func TestMigrateVibeVaultNoSessionsBuildsNoEmbedder(t *testing.T) {
+	vaultDir := setupTestVaultEnv(t)
+	seedVibeVaultSource(t, vaultDir)
+	constructed := stubVaultEmbedder(t, embedder.NewMock(384))
+	var code int
+	stderr := captureStderr(t, func() {
+		code = cmdMigrateVibeVault().Run([]string{"--agentctx", "--no-sessions", "--yes"})
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want ExitOK; stderr:\n%s", code, stderr)
+	}
+	if *constructed != 0 {
+		t.Errorf("embedder constructed %d times, want 0 (--no-sessions)", *constructed)
+	}
+}
+
+// TestMigrateVibeVaultCrossVaultGateRefusesBeforeEmbedder: a real cross-vault
+// run with a VALID source, no --yes and a non-TTY stdin is refused by the
+// confirmation gate — before the model loads.
+func TestMigrateVibeVaultCrossVaultGateRefusesBeforeEmbedder(t *testing.T) {
+	setupTestVaultEnv(t)
+	withPipeStdin(t)
+	src := t.TempDir()
+	seedVibeVaultSource(t, src)
+	var code int
+	stderr := captureStderr(t, func() { code = cmdMigrateVibeVault().Run([]string{"--vault-path", src}) })
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser (%d); stderr:\n%s", code, cli.ExitUser, stderr)
+	}
+	if !strings.Contains(stderr, "requires --yes") {
+		t.Errorf("stderr lacks the gate's refusal:\n%s", stderr)
+	}
+}
+
+// TestMigrateVibeVaultCrossVaultDryRunWarnsOrphanMarkers: a cross-vault dry
+// run whose source carries idempotency markers the destination lacks warns,
+// and still loads no model.
+func TestMigrateVibeVaultCrossVaultDryRunWarnsOrphanMarkers(t *testing.T) {
+	setupTestVaultEnv(t)
+	src := t.TempDir()
+	seedVibeVaultSource(t, src)
+	markerDir := filepath.Join(src, "palace", "p", ".local")
+	if err := os.MkdirAll(markerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(markerDir, "imported-sessions.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var code int
+	stderr := captureStderr(t, func() {
+		code = cmdMigrateVibeVault().Run([]string{"--vault-path", src, "--dry-run"})
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want ExitOK; stderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "WARNING: prior runs left idempotency markers") {
+		t.Errorf("stderr lacks the orphan-marker warning:\n%s", stderr)
+	}
+}
+
+func TestMigrateVibeVaultBadSlugMapIsUserError(t *testing.T) {
+	vaultDir := setupTestVaultEnv(t)
+	seedVibeVaultSource(t, vaultDir)
+	var code int
+	stderr := captureStderr(t, func() {
+		code = cmdMigrateVibeVault().Run([]string{"--dry-run", "--slug-map", "bogus"})
+	})
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser (%d); stderr:\n%s", code, cli.ExitUser, stderr)
+	}
+	if !strings.Contains(stderr, "--slug-map") {
+		t.Errorf("stderr lacks the --slug-map refusal:\n%s", stderr)
 	}
 }

@@ -696,6 +696,13 @@ editing.
 vp search "authentication"  # semantic search across palace content
 ```
 
+The project — `--project/-p`, or the one detected from the current directory —
+must exist in the vault: a `Projects/<slug>/` directory or a palace store. An
+unknown or malformed project exits 1 with a message naming how it was resolved,
+before the embedding model loads. (Until 2026-09-10 it printed
+`No results found.` and exited 0.) A symlinked `Projects/<slug>` does not count,
+matching what cross-project search enumerates.
+
 ### Friction Analytics
 
 Every captured session carries a friction score (0–100, higher = rougher).
@@ -1151,7 +1158,7 @@ migration guide, architecture details, and risk assessment.
 ### Quick Start
 
 ```bash
-# Preview what would be imported (no changes written)
+# Preview what would be imported (no changes written, no model download)
 vp migrate vibevault --dry-run
 vp migrate mempalace --export-path ~/mempalace-export.json --dry-run
 

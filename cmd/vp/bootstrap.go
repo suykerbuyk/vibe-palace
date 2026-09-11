@@ -76,12 +76,14 @@ func bootstrap() (*serverStack, error) {
 	// initialize handshake past the host's timeout, killing the session before
 	// a single tool is registered. The model loads on first use instead — which
 	// means a load failure now surfaces at first search, not at startup.
-	modelDir := v.VaultLocalDir() + "/models"
+	//
+	// The constructor is captured HERE, once, not read from the package
+	// variable at first use: a lazy construction that fires after a test's
+	// cleanup has restored newVaultEmbedder must still run the constructor this
+	// stack was built with.
+	ctor := newVaultEmbedder
 	emb := embedder.NewLazy(func() (embedder.Embedder, error) {
-		e, err := embedder.NewONNX(
-			cfg.EmbedderModel, modelDir,
-			cfg.EmbedderMaxSeqLen, cfg.EmbedderBatchSize,
-		)
+		e, err := ctor(v, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("embedder: %w", err)
 		}
