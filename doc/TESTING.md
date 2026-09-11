@@ -994,6 +994,54 @@ sentences.
 
 ---
 
+## Template Provenance Tests
+
+`vp config sync`, the upgrade reports, the reset verbs and the
+`template-drift` check decide whether a vault `Templates/` copy is vp's by
+its bytes alone (`templates.ClassifyVaultCopy`): the current embedded copy,
+an earlier shipped version, or an operator's override. See
+[ARCHITECTURE — The provenance decision table](ARCHITECTURE.md#the-provenance-decision-table).
+
+### `internal/templates` — frozen shipped-version manifest
+
+`internal/templates/shipped.txt` lists every version of every built-in a vp
+binary could ever have written into a vault, frozen at the `1f3bb62`
+last-writer boundary. **It is never regenerated**: there is no
+`-update-golden`, no history walk, no corpus-coverage or append-only
+ratchet, and no shallow-clone skip — so no test reads vibe-palace's own git
+history, and none can pass vacuously in a shallow CI clone. Two tests pin
+it:
+
+| Test | Pins |
+|---|---|
+| `TestShippedManifestWellFormed` | a header naming the boundary and the derivation; every row `^[0-9a-f]{64}  \S.*\.md$`, a clean relative relpath, sorted by (relpath, key), unique; exactly two `# extra:` annotations, each directly before one of the two `pre-rebase-501c96e` tag rows and naming its blob OID; no CR in the file; every row parses |
+| `TestShippedManifestIsFrozen` | the sha256 of the file on disk, and of the embedded copy, equals `frozenManifestSHA256`; the failure message says the file is frozen and that a change is a deliberate, reviewed edit that updates the constant in the same commit |
+
+A template edit needs nothing here. The earlier-version tests elsewhere
+(`cmd/vp`, `internal/integration`) read a committed fixture,
+`internal/templates/testdata/earlier/commands/restart.md` — the version of
+`commands/restart.md` before its current one in `1f3bb62`'s history — and
+`TestEarlierFixtureIsAShippedVersion` pins that it classifies `earlier`.
+`TestClassifyVaultCopy`, `TestProvenanceKey` and `TestShippedVersionParse`
+cover the classifier, the CRLF key (one pass: `\r\r\n` becomes `\r\n`)
+and the parser (a trailing `\r` stripped, a malformed line skipped).
+
+To verify the rows once, run the derivation from the file's header in a
+full clone with tags fetched (`git fetch --tags`). It fails closed — a
+revision that does not resolve is a non-zero exit, never zero rows — and its
+output equals the file's rows with every `#` line stripped:
+
+```sh
+set -eu -o pipefail
+revs="1f3bb62 pre-rebase-501c96e"
+for r in $revs; do git rev-parse -q --verify "$r^{commit}" >/dev/null || { echo "derive: $r does not resolve (git fetch --tags)" >&2; exit 1; }; done
+git rev-list --full-history $revs -- internal/templates/templates internal/context/templates \
+ | while read -r c; do git ls-tree -r "$c" -- internal/templates/templates/ internal/context/templates/ || exit 1; done \
+ | awk '$2=="blob" && $4 ~ /\.md$/ {sub("^internal/(templates|context)/templates/","",$4); print $3" "$4}' | LC_ALL=C sort -u \
+ | while read -r oid rel; do s=$(git cat-file blob "$oid" | sha256sum) || exit 1; printf '%s  %s\n' "${s%% *}" "$rel"; done \
+ | LC_ALL=C sort -k2,2 -k1,1 -u
+```
+
 ## MCP Surface-Handshake Check Tests
 
 The `mcp-surface-handshake` epic added the `vp check` surface row and the

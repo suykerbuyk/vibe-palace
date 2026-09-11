@@ -8,32 +8,45 @@ file, and the backup policy for the one that removes an override.
 No template-byte writer remains. Nothing writes embedded template bytes
 over a vault `Templates/` file, and nothing materializes one: the
 embedded floor serves every built-in. `templates.Executor`, the writer
-such writes once routed through, was deleted with its last callers. Three
-paths change `Templates/`, and each only removes a file or adds one
-beside it:
+such writes once routed through, was deleted with its last callers. Two
+paths change `Templates/`, and each only removes a file:
 
-- `vp config sync` removes only vp's own mirrors — a byte-identical copy
-  of a built-in — never an override. On an unversioned vault,
-  `applyMaterialize`'s prune removes the primary with a raw `os.Remove`
-  after re-hashing it against the SHAs the plan recorded (no `.bak`). On
-  a git vault the prune is `storage.PruneMirrorsVerified`, which removes
-  through `vaultfs.Delete` — compare-and-set under the path's lock —
-  only after the HEAD and remote-tip checks.
-- `vp config sync`'s `resolveTemplatePrompts` writes the `n` answer's
-  `.new` sidecar directly, beside the operator's file and never over it.
-- `vp commands reset` / `vp skills reset` remove the overrides the
-  operator names, on request only, after keeping a content-named backup
-  of each (see *Backup mechanics*). They remove through `vaultfs.Delete`,
-  compare-and-set on the bytes backed up.
+- `vp config sync` removes only vp-shipped bytes — a copy identical,
+  line endings aside, to the current built-in or to an earlier shipped
+  version in the frozen `internal/templates/shipped.txt`
+  (`templates.ClassifyVaultCopy`) — never an override, and keeps no
+  backup (the bytes are the binary's, or in vibe-palace's history). On an
+  unversioned vault `applyMaterialize` re-reads the file, re-applies
+  `reconcile.PruneAccepts`, and removes it through `vaultfs.Delete` —
+  compare-and-set under the path's lock. On a git vault the prune is
+  `storage.PruneMirrorsVerified`, which removes through `vaultfs.Delete`
+  only after the HEAD and remote-tip checks. A path not reached directly
+  (`vaultfs.CheckDirectPath`: a symlink in any component, a special
+  file) is never pruned. It also removes the retired
+  `.vibe-palace/templates.lock` — not a template — when it is untracked
+  and not ignored on a vault that is its own repository, through the
+  same `vaultfs.Delete`.
+- `vp commands reset` / `vp skills reset` remove the files the operator
+  names, on request only, after keeping a content-named backup of each
+  that is not vp-shipped bytes (see *Backup mechanics*). They remove
+  through `vaultfs.Delete`, compare-and-set on the bytes read.
 
-Routing the two raw writes (the unversioned prune's `os.Remove` and the
-`.new` sidecar) through the lock funnel is owned by
+No raw write of a `Templates/` file remains: the `.new` sidecar and its
+prompt are gone, and so is the unversioned prune's `os.Remove`. A symlink
+swapped into a path between `vaultfs.CheckDirectPath` and
+`vaultfs.Delete`'s resolve is the residual owned by
 `template-tree-raw-vault-writes-bypass-the-lock-funnel`.
+
+`internal/templates/shipped.txt` is **frozen** at the `1f3bb62`
+last-writer boundary: it is never regenerated, a template edit needs
+nothing beyond the Go-embedded copy, and `TestShippedManifestIsFrozen`
+pins its content hash.
 
 | Caller | Command surface | Effect on `Templates/` | Backup |
 |---|---|---|---|
-| `commands.Reset` | `vp commands reset`, `vp skills reset` | Removes each named override | `templates.PreserveBackup`: named by content, never overwritten; none for a byte-identical mirror |
-| — | `vp commands upgrade`, `vp skills upgrade` | None: each override is reported as `[keep]` | Not applicable |
+| `commands.Reset` | `vp commands reset`, `vp skills reset` | Removes each named file | `templates.PreserveBackup`: named by content, never overwritten; none for vp-shipped bytes (a mirror of the built-in or an earlier shipped version, line endings aside) |
+| `reconcile.TemplateTree.Apply` / `storage.PruneMirrorsVerified` | `vp config sync` | Prunes vp-shipped copies; keeps every override | None: the bytes are the binary's or in vibe-palace's history |
+| — | `vp commands upgrade`, `vp skills upgrade` | None: each override is reported as `[keep]`, each earlier shipped version as `[stale]` | Not applicable |
 
 `reconcile.TemplateTree.Apply` (`vp config sync`) never writes a
 template either, and reports a Create or Update action as an error. Its
@@ -73,12 +86,20 @@ The golden-path table says who may change a `Templates/` file. It does
   silently ignored. `vp config sync` classifies exactly such a mirror as
   reconciler-owned garbage and plans its deletion (ADR-008 Phase 3), so
   writing one puts the two commands into a loop over the same paths.
-- **Vault copy differing from embedded → `ChangeOverride`.** A genuine local
-  override. The upgrade commands list it as `[keep]` and never change it;
-  only `commands.Reset`, behind a reset verb the operator names, removes one.
-- **Vault copy matching embedded → `ChangeUnchanged`.** A mirror. The upgrade
-  commands skip it; `vp config sync` prunes it; a named reset removes it with
+- **Vault copy that is not vp-shipped bytes → `ChangeOverride`.** A genuine
+  local override. The upgrade commands list it as `[keep]` and never change
+  it; only `commands.Reset`, behind a reset verb the operator names, removes
+  one.
+- **Vault copy matching embedded, line endings aside → `ChangeUnchanged`.** A
+  mirror. The upgrade commands skip it; `vp config sync` prunes it; a named
+  reset removes it with no backup.
+- **Vault copy matching an earlier shipped version → `ChangeStale`.** vp's
+  bytes, not an override. The upgrade commands list it as `[stale]`, not
+  counted as kept; `vp config sync` prunes it; a named reset removes it with
   no backup.
+
+`commands.Plan` classifies with the same `templates.ClassifyVaultCopy` the
+reconcile uses, so the two surfaces cannot disagree about a file.
 
 `ChangeUnneeded` is deliberately distinct from `ChangeUnchanged`: "unchanged"
 asserts a vault copy was compared and matched, and in the unneeded case there
@@ -176,7 +197,10 @@ and deliberately no policy parameter. It lives in
 - The bare `<rel>.bak` is never written or read. Older binaries overwrite
   that fixed name on every reset, so it can never be trusted to hold a
   backup, and an existing one is left for its owner.
-- A byte-identical mirror of a built-in needs no backup and gets none.
+- vp-shipped bytes need no backup and get none: a mirror of the built-in,
+  line endings aside, or a copy of an earlier shipped version (recoverable
+  from vibe-palace's history). The dry run, the report line and the commit
+  message say so, and name no backup for them.
 
 `commands.Reset` writes every backup before it removes anything, then
 removes each file through `vaultfs.Delete`, compare-and-set on the bytes
@@ -191,15 +215,17 @@ binaries can only overwrite the fixed `<file>.bak`.
 
 ## What lives where
 
-- `internal/templates/backup.go` — `BackupName`, `PreserveBackup`,
-  `ErrBackupCollision`, and `HashFile`. The one backup primitive for a
-  template reset.
+- `internal/templates/backup.go` — `BackupName`, `PreserveBackup` and
+  `ErrBackupCollision`. The one backup primitive for a template reset.
 - `internal/templates/embedded.go` — `WalkEmbedded`,
   `EmbeddedSHA`, and the `Resource` value type.
-- `internal/reconcile/template_tree.go` — still owns the
-  override-only decision table, the silent-adopt pre-pass, and lock-
-  file integration. It writes no template bytes; the prune's verified
-  `os.Remove` is the raw exception named under *Golden path*.
+- `internal/templates/provenance.go` and `shipped.txt` —
+  `ClassifyVaultCopy`, `ProvenanceKey`, the `ShippedVersion` seam, and the
+  frozen shipped-version manifest.
+- `internal/reconcile/template_tree.go` — the override-only provenance
+  table (`planMaterialize`) and the compare-and-set prune
+  (`applyMaterialize`, `PruneAccepts`). It writes no template bytes and no
+  host-local state.
 - `internal/commands/upgrade.go` — `Plan`, the override-only
   classification the upgrade commands and the reset verbs share. It
   writes nothing.

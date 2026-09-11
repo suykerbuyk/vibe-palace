@@ -316,29 +316,36 @@ Details: [Tutorial — Zed](doc/TUTORIAL.md#zed),
 
 Vibe-palace ships its command and skill catalog compiled into the `vp`
 binary. These embedded templates are the **floor** — the default every
-command and skill resolves from. Your project's `Projects/<slug>/`
-directory in the vault is where you customise them.
+command and skill resolves from. You customise them in the vault, at one
+of two tiers:
 
-- **`<vault>/Projects/<slug>/commands/`** — per-project override
-  directory, scaffolded by `vp init` with a README stub. A file here
-  shadows the built-in for that project only, letting one project
-  diverge permanently without affecting the others. No reconciler and
-  no upgrade command ever writes here. `skills/` works the same way.
-- **`<vault>/Templates/`** — the vault-wide tier, **empty by default**.
-  `vp init` never writes it; the embedded floor serves every built-in,
-  including the `workflow.md` and `resume.md` templates. A file with a
-  **new name** here — a command or skill no built-in uses — applies to
-  every project and is safe: nothing iterates it. An **override of a
-  built-in** here is still not recommended. `vp config sync` no longer
-  overwrites one and never commits its removal — a committed override
-  is restored from HEAD — and the upgrade commands never change one.
-  The risk that remains: a host whose `templates.lock` lacks it
-  prompts on every interactive sync
-  (`template-provenance-manifest-retires-the-host-local-lock`). An
-  unedited copy of a built-in is identical to it and is pruned, so edit
-  before syncing. Override built-ins at the project tier. To remove a
-  vault override, name it: `vp commands reset NAME` /
-  `vp skills reset NAME`.
+- **`<vault>/Templates/`** — the vault-wide override tier, **empty by
+  default**. `vp init` never writes it; the embedded floor serves every
+  built-in, including the `workflow.md` and `resume.md` templates. A
+  file here applies to every project: a **new name** adds a vault-wide
+  command or skill, and a built-in's name **overrides** that built-in
+  everywhere.
+- **`<vault>/Projects/<slug>/commands/`** — the per-project tier,
+  scaffolded by `vp init` with a README stub. A file here shadows the
+  built-in (and any vault-wide override) for that project only.
+  `skills/` works the same way.
+
+No vp reconciler and no upgrade command changes an override in either
+tier. "Safe" means exactly that — safe from vp's reconcilers and upgrade
+commands; `vp_vault_write` / `vp_vault_edit` / `vp_vault_move` /
+`vp_vault_delete` and `vp vault commit --paths .` are direct edits and
+reach any tier. What to know about a vault-wide override of a built-in:
+
+- **Edit it before you sync.** `vp config sync` decides whether a
+  `Templates/` copy is vp's by its bytes alone. A copy identical, line
+  endings aside, to the current built-in or to any version vibe-palace
+  shipped up to `1f3bb62` is vp's, not an override, and is pruned.
+- **It shadows the built-in for every project**, and it misses changes
+  the binary depends on — `commands/wrap.md` supplies the
+  `expected_sha256` that `vp_update_resume` demands, for example. So
+  `vp_check` `template-drift` lists every override as `Info`.
+- **To drop one, name it:** `vp commands reset NAME` /
+  `vp skills reset NAME` (a backup is kept), not `vp vault delete`.
 
 **Precedence (first match wins):** room > wing > project > vault >
 embedded. For example,
@@ -351,28 +358,34 @@ embedded `wrap.md` baked into the binary.
 - **`vp init`** — never writes, prunes or reconciles `Templates/`. It
   only reads it, to give each project a shim for your vault-wide
   commands and skills.
-- **`vp config sync`** — the override-only reconcile, which never
-  writes over a template (an `n` answer adds a `.new` sidecar). It
-  prunes a byte-identical mirror of a built-in, keeps an override whose
-  embedded copy has not changed, and prompts
-  `[s]kip — keep your file / [n]ew-sidecar` on a diverged one (`--yes`
-  keeps it). On a git vault it removes a mirror only after checking
-  that HEAD's copy, and each remote's, is vp's too, then commits the
-  removal; when HEAD's copy is operator content it restores it in place
-  instead, and a prune git cannot verify is deferred. Its `<vault>/.vibe-palace/templates.lock` sidecar
-  records the embedded baseline that makes a prune safe; vp never stages
-  it to git, so it is host-local in practice.
+- **`vp config sync`** — the override-only reconcile. It never writes a
+  template, never prompts about one, and keeps no host-local state (no
+  lock file, no sidecar). A copy identical, line endings aside, to the
+  current built-in or to an earlier version vibe-palace shipped (the
+  frozen `internal/templates/shipped.txt`) is pruned, with no backup —
+  those bytes are recoverable from the binary or from vibe-palace's git
+  history. Anything else is an override, and is kept. On a git vault it
+  removes a copy only after checking that HEAD's copy, and each
+  remote's, is vp's too, then commits the removal; when HEAD's copy is
+  operator content it restores it in place instead, and a prune git
+  cannot verify is deferred. On a vault that is its own repository it
+  also commits a removal of vp-shipped bytes already pending in the
+  worktree, and removes the retired `.vibe-palace/templates.lock` when
+  it is untracked and not ignored.
 - **`vp commands upgrade` / `vp skills upgrade`** — never write or
   remove a `Templates/` file, in any mode. They list each override of a
-  built-in as `[keep]` and name the reset that removes it.
+  built-in as `[keep]` and name the reset that removes it, and each copy
+  of an earlier shipped version as `[stale]` (`vp config sync` prunes
+  it).
   `--overwrite` accepts only vp-owned changes (shims, agent-file
   blocks, the project `.gitignore`, the commit hook).
 - **`vp commands reset NAME...` / `vp skills reset NAME...`** — remove
   the named overrides, so the built-in serves them again. Each is first
   backed up to `<file>.<sha12>.bak`, a name derived from its bytes that
-  is never overwritten. On a vault that is its own git repository the
-  removal is committed locally; `vp vault sync` publishes it.
-  `--dry-run` previews it.
+  is never overwritten; a copy of vp-shipped bytes (the built-in, or an
+  earlier shipped version) needs no backup. On a vault that is its own
+  git repository the removal is committed locally; `vp vault sync`
+  publishes it. `--dry-run` previews it.
 
 The full walkthrough is in
 [Tutorial — Customizing a command template](doc/TUTORIAL.md#customizing-a-command-template).
@@ -381,7 +394,8 @@ The full walkthrough is in
 
 Vibe-palace does not know where your `vp` source checkout lives, so
 promotion is manual on purpose: copy your override from
-`<vault>/Projects/<slug>/commands/<name>.md` to
+`<vault>/Projects/<slug>/commands/<name>.md` (or
+`<vault>/Templates/commands/<name>.md`) to
 `internal/templates/templates/commands/<name>.md` in your
 vibe-palace checkout and commit. The next `vp` build ships your
 edit as the new embedded floor for everyone.

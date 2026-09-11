@@ -402,6 +402,12 @@ func TestTemplateDriftRemedyStaysTruthful(t *testing.T) {
 	text := strings.Join(templateDriftRemedy, " ")
 	for _, want := range []string{
 		"Projects/<slug>/commands/",
+		"vault-wide override tier",
+		"per-project tier",
+		"No vp reconciler or upgrade command changes an override in either",
+		"That is what safe means: vp_vault_write / edit / move / delete and `vp vault commit --paths .` are direct edits and reach any tier.",
+		"misses binary-contract changes",
+		"not `vp vault delete`",
 		"never overwrites one",
 		"never prompts about one",
 		"restored from HEAD",
@@ -419,6 +425,7 @@ func TestTemplateDriftRemedyStaysTruthful(t *testing.T) {
 		"templates.lock", "prompts on every sync", "-update-golden", "regenerate",
 		"o/O answer", "vault-template-override-is-discarded-by-config-sync", "currently unsafe",
 		"upgrade-overwrite-resets-vault-template-overrides", "--overwrite",
+		"not recommended", "still not",
 	} {
 		if strings.Contains(text, bad) {
 			t.Errorf("remedy still says %q", bad)

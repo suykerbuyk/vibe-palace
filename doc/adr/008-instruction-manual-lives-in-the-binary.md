@@ -11,6 +11,9 @@ still exceeds the whole token budget on its own, so `resume->pinned` keeps
 shedding and `adr-009-arm-fail-loud-bootstrap` stays gated. Phases 2–4 pending
 (see `doc/rollout/adr-008-phase1-live-vault-edits.md`, now a record rather than
 a plan).
+
+**Amended 2026-09-11** — see *Amendment (2026-09-11): Templates/ provenance is a frozen shipped-version manifest*.
+
 **Deciders:** Project owner
 **Context:** `workflow.md` is the largest un-sheddable item in the bootstrap payload, it has drifted from its embedded floor, and it is riddled with host-specific assumptions — three symptoms of one cause.
 
@@ -200,3 +203,66 @@ lands until that plan clears `/vpc-review-plan`.
   bootstrap-margin instruments; depends on this work — NOT subsumed).
 - Investigation: four read-only probes, 2026-07-21 (bootstrap/budget, templates/precedence,
   content-split/host-audit, MCP registry/discovery).
+
+## Amendment (2026-09-11): Templates/ provenance is a frozen shipped-version manifest
+
+Recorded by `template-provenance-manifest-retires-the-host-local-lock`, under the
+operator's decisions of 2026-09-11. It follows
+`vault-template-override-is-discarded-by-config-sync` (nothing vp does destroys a
+`Templates/` override) and `upgrade-overwrite-resets-vault-template-overrides` (no
+upgrade resets one; a named reset removes one). Nothing above is changed; this
+records what the override-only model (Design B) now rests on.
+
+1. **Provenance is decided by the binary alone, from a frozen manifest.** A vault
+   `Templates/` copy is vp's when its bytes, keyed by sha256 after one CRLF→LF pass,
+   equal the embedded copy this binary serves (matched live) or a row of
+   `internal/templates/shipped.txt` for the same relpath. The manifest holds every
+   version of every built-in a vp binary could ever have written into a vault: every
+   version reachable from `1f3bb62` — the last commit before `a4179a5` removed the last
+   writer — plus the two rows of tag `pre-rebase-501c96e`, published on the `github`
+   remote. It is frozen: never regenerated, pinned by a content-hash test, and changed
+   only by a deliberate, reviewed edit. Classification is relpath-scoped, and HEAD's and
+   each remote tip's copy are compared as git would check them out (clean/smudge filters
+   applied, a filter that cannot run an error). Residuals, all failing toward keep:
+   versions only in rebased-away commits, fixups or dirty builds before the boundary;
+   mirrors written by vibe-vault binaries; a built-in later removed from the corpus
+   (never consulted); a remote tip read with the worktree's attributes; a copy of a
+   post-boundary version, which no vp can have written.
+2. **`templates.lock` is retired.** No vp from this release reads or writes it; the
+   silent-adopt pre-pass, the lock-keyed decision table and the lock-entry retry of a
+   failed prune commit are gone (a pending removal is now read from git). On a vault
+   that is its own git repository, a `.vibe-palace/templates.lock` that is untracked and
+   not ignored is removed by `vp config sync`, because it is host-local dirt that makes
+   `vp vault sync` refuse. A tracked or ignored lock, and any lock on a non-git or
+   nested vault, is left.
+3. **New policy: an earlier shipped version is pruned on every host, with no backup.**
+   On a host with no lock this used to be a keep-or-`.new` prompt. The bytes are
+   vp-shipped and recoverable from vibe-palace's git history, so a backup would be a
+   second copy of public bytes left as ignored litter; the prune row and commit name the
+   version matched. Restoring a pruned earlier version into `Templates/` is undone by
+   the next sync: a deliberate pin belongs at the project tier, or in an edited copy. A
+   vault-tier pin of an unedited historical version is impossible by design.
+4. **The operator's commit grant is widened (2026-09-11).** The prune commit of
+   `vp config sync` carried only the paths it pruned. It may now also carry a tracked
+   removal already pending in the worktree whose committed copy classifies as vp-shipped
+   — on a vault that is its own repository only — and the commit message says, in a
+   paragraph of its own, that vp found these removals pending and committed them because
+   the committed copy of each is vp-shipped bytes. A pending removal of operator content
+   is never committed.
+5. **`vp config sync` never modifies operator content.** It writes no template, asks no
+   question (the keep/`.new` prompt and its sidecar are gone), and removes only bytes it
+   can prove it shipped; a path reached through a symlink is never followed or pruned.
+6. **The project-tier steer is reversed.** Vault `Templates/` is again a supported
+   vault-wide override tier, beside the per-project `Projects/<slug>/` tier: no vp
+   reconciler or upgrade command changes an override in either. "Safe" means safe from
+   vp's reconcilers and upgrade commands; `vp_vault_write` / `vp_vault_edit` /
+   `vp_vault_move` / `vp_vault_delete` and `vp vault commit --paths .` are direct edits
+   and reach any tier. An override still shadows the built-in for every project and
+   misses binary-contract changes, which is why `template-drift` reports each one.
+7. **The MCP surface stays at 5, decided by hazard.** This Decision's letter ("any
+   change to what/where instruction files are written") reads as "bump", and an
+   independent review read it that way. The operator ruled by hazard: a v5 binary
+   removes only vp-built bytes, every state this release leaves is one v5 produces and
+   reads, the remaining hazards (earlier-version and CRLF pruning) are this release's
+   own policy, which no gate can stop, and removals stamp nothing. The reasoning is
+   recorded in `internal/surface/version.go`.

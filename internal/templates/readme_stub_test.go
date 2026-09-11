@@ -30,23 +30,27 @@ func TestRenderReadmeStub(t *testing.T) {
 
 // TestRenderReadmeStub_PointsAtRealSources pins the positive half of the
 // override-only rewrite: each stub names where a built-in can actually be
-// fetched, and the project tier as the place to customise. There is no
-// materialized copy under <vault>/Templates/ to point at.
+// fetched. There is no materialized copy under <vault>/Templates/ to point at.
 //
-// It also pins the Templates/ warning to what is still true. Neither `vp
-// config sync` nor an upgrade command discards an override any more, so the
-// stub must not say either does; the reset verb removes one on request and
-// keeps a backup, and an unedited copy of a built-in is byte-identical to it
-// and is pruned.
+// It also pins the override text to what is true now that provenance is a
+// frozen shipped-version manifest: vault Templates/ is a supported vault-wide
+// override tier beside this project directory, no vp reconciler or upgrade
+// command changes an override at either tier, "safe" is scoped to exactly
+// those (the generic vault tools reach any tier), an unedited copy of a
+// built-in is pruned, and the reset verb removes an override and keeps a
+// backup. The retired lock, its per-sync prompt and the old project-tier
+// steer must not come back.
 func TestRenderReadmeStub_PointsAtRealSources(t *testing.T) {
 	for _, tc := range []struct {
 		kind  string
 		wants []string
 	}{
-		{"commands", []string{"vp_get_command", "Projects/<slug>/", "override → promote",
-			"never reset by", "vp commands reset <slug>", "keeps a backup", "edit it before syncing"}},
-		{"skills", []string{"vp skills show", "override → promote",
-			"never reset by", "vp skills reset <slug>", "keeps a backup", "edit it before syncing"}},
+		{"commands", []string{"vp_get_command", "override → promote", "<vault>/Templates/commands/ for every",
+			"No vp reconciler or upgrade command changes an override", "direct edits and reach",
+			"vp commands reset <slug>", "keeps a backup", "edit it before syncing"}},
+		{"skills", []string{"vp skills show", "override → promote", "<vault>/Templates/skills/ for every",
+			"No vp reconciler or", "direct edits and reach any tier",
+			"vp skills reset <slug>", "keeps a backup", "edit\nit before syncing"}},
 	} {
 		stub := RenderReadmeStub(tc.kind)
 		for _, w := range tc.wants {
@@ -54,7 +58,8 @@ func TestRenderReadmeStub_PointsAtRealSources(t *testing.T) {
 				t.Errorf("%s stub does not mention %q:\n%s", tc.kind, w, stub)
 			}
 		}
-		for _, bad := range []string{"discarded by", "reset to the embedded copy by", "--overwrite"} {
+		for _, bad := range []string{"discarded by", "reset to the embedded copy by", "--overwrite",
+			"templates.lock", "prompts on every sync", "not recommended"} {
 			if strings.Contains(stub, bad) {
 				t.Errorf("%s stub still says %q:\n%s", tc.kind, bad, stub)
 			}

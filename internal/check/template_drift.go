@@ -251,12 +251,14 @@ func CheckTemplateDrift(vaultRoot string) Result {
 // the same row to both. Addressed only to a vibe-palace contributor, "never edit
 // the vault mirror" read to an operator as "you cannot customise a template";
 // addressed only to an operator, it would drop the ordering rule a contributor
-// needs. The customisation half steers to the project tier and says what vp
-// does to a vault Templates/ override of a built-in: nothing — `vp config sync`
-// judges it by the binary alone (the frozen shipped-version manifest, no
-// host-local lock), never overwrites it, never prompts about it and never
-// commits its removal; the upgrade commands never reset one. It names the reset
-// verbs as the one way to remove an override, keeping a backup.
+// needs. The customisation half names both override tiers — vault Templates/
+// for every project, Projects/<slug>/ for one (operator decision Q1 on
+// template-provenance-manifest-retires-the-host-local-lock reversed the
+// project-tier-only steer) — and scopes "safe" to what vp's reconcilers and
+// upgrade commands do, because the generic vault tools reach any tier. It says
+// why an override is still listed here (it shadows the built-in and misses
+// binary-contract changes), that an unedited copy is pruned, and the reset verbs
+// as the one way to drop a vault override, keeping a backup.
 var templateDriftRemedy = []string{
 	"CHANGING VIBE-PALACE ITSELF: the binary and the vault-served templates ship",
 	"TOGETHER — a template supplies arguments the binary requires (commands/wrap.md",
@@ -265,18 +267,21 @@ var templateDriftRemedy = []string{
 	"ONLY the Go-embedded copy under internal/templates/templates/ (doctrine.md and",
 	"commands/ included), then `make install`, then `vp config sync` — in that order.",
 	"internal/templates/shipped.txt is frozen: a template edit needs nothing else.",
-	"CUSTOMISING A BUILT-IN command or skill: put your copy under",
-	"Projects/<slug>/commands/ or Projects/<slug>/skills/, which no reconciler and",
-	"no upgrade command touches. An override of a built-in under vault Templates/",
-	"shadows the built-in for every project. `vp config sync` keeps it — it never",
-	"overwrites one, never prompts about one, and never commits its removal (a",
-	"committed override is restored from HEAD) — and the upgrade commands never",
-	"reset one, in any mode. A copy identical, line endings aside, to the current or",
-	"an earlier shipped version of the built-in is vp's, not an override, and is",
-	"pruned: edit a copy before syncing.",
-	"To remove an override on purpose: `vp commands reset NAME` / `vp skills reset",
-	"NAME` — it removes the file so the built-in serves it, and keeps a backup.",
-	"A NEW vault-wide command or skill under Templates/ is safe — nothing touches it.",
-	"A mirror is drift pending a prune, not an error. An override of a built-in is",
-	"reported here so it stays visible, not because it is wrong.",
+	"CUSTOMISING A BUILT-IN command or skill: vault Templates/commands/ and",
+	"Templates/skills/ are the vault-wide override tier, and Projects/<slug>/commands/",
+	"and Projects/<slug>/skills/ the per-project tier. No vp reconciler or upgrade",
+	"command changes an override in either: `vp config sync` never overwrites one,",
+	"never prompts about one, and never commits its removal (a committed override is",
+	"restored from HEAD); the upgrade commands never reset one, in any mode. That is",
+	"what safe means: vp_vault_write / edit / move / delete and `vp vault commit",
+	"--paths .` are direct edits and reach any tier. A copy identical, line endings",
+	"aside, to the current or an earlier shipped version of the built-in is vp's, not",
+	"an override, and is pruned: edit a copy before syncing. An override shadows the",
+	"built-in and misses binary-contract changes (wrap.md's expected_sha256), so it is",
+	"listed here as Info — kept, not wrong.",
+	"To drop a vault override: `vp commands reset NAME` / `vp skills reset NAME` — it",
+	"removes the file so the built-in serves it, and keeps a backup; not `vp vault",
+	"delete`.",
+	"A NEW vault-wide command or skill under Templates/ is yours — nothing touches it.",
+	"A mirror is drift pending a prune, not an error.",
 }

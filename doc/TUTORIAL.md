@@ -967,6 +967,15 @@ and it is listed as kept, byte for byte:
 [keep] Templates/commands/wrap.md — override of a built-in (vault 6b8e659, embedded 4c91c8b); vp commands upgrade never resets one — to remove it: vp commands reset wrap
 ```
 
+A vault copy that is an *earlier* version vibe-palace shipped of the
+built-in is not an override: it is vp's bytes, which the next
+`vp config sync` prunes, and until then it shadows the current built-in.
+It is listed as stale, not kept:
+
+```
+[stale] Templates/commands/restart.md — an earlier shipped version of the built-in; vp config sync prunes it
+```
+
 An override is not pending work. The shim drift it can cause is: an
 override that changes a command's brief (its first paragraph) makes that
 command's shim in each project stale, and refreshing the shim is work
@@ -995,7 +1004,8 @@ with `Re-run with --overwrite to accept every shim and agent-file change
 exits 1; otherwise it prints `Nothing to do` and exits 0. In a
 `--dry-run`, an override's row reads `override  wrap  (vault 6b8e659,
 embedded 4c91c8b; kept — vp commands reset wrap removes it)` and the
-summary starts `N override(s) kept`.
+summary starts `N override(s) kept, N stale cop(y/ies) pending a prune
+by vp config sync`. A stale copy is never counted as kept.
 
 The upgrade commands commit nothing: they write no vault file. The
 reset verbs are the ones that commit, locally, on a vault that is its
@@ -1030,6 +1040,9 @@ that differ:
 [keep] Templates/skills/chair/ — override of a built-in (1 file(s) differ: SKILL.md); vp skills upgrade never resets one — to remove it: vp skills reset chair
 ```
 
+A skill file that is an earlier shipped version gets its own
+`[stale] Templates/skills/<skill>/<file> — an earlier shipped version of
+the built-in; vp config sync prunes it` line and is not counted as kept.
 With `--granular` there is one line per file. `--overwrite` is accepted
 for compatibility and prints `--overwrite: nothing to accept — vp skills
 upgrade never resets an override; use vp skills reset NAME`. Removing a
@@ -1042,26 +1055,29 @@ What each command does to your vault's `Templates/` directory:
   install does not create the directory. Its shim step does read it, so
   a vault-wide command or skill you add there gets a shim in each
   project you initialise.
-- **`vp config sync`** runs the override-only reconcile, comparing the
-  vault SHA, the SHA recorded in `.vibe-palace/templates.lock`, and the
-  embedded SHA. It never writes over a template (the one file it
-  creates under `Templates/` is an `n` answer's `.new` sidecar). A
-  byte-identical mirror of a built-in is pruned, with no `.bak`, after a
-  re-hash that keeps it if it changed since the plan. On a git vault
-  nothing is removed until HEAD's copy, and each remote's, is checked to
-  be vp's too; the removal is then committed. When HEAD's copy is yours
-  it is restored in place instead, and a prune git cannot verify is
-  deferred. An override whose embedded copy has not
-  changed since the lock recorded it is kept; a diverged override
-  prompts `s`kip (keep) / `n`ew-sidecar, and `--yes` answers `s`. Files
+- **`vp config sync`** runs the override-only reconcile. It decides
+  whether a `Templates/` copy is vp's by its bytes alone — no lock file,
+  no host-local state — and never writes a template or prompts about
+  one. A copy identical, line endings aside, to the current built-in or
+  to an earlier version vibe-palace shipped (the frozen
+  `internal/templates/shipped.txt`) is pruned, with no `.bak`, after a
+  re-read that keeps it if it changed since the plan. Anything else is
+  your override, and is kept. On a git vault nothing is removed until
+  HEAD's copy, and each remote's, is checked to be vp's too; the removal
+  is then committed. When HEAD's copy is yours it is restored in place
+  instead, and a prune git cannot verify is deferred. On a vault that is
+  its own repository it also commits a removal of vp-shipped bytes
+  already pending in the worktree, and removes a leftover
+  `.vibe-palace/templates.lock` that is untracked and not ignored. Files
   with names no built-in uses are never touched.
 - **`vp commands upgrade` / `vp skills upgrade`** compare embedded vs
   vault and only report: each override of a built-in is listed as
-  `[keep]` with the reset that removes it. They never write or remove a
+  `[keep]` with the reset that removes it, and each earlier shipped
+  version as `[stale]`. They never write or remove a
   `Templates/` file, in any mode.
 - **`vp commands reset NAME...` / `vp skills reset NAME...`** remove the
   overrides you name, so the built-in serves them again, after keeping a
-  content-named backup of each. They never write embedded bytes into
+  content-named backup of each (vp-shipped bytes need none). They never write embedded bytes into
   `Templates/`. On a vault that is its own git repository the removal is
   committed locally. See [Resetting an override](#resetting-an-override).
 
@@ -1123,7 +1139,12 @@ reset Templates/commands/wrap.md: removed your override; the built-in now serves
   that backup and run the reset again.
 - The bare `<file>.bak` is never written, and `.bak` files an older
   binary left are never touched.
-- A byte-identical mirror of a built-in is removed with no backup.
+- vp-shipped bytes are removed with no backup: a mirror of the built-in
+  (line endings aside) reads `(identical to the built-in; no backup
+  needed)`, and a copy of an earlier shipped version reads `(a copy of
+  an earlier shipped version of commands/restart.md; no backup needed —
+  recoverable from vibe-palace history)`. `--dry-run` says the same, and
+  names no backup for them.
 - On a git vault backups are gitignored (`*.bak` is a canonical ignore
   line) and stay on the host that made them. A vault replicated by a
   file-sync tool carries them to every host; that is harmless, since
@@ -1142,7 +1163,7 @@ anything is written (exit 1): vp does not follow or remove a link. On
 Windows a path whose letter case or short (8.3) name differs from the
 disk is refused too, as a fail-safe. Files you added to a skill
 directory that are not built-in files are left in place and listed.
-Project, wing and room overrides and `templates.lock` are never touched.
+Project, wing and room overrides are never touched.
 
 After it removes a command file or a `SKILL.md`, the reset prints:
 
@@ -1192,22 +1213,18 @@ file, it meets your commit at the next pull as a modify/delete conflict,
 which is left for you to resolve.
 
 The next `vp config sync` never restores a reset file: it treats the
-path as gone. One wrinkle: when this host's `templates.lock` had an
-entry for the reset path, that sync drops the entry and rewrites
-`.vibe-palace/templates.lock`, which a canonically configured vault does
-not ignore, so `vp vault sync` then refuses on it. That is the lock-dirt
-defect tracked as
-`template-provenance-manifest-retires-the-host-local-lock`; the reset
-triggers it, it does not cause it.
+path as gone. If the reset's commit failed and left the removal pending,
+that sync leaves an override's removal for the reset to finish (its row
+names `vp commands reset NAME`), and commits a removal whose committed
+copy is vp-shipped bytes itself.
 
 ### Customizing a command template
 
 The command templates shipped inside `vp` are the *floor* — a default.
-Your project's `Projects/<slug>/commands/` and `Projects/<slug>/skills/`
-directories in the vault are the editable surface. This walkthrough
-shows where a default comes from, how to override it, and why the
-vault-wide `Templates/` tier is not the place to override a built-in
-today.
+You override one in the vault, at one of two tiers: `Templates/` for
+every project, or `Projects/<slug>/` for one. This walkthrough shows
+where a default comes from, both tiers, and how `vp config sync` tells
+your override from a copy of vp's own bytes.
 
 **1. Nothing is materialized.** A fresh `vp init` writes no template
 into your vault — the resolver serves every command and skill from the
@@ -1225,8 +1242,7 @@ vp commands list
 `<vault>/Projects/<your-slug>/skills/`, each with a README stub
 explaining the 5-tier precedence.
 
-**2. Override for one project.** Put your own copy at the project tier.
-Three ways to fetch the default to start from, before you override it:
+Three ways to fetch a default to start an override from:
 
 - the `vp_get_command` MCP tool, for a command;
 - `vp skills show <name> --no-project` (add `--section NAME` for one
@@ -1237,84 +1253,107 @@ Three ways to fetch the default to start from, before you override it:
 - the source file under `internal/templates/templates/` in a
   vibe-palace checkout.
 
+**2. Override for one project.** Put your copy at the project tier:
+
 ```bash
 $EDITOR ~/vibe-palace-vault/Projects/myapp/commands/wrap.md
 vp commands list --project myapp
 # → wrap … project
 ```
 
-The project-level file shadows the built-in for `myapp` only; other
-projects keep resolving `wrap` from the embedded floor. No reconciler
-and no upgrade command ever writes to the project tier — `vp config
-sync` in scaffold mode only ensures the directory and README stub exist.
+The project-level file shadows the built-in (and any vault-wide
+override) for `myapp` only; other projects keep resolving `wrap` as
+before.
 
-**3. The vault-wide tier, `Templates/`.** A file under
-`<vault>/Templates/commands/` or `<vault>/Templates/skills/` applies to
-every project. What happens to it depends on its name:
+**3. Override for every project.** Put your copy under the vault-wide
+tier, `<vault>/Templates/commands/` or `<vault>/Templates/skills/`. A
+file with a new name — `Templates/commands/mycmd.md` — adds a command
+to every project (`vp commands list` shows it at tier `vault`); a file
+with a built-in's name overrides that built-in everywhere.
 
-- **A new name** — a command or skill no built-in uses, such as
-  `Templates/commands/mycmd.md` — is safe. Nothing iterates it: `vp
-  config sync` and both upgrade commands walk the embedded corpus only.
-  This is the only way to publish a command to every project, and
-  `vp commands list` shows it at tier `vault`.
-- **An override of a built-in** — `Templates/commands/wrap.md` — is
-  **still not recommended**, although `vp config sync` no longer loses
-  it. With no lock entry the reconciler cannot tell it from a stale
-  mirror, so every interactive `vp config sync` stops on it:
+No vp reconciler and no upgrade command changes an override in either
+tier. "Safe" means exactly that — safe from vp's reconcilers and
+upgrade commands; `vp_vault_write` / `vp_vault_edit` / `vp_vault_move`
+/ `vp_vault_delete` and `vp vault commit --paths .` are direct edits and
+reach any tier.
 
-  ```
-  === TemplateTree:Templates Prompt ===
-  Templates/commands/wrap.md diverged (no lock, bytes differ from embedded)
-    embedded_sha=4c91c8b4...
-    vault_sha=6b8e6594...
-    lock_sha=
-    embedded_relpath=commands/wrap.md
-  [s]kip — keep your file / [n]ew-sidecar — write <file>.new with the embedded copy — uppercase for all remaining items, [q]uit: s
-  [keep] Templates/commands/wrap.md — diverged (no lock, bytes differ from embedded); vp config sync never overwrites a Templates/ file
-  ```
+**Edit the copy before you sync.** `vp config sync` decides whether a
+`Templates/` copy is vp's by its bytes alone: a copy identical, line
+endings aside, to the current built-in or to any version vibe-palace
+shipped up to `1f3bb62` is vp's, not an override, and is pruned. Here a
+vault holds an edited `wrap.md`, an unedited copy of `capture.md`, and
+an old copy of `restart.md` a past release left behind (rows for the
+templates it does not hold, and the paths, trimmed):
 
-  `vp config sync` never writes over a template: every answer, and
-  `--yes`, keeps yours (`n` only adds a `.new` beside it), and the
-  upgrade commands never change it either. One risk remains, and it is
-  why the project tier is the place to customise a built-in: a host
-  whose `templates.lock` does not record the override prompts on every
-  interactive sync. Tracked as
-  `template-provenance-manifest-retires-the-host-local-lock`.
+```
+$ vp config sync --tier vault
+Plan:
+  [Delete] TemplateTree:Templates: prune Templates/commands/capture.md (byte-identical, line endings aside, to the current embedded copy) (…)
+    - embedded_relpath=commands/capture.md
+    - provenance=current
+    - vault_sha=b693b49ba8bec5d7a66f5810828c394c63412667056946d146216cb6f6358951
+    - key=b693b49ba8bec5d7a66f5810828c394c63412667056946d146216cb6f6358951
+  [Delete] TemplateTree:Templates: prune Templates/commands/restart.md (matched an earlier shipped version of commands/restart.md; recoverable from vibe-palace history) (…)
+    - embedded_relpath=commands/restart.md
+    - provenance=earlier
+    - vault_sha=6b06dcccc57f1debde3c1cec5ea3c719ba792a4538e0f58d38a4a29c7780ebe3
+    - key=6b06dcccc57f1debde3c1cec5ea3c719ba792a4538e0f58d38a4a29c7780ebe3
+  [Unchanged] TemplateTree:Templates: Templates/commands/wrap.md operator override of a built-in (kept) (…)
+  TemplateTree:Templates: pruned Templates/commands/restart.md (earlier shipped version of commands/restart.md; no backup)
+Summary: created=0 updated=0 unchanged=42 skipped=0 pruned=2
+```
 
-  If something does reset a *committed* override to the embedded bytes,
-  the next `vp config sync` checks HEAD's copy before removing
-  anything and — finding your content there — restores it in place
-  (`restored Templates/commands/wrap.md from HEAD`) instead of removing
-  or committing anything. If git cannot answer (no identity, an
-  unreadable index), the file is kept, a `[Skip] … prune deferred` row
-  says why, and the command exits non-zero. If a remote holds an
-  override you have not pulled, the prune is deferred until you pull;
-  if a remote cannot be reached, it is deferred too. A vault inside
-  another repository (a project or dotfiles repo) never has that
-  repository committed to or pushed: a tracked mirror there is kept. To drop an override on purpose,
-  name it: `vp commands reset wrap` (or `vp skills reset NAME`) removes
-  it, keeps a backup, and commits the removal on a vault that is its own
-  repository (see [Resetting an override](#resetting-an-override)). An
-  unedited copy of a built-in is identical to it and is pruned, so edit
-  before syncing.
+There is no prompt and nothing to answer: `wrap.md` is yours and is
+kept, on every host, whether or not `--yes` is given. The two pruned
+copies were vp's bytes — the current built-in and an earlier version of
+one — so no backup is kept. The next sync prints `Nothing to do — all
+tiers in sync.`
 
-**4. The prompt answers.** Uppercase `S`/`N` applies the choice to every
-remaining Prompt row in the same run. The same prompt also fires, with
-`diverged (user-edited AND embedded bumped)`, for a tracked override
-whose embedded copy changed in a new release.
+An override shadows the built-in for every project, and it misses
+changes the binary depends on — `commands/wrap.md` supplies the
+`expected_sha256` that `vp_update_resume` demands, for example. So the
+`template-drift` check lists each one, as `[info]`, every time it runs:
 
-- `s` — vault file unchanged, and a `[keep]` line says so. No `.bak`, no
-  `.new`. The lock is left as-is, so the same Prompt fires again on the
-  next sync. `--yes` and end-of-input both answer `s`.
-- `n` — vault file unchanged. The embedded bytes are written
-  side-by-side to `wrap.md.new` for manual review. The lock is left
-  as-is. Diff `wrap.md` against `wrap.md.new`, take the parts you want,
-  and delete the `.new` when done.
+```
+[info] Template drift: 1 override(s) of built-ins kept (of 41)
+                    Templates:Templates/commands/wrap.md: operator override of a built-in (kept; shadows embedded 4c91c8b4097d)
+```
 
-There is no overwrite answer. `o` existed until 2026-09-10: it replaced
-your file with the embedded copy, the next sync pruned the result, and
-the prune's commit pushed the deletion to every host. Typing `o` now
-re-prompts.
+To drop an override, name it: `vp commands reset wrap` (or
+`vp skills reset NAME`) removes it, keeps a backup, and commits the
+removal on a vault that is its own repository (see
+[Resetting an override](#resetting-an-override)). Do not use
+`vp vault delete` for it.
+
+**4. On a git vault.** Nothing is removed until HEAD's copy, and each
+remote's, is checked to be vp's too; each copy is read as git would
+check it out, so a vault whose `Templates/` passes through git-crypt,
+LFS or any other filter is compared like with like. If something reset
+a *committed* override to vp's bytes, the next `vp config sync` finds
+your content in HEAD and restores it in place
+(`restored Templates/commands/wrap.md from HEAD`) instead of removing or
+committing anything. If git cannot answer — no identity, an unreadable
+index, a filter that cannot run — the file is kept, a
+`[Skip] … prune deferred` row says why, and the command exits 2. If a
+remote holds an override you have not pulled, or a remote cannot be
+reached, the prune is deferred. A vault inside another repository (a
+project or dotfiles repo) never has that repository committed to or
+pushed: a tracked copy there is kept. On a vault that is its own
+repository, a removal of vp-shipped bytes you (or a failed commit) left
+pending in the worktree is committed with the prune, in a paragraph of
+its own that says vp found it pending; a pending removal of your own
+content is never committed — its row names
+`vp commands reset NAME` and the `git checkout HEAD -- <path>` that
+restores it.
+
+A path reached through a symlink — `Templates/`, `Templates/commands`,
+or the file — is never followed or pruned; its row says it is kept.
+
+There is no overwrite answer and no prompt. Until 2026-09-10 an `o`
+answer (and `--yes`) replaced your file with the embedded copy, the next
+sync pruned the result, and the prune's commit pushed the deletion to
+every host. Until this release a host whose `.vibe-palace/templates.lock`
+did not record an override prompted on it at every interactive sync.
 
 **Rollout of the fix (surface v4).** The binary that stops this loss
 raises `MCPSurfaceVersion` to 4, so an older binary on another host is
@@ -1360,19 +1399,55 @@ the reset verbs, or — on a v4 host — the upgrade commands.
    (`--no-project`, so a project-tier override is not what you compare
    against), restore it with
    `git -C <vault> checkout <sha>^ -- <path>` and commit. When in doubt,
-   restore. An unneeded restore of the *current* embedded copy is a
-   mirror the next sync prunes. An older embedded version is not: on a
-   host whose lock does not record it, it is kept and prompts on every
-   sync while shadowing the built-in with stale bytes — remove such a
-   restore with `vp commands reset NAME` / `vp skills reset NAME` once
-   you have confirmed it is not yours.
+   restore. An unneeded restore of the current embedded copy, or of any
+   version vibe-palace shipped up to `1f3bb62`, is vp's bytes, and the
+   next sync prunes it.
 4. A non-git vault, or an override never committed: after one sync by
    an older binary, `<path>.bak` holds your override — rename it back.
    After two, the `.bak` holds embedded bytes and the override cannot be
    recovered from vp's side.
-5. Older binaries leave `*.new`, `*.new.bak`, prune `.bak` files holding
-   embedded bytes, and `.vibe-palace/templates.lock` on each host. They
-   stay until you remove them.
+5. Leftovers older binaries wrote stay until you remove them — this
+   release never touches them, except as noted:
+   - `*.new` and `*.new.bak` beside a template (an old `n` answer's
+     review copy). Diff it against your file if you like, then delete
+     it: `find <vault>/Templates \( -name '*.new' -o -name '*.new.bak' \) -print`,
+     then `rm` what it lists.
+   - `.bak` files, whatever they hold (an old prune's copy of embedded
+     bytes, an old overwrite's copy of your override, a reset's
+     content-named backup). `vp config sync` never touches a `*.bak`;
+     read one before you delete it.
+   - `.vibe-palace/templates.lock`. No vp from this release reads it.
+     On a vault that is its own git repository, `vp config sync` removes
+     it when it is untracked and not ignored (the `--dry-run` row reads
+     `remove the retired .vibe-palace/templates.lock (untracked and not
+     ignored; …)`), because it makes `vp vault sync` refuse. A tracked
+     or ignored lock, and any lock on a non-git or nested vault, is left
+     — a host still running an older binary may share it — and
+     `template-drift` reports it; delete it once every host runs this
+     release.
+
+**Recovering a copy the prune removed.** `vp config sync` removes, with
+no backup, only bytes vibe-palace itself shipped: the current built-in
+or an earlier version from the frozen `internal/templates/shipped.txt`.
+Every such version is in vibe-palace's git history, so you can get it
+back from a vibe-palace checkout. The prune row's `key=` detail is the
+sha256 of the removed bytes with CRLF line endings folded to LF:
+
+```bash
+git -C <vibe-palace> fetch --tags     # two shipped versions live only under a tag
+git -C <vibe-palace> log --all --format=%H -- \
+    internal/templates/templates/commands/restart.md internal/context/templates/commands/restart.md
+# for each commit c, until the sum equals the row's key=:
+git -C <vibe-palace> show <c>:internal/templates/templates/commands/restart.md | tr -d '\r' | sha256sum
+```
+
+(Use the `internal/context/templates/` path for a commit before the
+directory moved; `git show` says which exists.) Restoring the bytes
+into `Templates/` defeats itself: they are still vp's bytes, and the
+next sync prunes them again. To keep an old version deliberately, edit
+it, or put it at the project tier (`Projects/<slug>/commands/`); a
+vault-tier pin of an unedited shipped version is impossible by design.
+
 
 **Changed in this release: vault `Templates/` overrides and the upgrade
 commands.** Requires `make install` on every host (MCP surface v5).
@@ -1417,11 +1492,48 @@ commands.** Requires `make install` on every host (MCP surface v5).
   v3 go straight to v5 — then restart every AI harness on it. See
   *Rollout of the upgrade-reset fix (surface v5)* above.
 
+**Changed in this release: how `vp config sync` decides a `Templates/`
+copy is vp's.** No surface bump: `MCPSurfaceVersion` stays 5, and
+hosts on the previous release keep working against the same vault.
+
+- Provenance is decided by the binary alone. A `Templates/` copy
+  identical, line endings aside, to the current built-in or to a version
+  vibe-palace shipped up to `1f3bb62` (the frozen
+  `internal/templates/shipped.txt`) is vp's; anything else is an
+  override, kept. Before, a host decided from its own
+  `.vibe-palace/templates.lock`, so a host without the lock prompted on
+  every override at every interactive sync and could not recognise a
+  stale copy an old release left.
+- **New policy:** a copy of an *earlier* shipped version is pruned on
+  every host, with no prompt and **no backup** — its bytes are in
+  vibe-palace's history (see *Recovering a copy the prune removed*). The
+  prune row and the prune commit name the version it matched.
+- No prompt, no lock, no `.new` sidecar: the keep/`.new` prompt is gone,
+  and `templates.lock` is neither read nor written. On a vault that is
+  its own git repository an untracked, un-ignored leftover lock is
+  removed, which unblocks `vp vault sync`.
+- A removal of vp-shipped bytes already pending in the worktree (a
+  failed prune commit, a failed reset commit, a hand deletion) is
+  committed with the next prune, and the commit says vp found it
+  pending. A pending removal of your own content is never committed.
+- On a vault whose `Templates/` passes through a clean/smudge filter
+  (git-crypt, LFS), the committed copy is compared as git checks it out;
+  a filter that cannot run defers the prune instead of restoring
+  filtered bytes over your file.
+- A CRLF copy of vp's bytes (a `core.autocrlf=true` checkout) is vp's.
+- `vp commands upgrade` / `vp skills upgrade` list an earlier shipped
+  version as `[stale]`, not `[keep]`, and a reset removes one without a
+  backup.
+- A `Templates/` path reached through a symlink is kept and never
+  followed, where the previous release pruned through it.
+- Vault `Templates/` is again a supported vault-wide override tier.
+
 **Promoting back to the `vp` source tree.** Vibe-palace cannot automate
 promotion because at runtime it does not know where your vibe-palace
 source checkout lives. To land an override as the new embedded floor
 for the next release, copy your override — from
-`<vault>/Projects/<slug>/commands/<name>.md` — to
+`<vault>/Projects/<slug>/commands/<name>.md` or
+`<vault>/Templates/commands/<name>.md` — to
 `<vp-repo>/internal/templates/templates/commands/<name>.md` and commit
 it like any other source change.
 

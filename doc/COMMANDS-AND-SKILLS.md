@@ -101,26 +101,38 @@ chain (tiers 3–5: project > vault > embedded).
 
 ### Override behavior
 
-To customize a built-in command for one project, create a file with the same
-name in the project's `commands/` directory. The project version
-completely replaces the lower-tier version — there is no inheritance or
-merging.
+There are two override tiers, and both are supported:
 
-To add a vault-wide command that applies to all projects, place it in
-`Templates/commands/` under a name no built-in uses. Nothing iterates such a
-file — `vp config sync` and both upgrade commands walk only the embedded
-corpus — so it is safe, and it is the only way to publish a command to every
-project.
+- **Vault-wide**: a file in `Templates/commands/` applies to every project.
+  Under a name no built-in uses it adds a vault-wide command — the only way
+  to publish a command to every project. Under a built-in's name it
+  overrides that built-in for every project.
+- **Per project**: a file with the same name in the project's `commands/`
+  directory overrides the built-in (and any vault-wide override) for that
+  project only.
 
-**Do not override a built-in in `Templates/`.** `vp config sync` no longer
-loses a `Templates/` file at the same path as an embedded template: it never
-writes one, `--yes` keeps it, and a prune never commits the deletion of a
-committed override — it restores HEAD's copy instead. The upgrade commands
-never change one either: they list it as `[keep]`. The risk that remains is
-that a host whose `templates.lock` lacks it prompts on every interactive sync
-(`template-provenance-manifest-retires-the-host-local-lock`). An unedited copy
-of a built-in is identical to it and is pruned, so edit before syncing.
-Override a built-in at the project tier instead.
+An override completely replaces the lower-tier version — there is no
+inheritance or merging.
+
+No vp reconciler and no upgrade command changes an override in either tier.
+`vp config sync` never writes a template, never prompts about one, and
+never commits the deletion of a committed override — it restores HEAD's
+copy instead; the upgrade commands list an override as `[keep]`. "Safe"
+here means safe from vp's reconcilers and upgrade commands:
+`vp_vault_write` / `vp_vault_edit` / `vp_vault_move` / `vp_vault_delete` and
+`vp vault commit --paths .` are direct edits and reach any tier.
+
+Three things to know about a vault-wide override of a built-in:
+
+- **Edit it before you sync.** `vp config sync` judges a `Templates/` copy by
+  its bytes alone: a copy identical, line endings aside, to the current
+  built-in or to any version vibe-palace shipped up to `1f3bb62` (the frozen
+  `internal/templates/shipped.txt`) is vp's, not an override, and is pruned.
+- **It shadows the built-in for every project**, and it misses changes the
+  binary relies on — `commands/wrap.md` supplies the `expected_sha256` that
+  `vp_update_resume` demands, for example. `vp_check` `template-drift` lists
+  every override as `Info` so it stays visible.
+- **To drop one, name it** with a reset, not `vp vault delete`.
 
 To remove a vault override of a built-in, name it: `vp commands reset NAME`
 (or `vp skills reset NAME` for a skill or one skill file). The reset removes
@@ -138,9 +150,9 @@ subdirectory under `commands/{wing}/.wing/` or `commands/{wing}/{room}/`.
 
 ### 1. Choose a location
 
-- **All projects**: `{vault}/Templates/commands/{name}.md` — for a *new*
-  name only; see [Override behavior](#override-behavior) for why a built-in
-  is not overridden here
+- **All projects**: `{vault}/Templates/commands/{name}.md` — a new name
+  adds a command; a built-in's name overrides it everywhere (edit the copy
+  before syncing; see [Override behavior](#override-behavior))
 - **One project**: `{vault}/Projects/{project}/commands/{name}.md`
 - **One wing**: `{vault}/Projects/{project}/commands/{wing}/.wing/{name}.md`
 - **One room**: `{vault}/Projects/{project}/commands/{wing}/{room}/{name}.md`
@@ -186,11 +198,12 @@ Save this as `audit-deps.md` and it's immediately available.
         framework.md
 ```
 
-This is the vault-wide location, for a skill with a **new** name. To
-override a built-in skill, use `{vault}/Projects/{project}/skills/{name}/`
-instead — a `Templates/skills/` copy of a built-in is still not recommended
-(see [Override behavior](#override-behavior)); `vp skills reset NAME`
-removes one.
+This is the vault-wide location: a skill with a **new** name is added for
+every project, and a built-in's name overrides that built-in everywhere
+(edit every copied file before syncing — an unedited one is vp's bytes and
+is pruned; see [Override behavior](#override-behavior)). To override a skill
+for one project only, use `{vault}/Projects/{project}/skills/{name}/`.
+`vp skills reset NAME` removes a vault-wide override, keeping a backup.
 
 Skills are always **directory-form** — a `{name}/` subdirectory
 containing `SKILL.md` (and optionally a `references/` tree). Flat-file
@@ -563,9 +576,10 @@ validation. Enrichment-queue drain remains Claude-hook-only; see
 {vault}/
 ├── Templates/                  # Overrides YOU author — empty by default
 │   ├── commands/               # Vault-wide commands (illustrative)
-│   │   └── audit-deps.md       # a NEW name: safe, applies to every project
+│   │   ├── audit-deps.md       # a NEW name: applies to every project
+│   │   └── wrap.md             # a built-in's name: overrides it everywhere
 │   └── skills/                 # Vault-wide skills (illustrative)
-│       └── my-reviewer/        # a NEW name: safe
+│       └── my-reviewer/        # a NEW name
 │           ├── SKILL.md
 │           └── references/
 │               └── checklist.md
@@ -583,8 +597,9 @@ validation. Enrichment-queue drain remains Claude-hook-only; see
 
 `vp init` never creates `Templates/`; every built-in is served from the
 embedded defaults below. The files shown under it are illustrative. An
-override of a built-in belongs under `Projects/{project}/`, not
-`Templates/` — see [Override behavior](#override-behavior).
+override of a built-in may live at either tier — `Templates/` for every
+project, `Projects/{project}/` for one — and no vp reconciler or upgrade
+command changes it; see [Override behavior](#override-behavior).
 
 Embedded defaults (compiled into `vp`):
 
