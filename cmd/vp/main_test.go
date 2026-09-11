@@ -248,15 +248,17 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		"tune rooms":     true,
 		"config upgrade": true,
 		"config sync":    true,
-		// Both reach commands.applyWithPolicy, which writes Change.VaultPath —
-		// a template under the vault's Templates/ tree — through the stamped
-		// local write path. Left unwrapped until 2026-08-19, which meant the
-		// command that WRITES template mirrors was ungated while `config sync`,
-		// the command that prunes them, was gated.
-		"commands upgrade": true,
-		"skills upgrade":   true,
-		"init":             true,
-		"tasks edit":       true,
+		// The reset verbs remove a vault Templates/ file (vaultfs.Delete),
+		// write its backup (vaultfs.Create) and commit the removal. `commands
+		// upgrade` and `skills upgrade` are deliberately ABSENT: they were
+		// gated while they reset overrides by writing the embedded bytes over
+		// them; since upgrade-overwrite-resets-vault-template-overrides they
+		// write nothing under the vault (the derived gate agrees — make
+		// source-audit), so a gate on them would be a divergence.
+		"commands reset": true,
+		"skills reset":   true,
+		"init":           true,
+		"tasks edit":     true,
 		// "vault sync" is deliberately ABSENT: it contains the pull
 		// (storage.SyncVault, vaultsyncflow.go:120), so gating it gated the very
 		// operation `vault pull` is left ungated to protect. See the rationale at

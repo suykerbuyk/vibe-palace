@@ -153,6 +153,12 @@ func TestSkillsCommandMetadata(t *testing.T) {
 		t.Error("the registry did not populate skills' Subcommands, so the dispatcher would " +
 			"treat this parent as a leaf and call its nil Run")
 	}
+	// The registered children, pinned by name: `skills reset` is the only one
+	// that writes the vault.
+	kids := strings.Join(registeredChildren(t, "skills"), ",")
+	if kids != "skills list,skills show,skills upgrade,skills reset" {
+		t.Errorf("skills children = %s", kids)
+	}
 	cl := cmdSkillsList()
 	if cl.Name != "skills list" {
 		t.Errorf("list name = %q", cl.Name)

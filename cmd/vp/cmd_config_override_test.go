@@ -463,13 +463,17 @@ func TestConfigSyncEditWhilePromptWaitsIsKept(t *testing.T) {
 
 // TestConfigSyncRefusedOnANewerVault pins the old-binary refusal the surface
 // bump buys: a binary older than the vault's surface stamp cannot run the
-// destructive template commands. Simulated here by stamping one version above
-// this binary's, and driven through the real dispatch so the preRun gate runs.
+// destructive template commands — `config sync` and the two reset verbs (the
+// upgrade commands no longer write the vault). Simulated here by stamping one
+// version above this binary's, and driven through the real dispatch so the
+// preRun gate runs.
 func TestConfigSyncRefusedOnANewerVault(t *testing.T) {
 	vaultPath, _ := overrideVault(t)
 	putVaultFile(t, vaultPath, "Templates/commands/wrap.md", myWrap)
+	putVaultFile(t, vaultPath, "Templates/skills/chair/SKILL.md", "---\nname: chair\ndescription: mine\n---\nmy chair\n")
 	gitifyVault(t, vaultPath)
 	seedCommittedOverrideUnderMirror(t, vaultPath, "commands/restart.md")
+	putVaultFile(t, vaultPath, "Templates/commands/restart.md", "# an uncommitted restart override\n")
 	if err := surface.WriteStamp(filepath.Join(vaultPath, "Projects", "ovr"), surface.MCPSurfaceVersion+1, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +482,8 @@ func TestConfigSyncRefusedOnANewerVault(t *testing.T) {
 
 	for _, args := range [][]string{
 		{"config", "sync", "--yes"},
-		{"commands", "upgrade", "--overwrite"},
+		{"commands", "reset", "restart"},
+		{"skills", "reset", "chair"},
 	} {
 		info := cli.BuildInfo{Version: "test"}
 		reg := cli.NewRegistry(info)

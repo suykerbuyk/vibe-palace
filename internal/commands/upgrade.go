@@ -6,12 +6,12 @@ package commands
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
-	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
 
 // matchesOnly decides whether the given resource name matches an --only
@@ -29,21 +29,23 @@ func matchesOnly(resourceType, name, only string) bool {
 	return strings.HasPrefix(name, only+"/")
 }
 
+// ErrNoEmbeddedTemplate is Plan's error when PlanOptions.Only names nothing
+// the binary embeds: the name is not a built-in, so there is nothing of vp's
+// to compare, upgrade or reset.
+var ErrNoEmbeddedTemplate = errors.New("no embedded template")
+
 // ChangeKind classifies how an embedded template compares to its vault copy.
 type ChangeKind string
 
 const (
-	// ChangeNew means a vault copy is to be created from scratch.
-	//
-	// Plan no longer emits this: every template Plan enumerates comes from
-	// the embedded corpus, so an absent vault copy is always ChangeUnneeded.
-	// The kind remains because Apply/ApplyWithBackup accept a caller-built
-	// []Change and still owe a create path the correct backup policy (there
-	// are no prior bytes to preserve).
-	ChangeNew ChangeKind = "new"
-	// ChangeUpdated means the embedded template differs from the vault copy.
-	ChangeUpdated ChangeKind = "updated"
-	// ChangeUnchanged means the embedded template matches the vault copy.
+	// ChangeOverride means a vault Templates/ copy exists and differs from the
+	// embedded template: an operator's override of a built-in. It is reported,
+	// never written. Neither `vp commands upgrade` nor `vp skills upgrade`
+	// changes one; only an explicit, named `vp commands reset` / `vp skills
+	// reset` removes it (Reset), keeping a backup.
+	ChangeOverride ChangeKind = "override"
+	// ChangeUnchanged means the embedded template matches the vault copy: a
+	// byte-identical mirror.
 	ChangeUnchanged ChangeKind = "unchanged"
 	// ChangeUnneeded means no vault copy exists and none is wanted: the
 	// embedded floor (precedence Tier 5, internal/context/precedence.go)
@@ -66,20 +68,18 @@ type Change struct {
 	// EmbeddedContent is the source-of-truth content.
 	EmbeddedContent string
 	// VaultContent is the current vault copy; empty when no vault copy
-	// exists (Kind == ChangeUnneeded, or a caller-built ChangeNew).
+	// exists (Kind == ChangeUnneeded).
 	VaultContent string
 	// EmbeddedHash is the first 7 hex chars of SHA-256(EmbeddedContent).
 	EmbeddedHash string
 	// VaultHash is the first 7 hex chars of SHA-256(VaultContent); empty
-	// when no vault copy exists (Kind == ChangeUnneeded, or a caller-built
-	// ChangeNew).
+	// when no vault copy exists (Kind == ChangeUnneeded).
 	VaultHash string
 	// VaultPath is the filesystem path where the vault copy lives or would live.
 	VaultPath string
-	// VaultRoot is the root of the vault that owns VaultPath, used to stamp the
-	// .surface version on write. Threading it here is what lets the shared
-	// atomicfile primitive stamp structurally — commands/skills upgrade
-	// previously stamped nowhere.
+	// VaultRoot is the root of the vault that owns VaultPath. Reset works in
+	// vault-relative paths — the locked vaultfs primitives it removes and backs
+	// up through take (root, rel) — and derives rel from the two.
 	VaultRoot string
 }
 
@@ -105,8 +105,11 @@ type PlanOptions struct {
 //
 // Plan is override-only, matching the `vp config sync` Templates reconciler
 // (ADR-008 Phase 3): a template with no vault copy is ChangeUnneeded, never
-// work to do. Only a vault copy that DIFFERS from embedded — a genuine local
-// override — is offered as ChangeUpdated.
+// work to do. A vault copy that DIFFERS from embedded — a genuine local
+// override — is ChangeOverride, and a plan is only ever a report of it: no
+// caller writes embedded bytes over an override. The upgrade commands list
+// overrides as kept, and the reset commands hand the named ones to Reset,
+// which removes them (keeping a backup) so the embedded floor serves them.
 func Plan(resolver *vpctx.Resolver, opts PlanOptions) ([]Change, error) {
 	types := opts.ResourceTypes
 	if len(types) == 0 {
@@ -139,7 +142,7 @@ func Plan(resolver *vpctx.Resolver, opts PlanOptions) ([]Change, error) {
 	})
 
 	if opts.Only != "" && len(changes) == 0 {
-		return nil, fmt.Errorf("no embedded template named %q", opts.Only)
+		return nil, fmt.Errorf("%w named %q", ErrNoEmbeddedTemplate, opts.Only)
 	}
 	return changes, nil
 }
@@ -169,11 +172,11 @@ func planOne(resolver *vpctx.Resolver, resourceType, name string) (Change, error
 		VaultRoot:       resolver.VaultRoot(),
 	}
 	if !haveVault {
-		// No vault copy means no local override, and Apply would write
-		// EmbeddedContent — the embedded floor already serving this
-		// resource. There is nothing to materialize. Classifying absence as
-		// ChangeNew is what re-created the byte-identical Templates/ mirrors
-		// that `vp config sync` prunes, silently inverting ADR-008 Phase 3.
+		// No vault copy means no local override: the embedded floor already
+		// serves this resource and there is nothing to materialize. Planning
+		// absence as a template to create is what once re-created the
+		// byte-identical Templates/ mirrors that `vp config sync` prunes,
+		// silently inverting ADR-008 Phase 3.
 		c.Kind = ChangeUnneeded
 		return c, nil
 	}
@@ -182,51 +185,9 @@ func planOne(resolver *vpctx.Resolver, resourceType, name string) (Change, error
 	if c.EmbeddedHash == c.VaultHash {
 		c.Kind = ChangeUnchanged
 	} else {
-		c.Kind = ChangeUpdated
+		c.Kind = ChangeOverride
 	}
 	return c, nil
-}
-
-// Apply writes the embedded content of each accepted Change to its vault
-// path, creating parent directories as needed. The write is atomic per file
-// (templates.Executor handles tmp+rename). Unchanged and Unneeded entries
-// are ignored whether or not they are marked accepted. No .bak is left behind — see
-// doc/TEMPLATE_POLICY.md for the rationale.
-func Apply(accepted []Change) error {
-	return applyWithPolicy(accepted, templates.BackupPolicyNever)
-}
-
-// ApplyWithBackup is like Apply but, for Updated entries, preserves the
-// existing vault file to a sibling ".bak" (via rename — matches the
-// legacy skills-upgrade behavior byte-for-byte) before writing. New
-// entries have no prior copy to preserve; Unchanged entries are
-// skipped. The backup is a single sibling ".bak"; repeated runs
-// overwrite it so the on-disk surface stays bounded.
-//
-// Centralized .bak policy: this function and Apply differ only in the
-// BackupPolicy passed to the shared templates.Executor. See
-// doc/TEMPLATE_POLICY.md for the follow-up (make the asymmetry user-
-// configurable or unify).
-func ApplyWithBackup(accepted []Change) error {
-	return applyWithPolicy(accepted, templates.BackupPolicyRename)
-}
-
-func applyWithPolicy(accepted []Change, policy templates.BackupPolicy) error {
-	exec := templates.NewExecutor()
-	for _, c := range accepted {
-		if c.Kind == ChangeUnchanged || c.Kind == ChangeUnneeded {
-			continue
-		}
-		// New entries have nothing to preserve regardless of policy.
-		effective := policy
-		if c.Kind == ChangeNew {
-			effective = templates.BackupPolicyNever
-		}
-		if err := exec.Write(c.VaultPath, []byte(c.EmbeddedContent), templates.WriteOptions{Backup: effective, VaultRoot: c.VaultRoot}); err != nil {
-			return fmt.Errorf("write %s: %w", c.VaultPath, err)
-		}
-	}
-	return nil
 }
 
 func shortHash(s string) string {

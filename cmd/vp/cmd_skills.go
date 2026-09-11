@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,7 +23,7 @@ func cmdSkills() *cli.Command {
 	return &cli.Command{
 		Name:        "skills",
 		Synopsis:    "vp skills <command> [flags]",
-		Description: "List the directory-form skills available for this project, inspect SKILL.md / reference bodies, and upgrade vault-level copies against embedded defaults.",
+		Description: "List the directory-form skills available for this project, inspect SKILL.md / reference bodies, report vault Templates/skills overrides of built-in skills, and reset one when you name it.",
 	}
 }
 
@@ -219,29 +218,28 @@ func runSkillsShow(stdout, stderr io.Writer, resolver *vpctx.Resolver, opts skil
 }
 
 var skillsUpgradeFlags = []cli.FlagDef{
-	{Name: "--dry-run", Help: "Print the upgrade plan without writing"},
-	{Name: "--overwrite", Help: "Accept every change without prompting (required in non-TTY)"},
-	{Name: "--only", Arg: "NAME", Help: "Upgrade only the named skill (all files under it)"},
-	{Name: "--granular", Help: "Prompt per file instead of per skill directory"},
+	{Name: "--dry-run", Help: "Print the report as a plan table"},
+	{Name: "--overwrite", Help: "Accepted for compatibility; there is nothing to accept — vp skills upgrade never resets an override"},
+	{Name: "--only", Arg: "NAME", Help: "Report only the named skill (all files under it)"},
+	{Name: "--granular", Help: "List per file instead of per skill directory"},
 }
 
-// cmdSkillsUpgrade mirrors `vp commands upgrade` but operates on the
-// directory-form skill corpus. By default prompts are grouped per skill
-// directory — SKILL.md plus every references/*.md file share one
-// accept/skip prompt. --granular restores the per-file prompt for
-// surgical reviews.
+// cmdSkillsUpgrade reports how the vault's Templates/skills/ copies compare to
+// the built-in skills. It writes nothing: a vault override of a built-in skill
+// is the operator's and is listed as [keep], and `vp skills reset NAME` is the
+// only command that removes one. The skill SHIMS a project carries are `vp
+// commands upgrade`'s.
 func cmdSkillsUpgrade() *cli.Command {
 	return &cli.Command{
 		Name:        "skills upgrade",
 		Synopsis:    "vp skills upgrade [--dry-run] [--overwrite] [--only NAME] [--granular]",
-		Description: "Compare embedded skill templates against the vault copy (tier 4) and, for each skill directory, show a unified diff of affected files and prompt to accept, skip, or accept-all. Project/wing/room overrides are never touched.",
+		Description: "Report every vault Templates/skills/ override of a built-in skill, one [keep] line per skill (per file with --granular). It never writes or removes a Templates/ file, in any mode: `vp skills reset NAME` removes an override on request, keeping a backup. Project skill shims are refreshed by `vp commands upgrade`.",
 		Flags:       skillsUpgradeFlags,
 		Examples: []cli.Example{
-			{Cmd: "vp skills upgrade", Comment: "Interactive upgrade, one prompt per skill"},
-			{Cmd: "vp skills upgrade --dry-run", Comment: "Show the plan without writing"},
-			{Cmd: "vp skills upgrade --overwrite", Comment: "Accept every change without prompting"},
-			{Cmd: "vp skills upgrade --only startup-analyst", Comment: "Upgrade a single skill's files"},
-			{Cmd: "vp skills upgrade --granular", Comment: "Prompt per file instead of per skill"},
+			{Cmd: "vp skills upgrade", Comment: "List the vault's skill overrides, one line per skill"},
+			{Cmd: "vp skills upgrade --dry-run", Comment: "Show the comparison as a plan table"},
+			{Cmd: "vp skills upgrade --only startup-analyst", Comment: "Report a single skill's files"},
+			{Cmd: "vp skills upgrade --granular", Comment: "List per file instead of per skill"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(skillsUpgradeFlags, args)
@@ -254,7 +252,6 @@ func cmdSkillsUpgrade() *cli.Command {
 				Overwrite: fv.Bool("--overwrite"),
 				Only:      fv.Get("--only"),
 				Granular:  fv.Bool("--granular"),
-				Stdin:     os.Stdin,
 				Stdout:    os.Stdout,
 				Stderr:    os.Stderr,
 			})
@@ -267,21 +264,15 @@ type skillsUpgradeOpts struct {
 	Overwrite bool
 	Only      string
 	Granular  bool
-	Stdin     io.Reader
 	Stdout    io.Writer
 	Stderr    io.Writer
-	// InteractiveOverride, when non-nil, forces interactive on/off for tests.
-	InteractiveOverride *bool
 	// VaultRootOverride, when non-empty, bypasses openProjectVault().
 	VaultRootOverride string
-	// ProjectRootOverride, when non-empty, replaces os.Getwd().
-	ProjectRootOverride string
 }
 
-// skillGroupID returns the skill name for a nested skill-file change —
-// the first path segment before the first "/" in c.Name. Used as the
-// default GroupBy for the skills-upgrade prompt so SKILL.md and every
-// reference share one accept/skip prompt.
+// skillGroupID returns the skill name for a nested skill-file change — the
+// first path segment before the first "/" in c.Name. It groups SKILL.md and
+// every reference of one skill into one line of the report.
 func skillGroupID(c commands.Change) string {
 	n := c.Name
 	if before, _, ok := strings.Cut(n, "/"); ok {
@@ -290,6 +281,9 @@ func skillGroupID(c commands.Change) string {
 	return n
 }
 
+// runSkillsUpgrade is report-only. It reads the vault and prints; it never
+// reads stdin and never writes, so every mode exits 0 unless the plan cannot
+// be built.
 func runSkillsUpgrade(opts skillsUpgradeOpts) int {
 	vaultRoot := opts.VaultRootOverride
 	if vaultRoot == "" {
@@ -311,13 +305,11 @@ func runSkillsUpgrade(opts skillsUpgradeOpts) int {
 		return cli.ExitUser
 	}
 
-	added, updated, unchanged, unneeded := 0, 0, 0, 0
+	overrides, unchanged, unneeded := 0, 0, 0
 	for _, c := range plan {
 		switch c.Kind {
-		case commands.ChangeNew:
-			added++
-		case commands.ChangeUpdated:
-			updated++
+		case commands.ChangeOverride:
+			overrides++
 		case commands.ChangeUnchanged:
 			unchanged++
 		case commands.ChangeUnneeded:
@@ -326,104 +318,55 @@ func runSkillsUpgrade(opts skillsUpgradeOpts) int {
 		}
 	}
 
+	if opts.Overwrite {
+		fmt.Fprintln(opts.Stdout, "--overwrite: nothing to accept — vp skills upgrade never resets an override; use vp skills reset NAME")
+	}
+
 	if opts.DryRun {
 		printSkillsUpgradePlan(opts.Stdout, plan, opts.Granular)
 		fmt.Fprintf(opts.Stdout,
-			"\nSummary (dry run): %d new, %d updated, %d unchanged, %d unneeded.\n",
-			added, updated, unchanged, unneeded)
-		if added+updated > 0 {
-			return cli.ExitUser
-		}
+			"\nSummary (dry run): %d override(s) kept, %d unchanged, %d unneeded.\n",
+			overrides, unchanged, unneeded)
 		return cli.ExitOK
 	}
 
-	interactive := isTerminal(os.Stdin) && !opts.Overwrite
-	if opts.InteractiveOverride != nil {
-		interactive = *opts.InteractiveOverride && !opts.Overwrite
+	printSkillKeepLines(opts.Stdout, plan, opts.Granular)
+	if overrides == 0 {
+		fmt.Fprintln(opts.Stdout, "No vault Templates/skills override of a built-in skill. Nothing to do.")
+		return cli.ExitOK
 	}
-	if !opts.Overwrite && !interactive {
-		if added+updated == 0 {
-			fmt.Fprintln(opts.Stdout, "All embedded skills match. Nothing to do.")
-			return cli.ExitOK
-		}
-		fmt.Fprintln(opts.Stderr,
-			"vp skills upgrade: stdin is not a terminal and --overwrite was not set.")
-		fmt.Fprintln(opts.Stderr,
-			"Re-run with --overwrite to accept every change, or --dry-run to preview.")
-		return cli.ExitUser
-	}
-
-	reader := bufio.NewReader(opts.Stdin)
-
-	// GroupBy: by default collapse to the skill directory; --granular
-	// returns identity so every file becomes its own prompt.
-	groupBy := skillGroupID
-	if opts.Granular {
-		groupBy = func(c commands.Change) string { return c.Name }
-	}
-
-	promptRes := runUpgradePrompt(plan, UpgradePromptOpts{
-		GroupBy:      groupBy,
-		RenderHeader: renderSkillHeader(opts.Granular),
-		RenderBody:   renderSkillBody(opts.Granular),
-		AcceptAll:    opts.Overwrite,
-		Reader:       reader,
-		Stdout:       opts.Stdout,
-		Stderr:       opts.Stderr,
-	})
-
-	// Write-back: commands.ApplyWithBackup is commands.Apply with
-	// templates.BackupPolicyRename, so a vault copy being reset keeps its
-	// prior bytes as a sibling .bak (commands.Apply keeps none).
-	if err := commands.ApplyWithBackup(promptRes.Accepted); err != nil {
-		fmt.Fprintf(opts.Stderr, "apply skills: %v\n", err)
-		return cli.ExitSystem
-	}
-
-	if promptRes.Quit {
-		fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
-	}
-	fmt.Fprintf(opts.Stdout,
-		"\nDone. %d accepted, %d skipped.\n",
-		promptRes.AcceptedCount, promptRes.SkippedCount)
+	fmt.Fprintf(opts.Stdout, "\nDone. %d override file(s) of built-in skills kept; nothing was written.\n", overrides)
 	return cli.ExitOK
 }
 
-func renderSkillHeader(granular bool) func(w io.Writer, groupID string, group []commands.Change) {
-	return func(w io.Writer, groupID string, group []commands.Change) {
-		if granular || len(group) == 1 {
-			c := group[0]
-			fmt.Fprintf(w, "\n=== %s (%s) ===\n", c.Name, c.Kind)
-			return
+// printSkillKeepLines prints the [keep] report: one line per skill with an
+// override, naming the files that differ, or one line per file when granular.
+func printSkillKeepLines(w io.Writer, plan []commands.Change, granular bool) {
+	if granular {
+		for _, c := range plan {
+			if c.Kind != commands.ChangeOverride {
+				continue
+			}
+			fmt.Fprintf(w, "[keep] Templates/skills/%s — override of a built-in (vault %s, embedded %s); vp skills upgrade never resets one — to remove it: vp skills reset %s\n",
+				c.Name, c.VaultHash, c.EmbeddedHash, c.Name)
 		}
-		// Per-skill group: header names the skill and enumerates the
-		// affected files with their individual kinds.
-		fmt.Fprintf(w, "\n=== skill %s (%d files) ===\n", groupID, len(group))
-		for _, c := range group {
-			rel := strings.TrimPrefix(c.Name, groupID+"/")
-			fmt.Fprintf(w, "  - %s (%s)\n", rel, c.Kind)
-		}
+		return
 	}
-}
-
-func renderSkillBody(granular bool) func(w io.Writer, groupID string, group []commands.Change) {
-	return func(w io.Writer, groupID string, group []commands.Change) {
-		for _, c := range group {
-			if !granular && len(group) > 1 {
-				fmt.Fprintf(w, "\n--- %s ---\n", c.Name)
-			}
-			if c.Kind == commands.ChangeUpdated {
-				diff := commands.RenderUnified(
-					"vault/"+c.Name,
-					"embedded/"+c.Name,
-					c.VaultContent, c.EmbeddedContent,
-				)
-				fmt.Fprint(w, diff)
-			} else {
-				fmt.Fprintf(w, "(new file; %d bytes will be added)\n",
-					len(c.EmbeddedContent))
-			}
+	var order []string
+	files := map[string][]string{}
+	for _, c := range plan {
+		if c.Kind != commands.ChangeOverride {
+			continue
 		}
+		id := skillGroupID(c)
+		if _, ok := files[id]; !ok {
+			order = append(order, id)
+		}
+		files[id] = append(files[id], strings.TrimPrefix(c.Name, id+"/"))
+	}
+	for _, id := range order {
+		fmt.Fprintf(w, "[keep] Templates/skills/%s/ — override of a built-in (%d file(s) differ: %s); vp skills upgrade never resets one — to remove it: vp skills reset %s\n",
+			id, len(files[id]), strings.Join(files[id], ", "), id)
 	}
 }
 
@@ -438,7 +381,7 @@ func printSkillsUpgradePlan(w io.Writer, plan []commands.Change, granular bool) 
 	fmt.Fprintln(w, "Skills upgrade plan:")
 	if granular {
 		for _, c := range plan {
-			printPlanLine(w, c)
+			printPlanLine(w, "  ", c.Name, skillGroupID(c), c)
 		}
 		return
 	}
@@ -462,32 +405,21 @@ func printSkillsUpgradePlan(w io.Writer, plan []commands.Change, granular bool) 
 	for _, g := range groups {
 		fmt.Fprintf(w, "  skill %s:\n", g.id)
 		for _, c := range g.member {
-			rel := strings.TrimPrefix(c.Name, g.id+"/")
-			switch c.Kind {
-			case commands.ChangeNew:
-				fmt.Fprintf(w, "    new       %s  (hash %s)\n", rel, c.EmbeddedHash)
-			case commands.ChangeUpdated:
-				fmt.Fprintf(w, "    updated   %s  (vault %s → embedded %s)\n",
-					rel, c.VaultHash, c.EmbeddedHash)
-			case commands.ChangeUnchanged:
-				fmt.Fprintf(w, "    unchanged %s\n", rel)
-			case commands.ChangeUnneeded:
-				fmt.Fprintf(w, "    unneeded  %s  (no local override; embedded floor serves it)\n", rel)
-			}
+			printPlanLine(w, "    ", strings.TrimPrefix(c.Name, g.id+"/"), g.id, c)
 		}
 	}
 }
 
-func printPlanLine(w io.Writer, c commands.Change) {
+// printPlanLine prints one skill-file row of the plan, labelled label and
+// indented by indent. An override row names the reset that removes it.
+func printPlanLine(w io.Writer, indent, label, skill string, c commands.Change) {
 	switch c.Kind {
-	case commands.ChangeNew:
-		fmt.Fprintf(w, "  new       %s  (hash %s)\n", c.Name, c.EmbeddedHash)
-	case commands.ChangeUpdated:
-		fmt.Fprintf(w, "  updated   %s  (vault %s → embedded %s)\n",
-			c.Name, c.VaultHash, c.EmbeddedHash)
+	case commands.ChangeOverride:
+		fmt.Fprintf(w, "%soverride  %s  (vault %s, embedded %s; kept — vp skills reset %s removes it)\n",
+			indent, label, c.VaultHash, c.EmbeddedHash, skill)
 	case commands.ChangeUnchanged:
-		fmt.Fprintf(w, "  unchanged %s\n", c.Name)
+		fmt.Fprintf(w, "%sunchanged %s\n", indent, label)
 	case commands.ChangeUnneeded:
-		fmt.Fprintf(w, "  unneeded  %s  (no local override; embedded floor serves it)\n", c.Name)
+		fmt.Fprintf(w, "%sunneeded  %s  (no local override; embedded floor serves it)\n", indent, label)
 	}
 }

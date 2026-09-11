@@ -11,9 +11,14 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
-	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 )
+
+// `vp skills upgrade` is report-only: it lists every vault Templates/skills
+// override of a built-in as [keep] and never writes, removes or prompts. These
+// tests replace the ones that pinned its old accept/overwrite behaviour —
+// which reset an override to the embedded bytes, keeping one .bak that the
+// next reset overwrote.
 
 // seedMatchingSkillsVault copies every embedded skill file into the
 // vault so a fresh plan finds every change Unchanged.
@@ -29,28 +34,12 @@ func seedMatchingSkillsVault(t *testing.T, vault string) {
 		if err != nil {
 			t.Fatalf("EmbeddedContent %s: %v", n, err)
 		}
-		rel := filepath.Join("Templates", "skills", filepath.FromSlash(n))
-		p := filepath.Join(vault, rel)
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatalf("mkdir: %v", err)
-		}
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
+		writeVaultFile(t, vault, filepath.Join("Templates", "skills", filepath.FromSlash(n)), body)
 	}
 }
 
-// TestRunSkillsUpgrade_DryRun_NonZeroOnPendingWork seeds a GENUINE override
-// (a vault skill file that differs from embedded) because that is now the
-// only thing that counts as pending work. An empty vault is not pending
-// work: the embedded floor already serves every skill, so there is nothing
-// to do and the dry run correctly exits zero.
 // seedStaleSkillGroup writes every file of the given embedded skill into the
 // vault with divergent content, making the whole group a genuine override.
-//
-// Tests that want prompts or writes need this: since commands.Plan became
-// override-only, an ABSENT vault copy is ChangeUnneeded and offers nothing.
-// Only a vault copy that differs from embedded is actionable.
 func seedStaleSkillGroup(t *testing.T, vault, skill string) {
 	t.Helper()
 	r := vpctx.NewResolver(vault)
@@ -73,26 +62,102 @@ func seedStaleSkillGroup(t *testing.T, vault, skill string) {
 	}
 }
 
-func TestRunSkillsUpgrade_DryRun_NonZeroOnPendingWork(t *testing.T) {
+// bodyOnlySkillOverride is the embedded SKILL.md with a line appended after
+// its body: the frontmatter — and so the skill shim's description — is
+// unchanged, so the override moves no shim.
+func bodyOnlySkillOverride(t *testing.T, skill string) string {
+	t.Helper()
+	emb, err := vpctx.NewResolver(t.TempDir()).EmbeddedContent("skill:" + skill + "/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return emb + "\nAn operator's addition to the body.\n"
+}
+
+// assertNoBakUnder fails if any *.bak file exists under root.
+func assertNoBakUnder(t *testing.T, root string) {
+	t.Helper()
+	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(p, ".bak") {
+			t.Errorf("a backup was written: %s", p)
+		}
+		return nil
+	})
+}
+
+// TestRunSkillsUpgrade_OverwriteKeepsOverrides is the skills must-fail: at
+// 1f3bb62 `--overwrite` replaced the override with the embedded bytes and kept
+// one overwritable SKILL.md.bak.
+func TestRunSkillsUpgrade_OverwriteKeepsOverrides(t *testing.T) {
 	vault := t.TempDir()
-	writeVaultFile(t, vault, "Templates/skills/startup-analyst/SKILL.md",
-		"stale user-edited skill\n")
+	override := bodyOnlySkillOverride(t, "startup-analyst")
+	skillMD := filepath.Join(vault, "Templates", "skills", "startup-analyst", "SKILL.md")
+	writeVaultFile(t, vault, "Templates/skills/startup-analyst/SKILL.md", override)
+	writeVaultFile(t, vault, "Templates/skills/chair/SKILL.md", bodyOnlySkillOverride(t, "chair"))
+
 	var out, errb bytes.Buffer
 	code := runSkillsUpgrade(skillsUpgradeOpts{
-		DryRun:            true,
-		Stdin:             strings.NewReader(""),
+		Overwrite:         true,
+		Only:              "startup-analyst",
 		Stdout:            &out,
 		Stderr:            &errb,
 		VaultRootOverride: vault,
 	})
-	if code != cli.ExitUser {
-		t.Fatalf("dry-run with new skills: exit=%d, want ExitUser", code)
+	if code != cli.ExitOK {
+		t.Fatalf("overwrite: exit=%d\nstderr=%s", code, errb.String())
 	}
-	if !strings.Contains(out.String(), "skill startup-analyst") {
-		t.Errorf("dry-run output missing startup-analyst group:\n%s", out.String())
+	assertFileBytes(t, skillMD, override)
+	assertNoBakUnder(t, vault)
+	for _, want := range []string{
+		"[keep] Templates/skills/startup-analyst/ — override of a built-in",
+		"vp skills reset startup-analyst",
+		"--overwrite: nothing to accept — vp skills upgrade never resets an override; use vp skills reset NAME",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("stdout lacks %q:\n%s", want, out.String())
+		}
 	}
-	if !strings.Contains(out.String(), "Summary (dry run):") {
-		t.Errorf("missing summary line:\n%s", out.String())
+	// --only scopes the report: chair's override is not listed.
+	if strings.Contains(out.String(), "Templates/skills/chair") {
+		t.Errorf("--only startup-analyst listed chair:\n%s", out.String())
+	}
+	entries, err := os.ReadDir(filepath.Dir(skillMD))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "SKILL.md" {
+		t.Errorf("Templates/skills/startup-analyst/ = %v, want only SKILL.md", entries)
+	}
+}
+
+// TestRunSkillsUpgrade_DryRunReportsOverrideAndExitsZero: an override is not
+// pending work — `vp skills upgrade` has no work at all — so the dry run
+// reports it and exits 0.
+func TestRunSkillsUpgrade_DryRunReportsOverrideAndExitsZero(t *testing.T) {
+	vault := t.TempDir()
+	writeVaultFile(t, vault, "Templates/skills/startup-analyst/SKILL.md", "stale user-edited skill\n")
+	var out, errb bytes.Buffer
+	code := runSkillsUpgrade(skillsUpgradeOpts{
+		DryRun:            true,
+		Stdout:            &out,
+		Stderr:            &errb,
+		VaultRootOverride: vault,
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("dry-run over an override: exit=%d, want 0", code)
+	}
+	for _, want := range []string{
+		"skill startup-analyst:",
+		"override  SKILL.md",
+		"kept — vp skills reset startup-analyst removes it",
+		"Summary (dry run): 1 override(s) kept,",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("dry run lacks %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), " new,") || strings.Contains(out.String(), "updated") {
+		t.Errorf("the dry run still reports new/updated counts:\n%s", out.String())
 	}
 }
 
@@ -102,7 +167,6 @@ func TestRunSkillsUpgrade_DryRun_ZeroWhenClean(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := runSkillsUpgrade(skillsUpgradeOpts{
 		DryRun:            true,
-		Stdin:             strings.NewReader(""),
 		Stdout:            &out,
 		Stderr:            &errb,
 		VaultRootOverride: vault,
@@ -110,172 +174,96 @@ func TestRunSkillsUpgrade_DryRun_ZeroWhenClean(t *testing.T) {
 	if code != cli.ExitOK {
 		t.Fatalf("clean dry-run: exit=%d\nstderr=%s", code, errb.String())
 	}
-}
-
-// TestRunSkillsUpgrade_Overwrite_AppliesActionable is the commands-path test
-// of the same name applied to skills: cmd_skills.go shares commands.Plan, so
-// --overwrite must upgrade the genuine override and leave the rest absent.
-func TestRunSkillsUpgrade_Overwrite_AppliesActionable(t *testing.T) {
-	vault := t.TempDir()
-	writeVaultFile(t, vault, "Templates/skills/startup-analyst/SKILL.md",
-		"stale user-edited skill\n")
-	var out, errb bytes.Buffer
-	code := runSkillsUpgrade(skillsUpgradeOpts{
-		Overwrite:         true,
-		Stdin:             strings.NewReader(""),
-		Stdout:            &out,
-		Stderr:            &errb,
-		VaultRootOverride: vault,
-	})
-	if code != cli.ExitOK {
-		t.Fatalf("overwrite: exit=%d\nstderr=%s", code, errb.String())
-	}
-	// Replan: the override settled to unchanged, everything else is still
-	// unneeded and no mirror was written for it.
-	r := vpctx.NewResolver(vault)
-	plan, err := commands.Plan(r, commands.PlanOptions{ResourceTypes: []string{"skill"}})
-	if err != nil {
-		t.Fatalf("re-plan: %v", err)
-	}
-	for _, c := range plan {
-		want := commands.ChangeUnneeded
-		if c.Name == "startup-analyst/SKILL.md" {
-			want = commands.ChangeUnchanged
-		}
-		if c.Kind != want {
-			t.Errorf("%s kind=%q after overwrite, want %q", c.Name, c.Kind, want)
-		}
-		if c.Kind != commands.ChangeUnneeded {
-			continue
-		}
-		if _, err := os.Stat(c.VaultPath); !os.IsNotExist(err) {
-			t.Errorf("%s: --overwrite materialized a byte-identical mirror at %s (stat err=%v)",
-				c.Name, c.VaultPath, err)
-		}
+	if !strings.Contains(out.String(), "unchanged SKILL.md") {
+		t.Errorf("no unchanged row:\n%s", out.String())
 	}
 }
 
-func TestRunSkillsUpgrade_Interactive_AcceptGroupOnce(t *testing.T) {
-	vault := t.TempDir()
-	// The group must be a genuine override to be offered at all; an absent
-	// copy is unneeded and never prompts.
-	seedStaleSkillGroup(t, vault, "startup-analyst")
-	// Accept the whole startup-analyst group with a single "a". Scoped to
-	// startup-analyst so the group's file layout and prompt count stay fixed
-	// regardless of how many other skills the binary embeds.
-	input := "a\n"
-	var out, errb bytes.Buffer
-	code := runSkillsUpgrade(skillsUpgradeOpts{
-		Only:                "startup-analyst",
-		Stdin:               strings.NewReader(input),
-		Stdout:              &out,
-		Stderr:              &errb,
-		VaultRootOverride:   vault,
-		InteractiveOverride: boolPtr(true),
-	})
-	if code != cli.ExitOK {
-		t.Fatalf("interactive: exit=%d\nstderr=%s", code, errb.String())
-	}
-	// All 6 files were upgraded to embedded content.
-	skillRoot := filepath.Join(vault, "Templates", "skills", "startup-analyst")
-	for _, rel := range []string{
-		"SKILL.md",
-		"references/capex-opex.md",
-		"references/competitive-landscape.md",
-		"references/funding-sources.md",
-		"references/reality-validation.md",
-		"references/strategic-partnerships.md",
-	} {
-		if _, err := os.Stat(filepath.Join(skillRoot, filepath.FromSlash(rel))); err != nil {
-			t.Errorf("missing after group-accept: %s (%v)", rel, err)
-		}
-	}
-	// Exactly one prompt surfaced (one "=== skill …" header).
-	if c := strings.Count(out.String(), "=== skill startup-analyst"); c != 1 {
-		t.Errorf("expected 1 skill header, got %d; stdout:\n%s", c, out.String())
-	}
-}
-
-func TestRunSkillsUpgrade_Granular_FansOutPerFile(t *testing.T) {
-	vault := t.TempDir()
-	seedStaleSkillGroup(t, vault, "startup-analyst")
-	// Skip every file ("s" × 6).
-	input := strings.Repeat("s\n", 6)
-	var out, errb bytes.Buffer
-	code := runSkillsUpgrade(skillsUpgradeOpts{
-		Only:                "startup-analyst",
-		Granular:            true,
-		Stdin:               strings.NewReader(input),
-		Stdout:              &out,
-		Stderr:              &errb,
-		VaultRootOverride:   vault,
-		InteractiveOverride: boolPtr(true),
-	})
-	if code != cli.ExitOK {
-		t.Fatalf("granular: exit=%d\nstderr=%s", code, errb.String())
-	}
-	// 6 per-file prompts visible: one "=== startup-analyst/..." per file.
-	count := strings.Count(out.String(), "=== startup-analyst/")
-	if count != 6 {
-		t.Errorf("expected 6 per-file prompts, got %d; stdout:\n%s", count, out.String())
-	}
-	// Nothing was accepted: the seeded stale bytes are untouched.
-	got, err := os.ReadFile(filepath.Join(vault, "Templates", "skills", "startup-analyst", "SKILL.md"))
-	if err != nil {
-		t.Fatalf("read seeded SKILL.md: %v", err)
-	}
-	if string(got) != "stale user-edited content\n" {
-		t.Errorf("expected no write when all skipped, got:\n%s", got)
-	}
-}
-
-func TestRunSkillsUpgrade_OnlyFiltersSkill(t *testing.T) {
+// TestRunSkillsUpgrade_ReportsOneLinePerSkill replaces the group-accept test:
+// the default listing is one [keep] line per skill naming every file that
+// differs, and nothing is written.
+func TestRunSkillsUpgrade_ReportsOneLinePerSkill(t *testing.T) {
 	vault := t.TempDir()
 	seedStaleSkillGroup(t, vault, "startup-analyst")
 	var out, errb bytes.Buffer
 	code := runSkillsUpgrade(skillsUpgradeOpts{
 		Only:              "startup-analyst",
-		Overwrite:         true,
-		Stdin:             strings.NewReader(""),
 		Stdout:            &out,
 		Stderr:            &errb,
 		VaultRootOverride: vault,
 	})
 	if code != cli.ExitOK {
-		t.Fatalf("--only: exit=%d\nstderr=%s", code, errb.String())
+		t.Fatalf("exit=%d\nstderr=%s", code, errb.String())
 	}
-	// SKILL.md was upgraded from the stale seed to embedded content.
-	r := vpctx.NewResolver(vault)
-	want, err := r.EmbeddedContent("skill:startup-analyst/SKILL.md")
-	if err != nil {
-		t.Fatalf("EmbeddedContent: %v", err)
+	if c := strings.Count(out.String(), "[keep] "); c != 1 {
+		t.Errorf("%d [keep] lines, want 1 per skill:\n%s", c, out.String())
 	}
-	got, err := os.ReadFile(filepath.Join(vault, "Templates/skills/startup-analyst/SKILL.md"))
-	if err != nil {
-		t.Fatalf("--only startup-analyst did not write SKILL.md: %v", err)
+	if !strings.Contains(out.String(), "(6 file(s) differ: SKILL.md, references/capex-opex.md") {
+		t.Errorf("the line does not name the differing files:\n%s", out.String())
 	}
-	if string(got) != want {
-		t.Error("--only startup-analyst did not upgrade SKILL.md to embedded content")
+	if !strings.Contains(out.String(), "6 override file(s) of built-in skills kept; nothing was written") {
+		t.Errorf("no closing count:\n%s", out.String())
+	}
+	got, _ := os.ReadFile(filepath.Join(vault, "Templates", "skills", "startup-analyst", "SKILL.md"))
+	if string(got) != "stale user-edited content\n" {
+		t.Errorf("SKILL.md was written: %q", got)
 	}
 }
 
-func TestRunSkillsUpgrade_NonInteractive_RefusesWithoutOverwrite(t *testing.T) {
+// TestRunSkillsUpgrade_GranularListsPerFile replaces the per-file prompt test.
+func TestRunSkillsUpgrade_GranularListsPerFile(t *testing.T) {
 	vault := t.TempDir()
-	// Needs actionable work to refuse about: an empty vault now plans nothing.
 	seedStaleSkillGroup(t, vault, "startup-analyst")
 	var out, errb bytes.Buffer
 	code := runSkillsUpgrade(skillsUpgradeOpts{
-		Stdin:               strings.NewReader(""),
-		Stdout:              &out,
-		Stderr:              &errb,
-		VaultRootOverride:   vault,
-		InteractiveOverride: boolPtr(false),
+		Only:              "startup-analyst",
+		Granular:          true,
+		Stdout:            &out,
+		Stderr:            &errb,
+		VaultRootOverride: vault,
 	})
-	if code != cli.ExitUser {
-		t.Fatalf("non-interactive: exit=%d, want ExitUser\nstderr=%s", code, errb.String())
+	if code != cli.ExitOK {
+		t.Fatalf("granular: exit=%d\nstderr=%s", code, errb.String())
 	}
-	if !strings.Contains(errb.String(), "--overwrite") {
-		t.Errorf("expected --overwrite hint:\n%s", errb.String())
+	if c := strings.Count(out.String(), "[keep] Templates/skills/startup-analyst/"); c != 6 {
+		t.Errorf("%d per-file [keep] lines, want 6:\n%s", c, out.String())
+	}
+	if !strings.Contains(out.String(), "vp skills reset startup-analyst/references/capex-opex.md") {
+		t.Errorf("a per-file line does not name its own reset:\n%s", out.String())
+	}
+
+	out.Reset()
+	if code := runSkillsUpgrade(skillsUpgradeOpts{
+		DryRun: true, Granular: true, Only: "startup-analyst",
+		Stdout: &out, Stderr: &errb, VaultRootOverride: vault,
+	}); code != cli.ExitOK {
+		t.Fatalf("granular dry-run: exit=%d", code)
+	}
+	if !strings.Contains(out.String(), "  override  startup-analyst/SKILL.md") {
+		t.Errorf("granular dry-run rows are not per file:\n%s", out.String())
+	}
+}
+
+// TestRunSkillsUpgrade_NonInteractive_OverrideAloneExitsZero is the rewritten
+// refusal test: with nothing vp-owned to do, an override alone is reported and
+// the run exits 0 — there is no --overwrite to demand.
+func TestRunSkillsUpgrade_NonInteractive_OverrideAloneExitsZero(t *testing.T) {
+	vault := t.TempDir()
+	seedStaleSkillGroup(t, vault, "startup-analyst")
+	var out, errb bytes.Buffer
+	code := runSkillsUpgrade(skillsUpgradeOpts{
+		Stdout:            &out,
+		Stderr:            &errb,
+		VaultRootOverride: vault,
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("exit=%d, want 0\nstderr=%s", code, errb.String())
+	}
+	if strings.Contains(errb.String(), "--overwrite") {
+		t.Errorf("still asks for --overwrite:\n%s", errb.String())
+	}
+	if !strings.Contains(out.String(), "[keep] Templates/skills/startup-analyst/") {
+		t.Errorf("no [keep] line:\n%s", out.String())
 	}
 }
 
@@ -284,11 +272,9 @@ func TestRunSkillsUpgrade_CleanNoOp(t *testing.T) {
 	seedMatchingSkillsVault(t, vault)
 	var out, errb bytes.Buffer
 	code := runSkillsUpgrade(skillsUpgradeOpts{
-		Stdin:               strings.NewReader(""),
-		Stdout:              &out,
-		Stderr:              &errb,
-		VaultRootOverride:   vault,
-		InteractiveOverride: boolPtr(false),
+		Stdout:            &out,
+		Stderr:            &errb,
+		VaultRootOverride: vault,
 	})
 	if code != cli.ExitOK {
 		t.Fatalf("no-op: exit=%d\nstderr=%s", code, errb.String())
@@ -298,32 +284,15 @@ func TestRunSkillsUpgrade_CleanNoOp(t *testing.T) {
 	}
 }
 
-func TestRunSkillsUpgrade_BackupOnDirtyReference(t *testing.T) {
-	vault := t.TempDir()
-	// Seed matching first so the file is "clean", then edit one reference
-	// so Plan reports Updated for that single file.
-	seedMatchingSkillsVault(t, vault)
-	capex := filepath.Join(vault, "Templates/skills/startup-analyst/references/capex-opex.md")
-	if err := os.WriteFile(capex, []byte("USER EDIT\n"), 0o644); err != nil {
-		t.Fatalf("edit: %v", err)
-	}
+func TestRunSkillsUpgrade_UnknownOnlyIsAUsageError(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := runSkillsUpgrade(skillsUpgradeOpts{
-		Overwrite:         true,
-		Stdin:             strings.NewReader(""),
+		Only:              "no-such-skill",
 		Stdout:            &out,
 		Stderr:            &errb,
-		VaultRootOverride: vault,
+		VaultRootOverride: t.TempDir(),
 	})
-	if code != cli.ExitOK {
-		t.Fatalf("dirty-ref overwrite: exit=%d\nstderr=%s", code, errb.String())
-	}
-	// .bak preserves user edit.
-	bak, err := os.ReadFile(capex + ".bak")
-	if err != nil {
-		t.Fatalf("expected .bak beside %s: %v", capex, err)
-	}
-	if string(bak) != "USER EDIT\n" {
-		t.Errorf(".bak did not preserve user edit:\n%s", bak)
+	if code != cli.ExitUser {
+		t.Errorf("exit=%d, want ExitUser", code)
 	}
 }

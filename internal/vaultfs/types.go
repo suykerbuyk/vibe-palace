@@ -46,6 +46,10 @@ var (
 	// the file's current SHA-256 does not match the caller-supplied
 	// expected_sha256.
 	ErrShaConflict = errors.New("vaultfs: sha256 conflict (compare-and-set failed)")
+
+	// ErrExists is returned by Create when something already exists at the
+	// target path. Create never replaces it.
+	ErrExists = errors.New("vaultfs: file already exists")
 )
 
 // SourceUnknown is what a result reports when nobody told it where its vault

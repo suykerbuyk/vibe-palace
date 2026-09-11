@@ -15,23 +15,28 @@ import (
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 )
 
-// TestIntegrationCommandsUpgradeFullLoop exercises the full surface: seed a
-// vault with one byte-identical command and one user-edited one, and leave
-// every other command absent; Plan reports unchanged / updated / unneeded;
-// Apply writes exactly the accepted change; re-Plan offers nothing.
+// TestIntegrationCommandsUpgradeFullLoop exercises the full surface through
+// the real binary: a vault with one byte-identical command, one user-edited
+// one, and every other command absent. Plan reports unchanged / override /
+// unneeded; `vp commands upgrade --overwrite` applies the vp-owned changes
+// (shims), keeps the override byte-for-byte and reports it, and creates no
+// mirror; a second run has nothing left to do.
 func TestIntegrationCommandsUpgradeFullLoop(t *testing.T) {
-	vault := t.TempDir()
+	bin := buildVPBinary(t)
+	env := setupFreshEnv(t)
+	runVP(t, bin, env, nil, "init", env.projectDir,
+		"--name", env.projectName, "--vault-path", env.vaultPath, "--no-git")
+	vault := env.vaultPath
 	r := vpctx.NewResolver(vault)
 
-	// Seed: restart matches embedded exactly; wrap is user-edited.
 	embRestart, err := r.EmbeddedContent("command:restart")
 	if err != nil {
 		t.Fatalf("read embedded restart: %v", err)
 	}
+	const userWrap = "# user-edited wrap\n"
 	writeFile(t, filepath.Join(vault, "Templates/commands/restart.md"), embRestart)
-	writeFile(t, filepath.Join(vault, "Templates/commands/wrap.md"), "# user-edited wrap\n")
+	writeFile(t, filepath.Join(vault, "Templates/commands/wrap.md"), userWrap)
 
-	// Plan
 	plan, err := commands.Plan(r, commands.PlanOptions{})
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -43,18 +48,11 @@ func TestIntegrationCommandsUpgradeFullLoop(t *testing.T) {
 	if kinds["restart"] != commands.ChangeUnchanged {
 		t.Errorf("restart kind = %q, want unchanged", kinds["restart"])
 	}
-	if kinds["wrap"] != commands.ChangeUpdated {
-		t.Errorf("wrap kind = %q, want updated", kinds["wrap"])
+	if kinds["wrap"] != commands.ChangeOverride {
+		t.Errorf("wrap kind = %q, want override", kinds["wrap"])
 	}
-	// Every embedded command with no vault copy is Unneeded, never New: the
-	// embedded floor serves it, so materializing a byte-identical mirror
-	// would shadow the binary (ADR-008 Phase 3). Goes red if planOne's
-	// !haveVault -> ChangeNew short-circuit is restored.
 	unneededCount := 0
-	for name, k := range kinds {
-		if k == commands.ChangeNew {
-			t.Errorf("plan emitted ChangeNew for %q; kinds=%v", name, kinds)
-		}
+	for _, k := range kinds {
 		if k == commands.ChangeUnneeded {
 			unneededCount++
 		}
@@ -63,42 +61,30 @@ func TestIntegrationCommandsUpgradeFullLoop(t *testing.T) {
 		t.Errorf("expected at least one unneeded template; kinds=%v", kinds)
 	}
 
-	// Accept everything the CLI would offer, apply, verify idempotence.
-	accepted := make([]commands.Change, 0, len(plan))
-	for _, c := range plan {
-		if c.Kind != commands.ChangeUnchanged && c.Kind != commands.ChangeUnneeded {
-			accepted = append(accepted, c)
-		}
+	out := runVP(t, bin, env, nil, "commands", "upgrade", "--overwrite")
+	if !strings.Contains(out, "[keep] Templates/commands/wrap.md — override of a built-in") {
+		t.Errorf("the override is not reported as kept:\n%s", out)
 	}
-	if err := commands.Apply(accepted); err != nil {
-		t.Fatalf("Apply: %v", err)
+	got, err := os.ReadFile(filepath.Join(vault, "Templates/commands/wrap.md"))
+	if err != nil || string(got) != userWrap {
+		t.Errorf("wrap.md changed: %q (err=%v)", got, err)
 	}
 
-	// Fixed point: re-planning offers nothing. The two seeded files settle to
-	// Unchanged; every other embedded command stays Unneeded, so a second
-	// `vp commands upgrade` writes nothing — upgrade never CREATES a mirror,
-	// which is what used to make it fight `vp config sync`. The two files it
-	// reset ARE now byte-identical to embedded, i.e. mirrors: `vp config sync`
-	// prunes them, and upgrade does not put them back. That is the reset
-	// discarding the wrap.md override, which is why the upgrade advisory says so.
+	// Fixed point: a second, non-TTY run (stdin a pipe) has nothing to do,
+	// and the plan is as it was.
+	out, code := runVPCode(t, bin, env, []byte{}, nil, "commands", "upgrade")
+	if code != 0 || !strings.Contains(out, "Nothing to do") {
+		t.Errorf("a second run found work (exit %d):\n%s", code, out)
+	}
 	plan2, err := commands.Plan(r, commands.PlanOptions{})
 	if err != nil {
 		t.Fatalf("re-Plan: %v", err)
 	}
 	for _, c := range plan2 {
-		switch c.Name {
-		case "restart", "wrap":
-			if c.Kind != commands.ChangeUnchanged {
-				t.Errorf("%s: kind=%q after Apply, want unchanged", c.Name, c.Kind)
-			}
-		default:
-			if c.Kind != commands.ChangeUnneeded {
-				t.Errorf("%s: kind=%q after Apply, want unneeded", c.Name, c.Kind)
-			}
+		if c.Kind != kinds[c.Name] {
+			t.Errorf("%s: kind %q -> %q across an upgrade", c.Name, kinds[c.Name], c.Kind)
 		}
 	}
-
-	// The vault grew no mirrors beyond the two the test seeded.
 	entries, err := os.ReadDir(filepath.Join(vault, "Templates", "commands"))
 	if err != nil {
 		t.Fatalf("readdir: %v", err)
@@ -108,8 +94,7 @@ func TestIntegrationCommandsUpgradeFullLoop(t *testing.T) {
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
-		t.Errorf("Templates/commands/ holds %d files %v, want exactly the 2 seeded",
-			len(entries), names)
+		t.Errorf("Templates/commands/ holds %d files %v, want exactly the 2 seeded", len(entries), names)
 	}
 }
 
@@ -168,34 +153,6 @@ func TestIntegrationCommandsUpgradeManagedBlock(t *testing.T) {
 	}
 	if len(again) != 1 || again[0].Kind != commands.BlockCurrent {
 		t.Errorf("after Apply: %+v", again)
-	}
-}
-
-// TestIntegrationVaultDirtyDetection proves the vault-git-dirty check:
-// init a real git repo under the vault root, stage a new Templates/commands
-// file, and confirm `git status --porcelain` output is non-empty and filtered
-// to the right prefix.
-func TestIntegrationVaultDirtyDetection(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	vault := t.TempDir()
-	run(t, vault, "git", "init", "-q")
-	run(t, vault, "git", "config", "user.email", "test@example.com")
-	run(t, vault, "git", "config", "user.name", "Test")
-
-	// Untracked file under Templates/commands is "dirty" for our purposes.
-	writeFile(t, filepath.Join(vault, "Templates/commands/new-one.md"), "hello\n")
-
-	// Re-use the same porcelain+filter the CLI uses by shelling out directly
-	// (keeps this test independent of cmd/vp package).
-	out, err := exec.Command("git", "-C", vault, "status", "--porcelain", "--",
-		"Templates/commands", "Projects").Output()
-	if err != nil {
-		t.Fatalf("git status: %v", err)
-	}
-	if !strings.Contains(string(out), "Templates/commands") {
-		t.Errorf("expected Templates/commands entry in porcelain output:\n%s", out)
 	}
 }
 

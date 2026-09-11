@@ -5,15 +5,12 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
@@ -42,7 +39,7 @@ func cmdCommands() *cli.Command {
 	return &cli.Command{
 		Name:        "commands",
 		Synopsis:    "vp commands <command> [flags]",
-		Description: "List the commands available for this project and upgrade vault-level copies against embedded defaults.",
+		Description: "List the commands available for this project, refresh this project's command and skill shims and agent-file blocks, and reset a vault Templates/ override of a built-in command when you name it.",
 	}
 }
 
@@ -135,21 +132,21 @@ func printCommandsTable(w io.Writer, summaries []commands.Summary, project strin
 
 var commandsUpgradeFlags = []cli.FlagDef{
 	{Name: "--dry-run", Help: "Print the upgrade plan without writing"},
-	{Name: "--overwrite", Help: "Accept every change without prompting (required in non-TTY)"},
-	{Name: "--only", Arg: "NAME", Help: "Upgrade only the named template"},
+	{Name: "--overwrite", Help: "Accept every shim and agent-file change without prompting (required in non-TTY); never resets a Templates/ override"},
+	{Name: "--only", Arg: "NAME", Help: "Consider only the named command's shims and vault copy"},
 }
 
 func cmdCommandsUpgrade() *cli.Command {
 	return &cli.Command{
 		Name:        "commands upgrade",
 		Synopsis:    "vp commands upgrade [--dry-run] [--overwrite] [--only NAME]",
-		Description: "Compare embedded command templates against the vault copy (tier 4) and, for each difference, show a unified diff and prompt to accept, skip, or accept-all. Project/wing/room overrides are never touched.",
+		Description: "Bring this project's vp-owned files up to date: the .claude/commands/vpc-*.md shims (and the Grok twins), the vps-* skill shims, the managed blocks in agent files (CLAUDE.md, AGENTS.md, …), the project .gitignore and the commit hook. Each change is prompted (accept, skip, accept-all) unless --overwrite is given. A vault Templates/commands/ override of a built-in is listed as [keep] and never changed, in any mode — `vp commands reset NAME` removes one on request. Project/wing/room overrides are never touched.",
 		Flags:       commandsUpgradeFlags,
 		Examples: []cli.Example{
-			{Cmd: "vp commands upgrade", Comment: "Interactive upgrade with diffs"},
+			{Cmd: "vp commands upgrade", Comment: "Interactive upgrade of shims and agent-file blocks"},
 			{Cmd: "vp commands upgrade --dry-run", Comment: "Show the plan without writing"},
-			{Cmd: "vp commands upgrade --overwrite", Comment: "Accept every change without prompting"},
-			{Cmd: "vp commands upgrade --only restart", Comment: "Upgrade a single template"},
+			{Cmd: "vp commands upgrade --overwrite", Comment: "Accept every shim and agent-file change without prompting"},
+			{Cmd: "vp commands upgrade --only restart", Comment: "Consider only the restart command's shims"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(commandsUpgradeFlags, args)
@@ -204,26 +201,17 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 		return cli.ExitUser
 	}
 
-	// Dirty-vault warning (non-fatal for --dry-run and --overwrite; blocking
-	// in interactive mode unless the user proceeds past the prompt).
-	if dirty, paths := vaultCommandsDirty(vaultRoot); dirty {
-		fmt.Fprintf(opts.Stderr,
-			"warning: vault has uncommitted changes under Templates/commands:\n")
-		for _, p := range paths {
-			fmt.Fprintf(opts.Stderr, "  %s\n", p)
-		}
-		fmt.Fprintf(opts.Stderr,
-			"Run 'git -C %s status' and commit or stash before upgrading.\n",
-			vaultRoot)
-	}
-
-	added, updated, unchanged, unneeded, custom := 0, 0, 0, 0, 0
+	// The template plan is a REPORT. An override (a vault Templates/ copy that
+	// differs from the built-in) is the operator's, and this command never
+	// writes or removes a Templates/ file: it lists each one as kept and names
+	// the reset verb that removes it on request. An override is therefore not
+	// pending work — though the shim drift it causes (a changed brief) is, and
+	// is counted with the shims below.
+	overrides, unchanged, unneeded, custom := 0, 0, 0, 0
 	for _, c := range plan {
 		switch c.Kind {
-		case commands.ChangeNew:
-			added++
-		case commands.ChangeUpdated:
-			updated++
+		case commands.ChangeOverride:
+			overrides++
 		case commands.ChangeUnchanged:
 			unchanged++
 		case commands.ChangeUnneeded:
@@ -350,16 +338,18 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 		}
 		printSkillShimPlan(opts.Stdout, skillPlan)
 		fmt.Fprintf(opts.Stdout,
-			"\nSummary (dry run): %d new, %d updated, %d unchanged, %d unneeded, %d custom, %d agent-file block(s) need updating, shims: %d new, %d updated, %d stale, %d custom, grok shims: %d new, %d updated, %d stale, %d custom, skill shims: %d new, %d updated, %d stale, %d custom.\n",
-			added, updated, unchanged, unneeded, custom, pendingBlocks,
+			"\nSummary (dry run): %d override(s) kept, %d unchanged, %d unneeded, %d custom, %d agent-file block(s) need updating, shims: %d new, %d updated, %d stale, %d custom, grok shims: %d new, %d updated, %d stale, %d custom, skill shims: %d new, %d updated, %d stale, %d custom.\n",
+			overrides, unchanged, unneeded, custom, pendingBlocks,
 			shimAdd, shimUpd, shimStale, shimCustom,
 			grokShimAdd, grokShimUpd, grokShimStale, grokShimCustom,
 			skillAdd, skillUpd, skillStale, skillCustom)
-		if added+updated+pendingBlocks+pendingShims+pendingSkillShims > 0 {
+		if pendingBlocks+pendingShims+pendingSkillShims > 0 {
 			return cli.ExitUser // non-zero — manual review required
 		}
 		return cli.ExitOK
 	}
+
+	printCommandKeepLines(opts.Stdout, plan)
 
 	interactive := isTerminal(os.Stdin) && !opts.Overwrite
 	if opts.InteractiveOverride != nil {
@@ -368,53 +358,24 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 	if !opts.Overwrite && !interactive {
 		// Non-interactive and not --overwrite: refuse to silently write.
 		// But we still proceed if there is nothing to do.
-		if added+updated+pendingBlocks+pendingShims+pendingSkillShims == 0 {
-			fmt.Fprintln(opts.Stdout, "All embedded templates, agent blocks, and shims match. Nothing to do.")
+		if pendingBlocks+pendingShims+pendingSkillShims == 0 {
+			if overrides > 0 {
+				fmt.Fprintf(opts.Stdout, "Agent blocks and shims match; %d override(s) of built-ins kept. Nothing to do.\n", overrides)
+			} else {
+				fmt.Fprintln(opts.Stdout, "All embedded templates, agent blocks, and shims match. Nothing to do.")
+			}
 			return cli.ExitOK
 		}
 		fmt.Fprintln(opts.Stderr,
 			"vp commands upgrade: stdin is not a terminal and --overwrite was not set.")
 		fmt.Fprintln(opts.Stderr,
-			"Re-run with --overwrite to accept every change, or --dry-run to preview.")
+			"Re-run with --overwrite to accept every shim and agent-file change (it never resets a Templates/ override), or --dry-run to preview.")
 		return cli.ExitUser
 	}
 
 	reader := bufio.NewReader(opts.Stdin)
-
-	promptRes := runUpgradePrompt(plan, UpgradePromptOpts{
-		GroupBy: func(c commands.Change) string { return c.Name },
-		RenderHeader: func(w io.Writer, _ string, group []commands.Change) {
-			c := group[0]
-			fmt.Fprintf(w, "\n=== %s (%s) ===\n", c.Name, c.Kind)
-		},
-		RenderBody: func(w io.Writer, _ string, group []commands.Change) {
-			c := group[0]
-			if c.Kind == commands.ChangeUpdated {
-				diff := commands.RenderUnified(
-					"vault/"+c.Name+".md",
-					"embedded/"+c.Name+".md",
-					c.VaultContent, c.EmbeddedContent,
-				)
-				fmt.Fprint(w, diff)
-			} else {
-				fmt.Fprintf(w, "(new file; %d bytes will be added)\n",
-					len(c.EmbeddedContent))
-			}
-		},
-		AcceptAll: opts.Overwrite,
-		Reader:    reader,
-		Stdout:    opts.Stdout,
-		Stderr:    opts.Stderr,
-	})
-	accepted := promptRes.Accepted
-	acceptAll := promptRes.AcceptAll
-	acceptedCount := promptRes.AcceptedCount
-	skippedCount := promptRes.SkippedCount
-	if promptRes.Quit {
-		fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
-		return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, nil, nil, nil, nil,
-			acceptedCount, skippedCount, custom, shimCustom, grokShimCustom, skillCustom)
-	}
+	acceptAll := opts.Overwrite
+	acceptedCount, skippedCount := 0, 0
 
 	// Agent-file managed blocks: collect acceptances using the same prompt.
 	acceptedBlocks := make([]commands.BlockChange, 0, len(blockChanges))
@@ -455,8 +416,8 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 			skippedCount++
 		case "q":
 			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
-			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, nil, nil, nil,
-				acceptedCount, skippedCount, custom, shimCustom, grokShimCustom, skillCustom)
+			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, acceptedBlocks, nil, nil, nil,
+				acceptedCount, skippedCount, custom, overrides, shimCustom, grokShimCustom, skillCustom)
 		}
 	}
 
@@ -504,8 +465,8 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 			skippedCount++
 		case "q":
 			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
-			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, acceptedShims, nil, nil,
-				acceptedCount, skippedCount, custom, shimCustom, grokShimCustom, skillCustom)
+			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, acceptedBlocks, acceptedShims, nil, nil,
+				acceptedCount, skippedCount, custom, overrides, shimCustom, grokShimCustom, skillCustom)
 		}
 	}
 
@@ -549,8 +510,8 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 			skippedCount++
 		case "q":
 			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
-			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, acceptedShims, acceptedGrokShims, nil,
-				acceptedCount, skippedCount, custom, shimCustom, grokShimCustom, skillCustom)
+			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, acceptedBlocks, acceptedShims, acceptedGrokShims, nil,
+				acceptedCount, skippedCount, custom, overrides, shimCustom, grokShimCustom, skillCustom)
 		}
 	}
 
@@ -597,20 +558,19 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 			skippedCount++
 		case "q":
 			fmt.Fprintln(opts.Stdout, "Aborting — no further changes applied.")
-			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, acceptedShims, acceptedGrokShims, acceptedSkillShims,
-				acceptedCount, skippedCount, custom, shimCustom, grokShimCustom, skillCustom)
+			return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, acceptedBlocks, acceptedShims, acceptedGrokShims, acceptedSkillShims,
+				acceptedCount, skippedCount, custom, overrides, shimCustom, grokShimCustom, skillCustom)
 		}
 	}
 
-	return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, accepted, acceptedBlocks, acceptedShims, acceptedGrokShims, acceptedSkillShims,
-		acceptedCount, skippedCount, custom, shimCustom, grokShimCustom, skillCustom)
+	return applyAndReport(opts.Stdout, opts.Stderr, projectRoot, acceptedBlocks, acceptedShims, acceptedGrokShims, acceptedSkillShims,
+		acceptedCount, skippedCount, custom, overrides, shimCustom, grokShimCustom, skillCustom)
 }
 
-func applyAndReport(w, errw io.Writer, projectRoot string, accepted []commands.Change, acceptedBlocks []commands.BlockChange, acceptedShims, acceptedGrokShims []shims.Change, acceptedSkillShims []shims.SkillChange, acceptedCount, skippedCount, custom, shimCustom, grokShimCustom, skillCustom int) int {
-	if err := commands.Apply(accepted); err != nil {
-		fmt.Fprintf(errw, "apply templates: %v\n", err)
-		return cli.ExitSystem
-	}
+// applyAndReport applies the accepted vp-owned changes — agent blocks, shims,
+// the project .gitignore and the commit hook — and prints the Done line. It
+// writes nothing under the vault's Templates/: overrides is only counted.
+func applyAndReport(w, errw io.Writer, projectRoot string, acceptedBlocks []commands.BlockChange, acceptedShims, acceptedGrokShims []shims.Change, acceptedSkillShims []shims.SkillChange, acceptedCount, skippedCount, custom, overrides, shimCustom, grokShimCustom, skillCustom int) int {
 	if err := commands.ApplyAgentBlocks(acceptedBlocks); err != nil {
 		fmt.Fprintf(errw, "apply agent blocks: %v\n", err)
 		return cli.ExitSystem
@@ -656,6 +616,9 @@ func applyAndReport(w, errw io.Writer, projectRoot string, accepted []commands.C
 		rep.Added, rep.Updated, rep.Removed, shimCustom,
 		grokRep.Added, grokRep.Updated, grokRep.Removed, grokShimCustom,
 		skillRep.Added, skillRep.Updated, skillRep.Removed, skillCustom)
+	if overrides > 0 {
+		fmt.Fprintf(w, "%d override(s) of built-ins kept.\n", overrides)
+	}
 	return cli.ExitOK
 }
 
@@ -879,11 +842,9 @@ func printUpgradePlan(w io.Writer, plan []commands.Change) {
 	fmt.Fprintln(w, "Upgrade plan:")
 	for _, c := range plan {
 		switch c.Kind {
-		case commands.ChangeNew:
-			fmt.Fprintf(w, "  new       %s  (hash %s)\n", c.Name, c.EmbeddedHash)
-		case commands.ChangeUpdated:
-			fmt.Fprintf(w, "  updated   %s  (vault %s → embedded %s)\n",
-				c.Name, c.VaultHash, c.EmbeddedHash)
+		case commands.ChangeOverride:
+			fmt.Fprintf(w, "  override  %s  (vault %s, embedded %s; kept — vp commands reset %s removes it)\n",
+				c.Name, c.VaultHash, c.EmbeddedHash, c.Name)
 		case commands.ChangeUnchanged:
 			fmt.Fprintf(w, "  unchanged %s\n", c.Name)
 		case commands.ChangeUnneeded:
@@ -892,37 +853,14 @@ func printUpgradePlan(w io.Writer, plan []commands.Change) {
 	}
 }
 
-// vaultCommandsDirty reports whether the vault git working tree has
-// uncommitted changes under Templates/commands/ or Projects/*/commands/.
-// Returns (false, nil) when the vault is not a git repo or git is absent.
-func vaultCommandsDirty(vaultRoot string) (bool, []string) {
-	gitDir := filepath.Join(vaultRoot, ".git")
-	if _, err := os.Stat(gitDir); err != nil {
-		return false, nil
-	}
-	cmd := exec.Command("git", "-C", vaultRoot, "status", "--porcelain", "--",
-		"Templates/commands", "Projects")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = io.Discard
-	if err := cmd.Run(); err != nil {
-		return false, nil
-	}
-	var paths []string
-	for line := range strings.SplitSeq(strings.TrimRight(out.String(), "\n"), "\n") {
-		if line == "" {
+// printCommandKeepLines prints one [keep] line per vault Templates/commands/
+// override of a built-in: what it is, and the only command that removes it.
+func printCommandKeepLines(w io.Writer, plan []commands.Change) {
+	for _, c := range plan {
+		if c.Kind != commands.ChangeOverride {
 			continue
 		}
-		// Status is "XY path" (at least 3 chars).
-		if len(line) < 4 {
-			continue
-		}
-		p := strings.TrimSpace(line[3:])
-		// Filter further to only /commands/ paths under Projects/.
-		if strings.HasPrefix(p, "Templates/commands/") ||
-			(strings.HasPrefix(p, "Projects/") && strings.Contains(p, "/commands/")) {
-			paths = append(paths, p)
-		}
+		fmt.Fprintf(w, "[keep] Templates/commands/%s.md — override of a built-in (vault %s, embedded %s); vp commands upgrade never resets one — to remove it: vp commands reset %s\n",
+			c.Name, c.VaultHash, c.EmbeddedHash, c.Name)
 	}
-	return len(paths) > 0, paths
 }

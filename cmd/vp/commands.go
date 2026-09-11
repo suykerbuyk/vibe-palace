@@ -40,21 +40,30 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(mutates(cmdAuditVault()))
 	reg.Register(cmdCommands())
 	reg.Register(cmdCommandsList())
-	// mutates(): `vp commands upgrade` and `vp skills upgrade` share one writer —
-	// commands.applyWithPolicy (internal/commands/upgrade.go) writes
-	// Change.VaultPath, a template under the vault's Templates/ tree. Both are
-	// therefore vault writers and must FAIL-STOP against a vault written by a
-	// newer binary rather than take the warn-only path. They were registered
-	// UNWRAPPED until 2026-08-19, which left the command that WRITES template
-	// mirrors ungated while `config sync`, the command that prunes them, was
-	// gated — the gate's coverage tracked whether someone typed mutates(), not
-	// what the command does.
-	reg.Register(mutates(cmdCommandsUpgrade()))
+	// `vp commands upgrade` and `vp skills upgrade` are registered UNWRAPPED
+	// because neither writes the vault any more. Until
+	// upgrade-overwrite-resets-vault-template-overrides they did: both reset a
+	// vault Templates/ override by writing the embedded bytes over it
+	// (commands.applyWithPolicy -> templates.Executor.Write), so they were
+	// gated (from 2026-08-19; before that the command that WROTE template
+	// mirrors was ungated while `config sync`, which prunes them, was gated).
+	// Now `commands upgrade` writes only project-tree files — shims, agent-file
+	// blocks, the project .gitignore and hook — and `skills upgrade` only
+	// reports. The derived-gate rule (make source-audit) agrees: neither
+	// reaches a vault-write sink. Do not re-wrap them to be safe; a gate on a
+	// command that writes nothing is exactly the declared-vs-derived divergence
+	// that rule reports.
+	//
+	// The destructive template verbs are the reset commands: they remove a
+	// vault Templates/ file (vaultfs.Delete), write its backup (vaultfs.Create)
+	// and commit the removal, so they are gated.
+	reg.Register(cmdCommandsUpgrade())
+	reg.Register(mutates(cmdCommandsReset()))
 	reg.Register(cmdSkills())
 	reg.Register(cmdSkillsList())
 	reg.Register(cmdSkillsShow())
-	// mutates(): same vault writer as `commands upgrade` above.
-	reg.Register(mutates(cmdSkillsUpgrade()))
+	reg.Register(cmdSkillsUpgrade())
+	reg.Register(mutates(cmdSkillsReset()))
 	reg.Register(cmdDiscover())
 	reg.Register(mutates(cmdDiscoverRooms()))
 	reg.Register(cmdTune())

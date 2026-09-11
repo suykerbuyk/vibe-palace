@@ -30,18 +30,6 @@ func TestWrite_RoundTripDefaultPerm(t *testing.T) {
 	}
 }
 
-func TestWrite_WithPerm(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "file.txt")
-	if err := Write("", p, []byte("x"), WithPerm(0o600)); err != nil {
-		t.Fatal(err)
-	}
-	info, _ := os.Stat(p)
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("perm = %o, want 0600", info.Mode().Perm())
-	}
-}
-
 func TestWrite_InheritPerm(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "file.txt")

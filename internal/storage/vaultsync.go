@@ -5,6 +5,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -311,6 +312,150 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 	// already-ahead guard) and is reused here.
 	pushCommitted(vaultPath, remotes, branch, reconcileErrs, result)
 	return result, nil
+}
+
+// commitRemovalsBeforeUnstageHook runs inside CommitRemovals' failure path,
+// under the vault commit lock, immediately before the removal is unstaged.
+// Production leaves it a no-op; a test uses it to prove the lock is held there
+// and to make the unstage itself fail.
+var commitRemovalsBeforeUnstageHook = func() {}
+
+// CommitRemovals commits the removal of rels — vault-relative, forward-slash
+// paths of tracked files an operator asked vp to remove — as one local commit
+// carrying exactly those paths. It never pushes: the operator's next `vp vault
+// sync` publishes it. Unlike the verified prune it does not fetch or consult a
+// remote either: the operator named each file, and a newer override of one on a
+// remote meets this commit at the next pull as a modify/delete conflict, which
+// storage.Pull leaves for the operator.
+//
+// The whole stage→commit sequence runs under the vault commit lock, as every vp
+// committer's does. On any stage or commit failure — a pre-commit hook that
+// refuses, say — exactly rels are unstaged before the lock is released, so the
+// removals stay unstaged in the worktree (` D`). Left staged, the next `vp
+// config sync` would read vp's own deletion as someone else's staged change and
+// defer it on every run; unstaged, it classifies the path as gone. If the
+// unstage itself fails, the error says so and names the manual command.
+//
+// A path git no longer tracks (another committer got there first) is dropped
+// before staging; if none is left the call is a no-op. After the commit each
+// path is looked up in HEAD again, and one still there is an error naming the
+// manual commit.
+//
+// vaultPath must be the root of its own repository. vp never commits into a
+// repository that merely encloses the vault; that caller must not call this.
+func CommitRemovals(vaultPath, message string, rels []string) (*PushResult, error) {
+	if len(rels) == 0 {
+		return nil, fmt.Errorf("no paths specified")
+	}
+	result := &PushResult{}
+	keep, skipped := filterStageablePaths(vaultPath, rels)
+	result.SkippedPaths = skipped
+	if len(keep) == 0 {
+		return result, nil
+	}
+	if err := checkIdentity(vaultPath); err != nil {
+		return nil, err
+	}
+
+	release, lerr := vaultlock.Acquire(vaultPath, vaultPath)
+	if lerr != nil {
+		return nil, fmt.Errorf("acquire vault commit lock: %w", lerr)
+	}
+	released := false
+	unlock := func() {
+		if !released {
+			released = true
+			release()
+		}
+	}
+	defer unlock()
+
+	fail := func(err error) (*PushResult, error) {
+		commitRemovalsBeforeUnstageHook()
+		if _, rerr := gitCmd(vaultPath, 10*time.Second, append([]string{"--literal-pathspecs", "reset", "-q", "--"}, keep...)...); rerr != nil {
+			err = fmt.Errorf("%w (and unstaging the removal failed: %v — run: git -C %s reset -q -- %s)",
+				err, rerr, vaultPath, strings.Join(keep, " "))
+		}
+		return nil, err
+	}
+	if err := stageInBatches(vaultPath, keep); err != nil {
+		return fail(fmt.Errorf("git add: %w", err))
+	}
+	staged, err := stagedChangesIn(vaultPath, keep)
+	if err != nil {
+		return fail(err)
+	}
+	if !staged {
+		return result, nil
+	}
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		hostname = "unknown"
+	}
+	if err := commitOnlyPaths(vaultPath, fmt.Sprintf("%s\n\n[%s]", message, hostname), keep); err != nil {
+		return fail(err)
+	}
+	unlock()
+
+	sha, _ := gitCmd(vaultPath, 10*time.Second, "rev-parse", "--short", "HEAD")
+	result.CommitSHA = sha
+	var still []string
+	for _, rel := range keep {
+		if _, found, err := ReadCommittedBlob(vaultPath, rel); err != nil || found {
+			still = append(still, rel)
+		}
+	}
+	if len(still) > 0 {
+		return result, fmt.Errorf("commit %s does not remove %s — commit the removal by hand: git -C %s commit -m %q -- %s",
+			sha, strings.Join(still, ", "), vaultPath, "remove reset template override", strings.Join(still, " "))
+	}
+	return result, nil
+}
+
+// CheckCommitIdentity returns nil when git can resolve a committer identity for
+// vaultPath, and otherwise an error naming how to set one. It is the check every
+// vp committer makes before it commits, exported so a caller can make it before
+// it changes anything the commit would carry.
+func CheckCommitIdentity(vaultPath string) error {
+	return checkIdentity(vaultPath)
+}
+
+// StagedChange reports whether the index holds a change for rel that HEAD does
+// not: a staged modification, addition or deletion. Any git failure is an
+// error, never "not staged" — a caller about to commit rel's removal must not
+// fail open on a corrupt index, because the commit would take the staged bytes
+// with it.
+func StagedChange(vaultPath, rel string) (bool, error) {
+	headOID, inHead, err := treeEntryOID(vaultPath, "HEAD", rel)
+	if err != nil {
+		return false, err
+	}
+	indexOID, inIndex, err := indexEntryOID(vaultPath, rel)
+	if err != nil {
+		return false, err
+	}
+	return inHead != inIndex || headOID != indexOID, nil
+}
+
+// GitTopLevel returns the top level of the work tree dir is in. For a vault
+// nested in another repository (VaultGitNested) it names that repository.
+func GitTopLevel(dir string) (string, error) {
+	return gitCmd(dir, 10*time.Second, "rev-parse", "--show-toplevel")
+}
+
+// GitPathIgnored reports whether git would ignore the vault-relative path rel
+// (`git check-ignore -q`). Exit status 1 is the answer "not ignored"; any other
+// failure is an error.
+func GitPathIgnored(vaultPath, rel string) (bool, error) {
+	_, err := gitCmd(vaultPath, 10*time.Second, "check-ignore", "-q", "--", rel)
+	if err == nil {
+		return true, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, err
 }
 
 // pushCommitted pushes the commit a caller just made to every remote, with the

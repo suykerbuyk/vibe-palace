@@ -48,11 +48,14 @@ type config struct {
 // Option configures a Write call.
 type Option func(*config)
 
-// WithPerm sets explicit file permissions (default 0o644).
-func WithPerm(m os.FileMode) Option { return func(c *config) { c.perm = m } }
+// There is no WithPerm option. Its only caller was templates.Executor.Write,
+// deleted with the template reset that overwrote a vault override
+// (upgrade-overwrite-resets-vault-template-overrides); an option nobody passes
+// is what sourceaudit's `uninvoked` rule exists to catch. Every write is 0o644
+// unless WithInheritPerm keeps an existing file's mode.
 
 // WithInheritPerm makes Write inherit the existing target file's mode when the
-// target exists, falling back to the configured/default perm when it does not.
+// target exists, falling back to the default 0o644 when it does not.
 // Used by writers that must preserve user-set permissions on managed files.
 func WithInheritPerm() Option { return func(c *config) { c.inheritPerm = true } }
 

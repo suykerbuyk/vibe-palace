@@ -13,7 +13,7 @@ import (
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 )
 
-func TestPlan_NewAndUnchangedAndUpdated(t *testing.T) {
+func TestPlan_OverrideUnchangedAndUnneeded(t *testing.T) {
 	vault := t.TempDir()
 	r := vpctx.NewResolver(vault)
 
@@ -39,21 +39,18 @@ func TestPlan_NewAndUnchangedAndUpdated(t *testing.T) {
 	if got := byName["restart"].Kind; got != commands.ChangeUnchanged {
 		t.Errorf("restart kind = %q, want unchanged", got)
 	}
-	if got := byName["wrap"].Kind; got != commands.ChangeUpdated {
-		t.Errorf("wrap kind = %q, want updated", got)
+	if got := byName["wrap"].Kind; got != commands.ChangeOverride {
+		t.Errorf("wrap kind = %q, want override", got)
+	}
+	if got := string(commands.ChangeOverride); got != "override" {
+		t.Errorf("ChangeOverride = %q, want \"override\"", got)
 	}
 
-	// An embedded command with NO vault copy is Unneeded, never New: the
-	// embedded floor already serves it, so writing a byte-identical mirror
-	// would create the Tier 4 shadow ADR-008 Phase 3 pruned. This is the
-	// assertion that goes red if planOne's !haveVault short-circuit to
-	// ChangeNew is restored.
+	// An embedded command with NO vault copy is Unneeded: the embedded floor
+	// already serves it, so writing a byte-identical mirror would create the
+	// Tier 4 shadow ADR-008 Phase 3 pruned.
 	foundUnneeded := false
 	for _, c := range plan {
-		if c.Kind == commands.ChangeNew {
-			t.Errorf("plan emitted ChangeNew for %q: an absent vault copy is "+
-				"not work to do (embedded floor serves it)", c.Name)
-		}
 		if c.Kind != commands.ChangeUnneeded {
 			continue
 		}
@@ -88,14 +85,10 @@ func TestPlan_OnlyFilter(t *testing.T) {
 	}
 }
 
-// TestApply_EmptyVaultStaysEmpty is the acceptance line: a run against a
-// vault with no Templates/commands/ must leave it with no
-// Templates/commands/. Accepting the WHOLE plan is deliberate — it models
-// the operator hitting accept-all to reach the shim prompts, which is how
-// the 14 mirrors got written in the first place.
-//
-// Restoring planOne's !haveVault -> ChangeNew short-circuit makes this red.
-func TestApply_EmptyVaultStaysEmpty(t *testing.T) {
+// TestPlan_EmptyVaultIsAllUnneeded is the acceptance line of the
+// override-only plan: against a vault with no Templates/commands/, every
+// embedded command is Unneeded — nothing to create, nothing to reset.
+func TestPlan_EmptyVaultIsAllUnneeded(t *testing.T) {
 	vault := t.TempDir()
 	r := vpctx.NewResolver(vault)
 
@@ -106,93 +99,16 @@ func TestApply_EmptyVaultStaysEmpty(t *testing.T) {
 	if len(plan) == 0 {
 		t.Fatal("empty plan: the embedded corpus should never be empty")
 	}
-	if err := commands.Apply(plan); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-
 	for _, c := range plan {
 		if c.Kind != commands.ChangeUnneeded {
 			t.Errorf("%s: kind=%q on an empty vault, want unneeded", c.Name, c.Kind)
 		}
-		if _, err := os.Stat(c.VaultPath); !os.IsNotExist(err) {
-			t.Errorf("%s: Apply materialized a byte-identical mirror at %s "+
-				"(stat err=%v); the embedded floor already served it",
-				c.Name, c.VaultPath, err)
+		if c.VaultRoot != vault {
+			t.Errorf("%s: VaultRoot=%q, want %q", c.Name, c.VaultRoot, vault)
 		}
 	}
-
-	// The directory itself must not have been created either.
 	if _, err := os.Stat(filepath.Join(vault, "Templates", "commands")); !os.IsNotExist(err) {
-		t.Errorf("Templates/commands/ came into existence (stat err=%v); "+
-			"vp config sync would plan to prune every file in it", err)
-	}
-}
-
-// TestApply_WritesOverridesAndSkipsUnchanged proves the fix did not make
-// genuine overrides unreachable: a vault copy that DIFFERS from embedded is
-// still Updated, still written, and re-planning settles to Unchanged.
-func TestApply_WritesOverridesAndSkipsUnchanged(t *testing.T) {
-	vault := t.TempDir()
-	r := vpctx.NewResolver(vault)
-
-	unchanged, err := r.EmbeddedContent("command:restart")
-	if err != nil {
-		t.Fatalf("read embedded restart: %v", err)
-	}
-	writeVault(t, vault, "Templates/commands/restart.md", unchanged)
-	writeVault(t, vault, "Templates/commands/wrap.md", "user-edited wrap content")
-
-	plan, err := commands.Plan(r, commands.PlanOptions{})
-	if err != nil {
-		t.Fatalf("Plan: %v", err)
-	}
-	if err := commands.Apply(plan); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-
-	// The override was upgraded to embedded bytes...
-	got, err := os.ReadFile(filepath.Join(vault, "Templates/commands/wrap.md"))
-	if err != nil {
-		t.Fatalf("read wrap: %v", err)
-	}
-	embWrap, err := r.EmbeddedContent("command:wrap")
-	if err != nil {
-		t.Fatalf("read embedded wrap: %v", err)
-	}
-	if string(got) != embWrap {
-		t.Error("wrap.md: genuine override was not upgraded to embedded content")
-	}
-
-	// ...and nothing else was materialized alongside it.
-	entries, err := os.ReadDir(filepath.Join(vault, "Templates", "commands"))
-	if err != nil {
-		t.Fatalf("readdir: %v", err)
-	}
-	if len(entries) != 2 {
-		names := make([]string, 0, len(entries))
-		for _, e := range entries {
-			names = append(names, e.Name())
-		}
-		t.Errorf("Templates/commands/ holds %d files %v, want exactly the 2 seeded",
-			len(entries), names)
-	}
-
-	// Re-plan: the two seeded files are unchanged, the rest still unneeded.
-	plan2, err := commands.Plan(r, commands.PlanOptions{})
-	if err != nil {
-		t.Fatalf("Plan2: %v", err)
-	}
-	for _, c := range plan2 {
-		switch c.Name {
-		case "restart", "wrap":
-			if c.Kind != commands.ChangeUnchanged {
-				t.Errorf("%s: kind=%q after Apply, want unchanged", c.Name, c.Kind)
-			}
-		default:
-			if c.Kind != commands.ChangeUnneeded {
-				t.Errorf("%s: kind=%q after Apply, want unneeded", c.Name, c.Kind)
-			}
-		}
+		t.Errorf("planning created Templates/commands/ (stat err=%v)", err)
 	}
 }
 
@@ -266,59 +182,5 @@ func TestPlan_SkillOnlyMatchesSkillName(t *testing.T) {
 			!strings.HasPrefix(c.Name, "startup-analyst/") {
 			t.Errorf("unexpected name for --only: %q", c.Name)
 		}
-	}
-}
-
-// TestApplyWithBackup_EmitsBakForUpdated covers the dirty-vault code
-// path: ApplyWithBackup renames the existing vault copy to .bak before
-// overwriting with embedded content.
-func TestApplyWithBackup_EmitsBakForUpdated(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "f.md")
-	if err := os.WriteFile(path, []byte("USER EDIT\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	c := commands.Change{
-		Kind:            commands.ChangeUpdated,
-		Name:            "f",
-		EmbeddedContent: "new body\n",
-		VaultContent:    "USER EDIT\n",
-		VaultPath:       path,
-	}
-	if err := commands.ApplyWithBackup([]commands.Change{c}); err != nil {
-		t.Fatalf("ApplyWithBackup: %v", err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "new body\n" {
-		t.Errorf("primary not updated: %q", got)
-	}
-	bak, err := os.ReadFile(path + ".bak")
-	if err != nil {
-		t.Fatalf("missing .bak: %v", err)
-	}
-	if string(bak) != "USER EDIT\n" {
-		t.Errorf(".bak content: %q", bak)
-	}
-}
-
-// TestApplyWithBackup_NewFileNoBak covers the New path: there is no
-// prior file, so no .bak should appear.
-func TestApplyWithBackup_NewFileNoBak(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "new.md")
-	c := commands.Change{
-		Kind:            commands.ChangeNew,
-		Name:            "new",
-		EmbeddedContent: "fresh\n",
-		VaultPath:       path,
-	}
-	if err := commands.ApplyWithBackup([]commands.Change{c}); err != nil {
-		t.Fatalf("ApplyWithBackup: %v", err)
-	}
-	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
-		t.Errorf("unexpected .bak for new file (err=%v)", err)
 	}
 }

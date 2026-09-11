@@ -60,15 +60,12 @@ func runVPWithTTY(t *testing.T, bin string, env *testEnv, stdin []byte, args ...
 	return string(out)
 }
 
-// TestIntegrationSkillUpgrade exercises the two-SHA `vp skills upgrade`
-// path end to end: seed vault skill copies that differ from embedded, run
-// `vp skills upgrade` with stdin "a\n", and verify every file in the group is
-// reset to the embedded bytes. `vp skills upgrade` never reads or writes
-// templates.lock; the lock belongs to `vp config sync`.
-//
-// Also proves:
-//   - a dirty vault edit on a reference triggers the .bak sidecar.
-//   - `--granular` fans out to 6 per-file prompts.
+// TestIntegrationSkillUpgrade exercises `vp skills upgrade` end to end
+// through the binary, with the interactive gate forced open. It is report-only:
+// it lists each vault override of a built-in skill as [keep], never prompts,
+// never consumes stdin, and writes nothing — the backup assertion it used to
+// carry now belongs to `vp skills reset` (template_reset_test.go). It never
+// reads or writes templates.lock; the lock belongs to `vp config sync`.
 func TestIntegrationSkillUpgrade(t *testing.T) {
 	bin := buildVPBinary(t)
 	env := setupFreshEnv(t)
@@ -84,27 +81,11 @@ func TestIntegrationSkillUpgrade(t *testing.T) {
 		"references/reality-validation.md",
 		"references/strategic-partnerships.md",
 	}
-
-	// Under the override-only materialization model a fresh `vp init` writes
-	// no skill mirror (the embedded floor serves it). `vp skills upgrade` is
-	// a separate command that reconciles the on-disk skill corpus against
-	// the embedded corpus across ALL skills, so seed the vault with every
-	// embedded skill byte-identically first — the precondition init used to
-	// provide. (Seeding only startup-analyst would leave the other embedded
-	// skills surfacing as "new", stealing the grouped prompt's stdin.)
 	seedAllEmbeddedSkills(t, env.vaultPath)
 
-	t.Run("group_accept_with_a", func(t *testing.T) {
-		// Edit two files so the plan has two "updated" entries — a genuine
-		// multi-member group, which is what the single "a" is here to test.
-		// Remove a third: under the override-only rule that file is now
-		// UNNEEDED, not "new", so the upgrade must leave it deleted.
-		//
-		// Removing a mirror used to make it "new" and get it re-created. That
-		// is the defect this unit fixes, and it is the same shape as the
-		// 2026-07-31 delete/modify conflict over four re-created code-digger
-		// mirrors: `vp config sync` prunes the mirror, `vp skills upgrade`
-		// puts it back, and the two commands fight over the vault forever.
+	t.Run("group_report_keeps_every_file", func(t *testing.T) {
+		// Two edited files make a multi-file override; a third is removed, and
+		// under the override-only rule it stays removed (unneeded, not new).
 		toRemove := filepath.Join(skillRoot, "references", "competitive-landscape.md")
 		toEdit := filepath.Join(skillRoot, "references", "funding-sources.md")
 		toEdit2 := filepath.Join(skillRoot, "references", "capex-opex.md")
@@ -118,43 +99,29 @@ func TestIntegrationSkillUpgrade(t *testing.T) {
 			t.Fatalf("edit2: %v", err)
 		}
 
+		// "a" is offered on stdin, as the old group prompt would have taken
+		// it. Nothing may read it: there is no prompt.
 		out := runVPWithTTY(t, bin, env, []byte("a\n"), "skills", "upgrade")
-		if !strings.Contains(out, "=== skill startup-analyst") {
-			t.Errorf("expected skill group header in output:\n%s", out)
+		if !strings.Contains(out, "[keep] Templates/skills/startup-analyst/ — override of a built-in (2 file(s) differ") {
+			t.Errorf("no per-skill [keep] line:\n%s", out)
 		}
-		// The deleted mirror stays deleted: the embedded floor serves it, and
-		// re-materializing it would shadow the binary. Goes red if planOne's
-		// !haveVault -> ChangeNew short-circuit is restored.
+		if strings.Contains(out, "=== skill startup-analyst") || strings.Contains(out, "[a]ccept") {
+			t.Errorf("a prompt was shown:\n%s", out)
+		}
 		if _, err := os.Stat(toRemove); !os.IsNotExist(err) {
-			t.Errorf("upgrade re-created the deleted mirror %s (stat err=%v); "+
-				"vp config sync would prune it right back", toRemove, err)
+			t.Errorf("upgrade re-created the deleted mirror %s (stat err=%v)", toRemove, err)
 		}
-		// Every file the vault still holds was upgraded to embedded content.
-		for _, rel := range wantFiles {
-			if rel == "references/competitive-landscape.md" {
-				continue
+		for p, want := range map[string]string{toEdit: "USER EDIT\n", toEdit2: "USER EDIT 2\n"} {
+			if got, err := os.ReadFile(p); err != nil || string(got) != want {
+				t.Errorf("%s changed: %q (err=%v)", p, got, err)
 			}
-			p := filepath.Join(skillRoot, filepath.FromSlash(rel))
-			if _, err := os.Stat(p); err != nil {
-				t.Errorf("missing after group-accept: %s (%v)", rel, err)
+			if _, err := os.Stat(p + ".bak"); !os.IsNotExist(err) {
+				t.Errorf("%s.bak written (err=%v)", p, err)
 			}
-		}
-		// .bak preserved the dirty vault edit on funding-sources.md.
-		bak, err := os.ReadFile(toEdit + ".bak")
-		if err != nil {
-			t.Fatalf("expected .bak beside %s: %v", toEdit, err)
-		}
-		if string(bak) != "USER EDIT\n" {
-			t.Errorf(".bak did not preserve user edit:\n%s", bak)
 		}
 	})
 
 	t.Run("granular_flag_fans_out", func(t *testing.T) {
-		// Overwrite all 6 files so every one surfaces as "updated", then skip
-		// every prompt; output must contain 6 per-file headers and no file is
-		// rewritten. Deleting them (the old setup) no longer produces prompts
-		// at all — an absent mirror is unneeded, which is the point of the
-		// group_accept assertion above.
 		for _, rel := range wantFiles {
 			p := filepath.Join(skillRoot, filepath.FromSlash(rel))
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -164,18 +131,16 @@ func TestIntegrationSkillUpgrade(t *testing.T) {
 				t.Fatalf("seed stale %s: %v", rel, err)
 			}
 		}
-		stdin := []byte(strings.Repeat("s\n", 6))
-		out := runVPWithTTY(t, bin, env, stdin, "skills", "upgrade", "--granular")
-		cnt := strings.Count(out, "=== startup-analyst/")
-		if cnt != 6 {
-			t.Errorf("expected 6 per-file headers with --granular, got %d\n%s", cnt, out)
+		out := runVPWithTTY(t, bin, env, []byte(strings.Repeat("a\n", 6)), "skills", "upgrade", "--granular")
+		if cnt := strings.Count(out, "[keep] Templates/skills/startup-analyst/"); cnt != 6 {
+			t.Errorf("expected 6 per-file [keep] lines with --granular, got %d\n%s", cnt, out)
 		}
 		got, err := os.ReadFile(filepath.Join(skillRoot, "SKILL.md"))
 		if err != nil {
 			t.Fatalf("read SKILL.md: %v", err)
 		}
 		if string(got) != "USER EDIT\n" {
-			t.Errorf("granular skip wrote files:\n%s", got)
+			t.Errorf("the report wrote files:\n%s", got)
 		}
 	})
 }

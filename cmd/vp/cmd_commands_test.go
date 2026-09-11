@@ -101,17 +101,28 @@ func TestRunCommandsUpgrade_DryRun_ZeroWhenClean(t *testing.T) {
 	}
 }
 
-// TestRunCommandsUpgrade_Overwrite_AppliesActionable proves --overwrite
-// skips the prompt, it does not change the classification. It upgrades the
-// genuine override and leaves every command with no vault copy alone — the
-// defect must not survive behind a flag.
-//
-// Goes red if planOne's !haveVault -> ChangeNew short-circuit is restored:
-// the mirrors reappear and Templates/commands/ holds the whole corpus.
-func TestRunCommandsUpgrade_Overwrite_AppliesActionable(t *testing.T) {
+// bodyOnlyCommandOverride is the embedded command with a line appended at the
+// end: its first paragraph — the shim's brief — is unchanged, so the override
+// moves no shim and is, on its own, no pending work.
+func bodyOnlyCommandOverride(t *testing.T, name string) string {
+	t.Helper()
+	emb, err := vpctx.NewResolver(t.TempDir()).EmbeddedContent("command:" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return emb + "\nAn operator's addition at the end of the body.\n"
+}
+
+// TestRunCommandsUpgrade_OverwriteKeepsOverrides is the must-fail of
+// upgrade-overwrite-resets-vault-template-overrides: at 1f3bb62 `--overwrite`
+// — the documented non-TTY path — replaced this override with the embedded
+// bytes and kept no backup. Now it applies only vp-owned changes and lists the
+// override as [keep], byte-for-byte untouched.
+func TestRunCommandsUpgrade_OverwriteKeepsOverrides(t *testing.T) {
 	vault := t.TempDir()
-	// Pre-seed one divergent copy so there's a guaranteed updated entry.
-	writeVaultFile(t, vault, "Templates/commands/restart.md", "stale user content\n")
+	override := bodyOnlyCommandOverride(t, "restart")
+	writeVaultFile(t, vault, "Templates/commands/restart.md", override)
+	restart := filepath.Join(vault, "Templates", "commands", "restart.md")
 
 	var out, errb bytes.Buffer
 	code := runCommandsUpgrade(commandsUpgradeOpts{
@@ -125,35 +136,168 @@ func TestRunCommandsUpgrade_Overwrite_AppliesActionable(t *testing.T) {
 	if code != cli.ExitOK {
 		t.Fatalf("overwrite: exit=%d\nstderr: %s", code, errb.String())
 	}
-
-	// After apply the override matches embedded; everything else is still
-	// unneeded and was never materialized.
-	r := vpctx.NewResolver(vault)
-	plan, err := commands.Plan(r, commands.PlanOptions{})
-	if err != nil {
-		t.Fatalf("re-plan: %v", err)
+	assertFileBytes(t, restart, override)
+	assertNoBakUnder(t, vault)
+	for _, want := range []string{
+		"[keep] Templates/commands/restart.md — override of a built-in",
+		"to remove it: vp commands reset restart",
+		"1 override(s) of built-ins kept.",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("stdout lacks %q:\n%s", want, out.String())
+		}
 	}
-	for _, c := range plan {
-		want := commands.ChangeUnneeded
-		if c.Name == "restart" {
-			want = commands.ChangeUnchanged
-		}
-		if c.Kind != want {
-			t.Errorf("%s: kind=%q after overwrite, want %q", c.Name, c.Kind, want)
-		}
+	if strings.Contains(out.String(), "[accept] restart") {
+		t.Errorf("the override was accepted as a change:\n%s", out.String())
 	}
 	entries, err := os.ReadDir(filepath.Join(vault, "Templates", "commands"))
 	if err != nil {
 		t.Fatalf("readdir: %v", err)
 	}
 	if len(entries) != 1 || entries[0].Name() != "restart.md" {
-		names := make([]string, 0, len(entries))
-		for _, e := range entries {
-			names = append(names, e.Name())
-		}
-		t.Errorf("Templates/commands/ = %v, want only restart.md; --overwrite "+
-			"must not re-materialize byte-identical mirrors", names)
+		t.Errorf("Templates/commands/ = %v, want only restart.md", entries)
 	}
+}
+
+// installShims runs one --overwrite pass so the project's shims are current.
+func installShims(t *testing.T, vault, projectRoot string) {
+	t.Helper()
+	var out, errb bytes.Buffer
+	if code := runCommandsUpgrade(commandsUpgradeOpts{
+		Overwrite: true, Stdin: strings.NewReader(""), Stdout: &out, Stderr: &errb,
+		VaultRootOverride: vault, ProjectRootOverride: projectRoot,
+	}); code != cli.ExitOK {
+		t.Fatalf("install shims: exit=%d\n%s", code, errb.String())
+	}
+}
+
+// TestRunCommandsUpgrade_NonTTYOverridesAreNotPendingWork: with the shims
+// current, a body-only override is no work to do, so a non-TTY run without
+// --overwrite reports it and exits 0. At 1f3bb62 it refused (exit 1) and
+// pointed at --overwrite, which would have reset it.
+func TestRunCommandsUpgrade_NonTTYOverridesAreNotPendingWork(t *testing.T) {
+	grokOff(t)
+	vault := t.TempDir()
+	projectRoot := t.TempDir()
+	installShims(t, vault, projectRoot)
+	override := bodyOnlyCommandOverride(t, "restart")
+	writeVaultFile(t, vault, "Templates/commands/restart.md", override)
+
+	var out, errb bytes.Buffer
+	code := runCommandsUpgrade(commandsUpgradeOpts{
+		Stdin:               strings.NewReader(""),
+		Stdout:              &out,
+		Stderr:              &errb,
+		VaultRootOverride:   vault,
+		ProjectRootOverride: projectRoot,
+		InteractiveOverride: boolPtr(false),
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("exit=%d, want 0\nstdout: %s\nstderr: %s", code, out.String(), errb.String())
+	}
+	if !strings.Contains(out.String(), "[keep] Templates/commands/restart.md") || !strings.Contains(out.String(), "Nothing to do") {
+		t.Errorf("stdout:\n%s", out.String())
+	}
+	assertFileBytes(t, filepath.Join(vault, "Templates", "commands", "restart.md"), override)
+}
+
+// TestRunCommandsUpgrade_DryRunOverrideIsNotPendingWork: the same seed, dry
+// run — exit 0 with an override row.
+func TestRunCommandsUpgrade_DryRunOverrideIsNotPendingWork(t *testing.T) {
+	grokOff(t)
+	vault := t.TempDir()
+	projectRoot := t.TempDir()
+	installShims(t, vault, projectRoot)
+	writeVaultFile(t, vault, "Templates/commands/restart.md", bodyOnlyCommandOverride(t, "restart"))
+
+	var out, errb bytes.Buffer
+	code := runCommandsUpgrade(commandsUpgradeOpts{
+		DryRun:              true,
+		Stdin:               strings.NewReader(""),
+		Stdout:              &out,
+		Stderr:              &errb,
+		VaultRootOverride:   vault,
+		ProjectRootOverride: projectRoot,
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("dry-run: exit=%d, want 0\n%s", code, out.String())
+	}
+	for _, want := range []string{
+		"  override  restart  (vault ",
+		"kept — vp commands reset restart removes it)",
+		"Summary (dry run): 1 override(s) kept,",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("dry run lacks %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// TestRunCommandsUpgrade_OverrideThatChangesShimTextIsPendingShimWork pins
+// the H2 behaviour, which is correct and not a regression: shims render from
+// the resolved (vault) copy, so an override with a new brief or description
+// makes the project's shim stale. That shim is pending vp-owned work; the
+// override itself is still kept.
+func TestRunCommandsUpgrade_OverrideThatChangesShimTextIsPendingShimWork(t *testing.T) {
+	grokOff(t)
+	t.Run("command-brief", func(t *testing.T) {
+		vault := t.TempDir()
+		projectRoot := t.TempDir()
+		installShims(t, vault, projectRoot)
+		const override = "An operator's own restart brief.\n\nDo it my way.\n"
+		writeVaultFile(t, vault, "Templates/commands/restart.md", override)
+
+		var out, errb bytes.Buffer
+		code := runCommandsUpgrade(commandsUpgradeOpts{
+			DryRun: true, Stdin: strings.NewReader(""), Stdout: &out, Stderr: &errb,
+			VaultRootOverride: vault, ProjectRootOverride: projectRoot,
+		})
+		if code != cli.ExitUser {
+			t.Errorf("dry-run: exit=%d, want ExitUser (a stale shim is pending)", code)
+		}
+		for _, want := range []string{
+			"shims: 0 new, 1 updated",
+			"modified  " + filepath.Join(projectRoot, ".claude", "commands", "vpc-restart.md"),
+			"override  restart",
+		} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("dry run lacks %q:\n%s", want, out.String())
+			}
+		}
+
+		out.Reset()
+		if code := runCommandsUpgrade(commandsUpgradeOpts{
+			Overwrite: true, Stdin: strings.NewReader(""), Stdout: &out, Stderr: &errb,
+			VaultRootOverride: vault, ProjectRootOverride: projectRoot,
+		}); code != cli.ExitOK {
+			t.Fatalf("overwrite: exit=%d\n%s", code, errb.String())
+		}
+		shim, err := os.ReadFile(filepath.Join(projectRoot, ".claude", "commands", "vpc-restart.md"))
+		if err != nil || !strings.Contains(string(shim), "An operator's own restart brief.") {
+			t.Errorf("the shim does not carry the override's brief (err=%v):\n%s", err, shim)
+		}
+		assertFileBytes(t, filepath.Join(vault, "Templates", "commands", "restart.md"), override)
+	})
+	t.Run("skill-description", func(t *testing.T) {
+		vault := t.TempDir()
+		projectRoot := t.TempDir()
+		installShims(t, vault, projectRoot)
+		const override = "---\nname: chair\ndescription: An operator's own chair.\n---\n\nMine.\n"
+		writeVaultFile(t, vault, "Templates/skills/chair/SKILL.md", override)
+
+		var out, errb bytes.Buffer
+		code := runCommandsUpgrade(commandsUpgradeOpts{
+			DryRun: true, Stdin: strings.NewReader(""), Stdout: &out, Stderr: &errb,
+			VaultRootOverride: vault, ProjectRootOverride: projectRoot,
+		})
+		if code != cli.ExitUser {
+			t.Errorf("dry-run: exit=%d, want ExitUser (a stale skill shim is pending)", code)
+		}
+		if !strings.Contains(out.String(), "modified  "+claudeSkillPath(projectRoot, "chair")) {
+			t.Errorf("the vps-chair shim is not modified:\n%s", out.String())
+		}
+		assertFileBytes(t, filepath.Join(vault, "Templates", "skills", "chair", "SKILL.md"), override)
+	})
 }
 
 func TestRunCommandsUpgrade_NonInteractive_RefusesWithoutOverwrite(t *testing.T) {
@@ -172,68 +316,57 @@ func TestRunCommandsUpgrade_NonInteractive_RefusesWithoutOverwrite(t *testing.T)
 		t.Fatalf("non-interactive without --overwrite: exit=%d, want ExitUser\nstderr: %s",
 			code, errb.String())
 	}
-	if !strings.Contains(errb.String(), "--overwrite") {
+	if !strings.Contains(errb.String(), "--overwrite to accept every shim and agent-file change (it never resets a Templates/ override)") {
 		t.Errorf("expected guidance to set --overwrite, got:\n%s", errb.String())
 	}
 }
 
-func TestRunCommandsUpgrade_Interactive_AcceptOne_SkipOne(t *testing.T) {
+// TestRunCommandsUpgrade_Interactive_NeverPromptsForATemplate replaces the
+// accept-one/skip-one template test. Interactively, no vault template is ever
+// offered: the overrides are listed as [keep] and left byte-for-byte, and the
+// answers typed go to the shim prompts, never to a template.
+func TestRunCommandsUpgrade_Interactive_NeverPromptsForATemplate(t *testing.T) {
+	grokOff(t)
 	vault := t.TempDir()
 	writeVaultFile(t, vault, "Templates/commands/restart.md", "stale restart\n")
 	writeVaultFile(t, vault, "Templates/commands/wrap.md", "stale wrap\n")
-
-	// Only the two seeded overrides are actionable, so only they prompt, in
-	// alphabetical order: restart then wrap. Accept restart, skip wrap.
-	//
-	// Before the override-only fix this needed six leading "s" keystrokes to
-	// walk past cancel-plan, capture, execute-plan, herdr, license and
-	// makefile — every one of them a byte-identical mirror the operator was
-	// being asked to write. That prompt run is what made accept-all the
-	// natural keystroke and buried the shim prompts behind 14 vault writes.
-	input := strings.Join([]string{"a", "s"}, "\n") + "\n"
+	projectRoot := t.TempDir()
 
 	var out, errb bytes.Buffer
 	code := runCommandsUpgrade(commandsUpgradeOpts{
-		Stdin:               strings.NewReader(input),
+		Stdin:               strings.NewReader("A\n"),
 		Stdout:              &out,
 		Stderr:              &errb,
 		VaultRootOverride:   vault,
-		ProjectRootOverride: t.TempDir(),
+		ProjectRootOverride: projectRoot,
 		InteractiveOverride: boolPtr(true),
 	})
 	if code != cli.ExitOK {
 		t.Fatalf("interactive: exit=%d\nstderr: %s", code, errb.String())
 	}
-
-	// restart should now match embedded; wrap should still be "stale wrap\n".
-	r := vpctx.NewResolver(vault)
-	embedded, _ := r.EmbeddedContent("command:restart")
-	got, err := os.ReadFile(filepath.Join(vault, "Templates/commands/restart.md"))
-	if err != nil {
-		t.Fatalf("read restart: %v", err)
-	}
-	if string(got) != embedded {
-		t.Errorf("restart content did not update:\n%s", got)
-	}
-	wrap, _ := os.ReadFile(filepath.Join(vault, "Templates/commands/wrap.md"))
-	if string(wrap) != "stale wrap\n" {
-		t.Errorf("wrap should not have changed, got:\n%s", wrap)
-	}
-
-	// No third file appeared: the skipped prompts were the only two offered.
-	entries, err := os.ReadDir(filepath.Join(vault, "Templates", "commands"))
-	if err != nil {
-		t.Fatalf("readdir: %v", err)
-	}
-	if len(entries) != 2 {
-		names := make([]string, 0, len(entries))
-		for _, e := range entries {
-			names = append(names, e.Name())
+	for _, header := range []string{"=== restart (", "=== wrap ("} {
+		if strings.Contains(out.String(), header) {
+			t.Errorf("a vault template was prompted (%q):\n%s", header, out.String())
 		}
-		t.Errorf("Templates/commands/ = %v, want only the 2 seeded files", names)
+	}
+	for _, keep := range []string{"[keep] Templates/commands/restart.md", "[keep] Templates/commands/wrap.md"} {
+		if !strings.Contains(out.String(), keep) {
+			t.Errorf("no %q line:\n%s", keep, out.String())
+		}
+	}
+	assertFileBytes(t, filepath.Join(vault, "Templates", "commands", "restart.md"), "stale restart\n")
+	assertFileBytes(t, filepath.Join(vault, "Templates", "commands", "wrap.md"), "stale wrap\n")
+	// The "A" went to the first shim prompt: every shim was accepted.
+	if _, err := os.Stat(filepath.Join(projectRoot, shims.ShimDir, shims.Filename("wrap"))); err != nil {
+		t.Errorf("the accept-all answer did not reach the shim prompts: %v", err)
+	}
+	if !strings.Contains(out.String(), "2 override(s) of built-ins kept.") {
+		t.Errorf("no override count after Done:\n%s", out.String())
 	}
 }
 
+// TestRunCommandsUpgrade_Only_ScopesToOneTemplate: --only still scopes the
+// run, and the named command's override is kept, not reset.
 func TestRunCommandsUpgrade_Only_ScopesToOneTemplate(t *testing.T) {
 	vault := t.TempDir()
 	writeVaultFile(t, vault, "Templates/commands/restart.md", "stale\n")
@@ -251,8 +384,7 @@ func TestRunCommandsUpgrade_Only_ScopesToOneTemplate(t *testing.T) {
 	if code != cli.ExitOK {
 		t.Fatalf("--only: exit=%d\nstderr: %s", code, errb.String())
 	}
-
-	// restart updated; other commands still absent.
+	assertFileBytes(t, filepath.Join(vault, "Templates", "commands", "restart.md"), "stale\n")
 	if _, err := os.Stat(filepath.Join(vault, "Templates/commands/wrap.md")); !os.IsNotExist(err) {
 		t.Errorf("--only leaked writes to wrap.md (err=%v)", err)
 	}

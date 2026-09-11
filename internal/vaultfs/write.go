@@ -101,6 +101,58 @@ func Write(vaultPath, relPath, content, expectedSha256 string) (WriteResult, err
 	return res, nil
 }
 
+// Create places content at relPath under vaultPath only if nothing exists
+// there yet. It never replaces anything: an existing file, directory or
+// symlink at relPath returns ErrExists and is left exactly as it was.
+//
+// It is the create-if-absent form of Write, with the same refusals (.git and
+// .vp-locks segments, task files) and the same path resolution. The absence
+// check (os.Lstat) runs inside the path's advisory lock, so two vp writers
+// creating the same name cannot both succeed. The bytes are fsynced before the
+// rename, so a caller that removes the original after a successful Create —
+// the template reset does — never depends on data still in the page cache.
+//
+// Residual, by construction: vaultlock is advisory, so a writer that is not vp
+// can still create the same name between the Lstat and the rename, and
+// atomicfile's rename would then replace that file. Callers that need the
+// window closed name the file by its content (templates.PreserveBackup does), so
+// a racing writer of the same name is writing the same bytes.
+func Create(vaultPath, relPath, content string) (WriteResult, error) {
+	if IsRefusedWritePath(relPath) {
+		return WriteResult{}, fmt.Errorf("%w: %s", ErrRefusedPath, relPath)
+	}
+	// See Write: task files are typed-writer-only, gated here too.
+	if IsTaskFilePath(relPath) {
+		return WriteResult{}, taskPathRefusal(relPath)
+	}
+	abs, err := ResolveSafePath(vaultPath, relPath)
+	if err != nil {
+		return WriteResult{}, err
+	}
+	release, lerr := vaultlock.Acquire(vaultPath, abs)
+	if lerr != nil {
+		return WriteResult{}, fmt.Errorf("vaultfs: lock %s: %w", relPath, lerr)
+	}
+	defer release()
+
+	if _, err := os.Lstat(abs); err == nil {
+		return WriteResult{}, fmt.Errorf("%w: %s", ErrExists, relPath)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return WriteResult{}, fmt.Errorf("vaultfs: stat %s: %w", relPath, err)
+	}
+
+	data := []byte(content)
+	if err := atomicfile.Write(vaultPath, abs, data, atomicfile.WithFsync()); err != nil {
+		return WriteResult{}, fmt.Errorf("vaultfs: atomic write %s: %w", relPath, err)
+	}
+	sum := sha256.Sum256(data)
+	return WriteResult{
+		VaultBinding: bind(vaultPath),
+		Bytes:        int64(len(data)),
+		Sha256:       hex.EncodeToString(sum[:]),
+	}, nil
+}
+
 // Edit replaces oldString with newString in the file at relPath.
 //
 // If oldString occurs more than once, the call fails with an error suggesting
