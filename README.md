@@ -329,10 +329,15 @@ directory in the vault is where you customise them.
   including the `workflow.md` and `resume.md` templates. A file with a
   **new name** here — a command or skill no built-in uses — applies to
   every project and is safe: nothing iterates it. An **override of a
-  built-in** here is currently unsafe: `vp config sync --yes` replaces
-  it with the embedded copy and the next sync prunes it (tracked as
-  `vault-template-override-is-discarded-by-config-sync`). Override
-  built-ins at the project tier.
+  built-in** here is still not recommended. `vp config sync` no longer
+  overwrites one and never commits its removal — a committed override
+  is restored from HEAD — but `vp commands upgrade --overwrite` /
+  `vp skills upgrade --overwrite` reset it to the embedded copy
+  (`upgrade-overwrite-resets-vault-template-overrides`), and a host
+  whose `templates.lock` lacks it prompts on every sync
+  (`template-provenance-manifest-retires-the-host-local-lock`). An
+  unedited copy of a built-in is identical to it and is pruned, so edit
+  before syncing. Override built-ins at the project tier.
 
 **Precedence (first match wins):** room > wing > project > vault >
 embedded. For example,
@@ -345,13 +350,17 @@ embedded `wrap.md` baked into the binary.
 - **`vp init`** — never writes, prunes or reconciles `Templates/`. It
   only reads it, to give each project a shim for your vault-wide
   commands and skills.
-- **`vp config sync`** — the override-only reconcile. It prunes a
-  byte-identical mirror of a built-in (committing the deletion on a git
-  vault), keeps an override whose embedded copy has not changed, and
-  prompts `[s]kip / [o]verwrite (writes .bak) / [n]ew-sidecar` on a
-  diverged one. Its `<vault>/.vibe-palace/templates.lock` sidecar records
-  the embedded baseline that makes a prune safe; vp never stages it to
-  git, so it is host-local in practice.
+- **`vp config sync`** — the override-only reconcile, which never
+  writes over a template (an `n` answer adds a `.new` sidecar). It
+  prunes a byte-identical mirror of a built-in, keeps an override whose
+  embedded copy has not changed, and prompts
+  `[s]kip — keep your file / [n]ew-sidecar` on a diverged one (`--yes`
+  keeps it). On a git vault it removes a mirror only after checking
+  that HEAD's copy, and each remote's, is vp's too, then commits the
+  removal; when HEAD's copy is operator content it restores it in place
+  instead, and a prune git cannot verify is deferred. Its `<vault>/.vibe-palace/templates.lock` sidecar
+  records the embedded baseline that makes a prune safe; vp never stages
+  it to git, so it is host-local in practice.
 - **`vp commands upgrade` / `vp skills upgrade`** — offer to reset an
   existing vault copy of a built-in to the embedded bytes (commands keep
   no `.bak`; skills keep one). They never create a copy.

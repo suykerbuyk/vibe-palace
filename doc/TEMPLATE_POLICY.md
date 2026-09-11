@@ -10,19 +10,29 @@ through `internal/templates.Executor.Write`. The caller passes a
 `WriteOptions{Backup: BackupPolicy}` value; the Executor owns the
 atomic write, directory creation, and (conditional) `.bak` emission.
 
-Three template-adjacent writes do **not**, and are named here so the
-sentence above stays true: `applyMaterialize`'s prune writes its `.bak`
-with a raw `os.WriteFile` and removes the primary with a raw
-`os.Remove`, and `vp config sync`'s `resolveTemplatePrompts` writes the
-`n` answer's `.new` sidecar directly. Routing them through the lock
-funnel is owned by `template-tree-raw-vault-writes-bypass-the-lock-funnel`.
+Two template-adjacent writes do **not**, and are named here so the
+sentence above stays true. On an unversioned vault, `applyMaterialize`'s
+prune removes the primary with a raw `os.Remove` after re-hashing it
+against the SHAs the plan recorded (no `.bak`). And `vp config sync`'s
+`resolveTemplatePrompts` writes the `n` answer's `.new` sidecar
+directly. (On a git vault the prune is `storage.PruneMirrorsVerified`,
+which removes through `vaultfs.Delete` — compare-and-set under the
+path's lock — only after the HEAD and remote-tip checks.) Routing them through the lock funnel is owned by
+`template-tree-raw-vault-writes-bypass-the-lock-funnel`.
 
 | Caller | Command surface | Policy | Rationale |
 |---|---|---|---|
-| `reconcile.TemplateTree.Apply` (Update action) | `vp config sync`, the `o` answer to a diverged-override Prompt (and `--yes`) | `BackupPolicyAlways` | No Plan emits an Update since ADR-008's override-only Design B; the only Update is the orchestrator's rewrite of an `o` answer. The file is by definition an operator's override, so its bytes are copied to `.bak` before the embedded copy replaces them. |
-| `reconcile.TemplateTree.Apply` (Create action) | unreachable from any Plan since ADR-008 Phase 3 | `BackupPolicyNever` | An absent vault file is served from the embedded floor, never created; the branch remains only for a caller-built Plan. |
 | `commands.Apply` | `vp commands upgrade` | `BackupPolicyNever` | See asymmetry note below. |
 | `commands.ApplyWithBackup` | `vp skills upgrade` | `BackupPolicyRename` | See asymmetry note below. |
+
+`reconcile.TemplateTree.Apply` (`vp config sync`) is **not** a caller any
+more: it never writes a template, and reports a Create or Update action
+as an error. Its Update — the old `o` answer to a diverged-override
+Prompt, and `--yes` — overwrote the operator's override with
+`BackupPolicyAlways`, and was the first step of a chain in which the next
+sync pruned the result and committed the deletion to every host. The
+answer and the policy were removed together
+(`vault-template-override-is-discarded-by-config-sync`).
 
 ## Outside the golden path: `reconcile.applyUpgrade`
 
@@ -86,8 +96,9 @@ After this refactor, the policy is controlled by a single switch
 (`templates.BackupPolicy` passed through `WriteOptions`) rather than
 two divergent writer implementations. A follow-up PR should:
 
-- Either **unify** on `BackupPolicyAlways` for both surfaces (safer
-  default), or
+- Either **unify** on a backup that is never overwritten for both
+  surfaces (the direction `upgrade-overwrite-resets-vault-template-overrides`
+  records; `BackupPolicyAlways`, the old candidate, is gone), or
 - Expose an `--backup / --no-backup` CLI flag so the user picks per
   invocation, or
 - Ship the "commands = never, skills = always" choice as an
@@ -98,22 +109,14 @@ here so a future sprint picks it up.
 
 ## Backup mechanics
 
-Three policies are defined in `internal/templates/executor.go`:
+Two policies are defined in `internal/templates/executor.go`:
 
 - `BackupPolicyNever` — overwrite atomically; no `.bak` on disk.
-- `BackupPolicyAlways` — read-then-write the `.bak` sibling before
-  the atomic rename of the primary. The primary stays readable
-  throughout the write window (no interval where `dst` is missing).
 - `BackupPolicyRename` — rename the existing target to `.bak`, then
   atomic-write the new bytes. There is a brief window where the
-  primary does not exist. Matches the legacy `commands.ApplyWithBackup`
-  byte-for-byte so the skills-upgrade golden-path tests pin.
-
-`Always` and `Rename` have the same steady-state output (user-edited
-bytes end up in `.bak`, new bytes in the primary). They differ only
-under partial-failure: `Always` leaves the primary intact if the
-atomic rename of the new bytes fails; `Rename` leaves the caller
-with a `.bak` and a missing primary.
+  primary does not exist, and a failed write leaves a `.bak` and no
+  primary. Matches the legacy `commands.ApplyWithBackup` byte-for-byte
+  so the skills-upgrade golden-path tests pin.
 
 A single-generation `.bak` is considered adequate. Users who need
 multi-generation backups should snapshot externally (`git`,
@@ -129,9 +132,8 @@ Time Machine, etc.) before invoking `vp * upgrade`.
   refactor.
 - `internal/reconcile/template_tree.go` — still owns the
   override-only decision table, the silent-adopt pre-pass, and lock-
-  file integration. Delegates every template-byte write to
-  `templates.Executor.Write`; the prune's `.bak` and remove are the raw
-  exceptions named under *Golden path*.
+  file integration. It writes no template bytes; the prune's verified
+  `os.Remove` is the raw exception named under *Golden path*.
 - `internal/commands/upgrade.go` — `Plan`, `Apply`, and
   `ApplyWithBackup` collapse into a shared `applyWithPolicy` helper
   that picks the `BackupPolicy` and delegates to

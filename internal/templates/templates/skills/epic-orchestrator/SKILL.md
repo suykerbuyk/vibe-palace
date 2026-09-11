@@ -189,11 +189,13 @@ vault-tooling epic. Do not stop at "merged":**
    is the positive signal it took.
 2. `vp config sync` — prune any vault `Templates/` mirror the new binary's embedded corpus
    supersedes (the healthy state is no mirror at all; the embedded floor serves every template), then
-   confirm no drift by calling `vp_check` (the MCP tool) with
+   confirm no mirror is left pending a prune by calling `vp_check` (the MCP tool) with
    `{"checks": ["vault-filesystem", "stray-scaffolds", "surface-merge-driver", "resume-caps", "resume-refs", "vault-abs-paths", "template-drift", "writer-identity", "stale-mcp"]}` — the host-agnostic
    half, and the first proof the rolled tooling reaches an agent at all rather than merely existing.
-   `template-drift` is the row that verifies the sync took; it reads the same `Templates/` tree the
-   CLI table does, so this step no longer needs a shell and a shell-less host can run the rollout.
+   `template-drift` is the row that verifies the sync took: no `mirror(s) pending a prune` may remain,
+   while an operator's override of a built-in is reported `info` as kept on purpose and is expected. It
+   reads the same `Templates/` tree the CLI table does, so this step no longer needs a shell and a
+   shell-less host can run the rollout.
    Report the per-check rows (the top-level `status` is an advisory roll-up); an `"info"` verdict is
    a report, not a gate, and the rollout continues to step 3. `vault-filesystem` is the row here
    most likely to return `"fail"` — relocating a vault off NTFS/exFAT is a human decision, so it too
@@ -204,7 +206,8 @@ vault-tooling epic. Do not stop at "merged":**
    two deferred edits to one file converge on different H2 sections; a project *fork* is edited
    directly, not reached by `config sync`).
 4. **Now** implement/finish the deferred live-vault-*measured* members against the now-live vault.
-5. Verify the alignment: no template drift, no surviving stale claim, no stray `.bak`.
+5. Verify the alignment: no template mirror pending a prune (a kept override's `info` row is
+   expected), no surviving stale claim, no stray `.bak`.
 
 ---
 

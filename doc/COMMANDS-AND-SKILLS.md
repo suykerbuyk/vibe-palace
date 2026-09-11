@@ -112,12 +112,16 @@ file — `vp config sync` and both upgrade commands walk only the embedded
 corpus — so it is safe, and it is the only way to publish a command to every
 project.
 
-**Do not override a built-in in `Templates/`.** A `Templates/` file at the
-same path as an embedded template is currently unsafe: `vp config sync --yes`
-(or its `o`/`O` answer) and the upgrade commands' reset replace it with the
-embedded copy, and the next sync prunes it and commits the deletion. Tracked
-as `vault-template-override-is-discarded-by-config-sync`. Override a built-in
-at the project tier instead.
+**Do not override a built-in in `Templates/`.** `vp config sync` no longer
+loses a `Templates/` file at the same path as an embedded template: it never
+writes one, `--yes` keeps it, and a prune never commits the deletion of a
+committed override — it restores HEAD's copy instead. But the upgrade
+commands' `--overwrite` still resets such a file to the embedded copy
+(`upgrade-overwrite-resets-vault-template-overrides`), and a host whose
+`templates.lock` lacks it prompts on every sync
+(`template-provenance-manifest-retires-the-host-local-lock`). An unedited copy
+of a built-in is identical to it and is pruned, so edit before syncing.
+Override a built-in at the project tier instead.
 
 To scope a command to a specific wing or room, place it in the appropriate
 subdirectory under `commands/{wing}/.wing/` or `commands/{wing}/{room}/`.
@@ -178,8 +182,9 @@ Save this as `audit-deps.md` and it's immediately available.
 
 This is the vault-wide location, for a skill with a **new** name. To
 override a built-in skill, use `{vault}/Projects/{project}/skills/{name}/`
-instead — a `Templates/skills/` copy of a built-in is currently discarded by
-`vp config sync --yes` (see [Override behavior](#override-behavior)).
+instead — a `Templates/skills/` copy of a built-in can still be reset to the
+embedded copy by `vp skills upgrade --overwrite` (see
+[Override behavior](#override-behavior)).
 
 Skills are always **directory-form** — a `{name}/` subdirectory
 containing `SKILL.md` (and optionally a `references/` tree). Flat-file

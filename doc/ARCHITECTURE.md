@@ -1278,9 +1278,12 @@ reconciler-owned mirror. Templates flow through four stations:
    reconciler or upgrade command writes. A *new* name under
    `<vault>/Templates/` is the vault-wide tier and is equally safe —
    nothing iterates it. An override of a *built-in* under `Templates/` is
-   currently unsafe (see `vault-template-override-is-discarded-by-config-sync`):
-   no writer records a lock baseline for it, so it prompts on every sync,
-   and an `o` answer turns it into a mirror the next sync prunes.
+   no longer lost by `vp config sync` (below), but is still not
+   recommended: no writer records a lock baseline for it, so it prompts
+   on every sync on a host whose lock lacks it
+   (`template-provenance-manifest-retires-the-host-local-lock`), and the
+   upgrade commands' `--overwrite` resets it to the embedded copy
+   (`upgrade-overwrite-resets-vault-template-overrides`).
 4. **Reconcile on `vp config sync`.** The `TemplateTreeReconciler` in
    `Materialize` mode reads the lock, hashes each vault file, and
    consults the current embedded SHA for each resource; the decision
@@ -1300,25 +1303,128 @@ matching case:
 | vault file absent | **Unchanged** — served from the embedded floor (a dangling lock entry is dropped) |
 | lock present, vault == lock | **Delete** — prune the reconciler-owned mirror |
 | lock present, vault == embedded | **Delete** — prune (byte-identical to current embedded; lock stale) |
-| lock present, embedded == lock | **Unchanged** — user override, kept |
+| lock present, embedded == lock | **Unchanged** — operator override of a built-in, kept |
 | lock present, otherwise | **Prompt** — diverged (user-edited AND embedded bumped) |
 | no lock, vault ≠ embedded | **Prompt** — diverged (no lock, bytes differ from embedded) |
 
-No row plans a Create or an Update: nothing is ever copied into the
-vault on its own. A prune backs the file up to a sibling `.bak` before
-removing it, and `vp config sync` then commits the deletion to the vault
-repo (`propagatePrunedMirrors`), so it survives a pull on another host.
+No row plans a Create or an Update, and `applyMaterialize` reports
+either kind as an error rather than executing it: **the Templates
+reconcile never writes over a template.** (The one file `vp config sync`
+creates under `Templates/` is an `n` answer's `.new` sidecar, which the
+orchestrator writes.) The reconcile's one destructive operation is the
+prune, and it removes only bytes provably vp's. The Delete action's
+`Details` carry `embedded_sha=` and `lock_sha=`; `reconcile.PruneBasis`
+is the one definition of that accept set, and every check below reads
+it. No `.bak` is written — the bytes removed are an embedded copy — and
+a `.bak` already beside the file (an earlier overwrite's or an upgrade
+reset's copy of the operator's bytes) is left byte-for-byte. Who
+removes the file depends on how git sees the vault
+(`storage.InspectVaultGit`, which looks for a `.git` directory *or*
+file at the vault and every directory above it, then asks git):
+
+- **Unversioned vault.** Apply re-hashes the file immediately before
+  `os.Remove` and removes it only if the hash is still in the accept
+  set; otherwise it keeps the file (`<path> changed since plan; kept`).
+  The orchestrator can sit on a prompt between Plan and Apply for as
+  long as the operator likes, and an edit made meanwhile must survive.
+- **Git vault** (the top level of its own repository: an ordinary
+  clone, a linked worktree or a submodule). The reconciler runs with
+  `ExternalPrune`: Apply removes nothing and drops no lock entry, and
+  `pruneOnGitVault` hands the paths to `storage.PruneMirrorsVerified`.
+  **Nothing is removed until git has answered.** Under the vault commit
+  lock, after the already-ahead reconcile may have moved HEAD, each path
+  is checked: the worktree bytes; the index against HEAD (a staged
+  change keeps the path); HEAD's blob, read raw (`git ls-tree` to tell
+  "absent" from a git error, then `git cat-file blob`); and, after a
+  fresh fetch, each remote tip's blob. A remote that cannot be fetched,
+  or whose tracking ref does not resolve, defers every tracked prune
+  (`prune deferred: remote not verified`, exit 2) — a stale tracking
+  ref is never trusted. A HEAD blob that is
+  operator content — the state an old binary's overwrite or an upgrade
+  reset leaves — is restored in place with `git checkout HEAD --`, and
+  the file is never removed. A remote tip holding operator content keeps
+  the path (`prune deferred — pull first, and keep that copy`). Because
+  every remote was just fetched (or the prune deferred), a prune commit
+  cannot strand behind, or delete in a later merge, an override that was
+  on a remote when the sync ran; an override pushed in the seconds
+  between that fetch and the push makes the push reject, which is
+  reported (below). The committer identity is checked before the first
+  tracked removal. Any git error defers the path (kept, printed as a
+  `[Skip]` row) and the command exits non-zero. Only then is the file
+  removed, through `vaultfs.Delete` with the accepted bytes' SHA as its
+  compare-and-set, under the path's advisory lock; HEAD is re-read
+  before staging, and removed paths are re-judged (and restored) if it
+  moved. The commit message
+  states what was checked and names each path's basis.
+- **Vault nested in another repository** (a project or dotfiles repo
+  whose top level is above the vault — `git rev-parse --show-toplevel`
+  is not the vault root). That repository is not the vault's: vp never
+  fetches, rebases, stages into, commits or pushes it
+  (`storage.PruneMirrorsInEnclosingRepo`). It reads HEAD and the index
+  and restores a vault path from HEAD exactly as above, and removes an
+  untracked mirror; a tracked mirror is kept, with a `[Skip]` row naming
+  the enclosing repository.
+- **Git vault git cannot read** (`git` not on PATH, a dangling `.git`
+  file, "dubious ownership"): every prune is planned as `Skip` (`prune
+  deferred`). Without git on PATH the run succeeds; a repository git
+  refuses is an error.
+
+What is guaranteed on a git vault, exactly: a file whose committed copy
+is operator content is never removed; no file is removed unless every
+check passed, including a fresh fetch of every remote; and no
+repository other than the vault's own is ever written. A removal can
+stay uncommitted only through a stage or commit failure — whose staging
+is undone (`git reset -q -- <paths>`), so vp's deletion never sits in
+the index as if it were someone else's — or a failed re-check after HEAD
+moved. Such a path is printed with its manual
+`git -C <vault> checkout HEAD -- <path>`, the command exits non-zero,
+and its lock entry is kept, so the next sync plans it again (case 1b:
+absent file, lock entry present) and commits the removal. A push the
+remote rejects, an aborted rebase or an autostash conflict after the
+prune commit is reported with the commit, the paths and the rule — a
+remote's copy of these paths is operator content, keep it — and the
+command exits non-zero. Lock entries are dropped only for outcomes known
+to be final (`ForgetPruned`); a restored override keeps its entry and
+stays a silent case-4 keep. `pruned=N` counts only files this run
+removed.
+
+The commit lock serialises against every vp committer; `storage.Pull`
+does not take it, which is safe because a concurrent merge fails on
+git's own index guards rather than losing anything. The remaining
+unlocked windows are named, not closed: on an unversioned vault the
+re-hash-then-remove is not under a per-path lock (owned by
+`template-tree-raw-vault-writes-bypass-the-lock-funnel`); a non-vp
+editor save in the instant between the check and a `git checkout HEAD
+--` restore is overwritten; and a `vp vault commit --paths .` racing the
+sync can still commit whatever the worktree holds.
+
+**Known limitations** (recorded, not fixed here):
+
+- **Filtered content** — git-crypt, LFS, any clean/smudge filter. The
+  verifier hashes HEAD's *raw* blob, but the worktree bytes were
+  smudged, so on such a vault every mirror's HEAD blob fails the check
+  and is "restored" (mislabelled operator content), then re-adopted and
+  re-planned on every sync. It churns but loses nothing. The fix is the
+  shipped-SHA manifest in
+  `template-provenance-manifest-retires-the-host-local-lock`.
+- **Git processes under the lock.** About five git processes run per
+  path while the vault commit lock is held (`ls-tree`, `ls-files -s`,
+  `cat-file`, plus the remote-tip reads), and the remote fetch runs
+  under it too, only when a tracked prune is pending. Batching them
+  (`ls-tree -z HEAD -- <paths>`, `ls-files -s -z -- <paths>`,
+  `cat-file --batch`) is left for when prune volume makes it matter.
 
 `ActionPrompt` carries all three SHAs and the embedded relpath in its
 `Details`, so the orchestrator can render the menu without re-reading
 files. `vp config sync` (`resolveTemplatePrompts`) resolves each answer
 before Apply runs — Apply itself never touches stdin/stdout, and returns
-an error if it ever sees a Prompt. `s` drops the action; `o` rewrites it
-to an Update of the same target, which the Executor applies with a
-`.bak` copy of the previous bytes; `n` writes a `.new` sidecar directly
-and drops the action. No answer produces a Create; the Create branch of
-`applyMaterialize` is unreachable from any Plan. Uppercase `S`/`O`/`N`
-apply the choice to every remaining Prompt, and `--yes` answers `o`.
+an error if it ever sees a Prompt. Both answers drop the action: `s`
+keeps the file and prints a `[keep]` line; `n` first writes a `.new`
+sidecar with the embedded bytes. Uppercase `S`/`N` apply the choice to
+every remaining Prompt, and `--yes` (like end-of-input) answers `s`.
+There is no overwrite answer: `o` was the first link of a chain in which
+the next sync pruned the overwritten file and committed the deletion to
+every host.
 
 #### Role of `templates.lock`
 
@@ -1327,11 +1433,13 @@ path) records the embedded SHA a vault file was last written from. It is
 what makes a **prune** safe: `vault == lock` is unambiguous evidence the
 file still holds the bytes a reconciler wrote, so deleting it (the
 embedded floor serves it) cannot discard user intent. There is no
-auto-Update branch any more. A missing lock reads as an empty one
+auto-Update branch any more. It also bounds what a prune **commit** may
+delete: HEAD's blob must hash to the current embedded SHA or this
+host's lock baseline for the path. A missing lock reads as an empty one
 (`templates.ReadLock`), and `vp init` never creates it; the first
 `vp config sync` does. vp never stages the lock to git, so it is
 host-local in practice — a tracked override on one host has no lock
-entry on the next.
+entry on the next, where it is a case-6 Prompt that every answer keeps.
 
 #### Two upgrade entry points
 
@@ -1342,7 +1450,8 @@ different UX contracts, and `vp init` is neither:
    destination scaffold) — `internal/reconcile/template_tree.go`. Runs
    the decision table above over every embedded resource (commands +
    skills): prunes mirrors, keeps overrides, and prompts
-   `[s]kip / [o]verwrite (writes .bak) / [n]ew-sidecar` on a diverged one.
+   `[s]kip — keep your file / [n]ew-sidecar` on a diverged one. It never
+   writes a template.
 2. **Two-SHA diff** (`vp commands upgrade`, `vp skills upgrade`) —
    `internal/commands/upgrade.go`. Compares embedded vs an *existing*
    vault copy only (an absent one is `unneeded`, never created), renders
@@ -1355,7 +1464,10 @@ different UX contracts, and `vp init` is neither:
    interactively by the user.
 
 They do not converge on the same vault content: path 2's reset leaves a
-byte-identical mirror, which path 1 then prunes. The shared prompt
+byte-identical mirror, which path 1 then prunes — and, when the reset
+override was committed, restores from HEAD in place instead of removing
+it, undoing the reset (`upgrade-overwrite-resets-vault-template-overrides`
+decides what a reset should mean). The shared prompt
 loop — `runUpgradePrompt` in `cmd/vp/upgrade_common.go` — is used by
 both `vp commands upgrade` and `vp skills upgrade`; identity `GroupBy`
 preserves the per-change prompt for commands while the skills path uses

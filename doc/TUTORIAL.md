@@ -1022,12 +1022,17 @@ What each command does to your vault's `Templates/` directory:
   project you initialise.
 - **`vp config sync`** runs the override-only reconcile, comparing the
   vault SHA, the SHA recorded in `.vibe-palace/templates.lock`, and the
-  embedded SHA. A byte-identical mirror of a built-in is pruned (and on a
-  git vault the deletion is committed to the vault repo); an override
-  whose embedded copy has not changed since the lock recorded it is kept;
-  a diverged override prompts `s`kip / `o`verwrite / `n`ew-sidecar.
-  `--yes` answers `o`. Files with names no built-in uses are never
-  touched.
+  embedded SHA. It never writes over a template (the one file it
+  creates under `Templates/` is an `n` answer's `.new` sidecar). A
+  byte-identical mirror of a built-in is pruned, with no `.bak`, after a
+  re-hash that keeps it if it changed since the plan. On a git vault
+  nothing is removed until HEAD's copy, and each remote's, is checked to
+  be vp's too; the removal is then committed. When HEAD's copy is yours
+  it is restored in place instead, and a prune git cannot verify is
+  deferred. An override whose embedded copy has not
+  changed since the lock recorded it is kept; a diverged override
+  prompts `s`kip (keep) / `n`ew-sidecar, and `--yes` answers `s`. Files
+  with names no built-in uses are never touched.
 - **`vp commands upgrade` / `vp skills upgrade`** run the two-SHA
   interactive diff path — embedded vs vault, with unified diffs and
   accept/skip/accept-all/quit prompts — and only ever offer to *reset* a
@@ -1038,7 +1043,8 @@ A first `vp init` onto an older vault that still holds byte-identical
 mirrors leaves them where they are. The `template-drift` check (in
 `vp check`, and the restart/wrap selector calls) reports each one as
 drift pending a prune — an `[info]`, not an error — until you run
-`vp config sync`.
+`vp config sync`. It reports every override of a built-in as `[info]`
+too, so an override that shadows the binary's copy stays visible.
 
 Man pages are available for all commands: `man vp`, `man vp-search`,
 `man vp-commands`, `man vp-commands-upgrade`, `man vp-skills`,
@@ -1099,45 +1105,100 @@ every project. What happens to it depends on its name:
   This is the only way to publish a command to every project, and
   `vp commands list` shows it at tier `vault`.
 - **An override of a built-in** — `Templates/commands/wrap.md` — is
-  **currently unsafe**. With no lock entry the reconciler cannot tell it
-  from a stale mirror, so every `vp config sync` stops on it:
+  **still not recommended**, although `vp config sync` no longer loses
+  it. With no lock entry the reconciler cannot tell it from a stale
+  mirror, so every interactive `vp config sync` stops on it:
 
   ```
   === TemplateTree:Templates Prompt ===
   Templates/commands/wrap.md diverged (no lock, bytes differ from embedded)
-    embedded_sha=c7f0...
-    vault_sha=ae12...
+    embedded_sha=4c91c8b4...
+    vault_sha=6b8e6594...
     lock_sha=
     embedded_relpath=commands/wrap.md
-  [s]kip / [o]verwrite (writes .bak) / [n]ew-sidecar — uppercase for all remaining items, [q]uit:
+  [s]kip — keep your file / [n]ew-sidecar — write <file>.new with the embedded copy — uppercase for all remaining items, [q]uit: s
+  [keep] Templates/commands/wrap.md — diverged (no lock, bytes differ from embedded); vp config sync never overwrites a Templates/ file
   ```
 
-  `--yes` (or `o`/`O`) replaces it with the embedded bytes, and so does
-  accepting `vp commands upgrade`'s reset. The file is then a
-  byte-identical mirror, so the *next* sync prunes it and, on a git
-  vault, commits and pushes the deletion. The lock entry and the `.bak`
-  that would have let you recover never leave the host that wrote them.
-  Tracked as `vault-template-override-is-discarded-by-config-sync`;
-  until it lands, override built-ins at the project tier.
+  `vp config sync` never writes over a template: every answer, and
+  `--yes`, keeps yours (`n` only adds a `.new` beside it). Two risks remain, and they are why the project
+  tier is the place to customise a built-in:
 
-**4. The three prompt answers.** Uppercase `S`/`O`/`N` applies the
-choice to every remaining Prompt row in the same run. The same prompt
-also fires, with `diverged (user-edited AND embedded bumped)`, for a
-tracked override whose embedded copy changed in a new release.
+  - `vp commands upgrade --overwrite` / `vp skills upgrade --overwrite`
+    reset the override to the embedded bytes (commands keep no `.bak`).
+    Tracked as `upgrade-overwrite-resets-vault-template-overrides`.
+  - A host whose `templates.lock` does not record the override prompts
+    on every sync. Tracked as
+    `template-provenance-manifest-retires-the-host-local-lock`.
 
-- `s` — vault file unchanged. No `.bak`, no `.new`. The lock is left
-  as-is, so the same Prompt fires again on the next sync.
-- `o` — vault file replaced by the embedded bytes. Your previous
-  content is *copied* to `wrap.md.bak` (overwriting any prior `.bak`),
-  and the lock records the embedded SHA. The file is now a reconciler-
-  owned mirror, so the next sync prunes it — and that prune writes the
-  file's current, embedded bytes to `wrap.md.bak`, overwriting the copy
-  of yours. Save the `.bak` somewhere else before the next sync if you
-  want to keep it.
+  If something does reset a *committed* override to the embedded bytes,
+  the next `vp config sync` checks HEAD's copy before removing
+  anything and — finding your content there — restores it in place
+  (`restored Templates/commands/wrap.md from HEAD`) instead of removing
+  or committing anything. If git cannot answer (no identity, an
+  unreadable index), the file is kept, a `[Skip] … prune deferred` row
+  says why, and the command exits non-zero. If a remote holds an
+  override you have not pulled, the prune is deferred until you pull;
+  if a remote cannot be reached, it is deferred too. A vault inside
+  another repository (a project or dotfiles repo) never has that
+  repository committed to or pushed: a tracked mirror there is kept. To drop an override on purpose,
+  `git rm` it and commit. An unedited copy of a built-in is identical to
+  it and is pruned, so edit before syncing.
+
+**4. The prompt answers.** Uppercase `S`/`N` applies the choice to every
+remaining Prompt row in the same run. The same prompt also fires, with
+`diverged (user-edited AND embedded bumped)`, for a tracked override
+whose embedded copy changed in a new release.
+
+- `s` — vault file unchanged, and a `[keep]` line says so. No `.bak`, no
+  `.new`. The lock is left as-is, so the same Prompt fires again on the
+  next sync. `--yes` and end-of-input both answer `s`.
 - `n` — vault file unchanged. The embedded bytes are written
   side-by-side to `wrap.md.new` for manual review. The lock is left
   as-is. Diff `wrap.md` against `wrap.md.new`, take the parts you want,
   and delete the `.new` when done.
+
+There is no overwrite answer. `o` existed until 2026-09-10: it replaced
+your file with the embedded copy, the next sync pruned the result, and
+the prune's commit pushed the deletion to every host. Typing `o` now
+re-prompts.
+
+**Rollout of the fix (surface v4).** The binary that stops this loss
+raises `MCPSurfaceVersion` to 4, so an older binary on another host is
+refused — exit 2, `action: cd ~/code/vibe-palace && git pull && make
+install` — instead of running the old chain against a vault it shares.
+Run `make install` on **every** host, then restart every AI harness on
+that host: a `vp mcp` still running the old binary is refused
+mid-session once the host's own hooks stamp v4. A host starts being
+refused when it pulls a vault an upgraded host has written to (any task
+write stamps `Projects/<p>/.surface`). Two windows remain: a lagging
+host that runs `vp config sync` before it pulls the stamp, and
+`VP_SURFACE_GATE=warn`. Never use that escape hatch for `vp config sync`
+or the upgrade commands.
+
+**Recovering an override an older binary already deleted.**
+
+1. Install the fixed binary on every host first.
+2. List deletions under `Templates/`:
+   `git -C <vault> log --format='%h %ad %s' --date=short --diff-filter=D -- Templates/`.
+   vp's prune commits have the subject
+   `chore(templates): prune vault mirrors superseded by the embedded floor`.
+3. For each path: `git -C <vault> show <sha>^:<path>`. If it differs
+   from what `vp_get_command` / `vp skills show` serves, restore it with
+   `git -C <vault> checkout <sha>^ -- <path>` and commit. When in doubt,
+   restore. An unneeded restore of the *current* embedded copy is a
+   mirror the next sync prunes. An older embedded version is not: on a
+   host whose lock does not record it, it is kept and prompts on every
+   sync while shadowing the built-in with stale bytes — delete such a
+   restore by hand (`git rm` and commit) once you have confirmed it is
+   not yours.
+4. A non-git vault, or an override never committed: after one sync by
+   an older binary, `<path>.bak` holds your override — rename it back.
+   After two, the `.bak` holds embedded bytes and the override cannot be
+   recovered from vp's side.
+5. Older binaries leave `*.new`, `*.new.bak`, prune `.bak` files holding
+   embedded bytes, and `.vibe-palace/templates.lock` on each host. They
+   stay until you remove them.
 
 **Promoting back to the `vp` source tree.** Vibe-palace cannot automate
 promotion because at runtime it does not know where your vibe-palace
