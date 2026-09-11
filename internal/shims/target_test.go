@@ -20,7 +20,6 @@ func sampleItem() SkillItem {
 			Paths:       []string{"**/*.go", "internal/**"},
 			Lifetime:    "postural",
 		},
-		VaultPath: "/vault/Templates/skills/pairing/SKILL.md",
 	}
 }
 
@@ -75,8 +74,12 @@ func TestRenderClaudeSkillGolden(t *testing.T) {
 		" -->\n",
 		"Call `vp_skill` with `name=\"pairing\"`",
 		"stack\nadditively",
-		"`vps-clear` drops all",
-		shimCloseDelim,
+		"`vps-clear` drops all.\n\n",
+		"If the `vp_skill` tool is not in your tool list and cannot be loaded\n",
+		"(search your deferred or MCP tools for `vp_skill` first), run\n",
+		"`vp skills show pairing` from the project directory",
+		"`vp skills show pairing --section <ref>`",
+		"ask the user to run that command and paste its output.\n" + shimCloseDelim + "\n",
 	}
 	for _, m := range mustContain {
 		if !strings.Contains(out, m) {
@@ -95,18 +98,24 @@ func TestRenderCursorRuleGolden(t *testing.T) {
 		"---\n\n",
 		"<!-- vibe-palace:shim v=1 sha=",
 		"Call `vp_skill` with `name=\"pairing\"`",
-		"If MCP tools are not available",
-		"/vault/Templates/skills/pairing/SKILL.md",
-		shimCloseDelim,
+		"(search your deferred or MCP tools for `vp_skill` first), run\n",
+		"`vp skills show pairing` from the project directory",
+		"`vp skills show pairing --section <ref>`",
+		"ask the user to run that command and paste its output.\n" + shimCloseDelim + "\n",
 	}
 	for _, m := range mustContain {
 		if !strings.Contains(out, m) {
 			t.Errorf("CursorRule render missing %q in:\n%s", m, out)
 		}
 	}
+	for _, bad := range []string{"If MCP tools are not available", "Templates/", "{vault}"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("CursorRule render still carries %q:\n%s", bad, out)
+		}
+	}
 }
 
-func TestRenderCursorRuleEmptyPathsAndVault(t *testing.T) {
+func TestRenderCursorRuleEmptyPaths(t *testing.T) {
 	it := SkillItem{
 		Name: "focus",
 		Frontmatter: skills.SkillFrontmatter{
@@ -118,8 +127,8 @@ func TestRenderCursorRuleEmptyPathsAndVault(t *testing.T) {
 	if !strings.Contains(out, "globs: []\n") {
 		t.Errorf("empty Paths should render [], got:\n%s", out)
 	}
-	if !strings.Contains(out, "{vault}/Templates/skills/focus/SKILL.md") {
-		t.Errorf("missing fallback placeholder when VaultPath empty:\n%s", out)
+	if !strings.Contains(out, "`vp skills show focus`") {
+		t.Errorf("fallback must name the CLI for the item's own skill:\n%s", out)
 	}
 }
 
@@ -153,14 +162,23 @@ func TestExpectedSkillShaStable(t *testing.T) {
 	if ExpectedSkillSha(CursorRule, it) == ExpectedSkillSha(ClaudeSkill, it) {
 		t.Error("ClaudeSkill and CursorRule produced same sha")
 	}
-	// Changing vault path affects CursorRule but not ClaudeSkill.
+	// A Paths change alters the CursorRule sha (Paths render into its globs
+	// line) but not the ClaudeSkill sha (a Claude skill shim never writes
+	// them); a Lifetime change, rendered by no kind, alters neither.
 	it3 := it
-	it3.VaultPath = "/different"
+	it3.Frontmatter.Paths = []string{"cmd/**"}
 	if ExpectedSkillSha(CursorRule, it3) == ExpectedSkillSha(CursorRule, it) {
-		t.Error("VaultPath change did not alter CursorRule hash")
+		t.Error("Paths change did not alter CursorRule hash")
 	}
 	if ExpectedSkillSha(ClaudeSkill, it3) != ExpectedSkillSha(ClaudeSkill, it) {
-		t.Error("VaultPath change altered ClaudeSkill hash (should not)")
+		t.Error("Paths change altered ClaudeSkill hash (should not)")
+	}
+	it4 := it
+	it4.Frontmatter.Lifetime = "ephemeral"
+	for _, kind := range []TargetKind{ClaudeSkill, CursorRule, GrokSkill} {
+		if ExpectedSkillSha(kind, it4) != ExpectedSkillSha(kind, it) {
+			t.Errorf("%s: Lifetime change altered the hash, but no renderer writes it", kind)
+		}
 	}
 }
 

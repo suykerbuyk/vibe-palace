@@ -167,14 +167,9 @@ func listSkillItems(resolver *vpctx.Resolver, rep *GlobalInstallReport) []SkillI
 			rep.Errors = append(rep.Errors, "resolve skill "+ri.Name+": "+err.Error())
 			continue
 		}
-		vaultPath := ""
-		if resolver.VaultRoot() != "" {
-			vaultPath = filepath.Join(resolver.VaultRoot(), "Templates", "skills", ri.Name, "SKILL.md")
-		}
 		items = append(items, SkillItem{
 			Name:        ri.Name,
 			Frontmatter: sd.Frontmatter,
-			VaultPath:   vaultPath,
 		})
 	}
 	return items

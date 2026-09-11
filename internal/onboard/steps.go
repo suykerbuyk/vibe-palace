@@ -489,12 +489,34 @@ func stepCommandShims(_ context.Context, req Request) []Outcome {
 	if rep.Empty() {
 		status = Info
 	}
+	var details []string
+	if len(rep.SkillsUpdated) > 0 {
+		// Name what re-rendered: an upgrade that re-keys every skill shim (a
+		// changed fallback, say) should not arrive as a bare "updated N".
+		details = append(details, "  skill shims re-rendered: "+skillShimLabels(rep.SkillsUpdated))
+	}
 	return append(rows, Outcome{
 		Name:    "Slash-command shims (project)",
 		Status:  status,
 		Created: len(rep.CommandsAdded)+len(rep.SkillsAdded) > 0,
 		Summary: summary,
+		Details: details,
 	})
+}
+
+// skillShimLabels joins skill-shim names for a Details line, showing the Grok
+// command hub (reserved skill name "vpc") as "the Grok /vpc hub" so it does not
+// read as a persona called vpc.
+func skillShimLabels(names []string) string {
+	labels := make([]string, len(names))
+	for i, n := range names {
+		if n == shims.GrokHubName {
+			labels[i] = "the Grok /vpc hub"
+			continue
+		}
+		labels[i] = n
+	}
+	return strings.Join(labels, ", ")
 }
 
 // stepHookWiring ensures vp hook entries are installed in

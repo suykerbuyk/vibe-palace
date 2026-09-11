@@ -44,30 +44,38 @@ func TestRenderGrokSkillGolden(t *testing.T) {
 		" -->\n",
 		"Call `vp_skill` with `name=\"pairing\"`",
 		"stack\nadditively",
-		"`vps-clear` drops all",
-		"If MCP tools are not available",
-		"/vault/Templates/skills/pairing/SKILL.md",
-		shimCloseDelim,
+		"`vps-clear` drops all.\n\n",
+		"If the `vp_skill` tool is not in your tool list and cannot be loaded\n",
+		"(search your deferred or MCP tools for `vp_skill` first), run\n",
+		"`vp skills show pairing` from the project directory",
+		"`vp skills show pairing --section <ref>`",
+		"ask the user to run that command and paste its output.\n" + shimCloseDelim + "\n",
 	}
 	for _, m := range mustContain {
 		if !strings.Contains(out, m) {
 			t.Errorf("GrokSkill render missing %q in:\n%s", m, out)
 		}
 	}
-	// Must NOT carry the Claude-only frontmatter keys.
-	for _, banned := range []string{"user-invocable", "argument-hint"} {
+	// Must NOT carry the Claude-only frontmatter keys, nor the retired
+	// unconditional trigger and its vault path.
+	for _, banned := range []string{"user-invocable", "argument-hint", "If MCP tools are not available", "Templates/", "{vault}"} {
 		if strings.Contains(out, banned) {
 			t.Errorf("GrokSkill render unexpectedly contains %q:\n%s", banned, out)
 		}
 	}
 }
 
-func TestRenderGrokSkillEmptyVaultFallback(t *testing.T) {
-	it := skillItem("focus", "Focus persona")
-	it.VaultPath = ""
-	out := RenderSkill(GrokSkill, it)
-	if !strings.Contains(out, "{vault}/Templates/skills/focus/SKILL.md") {
-		t.Errorf("missing default vault fallback when VaultPath empty:\n%s", out)
+// TestRenderGrokSkillFallbackNamesCLI: the persona Grok shim's fallback names
+// the item's own `vp skills show` command, as the user-global install renders
+// it even on a host with no vault configured (where the old fallback wrote a
+// literal "{vault}" no agent could resolve).
+func TestRenderGrokSkillFallbackNamesCLI(t *testing.T) {
+	out := RenderSkill(GrokSkill, skillItem("focus", "Focus persona"))
+	if !strings.Contains(out, skillFallback("focus")) || !strings.Contains(out, "`vp skills show focus`") {
+		t.Errorf("fallback must name `vp skills show focus`:\n%s", out)
+	}
+	if strings.Contains(out, "{vault}") {
+		t.Errorf("fallback still carries the {vault} placeholder:\n%s", out)
 	}
 }
 
@@ -85,12 +93,6 @@ func TestRenderedGrokShaMatchesExpected(t *testing.T) {
 	expected := ExpectedSkillSha(GrokSkill, it)
 	if !strings.Contains(RenderSkill(GrokSkill, it), "sha="+expected+" ") {
 		t.Errorf("GrokSkill rendered sha %q not in output", expected)
-	}
-	// VaultPath must key the GrokSkill hash (vault fallback is in the bytes).
-	it2 := it
-	it2.VaultPath = "/different"
-	if ExpectedSkillSha(GrokSkill, it2) == expected {
-		t.Error("VaultPath change did not alter GrokSkill hash")
 	}
 }
 
@@ -149,8 +151,9 @@ func TestRenderGrokHubGolden(t *testing.T) {
 		}
 	}
 	// The hub must not hardcode a project anywhere, nor the Claude-only keys —
-	// and must not re-acquire the retired "sends them WHOLE" claim.
-	for _, banned := range []string{"user-invocable", "argument-hint", "grok-first-class-citizen", "WHOLE"} {
+	// and must not re-acquire the retired "sends them WHOLE" claim. It carries
+	// no skill fallback: there is no `vp commands show` for it to name.
+	for _, banned := range []string{"user-invocable", "argument-hint", "grok-first-class-citizen", "WHOLE", "vp skills show"} {
 		if strings.Contains(out, banned) {
 			t.Errorf("GrokHub render unexpectedly contains %q", banned)
 		}

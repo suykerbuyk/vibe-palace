@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
@@ -770,12 +769,9 @@ func skillShimItems(resolver *vpctx.Resolver) ([]shims.SkillItem, error) {
 		if err != nil {
 			continue
 		}
-		vaultPath := filepath.Join(resolver.VaultRoot(),
-			"Templates", "skills", ri.Name, "SKILL.md")
 		items = append(items, shims.SkillItem{
 			Name:        ri.Name,
 			Frontmatter: sd.Frontmatter,
-			VaultPath:   vaultPath,
 		})
 	}
 	return items, nil

@@ -41,10 +41,11 @@ const ShimDir = ".claude/commands"
 // .grok/plugins/) with the identical naming convention used for Claude.
 const GrokCommandsPluginDir = ".grok/plugins/vibe-palace/commands"
 
-// shim marker delimiters. The opening marker carries a 7-hex content hash
-// derived from the render inputs and the template version; the closing
-// marker is static so the regex can find the marker pair regardless of
-// sha contents.
+// shim marker delimiters. The opening marker carries a 7-hex sha: for a
+// command shim it is derived from the render inputs and the template version
+// (contentHash); for a skill shim it is taken over the rendered bytes with the
+// sha blanked (skillContentHash). The closing marker is static so the regex
+// can find the marker pair regardless of sha contents.
 const (
 	shimOpenFmt    = "<!-- vibe-palace:shim v=%d sha=%s -->"
 	shimCloseDelim = "<!-- vibe-palace:shim-end -->"

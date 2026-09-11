@@ -21,7 +21,6 @@ func skillItem(name, desc string, paths ...string) SkillItem {
 			Paths:       paths,
 			Lifetime:    "postural",
 		},
-		VaultPath: "/vault/Templates/skills/" + name + "/SKILL.md",
 	}
 }
 

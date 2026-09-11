@@ -26,11 +26,15 @@ const (
 	ClaudeCommand TargetKind = iota
 	// ClaudeSkill emits one directory per skill under .claude/skills/ —
 	// specifically .claude/skills/vps-<name>/SKILL.md. Body delegates to
-	// the vp_skill MCP tool and teaches the additive persona contract.
+	// the vp_skill MCP tool, teaches the additive persona contract, and
+	// carries the skillFallback `vp skills show` fallback, gated on vp_skill
+	// being unloadable.
 	ClaudeSkill
 	// CursorRule emits one .mdc file per skill under .cursor/rules/. Body
-	// calls vp_skill with a vault-path fallback so Cursor surfaces without
-	// MCP still resolve the persona.
+	// calls vp_skill, with a `vp skills show` fallback gated on vp_skill being
+	// unloadable, so a Cursor session without MCP still resolves the persona.
+	// vp registers no MCP server with Cursor, so there the fallback is the
+	// common path.
 	CursorRule
 	// GrokSkill emits one directory per skill under .grok/skills/ —
 	// .grok/skills/vps-<name>/SKILL.md — mirroring ClaudeSkill, for xAI's
@@ -56,11 +60,13 @@ func (k TargetKind) String() string {
 	}
 }
 
-// skillShimVersion bumps when the rendered ClaudeSkill/CursorRule schema
-// changes in a way we want to force-refresh existing files. Mirrors the
-// per-target-version design of shimVersion for ClaudeCommand, kept in a
-// separate constant so command-shim version bumps don't invalidate skill
-// shims and vice versa.
+// skillShimVersion is the v= in every skill shim's marker, the version of the
+// marker format and the ScanShim contract the skill planners gate on. It is
+// NOT how a text change reaches existing shims: the skill-shim sha is taken
+// over the rendered bytes (skillContentHash), so any edit to what a renderer
+// writes re-keys every affected shim by itself. Bump this only if the marker
+// format or the ScanShim contract changes. It is separate from shimVersion,
+// so a command-shim bump never invalidates skill shims and vice versa.
 const skillShimVersion = 1
 
 // Per-target filename and directory constants. Split from the top-level
@@ -92,19 +98,18 @@ func SkillDirName(name string) string { return SkillFilePrefix + name }
 // CursorRuleFilename returns the .mdc filename for a given skill.
 func CursorRuleFilename(name string) string { return SkillFilePrefix + name + ".mdc" }
 
-// SkillItem is the Plan/Apply input for ClaudeSkill and CursorRule
-// targets. Name drives the filename and persona argument; Frontmatter
-// carries description/paths (parsed by internal/skills.Parse via
-// context.ResolveSkillDir). Paths is Cursor-only — it renders into the
-// Cursor rule's globs line; a path-less skill renders `globs: []` and
-// still activates by description.
+// SkillItem is the Plan/Apply input for the ClaudeSkill, CursorRule and
+// GrokSkill targets. Name drives the filename, the persona argument and the
+// `vp skills show <name>` fallback; Frontmatter carries description/paths
+// (parsed by internal/skills.Parse via context.ResolveSkillDir). Paths is
+// Cursor-only — it renders into the Cursor rule's globs line; a path-less
+// skill renders `globs: []` and still activates by description.
+//
+// No host path is part of an item: a shim never names a vault file, so the
+// rendered bytes do not depend on where this host's vault lives.
 type SkillItem struct {
 	Name        string
 	Frontmatter skills.SkillFrontmatter
-	// VaultPath is the filesystem path where the SKILL.md is found in
-	// the vault (used for CursorRule's vault-fetch fallback). Empty
-	// string means no vault fallback will be rendered.
-	VaultPath string
 }
 
 // TargetDir returns the absolute directory where shims of this kind live
@@ -138,25 +143,24 @@ func TargetFile(kind TargetKind, projectRoot, name string) string {
 	}
 }
 
-// skillContentHash keys the skill-shim sha on every input that can change
-// the rendered bytes: target kind, template version, name, description,
-// paths (order-sensitive, rendered verbatim into the Cursor globs line),
-// and vault path for the Cursor fallback. Keeping the hash input-based
-// (rather than over the rendered output) avoids the self-referential
-// problem of embedding the sha into the hashed content.
+// skillContentHash is the skill-shim sha: the first 7 hex characters of
+// sha256 over "kind=<kind>\x00" followed by the file exactly as rendered with
+// the marker's sha left blank ("<!-- vibe-palace:shim v=1 sha= -->").
+//
+// Taking the sha over the rendered bytes means every byte a renderer writes
+// keys it — the frontmatter, the vp_skill delegation, the skillFallback text,
+// the Grok hub body and the marker's v= — so an edit to any of them reaches
+// every existing shim with no version bump and no rule to remember. Inputs a
+// renderer does not write (a skill's lifetime, or Paths outside the Cursor
+// rule) do not key it. Blanking the sha removes the self-reference, and
+// rendering never calls this function, so there is no recursion.
+//
+// An independent check needs only a rendered file: blank its marker sha with
+// markerRegexp, prefix "kind=<kind>\x00", hash, and compare.
 func skillContentHash(kind TargetKind, item SkillItem) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "kind=%s\x00v=%d\x00name=%s\x00desc=%s\x00lifetime=%s",
-		kind.String(), skillShimVersion, item.Name,
-		item.Frontmatter.Description, item.Frontmatter.Lifetime)
-	for _, p := range item.Frontmatter.Paths {
-		fmt.Fprintf(h, "\x00path=%s", p)
-	}
-	if kind == CursorRule || kind == GrokSkill {
-		// Both CursorRule and GrokSkill render a vault-path fallback whose
-		// text is part of the file bytes, so the vault path keys the hash.
-		fmt.Fprintf(h, "\x00vault=%s", item.VaultPath)
-	}
+	fmt.Fprintf(h, "kind=%s\x00", kind.String())
+	h.Write([]byte(renderSkillWithSha(kind, item, "")))
 	sum := h.Sum(nil)
 	return hex.EncodeToString(sum)[:7]
 }
@@ -168,27 +172,53 @@ func ExpectedSkillSha(kind TargetKind, item SkillItem) string {
 	return skillContentHash(kind, item)
 }
 
-// RenderSkill returns the file body for a ClaudeSkill or CursorRule
-// shim. Output uses LF line endings and is deterministic for a given
-// (kind, item, template version) triple.
+// RenderSkill returns the file body for a ClaudeSkill, CursorRule or
+// GrokSkill shim, carrying its skillContentHash in the marker. Output uses LF
+// line endings and is deterministic for a given (kind, item) pair and binary.
 func RenderSkill(kind TargetKind, item SkillItem) string {
+	return renderSkillWithSha(kind, item, skillContentHash(kind, item))
+}
+
+// renderSkillWithSha renders a skill shim with the given sha in its marker.
+// skillContentHash calls it with "" to get the bytes it hashes.
+func renderSkillWithSha(kind TargetKind, item SkillItem, sha string) string {
 	switch kind {
 	case ClaudeSkill:
-		return renderClaudeSkill(item)
+		return renderClaudeSkill(item, sha)
 	case CursorRule:
-		return renderCursorRule(item)
+		return renderCursorRule(item, sha)
 	case GrokSkill:
 		if item.Name == GrokHubName {
-			return renderGrokHub(item)
+			return renderGrokHub(item, sha)
 		}
-		return renderGrokSkill(item)
+		return renderGrokSkill(item, sha)
 	default:
 		return ""
 	}
 }
 
-func renderClaudeSkill(item SkillItem) string {
-	sha := skillContentHash(ClaudeSkill, item)
+// skillFallback is the MCP-less fallback every persona shim (ClaudeSkill,
+// CursorRule, persona GrokSkill) writes after its vp_skill delegation — the
+// single source of that text.
+//
+// It names a command, never a file: under override-only Templates/ no file on
+// the host holds a built-in skill body, and `vp skills show` serves the same
+// resolver vp_skill does, defaulting the project from the working directory.
+// Its trigger requires the agent to search its deferred or MCP tools for
+// vp_skill first, mirroring the Grok hub's "load its schema first" guard, so a
+// host that defers MCP tools (Claude Code, Grok) loads vp_skill instead of
+// shelling out. The paste clause covers a host with no shell tool, an
+// ask-only mode, or a workspace where vp is not installed.
+func skillFallback(name string) string {
+	return "If the `vp_skill` tool is not in your tool list and cannot be loaded\n" +
+		"(search your deferred or MCP tools for `vp_skill` first), run\n" +
+		"`vp skills show " + name + "` from the project directory and adopt the\n" +
+		"printed persona manually. It lists the skill's references; print one\n" +
+		"with `vp skills show " + name + " --section <ref>`. If you cannot run `vp`,\n" +
+		"ask the user to run that command and paste its output.\n"
+}
+
+func renderClaudeSkill(item SkillItem, sha string) string {
 	openMarker := fmt.Sprintf(shimOpenFmt, skillShimVersion, sha)
 	shimName := SkillDirName(item.Name)
 	desc := sanitizeFrontmatter(item.Frontmatter.Description)
@@ -211,14 +241,14 @@ func renderClaudeSkill(item SkillItem) string {
 	sb.WriteString(item.Name)
 	sb.WriteString("\"` and adopt the returned persona as standing instruction\n")
 	sb.WriteString("for the rest of this session. Multiple vps-* invocations stack\n")
-	sb.WriteString("additively; `vps-clear` drops all.\n")
+	sb.WriteString("additively; `vps-clear` drops all.\n\n")
+	sb.WriteString(skillFallback(item.Name))
 	sb.WriteString(shimCloseDelim)
 	sb.WriteString("\n")
 	return sb.String()
 }
 
-func renderCursorRule(item SkillItem) string {
-	sha := skillContentHash(CursorRule, item)
+func renderCursorRule(item SkillItem, sha string) string {
 	openMarker := fmt.Sprintf(shimOpenFmt, skillShimVersion, sha)
 	desc := sanitizeFrontmatter(item.Frontmatter.Description)
 	if desc == "" {
@@ -242,25 +272,15 @@ func renderCursorRule(item SkillItem) string {
 	sb.WriteString("\"` and adopt the returned persona as standing instruction\n")
 	sb.WriteString("for the rest of this session. Multiple vps-* invocations stack\n")
 	sb.WriteString("additively; `vps-clear` drops all.\n\n")
-	sb.WriteString("If MCP tools are not available in this session, read\n")
-	if item.VaultPath != "" {
-		sb.WriteString("`")
-		sb.WriteString(item.VaultPath)
-		sb.WriteString("`\n")
-	} else {
-		sb.WriteString("`{vault}/Templates/skills/")
-		sb.WriteString(item.Name)
-		sb.WriteString("/SKILL.md`\n")
-	}
-	sb.WriteString("directly and adopt the persona manually.\n")
+	sb.WriteString(skillFallback(item.Name))
 	sb.WriteString(shimCloseDelim)
 	sb.WriteString("\n")
 	return sb.String()
 }
 
 // grokHubDescription is the single-line description carried in the /vpc
-// hub frontmatter and hashed into the hub shim's sha. Kept as one constant
-// so the renderer and PlanGrokHub agree on the exact bytes.
+// hub frontmatter. Kept as one constant so the renderer and PlanGrokHub agree
+// on the exact bytes.
 const grokHubDescription = "Vibe-palace command hub. Naked /vpc lists all commands via vp_cmd {}; /vpc <cmd> <args> dispatches via vp_cmd name=<cmd>. Use for restart, wrap, review-plan, execute-plan, cancel-plan and other vibe-palace operations."
 
 // grokHubBody is the fixed instructional body of the /vpc command hub,
@@ -344,12 +364,11 @@ func GrokHubItem() SkillItem {
 }
 
 // renderGrokSkill renders a per-persona Grok skill shim (vps-<name>). It
-// mirrors renderCursorRule structurally — vp_skill delegation plus a
-// vault-path MCP-unavailable fallback — but emits Grok frontmatter
+// mirrors renderCursorRule structurally — vp_skill delegation plus the
+// skillFallback `vp skills show` fallback — but emits Grok frontmatter
 // (name/description/metadata.short-description) and omits the Claude-only
 // user-invocable / argument-hint keys.
-func renderGrokSkill(item SkillItem) string {
-	sha := skillContentHash(GrokSkill, item)
+func renderGrokSkill(item SkillItem, sha string) string {
 	openMarker := fmt.Sprintf(shimOpenFmt, skillShimVersion, sha)
 	shimName := SkillDirName(item.Name)
 	desc := sanitizeFrontmatter(item.Frontmatter.Description)
@@ -377,17 +396,7 @@ func renderGrokSkill(item SkillItem) string {
 	sb.WriteString("\"` and adopt the returned persona as standing instruction\n")
 	sb.WriteString("for the rest of this session. Multiple vps-* invocations stack\n")
 	sb.WriteString("additively; `vps-clear` drops all.\n\n")
-	sb.WriteString("If MCP tools are not available in this session, read\n")
-	if item.VaultPath != "" {
-		sb.WriteString("`")
-		sb.WriteString(item.VaultPath)
-		sb.WriteString("`\n")
-	} else {
-		sb.WriteString("`{vault}/Templates/skills/")
-		sb.WriteString(item.Name)
-		sb.WriteString("/SKILL.md`\n")
-	}
-	sb.WriteString("directly and adopt the persona manually.\n")
+	sb.WriteString(skillFallback(item.Name))
 	sb.WriteString(shimCloseDelim)
 	sb.WriteString("\n")
 	return sb.String()
@@ -396,8 +405,9 @@ func renderGrokSkill(item SkillItem) string {
 // renderGrokHub renders the single /vpc command hub shim. The body is the
 // fixed grokHubBody constant wrapped in the managed marker pair so ScanShim
 // detects it and version/drift handling works exactly like the other shims.
-func renderGrokHub(item SkillItem) string {
-	sha := skillContentHash(GrokSkill, item)
+// The hub carries no skillFallback: there is no `vp commands show` for it to
+// name.
+func renderGrokHub(item SkillItem, sha string) string {
 	openMarker := fmt.Sprintf(shimOpenFmt, skillShimVersion, sha)
 	desc := sanitizeFrontmatter(item.Frontmatter.Description)
 	if desc == "" {

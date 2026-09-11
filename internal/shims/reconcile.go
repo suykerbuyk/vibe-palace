@@ -4,7 +4,6 @@
 package shims
 
 import (
-	"path/filepath"
 	"sort"
 
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
@@ -158,9 +157,8 @@ func (r *ReconcileReport) applySkills(what string, target TargetKind, items []Sk
 }
 
 // skillItems builds the SkillItem set from the vault's skill resources,
-// mirroring the init path: each skill's VaultPath is its canonical
-// Templates/skills/<name>/SKILL.md. Unresolvable skills are skipped silently
-// (lower tiers may have structural issues surfaced elsewhere).
+// mirroring the init path. Unresolvable skills are skipped silently (lower
+// tiers may have structural issues surfaced elsewhere).
 func (r *ReconcileReport) skillItems(resolver *vpctx.Resolver) []SkillItem {
 	names, err := resolver.ListResourcesScoped("skill", "", "", "")
 	if err != nil {
@@ -176,7 +174,6 @@ func (r *ReconcileReport) skillItems(resolver *vpctx.Resolver) []SkillItem {
 		items = append(items, SkillItem{
 			Name:        ri.Name,
 			Frontmatter: sd.Frontmatter,
-			VaultPath:   filepath.Join(resolver.VaultRoot(), "Templates", "skills", ri.Name, "SKILL.md"),
 		})
 	}
 	return items

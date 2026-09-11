@@ -79,7 +79,6 @@ func TestIntegrationSkillShimsLifecycle(t *testing.T) {
 				Paths:       []string{"**/*.go"},
 				Lifetime:    "postural",
 			},
-			VaultPath: "/vault/Templates/skills/pairing/SKILL.md",
 		},
 		{
 			Name: "focus",
@@ -88,7 +87,6 @@ func TestIntegrationSkillShimsLifecycle(t *testing.T) {
 				Description: "Deep-focus persona",
 				Lifetime:    "postural",
 			},
-			VaultPath: "/vault/Templates/skills/focus/SKILL.md",
 		},
 	}
 
@@ -189,11 +187,15 @@ func TestIntegrationSkillShimsLifecycle(t *testing.T) {
 			"globs: [\"**/*.go\"]",
 			"alwaysApply: false",
 			"vp_skill",
-			"/vault/Templates/skills/pairing/SKILL.md",
+			"(search your deferred or MCP tools for `vp_skill` first)",
+			"`vp skills show pairing`",
 		} {
 			if !strings.Contains(body, want) {
 				t.Errorf("cursor rule missing %q:\n%s", want, body)
 			}
+		}
+		if strings.Contains(body, "Templates/") {
+			t.Errorf("cursor rule still names a vault Templates/ path:\n%s", body)
 		}
 		// Idempotent re-apply across both targets.
 		for _, tgt := range targets {
