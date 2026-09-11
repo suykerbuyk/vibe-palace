@@ -16,7 +16,6 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
-	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
@@ -200,7 +199,11 @@ func runTemplateReset(opts templateResetOpts) int {
 		}
 		plan.present = append(plan.present, c)
 	}
-	slug, _ := project.DetectProjectHighConfidence(mustGetwd())
+	// The project whose higher tiers the notes below name: the same cwd default
+	// vp_skill and `vp skills show` resolve (a slug only when the vault holds
+	// Projects/<slug>/). A detected slug with no project directory has no
+	// project tier, so the notes read the same either way.
+	slug := storage.NewVault(vaultRoot).DetectedProject(mustGetwd())
 
 	// 2. Every path is checked before any write: a symlink in any component,
 	// or a non-regular file, refuses the whole invocation (Reset repeats this

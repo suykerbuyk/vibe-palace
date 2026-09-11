@@ -379,3 +379,57 @@ func TestEncodeTripleComponent(t *testing.T) {
 		})
 	}
 }
+
+// TestVaultDetectedProject pins the shared cwd-project default that vp_skill
+// (through defaultCmdProject) and `vp skills show` both use: a high-confidence
+// slug only when the vault holds Projects/<slug>/, never a basename guess.
+func TestVaultDetectedProject(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	vaultRoot := filepath.Join(root, "vault")
+	t.Setenv("HOME", home)
+	proj := filepath.Join(home, "code", "proj")
+	sub := filepath.Join(proj, "a", "b")
+	for _, d := range []string{sub, filepath.Join(vaultRoot, "Projects", "dp-slug")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	marker := filepath.Join(proj, ".vibe-palace.toml")
+	if err := os.WriteFile(marker, []byte("[project]\nname = \"dp-slug\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v := NewVault(vaultRoot)
+
+	if got := v.DetectedProject(proj); got != "dp-slug" {
+		t.Errorf("marker + Projects/dp-slug: got %q, want dp-slug", got)
+	}
+	if got := v.DetectedProject(sub); got != "dp-slug" {
+		t.Errorf("subdirectory must resolve through the upward walk: got %q", got)
+	}
+	if got := NewVault(t.TempDir()).DetectedProject(proj); got != "" {
+		t.Errorf("marker without Projects/<slug>/ in the vault must give \"\", got %q", got)
+	}
+	if got := NewVault("").DetectedProject(proj); got != "" {
+		t.Errorf("a vault with no root must give \"\", got %q", got)
+	}
+	bare := filepath.Join(home, "code", "dp-slug")
+	if err := os.MkdirAll(bare, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := v.DetectedProject(bare); got != "" {
+		t.Errorf("no marker must give \"\" — never the basename — got %q", got)
+	}
+
+	// Projects/<slug> as a regular file is not a project directory.
+	fileVault := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(fileVault, "Projects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fileVault, "Projects", "dp-slug"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := NewVault(fileVault).DetectedProject(proj); got != "" {
+		t.Errorf("Projects/<slug> as a file must give \"\", got %q", got)
+	}
+}

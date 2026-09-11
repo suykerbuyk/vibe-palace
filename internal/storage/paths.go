@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
@@ -294,6 +295,38 @@ func (v *Vault) ProjectDir(project string) (string, error) {
 		return "", fmt.Errorf("project: %w", err)
 	}
 	return filepath.Join(v.Root, "Projects", project), nil
+}
+
+// DetectedProject is the cwd-derived project default for the resolver's
+// project tier. It returns the slug project.DetectProjectHighConfidence finds
+// at cwd (a .vibe-palace.toml [project].name on the upward walk, or a git
+// origin remote) only when this vault already holds Projects/<slug>/ as a
+// directory, and "" otherwise — including when the vault has no root.
+//
+// It never falls back to the cwd's basename. A basename almost always exists
+// and invents a phantom slug for a worktree whose folder name differs from its
+// vault project (ADR-006: absence is not a value), so an unknown project
+// resolves the vault and embedded tiers instead.
+//
+// The MCP command and skill tools (vp_skill among them) and `vp skills show`
+// default their project through this one helper, so the tool and its CLI
+// fallback serve the same tier when both run from the project directory.
+func (v *Vault) DetectedProject(cwd string) string {
+	if v.Root == "" {
+		return ""
+	}
+	name, err := project.DetectProjectHighConfidence(cwd)
+	if err != nil {
+		return ""
+	}
+	dir, err := v.ProjectDir(name)
+	if err != nil {
+		return ""
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return ""
+	}
+	return name
 }
 
 // CommitMsgFile returns the path to a project's vault commit-message file:

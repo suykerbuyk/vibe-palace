@@ -358,3 +358,58 @@ func equalSorted(a, b []string) bool {
 	}
 	return true
 }
+
+// TestResolveSkillEmptyVaultRootIsEmbeddedOnly pins review N1: a resolver
+// with no vault root must serve the embedded tier only. filepath.Join("",
+// "Templates", …) is relative to the process cwd, so before the guard a
+// ./Templates/skills/<name> or ./Projects/<slug>/skills/<name> in the cwd was
+// served as the "vault" or "project" tier — on a host with no vault at all.
+func TestResolveSkillEmptyVaultRootIsEmbeddedOnly(t *testing.T) {
+	cwd := t.TempDir()
+	for rel, body := range map[string]string{
+		"Templates/skills/startup-analyst/SKILL.md":                       "cwd vault body\n",
+		"Templates/skills/startup-analyst/references/capex-opex.md":       "cwd vault section\n",
+		"Templates/skills/startup-analyst/references/cwd-only.md":         "cwd-only section\n",
+		"Projects/p1/skills/startup-analyst/SKILL.md":                     "cwd project body\n",
+		"Projects/p1/skills/startup-analyst/references/capex-opex.md":     "cwd project section\n",
+		"Projects/p1/skills/w/.wing/startup-analyst/SKILL.md":             "cwd wing body\n",
+		"Projects/p1/skills/w/r/startup-analyst/references/capex-opex.md": "cwd room section\n",
+	} {
+		p := filepath.Join(cwd, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(cwd)
+	r := NewResolver("")
+
+	for _, scope := range [][3]string{{"", "", ""}, {"p1", "", ""}, {"p1", "w", ""}, {"p1", "w", "r"}} {
+		sd, src, err := r.ResolveSkillDir("startup-analyst", scope[0], scope[1], scope[2])
+		if err != nil {
+			t.Fatalf("%v: ResolveSkillDir: %v", scope, err)
+		}
+		if src != "embedded" || strings.Contains(string(sd.SkillMDBody), "cwd ") || sd.Root != "" {
+			t.Errorf("%v: src=%q root=%q — an empty vault root read a cwd-relative tier", scope, src, sd.Root)
+		}
+		for _, n := range sd.ReferenceNames {
+			if n == "cwd-only" {
+				t.Errorf("%v: reference list picked up a cwd-relative reference", scope)
+			}
+		}
+
+		data, src, err := r.ResolveSkillSection("startup-analyst", "capex-opex", scope[0], scope[1], scope[2])
+		if err != nil {
+			t.Fatalf("%v: ResolveSkillSection: %v", scope, err)
+		}
+		if src != "embedded" || strings.Contains(string(data), "cwd ") {
+			t.Errorf("%v: section src=%q — an empty vault root read a cwd-relative tier", scope, src)
+		}
+	}
+
+	if _, _, err := r.ResolveSkillSection("startup-analyst", "cwd-only", "", "", ""); err == nil {
+		t.Error("a reference present only in the cwd must not resolve with no vault root")
+	}
+}

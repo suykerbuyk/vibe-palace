@@ -470,3 +470,17 @@ func TestDefaultCmdProjectHighConfidence(t *testing.T) {
 		t.Errorf("missing Projects/slug must yield empty, got %q", got)
 	}
 }
+
+// TestDefaultCmdProjectEmptyVaultRoot: with no vault root there is no
+// Projects/<slug>/ to confirm a detected slug against, so the default is empty
+// even from inside a marked project.
+func TestDefaultCmdProjectEmptyVaultRoot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, project.ConfigFileName), []byte("[project]\nname = \"hc-cmd\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	if got := defaultCmdProject("", ""); got != "" {
+		t.Errorf("defaultCmdProject with no vault root = %q, want empty", got)
+	}
+}

@@ -651,6 +651,11 @@ func (r *Resolver) resolveAtRel(rel, project, wing, room, resource string) (stri
 // the SKILL.md entry point, but references still fall through
 // per-file via ResolveSkillSection). Lifetime defaults to "postural"
 // when the frontmatter omits it.
+//
+// A resolver with no vault root serves the embedded tier only: every
+// filesystem tier is skipped, because filepath.Join("", "Templates", …) is a
+// path relative to the process cwd, and a stray ./Templates/skills or
+// ./Projects/<slug>/skills there is not a vault.
 func (r *Resolver) ResolveSkillDir(name, project, wing, room string) (SkillDir, string, error) {
 	if err := validateScope(wing, room); err != nil {
 		return SkillDir{}, "", err
@@ -664,16 +669,18 @@ func (r *Resolver) ResolveSkillDir(name, project, wing, room string) (SkillDir, 
 		root   string // absolute path ("" means embedded)
 	}
 	var tiers []tier
-	if wing != "" && room != "" && project != "" {
-		tiers = append(tiers, tier{"room", filepath.Join(r.vaultRoot, "Projects", project, "skills", wing, room, name)})
+	if r.vaultRoot != "" {
+		if wing != "" && room != "" && project != "" {
+			tiers = append(tiers, tier{"room", filepath.Join(r.vaultRoot, "Projects", project, "skills", wing, room, name)})
+		}
+		if wing != "" && project != "" {
+			tiers = append(tiers, tier{"wing", filepath.Join(r.vaultRoot, "Projects", project, "skills", wing, ".wing", name)})
+		}
+		if project != "" {
+			tiers = append(tiers, tier{"project", filepath.Join(r.vaultRoot, "Projects", project, "skills", name)})
+		}
+		tiers = append(tiers, tier{"vault", filepath.Join(r.vaultRoot, "Templates", "skills", name)})
 	}
-	if wing != "" && project != "" {
-		tiers = append(tiers, tier{"wing", filepath.Join(r.vaultRoot, "Projects", project, "skills", wing, ".wing", name)})
-	}
-	if project != "" {
-		tiers = append(tiers, tier{"project", filepath.Join(r.vaultRoot, "Projects", project, "skills", name)})
-	}
-	tiers = append(tiers, tier{"vault", filepath.Join(r.vaultRoot, "Templates", "skills", name)})
 	tiers = append(tiers, tier{"embedded", ""})
 
 	var (
@@ -768,7 +775,8 @@ func (r *Resolver) ResolveSkillDir(name, project, wing, room string) (SkillDir, 
 // skills/<name>/references/<section>.md. Fallthrough is independent of
 // which tier supplied SKILL.md: a project override of SKILL.md that
 // omits a given reference will transparently fall back to vault or
-// embedded for that reference.
+// embedded for that reference. Like ResolveSkillDir, a resolver with no vault
+// root serves the embedded tier only.
 func (r *Resolver) ResolveSkillSection(name, section, project, wing, room string) ([]byte, string, error) {
 	if err := validateScope(wing, room); err != nil {
 		return nil, "", err
@@ -780,32 +788,44 @@ func (r *Resolver) ResolveSkillSection(name, section, project, wing, room string
 		return nil, "", err
 	}
 	rel := path.Join("skills", name, "references", section+".md")
-	if wing != "" && room != "" && project != "" {
-		p := filepath.Join(r.vaultRoot, "Projects", project, "skills", wing, room, name, "references", section+".md")
-		if data, err := os.ReadFile(p); err == nil {
-			return data, "room", nil
+	if r.vaultRoot != "" {
+		if data, source, ok := r.skillSectionFromVault(name, section, project, wing, room); ok {
+			return data, source, nil
 		}
-	}
-	if wing != "" && project != "" {
-		p := filepath.Join(r.vaultRoot, "Projects", project, "skills", wing, ".wing", name, "references", section+".md")
-		if data, err := os.ReadFile(p); err == nil {
-			return data, "wing", nil
-		}
-	}
-	if project != "" {
-		p := filepath.Join(r.vaultRoot, "Projects", project, "skills", name, "references", section+".md")
-		if data, err := os.ReadFile(p); err == nil {
-			return data, "project", nil
-		}
-	}
-	vp := filepath.Join(r.vaultRoot, "Templates", "skills", name, "references", section+".md")
-	if data, err := os.ReadFile(vp); err == nil {
-		return data, "vault", nil
 	}
 	if data, err := fs.ReadFile(r.defaults, path.Join("templates", rel)); err == nil {
 		return data, "embedded", nil
 	}
 	return nil, "", fmt.Errorf("skill section %q/%q not found at any precedence level", name, section)
+}
+
+// skillSectionFromVault walks the filesystem tiers of ResolveSkillSection —
+// room, wing, project, vault — and reports the first reference file found.
+func (r *Resolver) skillSectionFromVault(name, section, project, wing, room string) ([]byte, string, bool) {
+	file := section + ".md"
+	if wing != "" && room != "" && project != "" {
+		p := filepath.Join(r.vaultRoot, "Projects", project, "skills", wing, room, name, "references", file)
+		if data, err := os.ReadFile(p); err == nil {
+			return data, "room", true
+		}
+	}
+	if wing != "" && project != "" {
+		p := filepath.Join(r.vaultRoot, "Projects", project, "skills", wing, ".wing", name, "references", file)
+		if data, err := os.ReadFile(p); err == nil {
+			return data, "wing", true
+		}
+	}
+	if project != "" {
+		p := filepath.Join(r.vaultRoot, "Projects", project, "skills", name, "references", file)
+		if data, err := os.ReadFile(p); err == nil {
+			return data, "project", true
+		}
+	}
+	vp := filepath.Join(r.vaultRoot, "Templates", "skills", name, "references", file)
+	if data, err := os.ReadFile(vp); err == nil {
+		return data, "vault", true
+	}
+	return nil, "", false
 }
 
 // listMDFiles returns sorted basenames (without .md) of markdown files in a

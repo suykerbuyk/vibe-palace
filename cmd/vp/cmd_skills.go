@@ -5,8 +5,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"sort"
 	"strings"
@@ -115,8 +117,9 @@ func printSkillsTable(w io.Writer, summaries []commands.Summary, project string)
 
 var skillsShowFlags = []cli.FlagDef{
 	{Name: "--section", Arg: "NAME", Help: "Show a specific reference (references/<NAME>.md) instead of SKILL.md"},
-	{Name: "--project", Arg: "SLUG", Help: "Resolve with project-tier overrides for SLUG"},
-	{Name: "--wing", Arg: "SLUG", Help: "Resolve with wing-tier overrides (requires --project)"},
+	{Name: "--project", Arg: "SLUG", Help: "Resolve with project-tier overrides for SLUG (default: the project detected from the working directory, as vp_skill resolves it)"},
+	{Name: "--no-project", Help: "Skip the project tier: show the vault override or the built-in, even from inside a project that overrides the skill"},
+	{Name: "--wing", Arg: "SLUG", Help: "Resolve with wing-tier overrides (requires a project)"},
 	{Name: "--room", Arg: "SLUG", Help: "Resolve with room-tier overrides (requires --wing)"},
 }
 
@@ -127,12 +130,13 @@ var skillsShowFlags = []cli.FlagDef{
 func cmdSkillsShow() *cli.Command {
 	return &cli.Command{
 		Name:        "skills show",
-		Synopsis:    "vp skills show <name> [--section NAME] [--project SLUG [--wing SLUG [--room SLUG]]]",
-		Description: "Print the SKILL.md body for the named skill along with its reference list. With --section, print just that reference's body.",
+		Synopsis:    "vp skills show <name> [--section NAME] [--project SLUG [--wing SLUG [--room SLUG]] | --no-project]",
+		Description: "Print the SKILL.md body for the named skill along with its reference list. With --section, print just that reference's body. Without --project it resolves the project detected from the working directory, exactly as vp_skill does, so run from a project directory it serves the same tier vp_skill would; --no-project skips that tier. With no vault configured it prints the built-in skill.",
 		Flags:       skillsShowFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp skills show startup-analyst", Comment: "Show SKILL.md + references list"},
 			{Cmd: "vp skills show startup-analyst --section capex-opex", Comment: "Show a single reference body"},
+			{Cmd: "vp skills show startup-analyst --no-project", Comment: "Show the vault or built-in copy, ignoring this project's override"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(skillsShowFlags, args)
@@ -147,22 +151,80 @@ func cmdSkillsShow() *cli.Command {
 			}
 			name := pos[0]
 
-			vault, err := openProjectVault()
+			cwd, err := os.Getwd()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "vp skills show: %v\n", err)
+				fmt.Fprintf(os.Stderr, "vp skills show: get working directory: %v\n", err)
 				return cli.ExitUser
 			}
-			resolver := vpctx.NewResolver(vault.Root)
+			resolver, scoped, note, code := skillsShowScope(cwd,
+				fv.Get("--project"), fv.Bool("--no-project"), fv.Get("--wing"), fv.Get("--room"))
+			if note != "" {
+				fmt.Fprintln(os.Stderr, note)
+			}
+			if code != cli.ExitOK {
+				return code
+			}
 
 			return runSkillsShow(os.Stdout, os.Stderr, resolver, skillsShowOpts{
 				Name:    name,
 				Section: fv.Get("--section"),
-				Project: fv.Get("--project"),
+				Project: scoped,
 				Wing:    fv.Get("--wing"),
 				Room:    fv.Get("--room"),
 			})
 		},
 	}
+}
+
+// skillsShowNoVaultNote is the one stderr line `vp skills show` prints when no
+// vault is configured and it serves the built-in skill instead of failing.
+const skillsShowNoVaultNote = "vp skills show: no vault configured; showing the built-in skill"
+
+// skillsShowScope decides which resolver and project scope `vp skills show`
+// runs with. It is the command's testable seam: the skill shims' MCP-less
+// fallback runs `vp skills show <name>` from the project directory and must get
+// the body vp_skill would serve there.
+//
+//   - --no-project skips the project tier. Combined with --project, --wing or
+//     --room it is a usage error.
+//   - An explicit --project wins.
+//   - Otherwise the project is storage.(*Vault).DetectedProject(cwd), the same
+//     cwd default vp_skill applies through defaultCmdProject.
+//   - With no vault configured — the global config file does not exist and no
+//     .vibe-palace.toml on the upward walk from cwd sets vault_path — the
+//     resolver has no vault root and serves the embedded skill only, with
+//     skillsShowNoVaultNote. --project, --wing and --room need a vault, so they
+//     are refused there. The degrade is deliberately narrow: a global config
+//     without vault_path, a malformed marker, or any other error opening the
+//     vault stays a usage error.
+//
+// note is a line for stderr: the degrade notice when code is ExitOK, or the
+// error when it is not.
+func skillsShowScope(cwd, project string, noProject bool, wing, room string) (resolver *vpctx.Resolver, scopedProject, note string, code int) {
+	if noProject && (project != "" || wing != "" || room != "") {
+		return nil, "", "vp skills show: --no-project cannot be combined with --project, --wing or --room", cli.ExitUser
+	}
+	vault, err := OpenProjectVaultAt(cwd)
+	if err != nil {
+		// Only the global config read can fail with ErrNotExist here: a cwd
+		// marker is read only after the upward walk has found it.
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, "", fmt.Sprintf("vp skills show: %v", err), cli.ExitUser
+		}
+		if project != "" || wing != "" || room != "" {
+			return nil, "", "vp skills show: no vault configured, so --project, --wing and --room have no tier to read; run without them to see the built-in skill", cli.ExitUser
+		}
+		return vpctx.NewResolver(""), "", skillsShowNoVaultNote, cli.ExitOK
+	}
+	switch {
+	case noProject:
+		scopedProject = ""
+	case project != "":
+		scopedProject = project
+	default:
+		scopedProject = vault.DetectedProject(cwd)
+	}
+	return vpctx.NewResolver(vault.Root), scopedProject, "", cli.ExitOK
 }
 
 type skillsShowOpts struct {

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -16,7 +15,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
-	"github.com/suykerbuyk/vibe-palace/internal/project"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 // cmdParams is the input for vp_cmd and vp_skill.
@@ -198,28 +197,21 @@ func cmdExecHandler(resolver *vpctx.Resolver, resourceType string) mcp.HandlerFu
 
 // defaultCmdProject returns explicit when set; otherwise a high-confidence
 // cwd-derived slug that already has Projects/<slug>/ under vaultRoot. Empty
-// means "leave expand blank" — never basename-guess.
+// means "leave expand blank" — never basename-guess. The cwd default is
+// storage.(*Vault).DetectedProject, the helper `vp skills show` shares, so the
+// CLI fallback a skill shim names resolves the same tier as vp_skill.
 func defaultCmdProject(explicit, vaultRoot string) string {
 	if s := strings.TrimSpace(explicit); s != "" {
 		return s
+	}
+	if vaultRoot == "" {
+		return ""
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return ""
 	}
-	slug, err := project.DetectProjectHighConfidence(cwd)
-	if err != nil {
-		return ""
-	}
-	if vaultRoot == "" {
-		return ""
-	}
-	dir := filepath.Join(vaultRoot, "Projects", slug)
-	fi, err := os.Stat(dir)
-	if err != nil || !fi.IsDir() {
-		return ""
-	}
-	return slug
+	return storage.NewVault(vaultRoot).DetectedProject(cwd)
 }
 
 // frameParams groups the arguments for buildExecutionFrame.
