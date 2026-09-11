@@ -61,6 +61,47 @@ import (
 //     reports. Two binaries in different zones disagree about a file's NAME,
 //     which no content check can reconcile after the fact.
 //
+// Bumped 3->4 (2026-09-10). What a binary does to vault Templates/ changed,
+// and ADR-008 requires the gate for "any change to what/where instruction
+// files are written":
+//
+//   - A v4 `vp config sync` NEVER OVERWRITES A TEMPLATES/ FILE, never writes the
+//     prune's .bak, re-hashes a mirror before pruning it, and before committing
+//     a prune checks HEAD's blob — restoring the committed copy from HEAD when it
+//     is operator content instead of committing its deletion.
+//   - A v3 binary on a lagging host does the opposite, and that was REPRODUCED
+//     ACROSS TWO HOSTS: its --yes (or `o`) overwrites an override a v4 host keeps,
+//     its next sync — answerless or not — prunes the result, and its prune
+//     commit pushes the deletion of the operator's override to every host. A v4
+//     host cannot defend against that by its own behaviour; only the gate stops
+//     the v3 binary, and it does: `vp config sync`, `vp commands upgrade`,
+//     `vp skills upgrade` and `vp init` are all mutates()-gated.
+//
+// Two further write-shape changes landed inside the v3 fleet and strengthen the
+// case, because each is something a pre-change binary mishandles on its NEXT
+// write:
+//
+//   - Audits/baseline.json GAINED `prior_accepted` (50b0f24). Silent in the WRITE
+//     direction exactly like `measured`: a binary without the field parses the
+//     file, ignores the key, and drops the whole record on its next
+//     `vp audit vault --accept` — the history that makes a re-acceptance refuse.
+//   - DECISION DRAWERS (39bc8e3, then ba64fce's filed_at and discriminated
+//     source_ref, and e02b514's backfill) are filed into the palace `decisions`
+//     room, which the room classifier cannot name. A binary from before 39bc8e3
+//     scores every one as a 100% mismatch, and its `vp audit rooms --apply` would
+//     MoveDrawer them all out of the room the palace query prunes to. 39bc8e3
+//     ruled "no surface bump" on the Drawer JSON shape alone; the hazard is the
+//     old binary's MOVE, which only the gate prevents.
+//
+// The floor rises at an upgraded host's first stamped write — any task write
+// stamps Projects/<p>/.surface, which commitTaskWrite stages and pushes — and a
+// lagging host meets it on its next pull. Rollout: `make install` on every host,
+// then restart every AI harness on it (a running v3 `vp mcp` is refused
+// mid-session once the host's own hooks stamp v4). A lagging host that runs
+// `vp config sync` BEFORE it pulls the stamp, and VP_SURFACE_GATE=warn, still
+// run the v3 chain; never use the escape hatch for `vp config sync` or the
+// upgrade commands.
+//
 // 🔴 RE-DERIVE THIS LIST, DO NOT EXTEND IT BY MEMORY. The commits above were
 // each confirmed against their diffs, and three plausible-sounding candidates
 // were REJECTED on inspection: e4f0f16 (archive-manifest serialisation) is
@@ -72,6 +113,11 @@ import (
 //
 //	git log -S'yaml:"' -- internal/storage/sessions.go
 //	git log -S'json:"' -- internal/vaultaudit/baseline.go internal/archive/manifest.go
+//	git log -- internal/storage/drawers.go internal/capture/
+//
+// The third is read, not grepped: a drawer-writing change can alter what an old
+// binary does to the vault (39bc8e3) without touching a struct tag, which is why
+// neither of the first two queries found it.
 //
 // and the audit dimension set is vaultaudit.DimensionNames() in internal/vaultaudit/audit.go
 // — never a count written down here, which is the claim 9b19134 deleted from two
@@ -84,7 +130,7 @@ import (
 // TESTED contract rather than a convenience — a stranded host has to be able to
 // read its way out. `vp check --check writer-identity` derives how many hosts
 // that is; do not record the number here.
-const MCPSurfaceVersion int = 3
+const MCPSurfaceVersion int = 4
 
 // Stamp models the on-disk .surface TOML file recording the latest writer.
 type Stamp struct {

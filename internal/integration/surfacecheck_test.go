@@ -65,7 +65,8 @@ func TestIntegrationSurfaceCheck(t *testing.T) {
 
 		newer := surface.MCPSurfaceVersion + 1
 		// A recognized stamp target: <vault>/Projects/<p> maps to the .surface
-		// scanned by CheckCompatible. WriteStamp emits exactly "surface = 2\n".
+		// scanned by CheckCompatible. WriteStamp emits exactly "surface = N\n",
+		// with N = newer.
 		stampDir := filepath.Join(h.Vault.Root, "Projects", "demo")
 		if err := surface.WriteStamp(stampDir, newer, ""); err != nil {
 			t.Fatalf("WriteStamp: %v", err)

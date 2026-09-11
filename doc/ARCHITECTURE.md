@@ -6,7 +6,8 @@ Vibe-palace is a compiled Go binary that serves as an MCP (Model Context
 Protocol) server for AI-assisted development. It provides context injection,
 session capture, semantic search, and palace-based knowledge navigation through
 its full MCP tool surface (versioned in `internal/mcp/tool_surface.golden.json`,
-`surface_version: 2`) over stdio JSON-RPC 2.0.
+whose `surface_version` is `MCPSurfaceVersion` in `internal/surface/version.go`)
+over stdio JSON-RPC 2.0.
 
 **Design principles:**
 - Single binary, zero-CGo, no external services
@@ -844,7 +845,8 @@ several always-registered tools — the five `vp_memory_*` tools
 `vp_archive_commit_log`, and the read-only probes documented in their own
 sections (`vp_check`, `vp_scan_plans`). The authoritative
 enumeration is the full tool surface versioned in
-`internal/mcp/tool_surface.golden.json` (`surface_version: 2`), pinned by
+`internal/mcp/tool_surface.golden.json` (its `surface_version` is
+`MCPSurfaceVersion` in `internal/surface/version.go`), pinned by
 `internal/tools/register_test.go` — the registry
 (`internal/tools/register.go`) exposes that surface with a search engine and
 the search-gated subset stripped without one.

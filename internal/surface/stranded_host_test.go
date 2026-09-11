@@ -110,7 +110,7 @@ func itoa(n int) string {
 func TestSurfaceVersionIsMonotonic(t *testing.T) {
 	// The floor is the last version this project shipped and stamped into live
 	// vaults. Raise it with the constant; never lower either.
-	const shippedFloor = 3
+	const shippedFloor = 4
 	if MCPSurfaceVersion < shippedFloor {
 		t.Fatalf("MCPSurfaceVersion = %d, below the shipped floor %d. Live vaults carry "+
 			"stamps at the floor; a binary claiming less than it already wrote would "+

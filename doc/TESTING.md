@@ -1270,10 +1270,13 @@ flipped, or a schema edited. The drift message tells the dev to regenerate with
 `-update-golden` AND to *consider* whether `internal/surface.MCPSurfaceVersion`
 needs a bump. Regenerating the golden does **not** bump the version — the
 surface-version bump is a deliberate operator decision made separately. The
-golden currently records `surface_version: 2`; derive the tool count and
-mutating split from the golden itself — `jq '.tools | length'
+golden's `surface_version` is `MCPSurfaceVersion` in
+`internal/surface/version.go` (read it there, or `jq .surface_version
+internal/mcp/tool_surface.golden.json`); derive the tool count and mutating
+split from the golden itself — `jq '.tools | length'
 internal/mcp/tool_surface.golden.json` and
-`jq '[.tools[] | select(.mutating)] | length' …` — recorded counts rot.
+`jq '[.tools[] | select(.mutating)] | length' …` — recorded counts rot, and so
+did the version literal that stood here through two bumps.
 
 It lives in `cmd/vp` (not `internal/mcp`) because building the full tool set
 requires `internal/tools`, which imports `internal/mcp` — so `internal/mcp`

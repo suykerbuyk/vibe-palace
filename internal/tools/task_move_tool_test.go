@@ -507,9 +507,14 @@ const manageTaskGoldenPath = "../mcp/tool_surface.golden.json"
 // the assertion is "this changed" and "this did not", and a BEFORE value cannot
 // be re-derived from the tree that now carries the AFTER. Everything else here
 // is measured against the live registry and the live golden.
+//
+// surfaceVersionAtHEAD was raised 3 -> 4 by
+// vault-template-override-is-discarded-by-config-sync, for a vault write-shape
+// change (what `vp config sync` does to vault Templates/). The ruling this test
+// pins still holds: `move` itself does not bump the surface.
 const (
 	manageTaskSchemaSHAAtHEAD = "4fb44b92cffff09f17e7b4561eb3344e38aaeb734cf9c0748eebea37cef65832"
-	surfaceVersionAtHEAD      = 3
+	surfaceVersionAtHEAD      = 4
 )
 
 // goldenToolSurface is the subset of the manifest these assertions read.
