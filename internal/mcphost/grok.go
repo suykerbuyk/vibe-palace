@@ -19,6 +19,11 @@ import (
 // grokServerName is the MCP server name registered in Grok's config.toml.
 const grokServerName = "vibe-palace"
 
+// grokBinary is the Grok Build CLI's executable name. Executables reports it,
+// and NewGrokHost's closures look up and run whatever Executables reports, so
+// the name executed and the name reported cannot drift apart.
+const grokBinary = "grok"
+
 // GrokHost registers the vibe-palace MCP server with xAI's Grok Build CLI by
 // shelling out to the official `grok mcp` command. We never model Grok's
 // config.toml schema ourselves: Grok owns it, the CLI is the documented stable
@@ -37,19 +42,24 @@ type GrokHost struct {
 	homeDir func() (string, error)
 }
 
-// NewGrokHost returns a GrokHost wired to the real `grok` CLI.
+// NewGrokHost returns a GrokHost wired to the real `grok` CLI. The binary both
+// closures look up and run is taken from Executables(), never restated here.
 func NewGrokHost() *GrokHost {
-	return &GrokHost{
-		runner: func(args ...string) ([]byte, error) {
-			return exec.Command("grok", args...).CombinedOutput()
-		},
-		lookPath: func() (string, error) { return exec.LookPath("grok") },
-		homeDir:  os.UserHomeDir,
+	h := &GrokHost{homeDir: os.UserHomeDir}
+	h.runner = func(args ...string) ([]byte, error) {
+		return exec.Command(h.Executables()[0], args...).CombinedOutput()
 	}
+	h.lookPath = func() (string, error) { return exec.LookPath(h.Executables()[0]) }
+	return h
 }
 
 func (*GrokHost) Name() string { return "grok" }
 func (*GrokHost) Flag() string { return "--grok" }
+
+// Executables reports the `grok` CLI, which Detected and Installed look up and
+// Installed, Install and Uninstall run. It is also where NewGrokHost's runner
+// and lookPath get the name from.
+func (*GrokHost) Executables() []string { return []string{grokBinary} }
 
 // Detected reports whether Grok Build is present: `grok` on PATH, or a ~/.grok/
 // directory (the CLI's data dir, present after first run even if not on PATH).

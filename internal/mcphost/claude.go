@@ -22,6 +22,12 @@ type ClaudeHost struct{}
 func (ClaudeHost) Name() string { return "claude" }
 func (ClaudeHost) Flag() string { return "--claude-plugin" }
 
+// Executables is empty: ClaudeHost is stat-only via internal/plugin and
+// resolves no binary. internal/plugin contains no os/exec import; a future
+// delegate that runs `claude` must report it here, and the executables test
+// must scan the package it lives in.
+func (ClaudeHost) Executables() []string { return nil }
+
 func (ClaudeHost) Detected() bool { return plugin.Detected() }
 
 func (ClaudeHost) Installed() (bool, error) { return plugin.IsInstalled(), nil }

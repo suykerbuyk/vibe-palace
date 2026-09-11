@@ -56,11 +56,26 @@ type Host interface {
 	Install(version, projectRoot string, out io.Writer) error
 	// Uninstall reverses Install. Idempotent: a no-op when nothing is registered.
 	Uninstall(out io.Writer) error
+	// Executables names every binary this host looks up on PATH or executes;
+	// it is empty when the host touches none. It is the SOURCE of those names,
+	// not a report kept beside them: every exec.Command / exec.LookPath in this
+	// package takes its binary as <host>.Executables()[i], so what a host runs
+	// and what it reports cannot drift. TestHostExecutablesMatchWhatTheyRun
+	// rejects any exec or LookPath whose binary comes from anywhere else, and
+	// any reported name no call uses. Tests use it to put a recording sentinel
+	// for every agent CLI first on PATH without a second list of binary names.
+	//
+	// It covers this package only. internal/shims keeps its own
+	// exec.LookPath("grok") for Grok presence detection, which is not a Host
+	// method and is not on the `vp check` path.
+	Executables() []string
 }
 
 // Registry returns the canonical host list in install-precedence order. cmd/vp
-// dispatches `vp mcp install`/`uninstall` flags against it, and internal/check
-// iterates it for status rows.
+// dispatches `vp mcp install`/`uninstall` flags against it, and hands it to
+// check.CheckMCPHosts for the `vp check` status rows (internal/check takes the
+// list as an argument rather than calling this itself, so tests can pass stub
+// hosts instead of ones that run a real agent CLI).
 func Registry() []Host {
 	return []Host{
 		ClaudeHost{},

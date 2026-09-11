@@ -32,15 +32,13 @@ import (
 // built on this helper can reach the ~90 MB ONNX model download — whose
 // go-huggingface downloader has a data race that `go test -race` reports as a
 // failure in OUR tests — through any seam-routed site: setupEmbedder (both
-// migrate subcommands), `vp search`, and bootstrap().
-//
-// 🔴 THE RESIDUAL HAZARD: `vp check`'s Embedder row (runCheck →
-// check.CheckEmbedder → embedder.NewONNX) bypasses the seam and is NOT
-// guarded. No caller of this helper reaches it today. A future one that drives
-// runCheck against its valid temp vault would cold-download the model into its
-// temp home on every run, and can race under -race. Do not fix that by
-// re-pinning XDG_CACHE_HOME to the host cache; route the check path through
-// newVaultEmbedder instead.
+// migrate subcommands), `vp search`, bootstrap(), and `vp check`'s Embedder
+// row (gatherCheckResults hands check.CheckEmbedder a closure over
+// newVaultEmbedder). A test that drives runCheck against this helper's valid
+// temp vault therefore fails loudly instead of cold-downloading; the full-suite
+// check tests use healthyCheckEnv, which stubs the seam. Do not route a new
+// construction site around the seam, and do not re-pin XDG_CACHE_HOME to the
+// host cache.
 //
 // Returns the vault root path; the env is restored by t.Setenv's cleanup.
 func setupTestVaultEnv(t *testing.T) string {

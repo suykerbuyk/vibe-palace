@@ -9,18 +9,18 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/mcphost"
 )
 
-// CheckMCPHosts reports, for each AI coding host detected on this machine,
-// whether the vibe-palace MCP server is registered with it. Hosts that are not
-// detected are omitted to keep the report quiet; when none are detected a
-// single Skip row explains how to register. This is advisory (Pass/Info/Skip,
-// never Fail) — an unregistered host is a suggestion, not a failure.
-func CheckMCPHosts() []Result {
-	return checkHostRows(mcphost.Registry())
-}
-
-// checkHostRows is the host-list-injectable core of CheckMCPHosts, separated so
-// tests can drive it with stub hosts instead of the live machine registry.
-func checkHostRows(hosts []mcphost.Host) []Result {
+// CheckMCPHosts reports, for each AI coding host in hosts that is detected on
+// this machine, whether the vibe-palace MCP server is registered with it. Hosts
+// that are not detected are omitted to keep the report quiet; when none are
+// detected a single Skip row explains how to register. This is advisory
+// (Pass/Info/Skip, never Fail) — an unregistered host is a suggestion, not a
+// failure.
+//
+// It is pure over its input: the caller decides which hosts are asked. `vp
+// check` passes mcphost.Registry() — the live machine registry, whose Grok host
+// runs `grok mcp list` — and tests pass stub hosts, so no test has to execute a
+// real agent CLI to cover this report.
+func CheckMCPHosts(hosts []mcphost.Host) []Result {
 	var rows []Result
 	for _, h := range hosts {
 		if !h.Detected() {

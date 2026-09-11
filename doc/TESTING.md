@@ -57,6 +57,20 @@ config values propagate correctly across layers.
 All integration test function names start with `TestIntegration` so
 `make integration` discovers them via the `-run` flag.
 
+**`make model-test`** is the real-model tier outside `internal/integration`:
+`go test -count=1 -timeout 10m` over every package with a test file that calls
+the real ONNX constructor (`embedder.NewONNX(`), with neither `-short` nor
+`-race`. The package list is **derived** by a grep in the Makefile
+(`MODEL_TEST_PKGS`), never hand-listed, and an empty derivation fails the
+target closed. Today it yields `internal/capture`, `internal/check`,
+`internal/embedder` and `internal/search`: `TestCheckEmbedder`, the `TestONNX*`
+tests, and the `TestIntegration*` tests of `internal/search` and
+`internal/capture` (the derived packages' fast tests run again too, which is
+cheap). The pattern needs the `LPAREN := (` indirection: make counts a literal
+`(` inside `$(shell …)` and a backslash does not escape it; dropping the paren
+instead would match comments that merely name `NewONNX` and pull `cmd/vp` and
+`internal/tools` into a non-`-short` run. It is the CI `model` job's only step.
+
 ### Tier 3: Full Suite
 
 **Command:** `make test-full`
@@ -249,7 +263,18 @@ runner for six. `workflows-e2e` and `walkthrough-e2e` therefore carry
 `timeout-minutes: 10` — roughly 15x the ~40s the harnesses actually take, so a
 slow runner is never a false red, but a wedged step is a red job in ten minutes
 instead of a runner lost for the afternoon. The timeout is a backstop against
-**any** stuck step, not a bound on harness runtime.
+**any** stuck step, not a bound on harness runtime. The `model` job carries
+`timeout-minutes: 15` for the same reason — a wedged model download — and its
+`make model-test` passes `go test -timeout 10m`, so go's own timeout panic
+(with its goroutine dump) fires before the runner kills the job.
+
+**Real-model coverage is its own job.** `model` runs `make model-test` (see
+Tier 2) with the `~/.cache/huggingface` cache (key `hf-cache-v1-…`), and it is
+the only CI job that loads the ONNX model. `test` runs `-short -race` and never
+reaches the model, so it carries no model cache. Before this split the only CI
+exercise of the model was a side effect: a step that warmed the cache by
+running one `cmd/vp` check test by name. The `model` job depends on
+huggingface.co being reachable on every run (see "Model cache").
 
 **One in-flight run per ref.** The workflow-level `concurrency` group is
 `${{ github.workflow }}-${{ github.ref }}` with `cancel-in-progress: true`, so a
@@ -331,16 +356,22 @@ upstream data race in `go-huggingface/hub` during concurrent file downloads
 that triggers under `go test -race` on cold cache only. This is not
 actionable and does not affect inference.
 
-Under `-short`, the only route to that download is the two `vp check`
-full-suite tests, `TestCheckEmitsVaultProjectRow` and
-`TestCheckFullSuiteEmitsEveryProducerRow`: `vp check`'s Embedder row constructs
-the model, and those tests read the host's `~/.cache/huggingface`. That is why
-CI caches that directory and warms it in a step outside `-race`. The migrate and
-search tests no longer reach the model at all (see "Model-free migrate and
-search tests").
+No `-short` test reaches that download. The `vp check` full-suite tests
+route the Embedder row through the `newVaultEmbedder` seam and stub it (see
+"`cmd/vp` — Flag Wiring"), and the migrate and search tests validate their
+inputs before constructing anything (see "Model-free migrate and search
+tests"). Real-model coverage in CI is the `model` job, which runs `make
+model-test` without `-race`, so a cold-cache download there is the
+un-instrumented kind the race detector never sees. CI's
+`~/.cache/huggingface` cache serves that job.
 
-**Warm cache** (subsequent runs): hugot loads the model directly from
-disk. No network access. This is the normal path in development.
+**Warm cache** (subsequent runs): hugot loads the model weights from disk and
+downloads no blob. It is **not** offline: every `NewONNX` still makes one
+revision-info request to the HuggingFace API (`go-huggingface` refreshes the
+cached `info/<revision>` file on each fresh repo handle before its snapshot
+short-circuit). With no route to huggingface.co, construction fails after
+hugot's ~20 s retry loop even on a warm cache. So `make model-test`, `make
+integration` and `make test-full` need network access, not only a warm cache.
 
 Cache lifecycle:
 - `make clean` — preserves model cache (only removes build artifacts)
@@ -539,6 +570,7 @@ session `model` field (model-regression detection).
 | `IntegrationDispatchParentBareShowsHelp` | cli → cmd/vp | No | `vp config` renders parent help on stdout and exits 0 via the framework dispatch gate (no per-parent stubby `Run` closure) |
 | `IntegrationDispatchParentUnknownSubcommand` | cli → cmd/vp | No | `vp config bogus` routes the unknown token to stderr with `ExitUser` (1); guards against the pre-plan silent-ExitOK behavior |
 | `IntegrationDispatchKnownSubcommandHelp` | cli → cmd/vp | No | `vp hook install --help` still routes through the two-word lookup with exit 0 after the dispatch gate was added |
+| `IntegrationCheckReachesRealHostRegistry` | cmd/vp → check → mcphost | No | The built `vp check --json`, run directly (it exits 1 with no global config, so not through `runVP`) with an explicit env — temp `HOME`/config/cache/data dirs, a dead proxy, and a scripted `grok` first on `PATH` — reports `MCP host: grok` as `pass` and the script saw exactly `mcp list`. It is the binary-level proof that production still asks `mcphost.Registry()`, which the stubbed `cmd/vp` tests cannot give. The Zed row varies with the parent `PATH` and is not asserted. Skipped on Windows (`check_mcp_hosts_test.go`) |
 
 ### `internal/integration/` — Vault Commit Path Tolerance
 
@@ -1131,6 +1163,72 @@ tests driving the real `cmdCheck(info).Run([]string{...})` dispatch
 `check.Producers` in `internal/check`, shared with the `vp_check` MCP tool;
 `runSelectedChecks` is now only the cwd→vault-root resolution the CLI owns.
 
+**The full suite is hermetic.** `gatherCheckResults` (the unfiltered `vp
+check`) has two dependencies that reach host state, and each goes through a
+seam: the Embedder row calls `check.CheckEmbedder(newEmb)` with a closure over
+`newVaultEmbedder` (the migrate seam, so `setupTestVaultEnv`'s default-on
+forbid guard covers every `runCheck` caller), and the MCP host rows call
+`check.CheckMCPHosts(mcpHostRegistry())`, where `mcpHostRegistry` is a package
+var that production never reassigns. Before this, five check tests ran the real
+`grok mcp list` against the developer's `~/.grok`, and two loaded the real
+model. The rule: **a new dependency of `gatherCheckResults` that reaches host
+state — spawns a binary, loads a model, touches the network — gets a seam.**
+
+Every full-suite test runs in one of two helpers (`check_testenv_test.go`):
+
+- `healthyCheckEnv(t)` — `setupTestVaultEnv` (sandboxed `HOME`, config and
+  cache dirs), a `Projects/` dir, a temp cwd whose `.vibe-palace.toml` names
+  project `checktest` under `[project]`, `stubVaultEmbedder(t,
+  embedder.NewMock(384))`, and the host stub. The Git row reads "disabled":
+  `VaultReconciler.gitEnabled`'s raw decode treats the absent `git_enabled` as
+  false.
+- `unconfiguredCheckEnv(t)` — `initTestEnv(t, false)` (no global config),
+  `forbidVaultEmbedder`, a temp cwd, and the host stub.
+
+The host stub returns `e.Hosts` (nil by default, so the report carries the
+single `MCP hosts` Skip row) and counts into `e.HostCalls`. Like the embedder
+helpers it sets `VP_TEST_MCP_HOST_SEAM` through `t.Setenv` before swapping, so
+a parallel caller panics instead of racing.
+
+| Test | What it proves |
+|------|----------------|
+| `TestCheckCommand` | Human/JSON parity in two envs — healthy, and healthy plus a vault-root `.gitattributes` naming the `vp-surface` merge driver (exactly one Fail): the human `[FAIL]` count equals `summary.fail`, and the human exit is `ExitUser` exactly when `exit_code` is 1. Mutating `runCheck`'s `n > 0` to `n > 1` turns the merge-driver row red |
+| `TestCheckFullSuiteReportsInjectedMCPHosts` | The MCP host rows come from `mcpHostRegistry`: a registered fake reads `pass`, an unregistered one `info` naming `vp mcp install --<flag>`, and the registry is asked once |
+| `TestCheckFullSuiteRoutesEmbedderRowThroughSeam` | The Embedder row is `pass … 384 dimensions` with one construction; a stub whose `Dimensions` errors gives `fail` and `exit_code` 1; `http_port = "x"` (Config passes, Settings fails) skips the row with zero constructions |
+| `TestFullCheckExecsNoAgentCLI` | The lock. Recording `sh` sentinels for every name in `mcphost.Host.Executables()` over `Registry()` go first on `PATH`; the full suite must leave the log empty, ask the registry once and construct the embedder once |
+| `TestCheckEnvHelpersStubHostRegistry`, `TestStubMCPHostRegistryRefusesParallel` | Both helpers install the host stub and restore the real registry; the stub refuses `t.Parallel` before swapping |
+
+**What the lock does and does not catch.** The two counts catch a revert of
+either seam: the real registry or a direct ONNX construction leaves them at
+zero. The sentinels catch a **new** exec route that bypasses the stubbed
+registry, for example a future check that runs `grok --version`. They do not
+catch a route through an agent CLI that no host reports; a package-wide
+sentinel `PATH` belongs to `test-infra-consolidation-ephemeral-vault`. The
+sentinels are `sh` scripts, so the test skips on Windows, whose CI job does not
+run `cmd/vp`.
+
+The sentinel names come from what each host actually runs, not from its
+`Name()`: `Host.Executables()` is the **source** of the names a host looks up
+and runs — `NewGrokHost` and `NewZedHost` pass `h.Executables()[0]` to
+`exec.Command` / `exec.LookPath` — so the name executed and the name reported
+cannot drift, and production calls the accessor (no source-audit baseline entry
+needed). `internal/mcphost/executables_test.go`'s
+`TestHostExecutablesMatchWhatTheyRun` parses the package's non-test files with
+`go/parser`, attributes every `exec.Command` / `exec.CommandContext` /
+`exec.LookPath` to the host type whose method or `New<Type>` constructor holds
+it, requires the binary argument to be exactly `<ident>.Executables()[i]`, and
+asserts each `Registry()` host's used indexes cover its `Executables()`. A call
+in a free function, in a non-host type, an uncalled reference (`lookPath:
+exec.LookPath`), or a binary taken from anything else — a string literal, a
+const, a variable — fails with its file and line. `ClaudeHost` delegates to `internal/plugin`, which has no
+`os/exec`, so its empty set is proven by the scan. `grok_exec_test.go`'s
+`TestNewGrokHostExecsGrokOnPATH` covers `NewGrokHost`'s real exec closures
+against a scripted `grok` with `PATH` set to its temp dir only and `HOME`
+empty: list names the server → detected and installed; list exits 1 → `(false,
+nil)`; no `grok` and no `~/.grok` → not detected, nothing executed.
+`zed_test.go`'s `TestNewZedHostLooksUpZedOnPATH` does the same for
+`NewZedHost`'s lookup (a `zed` file on a temp-only `PATH`, never executed).
+
 The `resume-caps` producer is covered against a seeded temp vault holding one
 over-every-cap project: `--check resume-caps` human output (the `[info] Resume
 caps` row plus all three breach strings; asserts no embedder load and no Surface
@@ -1573,11 +1671,13 @@ call `t.Setenv` before touching the variable, so a test that has called
 gone.
 
 **What the guard covers, exactly:** the seam-routed sites — `setupEmbedder`
-(both migrate subcommands), `vp search`, and `bootstrap()` (which captures the
-constructor once, before its lazy closure). `vp check`'s Embedder row constructs
-through `check.CheckEmbedder` → `embedder.NewONNX`, bypasses the seam, and is
-**unguarded**. No `setupTestVaultEnv` test reaches it today; one that drove
-`runCheck` against its valid temp vault would cold-download into its temp home.
+(both migrate subcommands), `vp search`, `bootstrap()` (which captures the
+constructor once, before its lazy closure), and `vp check`'s Embedder row,
+whose `check.CheckEmbedder` takes a constructor that `gatherCheckResults` feeds
+from `newVaultEmbedder`. A `setupTestVaultEnv` test that drives `runCheck`
+against its valid temp vault fails loudly rather than cold-downloading; the
+full-suite check tests stub the seam through `healthyCheckEnv` (see "`cmd/vp` —
+Flag Wiring").
 
 ### `cmd/vp/cmd_migrate_test.go` (all under the guard)
 

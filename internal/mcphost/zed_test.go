@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -257,5 +258,27 @@ func TestZedUninstall_NotConfigured(t *testing.T) {
 	// No settings file at all — must be a graceful no-op.
 	if err := h.Uninstall(nil); err != nil {
 		t.Fatalf("uninstall on absent file: %v", err)
+	}
+}
+
+// TestNewZedHostLooksUpZedOnPATH covers NewZedHost's real lookPath closure,
+// which resolves the name Executables reports. PATH holds only a temp dir and
+// XDG_CONFIG_HOME an empty one, so the settings-dir branch cannot fire and
+// detection rests on the lookup alone. The `zed` file is never executed.
+func TestNewZedHostLooksUpZedOnPATH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("exec.LookPath needs a PATHEXT suffix on Windows")
+	}
+	bin := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("PATH", bin)
+	if NewZedHost().Detected() {
+		t.Fatal("Detected() = true with no zed on PATH and no settings dir")
+	}
+	if err := os.WriteFile(filepath.Join(bin, zedBinary), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !NewZedHost().Detected() {
+		t.Error("Detected() = false with zed on PATH")
 	}
 }

@@ -45,7 +45,7 @@ type Result struct {
 func Run() []Result {
 	var results []Result
 
-	configPath, vaultPath, r := CheckConfig()
+	_, vaultPath, r := CheckConfig()
 	results = append(results, r)
 
 	if r.Status == Fail {
@@ -79,7 +79,19 @@ func Run() []Result {
 		return results
 	}
 
-	results = append(results, CheckEmbedder(cfg, v, configPath))
+	// The same construction as cmd/vp's newVaultEmbedder, inline because this
+	// package cannot import package main. It returns a nil interface on error,
+	// never a typed-nil *ONNXEmbedder inside it.
+	results = append(results, CheckEmbedder(func() (embedder.Embedder, error) {
+		e, err := embedder.NewONNX(
+			cfg.EmbedderModel, v.VaultLocalDir()+"/models",
+			cfg.EmbedderMaxSeqLen, cfg.EmbedderBatchSize,
+		)
+		if err != nil {
+			return nil, err
+		}
+		return e, nil
+	}))
 	results = append(results, CheckProject())
 	return results
 }
@@ -181,16 +193,20 @@ func CheckSettings(v *storage.Vault) (storage.Config, Result) {
 	return cfg, r
 }
 
-// CheckEmbedder verifies the ONNX model can be loaded.
-// This may download the model on first run (~90MB).
-func CheckEmbedder(cfg storage.Config, v *storage.Vault, configPath string) Result {
+// CheckEmbedder verifies that the embedder newEmb constructs can be loaded and
+// reports its dimensions. The caller decides what gets constructed: `vp check`
+// passes a closure over cmd/vp's newVaultEmbedder seam (the configured ONNX
+// model under the vault's machine-local models directory, which on a cold
+// cache is a ~90 MB download), so the cmd/vp tests can substitute a stub there
+// and never load the model; the internal/check model test passes the real
+// ONNX constructor.
+//
+// A construction error or a Dimensions error is a Fail; the embedder is always
+// closed once constructed.
+func CheckEmbedder(newEmb func() (embedder.Embedder, error)) Result {
 	r := Result{Name: "Embedder"}
 
-	modelDir := v.VaultLocalDir() + "/models"
-	emb, err := embedder.NewONNX(
-		cfg.EmbedderModel, modelDir,
-		cfg.EmbedderMaxSeqLen, cfg.EmbedderBatchSize,
-	)
+	emb, err := newEmb()
 	if err != nil {
 		r.Status = Fail
 		r.Summary = fmt.Sprintf("load model: %v", err)

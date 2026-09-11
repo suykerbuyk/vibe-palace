@@ -14,7 +14,9 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
+	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	mcpkg "github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/mcphost"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/reconcile"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
@@ -22,6 +24,12 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/tools"
 )
+
+// mcpHostRegistry supplies the hosts behind the full suite's "MCP host" rows.
+// It is a variable only so the cmd/vp tests can substitute stub hosts:
+// mcphost.Registry's Grok host runs the real `grok mcp list`, which writes the
+// developer's ~/.grok. Production never reassigns it.
+var mcpHostRegistry = mcphost.Registry
 
 var checkFlags = []cli.FlagDef{
 	{Name: "--json", Help: "Output JSON"},
@@ -173,6 +181,13 @@ func runCheck(info cli.BuildInfo, fv *cli.FlagValues) int {
 // agent-drift, and surface checks stay inline — none has a reconciler
 // (Embedder is intentionally excluded; agent drift belongs to vp commands
 // upgrade; surface mirrors the runtime gate).
+//
+// Two of its dependencies reach host state, and each goes through a seam the
+// tests substitute: the Embedder row constructs through newVaultEmbedder (the
+// ~90 MB ONNX model), and the MCP host rows ask mcpHostRegistry (whose Grok
+// host runs the real `grok` CLI). A new dependency that reaches host state —
+// spawns a binary, loads a model, touches the network — gets a seam too;
+// otherwise every full-suite test in cmd/vp reaches it.
 func gatherCheckResults() []check.Result {
 	var results []check.Result
 	ctx := context.Background()
@@ -322,9 +337,10 @@ func gatherCheckResults() []check.Result {
 			if sRow.Status == check.Fail {
 				results = append(results, check.Result{Name: "Embedder", Status: check.Skip})
 			} else {
-				configPath, _ := storage.VaultConfigFilePath()
 				check.ProgressLine(os.Stderr, "Embedder", "loading model (first run downloads ~90MB)...")
-				results = append(results, check.CheckEmbedder(cfg, vault, configPath))
+				results = append(results, check.CheckEmbedder(func() (embedder.Embedder, error) {
+					return newVaultEmbedder(vault, cfg)
+				}))
 			}
 		}
 	}
@@ -354,7 +370,7 @@ func gatherCheckResults() []check.Result {
 
 	// --- MCP host registration (advisory — one row per detected host:
 	// Claude/Grok/Zed, reporting whether vibe-palace is registered). ---
-	results = append(results, check.CheckMCPHosts()...)
+	results = append(results, check.CheckMCPHosts(mcpHostRegistry())...)
 
 	// --- User-global slash surfaces (advisory — vp mcp install emit). ---
 	results = append(results, check.CheckHostSurfaces()...)

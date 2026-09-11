@@ -5,12 +5,14 @@ package check
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -189,6 +191,11 @@ func TestCheckSettings(t *testing.T) {
 	}
 }
 
+// TestCheckEmbedder loads the real ONNX model through CheckEmbedder, exactly
+// as check.Run constructs it. It is `make model-test`'s member in this package
+// (the target derives its package list from test files calling the real ONNX
+// constructor), and it skips under -short. The -short tests below cover the
+// same Pass/Fail logic with substitute embedders.
 func TestCheckEmbedder(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping embedder test in short mode (requires ONNX model)")
@@ -202,12 +209,81 @@ func TestCheckEmbedder(t *testing.T) {
 		t.Fatalf("settings failed: %s", r.Summary)
 	}
 
-	r = CheckEmbedder(cfg, v, "")
+	r = CheckEmbedder(func() (embedder.Embedder, error) {
+		e, err := embedder.NewONNX(
+			cfg.EmbedderModel, v.VaultLocalDir()+"/models",
+			cfg.EmbedderMaxSeqLen, cfg.EmbedderBatchSize,
+		)
+		if err != nil {
+			return nil, err
+		}
+		return e, nil
+	})
 	if r.Status != Pass {
 		t.Fatalf("expected Pass, got %v: %s", r.Status, r.Summary)
 	}
 	if !strings.Contains(r.Summary, "dimensions") {
 		t.Errorf("summary should mention dimensions, got %q", r.Summary)
+	}
+}
+
+// dimsErrEmbedder is a MockEmbedder whose Dimensions fails, and which counts
+// Close calls so a test can prove CheckEmbedder closes what it constructed.
+type dimsErrEmbedder struct {
+	*embedder.MockEmbedder
+	closed int
+}
+
+var errDims = errors.New("dimensions unavailable")
+
+func (d *dimsErrEmbedder) Dimensions() (int, error) { return 0, errDims }
+func (d *dimsErrEmbedder) Close() error             { d.closed++; return nil }
+
+func TestCheckEmbedder_ConstructorErrorFails(t *testing.T) {
+	errLoad := errors.New("no model here")
+	r := CheckEmbedder(func() (embedder.Embedder, error) { return nil, errLoad })
+	if r.Name != "Embedder" || r.Status != Fail {
+		t.Fatalf("got %s/%v, want Embedder/Fail", r.Name, r.Status)
+	}
+	if r.Summary != "load model: no model here" {
+		t.Errorf("summary = %q, want %q", r.Summary, "load model: no model here")
+	}
+	if !errors.Is(r.Err, errLoad) {
+		t.Errorf("Err = %v, want the constructor's error", r.Err)
+	}
+}
+
+func TestCheckEmbedder_DimensionsErrorFails(t *testing.T) {
+	emb := &dimsErrEmbedder{MockEmbedder: embedder.NewMock(384)}
+	r := CheckEmbedder(func() (embedder.Embedder, error) { return emb, nil })
+	if r.Status != Fail {
+		t.Fatalf("status = %v, want Fail", r.Status)
+	}
+	if r.Summary != "embedder dimensions: dimensions unavailable" {
+		t.Errorf("summary = %q", r.Summary)
+	}
+	if !errors.Is(r.Err, errDims) {
+		t.Errorf("Err = %v, want the Dimensions error", r.Err)
+	}
+	if emb.closed != 1 {
+		t.Errorf("Close called %d times, want 1 — a constructed embedder must be closed on every path", emb.closed)
+	}
+}
+
+func TestCheckEmbedder_PassReportsDimensions(t *testing.T) {
+	calls := 0
+	r := CheckEmbedder(func() (embedder.Embedder, error) {
+		calls++
+		return embedder.NewMock(384), nil
+	})
+	if r.Status != Pass {
+		t.Fatalf("status = %v (%s), want Pass", r.Status, r.Summary)
+	}
+	if !strings.Contains(r.Summary, "384 dimensions") {
+		t.Errorf("summary = %q, want it to report 384 dimensions", r.Summary)
+	}
+	if calls != 1 {
+		t.Errorf("constructor called %d times, want 1", calls)
 	}
 }
 

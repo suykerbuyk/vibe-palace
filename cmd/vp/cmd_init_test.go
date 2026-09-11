@@ -50,10 +50,12 @@ func markProjectDir(t *testing.T, dir string) {
 // Every var is set unconditionally; the ones that do not apply to the
 // running GOOS are inert rather than wrong.
 //
-// Scope: this closes the ~/.claude and global-config routes. It does NOT
-// make cmd/vp hermetic outright — cmd_check_test.go spawns the real `grok`
-// binary, which still writes the developer's ~/.grok. That is tracked by
-// check-tests-spawn-the-real-grok-binary-and-write-host-state.
+// Scope: this closes the ~/.claude and global-config routes. The full
+// `vp check` suite's two host routes are closed elsewhere: its tests use
+// healthyCheckEnv / unconfiguredCheckEnv (check_testenv_test.go), which stub
+// the MCP host registry (mcpHostRegistry, whose Grok host would run the real
+// `grok` and write ~/.grok) and route the Embedder row through the
+// newVaultEmbedder seam, stubbed or forbidden.
 //
 // Both dirs are returned. Tests whose premise is "run vp init at a path
 // equal to $HOME" must use the returned homeDir rather than installing a

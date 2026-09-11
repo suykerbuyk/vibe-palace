@@ -20,11 +20,11 @@ import (
 // It is a package variable so the cmd/vp tests can replace it:
 // setupTestVaultEnv installs forbidVaultEmbedder, which fails any test that
 // constructs the model, and stubVaultEmbedder substitutes an embedder and
-// counts constructions. That guard covers ONLY the sites routed through here —
-// setupEmbedder (both `vp migrate` subcommands), `vp search`, and bootstrap()
-// (which captures the value once, before its lazy closure). `vp check`'s
-// Embedder row constructs through check.CheckEmbedder → embedder.NewONNX,
-// bypasses this seam, and is unguarded.
+// counts constructions. That guard covers the sites routed through here —
+// setupEmbedder (both `vp migrate` subcommands), `vp search`, bootstrap()
+// (which captures the value once, before its lazy closure), and `vp check`'s
+// Embedder row, whose check.CheckEmbedder is handed a closure over this
+// variable by gatherCheckResults.
 var newVaultEmbedder = func(v *storage.Vault, cfg storage.Config) (embedder.Embedder, error) {
 	e, err := embedder.NewONNX(
 		cfg.EmbedderModel, v.VaultLocalDir()+"/models",

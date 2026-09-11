@@ -5,25 +5,65 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
-	"github.com/suykerbuyk/vibe-palace/internal/project"
+	"github.com/suykerbuyk/vibe-palace/internal/embedder"
+	"github.com/suykerbuyk/vibe-palace/internal/mcphost"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
+// TestCheckCommand asserts that the human and --json renderings of the full
+// suite agree in the same environment: the human [FAIL] row count equals the
+// report's fail tally, and the human exit code is ExitUser exactly when the
+// report's exit_code is 1. The merge-driver row is CheckSurfaceMergeDriver's
+// hard Fail, so it is the case that can tell a correct failure-to-exit mapping
+// from one that ignores a single failure.
 func TestCheckCommand(t *testing.T) {
-	// runCheck depends on real config; just verify it doesn't panic
-	// and returns a valid exit code.
-	fv, _ := cli.ParseFlags(checkFlags, nil)
-	code := runCheck(cli.BuildInfo{Version: "test"}, fv)
-	if code != cli.ExitOK && code != cli.ExitUser {
-		t.Errorf("exit code = %d, want ExitOK or ExitUser", code)
+	cases := []struct {
+		name     string
+		seed     func(t *testing.T, vault string)
+		wantFail int
+	}{
+		{name: "healthy", seed: func(*testing.T, string) {}, wantFail: 0},
+		{
+			name: "merge driver",
+			seed: func(t *testing.T, vault string) {
+				if err := os.WriteFile(filepath.Join(vault, ".gitattributes"),
+					[]byte("*.surface merge=vp-surface\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantFail: 1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := healthyCheckEnv(t)
+			tc.seed(t, e.Vault)
+
+			human, humanCode := runFullCheckHuman(t)
+			rep, _ := runFullCheckJSON(t)
+			if rep.Summary.Fail != tc.wantFail {
+				t.Fatalf("precondition: summary.fail = %d, want %d: %+v", rep.Summary.Fail, tc.wantFail, rep.Checks)
+			}
+			if got := strings.Count(human, "[FAIL]"); got != rep.Summary.Fail {
+				t.Errorf("human output has %d [FAIL] rows, --json reports %d:\n%s", got, rep.Summary.Fail, human)
+			}
+			if (humanCode == cli.ExitUser) != (rep.ExitCode == 1) {
+				t.Errorf("human exit = %d but --json exit_code = %d — the renderings disagree on whether the run failed",
+					humanCode, rep.ExitCode)
+			}
+		})
 	}
 }
 
@@ -33,8 +73,7 @@ func TestCheckCommand(t *testing.T) {
 // assert check emits a "Project" row referencing the drifted file while
 // sync --dry-run reports a Project-tier action against the same path.
 func TestCheckParityWithConfigSyncDryRun(t *testing.T) {
-	configDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configDir)
+	unconfiguredCheckEnv(t)
 	// No global config — both surfaces should agree it's missing.
 	fv, _ := cli.ParseFlags(checkFlags, nil)
 	checkOut := captureStdout(t, func() { runCheck(cli.BuildInfo{Version: "test"}, fv) })
@@ -56,27 +95,19 @@ func TestCheckParityWithConfigSyncDryRun(t *testing.T) {
 // TestCheckEmitsVaultProjectRow verifies the new row added in Phase 4: vp
 // check now reports on vault-project state via the VaultProject reconciler.
 func TestCheckEmitsVaultProjectRow(t *testing.T) {
-	configDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configDir)
-	vpDir := filepath.Join(configDir, "vibe-palace")
-	_ = os.MkdirAll(vpDir, 0o755)
-	vaultPath := filepath.Join(configDir, "vault")
-	_ = os.MkdirAll(vaultPath, 0o755)
-	_ = os.WriteFile(filepath.Join(vpDir, "config.toml"),
-		[]byte("vault_path = \""+vaultPath+"\"\ngit_enabled = false\n"), 0o644)
-
-	// cwd into a project dir so DetectProject can find a slug.
-	projDir := t.TempDir()
-	_ = os.WriteFile(filepath.Join(projDir, project.ConfigFileName),
-		[]byte("name = \"checktest\"\n"), 0o644)
-	cwd, _ := os.Getwd()
-	defer os.Chdir(cwd)
-	_ = os.Chdir(projDir)
+	healthyCheckEnv(t)
 
 	fv, _ := cli.ParseFlags(checkFlags, nil)
 	out := captureStdout(t, func() { runCheck(cli.BuildInfo{Version: "test"}, fv) })
 	if !strings.Contains(out, "Vault project") {
 		t.Errorf("expected Vault project row in vp check output:\n%s", out)
+	}
+	// The row names the project the cwd's .vibe-palace.toml declares, which
+	// proves the fixture's [project] table is what detection read — a
+	// top-level name key is ignored, and detection would fall back to the
+	// temp dir's basename.
+	if !strings.Contains(out, "checktest") {
+		t.Errorf("expected the detected project \"checktest\" in vp check output:\n%s", out)
 	}
 }
 
@@ -96,47 +127,174 @@ func TestCheckEmitsVaultProjectRow(t *testing.T) {
 // this derives the expected names from the registry itself and requires the
 // full suite to carry every one.
 func TestCheckFullSuiteEmitsEveryProducerRow(t *testing.T) {
-	configDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configDir)
-	vpDir := filepath.Join(configDir, "vibe-palace")
-	if err := os.MkdirAll(vpDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	vaultPath := filepath.Join(configDir, "vault")
-	if err := os.MkdirAll(filepath.Join(vaultPath, "Projects"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(vpDir, "config.toml"),
-		[]byte("vault_path = \""+vaultPath+"\"\ngit_enabled = false\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	e := healthyCheckEnv(t)
 
-	projDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(projDir, project.ConfigFileName),
-		[]byte("name = \"checktest\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(projDir)
-
-	fvJSON, _ := cli.ParseFlags(checkFlags, []string{"--json"})
-	out := captureStdout(t, func() { runCheck(cli.BuildInfo{Version: "test"}, fvJSON) })
-
-	var rep check.JSONReport
-	if err := json.Unmarshal([]byte(out), &rep); err != nil {
-		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
-	}
+	rep, _ := runFullCheckJSON(t)
 	got := map[string]bool{}
 	for _, c := range rep.Checks {
 		got[c.Name] = true
 	}
 
 	for _, sel := range check.ProducerOrder {
-		for _, r := range check.Producers[sel](vaultPath) {
+		for _, r := range check.Producers[sel](e.Vault) {
 			if !got[r.Name] {
 				t.Errorf("selector %q produces row %q, which the full `vp check` suite never emits — "+
 					"gatherCheckResults has fallen behind check.Producers", sel, r.Name)
 			}
 		}
+	}
+}
+
+// TestCheckFullSuiteReportsInjectedMCPHosts proves the MCP host rows come from
+// mcpHostRegistry: a detected+registered fake reads pass, a detected fake that
+// is not registered reads info, and the registry is asked exactly once.
+func TestCheckFullSuiteReportsInjectedMCPHosts(t *testing.T) {
+	e := healthyCheckEnv(t)
+	e.Hosts = []mcphost.Host{
+		fakeMCPHost{name: "fakeon", detected: true, installed: true},
+		fakeMCPHost{name: "fakeoff", detected: true, installed: false},
+	}
+
+	rep, _ := runFullCheckJSON(t)
+	if got := checkRow(t, rep, "MCP host: fakeon"); got.Status != "pass" {
+		t.Errorf("MCP host: fakeon = %+v, want pass", got)
+	}
+	if got := checkRow(t, rep, "MCP host: fakeoff"); got.Status != "info" ||
+		!strings.Contains(got.Detail, "vp mcp install --fakeoff") {
+		t.Errorf("MCP host: fakeoff = %+v, want info naming `vp mcp install --fakeoff`", got)
+	}
+	if *e.HostCalls != 1 {
+		t.Errorf("mcpHostRegistry called %d times, want 1", *e.HostCalls)
+	}
+}
+
+// TestCheckFullSuiteRoutesEmbedderRowThroughSeam proves the Embedder row is
+// built through newVaultEmbedder — so setupTestVaultEnv's default-on forbid
+// guard covers every runCheck caller — and that the Settings-fail gate in
+// gatherCheckResults skips the row without constructing anything.
+func TestCheckFullSuiteRoutesEmbedderRowThroughSeam(t *testing.T) {
+	t.Run("healthy", func(t *testing.T) {
+		e := healthyCheckEnv(t)
+		rep, _ := runFullCheckJSON(t)
+		if got := checkRow(t, rep, "Embedder"); got.Status != "pass" || !strings.Contains(got.Detail, "384 dimensions") {
+			t.Errorf("Embedder = %+v, want pass reporting 384 dimensions", got)
+		}
+		if *e.EmbedderCalls != 1 {
+			t.Errorf("newVaultEmbedder constructed %d times, want 1", *e.EmbedderCalls)
+		}
+	})
+
+	t.Run("dimensions error", func(t *testing.T) {
+		healthyCheckEnv(t)
+		calls := stubVaultEmbedder(t, &dimsFailEmbedder{MockEmbedder: embedder.NewMock(384)})
+		rep, code := runFullCheckJSON(t)
+		if got := checkRow(t, rep, "Embedder"); got.Status != "fail" || !strings.Contains(got.Detail, "embedder dimensions") {
+			t.Errorf("Embedder = %+v, want fail naming the dimensions error", got)
+		}
+		if rep.ExitCode != 1 || code != cli.ExitUser {
+			t.Errorf("exit_code = %d / code = %d, want 1 / ExitUser", rep.ExitCode, code)
+		}
+		if *calls != 1 {
+			t.Errorf("newVaultEmbedder constructed %d times, want 1", *calls)
+		}
+	})
+
+	t.Run("settings fail skips", func(t *testing.T) {
+		e := healthyCheckEnv(t)
+		// A type error in a key the Config row's narrow vault_path decode
+		// tolerates: Config passes, CheckSettings' full LoadConfig fails, and
+		// the Embedder row must be skipped without a construction.
+		cfgPath, err := storage.VaultConfigFilePath()
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := os.OpenFile(cfgPath, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, werr := f.WriteString("http_port = \"x\"\n")
+		if cerr := f.Close(); werr != nil || cerr != nil {
+			t.Fatalf("append to %s: %v / %v", cfgPath, werr, cerr)
+		}
+
+		rep, _ := runFullCheckJSON(t)
+		if got := checkRow(t, rep, "Config"); got.Status != "pass" {
+			t.Fatalf("precondition: Config = %+v, want pass", got)
+		}
+		if got := checkRow(t, rep, "Settings"); got.Status != "fail" {
+			t.Fatalf("precondition: Settings = %+v, want fail", got)
+		}
+		if got := checkRow(t, rep, "Embedder"); got.Status != "skip" {
+			t.Errorf("Embedder = %+v, want skip when Settings fails", got)
+		}
+		if *e.EmbedderCalls != 0 {
+			t.Errorf("newVaultEmbedder constructed %d times, want 0 behind a failed Settings row", *e.EmbedderCalls)
+		}
+	})
+}
+
+// dimsFailEmbedder is a MockEmbedder whose Dimensions fails.
+type dimsFailEmbedder struct{ *embedder.MockEmbedder }
+
+func (dimsFailEmbedder) Dimensions() (int, error) { return 0, errors.New("dimensions unavailable") }
+
+// TestFullCheckExecsNoAgentCLI is the lock on the full suite's hermeticity.
+// It puts a recording sentinel for every binary a registered MCP host reports
+// (mcphost.Host.Executables — derived from what each host actually runs, not
+// from its Name) first on PATH, runs the full suite in healthyCheckEnv, and
+// asserts:
+//
+//   - the sentinel log is empty. This catches a NEW exec route that bypasses
+//     the stubbed registry, such as a future check running `grok --version`.
+//     It does not catch a route through an agent CLI no host reports; the
+//     package-wide sentinel PATH routed to test-infra-consolidation-ephemeral-vault
+//     is what covers that.
+//   - mcpHostRegistry was asked once and newVaultEmbedder constructed once.
+//     These counts catch a revert of either seam: the real registry or a
+//     direct embedder.NewONNX would leave them at zero.
+func TestFullCheckExecsNoAgentCLI(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sentinels are sh scripts; Windows is out of scope for cmd/vp host isolation")
+	}
+	names := map[string]bool{}
+	for _, h := range mcphost.Registry() {
+		for _, x := range h.Executables() {
+			names[x] = true
+		}
+	}
+	if len(names) == 0 {
+		t.Fatal("no registered MCP host reports an executable — the sentinel half of this lock would be vacuous")
+	}
+
+	dir := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "sentinel.log")
+	for name := range names {
+		body := "#!/bin/sh\necho \"${0##*/}|$*\" >> \"$VP_SENTINEL_LOG\"\nexit 1\n"
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("VP_SENTINEL_LOG", logPath)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for name := range names {
+		if got, err := exec.LookPath(name); err != nil || got != filepath.Join(dir, name) {
+			t.Fatalf("LookPath(%q) = %q, %v — the sentinel is not first on PATH", name, got, err)
+		}
+	}
+
+	e := healthyCheckEnv(t)
+	runFullCheckJSON(t)
+
+	if raw, err := os.ReadFile(logPath); err == nil && len(raw) > 0 {
+		t.Errorf("the full vp check suite executed an agent CLI:\n%s", raw)
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if e.HostCalls == nil || *e.HostCalls != 1 {
+		t.Errorf("mcpHostRegistry calls = %v, want 1 — the host seam was bypassed", e.HostCalls)
+	}
+	if e.EmbedderCalls == nil || *e.EmbedderCalls != 1 {
+		t.Errorf("newVaultEmbedder constructions = %v, want 1 — the embedder seam was bypassed", e.EmbedderCalls)
 	}
 }
 
@@ -178,8 +336,7 @@ func TestBinaryInfo(t *testing.T) {
 // (config check fails) and asserts the JSON shape parses, exit_code is 1, and
 // the human renderer is bypassed.
 func TestCheckJSONOutput(t *testing.T) {
-	configDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configDir)
+	unconfiguredCheckEnv(t)
 
 	fvJSON, _ := cli.ParseFlags(checkFlags, []string{"--json"})
 	var code int

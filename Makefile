@@ -94,9 +94,10 @@ live-canary: ## Run the live-vault bootstrap canary uncached and verbose (SKIP i
 
 # THE ONLY THING THAT RUNS THE DERIVED-GATE RULE. That rule type-checks the whole
 # module (go/packages + SSA + a VTA call graph) to derive which commands and tools
-# reach a vault-write sink, and it self-skips under -short — which `make test` and
-# every CI job except `source-audit` pass. So if this target and its CI job go
-# away, the rule runs NOWHERE and is green by never looking.
+# reach a vault-write sink, and it self-skips under -short — which `make test`
+# passes, and every CI job but two: `source-audit`, and `model`, whose
+# model-test package set never includes internal/sourceaudit. So if this target
+# and its CI job go away, the rule runs NOWHERE and is green by never looking.
 #
 # No -run filter: the whole package runs, because a filter is one rename away from
 # silently matching nothing. No -race either: this is single-goroutine analysis
@@ -113,6 +114,39 @@ test-full: build vet ## Run full test suite including ONNX integration tests
 .PHONY: integration
 integration: build ## Run integration tests only (requires ONNX model)
 	go test -count=1 -run TestIntegration -v ./...
+
+# MODEL_TEST_PKGS is DERIVED, never hand-listed: every package outside
+# internal/integration (that tier is `make integration`) with a test file that
+# calls the real ONNX constructor, embedder.NewONNX(. A hand list is one new
+# model test away from silently not covering it.
+#
+# 🔴 LPAREN IS LOAD-BEARING. make counts parentheses inside a $(shell ...) call
+# literally and a backslash does not escape them, so a bare `NewONNX\(` in the
+# pattern is an unterminated call and make stops with exit 2 before the guard
+# runs. Do not "fix" it by dropping the paren either: `\bNewONNX\b` also matches
+# comments that merely name NewONNX, which pulls internal/tools and cmd/vp into
+# a run with neither -short nor -race.
+LPAREN := (
+MODEL_TEST_PKGS = $(shell grep -rlE '\bNewONNX\$(LPAREN)' --include='*_test.go' internal cmd | grep -v '^internal/integration/' | xargs -rn1 dirname | sort -u | sed 's|^|./|')
+
+# THE ONLY TARGET THAT RUNS THE REAL MODEL OUTSIDE `make integration`, and the
+# CI `model` job's entire step. Every real-model test skips under -short, and
+# every other CI test job is -short, so without this no CI job loads the model.
+#
+# No -short: that is what un-skips the model tests. No -race: go-huggingface's
+# downloader has a data race that only a -race binary reports, and a cold cache
+# downloads here. A warm cache still makes one revision-info request to
+# huggingface.co per NewONNX, so this needs network access either way.
+#
+# The empty-set guard fails the target CLOSED if the derivation ever stops
+# matching, instead of running `go test` with no packages (which tests the
+# current directory) or passing on nothing. -timeout 10m sits under the CI job's
+# 15-minute timeout so go's own timeout panic, with its goroutine dump, fires
+# first.
+.PHONY: model-test
+model-test: ## Run every test that loads the real ONNX model (no -short, no -race; needs network)
+	@test -n "$(MODEL_TEST_PKGS)" || { echo "model-test: derivation found no packages" >&2; exit 1; }
+	go test -count=1 -timeout 10m $(MODEL_TEST_PKGS)
 
 .PHONY: init-e2e
 init-e2e: ## Run bash end-to-end harness for `vp init` (sandboxed HOME, builds its own binary)

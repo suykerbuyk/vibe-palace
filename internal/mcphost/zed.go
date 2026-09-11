@@ -19,6 +19,11 @@ import (
 // server is registered in Zed's settings.json.
 const zedServerName = "vibe-palace"
 
+// zedBinary is the Zed editor's executable name. Executables reports it, and
+// NewZedHost's lookPath resolves whatever Executables reports. Zed is never
+// executed, only resolved.
+const zedBinary = "zed"
+
 // ZedHost registers the vibe-palace MCP server with the Zed editor by adding a
 // context_servers entry to settings.json. Zed's settings file is JWCC (JSON
 // With Commas and Comments), and operators heavily annotate it, so the edit is
@@ -41,10 +46,9 @@ type ZedHost struct {
 // NewZedHost returns a ZedHost pointed at the platform-default settings.json
 // ($XDG_CONFIG_HOME/zed/settings.json, falling back to ~/.config/zed/settings.json).
 func NewZedHost() *ZedHost {
-	return &ZedHost{
-		settingsPath: defaultZedSettingsPath(),
-		lookPath:     func() (string, error) { return exec.LookPath("zed") },
-	}
+	h := &ZedHost{settingsPath: defaultZedSettingsPath()}
+	h.lookPath = func() (string, error) { return exec.LookPath(h.Executables()[0]) }
+	return h
 }
 
 func defaultZedSettingsPath() string {
@@ -57,6 +61,10 @@ func defaultZedSettingsPath() string {
 
 func (*ZedHost) Name() string { return "zed" }
 func (*ZedHost) Flag() string { return "--zed" }
+
+// Executables reports the `zed` CLI, which Detected looks up on PATH (the name
+// NewZedHost's lookPath resolves comes from here). Nothing in ZedHost runs it.
+func (*ZedHost) Executables() []string { return []string{zedBinary} }
 
 // Detected reports whether Zed is present: its config directory exists, or
 // `zed` is on PATH.
