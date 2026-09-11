@@ -57,8 +57,8 @@ func CheckSurface(vaultRoot string) Result {
 		// literals, deleting the remediation from version.go left every one of
 		// those tests green — the coverage was real and pointed at nothing.
 		//
-		// r.Err below is NOT a second route to this text: check/format.go:82-85
-		// records that Result.Err is never rendered (PrintRows emits Name,
+		// r.Err below is NOT a second route to this text: check/format.go's
+		// PrintRows records that Result.Err is never rendered (PrintRows emits Name,
 		// Summary and Details; check/json.go joins Summary + Details). On the
 		// `vp check` path, Details is the operator's ONLY route to the remedy.
 		r.Details = ie.Remediation()

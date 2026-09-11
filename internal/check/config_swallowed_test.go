@@ -58,30 +58,3 @@ func TestCheckConfigAt_SwallowedVaultPath(t *testing.T) {
 			"the cwd .vibe-palace.toml was rejected.\ngot: %s", details)
 	}
 }
-
-// TestWrapDetail covers the helper that carries err.Error() into Details.
-func TestWrapDetail(t *testing.T) {
-	if got := WrapDetail(""); got != nil {
-		t.Errorf("WrapDetail(\"\") = %v, want nil", got)
-	}
-	long := strings.Repeat("alpha beta ", 30)
-	lines := WrapDetail(long)
-	if len(lines) < 2 {
-		t.Fatalf("expected the long message to wrap, got %d line(s)", len(lines))
-	}
-	for i, l := range lines {
-		if len(l) > detailWidth {
-			t.Errorf("line %d is %d chars, over detailWidth %d: %q", i, len(l), detailWidth, l)
-		}
-	}
-	if joined := strings.Join(lines, " "); joined != strings.TrimSpace(long) {
-		t.Errorf("wrapping lost or altered content:\n got: %q\nwant: %q", joined, strings.TrimSpace(long))
-	}
-
-	// A single word longer than the width gets its own line rather than being
-	// broken, so paths stay copy-pasteable.
-	path := strings.Repeat("x", detailWidth+20)
-	if got := WrapDetail("see " + path); len(got) != 2 || got[1] != path {
-		t.Errorf("oversized word was broken: %q", got)
-	}
-}

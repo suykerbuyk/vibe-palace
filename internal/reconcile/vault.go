@@ -76,14 +76,14 @@ func (r *VaultReconciler) gitEnabled() bool {
 func (r *VaultReconciler) Check(_ context.Context) []check.Result {
 	vaultPath, err := r.resolvedVaultPath()
 	if err != nil || vaultPath == "" {
-		// Details, not Err alone — see check.WrapDetail.
+		// Details, not Err alone — see check.PrintRows.
 		res := check.Result{
 			Name: "Vault", Status: check.Fail,
 			Summary: "cannot resolve vault path",
 			Err:     err,
 		}
 		if err != nil {
-			res.Details = check.WrapDetail(err.Error())
+			res.Details = []string{err.Error()}
 		}
 		return []check.Result{res}
 	}

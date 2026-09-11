@@ -259,29 +259,31 @@ func CheckTemplateDrift(vaultRoot string) Result {
 // why an override is still listed here (it shadows the built-in and misses
 // binary-contract changes), that an unedited copy is pruned, and the reset verbs
 // as the one way to drop a vault override, keeping a backup.
+//
+// One entry per paragraph: check.PrintRows wraps each, and a line wrapped here
+// would render as an entry of its own.
 var templateDriftRemedy = []string{
-	"CHANGING VIBE-PALACE ITSELF: the binary and the vault-served templates ship",
-	"TOGETHER — a template supplies arguments the binary requires (commands/wrap.md",
-	"supplies the expected_sha256 vp_update_resume demands), so a NEW binary served",
-	"a stale vault copy breaks that command outright. The reverse is harmless. Edit",
-	"ONLY the Go-embedded copy under internal/templates/templates/ (doctrine.md and",
-	"commands/ included), then `make install`, then `vp config sync` — in that order.",
+	"CHANGING VIBE-PALACE ITSELF: the binary and the vault-served templates ship " +
+		"TOGETHER — a template supplies arguments the binary requires (commands/wrap.md " +
+		"supplies the expected_sha256 vp_update_resume demands), so a NEW binary served " +
+		"a stale vault copy breaks that command outright. The reverse is harmless. Edit " +
+		"ONLY the Go-embedded copy under internal/templates/templates/ (doctrine.md and " +
+		"commands/ included), then `make install`, then `vp config sync` — in that order.",
 	"internal/templates/shipped.txt is frozen: a template edit needs nothing else.",
-	"CUSTOMISING A BUILT-IN command or skill: vault Templates/commands/ and",
-	"Templates/skills/ are the vault-wide override tier, and Projects/<slug>/commands/",
-	"and Projects/<slug>/skills/ the per-project tier. No vp reconciler or upgrade",
-	"command changes an override in either: `vp config sync` never overwrites one,",
-	"never prompts about one, and never commits its removal (a committed override is",
-	"restored from HEAD); the upgrade commands never reset one, in any mode. That is",
-	"what safe means: vp_vault_write / edit / move / delete and `vp vault commit",
-	"--paths .` are direct edits and reach any tier. A copy identical, line endings",
-	"aside, to the current or an earlier shipped version of the built-in is vp's, not",
-	"an override, and is pruned: edit a copy before syncing. An override shadows the",
-	"built-in and misses binary-contract changes (wrap.md's expected_sha256), so it is",
-	"listed here as Info — kept, not wrong.",
-	"To drop a vault override: `vp commands reset NAME` / `vp skills reset NAME` — it",
-	"removes the file so the built-in serves it, and keeps a backup; not `vp vault",
-	"delete`.",
+	"CUSTOMISING A BUILT-IN command or skill: vault Templates/commands/ and " +
+		"Templates/skills/ are the vault-wide override tier, and Projects/<slug>/commands/ " +
+		"and Projects/<slug>/skills/ the per-project tier. No vp reconciler or upgrade " +
+		"command changes an override in either: `vp config sync` never overwrites one, " +
+		"never prompts about one, and never commits its removal (a committed override is " +
+		"restored from HEAD); the upgrade commands never reset one, in any mode. That is " +
+		"what safe means: vp_vault_write / edit / move / delete and `vp vault commit " +
+		"--paths .` are direct edits and reach any tier.",
+	"A copy identical, line endings aside, to the current or an earlier shipped version " +
+		"of the built-in is vp's, not an override, and is pruned: edit a copy before " +
+		"syncing. An override shadows the built-in and misses binary-contract changes " +
+		"(wrap.md's expected_sha256), so it is listed here as Info — kept, not wrong.",
+	"To drop a vault override: `vp commands reset NAME` / `vp skills reset NAME` — it " +
+		"removes the file so the built-in serves it, and keeps a backup; not `vp vault delete`.",
 	"A NEW vault-wide command or skill under Templates/ is yours — nothing touches it.",
 	"A mirror is drift pending a prune, not an error.",
 }

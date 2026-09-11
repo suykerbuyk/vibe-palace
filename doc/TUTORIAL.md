@@ -77,22 +77,40 @@ Fresh install inside a Go project:
 ```
 vp init — vibe-palace 0.1.0-dev
 
-[pass] Global config: /home/you/.config/vibe-palace/config.toml
-[pass] Vault:     /home/you/vibe-palace-vault
-                  git repository initialized
-[pass] Project config: created /home/you/code/myapp/.vibe-palace.toml (myapp, go.mod detected)
-[pass] Vault project: /home/you/vibe-palace-vault/Projects/myapp/config.toml
-[pass] Project templates: scaffolded Projects/myapp/{commands,skills}/
-[pass] Agent wiring: AGENTS.md — block added
-[skip] Agent wiring: .github/copilot-instructions.md — .github/ not present; create the dir to wire
-[pass] Slash-command shims (project): added 22, updated 0 (commands +15 skills +7)
-[pass] Hook wiring: vp hook installed
-[pass] Project .gitignore: host-local vp artifacts ignored
-[skip] Git commit.msg hook: /home/you/code/myapp is not a git repository — no hook to install
-[info] Upgrade policy: `vp init` is additive: it never removes a stale shim and never writes, prunes or reconciles vault Templates/. Stale shims are `vp commands upgrade`'s; a vault Templates/ override of a built-in is changed by nothing but an explicit reset
-                  stale .claude/commands/vpc-*.md shims: `vp commands upgrade` removes them; it never touches vault Templates/
-                  vault Templates/commands/ overrides of built-in commands: nothing resets one unless you name it — `vp commands reset NAME` removes it (a backup is kept)
-                  vault Templates/skills/ overrides of built-in skills: nothing resets one unless you name it — `vp skills reset NAME` removes it (a backup is kept)
+[pass] Global config:
+       /home/you/.config/vibe-palace/config.toml
+[pass] Vault:
+       /home/you/vibe-palace-vault
+       git repository initialized
+[pass] Project config:
+       created /home/you/code/myapp/.vibe-palace.toml (myapp, go.mod detected)
+[pass] Vault project:
+       /home/you/vibe-palace-vault/Projects/myapp/config.toml
+[pass] Project templates:
+       scaffolded Projects/myapp/{commands,skills}/
+[pass] Agent wiring:
+       AGENTS.md — block added
+[skip] Agent wiring:
+       .github/copilot-instructions.md — .github/ not present; create the dir to
+         wire
+[pass] Slash-command shims (project):
+       added 22, updated 0 (commands +15 skills +7)
+[pass] Hook wiring:
+       vp hook installed
+[pass] Project .gitignore:
+       host-local vp artifacts ignored
+[skip] Git commit.msg hook:
+       /home/you/code/myapp is not a git repository — no hook to install
+[info] Upgrade policy:
+       `vp init` is additive: it never removes a stale shim, and it never
+         writes, prunes or reconciles vault Templates/.
+       - Stale shims (.claude/commands/vpc-*.md): `vp commands upgrade` removes
+         them. It never touches vault Templates/.
+       - Command overrides (vault Templates/commands/): nothing resets one
+         unless you name it. `vp commands reset NAME` removes it, and a backup
+         is kept.
+       - Skill overrides (vault Templates/skills/): nothing resets one unless
+         you name it. `vp skills reset NAME` removes it, and a backup is kept.
 
 Summary: 10 ok, 2 skip. Re-run `vp init` anytime — it is idempotent.
 ```
@@ -131,24 +149,38 @@ overwritten, and no row claims work it did not do.
 
 It is **not** a no-op, and the rows say which is which. Every step runs
 again and reconciles; a step that found its artifact already in place says
-so — `[info] Project templates: … already present — nothing to scaffold` —
+so — `Project templates` reports `[info]` with `… already present — nothing
+to scaffold` —
 while a step that reconciled a file in place still reports `[pass]` with a
 summary that describes the state it left, not work performed:
 
 ```
 vp init — vibe-palace 0.1.0-dev
 
-[info] Global config: /home/you/.config/vibe-palace/config.toml (already exists, skipped)
-[info] Vault:     already configured
-[pass] Project config: /home/you/code/myapp/.vibe-palace.toml (myapp, .vibe-palace.toml detected)
-[pass] Vault project: /home/you/vibe-palace-vault/Projects/myapp/config.toml
-[info] Project templates: Projects/myapp/{commands,skills}/ already present — nothing to scaffold
-[info] Agent wiring: AGENTS.md — block unchanged
-[skip] Agent wiring: .github/copilot-instructions.md — .github/ not present; create the dir to wire
-[info] Slash-command shims (project): added 0, updated 0 (commands +0 skills +0)
-[info] Hook wiring: vp hook already installed
-[pass] Project .gitignore: host-local vp artifacts ignored
-[skip] Git commit.msg hook: /home/you/code/myapp is not a git repository — no hook to install
+[info] Global config:
+       /home/you/.config/vibe-palace/config.toml (already exists, skipped)
+[info] Vault:
+       already configured
+[pass] Project config:
+       /home/you/code/myapp/.vibe-palace.toml (myapp, .vibe-palace.toml
+         detected)
+[pass] Vault project:
+       /home/you/vibe-palace-vault/Projects/myapp/config.toml
+[info] Project templates:
+       Projects/myapp/{commands,skills}/ already present — nothing to scaffold
+[info] Agent wiring:
+       AGENTS.md — block unchanged
+[skip] Agent wiring:
+       .github/copilot-instructions.md — .github/ not present; create the dir to
+         wire
+[info] Slash-command shims (project):
+       added 0, updated 0 (commands +0 skills +0)
+[info] Hook wiring:
+       vp hook already installed
+[pass] Project .gitignore:
+       host-local vp artifacts ignored
+[skip] Git commit.msg hook:
+       /home/you/code/myapp is not a git repository — no hook to install
 
 Summary: 10 ok, 2 skip. Re-run `vp init` anytime — it is idempotent.
 ```
@@ -173,15 +205,23 @@ Expected output:
 ```
 vp check — vibe-palace installation diagnostic (0.1.0-dev)
 
-[pass] Config:           /home/you/.config/vibe-palace/config.toml
-                         vault_path = /home/you/vibe-palace-vault
-[pass] Vault:            /home/you/vibe-palace-vault (exists)
-[pass] Settings:         model=sentence-transformers/all-MiniLM-L6-v2  search_limit=10
-[pass] Embedder:         ONNX loaded, 384 dimensions
-[pass] Git:              remotes: github, vault
-[pass] Config Staleness: config is up to date
-[info] Project:          my-project (from .vibe-palace.toml)
-[pass] Surface:          binary v1 >= vault max
+[pass] Config:
+       /home/you/.config/vibe-palace/config.toml
+       vault_path = /home/you/vibe-palace-vault
+[pass] Vault:
+       /home/you/vibe-palace-vault (exists)
+[pass] Settings:
+       model=sentence-transformers/all-MiniLM-L6-v2  search_limit=10
+[pass] Embedder:
+       ONNX loaded, 384 dimensions
+[pass] Git:
+       remotes: github, vault
+[pass] Config Staleness:
+       config is up to date
+[info] Project:
+       my-project (from .vibe-palace.toml)
+[pass] Surface:
+       binary v1 >= vault max
 
 All checks passed.
 ```
@@ -235,12 +275,14 @@ vp check --check resume-caps
 ```
 
 ```
-[info] Resume caps: 2 of 6 resume.md over cap
-                    rezbldr: Project History 18 rows (cap 15)
-                    vibe-palace: 64.8 KB (cap 25 KB); Completed Plans 13 rows (cap 12)
-                  Caps: 25 KB total, Project History 15 rows, Completed Plans 12 rows.
-                  resume.md is a gateway, not an archive — prune at the next wrap (/vpc-wrap Step 3);
-                  the full record already lives in iterations.md and tasks/done/.
+[info] Resume caps:
+       2 of 6 resume.md over cap
+         rezbldr: Project History 18 rows (cap 15)
+         vibe-palace: 64.8 KB (cap 25 KB); Completed Plans 13 rows (cap 12)
+       Caps: 25 KB total, Project History 15 rows, Completed Plans 12 rows.
+       resume.md is a gateway, not an archive — prune at the next wrap
+         (/vpc-wrap Step 3); the full record already lives in iterations.md and
+         tasks/done/.
 ```
 
 The row is **advisory** — `[info]`, never `[FAIL]`, so it never changes the
@@ -1317,8 +1359,10 @@ changes the binary depends on — `commands/wrap.md` supplies the
 `template-drift` check lists each one, as `[info]`, every time it runs:
 
 ```
-[info] Template drift: 1 override(s) of built-ins kept (of 41)
-                    Templates:Templates/commands/wrap.md: operator override of a built-in (kept; shadows embedded 4c91c8b4097d)
+[info] Template drift:
+       1 override(s) of built-ins kept (of 41)
+         Templates:Templates/commands/wrap.md: operator override of a built-in
+           (kept; shadows embedded 4c91c8b4097d)
 ```
 
 To drop an override, name it: `vp commands reset wrap` (or

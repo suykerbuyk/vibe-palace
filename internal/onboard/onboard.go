@@ -399,17 +399,20 @@ func Run(ctx context.Context, req Request, scope Scope) (Result, error) {
 // path — accepted it for every override, commands with no .bak at all. Each
 // Templates line therefore names its own reset verb and says a backup is
 // kept, so no line can be read as "run the upgrade against drift".
+//
+// Each Details line is one "- " item naming the artifact first and its owner
+// second, so check.PrintRows hangs a wrapped item under its own text and the
+// three owners read as three items rather than one paragraph.
 func upgradeAdvisory() Advisory {
 	return Advisory{
-		Name: "Upgrade policy",
-		Summary: "`vp init` is additive: it never removes a stale shim and never writes, prunes or reconciles vault Templates/. " +
-			"Stale shims are `vp commands upgrade`'s; a vault Templates/ override of a built-in is changed by nothing but an explicit reset",
+		Name:    "Upgrade policy",
+		Summary: "`vp init` is additive: it never removes a stale shim, and it never writes, prunes or reconciles vault Templates/.",
 		Details: []string{
-			"stale .claude/commands/vpc-*.md shims: `vp commands upgrade` removes them; it never touches vault Templates/",
-			"vault Templates/commands/ overrides of built-in commands: nothing resets one unless you name it — " +
-				"`vp commands reset NAME` removes it (a backup is kept)",
-			"vault Templates/skills/ overrides of built-in skills: nothing resets one unless you name it — " +
-				"`vp skills reset NAME` removes it (a backup is kept)",
+			"- Stale shims (.claude/commands/vpc-*.md): `vp commands upgrade` removes them. It never touches vault Templates/.",
+			"- Command overrides (vault Templates/commands/): nothing resets one unless you name it. " +
+				"`vp commands reset NAME` removes it, and a backup is kept.",
+			"- Skill overrides (vault Templates/skills/): nothing resets one unless you name it. " +
+				"`vp skills reset NAME` removes it, and a backup is kept.",
 		},
 	}
 }

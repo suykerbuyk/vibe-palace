@@ -140,14 +140,14 @@ func CheckIterationHeadings(v *storage.Vault) Result {
 		}
 	}
 	r.Details = append(r.Details,
-		"An H2 on the writer's \"---\" frame that FormatIterationHeader would not emit is a REAL entry",
-		"boundary the reader cannot see: its narrative is unaddressable by number and is served as the",
-		"TAIL of the previous entry (vp_get_iteration over-returned exactly that way for 108, 110, 125,",
-		"128, 145 and 154, reporting success). A non-canonical numbered heading is addressable but not",
-		"what the writer emits; a doubled \"Iteration N —\" prefix passes the round-trip oracle and is",
-		"invisible to both other rules, which is why all three are checked.",
-		"Repair is a WRITE and a judgement call — an unnumbered orphan has no recoverable N — so this",
-		"check reports and never rewrites. Duplicate iteration numbers are DELIBERATE (addendum",
-		"narratives) and are not reported: that rule invented 17 findings once and was deleted.")
+		"An H2 on the writer's \"---\" frame that FormatIterationHeader would not emit is a REAL entry "+
+			"boundary the reader cannot see: its narrative is unaddressable by number and is served as the "+
+			"TAIL of the previous entry (vp_get_iteration over-returned exactly that way for 108, 110, 125, "+
+			"128, 145 and 154, reporting success). A non-canonical numbered heading is addressable but not "+
+			"what the writer emits; a doubled \"Iteration N —\" prefix passes the round-trip oracle and is "+
+			"invisible to both other rules, which is why all three are checked.",
+		"Repair is a WRITE and a judgement call — an unnumbered orphan has no recoverable N — so this "+
+			"check reports and never rewrites. Duplicate iteration numbers are DELIBERATE (addendum "+
+			"narratives) and are not reported: that rule invented 17 findings once and was deleted.")
 	return r
 }

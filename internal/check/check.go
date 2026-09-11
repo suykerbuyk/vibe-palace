@@ -126,7 +126,7 @@ func CheckConfigAt(root string) (configPath, vaultPath string, r Result) {
 	if err != nil {
 		r.Status = Fail
 		r.Err = err
-		// Details, not Err — see WrapDetail for why Err reaches nobody.
+		// Details, not Err — see PrintRows for why Err reaches nobody.
 		//
 		// "not found / run vp init" is the right remedy ONLY when resolution
 		// failed for want of a config. A cwd .vibe-palace.toml that PARSED but
@@ -138,7 +138,7 @@ func CheckConfigAt(root string) (configPath, vaultPath string, r Result) {
 			return
 		}
 		r.Summary = "vault_path could not be resolved"
-		r.Details = WrapDetail(err.Error())
+		r.Details = []string{err.Error()}
 		return
 	}
 

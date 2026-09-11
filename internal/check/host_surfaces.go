@@ -29,8 +29,8 @@ func CheckHostSurfaces() []Result {
 		} else {
 			missing = append(missing, "claude")
 			details = append(details,
-				"  claude: missing cache command shims — run `vp mcp install --claude-plugin`",
-				"  (marketplace source alone is not enough; Claude loads the cache copy)",
+				"  claude: missing cache command shims — run `vp mcp install --claude-plugin` "+
+					"(marketplace source alone is not enough; Claude loads the cache copy)",
 			)
 		}
 	}

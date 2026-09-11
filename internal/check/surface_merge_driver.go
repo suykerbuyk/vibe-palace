@@ -63,16 +63,16 @@ const surfaceMergeDriverName = "vp-surface"
 // failing row, so it costs nothing on the healthy path and is present at the
 // only moment a reader needs it.
 var surfaceMergeDriverHazard = []string{
-	"vp ships NO merge driver. The driver, the `vp vault merge-driver` subcommand, its auto-installer and",
-	"the `--no-install-merge-driver` opt-out were all DELETED at 174: `.surface` stamps are byte-stable, so",
-	"the conflict class the driver resolved no longer exists.",
-	"**git emits no diagnostic for an attribute naming an undefined driver** — it silently falls back to a",
-	"TEXT merge, so a corrupted stamp arrives looking like a clean merge.",
-	"A `merge.<name>.driver` entry left in some host's git config does not make this safe: it names the",
-	"deleted subcommand, so it binds nothing — and git config is host-local while this vault is synced to",
-	"every machine, so it could not cover the other hosts even if it did bind.",
-	"REMEDY: delete the line from `.gitattributes`. Do not re-add the attribute without re-adding a driver",
-	"that actually ships — and a driver that ships is a deliberate design decision, not a wrap-time fix.",
+	"vp ships NO merge driver. The driver, the `vp vault merge-driver` subcommand, its auto-installer and " +
+		"the `--no-install-merge-driver` opt-out were all DELETED at 174: `.surface` stamps are byte-stable, so " +
+		"the conflict class the driver resolved no longer exists.",
+	"**git emits no diagnostic for an attribute naming an undefined driver** — it silently falls back to a " +
+		"TEXT merge, so a corrupted stamp arrives looking like a clean merge.",
+	"A `merge.<name>.driver` entry left in some host's git config does not make this safe: it names the " +
+		"deleted subcommand, so it binds nothing — and git config is host-local while this vault is synced to " +
+		"every machine, so it could not cover the other hosts even if it did bind.",
+	"REMEDY: delete the line from `.gitattributes`. Do not re-add the attribute without re-adding a driver " +
+		"that actually ships — and a driver that ships is a deliberate design decision, not a wrap-time fix.",
 }
 
 // surfaceMergeDriverRef is one offending line.

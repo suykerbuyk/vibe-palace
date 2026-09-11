@@ -162,8 +162,8 @@ func CheckVaultFilesystem(vaultRoot string) Result {
 		r.Summary = "filesystem rejects ':' in filenames (NTFS/exFAT?)"
 		r.Details = []string{
 			"This vault cannot reliably store artifacts whose names contain ':'.",
-			"Relocate the vault to a POSIX filesystem (ext4/APFS): set vault_path in",
-			"~/.config/vibe-palace/config.toml, then move the vault directory there.",
+			"Relocate the vault to a POSIX filesystem (ext4/APFS): set vault_path in " +
+				"~/.config/vibe-palace/config.toml, then move the vault directory there.",
 		}
 		r.Err = err
 		return r

@@ -121,8 +121,8 @@ func CheckResumeCaps(v *storage.Vault) Result {
 	r.Details = append(r.Details,
 		fmt.Sprintf("Caps: %d KB total, Project History %d rows, Completed Plans %d rows.",
 			ResumeMaxBytes/1024, ResumeMaxHistoryRows, ResumeMaxCompletedRows),
-		"resume.md is a gateway, not an archive — prune at the next wrap (/vpc-wrap Step 3);",
-		"the full record already lives in iterations.md and tasks/done/.")
+		"resume.md is a gateway, not an archive — prune at the next wrap (/vpc-wrap Step 3); "+
+			"the full record already lives in iterations.md and tasks/done/.")
 	return r
 }
 
