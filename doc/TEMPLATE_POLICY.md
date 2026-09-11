@@ -141,7 +141,9 @@ the options the old note listed — and removed the policy switch
 >   stamped write (a task write or session capture; a reset or
 >   `vp commands upgrade` stamps nothing) and a lagging host has pulled
 >   it, that lagging host is refused on vault writes (exit 2,
->   `git pull && make install`).
+>   `git pull && make install`), so an older binary cannot reset overrides
+>   this release keeps. Run `make install` on every host — hosts still on
+>   v3 go straight to v5 — then restart every AI harness on it.
 
 ## Backup mechanics
 

@@ -1314,8 +1314,27 @@ mid-session once the host's own hooks stamp v4. A host starts being
 refused when it pulls a vault an upgraded host has written to (any task
 write stamps `Projects/<p>/.surface`). Two windows remain: a lagging
 host that runs `vp config sync` before it pulls the stamp, and
-`VP_SURFACE_GATE=warn`. Never use that escape hatch for `vp config sync`
-or the upgrade commands.
+`VP_SURFACE_GATE=warn`. Never use that escape hatch for `vp config sync`,
+`vp commands reset` / `vp skills reset`, or — on a host still running a v4
+or older binary — the upgrade commands.
+
+**Rollout of the upgrade-reset fix (surface v5).** The binary whose upgrade
+commands never reset a `Templates/` override (and which adds
+`vp commands reset` / `vp skills reset`) raises `MCPSurfaceVersion` to 5,
+so a v4 binary on another host is refused — exit 2, `action: cd
+~/code/vibe-palace && git pull && make install` — instead of running its
+`vp commands upgrade --overwrite`, which replaces every override a v5 host
+keeps with the embedded bytes (no backup for commands, one overwritable
+`.bak` for skills). Run `make install` on **every** host — a host still on
+v3 goes straight to v5 — then restart every AI harness on that host: a
+`vp mcp` still running the v4 binary is refused once the host's own hooks
+stamp v5. A reset itself stamps nothing (a removal and a `.bak` carry no
+stamp), so a host starts being refused when it pulls a vault an upgraded
+host has made a stamped write to — a task write or a session capture
+stamps `Projects/<p>/.surface`. Two windows remain: a lagging host that
+runs `vp commands upgrade --overwrite` before it pulls the stamp, and
+`VP_SURFACE_GATE=warn`. Never use that escape hatch for `vp config sync`,
+the reset verbs, or — on a v4 host — the upgrade commands.
 
 **Recovering an override an older binary already deleted.**
 
@@ -1379,7 +1398,10 @@ commands.** Requires `make install` on every host (MCP surface v5).
   stamped write (a task write or session capture; a reset or
   `vp commands upgrade` stamps nothing) and a lagging host has pulled
   it, that lagging host is refused on vault writes (exit 2,
-  `git pull && make install`).
+  `git pull && make install`), so an older binary cannot reset overrides
+  this release keeps. Run `make install` on every host — hosts still on
+  v3 go straight to v5 — then restart every AI harness on it. See
+  *Rollout of the upgrade-reset fix (surface v5)* above.
 
 **Promoting back to the `vp` source tree.** Vibe-palace cannot automate
 promotion because at runtime it does not know where your vibe-palace

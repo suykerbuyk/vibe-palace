@@ -75,7 +75,10 @@ import (
 //     commit pushes the deletion of the operator's override to every host. A v4
 //     host cannot defend against that by its own behaviour; only the gate stops
 //     the v3 binary, and it does: `vp config sync`, `vp commands upgrade`,
-//     `vp skills upgrade` and `vp init` are all mutates()-gated.
+//     `vp skills upgrade` and `vp init` are all mutates()-gated — true of v4
+//     binaries; from v5 the upgrade commands write nothing under Templates/
+//     and are ungated, and the destructive template verbs are `vp commands
+//     reset` / `vp skills reset`, which are gated.
 //
 // Two further write-shape changes landed inside the v3 fleet and strengthen the
 // case, because each is something a pre-change binary mishandles on its NEXT
@@ -99,8 +102,52 @@ import (
 // then restart every AI harness on it (a running v3 `vp mcp` is refused
 // mid-session once the host's own hooks stamp v4). A lagging host that runs
 // `vp config sync` BEFORE it pulls the stamp, and VP_SURFACE_GATE=warn, still
-// run the v3 chain; never use the escape hatch for `vp config sync` or the
-// upgrade commands.
+// run the v3 chain; never use the escape hatch for `vp config sync`, `vp
+// commands reset` / `vp skills reset`, or — on a host still running a v4 or
+// older binary — the upgrade commands.
+//
+// Bumped 4->5 (2026-09-11). What a binary does to vault Templates/ changed
+// again (upgrade-overwrite-resets-vault-template-overrides), and ADR-008's
+// trigger — "any change to what/where instruction files are written" — is met
+// literally: the upgrade commands stop writing Templates/, and a reset removes
+// a file instead of writing one.
+//
+//   - A v5 `vp commands upgrade` / `vp skills upgrade` NEVER WRITES OR REMOVES
+//     A TEMPLATES/ FILE, in any mode. Resetting an override is an explicit,
+//     named `vp commands reset` / `vp skills reset`: it REMOVES the file instead
+//     of writing the embedded bytes, keeps a content-addressed backup
+//     (<file>.<sha12>.bak) that is never overwritten, and commits the removal
+//     locally on the vault's own repository.
+//   - A v4 binary on a lagging host runs `vp commands upgrade --overwrite` — its
+//     documented non-TTY path, and where its own refusal text and the vp_check
+//     remedies send agents — and that REPLACES EVERY OVERRIDE A v5 HOST KEEPS
+//     with the embedded bytes: no backup for commands, one overwritable .bak for
+//     skills. A v5 host cannot defend against that by its own behaviour. It is
+//     the 3->4 shape exactly — an old binary destroys what the new one keeps,
+//     and only the gate stops it: a v4 binary's upgrade commands are
+//     mutates()-gated, so once it sees a v5 stamp it refuses them (exit 2).
+//
+// Operator decision (2026-09-11): bump. The v4 rollout was still open, so hosts
+// upgrade once, straight to v5, and the marginal stranding cost is about nil.
+// Considered and declined: not bumping, which would leave lagging v4 hosts able
+// to reset what v5 hosts keep.
+//
+// The re-derivation, run over 26ead15..this change with the three queries
+// below, found no other write-shape change: the first two return nothing, and
+// the third (read, not grepped) lists no commit. Named and REJECTED on
+// inspection: 1f3bb62 rewords the Projects/<slug>/{commands,skills}/README.md
+// stubs vp writes only when absent — prose no reader parses — and this change's
+// own epic-orchestrator SKILL.md edit is an embedded template body, which vp
+// never writes into a vault.
+//
+// A RESET ITSELF STAMPS NOTHING: a removal is unstamped (vaultfs.RemoveNoLock)
+// and ResolveStampDir skips a *.bak. The floor rises with an upgraded host's
+// first STAMPED write — any task write stamps Projects/<p>/.surface, which
+// commitTaskWrite stages — and a lagging host meets it once it has pulled that.
+// Rollout: `make install` on every host, then restart every AI harness on it (a
+// running v4 `vp mcp` is refused once the host's own hooks stamp v5). The
+// residual windows: a lagging host that runs `vp commands upgrade --overwrite`
+// before it pulls the stamp, and VP_SURFACE_GATE=warn.
 //
 // 🔴 RE-DERIVE THIS LIST, DO NOT EXTEND IT BY MEMORY. The commits above were
 // each confirmed against their diffs, and three plausible-sounding candidates
@@ -130,7 +177,7 @@ import (
 // TESTED contract rather than a convenience — a stranded host has to be able to
 // read its way out. `vp check --check writer-identity` derives how many hosts
 // that is; do not record the number here.
-const MCPSurfaceVersion int = 4
+const MCPSurfaceVersion int = 5
 
 // Stamp models the on-disk .surface TOML file recording the latest writer.
 type Stamp struct {
