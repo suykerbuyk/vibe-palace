@@ -413,3 +413,47 @@ func TestResolveSkillEmptyVaultRootIsEmbeddedOnly(t *testing.T) {
 		t.Error("a reference present only in the cwd must not resolve with no vault root")
 	}
 }
+
+// TestListResourcesEmptyVaultRootIsEmbeddedOnly: a resolver with no vault root
+// lists the embedded tier only. Before the guard, a ./Templates/skills/<name>
+// or ./Templates/commands/<name>.md in the process cwd was listed as a vault
+// resource, so the user-global installer on a host with no vault listed a
+// skill it then could not resolve.
+func TestListResourcesEmptyVaultRootIsEmbeddedOnly(t *testing.T) {
+	cwd := t.TempDir()
+	for _, rel := range []string{
+		"Templates/skills/cwd-skill/SKILL.md",
+		"Templates/commands/cwd-command.md",
+		"Projects/p1/skills/cwd-project-skill/SKILL.md",
+		"Projects/p1/commands/cwd-project-command.md",
+		"Projects/p1/skills/w/.wing/cwd-wing-skill/SKILL.md",
+		"Projects/p1/commands/w/r/cwd-room-command.md",
+	} {
+		p := filepath.Join(cwd, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("cwd\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(cwd)
+	r := NewResolver("")
+
+	for _, typ := range []string{"skill", "command"} {
+		for _, scope := range [][3]string{{"", "", ""}, {"p1", "", ""}, {"p1", "w", ""}, {"p1", "w", "r"}} {
+			list, err := r.ListResourcesScoped(typ, scope[0], scope[1], scope[2])
+			if err != nil {
+				t.Fatalf("%s %v: %v", typ, scope, err)
+			}
+			if len(list) == 0 {
+				t.Fatalf("%s %v: no embedded resources listed", typ, scope)
+			}
+			for _, ri := range list {
+				if ri.Source != "embedded" || strings.HasPrefix(ri.Name, "cwd-") {
+					t.Errorf("%s %v: listed %q from %q — an empty vault root read a cwd-relative tier", typ, scope, ri.Name, ri.Source)
+				}
+			}
+		}
+	}
+}

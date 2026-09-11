@@ -1612,7 +1612,7 @@ exactly as `vp_skill` does, so the two serve the same body there;
 `--project SLUG` picks another project and `--no-project` skips the
 project tier. With no vault configured at all it prints the built-in
 skill. (`vp skills list` does not default the project; pass
-`--project`.) Every skill shim's MCP-less fallback runs this command.
+`--project`.) Every persona shim's MCP-less fallback runs this command.
 Reference resolution is
 per-file: a project may override SKILL.md without having to clone
 every reference — the resolver transparently falls back to vault or

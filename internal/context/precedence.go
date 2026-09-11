@@ -208,7 +208,10 @@ func (r *Resolver) ResolveDigest(resource, project string) (content, source, sha
 
 // ListResourcesScoped returns deduplicated resource names merged across up to
 // 5 precedence tiers: Room > Wing > Project > Vault > Embedded.
-// Higher-precedence sources shadow lower when names collide.
+// Higher-precedence sources shadow lower when names collide. Like
+// ResolveSkillDir, a resolver with no vault root lists the embedded tier only:
+// filepath.Join("", "Templates", …) is relative to the process cwd, and a
+// stray ./Templates or ./Projects there is not a vault.
 func (r *Resolver) ListResourcesScoped(resourceType, project, wing, room string) ([]ResourceInfo, error) {
 	if err := validateScope(wing, room); err != nil {
 		return nil, err
@@ -258,16 +261,18 @@ func (r *Resolver) ListResourcesScoped(resourceType, project, wing, room string)
 			return names
 		}
 
-		if wing != "" && room != "" && project != "" {
-			addTier(listDirs(filepath.Join(r.vaultRoot, "Projects", project, dir, wing, room)), "room")
+		if r.vaultRoot != "" {
+			if wing != "" && room != "" && project != "" {
+				addTier(listDirs(filepath.Join(r.vaultRoot, "Projects", project, dir, wing, room)), "room")
+			}
+			if wing != "" && project != "" {
+				addTier(listDirs(filepath.Join(r.vaultRoot, "Projects", project, dir, wing, ".wing")), "wing")
+			}
+			if project != "" {
+				addTier(listDirs(filepath.Join(r.vaultRoot, "Projects", project, dir)), "project")
+			}
+			addTier(listDirs(filepath.Join(r.vaultRoot, "Templates", dir)), "vault")
 		}
-		if wing != "" && project != "" {
-			addTier(listDirs(filepath.Join(r.vaultRoot, "Projects", project, dir, wing, ".wing")), "wing")
-		}
-		if project != "" {
-			addTier(listDirs(filepath.Join(r.vaultRoot, "Projects", project, dir)), "project")
-		}
-		addTier(listDirs(filepath.Join(r.vaultRoot, "Templates", dir)), "vault")
 
 		// Tier 5 — Embedded defaults.
 		if entries, err := fs.ReadDir(r.defaults, path.Join("templates", dir)); err == nil {
@@ -291,27 +296,29 @@ func (r *Resolver) ListResourcesScoped(resourceType, project, wing, room string)
 		return result, nil
 	}
 
-	// Tier 1 — Room.
-	if wing != "" && room != "" && project != "" {
-		roomDir := filepath.Join(r.vaultRoot, "Projects", project, dir, wing, room)
-		addTier(listMDFiles(roomDir), "room")
-	}
+	if r.vaultRoot != "" {
+		// Tier 1 — Room.
+		if wing != "" && room != "" && project != "" {
+			roomDir := filepath.Join(r.vaultRoot, "Projects", project, dir, wing, room)
+			addTier(listMDFiles(roomDir), "room")
+		}
 
-	// Tier 2 — Wing.
-	if wing != "" && project != "" {
-		wingDir := filepath.Join(r.vaultRoot, "Projects", project, dir, wing, ".wing")
-		addTier(listMDFiles(wingDir), "wing")
-	}
+		// Tier 2 — Wing.
+		if wing != "" && project != "" {
+			wingDir := filepath.Join(r.vaultRoot, "Projects", project, dir, wing, ".wing")
+			addTier(listMDFiles(wingDir), "wing")
+		}
 
-	// Tier 3 — Project.
-	if project != "" {
-		projDir := filepath.Join(r.vaultRoot, "Projects", project, dir)
-		addTier(listMDFiles(projDir), "project")
-	}
+		// Tier 3 — Project.
+		if project != "" {
+			projDir := filepath.Join(r.vaultRoot, "Projects", project, dir)
+			addTier(listMDFiles(projDir), "project")
+		}
 
-	// Tier 4 — Vault templates.
-	vaultDir := filepath.Join(r.vaultRoot, "Templates", dir)
-	addTier(listMDFiles(vaultDir), "vault")
+		// Tier 4 — Vault templates.
+		vaultDir := filepath.Join(r.vaultRoot, "Templates", dir)
+		addTier(listMDFiles(vaultDir), "vault")
+	}
 
 	// Tier 5 — Embedded defaults.
 	embedDir := path.Join("templates", dir)

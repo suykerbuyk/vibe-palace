@@ -419,7 +419,7 @@ detected there by default, exactly as `vp_skill` does, so both serve the
 same tier; `--no-project` skips the project tier and `--project SLUG`
 names another. With no vault configured it prints the built-in skill.
 `vp skills list` does not default the project; pass `--project` to see
-project-tier overrides. Every skill shim's MCP-less fallback is
+project-tier overrides. Every persona shim's MCP-less fallback is
 `vp skills show <name>`, run from the project directory.
 
 ### Write and wrap tools

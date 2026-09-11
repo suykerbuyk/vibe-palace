@@ -256,8 +256,12 @@ func newSkillsShowEnv(t *testing.T) skillsShowEnv {
 			t.Fatal(err)
 		}
 	}
+	// USERPROFILE and APPDATA are Windows' HOME and config dir: set them too,
+	// as setupTestVaultEnv does, so no run can reach the host's real ones.
 	t.Setenv("HOME", env.home)
+	t.Setenv("USERPROFILE", env.home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(env.home, ".config"))
+	t.Setenv("APPDATA", filepath.Join(env.home, ".config"))
 	return env
 }
 

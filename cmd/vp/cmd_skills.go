@@ -181,7 +181,7 @@ func cmdSkillsShow() *cli.Command {
 const skillsShowNoVaultNote = "vp skills show: no vault configured; showing the built-in skill"
 
 // skillsShowScope decides which resolver and project scope `vp skills show`
-// runs with. It is the command's testable seam: the skill shims' MCP-less
+// runs with. It is the command's testable seam: the persona shims' MCP-less
 // fallback runs `vp skills show <name>` from the project directory and must get
 // the body vp_skill would serve there.
 //

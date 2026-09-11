@@ -1,4 +1,4 @@
-# The skill shims' MCP-less fallback, run exactly as an agent's shell would.
+# The persona shims' MCP-less fallback, run exactly as an agent's shell would.
 #
 # Every persona shim (Cursor rule, Grok and Claude skill) ends with a fallback
 # for a session where the vp_skill tool cannot be loaded: run

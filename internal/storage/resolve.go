@@ -13,9 +13,10 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// projectFileName is the per-source-directory project config file.
-// It mirrors the constant exported by the project package; kept private
-// here to avoid an import cycle (project already imports storage).
+// projectFileName is the per-source-directory project config file. It
+// mirrors project.ConfigFileName, kept as a private copy here; storage does
+// import internal/project (for (*Vault).DetectedProject), and project imports
+// only internal/slug, so there is no cycle either way.
 const projectFileName = ".vibe-palace.toml"
 
 // ResolveVaultPath determines the vault root for the given cwd.

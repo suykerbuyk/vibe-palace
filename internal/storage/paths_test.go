@@ -388,6 +388,9 @@ func TestVaultDetectedProject(t *testing.T) {
 	home := filepath.Join(root, "home")
 	vaultRoot := filepath.Join(root, "vault")
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("APPDATA", filepath.Join(home, ".config"))
 	proj := filepath.Join(home, "code", "proj")
 	sub := filepath.Join(proj, "a", "b")
 	for _, d := range []string{sub, filepath.Join(vaultRoot, "Projects", "dp-slug")} {

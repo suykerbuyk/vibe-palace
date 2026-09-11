@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -20,7 +21,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/tools"
 )
 
-// fallbackCmdRe extracts the command a skill shim's MCP-less fallback names.
+// fallbackCmdRe extracts the command a persona shim's MCP-less fallback names.
 // It matches only the plain `vp skills show <name>` span — the closing
 // backtick must follow the name — so the `vp skills show <name> --section
 // <ref>` span in the same text is never taken for it.
@@ -155,7 +156,7 @@ func assertServes(t *testing.T, s personaShim, dir, wantSource, wantBody string)
 }
 
 // TestIntegrationSkillShimFallbackIsReachable is the reachability pin for the
-// skill shims' MCP-less fallback: render every shim kind in a fresh sandbox,
+// persona shims' MCP-less fallback: render every shim kind in a fresh sandbox,
 // run the exact command each shim names, and assert it serves the body
 // vp_skill would — for the embedded, project and vault-override tiers, and on
 // a host with no vault configured at all.
@@ -338,7 +339,9 @@ func TestIntegrationSkillShimFallbackIsReachable(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
 		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		t.Setenv("APPDATA", filepath.Join(home, ".config"))
 		noVault := filepath.Join(home, shims.GrokUserPluginRel)
 		rep := shims.InstallGlobalSurfaces(shims.GlobalInstallOptions{GrokPluginRoot: noVault})
 		if len(rep.Errors) > 0 {
@@ -383,4 +386,62 @@ func resolvedBodyScoped(t *testing.T, r *vpctx.Resolver, name, project string) s
 		t.Fatalf("resolve %s: %v", name, err)
 	}
 	return string(sd.SkillMDBody)
+}
+
+// TestIntegrationGrokInstallWithNoVaultIgnoresCwdTemplates: on a host with no
+// vault configured, `vp mcp install --grok` renders the user-global Grok shims
+// from the embedded tier only. Run from a directory that happens to hold a
+// Templates/ tree — a vault checkout, say — it must not list that tree's skill
+// or command as the vault tier: before the resolver's listing guard it listed
+// ./Templates/skills/cwd-only as a skill, then warned "resolve skill cwd-only"
+// because resolution (already guarded) could not find it.
+func TestIntegrationGrokInstallWithNoVaultIgnoresCwdTemplates(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake grok is a POSIX shell script")
+	}
+	bin := buildVPBinary(t)
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	cwd := filepath.Join(home, "vault-checkout")
+	fakeBin := filepath.Join(root, "fakebin")
+	for _, d := range []string{filepath.Join(home, ".config"), cwd, fakeBin} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(cwd, "Templates", "skills", "cwd-only", "SKILL.md"), "---\nname: cwd-only\ndescription: not a vault\n---\n\ncwd body\n")
+	writeFile(t, filepath.Join(cwd, "Templates", "commands", "cwd-command.md"), "# not a vault command\n")
+	fakeLog := filepath.Join(root, "grok.log")
+	writeFile(t, filepath.Join(fakeBin, "grok"), "#!/bin/sh\necho \"$@\" >> "+fakeLog+"\nexit 0\n")
+	if err := os.Chmod(filepath.Join(fakeBin, "grok"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(bin, "mcp", "install", "--grok")
+	cmd.Dir = cwd
+	cmd.Env = append(os.Environ(),
+		"HOME="+home, "USERPROFILE="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "APPDATA="+filepath.Join(home, ".config"),
+		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vp mcp install --grok: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "warning: host surfaces") || strings.Contains(string(out), "cwd-only") {
+		t.Errorf("install read the cwd's Templates/ tree:\n%s", out)
+	}
+	if b, _ := os.ReadFile(fakeLog); !strings.Contains(string(b), "mcp add") {
+		t.Errorf("the fake grok was not the one run (log %q)", b)
+	}
+	plugin := filepath.Join(home, shims.GrokUserPluginRel)
+	if _, err := os.Stat(filepath.Join(plugin, shims.PluginSkillsRel, "vps-cwd-only")); err == nil {
+		t.Error("a skill from the cwd's Templates/ tree was installed as a user-global shim")
+	}
+	if _, err := os.Stat(filepath.Join(plugin, shims.PluginCommandsRel, "vpc-cwd-command.md")); err == nil {
+		t.Error("a command from the cwd's Templates/ tree was installed as a user-global shim")
+	}
+	if _, err := os.Stat(filepath.Join(plugin, shims.PluginSkillsRel, "vps-chair", "SKILL.md")); err != nil {
+		t.Errorf("the built-in skills were not installed: %v", err)
+	}
 }
