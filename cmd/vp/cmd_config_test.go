@@ -680,15 +680,11 @@ func syncPruneSetup(t *testing.T, embeddedRel string) (vaultPath, target, key st
 
 // TestConfigSyncPrunesByteIdenticalMirror replaces the old relock test: a
 // byte-identical reconciler-owned mirror with a stale lock is now pruned
-// (never relocked). The vault file is removed (backed up to .bak), its lock
-// entry is dropped, and the resource resolves from the embedded floor.
+// (never relocked). The vault file is removed with no .bak (its bytes are an
+// embedded copy), its lock entry is dropped, and the resource resolves from
+// the embedded floor.
 func TestConfigSyncPrunesByteIdenticalMirror(t *testing.T) {
 	vaultPath, target, key := syncPruneSetup(t, "commands/wrap.md")
-
-	before, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("read target: %v", err)
-	}
 
 	// The prune auto-applies (never prompted); --yes just makes it silent.
 	out, code := runSyncWithStdin(t, "", []string{
@@ -701,16 +697,12 @@ func TestConfigSyncPrunesByteIdenticalMirror(t *testing.T) {
 		t.Errorf("summary missing pruned=1:\n%s", out)
 	}
 
-	// File removed; its bytes preserved to .bak.
+	// File removed, and no .bak written for it.
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Errorf("pruned file still present (err=%v)", err)
 	}
-	bak, err := os.ReadFile(target + ".bak")
-	if err != nil {
-		t.Fatalf("prune should back up bytes to .bak: %v", err)
-	}
-	if string(bak) != string(before) {
-		t.Error(".bak != pruned bytes")
+	if _, err := os.Stat(target + ".bak"); !os.IsNotExist(err) {
+		t.Errorf("prune wrote a .bak (err=%v)", err)
 	}
 
 	// Lock entry dropped.
@@ -757,48 +749,6 @@ func TestConfigSyncTemplateDriftSkip(t *testing.T) {
 		t.Error("skip: unexpected .new present")
 	}
 	_ = vaultPath
-}
-
-func TestConfigSyncTemplateDriftOverwrite(t *testing.T) {
-	_, target, userEdit := syncPromptSetup(t, "commands/wrap.md")
-
-	// Capture embedded bytes for assertion.
-	var embBytes []byte
-	if rs, err := templates.WalkEmbedded(); err == nil {
-		for _, res := range rs {
-			if res.RelPath == "commands/wrap.md" {
-				embBytes = res.Bytes
-				break
-			}
-		}
-	}
-	if embBytes == nil {
-		t.Fatal("could not locate commands/wrap.md in embedded corpus")
-	}
-
-	_, code := runSyncWithStdin(t, "o\n", []string{
-		"--project-root", filepath.Dir(target), "--tier", "vault",
-	})
-	if code != cli.ExitOK {
-		t.Errorf("exit code = %d", code)
-	}
-	got, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("read target: %v", err)
-	}
-	if string(got) != string(embBytes) {
-		t.Error("overwrite: target bytes != embedded bytes")
-	}
-	bak, err := os.ReadFile(target + ".bak")
-	if err != nil {
-		t.Fatalf(".bak missing: %v", err)
-	}
-	if string(bak) != userEdit {
-		t.Errorf(".bak should contain user edit; got %q want %q", bak, userEdit)
-	}
-	if _, err := os.Stat(target + ".new"); err == nil {
-		t.Error("overwrite: unexpected .new present")
-	}
 }
 
 func TestConfigSyncTemplateDriftNew(t *testing.T) {
@@ -889,48 +839,61 @@ func TestConfigSyncTemplateDriftNewCollision(t *testing.T) {
 	}
 }
 
-// TestConfigSyncTemplateBatchUppercase verifies that S/O/N letters set
+// TestConfigSyncTemplateBatchUppercase verifies that the S/N letters set
 // a batch mode honored for remaining Prompt actions. We drift two
 // resources and feed a single uppercase letter.
 func TestConfigSyncTemplateBatchUppercase(t *testing.T) {
-	vaultPath, target1, _ := syncPromptSetup(t, "commands/wrap.md")
+	for _, letter := range []string{"S", "N"} {
+		t.Run(letter, func(t *testing.T) {
+			vaultPath, target1, _ := syncPromptSetup(t, "commands/wrap.md")
 
-	// Seed a second diverged override so two Prompt actions are queued.
-	restartSHA, ok := templates.EmbeddedSHA("commands/restart.md")
-	if !ok {
-		t.Fatal("no embedded SHA for commands/restart.md")
-	}
-	target2 := filepath.Join(vaultPath, "Templates", "commands", "restart.md")
-	seedTemplateOverride(t, vaultPath, "commands/restart.md", []byte("USER EDIT 2\n"), restartSHA)
+			// Seed a second diverged override so two Prompt actions are queued.
+			restartSHA, ok := templates.EmbeddedSHA("commands/restart.md")
+			if !ok {
+				t.Fatal("no embedded SHA for commands/restart.md")
+			}
+			target2 := filepath.Join(vaultPath, "Templates", "commands", "restart.md")
+			seedTemplateOverride(t, vaultPath, "commands/restart.md", []byte("USER EDIT 2\n"), restartSHA)
 
-	orig := templates.EmbeddedSHA
-	templates.EmbeddedSHA = func(rel string) (string, bool) {
-		switch rel {
-		case "commands/wrap.md", "commands/restart.md":
-			return strings.Repeat("b", 64), true
-		}
-		return orig(rel)
-	}
-	t.Cleanup(func() { templates.EmbeddedSHA = orig })
+			orig := templates.EmbeddedSHA
+			templates.EmbeddedSHA = func(rel string) (string, bool) {
+				switch rel {
+				case "commands/wrap.md", "commands/restart.md":
+					return strings.Repeat("b", 64), true
+				}
+				return orig(rel)
+			}
+			t.Cleanup(func() { templates.EmbeddedSHA = orig })
 
-	// Single uppercase 'S' answer — both Prompt actions should skip.
-	_, code := runSyncWithStdin(t, "S\n", []string{
-		"--project-root", filepath.Dir(target1), "--tier", "vault",
-	})
-	if code != cli.ExitOK {
-		t.Errorf("exit code = %d", code)
-	}
-	// Both files must retain user-edit bytes.
-	b1, _ := os.ReadFile(target1)
-	b2, _ := os.ReadFile(target2)
-	if !strings.HasPrefix(string(b1), "USER EDIT") {
-		t.Errorf("target1 not preserved: %s", b1)
-	}
-	if !strings.HasPrefix(string(b2), "USER EDIT") {
-		t.Errorf("target2 not preserved: %s", b2)
-	}
-	if _, err := os.Stat(target1 + ".bak"); err == nil {
-		t.Error("target1 .bak unexpectedly present after S")
+			// A single uppercase answer covers both Prompt actions: the
+			// second prompt is never shown, so stdin needs one line.
+			out, code := runSyncWithStdin(t, letter+"\n", []string{
+				"--project-root", filepath.Dir(target1), "--tier", "vault",
+			})
+			if code != cli.ExitOK {
+				t.Errorf("exit code = %d", code)
+			}
+			if n := strings.Count(out, "[s]kip — keep your file"); n != 1 {
+				t.Errorf("menu shown %d times, want 1 (the batch letter answers the rest):\n%s", n, out)
+			}
+			// Both files must retain user-edit bytes, whichever letter.
+			for _, tgt := range []string{target1, target2} {
+				b, _ := os.ReadFile(tgt)
+				if !strings.HasPrefix(string(b), "USER EDIT") {
+					t.Errorf("%s not preserved: %s", tgt, b)
+				}
+				if _, err := os.Stat(tgt + ".bak"); err == nil {
+					t.Errorf("%s.bak unexpectedly present after %s", tgt, letter)
+				}
+				_, err := os.Stat(tgt + ".new")
+				if letter == "N" && err != nil {
+					t.Errorf("%s.new missing after N: %v", tgt, err)
+				}
+				if letter == "S" && err == nil {
+					t.Errorf("%s.new unexpectedly present after S", tgt)
+				}
+			}
+		})
 	}
 }
 

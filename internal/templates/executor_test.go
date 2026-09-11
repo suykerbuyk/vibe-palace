@@ -54,35 +54,8 @@ func TestExecutor_Write_OverwriteNeverNoBackup(t *testing.T) {
 	}
 }
 
-// TestExecutor_Write_BackupAlwaysCopiesPriorBytes proves
-// BackupPolicyAlways writes a .bak containing the pre-existing bytes
-// (the template reconciler's Update — `vp config sync`'s `o` answer).
-func TestExecutor_Write_BackupAlwaysCopiesPriorBytes(t *testing.T) {
-	dir := t.TempDir()
-	dst := filepath.Join(dir, "f.md")
-	if err := os.WriteFile(dst, []byte("user-edit"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := templates.NewExecutor().Write(dst, []byte("upgrade"), templates.WriteOptions{Backup: templates.BackupPolicyAlways}); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	got, _ := os.ReadFile(dst)
-	if string(got) != "upgrade" {
-		t.Errorf("primary = %q, want upgrade", got)
-	}
-	bak, err := os.ReadFile(dst + ".bak")
-	if err != nil {
-		t.Fatalf("read bak: %v", err)
-	}
-	if string(bak) != "user-edit" {
-		t.Errorf(".bak = %q, want user-edit", bak)
-	}
-}
-
-// TestExecutor_Write_BackupRenameSavesPrior proves
-// BackupPolicyRename has the same user-visible effect (old bytes in
-// .bak, new bytes in primary) as Always; they differ only in failure
-// semantics which this test does not exercise.
+// TestExecutor_Write_BackupRenameSavesPrior proves BackupPolicyRename
+// leaves the old bytes in .bak and the new bytes in the primary.
 func TestExecutor_Write_BackupRenameSavesPrior(t *testing.T) {
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "f.md")
@@ -108,7 +81,7 @@ func TestExecutor_Write_BackupRenameSavesPrior(t *testing.T) {
 // TestExecutor_Write_BackupNewFileNoBak proves a .bak is not
 // fabricated when the target did not exist.
 func TestExecutor_Write_BackupNewFileNoBak(t *testing.T) {
-	for _, p := range []templates.BackupPolicy{templates.BackupPolicyAlways, templates.BackupPolicyRename} {
+	for _, p := range []templates.BackupPolicy{templates.BackupPolicyNever, templates.BackupPolicyRename} {
 		dir := t.TempDir()
 		dst := filepath.Join(dir, "new.md")
 		if err := templates.NewExecutor().Write(dst, []byte("x"), templates.WriteOptions{Backup: p}); err != nil {

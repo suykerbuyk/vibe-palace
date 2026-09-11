@@ -309,6 +309,19 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 
 	// Push to all remotes. branch was resolved up front (before the
 	// already-ahead guard) and is reused here.
+	pushCommitted(vaultPath, remotes, branch, reconcileErrs, result)
+	return result, nil
+}
+
+// pushCommitted pushes the commit a caller just made to every remote, with the
+// rejection recovery CommitAndPushPaths documents: a rejected remote is fetched
+// and the local branch rebased onto it (--autostash), a TRUE rebase conflict is
+// aborted and recorded, and prior remotes are converged with
+// --force-with-lease. It fills result.RemoteResults (nil = success),
+// PopConflict and, after any rebase, refreshes CommitSHA. A remote in
+// reconcileErrs is skipped and reported with that error. Callers must have
+// released the vault commit lock: pushes are deliberately not serialised.
+func pushCommitted(vaultPath string, remotes []string, branch string, reconcileErrs map[string]error, result *PushResult) {
 	result.RemoteResults = make(map[string]error, len(remotes))
 	remoteSHA := make(map[string]string, len(remotes))
 	rebasedAny := false
@@ -403,8 +416,6 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 			result.CommitSHA = newSHA
 		}
 	}
-
-	return result, nil
 }
 
 // CommitAndPushPathsWithDowngrade wraps CommitAndPushPaths with the remote-
@@ -415,22 +426,32 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 // is always false. The returned *PushResult and error are CommitAndPushPaths's
 // own (RemoteResults populated only when an effective push ran).
 func CommitAndPushPathsWithDowngrade(vaultPath, message string, paths []string, push bool) (res *PushResult, downgraded bool, err error) {
-	effectivePush := push
-	if push {
-		remotes, rErr := ListRemotes(vaultPath)
-		if rErr != nil {
-			return nil, false, fmt.Errorf("listing remotes: %w", rErr)
-		}
-		if len(remotes) == 0 {
-			effectivePush = false
-			downgraded = true
-		}
+	effectivePush, downgraded, err := downgradePush(vaultPath, push)
+	if err != nil {
+		return nil, false, err
 	}
 	res, err = CommitAndPushPaths(vaultPath, message, paths, effectivePush)
 	if err != nil {
 		return nil, downgraded, err
 	}
 	return res, downgraded, nil
+}
+
+// downgradePush is the remote-downgrade policy CommitAndPushPathsWithDowngrade
+// and PruneMirrorsVerifiedWithDowngrade share: a push requested against a
+// vault with zero remotes becomes a local-only commit, reported as downgraded.
+func downgradePush(vaultPath string, push bool) (effective, downgraded bool, err error) {
+	if !push {
+		return false, false, nil
+	}
+	remotes, err := ListRemotes(vaultPath)
+	if err != nil {
+		return false, false, fmt.Errorf("listing remotes: %w", err)
+	}
+	if len(remotes) == 0 {
+		return false, true, nil
+	}
+	return true, false, nil
 }
 
 // reconcileIfAhead heals branches that are already ahead of a remote — the

@@ -32,28 +32,34 @@ func PromptChoice(w io.Writer, r *bufio.Reader) (string, error) {
 
 // PromptTemplateChoice reads a single-line template-reconcile response
 // from r, writing the prompt to w. It returns one of
-// "s", "o", "n", "S", "O", "N", or "q":
+// "s", "n", "S", "N", or "q":
 //
-//   - s / o / n — apply the choice to the current item only
-//   - S / O / N — apply the choice to the current item AND every
-//     remaining Prompt in the batch (orchestrator honors the uppercase
-//     set similarly to today's acceptAll flag)
+//   - s — skip: keep the operator's file exactly as it is
+//   - n — write the embedded copy to <file>.new beside it, for review
+//   - S / N — apply the choice to the current item AND every
+//     remaining Prompt in the batch
 //   - q — quit the reconcile loop
+//
+// There is deliberately no overwrite answer. `o` ("overwrite, writes
+// .bak") existed until 2026-09-10: it was the first step of a chain in
+// which the next `vp config sync` pruned the overwritten file and
+// committed the deletion to every host. `o` and `O` are now unrecognized
+// input and re-prompt like any other.
 //
 // Unrecognized input repeats the prompt up to five times; EOF returns "s".
 func PromptTemplateChoice(w io.Writer, r *bufio.Reader) (string, error) {
 	for range 5 {
-		fmt.Fprint(w, "[s]kip / [o]verwrite (writes .bak) / [n]ew-sidecar — uppercase for all remaining items, [q]uit: ")
+		fmt.Fprint(w, "[s]kip — keep your file / [n]ew-sidecar — write <file>.new with the embedded copy — uppercase for all remaining items, [q]uit: ")
 		line, err := r.ReadString('\n')
 		if err != nil && err != io.EOF {
 			return "", err
 		}
 		line = strings.TrimSpace(line)
 		switch line {
-		case "s", "o", "n", "S", "O", "N", "q":
+		case "s", "n", "S", "N", "q":
 			return line, nil
 		}
-		fmt.Fprintln(w, "Please answer s, o, n, S, O, N, or q.")
+		fmt.Fprintln(w, "Please answer s, n, S, N, or q.")
 		if err == io.EOF {
 			return "s", nil
 		}

@@ -14,13 +14,8 @@ import (
 )
 
 // Executor is the central plan/apply surface for writing embedded
-// template bytes onto disk. Three callers delegate here:
+// template bytes onto disk. Two callers delegate here:
 //
-//   - reconcile.TemplateTree.Apply (`vp config sync`, and vault split):
-//     its Update — the `o` answer to a diverged-override prompt — uses
-//     BackupPolicyAlways so the operator's bytes are kept as .bak before
-//     the embedded copy replaces them. Its Create branch is unreachable
-//     from any Plan since ADR-008's override-only Design B.
 //   - commands.Apply (vp commands upgrade): uses BackupPolicyNever.
 //   - commands.ApplyWithBackup (vp skills upgrade): uses
 //     BackupPolicyRename.
@@ -28,6 +23,13 @@ import (
 // The asymmetry between commands and skills (commands keep no .bak,
 // skills keep one) predates this extraction; see
 // doc/TEMPLATE_POLICY.md for the rationale and follow-up flag.
+//
+// reconcile.TemplateTree.Apply (`vp config sync`) used to be a third caller:
+// its Update — the `o` answer to a diverged-override prompt, and `--yes` —
+// overwrote an operator's override with BackupPolicyAlways. That answer was
+// the first step of a chain that deleted the override on every host, so it
+// was removed together with BackupPolicyAlways; the Templates reconcile now
+// never writes a template.
 //
 // The walk primitive (WalkEmbedded) is already in embedded.go; the
 // Executor deliberately does not re-wrap it — callers that need a
@@ -49,18 +51,12 @@ const (
 	// BackupPolicyNever disables .bak emission regardless of whether
 	// the target exists. commands upgrade uses this.
 	BackupPolicyNever BackupPolicy = iota
-	// BackupPolicyAlways writes a .bak of the pre-existing bytes
-	// before overwriting. New files (no existing target) produce no
-	// .bak. The template reconciler's Update (`vp config sync`, `o`)
-	// uses this.
-	BackupPolicyAlways
-	// BackupPolicyRename, like BackupPolicyAlways, preserves the
-	// pre-existing bytes to a sibling .bak, but does so via rename
-	// (rather than read+write). This matches the legacy
-	// commands.ApplyWithBackup behavior byte-for-byte. Only distinct
-	// from Always in the edge case where the write fails — rename
-	// leaves the caller with a .bak and no primary; copy-then-write
-	// leaves the primary intact.
+	// BackupPolicyRename preserves the pre-existing bytes to a sibling
+	// .bak by renaming the target before the new bytes are written.
+	// This matches the legacy commands.ApplyWithBackup behavior
+	// byte-for-byte. If the write then fails, the caller is left with a
+	// .bak and no primary. New files (no existing target) produce no
+	// .bak.
 	BackupPolicyRename
 )
 
@@ -85,10 +81,6 @@ type WriteOptions struct {
 // Contract:
 //   - BackupPolicyNever: a pre-existing dst is overwritten; no .bak
 //     is left behind.
-//   - BackupPolicyAlways: a pre-existing dst's bytes are copied to
-//     dst+".bak" before the atomic rename. The primary remains
-//     readable throughout; a concurrent reader sees either the old
-//     bytes or the new bytes, never a partial write.
 //   - BackupPolicyRename: a pre-existing dst is renamed to
 //     dst+".bak"; the new bytes are then atomically written. This
 //     has a (tiny) window where dst does not exist, which matches
@@ -102,17 +94,7 @@ func (e *Executor) Write(dst string, data []byte, opts WriteOptions) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	switch opts.Backup {
-	case BackupPolicyAlways:
-		// Copy-then-atomic-write: primary stays readable.
-		if cur, err := os.ReadFile(dst); err == nil {
-			if err := os.WriteFile(dst+".bak", cur, perm); err != nil {
-				return fmt.Errorf("write bak %s: %w", dst+".bak", err)
-			}
-		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("read for bak %s: %w", dst, err)
-		}
-	case BackupPolicyRename:
+	if opts.Backup == BackupPolicyRename {
 		if _, err := os.Stat(dst); err == nil {
 			if err := os.Rename(dst, dst+".bak"); err != nil {
 				return fmt.Errorf("backup %s: %w", dst, err)

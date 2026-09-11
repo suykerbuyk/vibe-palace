@@ -201,9 +201,9 @@ func TestTemplateTree_MaterializeFreshVault(t *testing.T) {
 // scenario under Design B: a vault file whose bytes equal the CURRENT
 // embedded bytes but whose lock baseline is stale is a redundant
 // reconciler-owned mirror. Rather than refresh the lock (old ActionRelock),
-// Plan now prunes it (ActionDelete) so the embedded floor serves it. The
-// pruned bytes are backed up to .bak, the lock entry is dropped, and a
-// second plan is idempotent.
+// Plan now prunes it (ActionDelete) so the embedded floor serves it. No .bak
+// is written (the pruned bytes are an embedded copy), the lock entry is
+// dropped, and a second plan is idempotent.
 func TestTemplateTree_PrunesByteIdenticalStaleLock(t *testing.T) {
 	root := t.TempDir()
 	r := NewTemplateTree(root, "Templates", TemplateTreeSeed{Mode: TemplateModeMaterialize})
@@ -241,16 +241,12 @@ func TestTemplateTree_PrunesByteIdenticalStaleLock(t *testing.T) {
 		t.Errorf("Pruned = %d, want 1", rep.Pruned)
 	}
 
-	// The mirror file is gone; its bytes were preserved to .bak.
+	// The mirror file is gone, and no .bak was written for it.
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Errorf("pruned file still present (err=%v)", err)
 	}
-	bak, err := os.ReadFile(target + ".bak")
-	if err != nil {
-		t.Fatalf("prune should back up bytes to .bak: %v", err)
-	}
-	if string(bak) != string(embBytes) {
-		t.Error(".bak != pruned bytes")
+	if _, err := os.Stat(target + ".bak"); !os.IsNotExist(err) {
+		t.Errorf("prune wrote a .bak (err=%v) — the bytes are an embedded copy, so a backup preserves nothing", err)
 	}
 
 	// Lock entry was dropped.
@@ -360,8 +356,8 @@ func TestTemplateTree_BinaryBumpedUserUntouched(t *testing.T) {
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Errorf("mirror not pruned (err=%v)", err)
 	}
-	if _, err := os.Stat(target + ".bak"); err != nil {
-		t.Errorf("prune .bak not written: %v", err)
+	if _, err := os.Stat(target + ".bak"); !os.IsNotExist(err) {
+		t.Errorf("prune wrote a .bak (err=%v)", err)
 	}
 
 	// Lock entry dropped — embedded floor now owns the resource.
@@ -392,8 +388,8 @@ func TestTemplateTree_UserEditedBinaryStable(t *testing.T) {
 	if a.Kind != ActionUnchanged {
 		t.Errorf("expected Unchanged (kept), got %s", a.Kind)
 	}
-	if !strings.Contains(a.Summary, "user override (kept)") {
-		t.Errorf("summary = %q, want 'user override (kept)'", a.Summary)
+	if !strings.Contains(a.Summary, "operator override of a built-in (kept)") {
+		t.Errorf("summary = %q, want 'operator override of a built-in (kept)'", a.Summary)
 	}
 
 	rep, err := r.Apply(context.Background(), plan)
@@ -494,8 +490,8 @@ func TestTemplateTree_BothDivergedPrompt(t *testing.T) {
 // (every embedded file mirrored byte-identically, no lock) is now PRUNED
 // under Design B. The silent-adopt pre-pass plants a lock entry per
 // byte-identical file, which flows straight into the prune case: every
-// mirror file is deleted (backed up to .bak) and the lock ends empty. No
-// Prompt is emitted on this path.
+// mirror file is deleted (with no .bak) and the lock ends empty. No Prompt is
+// emitted on this path.
 func TestTemplateTree_SilentAdoptOnPopulatedVault(t *testing.T) {
 	root := t.TempDir()
 	// Pre-populate Templates/ manually with the embedded bytes, but no
@@ -542,14 +538,14 @@ func TestTemplateTree_SilentAdoptOnPopulatedVault(t *testing.T) {
 	if rep.Pruned != len(resources) {
 		t.Errorf("Pruned = %d, want %d", rep.Pruned, len(resources))
 	}
-	// Every mirror file is gone (with a .bak); the lock ends empty.
+	// Every mirror file is gone (with no .bak); the lock ends empty.
 	for _, res := range resources {
 		target := filepath.Join(root, "Templates", filepath.FromSlash(res.RelPath))
 		if _, err := os.Stat(target); !os.IsNotExist(err) {
 			t.Errorf("mirror %s not pruned (err=%v)", res.RelPath, err)
 		}
-		if _, err := os.Stat(target + ".bak"); err != nil {
-			t.Errorf("prune .bak missing for %s: %v", res.RelPath, err)
+		if _, err := os.Stat(target + ".bak"); !os.IsNotExist(err) {
+			t.Errorf("prune wrote a .bak for %s (err=%v)", res.RelPath, err)
 		}
 	}
 	lock, _ := templates.ReadLock(root)
@@ -764,59 +760,6 @@ func TestTemplateTree_ScaffoldExistingOverrides(t *testing.T) {
 		if a.Kind == ActionCreate {
 			t.Errorf("second run should not Create, got %+v", a)
 		}
-	}
-}
-
-// TestTemplateTree_BakRotationReplacesStale exercises the edge case where a
-// .bak already exists before an ActionUpdate overwrite (the path the Prompt
-// resolver routes a diverged override to when the user picks "overwrite").
-// The reconciler must replace the stale .bak with the pre-update bytes — not
-// preserve an older backup that predates this upgrade — so .bak is always a
-// meaningful single-step undo. Under Design B the reconciler no longer emits
-// ActionUpdate on its own, so we drive the Apply path with a hand-built
-// ActionUpdate plan (equivalent to a resolved "overwrite" prompt).
-func TestTemplateTree_BakRotationReplacesStale(t *testing.T) {
-	root := t.TempDir()
-	r := NewTemplateTree(root, "Templates", TemplateTreeSeed{Mode: TemplateModeMaterialize})
-
-	// Pre-create a diverged override with prior bytes + a stale .bak.
-	priorVaultBytes := []byte("# prior user override\n")
-	target, _ := seedOverride(t, root, "commands/wrap.md", priorVaultBytes, strings.Repeat("d", 64))
-	stale := []byte("STALE BACKUP CONTENT — must be replaced\n")
-	if err := os.WriteFile(target+".bak", stale, 0o644); err != nil {
-		t.Fatalf("write stale bak: %v", err)
-	}
-
-	// Apply an overwrite (ActionUpdate) directly — the resolved-prompt path.
-	updatePlan := Plan{Actions: []Action{{Kind: ActionUpdate, Target: target, Summary: "overwrite"}}}
-	rep, err := r.Apply(context.Background(), updatePlan)
-	if err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	if rep.Updated != 1 {
-		t.Errorf("Updated = %d, want 1", rep.Updated)
-	}
-
-	// Target now holds the embedded bytes.
-	newTarget, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("read updated target: %v", err)
-	}
-	embedded := embeddedBytesForRel(t, "commands/wrap.md")
-	if string(newTarget) != string(embedded) {
-		t.Errorf("target not written with embedded bytes")
-	}
-
-	// .bak must hold the PRIOR vault bytes, not the stale content.
-	bak, err := os.ReadFile(target + ".bak")
-	if err != nil {
-		t.Fatalf("read bak: %v", err)
-	}
-	if string(bak) == string(stale) {
-		t.Error(".bak still holds stale pre-existing content; should have been replaced")
-	}
-	if string(bak) != string(priorVaultBytes) {
-		t.Errorf(".bak != prior vault bytes")
 	}
 }
 

@@ -26,27 +26,29 @@ func assertStamped(t *testing.T, stampDir string) {
 	}
 }
 
-// TestMaterializeStamps proves a materialize Apply that WRITES into
-// <vault>/Templates/ leaves a .surface stamp at the Templates root. Under
-// Design B (override-only) a fresh vault writes nothing, so the remaining
-// write path is the ActionUpdate overwrite the Prompt resolver routes a
-// diverged override to. We drive that path with a hand-built ActionUpdate
-// plan and assert the stamp lands.
-func TestMaterializeStamps(t *testing.T) {
+// TestMaterializeWritesNoStamp: materialize Apply used to stamp
+// Templates/.surface when the prompt resolver's `o` answer drove an Update
+// that overwrote a template. That write is gone — the Templates reconcile never
+// writes a template — so a refused Update leaves no stamp and no changed file.
+func TestMaterializeWritesNoStamp(t *testing.T) {
 	root := t.TempDir()
 	r := NewTemplateTree(root, "Templates", TemplateTreeSeed{Mode: TemplateModeMaterialize})
 
-	// Seed a diverged override, then overwrite it with the embedded bytes.
 	target, _ := seedOverride(t, root, "commands/wrap.md", []byte("# override\n"), strings.Repeat("e", 64))
 	plan := Plan{Actions: []Action{{Kind: ActionUpdate, Target: target, Summary: "overwrite"}}}
 	rep, err := r.Apply(context.Background(), plan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Updated == 0 {
-		t.Fatalf("expected materialize overwrite to update a template, got %+v", rep)
+	if rep.Updated != 0 || len(rep.Errors) != 1 {
+		t.Fatalf("Update should be refused, got %+v", rep)
 	}
-	assertStamped(t, filepath.Join(root, "Templates"))
+	if got, _ := os.ReadFile(target); string(got) != "# override\n" {
+		t.Errorf("override changed: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Templates", ".surface")); !os.IsNotExist(err) {
+		t.Errorf("a refused Update stamped Templates/.surface (err=%v)", err)
+	}
 }
 
 // TestScaffoldStamps proves a scaffold Apply (commands/ + skills/ README stubs

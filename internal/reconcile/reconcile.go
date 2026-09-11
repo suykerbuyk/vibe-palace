@@ -9,6 +9,7 @@ package reconcile
 
 import (
 	"context"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 )
@@ -42,12 +43,14 @@ const (
 	// ActionPrompt — it is defense-in-depth against a misbehaving
 	// orchestrator.
 	//
-	// `vp config sync` (resolveTemplatePrompts) is the one orchestrator, and
-	// it resolves each answer differently: `s` DROPS the action, `o` rewrites
-	// it to an Update of the same Target, and `n` writes the "<path>.new"
-	// sidecar itself and then drops the action — Apply looks embedded bytes
-	// up by the original Target, so a Target rewritten to the sidecar path
-	// would miss. No answer produces a Create.
+	// `vp config sync` (resolveTemplatePrompts) is the one orchestrator. It
+	// has two answers and both DROP the action: `s` keeps the operator's file
+	// and does nothing else, and `n` writes the "<path>.new" sidecar itself
+	// first. No answer produces a Create or an Update — the Templates
+	// reconcile never writes a template, and its Apply reports either kind as
+	// an error. (An `o`/overwrite answer existed until it was found to be the
+	// first step of a chain that deleted the operator's override on every
+	// host.)
 	//
 	// For the TemplateTree reconciler, Action.Details carries the three
 	// SHAs and the embedded resource identity needed to render a
@@ -69,12 +72,16 @@ const (
 	// ActionDelete: the artifact is a reconciler-owned vault mirror that
 	// is byte-identical to the canonical (embedded) source and therefore
 	// redundant — the embedded floor serves it directly. The fix is to
-	// prune the vault file (after backing it up to a sibling .bak,
-	// mirroring the update backup discipline) and drop its lock entry so
-	// the persisted lock lists only genuine user overrides. Emitted by the
-	// TemplateTree reconciler under the override-only materialization model
-	// (ADR-008 Phase 3). Never prompted: pruning a byte-identical mirror is
-	// safe because resolution falls through to the embedded tier.
+	// prune the vault file and drop its lock entry so the persisted lock
+	// lists only genuine user overrides. Emitted by the TemplateTree
+	// reconciler under the override-only materialization model (ADR-008
+	// Phase 3). Never prompted: pruning a byte-identical mirror is safe
+	// because resolution falls through to the embedded tier.
+	//
+	// Details carry "embedded_sha=" and "lock_sha=": the SHAs that prove the
+	// bytes are vp's. Apply re-hashes the file against them immediately
+	// before removing it, and `vp config sync` checks the committed copy
+	// against the same pair before it commits the removal.
 	ActionDelete ActionKind = "Delete"
 )
 
@@ -85,6 +92,19 @@ type Action struct {
 	Target  string   // absolute path of the artifact, when applicable
 	Summary string   // short human-readable description
 	Details []string // optional — e.g. list of missing keys for an Update
+}
+
+// Detail returns the value of the first "<key>=<value>" entry in Details, or
+// "" when the key is absent. The TemplateTree reconciler's Prompt and Delete
+// rows carry their SHAs this way (see ActionPrompt).
+func (a Action) Detail(key string) string {
+	prefix := key + "="
+	for _, d := range a.Details {
+		if after, ok := strings.CutPrefix(d, prefix); ok {
+			return after
+		}
+	}
+	return ""
 }
 
 // Plan is the full set of proposed actions for one reconciler.

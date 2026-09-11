@@ -24,10 +24,11 @@ import (
 // directory, no lock), a tracked override of wrap.md survives a subsequent
 // `vp config sync --yes`, a simulated embedded bump (achieved by corrupting
 // the lock entry's SHA so vault≠lock and embedded≠lock simultaneously)
-// exercises each of the three Prompt branches — skip / overwrite+.bak /
-// write-as-.new — verifying the vault state predicates for each, and a first
-// install onto a vault that already holds an override neither fails nor
-// touches it.
+// exercises the Prompt — skip, write-as-.new, and an `o` that is no longer an
+// answer — verifying the vault state predicates for each, and a first install
+// onto a vault that already holds an override neither fails nor touches it.
+// TestIntegrationTemplateOverrideSurvivesSync covers the lock-less and git
+// paths that used to lose the override.
 //
 // We shell out to the built `vp` binary rather than importing unexported
 // `cmd/vp` helpers: cmd/vp is package main and not importable from
@@ -81,7 +82,7 @@ func TestIntegrationTemplateMaterializeAndReconcile(t *testing.T) {
 			afterSyncEntry.EmbeddedSHA, realEmbSHA)
 	}
 
-	// --- Part 3: diverged override → Prompt → three branches ---
+	// --- Part 3: diverged override → Prompt → keep / .new / `o` rejected ---
 	// Each subtest seeds a diverged override in its own vault tempdir: a
 	// vault file with user bytes plus a lock entry whose baseline is a bogus
 	// SHA, so vault_sha ≠ lock_sha AND embedded_sha ≠ lock_sha (Case 5 of
@@ -117,38 +118,35 @@ func TestIntegrationTemplateMaterializeAndReconcile(t *testing.T) {
 		}
 	})
 
-	t.Run("overwrite", func(t *testing.T) {
+	// `o` (overwrite) was the first link of the chain that lost an override on
+	// every host. It is no longer an answer: the menu re-prompts, EOF means
+	// keep, and nothing is written.
+	t.Run("o-is-not-an-answer", func(t *testing.T) {
 		env := setupFreshEnv(t)
 		runVP(t, bin, env, nil, "init", env.projectDir,
 			"--name", "tpl-ovw", "--vault-path", env.vaultPath, "--no-git")
 		wrap := filepath.Join(env.vaultPath, "Templates", "commands", "wrap.md")
 		seedTrackedOverride(t, env.vaultPath, "commands/wrap.md", []byte(userEdit), bogusSHA)
 
-		runVP(t, bin, env, []byte("o\n"),
+		out := runVP(t, bin, env, []byte("o\n"),
 			"config", "sync", "--project-root", env.projectDir)
-
-		// wrap.md should now hold the real embedded bytes (overwrite).
-		got, err := os.ReadFile(wrap)
-		if err != nil {
-			t.Fatalf("read wrap: %v", err)
+		if !strings.Contains(out, "Please answer s, n, S, N, or q.") {
+			t.Errorf("o was accepted as an answer:\n%s", out)
 		}
-		if !bytes.Equal(got, embWrap) {
-			t.Errorf("overwrite: wrap.md bytes != embedded defaults\n got  len=%d\n want len=%d",
-				len(got), len(embWrap))
+		if !strings.Contains(out, "[keep] Templates/commands/wrap.md — ") {
+			t.Errorf("no [keep] line after the rejected o:\n%s", out)
 		}
-		// .bak should hold the user's pre-overwrite edit.
-		bak, err := os.ReadFile(wrap + ".bak")
-		if err != nil {
-			t.Fatalf("overwrite: expected .bak, got err: %v", err)
+		if got, _ := os.ReadFile(wrap); string(got) != userEdit {
+			t.Errorf("o: wrap.md changed\n got  %q\n want %q", got, userEdit)
 		}
-		if string(bak) != userEdit {
-			t.Errorf("overwrite: .bak should contain user edit\n got  %q\n want %q",
-				bak, userEdit)
+		for _, side := range []string{".bak", ".new"} {
+			if _, err := os.Stat(wrap + side); err == nil {
+				t.Errorf("o: wrote %s", side)
+			}
 		}
 		entry, _ := readLockEntry(t, env.vaultPath, "Templates/commands/wrap.md")
-		if entry.EmbeddedSHA != realEmbSHA {
-			t.Errorf("overwrite: lock should track real embedded SHA; got %q want %q",
-				entry.EmbeddedSHA, realEmbSHA)
+		if entry.EmbeddedSHA != bogusSHA {
+			t.Errorf("o: lock entry changed to %q", entry.EmbeddedSHA)
 		}
 	})
 

@@ -6,6 +6,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -107,7 +110,7 @@ func aliasUpgradeToSync(fv *cli.FlagValues) int {
 var configSyncFlags = []cli.FlagDef{
 	{Name: "--dry-run", Help: "Print what would change and exit without writing."},
 	{Name: "--tier", Arg: "TIER", Default: "all", Help: "Reconcile only a single tier: global | vault | project | all."},
-	{Name: "--yes", Help: "Accept every proposed action non-interactively."},
+	{Name: "--yes", Help: "Accept every proposed action non-interactively. A diverged Templates/ override is kept, never overwritten."},
 	{Name: "--project-root", Arg: "PATH", Help: "Project root used for cwd-local vault_path resolution (default: current directory)."},
 	{Name: "--cwd", Arg: "DIR", Help: "Project directory for --tier project; filesystem-addressed. Mutually exclusive with --project."},
 	{Name: "--project", Arg: "SLUG", Help: "Vault-project slug for --tier project; vault-addressed. Mutually exclusive with --cwd."},
@@ -120,11 +123,11 @@ func cmdConfigSync() *cli.Command {
 	return &cli.Command{
 		Name:        "config sync",
 		Synopsis:    "vp config sync [--dry-run] [--tier TIER] [--yes] [--project-root PATH] [--cwd DIR | --project SLUG]",
-		Description: "Reconcile managed config files (global / vault / project tiers) against their canonical schemas. Idempotent on repeat runs. The vault tier also tops up the vault .gitignore and reconciles vault Templates/ override-only: a byte-identical mirror of an embedded template is pruned and the deletion committed to the vault repo, a tracked override is kept, and a diverged override prompts skip/overwrite/.new (--yes overwrites). Does not touch agent-files or slash-command shims — those are handled by `vp commands upgrade`.",
+		Description: "Reconcile managed config files (global / vault / project tiers) against their canonical schemas. Idempotent on repeat runs. The vault tier also tops up the vault .gitignore and reconciles vault Templates/ override-only, and never writes over a template (the one file it creates is an `n` answer's .new sidecar): a byte-identical mirror of an embedded template is pruned, a tracked override is kept, and a diverged override prompts keep/.new (--yes keeps). On a git vault a mirror is removed only after its committed copy (and each remote tip's) is checked to be vp's too, and the removal is then committed; when the committed copy is operator content it is restored from HEAD instead, and a prune git cannot verify is deferred. Does not touch agent-files or slash-command shims — those are handled by `vp commands upgrade`.",
 		Flags:       configSyncFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp config sync --dry-run", Comment: "Preview drift across all tiers"},
-			{Cmd: "vp config sync --yes", Comment: "Accept every proposed action non-interactively"},
+			{Cmd: "vp config sync --yes", Comment: "Accept every proposed action non-interactively (a diverged Templates/ override is kept)"},
 			{Cmd: "vp config sync --tier global", Comment: "Only reconcile the global config"},
 			{Cmd: "vp config sync --tier project --cwd ~/code/myapp", Comment: "Project tier addressed by filesystem path"},
 			{Cmd: "vp config sync --tier project --project myapp", Comment: "Project tier addressed by vault slug"},
@@ -220,9 +223,22 @@ func runConfigSync(args []string) int {
 		// the whole Templates tier from sync.
 		slog.Error("resolve vault path for TemplateTree", "err", err, "root", absRoot)
 	}
+	// How git sees the vault decides who prunes a Templates mirror. On a vault
+	// git can read, the reconciler hands every Delete to pruneOnGitVault,
+	// which checks HEAD and each remote tip before removing anything; on an
+	// unversioned vault the reconciler prunes directly; and on a git vault git
+	// cannot read, every prune is deferred.
+	var templatesTree *reconcile.TemplateTreeReconciler
+	var templatesGit storage.VaultGit
+	var templatesGitErr error
 	if vaultPathForTemplates != "" {
-		all["Templates"] = reconcile.NewTemplateTree(vaultPathForTemplates, "Templates",
-			reconcile.TemplateTreeSeed{Mode: reconcile.TemplateModeMaterialize})
+		templatesGit, templatesGitErr = storage.InspectVaultGit(vaultPathForTemplates)
+		templatesTree = reconcile.NewTemplateTree(vaultPathForTemplates, "Templates",
+			reconcile.TemplateTreeSeed{
+				Mode:          reconcile.TemplateModeMaterialize,
+				ExternalPrune: templatesGit == storage.VaultGitOK || templatesGit == storage.VaultGitNested,
+			})
+		all["Templates"] = templatesTree
 	}
 
 	// Phase 4: project-scoped TemplateTree scaffolders. When addressing
@@ -278,6 +294,30 @@ func runConfigSync(args []string) int {
 		plans[i] = p
 	}
 
+	// A git vault whose committed copies cannot be read defers every Templates
+	// prune: the removal could neither be checked against HEAD nor committed,
+	// and a deletion left in the worktree blocks the next vault sync. The file
+	// stays; a later sync that can read the repository prunes it. git missing
+	// from PATH is an environment the operator chose, so it is reported and
+	// the run succeeds; a repository git cannot use is an error to fix.
+	var preErrors []error
+	if templatesTree != nil && (templatesGit == storage.VaultGitUnavailable || templatesGit == storage.VaultGitBroken) {
+		reason := "prune deferred: the vault is a git repo and git is unavailable, so the committed copy cannot be verified"
+		if templatesGit == storage.VaultGitBroken {
+			reason = fmt.Sprintf("prune deferred: git cannot read the vault's repository (%v), so the committed copy cannot be verified", templatesGitErr)
+		}
+		for i, r := range order {
+			if r != reconcile.Reconciler(templatesTree) {
+				continue
+			}
+			var n int
+			plans[i], n = deferPrunes(plans[i], vaultPathForTemplates, reason)
+			if n > 0 && templatesGit == storage.VaultGitBroken {
+				preErrors = append(preErrors, fmt.Errorf("%d Templates prune(s) deferred: git cannot read the vault's repository: %w", n, templatesGitErr))
+			}
+		}
+	}
+
 	// Render plans.
 	printSyncPlans(os.Stdout, order, plans)
 
@@ -293,26 +333,28 @@ func runConfigSync(args []string) int {
 
 	reader := bufio.NewReader(os.Stdin)
 	acceptAll := autoYes
-	// batchMode is the separate S/O/N batch letter honored by the
+	// batchMode is the separate S/N batch letter honored by the
 	// Prompt resolver. Distinct from acceptAll because its letter
-	// semantics differ (skip/overwrite/new vs. accept/skip/accept-all).
+	// semantics differ (keep/new-sidecar vs. accept/skip/accept-all).
 	var batchMode string
 	if autoYes {
-		// --yes implies "overwrite" for every Prompt action so the
-		// non-interactive run never blocks on stdin.
-		batchMode = "o"
+		// --yes implies "keep" (s) for every Prompt action so the
+		// non-interactive run never blocks on stdin. It used to imply
+		// "overwrite", which replaced the operator's override with the
+		// embedded copy — and the next sync pruned the result and committed
+		// the deletion to every host.
+		batchMode = "s"
 	}
 	var totalReport reconcile.Report
+	totalReport.Errors = append(totalReport.Errors, preErrors...)
 
 	for i, r := range order {
 		actions := plans[i].Actions
-		// Prompt resolver pre-pass: turn every ActionPrompt into a
-		// concrete Create / Update / (drop) before the existing
-		// accept/skip loop runs. TemplateTree is the only reconciler
-		// that emits ActionPrompt today. Actions emitted by the
-		// resolver are already user-approved and bypass the
-		// PromptChoice gate below.
-		resolved, preApproved, abort := resolveTemplatePrompts(r, actions, reader, &batchMode, os.Stdout)
+		// Prompt resolver pre-pass: resolve and drop every ActionPrompt
+		// (keep, or write a .new sidecar) before the accept/skip loop
+		// runs. TemplateTree is the only reconciler that emits
+		// ActionPrompt today, and no answer turns one into a write.
+		resolved, abort := resolveTemplatePrompts(r, actions, reader, &batchMode, vaultPathForTemplates, os.Stdout)
 		if abort {
 			fmt.Fprintln(os.Stdout, "Aborting — no further changes applied.")
 			return finishSync(totalReport)
@@ -323,10 +365,6 @@ func runConfigSync(args []string) int {
 		for _, a := range actions {
 			if !isActionable(a.Kind) {
 				// Still pass Unchanged/Skip through so Apply's counters match.
-				filtered.Actions = append(filtered.Actions, a)
-				continue
-			}
-			if preApproved[a.Target] {
 				filtered.Actions = append(filtered.Actions, a)
 				continue
 			}
@@ -365,119 +403,247 @@ func runConfigSync(args []string) int {
 			return cli.ExitSystem
 		}
 		mergeReports(&totalReport, rep)
-		// Persist the prune immediately after the Apply that performed it,
-		// not at the end of the run: the loop can still hit an abort that
-		// returns early (the 'q' branch, and the prompt-resolver abort on the
-		// next reconciler), and a prune left uncommitted by that path is
-		// exactly the defect this closes.
-		if err := propagatePrunedMirrors(vaultPathForTemplates, filtered.Actions); err != nil {
-			fmt.Fprintf(os.Stderr, "vp config sync: propagate pruned mirrors: %v\n", err)
-			return cli.ExitSystem
+		for _, n := range rep.Notes {
+			fmt.Fprintf(os.Stdout, "  %s: %s\n", r.Name(), n)
+		}
+		// On a git vault the Templates prunes happen HERE, right after the
+		// Apply that handed them over, not at the end of the run: the loop can
+		// still hit an abort that returns early (the 'q' branch, and the
+		// prompt-resolver abort on the next reconciler). A failure is recorded
+		// rather than returned on the spot: the rest of the run still happens,
+		// and finishSync turns the recorded error into ExitSystem.
+		if templatesTree != nil && r == reconcile.Reconciler(templatesTree) && (templatesGit == storage.VaultGitOK || templatesGit == storage.VaultGitNested) {
+			pruned, skipped, err := pruneOnGitVault(vaultPathForTemplates, templatesTree, filtered.Actions, templatesGit == storage.VaultGitNested)
+			totalReport.Pruned += pruned
+			totalReport.Skipped += skipped
+			if err != nil {
+				totalReport.Errors = append(totalReport.Errors, fmt.Errorf("prune vault mirrors: %w", err))
+			}
 		}
 	}
 	return finishSync(totalReport)
 }
 
-// propagatePrunedMirrors commits the vault template mirrors a just-applied
-// plan pruned, so the removal survives a sync to another host.
+// pruneOnGitVault removes the vault template mirrors a just-applied plan handed
+// over (ExternalPrune), and commits the removal so it survives a sync to
+// another host. It returns the counts to add to the run's Summary.
 //
-// Without this the prune is a worktree-only operation — `internal/reconcile`
-// invokes git on no path — while the arm that puts mirrors back (a human
-// committing them) reaches git. The two are not symmetric, so a pruned mirror
-// returns on the next clone or pull and `vp config sync` reports a success the
-// vault does not keep.
+// Without the commit the prune is a worktree-only operation, and a pruned
+// mirror returns on the next clone or pull. Scope is deliberately narrow, per
+// the operator grant: the prune path of a mutates()-gated reconciler command
+// commits THE PATHS IT PRUNES, and nothing else.
 //
-// Scope is deliberately narrow, per the operator grant: the prune path of a
-// mutates()-gated reconciler command commits THE PATHS IT JUST PRUNED. It is
-// not a licence for any other reconciler action to commit, and it says nothing
-// about the project repo. Only ActionDelete targets that are actually gone
-// from disk are staged — a prune whose os.Remove failed leaves its file behind
-// and must not have a deletion committed on its behalf.
+// 🔴 NOTHING IS REMOVED BEFORE GIT HAS BEEN ASKED. The removal used to happen
+// in Apply and the HEAD check at commit time, so any git failure in between —
+// no identity, a corrupt index, a repository git refuses — left a committed
+// operator override deleted in the worktree, with its lock entry already
+// dropped so no later sync noticed. storage.PruneMirrorsVerified now checks the
+// worktree bytes, HEAD's blob and each remote tip's blob against the same
+// {embedded, lock baseline} pair (reconcile.PruneBasis) BEFORE it removes a
+// file, restores HEAD's copy where HEAD holds operator content, and defers
+// (keeps) a path on any git error.
 //
-// A vault that is not a git repo is supported (GitInit is offered, never
-// required), so that case skips silently and returns nil rather than reporting
-// an error: finishSync turns a Report error into ExitSystem, and a durability
-// fix must not start failing `vp config sync` on an unversioned vault.
-func propagatePrunedMirrors(vaultPath string, applied []reconcile.Action) error {
-	if vaultPath == "" {
-		return nil
-	}
+// What is guaranteed, exactly: a file whose committed copy is operator content
+// is never removed, and no path is removed unless every check passed —
+// including a fresh fetch of every remote. A removal can stay uncommitted only
+// through a stage or commit failure (whose staging is undone) or a failed
+// re-check after HEAD moved; such a path is printed with its manual restore
+// command, the run exits non-zero, and its lock entry is kept, so the next
+// sync retries the commit (planMaterialize case 1b). Lock entries go only for
+// outcomes known to be final (ForgetPruned); a restored override keeps its
+// entry.
+//
+// A vault nested inside another repository (nested) is verified and restored
+// the same way, but that repository is never fetched, staged, committed or
+// pushed: a tracked mirror there is kept, with a [Skip] row that says why.
+func pruneOnGitVault(vaultPath string, tt *reconcile.TemplateTreeReconciler, applied []reconcile.Action, nested bool) (pruned, skipped int, err error) {
 	var paths []string
+	basisByRel := map[string]map[string]string{}
 	for _, a := range applied {
 		if a.Kind != reconcile.ActionDelete {
 			continue
 		}
-		if _, err := os.Lstat(a.Target); !os.IsNotExist(err) {
-			continue
+		basis := reconcile.PruneBasis(a)
+		if len(basis) == 0 {
+			continue // Apply already reported it
 		}
-		rel, err := filepath.Rel(vaultPath, a.Target)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			continue
-		}
-		paths = append(paths, filepath.ToSlash(rel))
+		rel := vaultRelOf(vaultPath, a.Target)
+		paths = append(paths, rel)
+		basisByRel[rel] = basis
 	}
-	// An empty list is the common case (most syncs prune nothing) and must not
-	// reach CommitAndPushPaths, which errors on zero paths — that would turn a
-	// no-op sync into ExitSystem.
 	if len(paths) == 0 {
+		return 0, 0, nil
+	}
+	shaOf := func(b []byte) string {
+		sum := sha256.Sum256(b)
+		return hex.EncodeToString(sum[:])
+	}
+	verifier := storage.PruneVerifier{
+		Accept: func(rel string, content []byte) bool {
+			_, ok := basisByRel[rel][shaOf(content)]
+			return ok
+		},
+		Message: func(committed []string) string {
+			basisOf := map[string]string{}
+			for _, rel := range committed {
+				if blob, found, rerr := storage.ReadCommittedBlob(vaultPath, rel); rerr == nil && found {
+					basisOf[rel] = basisByRel[rel][shaOf(blob)]
+				}
+			}
+			return prunedMirrorCommitMessage(committed, basisOf)
+		},
+	}
+	var res *storage.PushResult
+	var out storage.PruneOutcome
+	var downgraded bool
+	var perr error
+	if nested {
+		// The repository is not the vault's: verify and restore only, never
+		// fetch, stage, commit or push it.
+		out, perr = storage.PruneMirrorsInEnclosingRepo(vaultPath, paths, verifier)
+	} else {
+		res, out, downgraded, perr = storage.PruneMirrorsVerifiedWithDowngrade(vaultPath, paths, true, verifier)
+	}
+
+	for _, rel := range out.Restored {
+		fmt.Fprintf(os.Stdout, "restored %s from HEAD — the committed copy is operator content, not a vp mirror; it is kept\n", rel)
+	}
+	for _, k := range out.Kept {
+		fmt.Fprintf(os.Stdout, "  [Skip] %s: %s — %s\n", tt.Name(), k.Path, k.Reason)
+	}
+	for _, f := range out.Failed {
+		fmt.Fprintf(os.Stderr, "could not commit the prune of %s (%v): it is removed from the worktree and NOT committed — restore it with: git -C %s checkout HEAD -- %s\n",
+			f.Path, f.Err, vaultPath, f.Path)
+	}
+	if res != nil && res.CommitSHA != "" {
+		if downgraded {
+			fmt.Fprintf(os.Stdout, "Pruned mirrors committed locally only (no remotes configured): %d path(s)\n", len(out.Committed))
+		}
+		if pushErr := reportPrunePush(res, out.Committed); pushErr != nil && perr == nil {
+			perr = pushErr
+		}
+	}
+	if ferr := tt.ForgetPruned(append(append([]string{}, out.Removed...), out.Gone...)); ferr != nil && perr == nil {
+		perr = fmt.Errorf("drop lock entries: %w", ferr)
+	}
+	return len(out.Removed), len(out.Kept), perr
+}
+
+// reportPrunePush makes a prune commit that did not reach every remote loud.
+// A rejected push, an aborted rebase or an autostash conflict after the commit
+// leaves the local prune commit stranded next to whatever the remote holds —
+// and if the remote changed these paths, that copy is an operator's override:
+// resolving the eventual merge conflict as a deletion would remove it from
+// every host.
+func reportPrunePush(res *storage.PushResult, committed []string) error {
+	var failed []string
+	for remote, e := range res.RemoteResults {
+		if e != nil {
+			failed = append(failed, remote)
+		}
+	}
+	sort.Strings(failed)
+	for _, remote := range failed {
+		fmt.Fprintf(os.Stderr, "the prune commit %s (%s) did not reach %s: %v\n", res.CommitSHA, strings.Join(committed, ", "), remote, res.RemoteResults[remote])
+	}
+	if res.PopConflict {
+		fmt.Fprintf(os.Stderr, "the prune commit %s landed, but re-applying your uncommitted changes conflicted in: %s (they are kept in `git stash list`)\n",
+			res.CommitSHA, strings.Join(res.PopConflictPaths, ", "))
+	}
+	if len(failed) == 0 && !res.PopConflict {
 		return nil
 	}
-	if !storage.GitAvailable() || !storage.GitIsRepo(vaultPath) {
-		return nil
+	fmt.Fprintf(os.Stderr, "If a remote changed %s, its copy is operator content: keep it. When you pull, resolve any conflict on these paths by keeping the remote's file, never by deleting it.\n",
+		strings.Join(committed, ", "))
+	if len(failed) == 0 {
+		return errors.New("re-applying uncommitted changes after the prune commit conflicted")
 	}
-	res, downgraded, err := storage.CommitAndPushPathsWithDowngrade(
-		vaultPath, prunedMirrorCommitMessage(paths), paths, true)
-	if err != nil {
-		return err
-	}
-	// CommitSHA is empty when nothing was staged — e.g. every pruned mirror
-	// was untracked, which filterStageablePaths drops. Say nothing then: a
-	// "committed" line for a commit that did not happen is the same class of
-	// dishonest instrument this task exists to fix.
-	if downgraded && res != nil && res.CommitSHA != "" {
-		fmt.Fprintf(os.Stdout, "Pruned mirrors committed locally only (no remotes configured): %d path(s)\n", len(paths))
-	}
-	return nil
+	return fmt.Errorf("the prune commit %s did not reach %s", res.CommitSHA, strings.Join(failed, ", "))
 }
 
 // prunedMirrorCommitMessage composes the vault commit message for a prune.
 // Nobody reviews this message at write time — it is machine-authored
 // permanent history — which argues for it being more self-explanatory than a
-// message a human approves, not less.
-func prunedMirrorCommitMessage(paths []string) string {
+// message a human approves, not less. It states only what was checked, and
+// is composed from the paths that survived the HEAD check, so it cannot list
+// a path the commit does not carry.
+func prunedMirrorCommitMessage(paths []string, basisOf map[string]string) string {
 	var b strings.Builder
 	b.WriteString("chore(templates): prune vault mirrors superseded by the embedded floor\n\n")
-	b.WriteString("`vp config sync` removed these reconciler-owned template mirrors from the\n")
-	b.WriteString("vault worktree: their bytes matched the binary's embedded copy, so each one\n")
-	b.WriteString("was a Tier 4 override that shadowed the embedded resource without changing\n")
-	b.WriteString("it — and would silently shadow the next release's copy too.\n\n")
+	b.WriteString("`vp config sync` removed these vault Templates/ files. Each one's bytes,\n")
+	b.WriteString("both in the worktree and in the commit it is removed from, equalled the\n")
+	b.WriteString("embedded copy this binary serves, or the embedded version this host's\n")
+	b.WriteString("templates.lock recorded vp writing there. So no operator content is\n")
+	b.WriteString("removed, and the embedded floor serves each resource.\n\n")
 	b.WriteString("The removal is committed here rather than left in the worktree because a\n")
 	b.WriteString("prune that stops at one host's disk is undone by the next clone or pull on\n")
 	b.WriteString("any other host.\n\n")
 	for _, p := range paths {
-		b.WriteString("- " + p + "\n")
+		line := "- " + p
+		if basis := basisOf[p]; basis != "" {
+			line += " (" + basis + ")"
+		}
+		b.WriteString(line + "\n")
 	}
 	return b.String()
 }
 
-// resolveTemplatePrompts rewrites any ActionPrompt in actions into a
-// concrete Create / Update action (or drops it for Skip) by consulting
-// the user via cli.PromptTemplateChoice. Non-Prompt actions pass
+// deferPrunes rewrites a Templates plan's Delete actions to Skip with reason:
+// the vault is a git repo whose committed copies cannot be read, and a prune
+// whose committed copy cannot be checked is not made. It returns how many.
+func deferPrunes(p reconcile.Plan, vaultPath, reason string) (reconcile.Plan, int) {
+	out := reconcile.Plan{Actions: make([]reconcile.Action, 0, len(p.Actions))}
+	n := 0
+	for _, a := range p.Actions {
+		if a.Kind == reconcile.ActionDelete {
+			n++
+			a = reconcile.Action{
+				Kind:    reconcile.ActionSkip,
+				Target:  a.Target,
+				Summary: vaultRelOf(vaultPath, a.Target) + " " + reason,
+			}
+		}
+		out.Actions = append(out.Actions, a)
+	}
+	return out, n
+}
+
+// vaultRelOf renders target relative to vaultPath with forward slashes, or
+// target itself when it is not under vaultPath.
+func vaultRelOf(vaultPath, target string) string {
+	if vaultPath != "" {
+		if rel, err := filepath.Rel(vaultPath, target); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return filepath.ToSlash(rel)
+		}
+	}
+	return target
+}
+
+// resolveTemplatePrompts resolves every ActionPrompt in actions by consulting
+// the user via cli.PromptTemplateChoice, and drops it. Non-Prompt actions pass
 // through unchanged.
 //
-// The 'n'/'N' branch writes the embedded bytes to <target>.new directly
-// (bypassing Apply) because the reconciler's Apply keys its
-// embedded-bytes lookup on the original target path; rewriting Target
-// to <path>.new would cause Apply to fail to find the resource.
-// Bypassing is safe because the .new write is a pure sidecar emission
-// with no lock bookkeeping.
+// There are two answers and neither writes the operator's file:
 //
-// batchMode carries the persistent S/O/N letter across reconcilers so
-// a single uppercase answer suppresses prompts for every remaining
-// Prompt action in this sync run. abort is true when the user picked
-// 'q'; the orchestrator should stop and print a terminal summary.
-func resolveTemplatePrompts(r reconcile.Reconciler, actions []reconcile.Action, reader *bufio.Reader, batchMode *string, w io.Writer) (resolved []reconcile.Action, preApproved map[string]bool, abort bool) {
-	preApproved = map[string]bool{}
+//   - 's' keeps it and prints a [keep] line. It is also what --yes and EOF
+//     answer.
+//   - 'n' writes the embedded bytes to <target>.new beside it for review.
+//
+// An 'o' (overwrite) answer existed until 2026-09-10 and is gone: it replaced
+// the override with the embedded copy, the next sync classified the result as
+// a reconciler-owned mirror and pruned it, and the prune's commit pushed the
+// deletion to every host. PromptTemplateChoice no longer accepts it.
+//
+// The 'n' branch writes the sidecar directly (bypassing Apply) because the
+// .new write is a pure sidecar emission with no lock bookkeeping, and the
+// Templates Apply never writes a template.
+//
+// batchMode carries the persistent S/N letter across reconcilers so a single
+// uppercase answer suppresses prompts for every remaining Prompt action in
+// this sync run. abort is true when the user picked 'q'; the orchestrator
+// should stop and print a terminal summary. vaultPath only renders the
+// vault-relative path in the [keep] line.
+func resolveTemplatePrompts(r reconcile.Reconciler, actions []reconcile.Action, reader *bufio.Reader, batchMode *string, vaultPath string, w io.Writer) (resolved []reconcile.Action, abort bool) {
 	// Lazily loaded embedded bytes map; only built when we actually
 	// need to write a .new sidecar.
 	var embBytes map[string][]byte
@@ -511,39 +677,31 @@ func resolveTemplatePrompts(r reconcile.Reconciler, actions []reconcile.Action, 
 			ans, err := cli.PromptTemplateChoice(w, reader)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp config sync: %v\n", err)
-				return resolved, preApproved, true
+				return resolved, true
 			}
 			answer = ans
 		}
 		switch answer {
 		case "q":
-			return resolved, preApproved, true
+			return resolved, true
 		case "S":
 			*batchMode = "s"
 			answer = "s"
-		case "O":
-			*batchMode = "o"
-			answer = "o"
 		case "N":
 			*batchMode = "n"
 			answer = "n"
 		}
 		switch answer {
 		case "s":
-			// Drop the action entirely.
-		case "o":
-			resolved = append(resolved, reconcile.Action{
-				Kind:    reconcile.ActionUpdate,
-				Target:  a.Target,
-				Summary: a.Summary + " — overwrite",
-				Details: a.Details,
-			})
-			preApproved[a.Target] = true
+			// Drop the action: the operator's file is kept as it is.
+			rel := vaultRelOf(vaultPath, a.Target)
+			summary := strings.TrimPrefix(a.Summary, rel+" ")
+			fmt.Fprintf(w, "[keep] %s — %s; vp config sync never overwrites a Templates/ file\n", rel, summary)
 		case "n":
 			// Write .new sidecar directly. The reconciler emits the
 			// embedded RelPath in Details as "embedded_relpath=<rel>" so
 			// we don't have to reverse-engineer it from the Target path.
-			embRel := detailValue(a.Details, "embedded_relpath")
+			embRel := a.Detail("embedded_relpath")
 			if embRel == "" {
 				slog.Error("template prompt missing embedded_relpath", "target", a.Target, "reconciler", r.Name())
 				fmt.Fprintf(os.Stderr, "vp config sync: prompt action for %s missing embedded_relpath detail\n", a.Target)
@@ -552,7 +710,7 @@ func resolveTemplatePrompts(r reconcile.Reconciler, actions []reconcile.Action, 
 			if err := ensureEmbeddedBytes(); err != nil {
 				slog.Error("walk embedded for .new sidecar", "err", err, "target", a.Target)
 				fmt.Fprintf(os.Stderr, "vp config sync: walk embedded: %v\n", err)
-				return resolved, preApproved, true
+				return resolved, true
 			}
 			match, ok := embBytes[embRel]
 			if !ok {
@@ -584,21 +742,7 @@ func resolveTemplatePrompts(r reconcile.Reconciler, actions []reconcile.Action, 
 			fmt.Fprintf(w, "  wrote %s\n", newPath)
 		}
 	}
-	return resolved, preApproved, false
-}
-
-// detailValue returns the value of a "<key>=<value>" entry in
-// Action.Details, or "" if the key is not present. Used to parse the
-// structured fields TemplateTree emits on ActionPrompt (see
-// reconcile.ActionPrompt doc comment for the full contract).
-func detailValue(details []string, key string) string {
-	prefix := key + "="
-	for _, d := range details {
-		if after, ok := strings.CutPrefix(d, prefix); ok {
-			return after
-		}
-	}
-	return ""
+	return resolved, false
 }
 
 // enumerateVaultProjectSlugs lists directory entries under

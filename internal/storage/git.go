@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // CanonicalGitignorePatterns is the growing set of .gitignore lines that
@@ -270,6 +271,86 @@ func GitAvailable() bool {
 func GitIsRepo(dir string) bool {
 	info, err := os.Stat(filepath.Join(dir, ".git"))
 	return err == nil && info.IsDir()
+}
+
+// VaultGit classifies how git can see a vault. It is the predicate for the
+// Templates prune, whose fail-safe side is "treat this as a git vault": the
+// prune verifies against HEAD and commits on a git vault, and must never
+// mistake one for an unversioned vault and leave an uncommitted deletion.
+type VaultGit int
+
+const (
+	// VaultNotGit: no .git entry at the vault or any directory above it.
+	VaultNotGit VaultGit = iota
+	// VaultGitUnavailable: a .git entry exists but git is not on PATH, so
+	// nothing committed can be read.
+	VaultGitUnavailable
+	// VaultGitBroken: a .git entry exists but git cannot use the repository
+	// (a dangling .git file, "dubious ownership", a corrupt repository).
+	VaultGitBroken
+	// VaultGitOK: the vault is the top level of its own work tree git can
+	// read — an ordinary clone, a linked worktree or a submodule (a .git
+	// FILE at the vault root).
+	VaultGitOK
+	// VaultGitNested: the vault is a subdirectory of another repository's
+	// work tree (a project or dotfiles repo). That repository is not the
+	// vault's: vp may read it and restore a vault path from its HEAD, but
+	// must never fetch, rebase, stage into, commit or push it.
+	VaultGitNested
+)
+
+// InspectVaultGit reports how git sees vault. It looks for a .git entry of
+// either kind at the vault and every directory above it, so a nested vault is
+// not mistaken for an unversioned one, then asks git itself — including
+// whether the work tree's top level is the vault (VaultGitOK) or an enclosing
+// repository's (VaultGitNested). The error is git's, for VaultGitBroken.
+func InspectVaultGit(vault string) (VaultGit, error) {
+	abs, err := filepath.Abs(vault)
+	if err != nil {
+		return VaultGitBroken, err
+	}
+	marker := false
+	for dir := abs; ; dir = filepath.Dir(dir) {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			marker = true
+			break
+		}
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	if !marker {
+		return VaultNotGit, nil
+	}
+	if !GitAvailable() {
+		return VaultGitUnavailable, nil
+	}
+	out, err := gitCmd(abs, 10*time.Second, "rev-parse", "--is-inside-work-tree")
+	if err != nil {
+		return VaultGitBroken, err
+	}
+	if out != "true" {
+		return VaultGitBroken, fmt.Errorf("git says the vault is not inside a work tree (rev-parse: %q)", out)
+	}
+	top, err := gitCmd(abs, 10*time.Second, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return VaultGitBroken, err
+	}
+	if !samePath(top, abs) {
+		return VaultGitNested, nil
+	}
+	return VaultGitOK, nil
+}
+
+// samePath reports whether a and b name the same directory, resolving
+// symlinks (git reports the resolved top level; a vault path may not be).
+func samePath(a, b string) bool {
+	ra, err1 := filepath.EvalSymlinks(a)
+	rb, err2 := filepath.EvalSymlinks(b)
+	if err1 != nil || err2 != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return ra == rb
 }
 
 // GitInit runs git init in the given directory.
