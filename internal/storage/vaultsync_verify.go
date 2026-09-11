@@ -442,7 +442,7 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 				case v.Accept(rel, blob):
 					still = append(still, rel)
 				default:
-					if _, cerr := gitCmd(vaultPath, 10*time.Second, "--literal-pathspecs", "checkout", "HEAD", "--", rel); cerr != nil {
+					if _, cerr := gitCmd(vaultPath, 10*time.Second, append(requiredFilterArgs(drivers), "--literal-pathspecs", "checkout", "HEAD", "--", rel)...); cerr != nil {
 						out.Failed = append(out.Failed, PruneFailure{Path: rel, Err: fmt.Errorf("restore from a moved HEAD: %w", cerr)})
 					} else {
 						out.Restored = append(out.Restored, rel)

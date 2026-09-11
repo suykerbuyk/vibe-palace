@@ -1287,8 +1287,9 @@ reconciler-owned mirror. Templates flow through four stations:
    misses binary-contract changes (`commands/wrap.md` supplies the
    `expected_sha256` `vp_update_resume` demands), which is why
    `template-drift` reports each one as `Info`. An unedited copy of the
-   current or any pre-`1f3bb62` version of a built-in is vp's bytes, and
-   is pruned.
+   current version of a built-in, or of any version in `shipped.txt`
+   (every version reachable from `1f3bb62`, plus the two rows of tag
+   `pre-rebase-501c96e`), is vp's bytes, and is pruned.
 4. **Reconcile on `vp config sync`.** The `TemplateTreeReconciler` in
    `Materialize` mode classifies each resource's vault copy by
    provenance — the binary alone, no host-local state

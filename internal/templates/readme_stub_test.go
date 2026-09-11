@@ -37,7 +37,8 @@ func TestRenderReadmeStub(t *testing.T) {
 // override tier beside this project directory, no vp reconciler or upgrade
 // command changes an override at either tier, "safe" is scoped to exactly
 // those (the generic vault tools reach any tier), an unedited copy of a
-// built-in is pruned, and the reset verb removes an override and keeps a
+// built-in under <vault>/Templates/ — never one in this project directory —
+// is pruned, and the reset verb removes an override and keeps a
 // backup. The retired lock, its per-sync prompt and the old project-tier
 // steer must not come back.
 func TestRenderReadmeStub_PointsAtRealSources(t *testing.T) {
@@ -50,12 +51,22 @@ func TestRenderReadmeStub_PointsAtRealSources(t *testing.T) {
 			"vp commands reset <slug>", "keeps a backup", "edit it before syncing"}},
 		{"skills", []string{"vp skills show", "override → promote", "<vault>/Templates/skills/ for every",
 			"No vp reconciler or", "direct edits and reach any tier",
-			"vp skills reset <slug>", "keeps a backup", "edit\nit before syncing"}},
+			"vp skills reset <slug>", "keeps a backup", "edit it before syncing"}},
 	} {
 		stub := RenderReadmeStub(tc.kind)
+		// Compared with the line wrapping flattened, so rewrapping the
+		// prose never breaks a pin.
+		flat := strings.Join(strings.Fields(stub), " ")
 		for _, w := range tc.wants {
-			if !strings.Contains(stub, w) {
+			if !strings.Contains(flat, w) {
 				t.Errorf("%s stub does not mention %q:\n%s", tc.kind, w, stub)
+			}
+		}
+		// The prune is scoped to the vault tier: the stub is written into
+		// Projects/<slug>/, where a copy of a built-in is never pruned.
+		for _, w := range []string{"under <vault>/Templates/ is vp's bytes and is pruned", "a copy here is never pruned"} {
+			if !strings.Contains(flat, w) {
+				t.Errorf("%s stub does not scope the prune to the vault tier (%q):\n%s", tc.kind, w, stub)
 			}
 		}
 		for _, bad := range []string{"discarded by", "reset to the embedded copy by", "--overwrite",

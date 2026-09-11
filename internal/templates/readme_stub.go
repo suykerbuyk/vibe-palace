@@ -26,9 +26,10 @@ built-in wrap command — or under <vault>/Templates/commands/ for every
 project. No vp reconciler or upgrade command changes an override at
 either tier. That is what "safe" means: vp_vault_write / edit / move /
 delete and ` + "`vp vault commit --paths .`" + ` are direct edits and reach
-any tier. An unedited copy of a built-in is vp's bytes and is pruned
-— edit it before syncing. ` + "`vp commands reset <slug>`" + ` removes a vault
-override and keeps a backup.
+any tier. An unedited copy of a built-in under <vault>/Templates/ is
+vp's bytes and is pruned — edit it before syncing; a copy here is never
+pruned. ` + "`vp commands reset <slug>`" + ` removes a vault override and keeps
+a backup.
 
 To start from a built-in, fetch it with the ` + "`vp_get_command`" + ` MCP
 tool or copy internal/templates/templates/commands/<slug>.md from a
@@ -73,9 +74,10 @@ Override a built-in skill here for this project, or under
 upgrade command changes an override at either tier. That is what
 "safe" means: vp_vault_write / edit / move / delete and
 ` + "`vp vault commit --paths .`" + ` are direct edits and reach any tier. An
-unedited copy of a built-in file is vp's bytes and is pruned — edit
-it before syncing. ` + "`vp skills reset <slug>`" + ` removes a vault override
-and keeps a backup. To start from a built-in, print it with
+unedited copy of a built-in file under <vault>/Templates/ is vp's
+bytes and is pruned — edit it before syncing; a copy here is never
+pruned. ` + "`vp skills reset <slug>`" + ` removes a vault override and keeps
+a backup. To start from a built-in, print it with
 ` + "`vp skills show <slug> [--section NAME]`" + `.
 
 Promotion back into the ` + "`vibe-palace`" + ` source tree is a manual git

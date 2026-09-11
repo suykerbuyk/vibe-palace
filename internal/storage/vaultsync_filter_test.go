@@ -342,3 +342,52 @@ func TestReadCommittedContent(t *testing.T) {
 		}
 	})
 }
+
+// TestPruneMirrorsVerified_MovedHeadRestoreForcesRequiredFilters (code review
+// L2): the restore after HEAD moves under the prune runs with the same forced
+// `filter.<d>.required=true` flags as the first one. The smudge here works
+// exactly once — the re-check's read of the new HEAD — and then fails, as a
+// flaky network smudge would. Not required, git's checkout would exit 0 and
+// write the CLEANED (rot13) bytes where the operator's file belongs; forced,
+// the restore fails loudly and nothing is written.
+func TestPruneMirrorsVerified_MovedHeadRestoreForcesRequiredFilters(t *testing.T) {
+	dir := rotRepo(t, map[string]string{"T/wrap.md": "mirror\n"})
+	token := filepath.Join(t.TempDir(), "smudge-token")
+	script := filepath.Join(t.TempDir(), "smudge.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ -e '"+token+"' ]; then rm -f '"+token+"'; exec "+rot13+"; fi\necho 'smudge unavailable' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "config", "filter.rot.smudge", script)
+	grant := func() {
+		if err := os.WriteFile(token, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	grant() // the first HEAD read
+
+	orig := pruneBeforeStageHook
+	t.Cleanup(func() { pruneBeforeStageHook = orig })
+	pruneBeforeStageHook = func() {
+		other := filepath.Join(t.TempDir(), "other")
+		gitRun(t, filepath.Dir(other), "clone", "-q", "-c", "filter.rot.clean="+rot13, "-c", "filter.rot.smudge="+rot13, dir, other)
+		gitRun(t, other, "config", "user.email", "o@example.com")
+		gitRun(t, other, "config", "user.name", "O")
+		writeFile(t, other, "T/wrap.md", "operator\n")
+		gitRun(t, other, "commit", "-qam", "override")
+		sha := gitRun(t, other, "rev-parse", "HEAD")
+		gitRun(t, dir, "fetch", "-q", other, "main")
+		gitRun(t, dir, "update-ref", "HEAD", sha)
+		gitRun(t, dir, "reset", "-q", "--", "T/wrap.md")
+		grant() // the re-check's read of the moved HEAD; the restore gets none
+	}
+	_, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, false, acceptOnly(nil, "mirror\n"))
+	if err == nil {
+		t.Fatalf("a restore through a failing filter was not an error: %+v", out)
+	}
+	if len(out.Restored) != 0 || len(out.Failed) != 1 || !strings.Contains(out.Failed[0].Err.Error(), "restore from a moved HEAD") {
+		t.Fatalf("out=%+v", out)
+	}
+	if body, present := readBody(t, dir, "T/wrap.md"); present {
+		t.Errorf("the restore wrote %q through a failing filter", body)
+	}
+}

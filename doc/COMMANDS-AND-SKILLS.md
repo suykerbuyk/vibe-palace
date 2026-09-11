@@ -126,8 +126,9 @@ Three things to know about a vault-wide override of a built-in:
 
 - **Edit it before you sync.** `vp config sync` judges a `Templates/` copy by
   its bytes alone: a copy identical, line endings aside, to the current
-  built-in or to any version vibe-palace shipped up to `1f3bb62` (the frozen
-  `internal/templates/shipped.txt`) is vp's, not an override, and is pruned.
+  built-in or to a version in the frozen `internal/templates/shipped.txt`
+  (every version reachable from `1f3bb62`, plus the two rows of tag
+  `pre-rebase-501c96e`) is vp's, not an override, and is pruned.
 - **It shadows the built-in for every project**, and it misses changes the
   binary relies on — `commands/wrap.md` supplies the `expected_sha256` that
   `vp_update_resume` demands, for example. `vp_check` `template-drift` lists

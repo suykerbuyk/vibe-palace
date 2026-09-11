@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -432,6 +433,14 @@ func TestConfigSyncCommitsAPendingRemovalWithoutALock(t *testing.T) {
 			if tip := strings.TrimSpace(gitInVault(t, origin, "rev-parse", "main")); tip != headOf(t, vaultPath) {
 				t.Error("the commit was not pushed")
 			}
+			// Review L4: the commit is this run's, so the run says what it
+			// published, and counts it.
+			if want := "committed the pending removal of " + tc.rel + " (" + tc.basis + ")"; !strings.Contains(out, want) {
+				t.Errorf("no outcome line %q:\n%s", want, out)
+			}
+			if !strings.Contains(out, "pruned=1") {
+				t.Errorf("the committed pending removal is not counted:\n%s", out)
+			}
 			assertTemplatesClean(t, vaultPath)
 		})
 	}
@@ -561,5 +570,64 @@ func resetStaleCopyDryRunMatchesTheRealRun(t *testing.T) {
 	assertAbsent(t, restart)
 	if baks := bakFilesUnder(t, filepath.Join(vault, "Templates")); len(baks) != 0 {
 		t.Errorf("the real run wrote a backup the dry run did not name: %v", baks)
+	}
+}
+
+// TestConfigSyncPreRunErrorsExitTwoOnEveryPath (code review L1): a Templates/
+// git read that fails before the run — here the pending-removal listing,
+// reading HEAD's copy of a " D" built-in through a smudge that cannot run —
+// is exit 2 on every path that includes the Templates reconciler: an
+// answerless run with "Nothing to do", and --dry-run. A --tier global run
+// never reads Templates/, so it neither reports nor fails on it.
+func TestConfigSyncPreRunErrorsExitTwoOnEveryPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the filter fixture needs a POSIX shell")
+	}
+	vaultPath, projDir, _ := canonicalGitVault(t, func(v string) {
+		putVaultFile(t, v, "Templates/commands/wrap.md", string(embeddedTemplateBytes(t, "commands/wrap.md")))
+		putVaultFile(t, v, ".gitattributes", "Templates/** filter=rot\n")
+	})
+	gitInVault(t, vaultPath, "config", "filter.rot.smudge", "/nonexistent/vp-test-smudge")
+	if err := os.Remove(filepath.Join(vaultPath, "Templates", "commands", "wrap.md")); err != nil {
+		t.Fatal(err)
+	}
+	head := headOf(t, vaultPath)
+
+	run := func(args ...string) (stdout, stderr string, code int) {
+		stderr = captureStderr(t, func() {
+			stdout, code = runSyncWithStdin(t, "", append([]string{"--project-root", projDir}, args...))
+		})
+		return stdout, stderr, code
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"nothing to do", []string{"--tier", "vault"}, "Nothing to do"},
+		{"dry run", []string{"--tier", "vault", "--dry-run"}, "Plan:"},
+		{"all tiers, nothing to do", nil, "Nothing to do"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := run(tc.args...)
+			if code != cli.ExitSystem {
+				t.Errorf("exit = %d, want %d\nstdout:\n%s\nstderr:\n%s", code, cli.ExitSystem, stdout, stderr)
+			}
+			if !strings.Contains(stdout, tc.want) || !strings.Contains(stderr, "could not list uncommitted Templates/ removals") {
+				t.Errorf("stdout:\n%s\nstderr:\n%s", stdout, stderr)
+			}
+		})
+	}
+	t.Run("global tier", func(t *testing.T) {
+		stdout, stderr, code := run("--tier", "global", "--yes")
+		if code != cli.ExitOK || strings.Contains(stderr, "Templates/") {
+			t.Errorf("a --tier global run failed on a Templates/ read: exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+		}
+	})
+	if headOf(t, vaultPath) != head {
+		t.Error("a commit was made")
+	}
+	if st := strings.TrimSpace(gitInVault(t, vaultPath, "status", "--porcelain", "--", "Templates/")); st != "D Templates/commands/wrap.md" {
+		t.Errorf("the pending removal changed: %q", st)
 	}
 }

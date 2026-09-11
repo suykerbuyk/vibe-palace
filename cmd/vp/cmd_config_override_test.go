@@ -161,9 +161,13 @@ func seedCommittedOverrideUnderMirror(t *testing.T, vaultPath, embeddedRel strin
 // HEAD's blob — the operator's. Now the commit checks the blob it removes and
 // restores it instead.
 func TestConfigSyncRestoresCommittedOverrideFromHEAD(t *testing.T) {
-	vaultPath, projDir := overrideVault(t)
-	target := putVaultFile(t, vaultPath, "Templates/commands/wrap.md", myWrap)
-	origin := gitifyVault(t, vaultPath)
+	// A canonically configured vault: its .gitignore is complete, so the
+	// Vault reconciler plans nothing and the answerless syncs below can only
+	// be about Templates/.
+	var target string
+	vaultPath, projDir, origin := canonicalGitVault(t, func(v string) {
+		target = putVaultFile(t, v, "Templates/commands/wrap.md", myWrap)
+	})
 	head := strings.TrimSpace(gitInVault(t, vaultPath, "rev-parse", "HEAD"))
 	seedCommittedOverrideUnderMirror(t, vaultPath, "commands/wrap.md")
 
@@ -182,7 +186,8 @@ func TestConfigSyncRestoresCommittedOverrideFromHEAD(t *testing.T) {
 	// The restored override is operator content by its bytes alone, so the
 	// next sync keeps it silently instead of prompting on every run.
 	if again := syncVault(t, projDir, ""); strings.Contains(again, "restored") || strings.Contains(again, "[Delete]") ||
-		!strings.Contains(again, "[Unchanged] TemplateTree:Templates: Templates/commands/wrap.md operator override of a built-in (kept)") {
+		!strings.Contains(again, "[Unchanged] TemplateTree:Templates: Templates/commands/wrap.md operator override of a built-in (kept)") ||
+		!strings.Contains(again, "Nothing to do") {
 		t.Errorf("the restored override is not a silent keep on the next sync:\n%s", again)
 	}
 	if got := strings.TrimSpace(gitInVault(t, vaultPath, "rev-parse", "HEAD")); got != head {
@@ -646,8 +651,11 @@ func TestConfigSyncRetriesAnUncommittedPrune(t *testing.T) {
 	if !strings.Contains(out, "prune Templates/commands/wrap.md (removed from the worktree before this sync and not committed; the committed copy is the current embedded copy)") {
 		t.Errorf("no pending-removal row:\n%s", out)
 	}
-	if !strings.Contains(out, "pruned=0") {
-		t.Errorf("an already-removed file was counted as pruned:\n%s", out)
+	// This run did not remove the file, but its commit publishes the removal
+	// (code review L4): the run says so, and counts it.
+	if !strings.Contains(out, "committed the pending removal of Templates/commands/wrap.md (current embedded copy)") ||
+		!strings.Contains(out, "pruned=1") {
+		t.Errorf("the committed pending removal is not reported and counted:\n%s", out)
 	}
 	msg := gitInVault(t, vaultPath, "log", "-1", "--format=%B")
 	if !strings.Contains(msg, "vp found these removals already pending in the worktree") ||

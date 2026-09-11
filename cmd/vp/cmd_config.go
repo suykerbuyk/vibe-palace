@@ -244,7 +244,10 @@ func runConfigSync(args []string) int {
 	if vaultPathForTemplates != "" {
 		templatesGit, templatesGitErr = storage.InspectVaultGit(vaultPathForTemplates)
 		var pending map[string][]byte
-		if templatesGit == storage.VaultGitOK {
+		// Only when the Templates reconciler is part of this run: a
+		// `--tier global` or `--tier project` sync never reads Templates/,
+		// so a Templates/ git problem is not its error.
+		if templatesGit == storage.VaultGitOK && (tier == "all" || tier == "vault") {
 			var perr error
 			pending, perr = storage.UncommittedRemovals(vaultPathForTemplates, "Templates", isBuiltinTemplateKey)
 			if perr != nil {
@@ -357,14 +360,17 @@ func runConfigSync(args []string) int {
 	// Render plans.
 	printSyncPlans(os.Stdout, order, plans)
 
+	// A pre-run error (a Templates/ git read that failed) is an exit 2 on
+	// every path — a dry run and "Nothing to do" included — never a green
+	// run that only printed a line on stderr.
 	if dryRun {
-		return cli.ExitOK
+		return preErrorsExit(preErrors)
 	}
 
 	// Determine whether any action requires prompting.
 	if !autoYes && !anyActionable(plans) {
 		fmt.Fprintln(os.Stdout, "Nothing to do — all tiers in sync.")
-		return cli.ExitOK
+		return preErrorsExit(preErrors)
 	}
 
 	reader := bufio.NewReader(os.Stdin)
@@ -452,6 +458,20 @@ func runConfigSync(args []string) int {
 	return finishSync(totalReport)
 }
 
+// preErrorsExit is the exit status of a run that stops before any Apply:
+// ExitSystem, with each error on stderr, when a pre-run check failed, and
+// ExitOK otherwise.
+func preErrorsExit(preErrors []error) int {
+	if len(preErrors) == 0 {
+		return cli.ExitOK
+	}
+	for _, e := range preErrors {
+		slog.Error("config sync pre-run error", "err", e)
+		fmt.Fprintf(os.Stderr, "  error: %v\n", e)
+	}
+	return cli.ExitSystem
+}
+
 // isBuiltinTemplateKey reports whether the vault-relative path rel is the
 // Templates/ copy of a built-in — the only paths whose uncommitted removal
 // `vp config sync` may commit.
@@ -531,7 +551,8 @@ func removeRetiredLock(vaultPath string, planned reconcile.Action) error {
 
 // pruneOnGitVault removes the vault template mirrors a just-applied plan handed
 // over (ExternalPrune), and commits the removal so it survives a sync to
-// another host. It returns the counts to add to the run's Summary.
+// another host. It returns the counts to add to the run's Summary: pruned
+// counts the paths this run removed and the pending removals it committed.
 //
 // Without the commit the prune is a worktree-only operation, and a pruned
 // mirror returns on the next clone or pull. Scope is deliberately narrow, per
@@ -629,10 +650,26 @@ func pruneOnGitVault(vaultPath string, tt *reconcile.TemplateTreeReconciler, app
 	for _, rel := range out.Committed {
 		committed[rel] = true
 	}
+	removed := map[string]bool{}
 	for _, rel := range out.Removed {
+		removed[rel] = true
 		if a := actionByRel[rel]; !committed[rel] && a.Detail("provenance") == templates.ProvenanceEarlier.String() {
 			fmt.Fprintf(os.Stdout, "pruned %s (earlier shipped version of %s; no backup)\n", rel, a.Detail("embedded_relpath"))
 		}
+	}
+	// A removal found pending in the worktree and committed now was not made
+	// by this run, so pruneMirrors counts it Gone — but the commit that
+	// publishes it is this run's, under the widened grant. Say so, one line
+	// per path, and count it.
+	var pendingCommitted int
+	for _, rel := range out.Committed {
+		if removed[rel] {
+			continue
+		}
+		pendingCommitted++
+		a := actionByRel[rel]
+		basis := pruneBasisWords(a.Detail("embedded_relpath"), provenanceOf(a.Detail("provenance")))
+		fmt.Fprintf(os.Stdout, "committed the pending removal of %s (%s)\n", rel, basis)
 	}
 	if res != nil && res.CommitSHA != "" {
 		if downgraded {
@@ -642,7 +679,18 @@ func pruneOnGitVault(vaultPath string, tt *reconcile.TemplateTreeReconciler, app
 			perr = pushErr
 		}
 	}
-	return len(out.Removed), len(out.Kept), perr
+	return len(out.Removed) + pendingCommitted, len(out.Kept), perr
+}
+
+// provenanceOf reads a Delete's provenance= detail back.
+func provenanceOf(detail string) templates.Provenance {
+	switch detail {
+	case templates.ProvenanceCurrent.String():
+		return templates.ProvenanceCurrent
+	case templates.ProvenanceEarlier.String():
+		return templates.ProvenanceEarlier
+	}
+	return templates.ProvenanceOperator
 }
 
 // pruneBasisWords is how a prune commit names a path's basis.

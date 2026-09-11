@@ -1279,8 +1279,10 @@ reach any tier.
 
 **Edit the copy before you sync.** `vp config sync` decides whether a
 `Templates/` copy is vp's by its bytes alone: a copy identical, line
-endings aside, to the current built-in or to any version vibe-palace
-shipped up to `1f3bb62` is vp's, not an override, and is pruned. Here a
+endings aside, to the current built-in or to a version in the frozen
+`internal/templates/shipped.txt` — every version reachable from
+`1f3bb62`, plus the two rows of tag `pre-rebase-501c96e` — is vp's, not
+an override, and is pruned. Here a
 vault holds an edited `wrap.md`, an unedited copy of `capture.md`, and
 an old copy of `restart.md` a past release left behind (rows for the
 templates it does not hold, and the paths, trimmed):
@@ -1400,8 +1402,9 @@ the reset verbs, or — on a v4 host — the upgrade commands.
    against), restore it with
    `git -C <vault> checkout <sha>^ -- <path>` and commit. When in doubt,
    restore. An unneeded restore of the current embedded copy, or of any
-   version vibe-palace shipped up to `1f3bb62`, is vp's bytes, and the
-   next sync prunes it.
+   version in `shipped.txt` (every version reachable from `1f3bb62`, plus
+   the two rows of tag `pre-rebase-501c96e`), is vp's bytes, and the next
+   sync prunes it.
 4. A non-git vault, or an override never committed: after one sync by
    an older binary, `<path>.bak` holds your override — rename it back.
    After two, the `.bak` holds embedded bytes and the override cannot be
@@ -1498,8 +1501,9 @@ hosts on the previous release keep working against the same vault.
 
 - Provenance is decided by the binary alone. A `Templates/` copy
   identical, line endings aside, to the current built-in or to a version
-  vibe-palace shipped up to `1f3bb62` (the frozen
-  `internal/templates/shipped.txt`) is vp's; anything else is an
+  in the frozen `internal/templates/shipped.txt` (every version reachable
+  from `1f3bb62`, plus the two rows of tag `pre-rebase-501c96e`) is vp's;
+  anything else is an
   override, kept. Before, a host decided from its own
   `.vibe-palace/templates.lock`, so a host without the lock prompted on
   every override at every interactive sync and could not recognise a
@@ -1527,6 +1531,11 @@ hosts on the previous release keep working against the same vault.
 - A `Templates/` path reached through a symlink is kept and never
   followed, where the previous release pruned through it.
 - Vault `Templates/` is again a supported vault-wide override tier.
+- The Templates step no longer rewrites the vault `.gitignore` behind
+  your back. Before, it silently appended any missing canonical line;
+  now only the Vault step tops it up, as an `Update` you accept, so an
+  interactive `vp config sync` on a vault whose `.gitignore` lacks a
+  canonical line asks until you accept it (`--yes` accepts it).
 
 **Promoting back to the `vp` source tree.** Vibe-palace cannot automate
 promotion because at runtime it does not know where your vibe-palace
