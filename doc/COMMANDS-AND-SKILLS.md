@@ -411,7 +411,16 @@ The same surface is available from the CLI:
 vp skills list
 vp skills show startup-analyst
 vp skills show startup-analyst --section capex-opex
+vp skills show startup-analyst --no-project
 ```
+
+Run from a project directory, `vp skills show` resolves the project
+detected there by default, exactly as `vp_skill` does, so both serve the
+same tier; `--no-project` skips the project tier and `--project SLUG`
+names another. With no vault configured it prints the built-in skill.
+`vp skills list` does not default the project; pass `--project` to see
+project-tier overrides. Every skill shim's MCP-less fallback is
+`vp skills show <name>`, run from the project directory.
 
 ### Write and wrap tools
 

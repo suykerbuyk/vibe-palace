@@ -1756,16 +1756,22 @@ marker are "custom" and never touched).
 | Target          | Location                             | Body                                           |
 |-----------------|--------------------------------------|------------------------------------------------|
 | `ClaudeCommand` | `.claude/commands/vpc-<name>.md`     | Delegates to `vp_command` MCP tool             |
-| `ClaudeSkill`   | `.claude/skills/vps-<name>/SKILL.md` | Delegates to `vp_skill`; teaches additive-stack contract |
-| `CursorRule`    | `.cursor/rules/vps-<name>.mdc`       | Delegates to `vp_skill` with vault-path fallback |
+| `ClaudeSkill`   | `.claude/skills/vps-<name>/SKILL.md` | Delegates to `vp_skill`; teaches additive-stack contract; `vp skills show` CLI fallback when `vp_skill` cannot be loaded |
+| `CursorRule`    | `.cursor/rules/vps-<name>.mdc`       | Delegates to `vp_skill`, with a `vp skills show` CLI fallback when `vp_skill` cannot be loaded |
+| `GrokSkill`     | `.grok/skills/vps-<name>/SKILL.md`, and the `/vpc` hub at `.grok/skills/vpc/SKILL.md` | Persona: as `ClaudeSkill`, in Grok frontmatter. Hub: lists and dispatches commands through `vp_cmd`; no fallback |
 
 - **Plan / Apply** for commands (`Plan` + `Apply`) and for skill-class
   targets (`PlanSkills` + `ApplySkills`) each classify on-disk files as
   New / Modified / Unchanged / Stale / Custom and compute the minimal
-  rewrite set. Per-target content hashes are keyed on render inputs
-  (name, description, paths, target kind, template version) so identical
-  inputs yield a stable `sha=` token across runs, and changes to any
-  input force a rewrite on next apply.
+  rewrite set. A skill shim's `sha=` is taken over the file as rendered
+  with the sha blanked (prefixed by the target kind), so every rendered
+  byte keys it: any change to what a renderer writes — a description, the
+  fallback text, the hub body — re-renders the affected shims once, with
+  no version bump. `skillShimVersion` versions only the marker format and
+  the `ScanShim` contract. Command shims (`ClaudeCommand`) are still keyed
+  on render inputs (name, brief, project, argument hint, template
+  version), so an edit to their static text does not reach an existing
+  shim.
 - **Cursor detection** (`shims.CursorPresent`) is strict: emission is
   triggered by `.cursor/rules/` (primary) or `.cursor/` (weaker) at the
   project root. A flat `.cursorrules` file is deliberately **not** a
@@ -1797,14 +1803,20 @@ Claude Code / Cursor skill pickers all depend on.
 **Shims.** On top of the resolver sits `internal/shims/`, which
 emits native artifacts into the editors that expose a first-class
 skill surface. `ClaudeSkill` writes
-`.claude/skills/vps-<name>/SKILL.md` — a three-line delegation to
+`.claude/skills/vps-<name>/SKILL.md` — a short delegation to
 `vp_skill` wrapped in the managed-hash shim marker — so Claude Code's
 skill picker auto-loads it. `CursorRule` writes
 `.cursor/rules/vps-<name>.mdc` (only when `.cursor/rules/` or
 `.cursor/` already exists at the project root), giving Cursor's
-Rules panel a native entry with a vault-path fallback for MCP-less
-setups. Every shim carries a render-input-keyed `sha=` token in its
-marker so drift detection is exact; files without the marker are
+Rules panel a native entry, and `GrokSkill` writes the same persona
+shims under `.grok/skills/`. Every persona shim ends with a
+`vp skills show` fallback for MCP-less setups: when `vp_skill` is not
+in the agent's tool list and cannot be loaded after a search, it runs
+`vp skills show <name>` from the project directory, which resolves the
+same tiers as `vp_skill` and prints references with `--section`. No
+shim names a vault file or any other host path. Every shim carries a
+`sha=` token in its marker so drift detection is exact — taken over the
+rendered bytes for skill shims — and files without the marker are
 "custom" and never touched. Editors without a native surface rely on
 the managed-block trigger phrase (`vps-<name>`) plus `vp_skill` over
 MCP, which is the universal fallback documented in

@@ -1229,8 +1229,11 @@ explaining the 5-tier precedence.
 Three ways to fetch the default to start from, before you override it:
 
 - the `vp_get_command` MCP tool, for a command;
-- `vp skills show <name>` (add `--section NAME` for one reference), for
-  a skill;
+- `vp skills show <name> --no-project` (add `--section NAME` for one
+  reference), for a skill. `--no-project` matters once an override
+  exists: run from inside the project, `vp skills show` serves the
+  project's own copy by default, and `--no-project` shows the vault or
+  built-in copy instead;
 - the source file under `internal/templates/templates/` in a
   vibe-palace checkout.
 
@@ -1353,7 +1356,9 @@ the reset verbs, or — on a v4 host — the upgrade commands.
    vp's prune commits have the subject
    `chore(templates): prune vault mirrors superseded by the embedded floor`.
 3. For each path: `git -C <vault> show <sha>^:<path>`. If it differs
-   from what `vp_get_command` / `vp skills show` serves, restore it with
+   from what `vp_get_command` / `vp skills show --no-project` serves
+   (`--no-project`, so a project-tier override is not what you compare
+   against), restore it with
    `git -C <vault> checkout <sha>^ -- <path>` and commit. When in doubt,
    restore. An unneeded restore of the *current* embedded copy is a
    mirror the next sync prunes. An older embedded version is not: on a
@@ -1513,11 +1518,15 @@ verification, see `doc/verify-skill-delivery.md`.
 
 | IDE                         | Mechanism                                                   | Auto-invokes? | Notes                                                                 |
 |-----------------------------|-------------------------------------------------------------|---------------|-----------------------------------------------------------------------|
-| Claude Code                 | Native SKILL.md primitive (`.claude/skills/vps-<name>/SKILL.md`) | Yes       | Auto-loaded by Claude Code's skill picker; shim is a three-line delegation to `vp_skill`. |
-| Cursor                      | Native rule file (`.cursor/rules/vps-<name>.mdc`)           | Pick from Rules panel | Only emitted when `.cursor/` or `.cursor/rules/` exists in the project. |
+| Claude Code                 | Native SKILL.md primitive (`.claude/skills/vps-<name>/SKILL.md`) | Yes       | Auto-loaded by Claude Code's skill picker; shim is a short delegation to `vp_skill`, with a `vp skills show <name>` fallback for when `vp_skill` cannot be loaded. |
+| Cursor                      | Native rule file (`.cursor/rules/vps-<name>.mdc`)           | Pick from Rules panel | Only emitted when `.cursor/` or `.cursor/rules/` exists in the project. vp registers no MCP server with Cursor; without one, the rule's fallback runs `vp skills show <name>` from the project directory. |
 | Zed + Claude                | Trigger phrase (managed block) + `vp_skill` MCP             | Yes, on trigger | Model recognizes `vps-<name>` via the agent-file managed block and calls `vp_skill`. |
-| Zed + Gemini / Copilot Chat | Trigger phrase (managed block) + user-paste fallback        | Partial       | Awareness works from the managed block; user pastes `SKILL.md` contents if MCP isn't wired. |
+| Zed + Gemini / Copilot Chat | Trigger phrase (managed block) + user-paste fallback        | Partial       | Awareness works from the managed block; user pastes `vp skills show <name>` output if MCP isn't wired. |
 | Any MCP-capable host        | Trigger phrase + `vp_skill` MCP                             | Yes, on trigger | Works anywhere `vp mcp` can be registered. Provider-level tool-use policy applies. |
+
+`.cursor/rules/vps-*.mdc` is vp-managed, depends on your vault and your
+vp version, and is rewritten by `vp init`; commit it only if every
+contributor shares a vault and a vp version.
 
 **This table is about skill DELIVERY, not durability.** A row saying skills reach a
 surface says nothing about whether a session captured there survives. In particular the
@@ -1597,7 +1606,14 @@ Cursor session:
 
 From the CLI the same content is reachable via `vp skills show
 <name>` (SKILL.md + references list) and `vp skills show <name>
---section <ref>` (just the reference body). Reference resolution is
+--section <ref>` (just the reference body). Run from a project
+directory, `vp skills show` resolves that project's tier by default,
+exactly as `vp_skill` does, so the two serve the same body there;
+`--project SLUG` picks another project and `--no-project` skips the
+project tier. With no vault configured at all it prints the built-in
+skill. (`vp skills list` does not default the project; pass
+`--project`.) Every skill shim's MCP-less fallback runs this command.
+Reference resolution is
 per-file: a project may override SKILL.md without having to clone
 every reference — the resolver transparently falls back to vault or
 embedded copies for anything the project did not override.
@@ -1654,6 +1670,10 @@ drift alongside command drift.
   detailed usage notes, including the `vp_get_task` + resource paging
   discipline for task commands).
 `.grok/` is gitignored and host-local just like `.claude/`.
+User-global shims refresh only when `vp mcp install --grok` /
+`--claude-plugin` is re-run; re-run it after upgrading vp. When an
+upgrade re-renders many shims, `vp commands upgrade` asks once per shim;
+answer `A` once, or pass `--overwrite`.
 
 Stale shims (for commands that were renamed or removed from the vault)
 are detected automatically but never deleted without explicit consent.

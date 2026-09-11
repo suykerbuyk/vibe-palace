@@ -132,9 +132,13 @@ neither exists, create `.cursor/rules/` (empty) and re-run `vp init`.
   from the SKILL.md frontmatter.
 - Selecting / invoking the rule adopts the persona as in §1.
 - If MCP is wired, `vp_skill` is called and the full persona frame
-  arrives. If MCP is not wired, the `.mdc` body alone carries
-  enough guidance to adopt the persona (with a vault-path fallback
-  hint for fetching references).
+  arrives. If MCP is not wired, the rule's fallback tells the agent
+  to run `vp skills show startup-analyst` from the project directory
+  and adopt the printed persona. Run from the project directory, that
+  command serves the same tier `vp_skill` would (project override,
+  then vault override, then the built-in), and it prints each
+  reference with `--section <ref>`. If the agent cannot run `vp`, it
+  asks the user to run the command and paste the output.
 
 **Common failure modes:**
 
@@ -142,9 +146,11 @@ neither exists, create `.cursor/rules/` (empty) and re-run `vp init`.
   reports `[skip] Cursor shims: .cursor/ not present`). Create the
   directory and re-run `vp init`.
 - Stale `sha=` in the shim → `vp commands upgrade` will re-render.
-- MCP not configured in Cursor → rule body still has the skill
-  description and trigger instructions; persona should still
-  adopt, but reference fetches will fail (user must paste).
+- MCP not configured in Cursor → the persona is adopted through the
+  CLI fallback (`vp skills show <name>`), and reference fetches work
+  through `vp skills show <name> --section <ref>`. If `vp` is not on
+  the agent's `PATH` (a remote or devcontainer workspace), the agent
+  asks the user to run the command and paste its output.
 - Rule shows up but doesn't engage → confirm the managed block is
   present in `.cursorrules` and/or `.rules`; Cursor reads these in
   addition to the `.cursor/rules/` picker.
@@ -207,8 +213,11 @@ neither exists, create `.cursor/rules/` (empty) and re-run `vp init`.
 
 This section covers any AI-coding surface where MCP may not be wired
 up. The contract is weaker: the managed-block trigger makes the
-model *aware* that `vps-<name>` means something, and a paste of
-SKILL.md finishes the activation.
+model *aware* that `vps-<name>` means something, and a paste of the
+persona finishes the activation. The persona is what
+`vp skills show <name>` prints from the project directory — not the
+`.claude/skills/vps-<name>/SKILL.md` file, which is only a short
+delegation to `vp_skill`.
 
 **Invoke it this way (Zed + Gemini variant):**
 
@@ -218,16 +227,18 @@ SKILL.md finishes the activation.
    vps-startup-analyst
    ```
 3. If the model says it can't find the skill or can't call a tool,
-   paste the body of `.claude/skills/vps-startup-analyst/SKILL.md`
-   into the chat and ask the model to adopt the persona.
+   run `vp skills show startup-analyst` in the project directory,
+   paste its output into the chat and ask the model to adopt the
+   persona.
 
 **Invoke it this way (Copilot Chat variant):**
 
 1. Open the project in the Copilot Chat surface (VS Code, JetBrains,
    etc.).
 2. Type `vps-startup-analyst`.
-3. Paste `SKILL.md` contents if the model doesn't adopt on the
-   trigger alone.
+3. Paste the output of `vp skills show startup-analyst` (run in the
+   project directory) if the model doesn't adopt on the trigger
+   alone.
 
 **Expected response shape:**
 
