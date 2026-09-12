@@ -603,6 +603,85 @@ func TestConfigSync_InteractivePathStillWorks(t *testing.T) {
 	}
 }
 
+// TestConfigSync_DevNullStdinWithBrokenGitPreErrorReportsExitSystem is the
+// regression test for the blocking finding on the fix above: the upfront
+// non-TTY refusal gate must not silently swallow a pre-run error (preErrors)
+// that was already present when it fires. Sets up a vault with a broken git
+// repository (a dangling .git file — InspectVaultGit's VaultGitBroken, same
+// fixture as TestCommandsResetRefusesBrokenRepository) AND a byte-identical
+// Templates/ mirror so there is an actual prune deferred by the broken git
+// (the precondition for cmd_config.go's preErrors append), AND drift in the
+// global config so a genuine Create/Update (prompting) action is also
+// pending, AND real /dev/null stdin with no --yes. Before the fix this
+// combination exited ExitUser (1) with only the "stdin is not a terminal"
+// line — the git-broken diagnostic was never printed. It must now exit
+// ExitSystem (2) with both messages on stderr.
+func TestConfigSync_DevNullStdinWithBrokenGitPreErrorReportsExitSystem(t *testing.T) {
+	configDir, _ := initTestEnv(t, false)
+	projDir := t.TempDir()
+	markProjectDir(t, projDir)
+	vaultPath := filepath.Join(t.TempDir(), "vault")
+
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
+	if code := cmd.Run([]string{projDir, "--name", "broken-git", "--vault-path", vaultPath, "--no-git"}); code != cli.ExitOK {
+		t.Fatalf("init exit code = %d", code)
+	}
+
+	// A byte-identical Templates/ mirror is a pending prune (ActionDelete) —
+	// the deferPrunes call in cmd_config.go only appends a preError when it
+	// actually finds one to defer (n>0).
+	const embeddedRel = "commands/wrap.md"
+	var embBytes []byte
+	if rs, err := templates.WalkEmbedded(); err == nil {
+		for _, res := range rs {
+			if res.RelPath == embeddedRel {
+				embBytes = res.Bytes
+				break
+			}
+		}
+	}
+	if embBytes == nil {
+		t.Fatalf("could not locate %q in embedded corpus", embeddedRel)
+	}
+	seedTemplateOverride(t, vaultPath, embeddedRel, embBytes)
+
+	// Break the vault's git: a dangling .git file. Git is on PATH, so
+	// InspectVaultGit reaches `rev-parse --is-inside-work-tree`, which fails
+	// against a nonexistent gitdir target — VaultGitBroken, not
+	// VaultGitUnavailable.
+	putVaultFile(t, vaultPath, ".git", "gitdir: /nonexistent\n")
+
+	// Drift the global config so GlobalConfig's reconciler proposes a
+	// genuine Create/Update — the prompting action anyPromptingAction needs.
+	cfgPath := filepath.Join(configDir, "vibe-palace", "config.toml")
+	if err := os.WriteFile(cfgPath,
+		[]byte("vault_path = \""+vaultPath+"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldStdin := os.Stdin
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open %s: %v", os.DevNull, err)
+	}
+	os.Stdin = devNull
+	t.Cleanup(func() { os.Stdin = oldStdin; _ = devNull.Close() })
+
+	var code int
+	stderr := captureStderr(t, func() {
+		code = runConfigSync([]string{"--project-root", projDir, "--tier", "all"})
+	})
+	if code != cli.ExitSystem {
+		t.Fatalf("/dev/null stdin with a broken-git preError: exit=%d, want ExitSystem (2)\nstderr: %s", code, stderr)
+	}
+	if !strings.Contains(stderr, "stdin is not a terminal and --yes was not set.") {
+		t.Errorf("missing the non-terminal refusal message:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "Templates prune(s) deferred: git cannot read the vault's repository") {
+		t.Errorf("missing the git-broken preError diagnostic:\n%s", stderr)
+	}
+}
+
 // --- Phase 3: TemplateTree override-only reconcile tests ---
 
 // seedTemplateOverride writes data to the vault Templates/ target for

@@ -411,9 +411,22 @@ func runConfigSync(args []string) int {
 	// below and anyActionable's own doc comment), so a prune-only or
 	// restore-only plan must reach Apply exactly as it always has, not be
 	// refused for a prompt it was never going to show.
+	//
+	// This still has to honor the invariant two paragraphs up: a pre-run
+	// error is exit 2 on every path, never a green (or merely user-error)
+	// run that dropped it. So the refusal message always prints — stdin
+	// really isn't a terminal, and the operator needs to know that whether
+	// or not a pre-run error also fired — but the exit code and the
+	// pre-run diagnostic itself defer to preErrorsExit exactly as the
+	// dry-run and "nothing to do" branches above do: ExitSystem with each
+	// preError reported when preErrors is non-empty, ExitUser (this path's
+	// own default) when it is not.
 	if !autoYes && anyPromptingAction(plans) && !cli.IsTerminal(os.Stdin) {
 		fmt.Fprintln(os.Stderr, "vp config sync: stdin is not a terminal and --yes was not set.")
 		fmt.Fprintln(os.Stderr, "Re-run with --yes to accept every proposed action non-interactively, or --dry-run to preview.")
+		if len(preErrors) > 0 {
+			return preErrorsExit(preErrors)
+		}
 		return cli.ExitUser
 	}
 
