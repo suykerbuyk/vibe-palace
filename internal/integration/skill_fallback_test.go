@@ -18,6 +18,7 @@ import (
 
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/shims"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 	"github.com/suykerbuyk/vibe-palace/internal/tools"
 )
 
@@ -329,20 +330,16 @@ func TestIntegrationSkillShimFallbackIsReachable(t *testing.T) {
 	// the user-global shims from no vault, and each command serves the
 	// built-in skill with one stderr note instead of failing.
 	t.Run("no-config", func(t *testing.T) {
-		bare := t.TempDir()
-		home := filepath.Join(bare, "home")
-		cwd := filepath.Join(home, "work")
-		if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		// NOTE: this drops the USERPROFILE/APPDATA (Windows) vars the
+		// hand-rolled version used to set alongside HOME/XDG_CONFIG_HOME —
+		// see internal/testinfra's IsolateEnv doc comment; none of the 8
+		// files this fixture was introduced for run on Windows CI today.
+		env := testinfra.IsolateEnv(t)
+		cwd := filepath.Join(env.Home, "work")
 		if err := os.MkdirAll(cwd, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv("HOME", home)
-		t.Setenv("USERPROFILE", home)
-		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-		t.Setenv("APPDATA", filepath.Join(home, ".config"))
-		noVault := filepath.Join(home, shims.GrokUserPluginRel)
+		noVault := filepath.Join(env.Home, shims.GrokUserPluginRel)
 		rep := shims.InstallGlobalSurfaces(shims.GlobalInstallOptions{GrokPluginRoot: noVault})
 		if len(rep.Errors) > 0 {
 			t.Fatalf("InstallGlobalSurfaces with no vault: %v", rep.Errors)
@@ -401,10 +398,15 @@ func TestIntegrationGrokInstallWithNoVaultIgnoresCwdTemplates(t *testing.T) {
 	}
 	bin := buildVPBinary(t)
 	root := t.TempDir()
-	home := filepath.Join(root, "home")
-	cwd := filepath.Join(home, "vault-checkout")
+	// NOTE: this drops the USERPROFILE/APPDATA (Windows) vars the
+	// hand-rolled version used to set alongside HOME/XDG_CONFIG_HOME —
+	// see internal/testinfra's IsolateEnv doc comment; none of the 8 files
+	// this fixture was introduced for run on Windows CI today (this test
+	// itself already skips on windows above).
+	env := testinfra.IsolateEnv(t)
+	cwd := filepath.Join(env.Home, "vault-checkout")
 	fakeBin := filepath.Join(root, "fakebin")
-	for _, d := range []string{filepath.Join(home, ".config"), cwd, fakeBin} {
+	for _, d := range []string{cwd, fakeBin} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -419,11 +421,7 @@ func TestIntegrationGrokInstallWithNoVaultIgnoresCwdTemplates(t *testing.T) {
 
 	cmd := exec.Command(bin, "mcp", "install", "--grok")
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(),
-		"HOME="+home, "USERPROFILE="+home,
-		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "APPDATA="+filepath.Join(home, ".config"),
-		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
-	)
+	cmd.Env = env.Environ("PATH=" + fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("vp mcp install --grok: %v\n%s", err, out)
@@ -434,7 +432,7 @@ func TestIntegrationGrokInstallWithNoVaultIgnoresCwdTemplates(t *testing.T) {
 	if b, _ := os.ReadFile(fakeLog); !strings.Contains(string(b), "mcp add") {
 		t.Errorf("the fake grok was not the one run (log %q)", b)
 	}
-	plugin := filepath.Join(home, shims.GrokUserPluginRel)
+	plugin := filepath.Join(env.Home, shims.GrokUserPluginRel)
 	if _, err := os.Stat(filepath.Join(plugin, shims.PluginSkillsRel, "vps-cwd-only")); err == nil {
 		t.Error("a skill from the cwd's Templates/ tree was installed as a user-global shim")
 	}

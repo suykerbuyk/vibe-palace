@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 // TestIntegrationTemplateMaterializeAndReconcile is the full-stack,
@@ -222,31 +223,36 @@ func containsLine(s, line string) bool {
 }
 
 // testEnv captures the isolated HOME / XDG / vault / project layout for
-// one end-to-end invocation of the `vp` CLI.
+// one end-to-end invocation of the `vp` CLI. home/xdgConfig are populated
+// from a *testinfra.Env (see setupFreshEnv) rather than the struct embedding
+// it directly, so the many other internal/integration files that already
+// address these fields as env.home / env.xdgConfig (skill_upgrade_test.go,
+// template_override_survives_test.go, template_reset_test.go,
+// skill_fallback_test.go) keep compiling unchanged.
 type testEnv struct {
 	home        string
 	xdgConfig   string
 	vaultPath   string
 	projectDir  string
 	projectName string
+
+	// iso is the *testinfra.Env home/xdgConfig were populated from. runVP
+	// uses it to build a subprocess environment via Environ() instead of
+	// hand-constructing "HOME="+... / "XDG_CONFIG_HOME="+... itself.
+	iso *testinfra.Env
 }
 
-// setupFreshEnv allocates a fresh HOME + XDG_CONFIG_HOME + vault + project
-// scratch area, marks the project dir as a Go project so `vp init` detects
-// it, and returns the resolved layout. Calls t.Setenv for HOME and
-// XDG_CONFIG_HOME so sub-processes inherit the isolation via os.Environ().
+// setupFreshEnv allocates a fresh HOME + XDG_CONFIG_HOME (via
+// testinfra.IsolateEnv) + vault + project scratch area, marks the project
+// dir as a Go project so `vp init` detects it, and returns the resolved
+// layout. IsolateEnv calls t.Setenv for HOME and XDG_CONFIG_HOME so
+// sub-processes inherit the isolation via os.Environ() (see runVP).
 func setupFreshEnv(t *testing.T) *testEnv {
 	t.Helper()
-	home := t.TempDir()
-	xdg := filepath.Join(home, ".config")
-	if err := os.MkdirAll(xdg, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", xdg)
+	env := testinfra.IsolateEnv(t)
 
-	vaultPath := filepath.Join(home, "vault")
-	projectDir := filepath.Join(home, "code", "proj")
+	vaultPath := filepath.Join(env.Home, "vault")
+	projectDir := filepath.Join(env.Home, "code", "proj")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -255,11 +261,12 @@ func setupFreshEnv(t *testing.T) *testEnv {
 		t.Fatal(err)
 	}
 	return &testEnv{
-		home:        home,
-		xdgConfig:   xdg,
+		home:        env.Home,
+		xdgConfig:   env.XDGConfigHome,
 		vaultPath:   vaultPath,
 		projectDir:  projectDir,
 		projectName: filepath.Base(projectDir),
+		iso:         env,
 	}
 }
 
@@ -288,10 +295,7 @@ func embeddedBytesFor(t *testing.T, relPath string) []byte {
 func runVP(t *testing.T, bin string, env *testEnv, stdin []byte, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(bin, args...)
-	cmd.Env = append(os.Environ(),
-		"HOME="+env.home,
-		"XDG_CONFIG_HOME="+env.xdgConfig,
-	)
+	cmd.Env = env.iso.Environ()
 	cmd.Dir = env.projectDir
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)

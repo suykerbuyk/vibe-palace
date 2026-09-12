@@ -13,6 +13,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/hook"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 // fakeTranscript returns minimal Claude Code JSONL with the given session ID.
@@ -91,8 +92,7 @@ func TestHookPipeline_EndToEnd(t *testing.T) {
 	// Isolate from host global config (which often has [enrichment] enabled on
 	// dev machines). This prevents the test from picking up real enrichment
 	// and re-tagging "auto-capture" → "implementation" (see known issue in resume).
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
+	testinfra.IsolateEnv(t)
 
 	ctx := context.Background()
 	vaultRoot := t.TempDir()

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 // TestIntegrationVaultResolutionCwdOverride proves end-to-end that two
@@ -18,12 +19,8 @@ import (
 // work/personal split scenario.
 func TestIntegrationVaultResolutionCwdOverride(t *testing.T) {
 	tmp := t.TempDir()
-	home := filepath.Join(tmp, "home")
-	if err := os.MkdirAll(home, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	env := testinfra.IsolateEnv(t)
+	home := env.Home
 
 	// Global config points at the "personal" vault.
 	personalVault := filepath.Join(tmp, "personal-vault")
@@ -108,12 +105,8 @@ func TestIntegrationVaultResolutionCwdOverride(t *testing.T) {
 // defensive guard against accidentally bound-to-nothing homes.
 func TestIntegrationVaultResolutionHomeBoundary(t *testing.T) {
 	tmp := t.TempDir()
-	home := filepath.Join(tmp, "home")
-	if err := os.MkdirAll(home, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	env := testinfra.IsolateEnv(t)
+	home := env.Home
 
 	globalVault := filepath.Join(tmp, "global-vault")
 	os.MkdirAll(globalVault, 0o755)

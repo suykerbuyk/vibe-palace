@@ -11,6 +11,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 // TestIntegrationInitFullFileset proves end-to-end that after a clean
@@ -21,12 +22,10 @@ import (
 //
 // Every file must parse as valid TOML.
 func TestIntegrationInitFullFileset(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	env := testinfra.IsolateEnv(t)
 
-	vaultDir := filepath.Join(home, "vault")
-	projectDir := filepath.Join(home, "code", "alpha")
+	vaultDir := filepath.Join(env.Home, "vault")
+	projectDir := filepath.Join(env.Home, "code", "alpha")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

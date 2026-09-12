@@ -13,6 +13,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/memory"
 	"github.com/suykerbuyk/vibe-palace/internal/memorytestutil"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 	"github.com/suykerbuyk/vibe-palace/internal/tools"
 )
 
@@ -115,8 +116,7 @@ func TestIntegration_MemoryFeature(t *testing.T) {
 		// dir and materialize the fixture at the dir NativeDirFromCwd resolves to.
 		// This exercises the full MCP path (cwd -> encoded native dir) rather than
 		// hand-injecting NativeDir, which the engine-level tests already cover.
-		home := t.TempDir()
-		t.Setenv("CLAUDE_HOME", home)
+		testinfra.IsolateEnv(t, testinfra.WithClaudeHome())
 		cwd := t.TempDir()
 		nativeDir, err := memory.NativeDirFromCwd(cwd)
 		if err != nil {

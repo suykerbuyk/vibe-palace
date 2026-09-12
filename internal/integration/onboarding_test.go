@@ -13,15 +13,15 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 // TestIntegrationInitToCheckPipeline proves the full init→check flow:
 // fresh init creates a config that vp check accepts as valid.
 func TestIntegrationInitToCheckPipeline(t *testing.T) {
 	tmp := t.TempDir()
-	configDir := filepath.Join(tmp, "config")
 	vaultDir := filepath.Join(tmp, "vault")
-	t.Setenv("XDG_CONFIG_HOME", configDir)
+	env := testinfra.IsolateEnv(t)
 
 	// Step 1: WriteGlobalConfig (simulates what vp init does).
 	configPath, err := storage.WriteGlobalConfig(vaultDir, true)
@@ -48,8 +48,12 @@ func TestIntegrationInitToCheckPipeline(t *testing.T) {
 		t.Errorf("HTTPPort = %d, want 7423 (default)", cfg.HTTPPort)
 	}
 
-	// Step 3: CheckConfig should pass.
-	_, _, r := check.CheckConfig()
+	// Step 3: CheckConfig should pass. CheckConfigAt(env.Home) is used
+	// instead of the bare CheckConfig() so this test resolves purely inside
+	// its isolated fixture: env.Home is itself the walk's boundary, so no
+	// cwd-local .vibe-palace.toml above the real test process's actual
+	// working directory can ever intervene.
+	_, _, r := check.CheckConfigAt(env.Home)
 	if r.Status != check.Pass {
 		t.Errorf("CheckConfig: expected Pass, got %v: %s", r.Status, r.Summary)
 	}
@@ -76,10 +80,10 @@ func TestIntegrationInitToCheckPipeline(t *testing.T) {
 // outdated config is detected, upgraded, and then passes staleness check.
 func TestIntegrationConfigUpgradePipeline(t *testing.T) {
 	tmp := t.TempDir()
-	configDir := filepath.Join(tmp, "config", "vibe-palace")
+	env := testinfra.IsolateEnv(t)
+	configDir := filepath.Join(env.XDGConfigHome, "vibe-palace")
 	os.MkdirAll(configDir, 0o755)
 	configPath := filepath.Join(configDir, "config.toml")
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "config"))
 
 	// Step 1: Write a deliberately outdated config (missing git_enabled).
 	outdated := `vault_path = "` + tmp + `"
@@ -169,11 +173,11 @@ overlap = 100
 // prevents vault git commands from executing, via the config→guard flow.
 func TestIntegrationGitGuardBlocksVaultCommands(t *testing.T) {
 	tmp := t.TempDir()
-	configDir := filepath.Join(tmp, "config", "vibe-palace")
+	env := testinfra.IsolateEnv(t)
+	configDir := filepath.Join(env.XDGConfigHome, "vibe-palace")
 	vaultDir := filepath.Join(tmp, "vault")
 	os.MkdirAll(configDir, 0o755)
 	os.MkdirAll(vaultDir, 0o755)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "config"))
 
 	// Write config with git_enabled = false.
 	content := `vault_path = "` + vaultDir + `"` + "\ngit_enabled = false\n"
@@ -268,11 +272,13 @@ func TestIntegrationTemplateSyncAndUpgradeConsistency(t *testing.T) {
 // TestIntegrationCheckCascadeWithMissingConfig proves the full check cascade
 // handles missing config gracefully with actionable messages.
 func TestIntegrationCheckCascadeWithMissingConfig(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmp)
+	env := testinfra.IsolateEnv(t)
 	// No config file exists.
 
-	_, _, r := check.CheckConfig()
+	// CheckConfigAt(env.Home), not the bare CheckConfig(), so this test
+	// resolves purely inside its isolated fixture rather than depending on
+	// whatever real directory the test process happens to be running from.
+	_, _, r := check.CheckConfigAt(env.Home)
 	if r.Status != check.Fail {
 		t.Fatalf("expected Fail for missing config, got %v", r.Status)
 	}

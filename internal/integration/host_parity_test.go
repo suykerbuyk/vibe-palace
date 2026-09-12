@@ -15,6 +15,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/hook"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 // highFrictionTranscript is a multi-signal friction fixture reused from the
@@ -125,9 +126,8 @@ func assertSharedMatrix(t *testing.T, vault *storage.Vault, fp structuralFootpri
 func TestIntegrationHostParityFootprint(t *testing.T) {
 	// Isolate from a parent Claude host's live session map so hostSessionID
 	// cannot resolve a real id and suppress the hook-less inline archive path.
-	t.Setenv("CLAUDE_HOME", t.TempDir())
-	// Isolate enrichment config that might re-tag on dev machines.
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	// Also isolates enrichment config that might re-tag on dev machines.
+	testinfra.IsolateEnv(t, testinfra.WithClaudeHome())
 
 	var grokFP, claudeFP structuralFootprint
 
@@ -434,8 +434,7 @@ func TestIntegrationHostParityFootprint(t *testing.T) {
 // omitted — a thin note is correct there, and the harness must not treat that
 // as a failure of defaults.
 func TestIntegrationHostParityNoAutoArchiveUnknownHost(t *testing.T) {
-	t.Setenv("CLAUDE_HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	testinfra.IsolateEnv(t, testinfra.WithClaudeHome())
 
 	h := newHarness(t, false)
 	h.registerAllTools(t)
