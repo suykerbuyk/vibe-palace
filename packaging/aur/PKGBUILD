@@ -1,6 +1,9 @@
 # Maintainer: John Suykerbuyk <john@syketech.com>
 pkgname=vibe-palace
-pkgver=0.1.0
+# pkgver's major must track internal/surface.MCPSurfaceVersion (the release
+# major, enforced by .github/workflows/release.yml) — bump it by hand here
+# when a new vN.x.y tag is cut; nothing else updates this file automatically.
+pkgver=5.0.0
 pkgrel=1
 pkgdesc="vibe-palace AI context engine"
 arch=('x86_64' 'aarch64')

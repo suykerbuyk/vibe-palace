@@ -91,7 +91,7 @@ diagnostic suite on the state you are about to load context from. Call
 `vp_check` (the MCP tool) with an **explicit** selector list:
 
 ```json
-{"checks": ["vault-filesystem", "stray-scaffolds", "surface-merge-driver", "resume-caps", "resume-refs", "vault-abs-paths", "template-drift", "writer-identity", "stale-mcp"]}
+{"checks": ["vault-filesystem", "stray-scaffolds", "surface-merge-driver", "resume-caps", "resume-refs", "vault-abs-paths", "template-drift", "writer-identity", "stale-mcp", "release-version"]}
 ```
 
 Name that list deliberately. Do **not** omit the argument, and do

@@ -190,7 +190,7 @@ vault-tooling epic. Do not stop at "merged":**
 2. `vp config sync` — prune any vault `Templates/` mirror the new binary's embedded corpus
    supersedes (the healthy state is no mirror at all; the embedded floor serves every template), then
    confirm no mirror is left pending a prune by calling `vp_check` (the MCP tool) with
-   `{"checks": ["vault-filesystem", "stray-scaffolds", "surface-merge-driver", "resume-caps", "resume-refs", "vault-abs-paths", "template-drift", "writer-identity", "stale-mcp"]}` — the host-agnostic
+   `{"checks": ["vault-filesystem", "stray-scaffolds", "surface-merge-driver", "resume-caps", "resume-refs", "vault-abs-paths", "template-drift", "writer-identity", "stale-mcp", "release-version"]}` — the host-agnostic
    half, and the first proof the rolled tooling reaches an agent at all rather than merely existing.
    `template-drift` is the row that verifies the sync took: no `mirror(s) pending a prune` may remain,
    while an operator's override of a built-in is reported `info` as kept on purpose and is expected. It

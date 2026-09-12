@@ -5,8 +5,16 @@ BINARY  := vp
 CMD     := ./cmd/$(BINARY)
 PREFIX  ?= $(HOME)/.local
 
-BASE_VERSION := 0.1.0
-VERSION      ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# SURFACE_MAJOR is the release major version: derived from MCPSurfaceVersion,
+# never hand-copied. The release.yml CI guard re-derives the same value from a
+# pushed tag and refuses a mismatch; this copy is for local `make release`.
+SURFACE_MAJOR := $(shell sed -n 's/^const MCPSurfaceVersion int = \([0-9]*\)$$/\1/p' internal/surface/version.go)
+
+# VERSION strips git describe's leading "v" so it matches goreleaser's own
+# {{.Version}} convention — left un-stripped, a `make install` binary and a
+# goreleaser-built release binary report the same commit's version in two
+# different shapes.
+VERSION      ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev)
 
 # DIRTY is derived from VERSION, never from a second git invocation. VERSION
 # above is the ONE place the working tree is inspected; `git diff --quiet` here
@@ -16,7 +24,7 @@ VERSION      ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo
 # that override rather than re-deriving behind it.
 DIRTY        := $(if $(findstring -dirty,$(VERSION)),true,false)
 
-LDFLAGS      := -X main.version=$(BASE_VERSION) \
+LDFLAGS      := -X main.version=$(VERSION) \
                 -X main.commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown) \
                 -X main.dirty=$(DIRTY) \
                 -X main.buildDate=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -229,6 +237,10 @@ uninstall: ## Remove installed binary and man pages from PREFIX
 ##@ Release
 .PHONY: release
 release: ## Tag-based release — build and publish to GitHub Releases
+	@case "$(VERSION)" in \
+		$(SURFACE_MAJOR).*) ;; \
+		*) echo "refusing release: tag major in VERSION=$(VERSION) disagrees with MCPSurfaceVersion $(SURFACE_MAJOR) — cut v$(SURFACE_MAJOR).x.y instead" >&2; exit 1 ;; \
+	esac
 	goreleaser release --clean
 
 .PHONY: snapshot

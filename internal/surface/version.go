@@ -28,9 +28,14 @@ import (
 )
 
 // MCPSurfaceVersion is the current MCP tool-surface schema version. It is a
-// hand-bumped monotonic integer, separate from the release version. Bump it
-// whenever the MCP tool surface changes in a way that affects what gets written
-// into the vault, so older binaries gate against vaults written by newer ones.
+// hand-bumped monotonic integer. Bump it whenever the MCP tool surface changes
+// in a way that affects what gets written into the vault, so older binaries
+// gate against vaults written by newer ones.
+//
+// It is ALSO the release major version, as of the versioning task filed
+// 2026-09-12: a bump here means the next cut git tag must be v<N>.0.0, enforced
+// by the `.github/workflows/release.yml` CI guard (and, as a local convenience
+// only, `make release`) and reported by `vp check --check release-version`.
 //
 // Baseline 1: fresh for vibe-palace (NOT inherited from vibe-vault's counter).
 // Bumped 1->2 once the vault-portability epic's write-path changes landed and

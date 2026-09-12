@@ -378,6 +378,10 @@ func gatherCheckResults() []check.Result {
 	// --- Stale MCP server image (advisory — make install is not enough). ---
 	results = append(results, check.CheckStaleMCP())
 
+	// --- Release version vs MCPSurfaceVersion (advisory here; the real gate
+	// is the release.yml CI guard on the pushed tag). ---
+	results = append(results, check.CheckReleaseVersion())
+
 	// --- Surface compatibility — last check, mirroring the runtime gate so
 	// the binary-vs-vault verdict reads as the closing line of the report. ---
 	//

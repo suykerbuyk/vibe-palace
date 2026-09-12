@@ -128,8 +128,8 @@ func ClaudePluginsDir() string {
 }
 
 // CacheInstallDir returns the Claude Code cache install directory for a stamp.
-// Prefer SurfaceStamp(version, commit) over the frozen product BASE_VERSION so
-// each rebuild can land a fresh cache path (Phase 0.5 / C2).
+// Prefer SurfaceStamp(version, commit) over the bare product version so each
+// rebuild can land a fresh cache path (Phase 0.5 / C2).
 func CacheInstallDir(stamp string) string {
 	return filepath.Join(ClaudePluginsDir(), "cache", MarketplaceName, pluginName, stamp)
 }
@@ -183,9 +183,10 @@ func ClaudeUserCommandsHealthy() bool {
 
 // SurfaceStamp returns a filesystem-safe identity for the Claude plugin cache
 // directory and plugin.json version field. The product version string alone is
-// not a refresh key: Makefile stamps main.version to a frozen BASE_VERSION
-// (0.1.0), so re-installs would always target the same cache path. Prefer the
-// build commit (ldflags main.commit), which changes every make install.
+// not a refresh key: two builds of the same tagged release share the same
+// main.version, so re-installs between them would target the same cache path.
+// Prefer the build commit (ldflags main.commit), which changes every make
+// install.
 //
 // Forms: "<version>-<commit>" when both are usable; otherwise whichever is
 // usable; "dev" as last resort. Path separators and spaces are replaced.

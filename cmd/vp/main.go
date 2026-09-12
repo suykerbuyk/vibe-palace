@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
@@ -23,6 +24,7 @@ var (
 
 func main() {
 	info := cli.BuildInfo{Version: version, Commit: commit, BuildDate: buildDate, Dirty: dirty}
+	check.BuildVersion = version
 	reg := cli.NewRegistry(info)
 	reg.SetPreRun(preRun)
 	registerAll(reg, info)

@@ -127,6 +127,9 @@ func TestRunSelectedSkipsWithoutVault(t *testing.T) {
 		if r.Name == "Stale MCP" {
 			continue // inspects this machine's process table, not the vault
 		}
+		if r.Name == "Release version" {
+			continue // inspects the running binary's own stamped version, not the vault
+		}
 		if r.Status != Skip {
 			t.Errorf("%s with no vault = %v, want Skip", r.Name, r.Status)
 		}
@@ -188,9 +191,9 @@ func TestProducersSkipContractNamesAreStable(t *testing.T) {
 	got := names(mustRunAll(t))
 	sort.Strings(got)
 	// Host surfaces may be Skip or present depending on $HOME; always one row.
-	want := []string{"Host surfaces", "Iteration headings", "Palace local-only", "Resume caps", "Resume refs",
-		"Stale MCP", "Stray scaffolds", "Surface", "Surface merge driver", "Template drift", "Vault abs paths",
-		"Vault filesystem", "Writer identity"}
+	want := []string{"Host surfaces", "Iteration headings", "Palace local-only", "Release version", "Resume caps",
+		"Resume refs", "Stale MCP", "Stray scaffolds", "Surface", "Surface merge driver", "Template drift",
+		"Vault abs paths", "Vault filesystem", "Writer identity"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("check row names = %v, want %v", got, want)
 	}

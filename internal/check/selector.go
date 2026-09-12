@@ -106,6 +106,9 @@ var Producers = map[string]func(vaultRoot string) []Result{
 	},
 	// stale-mcp inspects this machine's process table, not the vault.
 	"stale-mcp": func(string) []Result { return []Result{CheckStaleMCP()} },
+	// release-version inspects the running binary's own stamped version, not
+	// the vault.
+	"release-version": func(string) []Result { return []Result{CheckReleaseVersion()} },
 }
 
 // ProducerOrder is the DECLARED order the producers run in when the caller does
@@ -145,6 +148,7 @@ var ProducerOrder = []string{
 	"host-surfaces",
 	"writer-identity",
 	"stale-mcp",
+	"release-version",
 }
 
 // RunSelected runs the named checks against the supplied vault root and returns
