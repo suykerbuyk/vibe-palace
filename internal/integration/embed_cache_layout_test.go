@@ -19,6 +19,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultaudit"
 )
 
@@ -104,7 +105,7 @@ func TestIntegrationEmbedCacheLivesOutsideProjectTrees(t *testing.T) {
 	// notes-only project: that is the case it used to miss. It enumerates every
 	// project now, so it covers the notes-only one on every host — not only
 	// where someone searched it directly first.
-	h.addDrawer(t, "withstore", "general", "general", "unrelated widget inventory", "facts", "2026-09-10")
+	h.Seed(t, testinfra.WithDrawer("withstore", "general", "general", "unrelated widget inventory", "facts", "2026-09-10T10:00:00Z"))
 	if h.Engine.HasIndex("notesonly") {
 		t.Fatal("precondition: the engine must not have indexed notesonly yet")
 	}
@@ -199,7 +200,8 @@ func TestIntegrationPulledDeletionLeavesNoHusk(t *testing.T) {
 	// Host B: the harness root, with the operator's ignore shape.
 	vsGit(t, root, "init", "-q", "-b", "main")
 	ecWrite(t, root, ".gitignore", "palace/.local/\npalace/*/.local/\n.vibe-palace/\n")
-	stub := h.addDrawer(t, "stub", "general", "general", "stub drawer about pumps", "facts", "2026-09-09")
+	var stub storage.Drawer
+	h.Seed(t, testinfra.WithDrawerOut("stub", "general", "general", "stub drawer about pumps", "facts", "2026-09-09T10:00:00Z", &stub))
 	// A keeper, so the orphan reaper's zero-projects guard does not decline.
 	ecWrite(t, root, "Projects/keep/resume.md", "# keep\n")
 	ecGit(t, root, "add", "-A")
@@ -264,7 +266,8 @@ func TestIntegrationPulledDeletionLeavesNoHusk(t *testing.T) {
 	}
 
 	// --- New-layout leg -----------------------------------------------------
-	stub2 := h.addDrawer(t, "stub2", "general", "general", "stub2 drawer about valves", "facts", "2026-09-10")
+	var stub2 storage.Drawer
+	h.Seed(t, testinfra.WithDrawerOut("stub2", "general", "general", "stub2 drawer about valves", "facts", "2026-09-10T10:00:00Z", &stub2))
 	ecGit(t, root, "add", "-A")
 	ecGit(t, root, "commit", "-q", "-m", "add stub2")
 	ecGit(t, root, "push", "-q")
@@ -300,7 +303,8 @@ func TestIntegrationConcurrentSweepsConverge(t *testing.T) {
 
 	want := map[string][]byte{}
 	for _, p := range []string{"real1", "real2"} {
-		d := h.addDrawer(t, p, "general", "general", p+" drawer about compressors", "facts", "2026-09-10")
+		var d storage.Drawer
+		h.Seed(t, testinfra.WithDrawerOut(p, "general", "general", p+" drawer about compressors", "facts", "2026-09-10T10:00:00Z", &d))
 		h.seedProject(t, p)
 		want["palace/.local/embed-cache/"+p+"/"+d.ID+".vec"] = ecLegacyVector(t, h, p, d.ID, d.Content)
 	}

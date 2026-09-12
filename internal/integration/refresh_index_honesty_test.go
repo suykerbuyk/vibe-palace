@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 // TestRefreshIndexRefusesProjectWithNothingToRefresh is the defect test.
@@ -48,7 +50,7 @@ func TestRefreshIndexRefusesProjectWithNothingToRefresh(t *testing.T) {
 func TestRefreshIndexReportsCountsForARealRebuild(t *testing.T) {
 	h := newHarness(t, false)
 	h.registerAllTools(t)
-	h.addDrawer(t, "counted", "facts", "general", "the drawer body", "facts", "2026-08-18")
+	h.Seed(t, testinfra.WithDrawer("counted", "facts", "general", "the drawer body", "facts", "2026-08-18T10:00:00Z"))
 
 	text, isErr := h.callToolRaw(t, "vp_refresh_index", map[string]any{
 		"project": "counted",

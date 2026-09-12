@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 // TestTaskLifecycle exercises create → list → get → update_status → retire → verify in done.
@@ -140,8 +142,10 @@ func TestProjectDiscovery(t *testing.T) {
 	h.registerAllTools(t)
 
 	// Create some drawers to establish project palace dirs.
-	h.addDrawer(t, "alpha", "memory", "notes", "alpha content", "long-term", "2026-01-01")
-	h.addDrawer(t, "beta", "memory", "notes", "beta content", "long-term", "2026-01-01")
+	h.Seed(t,
+		testinfra.WithDrawer("alpha", "memory", "notes", "alpha content", "long-term", "2026-01-01T10:00:00Z"),
+		testinfra.WithDrawer("beta", "memory", "notes", "beta content", "long-term", "2026-01-01T10:00:00Z"),
+	)
 
 	raw := h.callTool(t, "vp_list_projects", map[string]any{})
 	if !strings.Contains(raw, "alpha") || !strings.Contains(raw, "beta") {
@@ -235,8 +239,10 @@ func TestRefreshIndex(t *testing.T) {
 	h.registerAllTools(t)
 
 	// Add drawers (these bypass the index).
-	h.addDrawer(t, "test-proj", "memory", "notes", "golang concurrency patterns", "long-term", "2026-01-01")
-	h.addDrawer(t, "test-proj", "memory", "notes", "rust ownership model", "long-term", "2026-01-02")
+	h.Seed(t,
+		testinfra.WithDrawer("test-proj", "memory", "notes", "golang concurrency patterns", "long-term", "2026-01-01T10:00:00Z"),
+		testinfra.WithDrawer("test-proj", "memory", "notes", "rust ownership model", "long-term", "2026-01-02T10:00:00Z"),
+	)
 
 	// Refresh index.
 	raw := h.callTool(t, "vp_refresh_index", map[string]any{

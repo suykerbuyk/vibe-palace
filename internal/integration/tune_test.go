@@ -11,6 +11,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/llm"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 type tuneMock struct {
@@ -34,26 +35,28 @@ func TestIntegrationTuneDetectsAndProposes(t *testing.T) {
 	h := newHarness(t, false)
 
 	// 4 "general" drawers with kubernetes/docker content (should be devops).
-	h.addDrawer(t, "proj", "proj", "general",
-		"Set up the kubernetes cluster for deployment using docker compose",
-		"facts", "2026-04-10")
-	h.addDrawer(t, "proj", "proj", "general",
-		"Configure kubernetes pods and docker containers for CI/CD pipeline",
-		"facts", "2026-04-10")
-	h.addDrawer(t, "proj", "proj", "general",
-		"Deploy kubernetes services with docker and manage the pipeline",
-		"facts", "2026-04-10")
-	h.addDrawer(t, "proj", "proj", "general",
-		"Monitor kubernetes deployments across docker environments in the pipeline",
-		"facts", "2026-04-10")
+	h.Seed(t,
+		testinfra.WithDrawer("proj", "proj", "general",
+			"Set up the kubernetes cluster for deployment using docker compose",
+			"facts", "2026-04-10T10:00:00Z"),
+		testinfra.WithDrawer("proj", "proj", "general",
+			"Configure kubernetes pods and docker containers for CI/CD pipeline",
+			"facts", "2026-04-10T10:00:00Z"),
+		testinfra.WithDrawer("proj", "proj", "general",
+			"Deploy kubernetes services with docker and manage the pipeline",
+			"facts", "2026-04-10T10:00:00Z"),
+		testinfra.WithDrawer("proj", "proj", "general",
+			"Monitor kubernetes deployments across docker environments in the pipeline",
+			"facts", "2026-04-10T10:00:00Z"),
 
-	// 2 correctly classified drawers.
-	h.addDrawer(t, "proj", "proj", "testing",
-		"Run the test spec with mock fixtures for coverage",
-		"facts", "2026-04-10")
-	h.addDrawer(t, "proj", "proj", "api",
-		"Implement the graphql endpoint with restful fallback",
-		"facts", "2026-04-10")
+		// 2 correctly classified drawers.
+		testinfra.WithDrawer("proj", "proj", "testing",
+			"Run the test spec with mock fixtures for coverage",
+			"facts", "2026-04-10T10:00:00Z"),
+		testinfra.WithDrawer("proj", "proj", "api",
+			"Implement the graphql endpoint with restful fallback",
+			"facts", "2026-04-10T10:00:00Z"),
+	)
 
 	rc := buildClassifier(h.Config)
 	opts := palace.TuneOptions{Project: "proj", MaxSamples: 50}
@@ -113,18 +116,20 @@ func TestIntegrationTuneApplyImproves(t *testing.T) {
 
 	// 4 "general" drawers with devops content that has existing keywords
 	// (docker is 0.6 in devops, deploy is 0.6).
-	h.addDrawer(t, "proj", "proj", "general",
-		"The docker deploy pipeline handles kubernetes orchestration",
-		"facts", "2026-04-10")
-	h.addDrawer(t, "proj", "proj", "general",
-		"Use docker to deploy services to the kubernetes cluster",
-		"facts", "2026-04-10")
-	h.addDrawer(t, "proj", "proj", "general",
-		"docker and deploy workflows for kubernetes infrastructure",
-		"facts", "2026-04-10")
-	h.addDrawer(t, "proj", "proj", "general",
-		"Configure docker and deploy automation with kubernetes",
-		"facts", "2026-04-10")
+	h.Seed(t,
+		testinfra.WithDrawer("proj", "proj", "general",
+			"The docker deploy pipeline handles kubernetes orchestration",
+			"facts", "2026-04-10T10:00:00Z"),
+		testinfra.WithDrawer("proj", "proj", "general",
+			"Use docker to deploy services to the kubernetes cluster",
+			"facts", "2026-04-10T10:00:00Z"),
+		testinfra.WithDrawer("proj", "proj", "general",
+			"docker and deploy workflows for kubernetes infrastructure",
+			"facts", "2026-04-10T10:00:00Z"),
+		testinfra.WithDrawer("proj", "proj", "general",
+			"Configure docker and deploy automation with kubernetes",
+			"facts", "2026-04-10T10:00:00Z"),
+	)
 
 	rc := buildClassifier(h.Config)
 	opts := palace.TuneOptions{Project: "proj", MaxSamples: 50}
@@ -199,11 +204,13 @@ func TestIntegrationTuneApplyImproves(t *testing.T) {
 func TestIntegrationTuneEstimate(t *testing.T) {
 	h := newHarness(t, false)
 
+	var opts []testinfra.SeedOption
 	for i := range 5 {
-		h.addDrawer(t, "proj", "proj", "general",
+		opts = append(opts, testinfra.WithDrawer("proj", "proj", "general",
 			"Some unclassified content "+string(rune('A'+i)),
-			"facts", "2026-04-10")
+			"facts", "2026-04-10T10:00:00Z"))
 	}
+	h.Seed(t, opts...)
 
 	rc := buildClassifier(h.Config)
 	samples, err := palace.SelectSamples(h.Vault, rc, palace.TuneOptions{Project: "proj"})

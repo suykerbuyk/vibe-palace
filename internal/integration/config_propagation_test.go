@@ -9,6 +9,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 // TestIntegrationConfigBoostValues proves that search boost config values
@@ -24,8 +25,10 @@ func TestIntegrationConfigBoostValues(t *testing.T) {
 
 	// Two identical drawers in different wings.
 	content := "Machine learning model training with gradient descent optimization"
-	h.addDrawer(t, "proj", "target-wing", "room", content, "facts", "2026-04-01")
-	h.addDrawer(t, "proj", "other-wing", "room", content, "facts", "2026-04-01")
+	h.Seed(t,
+		testinfra.WithDrawer("proj", "target-wing", "room", content, "facts", "2026-04-01T10:00:00Z"),
+		testinfra.WithDrawer("proj", "other-wing", "room", content, "facts", "2026-04-01T10:00:00Z"),
+	)
 
 	if _, err := h.Engine.Rebuild(ctx, "proj"); err != nil {
 		t.Fatal(err)
@@ -58,8 +61,10 @@ func TestIntegrationConfigBoostValues(t *testing.T) {
 		c.BoostRoom = 0.0
 	})
 
-	h2.addDrawer(t, "proj", "wing-a", "room", content, "facts", "2026-04-01")
-	h2.addDrawer(t, "proj", "wing-b", "room", content, "facts", "2026-04-01")
+	h2.Seed(t,
+		testinfra.WithDrawer("proj", "wing-a", "room", content, "facts", "2026-04-01T10:00:00Z"),
+		testinfra.WithDrawer("proj", "wing-b", "room", content, "facts", "2026-04-01T10:00:00Z"),
+	)
 
 	if _, err := h2.Engine.Rebuild(ctx, "proj"); err != nil {
 		t.Fatal(err)
@@ -125,10 +130,12 @@ func TestIntegrationConfigSearchLimit(t *testing.T) {
 	ctx := context.Background()
 
 	// Add 10 drawers.
+	var opts []testinfra.SeedOption
 	for i := range 10 {
-		h.addDrawer(t, "proj", "wing", "room",
-			"unique content item number "+string(rune('A'+i)), "facts", "2026-04-01")
+		opts = append(opts, testinfra.WithDrawer("proj", "wing", "room",
+			"unique content item number "+string(rune('A'+i)), "facts", "2026-04-01T10:00:00Z"))
 	}
+	h.Seed(t, opts...)
 
 	if _, err := h.Engine.Rebuild(ctx, "proj"); err != nil {
 		t.Fatal(err)

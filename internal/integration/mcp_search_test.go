@@ -11,6 +11,7 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/suykerbuyk/vibe-palace/internal/search"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 // TestIntegrationMCPSearchEndToEnd proves the full MCP protocol path:
@@ -21,9 +22,11 @@ func TestIntegrationMCPSearchEndToEnd(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed content.
-	h.addDrawer(t, "proj", "dev", "go", "Go goroutines and channels enable lightweight concurrency", "facts", "2026-04-01")
-	h.addDrawer(t, "proj", "dev", "python", "Python asyncio uses async/await for cooperative multitasking", "facts", "2026-04-01")
-	h.addDrawer(t, "proj", "cooking", "italian", "Fresh pasta is made from eggs and tipo 00 flour", "facts", "2026-04-01")
+	h.Seed(t,
+		testinfra.WithDrawer("proj", "dev", "go", "Go goroutines and channels enable lightweight concurrency", "facts", "2026-04-01T10:00:00Z"),
+		testinfra.WithDrawer("proj", "dev", "python", "Python asyncio uses async/await for cooperative multitasking", "facts", "2026-04-01T10:00:00Z"),
+		testinfra.WithDrawer("proj", "cooking", "italian", "Fresh pasta is made from eggs and tipo 00 flour", "facts", "2026-04-01T10:00:00Z"),
+	)
 
 	if _, err := h.Engine.Rebuild(ctx, "proj"); err != nil {
 		t.Fatal(err)

@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 // resumeCASFixture is the seeded resume.md this test contends on.
@@ -79,13 +81,8 @@ func TestIntegration_UpdateResumeStaleWriteRefused(t *testing.T) {
 		resumePath = "Projects/demo/resume.md"
 	)
 
-	h := newHarness(t, false)
-	h.registerAllTools(t)
-	h.initMCP(t)
+	h := &testHarness{testinfra.New(t, testinfra.WithResume(project, resumeCASFixture))}
 
-	if err := h.Vault.WriteResume(project, resumeCASFixture, ""); err != nil {
-		t.Fatalf("seed resume.md: %v", err)
-	}
 	resumeFile, err := h.Vault.ResumeFile(project)
 	if err != nil {
 		t.Fatalf("ResumeFile: %v", err)

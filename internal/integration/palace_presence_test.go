@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 	"github.com/suykerbuyk/vibe-palace/internal/tools"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultaudit"
 )
@@ -46,7 +47,7 @@ func TestIntegrationLocalOnlyPalaceDirIsNotAStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A real store in both trees.
-	h.addDrawer(t, "real", "general", "general", "a real drawer about widgets", "facts", "2026-09-10")
+	h.Seed(t, testinfra.WithDrawer("real", "general", "general", "a real drawer about widgets", "facts", "2026-09-10T10:00:00Z"))
 	h.seedProject(t, "real")
 	// A notes-only project: history, no palace/ store.
 	write("Projects/notesonly/sessions/2026-09-10-aaaa0000-01.md",

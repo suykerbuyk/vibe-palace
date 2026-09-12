@@ -8,20 +8,23 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 func TestIntegrationAuditDetectsMismatches(t *testing.T) {
 	h := newHarness(t, false)
 
 	// kubernetes content in wrong room (api instead of devops).
-	h.addDrawer(t, "proj", "proj", "api",
-		"Set up the kubernetes cluster for deployment.",
-		"facts", "2026-04-10")
+	h.Seed(t,
+		testinfra.WithDrawer("proj", "proj", "api",
+			"Set up the kubernetes cluster for deployment.",
+			"facts", "2026-04-10T10:00:00Z"),
 
-	// Correctly classified content.
-	h.addDrawer(t, "proj", "proj", "data",
-		"Run the SQL migration on the production database.",
-		"facts", "2026-04-10")
+		// Correctly classified content.
+		testinfra.WithDrawer("proj", "proj", "data",
+			"Run the SQL migration on the production database.",
+			"facts", "2026-04-10T10:00:00Z"),
+	)
 
 	rc := buildClassifier(h.Config)
 	report, err := palace.RunAudit(h.Vault, rc, palace.AuditOptions{
@@ -51,9 +54,9 @@ func TestIntegrationAuditApplyFixes(t *testing.T) {
 	h := newHarness(t, false)
 
 	// Misclassified: kubernetes content in api room.
-	h.addDrawer(t, "proj", "proj", "api",
+	h.Seed(t, testinfra.WithDrawer("proj", "proj", "api",
 		"Set up the kubernetes cluster for deployment.",
-		"facts", "2026-04-10")
+		"facts", "2026-04-10T10:00:00Z"))
 
 	rc := buildClassifier(h.Config)
 	report, err := palace.RunAudit(h.Vault, rc, palace.AuditOptions{Project: "proj"})
@@ -104,9 +107,9 @@ func TestIntegrationAuditWithScoringOverrides(t *testing.T) {
 	})
 
 	// Content that matches the new "ml" room, placed in "general".
-	h.addDrawer(t, "proj", "proj", "general",
+	h.Seed(t, testinfra.WithDrawer("proj", "proj", "general",
 		"train the neural network transformer model",
-		"facts", "2026-04-10")
+		"facts", "2026-04-10T10:00:00Z"))
 
 	rc := buildClassifier(h.Config)
 	report, err := palace.RunAudit(h.Vault, rc, palace.AuditOptions{Project: "proj"})
@@ -125,9 +128,9 @@ func TestIntegrationAuditWithScoringOverrides(t *testing.T) {
 func TestIntegrationAuditKeywordCoverage(t *testing.T) {
 	h := newHarness(t, false)
 
-	h.addDrawer(t, "proj", "proj", "devops",
+	h.Seed(t, testinfra.WithDrawer("proj", "proj", "devops",
 		"deploy the kubernetes cluster using terraform and ansible",
-		"facts", "2026-04-10")
+		"facts", "2026-04-10T10:00:00Z"))
 
 	rc := buildClassifier(h.Config)
 	report, err := palace.RunAudit(h.Vault, rc, palace.AuditOptions{Project: "proj"})

@@ -81,10 +81,6 @@
       "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot move into a _test.go — the same shape as cli.Registry.Each above. It reports which registered tools carry an mcp.Tool.ReadOnlyWhen predicate (the param-aware surface gate), and its sole caller is internal/tools TestParamAwareToolNamesMatchRegistry, which pins that set against the declared tools.ParamAwareToolNames. The pin has to live in internal/tools because that is where the declaration and the tool constructors are, and Go forbids importing another package's _test.go, so the accessor is FORCED into non-test code. It is deliberately not on ToolInfo: ToolInfo is a wire payload (vp_manual serves it) and a server-side gate predicate is not part of the callable surface. The set of tools a stale binary will admit is security-relevant, so it must be pinned rather than left to a struct literal nobody reviews. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — test-only intent is authorial intent no parse recovers; this reason declares it and the baseline ratchet enforces it."
     },
     {
-      "id": "uninvoked memorytestutil.WriteNativeMemoryFixture",
-      "reason": "TEST-ONLY BY DESIGN, cross-package (7 callers across 5 packages) so it cannot live in a _test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — test-only intent declared here, enforced by the baseline ratchet."
-    },
-    {
       "id": "uninvoked palace.CompressBatch",
       "reason": "REAL FINDING, owned by task aaak-compression-subsystem-unreachable. It is the ONLY non-test caller of palace.Compress, so with it dead the ENTIRE AAAK compression subsystem is unreachable from production code (Compress, EntityRegistry, NewEntityRegistry, detectEntities, AAKResult, DrawerMetadata). AAAK is a named architectural pillar — package doc, doc/ARCHITECTURE.md, PRD Task 6.3 ('compact digests for context loading') — and nothing produces or consumes a digest. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — the owning task's DECISION (205) was to PARK the subsystem: keep the code, stop the docs claiming it runs. That park is authorial intent no parse recovers; this entry declares it, and the baseline ratchet (Baseline.Diff + TestSourceAuditGate: the baseline may only SHRINK) enforces it mechanically — reaping AAAK makes this entry go stale and fails the build. Do not reap; do not remove this entry."
     },
@@ -149,10 +145,6 @@
       "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Relocated verbatim from internal/integration/helpers_test.go's unexported (*testHarness).addDrawer by task test-infra-relocate-harness-to-testinfra-package. Takes *testing.T, so by design its only caller is a test file: internal/integration/helpers_test.go's addDrawer forwarding shim. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
     },
     {
-      "id": "uninvoked testinfra.TestHarness.CallTool",
-      "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Relocated verbatim from internal/integration/helpers_test.go's unexported (*testHarness).callTool by task test-infra-relocate-harness-to-testinfra-package. Takes *testing.T, so by design its only caller is a test file: internal/integration/helpers_test.go's callTool forwarding shim (its own non-test call OUT to CallToolRaw does not clear this finding, which is about incoming calls). Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
-    },
-    {
       "id": "uninvoked testinfra.TestHarness.CallToolStdio",
       "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Relocated verbatim from internal/integration/helpers_test.go's unexported (*testHarness).callToolStdio by task test-infra-relocate-harness-to-testinfra-package. Takes *testing.T, so by design its only caller is a test file: internal/integration/helpers_test.go's callToolStdio forwarding shim. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
     },
@@ -161,16 +153,40 @@
       "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. A NEW accessor (not a relocation), added by task test-infra-relocate-harness-to-testinfra-package because the field it reads (mcpReady) is unexported outside this package: internal/integration/learnings_roundtrip_test.go and internal/integration/resource_roundtrip_test.go both used to read h.mcpReady directly and were fixed to call h.MCPReady() instead once the field moved into TestHarness. Those two test files are its only callers today. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
     },
     {
-      "id": "uninvoked testinfra.TestHarness.RegisterAllTools",
-      "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Relocated verbatim from internal/integration/helpers_test.go's unexported (*testHarness).registerAllTools by task test-infra-relocate-harness-to-testinfra-package. Takes *testing.T, so by design its only caller is a test file: internal/integration/helpers_test.go's registerAllTools forwarding shim. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
-    },
-    {
-      "id": "uninvoked testinfra.TestHarness.SeedProject",
-      "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Relocated verbatim from internal/integration/helpers_test.go's unexported (*testHarness).seedProject by task test-infra-relocate-harness-to-testinfra-package. Takes *testing.T, so by design its only caller is a test file: internal/integration/helpers_test.go's seedProject forwarding shim. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
+      "id": "uninvoked testinfra.WithCapturedSession",
+      "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Added by task test-infra-declarative-seeding-ephemeral-vault as the MCP lane of the New/Seed declarative seeder (SeedOption), wrapping h.CallTool(t, \"vp_capture_session\", args) so schema validation and dispatch run exactly as they do in production — deliberately not folded into the storage-direct WithSession, since the two exercise materially different code paths. It returns its result via an out *string parameter (a plain SeedOption func has no other way for a value to come back through), analogous to WithDrawerOut below. By design every caller is a test file: internal/integration/tool_coverage_test.go, room_scoring_test.go, friction_test.go, host_parity_test.go, journey_new_project_test.go, session_pipeline_test.go, and this package's own seed_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
     },
     {
       "id": "uninvoked testinfra.WithClaudeHome",
       "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Added alongside testinfra.IsolateEnv by task test-infra-shared-env-isolation-fixture as its CLAUDE_HOME-isolating EnvOption, for tests exercising Claude-host session-map or cwd-encoded native-dir resolution. Returns an EnvOption (a func(*Env, *testing.T)), so by design it is only ever passed to IsolateEnv from a test file: internal/integration/memory_test.go and host_parity_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
+    },
+    {
+      "id": "uninvoked testinfra.WithDrawer",
+      "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Added by task test-infra-declarative-seeding-ephemeral-vault as the singular convenience over WithDrawers — still routed through the same batched storage.AppendDrawers flush, never the O(N²) AppendDrawer wrapper — replacing the mechanical one-drawer addDrawer call sites across internal/integration (tune_test.go, storage_search_test.go, refresh_index_honesty_test.go, tools_lifecycle_test.go, config_propagation_test.go, discover_test.go, palace_presence_test.go, lazy_startup_test.go, mcp_search_test.go, audit_test.go, tool_coverage_test.go, embed_cache_layout_test.go, room_scoring_test.go) plus this package's own seed_test.go. By design every caller is a test file. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
+    },
+    {
+      "id": "uninvoked testinfra.WithDrawerOut",
+      "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Added by task test-infra-declarative-seeding-ephemeral-vault for the 5 call sites (2 files: embed_cache_layout_test.go, room_scoring_test.go) that need the written storage.Drawer back — its ID computed directly via storage.DrawerID(wing, content), the SAME exported function storage.AppendDrawers itself calls internally to mint each drawer's ID, so the two are provably identical rather than merely similar; no ListDrawers re-scan is needed. By design every caller is a test file, including this package's own seed_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
+    },
+    {
+      "id": "uninvoked testinfra.WithDrawers",
+      "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Added by task test-infra-declarative-seeding-ephemeral-vault as the batch entry point over storage.AppendDrawers (deliberately never the O(N²) AppendDrawer n=1 wrapper), batched per (project, wing, room) group and flushed once at the end of the enclosing New/Seed call. By design every caller is a test file, including this package's own seed_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
+    },
+    {
+      "id": "uninvoked testinfra.WithMemory",
+      "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Added by task test-infra-declarative-seeding-ephemeral-vault as the storage-direct lane for a project's own memory store (Vault.MemoryDir), parameterized by project and content in a way memorytestutil.WriteNativeMemoryFixture's dir-only, hardcoded-4-file signature cannot be; its no-args form still delegates to that fixture for the canonical shape, preserving it as the source of truth. Its only caller today is this package's own seed_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
+    },
+    {
+      "id": "uninvoked testinfra.WithProject",
+      "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Added by task test-infra-declarative-seeding-ephemeral-vault as the thin SeedOption wrapper over TestHarness.SeedProject, giving every other option in the same New/Seed call a default project to target. By design every caller is a test file, including this package's own seed_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
+    },
+    {
+      "id": "uninvoked testinfra.WithResume",
+      "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Added by task test-infra-declarative-seeding-ephemeral-vault as the storage-direct lane over Vault.WriteResume, replacing the bare h.Vault.WriteResume(...) seed calls in internal/integration/resume_cas_test.go and scopetoken_writeback_test.go. By design every caller is a test file, including this package's own seed_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
+    },
+    {
+      "id": "uninvoked testinfra.WithSession",
+      "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Added by task test-infra-declarative-seeding-ephemeral-vault as the storage-direct lane (wrapping capture.WriteSession) alongside the MCP-lane WithCapturedSession, so a test declares which seeding lane it means instead of blurring the two — the task's own 'declare the seeding lane' requirement. Its only caller today is this package's own seed_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
     },
     {
       "id": "uninvoked zed.ListThreadIDs",

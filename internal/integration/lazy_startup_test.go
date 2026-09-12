@@ -14,6 +14,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 // countingLazyEmbedder returns a LazyEmbedder over a MockEmbedder, plus the
@@ -121,7 +122,7 @@ func TestIntegration_HandshakeDoesNotConstructEmbedder(t *testing.T) {
 	// NON-VACUITY: the count is 0 above because nothing needed a vector, not
 	// because the counter is dead. The first search must force construction —
 	// exactly once — and it must actually work.
-	h.addDrawer(t, "proj", "dev", "go", "goroutines are cheap", "facts", "2026-04-01")
+	h.Seed(t, testinfra.WithDrawer("proj", "dev", "go", "goroutines are cheap", "facts", "2026-04-01T10:00:00Z"))
 
 	h.callTool(t, "vp_search", map[string]any{
 		"project": "proj",
@@ -180,8 +181,10 @@ func TestIntegration_ColdSearchBuildsIndexLazily(t *testing.T) {
 		h.initMCP(t)
 
 		// Drawers on disk, and NOTHING else. No Rebuild, no IndexDrawer(s).
-		h.addDrawer(t, "proj", "dev", "go", goContent, "facts", "2026-04-01")
-		h.addDrawer(t, "proj", "cooking", "italian", pastaContent, "facts", "2026-04-01")
+		h.Seed(t,
+			testinfra.WithDrawer("proj", "dev", "go", goContent, "facts", "2026-04-01T10:00:00Z"),
+			testinfra.WithDrawer("proj", "cooking", "italian", pastaContent, "facts", "2026-04-01T10:00:00Z"),
+		)
 
 		raw := h.callTool(t, "vp_search", map[string]any{
 			"project": "proj",
@@ -235,8 +238,10 @@ func TestIntegration_ColdSearchBuildsIndexLazily(t *testing.T) {
 		h.registerAllTools(t)
 		h.initMCP(t)
 
-		h.addDrawer(t, "alpha", "dev", "go", goContent, "facts", "2026-04-01")
-		h.addDrawer(t, "beta", "cooking", "italian", pastaContent, "facts", "2026-04-01")
+		h.Seed(t,
+			testinfra.WithDrawer("alpha", "dev", "go", goContent, "facts", "2026-04-01T10:00:00Z"),
+			testinfra.WithDrawer("beta", "cooking", "italian", pastaContent, "facts", "2026-04-01T10:00:00Z"),
+		)
 
 		raw := h.callTool(t, "vp_search_cross_project", map[string]any{
 			"query": pastaContent,

@@ -432,7 +432,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 
 	"vp_list_projects": {
 		build: func(t *testing.T, h *testHarness) any {
-			h.addDrawer(t, "cov-listproj", "memory", "notes", "content", "long-term", "2026-01-01")
+			h.Seed(t, testinfra.WithDrawer("cov-listproj", "memory", "notes", "content", "long-term", "2026-01-01T10:00:00Z"))
 			return map[string]any{}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {
@@ -576,7 +576,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 
 	"vp_palace_status": {
 		build: func(t *testing.T, h *testHarness) any {
-			h.addDrawer(t, "cov-palacestatus", "w1", "r1", "content", "facts", "2026-01-01")
+			h.Seed(t, testinfra.WithDrawer("cov-palacestatus", "w1", "r1", "content", "facts", "2026-01-01T10:00:00Z"))
 			return map[string]any{"project": "cov-palacestatus"}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {
@@ -592,8 +592,8 @@ var toolCoverageFixtures = map[string]toolFixture{
 
 	"vp_list_wings": {
 		build: func(t *testing.T, h *testHarness) any {
-			h.addDrawer(t, "cov-listwings", "wing-a", "r", "content a", "facts", "2026-01-01")
-			h.addDrawer(t, "cov-listwings", "wing-b", "r", "content b", "facts", "2026-01-01")
+			h.Seed(t, testinfra.WithDrawer("cov-listwings", "wing-a", "r", "content a", "facts", "2026-01-01T10:00:00Z"))
+			h.Seed(t, testinfra.WithDrawer("cov-listwings", "wing-b", "r", "content b", "facts", "2026-01-01T10:00:00Z"))
 			return map[string]any{"project": "cov-listwings"}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {
@@ -615,8 +615,8 @@ var toolCoverageFixtures = map[string]toolFixture{
 
 	"vp_list_rooms": {
 		build: func(t *testing.T, h *testHarness) any {
-			h.addDrawer(t, "cov-listrooms", "w", "room-a", "content a", "facts", "2026-01-01")
-			h.addDrawer(t, "cov-listrooms", "w", "room-b", "content b", "facts", "2026-01-01")
+			h.Seed(t, testinfra.WithDrawer("cov-listrooms", "w", "room-a", "content a", "facts", "2026-01-01T10:00:00Z"))
+			h.Seed(t, testinfra.WithDrawer("cov-listrooms", "w", "room-b", "content b", "facts", "2026-01-01T10:00:00Z"))
 			return map[string]any{"project": "cov-listrooms", "wing": "w"}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {
@@ -640,8 +640,8 @@ var toolCoverageFixtures = map[string]toolFixture{
 
 	"vp_find_tunnels": {
 		build: func(t *testing.T, h *testHarness) any {
-			h.addDrawer(t, "cov-tunnels", "wing-a", "shared", "content a", "facts", "2026-01-01")
-			h.addDrawer(t, "cov-tunnels", "wing-b", "shared", "content b", "facts", "2026-01-01")
+			h.Seed(t, testinfra.WithDrawer("cov-tunnels", "wing-a", "shared", "content a", "facts", "2026-01-01T10:00:00Z"))
+			h.Seed(t, testinfra.WithDrawer("cov-tunnels", "wing-b", "shared", "content b", "facts", "2026-01-01T10:00:00Z"))
 			return map[string]any{"project": "cov-tunnels"}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {
@@ -667,8 +667,8 @@ var toolCoverageFixtures = map[string]toolFixture{
 
 	"vp_traverse": {
 		build: func(t *testing.T, h *testHarness) any {
-			h.addDrawer(t, "cov-traverse", "wing-a", "shared", "content a", "facts", "2026-01-01")
-			h.addDrawer(t, "cov-traverse", "wing-b", "shared", "content b", "facts", "2026-01-01")
+			h.Seed(t, testinfra.WithDrawer("cov-traverse", "wing-a", "shared", "content a", "facts", "2026-01-01T10:00:00Z"))
+			h.Seed(t, testinfra.WithDrawer("cov-traverse", "wing-b", "shared", "content b", "facts", "2026-01-01T10:00:00Z"))
 			return map[string]any{"project": "cov-traverse", "start": "wing-a/shared", "max_hops": 3}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {
@@ -919,7 +919,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 
 	"vp_search": {
 		build: func(t *testing.T, h *testHarness) any {
-			h.addDrawer(t, "cov-search", "w", "r", "alpha bravo charlie unique-marker", "facts", "2026-01-01")
+			h.Seed(t, testinfra.WithDrawer("cov-search", "w", "r", "alpha bravo charlie unique-marker", "facts", "2026-01-01T10:00:00Z"))
 			return map[string]any{"project": "cov-search", "query": "alpha bravo charlie unique-marker"}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {
@@ -941,7 +941,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 
 	"vp_search_cross_project": {
 		build: func(t *testing.T, h *testHarness) any {
-			h.addDrawer(t, "cov-crosssearch", "w", "r", "gearbox bearing drivetrain unique-marker", "facts", "2026-01-01")
+			h.Seed(t, testinfra.WithDrawer("cov-crosssearch", "w", "r", "gearbox bearing drivetrain unique-marker", "facts", "2026-01-01T10:00:00Z"))
 			return map[string]any{"query": "gearbox bearing drivetrain unique-marker"}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {
@@ -962,10 +962,10 @@ var toolCoverageFixtures = map[string]toolFixture{
 
 	"vp_search_sessions": {
 		build: func(t *testing.T, h *testHarness) any {
-			h.callTool(t, "vp_capture_session", map[string]any{
+			h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 				"project": "cov-searchsessions", "summary": "a distinctive coverage summary",
 				"tag": "planning", "enrich": false,
-			})
+			}, nil))
 			return map[string]any{"project": "cov-searchsessions", "query": "distinctive coverage summary"}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {
@@ -986,9 +986,9 @@ var toolCoverageFixtures = map[string]toolFixture{
 
 	"vp_get_friction_trends": {
 		build: func(t *testing.T, h *testHarness) any {
-			h.callTool(t, "vp_capture_session", map[string]any{
+			h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 				"project": "cov-friction", "summary": "session for friction trend coverage", "enrich": false,
-			})
+			}, nil))
 			return map[string]any{"project": "cov-friction"}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {
@@ -1039,11 +1039,12 @@ var toolCoverageFixtures = map[string]toolFixture{
 
 	"vp_get_session_detail": {
 		build: func(t *testing.T, h *testHarness) any {
-			raw := h.callTool(t, "vp_capture_session", map[string]any{
+			var raw string
+			h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 				"project": "cov-sessiondetail", "summary": "detail coverage session",
 				"transcript": "## Human\nHello.\n## Assistant\nHi there — a distinctive marker.\n",
 				"enrich":     false,
-			})
+			}, &raw))
 			var cap struct {
 				SessionID string `json:"session_id"`
 			}
@@ -1075,9 +1076,9 @@ var toolCoverageFixtures = map[string]toolFixture{
 
 	"vp_get_effectiveness": {
 		build: func(t *testing.T, h *testHarness) any {
-			h.callTool(t, "vp_capture_session", map[string]any{
+			h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 				"project": "cov-effectiveness", "summary": "effectiveness coverage session", "enrich": false,
-			})
+			}, nil))
 			return map[string]any{"project": "cov-effectiveness"}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {
@@ -1093,9 +1094,9 @@ var toolCoverageFixtures = map[string]toolFixture{
 
 	"vp_get_project_context": {
 		build: func(t *testing.T, h *testHarness) any {
-			h.callTool(t, "vp_capture_session", map[string]any{
+			h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 				"project": "cov-projectcontext", "summary": "project context coverage session", "enrich": false,
-			})
+			}, nil))
 			return map[string]any{"project": "cov-projectcontext", "sections": []string{"sessions"}}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {
@@ -1888,7 +1889,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 
 	"vp_refresh_index": {
 		build: func(t *testing.T, h *testHarness) any {
-			h.addDrawer(t, "cov-refreshindex", "w", "r", "content to reindex", "facts", "2026-01-01")
+			h.Seed(t, testinfra.WithDrawer("cov-refreshindex", "w", "r", "content to reindex", "facts", "2026-01-01T10:00:00Z"))
 			return map[string]any{"project": "cov-refreshindex"}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {

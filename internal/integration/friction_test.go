@@ -9,6 +9,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 // TestIntegrationFrictionScoringOnCapture verifies that capturing a session
@@ -31,11 +32,12 @@ tool_use: read_file
 tool_use: read_file
 User: Try again with a different strategy. Scratch that.
 `
-	result := h.callTool(t, "vp_capture_session", map[string]any{
+	var result string
+	h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 		"project":    "friction-test",
 		"summary":    "High friction session",
 		"transcript": highFriction,
-	})
+	}, &result))
 
 	var highResult struct {
 		Status        string `json:"status"`
@@ -70,11 +72,12 @@ User: Looks good, thanks.
 Assistant: Done. It reads TOML and returns a Config struct.
 User: Perfect, let's continue.
 `
-	smoothResult := h.callTool(t, "vp_capture_session", map[string]any{
+	var smoothResult string
+	h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 		"project":    "friction-test",
 		"summary":    "Smooth session",
 		"transcript": smooth,
-	})
+	}, &smoothResult))
 
 	var lowResult struct {
 		FrictionScore int `json:"friction_score"`
@@ -93,10 +96,11 @@ func TestIntegrationFrictionScoringNoTranscript(t *testing.T) {
 	h := newHarness(t, false)
 	h.registerAllTools(t)
 
-	result := h.callTool(t, "vp_capture_session", map[string]any{
+	var result string
+	h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 		"project": "no-transcript",
 		"summary": "Session without transcript",
-	})
+	}, &result))
 
 	var r struct {
 		FrictionScore int `json:"friction_score"`

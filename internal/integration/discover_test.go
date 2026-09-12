@@ -11,6 +11,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/llm"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 type discoverMock struct {
@@ -37,20 +38,22 @@ func TestIntegrationDiscoverDetectsAndProposes(t *testing.T) {
 
 	// 3 "general" drawers with ML/neural network content.
 	// No "ml" room exists in defaults, so these stay in general.
-	h.addDrawer(t, "proj", "proj", "general",
-		"Train the neural network transformer model with gradient descent fine-tuning",
-		"facts", "2026-04-10")
-	h.addDrawer(t, "proj", "proj", "general",
-		"Implement a deep learning neural network for inference and training pipeline",
-		"facts", "2026-04-10")
-	h.addDrawer(t, "proj", "proj", "general",
-		"Neural network training with backpropagation and gradient descent optimization",
-		"facts", "2026-04-10")
+	h.Seed(t,
+		testinfra.WithDrawer("proj", "proj", "general",
+			"Train the neural network transformer model with gradient descent fine-tuning",
+			"facts", "2026-04-10T10:00:00Z"),
+		testinfra.WithDrawer("proj", "proj", "general",
+			"Implement a deep learning neural network for inference and training pipeline",
+			"facts", "2026-04-10T10:00:00Z"),
+		testinfra.WithDrawer("proj", "proj", "general",
+			"Neural network training with backpropagation and gradient descent optimization",
+			"facts", "2026-04-10T10:00:00Z"),
 
-	// 1 correctly classified drawer (should not regress).
-	h.addDrawer(t, "proj", "proj", "testing",
-		"Run the test spec with mock fixtures for coverage",
-		"facts", "2026-04-10")
+		// 1 correctly classified drawer (should not regress).
+		testinfra.WithDrawer("proj", "proj", "testing",
+			"Run the test spec with mock fixtures for coverage",
+			"facts", "2026-04-10T10:00:00Z"),
+	)
 
 	rc := buildClassifier(h.Config)
 	opts := palace.DiscoverOptions{Project: "proj", MaxSamples: 50}
@@ -122,23 +125,25 @@ func TestIntegrationDiscoverApplyReducesGeneral(t *testing.T) {
 	h := newHarness(t, false)
 
 	// 4 "general" drawers that contain "orchestration" — a keyword not in defaults.
-	h.addDrawer(t, "proj", "proj", "general",
-		"Container orchestration with kubernetes cluster management",
-		"facts", "2026-04-10")
-	h.addDrawer(t, "proj", "proj", "general",
-		"Service orchestration and deployment pipeline automation",
-		"facts", "2026-04-10")
-	h.addDrawer(t, "proj", "proj", "general",
-		"Orchestration of microservices using kubernetes and docker",
-		"facts", "2026-04-10")
-	h.addDrawer(t, "proj", "proj", "general",
-		"Automated orchestration for cloud infrastructure",
-		"facts", "2026-04-10")
+	h.Seed(t,
+		testinfra.WithDrawer("proj", "proj", "general",
+			"Container orchestration with kubernetes cluster management",
+			"facts", "2026-04-10T10:00:00Z"),
+		testinfra.WithDrawer("proj", "proj", "general",
+			"Service orchestration and deployment pipeline automation",
+			"facts", "2026-04-10T10:00:00Z"),
+		testinfra.WithDrawer("proj", "proj", "general",
+			"Orchestration of microservices using kubernetes and docker",
+			"facts", "2026-04-10T10:00:00Z"),
+		testinfra.WithDrawer("proj", "proj", "general",
+			"Automated orchestration for cloud infrastructure",
+			"facts", "2026-04-10T10:00:00Z"),
 
-	// 1 correctly classified drawer.
-	h.addDrawer(t, "proj", "proj", "devops",
-		"Deploy kubernetes pods to production cluster",
-		"facts", "2026-04-10")
+		// 1 correctly classified drawer.
+		testinfra.WithDrawer("proj", "proj", "devops",
+			"Deploy kubernetes pods to production cluster",
+			"facts", "2026-04-10T10:00:00Z"),
+	)
 
 	rc := buildClassifier(h.Config)
 
@@ -224,11 +229,13 @@ func TestIntegrationDiscoverApplyReducesGeneral(t *testing.T) {
 func TestIntegrationDiscoverEstimate(t *testing.T) {
 	h := newHarness(t, false)
 
+	var opts []testinfra.SeedOption
 	for i := range 5 {
-		h.addDrawer(t, "proj", "proj", "general",
+		opts = append(opts, testinfra.WithDrawer("proj", "proj", "general",
 			"Some unclassified content "+string(rune('A'+i)),
-			"facts", "2026-04-10")
+			"facts", "2026-04-10T10:00:00Z"))
 	}
+	h.Seed(t, opts...)
 
 	rc := buildClassifier(h.Config)
 	candidates, _, err := palace.CollectDiscoveryCandidates(h.Vault, rc,
@@ -258,20 +265,22 @@ func TestIntegrationDiscoverRejectsRegressions(t *testing.T) {
 	h := newHarness(t, false)
 
 	// 1 general drawer with "frobulate" keyword.
-	h.addDrawer(t, "proj", "proj", "general",
-		"Frobulate the data ingestion pipeline for faster processing",
-		"facts", "2026-04-10")
+	h.Seed(t,
+		testinfra.WithDrawer("proj", "proj", "general",
+			"Frobulate the data ingestion pipeline for faster processing",
+			"facts", "2026-04-10T10:00:00Z"),
 
-	// 3 correctly classified drawers in different rooms that also contain "frobulate".
-	h.addDrawer(t, "proj", "proj", "testing",
-		"Test the frobulate function with mock fixtures and frobulate edge cases",
-		"facts", "2026-04-10")
-	h.addDrawer(t, "proj", "proj", "api",
-		"Frobulate graphql endpoint for the restful frobulate service",
-		"facts", "2026-04-10")
-	h.addDrawer(t, "proj", "proj", "data",
-		"Frobulate the sql database migration and frobulate schema changes",
-		"facts", "2026-04-10")
+		// 3 correctly classified drawers in different rooms that also contain "frobulate".
+		testinfra.WithDrawer("proj", "proj", "testing",
+			"Test the frobulate function with mock fixtures and frobulate edge cases",
+			"facts", "2026-04-10T10:00:00Z"),
+		testinfra.WithDrawer("proj", "proj", "api",
+			"Frobulate graphql endpoint for the restful frobulate service",
+			"facts", "2026-04-10T10:00:00Z"),
+		testinfra.WithDrawer("proj", "proj", "data",
+			"Frobulate the sql database migration and frobulate schema changes",
+			"facts", "2026-04-10T10:00:00Z"),
+	)
 
 	rc := buildClassifier(h.Config)
 	opts := palace.DiscoverOptions{Project: "proj", MaxSamples: 50}

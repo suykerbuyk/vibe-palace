@@ -441,11 +441,12 @@ func TestIntegrationHostParityNoAutoArchiveUnknownHost(t *testing.T) {
 	// Default initMCP client is "integration-test" — not in the hook-less set.
 	// No withClientInfo → HostUnknown / no auto archive.
 
-	raw := h.callTool(t, "vp_capture_session", map[string]any{
+	var raw string
+	h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 		"project":    "parity-unknown",
 		"summary":    "Unknown host must stay thin without explicit flag.",
 		"transcript": highFrictionTranscript,
-	})
+	}, &raw))
 	var res struct {
 		Status    string `json:"status"`
 		NotePath  string `json:"note_path"`

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 // TestIntegrationWeightedRoomScoring proves that the weighted keyword scoring
@@ -85,12 +86,13 @@ credential validation and add permission checks.`,
 			h2 := newHarness(t, false)
 			h2.registerAllTools(t)
 
-			result := h2.callTool(t, "vp_capture_session", map[string]any{
+			var result string
+			h2.Seed(t, testinfra.WithCapturedSession(map[string]any{
 				"project":    "score-test",
 				"summary":    "Testing room scoring: " + tt.name,
 				"tag":        "implementation",
 				"transcript": tt.transcript,
-			})
+			}, &result))
 
 			var captureResult struct {
 				Status string `json:"status"`
@@ -193,12 +195,13 @@ Testing the output now.`,
 			})
 			h2.registerAllTools(t)
 
-			result := h2.callTool(t, "vp_capture_session", map[string]any{
+			var result string
+			h2.Seed(t, testinfra.WithCapturedSession(map[string]any{
 				"project":    "override-test",
 				"summary":    "Testing scoring overrides: " + tt.name,
 				"tag":        "implementation",
 				"transcript": tt.transcript,
-			})
+			}, &result))
 
 			var captureResult struct {
 				Status string `json:"status"`
@@ -238,8 +241,11 @@ func TestIntegrationDrawerIDStableAcrossRooms(t *testing.T) {
 	h := newHarness(t, false)
 
 	// Add the same content to two different rooms.
-	d1 := h.addDrawer(t, "proj", "wing-a", "testing", "shared content here", "facts", "2026-01-01")
-	d2 := h.addDrawer(t, "proj", "wing-a", "debugging", "shared content here", "facts", "2026-01-01")
+	var d1, d2 storage.Drawer
+	h.Seed(t,
+		testinfra.WithDrawerOut("proj", "wing-a", "testing", "shared content here", "facts", "2026-01-01T10:00:00Z", &d1),
+		testinfra.WithDrawerOut("proj", "wing-a", "debugging", "shared content here", "facts", "2026-01-01T10:00:00Z", &d2),
+	)
 
 	if d1.ID != d2.ID {
 		t.Errorf("drawer IDs should be identical across rooms: %q vs %q", d1.ID, d2.ID)

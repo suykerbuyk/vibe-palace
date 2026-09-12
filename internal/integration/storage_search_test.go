@@ -9,6 +9,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 // TestIntegrationStorageToSearch proves that drawers written via the storage
@@ -18,11 +19,13 @@ func TestIntegrationStorageToSearch(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed drawers with distinct topics across wings and rooms.
-	h.addDrawer(t, "proj", "dev", "go", "Go goroutines and channels enable lightweight concurrency patterns", "facts", "2026-04-01")
-	h.addDrawer(t, "proj", "dev", "go", "The sync.Mutex protects shared state in concurrent Go programs", "facts", "2026-04-01")
-	h.addDrawer(t, "proj", "data", "sql", "PostgreSQL uses MVCC for transaction isolation and concurrent reads", "facts", "2026-04-02")
-	h.addDrawer(t, "proj", "infra", "docker", "Docker containers package applications with their dependencies for deployment", "facts", "2026-04-03")
-	h.addDrawer(t, "proj", "dev", "go", "Go interfaces enable polymorphism without inheritance hierarchies", "discoveries", "2026-04-03")
+	h.Seed(t,
+		testinfra.WithDrawer("proj", "dev", "go", "Go goroutines and channels enable lightweight concurrency patterns", "facts", "2026-04-01T10:00:00Z"),
+		testinfra.WithDrawer("proj", "dev", "go", "The sync.Mutex protects shared state in concurrent Go programs", "facts", "2026-04-01T10:00:00Z"),
+		testinfra.WithDrawer("proj", "data", "sql", "PostgreSQL uses MVCC for transaction isolation and concurrent reads", "facts", "2026-04-02T10:00:00Z"),
+		testinfra.WithDrawer("proj", "infra", "docker", "Docker containers package applications with their dependencies for deployment", "facts", "2026-04-03T10:00:00Z"),
+		testinfra.WithDrawer("proj", "dev", "go", "Go interfaces enable polymorphism without inheritance hierarchies", "discoveries", "2026-04-03T10:00:00Z"),
+	)
 
 	if _, err := h.Engine.Rebuild(ctx, "proj"); err != nil {
 		t.Fatalf("Rebuild: %v", err)

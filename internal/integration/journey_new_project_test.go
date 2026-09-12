@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 // TestJourney_NewProject_Bootstrap_Capture_Search exercises the canonical
@@ -127,12 +129,12 @@ func TestJourney_NewProject_Bootstrap_Capture_Search(t *testing.T) {
 	// 3. vp_capture_session: write a session with transcript.
 	const uniqueMarker = "SENTINEL-PHRASE-HAPTIC-MONGOOSE"
 	transcript := "User asked about testing.\nAssistant responded with " + uniqueMarker + ".\n"
-	raw = h.callTool(t, "vp_capture_session", map[string]any{
+	h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 		"project":    projectName,
 		"summary":    "Journey bootstrap session with " + uniqueMarker,
 		"tag":        "implementation",
 		"transcript": transcript,
-	})
+	}, &raw))
 	var cap struct {
 		Status    string `json:"status"`
 		SessionID string `json:"session_id"`

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/search"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
 // TestIntegrationSessionCaptureToSearch proves the full workflow:
@@ -46,13 +47,14 @@ the entire migration is rolled back. The migrations table is only updated
 after a successful commit. This ensures atomicity — either the migration
 fully applies or it has no effect.`
 
-	result := h.callTool(t, "vp_capture_session", map[string]any{
+	var result string
+	h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 		"project":    "test-proj",
 		"summary":    "Discussed database migration system design.",
 		"tag":        "planning",
 		"transcript": transcript,
 		"decisions":  []string{"Use sequential SQL files with timestamp names"},
-	})
+	}, &result))
 
 	// Parse the capture result.
 	var captureResult struct {
@@ -119,11 +121,12 @@ func TestIntegrationSessionCaptureWithoutTranscript(t *testing.T) {
 	h := newHarness(t, false) // mock embedder — no ONNX needed
 	h.registerAllTools(t)
 
-	result := h.callTool(t, "vp_capture_session", map[string]any{
+	var result string
+	h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 		"project": "test-proj",
 		"summary": "Quick debugging session, no transcript captured.",
 		"tag":     "debugging",
-	})
+	}, &result))
 
 	var captureResult struct {
 		Status    string `json:"status"`
@@ -150,10 +153,11 @@ func TestIntegrationSessionIterationAcrossSessions(t *testing.T) {
 
 	var iterations []int
 	for i := range 3 {
-		result := h.callTool(t, "vp_capture_session", map[string]any{
+		var result string
+		h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 			"project": "test-proj",
 			"summary": "Session number " + string(rune('1'+i)),
-		})
+		}, &result))
 
 		var r struct {
 			Iteration int `json:"iteration"`
