@@ -157,12 +157,58 @@ func (r *VaultReconciler) Plan(_ context.Context) (Plan, error) {
 
 	// git init (only when enabled and not yet a repo)
 	if r.gitEnabled() {
-		if _, statErr := os.Stat(filepath.Join(vaultPath, ".git")); errors.Is(statErr, os.ErrNotExist) {
-			actions = append(actions, Action{
-				Kind: ActionCreate, Target: filepath.Join(vaultPath, ".git"),
-				Summary: "git init vault",
-			})
+		gitPath := filepath.Join(vaultPath, ".git")
+		if _, statErr := os.Stat(gitPath); errors.Is(statErr, os.ErrNotExist) {
+			// No .git AT the vault. Before planning git init, ask whether git
+			// sees a .git ABOVE the vault (VaultGitNested) — the same
+			// predicate storage.PruneMirrorsVerified's caller in
+			// cmd_config.go uses for the Templates tier. Do not invent a
+			// second nesting check.
+			switch gitState, _ := storage.InspectVaultGit(vaultPath); gitState {
+			case storage.VaultNotGit:
+				actions = append(actions, Action{
+					Kind: ActionCreate, Target: gitPath,
+					Summary: "git init vault",
+				})
+			case storage.VaultGitNested:
+				summary := "git init skipped — vault is nested inside another repository"
+				if top, err := storage.GitTopLevel(vaultPath); err == nil && top != "" {
+					summary = "git init skipped — vault is nested inside " + top
+				}
+				actions = append(actions, Action{
+					Kind: ActionSkip, Target: gitPath,
+					Summary: summary,
+				})
+			default:
+				// VaultGitUnavailable or VaultGitBroken: a .git marker was
+				// found at or above the vault, but git cannot be run or the
+				// repository is unreadable, so the OK/Nested distinction is
+				// unavailable. The marker cannot be an ordinary .git
+				// directory AT the vault (the os.Stat above would have found
+				// it), but it CAN be a dangling .git symlink AT the vault
+				// itself: os.Stat follows symlinks and reports ErrNotExist
+				// for a dangling target, while storage.InspectVaultGit's
+				// os.Lstat finds the symlink entry without resolving it. So
+				// do not claim the marker is "above the vault" unless an
+				// os.Lstat at the vault itself confirms nothing is there —
+				// otherwise a dangling symlink at the vault would be
+				// misreported as an ancestor's repository.
+				summary := "git init skipped — an existing .git entry could not be verified"
+				if _, lstatErr := os.Lstat(gitPath); errors.Is(lstatErr, os.ErrNotExist) {
+					summary = "git init skipped — an enclosing .git directory was found above the vault"
+				}
+				actions = append(actions, Action{
+					Kind: ActionSkip, Target: gitPath,
+					Summary: summary,
+				})
+			}
+		} else if statErr != nil {
+			return Plan{}, fmt.Errorf("stat vault git: %w", statErr)
 		}
+		// else: .git already present at the vault itself — unchanged,
+		// exactly as before (VaultGitOK and any locally-present .git in
+		// other states never reach storage.InspectVaultGit at all — no
+		// behavior change there).
 	}
 	return Plan{Actions: actions}, nil
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -900,4 +901,166 @@ func TestVaultApply_GitignoreUpdate_Accounting(t *testing.T) {
 	if len(rep.Errors) != 1 || !errors.As(rep.Errors[0], &ve) || ve.Artifact != VaultArtifactGitignore {
 		t.Errorf("want one VaultApplyError for the .gitignore, got %v", rep.Errors)
 	}
+}
+
+// runGit runs a git command in dir, failing the test on error. Local to this
+// file: internal/storage's gitRun is unexported in another package.
+func runGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %s: %v", args, out, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// gitAction returns the single action a Vault plan carries for .git, failing
+// when there is not exactly one.
+func gitAction(t *testing.T, p Plan) Action {
+	t.Helper()
+	var found []Action
+	for _, a := range p.Actions {
+		if filepath.Base(a.Target) == ".git" {
+			found = append(found, a)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want exactly one .git action, got %+v", p.Actions)
+	}
+	return found[0]
+}
+
+// TestVaultPlan_NestedVaultSkipsGitInit is the regression test for
+// config-sync-git-inits-a-vault-nested-in-another-repository: git_enabled =
+// true must not plan `git init` inside a vault that is a subdirectory of an
+// enclosing repository's work tree, and must instead Skip naming the
+// enclosing repo.
+func TestVaultPlan_NestedVaultSkipsGitInit(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	if !storage.GitAvailable() {
+		t.Skip("git not in PATH")
+	}
+	enclosing := t.TempDir()
+	runGit(t, enclosing, "init", "-b", "main")
+	runGit(t, enclosing, "config", "user.email", "test@example.com")
+	runGit(t, enclosing, "config", "user.name", "Test User")
+
+	vaultPath := filepath.Join(enclosing, "vault")
+	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewVault(t.TempDir(), VaultSeed{VaultPath: vaultPath, GitEnabled: true}.WithCreate())
+	p, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(vaultPath, ".git")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("Plan must not have created .git before Apply; stat err = %v", statErr)
+	}
+	a := gitAction(t, p)
+	if a.Kind != ActionSkip {
+		t.Fatalf("git action = %v, want ActionSkip: %+v", a.Kind, a)
+	}
+	if !strings.Contains(a.Summary, enclosing) {
+		t.Errorf("Skip summary %q does not name the enclosing repo %q", a.Summary, enclosing)
+	}
+
+	// Apply must not create .git either (defence in depth: Plan and Apply
+	// must agree, and a future edit to Apply must not resurrect the bug).
+	rep, err := r.Apply(context.Background(), p)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(vaultPath, ".git")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("Apply created .git inside a nested vault")
+	}
+	_ = rep
+}
+
+// TestVaultPlan_UnversionedVaultStillPlansGitInit guards against a fix that
+// accidentally skips ALL git-init planning: a vault with no enclosing
+// repository at or above it must still plan `git init` when git_enabled is
+// true.
+func TestVaultPlan_UnversionedVaultStillPlansGitInit(t *testing.T) {
+	tmp := t.TempDir()
+	vaultPath := filepath.Join(tmp, "vault")
+	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewVault(t.TempDir(), VaultSeed{VaultPath: vaultPath, GitEnabled: true}.WithCreate())
+	p, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	a := gitAction(t, p)
+	if a.Kind != ActionCreate {
+		t.Fatalf("git action = %v, want ActionCreate: %+v", a.Kind, a)
+	}
+	if filepath.Base(a.Target) != ".git" {
+		t.Errorf("Create target = %q, want it to end in .git", a.Target)
+	}
+}
+
+// TestVaultPlan_GitMarkerUnverifiable_SkipsGitInit is the regression test for
+// the review's Medium finding on this fix: the default branch of the new
+// three-way switch (VaultGitUnavailable / VaultGitBroken — a .git marker
+// exists at or above the vault but git cannot disambiguate OK vs Nested) had
+// no test. It also covers the accompanying Low finding: the Skip wording must
+// not claim the marker is "above the vault" when it is really a dangling
+// .git symlink AT the vault itself (an os.Stat/os.Lstat asymmetry).
+func TestVaultPlan_GitMarkerUnverifiable_SkipsGitInit(t *testing.T) {
+	if !storage.GitAvailable() {
+		t.Skip("git not in PATH")
+	}
+
+	t.Run("broken marker above the vault", func(t *testing.T) {
+		enclosing := t.TempDir()
+		if err := os.WriteFile(filepath.Join(enclosing, ".git"), []byte("gitdir: /nonexistent\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		vaultPath := filepath.Join(enclosing, "vault")
+		if err := os.MkdirAll(vaultPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		r := NewVault(t.TempDir(), VaultSeed{VaultPath: vaultPath, GitEnabled: true}.WithCreate())
+		p, err := r.Plan(context.Background())
+		if err != nil {
+			t.Fatalf("Plan: %v", err)
+		}
+		a := gitAction(t, p)
+		if a.Kind != ActionSkip {
+			t.Fatalf("kind = %v, want ActionSkip: %+v", a.Kind, a)
+		}
+		if !strings.Contains(a.Summary, "above the vault") {
+			t.Errorf("Skip summary = %q, want it to name the marker as above the vault", a.Summary)
+		}
+		if _, statErr := os.Stat(filepath.Join(vaultPath, ".git")); !errors.Is(statErr, os.ErrNotExist) {
+			t.Errorf("Plan must not have created .git before Apply")
+		}
+	})
+
+	t.Run("dangling symlink at the vault itself is not misattributed", func(t *testing.T) {
+		vaultPath := t.TempDir()
+		if err := os.Symlink(filepath.Join(vaultPath, "nonexistent-target"), filepath.Join(vaultPath, ".git")); err != nil {
+			t.Fatal(err)
+		}
+
+		r := NewVault(t.TempDir(), VaultSeed{VaultPath: vaultPath, GitEnabled: true}.WithCreate())
+		p, err := r.Plan(context.Background())
+		if err != nil {
+			t.Fatalf("Plan: %v", err)
+		}
+		a := gitAction(t, p)
+		if a.Kind != ActionSkip {
+			t.Fatalf("kind = %v, want ActionSkip: %+v", a.Kind, a)
+		}
+		if strings.Contains(a.Summary, "above the vault") {
+			t.Errorf("Skip summary = %q misattributes a dangling .git symlink AT the vault as being above it", a.Summary)
+		}
+	})
 }
