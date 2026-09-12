@@ -300,7 +300,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 				Complete bool   `json:"complete"`
 			}
 			covUnmarshal(t, payload, &out)
-			if !strings.Contains(out.Content, "startup-analyst") && len(out.Content) < 50 {
+			if !strings.Contains(out.Content, "startup-analyst") {
 				t.Errorf("skill content looks empty/wrong: %.100s", out.Content)
 			}
 			if !out.Complete {
@@ -1303,8 +1303,35 @@ var toolCoverageFixtures = map[string]toolFixture{
 			}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {
-			if !strings.Contains(payload, "created") {
-				t.Errorf("expected 'created' in response: %s", payload)
+			var out struct {
+				Status string `json:"status"`
+				Task   string `json:"task"`
+			}
+			covUnmarshal(t, payload, &out)
+			if out.Status != "created" {
+				t.Errorf("status = %q, want created", out.Status)
+			}
+			if out.Task != "cov-task" {
+				t.Errorf("task = %q, want cov-task", out.Task)
+			}
+			// Verify the side effect actually landed with the right slug/title/
+			// content, not just that the create call echoed back a status word.
+			get := h.callTool(t, "vp_get_task", map[string]any{
+				"project": "cov-managetask", "task": "cov-task", "include_content": true,
+			})
+			var gt struct {
+				Meta struct {
+					Slug  string `json:"slug"`
+					Title string `json:"title"`
+				} `json:"meta"`
+				Content string `json:"content"`
+			}
+			covUnmarshal(t, get, &gt)
+			if gt.Meta.Slug != "cov-task" || gt.Meta.Title != "Coverage Task" {
+				t.Errorf("created task meta = %+v, want slug=cov-task title='Coverage Task'", gt.Meta)
+			}
+			if !strings.Contains(gt.Content, "Coverage fixture task.") {
+				t.Errorf("created task content = %q, missing seeded body", gt.Content)
 			}
 		},
 	},
