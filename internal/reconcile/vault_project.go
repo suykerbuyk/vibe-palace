@@ -19,10 +19,32 @@ import (
 type VaultProjectReconciler struct {
 	vault *storage.Vault
 	slug  string
+
+	// skipReason and skipTarget, when skipReason is non-empty, force Check
+	// and Plan to unconditionally report a single Skip row instead of their
+	// usual vault/slug-driven behavior. Set via WithSkipReason. Zero value on
+	// both is today's behavior, unchanged.
+	skipReason string
+	skipTarget string
 }
 
 func NewVaultProject(v *storage.Vault, slug string) *VaultProjectReconciler {
 	return &VaultProjectReconciler{vault: v, slug: slug}
+}
+
+// WithSkipReason returns a copy of the reconciler that unconditionally
+// Checks/Plans a single Skip carrying reason and target, regardless of
+// vault/slug state. Used by `vp config sync` to short-circuit onboarding
+// when the resolved project directory is the vault itself or inside it —
+// the reconciler is only ever given a vault and a slug, never a project
+// directory, so it cannot detect this on its own. target becomes the
+// Skip row's Action.Target (the specific path the caller wants named),
+// matching CwdProjectReconciler's own skip-row convention of a generic
+// Summary reason plus a distinct Target path.
+func (r VaultProjectReconciler) WithSkipReason(reason, target string) *VaultProjectReconciler {
+	r.skipReason = reason
+	r.skipTarget = target
+	return &r
 }
 
 func (r *VaultProjectReconciler) Name() string { return "VaultProject" }
@@ -31,6 +53,13 @@ func (r *VaultProjectReconciler) Tier() Tier   { return TierProject }
 // Check reports the vault-project config's presence as an Info row — it is
 // always Info/Skip and never causes a failure.
 func (r *VaultProjectReconciler) Check(_ context.Context) []check.Result {
+	if r.skipReason != "" {
+		summary := r.skipReason
+		if r.skipTarget != "" {
+			summary = fmt.Sprintf("%s (%s)", r.skipReason, r.skipTarget)
+		}
+		return []check.Result{{Name: "Vault project", Status: check.Skip, Summary: summary}}
+	}
 	if r.vault == nil || r.slug == "" {
 		return []check.Result{{
 			Name: "Vault project", Status: check.Skip,
@@ -60,6 +89,9 @@ func (r *VaultProjectReconciler) Check(_ context.Context) []check.Result {
 }
 
 func (r *VaultProjectReconciler) Plan(_ context.Context) (Plan, error) {
+	if r.skipReason != "" {
+		return Plan{Actions: []Action{{Kind: ActionSkip, Target: r.skipTarget, Summary: r.skipReason}}}, nil
+	}
 	if r.vault == nil || r.slug == "" {
 		return Plan{Actions: []Action{{
 			Kind: ActionSkip, Summary: "vault not open or project not identified",

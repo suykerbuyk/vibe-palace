@@ -202,12 +202,38 @@ func runConfigSync(args []string) int {
 		}
 	}
 
+	// projectDirInsideVault gates BOTH creation paths that can originate a
+	// Projects/<slug>/ directory: VaultProjectReconciler's config.toml/tasks
+	// Create, and Phase 4's explicit-addressing TemplateTree scaffold below.
+	// Computed once so the two paths cannot disagree.
+	var projectDirInsideVault bool
+	vaultProject := reconcile.NewVaultProject(vault, projectSlug)
+	if vault != nil {
+		if err := vaultfs.RefuseDestinationInsideVault(vault.Root, projectDir); err != nil {
+			// Fail CLOSED on ANY non-nil error here, not just
+			// ErrDestinationInsideVault — matching guardExportDestination
+			// (cmd/vp/export_guard.go), the sibling caller of this same
+			// predicate, which also treats a genuine resolution failure as
+			// a refusal rather than "proceed and just log". A path-resolution
+			// error means whether projectDir is inside the vault is UNKNOWN,
+			// and creating Projects/<slug>/ on an unverified answer is
+			// exactly the phantom this floor exists to stop.
+			projectDirInsideVault = true
+			reason := fmt.Sprintf("the project directory resolves inside the vault at %s — not a project", vault.Root)
+			if !errors.Is(err, vaultfs.ErrDestinationInsideVault) {
+				slog.Error("check project directory against vault root", "err", err, "projectDir", projectDir, "vaultRoot", vault.Root)
+				reason = fmt.Sprintf("cannot verify whether the project directory is inside the vault (%v) — refusing to create", err)
+			}
+			vaultProject = vaultProject.WithSkipReason(reason, projectDir)
+		}
+	}
+
 	all := map[string]reconcile.Reconciler{
 		"GlobalConfig":  reconcile.NewGlobalConfig(absRoot, reconcile.GlobalSeed{}),
 		"Vault":         reconcile.NewVault(absRoot, reconcile.VaultSeed{}),
 		"VaultSettings": reconcile.NewVaultSettings(vault),
 		"CwdProject":    reconcile.NewCwdProject(projectDir, reconcile.CwdProjectSeed{}),
-		"VaultProject":  reconcile.NewVaultProject(vault, projectSlug),
+		"VaultProject":  vaultProject,
 	}
 	// Phase 3: TemplateTree is vault-tier and requires an open vault.
 	// When vault isn't resolvable (global-only scope, no vault yet) we
@@ -277,9 +303,15 @@ func runConfigSync(args []string) int {
 	var projectScaffolds []reconcile.Reconciler
 	if vaultPathForTemplates != "" {
 		if projectSlug != "" && (cwdSet || projectFlag != "") {
-			projectScaffolds = append(projectScaffolds,
-				reconcile.NewTemplateTree(vaultPathForTemplates, "Projects/"+projectSlug,
-					reconcile.TemplateTreeSeed{Mode: reconcile.TemplateModeScaffold}))
+			// Same gate as VaultProjectReconciler above: an explicit
+			// --cwd/--project addressing the vault itself (or a path inside
+			// it) must not scaffold Projects/<slug>/ either — this is the
+			// second, independent creation path the floor also has to close.
+			if !projectDirInsideVault {
+				projectScaffolds = append(projectScaffolds,
+					reconcile.NewTemplateTree(vaultPathForTemplates, "Projects/"+projectSlug,
+						reconcile.TemplateTreeSeed{Mode: reconcile.TemplateModeScaffold}))
+			}
 		} else {
 			for _, slug := range enumerateVaultProjectSlugs(vaultPathForTemplates) {
 				projectScaffolds = append(projectScaffolds,

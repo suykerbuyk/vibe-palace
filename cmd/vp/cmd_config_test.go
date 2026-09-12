@@ -498,7 +498,11 @@ func TestConfigSync_TierProjectScopeOnly(t *testing.T) {
 	configDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 	projectDir := t.TempDir()
-	// No seed: both CwdProject and VaultProject return Skip.
+	// No vault is open here (vault == nil), so VaultProject Skips via the
+	// vault==nil branch, not via any create-gate — see
+	// TestConfigSync_VaultProjectSkipsInsideVault and
+	// TestConfigSync_ExplicitAddressingSkipsVaultScaffold for the actual
+	// create-gate.
 	code := runConfigSync([]string{
 		"--project-root", projectDir, "--tier", "project", "--dry-run",
 	})
@@ -679,6 +683,117 @@ func phase4ConfigSyncSetup(t *testing.T) (vaultDir, projDir string) {
 	projDir = t.TempDir()
 	markProjectDir(t, projDir)
 	return vaultDir, projDir
+}
+
+// TestConfigSync_VaultProjectSkipsInsideVault reproduces the task's own
+// reported shape across two runs: a first run that would otherwise create
+// Projects/<slug>/config.toml (VaultProjectReconciler's own creation path),
+// and a second run that would otherwise enumerate the now-existing directory
+// and scaffold commands/skills READMEs into it (Phase 4's default/enumerate
+// path). Uses --project-root equal to the vault root with no --cwd/--project,
+// so Phase 4 takes the enumerate branch, not the explicit-addressing branch —
+// see TestConfigSync_ExplicitAddressingSkipsVaultScaffold for that one.
+func TestConfigSync_VaultProjectSkipsInsideVault(t *testing.T) {
+	vaultDir, _ := phase4ConfigSyncSetup(t)
+	slug := filepath.Base(vaultDir) // "vault" — basename fallback, same as the reported repro
+
+	code := runConfigSync([]string{
+		"--project-root", vaultDir, "--tier", "project", "--yes",
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("first run: exit code = %d, want ExitOK", code)
+	}
+	if _, err := os.Stat(filepath.Join(vaultDir, "Projects", slug, "config.toml")); err == nil {
+		t.Errorf("Projects/%s/config.toml should not have been created on the first run", slug)
+	}
+
+	code = runConfigSync([]string{
+		"--project-root", vaultDir, "--tier", "project", "--yes",
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("second run: exit code = %d, want ExitOK", code)
+	}
+	for _, kind := range []string{"commands", "skills"} {
+		if _, err := os.Stat(filepath.Join(vaultDir, "Projects", slug, kind, "README.md")); err == nil {
+			t.Errorf("Projects/%s/%s/README.md should not have been created on the second run", slug, kind)
+		}
+	}
+}
+
+// TestConfigSync_ExplicitAddressingSkipsVaultScaffold proves the Phase-4
+// explicit-addressing creation path (--project SLUG or --cwd DIR, as opposed
+// to the default/enumerate path TestConfigSync_VaultProjectSkipsInsideVault
+// exercises) is also gated. --project-root, --tier project and --project are
+// all set to the vault itself, so projectSlug bypasses DetectProject and
+// projectDir == vaultDir == vault.Root exactly, tripping the
+// self-inclusive-equality behavior of RefuseDestinationInsideVault. One run
+// is enough — the explicit branch does not depend on a prior run's leftover
+// directory the way the enumerate branch does.
+func TestConfigSync_ExplicitAddressingSkipsVaultScaffold(t *testing.T) {
+	vaultDir, _ := phase4ConfigSyncSetup(t)
+	slug := filepath.Base(vaultDir) // "vault"
+
+	code := runConfigSync([]string{
+		"--project-root", vaultDir, "--tier", "project", "--project", slug, "--yes",
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want ExitOK", code)
+	}
+	if _, err := os.Stat(filepath.Join(vaultDir, "Projects", slug, "config.toml")); err == nil {
+		t.Errorf("Projects/%s/config.toml should not have been created", slug)
+	}
+	for _, kind := range []string{"commands", "skills"} {
+		if _, err := os.Stat(filepath.Join(vaultDir, "Projects", slug, kind, "README.md")); err == nil {
+			t.Errorf("Projects/%s/%s/README.md should not have been created via explicit --project addressing", slug, kind)
+		}
+	}
+}
+
+// TestConfigSync_VaultProjectFailsClosedOnResolutionError constructs a
+// genuine path-resolution error for RefuseDestinationInsideVault, distinct
+// from the ordinary "resolves inside the vault" finding the tests above
+// exercise: the global config's vault_path names a directory that does not
+// exist, as if deleted or unmounted since the vault was last opened.
+// storage.OpenVaultFromCwd / ResolveVaultPath perform no existence check on
+// vault_path, so vault != nil with vault.Root pointing at a missing path, and
+// filepath.EvalSymlinks(vault.Root) inside RefuseDestinationInsideVault
+// genuinely fails with an ordinary resolution error — not
+// ErrDestinationInsideVault. This proves the gate fails CLOSED (skips
+// project-directory creation) rather than OPEN on that error, matching
+// guardExportDestination's (cmd/vp/export_guard.go) established convention
+// for this same predicate. A fail-open gate would fall through to
+// VaultProjectReconciler's normal Create path, whose Apply calls
+// os.MkdirAll for the missing vault root's Projects/<slug>/tasks
+// directories — silently resurrecting the deleted vault root. This test
+// asserts that never happens.
+func TestConfigSync_VaultProjectFailsClosedOnResolutionError(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+
+	vpDir := filepath.Join(configDir, "vibe-palace")
+	if err := os.MkdirAll(vpDir, 0o755); err != nil {
+		t.Fatalf("mkdir vp: %v", err)
+	}
+	// Deliberately never created — simulates a vault_path whose target has
+	// been deleted or unmounted since the vault was last opened.
+	missingVault := filepath.Join(t.TempDir(), "gone", "vault")
+	if err := os.WriteFile(filepath.Join(vpDir, "config.toml"),
+		[]byte("vault_path = \""+missingVault+"\"\ngit_enabled = false\n"), 0o644); err != nil {
+		t.Fatalf("write global: %v", err)
+	}
+
+	projDir := t.TempDir()
+	markProjectDir(t, projDir)
+
+	code := runConfigSync([]string{
+		"--project-root", projDir, "--tier", "project", "--yes",
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want ExitOK", code)
+	}
+	if _, err := os.Stat(missingVault); err == nil {
+		t.Errorf("vault root %s should not have been recreated by a fail-open gate", missingVault)
+	}
 }
 
 // TestConfigSyncDefaultScopeScaffoldsAllProjects verifies that the
