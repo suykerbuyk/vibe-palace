@@ -365,13 +365,28 @@ model-test` without `-race`, so a cold-cache download there is the
 un-instrumented kind the race detector never sees. CI's
 `~/.cache/huggingface` cache serves that job.
 
-**Warm cache** (subsequent runs): hugot loads the model weights from disk and
-downloads no blob. It is **not** offline: every `NewONNX` still makes one
-revision-info request to the HuggingFace API (`go-huggingface` refreshes the
-cached `info/<revision>` file on each fresh repo handle before its snapshot
-short-circuit). With no route to huggingface.co, construction fails after
-hugot's ~20 s retry loop even on a warm cache. So `make model-test`, `make
-integration` and `make test-full` need network access, not only a warm cache.
+**Warm cache** (subsequent runs, destination already fully populated):
+`NewONNX` checks the destination for a complete snapshot (`tokenizer.json`
+plus at least one `.onnx` file) before doing anything else, and when one is
+present it skips `hugot.DownloadModel` — and the whole `go-huggingface`
+repo-handle path — entirely. No revision-info request, no network, no risk
+of the delete-then-refetch bug that used to destroy the cached
+`info/<revision>` file on an offline attempt (`hugot.DownloadModel` forces a
+revision refresh on every process's first call against a `Repo`, and
+`go-huggingface`'s locked downloader deletes the cached file before
+re-fetching it — safe only because a warm destination now bypasses that path
+rather than relying on it not to fail). `make model-test-offline` is an
+opt-in regression check for this (Linux + `unshare -rn` only; it skips with
+a message otherwise) — it is not part of `make model-test`, `make
+integration`, `make test-full`, or CI.
+
+A **cold or partial** destination still goes through `hugot.DownloadModel`
+unchanged: full network required, and still subject to the pre-existing
+upstream delete-then-refetch bug if the network drops mid-download — not a
+regression, since a partial cache offline failed the same way before this
+fix. So `make model-test`, `make integration` and `make test-full` still
+need network access on anything but a destination that was already fully
+downloaded by a prior successful run.
 
 Cache lifecycle:
 - `make clean` — preserves model cache (only removes build artifacts)

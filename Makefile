@@ -135,8 +135,9 @@ MODEL_TEST_PKGS = $(shell grep -rlE '\bNewONNX\$(LPAREN)' --include='*_test.go' 
 #
 # No -short: that is what un-skips the model tests. No -race: go-huggingface's
 # downloader has a data race that only a -race binary reports, and a cold cache
-# downloads here. A warm cache still makes one revision-info request to
-# huggingface.co per NewONNX, so this needs network access either way.
+# downloads here. A fully warm destination (a complete prior download) skips
+# hugot.DownloadModel entirely and needs no network; anything cold or partial
+# still does and still needs network access.
 #
 # The empty-set guard fails the target CLOSED if the derivation ever stops
 # matching, instead of running `go test` with no packages (which tests the
@@ -147,6 +148,48 @@ MODEL_TEST_PKGS = $(shell grep -rlE '\bNewONNX\$(LPAREN)' --include='*_test.go' 
 model-test: ## Run every test that loads the real ONNX model (no -short, no -race; needs network)
 	@test -n "$(MODEL_TEST_PKGS)" || { echo "model-test: derivation found no packages" >&2; exit 1; }
 	go test -count=1 -timeout 10m $(MODEL_TEST_PKGS)
+
+# THE offline warm-cache regression check for
+# warm-model-cache-still-needs-the-network-and-deletes-its-index: a warm
+# destination must not dial huggingface.co, and must not delete its own
+# cached revision-info file when it can't reach the network. Opt-in, NOT
+# wired into `make model-test`, `make integration`, `make test-full`, or any
+# CI job by this target — it's for whoever explicitly runs it.
+#
+# Two phases against a throwaway scratch HOME/XDG_CACHE_HOME/modelCacheDir
+# (never the developer's real ~/.cache/huggingface or this project's
+# .cache/models):
+#   1. network allowed — TestONNXOfflineWarmupPopulateCache does one real
+#      download to populate the scratch destination.
+#   2. network cut via `unshare -rn` (rootless user+net namespace; `ip link
+#      set lo up` brings up loopback inside it) — TestONNXOfflineWarmCache-
+#      NeedsNoNetwork asserts NewONNX succeeds near-instantly against the
+#      now-warm scratch destination with no route to huggingface.co.
+#
+# PORTABILITY: `unshare -rn` is Linux-only and needs unprivileged user
+# namespaces enabled (CLONE_NEWUSER); it is refused on macOS/Windows
+# entirely, and on some hardened/corporate CI images and containers where
+# unprivileged user namespaces are disabled or seccomp-blocked. This target
+# probes for that capability first and skips (exit 0, not a failure) with an
+# explicit message rather than running -short/CI-only or failing flakily.
+.PHONY: model-test-offline
+model-test-offline: build ## Verify a warm model cache needs no network (opt-in; Linux + unshare -rn only)
+	@if ! command -v unshare >/dev/null 2>&1 || ! unshare -rn true 2>/dev/null; then \
+		echo "model-test-offline: skipped — unshare -rn unavailable on this host (needs Linux with unprivileged user namespaces enabled)" >&2; \
+		exit 0; \
+	fi
+	@scratch="$$(mktemp -d)"; \
+	trap 'rm -rf "$$scratch"' EXIT; \
+	dest="$$scratch/dest"; \
+	mkdir -p "$$dest" "$$scratch/home/.cache"; \
+	echo "model-test-offline: phase 1/2 (network allowed) — warming scratch cache at $$dest"; \
+	HOME="$$scratch/home" XDG_CACHE_HOME="$$scratch/home/.cache" VP_OFFLINE_MODEL_CACHE_DIR="$$dest" \
+		go test -count=1 -tags offlinewarm -run '^TestONNXOfflineWarmupPopulateCache$$' -v ./internal/embedder/... || exit 1; \
+	echo "model-test-offline: phase 2/2 (network isolated via unshare -rn) — verifying no network needed"; \
+	unshare -rn bash -c '\
+		ip link set lo up && \
+		HOME="'"$$scratch"'/home" XDG_CACHE_HOME="'"$$scratch"'/home/.cache" VP_OFFLINE_MODEL_CACHE_DIR="'"$$dest"'" \
+		go test -count=1 -tags offlinewarm -run "^TestONNXOfflineWarmCacheNeedsNoNetwork$$" -v ./internal/embedder/...'
 
 .PHONY: init-e2e
 init-e2e: ## Run bash end-to-end harness for `vp init` (sandboxed HOME, builds its own binary)

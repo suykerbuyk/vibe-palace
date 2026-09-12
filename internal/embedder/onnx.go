@@ -6,6 +6,7 @@ package embedder
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -75,6 +76,20 @@ func modelCacheLockPath(modelCacheDir, modelName string) string {
 	return filepath.Join(modelCacheDir, strings.ReplaceAll(modelP, "/", "_"))
 }
 
+// localSnapshotComplete reports whether modelPath already holds everything
+// hugot.DownloadModel would produce there: a tokenizer.json at the top level
+// (the only file backends.LoadTokenizer requires — a missing one makes it a
+// silent no-op tokenizer, so treat it as required) and at least one .onnx
+// file. hugot's own copy step flattens all files with path.Base, so both are
+// checked at the top level, not nested under "onnx/".
+func localSnapshotComplete(modelPath string) bool {
+	if _, err := os.Stat(filepath.Join(modelPath, "tokenizer.json")); err != nil {
+		return false
+	}
+	matches, err := filepath.Glob(filepath.Join(modelPath, "*.onnx"))
+	return err == nil && len(matches) > 0
+}
+
 // NewONNX creates an ONNXEmbedder. modelCacheDir is where model files are
 // downloaded and cached (e.g., {vault}/.local/models/).
 //
@@ -103,12 +118,24 @@ func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEm
 		return nil, fmt.Errorf("create go session: %w", err)
 	}
 
-	dlOpts := hugot.NewDownloadOptions()
-	dlOpts.OnnxFilePath = "onnx/model.onnx"
-	modelPath, err := hugot.DownloadModel(modelName, modelCacheDir, dlOpts)
-	if err != nil {
-		session.Destroy()
-		return nil, fmt.Errorf("download model %s: %w", modelName, err)
+	// hugot.DownloadModel forces a network round trip on every call, even on
+	// a fully warm cache: go-huggingface's readCommitHashForRevision() always
+	// refreshes the revision-info file on a Repo's first call in a process,
+	// and deletes the cached copy before re-fetching it — so an offline
+	// failure here also destroys the index a later offline run would need.
+	// When the destination already holds a complete snapshot (a prior
+	// successful download), skip hugot.DownloadModel entirely rather than
+	// risk that delete-then-refetch offline.
+	modelPath := lockTarget
+	if !localSnapshotComplete(modelPath) {
+		dlOpts := hugot.NewDownloadOptions()
+		dlOpts.OnnxFilePath = "onnx/model.onnx"
+		var derr error
+		modelPath, derr = hugot.DownloadModel(modelName, modelCacheDir, dlOpts)
+		if derr != nil {
+			session.Destroy()
+			return nil, fmt.Errorf("download model %s: %w", modelName, derr)
+		}
 	}
 
 	config := hugot.FeatureExtractionConfig{
