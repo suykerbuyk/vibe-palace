@@ -378,6 +378,25 @@ fix. So `make model-test`, `make integration` and `make test-full` still
 need network access on anything but a destination that was already fully
 downloaded by a prior successful run.
 
+**A stalled connection to huggingface.co no longer hangs `NewONNX`
+indefinitely.** `hugot.DownloadModel`'s two internal network calls run on an
+uncancellable `context.Background()` with no `http.Client` timeout anywhere
+in either vendored package (`hugot`, `go-huggingface`), so a blackholed
+connection used to block the calling goroutine forever, holding the
+model-cache lock, with nothing surfacing an error (`vp-search-can-hang-
+indefinitely-with-no-surfaced-error`). `NewONNX` now runs the download in a
+goroutine and bounds its own wait with `modelDownloadTimeout` (10 minutes,
+package `var`, overridable in tests). This bounds only the *caller's* wait
+per attempt — it does not make the underlying network call cancellable. On
+timeout, `NewONNX` returns a clean error immediately, but the model-cache
+lock stays held until the leaked goroutine's download actually finishes
+(success or error): a second `NewONNX` call still has to wait behind it,
+bounded in turn by `modelCacheLockTimeout` (8 minutes). A durably broken
+network therefore produces a sequence of bounded waits instead of one
+infinite hang, not zero waiting. See `internal/embedder/onnx_download_timeout_test.go`
+for the regression coverage, including the lock-held-until-the-leaked-
+goroutine-finishes test.
+
 Cache lifecycle:
 - `make clean` — preserves model cache (only removes build artifacts)
 - `make dist-clean` — deletes `.cache/` entirely (forces re-download)

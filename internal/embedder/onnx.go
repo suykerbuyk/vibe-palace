@@ -49,6 +49,34 @@ const defaultMaxSeqLen = 512
 // ordinary serialization.
 var modelCacheLockTimeout = 8 * time.Minute
 
+// modelDownloadTimeout bounds how long NewONNX waits for hugot.DownloadModel
+// to return once the model-cache lock is already held. hugot.DownloadModel's
+// two internal network calls (repo.DownloadInfo, then repo.DownloadFiles) run
+// on an uncancellable context.Background() with no http.Client timeout
+// visible anywhere in either vendored package (hugot@v0.7.0,
+// go-huggingface@v0.3.5) -- a stalled connection to huggingface.co blocks the
+// calling goroutine indefinitely, with nothing in vibe-palace's own code to
+// bound it, until this timeout fires.
+//
+// This bounds only the CALLER's wait per attempt; it does not make the
+// underlying network call itself cancellable. If the network is durably
+// down, the leaked goroutine keeps running hugot.DownloadModel (and keeps the
+// model-cache lock, see handedOff in NewONNX) until that call eventually
+// returns, however long that takes -- so a subsequent NewONNX call still has
+// to wait behind it, bounded by modelCacheLockTimeout. A persistently broken
+// network therefore produces a sequence of bounded waits (this timeout, then
+// modelCacheLockTimeout for the next attempt) instead of one infinite hang,
+// not zero waiting. It is a var, not a const, so tests can shrink it and
+// prove the timeout path is fast without waiting 10 real minutes.
+var modelDownloadTimeout = 10 * time.Minute
+
+// downloadModel is a seam over hugot.DownloadModel so tests can substitute a
+// deterministic, network-free stand-in for a stalled download -- proving the
+// timeout and lock-transfer behavior below without patching the vendored
+// dependency or requiring real (and inherently timing-dependent) network
+// access.
+var downloadModel = hugot.DownloadModel
+
 // ONNXEmbedder implements Embedder using the hugot pure-Go ONNX backend.
 type ONNXEmbedder struct {
 	session   *hugot.Session
@@ -111,7 +139,24 @@ func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEm
 	if err != nil {
 		return nil, fmt.Errorf("lock model cache (waited up to %s): %w", modelCacheLockTimeout, err)
 	}
-	defer release()
+	// handedOff decides, by construction, which of the two call sites below
+	// releases the lock: this deferred release on every ordinary return, or
+	// the leaked goroutine's release after a download timeout. Exactly one of
+	// them ever runs release() -- never both, never a race between them --
+	// because handedOff is written and read only in this goroutine,
+	// sequentially, and Go guarantees a defer's read happens after every
+	// earlier statement in the function, including the write in the timeout
+	// branch below. (An earlier draft released via defer unconditionally and
+	// separately tried to guard a double release with sync.Once; that stops
+	// only a SECOND call to release(), not the deferred call racing ahead of
+	// the leaked goroutine and firing FIRST, which is the actual hazard --
+	// see the task's Review (2026-09-12b) for why that guard doesn't work.)
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			release()
+		}
+	}()
 
 	session, err := hugot.NewGoSession()
 	if err != nil {
@@ -130,11 +175,44 @@ func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEm
 	if !localSnapshotComplete(modelPath) {
 		dlOpts := hugot.NewDownloadOptions()
 		dlOpts.OnnxFilePath = "onnx/model.onnx"
-		var derr error
-		modelPath, derr = hugot.DownloadModel(modelName, modelCacheDir, dlOpts)
-		if derr != nil {
+
+		type dlResult struct {
+			path string
+			err  error
+		}
+		// Buffered so the goroutine can always deliver its result and exit,
+		// even after NewONNX has already returned on the timeout branch below
+		// and nothing is left listening synchronously.
+		resultCh := make(chan dlResult, 1)
+		go func() {
+			p, derr := downloadModel(modelName, modelCacheDir, dlOpts)
+			resultCh <- dlResult{p, derr}
+		}()
+
+		select {
+		case res := <-resultCh:
+			if res.err != nil {
+				session.Destroy()
+				return nil, fmt.Errorf("download model %s: %w", modelName, res.err)
+			}
+			modelPath = res.path
+			// handedOff stays false: the outer defer releases the lock
+			// normally, exactly as before this change.
+		case <-time.After(modelDownloadTimeout):
+			// The goroutine above may still be blocked inside downloadModel,
+			// possibly still writing into modelCacheDir, so the lock must not
+			// release yet even though NewONNX itself returns now. Transfer
+			// release() to a second goroutine that waits for the real
+			// download attempt to actually finish (success or error) before
+			// calling it -- see the handedOff comment above the defer for why
+			// this is race-free without sync.Once.
+			handedOff = true
+			go func() {
+				<-resultCh
+				release()
+			}()
 			session.Destroy()
-			return nil, fmt.Errorf("download model %s: %w", modelName, derr)
+			return nil, fmt.Errorf("download model %s: timed out after %s (network to huggingface.co may be unreachable or stalled)", modelName, modelDownloadTimeout)
 		}
 	}
 
