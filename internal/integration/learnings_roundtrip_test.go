@@ -161,7 +161,7 @@ func TestIntegrationLearningsRoundtrip(t *testing.T) {
 // errors, so this is the negative-path counterpart).
 func (h *testHarness) toolCallIsError(t *testing.T, name string, args any) bool {
 	t.Helper()
-	if !h.mcpReady {
+	if !h.MCPReady() {
 		h.initMCP(t)
 	}
 	argsJSON, err := json.Marshal(args)

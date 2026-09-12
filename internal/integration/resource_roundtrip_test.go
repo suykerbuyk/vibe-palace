@@ -22,7 +22,7 @@ import (
 // resource provider stack wired by tools.RegisterResources.
 func (h *testHarness) readResourceProtocol(t *testing.T, uri string) string {
 	t.Helper()
-	if !h.mcpReady {
+	if !h.MCPReady() {
 		h.initMCP(t)
 	}
 	msg := json.RawMessage(fmt.Sprintf(`{
