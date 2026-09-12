@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -164,9 +163,20 @@ func (r *TemplateTreeReconciler) checkScaffold() check.Result {
 			break
 		}
 		readme := filepath.Join(dir, "README.md")
-		if _, err := os.Stat(readme); os.IsNotExist(err) {
+		info, err := os.Stat(readme)
+		if os.IsNotExist(err) {
 			status = check.Info
 			summary = r.relSubpath + " scaffolding: Info (missing " + kind + "/README.md)"
+			break
+		}
+		// A zero-length README is a crash-left or raced stub (see the
+		// applyScaffold write-path comment): the create left the file
+		// observable at length zero before the body landed. It is never a
+		// legitimate steady state, so it is reported and repaired exactly
+		// like a missing one, not silently treated as Pass.
+		if err == nil && info.Size() == 0 {
+			status = check.Info
+			summary = r.relSubpath + " scaffolding: Info (empty " + kind + "/README.md)"
 			break
 		}
 	}
@@ -340,6 +350,12 @@ func finishOperatorRemoval(vaultRoot, key, embeddedRel string) string {
 	return "finish removing it with " + verb + " (commits the removal; a backup an earlier reset wrote stays beside it), " + restore
 }
 
+// emptySHA256 is sha256("") — the digest of a zero-length file. planScaffold
+// carries it as a Detail on the ActionUpdate it emits for a zero-length
+// README so applyScaffold's repair write can CAS against "still exactly
+// empty" rather than blindly overwriting whatever landed there since Plan.
+const emptySHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
 func (r *TemplateTreeReconciler) planScaffold() (Plan, error) {
 	sub := r.subpathAbs()
 	var actions []Action
@@ -355,15 +371,29 @@ func (r *TemplateTreeReconciler) planScaffold() (Plan, error) {
 			return Plan{}, fmt.Errorf("stat %s: %w", dir, err)
 		}
 		readme := filepath.Join(dir, "README.md")
-		if _, err := os.Stat(readme); os.IsNotExist(err) {
+		info, err := os.Stat(readme)
+		switch {
+		case os.IsNotExist(err):
 			actions = append(actions, Action{
 				Kind:    ActionCreate,
 				Target:  readme,
 				Summary: "scaffold " + r.relSubpath + "/" + kind + "/README.md",
 			})
-		} else if err != nil {
+		case err != nil:
 			return Plan{}, fmt.Errorf("stat %s: %w", readme, err)
-		} else {
+		case info.Size() == 0:
+			// A crash between vaultfs.Create's rename and a reader's next
+			// look — or a manual touch — leaves the README present but
+			// empty. RenderReadmeStub never emits an empty body for a valid
+			// kind, so zero length is unambiguous: repair it, CAS-guarded
+			// against clobbering real content that landed in between.
+			actions = append(actions, Action{
+				Kind:    ActionUpdate,
+				Target:  readme,
+				Summary: "repair zero-length " + kind + "/README.md (crash-left or raced stub)",
+				Details: []string{"expected_sha256=" + emptySHA256},
+			})
+		default:
 			actions = append(actions, Action{
 				Kind:    ActionUnchanged,
 				Target:  readme,
@@ -493,10 +523,6 @@ func (r *TemplateTreeReconciler) applyScaffold(p Plan) (Report, error) {
 		case ActionCreate:
 			base := filepath.Base(a.Target)
 			if base == "README.md" {
-				if err := os.MkdirAll(filepath.Dir(a.Target), 0o755); err != nil {
-					rep.Errors = append(rep.Errors, fmt.Errorf("mkdir %s: %w", filepath.Dir(a.Target), err))
-					continue
-				}
 				// Decide kind by parent directory name.
 				kind := filepath.Base(filepath.Dir(a.Target))
 				body := templates.RenderReadmeStub(kind)
@@ -504,38 +530,39 @@ func (r *TemplateTreeReconciler) applyScaffold(p Plan) (Report, error) {
 					rep.Errors = append(rep.Errors, fmt.Errorf("unknown readme kind for %s", a.Target))
 					continue
 				}
-				// Write-if-absent, and the absence check IS the write.
+				// Write-if-absent through the storage funnel (ADR-003)
+				// rather than a raw os.OpenFile(O_EXCL). This used to be an
+				// O_EXCL create with a comment explaining why raw O_EXCL was
+				// taken over a stat/WriteFile pair: two processes (`vp
+				// init` and the vp_init MCP tool both drive
+				// internal/onboard) can scaffold the same Projects/<slug>
+				// concurrently. O_EXCL closed the clobber race but still
+				// left the target observable at length zero between the
+				// open and the write — a crash or a concurrent reader in
+				// that window saw (and could capture) an empty README that
+				// was never detected or repaired. vaultfs.Create closes
+				// that window structurally: it takes the path's advisory
+				// lock, checks absence under the lock (so two writers still
+				// cannot both succeed), and writes through atomicfile.Write
+				// — a temp file renamed over the target only once the full
+				// body is written and (WithFsync) synced, so the target
+				// never exists at a partial length.
 				//
-				// This used to be a stat/WriteFile pair, with a comment saying
-				// "race-safety via O_EXCL would be nicer, but scaffold mode
-				// runs serially per reconciler". That premise was already
-				// thin, and it is now false outright: `vp init` and the vp_init
-				// MCP tool both drive internal/onboard, so two processes can
-				// scaffold the same Projects/<slug> concurrently and interleave
-				// between the stat and the write. O_EXCL is the option the old
-				// comment named and declined; take it.
-				//
-				// EEXIST is the concurrent-loser path and counts as Unchanged
-				// rather than an error — the other writer created the same
-				// stub, which is the outcome this branch wanted anyway.
-				f, err := os.OpenFile(a.Target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-				if err != nil {
-					if errors.Is(err, fs.ErrExist) {
+				// ErrExists is the concurrent-loser path and counts as
+				// Unchanged rather than an error — the other writer created
+				// the same stub, which is the outcome this branch wanted
+				// anyway. vaultfs.Create also stamps the MCP surface
+				// version internally, so no separate stampVaultWrite call
+				// is needed here (and mkdir is handled by atomicfile.Write).
+				relPath := r.relSubpath + "/" + kind + "/README.md"
+				if _, err := vaultfs.Create(r.vaultRoot, relPath, body); err != nil {
+					if errors.Is(err, vaultfs.ErrExists) {
 						rep.Unchanged++
 						continue
 					}
 					rep.Errors = append(rep.Errors, fmt.Errorf("write %s: %w", a.Target, err))
 					continue
 				}
-				_, werr := f.Write([]byte(body))
-				if cerr := f.Close(); werr == nil {
-					werr = cerr
-				}
-				if werr != nil {
-					rep.Errors = append(rep.Errors, fmt.Errorf("write %s: %w", a.Target, werr))
-					continue
-				}
-				stampVaultWrite(r.vaultRoot, a.Target)
 				rep.Created++
 			} else {
 				if err := os.MkdirAll(a.Target, 0o755); err != nil {
@@ -549,6 +576,35 @@ func (r *TemplateTreeReconciler) applyScaffold(p Plan) (Report, error) {
 		case ActionSkip:
 			rep.Skipped++
 		case ActionUpdate:
+			// The only Update this reconciler ever plans: a zero-length
+			// README (see planScaffold). Guard the assumption so a future
+			// Update source doesn't silently fall through this repair path.
+			if filepath.Base(a.Target) != "README.md" {
+				rep.Errors = append(rep.Errors, fmt.Errorf("template_tree Apply: unexpected Update for %s — scaffold has no other Update writer", a.Target))
+				continue
+			}
+			kind := filepath.Base(filepath.Dir(a.Target))
+			body := templates.RenderReadmeStub(kind)
+			if body == "" {
+				rep.Errors = append(rep.Errors, fmt.Errorf("unknown readme kind for %s", a.Target))
+				continue
+			}
+			// vaultfs.Write (not Create): the target already exists at size
+			// 0, so this is an overwrite, CAS-guarded by expected_sha256
+			// against the empty-file digest. An operator who wrote real
+			// content into that path between Plan and Apply is refused
+			// (ErrShaConflict) and kept, exactly like the prune's "changed
+			// since plan; kept" pattern, rather than clobbered.
+			relPath := r.relSubpath + "/" + kind + "/README.md"
+			if _, err := vaultfs.Write(r.vaultRoot, relPath, body, a.Detail("expected_sha256")); err != nil {
+				if errors.Is(err, vaultfs.ErrShaConflict) {
+					rep.Skipped++
+					rep.Notes = append(rep.Notes, kind+"/README.md changed since plan; kept")
+					continue
+				}
+				rep.Errors = append(rep.Errors, fmt.Errorf("repair %s: %w", a.Target, err))
+				continue
+			}
 			rep.Updated++
 		}
 	}

@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/check"
 	vpcontext "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
@@ -436,5 +438,238 @@ func TestTemplateTree_CheckScaffold(t *testing.T) {
 	results = r.Check(context.Background())
 	if results[0].Status != 0 {
 		t.Errorf("expected Pass after Apply, got %v: %s", results[0].Status, results[0].Summary)
+	}
+}
+
+// TestTemplateTree_CheckScaffold_ZeroLengthReadme seeds a crash-left,
+// zero-length README directly (the file this task is about: a scaffold
+// README observed at length zero because a writer never got to finish it)
+// and asserts Check reports non-Pass (naming it empty, not missing) and
+// Plan emits ActionUpdate — not the ActionUnchanged a stat-for-existence-only
+// check used to emit — for it. This is the detection half of the fix.
+func TestTemplateTree_CheckScaffold_ZeroLengthReadme(t *testing.T) {
+	root := t.TempDir()
+	cmdDir := filepath.Join(root, "Projects", "foo", "commands")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	readme := filepath.Join(cmdDir, "README.md")
+	if err := os.WriteFile(readme, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// skills/ is left absent so the only anomaly under test is the
+	// zero-length commands/README.md; checkScaffold breaks on the first
+	// non-Pass finding, so seed skills/ complete to isolate the assertion.
+	skillsDir := filepath.Join(root, "Projects", "foo", "skills")
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsDir, "README.md"), []byte(templates.RenderReadmeStub("skills")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewTemplateTree(root, "Projects/foo", TemplateTreeSeed{Mode: TemplateModeScaffold})
+
+	results := r.Check(context.Background())
+	if len(results) != 1 {
+		t.Fatalf("expected 1 aggregate check row, got %d", len(results))
+	}
+	if results[0].Status == check.Pass {
+		t.Errorf("expected non-Pass status for a zero-length README, got Pass: %s", results[0].Summary)
+	}
+	if !strings.Contains(results[0].Summary, "empty") {
+		t.Errorf("expected summary naming the empty README, got: %s", results[0].Summary)
+	}
+
+	plan, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotUpdate bool
+	for _, a := range plan.Actions {
+		if a.Target != readme {
+			continue
+		}
+		gotUpdate = true
+		if a.Kind != ActionUpdate {
+			t.Errorf("zero-length README plan action = %s, want Update: %+v", a.Kind, a)
+		}
+		if got := a.Detail("expected_sha256"); got != emptySHA256 {
+			t.Errorf("expected_sha256 detail = %q, want %q", got, emptySHA256)
+		}
+	}
+	if !gotUpdate {
+		t.Fatalf("no plan action found for %s: %+v", readme, plan.Actions)
+	}
+}
+
+// TestTemplateTree_ScaffoldRepairsZeroLengthReadme proves a crash-left
+// zero-length README (this task's central scenario: a writer crashed, or was
+// raced, between creating the file and writing its body) is detected as
+// ActionUpdate and repaired — not left empty, not silently re-Created — on
+// the next Apply, and that a further run is idempotent.
+func TestTemplateTree_ScaffoldRepairsZeroLengthReadme(t *testing.T) {
+	root := t.TempDir()
+	cmdDir := filepath.Join(root, "Projects", "foo", "commands")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	readme := filepath.Join(cmdDir, "README.md")
+	if err := os.WriteFile(readme, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewTemplateTree(root, "Projects/foo", TemplateTreeSeed{Mode: TemplateModeScaffold})
+
+	plan, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := r.Apply(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(rep.Errors) > 0 {
+		t.Fatalf("apply errors: %v", rep.Errors)
+	}
+	if rep.Updated != 1 {
+		t.Errorf("Updated = %d, want 1: %+v", rep.Updated, rep)
+	}
+
+	got, err := os.ReadFile(readme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := templates.RenderReadmeStub("commands")
+	if string(got) != want {
+		t.Errorf("repaired README content mismatch:\n got: %q\nwant: %q", got, want)
+	}
+
+	// Second run: the repaired README is now canonical — idempotent, no
+	// further Update.
+	plan2, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range plan2.Actions {
+		if a.Target == readme && a.Kind != ActionUnchanged {
+			t.Errorf("second plan action for repaired README = %s, want Unchanged: %+v", a.Kind, a)
+		}
+	}
+	rep2, err := r.Apply(context.Background(), plan2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep2.Updated != 0 {
+		t.Errorf("second run Updated = %d, want 0", rep2.Updated)
+	}
+}
+
+// TestTemplateTree_ScaffoldRepairRefusedOnConflict proves the zero-length
+// README repair is CAS-guarded against the empty-file sha256: content that
+// landed in the window between Plan and Apply (no longer empty, and not the
+// canonical stub either) is kept rather than clobbered, mirroring the
+// existing prune's "changed since plan; kept" behaviour.
+func TestTemplateTree_ScaffoldRepairRefusedOnConflict(t *testing.T) {
+	root := t.TempDir()
+	cmdDir := filepath.Join(root, "Projects", "foo", "commands")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	readme := filepath.Join(cmdDir, "README.md")
+	if err := os.WriteFile(readme, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewTemplateTree(root, "Projects/foo", TemplateTreeSeed{Mode: TemplateModeScaffold})
+	plan, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// An operator (or another writer) lands real content in the window
+	// between Plan and Apply — the exact race the CAS guard exists for.
+	operatorContent := []byte("# my own notes, written between plan and apply\n")
+	if err := os.WriteFile(readme, operatorContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := r.Apply(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(rep.Errors) > 0 {
+		t.Fatalf("apply errors: %v", rep.Errors)
+	}
+	if rep.Updated != 0 {
+		t.Errorf("Updated = %d, want 0 (should be refused, not repaired)", rep.Updated)
+	}
+	if rep.Skipped != 1 {
+		t.Errorf("Skipped = %d, want 1", rep.Skipped)
+	}
+
+	got, err := os.ReadFile(readme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(operatorContent) {
+		t.Errorf("operator content clobbered: got %q, want %q", got, operatorContent)
+	}
+}
+
+// TestTemplateTree_ScaffoldConcurrentApplyDoesNotDeadlock proves concurrent
+// Apply calls racing to create/repair the same scaffold README complete
+// rather than hang. ADR-003 ("RMW callers must not double-acquire") flags a
+// same-path second vaultlock.Acquire in one process as a PERMANENT hang, not
+// an error — an ordinary assertion cannot distinguish "slow" from
+// "deadlocked", so this test bounds the race with a timeout: a genuine
+// double-acquire blocks forever and fails the test via the timeout branch
+// rather than a hang that never reports. It is a call-through proof that the
+// new vaultfs.Create/vaultfs.Write call sites acquire the lock exactly once
+// per call with no ambient lock held by the caller, not a deadlock
+// simulation.
+func TestTemplateTree_ScaffoldConcurrentApplyDoesNotDeadlock(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 8
+	done := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			r := NewTemplateTree(root, "Projects/race", TemplateTreeSeed{Mode: TemplateModeScaffold})
+			plan, err := r.Plan(context.Background())
+			if err != nil {
+				done <- err
+				return
+			}
+			_, err = r.Apply(context.Background(), plan)
+			done <- err
+		}()
+	}
+
+	timeout := time.After(10 * time.Second)
+	for i := 0; i < n; i++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("concurrent Apply: %v", err)
+			}
+		case <-timeout:
+			t.Fatalf("concurrent Apply did not complete within timeout — possible double lock-acquire hang")
+		}
+	}
+
+	for _, kind := range []string{"commands", "skills"} {
+		readme := filepath.Join(root, "Projects", "race", kind, "README.md")
+		data, err := os.ReadFile(readme)
+		if err != nil {
+			t.Fatalf("missing README %s: %v", readme, err)
+		}
+		want := templates.RenderReadmeStub(kind)
+		if string(data) != want {
+			t.Errorf("README %s content mismatch after concurrent scaffold", readme)
+		}
 	}
 }
