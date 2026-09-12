@@ -101,6 +101,10 @@ func runKGFilenamePlan(vault *storage.Vault) (storage.TripleFilenameMigration, e
 func runKGFilenameApply(vault *storage.Vault) (storage.TripleFilenameMigration, int, error) {
 	root := vault.Root
 
+	if err := storage.RefuseIfNestedVaultGit(root, "stage"); err != nil {
+		return storage.TripleFilenameMigration{}, 0, err
+	}
+
 	// REFUSE-ON-DIRTY: a clean tree makes `git checkout .` a guaranteed rollback.
 	if !storage.GitAvailable() || !storage.GitIsRepo(root) {
 		return storage.TripleFilenameMigration{}, 0, fmt.Errorf(

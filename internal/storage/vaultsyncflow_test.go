@@ -226,3 +226,25 @@ func TestSyncVault_ScanErrorReturnsNonNilResult(t *testing.T) {
 		t.Fatal("SyncVault returned a nil *SyncResult on scan error — violates the non-nil contract")
 	}
 }
+
+// TestSyncVaultRefusesNestedVault is the direct fix for the filed defect: a
+// vault nested inside another repository's work tree must refuse `vp vault
+// sync` before TidyScan even runs, leaving the enclosing repository (its
+// HEAD, refs, reflog, index, and bare-remote contents) byte-for-byte
+// unchanged — never merging or pushing that repository's unrelated commits.
+func TestSyncVaultRefusesNestedVault(t *testing.T) {
+	vaultPath, parent, state := nestedVaultFixture(t)
+	before := state()
+
+	res, err := SyncVault(vaultPath, []string{"origin"})
+	assertRefusesNested(t, err, parent, before, state())
+	if res == nil {
+		t.Fatal("SyncVault returned a nil *SyncResult on refusal — violates the non-nil contract")
+	}
+	if res.Refused {
+		t.Error("Refused must stay false: it is a synonym for GenuineDirt blocked it, not this pre-flight gate")
+	}
+	if res.Committed {
+		t.Error("must not commit when refusing")
+	}
+}

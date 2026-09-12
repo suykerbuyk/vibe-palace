@@ -101,6 +101,10 @@ func (r *TidyResult) GenuineDirt() []string {
 func SyncVault(vaultPath string, remotes []string) (*SyncResult, error) {
 	result := &SyncResult{}
 
+	if err := RefuseIfNestedVaultGit(vaultPath, "sync"); err != nil {
+		return result, err
+	}
+
 	// 1. Classify the whole working tree (read-only; no commit, no network).
 	// Return the (empty) result, never nil, so the non-nil contract holds even on
 	// a scan failure — front-ends dereference the result before checking err.

@@ -566,6 +566,104 @@ func TestVaultSync_ZeroRemotesRefused(t *testing.T) {
 	}
 }
 
+// nestedToolsVaultFixture builds the task's own reproduction for the MCP
+// layer: a clean enclosing repository with a bare origin and one unrelated,
+// unpushed local commit, and a vault subdirectory nested inside it with NO
+// .git entry of its own — the shape that makes storage.InspectVaultGit report
+// VaultGitNested. Mirrors TestConfigSyncNeverWritesAnEnclosingRepo's fixture
+// (cmd/vp/cmd_config_override_test.go) and cmd/vp/cmd_vault_nested_test.go's
+// CLI-level counterpart, for the vp_vault_sync MCP tool instead.
+//
+// Returns the vault path, the enclosing repo's own path (parent), and a
+// state() closure fingerprinting the parent: HEAD, symbolic HEAD, the index,
+// every ref, the bare origin's main, and the last 5 reflog entries.
+func nestedToolsVaultFixture(t *testing.T) (vaultPath, parent string, state func() []string) {
+	t.Helper()
+	parent = t.TempDir()
+	gitT(t, parent, "init", "-b", "main")
+	gitT(t, parent, "config", "user.email", "test@example.com")
+	gitT(t, parent, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(parent, "README.md"), []byte("project\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, parent, "add", "-A")
+	gitT(t, parent, "commit", "-m", "project")
+
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	gitT(t, parent, "init", "--bare", "-b", "main", origin)
+	gitT(t, parent, "remote", "add", "origin", origin)
+	gitT(t, parent, "push", "-u", "origin", "main")
+
+	// An unrelated, unpushed local commit — the "someone else's commits" this
+	// task exists to protect.
+	if err := os.WriteFile(filepath.Join(parent, "WIP.md"), []byte("not for push\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, parent, "add", "WIP.md")
+	gitT(t, parent, "commit", "-m", "LOCAL WIP - not for push")
+
+	vaultPath = filepath.Join(parent, "notes", "vault")
+	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	state = func() []string {
+		return []string{
+			gitT(t, parent, "rev-parse", "HEAD"),
+			gitT(t, parent, "symbolic-ref", "HEAD"),
+			gitT(t, parent, "ls-files", "-s"),
+			gitT(t, parent, "for-each-ref"),
+			gitT(t, origin, "rev-parse", "main"),
+			gitT(t, parent, "reflog", "-n", "5"),
+		}
+	}
+	return vaultPath, parent, state
+}
+
+// TestVaultSyncToolRefusesNestedVault is the MCP-layer pin: vp_vault_sync must
+// refuse every action (sync, pull, push, and the explicit paths-commit
+// variant) on a vault nested inside another repository's work tree, and must
+// leave the enclosing repository's HEAD, refs, index, and reflog exactly as
+// they were.
+func TestVaultSyncToolRefusesNestedVault(t *testing.T) {
+	sandboxHostEnv(t)
+
+	for _, tc := range []struct {
+		name   string
+		params vaultSyncParams
+	}{
+		{"sync", vaultSyncParams{Action: "sync"}},
+		{"sync_no_tidy", vaultSyncParams{Action: "sync", NoTidy: true}},
+		{"pull", vaultSyncParams{Action: "pull"}},
+		{"push", vaultSyncParams{Action: "push"}},
+		{"paths_commit", vaultSyncParams{Action: "sync", Paths: []string{"notes.txt"}, Message: "should never land"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vaultPath, parent, state := nestedToolsVaultFixture(t)
+			before := state()
+
+			tool := VaultSyncTool(storage.NewVault(vaultPath))
+			params, _ := json.Marshal(tc.params)
+			res, err := tool.Handler(context.Background(), params)
+			if err == nil {
+				t.Fatalf("expected a refusal, got result %v", res)
+			}
+			if !strings.Contains(err.Error(), "inside another repository") {
+				t.Errorf("error %q does not say \"inside another repository\"", err.Error())
+			}
+			if !strings.Contains(err.Error(), parent) {
+				t.Errorf("error %q does not name the enclosing repository %q", err.Error(), parent)
+			}
+			after := state()
+			for i, label := range []string{"HEAD", "symbolic HEAD", "index", "for-each-ref", "origin main", "reflog"} {
+				if before[i] != after[i] {
+					t.Errorf("%s changed:\n--- before\n%s\n--- after\n%s", label, before[i], after[i])
+				}
+			}
+		})
+	}
+}
+
 func TestVaultSyncInvalidAction(t *testing.T) {
 	sandboxHostEnv(t)
 	vault := storage.NewVault(t.TempDir())

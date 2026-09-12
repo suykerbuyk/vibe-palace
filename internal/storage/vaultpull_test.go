@@ -500,3 +500,22 @@ func TestPull_FailedHealIsRecordedAndPullContinues(t *testing.T) {
 		t.Errorf("un-healed working-tree content = %q, want %q", got, "B\n")
 	}
 }
+
+// TestPullRefusesNestedVault pins the Pull choke point: a vault nested inside
+// another repository's work tree must never be fetched/merged, and the
+// enclosing repository must be left exactly as it was. This is Pull's one
+// exception to "always returns err == nil" — the pre-flight refusal IS the
+// verdict, before any remote is touched.
+func TestPullRefusesNestedVault(t *testing.T) {
+	vaultPath, parent, state := nestedVaultFixture(t)
+	before := state()
+
+	res, err := Pull(vaultPath, []string{"origin"})
+	assertRefusesNested(t, err, parent, before, state())
+	if res == nil {
+		t.Fatal("expected non-nil PullResult even on refusal")
+	}
+	if len(res.RemoteResults) != 0 {
+		t.Errorf("expected no remotes attempted, got %#v", res.RemoteResults)
+	}
+}

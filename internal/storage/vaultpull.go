@@ -115,6 +115,13 @@ func (r *PullResult) Stranded() bool {
 // Pull keeps plain MERGE semantics; it deliberately does NOT replicate the push
 // path's rebase/force-with-lease converge loop.
 //
+// One pre-flight exception to "returns data, not errors": before anything else
+// runs — before the phantom-template scan, before any remote is touched — Pull
+// refuses outright if the vault is nested inside another repository's work
+// tree (see RefuseIfNestedVaultGit). That refusal IS the top-level error return
+// and is the verdict on its own; every existing caller already checks the
+// returned err before touching RemoteResults, so this adds no new obligation.
+//
 // Phantom-template self-heal: before the merge, each working-tree-dirty
 // Templates/commands/*.md path whose content provably equals the freshly-fetched
 // remote ref (`git diff --quiet <remote>/<branch> -- <path>` exits 0) has its
@@ -131,6 +138,9 @@ func Pull(vaultPath string, remotes []string) (*PullResult, error) {
 	result := &PullResult{
 		RemoteResults: make(map[string]error, len(remotes)),
 		RemoteOutput:  make(map[string]string, len(remotes)),
+	}
+	if err := RefuseIfNestedVaultGit(vaultPath, "pull"); err != nil {
+		return result, err
 	}
 	branch := currentBranch(vaultPath)
 

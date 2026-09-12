@@ -43,8 +43,19 @@ import (
 // Returns the vault root path; the env is restored by t.Setenv's cleanup.
 func setupTestVaultEnv(t *testing.T) string {
 	t.Helper()
+	return setupTestVaultEnvAt(t, t.TempDir())
+}
 
-	vaultDir := t.TempDir()
+// setupTestVaultEnvAt is setupTestVaultEnv, parametrized on the vault
+// directory instead of creating its own t.TempDir(). Use this when the test
+// needs the vault to already sit somewhere specific — e.g. nested inside a
+// pre-built enclosing repository — rather than at a fresh, standalone temp
+// directory.
+//
+// Returns vaultDir unchanged, for symmetry with setupTestVaultEnv.
+func setupTestVaultEnvAt(t *testing.T, vaultDir string) string {
+	t.Helper()
+
 	configDir := t.TempDir()
 	homeDir := t.TempDir()
 

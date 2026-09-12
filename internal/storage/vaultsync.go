@@ -96,6 +96,9 @@ func PushPlain(vaultPath string, remotes []string) (*PlainPushResult, error) {
 		RemoteResults: make(map[string]error, len(remotes)),
 		RemoteOutput:  make(map[string]string, len(remotes)),
 	}
+	if err := RefuseIfNestedVaultGit(vaultPath, "push"); err != nil {
+		return result, err
+	}
 	for _, remote := range remotes {
 		out, err := gitCmd(vaultPath, 60*time.Second, "push", remote, "main")
 		result.RemoteOutput[remote] = out
@@ -176,6 +179,9 @@ func PushPlain(vaultPath string, remotes []string) (*PlainPushResult, error) {
 func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*PushResult, error) {
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("no paths specified")
+	}
+	if err := RefuseIfNestedVaultGit(vaultPath, "commit"); err != nil {
+		return nil, err
 	}
 
 	result := &PushResult{}

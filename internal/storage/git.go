@@ -360,6 +360,35 @@ func samePath(a, b string) bool {
 	return ra == rb
 }
 
+// RefuseIfNestedVaultGit refuses an operation that would stage into, commit,
+// merge/pull, or push vaultPath's repository, when the vault is nested inside
+// another repository's work tree (VaultGitNested) — that repository is not
+// the vault's own. verb names the operation in the message ("stage", "commit",
+// "pull", "push", "sync"). Any other VaultGit state (including a broken or
+// unavailable repository, or InspectVaultGit's own error) returns nil: this
+// guard's only job is the confident VaultGitNested case, and the caller's own
+// git commands already surface every other failure on their own terms.
+//
+// Deliberately NOT gated here: a read-only `git fetch` that only refreshes
+// local remote-tracking refs (no merge, no working-tree change) — the shape
+// `vp vault status` performs by default via GetRemoteStatus/BuildStatusReport
+// (vaultstatus.go). That fetch never routes through this helper: it is bounded
+// to ref updates only, never a merge, stage, commit, or push, and is not the
+// harm a nested vault's enclosing repository needs protecting from. Do not
+// describe this helper as covering "fetch" in any call site's comments or
+// errors.
+func RefuseIfNestedVaultGit(vaultPath, verb string) error {
+	state, err := InspectVaultGit(vaultPath)
+	if err != nil || state != VaultGitNested {
+		return nil
+	}
+	top, _ := GitTopLevel(vaultPath)
+	if top == "" {
+		top = "an enclosing repository"
+	}
+	return fmt.Errorf("refusing to %s: the vault is inside another repository (%s), and vp never stages into, commits, merges/pulls, or pushes a repository that is not the vault's own", verb, top)
+}
+
 // GitInit runs git init in the given directory.
 func GitInit(dir string) error {
 	cmd := exec.Command("git", "init", dir)
