@@ -16,6 +16,16 @@ import (
 // pyproject.toml) and falls back to .git as a universal marker.
 // This cache persists between test runs and is gitignored. It is only
 // cleared by `make dist-clean` or `git clean -fxd`.
+//
+// This directory is only the copy destination that embedder.NewONNX passes
+// to hugot.DownloadModel — it is not where the model is downloaded from.
+// The download itself always resolves through go-huggingface's
+// hub.DefaultCacheDir(): ${XDG_CACHE_HOME}/huggingface/hub, or
+// ${HOME}/.cache/huggingface/hub if that's unset; hugot.DownloadModel
+// exposes no override for this. Whether that lands in the real host cache
+// or a sandboxed one depends entirely on whether the calling test's process
+// sets XDG_CACHE_HOME/HOME before calling ProjectCacheDir's caller —
+// ProjectCacheDir itself neither sets nor reads either variable.
 func ProjectCacheDir(t *testing.T) string {
 	t.Helper()
 
