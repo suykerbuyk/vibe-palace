@@ -133,7 +133,7 @@ func cmdMigrateVibeVault() *cli.Command {
 			// Real-run cross-vault confirmation gate (before the embedder
 			// loads, so an abort costs nothing).
 			proceed, abortMsg := confirmCrossVaultWrite(
-				sameVault, dryRun, yes, isStdinTTY(),
+				sameVault, dryRun, yes, cli.IsTerminal(os.Stdin),
 				resolvedSource, resolvedDest, os.Stdin, os.Stderr,
 			)
 			if !proceed {
@@ -229,7 +229,7 @@ func buildSlugResolver(vaultRoot string, yes bool, slugMapArg string) (migrate.S
 	}
 
 	var base migrate.SlugResolver
-	if yes || !isStdinTTY() {
+	if yes || !cli.IsTerminal(os.Stdin) {
 		base = &migrate.AutoResolver{OnDisk: onDisk}
 	} else {
 		base = &migrate.InteractiveResolver{OnDisk: onDisk}
@@ -267,17 +267,6 @@ func scanOnDiskSlugsForResolver(projectsDir string) (map[string]bool, error) {
 		}
 	}
 	return out, nil
-}
-
-// isStdinTTY reports whether stdin is a terminal. Non-terminal stdin
-// (pipe, file, /dev/null) means interactive prompts would block or
-// loop on EOF; the resolver builder falls back to AutoResolver.
-func isStdinTTY() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
 var migrateMemPalaceFlags = []cli.FlagDef{

@@ -20,21 +20,6 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-// isTerminal reports whether f is a TTY. Falls back to false on any error.
-// The VP_ASSUME_TTY=1 escape hatch forces true — used by integration tests
-// that drive the upgrade prompts through a pipe. Production code should
-// never rely on this override; it has no user-facing documentation.
-func isTerminal(f *os.File) bool {
-	if os.Getenv("VP_ASSUME_TTY") == "1" {
-		return true
-	}
-	fi, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
-}
-
 func cmdCommands() *cli.Command {
 	return &cli.Command{
 		Name:        "commands",
@@ -356,7 +341,7 @@ func runCommandsUpgrade(opts commandsUpgradeOpts) int {
 
 	printCommandKeepLines(opts.Stdout, plan)
 
-	interactive := isTerminal(os.Stdin) && !opts.Overwrite
+	interactive := cli.IsTerminal(os.Stdin) && !opts.Overwrite
 	if opts.InteractiveOverride != nil {
 		interactive = *opts.InteractiveOverride && !opts.Overwrite
 	}

@@ -321,6 +321,44 @@ func TestRunCommandsUpgrade_NonInteractive_RefusesWithoutOverwrite(t *testing.T)
 	}
 }
 
+// TestRunCommandsUpgrade_DevNullStdinRefuses is the regression test for
+// commands-upgrade-treats-dev-null-stdin-as-a-terminal: a char-device check
+// (fi.Mode()&os.ModeCharDevice != 0) misdetects /dev/null — a character
+// device — as a terminal, so `vp commands upgrade </dev/null` used to take
+// the interactive branch, hit EOF on every prompt, silently skip every
+// pending change, and exit 0. Deliberately uses a real os.Open(os.DevNull)
+// file, NOT os.Pipe(): a pipe was never ModeCharDevice and was already
+// correctly refused before this fix — only real /dev/null exercises the
+// misdetection this test guards against. Also leaves InteractiveOverride
+// nil so the real cli.IsTerminal(os.Stdin) check is exercised, not bypassed.
+func TestRunCommandsUpgrade_DevNullStdinRefuses(t *testing.T) {
+	vault := t.TempDir() // no vault templates; the shim plan is what is actionable
+
+	oldStdin := os.Stdin
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open %s: %v", os.DevNull, err)
+	}
+	os.Stdin = devNull
+	t.Cleanup(func() { os.Stdin = oldStdin; _ = devNull.Close() })
+
+	var out, errb bytes.Buffer
+	code := runCommandsUpgrade(commandsUpgradeOpts{
+		Stdin:               strings.NewReader(""),
+		Stdout:              &out,
+		Stderr:              &errb,
+		VaultRootOverride:   vault,
+		ProjectRootOverride: t.TempDir(),
+	})
+	if code != cli.ExitUser {
+		t.Fatalf("/dev/null stdin without --overwrite: exit=%d, want ExitUser\nstdout: %s\nstderr: %s",
+			code, out.String(), errb.String())
+	}
+	if !strings.Contains(errb.String(), "stdin is not a terminal and --overwrite was not set.") {
+		t.Errorf("expected the non-terminal refusal, got:\n%s", errb.String())
+	}
+}
+
 // TestRunCommandsUpgrade_Interactive_NeverPromptsForATemplate replaces the
 // accept-one/skip-one template test. Interactively, no vault template is ever
 // offered: the overrides are listed as [keep] and left byte-for-byte, and the

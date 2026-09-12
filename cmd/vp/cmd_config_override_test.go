@@ -351,8 +351,15 @@ func TestConfigSyncVerifiesPruneOnLinkedWorktreeVault(t *testing.T) {
 // moment a reconciler's accept/skip prompt appears on stdout, onPrompt runs and
 // then answer is written to stdin — so onPrompt acts in exactly the window
 // between Plan and Apply that a real operator's hesitation opens.
+//
+// A pipe is never a real terminal, so this sets VP_ASSUME_TTY=1 to reach the
+// interactive prompt loop — the same escape hatch runSyncWithStdin's
+// interactive callers rely on. Without it, the upfront non-TTY refusal gate
+// (commands-upgrade-treats-dev-null-stdin-as-a-terminal) would refuse before
+// the prompt this helper answers is ever shown.
 func runSyncAnsweringPrompt(t *testing.T, args []string, onPrompt func(), answer string) (string, int) {
 	t.Helper()
+	t.Setenv("VP_ASSUME_TTY", "1")
 	inR, inW, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)

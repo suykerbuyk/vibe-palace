@@ -405,6 +405,18 @@ func runConfigSync(args []string) int {
 		return preErrorsExit(preErrors)
 	}
 
+	// Refuse upfront on a non-terminal stdin — but only when a genuinely
+	// prompting action (Create/Update) is pending. A prune (ActionDelete)
+	// auto-applies without ever calling PromptChoice (see the apply loop
+	// below and anyActionable's own doc comment), so a prune-only or
+	// restore-only plan must reach Apply exactly as it always has, not be
+	// refused for a prompt it was never going to show.
+	if !autoYes && anyPromptingAction(plans) && !cli.IsTerminal(os.Stdin) {
+		fmt.Fprintln(os.Stderr, "vp config sync: stdin is not a terminal and --yes was not set.")
+		fmt.Fprintln(os.Stderr, "Re-run with --yes to accept every proposed action non-interactively, or --dry-run to preview.")
+		return cli.ExitUser
+	}
+
 	reader := bufio.NewReader(os.Stdin)
 	acceptAll := autoYes
 	var totalReport reconcile.Report
@@ -920,6 +932,22 @@ func anyActionable(plans []reconcile.Plan) bool {
 
 func isActionable(k reconcile.ActionKind) bool {
 	return k == reconcile.ActionCreate || k == reconcile.ActionUpdate
+}
+
+// anyPromptingAction reports whether any plan carries an action that would
+// reach cli.PromptChoice when --yes is not set — i.e. isActionable
+// (Create/Update). Deliberately narrower than anyActionable: a prune
+// (ActionDelete) auto-applies without ever prompting, so it must not trip
+// the non-TTY refusal gate that guards the prompt loop.
+func anyPromptingAction(plans []reconcile.Plan) bool {
+	for _, p := range plans {
+		for _, a := range p.Actions {
+			if isActionable(a.Kind) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func mergeReports(dst *reconcile.Report, src reconcile.Report) {

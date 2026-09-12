@@ -51,12 +51,7 @@ func cmdHook(info cli.BuildInfo) *cli.Command {
 // runHook is the core hook handler invoked when stdin has data.
 func runHook(info cli.BuildInfo) int {
 	// Detect whether stdin is a terminal.
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "vp hook: stat stdin: %v\n", err)
-		return cli.ExitSystem
-	}
-	if fi.Mode()&os.ModeCharDevice != 0 {
+	if cli.IsTerminal(os.Stdin) {
 		// Interactive terminal — print usage.
 		//
 		// 🔴 NOTE: THIS CHILD LIST IS HAND-MAINTAINED, AND IT IS THE LAST ONE.

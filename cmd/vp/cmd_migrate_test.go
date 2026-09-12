@@ -289,20 +289,24 @@ func TestBuildSlugResolver_InvalidMap(t *testing.T) {
 }
 
 func TestBuildSlugResolver_NonTTYSelectsAuto(t *testing.T) {
-	// In `go test`, stdin is typically /dev/null or pipe, not a TTY —
-	// so !isStdinTTY() → AutoResolver path.
+	// With a real cli.IsTerminal(os.Stdin) check (golang.org/x/term-backed,
+	// not the old char-device check), a real /dev/null stdin deterministically
+	// resolves to AutoResolver — no more "either is acceptable" hedging.
+	oldStdin := os.Stdin
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open %s: %v", os.DevNull, err)
+	}
+	os.Stdin = devNull
+	t.Cleanup(func() { os.Stdin = oldStdin; _ = devNull.Close() })
+
 	dir := t.TempDir()
 	r, err := buildSlugResolver(dir, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// May be AutoResolver or InteractiveResolver depending on test env;
-	// either is acceptable but for `go test` it should be AutoResolver.
-	switch r.(type) {
-	case *migrate.AutoResolver, *migrate.InteractiveResolver:
-		// ok
-	default:
-		t.Errorf("unexpected resolver type %T", r)
+	if _, ok := r.(*migrate.AutoResolver); !ok {
+		t.Errorf("expected AutoResolver with /dev/null stdin, got %T", r)
 	}
 }
 
@@ -349,8 +353,10 @@ func TestMigrateProgressFuncDeferred(t *testing.T) {
 }
 
 func TestIsStdinTTY_Runs(t *testing.T) {
-	// Just prove it doesn't panic.
-	_ = isStdinTTY()
+	// isStdinTTY was replaced by the shared cli.IsTerminal helper
+	// (commands-upgrade-treats-dev-null-stdin-as-a-terminal). Just prove the
+	// call site this file now uses doesn't panic.
+	_ = cli.IsTerminal(os.Stdin)
 }
 
 // ── Model-free migrate tests ────────────────────────────────────────────────

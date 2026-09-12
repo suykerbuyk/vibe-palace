@@ -533,6 +533,76 @@ func TestConfigSync_YesAcceptsWithoutStdin(t *testing.T) {
 	}
 }
 
+// TestConfigSync_DevNullStdinRefuses is the regression test for
+// commands-upgrade-treats-dev-null-stdin-as-a-terminal: `vp config sync` had
+// no TTY gate at all — it prompted whenever there was an actionable change
+// and --yes was not passed, regardless of whether stdin was a terminal, a
+// pipe, or /dev/null. Deliberately uses a real os.Open(os.DevNull) file, not
+// os.Pipe(), to also exercise the char-device-vs-real-terminal distinction
+// the sibling `vp commands upgrade` fix relies on.
+func TestConfigSync_DevNullStdinRefuses(t *testing.T) {
+	configDir, _, projectDir := seedFreshVault(t)
+	cfgPath := filepath.Join(configDir, "vibe-palace", "config.toml")
+	if err := os.WriteFile(cfgPath,
+		[]byte("vault_path = \""+filepath.Join(configDir, "vault")+"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldStdin := os.Stdin
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open %s: %v", os.DevNull, err)
+	}
+	os.Stdin = devNull
+	t.Cleanup(func() { os.Stdin = oldStdin; _ = devNull.Close() })
+
+	var code int
+	stderr := captureStderr(t, func() {
+		code = runConfigSync([]string{
+			"--project-root", projectDir, "--tier", "global",
+		})
+	})
+	if code != cli.ExitUser {
+		t.Fatalf("/dev/null stdin without --yes: exit=%d, want ExitUser\nstderr: %s", code, stderr)
+	}
+	if !strings.Contains(stderr, "stdin is not a terminal and --yes was not set.") {
+		t.Errorf("expected the non-terminal refusal, got:\n%s", stderr)
+	}
+	// Nothing must have been written — the refusal happens before any prompt.
+	after, _ := os.ReadFile(cfgPath)
+	if strings.Contains(string(after), "[embedder]") {
+		t.Errorf("refusal must not apply the drift fix:\n%s", after)
+	}
+}
+
+// TestConfigSync_InteractivePathStillWorks proves the new upfront TTY gate
+// only blocks a genuinely non-terminal stdin: with VP_ASSUME_TTY=1 (the same
+// escape hatch `vp commands upgrade`'s integration tests already rely on,
+// now shared via cli.IsTerminal), the interactive prompt loop still runs and
+// an accept-all answer still applies the pending change. No prior test in
+// this file exercises config sync's actual prompt loop — both existing
+// runSyncWithStdin call sites pass --yes and never reach it.
+func TestConfigSync_InteractivePathStillWorks(t *testing.T) {
+	t.Setenv("VP_ASSUME_TTY", "1")
+	configDir, _, projectDir := seedFreshVault(t)
+	cfgPath := filepath.Join(configDir, "vibe-palace", "config.toml")
+	if err := os.WriteFile(cfgPath,
+		[]byte("vault_path = \""+filepath.Join(configDir, "vault")+"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, code := runSyncWithStdin(t, "A\n", []string{
+		"--project-root", projectDir, "--tier", "global",
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("interactive accept-all: exit=%d, want ExitOK\n%s", code, out)
+	}
+	after, _ := os.ReadFile(cfgPath)
+	if !strings.Contains(string(after), "[embedder]") {
+		t.Errorf("expected the accepted drift fix to add [embedder] block, got:\n%s", after)
+	}
+}
+
 // --- Phase 3: TemplateTree override-only reconcile tests ---
 
 // seedTemplateOverride writes data to the vault Templates/ target for
