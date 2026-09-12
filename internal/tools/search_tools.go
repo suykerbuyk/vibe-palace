@@ -6,6 +6,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
@@ -37,7 +38,7 @@ var searchSchema = json.RawMessage(`{
 		},
 		"project": {
 			"type": "string",
-			"description": "Project slug to search within."
+			"description": "Project slug to search within. Must name a project already present in the vault; an unknown slug is an error."
 		},
 		"wing": {
 			"type": "string",
@@ -87,10 +88,12 @@ const maxSearchLimit = 50
 // SearchTool returns the MCP tool for vp_search.
 func SearchTool(engine *search.Engine) mcp.Tool {
 	return mcp.Tool{
-		Name:        "vp_search",
-		Description: "Semantic search within a project's knowledge base. Returns ranked results with text, metadata, and relevance scores.",
-		Schema:      searchSchema,
-		Handler:     searchHandler(engine),
+		Name: "vp_search",
+		Description: "Semantic search within a project's knowledge base. Returns ranked results with " +
+			"text, metadata, and relevance scores. project must name a project already present in the " +
+			"vault; an unknown slug is a tool error, not an empty result.",
+		Schema:  searchSchema,
+		Handler: searchHandler(engine),
 	}
 }
 
@@ -132,6 +135,10 @@ func searchHandler(engine *search.Engine) mcp.HandlerFunc {
 			Limit:    limit,
 		})
 		if err != nil {
+			var unk *search.UnknownProjectError
+			if errors.As(err, &unk) {
+				return nil, fmt.Errorf("unknown project %q: no such project in the vault", unk.Project)
+			}
 			return nil, fmt.Errorf("search: %w", err)
 		}
 		if results == nil {

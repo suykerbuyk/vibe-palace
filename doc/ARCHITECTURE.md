@@ -729,8 +729,10 @@ provides a JSON Schema for parameter validation:
 
 ```go
 Registry.Register(Tool{
-    Name:        "vp_search",
-    Description: "Semantic search within a project's knowledge base.",
+    Name: "vp_search",
+    Description: "Semantic search within a project's knowledge base. Returns ranked results " +
+        "with text, metadata, and relevance scores. project must name a project already " +
+        "present in the vault; an unknown slug is a tool error, not an empty result.",
     Schema:      searchSchema,       // JSON Schema for params
     Handler:     searchHandler,      // func(ctx, params) → (any, error)
 })

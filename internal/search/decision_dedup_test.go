@@ -31,7 +31,8 @@ import (
 // literally because internal/capture imports this package and cannot be
 // imported back.
 func TestDedupKeepsBothDecisionsAndTheTranscriptOfOneSession(t *testing.T) {
-	eng, _ := testEngine(t)
+	eng, v := testEngine(t)
+	mkProject(t, v, "proj")
 	ctx := context.Background()
 
 	const sessionID = "2026-06-21-abcd1234-01"
@@ -101,7 +102,8 @@ func TestDedupKeepsBothDecisionsAndTheTranscriptOfOneSession(t *testing.T) {
 // storage.DrawerID(wing, content) — which differs precisely because the content
 // does. Both survive, and a reader can see the decision was revised.
 func TestDedupKeepsBothTheSupersededAndRevisedDecisionAtOneIndex(t *testing.T) {
-	eng, _ := testEngine(t)
+	eng, v := testEngine(t)
+	mkProject(t, v, "proj")
 	ctx := context.Background()
 
 	const sessionID = "2026-06-21-abcd1234-01"

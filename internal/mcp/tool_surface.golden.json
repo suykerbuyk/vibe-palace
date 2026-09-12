@@ -269,7 +269,7 @@
     {
       "name": "vp_search",
       "mutating": false,
-      "schema_sha256": "8222251cc0b423af71fcae32f6c75c7978fcd3d0426a323ef0c1c119b7325ba8"
+      "schema_sha256": "0f52ad5937fa9170338031162fc9bb75fa3def5953b49a2e56eca99bf210afd0"
     },
     {
       "name": "vp_search_cross_project",

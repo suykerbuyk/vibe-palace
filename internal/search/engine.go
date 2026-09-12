@@ -176,8 +176,26 @@ func (e *Engine) EmbedderReady() bool {
 }
 
 // Search performs hybrid semantic + structural search.
-// Pipeline: embed query → vector search → filter → boost → deduplicate → top-N.
+// Pipeline: check project exists → embed query → vector search → filter →
+// boost → deduplicate → top-N.
 func (e *Engine) Search(ctx context.Context, query string, f SearchFilters) ([]SearchResult, error) {
+	// A project-scoped search must refuse an unknown project before anything
+	// else runs — in particular before ensureIndex/Rebuild, and therefore
+	// before searchReady ever forces embedder construction. This is the one
+	// check both the MCP and CLI surfaces inherit from; see ProjectExists. The
+	// cross-project path (f.Project == "") needs no such check: ensureAllIndexes
+	// below only ever iterates projects ListAllProjects itself reports, so it
+	// can never be asked about one that doesn't exist.
+	if f.Project != "" {
+		exists, err := ProjectExists(e.vault, f.Project)
+		if err != nil {
+			return nil, fmt.Errorf("check project exists: %w", err)
+		}
+		if !exists {
+			return nil, &UnknownProjectError{Project: f.Project}
+		}
+	}
+
 	// Build the index(es) this search reads, on first use. Must happen before
 	// e.mu is taken — Rebuild acquires it for write.
 	if f.Project != "" {

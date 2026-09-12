@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"slices"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
@@ -107,11 +106,13 @@ func cmdSearch() *cli.Command {
 // the project was named; answering it with empty results is a silent skip
 // dressed as success.
 //
-// "Exists" is the predicate search itself uses: membership in
-// ListAllProjects, the union of Projects/<slug>/ directories and palace stores
-// that cross-project search enumerates. A notes-only project is in; a
-// .local-only palace husk is out; so is a symlinked Projects/<slug>, which the
-// enumeration does not follow.
+// It is a thin wrapper over search.ProjectExists — the "exists" predicate,
+// including exactly which trees and which oddities (a notes-only project, a
+// .local-only palace husk, a symlinked Projects/<slug> or palace/<slug>) count,
+// lives on that function's doc comment now, because it is the layer both this
+// CLI check and (*search.Engine).Search's own inline check share. This wrapper
+// owns only the CLI-specific parts: syntax-checking a flagged slug, and naming
+// how the project was resolved (flag vs. detected) in the refusal.
 //
 // A flagged slug is syntax-checked first. A detected one already was, by
 // DetectProject, so only membership applies to it — and its refusal names the
@@ -123,13 +124,13 @@ func requireSearchProject(vault *storage.Vault, proj string, detected bool) int 
 			return cli.ExitUser
 		}
 	}
-	projects, err := vault.ListAllProjects()
+	exists, err := search.ProjectExists(vault, proj)
 	if err != nil {
 		// "I could not look" is not "absent".
 		fmt.Fprintf(os.Stderr, "vp search: list projects: %v\n", err)
 		return cli.ExitSystem
 	}
-	if slices.ContainsFunc(projects, func(p storage.ProjectPresence) bool { return p.Slug == proj }) {
+	if exists {
 		return cli.ExitOK
 	}
 	if detected {

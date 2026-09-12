@@ -6,6 +6,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
@@ -142,8 +146,17 @@ func TestCrossProjectToolValidation(t *testing.T) {
 	}
 }
 
+// TestSearchToolEmptyResults pins "known-but-empty project -> [], no error" —
+// exactly the case Rebuild's own doc comment protects. The project must be a
+// genuine member of the vault (a bare Projects/<slug>/ is enough for
+// ListAllProjects to report it), or this would actually be exercising the
+// unknown-project path covered separately by
+// TestSearchToolUnknownProjectIsError below.
 func TestSearchToolEmptyResults(t *testing.T) {
-	eng, _ := testSearchEngine(t)
+	eng, vault := testSearchEngine(t)
+	if err := os.MkdirAll(filepath.Join(vault.Root, "Projects", "proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	tool := SearchTool(eng)
 
 	result, err := tool.Handler(context.Background(),
@@ -155,5 +168,46 @@ func TestSearchToolEmptyResults(t *testing.T) {
 	results := result.([]search.SearchResult)
 	if len(results) != 0 {
 		t.Errorf("expected empty results, got %d", len(results))
+	}
+}
+
+// TestSearchToolUnknownProjectIsError pins the fix this task makes: a project
+// absent from the vault is a tool error, never []. Before this task, an
+// unknown project and a known-but-empty one were indistinguishable from an
+// MCP caller's point of view; this test is the one that would have failed had
+// requireSearchProject's CLI-only guard not been given an MCP-reachable
+// equivalent. searchHandler renders the *search.UnknownProjectError into a
+// fresh message naming the defect (not wrapped with %w), so this asserts on
+// the message text rather than errors.As.
+func TestSearchToolUnknownProjectIsError(t *testing.T) {
+	eng, _ := testSearchEngine(t)
+	tool := SearchTool(eng)
+
+	_, err := tool.Handler(context.Background(),
+		json.RawMessage(`{"query": "nothing", "project": "nosuchproject"}`))
+	if err == nil {
+		t.Fatal("expected an error for an unknown project, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown project") || !strings.Contains(err.Error(), "nosuchproject") {
+		t.Errorf("error does not name the unknown project: %v", err)
+	}
+}
+
+// TestEngineSearchUnknownProjectError pins Engine.Search's own contract
+// directly: an unknown project is a *search.UnknownProjectError, checkable
+// with errors.As, returned before ensureIndex/Rebuild ever run.
+func TestEngineSearchUnknownProjectError(t *testing.T) {
+	eng, _ := testSearchEngine(t)
+
+	_, err := eng.Search(context.Background(), "nothing", search.SearchFilters{Project: "nosuchproject"})
+	if err == nil {
+		t.Fatal("expected an error for an unknown project, got nil")
+	}
+	var unk *search.UnknownProjectError
+	if !errors.As(err, &unk) {
+		t.Fatalf("error is not *search.UnknownProjectError: %v", err)
+	}
+	if unk.Project != "nosuchproject" {
+		t.Errorf("UnknownProjectError.Project = %q, want %q", unk.Project, "nosuchproject")
 	}
 }

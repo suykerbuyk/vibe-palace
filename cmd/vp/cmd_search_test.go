@@ -34,7 +34,14 @@ func testEngine(t *testing.T) (*search.Engine, *storage.Vault) {
 }
 
 func TestRunSearchNoResults(t *testing.T) {
-	eng, _ := testEngine(t)
+	eng, v := testEngine(t)
+	// runSearch calls eng.Search directly, which now refuses an unknown
+	// project before anything else; make "test-proj" a real (empty) member of
+	// the vault so this pins the known-but-empty case runSearch's caller
+	// (cmdSearch, via requireSearchProject) is meant to actually reach.
+	if err := os.MkdirAll(filepath.Join(v.Root, "Projects", "test-proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	var buf bytes.Buffer
 	code := runSearch(eng, "test-proj", "nonexistent query", "", "", 10, false, &buf)
 	if code != cli.ExitOK {

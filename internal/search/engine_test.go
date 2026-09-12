@@ -116,6 +116,22 @@ func addDrawer(t *testing.T, v *storage.Vault, project, wing, room, content, hal
 	return storage.Drawer{}
 }
 
+// mkProject makes project a real vault member (a bare Projects/<slug>/
+// directory suffices for ListAllProjects) without writing any drawer content.
+// IndexDrawers itself writes only host-local embed-cache state, never a
+// project's on-disk presence — in production that presence always already
+// exists by the time IndexDrawers runs, because capture's indexer
+// (internal/capture/indexer.go) calls AppendDrawers before IndexDrawers. Tests
+// that call IndexDrawers directly, skipping AppendDrawers, must recreate that
+// invariant themselves or Engine.Search's project-existence check correctly
+// refuses them as unknown.
+func mkProject(t *testing.T, v *storage.Vault, project string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(v.Root, "Projects", project), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSearchBasic(t *testing.T) {
 	eng, v := testEngine(t)
 	ctx := context.Background()
@@ -217,7 +233,8 @@ func TestStructuralBoosts(t *testing.T) {
 }
 
 func TestDeduplication(t *testing.T) {
-	eng, _ := testEngine(t)
+	eng, v := testEngine(t)
+	mkProject(t, v, "proj")
 	ctx := context.Background()
 
 	// Index two drawers with the same SourceRef (simulating adjacent chunks).
@@ -277,7 +294,8 @@ func TestRebuild(t *testing.T) {
 }
 
 func TestEmptySearch(t *testing.T) {
-	eng, _ := testEngine(t)
+	eng, v := testEngine(t)
+	mkProject(t, v, "proj")
 	results, err := eng.Search(context.Background(), "anything", SearchFilters{Project: "proj"})
 	if err != nil {
 		t.Fatal(err)

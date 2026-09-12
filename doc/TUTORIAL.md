@@ -744,8 +744,12 @@ The project — `--project/-p`, or the one detected from the current directory �
 must exist in the vault: a `Projects/<slug>/` directory or a palace store. An
 unknown or malformed project exits 1 with a message naming how it was resolved,
 before the embedding model loads. (Until 2026-09-10 it printed
-`No results found.` and exited 0.) A symlinked `Projects/<slug>` does not count,
-matching what cross-project search enumerates.
+`No results found.` and exited 0.) Neither a symlinked `Projects/<slug>` nor a
+symlinked `palace/<slug>` counts, matching what cross-project search
+enumerates — both trees refuse a symlinked project directory for the same
+reason (see `search.ProjectExists`). MCP `vp_search` applies the identical
+existence check before any embedder work: an unknown project is now a tool
+error, not `[]`, so the two surfaces no longer disagree.
 
 ### Friction Analytics
 
