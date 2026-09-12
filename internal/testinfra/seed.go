@@ -189,8 +189,8 @@ func WithDrawers(project, wing, room string, drawers ...DrawerSpec) SeedOption {
 // []DrawerSpec. It still routes through the same batched AppendDrawers flush
 // as WithDrawers — never AppendDrawer — so the O(N) property holds even for N
 // mixed WithDrawer/WithDrawers/WithDrawerOut options in one New/Seed call.
-// SourceType is hardcoded to "manual", matching TestHarness.AddDrawer's
-// existing behavior for the same convenience shape.
+// SourceType is hardcoded to "manual", matching the same convenience shape
+// the now-removed TestHarness.AddDrawer used to provide.
 func WithDrawer(project, wing, room, content, hall, filedAt string) SeedOption {
 	return func(st *seedState, t *testing.T) {
 		key := drawerGroupKey{project: project, wing: wing, room: room}
@@ -207,8 +207,8 @@ func WithDrawer(project, wing, room, content, hall, filedAt string) SeedOption {
 // storage.Drawer into out — populated no later than the end of the enclosing
 // New/Seed call, once flushDrawers runs. It exists for the handful of call
 // sites that need the generated ID (or, in one case, the content) back, the
-// same way TestHarness.AddDrawer already returns it; unlike AddDrawer it does
-// not re-scan the room via ListDrawers to learn the ID, since
+// same way the now-removed TestHarness.AddDrawer used to return it; unlike
+// that method, it does not re-scan the room via ListDrawers to learn the ID, since
 // storage.DrawerID(wing, content) is deterministic and scan-independent.
 //
 // Reading out from inside another SeedOption in the SAME New/Seed call is

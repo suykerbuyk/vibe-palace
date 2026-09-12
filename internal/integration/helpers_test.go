@@ -69,11 +69,6 @@ func (h *testHarness) callTool(t *testing.T, name string, args any) string {
 	return h.TestHarness.CallTool(t, name, args)
 }
 
-// addDrawer is a convenience for writing a drawer and returning it with the generated ID.
-func (h *testHarness) addDrawer(t *testing.T, project, wing, room, content, hall, date string) storage.Drawer {
-	return h.TestHarness.AddDrawer(t, project, wing, room, content, hall, date)
-}
-
 // captureLogs installs a debug-level slog JSON handler that writes to a
 // buffer for the duration of the test, restoring the previous default on
 // cleanup. Used to assert zero mcp.makeHandler WARN on the happy path.

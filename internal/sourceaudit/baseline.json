@@ -141,10 +141,6 @@
       "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Relocated verbatim from internal/integration/helpers_test.go's unexported taskBody by task test-infra-relocate-harness-to-testinfra-package. It builds a vp_manage_task create body for tests only; its only caller is internal/integration/helpers_test.go's taskBody forwarding shim. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
     },
     {
-      "id": "uninvoked testinfra.TestHarness.AddDrawer",
-      "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Relocated verbatim from internal/integration/helpers_test.go's unexported (*testHarness).addDrawer by task test-infra-relocate-harness-to-testinfra-package. Takes *testing.T, so by design its only caller is a test file: internal/integration/helpers_test.go's addDrawer forwarding shim. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
-    },
-    {
       "id": "uninvoked testinfra.TestHarness.CallToolStdio",
       "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Relocated verbatim from internal/integration/helpers_test.go's unexported (*testHarness).callToolStdio by task test-infra-relocate-harness-to-testinfra-package. Takes *testing.T, so by design its only caller is a test file: internal/integration/helpers_test.go's callToolStdio forwarding shim. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
     },

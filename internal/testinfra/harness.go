@@ -432,28 +432,3 @@ func (h *TestHarness) CallTool(t *testing.T, name string, args any) string {
 	}
 	return text
 }
-
-// AddDrawer is a convenience for writing a drawer and returning it with the generated ID.
-func (h *TestHarness) AddDrawer(t *testing.T, project, wing, room, content, hall, date string) storage.Drawer {
-	t.Helper()
-	d := storage.Drawer{
-		Content:    content,
-		Hall:       hall,
-		SourceType: "manual",
-		FiledAt:    date + "T10:00:00Z",
-	}
-	if err := h.Vault.AppendDrawer(project, wing, room, d); err != nil {
-		t.Fatalf("AppendDrawer: %v", err)
-	}
-	drawers, err := h.Vault.ListDrawers(project, wing, room)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, stored := range drawers {
-		if stored.Content == content {
-			return stored
-		}
-	}
-	t.Fatal("drawer not found after append")
-	return storage.Drawer{}
-}
