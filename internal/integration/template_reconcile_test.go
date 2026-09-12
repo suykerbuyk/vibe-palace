@@ -4,13 +4,9 @@
 package integration
 
 import (
-	"bytes"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
@@ -292,67 +288,33 @@ func embeddedBytesFor(t *testing.T, relPath string) []byte {
 // args, returning combined stdout+stderr. Fails the test on non-zero
 // exit. Passes through the test-local HOME and XDG_CONFIG_HOME so the
 // subprocess sees the isolated config layout.
+//
+// This is a thin delegator over testinfra.RunCLI (promoted from this
+// function's own former body) so the many other call sites in this package
+// (agentfile_upgrade_test.go, journey_skill_materialization_test.go,
+// skill_init_test.go, and the rest) keep compiling unchanged. `bin` is kept
+// for signature compatibility but is otherwise unused — testinfra.RunCLI
+// resolves the built binary itself via testinfra.BuildVPBinary, which shares
+// the same sync.Once cache buildVPBinary below now delegates to (one binary
+// build cache for the whole package, not two). The return value concatenates
+// stdout+stderr rather than reproducing exec.Cmd.CombinedOutput's
+// byte-level interleaving — every call site here only substring-matches the
+// result, so the difference is not observable.
 func runVP(t *testing.T, bin string, env *testEnv, stdin []byte, args ...string) string {
 	t.Helper()
-	cmd := exec.Command(bin, args...)
-	cmd.Env = env.iso.Environ()
-	cmd.Dir = env.projectDir
-	if stdin != nil {
-		cmd.Stdin = bytes.NewReader(stdin)
+	r := testinfra.RunCLI(t, env.iso.Environ(), env.projectDir, stdin, args...)
+	if r.ExitCode != 0 {
+		t.Fatalf("vp %s failed: exit %d\n%s%s", strings.Join(args, " "), r.ExitCode, r.Stdout, r.Stderr)
 	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("vp %s failed: %v\n%s", strings.Join(args, " "), err, out)
-	}
-	return string(out)
+	return r.Stdout + r.Stderr
 }
 
-// Binary build is cached across subtests — `go build` is the expensive
-// step, not the invocations.
-var (
-	vpBinaryOnce sync.Once
-	vpBinaryPath string
-	vpBinaryErr  error
-)
-
 // buildVPBinary compiles cmd/vp once per test process and returns the
-// resulting binary path. Uses t.TempDir via a module-global lock so
-// every test in the package shares one build.
+// resulting binary path. Delegates to testinfra.BuildVPBinary, promoted
+// verbatim from this function's former body (including the Windows
+// .exe-suffix requirement) — see testinfra/runcli.go for the implementation
+// and its history.
 func buildVPBinary(t *testing.T) string {
 	t.Helper()
-	vpBinaryOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "vp-integration-bin-")
-		if err != nil {
-			vpBinaryErr = err
-			return
-		}
-		// 🔴 THE .exe SUFFIX IS LOAD-BEARING ON WINDOWS, NOT COSMETIC. os/exec
-		// resolves an extension-less path against PATHEXT, so a binary built as
-		// plain "vp" cannot be launched at all — it fails with the misleading
-		// `executable file not found in %PATH%` even though the file is right
-		// there. That defeated the ENTIRE windows-lock job for 11+ consecutive
-		// pushes (2026-07-21 → 2026-07-26): all 16 children of
-		// TestIntegration_VaultLockCrossProcess failed to exec, and the
-		// resulting "lost update" / "an edit was clobbered" assertions read as a
-		// lock-correctness bug when nothing had ever run. Per ci.yml that job is
-		// "the sole runtime proof of the LockFileEx/UnlockFileEx path", so the
-		// Windows lock had no runtime coverage whatsoever for that entire span.
-		bin := filepath.Join(dir, "vp")
-		if runtime.GOOS == "windows" {
-			bin += ".exe"
-		}
-		cmd := exec.Command("go", "build", "-o", bin,
-			"github.com/suykerbuyk/vibe-palace/cmd/vp")
-		cmd.Stderr = os.Stderr
-		cmd.Stdout = os.Stderr
-		if err := cmd.Run(); err != nil {
-			vpBinaryErr = err
-			return
-		}
-		vpBinaryPath = bin
-	})
-	if vpBinaryErr != nil {
-		t.Fatalf("build vp binary: %v", vpBinaryErr)
-	}
-	return vpBinaryPath
+	return testinfra.BuildVPBinary(t)
 }

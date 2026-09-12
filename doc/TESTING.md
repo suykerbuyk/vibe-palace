@@ -285,32 +285,22 @@ cancel each other or `main`. The accepted trade-off is that a superseded `main`
 SHA loses its CI verdict — which is the intent, since that verdict describes code
 `main` has already moved past.
 
-### Do not add an `Install jq` step
+### `jq` is no longer a CI dependency
 
-`workflows-e2e` and `walkthrough-e2e` used to run
-`sudo apt-get update && sudo apt-get install -y jq`. **That step was the hang.**
-It is also pure waste: jq ships in the `ubuntu-latest` image, so the step spent a
-five-archive `apt-get update` to print
-
-```
-jq is already the newest version (1.7.1-3ubuntu0.24.04.2).
-0 upgraded, 0 newly installed, 0 to remove and 12 not upgraded.
-```
-
-Both steps are deleted. The dependency is **not** unguarded: each harness
-preflights it directly — `test/e2e/workflows/run.sh` and
-`test/e2e/walkthrough/run.sh` both exit **127** with a message naming jq when it
-is absent from `PATH`. That is verified, not assumed: running either harness with
-jq removed from `PATH` produces
-
-```
-run.sh: 'jq' not in PATH — workflow shape-checks and summary require it
-EXIT=127
-```
-
-A failing preflight in the first second is strictly better than an apt step that
-can stall a runner, so if a future runner image ever drops jq, CI goes red
-immediately and says why.
+`workflows-e2e` and `walkthrough-e2e` used to run bash harnesses
+(`test/e2e/workflows/run.sh`, `test/e2e/walkthrough/run.sh`) that shelled out
+to `jq` for JSON shape checks and the metrics summary table, and briefly ran
+`sudo apt-get update && sudo apt-get install -y jq` before that — a step that
+was itself the source of a multi-hour CI hang (32165092806) and pure waste
+besides (jq already ships in the `ubuntu-latest` image). That apt step was
+deleted outright once the preflight-and-fail-fast approach below replaced it,
+and jq itself is now gone as a dependency of these two jobs entirely: the Go
+port (`internal/integration/e2e_walkthrough_test.go`,
+`internal/integration/e2e_workflows_test.go`) decodes JSON directly via
+`encoding/json` into typed structs (`palace.TuneReport` for the tune report,
+an anonymous `{Project string}` for `vp inject`'s bootstrap payload) instead
+of shelling out to `jq`. Neither job's `ci.yml` step installs or requires jq
+any more.
 
 ## ONNX Model and the Cache System
 
@@ -706,17 +696,108 @@ Covers the host-qualified `<date>-<fp8>-<NN>` session-id scheme (see
   five new malformed cases in `TestParseSessionID` /
   `TestParseSessionIDRejectsMalformed`.
 
-### `test/e2e/dispatch/` — Bash E2E (`make dispatch-e2e`)
+### `internal/integration/e2e_*_test.go` — exec-based end-to-end tiers
 
-End-user-level verification that every parent-command exit-code
-contract holds against the real binary.
+The five `test/e2e/**` bash tiers (init, dispatch, githook, walkthrough,
+workflows — 17 case scripts total, not the 16 an earlier draft of the
+migration task claimed) were retired and ported onto
+`internal/testinfra.RunCLI`: an exec-based helper (`BuildVPBinary` +
+`RunCLI` + `Must` + `RetainOnFailure`, `internal/testinfra/runcli.go`)
+promoted from `buildVPBinary`/`runVP` (`template_reconcile_test.go`) and the
+hand-rolled runner `cli_dispatch_test.go` already had. Every case still
+execs the real built `vp` binary — none of this runs in-process — under a
+per-case `testinfra.IsolateEnv(t)` HOME/XDG_CONFIG_HOME sandbox, matching the
+bash harnesses' `fresh_home` contract.
 
-| Case | What it asserts |
+Run one tier locally with `go test -race -run '<pattern>' -v
+./internal/integration/...` (see each tier's pattern below); all of them also
+run as an ordinary side effect of `make integration` / `make test-full`,
+since none skip under anything but `-short`.
+
+**Retained properties**, each independently verifiable (see the migration
+task for the full acceptance list): the walkthrough transcript is written
+directly to `os.Stdout` (not `t.Log`) so it prints on both pass and fail;
+every tier's working directory survives a failure via
+`testinfra.RetainOnFailure` (`/tmp/vp-e2e-<tier>.*`, same convention `ci.yml`'s
+per-tier `if: failure()` artifact upload already globs); and the workflows
+tier's `metrics.jsonl` now actually reaches its 14-day-retention CI upload —
+see the "Fixed, not merely ported" note below.
+
+#### `test/e2e/init/` → `TestIntegrationE2EInit*` (pattern: `^TestIntegrationE2EInit`)
+
+| Test | What it asserts |
 |------|-----------------|
-| `01-parent-bare-shows-help.sh` | `vp config` → help on stdout, empty stderr, exit 0 |
-| `02-unknown-subcommand-is-exit-user.sh` | `vp config bogus` → `unknown subcommand "bogus"` on stderr, empty stdout, exit 1 |
-| `03-known-subcommand-help.sh` | `vp hook install --help` → help on stdout, exit 0 (two-word lookup regression guard) |
-| `04-bare-parent-exit-code-discipline.sh` | Fan-out check across `vault`, `commands`, `migrate`, `skills`, `archive` — bare exits 0 with help, unknown-subcommand exits 1 |
+| `TestIntegrationE2EInitPositionalProjectDir` | `vp init` in a git-inited dir creates `.vibe-palace.toml` + default vault under HOME; no Templates/ pass |
+| `TestIntegrationE2EInitExplicitVaultPath` | `--vault-path` is honored; vault lands there, not under HOME |
+| `TestIntegrationE2EInitPositionalAndVault` | Both a positional project dir AND `--vault-path` land independently |
+| `TestIntegrationE2EInitNonexistentPositional` | A nonexistent positional path aborts ExitUser BEFORE any filesystem write, stderr names `--vault-path` |
+| `TestIntegrationE2EInitNoGitFlag` | `--no-git` creates the vault dir without `.git` |
+| `TestIntegrationE2EInitCleanupIsolation` | Meta-safety: HOME resolves entirely under the harness sandbox (construction-guaranteed by `testinfra.IsolateEnv`, kept for documentation value) |
+| `TestIntegrationE2EInitReinitIdempotent` | A second `vp init` converges: exit 0, no `[FAIL]` row, `.vibe-palace.toml` byte-identical, vault artifacts survive |
+| `TestIntegrationE2EInitSkillShimFallbackReachable` | The persona shims' MCP-less `vp skills show <name>` fallback works verbatim, embedded then project-override; no shim names a vault path |
+
+#### `test/e2e/dispatch/` → `cli_dispatch_test.go` (pattern: `^TestIntegrationDispatch`)
+
+End-user-level verification that every parent-command exit-code contract
+holds against the real binary. Extended, not replaced — the 3 pre-existing
+tests keep their names; only the 4th (the former `dispatch/04-*.sh`) is new.
+
+| Test | What it asserts |
+|------|-----------------|
+| `TestIntegrationDispatchParentBareShowsHelp` | `vp config` → help on stdout, empty stderr, exit 0 |
+| `TestIntegrationDispatchParentUnknownSubcommand` | `vp config bogus` → `unknown subcommand "bogus"` on stderr, empty stdout, exit 1 |
+| `TestIntegrationDispatchKnownSubcommandHelp` | `vp hook install --help` → help on stdout, exit 0 (two-word lookup regression guard) |
+| `TestIntegrationDispatchBareParentExitDiscipline` | Fan-out check across `vault`, `commands`, `migrate`, `skills`, `archive` — bare exits 0 with help, unknown-subcommand exits 1 |
+
+#### `test/e2e/githook/` → `TestIntegrationE2EGithook*` (pattern: `^TestIntegrationE2EGithook`)
+
+| Test | What it asserts |
+|------|-----------------|
+| `TestIntegrationE2EGithookInitInstallsAndReapFires` | `vp init` installs the post-commit hook; a real `git commit -F commit.msg` without `&& rm` leaves no `commit.msg` on disk, even for a multi-paragraph message with trailing whitespace |
+| `TestIntegrationE2EGithookCheckReportsMissingOnExistingClone` | A deleted hook is reported by `vp check`, repaired by re-running `vp init`, then reports clean — AND neither the ONNX embedder nor any agent CLI is ever constructed/exec'd (`testinfra.SentinelPATH` + a dead proxy, mirroring `TestIntegrationMigrateLoadsNoModel`) |
+| `TestIntegrationE2EGithookInitRefusesForeignHookAndSharedHookspath` | A foreign post-commit hook is never touched (sha256-verified); a repo with `core.hooksPath` set is never written to at all; both refusals leave `vp init` at exit 0 |
+
+#### `test/e2e/walkthrough/` → `TestIntegrationE2EWalkthroughHappyPath` (pattern: `^TestIntegrationE2EWalkthrough`)
+
+A single, deliberately singular test mirroring `doc/TUTORIAL.md` Part 2
+("Project Setup") end to end: project dir → load-bearing `git init` → `vp
+init` → seed a drawer (via the inlined `seedDrawer` helper, not `vp
+capture`, which is MCP-only) → `vp status` / `vp inject` (bootstrap JSON
+`.project` non-empty) → a second project attached to the same vault without
+reinitializing it (`vault/.git/HEAD` unchanged). Its stdout transcript is the
+documentation artifact — if this test and Part 2 ever disagree, one of them
+is wrong.
+
+#### `test/e2e/workflows/` → `TestIntegrationE2EWorkflowsTuneRoomsLoop` (pattern: `^TestIntegrationE2EWorkflows`)
+
+A two-iteration measurement loop: seed drawers → `vp tune rooms --export` →
+two `vp tune rooms --apply` calls (idempotency via decoded-TOML-struct
+equality, not textual — `toml.NewEncoder` output is not byte-stable across
+round-trips). Hard-asserts cover exit codes, `report.json` decoding into
+`palace.TuneReport`, `.Project == "proj"`, `.SamplesTotal >= 4`, and apply
+idempotency; everything else (ms per command, sample/proposal/agreement
+counts) is a tracked metric via a small JSONL emitter, never an assertion —
+it depends on the mock LLM's canned response distribution, not `vp tune`'s
+callable contract. The mock LLM itself is an in-process `httptest.Server`
+(`internal/integration/e2e_helpers_test.go`'s `newMockLLMServer`), not an
+exec'd binary.
+
+**Fixed, not merely ported: the `metrics.jsonl` CI upload.** The retired
+`test/e2e/workflows/run.sh`'s own success-path cleanup trap deleted
+`$TMPROOT` — `metrics.jsonl` included — before `ci.yml`'s separate "Upload
+workflows metrics on success" step ever ran, so that upload had been
+silently uploading nothing on every green run since it was added
+(`if-no-files-found: ignore` swallowed it). The Go port's
+`workflowsMetricsDir` helper writes `metrics.jsonl` under a directory whose
+retention policy depends on where it runs: under CI (`CI=true`, which GitHub
+Actions sets on every job) it is a plain `os.MkdirTemp` directory with **no**
+cleanup registered, so it is still there, unmodified, when the upload step
+runs; outside CI it is `t.TempDir()`, which IS cleaned up automatically, so a
+developer running `make integration` repeatedly over weeks does not
+accumulate one leaked directory per run on their own machine. `ci.yml`'s
+upload glob changed accordingly, from
+`/tmp/vp-e2e-workflows.*/cases/*/metrics.jsonl` to
+`/tmp/vp-e2e-workflows-metrics.*/metrics.jsonl`.
 
 ### `internal/integration/` — Phase 12 Tests (Room Classification)
 

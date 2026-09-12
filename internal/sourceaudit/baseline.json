@@ -113,6 +113,10 @@
       "reason": "TEST-ONLY BY CONSTRUCTION, exactly like its sibling sourceaudit.Run above: this gate IS a go test, so its entry point has no non-test caller. TestSourceAuditGate calls it. 🔴 AND IT MUST STAY THAT WAY — this is the one entry here where test-only is a REQUIREMENT rather than an accepted smell. RunModule pulls in golang.org/x/tools (go/packages, ssa, cha, vta) to build a type-checked call graph. internal/sourceaudit is not linked into cmd/vp — verified with `go list -deps ./cmd/vp`, which names neither sourceaudit nor golang.org/x/tools — so the dependency costs the shipped binary nothing, which is what ADR-010 §3 asserted and what makes deriving affordable at all. Wiring it into `vp check` to give it a 'real' caller would link an entire program-analysis toolkit into a CLI that must start in milliseconds. Do not wire a caller. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — declared here, enforced by the baseline ratchet."
     },
     {
+      "id": "uninvoked testinfra.CLIResult.Must",
+      "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Added by task test-infra-e2e-migration-to-go-runcli alongside RunCLI/RetainOnFailure below as the fatal-on-nonzero convenience the retired runVP (template_reconcile_test.go) used to provide inline. Takes *testing.T, so by design its only callers are test files: internal/integration/e2e_init_test.go, e2e_githook_test.go, e2e_walkthrough_test.go, e2e_workflows_test.go, and cli_dispatch_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
+    },
+    {
       "id": "uninvoked testinfra.CaptureLogs",
       "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Relocated verbatim from internal/integration/helpers_test.go's unexported captureLogs by task test-infra-relocate-harness-to-testinfra-package, which gives the integration test harness an importable home (internal/integration is otherwise all _test.go, with no importable surface of its own). Takes *testing.T, so by design its only caller is a test file: internal/integration/helpers_test.go's captureLogs forwarding shim. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
     },
@@ -123,6 +127,14 @@
     {
       "id": "uninvoked testinfra.NewHarness",
       "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Relocated verbatim from internal/integration/helpers_test.go's unexported newHarness by task test-infra-relocate-harness-to-testinfra-package. Takes *testing.T, so by design its only caller is a test file: internal/integration/helpers_test.go's newHarness forwarding shim (its own non-test caller — NewHarnessWithEmbedder — is a call OUT of this function, not in, so it does not clear this finding). Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
+    },
+    {
+      "id": "uninvoked testinfra.RetainOnFailure",
+      "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Added by task test-infra-e2e-migration-to-go-runcli as the retain-tmpdir-on-failure primitive the retired test/e2e/**'s bash orchestrators each hand-rolled via a `mktemp -d` + EXIT trap. Takes *testing.T, so by design its only callers are test files: internal/integration/e2e_init_test.go, e2e_githook_test.go, e2e_walkthrough_test.go, and e2e_workflows_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
+    },
+    {
+      "id": "uninvoked testinfra.RunCLI",
+      "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Added by task test-infra-e2e-migration-to-go-runcli, promoted from template_reconcile_test.go's runVP (itself now a thin delegator over this) and folding in cli_dispatch_test.go's former hand-rolled exec.Command runner, per the parent epic's instruction to migrate test/e2e/**'s bash tiers onto an exec-based Go harness. Takes *testing.T, so by design it is only ever called from tests: the delegators/tests above, plus internal/integration's five e2e_*_test.go tier files. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
     },
     {
       "id": "uninvoked testinfra.SentinelPATH",

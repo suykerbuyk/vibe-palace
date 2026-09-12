@@ -202,29 +202,6 @@ model-test-offline: build ## Verify a warm model cache needs no network (opt-in;
 		HOME="'"$$scratch"'/home" XDG_CACHE_HOME="'"$$scratch"'/home/.cache" VP_OFFLINE_MODEL_CACHE_DIR="'"$$dest"'" \
 		go test -count=1 -tags offlinewarm -run "^TestONNXOfflineWarmCacheNeedsNoNetwork$$" -v ./internal/embedder/...'
 
-.PHONY: init-e2e
-init-e2e: ## Run bash end-to-end harness for `vp init` (sandboxed HOME, builds its own binary)
-	bash test/e2e/init/run.sh
-
-.PHONY: dispatch-e2e
-dispatch-e2e: ## Run bash e2e for CLI dispatch (parent-bare help, unknown-subcommand exit codes)
-	bash test/e2e/dispatch/run.sh
-
-.PHONY: walkthrough-e2e
-walkthrough-e2e: ## Run canonical walkthrough (prints transcript on pass)
-	bash test/e2e/walkthrough/run.sh
-
-.PHONY: workflows-e2e
-workflows-e2e: ## Run multi-iteration workflow measurement rig
-	bash test/e2e/workflows/run.sh
-
-.PHONY: githook-e2e
-githook-e2e: ## Run bash e2e for the git post-commit commit.msg reaper (real commits)
-	bash test/e2e/githook/run.sh
-
-.PHONY: e2e
-e2e: init-e2e dispatch-e2e githook-e2e walkthrough-e2e workflows-e2e ## Run all e2e tiers
-
 .PHONY: cover
 cover: ## Generate HTML coverage report (short mode)
 	go test -race -short -coverprofile=coverage.out ./...

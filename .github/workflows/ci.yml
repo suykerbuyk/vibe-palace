@@ -149,6 +149,19 @@ jobs:
       - run: CGO_ENABLED=0 go build -o vp ./cmd/vp
       - run: ./vp version
 
+  # The five test/e2e/** bash tiers were migrated onto testinfra.RunCLI
+  # (internal/testinfra/runcli.go) and now live as ordinary Go tests in
+  # internal/integration/e2e_*_test.go plus the extended cli_dispatch_test.go.
+  # Each job below keeps its own name, its own `go test -run` filter, and its
+  # own per-tier artifact-upload step — preserving the 5-way job PARALLELISM
+  # GH Actions gave the old bash jobs (a real property: folding these into one
+  # sequential `go test` invocation would trade it away for no benefit) and
+  # the per-tier failure granularity of the old artifact uploads.
+  #
+  # testinfra.RetainOnFailure names its directory "vp-e2e-<tag>.<random>" —
+  # deliberately the SAME "vp-e2e-<tier>.*" dot-separator convention the old
+  # `mktemp -t` runs used — so these upload globs are unchanged from the bash
+  # era.
   init-e2e:
     runs-on: ubuntu-latest
     steps:
@@ -156,8 +169,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
-      - name: Run init e2e harness
-        run: make init-e2e
+      - name: Run init e2e (Go)
+        run: go test -race -run '^TestIntegrationE2EInit' -v ./internal/integration/...
       - name: Upload retained tmpdir on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -167,6 +180,11 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
+  # Filter is `^TestIntegrationDispatch`, matching cli_dispatch_test.go's
+  # existing 3 test names plus the new
+  # TestIntegrationDispatchBareParentExitDiscipline (the migrated
+  # dispatch/04-*.sh case), rather than renaming 3 already-passing tests to an
+  # E2E-prefixed set for no behavioral reason.
   dispatch-e2e:
     runs-on: ubuntu-latest
     steps:
@@ -174,8 +192,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
-      - name: Run dispatch e2e harness
-        run: make dispatch-e2e
+      - name: Run dispatch e2e (Go)
+        run: go test -race -run '^TestIntegrationDispatch' -v ./internal/integration/...
       - name: Upload retained tmpdir on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -192,8 +210,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
-      - name: Run git post-commit hook e2e harness
-        run: make githook-e2e
+      - name: Run git post-commit hook e2e (Go)
+        run: go test -race -run '^TestIntegrationE2EGithook' -v ./internal/integration/...
       - name: Upload retained tmpdir on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -213,8 +231,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
-      - name: Run walkthrough e2e harness
-        run: make walkthrough-e2e
+      - name: Run walkthrough e2e (Go)
+        run: go test -race -run '^TestIntegrationE2EWalkthrough' -v ./internal/integration/...
       - name: Upload retained tmpdir on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -238,8 +256,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
-      - name: Run workflows e2e harness
-        run: make workflows-e2e
+      - name: Run workflows e2e (Go)
+        run: go test -race -run '^TestIntegrationE2EWorkflows' -v ./internal/integration/...
       - name: Upload retained tmpdir on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -248,12 +266,21 @@ jobs:
           path: /tmp/vp-e2e-workflows.*
           retention-days: 3
           if-no-files-found: ignore
+      # FIXED, not merely ported: the retired bash harness's run.sh deleted
+      # its own $TMPROOT on the success path (cleanup trap) before this
+      # separate step ever ran, so this upload has been silently uploading
+      # nothing on every green run since it was added (if-no-files-found:
+      # ignore swallowed the failure). testinfra's workflowsMetricsDir (see
+      # internal/integration/e2e_workflows_test.go) writes metrics.jsonl
+      # under a plain os.MkdirTemp directory with NO cleanup registered
+      # whenever CI=true (which GitHub Actions sets on every job), so the
+      # directory is still here, unmodified, when this step runs.
       - name: Upload workflows metrics on success
         if: success()
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: workflows-metrics-${{ github.sha }}
-          path: /tmp/vp-e2e-workflows.*/cases/*/metrics.jsonl
+          path: /tmp/vp-e2e-workflows-metrics.*/metrics.jsonl
           retention-days: 14
           if-no-files-found: ignore
