@@ -210,8 +210,10 @@ func TestMigrateTaskPreambleExcludesArchivedTasks(t *testing.T) {
 			t.Errorf("archived file %s was modified", p)
 		}
 	}
-	if strings.Contains(out.String(), "old") || strings.Contains(out.String(), "dropped") {
-		t.Errorf("archived slugs appeared in the report: %s", out.String())
+	for _, plan := range sum.Plans {
+		if plan.Slug == "old" || plan.Slug == "dropped" {
+			t.Errorf("archived slug %q appeared in the plan report: %+v", plan.Slug, sum.Plans)
+		}
 	}
 }
 
