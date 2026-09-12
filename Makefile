@@ -111,7 +111,7 @@ source-audit: ## Run the source audit INCLUDING the type-checked derived-gate ru
 
 .PHONY: test-full
 test-full: build vet ## Run full test suite including ONNX integration tests
-	go test -count=1 -cover ./...
+	go test -count=1 -cover -v ./...
 
 .PHONY: integration
 integration: build ## Run integration tests only (requires ONNX model)
