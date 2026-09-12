@@ -12,16 +12,33 @@ import (
 )
 
 // isolateGit points git at a throwaway config so the developer's global/system
-// git config (default branch, hooks, signing) cannot influence a test, and
-// bounds git's upward repository discovery to this test's own temp tree so a
-// bare non-repo temp dir can never resolve to some enclosing repository (e.g.
-// when TMPDIR itself sits inside a git repo or worktree). This must run
-// before any other git subprocess in the test — every test in this file
-// already calls it first.
+// git config (default branch, hooks, signing) cannot influence a test, strips
+// any repo-pointing variables this test process itself inherited, and bounds
+// git's upward repository discovery to this test's own temp tree so a bare
+// non-repo temp dir can never resolve to some enclosing repository (e.g. when
+// TMPDIR itself sits inside a git repo or worktree). This must run before any
+// other git subprocess in the test — every test in this file already calls it
+// first.
 func isolateGit(t *testing.T) {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+
+	// Strip any repo-pointing variables this test process itself inherited
+	// (e.g. from a git hook that ran `go test`), so a bare `git -C <dir>` in
+	// this package always answers for <dir>, never for whatever GIT_DIR /
+	// GIT_WORK_TREE / GIT_INDEX_FILE named. An explicit GIT_DIR bypasses
+	// discovery entirely, so GIT_CEILING_DIRECTORIES alone cannot stop it —
+	// this closes that gap. Mirrors the rationale of internal/storage's
+	// withoutRepoLocalGitEnv / TrackedPalaceLocalFiles, scoped down to the
+	// variables that matter for a plain `-C` invocation.
+	for _, k := range []string{
+		"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+		"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	} {
+		t.Setenv(k, "")
+		_ = os.Unsetenv(k)
+	}
 
 	// Bound upward discovery to this test's own temp tree: git will not
 	// search into or above this directory looking for a repository. Every
@@ -232,6 +249,65 @@ func TestIsolateGitDoesNotEscapeIntoAnEnclosingRepo(t *testing.T) {
 
 	if after := snapshot(); before != after {
 		t.Errorf("enclosing repo mutated by a test that should never touch it:\nbefore: %s\nafter:  %s", before, after)
+	}
+}
+
+// TestIsolateGitStripsInheritedGitDir pins the gap a code review found in the
+// GIT_CEILING_DIRECTORIES fix above: GIT_CEILING_DIRECTORIES only bounds
+// upward discovery from a bare directory — it does nothing once GIT_DIR (or
+// GIT_WORK_TREE/GIT_INDEX_FILE/...) is already present in the process
+// environment, because an explicit GIT_DIR bypasses discovery entirely. Git
+// exports these into every hook script's environment (and its children), so a
+// test invoked from inside a git hook would reopen the exact incident class
+// this package's tests exist to close, through a different vector. isolateGit
+// must strip them before any other git subprocess runs.
+func TestIsolateGitStripsInheritedGitDir(t *testing.T) {
+	// Built directly (not via t.TempDir()), so it is unaffected by whatever
+	// isolateGit does later and outlives this test's assertions.
+	enclosing, err := os.MkdirTemp("", "enclosing-repo-gitdir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(enclosing) })
+	git := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", enclosing,
+			"-c", "user.email=test@example.com", "-c", "user.name=test"}, args...)
+		cmd := exec.Command("git", full...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_SYSTEM="+os.DevNull)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(enclosing, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "-A")
+	git("commit", "-q", "-m", "seed")
+
+	snapshot := func() string {
+		wt, _ := exec.Command("git", "-C", enclosing, "worktree", "list", "--porcelain").CombinedOutput()
+		br, _ := exec.Command("git", "-C", enclosing, "branch", "-a").CombinedOutput()
+		return string(wt) + "\x00" + string(br)
+	}
+	before := snapshot()
+
+	// Simulate a git hook's environment: GIT_DIR pointing at the enclosing
+	// scratch repo, set BEFORE isolateGit runs. An explicit GIT_DIR makes git
+	// operate on that repository directly, regardless of -C or
+	// GIT_CEILING_DIRECTORIES — the exact bypass this test pins.
+	t.Setenv("GIT_DIR", filepath.Join(enclosing, ".git"))
+
+	isolateGit(t) // must strip GIT_DIR before any other git call in the test
+	m := New(t.TempDir())
+	_, err = m.Create("x", "", "")
+	if err == nil || !strings.Contains(err.Error(), "not a git repository") {
+		t.Errorf("Create err = %v, want not-a-git-repository", err)
+	}
+
+	if after := snapshot(); before != after {
+		t.Errorf("enclosing repo mutated by an inherited GIT_DIR that isolateGit should have stripped:\nbefore: %s\nafter:  %s", before, after)
 	}
 }
 
