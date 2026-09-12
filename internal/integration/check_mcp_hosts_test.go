@@ -4,6 +4,7 @@
 package integration
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -71,12 +72,15 @@ func TestIntegrationCheckReachesRealHostRegistry(t *testing.T) {
 		"NO_PROXY=",
 		"VP_GROK_LOG=" + logPath,
 	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) {
-			t.Fatalf("run vp check --json: %v", err)
-		}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("run vp check --json: want an *exec.ExitError (the binary exits 1 with no config), got %v\nstderr:\n%s", err, &stderr)
+	}
+	if exitErr.ExitCode() != 1 {
+		t.Errorf("vp check --json exit code = %d, want 1 (no config)\nstderr:\n%s", exitErr.ExitCode(), &stderr)
 	}
 
 	var rep struct {
@@ -87,7 +91,7 @@ func TestIntegrationCheckReachesRealHostRegistry(t *testing.T) {
 		} `json:"checks"`
 	}
 	if err := json.Unmarshal(out, &rep); err != nil {
-		t.Fatalf("vp check --json is not valid JSON: %v\n%s", err, out)
+		t.Fatalf("vp check --json is not valid JSON: %v\nstdout:\n%s\nstderr:\n%s", err, out, &stderr)
 	}
 	var grok string
 	for _, c := range rep.Checks {
@@ -96,13 +100,13 @@ func TestIntegrationCheckReachesRealHostRegistry(t *testing.T) {
 		}
 	}
 	if grok != "pass" {
-		t.Errorf("MCP host: grok status = %q, want pass from the scripted grok — is `vp check` still asking mcphost.Registry()?\n%s", grok, out)
+		t.Errorf("MCP host: grok status = %q, want pass from the scripted grok — is `vp check` still asking mcphost.Registry()?\nstdout:\n%s\nstderr:\n%s", grok, out, &stderr)
 	}
 	raw, err := os.ReadFile(logPath)
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
 	if string(raw) != "mcp list\n" {
-		t.Errorf("scripted grok argv log = %q, want exactly \"mcp list\\n\"", raw)
+		t.Errorf("scripted grok argv log = %q, want exactly \"mcp list\\n\"\nstderr:\n%s", raw, &stderr)
 	}
 }

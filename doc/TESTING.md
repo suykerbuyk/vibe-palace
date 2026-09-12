@@ -1226,16 +1226,22 @@ tests driving the real `cmdCheck(info).Run([]string{...})` dispatch
 `check.Producers` in `internal/check`, shared with the `vp_check` MCP tool;
 `runSelectedChecks` is now only the cwd→vault-root resolution the CLI owns.
 
-**The full suite is hermetic.** `gatherCheckResults` (the unfiltered `vp
-check`) has two dependencies that reach host state, and each goes through a
-seam: the Embedder row calls `check.CheckEmbedder(newEmb)` with a closure over
-`newVaultEmbedder` (the migrate seam, so `setupTestVaultEnv`'s default-on
-forbid guard covers every `runCheck` caller), and the MCP host rows call
+**The two host-state dependencies that used to leak are now seamed.**
+`gatherCheckResults` (the unfiltered `vp check`) has two dependencies that
+reach host state, and each goes through a seam: the Embedder row calls
+`check.CheckEmbedder(newEmb)` with a closure over `newVaultEmbedder` (the
+migrate seam, so `setupTestVaultEnv`'s default-on forbid guard covers every
+`runCheck` caller), and the MCP host rows call
 `check.CheckMCPHosts(mcpHostRegistry())`, where `mcpHostRegistry` is a package
 var that production never reassigns. Before this, five check tests ran the real
 `grok mcp list` against the developer's `~/.grok`, and two loaded the real
 model. The rule: **a new dependency of `gatherCheckResults` that reaches host
 state — spawns a binary, loads a model, touches the network — gets a seam.**
+This is narrower than full hermeticity: the Git row still runs a real
+`exec.Command("git", "-C", vaultPath, "remote")` (`internal/check/check.go`)
+against the vault's own repo, and the stale-MCP-server row still reads the
+real `/proc` (`listMCPProcessesFrom`, `internal/check/stale_mcp.go`). Both are
+accepted, pre-existing scope — not seamed, and not a regression.
 
 Every full-suite test runs in one of two helpers (`check_testenv_test.go`):
 

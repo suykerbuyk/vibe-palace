@@ -192,10 +192,12 @@ func TestCheckSettings(t *testing.T) {
 }
 
 // TestCheckEmbedder loads the real ONNX model through CheckEmbedder, exactly
-// as check.Run constructs it. It is `make model-test`'s member in this package
-// (the target derives its package list from test files calling the real ONNX
-// constructor), and it skips under -short. The -short tests below cover the
-// same Pass/Fail logic with substitute embedders.
+// as cmd/vp's newVaultEmbedder constructs it for `vp check` (check.Run's
+// inline construction takes the same shape but has no callers). It is `make
+// model-test`'s member in this package (the target derives its package list
+// from test files calling the real ONNX constructor), and it skips under
+// -short. The -short tests below cover the same Pass/Fail logic with
+// substitute embedders.
 func TestCheckEmbedder(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping embedder test in short mode (requires ONNX model)")

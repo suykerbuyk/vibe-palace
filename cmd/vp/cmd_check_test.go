@@ -291,10 +291,10 @@ func TestFullCheckExecsNoAgentCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	if e.HostCalls == nil || *e.HostCalls != 1 {
-		t.Errorf("mcpHostRegistry calls = %v, want 1 — the host seam was bypassed", e.HostCalls)
+		t.Errorf("mcpHostRegistry calls = %s, want 1 — the host seam was bypassed", formatIntPtr(e.HostCalls))
 	}
 	if e.EmbedderCalls == nil || *e.EmbedderCalls != 1 {
-		t.Errorf("newVaultEmbedder constructions = %v, want 1 — the embedder seam was bypassed", e.EmbedderCalls)
+		t.Errorf("newVaultEmbedder constructions = %s, want 1 — the embedder seam was bypassed", formatIntPtr(e.EmbedderCalls))
 	}
 }
 

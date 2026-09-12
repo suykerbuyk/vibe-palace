@@ -93,15 +93,18 @@ jobs:
           key: hf-cache-v1-${{ runner.os }}-sentence-transformers-all-MiniLM-L6-v2
       - run: make model-test
 
-  # 🔴 THE ONLY JOB THAT RUNS internal/sourceaudit WITHOUT -short, AND THAT IS
-  # ITS ENTIRE PURPOSE. The derived-gate rule in internal/sourceaudit type-checks
-  # the whole module to derive which commands and tools reach a vault-write sink,
-  # then fails on any divergence from the hand-declared answer that nobody has
-  # ruled on in writing. It costs ~10s, so it self-skips under -short — and
-  # `test` above is -short, `model` runs only the derived real-model packages,
-  # windows-lock is -short and -run-filtered, and make test-full / cover-full are
-  # manual targets no job invokes. Delete this job and the rule runs nowhere.
-  # It needs no model cache and no -race: source analysis, single-goroutine.
+  # 🔴 THE ONLY JOB THAT RUNS internal/sourceaudit, AND THAT IS ITS ENTIRE
+  # PURPOSE. The derived-gate rule in internal/sourceaudit type-checks the whole
+  # module to derive which commands and tools reach a vault-write sink, then
+  # fails on any divergence from the hand-declared answer that nobody has ruled
+  # on in writing. It costs ~10s, so it self-skips under -short, but that is not
+  # why no other job runs it: no other job's package set includes
+  # internal/sourceaudit at all — `test` above is -short over ./..., `model` runs
+  # only the derived real-model packages, windows-lock runs ./internal/vaultlock
+  # and a single ./internal/integration test (its second step is not even
+  # -short), and make test-full / cover-full are manual targets no job invokes.
+  # Delete this job and the rule runs nowhere. It needs no model cache and no
+  # -race: source analysis, single-goroutine.
   source-audit:
     runs-on: ubuntu-latest
     steps:

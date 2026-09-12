@@ -94,10 +94,12 @@ live-canary: ## Run the live-vault bootstrap canary uncached and verbose (SKIP i
 
 # THE ONLY THING THAT RUNS THE DERIVED-GATE RULE. That rule type-checks the whole
 # module (go/packages + SSA + a VTA call graph) to derive which commands and tools
-# reach a vault-write sink, and it self-skips under -short — which `make test`
-# passes, and every CI job but two: `source-audit`, and `model`, whose
-# model-test package set never includes internal/sourceaudit. So if this target
-# and its CI job go away, the rule runs NOWHERE and is green by never looking.
+# reach a vault-write sink, and it self-skips under -short — but that alone
+# isn't why no other CI job runs it: no other job's package set includes
+# internal/sourceaudit at all (not just because it passes -short — windows-lock's
+# second step does not, for example — but because none of them touch this
+# package). So if this target and its CI job go away, the rule runs NOWHERE and
+# is green by never looking.
 #
 # No -run filter: the whole package runs, because a filter is one rename away from
 # silently matching nothing. No -race either: this is single-goroutine analysis
@@ -144,10 +146,19 @@ MODEL_TEST_PKGS = $(shell grep -rlE '\bNewONNX\$(LPAREN)' --include='*_test.go' 
 # current directory) or passing on nothing. -timeout 10m sits under the CI job's
 # 15-minute timeout so go's own timeout panic, with its goroutine dump, fires
 # first.
+#
+# -p 1 IS LOAD-BEARING: without it `go test` runs $(MODEL_TEST_PKGS) in
+# parallel, and every package shares one on-disk HF cache / .cache/models dir —
+# the same cross-process cache race NewONNX's own lock (internal/embedder) was
+# built to close, here one level up, across test binaries instead of within
+# one. Measured 2026-09-11 against today's 4-package set with a warm cache:
+# ~61s real in parallel vs. ~89s real with -p 1 — comfortably under both the
+# 10m timeout above and the CI job's 15m budget. That headroom shrinks as
+# MODEL_TEST_PKGS grows; re-measure before it gets close.
 .PHONY: model-test
 model-test: ## Run every test that loads the real ONNX model (no -short, no -race; needs network)
 	@test -n "$(MODEL_TEST_PKGS)" || { echo "model-test: derivation found no packages" >&2; exit 1; }
-	go test -count=1 -timeout 10m $(MODEL_TEST_PKGS)
+	go test -count=1 -timeout 10m -p 1 $(MODEL_TEST_PKGS)
 
 # THE offline warm-cache regression check for
 # warm-model-cache-still-needs-the-network-and-deletes-its-index: a warm

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -19,6 +20,16 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/mcphost"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 )
+
+// formatIntPtr formats a seam-call counter for a failure message: its count
+// when set, or "nil" when the seam was never wired — never the pointer
+// itself, which %v would print as an address rather than a count.
+func formatIntPtr(p *int) string {
+	if p == nil {
+		return "nil"
+	}
+	return strconv.Itoa(*p)
+}
 
 // The full `vp check` suite (gatherCheckResults) reaches host state through
 // two dependencies: the Embedder row constructs the ~90 MB ONNX model, and the
@@ -190,8 +201,8 @@ func TestCheckEnvHelpersStubHostRegistry(t *testing.T) {
 			if len(hosts) != 1 || hosts[0].Name() != "fake" {
 				t.Errorf("mcpHostRegistry() = %v, want e.Hosts", hosts)
 			}
-			if *e.HostCalls != 1 {
-				t.Errorf("HostCalls = %d, want 1", *e.HostCalls)
+			if e.HostCalls == nil || *e.HostCalls != 1 {
+				t.Errorf("HostCalls = %s, want 1", formatIntPtr(e.HostCalls))
 			}
 		})
 		if reflect.ValueOf(mcpHostRegistry).Pointer() != registry {

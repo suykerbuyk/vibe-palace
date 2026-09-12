@@ -39,7 +39,8 @@ type ZedHost struct {
 	// settingsPath is the absolute path to Zed's settings.json. Injectable for
 	// tests; NewZedHost resolves the platform default.
 	settingsPath string
-	// lookPath reports whether `zed` is resolvable; nil uses exec.LookPath.
+	// lookPath reports whether `zed` is resolvable; nil disables the PATH
+	// check (Detected then relies on the settings-dir check alone).
 	lookPath func() (string, error)
 }
 

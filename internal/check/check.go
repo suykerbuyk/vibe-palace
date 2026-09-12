@@ -213,6 +213,11 @@ func CheckEmbedder(newEmb func() (embedder.Embedder, error)) Result {
 		r.Err = err
 		return r
 	}
+	if emb == nil {
+		r.Status = Fail
+		r.Summary = "load model: constructor returned no embedder and no error"
+		return r
+	}
 	defer emb.Close()
 
 	dims, err := emb.Dimensions()
