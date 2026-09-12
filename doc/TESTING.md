@@ -1942,6 +1942,27 @@ build is gone and every agent now sees an empty vault (raw: [])"*.
 
 ---
 
+## Drawer-Seeding Batch Invariant
+
+### `internal/testinfra/seed_test.go` — the drawer-seeding batch invariant
+
+`internal/testinfra/seed.go`'s `flushDrawers` batches every `WithDrawers`/
+`WithDrawer`/`WithDrawerOut` option targeting the same `(project, wing, room)`
+into exactly ONE `storage.Vault.AppendDrawers` call, instead of one call per
+drawer — `AppendDrawer` (the singular n=1 wrapper) re-scans the whole room file
+for dedup on every call, so a per-drawer loop would make seeding O(N²).
+`TestHarness.AppendDrawersCallCount` instruments the one call site in
+`flushDrawers` directly (an `atomic.Int32`, matching the idiom
+`countingLazyEmbedder` already uses below) so this batching property is a
+checked call-count assertion, not just an inference from correct output.
+
+| Test | What it proves |
+|------|----------------|
+| `TestSeedBatchesManyDrawerOptionsIntoOneRoom` | A 50-entry batch (30 via `WithDrawers`, 19 via `WithDrawer`, 1 via `WithDrawerOut`) into ONE `(project, wing, room)` group lands correctly AND flushes with exactly **1** `AppendDrawers` call, regardless of how many separate option calls contributed to it. Count — not wall-clock time — is the observable; see doc/TESTING.md:1931's existing rule |
+| `TestSeedAppendDrawersCallCountMatchesGroupCount` | Non-vacuity: seeding into **three** distinct `(project, wing, room)` groups in one `New(t, ...)` call drives the count to exactly **3** — one call per group, not one call overall and not one call per option/drawer |
+
+---
+
 ## MCP-Native Memory Tests
 
 The `mcp-native-memory` epic added a host-agnostic AI-memory surface stored in

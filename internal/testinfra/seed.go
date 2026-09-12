@@ -140,7 +140,9 @@ func flushDrawers(st *seedState, t *testing.T) {
 				FiledAt:    e.spec.FiledAt,
 			}
 		}
-		if _, err := st.h.Vault.AppendDrawers(key.project, key.wing, key.room, ds); err != nil {
+		_, err := st.h.Vault.AppendDrawers(key.project, key.wing, key.room, ds)
+		st.h.appendDrawersCalls.Add(1)
+		if err != nil {
 			t.Fatalf("seed drawers %s/%s/%s: %v", key.project, key.wing, key.room, err)
 		}
 		for _, e := range entries {

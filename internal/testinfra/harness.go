@@ -34,6 +34,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -84,6 +85,26 @@ type TestHarness struct {
 	Config   storage.Config
 
 	mcpReady bool // true after InitMCP called
+
+	// appendDrawersCalls counts how many times flushDrawers has invoked
+	// storage.Vault.AppendDrawers through this harness's New/Seed calls.
+	// atomic.Int32 matches the idiom countingLazyEmbedder already uses in
+	// internal/integration/lazy_startup_test.go for the identical "count, not
+	// wall-clock time, is the observable" reason (doc/TESTING.md:1931) — the
+	// seeding path itself runs entirely on the test's own goroutine (New/Seed/
+	// flushDrawers spawn no goroutines), so a plain int32 would be equally
+	// correct here, but atomic keeps this counter safe even if a future caller
+	// seeds concurrently from multiple goroutines against one harness.
+	//
+	// The reader for this field (AppendDrawersCallCount) deliberately lives in
+	// seed_test.go, not here: its only caller today is this same package's own
+	// _test.go, and internal/sourceaudit's uninvoked-function gate only counts
+	// call sites in non-test code, so an exported reader with no non-test
+	// caller reads as dead capability. Declaring it in a _test.go file removes
+	// it from that gate's non-test declaration set entirely, rather than
+	// requiring a baseline.json exemption for a symbol that is genuinely
+	// test-only and not (yet) needed cross-package.
+	appendDrawersCalls atomic.Int32
 }
 
 // NewHarness creates a full-stack test harness.

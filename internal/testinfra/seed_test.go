@@ -100,15 +100,35 @@ func TestDrawerIDStableAcrossRoomsViaWithDrawerOut(t *testing.T) {
 	}
 }
 
+// AppendDrawersCallCount returns how many times AppendDrawers has been invoked
+// through this harness's Seed/New calls so far. Count, not wall-clock time, is
+// the observable — see doc/TESTING.md's TestIntegration_HandshakeDoesNotConstructEmbedder
+// for the precedent this follows. It exists to catch a regression where seeding
+// reverts from one batched AppendDrawers call per room group to one AppendDrawer
+// (singular) call per drawer — the exact shape that makes seeding O(N²).
+//
+// Deliberately declared here rather than in harness.go: this package's own
+// tests are its only caller today, and a _test.go declaration falls outside
+// internal/sourceaudit's uninvoked-function gate entirely (that gate only
+// inspects non-test declarations and non-test call sites), rather than
+// needing a baseline.json exemption for a genuinely test-only reader.
+func (h *TestHarness) AppendDrawersCallCount() int32 { return h.appendDrawersCalls.Load() }
+
 // TestSeedBatchesManyDrawerOptionsIntoOneRoom is the regression test for the
 // task's core requirement: a multi-room^Wmulti-option batch of
 // WithDrawers/WithDrawer/WithDrawerOut calls targeting the SAME
 // (project, wing, room) must all land — none dropped, none duplicated — from
 // a single flushed AppendDrawers call, whether contributed via one WithDrawers
 // call carrying many specs or many separate WithDrawer/WithDrawerOut calls.
-// This is the indirect/functional proof the plan allows in place of an actual
-// call-counter: storage.AppendDrawers is not instrumented for one, so
-// correctness of the batched result is what's asserted instead.
+// TestHarness.AppendDrawersCallCount now instruments the call directly, so the
+// count below is a real call-counter assertion, not just an indirect proof
+// via the batched result's correctness.
+//
+// WHAT BREAKS IT: reverting flushDrawers from one storage.Vault.AppendDrawers
+// call per (project, wing, room) group to a loop calling storage.Vault.
+// AppendDrawer (the singular n=1 wrapper) once per drawer — the exact shape
+// that makes seeding O(N²), since AppendDrawer re-scans the whole room file
+// for dedup on every call.
 func TestSeedBatchesManyDrawerOptionsIntoOneRoom(t *testing.T) {
 	specs := make([]DrawerSpec, 0, 30)
 	for i := range 30 {
@@ -139,6 +159,51 @@ func TestSeedBatchesManyDrawerOptionsIntoOneRoom(t *testing.T) {
 	}
 	if captured.Content != "captured single drawer" {
 		t.Errorf("captured drawer content = %q, want %q", captured.Content, "captured single drawer")
+	}
+
+	if got := h.AppendDrawersCallCount(); got != 1 {
+		t.Fatalf("flushDrawers made %d AppendDrawers calls for one (project,wing,room) group, want 1 "+
+			"— seeding has regressed from a single batched call to one call per drawer, which makes it O(N²)", got)
+	}
+}
+
+// TestSeedAppendDrawersCallCountMatchesGroupCount is the NON-VACUITY companion
+// to TestSeedBatchesManyDrawerOptionsIntoOneRoom: that test alone cannot rule
+// out a counter that is trivially always 1 regardless of how many distinct
+// (project, wing, room) groups are seeded. Seeding into THREE distinct groups
+// in one New(t, ...) call and asserting the count is exactly 3 — not 1 (one
+// call overall) and not the option count (one call per option) — proves the
+// counter tracks flushed groups specifically.
+func TestSeedAppendDrawersCallCountMatchesGroupCount(t *testing.T) {
+	h := New(t,
+		WithDrawers("proj-a", "general", "general",
+			DrawerSpec{Content: "a1", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T10:00:00Z"},
+			DrawerSpec{Content: "a2", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T10:00:00Z"},
+		),
+		WithDrawer("proj-b", "general", "general", "b1", "facts", "2026-01-01T10:00:00Z"),
+		WithDrawer("proj-b", "general", "general", "b2", "facts", "2026-01-01T10:00:00Z"),
+		WithDrawer("proj-b", "general", "general", "b3", "facts", "2026-01-01T10:00:00Z"),
+		WithDrawer("proj-c", "dev", "go", "c1", "facts", "2026-01-01T10:00:00Z"),
+	)
+
+	if got := h.AppendDrawersCallCount(); got != 3 {
+		t.Fatalf("AppendDrawersCallCount() = %d, want 3 (one call per distinct (project,wing,room) group: "+
+			"proj-a/general/general, proj-b/general/general, proj-c/dev/go) — either grouping broke (would "+
+			"read >3) or batching broke (would read 6, one per option/drawer)", got)
+	}
+
+	for _, group := range []struct{ project, wing, room string }{
+		{"proj-a", "general", "general"},
+		{"proj-b", "general", "general"},
+		{"proj-c", "dev", "go"},
+	} {
+		drawers, err := h.Vault.ListDrawers(group.project, group.wing, group.room)
+		if err != nil {
+			t.Fatalf("ListDrawers(%s/%s/%s): %v", group.project, group.wing, group.room, err)
+		}
+		if len(drawers) == 0 {
+			t.Fatalf("ListDrawers(%s/%s/%s) returned no drawers; seeding did not actually land", group.project, group.wing, group.room)
+		}
 	}
 }
 
