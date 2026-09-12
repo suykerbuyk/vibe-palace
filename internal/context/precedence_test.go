@@ -820,3 +820,117 @@ func TestVaultPath_NestedSkillForm(t *testing.T) {
 		t.Errorf("VaultPath = %q, want %q", got, want)
 	}
 }
+
+// --- Empty-vault-root guard tests ---
+//
+// These mirror TestListResourcesEmptyVaultRootIsEmbeddedOnly /
+// TestResolveSkillEmptyVaultRootIsEmbeddedOnly in skill_dir_test.go: plant
+// cwd-relative shadow files that a pre-fix ResolveScoped/readByPath/
+// resolveAtRel would read via filepath.Join("", "Templates"/"Projects", …),
+// t.Chdir into that directory, and confirm a resolver built with an empty
+// vault root never reads them — only the embedded tier answers.
+
+// TestResolveScopedEmptyVaultRootIsEmbeddedOnly pins the guard on
+// ResolveScoped's own four filesystem tiers (room/wing/project/vault) for a
+// flat command resource. Before the guard, a cwd holding
+// Templates/commands/restart.md (or the project/wing/room equivalents)
+// shadowed the embedded "restart" command with no vault configured at all.
+func TestResolveScopedEmptyVaultRootIsEmbeddedOnly(t *testing.T) {
+	const marker = "STRAY-CWD-SHADOW-MARKER"
+	cwd := t.TempDir()
+	for rel, body := range map[string]string{
+		"Templates/commands/restart.md":           marker + " vault body\n",
+		"Projects/p1/commands/restart.md":         marker + " project body\n",
+		"Projects/p1/commands/w/.wing/restart.md": marker + " wing body\n",
+		"Projects/p1/commands/w/r/restart.md":     marker + " room body\n",
+	} {
+		writeFile(t, filepath.Join(cwd, filepath.FromSlash(rel)), body)
+	}
+	t.Chdir(cwd)
+	r := NewResolver("")
+
+	for _, scope := range [][3]string{{"", "", ""}, {"p1", "", ""}, {"p1", "w", ""}, {"p1", "w", "r"}} {
+		content, src, err := r.ResolveScoped("command:restart", scope[0], scope[1], scope[2])
+		if err != nil {
+			t.Fatalf("%v: ResolveScoped: %v", scope, err)
+		}
+		if src != "embedded" || strings.Contains(content, marker) {
+			t.Errorf("%v: src=%q content=%q — an empty vault root read a cwd-relative tier", scope, src, content)
+		}
+	}
+}
+
+// TestResolveScopedEmptyVaultRootSkillFile pins the same guard on
+// resolveAtRel, reached via ResolveScoped's "skill:<name>" dispatch
+// (distinct from ResolveSkillDir, which already had its own guard). Uses an
+// actual embedded skill name ("startup-analyst") rather than a nonexistent
+// one, since resolveAtRel must find a real embedded SKILL.md to prove the
+// fallback succeeds rather than merely erroring out.
+func TestResolveScopedEmptyVaultRootSkillFile(t *testing.T) {
+	const marker = "STRAY-CWD-SHADOW-MARKER"
+	cwd := t.TempDir()
+	for rel, body := range map[string]string{
+		"Templates/skills/startup-analyst/SKILL.md":           marker + " vault body\n",
+		"Projects/p1/skills/startup-analyst/SKILL.md":         marker + " project body\n",
+		"Projects/p1/skills/w/.wing/startup-analyst/SKILL.md": marker + " wing body\n",
+		"Projects/p1/skills/w/r/startup-analyst/SKILL.md":     marker + " room body\n",
+	} {
+		writeFile(t, filepath.Join(cwd, filepath.FromSlash(rel)), body)
+	}
+	t.Chdir(cwd)
+	r := NewResolver("")
+
+	for _, scope := range [][3]string{{"", "", ""}, {"p1", "", ""}, {"p1", "w", ""}, {"p1", "w", "r"}} {
+		content, src, err := r.ResolveScoped("skill:startup-analyst", scope[0], scope[1], scope[2])
+		if err != nil {
+			t.Fatalf("%v: ResolveScoped(skill): %v", scope, err)
+		}
+		if src != "embedded" || strings.Contains(content, marker) {
+			t.Errorf("%v: src=%q content=%q — an empty vault root read a cwd-relative tier", scope, src, content)
+		}
+	}
+}
+
+// TestResolveByPathEmptyVaultRootIsEmbeddedOnly pins the guard on
+// readByPath, reached both through ResolveScoped's dir=="" dispatch (for
+// workflow/resume/doctrine) and through ResolveDigest. Before the guard, a
+// cwd-relative Templates/<resource>.md or Projects/<project>/<resource>.md
+// shadowed the embedded copy with no vault configured at all.
+func TestResolveByPathEmptyVaultRootIsEmbeddedOnly(t *testing.T) {
+	const marker = "STRAY-CWD-SHADOW-MARKER"
+	cwd := t.TempDir()
+	for _, rel := range []string{
+		"Templates/workflow.md",
+		"Templates/resume.md",
+		"Templates/doctrine.md",
+		"Projects/p1/workflow.md",
+		"Projects/p1/resume.md",
+		"Projects/p1/doctrine.md",
+	} {
+		writeFile(t, filepath.Join(cwd, filepath.FromSlash(rel)), marker+"\n")
+	}
+	t.Chdir(cwd)
+	r := NewResolver("")
+
+	for _, resource := range []string{"workflow", "resume", "doctrine"} {
+		for _, project := range []string{"", "p1"} {
+			content, src, err := r.Resolve(resource, project)
+			if err != nil {
+				t.Fatalf("Resolve(%q, %q): %v", resource, project, err)
+			}
+			if src != "embedded" || strings.Contains(content, marker) {
+				t.Errorf("Resolve(%q, %q): src=%q content=%q — an empty vault root read a cwd-relative tier", resource, project, src, content)
+			}
+		}
+		_, src, sha, err := r.ResolveDigest(resource, "p1")
+		if err != nil {
+			t.Fatalf("ResolveDigest(%q): %v", resource, err)
+		}
+		if src != "embedded" {
+			t.Errorf("ResolveDigest(%q): src=%q, want embedded", resource, src)
+		}
+		if sha != "" {
+			t.Errorf("ResolveDigest(%q): sha256Hex=%q, want empty for an embedded hit", resource, sha)
+		}
+	}
+}

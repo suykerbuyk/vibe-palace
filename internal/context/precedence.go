@@ -75,6 +75,11 @@ func (r *Resolver) Resolve(resource, project string) (string, string, error) {
 // ResolveScoped returns (content, source, error) using 5-tier precedence:
 // Room > Wing > Project > Vault > Embedded.
 // When wing and room are empty, only the 3-tier subset is checked.
+//
+// A resolver with no vault root serves the embedded tier only: every
+// filesystem tier is skipped, because filepath.Join("", "Templates", …) is a
+// path relative to the process cwd, and a stray ./Templates or ./Projects
+// there is not a vault.
 func (r *Resolver) ResolveScoped(resource, project, wing, room string) (string, string, error) {
 	if err := validateScope(wing, room); err != nil {
 		return "", "", err
@@ -101,34 +106,36 @@ func (r *Resolver) ResolveScoped(resource, project, wing, room string) (string, 
 
 	filename := name + ".md"
 
-	// Tier 1 — Room (only if both wing and room are set).
-	if wing != "" && room != "" && project != "" {
-		roomPath := filepath.Join(r.vaultRoot, "Projects", project, dir, wing, room, filename)
-		if data, err := os.ReadFile(roomPath); err == nil {
-			return r.expandScoped(string(data), project, wing, room), "room", nil
+	if r.vaultRoot != "" {
+		// Tier 1 — Room (only if both wing and room are set).
+		if wing != "" && room != "" && project != "" {
+			roomPath := filepath.Join(r.vaultRoot, "Projects", project, dir, wing, room, filename)
+			if data, err := os.ReadFile(roomPath); err == nil {
+				return r.expandScoped(string(data), project, wing, room), "room", nil
+			}
 		}
-	}
 
-	// Tier 2 — Wing (only if wing is set).
-	if wing != "" && project != "" {
-		wingPath := filepath.Join(r.vaultRoot, "Projects", project, dir, wing, ".wing", filename)
-		if data, err := os.ReadFile(wingPath); err == nil {
-			return r.expandScoped(string(data), project, wing, room), "wing", nil
+		// Tier 2 — Wing (only if wing is set).
+		if wing != "" && project != "" {
+			wingPath := filepath.Join(r.vaultRoot, "Projects", project, dir, wing, ".wing", filename)
+			if data, err := os.ReadFile(wingPath); err == nil {
+				return r.expandScoped(string(data), project, wing, room), "wing", nil
+			}
 		}
-	}
 
-	// Tier 3 — Project.
-	if project != "" {
-		projPath := filepath.Join(r.vaultRoot, "Projects", project, dir, filename)
-		if data, err := os.ReadFile(projPath); err == nil {
-			return r.expandScoped(string(data), project, wing, room), "project", nil
+		// Tier 3 — Project.
+		if project != "" {
+			projPath := filepath.Join(r.vaultRoot, "Projects", project, dir, filename)
+			if data, err := os.ReadFile(projPath); err == nil {
+				return r.expandScoped(string(data), project, wing, room), "project", nil
+			}
 		}
-	}
 
-	// Tier 4 — Vault template.
-	vaultPath := filepath.Join(r.vaultRoot, "Templates", dir, filename)
-	if data, err := os.ReadFile(vaultPath); err == nil {
-		return r.expandScoped(string(data), project, wing, room), "vault", nil
+		// Tier 4 — Vault template.
+		vaultPath := filepath.Join(r.vaultRoot, "Templates", dir, filename)
+		if data, err := os.ReadFile(vaultPath); err == nil {
+			return r.expandScoped(string(data), project, wing, room), "vault", nil
+		}
 	}
 
 	// Tier 5 — Embedded default.
@@ -153,16 +160,23 @@ func (r *Resolver) resolveByPath(relPath, project, wing, room string) (string, s
 // readByPath walks the 3-tier chain (Project > Vault > Embedded) for a
 // non-command/skill resource and returns the RAW, unexpanded bytes it read
 // plus the tier that supplied them.
+//
+// A resolver with no vault root serves the embedded tier only: every
+// filesystem tier is skipped, because filepath.Join("", "Templates", …) is a
+// path relative to the process cwd, and a stray ./Templates or ./Projects
+// there is not a vault.
 func (r *Resolver) readByPath(relPath, project string) ([]byte, string, error) {
-	if project != "" {
-		projPath := filepath.Join(r.vaultRoot, "Projects", project, relPath)
-		if data, err := os.ReadFile(projPath); err == nil {
-			return data, "project", nil
+	if r.vaultRoot != "" {
+		if project != "" {
+			projPath := filepath.Join(r.vaultRoot, "Projects", project, relPath)
+			if data, err := os.ReadFile(projPath); err == nil {
+				return data, "project", nil
+			}
 		}
-	}
-	vaultPath := filepath.Join(r.vaultRoot, "Templates", relPath)
-	if data, err := os.ReadFile(vaultPath); err == nil {
-		return data, "vault", nil
+		vaultPath := filepath.Join(r.vaultRoot, "Templates", relPath)
+		if data, err := os.ReadFile(vaultPath); err == nil {
+			return data, "vault", nil
+		}
 	}
 	embedPath := path.Join("templates", relPath)
 	if data, err := fs.ReadFile(r.defaults, embedPath); err == nil {
@@ -601,6 +615,11 @@ func validateResourceName(name string) error {
 // returned source is the same room/wing/project/vault/embedded label
 // used elsewhere; resource is the original resource identifier used
 // only to format the "not found" error.
+//
+// A resolver with no vault root serves the embedded tier only: every
+// filesystem tier is skipped, because filepath.Join("", "Templates", …) is a
+// path relative to the process cwd, and a stray ./Templates or ./Projects
+// there is not a vault.
 func (r *Resolver) resolveAtRel(rel, project, wing, room, resource string) (string, string, error) {
 	// rel is "skills/<name>/SKILL.md". For wing/room tiers the
 	// directory-as-override-unit slots in between "skills/" and
@@ -622,27 +641,29 @@ func (r *Resolver) resolveAtRel(rel, project, wing, room, resource string) (stri
 		return filepath.Join(segs...)
 	}
 
-	if wing != "" && room != "" && project != "" {
-		p := filepath.Join(r.vaultRoot, "Projects", project, splitScoped(wing, room))
-		if data, err := os.ReadFile(p); err == nil {
-			return r.expandScoped(string(data), project, wing, room), "room", nil
+	if r.vaultRoot != "" {
+		if wing != "" && room != "" && project != "" {
+			p := filepath.Join(r.vaultRoot, "Projects", project, splitScoped(wing, room))
+			if data, err := os.ReadFile(p); err == nil {
+				return r.expandScoped(string(data), project, wing, room), "room", nil
+			}
 		}
-	}
-	if wing != "" && project != "" {
-		p := filepath.Join(r.vaultRoot, "Projects", project, splitScoped(wing, ".wing"))
-		if data, err := os.ReadFile(p); err == nil {
-			return r.expandScoped(string(data), project, wing, room), "wing", nil
+		if wing != "" && project != "" {
+			p := filepath.Join(r.vaultRoot, "Projects", project, splitScoped(wing, ".wing"))
+			if data, err := os.ReadFile(p); err == nil {
+				return r.expandScoped(string(data), project, wing, room), "wing", nil
+			}
 		}
-	}
-	if project != "" {
-		projPath := filepath.Join(r.vaultRoot, "Projects", project, filepath.FromSlash(rel))
-		if data, err := os.ReadFile(projPath); err == nil {
-			return r.expandScoped(string(data), project, wing, room), "project", nil
+		if project != "" {
+			projPath := filepath.Join(r.vaultRoot, "Projects", project, filepath.FromSlash(rel))
+			if data, err := os.ReadFile(projPath); err == nil {
+				return r.expandScoped(string(data), project, wing, room), "project", nil
+			}
 		}
-	}
-	vaultPath := filepath.Join(r.vaultRoot, "Templates", filepath.FromSlash(rel))
-	if data, err := os.ReadFile(vaultPath); err == nil {
-		return r.expandScoped(string(data), project, wing, room), "vault", nil
+		vaultPath := filepath.Join(r.vaultRoot, "Templates", filepath.FromSlash(rel))
+		if data, err := os.ReadFile(vaultPath); err == nil {
+			return r.expandScoped(string(data), project, wing, room), "vault", nil
+		}
 	}
 	embedPath := path.Join("templates", rel)
 	if data, err := fs.ReadFile(r.defaults, embedPath); err == nil {

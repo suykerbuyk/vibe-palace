@@ -503,6 +503,43 @@ func TestSkillsShowWithoutConfigServesEmbedded(t *testing.T) {
 	})
 }
 
+// TestSkillsShowScopeResolverResolveScopedIsEmbeddedOnly pins the guard on
+// ResolveScoped through the one production call site that can actually
+// construct an empty-root resolver: skillsShowScope's no-vault-configured
+// branch. Unlike runSkillsShow (which only ever calls ResolveSkillDir /
+// ResolveSkillSection on that resolver, both already guarded before this
+// fix), this test drives ResolveScoped directly against the
+// production-constructed resolver to prove the fix holds there too.
+//
+// The stray file is planted under env.proj, and the test does its own
+// t.Chdir(env.proj) before calling ResolveScoped: the pre-fix bug reads
+// Templates/… relative to the process's actual cwd (filepath.Join("",
+// "Templates", …)), not relative to the cwd argument passed into
+// skillsShowScope, so without the chdir this test would pass identically
+// whether or not the guard exists.
+func TestSkillsShowScopeResolverResolveScopedIsEmbeddedOnly(t *testing.T) {
+	const marker = "STRAY-CWD-SHADOW-MARKER"
+	env := newSkillsShowEnv(t)
+	writeTestFile(t, filepath.Join(env.proj, "Templates", "commands", "restart.md"), marker+" templates body\n")
+	t.Chdir(env.proj)
+
+	resolver, _, note, code := skillsShowScope(env.proj, "", false, "", "")
+	if code != 0 {
+		t.Fatalf("skillsShowScope: code=%d note=%q", code, note)
+	}
+	if resolver.VaultRoot() != "" {
+		t.Fatalf("expected an empty-root resolver, got VaultRoot()=%q", resolver.VaultRoot())
+	}
+
+	content, src, err := resolver.ResolveScoped("command:restart", "", "", "")
+	if err != nil {
+		t.Fatalf("ResolveScoped: %v", err)
+	}
+	if src != "embedded" || strings.Contains(content, marker) {
+		t.Errorf("src=%q content=%q — the production no-vault resolver read a cwd-relative tier", src, content)
+	}
+}
+
 // TestSkillsShowCwdVaultPathWithoutGlobalConfig proves the degrade fires only
 // on the GLOBAL config's absence: a marker that sets vault_path still binds the
 // vault with no global config, so the project and vault tiers are served and
