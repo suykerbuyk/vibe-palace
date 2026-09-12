@@ -23,6 +23,18 @@ var (
 	vpBinaryErr  error
 )
 
+// realEnviron is captured at package init -- before any test in this binary
+// can have called t.Setenv (Go guarantees every package's init() completes
+// before any test function runs). BuildVPBinary's own `go build` subprocess
+// must use THIS, not a live os.Environ(), so it can never inherit a calling
+// test's isolated HOME/GOPATH/GOMODCACHE -- see
+// buildvpbinary-leaks-isolated-home-poisoning-tempdir-cleanup for what
+// happens when it does: go build defaults GOMODCACHE under the poisoned
+// HOME, downloads modules into that test's own TempDir, and Go's own
+// read-only module-cache permissions then make t.TempDir()'s cleanup fail
+// with "permission denied".
+var realEnviron = os.Environ()
+
 // BuildVPBinary compiles cmd/vp once per test process (sync.Once-cached) and
 // returns the resulting binary path. Promoted verbatim from
 // internal/integration/template_reconcile_test.go's buildVPBinary, including
@@ -51,6 +63,7 @@ func BuildVPBinary(t *testing.T) string {
 		}
 		cmd := exec.Command("go", "build", "-o", bin,
 			"github.com/suykerbuyk/vibe-palace/cmd/vp")
+		cmd.Env = realEnviron
 		cmd.Stderr = os.Stderr
 		cmd.Stdout = os.Stderr
 		if err := cmd.Run(); err != nil {
