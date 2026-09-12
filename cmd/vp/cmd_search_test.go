@@ -52,6 +52,23 @@ func TestRunSearchNoResults(t *testing.T) {
 	}
 }
 
+// TestRunSearchUnknownProjectExitCode proves runSearch's own error handling —
+// not just its sole production caller, cmdSearch (which never reaches
+// runSearch with an unknown project, since requireSearchProject refuses one
+// first) — maps a *search.UnknownProjectError from eng.Search to ExitUser,
+// not the generic ExitSystem every other eng.Search error gets. This is the
+// defense-in-depth path: a future caller, a reordering, or a TOCTOU race
+// between requireSearchProject's check and eng.Search would otherwise surface
+// the wrong exit code for a user-caused error.
+func TestRunSearchUnknownProjectExitCode(t *testing.T) {
+	eng, _ := testEngine(t)
+	var buf bytes.Buffer
+	code := runSearch(eng, "nosuchproject", "query", "", "", 10, false, &buf)
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser (%d); output: %s", code, cli.ExitUser, buf.String())
+	}
+}
+
 func TestRunSearchWithResults(t *testing.T) {
 	eng, v := testEngine(t)
 

@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -157,6 +158,18 @@ func runSearch(eng *search.Engine, proj, query, wing, room string, limit int, as
 		Limit:   limit,
 	})
 	if err != nil {
+		// An unknown project is a user error (ExitUser), never "I could not
+		// search" (ExitSystem) — mirroring searchHandler's own
+		// errors.As(*search.UnknownProjectError) special-case. Unreachable
+		// from cmdSearch today, since requireSearchProject already refuses an
+		// unknown project before runSearch is ever called; kept here as
+		// defense-in-depth for any other caller of runSearch, and so a future
+		// reordering can't silently regress the exit code.
+		var unk *search.UnknownProjectError
+		if errors.As(err, &unk) {
+			fmt.Fprintf(os.Stderr, "vp search: %v\n", err)
+			return cli.ExitUser
+		}
 		fmt.Fprintf(os.Stderr, "vp search: %v\n", err)
 		return cli.ExitSystem
 	}
