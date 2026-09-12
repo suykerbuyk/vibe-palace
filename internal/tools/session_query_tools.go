@@ -463,48 +463,49 @@ func getProjectContextHandler(vault *storage.Vault, resolver *vpctx.Resolver) mc
 		// Sessions, threads, decisions all need session list.
 		if want["sessions"] || want["threads"] || want["decisions"] {
 			sessions, err := vault.ListSessions(p.Project, "", "", 0)
-			if err == nil {
-				// Take most recent maxSessions.
-				start := 0
-				if len(sessions) > maxSessions {
-					start = len(sessions) - maxSessions
-				}
-				recent := sessions[start:]
+			if err != nil {
+				return nil, fmt.Errorf("list sessions: %w", err)
+			}
+			// Take most recent maxSessions.
+			start := 0
+			if len(sessions) > maxSessions {
+				start = len(sessions) - maxSessions
+			}
+			recent := sessions[start:]
 
-				if want["sessions"] {
-					for _, s := range recent {
-						result.Sessions = append(result.Sessions, sessionSearchResult{
-							SessionID:     s.ID,
-							Date:          s.Date,
-							Title:         s.Title,
-							Summary:       s.Summary,
-							Tag:           s.Tag,
-							FrictionScore: s.FrictionScore,
-						})
-					}
+			if want["sessions"] {
+				for _, s := range recent {
+					result.Sessions = append(result.Sessions, sessionSearchResult{
+						SessionID:     s.ID,
+						Date:          s.Date,
+						Title:         s.Title,
+						Summary:       s.Summary,
+						Tag:           s.Tag,
+						FrictionScore: s.FrictionScore,
+					})
 				}
+			}
 
-				if want["threads"] {
-					seen := make(map[string]bool)
-					// Walk recent sessions in reverse (most recent first).
-					for _, r := range slices.Backward(recent) {
-						for _, t := range r.OpenThreads {
-							if !seen[t] {
-								seen[t] = true
-								result.Threads = append(result.Threads, t)
-							}
+			if want["threads"] {
+				seen := make(map[string]bool)
+				// Walk recent sessions in reverse (most recent first).
+				for _, r := range slices.Backward(recent) {
+					for _, t := range r.OpenThreads {
+						if !seen[t] {
+							seen[t] = true
+							result.Threads = append(result.Threads, t)
 						}
 					}
 				}
+			}
 
-				if want["decisions"] {
-					seen := make(map[string]bool)
-					for _, r := range slices.Backward(recent) {
-						for _, d := range r.Decisions {
-							if !seen[d] {
-								seen[d] = true
-								result.Decisions = append(result.Decisions, d)
-							}
+			if want["decisions"] {
+				seen := make(map[string]bool)
+				for _, r := range slices.Backward(recent) {
+					for _, d := range r.Decisions {
+						if !seen[d] {
+							seen[d] = true
+							result.Decisions = append(result.Decisions, d)
 						}
 					}
 				}
@@ -513,9 +514,11 @@ func getProjectContextHandler(vault *storage.Vault, resolver *vpctx.Resolver) mc
 
 		// Friction trends.
 		if want["friction"] {
-			if trends, err := capture.GetFrictionTrends(vault, p.Project, 8); err == nil {
-				result.Friction = trends
+			trends, err := capture.GetFrictionTrends(vault, p.Project, 8)
+			if err != nil {
+				return nil, fmt.Errorf("get friction trends: %w", err)
 			}
+			result.Friction = trends
 		}
 
 		return result, nil

@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -445,6 +447,67 @@ func TestGetProjectContextDeduplicatesThreads(t *testing.T) {
 	r := result.(ProjectContext)
 	if len(r.Threads) != 3 {
 		t.Errorf("threads = %v, want 3 deduplicated", r.Threads)
+	}
+}
+
+func TestGetProjectContextSessionsListError(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedTestSessions(t, vault)
+
+	dir, err := vault.SessionDir("test-proj")
+	if err != nil {
+		t.Fatalf("SessionDir: %v", err)
+	}
+	// Missing closing "---" delimiter: storage.ParseFrontmatter hard-fails,
+	// and ListSessions is fail-fast (aborts on the first bad file), matching
+	// the quantum-ng defect that motivated this task.
+	bad := filepath.Join(dir, "2026-04-04-99.md")
+	if err := os.WriteFile(bad, []byte("---\nfoo: bar\n"), 0644); err != nil {
+		t.Fatalf("write malformed session: %v", err)
+	}
+
+	resolver := vpctx.NewResolver(vault.Root)
+	tool := GetProjectContextTool(vault, resolver)
+
+	params := json.RawMessage(`{"project": "test-proj"}`)
+	result, err := tool.Handler(context.Background(), params)
+	if err == nil {
+		t.Fatalf("expected error, got result: %+v", result)
+	}
+	if !strings.Contains(err.Error(), "list sessions") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "list sessions")
+	}
+}
+
+func TestGetProjectContextFrictionListError(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	seedTestSessions(t, vault)
+
+	dir, err := vault.SessionDir("test-proj")
+	if err != nil {
+		t.Fatalf("SessionDir: %v", err)
+	}
+	// Dated "today" so it falls inside GetFrictionTrends's default 8-week
+	// window regardless of when this test runs.
+	today := time.Now().Format("2006-01-02")
+	bad := filepath.Join(dir, today+"-99.md")
+	if err := os.WriteFile(bad, []byte("---\nfoo: bar\n"), 0644); err != nil {
+		t.Fatalf("write malformed session: %v", err)
+	}
+
+	resolver := vpctx.NewResolver(vault.Root)
+	tool := GetProjectContextTool(vault, resolver)
+
+	// sections=["friction"] isolates the friction block: it skips the
+	// sessions/threads/decisions block entirely, so this failure can only be
+	// coming from GetFrictionTrends's own internal ListSessions call.
+	params := json.RawMessage(`{"project": "test-proj", "sections": ["friction"]}`)
+	result, err := tool.Handler(context.Background(), params)
+	if err == nil {
+		t.Fatalf("expected error, got result: %+v", result)
+	}
+	if !strings.Contains(err.Error(), "get friction trends") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "get friction trends")
 	}
 }
 
