@@ -30,6 +30,11 @@ func initTestRepo(t *testing.T) string {
 	if !GitAvailable() {
 		t.Skip("git not in PATH")
 	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	dir := t.TempDir()
 	gitRun(t, dir, "init", "-b", "main")
 	gitRun(t, dir, "config", "user.email", "test@example.com")
