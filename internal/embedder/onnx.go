@@ -6,10 +6,14 @@ package embedder
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/knights-analytics/hugot"
 	"github.com/knights-analytics/hugot/pipelines"
+
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // defaultMaxSeqLen is all-MiniLM-L6-v2's position-embedding table size. A
@@ -30,12 +34,45 @@ type ONNXEmbedder struct {
 	maxSeqLen int
 }
 
+// modelCacheLockPath derives the absolute path NewONNX locks against before
+// touching modelCacheDir. It MUST mirror hugot's own modelPath derivation
+// (hugot@v0.7.0 downloader.go:DownloadModel) byte-for-byte, colon-stripping
+// included, or the lock silently guards a different path than the one hugot
+// (via viant/afs's non-atomic remove+recreate+copy in file/upload.go:Upload)
+// actually writes to — defeating the lock for any HF revision-pinned model
+// name ("org/model:revision"). hugot strips everything from the first ':'
+// onward before substituting '/' for '_'; replicate that exactly, not just
+// the slash substitution.
+func modelCacheLockPath(modelCacheDir, modelName string) string {
+	modelP := modelName
+	if strings.Contains(modelP, ":") {
+		modelP = strings.Split(modelName, ":")[0]
+	}
+	return filepath.Join(modelCacheDir, strings.ReplaceAll(modelP, "/", "_"))
+}
+
 // NewONNX creates an ONNXEmbedder. modelCacheDir is where model files are
 // downloaded and cached (e.g., {vault}/.local/models/).
+//
+// modelCacheDir is shared across every process that builds an embedder (every
+// vp-owned test package, plus the CLI), and hugot.DownloadModel re-copies the
+// model into it on every call with a non-atomic remove+recreate+copy (traced
+// to viant/afs@v1.30.0's file/upload.go:Upload). A concurrent process can
+// therefore observe a half-written model.onnx. NewONNX takes a blocking
+// cross-process lock, keyed on the same path hugot itself writes to, and
+// holds it across the download, pipeline build, and dimension probe so a
+// second process never opens the file mid-write.
 func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEmbedder, error) {
 	if maxSeqLen <= 0 {
 		maxSeqLen = defaultMaxSeqLen
 	}
+
+	lockTarget := modelCacheLockPath(modelCacheDir, modelName)
+	release, err := vaultlock.Acquire(modelCacheDir, lockTarget)
+	if err != nil {
+		return nil, fmt.Errorf("lock model cache: %w", err)
+	}
+	defer release()
 
 	session, err := hugot.NewGoSession()
 	if err != nil {

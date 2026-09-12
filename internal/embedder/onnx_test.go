@@ -221,6 +221,50 @@ func TestONNXEmbedSimilarity(t *testing.T) {
 	}
 }
 
+// TestModelCacheLockPathMatchesHugotColonStripping pins the Review
+// (2026-09-11) Medium finding: modelCacheLockPath must replicate hugot's own
+// colon-suffix strip (hugot@v0.7.0 downloader.go:DownloadModel splits an HF
+// revision-pinned "org/model:revision" name on ":" and keeps only the first
+// part before substituting "/" for "_") byte-for-byte. A lock keyed on a path
+// that still contains the ":revision" suffix would guard a DIFFERENT path
+// than the one hugot actually writes to, silently defeating the whole fix for
+// any future colon-bearing embedder.model config -- not triggered by today's
+// only configured model name, but exactly the kind of latent bug this task
+// exists to prevent.
+func TestModelCacheLockPathMatchesHugotColonStripping(t *testing.T) {
+	cacheDir := "/cache/models"
+
+	tests := []struct {
+		name      string
+		modelName string
+		want      string
+	}{
+		{
+			name:      "no colon (today's only configured model)",
+			modelName: "sentence-transformers/all-MiniLM-L6-v2",
+			want:      "/cache/models/sentence-transformers_all-MiniLM-L6-v2",
+		},
+		{
+			name:      "HF revision-pinned name strips everything from the colon onward",
+			modelName: "org/model:revision",
+			want:      "/cache/models/org_model",
+		},
+		{
+			name:      "colon with no further slash",
+			modelName: "org:main",
+			want:      "/cache/models/org",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := modelCacheLockPath(cacheDir, tc.modelName); got != tc.want {
+				t.Errorf("modelCacheLockPath(%q, %q) = %q, want %q", cacheDir, tc.modelName, got, tc.want)
+			}
+		})
+	}
+}
+
 // --- Mock tests ---
 
 func TestMockEmbedder(t *testing.T) {
