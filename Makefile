@@ -14,7 +14,16 @@ SURFACE_MAJOR := $(shell sed -n 's/^const MCPSurfaceVersion int = \([0-9]*\)$$/\
 # {{.Version}} convention — left un-stripped, a `make install` binary and a
 # goreleaser-built release binary report the same commit's version in two
 # different shapes.
-VERSION      ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev)
+#
+# The v-strip is a SEPARATE step from the shell fallback, deliberately: a
+# `git describe | sed ...` pipeline's exit status is sed's, not git describe's
+# (sed succeeds on empty input), so outside a git checkout (a source tarball,
+# a Docker COPY without .git) the `|| echo dev` fallback would never fire and
+# VERSION would silently become an empty string. Let git describe's own
+# success/failure drive the fallback first, then strip a leading v with make's
+# own text substitution — a no-op on the literal "dev".
+VERSION      ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION      := $(patsubst v%,%,$(VERSION))
 
 # DIRTY is derived from VERSION, never from a second git invocation. VERSION
 # above is the ONE place the working tree is inspected; `git diff --quiet` here

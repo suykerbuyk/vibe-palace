@@ -14,7 +14,8 @@ import (
 // InstallToCache writes plugin.json and .mcp.json into the Claude Code plugin
 // cache directory (belt-and-suspenders alongside the marketplace source).
 // stamp is the cache directory name and plugin.json version field — pass
-// SurfaceStamp(version, commit), not the frozen product version alone.
+// SurfaceStamp(version, commit), not the bare product version alone: two
+// builds of the same tagged release share the same main.version.
 // Returns the install path on success.
 func InstallToCache(stamp string) (string, error) {
 	if stamp == "" {

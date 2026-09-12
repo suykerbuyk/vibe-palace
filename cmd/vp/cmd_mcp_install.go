@@ -37,7 +37,8 @@ func cmdMCPInstall(info cli.BuildInfo) *cli.Command {
 		Description: "Register the vibe-palace MCP server with one or more AI coding hosts, " +
 			"making the vp_* tools available in every session. Re-running --claude-plugin " +
 			"refreshes on-disk plugin files even when already enabled (cache stamp uses " +
-			"build commit, not the frozen product version). Pass one or more host flags: " +
+			"build commit, not the bare product version — two builds of the same tagged " +
+			"release share the same version). Pass one or more host flags: " +
 			"--claude-plugin (Claude Code local plugin/marketplace), --grok (xAI Grok Build " +
 			"via `grok mcp add`), --zed (Zed editor context_servers). The same MCP server " +
 			"backs every host; only the registration differs. Restart the host to activate.",
@@ -54,8 +55,9 @@ func cmdMCPInstall(info cli.BuildInfo) *cli.Command {
 				return cli.ExitUser
 			}
 			cwd, _ := os.Getwd()
-			// SurfaceStamp prefers commit over frozen BASE_VERSION so Claude's
-			// plugin cache path actually moves on rebuild (Phase 0.5 / C2).
+			// SurfaceStamp prefers commit over the bare product version so
+			// Claude's plugin cache path actually moves on rebuild (Phase 0.5 /
+			// C2) — two builds of the same tagged release share the same version.
 			stamp := plugin.SurfaceStamp(info.Version, info.Commit)
 			failed := false
 			for _, h := range hosts {
