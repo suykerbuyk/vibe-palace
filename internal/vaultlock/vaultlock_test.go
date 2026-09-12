@@ -4,6 +4,7 @@
 package vaultlock
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -257,5 +258,27 @@ func TestAcquireInvalidVaultRoot(t *testing.T) {
 	}
 	if _, err := Acquire("relative/root", "/tmp/x"); err == nil {
 		t.Fatalf("expected error for relative vaultRoot")
+	}
+}
+
+func TestAcquireWithTimeoutReturnsCleanErrorInsteadOfHanging(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "held")
+
+	release, err := Acquire(root, target) // hold it for the whole test
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer release()
+
+	start := time.Now()
+	_, err = AcquireWithTimeout(root, target, 100*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, ErrLockWaitTimeout) {
+		t.Fatalf("AcquireWithTimeout error = %v, want ErrLockWaitTimeout", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("AcquireWithTimeout took %s, want ~100ms (proves it does not hang)", elapsed)
 	}
 }

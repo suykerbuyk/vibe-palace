@@ -5,11 +5,14 @@ package embedder
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/testutil"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 func newTestONNX(t *testing.T) *ONNXEmbedder {
@@ -262,6 +265,41 @@ func TestModelCacheLockPathMatchesHugotColonStripping(t *testing.T) {
 				t.Errorf("modelCacheLockPath(%q, %q) = %q, want %q", cacheDir, tc.modelName, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestNewONNXLockWaitTimeoutIsCleanNotHang proves NewONNX gives up cleanly on
+// a stuck lock-holder instead of blocking indefinitely. It never reaches
+// hugot.NewGoSession/DownloadModel -- the lock is already held before NewONNX
+// gets that far -- so it needs no network access and can run unconditionally,
+// including under -short, unlike the rest of this file's ONNX tests.
+func TestNewONNXLockWaitTimeoutIsCleanNotHang(t *testing.T) {
+	dir := t.TempDir()
+	modelName := "sentence-transformers/all-MiniLM-L6-v2"
+	lockTarget := modelCacheLockPath(dir, modelName)
+
+	release, err := vaultlock.Acquire(dir, lockTarget)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer release()
+
+	old := modelCacheLockTimeout
+	modelCacheLockTimeout = 100 * time.Millisecond
+	defer func() { modelCacheLockTimeout = old }()
+
+	start := time.Now()
+	_, err = NewONNX(modelName, dir, 0, 1)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, vaultlock.ErrLockWaitTimeout) {
+		t.Fatalf("NewONNX error = %v, want wrapping vaultlock.ErrLockWaitTimeout", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("NewONNX took %s, want ~100ms (proves it does not hang)", elapsed)
 	}
 }
 

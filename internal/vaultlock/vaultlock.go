@@ -29,11 +29,17 @@ package vaultlock
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
+
+// ErrLockWaitTimeout is returned by AcquireWithTimeout when the lock is not
+// obtained before the deadline elapses.
+var ErrLockWaitTimeout = errors.New("vaultlock: timed out waiting for lock")
 
 // Acquire takes an exclusive advisory lock guarding targetAbsPath. vaultRoot is
 // the absolute vault root; targetAbsPath is the absolute path of the file the
@@ -81,6 +87,37 @@ func TryAcquire(vaultRoot, targetAbsPath string) (release func() error, ok bool,
 		return nil, false, nil
 	}
 	return releaser(f), true, nil
+}
+
+// AcquireWithTimeout is the bounded-wait form of Acquire: it polls for the
+// exclusive lock (via the same non-blocking primitive TryAcquire uses) and
+// gives up with ErrLockWaitTimeout once timeout has elapsed, instead of
+// blocking indefinitely like Acquire. Use it wherever a stuck lock-holder
+// (e.g., a hung network download performed while holding the lock) must not
+// be allowed to starve every other waiter for however long the holder itself
+// takes to time out or hang.
+func AcquireWithTimeout(vaultRoot, targetAbsPath string, timeout time.Duration) (release func() error, err error) {
+	f, err := openLockFile(vaultRoot, targetAbsPath)
+	if err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(timeout)
+	const pollInterval = 50 * time.Millisecond
+	for {
+		ok, err := flockTryExclusive(f)
+		if err != nil {
+			f.Close()
+			return nil, fmt.Errorf("vaultlock: try acquire lock: %w", err)
+		}
+		if ok {
+			return releaser(f), nil
+		}
+		if time.Now().After(deadline) {
+			f.Close()
+			return nil, fmt.Errorf("%w: %s after %s", ErrLockWaitTimeout, targetAbsPath, timeout)
+		}
+		time.Sleep(pollInterval)
+	}
 }
 
 // openLockFile validates the root, computes the sidecar path for targetAbsPath,

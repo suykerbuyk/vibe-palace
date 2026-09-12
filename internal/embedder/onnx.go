@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/knights-analytics/hugot"
 	"github.com/knights-analytics/hugot/pipelines"
@@ -23,6 +24,29 @@ import (
 // mismatch (measured 2026-08-24: a 515-token batch against a 512-position
 // model, `pipeline.RunPipeline` broadcast panic).
 const defaultMaxSeqLen = 512
+
+// modelCacheLockTimeout bounds how long NewONNX waits to acquire the model
+// cache lock before giving up with a clean, attributable error instead of
+// blocking indefinitely behind a stuck holder (e.g., one that hit the known
+// hugot/go-huggingface cold-download hang — see
+// onnx-lock-can-cascade-a-cold-cache-hang). It is a var, not a const, so
+// tests can shrink it and prove the timeout path is fast without waiting 8
+// real minutes.
+//
+// 8 minutes sits under `make model-test`'s explicit -timeout 10m, `make
+// integration`'s implicit go-test-default 10m, and CI's outer
+// `timeout-minutes: 15` on the `model` job (.github/workflows/ci.yml) that
+// wraps `make model-test` — the only CI job that reaches this lock today
+// (`make integration` is not invoked by CI) — leaving slack at every layer
+// for a waiter to receive this error and exit cleanly before a harsher,
+// unattributed timeout/panic would otherwise fire first and obscure the real
+// cause. It is also generous enough to absorb one legitimate single cold
+// download of the model by whichever process gets there first: round 1
+// (6c73a9a) measured a warm-path NewONNX at ~650-730ms, so every OTHER
+// waiter's post-lock work is fast once the first cold fetch lands the model
+// on disk. 8 minutes is spent only when a holder is genuinely stuck, not by
+// ordinary serialization.
+var modelCacheLockTimeout = 8 * time.Minute
 
 // ONNXEmbedder implements Embedder using the hugot pure-Go ONNX backend.
 type ONNXEmbedder struct {
@@ -68,9 +92,9 @@ func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEm
 	}
 
 	lockTarget := modelCacheLockPath(modelCacheDir, modelName)
-	release, err := vaultlock.Acquire(modelCacheDir, lockTarget)
+	release, err := vaultlock.AcquireWithTimeout(modelCacheDir, lockTarget, modelCacheLockTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("lock model cache: %w", err)
+		return nil, fmt.Errorf("lock model cache (waited up to %s): %w", modelCacheLockTimeout, err)
 	}
 	defer release()
 
