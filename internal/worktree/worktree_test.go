@@ -12,11 +12,26 @@ import (
 )
 
 // isolateGit points git at a throwaway config so the developer's global/system
-// git config (default branch, hooks, signing) cannot influence a test.
+// git config (default branch, hooks, signing) cannot influence a test, and
+// bounds git's upward repository discovery to this test's own temp tree so a
+// bare non-repo temp dir can never resolve to some enclosing repository (e.g.
+// when TMPDIR itself sits inside a git repo or worktree). This must run
+// before any other git subprocess in the test — every test in this file
+// already calls it first.
 func isolateGit(t *testing.T) {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+
+	// Bound upward discovery to this test's own temp tree: git will not
+	// search into or above this directory looking for a repository. Every
+	// t.TempDir() call within one test shares the same immediate parent
+	// (Go's testing package creates that parent once per test and reuses
+	// it for every subsequent numbered subdir), so computing the ceiling
+	// from any t.TempDir() call in the test covers every temp dir the
+	// test creates — including a TMPDIR that itself sits inside a real
+	// repository or worktree, which is the 2026-09-10 incident this closes.
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(t.TempDir()))
 }
 
 // initRepo builds a temp git repo with one commit on `main` and returns its
@@ -160,6 +175,63 @@ func TestCreateNonRepo(t *testing.T) {
 	_, err := m.Create("x", "", "")
 	if err == nil || !strings.Contains(err.Error(), "not a git repository") {
 		t.Errorf("err = %v, want not-a-git-repository", err)
+	}
+}
+
+// TestIsolateGitDoesNotEscapeIntoAnEnclosingRepo is the regression pin for the
+// 2026-09-10 incident: with TMPDIR nested inside a real repository, isolateGit
+// must bound git's discovery so Create on a bare temp dir still fails with
+// "not a git repository", and the enclosing repository is left untouched.
+func TestIsolateGitDoesNotEscapeIntoAnEnclosingRepo(t *testing.T) {
+	// Built directly (not via t.TempDir()), because it must NOT be affected by
+	// the TMPDIR override below, and it must outlive that override's scope
+	// long enough to be inspected after.
+	enclosing, err := os.MkdirTemp("", "enclosing-repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(enclosing) })
+	git := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", enclosing,
+			"-c", "user.email=test@example.com", "-c", "user.name=test"}, args...)
+		cmd := exec.Command("git", full...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_SYSTEM="+os.DevNull)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(enclosing, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "-A")
+	git("commit", "-q", "-m", "seed")
+
+	snapshot := func() string {
+		wt, _ := exec.Command("git", "-C", enclosing, "worktree", "list", "--porcelain").CombinedOutput()
+		br, _ := exec.Command("git", "-C", enclosing, "branch", "-a").CombinedOutput()
+		return string(wt) + "\x00" + string(br)
+	}
+	before := snapshot()
+
+	// Simulate TMPDIR pointed inside the enclosing repo (the actual incident
+	// condition), nested a few levels down as the real one was.
+	fakeTMPDIR := filepath.Join(enclosing, "cache", "tmp")
+	if err := os.MkdirAll(fakeTMPDIR, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", fakeTMPDIR)
+
+	isolateGit(t) // must run before any other git call, so its ceiling covers them
+	m := New(t.TempDir())
+	_, err = m.Create("x", "", "")
+	if err == nil || !strings.Contains(err.Error(), "not a git repository") {
+		t.Errorf("Create err = %v, want not-a-git-repository", err)
+	}
+
+	if after := snapshot(); before != after {
+		t.Errorf("enclosing repo mutated by a test that should never touch it:\nbefore: %s\nafter:  %s", before, after)
 	}
 }
 
