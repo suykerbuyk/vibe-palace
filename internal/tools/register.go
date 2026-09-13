@@ -6,6 +6,7 @@ package tools
 import (
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
+	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -25,6 +26,7 @@ import (
 type registerOptions struct {
 	cfg                    storage.Config
 	requireExplicitProject bool
+	launch                 detachlaunch.LaunchFunc
 }
 
 // RegisterOption configures RegisterAll. The zero set of options preserves the
@@ -44,12 +46,26 @@ func WithRequireExplicitProject() RegisterOption {
 	return func(o *registerOptions) { o.requireExplicitProject = true }
 }
 
+// WithLaunch supplies the detachlaunch.LaunchFunc used by any tool that needs
+// to launch a detached background process. RegisterAll defaults to
+// detachlaunch.Launch whenever the resolved option is nil — whether because
+// WithLaunch was never passed, or because it was passed an explicit nil — so
+// the zero set of options preserves the real production behaviour, and only
+// a test harness needs to override this with a fake that records its
+// arguments instead of spawning a process.
+func WithLaunch(launch detachlaunch.LaunchFunc) RegisterOption {
+	return func(o *registerOptions) { o.launch = launch }
+}
+
 // RegisterAll registers all tools with the MCP registry.
 // If engine is nil, search tools and capture tools are not registered.
 func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vault, engine *search.Engine, opts ...RegisterOption) {
 	var o registerOptions
 	for _, opt := range opts {
 		opt(&o)
+	}
+	if o.launch == nil {
+		o.launch = detachlaunch.Launch
 	}
 
 	if o.requireExplicitProject {
@@ -118,6 +134,8 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	reg.MustRegister(CollectWrapStateTool(vault))
 	reg.MustRegister(StampIterTool(vault))
 	reg.MustRegister(PreflightWrapTool(vault))
+	reg.MustRegister(EnqueueIterationSummaryTool())
+	reg.MustRegister(TriggerSummarizationDrainTool(vault, o.launch))
 	reg.MustRegister(SurfaceCheckTool(vault))
 	reg.MustRegister(CheckTool(vault))
 	reg.MustRegister(ScanPlansTool(vault))

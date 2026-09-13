@@ -162,6 +162,7 @@ Call `vp_capture_session` with:
 - **model**: the model identifier you are running as — **always pass it.** The session note's DoD requires `model`, and the field is caller-declared on the MCP path: only the SessionEnd hook derives it, and only on Claude. So on a hook-less host (Grok, Zed pane, HTTP serve) your self-report is the only source, and omitting it records the session **unmodelled**; on Claude Code the hook also fills it in, so supplying it is harmless
 - **transcript**: when the host can supply the session transcript text, pass it (required for friction scoring and durable archive content on hook-less hosts)
 - **archive_transcript**: `true` — for hook-less hosts (Grok, Zed pane, HTTP serve) / when not relying on SessionEnd; Claude Code no-ops this when the server can derive the host session id
+- **cwd**: the local project repo root — the same project_path already gathered in Step 1 — enables host-local enqueue side effects (the enrichment retry queue, and the summarization queue)
 
 **Native Zed pane (handshake `host: zed`, no SessionEnd):** you almost never have transcript text. Capture anyway — the note will carry `host: zed`; `transcript_archive_unreachable` without a transcript is expected, not a reason to skip the note. Then list native threads with `vp archive threads --adapter zed` and **ask the human which thread id is this session** — never pick the most recently updated row (ADR-006). With a declared id: `vp archive create --adapter zed --session-id <id> -p {{PROJECT}}`. **Never pass the thread id as `session_key`** — a native thread appends across work units and that key would overwrite the note.
 
@@ -407,6 +408,13 @@ this one, silently reporting a window twice as wide as the work.
 `.vibe-palace/` is gitignored on purpose — it also holds host-local capture
 sentinels — so the anchors stay on this machine. **Do not `git add` them**, and
 do not un-ignore the directory to make them travel.
+
+### Queue the iteration for background summarization
+
+Right after the stamp call, with the same `iter_n`, call
+`vp_enqueue_iteration_summary` with the same `project_path` and `iter: iter_n`.
+This only queues the iteration for a later background summarization pass — it
+does not summarize anything itself and never blocks the wrap.
 
 
 ## Step 5: Update Stable Docs (if changed)
@@ -671,6 +679,21 @@ commits **only** classified capture artifacts and pushes, never
 If the result lists any **Reported** paths, surface them to the user
 before finishing — they need human eyes.
 
+## Step 10b: Trigger Background Summarization Drain
+
+Call `vp_trigger_summarization_drain` once, with the same `project_path`
+already in scope from Step 1. It checks the project's summarization queue and,
+if non-empty, launches `vp drain summaries` as a **detached** background
+process — this call returns immediately either way and never waits for the
+drain to finish.
+
+Its `status` is either `empty` (nothing queued) or `launched` (a drain was
+started) — this call's own result never reports `already_running`: that
+outcome is decided by the launched `vp drain summaries` process's own
+single-flight lock and is only ever visible in its log
+(`.vibe-palace/summarization-drain.log`), not in this tool's return value.
+Feed the `status` you actually got into the Step 11 report.
+
 ## Step 11: Report
 
 Report what was done:
@@ -685,6 +708,11 @@ Report what was done:
 - Project files staged (by path)
 - Vault synced
 - Vault tidied (capture artifacts swept; any reported dirt surfaced)
+- Background summarization drain: the queue was empty, or a drain was
+  launched — report the exact `status` `vp_trigger_summarization_drain`
+  returned (it never reports "already running" itself; only the launched
+  process's own log can show that) — the drain runs detached, so this
+  reports that it was **triggered**, not that summarization has finished
 
 Note that the user should review the staged diff and the
 `commit.msg`, then commit with:

@@ -15,6 +15,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/enrichment"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/summarize"
 )
 
 // SessionParams contains all inputs for a session capture. Both the MCP
@@ -150,10 +151,17 @@ const (
 	// not-yet — the same footing the adapter mismatch earns its loudness on.
 	StageTranscriptArchiveUnreachable = "transcript_archive_unreachable"
 	StageEnrichmentEnqueue            = "enrichment_enqueue"
-	StageArchiveBacklink              = "archive_backlink"
-	StageTranscriptIndex              = "transcript_index"
-	StageClaimSentinel                = "claim_sentinel"
-	StageEnricherInit                 = "enricher_init"
+	// StageSessionSummaryEnqueue: the best-effort enqueue of this session note
+	// into the host-local summarization queue (internal/summarize) failed. The
+	// note itself is unaffected; it simply will not be picked up by a
+	// background `vp drain summaries` pass. Unlike StageEnrichmentEnqueue,
+	// this enqueue is not miss-only — it always fires when p.CWD != "",
+	// regardless of enrichment outcome.
+	StageSessionSummaryEnqueue = "session_summary_enqueue"
+	StageArchiveBacklink       = "archive_backlink"
+	StageTranscriptIndex       = "transcript_index"
+	StageClaimSentinel         = "claim_sentinel"
+	StageEnricherInit          = "enricher_init"
 	// StagePalaceDecisionIngest: the note's decisions were not filed into the
 	// palace as drawers. The note itself carries them and is untouched; what is
 	// lost is their retrievability through a palace query.
@@ -371,11 +379,19 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		}
 	}
 
+	// isAutoCapture is the single source of truth for "this is the hook's
+	// unattended crash-net snapshot, not an interaction record" — both the
+	// friction-scoring exclusion below and the summarization-enqueue
+	// exclusion further down test this ONE local rather than each
+	// hand-repeating `p.Tag != storage.TagAutoCapture` independently, so the
+	// two can no longer drift out of sync with each other.
+	isAutoCapture := p.Tag == storage.TagAutoCapture
+
 	// Score transcript friction before writing session.
 	// Auto-capture is a crash net, not an interaction record: scoring its
 	// early-Stop transcript measures bootstrap/resume keywords, not the session.
 	// Leave FrictionScore unset and Breakdown nil (never-scored), not a measured zero.
-	if p.Transcript != "" && p.Tag != storage.TagAutoCapture {
+	if p.Transcript != "" && !isAutoCapture {
 		b, err := AnalyzeFrictionBreakdown(p.Transcript)
 		if err != nil {
 			// Was swallowed by an `if err == nil` with no else: the note kept a
@@ -409,6 +425,24 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 	if enqueuePending && p.CWD != "" {
 		if qerr := EnqueueEnrichment(p.CWD, p.Project, ref.Date, ref.Fingerprint, ref.Iteration, ref.NotePath, enqueueInput); qerr != nil {
 			lose(StageEnrichmentEnqueue, qerr, "capture: enrichment enqueue failed; this note will not be retried by the drain")
+		}
+	}
+
+	// Enqueue-always: unlike enrichment's enqueue-on-miss above, summarization
+	// is not retrying a failure — every genuinely captured note is a
+	// candidate for background summarization, so this fires whenever there is
+	// a host dir to enqueue into at all (p.CWD != ""), with no dependency on
+	// the enrichment outcome. Excludes isAutoCapture for the same reason the
+	// friction-scoring check above does: an auto-capture is a crash net, not
+	// an interaction record (internal/hook's SessionEnd/PreCompact captures
+	// always carry this tag), so summarizing it would spend real work (and,
+	// once a real Summarizer lands, real cost) on content this codebase
+	// already treats as not worth analyzing elsewhere. Best-effort like every
+	// enqueue past the write: a queue-write failure must never fail the
+	// capture that already landed.
+	if p.CWD != "" && !isAutoCapture {
+		if qerr := summarize.EnqueueSessionSummary(p.CWD, p.Project, ref.Date, ref.Fingerprint, ref.Iteration, ref.NotePath); qerr != nil {
+			lose(StageSessionSummaryEnqueue, qerr, "capture: session summary enqueue failed; this note will not be queued for summarization")
 		}
 	}
 

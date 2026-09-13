@@ -5,6 +5,7 @@ package capture
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -505,6 +506,126 @@ func TestWriteSessionEmptyEnrichmentResultEnqueues(t *testing.T) {
 	matches, _ := filepath.Glob(filepath.Join(dir, "*.json"))
 	if len(matches) != 1 {
 		t.Fatalf("expected 1 queued item under %s, found %d: %v", dir, len(matches), matches)
+	}
+}
+
+// TestWriteSessionEnqueuesSessionSummaryWhenCWDSet proves the new
+// summarization enqueue call fires whenever p.CWD != "", independent of
+// enrichment: a plain capture (no Enricher at all) still lands a job in the
+// summarization queue.
+func TestWriteSessionEnqueuesSessionSummaryWhenCWDSet(t *testing.T) {
+	vault := testVault(t)
+	cwd := t.TempDir()
+
+	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project: "test-proj",
+		Summary: "plain heuristic summary",
+		CWD:     cwd,
+	})
+	if err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	if result.Failed() {
+		t.Fatalf("expected no failures, got %+v", result.Failures)
+	}
+
+	dir := filepath.Join(cwd, ".vibe-palace", "summarization-queue")
+	matches, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 queued session-summary item under %s, found %d: %v", dir, len(matches), matches)
+	}
+
+	data, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var item struct {
+		Kind      string `json:"kind"`
+		Project   string `json:"project"`
+		NotePath  string `json:"note_path"`
+		Iteration int    `json:"iteration"`
+	}
+	if err := json.Unmarshal(data, &item); err != nil {
+		t.Fatal(err)
+	}
+	if item.Kind != "session_note" {
+		t.Errorf("kind = %q, want session_note", item.Kind)
+	}
+	if item.Project != "test-proj" {
+		t.Errorf("project = %q, want test-proj", item.Project)
+	}
+	if item.NotePath != result.NotePath {
+		t.Errorf("note_path = %q, want %q", item.NotePath, result.NotePath)
+	}
+	if item.Iteration != result.Iteration {
+		t.Errorf("iteration = %d, want %d", item.Iteration, result.Iteration)
+	}
+}
+
+// TestWriteSessionNoSessionSummaryEnqueueForAutoCapture pins a real fix: an
+// auto-capture (the hook's unattended crash-net snapshot, storage.TagAutoCapture)
+// must not enqueue a summarization job even though its CWD is set — mirroring
+// the friction-scoring exclusion a few lines above in WriteSession, which
+// excludes the exact same tag for the exact same reason ("a crash net, not an
+// interaction record"). Without this, every SessionEnd/PreCompact hook event
+// in every project would enqueue a job for content this codebase already
+// treats as not worth analyzing elsewhere.
+func TestWriteSessionNoSessionSummaryEnqueueForAutoCapture(t *testing.T) {
+	vault := testVault(t)
+	cwd := t.TempDir()
+
+	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project: "test-proj",
+		Summary: "unattended crash-net snapshot",
+		CWD:     cwd,
+		Tag:     storage.TagAutoCapture,
+	})
+	if err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	if result.Failed() {
+		t.Fatalf("expected no failures, got %+v", result.Failures)
+	}
+
+	dir := filepath.Join(cwd, ".vibe-palace", "summarization-queue")
+	matches, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	if len(matches) != 0 {
+		t.Fatalf("auto-capture must not enqueue a summarization job, found %d: %v", len(matches), matches)
+	}
+}
+
+// TestWriteSessionNoSessionSummaryEnqueueWithoutCWD is the negative pin: a
+// pure MCP-path capture (no CWD) must not create a summarization-queue
+// directory at all — there is no host dir to enqueue into. It changes the
+// test's own actual process cwd to a known, empty temp dir first: a bare
+// "no error, no reported failure" assertion would still pass even if the
+// enqueue path silently fell back to os.Getwd() instead of requiring a
+// real, caller-supplied CWD — this test proves that fallback did not happen
+// by checking the one place its evidence would actually land.
+func TestWriteSessionNoSessionSummaryEnqueueWithoutCWD(t *testing.T) {
+	vault := testVault(t)
+
+	realCwd := t.TempDir()
+	t.Chdir(realCwd)
+
+	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project: "test-proj",
+		Summary: "plain heuristic summary",
+		// CWD deliberately empty.
+	})
+	if err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	if result.Failed() {
+		t.Fatalf("expected no failures, got %+v", result.Failures)
+	}
+
+	// Regression check: confirm nothing was created under the process's
+	// ACTUAL cwd either. If EnqueueSessionSummary's caller ever silently
+	// substituted os.Getwd() for an empty SessionParams.CWD, this is exactly
+	// where the resulting .vibe-palace/ directory would appear.
+	if _, statErr := os.Stat(filepath.Join(realCwd, ".vibe-palace")); !os.IsNotExist(statErr) {
+		t.Errorf("a .vibe-palace dir was created under the process's actual cwd (%s) despite CWD being empty — the enqueue path must never fall back to os.Getwd()", realCwd)
 	}
 }
 

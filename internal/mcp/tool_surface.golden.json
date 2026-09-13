@@ -47,6 +47,11 @@
       "schema_sha256": "15f610fbbc57599f94811a0ee899e3182ebfbee45283b37aed1471c4858ea9c8"
     },
     {
+      "name": "vp_enqueue_iteration_summary",
+      "mutating": true,
+      "schema_sha256": "b50186802c795a0f26e6224b1da7ccc8e597f96772bf26a335f8f1fbefa7edd2"
+    },
+    {
       "name": "vp_find_tunnels",
       "mutating": false,
       "schema_sha256": "e6bb4842aab417be857b871f1a3d5a5a2867ac63fa1450cd2d5627f542dd9dc4"
@@ -300,6 +305,11 @@
       "name": "vp_traverse",
       "mutating": false,
       "schema_sha256": "b14cc31e18932b36cfae3670312f27979445469b860f75fb74d86b1d20ca6e54"
+    },
+    {
+      "name": "vp_trigger_summarization_drain",
+      "mutating": true,
+      "schema_sha256": "bb71b92d82aa6371a5472a174a23373412478a37d262da16c6b35c5342b7cc18"
     },
     {
       "name": "vp_update_resume",

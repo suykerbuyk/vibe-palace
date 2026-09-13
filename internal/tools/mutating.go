@@ -56,6 +56,17 @@ var MutatingToolNames = []string{
 	// commit-log.md permanent history and advances the last-archived anchor.
 	"vp_archive_commit_log",
 	"vp_stamp_iter",
+	// vp_enqueue_iteration_summary writes a job file into the host-local
+	// summarization queue under project_path/.vibe-palace/. Project-root
+	// state, same class of write vp_stamp_iter and vp_ingest_commit_msg are
+	// gated for.
+	"vp_enqueue_iteration_summary",
+	// vp_trigger_summarization_drain launches a detached `vp drain summaries`
+	// background process — a destructive/side-effecting action (it starts a
+	// process against the vault and project state) a stale binary must refuse
+	// like any other writer, even though the tool itself only globs a
+	// directory before deciding whether to launch.
+	"vp_trigger_summarization_drain",
 	"vp_kg_add",
 	"vp_kg_invalidate",
 	"vp_init",

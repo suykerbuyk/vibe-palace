@@ -46,6 +46,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -1221,6 +1222,84 @@ var toolCoverageFixtures = map[string]toolFixture{
 			}
 		},
 	},
+
+	"vp_enqueue_iteration_summary": {
+		build: func(t *testing.T, h *testHarness) any {
+			const project = "cov-enqueueitersummary"
+			projDir := t.TempDir()
+			return map[string]any{"project": project, "project_path": projDir, "iter": 3}
+		},
+		assert: func(t *testing.T, h *testHarness, payload string) {
+			var out struct {
+				Status    string `json:"status"`
+				QueuePath string `json:"queue_path"`
+			}
+			covUnmarshal(t, payload, &out)
+			if out.Status != "enqueued" {
+				t.Errorf("status = %q, want enqueued", out.Status)
+			}
+			if out.QueuePath == "" {
+				t.Fatal("queue_path is empty")
+			}
+			// Verify the side effect actually landed: exactly one queued job
+			// file under the reported queue directory.
+			matches, err := filepath.Glob(filepath.Join(out.QueuePath, "*.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(matches) != 1 {
+				t.Fatalf("got %d queued files under %s, want 1", len(matches), out.QueuePath)
+			}
+		},
+	},
+
+	"vp_trigger_summarization_drain": func() toolFixture {
+		// Shared between build and assert so assert can confirm the recorded
+		// launch args against the EXACT project_path this fixture used,
+		// rather than re-deriving it from the recorded call itself.
+		var projDir string
+		return toolFixture{
+			build: func(t *testing.T, h *testHarness) any {
+				const project = "cov-triggerdrain"
+				projDir = t.TempDir()
+				// Pre-populate a fake queue file so the drain has something
+				// to see and the launch actually fires.
+				queueDir := filepath.Join(projDir, ".vibe-palace", "summarization-queue")
+				if err := os.MkdirAll(queueDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(queueDir, "00000000000000000001-aaaaaaaa.json"), []byte("{}"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return map[string]any{"project": project, "project_path": projDir}
+			},
+			assert: func(t *testing.T, h *testHarness, payload string) {
+				var out struct {
+					Status string `json:"status"`
+					Pid    int    `json:"pid"`
+				}
+				covUnmarshal(t, payload, &out)
+				if out.Status != "launched" {
+					t.Errorf("status = %q, want launched", out.Status)
+				}
+				if out.Pid == 0 {
+					t.Error("pid is 0")
+				}
+				// The proof this whole seam works end-to-end: the harness's
+				// recording-fake Launch (installed by default, see
+				// testinfra.NewHarnessWithEmbedder) actually recorded the
+				// call that reached it through the REAL dispatch path.
+				launches := h.RecordedLaunches()
+				if len(launches) != 1 {
+					t.Fatalf("got %d recorded launches, want 1: %+v", len(launches), launches)
+				}
+				wantArgs := []string{"drain", "summaries", "--project-path", projDir}
+				if !reflect.DeepEqual(launches[0].Args, wantArgs) {
+					t.Errorf("recorded args = %v, want %v", launches[0].Args, wantArgs)
+				}
+			},
+		}
+	}(),
 
 	"vp_preflight_wrap": {
 		build: func(t *testing.T, h *testHarness) any {

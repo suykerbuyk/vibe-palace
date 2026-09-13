@@ -111,12 +111,15 @@ func TestCaptureSessionInlineArchiveHookless(t *testing.T) {
 
 	// NO claim despite cwd being set: a minted inline id must never write a
 	// claim no hook will ever query.
+	//
+	// The claim dir (.vibe-palace/) itself DOES exist here — cwd is set, so
+	// WriteSession's unconditional-on-CWD summarization enqueue
+	// (internal/capture/session.go) has already created
+	// .vibe-palace/summarization-queue/ regardless of any claim. That is
+	// correct and expected; what must never appear is the claim FILE itself.
 	claimDir := filepath.Join(cwd, ".vibe-palace")
 	if hook.IsClaimed(claimDir, got.SessionKey) {
 		t.Error("a claim was written for a minted inline id — no hook will ever query it")
-	}
-	if _, statErr := os.Stat(claimDir); !os.IsNotExist(statErr) {
-		t.Errorf("claim dir %s exists on the hook-less inline path", claimDir)
 	}
 }
 
@@ -298,8 +301,16 @@ func TestCaptureSessionInlineArchiveAutoOffUnknownHost(t *testing.T) {
 	if names := transcriptsDirEntries(t, vault, "test-proj"); len(names) != 0 {
 		t.Errorf("archive %v created for unknown host without archive_transcript", names)
 	}
-	if _, statErr := os.Stat(filepath.Join(cwd, ".vibe-palace")); !os.IsNotExist(statErr) {
-		t.Error("claim dir created without a derivable id")
+	// No CLAIM FILE without a derivable id — NOT "no .vibe-palace dir at all":
+	// cwd is set, so WriteSession's unconditional-on-CWD summarization enqueue
+	// has already created .vibe-palace/summarization-queue/ regardless, and
+	// that is correct and expected here.
+	claimed, globErr := filepath.Glob(filepath.Join(cwd, ".vibe-palace", "claimed-*"))
+	if globErr != nil {
+		t.Fatalf("glob claim dir: %v", globErr)
+	}
+	if len(claimed) != 0 {
+		t.Errorf("claim file(s) created without a derivable id: %v", claimed)
 	}
 
 	meta, _, err := vault.ReadSession("test-proj", got.SessionID[:10], capture.ParseFingerprint(got.SessionID), got.Iteration)

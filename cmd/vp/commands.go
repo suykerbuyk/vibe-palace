@@ -66,6 +66,20 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(mutates(cmdSkillsReset()))
 	reg.Register(cmdDiscover())
 	reg.Register(mutates(cmdDiscoverRooms()))
+	reg.Register(cmdDrain())
+	// `drain summaries` is UNWRAPPED (no mutates()) TODAY: it only drains a
+	// project's own local, gitignored queue
+	// (.vibe-palace/summarization-queue under the PROJECT root, not the
+	// vault) via summarize.DrainSummarizationQueue, which never touches the
+	// vault at all while its Summarizer is nil (see that function's doc
+	// comment). 🔴 THIS MUST BECOME mutates(cmdDrainSummaries()) THE MOMENT A
+	// REAL, VAULT-WRITING Summarizer IS WIRED IN (a later, separate piece of
+	// work) — at that point a stale `vp drain summaries` binary run directly
+	// from the command line would write vault content with none of the
+	// version-mismatch protection vp_trigger_summarization_drain's own
+	// MutatingToolNames entry already provides on the MCP path. Revisit this
+	// registration in that same change, not as an afterthought.
+	reg.Register(cmdDrainSummaries())
 	reg.Register(cmdTune())
 	reg.Register(mutates(cmdTuneRooms()))
 	reg.Register(cmdConfig())

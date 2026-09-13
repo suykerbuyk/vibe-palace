@@ -42,6 +42,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
+	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
@@ -83,6 +84,22 @@ type TestHarness struct {
 	Server   *mcp.Server
 	Resolver *vpctx.Resolver
 	Config   storage.Config
+
+	// Launch is the detachlaunch.LaunchFunc used when registering tools on
+	// this harness (see RegisterAllTools). Defaults to a no-op fake that
+	// records the (binary, args, logPath) of every call and returns a
+	// fabricated pid without spawning anything, so tests that dispatch a
+	// launch-triggering tool through this harness never spawn a real OS
+	// process. Tests that specifically want to assert on what would have been
+	// launched should read the recorded calls back via RecordedLaunches
+	// rather than override this field.
+	Launch detachlaunch.LaunchFunc
+
+	// recordedLaunches is the snapshot half of the NewRecordingLaunch pair
+	// backing the default Launch installed by NewHarnessWithEmbedder — see
+	// RecordedLaunches. Reading through it (rather than a raw shared slice)
+	// is what keeps that read race-free against an in-flight Launch call.
+	recordedLaunches func() []RecordedLaunch
 
 	mcpReady bool // true after InitMCP called
 
@@ -167,7 +184,7 @@ func NewHarnessWithEmbedder(t *testing.T, emb embedder.Embedder, cfgOverrides ..
 	resolver := vpctx.NewResolver(root)
 	srv := mcp.NewServer(vault)
 
-	return &TestHarness{
+	h := &TestHarness{
 		Vault:    vault,
 		Engine:   eng,
 		Embedder: emb,
@@ -176,12 +193,29 @@ func NewHarnessWithEmbedder(t *testing.T, emb embedder.Embedder, cfgOverrides ..
 		Resolver: resolver,
 		Config:   cfg,
 	}
+	h.Launch, h.recordedLaunches = NewRecordingLaunch()
+	return h
+}
+
+// RecordedLaunches returns the (binary, args, logPath) of every call made so
+// far through this harness's Launch, in call order. Only meaningful when
+// Launch is still the default recording fake installed by
+// NewHarnessWithEmbedder (or another NewRecordingLaunch-backed func) — it
+// returns nil if Launch has been overridden with something else (no backing
+// snapshot function). Safe to call concurrently with an in-flight Launch
+// call: the read goes through the same mutex NewRecordingLaunch's closure
+// uses to guard its writes.
+func (h *TestHarness) RecordedLaunches() []RecordedLaunch {
+	if h.recordedLaunches == nil {
+		return nil
+	}
+	return h.recordedLaunches()
 }
 
 // RegisterAllTools registers all MCP tools on the harness server.
 func (h *TestHarness) RegisterAllTools(t *testing.T) {
 	t.Helper()
-	tools.RegisterAll(h.Server.Registry(), h.Resolver, h.Vault, h.Engine, tools.WithConfig(h.Config))
+	tools.RegisterAll(h.Server.Registry(), h.Resolver, h.Vault, h.Engine, tools.WithConfig(h.Config), tools.WithLaunch(h.Launch))
 }
 
 // InitMCP sends the initialize + notifications/initialized handshake.

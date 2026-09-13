@@ -236,13 +236,14 @@ func TestIntegrationHostParityFootprint(t *testing.T) {
 		if meta.HostSource != storage.HostSourceDerived {
 			t.Errorf("host_source = %q, want %q", meta.HostSource, storage.HostSourceDerived)
 		}
-		// No claim sentinel for minted inline ids.
+		// No claim sentinel for minted inline ids. The claim dir (.vibe-palace/)
+		// itself DOES exist here — cwd is set, so WriteSession's
+		// unconditional-on-CWD summarization enqueue has already created
+		// .vibe-palace/summarization-queue/ regardless of any claim; only the
+		// claim FILE itself must be absent.
 		claimDir := filepath.Join(cwd, ".vibe-palace")
 		if hook.IsClaimed(claimDir, res.SessionKey) {
 			t.Error("claim written for minted inline id — hook-less path must not claim")
-		}
-		if _, statErr := os.Stat(claimDir); !os.IsNotExist(statErr) {
-			t.Errorf("claim dir %s exists on hook-less path", claimDir)
 		}
 
 		grokFP = structuralFootprint{

@@ -2640,6 +2640,103 @@ coin flip. Close this before it matters.
 
 ---
 
+## Background summarization queue + wrap-triggered drain
+
+A new job-kind sibling of `internal/capture/enrichqueue.go`, split across three
+new packages plus a detached-launch CLI subcommand and two new MCP tools —
+foundational infrastructure for later, separate work that supplies a real
+LLM-backed `summarize.Summarizer`.
+
+- **`internal/jobqueue`** (`jobqueue_test.go`) — the three primitives
+  generalized out of `enrichqueue.go` (`Claim`/`Requeue`/`Done`), tested
+  independently of any job schema: `TestClaimRaceNoDoubleClaim` (atomic-rename
+  claim safety under concurrent callers), `TestClaimStaleReclaim*` (orphaned
+  `.processing` reclaim, and the drop-not-clobber case when a fresh job already
+  occupies the reclaim target), `TestRequeueDeadLetterAtCap` /
+  `TestRequeueAttemptsAboveCapAlsoDeadLetters` (dead-letter to `.failed`, never
+  deleted), `TestRequeue*RestoresClaim` (a `reencode`/write failure restores the
+  claim rather than losing the job), `TestClaimRequeueDoneFullRoundTrip`.
+- **`internal/summarize`** (`summarize_test.go`) — `SummaryItem` (the one
+  exported type shared by the persisted queue item and `Summarizer`'s
+  parameter — see its doc comment for why there is deliberately only one),
+  `Summarizer`/`SummaryResult` (an intentionally thin placeholder; a later
+  piece of work defines real fields), and `DrainSummarizationQueue` built on
+  `internal/jobqueue`: `TestEnqueueDrainRoundTrip_{Iteration,SessionNote}`,
+  `TestDrain_DeadLetterOnRepeatedFailure`, `TestDrain_NilSummarizerIsNoop`,
+  `TestDrain_MaxBoundsProcessedCount`, `TestDrain_ContextCancellationStopsEarly`
+  — all against a fake `Summarizer`, never a real LLM client.
+- **`internal/detachlaunch`** (`launch_test.go`) — POSIX/Windows detached
+  process launch (`Launch`/`LaunchFunc`), mirroring `internal/vaultlock`'s
+  `flock_unix.go`/`flock_windows.go` build-tag split: `TestLaunchReturnsImmediately`,
+  `TestLaunchSelfRelaunch` (`binary == ""` resolves `os.Executable()`),
+  `TestLaunchWritesLogFile`, `TestLaunchNoDeadlockOrLeak` (the reaper goroutine
+  doesn't hang the test binary). True survive-the-parent behavior is **not**
+  claimed by any unit test here — see the file's own doc comment for why that
+  is honestly unprovable in-process, and what a manual/CI shell-script check
+  would look like instead.
+- **`cmd/vp/cmd_drain.go`** (`cmd_drain_test.go`) — the one-shot `vp drain
+  summaries --project-path <path> [--max N]` subcommand: explicit
+  `OpenProjectVaultAt` resolution (never `os.Getwd()`, since a detached
+  child's inherited cwd is not reliably the project being drained), the
+  `--max` default (`50`) applied in code (`cli.FlagDef.Default` is
+  display-only and is never read by `ParseFlags`), and the single-flight
+  lock — an `internal/vaultlock` OS-level advisory flock (its sidecar under
+  `.vibe-palace/.vp-locks/`), not a hand-rolled pidfile-plus-staleness
+  heuristic: an earlier revision of this file used exactly that (an
+  `O_EXCL` pidfile reclaimed after a fixed staleness window), and had a real
+  fencing gap — a drain running longer than the window could have its lock
+  "reclaimed" by a second caller while still running, and its own cleanup
+  would then delete the second caller's lock. `vaultlock.TryAcquire` has no
+  staleness window at all (a flock is either held or not, and the OS
+  releases it automatically even on a crash), which is what actually closes
+  that gap. Also load-bearing: the lock's *target* must be an absolute,
+  already-existing path (the queue directory itself) — `vaultlock`'s own
+  `canonicalKey` resolves a relative, nonexistent target via
+  `EvalSymlinks` against the *calling process's cwd*, which would have
+  made two different callers (a detached drain vs. a manually-run `vp
+  drain summaries`) hash to two different lock files for the same
+  project, silently defeating the single-flight guarantee.
+  `TestRunDrainSummaries_ConcurrentDrainReportsAlreadyRunning` pins the
+  guarantee itself (holding the lock via `vaultlock.TryAcquire` directly,
+  the same way a concurrent drain would); `TestRunDrainSummaries_Success`
+  additionally proves the lock is actually released (a second sequential
+  call succeeds, not `already_running`).
+- **`internal/tools/summarize_tools.go`** (`summarize_tools_test.go`) — the
+  two new MCP tools, `vp_enqueue_iteration_summary` and
+  `vp_trigger_summarization_drain`, mirroring `vp_stamp_iter`'s
+  `project`/`project_path` shape. The drain-trigger tool takes an injected
+  `detachlaunch.LaunchFunc` (`TriggerSummarizationDrainTool(vault, launch)`) —
+  the seam that keeps `internal/integration/tool_coverage_test.go`'s real
+  dispatch test from spawning an actual OS process (see below).
+- **The injection seam itself** — `tools.WithLaunch` (a `RegisterOption` on
+  `RegisterAll`, defaulting internally to `detachlaunch.Launch` when omitted,
+  so none of `RegisterAll`'s ~16 existing call sites needed to change) and
+  `testinfra.TestHarness.Launch` / `RecordedLaunches()` (a recording fake
+  installed by default via `testinfra.NewRecordingLaunch`, so any
+  harness-dispatched call to the drain-trigger tool records its args instead
+  of spawning anything). `internal/tools/register_test.go`'s
+  `TestRegisterAllZeroOptionsUnchanged` pins that the ~16 existing zero/`WithConfig`-only
+  call sites are unaffected. `internal/integration/tool_coverage_test.go`'s
+  `vp_trigger_summarization_drain` fixture is the concrete end-to-end proof:
+  it pre-populates a fake queue file, dispatches the tool through the real MCP
+  JSON-RPC path, and asserts the exact launch args landed in
+  `h.RecordedLaunches()` — real dispatch, zero real subprocesses.
+- **`internal/capture/session.go`** — a new best-effort, always-fires-when-`cwd`-is-set
+  (not miss-only, unlike its `EnqueueEnrichment` sibling) call to
+  `summarize.EnqueueSessionSummary`, logged via `StageSessionSummaryEnqueue` on
+  failure. Covered in `session_test.go`; its side effect (a `.vibe-palace/summarization-queue/`
+  directory appearing whenever `cwd` is set) required updating three
+  pre-existing tests' stricter "no `.vibe-palace` dir at all" assumption down to
+  the actually-load-bearing "no **claim file**" check (`host_parity_test.go`,
+  `session_inline_archive_test.go`).
+- **`internal/templates/templates/commands/wrap.md`** — Step 2 gained a `cwd`
+  field instruction, Step 4 gained an iteration-summary enqueue call, and a new
+  Step 10b triggers the drain; Step 11's report says the drain was
+  **triggered**, not that summarization finished (it is a detached background
+  process wrap never waits on).
+
+---
+
 ## MockEmbedder vs Real ONNX
 
 | Aspect | MockEmbedder | ONNX Embedder |
