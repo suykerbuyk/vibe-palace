@@ -350,3 +350,171 @@ func TestTriggerSummarizationDrainTool_LaunchError(t *testing.T) {
 		t.Fatal("expected error when launch fails")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// vp_check_summarization_queue
+// ---------------------------------------------------------------------------
+
+func TestCheckSummarizationQueueTool_MissingProjectPath(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	tool := CheckSummarizationQueueTool(vault)
+
+	params, _ := json.Marshal(map[string]any{"project": "demo"})
+	if _, err := tool.Handler(context.Background(), params); err == nil {
+		t.Fatal("expected error for missing project_path")
+	}
+}
+
+// TestCheckSummarizationQueueTool_RelativeProjectPath mirrors
+// TestTriggerSummarizationDrainTool_RelativeProjectPath: a relative
+// project_path must be rejected at the tool's own boundary, before it ever
+// reaches check.CheckSummarizationQueue.
+func TestCheckSummarizationQueueTool_RelativeProjectPath(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	tool := CheckSummarizationQueueTool(vault)
+
+	params, _ := json.Marshal(map[string]any{"project": "demo", "project_path": "relative/path"})
+	if _, err := tool.Handler(context.Background(), params); err == nil {
+		t.Fatal("expected error for a relative project_path")
+	}
+}
+
+func TestCheckSummarizationQueueTool_EmptyQueue(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	tool := CheckSummarizationQueueTool(vault)
+
+	projDir := t.TempDir() // no summarization-queue dir at all
+
+	params, _ := json.Marshal(map[string]any{"project": "demo", "project_path": projDir})
+	res, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	want := map[string]any{"status": "empty"}
+	got, ok := res.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T, want map[string]any", res)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("result = %#v, want %#v", got, want)
+	}
+}
+
+func TestCheckSummarizationQueueTool_NonEmptyQueueReportsDiagnosis(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	tool := CheckSummarizationQueueTool(vault)
+
+	projDir := t.TempDir()
+	queueDir := filepath.Join(projDir, ".vibe-palace", "summarization-queue")
+	if err := os.MkdirAll(queueDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(queueDir, "iteration-00001.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	params, _ := json.Marshal(map[string]any{"project": "demo", "project_path": projDir})
+	res, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	out, ok := res.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T, want map[string]any", res)
+	}
+	if out["status"] != "info" {
+		t.Errorf("status = %v, want info", out["status"])
+	}
+	summary, _ := out["summary"].(string)
+	if summary == "" {
+		t.Error("summary is empty, want a populated diagnosis")
+	}
+}
+
+// TestCheckSummarizationQueueTool_NeverMutates proves the tool's read-only
+// contract: it takes no detachlaunch.LaunchFunc at all (unlike its sibling
+// TriggerSummarizationDrainTool), and calling it against a non-empty queue
+// leaves every file in that queue byte-identical and does not add or remove
+// any file.
+func TestCheckSummarizationQueueTool_NeverMutates(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	tool := CheckSummarizationQueueTool(vault)
+
+	projDir := t.TempDir()
+	queueDir := filepath.Join(projDir, ".vibe-palace", "summarization-queue")
+	if err := os.MkdirAll(queueDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"iteration-00001.json":            []byte(`{"kind":"iteration","project":"demo","iteration":1}`),
+		"iteration-00002.json.failed":     []byte(`{"kind":"iteration","project":"demo","iteration":2}`),
+		"iteration-00003.json.processing": []byte(`{"kind":"iteration","project":"demo","iteration":3}`),
+	}
+	for name, data := range files {
+		if err := os.WriteFile(filepath.Join(queueDir, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	before, err := os.ReadDir(queueDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeInfo := make(map[string]os.FileInfo, len(before))
+	for _, e := range before {
+		info, err := e.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		beforeInfo[e.Name()] = info
+	}
+
+	params, _ := json.Marshal(map[string]any{"project": "demo", "project_path": projDir})
+	if _, err := tool.Handler(context.Background(), params); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	after, err := os.ReadDir(queueDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("queue dir entry count changed: before=%d after=%d", len(before), len(after))
+	}
+	for _, e := range after {
+		name := e.Name()
+		wantData, ok := files[name]
+		if !ok {
+			t.Errorf("unexpected file %q appeared in queue dir after handler call", name)
+			continue
+		}
+		gotData, err := os.ReadFile(filepath.Join(queueDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(gotData) != string(wantData) {
+			t.Errorf("file %q content changed: got %q, want %q", name, gotData, wantData)
+		}
+		info, err := e.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.ModTime().Equal(beforeInfo[name].ModTime()) {
+			t.Errorf("file %q mtime changed: before=%v after=%v", name, beforeInfo[name].ModTime(), info.ModTime())
+		}
+	}
+	for name := range files {
+		found := false
+		for _, e := range after {
+			if e.Name() == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("file %q disappeared from queue dir after handler call", name)
+		}
+	}
+}

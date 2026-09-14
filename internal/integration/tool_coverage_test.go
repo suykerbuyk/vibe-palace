@@ -1301,6 +1301,66 @@ var toolCoverageFixtures = map[string]toolFixture{
 		}
 	}(),
 
+	"vp_check_summarization_queue": func() toolFixture {
+		// Shared between build and assert so assert can confirm the
+		// read-only contract (the planted queue file must still be there,
+		// untouched) against the EXACT queue path this fixture used.
+		var queueFile string
+		return toolFixture{
+			build: func(t *testing.T, h *testHarness) any {
+				const project = "cov-checksummqueue"
+				projDir := t.TempDir()
+				// [summarization] left disabled: the fixture proves the
+				// read-only diagnostic reports an EXPECTED-backlog verdict
+				// (never Fail) for a pending, unconfigured queue,
+				// distinguishing it from an actually-stuck one.
+				cfgPath, err := h.Vault.ProjectConfigFile(project)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(cfgPath, []byte("[summarization]\nenabled = false\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				queueDir := filepath.Join(projDir, ".vibe-palace", "summarization-queue")
+				if err := os.MkdirAll(queueDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				queueFile = filepath.Join(queueDir, "iteration-00001.json")
+				if err := os.WriteFile(queueFile, []byte("{}"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return map[string]any{"project": project, "project_path": projDir}
+			},
+			assert: func(t *testing.T, h *testHarness, payload string) {
+				var out struct {
+					Status  string   `json:"status"`
+					Summary string   `json:"summary"`
+					Details []string `json:"details"`
+				}
+				covUnmarshal(t, payload, &out)
+				if out.Status != "info" {
+					t.Fatalf("status = %q, want info; summary=%q", out.Status, out.Summary)
+				}
+				if !strings.Contains(out.Summary, "not configured") {
+					t.Errorf("summary = %q, want it to mention the expected-backlog (not configured) wording", out.Summary)
+				}
+				// Read-only contract: the planted queue file must still be
+				// there, byte-identical — this tool never claims, requeues,
+				// or drains anything.
+				data, err := os.ReadFile(queueFile)
+				if err != nil {
+					t.Fatalf("queue file %s vanished or is unreadable after a read-only diagnostic call: %v", queueFile, err)
+				}
+				if string(data) != "{}" {
+					t.Errorf("queue file %s content changed to %q, want unchanged \"{}\"", queueFile, data)
+				}
+			},
+		}
+	}(),
+
 	"vp_preflight_wrap": {
 		build: func(t *testing.T, h *testHarness) any {
 			const project = "cov-preflight"

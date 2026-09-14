@@ -772,3 +772,86 @@ func TestCheckResumeRefsNoVault(t *testing.T) {
 		t.Errorf("got %+v, want a skipped Resume refs row", rs[0])
 	}
 }
+
+// TestCheckFullSuiteEmitsSummarizationQueueRow proves the new project-repo-
+// rooted "Summarization queue" row (check.CheckSummarizationQueue, wired into
+// gatherCheckResults right after the Phase 4 scaffold check) appears in BOTH
+// the human table and the --json report when the current project's queue is
+// non-empty and [summarization] is not configured — an expected backlog, not
+// a stuck queue.
+func TestCheckFullSuiteEmitsSummarizationQueueRow(t *testing.T) {
+	e := healthyCheckEnv(t)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vault := storage.NewVault(e.Vault)
+	cfgPath, err := vault.ProjectConfigFile("checktest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("[summarization]\nenabled = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	queueDir := filepath.Join(cwd, ".vibe-palace", "summarization-queue")
+	if err := os.MkdirAll(queueDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(queueDir, "iteration-00001.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	human, _ := runFullCheckHuman(t)
+	if !strings.Contains(human, "Summarization queue") || !strings.Contains(human, "not configured") {
+		t.Errorf("expected a Summarization queue row naming the expected-backlog wording in human output:\n%s", human)
+	}
+
+	rep, _ := runFullCheckJSON(t)
+	row := checkRow(t, rep, "Summarization queue")
+	if row.Status != "info" {
+		t.Errorf("Summarization queue status = %q, want info", row.Status)
+	}
+	if !strings.Contains(row.Detail, "not configured") {
+		t.Errorf("Summarization queue detail = %q, want it to mention the config is not configured", row.Detail)
+	}
+}
+
+// TestCheckSummarizationQueueNotSelectable guards against a future accidental
+// merge of check.CheckSummarizationQueue into check.Producers /
+// check.ProducerOrder. It is deliberately project-repo-path-scoped
+// (gatherCheckResults calls it directly with cwd) rather than vault-rooted,
+// which check.Producers structurally is not — see cmd_check.go's comment on
+// CheckGitPostCommitHook. Neither its row name nor any plausible selector
+// name for it may appear in the selective-dispatch registry.
+func TestCheckSummarizationQueueNotSelectable(t *testing.T) {
+	for _, name := range check.ProducerOrder {
+		if name == "summarization-queue" {
+			t.Fatalf("check.ProducerOrder unexpectedly contains %q — CheckSummarizationQueue must stay out of the "+
+				"vault-rooted selector registry (it needs a project repo path the registry doesn't carry)", name)
+		}
+		for _, r := range check.Producers[name]("") {
+			if r.Name == "Summarization queue" {
+				t.Fatalf("selector %q unexpectedly produces a %q row", name, r.Name)
+			}
+		}
+	}
+
+	cmd := cmdCheck(cli.BuildInfo{Version: "test"})
+	for _, guess := range []string{"summarization-queue", "summarization_queue", "summarization"} {
+		var code int
+		stderr := captureStderr(t, func() {
+			code = cmd.Run([]string{"--check", guess})
+		})
+		if code != cli.ExitUser {
+			t.Errorf("--check %q: exit code = %d, want ExitUser", guess, code)
+		}
+		if !strings.Contains(stderr, "unknown check") {
+			t.Errorf("--check %q: expected 'unknown check' on stderr, got:\n%s", guess, stderr)
+		}
+	}
+}

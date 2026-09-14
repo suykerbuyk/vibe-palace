@@ -37,6 +37,11 @@
       "schema_sha256": "8ea6d9b6ce9d907029fab02f94728b6dc77ea8bb3860d53d505b897a50dc757e"
     },
     {
+      "name": "vp_check_summarization_queue",
+      "mutating": false,
+      "schema_sha256": "2bf2b600d02eea5fd472a4d9c6b503b0e626f9b9134fb96a7a03d523de83e02e"
+    },
+    {
       "name": "vp_cmd",
       "mutating": false,
       "schema_sha256": "41cd4c428fa53d67610a1ac2008d492bb8f973e101baca4570d5b23074ac8034"

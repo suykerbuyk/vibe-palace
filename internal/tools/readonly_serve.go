@@ -104,6 +104,7 @@ import "sort"
 var ReadOnlyServeToolNames = []string{
 	"vp_bootstrap_context",
 	"vp_check",
+	"vp_check_summarization_queue",
 	"vp_cmd",
 	"vp_collect_wrap_state",
 	"vp_find_tunnels",

@@ -136,6 +136,7 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	reg.MustRegister(PreflightWrapTool(vault))
 	reg.MustRegister(EnqueueIterationSummaryTool())
 	reg.MustRegister(TriggerSummarizationDrainTool(vault, o.launch))
+	reg.MustRegister(CheckSummarizationQueueTool(vault))
 	reg.MustRegister(SurfaceCheckTool(vault))
 	reg.MustRegister(CheckTool(vault))
 	reg.MustRegister(ScanPlansTool(vault))

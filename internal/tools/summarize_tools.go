@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // Background summarization queue tools (vp_enqueue_iteration_summary,
-// vp_trigger_summarization_drain). These are the MCP-side counterpart of
-// internal/summarize's host-local queue and cmd/vp/cmd_drain.go's one-shot
-// drain command: the wrap flow enqueues a cheap synchronous write here, then
-// (separately) asks the server to launch a detached `vp drain summaries`
-// process against whatever is queued.
+// vp_trigger_summarization_drain, vp_check_summarization_queue). These are
+// the MCP-side counterpart of internal/summarize's host-local queue and
+// cmd/vp/cmd_drain.go's one-shot drain command: the wrap flow enqueues a
+// cheap synchronous write here, then (separately) asks the server to launch
+// a detached `vp drain summaries` process against whatever is queued, or
+// asks it to just report on the queue's health without touching it.
 //
-// Both tools follow the same project/project_path shape as
+// All three tools follow the same project/project_path shape as
 // wrapstate_tools.go's vp_stamp_iter — project is optional and detected from
 // project_path via resolveWrapProject, project_path is required and absolute,
 // because the MCP server (vp mcp) is long-lived and its own cwd is never the
@@ -23,6 +24,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
 	"github.com/suykerbuyk/vibe-palace/internal/jobqueue"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
@@ -232,6 +234,90 @@ func TriggerSummarizationDrainTool(vault *storage.Vault, launch detachlaunch.Lau
 			return map[string]any{
 				"status": "launched",
 				"pid":    pid,
+			}, nil
+		},
+	}
+}
+
+// ---------------------------------------------------------------------------
+// vp_check_summarization_queue
+// ---------------------------------------------------------------------------
+
+var checkSummarizationQueueSchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"project": {"type": "string", "description": "Project slug. If omitted, detected from project_path."},
+		"project_path": {"type": "string", "description": "Absolute path to the local project repo root. Required."}
+	},
+	"required": ["project_path"]
+}`)
+
+// CheckSummarizationQueueTool reports on the health of project_path's
+// host-local summarization queue by calling check.CheckSummarizationQueue
+// directly — the three-way pending/claimed/dead-lettered file-count
+// breakdown, the oldest-pending age, and a live probe of whether the
+// project's [summarization] config would actually construct a working
+// summarizer right now. All verdict logic lives in internal/check; this
+// layer only resolves the project slug and marshals the Result.
+//
+// This is READ-ONLY: unlike its sibling TriggerSummarizationDrainTool, which
+// launches a detached `vp drain summaries` subprocess as a side effect when
+// the queue is non-empty, this tool never launches anything, never claims or
+// mutates a single queue file, and takes no detachlaunch.LaunchFunc — it
+// only reads. Use vp_check_summarization_queue to see whether a backlog is
+// expected (summarization not configured) or actually stuck (configured but
+// unresolvable, or resolving but not keeping up); use
+// vp_trigger_summarization_drain to actually act on it.
+//
+// project_path is required and must be absolute, exactly like
+// TriggerSummarizationDrainTool's own validation.
+func CheckSummarizationQueueTool(vault *storage.Vault) mcp.Tool {
+	return mcp.Tool{
+		Name: "vp_check_summarization_queue",
+		Description: "Read-only diagnostic on project_path's host-local summarization " +
+			"queue (<project_path>/.vibe-palace/summarization-queue/): reports the " +
+			"pending/claimed/dead-lettered file-count breakdown, the oldest pending " +
+			"job's age, and — when jobs are pending — whether that backlog is expected " +
+			"(the project's [summarization] config is not enabled), actually broken " +
+			"(enabled but its config fails to resolve to a working summarizer), or " +
+			"resolving normally but not being drained fast enough. Wraps " +
+			"check.CheckSummarizationQueue directly — never drains, claims, or mutates " +
+			"a single file in the queue, unlike vp_trigger_summarization_drain, which " +
+			"launches a detached `vp drain summaries` subprocess as a side effect. " +
+			"project_path is required and must be absolute. Returns {status: \"empty\"} " +
+			"when the queue has zero pending, claimed, and dead-lettered entries " +
+			"(including a missing queue directory); otherwise returns {status: " +
+			"\"info\"|\"skip\"|\"fail\", summary, details[]}.",
+		Schema: checkSummarizationQueueSchema,
+		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+			var args struct {
+				Project     string `json:"project"`
+				ProjectPath string `json:"project_path"`
+			}
+			if err := unmarshalParams(params, &args); err != nil {
+				return nil, err
+			}
+			if args.ProjectPath == "" {
+				return nil, fmt.Errorf("project_path is required")
+			}
+			if !filepath.IsAbs(args.ProjectPath) {
+				return nil, fmt.Errorf("project_path must be absolute, got %q", args.ProjectPath)
+			}
+
+			slug, err := resolveWrapProject(args.Project, args.ProjectPath)
+			if err != nil {
+				return nil, fmt.Errorf("detect project from %q: %w", args.ProjectPath, err)
+			}
+
+			result := check.CheckSummarizationQueue(vault, args.ProjectPath, slug)
+			if result.Status == check.Pass {
+				return map[string]any{"status": "empty"}, nil
+			}
+
+			return map[string]any{
+				"status":  checkStatusString(result.Status),
+				"summary": result.Summary,
+				"details": result.Details,
 			}, nil
 		},
 	}

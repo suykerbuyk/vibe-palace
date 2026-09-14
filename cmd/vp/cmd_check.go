@@ -332,6 +332,15 @@ func gatherCheckResults() []check.Result {
 				scaffold := reconcile.NewTemplateTree(vault.Root, "Projects/"+slug,
 					reconcile.TemplateTreeSeed{Mode: reconcile.TemplateModeScaffold})
 				results = append(results, scaffold.Check(ctx)...)
+
+				// Summarization queue (advisory — cwd-scoped, project-repo-rooted,
+				// same class as CheckAgentDrift/CheckProjectGitignore/
+				// CheckGitPostCommitHook below: it needs cwd's actual project
+				// repo path, which check.Producers' vault-rooted selector
+				// registry structurally doesn't carry, so it is deliberately
+				// NOT registered there and does not run in the
+				// `vp check --check NAME` selective path.
+				results = append(results, check.CheckSummarizationQueue(vault, cwd, slug))
 			}
 
 			if sRow.Status == check.Fail {

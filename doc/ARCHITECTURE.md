@@ -841,6 +841,16 @@ Nothing on this path reaches `check.Run`, so the embedder is never loaded.
 `vp_surface_check` stays because it is the preflight the surface gate itself
 depends on and carries gate-specific fields the uniform envelope does not.
 
+`vp_check_summarization_queue` (`summarize_tools.go`) wraps
+`check.CheckSummarizationQueue` directly, outside `vp_check`'s registry: it is
+read-only (never drains, claims, or mutates a queue file) but, unlike every
+row `vp_check` dispatches, it is **project-path-scoped, not vault-scoped** — it
+needs the caller's `project_path` to find `<project_path>/.vibe-palace/
+summarization-queue/`, which `check.Producers`' vault-rooted signature has no
+way to carry. It returns `{status: "empty"}` for a fully drained queue, or
+`{status, summary, details[]}` otherwise; it never launches the detached
+`vp drain summaries` subprocess `vp_trigger_summarization_drain` does.
+
 The table above enumerates the primary tool surface; for brevity it omits
 several always-registered tools — the five `vp_memory_*` tools
 (`memory_tools.go`), `vp_read_resource` (`resource_read_tool.go`),
@@ -980,6 +990,18 @@ The table is ordered as `check.ProducerOrder` declares, which is the order a
 default (unfiltered) run emits. Re-derive it from that slice rather than trusting
 this table: it went stale once when `vault-filesystem` and `stray-scaffolds`
 joined the registry, and again as six more producers joined without a row here.
+
+This table enumerates only the **vault-rooted, selector-registry** checks —
+the ones `check.Producers` can dispatch by name, because their signature takes
+just a vault root. `vp check`'s full CLI suite also runs a small number of
+**cwd-scoped, project-repo-rooted** rows outside that registry and therefore
+not selectable via `--check NAME`: `CheckAgentDrift`, `CheckProjectGitignore`,
+`CheckGitPostCommitHook`, and `CheckSummarizationQueue`. Each of these needs an
+actual project repo path (to walk `.claude/agents/`, read `.gitignore`, stat
+`.git/hooks/post-commit`, or scan `.vibe-palace/summarization-queue/`) that
+`check.Producers`' vault-rooted signature structurally has no way to carry, so
+`gatherCheckResults` (`cmd/vp/cmd_check.go`) calls each of them directly
+against `cwd` instead of registering them.
 
 `palace-local-only` is deliberately **absent from the delivery check lists** in
 the restart and wrap commands and the epic-orchestrator skill. A vault copy of
