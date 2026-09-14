@@ -240,7 +240,10 @@ func CheckGit(vaultPath string, gitEnabled bool) Result {
 
 	if !gitEnabled {
 		r.Status = Info
-		r.Summary = "disabled (git_enabled = false)"
+		r.Summary = "disabled (git_enabled = false) — CLI vault subcommands only"
+		r.Details = []string{
+			"git_enabled governs only the CLI 'vp vault pull/push/sync/commit/tidy' subcommands. MCP tools (vp_vault_sync, vp_memory_harvest, vp_manage_task) and the SessionEnd hook's memory harvest still commit and push to the vault regardless of this setting.",
+		}
 		return r
 	}
 

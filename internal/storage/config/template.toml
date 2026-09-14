@@ -8,8 +8,12 @@
 vault_path = "~/vibe-palace-vault"
 
 # Enable git version tracking for the vault.
-# When true, 'vp init' initializes a git repo in the vault and
-# 'vp vault pull/push/sync' commands are available.
+# When true, 'vp init' initializes a git repo in the vault and the CLI
+# 'vp vault pull/push/sync/commit/tidy' subcommands are available.
+# Scope: this governs ONLY those CLI subcommands. It does NOT disable git
+# commits/pushes made by MCP tools (vp_vault_sync, vp_memory_harvest,
+# vp_manage_task) or the SessionEnd hook's memory harvest — those commit
+# and push to the vault regardless of this setting.
 git_enabled = true
 
 # HTTP port for the MCP server.
