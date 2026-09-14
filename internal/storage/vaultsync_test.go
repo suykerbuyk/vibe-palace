@@ -47,6 +47,26 @@ func initTestRepo(t *testing.T) string {
 	return dir
 }
 
+// initUnbornTestRepo creates a git repo with a committer identity and NO
+// commit — HEAD names no commit yet, exactly as a freshly `vp init`-ed vault
+// looks before anything is committed to it.
+func initUnbornTestRepo(t *testing.T) string {
+	t.Helper()
+	if !GitAvailable() {
+		t.Skip("git not in PATH")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-q", "-b", "main")
+	gitRun(t, dir, "config", "user.email", "test@example.com")
+	gitRun(t, dir, "config", "user.name", "Test User")
+	return dir
+}
+
 // initBareRemote creates a bare repo usable as a push target.
 func initBareRemote(t *testing.T) string {
 	t.Helper()

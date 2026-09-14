@@ -578,3 +578,113 @@ func TestPruneMirrorsVerified_CommitFailureUnstages(t *testing.T) {
 		t.Errorf("commit carries %q", names)
 	}
 }
+
+// assertStillUnborn fails the test if HEAD now names a commit. It is the
+// regression guard for the unborn-HEAD prune tests below: the fix must treat
+// an unborn HEAD as "absent from HEAD," never paper over the gap by sneaking
+// in a phantom first commit. Checked directly with exec.Command (not gitRun,
+// which fails the test on the non-zero exit `rev-parse --verify` gives on an
+// unborn branch).
+func assertStillUnborn(t *testing.T, dir string) {
+	t.Helper()
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--verify", "-q", "HEAD")
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if err := cmd.Run(); err == nil {
+		t.Error("HEAD is no longer unborn: a commit was made")
+	}
+}
+
+// TestPruneMirrorsVerified_UnbornHeadUntrackedMirrorPruned is the bug fix
+// itself: a freshly `vp init`-ed vault (git repo, no commits yet) must not
+// have every prune deferred forever because treeEntryOID's HEAD lookup faults
+// on an unborn branch. HEAD has nothing in it, so the mirror is absent from
+// HEAD like any other untracked mirror, and is removed with nothing to
+// commit.
+func TestPruneMirrorsVerified_UnbornHeadUntrackedMirrorPruned(t *testing.T) {
+	dir := initUnbornTestRepo(t)
+	writeFile(t, dir, "T/wrap.md", "mirror\n")
+	res, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, false, acceptOnly(nil, "mirror\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Removed) != 1 {
+		t.Errorf("out = %+v", out)
+	}
+	if res.CommitSHA != "" {
+		t.Errorf("res = %+v", res)
+	}
+	if _, present := readBody(t, dir, "T/wrap.md"); present {
+		t.Error("mirror not removed")
+	}
+	assertStillUnborn(t, dir)
+}
+
+// TestPruneMirrorsVerified_UnbornHeadRemoteHoldsMirrorKeepsIt is the safety
+// proof that closes the bug-under-the-bug: an unborn-HEAD candidate is
+// untracked (tracked=false, nothing local to commit), but it must still go
+// through the remote-tip check before being removed, exactly like any other
+// untracked candidate. A naive fix that only zeroes `tracked` for an unborn
+// HEAD would also silently skip the remote check (it is gated on `tracked` in
+// the original code), letting vp delete its own mirror bytes out of the
+// worktree while a remote already holds real, different operator content at
+// that path that nobody here has pulled.
+func TestPruneMirrorsVerified_UnbornHeadRemoteHoldsMirrorKeepsIt(t *testing.T) {
+	dir := initUnbornTestRepo(t)
+	bare := initBareRemote(t)
+	gitRun(t, dir, "remote", "add", "origin", bare)
+
+	other := t.TempDir()
+	gitRun(t, other, "init", "-q", "-b", "main")
+	gitRun(t, other, "config", "user.email", "o@example.com")
+	gitRun(t, other, "config", "user.name", "O")
+	writeFile(t, other, "T/wrap.md", "operator content on remote\n")
+	gitRun(t, other, "add", "-A")
+	gitRun(t, other, "commit", "-m", "operator content")
+	gitRun(t, other, "remote", "add", "origin", bare)
+	gitRun(t, other, "push", "origin", "main")
+
+	writeFile(t, dir, "T/wrap.md", "mirror\n")
+
+	res, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, true, acceptOnly(nil, "mirror\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Kept) != 1 || !strings.Contains(out.Kept[0].Reason, "origin/main holds operator content") {
+		t.Errorf("Kept = %+v", out.Kept)
+	}
+	if res.CommitSHA != "" {
+		t.Errorf("res = %+v", res)
+	}
+	if got, present := readBody(t, dir, "T/wrap.md"); !present || got != "mirror\n" {
+		t.Errorf("file = %q present=%v", got, present)
+	}
+	assertStillUnborn(t, dir)
+}
+
+// TestPruneMirrorsVerified_UnbornHeadUnreachableRemoteDefers pins the other
+// half of the "fetch and compare, or defer with a clear message" fork: when a
+// configured remote cannot be reached at all, an unborn-HEAD candidate is
+// deferred exactly like a tracked one would be, not removed on the
+// assumption that "untracked" means "nothing to check."
+func TestPruneMirrorsVerified_UnbornHeadUnreachableRemoteDefers(t *testing.T) {
+	dir := initUnbornTestRepo(t)
+	bare := initBareRemote(t)
+	gitRun(t, dir, "remote", "add", "origin", bare)
+	gitRun(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
+	writeFile(t, dir, "T/wrap.md", "mirror\n")
+
+	res, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, true, acceptOnly(nil, "mirror\n"))
+	if err == nil {
+		t.Error("no error although the remote could not be verified")
+	}
+	if len(out.Kept) != 1 || !strings.Contains(out.Kept[0].Reason, "remote not verified") {
+		t.Errorf("Kept = %+v", out.Kept)
+	}
+	if res.CommitSHA != "" {
+		t.Errorf("res = %+v", res)
+	}
+	if _, present := readBody(t, dir, "T/wrap.md"); !present {
+		t.Error("removed")
+	}
+	assertStillUnborn(t, dir)
+}
