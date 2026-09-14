@@ -2644,9 +2644,11 @@ coin flip. Close this before it matters.
 ## Background summarization queue + wrap-triggered drain
 
 A new job-kind sibling of `internal/capture/enrichqueue.go`, split across three
-new packages plus a detached-launch CLI subcommand and two new MCP tools —
-foundational infrastructure for later, separate work that supplies a real
-LLM-backed `summarize.Summarizer`.
+new packages plus a detached-launch CLI subcommand and two new MCP tools. The
+queue/dispatch/drain mechanics below landed first, against a fake
+`Summarizer`; the real LLM-backed one (`internal/itersummary`) and its wiring
+into `vp drain summaries` landed in a later phase of the same effort — see
+"Real Summarizer wiring" below.
 
 - **`internal/jobqueue`** (`jobqueue_test.go`) — the three primitives
   generalized out of `enrichqueue.go` (`Claim`/`Requeue`/`Done`), tested
@@ -2735,6 +2737,70 @@ LLM-backed `summarize.Summarizer`.
   Step 10b triggers the drain; Step 11's report says the drain was
   **triggered**, not that summarization finished (it is a detached background
   process wrap never waits on).
+
+### Real Summarizer wiring
+
+The queue above originally always drained against a fake `Summarizer` (or a
+`nil` one, a documented no-op). This phase supplies the real, LLM-backed
+implementation and wires it all the way through:
+
+- **`internal/storage`** — a new `[summarization]` TOML section
+  (`SummarizationConfig`, `config.go`/`config/defaults.toml`/
+  `config/template.toml`), deliberately its own section rather than reusing
+  `[enrichment]`, since the two features can be enabled/pointed at different
+  models independently. Also new: `IterationSummaryFile`/
+  `WriteIterationSummary`/`ReadIterationSummary` (`paths.go`,
+  `iteration_summary.go`), a vault-committed cache at
+  `palace/{project}/iteration-summaries/{n}.json` keyed by `MatchIndex` so a
+  later same-`N` entry invalidates a stale cached summary.
+- **`internal/itersummary`** (new package, `itersummary_test.go`) — the actual
+  LLM-calling `IterationSummarizer`. `NewIterationSummarizerFromConfig`
+  resolves a project's `[summarization]` config into a real client (mirroring
+  `internal/capture`'s own `NewEnricherFromConfig` pattern: disabled or
+  unresolvable config is a warn-log, not a hard error), and resolves
+  multi-entry-per-`N` iterations.md sections via `wrapstate.LastEntryByN` so
+  only the current, last file-order match for a given `N` is ever summarized.
+- **`internal/summarize`** — `DispatchSummarizer`, a `Kind`-routing wrapper
+  around per-kind summarizers (today just `Iteration`), plus an
+  `ErrUnsupportedKind` sentinel so `DrainSummarizationQueue` correctly
+  `continue`s past a kind with no handler registered (deferring the job back
+  to the queue) instead of aborting the whole drain.
+- **`internal/search/iterations.go`** — `collectIterationCorpus` now emits a
+  summary row (read from the vault cache, when present) *and* the raw entry
+  row for each iteration, with distinct `SourceType`/`SourceRef`/cache-id
+  families so the two never dedup-collide or share a vector-cache entry.
+- **`cmd/vp/cmd_drain.go`** — `runDrainSummaries` now loads the project's
+  `[summarization]` config and constructs a real
+  `summarize.DispatchSummarizer{Iteration: iterationSummarizer}` itself
+  (there is no longer an injectable `Summarizer` parameter on this function);
+  `drained` in its report now reflects genuine LLM-backed work once
+  `[summarization]` is enabled, not just a queue-mechanics no-op.
+- **`cmd/vp/cmd_summarize.go`** (new) — `vp summarize iterations
+  --project-path PATH [--force]`, a synchronous, one-shot, operator-triggered
+  command that walks every `iterations.md` entry directly (no queue involved)
+  and (re)generates its cached summary; `--force` bypasses the
+  `MatchIndex`-freshness check. This is deliberately a *separate* code path
+  from the queue-drain one above — an operator wanting to backfill or
+  regenerate summaries for a whole project shouldn't have to enqueue one job
+  per iteration first. Covered in `cmd_summarize_test.go`: happy path,
+  additive skip-when-cached, `--force` bypass, stale-cache
+  (`MatchIndex` mismatch) re-summarization, multi-entry-per-`N`, a missing
+  `iterations.md` (an empty, not erroring, result), and disabled
+  `[summarization]` (a real `ExitUser`, unlike the drain path's silent
+  no-op — this command's whole purpose is to summarize).
+- **`cmd/vp/integration_iteration_summary_test.go`** (new) —
+  `TestEnqueueThenDrain_EndToEnd`, the one test in this whole feature that
+  goes through the actual production job-*creation* entrypoint instead of
+  calling `runDrainSummaries`/`runSummarizeIterations` directly or hand-
+  seeding a queue file: it calls `EnqueueIterationSummaryTool().Handler`
+  (the `vp_enqueue_iteration_summary` MCP tool's own handler function, called
+  directly rather than through a real MCP server) to create the queue job,
+  confirms the resulting file on disk, then drives `runDrainSummaries` (the
+  real `vp drain summaries` body) against it and asserts exactly one HTTP
+  call to a canned `httptest` server and a matching vault-cached summary —
+  proof that `vp_enqueue_iteration_summary` and `vp drain summaries`,
+  wired through `DispatchSummarizer`, work end-to-end as an operator or
+  agent would actually trigger them.
 
 ---
 

@@ -350,6 +350,71 @@ func TestConfigEnrichmentEmpty(t *testing.T) {
 	}
 }
 
+func TestConfigSummarization(t *testing.T) {
+	v := testVault(t)
+
+	projDir := filepath.Join(v.Root, "Projects", "proj")
+	os.MkdirAll(projDir, 0755)
+	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`
+[summarization]
+enabled = true
+provider = "xai"
+model = "grok-3-mini"
+api_key_env = "XAI_API_KEY"
+base_url = "https://api.x.ai/v1"
+max_tokens = 4096
+timeout_seconds = 30
+`), 0644)
+
+	cfg, err := v.LoadConfig("proj")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if !cfg.Summarization.Enabled {
+		t.Errorf("Enabled = false, want true")
+	}
+	if cfg.Summarization.Provider != "xai" {
+		t.Errorf("Provider = %q, want %q", cfg.Summarization.Provider, "xai")
+	}
+	if cfg.Summarization.Model != "grok-3-mini" {
+		t.Errorf("Model = %q, want %q", cfg.Summarization.Model, "grok-3-mini")
+	}
+	if cfg.Summarization.APIKeyEnv != "XAI_API_KEY" {
+		t.Errorf("APIKeyEnv = %q, want %q", cfg.Summarization.APIKeyEnv, "XAI_API_KEY")
+	}
+	if cfg.Summarization.BaseURL != "https://api.x.ai/v1" {
+		t.Errorf("BaseURL = %q, want %q", cfg.Summarization.BaseURL, "https://api.x.ai/v1")
+	}
+	if cfg.Summarization.MaxTokens != 4096 {
+		t.Errorf("MaxTokens = %d, want 4096", cfg.Summarization.MaxTokens)
+	}
+	if cfg.Summarization.TimeoutSeconds != 30 {
+		t.Errorf("TimeoutSeconds = %d, want 30", cfg.Summarization.TimeoutSeconds)
+	}
+}
+
+func TestConfigSummarizationEmpty(t *testing.T) {
+	// Isolate from any host global ~/.config/vibe-palace/config.toml (which
+	// on developer machines might have [summarization] enabled). Point XDG to
+	// empty temp so LoadConfig sees only embedded defaults (summarization off).
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	v := testVault(t)
+
+	// No [summarization] block — Config.Summarization must be the zero value.
+	cfg, err := v.LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Summarization != (SummarizationConfig{}) {
+		t.Errorf("Summarization should be zero value when no block configured, got %+v", cfg.Summarization)
+	}
+	if cfg.Summarization.Enabled {
+		t.Errorf("Summarization.Enabled should be false by default, got true")
+	}
+}
+
 func TestCurrentVersionMinor(t *testing.T) {
 	if CurrentVersionMinor != 1 {
 		t.Errorf("CurrentVersionMinor = %d, want 1", CurrentVersionMinor)

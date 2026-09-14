@@ -371,6 +371,27 @@ func (v *Vault) IterationsFile(project string) (string, error) {
 	return filepath.Join(v.Root, "Projects", project, "iterations.md"), nil
 }
 
+// IterationSummaryFile returns the path to one iteration's vault-committed,
+// LLM-generated search summary:
+// {vault}/palace/{project}/iteration-summaries/{n}.json
+//
+// This lives under palace/{project}/ (structured, machine-generated, still
+// git-tracked derived data — the same tier as kg/triples/*.json), NOT
+// Projects/{project}/ (authoritative, human-authored narrative, where
+// iterations.md itself lives) and NOT palace/.local/ (host-local, gitignored
+// — where the embedding-vector cache lives, since ONNX inference is free to
+// redo per-machine while an LLM summarization call has a real cost the
+// operator wants to pay only once, globally).
+func (v *Vault) IterationSummaryFile(project string, n int) (string, error) {
+	if err := slug.Validate(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	if n < 1 {
+		return "", fmt.Errorf("iteration number must be >= 1, got %d", n)
+	}
+	return filepath.Join(v.Root, "palace", project, "iteration-summaries", fmt.Sprintf("%d.json", n)), nil
+}
+
 // WorkflowFile returns the path to a project's workflow file:
 // {vault}/Projects/{project}/workflow.md
 func (v *Vault) WorkflowFile(project string) (string, error) {

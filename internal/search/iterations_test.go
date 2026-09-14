@@ -10,15 +10,20 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-// parseIterationSourceRef extracts n and matchIndex from a source_ref for assertions.
+// parseIterationSourceRef extracts n and matchIndex from a source_ref for
+// assertions. Tolerates the raw row's trailing "/raw" suffix (see
+// iterationRawSourceRef) so it works on both summary and raw refs.
 func parseIterationSourceRef(ref string) (n, matchIndex int, ok bool) {
 	const prefix = "iteration/"
 	if !strings.HasPrefix(ref, prefix) {
 		return 0, 0, false
 	}
 	rest := strings.TrimPrefix(ref, prefix)
+	rest = strings.TrimSuffix(rest, "/raw")
 	parts := strings.Split(rest, "/")
 	if len(parts) != 3 || parts[1] != "m" {
 		return 0, 0, false
@@ -89,10 +94,12 @@ func TestRebuild_IndexesIterationsWithoutDrawers(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected a hit whose content contains %q; got %d results", unique, len(results))
 	}
-	if got.SourceType != iterationSourceType {
-		t.Errorf("SourceType = %q, want %q", got.SourceType, iterationSourceType)
+	// No cache was seeded for this project, so this entry gets only a RAW row
+	// (SourceType iteration_raw), never a summary row (SourceType iteration).
+	if got.SourceType != iterationRawSourceType {
+		t.Errorf("SourceType = %q, want %q", got.SourceType, iterationRawSourceType)
 	}
-	wantRef := iterationSourceRef(2, 0)
+	wantRef := iterationRawSourceRef(2, 0)
 	if got.SourceRef != wantRef {
 		t.Errorf("SourceRef = %q, want %q", got.SourceRef, wantRef)
 	}
@@ -108,8 +115,8 @@ func TestRebuild_IndexesIterationsWithoutDrawers(t *testing.T) {
 		t.Errorf("SourceRef must be per-entry, not per-chunk: %q", got.SourceRef)
 	}
 	// SearchResult does not expose ChunkIndex; cache ID carries it (pin 2).
-	if !strings.HasPrefix(got.DrawerID, "iter.hist-only.2.m0.c") {
-		t.Errorf("DrawerID = %q, want iter.hist-only.2.m0.c*", got.DrawerID)
+	if !strings.HasPrefix(got.DrawerID, "iter.hist-only.2.m0.raw.c") {
+		t.Errorf("DrawerID = %q, want iter.hist-only.2.m0.raw.c*", got.DrawerID)
 	}
 }
 
@@ -148,11 +155,12 @@ func TestRebuild_DuplicateNDistinctMatchRefs(t *testing.T) {
 	if !ok0 || !ok1 {
 		t.Fatalf("missing hits: ok0=%v ok1=%v (results=%d)", ok0, ok1, len(all))
 	}
-	if h0.SourceRef != iterationSourceRef(7, 0) {
-		t.Errorf("match0 SourceRef = %q, want %q", h0.SourceRef, iterationSourceRef(7, 0))
+	// No cache seeded for either match, so both surface only as raw rows.
+	if h0.SourceRef != iterationRawSourceRef(7, 0) {
+		t.Errorf("match0 SourceRef = %q, want %q", h0.SourceRef, iterationRawSourceRef(7, 0))
 	}
-	if h1.SourceRef != iterationSourceRef(7, 1) {
-		t.Errorf("match1 SourceRef = %q, want %q", h1.SourceRef, iterationSourceRef(7, 1))
+	if h1.SourceRef != iterationRawSourceRef(7, 1) {
+		t.Errorf("match1 SourceRef = %q, want %q", h1.SourceRef, iterationRawSourceRef(7, 1))
 	}
 	if h0.SourceRef == h1.SourceRef {
 		t.Error("duplicate-N matches must not share SourceRef")
@@ -183,15 +191,20 @@ func TestRebuild_IterationChunksShareSourceRefSoDedupKeepsOne(t *testing.T) {
 	if len(texts) < 2 {
 		t.Fatalf("expected multiple chunks, got %d", len(texts))
 	}
+	// No cache seeded for this project, so this entry surfaces only as raw
+	// chunks (SourceType iteration_raw, SourceRef with the "/raw" suffix).
 	ref := metas[0].SourceRef
 	for i, m := range metas {
 		if m.SourceRef != ref {
 			t.Fatalf("chunk %d SourceRef = %q, want shared %q", i, m.SourceRef, ref)
 		}
+		if m.SourceType != iterationRawSourceType {
+			t.Errorf("chunk %d SourceType = %q, want %q", i, m.SourceType, iterationRawSourceType)
+		}
 		if m.ChunkIndex != i {
 			t.Errorf("chunk %d ChunkIndex = %d, want %d", i, m.ChunkIndex, i)
 		}
-		wantID := iterationCacheID("chunky", 9, 0, i)
+		wantID := iterationRawCacheID("chunky", 9, 0, i)
 		if ids[i] != wantID {
 			t.Errorf("ids[%d] = %q, want %q", i, ids[i], wantID)
 		}
@@ -207,8 +220,8 @@ func TestRebuild_IterationChunksShareSourceRefSoDedupKeepsOne(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("dedup should keep one hit per entry SourceRef, got %d", len(results))
 	}
-	if results[0].SourceRef != iterationSourceRef(9, 0) {
-		t.Errorf("SourceRef = %q, want %q", results[0].SourceRef, iterationSourceRef(9, 0))
+	if results[0].SourceRef != iterationRawSourceRef(9, 0) {
+		t.Errorf("SourceRef = %q, want %q", results[0].SourceRef, iterationRawSourceRef(9, 0))
 	}
 }
 
@@ -231,5 +244,248 @@ func TestCollectIterationCorpus_MissingFileIsEmpty(t *testing.T) {
 	}
 	if len(ids) != 0 || len(texts) != 0 || len(metas) != 0 {
 		t.Fatalf("want empty, got ids=%d texts=%d metas=%d", len(ids), len(texts), len(metas))
+	}
+}
+
+// metasByType partitions metas into (summary rows, raw rows) by SourceType,
+// for the tests below that must reason about the two row families separately.
+func metasByType(metas []drawerMeta) (summary, raw []drawerMeta) {
+	for _, m := range metas {
+		switch m.SourceType {
+		case iterationSourceType:
+			summary = append(summary, m)
+		case iterationRawSourceType:
+			raw = append(raw, m)
+		}
+	}
+	return summary, raw
+}
+
+// TestCollectIterationCorpus_SummaryRowWhenCacheMatches covers the happy
+// path: a fresh cache (MatchIndex equal to the entry's own current
+// matchIndex) produces BOTH a summary row (prose-rendered, not raw JSON) and
+// a raw row, with DISTINCT SourceRefs — the dedup-safety property engine.go's
+// SourceRef-only dedup depends on.
+func TestCollectIterationCorpus_SummaryRowWhenCacheMatches(t *testing.T) {
+	_, v := testEngine(t)
+	const project = "sum-ok"
+
+	writeIterationsMD(t, v.Root, project, strings.Join([]string{
+		"## Iteration 1 — first",
+		"",
+		"The raw narrative body for iteration one, never mentioned by the cached summary.",
+		"",
+		"---",
+		"",
+	}, "\n"))
+
+	cached := storage.IterationSummary{
+		N:           1,
+		MatchIndex:  0,
+		Summary:     "CACHED_SUMMARY_PROSE_MARKER: shipped the widget.",
+		Decisions:   []string{"Decided to use approach A.", "Decided to defer approach B."},
+		Unblocks:    "Unblocks the follow-on rollout task.",
+		Model:       "test-model",
+		GeneratedAt: "2026-01-01T00:00:00Z",
+	}
+	if err := v.WriteIterationSummary(project, cached); err != nil {
+		t.Fatalf("WriteIterationSummary: %v", err)
+	}
+
+	_, _, metas, err := collectIterationCorpus(v, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summaryRows, rawRows := metasByType(metas)
+
+	if len(summaryRows) == 0 {
+		t.Fatal("expected at least one summary row, got none")
+	}
+	if len(rawRows) == 0 {
+		t.Fatal("expected at least one raw row, got none")
+	}
+
+	sm, ok := findHitContainingMeta(summaryRows, "CACHED_SUMMARY_PROSE_MARKER")
+	if !ok {
+		t.Fatalf("no summary row contains the cached summary text; rows=%+v", summaryRows)
+	}
+	if sm.Content == "The raw narrative body for iteration one, never mentioned by the cached summary." {
+		t.Error("summary row Content must be the rendered summary, not the raw entry body")
+	}
+	if !strings.Contains(sm.Content, "Decided to use approach A.") {
+		t.Errorf("summary row Content = %q, want it to include rendered Decisions", sm.Content)
+	}
+	if !strings.Contains(sm.Content, "Unblocks the follow-on rollout task.") {
+		t.Errorf("summary row Content = %q, want it to include rendered Unblocks", sm.Content)
+	}
+	if sm.SourceRef != iterationSourceRef(1, 0) {
+		t.Errorf("summary SourceRef = %q, want %q", sm.SourceRef, iterationSourceRef(1, 0))
+	}
+
+	rm, ok := findHitContainingMeta(rawRows, "The raw narrative body for iteration one")
+	if !ok {
+		t.Fatalf("no raw row contains the raw entry text; rows=%+v", rawRows)
+	}
+	if rm.SourceRef != iterationRawSourceRef(1, 0) {
+		t.Errorf("raw SourceRef = %q, want %q", rm.SourceRef, iterationRawSourceRef(1, 0))
+	}
+
+	// Dedup-safety assertion: engine.go's dedup keys solely on SourceRef (no
+	// SourceType involved) — if the raw row shared the summary row's ref,
+	// dedup could silently keep whichever one scores higher and drop the
+	// other. They must be distinct.
+	t.Run("summary_and_raw_have_distinct_SourceRef", func(t *testing.T) {
+		if sm.SourceRef == rm.SourceRef {
+			t.Fatalf("summary and raw rows for the same entry must not share SourceRef, both got %q", sm.SourceRef)
+		}
+	})
+}
+
+// findHitContainingMeta is findHitContaining's drawerMeta counterpart.
+func findHitContainingMeta(metas []drawerMeta, needle string) (drawerMeta, bool) {
+	for _, m := range metas {
+		if strings.Contains(m.Content, needle) {
+			return m, true
+		}
+	}
+	return drawerMeta{}, false
+}
+
+// TestCollectIterationCorpus_NoSummaryRowWhenUncached: an entry with no
+// cache file at all must produce a raw row only — no summary row, and no
+// error (ReadIterationSummary's not-found case is the expected common case).
+func TestCollectIterationCorpus_NoSummaryRowWhenUncached(t *testing.T) {
+	_, v := testEngine(t)
+	const project = "sum-uncached"
+
+	writeIterationsMD(t, v.Root, project, strings.Join([]string{
+		"## Iteration 2 — second",
+		"",
+		"UNCACHED_RAW_BODY_MARKER narrative text.",
+		"",
+		"---",
+		"",
+	}, "\n"))
+
+	_, _, metas, err := collectIterationCorpus(v, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summaryRows, rawRows := metasByType(metas)
+
+	if len(summaryRows) != 0 {
+		t.Fatalf("expected no summary rows for an uncached entry, got %d", len(summaryRows))
+	}
+	if _, ok := findHitContainingMeta(rawRows, "UNCACHED_RAW_BODY_MARKER"); !ok {
+		t.Fatalf("expected a raw row findable via raw text even before summarization; rows=%+v", rawRows)
+	}
+}
+
+// TestCollectIterationCorpus_StaleCacheFallsBackToRawOnly simulates a newer
+// same-N entry having been appended to iterations.md since a cache was
+// generated: the stored MatchIndex (1) no longer equals the current
+// computed matchIndex (0, since there's only one entry sharing N=5). A naive
+// implementation that attaches any cache sharing N to the entry — without
+// checking the stored MatchIndex — would wrongly emit a summary row here.
+func TestCollectIterationCorpus_StaleCacheFallsBackToRawOnly(t *testing.T) {
+	_, v := testEngine(t)
+	const project = "sum-stale"
+
+	writeIterationsMD(t, v.Root, project, strings.Join([]string{
+		"## Iteration 5 — fifth",
+		"",
+		"STALE_CACHE_RAW_BODY_MARKER narrative text.",
+		"",
+		"---",
+		"",
+	}, "\n"))
+
+	// Deliberate mismatch: only one entry shares N=5 (current computed
+	// matchIndex = 0), but the cache claims it was generated against
+	// matchIndex 1.
+	stale := storage.IterationSummary{
+		N:          5,
+		MatchIndex: 1,
+		Summary:    "STALE_SUMMARY_SHOULD_NOT_APPEAR",
+	}
+	if err := v.WriteIterationSummary(project, stale); err != nil {
+		t.Fatalf("WriteIterationSummary: %v", err)
+	}
+
+	_, _, metas, err := collectIterationCorpus(v, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summaryRows, rawRows := metasByType(metas)
+
+	if len(summaryRows) != 0 {
+		t.Fatalf("stale cache (MatchIndex mismatch) must not produce a summary row, got %d: %+v", len(summaryRows), summaryRows)
+	}
+	if _, ok := findHitContainingMeta(rawRows, "STALE_CACHE_RAW_BODY_MARKER"); !ok {
+		t.Fatalf("expected raw-only fallback for the stale-cache entry; rows=%+v", rawRows)
+	}
+}
+
+// TestCollectIterationCorpus_OnlyLastMatchGetsSummaryRow: two entries share
+// N=9 (a legitimate duplicate). A cache exists with MatchIndex 1 (the last
+// match's index). Only the LAST match (matchIndex 1) may get a summary row;
+// the first, superseded match (matchIndex 0) must never get one even though
+// it shares the same N as the cached entry — both still get their own raw
+// rows regardless.
+func TestCollectIterationCorpus_OnlyLastMatchGetsSummaryRow(t *testing.T) {
+	_, v := testEngine(t)
+	const project = "sum-multi"
+
+	writeIterationsMD(t, v.Root, project, strings.Join([]string{
+		"## Iteration 9 — first nine",
+		"",
+		"FIRST_NINE_RAW_MARKER narrative text.",
+		"",
+		"---",
+		"",
+		"## Iteration 9 — second nine",
+		"",
+		"SECOND_NINE_RAW_MARKER narrative text.",
+		"",
+		"---",
+		"",
+	}, "\n"))
+
+	cached := storage.IterationSummary{
+		N:          9,
+		MatchIndex: 1,
+		Summary:    "LAST_MATCH_SUMMARY_MARKER",
+	}
+	if err := v.WriteIterationSummary(project, cached); err != nil {
+		t.Fatalf("WriteIterationSummary: %v", err)
+	}
+
+	_, _, metas, err := collectIterationCorpus(v, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summaryRows, rawRows := metasByType(metas)
+
+	if len(summaryRows) != 1 {
+		t.Fatalf("expected exactly one summary row (only the last match), got %d: %+v", len(summaryRows), summaryRows)
+	}
+	if summaryRows[0].SourceRef != iterationSourceRef(9, 1) {
+		t.Errorf("summary SourceRef = %q, want %q (matchIndex 1, the last match)", summaryRows[0].SourceRef, iterationSourceRef(9, 1))
+	}
+	if !strings.Contains(summaryRows[0].Content, "LAST_MATCH_SUMMARY_MARKER") {
+		t.Errorf("summary Content = %q, want cached summary text", summaryRows[0].Content)
+	}
+
+	if _, ok := findHitContainingMeta(rawRows, "FIRST_NINE_RAW_MARKER"); !ok {
+		t.Fatalf("expected a raw row for the first (superseded) match; rows=%+v", rawRows)
+	}
+	if _, ok := findHitContainingMeta(rawRows, "SECOND_NINE_RAW_MARKER"); !ok {
+		t.Fatalf("expected a raw row for the second (last) match; rows=%+v", rawRows)
+	}
+	// The superseded first match must not have a summary row referencing it.
+	for _, m := range summaryRows {
+		if m.SourceRef == iterationSourceRef(9, 0) {
+			t.Errorf("superseded match (matchIndex 0) must not get a summary row, got one at %q", m.SourceRef)
+		}
 	}
 }

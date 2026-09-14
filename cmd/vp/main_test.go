@@ -246,8 +246,19 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		"audit vault":    true,
 		"discover rooms": true,
 		"tune rooms":     true,
-		"config upgrade": true,
-		"config sync":    true,
+		// runDrainSummaries (cmd_drain.go) resolves the project's own
+		// [summarization] config and, when enabled/resolvable, constructs a
+		// real itersummary.IterationSummarizer that writes vault-committed
+		// iteration summaries (storage.Vault.WriteIterationSummary) — a
+		// genuine local vault writer now, so it gets the same fail-stop
+		// protection as any other one.
+		"drain summaries": true,
+		// runSummarizeIterations (cmd_summarize.go) calls the same
+		// itersummary.IterationSummarizer synchronously, one entry at a
+		// time, for the same WriteIterationSummary sink.
+		"summarize iterations": true,
+		"config upgrade":       true,
+		"config sync":          true,
 		// The reset verbs remove a vault Templates/ file (vaultfs.Delete),
 		// write its backup (vaultfs.Create) and commit the removal. `commands
 		// upgrade` and `skills upgrade` are deliberately ABSENT: they were

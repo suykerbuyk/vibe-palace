@@ -76,6 +76,7 @@ type Config struct {
 	PalaceLLM              LLMConfig                      `json:"palace_llm"`
 	Archive                ArchiveConfig                  `json:"archive"`
 	Enrichment             EnrichmentConfig               `json:"enrichment"`
+	Summarization          SummarizationConfig            `json:"summarization"`
 }
 
 // EnrichmentConfig holds resolved settings for the session-enrichment LLM
@@ -83,6 +84,25 @@ type Config struct {
 // key, not the key itself. All fields are optional; Enabled is off by
 // default so an absent [enrichment] block decodes to the zero value.
 type EnrichmentConfig struct {
+	Enabled        bool   `json:"enabled"`
+	Provider       string `json:"provider"`
+	Model          string `json:"model"`
+	APIKeyEnv      string `json:"api_key_env"`
+	BaseURL        string `json:"base_url"`
+	MaxTokens      int    `json:"max_tokens"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+}
+
+// SummarizationConfig holds resolved settings for the bulk LLM-summarization
+// pass (search-oriented iteration/session-note summaries) — a distinct
+// concern from EnrichmentConfig's human-facing session enrichment, so it has
+// its own on/off toggle and its own model choice (a cheaper/faster model is
+// plausibly sufficient here). Shared by every SummaryJobKind's Summarizer
+// implementation, not per-kind. APIKeyEnv is the name of the environment
+// variable holding the API key, not the key itself. All fields are optional;
+// Enabled is off by default so an absent [summarization] block decodes to
+// the zero value.
+type SummarizationConfig struct {
 	Enabled        bool   `json:"enabled"`
 	Provider       string `json:"provider"`
 	Model          string `json:"model"`
@@ -153,11 +173,22 @@ type tomlConfig struct {
 		Scoring tomlScoringConfig         `toml:"scoring"`
 		LLM     tomlLLMConfig             `toml:"llm"`
 	} `toml:"palace"`
-	Archive    tomlArchiveConfig    `toml:"archive"`
-	Enrichment tomlEnrichmentConfig `toml:"enrichment"`
+	Archive       tomlArchiveConfig       `toml:"archive"`
+	Enrichment    tomlEnrichmentConfig    `toml:"enrichment"`
+	Summarization tomlSummarizationConfig `toml:"summarization"`
 }
 
 type tomlEnrichmentConfig struct {
+	Enabled        bool   `toml:"enabled"`
+	Provider       string `toml:"provider"`
+	Model          string `toml:"model"`
+	APIKeyEnv      string `toml:"api_key_env"`
+	BaseURL        string `toml:"base_url"`
+	MaxTokens      int    `toml:"max_tokens"`
+	TimeoutSeconds int    `toml:"timeout_seconds"`
+}
+
+type tomlSummarizationConfig struct {
 	Enabled        bool   `toml:"enabled"`
 	Provider       string `toml:"provider"`
 	Model          string `toml:"model"`
@@ -240,6 +271,15 @@ func (tc *tomlConfig) flatten() Config {
 			BaseURL:        tc.Enrichment.BaseURL,
 			MaxTokens:      tc.Enrichment.MaxTokens,
 			TimeoutSeconds: tc.Enrichment.TimeoutSeconds,
+		},
+		Summarization: SummarizationConfig{
+			Enabled:        tc.Summarization.Enabled,
+			Provider:       tc.Summarization.Provider,
+			Model:          tc.Summarization.Model,
+			APIKeyEnv:      tc.Summarization.APIKeyEnv,
+			BaseURL:        tc.Summarization.BaseURL,
+			MaxTokens:      tc.Summarization.MaxTokens,
+			TimeoutSeconds: tc.Summarization.TimeoutSeconds,
 		},
 	}
 }

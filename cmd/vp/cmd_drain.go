@@ -7,10 +7,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/itersummary"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/summarize"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
@@ -121,29 +123,22 @@ func cmdDrainSummaries() *cli.Command {
 				max = drainSummariesDefaultMax
 			}
 
-			// No real Summarizer is wired in yet — see internal/summarize's
-			// package doc comment: a later, separate piece of work supplies
-			// one. Passing nil here preserves that documented no-op behavior
-			// exactly as before; runDrainSummaries's s parameter exists so an
-			// integration test can inject a stub Summarizer and prove the
-			// rest of this path (flag parsing, locking, and
-			// internal/jobqueue's Claim/Requeue/Done) actually processes a
-			// claimed job end-to-end, which a nil Summarizer's early no-op
-			// return can never exercise.
-			return runDrainSummaries(projectPath, nil, max, os.Stdout)
+			// runDrainSummaries resolves the project's own [summarization]
+			// config and constructs a real, config-driven Summarizer itself
+			// (mirroring internal/hook/hook.go's own
+			// capture.NewEnricherFromConfig call site) — there is nothing
+			// left for this Run closure to inject.
+			return runDrainSummaries(projectPath, max, os.Stdout)
 		},
 	}
 }
 
-// runDrainSummaries is the testable body of `vp drain summaries`. s is the
-// Summarizer handed to summarize.DrainSummarizationQueue — production always
-// passes nil today (see the no-Summarizer-yet comment at this function's one
-// call site); a test may pass a stub to exercise real claim/requeue/done
-// processing. out receives the one-line result (and any error text): when
-// this command is launched via internal/detachlaunch.Launch, the caller has
-// already redirected this process's stdout to a log file, so writing here is
-// all the logging this command needs to do.
-func runDrainSummaries(projectPath string, s summarize.Summarizer, max int, out io.Writer) int {
+// runDrainSummaries is the testable body of `vp drain summaries`. out
+// receives the one-line result (and any error text): when this command is
+// launched via internal/detachlaunch.Launch, the caller has already
+// redirected this process's stdout to a log file, so writing here is all the
+// logging this command needs to do.
+func runDrainSummaries(projectPath string, max int, out io.Writer) int {
 	// Resolve the vault and the project slug EXPLICITLY from the given
 	// projectPath, never via os.Getwd(). This command is designed to be
 	// launched as a detached child (internal/detachlaunch), whose inherited
@@ -151,11 +146,9 @@ func runDrainSummaries(projectPath string, s summarize.Summarizer, max int, out 
 	// cmd/vp/bootstrap.go's openProjectVault() and
 	// internal/tools/wrapstate_tools.go's vp_collect_wrap_state /
 	// vp_preflight_wrap avoid by taking an explicit root/project_path
-	// instead of Getwd(). Neither result is used beyond validating the
-	// project is a real, resolvable one and labeling the summary line below;
-	// summarize.DrainSummarizationQueue itself takes projectPath directly as
-	// its cwd.
-	if _, err := OpenProjectVaultAt(projectPath); err != nil {
+	// instead of Getwd().
+	vault, err := OpenProjectVaultAt(projectPath)
+	if err != nil {
 		fmt.Fprintf(out, "vp drain summaries: open vault: %v\n", err)
 		return cli.ExitSystem
 	}
@@ -164,6 +157,47 @@ func runDrainSummaries(projectPath string, s summarize.Summarizer, max int, out 
 		fmt.Fprintf(out, "vp drain summaries: detect project: %v\n", err)
 		return cli.ExitSystem
 	}
+
+	// Resolve the project's own [summarization] config and build the real
+	// Summarizer this drain call uses — the same
+	// load-config-then-build-client pattern internal/hook/hook.go's own
+	// capture.NewEnricherFromConfig call site uses for enrichment. Disabled
+	// or unresolvable summarization must never fail the drain itself (a
+	// project that hasn't opted in still needs `vp drain summaries` to
+	// succeed as a documented no-op) — only a hard error loading the config
+	// file itself (malformed TOML, etc.) is a real ExitSystem failure here.
+	cfg, err := vault.LoadConfig(slug)
+	if err != nil {
+		fmt.Fprintf(out, "vp drain summaries: load config: %v\n", err)
+		return cli.ExitSystem
+	}
+
+	is, err := itersummary.NewIterationSummarizerFromConfig(cfg.Summarization, vault)
+	if err != nil {
+		// Enabled but unresolvable (e.g. missing API key env) must not fail
+		// the whole drain — mirrors capture.NewEnricherFromConfig's own
+		// contract: callers warn-log and proceed with a nil client, never a
+		// hard failure. Here that means proceeding with a DispatchSummarizer
+		// whose Iteration handler is nil, so any queued KindIteration job
+		// is deferred back to the queue (ErrUnsupportedKind) rather than
+		// dropped or crashing this call.
+		slog.Warn("vp drain summaries: iteration summarizer disabled", "err", err)
+	}
+	// iterationSummarizer is deliberately typed as the summarize.Summarizer
+	// INTERFACE, assigned only in the is != nil branch — never assigned
+	// directly from `is` (a concrete *itersummary.IterationSummarizer). A
+	// direct assignment would box a nil *IterationSummarizer into a
+	// NON-nil Summarizer interface value (Go's classic typed-nil-interface
+	// trap: the interface carries a type descriptor even when the pointer
+	// inside it is nil), which would make DispatchSummarizer.Summarize's
+	// own `d.Iteration != nil` check pass and dispatch into Summarize on a
+	// nil receiver instead of correctly treating this as "no handler
+	// registered".
+	var iterationSummarizer summarize.Summarizer
+	if is != nil {
+		iterationSummarizer = is
+	}
+	dispatcher := &summarize.DispatchSummarizer{Iteration: iterationSummarizer}
 
 	// Ensure the queue directory exists so callers globbing it (e.g.
 	// vp_trigger_summarization_drain) always find a real, stat-able
@@ -204,17 +238,18 @@ func runDrainSummaries(projectPath string, s summarize.Summarizer, max int, out 
 	}
 	defer release()
 
-	drained, err := summarize.DrainSummarizationQueue(context.Background(), projectPath, s, max)
+	drained, err := summarize.DrainSummarizationQueue(context.Background(), projectPath, dispatcher, max)
 	if err != nil {
 		fmt.Fprintf(out, "vp drain summaries: drain: %v\n", err)
 		return cli.ExitSystem
 	}
 
-	// A nil Summarizer (production's real-world state today — see this
-	// function's one call site) is a documented no-op (see internal/summarize's
-	// doc comment): drained is always 0 in that case. A later, separate piece
-	// of work supplies a real Summarizer, at which point this line starts
-	// reporting real counts with no change needed here.
+	// drained now genuinely reflects real work once [summarization] is
+	// enabled and resolvable in this project's config: dispatcher above is a
+	// real, config-driven DispatchSummarizer, not a documented no-op stand-in.
+	// It stays 0 only when the queue is empty, or when summarization is
+	// disabled/unresolvable (see the warn-log above) so every claimed
+	// KindIteration job is deferred back to the queue via ErrUnsupportedKind.
 	fmt.Fprintf(out, "vp drain summaries: project=%s drained=%d\n", slug, drained)
 	return cli.ExitOK
 }

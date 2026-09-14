@@ -68,3 +68,20 @@ overlap = 100
 # base_url = "https://api.x.ai/v1"
 # max_tokens = 4096
 # timeout_seconds = 30
+
+# Bulk LLM summarization of iteration/session-note content for search — a
+# separate concern from [enrichment]'s human-facing session synthesis, so it
+# gets its own toggle and (plausibly cheaper/faster) model. Shared by every
+# summarization consumer (iteration summaries, and later session-note
+# summaries), not scoped to one.
+# Disabled by default; set enabled = true and configure a provider to opt in.
+# api_key_env is the name of the environment variable holding the API key,
+# not the key itself.
+# [summarization]
+# enabled = false
+# provider = "xai"
+# model = "grok-3-mini"
+# api_key_env = "XAI_API_KEY"
+# base_url = "https://api.x.ai/v1"
+# max_tokens = 4096
+# timeout_seconds = 30

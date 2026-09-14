@@ -18,7 +18,9 @@ package summarize
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -108,6 +110,14 @@ type SummaryResult struct {
 type Summarizer interface {
 	Summarize(ctx context.Context, item SummaryItem) (*SummaryResult, error)
 }
+
+// ErrUnsupportedKind is returned by a Summarizer (directly, or via
+// DispatchSummarizer's default case) when it has no registered handler for a
+// SummaryItem's Kind. DrainSummarizationQueue treats this as a per-ITEM
+// property, not a call-level interruption: the item is deferred back to
+// claimable with Attempts genuinely unchanged, and the loop CONTINUES to try
+// other items, rather than aborting the whole call.
+var ErrUnsupportedKind = errors.New("summarize: unsupported kind")
 
 // QueueDir returns the host-local summarization queue directory,
 // a sibling of internal/capture's enrichment-queue dir under the same
@@ -237,6 +247,32 @@ func DrainSummarizationQueue(ctx context.Context, cwd string, s Summarizer, max 
 
 	dir := QueueDir(cwd)
 
+	// pendingRequeue collects one closure per item that is deferred back to
+	// the queue this call (a genuine failure, a ctx interruption, or an
+	// unsupported Kind), flushed only once this function is about to return
+	// (via the defer below) instead of run immediately. A deferred item's
+	// claim is deliberately left in its ".processing" state for the REST of
+	// this call: jobqueue.Claim only matches "*.json" files, so a
+	// still-".processing" claim is invisible to it and cannot be immediately
+	// re-claimed ahead of other, not-yet-tried distinct items.
+	//
+	// This mirrors internal/capture/enrichqueue.go's DrainEnrichmentQueue,
+	// which fixed the exact same fairness bug: jobqueue.Claim always claims
+	// the lexicographically-first claimable "*.json" file, so rewriting a
+	// failed item back to its claimable name IMMEDIATELY inside the loop lets
+	// it re-claim itself on every subsequent Claim call within the SAME
+	// invocation, starving every other distinct queued item for the rest of
+	// that call. Deferring the requeue until this call is about to return
+	// guarantees every jobqueue.Claim call inside this loop returns a
+	// genuinely new, never-before-attempted-this-call item (or "" once none
+	// remain).
+	var pendingRequeue []func()
+	defer func() {
+		for _, fn := range pendingRequeue {
+			fn()
+		}
+	}()
+
 	processed := 0
 	for {
 		if max > 0 && processed >= max {
@@ -294,6 +330,26 @@ func DrainSummarizationQueue(ctx context.Context, cwd string, s Summarizer, max 
 			continue
 		}
 
+		if errors.Is(sErr, ErrUnsupportedKind) {
+			// Per-ITEM property, not a call-level interruption — this call may still
+			// have OTHER, supported-kind items left to claim. Defer this one back to
+			// claimable via the SAME pendingRequeue mechanism as any other deferred
+			// requeue, with Attempts forced unchanged regardless of item.Attempts's
+			// current value (mirroring internal/capture/enrichqueue.go's own "hand
+			// back unchanged" trick: Requeue(procPath, 0, 1, ...) guarantees the
+			// 0 >= 1 dead-letter check can never fire, so this can never consume a
+			// retry no matter what item.Attempts happens to be) — and CONTINUE,
+			// never break, so the next Claim call in THIS SAME loop can still reach
+			// a different item.
+			unchanged := func(int) ([]byte, error) { return json.Marshal(item) }
+			pendingRequeue = append(pendingRequeue, func() {
+				if _, rqErr := jobqueue.Requeue(procPath, 0, 1, unchanged); rqErr != nil {
+					slog.Warn("summarize: returning unsupported-kind item failed", "err", rqErr, "item", procPath)
+				}
+			})
+			continue
+		}
+
 		if ctx.Err() != nil {
 			// This drain's OWN ctx was canceled/deadline-exceeded during (or
 			// before) this NON-successful call — the job never got a fair,
@@ -314,17 +370,31 @@ func DrainSummarizationQueue(ctx context.Context, cwd string, s Summarizer, max 
 			//     is the one signal that is authoritative for "was THIS
 			//     call's own ctx the reason it didn't finish," and can't be
 			//     lost or spoofed in translation the way an error value can.
-			// Requeue with Attempts unchanged and stop draining: ctx is no
-			// longer usable for anything further in this call.
-			_ = requeueItem(procPath, item)
+			// Defer the requeue (Attempts unchanged) via pendingRequeue and stop
+			// draining: ctx is no longer usable for anything further in this call.
+			pendingRequeue = append(pendingRequeue, func() {
+				if rqErr := requeueItem(procPath, item); rqErr != nil {
+					slog.Warn("summarize: returning ctx-interrupted item failed", "err", rqErr, "item", procPath)
+				}
+			})
 			break
 		}
 
 		// Neither a success nor a ctx interruption: a genuine summarization
 		// failure, which does consume a retry from maxSummaryAttempts's
-		// budget.
+		// budget. The Attempts bump happens now (item is this closure's own
+		// enclosing loop variable, freshly declared each iteration), but the
+		// actual jobqueue.Requeue call itself is deferred via pendingRequeue
+		// so the item stays claimed (invisible to jobqueue.Claim's "*.json"
+		// filter) for the rest of this call — see pendingRequeue's own doc
+		// comment above for why this is a fairness fix, not cosmetic
+		// reordering.
 		item.Attempts++
-		_ = requeueItem(procPath, item)
+		pendingRequeue = append(pendingRequeue, func() {
+			if rqErr := requeueItem(procPath, item); rqErr != nil {
+				slog.Warn("summarize: requeue after genuine failure failed", "err", rqErr, "item", procPath)
+			}
+		})
 		continue
 	}
 

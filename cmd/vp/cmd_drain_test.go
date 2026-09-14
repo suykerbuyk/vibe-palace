@@ -5,14 +5,16 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/summarize"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
@@ -36,7 +38,7 @@ func TestRunDrainSummaries_Success(t *testing.T) {
 	projectPath := setupDrainProject(t)
 
 	var buf bytes.Buffer
-	code := runDrainSummaries(projectPath, nil, 10, &buf)
+	code := runDrainSummaries(projectPath, 10, &buf)
 	if code != cli.ExitOK {
 		t.Fatalf("code = %d, want ExitOK; output: %s", code, buf.String())
 	}
@@ -52,7 +54,7 @@ func TestRunDrainSummaries_Success(t *testing.T) {
 	// the file proves nothing either way, only successful re-acquisition
 	// does.)
 	var buf2 bytes.Buffer
-	code2 := runDrainSummaries(projectPath, nil, 10, &buf2)
+	code2 := runDrainSummaries(projectPath, 10, &buf2)
 	if code2 != cli.ExitOK {
 		t.Fatalf("second call: code = %d, want ExitOK; output: %s", code2, buf2.String())
 	}
@@ -68,7 +70,7 @@ func TestRunDrainSummaries_EmptyProjectHasNoQueueYet(t *testing.T) {
 	projectPath := setupDrainProject(t)
 
 	var buf bytes.Buffer
-	code := runDrainSummaries(projectPath, nil, 0, &buf)
+	code := runDrainSummaries(projectPath, 0, &buf)
 	if code != cli.ExitOK {
 		t.Fatalf("code = %d, want ExitOK; output: %s", code, buf.String())
 	}
@@ -106,7 +108,7 @@ func TestRunDrainSummaries_ConcurrentDrainReportsAlreadyRunning(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	code := runDrainSummaries(projectPath, nil, 10, &buf)
+	code := runDrainSummaries(projectPath, 10, &buf)
 	if code != cli.ExitOK {
 		t.Fatalf("code = %d, want ExitOK (already_running is not a user error); output: %s", code, buf.String())
 	}
@@ -119,7 +121,7 @@ func TestRunDrainSummaries_ConcurrentDrainReportsAlreadyRunning(t *testing.T) {
 	}
 
 	var buf2 bytes.Buffer
-	code2 := runDrainSummaries(projectPath, nil, 10, &buf2)
+	code2 := runDrainSummaries(projectPath, 10, &buf2)
 	if code2 != cli.ExitOK {
 		t.Fatalf("after release: code = %d, want ExitOK; output: %s", code2, buf2.String())
 	}
@@ -191,7 +193,7 @@ func TestRunDrainSummaries_BadVaultConfigIsSystemError(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	code := runDrainSummaries(projectPath, nil, 10, &buf)
+	code := runDrainSummaries(projectPath, 10, &buf)
 	if code != cli.ExitSystem {
 		t.Fatalf("code = %d, want ExitSystem; output: %s", code, buf.String())
 	}
@@ -215,7 +217,7 @@ func TestRunDrainSummaries_UndetectableProjectIsSystemError(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	code := runDrainSummaries(projectPath, nil, 10, &buf)
+	code := runDrainSummaries(projectPath, 10, &buf)
 	if code != cli.ExitSystem {
 		t.Fatalf("code = %d, want ExitSystem; output: %s", code, buf.String())
 	}
@@ -233,7 +235,7 @@ func TestRunDrainSummaries_QueueDirCreationFailureIsSystemError(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	code := runDrainSummaries(projectPath, nil, 10, &buf)
+	code := runDrainSummaries(projectPath, 10, &buf)
 	if code != cli.ExitSystem {
 		t.Fatalf("code = %d, want ExitSystem; output: %s", code, buf.String())
 	}
@@ -259,28 +261,13 @@ func TestRunDrainSummaries_LockAcquireIOErrorIsSystemError(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	code := runDrainSummaries(projectPath, nil, 10, &buf)
+	code := runDrainSummaries(projectPath, 10, &buf)
 	if code != cli.ExitSystem {
 		t.Fatalf("code = %d, want ExitSystem; output: %s", code, buf.String())
 	}
 	if !strings.Contains(buf.String(), "acquire lock") {
 		t.Errorf("expected an acquire-lock error message: %s", buf.String())
 	}
-}
-
-// stubSummarizer is a minimal summarize.Summarizer that records every item it
-// is asked to summarize and always succeeds. It exists purely so this file's
-// bracketed-path integration test can reach past DrainSummarizationQueue's
-// nil-Summarizer no-op (production has no real Summarizer wired in yet, per
-// internal/summarize's own package doc comment) and actually exercise
-// internal/jobqueue's Claim/Requeue/Done against a real queued job on disk.
-type stubSummarizer struct {
-	calls []summarize.SummaryItem
-}
-
-func (s *stubSummarizer) Summarize(_ context.Context, item summarize.SummaryItem) (*summarize.SummaryResult, error) {
-	s.calls = append(s.calls, item)
-	return &summarize.SummaryResult{Kind: item.Kind}, nil
 }
 
 // TestRunDrainSummaries_BracketedProjectPathProcessesQueuedJob is this
@@ -303,28 +290,76 @@ func (s *stubSummarizer) Summarize(_ context.Context, item summarize.SummaryItem
 // ".json" suffix check, so bracket characters in the directory name are
 // inert.
 //
-// A nil Summarizer — what production's Run closure actually passes today,
-// since no real Summarizer exists yet — would make
-// DrainSummarizationQueue's no-op check return before ever calling
-// jobqueue.Claim, which would make this test pass regardless of whether
-// Bug 3 were fixed. So this test injects a stubSummarizer via
-// runDrainSummaries's s parameter (added in this phase specifically to make
-// this proof possible) to force the real Claim/Requeue/Done path to run.
+// runDrainSummaries no longer accepts an injectable Summarizer override — it
+// always builds a real, config-driven summarize.DispatchSummarizer itself
+// (see cmd_drain.go). So, to force the real Claim/Requeue/Done path to run
+// instead of short-circuiting on a disabled summarizer, this test enables
+// [summarization] in the project's own config and points base_url at an
+// httptest server returning a canned OpenAI-compatible completion — the same
+// pattern internal/hook/hook_test.go's
+// TestRun_SessionEndDrainsQueuedEnrichmentFromBracketedProjectPath uses to
+// preserve its own analogous enrichment-side proof.
 func TestRunDrainSummaries_BracketedProjectPathProcessesQueuedJob(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"summary\":\"Drained via real wiring.\",\"decisions\":[],\"unblocks\":\"\"}"}}]}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("VP_TEST_DRAIN_BRACKET_KEY", "sk-drain-bracket-test")
+
 	outer := t.TempDir()
 	projectPath := filepath.Join(outer, "proj[1]")
 	if err := os.MkdirAll(projectPath, 0o755); err != nil {
 		t.Fatalf("mkdir bracketed project dir: %v", err)
 	}
 	vaultRoot := t.TempDir()
-	cfg := fmt.Sprintf("vault_path = %q\n", vaultRoot)
-	if err := os.WriteFile(filepath.Join(projectPath, ".vibe-palace.toml"), []byte(cfg), 0o644); err != nil {
-		t.Fatalf("write project config: %v", err)
+	const slug = "test-project"
+
+	// .vibe-palace.toml pins BOTH the vault_path override AND the project
+	// name (strategy 1 of project.DetectProjectHighConfidence) so slug is
+	// deterministic regardless of the bracketed temp-dir basename, matching
+	// what summarize.EnqueueIterationSummary below is keyed on.
+	markerCfg := fmt.Sprintf("vault_path = %q\n\n[project]\nname = %q\n", vaultRoot, slug)
+	if err := os.WriteFile(filepath.Join(projectPath, ".vibe-palace.toml"), []byte(markerCfg), 0o644); err != nil {
+		t.Fatalf("write project marker config: %v", err)
+	}
+
+	vault := storage.NewVault(vaultRoot)
+	cfgPath, err := vault.ProjectConfigFile(slug)
+	if err != nil {
+		t.Fatalf("ProjectConfigFile: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatalf("mkdir project config dir: %v", err)
+	}
+	summCfg := "[summarization]\n" +
+		"enabled = true\n" +
+		"provider = \"openai\"\n" +
+		"model = \"drain-test-model\"\n" +
+		"api_key_env = \"VP_TEST_DRAIN_BRACKET_KEY\"\n" +
+		"base_url = \"" + srv.URL + "\"\n" +
+		"max_tokens = 512\n" +
+		"timeout_seconds = 10\n"
+	if err := os.WriteFile(cfgPath, []byte(summCfg), 0o644); err != nil {
+		t.Fatalf("write summarization config: %v", err)
+	}
+
+	// Seed the iterations.md entry the queued job (N=7) resolves against.
+	itersPath, err := vault.IterationsFile(slug)
+	if err != nil {
+		t.Fatalf("IterationsFile: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(itersPath), 0o755); err != nil {
+		t.Fatalf("mkdir iterations dir: %v", err)
+	}
+	if err := os.WriteFile(itersPath, []byte("## Iteration 7 — Bracket path test\n\nDid the bracket thing.\n"), 0o644); err != nil {
+		t.Fatalf("write iterations.md: %v", err)
 	}
 
 	// Place a real queued job on disk via internal/summarize's own enqueue
 	// path (not a hand-built fixture), inside the bracketed project path.
-	if err := summarize.EnqueueIterationSummary(projectPath, "test-project", 7); err != nil {
+	if err := summarize.EnqueueIterationSummary(projectPath, slug, 7); err != nil {
 		t.Fatalf("EnqueueIterationSummary: %v", err)
 	}
 	queueFile := filepath.Join(summarize.QueueDir(projectPath), "iteration-7.json")
@@ -332,9 +367,8 @@ func TestRunDrainSummaries_BracketedProjectPathProcessesQueuedJob(t *testing.T) 
 		t.Fatalf("queued job not on disk before drain: %v", err)
 	}
 
-	stub := &stubSummarizer{}
 	var buf bytes.Buffer
-	code := runDrainSummaries(projectPath, stub, 10, &buf)
+	code := runDrainSummaries(projectPath, 10, &buf)
 	if code != cli.ExitOK {
 		t.Fatalf("code = %d, want ExitOK; output: %s", code, buf.String())
 	}
@@ -342,17 +376,24 @@ func TestRunDrainSummaries_BracketedProjectPathProcessesQueuedJob(t *testing.T) 
 		t.Errorf("expected drained=1 in output, got: %s", buf.String())
 	}
 
-	if len(stub.calls) != 1 {
-		t.Fatalf("stub Summarizer called %d times, want 1 (job was not found/processed): %+v", len(stub.calls), stub.calls)
-	}
-	if stub.calls[0].Kind != summarize.KindIteration || stub.calls[0].Iteration != 7 {
-		t.Errorf("unexpected item processed: %+v", stub.calls[0])
-	}
-
 	// The queued job file that lived in the bracketed directory must be
 	// gone: actually found and processed, not silently left behind the way
 	// the pre-fix filepath.Glob bug would have left it.
 	if _, err := os.Stat(queueFile); !os.IsNotExist(err) {
 		t.Errorf("queue file still present after drain (job was not processed): stat err = %v", err)
+	}
+
+	// The real IterationSummarizer must have run end-to-end: a
+	// vault-committed cache file for N=7 now exists with the canned
+	// response's content.
+	got, ok, err := vault.ReadIterationSummary(slug, 7)
+	if err != nil {
+		t.Fatalf("ReadIterationSummary: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected an iteration summary to have been cached, found none")
+	}
+	if got.Summary != "Drained via real wiring." {
+		t.Errorf("Summary = %q, want %q", got.Summary, "Drained via real wiring.")
 	}
 }

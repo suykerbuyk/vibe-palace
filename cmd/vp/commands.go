@@ -67,19 +67,29 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(cmdDiscover())
 	reg.Register(mutates(cmdDiscoverRooms()))
 	reg.Register(cmdDrain())
-	// `drain summaries` is UNWRAPPED (no mutates()) TODAY: it only drains a
-	// project's own local, gitignored queue
-	// (.vibe-palace/summarization-queue under the PROJECT root, not the
-	// vault) via summarize.DrainSummarizationQueue, which never touches the
-	// vault at all while its Summarizer is nil (see that function's doc
-	// comment). 🔴 THIS MUST BECOME mutates(cmdDrainSummaries()) THE MOMENT A
-	// REAL, VAULT-WRITING Summarizer IS WIRED IN (a later, separate piece of
-	// work) — at that point a stale `vp drain summaries` binary run directly
-	// from the command line would write vault content with none of the
-	// version-mismatch protection vp_trigger_summarization_drain's own
-	// MutatingToolNames entry already provides on the MCP path. Revisit this
-	// registration in that same change, not as an afterthought.
-	reg.Register(cmdDrainSummaries())
+	// `drain summaries` is now WRAPPED with mutates(): runDrainSummaries
+	// (cmd/vp/cmd_drain.go) resolves the project's own [summarization]
+	// config and, when it is enabled and resolvable, constructs a real
+	// itersummary.IterationSummarizer that writes vault-committed iteration
+	// summaries (storage.Vault.WriteIterationSummary) — so this command can
+	// genuinely write vault content now, and must get the same
+	// version-mismatch fail-stop protection as any other local vault writer
+	// (the same protection vp_trigger_summarization_drain's own
+	// MutatingToolNames entry already provides on the MCP path). A project
+	// with summarization disabled/unresolvable still drains as a documented
+	// no-op (see runDrainSummaries's own doc comment) — mutates() is a
+	// blanket, config-independent classification, exactly like every other
+	// entry in this list.
+	reg.Register(mutates(cmdDrainSummaries()))
+	reg.Register(cmdSummarize())
+	// `summarize iterations` writes vault-committed iteration summaries
+	// (storage.Vault.WriteIterationSummary, via the same
+	// itersummary.IterationSummarizer `drain summaries` above now uses) — an
+	// operator-triggered, synchronous alternative to the queue-drain path
+	// above, for backfill/regeneration. Wrapped with mutates() for the same
+	// reason `drain summaries` is: this is a local vault writer and must get
+	// the version-mismatch fail-stop protection every other one gets.
+	reg.Register(mutates(cmdSummarizeIterations()))
 	reg.Register(cmdTune())
 	reg.Register(mutates(cmdTuneRooms()))
 	reg.Register(cmdConfig())

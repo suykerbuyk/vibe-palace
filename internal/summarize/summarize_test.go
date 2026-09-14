@@ -6,6 +6,7 @@ package summarize
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -122,17 +123,25 @@ func TestDrain_DeadLetterOnRepeatedFailure(t *testing.T) {
 		},
 	}
 
-	drained, err := DrainSummarizationQueue(context.Background(), cwd, fake, 0)
-	if err != nil {
-		t.Fatalf("DrainSummarizationQueue: %v", err)
-	}
-	if drained != 0 {
-		t.Fatalf("drained = %d, want 0", drained)
+	// With the pendingRequeue fairness fix, a failed item's claim is held
+	// (as ".processing") for the REST of the call it failed in, so a lone
+	// failing item now gets exactly ONE attempt per DrainSummarizationQueue
+	// call, not maxSummaryAttempts attempts within a single call. This
+	// mirrors internal/capture/enrichqueue.go's own
+	// TestDrainDeadLettersAfterMaxAttempts, which drains repeatedly in a
+	// loop for the same reason. Drain repeatedly until dead-lettered.
+	for i := range maxSummaryAttempts + 2 {
+		drained, err := DrainSummarizationQueue(context.Background(), cwd, fake, 0)
+		if err != nil {
+			t.Fatalf("drain %d: DrainSummarizationQueue: %v", i, err)
+		}
+		if drained != 0 {
+			t.Fatalf("drain %d: drained = %d, want 0", i, drained)
+		}
 	}
 
 	// The single job should have been retried until maxSummaryAttempts was
-	// reached, then dead-lettered — all within this one call, so the loop
-	// must not have spun forever.
+	// reached, then dead-lettered, one attempt per call.
 	if fake.callCount() != maxSummaryAttempts {
 		t.Fatalf("callCount = %d, want %d", fake.callCount(), maxSummaryAttempts)
 	}
@@ -408,15 +417,24 @@ func TestDrain_SummarizeReturnsContextShapedErrorButOuterCtxHealthyIsAGenuineFai
 	// context.Background() is never done — the outer ctx is healthy
 	// throughout, even though the Summarizer's own returned error happens to
 	// be context.DeadlineExceeded.
-	drained, err := DrainSummarizationQueue(context.Background(), cwd, fake, 0)
-	if err != nil {
-		t.Fatalf("DrainSummarizationQueue: %v", err)
+	//
+	// With the pendingRequeue fairness fix, a failed item's claim is held
+	// (as ".processing") for the REST of the call it failed in, so a lone
+	// failing item now gets exactly ONE attempt per DrainSummarizationQueue
+	// call rather than maxSummaryAttempts attempts within a single call (see
+	// TestDrain_DeadLetterOnRepeatedFailure's own comment for the same
+	// point). Drain repeatedly until dead-lettered; the genuine-failure
+	// branch (unlike the ctx-interruption branch) still consumes a retry on
+	// every one of these attempts.
+	for i := range maxSummaryAttempts + 2 {
+		drained, err := DrainSummarizationQueue(context.Background(), cwd, fake, 0)
+		if err != nil {
+			t.Fatalf("drain %d: DrainSummarizationQueue: %v", i, err)
+		}
+		if drained != 0 {
+			t.Fatalf("drain %d: drained = %d, want 0", i, drained)
+		}
 	}
-	if drained != 0 {
-		t.Fatalf("drained = %d, want 0", drained)
-	}
-	// A genuine failure must keep retrying inline (not break the loop after
-	// one call the way the ctx-interruption branch does) until dead-lettered.
 	if fake.callCount() != maxSummaryAttempts {
 		t.Fatalf("callCount = %d, want %d (a healthy outer ctx must not stop the drain early)", fake.callCount(), maxSummaryAttempts)
 	}
@@ -429,6 +447,202 @@ func TestDrain_SummarizeReturnsContextShapedErrorButOuterCtxHealthyIsAGenuineFai
 	if len(failed) != 1 {
 		t.Fatalf("failed files = %v, want exactly one (this must consume the retry budget like any other failure)", failed)
 	}
+}
+
+// TestDrain_FairnessFixSecondItemNotStarved pins the port of
+// internal/capture/enrichqueue.go's pendingRequeue fairness fix onto
+// DrainSummarizationQueue. Without it, a persistently-failing,
+// lexicographically-first-claimed item is rewritten back to its claimable
+// name IMMEDIATELY on every failed attempt — and since jobqueue.Claim always
+// claims the lexicographically-first claimable "*.json" file, that item
+// re-claims itself on every subsequent Claim call within this SAME
+// invocation, consuming this call's entire `max` processed budget on itself
+// alone and starving every other, distinct queued item.
+//
+// "iteration-0.json" sorts before "iteration-1.json", so item 0 (which
+// always fails) is guaranteed to be claimed first. max is set to exactly the
+// number of queued items (2): just enough budget for both items to get ONE
+// fair attempt each, but only if a failed item does NOT re-claim itself
+// ahead of item 1.
+func TestDrain_FairnessFixSecondItemNotStarved(t *testing.T) {
+	cwd := t.TempDir()
+	if err := EnqueueIterationSummary(cwd, "proj-fair", 0); err != nil {
+		t.Fatalf("EnqueueIterationSummary(0): %v", err)
+	}
+	if err := EnqueueIterationSummary(cwd, "proj-fair", 1); err != nil {
+		t.Fatalf("EnqueueIterationSummary(1): %v", err)
+	}
+
+	fake := &fakeSummarizer{
+		fn: func(ctx context.Context, item SummaryItem) (*SummaryResult, error) {
+			if item.Iteration == 0 {
+				return nil, errAlwaysFails
+			}
+			return &SummaryResult{Kind: item.Kind}, nil
+		},
+	}
+
+	drained, err := DrainSummarizationQueue(context.Background(), cwd, fake, 2)
+	if err != nil {
+		t.Fatalf("DrainSummarizationQueue: %v", err)
+	}
+	if drained != 1 {
+		t.Fatalf("drained = %d, want 1 (item 1 must still be claimed and processed in this same call, not starved by item 0's repeated failure)", drained)
+	}
+
+	// item 1 must have actually been handed to Summarize (Done'd, so it is
+	// no longer in the queue dir at all); item 0 must be back to a plain
+	// *.json (requeued, not dead-lettered after a single failure) with
+	// Attempts == 1.
+	dir := QueueDir(cwd)
+	remaining, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(remaining) != 1 {
+		t.Fatalf("remaining *.json files = %v, want exactly 1 (item 0, requeued)", remaining)
+	}
+	data, err := os.ReadFile(remaining[0])
+	if err != nil {
+		t.Fatalf("read requeued job: %v", err)
+	}
+	var item SummaryItem
+	if err := json.Unmarshal(data, &item); err != nil {
+		t.Fatalf("unmarshal requeued job: %v", err)
+	}
+	if item.Iteration != 0 {
+		t.Fatalf("requeued item.Iteration = %d, want 0", item.Iteration)
+	}
+	if item.Attempts != 1 {
+		t.Fatalf("requeued item.Attempts = %d, want 1", item.Attempts)
+	}
+}
+
+// TestDrain_UnsupportedKindContinuesNotBreaks pins ErrUnsupportedKind's
+// handling as a per-ITEM property, not a call-level interruption: the drain
+// loop must `continue` past an unsupported-kind item, not `break` out of the
+// whole call. Two unsupported-kind items are queued ahead of one
+// supported-kind item (by filename sort order: "iteration-*.json" sorts
+// before "session-*.json") so a `break` bug is exposed on the very FIRST
+// unsupported item, regardless of any incidental ordering coincidence.
+func TestDrain_UnsupportedKindContinuesNotBreaks(t *testing.T) {
+	cwd := t.TempDir()
+
+	// Two unsupported-kind (KindIteration; no Iteration handler registered
+	// below) items, claimed first by filename sort order.
+	if err := EnqueueIterationSummary(cwd, "proj-uk", 0); err != nil {
+		t.Fatalf("EnqueueIterationSummary(0): %v", err)
+	}
+	if err := EnqueueIterationSummary(cwd, "proj-uk", 1); err != nil {
+		t.Fatalf("EnqueueIterationSummary(1): %v", err)
+	}
+	// One supported-kind (KindSessionNote) item, claimed last by filename
+	// sort order ("session-..." > "iteration-...").
+	if err := EnqueueSessionSummary(cwd, "proj-uk", "2026-09-13", "fpuk", 0, "/vault/proj-uk/notes/a.md"); err != nil {
+		t.Fatalf("EnqueueSessionSummary: %v", err)
+	}
+
+	sessionHandler := &fakeSummarizer{}
+	dispatch := &DispatchSummarizer{SessionNote: sessionHandler} // Iteration left nil: unsupported
+
+	drained, err := DrainSummarizationQueue(context.Background(), cwd, dispatch, 0)
+	if err != nil {
+		t.Fatalf("DrainSummarizationQueue: %v", err)
+	}
+	if drained != 1 {
+		t.Fatalf("drained = %d, want 1 (the supported session-note item must still be reached and processed in this same call)", drained)
+	}
+	if sessionHandler.callCount() != 1 {
+		t.Fatalf("session handler callCount = %d, want 1", sessionHandler.callCount())
+	}
+
+	// Both unsupported items must still be present, unchanged, as plain
+	// *.json files with Attempts == 0 (deferred back to claimable, never
+	// charged a retry).
+	dir := QueueDir(cwd)
+	remaining, err := filepath.Glob(filepath.Join(dir, "iteration-*.json"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(remaining) != 2 {
+		t.Fatalf("remaining iteration-*.json files = %v, want exactly 2 (both unsupported items returned to claimable)", remaining)
+	}
+	for _, p := range remaining {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("read %s: %v", p, err)
+		}
+		var item SummaryItem
+		if err := json.Unmarshal(data, &item); err != nil {
+			t.Fatalf("unmarshal %s: %v", p, err)
+		}
+		if item.Kind != KindIteration {
+			t.Errorf("%s: Kind = %q, want %q", p, item.Kind, KindIteration)
+		}
+		if item.Attempts != 0 {
+			t.Errorf("%s: Attempts = %d, want 0 (unsupported kind must never consume a retry)", p, item.Attempts)
+		}
+	}
+
+	// The session-note item must be gone entirely (Done'd), not left behind.
+	if remaining, _ := filepath.Glob(filepath.Join(dir, "session-*.json")); len(remaining) != 0 {
+		t.Fatalf("remaining session-*.json files = %v, want none (supported item must be Done'd)", remaining)
+	}
+}
+
+// TestDispatchSummarizer covers DispatchSummarizer's Kind-based routing:
+// a registered handler is called for its own Kind, and ErrUnsupportedKind is
+// returned for any Kind whose handler field is nil.
+func TestDispatchSummarizer(t *testing.T) {
+	t.Run("only Iteration registered", func(t *testing.T) {
+		iter := &fakeSummarizer{}
+		d := &DispatchSummarizer{Iteration: iter}
+
+		iterItem := SummaryItem{Kind: KindIteration, Project: "p", Iteration: 1}
+		res, err := d.Summarize(context.Background(), iterItem)
+		if err != nil {
+			t.Fatalf("Summarize(KindIteration): unexpected err %v", err)
+		}
+		if res == nil || res.Kind != KindIteration {
+			t.Fatalf("Summarize(KindIteration): res = %+v, want Kind %q", res, KindIteration)
+		}
+		if iter.callCount() != 1 {
+			t.Fatalf("iter.callCount() = %d, want 1", iter.callCount())
+		}
+
+		noteItem := SummaryItem{Kind: KindSessionNote, Project: "p"}
+		res, err = d.Summarize(context.Background(), noteItem)
+		if !errors.Is(err, ErrUnsupportedKind) {
+			t.Fatalf("Summarize(KindSessionNote): err = %v, want ErrUnsupportedKind", err)
+		}
+		if res != nil {
+			t.Fatalf("Summarize(KindSessionNote): res = %+v, want nil", res)
+		}
+		// The unregistered SessionNote handler must not have been invoked
+		// (nil, so calling it would have panicked).
+		if iter.callCount() != 1 {
+			t.Fatalf("iter.callCount() after unsupported call = %d, want still 1", iter.callCount())
+		}
+	})
+
+	t.Run("both registered route independently", func(t *testing.T) {
+		iter := &fakeSummarizer{}
+		note := &fakeSummarizer{}
+		d := &DispatchSummarizer{Iteration: iter, SessionNote: note}
+
+		if _, err := d.Summarize(context.Background(), SummaryItem{Kind: KindIteration}); err != nil {
+			t.Fatalf("Summarize(KindIteration): unexpected err %v", err)
+		}
+		if _, err := d.Summarize(context.Background(), SummaryItem{Kind: KindSessionNote}); err != nil {
+			t.Fatalf("Summarize(KindSessionNote): unexpected err %v", err)
+		}
+		if iter.callCount() != 1 {
+			t.Fatalf("iter.callCount() = %d, want 1", iter.callCount())
+		}
+		if note.callCount() != 1 {
+			t.Fatalf("note.callCount() = %d, want 1", note.callCount())
+		}
+	})
 }
 
 // TestDrain_SuccessBeatsCanceledCtxInSameCall pins a real fix: a genuine

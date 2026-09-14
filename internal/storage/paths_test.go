@@ -270,6 +270,39 @@ func TestSessionFile(t *testing.T) {
 	}
 }
 
+func TestIterationSummaryFile(t *testing.T) {
+	v := NewVault("/vault")
+	tests := []struct {
+		name    string
+		project string
+		n       int
+		want    string
+		wantErr bool
+	}{
+		{
+			"valid",
+			"recmeet", 5,
+			filepath.Join("/vault", "palace", "recmeet", "iteration-summaries", "5.json"),
+			false,
+		},
+		{"invalid project", "BAD", 5, "", true},
+		{"zero iteration", "recmeet", 0, "", true},
+		{"negative iteration", "recmeet", -1, "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := v.IterationSummaryFile(tt.project, tt.n)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("IterationSummaryFile error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("IterationSummaryFile = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestTasksDir(t *testing.T) {
 	v := NewVault("/vault")
 	got, err := v.TasksDir("recmeet")
