@@ -207,6 +207,35 @@ type SessionMeta struct {
 	// RFC3339 timestamp. Both are omitted for plain heuristic captures.
 	EnrichedBy string `yaml:"enriched_by,omitempty"`
 	EnrichedAt string `yaml:"enriched_at,omitempty"`
+
+	// SearchSummary is an LLM-generated, search-oriented summary of this
+	// session note — denser and more keyword-forward than the human-facing
+	// Summary field above, tuned for embedding-similarity retrieval rather
+	// than reading comfort. Summary is genuinely different in kind: it is
+	// what buildSessionBody (internal/capture/session.go) renders directly
+	// into the note's human-visible body, so overloading it here would
+	// silently change what a human sees when they open the note. Populated
+	// by internal/notesummary's SessionNoteSummarizer via the background
+	// summarization queue (internal/summarize.KindSessionNote), never by the
+	// human-facing enrichment pass.
+	SearchSummary string `yaml:"search_summary,omitempty"`
+	// SearchSummaryAt is the RFC3339 timestamp SearchSummary was generated
+	// at.
+	SearchSummaryAt string `yaml:"search_summary_at,omitempty"`
+	// SearchSummaryModel is the model that generated SearchSummary — lets a
+	// future selective re-summarization pass tell "written by an old/weak
+	// model, worth redoing" from "already current", mirroring
+	// IterationSummary.Model's exact same purpose for the iterations corpus
+	// (internal/storage/iteration_summary.go). No separate staleness check
+	// is needed here beyond that future comparison: summarize.
+	// EnqueueSessionSummary already fires at most once per genuinely-new
+	// note-content write (see internal/capture/session.go's "Enqueue-always"
+	// block), so this Model/At pair is enough to support that later
+	// selective-resummarization decision without this task needing to build
+	// one now. Unlike IterationSummary there is no MatchIndex equivalent
+	// here: a session note is one file per record, not a shared
+	// append-only log with possible duplicate identities.
+	SearchSummaryModel string `yaml:"search_summary_model,omitempty"`
 }
 
 // sessionKeyScanBytes bounds how much of a note the key scan reads. Frontmatter

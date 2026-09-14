@@ -2802,6 +2802,93 @@ implementation and wires it all the way through:
   wired through `DispatchSummarizer`, work end-to-end as an operator or
   agent would actually trigger them.
 
+### Session-note summarizer wiring
+
+A later phase of the same effort adds the session-note counterpart to
+`internal/itersummary` above, wired the same way but through a genuinely
+different job-*creation* path: unlike iterations, there is no
+`vp_enqueue_session_summary` MCP tool. Enqueue is implicit and additive,
+inside `internal/capture.WriteSession`, on every real (non-auto-capture)
+capture — see "Background summarization queue + wrap-triggered drain" above
+for that call site.
+
+- **`internal/notesummary`** (new package, `session_note_summarizer_test.go`,
+  `client_test.go`) — `SessionNoteSummarizer` implements
+  `summarize.Summarizer` for `SummaryJobKind` `KindSessionNote`, mirroring
+  `internal/itersummary.IterationSummarizer`'s shape: it reads the note via
+  `vault.ReadSession`, asks its LLM client (`Summarizer.Generate`, its own
+  `resultJSON.SearchSummary` wire field, distinct from
+  `storage.SessionMeta.SearchSummary`) for a dense, keyword-forward 1-3
+  sentence recap, and writes the result back onto the note's frontmatter
+  (`SearchSummary`/`SearchSummaryAt`/`SearchSummaryModel`) via
+  `vault.RewriteSession`, leaving the note's body untouched.
+  `NewSessionNoteSummarizerFromConfig(cfg storage.SummarizationConfig, vault
+  *storage.Vault)` resolves the SAME `[summarization]` config section
+  iterations use (there is deliberately no second config section for this) and
+  mirrors `NewIterationSummarizerFromConfig`'s exact return contract: disabled
+  config returns `(nil, nil)`; enabled-but-unresolvable returns `(nil, err)`;
+  resolvable returns `(summarizer, nil)`.
+- **`notesummary.LengthGateBytes`** (1600 bytes, defined once in
+  `prompt.go`) — the point past which a session note's raw body stops
+  fitting inside `chunk.DefaultChunkConfig`'s first couple of raw chunks and
+  starts fragmenting across 3+, which is exactly where a single dense summary
+  row helps retrieval most; below it, a note is already a compact,
+  easily-retrievable unit and a summarization pass buys little. Enforced
+  twice: `internal/capture/session.go`'s enqueue site (`len(body) >
+  notesummary.LengthGateBytes`, alongside the existing `!isAutoCapture` and
+  `p.CWD != ""` gates — see the "Background summarization queue" section
+  above) is the PRIMARY gate, so a short note is never even queued;
+  `SessionNoteSummarizer.Summarize`'s own belt-and-suspenders check against
+  the same constant is a benign no-op success (not a retry-consuming error)
+  guarding only a job enqueued before the gate existed or before a config
+  change took effect.
+- **`internal/summarize.DispatchSummarizer`** — its `SessionNote Summarizer`
+  field (alongside the existing `Iteration` field) now gets a real handler.
+- **`cmd/vp/cmd_drain.go`** — `runDrainSummaries` resolves
+  `notesummary.NewSessionNoteSummarizerFromConfig(cfg.Summarization, vault)`
+  alongside the existing iteration-summarizer resolution, with its own
+  warn-and-proceed handling on an unresolvable config (never a hard drain
+  failure). It then builds `dispatcher := &summarize.DispatchSummarizer{
+  Iteration: iterationSummarizer, SessionNote: sessionNoteSummarizer}`,
+  applying the EXACT same nil-boxing-safe pattern the iteration side already
+  uses: `sessionNoteSummarizer` is declared as the `summarize.Summarizer`
+  INTERFACE and assigned only inside `if ns != nil`, never assigned directly
+  from the concrete `*notesummary.SessionNoteSummarizer` — a direct
+  assignment would box a non-nil-typed nil pointer into a non-nil interface
+  value (Go's typed-nil trap), which would make `DispatchSummarizer`'s own
+  `d.SessionNote != nil` check pass and dispatch into `Summarize` on a nil
+  receiver instead of correctly treating a disabled/unresolvable summarizer
+  as "no handler registered".
+- **`internal/search/notes.go`** — `collectNoteCorpus` now emits an
+  additional summary row (`SourceType noteSummarySourceType`, its own
+  `SourceRef`/cache id) whenever `meta.SearchSummary` is set, alongside the
+  note's existing raw row(s) — the session-note-corpus analogue of the
+  iteration corpus's summary-row addition above. Covered in
+  `notes_test.go`'s `TestCollectNoteCorpus_SummaryRowDistinctFromRawRow` and
+  `TestCollectNoteCorpus_SummaryCacheIDDistinctFromRawChunkZero`.
+- **`cmd/vp/integration_session_summary_test.go`** (new) —
+  `TestCaptureThenDrain_SessionSummaryEndToEnd`, this side's end-to-end proof,
+  built the same way as `TestEnqueueThenDrain_EndToEnd` above but against the
+  session-note job-creation path: it calls
+  `tools.CaptureSessionTool(vault, nil).Handler` (the real `vp_capture_session`
+  MCP tool's own handler, called directly with JSON-marshaled args) with a
+  summary long enough that the rendered body clears
+  `notesummary.LengthGateBytes` — asserted explicitly in the test rather than
+  assumed, mirroring `internal/capture/session_test.go`'s own length-gate
+  tests — and a tag other than `storage.TagAutoCapture`. It confirms the real
+  `KindSessionNote` queue file lands on disk, drives `runDrainSummaries` (the
+  real CLI entrypoint body) against it, and asserts the queue file is gone and
+  `vault.ReadSession` now reports `SearchSummary`/`SearchSummaryAt`/
+  `SearchSummaryModel` all populated from the canned `httptest` response. As
+  the final tie-together step it drives `internal/search`'s real corpus path
+  — `search.NewEngine` + `Engine.Rebuild` + `Engine.Search` (all exported),
+  since `collectNoteCorpus` itself is unexported and this test lives outside
+  package `search` — and asserts the rebuilt index produces a summary-row
+  search hit distinct in both `SourceRef` and `SourceType` from the note's raw
+  row, proving the whole pipeline (capture → enqueue → drain → LLM → cache
+  write → search index) connects end to end, not just that each piece works
+  in isolation.
+
 ---
 
 ## MockEmbedder vs Real ONNX

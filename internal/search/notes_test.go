@@ -36,6 +36,34 @@ func writeSessionNote(t *testing.T, vaultRoot, project, stem, date, title, body 
 	return path
 }
 
+// writeSessionNoteWithSummary is writeSessionNote plus a search_summary
+// frontmatter field, for exercising the summary-row path of
+// collectNoteCorpus. Kept as a separate helper (rather than widening
+// writeSessionNote's signature) so every pre-existing call site continues to
+// produce a note with no SearchSummary at all, exactly as before this change.
+func writeSessionNoteWithSummary(t *testing.T, vaultRoot, project, stem, date, title, body, summary string) string {
+	t.Helper()
+	dir := filepath.Join(vaultRoot, "Projects", project, "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := strings.Join([]string{
+		"---",
+		"session_id: " + stem,
+		"project: " + project,
+		"date: " + date,
+		"title: " + title,
+		"search_summary: " + summary,
+		"---",
+		body,
+	}, "\n")
+	path := filepath.Join(dir, stem+".md")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 // TestCollectNoteCorpus_IndexesBodyNotFrontmatter is the core contract: the
 // note BODY becomes corpus rows and the frontmatter does not. Frontmatter is
 // already served verbatim by vp_search_sessions, which reads it off disk and
@@ -465,5 +493,195 @@ func TestCollectNoteCorpus_UnreadableNoteFailsTheRebuild(t *testing.T) {
 		t.Fatal("Rebuild must surface the note-corpus error")
 	} else if !strings.Contains(err.Error(), "note corpus") {
 		t.Errorf("Rebuild error = %q, want it to name the note corpus", err)
+	}
+}
+
+// TestCollectNoteCorpus_SummaryRowDistinctFromRawRow is the core contract of
+// the summary-row addition: a note with meta.SearchSummary set produces BOTH
+// its existing raw row(s) (SourceType unchanged) AND a new summary row
+// (SourceType noteSummarySourceType, Content == the summary text) — and the
+// two families never share a SourceRef. That last assertion is the one a
+// naive implementation (reusing noteSourceRef(stem) for the summary row too)
+// would fail: dedup in engine.go keys solely on SourceRef, so a shared ref
+// would let dedup arbitrarily collapse the summary and raw hits into one.
+func TestCollectNoteCorpus_SummaryRowDistinctFromRawRow(t *testing.T) {
+	_, v := testEngine(t)
+
+	const summaryText = "IBEX_SEARCH_SUMMARY_MARKER dense keyword-forward recap."
+	const bodyText = "GERENUK_RAW_BODY_MARKER prose making up the actual wrap note."
+	writeSessionNoteWithSummary(t, v.Root, "summarized", "2026-08-20-1111beef-01", "2026-08-20",
+		"wrap", bodyText, summaryText)
+
+	ids, texts, metas, err := collectNoteCorpus(v, "summarized")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != len(texts) || len(ids) != len(metas) {
+		t.Fatalf("parallel slices disagree: ids=%d texts=%d metas=%d", len(ids), len(texts), len(metas))
+	}
+
+	var rawRow, summaryRow *drawerMeta
+	for i := range metas {
+		switch metas[i].SourceType {
+		case noteSourceType:
+			m := metas[i]
+			rawRow = &m
+		case noteSummarySourceType:
+			m := metas[i]
+			summaryRow = &m
+		}
+	}
+	if rawRow == nil {
+		t.Fatal("expected at least one raw row (SourceType unchanged) alongside the summary row")
+	}
+	if summaryRow == nil {
+		t.Fatal("expected a summary row (SourceType noteSummarySourceType) since meta.SearchSummary was set")
+	}
+	if summaryRow.Content != summaryText {
+		t.Errorf("summary row Content = %q, want %q", summaryRow.Content, summaryText)
+	}
+	if !strings.Contains(rawRow.Content, bodyText) {
+		t.Errorf("raw row Content = %q, want it to contain the raw body marker", rawRow.Content)
+	}
+
+	// The load-bearing assertion: distinct SourceRefs, not merely "the summary
+	// row's SourceRef equals what I expect".
+	if summaryRow.SourceRef == rawRow.SourceRef {
+		t.Fatalf("summary row and raw row must not share a SourceRef; both = %q", summaryRow.SourceRef)
+	}
+	if rawRow.SourceRef != noteSourceRef("2026-08-20-1111beef-01") {
+		t.Errorf("raw row SourceRef = %q, want unchanged noteSourceRef output %q",
+			rawRow.SourceRef, noteSourceRef("2026-08-20-1111beef-01"))
+	}
+	if summaryRow.SourceRef != noteSummarySourceRef("2026-08-20-1111beef-01") {
+		t.Errorf("summary row SourceRef = %q, want %q", summaryRow.SourceRef, noteSummarySourceRef("2026-08-20-1111beef-01"))
+	}
+}
+
+// TestCollectNoteCorpus_SummaryCacheIDDistinctFromRawChunkZero pins the exact
+// hazard called out in the sibling iteration feature: the summary row's
+// vector-store id must not collide with the note's own first raw chunk id
+// (chunk index 0). A naive implementation that reused
+// noteCacheID(project, stem, 0) for the summary row would collide EXACTLY
+// with that raw chunk's id, letting Rebuild's global id-keyed cache silently
+// answer one row's queries with the other's (different) content.
+func TestCollectNoteCorpus_SummaryCacheIDDistinctFromRawChunkZero(t *testing.T) {
+	_, v := testEngine(t)
+
+	const project = "cacheid"
+	const stem = "2026-08-21-2222beef-01"
+	writeSessionNoteWithSummary(t, v.Root, project, stem, "2026-08-21", "wrap",
+		"Short raw body, a single chunk.", "A dense search summary.")
+
+	ids, _, metas, err := collectNoteCorpus(v, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var rawChunkZeroID, summaryID string
+	for i, m := range metas {
+		if m.SourceType == noteSourceType && m.ChunkIndex == 0 {
+			rawChunkZeroID = ids[i]
+		}
+		if m.SourceType == noteSummarySourceType {
+			summaryID = ids[i]
+		}
+	}
+	if rawChunkZeroID == "" {
+		t.Fatal("expected a raw chunk-0 row")
+	}
+	if summaryID == "" {
+		t.Fatal("expected a summary row")
+	}
+
+	// This is precisely what a naive noteCacheID(project, stem, 0) reuse would
+	// produce for the summary row, so assert against it explicitly rather than
+	// only checking the two ids differ from each other in the abstract.
+	wouldBeNaiveID := noteCacheID(project, stem, 0)
+	if rawChunkZeroID != wouldBeNaiveID {
+		t.Fatalf("test assumption broken: raw chunk-0 id %q != noteCacheID(...,0) %q", rawChunkZeroID, wouldBeNaiveID)
+	}
+	if summaryID == wouldBeNaiveID {
+		t.Fatalf("summary row id %q collides with the raw chunk-0 id — a future edit must have reused noteCacheID(project, stem, 0)", summaryID)
+	}
+	if summaryID == rawChunkZeroID {
+		t.Fatalf("summary row id and raw chunk-0 id must be distinct strings; both = %q", summaryID)
+	}
+}
+
+// TestCollectNoteCorpus_NoSummaryFieldProducesNoSummaryRow is the
+// regression-safety test: a note that has never been summarized (or fell
+// below internal/notesummary's length gate) must be completely unaffected by
+// this change — only its existing raw row(s), exactly as before.
+func TestCollectNoteCorpus_NoSummaryFieldProducesNoSummaryRow(t *testing.T) {
+	_, v := testEngine(t)
+
+	writeSessionNote(t, v.Root, "unsummarized", "2026-08-22-3333beef-01", "2026-08-22",
+		"wrap", "Plain wrap body with no search summary ever generated.")
+
+	ids, _, metas, err := collectNoteCorpus(v, "unsummarized")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) == 0 {
+		t.Fatal("expected the raw row(s) to still be produced")
+	}
+	for i, m := range metas {
+		if m.SourceType == noteSummarySourceType {
+			t.Errorf("metas[%d] is a summary row (SourceType=%q), but meta.SearchSummary was never set", i, m.SourceType)
+		}
+		if m.SourceType != noteSourceType {
+			t.Errorf("metas[%d] SourceType = %q, want %q (unsummarized note must produce only raw rows)", i, m.SourceType, noteSourceType)
+		}
+	}
+}
+
+// TestCollectNoteCorpus_ShortBodySingleChunkStillGetsSummaryRow is the
+// boundary case: a note whose raw body is short enough to be exactly one
+// existing raw chunk must still get a properly-formed summary row alongside
+// it — the summary row is not conditioned on the note being multi-chunk.
+func TestCollectNoteCorpus_ShortBodySingleChunkStillGetsSummaryRow(t *testing.T) {
+	_, v := testEngine(t)
+
+	const summaryText = "QUOKKA_SHORT_NOTE_SUMMARY_MARKER."
+	writeSessionNoteWithSummary(t, v.Root, "shortnote", "2026-08-23-4444beef-01", "2026-08-23",
+		"wrap", "One short sentence of raw body.", summaryText)
+
+	ids, texts, metas, err := collectNoteCorpus(v, "shortnote")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("want exactly one raw chunk + one summary row, got %d rows", len(ids))
+	}
+
+	var rawCount, summaryCount int
+	for i, m := range metas {
+		switch m.SourceType {
+		case noteSourceType:
+			rawCount++
+			if m.ChunkIndex != 0 {
+				t.Errorf("single-chunk raw row ChunkIndex = %d, want 0", m.ChunkIndex)
+			}
+		case noteSummarySourceType:
+			summaryCount++
+			if texts[i] != summaryText {
+				t.Errorf("summary row text = %q, want %q", texts[i], summaryText)
+			}
+			if m.ChunkIndex != 0 {
+				t.Errorf("summary row ChunkIndex = %d, want 0 (unchunked)", m.ChunkIndex)
+			}
+			if ids[i] != noteSummaryCacheID("shortnote", "2026-08-23-4444beef-01") {
+				t.Errorf("summary row id = %q, want %q", ids[i], noteSummaryCacheID("shortnote", "2026-08-23-4444beef-01"))
+			}
+		default:
+			t.Errorf("unexpected SourceType %q", m.SourceType)
+		}
+	}
+	if rawCount != 1 {
+		t.Errorf("raw row count = %d, want 1", rawCount)
+	}
+	if summaryCount != 1 {
+		t.Errorf("summary row count = %d, want 1", summaryCount)
 	}
 }

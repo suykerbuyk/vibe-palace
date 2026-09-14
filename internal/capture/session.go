@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/enrichment"
+	"github.com/suykerbuyk/vibe-palace/internal/notesummary"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/summarize"
 )
@@ -440,7 +441,16 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 	// already treats as not worth analyzing elsewhere. Best-effort like every
 	// enqueue past the write: a queue-write failure must never fail the
 	// capture that already landed.
-	if p.CWD != "" && !isAutoCapture {
+	//
+	// LENGTH GATE: also excludes any note whose body is at or under
+	// notesummary.LengthGateBytes. A short note already fits inside
+	// chunk.DefaultChunkConfig's first couple of raw chunks and is already a
+	// compact, easily-retrievable unit on its own — an LLM summarization pass
+	// buys little there. The gate matters for the long tail of notes that
+	// fragment across 3+ chunks, where a single dense summary row actually
+	// helps retrieval. See notesummary.LengthGateBytes's own doc comment for
+	// the precise reasoning and how the threshold was derived.
+	if p.CWD != "" && !isAutoCapture && len(body) > notesummary.LengthGateBytes {
 		if qerr := summarize.EnqueueSessionSummary(p.CWD, p.Project, ref.Date, ref.Fingerprint, ref.Iteration, ref.NotePath); qerr != nil {
 			lose(StageSessionSummaryEnqueue, qerr, "capture: session summary enqueue failed; this note will not be queued for summarization")
 		}

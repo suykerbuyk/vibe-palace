@@ -28,10 +28,11 @@ import (
 // TRANSCRIPT" at a glance, because those are different evidence with different
 // provenance.
 const (
-	noteWing       = "history"
-	noteRoom       = "session-notes"
-	noteHall       = "narrative"
-	noteSourceType = "session-note"
+	noteWing              = "history"
+	noteRoom              = "session-notes"
+	noteHall              = "narrative"
+	noteSourceType        = "session-note"         // raw body row, emitted for every note unconditionally
+	noteSummarySourceType = "session-note-summary" // LLM search-summary row, emitted only when meta.SearchSummary is set
 )
 
 // noteCacheID returns the deterministic vector/cache ID for one chunk of one
@@ -54,6 +55,21 @@ func noteCacheID(project, stem string, chunkIndex int) string {
 	return fmt.Sprintf("note.%s.%s.c%d", project, stem, chunkIndex)
 }
 
+// noteSummaryCacheID is noteCacheID's counterpart for the SUMMARY row (emitted
+// only when meta.SearchSummary is set). It must never collide with
+// noteCacheID's output for the same (project, stem) at any chunkIndex: Rebuild
+// treats these ids as global vector-store/metadata keys, and a summary row
+// sharing an id with a raw chunk would let one's cached vector and metadata
+// silently answer for the other's (different) content. noteCacheID always
+// ends in a literal ".c<digits>" chunk suffix; this id ends in a literal
+// ".summary" suffix instead, which is not a valid chunkIndex rendering, so the
+// two families can never produce the same string for any chunkIndex —
+// including chunk 0, where a naive noteCacheID(project, stem, 0) reuse would
+// have collided exactly with the raw first-chunk id "note.<project>.<stem>.c0".
+func noteSummaryCacheID(project, stem string) string {
+	return fmt.Sprintf("note.%s.%s.summary", project, stem)
+}
+
 // noteSourceRef is per note (not per chunk): the note's path relative to the
 // project directory, so a reader can navigate straight back to the file.
 // Chunk index lives on the cache ID and metadata.ChunkIndex so Search dedup
@@ -62,16 +78,37 @@ func noteSourceRef(stem string) string {
 	return fmt.Sprintf("sessions/%s.md", stem)
 }
 
+// noteSummarySourceRef is the summary row's own identity, distinct from the
+// raw rows' noteSourceRef for the same note. This matters beyond naming
+// hygiene: Engine's dedup (internal/search/engine.go) keys solely on
+// SourceRef — a bare map[string]bool with no SourceType involved — so a
+// summary row sharing the raw rows' SourceRef would let dedup silently pick
+// whichever one scores higher for a given query, defeating the point of
+// having a distinguishable summary-vs-raw identity.
+func noteSummarySourceRef(stem string) string {
+	return noteSourceRef(stem) + "/summary"
+}
+
 // collectNoteCorpus globs Projects/<project>/sessions/*.md, splits each file
 // with storage.ParseFrontmatter, sub-chunks the BODY with
 // chunk.DefaultChunkConfig (800/100), and returns parallel id / text / meta
 // slices ready to merge into Rebuild. A missing sessions directory is not an
 // error — empty slices.
 //
-// Only the body is indexed. The frontmatter is already served verbatim by
-// vp_search_sessions, which reads it off disk and never goes through the vector
-// index, so duplicating it here would add noise to every query without making
-// anything newly reachable.
+// The body is chunked and indexed as the RAW row family (SourceType
+// noteSourceType), unconditionally, exactly as before summary rows existed.
+// The rest of the frontmatter is already served verbatim by
+// vp_search_sessions, which reads it off disk and never goes through the
+// vector index, so duplicating it here would add noise to every query without
+// making anything newly reachable — with one deliberate exception:
+// meta.SearchSummary. When it is set (an LLM-generated, search-oriented
+// summary populated out-of-band by internal/notesummary), it is additionally
+// indexed, unchunked, as its own SUMMARY row (SourceType
+// noteSummarySourceType) with its own SourceRef (noteSummarySourceRef) and
+// cache id (noteSummaryCacheID) so it can never collide with, or be
+// dedup-shadowed by, the note's raw row(s) — see those functions' doc
+// comments. A note with no SearchSummary yet (never summarized, or below
+// internal/notesummary's length gate) gets only its raw row(s), unchanged.
 //
 // This is the wrap-note corpus, and it writes NOTHING: no drawers.jsonl, no
 // DrawerID, and — because it never touches internal/capture.IndexTranscript —
@@ -145,6 +182,27 @@ func collectNoteCorpus(vault *storage.Vault, project string) (ids []string, text
 				Date:       date,
 				Content:    part,
 				ChunkIndex: cIdx,
+			})
+		}
+
+		// Summary row: additive, emitted only when a search summary has been
+		// generated for this note. Unchunked — the summary is deliberately
+		// short/dense, unlike the raw body above — and carries its own
+		// SourceType/SourceRef/cache id so it can never collide with, or be
+		// dedup-shadowed by, this note's raw row(s).
+		if meta.SearchSummary != "" {
+			ids = append(ids, noteSummaryCacheID(project, stem))
+			texts = append(texts, meta.SearchSummary)
+			metas = append(metas, drawerMeta{
+				Project:    project,
+				Wing:       noteWing,
+				Room:       noteRoom,
+				Hall:       noteHall,
+				SourceType: noteSummarySourceType,
+				SourceRef:  noteSummarySourceRef(stem),
+				Date:       date,
+				Content:    meta.SearchSummary,
+				ChunkIndex: 0,
 			})
 		}
 	}

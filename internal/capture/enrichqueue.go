@@ -15,7 +15,9 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/enrichment"
 	"github.com/suykerbuyk/vibe-palace/internal/jobqueue"
+	"github.com/suykerbuyk/vibe-palace/internal/notesummary"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/summarize"
 )
 
 // enrichmentItem is one queued enrichment job. It carries everything the
@@ -244,6 +246,29 @@ func DrainEnrichmentQueue(ctx context.Context, vault *storage.Vault, cwd string,
 			slog.Warn("enrichment drain: rewrite note failed; will retry", "err", rwErr, "project", item.Project)
 			requeue()
 			continue
+		}
+
+		// Post-enrichment length-gate re-check. internal/capture/session.go's
+		// WriteSession evaluates notesummary.LengthGateBytes exactly ONCE, at
+		// the initial synchronous capture, against whatever body existed at
+		// that moment (inline enrichment included, since it runs earlier in
+		// that same call). But THIS rewrite can grow a note's body well after
+		// that one-shot check already ran and decided not to enqueue — a note
+		// captured just under the gate has nothing left to ever re-evaluate
+		// it, so without this it would permanently never be queued for
+		// summarization. Reuses the SAME notesummary.LengthGateBytes constant
+		// the capture-time gate uses (never a second, independently-defined
+		// threshold) and is additive to this function's existing
+		// claim/reclaim/requeue mechanics — a post-success side effect,
+		// structurally the same shape as fileDecisionDrawers below: best-effort,
+		// warn-logged on failure, never requeued (the note is already
+		// correctly rewritten; requeueing here would re-run a real LLM
+		// enrichment call — real money — over a bookkeeping-only failure).
+		if len(body) > notesummary.LengthGateBytes {
+			if qerr := summarize.EnqueueSessionSummary(cwd, item.Project, item.Date, item.Fingerprint, item.Iteration, item.NotePath); qerr != nil {
+				slog.Warn("enrichment drain: session summary enqueue failed after async enrichment; this note will not be queued for summarization",
+					"err", qerr, "project", item.Project)
+			}
 		}
 
 		// File the freshly-enriched decisions into the palace. This is the

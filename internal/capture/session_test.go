@@ -15,6 +15,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/enrichment"
+	"github.com/suykerbuyk/vibe-palace/internal/notesummary"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -517,9 +518,14 @@ func TestWriteSessionEnqueuesSessionSummaryWhenCWDSet(t *testing.T) {
 	vault := testVault(t)
 	cwd := t.TempDir()
 
+	// Summary must be long enough that the rendered body clears
+	// notesummary.LengthGateBytes — this test is proving the enqueue
+	// happens for a note that qualifies, not exercising the length gate
+	// itself (see TestWriteSessionNoSessionSummaryEnqueueForShortBody /
+	// TestWriteSessionSessionSummaryEnqueueForLongBody for that).
 	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
 		Project: "test-proj",
-		Summary: "plain heuristic summary",
+		Summary: strings.Repeat("plain heuristic summary ", 100),
 		CWD:     cwd,
 	})
 	if err != nil {
@@ -626,6 +632,187 @@ func TestWriteSessionNoSessionSummaryEnqueueWithoutCWD(t *testing.T) {
 	// where the resulting .vibe-palace/ directory would appear.
 	if _, statErr := os.Stat(filepath.Join(realCwd, ".vibe-palace")); !os.IsNotExist(statErr) {
 		t.Errorf("a .vibe-palace dir was created under the process's actual cwd (%s) despite CWD being empty — the enqueue path must never fall back to os.Getwd()", realCwd)
+	}
+}
+
+// TestWriteSessionNoSessionSummaryEnqueueForShortBody proves the length gate
+// (notesummary.LengthGateBytes): a real, non-auto-capture note whose
+// rendered body is at or under the gate must NOT enqueue a summarization
+// job, even though it otherwise qualifies (has a CWD, is not auto-capture).
+// This test FAILS against pre-gate code, which enqueues unconditionally for
+// any non-auto-capture note with a CWD.
+func TestWriteSessionNoSessionSummaryEnqueueForShortBody(t *testing.T) {
+	vault := testVault(t)
+	cwd := t.TempDir()
+
+	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project: "test-proj",
+		Summary: "short",
+		CWD:     cwd,
+	})
+	if err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	if result.Failed() {
+		t.Fatalf("expected no failures, got %+v", result.Failures)
+	}
+
+	meta, body, err := vault.ReadSession("test-proj", result.SessionID[:10], ParseFingerprint(result.SessionID), result.Iteration)
+	if err != nil {
+		t.Fatalf("ReadSession: %v", err)
+	}
+	_ = meta
+	if len(body) > notesummary.LengthGateBytes {
+		t.Fatalf("test fixture invariant broken: body length %d exceeds gate %d", len(body), notesummary.LengthGateBytes)
+	}
+
+	dir := filepath.Join(cwd, ".vibe-palace", "summarization-queue")
+	matches, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	if len(matches) != 0 {
+		t.Fatalf("short-body note must not enqueue a summarization job, found %d: %v", len(matches), matches)
+	}
+}
+
+// TestWriteSessionSessionSummaryEnqueueForLongBody is the positive pin
+// alongside the short-body test above: a note whose rendered body is over
+// notesummary.LengthGateBytes DOES still enqueue a summarization job, so the
+// new gate does not silently suppress the whole feature.
+func TestWriteSessionSessionSummaryEnqueueForLongBody(t *testing.T) {
+	vault := testVault(t)
+	cwd := t.TempDir()
+
+	longSummary := strings.Repeat("word ", 400) // well over the gate once rendered
+	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project: "test-proj",
+		Summary: longSummary,
+		CWD:     cwd,
+	})
+	if err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	if result.Failed() {
+		t.Fatalf("expected no failures, got %+v", result.Failures)
+	}
+
+	_, body, err := vault.ReadSession("test-proj", result.SessionID[:10], ParseFingerprint(result.SessionID), result.Iteration)
+	if err != nil {
+		t.Fatalf("ReadSession: %v", err)
+	}
+	if len(body) <= notesummary.LengthGateBytes {
+		t.Fatalf("test fixture invariant broken: body length %d does not exceed gate %d", len(body), notesummary.LengthGateBytes)
+	}
+
+	dir := filepath.Join(cwd, ".vibe-palace", "summarization-queue")
+	matches, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	if len(matches) != 1 {
+		t.Fatalf("long-body note must enqueue exactly 1 summarization job, found %d: %v", len(matches), matches)
+	}
+}
+
+// bodyOverheadForSummary writes a session carrying only the given Summary
+// and returns len(body) - len(summary) — the fixed rendering overhead
+// buildSessionBody adds around the Summary text (headers, newlines, etc.),
+// with no Decisions/FilesChanged/OpenThreads to contribute their own
+// sections. Used to construct fixture summaries that land the RENDERED body
+// at an EXACT byte length, so the boundary tests below pin the gate's
+// precise `>` (not `>=`) comparison rather than testing far from it.
+func bodyOverheadForSummary(t *testing.T, summary string) int {
+	t.Helper()
+	vault := testVault(t)
+	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project: "overhead-probe",
+		Summary: summary,
+	})
+	if err != nil {
+		t.Fatalf("WriteSession (overhead probe): %v", err)
+	}
+	_, body, err := vault.ReadSession("overhead-probe", result.SessionID[:10], ParseFingerprint(result.SessionID), result.Iteration)
+	if err != nil {
+		t.Fatalf("ReadSession (overhead probe): %v", err)
+	}
+	return len(body) - len(summary)
+}
+
+// TestWriteSessionNoSessionSummaryEnqueueAtExactGateBoundary pins the exact
+// boundary the two tests above only bracket from a distance: a note whose
+// rendered body is EXACTLY notesummary.LengthGateBytes (not just "short")
+// must NOT enqueue — the gate is a strict `>`, so `==` must not qualify. An
+// off-by-one (`>=` instead of `>`) would only be caught here, not by a
+// far-from-the-boundary fixture.
+func TestWriteSessionNoSessionSummaryEnqueueAtExactGateBoundary(t *testing.T) {
+	overhead := bodyOverheadForSummary(t, "x")
+	summaryLen := notesummary.LengthGateBytes - overhead
+	if summaryLen < 0 {
+		t.Fatalf("computed summaryLen %d is negative; overhead %d exceeds the gate", summaryLen, overhead)
+	}
+	summary := strings.Repeat("a", summaryLen)
+
+	vault := testVault(t)
+	cwd := t.TempDir()
+	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project: "test-proj",
+		Summary: summary,
+		CWD:     cwd,
+	})
+	if err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	if result.Failed() {
+		t.Fatalf("expected no failures, got %+v", result.Failures)
+	}
+
+	_, body, err := vault.ReadSession("test-proj", result.SessionID[:10], ParseFingerprint(result.SessionID), result.Iteration)
+	if err != nil {
+		t.Fatalf("ReadSession: %v", err)
+	}
+	if len(body) != notesummary.LengthGateBytes {
+		t.Fatalf("test fixture invariant broken: body length %d != gate %d exactly", len(body), notesummary.LengthGateBytes)
+	}
+
+	dir := filepath.Join(cwd, ".vibe-palace", "summarization-queue")
+	matches, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	if len(matches) != 0 {
+		t.Fatalf("a body EXACTLY at the gate must not enqueue (gate is a strict >), found %d: %v", len(matches), matches)
+	}
+}
+
+// TestWriteSessionSessionSummaryEnqueueOneByteOverGateBoundary is the
+// positive pin alongside the exact-boundary test above: one byte over the
+// gate must enqueue.
+func TestWriteSessionSessionSummaryEnqueueOneByteOverGateBoundary(t *testing.T) {
+	overhead := bodyOverheadForSummary(t, "x")
+	summaryLen := notesummary.LengthGateBytes - overhead + 1
+	if summaryLen < 0 {
+		t.Fatalf("computed summaryLen %d is negative; overhead %d exceeds the gate", summaryLen, overhead)
+	}
+	summary := strings.Repeat("a", summaryLen)
+
+	vault := testVault(t)
+	cwd := t.TempDir()
+	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project: "test-proj",
+		Summary: summary,
+		CWD:     cwd,
+	})
+	if err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	if result.Failed() {
+		t.Fatalf("expected no failures, got %+v", result.Failures)
+	}
+
+	_, body, err := vault.ReadSession("test-proj", result.SessionID[:10], ParseFingerprint(result.SessionID), result.Iteration)
+	if err != nil {
+		t.Fatalf("ReadSession: %v", err)
+	}
+	if len(body) != notesummary.LengthGateBytes+1 {
+		t.Fatalf("test fixture invariant broken: body length %d != gate+1 %d", len(body), notesummary.LengthGateBytes+1)
+	}
+
+	dir := filepath.Join(cwd, ".vibe-palace", "summarization-queue")
+	matches, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	if len(matches) != 1 {
+		t.Fatalf("a body one byte OVER the gate must enqueue exactly 1 job, found %d: %v", len(matches), matches)
 	}
 }
 

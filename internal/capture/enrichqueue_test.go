@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/enrichment"
+	"github.com/suykerbuyk/vibe-palace/internal/notesummary"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/summarize"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
@@ -504,6 +506,79 @@ func TestDrainSecondItemStillProcessedWhenFirstFails(t *testing.T) {
 	}
 	if _, err := os.Stat(item1Path + ".processing"); !os.IsNotExist(err) {
 		t.Errorf("item 1 still has a stray .processing file after drain")
+	}
+}
+
+// longSummaryCompleter returns a canned enrichment response whose Summary is
+// long enough that the rewritten note body clears notesummary.LengthGateBytes
+// — used to prove DrainEnrichmentQueue's post-RewriteSession length-gate
+// re-check (see enrichqueue.go's RewriteSession call site) actually enqueues
+// a KindSessionNote job for a note that was too short to enqueue at capture
+// time.
+type longSummaryCompleter struct{}
+
+func (longSummaryCompleter) Complete(_ context.Context, _, _ string) (string, error) {
+	long := strings.Repeat("word ", 400) // well over notesummary.LengthGateBytes once rendered
+	return fmt.Sprintf(`{"summary":%q,"decisions":[],"open_threads":[],"tag":"refactor"}`, long), nil
+}
+
+func (longSummaryCompleter) Name() string { return "long-summary-mock" }
+
+// TestDrainAsyncEnrichmentCrossingLengthGateEnqueuesSessionSummary proves the
+// fix for the gap found in code review: internal/capture/session.go's
+// WriteSession evaluates notesummary.LengthGateBytes exactly ONCE, at the
+// initial synchronous capture, against whatever body existed at that moment.
+// A note captured well under the gate is correctly not enqueued then — but
+// THIS drain's RewriteSession can grow that same note's body well past the
+// gate later, and nothing else ever re-evaluates it. Without the
+// post-RewriteSession re-check this test pins, such a note would permanently
+// never be queued for summarization.
+//
+// This test FAILS against pre-fix code: internal/capture/enrichqueue.go
+// contains no call to summarize.EnqueueSessionSummary anywhere, so the queue
+// file this test asserts on would simply never exist.
+func TestDrainAsyncEnrichmentCrossingLengthGateEnqueuesSessionSummary(t *testing.T) {
+	vault := testVault(t)
+	cwd := t.TempDir()
+	fp := surface.WriterFingerprint(vault.Root)
+
+	const shortBody = "## Summary\n\nplain\n"
+	if len(shortBody) > notesummary.LengthGateBytes {
+		t.Fatalf("test fixture invariant broken: pre-enrichment body length %d exceeds gate %d", len(shortBody), notesummary.LengthGateBytes)
+	}
+	if _, err := vault.WriteSession("proj", testPlainMeta(), shortBody); err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", fp, 1, "", enrichment.PromptInput{UserText: "u"}); err != nil {
+		t.Fatalf("EnqueueEnrichment: %v", err)
+	}
+
+	enricher := enrichment.NewEnricher(longSummaryCompleter{}, "test-model", 5*time.Second, "")
+	drained, err := DrainEnrichmentQueue(context.Background(), vault, cwd, enricher, 0)
+	if err != nil {
+		t.Fatalf("DrainEnrichmentQueue: %v", err)
+	}
+	if drained != 1 {
+		t.Fatalf("drained = %d, want 1", drained)
+	}
+
+	_, body, err := vault.ReadSession("proj", "2026-06-21", fp, 1)
+	if err != nil {
+		t.Fatalf("ReadSession: %v", err)
+	}
+	if len(body) <= notesummary.LengthGateBytes {
+		t.Fatalf("test fixture invariant broken: post-enrichment body length %d does not exceed gate %d", len(body), notesummary.LengthGateBytes)
+	}
+
+	// The load-bearing assertion: a real KindSessionNote job now exists, even
+	// though nothing ever called summarize.EnqueueSessionSummary at capture
+	// time (the note was under the gate then, so WriteSession's own one-shot
+	// check correctly skipped it).
+	queueDir := summarize.QueueDir(cwd)
+	stem := storage.SessionStem("2026-06-21", fp, 1)
+	queueFile := filepath.Join(queueDir, fmt.Sprintf("session-%s.json", stem))
+	if _, err := os.Stat(queueFile); err != nil {
+		t.Fatalf("expected a KindSessionNote queue file at %s after async enrichment crossed the length gate, got: %v", queueFile, err)
 	}
 }
 

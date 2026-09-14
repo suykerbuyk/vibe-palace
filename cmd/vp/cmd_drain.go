@@ -13,6 +13,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/itersummary"
+	"github.com/suykerbuyk/vibe-palace/internal/notesummary"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/summarize"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
@@ -197,7 +198,30 @@ func runDrainSummaries(projectPath string, max int, out io.Writer) int {
 	if is != nil {
 		iterationSummarizer = is
 	}
-	dispatcher := &summarize.DispatchSummarizer{Iteration: iterationSummarizer}
+
+	ns, err := notesummary.NewSessionNoteSummarizerFromConfig(cfg.Summarization, vault)
+	if err != nil {
+		// Same contract as the iteration summarizer above: enabled but
+		// unresolvable must not fail the whole drain. Proceeding with a
+		// DispatchSummarizer whose SessionNote handler is nil just defers any
+		// queued KindSessionNote job back to the queue (ErrUnsupportedKind)
+		// rather than dropping it or crashing this call.
+		slog.Warn("vp drain summaries: session note summarizer disabled", "err", err)
+	}
+	// sessionNoteSummarizer is deliberately typed as the summarize.Summarizer
+	// INTERFACE, assigned only in the ns != nil branch — never assigned
+	// directly from `ns` (a concrete *notesummary.SessionNoteSummarizer), for
+	// the exact same reason as iterationSummarizer above: a direct assignment
+	// would box a nil *SessionNoteSummarizer into a NON-nil Summarizer
+	// interface value (Go's typed-nil-interface trap), which would make
+	// DispatchSummarizer.Summarize's own `d.SessionNote != nil` check pass and
+	// dispatch into Summarize on a nil receiver instead of correctly treating
+	// this as "no handler registered".
+	var sessionNoteSummarizer summarize.Summarizer
+	if ns != nil {
+		sessionNoteSummarizer = ns
+	}
+	dispatcher := &summarize.DispatchSummarizer{Iteration: iterationSummarizer, SessionNote: sessionNoteSummarizer}
 
 	// Ensure the queue directory exists so callers globbing it (e.g.
 	// vp_trigger_summarization_drain) always find a real, stat-able

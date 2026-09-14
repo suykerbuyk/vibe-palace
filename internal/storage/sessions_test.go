@@ -639,3 +639,135 @@ func TestReadLegacySessionFile(t *testing.T) {
 		t.Errorf("legacy SessionFile base = %q, want 2026-01-02-01.md", filepath.Base(p))
 	}
 }
+
+// TestSearchSummaryFieldsRoundTripWriteSession proves the three new
+// SearchSummary/SearchSummaryAt/SearchSummaryModel fields survive a
+// WriteSession -> ReadSession round trip byte-for-byte. This must FAIL
+// against a struct version missing the fields entirely (they would silently
+// vanish on read-back).
+func TestSearchSummaryFieldsRoundTripWriteSession(t *testing.T) {
+	v := testVault(t)
+	fp := surface.WriterFingerprint(v.Root)
+
+	meta := SessionMeta{
+		Date:               "2026-07-01",
+		Title:              "Search summary round trip",
+		Summary:            "human-facing summary",
+		SearchSummary:      "dense keyword-forward summary of the session",
+		SearchSummaryAt:    "2026-07-01T12:00:00Z",
+		SearchSummaryModel: "claude-haiku-test",
+	}
+	if _, err := v.WriteSession("proj", meta, "body\n"); err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+
+	got, _, err := v.ReadSession("proj", "2026-07-01", fp, 1)
+	if err != nil {
+		t.Fatalf("ReadSession: %v", err)
+	}
+	if got.SearchSummary != meta.SearchSummary {
+		t.Errorf("SearchSummary = %q, want %q", got.SearchSummary, meta.SearchSummary)
+	}
+	if got.SearchSummaryAt != meta.SearchSummaryAt {
+		t.Errorf("SearchSummaryAt = %q, want %q", got.SearchSummaryAt, meta.SearchSummaryAt)
+	}
+	if got.SearchSummaryModel != meta.SearchSummaryModel {
+		t.Errorf("SearchSummaryModel = %q, want %q", got.SearchSummaryModel, meta.SearchSummaryModel)
+	}
+	// Human-facing Summary must be untouched by the new fields.
+	if got.Summary != meta.Summary {
+		t.Errorf("Summary = %q, want %q (SearchSummary must not overload it)", got.Summary, meta.Summary)
+	}
+}
+
+// TestSearchSummaryFieldsRoundTripRewriteSession proves the same round trip
+// through RewriteSession, the path internal/notesummary's SessionNoteSummarizer
+// actually uses to persist a generated summary.
+func TestSearchSummaryFieldsRoundTripRewriteSession(t *testing.T) {
+	v := testVault(t)
+	fp := surface.WriterFingerprint(v.Root)
+
+	if _, err := v.WriteSession("proj", SessionMeta{
+		Date:    "2026-07-02",
+		Title:   "Original",
+		Summary: "plain summary",
+	}, "body\n"); err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+
+	newMeta := SessionMeta{
+		Date:               "2026-07-02",
+		Title:              "Original",
+		Summary:            "plain summary",
+		SearchSummary:      "rewritten dense summary",
+		SearchSummaryAt:    "2026-07-02T08:30:00Z",
+		SearchSummaryModel: "claude-sonnet-test",
+	}
+	if err := v.RewriteSession("proj", "2026-07-02", fp, 1, newMeta, "body\n"); err != nil {
+		t.Fatalf("RewriteSession: %v", err)
+	}
+
+	got, _, err := v.ReadSession("proj", "2026-07-02", fp, 1)
+	if err != nil {
+		t.Fatalf("ReadSession: %v", err)
+	}
+	if got.SearchSummary != newMeta.SearchSummary {
+		t.Errorf("SearchSummary = %q, want %q", got.SearchSummary, newMeta.SearchSummary)
+	}
+	if got.SearchSummaryAt != newMeta.SearchSummaryAt {
+		t.Errorf("SearchSummaryAt = %q, want %q", got.SearchSummaryAt, newMeta.SearchSummaryAt)
+	}
+	if got.SearchSummaryModel != newMeta.SearchSummaryModel {
+		t.Errorf("SearchSummaryModel = %q, want %q", got.SearchSummaryModel, newMeta.SearchSummaryModel)
+	}
+}
+
+// TestSearchSummaryFieldsOmitEmpty proves that when none of the three
+// SearchSummary* fields are set, the WRITTEN YAML frontmatter carries none of
+// their keys — checked against the raw file bytes, not the parsed struct,
+// since an omitempty bug (a missing tag, or a tag typo) only shows up in the
+// serialized form. This must FAIL against a struct version whose fields lack
+// the omitempty tag.
+func TestSearchSummaryFieldsOmitEmpty(t *testing.T) {
+	v := testVault(t)
+	fp := surface.WriterFingerprint(v.Root)
+
+	meta := SessionMeta{
+		Date:    "2026-07-03",
+		Title:   "No search summary set",
+		Summary: "plain summary",
+	}
+	if _, err := v.WriteSession("proj", meta, "body\n"); err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+
+	path, err := v.SessionFile("proj", "2026-07-03", fp, 1)
+	if err != nil {
+		t.Fatalf("SessionFile: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	for _, key := range []string{"search_summary:", "search_summary_at:", "search_summary_model:"} {
+		if strings.Contains(string(raw), key) {
+			t.Errorf("raw frontmatter unexpectedly contains %q (omitempty broken):\n%s", key, raw)
+		}
+	}
+
+	// Now via RewriteSession too, since it shares marshalSessionFile but is
+	// worth checking independently in case a future change diverges the two
+	// write paths.
+	if err := v.RewriteSession("proj", "2026-07-03", fp, 1, meta, "body\n"); err != nil {
+		t.Fatalf("RewriteSession: %v", err)
+	}
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile after RewriteSession: %v", err)
+	}
+	for _, key := range []string{"search_summary:", "search_summary_at:", "search_summary_model:"} {
+		if strings.Contains(string(raw), key) {
+			t.Errorf("raw frontmatter (post-RewriteSession) unexpectedly contains %q:\n%s", key, raw)
+		}
+	}
+}
