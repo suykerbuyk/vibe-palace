@@ -74,11 +74,12 @@ func TestEnqueueThenDrain_EndToEnd(t *testing.T) {
 	}
 
 	// Step 2: confirm a real queue file landed on disk at the expected
-	// location — summarize.QueueDir plus the "iteration-<N>.json" naming
-	// convention EnqueueIterationSummary itself uses (independently pinned by
-	// cmd_drain_test.go's bracketed-path test and
-	// summarize_tools_test.go's own glob assertion).
-	queueFile := filepath.Join(summarize.QueueDir(f.projectPath), "iteration-1.json")
+	// location — summarize.QueueDir plus the zero-padded "iteration-<N>.json"
+	// naming convention EnqueueIterationSummary itself uses (independently
+	// pinned by cmd_drain_test.go's bracketed-path test and
+	// summarize_tools_test.go's own glob assertion; the padding width itself
+	// is pinned in internal/summarize/summarize_test.go).
+	queueFile := filepath.Join(summarize.QueueDir(f.projectPath), "iteration-00001.json")
 	if _, err := os.Stat(queueFile); err != nil {
 		t.Fatalf("expected a real queue file at %s, got: %v", queueFile, err)
 	}

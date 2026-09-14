@@ -266,6 +266,38 @@ func TestEnqueue_UnknownKindFailsLoudly(t *testing.T) {
 	}
 }
 
+// TestQueueFileName_IterationOrdersNumericallyNotLexically pins the fix for
+// zero-pad-summarization-queue-filenames: jobqueue.Claim lists a queue
+// directory via os.ReadDir, which sorts by filename — lexically, not
+// numerically. Before the fix, "iteration-10.json" < "iteration-2.json"
+// lexically (the actual bug); zero-padding must make the filename order
+// agree with the numeric order for every iteration this test checks,
+// including the pre-fix failure pair and a same-length pair the unpadded
+// scheme already got right (to prove the fix doesn't just get lucky).
+func TestQueueFileName_IterationOrdersNumericallyNotLexically(t *testing.T) {
+	pairs := []struct{ lower, higher int }{
+		{2, 10},    // the actual bug: unpadded, "10" < "2" lexically
+		{9, 100},   // one digit vs three
+		{99, 100},  // the classic zero-pad boundary case
+		{413, 414}, // consecutive, both already 3 digits
+		{1, 2},     // same-length pair the unpadded scheme already ordered correctly
+	}
+	for _, p := range pairs {
+		lowerName, err := queueFileName(SummaryItem{Kind: KindIteration, Iteration: p.lower})
+		if err != nil {
+			t.Fatalf("queueFileName(%d): %v", p.lower, err)
+		}
+		higherName, err := queueFileName(SummaryItem{Kind: KindIteration, Iteration: p.higher})
+		if err != nil {
+			t.Fatalf("queueFileName(%d): %v", p.higher, err)
+		}
+		if !(lowerName < higherName) {
+			t.Errorf("queueFileName(%d)=%q, queueFileName(%d)=%q — want the lower iteration's filename to sort first lexically",
+				p.lower, lowerName, p.higher, higherName)
+		}
+	}
+}
+
 // errAlwaysFails is a stand-in summarization error for the dead-letter test.
 type sentinelError string
 
@@ -587,6 +619,108 @@ func TestDrain_UnsupportedKindContinuesNotBreaks(t *testing.T) {
 	// The session-note item must be gone entirely (Done'd), not left behind.
 	if remaining, _ := filepath.Glob(filepath.Join(dir, "session-*.json")); len(remaining) != 0 {
 		t.Fatalf("remaining session-*.json files = %v, want none (supported item must be Done'd)", remaining)
+	}
+}
+
+// writeRawQueueFile plants a job file directly on disk under cwd's queue
+// dir, bypassing enqueue/queueFileName entirely — used to simulate a legacy,
+// pre-fix unpadded "iteration-<N>.json" file left over from before
+// zero-pad-summarization-queue-filenames, or a hand-placed collision, rather
+// than whatever the CURRENT queueFileName would produce.
+func writeRawQueueFile(t *testing.T, cwd, name string, item SummaryItem) {
+	t.Helper()
+	dir := QueueDir(cwd)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir queue dir: %v", err)
+	}
+	data, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal item: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+}
+
+// TestDrain_MigratesLegacyUnpaddedIterationFilename pins the migration half
+// of zero-pad-summarization-queue-filenames: a legacy "iteration-<N>.json"
+// file (unpadded — exactly the shape a pre-fix EnqueueIterationSummary call
+// would have left on disk, and exactly the shape found in real, live,
+// undrained queues during that task's investigation) must still be picked
+// up and processed by a drain call, not silently ignored, and must have been
+// renamed to the current padded form before jobqueue.Claim ever lists the
+// directory.
+func TestDrain_MigratesLegacyUnpaddedIterationFilename(t *testing.T) {
+	cwd := t.TempDir()
+	writeRawQueueFile(t, cwd, "iteration-7.json", SummaryItem{
+		Kind:      KindIteration,
+		Project:   "proj-legacy",
+		Iteration: 7,
+	})
+
+	fake := &fakeSummarizer{}
+	drained, err := DrainSummarizationQueue(context.Background(), cwd, fake, 0)
+	if err != nil {
+		t.Fatalf("DrainSummarizationQueue: %v", err)
+	}
+	if drained != 1 {
+		t.Fatalf("drained = %d, want 1 (the legacy-named file must still be claimed and processed)", drained)
+	}
+	if fake.callCount() != 1 || fake.calls[0].Project != "proj-legacy" || fake.calls[0].Iteration != 7 {
+		t.Fatalf("calls = %+v, want exactly one call for proj-legacy iteration 7", fake.calls)
+	}
+	if remaining := queueFiles(t, cwd); len(remaining) != 0 {
+		t.Errorf("queue dir not empty after successful drain: %v", remaining)
+	}
+}
+
+// TestMigrateLegacyIterationNames_SkipsWhenPaddedTargetAlreadyExists pins the
+// clobber guard directly against migrateLegacyIterationNames, in isolation
+// from jobqueue.Claim's own independent per-file processing (which would
+// otherwise legitimately claim and drain BOTH files in one call — a
+// migration miss does not stop them from being two distinct claimable
+// *.json files, it only risks os.Rename silently destroying one of them,
+// which is the one thing this guard exists to prevent).
+//
+// When BOTH a legacy unpadded file and its padded counterpart already exist
+// for the same iteration (a newer re-enqueue already landed in the current
+// form after the fix shipped, while the stale pre-fix duplicate was never
+// cleaned up), migration must never os.Rename the legacy file onto the
+// padded one — POSIX rename silently overwrites its destination, which
+// would destroy the newer, correct copy's bytes with stale content.
+func TestMigrateLegacyIterationNames_SkipsWhenPaddedTargetAlreadyExists(t *testing.T) {
+	cwd := t.TempDir()
+	legacyName := "iteration-7.json"
+	paddedName, err := queueFileName(SummaryItem{Kind: KindIteration, Iteration: 7})
+	if err != nil {
+		t.Fatalf("queueFileName: %v", err)
+	}
+	if legacyName == paddedName {
+		t.Fatalf("test setup is broken: legacy name %q must differ from the current padded name %q", legacyName, paddedName)
+	}
+
+	writeRawQueueFile(t, cwd, legacyName, SummaryItem{Kind: KindIteration, Project: "proj-stale", Iteration: 7})
+	writeRawQueueFile(t, cwd, paddedName, SummaryItem{Kind: KindIteration, Project: "proj-current", Iteration: 7})
+
+	dir := QueueDir(cwd)
+	migrateLegacyIterationNames(dir)
+
+	// Both files must still exist, at their ORIGINAL names, with their
+	// ORIGINAL content — migration must have renamed neither, since renaming
+	// the legacy one onto the padded name would have clobbered it.
+	for name, wantProject := range map[string]string{legacyName: "proj-stale", paddedName: "proj-current"} {
+		path := filepath.Join(dir, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("%s: want it left in place, got: %v", name, err)
+		}
+		var item SummaryItem
+		if err := json.Unmarshal(data, &item); err != nil {
+			t.Fatalf("unmarshal %s: %v", name, err)
+		}
+		if item.Project != wantProject {
+			t.Errorf("%s content Project = %q, want %q (untouched)", name, item.Project, wantProject)
+		}
 	}
 }
 

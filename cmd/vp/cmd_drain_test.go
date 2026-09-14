@@ -362,7 +362,7 @@ func TestRunDrainSummaries_BracketedProjectPathProcessesQueuedJob(t *testing.T) 
 	if err := summarize.EnqueueIterationSummary(projectPath, slug, 7); err != nil {
 		t.Fatalf("EnqueueIterationSummary: %v", err)
 	}
-	queueFile := filepath.Join(summarize.QueueDir(projectPath), "iteration-7.json")
+	queueFile := filepath.Join(summarize.QueueDir(projectPath), "iteration-00007.json")
 	if _, err := os.Stat(queueFile); err != nil {
 		t.Fatalf("queued job not on disk before drain: %v", err)
 	}

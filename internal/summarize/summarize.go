@@ -23,6 +23,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/jobqueue"
@@ -127,6 +129,22 @@ func QueueDir(cwd string) string {
 	return filepath.Join(cwd, ".vibe-palace", "summarization-queue")
 }
 
+// iterationFilePad is the width KindIteration queue filenames are
+// zero-padded to: "iteration-%0<iterationFilePad>d.json". jobqueue.Claim (via
+// os.ReadDir) lists a queue directory in lexical order, so an unpadded %d
+// puts "iteration-10.json" before "iteration-2.json" once a project's queue
+// reaches double digits — see
+// zero-pad-summarization-queue-filenames. 5 digits (up to 99,999)
+// comfortably exceeds any real project's iteration count — LIVE queues on
+// this host were already into the 100s-400s at the time this was fixed. The
+// only other zero-padding convention in this codebase,
+// storage.SessionStem's %02d, is for a different, much smaller quantity (a
+// day-bounded session sequence number, not a whole-project iteration
+// counter) and does not apply here. migrateLegacyIterationNames (below)
+// shares this constant so it recognizes and renames a pre-fix unpadded file
+// using the exact same width.
+const iterationFilePad = 5
+
 // queueFileName returns a DETERMINISTIC name for item, derived from its own
 // identity rather than the time it was enqueued — mirroring
 // internal/capture/enrichqueue.go's EnqueueEnrichment, whose queue file name
@@ -146,7 +164,7 @@ func queueFileName(item SummaryItem) (string, error) {
 	case KindSessionNote:
 		return fmt.Sprintf("session-%s.json", storage.SessionStem(item.Date, item.Fingerprint, item.Iteration)), nil
 	case KindIteration:
-		return fmt.Sprintf("iteration-%d.json", item.Iteration), nil
+		return fmt.Sprintf("iteration-%0*d.json", iterationFilePad, item.Iteration), nil
 	default:
 		// Deliberately explicit, not a catch-all default falling through to
 		// KindIteration's naming: an unrecognized Kind (a future third kind
@@ -155,6 +173,82 @@ func queueFileName(item SummaryItem) (string, error) {
 		// iteration-<N>.json naming scheme using whatever stale Iteration
 		// value it happens to carry.
 		return "", fmt.Errorf("summarize: unknown SummaryJobKind %q", item.Kind)
+	}
+}
+
+// migrateLegacyIterationNames renames any KindIteration queue file left over
+// from before iteration filenames were zero-padded
+// (zero-pad-summarization-queue-filenames) into the current padded name, so
+// jobqueue.Claim's lexical listing order agrees with numeric order even for
+// a queue that already had unpadded entries sitting in it when this fix
+// shipped. This is a real, not hypothetical, concern: that task's own
+// investigation found live, undrained queues on disk (including this
+// project's own) with exactly this shape — a project whose [summarization]
+// config is disabled or unresolvable defers every KindIteration job back to
+// the queue with Attempts genuinely unchanged (see DrainSummarizationQueue),
+// so such a queue never drains and never dead-letters on its own.
+//
+// Called once at the top of every DrainSummarizationQueue call, before the
+// claim loop, so a mixed old/new-format directory is normalized before
+// jobqueue.Claim ever lists it.
+//
+// Best-effort and silent on failure: a rename failure is logged via
+// slog.Warn and skipped, never returned or allowed to fail the drain call
+// itself. The file is still fully claimable under its old name either way —
+// only its SORT POSITION relative to newly-written padded files is at
+// stake, which is exactly the same low-severity "queue backed up, processed
+// slightly out of order" risk this whole task exists to shrink, not
+// eliminate outright.
+//
+// Skips (does not rename) a legacy file whose padded target name already
+// exists: queueFileName's own doc comment establishes that re-enqueuing the
+// same iteration is an intentional idempotent overwrite, so a newer,
+// correctly-named file already at the target path must win — os.Rename
+// would otherwise silently clobber it, since POSIX rename overwrites an
+// existing destination.
+//
+// Only plain "iteration-<digits>.json" files are considered. A name that
+// doesn't parse as exactly that shape (session-*.json, a ".processing" or
+// ".failed" claim/dead-letter artifact — jobqueue's own, never this
+// package's to rename — or anything else) is left untouched.
+func migrateLegacyIterationNames(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// Missing/unreadable dir: nothing to migrate. jobqueue.Claim (called
+		// right after this) reports its own "nothing claimable" for a
+		// missing dir, or its own error for anything worse.
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		numeral, ok := strings.CutPrefix(name, "iteration-")
+		if !ok {
+			continue
+		}
+		numeral, ok = strings.CutSuffix(numeral, ".json")
+		if !ok {
+			continue // e.g. "iteration-3.json.processing" — jobqueue's, not ours.
+		}
+		n, err := strconv.Atoi(numeral)
+		if err != nil || n < 0 {
+			continue // Not a plain "iteration-<digits>.json" — leave it alone.
+		}
+		canonical := fmt.Sprintf("iteration-%0*d.json", iterationFilePad, n)
+		if canonical == name {
+			continue // Already in the current padded form.
+		}
+		newPath := filepath.Join(dir, canonical)
+		if _, statErr := os.Lstat(newPath); statErr == nil {
+			// A newer copy of the same iteration is already at the padded
+			// name — leave the stale legacy duplicate alone rather than
+			// clobber it.
+			continue
+		}
+		oldPath := filepath.Join(dir, name)
+		if renameErr := os.Rename(oldPath, newPath); renameErr != nil {
+			slog.Warn("summarize: could not migrate legacy iteration queue filename",
+				"old", name, "new", canonical, "err", renameErr)
+		}
 	}
 }
 
@@ -246,6 +340,7 @@ func DrainSummarizationQueue(ctx context.Context, cwd string, s Summarizer, max 
 	}
 
 	dir := QueueDir(cwd)
+	migrateLegacyIterationNames(dir)
 
 	// pendingRequeue collects one closure per item that is deferred back to
 	// the queue this call (a genuine failure, a ctx interruption, or an
