@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
 )
 
 // gitCmdRunner runs a git command in dir and returns its stdout. Test seam.
@@ -23,7 +25,7 @@ import (
 var gitCmdRunner = func(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
+	cmd.Env = gitenv.SafeGitEnv("GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

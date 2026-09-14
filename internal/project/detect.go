@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
 	slugpkg "github.com/suykerbuyk/vibe-palace/internal/slug"
 )
 
@@ -426,6 +427,7 @@ func gitRemoteName(dir string) (string, error) {
 
 	cmd := exec.Command("git", "remote", "get-url", "origin")
 	cmd.Dir = repoRoot
+	cmd.Env = gitenv.SafeGitEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git remote: %w", err)

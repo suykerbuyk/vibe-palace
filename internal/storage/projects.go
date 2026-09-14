@@ -367,32 +367,3 @@ func (v *Vault) TrackedPalaceLocalFiles() (map[string]int, error) {
 	}
 	return counts, nil
 }
-
-// repoLocalGitEnv is git's own list of variables that redirect a command to a
-// different repository, index or work tree (`git rev-parse --local-env-vars`).
-// A process that inherits any of them — vp spawned from a git hook, or from a
-// shell exporting GIT_DIR — would have `git ls-files` answer for that other
-// repository instead of the vault at cmd.Dir.
-var repoLocalGitEnv = []string{
-	"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS",
-	"GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE",
-	"GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE",
-	"GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
-	"GIT_INTERNAL_SUPER_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR",
-}
-
-// withoutRepoLocalGitEnv returns env minus every repoLocalGitEnv variable, so
-// a git call built from it answers about the directory cmd.Dir names rather
-// than a repository named by an inherited environment variable. Every git
-// runner in this package builds its environment from this (via the exported
-// SafeGitEnv, git.go) rather than calling it directly.
-func withoutRepoLocalGitEnv(env []string) []string {
-	out := make([]string, 0, len(env))
-	for _, kv := range env {
-		name, _, _ := strings.Cut(kv, "=")
-		if !slices.Contains(repoLocalGitEnv, name) {
-			out = append(out, kv)
-		}
-	}
-	return out
-}

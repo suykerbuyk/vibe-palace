@@ -88,6 +88,48 @@ func TestDetectProject_GitRemote(t *testing.T) {
 	}
 }
 
+// TestGitRemoteName_IgnoresInheritedGitDirAndWorkTree pins the fix for
+// project-git-runners-inherit-git-dir-from-the-environment: an inherited
+// GIT_DIR/GIT_WORK_TREE (as a git hook, `git rebase -x`, or an IDE git
+// integration would export to a vp subprocess) must never override cmd.Dir
+// for gitRemoteName.
+//
+// Measured directly with the plain git binary before writing this test:
+// `git -C <project> remote get-url origin` with GIT_DIR/GIT_WORK_TREE pointed
+// at a different, real repository (the decoy) silently prints the DECOY's
+// origin URL instead of the project's — exit 0, no error. Unlike the vault
+// task's commit-path regression (which needed a decoy with a matching local
+// edit to produce a "silent wrong-repo success" rather than a pathspec
+// error), a read-only `remote get-url` has no such ambiguity: it simply
+// answers for whichever repository GIT_DIR names, unconditionally.
+func TestGitRemoteName_IgnoresInheritedGitDirAndWorkTree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	projectDir := t.TempDir()
+	initGitRepo(t, projectDir, "https://github.com/user/real-project.git")
+
+	decoyDir := t.TempDir()
+	initGitRepo(t, decoyDir, "https://github.com/someone-else/decoy.git")
+
+	// Simulate vp being invoked from an environment that already exports
+	// GIT_DIR/GIT_WORK_TREE for a different, real repository — the decoy —
+	// exactly the shape a git hook or `git rebase -x` hands its children.
+	t.Setenv("GIT_DIR", filepath.Join(decoyDir, ".git"))
+	t.Setenv("GIT_WORK_TREE", decoyDir)
+
+	got, err := gitRemoteName(projectDir)
+	if err != nil {
+		t.Fatalf("gitRemoteName: %v", err)
+	}
+	if got != "real-project" {
+		t.Errorf("gitRemoteName(%s) = %q, want %q (the project's own remote) — "+
+			"an inherited GIT_DIR/GIT_WORK_TREE overrode cmd.Dir and answered for the decoy instead",
+			projectDir, got, "real-project")
+	}
+}
+
 func TestDetectProject_GitRemoteSSH(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")

@@ -14,6 +14,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/agentfile"
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
@@ -507,6 +508,7 @@ func stageRewrittenFiles(projectRoot string, plan *Plan, report *WriteReport) {
 		args = append(args, b)
 	}
 	cmd := exec.Command("git", args...)
+	cmd.Env = gitenv.SafeGitEnv()
 	// Best-effort — if git is absent or the add fails, it's not fatal.
 	_ = cmd.Run()
 }

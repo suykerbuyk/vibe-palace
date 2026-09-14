@@ -53,18 +53,6 @@
       "reason": "🔴 GIT-MEDIATED — see mcp.vp_vault_sync. Derived FALSE (storage.TidyScan classifies, storage.TidyVault stages and commits, both through git); DECLARED gated, and it stays gated. Its read-only invocation — dry_run:true, which returns after TidyScan having committed nothing — is admitted by the param-aware gate landed in 6254549 rather than by ungating the tool. Accepted, permanently."
     },
     {
-      "id": "git-exec-unsafe-env absorb.stageRewrittenFiles",
-      "reason": "Targets the CONSUMING PROJECT'S repo (`git -C <projectRoot> add --`), never a vault — out of scope for vault-git-runners-inherit-git-dir-from-the-environment, which fixed only vault git runners. Same mechanical risk (an inherited GIT_DIR/GIT_WORK_TREE would misdirect it too), tracked as a separate bug class in project-git-runners-inherit-git-dir-from-the-environment. Accepted until that task lands."
-    },
-    {
-      "id": "git-exec-unsafe-env archive.gitHead",
-      "reason": "Reads opts.SourceCWD's HEAD SHA (the project cwd being archived) for a manifest field — read-only, never a vault, out of scope for vault-git-runners-inherit-git-dir-from-the-environment. Same env-leak class, tracked in project-git-runners-inherit-git-dir-from-the-environment. Accepted until that task lands."
-    },
-    {
-      "id": "git-exec-unsafe-env project.gitRemoteName",
-      "reason": "Reads the CONSUMING PROJECT'S origin remote URL for naming, never a vault — out of scope for vault-git-runners-inherit-git-dir-from-the-environment. Same env-leak class, tracked in project-git-runners-inherit-git-dir-from-the-environment. Accepted until that task lands."
-    },
-    {
       "id": "ungated-vault-writer main.cmdCheck",
       "reason": "FALSE POSITIVE via closure attribution, and separately a considered exemption. The reported path is main.cmdCheck -> main.runCheck -> main.binaryInfo -> main.registeredToolCount -> tools.RegisterAll -> a tool constructor's handler closure -> atomicfile.Write: `vp check` COUNTS registered tools, it does not invoke them. The only vault write `vp check` performs is the transient, self-deleting .vp-fs-probe-* that CheckVaultFilesystem creates to test whether the filesystem accepts ':' in a filename — internal/check/vaultfs.go records the matching decision that the MCP-side vp_check stays Mutating:false for it. Gating a diagnostic against a newer vault would remove the tool an operator reaches for precisely when the surface mismatch is what they are diagnosing. Accepted."
     },

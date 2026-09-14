@@ -17,6 +17,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
@@ -352,6 +353,7 @@ func gitHead(cwd string) string {
 		cwd = c
 	}
 	cmd := exec.Command("git", "-C", cwd, "rev-parse", "HEAD")
+	cmd.Env = gitenv.SafeGitEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return ""

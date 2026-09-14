@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
 	slugpkg "github.com/suykerbuyk/vibe-palace/internal/slug"
 )
 
@@ -46,7 +47,7 @@ const (
 // credential prompt or an interactive editor.
 var runGit = func(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
+	cmd.Env = gitenv.SafeGitEnv("GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))

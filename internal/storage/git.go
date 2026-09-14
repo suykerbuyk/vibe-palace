@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
 )
 
 // CanonicalGitignorePatterns is the growing set of .gitignore lines that
@@ -281,10 +283,17 @@ func GitAvailable() bool {
 // variables precedence over cmd.Dir, so a process that inherits one (spawned
 // from a git hook, or from a shell exporting GIT_DIR) would run against
 // whatever repository the variable names instead of the directory cmd.Dir
-// says. See repoLocalGitEnv (projects.go) for the exact list, sourced from
-// `git rev-parse --local-env-vars`.
+// says.
+//
+// This forwards to internal/gitenv, which holds the actual list and strip
+// logic. It moved out of this package (project-git-runners-inherit-git-dir-from-the-environment)
+// because internal/storage imports internal/project and internal/wrapstate —
+// so either of those importing storage back for this one helper would be an
+// import cycle. gitenv has no internal dependencies, so every package that
+// spawns git can reach it. This wrapper's signature and every existing caller
+// are unchanged by the move.
 func SafeGitEnv(extra ...string) []string {
-	return append(withoutRepoLocalGitEnv(os.Environ()), extra...)
+	return gitenv.SafeGitEnv(extra...)
 }
 
 // GitIsRepo returns true if dir contains a .git directory.
