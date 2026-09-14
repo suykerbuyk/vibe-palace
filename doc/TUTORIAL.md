@@ -2059,11 +2059,13 @@ The embedder step will show the failure (e.g., `[FAIL] Embedder: load model: dow
 
 Common fixes:
 - Check network connectivity to huggingface.co
-- If behind auth, set `HF_TOKEN` environment variable
 - If behind a proxy, set `HTTPS_PROXY`
 - Model is cached at `{vault}/palace/.local/models/` — delete the directory
   to force re-download
-- If offline: vp will not start (embedder initialization is required)
+- vp always starts offline (the embedder loads lazily, on first use). A
+  *warm* cache (the model already downloaded) also searches offline; a
+  *cold* cache fails only the first search, once, when it needs the
+  network to download the model.
 
 ### "no tools available" in editor
 

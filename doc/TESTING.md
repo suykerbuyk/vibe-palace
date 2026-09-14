@@ -399,8 +399,13 @@ goroutine-finishes test.
 
 Cache lifecycle:
 - `make clean` — preserves model cache (only removes build artifacts)
-- `make dist-clean` — deletes `.cache/` entirely (forces re-download)
-- `git clean -fxd` — also deletes the cache (it's gitignored)
+- `make dist-clean` — deletes this project's local `.cache/` (its
+  `VP_OFFLINE_MODEL_CACHE_DIR`-style destination), but NOT the separate
+  HF hub download cache at `${XDG_CACHE_HOME:-$HOME/.cache}/huggingface/hub`
+  go-huggingface maintains — so it forces a re-copy from that hub cache,
+  not necessarily a re-download over the network. Delete the hub cache too
+  to force an actual re-download.
+- `git clean -fxd` — also deletes `.cache/` (it's gitignored), same caveat
 
 ### Embed cache: `palace/.local/embed-cache/{project}/`
 
