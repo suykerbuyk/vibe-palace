@@ -344,7 +344,7 @@ func (v *Vault) TrackedPalaceLocalFiles() (map[string]int, error) {
 	cmd := exec.CommandContext(ctx, "git", "ls-files", "-z", "--", trackedPalaceLocalPathspec)
 	cmd.Dir = v.Root
 	// LC_ALL=C so the "not a git repository" test below reads git's own words.
-	cmd.Env = append(withoutRepoLocalGitEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	cmd.Env = SafeGitEnv("GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -382,8 +382,10 @@ var repoLocalGitEnv = []string{
 }
 
 // withoutRepoLocalGitEnv returns env minus every repoLocalGitEnv variable, so
-// the one git call it is used for answers about the directory it runs in. It is
-// scoped to TrackedPalaceLocalFiles; gitCmd's environment is unchanged.
+// a git call built from it answers about the directory cmd.Dir names rather
+// than a repository named by an inherited environment variable. Every git
+// runner in this package builds its environment from this (via the exported
+// SafeGitEnv, git.go) rather than calling it directly.
 func withoutRepoLocalGitEnv(env []string) []string {
 	out := make([]string, 0, len(env))
 	for _, kv := range env {

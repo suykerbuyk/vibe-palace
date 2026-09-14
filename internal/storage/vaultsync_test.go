@@ -86,6 +86,107 @@ func writeFile(t *testing.T, dir, rel, content string) {
 	}
 }
 
+// gitRunNoRepoEnv runs a git command in dir with EVERY GIT_* variable
+// stripped from the environment, deliberately independent of SafeGitEnv (the
+// code under test in TestCommitAndPushPaths_IgnoresInheritedGitDirAndWorkTree):
+// a verification helper built from the same production helper it is meant to
+// catch a regression in would hide exactly the bug that helper could have.
+func gitRunNoRepoEnv(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	var env []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(name, "GIT_") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(env, "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %s: %v", args, out, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// TestCommitAndPushPaths_IgnoresInheritedGitDirAndWorkTree pins the fix for
+// vault-git-runners-inherit-git-dir-from-the-environment: an inherited
+// GIT_DIR/GIT_WORK_TREE (as a git hook, `git rebase -x`, or an IDE git
+// integration would export to a vp subprocess) must never override cmd.Dir for
+// any vault git runner.
+//
+// Before the fix this was not a loud failure — it was a SILENT WRONG-REPO
+// SUCCESS: measured directly with the plain git binary (see the task's
+// investigation), `git -C <vault> add -- README.md` with GIT_WORK_TREE=<decoy>
+// resolves the pathspec against the DECOY's working copy of README.md, not the
+// vault's. So this test gives the decoy its own genuine local edit at the same
+// path the vault is trying to commit: if the bug is present, that decoy edit is
+// what gets staged and committed — CommitAndPushPaths returns success, with a
+// CommitSHA that is actually the decoy's new commit, while the vault's own
+// change is never captured anywhere. A pathspec-not-found error (the shape the
+// task's own repro happened to hit, because that repro's path did not exist in
+// the decoy) would NOT prove this fix; a wrong-repo commit that came back
+// looking like a normal success is the actual failure mode.
+func TestCommitAndPushPaths_IgnoresInheritedGitDirAndWorkTree(t *testing.T) {
+	vault := initTestRepo(t)
+	decoy := initTestRepo(t)
+
+	vaultHeadBefore := gitRunNoRepoEnv(t, vault, "rev-parse", "HEAD")
+	decoyHeadBefore := gitRunNoRepoEnv(t, decoy, "rev-parse", "HEAD")
+	decoyRefsBefore := gitRunNoRepoEnv(t, decoy, "show-ref")
+	decoyIndexBefore := gitRunNoRepoEnv(t, decoy, "ls-files", "-s")
+
+	// Simulate vp being invoked from an environment that already exports
+	// GIT_DIR/GIT_WORK_TREE for a different, real repository — the decoy —
+	// exactly the shape a git hook or `git rebase -x` hands its children.
+	t.Setenv("GIT_DIR", filepath.Join(decoy, ".git"))
+	t.Setenv("GIT_WORK_TREE", decoy)
+
+	// The vault has a pending change to commit...
+	writeFile(t, vault, "README.md", "vault change\n")
+	// ...and the decoy independently has its own uncommitted local edit at the
+	// same relative path, standing in for whatever unrelated work-in-progress
+	// happens to sit in the enclosing repository that exported these vars.
+	writeFile(t, decoy, "README.md", "decoy local edit\n")
+
+	res, err := CommitAndPushPaths(vault, "probe", []string{"README.md"}, false)
+	if err != nil {
+		t.Fatalf("CommitAndPushPaths: %v", err)
+	}
+	if res.CommitSHA == "" {
+		t.Fatal("expected a commit SHA — the vault had a real staged change")
+	}
+
+	vaultHeadAfter := gitRunNoRepoEnv(t, vault, "rev-parse", "HEAD")
+	if vaultHeadAfter == vaultHeadBefore {
+		t.Fatal("vault HEAD did not advance — the commit never landed in the vault")
+	}
+	if got := gitRunNoRepoEnv(t, vault, "show", "HEAD:README.md"); got != "vault change" {
+		t.Errorf("vault HEAD:README.md = %q, want the vault's own staged change", got)
+	}
+
+	decoyHeadAfter := gitRunNoRepoEnv(t, decoy, "rev-parse", "HEAD")
+	if decoyHeadAfter != decoyHeadBefore {
+		t.Errorf("decoy HEAD changed (%s -> %s): the vault commit landed in the wrong repository", decoyHeadBefore, decoyHeadAfter)
+	}
+	if got := gitRunNoRepoEnv(t, decoy, "show-ref"); got != decoyRefsBefore {
+		t.Errorf("decoy refs changed:\nbefore: %s\nafter:  %s", decoyRefsBefore, got)
+	}
+	if got := gitRunNoRepoEnv(t, decoy, "ls-files", "-s"); got != decoyIndexBefore {
+		t.Errorf("decoy index changed:\nbefore: %s\nafter:  %s", decoyIndexBefore, got)
+	}
+	// The decoy's own local edit must still be sitting there uncommitted —
+	// untouched, not silently absorbed into a commit.
+	decoyWorktree, err := os.ReadFile(filepath.Join(decoy, "README.md"))
+	if err != nil {
+		t.Fatalf("read decoy README.md: %v", err)
+	}
+	if string(decoyWorktree) != "decoy local edit\n" {
+		t.Errorf("decoy working tree README.md = %q, want its untouched local edit", decoyWorktree)
+	}
+}
+
 func TestHasUncommittedChanges(t *testing.T) {
 	if !GitAvailable() {
 		t.Skip("git not in PATH")

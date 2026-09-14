@@ -516,6 +516,7 @@ func gitPull(root string, remotes []string) (string, error) {
 func gitPush(root string, remotes []string) (string, error) {
 	// Check for clean state.
 	cmd := exec.Command("git", "-C", root, "status", "--porcelain")
+	cmd.Env = storage.SafeGitEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git status: %w", err)

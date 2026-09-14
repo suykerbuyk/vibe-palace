@@ -270,6 +270,7 @@ func CheckGit(vaultPath string, gitEnabled bool) Result {
 
 	// Check for configured remotes.
 	cmd := exec.Command("git", "-C", vaultPath, "remote")
+	cmd.Env = storage.SafeGitEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		r.Status = Info

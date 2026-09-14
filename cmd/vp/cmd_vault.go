@@ -709,6 +709,7 @@ func pushAll(root string, remotes []string, dryRun bool) int {
 
 	// Check for clean state.
 	cmd := exec.Command("git", "-C", root, "status", "--porcelain")
+	cmd.Env = storage.SafeGitEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vp vault push: git status: %v\n", err)

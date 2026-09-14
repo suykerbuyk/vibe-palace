@@ -274,6 +274,19 @@ func GitAvailable() bool {
 	return err == nil
 }
 
+// SafeGitEnv returns the process environment with every repo-local git
+// variable (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, ...) stripped, plus extra.
+// Every git subprocess this package spawns against a vault or a project repo
+// must build cmd.Env from this, not os.Environ() directly: git gives those
+// variables precedence over cmd.Dir, so a process that inherits one (spawned
+// from a git hook, or from a shell exporting GIT_DIR) would run against
+// whatever repository the variable names instead of the directory cmd.Dir
+// says. See repoLocalGitEnv (projects.go) for the exact list, sourced from
+// `git rev-parse --local-env-vars`.
+func SafeGitEnv(extra ...string) []string {
+	return append(withoutRepoLocalGitEnv(os.Environ()), extra...)
+}
+
 // GitIsRepo returns true if dir contains a .git directory.
 func GitIsRepo(dir string) bool {
 	info, err := os.Stat(filepath.Join(dir, ".git"))
@@ -392,6 +405,7 @@ func RefuseIfNestedVaultGit(vaultPath, verb string) error {
 // GitInit runs git init in the given directory.
 func GitInit(dir string) error {
 	cmd := exec.Command("git", "init", dir)
+	cmd.Env = SafeGitEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git init %s: %s: %w", dir, out, err)
 	}
@@ -405,6 +419,7 @@ func GitInit(dir string) error {
 // `git checkout .` a guaranteed, complete rollback of the rename.
 func GitStatusClean(dir string) (bool, error) {
 	cmd := exec.Command("git", "-C", dir, "status", "--porcelain")
+	cmd.Env = SafeGitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("git status %s: %s: %w", dir, bytes.TrimSpace(out), err)
@@ -421,6 +436,7 @@ func GitAdd(dir string, paths ...string) error {
 	}
 	args := append([]string{"-C", dir, "add", "--"}, paths...)
 	cmd := exec.Command("git", args...)
+	cmd.Env = SafeGitEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git add %v in %s: %s: %w", paths, dir, bytes.TrimSpace(out), err)
 	}
@@ -438,6 +454,7 @@ func GitAddForce(dir string, paths ...string) error {
 	}
 	args := append([]string{"-C", dir, "add", "-f", "--"}, paths...)
 	cmd := exec.Command("git", args...)
+	cmd.Env = SafeGitEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git add -f %v in %s: %s: %w", paths, dir, bytes.TrimSpace(out), err)
 	}

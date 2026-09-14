@@ -247,7 +247,9 @@ func resolvePostCommitHookPath(projectRoot string) (string, HookReport, bool) {
 
 	// `git config --get` exits 1 when the key is unset; only a successful exit
 	// with a non-empty value is a real hooksPath.
-	out, err := exec.Command("git", "-C", projectRoot, "config", "--get", "core.hooksPath").Output()
+	hooksPathCmd := exec.Command("git", "-C", projectRoot, "config", "--get", "core.hooksPath")
+	hooksPathCmd.Env = SafeGitEnv()
+	out, err := hooksPathCmd.Output()
 	if err == nil {
 		if hp := strings.TrimSpace(string(out)); hp != "" {
 			return "", HookReport{Status: HookSharedHooksPath,
@@ -259,7 +261,9 @@ func resolvePostCommitHookPath(projectRoot string) (string, HookReport, bool) {
 	// RELATIVE TO THE GIT PROCESS CWD, not the repo root: run from a subdirectory
 	// it prints `../.git/hooks` (measured). Asking from the toplevel makes the
 	// relative answer resolvable against the toplevel, which is the rule.
-	top, err := exec.Command("git", "-C", projectRoot, "rev-parse", "--show-toplevel").Output()
+	toplevelCmd := exec.Command("git", "-C", projectRoot, "rev-parse", "--show-toplevel")
+	toplevelCmd.Env = SafeGitEnv()
+	top, err := toplevelCmd.Output()
 	if err != nil {
 		return "", HookReport{Status: HookNoRepo,
 			Detail: fmt.Sprintf("%s is not a git repository — no hook to install", projectRoot)}, false
@@ -270,7 +274,9 @@ func resolvePostCommitHookPath(projectRoot string) (string, HookReport, bool) {
 			Detail: fmt.Sprintf("%s is not a git repository — no hook to install", projectRoot)}, false
 	}
 
-	hooksOut, err := exec.Command("git", "-C", root, "rev-parse", "--git-path", "hooks").Output()
+	hooksPathResolveCmd := exec.Command("git", "-C", root, "rev-parse", "--git-path", "hooks")
+	hooksPathResolveCmd.Env = SafeGitEnv()
+	hooksOut, err := hooksPathResolveCmd.Output()
 	if err != nil {
 		return "", HookReport{Status: HookNoRepo,
 			Detail: fmt.Sprintf("cannot resolve the hooks directory for %s: %v", root, err)}, false

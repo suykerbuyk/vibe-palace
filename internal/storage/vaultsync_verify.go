@@ -681,7 +681,7 @@ func gitBlob(vaultPath, oid string) ([]byte, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "cat-file", "blob", oid)
 	cmd.Dir = vaultPath
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = SafeGitEnv("GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.Output()
 	if err != nil {
 		var detail string
@@ -781,7 +781,7 @@ func gitExact(dir string, timeout time.Duration, args ...string) (stdout, stderr
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = SafeGitEnv("GIT_TERMINAL_PROMPT=0")
 	var errBuf bytes.Buffer
 	cmd.Stderr = &errBuf
 	stdout, err = cmd.Output()

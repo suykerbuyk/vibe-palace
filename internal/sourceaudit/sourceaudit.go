@@ -131,6 +131,14 @@ const (
 	// message built from the error's numeric fields is accurate, well-formed and
 	// useless. See surfaceRemediation.
 	KindSurfaceRemediationLost = "surface-remediation-lost"
+
+	// KindGitExecUnsafeEnv: a `git` subprocess (exec.Command("git", ...) or
+	// exec.CommandContext(ctx, "git", ...)) whose environment is not built
+	// through SafeGitEnv, so an inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE
+	// overrides cmd.Dir and the subprocess silently runs against whichever
+	// repository the environment names instead of the caller's intended
+	// directory. See gitExecEnvFunnel.
+	KindGitExecUnsafeEnv = "git-exec-unsafe-env"
 )
 
 // ID is the finding's stable identity for baseline comparison. It deliberately
@@ -218,6 +226,7 @@ func Run(roots ...string) ([]Finding, error) {
 	findings = append(findings, ungatedVaultWriters(files)...)
 	findings = append(findings, vaultWriteFunnel(files)...)
 	findings = append(findings, surfaceRemediation(files)...)
+	findings = append(findings, gitExecEnvFunnel(files)...)
 
 	sort.Slice(findings, func(i, j int) bool { return findings[i].ID() < findings[j].ID() })
 	return findings, nil

@@ -304,7 +304,7 @@ func scanPorcelain(vaultPath string, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "-C", vaultPath, "status", "--porcelain", "-z", "-uall")
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
+	cmd.Env = SafeGitEnv("GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git status: %w", err)

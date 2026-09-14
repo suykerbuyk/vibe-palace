@@ -1090,7 +1090,12 @@ func gitCmd(dir string, timeout time.Duration, args ...string) (string, error) {
 	// invocation (e.g. rebase --continue composing a merge commit message) so
 	// operators with an interactive core.editor do not see the backend hang
 	// waiting for stdin. All explicit commits here use `-m` already.
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
+	//
+	// SafeGitEnv, not os.Environ() directly: a process that inherits GIT_DIR /
+	// GIT_WORK_TREE (spawned from a git hook, or a shell exporting them) would
+	// otherwise have every vault git command answer for that other repository
+	// instead of dir.
+	cmd.Env = SafeGitEnv("GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
 
 	out, err := cmd.CombinedOutput()
 	trimmed := strings.TrimSpace(string(out))
