@@ -107,15 +107,46 @@ func modelCacheLockPath(modelCacheDir, modelName string) string {
 // localSnapshotComplete reports whether modelPath already holds everything
 // hugot.DownloadModel would produce there: a tokenizer.json at the top level
 // (the only file backends.LoadTokenizer requires — a missing one makes it a
-// silent no-op tokenizer, so treat it as required) and at least one .onnx
-// file. hugot's own copy step flattens all files with path.Base, so both are
-// checked at the top level, not nested under "onnx/".
+// silent no-op tokenizer, so treat it as required) and at least one non-empty
+// .onnx file. hugot's own copy step flattens all files with path.Base, so
+// both are checked at the top level, not nested under "onnx/".
+//
+// The size check is a cheap floor, not a full integrity check: it catches a
+// zero-byte file (e.g. a crash immediately after hugot's non-atomic
+// remove+create, before any bytes were written) but not a nonzero-size
+// truncated copy. That broader class of corruption is instead caught at load
+// time by NewONNX's self-heal (a load failure from this "complete" path
+// discards the copy and re-downloads once) — see
+// truncated-model-onnx-panics-and-is-never-re-downloaded.
 func localSnapshotComplete(modelPath string) bool {
 	if _, err := os.Stat(filepath.Join(modelPath, "tokenizer.json")); err != nil {
 		return false
 	}
 	matches, err := filepath.Glob(filepath.Join(modelPath, "*.onnx"))
-	return err == nil && len(matches) > 0
+	if err != nil || len(matches) == 0 {
+		return false
+	}
+	info, err := os.Stat(matches[0])
+	return err == nil && info.Size() > 0
+}
+
+// newFeatureExtractionPipeline wraps hugot.NewPipeline with a narrowly
+// scoped recover(). hugot@v0.7.0's backends/model_gomlx.go has an ordering
+// bug: createGoMLXModelBackend calls onnx.Model.WithBaseDir on a nil
+// onnx.Model interface BEFORE the error check for the parser.ParseFile
+// failure that produced it ever runs (the check exists two lines later — it
+// just never gets a chance to fire), so an unparseable or truncated
+// model.onnx is a nil-pointer panic instead of an error. This recover is
+// scoped to ONLY this call, not RunPipeline/the probe step below, whose
+// error paths are unaffected by that bug — so an unrelated panic elsewhere
+// in NewONNX is never silently swallowed.
+func newFeatureExtractionPipeline(session *hugot.Session, config hugot.FeatureExtractionConfig) (pipeline *pipelines.FeatureExtractionPipeline, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("model at %s failed to load (panic in hugot.NewPipeline, likely a corrupt or truncated model file): %v", config.ModelPath, r)
+		}
+	}()
+	return hugot.NewPipeline(session, config)
 }
 
 // NewONNX creates an ONNXEmbedder. modelCacheDir is where model files are
@@ -158,24 +189,21 @@ func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEm
 		}
 	}()
 
-	session, err := hugot.NewGoSession()
-	if err != nil {
-		return nil, fmt.Errorf("create go session: %w", err)
-	}
-
-	// hugot.DownloadModel forces a network round trip on every call, even on
-	// a fully warm cache: go-huggingface's readCommitHashForRevision() always
-	// refreshes the revision-info file on a Repo's first call in a process,
-	// and deletes the cached copy before re-fetching it — so an offline
-	// failure here also destroys the index a later offline run would need.
-	// When the destination already holds a complete snapshot (a prior
-	// successful download), skip hugot.DownloadModel entirely rather than
-	// risk that delete-then-refetch offline.
-	modelPath := lockTarget
-	if !localSnapshotComplete(modelPath) {
-		dlOpts := hugot.NewDownloadOptions()
-		dlOpts.OnnxFilePath = "onnx/model.onnx"
-
+	// downloadOnce runs hugot.DownloadModel in a goroutine bounded by
+	// modelDownloadTimeout, exactly as this block always has. It is declared
+	// as a CLOSURE over the handedOff/release locals above -- rather than
+	// extracted to a package-level helper that returns a handedOff bool --
+	// so that a second call site (the self-heal path below) can reuse it
+	// WITHOUT risking the lock-release race a prior review already found and
+	// fixed once (see the handedOff comment above): a helper returning
+	// handedOff invites `handedOff, err := downloadOnce(...)` at the new call
+	// site, which would SHADOW this outer local with := instead of assigning
+	// to it, so the outer defer would always see false and release the lock
+	// immediately regardless of what actually happened. This closure has no
+	// handedOff of its own -- the `handedOff = true` below is an assignment
+	// to the SAME outer local the defer reads -- so that shadowing bug class
+	// is structurally impossible here, not just avoided by convention.
+	downloadOnce := func(dlOpts hugot.DownloadOptions) (string, error) {
 		type dlResult struct {
 			path string
 			err  error
@@ -192,12 +220,9 @@ func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEm
 		select {
 		case res := <-resultCh:
 			if res.err != nil {
-				session.Destroy()
-				return nil, fmt.Errorf("download model %s: %w", modelName, res.err)
+				return "", fmt.Errorf("download model %s: %w", modelName, res.err)
 			}
-			modelPath = res.path
-			// handedOff stays false: the outer defer releases the lock
-			// normally, exactly as before this change.
+			return res.path, nil
 		case <-time.After(modelDownloadTimeout):
 			// The goroutine above may still be blocked inside downloadModel,
 			// possibly still writing into modelCacheDir, so the lock must not
@@ -211,9 +236,37 @@ func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEm
 				<-resultCh
 				release()
 			}()
-			session.Destroy()
-			return nil, fmt.Errorf("download model %s: timed out after %s (network to huggingface.co may be unreachable or stalled)", modelName, modelDownloadTimeout)
+			return "", fmt.Errorf("download model %s: timed out after %s (network to huggingface.co may be unreachable or stalled)", modelName, modelDownloadTimeout)
 		}
+	}
+
+	session, err := hugot.NewGoSession()
+	if err != nil {
+		return nil, fmt.Errorf("create go session: %w", err)
+	}
+
+	dlOpts := hugot.NewDownloadOptions()
+	dlOpts.OnnxFilePath = "onnx/model.onnx"
+
+	// hugot.DownloadModel forces a network round trip on every call, even on
+	// a fully warm cache: go-huggingface's readCommitHashForRevision() always
+	// refreshes the revision-info file on a Repo's first call in a process,
+	// and deletes the cached copy before re-fetching it — so an offline
+	// failure here also destroys the index a later offline run would need.
+	// When the destination already holds a complete snapshot (a prior
+	// successful download), skip hugot.DownloadModel entirely rather than
+	// risk that delete-then-refetch offline.
+	modelPath := lockTarget
+	usedFastPath := localSnapshotComplete(modelPath)
+	if !usedFastPath {
+		path, err := downloadOnce(dlOpts)
+		if err != nil {
+			session.Destroy()
+			return nil, err
+		}
+		modelPath = path
+		// handedOff, if it became true inside downloadOnce, already reflects
+		// that; nothing else to do here.
 	}
 
 	config := hugot.FeatureExtractionConfig{
@@ -225,10 +278,42 @@ func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEm
 		},
 	}
 
-	pipeline, err := hugot.NewPipeline(session, config)
+	pipeline, err := newFeatureExtractionPipeline(session, config)
 	if err != nil {
-		session.Destroy()
-		return nil, fmt.Errorf("create pipeline: %w", err)
+		if !usedFastPath {
+			// A freshly downloaded model that still fails to load is not
+			// retried: another download of the same bytes won't fix a
+			// genuine upstream/compat problem, and retrying here risks a
+			// silent network-retry loop instead of surfacing the error.
+			session.Destroy()
+			return nil, fmt.Errorf("create pipeline from freshly downloaded model at %s: %w; delete %s and retry, or report this if it persists", modelPath, err, modelPath)
+		}
+
+		// The local snapshot looked complete (per localSnapshotComplete) but
+		// failed to load -- most likely a truncated or otherwise corrupt
+		// copy left by a prior interrupted download (see
+		// truncated-model-onnx-panics-and-is-never-re-downloaded). Discard it
+		// and fall through to one real download, bounded exactly like the
+		// initial download above and still under the same held vaultlock, so
+		// this self-heals instead of failing forever.
+		if rmErr := os.RemoveAll(modelPath); rmErr != nil {
+			session.Destroy()
+			return nil, fmt.Errorf("model at %s failed to load: %w; could not remove it to retry automatically (%v); delete %s manually and retry", modelPath, err, rmErr, modelPath)
+		}
+
+		newPath, dlErr := downloadOnce(dlOpts)
+		if dlErr != nil {
+			session.Destroy()
+			return nil, fmt.Errorf("model at %s failed to load: %w; automatic re-download also failed (%v); delete %s and retry, or verify network access to huggingface.co", modelPath, err, dlErr, modelPath)
+		}
+		modelPath = newPath
+		config.ModelPath = modelPath
+
+		pipeline, err = newFeatureExtractionPipeline(session, config)
+		if err != nil {
+			session.Destroy()
+			return nil, fmt.Errorf("create pipeline after re-downloading %s to %s: %w; delete %s and retry, or report this if it persists", modelName, modelPath, err, modelPath)
+		}
 	}
 
 	// Probe dimensions with a test embedding.
