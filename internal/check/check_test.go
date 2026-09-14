@@ -334,6 +334,24 @@ func TestCheckGit_Disabled(t *testing.T) {
 	if !strings.Contains(r.Summary, "disabled") {
 		t.Errorf("summary should mention disabled, got %q", r.Summary)
 	}
+
+	// Pin the scope-clarification Details entry: git_enabled governs only
+	// 'vp init' and the CLI 'vp vault *' subcommands, and explicitly does NOT
+	// cover the MCP tools or CLI commands that bypass it (vp_vault_tidy and
+	// vp_manage_task's commit-only-never-push behavior were both found missing
+	// from an earlier draft of this text by adversarial review — this
+	// assertion is what would have caught that regression).
+	if len(r.Details) == 0 {
+		t.Fatal("expected a Details entry explaining git_enabled's real scope, got none")
+	}
+	detail := r.Details[0]
+	for _, want := range []string{
+		"vp init", "vp vault", "vp_vault_tidy", "vp_manage_task", "never pushes", "SessionEnd",
+	} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("Details should mention %q (part of git_enabled's real scope), got %q", want, detail)
+		}
+	}
 }
 
 func TestCheckGit_NotARepo(t *testing.T) {

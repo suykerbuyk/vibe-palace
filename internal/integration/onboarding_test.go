@@ -201,6 +201,13 @@ func TestIntegrationGitGuardBlocksVaultCommands(t *testing.T) {
 	if !strings.Contains(r.Summary, "disabled") {
 		t.Errorf("CheckGit summary should mention disabled, got %q", r.Summary)
 	}
+
+	// The Details entry must actually name the real scope: 'vp init' + the CLI
+	// 'vp vault *' subcommands, and NOT overclaim coverage of the MCP tools or
+	// other CLI commands that bypass this setting.
+	if len(r.Details) == 0 || !strings.Contains(r.Details[0], "vp_vault_tidy") {
+		t.Errorf("CheckGit Details should name the paths this setting does NOT cover, got %v", r.Details)
+	}
 }
 
 // TestIntegrationGitInitInVault proves that git init + gitignore work

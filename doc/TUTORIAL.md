@@ -882,8 +882,16 @@ vp vault push               # push vault state to all remotes
 vp vault sync               # tidy capture artifacts, then pull and push
 ```
 
-To disable git tracking, pass `--no-git` during init or set
-`git_enabled = false` in your config file.
+`git_enabled = false` (set with `--no-git` at init, or by hand in your
+config file) disables ONLY `vp init`'s repository creation and the CLI
+`vp vault pull/push/sync/commit/tidy/status` subcommands, which refuse
+with an error when git is disabled. It does **not** disable git activity
+from any MCP tool (`vp_vault_sync`, `vp_vault_tidy`, `vp_memory_harvest`,
+`vp_manage_task` — the last commits locally but never pushes, regardless
+of this setting), other CLI commands (`vp memory harvest`, `vp migrate
+kg-filenames`, `vp config sync`'s template-mirror commit), or the
+SessionEnd hook's memory harvest — all of those may still commit and/or
+push the vault regardless of this setting.
 
 ### Zero manual git in the vault
 
