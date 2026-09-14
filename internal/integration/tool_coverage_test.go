@@ -1574,8 +1574,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 			covGitVault(t, h)
 			const project = "cov-memharvest"
 			h.seedProject(t, project)
-			home := t.TempDir()
-			t.Setenv("CLAUDE_HOME", home)
+			testinfra.IsolateEnv(t, testinfra.WithClaudeHome())
 			cwd := t.TempDir()
 			// A minimal native memory index + one typed file, in the shape
 			// memory.Harvest expects (MEMORY.md front-matter table + a typed
@@ -2019,8 +2018,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	"vp_scan_plans": {
 		build: func(t *testing.T, h *testHarness) any {
 			h.seedProject(t, "cov-scanplans")
-			home := t.TempDir()
-			t.Setenv("CLAUDE_HOME", home)
+			home := testinfra.IsolateEnv(t, testinfra.WithClaudeHome()).ClaudeHome
 			candidateDir := filepath.Join(t.TempDir(), "cov-scanplans-candidate")
 			if err := os.MkdirAll(candidateDir, 0o755); err != nil {
 				t.Fatal(err)
