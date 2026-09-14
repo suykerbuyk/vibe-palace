@@ -825,3 +825,211 @@ func TestDrain_SuccessBeatsCanceledCtxInSameCall(t *testing.T) {
 		t.Fatalf("queue files = %v, want none (successful job must be Done, not requeued because ctx was canceled)", remaining)
 	}
 }
+
+// readQueueItemAttempts unmarshals the Attempts field of a plain *.json queue
+// file, failing the test on any I/O or unmarshal error.
+func readQueueItemAttempts(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var item SummaryItem
+	if err := json.Unmarshal(data, &item); err != nil {
+		t.Fatalf("unmarshal %s: %v", path, err)
+	}
+	return item.Attempts
+}
+
+// plainJSONQueueFiles returns the sorted list of plain "*.json" files (never
+// ".processing" or ".failed") currently sitting in cwd's summarization queue
+// directory.
+func plainJSONQueueFiles(t *testing.T, cwd string) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(QueueDir(cwd), "*.json"))
+	if err != nil {
+		t.Fatalf("glob *.json: %v", err)
+	}
+	return matches
+}
+
+// TestDrain_DisabledConfigThenLaterFixedIsZeroLoss pins the CORE zero-loss
+// guarantee a project relies on while [summarization] is unconfigured: N
+// queued KindIteration jobs must survive ANY NUMBER of drain calls made with
+// no registered Iteration handler (the DispatchSummarizer shape
+// cmd/vp/cmd_drain.go builds when NewIterationSummarizerFromConfig returns
+// (nil, nil) for a disabled config) with drained==0, the files still present
+// as plain *.json, and Attempts genuinely UNCHANGED at 0 every single time —
+// per ErrUnsupportedKind's own doc comment, this is a per-ITEM property, not
+// a retry-consuming failure. Once a working Summarizer is later substituted
+// (the config got fixed), every item must still drain, exactly once each,
+// with nothing lost or duplicated.
+func TestDrain_DisabledConfigThenLaterFixedIsZeroLoss(t *testing.T) {
+	cwd := t.TempDir()
+
+	const n = 4
+	for i := range n {
+		if err := EnqueueIterationSummary(cwd, "proj-disabled", 100+i); err != nil {
+			t.Fatalf("EnqueueIterationSummary(%d): %v", i, err)
+		}
+	}
+
+	disabled := &DispatchSummarizer{Iteration: nil} // simulates disabled/unresolvable config
+	const m = 3
+	for run := range m {
+		drained, err := DrainSummarizationQueue(context.Background(), cwd, disabled, 0)
+		if err != nil {
+			t.Fatalf("run %d: DrainSummarizationQueue: %v", run, err)
+		}
+		if drained != 0 {
+			t.Fatalf("run %d: drained = %d, want 0", run, drained)
+		}
+
+		remaining := plainJSONQueueFiles(t, cwd)
+		if len(remaining) != n {
+			t.Fatalf("run %d: plain *.json files = %v, want exactly %d", run, remaining, n)
+		}
+		// No ".processing" or ".failed" artifacts must be left behind once
+		// DrainSummarizationQueue has RETURNED — pendingRequeue is flushed via
+		// its own defer before the call returns, so every deferred item must
+		// already be back to a plain claimable *.json by the time we observe
+		// it here.
+		if all := queueFiles(t, cwd); len(all) != n {
+			t.Fatalf("run %d: total queue files = %v, want exactly %d plain *.json and nothing else", run, all, n)
+		}
+		for _, p := range remaining {
+			if attempts := readQueueItemAttempts(t, p); attempts != 0 {
+				t.Errorf("run %d: %s Attempts = %d, want 0 (unsupported kind must never consume a retry)", run, p, attempts)
+			}
+		}
+	}
+
+	// Now the config is "fixed": swap in a working stub Summarizer and drain
+	// once more.
+	fake := &fakeSummarizer{}
+	fixed := &DispatchSummarizer{Iteration: fake}
+	drained, err := DrainSummarizationQueue(context.Background(), cwd, fixed, 0)
+	if err != nil {
+		t.Fatalf("final drain: DrainSummarizationQueue: %v", err)
+	}
+	if drained != n {
+		t.Fatalf("final drain: drained = %d, want %d", drained, n)
+	}
+	if remaining := queueFiles(t, cwd); len(remaining) != 0 {
+		t.Fatalf("final drain: queue dir = %v, want empty", remaining)
+	}
+
+	// Track by the SET of distinct Iteration numbers seen, not just a call
+	// counter, so a duplicate-vs-drop bug (e.g. the same item claimed twice
+	// while another is silently dropped) would be caught even though the
+	// total call count alone would look correct.
+	seen := map[int]int{}
+	for _, item := range fake.calls {
+		seen[item.Iteration]++
+	}
+	if len(seen) != n {
+		t.Fatalf("distinct iterations summarized = %d, want %d; seen=%v", len(seen), n, seen)
+	}
+	for i := range n {
+		iter := 100 + i
+		if seen[iter] != 1 {
+			t.Errorf("iteration %d was summarized %d time(s), want exactly 1; seen=%v", iter, seen[iter], seen)
+		}
+	}
+}
+
+// TestDrain_EnabledUnresolvableThenLaterFixedIsZeroLoss covers the OTHER
+// "not ready yet" shape: unlike TestDrain_DisabledConfigThenLaterFixedIsZeroLoss
+// (an unsupported Kind, which never consumes a retry), a Summarizer that is
+// registered for the Kind but genuinely FAILS (e.g. summarization is enabled
+// but the provider is briefly unreachable) DOES consume a retry via
+// Attempts on every failing drain — this is the correct, existing behavior
+// for a real failure, not a bug. This test proves that switching to a
+// working Summarizer stub BEFORE maxSummaryAttempts is exhausted still
+// drains every item losslessly, exactly once each.
+//
+// NOTE: unlike the disabled-config path above, this genuine-failure path
+// COULD dead-letter a job if the fix arrives too late (after
+// maxSummaryAttempts genuine failures) — that is precisely why the read-only
+// diagnostic (CheckSummarizationQueue, internal/check) rather than an
+// Attempts-bumping change is the correct fix for the "config not ready yet"
+// case specifically: bumping Attempts here is desired behavior for a REAL
+// failure, and must stay intact.
+func TestDrain_EnabledUnresolvableThenLaterFixedIsZeroLoss(t *testing.T) {
+	cwd := t.TempDir()
+
+	const n = 3
+	for i := range n {
+		if err := EnqueueIterationSummary(cwd, "proj-unresolvable", 200+i); err != nil {
+			t.Fatalf("EnqueueIterationSummary(%d): %v", i, err)
+		}
+	}
+
+	// A distinguishable, genuine (non-ErrUnsupportedKind) transient-looking
+	// failure — e.g. "enabled but the provider timed out" — for the first
+	// two drain calls.
+	genuineErr := errors.New("summarize: transient provider timeout (simulated)")
+	failing := &fakeSummarizer{
+		fn: func(ctx context.Context, item SummaryItem) (*SummaryResult, error) {
+			return nil, genuineErr
+		},
+	}
+
+	const failingRuns = 2 // well under maxSummaryAttempts
+	if failingRuns >= maxSummaryAttempts {
+		t.Fatalf("test setup is broken: failingRuns (%d) must be under maxSummaryAttempts (%d)", failingRuns, maxSummaryAttempts)
+	}
+	for run := range failingRuns {
+		drained, err := DrainSummarizationQueue(context.Background(), cwd, failing, 0)
+		if err != nil {
+			t.Fatalf("run %d: DrainSummarizationQueue: %v", run, err)
+		}
+		if drained != 0 {
+			t.Fatalf("run %d: drained = %d, want 0", run, drained)
+		}
+
+		remaining := plainJSONQueueFiles(t, cwd)
+		if len(remaining) != n {
+			t.Fatalf("run %d: plain *.json files = %v, want exactly %d", run, remaining, n)
+		}
+		// Unlike the unsupported-kind path, Attempts DOES increment here: a
+		// genuine failure consumes a retry from maxSummaryAttempts's budget.
+		for _, p := range remaining {
+			want := run + 1
+			if attempts := readQueueItemAttempts(t, p); attempts != want {
+				t.Errorf("run %d: %s Attempts = %d, want %d (a genuine failure must consume a retry)", run, p, attempts, want)
+			}
+		}
+		if failed, _ := filepath.Glob(filepath.Join(QueueDir(cwd), "*.failed")); len(failed) != 0 {
+			t.Fatalf("run %d: unexpected dead-lettered files: %v", run, failed)
+		}
+	}
+
+	// The config is "fixed" before maxSummaryAttempts is exhausted: swap in a
+	// working stub Summarizer and drain the rest of the way.
+	fake := &fakeSummarizer{}
+	drained, err := DrainSummarizationQueue(context.Background(), cwd, fake, 0)
+	if err != nil {
+		t.Fatalf("final drain: DrainSummarizationQueue: %v", err)
+	}
+	if drained != n {
+		t.Fatalf("final drain: drained = %d, want %d", drained, n)
+	}
+	if remaining := queueFiles(t, cwd); len(remaining) != 0 {
+		t.Fatalf("final drain: queue dir = %v, want empty", remaining)
+	}
+
+	seen := map[int]int{}
+	for _, item := range fake.calls {
+		seen[item.Iteration]++
+	}
+	if len(seen) != n {
+		t.Fatalf("distinct iterations summarized = %d, want %d; seen=%v", len(seen), n, seen)
+	}
+	for i := range n {
+		iter := 200 + i
+		if seen[iter] != 1 {
+			t.Errorf("iteration %d was summarized %d time(s), want exactly 1; seen=%v", iter, seen[iter], seen)
+		}
+	}
+}
