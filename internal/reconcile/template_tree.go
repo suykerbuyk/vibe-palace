@@ -361,6 +361,36 @@ func (r *TemplateTreeReconciler) planScaffold() (Plan, error) {
 	var actions []Action
 	for _, kind := range []string{"commands", "skills"} {
 		dir := filepath.Join(sub, kind)
+
+		// The README write in applyScaffold goes through vaultfs.Create,
+		// which enforces cross-platform path portability and refuses to
+		// follow a symlinked directory. Check both here, before planning
+		// anything: planning the directory Create and then having the
+		// README write refused would leave an empty commands/skills/ dir
+		// behind and fail the whole sync (the bug this guards against).
+		// Reuse the exact relPath applyScaffold builds for its own
+		// vaultfs calls so the two can never drift apart.
+		readmeRelPath := r.relSubpath + "/" + kind + "/README.md"
+		if err := vaultfs.ValidateRelPath(readmeRelPath); err != nil {
+			actions = append(actions, Action{
+				Kind:    ActionSkip,
+				Target:  dir,
+				Summary: "skip " + r.relSubpath + "/" + kind + "/: not portable (" + err.Error() + ")",
+			})
+			continue
+		}
+		if err := vaultfs.CheckDirectPath(r.vaultRoot, readmeRelPath); err != nil {
+			if !errors.Is(err, vaultfs.ErrIndirectPath) {
+				return Plan{}, fmt.Errorf("inspect %s: %w", dir, err)
+			}
+			actions = append(actions, Action{
+				Kind:    ActionSkip,
+				Target:  dir,
+				Summary: "skip " + r.relSubpath + "/" + kind + "/: not scaffolded (" + check.NotReachedDirectly + "): " + err.Error(),
+			})
+			continue
+		}
+
 		if _, err := os.Stat(dir); os.IsNotExist(err) {
 			actions = append(actions, Action{
 				Kind:    ActionCreate,

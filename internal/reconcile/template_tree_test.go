@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -671,5 +672,135 @@ func TestTemplateTree_ScaffoldConcurrentApplyDoesNotDeadlock(t *testing.T) {
 		if string(data) != want {
 			t.Errorf("README %s content mismatch after concurrent scaffold", readme)
 		}
+	}
+}
+
+// TestTemplateTree_ScaffoldSkipsNonPortableSlug pins the fix for a Projects/
+// directory whose name is not portable across filesystems (e.g. contains ':',
+// illegal on NTFS/exFAT). Before the fix, planScaffold still planned the
+// directory Create and README Create for such a slug; applyScaffold's raw
+// os.MkdirAll for the directory succeeded, then the vaultfs.Create README
+// write was refused (ValidateRelPath rejects the segment), landing in
+// rep.Errors and leaving an empty commands/skills/ dir behind. Now: one Skip
+// per kind, no directory Create, exit clean.
+func TestTemplateTree_ScaffoldSkipsNonPortableSlug(t *testing.T) {
+	root := t.TempDir()
+	// Mirrors the filed repro: a directory hand-created outside vp (a raw
+	// mkdir bypasses slug.Validate entirely), not one vp itself produced.
+	projDir := filepath.Join(root, "Projects", "a:b")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewTemplateTree(root, "Projects/a:b", TemplateTreeSeed{Mode: TemplateModeScaffold})
+	plan, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(plan.Actions) != 2 {
+		t.Fatalf("expected 2 actions (one Skip per kind), got %d: %+v", len(plan.Actions), plan.Actions)
+	}
+	for _, a := range plan.Actions {
+		if a.Kind != ActionSkip {
+			t.Errorf("action for %s: Kind = %s, want Skip", a.Target, a.Kind)
+		}
+		if !strings.Contains(a.Summary, "not portable") {
+			t.Errorf("action for %s: Summary = %q, want it to mention \"not portable\"", a.Target, a.Summary)
+		}
+	}
+
+	rep, err := r.Apply(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(rep.Errors) > 0 {
+		t.Fatalf("apply errors: %v", rep.Errors)
+	}
+	if rep.Skipped != 2 {
+		t.Errorf("Skipped = %d, want 2", rep.Skipped)
+	}
+	if rep.Created != 0 {
+		t.Errorf("Created = %d, want 0", rep.Created)
+	}
+
+	for _, kind := range []string{"commands", "skills"} {
+		dir := filepath.Join(projDir, kind)
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("%s should not have been created (err=%v)", dir, err)
+		}
+	}
+}
+
+// TestTemplateTree_ScaffoldSkipsSymlinkedDir pins the fix's other guard:
+// vaultfs.CheckDirectPath catches a kind directory reached only through a
+// symlink (planScaffold otherwise never checked this in scaffold mode, unlike
+// materialize mode). The symlinked kind is Skipped and nothing is written
+// through it; an unaffected sibling kind scaffolds normally.
+func TestTemplateTree_ScaffoldSkipsSymlinkedDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need a privilege on Windows")
+	}
+	root := t.TempDir()
+	projDir := filepath.Join(root, "Projects", "foo")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := filepath.Join(root, "Elsewhere")
+	if err := os.MkdirAll(elsewhere, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(projDir, "commands")); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewTemplateTree(root, "Projects/foo", TemplateTreeSeed{Mode: TemplateModeScaffold})
+	plan, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	a, ok := findAction(plan, "commands")
+	if !ok {
+		t.Fatalf("no action for the symlinked commands dir: %+v", plan.Actions)
+	}
+	if a.Kind != ActionSkip {
+		t.Errorf("commands action Kind = %s, want Skip", a.Kind)
+	}
+	if !strings.Contains(a.Summary, "not scaffolded") {
+		t.Errorf("commands action Summary = %q, want it to mention \"not scaffolded\"", a.Summary)
+	}
+	// skills is unaffected: its normal 2 Create actions (dir + README) plus
+	// the 1 Skip for commands = 3 actions total.
+	if len(plan.Actions) != 3 {
+		t.Errorf("expected 3 actions total, got %d: %+v", len(plan.Actions), plan.Actions)
+	}
+
+	rep, err := r.Apply(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(rep.Errors) > 0 {
+		t.Fatalf("apply errors: %v", rep.Errors)
+	}
+	if rep.Skipped != 1 {
+		t.Errorf("Skipped = %d, want 1", rep.Skipped)
+	}
+	if rep.Created != 2 {
+		t.Errorf("Created = %d, want 2 (skills dir + README)", rep.Created)
+	}
+
+	// Nothing was written through the symlink.
+	entries, err := os.ReadDir(elsewhere)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("symlink target should be untouched, got entries: %v", entries)
+	}
+
+	// skills scaffolded normally.
+	skillsReadme := filepath.Join(projDir, "skills", "README.md")
+	if _, err := os.Stat(skillsReadme); err != nil {
+		t.Errorf("skills README not created: %v", err)
 	}
 }
