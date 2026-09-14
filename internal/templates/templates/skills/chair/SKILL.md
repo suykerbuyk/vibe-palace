@@ -438,6 +438,12 @@ is empty and tempting (leave it); the tree is dirty with another pane's unit
    no prior kind and none named — default to **the Chair's own kind**. If
    the operator asked specifically for a *different* model for independence,
    pick a kind other than the Chair's own instead of defaulting.
+   For `--kind claude`, append `-- --prompt-suggestions false` to suppress
+   Claude Code's recap banner and unsent predicted-next-prompt clutter in the
+   subordinate's own pane — set at process launch, so it never touches the
+   global setting and never affects the Chair's own pane. Operator-confirmed
+   over many sessions of manual use; not yet confirmed for any other agent
+   kind, so do not extend it to `grok` or others without checking first.
 6. Bootstrap it with `herdr agent prompt <name> "…" --wait` (binding
    constraints first; the project's own restart command if it needs full
    context).
