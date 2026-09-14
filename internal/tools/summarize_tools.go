@@ -287,7 +287,8 @@ func CheckSummarizationQueueTool(vault *storage.Vault) mcp.Tool {
 			"project_path is required and must be absolute. Returns {status: \"empty\"} " +
 			"when the queue has zero pending, claimed, and dead-lettered entries " +
 			"(including a missing queue directory); otherwise returns {status: " +
-			"\"info\"|\"skip\"|\"fail\", summary, details[]}.",
+			"\"info\", summary, details[]} (the only other status " +
+			"check.CheckSummarizationQueue ever produces).",
 		Schema: checkSummarizationQueueSchema,
 		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
 			var args struct {
