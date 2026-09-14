@@ -26,6 +26,21 @@ import (
 // model, `pipeline.RunPipeline` broadcast panic).
 const defaultMaxSeqLen = 512
 
+// modelDownloadConcurrentConnections mitigates a lost-wakeup bug in
+// go-huggingface's internal/downloader/semaphore.go Release: with more files
+// queued than DownloadOptions.ConcurrentConnections permits, a download can
+// hang forever waiting for a wakeup that never arrives (measured upstream:
+// 0/125 cold-download hangs once every file gets its own slot, vs 2/85 on
+// hugot's NewDownloadOptions default of 5). This model needs 6 files
+// (confirmed against the actual flat destination: config.json, model.onnx,
+// special_tokens_map.json, tokenizer_config.json, tokenizer.json,
+// vocab.txt) — hugot's default is already below that, so every cold download
+// contends the buggy semaphore. Set comfortably above the file count so no
+// download ever needs to wait for a slot. See
+// upstream-model-download-bugs-and-the-hugot-upgrade for the upstream issue
+// and the pinned dependency versions this mitigates against.
+const modelDownloadConcurrentConnections = 10
+
 // modelCacheLockTimeout bounds how long NewONNX waits to acquire the model
 // cache lock before giving up with a clean, attributable error instead of
 // blocking indefinitely behind a stuck holder (e.g., one that hit the known
@@ -247,6 +262,7 @@ func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEm
 
 	dlOpts := hugot.NewDownloadOptions()
 	dlOpts.OnnxFilePath = "onnx/model.onnx"
+	dlOpts.ConcurrentConnections = modelDownloadConcurrentConnections
 
 	// hugot.DownloadModel forces a network round trip on every call, even on
 	// a fully warm cache: go-huggingface's readCommitHashForRevision() always
