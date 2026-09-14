@@ -238,3 +238,55 @@ func TestConfigSyncPruneOfUntrackedMirrorDoesNotPoisonTheBatch(t *testing.T) {
 		t.Errorf("the tracked deletion did not reach git — one untracked path poisoned the batch (err=%v)", err)
 	}
 }
+
+// gitifyVaultUnborn turns an already-seeded vault into a git repository with
+// NO commit yet — HEAD names no commit, exactly as a freshly `vp init`-ed
+// git vault looks before anything is committed to it. Mirrors gitifyVault's
+// setup (identity, the canonical .gitignore for the prune's own sidecars) but
+// deliberately stops short of the seed commit: that commit is the one thing
+// this fixture must not have.
+func gitifyVaultUnborn(t *testing.T, vaultPath string) {
+	t.Helper()
+	gitInVault(t, vaultPath, "init", "-b", "main")
+	gitInVault(t, vaultPath, "config", "user.email", "test@test.com")
+	gitInVault(t, vaultPath, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(vaultPath, ".gitignore"),
+		[]byte(".vp-locks/\n*.bak\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+}
+
+// TestConfigSyncPruneOnUnbornHeadVaultSucceeds is the full-stack proof for
+// fresh-vault-unborn-head-defers-every-templates-prune: a freshly `vp
+// init`-ed git vault with no commit yet must prune a byte-identical mirror
+// and exit ExitOK — not defer every path forever with exit status 2 because
+// treeEntryOID's `git ls-tree HEAD` faults on an unborn HEAD. This is the
+// literal CLI-level reproduction the bug report used (`vp config sync --yes`
+// against a fresh `vp init` vault, Evidence's r4_fresh_unborn.sh). The
+// internal/storage unit tests cover the classification logic in isolation;
+// this proves the CLI wiring — InspectVaultGit's VaultGitOK routing,
+// pruneOnGitVault, finishSync's exit-code mapping — carries the fix through
+// end to end.
+func TestConfigSyncPruneOnUnbornHeadVaultSucceeds(t *testing.T) {
+	vaultPath, target, _ := syncPruneSetup(t, "commands/wrap.md")
+	gitifyVaultUnborn(t, vaultPath)
+
+	out, code := runSyncWithStdin(t, "", []string{
+		"--project-root", filepath.Dir(target), "--tier", "vault", "--yes",
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d (want ExitOK) — the unborn-HEAD prune deferred instead of succeeding:\n%s", code, out)
+	}
+	if !strings.Contains(out, "pruned=1") {
+		t.Fatalf("summary missing pruned=1:\n%s", out)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Errorf("pruned mirror still present (err=%v)", err)
+	}
+	// Nothing was committed: an untracked-because-unborn removal needs no
+	// commit, and the fix must not paper over the gap with a phantom first
+	// commit.
+	if err := exec.Command("git", "-C", vaultPath, "rev-parse", "--verify", "-q", "HEAD").Run(); err == nil {
+		t.Error("HEAD is no longer unborn: the fix committed something it shouldn't have")
+	}
+}
