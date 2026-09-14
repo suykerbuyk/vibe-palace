@@ -20,7 +20,10 @@ paths change `Templates/`, and each only removes a file:
   `reconcile.PruneAccepts`, and removes it through `vaultfs.Delete` —
   compare-and-set under the path's lock. On a git vault the prune is
   `storage.PruneMirrorsVerified`, which removes through `vaultfs.Delete`
-  only after the HEAD and remote-tip checks. A path not reached directly
+  only after the HEAD and remote-tip checks; a vault with no commits yet
+  (unborn HEAD, e.g. right after `vp init`) is treated as absent from
+  HEAD rather than deferred or erroring, and is still subject to the
+  same remote-tip check before removal. A path not reached directly
   (`vaultfs.CheckDirectPath`: a symlink in any component, a special
   file) is never pruned. It also removes the retired
   `.vibe-palace/templates.lock` — not a template — when it is untracked
