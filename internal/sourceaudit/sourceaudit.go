@@ -96,7 +96,7 @@ import (
 
 // Finding is one auditable defect in the source tree.
 type Finding struct {
-	Kind   string `json:"kind"`   // KindWriteOnlyField | KindUninvoked | KindUngatedVaultWriter | KindVaultWriteOutsideFunnel | KindSurfaceRemediationLost
+	Kind   string `json:"kind"`   // KindWriteOnlyField | KindUninvoked | KindUngatedVaultWriter | KindVaultWriteOutsideFunnel | KindSurfaceRemediationLost | KindEnvIsolationBypass
 	Symbol string `json:"symbol"` // "storage.SessionMeta.Branch" | "capture.AnalyzeFriction"
 	Pos    string `json:"pos"`    // file:line, for humans; NOT part of identity
 	Detail string `json:"detail"`
@@ -139,6 +139,13 @@ const (
 	// repository the environment names instead of the caller's intended
 	// directory. See gitExecEnvFunnel.
 	KindGitExecUnsafeEnv = "git-exec-unsafe-env"
+
+	// KindEnvIsolationBypass: an internal/integration test sets HOME,
+	// XDG_CONFIG_HOME or CLAUDE_HOME directly via os.Setenv/t.Setenv instead of
+	// routing through testinfra.IsolateEnv, silently reintroducing the
+	// hand-rolled isolation recipes test-infra-shared-env-isolation-fixture
+	// consolidated away. See envIsolationBypass.
+	KindEnvIsolationBypass = "env-isolation-bypass"
 )
 
 // ID is the finding's stable identity for baseline comparison. It deliberately
@@ -227,6 +234,7 @@ func Run(roots ...string) ([]Finding, error) {
 	findings = append(findings, vaultWriteFunnel(files)...)
 	findings = append(findings, surfaceRemediation(files)...)
 	findings = append(findings, gitExecEnvFunnel(files)...)
+	findings = append(findings, envIsolationBypass(files)...)
 
 	sort.Slice(findings, func(i, j int) bool { return findings[i].ID() < findings[j].ID() })
 	return findings, nil
