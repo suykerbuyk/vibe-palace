@@ -489,3 +489,61 @@ func TestCollectIterationCorpus_OnlyLastMatchGetsSummaryRow(t *testing.T) {
 		}
 	}
 }
+
+// TestCollectIterationCorpus_DegenerateCachedSummaryProducesNoSummaryRow is
+// the collector-level regression test for the round's actual bug: a cached
+// storage.IterationSummary can pass the "ok && MatchIndex == matchIndex"
+// check yet carry Summary, Decisions and Unblocks ALL empty/nil.
+// renderIterationSummary then returns "", chunk.Chunk on trimmed-empty input
+// returns nil (0 parts), and the OLD fallback guard
+// (strings.TrimSpace(rendered) != "") is ALSO false in that case — so sParts
+// stays empty and the summary-row append loop never runs. The old code had no
+// signal that this happened: cached.MatchIndex == matchIndex was true, but
+// zero rows were actually appended. A raw row's SummaryAvailable must reflect
+// ACTUAL emission, not that stale pre-check — so this test would still fail
+// if an implementation set summaryEmitted from
+// "ok && cached.MatchIndex == matchIndex" alone, dropping the
+// len(sParts) > 0 gate.
+func TestCollectIterationCorpus_DegenerateCachedSummaryProducesNoSummaryRow(t *testing.T) {
+	_, v := testEngine(t)
+	const project = "sum-degenerate"
+
+	writeIterationsMD(t, v.Root, project, strings.Join([]string{
+		"## Iteration 4 — fourth",
+		"",
+		"DEGENERATE_CACHE_RAW_BODY_MARKER narrative text.",
+		"",
+		"---",
+		"",
+	}, "\n"))
+
+	// Passes ok && MatchIndex == matchIndex, but renders to an empty string.
+	degenerate := storage.IterationSummary{
+		N:          4,
+		MatchIndex: 0,
+		Summary:    "",
+		Decisions:  nil,
+		Unblocks:   "",
+	}
+	if err := v.WriteIterationSummary(project, degenerate); err != nil {
+		t.Fatalf("WriteIterationSummary: %v", err)
+	}
+
+	_, _, metas, err := collectIterationCorpus(v, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summaryRows, rawRows := metasByType(metas)
+
+	if len(summaryRows) != 0 {
+		t.Fatalf("a degenerate cached summary (all fields empty) must produce ZERO summary rows, got %d: %+v", len(summaryRows), summaryRows)
+	}
+
+	rm, ok := findHitContainingMeta(rawRows, "DEGENERATE_CACHE_RAW_BODY_MARKER")
+	if !ok {
+		t.Fatalf("expected the raw row to still be present and findable by its own content; rows=%+v", rawRows)
+	}
+	if rm.SummaryAvailable {
+		t.Error("raw row SummaryAvailable = true, want false — no summary row was actually emitted")
+	}
+}

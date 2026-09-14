@@ -834,6 +834,242 @@ func TestRebuildClearsStaleIndex(t *testing.T) {
 	}
 }
 
+// TestSearch_IterationRawHiddenByDefaultWhenSummaryExists is the engine-level
+// proof of the suppression fix: once an iteration entry has a summary row,
+// default Search (IncludeRaw unset/false) must never surface that entry's
+// RAW row — even for a query term that appears ONLY in the raw text and
+// nowhere in the summary. That last part matters: a naive "just stop
+// suppressing and let vector scoring sort it out" implementation would still
+// surface the raw row here, because it is the only (or best) candidate for
+// that term. The suppression must be a hard filter, not a scoring nudge.
+func TestSearch_IterationRawHiddenByDefaultWhenSummaryExists(t *testing.T) {
+	eng, v := testEngine(t)
+	ctx := context.Background()
+	const project = "hide-raw-default"
+	const rawMarker = "RIVET_RAW_ONLY_RAW_MARKER"
+
+	writeIterationsMD(t, v.Root, project, strings.Join([]string{
+		"## Iteration 1 — first",
+		"",
+		"Body containing " + rawMarker + " and nothing the summary will mention.",
+		"",
+		"---",
+		"",
+	}, "\n"))
+
+	cached := storage.IterationSummary{
+		N:          1,
+		MatchIndex: 0,
+		Summary:    "A summary that never mentions the raw-only marker at all.",
+	}
+	if err := v.WriteIterationSummary(project, cached); err != nil {
+		t.Fatalf("WriteIterationSummary: %v", err)
+	}
+
+	if _, err := eng.Rebuild(ctx, project); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	results, err := eng.Search(ctx, rawMarker, SearchFilters{Project: project, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range results {
+		if r.SourceType == iterationRawSourceType {
+			t.Fatalf("default search surfaced the RAW row for a raw-only term when a summary row exists: %+v", r)
+		}
+	}
+}
+
+// TestSearch_IterationIncludeRawRestoresRawAlongsideSummary verifies the
+// opt-in half: SearchFilters{IncludeRaw: true} makes both the raw row and the
+// summary row visible for the same entry, restoring exactly what the default
+// path hides.
+func TestSearch_IterationIncludeRawRestoresRawAlongsideSummary(t *testing.T) {
+	eng, v := testEngine(t)
+	ctx := context.Background()
+	const project = "include-raw"
+	const rawMarker = "TARSIER_INCLUDE_RAW_MARKER"
+
+	writeIterationsMD(t, v.Root, project, strings.Join([]string{
+		"## Iteration 1 — first",
+		"",
+		"Body containing " + rawMarker + ".",
+		"",
+		"---",
+		"",
+	}, "\n"))
+
+	cached := storage.IterationSummary{
+		N:          1,
+		MatchIndex: 0,
+		Summary:    "Cached summary text for the same entry.",
+	}
+	if err := v.WriteIterationSummary(project, cached); err != nil {
+		t.Fatalf("WriteIterationSummary: %v", err)
+	}
+
+	if _, err := eng.Rebuild(ctx, project); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	results, err := eng.Search(ctx, rawMarker, SearchFilters{Project: project, Limit: 10, IncludeRaw: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawRaw, sawSummary bool
+	for _, r := range results {
+		switch r.SourceType {
+		case iterationRawSourceType:
+			sawRaw = true
+		case iterationSourceType:
+			sawSummary = true
+		}
+	}
+	if !sawRaw {
+		t.Errorf("IncludeRaw: true must restore the raw row; results=%+v", results)
+	}
+	if !sawSummary {
+		t.Errorf("IncludeRaw: true must not hide the summary row; results=%+v", results)
+	}
+}
+
+// TestSearch_IterationRawStillDefaultVisibleWithoutSummary is the recall
+// regression guard: the second design trap this change must avoid is
+// unconditionally hiding every raw row. An entry with NO cached summary at
+// all must still surface its raw row under the default (IncludeRaw
+// unset/false) — this is the common case (most entries are never
+// summarized), so getting it wrong would be a much bigger regression than
+// the bug this round fixes.
+func TestSearch_IterationRawStillDefaultVisibleWithoutSummary(t *testing.T) {
+	eng, v := testEngine(t)
+	ctx := context.Background()
+	const project = "no-summary-default"
+	const rawMarker = "OKAPI_NO_SUMMARY_RAW_MARKER"
+
+	writeIterationsMD(t, v.Root, project, strings.Join([]string{
+		"## Iteration 1 — first",
+		"",
+		"Body containing " + rawMarker + ".",
+		"",
+		"---",
+		"",
+	}, "\n"))
+
+	if _, err := eng.Rebuild(ctx, project); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	results, err := eng.Search(ctx, rawMarker, SearchFilters{Project: project, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := findHitContaining(results, rawMarker)
+	if !ok {
+		t.Fatalf("expected the raw row visible by default when no summary exists; results=%+v", results)
+	}
+	if got.SourceType != iterationRawSourceType {
+		t.Errorf("SourceType = %q, want %q", got.SourceType, iterationRawSourceType)
+	}
+}
+
+// TestSearch_NoteRawHiddenByDefaultWhenSummaryExists mirrors
+// TestSearch_IterationRawHiddenByDefaultWhenSummaryExists for the note
+// corpus: a session note with meta.SearchSummary set must have its raw row
+// hidden from default Search.
+func TestSearch_NoteRawHiddenByDefaultWhenSummaryExists(t *testing.T) {
+	eng, v := testEngine(t)
+	ctx := context.Background()
+	const project = "note-hide-raw-default"
+	const rawMarker = "MANATEE_RAW_ONLY_NOTE_MARKER"
+
+	writeSessionNoteWithSummary(t, v.Root, project, "2026-09-01-1234abcd-01", "2026-09-01", "wrap",
+		"Wrap body containing "+rawMarker+" and nothing else.",
+		"A dense search summary that never mentions the raw-only marker.")
+
+	if _, err := eng.Rebuild(ctx, project); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	results, err := eng.Search(ctx, rawMarker, SearchFilters{Project: project, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range results {
+		if r.SourceType == noteSourceType {
+			t.Fatalf("default search surfaced the RAW note row for a raw-only term when a summary row exists: %+v", r)
+		}
+	}
+}
+
+// TestSearch_NoteIncludeRawRestoresRawAlongsideSummary mirrors
+// TestSearch_IterationIncludeRawRestoresRawAlongsideSummary for the note
+// corpus.
+func TestSearch_NoteIncludeRawRestoresRawAlongsideSummary(t *testing.T) {
+	eng, v := testEngine(t)
+	ctx := context.Background()
+	const project = "note-include-raw"
+	const rawMarker = "CAPYBARA_INCLUDE_RAW_NOTE_MARKER"
+
+	writeSessionNoteWithSummary(t, v.Root, project, "2026-09-02-1234abcd-01", "2026-09-02", "wrap",
+		"Wrap body containing "+rawMarker+".",
+		"Cached search summary text for the same note.")
+
+	if _, err := eng.Rebuild(ctx, project); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	results, err := eng.Search(ctx, rawMarker, SearchFilters{Project: project, Limit: 10, IncludeRaw: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawRaw, sawSummary bool
+	for _, r := range results {
+		switch r.SourceType {
+		case noteSourceType:
+			sawRaw = true
+		case noteSummarySourceType:
+			sawSummary = true
+		}
+	}
+	if !sawRaw {
+		t.Errorf("IncludeRaw: true must restore the raw note row; results=%+v", results)
+	}
+	if !sawSummary {
+		t.Errorf("IncludeRaw: true must not hide the note summary row; results=%+v", results)
+	}
+}
+
+// TestSearch_NoteRawStillDefaultVisibleWithoutSummary mirrors
+// TestSearch_IterationRawStillDefaultVisibleWithoutSummary for the note
+// corpus: a note with no SearchSummary must still surface its raw row by
+// default.
+func TestSearch_NoteRawStillDefaultVisibleWithoutSummary(t *testing.T) {
+	eng, v := testEngine(t)
+	ctx := context.Background()
+	const project = "note-no-summary-default"
+	const rawMarker = "AXOLOTL_NO_SUMMARY_NOTE_MARKER"
+
+	writeSessionNote(t, v.Root, project, "2026-09-03-1234abcd-01", "2026-09-03", "wrap",
+		"Wrap body containing "+rawMarker+".")
+
+	if _, err := eng.Rebuild(ctx, project); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	results, err := eng.Search(ctx, rawMarker, SearchFilters{Project: project, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := findHitContaining(results, rawMarker)
+	if !ok {
+		t.Fatalf("expected the raw note row visible by default when no summary exists; results=%+v", results)
+	}
+	if got.SourceType != noteSourceType {
+		t.Errorf("SourceType = %q, want %q", got.SourceType, noteSourceType)
+	}
+}
+
 // TestIndexDrawersMixedBatch verifies that a batch with a mix of pre-computed
 // and nil vectors embeds only the missing ones and indexes all entries.
 func TestIndexDrawersMixedBatch(t *testing.T) {

@@ -28,6 +28,15 @@ type drawerMeta struct {
 	Date       string
 	Content    string
 	ChunkIndex int
+
+	// SummaryAvailable is set true only on a RAW row's metadata, only when the
+	// collector also emitted a summary row for the same entity in this same
+	// Rebuild pass. It is the suppression signal for Search's default
+	// raw-hiding behavior — checked as a boolean, never derived from
+	// SourceType string comparison (the un-suffixed SourceType literal means
+	// SUMMARY for the iteration corpus but RAW for the note corpus, so a
+	// string-based check would be silently wrong for one of them).
+	SummaryAvailable bool
 }
 
 // Engine implements hybrid semantic + structural search.
@@ -271,6 +280,9 @@ func (e *Engine) searchReady(ctx context.Context, query string, f SearchFilters)
 			continue
 		}
 		if !matchesFilters(meta, f) {
+			continue
+		}
+		if !f.IncludeRaw && meta.SummaryAvailable {
 			continue
 		}
 

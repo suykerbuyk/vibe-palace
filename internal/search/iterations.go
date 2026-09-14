@@ -138,6 +138,7 @@ func collectIterationCorpus(vault *storage.Vault, project string) (ids []string,
 
 		// Summary row: only the entry that is the current last match for its
 		// N may ever get one, and only when a non-stale cache exists.
+		summaryEmitted := false
 		if isLastMatch {
 			cached, ok, rerr := vault.ReadIterationSummary(project, e.N)
 			if rerr != nil {
@@ -149,6 +150,16 @@ func collectIterationCorpus(vault *storage.Vault, project string) (ids []string,
 				if len(sParts) == 0 && strings.TrimSpace(rendered) != "" {
 					sParts = []string{rendered}
 				}
+				// A degenerate cached summary (Summary, Decisions and Unblocks
+				// all empty/nil) renders to an all-whitespace-or-empty string:
+				// chunk.Chunk on trimmed-empty input returns nil, and the
+				// fallback above is also a no-op since TrimSpace(rendered) is
+				// also empty. summaryEmitted must reflect that — computed
+				// AFTER the fallback, from whether any chunk actually exists
+				// to append — never from ok && cached.MatchIndex == matchIndex
+				// alone, or a summary row could be reported as emitted when
+				// the loop below appends nothing.
+				summaryEmitted = len(sParts) > 0
 				sRef := iterationSourceRef(e.N, matchIndex)
 				for cIdx, part := range sParts {
 					ids = append(ids, iterationCacheID(project, e.N, matchIndex, cIdx))
@@ -190,15 +201,16 @@ func collectIterationCorpus(vault *storage.Vault, project string) (ids []string,
 			ids = append(ids, iterationRawCacheID(project, e.N, matchIndex, cIdx))
 			texts = append(texts, part)
 			metas = append(metas, drawerMeta{
-				Project:    project,
-				Wing:       iterationWing,
-				Room:       iterationRoom,
-				Hall:       iterationHall,
-				SourceType: iterationRawSourceType,
-				SourceRef:  rRef,
-				Date:       "",
-				Content:    part,
-				ChunkIndex: cIdx,
+				Project:          project,
+				Wing:             iterationWing,
+				Room:             iterationRoom,
+				Hall:             iterationHall,
+				SourceType:       iterationRawSourceType,
+				SourceRef:        rRef,
+				Date:             "",
+				Content:          part,
+				ChunkIndex:       cIdx,
+				SummaryAvailable: summaryEmitted,
 			})
 		}
 	}

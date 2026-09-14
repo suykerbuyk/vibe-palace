@@ -173,15 +173,16 @@ func collectNoteCorpus(vault *storage.Vault, project string) (ids []string, text
 			ids = append(ids, noteCacheID(project, stem, cIdx))
 			texts = append(texts, part)
 			metas = append(metas, drawerMeta{
-				Project:    project,
-				Wing:       noteWing,
-				Room:       noteRoom,
-				Hall:       noteHall,
-				SourceType: noteSourceType,
-				SourceRef:  ref,
-				Date:       date,
-				Content:    part,
-				ChunkIndex: cIdx,
+				Project:          project,
+				Wing:             noteWing,
+				Room:             noteRoom,
+				Hall:             noteHall,
+				SourceType:       noteSourceType,
+				SourceRef:        ref,
+				Date:             date,
+				Content:          part,
+				ChunkIndex:       cIdx,
+				SummaryAvailable: meta.SearchSummary != "",
 			})
 		}
 

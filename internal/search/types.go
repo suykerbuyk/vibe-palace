@@ -26,4 +26,10 @@ type SearchFilters struct {
 	DateFrom string `json:"date_from,omitempty"`
 	DateTo   string `json:"date_to,omitempty"`
 	Limit    int    `json:"limit,omitempty"`
+
+	// IncludeRaw opts into seeing RAW rows even when their sibling SUMMARY row
+	// exists for the same entity. By default (false) a RAW row whose metadata
+	// carries SummaryAvailable is suppressed in searchReady — see drawerMeta
+	// in engine.go.
+	IncludeRaw bool `json:"include_raw,omitempty"`
 }
