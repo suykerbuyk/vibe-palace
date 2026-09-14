@@ -509,7 +509,7 @@ func normalizeSplitSlugs(in []string) ([]string, error) {
 	seen := make(map[string]bool, len(in))
 	out := make([]string, 0, len(in))
 	for _, s := range in {
-		if err := slug.Validate(s); err != nil {
+		if err := slug.ValidateCreatable(s); err != nil {
 			return nil, apperr.Caller(fmt.Errorf("slug: %w", err))
 		}
 		if seen[s] {

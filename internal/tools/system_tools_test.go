@@ -464,6 +464,34 @@ func TestInitProjectRelativePath(t *testing.T) {
 	}
 }
 
+// TestInitProject_RejectsReservedDeviceName is the MCP-side twin of
+// cmd/vp's TestInitRejectsReservedDeviceName: `vp_init {name: "con"}` (and any
+// other Windows-reserved device name) must be refused at creation, not
+// silently degraded to a skip downstream, and must not create a
+// Projects/<name>/ directory in the vault.
+func TestInitProject_RejectsReservedDeviceName(t *testing.T) {
+	sandboxHostEnv(t)
+	vaultDir := t.TempDir()
+	vault := storage.NewVault(vaultDir)
+	tool := InitProjectTool(vault)
+
+	for _, reserved := range []string{"con", "aux", "com1"} {
+		t.Run(reserved, func(t *testing.T) {
+			projDir := markProjectTree(t, filepath.Join(t.TempDir(), reserved))
+			params, _ := json.Marshal(initParams{Path: projDir, Name: reserved})
+			if _, err := tool.Handler(context.Background(), params); err == nil {
+				t.Fatalf("expected an error for reserved device name %q", reserved)
+			}
+			if _, err := os.Stat(filepath.Join(projDir, project.ConfigFileName)); err == nil {
+				t.Errorf("%s was written despite the reserved name being refused", project.ConfigFileName)
+			}
+			if _, err := os.Stat(filepath.Join(vaultDir, "Projects", reserved)); err == nil {
+				t.Errorf("Projects/%s was created in the vault despite the reserved name being refused", reserved)
+			}
+		})
+	}
+}
+
 // TestInitProjectAlreadyExists is INVERTED, deliberately, and the inversion is
 // the point of the change rather than a side effect of it.
 //

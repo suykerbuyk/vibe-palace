@@ -403,7 +403,7 @@ func scanProjects(vaultRoot string, resolver SlugResolver) (map[string]string, m
 			if rerr != nil {
 				return nil, nil, rerr
 			}
-			if verr := slug.Validate(newSlug); verr != nil {
+			if verr := slug.ValidateCreatable(newSlug); verr != nil {
 				return nil, nil, fmt.Errorf("resolver returned invalid slug %q: %w", newSlug, verr)
 			}
 			if taken[newSlug] {

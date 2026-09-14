@@ -115,7 +115,7 @@ type MapResolver struct {
 // On miss delegates to Fallback.
 func (r *MapResolver) Resolve(collidingDir, existingDir, slugVal string, taken map[string]bool) (string, error) {
 	if mapped, ok := r.Map[slugVal]; ok {
-		if err := slug.Validate(mapped); err != nil {
+		if err := slug.ValidateCreatable(mapped); err != nil {
 			return "", fmt.Errorf("slug-map value for %q is invalid: %w", slugVal, err)
 		}
 		if taken[mapped] {
@@ -175,7 +175,7 @@ func (r *InteractiveResolver) Resolve(collidingDir, existingDir, slugVal string,
 		if entered == "" {
 			entered = proposal
 		}
-		if verr := slug.Validate(entered); verr != nil {
+		if verr := slug.ValidateCreatable(entered); verr != nil {
 			fmt.Fprintf(out, "  invalid slug: %v\n", verr)
 			continue
 		}
@@ -216,7 +216,7 @@ func ParseSlugMap(s string) (map[string]string, error) {
 		if _, dup := out[k]; dup {
 			return nil, fmt.Errorf("slug-map has duplicate key %q", k)
 		}
-		if err := slug.Validate(v); err != nil {
+		if err := slug.ValidateCreatable(v); err != nil {
 			return nil, fmt.Errorf("slug-map value %q invalid: %w", v, err)
 		}
 		out[k] = v

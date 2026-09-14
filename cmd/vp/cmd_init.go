@@ -404,7 +404,7 @@ func initProject(fv *cli.FlagValues) (onboard.Request, []check.Result, int, bool
 	if name == "" {
 		name = filepath.Base(dir)
 	}
-	if err := slug.Validate(name); err != nil {
+	if err := slug.ValidateCreatable(name); err != nil {
 		results = append(results, check.Result{
 			Name:    "Project config",
 			Status:  check.Fail,

@@ -199,7 +199,7 @@ func initProjectHandler(vault *storage.Vault) mcp.HandlerFunc {
 				name = filepath.Base(p.Path)
 			}
 		}
-		if err := slug.Validate(name); err != nil {
+		if err := slug.ValidateCreatable(name); err != nil {
 			return nil, fmt.Errorf("invalid project name %q: %w", name, err)
 		}
 

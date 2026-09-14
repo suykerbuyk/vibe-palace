@@ -321,6 +321,50 @@ func TestInitInvalidName(t *testing.T) {
 	}
 }
 
+// TestInitRejectsReservedDeviceName pins the fix for
+// slug-validate-accepts-windows-reserved-device-names: `vp init con` (and any
+// other Windows-reserved device name) must be refused AT CREATION with a
+// non-zero exit, not silently degraded to a skip somewhere downstream — and no
+// Projects/<name>/ directory must exist in the vault afterward.
+func TestInitRejectsReservedDeviceName(t *testing.T) {
+	for _, reserved := range []string{"con", "aux", "com1"} {
+		t.Run(reserved, func(t *testing.T) {
+			configDir, _ := initTestEnv(t, true)
+			globalData, err := os.ReadFile(filepath.Join(configDir, "vibe-palace", "config.toml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			vaultDir := ""
+			for line := range strings.SplitSeq(string(globalData), "\n") {
+				if after, ok := strings.CutPrefix(line, "vault_path = "); ok {
+					vaultDir = strings.Trim(after, `"`)
+					break
+				}
+			}
+			if vaultDir == "" {
+				t.Fatal("could not determine vault path from global config")
+			}
+
+			dir := t.TempDir()
+			markProjectDir(t, dir)
+			cmd := cmdInit(cli.BuildInfo{Version: "test"})
+			code := cmd.Run([]string{dir, "--name", reserved})
+			if code != cli.ExitUser {
+				t.Errorf("exit code = %d, want %d (reserved device name %q)", code, cli.ExitUser, reserved)
+			}
+
+			// Refused at creation, not just reported: the cwd-side marker
+			// must not exist either.
+			if _, err := os.Stat(filepath.Join(dir, project.ConfigFileName)); err == nil {
+				t.Errorf("%s was written despite the reserved name being refused", project.ConfigFileName)
+			}
+			if _, err := os.Stat(filepath.Join(vaultDir, "Projects", reserved)); err == nil {
+				t.Errorf("Projects/%s was created in the vault despite the reserved name being refused", reserved)
+			}
+		})
+	}
+}
+
 func TestInitAutoDetectsName(t *testing.T) {
 	initTestEnv(t, true)
 	dir := filepath.Join(t.TempDir(), "my-project")

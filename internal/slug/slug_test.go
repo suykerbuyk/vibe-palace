@@ -105,3 +105,59 @@ func TestValidate(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateCreatable pins the fix for
+// slug-validate-accepts-windows-reserved-device-names: a Windows reserved
+// device name must be refused for a NEW project/room/wing name, even though
+// it passes the plain slugPattern regex Validate uses.
+func TestValidateCreatable(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{name: "ordinary valid slug", input: "hello-world", wantErr: false},
+
+		// Windows reserved device names — the actual bug. Validate alone
+		// accepts every one of these.
+		{name: "con", input: "con", wantErr: true},
+		{name: "aux", input: "aux", wantErr: true},
+		{name: "nul", input: "nul", wantErr: true},
+		{name: "prn", input: "prn", wantErr: true},
+		{name: "com1", input: "com1", wantErr: true},
+		{name: "lpt1", input: "lpt1", wantErr: true},
+
+		// A reserved name is not merely a PREFIX match — "console" and
+		// "auxiliary" are real, legal slugs and must not be caught by a naive
+		// substring check.
+		{name: "reserved-name prefix is fine", input: "console", wantErr: false},
+		{name: "reserved-name prefix is fine 2", input: "auxiliary", wantErr: false},
+
+		// Validate's own rejections must still surface, unchanged, through
+		// ValidateCreatable — it must not silently swallow them or replace
+		// them with a portability-specific message.
+		{name: "already invalid per Validate", input: "BAD SLUG", wantErr: true},
+		{name: "empty string", input: "", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateCreatable(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateCreatable(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+		})
+	}
+
+	// Validate's own error message must still be the one returned for a
+	// string Validate itself rejects — ValidateCreatable must not mask it
+	// behind vaultfs's error or its own.
+	err := ValidateCreatable("BAD SLUG")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	wantValidateErr := Validate("BAD SLUG")
+	if err.Error() != wantValidateErr.Error() {
+		t.Errorf("ValidateCreatable(%q) = %q, want Validate's own message %q", "BAD SLUG", err, wantValidateErr)
+	}
+}

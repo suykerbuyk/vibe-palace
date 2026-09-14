@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
 // slugPattern matches valid slugs: lowercase alphanumeric segments separated
@@ -35,6 +37,25 @@ func Validate(s string) error {
 		return fmt.Errorf("slug %q must contain only lowercase alphanumeric characters and hyphens", s)
 	}
 	return nil
+}
+
+// ValidateCreatable checks whether s is valid both as a slug (Validate) and as
+// a portable filesystem segment (vaultfs.ValidatePortableSegment) — the check
+// a NEW project, room, or wing name must pass before anything is created or
+// renamed onto it on disk. It rejects everything Validate does, plus Windows
+// reserved device names (con, aux, nul, com1-9, lpt1-9) that Validate's regex
+// alone does not know about.
+//
+// Call sites that merely validate an ALREADY-EXISTING identifier — a path
+// builder, a directory-scan filter, a lookup by name — must keep calling
+// Validate: a reserved name already on disk (a vault whose project was
+// created on a non-Windows host before this check existed) must stay
+// readable even though it should never again become creatable.
+func ValidateCreatable(s string) error {
+	if err := Validate(s); err != nil {
+		return err
+	}
+	return vaultfs.ValidatePortableSegment(s)
 }
 
 // Slugify produces a URL-safe slug from an arbitrary string.
