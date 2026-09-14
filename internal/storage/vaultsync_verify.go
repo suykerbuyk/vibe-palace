@@ -119,7 +119,11 @@ func (o *PruneOutcome) err() error {
 //
 //   - present, but its worktree bytes are not vp's: kept (changed since plan);
 //   - index differs from HEAD (a staged change or a staged add): kept;
-//   - absent from HEAD: an untracked mirror, removed with nothing to commit;
+//   - absent from HEAD: an untracked mirror, removed with nothing to commit —
+//     this includes a vault whose HEAD does not exist yet (a freshly
+//     initialized repository with no commits), detected via headExists
+//     rather than by matching git's error text, and such a path still goes
+//     through the same remote-tip check below as any other untracked one;
 //   - HEAD blob not vp's: the worktree mirror is replaced by HEAD's copy
 //     (`git checkout HEAD --`) — the operator's override comes back, and the
 //     file is never removed; an already-absent path is someone else's
@@ -211,7 +215,7 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 			out.Errors = append(out.Errors, fmt.Errorf("listing remotes: %w", err))
 			return nil, out, out.err()
 		}
-		if b, _ := gitCmd(vaultPath, 10*time.Second, "rev-parse", "--abbrev-ref", "HEAD"); b != "" {
+		if b, err := gitCmd(vaultPath, 10*time.Second, "symbolic-ref", "--short", "HEAD"); err == nil && b != "" {
 			branch = b
 		}
 		if len(remotes) > 0 {
@@ -220,6 +224,18 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 	}
 
 	headBefore, _ := gitCmd(vaultPath, 10*time.Second, "rev-parse", "HEAD")
+
+	// A vault whose HEAD names no commit yet (a fresh `git init`, or `vp init`
+	// with nothing committed) has nothing in HEAD, not a git fault: every path
+	// is "absent from HEAD" without a treeEntryOID call, which would otherwise
+	// report the genuine 128 exit an unborn HEAD produces as a git error.
+	headBorn, hbErr := headExists(vaultPath)
+	if hbErr != nil {
+		for _, rel := range paths {
+			out.deferOn(rel, hbErr)
+		}
+		return nil, out, out.err()
+	}
 
 	// Every committed or remote copy is read as git would check it out. A
 	// filter driver that cannot be listed leaves nothing verifiable: every
@@ -238,6 +254,13 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 		rel     string
 		present bool
 		tracked bool
+		// verifyRemote is whether this candidate must pass the remote-tip
+		// check before it can be removed: every tracked candidate, plus every
+		// untracked one that is untracked ONLY because HEAD itself is unborn
+		// (a remote may already hold real content nobody has pulled yet). A
+		// candidate absent from HEAD because a born HEAD simply never held it
+		// does not need the check — nothing has ever been committed there.
+		verifyRemote bool
 	}
 	var cands []candidate
 	for _, rel := range paths {
@@ -254,10 +277,15 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 			out.deferOn(rel, err)
 			continue
 		}
-		headOID, inHead, err := treeEntryOID(vaultPath, "HEAD", rel)
-		if err != nil {
-			out.deferOn(rel, err)
-			continue
+		var headOID string
+		var inHead bool
+		if headBorn {
+			var err error
+			headOID, inHead, err = treeEntryOID(vaultPath, "HEAD", rel)
+			if err != nil {
+				out.deferOn(rel, err)
+				continue
+			}
 		}
 		indexOID, inIndex, err := indexEntryOID(vaultPath, rel)
 		if err != nil {
@@ -269,7 +297,7 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 			continue
 		}
 		if !inHead {
-			cands = append(cands, candidate{rel: rel, present: present})
+			cands = append(cands, candidate{rel: rel, present: present, verifyRemote: !headBorn})
 			continue
 		}
 		// The restore below is reached only after this read SUCCEEDED and its
@@ -295,7 +323,7 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 			out.Restored = append(out.Restored, rel)
 			continue
 		}
-		cands = append(cands, candidate{rel: rel, present: present, tracked: true})
+		cands = append(cands, candidate{rel: rel, present: present, tracked: true, verifyRemote: true})
 	}
 
 	// The enclosing-repo form never finishes a tracked prune: that would
@@ -318,16 +346,19 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 	// exists that this host has not pulled. Pruning here would commit a
 	// deletion that either strands behind it or, merged later, deletes it.
 	// The tips are only trusted fresh: a remote that cannot be fetched, or
-	// whose tracking ref does not resolve afterwards, defers every tracked
-	// prune — a stale ref is exactly how an offline host would miss the
-	// override.
-	var tracked int
+	// whose tracking ref does not resolve afterwards, defers every candidate
+	// this check applies to (verifyRemote) — a stale ref is exactly how an
+	// offline host would miss the override. This includes an untracked
+	// candidate that is untracked only because HEAD is unborn: nothing is
+	// committed locally, but a remote may already hold real content nobody
+	// here has pulled yet.
+	var needsRemoteCheck int
 	for _, c := range cands {
-		if c.tracked {
-			tracked++
+		if c.verifyRemote {
+			needsRemoteCheck++
 		}
 	}
-	if len(remotes) > 0 && tracked > 0 {
+	if len(remotes) > 0 && needsRemoteCheck > 0 {
 		var unverified []string
 		for _, remote := range remotes {
 			if _, err := gitCmd(vaultPath, 60*time.Second, "fetch", "-q", remote); err != nil {
@@ -343,7 +374,7 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 		var kept []candidate
 		for _, c := range cands {
 			switch {
-			case !c.tracked:
+			case !c.verifyRemote:
 				kept = append(kept, c)
 			case len(unverified) > 0:
 				out.keep(c.rel, "prune deferred: remote not verified ("+strings.Join(unverified, ", ")+
