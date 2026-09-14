@@ -2101,7 +2101,8 @@ clearing it restores the byte-identical plain body).
 queue and drain: enqueue round-trip, drain happy path, the byte-identical
 inline-vs-drain convergence (and `EnrichedAt` preserved on re-drain), transient
 failure renames the claim back (no stranded `.processing`), an already-claimed
-`.processing` item is left untouched (glob invisibility), corrupt-item removal,
+`.processing` item is left untouched (it does not match `jobqueue.Claim`'s
+`.json`-suffix check), corrupt-item removal,
 nil-result enqueue, the `max` cap, the nil-enricher / empty-queue no-ops, and
 `TestWriteSessionEnqueueOnMiss` / `TestWriteSessionNoEnqueueWithoutCWD`.
 

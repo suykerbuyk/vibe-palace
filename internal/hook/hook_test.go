@@ -15,8 +15,11 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
+	"github.com/suykerbuyk/vibe-palace/internal/capture"
+	"github.com/suykerbuyk/vibe-palace/internal/enrichment"
 	"github.com/suykerbuyk/vibe-palace/internal/memorytestutil"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -355,6 +358,148 @@ func TestRun_EnrichmentEnabled(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("enriched note missing %q\n---\n%s", want, body)
 		}
+	}
+}
+
+// TestRun_SessionEndDrainsQueuedEnrichmentFromBracketedProjectPath is this
+// phase's integration-level proof for the SessionEnd hook entrypoint: it
+// calls Run — the hook's real top-level dispatch function, exactly as
+// cmd/vp/cmd_hook.go's Run: closure does for every real "SessionEnd" hook
+// invocation — with a CWD whose path contains a bracketed segment
+// ("proj[1]"), and a real enrichment job already queued on disk (written via
+// capture.EnqueueEnrichment, the package's own real enqueue path) inside
+// that bracketed CWD's .vibe-palace/enrichment-queue directory. It reuses
+// TestRun_EnrichmentEnabled's httptest-server + [enrichment]-enabled project
+// config pattern to get a real, non-nil *enrichment.Enricher — the same
+// infrastructure this package's own tests already use to avoid hitting a
+// real LLM API — so DrainEnrichmentQueue (called from Run's own SessionEnd
+// drain step) actually attempts the queued job instead of short-circuiting
+// on a nil enricher.
+//
+// This specifically pins Bug 3: internal/jobqueue.Claim (which
+// DrainEnrichmentQueue is now built on) used to be reached via
+// filepath.Glob(filepath.Join(dir, "*.json")). '[' and ']' are glob
+// metacharacters, so a queue directory nested under a bracketed CWD (as
+// here) would make that pattern silently fail to match the real,
+// already-on-disk job file — it would sit in the queue forever, un-drained,
+// with no error surfaced anywhere in the hook's own non-fatal logging. Claim
+// now lists the directory via os.ReadDir and matches by a plain ".json"
+// suffix check, so bracket characters in the path are inert. The assertions
+// below (queue file gone, note enriched) fail exactly the way that bug
+// would have manifested: the job silently left behind, never processed.
+func TestRun_SessionEndDrainsQueuedEnrichmentFromBracketedProjectPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"summary\":\"Auto-enriched summary.\",\"decisions\":[\"Picked the synchronous path\"],\"open_threads\":[\"Add drain telemetry\"],\"tag\":\"implementation\"}"}}]}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("VP_TEST_HOOK_BRACKET_ENRICH_KEY", "sk-hook-bracket-test")
+
+	vaultRoot := t.TempDir()
+	// The bracketed segment is the whole point: the enrichment-queue
+	// directory this test seeds is nested under it, exercising Bug 3's fix
+	// through the full SessionEnd entrypoint rather than a direct package
+	// call.
+	cwd := filepath.Join(t.TempDir(), "proj[1]")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir bracketed cwd: %v", err)
+	}
+	writeVibeMarker(t, cwd)
+	initGitRepo(t, cwd, "initial commit")
+	claimDir := filepath.Join(cwd, ".vibe-palace")
+	if err := os.MkdirAll(claimDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	const project = "test-project"
+	const date = "2026-06-21"
+
+	// Project config enabling enrichment against the test server — same
+	// pattern as TestRun_EnrichmentEnabled, reused rather than reinvented.
+	vault := storage.NewVault(vaultRoot)
+	cfgPath, err := vault.ProjectConfigFile(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgBody := "[enrichment]\n" +
+		"enabled = true\n" +
+		"provider = \"openai\"\n" +
+		"model = \"hook-bracket-enrich-model\"\n" +
+		"api_key_env = \"VP_TEST_HOOK_BRACKET_ENRICH_KEY\"\n" +
+		"base_url = \"" + srv.URL + "\"\n" +
+		"max_tokens = 512\n" +
+		"timeout_seconds = 10\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed a plain (un-enriched) session note directly, then queue a real
+	// enrichment job for it via capture's own enqueue path — mirroring
+	// internal/capture/enrichqueue_test.go's TestDrainEnrichmentQueueHappyPath,
+	// but with the queue living under a bracketed CWD instead of a plain one.
+	fp := surface.WriterFingerprint(vaultRoot)
+	if _, err := vault.WriteSession(project, storage.SessionMeta{
+		Date:    date,
+		Title:   "Plain",
+		Summary: "plain",
+	}, "## Summary\n\nplain\n"); err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	in := enrichment.PromptInput{UserText: "user said things", AssistantText: "assistant replied"}
+	if err := capture.EnqueueEnrichment(cwd, project, date, fp, 1, "", in); err != nil {
+		t.Fatalf("EnqueueEnrichment: %v", err)
+	}
+	queueFile := filepath.Join(cwd, ".vibe-palace", "enrichment-queue", storage.SessionStem(date, fp, 1)+".json")
+	if _, err := os.Stat(queueFile); err != nil {
+		t.Fatalf("queued job not on disk before Run: %v", err)
+	}
+
+	transcriptPath := filepath.Join(t.TempDir(), "transcript.jsonl")
+	if err := os.WriteFile(transcriptPath, []byte(fakeTranscript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Run(context.Background(), Payload{
+		SessionID:      "bracket-drain-session",
+		TranscriptPath: transcriptPath,
+		CWD:            cwd,
+		HookEventName:  "SessionEnd",
+	}, RunOptions{
+		VaultRoot:   vaultRoot,
+		ProjectSlug: project,
+		VPVersion:   "test-0.1",
+		ClaimDir:    claimDir,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Event != "SessionEnd" {
+		t.Errorf("expected event=SessionEnd, got %q", res.Event)
+	}
+
+	// The queued job must be gone: found and processed via the real
+	// SessionEnd entrypoint, not silently left behind in the bracketed
+	// directory the way the pre-fix filepath.Glob bug would have left it.
+	if _, err := os.Stat(queueFile); !os.IsNotExist(err) {
+		t.Errorf("queue file still present after Run (job was not drained): stat err = %v", err)
+	}
+
+	meta, body, err := vault.ReadSession(project, date, fp, 1)
+	if err != nil {
+		t.Fatalf("ReadSession: %v", err)
+	}
+	if meta.Summary != "Auto-enriched summary." {
+		t.Errorf("summary = %q, want the LLM-enriched summary (job was not actually processed)", meta.Summary)
+	}
+	if meta.EnrichedBy != "hook-bracket-enrich-model" {
+		t.Errorf("enriched_by = %q, want hook-bracket-enrich-model", meta.EnrichedBy)
+	}
+	if !strings.Contains(body, "<!-- enriched -->") {
+		t.Errorf("body missing enriched fence:\n%s", body)
 	}
 }
 

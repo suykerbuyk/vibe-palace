@@ -160,11 +160,15 @@ the project repo either.
 
 ### Byte-identical drain via the shared body/marshal helpers
 
-`DrainEnrichmentQueue` processes queued jobs. Each item is **claimed via an
-atomic rename to `<item>.processing`** so a concurrent hook drain and any other
-drain cannot double-process the same job (a `.processing` file is invisible to
-the `*.json` glob). It retries transient enrichment failures by renaming the
-claim back to `.json`; a corrupt item is removed rather than retried forever.
+`DrainEnrichmentQueue` processes queued jobs via `internal/jobqueue`'s
+`Claim`/`Requeue`/`Done` primitives (the claim/dead-letter mechanics originally
+described here, since generalized out of this package). Each item is **claimed
+via an atomic rename to `<item>.processing`** so a concurrent hook drain and
+any other drain cannot double-process the same job — `jobqueue.Claim` lists
+the queue directory with `os.ReadDir` and matches candidates by a `.json`
+suffix check, so a `.processing` file is simply not a match. It retries
+transient enrichment failures by renaming the claim back to `.json`; a corrupt
+item is removed rather than retried forever.
 On success it rewrites the note **in place** via `storage.RewriteSession` — a
 fixed-path overwrite that does **not** increment the iteration and shares the
 `marshalSessionFile` framing helper with `WriteSession`.
@@ -274,6 +278,9 @@ point:
   `internal/capture/enrichqueue.go` (`EnqueueEnrichment`,
   `DrainEnrichmentQueue`), `internal/capture/enricher_config.go`
   (`NewEnricherFromConfig`)
+- Queue mechanics: `internal/jobqueue` (`Claim`/`Requeue`/`Done`/`AtomicWrite`)
+  — `enrichqueue.go`'s own claim/reclaim/dead-letter logic has since been
+  migrated onto these shared primitives rather than reimplementing them
 - Storage: `internal/storage/sessions.go` (`RewriteSession`,
   `marshalSessionFile`, `EnrichedBy`/`EnrichedAt`),
   `internal/storage/config.go` (`EnrichmentConfig`, minor bump),

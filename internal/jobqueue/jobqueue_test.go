@@ -85,8 +85,8 @@ func TestClaimDeterministicOrder(t *testing.T) {
 }
 
 // TestClaimSkipsInFlightClaim proves an already-claimed job (renamed to
-// ".processing" by someone else) is invisible to the "*.json" glob and is
-// left untouched.
+// ".processing" by someone else) does not match Claim's ".json" suffix
+// filter and is left untouched.
 func TestClaimSkipsInFlightClaim(t *testing.T) {
 	dir := t.TempDir()
 	jsonPath := writeJob(t, dir, "a", `{"n":1}`)
@@ -109,8 +109,8 @@ func TestClaimSkipsInFlightClaim(t *testing.T) {
 
 // TestClaimDoesNotClobberOutstandingClaimOnReenqueue pins a real fix, distinct
 // from TestClaimSkipsInFlightClaim above: that test has ONLY a ".processing"
-// file (no fresh ".json" of the same name exists at all, so Claim's glob
-// never even considers it). This test covers the case the earlier fix
+// file (no fresh ".json" of the same name exists at all, so Claim's own
+// ".json"-suffix listing never even considers it). This test covers the case the earlier fix
 // missed: a job is claimed (renamed to ".processing"), and — because
 // internal/summarize's queue filenames are deterministic — the SAME logical
 // job gets re-enqueued while that claim is still outstanding, landing a
@@ -311,7 +311,7 @@ func TestRequeueBelowCapRoundTrip(t *testing.T) {
 		v["attempts"] = attempts
 		return json.Marshal(v)
 	}
-	if err := Requeue(procPath, 1, 5, reencode); err != nil {
+	if _, err := Requeue(procPath, 1, 5, reencode); err != nil {
 		t.Fatalf("Requeue: %v", err)
 	}
 	if reencodeCalledWith != 1 {
@@ -356,8 +356,12 @@ func TestRequeueDeadLetterAtCap(t *testing.T) {
 		reencodeCalled = true
 		return nil, nil
 	}
-	if err := Requeue(procPath, 5, 5, reencode); err != nil {
+	deadLettered, err := Requeue(procPath, 5, 5, reencode)
+	if err != nil {
 		t.Fatalf("Requeue: %v", err)
+	}
+	if !deadLettered {
+		t.Error("deadLettered = false, want true when attempts >= maxAttempts")
 	}
 	if reencodeCalled {
 		t.Error("reencode must not be called once attempts >= maxAttempts")
@@ -396,8 +400,12 @@ func TestRequeueAttemptsAboveCapAlsoDeadLetters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
-	if err := Requeue(procPath, 9, 5, func(int) ([]byte, error) { return nil, nil }); err != nil {
+	deadLettered, err := Requeue(procPath, 9, 5, func(int) ([]byte, error) { return nil, nil })
+	if err != nil {
 		t.Fatalf("Requeue: %v", err)
+	}
+	if !deadLettered {
+		t.Error("deadLettered = false, want true when attempts > maxAttempts")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "a.json.failed")); err != nil {
 		t.Errorf("dead-letter file missing: %v", err)
@@ -413,7 +421,7 @@ func TestRequeueReencodeFailureRestoresClaim(t *testing.T) {
 	}
 
 	boom := fmt.Errorf("boom")
-	err = Requeue(procPath, 1, 5, func(int) ([]byte, error) { return nil, boom })
+	_, err = Requeue(procPath, 1, 5, func(int) ([]byte, error) { return nil, boom })
 	if err == nil {
 		t.Fatal("Requeue: want error on reencode failure")
 	}
@@ -457,7 +465,7 @@ func TestRequeueRestoreDoesNotClobberFreshReenqueue(t *testing.T) {
 	}
 
 	boom := fmt.Errorf("boom")
-	if err := Requeue(procPath, 1, 5, func(int) ([]byte, error) { return nil, boom }); err == nil {
+	if _, err := Requeue(procPath, 1, 5, func(int) ([]byte, error) { return nil, boom }); err == nil {
 		t.Fatal("Requeue: want error on reencode failure")
 	}
 
@@ -493,7 +501,7 @@ func TestRequeueWriteFailureRestoresClaim(t *testing.T) {
 		t.Fatalf("mkdir blocker: %v", err)
 	}
 
-	err = Requeue(procPath, 1, 5, func(int) ([]byte, error) { return []byte(`{"n":1,"attempts":1}`), nil })
+	_, err = Requeue(procPath, 1, 5, func(int) ([]byte, error) { return []byte(`{"n":1,"attempts":1}`), nil })
 	if err == nil {
 		t.Fatal("Requeue: want error when rewrite target is unwritable")
 	}
@@ -541,7 +549,7 @@ func TestClaimRequeueDoneFullRoundTrip(t *testing.T) {
 		v["attempts"] = attempts
 		return json.Marshal(v)
 	}
-	if err := Requeue(procPath, 1, 5, reencode); err != nil {
+	if _, err := Requeue(procPath, 1, 5, reencode); err != nil {
 		t.Fatalf("Requeue: %v", err)
 	}
 

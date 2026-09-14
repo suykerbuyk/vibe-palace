@@ -292,6 +292,45 @@ func TestTriggerSummarizationDrainTool_OrphanedClaimOnlyStillLaunches(t *testing
 	}
 }
 
+// TestTriggerSummarizationDrainTool_BracketedProjectPath pins a real fix: a
+// project_path whose directory name contains "[" and "]" (e.g. a project
+// slug like "proj[1]") must still have its pending job detected. The
+// handler's queue check used to be built on filepath.Glob, which treats "["
+// and "]" in the GLOBBED PATH ITSELF as glob character-class metacharacters
+// (not literal text) — so a queueDir under such a project_path could
+// silently fail to match its own "*.json" files, misreporting a non-empty
+// queue as "empty" and never launching a drain for it. os.ReadDir has no
+// such pattern-interpretation step: it lists the literal directory named by
+// queueDir regardless of what characters its path contains.
+func TestTriggerSummarizationDrainTool_BracketedProjectPath(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	fl := &fakeLaunch{pid: 999}
+	tool := TriggerSummarizationDrainTool(vault, fl.launch)
+
+	parent := t.TempDir()
+	projDir := filepath.Join(parent, "proj[1]")
+	queueDir := filepath.Join(projDir, ".vibe-palace", "summarization-queue")
+	if err := os.MkdirAll(queueDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(queueDir, "iteration-1.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	params, _ := json.Marshal(map[string]any{"project_path": projDir})
+	res, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	out := res.(map[string]any)
+	if out["status"] != "launched" {
+		t.Errorf("status = %v, want launched (a bracketed project_path must not hide its own pending job)", out["status"])
+	}
+	if !fl.called {
+		t.Fatal("launch was not called for a bracketed project_path with a pending job")
+	}
+}
+
 func TestTriggerSummarizationDrainTool_LaunchError(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
 	fl := &fakeLaunch{err: os.ErrPermission}

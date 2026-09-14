@@ -121,17 +121,29 @@ func cmdDrainSummaries() *cli.Command {
 				max = drainSummariesDefaultMax
 			}
 
-			return runDrainSummaries(projectPath, max, os.Stdout)
+			// No real Summarizer is wired in yet — see internal/summarize's
+			// package doc comment: a later, separate piece of work supplies
+			// one. Passing nil here preserves that documented no-op behavior
+			// exactly as before; runDrainSummaries's s parameter exists so an
+			// integration test can inject a stub Summarizer and prove the
+			// rest of this path (flag parsing, locking, and
+			// internal/jobqueue's Claim/Requeue/Done) actually processes a
+			// claimed job end-to-end, which a nil Summarizer's early no-op
+			// return can never exercise.
+			return runDrainSummaries(projectPath, nil, max, os.Stdout)
 		},
 	}
 }
 
-// runDrainSummaries is the testable body of `vp drain summaries`. out
-// receives the one-line result (and any error text): when this command is
-// launched via internal/detachlaunch.Launch, the caller has already
-// redirected this process's stdout to a log file, so writing here is all
-// the logging this command needs to do.
-func runDrainSummaries(projectPath string, max int, out io.Writer) int {
+// runDrainSummaries is the testable body of `vp drain summaries`. s is the
+// Summarizer handed to summarize.DrainSummarizationQueue — production always
+// passes nil today (see the no-Summarizer-yet comment at this function's one
+// call site); a test may pass a stub to exercise real claim/requeue/done
+// processing. out receives the one-line result (and any error text): when
+// this command is launched via internal/detachlaunch.Launch, the caller has
+// already redirected this process's stdout to a log file, so writing here is
+// all the logging this command needs to do.
+func runDrainSummaries(projectPath string, s summarize.Summarizer, max int, out io.Writer) int {
 	// Resolve the vault and the project slug EXPLICITLY from the given
 	// projectPath, never via os.Getwd(). This command is designed to be
 	// launched as a detached child (internal/detachlaunch), whose inherited
@@ -192,16 +204,17 @@ func runDrainSummaries(projectPath string, max int, out io.Writer) int {
 	}
 	defer release()
 
-	drained, err := summarize.DrainSummarizationQueue(context.Background(), projectPath, nil, max)
+	drained, err := summarize.DrainSummarizationQueue(context.Background(), projectPath, s, max)
 	if err != nil {
 		fmt.Fprintf(out, "vp drain summaries: drain: %v\n", err)
 		return cli.ExitSystem
 	}
 
-	// nil Summarizer is a documented no-op (see internal/summarize's doc
-	// comment): drained is always 0 today. A later, separate piece of work
-	// supplies a real Summarizer, at which point this line starts reporting
-	// real counts with no change needed here.
+	// A nil Summarizer (production's real-world state today — see this
+	// function's one call site) is a documented no-op (see internal/summarize's
+	// doc comment): drained is always 0 in that case. A later, separate piece
+	// of work supplies a real Summarizer, at which point this line starts
+	// reporting real counts with no change needed here.
 	fmt.Fprintf(out, "vp drain summaries: project=%s drained=%d\n", slug, drained)
 	return cli.ExitOK
 }

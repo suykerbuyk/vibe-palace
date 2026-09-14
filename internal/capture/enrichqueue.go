@@ -10,11 +10,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/enrichment"
+	"github.com/suykerbuyk/vibe-palace/internal/jobqueue"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -86,7 +86,7 @@ func EnqueueEnrichment(cwd, project, date, fp string, iteration int, notePath st
 
 	name := storage.SessionStem(date, fp, iteration) + ".json"
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := jobqueue.AtomicWrite(path, data); err != nil {
 		return fmt.Errorf("write enrichment item: %w", err)
 	}
 	return nil
@@ -116,78 +116,102 @@ func DrainEnrichmentQueue(ctx context.Context, vault *storage.Vault, cwd string,
 	}
 
 	dir := enrichmentQueueDir(cwd)
-	if _, statErr := os.Stat(dir); statErr != nil {
-		if os.IsNotExist(statErr) {
-			return 0, nil
+
+	// pendingRequeue collects one closure per item that fails this call,
+	// deferred until this function returns (via the defer below) instead of
+	// run immediately. A failed item's claim is deliberately left in its
+	// ".processing" state for the REST of this call: jobqueue.Claim only
+	// matches "*.json" files, so a still-".processing" claim is invisible to
+	// it and cannot be immediately re-claimed ahead of other, not-yet-tried
+	// distinct items.
+	//
+	// This matters because jobqueue.Claim always claims the
+	// lexicographically-first claimable "*.json" file. An earlier version of
+	// this migration rewrote a failed item back to its claimable name
+	// IMMEDIATELY (inside requeue(), below) — which put it right back at the
+	// front of the sort order, so the very next loop iteration's Claim call
+	// re-claimed that SAME item again before any other, never-yet-tried item
+	// ever got a turn. A `seen` map caught the resulting infinite
+	// re-processing and stopped the loop, but stopping there meant a single
+	// persistently-failing item (a genuinely broken job, or an LLM outage
+	// failing every item) silently degraded an entire DrainEnrichmentQueue
+	// call to "at most one attempt total, for the whole queue" — starving
+	// every other queued item, including ones with nothing to do with the
+	// failure — instead of draining up to `max` DISTINCT items as this
+	// function's own doc comment promises. See
+	// TestDrainSecondItemStillProcessedWhenFirstFails.
+	//
+	// Deferring the requeue until this call is about to return reproduces
+	// the OLD (pre-migration) glob-snapshot code's fairness guarantee
+	// exactly: that code computed its match list once at the top of the
+	// call, so a mid-loop failure of item "a" never prevented "b" and "c"
+	// from each still getting their own attempt in the same call. Here,
+	// because a failed item stays claimed (as ".processing") until the very
+	// end, every jobqueue.Claim call inside this loop is guaranteed to
+	// return a genuinely new, never-before-attempted-this-call item (or
+	// "" once none remain) — so `processed` can simply count claims, with
+	// no seen-map needed at all.
+	var pendingRequeue []func()
+	defer func() {
+		for _, fn := range pendingRequeue {
+			fn()
 		}
-		return 0, fmt.Errorf("stat enrichment queue: %w", statErr)
-	}
-
-	// Reclaim jobs orphaned by a drainer that crashed between claim and
-	// completion, so they are retried rather than lost forever.
-	reclaimStaleClaims(dir)
-
-	matches, globErr := filepath.Glob(filepath.Join(dir, "*.json"))
-	if globErr != nil {
-		return 0, fmt.Errorf("glob enrichment queue: %w", globErr)
-	}
-	sort.Strings(matches)
+	}()
 
 	processed := 0
-	for _, jsonPath := range matches {
+	for {
 		if max > 0 && processed >= max {
 			break
 		}
 
-		// Claim via atomic rename. If this fails, another drainer won it or
-		// the file vanished — skip without double-processing [M4]. Only a
-		// successful claim consumes the budget, so lost races don't starve
-		// genuinely-claimable jobs.
-		procPath := jsonPath + ".processing"
-		if renErr := os.Rename(jsonPath, procPath); renErr != nil {
-			continue
+		// Claim via internal/jobqueue: an atomic rename to "<item>.processing",
+		// reclaiming any stale (crashed-drainer) claims older than
+		// staleProcessingAge first. A missing/empty dir or every job already
+		// claimed by someone else is reported as ("", nil, nil) — treated like
+		// io.EOF, not an error. Items held in pendingRequeue above are exactly
+		// such ".processing" files, so they are correctly invisible here too.
+		procPath, data, claimErr := jobqueue.Claim(dir, staleProcessingAge)
+		if claimErr != nil {
+			return drained, fmt.Errorf("enrichment drain: claim: %w", claimErr)
 		}
+		if procPath == "" {
+			break
+		}
+		jsonPath := strings.TrimSuffix(procPath, jobqueue.ProcessingSuffix)
 		processed++
-
-		data, readErr := os.ReadFile(procPath)
-		if readErr != nil {
-			slog.Warn("enrichment drain: read claimed item failed", "err", readErr, "item", procPath)
-			_ = os.Remove(procPath)
-			continue
-		}
 
 		var item enrichmentItem
 		if umErr := json.Unmarshal(data, &item); umErr != nil {
 			slog.Warn("enrichment drain: corrupt item discarded", "err", umErr, "item", procPath)
-			_ = os.Remove(procPath)
+			if doneErr := jobqueue.Done(procPath); doneErr != nil {
+				slog.Warn("enrichment drain: removing corrupt item's claim failed; it will linger until reclaimStale picks it up", "err", doneErr, "item", procPath)
+			}
 			continue
 		}
 
-		// requeue returns the claimed job for a later attempt, incrementing its
-		// attempt counter and dead-lettering it once the cap is hit so a
-		// deterministically-failing job cannot loop forever.
+		// requeue defers the claimed job for a later attempt (see
+		// pendingRequeue above), incrementing its attempt counter and
+		// dead-lettering it once the cap is hit so a deterministically-failing
+		// job cannot loop forever. The increment and dead-letter-cap check
+		// happen at defer-flush time, not here — item.Attempts is captured by
+		// reference (item is this closure's own enclosing loop variable), so
+		// the value used is whatever it is when the deferred closure actually
+		// runs, which is fine since nothing else mutates item after this
+		// point in the same iteration.
 		requeue := func() {
-			item.Attempts++
-			if item.Attempts >= maxEnrichAttempts {
-				deadPath := jsonPath + ".failed"
-				if rnErr := os.Rename(procPath, deadPath); rnErr != nil {
-					slog.Warn("enrichment drain: dead-letter rename failed", "err", rnErr, "item", procPath)
-				} else {
-					slog.Warn("enrichment drain: job exceeded max attempts; dead-lettered",
-						"item", deadPath, "attempts", item.Attempts, "project", item.Project)
+			pendingRequeue = append(pendingRequeue, func() {
+				item.Attempts++
+				reencode := func(int) ([]byte, error) { return json.Marshal(item) }
+				deadLettered, rqErr := jobqueue.Requeue(procPath, item.Attempts, maxEnrichAttempts, reencode)
+				if rqErr != nil {
+					slog.Warn("enrichment drain: requeue failed", "err", rqErr, "item", procPath)
+					return
 				}
-				return
-			}
-			updated, mErr := json.Marshal(item)
-			if mErr != nil {
-				_ = os.Rename(procPath, jsonPath)
-				return
-			}
-			if wErr := os.WriteFile(jsonPath, updated, 0o644); wErr != nil {
-				_ = os.Rename(procPath, jsonPath)
-				return
-			}
-			_ = os.Remove(procPath)
+				if deadLettered {
+					slog.Warn("enrichment drain: job exceeded max attempts; dead-lettered",
+						"item", jsonPath+jobqueue.FailedSuffix, "attempts", item.Attempts, "project", item.Project)
+				}
+			})
 		}
 
 		res, eerr := enricher.Enrich(ctx, item.Prompt)
@@ -249,37 +273,11 @@ func DrainEnrichmentQueue(ctx context.Context, vault *storage.Vault, cwd string,
 				"err", dferr, "project", item.Project, "note_path", item.NotePath)
 		}
 
-		_ = os.Remove(procPath)
+		if doneErr := jobqueue.Done(procPath); doneErr != nil {
+			slog.Warn("enrichment drain: removing completed claim failed; the note is enriched but this item will be redundantly re-processed once reclaimStale picks it up", "err", doneErr, "item", procPath)
+		}
 		drained++
 	}
 
 	return drained, nil
-}
-
-// reclaimStaleClaims renames orphaned <id>.json.processing files — claimed by a
-// drainer that crashed before finishing — back to <id>.json so they are retried,
-// once they are older than staleProcessingAge. The main drain glob matches only
-// *.json, so without this sweep a crashed claim would be lost forever.
-func reclaimStaleClaims(dir string) {
-	stale, err := filepath.Glob(filepath.Join(dir, "*.json.processing"))
-	if err != nil {
-		return
-	}
-	for _, p := range stale {
-		info, statErr := os.Stat(p)
-		if statErr != nil || time.Since(info.ModTime()) < staleProcessingAge {
-			continue
-		}
-		target := strings.TrimSuffix(p, ".processing")
-		if _, existsErr := os.Stat(target); existsErr == nil {
-			// A fresh job already occupies the slot; drop the stale claim.
-			_ = os.Remove(p)
-			continue
-		}
-		if renErr := os.Rename(p, target); renErr != nil {
-			slog.Warn("enrichment drain: reclaim stale claim failed", "err", renErr, "item", p)
-			continue
-		}
-		slog.Info("enrichment drain: reclaimed stale claim", "item", target)
-	}
 }

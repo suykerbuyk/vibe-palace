@@ -2,27 +2,37 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // Package jobqueue provides small, enrichment-agnostic host-local job-queue
-// primitives: claim, requeue and complete. It operates purely on raw file
-// paths and caller-supplied bytes and carries no knowledge of any job's own
-// JSON schema — that belongs to the caller.
+// primitives: claim, requeue, complete, and an atomic write helper for
+// creating or rewriting a job file in the first place. It operates purely on
+// raw file paths and caller-supplied bytes and carries no knowledge of any
+// job's own JSON schema — that belongs to the caller.
 //
-// A "job" is a *.json file in a directory. Claim atomically renames one such
+// A "job" is a *.json file in a directory, listed via os.ReadDir and matched
+// by a plain ".json" suffix check — never filepath.Glob, whose bracket
+// metacharacters would silently fail to match a queue directory nested under
+// a path segment containing '[' or ']'. Claim atomically renames one such
 // file to a "<name>.json.processing" claim file (a plain os.Rename, so it is
 // safe under concurrent drainers: exactly one caller wins the rename and
 // therefore the claim). Requeue either dead-letters the claim to
 // "<name>.json.failed" (attempts exhausted) or rewrites it back to
 // "<name>.json" so it becomes claimable again. Done removes a claim once its
-// work is finished successfully.
+// work is finished successfully. AtomicWrite (a temp file plus rename, in the
+// same directory) is the one path every writer of a job file — Requeue
+// itself, plus internal/summarize's and internal/capture's own enqueue
+// paths, both outside this package — uses to create or rewrite one, so a
+// reader can never observe a partially-written job.
 //
-// This mirrors the shape of internal/capture/enrichqueue.go's queue
-// mechanics, generalized off that package's specific job schema.
+// This began as a generalization off internal/capture/enrichqueue.go's own
+// inline queue mechanics; enrichqueue.go has since been migrated onto this
+// package's Claim/Requeue/Done directly, rather than merely sharing their
+// shape.
 package jobqueue
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 )
@@ -30,10 +40,10 @@ import (
 // ProcessingSuffix marks a claimed job file, appended to its original name.
 const ProcessingSuffix = ".processing"
 
-// failedSuffix marks a dead-lettered job file: a permanent record that a job
+// FailedSuffix marks a dead-lettered job file: a permanent record that a job
 // exhausted its retry budget. Dead-lettered files are never deleted by this
 // package.
-const failedSuffix = ".failed"
+const FailedSuffix = ".failed"
 
 // Claim reclaims any stale ".processing" files in dir older than staleAge
 // (presumed orphaned by a crashed claimant), then atomically claims the
@@ -52,11 +62,23 @@ const failedSuffix = ".failed"
 func Claim(dir string, staleAge time.Duration) (procPath string, data []byte, err error) {
 	reclaimStale(dir, staleAge)
 
-	matches, globErr := filepath.Glob(filepath.Join(dir, "*.json"))
-	if globErr != nil {
-		return "", nil, fmt.Errorf("jobqueue: glob %s: %w", dir, globErr)
+	entries, readDirErr := os.ReadDir(dir)
+	if readDirErr != nil {
+		if !os.IsNotExist(readDirErr) {
+			return "", nil, fmt.Errorf("jobqueue: read dir %s: %w", dir, readDirErr)
+		}
+		entries = nil
 	}
-	sort.Strings(matches)
+
+	var matches []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasSuffix(name, ".json") {
+			matches = append(matches, filepath.Join(dir, name))
+		}
+	}
+	// os.ReadDir already returns entries sorted by filename, so matches is
+	// already in deterministic order — no explicit sort needed.
 
 	for _, jsonPath := range matches {
 		candidate := jsonPath + ProcessingSuffix
@@ -81,6 +103,50 @@ func Claim(dir string, staleAge time.Duration) (procPath string, data []byte, er
 			// is treated as "safe to proceed."
 			continue
 		}
+		// Stamp jsonPath's mtime to now BEFORE renaming it to candidate, not
+		// after. os.Rename does not update mtime on POSIX, so whichever
+		// mtime the SOURCE has at rename time is the one the resulting
+		// ".processing" file is born with; reclaimStale measures staleness
+		// by that same mtime. Two gaps existed in an earlier version of this
+		// fix that stamped candidate AFTER the rename instead:
+		//
+		//  1. Fail-open: if that post-rename Chtimes call failed, the claim
+		//     was still handed back to the caller with its stale mtime
+		//     intact — reproducing the original bug on exactly the path
+		//     meant to guard against it.
+		//  2. A window between the rename and the post-rename Chtimes call
+		//     during which candidate was visible to a CONCURRENT drainer's
+		//     own reclaimStale sweep with its old, pre-claim mtime — for a
+		//     job queued long enough before being claimed, that concurrent
+		//     pass could steal a claim that was still genuinely in-flight.
+		//     Concurrent SessionEnd hooks across multiple Herdr panes
+		//     hitting the same project's queue directory is a real scenario
+		//     this project has hit before (iter 410), not a theoretical one.
+		//
+		// Stamping the source first closes both: os.Rename preserves the
+		// inode (and therefore the mtime just set on it), so candidate is
+		// born already correctly stamped — there is no window where a
+		// stale-mtime ".processing" file is ever visible to anyone. And if
+		// the Chtimes call itself fails, NOTHING has been claimed yet, so
+		// failing closed (skip this candidate, try the next match) costs
+		// nothing and can't hand back an unclocked claim.
+		now := time.Now()
+		if chErr := os.Chtimes(jsonPath, now, now); chErr != nil {
+			// os.IsNotExist here means a concurrent Claim call already won
+			// this exact candidate (renamed jsonPath away between our Lstat
+			// check above and this Chtimes call) — an entirely normal
+			// outcome of the concurrent-claim contention this package's own
+			// docs promise to handle safely, identical in kind to the
+			// silent "another claimant won the race" continue below. Treated
+			// the same way: silent, not warned. Any OTHER Chtimes error
+			// (permission trouble, an exotic filesystem) is genuinely
+			// unexpected and worth surfacing.
+			if !os.IsNotExist(chErr) {
+				slog.Warn("jobqueue: stamp claim time failed; skipping candidate", "err", chErr, "item", jsonPath)
+			}
+			continue
+		}
+
 		if renErr := os.Rename(jsonPath, candidate); renErr != nil {
 			// Another claimant won the race (or the file already vanished);
 			// move on without double-claiming.
@@ -89,10 +155,12 @@ func Claim(dir string, staleAge time.Duration) (procPath string, data []byte, er
 
 		b, readErr := os.ReadFile(candidate)
 		if readErr != nil {
-			// The claim succeeded but the bytes are unreadable (e.g. removed
-			// out from under us). Drop this claim and try the next
-			// candidate rather than fail the whole call.
-			_ = os.Remove(candidate)
+			// The claim succeeded but the bytes are unreadable (e.g. a
+			// transient permission or I/O error). Restore the claim to its
+			// original claimable name rather than deleting it outright — a
+			// delete here would silently destroy the job — and try the next
+			// candidate.
+			restoreClaim(candidate, jsonPath)
 			continue
 		}
 		return candidate, b, nil
@@ -113,28 +181,69 @@ func Claim(dir string, staleAge time.Duration) (procPath string, data []byte, er
 // If reencode or the rewrite fails, Requeue makes a best-effort attempt to
 // restore procPath to its original claimable name before returning the
 // error, so a transient local failure here does not silently lose the job.
-func Requeue(procPath string, attempts, maxAttempts int, reencode func(attempts int) ([]byte, error)) error {
+//
+// deadLettered reports which branch fired: true exactly when the
+// attempts >= maxAttempts dead-letter branch fired (regardless of whether
+// err is nil), false on the normal-requeue branch. This lets a caller log
+// branch-specific diagnostics without duplicating the threshold check.
+func Requeue(procPath string, attempts, maxAttempts int, reencode func(attempts int) ([]byte, error)) (deadLettered bool, err error) {
 	jsonPath := strings.TrimSuffix(procPath, ProcessingSuffix)
 
 	if attempts >= maxAttempts {
-		failedPath := jsonPath + failedSuffix
+		failedPath := jsonPath + FailedSuffix
 		if err := os.Rename(procPath, failedPath); err != nil {
-			return fmt.Errorf("jobqueue: dead-letter %s: %w", procPath, err)
+			return true, fmt.Errorf("jobqueue: dead-letter %s: %w", procPath, err)
 		}
-		return nil
+		return true, nil
 	}
 
 	data, err := reencode(attempts)
 	if err != nil {
 		restoreClaim(procPath, jsonPath)
-		return fmt.Errorf("jobqueue: reencode %s: %w", procPath, err)
+		return false, fmt.Errorf("jobqueue: reencode %s: %w", procPath, err)
 	}
-	if err := os.WriteFile(jsonPath, data, 0o644); err != nil {
+	if err := AtomicWrite(jsonPath, data); err != nil {
 		restoreClaim(procPath, jsonPath)
-		return fmt.Errorf("jobqueue: write %s: %w", jsonPath, err)
+		return false, fmt.Errorf("jobqueue: write %s: %w", jsonPath, err)
 	}
 	if err := os.Remove(procPath); err != nil {
-		return fmt.Errorf("jobqueue: remove claim %s: %w", procPath, err)
+		return false, fmt.Errorf("jobqueue: remove claim %s: %w", procPath, err)
+	}
+	return false, nil
+}
+
+// AtomicWrite atomically writes data to path: a temp file in the same
+// directory (required for the rename to be same-filesystem), chmod 0o644,
+// then rename over path. Callers outside this package (internal/summarize,
+// internal/capture) use this directly for their own job-file writes so the
+// same atomicity applies to brand-new job files, not just requeue rewrites.
+func AtomicWrite(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("jobqueue: create temp file in %s: %w", dir, err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return fmt.Errorf("jobqueue: write temp file %s: %w", tmpPath, err)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		cleanup()
+		return fmt.Errorf("jobqueue: chmod temp file %s: %w", tmpPath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("jobqueue: close temp file %s: %w", tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("jobqueue: rename %s to %s: %w", tmpPath, path, err)
 	}
 	return nil
 }
@@ -177,20 +286,33 @@ func Done(procPath string) error {
 // the target name (unusual, but possible after manual intervention), the
 // stale claim is dropped rather than clobbering it.
 func reclaimStale(dir string, staleAge time.Duration) {
-	stale, err := filepath.Glob(filepath.Join(dir, "*"+ProcessingSuffix))
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
+
+	var stale []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasSuffix(name, ProcessingSuffix) {
+			stale = append(stale, filepath.Join(dir, name))
+		}
+	}
+
 	for _, p := range stale {
 		info, statErr := os.Stat(p)
 		if statErr != nil || time.Since(info.ModTime()) < staleAge {
 			continue
 		}
 		target := strings.TrimSuffix(p, ProcessingSuffix)
-		if _, existsErr := os.Stat(target); existsErr == nil {
-			_ = os.Remove(p)
-			continue
+		if linkErr := os.Link(p, target); linkErr != nil {
+			if os.IsExist(linkErr) {
+				_ = os.Remove(p) // fresh job already occupies target; drop the stale claim
+			} else {
+				slog.Warn("jobqueue: reclaim stale claim failed", "err", linkErr, "item", p)
+			}
+			continue // any other Link error: unproven state, leave p for next pass
 		}
-		_ = os.Rename(p, target)
+		_ = os.Remove(p)
 	}
 }

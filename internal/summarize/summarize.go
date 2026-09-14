@@ -169,7 +169,7 @@ func enqueue(cwd string, item SummaryItem) error {
 	}
 
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := jobqueue.AtomicWrite(path, data); err != nil {
 		return fmt.Errorf("summarize: write item: %w", err)
 	}
 	return nil
@@ -340,5 +340,6 @@ func requeueItem(procPath string, item SummaryItem) error {
 	reencode := func(int) ([]byte, error) {
 		return json.Marshal(item)
 	}
-	return jobqueue.Requeue(procPath, item.Attempts, maxSummaryAttempts, reencode)
+	_, err := jobqueue.Requeue(procPath, item.Attempts, maxSummaryAttempts, reencode)
+	return err
 }

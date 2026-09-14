@@ -277,7 +277,8 @@ func TestDrainTransientFailureRetries(t *testing.T) {
 }
 
 // TestDrainClaimSkip simulates a concurrent claim: an item already renamed to
-// .processing is invisible to glob("*.json"), so drain leaves it untouched.
+// .processing does not end in ".json", so jobqueue.Claim's suffix check skips
+// it and drain leaves it untouched.
 func TestDrainClaimSkip(t *testing.T) {
 	vault := testVault(t)
 	cwd := t.TempDir()
@@ -414,6 +415,95 @@ func TestDrainMaxBound(t *testing.T) {
 	remaining, _ := filepath.Glob(filepath.Join(cwd, ".vibe-palace", "enrichment-queue", "*.json"))
 	if len(remaining) != 1 {
 		t.Errorf("remaining jobs = %d, want 1", len(remaining))
+	}
+}
+
+// conditionalFailCompleter is an llm.Completer whose Complete fails whenever
+// the user prompt contains failMarker, and otherwise returns cannedEnrichment.
+// Used to make ONE specific queued item fail deterministically while another
+// succeeds, so a single DrainEnrichmentQueue call can be observed processing
+// both distinct items rather than just one.
+type conditionalFailCompleter struct {
+	failMarker string
+}
+
+func (c conditionalFailCompleter) Complete(_ context.Context, _, user string) (string, error) {
+	if strings.Contains(user, c.failMarker) {
+		return "", fmt.Errorf("boom: %s", c.failMarker)
+	}
+	return cannedEnrichment, nil
+}
+
+func (c conditionalFailCompleter) Name() string { return "conditional-fail-mock" }
+
+// TestDrainSecondItemStillProcessedWhenFirstFails is the regression test for
+// the throughput/fairness bug found in code review: jobqueue.Claim always
+// claims the lexicographically-first claimable "*.json" file, so a naive
+// migration that rewrote a failed item back to its claimable name
+// IMMEDIATELY would let that same first-claimed, persistently-failing item
+// re-claim itself on every subsequent loop iteration — starving every OTHER
+// queued item for the rest of the call, in direct contradiction of
+// DrainEnrichmentQueue's own doc comment ("max bounds how many jobs are
+// processed this call"). This test queues two distinct items (iteration 1
+// sorts before iteration 2, so item 1 is always claimed first), makes item 1
+// fail on EVERY attempt, and asserts item 2 still gets its own turn and
+// succeeds within this SAME DrainEnrichmentQueue call.
+func TestDrainSecondItemStillProcessedWhenFirstFails(t *testing.T) {
+	vault := testVault(t)
+	cwd := t.TempDir()
+	fp := surface.WriterFingerprint(vault.Root)
+
+	if _, err := vault.WriteSession("proj", testPlainMeta(), "## Summary\n\nplain\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", fp, 1, "", enrichment.PromptInput{UserText: "FAIL_ITEM_MARKER"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vault.WriteSession("proj", testPlainMeta(), "## Summary\n\nplain\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", fp, 2, "", enrichment.PromptInput{UserText: "second item, should succeed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	enricher := enrichment.NewEnricher(conditionalFailCompleter{failMarker: "FAIL_ITEM_MARKER"}, "test-model", 5*time.Second, "")
+
+	drained, err := DrainEnrichmentQueue(context.Background(), vault, cwd, enricher, 0)
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if drained != 1 {
+		t.Fatalf("drained = %d, want 1 (only item 2 should succeed; item 1 always fails)", drained)
+	}
+
+	// Item 2 must actually have been enriched: this is the assertion that
+	// fails against the pre-fix code, where item 1's persistent failure
+	// prevents item 2 from ever being claimed in the same call.
+	meta2, _, err := vault.ReadSession("proj", "2026-06-21", fp, 2)
+	if err != nil {
+		t.Fatalf("read item 2's note: %v", err)
+	}
+	if meta2.Summary != "LLM refined summary" {
+		t.Errorf("item 2 summary = %q, want it to have been enriched (LLM refined summary) — it was never claimed this call", meta2.Summary)
+	}
+
+	// Item 1 must be back in the queue, claimable, with exactly one attempt
+	// recorded (requeued, not dead-lettered — maxEnrichAttempts is 5).
+	dir := filepath.Join(cwd, ".vibe-palace", "enrichment-queue")
+	item1Path := queuePath(dir, fp, 1)
+	data, err := os.ReadFile(item1Path)
+	if err != nil {
+		t.Fatalf("item 1 not retained for retry: %v", err)
+	}
+	var item1 enrichmentItem
+	if err := json.Unmarshal(data, &item1); err != nil {
+		t.Fatalf("unmarshal item 1: %v", err)
+	}
+	if item1.Attempts != 1 {
+		t.Errorf("item 1 attempts = %d, want 1", item1.Attempts)
+	}
+	if _, err := os.Stat(item1Path + ".processing"); !os.IsNotExist(err) {
+		t.Errorf("item 1 still has a stray .processing file after drain")
 	}
 }
 

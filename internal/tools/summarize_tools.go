@@ -19,7 +19,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
 	"github.com/suykerbuyk/vibe-palace/internal/jobqueue"
@@ -128,7 +130,7 @@ var triggerSummarizationDrainSchema = json.RawMessage(`{
 // vault is accepted for signature symmetry with its wrapstate-tool siblings
 // (CollectWrapStateTool, StampIterTool, PreflightWrapTool all take
 // *storage.Vault) but is not read by this handler: the check below is a
-// cheap glob over project_path's own queue directory, and the launched `vp
+// cheap os.ReadDir scan of project_path's own queue directory, and the launched `vp
 // drain summaries` subprocess resolves its own vault independently (see
 // cmd/vp/cmd_drain.go). Kept rather than dropped in case a future revision
 // needs a project.RequireKnownProject-style gate here.
@@ -188,14 +190,35 @@ func TriggerSummarizationDrainTool(vault *storage.Vault, launch detachlaunch.Lau
 			// Launching a drain either way is cheap and idempotent — an
 			// empty drain (nothing left to reclaim) just exits immediately.
 			queueDir := summarizequeue.QueueDir(args.ProjectPath)
-			pending, err := filepath.Glob(filepath.Join(queueDir, "*.json"))
-			if err != nil {
-				return nil, fmt.Errorf("glob summarization queue: %w", err)
+			// os.ReadDir (unlike filepath.Glob, which silently returns
+			// (nil, nil) for a missing dir and also treats brackets in
+			// queueDir's own path — e.g. a project directory literally named
+			// "proj[1]" — as glob metacharacters rather than literal text)
+			// errors with an fs.PathError wrapping ENOENT when queueDir does
+			// not exist yet, which is the single most common case (a project
+			// that has never queued anything). That must be treated as
+			// "empty", not propagated as a tool error — this handler, unlike
+			// DrainEnrichmentQueue/DrainSummarizationQueue, does not os.Stat
+			// queueDir before reading it.
+			entries, readDirErr := os.ReadDir(queueDir)
+			if readDirErr != nil {
+				if !os.IsNotExist(readDirErr) {
+					return nil, fmt.Errorf("read summarization queue: %w", readDirErr)
+				}
+				entries = nil
 			}
-			claimed, err := filepath.Glob(filepath.Join(queueDir, "*.json"+jobqueue.ProcessingSuffix))
-			if err != nil {
-				return nil, fmt.Errorf("glob summarization queue claims: %w", err)
+
+			var pending, claimed []string
+			for _, entry := range entries {
+				name := entry.Name()
+				switch {
+				case strings.HasSuffix(name, ".json"+jobqueue.ProcessingSuffix):
+					claimed = append(claimed, filepath.Join(queueDir, name))
+				case strings.HasSuffix(name, ".json"):
+					pending = append(pending, filepath.Join(queueDir, name))
+				}
 			}
+
 			if len(pending) == 0 && len(claimed) == 0 {
 				return map[string]any{"status": "empty"}, nil
 			}
