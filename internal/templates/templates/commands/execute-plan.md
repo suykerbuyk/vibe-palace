@@ -2,6 +2,12 @@ Execute an approved plan to completion in an isolated git worktree: dispatch a s
 
 ## 1. Isolate the work in a worktree
 
+Before creating the worktree, confirm `main` is not confirmed stale: call `vp_repo_freshness` with `project_path` set to your own working directory (the project checkout, not the vault).
+
+- `status: "behind"` or `"diverged"` ⇒ **refuse to proceed.** A worktree cut now branches from a `main` another machine already moved past — report the remote, the behind count, and the newest upstream commit subjects from `remotes`, and tell the human to sync `main` (e.g. `git pull --ff-only`) before re-running this command. Do not fast-forward it yourself.
+- `status: "unverified"` (no remote configured, network unreachable) ⇒ warn once and proceed — local state is still the best available, same as restart's own vault-pull precedent for a network failure.
+- `status: "up_to_date"` or `"ahead"` ⇒ proceed silently.
+
 Before any code changes, create an isolated worktree so this plan never touches `main` and other work (including other `/vpc-execute-plan` runs) can proceed in parallel:
 
     vp worktree create <slug>

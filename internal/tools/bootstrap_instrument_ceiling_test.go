@@ -254,14 +254,52 @@ func worstCaseAdvisory() BootstrapResult {
 	health := worstCaseAdvisoryHealth()
 	audit := worstCaseAdvisoryAudit()
 	friction := worstCaseAdvisoryFriction()
+	repoFreshness := worstCaseProjectRepoFreshness()
 
 	result.VaultStaleness = &staleness
 	result.Health = &health
 	result.AuditStaleness = &audit
 	result.FrictionTrend = &friction
+	result.ProjectRepoFreshness = &repoFreshness
 
 	result.PostBootstrapInstructions = worstCaseDirective(worstCaseAdvisoryAlerts())
 	return result
+}
+
+// worstCaseProjectRepoFreshness is storage.CheckRepoFreshness's own shape for
+// a checkout that has DIVERGED from its upstream — hand-built, like
+// worstCaseAdvisoryAudit, because the producer needs a real git tree and
+// cannot be called purely from this fixture. Diverged is the wider of the two
+// alert-worthy shapes (behind, diverged): its message names both counts, so
+// it is the one that must fit.
+//
+// The branch name and commit subjects are LIVE SPECIMENS, not filler —
+// worstCaseDirtPaths and worstCaseSurfaceMismatch set the precedent of
+// rounding up from real, observed values rather than inventing plausible
+// ones. Verified against the real producer + the real renderer by
+// TestProjectRepoFreshnessAdvisoryFiresOnARealDivergedRepo.
+func worstCaseProjectRepoFreshness() storage.RepoFreshness {
+	fetched := time.Date(2026, 8, 16, 15, 17, 8, 0, time.UTC)
+	return storage.RepoFreshness{
+		Branch:         "task/restart-never-checks-the-project-repo-against-its-remote",
+		UpstreamRemote: "origin",
+		Status:         storage.RepoDiverged,
+		Remotes: []storage.RemoteFreshness{{
+			Remote:      "origin",
+			Ahead:       3,
+			AheadKnown:  true,
+			Behind:      2,
+			BehindKnown: true,
+			Diverged:    true,
+			Reachable:   true,
+			LastFetched: &fetched,
+			NewestUpstreamSubjects: []string{
+				"Fix 2 more git_enabled scope gaps, rewritten from an exhaustive sweep",
+				"Fix five defects in the git_enabled scope documentation found by review",
+			},
+			SubjectsTruncated: true,
+		}},
+	}
 }
 
 // worstCaseAdvisoryStaleness is computeVaultStaleness's own output for a vault
@@ -429,6 +467,7 @@ func worstCaseAdvisoryAlerts() []string {
 		healthMessage(health),
 		callerFrictionMessage(health),
 		worstCaseAdvisoryAudit().Message,
+		projectRepoFreshnessMessage(worstCaseProjectRepoFreshness()),
 	}
 }
 
@@ -481,18 +520,71 @@ func TestAdvisoryFixtureLinesMatchTheirProducers(t *testing.T) {
 	if h := worstCaseAdvisoryHealth(); healthMessage(h) == "" || callerFrictionMessage(h) == "" {
 		t.Errorf("healthMessage or callerFrictionMessage went silent for the fixture summary (%+v)", h)
 	}
+	if msg := projectRepoFreshnessMessage(worstCaseProjectRepoFreshness()); msg == "" {
+		t.Errorf("projectRepoFreshnessMessage produced no alert for the fixture's diverged repo — the " +
+			"advisory branch would measure a payload with no project-repo-freshness alert on it")
+	}
 
-	// And the composed set is what assembleBootstrap would append: five lines,
+	// And the composed set is what assembleBootstrap would append: six lines,
 	// none empty. A producer returning "" would shrink the directive silently.
 	alerts := worstCaseAdvisoryAlerts()
-	if len(alerts) != 5 {
-		t.Errorf("the advisory alert set is %d lines, want 5 — one per append site below the gate "+
-			"(friction, vault staleness, health, caller friction, audit staleness)", len(alerts))
+	if len(alerts) != 6 {
+		t.Errorf("the advisory alert set is %d lines, want 6 — one per append site below the gate "+
+			"(friction, vault staleness, health, caller friction, audit staleness, project repo freshness)", len(alerts))
 	}
 	for i, a := range alerts {
 		if strings.TrimSpace(a) == "" {
 			t.Errorf("advisory alert %d is empty; its producer went silent", i)
 		}
+	}
+}
+
+// TestProjectRepoFreshnessAdvisoryFiresOnARealDivergedRepo is the
+// project-repo-freshness analogue of the audit-staleness cross-check above:
+// storage.CheckRepoFreshness needs a real git tree and cannot be called
+// purely, so worstCaseProjectRepoFreshness hand-builds its shape. This proves
+// the REAL producer, on a REAL diverged repo, still yields a shape
+// projectRepoFreshnessMessage (the real renderer — not a paraphrase, unlike
+// CheckStaleness's format string) turns into a non-empty DIVERGED alert.
+func TestProjectRepoFreshnessAdvisoryFiresOnARealDivergedRepo(t *testing.T) {
+	if !storage.GitAvailable() {
+		t.Skip("git not in PATH")
+	}
+	dir := initVaultRepo(t)
+	bare := t.TempDir()
+	gitT(t, bare, "init", "--bare", "-b", "main")
+	gitT(t, dir, "remote", "add", "origin", bare)
+	gitT(t, dir, "push", "origin", "main")
+
+	// Ahead: a local commit never pushed.
+	if err := os.WriteFile(filepath.Join(dir, "local.txt"), []byte("local\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, dir, "add", "-A")
+	gitT(t, dir, "commit", "-m", "local change")
+
+	// Behind: the remote advances via a second clone, so dir is genuinely
+	// behind without being touched directly.
+	other := t.TempDir()
+	gitT(t, other, "clone", "-b", "main", bare, ".")
+	gitT(t, other, "config", "user.email", "other@example.com")
+	gitT(t, other, "config", "user.name", "Other")
+	if err := os.WriteFile(filepath.Join(other, "remote.txt"), []byte("advanced\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, other, "add", "-A")
+	gitT(t, other, "commit", "-m", "advance remote.txt")
+	gitT(t, other, "push", "origin", "main")
+
+	rf, err := storage.CheckRepoFreshness(dir, "", "", true, 5)
+	if err != nil {
+		t.Fatalf("CheckRepoFreshness: %v", err)
+	}
+	if rf.Status != storage.RepoDiverged {
+		t.Fatalf("test premise broken: got status %q, want diverged", rf.Status)
+	}
+	if msg := projectRepoFreshnessMessage(rf); msg == "" || !strings.Contains(msg, "DIVERGED") {
+		t.Errorf("projectRepoFreshnessMessage produced %q for a real diverged repo, want a DIVERGED alert", msg)
 	}
 }
 

@@ -61,6 +61,16 @@ Read the task file(s) and extract:
 
 ## Step 2: Validate Against the Codebase
 
+Before validating anything, call `vp_repo_freshness` with `project_path` set
+to your own working directory. If `status` is `"behind"` or `"diverged"`,
+**warn, don't refuse**: everything below reads the code you have on disk, and
+a confirmed-stale checkout means that code may already be superseded. Open the
+review with one line naming the remote, the behind count, and the newest
+upstream commit subjects from `remotes`, so the human weighs the feasibility
+findings that follow accordingly — then continue the review; do not stop
+short of it. `"unverified"` (no remote, network unreachable) needs no
+mention — it means the check could not run, not that anything is wrong.
+
 For every claim the plan makes about existing code, **read the
 actual source**. Do not trust the plan's characterization of
 coupling, interfaces, or behavior. Specific checks:

@@ -49,6 +49,7 @@ func advisoryFieldsPresent(br BootstrapResult) []string {
 		{"health", br.Health != nil},
 		{"audit_staleness", br.AuditStaleness != nil},
 		{"friction_trend", br.FrictionTrend != nil},
+		{"project_repo_freshness", br.ProjectRepoFreshness != nil},
 	} {
 		if f.set {
 			present = append(present, f.name)
@@ -129,6 +130,11 @@ func advisoryProseProbes(t *testing.T) []advisoryProbe {
 			text:    "run `vp audit vault`",
 			why:     "the audit-staleness line, in every branch (vaultaudit.CheckStaleness)",
 			samples: []string{auditStale.Message, auditNever.Message},
+		},
+		{
+			text:    "project repo branch",
+			why:     "the project-repo-freshness line for a behind/diverged checkout (projectRepoFreshnessMessage)",
+			samples: []string{projectRepoFreshnessMessage(worstCaseProjectRepoFreshness())},
 		},
 	}
 

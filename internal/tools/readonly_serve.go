@@ -139,6 +139,7 @@ var ReadOnlyServeToolNames = []string{
 	"vp_palace_status",
 	"vp_preflight_wrap",
 	"vp_read_resource",
+	"vp_repo_freshness",
 	"vp_scan_plans",
 	"vp_search",
 	"vp_search_cross_project",

@@ -209,6 +209,21 @@ type BootstrapResult struct {
 	// field but not this channel. Do not spend an alert on one.
 	AuditStaleness *vaultaudit.Staleness `json:"audit_staleness,omitempty"`
 
+	// ProjectRepoFreshness reports whether the PROJECT checkout this session
+	// is running in (not the vault) is behind, ahead of, diverged from, or
+	// unverified against its git remote(s) — NIL WHEN UP TO DATE OR AHEAD, for
+	// the same reason AuditStaleness is. Attached only when project_repo_path
+	// was supplied on the call (bootstrapParams); omitted entirely otherwise,
+	// exactly like every other opt-in advisory here.
+	//
+	// It exists because vault_staleness (above) answers this question for the
+	// VAULT and nothing on this payload used to answer it for the code: a
+	// session could plan and build against a project `main` another machine
+	// had already moved past, with nothing in bootstrap or restart flagging
+	// it. See the task that added this field for the incident that surfaced
+	// the gap.
+	ProjectRepoFreshness *storage.RepoFreshness `json:"project_repo_freshness,omitempty"`
+
 	// FrictionTrend is computed early, with the session listing it derives from,
 	// and CLEARED by the advisory gate rather than skipped. It is the one
 	// advisory whose cost is already sunk by the time the gate is reached.
@@ -367,6 +382,14 @@ type bootstrapParams struct {
 	Project string `json:"project"`
 	Wing    string `json:"wing,omitempty"`
 	Room    string `json:"room,omitempty"`
+	// ProjectRepoPath opts the call into the project_repo_freshness instrument
+	// — see BootstrapResult.ProjectRepoFreshness. There is no cwd default: the
+	// bit this instrument needs is exactly the one bootstrapParams cannot
+	// derive on any transport (a per-client stdio process's own cwd IS the
+	// caller's, but the server has no general way to confirm that without
+	// being told), so an omitted value simply skips the instrument rather
+	// than guessing.
+	ProjectRepoPath string `json:"project_repo_path,omitempty"`
 }
 
 // bootstrapSchemaStdio is the stdio MCP schema: project is optional because the
@@ -387,6 +410,10 @@ var bootstrapSchemaStdio = json.RawMessage(`{
 		"room": {
 			"type": "string",
 			"description": "Room slug for palace-scoped command discovery (requires wing)."
+		},
+		"project_repo_path": {
+			"type": "string",
+			"description": "Absolute path to the PROJECT's git checkout (not the vault) — opts into the project_repo_freshness instrument, which reports whether this checkout is behind its upstream remote. Pass your own session's working directory. Omit to skip the check entirely; it is never inferred from cwd."
 		}
 	}
 }`)
@@ -408,6 +435,10 @@ var bootstrapSchemaExplicit = json.RawMessage(`{
 		"room": {
 			"type": "string",
 			"description": "Room slug for palace-scoped command discovery (requires wing)."
+		},
+		"project_repo_path": {
+			"type": "string",
+			"description": "Absolute path to the PROJECT's git checkout (not the vault) — opts into the project_repo_freshness instrument, which reports whether this checkout is behind its upstream remote. On this transport the server process cwd is not per-client, so pass this explicitly; there is no cwd fallback. Omit to skip the check entirely."
 		}
 	},
 	"required": ["project"]
@@ -459,7 +490,10 @@ func bootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, engine
 func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, wing, room string) BootstrapResult {
 	// Inject/CLI path: no search engine → structural ranker with fallback_reason.
 	// MCP RegisterAll wires the engine through BootstrapContextTool instead.
-	return assembleBootstrap(resolver, vault, project, wing, room, nil, false)
+	// projectRepoPath is "" here: the CLI harnesses this serves have no single
+	// caller cwd to assume is the project's own, so the instrument is skipped
+	// rather than guessed — see assembleBootstrap's projectRepoPath param.
+	return assembleBootstrap(resolver, vault, project, wing, room, "", nil, false)
 }
 
 // assembleBootstrap is AssembleBootstrap plus the one fact this payload cannot
@@ -476,7 +510,7 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 // environment belongs to whoever started the server, days ago, possibly on
 // another machine. Sniffing os.Args or stdin's file type would be guessing at a
 // fact the caller already knows for certain, so the caller states it.
-func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, wing, room string, engine *search.Engine, stdioMCP bool) BootstrapResult {
+func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, wing, room string, projectRepoPath string, engine *search.Engine, stdioMCP bool) BootstrapResult {
 
 	// The Herdr line is built ONCE, here, into a local that is threaded into
 	// BOTH renderPostBootstrapInstructions calls below.
@@ -857,7 +891,81 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		alerts = append(alerts, as.Message)
 	}
 
+	// Project-repo freshness — OPT-IN via project_repo_path, and best-effort:
+	// any error (bad path, not a git repo) leaves the field nil rather than
+	// failing bootstrap, mirroring the "these are diagnostics, not a gate"
+	// rule restart.md's own hygiene checks already follow.
+	//
+	// NIL WHEN UP TO DATE OR AHEAD — both are fine states, nothing to look at.
+	// Present (but silent, no alert) when UNVERIFIED: a repo bootstrap cannot
+	// check against anything is worth seeing structurally without being loud
+	// about it, since it fires on every offline host and every remoteless
+	// checkout. Loud (alert appended) only for BEHIND or DIVERGED — the two
+	// states a real fetch actually confirmed, matching the vault-staleness and
+	// audit-staleness alerts already on this path.
+	if projectRepoPath != "" {
+		if rf, err := storage.CheckRepoFreshness(projectRepoPath, "", "", true, projectRepoFreshnessSubjectLimit); err == nil {
+			if rf.Status != storage.RepoUpToDate && rf.Status != storage.RepoAhead {
+				result.ProjectRepoFreshness = &rf
+			}
+			if msg := projectRepoFreshnessMessage(rf); msg != "" {
+				alerts = append(alerts, msg)
+			}
+		}
+	}
+
 	return finishBootstrap(result, alerts, herdrLine)
+}
+
+// projectRepoFreshnessSubjectLimit caps newest_upstream_subjects per remote on
+// the bootstrap instrument — smaller than vp_repo_freshness's own default
+// (repoFreshnessDefaultSubjectLimit) because this copy rides the bounded
+// instrument prefix a host preview must fit, not a tool result a caller asked
+// for by name.
+const projectRepoFreshnessSubjectLimit = 2
+
+// projectRepoFreshnessMessage renders the alert line for a BEHIND or DIVERGED
+// project-repo freshness verdict, or "" for every other status (including
+// unverified, which is visible in the structured field but deliberately
+// silent — see the call site).
+//
+// It selects the remote whose OWN per-remote verdict matches rf.Status —
+// never merely the first remote with Behind>0 — because in a no-upstream,
+// multi-remote check the worst-of winner need not be first in Remotes: a
+// merely-behind remote earlier in the slice must not steal the alert from a
+// later, genuinely DIVERGED sibling and undersell it as "N commits behind".
+// It names the offending remote and, for behind, the newest subject a plan
+// branch cut from this checkout would miss; the full remote list already
+// rides in project_repo_freshness.remotes ahead of the directive, so this
+// prose does not repeat it.
+func projectRepoFreshnessMessage(rf storage.RepoFreshness) string {
+	if rf.Status != storage.RepoBehind && rf.Status != storage.RepoDiverged {
+		return ""
+	}
+	for _, r := range rf.Remotes {
+		wantDiverged := rf.Status == storage.RepoDiverged
+		if r.Diverged != wantDiverged {
+			continue
+		}
+		if !r.BehindKnown || r.Behind == 0 {
+			continue
+		}
+		newest := ""
+		if len(r.NewestUpstreamSubjects) > 0 {
+			newest = fmt.Sprintf(" Newest: %q.", r.NewestUpstreamSubjects[0])
+		}
+		if r.Diverged {
+			return fmt.Sprintf(
+				"⚠ project repo branch %q has DIVERGED from %s: %d commit(s) unpushed locally and %d commit(s) "+
+					"behind upstream — see project_repo_freshness.remotes before trusting this checkout.%s",
+				rf.Branch, r.Remote, r.Ahead, r.Behind, newest)
+		}
+		return fmt.Sprintf(
+			"⚠ project repo branch %q is %d commit(s) behind %s/%s — cutting a plan branch from this checkout "+
+				"risks building on code another machine already replaced. See project_repo_freshness.remotes.%s",
+			rf.Branch, r.Behind, r.Remote, rf.Branch, newest)
+	}
+	return ""
 }
 
 // finishBootstrap composes the directive and returns the payload. It is the ONE
@@ -1042,7 +1150,7 @@ func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault, engine *se
 		// environment — are only client-scoped on the first of those. Passing it
 		// through as stdioMCP names the bit for what it is at the seam that
 		// needs it; see herdrAnnouncement.
-		result := assembleBootstrap(resolver, vault, projectSlug, p.Wing, p.Room, engine, allowCwdDefault)
+		result := assembleBootstrap(resolver, vault, projectSlug, p.Wing, p.Room, p.ProjectRepoPath, engine, allowCwdDefault)
 
 		// Phase 4a / D4: bootstrap no longer writes project (or HOME) shims.
 		// Host surfaces refresh only via `vp mcp install` / user install paths.

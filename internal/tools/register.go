@@ -139,6 +139,7 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	reg.MustRegister(SurfaceCheckTool(vault))
 	reg.MustRegister(CheckTool(vault))
 	reg.MustRegister(ScanPlansTool(vault))
+	reg.MustRegister(RepoFreshnessTool())
 	if engine != nil {
 		reg.MustRegister(SearchTool(engine))
 		reg.MustRegister(SearchCrossProjectTool(engine))

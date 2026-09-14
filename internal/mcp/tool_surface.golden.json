@@ -24,7 +24,7 @@
     {
       "name": "vp_bootstrap_context",
       "mutating": false,
-      "schema_sha256": "54db4954c6cbeece715435978624795c0e416145b4a64cfa30c70959e6f9be8c"
+      "schema_sha256": "534a66437c1b683a59dd59f57fcfc117841f99f0c07944fa140909248b07b816"
     },
     {
       "name": "vp_capture_session",
@@ -265,6 +265,11 @@
       "name": "vp_refresh_index",
       "mutating": true,
       "schema_sha256": "e6bb4842aab417be857b871f1a3d5a5a2867ac63fa1450cd2d5627f542dd9dc4"
+    },
+    {
+      "name": "vp_repo_freshness",
+      "mutating": false,
+      "schema_sha256": "c574f27e4ced45fa3f2e1314ae42d0107643acc32bbbf73e2ad0e0f371e96048"
     },
     {
       "name": "vp_scan_plans",

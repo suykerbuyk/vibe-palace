@@ -836,3 +836,65 @@ func TestBootstrapResumeSha256EmptyWithoutProjectFile(t *testing.T) {
 		t.Errorf("resume_sha256 = %q, want empty when no project resume.md exists", br.ResumeSha256)
 	}
 }
+
+// TestProjectRepoFreshnessMessageNamesTheRemoteMatchingStatus is the
+// code-review regression for a defect found live: with no upstream and
+// multiple remotes, the alert used to name the FIRST remote with Behind>0,
+// not necessarily the one whose own verdict matches rf.Status (the worst-of
+// winner). A merely-behind remote earlier in Remotes stole the alert from a
+// later, genuinely DIVERGED sibling and undersold it as "N commits behind".
+func TestProjectRepoFreshnessMessageNamesTheRemoteMatchingStatus(t *testing.T) {
+	rf := storage.RepoFreshness{
+		Branch: "main",
+		Status: storage.RepoDiverged,
+		Remotes: []storage.RemoteFreshness{
+			{Remote: "origin", Behind: 1, BehindKnown: true, Reachable: true},                                             // merely behind — NOT the worst-of winner
+			{Remote: "mirror", Ahead: 2, AheadKnown: true, Behind: 3, BehindKnown: true, Diverged: true, Reachable: true}, // the real diverged remote
+		},
+	}
+
+	msg := projectRepoFreshnessMessage(rf)
+	if !strings.Contains(msg, "mirror") {
+		t.Errorf("message = %q, does not name the diverged remote (mirror) — it named the wrong, "+
+			"merely-behind remote instead", msg)
+	}
+	if strings.Contains(msg, "origin") {
+		t.Errorf("message = %q, names the merely-behind remote (origin) instead of the diverged one (mirror)", msg)
+	}
+	if !strings.Contains(msg, "DIVERGED") {
+		t.Errorf("message = %q, want a DIVERGED alert for a diverged verdict", msg)
+	}
+}
+
+// TestProjectRepoFreshnessMessageBehindStillWorks is the companion negative:
+// a plain "behind" verdict (no diverged remote anywhere) must still name the
+// behind remote and say "commits behind", not "DIVERGED".
+func TestProjectRepoFreshnessMessageBehindStillWorks(t *testing.T) {
+	rf := storage.RepoFreshness{
+		Branch: "main",
+		Status: storage.RepoBehind,
+		Remotes: []storage.RemoteFreshness{
+			{Remote: "origin", Behind: 4, BehindKnown: true, Reachable: true},
+		},
+	}
+
+	msg := projectRepoFreshnessMessage(rf)
+	if !strings.Contains(msg, "origin") || !strings.Contains(msg, "4 commit(s) behind") {
+		t.Errorf("message = %q, want it to name origin and \"4 commit(s) behind\"", msg)
+	}
+	if strings.Contains(msg, "DIVERGED") {
+		t.Errorf("message = %q, a plain behind verdict must not say DIVERGED", msg)
+	}
+}
+
+// TestProjectRepoFreshnessMessageSilentForHealthyOrUnverified pins the other
+// half of the contract: up_to_date, ahead, and unverified must never produce
+// an alert line, regardless of what Remotes happens to carry.
+func TestProjectRepoFreshnessMessageSilentForHealthyOrUnverified(t *testing.T) {
+	for _, status := range []string{storage.RepoUpToDate, storage.RepoAhead, storage.RepoUnverified} {
+		rf := storage.RepoFreshness{Branch: "main", Status: status}
+		if msg := projectRepoFreshnessMessage(rf); msg != "" {
+			t.Errorf("status %q produced alert %q, want silence", status, msg)
+		}
+	}
+}

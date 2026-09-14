@@ -2086,6 +2086,31 @@ var toolCoverageFixtures = map[string]toolFixture{
 			}
 		},
 	},
+
+	"vp_repo_freshness": {
+		build: func(t *testing.T, h *testHarness) any {
+			// A project checkout that is deliberately NOT the vault, with no
+			// remote configured — the tool must report "unverified", never a
+			// fabricated "up_to_date", for a repo with nothing to check against.
+			dir := t.TempDir()
+			initGitRepo(t, dir)
+			return map[string]any{"project_path": dir}
+		},
+		assert: func(t *testing.T, h *testHarness, payload string) {
+			var out struct {
+				Branch  string `json:"branch"`
+				Status  string `json:"status"`
+				Remotes []any  `json:"remotes"`
+			}
+			covUnmarshal(t, payload, &out)
+			if out.Status != "unverified" {
+				t.Errorf("status = %q, want unverified (no remote configured)", out.Status)
+			}
+			if len(out.Remotes) != 0 {
+				t.Errorf("remotes = %+v, want none configured", out.Remotes)
+			}
+		},
+	},
 }
 
 // TestToolCoverageComplete is the completeness gate: every tool

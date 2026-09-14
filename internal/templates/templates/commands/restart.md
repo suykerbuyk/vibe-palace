@@ -146,6 +146,19 @@ Call `vp_bootstrap_context` with the project slug:
   HTTP serve (`vp mcp serve`) project is schema-required. Prefer naming it
   explicitly either way.
 
+Also add `project_repo_path` — the absolute path of the PROJECT checkout this
+session is running in (not the vault), normally just your own primary working
+directory, which you already know from your environment:
+
+```json
+{"project": "<slug>", "project_repo_path": "<your session's own working directory, absolute>"}
+```
+
+This is what opts you into the `project_repo_freshness` instrument below: the
+vault gets synced in Step 1, but nothing checks the PROJECT repo against its
+remote unless you pass this. There is no cwd fallback on any transport — an
+omitted value silently skips the check rather than guessing at a path.
+
 ### 🔴 The payload is an INDEX. The documents do not arrive — you fetch them.
 
 `resume` and `workflow` are **not fields of this payload**. Waiting for them,
@@ -187,10 +200,23 @@ safe. It is not licence to skip the fetch.
   Do not carry a cut payload into Step 3.
 - **`complete: true` present** ⇒ you have the whole document vp emitted.
 
-The instruments (`health`, `vault_staleness`, `friction_trend`, `ranking`,
-alerts) LEAD the payload deliberately, because they are what a host preview
-keeps. Read them first; the condition alerts are silent when healthy, so
-anything you see there wants attention.
+The instruments (`health`, `vault_staleness`, `friction_trend`,
+`project_repo_freshness`, `ranking`, alerts) LEAD the payload deliberately,
+because they are what a host preview keeps. Read them first; the condition
+alerts are silent when healthy, so anything you see there wants attention.
+
+- 🔴 **`project_repo_freshness` present with `status: "behind"` or
+  `"diverged"`** ⇒ **tell the human before doing anything else.** It means the
+  PROJECT checkout (not the vault) is confirmed behind or diverged from its
+  upstream remote — planning or building against it risks working on code
+  another machine already replaced. Report the remote, the behind count, and
+  the newest upstream commit subjects from `project_repo_freshness.remotes`
+  verbatim; do not fast-forward or otherwise mutate the checkout yourself —
+  syncing it is the human's call.
+- `status: "unverified"` (no remote configured, network unreachable, or the
+  field is simply absent because `project_repo_path` was not passed) is not an
+  error and needs no report — it means the check could not run, not that
+  anything is wrong.
 
 `ranking` is the exception that is never silent: it names the ranker that
 ordered the rows below, the head-of-queue slug they were ranked against, and
