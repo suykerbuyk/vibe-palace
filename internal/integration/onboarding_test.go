@@ -202,11 +202,16 @@ func TestIntegrationGitGuardBlocksVaultCommands(t *testing.T) {
 		t.Errorf("CheckGit summary should mention disabled, got %q", r.Summary)
 	}
 
-	// The Details entry must actually name the real scope: 'vp init' + the CLI
-	// 'vp vault *' subcommands, and NOT overclaim coverage of the MCP tools or
-	// other CLI commands that bypass this setting.
-	if len(r.Details) == 0 || !strings.Contains(r.Details[0], "vp_vault_tidy") {
-		t.Errorf("CheckGit Details should name the paths this setting does NOT cover, got %v", r.Details)
+	// The Details entries must actually name the real scope: 'vp init' + the
+	// CLI 'vp vault *' subcommands, and NOT overclaim coverage of the MCP
+	// tools or other CLI commands that bypass this setting (vp_vault_tidy and
+	// vp commands/skills reset were both found missing by adversarial review
+	// across two prior rounds of this exact text).
+	all := strings.Join(r.Details, "\n")
+	for _, want := range []string{"vp_vault_tidy", "vp commands reset", "vp migrate kg-filenames"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("CheckGit Details should name %q among the paths this setting does NOT cover, got %v", want, r.Details)
+		}
 	}
 }
 

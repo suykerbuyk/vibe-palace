@@ -885,13 +885,17 @@ vp vault sync               # tidy capture artifacts, then pull and push
 `git_enabled = false` (set with `--no-git` at init, or by hand in your
 config file) disables ONLY `vp init`'s repository creation and the CLI
 `vp vault pull/push/sync/commit/tidy/status` subcommands, which refuse
-with an error when git is disabled. It does **not** disable git activity
-from any MCP tool (`vp_vault_sync`, `vp_vault_tidy`, `vp_memory_harvest`,
-`vp_manage_task` — the last commits locally but never pushes, regardless
-of this setting), other CLI commands (`vp memory harvest`, `vp migrate
-kg-filenames`, `vp config sync`'s template-mirror commit), or the
-SessionEnd hook's memory harvest — all of those may still commit and/or
-push the vault regardless of this setting.
+with an error when it is false. Nothing else checks it:
+
+- **Commit AND push regardless of this setting:** the MCP tools
+  `vp_vault_sync`, `vp_vault_tidy`, `vp_memory_harvest`; the CLI
+  `vp memory harvest`; the SessionEnd hook's memory harvest; and
+  `vp config sync`'s template-mirror commit.
+- **Commit locally but NEVER push, regardless of this setting:** the MCP
+  tool `vp_manage_task`, and the CLI `vp commands reset` /
+  `vp skills reset`.
+- **Stage (`git add`) but never commit or push, regardless of this
+  setting:** the CLI `vp migrate kg-filenames`.
 
 ### Zero manual git in the vault
 
