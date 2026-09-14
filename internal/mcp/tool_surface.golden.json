@@ -274,12 +274,12 @@
     {
       "name": "vp_search",
       "mutating": false,
-      "schema_sha256": "0f52ad5937fa9170338031162fc9bb75fa3def5953b49a2e56eca99bf210afd0"
+      "schema_sha256": "d56a8348fa68b3539d31bdfb50e4fbf174be6ebbdf801c843b1808d92caee1e4"
     },
     {
       "name": "vp_search_cross_project",
       "mutating": false,
-      "schema_sha256": "487d3c557eab42c5554c62135c9bdf6be7f0bbbf8b0a37b20142e2841beac6bd"
+      "schema_sha256": "2f9cf600ab131ca70aca964c3038003120db0c67fc5e9147d81c3b88530a7f4c"
     },
     {
       "name": "vp_search_sessions",

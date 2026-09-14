@@ -43,7 +43,7 @@ func TestRunSearchNoResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	code := runSearch(eng, "test-proj", "nonexistent query", "", "", 10, false, &buf)
+	code := runSearch(eng, "test-proj", "nonexistent query", "", "", 10, false, false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
 	}
@@ -63,7 +63,7 @@ func TestRunSearchNoResults(t *testing.T) {
 func TestRunSearchUnknownProjectExitCode(t *testing.T) {
 	eng, _ := testEngine(t)
 	var buf bytes.Buffer
-	code := runSearch(eng, "nosuchproject", "query", "", "", 10, false, &buf)
+	code := runSearch(eng, "nosuchproject", "query", "", "", 10, false, false, &buf)
 	if code != cli.ExitUser {
 		t.Errorf("exit code = %d, want ExitUser (%d); output: %s", code, cli.ExitUser, buf.String())
 	}
@@ -89,7 +89,7 @@ func TestRunSearchWithResults(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	code := runSearch(eng, "test-proj", "authentication", "", "", 10, false, &buf)
+	code := runSearch(eng, "test-proj", "authentication", "", "", 10, false, false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
 	}
@@ -112,7 +112,7 @@ func TestRunSearchJSON(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	code := runSearch(eng, "test-proj", "api endpoint", "", "", 10, true, &buf)
+	code := runSearch(eng, "test-proj", "api endpoint", "", "", 10, false, true, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
 	}
@@ -141,7 +141,7 @@ func TestRunSearchLimit(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	code := runSearch(eng, "test-proj", "content testing", "", "", 2, true, &buf)
+	code := runSearch(eng, "test-proj", "content testing", "", "", 2, false, true, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
 	}
@@ -166,7 +166,7 @@ func TestRunSearchWingFilter(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	code := runSearch(eng, "test-proj", "api content", "code", "", 10, true, &buf)
+	code := runSearch(eng, "test-proj", "api content", "code", "", 10, false, true, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
 	}
@@ -177,6 +177,86 @@ func TestRunSearchWingFilter(t *testing.T) {
 		if r.Wing != "code" {
 			t.Errorf("expected wing=code, got %q", r.Wing)
 		}
+	}
+}
+
+// TestRunSearchRawFlag is this plan's full-stack integration proof for the
+// --raw flag: a real iterations.md written to disk, read through
+// collectIterationCorpus, indexed by Engine.Rebuild, filtered by
+// searchReady's IncludeRaw suppression, threaded through runSearch's
+// includeRaw parameter (which fv.Bool("--raw") ultimately supplies from
+// cmdSearch), and rendered as JSON on stdout — proving the whole path end to
+// end, not just that a bool field parses.
+//
+// runSearch calls eng.Rebuild itself on every invocation, so calling it twice
+// against the same *search.Engine correctly picks up the on-disk state
+// (including the cached iteration summary written before either call).
+func TestRunSearchRawFlag(t *testing.T) {
+	eng, v := testEngine(t)
+	const project = "raw-flag-e2e"
+	const rawMarker = "PLATYPUS_RAW_FLAG_E2E_MARKER"
+
+	// Write a real iterations.md by hand: this test file's package is `main`,
+	// not `search`, so it cannot reuse the unexported writeIterationsMD helper
+	// from internal/search's own tests.
+	path, err := v.IterationsFile(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entry := "## Iteration 1 — first\n\nBody containing " + rawMarker + ".\n\n---\n"
+	if err := os.WriteFile(path, []byte(entry), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := v.WriteIterationSummary(project, storage.IterationSummary{
+		N:          1,
+		MatchIndex: 0,
+		Summary:    "A summary that never mentions the raw-only marker.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Default: --raw NOT passed (includeRaw=false). runSearch's own
+	// eng.Rebuild call builds the index from the files written above.
+	var buf bytes.Buffer
+	code := runSearch(eng, project, rawMarker, "", "", 10, false, true, &buf)
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d: %s", code, buf.String())
+	}
+	var results []search.SearchResult
+	if err := json.Unmarshal(buf.Bytes(), &results); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	for _, r := range results {
+		// "iteration_raw" is internal/search's unexported
+		// iterationRawSourceType constant, unreachable from package main;
+		// the literal is used deliberately here.
+		if r.SourceType == "iteration_raw" {
+			t.Fatalf("expected raw row hidden by default, got it: %+v", r)
+		}
+	}
+
+	// With --raw (includeRaw=true): raw row restored alongside the summary.
+	buf.Reset()
+	code = runSearch(eng, project, rawMarker, "", "", 10, true, true, &buf)
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d: %s", code, buf.String())
+	}
+	results = nil
+	if err := json.Unmarshal(buf.Bytes(), &results); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	var sawRaw bool
+	for _, r := range results {
+		if r.SourceType == "iteration_raw" {
+			sawRaw = true
+		}
+	}
+	if !sawRaw {
+		t.Errorf("expected --raw to restore the raw row; results=%+v", results)
 	}
 }
 

@@ -24,6 +24,7 @@ var searchFlags = []cli.FlagDef{
 	{Name: "--room", Short: "-r", Arg: "ROOM", Help: "Filter by room"},
 	{Name: "--limit", Short: "-n", Arg: "N", Help: "Max results", Default: "10"},
 	{Name: "--json", Help: "Output JSON"},
+	{Name: "--raw", Help: "Also show raw source-text hits alongside summary hits (default: raw hits are hidden when a summary exists)."},
 }
 
 func cmdSearch() *cli.Command {
@@ -96,7 +97,7 @@ func cmdSearch() *cli.Command {
 				limit = 10
 			}
 
-			return runSearch(eng, proj, query, fv.Get("--wing"), fv.Get("--room"), limit, fv.Bool("--json"), os.Stdout)
+			return runSearch(eng, proj, query, fv.Get("--wing"), fv.Get("--room"), limit, fv.Bool("--raw"), fv.Bool("--json"), os.Stdout)
 		},
 	}
 }
@@ -142,7 +143,7 @@ func requireSearchProject(vault *storage.Vault, proj string, detected bool) int 
 	return cli.ExitUser
 }
 
-func runSearch(eng *search.Engine, proj, query, wing, room string, limit int, asJSON bool, out io.Writer) int {
+func runSearch(eng *search.Engine, proj, query, wing, room string, limit int, includeRaw, asJSON bool, out io.Writer) int {
 	ctx := context.Background()
 
 	// Synchronous rebuild for the target project.
@@ -152,10 +153,11 @@ func runSearch(eng *search.Engine, proj, query, wing, room string, limit int, as
 	}
 
 	results, err := eng.Search(ctx, query, search.SearchFilters{
-		Project: proj,
-		Wing:    wing,
-		Room:    room,
-		Limit:   limit,
+		Project:    proj,
+		Wing:       wing,
+		Room:       room,
+		Limit:      limit,
+		IncludeRaw: includeRaw,
 	})
 	if err != nil {
 		// An unknown project is a user error (ExitUser), never "I could not

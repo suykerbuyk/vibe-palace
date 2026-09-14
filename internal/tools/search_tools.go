@@ -14,19 +14,21 @@ import (
 )
 
 type searchParams struct {
-	Query    string `json:"query"`
-	Project  string `json:"project"`
-	Wing     string `json:"wing,omitempty"`
-	Room     string `json:"room,omitempty"`
-	Hall     string `json:"hall,omitempty"`
-	DateFrom string `json:"date_from,omitempty"`
-	DateTo   string `json:"date_to,omitempty"`
-	Limit    int    `json:"limit,omitempty"`
+	Query      string `json:"query"`
+	Project    string `json:"project"`
+	Wing       string `json:"wing,omitempty"`
+	Room       string `json:"room,omitempty"`
+	Hall       string `json:"hall,omitempty"`
+	DateFrom   string `json:"date_from,omitempty"`
+	DateTo     string `json:"date_to,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+	IncludeRaw bool   `json:"include_raw,omitempty"`
 }
 
 type crossSearchParams struct {
-	Query string `json:"query"`
-	Limit int    `json:"limit,omitempty"`
+	Query      string `json:"query"`
+	Limit      int    `json:"limit,omitempty"`
+	IncludeRaw bool   `json:"include_raw,omitempty"`
 }
 
 var searchSchema = json.RawMessage(`{
@@ -63,6 +65,10 @@ var searchSchema = json.RawMessage(`{
 		"limit": {
 			"type": "integer",
 			"description": "Maximum results to return (default 10, max 50)."
+		},
+		"include_raw": {
+			"type": "boolean",
+			"description": "Also return raw source-text rows even when a summary row exists for the same entity. Default false: raw rows are shown only for entries with no cached summary yet."
 		}
 	},
 	"required": ["query", "project"]
@@ -78,6 +84,10 @@ var crossSearchSchema = json.RawMessage(`{
 		"limit": {
 			"type": "integer",
 			"description": "Maximum results to return (default 10, max 50)."
+		},
+		"include_raw": {
+			"type": "boolean",
+			"description": "Also return raw source-text rows even when a summary row exists for the same entity. Default false: raw rows are shown only for entries with no cached summary yet."
 		}
 	},
 	"required": ["query"]
@@ -126,13 +136,14 @@ func searchHandler(engine *search.Engine) mcp.HandlerFunc {
 		limit := clampLimit(p.Limit)
 
 		results, err := engine.Search(ctx, p.Query, search.SearchFilters{
-			Project:  p.Project,
-			Wing:     p.Wing,
-			Room:     p.Room,
-			Hall:     p.Hall,
-			DateFrom: p.DateFrom,
-			DateTo:   p.DateTo,
-			Limit:    limit,
+			Project:    p.Project,
+			Wing:       p.Wing,
+			Room:       p.Room,
+			Hall:       p.Hall,
+			DateFrom:   p.DateFrom,
+			DateTo:     p.DateTo,
+			Limit:      limit,
+			IncludeRaw: p.IncludeRaw,
 		})
 		if err != nil {
 			var unk *search.UnknownProjectError
@@ -162,7 +173,8 @@ func crossSearchHandler(engine *search.Engine) mcp.HandlerFunc {
 		limit := clampLimit(p.Limit)
 
 		results, err := engine.Search(ctx, p.Query, search.SearchFilters{
-			Limit: limit,
+			Limit:      limit,
+			IncludeRaw: p.IncludeRaw,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("search: %w", err)

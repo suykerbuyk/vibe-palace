@@ -856,7 +856,7 @@ upload glob changed accordingly, from
 > `make test` is `-short -race` (the ONNX tests skip) and `make integration` runs
 > without `-race`. Do not combine `-race` with the ONNX tests in this package.
 
-### `internal/search/` — Search Engine Tests (coverage 86.9%)
+### `internal/search/` — Search Engine Tests (coverage 88.1%)
 
 | Test | ONNX? | What it proves |
 |------|-------|----------------|
@@ -886,6 +886,13 @@ upload glob changed accordingly, from
 | `TestEmbedCachePut_RetriesWhenItsDirectoryVanishes` (`cache_test.go`) | No | Through the `cacheWriteFile` seam, Put's first write finds its directory removed and fails with ENOENT; Put must re-create the directory, write once more, and serve the vector. Removing the retry from Put turns it red |
 | `TestEmbedCache_SweepsOncePerInstance` / `_SweepFailureIsNotFatal` / `_RefusesInvalidSlug` (`cache_test.go`) | No | The sweep Once is per instance (a second op does not re-sweep; a fresh instance does); an unreadable `palace/` fails the sweep without failing the cache; an invalid slug is refused on every operation |
 | `TestEmbedCache_ConcurrentInstancesConverge` (`cache_test.go`) | No | Six `EmbedCache` instances — each its own Once — sweep and `Put` at once under `-race`: every legacy vector ends at the new path with its bytes, every `Put` is readable, and the husks are healed |
+| `TestCollectIterationCorpus_DegenerateCachedSummaryProducesNoSummaryRow` | No | A cached `IterationSummary` that passes `ok && MatchIndex == matchIndex` but renders to an empty string (`Summary`/`Decisions`/`Unblocks` all empty) must NOT set the raw row's `SummaryAvailable`: the flag must reflect actual summary-row emission, not the stale cache-hit precheck alone |
+| `TestSearch_IterationRawHiddenByDefaultWhenSummaryExists` | No | Engine-level proof of the suppression fix: once an iteration entry has a summary row, default `Search` (`IncludeRaw` unset/false) never surfaces that entry's RAW row, even for a query term appearing only in the raw text and nowhere in the summary — the suppression is a hard filter, not a scoring nudge |
+| `TestSearch_IterationIncludeRawRestoresRawAlongsideSummary` | No | `SearchFilters{IncludeRaw: true}` makes both the raw row and the summary row visible for the same entry, restoring exactly what the default path hides |
+| `TestSearch_IterationRawStillDefaultVisibleWithoutSummary` | No | Recall regression guard: an entry with NO cached summary at all still surfaces its raw row under the default (`IncludeRaw` unset/false) — the common case, since most entries are never summarized |
+| `TestSearch_NoteRawHiddenByDefaultWhenSummaryExists` | No | Mirrors the iteration suppression test for the note corpus: a session note with `meta.SearchSummary` set has its raw row hidden from default `Search` |
+| `TestSearch_NoteIncludeRawRestoresRawAlongsideSummary` | No | Mirrors the iteration include-raw test for the note corpus: `IncludeRaw: true` restores both the note's raw row and its summary row |
+| `TestSearch_NoteRawStillDefaultVisibleWithoutSummary` | No | Mirrors the iteration no-summary test for the note corpus: a note with no `SearchSummary` still surfaces its raw row by default |
 
 ### `internal/search/` — Recall Harness (`recall_test.go`)
 
@@ -1275,6 +1282,22 @@ Covers `computeVaultStaleness` and its wiring into `vp_bootstrap_context`:
 old (>24h → `warn` + message), recent (no warn), unknown-fetch (never
 fetched → warn), the no-warn boundary, and `TestBootstrapPopulatesVaultStaleness`
 (bootstrap emits the `vault_staleness` field).
+
+### `internal/tools/search_tools_test.go` — `include_raw` on `vp_search` / `vp_search_cross_project`
+
+Covers the MCP wiring for `SearchFilters.IncludeRaw` on both search tools,
+using a real on-disk `iterations.md` plus a cached `storage.IterationSummary`
+(via `vault.IterationsFile`/`WriteIterationSummary`, not
+`seedDrawer`/`AppendDrawer`, since only the iteration-corpus collector sets
+`SummaryAvailable`): `TestSearchToolIncludeRawDefaultHidesRawWhenSummaryExists`
+and `TestCrossSearchToolIncludeRawDefaultHidesRawWhenSummaryExists` prove a
+raw-only query term stays hidden by default once a summary row exists for the
+same entry; `TestSearchToolIncludeRawTrueRestoresRawRow` and
+`TestCrossSearchToolIncludeRawTrueRestoresRawRow` prove `include_raw: true` in
+the tool's JSON params restores the raw row alongside the summary row for
+`vp_search` and `vp_search_cross_project` respectively — the latter pinning
+that the cross-project handler's `SearchFilters` literal (which carries no
+`Project` field) also threads `IncludeRaw` through.
 
 ### `internal/check/json_test.go` — `vp check --json` Report Shape
 

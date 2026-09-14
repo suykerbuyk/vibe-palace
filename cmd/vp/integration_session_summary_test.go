@@ -256,9 +256,14 @@ func TestCaptureThenDrain_SessionSummaryEndToEnd(t *testing.T) {
 		t.Fatalf("NoteChunks = %d, want at least 2 (raw + summary)", stats.NoteChunks)
 	}
 
+	// IncludeRaw: true, because this step's whole point is confirming BOTH
+	// the raw row and the summary row landed in the corpus — the default
+	// (IncludeRaw false) now suppresses the raw row once a summary row
+	// exists for the same note, per SearchFilters.IncludeRaw's opt-in.
 	results, err := eng.Search(context.Background(), "session summarized for search", search.SearchFilters{
-		Project: slug,
-		Limit:   50,
+		Project:    slug,
+		Limit:      50,
+		IncludeRaw: true,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)

@@ -193,6 +193,223 @@ func TestSearchToolUnknownProjectIsError(t *testing.T) {
 	}
 }
 
+// TestSearchToolIncludeRawDefaultHidesRawWhenSummaryExists is the vp_search
+// tool-handler proof of the include_raw wiring: with no include_raw field
+// (defaulting to false), a query matching only the raw iteration body text
+// must not surface that entry's raw row once a cached summary exists for it.
+// It uses a real on-disk iterations.md + cached IterationSummary (via
+// vault.IterationsFile/WriteIterationSummary), not seedDrawer/AppendDrawer,
+// because only the iteration corpus collector sets SummaryAvailable.
+func TestSearchToolIncludeRawDefaultHidesRawWhenSummaryExists(t *testing.T) {
+	eng, vault := testSearchEngine(t)
+	ctx := context.Background()
+	const project = "tool-hide-raw-default"
+	const rawMarker = "PANGOLIN_TOOL_RAW_ONLY_MARKER"
+
+	writeToolIterationsMD(t, vault, project, strings.Join([]string{
+		"## Iteration 1 — first",
+		"",
+		"Body containing " + rawMarker + " and nothing the summary will mention.",
+		"",
+		"---",
+		"",
+	}, "\n"))
+
+	if err := vault.WriteIterationSummary(project, storage.IterationSummary{
+		N:          1,
+		MatchIndex: 0,
+		Summary:    "A summary that never mentions the raw-only marker at all.",
+	}); err != nil {
+		t.Fatalf("WriteIterationSummary: %v", err)
+	}
+	if _, err := eng.Rebuild(ctx, project); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	tool := SearchTool(eng)
+	result, err := tool.Handler(ctx, json.RawMessage(
+		`{"query": "`+rawMarker+`", "project": "`+project+`"}`))
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	results := result.([]search.SearchResult)
+	for _, r := range results {
+		if r.SourceType == "iteration_raw" {
+			t.Fatalf("default vp_search surfaced the raw row when a summary exists: %+v", r)
+		}
+	}
+}
+
+// TestSearchToolIncludeRawTrueRestoresRawRow proves include_raw:true threads
+// from the vp_search JSON params through SearchFilters.IncludeRaw and back
+// into searchReady's filter, restoring the raw row alongside the summary row
+// that TestSearchToolIncludeRawDefaultHidesRawWhenSummaryExists shows hidden
+// by default.
+func TestSearchToolIncludeRawTrueRestoresRawRow(t *testing.T) {
+	eng, vault := testSearchEngine(t)
+	ctx := context.Background()
+	const project = "tool-include-raw"
+	const rawMarker = "ECHIDNA_TOOL_INCLUDE_RAW_MARKER"
+
+	writeToolIterationsMD(t, vault, project, strings.Join([]string{
+		"## Iteration 1 — first",
+		"",
+		"Body containing " + rawMarker + ".",
+		"",
+		"---",
+		"",
+	}, "\n"))
+
+	if err := vault.WriteIterationSummary(project, storage.IterationSummary{
+		N:          1,
+		MatchIndex: 0,
+		Summary:    "Cached summary text for the same entry.",
+	}); err != nil {
+		t.Fatalf("WriteIterationSummary: %v", err)
+	}
+	if _, err := eng.Rebuild(ctx, project); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	tool := SearchTool(eng)
+	result, err := tool.Handler(ctx, json.RawMessage(
+		`{"query": "`+rawMarker+`", "project": "`+project+`", "include_raw": true}`))
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	results := result.([]search.SearchResult)
+	var sawRaw, sawSummary bool
+	for _, r := range results {
+		switch r.SourceType {
+		case "iteration_raw":
+			sawRaw = true
+		case "iteration":
+			sawSummary = true
+		}
+	}
+	if !sawRaw {
+		t.Errorf("include_raw: true must restore the raw row; results=%+v", results)
+	}
+	if !sawSummary {
+		t.Errorf("include_raw: true must not hide the summary row; results=%+v", results)
+	}
+}
+
+// TestCrossSearchToolIncludeRawDefaultHidesRawWhenSummaryExists mirrors
+// TestSearchToolIncludeRawDefaultHidesRawWhenSummaryExists for
+// vp_search_cross_project, proving the same include_raw wiring on the
+// cross-project handler (whose SearchFilters literal carries no Project
+// field).
+func TestCrossSearchToolIncludeRawDefaultHidesRawWhenSummaryExists(t *testing.T) {
+	eng, vault := testSearchEngine(t)
+	ctx := context.Background()
+	const project = "cross-tool-hide-raw-default"
+	const rawMarker = "QUOKKA_CROSS_TOOL_RAW_ONLY_MARKER"
+
+	writeToolIterationsMD(t, vault, project, strings.Join([]string{
+		"## Iteration 1 — first",
+		"",
+		"Body containing " + rawMarker + " and nothing the summary will mention.",
+		"",
+		"---",
+		"",
+	}, "\n"))
+
+	if err := vault.WriteIterationSummary(project, storage.IterationSummary{
+		N:          1,
+		MatchIndex: 0,
+		Summary:    "A summary that never mentions the raw-only marker at all.",
+	}); err != nil {
+		t.Fatalf("WriteIterationSummary: %v", err)
+	}
+	if _, err := eng.Rebuild(ctx, project); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	tool := SearchCrossProjectTool(eng)
+	result, err := tool.Handler(ctx, json.RawMessage(`{"query": "`+rawMarker+`"}`))
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	results := result.([]search.SearchResult)
+	for _, r := range results {
+		if r.SourceType == "iteration_raw" {
+			t.Fatalf("default vp_search_cross_project surfaced the raw row when a summary exists: %+v", r)
+		}
+	}
+}
+
+// TestCrossSearchToolIncludeRawTrueRestoresRawRow mirrors
+// TestSearchToolIncludeRawTrueRestoresRawRow for vp_search_cross_project.
+func TestCrossSearchToolIncludeRawTrueRestoresRawRow(t *testing.T) {
+	eng, vault := testSearchEngine(t)
+	ctx := context.Background()
+	const project = "cross-tool-include-raw"
+	const rawMarker = "WOMBAT_CROSS_TOOL_INCLUDE_RAW_MARKER"
+
+	writeToolIterationsMD(t, vault, project, strings.Join([]string{
+		"## Iteration 1 — first",
+		"",
+		"Body containing " + rawMarker + ".",
+		"",
+		"---",
+		"",
+	}, "\n"))
+
+	if err := vault.WriteIterationSummary(project, storage.IterationSummary{
+		N:          1,
+		MatchIndex: 0,
+		Summary:    "Cached summary text for the same entry.",
+	}); err != nil {
+		t.Fatalf("WriteIterationSummary: %v", err)
+	}
+	if _, err := eng.Rebuild(ctx, project); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	tool := SearchCrossProjectTool(eng)
+	result, err := tool.Handler(ctx, json.RawMessage(
+		`{"query": "`+rawMarker+`", "include_raw": true}`))
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	results := result.([]search.SearchResult)
+	var sawRaw, sawSummary bool
+	for _, r := range results {
+		switch r.SourceType {
+		case "iteration_raw":
+			sawRaw = true
+		case "iteration":
+			sawSummary = true
+		}
+	}
+	if !sawRaw {
+		t.Errorf("include_raw: true must restore the raw row; results=%+v", results)
+	}
+	if !sawSummary {
+		t.Errorf("include_raw: true must not hide the summary row; results=%+v", results)
+	}
+}
+
+// writeToolIterationsMD writes a real iterations.md for project directly
+// via the vault's own path resolution (this package cannot reuse
+// internal/search's unexported writeIterationsMD test helper), so
+// collectIterationCorpus produces a genuine RAW row whose SummaryAvailable
+// metadata reflects an actual cached IterationSummary written alongside it.
+func writeToolIterationsMD(t *testing.T, v *storage.Vault, project, body string) {
+	t.Helper()
+	path, err := v.IterationsFile(project)
+	if err != nil {
+		t.Fatalf("IterationsFile: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestEngineSearchUnknownProjectError pins Engine.Search's own contract
 // directly: an unknown project is a *search.UnknownProjectError, checkable
 // with errors.As, returned before ensureIndex/Rebuild ever run.

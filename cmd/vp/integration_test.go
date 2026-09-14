@@ -174,7 +174,7 @@ func TestIntegrationSearchPipeline(t *testing.T) {
 
 	// Run search (text mode).
 	var textBuf bytes.Buffer
-	code := runSearch(eng, proj, "authentication", "", "", 10, false, &textBuf)
+	code := runSearch(eng, proj, "authentication", "", "", 10, false, false, &textBuf)
 	if code != cli.ExitOK {
 		t.Fatalf("text search exit code = %d", code)
 	}
@@ -185,7 +185,7 @@ func TestIntegrationSearchPipeline(t *testing.T) {
 
 	// Run search (JSON mode) and verify metadata integrity.
 	var jsonBuf bytes.Buffer
-	code = runSearch(eng, proj, "authentication", "", "", 10, true, &jsonBuf)
+	code = runSearch(eng, proj, "authentication", "", "", 10, false, true, &jsonBuf)
 	if code != cli.ExitOK {
 		t.Fatalf("JSON search exit code = %d", code)
 	}
@@ -215,7 +215,7 @@ func TestIntegrationSearchPipeline(t *testing.T) {
 
 	// Verify wing filter works.
 	var filteredBuf bytes.Buffer
-	runSearch(eng, proj, "authentication", "code", "", 10, true, &filteredBuf)
+	runSearch(eng, proj, "authentication", "code", "", 10, false, true, &filteredBuf)
 	var filtered []search.SearchResult
 	json.Unmarshal(filteredBuf.Bytes(), &filtered)
 	for _, r := range filtered {
