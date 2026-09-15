@@ -1,6 +1,6 @@
 # ADR 011: Open Task-Header Schema and the RequiredDataFormat/Release-Versioning Coupling
 
-**Status:** Proposed (2026-09-15)
+**Status:** Accepted (2026-09-15)
 **Deciders:** Project owner
 **Context:** Task-header schema extensibility, the widened task-status lifecycle, and the data-format/release-tag versioning coupling this opens up
 
