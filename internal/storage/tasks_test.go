@@ -4153,6 +4153,48 @@ func TestFindHeaderSpacingHazardHandlesShortHeader(t *testing.T) {
 	}
 }
 
+// TestFindHeaderSpacingHazardDetectsFirstOfTwoConsecutiveOrphanedLines pins the
+// exact shape the real corpus contains (default-cas-for-blind-overwrites.md:
+// **Priority:**, then **Filed:**, then **Rewritten:**, no blank line before
+// either): only the FIRST orphaned line is reported. Inserting a blank line
+// there is sufficient — headerBlock only needs one blank line to re-terminate
+// correctly for both, so nothing needs to "find" the second one independently
+// (confirmed below: after a single insertion, no hazard remains and BOTH
+// orphaned lines are excluded from the header block).
+func TestFindHeaderSpacingHazardDetectsFirstOfTwoConsecutiveOrphanedLines(t *testing.T) {
+	content := "# T\n\n**Status:** pending\n**Priority:** high\n**Filed:** 2026-07-11\n**Rewritten:** 2026-07-12\n\n## Context\n\nBody.\n"
+	line, text, ok := FindHeaderSpacingHazard(content)
+	if !ok {
+		t.Fatal("expected a hazard hit")
+	}
+	if line != 5 {
+		t.Errorf("line = %d, want 5 (the FIRST orphaned line, **Filed:**)", line)
+	}
+	if text != "**Filed:** 2026-07-11" {
+		t.Errorf("text = %q, want the FIRST orphaned line's text", text)
+	}
+
+	// Simulate the one-blank-line fix and confirm it resolves BOTH orphaned
+	// lines, not just the reported one.
+	lines := strings.Split(content, "\n")
+	idx := line - 1
+	repaired := make([]string, 0, len(lines)+1)
+	repaired = append(repaired, lines[:idx]...)
+	repaired = append(repaired, "")
+	repaired = append(repaired, lines[idx:]...)
+	repairedContent := strings.Join(repaired, "\n")
+
+	if _, _, ok := FindHeaderSpacingHazard(repairedContent); ok {
+		t.Error("a single inserted blank line should resolve the hazard entirely — no hazard should remain")
+	}
+	hstart, hend := headerBlock(strings.Split(repairedContent, "\n"))
+	got := strings.Split(repairedContent, "\n")[hstart:hend]
+	want := []string{"**Status:** pending", "**Priority:** high"}
+	if !slices.Equal(got, want) {
+		t.Errorf("header block after repair = %v, want %v (both orphaned lines excluded as body prose)", got, want)
+	}
+}
+
 func TestFindHeaderSpacingHazardNoHitAtEndOfFile(t *testing.T) {
 	content := "# T\n\n**Status:** pending\n**Priority:** high\n"
 	_, _, ok := FindHeaderSpacingHazard(content)

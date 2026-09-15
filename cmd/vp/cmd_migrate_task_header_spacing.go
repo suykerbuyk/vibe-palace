@@ -149,7 +149,8 @@ func runTaskHeaderSpacingMigration(root, only string, apply bool, out io.Writer)
 	var sum taskHeaderSpacingSummary
 
 	if apply {
-		if err := requireVaultGitRepo(root); err != nil {
+		if err := requireVaultGitRepo(root, "this command rewrites the file in place to insert the missing blank "+
+			"line, and git is what lets you inspect the exact diff — and revert it — before committing the result"); err != nil {
 			return sum, err
 		}
 	}

@@ -299,7 +299,7 @@ func runTaskStatusMigration(root, only string, apply bool, out io.Writer) (taskS
 		// Repo-existence only. The CLEANLINESS half moved to a per-file check
 		// immediately before each write — see the header comment for why the
 		// recoverability concern is real but its whole-vault scope was not.
-		if err := requireVaultGitRepo(root); err != nil {
+		if err := requireVaultGitRepo(root, "this repair overwrites a status value whose only other copy is git history"); err != nil {
 			return sum, err
 		}
 	}
@@ -457,20 +457,26 @@ func runTaskStatusMigration(root, only string, apply bool, out io.Writer) (taskS
 // requireVaultGitRepo refuses an --apply run unless the vault is a git repo.
 //
 // This is the half of the old whole-tree gate that survived, and the reason is
-// unchanged from `requireCleanVaultTree`'s: this repair is lossy per file, so the
-// value it overwrites has to exist somewhere else BEFORE the first byte is
-// written, and git history is that somewhere. What did NOT survive is asking
-// whether the whole vault is clean — that answered "is anyone anywhere mid-edit",
-// which is not the recoverability question and is unsatisfiable in a live session.
+// unchanged from `requireCleanVaultTree`'s: a caller's repair needs a way for the
+// operator to recover before the first byte is written, and git history is that
+// way. What did NOT survive is asking whether the whole vault is clean — that
+// answered "is anyone anywhere mid-edit", which is not the recoverability
+// question and is unsatisfiable in a live session.
+//
+// reason names what THIS caller's repair puts at risk, so the refusal describes
+// the caller that actually fired rather than a copy-pasted claim from a
+// different repair — `runTaskStatusMigration`'s repair is lossy per file
+// (the prior value survives nowhere else), while `runTaskHeaderSpacingMigration`'s
+// is not (every original byte is preserved plus one inserted blank line), and
+// those are different claims about what git buys the operator.
 //
 // It is deliberately its own function rather than a call into
 // `requireCleanVaultTree` with a flag: that helper still guards three siblings
 // whose gates are not being narrowed here, and a shared predicate with a mode
 // switch is how two callers come to disagree about what the gate means.
-func requireVaultGitRepo(root string) error {
+func requireVaultGitRepo(root, reason string) error {
 	if !storage.GitAvailable() || !storage.GitIsRepo(root) {
-		return fmt.Errorf("vault at %s is not a git repository; --apply requires git, because this "+
-			"repair overwrites a status value whose only other copy is git history", root)
+		return fmt.Errorf("vault at %s is not a git repository; --apply requires git, because %s", root, reason)
 	}
 	return nil
 }
