@@ -803,9 +803,16 @@ func TestTopUpVaultGitignore_HoldsTheVaultLock(t *testing.T) {
 // TestTopUpVaultGitignore_HoldsTheVaultLock above, adapted for the Create-path
 // precondition: the file is ABSENT at call time (the real-world precondition —
 // the Vault reconciler's Create branch is reached only when .gitignore is
-// missing), not pre-written with custom content. Proves
-// ReconcileVaultGitignore now genuinely blocks on the per-path vaultlock
-// rather than racing straight past it with the old raw temp+rename.
+// missing), not pre-written with custom content.
+//
+// This proves that ReconcileVaultGitignore BLOCKS UNTIL RELEASED on a lock
+// someone else already holds for the same path — i.e. it does not race past
+// an externally-held lock the way the old raw temp+rename did (confirmed:
+// removing its Acquire call makes this test fail). It does NOT prove the lock
+// stays held across the write itself; a version that acquired, released
+// immediately, and then wrote unprotected would pass this same test shape.
+// The production code's actual `defer release()` (spanning the read and
+// write) is read, not re-derived by this test.
 func TestReconcileVaultGitignore_HoldsTheVaultLockOnCreate(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".gitignore")
