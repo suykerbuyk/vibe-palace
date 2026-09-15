@@ -762,9 +762,15 @@ func TestTopUpVaultGitignore_MissingFileIsAnError(t *testing.T) {
 	}
 }
 
-// TestTopUpVaultGitignore_HoldsTheVaultLock proves the read-modify-write runs
-// under the per-path vaultlock: while another holder has the lock, the top-up
-// must not complete; once it is released, it does.
+// TestTopUpVaultGitignore_HoldsTheVaultLock proves that TopUpVaultGitignore
+// BLOCKS UNTIL RELEASED on a lock someone else already holds for the same
+// path — i.e. it does not race past an externally-held lock. It does NOT
+// prove the lock stays held across the read-modify-write itself; a version
+// that acquired, released immediately, and then read/wrote unprotected would
+// pass this same test shape. The production code's actual lock span (across
+// the read and write — see LockedUpdate/lockedWrite) is read, not re-derived
+// by this test. See gitignore-lock-test-overclaims-what-it-proves and its
+// sibling TestReconcileVaultGitignore_HoldsTheVaultLockOnCreate below.
 func TestTopUpVaultGitignore_HoldsTheVaultLock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".gitignore")
