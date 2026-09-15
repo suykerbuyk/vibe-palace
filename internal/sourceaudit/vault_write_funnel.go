@@ -123,29 +123,31 @@ func vaultWriteFunnel(files []file) []Finding {
 			continue
 		}
 		pkg := f.ast.Name.Name
-		for _, decl := range f.ast.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
-			}
-			// Skip the funnel's own implementation: atomicfile IS the F1
-			// primitive and cannot route through itself.
-			//
-			// internal/vaultfs is deliberately NOT skipped, even though its
-			// raw.go now holds the F2 sink. A package-wide skip would blind this
-			// rule to a NEW raw write added anywhere in vaultfs — read.go,
-			// safety.go — which is a bigger hole than the one it would close.
-			// The sink's own two lines go unreported because they act on a bare
-			// absPath parameter carrying no vault signal, which is the same
-			// documented limit as vaultaudit.Baseline.Save, not a special case.
-			if pkg == "atomicfile" {
-				continue
-			}
+		// Skip the funnel's own implementation: atomicfile IS the F1 primitive
+		// and cannot route through itself.
+		//
+		// internal/vaultfs is deliberately NOT skipped, even though its raw.go
+		// now holds the F2 sink. A package-wide skip would blind this rule to a
+		// NEW raw write added anywhere in vaultfs — read.go, safety.go — which
+		// is a bigger hole than the one it would close. The sink's own two
+		// lines go unreported because they act on a bare absPath parameter
+		// carrying no vault signal, which is the same documented limit as
+		// vaultaudit.Baseline.Save, not a special case.
+		if pkg == "atomicfile" {
+			continue
+		}
 
-			known := vaultPathIdents(fn, &stats)
-			key := pkg + "." + funcName(fn)
+		// bindingScopes(f) — surface_remediation.go's mechanism, reused as-is —
+		// covers every FuncDecl PLUS every func literal held by a package-level
+		// var/const, closing the same *ast.FuncDecl-only blind spot
+		// gitExecEnvFunnel had: a vault mutation built inside a package-level
+		// `var x = func(...){}` test seam (internal/wrapstate.gitCmdRunner,
+		// internal/worktree.runGit and siblings) was previously invisible here.
+		for _, s := range bindingScopes(f) {
+			known := vaultPathIdents(s.params, s.body, &stats)
+			key := pkg + "." + s.name
 
-			ast.Inspect(fn.Body, func(n ast.Node) bool {
+			ast.Inspect(s.body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok || len(call.Args) == 0 {
 					return true
@@ -472,11 +474,16 @@ func isVaultPathExpr(e ast.Expr, known map[string]bool) bool {
 // cross-package idiom reachable: `func Create(opts CreateOptions)` gives nothing,
 // but `func stampVaultWrite(vaultRoot, path string)` names its root in the
 // signature, and most of this tree does the latter.
-func vaultPathIdents(fn *ast.FuncDecl, stats *funnelStats) map[string]bool {
+//
+// Takes params and body separately rather than an *ast.FuncDecl so the same
+// resolver covers a package-level `var x = func(vaultRoot string) {...}`
+// binding scope — a FuncLit has no *ast.FuncDecl and never will, the same
+// reason bindingScope itself carries params+body instead of one.
+func vaultPathIdents(params *ast.FieldList, body *ast.BlockStmt, stats *funnelStats) map[string]bool {
 	known := map[string]bool{}
 
-	if fn.Type.Params != nil {
-		for _, p := range fn.Type.Params.List {
+	if params != nil {
+		for _, p := range params.List {
 			for _, n := range p.Names {
 				if vaultRootIdentNames[n.Name] {
 					known[n.Name] = true
@@ -488,7 +495,7 @@ func vaultPathIdents(fn *ast.FuncDecl, stats *funnelStats) map[string]bool {
 
 	for {
 		added := 0
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
+		ast.Inspect(body, func(n ast.Node) bool {
 			as, ok := n.(*ast.AssignStmt)
 			if !ok {
 				return true

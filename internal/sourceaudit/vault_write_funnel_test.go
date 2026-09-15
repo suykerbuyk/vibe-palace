@@ -87,6 +87,22 @@ func ReadHandle(vaultRoot string) error {
 func MakeDir(vaultRoot string) error {
 	return os.MkdirAll(filepath.Join(vaultRoot, "Projects", "p"), 0o755)
 }
+
+// BYPASS: a raw write inside a package-level func-literal var — the shape
+// internal/wrapstate.gitCmdRunner and internal/worktree.runGit use as a test
+// seam. Before the bindingScopes(f) swap this shape was invisible to the
+// FuncDecl-only walk.
+var VarRawWrite = func(vaultRoot string) error {
+	p := filepath.Join(vaultRoot, "Audits", "baseline.json")
+	return os.WriteFile(p, nil, 0o644)
+}
+
+// CLEAN: the same func-literal-var shape, routed through the sanctioned
+// primitive — proves the extended walk doesn't just flag every var
+// func-literal indiscriminately.
+var VarSanctioned = func(vaultRoot, abs string) error {
+	return atomicfile.Write(vaultRoot, abs, nil)
+}
 `
 
 func funnelIDs(t *testing.T) []string {
@@ -118,6 +134,7 @@ func TestFunnelFlagsBypasses(t *testing.T) {
 		"fixture.RawWriteBackup",
 		"fixture.RawAppend",
 		"fixture.DefeatedRoot",
+		"fixture.VarRawWrite",
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("%s is a vault mutation outside the funnel and the rule did not flag it. "+
@@ -144,6 +161,7 @@ func TestFunnelDoesNotFlagCleanCode(t *testing.T) {
 		"fixture.RawWriteHostPath",
 		"fixture.ReadHandle",
 		"fixture.MakeDir",
+		"fixture.VarSanctioned",
 	} {
 		if slices.Contains(got, unwanted) {
 			t.Errorf("%s is correct code and the rule flagged it — a noisy gate is a disabled gate.\n  got: %v",
