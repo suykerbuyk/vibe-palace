@@ -64,7 +64,7 @@ func diffCLI(pkgs []*packages.Package, byName map[string]*ssa.Function, reach ma
 // and nothing in this file should.
 func diffMCP(pkgs []*packages.Package, byName map[string]*ssa.Function, reach map[*ssa.Function]bool) []GateDivergence {
 	declared := declaredMCPGate(pkgs)
-	ctors := toolConstructors(pkgs)
+	ctors, literalCtors := toolConstructors(pkgs)
 
 	tools := make([]string, 0, len(ctors))
 	for _, name := range ctors {
@@ -80,6 +80,32 @@ func diffMCP(pkgs []*packages.Package, byName map[string]*ssa.Function, reach ma
 	var out []GateDivergence
 	for _, tool := range tools {
 		ctor := byTool[tool]
+
+		// 🔴 A FUNC-LITERAL-BASED CONSTRUCTOR CANNOT BE VERIFIED BY SSA, EVER —
+		// go/ssa folds a package-level `var X = func(...){...}` into the
+		// package initializer as an anonymous closure ("internal/tools.init$N"),
+		// never as "internal/tools.X" (confirmed empirically against a scratch
+		// go/packages+go/ssa harness). byName therefore can never contain an
+		// entry for such a ctor, so `derived` below is unconditionally false
+		// regardless of what the constructor's body actually reaches — a
+		// declared=true tool would forever look like a spurious divergence, and
+		// a declared=false one would forever agree with a wrong answer and
+		// never be reported at all. Both are worse than reporting it plainly:
+		// unconditionally flag it for a human, exactly like a real divergence,
+		// rather than trust or half-trust a derived value that structurally
+		// cannot mean anything for this ctor shape.
+		if literalCtors[ctor] {
+			out = append(out, GateDivergence{
+				Surface:      "mcp",
+				Name:         tool,
+				ctor:         ctor,
+				Derived:      false,
+				Declared:     declared[tool],
+				Unverifiable: true,
+			})
+			continue
+		}
+
 		fn := byName[modulePath+"/internal/tools."+ctor]
 		derived := fn != nil && reach[fn]
 		if derived == declared[tool] {
@@ -178,54 +204,102 @@ func declaredMCPGate(pkgs []*packages.Package) map[string]bool {
 }
 
 // toolConstructors maps each function in internal/tools that builds an mcp.Tool
-// composite literal to the tool NAME in that literal.
+// composite literal to the tool NAME in that literal, plus — separately — which
+// of those constructors are package-level func-literal vars rather than
+// *ast.FuncDecl functions.
 //
 // Keyed off the literal rather than off RegisterAll because the name is the
 // identity everything else uses — MutatingToolNames, the surface golden, the
 // wire. A constructor that builds a Tool without a literal Name would be
 // invisible here; there are none today, and the 1:1 count against the golden
 // (70 constructors, 70 registered tools) is asserted by the test.
-func toolConstructors(pkgs []*packages.Package) map[string]string {
-	out := map[string]string{}
+//
+// The FuncDecl half is unchanged from before this file recognised func
+// literals at all. The GenDecl half closes the same *ast.FuncDecl-only blind
+// spot gitExecEnvFunnel, vaultWriteFunnel and ungatedVaultWriters had: a
+// package-level `var newFooTool = func(...) mcp.Tool {...}` constructor was
+// previously invisible to this walk. Closing it here is DETECTION ONLY — the
+// returned literalCtors set exists so diffMCP can flag such a constructor for
+// mandatory human review rather than trust a derived answer that go/ssa
+// structurally cannot compute for it (see diffMCP's comment).
+func toolConstructors(pkgs []*packages.Package) (ctors map[string]string, literalCtors map[string]bool) {
+	ctors = map[string]string{}
+	literalCtors = map[string]bool{}
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
 		if p.PkgPath != modulePath+"/internal/tools" {
 			return
 		}
 		for _, f := range p.Syntax {
 			for _, d := range f.Decls {
-				fd, ok := d.(*ast.FuncDecl)
-				if !ok || fd.Recv != nil {
-					continue
-				}
-				ast.Inspect(fd, func(n ast.Node) bool {
-					cl, ok := n.(*ast.CompositeLit)
-					if !ok {
-						return true
+				switch decl := d.(type) {
+				case *ast.FuncDecl:
+					if decl.Recv != nil || decl.Body == nil {
+						continue
 					}
-					sel, ok := cl.Type.(*ast.SelectorExpr)
-					if !ok || sel.Sel.Name != "Tool" {
-						return true
+					if name := mcpToolNameIn(decl.Body); name != "" {
+						ctors[decl.Name.Name] = name
 					}
-					if pkgIdent, ok := sel.X.(*ast.Ident); !ok || pkgIdent.Name != "mcp" {
-						return true
-					}
-					for _, el := range cl.Elts {
-						kv, ok := el.(*ast.KeyValueExpr)
+
+				case *ast.GenDecl:
+					for _, spec := range decl.Specs {
+						vs, ok := spec.(*ast.ValueSpec)
 						if !ok {
 							continue
 						}
-						k, ok := kv.Key.(*ast.Ident)
-						if !ok || k.Name != "Name" {
-							continue
-						}
-						if lit, ok := kv.Value.(*ast.BasicLit); ok {
-							out[fd.Name.Name] = strings.Trim(lit.Value, `"`)
+						for i, val := range vs.Values {
+							if i >= len(vs.Names) {
+								continue
+							}
+							for _, lit := range outermostFuncLits(val) {
+								if name := mcpToolNameIn(lit.Body); name != "" {
+									ctors[vs.Names[i].Name] = name
+									literalCtors[vs.Names[i].Name] = true
+								}
+							}
 						}
 					}
-					return true
-				})
+				}
 			}
 		}
 	})
-	return out
+	return ctors, literalCtors
+}
+
+// mcpToolNameIn returns the literal Name field of an mcp.Tool{...} composite
+// literal built anywhere inside body, or "" if none is found. Shared between
+// the *ast.FuncDecl and func-literal arms of toolConstructors so there is one
+// definition of "this body builds a named tool", not two that can drift apart.
+func mcpToolNameIn(body ast.Node) string {
+	name := ""
+	ast.Inspect(body, func(n ast.Node) bool {
+		if name != "" {
+			return false
+		}
+		cl, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		sel, ok := cl.Type.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Tool" {
+			return true
+		}
+		if pkgIdent, ok := sel.X.(*ast.Ident); !ok || pkgIdent.Name != "mcp" {
+			return true
+		}
+		for _, el := range cl.Elts {
+			kv, ok := el.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			k, ok := kv.Key.(*ast.Ident)
+			if !ok || k.Name != "Name" {
+				continue
+			}
+			if lit, ok := kv.Value.(*ast.BasicLit); ok {
+				name = strings.Trim(lit.Value, `"`)
+			}
+		}
+		return true
+	})
+	return name
 }

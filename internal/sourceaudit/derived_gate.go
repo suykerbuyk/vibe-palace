@@ -102,6 +102,16 @@ type GateDivergence struct {
 	Declared bool     // is it gated today?
 	Witness  []string // root -> sink path when Derived; nil otherwise
 
+	// Unverifiable marks a divergence forced by toolConstructors finding a
+	// package-level func-literal-var tool constructor: go/ssa never names such
+	// a value "pkg.<ctorName>" (it is folded into the package initializer as an
+	// anonymous closure), so Derived above is unconditionally false and cannot
+	// be trusted either way. Reported unconditionally — never gated on
+	// Derived == Declared — so it always requires a written baseline reason
+	// rather than silently agreeing or disagreeing with a derived answer that
+	// structurally cannot mean anything for this ctor shape.
+	Unverifiable bool
+
 	// ctor is the SSA root this verdict was computed from: the command
 	// constructor for cli, the tool constructor for mcp. Unexported because it
 	// is an implementation handle, not part of the finding's identity — the
@@ -153,8 +163,17 @@ func RunModule(dir string) ([]Finding, error) {
 
 func (d GateDivergence) detail() string {
 	var b strings.Builder
-	verb := map[bool]string{true: "reaches a funnel sink", false: "reaches NO funnel sink"}
 	gate := map[bool]string{true: "gated", false: "ungated"}
+	if d.Unverifiable {
+		fmt.Fprintf(&b, "declared %v (%s), but this tool's constructor is a package-level "+
+			"func-literal var — go/ssa folds it into the package initializer as an anonymous "+
+			"closure rather than naming it %q, so reachability can be neither confirmed nor "+
+			"refuted for it. A human must rule on this tool directly, exactly like a normal "+
+			"divergence, rather than trust a derived answer this ctor shape cannot produce",
+			d.Declared, gate[d.Declared], modulePath+"/internal/tools."+d.ctor)
+		return b.String()
+	}
+	verb := map[bool]string{true: "reaches a funnel sink", false: "reaches NO funnel sink"}
 	fmt.Fprintf(&b, "derived %v (%s) but declared %v (%s)",
 		d.Derived, verb[d.Derived], d.Declared, gate[d.Declared])
 	if len(d.Witness) > 0 {

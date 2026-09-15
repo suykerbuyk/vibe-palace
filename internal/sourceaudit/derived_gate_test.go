@@ -274,7 +274,7 @@ func TestDerivedGateSeesEveryRegisteredTool(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctors := toolConstructors(livePackages(t))
+	ctors, _ := toolConstructors(livePackages(t))
 
 	seen := map[string]bool{}
 	for _, tool := range ctors {
