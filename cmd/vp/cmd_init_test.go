@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
@@ -253,6 +255,12 @@ func TestInitWithDomainAndTags(t *testing.T) {
 	}
 }
 
+// foldSpace collapses every run of whitespace (including a wrapped line's own
+// newline + hanging indent) to a single space, so a substring check against
+// check.PrintRows-rendered output tests the logical phrase a reader sees
+// rather than the physical line layout writeEntry's word-wrap produced.
+func foldSpace(s string) string { return strings.Join(strings.Fields(s), " ") }
+
 // TestInitFailsOnMalformedMarker is the CLI-side twin of
 // internal/onboard's TestOnboardRun_MalformedMarkerFails.
 //
@@ -294,7 +302,13 @@ func TestInitFailsOnMalformedMarker(t *testing.T) {
 	if !strings.Contains(out, cfgPath) {
 		t.Errorf("Fail row does not name the file to fix (%s):\n%s", cfgPath, out)
 	}
-	if !strings.Contains(out, "not valid TOML") {
+	// Only this check is exposed to check.PrintRows's word-wrap: cfgPath (a
+	// path, one atomic word) and the two "[FAIL] ..." tag+Name lines above are
+	// never wrapped or split by writeEntry, but this Summary's variable-length
+	// cfgPath prefix can shift where "is not valid TOML" wraps — fold
+	// whitespace before checking it. See
+	// testinitfailsonmalformedmarker-flakes-on-tempdir-path-length.
+	if !strings.Contains(foldSpace(out), "not valid TOML") {
 		t.Errorf("Fail row does not say the file is unparseable:\n%s", out)
 	}
 	// The operator's bytes survive, in place or as the .bak the host-local
@@ -307,6 +321,38 @@ func TestInitFailsOnMalformedMarker(t *testing.T) {
 	}
 	if !recovered {
 		t.Errorf("original bytes not recoverable from %s or its .bak", cfgPath)
+	}
+}
+
+// TestNotValidTOMLSurvivesWrapBoundary proves the fix in
+// TestInitFailsOnMalformedMarker deterministically, rather than relying on
+// t.TempDir()'s random path length to happen to reproduce the split. It
+// drives check.PrintRows directly with a synthetic Fail row shaped exactly
+// like internal/onboard/steps.go's Summary (a variable-length path prefix
+// immediately before "is not valid TOML"), sweeping the prefix length so the
+// wrap boundary is forced into every possible position at least once.
+func TestNotValidTOMLSurvivesWrapBoundary(t *testing.T) {
+	const suffix = " is not valid TOML: toml: line 1: expected '.' or '=', but got '\\n' instead"
+	sawSplit := false
+	for pad := 0; pad <= 100; pad++ {
+		path := strings.Repeat("p", 40+pad) + "/.vibe-palace.toml"
+		var buf bytes.Buffer
+		check.PrintRows(&buf, []check.Result{{
+			Name: "Project config", Status: check.Fail, Summary: path + suffix,
+		}})
+		rendered := buf.String()
+		if !strings.Contains(rendered, "not valid TOML") {
+			sawSplit = true
+		}
+		if !strings.Contains(foldSpace(rendered), "not valid TOML") {
+			t.Fatalf("pad=%d (path len %d): folded output still does not contain the phrase:\n%s",
+				pad, len(path), rendered)
+		}
+	}
+	if !sawSplit {
+		t.Fatal("fixture never reproduced a wrap split across the 0..100 pad sweep — " +
+			"widen the range or adjust the suffix so this test still proves what it claims " +
+			"(that the split is real, not that it never happens to occur)")
 	}
 }
 
