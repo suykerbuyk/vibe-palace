@@ -33,13 +33,19 @@
 #
 # Derivation. Run it once in a full clone with tags fetched (git fetch --tags).
 # It fails closed: a revision that does not resolve is a non-zero exit, never
-# zero rows. The rows below, with every "#" line stripped, equal its output:
-# 174 rows over 46 relpaths. With revs="1f3bb62" alone it yields 172; the two
-# rows marked "# extra:" come from the tag pre-rebase-501c96e, whose commit is
-# not an ancestor of 1f3bb62 but whose build was installed.
+# zero rows. The rows below, with every "#" line stripped, equal its output
+# (172 rows over 46 relpaths from revs="1f3bb62" alone) plus the two rows
+# marked "# extra:", carried verbatim from the tag pre-rebase-501c96e (commit
+# 501c96e, not an ancestor of 1f3bb62, whose build was installed): 174 rows
+# total. The operator deleted that tag from the github remote on 2026-09-14
+# (task docs-and-shipped-manifest-cite-a-deleted-tag) — the two extra rows are
+# no longer re-derivable or recoverable from published history, and are
+# pinned here by blob hash alone (see the two "# extra:" lines below). The
+# recipe below reproduces only the 172 non-tag rows; it no longer names the
+# deleted tag in revs.
 #
 #   set -eu -o pipefail
-#   revs="1f3bb62 pre-rebase-501c96e"
+#   revs="1f3bb62"
 #   for r in $revs; do git rev-parse -q --verify "$r^{commit}" >/dev/null || { echo "derive: $r does not resolve (git fetch --tags)" >&2; exit 1; }; done
 #   git rev-list --full-history $revs -- internal/templates/templates internal/context/templates \
 #    | while read -r c; do git ls-tree -r "$c" -- internal/templates/templates/ internal/context/templates/ || exit 1; done \
@@ -55,7 +61,7 @@ b9c681a449e33bb4582cd1cdc4bef209ab9b64e4450ac18e44b3b22786be62a0  commands/cance
 d83afc14a09a089ea953651a0d8960b64a33781541255700c77d48701a280b58  commands/cancel-plan.md
 f468f7885ac387032a165083e5d89c4f4916877e4f570e37e2dcd6ef5a8e904a  commands/cancel-plan.md
 fc667be07a6ea4ea0d74406320155ac89da47b34cd6c112f4aba79181aa3c964  commands/cancel-plan.md
-# extra: tag pre-rebase-501c96e (commit 501c96e, 2026-07-30; on the github remote since 2026-09-11), blob 17505a1e135686913bb14a1e1845fac6b4c89e25
+# extra: tag pre-rebase-501c96e (commit 501c96e, 2026-07-30; on the github remote 2026-09-11 to 2026-09-14, then deleted by operator instruction — no longer resolvable or recoverable from published history), blob 17505a1e135686913bb14a1e1845fac6b4c89e25
 3a237999814fd03956a59518ae505f55b170daa11c774c4074348562b35a1c47  commands/capture.md
 4be8c3300be5631a5a3acfce2a1317e8f223710c789af7f18b045619e5021ec5  commands/capture.md
 7d77f5d7ef47d559e3f9be1fc1a15b6b5278ae820fff73001230389b0564b125  commands/capture.md
@@ -128,7 +134,7 @@ eb511caf8483d5a3662d3d337ef1c2b195b60fd4a133d47e6096daa65f14cd51  commands/vp-re
 22f9185308a5263de4ed7aa1cbaaffe2c0546664f26e89826ee4de8e9fa32f5b  commands/wrap.md
 2548caa4a59b8a5d4d31d5540e3ec8f90d75d1617229f9fd4f894758550762be  commands/wrap.md
 2951371ed705779c4aec293a1226636bc44b19dd26a5efc95ae59a8401e89e13  commands/wrap.md
-# extra: tag pre-rebase-501c96e (commit 501c96e, 2026-07-30; on the github remote since 2026-09-11), blob 3924d6ca85fa89d5b298dd57191112bddafa8427
+# extra: tag pre-rebase-501c96e (commit 501c96e, 2026-07-30; on the github remote 2026-09-11 to 2026-09-14, then deleted by operator instruction — no longer resolvable or recoverable from published history), blob 3924d6ca85fa89d5b298dd57191112bddafa8427
 2f13399366aef10ebc04d2ecd2eba3344557435637ba15faa924a3e2cf5aa8ea  commands/wrap.md
 2f3eed0a56000c7ce3560eb60457b6edf41b892b780729a9d918af102a7aba33  commands/wrap.md
 301db931c7d61009794c921dc196fcee9da65e93b794e16e4cb391a68addcc3e  commands/wrap.md

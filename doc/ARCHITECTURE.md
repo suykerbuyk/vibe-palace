@@ -1531,9 +1531,12 @@ lines allowed. It is **frozen**:
   vault from vp.
 - **The rows** are every version reachable from `1f3bb62`, plus the two
   rows of tag `pre-rebase-501c96e` (annotated `# extra:` with their blob
-  OIDs; the tag is on the `github` remote). The current embedded copy is
-  matched live, not as a row. `TestShippedManifestWellFormed` pins the
-  shape and `TestShippedManifestIsFrozen` the content hash.
+  OIDs; the tag was on the `github` remote from 2026-09-11 until the
+  operator deleted it on 2026-09-14 — the two rows are pinned by blob
+  hash alone and are no longer re-derivable or recoverable from
+  published history). The current embedded copy is matched live, not as
+  a row. `TestShippedManifestWellFormed` pins the shape and
+  `TestShippedManifestIsFrozen` the content hash.
 - **It is never regenerated.** A template edit needs nothing beyond the
   Go-embedded copy. A change to the file is a deliberate, reviewed edit
   that updates `frozenManifestSHA256` in the same commit.
@@ -1541,15 +1544,17 @@ lines allowed. It is **frozen**:
   `internal/templates/**` LF on every checkout, and the parser strips a
   trailing `\r` anyway.
 
-A reviewer reproduces the rows once, in a full clone with tags fetched
-(`git fetch --tags`). The command fails closed — a revision that does
-not resolve is a non-zero exit, never zero rows — and its output equals
-the file's rows with the `#` lines stripped (with `revs="1f3bb62"` alone
-it omits the two tag rows):
+A reviewer reproduces the 172 non-tag rows once, in a full clone with
+tags fetched (`git fetch --tags`). The command fails closed — a
+revision that does not resolve is a non-zero exit, never zero rows —
+and its output equals the file's rows minus the two
+`# extra:`-annotated rows, which are carried verbatim and pinned by
+blob hash alone (the tag they came from, `pre-rebase-501c96e`, was
+deleted from `github` on 2026-09-14 and no longer resolves).
 
 ```sh
 set -eu -o pipefail
-revs="1f3bb62 pre-rebase-501c96e"
+revs="1f3bb62"
 for r in $revs; do git rev-parse -q --verify "$r^{commit}" >/dev/null || { echo "derive: $r does not resolve (git fetch --tags)" >&2; exit 1; }; done
 git rev-list --full-history $revs -- internal/templates/templates internal/context/templates \
  | while read -r c; do git ls-tree -r "$c" -- internal/templates/templates/ internal/context/templates/ || exit 1; done \

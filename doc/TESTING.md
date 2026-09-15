@@ -1153,14 +1153,17 @@ A template edit needs nothing here. The earlier-version tests elsewhere
 cover the classifier, the CRLF key (one pass: `\r\r\n` becomes `\r\n`)
 and the parser (a trailing `\r` stripped, a malformed line skipped).
 
-To verify the rows once, run the derivation from the file's header in a
-full clone with tags fetched (`git fetch --tags`). It fails closed — a
-revision that does not resolve is a non-zero exit, never zero rows — and its
-output equals the file's rows with every `#` line stripped:
+To verify the rows once, reproduce the 172 non-tag rows by running the
+derivation from the file's header in a full clone with tags fetched
+(`git fetch --tags`). It fails closed — a revision that does not resolve is a
+non-zero exit, never zero rows — and its output equals the file's rows minus
+the two `# extra:`-annotated rows, which are carried verbatim and pinned by
+blob hash alone (the tag they came from, `pre-rebase-501c96e`, was deleted
+from `github` on 2026-09-14 and no longer resolves):
 
 ```sh
 set -eu -o pipefail
-revs="1f3bb62 pre-rebase-501c96e"
+revs="1f3bb62"
 for r in $revs; do git rev-parse -q --verify "$r^{commit}" >/dev/null || { echo "derive: $r does not resolve (git fetch --tags)" >&2; exit 1; }; done
 git rev-list --full-history $revs -- internal/templates/templates internal/context/templates \
  | while read -r c; do git ls-tree -r "$c" -- internal/templates/templates/ internal/context/templates/ || exit 1; done \

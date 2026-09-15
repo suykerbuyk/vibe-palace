@@ -266,3 +266,17 @@ records what the override-only model (Design B) now rests on.
    reads, the remaining hazards (earlier-version and CRLF pruning) are this release's
    own policy, which no gate can stop, and removals stamp nothing. The reasoning is
    recorded in `internal/surface/version.go`.
+
+## Amendment (2026-09-14): tag `pre-rebase-501c96e` deleted; rows pinned by blob hash alone
+
+On operator instruction, tag `pre-rebase-501c96e` was deleted from the `github`
+remote (and from host `12a23ab8`'s clone) — see task
+`docs-and-shipped-manifest-cite-a-deleted-tag`. It was the only ref keeping
+commit `501c96e` reachable from that remote; the commit is not an ancestor of
+`main`. The manifest's two `# extra:` rows (blobs `17505a1e135686913bb14a1e1845fac6b4c89e25`
+and `3924d6ca85fa89d5b298dd57191112bddafa8427`) are unaffected and still count
+as vp's — they are pinned by blob hash alone in `internal/templates/shipped.txt`,
+not by the tag's continued existence — but they are no longer re-derivable or
+recoverable from the published `github` history. The Amendment (2026-09-11)
+paragraph above still describes the manifest's design correctly; only the
+tag's current availability has changed.

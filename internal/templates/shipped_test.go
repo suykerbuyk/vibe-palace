@@ -16,10 +16,13 @@ import (
 // frozenManifestSHA256 is the sha256 of shipped.txt as frozen at the 1f3bb62
 // last-writer boundary. The manifest is never regenerated: a change to it is a
 // deliberate, reviewed edit that updates this constant in the same commit.
-const frozenManifestSHA256 = "b0acf9d64dc9f5596f346e07d59ef56c0992a2020cfb12fec5f4ddfcc434c831"
+const frozenManifestSHA256 = "126fa37f947daff812504fb607621bb506e98d20cf2096a8fdda8f39818021fe"
 
 // The two rows that come from the tag pre-rebase-501c96e, whose commit is not
-// an ancestor of 1f3bb62, and the git blob each was derived from.
+// an ancestor of 1f3bb62, and the git blob each was derived from. The operator
+// deleted the tag from the github remote on 2026-09-14; these two rows are no
+// longer re-derivable or recoverable from published history and are pinned
+// here by blob hash alone.
 var tagRows = map[string]string{
 	"3a237999814fd03956a59518ae505f55b170daa11c774c4074348562b35a1c47  commands/capture.md": "17505a1e135686913bb14a1e1845fac6b4c89e25",
 	"2f13399366aef10ebc04d2ecd2eba3344557435637ba15faa924a3e2cf5aa8ea  commands/wrap.md":    "3924d6ca85fa89d5b298dd57191112bddafa8427",
