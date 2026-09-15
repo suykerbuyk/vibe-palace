@@ -215,9 +215,13 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 			out.Errors = append(out.Errors, fmt.Errorf("listing remotes: %w", err))
 			return nil, out, out.err()
 		}
-		if b, err := gitCmd(vaultPath, 10*time.Second, "symbolic-ref", "--short", "HEAD"); err == nil && b != "" {
-			branch = b
-		}
+		// Routed through the shared currentBranch (vaultstatus.go) rather than
+		// hand-rolling the same symbolic-ref call here: this and
+		// CommitAndPushPaths's own branch resolution want identical
+		// semantics, and a second independently-maintained copy is exactly
+		// how this class of bug (see vaultstatus-and-vaultsync-abbrev-ref-branch-corruption)
+		// arose in the first place.
+		branch = currentBranch(vaultPath)
 		if len(remotes) > 0 {
 			reconcileErrs = reconcileIfAhead(vaultPath, remotes, branch)
 		}

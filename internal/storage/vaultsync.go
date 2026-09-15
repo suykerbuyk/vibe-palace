@@ -246,12 +246,13 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 			return nil, fmt.Errorf("no git remotes configured in vault %s", vaultPath)
 		}
 		// Resolve the branch once, up front: the already-ahead guard needs it
-		// before staging and the push loop reuses it. HEAD already exists (the
-		// vault always has at least a seed commit) so this resolves before our
-		// own commit. Keep the "main" fallback for a detached/empty HEAD.
-		if b, _ := gitCmd(vaultPath, 10*time.Second, "rev-parse", "--abbrev-ref", "HEAD"); b != "" {
-			branch = b
-		}
+		// before staging and the push loop reuses it. Routed through
+		// currentBranch (vaultstatus.go), which is symbolic-ref-based and
+		// therefore correct even when this IS the vault's first-ever commit —
+		// HEAD is a valid symbolic ref (refs/heads/<branch>) whether or not
+		// that branch has any commits yet, unlike the rev-parse --abbrev-ref
+		// HEAD this used to call directly, which fails on an unborn HEAD.
+		branch = currentBranch(vaultPath)
 		// Fix B: heal an already-ahead branch (a prior stranded commit) BEFORE a
 		// new commit stacks on top of it and compounds the strand. Gated on
 		// push && len(remotes) > 0 so it never fires on the downgrade path.

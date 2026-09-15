@@ -1075,3 +1075,41 @@ func TestCommitAndPushPaths_AlreadyAheadGuardFailsOpen(t *testing.T) {
 		}
 	})
 }
+
+// TestCommitAndPushPaths_FirstCommitOnUnbornHeadWithRemotePushesCleanly is the
+// permanent regression test for vaultstatus-and-vaultsync-abbrev-ref-branch-corruption's
+// vaultsync.go:252 site: a remote configured on a vault BEFORE its first-ever
+// commit, then a push-enabled commit as that first commit. Before the fix,
+// this reproducibly corrupted the branch-resolution variable with git's own
+// multi-line fatal error text, which pushCommitted then passed to `git push
+// <remote> <branch>` as a literal (invalid) refspec — the push failed with a
+// misleading "invalid refspec" error even though the commit itself landed
+// locally. After the fix, currentBranch resolves the real branch name (HEAD
+// is a valid symbolic ref whether or not it has commits yet), so the push
+// must actually SUCCEED against a fresh bare remote — not merely "fail in a
+// different way."
+func TestCommitAndPushPaths_FirstCommitOnUnbornHeadWithRemotePushesCleanly(t *testing.T) {
+	dir := initUnbornTestRepo(t)
+	bare := initBareRemote(t)
+	gitRun(t, dir, "remote", "add", "origin", bare)
+
+	writeFile(t, dir, "file.txt", "hello\n")
+	res, err := CommitAndPushPaths(dir, "first ever commit", []string{"file.txt"}, true)
+	if err != nil {
+		t.Fatalf("CommitAndPushPaths: %v", err)
+	}
+	if res.CommitSHA == "" {
+		t.Fatal("expected a commit SHA for the vault's first-ever commit")
+	}
+	headSHA := gitRun(t, dir, "rev-parse", "--short", "HEAD")
+	if res.CommitSHA != headSHA {
+		t.Errorf("res.CommitSHA = %q, want it to match HEAD %q", res.CommitSHA, headSHA)
+	}
+	if pushErr := res.RemoteResults["origin"]; pushErr != nil {
+		t.Errorf("push to origin must succeed on the vault's first commit, got: %v", pushErr)
+	}
+	tree := gitRun(t, bare, "ls-tree", "--name-only", "main")
+	if !strings.Contains(tree, "file.txt") {
+		t.Errorf("remote tip missing file.txt after the first push: %q", tree)
+	}
+}

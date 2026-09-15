@@ -6,6 +6,7 @@ package storage
 import (
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -337,5 +338,81 @@ func TestGetRemoteStatus_EmptyBranchResolvesCurrent(t *testing.T) {
 	}
 	if st.Ahead != 1 {
 		t.Errorf("empty branch should resolve to main and report Ahead=1, got %d", st.Ahead)
+	}
+}
+
+// TestCurrentBranch_UnbornHead is the direct regression pin for the
+// vaultstatus-and-vaultsync-abbrev-ref-branch-corruption fix: on a vault that
+// is git-init'd with zero commits, currentBranch must return the real branch
+// name, never git's own multi-line fatal error text. initUnbornTestRepo pins
+// the branch to "main" explicitly (`-b main`), so asserting against "main"
+// directly is exact, not an assumption about the host's init.defaultBranch.
+func TestCurrentBranch_UnbornHead(t *testing.T) {
+	dir := initUnbornTestRepo(t)
+
+	got := currentBranch(dir)
+	if got != "main" {
+		t.Errorf("currentBranch on unborn HEAD = %q, want %q", got, "main")
+	}
+	if strings.Contains(got, "fatal:") {
+		t.Errorf("currentBranch returned git's own error text: %q", got)
+	}
+	if strings.Contains(got, "\n") {
+		t.Errorf("currentBranch returned a multi-line value: %q", got)
+	}
+}
+
+// TestCurrentBranch_DetachedHead is a characterization test, not a bug
+// report: it pins the ACCEPTED, deliberate behavior change from switching
+// rev-parse --abbrev-ref HEAD (which succeeds on a detached HEAD and returns
+// the literal string "HEAD") to symbolic-ref --short HEAD (which fails on a
+// detached HEAD, since it names a commit directly rather than a branch) —
+// falling back to "main" there instead. See currentBranch's own doc comment.
+func TestCurrentBranch_DetachedHead(t *testing.T) {
+	dir := initTestRepo(t)
+	writeFile(t, dir, "second.txt", "second commit\n")
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-m", "second")
+	firstSHA := gitRun(t, dir, "rev-list", "--max-parents=0", "HEAD")
+	gitRun(t, dir, "checkout", "-q", firstSHA)
+
+	got := currentBranch(dir)
+	if got != "main" {
+		t.Errorf("currentBranch on detached HEAD = %q, want the accepted fallback %q", got, "main")
+	}
+}
+
+// TestCurrentBranch_NormalBranch guards against a fix that only handles the
+// unborn/detached cases and breaks the common one: an ordinary repo on a
+// non-default branch must still resolve to that branch's real name.
+func TestCurrentBranch_NormalBranch(t *testing.T) {
+	dir := initTestRepo(t)
+	gitRun(t, dir, "checkout", "-b", "feature-x")
+
+	got := currentBranch(dir)
+	if got != "feature-x" {
+		t.Errorf("currentBranch = %q, want %q", got, "feature-x")
+	}
+}
+
+// TestBuildStatusReport_UnbornHeadReportsRealBranchNotGitError is the exact
+// repro from the investigation, kept as a permanent regression test: before
+// the fix, this silently set StatusReport.Branch to git's own multi-line
+// fatal error text with a NIL error — corruption a caller had no reason to
+// distrust, surfaced directly into `vp vault status`'s output. No remote is
+// configured and nothing is committed, matching a freshly `vp init`-ed vault
+// exactly.
+func TestBuildStatusReport_UnbornHeadReportsRealBranchNotGitError(t *testing.T) {
+	dir := initUnbornTestRepo(t)
+
+	rep, err := BuildStatusReport(dir, false)
+	if err != nil {
+		t.Fatalf("BuildStatusReport: %v", err)
+	}
+	if rep.Branch != "main" {
+		t.Errorf("Branch = %q, want %q", rep.Branch, "main")
+	}
+	if strings.Contains(rep.Branch, "fatal:") || strings.Contains(rep.Branch, "\n") {
+		t.Errorf("Branch was corrupted with git error text: %q", rep.Branch)
 	}
 }

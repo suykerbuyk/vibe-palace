@@ -53,10 +53,25 @@ type RemoteStatus struct {
 }
 
 // currentBranch returns the vault's current branch via
-// `git rev-parse --abbrev-ref HEAD`, falling back to "main" for a detached or
-// empty HEAD. Mirrors the inline branch detection in CommitAndPushPaths.
+// `git symbolic-ref --short HEAD`, falling back to "main" when that fails
+// (a detached HEAD, or any other git error) or returns empty.
+//
+// symbolic-ref, not rev-parse --abbrev-ref: HEAD is a valid symbolic ref
+// (refs/heads/<branch>) whether or not that branch has any commits yet, so
+// this resolves correctly even on an unborn HEAD (a freshly `git init`-ed
+// vault with nothing committed) — exactly the case rev-parse --abbrev-ref
+// HEAD fails on, with a multi-line fatal message on stderr that gitCmd's
+// CombinedOutput folds into its "success" return value once the error is
+// discarded. The error is checked here, not discarded, so that failure mode
+// falls through to the "main" default instead of returning git's own error
+// text as if it were a branch name.
+//
+// On a genuinely DETACHED (not unborn) HEAD, symbolic-ref fails too (HEAD
+// names a commit directly, not a branch) and this returns "main" — a
+// deliberate, accepted behavior change from the old rev-parse --abbrev-ref
+// HEAD, which succeeded there and returned the literal string "HEAD".
 func currentBranch(vaultPath string) string {
-	if b, _ := gitCmd(vaultPath, 10*time.Second, "rev-parse", "--abbrev-ref", "HEAD"); b != "" {
+	if b, err := gitCmd(vaultPath, 10*time.Second, "symbolic-ref", "--short", "HEAD"); err == nil && b != "" {
 		return b
 	}
 	return "main"
