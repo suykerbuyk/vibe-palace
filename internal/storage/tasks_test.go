@@ -4101,3 +4101,62 @@ func TestOverwriteTaskFileRewritingHeaderStillMovesUnrecognizedFields(t *testing
 		t.Fatalf("migration writer refused an unrecognized-field move: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FindHeaderSpacingHazard (§6, vp migrate task-header-spacing)
+// ---------------------------------------------------------------------------
+
+func TestFindHeaderSpacingHazardDetectsOrphanedLine(t *testing.T) {
+	content := "# T\n\n**Status:** pending\n**Priority:** high\n**Depends:** dep\n**Note:** orphaned\n\n## Context\n\nBody.\n"
+	line, text, ok := FindHeaderSpacingHazard(content)
+	if !ok {
+		t.Fatal("expected a hazard hit")
+	}
+	// Hand-verified expected line number: this is the real defense against a
+	// bug in FindHeaderSpacingHazard's own index computation —
+	// applyHeaderSpacingFix's checks cannot substitute for it.
+	if line != 6 {
+		t.Errorf("line = %d, want 6", line)
+	}
+	if text != "**Note:** orphaned" {
+		t.Errorf("text = %q, want %q", text, "**Note:** orphaned")
+	}
+}
+
+func TestFindHeaderSpacingHazardNoHitWithBlankLineSeparator(t *testing.T) {
+	content := "# T\n\n**Status:** pending\n**Priority:** high\n**Depends:** dep\n\n**Note:** not a hazard\n\n## Context\n\nBody.\n"
+	_, _, ok := FindHeaderSpacingHazard(content)
+	if ok {
+		t.Error("a blank-line-separated field must not be reported as a hazard")
+	}
+}
+
+func TestFindHeaderSpacingHazardIgnoresOrdinaryAdjacentCoreFields(t *testing.T) {
+	content := "# T\n\n**Status:** pending\n**Priority:** high\n**Parent:** epic\n**Depends:** dep\n\n## Context\n\nBody.\n"
+	_, _, ok := FindHeaderSpacingHazard(content)
+	if ok {
+		t.Error("an ordinary Status/Priority/Parent/Depends run with no trailing extension line must not be a hazard")
+	}
+}
+
+func TestFindHeaderSpacingHazardHandlesShortHeader(t *testing.T) {
+	content := "# T\n\n**Status:** pending\n**Priority:** high\n**Note:** orphaned\n\n## Context\n\nBody.\n"
+	line, text, ok := FindHeaderSpacingHazard(content)
+	if !ok {
+		t.Fatal("expected a hazard hit even with no Parent/Depends present")
+	}
+	if line != 5 {
+		t.Errorf("line = %d, want 5", line)
+	}
+	if text != "**Note:** orphaned" {
+		t.Errorf("text = %q, want %q", text, "**Note:** orphaned")
+	}
+}
+
+func TestFindHeaderSpacingHazardNoHitAtEndOfFile(t *testing.T) {
+	content := "# T\n\n**Status:** pending\n**Priority:** high\n"
+	_, _, ok := FindHeaderSpacingHazard(content)
+	if ok {
+		t.Error("a header with nothing after it must not be a hazard")
+	}
+}

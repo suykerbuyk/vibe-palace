@@ -1721,6 +1721,70 @@ func headerBlock(lines []string) (start, end int) {
 	return start, at
 }
 
+// oldClosedHeaderBoundary re-derives the header-block boundary the ORIGINAL
+// closed-list parser would have computed — before ADR-011 generalized
+// isHeaderFieldLine to accept any well-formed field, not just
+// Status/Priority/Parent/Depends. It is built from isStatusLine/
+// isPriorityLine/isParentLine/isDependsLine (thin wrappers over the shared,
+// UNCHANGED headerFieldValue), not a copy of headerBlock's own loop — that
+// function IS the new open-schema boundary once the generalization lands, so
+// it can no longer produce the old one. Used only by FindHeaderSpacingHazard.
+func oldClosedHeaderBoundary(lines []string) (start, end int) {
+	at := 0
+	for i, line := range lines {
+		if isH1Line(line) {
+			at = i + 1
+			break
+		}
+	}
+	for at < len(lines) && strings.TrimSpace(lines[at]) == "" {
+		at++
+	}
+	start = at
+	for at < len(lines) &&
+		(isStatusLine(lines[at]) || isPriorityLine(lines[at]) || isParentLine(lines[at]) || isDependsLine(lines[at])) {
+		at++
+	}
+	return start, at
+}
+
+// FindHeaderSpacingHazard scans content for the one shape ADR-011 Decision 1
+// flags: a non-blank, bold-field-shaped line sitting immediately after the
+// last of the four ORIGINALLY closed fields (Status/Priority/Parent/Depends),
+// with no blank-line separator, that the OLD closed-list headerBlock would
+// have correctly excluded as body prose but the new open-schema headerBlock
+// (see isHeaderFieldLine) now absorbs as an unrecognized field.
+//
+// The candidate-line half genuinely calls headerFieldName — the exact
+// open-schema predicate isHeaderFieldLine is built on, not a copy of it. The
+// OLD-boundary half cannot call headerBlock itself (that function IS the new
+// open-schema version) — it is built instead from isStatusLine/isPriorityLine/
+// isParentLine/isDependsLine, composition of existing, tested primitives, not
+// a parallel reimplementation.
+//
+// Returns the 1-based line number to insert a blank line before, the exact
+// text of that line (so a caller can independently verify it against disk
+// before trusting the index — see cmd/vp's applyHeaderSpacingFix), and false
+// if content has no such hazard.
+func FindHeaderSpacingHazard(content string) (line int, text string, ok bool) {
+	lines := strings.Split(content, "\n")
+	_, oldEnd := oldClosedHeaderBoundary(lines)
+	if oldEnd >= len(lines) {
+		return 0, "", false
+	}
+	candidate := lines[oldEnd]
+	if strings.TrimSpace(candidate) == "" {
+		return 0, "", false
+	}
+	if !isHeaderFieldLine(candidate) {
+		// Not field-shaped even under the open schema: ordinary body prose,
+		// correctly excluded by both the old and the new boundary. Not a
+		// hazard.
+		return 0, "", false
+	}
+	return oldEnd + 1, candidate, true
+}
+
 // validateTaskBody rejects a caller-supplied task body that carries its own
 // metadata header, or the one H2 heading CreateTask writes for itself.
 //

@@ -303,6 +303,11 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		// cancelled/ alike: the header classes it reports span all three, and a
 		// legacy header is not made harmless by the directory it sits in.
 		"migrate task-header": true,
+		// Writes via Vault.OverwriteTaskFileRewritingHeader (the same migration
+		// escape hatch task-header uses) under --apply, across active, done/
+		// and cancelled/ alike — the header-spacing hazard is not
+		// directory-specific.
+		"migrate task-header-spacing": true,
 	}
 
 	reg, _, _ := testRegistry()
