@@ -12,7 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // CanonicalGitignorePatterns is the growing set of .gitignore lines that
@@ -76,17 +78,44 @@ var CanonicalProjectGitignorePatterns = []string{
 
 // ReconcileVaultGitignore ensures every pattern in
 // CanonicalGitignorePatterns is present in <vaultRoot>/.gitignore as an
-// exact line. Existing content — comments, blank lines, custom
-// patterns, ordering — is preserved verbatim. Missing canonical lines
-// append at EOF in declaration order. The file is written atomically
-// via a sibling tmp-file + rename, with 0o644 permissions and exactly
-// one trailing newline. Calling twice on the same vault produces
-// byte-identical files.
+// exact line, creating the file if it is absent. Existing content —
+// comments, blank lines, custom patterns, ordering — is preserved
+// verbatim. Missing canonical lines append at EOF in declaration order.
+// Calling twice on the same vault produces byte-identical files.
+//
+// Unlike ReconcileProjectGitignore's raw temp+rename (reconcileGitignore,
+// below) — a non-vault path, correctly outside ADR-003's lock funnel — this
+// acquires the .gitignore path's vaultlock ONCE, reads absent-tolerantly
+// inside it, and writes with atomicfile.Write. It never calls
+// TopUpVaultGitignore / LockedUpdate / lockedWrite: those would either error
+// on a missing file (LockedUpdate has no absent-tolerant branch) or
+// re-acquire this same path's lock while it is already held, which is a
+// PERMANENT HANG, not an error (ADR-003, "RMW callers must not
+// double-acquire" — vaultlock.Acquire is a blocking flock with no timeout).
+//
+// The unconditional write (never skipped, even when nothing was missing)
+// matters for the case where two callers both observe the file absent at
+// plan time: the second to actually acquire the lock must still succeed as
+// a normalizing no-op against whatever the first caller (or some other
+// writer) left behind, never assume the file is still absent.
 func ReconcileVaultGitignore(vaultRoot string) error {
-	// skipWhenComplete=false: the vault path always (re)writes so the
-	// trailing newline is normalized even on a no-additions run.
-	return reconcileGitignore(filepath.Join(vaultRoot, ".gitignore"),
-		CanonicalGitignorePatterns, false)
+	path := filepath.Join(vaultRoot, ".gitignore")
+
+	release, err := vaultlock.Acquire(vaultRoot, path)
+	if err != nil {
+		return fmt.Errorf("storage: lock %s: %w", path, err)
+	}
+	defer release()
+
+	var existing []byte
+	if data, err := os.ReadFile(path); err == nil {
+		existing = data
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read gitignore %s: %w", path, err)
+	}
+
+	out, _ := appendMissingGitignoreLines(existing, CanonicalGitignorePatterns)
+	return atomicfile.Write(vaultRoot, path, out)
 }
 
 // ReconcileProjectGitignore ensures every pattern in
@@ -113,11 +142,14 @@ func ReconcileProjectGitignore(projectRoot string) error {
 // it — this is a genuine read-modify-write of a shared, git-tracked vault file,
 // so it runs inside LockedUpdate: the missing set is computed from bytes read
 // under the per-path lock, and no other LOCKED writer of the file can land an
-// edit between that read and the write (ADR-003). The raw writer,
-// ReconcileVaultGitignore, takes no lock, so it is not excluded; routing it
-// through the funnel is owned by template-tree-raw-vault-writes-bypass-the-lock-funnel.
-// A missing file is an error here, not a create; the Vault reconciler plans a
-// Create for that case.
+// edit between that read and the write (ADR-003). ReconcileVaultGitignore also
+// takes the lock now (vault-gitignore-create-bypasses-the-vault-lock), via its
+// own absent-tolerant single acquisition rather than this function's
+// LockedUpdate — LockedUpdate has no absent-tolerant branch (a missing file is
+// an error here, not a create; the Vault reconciler plans a Create for that
+// case, which is exactly the case ReconcileVaultGitignore's own acquisition
+// handles). The two never run nested: a single VaultReconciler.Apply action is
+// exactly one of Create or Update for a given target, never both.
 func TopUpVaultGitignore(vaultRoot string) (int, error) {
 	path := filepath.Join(vaultRoot, ".gitignore")
 	added := 0
@@ -219,12 +251,16 @@ func appendMissingGitignoreLines(existing []byte, canonical []string) ([]byte, i
 	return []byte(strings.Join(lines, "\n") + "\n"), added
 }
 
-// reconcileGitignore is the shared mechanism behind the vault and
-// project-root reconcilers. It ensures every pattern in canonical is
-// present in path as an exact line, preserving existing content verbatim
-// and appending missing canonical lines at EOF in declaration order. The
-// file is written atomically (sibling tmp-file + rename, 0o644, exactly
-// one trailing newline).
+// reconcileGitignore is ReconcileProjectGitignore's sole mechanism (a
+// project-root .gitignore is not a vault path, so it correctly stays outside
+// ADR-003's lock funnel — mirroring the ADR's own carve-out for
+// applyUpgrade's host-local branch). ReconcileVaultGitignore no longer calls
+// this: it has its own small, locked implementation (see its doc comment)
+// since vault-gitignore-create-bypasses-the-vault-lock. It ensures every
+// pattern in canonical is present in path as an exact line, preserving
+// existing content verbatim and appending missing canonical lines at EOF in
+// declaration order. The file is written atomically (sibling tmp-file +
+// rename, 0o644, exactly one trailing newline).
 //
 // When skipWhenComplete is true and no canonical line was missing, the
 // function returns without touching the file at all — no write, no mtime

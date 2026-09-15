@@ -316,11 +316,17 @@ func (r *VaultReconciler) Apply(_ context.Context, p Plan) (Report, error) {
 			// The only Update this reconciler plans is the .gitignore top-up.
 			// It is a read-modify-write of a shared, git-tracked vault file,
 			// so it goes through the locked funnel (storage.LockedUpdate, via
-			// TopUpVaultGitignore) rather than ReconcileVaultGitignore's raw
-			// temp+rename, which the Create branch above keeps because it only
-			// ever meets an absent file. The missing set is re-derived under
-			// the lock; if another writer already added it, nothing is written
-			// and the action counts as Unchanged.
+			// TopUpVaultGitignore). The Create branch above is ALSO
+			// lock-protected (ReconcileVaultGitignore's own absent-tolerant
+			// single acquisition, since vault-gitignore-create-bypasses-the-vault-lock)
+			// — the two branches use different acquisition shapes because
+			// LockedUpdate has no absent-tolerant path (a missing file is an
+			// error there, not a create), never because one of them is
+			// unlocked. They never run nested: a single Apply action is
+			// exactly one of Create or Update for a given target, never both.
+			// The missing set is re-derived under the lock; if another writer
+			// already added it, nothing is written and the action counts as
+			// Unchanged.
 			if filepath.Base(a.Target) != ".gitignore" {
 				// Nothing else has an Update writer. Counting one as Updated
 				// would report a success that wrote nothing.

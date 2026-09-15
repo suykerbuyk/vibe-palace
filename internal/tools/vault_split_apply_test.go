@@ -343,6 +343,17 @@ func TestVaultSplitApply_DestinationTreesAreExactlyTheAllowList(t *testing.T) {
 		}
 	}
 
+	// Positive proof, not just tolerance: the real apply path must actually
+	// route the .gitignore Create through vaultlock.Acquire against THIS
+	// destination (vault-gitignore-create-bypasses-the-vault-lock), which
+	// unconditionally creates .vp-locks/ as a side effect of taking the lock
+	// at all. Without this assertion, a fix that merely widened the allow-list
+	// without ever wiring the lock through would slip past undetected.
+	if info, err := os.Stat(filepath.Join(dest, ".vp-locks")); err != nil || !info.IsDir() {
+		t.Errorf("destination is missing .vp-locks/ after apply (err=%v) — "+
+			"the .gitignore Create branch should have taken the vault lock against this destination", err)
+	}
+
 	// Vault-global artifacts stayed behind. Neither include_ flag was set.
 	for _, rel := range []string{"Knowledge", "Audits"} {
 		if _, err := os.Stat(filepath.Join(dest, rel)); err == nil {
@@ -794,4 +805,56 @@ func equalStringMaps(a, b map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// TestSplitLeakGateMembership_ToleratesVpLocksAtDestRoot is a direct, fast
+// unit test of splitLeakGateMembership, independent of whether a real apply
+// call happens to exercise vaultlock this exact way in the future. It plants
+// a .vp-locks/<hash>.lock file exactly matching what vaultlock's own
+// openLockFile actually creates (internal/vaultlock/vaultlock.go) — without
+// going through the real lock acquisition, since the point here is to pin the
+// allow-list's tolerance, not to re-prove vaultlock itself — and asserts the
+// leak gate raises no problem for it.
+//
+// The stray-directory subtest is the necessary negative: it proves the new
+// allow-list entry didn't accidentally widen the gate into a no-op.
+func TestSplitLeakGateMembership_ToleratesVpLocksAtDestRoot(t *testing.T) {
+	dest := t.TempDir()
+	const slug = "alpha"
+	for _, tree := range []string{"palace", "Projects"} {
+		if err := os.MkdirAll(filepath.Join(dest, tree, slug), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	lockDir := filepath.Join(dest, ".vp-locks")
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lockDir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef.lock"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if problems := splitLeakGateMembership(dest, []string{slug}, vaultSplitParams{}); len(problems) != 0 {
+		t.Errorf("splitLeakGateMembership flagged a legitimate .vp-locks/ as a leak: %v", problems)
+	}
+
+	t.Run("stray directory alongside .vp-locks is still flagged", func(t *testing.T) {
+		if err := os.MkdirAll(filepath.Join(dest, ".obsidian"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		problems := splitLeakGateMembership(dest, []string{slug}, vaultSplitParams{})
+		found := false
+		for _, p := range problems {
+			if strings.Contains(p, `".obsidian"`) {
+				found = true
+			}
+			if strings.Contains(p, ".vp-locks") {
+				t.Errorf("unexpected .vp-locks problem alongside the stray directory: %v", problems)
+			}
+		}
+		if !found {
+			t.Errorf("expected a problem naming the stray .obsidian directory, got: %v", problems)
+		}
+	})
 }

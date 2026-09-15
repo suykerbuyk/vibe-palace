@@ -798,3 +798,112 @@ func TestTopUpVaultGitignore_HoldsTheVaultLock(t *testing.T) {
 		t.Fatal("top-up did not complete after the lock was released")
 	}
 }
+
+// TestReconcileVaultGitignore_HoldsTheVaultLockOnCreate mirrors
+// TestTopUpVaultGitignore_HoldsTheVaultLock above, adapted for the Create-path
+// precondition: the file is ABSENT at call time (the real-world precondition —
+// the Vault reconciler's Create branch is reached only when .gitignore is
+// missing), not pre-written with custom content. Proves
+// ReconcileVaultGitignore now genuinely blocks on the per-path vaultlock
+// rather than racing straight past it with the old raw temp+rename.
+func TestReconcileVaultGitignore_HoldsTheVaultLockOnCreate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".gitignore")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("test precondition: .gitignore must not exist yet (stat err=%v)", err)
+	}
+
+	release, err := vaultlock.Acquire(dir, path)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- ReconcileVaultGitignore(dir)
+	}()
+	select {
+	case err := <-done:
+		release()
+		t.Fatalf("ReconcileVaultGitignore completed while the lock was held (err=%v)", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ReconcileVaultGitignore: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ReconcileVaultGitignore did not complete after the lock was released")
+	}
+
+	// The unblocked call must have actually created correct content, not just
+	// returned.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	for _, p := range CanonicalGitignorePatterns {
+		if !strings.Contains(string(data), p) {
+			t.Errorf(".gitignore missing canonical line %q; content:\n%s", p, data)
+		}
+	}
+}
+
+// TestReconcileVaultGitignore_CalledTwiceIsByteIdentical pins the doc
+// comment's own claim: calling twice on the same vault produces byte-identical
+// files. Worth an explicit test now that the implementation has been rewritten,
+// even though it is not a new behavior.
+func TestReconcileVaultGitignore_CalledTwiceIsByteIdentical(t *testing.T) {
+	dir := t.TempDir()
+	if err := ReconcileVaultGitignore(dir); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	first, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read after first call: %v", err)
+	}
+	if err := ReconcileVaultGitignore(dir); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	second, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read after second call: %v", err)
+	}
+	if string(first) != string(second) {
+		t.Errorf("second call produced different bytes:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+}
+
+// TestReconcileVaultGitignore_PreservesExistingCustomContentOnRace covers the
+// "two racers both see it absent" case the absent-tolerant design exists for:
+// a .gitignore that already exists (written by some other caller between this
+// caller's Plan snapshot and its Apply) must be topped up, never assumed
+// empty and clobbered.
+func TestReconcileVaultGitignore_PreservesExistingCustomContentOnRace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".gitignore")
+	const custom = "my-custom-pattern/\n"
+	if err := os.WriteFile(path, []byte(custom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ReconcileVaultGitignore(dir); err != nil {
+		t.Fatalf("ReconcileVaultGitignore: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if !strings.Contains(string(data), "my-custom-pattern/") {
+		t.Errorf("custom line lost; content:\n%s", data)
+	}
+	for _, p := range CanonicalGitignorePatterns {
+		if !strings.Contains(string(data), p) {
+			t.Errorf(".gitignore missing canonical line %q; content:\n%s", p, data)
+		}
+	}
+}

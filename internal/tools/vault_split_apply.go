@@ -64,11 +64,19 @@ import (
 //   - palace, Projects   — the two trees the copy writes into
 //   - .surface           — atomicfile's own stamp, if a write resolves the
 //     destination root as its stamp directory
+//   - .vp-locks          — vaultlock's per-path sidecar dir, created
+//     unconditionally by vaultlock.Acquire (openLockFile's own
+//     os.MkdirAll) the moment anything locks a path under this vault —
+//     here, ReconcileVaultGitignore's own create-path lock, taken against
+//     THIS destination since vault-gitignore-create-bypasses-the-vault-lock.
+//     Host-local and gitignored (CanonicalGitignorePatterns), same class as
+//     .vibe-palace and .surface above.
 var splitDestRootAllowed = map[string]bool{
 	".git":         true,
 	".gitignore":   true,
 	".vibe-palace": true,
 	".surface":     true,
+	".vp-locks":    true,
 	"Templates":    true,
 	"palace":       true,
 	"Projects":     true,
