@@ -310,19 +310,98 @@ func fileImports(f file, pkgByDirBase map[string]string) map[string]string {
 	return out
 }
 
-// fieldLists returns the receiver, parameter and result field lists of fd,
-// skipping any that are absent.
-func fieldLists(fd *ast.FuncDecl) []*ast.FieldList {
+// fieldLists returns the non-nil field lists among recv, params and results —
+// the receiver, parameter and result field lists a call-graph scope may carry.
+// A func literal has no receiver, so recv is nil for every scope
+// callGraphScopes derives from one.
+func fieldLists(recv, params, results *ast.FieldList) []*ast.FieldList {
 	var out []*ast.FieldList
-	if fd.Recv != nil {
-		out = append(out, fd.Recv)
+	if recv != nil {
+		out = append(out, recv)
 	}
-	if fd.Type != nil {
-		if fd.Type.Params != nil {
-			out = append(out, fd.Type.Params)
-		}
-		if fd.Type.Results != nil {
-			out = append(out, fd.Type.Results)
+	if params != nil {
+		out = append(out, params)
+	}
+	if results != nil {
+		out = append(out, results)
+	}
+	return out
+}
+
+// callGraphScope is ONE body buildCallGraph walks, plus the field lists it
+// resolves receiver packages from. It deliberately does NOT reuse
+// surface_remediation.go's bindingScope: that type names a FuncDecl scope
+// RECEIVER-QUALIFIED (funcName(d): "Vault.MoveDrawer"), which is correct for a
+// per-declaration finding key but wrong here — buildCallGraph's key discards
+// the receiver ON PURPOSE ("two same-named methods on different types within
+// one package merge"), and substituting a receiver-qualified name would
+// silently change every method's address in vaultMutationSinks and in the
+// graph itself. bindingScope also carries no receiver or result field list,
+// which this rule needs to resolve `func (v *Vault) M(...)` and
+// `func F(...) *storage.Vault` receiver/result-typed calls.
+type callGraphScope struct {
+	name    string // fd.Name.Name for a FuncDecl (receiver discarded); the var's name for a literal
+	recv    *ast.FieldList
+	params  *ast.FieldList
+	results *ast.FieldList
+	body    *ast.BlockStmt // never nil
+}
+
+// callGraphScopes enumerates every body buildCallGraph must walk: FuncDecls,
+// and the func literals held by package-level var/const declarations — the
+// same *ast.FuncDecl-only blind spot gitExecEnvFunnel and vaultWriteFunnel
+// had, closed the same way. A git/vault call built inside a package-level
+// `var x = func(...){}` test seam had no entry in callees at all, so even
+// when its body called a vaultMutationSinks primitive directly, nothing that
+// called INTO it could ever be marked a writer.
+func callGraphScopes(f file) []callGraphScope {
+	var out []callGraphScope
+	for _, decl := range f.ast.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if d.Body == nil || d.Name == nil {
+				continue
+			}
+			var params, results *ast.FieldList
+			if d.Type != nil {
+				params, results = d.Type.Params, d.Type.Results
+			}
+			out = append(out, callGraphScope{
+				name:    d.Name.Name,
+				recv:    d.Recv,
+				params:  params,
+				results: results,
+				body:    d.Body,
+			})
+
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, val := range vs.Values {
+					name := filepath.Base(f.path)
+					if i < len(vs.Names) {
+						name = vs.Names[i].Name
+					}
+					for _, lit := range outermostFuncLits(val) {
+						if lit.Body == nil {
+							continue
+						}
+						var params, results *ast.FieldList
+						if lit.Type != nil {
+							params, results = lit.Type.Params, lit.Type.Results
+						}
+						out = append(out, callGraphScope{
+							name:    name,
+							params:  params,
+							results: results,
+							body:    lit.Body,
+						})
+					}
+				}
+			}
 		}
 	}
 	return out
@@ -387,12 +466,8 @@ func buildCallGraph(files []file) map[string]map[string]bool {
 		pkg := f.ast.Name.Name
 		imported := fileImports(f, pkgByDirBase)
 
-		for _, d := range f.ast.Decls {
-			fd, ok := d.(*ast.FuncDecl)
-			if !ok || fd.Name == nil || fd.Body == nil {
-				continue
-			}
-			key := pkg + "." + fd.Name.Name
+		for _, s := range callGraphScopes(f) {
+			key := pkg + "." + s.name
 			if callees[key] == nil {
 				callees[key] = map[string]bool{}
 			}
@@ -406,7 +481,7 @@ func buildCallGraph(files []file) map[string]map[string]bool {
 			// `vault.OverwriteTaskFile(…)`, the dominant idiom in this tree and
 			// the mechanism that made `vp tasks edit` invisible to the first
 			// version of this rule.
-			for _, fl := range fieldLists(fd) {
+			for _, fl := range fieldLists(s.recv, s.params, s.results) {
 				for _, fld := range fl.List {
 					p, ok := pkgOfTypeExpr(fld.Type, imported, pkg)
 					if !ok {
@@ -418,7 +493,7 @@ func buildCallGraph(files []file) map[string]map[string]bool {
 				}
 			}
 			// Locals with an explicit type: `var v *storage.Vault`.
-			ast.Inspect(fd.Body, func(n ast.Node) bool {
+			ast.Inspect(s.body, func(n ast.Node) bool {
 				vs, ok := n.(*ast.ValueSpec)
 				if !ok || vs.Type == nil {
 					return true
@@ -430,7 +505,7 @@ func buildCallGraph(files []file) map[string]map[string]bool {
 				}
 				return true
 			})
-			ast.Inspect(fd.Body, func(n ast.Node) bool {
+			ast.Inspect(s.body, func(n ast.Node) bool {
 				as, ok := n.(*ast.AssignStmt)
 				if !ok {
 					return true
@@ -463,7 +538,7 @@ func buildCallGraph(files []file) map[string]map[string]bool {
 			// literals, so a command's `Run: func(...)` closure is attributed to
 			// the constructor that builds it — which is why no separate rooting
 			// mechanism for closures is needed.
-			ast.Inspect(fd.Body, func(n ast.Node) bool {
+			ast.Inspect(s.body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
 					return true

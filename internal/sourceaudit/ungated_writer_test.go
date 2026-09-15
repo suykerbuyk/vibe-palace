@@ -235,6 +235,92 @@ func registerAll(reg *Registry) {
 	}
 }
 
+// funcLiteralWriterFixture builds a command whose Run closure reaches a vault
+// mutation through a package-level func-literal var — the test-seam shape
+// internal/wrapstate.gitCmdRunner and internal/worktree.runGit use. Before
+// callGraphScopes replaced the FuncDecl-only decl loop, such a literal's body
+// had NO entry in callees at all, so a direct sink call inside it was
+// invisible no matter how the literal was reached: nothing that called INTO
+// it could ever be marked a writer.
+func funcLiteralWriterFixture(register string) map[string]string {
+	return map[string]string{
+		"surface": `package surface
+
+func StampForPath(vaultRoot, writePath string) error { return nil }
+`,
+		"main": `package main
+
+import "example.com/fixture/surface"
+
+type Command struct {
+	Name string
+	Run  func() int
+}
+
+type Registry struct{}
+
+func (r *Registry) Register(c *Command) {}
+
+func mutates(c *Command) *Command { return c }
+
+var writeViaVar = func() error {
+	return surface.StampForPath("/vault", "x.md")
+}
+
+func cmdVarWrite() *Command {
+	return &Command{
+		Name: "var write",
+		Run: func() int {
+			if err := writeViaVar(); err != nil {
+				return 1
+			}
+			return 0
+		},
+	}
+}
+
+func registerAll(reg *Registry) {
+` + register + `
+}
+`,
+	}
+}
+
+// TestFuncLiteralVarReachingSinkIsFlagged is the mutation proof for the
+// callGraphScopes swap: cmdVarWrite's Run closure calls writeViaVar, a
+// package-level func-literal var whose body calls surface.StampForPath
+// directly. Before the fix, writeViaVar had no entry in callees at all, so
+// this chain was invisible regardless of the FuncDecl-only walk's other
+// resolvers.
+func TestFuncLiteralVarReachingSinkIsFlagged(t *testing.T) {
+	root := writeMultiPkgFixture(t, funcLiteralWriterFixture("\treg.Register(cmdVarWrite())"))
+
+	findings, err := Run(root)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := ids(findings); !slices.Contains(got, "ungated-vault-writer main.cmdVarWrite") {
+		t.Fatalf("cmdVarWrite reaches surface.StampForPath through a package-level func-literal "+
+			"var and is registered WITHOUT mutates(), and the rule did not flag it. A call built "+
+			"inside a var func-literal had no entry in callees at all before this fix.\n  findings: %v", got)
+	}
+}
+
+// TestFuncLiteralVarWriterIsNotFlaggedWhenGated is the other half — proves the
+// extended walk doesn't just flag every command that merely reaches a var
+// func-literal, only ones registered without mutates().
+func TestFuncLiteralVarWriterIsNotFlaggedWhenGated(t *testing.T) {
+	root := writeMultiPkgFixture(t, funcLiteralWriterFixture("\treg.Register(mutates(cmdVarWrite()))"))
+
+	findings, err := Run(root)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := ids(findings); slices.Contains(got, "ungated-vault-writer main.cmdVarWrite") {
+		t.Fatalf("cmdVarWrite IS wrapped in mutates() and was flagged anyway: %v", got)
+	}
+}
+
 // TestDeclaredParameterReceiverResolves pins the hop that made `vp tasks edit`
 // invisible: runTasksEdit(vault *storage.Vault, ...) then vault.OverwriteTaskFile(...).
 // The receiver is a PARAMETER, not a same-body constructor result. Passing a
