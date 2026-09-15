@@ -3659,3 +3659,445 @@ func TestLegacyHeaderRepairsMoveOnlyTheFieldsTheyClaim(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Open header schema (ADR-011): isHeaderFieldLine/headerBlock generalization,
+// the DataFormat marker, upsertHeaderField ordering, and three-bucket
+// overwrite validation.
+// ---------------------------------------------------------------------------
+
+func TestIsHeaderFieldLineAcceptsUnrecognizedField(t *testing.T) {
+	if !isHeaderFieldLine("**Note:** hello") {
+		t.Error("isHeaderFieldLine must accept any well-formed bold-key field line, not just the four known names")
+	}
+	if isHeaderFieldLine("**this is bold, not a field:** text") {
+		t.Error("a bolded PHRASE (multiple words before the colon) must not be read as a field line")
+	}
+	if isHeaderFieldLine("not a field line at all") {
+		t.Error("ordinary prose must not be read as a field line")
+	}
+}
+
+// TestHeaderBlockAbsorbsUnrecognizedFieldWithNoBlankLine documents, deliberately,
+// the exact ADR-011 risk shape: a bold-key line directly under **Depends:**
+// with no blank-line separator is now INSIDE the header block, where the old
+// closed-list parser would have excluded it as body prose.
+func TestHeaderBlockAbsorbsUnrecognizedFieldWithNoBlankLine(t *testing.T) {
+	content := "# T\n\n**Status:** pending\n**Priority:** high\n**Depends:** dep\n**Note:** orphaned\n\n## Context\n\nBody.\n"
+	lines := strings.Split(content, "\n")
+	start, end := headerBlock(lines)
+	if end <= start {
+		t.Fatalf("empty header block for:\n%s", content)
+	}
+	if !isHeaderFieldLine(lines[end-1]) || lines[end-1] != "**Note:** orphaned" {
+		t.Errorf("the orphaned **Note:** line must be the last line INSIDE the header block, got block %v", lines[start:end])
+	}
+}
+
+func TestUnrecognizedHeaderFieldRoundTripsThroughAmend(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task", Title: "T", Priority: "high",
+		Parent: "epic", Depends: []string{"dep"},
+		Content: "Some content.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	_, before, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	injected := strings.Replace(before, "**Depends:** dep\n", "**Depends:** dep\n**Note:** keep me\n", 1)
+	if injected == before {
+		t.Fatal("test bug: Depends line not found in fixture")
+	}
+	if err := v.OverwriteTaskFileRewritingHeader("proj", "task", injected); err != nil {
+		t.Fatalf("inject unrecognized field: %v", err)
+	}
+
+	if _, err := v.AmendTask("proj", "task", "Context", "Updated content.\n"); err != nil {
+		t.Fatalf("AmendTask: %v", err)
+	}
+
+	_, after, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if !strings.Contains(after, "**Note:** keep me") {
+		t.Errorf("unrecognized field lost across amend:\n%s", after)
+	}
+}
+
+func TestUnrecognizedHeaderFieldRoundTripsThroughSetMeta(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task", Title: "T", Priority: "high",
+		Parent: "epic", Depends: []string{"dep"},
+		Content: "Some content.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	_, before, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	injected := strings.Replace(before, "**Depends:** dep\n", "**Depends:** dep\n**Note:** keep me\n", 1)
+	if injected == before {
+		t.Fatal("test bug: Depends line not found in fixture")
+	}
+	if err := v.OverwriteTaskFileRewritingHeader("proj", "task", injected); err != nil {
+		t.Fatalf("inject unrecognized field: %v", err)
+	}
+
+	newTitle := "New Title"
+	if err := v.SetTaskMeta("proj", "task", TaskMetaEdit{Title: &newTitle}); err != nil {
+		t.Fatalf("SetTaskMeta: %v", err)
+	}
+
+	_, after, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if !strings.Contains(after, "**Note:** keep me") {
+		t.Errorf("unrecognized field lost across set_meta:\n%s", after)
+	}
+}
+
+func TestUnrecognizedHeaderFieldRoundTripsThroughSetRelations(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task", Title: "T", Priority: "high",
+		Parent: "epic", Depends: []string{"dep"},
+		Content: "Some content.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	_, before, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	injected := strings.Replace(before, "**Depends:** dep\n", "**Depends:** dep\n**Note:** keep me\n", 1)
+	if injected == before {
+		t.Fatal("test bug: Depends line not found in fixture")
+	}
+	if err := v.OverwriteTaskFileRewritingHeader("proj", "task", injected); err != nil {
+		t.Fatalf("inject unrecognized field: %v", err)
+	}
+
+	newParent := "new-epic"
+	if err := v.SetTaskRelations("proj", "task", TaskRelations{Parent: &newParent}); err != nil {
+		t.Fatalf("SetTaskRelations: %v", err)
+	}
+
+	_, after, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if !strings.Contains(after, "**Note:** keep me") {
+		t.Errorf("unrecognized field lost across set_relations:\n%s", after)
+	}
+}
+
+func TestUpsertHeaderFieldNewFieldAppendsAfterCoreFields(t *testing.T) {
+	content := "# T\n\n**Status:** pending\n**Priority:** high\n**Parent:** epic\n**Depends:** dep\n\n## Context\n\nBody.\n"
+	updated := upsertHeaderField(content, "Extension", "value")
+	lines := strings.Split(updated, "\n")
+	start, end := headerBlock(lines)
+	if end-start != 5 {
+		t.Fatalf("expected 5 header lines after insertion, got %d: %v", end-start, lines[start:end])
+	}
+	if lines[end-1] != "**Extension:** value" {
+		t.Errorf("new extension field must land at the END of the header block, got %q", lines[end-1])
+	}
+}
+
+// TestUpsertHeaderFieldLateParentInsertedBeforeExtensionField pins the ordering
+// hazard §3 exists to close: an extension field stamped BEFORE Parent/Depends
+// exist must not end up ahead of a Parent added later.
+func TestUpsertHeaderFieldLateParentInsertedBeforeExtensionField(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task", Title: "T", Priority: "high", Content: "Body.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := v.SetTaskDataFormat("proj", "task", "2"); err != nil {
+		t.Fatalf("SetTaskDataFormat: %v", err)
+	}
+
+	newParent := "epic"
+	if err := v.SetTaskRelations("proj", "task", TaskRelations{Parent: &newParent}); err != nil {
+		t.Fatalf("SetTaskRelations: %v", err)
+	}
+
+	_, content, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	lines := strings.Split(content, "\n")
+	start, end := headerBlock(lines)
+	got := lines[start:end]
+	want := []string{"**Status:** pending", "**Priority:** high", "**Parent:** epic", "**DataFormat:** 2"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("header order = %v, want %v", got, want)
+	}
+}
+
+// TestUpsertHeaderFieldLateParentAndDependsBothInsertedBeforeExtensionField is
+// the realistic together-set shape SetTaskRelations actually produces: Parent
+// and Depends inserted in the SAME call, against a string that already has
+// Parent re-inserted ahead of the extension field by the time Depends'
+// insertion runs.
+func TestUpsertHeaderFieldLateParentAndDependsBothInsertedBeforeExtensionField(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task", Title: "T", Priority: "high", Content: "Body.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := v.SetTaskDataFormat("proj", "task", "2"); err != nil {
+		t.Fatalf("SetTaskDataFormat: %v", err)
+	}
+
+	newParent := "epic"
+	newDepends := []string{"dep"}
+	if err := v.SetTaskRelations("proj", "task", TaskRelations{Parent: &newParent, Depends: &newDepends}); err != nil {
+		t.Fatalf("SetTaskRelations: %v", err)
+	}
+
+	_, content, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	lines := strings.Split(content, "\n")
+	start, end := headerBlock(lines)
+	got := lines[start:end]
+	want := []string{"**Status:** pending", "**Priority:** high", "**Parent:** epic", "**Depends:** dep", "**DataFormat:** 2"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("header order = %v, want %v", got, want)
+	}
+}
+
+func TestDataFormatFieldParsesAndRoundTrips(t *testing.T) {
+	content := "# T\n\n**Status:** pending\n**Priority:** high\n\n## Context\n\nBody.\n"
+	updated := upsertHeaderField(content, fieldDataFormat, "2")
+	meta := parseTaskMeta("t", updated, false)
+	if meta.DataFormat != "2" {
+		t.Errorf("DataFormat = %q, want %q", meta.DataFormat, "2")
+	}
+
+	metaAbsent := parseTaskMeta("t", content, false)
+	if metaAbsent.DataFormat != "" {
+		t.Errorf("DataFormat should be empty (omitempty-clean) when absent, got %q", metaAbsent.DataFormat)
+	}
+}
+
+func TestSetTaskDataFormatWritesAndLocks(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task", Title: "T", Priority: "high", Content: "Body.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := v.SetTaskDataFormat("proj", "task", "2"); err != nil {
+		t.Fatalf("SetTaskDataFormat (active): %v", err)
+	}
+	meta, _, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if meta.DataFormat != "2" {
+		t.Errorf("DataFormat = %q, want %q", meta.DataFormat, "2")
+	}
+
+	// Unlike SetTaskRelations/SetTaskMeta, SetTaskDataFormat must also reach an
+	// ARCHIVED task — the migration this exists for touches done/ and
+	// cancelled/ too.
+	if err := v.RetireTask("proj", "task"); err != nil {
+		t.Fatalf("RetireTask: %v", err)
+	}
+	if err := v.SetTaskDataFormat("proj", "task", "3"); err != nil {
+		t.Fatalf("SetTaskDataFormat (archived): %v", err)
+	}
+	meta, _, err = v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask after retire: %v", err)
+	}
+	if meta.DataFormat != "3" {
+		t.Errorf("archived DataFormat = %q, want %q", meta.DataFormat, "3")
+	}
+}
+
+func TestOverwriteRefusesUnrecognizedFieldChange(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mutate  func(injected string) string
+		wantErr bool
+	}{
+		{
+			name: "change",
+			mutate: func(injected string) string {
+				return strings.Replace(injected, "**Note:** original", "**Note:** different", 1)
+			},
+			wantErr: true,
+		},
+		{
+			name: "remove",
+			mutate: func(injected string) string {
+				return strings.Replace(injected, "**Note:** original\n", "", 1)
+			},
+			wantErr: true,
+		},
+		{
+			name: "add a NEW unrecognized field beyond the one already there",
+			mutate: func(injected string) string {
+				return strings.Replace(injected, "**Note:** original\n", "**Note:** original\n**Extra:** new\n", 1)
+			},
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := testVault(t)
+			if err := v.CreateTask("proj", TaskSpec{
+				Slug: "task", Title: "T", Priority: "high", Content: "Body.\n",
+			}); err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+			_, before, err := v.GetTask("proj", "task")
+			if err != nil {
+				t.Fatalf("GetTask: %v", err)
+			}
+			injected := strings.Replace(before, "**Priority:** high\n", "**Priority:** high\n**Note:** original\n", 1)
+			if injected == before {
+				t.Fatal("test bug: Priority line not found in fixture")
+			}
+			if err := v.OverwriteTaskFileRewritingHeader("proj", "task", injected); err != nil {
+				t.Fatalf("inject unrecognized field: %v", err)
+			}
+
+			proposed := tc.mutate(injected)
+			if proposed == injected {
+				t.Fatal("test bug: mutate produced no change")
+			}
+
+			err = v.OverwriteTaskFile("proj", "task", proposed)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected a refusal for an unrecognized-field diff")
+			}
+			var hce *HeaderChangeError
+			if tc.wantErr && !errors.As(err, &hce) {
+				t.Errorf("refusal must be a *HeaderChangeError, got %T: %v", err, err)
+			}
+			if tc.wantErr && !apperr.IsCaller(err) {
+				t.Errorf("refusal must be classified apperr.Caller, got %v", err)
+			}
+		})
+	}
+}
+
+func TestOverwriteAllowsUnrecognizedFieldUnchanged(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task", Title: "T", Priority: "high", Content: "Original body.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	_, before, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	injected := strings.Replace(before, "**Priority:** high\n", "**Priority:** high\n**Note:** original\n", 1)
+	if injected == before {
+		t.Fatal("test bug: Priority line not found in fixture")
+	}
+	if err := v.OverwriteTaskFileRewritingHeader("proj", "task", injected); err != nil {
+		t.Fatalf("inject unrecognized field: %v", err)
+	}
+
+	// A body-only change that reproduces the unrecognized field byte-for-byte
+	// must NOT be refused.
+	rewritten := strings.Replace(injected, "Original body.", "Rewritten body.", 1)
+	if rewritten == injected {
+		t.Fatal("test bug: body marker not found")
+	}
+	if err := v.OverwriteTaskFile("proj", "task", rewritten); err != nil {
+		t.Fatalf("overwrite with an unchanged unrecognized field was refused: %v", err)
+	}
+
+	_, after, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if after != rewritten {
+		t.Errorf("body-only overwrite did not persist verbatim:\n%s", after)
+	}
+}
+
+// TestOverwriteExemptsServerDerivedFieldFromDiffCheck pins bucket 3 of the
+// three-field-write-policy split: serverDerivedHeaderFields is empty in
+// production (ModTime lands in a later task), but the exemption mechanism
+// itself is tested now, before a real field depends on it.
+func TestOverwriteExemptsServerDerivedFieldFromDiffCheck(t *testing.T) {
+	const exempt = "ServerStamped"
+	serverDerivedHeaderFields[exempt] = true
+	t.Cleanup(func() { delete(serverDerivedHeaderFields, exempt) })
+
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task", Title: "T", Priority: "high", Content: "Body.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	_, before, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	injected := strings.Replace(before, "**Priority:** high\n", "**Priority:** high\n**ServerStamped:** old\n", 1)
+	if injected == before {
+		t.Fatal("test bug: Priority line not found in fixture")
+	}
+	if err := v.OverwriteTaskFileRewritingHeader("proj", "task", injected); err != nil {
+		t.Fatalf("inject server-derived field: %v", err)
+	}
+
+	proposed := strings.Replace(injected, "**ServerStamped:** old", "**ServerStamped:** new", 1)
+	if proposed == injected {
+		t.Fatal("test bug: mutate produced no change")
+	}
+	if err := v.OverwriteTaskFile("proj", "task", proposed); err != nil {
+		t.Fatalf("a server-derived field's changed value must be exempt from the diff check, got refusal: %v", err)
+	}
+}
+
+func TestOverwriteTaskFileRewritingHeaderStillMovesUnrecognizedFields(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task", Title: "T", Priority: "high", Content: "Body.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	_, before, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	injected := strings.Replace(before, "**Priority:** high\n", "**Priority:** high\n**Note:** original\n", 1)
+	if injected == before {
+		t.Fatal("test bug: Priority line not found in fixture")
+	}
+	if err := v.OverwriteTaskFileRewritingHeader("proj", "task", injected); err != nil {
+		t.Fatalf("inject unrecognized field: %v", err)
+	}
+
+	moved := strings.Replace(injected, "**Note:** original", "**Note:** moved-by-migration", 1)
+	if moved == injected {
+		t.Fatal("test bug: Note line not found")
+	}
+	// The migration escape hatch must still be able to move an unrecognized
+	// field, even though the strict writer now refuses to.
+	if err := v.OverwriteTaskFile("proj", "task", moved); err == nil {
+		t.Fatal("the strict writer accepted an unrecognized-field change")
+	}
+	if err := v.OverwriteTaskFileRewritingHeader("proj", "task", moved); err != nil {
+		t.Fatalf("migration writer refused an unrecognized-field move: %v", err)
+	}
+}

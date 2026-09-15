@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
@@ -41,6 +43,12 @@ type TaskMeta struct {
 	Done     bool     `json:"done"`
 	Parent   string   `json:"parent,omitempty"`
 	Depends  []string `json:"depends,omitempty"`
+	// DataFormat is the per-file header schema/version marker (fieldDataFormat):
+	// the RequiredDataFormat this file was last migrated under. Optional, same
+	// omitempty reasoning as Parent/Depends — every task file written before
+	// this field existed has none, and it stays unset in this package until
+	// the migration/version-bump tasks populate it.
+	DataFormat string `json:"data_format,omitempty"`
 }
 
 // ConventionalFirstHeading is the H2 heading CreateTask emits between the
@@ -244,8 +252,73 @@ func normalizeRelations(self, parent string, depends []string) (string, []string
 	return parent, out, nil
 }
 
+// coreFieldOrder is the canonical position of every field the ORIGINAL closed
+// header gave special meaning to. A core field being added late (Parent or
+// Depends, via SetTaskRelations, on a task that already carries an extension
+// field such as DataFormat) must be inserted BEFORE that extension field,
+// never after — the mirror image of "extension fields append after
+// Parent/Depends" (ADR-011 Decision 1), and it only holds if both directions
+// are enforced. See coreFieldInsertionPoint.
+var coreFieldOrder = []string{fieldStatus, fieldPriority, fieldParent, fieldDepends}
+
+// isCoreField reports whether field is one of the four fields the original
+// closed header recognized, as opposed to an extension field (DataFormat and
+// anything added after it).
+func isCoreField(field string) bool {
+	for _, f := range coreFieldOrder {
+		if f == field {
+			return true
+		}
+	}
+	return false
+}
+
+// coreFieldInsertionPoint returns where a MISSING core field belongs: right
+// after the last core field ahead of it (in coreFieldOrder) that is actually
+// present, and never past the first extension field already in the block.
+// Only called for a field isCoreField reports true for.
+func coreFieldInsertionPoint(lines []string, start, end int, field string) int {
+	rank := func(name string) int {
+		for i, f := range coreFieldOrder {
+			if f == name {
+				return i
+			}
+		}
+		return -1
+	}
+	fieldRank := rank(field)
+	at := start
+	for i := start; i < end; i++ {
+		name, ok := headerFieldName(lines[i])
+		if !ok {
+			continue
+		}
+		if !isCoreField(name) {
+			// Never insert a core field past an extension field.
+			break
+		}
+		if rank(name) < fieldRank {
+			at = i + 1
+			continue
+		}
+		break
+	}
+	return at
+}
+
 // upsertHeaderField sets a metadata field's value, replacing the first such line
-// inside the header block or appending one at the end of the block if absent.
+// inside the header block or inserting one if absent.
+//
+// The insertion point for a MISSING field depends on what kind of field it
+// is: a core field (Status/Priority/Parent/Depends) is inserted in its
+// canonical position — after whichever earlier core fields are present, and
+// BEFORE any extension field already in the block (coreFieldInsertionPoint).
+// This guarantees a late-added Parent/Depends never lands after a field that
+// must always follow them (DataFormat, and later CreateTime/ModTime/
+// SupersededBy), regardless of the order these writers happen to be called
+// in. Any other field (an extension field) is appended at the END of the
+// header block, satisfying ADR-011 Decision 1's "new fields append strictly
+// after Parent/Depends" contract.
 //
 // Like replaceStatusLine it splices into the line slice rather than
 // concatenating strings, so the file's trailing-newline shape survives exactly.
@@ -260,7 +333,11 @@ func upsertHeaderField(content, field, value string) string {
 			return strings.Join(lines, "\n")
 		}
 	}
-	lines = slices.Insert(lines, end, rendered)
+	at := end
+	if isCoreField(field) {
+		at = coreFieldInsertionPoint(lines, start, end, field)
+	}
+	lines = slices.Insert(lines, at, rendered)
 	return strings.Join(lines, "\n")
 }
 
@@ -337,6 +414,40 @@ func (v *Vault) SetTaskRelations(project, taskSlug string, rel TaskRelations) er
 		}
 	}
 
+	return atomicfile.Write(v.Root, path, []byte(updated))
+}
+
+// SetTaskDataFormat stamps the per-task DataFormat header marker: the
+// RequiredDataFormat this file was last migrated under. format is a plain
+// string (the caller formats surface.RequiredDataFormat itself, e.g. via
+// strconv.Itoa) so this package never imports internal/surface — the same
+// reason internal/surface never imports internal/storage.
+//
+// Unlike SetTaskRelations/SetTaskMeta (active tasks only, via v.TaskFile),
+// this resolves via resolveTaskFile: the migration must stamp DataFormat on
+// ARCHIVED task files too (done/, cancelled/), the same three-directory reach
+// OverwriteTaskFileRewritingHeader already has. It keeps SetTaskRelations'
+// exact RMW shape otherwise: lock the per-path lock, read, upsertHeaderField,
+// write via atomicfile.Write directly (never lockedWrite, which would
+// re-acquire the same lock and self-deadlock).
+func (v *Vault) SetTaskDataFormat(project, slug, format string) error {
+	path, _, err := v.resolveTaskFile(project, slug)
+	if err != nil {
+		return err
+	}
+
+	release, err := vaultlock.Acquire(v.Root, path)
+	if err != nil {
+		return fmt.Errorf("lock task: %w", err)
+	}
+	defer release()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read task: %w", err)
+	}
+
+	updated := upsertHeaderField(string(data), fieldDataFormat, format)
 	return atomicfile.Write(v.Root, path, []byte(updated))
 }
 
@@ -1446,14 +1557,33 @@ func (p MoveProvenance) commitClause() string {
 	return ", against vault commit " + p.Commit
 }
 
-// The four header field names. A task's metadata header is a contiguous run of
-// "**Field:** value" lines, and these are the only fields in it.
+// The header field names this binary gives typed meaning to. A task's
+// metadata header is a contiguous run of "**Field:** value" lines, but under
+// the open schema (ADR-011) these are no longer the only ones the header can
+// legally carry — any well-formed "**Field:** value" line is header metadata,
+// whether or not it's one of these four. See headerFieldNameValue and
+// isHeaderFieldLine.
 const (
 	fieldStatus   = "Status"
 	fieldPriority = "Priority"
 	fieldParent   = "Parent"
 	fieldDepends  = "Depends"
 )
+
+// fieldDataFormat is the per-file header schema/version marker: the
+// RequiredDataFormat (internal/surface/format.go) a task file was last
+// migrated under. It is a bare-word field, matching this project's existing
+// header style (Status, Priority, Parent, Depends), and is recognized
+// exactly like any other extension field under the open schema — nothing
+// special-cases it in isHeaderFieldLine/headerBlock. See SetTaskDataFormat.
+//
+// Nothing in this package writes it yet: RequiredDataFormat is still 1, and
+// stamping 2 before the surface/format version bump and the vault-wide
+// migration actually land would be premature. The read path (TaskMeta.DataFormat,
+// parseTaskMeta) and the write path (SetTaskDataFormat) exist so
+// board-reporting-one-time-migration and board-reporting-surface-and-format-version-bump
+// have one correct way to use it, per ADR-011.
+const fieldDataFormat = "DataFormat"
 
 // headerFieldValue is THE definition of a metadata line for the whole package:
 // the parser (parseTaskMeta), the writers (replaceStatusLine, upsertHeaderField)
@@ -1473,15 +1603,47 @@ func headerFieldValue(line, field string) (string, bool) {
 	return strings.TrimSpace(strings.TrimPrefix(trimmed, prefix)), true
 }
 
-// isHeaderFieldLine reports whether a line is any of the four metadata lines.
-// It is what bounds the header block; see headerBlock.
-func isHeaderFieldLine(line string) bool {
-	for _, f := range []string{fieldStatus, fieldPriority, fieldParent, fieldDepends} {
-		if _, ok := headerFieldValue(line, f); ok {
-			return true
+// headerFieldNameValue splits a well-formed "**Field:** value" line into its
+// field name and value, without requiring the caller to already know the
+// field name — the open-schema counterpart of headerFieldValue. A field name
+// is a bare word (letters, digits, underscore), matching the style every
+// field this project has ever written uses (Status, Priority, Parent,
+// Depends). This excludes a bolded PHRASE ("**this is bold, not a
+// field:** text") from being read as metadata — only a single bare word
+// before the colon counts, so the recognized SHAPE stays exactly as narrow
+// as the old four-name enum, just no longer closed to those four names.
+func headerFieldNameValue(line string) (name, value string, ok bool) {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "**") {
+		return "", "", false
+	}
+	rest := trimmed[2:]
+	idx := strings.Index(rest, ":**")
+	if idx <= 0 {
+		return "", "", false
+	}
+	candidate := rest[:idx]
+	for _, r := range candidate {
+		if !(r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)) {
+			return "", "", false
 		}
 	}
-	return false
+	return candidate, strings.TrimSpace(rest[idx+3:]), true
+}
+
+// headerFieldName is headerFieldNameValue without the value, for callers that
+// only need to know whether/what field a line names.
+func headerFieldName(line string) (name string, ok bool) {
+	name, _, ok = headerFieldNameValue(line)
+	return name, ok
+}
+
+// isHeaderFieldLine reports whether a line is header metadata under the open
+// schema: ANY well-formed "**Field:** value" line, not one of a fixed list of
+// names. It is what bounds the header block; see headerBlock.
+func isHeaderFieldLine(line string) bool {
+	_, ok := headerFieldName(line)
+	return ok
 }
 
 // isStatusLine reports whether a line is a task **Status:** line.
@@ -1964,6 +2126,9 @@ func (v *Vault) overwriteTaskFile(project, slug, content string, policy headerPo
 		if err := refuseHeaderChange(onDisk, proposed); err != nil {
 			return apperr.Caller(err)
 		}
+		if err := refuseUnknownHeaderFieldChange(string(current), content); err != nil {
+			return apperr.Caller(err)
+		}
 	}
 
 	return atomicfile.Write(v.Root, path, []byte(content))
@@ -1983,6 +2148,13 @@ type HeaderChangeError struct {
 }
 
 func (e *HeaderChangeError) Error() string {
+	if e.Action == "" {
+		return fmt.Sprintf(
+			"overwrite refused: the body changes %s from %q to %q. "+
+				"This field has no dedicated typed writer yet, but overwrite still isn't the place to "+
+				"change it — reproduce it byte-for-byte from the file you read",
+			e.Field, e.Was, e.Now)
+	}
 	return fmt.Sprintf(
 		"overwrite refused: the body changes %s from %q to %q. "+
 			"Header fields are not overwrite's to write — %s owns this one, and two writers for "+
@@ -2022,6 +2194,104 @@ func refuseHeaderChange(onDisk, proposed TaskMeta) error {
 		}
 	}
 	return nil
+}
+
+// extraHeaderFields extracts every header-block field NOT in
+// {Status, Priority, Parent, Depends} — the fields refuseHeaderChange already
+// compares by name — via headerFieldNameValue, first-occurrence-wins,
+// matching every other field's parse convention.
+func extraHeaderFields(content string) map[string]string {
+	lines := strings.Split(content, "\n")
+	start, end := headerBlock(lines)
+	out := make(map[string]string)
+	for _, line := range lines[start:end] {
+		name, value, ok := headerFieldNameValue(line)
+		if !ok || isCoreField(name) {
+			continue
+		}
+		if _, seen := out[name]; seen {
+			continue
+		}
+		out[name] = value
+	}
+	return out
+}
+
+// serverDerivedHeaderFields names header fields whose value the SERVER
+// decides on every write, never the caller's copy — the third field-write
+// policy bucket ADR-011's open schema requires room for, alongside typed-owner
+// fields (refuseHeaderChange) and ownerless extension fields
+// (refuseUnknownHeaderFieldChange's default rule below). Empty today;
+// board-reporting-createtime-modtime-fields is expected to add ModTime here
+// the moment overwriteTaskFile starts re-stamping it on every mutating
+// action, so the exemption exists before that task needs to carve one out
+// under time pressure. A field named here is skipped by
+// refuseUnknownHeaderFieldChange entirely — never compared, in either
+// direction — because ANY value the server is about to write is correct by
+// definition; there is nothing for a caller to get "wrong."
+var serverDerivedHeaderFields = map[string]bool{}
+
+// refuseUnknownHeaderFieldChange extends refuseHeaderChange to every header
+// field neither it nor TaskMeta knows about — the open-schema fields this
+// generalization adds recognition for (DataFormat now; SupersededBy later)
+// plus anything a future field adds without a matching refuseHeaderChange
+// entry. None of them are overwrite's to write either: each either has no
+// dedicated action yet, or is stamped only by a migration path that goes
+// around the typed actions entirely, exactly like a header field already
+// does today.
+//
+// A field present and byte-identical in both onDiskContent and
+// proposedContent is not a diff and is silently allowed — this is the
+// "round-trips correctly" half. A field added, removed, or changed is
+// refused, in sorted-name order for a deterministic error across runs (map
+// iteration order is not). A field named in serverDerivedHeaderFields is
+// skipped entirely, in either direction — bucket 3, see that var's comment.
+func refuseUnknownHeaderFieldChange(onDiskContent, proposedContent string) error {
+	before := extraHeaderFields(onDiskContent)
+	after := extraHeaderFields(proposedContent)
+
+	names := make([]string, 0, len(before)+len(after))
+	seen := make(map[string]bool)
+	for n := range before {
+		if !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	for n := range after {
+		if !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+
+	for _, n := range names {
+		if serverDerivedHeaderFields[n] {
+			continue
+		}
+		was, wasOK := before[n]
+		now, nowOK := after[n]
+		if was == now && wasOK == nowOK {
+			continue
+		}
+		return &HeaderChangeError{
+			Field: "**" + n + ":**",
+			Was:   headerFieldAbsenceLabel(was, wasOK),
+			Now:   headerFieldAbsenceLabel(now, nowOK),
+		}
+	}
+	return nil
+}
+
+// headerFieldAbsenceLabel renders an extraHeaderFields lookup for a
+// HeaderChangeError message: the value if present, or a readable sentinel if
+// the field was absent on that side of the comparison.
+func headerFieldAbsenceLabel(value string, ok bool) string {
+	if !ok {
+		return "(absent)"
+	}
+	return value
 }
 
 // ParseTaskMetaFromContent extracts a task's header metadata from a whole task
@@ -2068,7 +2338,7 @@ func parseTaskMeta(slug, content string, done bool) TaskMeta {
 
 	lines := strings.Split(content, "\n")
 	start, end := headerBlock(lines)
-	var haveParent, haveDepends bool
+	var haveParent, haveDepends, haveDataFormat bool
 	for _, line := range lines[start:end] {
 		if v, ok := headerFieldValue(line, fieldParent); ok && !haveParent {
 			meta.Parent = v
@@ -2077,6 +2347,10 @@ func parseTaskMeta(slug, content string, done bool) TaskMeta {
 		if v, ok := headerFieldValue(line, fieldDepends); ok && !haveDepends {
 			meta.Depends = parseDependsList(v)
 			haveDepends = true
+		}
+		if v, ok := headerFieldValue(line, fieldDataFormat); ok && !haveDataFormat {
+			meta.DataFormat = v
+			haveDataFormat = true
 		}
 	}
 	return meta
