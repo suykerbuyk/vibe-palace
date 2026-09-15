@@ -61,13 +61,12 @@ var gitExecEnvGuards = map[string]bool{
 //     be set is invisible here — the tracked shape is "build it and guard it
 //     in the same function body," which is every call site this task's own
 //     fix touches.
-//   - Resolution is a FuncDecl walk. A git subprocess built inside a func
-//     literal assigned to a package-level var (a test seam, e.g.
-//     internal/worktree.runGit or internal/wrapstate.gitCmdRunner) is NOT
-//     visible to this rule — extending into that shape is the same
-//     bindingScopes/outermostFuncLits mechanism surface_remediation.go already
-//     has, and is a reasonable follow-up rather than something this rule was
-//     asked to do.
+//   - Resolution walks bindingScopes (surface_remediation.go's mechanism,
+//     reused as-is): every FuncDecl, plus every func literal held by a
+//     package-level var/const — so a git subprocess built inside a test seam
+//     like internal/worktree.runGit or internal/wrapstate.gitCmdRunner is
+//     visible here, keyed by the var's own name (e.g.
+//     "worktree.runGit"), same as any other function.
 //   - A git subprocess that targets a repository OTHER than a vault — the
 //     project's own repo, an archive's source cwd — carries the identical
 //     mechanical risk (an inherited GIT_DIR would misdirect it too) but is a
@@ -87,18 +86,14 @@ func gitExecEnvFunnel(files []file) []Finding {
 			continue
 		}
 		pkg := f.ast.Name.Name
-		for _, decl := range f.ast.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
-			}
-			key := pkg + "." + funcName(fn)
+		for _, s := range bindingScopes(f) {
+			key := pkg + "." + s.name
 
 			// varsFromGitExec: variable name -> the exec.Command/CommandContext
 			// call it was assigned from, scoped to this function only.
 			varsFromGitExec := map[string]*ast.CallExpr{}
 
-			ast.Inspect(fn.Body, func(n ast.Node) bool {
+			ast.Inspect(s.body, func(n ast.Node) bool {
 				assign, ok := n.(*ast.AssignStmt)
 				if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
 					return true
@@ -118,7 +113,7 @@ func gitExecEnvFunnel(files []file) []Finding {
 
 			// Direct chains: exec.Command("git", ...).Something(...), never
 			// bound to a variable, so its Env can never be set at all.
-			ast.Inspect(fn.Body, func(n ast.Node) bool {
+			ast.Inspect(s.body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
 					return true
@@ -138,7 +133,7 @@ func gitExecEnvFunnel(files []file) []Finding {
 			})
 
 			for varName, call := range varsFromGitExec {
-				if gitExecEnvGuarded(fn.Body, varName) {
+				if gitExecEnvGuarded(s.body, varName) {
 					continue
 				}
 				breachAdd(byFunc, &order, key, f, call, fmt.Sprintf(

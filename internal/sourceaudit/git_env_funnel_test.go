@@ -52,6 +52,25 @@ func Guarded(dir string) (string, error) {
 	return string(out), err
 }
 
+// BYPASS: a git subprocess built inside a func literal bound to a
+// package-level var — the shape internal/worktree.runGit and
+// internal/wrapstate.gitCmdRunner use as a test seam. Before the fix, this
+// shape was invisible to the FuncDecl-only walk.
+var VarNoEnv = func(dir string) (string, error) {
+	cmd := exec.Command("git", "-C", dir, "status")
+	out, err := cmd.Output()
+	return string(out), err
+}
+
+// CLEAN: the same func-literal-var shape, correctly guarded — proves the
+// extended walk doesn't just flag every var func-literal indiscriminately.
+var VarGuarded = func(dir string) (string, error) {
+	cmd := exec.Command("git", "-C", dir, "status")
+	cmd.Env = SafeGitEnv("GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.Output()
+	return string(out), err
+}
+
 // CLEAN: package-qualified guard, the shape cmd/vp and internal/tools use.
 func GuardedQualified(dir string) (string, error) {
 	cmd := exec.Command("git", "-C", dir, "status")
@@ -104,7 +123,7 @@ func gitEnvFindingIDs(t *testing.T) []string {
 // subprocess shape must be caught.
 func TestGitEnvFunnelFlagsBypasses(t *testing.T) {
 	got := gitEnvFindingIDs(t)
-	for _, want := range []string{"fixture.NoEnv", "fixture.WrongEnv", "fixture.Chained"} {
+	for _, want := range []string{"fixture.NoEnv", "fixture.WrongEnv", "fixture.Chained", "fixture.VarNoEnv"} {
 		if !slices.Contains(got, want) {
 			t.Errorf("%s is an unguarded git subprocess and the rule did not flag it. "+
 				"A ratchet that cannot see the defect it was written for is coverage in name only.\n  got: %v",
@@ -119,7 +138,7 @@ func TestGitEnvFunnelDoesNotFlagCleanCode(t *testing.T) {
 	got := gitEnvFindingIDs(t)
 	for _, unwanted := range []string{
 		"fixture.Guarded", "fixture.GuardedQualified", "fixture.GuardedNested",
-		"fixture.GuardedContext", "fixture.NotGit",
+		"fixture.GuardedContext", "fixture.NotGit", "fixture.VarGuarded",
 	} {
 		if slices.Contains(got, unwanted) {
 			t.Errorf("%s is correctly guarded (or is not git at all) and the rule flagged it.\n  got: %v",
