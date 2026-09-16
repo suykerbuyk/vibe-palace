@@ -44,19 +44,35 @@ import (
 // vaults are born-current (stamped at creation), and the migration command
 // advances an existing vault to 1 on completion.
 //
-// Bumped 1->2 (board-reporting-surface-and-format-version-bump; advanced on a
-// given vault only by board-reporting-one-time-migration, on completion).
-// vp board's chronological/status-bucket reporting needs CreateTime/ModTime
-// and the widened Status vocabulary to be TRUSTWORTHY, not merely present — a
-// vault still at format 1 may hold task files with pre-migration Status
-// values and no CreateTime/ModTime at all. Format 2 is the read-side signal
-// that a migration has backfilled both across the vault. This bump does NOT
-// extend the read gate's reach: checkFormatGate (internal/storage/format_gate.go)
-// still guards only the three KG-storage call sites (QueryEntity/KGStats/
-// ListTriples) — not vp_kg_invalidate, which resolves a triple by direct path
-// and never calls checkFormatGate — so task/session/resume reads and every
-// other vault operation are unaffected by this bump.
-const RequiredDataFormat int = 2
+// BUMPED TO 2, THEN REVERTED TO 1 (revert-requireddataformat-to-1-until-migration-is-proven).
+// The bump to 2 landed with board-reporting-surface-and-format-version-bump and was reverted
+// before any live vault reached 2, because the only thing that can advance a vault to 2 —
+// vp migrate task-board-fields — aborts partway on real vault data
+// (task-board-fields-migration-fails-on-real-vault-data). A constant that requires a format no
+// vault can reach fail-stops every gated read with no exit: this gate fires when the vault is
+// BEHIND, and every vault was.
+//
+// 🔴 THE VALUE IS NOT THE DESTINATION. The vault conceptually passes through two data formats,
+// and this constant must not assert the second before a corpus exists in it. Re-bump to 2 when
+// the migration is proven on a Tier-2 rehearsal — not when the migration merely ships.
+//
+// What format 2 will mean, unchanged and still the plan: vp board's chronological/status-bucket
+// reporting needs CreateTime/ModTime and the widened Status vocabulary to be TRUSTWORTHY, not
+// merely present — a vault at format 1 may hold task files with pre-migration Status values and
+// no CreateTime/ModTime at all. Format 2 is the read-side signal that a migration has backfilled
+// both across the vault.
+//
+// The re-bump will NOT extend the read gate's reach: checkFormatGate
+// (internal/storage/format_gate.go) guards only the three KG-storage call sites
+// (QueryEntity/KGStats/ListTriples) — not vp_kg_invalidate, which resolves a triple by direct
+// path and never calls checkFormatGate — so task/session/resume reads and every other vault
+// operation are unaffected by either value.
+//
+// MCPSurfaceVersion is deliberately NOT reverted with this: the two axes are independent (see
+// the header comment above), and the MCP tool surface genuinely did change. The release-tag
+// convention v<MCPSurfaceVersion>.<RequiredDataFormat>.<build> therefore reads v6.1.y while this
+// stands.
+const RequiredDataFormat int = 1
 
 // vaultManifestDir/vaultManifestFile locate the vault-root manifest carrying the
 // data-format number: <root>/.vibe-palace/vault.toml.

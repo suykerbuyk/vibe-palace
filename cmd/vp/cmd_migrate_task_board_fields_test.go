@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -193,17 +194,20 @@ func TestRunTaskBoardFieldsPlainNeverTouchedTask(t *testing.T) {
 	if !strings.Contains(got, "**CreateTime:** 2026-01-05") || !strings.Contains(got, "**ModTime:** 2026-01-05") {
 		t.Errorf("on-disk file missing stamped fields:\n%s", got)
 	}
-	if !strings.Contains(got, "**DataFormat:** 2") {
-		t.Errorf("on-disk file missing DataFormat marker:\n%s", got)
+	// Constant-RELATIVE, deliberately. This assertion used to hardcode "2" and was
+	// guarded by a RequiredDataFormat != 2 fatal placed BELOW it — so when the
+	// constant moved, the hardcoded assertion failed first and the guard's
+	// explanatory message never printed. Deriving the expected marker from the
+	// constant removes both the literal and the need for a guard.
+	wantFormat := strconv.Itoa(surface.RequiredDataFormat)
+	if !strings.Contains(got, "**DataFormat:** "+wantFormat) {
+		t.Errorf("on-disk file missing DataFormat marker %q:\n%s", wantFormat, got)
 	}
 	if !strings.HasSuffix(got, bfBody) {
 		t.Errorf("body content changed:\n%s", got)
 	}
-	if surface.RequiredDataFormat != 2 {
-		t.Fatalf("test assumes RequiredDataFormat==2, got %d — update fixture assertions", surface.RequiredDataFormat)
-	}
-	if n, err := surface.ReadFormat(root); err != nil || n != 2 {
-		t.Errorf("ReadFormat = (%d, %v), want (2, nil)", n, err)
+	if n, err := surface.ReadFormat(root); err != nil || n != surface.RequiredDataFormat {
+		t.Errorf("ReadFormat = (%d, %v), want (%d, nil)", n, err, surface.RequiredDataFormat)
 	}
 }
 
@@ -507,8 +511,9 @@ func TestRunTaskBoardFieldsShadowSlugRefusedArchivedLeftActiveMigrated(t *testin
 	}
 	// The overall run still has a nonzero Failed count (the refusal), so
 	// RequiredDataFormat must NOT have advanced.
-	if n, err := surface.ReadFormat(root); err != nil || n == 2 {
-		t.Errorf("ReadFormat = (%d, %v), want anything but 2 — a shadow-slug refusal must block the format stamp", n, err)
+	if n, err := surface.ReadFormat(root); err != nil || n == surface.RequiredDataFormat {
+		t.Errorf("ReadFormat = (%d, %v), want anything but %d — a shadow-slug refusal must block the format stamp",
+			n, err, surface.RequiredDataFormat)
 	}
 }
 
@@ -584,8 +589,9 @@ func TestRunTaskBoardFieldsDirtyFileSkippedBlocksWriteFormat(t *testing.T) {
 	if !strings.Contains(buf.String(), "RequiredDataFormat was NOT advanced") {
 		t.Errorf("report must say the format was not advanced:\n%s", buf.String())
 	}
-	if n, err := surface.ReadFormat(root); err != nil || n == 2 {
-		t.Errorf("ReadFormat = (%d, %v), want anything but 2 — a Dirty skip must block the format stamp", n, err)
+	if n, err := surface.ReadFormat(root); err != nil || n == surface.RequiredDataFormat {
+		t.Errorf("ReadFormat = (%d, %v), want anything but %d — a Dirty skip must block the format stamp",
+			n, err, surface.RequiredDataFormat)
 	}
 }
 
