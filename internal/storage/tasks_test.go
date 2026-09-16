@@ -4232,6 +4232,45 @@ func TestFindHeaderSpacingHazardNoHitAtEndOfFile(t *testing.T) {
 	}
 }
 
+func TestFindHeaderSpacingHazardIgnoresKnownExtensionFields(t *testing.T) {
+	cases := []struct {
+		name  string
+		field string
+	}{
+		{"DataFormat", "**DataFormat:** 2"},
+		{"SupersededBy", "**SupersededBy:** other-task"},
+		{"CreateTime", "**CreateTime:** 2026-09-01"},
+		{"ModTime", "**ModTime:** 2026-09-01"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			content := "# T\n\n**Status:** planning\n**Priority:** high\n**Depends:** dep\n" + tc.field + "\n\n## Context\n\nBody.\n"
+			if _, _, ok := FindHeaderSpacingHazard(content); ok {
+				t.Errorf("%s immediately after Depends must not be reported as a hazard", tc.name)
+			}
+		})
+	}
+}
+
+// TestFindHeaderSpacingHazardKnownFieldSuppressesTheSingleLineCheck pins the
+// single-position design's documented scope (see FindHeaderSpacingHazard's
+// own plan §3 scope note): oldEnd is computed from the OLD core-4 boundary
+// (stops right after Depends), so lines[oldEnd] here is **ModTime:**, which
+// the whitelist now correctly excludes — the function returns ok=false for
+// this whole fixture, and the trailing **Filed:** line is never reached by
+// this single-line check at all. This is NOT a design defect: it proves the
+// known field correctly suppresses the check at that position, not that the
+// unknown field gets caught (it structurally can't, by the current
+// single-position check).
+func TestFindHeaderSpacingHazardKnownFieldSuppressesTheSingleLineCheck(t *testing.T) {
+	content := "# T\n\n**Status:** planning\n**Priority:** high\n**Depends:** dep\n**ModTime:** 2026-09-01\n**Filed:** 2026-07-11\n\n## Context\n\nBody.\n"
+	_, text, ok := FindHeaderSpacingHazard(content)
+	if ok {
+		t.Fatal("the known ModTime field must not itself be reported (whitelist regression)")
+	}
+	_ = text
+}
+
 // ---------------------------------------------------------------------------
 // SupersededBy (board-reporting-supersession-link): the abandon-and-rework
 // link. Same open-schema/bucket-2 shape DataFormat established above, plus

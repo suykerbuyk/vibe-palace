@@ -1766,6 +1766,26 @@ const (
 	fieldModTime    = "ModTime"
 )
 
+// knownExtensionFields names every open-schema extension field this binary's
+// OWN typed writers currently stamp immediately after Parent/Depends with no
+// blank-line separator (upsertHeaderField never inserts one — see its own doc
+// comment). FindHeaderSpacingHazard uses this to tell a genuine pre-ADR-011
+// corpus hazard (an unrecognized, coincidentally field-shaped BODY line) from
+// an ordinary, currently-sanctioned header field placed exactly where its own
+// writer puts it.
+//
+// 🔴 ADD A NEW FIELD'S CONSTANT HERE THE MOMENT IT IS INTRODUCED, IN THE SAME
+// CHANGE. Forgetting turns every file that new field's writer touches into a
+// false-positive hazard on the very next `vp migrate task-header-spacing`
+// run — this is the exact defect this task exists to fix, reintroduced for
+// the next field instead of ModTime.
+var knownExtensionFields = map[string]bool{
+	fieldDataFormat:   true,
+	fieldSupersededBy: true,
+	fieldCreateTime:   true,
+	fieldModTime:      true,
+}
+
 // headerFieldValue is THE definition of a metadata line for the whole package:
 // the parser (parseTaskMeta), the writers (replaceStatusLine, upsertHeaderField)
 // and the validator (validateTaskBody) all reach it, directly or through the
@@ -1957,10 +1977,17 @@ func FindHeaderSpacingHazard(content string) (line int, text string, ok bool) {
 	if strings.TrimSpace(candidate) == "" {
 		return 0, "", false
 	}
-	if !isHeaderFieldLine(candidate) {
+	name, ok := headerFieldName(candidate)
+	if !ok {
 		// Not field-shaped even under the open schema: ordinary body prose,
-		// correctly excluded by both the old and the new boundary. Not a
-		// hazard.
+		// correctly excluded by both the old and the new boundary.
+		return 0, "", false
+	}
+	if knownExtensionFields[name] {
+		// A sanctioned open-schema extension field, legitimately appended
+		// right where its own typed writer puts it (upsertHeaderField never
+		// inserts a blank-line separator) — not a hazard, regardless of
+		// spacing.
 		return 0, "", false
 	}
 	return oldEnd + 1, candidate, true
