@@ -4280,9 +4280,18 @@ func TestCancelTaskWithSupersededByStampsFieldAtomically(t *testing.T) {
 		t.Errorf("SupersededBy = %q, want %q", meta.SupersededBy, "task-b")
 	}
 
+	// CreateTime/ModTime (board-reporting-createtime-modtime-fields) are
+	// stamped by CreateTask and land before SupersededBy: ModTime is
+	// restamped in place (it already exists from creation) inside moveTask
+	// before CancelTask's extraField upsert appends the new SupersededBy
+	// field, so SupersededBy — the one field with no prior occurrence —
+	// lands last.
 	lines := strings.Split(content, "\n")
 	start, end := headerBlock(lines)
-	want := []string{"**Status:** cancelled", "**Priority:** high", "**Parent:** epic", "**Depends:** dep", "**SupersededBy:** task-b"}
+	want := []string{
+		"**Status:** cancelled", "**Priority:** high", "**Parent:** epic", "**Depends:** dep",
+		"**CreateTime:** " + meta.CreateTime, "**ModTime:** " + meta.ModTime, "**SupersededBy:** task-b",
+	}
 	if got := lines[start:end]; !slices.Equal(got, want) {
 		t.Fatalf("header order = %v, want %v", got, want)
 	}
@@ -4481,5 +4490,270 @@ func TestOverwriteAllowsSupersededByUnchanged(t *testing.T) {
 	}
 	if meta.SupersededBy != "task-b" {
 		t.Errorf("SupersededBy lost across an unrelated overwrite: %q", meta.SupersededBy)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CreateTime / ModTime (board-reporting-createtime-modtime-fields)
+//
+// CreateTime is bucket 2 (ownerless extension: stamped once, refused on any
+// proposed change via overwrite). ModTime is bucket 3 (server-derived:
+// restamped unconditionally by every mutating action, exempt from the
+// overwrite diff check, and force-restamped even through the overwrite path).
+// ---------------------------------------------------------------------------
+
+// clockDay returns a fixed instant on the given day of January 2026, distinct
+// enough that CalendarDay(clockDay(d1)) != CalendarDay(clockDay(d2)) for d1 !=
+// d2 — what lets these tests observe a restamp rather than a same-day
+// coincidence.
+func clockDay(d int) time.Time {
+	return time.Date(2026, time.January, d, 12, 0, 0, 0, time.Local)
+}
+
+// TestCreateTimeStableAcrossOtherStampingActions pins bucket 2's immutability
+// end to end: CreateTime is stamped once at birth and NEVER restamped by any
+// of the other five direct storage-layer hookpoints (amend, set_meta,
+// update_status, set_relations, retire), even as the clock advances between
+// every one of them. ModTime is asserted in the same pass (item 2 of the plan)
+// because observing it change is what proves the clock override actually took
+// effect — two same-day stamps would look identical otherwise.
+func TestCreateTimeStableAcrossOtherStampingActions(t *testing.T) {
+	v := testVault(t)
+
+	v.clock = func() time.Time { return clockDay(1) }
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task", Title: "T", Priority: "high", Content: "Body.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	meta, _, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask after create: %v", err)
+	}
+	wantCreate := CalendarDay(clockDay(1))
+	if meta.CreateTime != wantCreate {
+		t.Fatalf("CreateTime after create = %q, want %q", meta.CreateTime, wantCreate)
+	}
+	if meta.ModTime != wantCreate {
+		t.Fatalf("ModTime after create = %q, want %q", meta.ModTime, wantCreate)
+	}
+
+	steps := []struct {
+		name string
+		day  int
+		do   func() error
+	}{
+		{"amend", 2, func() error {
+			_, err := v.AmendTask("proj", "task", "Decision", "A decision was recorded.\n")
+			return err
+		}},
+		{"set_meta", 3, func() error {
+			p := "medium"
+			return v.SetTaskMeta("proj", "task", TaskMetaEdit{Priority: &p})
+		}},
+		{"update_status", 4, func() error {
+			return v.UpdateTaskStatus("proj", "task", "in_progress")
+		}},
+		{"set_relations", 5, func() error {
+			p := "epic"
+			return v.SetTaskRelations("proj", "task", TaskRelations{Parent: &p})
+		}},
+	}
+	for _, step := range steps {
+		v.clock = func() time.Time { return clockDay(step.day) }
+		if err := step.do(); err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+		meta, _, err := v.GetTask("proj", "task")
+		if err != nil {
+			t.Fatalf("GetTask after %s: %v", step.name, err)
+		}
+		if meta.CreateTime != wantCreate {
+			t.Errorf("after %s: CreateTime = %q, want %q (must never change)", step.name, meta.CreateTime, wantCreate)
+		}
+		wantMod := CalendarDay(clockDay(step.day))
+		if meta.ModTime != wantMod {
+			t.Errorf("after %s: ModTime = %q, want %q (latest advanced date)", step.name, meta.ModTime, wantMod)
+		}
+	}
+
+	// retire (moveTask) is exercised last and separately: it moves the file
+	// out of the active directory, so GetTask must still find it (three-dir
+	// search) and both fields must hold under the move too.
+	v.clock = func() time.Time { return clockDay(6) }
+	if err := v.RetireTask("proj", "task"); err != nil {
+		t.Fatalf("RetireTask: %v", err)
+	}
+	meta, _, err = v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask after retire: %v", err)
+	}
+	if meta.CreateTime != wantCreate {
+		t.Errorf("after retire: CreateTime = %q, want %q (must never change)", meta.CreateTime, wantCreate)
+	}
+	wantMod := CalendarDay(clockDay(6))
+	if meta.ModTime != wantMod {
+		t.Errorf("after retire: ModTime = %q, want %q (latest advanced date)", meta.ModTime, wantMod)
+	}
+}
+
+// TestCancelTaskAlsoStampsModTime is the CancelTask half of moveTask's shared
+// stamping code path — RetireTask is exercised end to end above, so this pins
+// only that CancelTask reaches the same line rather than repeating the whole
+// sequence.
+func TestCancelTaskAlsoStampsModTime(t *testing.T) {
+	v := testVault(t)
+	v.clock = func() time.Time { return clockDay(1) }
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task", Title: "T", Priority: "high", Content: "Body.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	wantCreate := CalendarDay(clockDay(1))
+
+	v.clock = func() time.Time { return clockDay(2) }
+	if err := v.CancelTask("proj", "task", ""); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+	meta, _, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask after cancel: %v", err)
+	}
+	if meta.CreateTime != wantCreate {
+		t.Errorf("CreateTime = %q, want %q (must never change)", meta.CreateTime, wantCreate)
+	}
+	wantMod := CalendarDay(clockDay(2))
+	if meta.ModTime != wantMod {
+		t.Errorf("ModTime = %q, want %q", meta.ModTime, wantMod)
+	}
+}
+
+// TestOverwriteForceRestampsModTimeRegardlessOfProposal pins the write half of
+// bucket 3: the bucket-3 exemption in serverDerivedHeaderFields only controls
+// what refuseUnknownHeaderFieldChange COMPARES, not what overwriteTaskFile
+// WRITES. A caller proposing a stale or fabricated ModTime is never refused
+// for it (exempt from the diff check) AND never gets what it proposed — the
+// written result reflects the CURRENT clock, discarding the caller's value.
+func TestOverwriteForceRestampsModTimeRegardlessOfProposal(t *testing.T) {
+	v := testVault(t)
+	v.clock = func() time.Time { return clockDay(1) }
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task", Title: "T", Priority: "high", Content: "Body.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	_, before, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+
+	// Advance the clock so the write-time stamp is observably different from
+	// both the on-disk ModTime and the caller's fabricated proposal below.
+	v.clock = func() time.Time { return clockDay(9) }
+
+	staleModTime := CalendarDay(clockDay(1))
+	fabricated := CalendarDay(clockDay(5))
+	proposed := strings.Replace(before, "**ModTime:** "+staleModTime, "**ModTime:** "+fabricated, 1)
+	if proposed == before {
+		t.Fatal("test bug: ModTime line not found in fixture")
+	}
+	if err := v.OverwriteTaskFile("proj", "task", proposed); err != nil {
+		t.Fatalf("OverwriteTaskFile: a proposed ModTime change must not be refused (bucket 3), got %v", err)
+	}
+
+	meta, _, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask after overwrite: %v", err)
+	}
+	wantMod := CalendarDay(clockDay(9))
+	if meta.ModTime != wantMod {
+		t.Errorf("ModTime after overwrite = %q, want %q (the current clock, not the caller's %q)", meta.ModTime, wantMod, fabricated)
+	}
+}
+
+// TestOverwriteRefusesProposedCreateTimeChange pins bucket 2's overwrite
+// refusal for CreateTime specifically, in the same HeaderChangeError shape
+// TestOverwriteRefusesUnrecognizedFieldChange already exercises for other
+// bucket-2 fields — CreateTime gets this refusal for free from
+// refuseUnknownHeaderFieldChange's generic logic, with no dedicated code, and
+// this test is what proves that.
+func TestOverwriteRefusesProposedCreateTimeChange(t *testing.T) {
+	v := testVault(t)
+	v.clock = func() time.Time { return clockDay(1) }
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task", Title: "T", Priority: "high", Content: "Body.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	_, before, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+
+	onDiskCreateTime := CalendarDay(clockDay(1))
+	alteredCreateTime := CalendarDay(clockDay(2))
+	proposed := strings.Replace(before, "**CreateTime:** "+onDiskCreateTime, "**CreateTime:** "+alteredCreateTime, 1)
+	if proposed == before {
+		t.Fatal("test bug: CreateTime line not found in fixture")
+	}
+
+	err = v.OverwriteTaskFile("proj", "task", proposed)
+	if err == nil {
+		t.Fatal("expected a refusal for a proposed CreateTime change")
+	}
+	var hce *HeaderChangeError
+	if !errors.As(err, &hce) {
+		t.Errorf("refusal must be a *HeaderChangeError, got %T: %v", err, err)
+	}
+	if !apperr.IsCaller(err) {
+		t.Errorf("refusal must be classified apperr.Caller, got %v", err)
+	}
+
+	// And the on-disk file must be untouched by the refused attempt.
+	_, after, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask after refusal: %v", err)
+	}
+	if after != before {
+		t.Errorf("a refused overwrite must leave the file byte-identical\n got: %q\nwant: %q", after, before)
+	}
+}
+
+// TestOverwriteNoOpDoesNotRestampModTime pins the no-op short-circuit's
+// interaction with the force-restamp: a byte-identical resubmission must
+// return before the restamp is ever reached, so ModTime on disk survives a
+// harmless re-send of the exact bytes just read.
+func TestOverwriteNoOpDoesNotRestampModTime(t *testing.T) {
+	v := testVault(t)
+	v.clock = func() time.Time { return clockDay(1) }
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task", Title: "T", Priority: "high", Content: "Body.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	_, before, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+
+	// Advance the clock so a restamp, if one wrongly happened, would be
+	// observable rather than accidentally matching the original stamp.
+	v.clock = func() time.Time { return clockDay(9) }
+
+	if err := v.OverwriteTaskFile("proj", "task", before); err != nil {
+		t.Fatalf("OverwriteTaskFile with byte-identical content: %v", err)
+	}
+
+	meta, after, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask after no-op overwrite: %v", err)
+	}
+	if after != before {
+		t.Errorf("a no-op overwrite must leave the file byte-identical\n got: %q\nwant: %q", after, before)
+	}
+	wantMod := CalendarDay(clockDay(1))
+	if meta.ModTime != wantMod {
+		t.Errorf("ModTime after no-op overwrite = %q, want %q (unchanged — a no-op must not restamp)", meta.ModTime, wantMod)
 	}
 }

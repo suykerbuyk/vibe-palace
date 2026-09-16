@@ -294,6 +294,50 @@ func TestManageTaskMoveWritesDestinationProvenanceUnderItsOwnH2(t *testing.T) {
 	}
 }
 
+// TestManageTaskMoveStampsDestinationModTimeViaProvenanceAmend pins
+// board-reporting-createtime-modtime-fields' §5 claim: MoveTaskToProject is a
+// bare rename that stamps nothing, and ModTime lands at the destination
+// anyway, for free, because AmendTask itself now restamps ModTime
+// unconditionally (bucket 3) and the move arm's own STEP 2 already calls
+// AmendTask to write the "Moved from" provenance section. No code in
+// task_tools.go or MoveTaskToProject changes for this to hold.
+func TestManageTaskMoveStampsDestinationModTimeViaProvenanceAmend(t *testing.T) {
+	vault := moveTaskVault(t)
+
+	// moveTaskVault created "moving" against the real clock, so its ModTime
+	// is whatever today happens to be. Advance the injected clock to a
+	// distinct, later day before driving the move, so the destination's
+	// ModTime is observably the MOVE's timestamp rather than accidentally
+	// matching the pre-move value.
+	future := time.Now().AddDate(0, 0, 30)
+	vault.SetClock(func() time.Time { return future })
+
+	srcMeta, _, err := vault.GetTask("src-proj", "moving")
+	if err != nil {
+		t.Fatalf("GetTask source (pre-move): %v", err)
+	}
+
+	if _, err := callManageTask(t, vault, manageTaskParams{
+		Project: "src-proj", Action: "move", Task: "moving", ToProject: "dst-proj",
+	}); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+
+	destMeta, _, err := vault.GetTask("dst-proj", "moving")
+	if err != nil {
+		t.Fatalf("GetTask destination: %v", err)
+	}
+	wantMod := storage.CalendarDay(future)
+	if destMeta.ModTime != wantMod {
+		t.Errorf("destination ModTime = %q, want %q — the move's provenance AmendTask call must restamp it",
+			destMeta.ModTime, wantMod)
+	}
+	// CreateTime is bucket 2 and immutable: the move must not touch it.
+	if destMeta.CreateTime != srcMeta.CreateTime {
+		t.Errorf("destination CreateTime = %q, want %q (unchanged by a move)", destMeta.CreateTime, srcMeta.CreateTime)
+	}
+}
+
 // TestManageTaskMoveProvenanceRecordsTheCommitItWasMadeAgainst is the git half of
 // the fact above: when there IS a vault commit, the note names it. A note that
 // only ever said "no commit to record" would pass the non-git test forever while
