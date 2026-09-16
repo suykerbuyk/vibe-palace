@@ -423,9 +423,13 @@ func TestCreateTask_ConcurrentSameSlugExactlyOneWins(t *testing.T) {
 	w := winners[0]
 	// The conventional first H2 is part of what CreateTask writes; build the
 	// expectation from the same constant the writer uses so this test pins the
-	// no-torn-write property rather than the heading's spelling.
-	want := fmt.Sprintf("# %s\n\n**Status:** planning\n**Priority:** medium\n\n## %s\n\n%s\n",
-		title(w), ConventionalFirstHeading, body(w))
+	// no-torn-write property rather than the heading's spelling. CreateTime and
+	// ModTime are stamped to "now", so their value is read back off the winner's
+	// own file rather than hardcoded — this test is about no-torn-write, not
+	// about pinning the clock.
+	meta := parseTaskMeta("contended", string(data), false)
+	want := fmt.Sprintf("# %s\n\n**Status:** planning\n**Priority:** medium\n**CreateTime:** %s\n**ModTime:** %s\n\n## %s\n\n%s\n",
+		title(w), meta.CreateTime, meta.ModTime, ConventionalFirstHeading, body(w))
 	if string(data) != want {
 		t.Errorf("task file is not the winner's content verbatim (torn or overwritten)\n got: %q\nwant: %q", data, want)
 	}
@@ -1814,24 +1818,34 @@ func TestOverwriteTaskFileWritesValid(t *testing.T) {
 	if err := v.CreateTask("proj", TaskSpec{Slug: "task", Title: "Old", Priority: "P1"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
+	before, _, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask before overwrite: %v", err)
+	}
 
 	// The header must MATCH the task on disk: OverwriteTaskFile refuses a body
 	// that moves a header field, and this test is about the write mechanic, not
 	// that rule (TestOverwriteTaskFileRefusesAHeaderChange owns it). CreateTask
-	// wrote title "Old" and priority "P1" with the default status, so the body
-	// below restates them verbatim and changes only prose.
+	// wrote title "Old" and priority "P1" with the default status and its own
+	// CreateTime, so the body below restates them verbatim and changes only
+	// prose. ModTime is omitted deliberately — it is bucket 3 (server-derived)
+	// and overwriteTaskFile force-restamps it regardless of what the caller
+	// proposes, so the "want" below accounts for that stamp rather than
+	// expecting the body back byte-for-byte.
 	newContent := "# Old\n\n" +
-		"**Status:** planning\n**Priority:** P1\n\n## Context\n\nRewritten body.\n"
+		"**Status:** planning\n**Priority:** P1\n**CreateTime:** " + before.CreateTime +
+		"\n\n## Context\n\nRewritten body.\n"
 	if err := v.OverwriteTaskFile("proj", "task", newContent); err != nil {
 		t.Fatalf("OverwriteTaskFile: %v", err)
 	}
 
-	_, body, err := v.GetTask("proj", "task")
+	after, body, err := v.GetTask("proj", "task")
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
-	if body != newContent {
-		t.Errorf("re-read body = %q, want %q", body, newContent)
+	want := upsertHeaderField(newContent, fieldModTime, after.ModTime)
+	if body != want {
+		t.Errorf("re-read body = %q, want %q", body, want)
 	}
 
 	stamp := filepath.Join(v.Root, "Projects", "proj", ".surface")
@@ -3830,14 +3844,22 @@ func TestUpsertHeaderFieldLateParentInsertedBeforeExtensionField(t *testing.T) {
 		t.Fatalf("SetTaskRelations: %v", err)
 	}
 
-	_, content, err := v.GetTask("proj", "task")
+	meta, content, err := v.GetTask("proj", "task")
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
 	lines := strings.Split(content, "\n")
 	start, end := headerBlock(lines)
 	got := lines[start:end]
-	want := []string{"**Status:** planning", "**Priority:** high", "**Parent:** epic", "**DataFormat:** 2"}
+	// CreateTime/ModTime are extension fields CreateTask stamps before
+	// SetTaskDataFormat ever runs, so they sit ahead of DataFormat; ModTime's
+	// VALUE is re-stamped by this SetTaskRelations call but its POSITION does
+	// not move (upsertHeaderField replaces an existing field in place).
+	want := []string{
+		"**Status:** planning", "**Priority:** high", "**Parent:** epic",
+		"**CreateTime:** " + meta.CreateTime, "**ModTime:** " + meta.ModTime,
+		"**DataFormat:** 2",
+	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("header order = %v, want %v", got, want)
 	}
@@ -3865,14 +3887,21 @@ func TestUpsertHeaderFieldLateParentAndDependsBothInsertedBeforeExtensionField(t
 		t.Fatalf("SetTaskRelations: %v", err)
 	}
 
-	_, content, err := v.GetTask("proj", "task")
+	meta, content, err := v.GetTask("proj", "task")
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
 	lines := strings.Split(content, "\n")
 	start, end := headerBlock(lines)
 	got := lines[start:end]
-	want := []string{"**Status:** planning", "**Priority:** high", "**Parent:** epic", "**Depends:** dep", "**DataFormat:** 2"}
+	// Same reasoning as TestUpsertHeaderFieldLateParentInsertedBeforeExtensionField:
+	// CreateTime/ModTime predate DataFormat, and ModTime's position does not
+	// move when this SetTaskRelations call re-stamps its value.
+	want := []string{
+		"**Status:** planning", "**Priority:** high", "**Parent:** epic", "**Depends:** dep",
+		"**CreateTime:** " + meta.CreateTime, "**ModTime:** " + meta.ModTime,
+		"**DataFormat:** 2",
+	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("header order = %v, want %v", got, want)
 	}

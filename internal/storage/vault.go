@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -24,6 +25,35 @@ type Vault struct {
 	// false ⇒ every normal caller (all existing NewVault call sites) is gated by
 	// default.
 	migratorExempt bool
+
+	// clock, when set, replaces time.Now() for every CreateTime/ModTime stamp
+	// this Vault writes (see now, SetClock). Zero-value nil ⇒ every normal
+	// caller (all existing NewVault call sites) reads the real clock by
+	// default — the same zero-value-correct seam as migratorExempt above.
+	// ONLY test code sets it, to pin a stamp to a fixed instant instead of
+	// racing the wall clock.
+	clock func() time.Time
+}
+
+// SetClock overrides the instant this Vault stamps into CreateTime/ModTime,
+// replacing the default time.Now(). It exists for test code that needs a
+// fixed, advanceable instant to observe a restamp — mirroring
+// SetMigratorExempt's seam shape exactly: an unexported field, zero-value
+// nil for every normal caller, and one exported setter for the one caller
+// (tests) that needs to override it.
+func (v *Vault) SetClock(fn func() time.Time) { v.clock = fn }
+
+// now returns the instant this Vault stamps into CreateTime/ModTime: the
+// injected clock if SetClock was called, else the real time.Now().
+//
+// Call this exactly ONCE per stamping method body and reuse the result — see
+// clock.go's CalendarDay doc comment: "one logical operation cannot disagree
+// with itself by reading the clock twice across midnight."
+func (v *Vault) now() time.Time {
+	if v.clock != nil {
+		return v.clock()
+	}
+	return time.Now()
 }
 
 // config is the minimal TOML structure needed for vault resolution.

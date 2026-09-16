@@ -322,7 +322,8 @@ func headerAndPreamble(t *testing.T, content string) (header, preamble string) {
 		tl := strings.TrimSpace(l)
 		if strings.HasPrefix(tl, "# ") ||
 			strings.HasPrefix(tl, "**Status:**") || strings.HasPrefix(tl, "**Priority:**") ||
-			strings.HasPrefix(tl, "**Parent:**") || strings.HasPrefix(tl, "**Depends:**") {
+			strings.HasPrefix(tl, "**Parent:**") || strings.HasPrefix(tl, "**Depends:**") ||
+			strings.HasPrefix(tl, "**CreateTime:**") || strings.HasPrefix(tl, "**ModTime:**") {
 			last = i
 		}
 	}

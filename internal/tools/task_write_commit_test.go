@@ -190,7 +190,11 @@ func TestEveryMutatingTaskActionCommits(t *testing.T) {
 	}{
 		{"create", manageTaskParams{Action: "create", Task: "t1", Title: "T1", Content: unitTaskBody(), Priority: "high"}},
 		{"amend", manageTaskParams{Action: "amend", Task: "t1", Section: "Decision", Content: "A decision was recorded.\n"}},
-		{"overwrite", manageTaskParams{Action: "overwrite", Task: "t1", Content: overwriteBodyFor("t1", "T1", "high")}},
+		// Content is filled in below, right before this case runs: overwrite
+		// must restate CreateTime verbatim (bucket 2, refuses any change), and
+		// CreateTime is stamped by "create" above at test run time, not known
+		// when this table is built.
+		{"overwrite", manageTaskParams{Action: "overwrite", Task: "t1"}},
 		{"set_meta", manageTaskParams{Action: "set_meta", Task: "t1", Title: "T1 renamed", Priority: "medium"}},
 		{"update_status", manageTaskParams{Action: "update_status", Task: "t1", Status: "in_progress"}},
 		{"set_relations", manageTaskParams{Action: "set_relations", Task: "t1", Parent: &parent, DependsOn: &depends}},
@@ -203,6 +207,13 @@ func TestEveryMutatingTaskActionCommits(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			p := c.params
 			p.Project = "test-proj"
+			if c.name == "overwrite" {
+				meta, _, err := vault.GetTask("test-proj", "t1")
+				if err != nil {
+					t.Fatalf("GetTask before overwrite: %v", err)
+				}
+				p.Content = overwriteBodyFor("t1", "T1", "high", meta.CreateTime)
+			}
 			m := manageTask(t, vault, p)
 			if m["commit"] != taskCommitCommitted {
 				t.Errorf("commit = %v, want %q — this action does not route through the commit seam (%#v)",
@@ -232,8 +243,9 @@ func TestEveryMutatingTaskActionCommits(t *testing.T) {
 
 // overwriteBodyFor renders a whole task file whose header matches what the
 // handler's smuggling guard expects to find unchanged.
-func overwriteBodyFor(slug, title, priority string) string {
-	return "# " + title + "\n\n**Status:** planning\n**Priority:** " + priority + "\n\n" +
+func overwriteBodyFor(slug, title, priority, createTime string) string {
+	return "# " + title + "\n\n**Status:** planning\n**Priority:** " + priority +
+		"\n**CreateTime:** " + createTime + "\n\n" +
 		"## Context\n\nA rewritten preamble and body for " + slug + ", long enough to be a real plan. " +
 		strings.Repeat("More prose. ", 12) + "\n"
 }

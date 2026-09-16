@@ -57,6 +57,18 @@ type TaskMeta struct {
 	// IsEpic() deriving epic-ness from inbound Parent edges. Optional, same
 	// omitempty reasoning as Parent/Depends/DataFormat.
 	SupersededBy string `json:"superseded_by,omitempty"`
+	// CreateTime is the CalendarDay (YYYY-MM-DD) CreateTask stamped once at
+	// birth (fieldCreateTime). Immutable — no writer in this package ever
+	// changes it again, and overwrite refuses any proposed change to it.
+	// Optional, same omitempty reasoning as Parent/Depends: every task file
+	// written before this field existed has none.
+	CreateTime string `json:"create_time,omitempty"`
+	// ModTime is the CalendarDay (YYYY-MM-DD) of the most recent mutating
+	// write (fieldModTime). Server-derived — every mutating action restamps
+	// it unconditionally, so it is never a caller's to propose via overwrite.
+	// Optional, same omitempty reasoning as Parent/Depends: every task file
+	// written before this field existed has none.
+	ModTime string `json:"mod_time,omitempty"`
 }
 
 // ConventionalFirstHeading is the H2 heading CreateTask emits between the
@@ -452,6 +464,7 @@ func (v *Vault) SetTaskRelations(project, taskSlug string, rel TaskRelations) er
 			updated = upsertHeaderField(updated, fieldDepends, formatDependsList(depends))
 		}
 	}
+	updated = upsertHeaderField(updated, fieldModTime, CalendarDay(v.now()))
 
 	return atomicfile.Write(v.Root, path, []byte(updated))
 }
@@ -628,6 +641,7 @@ func (v *Vault) SetTaskMeta(project, taskSlug string, edit TaskMetaEdit) error {
 	if edit.Priority != nil {
 		updated = upsertHeaderField(updated, fieldPriority, priority)
 	}
+	updated = upsertHeaderField(updated, fieldModTime, CalendarDay(v.now()))
 
 	return atomicfile.Write(v.Root, path, []byte(updated))
 }
@@ -756,6 +770,7 @@ func (v *Vault) AmendTask(project, taskSlug, section, body string) (op string, e
 	}
 
 	next, op := upsertSection(string(data), section, body)
+	next = upsertHeaderField(next, fieldModTime, CalendarDay(v.now()))
 	if err := atomicfile.Write(v.Root, path, []byte(next)); err != nil {
 		return "", err
 	}
@@ -952,6 +967,16 @@ func (v *Vault) CreateTask(project string, spec TaskSpec) error {
 	if len(depends) > 0 {
 		fmt.Fprintf(&buf, "**Depends:** %s\n", formatDependsList(depends))
 	}
+	// CreateTime and ModTime are extension fields (neither is in
+	// coreFieldOrder), so per upsertHeaderField's ordering contract they must
+	// land AFTER the conditional Parent/Depends lines above, matching where
+	// upsertHeaderField's generic append path would place them anyway. Both
+	// are stamped to the SAME instant — CreateTime never moves again after
+	// this; ModTime is restamped on every subsequent mutating action.
+	now := v.now()
+	stamp := CalendarDay(now)
+	fmt.Fprintf(&buf, "**%s:** %s\n", fieldCreateTime, stamp)
+	fmt.Fprintf(&buf, "**%s:** %s\n", fieldModTime, stamp)
 	// The conventional first H2, emitted UNCONDITIONALLY — including when
 	// content already opens with its own H2. See ConventionalFirstHeading: the
 	// point is that the region above the first heading is provenance-only and
@@ -1122,6 +1147,7 @@ func (v *Vault) UpdateTaskStatus(project, slug, status string) error {
 	}
 
 	updated := replaceStatusLine(string(data), status)
+	updated = upsertHeaderField(updated, fieldModTime, CalendarDay(v.now()))
 	return atomicfile.Write(v.Root, path, []byte(updated))
 }
 
@@ -1275,9 +1301,10 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 	if extraField != "" {
 		updated = upsertHeaderField(updated, extraField, extraValue)
 	}
+	updated = upsertHeaderField(updated, fieldModTime, CalendarDay(v.now()))
 
 	// Step 1 — stamp the terminal status (and any extraField, e.g.
-	// SupersededBy) while the file is still active.
+	// SupersededBy, and ModTime) while the file is still active.
 	// atomicfile.Write is atomic per file, so this either lands whole or leaves
 	// the source untouched; there is no half-stamped body.
 	if err := atomicfile.Write(v.Root, srcPath, []byte(updated)); err != nil {
@@ -1715,6 +1742,29 @@ const fieldDataFormat = "DataFormat"
 // cancel time) and corrected, when a task is already archived, by
 // SetTaskSupersededBy — see both for why bucket 2, not bucket 1.
 const fieldSupersededBy = "SupersededBy"
+
+// fieldCreateTime and fieldModTime are the two per-task timestamp header
+// fields (board-reporting-createtime-modtime-fields), both bare-word,
+// matching this project's existing header style (Status, Priority, Parent,
+// Depends, DataFormat), and both CalendarDay-formatted (YYYY-MM-DD) via
+// storage.CalendarDay.
+//
+// CreateTime is stamped once by CreateTask and never restamped — an
+// ownerless extension field (ADR-011 write-policy bucket 2):
+// refuseUnknownHeaderFieldChange refuses ANY change to it via overwrite,
+// exactly like DataFormat, because no dedicated action owns it and overwrite
+// is not the place to change it either.
+//
+// ModTime is restamped by every mutating action (CreateTask, AmendTask,
+// SetTaskMeta, SetTaskRelations, UpdateTaskStatus, moveTask, and
+// overwriteTaskFile itself) — a server-derived field (bucket 3): it is named
+// in serverDerivedHeaderFields, so refuseUnknownHeaderFieldChange skips it
+// entirely rather than comparing it, because the server is about to
+// overwrite it unconditionally anyway.
+const (
+	fieldCreateTime = "CreateTime"
+	fieldModTime    = "ModTime"
+)
 
 // headerFieldValue is THE definition of a metadata line for the whole package:
 // the parser (parseTaskMeta), the writers (replaceStatusLine, upsertHeaderField)
@@ -2326,6 +2376,17 @@ func (v *Vault) overwriteTaskFile(project, slug, content string, policy headerPo
 		}
 	}
 
+	// Force-restamp ModTime UNCONDITIONALLY, after both guards pass and
+	// after the no-op short-circuit above (a byte-identical resubmission
+	// returns before reaching here and is never restamped). The bucket-3
+	// exemption in serverDerivedHeaderFields only controls what
+	// refuseUnknownHeaderFieldChange COMPARES; it does not write anything —
+	// this is the write half. Any ModTime the caller's content proposed is
+	// discarded here and replaced with the current instant, which is what
+	// makes the field genuinely server-derived rather than merely
+	// unenforced.
+	content = upsertHeaderField(content, fieldModTime, CalendarDay(v.now()))
+
 	return atomicfile.Write(v.Root, path, []byte(content))
 }
 
@@ -2416,15 +2477,18 @@ func extraHeaderFields(content string) map[string]string {
 // decides on every write, never the caller's copy — the third field-write
 // policy bucket ADR-011's open schema requires room for, alongside typed-owner
 // fields (refuseHeaderChange) and ownerless extension fields
-// (refuseUnknownHeaderFieldChange's default rule below). Empty today;
-// board-reporting-createtime-modtime-fields is expected to add ModTime here
-// the moment overwriteTaskFile starts re-stamping it on every mutating
-// action, so the exemption exists before that task needs to carve one out
-// under time pressure. A field named here is skipped by
-// refuseUnknownHeaderFieldChange entirely — never compared, in either
-// direction — because ANY value the server is about to write is correct by
-// definition; there is nothing for a caller to get "wrong."
-var serverDerivedHeaderFields = map[string]bool{}
+// (refuseUnknownHeaderFieldChange's default rule below). A field named here
+// is skipped by refuseUnknownHeaderFieldChange entirely — never compared, in
+// either direction — because ANY value the server is about to write is
+// correct by definition; there is nothing for a caller to get "wrong."
+//
+// ModTime is the first occupant: overwriteTaskFile force-restamps it
+// unconditionally on every non-no-op write (see overwriteTaskFile), so a
+// caller's proposed ModTime is never compared — it is about to be replaced
+// regardless of what it says.
+var serverDerivedHeaderFields = map[string]bool{
+	"ModTime": true,
+}
 
 // refuseUnknownHeaderFieldChange extends refuseHeaderChange to every header
 // field neither it nor TaskMeta knows about — the open-schema fields this
@@ -2534,7 +2598,7 @@ func parseTaskMeta(slug, content string, done bool) TaskMeta {
 
 	lines := strings.Split(content, "\n")
 	start, end := headerBlock(lines)
-	var haveParent, haveDepends, haveDataFormat, haveSupersededBy bool
+	var haveParent, haveDepends, haveDataFormat, haveSupersededBy, haveCreateTime, haveModTime bool
 	for _, line := range lines[start:end] {
 		if v, ok := headerFieldValue(line, fieldParent); ok && !haveParent {
 			meta.Parent = v
@@ -2551,6 +2615,14 @@ func parseTaskMeta(slug, content string, done bool) TaskMeta {
 		if v, ok := headerFieldValue(line, fieldSupersededBy); ok && !haveSupersededBy {
 			meta.SupersededBy = v
 			haveSupersededBy = true
+		}
+		if v, ok := headerFieldValue(line, fieldCreateTime); ok && !haveCreateTime {
+			meta.CreateTime = v
+			haveCreateTime = true
+		}
+		if v, ok := headerFieldValue(line, fieldModTime); ok && !haveModTime {
+			meta.ModTime = v
+			haveModTime = true
 		}
 	}
 	return meta
