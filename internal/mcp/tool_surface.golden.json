@@ -209,7 +209,7 @@
     {
       "name": "vp_manage_task",
       "mutating": true,
-      "schema_sha256": "PLACEHOLDER_REGENERATE_AFTER_REBASE"
+      "schema_sha256": "3d07ff587d8cccd992a330eb95b8467be502eb4a5d61abc9d435683d7a917e01"
     },
     {
       "name": "vp_manual",
