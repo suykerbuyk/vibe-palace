@@ -116,6 +116,10 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(cmdTasks())
 	reg.Register(cmdTasksEpics())
 	reg.Register(mutates(cmdTasksEdit()))
+	// `vp board` is registered UNWRAPPED (no mutates()), same as cmdTasks()/
+	// cmdTasksEpics() immediately above: Board() is a pure read, vp board
+	// never writes the vault.
+	reg.Register(cmdBoard())
 	reg.Register(cmdVersion(info))
 	// Worktree ops target the PROJECT repo (not the vault), so they carry no
 	// vault surface gate and are registered UNWRAPPED.
