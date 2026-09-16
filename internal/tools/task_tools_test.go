@@ -249,6 +249,76 @@ func TestManageTaskCancel(t *testing.T) {
 	}
 }
 
+// TestManageTaskCancelWithSupersededBy is the end-to-end path for
+// board-reporting-supersession-link: cancel with a successor slug records
+// the link, and the result surfaces it.
+func TestManageTaskCancelWithSupersededBy(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "task-a", Title: "A", Content: "", Priority: "medium"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	tool := ManageTaskTool(vault)
+	params, _ := json.Marshal(manageTaskParams{
+		Project:      "test-proj",
+		Action:       "cancel",
+		Task:         "task-a",
+		SupersededBy: "task-b",
+	})
+	res, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	m, ok := res.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T, want map[string]any", res)
+	}
+	if m["superseded_by"] != "task-b" {
+		t.Errorf("result[superseded_by] = %v, want %q", m["superseded_by"], "task-b")
+	}
+
+	meta, _, err := vault.GetTask("test-proj", "task-a")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if meta.Status != "cancelled" {
+		t.Errorf("status = %q", meta.Status)
+	}
+	if meta.SupersededBy != "task-b" {
+		t.Errorf("SupersededBy = %q, want %q", meta.SupersededBy, "task-b")
+	}
+}
+
+// TestManageTaskCancelSelfSupersessionRejected covers the caller-error path:
+// a self-referential superseded_by must be rejected by the handler, not
+// silently accepted or panicked on.
+func TestManageTaskCancelSelfSupersessionRejected(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "task-a", Title: "A", Content: "", Priority: "medium"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	tool := ManageTaskTool(vault)
+	params, _ := json.Marshal(manageTaskParams{
+		Project:      "test-proj",
+		Action:       "cancel",
+		Task:         "task-a",
+		SupersededBy: "task-a",
+	})
+	if _, err := tool.Handler(context.Background(), params); err == nil {
+		t.Fatal("expected an error for a self-referential superseded_by")
+	}
+
+	// The task must remain active — a rejected cancel must not archive it.
+	meta, _, err := vault.GetTask("test-proj", "task-a")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if meta.Done {
+		t.Error("a refused self-supersession must not archive the task")
+	}
+}
+
 func TestManageTaskInvalidAction(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
 	tool := ManageTaskTool(vault)

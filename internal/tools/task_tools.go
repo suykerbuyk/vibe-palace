@@ -394,6 +394,13 @@ type manageTaskParams struct {
 	// tri-state. There is no "clear the destination" — a move without one is
 	// not a move.
 	ToProject string `json:"to_project,omitempty"`
+	// SupersededBy is meaningful only with action=cancel: the successor task
+	// this one's remaining intent moved to. A plain string, not a pointer:
+	// unlike parent and depends_on it has no "clear" concept — cancel is
+	// one-shot (the file moves and cannot be re-cancelled), so there is
+	// nothing to clear it FROM after the fact. Correcting an already-set link
+	// is out-of-band by design (board-reporting-supersession-link).
+	SupersededBy string `json:"superseded_by,omitempty"`
 }
 
 // minTaskContentBytes is the floor a create body must clear.
@@ -479,7 +486,8 @@ var manageTaskSchema = json.RawMessage(`{
 		"parent":   {"type": "string", "description": "Slug of this task's parent (for create or set_relations). An EPIC is simply a task that others name as their parent — there is no separate epic type. Pass \"\" with set_relations to clear it."},
 		"depends_on": {"type": "array", "items": {"type": "string"}, "description": "Slugs this task depends on (for create or set_relations). A dependency on a retired or cancelled task counts as SATISFIED. Pass [] with set_relations to clear."},
 		"approved_by_human": {"type": "boolean", "description": "REQUIRED for retire, and must be true. Set this ONLY when the human has actually said the task is done. Nothing verifies this — it is your own attestation, not an authorization check."},
-		"to_project": {"type": "string", "description": "REQUIRED for move, and meaningless for every other action: the DESTINATION project slug (from vp_list_projects) to move the task INTO. 'project' names where the task is NOW. Only ACTIVE tasks move — an archived body is the record of what happened in the project it happened in. The move is REFUSED if the task's parent or any depends_on slug does not resolve in the destination (fix it first with action=set_relations, or move the counterpart across too), and refused if a task of the same slug already lives there. On success it appends a \"Moved from <source>\" section to the task in the destination and files a tombstone at Projects/<source>/tasks/cancelled/<task>.md recording where the work went."}
+		"to_project": {"type": "string", "description": "REQUIRED for move, and meaningless for every other action: the DESTINATION project slug (from vp_list_projects) to move the task INTO. 'project' names where the task is NOW. Only ACTIVE tasks move — an archived body is the record of what happened in the project it happened in. The move is REFUSED if the task's parent or any depends_on slug does not resolve in the destination (fix it first with action=set_relations, or move the counterpart across too), and refused if a task of the same slug already lives there. On success it appends a \"Moved from <source>\" section to the task in the destination and files a tombstone at Projects/<source>/tasks/cancelled/<task>.md recording where the work went."},
+		"superseded_by": {"type": "string", "description": "Optional, meaningful only with action=cancel: the slug of the task this one's remaining intent moved to, when it is abandoned and reworked into another. Lexically validated only (slug format, and refused if equal to this task's own slug) — the successor's existence is not checked here; a dangling or cyclic link is reported later by vp_audit_vault/vp board, not refused at cancel time. There is no action to change a link once set — a mistaken one is corrected out-of-band, by design (see board-reporting-supersession-link)."}
 	},
 	"required": ["project", "action", "task"],
 	"allOf": [
@@ -526,7 +534,9 @@ func ManageTaskTool(vault *storage.Vault) mcp.Tool {
 			"`section` (or appends it if absent). The result's `op` is `replaced` or `appended` — a same-name " +
 			"re-run converges by replacing, and that collision is now visible instead of silent. " +
 			"Use it whenever a plan is superseded — a task whose body still states a premise you have disproved " +
-			"is a task that will be implemented wrong. overwrite replaces an ACTIVE task's WHOLE file and is the " +
+			"is a task that will be implemented wrong. cancel optionally takes `superseded_by`: the slug of the " +
+			"task this one's remaining intent moved to, when it is abandoned and reworked into another — there is " +
+			"no action to change the link once set. overwrite replaces an ACTIVE task's WHOLE file and is the " +
 			"only path to text amend cannot address: the preamble above the first H2, an H2 heading's own wording, " +
 			"or a whole-file migration. Its `content` is the entire file, header block included, and every header " +
 			"field must match the task as it stands — title, status, priority, parent and depends each have their " +
@@ -834,11 +844,14 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 				map[string]any{"status": "done", "task": p.Task}), nil
 
 		case "cancel":
-			if err := vault.CancelTask(p.Project, p.Task); err != nil {
+			if err := vault.CancelTask(p.Project, p.Task, p.SupersededBy); err != nil {
 				return nil, fmt.Errorf("cancel task: %w", err)
 			}
-			return taskWriteResult(vault, p.Project, p.Task, "cancel",
-				map[string]any{"status": "cancelled", "task": p.Task}), nil
+			result := map[string]any{"status": "cancelled", "task": p.Task}
+			if p.SupersededBy != "" {
+				result["superseded_by"] = p.SupersededBy
+			}
+			return taskWriteResult(vault, p.Project, p.Task, "cancel", result), nil
 
 		case "move":
 			// Relocate an ACTIVE task from `project` into `to_project` and
@@ -984,7 +997,7 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 						"File the record by hand with vp_manage_task action=create then action=cancel, both "+
 						"on project=%s task=%s",
 					err, p.ToProject, p.Task, p.Project, p.Task, p.Project, p.Task)
-			} else if err := vault.CancelTask(p.Project, p.Task); err != nil {
+			} else if err := vault.CancelTask(p.Project, p.Task, ""); err != nil {
 				// The tombstone exists but is still ACTIVE in the source
 				// project. Its BODY says it is a tombstone, so nothing here
 				// asserts the task is live — but it will show in the source's

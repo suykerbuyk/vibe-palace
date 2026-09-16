@@ -119,7 +119,7 @@ func TestOverwriteRefusesArchivedTask(t *testing.T) {
 		archive func(*storage.Vault) error
 	}{
 		{"done", func(v *storage.Vault) error { return v.RetireTask(project, slug) }},
-		{"cancelled", func(v *storage.Vault) error { return v.CancelTask(project, slug) }},
+		{"cancelled", func(v *storage.Vault) error { return v.CancelTask(project, slug, "") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			vault, original := overwriteFixture(t, project, slug)
