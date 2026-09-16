@@ -308,6 +308,11 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		// and cancelled/ alike — the header-spacing hazard is not
 		// directory-specific.
 		"migrate task-header-spacing": true,
+		// The one-time vault-wide migration: folds in migrate task-status as
+		// its own phase 1, then writes Status/CreateTime/ModTime/DataFormat
+		// via Vault.SetTaskMigrationFields across active, done/ and
+		// cancelled/ alike.
+		"migrate task-board-fields": true,
 	}
 
 	reg, _, _ := testRegistry()
