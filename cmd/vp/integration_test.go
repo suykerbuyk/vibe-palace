@@ -301,8 +301,8 @@ func TestIntegrationTasksTableFormat(t *testing.T) {
 		}
 		if strings.Contains(line, "low-pri") {
 			found["low-pri"] = true
-			if !strings.Contains(line, "pending") {
-				t.Errorf("low-pri should be pending: %s", line)
+			if !strings.Contains(line, "planning") {
+				t.Errorf("low-pri should be planning: %s", line)
 			}
 		}
 	}

@@ -28,7 +28,7 @@ func TestManageTaskArchiveEndToEndPlacementAndStamp(t *testing.T) {
 		wantStatus string
 		dirFn      func(v *storage.Vault, project string) (string, error)
 	}{
-		{"retire", "retired", (*storage.Vault).TaskDoneDir},
+		{"retire", "done", (*storage.Vault).TaskDoneDir},
 		{"cancel", "cancelled", (*storage.Vault).TaskCancelledDir},
 	} {
 		t.Run(tc.action, func(t *testing.T) {

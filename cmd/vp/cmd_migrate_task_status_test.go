@@ -143,7 +143,7 @@ func TestMigrateTaskStatusApplyRepairsAllThreeFlavours(t *testing.T) {
 		paths[slug] = tsWrite(t, root, "Projects/proj/tasks/done/"+slug+".md",
 			"# T\n\n**Status:** "+status+"\n**Priority:** medium\n\n## Context\n\nBody.\n")
 	}
-	// A cancelled file gets the other terminal value, not "retired".
+	// A cancelled file gets the other terminal value, not "done".
 	paths["cancelledone"] = tsWrite(t, root, "Projects/proj/tasks/cancelled/cancelledone.md",
 		"# T\n\n**Status:** pending\n**Priority:** medium\n\n## Context\n\nBody.\n")
 	tsGitInit(t, root)
@@ -158,8 +158,8 @@ func TestMigrateTaskStatusApplyRepairsAllThreeFlavours(t *testing.T) {
 	}
 	for slug := range files {
 		_, v, ok := findStatusLineOutsideFences(tsRead(t, paths[slug]))
-		if !ok || v != "retired" {
-			t.Errorf("done/%s status = %q (found=%v), want \"retired\"", slug, v, ok)
+		if !ok || v != "done" {
+			t.Errorf("done/%s status = %q (found=%v), want \"done\"", slug, v, ok)
 		}
 	}
 	_, v, _ := findStatusLineOutsideFences(tsRead(t, paths["cancelledone"]))
@@ -194,11 +194,12 @@ func TestMigrateTaskStatusLeavesMissingStatusLineAlone(t *testing.T) {
 }
 
 // TestMigrateTaskStatusIgnoresFencedStatusLines uses the real shape found in the
-// live vault: a header saying "retired" and a fenced sample saying "pending".
+// live vault: a header saying "done" and a fenced sample saying "pending" (the
+// legacy specimen this shape was originally measured against pre-rename).
 // A fence-blind check reports this file as a disagreement and rewrites the sample.
 func TestMigrateTaskStatusIgnoresFencedStatusLines(t *testing.T) {
 	root := tsVault(t)
-	body := "# T\n\n**Status:** retired\n**Priority:** medium\n\n## Context\n\n" +
+	body := "# T\n\n**Status:** done\n**Priority:** medium\n\n## Context\n\n" +
 		"```\n**Status:** pending\n```\n\nBody.\n"
 	p := tsWrite(t, root, "Projects/proj/tasks/done/fenced.md", body)
 	tsGitInit(t, root)
@@ -314,8 +315,8 @@ func TestMigrateTaskStatusApplyIgnoresAnotherProjectsDirt(t *testing.T) {
 		t.Fatalf("Applied = %d, Dirty = %d, Failed = %d, want 1/0/0; out:\n%s",
 			sum.Applied, sum.Dirty, sum.Failed, out.String())
 	}
-	if _, v, _ := findStatusLineOutsideFences(tsRead(t, target)); v != "retired" {
-		t.Errorf("target status = %q, want \"retired\"", v)
+	if _, v, _ := findStatusLineOutsideFences(tsRead(t, target)); v != "done" {
+		t.Errorf("target status = %q, want \"done\"", v)
 	}
 	// And the other session's work is exactly as it left it.
 	if got := tsRead(t, filepath.Join(root, "Projects", "other", "tasks", "in-flight.md")); !strings.Contains(got, "Mid-edit.") {
@@ -357,8 +358,8 @@ func TestMigrateTaskStatusSkipsAFileWithUncommittedChanges(t *testing.T) {
 	if got := tsRead(t, dirty); got != edited {
 		t.Errorf("the skipped file was rewritten; the operator's edit is gone:\n%s", got)
 	}
-	if _, v, _ := findStatusLineOutsideFences(tsRead(t, clean)); v != "retired" {
-		t.Errorf("clean.md status = %q, want \"retired\": one dirty file must not stop the run", v)
+	if _, v, _ := findStatusLineOutsideFences(tsRead(t, clean)); v != "done" {
+		t.Errorf("clean.md status = %q, want \"done\": one dirty file must not stop the run", v)
 	}
 	// The report has to NAME it, or the operator cannot act on the count.
 	got := out.String()
@@ -489,22 +490,22 @@ func TestRepairPopulationMatchesTheDetector(t *testing.T) {
 	}{
 		{"Projects/proj/tasks/done/plain.md", body("In Progress"), true,
 			"the ordinary stale case both definitions agree on"},
-		{"Projects/proj/tasks/done/oddcase.md", body("Retired"), false,
+		{"Projects/proj/tasks/done/oddcase.md", body("Done"), false,
 			"terminal but oddly cased — string equality would REWRITE a file the audit calls clean"},
 		{"Projects/proj/tasks/done/othertermnal.md", body("cancelled"), false,
-			"the OTHER terminal value in done/ — string equality would rewrite it to retired, " +
+			"the OTHER terminal value in done/ — string equality would rewrite it to done, " +
 				"mutating a file wholly outside the detector's remit"},
-		{"Projects/proj/tasks/done/trailingws.md", body("retired   "), false,
+		{"Projects/proj/tasks/done/trailingws.md", body("done   "), false,
 			"trailing whitespace — the detector trims, string equality does not"},
 		{"Projects/proj/tasks/done/nostatus.md",
 			"# Legacy\n\nNo header block.\n\n## Context\n\nBody.\n", false,
 			"absent status is the older format, excluded by ruling on both sides"},
 		{"Projects/proj/tasks/done/fenced.md",
-			"# T\n\n**Status:** retired\n**Priority:** medium\n\n## Context\n\n" +
-				"```\n**Status:** pending\n```\n\nBody.\n", false,
+			"# T\n\n**Status:** done\n**Priority:** medium\n\n## Context\n\n" +
+				"```\n**Status:** planning\n```\n\nBody.\n", false,
 			"a fenced sample is not metadata — both sides walk OutsideFences"},
 		{"Projects/proj/tasks/cancelled/stale.md", body("pending"), true,
-			"stale in cancelled/, repaired to StatusCancelled not StatusRetired"},
+			"stale in cancelled/, repaired to StatusCancelled not StatusDone"},
 		{"Projects/proj/tasks/cancelled/oddcase.md", body("CANCELLED"), false,
 			"terminal, oddly cased, in the matching dir"},
 	}
@@ -513,7 +514,7 @@ func TestRepairPopulationMatchesTheDetector(t *testing.T) {
 	}
 	// An ACTIVE file carrying a terminal status is rule 2, never rule 1, and must
 	// not appear in the repair population at all.
-	tsWrite(t, root, "Projects/proj/tasks/interrupted.md", body("retired"))
+	tsWrite(t, root, "Projects/proj/tasks/interrupted.md", body("done"))
 
 	// --- the repair's population -------------------------------------------
 	var out bytes.Buffer
@@ -572,7 +573,7 @@ func TestRepairPopulationMatchesTheDetector(t *testing.T) {
 // TestMigrateTaskStatusLeavesTheOtherTerminalValueAlone is the behaviour change
 // the agreement test implies, asserted on its own so it cannot be lost in a
 // refactor: a done/ file reading "cancelled" is already terminal, so it AGREES in
-// the only sense the detector recognises and must not be rewritten to "retired".
+// the only sense the detector recognises and must not be rewritten to "done".
 func TestMigrateTaskStatusLeavesTheOtherTerminalValueAlone(t *testing.T) {
 	root := tsVault(t)
 	body := "# T\n\n**Status:** cancelled\n**Priority:** medium\n\n## Context\n\nBody.\n"

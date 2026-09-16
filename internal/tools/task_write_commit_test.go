@@ -233,7 +233,7 @@ func TestEveryMutatingTaskActionCommits(t *testing.T) {
 // overwriteBodyFor renders a whole task file whose header matches what the
 // handler's smuggling guard expects to find unchanged.
 func overwriteBodyFor(slug, title, priority string) string {
-	return "# " + title + "\n\n**Status:** pending\n**Priority:** " + priority + "\n\n" +
+	return "# " + title + "\n\n**Status:** planning\n**Priority:** " + priority + "\n\n" +
 		"## Context\n\nA rewritten preamble and body for " + slug + ", long enough to be a real plan. " +
 		strings.Repeat("More prose. ", 12) + "\n"
 }
@@ -280,7 +280,7 @@ func TestTaskWriteCommitStagesOnlyTheTaskPaths(t *testing.T) {
 		stagedDecoy    = "Knowledge/already-staged.md"
 	)
 	write(vaultRootDecoy, "a human wrote this\n")
-	write(tasksDirDecoy, "# Hand edited\n\n**Status:** pending\n**Priority:** high\n\nprose a human typed\n")
+	write(tasksDirDecoy, "# Hand edited\n\n**Status:** planning\n**Priority:** high\n\nprose a human typed\n")
 	write(stagedDecoy, "a human staged this\n")
 	gitVaultRun(t, vault.Root, "add", "--", stagedDecoy)
 	// Premise, asserted rather than assumed: it really is in the index, so a

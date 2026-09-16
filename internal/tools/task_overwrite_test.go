@@ -118,7 +118,7 @@ func TestOverwriteRefusesArchivedTask(t *testing.T) {
 		name    string
 		archive func(*storage.Vault) error
 	}{
-		{"retired", func(v *storage.Vault) error { return v.RetireTask(project, slug) }},
+		{"done", func(v *storage.Vault) error { return v.RetireTask(project, slug) }},
 		{"cancelled", func(v *storage.Vault) error { return v.CancelTask(project, slug) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -174,7 +174,7 @@ func TestOverwriteRefusesHeaderSmuggling(t *testing.T) {
 		wantField  string
 		wantAction string
 	}{
-		{"status", "**Status:** pending", "**Status:** in_progress", "**Status:**", "update_status"},
+		{"status", "**Status:** planning", "**Status:** in_progress", "**Status:**", "update_status"},
 		{"priority", "**Priority:** high", "**Priority:** low", "**Priority:**", "set_meta"},
 		{"title", "# Original Title", "# Smuggled Title", "title", "set_meta"},
 	} {

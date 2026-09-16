@@ -174,7 +174,7 @@ func TestManageTaskFriction_RetireWithApprovalIsAccepted(t *testing.T) {
 		"task":              slug,
 		"approved_by_human": true,
 	})
-	if !strings.Contains(raw, "retired") {
+	if !strings.Contains(raw, "done") {
 		t.Fatalf("retire with approval: %s", raw)
 	}
 }
@@ -231,7 +231,7 @@ func TestManageTaskFriction_UpdateStatusTerminalValuesRefused(t *testing.T) {
 		"content": taskBody("A task whose status is driven through update_status."),
 	})
 
-	for _, terminal := range []string{"completed", "retired", "cancelled"} {
+	for _, terminal := range []string{"completed", "done", "cancelled"} {
 		t.Run(terminal, func(t *testing.T) {
 			text, isErr := h.callToolRaw(t, "vp_manage_task", map[string]any{
 				"project": project,
@@ -262,7 +262,7 @@ func TestManageTaskFriction_UpdateStatusNonTerminalAccepted(t *testing.T) {
 		"content": taskBody("A task that moves through the live statuses."),
 	})
 
-	for _, status := range []string{"in_progress", "blocked", "pending"} {
+	for _, status := range []string{"in_progress", "blocked", "planning"} {
 		raw := h.callTool(t, "vp_manage_task", map[string]any{
 			"project": project,
 			"action":  "update_status",

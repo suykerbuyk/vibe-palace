@@ -63,7 +63,7 @@ func TestArchiveSuccessStateIsUnchangedByTheReorder(t *testing.T) {
 		wantStatus string
 		dirFn      func(v *Vault, project string) (string, error)
 	}{
-		{"retire", (*Vault).RetireTask, "retired", (*Vault).TaskDoneDir},
+		{"retire", (*Vault).RetireTask, "done", (*Vault).TaskDoneDir},
 		{"cancel", (*Vault).CancelTask, "cancelled", (*Vault).TaskCancelledDir},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -98,7 +98,7 @@ func TestArchiveSuccessStateIsUnchangedByTheReorder(t *testing.T) {
 			if active {
 				t.Error("archived task must not remain in the active directory")
 			}
-			if tc.wantStatus == "retired" && (!done || cancelled) {
+			if tc.wantStatus == "done" && (!done || cancelled) {
 				t.Errorf("retired task placement wrong: done=%v cancelled=%v", done, cancelled)
 			}
 			if tc.wantStatus == "cancelled" && (!cancelled || done) {
@@ -177,8 +177,8 @@ func TestArchiveCrashBetweenStampAndRename(t *testing.T) {
 		t.Fatalf("read active body: %v", readErr)
 	}
 	meta := parseTaskMeta("my-task", string(body), false)
-	if meta.Status != "retired" {
-		t.Errorf("interrupted archive should leave the ACTIVE file stamped retired, got status %q", meta.Status)
+	if meta.Status != "done" {
+		t.Errorf("interrupted archive should leave the ACTIVE file stamped done, got status %q", meta.Status)
 	}
 }
 
@@ -207,7 +207,7 @@ func TestRetireRefusalLeavesSourceBodyUnstamped(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(doneDir, "my-task.md"),
-		[]byte("# My Task\n\n**Status:** retired\n\nHISTORICAL\n"), 0o644); err != nil {
+		[]byte("# My Task\n\n**Status:** done\n\nHISTORICAL\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -229,7 +229,7 @@ func TestRetireRefusalLeavesSourceBodyUnstamped(t *testing.T) {
 		t.Errorf("a refused archive must not have stamped the source body:\ngot:  %q\nwant: %q", after, before)
 	}
 	meta := parseTaskMeta("my-task", string(after), false)
-	if meta.Status == "retired" {
+	if meta.Status == "done" {
 		t.Error("refused archive stamped the source terminal — the destination check must precede the stamp")
 	}
 }

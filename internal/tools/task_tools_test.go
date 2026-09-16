@@ -481,7 +481,7 @@ func TestManageTaskAmend_RecordsADecisionIntoThePlan(t *testing.T) {
 	if strings.Contains(got, "Provisional.") {
 		t.Errorf("the first amend's body survived the replace:\n%s", got)
 	}
-	if meta.Status != "pending" || meta.Priority != "high" {
+	if meta.Status != "planning" || meta.Priority != "high" {
 		t.Errorf("amend disturbed the header block: status=%q priority=%q", meta.Status, meta.Priority)
 	}
 	// The original plan sections must be intact.

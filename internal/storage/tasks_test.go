@@ -36,8 +36,8 @@ func TestCreateAndGetTask(t *testing.T) {
 	if meta.Title != "My Task Title" {
 		t.Errorf("Title = %q, want %q", meta.Title, "My Task Title")
 	}
-	if meta.Status != "pending" {
-		t.Errorf("Status = %q, want %q", meta.Status, "pending")
+	if meta.Status != "planning" {
+		t.Errorf("Status = %q, want %q", meta.Status, "planning")
 	}
 	if meta.Priority != "P1" {
 		t.Errorf("Priority = %q, want %q", meta.Priority, "P1")
@@ -133,7 +133,7 @@ func TestRetireDoesNotClobberExistingDoneRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	donePath := filepath.Join(doneDir, "my-task.md")
-	historical := []byte("# My Task\n\n**Status:** retired\n\nHISTORICAL RECORD iter-209\n")
+	historical := []byte("# My Task\n\n**Status:** done\n\nHISTORICAL RECORD iter-209\n")
 	if err := os.WriteFile(donePath, historical, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestRetireDoesNotClobberExistingDoneRecord(t *testing.T) {
 	if err := EnsureDir(filepath.Dir(activePath)); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(activePath, []byte("# My Task\n\n**Status:** pending\n\nDUPLICATE\n"), 0o644); err != nil {
+	if err := os.WriteFile(activePath, []byte("# My Task\n\n**Status:** planning\n\nDUPLICATE\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -286,8 +286,8 @@ func TestRetireTask(t *testing.T) {
 	if !meta.Done {
 		t.Error("Done should be true for retired task")
 	}
-	if meta.Status != "retired" {
-		t.Errorf("Status = %q, want %q", meta.Status, "retired")
+	if meta.Status != "done" {
+		t.Errorf("Status = %q, want %q", meta.Status, "done")
 	}
 
 	// Should exist in done dir.
@@ -354,7 +354,7 @@ func TestTaskFileContent(t *testing.T) {
 	if !contains(content, "# My Title") {
 		t.Error("file should contain title heading")
 	}
-	if !contains(content, "**Status:** pending") {
+	if !contains(content, "**Status:** planning") {
 		t.Error("file should contain status line")
 	}
 	if !contains(content, "**Priority:** P0") {
@@ -424,7 +424,7 @@ func TestCreateTask_ConcurrentSameSlugExactlyOneWins(t *testing.T) {
 	// The conventional first H2 is part of what CreateTask writes; build the
 	// expectation from the same constant the writer uses so this test pins the
 	// no-torn-write property rather than the heading's spelling.
-	want := fmt.Sprintf("# %s\n\n**Status:** pending\n**Priority:** medium\n\n## %s\n\n%s\n",
+	want := fmt.Sprintf("# %s\n\n**Status:** planning\n**Priority:** medium\n\n## %s\n\n%s\n",
 		title(w), ConventionalFirstHeading, body(w))
 	if string(data) != want {
 		t.Errorf("task file is not the winner's content verbatim (torn or overwritten)\n got: %q\nwant: %q", data, want)
@@ -435,7 +435,7 @@ func TestCreateTask_ConcurrentSameSlugExactlyOneWins(t *testing.T) {
 // Agent-written plan bodies idiomatically open with their own metadata block;
 // CreateTask used to staple that under its OWN header verbatim, producing a file
 // with two **Status:** lines. The writer then rewrote the first and the reader
-// reported the last, so a task could read back "pending" forever.
+// reported the last, so a task could read back "planning" forever.
 func TestCreateTaskRejectsStatusLineInContent(t *testing.T) {
 	v := testVault(t)
 	content := "**Status:** in_progress\n**Priority:** high\n\n## Plan\n\nDo the thing."
@@ -525,7 +525,7 @@ func TestCreateTaskAcceptsMetadataShapesInsideCodeFences(t *testing.T) {
 		},
 		{
 			name:    "a **Status:** line inside a fence is not a metadata block",
-			content: "The task file looks like:\n\n```markdown\n**Status:** pending\n**Priority:** high\n```\n\nThat is the shape we parse.",
+			content: "The task file looks like:\n\n```markdown\n**Status:** planning\n**Priority:** high\n```\n\nThat is the shape we parse.",
 		},
 		{
 			name:    "unterminated fence does not error — rest of body is treated as fenced",
@@ -591,21 +591,21 @@ func TestCreateTaskAcceptsRealCorpusBodyShape(t *testing.T) {
 	if meta.Title != "E2E Walkthrough Rig" {
 		t.Errorf("Title = %q, want %q (first-wins must find the real H1)", meta.Title, "E2E Walkthrough Rig")
 	}
-	if meta.Status != "pending" {
-		t.Errorf("Status = %q, want %q", meta.Status, "pending")
+	if meta.Status != "planning" {
+		t.Errorf("Status = %q, want %q", meta.Status, "planning")
 	}
 }
 
 // TestParseTaskMetaFirstStatusWins is the regression test for the exact live
 // corruption: a task file that already carries a duplicated header on disk. The
 // writer rewrites the FIRST status line, so the reader must report the FIRST
-// one too — reporting the last is how "in_progress" showed up as "pending".
+// one too — reporting the last is how "in_progress" showed up as "planning".
 func TestParseTaskMetaFirstStatusWins(t *testing.T) {
 	content := "# Real Title\n\n" +
 		"**Status:** in_progress\n" +
 		"**Priority:** high\n\n" +
 		"# Agent's Own Title\n\n" +
-		"**Status:** pending\n" +
+		"**Status:** planning\n" +
 		"**Priority:** low\n"
 
 	meta := parseTaskMeta("dup", content, false)
@@ -651,7 +651,7 @@ func TestReplaceStatusLineAppendsWhenMissing(t *testing.T) {
 		},
 		{
 			name:    "existing status line is replaced, not appended",
-			content: "# Title\n\n**Status:** pending\n**Priority:** high\n",
+			content: "# Title\n\n**Status:** planning\n**Priority:** high\n",
 			want:    "# Title\n\n**Status:** completed\n**Priority:** high\n",
 		},
 	}
@@ -716,7 +716,7 @@ func TestUpdateTaskStatusReaderWriterAgree(t *testing.T) {
 // validStatuses. If someone ever "tidies up" by routing moveTask through the
 // write-set check, retire and cancel break — and this test is what says so.
 func TestUpdateTaskStatusRejectsTerminalButMoveStillWritesThem(t *testing.T) {
-	for _, terminal := range []string{"completed", "retired", "cancelled"} {
+	for _, terminal := range []string{"completed", "done", "cancelled"} {
 		v := testVault(t)
 		if err := v.CreateTask("proj", TaskSpec{Slug: "t", Title: "T", Content: "body", Priority: "high"}); err != nil {
 			t.Fatal(err)
@@ -726,7 +726,7 @@ func TestUpdateTaskStatusRejectsTerminalButMoveStillWritesThem(t *testing.T) {
 		}
 	}
 
-	// retire → done/, status "retired".
+	// retire → done/, status "done".
 	v := testVault(t)
 	if err := v.CreateTask("proj", TaskSpec{Slug: "r", Title: "R", Content: "body", Priority: "high"}); err != nil {
 		t.Fatal(err)
@@ -738,8 +738,8 @@ func TestUpdateTaskStatusRejectsTerminalButMoveStillWritesThem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta.Status != "retired" || !meta.Done {
-		t.Errorf("retired task: status=%q done=%v, want %q/true", meta.Status, meta.Done, "retired")
+	if meta.Status != "done" || !meta.Done {
+		t.Errorf("retired task: status=%q done=%v, want %q/true", meta.Status, meta.Done, "done")
 	}
 
 	// cancel → cancelled/, status "cancelled".
@@ -760,11 +760,11 @@ func TestUpdateTaskStatusRejectsTerminalButMoveStillWritesThem(t *testing.T) {
 
 // TestParseTaskMetaReadsArchivedTerminalStatuses pins that removing the terminal
 // values from the WRITE set did not touch the READ path. Every archived file on
-// disk carries "**Status:** retired" or "**Status:** cancelled" — 96 of them.
+// disk carries "**Status:** done" or "**Status:** cancelled" — 96 of them.
 // validStatuses is not, and must never become, a read whitelist: a read-side
 // check built on it would declare the entire archive invalid.
 func TestParseTaskMetaReadsArchivedTerminalStatuses(t *testing.T) {
-	for _, status := range []string{"retired", "cancelled", "completed"} {
+	for _, status := range []string{"done", "cancelled", "completed"} {
 		meta := parseTaskMeta("archived", "# Old Task\n\n**Status:** "+status+"\n**Priority:** low\n", true)
 		if meta.Status != status {
 			t.Errorf("archived file with status %q read back as %q — the read path must not filter on the write set",
@@ -915,7 +915,7 @@ func TestCreateAndReadRelations(t *testing.T) {
 	}
 	// Status and Priority must still parse — the header block grew, and the
 	// original whole-file scan must not have been disturbed.
-	if meta.Status != "pending" || meta.Priority != "high" {
+	if meta.Status != "planning" || meta.Priority != "high" {
 		t.Errorf("status/priority regressed: %q/%q", meta.Status, meta.Priority)
 	}
 }
@@ -992,7 +992,7 @@ func TestRetirePreservesRelations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta.Status != "retired" {
+	if meta.Status != "done" {
 		t.Fatalf("status = %q", meta.Status)
 	}
 	if meta.Parent != "epic" || !slices.Equal(meta.Depends, []string{"a", "b"}) {
@@ -1042,7 +1042,7 @@ func TestIceboxIsAValidNonTerminalStatus(t *testing.T) {
 // binary built from the pre-change commit, which reads and rewrites these files
 // happily and preserves the header lines through a retire.
 func TestOldBinaryBodyBorneRelationIsStillNotRead(t *testing.T) {
-	raw := "# Title\n\n**Status:** pending\n**Priority:** high\n\n" +
+	raw := "# Title\n\n**Status:** planning\n**Priority:** high\n\n" +
 		"## Notes\n\n**Parent:** sneaky-epic\n**Depends:** sneaky-a\n\nmore prose\n"
 
 	meta := parseTaskMeta("t", raw, false)
@@ -1050,7 +1050,7 @@ func TestOldBinaryBodyBorneRelationIsStillNotRead(t *testing.T) {
 		t.Fatalf("a body-borne relation written by an OLD binary was read as real: parent=%q depends=%v",
 			meta.Parent, meta.Depends)
 	}
-	if meta.Status != "pending" || meta.Priority != "high" {
+	if meta.Status != "planning" || meta.Priority != "high" {
 		t.Fatalf("header regressed: %q/%q", meta.Status, meta.Priority)
 	}
 }
@@ -1272,7 +1272,7 @@ func TestAmendTaskRejectsMetadataAndH2InBody(t *testing.T) {
 // A fenced metadata shape is sample text, not metadata. Same rule as create.
 func TestAmendTaskAcceptsMetadataShapesInsideFences(t *testing.T) {
 	v := amendFixture(t)
-	body := "The header syntax is:\n\n```markdown\n**Status:** pending\n**Parent:** epic\n## Example\n```\n\nQuoted, not applied."
+	body := "The header syntax is:\n\n```markdown\n**Status:** planning\n**Parent:** epic\n## Example\n```\n\nQuoted, not applied."
 	if _, err := v.AmendTask("proj", "t", "Decision", body); err != nil {
 		t.Fatalf("AmendTask rejected a fenced example: %v", err)
 	}
@@ -1280,7 +1280,7 @@ func TestAmendTaskAcceptsMetadataShapesInsideFences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
-	if meta.Status != "pending" || meta.Parent != "epic" {
+	if meta.Status != "planning" || meta.Parent != "epic" {
 		t.Errorf("fenced sample text was read as metadata: status=%q parent=%q", meta.Status, meta.Parent)
 	}
 	if n := strings.Count(got, "**Status:**"); n != 2 {
@@ -1412,7 +1412,7 @@ func TestSetTaskMetaRetitleAndReprioritize(t *testing.T) {
 		t.Errorf("Priority = %q, want critical", meta.Priority)
 	}
 	// Everything else must be untouched.
-	if meta.Status != "pending" || meta.Parent != "epic" || !slices.Equal(meta.Depends, []string{"other"}) {
+	if meta.Status != "planning" || meta.Parent != "epic" || !slices.Equal(meta.Depends, []string{"other"}) {
 		t.Errorf("set_meta disturbed a field it does not own: %+v", meta)
 	}
 	if n := strings.Count(body, "# "+newTitle); n != 1 {
@@ -1605,7 +1605,7 @@ func TestResolveTaskFileNotFound(t *testing.T) {
 // file with no H2 at all — so a fixture without one is not "the shape CreateTask
 // writes", it is a shape no writer can produce and the validator rejects.
 const validTaskFile = "# Task Title\n\n" +
-	"**Status:** pending\n" +
+	"**Status:** planning\n" +
 	"**Priority:** P1\n\n" +
 	"## " + ConventionalFirstHeading + "\n\n" +
 	"Body prose goes here.\n"
@@ -1621,7 +1621,7 @@ func TestValidateWholeTaskFileValid(t *testing.T) {
 // by name.
 func TestValidateWholeTaskFileTwoStatus(t *testing.T) {
 	content := "# Task Title\n\n" +
-		"**Status:** pending\n" +
+		"**Status:** planning\n" +
 		"**Status:** blocked\n" +
 		"**Priority:** P1\n\n## Context\n\nBody.\n"
 	err := validateWholeTaskFile(content)
@@ -1633,7 +1633,7 @@ func TestValidateWholeTaskFileTwoStatus(t *testing.T) {
 // TestValidateWholeTaskFileTwoTitles proves a second H1 is rejected by name.
 func TestValidateWholeTaskFileTwoTitles(t *testing.T) {
 	content := "# Task Title\n# Second Title\n\n" +
-		"**Status:** pending\n**Priority:** P1\n\n## Context\n\nBody.\n"
+		"**Status:** planning\n**Priority:** P1\n\n## Context\n\nBody.\n"
 	err := validateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "two title lines") {
 		t.Fatalf("error = %v, want 'two title lines'", err)
@@ -1644,7 +1644,7 @@ func TestValidateWholeTaskFileTwoTitles(t *testing.T) {
 // rejected by name.
 func TestValidateWholeTaskFileTwoPriority(t *testing.T) {
 	content := "# Task Title\n\n" +
-		"**Status:** pending\n" +
+		"**Status:** planning\n" +
 		"**Priority:** P1\n" +
 		"**Priority:** P2\n\n## Context\n\nBody.\n"
 	err := validateWholeTaskFile(content)
@@ -1656,7 +1656,7 @@ func TestValidateWholeTaskFileTwoPriority(t *testing.T) {
 // TestValidateWholeTaskFileMissingField proves a file missing a required header
 // field is rejected and names the field.
 func TestValidateWholeTaskFileMissingField(t *testing.T) {
-	content := "# Task Title\n\n**Status:** pending\n\n## Context\n\nBody, no priority.\n"
+	content := "# Task Title\n\n**Status:** planning\n\n## Context\n\nBody, no priority.\n"
 	err := validateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "missing Priority") {
 		t.Fatalf("error = %v, want 'missing Priority'", err)
@@ -1665,7 +1665,7 @@ func TestValidateWholeTaskFileMissingField(t *testing.T) {
 
 // TestValidateWholeTaskFileMissingTitle proves a headerless file is rejected.
 func TestValidateWholeTaskFileMissingTitle(t *testing.T) {
-	content := "**Status:** pending\n**Priority:** P1\n\n## Context\n\nNo title here.\n"
+	content := "**Status:** planning\n**Priority:** P1\n\n## Context\n\nNo title here.\n"
 	err := validateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "missing title") {
 		t.Fatalf("error = %v, want 'missing title'", err)
@@ -1676,7 +1676,7 @@ func TestValidateWholeTaskFileMissingTitle(t *testing.T) {
 // rejected by name.
 func TestValidateWholeTaskFileUnterminatedFence(t *testing.T) {
 	content := "# Task Title\n\n" +
-		"**Status:** pending\n**Priority:** P1\n\n" +
+		"**Status:** planning\n**Priority:** P1\n\n" +
 		"## Context\n\n" +
 		"```go\nnever closed\n"
 	err := validateWholeTaskFile(content)
@@ -1689,7 +1689,7 @@ func TestValidateWholeTaskFileUnterminatedFence(t *testing.T) {
 // the body — not part of the contiguous run after the title — is rejected.
 func TestValidateWholeTaskFileMalformedHeaderBlock(t *testing.T) {
 	content := "# Task Title\n\n" +
-		"**Status:** pending\n\n" + // blank line breaks the contiguous run
+		"**Status:** planning\n\n" + // blank line breaks the contiguous run
 		"**Priority:** P1\n\n## Context\n\nBody.\n"
 	err := validateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "malformed header block") {
@@ -1709,7 +1709,7 @@ func TestValidateWholeTaskFileMalformedHeaderBlock(t *testing.T) {
 // TestValidateWholeTaskFileFencedH2DoesNotCount.
 func TestValidateWholeTaskFileFenceAware(t *testing.T) {
 	content := "# Task Title\n\n" +
-		"**Status:** pending\n**Priority:** P1\n\n" +
+		"**Status:** planning\n**Priority:** P1\n\n" +
 		"## Context\n\n" +
 		"Example task markdown:\n\n" +
 		"```md\n" +
@@ -1729,7 +1729,7 @@ func TestValidateWholeTaskFileFenceAware(t *testing.T) {
 // unreachable to amend, which matches on an exact "## " heading line.
 func TestValidateWholeTaskFileNoH2(t *testing.T) {
 	content := "# Task Title\n\n" +
-		"**Status:** pending\n**Priority:** P1\n\n" +
+		"**Status:** planning\n**Priority:** P1\n\n" +
 		"All of this prose is unaddressable.\n\nSo is this.\n"
 	err := validateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "missing section") {
@@ -1746,7 +1746,7 @@ func TestValidateWholeTaskFileNoH2(t *testing.T) {
 // mdfence.OutsideFences and this reds.
 func TestValidateWholeTaskFileFencedH2DoesNotCount(t *testing.T) {
 	content := "# Task Title\n\n" +
-		"**Status:** pending\n**Priority:** P1\n\n" +
+		"**Status:** planning\n**Priority:** P1\n\n" +
 		"Example task markdown:\n\n" +
 		"```md\n" +
 		"## Context\n" +
@@ -1763,7 +1763,7 @@ func TestValidateWholeTaskFileFencedH2DoesNotCount(t *testing.T) {
 // that demanded exactly one would refuse nearly every real task file.
 func TestValidateWholeTaskFileManyH2(t *testing.T) {
 	content := "# Task Title\n\n" +
-		"**Status:** pending\n**Priority:** P1\n\n" +
+		"**Status:** planning\n**Priority:** P1\n\n" +
 		"## Context\n\nWhy.\n\n" +
 		"## Decision\n\nWhat.\n\n" +
 		"## Notes\n\nHow.\n"
@@ -1821,7 +1821,7 @@ func TestOverwriteTaskFileWritesValid(t *testing.T) {
 	// wrote title "Old" and priority "P1" with the default status, so the body
 	// below restates them verbatim and changes only prose.
 	newContent := "# Old\n\n" +
-		"**Status:** pending\n**Priority:** P1\n\n## Context\n\nRewritten body.\n"
+		"**Status:** planning\n**Priority:** P1\n\n## Context\n\nRewritten body.\n"
 	if err := v.OverwriteTaskFile("proj", "task", newContent); err != nil {
 		t.Fatalf("OverwriteTaskFile: %v", err)
 	}
@@ -1989,7 +1989,7 @@ func TestArchiveMakesNoProgressWhileSourceLockHeld(t *testing.T) {
 			unlock()
 			t.Fatalf("source body was stamped while its lock was held:\ngot:  %q\nwant: %q", now, before)
 		}
-		if meta := parseTaskMeta("locked-task", string(now), false); meta.Status == "retired" {
+		if meta := parseTaskMeta("locked-task", string(now), false); meta.Status == "done" {
 			unlock()
 			t.Fatal("source carries a terminal status while its lock was held — the stamp escaped the critical section")
 		}
@@ -2018,8 +2018,8 @@ func TestArchiveMakesNoProgressWhileSourceLockHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("destination should exist after retire: %v", err)
 	}
-	if meta := parseTaskMeta("locked-task", string(archived), true); meta.Status != "retired" {
-		t.Errorf("archived body status = %q, want %q", meta.Status, "retired")
+	if meta := parseTaskMeta("locked-task", string(archived), true); meta.Status != "done" {
+		t.Errorf("archived body status = %q, want %q", meta.Status, "done")
 	}
 }
 
@@ -2036,7 +2036,7 @@ func TestArchiveMakesNoProgressWhileSourceLockHeld(t *testing.T) {
 const legacyBoth = "# Task 3.5: Portable Command Execution\n" +
 	"Status: Done\n" +
 	"\n" +
-	"**Status:** pending\n" +
+	"**Status:** planning\n" +
 	"**Priority:** high\n\n" +
 	"## Summary\n\nBody.\n"
 
@@ -2074,7 +2074,7 @@ func TestScanLegacyHeaderClassifiesTheMeasuredShapes(t *testing.T) {
 			name: "title offset by a YAML block still finds the legacy line",
 			content: "---\ntype: task\npriority: high\n---\n\n" +
 				"# Plan: Phase E\nStatus: Cutover IN PROGRESS\n\n" +
-				"**Status:** pending\n**Priority:** high\n\n## Context\n\nBody.\n",
+				"**Status:** planning\n**Priority:** high\n\n## Context\n\nBody.\n",
 			want:     LegacyHeaderBoth,
 			wantBare: 7,
 		},
@@ -2085,14 +2085,14 @@ func TestScanLegacyHeaderClassifiesTheMeasuredShapes(t *testing.T) {
 		},
 		{
 			name: "body prose beginning with the word Status is NOT a header line",
-			content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n" +
+			content: "# T\n\n**Status:** done\n**Priority:** medium\n\n" +
 				"## Implementation plan\n\n" +
 				"Status: **design only — not implemented.** Stop until the chair accepts.\n",
 			want: LegacyHeaderClean,
 		},
 		{
 			name: "a Rust path expression is NOT a header line",
-			content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n## Wiring\n\n" +
+			content: "# T\n\n**Status:** done\n**Priority:** medium\n\n## Wiring\n\n" +
 				"Wiring: replace `SubCheck::new(\"field-names\",\n" +
 				"Status::Skipped, \"deferred\")` with check_field_names().\n",
 			want: LegacyHeaderClean,
@@ -2100,7 +2100,7 @@ func TestScanLegacyHeaderClassifiesTheMeasuredShapes(t *testing.T) {
 		{
 			name: "multi-title wins over a bolded field plus a legacy line",
 			content: "# Salvage HNSW recall harness\n\n" +
-				"**Status:** retired\n**Priority:** medium\n\n" +
+				"**Status:** done\n**Priority:** medium\n\n" +
 				"# Plan: Salvage HNSW Recall Harness\n\n" +
 				"Status: Planned, architecture-reviewed.\n\n## Context\n\nBody.\n",
 			want: LegacyHeaderMultiTitle,
@@ -2126,7 +2126,7 @@ func TestScanLegacyHeaderClassifiesTheMeasuredShapes(t *testing.T) {
 // and a fence-blind repair rewrites the very files describing it.
 func TestScanLegacyHeaderIgnoresFencedSpecimens(t *testing.T) {
 	content := "# One shared classifier for legacy task headers\n\n" +
-		"**Status:** pending\n" +
+		"**Status:** planning\n" +
 		"**Priority:** medium\n\n" +
 		"## The two shapes, measured\n\n" +
 		"```\n" + legacyBoth + "```\n\n" +
@@ -2154,7 +2154,7 @@ func TestRepairLegacyBothHeaderCarriesTheTrueValueInOneWrite(t *testing.T) {
 	if strings.Contains(got, "\nStatus: Done") {
 		t.Errorf("the bare legacy line survived:\n%s", got)
 	}
-	if strings.Contains(got, "**Status:** pending") {
+	if strings.Contains(got, "**Status:** planning") {
 		t.Errorf("the STALE value survived — dropping the bare line alone leaves "+
 			"the file asserting only the falsehood:\n%s", got)
 	}
@@ -2182,7 +2182,7 @@ func TestRepairLegacyBothHeaderRefusesEveryOtherClass(t *testing.T) {
 		{"clean", validTaskFile, LegacyHeaderClean},
 		{
 			name: "multi-title",
-			content: "# First\n\n**Status:** retired\n**Priority:** medium\n\n" +
+			content: "# First\n\n**Status:** done\n**Priority:** medium\n\n" +
 				"# Second\n\nStatus: Planned\n\n## Context\n\nBody.\n",
 			want: LegacyHeaderMultiTitle,
 		},
@@ -2253,7 +2253,7 @@ func TestBareOnlyDeletionWouldNotRepairPinsTheReasonForTheSplit(t *testing.T) {
 // priority field so nothing but the class itself can stop the repair.
 const legacyInverted = "# Plan: Phase D — Parallel Operation\n" +
 	"Status: Closed — operator accepted retrospective 2026-06-06; advancing to Phase E\n" +
-	"**Status:** retired\n" +
+	"**Status:** done\n" +
 	"**Priority:** medium\n\n" +
 	"## Context\n\nBody.\n"
 
@@ -2612,8 +2612,8 @@ func TestRepairLegacyBareOnlyHeaderRelocatesTheStatusLineItself(t *testing.T) {
 			}
 
 			// What migrate task-status does next, through the same writer.
-			stamped := replaceStatusLine(got.Content, StatusRetired)
-			if !strings.Contains(stamped, "**Status:** "+StatusRetired) {
+			stamped := replaceStatusLine(got.Content, StatusDone)
+			if !strings.Contains(stamped, "**Status:** "+StatusDone) {
 				t.Fatalf("the simulation did not stamp the field:\n%s", stamped)
 			}
 			if !strings.Contains(stamped, tc.value) {
@@ -2643,7 +2643,7 @@ func TestRepairLegacyBareOnlyHeaderRefusesEveryOtherClass(t *testing.T) {
 		{"inverted", legacyInverted, LegacyHeaderInverted},
 		{
 			name: "multi-title",
-			content: "# First\n\n**Status:** retired\n**Priority:** medium\n\n" +
+			content: "# First\n\n**Status:** done\n**Priority:** medium\n\n" +
 				"# Second\n\nStatus: Planned\n\n## Context\n\nBody.\n",
 			want: LegacyHeaderMultiTitle,
 		},
@@ -2694,7 +2694,7 @@ func TestRepairLegacyBareOnlyHeaderIsIdempotent(t *testing.T) {
 // files describing the bug.
 func TestRepairLegacyBareOnlyHeaderIgnoresFencedSpecimens(t *testing.T) {
 	content := "# Promote a bare legacy Status line\n\n" +
-		"**Status:** pending\n**Priority:** medium\n\n" +
+		"**Status:** planning\n**Priority:** medium\n\n" +
 		"## The shape, quoted\n\n" +
 		"```\n" + boMinimal + "```\n\nProse after the fence.\n"
 
@@ -2813,9 +2813,9 @@ const (
 	// mtCanonical — H1 / blank / Status / Priority / blank / rival H1 with its
 	// own fields. The dominant shape on disk.
 	mtCanonical = "# Refresh per-project skill shims on upgrade\n\n" +
-		"**Status:** retired\n**Priority:** medium\n\n" +
+		"**Status:** done\n**Priority:** medium\n\n" +
 		"# Refresh per-project skill shims on upgrade (not only vp init)\n\n" +
-		"**Status:** pending — investigated 2026-06-07\n" +
+		"**Status:** planning — investigated 2026-06-07\n" +
 		"**Priority:** medium\n\n" +
 		"## Problem\n\nBody.\n"
 
@@ -2823,7 +2823,7 @@ const (
 	// THIRD status syntax. It is not frontmatter: it does not start at line 1.
 	// Four live files have this.
 	mtYAMLWedge = "# Add vp_list_learnings / vp_get_learning\n\n" +
-		"**Status:** retired\n**Priority:** medium\n\n" +
+		"**Status:** done\n**Priority:** medium\n\n" +
 		"---\ntype: task\nstatus: reviewed-ready-to-implement\npriority: medium\n---\n\n" +
 		"# Plan: Add cross-project \"learnings\" support\n\n" +
 		"**Status:** Reviewed twice — 2026-06-20\n**Priority:** medium\n\n" +
@@ -2832,7 +2832,7 @@ const (
 	// mtBareLegacySecond — the second title's block uses the BARE legacy syntax,
 	// not the bolded one, so there is nothing under it to relabel.
 	mtBareLegacySecond = "# Salvage HNSW constitution recall harness\n\n" +
-		"**Status:** retired\n**Priority:** medium\n\n" +
+		"**Status:** done\n**Priority:** medium\n\n" +
 		"# Plan: Salvage HNSW Recall Harness into vibe-palace\n\n" +
 		"Status: Planned, architecture-reviewed.\n" +
 		"Not started. Spun out of `hnsw-library-bug-fixes`.\n\n" +
@@ -2843,7 +2843,7 @@ const (
 	// at line 57, reading "PHASE 1 — MOVED OUT"; later ones read "Open
 	// Questions" and "Definition of done".
 	mtSectionHeadings = "# ADR-006 umbrella — CLOSED 2026-08-16\n\n" +
-		"**Status:** retired\n**Priority:** high\n**Parent:** honest-instruments\n\n" +
+		"**Status:** done\n**Priority:** high\n**Parent:** honest-instruments\n\n" +
 		"## The thesis\n\nBody.\n\n" +
 		"# PHASE 2 — DERIVE WHAT IS ACTUALLY DERIVABLE\n\nPhase body.\n\n" +
 		"# Open Questions\n\nQuestions.\n\n" +
@@ -2854,15 +2854,15 @@ const (
 	// fixture the prepend rule would be untested, because the live specimen trips
 	// the title-count rule as well.
 	mtSectionsTwoTitlesOnly = "# One document with a mis-levelled section\n\n" +
-		"**Status:** retired\n**Priority:** medium\n\n" +
+		"**Status:** done\n**Priority:** medium\n\n" +
 		"## Context\n\nBody.\n\n" +
 		"# Definition of done\n\nDone when.\n"
 
 	// mtThreeTitles — trips ONLY the title-count rule: three rival titles, none
 	// preceded by an H2. Without this fixture the count rule would be untested
 	// for the same reason.
-	mtThreeTitles = "# First\n\n**Status:** retired\n**Priority:** medium\n\n" +
-		"# Second\n\n**Status:** pending\n**Priority:** high\n\n" +
+	mtThreeTitles = "# First\n\n**Status:** done\n**Priority:** medium\n\n" +
+		"# Second\n\n**Status:** planning\n**Priority:** high\n\n" +
 		"# Third\n\n**Status:** blocked\n**Priority:** low\n\n" +
 		"## Body\n\nBody.\n"
 
@@ -2872,7 +2872,7 @@ const (
 	// it, so a repair keyed on the classifier writes nothing for it and says
 	// nothing about it.
 	mtCorruptModernHeader = "# Vault whole-file writes have no lock across read-modify-write\n\n" +
-		"**Status:** retired\n" +
+		"**Status:** done\n" +
 		"Plan-reviewed 2026-06-06; design decisions below are locked.\n" +
 		"No code written.\n" +
 		"**Priority:** medium\n\n" +
@@ -3102,7 +3102,7 @@ func TestRepairLegacyMultiTitleIsIdempotent(t *testing.T) {
 // the task files documenting this defect quote two-H1 specimens inside fences.
 func TestRepairLegacyMultiTitleIgnoresFencedSpecimens(t *testing.T) {
 	content := "# A per-file proposal for multi-title task files\n\n" +
-		"**Status:** pending\n**Priority:** medium\n\n" +
+		"**Status:** planning\n**Priority:** medium\n\n" +
 		"## The shape, quoted\n\n" +
 		"```\n" + mtCanonical + "```\n\nProse after the fence.\n"
 
@@ -3164,7 +3164,7 @@ const (
 	// exposed it. No live file has this shape; the command runs against vaults
 	// this measurement never saw.
 	mtSectionH1NoH2Anywhere = "# Port the surface handshake\n\n" +
-		"**Status:** retired\n**Priority:** medium\n\n" +
+		"**Status:** done\n**Priority:** medium\n\n" +
 		"# Background\n\n" +
 		"Prose about the background, written by an author who used H1 for sections.\n"
 
@@ -3173,7 +3173,7 @@ const (
 	// The legacy title owns its own header block, which is what shows it opens a
 	// document; refusing this file would be an over-refusal.
 	mtH2InModernPreamble = "# Modern title\n\n" +
-		"**Status:** retired\n**Priority:** medium\n\n" +
+		"**Status:** done\n**Priority:** medium\n\n" +
 		"## Review notes\n\nA section belonging to the modern half.\n\n" +
 		"# Legacy document title\n\n" +
 		"**Status:** In Progress\n**Priority:** high\n\n" +
@@ -3396,7 +3396,7 @@ func TestConventionalHeadingRefusalMatchesSectionBoundsEquality(t *testing.T) {
 			// unreachable by every section name for the life of the file — which
 			// is the defect itself, measured through sectionBounds rather than by
 			// restating its equality rule here.
-			file := "# T\n\n**Status:** pending\n**Priority:** medium\n\n" +
+			file := "# T\n\n**Status:** planning\n**Priority:** medium\n\n" +
 				"## " + ConventionalFirstHeading + "\n\n" + heading + "\n\nAuthor prose.\n"
 			_, end, found := sectionBounds(file, ConventionalFirstHeading)
 			if !found {
@@ -3452,7 +3452,7 @@ func TestOverwriteTaskFileRefusesAHeaderChange(t *testing.T) {
 		wantField  string
 		wantAction string
 	}{
-		{"status", "**Status:** pending", "**Status:** in_progress", "**Status:**", "update_status"},
+		{"status", "**Status:** planning", "**Status:** in_progress", "**Status:**", "update_status"},
 		{"priority", "**Priority:** high", "**Priority:** low", "**Priority:**", "set_meta"},
 		{"title", "# Original", "# Smuggled", "title", "set_meta"},
 		{"parent", "**Parent:** epic-a", "**Parent:** epic-b", "**Parent:**", "set_relations"},
@@ -3573,7 +3573,7 @@ func TestOverwriteTaskFileRewritingHeaderIsTheMigrationOptOut(t *testing.T) {
 		t.Fatalf("GetTask: %v", err)
 	}
 
-	repaired := strings.Replace(before, "**Status:** pending", "**Status:** in_progress", 1)
+	repaired := strings.Replace(before, "**Status:** planning", "**Status:** in_progress", 1)
 	if repaired == before {
 		t.Fatal("test bug: status line not found in the fixture")
 	}
@@ -3615,7 +3615,7 @@ func TestLegacyHeaderRepairsMoveOnlyTheFieldsTheyClaim(t *testing.T) {
 	const withEdges = "# Task 3.5: Portable Command Execution\n" +
 		"Status: Done\n" +
 		"\n" +
-		"**Status:** pending\n" +
+		"**Status:** planning\n" +
 		"**Priority:** high\n" +
 		"**Parent:** epic-a\n" +
 		"**Depends:** dep-one, dep-two\n\n" +
@@ -3683,7 +3683,7 @@ func TestIsHeaderFieldLineAcceptsUnrecognizedField(t *testing.T) {
 // with no blank-line separator is now INSIDE the header block, where the old
 // closed-list parser would have excluded it as body prose.
 func TestHeaderBlockAbsorbsUnrecognizedFieldWithNoBlankLine(t *testing.T) {
-	content := "# T\n\n**Status:** pending\n**Priority:** high\n**Depends:** dep\n**Note:** orphaned\n\n## Context\n\nBody.\n"
+	content := "# T\n\n**Status:** planning\n**Priority:** high\n**Depends:** dep\n**Note:** orphaned\n\n## Context\n\nBody.\n"
 	lines := strings.Split(content, "\n")
 	start, end := headerBlock(lines)
 	if end <= start {
@@ -3799,7 +3799,7 @@ func TestUnrecognizedHeaderFieldRoundTripsThroughSetRelations(t *testing.T) {
 }
 
 func TestUpsertHeaderFieldNewFieldAppendsAfterCoreFields(t *testing.T) {
-	content := "# T\n\n**Status:** pending\n**Priority:** high\n**Parent:** epic\n**Depends:** dep\n\n## Context\n\nBody.\n"
+	content := "# T\n\n**Status:** planning\n**Priority:** high\n**Parent:** epic\n**Depends:** dep\n\n## Context\n\nBody.\n"
 	updated := upsertHeaderField(content, "Extension", "value")
 	lines := strings.Split(updated, "\n")
 	start, end := headerBlock(lines)
@@ -3837,7 +3837,7 @@ func TestUpsertHeaderFieldLateParentInsertedBeforeExtensionField(t *testing.T) {
 	lines := strings.Split(content, "\n")
 	start, end := headerBlock(lines)
 	got := lines[start:end]
-	want := []string{"**Status:** pending", "**Priority:** high", "**Parent:** epic", "**DataFormat:** 2"}
+	want := []string{"**Status:** planning", "**Priority:** high", "**Parent:** epic", "**DataFormat:** 2"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("header order = %v, want %v", got, want)
 	}
@@ -3872,14 +3872,14 @@ func TestUpsertHeaderFieldLateParentAndDependsBothInsertedBeforeExtensionField(t
 	lines := strings.Split(content, "\n")
 	start, end := headerBlock(lines)
 	got := lines[start:end]
-	want := []string{"**Status:** pending", "**Priority:** high", "**Parent:** epic", "**Depends:** dep", "**DataFormat:** 2"}
+	want := []string{"**Status:** planning", "**Priority:** high", "**Parent:** epic", "**Depends:** dep", "**DataFormat:** 2"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("header order = %v, want %v", got, want)
 	}
 }
 
 func TestDataFormatFieldParsesAndRoundTrips(t *testing.T) {
-	content := "# T\n\n**Status:** pending\n**Priority:** high\n\n## Context\n\nBody.\n"
+	content := "# T\n\n**Status:** planning\n**Priority:** high\n\n## Context\n\nBody.\n"
 	updated := upsertHeaderField(content, fieldDataFormat, "2")
 	meta := parseTaskMeta("t", updated, false)
 	if meta.DataFormat != "2" {
@@ -4107,7 +4107,7 @@ func TestOverwriteTaskFileRewritingHeaderStillMovesUnrecognizedFields(t *testing
 // ---------------------------------------------------------------------------
 
 func TestFindHeaderSpacingHazardDetectsOrphanedLine(t *testing.T) {
-	content := "# T\n\n**Status:** pending\n**Priority:** high\n**Depends:** dep\n**Note:** orphaned\n\n## Context\n\nBody.\n"
+	content := "# T\n\n**Status:** planning\n**Priority:** high\n**Depends:** dep\n**Note:** orphaned\n\n## Context\n\nBody.\n"
 	line, text, ok := FindHeaderSpacingHazard(content)
 	if !ok {
 		t.Fatal("expected a hazard hit")
@@ -4124,7 +4124,7 @@ func TestFindHeaderSpacingHazardDetectsOrphanedLine(t *testing.T) {
 }
 
 func TestFindHeaderSpacingHazardNoHitWithBlankLineSeparator(t *testing.T) {
-	content := "# T\n\n**Status:** pending\n**Priority:** high\n**Depends:** dep\n\n**Note:** not a hazard\n\n## Context\n\nBody.\n"
+	content := "# T\n\n**Status:** planning\n**Priority:** high\n**Depends:** dep\n\n**Note:** not a hazard\n\n## Context\n\nBody.\n"
 	_, _, ok := FindHeaderSpacingHazard(content)
 	if ok {
 		t.Error("a blank-line-separated field must not be reported as a hazard")
@@ -4132,7 +4132,7 @@ func TestFindHeaderSpacingHazardNoHitWithBlankLineSeparator(t *testing.T) {
 }
 
 func TestFindHeaderSpacingHazardIgnoresOrdinaryAdjacentCoreFields(t *testing.T) {
-	content := "# T\n\n**Status:** pending\n**Priority:** high\n**Parent:** epic\n**Depends:** dep\n\n## Context\n\nBody.\n"
+	content := "# T\n\n**Status:** planning\n**Priority:** high\n**Parent:** epic\n**Depends:** dep\n\n## Context\n\nBody.\n"
 	_, _, ok := FindHeaderSpacingHazard(content)
 	if ok {
 		t.Error("an ordinary Status/Priority/Parent/Depends run with no trailing extension line must not be a hazard")
@@ -4140,7 +4140,7 @@ func TestFindHeaderSpacingHazardIgnoresOrdinaryAdjacentCoreFields(t *testing.T) 
 }
 
 func TestFindHeaderSpacingHazardHandlesShortHeader(t *testing.T) {
-	content := "# T\n\n**Status:** pending\n**Priority:** high\n**Note:** orphaned\n\n## Context\n\nBody.\n"
+	content := "# T\n\n**Status:** planning\n**Priority:** high\n**Note:** orphaned\n\n## Context\n\nBody.\n"
 	line, text, ok := FindHeaderSpacingHazard(content)
 	if !ok {
 		t.Fatal("expected a hazard hit even with no Parent/Depends present")
@@ -4162,7 +4162,7 @@ func TestFindHeaderSpacingHazardHandlesShortHeader(t *testing.T) {
 // (confirmed below: after a single insertion, no hazard remains and BOTH
 // orphaned lines are excluded from the header block).
 func TestFindHeaderSpacingHazardDetectsFirstOfTwoConsecutiveOrphanedLines(t *testing.T) {
-	content := "# T\n\n**Status:** pending\n**Priority:** high\n**Filed:** 2026-07-11\n**Rewritten:** 2026-07-12\n\n## Context\n\nBody.\n"
+	content := "# T\n\n**Status:** planning\n**Priority:** high\n**Filed:** 2026-07-11\n**Rewritten:** 2026-07-12\n\n## Context\n\nBody.\n"
 	line, text, ok := FindHeaderSpacingHazard(content)
 	if !ok {
 		t.Fatal("expected a hazard hit")
@@ -4189,14 +4189,14 @@ func TestFindHeaderSpacingHazardDetectsFirstOfTwoConsecutiveOrphanedLines(t *tes
 	}
 	hstart, hend := headerBlock(strings.Split(repairedContent, "\n"))
 	got := strings.Split(repairedContent, "\n")[hstart:hend]
-	want := []string{"**Status:** pending", "**Priority:** high"}
+	want := []string{"**Status:** planning", "**Priority:** high"}
 	if !slices.Equal(got, want) {
 		t.Errorf("header block after repair = %v, want %v (both orphaned lines excluded as body prose)", got, want)
 	}
 }
 
 func TestFindHeaderSpacingHazardNoHitAtEndOfFile(t *testing.T) {
-	content := "# T\n\n**Status:** pending\n**Priority:** high\n"
+	content := "# T\n\n**Status:** planning\n**Priority:** high\n"
 	_, _, ok := FindHeaderSpacingHazard(content)
 	if ok {
 		t.Error("a header with nothing after it must not be a hazard")

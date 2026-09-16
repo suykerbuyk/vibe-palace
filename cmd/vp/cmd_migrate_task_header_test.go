@@ -22,10 +22,17 @@ import (
 // test acts on; verify against the live shapes, not against canned strings.
 const (
 	// thBoth — a true un-bolded value above a stale bolded one.
+	//
+	// The carried value is "Active", deliberately not "Done": storage.IsTerminalStatus
+	// folds case, and since the board-reporting-status-vocabulary-rename task made
+	// "done" the terminal value, a carried "Done" would coincidentally read as
+	// AGREEING with its done/ directory — flipping this fixture's
+	// vaultaudit.DimTaskStatusDirectory classification as an unplanned side effect
+	// of the rename, not of anything this fixture is testing.
 	thBoth = "# Task 3.5: Portable Command Execution\n" +
-		"Status: Done\n" +
+		"Status: Active\n" +
 		"\n" +
-		"**Status:** pending\n" +
+		"**Status:** planning\n" +
 		"**Priority:** high\n\n" +
 		"## Summary\n\nBody.\n"
 
@@ -49,7 +56,7 @@ const (
 	// that carries its own un-bolded status. Classifying this as "both" would
 	// carry the legacy document's status onto the modern header.
 	thMultiTitle = "# Salvage HNSW recall harness\n\n" +
-		"**Status:** retired\n" +
+		"**Status:** done\n" +
 		"**Priority:** medium\n\n" +
 		"# Plan: Salvage HNSW Recall Harness\n\n" +
 		"Status: Planned, architecture-reviewed.\n\n" +
@@ -61,7 +68,7 @@ const (
 	// done". Demoting them would restructure a document nobody asked to
 	// restructure.
 	thMultiTitleSections = "# ADR-006 umbrella — CLOSED 2026-08-16\n\n" +
-		"**Status:** retired\n**Priority:** high\n\n" +
+		"**Status:** done\n**Priority:** high\n\n" +
 		"## The thesis\n\nBody.\n\n" +
 		"# PHASE 2 — DERIVE WHAT IS ACTUALLY DERIVABLE\n\nPhase body.\n\n" +
 		"# Open Questions\n\nQuestions.\n"
@@ -75,7 +82,7 @@ const (
 	// REFUSES it. A repair keyed on the classifier writes nothing for it and
 	// says nothing about it — which is why the sign-off section exists.
 	thMultiTitleBadHeader = "# Vault whole-file writes have no lock across RMW\n\n" +
-		"**Status:** retired\n" +
+		"**Status:** done\n" +
 		"Plan-reviewed 2026-06-06; design decisions below are locked.\n" +
 		"**Priority:** medium\n\n" +
 		"# Vault whole-file writes lack RMW serialization (lost-update hole)\n\n" +
@@ -83,7 +90,7 @@ const (
 
 	// thClean — the shape the current writer produces.
 	thClean = "# Ordinary task\n\n" +
-		"**Status:** retired\n" +
+		"**Status:** done\n" +
 		"**Priority:** medium\n\n" +
 		"## Context\n\nBody.\n"
 
@@ -97,7 +104,7 @@ const (
 	// and keep passing if the class were deleted.
 	thInverted = "# Plan: Phase D — Parallel Operation\n" +
 		"Status: Closed — operator accepted retrospective 2026-06-06\n" +
-		"**Status:** retired\n" +
+		"**Status:** done\n" +
 		"**Priority:** medium\n\n" +
 		"## Context\n\nBody.\n"
 )
@@ -161,14 +168,14 @@ func TestMigrateTaskHeaderRepairsTheWritableClassesAndLeavesTheRestAlone(t *test
 	}
 
 	got := tsRead(t, paths["both"])
-	if strings.Contains(got, "\nStatus: Done") {
+	if strings.Contains(got, "\nStatus: Active") {
 		t.Errorf("the bare legacy line survived:\n%s", got)
 	}
-	if strings.Contains(got, "**Status:** pending") {
+	if strings.Contains(got, "**Status:** planning") {
 		t.Errorf("the STALE value survived — dropping the bare line alone would leave "+
 			"the file asserting only the falsehood:\n%s", got)
 	}
-	if !strings.Contains(got, "**Status:** Done") {
+	if !strings.Contains(got, "**Status:** Active") {
 		t.Errorf("the true value was not carried onto the bolded field:\n%s", got)
 	}
 
@@ -273,7 +280,7 @@ func TestMigrateTaskHeaderReportOnlyWritesNothing(t *testing.T) {
 // tasks/ would silently rewrite the active file instead.
 func TestMigrateTaskHeaderRefusesArchivedShadow(t *testing.T) {
 	root := setupTestVaultEnv(t)
-	activeBody := "# Active twin\n\n**Status:** pending\n**Priority:** medium\n\n## Context\n\nActive.\n"
+	activeBody := "# Active twin\n\n**Status:** planning\n**Priority:** medium\n\n## Context\n\nActive.\n"
 	activePath := tsWrite(t, root, "Projects/proj/tasks/dup.md", activeBody)
 	archivedPath := tsWrite(t, root, "Projects/proj/tasks/done/dup.md", thBoth)
 
@@ -301,7 +308,7 @@ func TestMigrateTaskHeaderExitsNonZeroWhenEveryWriteFailed(t *testing.T) {
 	// so every candidate write fails and none succeeds.
 	for _, slug := range []string{"dup1", "dup2"} {
 		tsWrite(t, root, "Projects/proj/tasks/"+slug+".md",
-			"# T\n\n**Status:** pending\n**Priority:** medium\n\n## Context\n\nActive.\n")
+			"# T\n\n**Status:** planning\n**Priority:** medium\n\n## Context\n\nActive.\n")
 		tsWrite(t, root, "Projects/proj/tasks/done/"+slug+".md", thBoth)
 	}
 
@@ -378,7 +385,7 @@ func TestMigrateTaskHeaderWalksEveryTaskDirectory(t *testing.T) {
 func TestMigrateTaskHeaderIgnoresFencedSpecimens(t *testing.T) {
 	root := setupTestVaultEnv(t)
 	doc := "# A shared fence-aware classifier for legacy task headers\n\n" +
-		"**Status:** pending\n" +
+		"**Status:** planning\n" +
 		"**Priority:** medium\n\n" +
 		"## The two shapes, measured\n\n" +
 		"```\n" + thBoth + "```\n\n" +
@@ -491,7 +498,7 @@ func TestMigrateTaskHeaderRefusesTheInvertedShapeAndMakesNoNewFinding(t *testing
 	}
 	// The report must name BOTH values: the whole reason the file is skipped is
 	// that a human has to decide which of the two is true.
-	for _, want := range []string{"inverted", "retired", "Closed — operator accepted"} {
+	for _, want := range []string{"inverted", "done", "Closed — operator accepted"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("report omits %q — the operator cannot judge the file from it; out:\n%s", want, out.String())
 		}
@@ -629,7 +636,7 @@ func TestMigrateTaskHeaderPairedWithTaskStatusReturnsTheAuditToBaseline(t *testi
 
 	// --- the reason flattening was rejected ----------------------------------
 	after := tsRead(t, wrappedPath)
-	if !strings.Contains(after, "**Status:** retired") {
+	if !strings.Contains(after, "**Status:** done") {
 		t.Fatalf("task-status did not stamp the constructed field:\n%s", after)
 	}
 	for _, want := range []string{

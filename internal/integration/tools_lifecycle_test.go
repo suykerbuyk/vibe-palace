@@ -73,7 +73,7 @@ func TestTaskLifecycle(t *testing.T) {
 		"task":              "lifecycle-task",
 		"approved_by_human": true,
 	})
-	if !strings.Contains(raw, "retired") {
+	if !strings.Contains(raw, "done") {
 		t.Fatalf("retire: %s", raw)
 	}
 

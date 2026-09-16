@@ -18,7 +18,7 @@ func task(slug, status, priority, parent string, depends ...string) storage.Task
 		Title:    slug,
 		Status:   status,
 		Priority: priority,
-		Done:     status == "retired" || status == "cancelled",
+		Done:     status == "done" || status == "cancelled",
 		Parent:   parent,
 		Depends:  depends,
 	}
@@ -44,10 +44,10 @@ func withinTimeout(t *testing.T, fn func()) {
 
 func TestEpicIsDerivedFromChildren(t *testing.T) {
 	g := Build([]storage.TaskMeta{
-		task("epic", "pending", "high", ""),
-		task("child-a", "pending", "high", "epic"),
-		task("child-b", "pending", "low", "epic"),
-		task("loner", "pending", "medium", ""),
+		task("epic", "planning", "high", ""),
+		task("child-a", "planning", "high", "epic"),
+		task("child-b", "planning", "low", "epic"),
+		task("loner", "planning", "medium", ""),
 	})
 
 	if !g.Nodes["epic"].IsEpic() {
@@ -66,9 +66,9 @@ func TestEpicIsDerivedFromChildren(t *testing.T) {
 
 func TestDependencyOnRetiredTaskIsSatisfiedNotDangling(t *testing.T) {
 	g := Build([]storage.TaskMeta{
-		task("done-dep", "retired", "high", ""),
+		task("done-dep", "done", "high", ""),
 		task("gone-dep", "cancelled", "high", ""),
-		task("work", "pending", "high", "", "done-dep", "gone-dep"),
+		task("work", "planning", "high", "", "done-dep", "gone-dep"),
 	})
 
 	if len(g.Dangling) != 0 {
@@ -94,7 +94,7 @@ func TestDependencyOnRetiredTaskIsSatisfiedNotDangling(t *testing.T) {
 
 func TestDanglingDependencyIsReportedButDoesNotBlock(t *testing.T) {
 	g := Build([]storage.TaskMeta{
-		task("work", "pending", "high", "", "no-such-task"),
+		task("work", "planning", "high", "", "no-such-task"),
 	})
 
 	if len(g.Dangling) != 1 || g.Dangling[0].To != "no-such-task" {
@@ -111,7 +111,7 @@ func TestDanglingDependencyIsReportedButDoesNotBlock(t *testing.T) {
 
 func TestDanglingParentMakesTaskItsOwnRootAndStillRenders(t *testing.T) {
 	g := Build([]storage.TaskMeta{
-		task("orphan", "pending", "high", "no-such-epic"),
+		task("orphan", "planning", "high", "no-such-epic"),
 	})
 
 	if len(g.Dangling) != 1 || g.Dangling[0].Kind != "parent" {
@@ -134,8 +134,8 @@ func TestDanglingParentMakesTaskItsOwnRootAndStillRenders(t *testing.T) {
 
 func TestRetiredParentWithActiveChildIsReportedStale(t *testing.T) {
 	g := Build([]storage.TaskMeta{
-		task("epic", "retired", "high", ""),
-		task("child", "pending", "high", "epic"),
+		task("epic", "done", "high", ""),
+		task("child", "planning", "high", "epic"),
 	})
 
 	if len(g.StaleParents) != 1 || g.StaleParents[0].From != "child" {
@@ -151,9 +151,9 @@ func TestRetiredParentWithActiveChildIsReportedStale(t *testing.T) {
 func TestDependencyCycleIsDetectedNotWalked(t *testing.T) {
 	withinTimeout(t, func() {
 		g := Build([]storage.TaskMeta{
-			task("a", "pending", "high", "", "c"),
-			task("b", "pending", "high", "", "a"),
-			task("c", "pending", "high", "", "b"),
+			task("a", "planning", "high", "", "c"),
+			task("b", "planning", "high", "", "a"),
+			task("c", "planning", "high", "", "b"),
 		})
 
 		if len(g.Cycles) != 1 {
@@ -181,9 +181,9 @@ func TestDependencyCycleIsDetectedNotWalked(t *testing.T) {
 func TestDownstreamOfCycleIsNotNamedAsPartOfIt(t *testing.T) {
 	withinTimeout(t, func() {
 		g := Build([]storage.TaskMeta{
-			task("a", "pending", "high", "", "b"),
-			task("b", "pending", "high", "", "a"),
-			task("downstream", "pending", "high", "", "a"),
+			task("a", "planning", "high", "", "b"),
+			task("b", "planning", "high", "", "a"),
+			task("downstream", "planning", "high", "", "a"),
 		})
 
 		if len(g.Cycles) != 1 {
@@ -200,7 +200,7 @@ func TestDownstreamOfCycleIsNotNamedAsPartOfIt(t *testing.T) {
 
 func TestSelfDependencyIsALengthOneCycle(t *testing.T) {
 	withinTimeout(t, func() {
-		g := Build([]storage.TaskMeta{task("a", "pending", "high", "", "a")})
+		g := Build([]storage.TaskMeta{task("a", "planning", "high", "", "a")})
 		if len(g.Cycles) != 1 || !slices.Equal(g.Cycles[0].Slugs, []string{"a"}) {
 			t.Fatalf("cycles = %+v, want a self-cycle on [a]", g.Cycles)
 		}
@@ -210,8 +210,8 @@ func TestSelfDependencyIsALengthOneCycle(t *testing.T) {
 func TestParentCycleDoesNotSpinDepth(t *testing.T) {
 	withinTimeout(t, func() {
 		g := Build([]storage.TaskMeta{
-			task("a", "pending", "high", "b"),
-			task("b", "pending", "high", "a"),
+			task("a", "planning", "high", "b"),
+			task("b", "planning", "high", "a"),
 		})
 
 		var found bool
@@ -233,8 +233,8 @@ func TestParentCycleDoesNotSpinDepth(t *testing.T) {
 
 func TestOrderPutsDependencyBeforeDependent(t *testing.T) {
 	g := Build([]storage.TaskMeta{
-		task("late", "pending", "critical", "", "early"),
-		task("early", "pending", "low", ""),
+		task("late", "planning", "critical", "", "early"),
+		task("early", "planning", "low", ""),
 	})
 
 	i, j := slices.Index(g.Order, "early"), slices.Index(g.Order, "late")
@@ -245,7 +245,7 @@ func TestOrderPutsDependencyBeforeDependent(t *testing.T) {
 
 func TestIceboxIsHiddenByDefaultAndShownOnRequest(t *testing.T) {
 	tasks := []storage.TaskMeta{
-		task("hot", "pending", "high", ""),
+		task("hot", "planning", "high", ""),
 		task("cold", storage.StatusIcebox, "low", ""),
 	}
 	g := Build(tasks)
@@ -269,8 +269,8 @@ func TestIceboxIsHiddenByDefaultAndShownOnRequest(t *testing.T) {
 
 func TestArchivedTasksAreNotGrouped(t *testing.T) {
 	g := Build([]storage.TaskMeta{
-		task("old", "retired", "high", ""),
-		task("live", "pending", "high", ""),
+		task("old", "done", "high", ""),
+		task("live", "planning", "high", ""),
 	})
 	for _, grp := range g.Grouped(true) {
 		if slices.Contains(grp.Members, "old") {
@@ -281,12 +281,12 @@ func TestArchivedTasksAreNotGrouped(t *testing.T) {
 
 func TestBuildIsDeterministic(t *testing.T) {
 	tasks := []storage.TaskMeta{
-		task("epic", "pending", "high", ""),
-		task("z", "pending", "high", "epic", "y"),
-		task("y", "pending", "high", "epic"),
-		task("cycle-a", "pending", "low", "", "cycle-b"),
-		task("cycle-b", "pending", "low", "", "cycle-a"),
-		task("orphan", "pending", "medium", "ghost"),
+		task("epic", "planning", "high", ""),
+		task("z", "planning", "high", "epic", "y"),
+		task("y", "planning", "high", "epic"),
+		task("cycle-a", "planning", "low", "", "cycle-b"),
+		task("cycle-b", "planning", "low", "", "cycle-a"),
+		task("orphan", "planning", "medium", "ghost"),
 	}
 
 	first := Build(tasks)
@@ -303,7 +303,7 @@ func TestBuildIsDeterministic(t *testing.T) {
 // The footgun BuildFromVault exists to prevent: hand Build only the ACTIVE
 // tasks and every completed dependency reads as a typo.
 func TestBuildWithoutArchivedTasksMisreadsSatisfiedDepsAsDangling(t *testing.T) {
-	active := []storage.TaskMeta{task("work", "pending", "high", "", "finished-thing")}
+	active := []storage.TaskMeta{task("work", "planning", "high", "", "finished-thing")}
 	g := Build(active)
 
 	if len(g.Dangling) != 1 {
@@ -311,7 +311,7 @@ func TestBuildWithoutArchivedTasksMisreadsSatisfiedDepsAsDangling(t *testing.T) 
 	}
 	// ...which is exactly why BuildFromVault passes includeDone=true, and why no
 	// production caller may call Build directly.
-	full := append(active, task("finished-thing", "retired", "high", ""))
+	full := append(active, task("finished-thing", "done", "high", ""))
 	if g2 := Build(full); len(g2.Dangling) != 0 {
 		t.Fatalf("with the archive present the dep must resolve: %+v", g2.Dangling)
 	}
@@ -323,9 +323,9 @@ func TestBuildWithoutArchivedTasksMisreadsSatisfiedDepsAsDangling(t *testing.T) 
 // own work. Caught by running it against the real backlog, not by a fixture.
 func TestEpicIsNotAMemberOfItsOwnGroup(t *testing.T) {
 	g := Build([]storage.TaskMeta{
-		task("epic", "pending", "high", ""),
-		task("child-a", "pending", "high", "epic"),
-		task("child-b", "pending", "medium", "epic"),
+		task("epic", "planning", "high", ""),
+		task("child-a", "planning", "high", "epic"),
+		task("child-b", "planning", "medium", "epic"),
 	})
 
 	for _, grp := range g.Grouped(false) {
@@ -346,9 +346,9 @@ func TestEpicIsNotAMemberOfItsOwnGroup(t *testing.T) {
 // is only excluded from the group it heads.
 func TestNestedEpicIsAMemberOfItsParentsGroup(t *testing.T) {
 	g := Build([]storage.TaskMeta{
-		task("top", "pending", "high", ""),
-		task("mid", "pending", "high", "top"),
-		task("leaf", "pending", "high", "mid"),
+		task("top", "planning", "high", ""),
+		task("mid", "planning", "high", "top"),
+		task("leaf", "planning", "high", "mid"),
 	})
 
 	for _, grp := range g.Grouped(false) {
@@ -380,9 +380,9 @@ func memberSet(groups []Group) []string {
 // surfaces it. The wrapper and the archived form must agree on the false case.
 func TestGroupedArchivedIncludesDoneOnlyWhenAsked(t *testing.T) {
 	g := Build([]storage.TaskMeta{
-		task("epic", "pending", "high", ""),
-		task("live", "pending", "high", "epic"),
-		task("finished", "retired", "high", "epic"),
+		task("epic", "planning", "high", ""),
+		task("live", "planning", "high", "epic"),
+		task("finished", "done", "high", "epic"),
 	})
 
 	open := memberSet(g.GroupedArchived(false, false))
@@ -411,10 +411,10 @@ func TestGroupedArchivedIncludesDoneOnlyWhenAsked(t *testing.T) {
 // direct-only, so every level below must be reached by walking, not by one hop.
 func TestSubtreeReturnsFullTransitiveSet(t *testing.T) {
 	g := Build([]storage.TaskMeta{
-		task("epic", "pending", "high", ""),
-		task("story", "pending", "high", "epic"),
-		task("leaf", "pending", "high", "story"),
-		task("elsewhere", "pending", "high", ""),
+		task("epic", "planning", "high", ""),
+		task("story", "planning", "high", "epic"),
+		task("leaf", "planning", "high", "story"),
+		task("elsewhere", "planning", "high", ""),
 	})
 
 	grp, ok := g.Subtree("epic", false, false)
@@ -458,9 +458,9 @@ func TestSubtreeReturnsFullTransitiveSet(t *testing.T) {
 // Subtree honors the same filters as grouped, applied to the root as well.
 func TestSubtreeFiltersDoneAndIcebox(t *testing.T) {
 	g := Build([]storage.TaskMeta{
-		task("epic", "pending", "high", ""),
-		task("live", "pending", "high", "epic"),
-		task("finished", "retired", "high", "epic"),
+		task("epic", "planning", "high", ""),
+		task("live", "planning", "high", "epic"),
+		task("finished", "done", "high", "epic"),
 		task("cold", storage.StatusIcebox, "low", "epic"),
 	})
 
@@ -478,8 +478,8 @@ func TestSubtreeFiltersDoneAndIcebox(t *testing.T) {
 
 	// A root that exists but is itself filtered out yields ok=true, empty members.
 	gd := Build([]storage.TaskMeta{
-		task("done-epic", "retired", "high", ""),
-		task("done-child", "retired", "high", "done-epic"),
+		task("done-epic", "done", "high", ""),
+		task("done-child", "done", "high", "done-epic"),
 	})
 	grp, ok := gd.Subtree("done-epic", false, false)
 	if !ok {
@@ -494,8 +494,8 @@ func TestSubtreeFiltersDoneAndIcebox(t *testing.T) {
 func TestSubtreeTerminatesOnParentCycle(t *testing.T) {
 	withinTimeout(t, func() {
 		g := Build([]storage.TaskMeta{
-			task("a", "pending", "high", "b"),
-			task("b", "pending", "high", "a"),
+			task("a", "planning", "high", "b"),
+			task("b", "planning", "high", "a"),
 		})
 		grp, ok := g.Subtree("a", false, false)
 		if !ok {
@@ -511,9 +511,9 @@ func TestSubtreeTerminatesOnParentCycle(t *testing.T) {
 // it to a story; no children makes a task.
 func TestRoleDerivesEpicStoryTask(t *testing.T) {
 	g := Build([]storage.TaskMeta{
-		task("epic", "pending", "high", ""),
-		task("story", "pending", "high", "epic"),
-		task("leaf", "pending", "high", "story"),
+		task("epic", "planning", "high", ""),
+		task("story", "planning", "high", "epic"),
+		task("leaf", "planning", "high", "story"),
 	})
 
 	if got := g.Role("epic"); got != "epic" {
@@ -539,9 +539,9 @@ func TestRoleDerivesEpicStoryTask(t *testing.T) {
 // fact that tells the two apart.
 func TestRoleDanglingParentWithChildrenIsEpic(t *testing.T) {
 	g := Build([]storage.TaskMeta{
-		task("head", "pending", "high", "ghost"), // parent does not exist
-		task("child", "pending", "high", "head"), // has a child (leaf) AND a resolvable parent
-		task("leaf", "pending", "high", "child"),
+		task("head", "planning", "high", "ghost"), // parent does not exist
+		task("child", "planning", "high", "head"), // has a child (leaf) AND a resolvable parent
+		task("leaf", "planning", "high", "child"),
 	})
 
 	if !g.hasResolvableParent("child") {
@@ -562,9 +562,9 @@ func TestRoleDanglingParentWithChildrenIsEpic(t *testing.T) {
 // childless node is not an epic; a nested epic with children still is.
 func TestIsEpicSemanticsUnchanged(t *testing.T) {
 	g := Build([]storage.TaskMeta{
-		task("top", "pending", "high", ""),
-		task("mid", "pending", "high", "top"), // nested epic: has a child AND a parent
-		task("leaf", "pending", "high", "mid"),
+		task("top", "planning", "high", ""),
+		task("mid", "planning", "high", "top"), // nested epic: has a child AND a parent
+		task("leaf", "planning", "high", "mid"),
 	})
 
 	if !g.Nodes["top"].IsEpic() {

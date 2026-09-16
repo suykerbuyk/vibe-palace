@@ -34,7 +34,7 @@ func statusArtifacts(findings []Finding) []string {
 // in the archive whose body still claims a live state.
 func TestTaskStatusDirectory_Rule1_ArchivedNonTerminal(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	seedArchivedTask(t, vault, "p", "done", "stale", "# T\n\n**Status:** pending\n**Priority:** medium\n\nbody\n")
+	seedArchivedTask(t, vault, "p", "done", "stale", "# T\n\n**Status:** planning\n**Priority:** medium\n\nbody\n")
 
 	findings, unknowns, err := auditTaskStatusDirectory(vault)
 	if err != nil {
@@ -77,7 +77,7 @@ func TestTaskStatusDirectory_Rule1_CoversCancelledToo(t *testing.T) {
 // created by rewrite-then-rename (2026-09-01): the stamp landed, the rename did not.
 func TestTaskStatusDirectory_Rule2_ActiveTerminal(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	seedTask(t, vault, "p", "midretire", "# T\n\n**Status:** retired\n**Priority:** medium\n\nbody\n")
+	seedTask(t, vault, "p", "midretire", "# T\n\n**Status:** done\n**Priority:** medium\n\nbody\n")
 
 	findings, unknowns, err := auditTaskStatusDirectory(vault)
 	if err != nil {
@@ -106,7 +106,7 @@ func TestTaskStatusDirectory_Rule2_ActiveTerminal(t *testing.T) {
 // other's work: one vault, one specimen of each, two findings with distinct details.
 func TestTaskStatusDirectory_RulesAreIndependent(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	seedArchivedTask(t, vault, "p", "done", "archived-live", "# T\n\n**Status:** pending\n")
+	seedArchivedTask(t, vault, "p", "done", "archived-live", "# T\n\n**Status:** planning\n")
 	seedTask(t, vault, "p", "active-dead", "# T\n\n**Status:** cancelled\n")
 
 	findings, _, err := auditTaskStatusDirectory(vault)
@@ -141,9 +141,9 @@ func TestTaskStatusDirectory_RulesAreIndependent(t *testing.T) {
 // audit useless.
 func TestTaskStatusDirectory_AgreeingFilesAreSilent(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	seedTask(t, vault, "p", "live", "# T\n\n**Status:** pending\n")
+	seedTask(t, vault, "p", "live", "# T\n\n**Status:** planning\n")
 	seedTask(t, vault, "p", "iced", "# T\n\n**Status:** icebox\n")
-	seedArchivedTask(t, vault, "p", "done", "gone", "# T\n\n**Status:** retired\n")
+	seedArchivedTask(t, vault, "p", "done", "gone", "# T\n\n**Status:** done\n")
 	seedArchivedTask(t, vault, "p", "cancelled", "dropped", "# T\n\n**Status:** cancelled\n")
 
 	findings, _, err := auditTaskStatusDirectory(vault)
@@ -165,7 +165,7 @@ func TestTaskStatusDirectory_ValueMatchingIsCaseInsensitive(t *testing.T) {
 	// Legacy spelling in the archive: must still be caught by rule 1.
 	seedArchivedTask(t, vault, "p", "done", "legacy", "# T\n\n**Status:** In Progress\n")
 	// Odd-cased terminal in the archive: must NOT be caught — it agrees.
-	seedArchivedTask(t, vault, "p", "done", "shouty", "# T\n\n**Status:** RETIRED\n")
+	seedArchivedTask(t, vault, "p", "done", "shouty", "# T\n\n**Status:** DONE\n")
 	// Odd-cased terminal while active: must be caught by rule 2.
 	seedTask(t, vault, "p", "midcancel", "# T\n\n**Status:** Cancelled\n")
 
@@ -194,7 +194,7 @@ func TestTaskStatusDirectory_ValueMatchingIsCaseInsensitive(t *testing.T) {
 // inventing a finding against sample text.
 func TestTaskStatusDirectory_FencedStatusIsNotAClaim(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	body := "# T\n\n**Status:** retired\n\n## Example\n\n```md\n**Status:** pending\n```\n\ntail\n"
+	body := "# T\n\n**Status:** done\n\n## Example\n\n```md\n**Status:** planning\n```\n\ntail\n"
 	seedArchivedTask(t, vault, "p", "done", "quotes", body)
 
 	findings, _, err := auditTaskStatusDirectory(vault)
@@ -212,7 +212,7 @@ func TestTaskStatusDirectory_FencedStatusIsNotAClaim(t *testing.T) {
 // this archived-file-says-pending and emit a finding nobody can act on.
 func TestTaskStatusDirectory_OnlyFencedStatusIsNoClaimAtAll(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	seedArchivedTask(t, vault, "p", "done", "sample-only", "# T\n\n```md\n**Status:** pending\n```\n\nbody\n")
+	seedArchivedTask(t, vault, "p", "done", "sample-only", "# T\n\n```md\n**Status:** planning\n```\n\nbody\n")
 
 	findings, _, err := auditTaskStatusDirectory(vault)
 	if err != nil {
@@ -260,7 +260,7 @@ func TestTaskStatusDirectory_AbsentStatusIsNotAFinding(t *testing.T) {
 // them. A regression here would report every archived file twice.
 func TestTaskStatusDirectory_ArchiveSubdirsAreNotDoubleCounted(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	seedArchivedTask(t, vault, "p", "done", "stale", "# T\n\n**Status:** pending\n")
+	seedArchivedTask(t, vault, "p", "done", "stale", "# T\n\n**Status:** planning\n")
 
 	findings, _, err := auditTaskStatusDirectory(vault)
 	if err != nil {
@@ -276,7 +276,7 @@ func TestTaskStatusDirectory_ArchiveSubdirsAreNotDoubleCounted(t *testing.T) {
 // the failure this audit package is named after.
 func TestTaskStatusDirectory_RegisteredInTheAudit(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
-	seedTask(t, vault, "p", "midretire", "# T\n\n**Status:** retired\n")
+	seedTask(t, vault, "p", "midretire", "# T\n\n**Status:** done\n")
 
 	report, err := Run(vault)
 	if err != nil {
