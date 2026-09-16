@@ -768,3 +768,559 @@ func TestHistoryLabel(t *testing.T) {
 		t.Errorf("HistoryLabel(d) = %q, want bare status %q", got, want)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Board (board-reporting-three-bucket-grouping): StatusBucket, BoardView and
+// Graph.Board() — the three-bucket board report.
+// ---------------------------------------------------------------------------
+
+// findGroup returns the single group in groups whose Epic matches, if any.
+func findGroup(groups []Group, epic string) (Group, bool) {
+	for _, g := range groups {
+		if g.Epic == epic {
+			return g, true
+		}
+	}
+	return Group{}, false
+}
+
+// countAppearances counts how many times slug shows up across all three
+// buckets of view, either as a group's Epic or inside a group's Members. A
+// root epic or a standalone task must appear exactly once, total.
+func countAppearances(view BoardView, slug string) int {
+	var all []Group
+	all = append(all, view.Active...)
+	all = append(all, view.Icebox...)
+	all = append(all, view.History...)
+
+	count := 0
+	for _, grp := range all {
+		if grp.Epic == slug {
+			count++
+		}
+		if slices.Contains(grp.Members, slug) {
+			count++
+		}
+	}
+	return count
+}
+
+// bucketContaining reports which bucket holds the group named by epic, if
+// any is found.
+func bucketContaining(view BoardView, epic string) (Bucket, bool) {
+	if _, ok := findGroup(view.Active, epic); ok {
+		return BucketActive, true
+	}
+	if _, ok := findGroup(view.Icebox, epic); ok {
+		return BucketIcebox, true
+	}
+	if _, ok := findGroup(view.History, epic); ok {
+		return BucketHistory, true
+	}
+	return 0, false
+}
+
+func TestStatusBucket(t *testing.T) {
+	cases := []struct {
+		name   string
+		status string
+		done   bool
+		want   Bucket
+	}{
+		{"planning", "planning", false, BucketActive},
+		{"reviewed", "reviewed", false, BucketActive},
+		{"in_progress", "in_progress", false, BucketActive},
+		{"blocked", "blocked", false, BucketActive},
+		{"icebox", storage.StatusIcebox, false, BucketIcebox},
+		{"done via Done flag", storage.StatusDone, true, BucketHistory},
+		{"cancelled via Done flag", storage.StatusCancelled, true, BucketHistory},
+		// Legacy strings: the directory-derived Done flag decides it, not the
+		// string on disk.
+		{"legacy pending, Done false", "pending", false, BucketActive},
+		{"legacy retired, Done true", "retired", true, BucketHistory},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			meta := storage.TaskMeta{Slug: "x", Status: tc.status, Done: tc.done}
+			if got := StatusBucket(meta); got != tc.want {
+				t.Fatalf("StatusBucket(%+v) = %v, want %v", meta, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBucketString(t *testing.T) {
+	cases := []struct {
+		b    Bucket
+		want string
+	}{
+		{BucketActive, "active"},
+		{BucketIcebox, "icebox"},
+		{BucketHistory, "history"},
+	}
+	for _, tc := range cases {
+		if got := tc.b.String(); got != tc.want {
+			t.Fatalf("Bucket(%d).String() = %q, want %q", tc.b, got, tc.want)
+		}
+	}
+}
+
+// TestBoardPOLAEpicBucketIgnoresChildMutation is a MUTATION regression, not a
+// static fixture: it builds the graph, asserts the epic's bucket, mutates
+// ONLY the child's status, rebuilds, and asserts the epic's bucket is
+// unchanged. An epic's own status decides its bucket — never a child's.
+func TestBoardPOLAEpicBucketIgnoresChildMutation(t *testing.T) {
+	epic := task("pola-epic", "in_progress", "high", "")
+	child := task("pola-child", "planning", "high", "pola-epic")
+
+	g := Build([]storage.TaskMeta{epic, child})
+	view := g.Board()
+	b, ok := bucketContaining(view, "pola-epic")
+	if !ok || b != BucketActive {
+		t.Fatalf("epic bucket = %v (found=%v), want Active", b, ok)
+	}
+
+	// Mutate ONLY the child's status and re-run Board() — the epic's own
+	// Status/Done never changed, so its bucket must not either.
+	child.Status = storage.StatusIcebox
+	g2 := Build([]storage.TaskMeta{epic, child})
+	view2 := g2.Board()
+	b2, ok2 := bucketContaining(view2, "pola-epic")
+	if !ok2 || b2 != BucketActive {
+		t.Fatalf("after mutating only the child's status, epic bucket = %v (found=%v), want STILL Active (POLA)", b2, ok2)
+	}
+}
+
+// TestBoardPartitionCompleteness builds a representative mix — active,
+// iceboxed, and done epics, a stale-parented child, standalone tasks in all
+// three states, and a SupersededBy link — and asserts every root
+// epic/standalone slug appears in EXACTLY ONE bucket, with t.Fatal on zero or
+// two appearances.
+func TestBoardPartitionCompleteness(t *testing.T) {
+	tasks := []storage.TaskMeta{
+		task("epic-active", "in_progress", "high", ""),
+		task("child-of-active", "planning", "high", "epic-active"),
+		task("epic-icebox", storage.StatusIcebox, "medium", ""),
+		task("child-of-icebox", "planning", "medium", "epic-icebox"),
+		task("epic-done", "done", "high", ""),
+		task("child-of-done", "done", "high", "epic-done"),
+		task("epic-done-stale", "done", "high", ""),
+		task("stale-child", "planning", "high", "epic-done-stale"),
+		task("standalone-active", "planning", "low", ""),
+		task("standalone-icebox", storage.StatusIcebox, "low", ""),
+		task("standalone-done", "done", "low", ""),
+		task("successor-task", "planning", "low", ""),
+	}
+	linked := task("cancelled-with-link", "cancelled", "low", "")
+	linked.SupersededBy = "successor-task"
+	tasks = append(tasks, linked)
+
+	g := Build(tasks)
+	view := g.Board()
+
+	roots := []string{
+		"epic-active", "epic-icebox", "epic-done", "epic-done-stale",
+		"standalone-active", "standalone-icebox", "standalone-done",
+		"cancelled-with-link", "successor-task",
+	}
+	for _, slug := range roots {
+		if n := countAppearances(view, slug); n != 1 {
+			t.Fatalf("%q appears %d times across the three buckets, want exactly 1", slug, n)
+		}
+	}
+}
+
+// TestBoardStaleParentChildStaysInHistoryGroupAndFlagged: an active child of
+// a done parent is NOT hidden or relocated — it stays a Member of the done
+// parent's (History) group, AND is separately present in g.StaleParents.
+func TestBoardStaleParentChildStaysInHistoryGroupAndFlagged(t *testing.T) {
+	g := Build([]storage.TaskMeta{
+		task("done-parent", "done", "high", ""),
+		task("stale-child", "planning", "high", "done-parent"),
+	})
+	view := g.Board()
+
+	grp, ok := findGroup(view.History, "done-parent")
+	if !ok {
+		t.Fatal("done-parent group missing from History")
+	}
+	if !slices.Contains(grp.Members, "stale-child") {
+		t.Fatalf("stale-child missing from done-parent's History members: %v", grp.Members)
+	}
+	if len(g.StaleParents) != 1 || g.StaleParents[0].From != "stale-child" {
+		t.Fatalf("StaleParents = %+v, want stale-child flagged", g.StaleParents)
+	}
+}
+
+// TestBoardStandaloneSplitsByStatus: three standalone tasks in three
+// different statuses must produce three SEPARATE one-member Group{Epic: ""}
+// entries, one per bucket — not one merged group misfiled into a single
+// bucket.
+func TestBoardStandaloneSplitsByStatus(t *testing.T) {
+	g := Build([]storage.TaskMeta{
+		task("standalone-active", "planning", "high", ""),
+		task("standalone-icebox", storage.StatusIcebox, "high", ""),
+		task("standalone-done", "done", "high", ""),
+	})
+	view := g.Board()
+
+	checkOne := func(groups []Group, want string) {
+		t.Helper()
+		grp, ok := findGroup(groups, "")
+		if !ok {
+			t.Fatalf("no standalone group found, want one containing %q", want)
+		}
+		if !slices.Equal(grp.Members, []string{want}) {
+			t.Fatalf("standalone group members = %v, want [%s]", grp.Members, want)
+		}
+	}
+	checkOne(view.Active, "standalone-active")
+	checkOne(view.Icebox, "standalone-icebox")
+	checkOne(view.History, "standalone-done")
+
+	for _, groups := range [][]Group{view.Active, view.Icebox, view.History} {
+		var standaloneCount int
+		for _, grp := range groups {
+			if grp.Epic == "" {
+				standaloneCount++
+			}
+		}
+		if standaloneCount > 1 {
+			t.Fatalf("more than one standalone group in a single bucket: %v", groups)
+		}
+	}
+}
+
+// TestBoardHistoryGroupsSortDescendingByModTime uses 3 epics so a stable-sort
+// accident can't mask an ordering bug.
+func TestBoardHistoryGroupsSortDescendingByModTime(t *testing.T) {
+	e1 := task("hgroup-epic-1", "done", "high", "")
+	e1.ModTime = "2026-01-01"
+	c1 := task("hgroup-child-1", "done", "high", "hgroup-epic-1")
+	e2 := task("hgroup-epic-2", "done", "high", "")
+	e2.ModTime = "2026-03-01"
+	c2 := task("hgroup-child-2", "done", "high", "hgroup-epic-2")
+	e3 := task("hgroup-epic-3", "done", "high", "")
+	e3.ModTime = "2026-02-01"
+	c3 := task("hgroup-child-3", "done", "high", "hgroup-epic-3")
+
+	g := Build([]storage.TaskMeta{e1, c1, e2, c2, e3, c3})
+	view := g.Board()
+
+	var order []string
+	for _, grp := range view.History {
+		order = append(order, grp.Epic)
+	}
+	want := []string{"hgroup-epic-2", "hgroup-epic-3", "hgroup-epic-1"}
+	if !slices.Equal(order, want) {
+		t.Fatalf("History group order = %v, want %v (ModTime descending)", order, want)
+	}
+}
+
+// TestBoardActiveAndIceboxGroupsSortAscendingByCreateTime uses 3 epics per
+// bucket so a stable-sort accident can't mask an ordering bug.
+func TestBoardActiveAndIceboxGroupsSortAscendingByCreateTime(t *testing.T) {
+	a1 := task("agroup-epic-a", "in_progress", "high", "")
+	a1.CreateTime = "2026-02-01"
+	ac1 := task("agroup-child-a", "planning", "high", "agroup-epic-a")
+	a2 := task("agroup-epic-b", "in_progress", "high", "")
+	a2.CreateTime = "2026-01-01"
+	ac2 := task("agroup-child-b", "planning", "high", "agroup-epic-b")
+	a3 := task("agroup-epic-c", "in_progress", "high", "")
+	a3.CreateTime = "2026-03-01"
+	ac3 := task("agroup-child-c", "planning", "high", "agroup-epic-c")
+
+	i1 := task("igroup-epic-a", storage.StatusIcebox, "high", "")
+	i1.CreateTime = "2026-02-01"
+	ic1 := task("igroup-child-a", "planning", "high", "igroup-epic-a")
+	i2 := task("igroup-epic-b", storage.StatusIcebox, "high", "")
+	i2.CreateTime = "2026-01-01"
+	ic2 := task("igroup-child-b", "planning", "high", "igroup-epic-b")
+	i3 := task("igroup-epic-c", storage.StatusIcebox, "high", "")
+	i3.CreateTime = "2026-03-01"
+	ic3 := task("igroup-child-c", "planning", "high", "igroup-epic-c")
+
+	g := Build([]storage.TaskMeta{a1, ac1, a2, ac2, a3, ac3, i1, ic1, i2, ic2, i3, ic3})
+	view := g.Board()
+
+	var activeOrder []string
+	for _, grp := range view.Active {
+		activeOrder = append(activeOrder, grp.Epic)
+	}
+	wantActive := []string{"agroup-epic-b", "agroup-epic-a", "agroup-epic-c"}
+	if !slices.Equal(activeOrder, wantActive) {
+		t.Fatalf("Active group order = %v, want %v (CreateTime ascending)", activeOrder, wantActive)
+	}
+
+	var iceboxOrder []string
+	for _, grp := range view.Icebox {
+		iceboxOrder = append(iceboxOrder, grp.Epic)
+	}
+	wantIcebox := []string{"igroup-epic-b", "igroup-epic-a", "igroup-epic-c"}
+	if !slices.Equal(iceboxOrder, wantIcebox) {
+		t.Fatalf("Icebox group order = %v, want %v (CreateTime ascending)", iceboxOrder, wantIcebox)
+	}
+}
+
+// TestBoardHistoryMembersSortByModTimeNotCreateTime is the specific
+// regression test for a blanket-CreateTime rule: CreateTime order and
+// ModTime order are DELIBERATELY different here, and History-bucket members
+// must follow ModTime.
+func TestBoardHistoryMembersSortByModTimeNotCreateTime(t *testing.T) {
+	epic := task("hmember-epic", "done", "high", "")
+	c1 := task("hmember-child-1", "done", "high", "hmember-epic")
+	c1.CreateTime = "2026-01-01" // oldest created
+	c1.ModTime = "2026-03-01"    // most recently completed
+	c2 := task("hmember-child-2", "done", "high", "hmember-epic")
+	c2.CreateTime = "2026-02-01"
+	c2.ModTime = "2026-01-01" // completed first
+	c3 := task("hmember-child-3", "done", "high", "hmember-epic")
+	c3.CreateTime = "2026-03-01" // newest created
+	c3.ModTime = "2026-02-01"
+
+	g := Build([]storage.TaskMeta{epic, c1, c2, c3})
+	view := g.Board()
+
+	grp, ok := findGroup(view.History, "hmember-epic")
+	if !ok {
+		t.Fatal("hmember-epic group missing")
+	}
+	want := []string{"hmember-child-1", "hmember-child-3", "hmember-child-2"}
+	if !slices.Equal(grp.Members, want) {
+		t.Fatalf("History members = %v, want ModTime-descending %v (NOT the CreateTime order)", grp.Members, want)
+	}
+}
+
+// TestBoardActiveAndIceboxMembersSortByCreateTimeDescending.
+func TestBoardActiveAndIceboxMembersSortByCreateTimeDescending(t *testing.T) {
+	epic := task("amember-epic", "in_progress", "high", "")
+	c1 := task("amember-child-1", "planning", "high", "amember-epic")
+	c1.CreateTime = "2026-01-01"
+	c2 := task("amember-child-2", "planning", "high", "amember-epic")
+	c2.CreateTime = "2026-03-01"
+	c3 := task("amember-child-3", "planning", "high", "amember-epic")
+	c3.CreateTime = "2026-02-01"
+
+	g := Build([]storage.TaskMeta{epic, c1, c2, c3})
+	view := g.Board()
+
+	grp, ok := findGroup(view.Active, "amember-epic")
+	if !ok {
+		t.Fatal("amember-epic group missing")
+	}
+	want := []string{"amember-child-2", "amember-child-3", "amember-child-1"}
+	if !slices.Equal(grp.Members, want) {
+		t.Fatalf("Active members = %v, want CreateTime-descending %v", grp.Members, want)
+	}
+}
+
+// TestBoardDoneChildInActiveEpicSortsByCreateTimeLikeSiblings: a done child
+// inside a still-Active epic must sort on the SAME axis (CreateTime) as its
+// open siblings, not by its own ModTime.
+func TestBoardDoneChildInActiveEpicSortsByCreateTimeLikeSiblings(t *testing.T) {
+	epic := task("mixed-active-epic", "in_progress", "high", "")
+	openChild := task("open-child", "planning", "high", "mixed-active-epic")
+	openChild.CreateTime = "2026-01-01"
+	doneChild := task("done-child", "done", "high", "mixed-active-epic")
+	doneChild.CreateTime = "2026-02-01"
+	doneChild.ModTime = "2026-06-01" // if ModTime were used, this would sort first regardless
+
+	g := Build([]storage.TaskMeta{epic, openChild, doneChild})
+	view := g.Board()
+
+	grp, ok := findGroup(view.Active, "mixed-active-epic")
+	if !ok {
+		t.Fatal("mixed-active-epic group missing")
+	}
+	want := []string{"done-child", "open-child"}
+	if !slices.Equal(grp.Members, want) {
+		t.Fatalf("members = %v, want CreateTime-descending %v regardless of done-child's own ModTime", grp.Members, want)
+	}
+}
+
+// TestBoardGroupTieBreaksOnEpicSlug: two epics share an identical CreateTime
+// and must sort by Epic slug, asserted against the specific expected order
+// and re-run to rule out stable-sort luck.
+func TestBoardGroupTieBreaksOnEpicSlug(t *testing.T) {
+	e1 := task("zzz-tie-epic", "in_progress", "high", "")
+	e1.CreateTime = "2026-01-01"
+	c1 := task("zzz-tie-child", "planning", "high", "zzz-tie-epic")
+	e2 := task("aaa-tie-epic", "in_progress", "high", "")
+	e2.CreateTime = "2026-01-01"
+	c2 := task("aaa-tie-child", "planning", "high", "aaa-tie-epic")
+
+	for i := 0; i < 5; i++ {
+		g := Build([]storage.TaskMeta{e1, c1, e2, c2})
+		view := g.Board()
+		var order []string
+		for _, grp := range view.Active {
+			order = append(order, grp.Epic)
+		}
+		want := []string{"aaa-tie-epic", "zzz-tie-epic"}
+		if !slices.Equal(order, want) {
+			t.Fatalf("run %d: Active group order = %v, want %v (slug tiebreaker on equal CreateTime)", i, order, want)
+		}
+	}
+}
+
+// TestBoardMemberTieBreaksOnSlug: two members share an identical ModTime and
+// must sort by slug, asserted against the specific expected order and re-run
+// to rule out stable-sort luck.
+func TestBoardMemberTieBreaksOnSlug(t *testing.T) {
+	epic := task("tie-member-epic", "done", "high", "")
+	c1 := task("zzz-tie-member", "done", "high", "tie-member-epic")
+	c1.ModTime = "2026-01-01"
+	c2 := task("aaa-tie-member", "done", "high", "tie-member-epic")
+	c2.ModTime = "2026-01-01"
+
+	for i := 0; i < 5; i++ {
+		g := Build([]storage.TaskMeta{epic, c1, c2})
+		view := g.Board()
+		grp, ok := findGroup(view.History, "tie-member-epic")
+		if !ok {
+			t.Fatal("tie-member-epic group missing")
+		}
+		want := []string{"aaa-tie-member", "zzz-tie-member"}
+		if !slices.Equal(grp.Members, want) {
+			t.Fatalf("run %d: members = %v, want %v on equal ModTime", i, grp.Members, want)
+		}
+	}
+}
+
+// TestBoardGroupsWithMissingCreateTimeSortLast: a legacy epic with no
+// CreateTime, mixed into the Active bucket with dated siblings, must not
+// crash the sort and must land at the END (ascending convention).
+func TestBoardGroupsWithMissingCreateTimeSortLast(t *testing.T) {
+	dated1 := task("gmiss-epic-1", "in_progress", "high", "")
+	dated1.CreateTime = "2026-01-01"
+	c1 := task("gmiss-child-1", "planning", "high", "gmiss-epic-1")
+	dated2 := task("gmiss-epic-2", "in_progress", "high", "")
+	dated2.CreateTime = "2026-02-01"
+	c2 := task("gmiss-child-2", "planning", "high", "gmiss-epic-2")
+	legacy := task("gmiss-epic-legacy", "in_progress", "high", "") // no CreateTime
+	c3 := task("gmiss-child-legacy", "planning", "high", "gmiss-epic-legacy")
+
+	g := Build([]storage.TaskMeta{dated1, c1, dated2, c2, legacy, c3})
+	view := g.Board()
+
+	var order []string
+	for _, grp := range view.Active {
+		order = append(order, grp.Epic)
+	}
+	want := []string{"gmiss-epic-1", "gmiss-epic-2", "gmiss-epic-legacy"}
+	if !slices.Equal(order, want) {
+		t.Fatalf("Active group order = %v, want dated groups first, legacy (no CreateTime) last: %v", order, want)
+	}
+}
+
+// TestBoardGroupsWithMissingModTimeSortLast: a legacy done epic with no
+// ModTime, mixed into the History bucket with dated siblings, must not
+// crash the sort and must land at the END (descending convention).
+func TestBoardGroupsWithMissingModTimeSortLast(t *testing.T) {
+	dated1 := task("hmiss-epic-1", "done", "high", "")
+	dated1.ModTime = "2026-02-01"
+	c1 := task("hmiss-child-1", "done", "high", "hmiss-epic-1")
+	dated2 := task("hmiss-epic-2", "done", "high", "")
+	dated2.ModTime = "2026-01-01"
+	c2 := task("hmiss-child-2", "done", "high", "hmiss-epic-2")
+	legacy := task("hmiss-epic-legacy", "done", "high", "") // no ModTime
+	c3 := task("hmiss-child-legacy", "done", "high", "hmiss-epic-legacy")
+
+	g := Build([]storage.TaskMeta{dated1, c1, dated2, c2, legacy, c3})
+	view := g.Board()
+
+	var order []string
+	for _, grp := range view.History {
+		order = append(order, grp.Epic)
+	}
+	want := []string{"hmiss-epic-1", "hmiss-epic-2", "hmiss-epic-legacy"}
+	if !slices.Equal(order, want) {
+		t.Fatalf("History group order = %v, want dated groups first (descending), legacy (no ModTime) last: %v", order, want)
+	}
+}
+
+// TestBoardActiveMembersWithMissingCreateTimeSortLast: a legacy member with
+// no CreateTime, mixed among dated siblings, must not crash the sort and
+// must land last.
+func TestBoardActiveMembersWithMissingCreateTimeSortLast(t *testing.T) {
+	epic := task("mmiss-epic", "in_progress", "high", "")
+	dated1 := task("mmiss-child-1", "planning", "high", "mmiss-epic")
+	dated1.CreateTime = "2026-02-01"
+	dated2 := task("mmiss-child-2", "planning", "high", "mmiss-epic")
+	dated2.CreateTime = "2026-01-01"
+	legacy := task("mmiss-child-legacy", "planning", "high", "mmiss-epic") // no CreateTime
+
+	g := Build([]storage.TaskMeta{epic, dated1, dated2, legacy})
+	view := g.Board()
+
+	grp, ok := findGroup(view.Active, "mmiss-epic")
+	if !ok {
+		t.Fatal("mmiss-epic group missing")
+	}
+	want := []string{"mmiss-child-1", "mmiss-child-2", "mmiss-child-legacy"}
+	if !slices.Equal(grp.Members, want) {
+		t.Fatalf("members = %v, want dated descending then legacy (no CreateTime) last", grp.Members)
+	}
+}
+
+// TestBoardHistoryMembersWithMissingModTimeSortLast mirrors the above for the
+// History bucket's descending-ModTime convention.
+func TestBoardHistoryMembersWithMissingModTimeSortLast(t *testing.T) {
+	epic := task("hmmiss-epic", "done", "high", "")
+	dated1 := task("hmmiss-child-1", "done", "high", "hmmiss-epic")
+	dated1.ModTime = "2026-02-01"
+	dated2 := task("hmmiss-child-2", "done", "high", "hmmiss-epic")
+	dated2.ModTime = "2026-01-01"
+	legacy := task("hmmiss-child-legacy", "done", "high", "hmmiss-epic") // no ModTime
+
+	g := Build([]storage.TaskMeta{epic, dated1, dated2, legacy})
+	view := g.Board()
+
+	grp, ok := findGroup(view.History, "hmmiss-epic")
+	if !ok {
+		t.Fatal("hmmiss-epic group missing")
+	}
+	want := []string{"hmmiss-child-1", "hmmiss-child-2", "hmmiss-child-legacy"}
+	if !slices.Equal(grp.Members, want) {
+		t.Fatalf("members = %v, want dated descending then legacy (no ModTime) last", grp.Members)
+	}
+}
+
+// TestBoardSupersessionDoesNotAffectBucketing: a cancelled task with a
+// SupersededBy link buckets into History identically to one without — a
+// fixture comparison, not just an absence-of-crash check.
+func TestBoardSupersessionDoesNotAffectBucketing(t *testing.T) {
+	plain := task("supersede-plain", "cancelled", "high", "")
+	linked := task("supersede-linked", "cancelled", "high", "")
+	linked.SupersededBy = "supersede-successor"
+	successor := task("supersede-successor", "planning", "high", "")
+
+	g := Build([]storage.TaskMeta{plain, linked, successor})
+	view := g.Board()
+
+	if n := countAppearances(view, "supersede-plain"); n != 1 {
+		t.Fatalf("supersede-plain appears %d times, want 1", n)
+	}
+	if n := countAppearances(view, "supersede-linked"); n != 1 {
+		t.Fatalf("supersede-linked appears %d times, want 1", n)
+	}
+
+	histGrp, ok := findGroup(view.History, "")
+	if !ok {
+		t.Fatal("standalone History group missing")
+	}
+	if !slices.Contains(histGrp.Members, "supersede-plain") || !slices.Contains(histGrp.Members, "supersede-linked") {
+		t.Fatalf("both cancelled tasks must land in the same standalone History group: %v", histGrp.Members)
+	}
+	if slices.Contains(histGrp.Members, "supersede-successor") {
+		t.Fatal("supersede-successor is still open (planning) and must not be in History")
+	}
+
+	activeGrp, ok := findGroup(view.Active, "")
+	if !ok {
+		t.Fatal("standalone Active group missing")
+	}
+	if !slices.Equal(activeGrp.Members, []string{"supersede-successor"}) {
+		t.Fatalf("Active standalone members = %v, want [supersede-successor]", activeGrp.Members)
+	}
+}
