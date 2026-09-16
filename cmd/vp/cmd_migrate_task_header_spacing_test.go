@@ -202,21 +202,12 @@ func TestMigrateTaskHeaderSpacingIdempotentOnSecondRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second (report) run: %v", err)
 	}
-	// 🔴 KNOWN, DOCUMENTED RESIDUAL — not the hazard this test was written to
-	// pin. The migration's OWN repair write goes through
-	// OverwriteTaskFileRewritingHeader, which (board-reporting-createtime-
-	// modtime-fields) now force-restamps a "**ModTime:**" line directly after
-	// Depends — the exact shape FindHeaderSpacingHazard flags (an
-	// open-schema extension field sitting where the pre-ADR-011 closed
-	// schema's boundary check does not expect one). The ORIGINAL orphaned
-	// "**Note:**" hazard this test exercises IS fixed by the first run and
-	// does not recur; what remains is a second, independent trip of the same
-	// detector caused by ModTime's own placement, which predates this task
-	// for DataFormat (SetTaskDataFormat produces the identical shape) and is
-	// out of scope here to redesign. Asserting the true post-fix count (1,
-	// not 0) keeps this test honest about what actually converged.
-	if sum2.Fix != 1 {
-		t.Errorf("second run found %d hazard(s), want 1 (the residual ModTime-adjacency trip, not the original orphaned-Note hazard)", sum2.Fix)
+	// Post board-reporting-header-spacing-schema-aware-fix: the ModTime line
+	// the first run's own restamp produces is a known extension field and is
+	// never itself flagged, so this converges to zero hazards, restoring the
+	// original pre-regression guarantee.
+	if sum2.Fix != 0 {
+		t.Errorf("second run found %d hazard(s), want 0", sum2.Fix)
 	}
 }
 
@@ -268,6 +259,75 @@ func TestMigrateTaskHeaderSpacingLeavesCleanFilesUntouched(t *testing.T) {
 	}
 	if got := tsRead(t, p); got != clean {
 		t.Errorf("a clean file was modified\n got: %q\nwant: %q", got, clean)
+	}
+}
+
+func TestMigrateTaskHeaderSpacingModTimeNeverStacksAcrossRepeatedApply(t *testing.T) {
+	root := tsVault(t)
+	// Deliberately has BOTH a genuine legacy hazard (orphaned "**Note:**",
+	// unknown field name — still must be fixed) AND starts with no ModTime,
+	// so the first run's own repair write triggers OverwriteTaskFileRewritingHeader's
+	// unconditional restamp — the exact interaction that used to cascade.
+	p := tsWrite(t, root, "Projects/proj/tasks/hazard.md", hazardFixture)
+	tsGitInit(t, root)
+
+	var out1 bytes.Buffer
+	sum1, err := runTaskHeaderSpacingMigration(root, "proj", true, &out1)
+	if err != nil {
+		t.Fatalf("run 1: %v", err)
+	}
+	if sum1.Applied != 1 || sum1.Failed != 0 {
+		t.Fatalf("run 1: Applied=%d Failed=%d, want 1 and 0", sum1.Applied, sum1.Failed)
+	}
+	afterRun1 := tsRead(t, p)
+	if n := strings.Count(afterRun1, "**ModTime:**"); n != 1 {
+		t.Fatalf("after run 1: %d ModTime line(s), want exactly 1:\n%s", n, afterRun1)
+	}
+
+	for i, run := range []int{2, 3} {
+		_ = i
+		var out bytes.Buffer
+		sum, err := runTaskHeaderSpacingMigration(root, "proj", true, &out)
+		if err != nil {
+			t.Fatalf("run %d: %v", run, err)
+		}
+		if sum.Fix != 0 || sum.Applied != 0 {
+			t.Errorf("run %d: Fix=%d Applied=%d, want 0 and 0 (the fix must never re-trip on its own ModTime restamp)", run, sum.Fix, sum.Applied)
+		}
+		got := tsRead(t, p)
+		if got != afterRun1 {
+			t.Errorf("run %d: content changed on a no-op run:\n%q\nwant (unchanged from after run 1):\n%q", run, got, afterRun1)
+		}
+		if n := strings.Count(got, "**ModTime:**"); n != 1 {
+			t.Errorf("run %d: %d ModTime line(s), want exactly 1 (the exact stacking regression this test pins)", run, n)
+		}
+	}
+}
+
+// TestMigrateTaskHeaderSpacingAlreadyMigratedFileIsUntouched covers the
+// simpler companion shape: a file with NO hazard at all, ModTime already
+// legitimately populated adjacent to Depends (exactly what every task file
+// created after board-reporting-createtime-modtime-fields looks like).
+// Before this fix, this shape alone was enough to trip the false positive on
+// the very first run, with no orphaned-Note hazard needed at all.
+func TestMigrateTaskHeaderSpacingAlreadyMigratedFileIsUntouched(t *testing.T) {
+	root := tsVault(t)
+	clean := "# T\n\n**Status:** planning\n**Priority:** high\n**Depends:** dep\n**ModTime:** 2026-01-01\n\n## Context\n\nBody.\n"
+	p := tsWrite(t, root, "Projects/proj/tasks/clean.md", clean)
+	tsGitInit(t, root)
+
+	for run := 1; run <= 3; run++ {
+		var out bytes.Buffer
+		sum, err := runTaskHeaderSpacingMigration(root, "proj", true, &out)
+		if err != nil {
+			t.Fatalf("run %d: %v", run, err)
+		}
+		if sum.Fix != 0 || sum.Applied != 0 {
+			t.Errorf("run %d: Fix=%d Applied=%d, want 0 and 0", run, sum.Fix, sum.Applied)
+		}
+		if got := tsRead(t, p); got != clean {
+			t.Errorf("run %d: file changed from its original, already-correct content:\n%q", run, got)
+		}
 	}
 }
 
