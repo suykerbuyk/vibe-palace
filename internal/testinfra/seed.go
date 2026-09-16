@@ -6,8 +6,10 @@ package testinfra
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
@@ -317,6 +319,69 @@ func WithCapturedSession(args map[string]any, out *string) SeedOption {
 		text := st.h.CallTool(t, "vp_capture_session", args)
 		if out != nil {
 			*out = text
+		}
+	}
+}
+
+// WithGit initializes a real git repository at the harness vault root — no
+// initial commit — so subsequent writes (driven tool calls, via
+// commitTaskWrite/CommitAndPushPaths, or WithGitCommit's direct lane below)
+// can actually be committed. Every real production vault write goes through
+// storage.HasUncommittedChanges/CommitAndPushPaths, both of which silently
+// no-op on a non-git vault — so a fixture that needs real commit history
+// MUST call this first, before any option or driven tool call that expects a
+// write to land as a commit.
+//
+// The repo starts at an unborn HEAD, exactly like a freshly `vp init`-ed
+// real vault — the first real write (a driven tool call, or WithGitCommit)
+// creates the first commit. Production's commitTaskWrite/CommitAndPushPaths
+// already handle an unborn-HEAD first commit correctly (this project has
+// fixed unborn-HEAD bugs before), so reusing that exact path here gets the
+// edge case handled for free rather than needing a second implementation.
+//
+// Local-only git config, never global: user.name/user.email so
+// checkIdentity's `git var GIT_AUTHOR_IDENT` succeeds without depending on
+// the host's own git config, and commit.gpgsign=false so a host/CI whose
+// global config signs commits does not hang this test waiting on a
+// passphrase or fail for lack of a key — this repo is throwaway and
+// unsigned, unlike the doctrine's signing rule for the real project repo,
+// which does not apply here.
+func WithGit() SeedOption {
+	return func(st *seedState, t *testing.T) {
+		t.Helper()
+		root := st.h.Vault.Root
+		if err := storage.GitInit(root); err != nil {
+			t.Fatalf("seed git init: %v", err)
+		}
+		for _, kv := range [][2]string{
+			{"user.name", "testinfra"},
+			{"user.email", "testinfra@vibe-palace.invalid"},
+			{"commit.gpgsign", "false"},
+		} {
+			cmd := exec.Command("git", "-C", root, "config", kv[0], kv[1])
+			cmd.Env = storage.SafeGitEnv()
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("seed git config %s %s: %s: %v", kv[0], kv[1], out, err)
+			}
+		}
+	}
+}
+
+// WithGitCommit is the storage-direct seeding lane's commit primitive — the
+// same shape WithResume/WithMemory already use: a caller writes fixture
+// files directly (os.WriteFile, bypassing MCP entirely), then calls this to
+// snapshot-commit the vault root at an explicit, backdated moment. Requires
+// WithGit() to have already run in the same New/Seed call — an ungitted root
+// fails at GitCommitAllAt's own "git add -A" with a clear git error, not a
+// silent no-op, unlike production's HasUncommittedChanges/CommitAndPushPaths
+// path, which no-ops on a non-git vault by design: this direct lane has no
+// such tolerance, because a test asking for a commit that silently doesn't
+// happen is a worse failure mode than a loud one.
+func WithGitCommit(message string, at time.Time) SeedOption {
+	return func(st *seedState, t *testing.T) {
+		t.Helper()
+		if err := storage.GitCommitAllAt(st.h.Vault.Root, message, at); err != nil {
+			t.Fatalf("seed git commit %q: %v", message, err)
 		}
 	}
 }

@@ -505,3 +505,43 @@ func GitAddForce(dir string, paths ...string) error {
 	}
 	return nil
 }
+
+// GitCommitAllAt stages EVERY currently dirty path at root (`git add -A`) and
+// commits with both GIT_AUTHOR_DATE and GIT_COMMITTER_DATE set to at, via
+// SafeGitEnv. No --date flag is used: both env vars are sufficient, and this
+// keeps the call shape identical to every other git subprocess in this file.
+//
+// 🔴 `git add -A` STAGES THE WHOLE REPOSITORY ROOTED AT dir, NOT A SCOPED
+// SUBTREE. That is safe ONLY where dir IS the entire repository on its own —
+// an ephemeral test harness vault (testinfra.TestHarness.Vault.Root), never
+// the real, multi-project vault, where an indiscriminate `git add -A` could
+// bundle another project's or another session's in-flight, unrelated changes
+// into this commit. Callers outside a throwaway, single-purpose repository
+// must not reach for this helper.
+//
+// at should carry a real time-of-day, not just a date: a caller that only
+// cares about the CALENDAR DAY (storage.CalendarDay's own YYYY-MM-DD grain,
+// which is what this project's git-log-based date derivation ultimately
+// reads back via `--date=format:%Y-%m-%d`) should pick a time comfortably
+// inside the intended day (e.g. noon UTC) to avoid a near-midnight value
+// landing on the adjacent day once formatted.
+//
+// Returns the underlying git error verbatim on failure, including the
+// ordinary "nothing to commit, working tree clean" case — a caller invoking
+// this with nothing dirty almost always has a fixture bug, and surfacing the
+// real git message is more useful than silently treating it as a no-op.
+func GitCommitAllAt(root, message string, at time.Time) error {
+	addCmd := exec.Command("git", "-C", root, "add", "-A")
+	addCmd.Env = SafeGitEnv()
+	if out, err := addCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git add -A: %s: %w", bytes.TrimSpace(out), err)
+	}
+
+	dateStr := at.Format(time.RFC3339)
+	commitCmd := exec.Command("git", "-C", root, "commit", "-m", message)
+	commitCmd.Env = SafeGitEnv("GIT_AUTHOR_DATE="+dateStr, "GIT_COMMITTER_DATE="+dateStr)
+	if out, err := commitCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git commit: %s: %w", bytes.TrimSpace(out), err)
+	}
+	return nil
+}
