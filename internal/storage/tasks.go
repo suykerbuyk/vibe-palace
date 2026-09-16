@@ -84,9 +84,9 @@ const ConventionalFirstHeading = "Context"
 
 // validStatuses is the WRITE set for UpdateTaskStatus — and ONLY the write set.
 //
-// The terminal values ("completed", "retired", "cancelled") are deliberately
+// The terminal values ("completed", "done", "cancelled") are deliberately
 // absent. A task leaves the active set by MOVING (RetireTask → done/,
-// CancelTask → cancelled/), and moveTask writes "retired"/"cancelled" straight
+// CancelTask → cancelled/), and moveTask writes "done"/"cancelled" straight
 // through replaceStatusLine without ever consulting this map. Letting
 // UpdateTaskStatus stamp a terminal status in place produced a task file that
 // claimed to be finished while still sitting in the active directory — visible
@@ -96,7 +96,7 @@ const ConventionalFirstHeading = "Context"
 // still can).
 //
 // This is NOT a read whitelist and must never become one. Every archived file
-// on disk carries "**Status:** retired" or "**Status:** cancelled" — 96 of them
+// on disk carries "**Status:** done" or "**Status:** cancelled" — 96 of them
 // today. A read-side check built on this map would declare the entire archive
 // invalid. parseTaskMeta reads whatever the file says, on purpose.
 //
@@ -113,7 +113,8 @@ const ConventionalFirstHeading = "Context"
 // tasks, vp_bootstrap_context) and must say how many they hid — an icebox that
 // is silently invisible is just a deletion with extra steps.
 var validStatuses = map[string]bool{
-	"pending":     true,
+	"planning":    true,
+	"reviewed":    true,
 	"in_progress": true,
 	"blocked":     true,
 	"icebox":      true,
@@ -127,7 +128,7 @@ const StatusIcebox = "icebox"
 // do NEXT put it ahead of everything not yet started.
 const StatusInProgress = "in_progress"
 
-// StatusRetired and StatusCancelled are the two TERMINAL status values. They are
+// StatusDone and StatusCancelled are the two TERMINAL status values. They are
 // deliberately absent from validStatuses — UpdateTaskStatus must not stamp them
 // in place, because a task reaches a terminal state by MOVING (see moveTask).
 //
@@ -136,8 +137,13 @@ const StatusInProgress = "in_progress"
 // reader wanting to ask "is this status terminal?" had to hardcode a second copy
 // — and a detector whose copy drifts from the writer's stops seeing the very
 // disagreement it exists to report.
+//
+// StatusDone was named StatusDone until the board-reporting-status-vocabulary-rename
+// task: the stored value is now "done", matching the done/ directory it already
+// lived in, and the identifier was renamed with it rather than left to mean
+// something its name no longer says.
 const (
-	StatusRetired   = "retired"
+	StatusDone      = "done"
 	StatusCancelled = "cancelled"
 )
 
@@ -153,7 +159,7 @@ const (
 // correctly; folding the key would be the 347 defect.
 func IsTerminalStatus(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case StatusRetired, StatusCancelled:
+	case StatusDone, StatusCancelled:
 		return true
 	}
 	return false
@@ -853,7 +859,7 @@ func (v *Vault) CreateTask(project string, spec TaskSpec) error {
 
 	var buf strings.Builder
 	fmt.Fprintf(&buf, "# %s\n\n", title)
-	fmt.Fprintf(&buf, "**Status:** pending\n")
+	fmt.Fprintf(&buf, "**Status:** planning\n")
 	fmt.Fprintf(&buf, "**Priority:** %s\n", priority)
 	if parent != "" {
 		fmt.Fprintf(&buf, "**Parent:** %s\n", parent)
@@ -1007,7 +1013,7 @@ func (v *Vault) ListTasks(project string, includeDone bool) ([]TaskMeta, error) 
 func (v *Vault) UpdateTaskStatus(project, slug, status string) error {
 	if !validStatuses[status] {
 		return fmt.Errorf(
-			"invalid status %q: UpdateTaskStatus writes only pending, in_progress, or blocked — "+
+			"invalid status %q: UpdateTaskStatus writes only planning, reviewed, in_progress, or blocked — "+
 				"a task reaches a terminal state by being moved (RetireTask/CancelTask), not stamped in place",
 			status)
 	}
@@ -1034,9 +1040,9 @@ func (v *Vault) UpdateTaskStatus(project, slug, status string) error {
 	return atomicfile.Write(v.Root, path, []byte(updated))
 }
 
-// RetireTask moves a task to the done/ directory with status "retired".
+// RetireTask moves a task to the done/ directory with status "done".
 func (v *Vault) RetireTask(project, slug string) error {
-	return v.moveTask(project, slug, v.TaskDoneDir, StatusRetired)
+	return v.moveTask(project, slug, v.TaskDoneDir, StatusDone)
 }
 
 // CancelTask moves a task to the cancelled/ directory with status "cancelled".
@@ -2597,7 +2603,7 @@ const (
 	// that turns an assumption into an unexamined one.
 	//
 	// Where the bolded value is terminal, carrying the bare value forward would
-	// overwrite a clean "retired"/"cancelled" with whatever the legacy line says —
+	// overwrite a clean "done"/"cancelled" with whatever the legacy line says —
 	// on the real specimen, a sentence. The file would stop reading as terminal
 	// while sitting in done/, manufacturing the exact finding
 	// vaultaudit.DimTaskStatusDirectory rule 1 exists to report.

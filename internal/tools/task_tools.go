@@ -475,7 +475,7 @@ var manageTaskSchema = json.RawMessage(`{
 		"content":  {"type": "string", "description": "Task content body. REQUIRED for create (min 200 bytes of real plan, not a pointer to a plan stored elsewhere), for amend (the section body), and for overwrite. Do not include a '# Title' heading or '**Status:**'/'**Priority:**'/'**Parent:**'/'**Depends:**' lines; create writes those itself and amend must never touch them. For amend, do not include an '## H2' heading either — the 'section' parameter supplies it; use '###' for sub-headings. \ud83d\udd34 For OVERWRITE the meaning INVERTS: content is the ENTIRE file including the '# Title' line and the whole header block, and every header field must MATCH the task as it stands \u2014 a body that changes title, status, priority, parent or depends is REFUSED, because each of those has its own action."},
 		"section":  {"type": "string", "description": "REQUIRED for amend: the H2 heading TEXT (no '##' markup) of the section to replace, or to append if absent. Amend is keyed on this so a repeated amend CONVERGES instead of duplicating the section. Use it to record decisions, review findings and reversals into a task's plan — e.g. section=\"Decision (iter 205)\"."},
 		"priority": {"type": "string", "description": "Priority: low, medium, high, critical (for create or set_meta). set_meta is the ONLY way to re-prioritize an existing task."},
-		"status":   {"type": "string", "enum": ["pending", "in_progress", "blocked", "icebox"], "description": "New status (for update_status). 'icebox' means known but deliberately not scheduled — it stays in the active directory and is hidden from default listings. Terminal states are not reachable here: use action=retire or action=cancel, which move the file."},
+		"status":   {"type": "string", "enum": ["planning", "reviewed", "in_progress", "blocked", "icebox"], "description": "New status (for update_status). 'icebox' means known but deliberately not scheduled — it stays in the active directory and is hidden from default listings. Terminal states are not reachable here: use action=retire or action=cancel, which move the file."},
 		"parent":   {"type": "string", "description": "Slug of this task's parent (for create or set_relations). An EPIC is simply a task that others name as their parent — there is no separate epic type. Pass \"\" with set_relations to clear it."},
 		"depends_on": {"type": "array", "items": {"type": "string"}, "description": "Slugs this task depends on (for create or set_relations). A dependency on a retired or cancelled task counts as SATISFIED. Pass [] with set_relations to clear."},
 		"approved_by_human": {"type": "boolean", "description": "REQUIRED for retire, and must be true. Set this ONLY when the human has actually said the task is done. Nothing verifies this — it is your own attestation, not an authorization check."},
@@ -831,7 +831,7 @@ func manageTaskHandler(vault *storage.Vault) mcp.HandlerFunc {
 				return nil, fmt.Errorf("retire task: %w", err)
 			}
 			return taskWriteResult(vault, p.Project, p.Task, "retire",
-				map[string]any{"status": "retired", "task": p.Task}), nil
+				map[string]any{"status": "done", "task": p.Task}), nil
 
 		case "cancel":
 			if err := vault.CancelTask(p.Project, p.Task); err != nil {

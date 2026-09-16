@@ -137,18 +137,18 @@ import (
 //     headerFieldValue that the parser, the writers and the validator all use.
 //   - WHETHER IT AGREES — `storage.IsTerminalStatus`, which folds case and trims,
 //     because the real corpus spells its values inconsistently.
-//   - WHAT TO WRITE — `storage.StatusRetired` / `storage.StatusCancelled`.
+//   - WHAT TO WRITE — `storage.StatusDone` / `storage.StatusCancelled`.
 //
 // An earlier revision asked `found == ad.status` instead. That is a second
 // definition, and it diverges on real inputs: it rewrites "Retired", rewrites a
-// done/ file reading "cancelled" into "retired", and disagrees on trailing
+// done/ file reading "cancelled" into "done", and disagrees on trailing
 // whitespace — each time editing a file the audit never flagged.
 // `TestRepairPopulationMatchesTheDetector` pins the two populations together over
 // a fixture built from exactly those shapes, rather than over clean data where
 // they agree by luck.
 //
 // What stays local is the repair TARGET, which is genuinely per-directory:
-// done/ repairs to StatusRetired, cancelled/ to StatusCancelled.
+// done/ repairs to StatusDone, cancelled/ to StatusCancelled.
 //
 // # Fence-awareness is load-bearing, not defensive
 //
@@ -156,7 +156,7 @@ import (
 // the live vault on 2026-09-01, two archived files carry a `**Status:**` line
 // inside a fence, and one of them (`task-relationships-epics-and-dependencies`)
 // is `**Status:** pending` — sample text in a file whose real header says
-// `retired`. A fence-blind detector reports that file as a disagreement, and a
+// `done`. A fence-blind detector reports that file as a disagreement, and a
 // fence-blind rewriter can edit the sample. Neither `storage.replaceStatusLine`
 // nor `parseTaskMeta` is fence-aware (both scan raw lines), which is why this
 // command walks `mdfence.OutsideFences` — the same walk the detector does.
@@ -168,7 +168,7 @@ var archiveDirs = []struct {
 	dir    string
 	status string
 }{
-	{"done", storage.StatusRetired},
+	{"done", storage.StatusDone},
 	{"cancelled", storage.StatusCancelled},
 }
 
@@ -183,7 +183,7 @@ func cmdMigrateTaskStatus() *cli.Command {
 		Name:     "migrate task-status",
 		Synopsis: "vp migrate task-status [--vault PATH] [--project P] [--apply]",
 		Description: "Make every ARCHIVED task's \"**Status:**\" line agree with the directory it sits " +
-			"in: tasks/done/ must say \"retired\", tasks/cancelled/ must say \"cancelled\".\n\n" +
+			"in: tasks/done/ must say \"done\", tasks/cancelled/ must say \"cancelled\".\n\n" +
 			"PLAN-FIRST: the bare command REPORTS and writes nothing; pass --apply to write.\n\n" +
 			"The directory is authoritative and every current reader derives `done` from it, so this " +
 			"repairs what a file says about ITSELF. Legacy files archived before the writer stamped " +
@@ -359,7 +359,7 @@ func runTaskStatusMigration(root, only string, apply bool, out io.Writer) (taskS
 				// its status is NOT terminal, so this repair must have exactly
 				// that population. Asking `found == ad.status` instead made this
 				// tool a second definition: it would rewrite "Retired" (cased),
-				// rewrite a done/ file reading "cancelled" into "retired", and
+				// rewrite a done/ file reading "cancelled" into "done", and
 				// disagree on trailing whitespace — in every case editing a file
 				// the audit never flagged.
 				//

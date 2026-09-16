@@ -47,7 +47,7 @@ import (
 //
 // MULTI-TITLE needs a per-file judgment call between two disagreeing headers.
 // INVERTED carries a bolded value that is already terminal, so the Both repair
-// would overwrite a correct "retired"/"cancelled" with the legacy line —
+// would overwrite a correct "done"/"cancelled" with the legacy line —
 // manufacturing the very finding `vaultaudit.DimTaskStatusDirectory` rule 1
 // exists to report. Both are separate tasks, and the refusals in
 // `storage.RepairLegacyBothHeader` / `storage.RepairLegacyBareOnlyHeader` are

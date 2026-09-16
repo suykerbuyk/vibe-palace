@@ -141,9 +141,9 @@ const (
 	// before 2026-09-01:
 	//
 	//  1. ARCHIVED directory, NON-TERMINAL status. A file in done/ or cancelled/
-	//     whose status is not retired/cancelled. The original finding: legacy residue
+	//     whose status is not done/cancelled. The original finding: legacy residue
 	//     from a bulk migration that predates the current writer.
-	//  2. ACTIVE directory, TERMINAL status. A file in tasks/ whose body says retired
+	//  2. ACTIVE directory, TERMINAL status. A file in tasks/ whose body says done
 	//     or cancelled. This is the rewrite-then-rename crash signature: the stamp
 	//     landed and the rename did not. It is REPAIRABLE BY COMPLETING THE RENAME,
 	//     and the finding says so rather than only reporting disagreement.
@@ -1466,7 +1466,7 @@ func archivedNonTerminalDetail(value string) string {
 			"legacy residue from a bulk migration, not a live regression: the archive writer stamps %q/%q "+
 			"correctly today, and since 2026-09-01 it does so BEFORE the file moves. Repairable only by a "+
 			"done/-scoped writer, because every typed task writer refuses an archived task.",
-		value, storage.StatusRetired, storage.StatusCancelled)
+		value, storage.StatusDone, storage.StatusCancelled)
 }
 
 // activeTerminalDetail renders a rule-2 finding: the interrupted-archive signature.
@@ -1479,5 +1479,5 @@ func activeTerminalDetail(value string) string {
 			"or tasks/cancelled/ for %q, which is what the interrupted operation was about to do. Do not instead "+
 			"rewrite the status back to a live value — that would discard a retire the operator had already "+
 			"approved.",
-		value, storage.StatusRetired, storage.StatusCancelled)
+		value, storage.StatusDone, storage.StatusCancelled)
 }
