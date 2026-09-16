@@ -324,6 +324,183 @@ func TestRunBoardStaleParentsFlagged(t *testing.T) {
 	}
 }
 
+// historyRow returns the single HISTORY-section line naming slug.
+//
+// Scoped to the section on purpose: PROBLEMS also names every stale-parented
+// child, so an unscoped search would match two lines and a row assertion could
+// be satisfied by the PROBLEMS line instead of the row it is about. Fails on
+// zero or more than one match rather than silently picking the first.
+func historyRow(t *testing.T, out, slug string) string {
+	t.Helper()
+	_, rest, found := strings.Cut(out, "HISTORY")
+	if !found {
+		t.Fatalf("no HISTORY section in:\n%s", out)
+	}
+	history, _, _ := strings.Cut(rest, "PROBLEMS")
+	var hits []string
+	for _, line := range strings.Split(history, "\n") {
+		if strings.Contains(line, slug) {
+			hits = append(hits, line)
+		}
+	}
+	if len(hits) != 1 {
+		t.Fatalf("want exactly one HISTORY line naming %q, got %d:\n%s", slug, len(hits), history)
+	}
+	return hits[0]
+}
+
+// assertStatusWord asserts slug's HISTORY row still carries want in its status
+// column — and refuses to run at all if the slug itself contains want.
+//
+// 🔴 THE REFUSAL IS THE POINT, AND IT IS WHY THIS IS A FUNCTION RATHER THAN AN
+// INLINE CHECK. A row assertion is a substring test over a whole rendered line,
+// which already contains the slug, so `want` inside the slug satisfies it no
+// matter what the renderer emitted. Every status-column assertion goes through
+// here so the hygiene rule is enforced for all of them at once; a new one
+// written inline would not be covered, which is the shape of guard this project
+// rejects.
+//
+// It compares against the EXACT want, so it fires only on real vacuity and
+// never on a near-miss: a slug of "in-progress-child" cannot satisfy a want of
+// "in_progress" (hyphen vs underscore), and that assertion is correctly allowed.
+func assertStatusWord(t *testing.T, out, slug, want string) {
+	t.Helper()
+	if strings.Contains(slug, want) {
+		t.Fatalf("fixture slug %q contains status word %q — this assertion would be vacuous", slug, want)
+	}
+	if row := historyRow(t, out, slug); !strings.Contains(row, want) {
+		t.Errorf("%s must still carry its own status word %q: %q", slug, want, row)
+	}
+}
+
+// TestRunBoardHistoryNonDoneMemberIsNotLabeledCompleted pins the fix: a member
+// of a History-bucket group is labeled from its OWN Meta.Done, not from the
+// section it was sorted into.
+//
+// The cancelled and legacy-retired children are the load-bearing rows. Meta.Done
+// and a Status == "done" string test diverge on exactly one shape — Done true
+// while Status is not literally "done" — so without such a row in the fixture
+// the two predicates are indistinguishable and the choice of Meta.Done ships
+// unguarded. legacy-retired-child is that shape as the LIVE archived corpus
+// actually holds it: every done task in the unmigrated vault still reads
+// `Status: retired`, so a Status-keyed predicate would relabel essentially every
+// done row in the real vault while this suite stayed green.
+//
+// 🔴 NO FIXTURE SLUG BELOW MAY CONTAIN A STATUS WORD, AND THAT IS NOT COSMETIC.
+// The row assertions are substring checks over a whole rendered line, so a slug
+// like "planning-child" would satisfy a `Contains(row, "planning")` status-column
+// assertion by itself and the check would pass no matter what the renderer did.
+// The slugs are therefore deliberately status-free ("unstarted", "parked",
+// "finished", "abandoned", "legacy-archived").
+//
+// The rule is ENFORCED by assertStatusWord, not by this comment — renaming a
+// slug back to its status word fails the test rather than silently re-vacuuming
+// the assertion. This paragraph explains why the convention exists; the guard is
+// what holds it.
+func TestRunBoardHistoryNonDoneMemberIsNotLabeledCompleted(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "finished-epic", "")
+
+	// Non-done members, reached through the normal lifecycle actions.
+	mkTask(t, v, "test-proj", "unstarted-child", "finished-epic") // mkTask defaults to planning
+	mkTask(t, v, "test-proj", "parked-child", "finished-epic")
+	if err := v.UpdateTaskStatus("test-proj", "parked-child", storage.StatusIcebox); err != nil {
+		t.Fatalf("icebox child: %v", err)
+	}
+
+	// Done members. finished-child is the ordinary shape; abandoned-child and
+	// legacy-archived-child are both Done==true with a Status that is not "done".
+	mkTask(t, v, "test-proj", "finished-child", "finished-epic")
+	if err := v.RetireTask("test-proj", "finished-child"); err != nil {
+		t.Fatalf("retire finished-child: %v", err)
+	}
+	mkTask(t, v, "test-proj", "abandoned-child", "finished-epic")
+	if err := v.CancelTask("test-proj", "abandoned-child", ""); err != nil {
+		t.Fatalf("cancel abandoned-child: %v", err)
+	}
+	// The normal lifecycle actions cannot produce Done==true with
+	// Status=="retired": RetireTask writes "done", and UpdateTaskStatus refuses
+	// "retired" (it is absent from validStatuses). SetTaskMigrationFields is the
+	// migration writer that takes an unvalidated status and reaches archived
+	// files, so it is how the pre-migration corpus's shape is reproduced here.
+	mkTask(t, v, "test-proj", "legacy-archived-child", "finished-epic")
+	if err := v.RetireTask("test-proj", "legacy-archived-child"); err != nil {
+		t.Fatalf("retire legacy-archived-child: %v", err)
+	}
+	if err := v.SetTaskMigrationFields("test-proj", "legacy-archived-child", "retired", "", "", ""); err != nil {
+		t.Fatalf("stamp legacy retired status: %v", err)
+	}
+
+	if err := v.RetireTask("test-proj", "finished-epic"); err != nil {
+		t.Fatalf("retire epic: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if code := runBoard(v, "test-proj", false, &buf); code != cli.ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	out := buf.String()
+
+	for _, slug := range []string{"unstarted-child", "parked-child"} {
+		row := historyRow(t, out, slug)
+		if !strings.Contains(row, "modified") {
+			t.Errorf("%s is not done — its row must read \"modified\": %q", slug, row)
+		}
+		if strings.Contains(row, "completed") {
+			t.Errorf("%s is not done — its row must NOT claim a completion: %q", slug, row)
+		}
+	}
+
+	for _, slug := range []string{"finished-child", "abandoned-child", "legacy-archived-child"} {
+		row := historyRow(t, out, slug)
+		if !strings.Contains(row, "completed") {
+			t.Errorf("%s is Done — its row must still read \"completed\": %q", slug, row)
+		}
+	}
+
+	// The status column was never the defect; prove the fix did not disturb it.
+	// assertStatusWord refuses a slug that would make the check vacuous.
+	assertStatusWord(t, out, "unstarted-child", "planning")
+	assertStatusWord(t, out, "legacy-archived-child", "retired")
+}
+
+// TestRunBoardHistoryMemberUnderCancelledEpicIsNotLabeledCompleted covers the
+// other root a History group can have. The group-header assertion pins a
+// deliberate scope boundary: a cancelled epic's own header still reads
+// "(completed …)" because Meta.Done is true for it, and this task does not
+// change done/cancelled rendering.
+func TestRunBoardHistoryMemberUnderCancelledEpicIsNotLabeledCompleted(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "cancelled-epic", "")
+	mkTask(t, v, "test-proj", "in-progress-child", "cancelled-epic")
+	if err := v.UpdateTaskStatus("test-proj", "in-progress-child", storage.StatusInProgress); err != nil {
+		t.Fatalf("in_progress child: %v", err)
+	}
+	if err := v.CancelTask("test-proj", "cancelled-epic", ""); err != nil {
+		t.Fatalf("cancel epic: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if code := runBoard(v, "test-proj", false, &buf); code != cli.ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	out := buf.String()
+
+	row := historyRow(t, out, "in-progress-child")
+	if !strings.Contains(row, "modified") || strings.Contains(row, "completed") {
+		t.Errorf("an in_progress child under a CANCELLED epic must read \"modified\": %q", row)
+	}
+	// Also exercises assertStatusWord's near-miss case in the suite rather than
+	// in prose: the slug carries "progress" but the status renders "in_progress",
+	// so the guard correctly does not fire and the assertion is real.
+	assertStatusWord(t, out, "in-progress-child", "in_progress")
+	header := historyRow(t, out, "cancelled-epic")
+	if !strings.Contains(header, "(completed") {
+		t.Errorf("the cancelled epic's own header is deliberately unchanged and must still "+
+			"read \"(completed …)\": %q", header)
+	}
+}
+
 func TestRunBoardProjectFlag(t *testing.T) {
 	v := testVault(t)
 	mkTask(t, v, "proj-a", "task-a", "")

@@ -198,9 +198,22 @@ func renderBoardGroups(out io.Writer, g *taskgraph.Graph, groups []taskgraph.Gro
 			}
 			var row string
 			if history {
-				row = fmt.Sprintf("%s %-*s  %s  %-*s  completed %s",
+				// A History group is bucketed by its EPIC's own status (Board,
+				// POLA), so a NON-done member rides in under a finished epic.
+				// ModTime is that member's last-write date, not a completion —
+				// saying "completed" of a planning/icebox/in_progress row states
+				// something that never happened, and contradicts the status
+				// column two fields to its left. Keyed on Meta.Done, which is
+				// directory-derived: true for done AND cancelled regardless of
+				// what a legacy Status string says on disk, so a `retired`-era
+				// archived row still reads "completed".
+				dateLabel := "completed"
+				if !n.Meta.Done {
+					dateLabel = "modified"
+				}
+				row = fmt.Sprintf("%s %-*s  %s  %-*s  %s %s",
 					branch, wSlug, indentOf(grp, m)+m, n.HistoryLabel(), wPri, priorityOrDash(n.Meta.Priority),
-					dateOrUnknown(n.Meta.ModTime))
+					dateLabel, dateOrUnknown(n.Meta.ModTime))
 			} else {
 				dates := "created " + dateOrUnknown(n.Meta.CreateTime)
 				if n.Meta.Done {
