@@ -32,10 +32,15 @@ import (
 // in a way that affects what gets written into the vault, so older binaries
 // gate against vaults written by newer ones.
 //
-// It is ALSO the release major version, as of the versioning task filed
-// 2026-09-12: a bump here means the next cut git tag must be v<N>.0.0, enforced
-// by the `.github/workflows/release.yml` CI guard (and, as a local convenience
-// only, `make release`) and reported by `vp check --check release-version`.
+// It is ALSO half of the release-tag scheme, as of ADR-011 (2026-09-15): a
+// bump here means the next cut git tag's MAJOR component must equal this
+// value, and its MINOR component must equal RequiredDataFormat
+// (internal/surface/format.go) — giving
+// v<MCPSurfaceVersion>.<RequiredDataFormat>.<build> going forward, enforced
+// by the `.github/workflows/release.yml` CI guard (and, as a local
+// convenience only, `make release`) and reported by `vp check --check
+// release-version`. Tags cut before ADR-011 (e.g. v5.0.0) predate this
+// scheme and are grandfathered, not violations — see ADR-011 Decision 5.
 //
 // Baseline 1: fresh for vibe-palace (NOT inherited from vibe-vault's counter).
 // Bumped 1->2 once the vault-portability epic's write-path changes landed and
@@ -207,6 +212,60 @@ import (
 // — never a count written down here, which is the claim 9b19134 deleted from two
 // documents for rotting.
 //
+// Bumped 5->6 (2026-09-15). Three coupled write-shape changes landed together,
+// batched into one bump rather than three — same "multiple shapes, one bump"
+// precedent as 2->3 and the 3->4 in-fleet additions:
+//
+//   - OPEN, EXTENSIBLE HEADER PARSER (board-reporting-open-header-schema,
+//     landed e847892/4818b0e, ADR-011 Decision 1). isHeaderFieldLine
+//     recognizes any well-formed "**Field:** value" line, not a closed
+//     four-name list; an unrecognized field is preserved verbatim on rewrite.
+//     A v5 binary's OWN write path still uses the closed four-field
+//     headerBlock — it does not know how to preserve an extension field
+//     (DataFormat, CreateTime, ModTime, SupersededBy) it cannot parse as
+//     header, so a v5 write against a file a v6 binary has already touched
+//     risks silently dropping one.
+//   - WIDENED STATUS VOCABULARY (board-reporting-status-vocabulary-rename,
+//     landed 47ac25d/af9c4e2/a30cc9b). validStatuses gained planning/reviewed
+//     and retired->done. A v5 binary's update_status still validates against
+//     its OWN four-value enum — it cannot write planning/reviewed, and its
+//     own error path would refuse a status transition on a task already in
+//     one of the new states.
+//   - CreateTime/ModTime HEADER FIELDS (board-reporting-createtime-modtime-fields,
+//     landed c401163/f9cb71b; idempotency of the header-spacing migration
+//     restored separately by board-reporting-header-spacing-schema-aware-fix,
+//     5ab1593/180d707). Stamped server-side on every mutating action from a
+//     v6 binary forward; a v5 write simply never stamps them — a silent
+//     write-shape disagreement vp board's readers depend on not happening.
+//
+// Two further write-shape changes landed in the same window, unrelated to
+// board reporting, found by re-running the standing re-derivation queries
+// below over 2c4ef40..this change rather than trusting a plan draft's own
+// three-item list at face value — folded into this same bump rather than
+// reserved for a later one, matching the 3->4 bump's own "found more since
+// the plan was written" precedent:
+//
+//   - SESSION-NOTE FRONTMATTER GAINED THREE MORE KEYS (b8b6a5d).
+//     SearchSummary/SearchSummaryAt/SearchSummaryModel join SessionMeta,
+//     yaml.Marshal'd straight to disk exactly like the 2->3 bump's first
+//     bullet — new lines in every note a v6 binary's summarization drain
+//     writes.
+//   - A NEW ARTIFACT WITH NO v5 READER: palace/<project>/iteration-summaries/
+//     <n>.json (d203ff8's IterationSummaryFile). Same shape as the 2->3
+//     bump's ingested-archives.jsonl — a v5 binary neither emits it nor knows
+//     to skip what it records.
+//
+// Named and REJECTED on inspection: internal/jobqueue's durability hardening
+// (fa03265) and the summarization queue infrastructure itself (d2f5f4d) —
+// both are HOST-LOCAL (summarize.QueueDir), never vault-resident, so neither
+// is a vault write-shape change the surface gate has any business seeing.
+//
+// Rollout: `make install` on every host, then restart every AI harness on it
+// (a running v5 `vp mcp` is refused mid-session once the host's own hooks
+// stamp v6). The floor rises at the first v6 stamped write anywhere in the
+// vault — ordinary task-mutation traffic, not a special migration step for
+// THIS axis.
+//
 // 🔴 A BUMP STRANDS EVERY HOST THAT HAS NOT RUN `make install`, vault-wide and
 // at once: CheckCompatible takes the MAX across every stamp, so the first v3
 // write anywhere raises the floor for everybody. That is the intended effect,
@@ -214,7 +273,7 @@ import (
 // TESTED contract rather than a convenience — a stranded host has to be able to
 // read its way out. `vp check --check writer-identity` derives how many hosts
 // that is; do not record the number here.
-const MCPSurfaceVersion int = 5
+const MCPSurfaceVersion int = 6
 
 // Stamp models the on-disk .surface TOML file recording the latest writer.
 type Stamp struct {

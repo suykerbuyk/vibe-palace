@@ -43,7 +43,20 @@ import (
 // until the migration renames the files and stamps format = 1. Freshly created
 // vaults are born-current (stamped at creation), and the migration command
 // advances an existing vault to 1 on completion.
-const RequiredDataFormat int = 1
+//
+// Bumped 1->2 (board-reporting-surface-and-format-version-bump; advanced on a
+// given vault only by board-reporting-one-time-migration, on completion).
+// vp board's chronological/status-bucket reporting needs CreateTime/ModTime
+// and the widened Status vocabulary to be TRUSTWORTHY, not merely present — a
+// vault still at format 1 may hold task files with pre-migration Status
+// values and no CreateTime/ModTime at all. Format 2 is the read-side signal
+// that a migration has backfilled both across the vault. This bump does NOT
+// extend the read gate's reach: checkFormatGate (internal/storage/format_gate.go)
+// still guards only the three KG-storage call sites (QueryEntity/KGStats/
+// ListTriples) — not vp_kg_invalidate, which resolves a triple by direct path
+// and never calls checkFormatGate — so task/session/resume reads and every
+// other vault operation are unaffected by this bump.
+const RequiredDataFormat int = 2
 
 // vaultManifestDir/vaultManifestFile locate the vault-root manifest carrying the
 // data-format number: <root>/.vibe-palace/vault.toml.
