@@ -3957,6 +3957,80 @@ func TestSetTaskDataFormatWritesAndLocks(t *testing.T) {
 	}
 }
 
+func TestSetTaskMigrationFieldsWritesOnlyRequestedFieldsAndReachesArchive(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task", Title: "T", Priority: "high", Content: "Body.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	_, before, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+
+	// Backfill CreateTime/ModTime/DataFormat, leaving Status untouched (empty
+	// arg) — the migration's own shape when a file's Status is already
+	// current.
+	if err := v.SetTaskMigrationFields("proj", "task", "", "2025-01-01", "2025-06-01", "3"); err != nil {
+		t.Fatalf("SetTaskMigrationFields (backfill only): %v", err)
+	}
+	meta, after, err := v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if meta.Status != "planning" {
+		t.Errorf("Status = %q, want unchanged %q (empty newStatus arg)", meta.Status, "planning")
+	}
+	if meta.CreateTime != "2025-01-01" {
+		t.Errorf("CreateTime = %q, want %q", meta.CreateTime, "2025-01-01")
+	}
+	if meta.ModTime != "2025-06-01" {
+		t.Errorf("ModTime = %q, want %q", meta.ModTime, "2025-06-01")
+	}
+	if meta.DataFormat != "3" {
+		t.Errorf("DataFormat = %q, want %q", meta.DataFormat, "3")
+	}
+	if !strings.HasSuffix(after, "Body.\n") || !strings.Contains(before, "Body.\n") {
+		t.Errorf("body content must be untouched:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+
+	// Now write ONLY Status, leaving the just-backfilled fields untouched —
+	// the migration's active pending->planning rename shape.
+	if err := v.SetTaskMigrationFields("proj", "task", "in_progress", "", "", ""); err != nil {
+		t.Fatalf("SetTaskMigrationFields (status only): %v", err)
+	}
+	meta, _, err = v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if meta.Status != "in_progress" {
+		t.Errorf("Status = %q, want %q", meta.Status, "in_progress")
+	}
+	if meta.CreateTime != "2025-01-01" || meta.ModTime != "2025-06-01" || meta.DataFormat != "3" {
+		t.Errorf("empty args must leave prior values untouched, got CreateTime=%q ModTime=%q DataFormat=%q",
+			meta.CreateTime, meta.ModTime, meta.DataFormat)
+	}
+
+	// Unlike SetTaskRelations/SetTaskMeta, this must also reach an ARCHIVED
+	// task — the whole point of board-reporting-one-time-migration is
+	// backfilling files sitting in done/ and cancelled/ too.
+	if err := v.RetireTask("proj", "task"); err != nil {
+		t.Fatalf("RetireTask: %v", err)
+	}
+	if err := v.SetTaskMigrationFields("proj", "task", "", "2024-01-01", "2024-02-01", "4"); err != nil {
+		t.Fatalf("SetTaskMigrationFields (archived): %v", err)
+	}
+	meta, _, err = v.GetTask("proj", "task")
+	if err != nil {
+		t.Fatalf("GetTask after retire: %v", err)
+	}
+	if meta.CreateTime != "2024-01-01" || meta.ModTime != "2024-02-01" || meta.DataFormat != "4" {
+		t.Errorf("archived write did not land: CreateTime=%q ModTime=%q DataFormat=%q",
+			meta.CreateTime, meta.ModTime, meta.DataFormat)
+	}
+}
+
 func TestOverwriteRefusesUnrecognizedFieldChange(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

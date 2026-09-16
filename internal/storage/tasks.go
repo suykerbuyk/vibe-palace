@@ -503,6 +503,55 @@ func (v *Vault) SetTaskDataFormat(project, slug, format string) error {
 	return atomicfile.Write(v.Root, path, []byte(updated))
 }
 
+// SetTaskMigrationFields is the one-time migration writer for
+// board-reporting-one-time-migration. Unlike every normal mutating action
+// (which always stamps ModTime with time.Now()), this accepts HISTORICALLY
+// DERIVED values, because backfilling history is the one thing this command
+// exists to do. Any empty argument is left untouched — it never blanks a
+// field that already has a value, and never invents Status/CreateTime/ModTime
+// when the caller could not derive one.
+//
+// Same RMW shape as SetTaskDataFormat: resolves via resolveTaskFile (reaches
+// active/done/cancelled — this migration backfills archived files too), one
+// per-path lock, one read, one atomicfile.Write. It does NOT itself guard
+// against the shadow-slug hazard resolveTaskFile's active-first resolution
+// creates for an archived candidate whose slug also exists in the active
+// directory — that guard belongs to the CALLER (mirroring where Phase 1's own
+// identical guard already lives, in cmd/vp, not inside the storage writer),
+// so this setter stays as simple and generic as its siblings.
+func (v *Vault) SetTaskMigrationFields(project, slug, newStatus, createTime, modTime, dataFormat string) error {
+	path, _, err := v.resolveTaskFile(project, slug)
+	if err != nil {
+		return err
+	}
+
+	release, err := vaultlock.Acquire(v.Root, path)
+	if err != nil {
+		return fmt.Errorf("lock task: %w", err)
+	}
+	defer release()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read task: %w", err)
+	}
+
+	content := string(data)
+	if newStatus != "" {
+		content = replaceStatusLine(content, newStatus)
+	}
+	if createTime != "" {
+		content = upsertHeaderField(content, fieldCreateTime, createTime)
+	}
+	if modTime != "" {
+		content = upsertHeaderField(content, fieldModTime, modTime)
+	}
+	if dataFormat != "" {
+		content = upsertHeaderField(content, fieldDataFormat, dataFormat)
+	}
+	return atomicfile.Write(v.Root, path, []byte(content))
+}
+
 // SetTaskSupersededBy sets (or corrects) the SupersededBy header marker on a
 // task — the ONLY writer for this field once a task is archived, since
 // CancelTask (its other write path) is one-shot and cannot be re-invoked on
