@@ -81,7 +81,7 @@ func TestMigrateTaskStatusExpectationsMatchTheRealWriter(t *testing.T) {
 	if err := vault.RetireTask("proj", "r"); err != nil {
 		t.Fatalf("retire: %v", err)
 	}
-	if err := vault.CancelTask("proj", "c"); err != nil {
+	if err := vault.CancelTask("proj", "c", ""); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
 

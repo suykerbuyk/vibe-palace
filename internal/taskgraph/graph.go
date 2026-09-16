@@ -32,12 +32,13 @@ package taskgraph
 
 import (
 	"cmp"
+	"fmt"
 	"slices"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-// RefKind distinguishes the two edge types a task can carry.
+// RefKind distinguishes the edge types a task can carry.
 type RefKind int
 
 const (
@@ -45,13 +46,39 @@ const (
 	ParentRef RefKind = iota
 	// DependsRef is a **Depends:** edge (dependent → dependency).
 	DependsRef
+	// SupersededByRef is a **SupersededBy:** edge (abandoned task → successor).
+	// board-reporting-supersession-link.
+	SupersededByRef
 )
 
+// String is the ONLY place any RefKind value is turned into a string —
+// confirmed by inspection: Ref.Kind and Cycle.Kind are both plain `string`
+// fields (never RefKind), so a Ref/Cycle is committed to its string label the
+// moment it is constructed, at each append site below, by calling this
+// method inline. This method previously read `if k == ParentRef { "parent" }
+// else { "depends" }`: adding SupersededByRef to the enum above without ALSO
+// rewriting it would have made SupersededByRef.String() silently return
+// "depends" for every Cycle/Dangling finding — a structurally valid but
+// WRONG label, with no compile error (Go does not check switch
+// exhaustiveness over a named int type) and no test failure short of one
+// that checks the string itself directly (see TestRefKindString). The real
+// switch below cannot repeat that specific bug for THESE three values, but a
+// fourth RefKind added later without a matching case here would still
+// silently fall through to "unknown" rather than fail to compile — this is a
+// smaller, honest blast radius (a visibly wrong label, not a
+// convincingly-a-different-kind one), not a guarantee against the same class
+// of mistake recurring.
 func (k RefKind) String() string {
-	if k == ParentRef {
+	switch k {
+	case ParentRef:
 		return "parent"
+	case DependsRef:
+		return "depends"
+	case SupersededByRef:
+		return "superseded_by"
+	default:
+		return "unknown"
 	}
-	return "depends"
 }
 
 // DepState is the resolution of a single dependency.
@@ -114,10 +141,30 @@ type Node struct {
 	// Depth is the length of the parent chain above this node. Capped rather
 	// than looped when the chain cycles.
 	Depth int `json:"depth"`
+	// Supersedes is every task naming this one as its SupersededBy successor,
+	// sorted — the derived reverse view ("what points at me"), direct-edge
+	// only, never transitive. Mirrors how Children derives epic-ness from
+	// inbound Parent edges: Meta.SupersededBy is the only WRITTEN half of this
+	// relation, and fan-in (several abandoned tasks pointing at one successor)
+	// is a first-class case, so this is a list, not a scalar.
+	// board-reporting-supersession-link.
+	Supersedes []string `json:"supersedes,omitempty"`
 }
 
 // IsEpic reports whether anything points at this node. Derived, never stored.
 func (n *Node) IsEpic() bool { return len(n.Children) > 0 }
+
+// HistoryLabel renders a task's terminal-status label for board/history
+// reporting: "cancelled → superseded by X" when a supersession link exists,
+// or the bare status otherwise. A pure function of the node's own metadata —
+// ready for board-reporting-vp-board-cli to consume once it lands.
+// board-reporting-supersession-link.
+func (n *Node) HistoryLabel() string {
+	if n.Meta.Status == storage.StatusCancelled && n.Meta.SupersededBy != "" {
+		return fmt.Sprintf("%s → superseded by %s", n.Meta.Status, n.Meta.SupersededBy)
+	}
+	return n.Meta.Status
+}
 
 // Cycle is a closed loop of references.
 //
@@ -224,6 +271,31 @@ func Build(tasks []storage.TaskMeta) *Graph {
 		}
 	}
 
+	// Supersedes (reverse SupersededBy), and the dangling finding for a
+	// SupersededBy edge pointing at no real task. Same shape as the Parent
+	// loop above, minus StaleParents — there is no equivalent "stale
+	// successor" finding, since SupersededBy is only ever written once, at
+	// cancel time, onto an already-terminal task.
+	// board-reporting-supersession-link.
+	for _, s := range slugs {
+		n := g.Nodes[s]
+		sup := n.Meta.SupersededBy
+		if sup == "" {
+			continue
+		}
+		successor, ok := g.Nodes[sup]
+		if !ok {
+			g.Dangling = append(g.Dangling, Ref{From: s, To: sup, Kind: SupersededByRef.String()})
+			continue
+		}
+		successor.Supersedes = append(successor.Supersedes, s)
+	}
+	for _, s := range slugs {
+		if n := g.Nodes[s]; len(n.Supersedes) > 0 {
+			slices.Sort(n.Supersedes)
+		}
+	}
+
 	// Dependencies. Only an OPEN dep — one that exists, is active, and is not
 	// finished — blocks or contributes an edge. Satisfied deps contribute no
 	// edge, which is also why a satisfied dep can never be part of a cycle.
@@ -257,6 +329,7 @@ func Build(tasks []storage.TaskMeta) *Graph {
 
 	g.Order, g.Cycles = topoSort(g, slugs, adj, indeg)
 	g.Cycles = append(g.Cycles, parentCycles(g, slugs)...)
+	g.Cycles = append(g.Cycles, supersededByCycles(g, slugs)...)
 	assignDepths(g, slugs)
 
 	slices.SortFunc(g.Cycles, func(a, b Cycle) int {
@@ -460,6 +533,55 @@ func parentCycles(g *Graph, slugs []string) []Cycle {
 			// Closed on a node in the CURRENT path: that is the cycle.
 			if i := slices.Index(path, cur); i >= 0 {
 				cycles = append(cycles, Cycle{Kind: ParentRef.String(), Slugs: rotate(path[i:])})
+			}
+		}
+		for _, p := range path {
+			color[p] = black
+		}
+	}
+	return cycles
+}
+
+// supersededByCycles walks each SupersededBy chain, mirroring parentCycles
+// exactly: SupersededBy is scalar (at most one successor per task, same as
+// Parent), so a chain either terminates or closes on itself, and the
+// coloring finds the latter without ever revisiting a node twice.
+// board-reporting-supersession-link.
+//
+// This is a genuine cycle-detection FINDING, not a write-time refusal:
+// CancelTask/SetTaskSupersededBy each only ever touch their own file's lock
+// and cannot see a cycle forming across two separate calls (see
+// normalizeSupersededBy in internal/storage). Two archived tasks can
+// therefore end up naming each other, and this walk is what surfaces it.
+func supersededByCycles(g *Graph, slugs []string) []Cycle {
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+	color := make(map[string]int, len(slugs))
+	var cycles []Cycle
+
+	for _, s := range slugs {
+		if color[s] != white {
+			continue
+		}
+		var path []string
+		cur := s
+		for cur != "" && color[cur] == white {
+			color[cur] = gray
+			path = append(path, cur)
+			n, ok := g.Nodes[cur]
+			if !ok {
+				cur = ""
+				break
+			}
+			cur = n.Meta.SupersededBy
+		}
+		if cur != "" && color[cur] == gray {
+			// Closed on a node in the CURRENT path: that is the cycle.
+			if i := slices.Index(path, cur); i >= 0 {
+				cycles = append(cycles, Cycle{Kind: SupersededByRef.String(), Slugs: rotate(path[i:])})
 			}
 		}
 		for _, p := range path {

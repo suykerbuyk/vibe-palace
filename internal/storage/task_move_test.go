@@ -126,7 +126,7 @@ func TestMoveTaskToProjectRefusesArchivedSource(t *testing.T) {
 		archive func(v *Vault, project, slug string) error
 	}{
 		{"done", (*Vault).RetireTask},
-		{"cancelled", (*Vault).CancelTask},
+		{"cancelled", func(v *Vault, project, slug string) error { return v.CancelTask(project, slug, "") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := moveTestVault(t, "src-proj", "dst-proj", plainTask("finished-task"), plainTask("anchor"))

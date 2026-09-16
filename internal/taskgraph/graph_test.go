@@ -577,3 +577,194 @@ func TestIsEpicSemanticsUnchanged(t *testing.T) {
 		t.Fatal("a childless node is not an epic")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SupersededBy (board-reporting-supersession-link): RefKind.String()'s
+// three-way switch, the derived Supersedes reverse view (fan-in, direct-edge
+// only), the SupersededByRef cycle walk, dangling links, and HistoryLabel.
+// ---------------------------------------------------------------------------
+
+// TestRefKindString is the direct regression test for finding 1 of the
+// plan's review: RefKind.String() used to be `if k == ParentRef { "parent" }
+// else { "depends" }`, which would have silently mislabeled SupersededByRef
+// as "depends" the moment it was added to the enum. Asserted directly
+// against the string, not only indirectly through a Cycle/Dangling fixture,
+// and asserts the three values are pairwise DISTINCT — the exact shape of
+// the bug this guards against.
+func TestRefKindString(t *testing.T) {
+	cases := []struct {
+		kind RefKind
+		want string
+	}{
+		{ParentRef, "parent"},
+		{DependsRef, "depends"},
+		{SupersededByRef, "superseded_by"},
+	}
+	seen := make(map[string]RefKind)
+	for _, tc := range cases {
+		got := tc.kind.String()
+		if got != tc.want {
+			t.Errorf("RefKind(%d).String() = %q, want %q", tc.kind, got, tc.want)
+		}
+		if other, dup := seen[got]; dup {
+			t.Fatalf("RefKind(%d) and RefKind(%d) both stringify to %q — exactly the finding-1 regression", tc.kind, other, got)
+		}
+		seen[got] = tc.kind
+	}
+}
+
+func TestSupersededByFieldParsesIntoNode(t *testing.T) {
+	a := task("a", "cancelled", "high", "")
+	a.SupersededBy = "b"
+	g := Build([]storage.TaskMeta{a, task("b", "pending", "high", "")})
+
+	if g.Nodes["a"].Meta.SupersededBy != "b" {
+		t.Fatalf("Meta.SupersededBy = %q, want %q", g.Nodes["a"].Meta.SupersededBy, "b")
+	}
+}
+
+// TestSupersededByFanIn is the Acceptance-named fan-in case: two abandoned
+// tasks pointing at the same successor. The derived reverse view is a list,
+// not a scalar, sorted for a stable order across runs.
+func TestSupersededByFanIn(t *testing.T) {
+	a := task("a", "cancelled", "high", "")
+	a.SupersededBy = "c"
+	b := task("b", "cancelled", "high", "")
+	b.SupersededBy = "c"
+	c := task("c", "pending", "high", "")
+
+	g := Build([]storage.TaskMeta{a, b, c})
+
+	if !slices.Equal(g.Nodes["c"].Supersedes, []string{"a", "b"}) {
+		t.Fatalf("Supersedes(c) = %v, want sorted fan-in [a b]", g.Nodes["c"].Supersedes)
+	}
+	if len(g.Dangling) != 0 {
+		t.Fatalf("no dangling SupersededBy expected in a fan-in with a real successor: %+v", g.Dangling)
+	}
+}
+
+// TestSupersededByChainReverseViewIsDirectEdgeOnly pins the chain decision:
+// A→B→C is not a cycle, and C's derived Supersedes contains only its DIRECT
+// predecessor B — never A, transitively. Matches how Children/IsEpic are
+// also non-transitive.
+func TestSupersededByChainReverseViewIsDirectEdgeOnly(t *testing.T) {
+	withinTimeout(t, func() {
+		a := task("a", "cancelled", "high", "")
+		a.SupersededBy = "b"
+		b := task("b", "cancelled", "high", "")
+		b.SupersededBy = "c"
+		c := task("c", "pending", "high", "")
+
+		g := Build([]storage.TaskMeta{a, b, c})
+
+		if len(g.Cycles) != 0 {
+			t.Fatalf("a chain is not a cycle: %+v", g.Cycles)
+		}
+		if !slices.Equal(g.Nodes["b"].Supersedes, []string{"a"}) {
+			t.Fatalf("Supersedes(b) = %v, want [a]", g.Nodes["b"].Supersedes)
+		}
+		if !slices.Equal(g.Nodes["c"].Supersedes, []string{"b"}) {
+			t.Fatalf("Supersedes(c) = %v, want [b] — direct-edge only, NOT transitively including a", g.Nodes["c"].Supersedes)
+		}
+	})
+}
+
+// TestSupersededByCycleIsDetectedNotWalked is the Acceptance-named cycle
+// case: A.SupersededBy=B, B.SupersededBy=A. Asserted against the Kind
+// STRING, not the RefKind constant — a stringer regression (finding 1) is
+// exactly the failure mode this guards against, mirroring
+// TestDependencyCycleIsDetectedNotWalked's own shape for Depends.
+func TestSupersededByCycleIsDetectedNotWalked(t *testing.T) {
+	withinTimeout(t, func() {
+		a := task("a", "cancelled", "high", "")
+		a.SupersededBy = "b"
+		b := task("b", "cancelled", "high", "")
+		b.SupersededBy = "a"
+
+		g := Build([]storage.TaskMeta{a, b})
+
+		var found *Cycle
+		for i := range g.Cycles {
+			if g.Cycles[i].Kind == "superseded_by" {
+				found = &g.Cycles[i]
+			}
+		}
+		if found == nil {
+			t.Fatalf("no superseded_by cycle reported: %+v", g.Cycles)
+		}
+		if !slices.Equal(found.Slugs, []string{"a", "b"}) {
+			t.Fatalf("cycle slugs = %v, want rotated [a b]", found.Slugs)
+		}
+		if !g.HasProblems() {
+			t.Fatal("a SupersededBy cycle is a problem")
+		}
+	})
+}
+
+// TestSelfSupersessionIsALengthOneCycle mirrors
+// TestSelfDependencyIsALengthOneCycle: internal/storage refuses this at
+// write time (normalizeSupersededBy), but this package's contract is that it
+// NEVER hangs on malformed data regardless of how it got there, so Build
+// must still detect rather than loop on a directly-constructed A→A edge.
+func TestSelfSupersessionIsALengthOneCycle(t *testing.T) {
+	withinTimeout(t, func() {
+		a := task("a", "cancelled", "high", "")
+		a.SupersededBy = "a"
+		g := Build([]storage.TaskMeta{a})
+
+		var found *Cycle
+		for i := range g.Cycles {
+			if g.Cycles[i].Kind == "superseded_by" {
+				found = &g.Cycles[i]
+			}
+		}
+		if found == nil || !slices.Equal(found.Slugs, []string{"a"}) {
+			t.Fatalf("cycles = %+v, want a self-cycle on [a] for superseded_by", g.Cycles)
+		}
+	})
+}
+
+func TestSupersededByDanglingIsReportedButIsNotACycle(t *testing.T) {
+	a := task("a", "cancelled", "high", "")
+	a.SupersededBy = "no-such-task"
+
+	g := Build([]storage.TaskMeta{a})
+
+	var found bool
+	for _, d := range g.Dangling {
+		if d.Kind == "superseded_by" && d.From == "a" && d.To == "no-such-task" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("dangling SupersededBy not reported: %+v", g.Dangling)
+	}
+	if len(g.Cycles) != 0 {
+		t.Fatalf("a dangling link is not a cycle: %+v", g.Cycles)
+	}
+}
+
+// TestHistoryLabel confirms the board/History render helper is a pure
+// function of a node's own metadata: the supersession suffix appears ONLY
+// for a cancelled task that actually carries a link, and every other task
+// (cancelled without a link, or not cancelled at all) renders its bare
+// status.
+func TestHistoryLabel(t *testing.T) {
+	cancelledWithLink := task("a", "cancelled", "high", "")
+	cancelledWithLink.SupersededBy = "b"
+	cancelledNoLink := task("c", "cancelled", "high", "")
+	activeTask := task("d", "pending", "high", "")
+	successor := task("b", "pending", "high", "")
+
+	g := Build([]storage.TaskMeta{cancelledWithLink, cancelledNoLink, activeTask, successor})
+
+	if got, want := g.Nodes["a"].HistoryLabel(), "cancelled → superseded by b"; got != want {
+		t.Errorf("HistoryLabel(a) = %q, want %q", got, want)
+	}
+	if got, want := g.Nodes["c"].HistoryLabel(), "cancelled"; got != want {
+		t.Errorf("HistoryLabel(c) = %q, want bare status %q", got, want)
+	}
+	if got, want := g.Nodes["d"].HistoryLabel(), "pending"; got != want {
+		t.Errorf("HistoryLabel(d) = %q, want bare status %q", got, want)
+	}
+}

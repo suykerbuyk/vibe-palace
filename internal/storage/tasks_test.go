@@ -94,7 +94,7 @@ func TestCreateTaskOverCancelledSlug(t *testing.T) {
 	if err := v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "Title", Content: "", Priority: "P1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := v.CancelTask("proj", "my-task"); err != nil {
+	if err := v.CancelTask("proj", "my-task", ""); err != nil {
 		t.Fatalf("CancelTask: %v", err)
 	}
 
@@ -218,7 +218,7 @@ func TestListTasksIncludeDone(t *testing.T) {
 	v.CreateTask("proj", TaskSpec{Slug: "to-cancel", Title: "To Cancel", Content: "", Priority: "P1"})
 
 	v.RetireTask("proj", "to-retire")
-	v.CancelTask("proj", "to-cancel")
+	v.CancelTask("proj", "to-cancel", "")
 
 	active, err := v.ListTasks("proj", false)
 	if err != nil {
@@ -313,7 +313,7 @@ func TestCancelTask(t *testing.T) {
 	v := testVault(t)
 	v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "Title", Content: "", Priority: "P1"})
 
-	if err := v.CancelTask("proj", "my-task"); err != nil {
+	if err := v.CancelTask("proj", "my-task", ""); err != nil {
 		t.Fatalf("CancelTask: %v", err)
 	}
 
@@ -332,9 +332,9 @@ func TestCancelTask(t *testing.T) {
 func TestCancelTaskAlreadyCancelled(t *testing.T) {
 	v := testVault(t)
 	v.CreateTask("proj", TaskSpec{Slug: "my-task", Title: "Title", Content: "", Priority: "P1"})
-	v.CancelTask("proj", "my-task")
+	v.CancelTask("proj", "my-task", "")
 
-	err := v.CancelTask("proj", "my-task")
+	err := v.CancelTask("proj", "my-task", "")
 	if err == nil {
 		t.Error("cancelling already-cancelled task should return error")
 	}
@@ -746,7 +746,7 @@ func TestUpdateTaskStatusRejectsTerminalButMoveStillWritesThem(t *testing.T) {
 	if err := v.CreateTask("proj", TaskSpec{Slug: "c", Title: "C", Content: "body", Priority: "high"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := v.CancelTask("proj", "c"); err != nil {
+	if err := v.CancelTask("proj", "c", ""); err != nil {
 		t.Fatalf("CancelTask must still work: %v", err)
 	}
 	meta, _, err = v.GetTask("proj", "c")
@@ -1569,7 +1569,7 @@ func TestResolveTaskFileResolvesCancelled(t *testing.T) {
 	if err := v.CreateTask("proj", TaskSpec{Slug: "gamma", Title: "Gamma", Priority: "P3"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if err := v.CancelTask("proj", "gamma"); err != nil {
+	if err := v.CancelTask("proj", "gamma", ""); err != nil {
 		t.Fatalf("CancelTask: %v", err)
 	}
 
@@ -4200,5 +4200,257 @@ func TestFindHeaderSpacingHazardNoHitAtEndOfFile(t *testing.T) {
 	_, _, ok := FindHeaderSpacingHazard(content)
 	if ok {
 		t.Error("a header with nothing after it must not be a hazard")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SupersededBy (board-reporting-supersession-link): the abandon-and-rework
+// link. Same open-schema/bucket-2 shape DataFormat established above, plus
+// the write paths (CancelTask, SetTaskSupersededBy) and self-reference
+// refusal specific to this field.
+// ---------------------------------------------------------------------------
+
+func TestSupersededByFieldParsesAndRoundTrips(t *testing.T) {
+	content := "# T\n\n**Status:** pending\n**Priority:** high\n\n## Context\n\nBody.\n"
+	updated := upsertHeaderField(content, fieldSupersededBy, "task-b")
+	meta := parseTaskMeta("t", updated, false)
+	if meta.SupersededBy != "task-b" {
+		t.Errorf("SupersededBy = %q, want %q", meta.SupersededBy, "task-b")
+	}
+
+	metaAbsent := parseTaskMeta("t", content, false)
+	if metaAbsent.SupersededBy != "" {
+		t.Errorf("SupersededBy should be empty (omitempty-clean) when absent, got %q", metaAbsent.SupersededBy)
+	}
+}
+
+// TestCancelTaskWithSupersededByStampsFieldAtomically confirms CancelTask
+// threads the link through moveTask's shared critical section: the field
+// lands in the ARCHIVED copy, appended strictly after Parent/Depends, in the
+// SAME write that stamps the terminal status — not a second write.
+func TestCancelTaskWithSupersededByStampsFieldAtomically(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{
+		Slug: "task-a", Title: "A", Priority: "high",
+		Parent: "epic", Depends: []string{"dep"}, Content: "Body.\n",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := v.CancelTask("proj", "task-a", "task-b"); err != nil {
+		t.Fatalf("CancelTask with supersededBy: %v", err)
+	}
+
+	meta, content, err := v.GetTask("proj", "task-a")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if meta.Status != StatusCancelled {
+		t.Errorf("Status = %q, want %q", meta.Status, StatusCancelled)
+	}
+	if meta.SupersededBy != "task-b" {
+		t.Errorf("SupersededBy = %q, want %q", meta.SupersededBy, "task-b")
+	}
+
+	lines := strings.Split(content, "\n")
+	start, end := headerBlock(lines)
+	want := []string{"**Status:** cancelled", "**Priority:** high", "**Parent:** epic", "**Depends:** dep", "**SupersededBy:** task-b"}
+	if got := lines[start:end]; !slices.Equal(got, want) {
+		t.Fatalf("header order = %v, want %v", got, want)
+	}
+}
+
+func TestCancelTaskWithoutSupersededByLeavesFieldAbsent(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "task-a", Title: "A", Priority: "high", Content: "Body.\n"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := v.CancelTask("proj", "task-a", ""); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+	meta, _, err := v.GetTask("proj", "task-a")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if meta.SupersededBy != "" {
+		t.Errorf("SupersededBy = %q, want empty when no link was given", meta.SupersededBy)
+	}
+}
+
+// TestCancelTaskSelfSupersessionRefused pins the synchronous refusal
+// (normalizeSupersededBy), mirroring normalizeRelations's "cannot be its own
+// parent" check. The task must NOT be archived by a refused cancel — same
+// invariant TestRetireRefusalLeavesSourceBodyUnstamped pins for the status
+// stamp.
+func TestCancelTaskSelfSupersessionRefused(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "task-a", Title: "A", Priority: "high", Content: "Body.\n"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	err := v.CancelTask("proj", "task-a", "task-a")
+	if err == nil {
+		t.Fatal("cancelling with supersededBy equal to the task's own slug should be refused")
+	}
+	if !strings.Contains(err.Error(), "cannot be superseded by itself") {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Refused: the task must still be active and unarchived.
+	if _, _, err := v.resolveTaskFile("proj", "task-a"); err != nil {
+		t.Fatalf("resolveTaskFile: %v", err)
+	}
+	activePath, err := v.TaskFile("proj", "task-a")
+	if err != nil {
+		t.Fatalf("TaskFile: %v", err)
+	}
+	if _, err := os.Stat(activePath); err != nil {
+		t.Errorf("a refused self-supersession must leave the task active at %q: %v", activePath, err)
+	}
+}
+
+func TestCancelTaskInvalidSupersededBySlugRefused(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "task-a", Title: "A", Priority: "high", Content: "Body.\n"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := v.CancelTask("proj", "task-a", "Not A Valid Slug!"); err == nil {
+		t.Fatal("an invalid successor slug should be refused")
+	}
+}
+
+// TestSetTaskSupersededByCorrectsArchivedTask covers the realistic
+// population this setter exists for: a link corrected AFTER cancel has
+// already archived the task, since cancel is one-shot and cannot be
+// re-invoked on an already-cancelled slug.
+func TestSetTaskSupersededByCorrectsArchivedTask(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "task-a", Title: "A", Priority: "high", Content: "Body.\n"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := v.CancelTask("proj", "task-a", "wrong-successor"); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+
+	// A second CancelTask cannot fix the mistake — the active file is gone.
+	if err := v.CancelTask("proj", "task-a", "task-b"); err == nil {
+		t.Fatal("CancelTask on an already-cancelled slug should fail — it is one-shot")
+	}
+
+	if err := v.SetTaskSupersededBy("proj", "task-a", "task-b"); err != nil {
+		t.Fatalf("SetTaskSupersededBy (correcting an archived task): %v", err)
+	}
+
+	meta, _, err := v.GetTask("proj", "task-a")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if meta.SupersededBy != "task-b" {
+		t.Errorf("SupersededBy = %q, want corrected value %q", meta.SupersededBy, "task-b")
+	}
+}
+
+func TestSetTaskSupersededByWritesOnActiveTaskToo(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "task-a", Title: "A", Priority: "high", Content: "Body.\n"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := v.SetTaskSupersededBy("proj", "task-a", "task-b"); err != nil {
+		t.Fatalf("SetTaskSupersededBy (active): %v", err)
+	}
+	meta, _, err := v.GetTask("proj", "task-a")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if meta.SupersededBy != "task-b" {
+		t.Errorf("SupersededBy = %q, want %q", meta.SupersededBy, "task-b")
+	}
+}
+
+func TestSetTaskSupersededBySelfReferenceRefused(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "task-a", Title: "A", Priority: "high", Content: "Body.\n"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	err := v.SetTaskSupersededBy("proj", "task-a", "task-a")
+	if err == nil {
+		t.Fatal("SetTaskSupersededBy must refuse self-reference — it is the SOLE corrective writer and cannot assume cancel already checked this")
+	}
+	if !strings.Contains(err.Error(), "cannot be superseded by itself") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSetTaskSupersededByRequiresNonEmptySuccessor(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "task-a", Title: "A", Priority: "high", Content: "Body.\n"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := v.SetTaskSupersededBy("proj", "task-a", ""); err == nil {
+		t.Fatal("SetTaskSupersededBy has no clear path — an empty successor should be refused, not silently upsert an empty value")
+	}
+}
+
+// TestOverwriteRefusesSupersededByChange confirms the bucket-2 classification
+// (ADR-011): there is NO refuseHeaderChange entry for SupersededBy, so a
+// change to it is caught by refuseUnknownHeaderFieldChange's GENERIC
+// no-named-action message rather than one pointing at an action (`cancel`)
+// that could not actually fix it.
+func TestOverwriteRefusesSupersededByChange(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "task-a", Title: "A", Priority: "high", Content: "Body.\n"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := v.SetTaskSupersededBy("proj", "task-a", "task-b"); err != nil {
+		t.Fatalf("SetTaskSupersededBy: %v", err)
+	}
+	_, before, err := v.GetTask("proj", "task-a")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+
+	proposed := strings.Replace(before, "**SupersededBy:** task-b", "**SupersededBy:** task-c", 1)
+	if proposed == before {
+		t.Fatal("test bug: SupersededBy line not found in fixture")
+	}
+
+	err = v.OverwriteTaskFile("proj", "task-a", proposed)
+	var hce *HeaderChangeError
+	if !errors.As(err, &hce) {
+		t.Fatalf("expected a *HeaderChangeError, got %T: %v", err, err)
+	}
+	if hce.Action != "" {
+		t.Errorf("SupersededBy is bucket 2 (ownerless) — HeaderChangeError.Action must be empty, got %q", hce.Action)
+	}
+	if !apperr.IsCaller(err) {
+		t.Errorf("refusal must be classified apperr.Caller, got %v", err)
+	}
+}
+
+func TestOverwriteAllowsSupersededByUnchanged(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("proj", TaskSpec{Slug: "task-a", Title: "A", Priority: "high", Content: "Original body.\n"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := v.SetTaskSupersededBy("proj", "task-a", "task-b"); err != nil {
+		t.Fatalf("SetTaskSupersededBy: %v", err)
+	}
+	_, before, err := v.GetTask("proj", "task-a")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+
+	rewritten := strings.Replace(before, "Original body.", "Rewritten body.", 1)
+	if rewritten == before {
+		t.Fatal("test bug: body marker not found")
+	}
+	if err := v.OverwriteTaskFile("proj", "task-a", rewritten); err != nil {
+		t.Fatalf("overwrite with an unchanged SupersededBy was refused: %v", err)
+	}
+
+	meta, _, err := v.GetTask("proj", "task-a")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if meta.SupersededBy != "task-b" {
+		t.Errorf("SupersededBy lost across an unrelated overwrite: %q", meta.SupersededBy)
 	}
 }

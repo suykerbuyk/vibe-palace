@@ -49,6 +49,14 @@ type TaskMeta struct {
 	// this field existed has none, and it stays unset in this package until
 	// the migration/version-bump tasks populate it.
 	DataFormat string `json:"data_format,omitempty"`
+	// SupersededBy names the task this one's remaining intent moved to, when a
+	// task is abandoned and reworked into another (board-reporting-supersession-link).
+	// Scalar and one-directional: at most one successor. The reverse view
+	// ("what points at me", fan-in) is DERIVED in internal/taskgraph, never
+	// stored here — same "reuse, don't store what's derivable" shape as
+	// IsEpic() deriving epic-ness from inbound Parent edges. Optional, same
+	// omitempty reasoning as Parent/Depends/DataFormat.
+	SupersededBy string `json:"superseded_by,omitempty"`
 }
 
 // ConventionalFirstHeading is the H2 heading CreateTask emits between the
@@ -258,6 +266,31 @@ func normalizeRelations(self, parent string, depends []string) (string, []string
 	return parent, out, nil
 }
 
+// normalizeSupersededBy validates a SupersededBy successor LEXICALLY, same
+// shape as normalizeRelations: it does NOT check that successor exists
+// (existence is cross-file truth and belongs to internal/taskgraph, exactly
+// as normalizeRelations's own comment argues for Parent/Depends), and it
+// canonicalizes an empty value to "" (no link) rather than treating it as an
+// error — CancelTask's link is optional.
+//
+// It is the SOLE validator for this field, called from both write paths
+// (CancelTask and SetTaskSupersededBy) rather than duplicated, because
+// SetTaskSupersededBy is the only corrective writer once a task is archived
+// and cannot assume its caller already checked self-reference.
+func normalizeSupersededBy(self, successor string) (string, error) {
+	successor = strings.TrimSpace(successor)
+	if successor == "" {
+		return "", nil
+	}
+	if err := slug.Validate(successor); err != nil {
+		return "", fmt.Errorf("invalid superseded_by: %w", err)
+	}
+	if successor == self {
+		return "", fmt.Errorf("task %q cannot be superseded by itself", self)
+	}
+	return successor, nil
+}
+
 // coreFieldOrder is the canonical position of every field the ORIGINAL closed
 // header gave special meaning to. A core field being added late (Parent or
 // Depends, via SetTaskRelations, on a task that already carries an extension
@@ -454,6 +487,58 @@ func (v *Vault) SetTaskDataFormat(project, slug, format string) error {
 	}
 
 	updated := upsertHeaderField(string(data), fieldDataFormat, format)
+	return atomicfile.Write(v.Root, path, []byte(updated))
+}
+
+// SetTaskSupersededBy sets (or corrects) the SupersededBy header marker on a
+// task — the ONLY writer for this field once a task is archived, since
+// CancelTask (its other write path) is one-shot and cannot be re-invoked on
+// an already-cancelled slug to fix an existing link.
+//
+// It is bucket 2 (ownerless extension field) in ADR-011's three-bucket
+// design, not bucket 1: there is no vp_manage_task action named after this
+// setter, so `overwrite` refuses any body that changes SupersededBy via
+// refuseUnknownHeaderFieldChange's generic message rather than naming an
+// action that could fix it — see board-reporting-supersession-link's plan
+// for why a bucket-1 entry pointing at `cancel` would be actively wrong
+// advice here.
+//
+// Same RMW shape as SetTaskDataFormat: resolves via resolveTaskFile (reaches
+// active/done/cancelled — a correction targets an ARCHIVED file in the
+// realistic case), per-path lock, read, upsertHeaderField, atomicfile.Write
+// directly (never lockedWrite, which would re-acquire the same lock and
+// self-deadlock).
+//
+// successor is required and non-empty: this setter has no dedicated "clear
+// the link" path, matching SetTaskDataFormat's own precedent (it never
+// clears DataFormat either) — a real need to clear a supersession link is
+// not a case this task's plan asked for and is deferred until one appears.
+func (v *Vault) SetTaskSupersededBy(project, taskSlug, successor string) error {
+	successor, err := normalizeSupersededBy(taskSlug, successor)
+	if err != nil {
+		return err
+	}
+	if successor == "" {
+		return fmt.Errorf("set superseded_by for %q: successor is required", taskSlug)
+	}
+
+	path, _, err := v.resolveTaskFile(project, taskSlug)
+	if err != nil {
+		return err
+	}
+
+	release, err := vaultlock.Acquire(v.Root, path)
+	if err != nil {
+		return fmt.Errorf("lock task: %w", err)
+	}
+	defer release()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read task: %w", err)
+	}
+
+	updated := upsertHeaderField(string(data), fieldSupersededBy, successor)
 	return atomicfile.Write(v.Root, path, []byte(updated))
 }
 
@@ -1042,16 +1127,41 @@ func (v *Vault) UpdateTaskStatus(project, slug, status string) error {
 
 // RetireTask moves a task to the done/ directory with status "done".
 func (v *Vault) RetireTask(project, slug string) error {
-	return v.moveTask(project, slug, v.TaskDoneDir, StatusDone)
+	return v.moveTask(project, slug, v.TaskDoneDir, StatusDone, "", "")
 }
 
-// CancelTask moves a task to the cancelled/ directory with status "cancelled".
-func (v *Vault) CancelTask(project, slug string) error {
-	return v.moveTask(project, slug, v.TaskCancelledDir, StatusCancelled)
+// CancelTask moves a task to the cancelled/ directory with status "cancelled",
+// optionally recording that its remaining intent moved to supersededBy (the
+// board-reporting-supersession-link abandon-and-rework link). An empty
+// supersededBy means no link — most cancellations carry none.
+//
+// supersededBy is validated LEXICALLY only (normalizeSupersededBy): format
+// and not-self, never that the successor task exists — existence is
+// cross-file truth and belongs to internal/taskgraph, same reasoning
+// normalizeRelations gives for Parent/Depends. A chain (A→B→C) or a cycle
+// (A→B, B→A) across two separate CancelTask calls is therefore NOT caught
+// here — each call only ever touches its own file's lock, and detecting a
+// cross-file cycle synchronously would require a second lock this function
+// deliberately never takes. Cycle detection is internal/taskgraph's job (the
+// SupersededByRef walk), as a reported finding, not a write-time refusal.
+func (v *Vault) CancelTask(project, slug, supersededBy string) error {
+	supersededBy, err := normalizeSupersededBy(slug, supersededBy)
+	if err != nil {
+		return err
+	}
+	if supersededBy == "" {
+		return v.moveTask(project, slug, v.TaskCancelledDir, StatusCancelled, "", "")
+	}
+	return v.moveTask(project, slug, v.TaskCancelledDir, StatusCancelled, fieldSupersededBy, supersededBy)
 }
 
 // moveTask updates a task's status and moves it to a destination directory.
-func (v *Vault) moveTask(project, slug string, destFn func(string) (string, error), status string) error {
+// extraField/extraValue, when extraField is non-empty, are stamped in the
+// SAME critical section as the status line — under the one lock, before the
+// rename — so CancelTask's supersession link lands atomically with the
+// cancellation itself rather than as a second write. RetireTask passes
+// ("", "") for neither.
+func (v *Vault) moveTask(project, slug string, destFn func(string) (string, error), status, extraField, extraValue string) error {
 	srcPath, err := v.TaskFile(project, slug)
 	if err != nil {
 		return err
@@ -1162,8 +1272,12 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 		return fmt.Errorf("read task: %w", err)
 	}
 	updated := replaceStatusLine(string(data), status)
+	if extraField != "" {
+		updated = upsertHeaderField(updated, extraField, extraValue)
+	}
 
-	// Step 1 — stamp the terminal status while the file is still active.
+	// Step 1 — stamp the terminal status (and any extraField, e.g.
+	// SupersededBy) while the file is still active.
 	// atomicfile.Write is atomic per file, so this either lands whole or leaves
 	// the source untouched; there is no half-stamped body.
 	if err := atomicfile.Write(v.Root, srcPath, []byte(updated)); err != nil {
@@ -1590,6 +1704,17 @@ const (
 // board-reporting-one-time-migration and board-reporting-surface-and-format-version-bump
 // have one correct way to use it, per ADR-011.
 const fieldDataFormat = "DataFormat"
+
+// fieldSupersededBy is the abandon-and-rework link (board-reporting-supersession-link):
+// the task this one's remaining intent moved to. Recognized exactly like
+// DataFormat under the open schema — an extension field, appended strictly
+// after Parent/Depends/DataFormat, with no coreFieldOrder entry. Bucket 2
+// (ownerless) in ADR-011's three-bucket write policy: no refuseHeaderChange
+// entry exists for it, so overwrite refuses any change via
+// refuseUnknownHeaderFieldChange's generic message. Written by CancelTask (at
+// cancel time) and corrected, when a task is already archived, by
+// SetTaskSupersededBy — see both for why bucket 2, not bucket 1.
+const fieldSupersededBy = "SupersededBy"
 
 // headerFieldValue is THE definition of a metadata line for the whole package:
 // the parser (parseTaskMeta), the writers (replaceStatusLine, upsertHeaderField)
@@ -2303,12 +2428,13 @@ var serverDerivedHeaderFields = map[string]bool{}
 
 // refuseUnknownHeaderFieldChange extends refuseHeaderChange to every header
 // field neither it nor TaskMeta knows about — the open-schema fields this
-// generalization adds recognition for (DataFormat now; SupersededBy later)
-// plus anything a future field adds without a matching refuseHeaderChange
-// entry. None of them are overwrite's to write either: each either has no
-// dedicated action yet, or is stamped only by a migration path that goes
-// around the typed actions entirely, exactly like a header field already
-// does today.
+// generalization adds recognition for (DataFormat, SupersededBy) plus
+// anything a future field adds without a matching refuseHeaderChange entry.
+// None of them are overwrite's to write either: each either has no dedicated
+// action yet (SupersededBy is bucket 2 deliberately — see fieldSupersededBy
+// and SetTaskSupersededBy: naming `cancel` here would be wrong advice, since
+// cancel cannot correct an already-set link), or is stamped only by a
+// migration path that goes around the typed actions entirely.
 //
 // A field present and byte-identical in both onDiskContent and
 // proposedContent is not a diff and is silently allowed — this is the
@@ -2408,7 +2534,7 @@ func parseTaskMeta(slug, content string, done bool) TaskMeta {
 
 	lines := strings.Split(content, "\n")
 	start, end := headerBlock(lines)
-	var haveParent, haveDepends, haveDataFormat bool
+	var haveParent, haveDepends, haveDataFormat, haveSupersededBy bool
 	for _, line := range lines[start:end] {
 		if v, ok := headerFieldValue(line, fieldParent); ok && !haveParent {
 			meta.Parent = v
@@ -2421,6 +2547,10 @@ func parseTaskMeta(slug, content string, done bool) TaskMeta {
 		if v, ok := headerFieldValue(line, fieldDataFormat); ok && !haveDataFormat {
 			meta.DataFormat = v
 			haveDataFormat = true
+		}
+		if v, ok := headerFieldValue(line, fieldSupersededBy); ok && !haveSupersededBy {
+			meta.SupersededBy = v
+			haveSupersededBy = true
 		}
 	}
 	return meta

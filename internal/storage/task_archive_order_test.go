@@ -64,7 +64,7 @@ func TestArchiveSuccessStateIsUnchangedByTheReorder(t *testing.T) {
 		dirFn      func(v *Vault, project string) (string, error)
 	}{
 		{"retire", (*Vault).RetireTask, "done", (*Vault).TaskDoneDir},
-		{"cancel", (*Vault).CancelTask, "cancelled", (*Vault).TaskCancelledDir},
+		{"cancel", func(v *Vault, project, slug string) error { return v.CancelTask(project, slug, "") }, "cancelled", (*Vault).TaskCancelledDir},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := testVault(t)
