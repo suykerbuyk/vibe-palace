@@ -554,13 +554,17 @@ const manageTaskGoldenPath = "../mcp/tool_surface.golden.json"
 //
 // surfaceVersionAtHEAD was raised 3 -> 4 by
 // vault-template-override-is-discarded-by-config-sync, for a vault write-shape
-// change (what `vp config sync` does to vault Templates/), and 4 -> 5 by
+// change (what `vp config sync` does to vault Templates/), 4 -> 5 by
 // upgrade-overwrite-resets-vault-template-overrides, for a vault write-shape
-// change (what the upgrade and reset commands do to vault Templates/). The
-// ruling this test pins still holds: `move` itself does not bump the surface.
+// change (what the upgrade and reset commands do to vault Templates/), and
+// 5 -> 6 by board-reporting-surface-and-format-version-bump, for three
+// coupled vault write-shape changes (the open extensible header parser, the
+// widened Status vocabulary, and the CreateTime/ModTime header fields) —
+// none of which touch `move`. The ruling this test pins still holds: `move`
+// itself does not bump the surface.
 const (
 	manageTaskSchemaSHAAtHEAD = "4fb44b92cffff09f17e7b4561eb3344e38aaeb734cf9c0748eebea37cef65832"
-	surfaceVersionAtHEAD      = 5
+	surfaceVersionAtHEAD      = 6
 )
 
 // goldenToolSurface is the subset of the manifest these assertions read.
