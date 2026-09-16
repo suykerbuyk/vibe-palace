@@ -788,6 +788,229 @@ func (g *Graph) grouped(includeIcebox, includeArchived bool) []Group {
 	return groups
 }
 
+// Bucket is the three-way board classification a task or epic falls into,
+// decided by its own Meta alone — never by inspecting children (POLA, see
+// Board). An epic's bucket never changes because a child's status changed.
+type Bucket int
+
+const (
+	// BucketActive is open work: any non-terminal, non-icebox status.
+	BucketActive Bucket = iota
+	// BucketIcebox is known-but-not-scheduled work (Status == StatusIcebox).
+	BucketIcebox
+	// BucketHistory is archived work (Meta.Done).
+	BucketHistory
+)
+
+// String renders a Bucket's board label.
+func (b Bucket) String() string {
+	switch b {
+	case BucketIcebox:
+		return "icebox"
+	case BucketHistory:
+		return "history"
+	default:
+		return "active"
+	}
+}
+
+// StatusBucket classifies a single TaskMeta into its board bucket.
+//
+// Meta.Done decides History OUTRIGHT and is checked first: it is the
+// directory-derived boolean (parseTaskMeta sets it from whichever of
+// tasks/, done/, cancelled/ the file was found in), reliably true for a
+// done or cancelled task regardless of what a legacy Status string says on
+// disk. Only a non-Done task's Status is consulted, and only for the one
+// value that means "known but not scheduled" — StatusIcebox. Every other
+// non-Done status (planning, reviewed, in_progress, blocked, and any
+// legacy/unrecognized string) is open work and lands in Active: an
+// ambiguous non-terminal task is still open work.
+func StatusBucket(meta storage.TaskMeta) Bucket {
+	if meta.Done {
+		return BucketHistory
+	}
+	if meta.Status == storage.StatusIcebox {
+		return BucketIcebox
+	}
+	return BucketActive
+}
+
+// BoardView is the three-bucket board report: every epic/standalone Group
+// sorted into Active, Icebox, or History by its own root's status alone
+// (POLA — see StatusBucket). It does not carry StaleParents: a caller
+// holding the same *Graph Board() was called on already has direct access
+// to g.StaleParents, and duplicating it here would be a second copy of the
+// same fact.
+type BoardView struct {
+	Active  []Group `json:"active"`
+	Icebox  []Group `json:"icebox"`
+	History []Group `json:"history"`
+}
+
+// compareDates orders two CalendarDay strings ("" meaning absent/unmigrated),
+// always placing an absent date after a present one, under EITHER direction
+// — a legacy task with no date sorts last whether the bucket is ascending or
+// descending. Two present dates compare lexicographically, which is also
+// chronological for the YYYY-MM-DD CalendarDay format; descending reverses
+// that comparison. Two absent dates compare equal, leaving the caller's own
+// tiebreaker (Epic or slug) to decide.
+func compareDates(a, b string, descending bool) int {
+	ha, hb := a != "", b != ""
+	if ha != hb {
+		if ha {
+			return -1
+		}
+		return 1
+	}
+	if !ha {
+		return 0
+	}
+	c := cmp.Compare(a, b)
+	if descending {
+		return -c
+	}
+	return c
+}
+
+// sortBoardGroups sorts one bucket's groups in place, per Board's
+// group-level rules. The standalone group (Epic == "") always sorts LAST,
+// unconditionally — there is at most one per bucket, so it never needs to be
+// compared against another standalone group. Every other group is ordered by
+// its own epic's ModTime descending (historyBucket — most recently completed
+// first) or CreateTime ascending (Active/Icebox — oldest/longest-outstanding
+// first), with a missing date sorting last under either direction, and the
+// Epic slug as the final tiebreaker.
+func sortBoardGroups(g *Graph, groups []Group, historyBucket bool) {
+	dateOf := func(grp Group) string {
+		n, ok := g.Nodes[grp.Epic]
+		if !ok {
+			return ""
+		}
+		if historyBucket {
+			return n.Meta.ModTime
+		}
+		return n.Meta.CreateTime
+	}
+
+	slices.SortFunc(groups, func(a, b Group) int {
+		if (a.Epic == "") != (b.Epic == "") {
+			if a.Epic == "" {
+				return 1
+			}
+			return -1
+		}
+		if c := compareDates(dateOf(a), dateOf(b), historyBucket); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Epic, b.Epic)
+	})
+}
+
+// sortBoardMembers sorts every group's Members in place, per Board's
+// member-level rules. Direction is ALWAYS descending (newest first) — only
+// the date FIELD differs by bucket: History-bucket members sort by ModTime
+// (most-recently-completed-first), Active/Icebox-bucket members by
+// CreateTime. This is ONE axis for the whole mixed member list regardless of
+// whether an individual member is itself done or open — a done child inside
+// a still-active epic sorts by CreateTime like its open siblings, never by
+// its own ModTime. A missing date sorts last; slug is the final tiebreaker.
+func sortBoardMembers(g *Graph, groups []Group, useModTime bool) {
+	dateOf := func(m string) string {
+		n, ok := g.Nodes[m]
+		if !ok {
+			return ""
+		}
+		if useModTime {
+			return n.Meta.ModTime
+		}
+		return n.Meta.CreateTime
+	}
+
+	for i := range groups {
+		slices.SortFunc(groups[i].Members, func(a, b string) int {
+			if c := compareDates(dateOf(a), dateOf(b), true); c != 0 {
+				return c
+			}
+			return cmp.Compare(a, b)
+		})
+	}
+}
+
+// Board computes the three-bucket board view.
+//
+// Reuses GroupedArchived(true, true) for MEMBERSHIP ONLY — every epic and
+// the one standalone group, with icebox and archived (Done) work both
+// included — then discards its internal rank/sortMembers order entirely and
+// re-sorts everything per Board's own rules (sortBoardGroups,
+// sortBoardMembers).
+//
+// An epic-rooted group (non-empty Epic) maps 1:1 to exactly one bucket,
+// decided ONCE by StatusBucket(g.Nodes[group.Epic].Meta) — the epic's own
+// status, never a child's (POLA). A nested story is never its own group; it
+// is a flat member string inside its true root's single group, and its own
+// status is never separately consulted.
+//
+// The one standalone group (Epic == "") gets a second pass: each member is
+// classified independently by StatusBucket, accumulated into up to three
+// slug lists, and each non-empty list becomes its own Group{Epic: ""} in the
+// matching bucket — never more than one standalone group per bucket.
+//
+// Never reads Meta.SupersededBy or Node.Supersedes: bucketing and sorting
+// are decided only by Status/Done/CreateTime/ModTime.
+func (g *Graph) Board() BoardView {
+	groups := g.GroupedArchived(true, true)
+
+	var view BoardView
+	appendTo := func(b Bucket, grp Group) {
+		switch b {
+		case BucketIcebox:
+			view.Icebox = append(view.Icebox, grp)
+		case BucketHistory:
+			view.History = append(view.History, grp)
+		default:
+			view.Active = append(view.Active, grp)
+		}
+	}
+
+	for _, grp := range groups {
+		if grp.Epic != "" {
+			appendTo(StatusBucket(g.Nodes[grp.Epic].Meta), grp)
+			continue
+		}
+
+		var actives, iceboxes, histories []string
+		for _, m := range grp.Members {
+			switch StatusBucket(g.Nodes[m].Meta) {
+			case BucketIcebox:
+				iceboxes = append(iceboxes, m)
+			case BucketHistory:
+				histories = append(histories, m)
+			default:
+				actives = append(actives, m)
+			}
+		}
+		if len(actives) > 0 {
+			view.Active = append(view.Active, Group{Members: actives})
+		}
+		if len(iceboxes) > 0 {
+			view.Icebox = append(view.Icebox, Group{Members: iceboxes})
+		}
+		if len(histories) > 0 {
+			view.History = append(view.History, Group{Members: histories})
+		}
+	}
+
+	sortBoardGroups(g, view.Active, false)
+	sortBoardGroups(g, view.Icebox, false)
+	sortBoardGroups(g, view.History, true)
+
+	sortBoardMembers(g, view.Active, false)
+	sortBoardMembers(g, view.Icebox, false)
+	sortBoardMembers(g, view.History, true)
+
+	return view
+}
+
 // Subtree returns the group rooted at root: the root slug plus every transitive
 // descendant reached through Node.Children (which is direct-children-only, so
 // the walk here is what makes it transitive), filtered and ordered exactly as a
