@@ -19,37 +19,38 @@ import (
 // treats that as nothing to check rather than a failure.
 var BuildVersion string
 
-// CheckReleaseVersion reports whether the running binary's release major
-// version agrees with surface.MCPSurfaceVersion. It is the check-time half of
-// the versioning task filed 2026-09-12: `.github/workflows/release.yml`
-// guards a pushed TAG against the constant, but nothing previously checked a
-// binary already built and running.
+// CheckReleaseVersion reports whether the running binary's release
+// major.minor agrees with surface.MCPSurfaceVersion.RequiredDataFormat. It is
+// the check-time half of the versioning task filed 2026-09-12, extended by
+// ADR-011 Decision 5 to the minor component: `.github/workflows/release.yml`
+// guards a pushed TAG against both constants, but nothing previously checked
+// a binary already built and running.
 //
 // Only a real MAJOR.MINOR.PATCH release version is checked. A bare
 // git-describe SHA, a "dev" fallback, or a pre-release/dirty suffix all mean
 // "not a tagged release build" and pass without comparison — there is no tag
-// major to disagree with.
+// major.minor to disagree with.
 func CheckReleaseVersion() Result {
 	r := Result{Name: "Release version"}
 
-	major, ok := releaseMajor(BuildVersion)
+	major, minor, ok := releaseMajorMinor(BuildVersion)
 	if !ok {
 		r.Status = Pass
 		r.Summary = "not a tagged release build (" + displayVersion(BuildVersion) + ") — nothing to check"
 		return r
 	}
 
-	if major == surface.MCPSurfaceVersion {
+	if major == surface.MCPSurfaceVersion && minor == surface.RequiredDataFormat {
 		r.Status = Pass
-		r.Summary = fmt.Sprintf("v%d matches MCPSurfaceVersion %d", major, surface.MCPSurfaceVersion)
+		r.Summary = fmt.Sprintf("v%d.%d matches MCPSurfaceVersion.RequiredDataFormat %d.%d", major, minor, surface.MCPSurfaceVersion, surface.RequiredDataFormat)
 		return r
 	}
 
 	r.Status = Fail
-	r.Summary = fmt.Sprintf("v%d disagrees with MCPSurfaceVersion %d", major, surface.MCPSurfaceVersion)
+	r.Summary = fmt.Sprintf("v%d.%d disagrees with MCPSurfaceVersion.RequiredDataFormat %d.%d", major, minor, surface.MCPSurfaceVersion, surface.RequiredDataFormat)
 	r.Details = []string{
-		fmt.Sprintf("  running binary version %q, but MCPSurfaceVersion is %d", BuildVersion, surface.MCPSurfaceVersion),
-		"  cut vN.x.y matching MCPSurfaceVersion, or this binary predates a surface bump — restart the AI host after `make install`.",
+		fmt.Sprintf("  running binary version %q, but MCPSurfaceVersion.RequiredDataFormat is %d.%d", BuildVersion, surface.MCPSurfaceVersion, surface.RequiredDataFormat),
+		"  cut vN.M.y matching MCPSurfaceVersion.RequiredDataFormat, or this binary predates a bump — restart the AI host after `make install`.",
 	}
 	return r
 }
@@ -61,32 +62,33 @@ func displayVersion(v string) string {
 	return v
 }
 
-// releaseMajor parses a leading MAJOR from a MAJOR.MINOR.PATCH release
-// version, rejecting anything else (empty, "dev", a bare git-describe SHA, a
-// "-dirty"/pre-release suffix) as not a release build.
-func releaseMajor(v string) (int, bool) {
+// releaseMajorMinor parses a leading MAJOR.MINOR from a MAJOR.MINOR.PATCH
+// release version, rejecting anything else (empty, "dev", a bare
+// git-describe SHA, a "-dirty"/pre-release suffix) as not a release build.
+func releaseMajorMinor(v string) (major, minor int, ok bool) {
 	if v == "" {
-		return 0, false
+		return 0, 0, false
 	}
 	parts := strings.SplitN(v, ".", 3)
 	if len(parts) != 3 {
-		return 0, false
+		return 0, 0, false
 	}
 	major, err := strconv.Atoi(parts[0])
 	if err != nil {
-		return 0, false
+		return 0, 0, false
 	}
 	// A dirty/pre-release suffix on the patch component (e.g. "0-3-gabcdef" or
 	// "0-dirty") means this is a git-describe pseudo-version off a tag, not
 	// the tag itself.
 	if strings.ContainsAny(parts[2], "-+") {
-		return 0, false
+		return 0, 0, false
 	}
-	if _, err := strconv.Atoi(parts[1]); err != nil {
-		return 0, false
+	minor, err = strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, false
 	}
 	if _, err := strconv.Atoi(parts[2]); err != nil {
-		return 0, false
+		return 0, 0, false
 	}
-	return major, true
+	return major, minor, true
 }

@@ -18,18 +18,24 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
-      - name: Guard tag major against MCPSurfaceVersion
+      - name: Guard tag major.minor against MCPSurfaceVersion.RequiredDataFormat
         env:
           TAG: ${{ github.ref_name }}
         run: |
           surface_major=$(sed -n 's/^const MCPSurfaceVersion int = \([0-9]*\)$/\1/p' internal/surface/version.go)
+          format_minor=$(sed -n 's/^const RequiredDataFormat int = \([0-9]*\)$/\1/p' internal/surface/format.go)
           tag_major=$(echo "$TAG" | sed -n 's/^v\([0-9]*\)\..*$/\1/p')
-          if [ -z "$surface_major" ] || [ -z "$tag_major" ]; then
-            echo "refusing release: could not parse MCPSurfaceVersion ($surface_major) or tag major ($tag_major) from tag $TAG" >&2
+          tag_minor=$(echo "$TAG" | sed -n 's/^v[0-9]*\.\([0-9]*\)\..*$/\1/p')
+          if [ -z "$surface_major" ] || [ -z "$format_minor" ] || [ -z "$tag_major" ] || [ -z "$tag_minor" ]; then
+            echo "refusing release: could not parse MCPSurfaceVersion ($surface_major), RequiredDataFormat ($format_minor), or tag major.minor ($tag_major.$tag_minor) from tag $TAG" >&2
             exit 1
           fi
           if [ "$surface_major" != "$tag_major" ]; then
-            echo "refusing release: tag $TAG has major $tag_major, but MCPSurfaceVersion is $surface_major — cut v${surface_major}.x.y instead" >&2
+            echo "refusing release: tag $TAG has major $tag_major, but MCPSurfaceVersion is $surface_major — cut v${surface_major}.${format_minor}.y instead" >&2
+            exit 1
+          fi
+          if [ "$format_minor" != "$tag_minor" ]; then
+            echo "refusing release: tag $TAG has minor $tag_minor, but RequiredDataFormat is $format_minor — cut v${surface_major}.${format_minor}.y instead" >&2
             exit 1
           fi
       - uses: goreleaser/goreleaser-action@v6

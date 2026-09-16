@@ -10,6 +10,11 @@ PREFIX  ?= $(HOME)/.local
 # pushed tag and refuses a mismatch; this copy is for local `make release`.
 SURFACE_MAJOR := $(shell sed -n 's/^const MCPSurfaceVersion int = \([0-9]*\)$$/\1/p' internal/surface/version.go)
 
+# FORMAT_MINOR is the release minor version: derived from RequiredDataFormat,
+# mirroring SURFACE_MAJOR's derivation. Local convenience only; release.yml's
+# CI guard re-derives the same value from a pushed tag and refuses a mismatch.
+FORMAT_MINOR := $(shell sed -n 's/^const RequiredDataFormat int = \([0-9]*\)$$/\1/p' internal/surface/format.go)
+
 # VERSION strips git describe's leading "v" so it matches goreleaser's own
 # {{.Version}} convention — left un-stripped, a `make install` binary and a
 # goreleaser-built release binary report the same commit's version in two
@@ -247,8 +252,8 @@ uninstall: ## Remove installed binary and man pages from PREFIX
 .PHONY: release
 release: ## Tag-based release — build and publish to GitHub Releases
 	@case "$(VERSION)" in \
-		$(SURFACE_MAJOR).*) ;; \
-		*) echo "refusing release: tag major in VERSION=$(VERSION) disagrees with MCPSurfaceVersion $(SURFACE_MAJOR) — cut v$(SURFACE_MAJOR).x.y instead" >&2; exit 1 ;; \
+		$(SURFACE_MAJOR).$(FORMAT_MINOR).*) ;; \
+		*) echo "refusing release: tag major.minor in VERSION=$(VERSION) disagrees with MCPSurfaceVersion.RequiredDataFormat $(SURFACE_MAJOR).$(FORMAT_MINOR) — cut v$(SURFACE_MAJOR).$(FORMAT_MINOR).y instead" >&2; exit 1 ;; \
 	esac
 	goreleaser release --clean
 

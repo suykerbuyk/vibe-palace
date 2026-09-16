@@ -23,21 +23,32 @@ func withBuildVersion(t *testing.T, v string) {
 }
 
 func TestCheckReleaseVersion_Agrees(t *testing.T) {
-	withBuildVersion(t, fmt.Sprintf("%d.0.0", surface.MCPSurfaceVersion))
+	withBuildVersion(t, fmt.Sprintf("%d.%d.0", surface.MCPSurfaceVersion, surface.RequiredDataFormat))
 	r := CheckReleaseVersion()
 	if r.Status != Pass {
-		t.Fatalf("agreeing major: status = %v, want Pass: %+v", r.Status, r)
+		t.Fatalf("agreeing major.minor: status = %v, want Pass: %+v", r.Status, r)
 	}
 	if !strings.Contains(r.Summary, "matches") {
 		t.Errorf("summary should say it matches: %q", r.Summary)
 	}
 }
 
-func TestCheckReleaseVersion_Disagrees(t *testing.T) {
-	withBuildVersion(t, fmt.Sprintf("%d.0.0", surface.MCPSurfaceVersion+1))
+func TestCheckReleaseVersion_DisagreesMajor(t *testing.T) {
+	withBuildVersion(t, fmt.Sprintf("%d.%d.0", surface.MCPSurfaceVersion+1, surface.RequiredDataFormat))
 	r := CheckReleaseVersion()
 	if r.Status != Fail {
 		t.Fatalf("disagreeing major: status = %v, want Fail: %+v", r.Status, r)
+	}
+	if !strings.Contains(r.Summary, "disagrees") {
+		t.Errorf("summary should say it disagrees: %q", r.Summary)
+	}
+}
+
+func TestCheckReleaseVersion_DisagreesMinor(t *testing.T) {
+	withBuildVersion(t, fmt.Sprintf("%d.%d.0", surface.MCPSurfaceVersion, surface.RequiredDataFormat+1))
+	r := CheckReleaseVersion()
+	if r.Status != Fail {
+		t.Fatalf("disagreeing minor: status = %v, want Fail: %+v", r.Status, r)
 	}
 	if !strings.Contains(r.Summary, "disagrees") {
 		t.Errorf("summary should say it disagrees: %q", r.Summary)
@@ -63,27 +74,29 @@ func TestCheckReleaseVersion_NonReleaseBuildsPass(t *testing.T) {
 	}
 }
 
-func TestReleaseMajor(t *testing.T) {
+func TestReleaseMajorMinor(t *testing.T) {
 	cases := []struct {
 		v         string
 		wantMajor int
+		wantMinor int
 		wantOK    bool
 	}{
-		{"5.0.0", 5, true},
-		{"", 0, false},
-		{"4220e4c", 0, false}, // no dots at all
-		{"not-a-version-at-all", 0, false},
-		{"a.0.0", 0, false},           // non-numeric major
-		{"5.a.0", 0, false},           // non-numeric minor
-		{"5.0.a", 0, false},           // non-numeric patch, no dirty marker
-		{"5.0.0-dirty", 0, false},     // dirty suffix on patch
-		{"5.0.0-3-gabcdef", 0, false}, // git-describe pseudo-version
+		{"5.0.0", 5, 0, true},
+		{"6.2.0", 6, 2, true},
+		{"", 0, 0, false},
+		{"4220e4c", 0, 0, false}, // no dots at all
+		{"not-a-version-at-all", 0, 0, false},
+		{"a.0.0", 0, 0, false},           // non-numeric major
+		{"5.a.0", 0, 0, false},           // non-numeric minor
+		{"5.0.a", 0, 0, false},           // non-numeric patch, no dirty marker
+		{"5.0.0-dirty", 0, 0, false},     // dirty suffix on patch
+		{"5.0.0-3-gabcdef", 0, 0, false}, // git-describe pseudo-version
 	}
 	for _, tc := range cases {
 		t.Run(tc.v, func(t *testing.T) {
-			major, ok := releaseMajor(tc.v)
-			if major != tc.wantMajor || ok != tc.wantOK {
-				t.Errorf("releaseMajor(%q) = (%d, %v), want (%d, %v)", tc.v, major, ok, tc.wantMajor, tc.wantOK)
+			major, minor, ok := releaseMajorMinor(tc.v)
+			if major != tc.wantMajor || minor != tc.wantMinor || ok != tc.wantOK {
+				t.Errorf("releaseMajorMinor(%q) = (%d, %d, %v), want (%d, %d, %v)", tc.v, major, minor, ok, tc.wantMajor, tc.wantMinor, tc.wantOK)
 			}
 		})
 	}
