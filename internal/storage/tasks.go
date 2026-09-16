@@ -138,7 +138,7 @@ const StatusInProgress = "in_progress"
 // — and a detector whose copy drifts from the writer's stops seeing the very
 // disagreement it exists to report.
 //
-// StatusDone was named StatusDone until the board-reporting-status-vocabulary-rename
+// StatusDone was named StatusRetired until the board-reporting-status-vocabulary-rename
 // task: the stored value is now "done", matching the done/ directory it already
 // lived in, and the identifier was renamed with it rather than left to mean
 // something its name no longer says.
