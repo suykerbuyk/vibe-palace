@@ -115,6 +115,13 @@ const (
 	// have its own derivations read its own output. See planner_no_write.go.
 	KindPlannerWrite = "planner-write"
 
+	// KindSharedEnumeration: an EVIDENCE REPORTER — the `vp` command a vaultaudit
+	// dimension publishes so a reader can corroborate it — reached the enumerator
+	// the dimensions themselves use. The two deliberately share a PREDICATE, so
+	// the enumeration is the only thing their differential compares; sharing it
+	// too makes that test pass while proving nothing.
+	KindSharedEnumeration = "shared-enumeration"
+
 	// KindUninvoked: a function or method declared in non-test code and called from
 	// nowhere in non-test code. Capability built, nothing invokes it.
 	KindUninvoked = "uninvoked"
@@ -241,6 +248,7 @@ func Run(roots ...string) ([]Finding, error) {
 	findings = append(findings, gitExecEnvFunnel(files)...)
 	findings = append(findings, envIsolationBypass(files)...)
 	findings = append(findings, plannerNoWrite(files)...)
+	findings = append(findings, evidenceWalkIndependence(files)...)
 
 	sort.Slice(findings, func(i, j int) bool { return findings[i].ID() < findings[j].ID() })
 	return findings, nil
