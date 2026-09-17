@@ -142,7 +142,7 @@ func TestHookPipeline_EndToEnd(t *testing.T) {
 
 	// Verify session note in vault.
 	vault := storage.NewVault(vaultRoot)
-	sessions, err := vault.ListSessions(slug, "", "", 10)
+	sessions, _, err := vault.ListSessions(slug, "", "", 10)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestHookPipeline_EndToEnd(t *testing.T) {
 		t.Error("second run should be a claimed skip")
 	}
 
-	sessions2, err := vault.ListSessions(slug, "", "", 10)
+	sessions2, _, err := vault.ListSessions(slug, "", "", 10)
 	if err != nil {
 		t.Fatalf("ListSessions after second run: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestHookPipeline_EndToEnd(t *testing.T) {
 		t.Error("third run (new session) should not be a claimed skip")
 	}
 
-	sessions3, err := vault.ListSessions(slug, "", "", 10)
+	sessions3, _, err := vault.ListSessions(slug, "", "", 10)
 	if err != nil {
 		t.Fatalf("ListSessions after third run: %v", err)
 	}

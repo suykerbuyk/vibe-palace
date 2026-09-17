@@ -151,7 +151,7 @@ func TestIntegrationBootstrapWithSessions(t *testing.T) {
 	}
 
 	// Read it back.
-	sessions, err := h.Vault.ListSessions("test-proj", "", "", 0)
+	sessions, _, err := h.Vault.ListSessions("test-proj", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

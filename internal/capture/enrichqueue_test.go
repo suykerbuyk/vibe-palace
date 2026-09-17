@@ -803,7 +803,7 @@ func TestDrainLegacyQueueItem(t *testing.T) {
 	cwd := t.TempDir()
 
 	// Seed a legacy host-agnostic note (fp="") and a legacy queue item.
-	if err := vault.RewriteSession("proj", "2026-06-21", "", 1, testPlainMeta(), "## Summary\n\nplain\n"); err != nil {
+	if _, err := vault.RewriteSession("proj", "2026-06-21", "", 1, testPlainMeta(), "## Summary\n\nplain\n"); err != nil {
 		t.Fatalf("RewriteSession(legacy): %v", err)
 	}
 	if err := EnqueueEnrichment(cwd, "proj", "2026-06-21", "", 1, "", enrichment.PromptInput{UserText: "u", AssistantText: "a"}); err != nil {

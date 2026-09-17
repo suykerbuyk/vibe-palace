@@ -52,7 +52,7 @@ User: Try again with a different strategy. Scratch that.
 	}
 
 	// Verify score is persisted in session YAML frontmatter.
-	sessions, err := h.Vault.ListSessions("friction-test", "", "", 0)
+	sessions, _, err := h.Vault.ListSessions("friction-test", "", "", 0)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}

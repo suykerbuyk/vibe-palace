@@ -220,11 +220,12 @@ func runSessionHosts(sessions []storage.SessionMeta, asJSON bool, out io.Writer)
 }
 
 func runSessions(vault *storage.Vault, proj string, q sessionsQuery, out io.Writer) int {
-	sessions, err := vault.ListSessions(proj, "", "", 0)
+	sessions, skipped, err := vault.ListSessions(proj, "", "", 0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vp sessions: %v\n", err)
 		return cli.ExitSystem
 	}
+	reportSkippedSessions(os.Stderr, "vp sessions", skipped)
 
 	// The host filter runs BEFORE the --last window, so "the last 10 Grok
 	// sessions" means what it says rather than "whichever of the last 10

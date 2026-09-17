@@ -198,10 +198,15 @@ func GetFrictionTrends(vault *storage.Vault, project string, weeks int) ([]Weekl
 	monday := now.AddDate(0, 0, -int(weekday-time.Monday))
 	dateFrom := monday.AddDate(0, 0, -7*(weeks-1)).Format("2006-01-02")
 
-	sessions, err := vault.ListSessions(project, dateFrom, "", 0)
+	sessions, skipped, err := vault.ListSessions(project, dateFrom, "", 0)
 	if err != nil {
 		return nil, err
 	}
+	// A skipped note is a HOLE in this series, not a missing row: the week it
+	// belonged to is now computed from fewer sessions than actually happened.
+	// Reporting it is what keeps a dip in the trend distinguishable from a note
+	// the reader could not read.
+	warnSkippedSessions("friction trend", project, skipped)
 
 	if len(sessions) == 0 {
 		return []WeeklyMetric{}, nil

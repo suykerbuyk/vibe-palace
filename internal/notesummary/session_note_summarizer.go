@@ -6,7 +6,9 @@ package notesummary
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/llm"
@@ -79,8 +81,16 @@ func (is *SessionNoteSummarizer) Summarize(ctx context.Context, item summarize.S
 	meta.SearchSummaryAt = time.Now().UTC().Format(time.RFC3339)
 	meta.SearchSummaryModel = is.client.Model()
 
-	if err := is.vault.RewriteSession(item.Project, item.Date, item.Fingerprint, item.Iteration, meta, body); err != nil {
+	normalized, err := is.vault.RewriteSession(item.Project, item.Date, item.Fingerprint, item.Iteration, meta, body)
+	if err != nil {
 		return nil, fmt.Errorf("notesummary: rewrite session: %w", err)
+	}
+	// This path OWNS the note's prose (it just replaced search_summary), so it
+	// normalizes rather than refusing — but it says so. A repair nobody is told
+	// about is a silent edit to a historical record.
+	if len(normalized) > 0 {
+		slog.Warn("notesummary: session note needed YAML repair to stay readable",
+			"project", item.Project, "note", item.Date, "fields", strings.Join(normalized, ","))
 	}
 
 	return &summarize.SummaryResult{Kind: summarize.KindSessionNote}, nil

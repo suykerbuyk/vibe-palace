@@ -174,7 +174,7 @@ func TestIntegrationSessionIterationAcrossSessions(t *testing.T) {
 	}
 
 	// Verify all sessions are listable.
-	sessions, err := h.Vault.ListSessions("test-proj", "", "", 0)
+	sessions, _, err := h.Vault.ListSessions("test-proj", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

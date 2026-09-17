@@ -104,10 +104,17 @@ func searchSessionsHandler(vault *storage.Vault) mcp.HandlerFunc {
 		}
 
 		// Fetch sessions with date-range filtering.
-		sessions, err := vault.ListSessions(p.Project, p.DateFrom, p.DateTo, 0)
+		sessions, skipped, err := vault.ListSessions(p.Project, p.DateFrom, p.DateTo, 0)
 		if err != nil {
 			return nil, fmt.Errorf("list sessions: %w", err)
 		}
+		// 🔴 THE ONE SKIP THAT DOES NOT REACH ITS PAYLOAD, said out loud rather
+		// than quietly omitted. This tool returns a BARE ARRAY of results, so
+		// there is no envelope to carry a skip list without changing its wire
+		// contract — which is a larger change than this fix, and not one to make
+		// silently in passing. The skip is logged instead. If this tool ever
+		// grows an envelope, move the report into it.
+		warnSkippedSessions("session search", p.Project, skipped)
 
 		lowerQuery := strings.ToLower(p.Query)
 		lowerTag := strings.ToLower(p.Tag)
@@ -378,6 +385,11 @@ type ProjectContext struct {
 	Decisions []string               `json:"decisions,omitempty"`
 	Friction  []capture.WeeklyMetric `json:"friction,omitempty"`
 
+	// SkippedNotes names session notes the reader could not parse. This payload
+	// is a project's context; a short answer that does not say it is short is
+	// the failure this field exists to prevent.
+	SkippedNotes []string `json:"skipped_notes,omitempty"`
+
 	// 🔴 THE TERMINAL SENTINEL — last field, no omitempty, always true on a
 	// successful return. Its ABSENCE is the signal: absent ⇒ the host cut this
 	// document, so the `sessions`/`threads`/`decisions` lists you are holding
@@ -462,9 +474,12 @@ func getProjectContextHandler(vault *storage.Vault, resolver *vpctx.Resolver) mc
 
 		// Sessions, threads, decisions all need session list.
 		if want["sessions"] || want["threads"] || want["decisions"] {
-			sessions, err := vault.ListSessions(p.Project, "", "", 0)
+			sessions, skipped, err := vault.ListSessions(p.Project, "", "", 0)
 			if err != nil {
 				return nil, fmt.Errorf("list sessions: %w", err)
+			}
+			for _, sk := range skipped {
+				result.SkippedNotes = append(result.SkippedNotes, sk.Path)
 			}
 			// Take most recent maxSessions.
 			start := 0
@@ -595,12 +610,15 @@ func getEffectivenessHandler(vault *storage.Vault) mcp.HandlerFunc {
 		loc := vault.CalendarLocation()
 		dateFrom := time.Now().In(loc).AddDate(0, 0, -weeks*7).Format("2006-01-02")
 
-		sessions, err := vault.ListSessions(p.Project, dateFrom, "", 0)
+		sessions, skipped, err := vault.ListSessions(p.Project, dateFrom, "", 0)
 		if err != nil {
 			return nil, fmt.Errorf("list sessions: %w", err)
 		}
 
 		result := capture.ComputeEffectiveness(p.Project, sessions, loc)
+		for _, sk := range skipped {
+			result.SkippedNotes = append(result.SkippedNotes, sk.Path)
+		}
 
 		// Optional post-filter: when a narrowing sections selector is supplied,
 		// ZERO the unselected section's field (present-but-empty, not an absent

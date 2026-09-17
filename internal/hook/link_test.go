@@ -110,7 +110,7 @@ func TestRun_StopThenSessionEnd_ClosesTheArchiveLink(t *testing.T) {
 	}
 
 	vault := storage.NewVault(f.vaultRoot)
-	notes, err := vault.ListSessions("test-project", "", "", 0)
+	notes, _, err := vault.ListSessions("test-project", "", "", 0)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestRun_StopThenSessionEnd_ClosesTheArchiveLink(t *testing.T) {
 	}
 
 	// Forward link: note -> transcript.
-	linked, err := vault.ListSessions("test-project", "", "", 0)
+	linked, _, err := vault.ListSessions("test-project", "", "", 0)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestRun_SessionEnd_LinkIsIdempotent(t *testing.T) {
 	}
 
 	vault := storage.NewVault(f.vaultRoot)
-	notes, err := vault.ListSessions("test-project", "", "", 0)
+	notes, _, err := vault.ListSessions("test-project", "", "", 0)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestRun_SessionEnd_ManifestPointsAtTheWrapNote_NotTheStub(t *testing.T) {
 		t.Fatalf("wrap capture: %v", err)
 	}
 
-	notes, err := vault.ListSessions("test-project", "", "", 0)
+	notes, _, err := vault.ListSessions("test-project", "", "", 0)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestRun_SessionEnd_ManifestPointsAtTheWrapNote_NotTheStub(t *testing.T) {
 
 	// Every note of the session reaches the transcript...
 	var wrapPath string
-	linked, err := vault.ListSessions("test-project", "", "", 0)
+	linked, _, err := vault.ListSessions("test-project", "", "", 0)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestRun_SessionEnd_ScoresWrapNoteNotStub(t *testing.T) {
 		t.Fatalf("FrictionScored=%d, want 1", end.FrictionScored)
 	}
 
-	notes, err := vault.ListSessions("test-project", "", "", 0)
+	notes, _, err := vault.ListSessions("test-project", "", "", 0)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}

@@ -54,10 +54,22 @@ const headOfQueueN = 5
 // that the ranker had no signal: every session then scores zero and the order
 // falls back to recency, which is exactly what the rows show.
 //
-// FallbackReason is set when the semantic path was considered but not used
-// (cold embedder, missing in-memory index, no session-typed hits, nil engine).
-// Empty when structural was the intentional result, including empty-corpus
-// projects that have nothing semantic to say.
+// FallbackReason says why semantic ranking did not run. It is NEVER empty on a
+// structural result.
+//
+// 🔴 IT USED TO BE EMPTY FOR AN EMPTY CORPUS, and that hole is what let a real
+// outage read as normal. When ListSessions was fail-closed, two malformed notes
+// made it return zero sessions for the two largest projects; rankSessionIndex
+// took its zero-length early return BEFORE reaching any of the reasons below,
+// and the payload said `ranker: structural` with no reason at all — identical
+// bytes to a healthy project that simply had nothing semantic to say. The
+// comment at the attachment site in context_tools.go already claimed this
+// ambiguity could not happen; fallbackNoSessions and fallbackNotesUnreadable
+// are what make that claim true rather than aspirational.
+//
+// SkippedNotes names session notes the reader could not parse. A short index is
+// not the same fact as a short history, and without this the difference is
+// invisible from inside the payload.
 //
 // 🔴 IT IS NOT CALLED head_of_queue ON THE WIRE, AND THAT IS DELIBERATE. The
 // payload already has a `head_of_queue` key — the row list — and two identical
@@ -66,11 +78,12 @@ const headOfQueueN = 5
 // use the bulk key as the instrument/index boundary and silently measured the
 // wrong offset until this was renamed.
 type RankingReport struct {
-	Ranker         string `json:"ranker"`
-	RankedAgainst  string `json:"ranked_against,omitempty"`
-	Candidates     int    `json:"candidates"`
-	Returned       int    `json:"returned"`
-	FallbackReason string `json:"fallback_reason,omitempty"`
+	Ranker         string   `json:"ranker"`
+	RankedAgainst  string   `json:"ranked_against,omitempty"`
+	Candidates     int      `json:"candidates"`
+	Returned       int      `json:"returned"`
+	FallbackReason string   `json:"fallback_reason,omitempty"`
+	SkippedNotes   []string `json:"skipped_notes,omitempty"`
 }
 
 // rankerStructural is the deterministic ranker: task-graph order for the queue,
@@ -91,6 +104,17 @@ const (
 	fallbackEmbedderNotReady = "embedder_not_ready"
 	fallbackIndexNotReady    = "index_not_ready"
 	fallbackNoSessionHits    = "no_session_hits"
+
+	// fallbackNoSessions is reported when the project has no readable session
+	// at all. It is what keeps the zero-corpus case from being reported as the
+	// same bytes as a healthy structural run — see the RankingReport doc above.
+	fallbackNoSessions = "no_sessions"
+
+	// fallbackNotesUnreadable is reported when the corpus is empty AND the
+	// reader skipped notes to get there, which is the outage shape rather than
+	// a genuinely new project. It is strictly more specific than
+	// fallbackNoSessions and takes precedence over it.
+	fallbackNotesUnreadable = "notes_unreadable"
 )
 
 // headOfQueueRow is one task in the derived head of queue: what the project
@@ -195,9 +219,18 @@ func inProgressRank(status string) int {
 // rankSessionIndex chooses structural or semantic ordering for recent_sessions.
 // Semantic runs only when the engine's embedder is already warm and the project
 // index is already in memory — never ensureIndex, never LazyEmbedder construct.
-func rankSessionIndex(project string, sessions []storage.SessionMeta, terms []string, n int, eng *search.Engine) (rows []sessionSummary, report RankingReport) {
+func rankSessionIndex(project string, sessions []storage.SessionMeta, terms []string, n int, eng *search.Engine, skipped []storage.SessionSkip) (rows []sessionSummary, report RankingReport) {
 	report = RankingReport{Ranker: rankerStructural, Candidates: len(sessions)}
+	for _, s := range skipped {
+		report.SkippedNotes = append(report.SkippedNotes, s.Path)
+	}
 	if len(sessions) == 0 {
+		// Never return without a reason. An empty fallback_reason here is what
+		// made a two-file outage indistinguishable from an empty project.
+		report.FallbackReason = fallbackNoSessions
+		if len(skipped) > 0 {
+			report.FallbackReason = fallbackNotesUnreadable
+		}
 		return nil, report
 	}
 

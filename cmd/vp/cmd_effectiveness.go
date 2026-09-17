@@ -58,11 +58,12 @@ func cmdEffectiveness() *cli.Command {
 }
 
 func runEffectiveness(vault *storage.Vault, proj string, asJSON bool, out io.Writer) int {
-	sessions, err := vault.ListSessions(proj, "", "", 0)
+	sessions, skipped, err := vault.ListSessions(proj, "", "", 0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vp effectiveness: %v\n", err)
 		return cli.ExitSystem
 	}
+	reportSkippedSessions(os.Stderr, "vp effectiveness", skipped)
 
 	result := capture.ComputeEffectiveness(proj, sessions, vault.CalendarLocation())
 

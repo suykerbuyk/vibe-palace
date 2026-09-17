@@ -571,7 +571,7 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	}
 
 	// The session INDEX, ranked against the head of queue — graceful on error.
-	if sessions, err := vault.ListSessions(project, "", "", 0); err == nil {
+	if sessions, skipped, err := vault.ListSessions(project, "", "", 0); err == nil {
 		// Compute the friction trend from the FULL history BEFORE the index trim
 		// — computing after it would leave the 30d/90d windows meaningless.
 		// GetFrictionWindows always returns one window per request, so guard on
@@ -582,12 +582,13 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		if trend := capture.ComputeFrictionTrend(sessions, time.Now(), vault.CalendarLocation()); frictionTrendHasData(trend) {
 			result.FrictionTrend = &trend
 		}
-		rows, report := rankSessionIndex(project, sessions, terms, headOfQueueN, engine)
+		rows, report := rankSessionIndex(project, sessions, terms, headOfQueueN, engine, skipped)
 		result.RecentSessions = rows
 		ranking.Ranker = report.Ranker
 		ranking.Candidates = report.Candidates
 		ranking.Returned = report.Returned
 		ranking.FallbackReason = report.FallbackReason
+		ranking.SkippedNotes = report.SkippedNotes
 	}
 
 	// The ranking report is attached UNCONDITIONALLY, including when the session

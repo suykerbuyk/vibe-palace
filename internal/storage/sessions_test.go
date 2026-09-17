@@ -122,7 +122,7 @@ func TestListSessions(t *testing.T) {
 	}
 
 	// All sessions.
-	got, err := v.ListSessions("proj", "", "", 0)
+	got, _, err := v.ListSessions("proj", "", "", 0)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestListSessions(t *testing.T) {
 	}
 
 	// Date range filter.
-	got, err = v.ListSessions("proj", "2026-03-15", "2026-03-15", 0)
+	got, _, err = v.ListSessions("proj", "2026-03-15", "2026-03-15", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestListSessions(t *testing.T) {
 	}
 
 	// Limit.
-	got, err = v.ListSessions("proj", "", "", 2)
+	got, _, err = v.ListSessions("proj", "", "", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestListSessions(t *testing.T) {
 
 func TestListSessionsEmpty(t *testing.T) {
 	v := testVault(t)
-	got, err := v.ListSessions("proj", "", "", 0)
+	got, _, err := v.ListSessions("proj", "", "", 0)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestRewriteSessionOverwritesInPlace(t *testing.T) {
 		Decisions:   []string{"d1"},
 		OpenThreads: []string{"t1"},
 	}
-	if err := v.RewriteSession("proj", "2026-05-01", fp, 1, newMeta, "## Summary\n\nenriched summary\n"); err != nil {
+	if _, err := v.RewriteSession("proj", "2026-05-01", fp, 1, newMeta, "## Summary\n\nenriched summary\n"); err != nil {
 		t.Fatalf("RewriteSession: %v", err)
 	}
 
@@ -350,7 +350,7 @@ func TestRewriteSessionByteIdenticalFraming(t *testing.T) {
 	// note_path is an identity coordinate that both writers pin, so the
 	// hand-stamped meta must carry it for the framing to match.
 	framed.NotePath = fmt.Sprintf("Projects/proj/sessions/2026-05-02-%s-01.md", fp)
-	got, err := marshalSessionFile(framed, body)
+	got, _, err := marshalSessionFile(framed, body)
 	if err != nil {
 		t.Fatalf("marshalSessionFile: %v", err)
 	}
@@ -361,10 +361,10 @@ func TestRewriteSessionByteIdenticalFraming(t *testing.T) {
 
 func TestRewriteSessionInvalidArgs(t *testing.T) {
 	v := testVault(t)
-	if err := v.RewriteSession("BAD PROJECT", "2026-05-01", "", 1, SessionMeta{}, ""); err == nil {
+	if _, err := v.RewriteSession("BAD PROJECT", "2026-05-01", "", 1, SessionMeta{}, ""); err == nil {
 		t.Error("RewriteSession with invalid project should error")
 	}
-	if err := v.RewriteSession("proj", "not-a-date", "", 1, SessionMeta{}, ""); err == nil {
+	if _, err := v.RewriteSession("proj", "not-a-date", "", 1, SessionMeta{}, ""); err == nil {
 		t.Error("RewriteSession with invalid date should error")
 	}
 }
@@ -579,10 +579,10 @@ func TestCrossHostNoCollision(t *testing.T) {
 	v := testVault(t)
 	const fpA, fpB = "aaaaaaaa", "bbbbbbbb"
 
-	if err := v.RewriteSession("proj", "2026-06-23", fpA, 1, SessionMeta{Date: "2026-06-23", Title: "host A"}, "## A\n"); err != nil {
+	if _, err := v.RewriteSession("proj", "2026-06-23", fpA, 1, SessionMeta{Date: "2026-06-23", Title: "host A"}, "## A\n"); err != nil {
 		t.Fatalf("RewriteSession A: %v", err)
 	}
-	if err := v.RewriteSession("proj", "2026-06-23", fpB, 1, SessionMeta{Date: "2026-06-23", Title: "host B"}, "## B\n"); err != nil {
+	if _, err := v.RewriteSession("proj", "2026-06-23", fpB, 1, SessionMeta{Date: "2026-06-23", Title: "host B"}, "## B\n"); err != nil {
 		t.Fatalf("RewriteSession B: %v", err)
 	}
 
@@ -703,7 +703,7 @@ func TestSearchSummaryFieldsRoundTripRewriteSession(t *testing.T) {
 		SearchSummaryAt:    "2026-07-02T08:30:00Z",
 		SearchSummaryModel: "claude-sonnet-test",
 	}
-	if err := v.RewriteSession("proj", "2026-07-02", fp, 1, newMeta, "body\n"); err != nil {
+	if _, err := v.RewriteSession("proj", "2026-07-02", fp, 1, newMeta, "body\n"); err != nil {
 		t.Fatalf("RewriteSession: %v", err)
 	}
 
@@ -758,7 +758,7 @@ func TestSearchSummaryFieldsOmitEmpty(t *testing.T) {
 	// Now via RewriteSession too, since it shares marshalSessionFile but is
 	// worth checking independently in case a future change diverges the two
 	// write paths.
-	if err := v.RewriteSession("proj", "2026-07-03", fp, 1, meta, "body\n"); err != nil {
+	if _, err := v.RewriteSession("proj", "2026-07-03", fp, 1, meta, "body\n"); err != nil {
 		t.Fatalf("RewriteSession: %v", err)
 	}
 	raw, err = os.ReadFile(path)

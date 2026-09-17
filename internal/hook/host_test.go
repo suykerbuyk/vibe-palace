@@ -35,7 +35,7 @@ import (
 func soleNote(t *testing.T, f linkFixture) (storage.SessionMeta, string) {
 	t.Helper()
 	vault := storage.NewVault(f.vaultRoot)
-	notes, err := vault.ListSessions("test-project", "", "", 0)
+	notes, _, err := vault.ListSessions("test-project", "", "", 0)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}

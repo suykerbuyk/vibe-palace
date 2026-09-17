@@ -361,7 +361,7 @@ func TestRunSessionsListingShowsHost(t *testing.T) {
 
 func mustSessions(t *testing.T, v *storage.Vault) []storage.SessionMeta {
 	t.Helper()
-	sessions, err := v.ListSessions("test-proj", "", "", 0)
+	sessions, _, err := v.ListSessions("test-proj", "", "", 0)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}

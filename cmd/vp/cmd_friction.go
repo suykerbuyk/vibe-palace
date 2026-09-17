@@ -72,11 +72,12 @@ func cmdFriction() *cli.Command {
 }
 
 func runFriction(vault *storage.Vault, proj string, top int, asJSON bool, out io.Writer) int {
-	sessions, err := vault.ListSessions(proj, "", "", 0)
+	sessions, skipped, err := vault.ListSessions(proj, "", "", 0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vp friction: %v\n", err)
 		return cli.ExitSystem
 	}
+	reportSkippedSessions(os.Stderr, "vp friction", skipped)
 
 	recent := capture.GetFrictionWindows(sessions, time.Now(), vault.CalendarLocation(), []int{7})[0]
 	topSessions := capture.TopFrictionSessions(sessions, top)

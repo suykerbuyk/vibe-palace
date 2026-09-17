@@ -208,7 +208,7 @@ func TestIntegrationHostParityFootprint(t *testing.T) {
 			t.Fatalf("read manifest: %v", err)
 		}
 
-		sessions, err := h.Vault.ListSessions("parity-grok", "", "", 0)
+		sessions, _, err := h.Vault.ListSessions("parity-grok", "", "", 0)
 		if err != nil {
 			t.Fatalf("ListSessions: %v", err)
 		}
@@ -340,7 +340,7 @@ func TestIntegrationHostParityFootprint(t *testing.T) {
 		}
 
 		vault := storage.NewVault(vaultRoot)
-		sessions, err := vault.ListSessions(slug, "", "", 10)
+		sessions, _, err := vault.ListSessions(slug, "", "", 10)
 		if err != nil {
 			t.Fatalf("ListSessions: %v", err)
 		}
@@ -476,7 +476,7 @@ func TestIntegrationHostParityNoAutoArchiveUnknownHost(t *testing.T) {
 		t.Fatalf("unknown host auto-archived %v — defaults must not fire without hook-less signal", names)
 	}
 
-	sessions, err := h.Vault.ListSessions("parity-unknown", "", "", 0)
+	sessions, _, err := h.Vault.ListSessions("parity-unknown", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

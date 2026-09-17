@@ -511,7 +511,7 @@ func TestScoreUnscoredNotesFromTranscript_WrapNotStub(t *testing.T) {
 		t.Fatalf("updated %d notes, want 1 (wrap only)", n)
 	}
 
-	notes, err := vault.ListSessions("p", "", "", 0)
+	notes, _, err := vault.ListSessions("p", "", "", 0)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -587,7 +587,7 @@ func TestScoreUnscoredNotesFromTranscript_EmptyIsNoop(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("empty transcript updated %d, want 0", n)
 	}
-	notes, err := vault.ListSessions("p", "", "", 0)
+	notes, _, err := vault.ListSessions("p", "", "", 0)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}

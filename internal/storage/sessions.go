@@ -445,9 +445,11 @@ func (v *Vault) UpsertSessionByKey(project, sessionKey string, meta SessionMeta,
 			// never checks that its target exists, so a wrong iteration here would
 			// overwrite a DIFFERENT note and stamp it with that note's ID — producing
 			// a perfectly well-formed, self-consistent, wrong file.
-			if err := v.RewriteSession(project, ref.Date, ref.Fingerprint, ref.Iteration, finalMeta, finalBody); err != nil {
+			normalized, err := v.RewriteSession(project, ref.Date, ref.Fingerprint, ref.Iteration, finalMeta, finalBody)
+			if err != nil {
 				return SessionRef{}, false, err
 			}
+			ref.Normalized = normalized
 			return ref, true, nil
 		}
 	}
@@ -702,8 +704,12 @@ func (v *Vault) TryLinkArchiveToSessions(project, archiveSessionID, archiveRel s
 		// history on every SessionEnd for no gain.
 		if meta.Archive != archiveRel {
 			meta.Archive = archiveRel
-			if werr := v.RewriteSession(project, date, fp, iteration, meta, body); werr != nil {
+			norm, werr := v.RewriteSession(project, date, fp, iteration, meta, body)
+			if werr != nil {
 				return ArchiveLinkResult{}, fmt.Errorf("link session %s: %w", stem, werr)
+			}
+			if len(norm) > 0 {
+				return ArchiveLinkResult{}, fmt.Errorf("link session %s: %w", stem, errRewriteWouldNormalize(norm))
 			}
 			res.Updated = append(res.Updated, ref)
 		}
@@ -846,8 +852,12 @@ func (v *Vault) ScoreUnscoredNotes(project, archiveSessionID string, score int, 
 		cp := *breakdown
 		meta.Breakdown = &cp
 		meta.FrictionScore = score
-		if werr := v.RewriteSession(project, date, fp, iteration, meta, body); werr != nil {
+		norm, werr := v.RewriteSession(project, date, fp, iteration, meta, body)
+		if werr != nil {
 			return updated, fmt.Errorf("score session %s: %w", stem, werr)
+		}
+		if len(norm) > 0 {
+			return updated, fmt.Errorf("score session %s: %w", stem, errRewriteWouldNormalize(norm))
 		}
 		updated++
 	}
@@ -1012,8 +1022,12 @@ func (v *Vault) BackfillArchiveLink(project, sessionID, archiveRel string) (Arch
 			changed = true
 		}
 		if changed {
-			if werr := v.RewriteSession(project, date, fp, iteration, meta, body); werr != nil {
+			norm, werr := v.RewriteSession(project, date, fp, iteration, meta, body)
+			if werr != nil {
 				return ArchiveLinkResult{}, fmt.Errorf("backfill session %s: %w", stem, werr)
+			}
+			if len(norm) > 0 {
+				return ArchiveLinkResult{}, fmt.Errorf("backfill session %s: %w", stem, errRewriteWouldNormalize(norm))
 			}
 			res.Updated = append(res.Updated, ref)
 		}
@@ -1038,6 +1052,13 @@ type SessionRef struct {
 	Date        string
 	Fingerprint string
 	Iteration   int
+
+	// Normalized names the frontmatter fields the write-side guard repaired to
+	// keep this note readable — empty on a clean write. It rides the ref rather
+	// than being logged inside the writer so the CALLER decides how to surface
+	// it; a repair nobody is told about is a silent edit to a historical record.
+	// See session_yaml_safety.go.
+	Normalized []string
 }
 
 // WriteSession writes a session markdown file with YAML frontmatter.
@@ -1098,7 +1119,7 @@ func (v *Vault) WriteSessionRef(project string, meta SessionMeta, body string) (
 		return SessionRef{}, fmt.Errorf("ensure sessions dir: %w", err)
 	}
 
-	data, err := marshalSessionFile(meta, body)
+	data, normalized, err := marshalSessionFile(meta, body)
 	if err != nil {
 		return SessionRef{}, err
 	}
@@ -1118,6 +1139,7 @@ func (v *Vault) WriteSessionRef(project string, meta SessionMeta, body string) (
 		Date:        meta.Date,
 		Fingerprint: fp,
 		Iteration:   iteration,
+		Normalized:  normalized,
 	}, nil
 }
 
@@ -1126,10 +1148,22 @@ func (v *Vault) WriteSessionRef(project string, meta SessionMeta, body string) (
 // body with exactly one trailing newline. WriteSession and RewriteSession
 // share this helper so both writers produce byte-identical framing for the
 // same (meta, body) pair.
-func marshalSessionFile(meta SessionMeta, body string) ([]byte, error) {
+//
+// It is also the one place a session note is proven READABLE before it is
+// written. Both write surfaces reach it and neither can skip it, which is the
+// property that makes the guarantee hold without either caller remembering:
+//
+//	grep -rn "marshalSessionFile" --include='*.go' .
+//
+// The second return value names the fields normalization repaired, empty when
+// nothing was touched. Callers surface it; see session_yaml_safety.go on why a
+// silent repair is the same defect as a silent skip.
+func marshalSessionFile(meta SessionMeta, body string) ([]byte, []string, error) {
+	meta, normalized := normalizeSessionMeta(meta)
+
 	yamlBytes, err := yaml.Marshal(meta)
 	if err != nil {
-		return nil, fmt.Errorf("marshal session meta: %w", err)
+		return nil, nil, fmt.Errorf("marshal session meta: %w", err)
 	}
 
 	var buf bytes.Buffer
@@ -1142,7 +1176,30 @@ func marshalSessionFile(meta SessionMeta, body string) ([]byte, error) {
 			buf.WriteByte('\n')
 		}
 	}
-	return buf.Bytes(), nil
+	data := buf.Bytes()
+
+	// 🔴 THE WRITE-SIDE GUARD. Normalization is best-effort against the shapes
+	// that have been measured; this asks the actual reader. A note that reaches
+	// here unreadable is genuine capture loss and fails HARD rather than landing
+	// on disk to take a project's session index down later (iteration 196: no
+	// `partial` tier).
+	if verr := verifySessionRoundTrip(data, meta); verr != nil {
+		return nil, normalized, fmt.Errorf(
+			"refusing to write a session note that cannot be read back: %w\n"+
+				"This is gopkg.in/yaml.v3's emitter disagreeing with its own parser, and there is no "+
+				"newer release to upgrade to. Normalization already ran%s. Writing anyway would put a "+
+				"file on disk that fails every later read of this project's session index.",
+			verr, normalizedSuffix(normalized))
+	}
+	return data, normalized, nil
+}
+
+// normalizedSuffix renders the normalization report for an error message.
+func normalizedSuffix(normalized []string) string {
+	if len(normalized) == 0 {
+		return " and changed nothing"
+	}
+	return " and repaired " + strings.Join(normalized, ", ")
 }
 
 // RewriteSession overwrites an EXISTING session file in place at the fixed
@@ -1153,20 +1210,20 @@ func marshalSessionFile(meta SessionMeta, body string) ([]byte, error) {
 // captured note with synthesized summary/decisions/threads. It shares only the
 // marshalSessionFile framing helper with WriteSession and serializes against a
 // concurrent WriteSession via the same per-path advisory lock (lockedWrite).
-func (v *Vault) RewriteSession(project, date, fp string, iteration int, meta SessionMeta, body string) error {
+func (v *Vault) RewriteSession(project, date, fp string, iteration int, meta SessionMeta, body string) ([]string, error) {
 	if err := slug.Validate(project); err != nil {
-		return fmt.Errorf("project: %w", err)
+		return nil, fmt.Errorf("project: %w", err)
 	}
 	if !datePattern.MatchString(date) {
-		return fmt.Errorf("date %q must be in YYYY-MM-DD format", date)
+		return nil, fmt.Errorf("date %q must be in YYYY-MM-DD format", date)
 	}
 
 	path, err := v.SessionFile(project, date, fp, iteration)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("ensure sessions dir: %w", err)
+		return nil, fmt.Errorf("ensure sessions dir: %w", err)
 	}
 
 	// Defensively pin the identity fields so a rewrite cannot drift the
@@ -1183,21 +1240,21 @@ func (v *Vault) RewriteSession(project, date, fp string, iteration int, meta Ses
 
 	rel, err := v.SessionRelPath(project, date, fp, iteration)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	meta.NotePath = rel
 
-	data, err := marshalSessionFile(meta, body)
+	data, normalized, err := marshalSessionFile(meta, body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Capture-only fsync — see the rationale at WriteSession above. The drain
 	// rewrite is the same durability-critical capture write, so it fsyncs too.
 	if err := v.lockedWrite(path, data, atomicfile.WithFsync()); err != nil {
-		return fmt.Errorf("rewrite session file: %w", err)
+		return nil, fmt.Errorf("rewrite session file: %w", err)
 	}
-	return nil
+	return normalized, nil
 }
 
 // ReadSession reads a session file and returns its metadata and body. fp is
@@ -1222,19 +1279,20 @@ func (v *Vault) ReadSession(project, date, fp string, iteration int) (SessionMet
 // ListSessions returns session metadata filtered by date range and limited
 // to the specified count. Pass empty strings for dateFrom/dateTo to skip
 // date filtering. Pass 0 for limit to return all matches.
-func (v *Vault) ListSessions(project, dateFrom, dateTo string, limit int) ([]SessionMeta, error) {
+func (v *Vault) ListSessions(project, dateFrom, dateTo string, limit int) ([]SessionMeta, []SessionSkip, error) {
 	dir, err := v.SessionDir(project)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	matches, err := filepath.Glob(filepath.Join(dir, "*.md"))
 	if err != nil {
-		return nil, fmt.Errorf("glob sessions: %w", err)
+		return nil, nil, fmt.Errorf("glob sessions: %w", err)
 	}
 	sort.Strings(matches)
 
 	var result []SessionMeta
+	var skipped []SessionSkip
 	for _, m := range matches {
 		base := filepath.Base(m)
 		// Filename format: YYYY-MM-DD-NN.md — date is first 10 chars.
@@ -1249,20 +1307,30 @@ func (v *Vault) ListSessions(project, dateFrom, dateTo string, limit int) ([]Ses
 			continue
 		}
 
+		// 🔴 A READ failure stays FATAL and a PARSE failure does not, and the
+		// asymmetry is the whole point. An unreadable file is a HOST problem —
+		// a bad mount, a permission change, a disk fault — and it says nothing
+		// about the file's content, so continuing would report a partial index
+		// as if the vault were intact. An unparseable file is a CONTENT problem
+		// scoped to that one note, and every other note is still true.
 		data, err := os.ReadFile(m)
 		if err != nil {
-			return nil, fmt.Errorf("read session %s: %w", m, err)
+			return nil, nil, fmt.Errorf("read session %s: %w", m, err)
 		}
 		meta, _, err := ParseFrontmatter(data)
 		if err != nil {
-			return nil, fmt.Errorf("parse session %s: %w", m, err)
+			skipped = append(skipped, SessionSkip{
+				Path:   vaultRelPath(v.Root, m),
+				Reason: err.Error(),
+			})
+			continue
 		}
 		result = append(result, meta)
 		if limit > 0 && len(result) >= limit {
 			break
 		}
 	}
-	return result, nil
+	return result, skipped, nil
 }
 
 // NextIteration returns the next available iteration number for a

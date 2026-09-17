@@ -27,6 +27,12 @@ type EffectivenessResult struct {
 	Project string                `json:"project"`
 	Weeks   []WeeklyEffectiveness `json:"weeks"`
 	Overall OverallEffectiveness  `json:"overall"`
+
+	// SkippedNotes names session notes the reader could not parse, and therefore
+	// sessions this result was NOT computed over. Every figure above is an
+	// average or a total; a hole in the input moves all of them, so a result
+	// that cannot say it has one is quietly wrong rather than merely partial.
+	SkippedNotes []string `json:"skipped_notes,omitempty"`
 }
 
 // OverallEffectiveness aggregates across all weeks.

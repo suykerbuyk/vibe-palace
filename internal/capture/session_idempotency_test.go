@@ -180,7 +180,7 @@ func TestCaptureRetryPreservesEnrichmentArchiveAndFriction(t *testing.T) {
 	meta.EnrichedBy = "test-model"
 	meta.EnrichedAt = "2026-07-12T00:00:00Z"
 	meta.Archive = "Projects/test-proj/transcripts/abc.manifest.json"
-	if err := vault.RewriteSession("test-proj", meta.Date, parseFPFromID(first.SessionID), meta.Iteration,
+	if _, err := vault.RewriteSession("test-proj", meta.Date, parseFPFromID(first.SessionID), meta.Iteration,
 		meta, buildSessionBody(paramsFromMeta(meta))); err != nil {
 		t.Fatalf("seed enriched note: %v", err)
 	}

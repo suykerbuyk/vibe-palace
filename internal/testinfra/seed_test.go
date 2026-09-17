@@ -256,7 +256,7 @@ func TestWithSessionWritesViaStorageDirectLane(t *testing.T) {
 		Summary: "Seeded directly via the storage lane.",
 	}))
 
-	sessions, err := h.Vault.ListSessions("session-proj", "", "", 0)
+	sessions, _, err := h.Vault.ListSessions("session-proj", "", "", 0)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestWithCapturedSessionUsesMCPLaneAndReturnsResult(t *testing.T) {
 		t.Fatalf("status = %q, want ok (raw=%s)", result.Status, raw)
 	}
 
-	sessions, err := h.Vault.ListSessions("captured-proj", "", "", 0)
+	sessions, _, err := h.Vault.ListSessions("captured-proj", "", "", 0)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}

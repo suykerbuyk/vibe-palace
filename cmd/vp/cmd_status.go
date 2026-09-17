@@ -101,8 +101,9 @@ func runStatus(vault *storage.Vault, proj string, vaultSource string, asJSON boo
 		result.Tasks = len(tasks)
 	}
 
-	if sessions, err := vault.ListSessions(proj, "", "", 0); err == nil {
+	if sessions, skipped, err := vault.ListSessions(proj, "", "", 0); err == nil {
 		result.Sessions = len(sessions)
+		reportSkippedSessions(os.Stderr, "vp status", skipped)
 	}
 
 	if stats, err := vault.KGStats(proj); err == nil {

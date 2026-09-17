@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
+	"slices"
 	"testing"
 	"time"
 
@@ -450,7 +450,19 @@ func TestGetProjectContextDeduplicatesThreads(t *testing.T) {
 	}
 }
 
-func TestGetProjectContextSessionsListError(t *testing.T) {
+// TestGetProjectContextSkipsAMalformedSessionNote asserts the INVERSE of what
+// this test asserted before.
+//
+// It used to require that one malformed note fail the whole call, and its own
+// comment described that as "matching the quantum-ng defect that motivated this
+// task" — the defect was pinned as the contract. It was not a hypothetical: two
+// such notes zeroed the session index of the two largest real projects, and
+// vp_bootstrap_context reported zero sessions while the absence read as normal.
+//
+// The contract now is skip-and-report: the readable notes survive, and the
+// unreadable one is NAMED in the payload rather than taking the project's
+// history down with it.
+func TestGetProjectContextSkipsAMalformedSessionNote(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
 	seedTestSessions(t, vault)
 
@@ -458,9 +470,8 @@ func TestGetProjectContextSessionsListError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SessionDir: %v", err)
 	}
-	// Missing closing "---" delimiter: storage.ParseFrontmatter hard-fails,
-	// and ListSessions is fail-fast (aborts on the first bad file), matching
-	// the quantum-ng defect that motivated this task.
+	// Missing closing "---" delimiter: storage.ParseFrontmatter hard-fails on
+	// this note, and ListSessions now skips it and reports it.
 	bad := filepath.Join(dir, "2026-04-04-99.md")
 	if err := os.WriteFile(bad, []byte("---\nfoo: bar\n"), 0644); err != nil {
 		t.Fatalf("write malformed session: %v", err)
@@ -471,15 +482,35 @@ func TestGetProjectContextSessionsListError(t *testing.T) {
 
 	params := json.RawMessage(`{"project": "test-proj"}`)
 	result, err := tool.Handler(context.Background(), params)
-	if err == nil {
-		t.Fatalf("expected error, got result: %+v", result)
+	if err != nil {
+		t.Fatalf("one malformed note failed the WHOLE project context: %v\n"+
+			"A bad file must not delete a project's history", err)
 	}
-	if !strings.Contains(err.Error(), "list sessions") {
-		t.Errorf("error = %q, want it to contain %q", err.Error(), "list sessions")
+	pc, ok := result.(ProjectContext)
+	if !ok {
+		t.Fatalf("unexpected result type %T", result)
+	}
+	if len(pc.Sessions) == 0 {
+		t.Error("the seeded readable notes came back empty — a malformed note is taking healthy " +
+			"notes down with it")
+	}
+	if !slices.Contains(pc.SkippedNotes, "Projects/test-proj/sessions/2026-04-04-99.md") {
+		t.Errorf("the payload must NAME the note it could not read; a short answer that does not say "+
+			"it is short is quietly wrong rather than merely partial.\n  skipped_notes: %v",
+			pc.SkippedNotes)
 	}
 }
 
-func TestGetProjectContextFrictionListError(t *testing.T) {
+// TestGetProjectContextFrictionSkipsAMalformedSessionNote is the friction half
+// of the same inversion.
+//
+// 🔴 THE SKIP IS LOGGED HERE, NOT PAYLOADED, and that is a stated limitation
+// rather than an oversight. GetFrictionTrends does its own ListSessions inside
+// internal/capture and returns []WeeklyMetric, so there is no envelope on this
+// path to carry a skip list without changing that signature — a larger change
+// than this fix. internal/capture.warnSkippedSessions reports it instead. If
+// GetFrictionTrends ever grows a result struct, move the report into it.
+func TestGetProjectContextFrictionSkipsAMalformedSessionNote(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
 	seedTestSessions(t, vault)
 
@@ -502,12 +533,9 @@ func TestGetProjectContextFrictionListError(t *testing.T) {
 	// sessions/threads/decisions block entirely, so this failure can only be
 	// coming from GetFrictionTrends's own internal ListSessions call.
 	params := json.RawMessage(`{"project": "test-proj", "sections": ["friction"]}`)
-	result, err := tool.Handler(context.Background(), params)
-	if err == nil {
-		t.Fatalf("expected error, got result: %+v", result)
-	}
-	if !strings.Contains(err.Error(), "get friction trends") {
-		t.Errorf("error = %q, want it to contain %q", err.Error(), "get friction trends")
+	if _, err := tool.Handler(context.Background(), params); err != nil {
+		t.Fatalf("one malformed note failed the friction trend outright: %v\n"+
+			"The trend now has a hole in it, which is reported; it is not a reason to return nothing", err)
 	}
 }
 

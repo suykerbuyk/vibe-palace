@@ -67,11 +67,12 @@ func cmdTrends() *cli.Command {
 }
 
 func runTrends(vault *storage.Vault, proj string, asJSON bool, out io.Writer) int {
-	sessions, err := vault.ListSessions(proj, "", "", 0)
+	sessions, skipped, err := vault.ListSessions(proj, "", "", 0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vp trends: %v\n", err)
 		return cli.ExitSystem
 	}
+	reportSkippedSessions(os.Stderr, "vp trends", skipped)
 
 	windows := capture.GetFrictionWindows(sessions, time.Now(), vault.CalendarLocation(), []int{7, 30, 90})
 	density := capture.GetCorrectionDensitySeries(sessions)

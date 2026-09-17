@@ -242,10 +242,17 @@ func DrainEnrichmentQueue(ctx context.Context, vault *storage.Vault, cwd string,
 		// uses so inline and drained notes converge to byte-identical bodies [M-B].
 		body := buildSessionBody(paramsFromMeta(meta))
 
-		if rwErr := vault.RewriteSession(item.Project, item.Date, item.Fingerprint, item.Iteration, meta, body); rwErr != nil {
+		normalized, rwErr := vault.RewriteSession(item.Project, item.Date, item.Fingerprint, item.Iteration, meta, body)
+		if rwErr != nil {
 			slog.Warn("enrichment drain: rewrite note failed; will retry", "err", rwErr, "project", item.Project)
 			requeue()
 			continue
+		}
+		// The drain owns the prose it just enriched, so it normalizes rather than
+		// refusing — and reports it, because a silent repair is a silent edit.
+		if len(normalized) > 0 {
+			slog.Warn("enrichment drain: session note needed YAML repair to stay readable",
+				"project", item.Project, "note", item.Date, "fields", strings.Join(normalized, ","))
 		}
 
 		// Post-enrichment length-gate re-check. internal/capture/session.go's
