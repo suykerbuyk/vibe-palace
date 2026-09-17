@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
+	"github.com/suykerbuyk/vibe-palace/internal/giterr"
 )
 
 // gitCmdRunner runs a git command in dir and returns its stdout. Test seam.
@@ -22,13 +23,26 @@ import (
 // It pins GIT_TERMINAL_PROMPT=0 (no credential prompts) and GIT_EDITOR=true
 // (no interactive editor) so read-only probes can never hang on hosts where
 // core.editor is configured to an interactive command.
+//
+// Failures are wrapped by giterr HERE, not at the ten call sites below, for the
+// same reason internal/storage's gitCmd wraps at its own single point: exec's
+// *ExitError renders as exactly "exit status 128" while git's own explanation —
+// already captured in (*exec.ExitError).Stderr, because cmd.Stderr is nil —
+// would otherwise be dropped one line later. Wrapping here means every existing
+// `fmt.Errorf("...: %w", err)` site gains the diagnosis without being rewritten,
+// and every future one is born with it.
+//
+// This runner is SEPARATE from internal/storage's gitCmd by necessity, not by
+// preference: internal/storage imports this package, so importing it back for a
+// shared runner would be a hard cycle. giterr is the leaf both call instead —
+// the same shape as gitenv, which this runner already uses for cmd.Env.
 var gitCmdRunner = func(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = gitenv.SafeGitEnv("GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
 	out, err := cmd.Output()
 	if err != nil {
-		return "", err
+		return "", giterr.Wrap(err)
 	}
 	return string(out), nil
 }

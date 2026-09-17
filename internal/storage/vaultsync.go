@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/giterr"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -1115,48 +1116,20 @@ func gitCmd(dir string, timeout time.Duration, args ...string) (string, error) {
 
 // GitError pairs git's own message with the exit status exec reports.
 //
-// It is a POINTER type with Unwrap, so errors.As reaches it through any number
-// of fmt.Errorf("%w") wraps and errors.Is still matches the underlying
-// *exec.ExitError — callers that switch on exit status keep working.
-type GitError struct {
-	// Detail is ONE line of git's combined output (see gitDetailLine). One line
-	// on purpose: these strings reach an agent's context window, and a full
-	// multi-line rebase dump would be a regression in the other direction.
-	Detail string
-	Err    error
-}
+// This ALIASES internal/giterr, which holds the type and the detail-line
+// picker. It moved out of this package because internal/storage imports
+// internal/project and internal/wrapstate — so either of those importing
+// storage back for this one helper would be an import cycle, and
+// internal/wrapstate runs its own git subprocesses and needs it. giterr has no
+// internal dependencies, so every package that spawns git can reach it. Same
+// move, same reason, as SafeGitEnv -> internal/gitenv (see git.go).
+//
+// An ALIAS, not a new named type: every existing &GitError{...} literal,
+// errors.As(err, &ge) with a *GitError target, and type switch in this package
+// and its tests keeps working unchanged, which is what makes the relocation
+// invisible to callers.
+type GitError = giterr.GitError
 
-func (e *GitError) Error() string {
-	if e.Detail == "" {
-		return e.Err.Error()
-	}
-	return e.Err.Error() + ": " + e.Detail
-}
-
-// Unwrap exposes the underlying exec error so errors.Is/As continue down the
-// chain, and so a renderer that has already printed the raw output separately
-// can recover the bare cause instead of printing git's text twice.
-func (e *GitError) Unwrap() error { return e.Err }
-
-// gitDetailLine picks the single most diagnostic line out of git's combined
-// output. git marks its own failures with "fatal:" or "error:", so prefer the
-// first such line; absent one, the first non-empty line. Returns "" for empty
-// output, which makes GitError render exactly as the bare error did.
-func gitDetailLine(out string) string {
-	if out == "" {
-		return ""
-	}
-	lines := strings.Split(out, "\n")
-	for _, ln := range lines {
-		t := strings.TrimSpace(ln)
-		if strings.HasPrefix(t, "fatal:") || strings.HasPrefix(t, "error:") {
-			return t
-		}
-	}
-	for _, ln := range lines {
-		if t := strings.TrimSpace(ln); t != "" {
-			return t
-		}
-	}
-	return ""
-}
+// gitDetailLine forwards to giterr.DetailLine. Kept as a package-local name so
+// the seven call sites in this package read as they did before the move.
+func gitDetailLine(out string) string { return giterr.DetailLine(out) }

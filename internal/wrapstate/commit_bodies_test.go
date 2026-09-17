@@ -5,6 +5,7 @@ package wrapstate
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -135,5 +136,78 @@ func TestParseCommitBodies_EmptyBody(t *testing.T) {
 	}
 	if got[0].SHA != "abc123" || got[0].Body != "subject only" {
 		t.Errorf("parsed = %+v, want sha=abc123 body=%q", got[0], "subject only")
+	}
+}
+
+// brokenConfigRepo builds a repo that is entirely intact — real objects, a real
+// commit — but whose .git/config is malformed, so every git command against it
+// fails with git's own sentence and exit 128.
+//
+// This is the shape the live corpus can actually produce (a truncated write, a
+// half-applied config edit, a repo on a filesystem that lost a tail) and it is
+// the one that matters here: it is NOT a missing repository, so any instrument
+// that reports it as one is lying. Measured directly with the git binary before
+// it was made a fixture:
+//
+//	git -C <repo> rev-parse HEAD
+//	fatal: bad config line 1 in file .git/config
+//	rc=128
+func brokenConfigRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		c := exec.Command("git", args...)
+		c.Dir = dir
+		c.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+			"GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-b", "main")
+	run("config", "user.email", "throwaway@example.invalid")
+	run("config", "user.name", "Throwaway")
+	run("commit", "--allow-empty", "-m", "real commit")
+	if err := os.WriteFile(filepath.Join(dir, ".git", "config"), []byte("[core\nnot valid ini\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestGitCmdRunnerCarriesGitsOwnMessage is Unit A's acceptance gate, and it is
+// driven through CommitBodiesSinceAnchor on purpose: that is the exact call
+// site the iteration-277 field report came from, reported as its entire
+// content as
+//
+//	commit bodies since anchor: exit status 128
+//
+// The wrap that fixed that report was added to internal/storage's gitCmd, whose
+// acceptance test drives a storage path — so it went green while THIS path, the
+// one the report actually named, kept emitting the bare exit code. Reproduced
+// at 4524595 before the fix, verbatim.
+//
+// BREAK: restore `return "", err` in gitCmdRunner and the message collapses to
+// "exit status 128" again, failing both assertions below.
+func TestGitCmdRunnerCarriesGitsOwnMessage(t *testing.T) {
+	dir := brokenConfigRepo(t)
+
+	_, err := CommitBodiesSinceAnchor(context.Background(), dir, "HEAD~1")
+	if err == nil {
+		t.Fatal("fixture is degenerate: git succeeded against a malformed config")
+	}
+	// Wrapped the way internal/tools/commit_log_tools.go wraps it, so the
+	// assertion is on what a caller actually reads.
+	msg := fmt.Errorf("commit bodies since anchor: %w", err).Error()
+
+	if !strings.Contains(msg, "bad config") {
+		t.Errorf("error must carry git's own explanation, got %q", msg)
+	}
+	if strings.HasSuffix(strings.TrimSpace(msg), "exit status 128") {
+		t.Errorf("error ends at the exit code — git's captured output was dropped again: %q", msg)
+	}
+	if n := strings.Count(msg, "\n"); n > 0 {
+		t.Errorf("error should carry ONE line of git text, got %d newlines: %q", n, msg)
 	}
 }
