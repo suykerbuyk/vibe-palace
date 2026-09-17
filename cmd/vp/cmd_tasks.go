@@ -219,6 +219,10 @@ func runTasksFlat(vault *storage.Vault, proj string, opts taskListOpts, out io.W
 		wSlug = max(wSlug, len(t.Slug))
 		wStatus = max(wStatus, len(t.Status))
 	}
+	// Priority is free text and the archive holds a 168-character one; without
+	// this cap it sets the column for every row. Slug and title stay uncapped
+	// for the reason the comment above gives.
+	wPri = clampWidth(wPri)
 
 	fmt.Fprintf(out, "%-*s  %-*s  %-*s  %s\n", wPri, "PRIORITY", wSlug, "SLUG", wStatus, "STATUS", "TITLE")
 	for _, t := range tasks {
@@ -244,6 +248,44 @@ func priorityOrDash(p string) string {
 	}
 	return p
 }
+
+// maxMeasuredColWidth caps a measure-then-pad column, and groupsPriorityWidth is
+// renderGroups' own historical floor. Both exist for one reason: a measured width
+// is a max over LIVE values, so a single free-text value sets the column for every
+// row. The live vault holds a 168-character **Priority:** value, which widened vp
+// board's HISTORY priority column to 173 and vp tasks --flat --done's to 172 —
+// two commands disfigured by one task's metadata.
+//
+// 12 is derived from two live facts rather than chosen round: it clears the
+// longest real status (in_progress, 11) and the "PRIORITY" header label (8) that
+// seeds wPri in the two table views.
+//
+// An over-cap value is printed IN FULL and overflows its own row. Nothing is
+// truncated, and only that row loses alignment. Truncating instead would delete
+// the operator's own note from the one view they would look for it in — and
+// TestRunBoardPriorityConsistentAcrossBuckets, which asserts every row still
+// CONTAINS its priority text, is an accidental guard against exactly that wrong
+// remedy. Keeping it green is better than weakening it.
+//
+// The FLOOR is each caller's job, applied by seeding its width BEFORE measuring —
+// runTasksFlat and runTasksEpics already seed len("PRIORITY"), and renderGroups
+// now seeds groupsPriorityWidth. Seeding rather than flooring inside clampWidth
+// is deliberate: a shared floor would silently widen vp board's priority column
+// from its measured 6 to 8 on every row of every board, which is precisely the
+// kind of unasked-for change this cap exists to prevent.
+const (
+	maxMeasuredColWidth = 12
+
+	// groupsPriorityWidth is the literal renderGroups printed as %-8s before its
+	// priority column became measured. Seeding with it makes that conversion
+	// strictly WIDENING — the column can reach maxMeasuredColWidth but can never
+	// fall below what it printed before.
+	groupsPriorityWidth = 8
+)
+
+// clampWidth caps a measured column width. It only ever narrows: callers
+// establish their own minimum by seeding, per the comment above.
+func clampWidth(measured int) int { return min(measured, maxMeasuredColWidth) }
 
 // printTaskTree renders the derived structure: epics with their members
 // indented beneath them, the standalone bucket last, then any structural
@@ -305,13 +347,20 @@ func renderGroups(out io.Writer, g *taskgraph.Graph, groups []taskgraph.Group, i
 
 	// One width for the whole listing so every row lines up across groups. No
 	// truncation — the widest slug sets the column.
+	//
+	// wPri is SEEDED at groupsPriorityWidth — the literal this column printed as
+	// %-8s before it became measured — so becoming measured can only widen it,
+	// never narrow it.
 	wSlug, wStatus := 0, 0
+	wPri := groupsPriorityWidth
 	for _, grp := range groups {
 		for _, m := range bodyMembers(grp) {
 			wSlug = max(wSlug, len(indentOf(grp, m))+len(m))
 			wStatus = max(wStatus, len(g.Nodes[m].Meta.Status))
+			wPri = max(wPri, len(priorityOrDash(g.Nodes[m].Meta.Priority)))
 		}
 	}
+	wPri = clampWidth(wPri)
 
 	for i, grp := range groups {
 		if i > 0 {
@@ -341,8 +390,8 @@ func renderGroups(out io.Writer, g *taskgraph.Graph, groups []taskgraph.Group, i
 			if j == len(members)-1 {
 				branch = "└─"
 			}
-			row := fmt.Sprintf("  %s %-*s  %-*s  %-8s",
-				branch, wSlug, indentOf(grp, m)+m, wStatus, n.Meta.Status, priorityOrDash(n.Meta.Priority))
+			row := fmt.Sprintf("  %s %-*s  %-*s  %-*s",
+				branch, wSlug, indentOf(grp, m)+m, wStatus, n.Meta.Status, wPri, priorityOrDash(n.Meta.Priority))
 			if len(n.Blockers) > 0 {
 				row += fmt.Sprintf("  [blocked by: %s]", strings.Join(n.Blockers, ", "))
 			}
@@ -513,6 +562,7 @@ func runTasksEpics(vault *storage.Vault, proj string, includeIcebox, includeDone
 		wPri = max(wPri, len(priorityOrDash(r.Priority)))
 		wStatus = max(wStatus, len(r.Status))
 	}
+	wPri = clampWidth(wPri)
 
 	fmt.Fprintf(out, "%-*s  %-*s  %-*s  %-*s  %s\n",
 		wSlug, "SLUG", wCount, "OPEN/TOTAL", wPri, "PRIORITY", wStatus, "STATUS", "TITLE")

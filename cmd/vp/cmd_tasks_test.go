@@ -649,3 +649,82 @@ func TestRunTasksEditStillWritesABodyOnlyChange(t *testing.T) {
 		t.Errorf("body-only CLI edit did not persist:\n%s", content)
 	}
 }
+
+// TestRunTasksFlatOutlierPriorityDoesNotWidenEveryRow is the second surface the
+// same defect reaches, and the reason the cap lives in a helper both renderers
+// call rather than in cmd_board.go. Measured on the live vault before the fix:
+//
+//	vp tasks --project vibe-palace --flat --done | head -1 | awk '{print index($0,"SLUG")-1}'   # 172
+//	vp board --project vibe-palace | sed -n '/^HISTORY/,$p' | grep -m1 'retired  medium' \
+//	  | awk '{i=index($0,"medium"); r=substr($0,i); print index(r,"completed")}'                # 173
+//
+// One task's free-text **Priority:** disfigured two commands. A fix only vp
+// board honored would have left this one standing.
+func TestRunTasksFlatOutlierPriorityDoesNotWidenEveryRow(t *testing.T) {
+	v := testVault(t)
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "flat-short", Title: "Short", Content: "body", Priority: "high"})
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "flat-long", Title: "Long", Content: "body", Priority: livePriority})
+
+	var buf bytes.Buffer
+	if code := runTasks(v, "test-proj", taskListOpts{flat: true}, &buf); code != cli.ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	out := buf.String()
+	header, _, _ := strings.Cut(out, "\n")
+
+	// The PRIORITY column's width is the offset of the next header label.
+	got := strings.Index(header, "SLUG")
+	if got < 0 {
+		t.Fatalf("no SLUG column in header: %q", header)
+	}
+	// len("PRIORITY") seeds the column at 8; the cap is maxMeasuredColWidth,
+	// plus the two-space separator. Uncapped this was 172.
+	if want := maxMeasuredColWidth + 2; got > want {
+		t.Errorf("one free-text priority widened the PRIORITY column: SLUG@%d, want <= %d\nheader: %q", got, want, header)
+	}
+	// Capping a width never truncates a value.
+	if !strings.Contains(out, livePriority) {
+		t.Errorf("flat table must still print the long priority in full:\n%s", out)
+	}
+}
+
+// TestRenderGroupsPriorityWidthOnlyWidens pins the required one-directional
+// property of the %-8s -> %-*s conversion in renderGroups: with only ordinary
+// priorities present the column must stay exactly as wide as the literal it
+// replaced, never narrower.
+func TestRenderGroupsPriorityWidthOnlyWidens(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "grp-epic", "")
+	// "low" is 3 bytes — well under the old literal 8. If the conversion could
+	// narrow, this is the fixture that would show it.
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "grp-kid", Title: "K", Content: "body", Priority: "low"})
+	if err := v.SetTaskRelations("test-proj", "grp-kid", storage.TaskRelations{Parent: ptr("grp-epic")}); err != nil {
+		t.Fatalf("relate: %v", err)
+	}
+	deps := []string{"grp-epic"}
+	if err := v.SetTaskRelations("test-proj", "grp-kid", storage.TaskRelations{Depends: &deps}); err != nil {
+		t.Fatalf("depends: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if code := runTasks(v, "test-proj", taskListOpts{}, &buf); code != cli.ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	var row string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "grp-kid") && strings.Contains(line, "blocked by") {
+			row = line
+		}
+	}
+	if row == "" {
+		t.Skipf("no blocked row rendered; padding is trimmed on unblocked rows:\n%s", buf.String())
+	}
+	// The blockers field is the only thing right of the priority column, so its
+	// offset is the column's width. Seeded at groupsPriorityWidth, so "low"
+	// must still occupy the full 8.
+	i := strings.Index(row, "low")
+	j := strings.Index(row, "[blocked by:")
+	if got, want := j-i-2, groupsPriorityWidth; got != want {
+		t.Errorf("renderGroups priority column = %d, want %d (the literal it replaced): %q", got, want, row)
+	}
+}

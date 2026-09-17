@@ -147,13 +147,33 @@ func renderBoardGroups(out io.Writer, g *taskgraph.Graph, groups []taskgraph.Gro
 	// Measure, then pad — scoped to just the groups in THIS section, not the
 	// whole board: Active/Icebox/History are rendered as three independent
 	// tables, each with its own column widths.
-	wSlug, wPri := 0, 0
+	//
+	// The HISTORY status column is measured too (wLabel): HistoryLabel() varies in
+	// width — "done" is 4, "cancelled" is 9 — and printing it unpadded shifted
+	// every column to its right by that difference.
+	wSlug, wPri, wLabel := 0, 0, 0
 	for _, grp := range groups {
 		for _, m := range bodyMembers(grp) {
 			wSlug = max(wSlug, len(indentOf(grp, m))+len(m))
 			wPri = max(wPri, len(priorityOrDash(g.Nodes[m].Meta.Priority)))
+			if history {
+				wLabel = max(wLabel, len(g.Nodes[m].HistoryLabel()))
+			}
 		}
 	}
+	// Both free-width columns are capped; see maxMeasuredColWidth. wPri is the
+	// live defect (a 168-character **Priority:** in the archive widened this
+	// column to 173). wLabel is the latent one: HistoryLabel() returns
+	// "cancelled → superseded by <slug>" when a supersession link exists, and
+	// slugs here reach 64 characters, so measuring it UNCAPPED would have
+	// recreated the same defect on a brand-new column the first time such a row
+	// appeared.
+	//
+	// wSlug is deliberately NOT capped. The slug is the row's identifier, and
+	// cmd_tasks.go's own measure-then-pad comment records why the old fixed
+	// caps had to go: an elided identifier is unusable, and a byte-based cap can
+	// split a multi-byte rune.
+	wPri, wLabel = clampWidth(wPri), clampWidth(wLabel)
 
 	for i, grp := range groups {
 		if i > 0 {
@@ -211,8 +231,8 @@ func renderBoardGroups(out io.Writer, g *taskgraph.Graph, groups []taskgraph.Gro
 				if !n.Meta.Done {
 					dateLabel = "modified"
 				}
-				row = fmt.Sprintf("%s %-*s  %s  %-*s  %s %s",
-					branch, wSlug, indentOf(grp, m)+m, n.HistoryLabel(), wPri, priorityOrDash(n.Meta.Priority),
+				row = fmt.Sprintf("%s %-*s  %-*s  %-*s  %s %s",
+					branch, wSlug, indentOf(grp, m)+m, wLabel, n.HistoryLabel(), wPri, priorityOrDash(n.Meta.Priority),
 					dateLabel, dateOrUnknown(n.Meta.ModTime))
 			} else {
 				dates := "created " + dateOrUnknown(n.Meta.CreateTime)

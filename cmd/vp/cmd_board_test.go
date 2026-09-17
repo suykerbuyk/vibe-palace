@@ -619,3 +619,209 @@ func TestBoardFlagValidation(t *testing.T) {
 		t.Errorf("stderr = %q, want it prefixed with 'vp board:'", errs)
 	}
 }
+
+// livePriority is the longest **Priority:** value in the live vault, copied
+// verbatim from vibe-palace/hugot-onnx-download-race-in-ci. It is free text, not
+// a priority word, and it is the value that set vp board's HISTORY priority
+// column to 173 and vp tasks --flat --done's to 172.
+//
+// Re-derive it, never trust this copy:
+//
+//	vp tasks --project vibe-palace --json | jq -r '.nodes|to_entries[]|[(.value.meta.priority|length),.key]|@tsv' | sort -rn | head -1
+//
+// 168 runes, 170 bytes — the em dash is 3 bytes and the column measure is
+// byte-based, which is why the two numbers differ and why the byte one is what
+// the renderer sees.
+const livePriority = "Medium — CI has been failing on `main` since iter 73; merging through it is " +
+	"the current operator workaround. Should be addressed before pre-push gates can be tightened."
+
+// dateColumn returns the byte offset of a board row's date label, which is the
+// first field to the right of every padded column. If the padding is right,
+// rows in the same section agree on it.
+func dateColumn(t *testing.T, row, label string) int {
+	t.Helper()
+	i := strings.Index(row, label)
+	if i < 0 {
+		t.Fatalf("row has no %q field: %q", label, row)
+	}
+	return i
+}
+
+// TestRunBoardHistoryStatusColumnIsPadded pins the fix for the unpadded HISTORY
+// status column. HistoryLabel() varies in width across the live archive —
+// "done" is 4 bytes, "cancelled" is 9 — and it was printed with a bare %s while
+// the slug and priority either side of it were padded, so every column to its
+// right shifted by the difference.
+//
+// The two slugs are the same length on purpose: with slug width held constant,
+// the label is the only thing that can move the date column, so a disagreement
+// can only mean the label column is unpadded.
+func TestRunBoardHistoryStatusColumnIsPadded(t *testing.T) {
+	v := testVault(t)
+	// row-alpha / row-bravo: equal length, and neither contains a status word
+	// that an assertion here could match vacuously.
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "row-alpha", Title: "A", Content: "body", Priority: "high"})
+	if err := v.RetireTask("test-proj", "row-alpha"); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "row-bravo", Title: "B", Content: "body", Priority: "high"})
+	if err := v.CancelTask("test-proj", "row-bravo", ""); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if code := runBoard(v, "test-proj", false, &buf); code != cli.ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	out := buf.String()
+
+	alpha := historyRow(t, out, "row-alpha")
+	bravo := historyRow(t, out, "row-bravo")
+	// Precondition: the labels really do differ in width, or this test proves
+	// nothing about padding.
+	if !strings.Contains(alpha, "done") || !strings.Contains(bravo, "cancelled") {
+		t.Fatalf("fixture precondition failed — want a done row and a cancelled row:\n%s\n%s", alpha, bravo)
+	}
+	if got, want := dateColumn(t, bravo, "completed"), dateColumn(t, alpha, "completed"); got != want {
+		t.Errorf("HISTORY date column must not move with the status label's width:\n"+
+			"  done row      completed@%d: %q\n  cancelled row completed@%d: %q",
+			want, alpha, got, bravo)
+	}
+}
+
+// TestRunBoardSupersededLabelDoesNotWidenEveryRow pins the cap on the status
+// column itself.
+//
+// FIXTURE-ONLY, deliberately and by measurement: the live vault contains no
+// supersession links at all —
+//
+//	vp board --project vibe-palace | grep -c 'superseded by'   # 0
+//
+// so this shape cannot be grounded in the corpus the way the priority defect
+// can. It is latent, not live: HistoryLabel() returns "cancelled → superseded by
+// <slug>" once such a link exists, and slugs in this project reach 64 bytes, so
+// padding the label column UNCAPPED would have recreated the priority defect on
+// a brand-new column the first time one appeared.
+func TestRunBoardSupersededLabelDoesNotWidenEveryRow(t *testing.T) {
+	v := testVault(t)
+	const longSuccessor = "create-silently-duplicates-retired-slug-and-clobbers-done-record"
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: longSuccessor, Title: "S", Content: "body", Priority: "high"})
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "sup-gone", Title: "G", Content: "body", Priority: "high"})
+	if err := v.CancelTask("test-proj", "sup-gone", longSuccessor); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "sup-plain", Title: "P", Content: "body", Priority: "high"})
+	if err := v.RetireTask("test-proj", "sup-plain"); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if code := runBoard(v, "test-proj", false, &buf); code != cli.ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	out := buf.String()
+
+	long := historyRow(t, out, "sup-gone")
+	plain := historyRow(t, out, "sup-plain")
+
+	// The long label must survive in full — capping a WIDTH never truncates a
+	// VALUE.
+	if !strings.Contains(long, "cancelled → superseded by "+longSuccessor) {
+		t.Errorf("superseded label must render in full, not truncated: %q", long)
+	}
+	// And it must not have set the column for the plain row. Uncapped, the
+	// plain row's date would sit ~75 bytes further right.
+	if got := dateColumn(t, plain, "completed"); got > 64 {
+		t.Errorf("a superseded label widened every row: plain row completed@%d: %q", got, plain)
+	}
+}
+
+// TestRunBoardOutlierPriorityDoesNotWidenEveryRow is the live defect: one
+// free-text **Priority:** in the archive set the HISTORY priority column for
+// every row. The fixture uses the real value, not an invented one.
+//
+// Both assertions are load-bearing and they fail to different fixes. The offset
+// assertion fails if the cap is removed; the full-text assertion fails if the
+// cap is swapped for truncation. Neither alone pins WHICH remedy shipped.
+func TestRunBoardOutlierPriorityDoesNotWidenEveryRow(t *testing.T) {
+	v := testVault(t)
+	for _, tc := range []struct{ slug, pri string }{
+		{"pri-row-aaa", "high"},
+		{"pri-row-bbb", "medium"},
+		{"pri-row-ccc", livePriority},
+	} {
+		v.CreateTask("test-proj", storage.TaskSpec{Slug: tc.slug, Title: tc.slug, Content: "body", Priority: tc.pri})
+		if err := v.RetireTask("test-proj", tc.slug); err != nil {
+			t.Fatalf("retire %s: %v", tc.slug, err)
+		}
+	}
+
+	var buf bytes.Buffer
+	if code := runBoard(v, "test-proj", false, &buf); code != cli.ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	out := buf.String()
+
+	aaa := historyRow(t, out, "pri-row-aaa")
+	bbb := historyRow(t, out, "pri-row-bbb")
+	ccc := historyRow(t, out, "pri-row-ccc")
+
+	// The two ordinary rows agree with each other...
+	if got, want := dateColumn(t, bbb, "completed"), dateColumn(t, aaa, "completed"); got != want {
+		t.Errorf("ordinary rows disagree on the date column: %d vs %d\n%q\n%q", want, got, aaa, bbb)
+	}
+	// ...and are not pushed out by the outlier. Uncapped this sits past 200.
+	if got := dateColumn(t, aaa, "completed"); got > 64 {
+		t.Errorf("one free-text priority widened every row: completed@%d: %q", got, aaa)
+	}
+	// The outlier itself is printed IN FULL. This is the assertion that
+	// distinguishes a width cap from truncation.
+	if !strings.Contains(ccc, livePriority) {
+		t.Errorf("capping a column width must never truncate the value: %q", ccc)
+	}
+}
+
+// TestRunBoardActiveOutlierPriorityClampsToo covers the non-history branch.
+// Every long-priority task in the live vault today happens to be terminal —
+//
+//	vp tasks --project vibe-palace --json | jq -r '.nodes|to_entries[]|select((.value.meta.priority|length)>20)|.value.meta.status' | sort -u
+//
+// reports only retired — so ACTIVE is clean by accident, not by construction.
+// Nothing stops an open task carrying one.
+func TestRunBoardActiveOutlierPriorityClampsToo(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "act-epic", "")
+	if err := v.UpdateTaskStatus("test-proj", "act-epic", "in_progress"); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "act-kid-aaa", Title: "A", Content: "body", Priority: "high"})
+	if err := v.SetTaskRelations("test-proj", "act-kid-aaa", storage.TaskRelations{Parent: ptr("act-epic")}); err != nil {
+		t.Fatalf("relate: %v", err)
+	}
+	v.CreateTask("test-proj", storage.TaskSpec{Slug: "act-kid-bbb", Title: "B", Content: "body", Priority: livePriority})
+	if err := v.SetTaskRelations("test-proj", "act-kid-bbb", storage.TaskRelations{Parent: ptr("act-epic")}); err != nil {
+		t.Fatalf("relate: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if code := runBoard(v, "test-proj", false, &buf); code != cli.ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	var short string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "act-kid-aaa") {
+			short = line
+		}
+	}
+	if short == "" {
+		t.Fatalf("no row for act-kid-aaa in:\n%s", buf.String())
+	}
+	if got := dateColumn(t, short, "created"); got > 64 {
+		t.Errorf("ACTIVE row widened by a sibling's free-text priority: created@%d: %q", got, short)
+	}
+	if !strings.Contains(buf.String(), livePriority) {
+		t.Errorf("ACTIVE outlier priority must still render in full:\n%s", buf.String())
+	}
+}
+
+func ptr(s string) *string { return &s }
