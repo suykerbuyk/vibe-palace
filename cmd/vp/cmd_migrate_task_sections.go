@@ -1,0 +1,557 @@
+package main
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"slices"
+	"sort"
+	"strings"
+
+	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/mdfence"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
+)
+
+// `vp migrate task-sections` promotes the `### ` H3 headings of an ARCHIVED task
+// file to `## ` H2, so a file with no addressable section becomes one that
+// storage.ValidateWholeTaskFile accepts and `amend` can reach. Report by default;
+// writes only under --apply.
+//
+// # ARCHIVED ONLY. The name does not say so, and this comment is the scope fence.
+//
+// The walk covers Projects/*/tasks/{done,cancelled} and never the active
+// directory. A missing H2 on an ACTIVE file is already owned by task-preamble's
+// PreambleSkippedNoH2 class, and TestTaskFileValidity_ActiveFilesAreNotReported
+// pins that ownership — two surfaces repairing the same byte is precisely what
+// that disjointness idiom exists to prevent. Adding "" to the directory list
+// reintroduces the collision.
+//
+// The name is `task-sections`, not `task-h3-promotions`, so the BOLD
+// pseudo-heading class can join later as a second class in this command rather
+// than as a second subcommand. It therefore encodes no scope of its own.
+//
+// # THE WRITE SEAM IS THE STRICT ONE, AND THAT IS A DECISION
+//
+// Writes go through Vault.OverwriteTaskFile (headerMustMatch), NOT
+// OverwriteTaskFileRewritingHeader. This transform rewrites heading prefixes and
+// nothing else, so the header block is byte-identical by construction and the
+// strict policy costs nothing — what it buys is refuseHeaderChange and
+// refuseUnknownHeaderFieldChange, so a future edit that reaches a header field is
+// REFUSED rather than silently written. ModTime is exempt (serverDerivedHeaderFields)
+// and is force-restamped after both guards, so the restamp does not trip the policy.
+//
+// 🔴 `vp migrate task-header-spacing` is this command's structural-shape model
+// ONLY. Its seam is the permissive one and is deliberately NOT copied, and its
+// help text claims the permissive wrapper is REQUIRED to reach archived files —
+// which is false: both wrappers resolve through the same resolveTaskFile, and
+// cmd_migrate_task_header.go:376 writes into done/ through the strict seam today.
+//
+// # WHY THE VALIDATOR IS THE GATE RATHER THAN A REIMPLEMENTED SHAPE CHECK
+//
+// Every refusal below is a fail-fast with a readable reason, but the thing that
+// actually makes a bad write impossible is the POST-CONDITION: a file is written
+// only when storage.ValidateWholeTaskFile accepts the transformed bytes. That
+// predicate checks fence balance FIRST (an unterminated fence returns before the
+// outside-fence scan ever runs), then the title arms, then the missing-section
+// arm — so pointing this command at a file whose defect is anything other than
+// the missing H2 cannot produce a write, whatever the shape checks here miss.
+// One definition, one gate, and no third copy of the fence scanner.
+
+var migrateTaskSectionsFlags = []cli.FlagDef{
+	{Name: "--vault", Arg: "PATH", Help: "Vault root to scan and repair (default: the configured vault_path)"},
+	{Name: "--project", Short: "-p", Arg: "PROJECT", Help: "Limit to one project (default: every project in the vault)"},
+	{Name: "--apply", Help: "WRITE the promotions. Without this the command only reports."},
+}
+
+// taskSectionsDirs is the ARCHIVED scope, and the active directory's absence is
+// the fence described in this file's header comment. Adding "" here is the one
+// edit that silently collides with task-preamble's PreambleSkippedNoH2 class.
+var taskSectionsDirs = []string{"done", "cancelled"}
+
+// taskSectionsOutcome classifies one file's decision.
+type taskSectionsOutcome int
+
+const (
+	// sectionsNoWork: the file needs nothing from this command — it already
+	// validates, or it already has an H2 and its defect (if any) is not ours.
+	sectionsNoWork taskSectionsOutcome = iota
+	// sectionsPromote: zero H2, at least one promotable H3, and the promoted
+	// result validates. This is the only outcome that writes.
+	sectionsPromote
+	// sectionsNoH3: no H2 and no H3 — the BOLD pseudo-heading class, which is a
+	// separate unit's work and is reported rather than guessed at.
+	sectionsNoH3
+	// sectionsRefused: a shape this command must not reason about.
+	sectionsRefused
+)
+
+// taskSectionsDecision is one file's decision, kept so a test can assert on the
+// roll-up without re-parsing the printed report.
+type taskSectionsDecision struct {
+	Project string
+	Sub     string
+	Slug    string
+	Outcome taskSectionsOutcome
+	Reason  string // refusal/skip detail; empty for a clean promotion
+	Promos  int    // how many H3 headings would be promoted
+	After   string // transformed content, only for sectionsPromote
+	Applied bool
+	Failed  bool
+	// Skipped marks a file left alone because it carries uncommitted changes.
+	// It is deliberately NOT Failed: nothing went wrong, the file is simply not
+	// recoverable right now, and one commit makes the next run repair it.
+	Skipped bool
+}
+
+type taskSectionsSummary struct {
+	Scanned int
+	NoWork  int
+	Fix     int
+	NoH3    int
+	Refused int
+	Dirty   int
+	Applied int
+	// Failed counts ATTEMPTS that went wrong — read errors and refused writes.
+	// It never counts a file the migration had no work for, which is what keeps
+	// "nothing to migrate" (exit 0) distinct from "everything refused".
+	Failed       int
+	Decisions    []taskSectionsDecision
+	AppliedPaths []string
+}
+
+func cmdMigrateTaskSections() *cli.Command {
+	return &cli.Command{
+		Name:     "migrate task-sections",
+		Synopsis: "vp migrate task-sections [--vault PATH] [--project P] [--apply]",
+		Description: "Promote the \"### \" H3 headings of an ARCHIVED task file to \"## \" H2, so a file " +
+			"with no addressable section becomes one storage.ValidateWholeTaskFile accepts and " +
+			"`amend` can reach.\n\n" +
+			"PLAN-FIRST: the bare command REPORTS and writes nothing; pass --apply to write.\n\n" +
+			"SCOPE IS ARCHIVED ONLY — Projects/*/tasks/{done,cancelled}, never the active " +
+			"directory. A missing H2 on an ACTIVE file is already reported by `vp migrate " +
+			"task-preamble` as its PreambleSkippedNoH2 class, and two surfaces repairing the same " +
+			"byte is exactly what that disjointness rule exists to prevent. The command name " +
+			"encodes no scope, so this is where the scope lives.\n\n" +
+			"EVERY top-level H3 is promoted, not just the first: promoting one would satisfy the " +
+			"validator while leaving the remaining siblings nested under it, which is a worse file " +
+			"and a different `amend` surface than the one the author wrote.\n\n" +
+			"A file with no H2 and no H3 is SKIPPED as its own class — its pseudo-heading is a bold " +
+			"line, a separate transform. A file carrying an H4-or-deeper heading, an empty heading, " +
+			"an indented heading, a heading inside an HTML comment or frontmatter, or two " +
+			"same-named H3s is REFUSED rather than guessed at.\n\n" +
+			"Writes go through the STRICT locked task writer (OverwriteTaskFile, headerMustMatch), " +
+			"never the header-rewriting escape hatch and never the generic vault file tools. A file " +
+			"is written only if the transformed bytes PASS the whole-file validator, so a repair " +
+			"that would not actually fix the file is refused instead of applied. Files with " +
+			"uncommitted changes are skipped — git holds the only copy. A run in which any file " +
+			"failed exits non-zero; a run with nothing to migrate exits 0.",
+		Flags: migrateTaskSectionsFlags,
+		Examples: []cli.Example{
+			{Cmd: "vp migrate task-sections", Comment: "Report what would be promoted; writes nothing"},
+			{Cmd: "vp migrate task-sections -p atlassian-vault", Comment: "Report for one project"},
+			{Cmd: "vp migrate task-sections --apply", Comment: "Apply to the configured vault"},
+		},
+		Run: func(args []string) int {
+			fv, err := cli.ParseFlags(migrateTaskSectionsFlags, args)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp migrate task-sections: %v\n", err)
+				return cli.ExitUser
+			}
+			root, err := resolveMigrationVaultRoot(fv.Get("--vault"))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp migrate task-sections: %v\n", err)
+				return cli.ExitUser
+			}
+			sum, err := runTaskSectionsMigration(root, fv.Get("--project"), fv.Bool("--apply"), os.Stdout)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp migrate task-sections: %v\n", err)
+				return cli.ExitSystem
+			}
+			if sum.Failed > 0 {
+				fmt.Fprintf(os.Stderr, "vp migrate task-sections: %d file(s) failed\n", sum.Failed)
+				return cli.ExitSystem
+			}
+			return cli.ExitOK
+		},
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The transform — a pure function of one file's bytes.
+//
+// It derives nothing from git, nothing from the filesystem, and nothing from any
+// other file, which is why this command needs no planner/executor split: there is
+// no footprint for a derivation to read back. See planner_no_write.go's rationale.
+// ---------------------------------------------------------------------------
+
+// headingLevel reports how many leading '#' characters open a heading, and the
+// text following them. ok is false when the line is not heading-shaped at all —
+// "#hashtag" has no space after its run and is prose, which is the same rule
+// storage's isH1Line/isH2Line enforce with their trailing-space prefixes.
+func headingLevel(trimmed string) (level int, rest string, ok bool) {
+	n := 0
+	for n < len(trimmed) && trimmed[n] == '#' {
+		n++
+	}
+	if n == 0 {
+		return 0, "", false
+	}
+	rest = trimmed[n:]
+	if rest != "" && !strings.HasPrefix(rest, " ") {
+		return 0, "", false
+	}
+	return n, strings.TrimSpace(rest), true
+}
+
+// taskSectionsUnbalancedFence reports whether content ends inside an open fence.
+//
+// It owns NO fence rule of its own. mdfence.Scanner.Step returns Delimiter for
+// exactly two cases — a real opener and its matching closer — so the parity of
+// Delimiter results over every line IS the in-fence state at EOF. Every
+// classification decision stays inside mdfence, which is what the package doc
+// demands ("Do not add a third copy — call this"); storage's unexported
+// unbalancedFence drives the same primitives to the same answer.
+func taskSectionsUnbalancedFence(content string) bool {
+	var s mdfence.Scanner
+	delims := 0
+	for _, line := range strings.Split(content, "\n") {
+		if s.Step(line) == mdfence.Delimiter {
+			delims++
+		}
+	}
+	return delims%2 == 1
+}
+
+// planTaskSections decides one file. after is meaningful only for
+// sectionsPromote; reason carries the detail the report prints.
+//
+// 🔴 The final gate is storage.ValidateWholeTaskFile over the TRANSFORMED bytes.
+// The shape checks above it exist to give a readable reason, not to be the
+// safety property — a shape this function fails to anticipate still cannot be
+// written, because the post-condition rejects it.
+func planTaskSections(content string) (after string, outcome taskSectionsOutcome, reason string, promos int) {
+	if verr := storage.ValidateWholeTaskFile(content); verr == nil {
+		return "", sectionsNoWork, "", 0
+	}
+
+	// 🔴 FENCE BALANCE FIRST, AND THE ORDER IS THE POINT. mdfence.OutsideFences
+	// deliberately treats the tail of a half-open fence as fenced and drops it,
+	// so on an unbalanced file every scan below sees a TRUNCATED document and
+	// would report "no H3" — a file that is actually broken masquerading as a
+	// file with nothing to promote. storage.ValidateWholeTaskFile checks this
+	// first for the same reason (its doc: an open fence "swallows the trailing
+	// header and would otherwise masquerade as a 'missing field'").
+	if taskSectionsUnbalancedFence(content) {
+		return "", sectionsRefused, "unterminated code fence: a ``` or ~~~ block is opened but never closed, " +
+			"so every heading after it is invisible to the scan", 0
+	}
+
+	outside := mdfence.OutsideFences(content)
+
+	var h1, h2 int
+	var h3Lines []int
+	seen := map[string]bool{}
+	inComment := false
+	inFrontmatter := false
+	firstLine := true
+
+	for _, l := range outside {
+		raw := l.Text
+		trimmed := strings.TrimSpace(raw)
+
+		// Leading "---" opens YAML frontmatter, which mdfence does not model at
+		// all. A heading inside it is not a section.
+		if firstLine && trimmed == "---" {
+			inFrontmatter = true
+			firstLine = false
+			continue
+		}
+		firstLine = false
+		if inFrontmatter {
+			if trimmed == "---" {
+				inFrontmatter = false
+			}
+			continue
+		}
+
+		// HTML comments are likewise invisible to mdfence: it recognises only
+		// ` and ~ as delimiters, so "###" inside <!-- --> reads as a heading to
+		// every caller. Track the span and refuse rather than promote into a
+		// fake section.
+		if inComment {
+			if strings.Contains(trimmed, "-->") {
+				inComment = false
+			}
+			continue
+		}
+		if strings.Contains(trimmed, "<!--") && !strings.Contains(trimmed, "-->") {
+			inComment = true
+			continue
+		}
+
+		level, rest, ok := headingLevel(trimmed)
+		if !ok {
+			continue
+		}
+		switch {
+		case level == 1:
+			h1++
+		case level == 2:
+			if rest == "" {
+				return "", sectionsRefused, "empty H2 heading: a bare \"##\" is not a section to the validator", 0
+			}
+			h2++
+		case level == 3:
+			if rest == "" {
+				return "", sectionsRefused, "empty H3 heading: promoting a bare \"###\" yields \"##\", which the validator does not count as a section", 0
+			}
+			if raw != strings.TrimLeft(raw, " \t") {
+				return "", sectionsRefused, "indented H3 heading: mdfence returns raw text while the validator matches the trimmed line, so the two disagree about this file", 0
+			}
+			if seen[rest] {
+				return "", sectionsRefused, fmt.Sprintf("two H3 headings both titled %q: promoting them manufactures duplicate H2s, a class no validator rule and no audit dimension reports", rest), 0
+			}
+			seen[rest] = true
+			h3Lines = append(h3Lines, l.Num)
+		default:
+			return "", sectionsRefused, fmt.Sprintf("H%d heading present: a flat promotion would make each heading a sibling of its own children, which is a hierarchy judgment this command must not make", level), 0
+		}
+	}
+
+	if h2 > 0 {
+		// Not our defect. The file is invalid for some other reason, and the
+		// validator's own message is more useful than anything guessed here.
+		return "", sectionsNoWork, storage.ValidateWholeTaskFile(content).Error(), 0
+	}
+	if len(h3Lines) == 0 {
+		return "", sectionsNoH3, "no \"## \" H2 and no \"### \" H3 — its pseudo-heading is a bold line, a separate transform", 0
+	}
+	if h1 != 1 {
+		return "", sectionsRefused, fmt.Sprintf("%d \"# \" H1 title line(s), want exactly 1: the validator refuses this above the missing-section arm, so promoting H3s would not make the file valid", h1), 0
+	}
+
+	lines := strings.Split(content, "\n")
+	for _, num := range h3Lines {
+		lines[num-1] = lines[num-1][1:]
+	}
+	after = strings.Join(lines, "\n")
+
+	if verr := storage.ValidateWholeTaskFile(after); verr != nil {
+		return "", sectionsRefused, "promoting would not make the file valid: " + verr.Error(), 0
+	}
+	return after, sectionsPromote, "", len(h3Lines)
+}
+
+// ---------------------------------------------------------------------------
+// The walk.
+// ---------------------------------------------------------------------------
+
+// runTaskSectionsMigration is the whole command, injectable for tests.
+//
+// ONE renderer, both modes: --apply prints the identical plan and then executes
+// it, so the report cannot promise something the write does not deliver. The
+// corpus is re-scanned fresh under --apply rather than replayed from a printed
+// list, so it cannot drift between review and write.
+func runTaskSectionsMigration(root, only string, apply bool, out io.Writer) (taskSectionsSummary, error) {
+	var sum taskSectionsSummary
+
+	if apply {
+		if err := requireVaultGitRepo(root, "this command rewrites archived task files in place, and git "+
+			"is what lets you inspect the exact diff — and revert it — before committing the result"); err != nil {
+			return sum, err
+		}
+	}
+
+	projects, err := taskPreambleProjects(root, only)
+	if err != nil {
+		return sum, err
+	}
+
+	printVaultRoot(out, root)
+	if apply {
+		fmt.Fprintln(out, "Mode:  APPLY — archived task files will be rewritten.")
+	} else {
+		fmt.Fprintln(out, "Mode:  REPORT ONLY — nothing is written. Pass --apply to write.")
+	}
+	fmt.Fprintln(out)
+
+	vault := storage.NewVault(root)
+
+	for _, slug := range projects {
+		for _, sub := range taskSectionsDirs {
+			dir := filepath.Join(root, "Projects", slug, "tasks", sub)
+			entries, rerr := os.ReadDir(dir)
+			if rerr != nil {
+				// A project with no done/ or cancelled/ is normal, not a defect.
+				continue
+			}
+			var names []string
+			for _, e := range entries {
+				if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+					continue
+				}
+				names = append(names, e.Name())
+			}
+			sort.Strings(names)
+
+			for _, name := range names {
+				taskSlug := strings.TrimSuffix(name, ".md")
+				rel := "Projects/" + slug + "/tasks/" + sub + "/" + name
+				data, ferr := os.ReadFile(filepath.Join(dir, name))
+				if ferr != nil {
+					fmt.Fprintf(out, "  !!    %s/%s (%s/): read: %v\n", slug, taskSlug, sub, ferr)
+					sum.Failed++
+					continue
+				}
+				sum.Scanned++
+
+				after, outcome, reason, promos := planTaskSections(string(data))
+				d := taskSectionsDecision{
+					Project: slug, Sub: sub, Slug: taskSlug,
+					Outcome: outcome, Reason: reason, Promos: promos, After: after,
+				}
+
+				switch outcome {
+				case sectionsNoWork:
+					sum.NoWork++
+				case sectionsNoH3:
+					sum.NoH3++
+					fmt.Fprintf(out, "  SKIP  %s/%s (%s/) — %s\n", slug, taskSlug, sub, reason)
+				case sectionsRefused:
+					sum.Refused++
+					fmt.Fprintf(out, "  ??    %s/%s (%s/) — refused: %s\n", slug, taskSlug, sub, reason)
+				case sectionsPromote:
+					sum.Fix++
+					fmt.Fprintf(out, "  FIX   %s/%s (%s/) — promote %d \"### \" heading(s) to \"## \"\n",
+						slug, taskSlug, sub, promos)
+					if apply {
+						// 🔴 The writer resolves ACTIVE first, so an archived
+						// slug that is also an active file would rewrite the
+						// WRONG one. task-header-spacing omits this guard and a
+						// reviewer reproduced it destroying an active task.
+						if taskHeaderShadowed(out, root, slug, sub, taskSlug, name) {
+							d.Failed = true
+							sum.Failed++
+							sum.Decisions = append(sum.Decisions, d)
+							continue
+						}
+						// git holds the only copy of whatever a concurrent
+						// session has written but not committed, and this is a
+						// whole-file overwrite. Per FILE, not per vault: a dirty
+						// note in another project must not block this repair.
+						dirty, derr := storage.HasUncommittedChanges(root, rel)
+						if derr != nil {
+							fmt.Fprintf(out, "  !!    %s/%s (%s/): dirty check: %v\n", slug, taskSlug, sub, derr)
+							d.Failed = true
+							sum.Failed++
+							sum.Decisions = append(sum.Decisions, d)
+							continue
+						}
+						if dirty {
+							d.Skipped = true
+							sum.Dirty++
+							fmt.Fprintf(out, "  SKIP  %s/%s (%s/): uncommitted changes — this rewrites the "+
+								"whole file and git holds the only copy of %q; commit or stash it, then re-run\n",
+								slug, taskSlug, sub, rel)
+							sum.Decisions = append(sum.Decisions, d)
+							continue
+						}
+						if werr := vault.OverwriteTaskFile(slug, taskSlug, after); werr != nil {
+							fmt.Fprintf(out, "  !!    %s/%s (%s/): write: %v\n", slug, taskSlug, sub, werr)
+							d.Failed = true
+							sum.Failed++
+							sum.Decisions = append(sum.Decisions, d)
+							continue
+						}
+						d.Applied = true
+						sum.Applied++
+						taskSectionsRecordWrite(&sum, root, rel)
+					}
+				}
+				sum.Decisions = append(sum.Decisions, d)
+			}
+		}
+	}
+
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "Scanned %d archived task file(s): %d need nothing, %d to promote, %d skipped (no H3), %d refused.\n",
+		sum.Scanned, sum.NoWork, sum.Fix, sum.NoH3, sum.Refused)
+	if apply {
+		fmt.Fprintf(out, "Applied %d rewrite(s).\n", sum.Applied)
+		if sum.Dirty > 0 {
+			fmt.Fprintf(out, "%d file(s) SKIPPED for uncommitted changes.\n", sum.Dirty)
+		}
+		taskSectionsRollbackBanner(out, root, sum)
+	} else if sum.Fix > 0 {
+		fmt.Fprintln(out, "Nothing was written. Re-run with --apply to write.")
+	}
+	if sum.Failed > 0 {
+		fmt.Fprintf(out, "%d file(s) FAILED.\n", sum.Failed)
+	}
+	return sum, nil
+}
+
+// taskSectionsRecordWrite appends the paths one write dirtied: the task file,
+// and the .surface stamp the locked writer touches alongside it.
+//
+// 🔴 THE STAMP IS ONLY LISTED WHEN GIT ALREADY TRACKS IT. A project written into
+// for the first time has no committed `.surface`, and `git checkout -- <untracked>`
+// is a pathspec error — which git applies to the WHOLE command, so one such path
+// makes the undo restore none of the task files either, while looking to the
+// operator like it worked. storage.GitPathIsTracked is the shared predicate that
+// decides this; it is not re-implemented here.
+//
+// The task file itself needs no such check, and the reason is structural rather
+// than lucky: the per-file dirty precondition above refuses any path
+// `git status --porcelain` reports, and an untracked file is reported (`??`).
+//
+// The stamp path comes from surface.StampPath rather than a joined literal, so
+// this does not own a second copy of the stamp filename or of where stamps live.
+func taskSectionsRecordWrite(sum *taskSectionsSummary, root, rel string) {
+	sum.AppliedPaths = append(sum.AppliedPaths, rel)
+
+	stamp, err := surface.StampPath(root, filepath.Join(root, filepath.FromSlash(rel)))
+	if err != nil || stamp == "" {
+		return
+	}
+	if slices.Contains(sum.AppliedPaths, stamp) {
+		return
+	}
+	if tracked, terr := storage.GitPathIsTracked(root, stamp); terr != nil || !tracked {
+		return
+	}
+	sum.AppliedPaths = append(sum.AppliedPaths, stamp)
+}
+
+// taskSectionsRollbackBanner prints the undo, scoped to what the run wrote.
+//
+// 🔴 EACH PATH IS SEPARATELY QUOTED, AND THAT IS NOT COSMETIC. The sibling banner
+// in `migrate task-header` learned this the expensive way: a list joined into ONE
+// quoted value across backslash-continued lines keeps the continuation
+// indentation inside the argument. Quoting each path on its own means the
+// whitespace between them is an argument separator, which is what `git checkout
+// --` wants, and a path containing a space still survives.
+//
+// The command is printed with `git -C <root>` rather than bare `git` because the
+// operator's shell is generally in the PROJECT repo, not the vault, and a
+// `git checkout` run in the wrong repo either fails or reverts the wrong tree.
+func taskSectionsRollbackBanner(out io.Writer, root string, sum taskSectionsSummary) {
+	if len(sum.AppliedPaths) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "\n%d path(s) were written. To UNDO this run — and nothing else:\n\n",
+		len(sum.AppliedPaths))
+	fmt.Fprintf(out, "  git -C %s checkout --", root)
+	for _, p := range sum.AppliedPaths {
+		fmt.Fprintf(out, " \\\n      %q", p)
+	}
+	fmt.Fprintln(out)
+	// The point of naming paths instead of `.`: a whole-tree checkout in a vault
+	// that holds every project would also revert whatever other sessions have in
+	// flight.
+	fmt.Fprintln(out, "\nDo NOT use `git checkout .` — the vault holds every project, and that would "+
+		"revert other sessions' in-flight work along with this run.")
+}

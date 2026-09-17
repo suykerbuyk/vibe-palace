@@ -312,6 +312,10 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		// its own phase 1, then writes Status/CreateTime/ModTime/DataFormat
 		// via Vault.SetTaskMigrationFields across active, done/ and
 		// cancelled/ alike.
+		// Writes ARCHIVED task files (done/, cancelled/ only) through the STRICT
+		// storage.OverwriteTaskFile — headerMustMatch, not the header-rewriting
+		// escape hatch — under --apply, promoting "### " H3 headings to "## ".
+		"migrate task-sections":     true,
 		"migrate task-board-fields": true,
 	}
 
