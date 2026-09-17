@@ -173,7 +173,7 @@ func TestIndexTranscriptBatchesEntities(t *testing.T) {
 		t.Fatal("stats.Entities = 0 — the batch wrote no entities at all")
 	}
 
-	got, err := v.ListEntities("test-proj")
+	got, _, err := v.ListEntities("test-proj")
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestIndexTranscriptBatchesEntities(t *testing.T) {
 	if st2.Entities != 0 {
 		t.Errorf("second pass reported %d new entities, want 0 (all already filed)", st2.Entities)
 	}
-	after, err := v.ListEntities("test-proj")
+	after, _, err := v.ListEntities("test-proj")
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}

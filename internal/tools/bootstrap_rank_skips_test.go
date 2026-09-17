@@ -27,7 +27,7 @@ func TestRankingReportIsNeverSilent(t *testing.T) {
 	cases := []struct {
 		name     string
 		sessions []storage.SessionMeta
-		skipped  []storage.SessionSkip
+		skipped  []storage.RecordSkip
 		want     string
 	}{
 		{
@@ -36,7 +36,7 @@ func TestRankingReportIsNeverSilent(t *testing.T) {
 		},
 		{
 			name:    "every note unreadable",
-			skipped: []storage.SessionSkip{{Path: "Projects/p/sessions/bad.md", Reason: "yaml"}},
+			skipped: []storage.RecordSkip{{Path: "Projects/p/sessions/bad.md", Reason: "yaml"}},
 			want:    fallbackNotesUnreadable,
 		},
 		{
@@ -69,7 +69,7 @@ func TestRankingReportIsNeverSilent(t *testing.T) {
 //
 // Break: stop copying skips into report.SkippedNotes in rankSessionIndex.
 func TestRankingReportCarriesSkippedNotes(t *testing.T) {
-	skipped := []storage.SessionSkip{
+	skipped := []storage.RecordSkip{
 		{Path: "Projects/p/sessions/2026-09-15-03.md", Reason: "yaml: line 20"},
 	}
 	_, report := rankSessionIndex("p", []storage.SessionMeta{{ID: "a"}}, nil, 5, nil, skipped)
@@ -90,7 +90,7 @@ func TestRankingReportCarriesSkippedNotes(t *testing.T) {
 // Break: swap the order of the two assignments on the zero-length arm.
 func TestNotesUnreadableOutranksNoSessions(t *testing.T) {
 	_, report := rankSessionIndex("p", nil, nil, 5, nil,
-		[]storage.SessionSkip{{Path: "x.md", Reason: "yaml"}})
+		[]storage.RecordSkip{{Path: "x.md", Reason: "yaml"}})
 
 	if report.FallbackReason != fallbackNotesUnreadable {
 		t.Errorf("fallback_reason = %q, want %q — a project whose notes are UNREADABLE must not be "+

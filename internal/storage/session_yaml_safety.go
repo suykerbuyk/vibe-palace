@@ -254,28 +254,6 @@ func errRewriteWouldNormalize(fields []string) error {
 		strings.Join(fields, ", "))
 }
 
-// SessionSkip names a session note the reader could not parse.
-//
-// It is a REPORT, not an error, and the distinction is the whole of the fix it
-// belongs to. Two malformed notes out of 2360 once returned the entire session
-// index of the two largest projects as empty, because ListSessions was
-// fail-closed and every caller either bailed on the error or dropped the
-// results — so `vp_bootstrap_context` reported zero sessions and the absence
-// read as normal.
-//
-// 🔴 IT IS RETURNED, NOT LOGGED, AND THERE IS NO VARIANT THAT DISCARDS IT. A
-// `ListSessions` wrapper that dropped skips would be shorter, so it is what
-// every future call site would reach for — and a silently skipped file is the
-// same defect as a fail-closed one, moved down a layer. Every caller takes the
-// third return value and decides how to surface it; the compiler is what makes
-// that decision unavoidable.
-type SessionSkip struct {
-	// Path is vault-relative, because that is what an operator acts on and
-	// what is stable across hosts.
-	Path   string
-	Reason string
-}
-
 // vaultRelPath renders an absolute vault path relative to the vault root,
 // falling back to the absolute path when it cannot (never worth failing a
 // listing over a cosmetic path).

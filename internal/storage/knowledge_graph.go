@@ -45,6 +45,17 @@ type KGStats struct {
 	CurrentFacts   int      `json:"current_facts"`
 	ExpiredFacts   int      `json:"expired_facts"`
 	PredicateTypes []string `json:"predicate_types"`
+
+	// SkippedRecords names entity lines the reader could not parse, so
+	// EntityCount is readable as "how many entities there are" rather than
+	// silently meaning "how many were legible today".
+	//
+	// 🔴 WITHOUT THIS THE COUNT LIES QUIETLY. TripleCount is the GLOB count and
+	// EntityCount is a PARSE count, so they already answer slightly different
+	// questions; once ListEntities skips, a lower EntityCount is
+	// indistinguishable from a smaller graph. This field is what keeps the
+	// difference visible to whoever reads the stats.
+	SkippedRecords []string `json:"skipped_records,omitempty"`
 }
 
 // maxEntityLine caps a single entities JSONL record for the dedup scan.
@@ -183,11 +194,11 @@ func (v *Vault) AddEntities(project string, es []Entity) (int, error) {
 	// replace does not. Appending straight onto it would concatenate the torn
 	// bytes with the first new record and lose BOTH.
 	//
-	// This matters MORE here than it does for drawers: readDrawerFile SKIPS a
-	// malformed line, so an unhealed torn write there costs one row, whereas
-	// ListEntities returns an error on the first line that does not parse — so
-	// the same damage makes the ENTIRE knowledge graph unreadable, not one
-	// record. Separating them costs one byte.
+	// Both readers cost one row for an unhealed torn write — readDrawerFile
+	// skips a malformed line and ListEntities now does too. What the heal buys
+	// is that the row lost is the torn one ALONE: without it the next append
+	// concatenates onto the torn bytes and a good new record is lost as well.
+	// Separating them costs one byte.
 	out := buf.Bytes()
 	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
 		out = append([]byte{'\n'}, out...)
@@ -199,39 +210,76 @@ func (v *Vault) AddEntities(project string, es []Entity) (int, error) {
 	return appended, nil
 }
 
-// ListEntities returns all entities for a project.
-func (v *Vault) ListEntities(project string) ([]Entity, error) {
+// ListEntities returns all entities for a project, plus any lines it could not
+// parse.
+//
+// # Why this one is tolerant and ListTriples is not
+//
+// The entities file is APPENDED to (appendUnderLock, family F4), so a crash
+// mid-append leaves a torn final line. That is a normal physical outcome of the
+// write path, not corruption, and this reader used to make it fatal: one torn
+// line and the whole graph was unreadable through the only reader anyone calls.
+//
+// The file's own writer already disagreed with that. AddEntities' dedup scan
+// SKIPS a line that does not parse (see it above, same file, same maxEntityLine
+// ceiling), so the tolerant contract was already the de-facto one and this
+// reader was the outlier. Every sibling JSONL reader in this package skips too —
+// readDrawerFile, IngestedArchives, and both dedup scans.
+//
+// 🔴 THIS IS NOT A GENERAL LICENCE TO SKIP. ListTriples stays fail-closed
+// because triples are written with atomicfile.Write, which cannot leave a
+// partial record — so a malformed triple means corruption rather than an
+// interrupted append. See TestListTriplesStaysFailClosed for the full argument
+// and for why tolerating it there would defeat the migration verifier.
+//
+// # What stays fatal
+//
+// Opening the file, and scanner.Err(). A failed open is a HOST problem — a bad
+// mount, a permission change — and says nothing about content, so continuing
+// would report a partial graph as though the vault were intact. scanner.Err()
+// is fatal for a blunter reason: bufio.Scanner cannot resume after ErrTooLong,
+// so a line over maxEntityLine truncates the listing with no way to skip past
+// it. Per-record tolerance is only available where the scanner can continue.
+func (v *Vault) ListEntities(project string) ([]Entity, []RecordSkip, error) {
 	path, err := v.KGEntitiesFile(project)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("open entities file: %w", err)
+		return nil, nil, fmt.Errorf("open entities file: %w", err)
 	}
 	defer f.Close()
 
+	rel := vaultRelPath(v.Root, path)
 	var entities []Entity
+	var skipped []RecordSkip
+	lineNo := 0
 	scanner := bufio.NewScanner(f)
 	// Same ceiling as the dedup scan in AddEntities: the reader and the writer
 	// must agree on what a readable line is, or a record one of them accepts is
 	// an unrecoverable error to the other.
 	scanner.Buffer(make([]byte, 0, 64*1024), maxEntityLine)
 	for scanner.Scan() {
+		lineNo++
 		var e Entity
 		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
-			return nil, fmt.Errorf("parse entity line: %w", err)
+			skipped = append(skipped, RecordSkip{
+				Path:   fmt.Sprintf("%s:%d", rel, lineNo),
+				Reason: err.Error(),
+			})
+			continue
 		}
 		entities = append(entities, e)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan entities file: %w", err)
+		return nil, nil, fmt.Errorf("scan entities file: %w", err)
 	}
-	return entities, nil
+	return entities, skipped, nil
 }
 
 // AddTriple writes a triple as an individual JSON file.
@@ -372,7 +420,7 @@ func (v *Vault) KGStats(project string) (KGStats, error) {
 	if err := v.checkFormatGate(); err != nil {
 		return KGStats{}, err
 	}
-	entities, err := v.ListEntities(project)
+	entities, skipped, err := v.ListEntities(project)
 	if err != nil {
 		return KGStats{}, err
 	}
@@ -389,6 +437,9 @@ func (v *Vault) KGStats(project string) (KGStats, error) {
 
 	var stats KGStats
 	stats.EntityCount = len(entities)
+	for _, sk := range skipped {
+		stats.SkippedRecords = append(stats.SkippedRecords, sk.Path)
+	}
 	stats.TripleCount = len(matches)
 
 	predicates := make(map[string]bool)

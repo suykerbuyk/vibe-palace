@@ -17,7 +17,7 @@ import (
 // with the outage replaced by a quietly short answer. Every derived series in
 // this package computes over FEWER sessions than happened when a note is
 // skipped, so the skip belongs in the operator's view of that series.
-func warnSkippedSessions(what, project string, skipped []storage.SessionSkip) {
+func warnSkippedSessions(what, project string, skipped []storage.RecordSkip) {
 	for _, s := range skipped {
 		slog.Warn("session note unreadable; excluded from "+what,
 			"project", project, "note", s.Path, "reason", s.Reason)

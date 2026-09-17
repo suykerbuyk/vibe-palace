@@ -234,7 +234,7 @@ and internal/storage/config.go was cross-checked against its defaults.`
 	}
 
 	// Verify entities were extracted.
-	entities, err := vault.ListEntities("test-proj")
+	entities, _, err := vault.ListEntities("test-proj")
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}

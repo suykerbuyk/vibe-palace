@@ -106,8 +106,16 @@ func runStatus(vault *storage.Vault, proj string, vaultSource string, asJSON boo
 		reportSkippedSessions(os.Stderr, "vp status", skipped)
 	}
 
+	// Graceful about a project with no knowledge graph; never silent about one
+	// that cannot be read. An absent KG block used to mean both at once.
+	//
+	// No not-exist exemption, because absence does not come back as an error:
+	// KGStats returns nil for a project with no graph (measured). Any error
+	// here is genuine unreadability. stderr, so JSON output stays parseable.
 	if stats, err := vault.KGStats(proj); err == nil {
 		result.KG = &stats
+	} else {
+		fmt.Fprintf(os.Stderr, "vp status: knowledge graph unreadable: %v\n", err)
 	}
 
 	if asJSON {

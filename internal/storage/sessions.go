@@ -1279,7 +1279,7 @@ func (v *Vault) ReadSession(project, date, fp string, iteration int) (SessionMet
 // ListSessions returns session metadata filtered by date range and limited
 // to the specified count. Pass empty strings for dateFrom/dateTo to skip
 // date filtering. Pass 0 for limit to return all matches.
-func (v *Vault) ListSessions(project, dateFrom, dateTo string, limit int) ([]SessionMeta, []SessionSkip, error) {
+func (v *Vault) ListSessions(project, dateFrom, dateTo string, limit int) ([]SessionMeta, []RecordSkip, error) {
 	dir, err := v.SessionDir(project)
 	if err != nil {
 		return nil, nil, err
@@ -1292,7 +1292,7 @@ func (v *Vault) ListSessions(project, dateFrom, dateTo string, limit int) ([]Ses
 	sort.Strings(matches)
 
 	var result []SessionMeta
-	var skipped []SessionSkip
+	var skipped []RecordSkip
 	for _, m := range matches {
 		base := filepath.Base(m)
 		// Filename format: YYYY-MM-DD-NN.md — date is first 10 chars.
@@ -1319,7 +1319,7 @@ func (v *Vault) ListSessions(project, dateFrom, dateTo string, limit int) ([]Ses
 		}
 		meta, _, err := ParseFrontmatter(data)
 		if err != nil {
-			skipped = append(skipped, SessionSkip{
+			skipped = append(skipped, RecordSkip{
 				Path:   vaultRelPath(v.Root, m),
 				Reason: err.Error(),
 			})

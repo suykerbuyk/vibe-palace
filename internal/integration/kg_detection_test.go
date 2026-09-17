@@ -33,7 +33,7 @@ vibe-palace depends on hugot for embeddings. vibe-palace keeps improving.`
 	}
 
 	// Verify person entities were detected.
-	entities, err := h.Vault.ListEntities("proj")
+	entities, _, err := h.Vault.ListEntities("proj")
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}

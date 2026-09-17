@@ -326,7 +326,10 @@ func kgStatsHandler(vault *storage.Vault) mcp.HandlerFunc {
 		}
 
 		// Compute type breakdown from entities.
-		entities, err := vault.ListEntities(p.Project)
+		// The skips already ride on stats.SkippedRecords (KGStats reads the same
+		// listing), so this call takes them only to satisfy the compiler — the
+		// report reaches the caller through the stats block rather than twice.
+		entities, _, err := vault.ListEntities(p.Project)
 		if err != nil {
 			return nil, fmt.Errorf("list entities: %w", err)
 		}

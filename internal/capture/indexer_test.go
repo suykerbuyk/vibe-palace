@@ -230,7 +230,7 @@ func TestIndexTranscriptEntityExtraction(t *testing.T) {
 	}
 
 	// Check that entities were extracted to KG.
-	entities, err := v.ListEntities("test-proj")
+	entities, _, err := v.ListEntities("test-proj")
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestIndexTranscriptKGDedup(t *testing.T) {
 		t.Fatalf("IndexTranscript: %v", err)
 	}
 
-	entities, err := v.ListEntities("test-proj")
+	entities, _, err := v.ListEntities("test-proj")
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}

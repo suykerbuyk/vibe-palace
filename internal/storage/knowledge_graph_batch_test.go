@@ -48,7 +48,7 @@ func TestAddEntitiesAppendsWholeBatch(t *testing.T) {
 		t.Fatalf("appended = %d, want 25", n)
 	}
 
-	got, err := v.ListEntities(project)
+	got, _, err := v.ListEntities(project)
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestAddEntitiesPartialOverlap(t *testing.T) {
 	if n != 6 {
 		t.Fatalf("appended = %d, want 6", n)
 	}
-	got, err := v.ListEntities(project)
+	got, _, err := v.ListEntities(project)
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestAddEntitiesDedupsWithinBatch(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("appended = %d, want 1", n)
 	}
-	got, err := v.ListEntities(project)
+	got, _, err := v.ListEntities(project)
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}
@@ -194,13 +194,17 @@ func TestAddEntityWrapperKeepsDuplicateError(t *testing.T) {
 // never leave a partial line; an O_APPEND write can. Without the heal, the new
 // batch's FIRST record is concatenated onto the torn bytes and both are lost.
 //
-// 🔴 The blast radius is bigger here than for drawers: readDrawerFile SKIPS a
-// malformed line, but ListEntities returns an error on it — so the torn line
-// alone makes the whole graph unreadable through the normal reader. The heal
-// cannot fix that; what it does is confine the damage to the ONE record that
-// was genuinely torn instead of taking a good new record down with it. This
-// test therefore asserts the raw file, line by line, and pins the error that
-// ListEntities actually returns.
+// 🔴 The heal is what confines the damage to the ONE record that was genuinely
+// torn, instead of letting it take a good new record down with it. This test
+// therefore asserts the RAW FILE, line by line — that is the property the heal
+// owns, and it holds however tolerant any reader happens to be.
+//
+// This comment used to continue: "readDrawerFile SKIPS a malformed line, but
+// ListEntities returns an error on it — so the torn line alone makes the whole
+// graph unreadable through the normal reader." That is no longer true.
+// ListEntities now skips a torn line and names it, so entities read the way
+// drawers always did, and the reader assertion at the foot of this test was
+// inverted to match — following the instruction the old assertion itself left.
 func TestAddEntitiesHealsTornFinalLine(t *testing.T) {
 	v := testVault(t)
 	const project = "proj"
@@ -259,15 +263,23 @@ func TestAddEntitiesHealsTornFinalLine(t *testing.T) {
 	}
 
 	// And the reader's actual behaviour, stated rather than wished for:
-	// ListEntities hard-errors on the torn record, so the record that is lost
-	// is "deadbeef" and it takes the whole listing with it. The dedup scan on
-	// the WRITE path tolerates it (the append above succeeded), which is why a
-	// torn line does not also wedge every future write.
-	if _, err := v.ListEntities(project); err == nil {
-		t.Error("ListEntities returned no error over a torn line — " +
-			"if this reader was made tolerant, update this test and the AddEntities comment")
-	} else if !strings.Contains(err.Error(), "parse entity line") {
-		t.Errorf("ListEntities error = %q, want it to name the unparseable line", err)
+	// ListEntities SKIPS the torn record and names it, so the only record lost
+	// is "deadbeef" and the other five survive. The dedup scan on the WRITE path
+	// tolerates it too (the append above succeeded), so reader and writer now
+	// agree about what a torn line costs — which they did not before.
+	got, skipped, err := v.ListEntities(project)
+	if err != nil {
+		t.Fatalf("ListEntities failed over a torn line: %v — a torn append must cost one record, "+
+			"not the whole graph", err)
+	}
+	if len(got) != 5 {
+		t.Errorf("ListEntities returned %d entities, want 5 (3 good + 2 new; only the torn one lost)", len(got))
+	}
+	if len(skipped) != 1 {
+		t.Fatalf("wanted the torn line reported exactly once, got %d: %v", len(skipped), skipped)
+	}
+	if !strings.Contains(skipped[0].Path, ":4") {
+		t.Errorf("the skip must name the torn LINE, got %q", skipped[0].Path)
 	}
 }
 
@@ -317,7 +329,7 @@ func TestAddEntitiesLongLineDoesNotFailTheScan(t *testing.T) {
 		t.Fatalf("re-add of the big entity = (%d, %v), want (0, nil) — "+
 			"a skipped scan would have re-appended it", n, err)
 	}
-	got, err := v.ListEntities(project)
+	got, _, err := v.ListEntities(project)
 	if err != nil {
 		t.Fatalf("ListEntities over a >64 KiB line: %v", err)
 	}

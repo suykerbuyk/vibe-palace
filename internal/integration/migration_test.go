@@ -141,7 +141,7 @@ and internal/auth/jwt.go wraps the RS256 signing.
 	}
 
 	// Prove KG entities were extracted from session transcripts.
-	entities, err := h.Vault.ListEntities("test-project")
+	entities, _, err := h.Vault.ListEntities("test-project")
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}
@@ -201,7 +201,7 @@ We also reviewed internal/cache/redis.go for connection pooling issues.
 
 	// Count drawers and entities after first import.
 	drawers1, _ := countAllDrawers(t, h.Vault, "idempotent-proj")
-	entities1, _ := h.Vault.ListEntities("idempotent-proj")
+	entities1, _, _ := h.Vault.ListEntities("idempotent-proj")
 
 	// Second import — should skip.
 	r2, err := migrate.ImportVibeVault(ctx, h.Vault, h.Vault, h.Engine, h.Embedder, h.Config, migrate.ImportOptions{})
@@ -217,7 +217,7 @@ We also reviewed internal/cache/redis.go for connection pooling issues.
 
 	// Verify no new drawers or entities were created.
 	drawers2, _ := countAllDrawers(t, h.Vault, "idempotent-proj")
-	entities2, _ := h.Vault.ListEntities("idempotent-proj")
+	entities2, _, _ := h.Vault.ListEntities("idempotent-proj")
 
 	if drawers2 != drawers1 {
 		t.Errorf("drawer count changed: %d → %d", drawers1, drawers2)
@@ -384,7 +384,7 @@ func TestIntegrationMemPalaceImportToSearch(t *testing.T) {
 	}
 
 	// Prove KG entities were imported.
-	entities, err := h.Vault.ListEntities("mempalace")
+	entities, _, err := h.Vault.ListEntities("mempalace")
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}
@@ -515,7 +515,7 @@ We discussed internal/api/handler.go refactoring.
 	}
 
 	// Verify no KG entities were created.
-	entities, _ := h.Vault.ListEntities("dryrun-proj")
+	entities, _, _ := h.Vault.ListEntities("dryrun-proj")
 	if len(entities) != 0 {
 		t.Errorf("expected 0 entities after dry run, got %d", len(entities))
 	}

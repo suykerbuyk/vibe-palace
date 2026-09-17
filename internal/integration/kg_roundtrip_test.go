@@ -29,7 +29,7 @@ Follow-up edits to internal/search/engine.go landed shortly after.`
 	}
 
 	// Verify entities were extracted.
-	entities, err := h.Vault.ListEntities("proj")
+	entities, _, err := h.Vault.ListEntities("proj")
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestIntegrationKGEntityDeduplication(t *testing.T) {
 		_, _ = h.Indexer.IndexTranscript(context.Background(), sessionID, "proj", transcript)
 	}
 
-	entities, err := h.Vault.ListEntities("proj")
+	entities, _, err := h.Vault.ListEntities("proj")
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}

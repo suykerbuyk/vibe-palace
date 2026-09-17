@@ -219,7 +219,7 @@ func inProgressRank(status string) int {
 // rankSessionIndex chooses structural or semantic ordering for recent_sessions.
 // Semantic runs only when the engine's embedder is already warm and the project
 // index is already in memory — never ensureIndex, never LazyEmbedder construct.
-func rankSessionIndex(project string, sessions []storage.SessionMeta, terms []string, n int, eng *search.Engine, skipped []storage.SessionSkip) (rows []sessionSummary, report RankingReport) {
+func rankSessionIndex(project string, sessions []storage.SessionMeta, terms []string, n int, eng *search.Engine, skipped []storage.RecordSkip) (rows []sessionSummary, report RankingReport) {
 	report = RankingReport{Ranker: rankerStructural, Candidates: len(sessions)}
 	for _, s := range skipped {
 		report.SkippedNotes = append(report.SkippedNotes, s.Path)

@@ -18,7 +18,7 @@ import (
 // cannot tell a short answer from a short history. vp_search_sessions returns a
 // bare array with no envelope, so it logs instead — a stated limitation, not a
 // quiet omission.
-func warnSkippedSessions(what, project string, skipped []storage.SessionSkip) {
+func warnSkippedSessions(what, project string, skipped []storage.RecordSkip) {
 	for _, s := range skipped {
 		slog.Warn("session note unreadable; excluded from "+what,
 			"project", project, "note", s.Path, "reason", s.Reason)

@@ -266,7 +266,12 @@ func TestConcurrentAppendIterationOwned(t *testing.T) {
 
 // TestConcurrentAddEntity adds N distinct entities concurrently to the same
 // entities JSONL file; all must survive and the file must parse as well-formed
-// JSONL (ListEntities errors on any malformed line). Run under -race.
+// JSONL. Run under -race.
+//
+// The well-formedness oracle used to be "ListEntities returns an error". Now
+// that the reader skips and reports, the oracle is len(skipped) == 0 — which is
+// STRICTLY STRONGER: a lost race is named by file and line instead of only
+// being counted as one error somewhere in the file.
 func TestConcurrentAddEntity(t *testing.T) {
 	v := testVault(t)
 	const project = "proj"
@@ -283,9 +288,13 @@ func TestConcurrentAddEntity(t *testing.T) {
 	}
 	wg.Wait()
 
-	entities, err := v.ListEntities(project)
+	entities, skipped, err := v.ListEntities(project)
 	if err != nil {
-		t.Fatalf("ListEntities (file not well-formed?): %v", err)
+		t.Fatalf("ListEntities: %v", err)
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("concurrent appends left %d unparseable line(s) — an interleaved write corrupted "+
+			"the file: %v", len(skipped), skipped)
 	}
 	if len(entities) != n {
 		t.Fatalf("entity count = %d, want %d (lost update)", len(entities), n)

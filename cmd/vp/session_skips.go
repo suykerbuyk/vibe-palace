@@ -22,7 +22,7 @@ import (
 // other half: every figure these commands print is computed over FEWER sessions
 // than happened, and a total that cannot say it is short is quietly wrong
 // rather than merely partial.
-func reportSkippedSessions(stderr io.Writer, cmd string, skipped []storage.SessionSkip) {
+func reportSkippedSessions(stderr io.Writer, cmd string, skipped []storage.RecordSkip) {
 	if len(skipped) == 0 {
 		return
 	}

@@ -42,7 +42,7 @@ func TestAddEntityRoundTrip(t *testing.T) {
 		t.Fatalf("AddEntity: %v", err)
 	}
 
-	ents, err := v.ListEntities("proj")
+	ents, _, err := v.ListEntities("proj")
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestConcurrentAddEntityDedup(t *testing.T) {
 	if failures != n-1 {
 		t.Errorf("got %d duplicate failures, want %d (exactly one writer should win)", failures, n-1)
 	}
-	entities, err := v.ListEntities(project)
+	entities, _, err := v.ListEntities(project)
 	if err != nil {
 		t.Fatalf("ListEntities (file not well-formed?): %v", err)
 	}
@@ -146,7 +146,7 @@ func TestListEntities(t *testing.T) {
 		}
 	}
 
-	got, err := v.ListEntities("proj")
+	got, _, err := v.ListEntities("proj")
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestListEntities(t *testing.T) {
 
 func TestListEntitiesEmpty(t *testing.T) {
 	v := testVault(t)
-	got, err := v.ListEntities("proj")
+	got, _, err := v.ListEntities("proj")
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}
@@ -474,7 +474,7 @@ func TestEntityWithProperties(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ents, err := v.ListEntities("proj")
+	ents, _, err := v.ListEntities("proj")
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}

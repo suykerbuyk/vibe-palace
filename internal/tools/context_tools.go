@@ -268,10 +268,15 @@ type BootstrapResult struct {
 	// block on the wire, so a reader (and the wire-order tests) can find the
 	// boundary between the instruments and the index without depending on which
 	// optional lists a given project happens to populate.
-	HeadOfQueue       []headOfQueueRow `json:"head_of_queue"`
-	RecentSessions    []sessionSummary `json:"recent_sessions,omitempty"`
-	Memory            []memorySnapshot `json:"memory,omitempty"`
-	KGSnapshot        *storage.KGStats `json:"kg_snapshot,omitempty"`
+	HeadOfQueue    []headOfQueueRow `json:"head_of_queue"`
+	RecentSessions []sessionSummary `json:"recent_sessions,omitempty"`
+	Memory         []memorySnapshot `json:"memory,omitempty"`
+	KGSnapshot     *storage.KGStats `json:"kg_snapshot,omitempty"`
+
+	// KGUnreadable carries why the knowledge graph could not be read, when it
+	// could not. It is the discriminator that kg_snapshot alone cannot provide:
+	// an absent snapshot used to mean "no graph" and "graph unreadable" at once.
+	KGUnreadable      string           `json:"kg_unreadable,omitempty"`
 	AvailableCommands []commandSummary `json:"available_commands,omitempty"`
 	AvailableSkills   []skillSummary   `json:"available_skills,omitempty"`
 
@@ -599,8 +604,29 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	result.Ranking = &ranking
 
 	// KG snapshot — Phase 7 may not exist yet, graceful.
+	//
+	// 🔴 GRACEFUL ABOUT ABSENCE, NEVER SILENT ABOUT UNREADABILITY. This `err ==
+	// nil` was written for one reason — a project with no knowledge graph must
+	// not fail bootstrap — and it silently covered a second: a knowledge graph
+	// that could not be READ produced the identical payload, no snapshot and no
+	// word about why. That is the same defect as the session index returning
+	// zero rows, in a different field, and it is the half that actually reaches
+	// a user.
+	//
+	// The two cases are now distinguishable from inside the payload:
+	// kg_unreadable carries the error, and a project that simply has no graph
+	// still carries nothing at all.
+	//
+	// Every error is reported, with no not-exist exemption, because MEASURED:
+	// KGStats returns a NIL error and a zero-valued stats block for a project
+	// with no knowledge graph — ListEntities maps a missing file to (nil, nil,
+	// nil) and a missing triples dir globs to no matches. So absence never
+	// reaches this branch at all, and an fs.ErrNotExist guard here would be a
+	// plausible-looking line that can never run.
 	if stats, err := vault.KGStats(project); err == nil {
 		result.KGSnapshot = &stats
+	} else {
+		result.KGUnreadable = err.Error()
 	}
 
 	// Memory index (capped) — bodies fetched on demand via vp_memory_read.
