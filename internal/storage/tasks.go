@@ -4,12 +4,14 @@
 package storage
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -309,7 +311,7 @@ func normalizeSupersededBy(self, successor string) (string, error) {
 // field such as DataFormat) must be inserted BEFORE that extension field,
 // never after — the mirror image of "extension fields append after
 // Parent/Depends" (ADR-011 Decision 1), and it only holds if both directions
-// are enforced. See coreFieldInsertionPoint.
+// are enforced. See headerFieldInsertionPoint.
 var coreFieldOrder = []string{fieldStatus, fieldPriority, fieldParent, fieldDepends}
 
 // isCoreField reports whether field is one of the four fields the original
@@ -324,31 +326,57 @@ func isCoreField(field string) bool {
 	return false
 }
 
-// coreFieldInsertionPoint returns where a MISSING core field belongs: right
-// after the last core field ahead of it (in coreFieldOrder) that is actually
-// present, and never past the first extension field already in the block.
-// Only called for a field isCoreField reports true for.
-func coreFieldInsertionPoint(lines []string, start, end int, field string) int {
-	rank := func(name string) int {
-		for i, f := range coreFieldOrder {
-			if f == name {
-				return i
-			}
+// headerFieldOrder is the canonical position of EVERY header field this binary
+// knows: the four core fields the original closed header recognized, followed by
+// the open-schema extension fields in the order CreateTask itself writes them.
+//
+// 🔴 IT EXISTS BECAUSE APPEND-AT-END IS WRONG FOR A FIELD FILLED LATE. Extension
+// fields used to be appended at the end of the header block unconditionally,
+// which is correct only while they arrive in canonical order. They do not: a task
+// created before CreateTime shipped and amended since carries ModTime and NO
+// CreateTime (amend restamps ModTime; CreateTime is written only by CreateTask),
+// so backfilling CreateTime appended it AFTER ModTime and inverted the pair.
+// Ranking every known field fixes the fill and leaves the append-in-order case
+// byte-identical, because for a header already in canonical order the ranked
+// insertion point IS the end.
+//
+// An UNKNOWN field (one a newer binary appended) has no rank: a known field is
+// inserted before it rather than past it, keeping the known block contiguous and
+// leaving the unknown tail undisturbed.
+var headerFieldOrder = []string{
+	fieldStatus, fieldPriority, fieldParent, fieldDepends,
+	fieldCreateTime, fieldModTime, fieldDataFormat, fieldSupersededBy,
+}
+
+// headerFieldRank returns field's position in headerFieldOrder, or -1 when this
+// binary does not know the field.
+func headerFieldRank(field string) int {
+	for i, f := range headerFieldOrder {
+		if f == field {
+			return i
 		}
-		return -1
 	}
-	fieldRank := rank(field)
+	return -1
+}
+
+// headerFieldInsertionPoint returns where a MISSING field belongs: right after
+// the last known field ahead of it (in headerFieldOrder) that is actually
+// present, and never past a field ranking at or after it — which subsumes the
+// old core-only rule "never past the first extension field", since every
+// extension field outranks every core one.
+func headerFieldInsertionPoint(lines []string, start, end int, field string) int {
+	fieldRank := headerFieldRank(field)
+	if fieldRank < 0 {
+		return end
+	}
 	at := start
 	for i := start; i < end; i++ {
 		name, ok := headerFieldName(lines[i])
 		if !ok {
 			continue
 		}
-		if !isCoreField(name) {
-			// Never insert a core field past an extension field.
-			break
-		}
-		if rank(name) < fieldRank {
+		r := headerFieldRank(name)
+		if r >= 0 && r < fieldRank {
 			at = i + 1
 			continue
 		}
@@ -363,7 +391,7 @@ func coreFieldInsertionPoint(lines []string, start, end int, field string) int {
 // The insertion point for a MISSING field depends on what kind of field it
 // is: a core field (Status/Priority/Parent/Depends) is inserted in its
 // canonical position — after whichever earlier core fields are present, and
-// BEFORE any extension field already in the block (coreFieldInsertionPoint).
+// BEFORE any extension field already in the block (headerFieldInsertionPoint).
 // This guarantees a late-added Parent/Depends never lands after a field that
 // must always follow them (DataFormat, and later CreateTime/ModTime/
 // SupersededBy), regardless of the order these writers happen to be called
@@ -384,10 +412,7 @@ func upsertHeaderField(content, field, value string) string {
 			return strings.Join(lines, "\n")
 		}
 	}
-	at := end
-	if isCoreField(field) {
-		at = coreFieldInsertionPoint(lines, start, end, field)
-	}
+	at := headerFieldInsertionPoint(lines, start, end, field)
 	lines = slices.Insert(lines, at, rendered)
 	return strings.Join(lines, "\n")
 }
@@ -503,6 +528,165 @@ func (v *Vault) SetTaskDataFormat(project, slug, format string) error {
 	return atomicfile.Write(v.Root, path, []byte(updated))
 }
 
+// TaskMigrationFill is one task file's migration write: an archived Status
+// repair plus the three board-reporting header fields, and the mode that decides
+// whether an already-present value is overwritten.
+//
+// 🔴 FillAbsentOnly IS A MODE SWITCH ON A SHARED TRANSFORM, WHICH IS NORMALLY THE
+// THING TO AVOID. It is here because the alternative is two copies of the
+// transform, which is strictly worse: a simulator that drifts from the writer
+// silently validates bytes nobody writes. The two modes are named, both are
+// tested, and only one of them is reachable from the migration.
+//
+//   - false (SetTaskMigrationFields, the shipped setter): every non-empty value
+//     is written. Empty means "leave alone"; it never blanks a field.
+//   - true (the migration): CreateTime and ModTime are written only when ABSENT,
+//     so a value already on disk is authoritative; DataFormat is written when
+//     absent OR when the on-disk marker is numerically LOWER than the requested
+//     one, so a re-bump refreshes a stale marker instead of skipping the file.
+//
+// The true mode is what defect 7 requires: keying "already migrated" off
+// CreateTime alone stores a derived value, and it is wrong for any file whose
+// fields were filled by different writers at different times.
+type TaskMigrationFill struct {
+	NewStatus      string
+	CreateTime     string
+	ModTime        string
+	DataFormat     string
+	FillAbsentOnly bool
+}
+
+// headerFieldCurrent returns the value a header field currently carries, and
+// whether it is present at all, reading only the contiguous header block.
+func headerFieldCurrent(content, field string) (string, bool) {
+	lines := strings.Split(content, "\n")
+	start, end := headerBlock(lines)
+	for i := start; i < end; i++ {
+		if v, ok := headerFieldValue(lines[i], field); ok {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// dataFormatNeedsRefresh reports whether an on-disk DataFormat marker should be
+// replaced by want. A marker neither side can parse as an integer is LEFT ALONE:
+// the migration has no basis for choosing, and overwriting an unparseable marker
+// would destroy the only evidence of whatever wrote it.
+func dataFormatNeedsRefresh(current, want string) bool {
+	c, cerr := strconv.Atoi(strings.TrimSpace(current))
+	w, werr := strconv.Atoi(strings.TrimSpace(want))
+	if cerr != nil || werr != nil {
+		return false
+	}
+	return c < w
+}
+
+// applyTaskMigrationFill is THE transform — the single definition of what a
+// migration write does to one file's bytes. The planner calls it (through
+// PlanTaskMigrationFields) to simulate and validate; the writer calls it under
+// the lock to produce the bytes it actually writes. They cannot disagree,
+// because there is one of them.
+//
+// Pure: no I/O, no clock, no locking.
+func applyTaskMigrationFill(content string, fill TaskMigrationFill) string {
+	out := content
+	if fill.NewStatus != "" {
+		out = replaceStatusLine(out, fill.NewStatus)
+	}
+	set := func(field, value string) {
+		if value == "" {
+			return
+		}
+		if fill.FillAbsentOnly {
+			if cur, present := headerFieldCurrent(out, field); present {
+				if field != fieldDataFormat || !dataFormatNeedsRefresh(cur, value) {
+					return
+				}
+			}
+		}
+		out = upsertHeaderField(out, field, value)
+	}
+	set(fieldCreateTime, fill.CreateTime)
+	set(fieldModTime, fill.ModTime)
+	set(fieldDataFormat, fill.DataFormat)
+	return out
+}
+
+// PlanTaskMigrationFields returns the exact bytes a migration write would produce
+// for content, and VALIDATES them — the whole point of a plan-first migration
+// being that a file which would fail the writer's validator is known before any
+// byte is written, not after several hundred have been.
+//
+// It is pure and exported so a planner outside this package can simulate a write
+// it is deliberately not able to perform.
+func PlanTaskMigrationFields(content string, fill TaskMigrationFill) (string, error) {
+	out := applyTaskMigrationFill(content, fill)
+	if err := validateWholeTaskFile(out); err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+// TaskMigrationDriftError is the refusal a guarded migration write returns when
+// the file changed between planning and writing. It is typed so the caller can
+// report it as its own outcome rather than as a generic write failure: a drifted
+// file is not a defect in the plan, it is a corpus that moved.
+type TaskMigrationDriftError struct {
+	Project string
+	Slug    string
+}
+
+func (e *TaskMigrationDriftError) Error() string {
+	return fmt.Sprintf("%s/%s: file changed between plan and write; refusing to write a stale plan",
+		e.Project, e.Slug)
+}
+
+// ApplyTaskMigrationFields is the GUARDED migration writer: it re-reads under the
+// per-path lock, re-applies the same transform the planner used, and refuses if
+// the result does not match the digest the planner recorded.
+//
+// This is applyHeaderSpacingFix's discipline one command over — check the value
+// you planned against the file you are about to write, and refuse rather than
+// guess on any disagreement. It matters because the plan is computed OUTSIDE the
+// lock: ADR-003 makes the read-modify-write atomic, not the plan-to-write window.
+//
+// An empty wantSHA256 skips the comparison, for a caller that has no plan to
+// check against.
+func (v *Vault) ApplyTaskMigrationFields(project, slug string, fill TaskMigrationFill, wantSHA256 string) error {
+	path, _, err := v.resolveTaskFile(project, slug)
+	if err != nil {
+		return err
+	}
+
+	release, err := vaultlock.Acquire(v.Root, path)
+	if err != nil {
+		return fmt.Errorf("lock task: %w", err)
+	}
+	defer release()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read task: %w", err)
+	}
+
+	updated, err := PlanTaskMigrationFields(string(data), fill)
+	if err != nil {
+		return err
+	}
+	if wantSHA256 != "" {
+		if fmt.Sprintf("%x", sha256.Sum256([]byte(updated))) != wantSHA256 {
+			return &TaskMigrationDriftError{Project: project, Slug: slug}
+		}
+	}
+	// A no-op write is not a write: returning early keeps the run idempotent and
+	// keeps the one-write-per-file count honest.
+	if updated == string(data) {
+		return nil
+	}
+	return atomicfile.Write(v.Root, path, []byte(updated))
+}
+
 // SetTaskMigrationFields is the one-time migration writer for
 // board-reporting-one-time-migration. Unlike every normal mutating action
 // (which always stamps ModTime with time.Now()), this accepts HISTORICALLY
@@ -536,19 +720,12 @@ func (v *Vault) SetTaskMigrationFields(project, slug, newStatus, createTime, mod
 		return fmt.Errorf("read task: %w", err)
 	}
 
-	content := string(data)
-	if newStatus != "" {
-		content = replaceStatusLine(content, newStatus)
-	}
-	if createTime != "" {
-		content = upsertHeaderField(content, fieldCreateTime, createTime)
-	}
-	if modTime != "" {
-		content = upsertHeaderField(content, fieldModTime, modTime)
-	}
-	if dataFormat != "" {
-		content = upsertHeaderField(content, fieldDataFormat, dataFormat)
-	}
+	content := applyTaskMigrationFill(string(data), TaskMigrationFill{
+		NewStatus:  newStatus,
+		CreateTime: createTime,
+		ModTime:    modTime,
+		DataFormat: dataFormat,
+	})
 	return atomicfile.Write(v.Root, path, []byte(content))
 }
 

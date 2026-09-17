@@ -34,6 +34,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
@@ -63,6 +64,49 @@ func WithInheritPerm() Option { return func(c *config) { c.inheritPerm = true } 
 // want durability beyond rename atomicity.
 func WithFsync() Option { return func(c *config) { c.fsync = true } }
 
+// writeObserver, when non-nil, is called with the absolute path of every
+// content write this package completes.
+//
+// 🔴 TEST SEAM. It exists because "how many times did this run write THIS FILE"
+// is not answerable anywhere else. A counter placed in a command's own executor
+// counts writes THROUGH THAT EXECUTOR, which is the wrong question: the
+// regression that matters is a second writer appearing BESIDE the executor, and
+// such a writer never passes the executor's counter. Every task-file write in
+// the tree bottoms out here — sourceaudit's vaultWriteFunnel exists to keep it
+// that way — so this is the one place a per-file write count is honest.
+//
+// Guarded by its own mutex rather than left as a bare var: tests that install it
+// may run alongside others in the same binary.
+var (
+	writeObserverMu sync.Mutex
+	writeObserver   func(absPath string)
+)
+
+// SetWriteObserver installs f as the write observer and returns a function that
+// restores the previous one. Intended for tests only; production code never
+// calls it and nothing in this package behaves differently when it is unset.
+func SetWriteObserver(f func(absPath string)) (restore func()) {
+	writeObserverMu.Lock()
+	prev := writeObserver
+	writeObserver = f
+	writeObserverMu.Unlock()
+	return func() {
+		writeObserverMu.Lock()
+		writeObserver = prev
+		writeObserverMu.Unlock()
+	}
+}
+
+// notifyWrite reports a completed write to the observer, if one is installed.
+func notifyWrite(absPath string) {
+	writeObserverMu.Lock()
+	f := writeObserver
+	writeObserverMu.Unlock()
+	if f != nil {
+		f(absPath)
+	}
+}
+
 // Write atomically writes data to absPath: it creates parent directories,
 // writes a temp file in the same directory, optionally fsyncs, chmods, and
 // renames it over absPath (retrying the rename on the transient Windows sharing
@@ -75,12 +119,16 @@ func Write(vaultRoot, absPath string, data []byte, opts ...Option) error {
 	for _, o := range opts {
 		o(&cfg)
 	}
-	return writeAtomic(vaultRoot, absPath, cfg, func(f *os.File) error {
+	if err := writeAtomic(vaultRoot, absPath, cfg, func(f *os.File) error {
 		if _, err := f.Write(data); err != nil {
 			return fmt.Errorf("write temp: %w", err)
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	notifyWrite(absPath)
+	return nil
 }
 
 // WriteStream is Write for content that must not be held in memory: it opens

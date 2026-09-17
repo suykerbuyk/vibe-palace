@@ -5,6 +5,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -90,30 +92,31 @@ func cmdMigrateTaskBoardFields() *cli.Command {
 		Name:     "migrate task-board-fields",
 		Synopsis: "vp migrate task-board-fields [--vault PATH] [--project P] [--apply]",
 		Description: "The one-time, vault-wide migration to the board-reporting task-header schema: " +
-			"renames the active-directory legacy \"pending\" status to \"planning\", backfills " +
-			"CreateTime/ModTime from git history (with cross-project-move detection, including a " +
-			"multi-hop tombstone chase), and stamps the per-file DataFormat marker.\n\n" +
-			"PLAN-FIRST: the bare command REPORTS and writes nothing; pass --apply to write.\n\n" +
-			"--apply runs two phases in order. Phase 1 folds in \"vp migrate task-status --apply\" " +
-			"(the already-shipped archived retired/pending->done/cancelled repair) so a single " +
-			"coordinated-window command handles both. If phase 1 reports any failure, phase 2 does " +
-			"not run and the DataFormat marker is not stamped. Phase 2 walks every task file in " +
-			"every project (active, done/, cancelled/): a file that already carries a CreateTime is " +
-			"skipped entirely (already migrated); a done/cancelled candidate whose slug also exists " +
-			"in the active directory is refused, matching phase 1's own shadow-slug guard, because " +
-			"the underlying writer resolves active first.\n\n" +
-			"A file with no derivable git history is left with an unknown CreateTime/ModTime but " +
-			"still gets its Status rename and DataFormat stamp — never a fabricated date. The final " +
-			"vault-wide DataFormat stamp (surface.WriteFormat) runs exactly once, at the very end, " +
-			"ONLY if both phases report zero failures AND zero files skipped for uncommitted " +
-			"changes: this is a one-time, non-repeating operation, so a Dirty-skipped file has no " +
-			"scheduled path back to correctness the way it does for the everyday, re-runnable " +
-			"\"migrate task-status\".\n\n" +
-			"--apply requires the vault to be a git repo (both phases derive from and depend on git " +
-			"history) and writes go through the locked, surface-stamping task writer, never the " +
-			"generic vault file tools. --apply writes directly (no staging, no auto-commit) and " +
-			"prints a combined rollback banner naming every path either phase wrote, so `git " +
-			"checkout -- ...` undoes exactly this run.\n\n" +
+			"renames the legacy \"pending\" status to \"planning\" on active tasks, makes an ARCHIVED " +
+			"task's status agree with its directory, backfills CreateTime/ModTime from git history " +
+			"(with cross-project-move detection, including a multi-hop tombstone chase), and stamps " +
+			"the per-file DataFormat marker.\n\n" +
+			"PLAN-FIRST, AND THE PLAN IS THE WHOLE RUN: one planner computes every file's decision, " +
+			"validates the bytes it would write, and predicts whether the vault ends up fully " +
+			"migrated. The bare command prints that plan and writes nothing; --apply prints the same " +
+			"plan and then executes it. Report and apply cannot disagree, because there is one " +
+			"planner and both modes call it.\n\n" +
+			"REFUSALS ARE WHOLE-RUN REFUSALS. If any file would fail the task-file validator, or a " +
+			"slug exists in both the active and an archive directory, NOTHING is written and the " +
+			"report names every offending file. A one-time migration that half-applies leaves a vault " +
+			"with no safe recovery, so the refusal happens while the vault is still untouched.\n\n" +
+			"Each task file is written EXACTLY ONCE, through the migration writer, which re-reads " +
+			"under the per-path lock and refuses if the file changed between plan and write. Fields " +
+			"are filled per-field: a value already on disk is authoritative, and the DataFormat " +
+			"marker is refreshed only upward.\n\n" +
+			"A file with no derivable git history keeps an unknown CreateTime/ModTime but still gets " +
+			"its Status repair and DataFormat stamp — never a fabricated date. The vault-wide " +
+			"RequiredDataFormat stamp is DERIVED, not asserted: it advances only when every task " +
+			"file in the whole vault carries the marker, so a --project run cannot declare the vault " +
+			"current, and a sequence of scoped runs correctly stamps when the last one completes.\n\n" +
+			"--apply requires the vault to be a git repo (every date comes from git history), writes " +
+			"directly (no staging, no auto-commit), and prints a rollback banner naming every path " +
+			"it wrote, so `git checkout -- ...` undoes exactly this run.\n\n" +
 			"Manual, operator-invoked, run at a coordinated maintenance window — see the task's own " +
 			"Direction for the required two-tier testing strategy before ever pointing this at the " +
 			"real vault.",
@@ -134,13 +137,14 @@ func cmdMigrateTaskBoardFields() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp migrate task-board-fields: %v\n", err)
 				return cli.ExitUser
 			}
-			statusSum, fieldsSum, err := runTaskBoardFieldsMigration(root, fv.Get("--project"), fv.Bool("--apply"), os.Stdout)
+			ps, err := runTaskBoardFieldsMigration(root, fv.Get("--project"), fv.Bool("--apply"), os.Stdout)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp migrate task-board-fields: %v\n", err)
 				return cli.ExitSystem
 			}
-			if statusSum.Failed > 0 || fieldsSum.Failed > 0 {
-				fmt.Fprintf(os.Stderr, "vp migrate task-board-fields: %d file(s) failed\n", statusSum.Failed+fieldsSum.Failed)
+			if ps.Refusals > 0 || ps.Failed > 0 {
+				fmt.Fprintf(os.Stderr, "vp migrate task-board-fields: %d file(s) refused or failed\n",
+					ps.Refusals+ps.Failed)
 				return cli.ExitSystem
 			}
 			return cli.ExitOK
@@ -148,299 +152,503 @@ func cmdMigrateTaskBoardFields() *cli.Command {
 	}
 }
 
-// boardFieldsPlan is one task file's phase-2 decision, kept so a test can
-// assert on the roll-up without re-parsing the printed report.
+// boardFieldsPlan is one task file's decision, computed by the PLANNER and
+// executed verbatim by the executor. It carries the derived values, the digest
+// of the bytes they produce, and — after execution — that file's outcome.
 type boardFieldsPlan struct {
 	Project string
 	Slug    string
 	Dir     string // "", "done", or "cancelled"
+	RelPath string
 
 	StatusFrom string
-	StatusTo   string // empty = unchanged (archived files, or already-valid active values)
+	StatusTo   string // empty = unchanged
 
 	CreateTime string // empty = unknown (no history, or a cycle)
-	CreateWhy  string // human-readable derivation source, or the unknown/cycle reason
+	CreateWhy  string
 	ModTime    string // empty = unknown (no history)
 	DataFormat string
 
-	AlreadyMigrated bool
-	ShadowRefused   bool
-	Applied         bool
-	Failed          bool
-	Skipped         bool // Dirty
+	// WantSHA256 is the digest of the bytes the planner simulated. The executor
+	// re-derives it under the lock and refuses on any disagreement.
+	WantSHA256 string
+
+	NoWork        bool // the transform is a no-op: nothing to do for this file
+	ShadowRefused bool
+	InvalidReason string // VALID before, INVALID after: a defect in this migration
+	BrokenReason  string // ALREADY invalid before this run touched it
+
+	// Execution outcomes, set only by executeBoardFieldsPlan.
+	Applied bool
+	Failed  bool
+	Skipped bool // Dirty
+	Drifted bool // changed between plan and write
 }
 
-// boardFieldsSummary is phase 2's roll-up, mirroring taskStatusSummary's
-// shape for phase 1.
-type boardFieldsSummary struct {
-	Scanned         int
-	AlreadyMigrated int
-	ToMigrate       int
-	Applied         int
-	Failed          int
-	Dirty           int
-	UnknownDates    int // includes cycle-detected
-	ShadowRefusals  int
-	AppliedPaths    []string
-	Plans           []boardFieldsPlan
+// boardFieldsPlanSet is the whole plan: every file's decision plus the roll-up
+// both the report and the executor read. It is produced by a function that does
+// not write, and consumed by one that does not derive.
+type boardFieldsPlanSet struct {
+	Root string
+	Only string
+
+	Plans []boardFieldsPlan
+
+	Scanned       int
+	NoWork        int
+	ToMigrate     int
+	StatusRepairs int // files whose Status line this run would rewrite
+	UnknownDates  int
+	Refusals      int // shadow-slug refusals plus would-break-this-file refusals
+	Preexisting   int // files already malformed before this run; skipped, not failed
+
+	// WillStampFormat is the PREDICTION: after this plan is applied, will every
+	// task file in the WHOLE vault carry a DataFormat marker at or above this
+	// binary's RequiredDataFormat? Computed at plan time, over every project,
+	// regardless of --project.
+	WillStampFormat bool
+	StampReason     string
+
+	// Execution results.
+	Applied      int
+	Failed       int
+	Dirty        int
+	AppliedPaths []string
 }
 
-// runTaskBoardFieldsMigration is the whole command, injectable for tests.
-func runTaskBoardFieldsMigration(root, only string, apply bool, out io.Writer) (taskStatusSummary, boardFieldsSummary, error) {
-	var statusSum taskStatusSummary
-	var fieldsSum boardFieldsSummary
+// boardFieldsFileIsCurrent reports whether a task file already carries a
+// DataFormat marker at or above what this binary requires.
+//
+// 🔴 THIS, NOT CreateTime, IS THE "already migrated" PREDICATE. Keying off
+// CreateTime stored a derived value and was wrong twice over: a file can carry
+// CreateTime from CreateTask while never having been migrated, and a file with
+// no derivable git history legitimately ends the migration with NO CreateTime at
+// all ("never fabricate a date") — so CreateTime-presence both over- and
+// under-reports. The DataFormat marker is the field that exists to answer
+// exactly this question.
+func boardFieldsFileIsCurrent(slug, content string, archived bool) bool {
+	meta := storage.ParseTaskMetaFromContent(slug, content, archived)
+	n, err := strconv.Atoi(strings.TrimSpace(meta.DataFormat))
+	return err == nil && n >= surface.RequiredDataFormat
+}
 
-	if apply {
-		if err := requireVaultGitRepo(root, "this migration derives CreateTime/ModTime from git history and "+
-			"backfills header fields whose only other copy is that history"); err != nil {
-			return statusSum, fieldsSum, err
+// boardFieldsStatusTarget returns the Status value this file should carry, or ""
+// to leave it alone.
+//
+// ONE population, shared with `vp migrate task-status` rather than re-derived:
+// the archived arm asks findStatusLineOutsideFences (fence-aware, built on
+// storage.TaskStatusValue) and storage.IsTerminalStatus, which are the same two
+// decisions that command's own header comment names as the single source. The
+// active arm is this migration's own: the literal legacy "pending" spelling
+// becomes "planning", and anything else — already-valid, or genuinely free-text
+// legacy — is left alone rather than guessed at.
+func boardFieldsStatusTarget(dir, content string) (from, to string) {
+	_, found, ok := findStatusLineOutsideFences(content)
+	if !ok {
+		// No Status line outside a fence. Absence is the older header format,
+		// not a false claim: never insert one.
+		return "", ""
+	}
+	if dir == "" {
+		if strings.EqualFold(strings.TrimSpace(found), "pending") {
+			return found, "planning"
+		}
+		return found, ""
+	}
+	if storage.IsTerminalStatus(found) {
+		return found, ""
+	}
+	for _, ad := range archiveDirs {
+		if ad.dir == dir {
+			return found, ad.status
+		}
+	}
+	return found, ""
+}
+
+// boardFieldsTaskFiles lists one project directory's task files, sorted.
+func boardFieldsTaskFiles(root, proj, sub string) []string {
+	entries, err := os.ReadDir(filepath.Join(root, "Projects", proj, "tasks", sub))
+	if err != nil {
+		// A project with no done/ or cancelled/ (or no active tasks/) is normal.
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	return names
+}
+
+// planBoardFieldsMigration computes the COMPLETE migration and writes nothing.
+//
+// 🔴 IT TAKES A ROOT, NOT A VAULT, AND THAT IS A CONVENTION — NOT A GUARANTEE.
+// A function holding a root path can still write: storage.NewVault(root) is
+// exported and os.WriteFile needs nothing else. The enforcement that this
+// function performs no writes is the sourceaudit ratchet (see
+// internal/sourceaudit/planner_no_write.go), backed by a test that hashes the
+// whole vault across a planning call. Neither is a compiler guarantee and this
+// comment must not be read as claiming one.
+//
+// Why the split exists at all: every date is derived HERE, before the executor
+// writes anything, so deriveModTime's `git log -1` cannot read a commit this run
+// produced. That hazard is not hypothetical — it is how the shipped version
+// corrupted ModTime on every file it repaired before aborting.
+func planBoardFieldsMigration(root, only string) (*boardFieldsPlanSet, error) {
+	projects, err := taskPreambleProjects(root, only)
+	if err != nil {
+		return nil, err
+	}
+	// The tombstone chase must reach a source project's tombstone regardless of
+	// --project scoping: --project limits which files are MIGRATED, not which
+	// projects can hold a cross-project move's other half. The stamp prediction
+	// below needs the same unscoped list for its own reason.
+	allProjects, err := taskPreambleProjects(root, "")
+	if err != nil {
+		return nil, err
+	}
+
+	ps := &boardFieldsPlanSet{Root: root, Only: only}
+	dataFormat := strconv.Itoa(surface.RequiredDataFormat)
+	planned := make(map[string]bool)
+
+	for _, proj := range projects {
+		for _, sub := range []string{"", "done", "cancelled"} {
+			for _, name := range boardFieldsTaskFiles(root, proj, sub) {
+				slug := strings.TrimSuffix(name, ".md")
+				rel := boardFieldsRelPath(proj, sub, name)
+				data, ferr := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+				if ferr != nil {
+					return nil, fmt.Errorf("read %s: %w", rel, ferr)
+				}
+				ps.Scanned++
+				content := string(data)
+
+				plan := boardFieldsPlan{Project: proj, Slug: slug, Dir: sub, RelPath: rel}
+
+				// Shadow-slug guard: resolveTaskFile resolves active before done
+				// before cancelled, so an archived candidate whose slug also
+				// exists in the active directory would send this write to the
+				// wrong file. Refuse rather than repair.
+				if sub != "" && fileExists(filepath.Join(root, "Projects", proj, "tasks", name)) {
+					plan.ShadowRefused = true
+					ps.Refusals++
+					ps.Plans = append(ps.Plans, plan)
+					continue
+				}
+
+				from, to := boardFieldsStatusTarget(sub, content)
+				plan.StatusFrom, plan.StatusTo = from, to
+
+				createTime, createWhy, cerr := deriveCreateTime(root, allProjects, proj, slug, rel)
+				if cerr != nil {
+					return nil, fmt.Errorf("%s: derive CreateTime: %w", rel, cerr)
+				}
+				modTime, merr := deriveModTime(root, rel)
+				if merr != nil {
+					return nil, fmt.Errorf("%s: derive ModTime: %w", rel, merr)
+				}
+				plan.CreateTime, plan.CreateWhy, plan.ModTime = createTime, createWhy, modTime
+				plan.DataFormat = dataFormat
+
+				// 🔴 TWO DIFFERENT FAILURES, AND CONFLATING THEM WAS WRONG.
+				// An empty fill changes nothing, so this validates the file AS IT
+				// STANDS. A file already malformed is a PRE-EXISTING condition,
+				// not a defect in this migration: refusing the whole run for it
+				// would hold a one-time migration hostage to damage it did not
+				// cause, and the live corpus carries 30 such files whose only
+				// fault is an older header format with no Status line — files the
+				// shipped version migrated without complaint, because its write
+				// path never validated at all.
+				//
+				// They are still SKIPPED rather than written: a file whose header
+				// block cannot be parsed reliably is a file whose header block is
+				// the wrong place to insert a field, and upsertHeaderField would
+				// be guessing at the position. They also hold the format stamp
+				// down, because a vault holding files this migration could not
+				// process is not a migrated vault.
+				if _, berr := storage.PlanTaskMigrationFields(content, storage.TaskMigrationFill{}); berr != nil {
+					plan.BrokenReason = berr.Error()
+					ps.Preexisting++
+					ps.Plans = append(ps.Plans, plan)
+					continue
+				}
+
+				fill := plan.fill()
+				after, verr := storage.PlanTaskMigrationFields(content, fill)
+				if verr != nil {
+					// Valid before, invalid after: this migration would BREAK the
+					// file. That is a defect in the migration and stops the run.
+					plan.InvalidReason = verr.Error()
+					ps.Refusals++
+					ps.Plans = append(ps.Plans, plan)
+					continue
+				}
+				if after == content {
+					plan.NoWork = true
+					ps.NoWork++
+					planned[rel] = true
+					ps.Plans = append(ps.Plans, plan)
+					continue
+				}
+
+				plan.WantSHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(after)))
+				ps.ToMigrate++
+				if to != "" {
+					ps.StatusRepairs++
+				}
+				if createTime == "" {
+					ps.UnknownDates++
+				}
+				planned[rel] = true
+				ps.Plans = append(ps.Plans, plan)
+			}
 		}
 	}
 
-	projects, err := taskPreambleProjects(root, only)
-	if err != nil {
-		return statusSum, fieldsSum, err
-	}
-	// The tombstone chase must be able to find a source project's tombstone
-	// regardless of --project scoping: --project limits which files phase 2
-	// MIGRATES, not which projects can hold a cross-project move's other half.
-	allProjects, err := taskPreambleProjects(root, "")
-	if err != nil {
-		return statusSum, fieldsSum, err
-	}
+	ps.WillStampFormat, ps.StampReason = predictFormatStamp(root, allProjects, planned)
+	return ps, nil
+}
 
-	printVaultRoot(out, root)
+// fill is the write this plan entry asks for.
+//
+// FillAbsentOnly is always true here: a value already on disk is authoritative,
+// and DataFormat refreshes only upward. That is defect 7's per-field fill, and
+// it is what lets a file carrying CreateTime from CreateTask still receive the
+// DataFormat marker the shipped all-or-nothing skip denied it.
+func (p boardFieldsPlan) fill() storage.TaskMigrationFill {
+	return storage.TaskMigrationFill{
+		NewStatus:      p.StatusTo,
+		CreateTime:     p.CreateTime,
+		ModTime:        p.ModTime,
+		DataFormat:     p.DataFormat,
+		FillAbsentOnly: true,
+	}
+}
+
+// predictFormatStamp answers, at PLAN time, whether the vault will be fully
+// migrated once this plan is applied.
+//
+// 🔴 IT SCANS EVERY PROJECT, NOT THE --project SCOPE, and that is the whole
+// point. The marker is vault-wide, so deciding it from a project-scoped file set
+// asserts a vault-wide fact from project-local evidence — which is how a run
+// that migrated 38 of 656 files stamped the entire vault current.
+//
+// It is a PREDICTION, not a promise: a Dirty skip or a drift refusal can falsify
+// it at write time, which is why the executor re-derives the same predicate from
+// disk before stamping and reports any divergence.
+func predictFormatStamp(root string, allProjects []string, planned map[string]bool) (bool, string) {
+	for _, proj := range allProjects {
+		for _, sub := range []string{"", "done", "cancelled"} {
+			for _, name := range boardFieldsTaskFiles(root, proj, sub) {
+				rel := boardFieldsRelPath(proj, sub, name)
+				if planned[rel] {
+					continue
+				}
+				data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+				if err != nil {
+					return false, fmt.Sprintf("cannot read %s", rel)
+				}
+				slug := strings.TrimSuffix(name, ".md")
+				if !boardFieldsFileIsCurrent(slug, string(data), sub != "") {
+					return false, fmt.Sprintf("%s is not covered by this run and is below data format %d",
+						rel, surface.RequiredDataFormat)
+				}
+			}
+		}
+	}
+	return true, ""
+}
+
+// vaultIsFullyMigrated re-derives the stamp predicate from DISK, after execution.
+func vaultIsFullyMigrated(root string, allProjects []string) (bool, string) {
+	return predictFormatStamp(root, allProjects, nil)
+}
+
+// printBoardFieldsPlan renders the plan. ONE renderer, called in both modes, so
+// the report a human reads before --apply is the same plan --apply executes.
+func printBoardFieldsPlan(out io.Writer, ps *boardFieldsPlanSet, apply bool) {
+	printVaultRoot(out, ps.Root)
 	if apply {
 		fmt.Fprintln(out, "Mode:  APPLY — task files will be rewritten.")
 	} else {
 		fmt.Fprintln(out, "Mode:  REPORT ONLY — nothing is written. Pass --apply to write.")
 	}
+	fmt.Fprintln(out)
 
-	fmt.Fprintln(out, "\n=== Phase 1: archived Status repair (vp migrate task-status) ===")
-	statusSum, err = runTaskStatusMigration(root, only, apply, out)
-	if err != nil {
-		return statusSum, fieldsSum, err
-	}
-	if apply && statusSum.Failed > 0 {
-		fmt.Fprintln(out, "\nPhase 1 reported failures — phase 2 will NOT run, and the DataFormat marker will NOT be stamped.")
-		return statusSum, fieldsSum, nil
-	}
-
-	fmt.Fprintln(out, "\n=== Phase 2: Status rename + CreateTime/ModTime/DataFormat backfill ===")
-	vault := storage.NewVault(root)
-	dataFormat := strconv.Itoa(surface.RequiredDataFormat)
-
-	// 🔴 A PATH PHASE 1 ITSELF JUST WROTE IS EXPECTED TO BE DIRTY, AND THAT IS
-	// NOT THE HAZARD THE PER-FILE PRECONDITION EXISTS TO CATCH. Both phases
-	// write directly with no staging and no auto-commit (Operator Decision 4),
-	// so an archived file phase 1 just repaired is, by construction,
-	// uncommitted the moment phase 2 reaches it — on every real run, not an
-	// edge case. A naive per-file HasUncommittedChanges check can't tell that
-	// dirt apart from a genuinely unrelated in-flight operator edit, so it
-	// would skip phase 2's own backfill for every single file phase 1 touched,
-	// defeating Operator Decision 1's entire point (one coordinated-window
-	// command) on the very files it folded in. Since phase 1's write is OUR
-	// OWN, from earlier in this same invocation, it is safe to build on: both
-	// writes land in the same rollback banner and the same eventual human
-	// commit, so nothing is silently mixed with work this run did not make.
-	phase1Written := make(map[string]bool, len(statusSum.AppliedPaths))
-	for _, p := range statusSum.AppliedPaths {
-		phase1Written[p] = true
-	}
-
-	for _, proj := range projects {
-		for _, sub := range []string{"", "done", "cancelled"} {
-			dir := filepath.Join(root, "Projects", proj, "tasks", sub)
-			entries, rerr := os.ReadDir(dir)
-			if rerr != nil {
-				// A project with no done/ or cancelled/ (or, degenerately, no
-				// active tasks/ at all) is normal, not a defect.
-				continue
-			}
-			var names []string
-			for _, e := range entries {
-				if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
-					continue
-				}
-				names = append(names, e.Name())
-			}
-			sort.Strings(names)
-
-			for _, name := range names {
-				slug := strings.TrimSuffix(name, ".md")
-				relPath := boardFieldsRelPath(proj, sub, name)
-				data, ferr := os.ReadFile(filepath.Join(root, filepath.FromSlash(relPath)))
-				if ferr != nil {
-					fmt.Fprintf(out, "  !!    %s/%s: read: %v\n", proj, slug, ferr)
-					fieldsSum.Failed++
-					continue
-				}
-				fieldsSum.Scanned++
-				content := string(data)
-				meta := storage.ParseTaskMetaFromContent(slug, content, sub != "")
-
-				plan := boardFieldsPlan{Project: proj, Slug: slug, Dir: sub}
-
-				// §6 idempotency: a non-empty CreateTime means either
-				// server-stamped-at-creation (post-dates this feature) or
-				// already migrated by an earlier partial run. Either way,
-				// skip entirely — including the DataFormat re-stamp.
-				if meta.CreateTime != "" {
-					plan.AlreadyMigrated = true
-					fieldsSum.AlreadyMigrated++
-					fieldsSum.Plans = append(fieldsSum.Plans, plan)
-					continue
-				}
-
-				// Shadow-slug guard: resolveTaskFile (and so
-				// SetTaskMigrationFields) resolves active before done before
-				// cancelled, so a done/cancelled candidate whose slug ALSO
-				// exists in the active directory would silently write the
-				// active file with this archived file's derived values.
-				// Refuse rather than repair, exactly like phase 1's own
-				// identical guard — no equivalent check is needed for an
-				// active-directory candidate, since active always resolves
-				// to itself first regardless of what else shares its slug.
-				if sub != "" {
-					active := filepath.Join(root, "Projects", proj, "tasks", name)
-					if fileExists(active) {
-						fmt.Fprintf(out, "  !!    %s/%s: also present in tasks/ (%s) — refusing, the writer resolves active first\n",
-							proj, slug, boardFieldsRelPath(proj, "", name))
-						plan.ShadowRefused = true
-						plan.Failed = true
-						fieldsSum.Failed++
-						fieldsSum.ShadowRefusals++
-						fieldsSum.Plans = append(fieldsSum.Plans, plan)
-						continue
-					}
-				}
-
-				// Status rename: active directory only, literal "pending"
-				// (case-insensitive) -> "planning". Phase 1 already owns the
-				// archived retired/pending->done/cancelled repair. Anything
-				// else (already-valid, or genuinely free-text/legacy) is
-				// left alone — never guessed at.
-				plan.StatusFrom = meta.Status
-				if sub == "" && strings.EqualFold(strings.TrimSpace(meta.Status), "pending") {
-					plan.StatusTo = "planning"
-				}
-
-				createTime, createWhy, cerr := deriveCreateTime(root, allProjects, proj, slug, relPath)
-				if cerr != nil {
-					fmt.Fprintf(out, "  !!    %s/%s: derive CreateTime: %v\n", proj, slug, cerr)
-					plan.Failed = true
-					fieldsSum.Failed++
-					fieldsSum.Plans = append(fieldsSum.Plans, plan)
-					continue
-				}
-				plan.CreateTime = createTime
-				plan.CreateWhy = createWhy
-				if createTime == "" {
-					fieldsSum.UnknownDates++
-				}
-
-				modTime, merr := deriveModTime(root, relPath)
-				if merr != nil {
-					fmt.Fprintf(out, "  !!    %s/%s: derive ModTime: %v\n", proj, slug, merr)
-					plan.Failed = true
-					fieldsSum.Failed++
-					fieldsSum.Plans = append(fieldsSum.Plans, plan)
-					continue
-				}
-				plan.ModTime = modTime
-				plan.DataFormat = dataFormat
-
-				fieldsSum.ToMigrate++
-				fmt.Fprintf(out, "  FIX   %s/%s (%s/) — Status %q->%q  CreateTime=%s (%s)  ModTime=%s  DataFormat=%s\n",
-					proj, slug, sub, plan.StatusFrom, orUnchanged(plan.StatusTo), orUnknown(createTime), createWhy, orUnknown(modTime), dataFormat)
-
-				if apply {
-					var dirty bool
-					if !phase1Written[relPath] {
-						var dierr error
-						dirty, dierr = storage.HasUncommittedChanges(root, relPath)
-						if dierr != nil {
-							fmt.Fprintf(out, "  !!    %s/%s: git status: %v\n", proj, slug, dierr)
-							plan.Failed = true
-							fieldsSum.Failed++
-							fieldsSum.Plans = append(fieldsSum.Plans, plan)
-							continue
-						}
-					}
-					if dirty {
-						fmt.Fprintf(out, "  SKIP  %s/%s: uncommitted changes — this migration backfills "+
-							"history-derived fields; commit or stash %s, then re-run\n", proj, slug, relPath)
-						plan.Skipped = true
-						fieldsSum.Dirty++
-						fieldsSum.Plans = append(fieldsSum.Plans, plan)
-						continue
-					}
-					if werr := vault.SetTaskMigrationFields(proj, slug, plan.StatusTo, createTime, modTime, dataFormat); werr != nil {
-						fmt.Fprintf(out, "  !!    %s/%s: write: %v\n", proj, slug, werr)
-						plan.Failed = true
-						fieldsSum.Failed++
-						fieldsSum.Plans = append(fieldsSum.Plans, plan)
-						continue
-					}
-					plan.Applied = true
-					fieldsSum.Applied++
-					boardFieldsRecordWrite(&fieldsSum, root, relPath)
-				}
-				fieldsSum.Plans = append(fieldsSum.Plans, plan)
-			}
+	for _, p := range ps.Plans {
+		switch {
+		case p.ShadowRefused:
+			fmt.Fprintf(out, "  !!    %s/%s: also present in tasks/ (%s) — refusing, the writer resolves active first\n",
+				p.Project, p.Slug, boardFieldsRelPath(p.Project, "", p.Slug+".md"))
+		case p.InvalidReason != "":
+			fmt.Fprintf(out, "  !!    %s/%s (%s/): this migration would BREAK this file — %s\n",
+				p.Project, p.Slug, p.Dir, p.InvalidReason)
+		case p.BrokenReason != "":
+			fmt.Fprintf(out, "  SKIP  %s/%s (%s/): already malformed before this run — %s\n",
+				p.Project, p.Slug, p.Dir, p.BrokenReason)
+		case p.NoWork:
+			// Nothing to say per file; counted in the roll-up.
+		default:
+			fmt.Fprintf(out, "  FIX   %s/%s (%s/) — Status %q->%q  CreateTime=%s (%s)  ModTime=%s  DataFormat=%s\n",
+				p.Project, p.Slug, p.Dir, p.StatusFrom, orUnchanged(p.StatusTo),
+				orUnknown(p.CreateTime), p.CreateWhy, orUnknown(p.ModTime), p.DataFormat)
 		}
 	}
 
 	fmt.Fprintln(out)
-	fmt.Fprintf(out, "Phase 1: %d archived file(s) scanned, %d repaired, %d dirty.\n",
-		statusSum.Scanned, statusSum.Applied, statusSum.Dirty)
-	fmt.Fprintf(out, "Phase 2: %d task file(s) scanned, %d already migrated, %d to migrate, "+
-		"%d with unknown dates (no git history or cycle), %d shadow-slug refusal(s).\n",
-		fieldsSum.Scanned, fieldsSum.AlreadyMigrated, fieldsSum.ToMigrate, fieldsSum.UnknownDates, fieldsSum.ShadowRefusals)
+	// 🔴 THE ROLL-UP REPORTS PLANNED WORK, NOT APPLIED WORK. The shipped version
+	// printed statusSum.Applied here, which is 0 in report mode by construction —
+	// so a report listing hundreds of repairs summarised them as "0 repaired",
+	// at exactly the moment an operator decides whether to proceed.
+	fmt.Fprintf(out, "Planned: %d task file(s) scanned, %d already current, %d to migrate "+
+		"(%d of them a Status repair), %d with unknown dates (no git history or cycle), "+
+		"%d already-malformed file(s) skipped, %d refusal(s).\n",
+		ps.Scanned, ps.NoWork, ps.ToMigrate, ps.StatusRepairs, ps.UnknownDates,
+		ps.Preexisting, ps.Refusals)
+	if ps.Preexisting > 0 {
+		fmt.Fprintf(out, "The %d skipped file(s) were malformed before this run and need their own "+
+			"repair; they hold the vault below data format %d until they are fixed.\n",
+			ps.Preexisting, surface.RequiredDataFormat)
+	}
 
-	totalFailed := statusSum.Failed + fieldsSum.Failed
-	totalDirty := statusSum.Dirty + fieldsSum.Dirty
+	if ps.WillStampFormat {
+		fmt.Fprintf(out, "Data format: this run would advance the vault to %d.\n", surface.RequiredDataFormat)
+	} else {
+		fmt.Fprintf(out, "Data format: this run would NOT advance the vault — %s.\n", ps.StampReason)
+	}
+}
 
-	if apply {
-		fmt.Fprintf(out, "Applied %d rewrite(s) in phase 2.\n", fieldsSum.Applied)
-		switch {
-		case totalFailed > 0:
-			fmt.Fprintf(out, "%d file(s) FAILED across both phases; RequiredDataFormat was NOT advanced.\n", totalFailed)
-		case totalDirty > 0:
-			fmt.Fprintf(out, "%d file(s) skipped for uncommitted changes; RequiredDataFormat was NOT advanced — "+
-				"commit or stash them and re-run --apply.\n", totalDirty)
-		default:
-			if werr := surface.WriteFormat(root, surface.RequiredDataFormat); werr != nil {
-				return statusSum, fieldsSum, fmt.Errorf("stamp vault data format: %w", werr)
+// executeBoardFieldsPlan applies a plan and derives NOTHING. Every value it
+// writes came from the planner; its only decisions are per-file preconditions
+// (uncommitted changes) and the guarded write's own drift refusal.
+func executeBoardFieldsPlan(vault *storage.Vault, ps *boardFieldsPlanSet, allProjects []string, out io.Writer) error {
+	for i := range ps.Plans {
+		p := &ps.Plans[i]
+		if p.ShadowRefused || p.InvalidReason != "" {
+			p.Failed = true
+			ps.Failed++
+			continue
+		}
+		if p.NoWork || p.BrokenReason != "" {
+			continue
+		}
+
+		// 🔴 NO phase1Written MAP, AND NONE IS NEEDED. The shipped version wrote
+		// each archived file TWICE — a status repair, then a field backfill — so
+		// the second write's dirty check saw dirt the same run had just made, and
+		// a map of "paths we wrote" had to exist to tell that apart from a real
+		// in-flight operator edit. This run writes each file exactly once, so no
+		// file is dirty for a reason this run created, and the check can be taken
+		// at face value again.
+		dirty, derr := storage.HasUncommittedChanges(ps.Root, p.RelPath)
+		if derr != nil {
+			fmt.Fprintf(out, "  !!    %s/%s: git status: %v\n", p.Project, p.Slug, derr)
+			p.Failed = true
+			ps.Failed++
+			continue
+		}
+		if dirty {
+			fmt.Fprintf(out, "  SKIP  %s/%s: uncommitted changes — this migration backfills history-derived "+
+				"fields and will not overwrite an edit it cannot see. Undo this run with the rollback "+
+				"command printed below, resolve %s, then re-run.\n", p.Project, p.Slug, p.RelPath)
+			p.Skipped = true
+			ps.Dirty++
+			continue
+		}
+
+		if werr := vault.ApplyTaskMigrationFields(p.Project, p.Slug, p.fill(), p.WantSHA256); werr != nil {
+			var drift *storage.TaskMigrationDriftError
+			if errors.As(werr, &drift) {
+				fmt.Fprintf(out, "  !!    %s/%s: %v\n", p.Project, p.Slug, werr)
+				p.Drifted = true
+			} else {
+				fmt.Fprintf(out, "  !!    %s/%s: write: %v\n", p.Project, p.Slug, werr)
 			}
-			fmt.Fprintf(out, "RequiredDataFormat stamped at %d.\n", surface.RequiredDataFormat)
+			p.Failed = true
+			ps.Failed++
+			continue
 		}
-	} else if fieldsSum.ToMigrate > 0 || statusSum.Fix > 0 {
-		fmt.Fprintln(out, "Nothing was written. Re-run with --apply to write.")
+		p.Applied = true
+		ps.Applied++
+		boardFieldsRecordWrite(ps, ps.Root, p.RelPath)
 	}
 
-	// A path phase 1 wrote and phase 2 ALSO wrote (the phase1Written
-	// interaction above) is a real, separate write from each phase, but it
-	// is still one path on disk — de-duplicated here so the rollback banner
-	// (and the `git checkout --` argument list it prints) names each path
-	// exactly once.
-	seen := make(map[string]bool, len(statusSum.AppliedPaths)+len(fieldsSum.AppliedPaths))
-	allPaths := make([]string, 0, len(statusSum.AppliedPaths)+len(fieldsSum.AppliedPaths))
-	for _, p := range statusSum.AppliedPaths {
-		if !seen[p] {
-			seen[p] = true
-			allPaths = append(allPaths, p)
-		}
-	}
-	for _, p := range fieldsSum.AppliedPaths {
-		if !seen[p] {
-			seen[p] = true
-			allPaths = append(allPaths, p)
-		}
-	}
-	boardFieldsRollbackBanner(out, root, allPaths)
+	fmt.Fprintf(out, "\nApplied %d rewrite(s); %d failed, %d skipped for uncommitted changes.\n",
+		ps.Applied, ps.Failed, ps.Dirty)
 
-	return statusSum, fieldsSum, nil
+	// The stamp is DERIVED from disk, never asserted from this run's own scope.
+	complete, why := vaultIsFullyMigrated(ps.Root, allProjects)
+	switch {
+	case complete && ps.WillStampFormat:
+		if werr := surface.WriteFormat(ps.Root, surface.RequiredDataFormat); werr != nil {
+			return fmt.Errorf("stamp vault data format: %w", werr)
+		}
+		fmt.Fprintf(out, "RequiredDataFormat stamped at %d.\n", surface.RequiredDataFormat)
+	case complete && !ps.WillStampFormat:
+		// Predicted no, outcome yes. Harmless but reported: the prediction is
+		// part of the contract and a silent correction hides that it was wrong.
+		if werr := surface.WriteFormat(ps.Root, surface.RequiredDataFormat); werr != nil {
+			return fmt.Errorf("stamp vault data format: %w", werr)
+		}
+		fmt.Fprintf(out, "RequiredDataFormat stamped at %d — NOTE: the plan predicted this run would "+
+			"not advance the format (%s); it did.\n", surface.RequiredDataFormat, ps.StampReason)
+	case !complete && ps.WillStampFormat:
+		fmt.Fprintf(out, "RequiredDataFormat was NOT advanced — the plan predicted it would be, but "+
+			"%s. A skipped or refused file falsified the prediction; resolve it and re-run.\n", why)
+	default:
+		fmt.Fprintf(out, "RequiredDataFormat was NOT advanced — %s.\n", why)
+	}
+
+	boardFieldsRollbackBanner(out, ps.Root, ps.AppliedPaths)
+	return nil
+}
+
+// runTaskBoardFieldsMigration plans, reports, and — when apply is set — executes.
+func runTaskBoardFieldsMigration(root, only string, apply bool, out io.Writer) (*boardFieldsPlanSet, error) {
+	if apply {
+		if err := requireVaultGitRepo(root, "this migration derives CreateTime/ModTime from git history and "+
+			"backfills header fields whose only other copy is that history"); err != nil {
+			return nil, err
+		}
+	}
+
+	ps, err := planBoardFieldsMigration(root, only)
+	if err != nil {
+		return nil, err
+	}
+	printBoardFieldsPlan(out, ps, apply)
+
+	// 🔴 A REFUSAL IS A WHOLE-RUN REFUSAL, BEFORE ANY BYTE IS WRITTEN. The
+	// shipped version discovered a file the writer would reject only by trying to
+	// write it, 472 files into the run, and then abandoned the rest — leaving a
+	// half-migrated vault whose documented recovery corrupted ModTime. Validating
+	// every candidate during planning turns that into a report the operator reads
+	// while the vault is still untouched.
+	if ps.Refusals > 0 {
+		fmt.Fprintf(out, "\n%d file(s) would not survive this migration. Nothing was written.\n", ps.Refusals)
+		return ps, nil
+	}
+
+	if !apply {
+		if ps.ToMigrate > 0 {
+			fmt.Fprintln(out, "\nNothing was written. Re-run with --apply to write.")
+		}
+		return ps, nil
+	}
+
+	allProjects, err := taskPreambleProjects(root, "")
+	if err != nil {
+		return nil, err
+	}
+	if err := executeBoardFieldsPlan(storage.NewVault(root), ps, allProjects, out); err != nil {
+		return ps, err
+	}
+	return ps, nil
 }
 
 // orUnknown renders an empty derived date as "unknown" for the report line.
@@ -475,7 +683,7 @@ func boardFieldsRelPath(project, sub, name string) string {
 // holds nothing unrecoverable), and it is only listed when tracked, because
 // `git checkout -- <untracked>` is a pathspec error that fails the WHOLE
 // checkout command, silently leaving every other path un-rolled-back too.
-func boardFieldsRecordWrite(sum *boardFieldsSummary, root, rel string) {
+func boardFieldsRecordWrite(sum *boardFieldsPlanSet, root, rel string) {
 	sum.AppliedPaths = append(sum.AppliedPaths, rel)
 
 	stamp, err := surface.StampPath(root, filepath.Join(root, filepath.FromSlash(rel)))

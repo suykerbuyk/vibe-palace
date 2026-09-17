@@ -110,6 +110,11 @@ const (
 	// the note_path bug, exactly.
 	KindWriteOnlyField = "write-only-field"
 
+	// KindPlannerWrite: a migration PLANNER — a function that derives values a
+	// later executor writes — reaching a write call. A planner that writes can
+	// have its own derivations read its own output. See planner_no_write.go.
+	KindPlannerWrite = "planner-write"
+
 	// KindUninvoked: a function or method declared in non-test code and called from
 	// nowhere in non-test code. Capability built, nothing invokes it.
 	KindUninvoked = "uninvoked"
@@ -235,6 +240,7 @@ func Run(roots ...string) ([]Finding, error) {
 	findings = append(findings, surfaceRemediation(files)...)
 	findings = append(findings, gitExecEnvFunnel(files)...)
 	findings = append(findings, envIsolationBypass(files)...)
+	findings = append(findings, plannerNoWrite(files)...)
 
 	sort.Slice(findings, func(i, j int) bool { return findings[i].ID() < findings[j].ID() })
 	return findings, nil
