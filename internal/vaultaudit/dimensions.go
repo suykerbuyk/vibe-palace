@@ -142,11 +142,52 @@ const (
 	//
 	//  1. ARCHIVED directory, NON-TERMINAL status. A file in done/ or cancelled/
 	//     whose status is not done/cancelled. The original finding: legacy residue
-	//     from a bulk migration that predates the current writer.
+	//     from a bulk migration that predates the current writer. SPLIT BY OUTCOME —
+	//     see below.
 	//  2. ACTIVE directory, TERMINAL status. A file in tasks/ whose body says done
-	//     or cancelled. This is the rewrite-then-rename crash signature: the stamp
-	//     landed and the rename did not. It is REPAIRABLE BY COMPLETING THE RENAME,
-	//     and the finding says so rather than only reporting disagreement.
+	//     or cancelled — or the PRE-RENAME spelling of done, which is the same
+	//     signature written in the older vocabulary. This is the rewrite-then-rename
+	//     crash signature: the stamp landed and the rename did not. It is REPAIRABLE
+	//     BY COMPLETING THE RENAME, and the finding says so rather than only
+	//     reporting disagreement. It stays PER-FILE: a crash is repaired one file at
+	//     a time.
+	//
+	// 🔴 RULE 1 SPLITS BY OUTCOME, AND THE LEGACY HALF IS ONE AGGREGATE ROW PER
+	// DIRECTORY. The status vocabulary was renamed (board-reporting-status-vocabulary-rename)
+	// while the corpus was not, and the corpus is not small — re-derive with the
+	// rule-1b derivation in EvidenceTaskStatusDirectory, never from a number written
+	// down here. Emitting one finding per file would bury the handful of real rule-1a
+	// findings under hundreds of identical rows describing one scheduled act.
+	//
+	//   - archived + status neither current-terminal nor legacy → PER-FILE finding,
+	//     unchanged, Measure zero. Values like `planning` or `In Progress` sitting in
+	//     an archive directory. These stay individually addressable.
+	//   - archived + status IS the legacy value → ONE AGGREGATE finding per archive
+	//     directory, Artifact `Projects/<slug>/tasks/done` (or `/cancelled`), count
+	//     in Measure.
+	//
+	// Not silence: quiet is indistinguishable from the migration having run, and that
+	// signal is the only one that cannot be faked. Not baseline acceptance either —
+	// the baseline suits debt that stays put, and this debt is scheduled to vanish in
+	// a single act. The aggregate still FAILs while real debt exists.
+	//
+	// 🔴 IF YOU ARE COPYING THIS SHAPE INTO A NEW DIMENSION, READ THIS FIRST. It is
+	// deliberately unlike DimResumeDiscipline, the other Measure user, and the
+	// difference is the whole point:
+	//
+	//   - DimResumeDiscipline: Artifact is ONE FILE and Measure is THAT FILE's own
+	//     magnitude (its byte count). Artifact and Measure describe the same object.
+	//   - Here: Artifact is a DIRECTORY standing for a POPULATION, and Measure is a
+	//     COUNT OF OTHER ARTIFACTS — the files inside it. Artifact and Measure
+	//     describe different objects, and the row is a summary, not a defect in the
+	//     directory itself.
+	//
+	// The second shape is only legitimate when the population shares ONE repair act.
+	// If the members need individual decisions they must be listed, or the audit has
+	// traded a readable report for an unactionable one. Per-directory granularity
+	// (rather than one vault-wide row) is what makes the row self-clearing as each
+	// project migrates, which is why it matches `vp migrate task-board-fields`'s own
+	// --project scoping.
 	//
 	// Rule 2 is worth having independently of crashes. UpdateTaskStatus refuses
 	// terminal values by design (they are absent from validStatuses), so an active
@@ -287,26 +328,62 @@ const (
 	// invents findings on the markdown these task bodies routinely quote.
 	EvidenceTaskPreamble = `vp migrate task-preamble   # REPORT ONLY, writes nothing. ` +
 		`MOVE rows are this dimension's findings; SKIP rows are its no-H2 class`
-	// THREE derivations, because the third class must be measurable WITHOUT being a
-	// finding. Lines 1 and 2 reproduce the two rules; line 3 is the absent-status
-	// population, which this dimension deliberately never reports (see
-	// DimTaskStatusDirectory) and which a reader still needs a way to size.
-	//
-	// -i on the VALUE only. The **Status:** key is matched case-sensitively — folding
-	// it would be the iteration-347 defect, where a case-folded token started matching
-	// prose. The value is folded because the real corpus spells it inconsistently:
-	// "In Progress" and "in_progress" both appear on disk.
-	//
-	// The greps are line-oriented and therefore fence-BLIND, while the dimension is
-	// fence-aware. On a file whose only **Status:**-shaped line is quoted inside a code
-	// fence the two disagree, and the dimension is the one to believe. That is the same
-	// honest gap EvidenceIterationHeadings records for its third condition.
-	EvidenceTaskStatusDirectory = `grep -l -m1 -iE '^\*\*Status:\*\* *(retired|cancelled)' ` +
-		`Projects/*/tasks/done/*.md Projects/*/tasks/cancelled/*.md 2>/dev/null | ` +
-		`comm -13 - <(grep -l '^\*\*Status:\*\*' Projects/*/tasks/done/*.md Projects/*/tasks/cancelled/*.md 2>/dev/null | sort)   # rule 1: archived, non-terminal ; ` +
-		`grep -n -iE '^\*\*Status:\*\* *(retired|cancelled)' Projects/*/tasks/*.md 2>/dev/null   # rule 2: active, terminal ; ` +
-		`grep -L '^\*\*Status:\*\*' Projects/*/tasks/done/*.md Projects/*/tasks/cancelled/*.md 2>/dev/null   # NOT a finding: the absent-status class`
 )
+
+// evidenceArchivedGlobs is the archive corpus every rule-1 derivation walks.
+const evidenceArchivedGlobs = `Projects/*/tasks/done/*.md Projects/*/tasks/cancelled/*.md`
+
+// evidenceStatusAlt renders a grep alternation from status VALUES, so the evidence
+// command names the same vocabulary the predicate accepts rather than a hand-typed
+// copy of it.
+func evidenceStatusAlt(values ...string) string { return strings.Join(values, "|") }
+
+// EvidenceTaskStatusDirectory is a var, not a const, because it is COMPOSED from the
+// status vocabulary the predicate accepts (storage.StatusDone, storage.StatusCancelled,
+// storage.StatusDoneLegacy). Hand-editing an alternation here is what rotted the
+// previous version: it was the exact COMPLEMENT of the Go rule, so the two instruments
+// disagreed on essentially every row of the live corpus while report.go printed this
+// string under "Verify, never trust this report" directly above findings it
+// contradicted. An evidence command that reproduces a DIFFERENT answer than the code
+// is worse than no evidence command at all.
+//
+// FOUR derivations, and THEIR SHAPES MATCH THE RULE'S OWN OUTPUT. That is not a
+// concession to make enrollment pass; it is what makes the printed command honest
+// about a rule whose output is a number:
+//
+//   - rule 1a → a LIST, compared against the per-file artifacts.
+//   - rule 1b → a COUNT PER DIRECTORY, compared against each aggregate row's
+//     (Artifact, Measure). The predicate is a magnitude, so its evidence is one.
+//   - rule 2  → a LIST.
+//   - absent-status → a LIST, explicitly NOT a finding, so a reader can size the
+//     class this dimension deliberately never reports (see DimTaskStatusDirectory).
+//
+// 🔴 RULE 1b COUNTS FILES (`grep -l | … | uniq -c`), NEVER LINES (`grep -c`), AND THE
+// LIVE CORPUS IS WHY. Projects/vibe-palace/tasks/done/legacy-both-repair-assumes-the-bare-line-is-authoritative.md
+// carries TWO `**Status:** retired` lines, so a line-based count exceeds the file
+// count and would disagree with Measure by one — an enrollment failure that looks
+// exactly like a rule bug and is not one. The Go scan takes the first unfenced status
+// line per file, so files are the only unit the two instruments can agree on.
+//
+// -i on the VALUE only. The **Status:** key is matched case-sensitively — folding
+// it would be the iteration-347 defect, where a case-folded token started matching
+// prose. The value is folded because the real corpus spells it inconsistently:
+// "In Progress" and "in_progress" both appear on disk.
+//
+// The greps are line-oriented and therefore fence-BLIND, while the dimension is
+// fence-aware. On a file whose only **Status:**-shaped line is quoted inside a code
+// fence the two disagree, and the dimension is the one to believe. That is the same
+// honest gap EvidenceIterationHeadings records for its third condition, and it is why
+// the differential test's fixture carries no fenced status line.
+var EvidenceTaskStatusDirectory = `comm -13 ` +
+	`<(grep -l -iE '^\*\*Status:\*\* *(` + evidenceStatusAlt(storage.StatusDone, storage.StatusCancelled, storage.StatusDoneLegacy) + `)' ` + evidenceArchivedGlobs + ` 2>/dev/null | sort) ` +
+	`<(grep -l '^\*\*Status:\*\*' ` + evidenceArchivedGlobs + ` 2>/dev/null | sort)   # rule 1a: archived, neither terminal nor legacy — a LIST ; ` +
+	`grep -l -iE '^\*\*Status:\*\* *(` + evidenceStatusAlt(storage.StatusDoneLegacy) + `)' ` + evidenceArchivedGlobs + ` 2>/dev/null | cut -d/ -f1-4 | sort | uniq -c   # rule 1b: archived, LEGACY value — a COUNT OF FILES per directory, matching each aggregate row's Measure ; ` +
+	// -H is not decoration: grep omits the filename when exactly one file matches,
+	// so without it this derivation silently changes shape on a one-hit corpus and
+	// prints a bare line number where every other class prints a path.
+	`grep -H -n -iE '^\*\*Status:\*\* *(` + evidenceStatusAlt(storage.StatusDone, storage.StatusCancelled, storage.StatusDoneLegacy) + `)' Projects/*/tasks/*.md 2>/dev/null   # rule 2: active, terminal OR legacy — a LIST ; ` +
+	`grep -L '^\*\*Status:\*\*' ` + evidenceArchivedGlobs + ` 2>/dev/null   # NOT a finding: the absent-status class`
 
 // unresolvedStatusMarkers is the DECLARED marker set for DimTaskHeadingMarkers: the
 // tokens that assert an open state a later event closes.
@@ -1417,6 +1494,10 @@ func auditTaskStatusDirectory(vault *storage.Vault) ([]Finding, []string, error)
 				unknowns = append(unknowns, fmt.Sprintf("%s: cannot read dir: %v", d.rel, rerr))
 				continue
 			}
+			// Rule 1 splits by OUTCOME, and the legacy half is counted rather than
+			// listed. See DimTaskStatusDirectory for why, and for the aggregate
+			// row's shape.
+			var legacyCount int64
 			for _, e := range entries {
 				// Subdirectories are skipped: done/ and cancelled/ are reached as
 				// their own rows above, so descending here would double-count them.
@@ -1436,14 +1517,27 @@ func auditTaskStatusDirectory(vault *storage.Vault) ([]Finding, []string, error)
 					continue
 				}
 				terminal := storage.IsTerminalStatus(scan.value)
+				// The legacy class is what IsArchivedStatusClaim admits and
+				// IsTerminalStatus does not. Derived from the two predicates rather
+				// than re-tested against StatusDoneLegacy here: terminality has one
+				// definition and this package is not allowed a second copy of it.
+				legacy := !terminal && storage.IsArchivedStatusClaim(scan.value)
 				switch {
+				case d.archived && legacy:
+					// Counted, not listed. The per-file row would be correct and
+					// useless: hundreds of identical findings for one scheduled act.
+					legacyCount++
 				case d.archived && !terminal:
 					findings = append(findings, Finding{
 						Dimension: DimTaskStatusDirectory,
 						Artifact:  fmt.Sprintf("%s:%d", rel, scan.line),
 						Detail:    archivedNonTerminalDetail(scan.value),
 					})
-				case !d.archived && terminal:
+				case !d.archived && storage.IsArchivedStatusClaim(scan.value):
+					// Rule 2 admits the LEGACY value too, and must stay per-file. An
+					// active file saying "retired" is the interrupted-archive
+					// signature — moveTask stamped the status and then failed to
+					// rename — which is a live crash to repair, not scheduled debt.
 					findings = append(findings, Finding{
 						Dimension: DimTaskStatusDirectory,
 						Artifact:  fmt.Sprintf("%s:%d", rel, scan.line),
@@ -1451,9 +1545,35 @@ func auditTaskStatusDirectory(vault *storage.Vault) ([]Finding, []string, error)
 					})
 				}
 			}
+			if legacyCount > 0 {
+				findings = append(findings, Finding{
+					Dimension: DimTaskStatusDirectory,
+					Artifact:  d.rel,
+					Measure:   legacyCount,
+					Detail:    archivedLegacyAggregateDetail(legacyCount),
+				})
+			}
 		}
 	}
 	return findings, unknowns, nil
+}
+
+// archivedLegacyAggregateDetail renders the rule-1b aggregate: one row standing for
+// a whole directory's worth of pre-rename status lines.
+//
+// It names the repair COMMAND rather than the files, because the repair is one act
+// over the whole population and a reader who wants the list has the Evidence string
+// directly above the findings.
+func archivedLegacyAggregateDetail(n int64) string {
+	return fmt.Sprintf(
+		"%d archived task file(s) in this directory still carry the pre-rename status %q instead of %q. "+
+			"These are TRUE findings, not noise: the DIRECTORY is authoritative so every current reader is "+
+			"correct, but each file states something false about ITSELF, and any consumer keying off `status` "+
+			"rather than `done` is exposed. They are aggregated rather than listed because the repair is a "+
+			"single scheduled act over the whole population — `vp migrate task-board-fields` — not %d "+
+			"independent decisions. The count is in Measure, so this row keeps reporting if the population "+
+			"GROWS after being accepted, and clears on its own as each project migrates.",
+		n, storage.StatusDoneLegacy, storage.StatusDone, n)
 }
 
 // archivedNonTerminalDetail renders a rule-1 finding: the file is in the archive
