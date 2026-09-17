@@ -152,6 +152,7 @@ var dimensions = []auditDimension{
 	{DimPalaceStoreDrawers, EvidencePalaceStoreDrawers, auditPalaceStoreDrawers},
 	{DimTaskPreamble, EvidenceTaskPreamble, auditTaskPreamble},
 	{DimTaskStatusDirectory, EvidenceTaskStatusDirectory, auditTaskStatusDirectory},
+	{DimTaskFileValidity, EvidenceTaskFileValidity, auditTaskFileValidity},
 }
 
 // DimensionNames returns the registry's dimension names in report order.

@@ -208,6 +208,63 @@ const (
 	// EvidenceTaskStatusDirectory as its own derivation instead, so a reader can
 	// measure it without the audit failing over it.
 	DimTaskStatusDirectory = "task-status-directory"
+
+	// DimTaskFileValidity — an ARCHIVED task file must satisfy the whole-file task
+	// validator, storage.ValidateWholeTaskFile: balanced fences, exactly one H1, at
+	// least one H2, exactly one **Status:** and one **Priority:**, and both of those
+	// inside the one contiguous field run after the title. A file that fails it is
+	// malformed by definition — every sanctioned whole-file writer refuses it.
+	//
+	// 🔴 IT CALLS THE WRITER'S OWN VALIDATOR AND DOES NOT RE-IMPLEMENT IT. That
+	// function was unexported until this dimension existed; exporting it was the
+	// cheaper half of the choice, because the alternative is the failure
+	// DimTaskStatusDirectory's doc already names — "a detector whose copy drifts from
+	// the writer's stops seeing the very disagreement it exists to report." One
+	// definition, two callers. Do not add a second copy of the eight rules here, and
+	// do not "simplify" any of them into a grep.
+	//
+	// 🔴 SCOPE IS ARCHIVED TASKS ONLY — tasks/done/ and tasks/cancelled/ — and that is
+	// a DISJOINTNESS requirement, not a limitation. DimTaskPreamble's
+	// PreambleSkippedNoH2 class already reports a missing H2 for ACTIVE files, which is
+	// one of this validator's eight rules. Adding the active directory here would make
+	// two dimensions report the same byte, which is exactly what that idiom exists to
+	// prevent. Measured when this landed: zero active task files fail the validator
+	// anyway, so the exclusion costs nothing today and prevents a collision tomorrow.
+	//
+	// It is NOT an exception to the ruling DimTaskPreamble and DimTaskHeadingMarkers
+	// record for their own archived exclusion — "unrepairable by every path, permanent
+	// un-actionable red". It is that ruling applied to changed facts: the premise has
+	// expired. SetTaskDataFormat, SetTaskMigrationFields and SetTaskSupersededBy all
+	// resolve through resolveTaskFile, which searches archived directories, and
+	// OverwriteTaskFileRewritingHeader is a whole-file archived writer four
+	// `vp migrate task-*` commands already call. These findings are repairable, and
+	// they block the format migration until they are, which is the opposite of
+	// un-actionable.
+	//
+	// 🔴 A FILE MAY LEGITIMATELY APPEAR HERE AND IN DimTaskStatusDirectory AT ONCE,
+	// and that is not the collision the paragraph above forbids. That dimension reports
+	// a status VALUE disagreeing with its directory; this one reports the file's SHAPE.
+	// Different defects, different bytes, different repairs. Measured on the live vault
+	// when this landed, a substantial minority of this dimension's population also
+	// carried the legacy status value — re-derive with the evidence command rather than
+	// trusting a number here. Since those are aggregated into per-directory rows there
+	// and named individually here, no artifact string is ever emitted twice.
+	//
+	// FINDINGS ARE PER-FILE, keyed (Dimension, path), Measure zero — deliberately NOT
+	// the aggregate shape DimTaskStatusDirectory uses for its legacy class. The test
+	// that shape has to pass is stated there: aggregate only when the population shares
+	// ONE repair act. This population does not. It decomposes into uniform mechanical
+	// promotions, a heterogeneous set gated on several operator judgment calls, and a
+	// class needing whole header blocks constructed — and the per-file repair decisions
+	// differ inside a single class.
+	//
+	// The second reason is stronger still: the validator returns on FIRST failure, so a
+	// file's class MOVES as it is repaired, and two files in this corpus carry a second
+	// defect behind the first. A class-keyed aggregate would decrement one row and
+	// increment another on a partial repair, churning the baseline and telling the
+	// reader nothing. The path does not move. Detail carries the class, so the reader
+	// still gets it, and the roll-up in the evidence command gives the distribution.
+	DimTaskFileValidity = "task-file-validity"
 )
 
 // 🔴 THERE IS DELIBERATELY NO DUPLICATE-H2 DIMENSION, AND ITS ABSENCE IS A RULING.
@@ -328,6 +385,27 @@ const (
 	// invents findings on the markdown these task bodies routinely quote.
 	EvidenceTaskPreamble = `vp migrate task-preamble   # REPORT ONLY, writes nothing. ` +
 		`MOVE rows are this dimension's findings; SKIP rows are its no-H2 class`
+	// A REPORTER, because a grep cannot be one here — and this is the case where that
+	// is not a preference. storage.ValidateWholeTaskFile is fence-aware across eight
+	// ORDERED rules, so a line-oriented approximation is wrong in BOTH directions: a
+	// "## " inside a fence makes a malformed file look clean, and a "**Status:**"
+	// inside a fence makes a clean file look malformed. An evidence command that lies
+	// is a stronger defect than one that is merely incomplete, so the honest option is
+	// a real second walk — the same shape EvidenceTaskPreamble points at.
+	//
+	// 🔴 WHAT AGREEMENT PROVES, AND WHAT IT DOES NOT. `vp audit task-files` and this
+	// dimension call the SAME predicate, so the two agreeing says NOTHING about the
+	// eight rules — that is the funnel rule working, not a gap. What it proves is that
+	// the two ENUMERATIONS agree: the command walks Projects/*/tasks/{done,cancelled}
+	// directly with os.ReadDir while this dimension goes through vault.ListAllProjects
+	// and TaskDoneDir/TaskCancelledDir. Project filtering, InProjects, symlinks and
+	// subdirectory handling are where those two really can diverge, and that is what
+	// the differential in cmd/vp catches. If the command is ever "simplified" to reuse
+	// ListAllProjects, the differential becomes one implementation quoting itself and
+	// reports confidence it has not earned.
+	EvidenceTaskFileValidity = `vp audit task-files   # REPORT ONLY, no write mode at all. ` +
+		`INVALID rows are this dimension's findings, one per file with the validator's own ` +
+		`first-failure message; the trailing roll-up groups them by class`
 )
 
 // evidenceArchivedGlobs is the archive corpus every rule-1 derivation walks.
@@ -1600,4 +1678,93 @@ func activeTerminalDetail(value string) string {
 			"rewrite the status back to a live value — that would discard a retire the operator had already "+
 			"approved.",
 		value, storage.StatusDone, storage.StatusCancelled)
+}
+
+// auditTaskFileValidity implements DimTaskFileValidity. See that constant for the
+// scope ruling, the disjointness requirement, and why the findings are per-file.
+//
+// It walks the two ARCHIVED directories only. The active directory is absent by
+// ruling, not by oversight — DimTaskPreamble already reports a missing H2 there.
+func auditTaskFileValidity(vault *storage.Vault) ([]Finding, []string, error) {
+	projects, err := vault.ListAllProjects()
+	if err != nil {
+		return nil, nil, fmt.Errorf("enumerate projects: %w", err)
+	}
+
+	var findings []Finding
+	var unknowns []string
+
+	for _, p := range projects {
+		if !p.InProjects {
+			continue
+		}
+		doneDir, derr := vault.TaskDoneDir(p.Slug)
+		cancelledDir, cerr := vault.TaskCancelledDir(p.Slug)
+		if derr != nil || cerr != nil {
+			unknowns = append(unknowns, fmt.Sprintf("%s: cannot resolve archive dirs: %v %v", p.Slug, derr, cerr))
+			continue
+		}
+		for _, d := range []struct{ abs, rel string }{
+			{doneDir, "Projects/" + p.Slug + "/tasks/done"},
+			{cancelledDir, "Projects/" + p.Slug + "/tasks/cancelled"},
+		} {
+			entries, rerr := os.ReadDir(d.abs)
+			if os.IsNotExist(rerr) {
+				// A project with no done/ or cancelled/ is ordinary, not a defect.
+				continue
+			}
+			if rerr != nil {
+				unknowns = append(unknowns, fmt.Sprintf("%s: cannot read dir: %v", d.rel, rerr))
+				continue
+			}
+			for _, e := range entries {
+				if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+					continue
+				}
+				rel := d.rel + "/" + e.Name()
+				data, ferr := os.ReadFile(filepath.Join(d.abs, e.Name()))
+				if ferr != nil {
+					// THREE OUTCOMES, NOT TWO. "I could not look here" is not "this is
+					// clean": an unreadable file goes to unknowns, never to findings and
+					// never to the error return, so the framework renders it as UNKNOWN
+					// rather than silently counting it valid.
+					unknowns = append(unknowns, fmt.Sprintf("%s: cannot read: %v", rel, ferr))
+					continue
+				}
+				if verr := storage.ValidateWholeTaskFile(string(data)); verr != nil {
+					findings = append(findings, Finding{
+						Dimension: DimTaskFileValidity,
+						// The ARTIFACT IS THE PATH ALONE — no line, no rule name. Finding
+						// identity is (Dimension, Artifact), and the validator returns on
+						// FIRST failure, so a file's failing rule moves as it is partially
+						// repaired. Keying on the rule would make a half-repaired file read
+						// as a NEW finding rather than the same known-bad file, churning the
+						// accepted baseline on progress.
+						Artifact: rel,
+						Detail:   taskFileValidityDetail(verr),
+					})
+				}
+			}
+		}
+	}
+	return findings, unknowns, nil
+}
+
+// taskFileValidityDetail renders one finding: the validator's own message, the
+// first-failure caveat, and where the repair lives.
+//
+// The message is passed through VERBATIM rather than re-worded. It is the writer's
+// own vocabulary, so a reader who then runs a whole-file write sees the same
+// sentence the refusal will give them, and nothing here can drift from it.
+func taskFileValidityDetail(verr error) string {
+	return fmt.Sprintf(
+		"archived task file fails the whole-file task validator: %s. This is the FIRST rule it "+
+			"fails and not necessarily the only one — the validator returns on first failure, so a "+
+			"file repaired past this rule may surface again naming a later one, which is progress "+
+			"rather than a regression. Every sanctioned whole-file writer refuses this file, and it "+
+			"holds the vault below the required data format until it is repaired. REPAIR IS A "+
+			"SEPARATE UNIT (repair-24-legacy-task-files-failing-whole-file-validation); this "+
+			"dimension reports and deliberately does not fix, because several classes need a human "+
+			"judgment the report cannot make. Reproduce with `vp audit task-files`.",
+		verr)
 }
