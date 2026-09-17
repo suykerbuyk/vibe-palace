@@ -494,9 +494,7 @@ func printBoardFieldsPlan(out io.Writer, ps *boardFieldsPlanSet, apply bool) {
 		case p.NoWork:
 			// Nothing to say per file; counted in the roll-up.
 		default:
-			fmt.Fprintf(out, "  FIX   %s/%s (%s/) — Status %q->%q  CreateTime=%s (%s)  ModTime=%s  DataFormat=%s\n",
-				p.Project, p.Slug, p.Dir, p.StatusFrom, orUnchanged(p.StatusTo),
-				orUnknown(p.CreateTime), p.CreateWhy, orUnknown(p.ModTime), p.DataFormat)
+			fmt.Fprintf(out, "  FIX   %s/%s (%s/) — %s\n", p.Project, p.Slug, p.Dir, boardFieldsRowDetail(p))
 		}
 	}
 
@@ -651,20 +649,42 @@ func runTaskBoardFieldsMigration(root, only string, apply bool, out io.Writer) (
 	return ps, nil
 }
 
-// orUnknown renders an empty derived date as "unknown" for the report line.
-func orUnknown(s string) string {
-	if s == "" {
-		return "unknown"
+// boardFieldsRowDetail renders one FIX row's columns.
+//
+// 🔴 A COLUMN NEVER NAMES A VALUE THE MIGRATION WILL NOT WRITE. The first cut
+// rendered an empty target through a sentinel — Status %q->%q with the second
+// %q holding the word "unchanged" — so 77 of 606 rows read
+//
+//	Status "cancelled"->"unchanged"
+//
+// which parses just as naturally as "sets Status to the string unchanged". This
+// is the operator's primary gate before a one-time, vault-wide migration, so a
+// row that has to be interpreted correctly is a row that can be interpreted
+// wrongly.
+//
+// The rule, applied to EVERY column and not just the one that was reported: a
+// column appears only when this run will write that field. A row showing no
+// transition cannot be misread as one, and the 529 rows that DO repair a Status
+// now stand out from the 77 that do not, which is the distinction the operator
+// is scanning for. An underivable date is rendered without "=" and with its
+// reason, so it cannot read as a value either.
+func boardFieldsRowDetail(p boardFieldsPlan) string {
+	var cols []string
+	if p.StatusTo != "" {
+		cols = append(cols, fmt.Sprintf("Status %q -> %q", p.StatusFrom, p.StatusTo))
 	}
-	return s
-}
-
-// orUnchanged renders an empty target Status as "unchanged" for the report line.
-func orUnchanged(s string) string {
-	if s == "" {
-		return "unchanged"
+	if p.CreateTime != "" {
+		cols = append(cols, fmt.Sprintf("CreateTime=%s (%s)", p.CreateTime, p.CreateWhy))
+	} else {
+		cols = append(cols, fmt.Sprintf("CreateTime unset (%s)", p.CreateWhy))
 	}
-	return s
+	if p.ModTime != "" {
+		cols = append(cols, "ModTime="+p.ModTime)
+	} else {
+		cols = append(cols, "ModTime unset (no git history)")
+	}
+	cols = append(cols, "DataFormat="+p.DataFormat)
+	return strings.Join(cols, "  ")
 }
 
 // boardFieldsRelPath is the vault-relative path of one task file, active or

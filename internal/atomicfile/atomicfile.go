@@ -67,8 +67,11 @@ func WithFsync() Option { return func(c *config) { c.fsync = true } }
 // writeObserver, when non-nil, is called with the absolute path of every
 // content write this package completes.
 //
-// 🔴 TEST SEAM. It exists because "how many times did this run write THIS FILE"
-// is not answerable anywhere else. A counter placed in a command's own executor
+// 🔴 TEST SEAM, fired from writeAtomic — the temp-plus-rename core BOTH Write
+// and WriteStream reach — so every content write this package completes is
+// observed, whichever entry point produced it. It exists because "how many
+// times did this run write THIS FILE" is not answerable anywhere else. A
+// counter placed in a command's own executor
 // counts writes THROUGH THAT EXECUTOR, which is the wrong question: the
 // regression that matters is a second writer appearing BESIDE the executor, and
 // such a writer never passes the executor's counter. Every task-file write in
@@ -119,16 +122,12 @@ func Write(vaultRoot, absPath string, data []byte, opts ...Option) error {
 	for _, o := range opts {
 		o(&cfg)
 	}
-	if err := writeAtomic(vaultRoot, absPath, cfg, func(f *os.File) error {
+	return writeAtomic(vaultRoot, absPath, cfg, func(f *os.File) error {
 		if _, err := f.Write(data); err != nil {
 			return fmt.Errorf("write temp: %w", err)
 		}
 		return nil
-	}); err != nil {
-		return err
-	}
-	notifyWrite(absPath)
-	return nil
+	})
 }
 
 // WriteStream is Write for content that must not be held in memory: it opens
@@ -218,5 +217,14 @@ func writeAtomic(vaultRoot, absPath string, cfg config, fill func(*os.File) erro
 			slog.Warn("surface stamp failed", "path", absPath, "err", err)
 		}
 	}
+	// 🔴 NOTIFY FROM THE SHARED CORE, NOT FROM EACH ENTRY POINT. The observer
+	// first lived in Write alone, while its own comment claimed "every task-file
+	// write in the tree bottoms out here". That was true of the corpus and false
+	// of the code: WriteStream reaches this same temp-plus-rename core and
+	// notified nothing, so routing one task write through it would have silenced
+	// the seam and quietly lapsed the one-write-per-file guarantee it exists to
+	// hold — with no test failing to say so. Sitting here, the claim is true by
+	// construction and stays true for the NEXT entry point somebody adds.
+	notifyWrite(absPath)
 	return nil
 }

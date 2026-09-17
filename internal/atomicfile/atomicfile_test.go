@@ -4,8 +4,10 @@
 package atomicfile
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
@@ -150,5 +152,78 @@ func TestWrite_NoStampOutsideVault(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(other, ".surface")); !os.IsNotExist(err) {
 		t.Fatalf("outside-vault write should not stamp (err=%v)", err)
+	}
+}
+
+// TestWriteObserverSeesBothEntryPoints pins the invariant SetWriteObserver's own
+// comment states: every content write this package completes is observed.
+//
+// It covers WriteStream specifically because that is where the first cut of the
+// seam was silent. A task write routed through WriteStream would have vanished
+// from the per-file write count that cmd/vp's
+// TestBoardFieldsWritesEachFileExactlyOnce depends on, and nothing would have
+// failed to say so.
+func TestWriteObserverSeesBothEntryPoints(t *testing.T) {
+	dir := t.TempDir()
+	// Guarded because the observer is package-global and notifyWrite invokes it
+	// OUTSIDE SetWriteObserver's own mutex — so two concurrent writes reach this
+	// closure concurrently. Nothing here runs in parallel today; the guard is what
+	// keeps SetWriteObserver's doc claim ("tests that install it may run alongside
+	// others in the same binary") true of the tests as well as of the seam.
+	var mu sync.Mutex
+	var seen []string
+	restore := SetWriteObserver(func(p string) {
+		mu.Lock()
+		defer mu.Unlock()
+		seen = append(seen, filepath.Base(p))
+	})
+	defer restore()
+
+	if err := Write("", filepath.Join(dir, "via-write"), []byte("a")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := WriteStream("", filepath.Join(dir, "via-stream"), func(w io.Writer) error {
+		_, err := w.Write([]byte("b"))
+		return err
+	}); err != nil {
+		t.Fatalf("WriteStream: %v", err)
+	}
+
+	want := []string{"via-write", "via-stream"}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != len(want) {
+		t.Fatalf("observer saw %v, want %v", seen, want)
+	}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Errorf("observer[%d] = %q, want %q", i, seen[i], want[i])
+		}
+	}
+}
+
+// TestWriteObserverIsRestoredAndOptional pins that the seam is inert by default
+// and that restore actually restores — a leaked observer would make an unrelated
+// test in the same binary count writes it never made.
+func TestWriteObserverIsRestoredAndOptional(t *testing.T) {
+	dir := t.TempDir()
+	var mu sync.Mutex
+	var count int
+	restore := SetWriteObserver(func(string) {
+		mu.Lock()
+		defer mu.Unlock()
+		count++
+	})
+	if err := Write("", filepath.Join(dir, "one"), []byte("x")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	restore()
+	if err := Write("", filepath.Join(dir, "two"), []byte("y")); err != nil {
+		t.Fatalf("Write after restore: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if count != 1 {
+		t.Errorf("count = %d, want 1 — the observer kept firing after restore", count)
 	}
 }

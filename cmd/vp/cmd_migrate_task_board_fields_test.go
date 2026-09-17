@@ -1260,3 +1260,45 @@ func TestBoardFieldsIdempotentOverAFullCorpus(t *testing.T) {
 	}
 	_ = first
 }
+
+// TestBoardFieldsReportRowDistinguishesTransitionFromNoChange guards the FIX-row
+// render, which shipped with nothing asserting it at all.
+//
+// Two assertions, deliberately — this is report prose, not a write path. What
+// must hold is that the two shapes are DISTINGUISHABLE: a row that changes a
+// Status says so, and a row that does not carries no Status clause and no
+// sentinel. The render previously emitted `Status "cancelled"->"unchanged"`,
+// which reads just as naturally as setting the status to the string "unchanged"
+// — on the operator's primary gate before a one-time, vault-wide migration.
+func TestBoardFieldsReportRowDistinguishesTransitionFromNoChange(t *testing.T) {
+	root := bfVault(t, "p")
+	bfWriteTask(t, root, "p", "", "moves", "Moves", "pending", "")     // pending -> planning
+	bfWriteTask(t, root, "p", "", "stays", "Stays", "in_progress", "") // already valid: no transition
+	bfCommit(t, root, "seed", time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
+
+	var buf bytes.Buffer
+	if _, err := runTaskBoardFieldsMigration(root, "", false, &buf); err != nil {
+		t.Fatalf("migration: %v", err)
+	}
+	var moves, stays string
+	for _, ln := range strings.Split(buf.String(), "\n") {
+		switch {
+		case strings.HasPrefix(ln, "  FIX ") && strings.Contains(ln, "p/moves "):
+			moves = ln
+		case strings.HasPrefix(ln, "  FIX ") && strings.Contains(ln, "p/stays "):
+			stays = ln
+		}
+	}
+	if moves == "" || stays == "" {
+		t.Fatalf("expected a FIX row for each fixture:\n%s", buf.String())
+	}
+
+	// A real transition names both ends, and only those.
+	if !strings.Contains(moves, `Status "pending" -> "planning"`) {
+		t.Errorf("a row that changes Status must name both ends:\n%s", moves)
+	}
+	// A row with no transition carries no Status clause and invents no value.
+	if strings.Contains(stays, "Status ") || strings.Contains(stays, "unchanged") {
+		t.Errorf("a row with no Status change must carry no Status clause and no sentinel:\n%s", stays)
+	}
+}
