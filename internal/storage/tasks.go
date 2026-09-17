@@ -673,7 +673,7 @@ func applyTaskMigrationFill(content string, fill TaskMigrationFill) string {
 // it is deliberately not able to perform.
 func PlanTaskMigrationFields(content string, fill TaskMigrationFill) (string, error) {
 	out := applyTaskMigrationFill(content, fill)
-	if err := validateWholeTaskFile(out); err != nil {
+	if err := ValidateWholeTaskFile(out); err != nil {
 		return "", err
 	}
 	return out, nil
@@ -2347,7 +2347,7 @@ func validateTaskBody(content string) error {
 // value is that it holds without the reader checking — "a rule that applies only
 // when the author forgot a heading is not a rule the reader can rely on" — and
 // making the emit depend on author input converts the guarantee into a
-// convention. validateWholeTaskFile's zero-H2 refusal is built on that guarantee
+// convention. ValidateWholeTaskFile's zero-H2 refusal is built on that guarantee
 // holding unconditionally.
 //
 // Splicing the author's same-named section under the emitted heading fails the
@@ -2429,12 +2429,29 @@ func isConventionalFirstHeadingLine(trimmed string) bool {
 	return trimmed == "## "+ConventionalFirstHeading
 }
 
-// validateWholeTaskFile validates a COMPLETE task file — header and body
+// ValidateWholeTaskFile validates a COMPLETE task file — header and body
 // together — the shape OverwriteTaskFile is about to persist over an existing
 // task. It is the exact INVERSE of validateTaskBody: that function rejects a
 // header-less create/amend body that carries ANY metadata; this one REQUIRES a
 // well-formed metadata header and rejects a file that is missing it or has it
 // twice. Do not confuse the two, and do not call one from the other.
+//
+// 🔴 EXPORTED FOR THE DETECTOR, AND THAT IS THE WHOLE POINT. It was unexported
+// until task audit-dimension-for-task-files-failing-whole-file-validation, which
+// added DimTaskFileValidity in internal/vaultaudit — a different package, so it
+// could not call this. The alternative was to re-implement the eight rules there,
+// and DimTaskStatusDirectory's own doc already records what that costs: "a
+// detector whose copy drifts from the writer's stops seeing the very disagreement
+// it exists to report." ONE definition, two callers — the write gate and the
+// audit — is the shape that keeps the report and the refusal agreeing by
+// construction. Do not add a second validator anywhere.
+//
+// The returned error's TEXT is part of what callers use: the audit reports it
+// verbatim per file, and `vp audit task-files` groups its roll-up by the message
+// up to the first colon. That grouping is DERIVED from these messages, never a
+// copied list, so rewording one relabels the roll-up rather than silently
+// misclassifying a file. Reword freely; do not expect a stable machine key here,
+// because deliberately none is exported.
 //
 // It is fence-aware for the same reason validateTaskBody is: a whole task file
 // routinely carries shell/TOML/Python snippets whose "# Usage" comment or sample
@@ -2456,7 +2473,7 @@ func isConventionalFirstHeadingLine(trimmed string) bool {
 //   - those Status and Priority lines lie inside the one contiguous "**Field:**"
 //     run following the title (a well-formed header block — a stray field marooned
 //     in the body is not a header).
-func validateWholeTaskFile(content string) error {
+func ValidateWholeTaskFile(content string) error {
 	if unbalancedFence(content) {
 		return errors.New("unterminated code fence: a ``` or ~~~ block is opened but never closed")
 	}
@@ -2569,7 +2586,7 @@ func unbalancedFence(content string) bool {
 }
 
 // OverwriteTaskFile replaces a task file's entire contents with content, after
-// validating content as a well-formed whole task file (validateWholeTaskFile).
+// validating content as a well-formed whole task file (ValidateWholeTaskFile).
 //
 // The write is guarded and surface-stamped: it resolves the task across the
 // active/done/cancelled dirs, holds the per-path advisory lock across the
@@ -2647,7 +2664,7 @@ func (v *Vault) overwriteTaskFile(project, slug, content string, policy headerPo
 		return nil
 	}
 
-	if err := validateWholeTaskFile(content); err != nil {
+	if err := ValidateWholeTaskFile(content); err != nil {
 		return err
 	}
 
@@ -3014,11 +3031,11 @@ func globTaskMeta(dir string, done bool) ([]TaskMeta, error) {
 //
 // It is not invisible to headerBlock. A bare line sitting between the title and
 // the field run is not isHeaderFieldLine, so it ends the block before it starts
-// and validateWholeTaskFile refuses the file at "no \"**Field:**\" run follows
+// and ValidateWholeTaskFile refuses the file at "no \"**Field:**\" run follows
 // the title". That is why no whole-file writer can repair these files, including
 // the migrations built to repair them.
 //
-// 🔴 This classifier sits IN FRONT of validateWholeTaskFile and never weakens it.
+// 🔴 This classifier sits IN FRONT of ValidateWholeTaskFile and never weakens it.
 // A repair built on it must produce a file the validator ACCEPTS, and prove that
 // by asking the validator rather than by comparing bytes.
 
@@ -3074,7 +3091,7 @@ const (
 
 	// LegacyHeaderBareOnly — a bare legacy line and NO bolded field, so the bare
 	// line is the file's ONLY status declaration. Deleting it destroys the
-	// status and leaves the file refused at validateWholeTaskFile's "missing
+	// status and leaves the file refused at ValidateWholeTaskFile's "missing
 	// Status" arm rather than repaired.
 	//
 	// The repair is CONSTRUCTION, not promotion, and that distinction was
@@ -3264,7 +3281,7 @@ func RepairLegacyBothHeader(content string) (string, error) {
 	// it; a repair whose output the validator would refuse is a bug in the
 	// repair. Asking here is what stops this from becoming a second, weaker
 	// definition of a well-formed task file.
-	if err := validateWholeTaskFile(repaired); err != nil {
+	if err := ValidateWholeTaskFile(repaired); err != nil {
 		return "", fmt.Errorf("legacy header repair produced an invalid task file: %w", err)
 	}
 	return repaired, nil
@@ -3336,7 +3353,7 @@ type LegacyBareOnlyRepair struct {
 
 // RepairLegacyBareOnlyHeader builds a valid modern header block for a
 // LegacyHeaderBareOnly file, in ONE write, validated against
-// validateWholeTaskFile as the oracle.
+// ValidateWholeTaskFile as the oracle.
 //
 // # Why this is CONSTRUCTION and not promotion
 //
@@ -3487,7 +3504,7 @@ func RepairLegacyBareOnlyHeader(content string) (LegacyBareOnlyRepair, error) {
 
 	// The oracle. This repair sits IN FRONT of the validator and never weakens
 	// it; a constructed file the validator would refuse is a bug here.
-	if err := validateWholeTaskFile(out.Content); err != nil {
+	if err := ValidateWholeTaskFile(out.Content); err != nil {
 		return out, fmt.Errorf("legacy bare-only repair produced an invalid task file: %w", err)
 	}
 	return out, nil
@@ -3599,7 +3616,7 @@ const (
 	// LegacyRefusedShape — the file is not the shape this repair serves. Decided
 	// from the file's own structure, before any transform is attempted.
 	LegacyRefusedShape
-	// LegacyRefusedValidator — the transform ran and validateWholeTaskFile
+	// LegacyRefusedValidator — the transform ran and ValidateWholeTaskFile
 	// refused its output, so the defect is not the one being repaired.
 	LegacyRefusedValidator
 )
@@ -3688,7 +3705,7 @@ type LegacyMultiTitleRepair struct {
 // # 🔴 THE VALIDATOR DECIDES, NEVER THE CLASSIFIER
 //
 // ScanLegacyHeader returns `clean` for every file this transform touches,
-// INCLUDING one whose output validateWholeTaskFile still refuses — the classifier
+// INCLUDING one whose output ValidateWholeTaskFile still refuses — the classifier
 // asks "how many titles", and one title is one title whether or not the header
 // block beneath it is well formed. A repair keyed on the classifier going clean
 // would write nothing for that file AND drop it from the only report that names
@@ -3779,9 +3796,9 @@ func RepairLegacyMultiTitleHeader(content string) (LegacyMultiTitleRepair, error
 	// The oracle, and the trap. A file can reach here classifying `clean` and
 	// still be refused — its modern header may be malformed for reasons that have
 	// nothing to do with a second title.
-	if err := validateWholeTaskFile(repaired); err != nil {
+	if err := ValidateWholeTaskFile(repaired); err != nil {
 		out.Refusal = LegacyRefusedValidator
-		return out, fmt.Errorf("demoting the second title leaves a file validateWholeTaskFile still "+
+		return out, fmt.Errorf("demoting the second title leaves a file ValidateWholeTaskFile still "+
 			"refuses, so the defect is not the two titles: %w", err)
 	}
 	out.Content = repaired

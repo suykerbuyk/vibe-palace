@@ -26,7 +26,7 @@ import (
 // THE definition of a metadata line for that package and is prefix-matched on
 // "**Status:**", so the legacy line is invisible to every reader — but not to
 // `headerBlock`, which stops at the first non-field line and so reports an EMPTY
-// header block. `validateWholeTaskFile` then refuses the file, and since every
+// header block. `ValidateWholeTaskFile` then refuses the file, and since every
 // whole-file writer goes through that validator, no tool could repair these
 // files, including the migrations built to repair them.
 //
@@ -110,7 +110,7 @@ func cmdMigrateTaskHeader() *cli.Command {
 		Description: "Normalize task headers written before the current contract, where the status " +
 			"sits on a BARE un-bolded \"Status:\" line under the title instead of inside the " +
 			"contiguous \"**Field:**\" run.\n\n" +
-			"Such a file is refused by validateWholeTaskFile — the bare line ends the header block " +
+			"Such a file is refused by ValidateWholeTaskFile — the bare line ends the header block " +
 			"before it starts — and every whole-file writer goes through that validator, so no " +
 			"other tool can repair these files.\n\n" +
 			"PLAN-FIRST: the bare command REPORTS and writes nothing; pass --apply to write.\n\n" +
@@ -139,7 +139,7 @@ func cmdMigrateTaskHeader() *cli.Command {
 			"Scope is every task directory — active, done/ and cancelled/ — because the classes " +
 			"span all three. Writes go through the locked, surface-stamping task writer, never the " +
 			"generic vault file tools (which refuse task paths), and the repaired file is checked " +
-			"against validateWholeTaskFile before it is written.\n\n" +
+			"against ValidateWholeTaskFile before it is written.\n\n" +
 			"There is deliberately NO whole-vault clean-tree precondition: every write is atomic " +
 			"and idempotent, so an interrupted run leaves each file either repaired or untouched, " +
 			"never torn. A run in which any file failed exits non-zero.",
@@ -674,7 +674,7 @@ func taskHeaderSignOffSection(out io.Writer, sum taskHeaderSummary) {
 		"    shape     — not a modern header prepended above one legacy document. Decided from the "+
 		"file's own structure,\n                  before any transform ran, so the validator never saw "+
 		"these bytes.\n"+
-		"    validator — the transform ran and validateWholeTaskFile refused its output, so the defect "+
+		"    validator — the transform ran and ValidateWholeTaskFile refused its output, so the defect "+
 		"is not the two titles.\n"+
 		"Neither is visible to the classifier, which counts titles; a repair keyed on it would report "+
 		"nothing remaining.\n", len(sum.SignOff))

@@ -162,7 +162,7 @@ func TestOverwriteRefusesArchivedTask(t *testing.T) {
 }
 
 // TestOverwriteRefusesHeaderSmuggling is the guard that keeps overwrite from
-// becoming a second writer for fields that already have one. validateWholeTaskFile
+// becoming a second writer for fields that already have one. ValidateWholeTaskFile
 // checks SHAPE only — it never sees the old file, so it cannot tell that a Status
 // line now says something different.
 func TestOverwriteRefusesHeaderSmuggling(t *testing.T) {

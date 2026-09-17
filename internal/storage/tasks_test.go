@@ -1519,7 +1519,7 @@ func TestSetTaskMetaNotFound(t *testing.T) {
 	}
 }
 
-// --- Phase B: resolveTaskFile / validateWholeTaskFile / OverwriteTaskFile ---
+// --- Phase B: resolveTaskFile / ValidateWholeTaskFile / OverwriteTaskFile ---
 
 // TestResolveTaskFileResolvesActive proves resolveTaskFile resolves a live task
 // to its tasks/ path and reports it as not archived.
@@ -1605,7 +1605,7 @@ func TestResolveTaskFileNotFound(t *testing.T) {
 // one Priority, contiguous, then the conventional first H2 and a body under it.
 //
 // 🔴 The H2 is not decoration. CreateTask emits "## Context"
-// (ConventionalFirstHeading) unconditionally, and validateWholeTaskFile refuses a
+// (ConventionalFirstHeading) unconditionally, and ValidateWholeTaskFile refuses a
 // file with no H2 at all — so a fixture without one is not "the shape CreateTask
 // writes", it is a shape no writer can produce and the validator rejects.
 const validTaskFile = "# Task Title\n\n" +
@@ -1616,7 +1616,7 @@ const validTaskFile = "# Task Title\n\n" +
 
 // TestValidateWholeTaskFileValid proves a normal well-formed task passes.
 func TestValidateWholeTaskFileValid(t *testing.T) {
-	if err := validateWholeTaskFile(validTaskFile); err != nil {
+	if err := ValidateWholeTaskFile(validTaskFile); err != nil {
 		t.Fatalf("valid task rejected: %v", err)
 	}
 }
@@ -1628,7 +1628,7 @@ func TestValidateWholeTaskFileTwoStatus(t *testing.T) {
 		"**Status:** planning\n" +
 		"**Status:** blocked\n" +
 		"**Priority:** P1\n\n## Context\n\nBody.\n"
-	err := validateWholeTaskFile(content)
+	err := ValidateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "two Status lines") {
 		t.Fatalf("error = %v, want 'two Status lines'", err)
 	}
@@ -1638,7 +1638,7 @@ func TestValidateWholeTaskFileTwoStatus(t *testing.T) {
 func TestValidateWholeTaskFileTwoTitles(t *testing.T) {
 	content := "# Task Title\n# Second Title\n\n" +
 		"**Status:** planning\n**Priority:** P1\n\n## Context\n\nBody.\n"
-	err := validateWholeTaskFile(content)
+	err := ValidateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "two title lines") {
 		t.Fatalf("error = %v, want 'two title lines'", err)
 	}
@@ -1651,7 +1651,7 @@ func TestValidateWholeTaskFileTwoPriority(t *testing.T) {
 		"**Status:** planning\n" +
 		"**Priority:** P1\n" +
 		"**Priority:** P2\n\n## Context\n\nBody.\n"
-	err := validateWholeTaskFile(content)
+	err := ValidateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "two Priority lines") {
 		t.Fatalf("error = %v, want 'two Priority lines'", err)
 	}
@@ -1661,7 +1661,7 @@ func TestValidateWholeTaskFileTwoPriority(t *testing.T) {
 // field is rejected and names the field.
 func TestValidateWholeTaskFileMissingField(t *testing.T) {
 	content := "# Task Title\n\n**Status:** planning\n\n## Context\n\nBody, no priority.\n"
-	err := validateWholeTaskFile(content)
+	err := ValidateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "missing Priority") {
 		t.Fatalf("error = %v, want 'missing Priority'", err)
 	}
@@ -1670,7 +1670,7 @@ func TestValidateWholeTaskFileMissingField(t *testing.T) {
 // TestValidateWholeTaskFileMissingTitle proves a headerless file is rejected.
 func TestValidateWholeTaskFileMissingTitle(t *testing.T) {
 	content := "**Status:** planning\n**Priority:** P1\n\n## Context\n\nNo title here.\n"
-	err := validateWholeTaskFile(content)
+	err := ValidateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "missing title") {
 		t.Fatalf("error = %v, want 'missing title'", err)
 	}
@@ -1683,7 +1683,7 @@ func TestValidateWholeTaskFileUnterminatedFence(t *testing.T) {
 		"**Status:** planning\n**Priority:** P1\n\n" +
 		"## Context\n\n" +
 		"```go\nnever closed\n"
-	err := validateWholeTaskFile(content)
+	err := ValidateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "unterminated code fence") {
 		t.Fatalf("error = %v, want 'unterminated code fence'", err)
 	}
@@ -1695,7 +1695,7 @@ func TestValidateWholeTaskFileMalformedHeaderBlock(t *testing.T) {
 	content := "# Task Title\n\n" +
 		"**Status:** planning\n\n" + // blank line breaks the contiguous run
 		"**Priority:** P1\n\n## Context\n\nBody.\n"
-	err := validateWholeTaskFile(content)
+	err := ValidateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "malformed header block") {
 		t.Fatalf("error = %v, want 'malformed header block'", err)
 	}
@@ -1722,7 +1722,7 @@ func TestValidateWholeTaskFileFenceAware(t *testing.T) {
 		"**Priority:** fake\n" +
 		"```\n\n" +
 		"Done.\n"
-	if err := validateWholeTaskFile(content); err != nil {
+	if err := ValidateWholeTaskFile(content); err != nil {
 		t.Fatalf("fenced header lines tripped the validator: %v", err)
 	}
 }
@@ -1735,7 +1735,7 @@ func TestValidateWholeTaskFileNoH2(t *testing.T) {
 	content := "# Task Title\n\n" +
 		"**Status:** planning\n**Priority:** P1\n\n" +
 		"All of this prose is unaddressable.\n\nSo is this.\n"
-	err := validateWholeTaskFile(content)
+	err := ValidateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "missing section") {
 		t.Fatalf("error = %v, want 'missing section'", err)
 	}
@@ -1756,7 +1756,7 @@ func TestValidateWholeTaskFileFencedH2DoesNotCount(t *testing.T) {
 		"## Context\n" +
 		"body under it\n" +
 		"```\n"
-	err := validateWholeTaskFile(content)
+	err := ValidateWholeTaskFile(content)
 	if err == nil || !strings.Contains(err.Error(), "missing section") {
 		t.Fatalf("error = %v, want 'missing section'", err)
 	}
@@ -1771,14 +1771,14 @@ func TestValidateWholeTaskFileManyH2(t *testing.T) {
 		"## Context\n\nWhy.\n\n" +
 		"## Decision\n\nWhat.\n\n" +
 		"## Notes\n\nHow.\n"
-	if err := validateWholeTaskFile(content); err != nil {
+	if err := ValidateWholeTaskFile(content); err != nil {
 		t.Fatalf("multiple H2 sections rejected: %v", err)
 	}
 }
 
 // TestCreateTaskOutputPassesWholeFileValidation ties the new rule to its reason
 // at BOTH ends: CreateTask establishes the H2 guarantee at birth
-// (ConventionalFirstHeading, emitted unconditionally) and validateWholeTaskFile
+// (ConventionalFirstHeading, emitted unconditionally) and ValidateWholeTaskFile
 // is what stops a later whole-file overwrite from undoing it. If the two ever
 // disagree — a CreateTask that stopped emitting the heading, or a validator that
 // demanded a shape CreateTask does not write — this reds.
@@ -1804,8 +1804,8 @@ func TestCreateTaskOutputPassesWholeFileValidation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetTask: %v", err)
 			}
-			if err := validateWholeTaskFile(body); err != nil {
-				t.Fatalf("CreateTask wrote a file validateWholeTaskFile refuses: %v\nfile:\n%s", err, body)
+			if err := ValidateWholeTaskFile(body); err != nil {
+				t.Fatalf("CreateTask wrote a file ValidateWholeTaskFile refuses: %v\nfile:\n%s", err, body)
 			}
 		})
 	}
@@ -2177,8 +2177,8 @@ func TestRepairLegacyBothHeaderCarriesTheTrueValueInOneWrite(t *testing.T) {
 	}
 
 	// The oracle: assert the validator's verdict, never a byte comparison.
-	if err := validateWholeTaskFile(got); err != nil {
-		t.Fatalf("repaired file is one validateWholeTaskFile refuses: %v\nfile:\n%s", err, got)
+	if err := ValidateWholeTaskFile(got); err != nil {
+		t.Fatalf("repaired file is one ValidateWholeTaskFile refuses: %v\nfile:\n%s", err, got)
 	}
 }
 
@@ -2245,7 +2245,7 @@ func TestBareOnlyDeletionWouldNotRepairPinsTheReasonForTheSplit(t *testing.T) {
 	lines := strings.Split(content, "\n")
 	deleted := strings.Join(slices.Delete(lines, 2, 3), "\n")
 
-	err := validateWholeTaskFile(deleted)
+	err := ValidateWholeTaskFile(deleted)
 	if err == nil {
 		t.Fatal("deleting the only status line produced a file the validator ACCEPTS; " +
 			"if this ever passes, the split between BOTH and BARE-ONLY needs revisiting")
@@ -2260,7 +2260,7 @@ func TestBareOnlyDeletionWouldNotRepairPinsTheReasonForTheSplit(t *testing.T) {
 //
 // 🔴 The **Priority:** line is the whole point of this fixture, not filler. The
 // live specimen that exposed this class (done/phase-d-parallel-operation) has no
-// priority field, so validateWholeTaskFile refuses its repaired bytes at the
+// priority field, so ValidateWholeTaskFile refuses its repaired bytes at the
 // missing-Priority arm — an UNRELATED guard that happens to point the same way.
 // A fixture without a priority line would therefore pass for the wrong reason
 // and would keep passing if the class were deleted. This one carries a valid
@@ -2465,8 +2465,8 @@ func TestRepairLegacyBareOnlyHeaderConstructsAHeaderTheValidatorAccepts(t *testi
 			if err != nil {
 				t.Fatalf("RepairLegacyBareOnlyHeader: %v", err)
 			}
-			if err := validateWholeTaskFile(got.Content); err != nil {
-				t.Fatalf("constructed file is one validateWholeTaskFile refuses: %v\nfile:\n%s", err, got.Content)
+			if err := ValidateWholeTaskFile(got.Content); err != nil {
+				t.Fatalf("constructed file is one ValidateWholeTaskFile refuses: %v\nfile:\n%s", err, got.Content)
 			}
 			if got.Status != tc.wantStatus {
 				t.Errorf("Status = %q, want %q", got.Status, tc.wantStatus)
@@ -2920,8 +2920,8 @@ func TestRepairLegacyMultiTitleDemotesAndRelabels(t *testing.T) {
 			if err != nil {
 				t.Fatalf("RepairLegacyMultiTitleHeader: %v", err)
 			}
-			if err := validateWholeTaskFile(got.Content); err != nil {
-				t.Fatalf("transformed file is one validateWholeTaskFile refuses: %v\nfile:\n%s", err, got.Content)
+			if err := ValidateWholeTaskFile(got.Content); err != nil {
+				t.Fatalf("transformed file is one ValidateWholeTaskFile refuses: %v\nfile:\n%s", err, got.Content)
 			}
 			if got.DemotedTitle != tc.wantDemoted {
 				t.Errorf("DemotedTitle = %q, want %q", got.DemotedTitle, tc.wantDemoted)
@@ -3031,7 +3031,7 @@ func TestRepairLegacyMultiTitleTrapClassifierSaysCleanValidatorRefuses(t *testin
 		t.Fatalf("the trap does not reproduce: classifier says %s after the transform, want %s",
 			got, LegacyHeaderClean)
 	}
-	if err := validateWholeTaskFile(demotedOnly); err == nil {
+	if err := ValidateWholeTaskFile(demotedOnly); err == nil {
 		t.Fatal("the trap does not reproduce: the validator ACCEPTS the transformed file, so " +
 			"classifier and validator agree and there is nothing to guard against")
 	}
@@ -3249,7 +3249,7 @@ func TestRepairLegacyMultiTitleAsksOneQuestionOfTheSecondTitle(t *testing.T) {
 				if err != nil {
 					t.Fatalf("a genuine prepended-over file was refused: %v", err)
 				}
-				if verr := validateWholeTaskFile(got.Content); verr != nil {
+				if verr := ValidateWholeTaskFile(got.Content); verr != nil {
 					t.Fatalf("transformed file is one the validator refuses: %v", verr)
 				}
 				return
@@ -3375,7 +3375,7 @@ func TestCreateTaskAcceptsAFencedConventionalHeading(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetTask: %v", err)
 			}
-			if err := validateWholeTaskFile(body); err != nil {
+			if err := ValidateWholeTaskFile(body); err != nil {
 				t.Fatalf("the accepted file does not validate: %v\n%s", err, body)
 			}
 		})

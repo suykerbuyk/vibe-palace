@@ -98,7 +98,7 @@ const (
 	// a correct terminal status and the bare line is prose.
 	//
 	// 🔴 The **Priority:** line is load-bearing. The live specimen that exposed
-	// this class carries no priority field, so validateWholeTaskFile refuses its
+	// this class carries no priority field, so ValidateWholeTaskFile refuses its
 	// repaired bytes at the missing-Priority arm — an unrelated guard pointing
 	// the same way by luck. A fixture without it would pass for the wrong reason
 	// and keep passing if the class were deleted.
@@ -179,7 +179,7 @@ func TestMigrateTaskHeaderRepairsTheWritableClassesAndLeavesTheRestAlone(t *test
 		t.Errorf("the true value was not carried onto the bolded field:\n%s", got)
 	}
 
-	// The oracle. OverwriteTaskFile runs validateWholeTaskFile before it writes,
+	// The oracle. OverwriteTaskFile runs ValidateWholeTaskFile before it writes,
 	// so a successful apply already IS the validator's verdict; re-classifying
 	// proves the file also left the population it was in.
 	if c := storage.ScanLegacyHeader(got).Class; c != storage.LegacyHeaderClean {

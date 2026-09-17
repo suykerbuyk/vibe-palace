@@ -239,7 +239,7 @@ func TestMigrateTaskPreambleApplyRefusesDirtyVault(t *testing.T) {
 // tpLegacyHeader is a task file carrying a legacy BARE "Status:" line above the
 // modern header block. It is the shape that refused 7 of 7 writes on the
 // sibling migrator's first live --apply in iteration 376: the bare line breaks
-// the contiguous "**Field:**" run after the title, so validateWholeTaskFile
+// the contiguous "**Field:**" run after the title, so ValidateWholeTaskFile
 // rejects the migrated bytes with "malformed header block".
 //
 // It is used here rather than an injected fault because a fixture that fails

@@ -45,7 +45,7 @@ const (
 	//
 	// That is also the only path that can reintroduce the class — CreateTask
 	// emits ConventionalFirstHeading unconditionally, so no task is born
-	// without an H2 — and validateWholeTaskFile now refuses a whole-file write
+	// without an H2 — and ValidateWholeTaskFile now refuses a whole-file write
 	// with no "## " heading outside code fences. The files this branch skips
 	// are the pre-existing ones; nothing new joins them.
 	PreambleSkippedNoH2

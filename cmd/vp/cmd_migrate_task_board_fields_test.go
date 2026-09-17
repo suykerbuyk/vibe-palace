@@ -853,7 +853,7 @@ func bfWriteRaw(t *testing.T, root, rel, content string) {
 // 🔴 A FILE THAT WAS ALREADY BROKEN IS NOT A MIGRATION DEFECT. The first cut of
 // this validated the simulated OUTPUT and refused the whole run on any failure —
 // which, against the real corpus, refused 57 files where the shipped version
-// refused 24, because validateWholeTaskFile is the OVERWRITE validator (it
+// refused 24, because ValidateWholeTaskFile is the OVERWRITE validator (it
 // demands a complete well-formed task file) while this migration only upserts
 // header fields. 30 of those 57 were merely an older header format with no
 // Status line, and the shipped code migrated them without complaint.
