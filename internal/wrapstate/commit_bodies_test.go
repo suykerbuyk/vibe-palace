@@ -211,3 +211,108 @@ func TestGitCmdRunnerCarriesGitsOwnMessage(t *testing.T) {
 		t.Errorf("error should carry ONE line of git text, got %d newlines: %q", n, msg)
 	}
 }
+
+// unbornRepo is `git init` with no commit: a perfectly healthy repository that
+// has no HEAD to resolve. Measured: `git rev-parse --verify --quiet HEAD` exits
+// 1 with no output here, while a broken repo exits 128 — which is the
+// distinction resolveHead keys on.
+func unbornRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	c := exec.Command("git", "init", "-b", "main")
+	c.Dir = dir
+	c.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	return dir
+}
+
+// TestHeadSHADistinguishesGitFailureFromNoRepo is unit B's acceptance gate.
+//
+// Four states used to produce one output — ("", nil) — so vp_archive_commit_log
+// reported all four as `commits_archived: 0` with the note "project_path is not
+// a git repo with commits". That note is TRUE of the first three and FALSE of
+// the fourth, and nothing in the response let a reader tell them apart.
+//
+// BREAK 1 (restore `return "", nil` on the probe error in HeadSHA): brokenConfig
+// reports as a non-repo — the literal defect.
+// BREAK 2 (return an error for EVERY failure, including no-.git and unborn):
+// the first three go red. The pair is what pins the DISTINCTION rather than
+// merely "errors now exist"; either break alone leaves a fix that satisfies the
+// other.
+func TestHeadSHADistinguishesGitFailureFromNoRepo(t *testing.T) {
+	healthy := bodyRepo(t)
+
+	for _, tc := range []struct {
+		name    string
+		dir     string
+		wantSHA bool
+		wantErr bool
+	}{
+		{"no .git at all", t.TempDir(), false, false},
+		{"empty projectDir", "", false, false},
+		{"unborn branch — repo is fine, has no commit", unbornRepo(t), false, false},
+		{"malformed .git/config — a REAL repo git cannot read", brokenConfigRepo(t), false, true},
+		{"healthy repo", healthy, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sha, err := HeadSHA(context.Background(), tc.dir)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("a git failure must not be reported as an absent repo: sha=%q err=nil", sha)
+				}
+				// The error must say what git said, or the caller has traded
+				// one uninformative output for another.
+				if !strings.Contains(err.Error(), "bad config") {
+					t.Errorf("error must carry git's own explanation, got %q", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("a legitimately head-less state must stay ('' , nil), got err=%v", err)
+			}
+			if got := sha != ""; got != tc.wantSHA {
+				t.Errorf("sha=%q, wantSHA=%v", sha, tc.wantSHA)
+			}
+		})
+	}
+}
+
+// TestLastIterAnchorShaDistinguishesGitFailureFromUntracked pins the same
+// distinction on the anchor probe, and pins the case that is easiest to break
+// while "fixing" it.
+//
+// 🔴 THE UNTRACKED CASE IS THE LOAD-BEARING ONE. `git log -- <untracked path>`
+// exits 0 with empty output, and that is the documented "no prior wrap" signal
+// — the state every repository is in before its first wrap, and the state all
+// three live repositories are in today. Routing it into the error path would
+// make the probe fail on the one input it is guaranteed to meet.
+func TestLastIterAnchorShaDistinguishesGitFailureFromUntracked(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		dir     string
+		wantErr bool
+	}{
+		{"no .git at all", t.TempDir(), false},
+		{"unborn branch", unbornRepo(t), false},
+		{"has commits, anchor file never tracked — THE no-prior-wrap signal", bodyRepo(t), false},
+		{"malformed .git/config", brokenConfigRepo(t), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sha, err := LastIterAnchorSha(tc.dir)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("a git failure must not read as 'no prior wrap': sha=%q err=nil", sha)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("no-prior-wrap must stay ('', nil), got err=%v", err)
+			}
+			if sha != "" {
+				t.Errorf("sha = %q, want empty", sha)
+			}
+		})
+	}
+}

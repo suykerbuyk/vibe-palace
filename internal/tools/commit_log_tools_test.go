@@ -390,3 +390,51 @@ func TestArchiveCommitLog_RefusesUnresolvableAnchor(t *testing.T) {
 		t.Errorf("refusal missing remediation:\n%s", err)
 	}
 }
+
+// TestArchiveCommitLog_RefusesToCallABrokenRepoANonRepo guards the SYMPTOM, not
+// the mechanism. wrapstate has its own unit tests for HeadSHA's return
+// contract; this one asserts what an agent on the other end of the MCP call
+// actually receives.
+//
+// The defect: a repository whose .git/config is malformed is intact, has
+// commits, and is emphatically a git repo — but git cannot read it. The probe
+// swallowed that failure and returned "", so this handler reported
+//
+//	commits_archived: 0
+//	note: "project_path is not a git repo with commits — nothing to archive"
+//
+// which is a false statement about that repository, indistinguishable from the
+// true one TestArchiveCommitLog_NonRepo covers. The wrap then proceeded as
+// though the archive were current.
+//
+// BREAK: restore `return "", nil` on the probe error in wrapstate.HeadSHA and
+// this fails on both assertions — the handler returns no error and emits the
+// not-a-git-repo note for a repo that is one.
+func TestArchiveCommitLog_RefusesToCallABrokenRepoANonRepo(t *testing.T) {
+	vault := storage.NewVault(t.TempDir())
+	tool := ArchiveCommitLogTool(vault)
+
+	projDir := archiveRepo(t, "brokencfg")
+	// Intact repo, real commit, then a malformed config — measured to make
+	// every git command exit 128 with "fatal: bad config line 1 in file
+	// .git/config" while the repository itself is untouched.
+	if err := os.WriteFile(filepath.Join(projDir, ".git", "config"),
+		[]byte("[core\nnot valid ini\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	params, _ := json.Marshal(map[string]string{"project_path": projDir})
+	res, err := tool.Handler(context.Background(), params)
+	if err == nil {
+		t.Fatalf("a repo git cannot read must surface an error, got result %+v", res)
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "not a git repo") {
+		t.Errorf("a real repository was reported as not a git repo: %q", msg)
+	}
+	// And the error must carry git's own diagnosis, or the caller has been told
+	// only that something failed.
+	if !strings.Contains(msg, "bad config") {
+		t.Errorf("error must carry git's own explanation, got %q", msg)
+	}
+}

@@ -245,12 +245,31 @@ func LastIterAnchorSha(projectDir string) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+
+	// An unborn repo is checked FIRST, because `git log` cannot express it as
+	// anything but a fatal: measured, it exits 128 with "your current branch
+	// 'main' does not have any commits yet" — the same code a malformed config
+	// produces. Asking rev-parse first is what keeps this distinguishable
+	// without matching on that sentence.
+	if _, hasHead, err := resolveHead(ctx, projectDir); err != nil {
+		return "", err
+	} else if !hasHead {
+		return "", nil
+	}
+
 	out, err := gitCmdRunner(ctx, projectDir,
 		"log", "-n", "1", "--format=%H", "--",
 		AnchorDir+"/"+AnchorFile)
 	if err != nil {
-		return "", nil
+		return "", err
 	}
+	// 🔴 EMPTY OUTPUT ON A SUCCESSFUL LOG IS THE "NO PRIOR WRAP" SIGNAL AND MUST
+	// STAY ("", nil). `git log -- <untracked path>` exits 0 with no output, and
+	// that is the canonical first-wrap state — every repo is in it once.
+	// Collapsing it into the error path would be a regression wearing a fix's
+	// clothes: the caller would start failing on the one state it is guaranteed
+	// to meet. Verified against the live corpus, where all three real
+	// repositories are in exactly this state.
 	return strings.TrimSpace(out), nil
 }
 
@@ -341,9 +360,61 @@ func parseCommitBodies(out string) []CommitInfo {
 	return commits
 }
 
-// HeadSHA returns the full SHA of HEAD in projectDir, or "" when projectDir is
-// empty, is not a repo, or the probe fails (an unborn branch, a detached
-// probe error). Callers treat "" as "nothing to anchor to" and no-op.
+// resolveHead resolves HEAD in projectDir, separating the two outcomes that
+// used to be one: "this repo has no HEAD yet" and "git could not answer".
+//
+// hasHead=false with a nil error means the repo is FINE and simply has no
+// commit to point at — an unborn branch. A non-nil error means git failed and
+// the caller has been told nothing about this repo at all.
+//
+// The discriminator is `rev-parse --verify --quiet HEAD`'s EXIT CODE, not a
+// message match. Measured directly with the git binary against the four shapes
+// this package can meet:
+//
+//	healthy repo                    rc=0    <sha>
+//	unborn branch (git init, no commit)  rc=1    (no output)
+//	malformed .git/config           rc=128  fatal: bad config line 1 in file .git/config
+//	.git gitfile -> deleted gitdir  rc=128  fatal: not a git repository: ...
+//
+// So rc=1 is "the ref does not resolve, the repository is otherwise fine" and
+// rc=128 is a real failure. Keying on the code rather than on git's wording is
+// deliberate: the wording is localized and version-dependent, the codes are
+// part of rev-parse's contract. --quiet suppresses only the unknown-revision
+// message; a fatal still reaches stderr, which is what giterr.Wrap needs.
+//
+// Reaching the exit code through the wrapped error is the payoff from giterr
+// keeping Unwrap: errors.As walks to the *exec.ExitError underneath while the
+// error a caller prints still carries git's own sentence.
+func resolveHead(ctx context.Context, projectDir string) (sha string, hasHead bool, err error) {
+	out, err := gitCmdRunner(ctx, projectDir, "rev-parse", "--verify", "--quiet", "HEAD")
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 1 {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return strings.TrimSpace(out), true, nil
+}
+
+// HeadSHA returns the full SHA of HEAD in projectDir. It returns ("", nil) for
+// the three states that genuinely have no HEAD to name — an empty projectDir,
+// a directory that is not a repo, and a repo with no commits yet — and a real
+// error for anything else.
+//
+// 🔴 THE EMPTY-AND-NIL CASES ARE A CLOSED LIST, AND THAT IS THE POINT. This
+// function used to return ("", nil) for a FAILED probe too, which made a
+// healthy repository that git merely could not read indistinguishable from a
+// directory that has never seen git. vp_archive_commit_log keys on `head == ""`
+// and reports `commits_archived: 0` with the note "project_path is not a git
+// repo with commits" — a statement that was false for a repo whose config was
+// malformed, and that a reader could not tell from the true case. The error
+// return existed the whole time and could never fire: the caller's
+// `if err != nil` was dead code guarding a live defect.
+//
+// Adding a fourth quiet case here re-opens that hole, so any future "degrade
+// gracefully" instinct belongs in the CALLER, where the decision is visible,
+// not here where it is silent.
 func HeadSHA(ctx context.Context, projectDir string) (string, error) {
 	if projectDir == "" {
 		return "", nil
@@ -351,11 +422,14 @@ func HeadSHA(ctx context.Context, projectDir string) (string, error) {
 	if _, err := os.Stat(filepath.Join(projectDir, ".git")); err != nil {
 		return "", nil
 	}
-	out, err := gitCmdRunner(ctx, projectDir, "rev-parse", "HEAD")
+	sha, hasHead, err := resolveHead(ctx, projectDir)
 	if err != nil {
+		return "", err
+	}
+	if !hasHead {
 		return "", nil
 	}
-	return strings.TrimSpace(out), nil
+	return sha, nil
 }
 
 // FilesChangedSinceAnchor returns the list of files that differ between
