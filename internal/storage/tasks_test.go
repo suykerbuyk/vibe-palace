@@ -4870,3 +4870,51 @@ func TestOverwriteNoOpDoesNotRestampModTime(t *testing.T) {
 		t.Errorf("ModTime after no-op overwrite = %q, want %q (unchanged — a no-op must not restamp)", meta.ModTime, wantMod)
 	}
 }
+
+// TestIsTerminalStatusDoesNotAdmitTheLegacyValue guards the single most dangerous
+// edit in the status vocabulary: adding StatusDoneLegacy to IsTerminalStatus.
+//
+// IsTerminalStatus is not merely a classifier — it is the AGREEMENT test both
+// migrations use to decide whether an archived file still needs rewriting
+// (cmd/vp/cmd_migrate_task_status.go: "WHETHER IT AGREES — storage.IsTerminalStatus,
+// which folds case and trims"). Teaching it that "retired" already agrees with the
+// done/ directory makes `vp migrate task-status` and `vp migrate task-board-fields`
+// skip the ENTIRE population they exist to repair while reporting success — and
+// DimTaskStatusDirectory goes quiet at the same moment, removing the one instrument
+// that would have caught it. Silent no-op, green suite, unmigrated vault.
+//
+// The call sites are named by the enumerating command, never by line number,
+// because internal/storage and cmd/vp have both moved during this task's life:
+//
+//	grep -rn 'IsTerminalStatus(' --include='*.go' . | grep -v '_test.go'
+//
+// Break it: add StatusDoneLegacy to IsTerminalStatus's switch. This test fails.
+func TestIsTerminalStatusDoesNotAdmitTheLegacyValue(t *testing.T) {
+	if IsTerminalStatus(StatusDoneLegacy) {
+		t.Fatalf("IsTerminalStatus(%q) = true — the legacy value must NOT read as agreeing "+
+			"with the done/ directory, or both migrations skip the population they exist to repair",
+			StatusDoneLegacy)
+	}
+	// Case folding must not smuggle it back in: the value half is folded by design.
+	for _, spelling := range []string{"Retired", "RETIRED", "  retired  "} {
+		if IsTerminalStatus(spelling) {
+			t.Errorf("IsTerminalStatus(%q) = true — case folding must not admit the legacy value", spelling)
+		}
+	}
+	// The recognition predicate is the one that DOES admit it, under both spellings.
+	if !IsArchivedStatusClaim(StatusDoneLegacy) {
+		t.Errorf("IsArchivedStatusClaim(%q) = false — the read predicate must recognise the legacy value",
+			StatusDoneLegacy)
+	}
+	for _, current := range []string{StatusDone, StatusCancelled} {
+		if !IsArchivedStatusClaim(current) {
+			t.Errorf("IsArchivedStatusClaim(%q) = false — it must admit the current vocabulary too", current)
+		}
+	}
+	// And neither predicate may admit a live value.
+	for _, live := range []string{"planning", "reviewed", StatusInProgress, StatusIcebox} {
+		if IsTerminalStatus(live) || IsArchivedStatusClaim(live) {
+			t.Errorf("%q must not read as archived under either predicate", live)
+		}
+	}
+}

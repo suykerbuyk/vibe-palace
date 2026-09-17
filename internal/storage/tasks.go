@@ -169,7 +169,58 @@ const (
 	StatusCancelled = "cancelled"
 )
 
+// StatusDoneLegacy is the value StatusDone was spelled as before the
+// board-reporting-status-vocabulary-rename task. NO WRITER PRODUCES IT. It exists
+// so READERS can recognise the unmigrated corpus, which is most of it: every
+// archived task written before that rename still says "retired" on disk.
+//
+// 🔴 PROVISIONAL, PENDING AN OPERATOR RULING ON PERMANENCE. Whether this project
+// commits permanently to understanding two status vocabularies is not settled
+// here. The case FOR permanent, recorded so the ruling has it: a backup restore,
+// a `vp vault split`, or a merge from a non-migrated copy each re-creates the
+// legacy corpus long after any migration has run, so the recognition has no
+// natural expiry. The case against is simply that dead vocabulary accumulates.
+// Do not read this comment as the decision; it is the brief for it.
+const StatusDoneLegacy = "retired"
+
+// IsArchivedStatusClaim reports whether a Status VALUE claims an ARCHIVED state,
+// under either vocabulary — the current one or the pre-rename one.
+//
+// 🔴 THIS IS NOT IsTerminalStatus, AND THE TWO MUST NEVER BE MERGED. They answer
+// different questions and the difference is load-bearing:
+//
+//   - IsTerminalStatus asks "does this value AGREE with an archive directory?"
+//     It is the AGREEMENT test both migrations use to decide whether a file still
+//     needs rewriting.
+//   - IsArchivedStatusClaim asks "is this value CLAIMING an archived state?"
+//     It is a READ predicate, for detectors that must recognise the legacy value
+//     in order to report it.
+//
+// Widening IsTerminalStatus to admit StatusDoneLegacy — the one-line edit this
+// constant sitting two definitions above makes look obvious — teaches both
+// `vp migrate task-status` and `vp migrate task-board-fields` that "retired"
+// already agrees with done/, so both skip the entire population they exist to
+// repair WHILE REPORTING SUCCESS, and the audit goes quiet in the same moment,
+// removing the instrument that would have caught it. Enumerate the call sites
+// before touching either predicate, and never from a remembered line number:
+//
+//	grep -rn 'IsTerminalStatus(' --include='*.go' . | grep -v '_test.go'
+//
+// TestIsTerminalStatusDoesNotAdmitTheLegacyValue guards exactly that edit.
+func IsArchivedStatusClaim(status string) bool {
+	if IsTerminalStatus(status) {
+		return true
+	}
+	return strings.ToLower(strings.TrimSpace(status)) == StatusDoneLegacy
+}
+
 // IsTerminalStatus reports whether a Status VALUE names an archived state.
+//
+// 🔴 IT DOES NOT, AND MUST NOT, ADMIT StatusDoneLegacy. This is the AGREEMENT
+// test, not a recognition test — see IsArchivedStatusClaim for the one that
+// recognises the legacy value, and for what breaks in both migrations if the two
+// are merged. Neither predicate can be widened by someone who has read only one
+// of these comments, which is why each names the other.
 //
 // 🔴 CASE-INSENSITIVE ON THE VALUE, DELIBERATELY, and that is not the same
 // looseness iteration 347 ruled against. There the case-folded thing was a
