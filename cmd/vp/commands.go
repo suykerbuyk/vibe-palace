@@ -38,6 +38,12 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	// baseline, so it must FAIL-STOP against a vault written by a newer binary rather
 	// than take the warn-only path.
 	reg.Register(mutates(cmdAuditVault()))
+	// Registered UNWRAPPED, unlike both its siblings above: `vp audit task-files` has
+	// no write mode at all — no --apply, no --write, no --accept — so there is nothing
+	// for the surface fail-stop to protect. Wrapping it would make a pure reporter
+	// refuse to run against a vault written by a newer binary, which is precisely the
+	// vault you most want to be able to inspect.
+	reg.Register(cmdAuditTaskFiles())
 	reg.Register(cmdCommands())
 	reg.Register(cmdCommandsList())
 	// `vp commands upgrade` and `vp skills upgrade` are registered UNWRAPPED
