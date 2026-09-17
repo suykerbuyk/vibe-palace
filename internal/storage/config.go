@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/BurntSushi/toml"
@@ -460,11 +462,18 @@ func (v *Vault) WriteScoringConfig(project string, rooms map[string]ScoringRoomO
 	// Load existing config if present. m only ever holds keys that were
 	// actually present in the file — a fresh-create starts as an empty map,
 	// not a zero-value schema.
+	//
+	// The BYTES are kept, not just the decode. They are the thing this function
+	// writes back; the map exists only to compute the scoring subtree.
 	m := map[string]any{}
-	if _, statErr := os.Stat(cfgPath); statErr == nil {
-		if _, err := toml.DecodeFile(cfgPath, &m); err != nil {
+	var existing []byte
+	if raw, readErr := os.ReadFile(cfgPath); readErr == nil {
+		existing = raw
+		if _, err := toml.Decode(string(raw), &m); err != nil {
 			return fmt.Errorf("decode existing config %s: %w", cfgPath, err)
 		}
+	} else if !os.IsNotExist(readErr) {
+		return fmt.Errorf("read existing config %s: %w", cfgPath, readErr)
 	}
 
 	// Navigate/create the palace.scoring.rooms path with checked type
@@ -504,12 +513,25 @@ func (v *Vault) WriteScoringConfig(project string, rooms map[string]ScoringRoomO
 		scoringTable["min_score"] = minScore
 	}
 
-	// Atomic write via the shared primitive (temp + rename + surface stamp).
-	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(m); err != nil {
-		return fmt.Errorf("encode config: %w", err)
+	// MERGE INTO THE EXISTING TEXT, never re-encode the parsed map. The map is
+	// used to compute the merged scoring subtree and for nothing else; splicing
+	// that subtree back into the original bytes is what keeps every comment,
+	// every commented-out template block and every section this function does
+	// not own. See spliceScoringSections for what re-encoding used to destroy.
+	rendered, err := renderScoringSections(scoringTable)
+	if err != nil {
+		return fmt.Errorf("config %s: %w", cfgPath, err)
 	}
-	if err := atomicfile.Write(v.Root, cfgPath, buf.Bytes()); err != nil {
+	merged := spliceScoringSections(string(existing), rendered)
+	if !strings.HasSuffix(merged, "\n") {
+		merged += "\n"
+	}
+	if merged == string(existing) {
+		// Nothing changed: leave the file's mtime alone. A no-op write on a
+		// tracked vault file is dirt a human then has to explain.
+		return nil
+	}
+	if err := atomicfile.Write(v.Root, cfgPath, []byte(merged)); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
@@ -615,4 +637,136 @@ func mergeKeywordTier(existing, additions []string) []string {
 		}
 	}
 	return existing
+}
+
+// renderScoringSections renders the palace.scoring subtree as fully-qualified
+// TOML sections: [palace.scoring] for min_score, then one
+// [palace.scoring.rooms.<room>] per room, rooms in sorted order.
+//
+// 🔴 THE SECTION HEADERS ARE WRITTEN HERE; THE VALUES ARE NOT. Every value goes
+// through the real TOML encoder, so quoting, escaping and array formatting stay
+// the encoder's job and this file never becomes a second TOML emitter. What is
+// hand-written is one Sprintf per header, and it is hand-written for a reason
+// the encoder cannot serve: encoding a nested map emits `[palace]` and then an
+// INDENTED `[palace.scoring]` beneath it, which would duplicate a `[palace]`
+// section the file may already have. Fully-qualified headers are legal TOML
+// standing alone and compose with whatever else the file holds.
+func renderScoringSections(scoring map[string]any) (string, error) {
+	var b strings.Builder
+
+	if ms, ok := scoring["min_score"]; ok {
+		leaf := map[string]any{"min_score": ms}
+		var buf bytes.Buffer
+		if err := toml.NewEncoder(&buf).Encode(leaf); err != nil {
+			return "", fmt.Errorf("encode min_score: %w", err)
+		}
+		b.WriteString("[palace.scoring]\n")
+		b.WriteString(buf.String())
+		b.WriteString("\n")
+	}
+
+	roomsAny, ok := scoring["rooms"]
+	if !ok {
+		return b.String(), nil
+	}
+	rooms, ok := roomsAny.(map[string]any)
+	if !ok {
+		return "", fmt.Errorf("palace.scoring.rooms is %T, want a table", roomsAny)
+	}
+	names := make([]string, 0, len(rooms))
+	for name := range rooms {
+		names = append(names, name)
+	}
+	// Sorted so a re-run over unchanged data produces byte-identical output.
+	// Map iteration order would make every write a diff.
+	sort.Strings(names)
+
+	for _, name := range names {
+		leaf, ok := rooms[name].(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("palace.scoring.rooms.%s is %T, want a table", name, rooms[name])
+		}
+		var buf bytes.Buffer
+		if err := toml.NewEncoder(&buf).Encode(leaf); err != nil {
+			return "", fmt.Errorf("encode room %q: %w", name, err)
+		}
+		fmt.Fprintf(&b, "[palace.scoring.rooms.%s]\n", name)
+		b.WriteString(buf.String())
+		b.WriteString("\n")
+	}
+	return b.String(), nil
+}
+
+// spliceScoringSections replaces every ACTIVE section named palace.scoring or
+// nested beneath it with replacement, and returns the rest of the text byte for
+// byte. When the file has no such section, replacement is appended.
+//
+// 🔴 THIS IS THE WHOLE FIX. The previous implementation decoded the file into a
+// map[string]any, merged, and re-encoded the WHOLE map — and a map has nowhere
+// to hold a comment, so every round trip deleted the file header, the
+// "managed by vp" warning, the commented-out [palace.llm] template and the
+// [search] defaults, to record a learned keyword. Measured across the live
+// vault when this was written: every project config carrying a real
+// [palace.scoring block had lost its comments, and every config without one
+// still had them, with no exceptions in either direction. Re-derive with
+//
+//	for f in $(grep -L 'Per-project overrides' Projects/*/config.toml); do grep -qE '^( *)\[palace\.scoring' "$f" && echo "$f"; done
+//
+// Only the scoring subtree is machine-owned, so only the scoring subtree is
+// re-rendered. Everything else survives because it is never parsed.
+//
+// Commented section headers are NOT sections: FindSectionRanges considers only
+// uncommented headers, so the template's `# [palace.scoring]` example is inert
+// text belonging to whatever section encloses it, and it survives like any other
+// comment. That is deliberate — it is the documentation a reader needs most once
+// a machine has written the real block.
+func spliceScoringSections(original, replacement string) string {
+	const prefix = "palace.scoring"
+
+	ranges := FindSectionRanges(original)
+	lines := splitLines(original)
+
+	first := -1
+	drop := make(map[int]bool, len(lines))
+	for _, r := range ranges {
+		if r.Name != prefix && !strings.HasPrefix(r.Name, prefix+".") {
+			continue
+		}
+		if first == -1 || r.StartLine < first {
+			first = r.StartLine
+		}
+		for i := r.StartLine; i < r.EndLine && i < len(lines); i++ {
+			drop[i] = true
+		}
+	}
+
+	// BOTH BRANCHES TRIM THE REPLACEMENT THE SAME WAY, and that is not tidiness.
+	// The append branch used to keep the rendered block's trailing newline while
+	// the replace branch trimmed it, so the FIRST write left a trailing blank
+	// line and the SECOND removed it — making an otherwise identical re-run a
+	// one-byte diff, which on a tracked vault file is exactly the dirt this
+	// change exists to stop producing.
+	body := strings.TrimRight(replacement, "\n")
+
+	if first == -1 {
+		// No scoring section yet: append, separated by one blank line from
+		// whatever the file already ends with.
+		out := strings.TrimRight(original, "\n")
+		if out == "" {
+			return body
+		}
+		return out + "\n\n" + body
+	}
+
+	var kept []string
+	for i, l := range lines {
+		if i == first {
+			kept = append(kept, body)
+		}
+		if drop[i] {
+			continue
+		}
+		kept = append(kept, l)
+	}
+	return joinLines(kept)
 }

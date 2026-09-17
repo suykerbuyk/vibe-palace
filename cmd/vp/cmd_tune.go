@@ -217,7 +217,15 @@ func runTuneRooms(vault *storage.Vault, proj string, cfg storage.Config,
 
 		cfgPath, _ := vault.ProjectConfigFile(proj)
 		fmt.Fprintf(out, "Applied %d weight changes to %s\n", len(report.Proposals), cfgPath)
-		fmt.Fprintln(out, "Note: TOML comments in the config file are not preserved.")
+		// The "TOML comments are not preserved" note that stood here is DELETED
+		// rather than copied to `vp discover rooms --apply`, which never carried
+		// it. The asymmetry was real — two writers of one fact, one of them
+		// disclosing the damage and one silent — but the resolution is that the
+		// claim is no longer true: storage.WriteScoringConfig merges into the
+		// existing text instead of re-encoding a parsed map, so comments survive.
+		// A warning kept past the defect it described teaches a reader to expect
+		// damage that no longer happens, and the next person to read it has no way
+		// to tell it from a live hazard.
 	}
 
 	return cli.ExitOK
