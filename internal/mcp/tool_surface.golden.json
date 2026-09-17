@@ -209,7 +209,7 @@
     {
       "name": "vp_manage_task",
       "mutating": true,
-      "schema_sha256": "3d07ff587d8cccd992a330eb95b8467be502eb4a5d61abc9d435683d7a917e01"
+      "schema_sha256": "892823ae743e2e112f43661038cb41e50f4903685464e72026f6e6239e48bfbf"
     },
     {
       "name": "vp_manual",
