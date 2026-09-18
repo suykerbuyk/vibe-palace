@@ -503,7 +503,9 @@ func runTaskSectionsMigration(root, only string, apply bool, out io.Writer) (tas
 					// known defect, not a template.
 					if taskHeaderShadowed(out, root, slug, sub, taskSlug, name) {
 						d.Outcome = sectionsRefused
-						d.Reason = "an ACTIVE task of the same slug exists; the writer resolves active first"
+						// Derived, never hardcoded: the guard covers done/+cancelled/
+						// pairs too, and a literal here was false for them.
+						d.Reason = taskHeaderShadowReason(root, slug, sub, name)
 						d.Failed = true
 						sum.Failed++
 						sum.Decisions = append(sum.Decisions, d)
