@@ -2589,6 +2589,9 @@ func unbalancedFence(content string) bool {
 	in := false
 	for line := range strings.SplitSeq(content, "\n") {
 		ch, run, info, ok := mdfence.Delim(line)
+		// info == "" is implied by OpensFence returning true for an empty info
+		// string; it is kept only so the candidate reads as "a delimiter that
+		// CARRIES something it cannot open with". Removing it changes nothing.
 		if !ok {
 			continue
 		}
@@ -4218,4 +4221,142 @@ func RepairInterleavedHeaderProse(content string) (string, error) {
 	out = append(out, wedge...)
 	out = append(out, rest[tail:]...)
 	return strings.Join(out, "\n"), nil
+}
+
+// RepairGluedFenceDelimiter splits a code-fence delimiter that has prose glued
+// onto it into a bare delimiter plus that prose on its own line.
+//
+// # THE DEFECT, AND WHY IT IS INVISIBLE
+//
+// A backtick delimiter whose INFO STRING contains a backtick can neither open a
+// fence nor close one: mdfence.OpensFence rejects it, and Scanner's in-fence
+// branch requires an empty info string to close. So a line that LOOKS like a
+// closing delimiter silently is not, the fence opened above it stays open, and
+// every later delimiter pairs shifted. The document is not truncated from that
+// point — it is MIRROR-IMAGED, with prose rendering as code and code as prose.
+//
+// A counting check reports such a file as balanced, because the delimiter-shaped
+// lines are still even. Only the real scanner sees it.
+//
+// # THE DETECTOR KEYS ON THE INFO STRING, AND THAT IS WHAT MAKES IT IDEMPOTENT
+//
+// The candidate is a delimiter-shaped line with a NON-EMPTY info string that
+// cannot open a fence. After the split, zero such lines remain, so a second
+// application selects nothing. A detector keyed on anything else — line number,
+// surrounding text, fence parity — loses that property on the one file where the
+// validator would not catch a second application, because the second application
+// also validates.
+func RepairGluedFenceDelimiter(content string) (string, error) {
+	lines := strings.Split(content, "\n")
+	var out []string
+	splits := 0
+	for _, line := range lines {
+		ch, run, info, ok := mdfence.Delim(line)
+		if !ok || info == "" || mdfence.OpensFence(ch, info) {
+			out = append(out, line)
+			continue
+		}
+		indent := line[:strings.IndexByte(line, ch)]
+		out = append(out, indent+strings.Repeat(string(ch), run))
+		out = append(out, info)
+		splits++
+	}
+	if splits == 0 {
+		return "", fmt.Errorf("glued-fence repair found no delimiter carrying an info string that cannot open a fence")
+	}
+	repaired := strings.Join(out, "\n")
+	if err := ValidateWholeTaskFile(repaired); err != nil {
+		return "", fmt.Errorf("glued-fence repair produced an invalid task file: %w", err)
+	}
+	return repaired, nil
+}
+
+// RepairBareLegacyStatusLine constructs the missing Priority field and relocates a
+// bare, non-bold legacy status line out of the header region into the shipped
+// "## Legacy header" body section.
+//
+// # NEITHER HALF ALONE VALIDATES, AND THEY MUST LAND TOGETHER
+//
+// The bare line sits directly under the title, where headerBlock skips only BLANK
+// lines — so a non-blank non-field line there makes the header block EMPTY.
+// Inserting a Priority without moving that line trades one failure for another;
+// moving the line without inserting a Priority leaves the original failure
+// byte-identical. Only both together produce a valid file.
+//
+// 🔴 THE BARE LINE IS RELOCATED, NEVER MERGED ONTO THE BOLD STATUS FIELD. The
+// merged value would be non-terminal, which drops the file into the population
+// that the status and board-fields migrations rewrite BY REPLACING THE WHOLE LINE
+// — destroying prose that exists nowhere else. A body section is where such prose
+// survives, and survives addressably, because amend reaches an H2 and nothing
+// above the first one. This is the same shape RepairLegacyBareOnlyHeader already
+// uses for the same reason.
+//
+// Relocating also disarms a live hazard rather than merely avoiding it:
+// ScanLegacyHeader recognises a bare status line ONLY directly under the title, so
+// once the line is in the body the file classifies Clean and the legacy-header
+// repair stops planning anything on it.
+//
+// The Priority value is a LABELLED FABRICATION. Nothing in the file implies one.
+// LegacyPriorityDefault is the operator-decided value for exactly this class, and
+// the provenance of the fabrication belongs in the plan and the commit message —
+// nothing in the bytes will distinguish it afterwards.
+func RepairBareLegacyStatusLine(content string) (string, error) {
+	lines := strings.Split(content, "\n")
+
+	titleAt := -1
+	for i, line := range lines {
+		if isH1Line(line) {
+			titleAt = i
+			break
+		}
+	}
+	if titleAt < 0 {
+		return "", fmt.Errorf("bare legacy status repair found no \"# \" title line")
+	}
+
+	// The bare line must sit directly under the title, which is the only place
+	// ScanLegacyHeader treats it as header material rather than prose.
+	bareAt := titleAt + 1
+	if bareAt >= len(lines) {
+		return "", fmt.Errorf("bare legacy status repair found nothing after the title")
+	}
+	bare := lines[bareAt]
+	if strings.TrimSpace(bare) == "" || isHeaderFieldLine(bare) {
+		return "", fmt.Errorf("bare legacy status repair wants a non-blank, non-field line directly under the "+
+			"title, found %q", bare)
+	}
+	if _, ok := legacyStatusValue(bare); !ok {
+		return "", fmt.Errorf("bare legacy status repair wants a bare legacy status line directly under the "+
+			"title, found %q", bare)
+	}
+
+	// Remove the bare line, then insert the constructed Priority into the field
+	// run that now follows the title.
+	rest := append([]string(nil), lines[:bareAt]...)
+	rest = append(rest, lines[bareAt+1:]...)
+
+	start, end := headerBlock(rest)
+	if start == end {
+		return "", fmt.Errorf("bare legacy status repair: removing the bare line left no header field run")
+	}
+	if _, ok := headerFieldValue(strings.Join(rest[start:end], "\n"), fieldPriority); ok {
+		return "", fmt.Errorf("bare legacy status repair: the file already carries a **Priority:** field")
+	}
+	withPriority := append([]string(nil), rest[:end]...)
+	withPriority = append(withPriority, "**"+fieldPriority+":** "+LegacyPriorityDefault)
+	withPriority = append(withPriority, rest[end:]...)
+
+	// The relocated prose goes into the shipped legacy-header body section, at the
+	// end of the document so it disturbs no existing section range.
+	section := []string{"", legacyHeaderSectionHeading, "", legacyHeaderSectionProvenance, "", bare}
+	repaired := strings.Join(append(withPriority, section...), "\n")
+
+	if err := ValidateWholeTaskFile(repaired); err != nil {
+		return "", fmt.Errorf("bare legacy status repair produced an invalid task file: %w", err)
+	}
+	if scan := ScanLegacyHeader(repaired); scan.BareLine != 0 {
+		return "", fmt.Errorf("bare legacy status repair left a bare legacy line at %d, so the legacy-header "+
+			"repair would still plan a destructive merge on this file", scan.BareLine)
+	}
+	return repaired, nil
 }

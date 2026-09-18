@@ -88,6 +88,12 @@ const (
 	// shapeRelocate: prose wedged into the header field run, marooning a field
 	// outside the contiguous block.
 	shapeRelocate
+	// shapeFence: a code-fence delimiter with prose glued onto it, which can
+	// neither open a fence nor close one.
+	shapeFence
+	// shapeInsertRelocate: a bare legacy status line directly under the title AND
+	// no Priority field. Neither half alone validates.
+	shapeInsertRelocate
 )
 
 func (c taskHeaderShapeClass) String() string {
@@ -102,6 +108,10 @@ func (c taskHeaderShapeClass) String() string {
 		return "demote-extra-titles+relocate-prose"
 	case shapeRelocate:
 		return "relocate-prose"
+	case shapeFence:
+		return "split-glued-fence"
+	case shapeInsertRelocate:
+		return "construct-priority+relocate-legacy-status"
 	default:
 		return "no-work"
 	}
@@ -138,6 +148,14 @@ var taskHeaderShapeSeamFor = map[taskHeaderShapeClass]taskHeaderShapeSeam{
 	shapeDupTitle:         seamStrict,
 	shapeDupTitleRelocate: seamStrict,
 	shapeRelocate:         seamStrict,
+	shapeFence:            seamStrict,
+	// 🔴 THE ONLY PERMISSIVE CLASS, and the reason the seam is a table rather than
+	// a constant. This repair moves meta.Priority from absent to present, which is
+	// exactly what refuseHeaderChange refuses — set_meta owns that field. Every
+	// other class leaves every bound header value byte-identical and therefore
+	// goes through the strict writer, which is what makes a mis-targeted repair a
+	// refusal rather than a silent write.
+	shapeInsertRelocate: seamPermissive,
 }
 
 // taskHeaderShapeWritingClasses is the roster the exhaustiveness test compares
@@ -148,6 +166,8 @@ var taskHeaderShapeWritingClasses = []taskHeaderShapeClass{
 	shapeDupTitle,
 	shapeDupTitleRelocate,
 	shapeRelocate,
+	shapeFence,
+	shapeInsertRelocate,
 }
 
 type taskHeaderShapeDecision struct {
@@ -285,6 +305,14 @@ func planTaskHeaderShape(content string) (after string, class taskHeaderShapeCla
 	case strings.Contains(verr.Error(), "malformed header block"):
 		class = shapeRelocate
 		repaired, rerr = storage.RepairInterleavedHeaderProse(content)
+
+	case strings.Contains(verr.Error(), "unterminated code fence"):
+		class = shapeFence
+		repaired, rerr = storage.RepairGluedFenceDelimiter(content)
+
+	case strings.Contains(verr.Error(), "missing Priority"):
+		class = shapeInsertRelocate
+		repaired, rerr = storage.RepairBareLegacyStatusLine(content)
 
 	default:
 		// Malformed, but not this command's defect. Report the validator's own
