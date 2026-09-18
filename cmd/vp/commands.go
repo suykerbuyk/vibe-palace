@@ -215,5 +215,6 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(mutates(cmdMigrateTaskHeaderSpacing()))
 	reg.Register(mutates(cmdMigrateTaskSections()))
 	reg.Register(mutates(cmdMigrateTaskBoardFields()))
+	reg.Register(mutates(cmdMigrateTaskHeaderBlock()))
 	reg.RegisterHelp()
 }

@@ -255,6 +255,32 @@ func TaskStatusValue(line string) (string, bool) {
 	return headerFieldValue(line, fieldStatus)
 }
 
+// TaskPriorityValue returns the value of a task **Priority:** line, and ok=false
+// for any other line.
+//
+// The symmetric narrow export of headerFieldValue beside TaskStatusValue, added
+// for the same reason and under the same restraint: a detector outside this
+// package that has to establish a file carries NO priority declaration must ask
+// the one definition rather than match a near-copy. It is deliberately a second
+// named field rather than the field-agnostic helper — exporting that would invite
+// exactly the drift TaskStatusValue's comment declines.
+func TaskPriorityValue(line string) (string, bool) {
+	return headerFieldValue(line, fieldPriority)
+}
+
+// IsHeaderFieldLine reports whether a line is header metadata under the OPEN
+// schema: any well-formed "**Field:** value" line, whatever its name.
+//
+// This is the boundary rule headerBlock itself uses, exported because a caller
+// outside this package cannot otherwise ask "does a header field run already
+// start here?" without re-deriving the rule — and the character class it rests on
+// (letters, digits and underscore only, so a name containing a SPACE is not a
+// field at all) is exactly the sort of detail a re-derivation gets wrong. One
+// definition, more callers; never a second copy.
+func IsHeaderFieldLine(line string) bool {
+	return isHeaderFieldLine(line)
+}
+
 // DropIcebox removes tasks that are known but deliberately unscheduled.
 //
 // ONE definition, reached by every reader that shows INTENT — vp tasks,
@@ -3372,6 +3398,19 @@ const (
 	// is derivable — was put to the operator and declined in favour of full
 	// coverage. Re-derive the split with `vp migrate task-header`; never quote a
 	// count from a comment.
+	//
+	// 🔴 A SECOND POPULATION AND A SECOND OPERATOR RULING NOW REST ON THIS VALUE,
+	// and a reader who follows the pointer above lands on the wrong one.
+	// `vp migrate task-header-block` writes it into the archived task files that
+	// predate the header format and carry no field run at all — a class that
+	// overlaps the bare-only one not at all, since those files have no status
+	// declaration in ANY form. That is its own operator decision (2026-09-18),
+	// taken with the cost stated in front of the operator: the value is derived
+	// from nothing in any of those files, it is uniform across all of them, and
+	// it is NOT recoverable by inspection afterwards — once written, nothing
+	// distinguishes them from tasks genuinely assigned medium priority. The
+	// provenance lives in that unit's vault task and in its commit message, and
+	// nowhere in the bytes.
 	LegacyPriorityDefault = "medium"
 
 	// legacyHeaderSectionHeading is where a wrapped legacy value's remainder
