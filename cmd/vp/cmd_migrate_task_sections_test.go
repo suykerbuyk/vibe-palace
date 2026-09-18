@@ -1102,3 +1102,64 @@ func TestTaskSectionsPopulationMatchesTheDetector(t *testing.T) {
 		}
 	}
 }
+
+// TestMigrateTaskSections_ArchivedPairReasonNamesTheRealWinner pins the
+// STRUCTURED refusal reason, which nothing pinned before and which was therefore
+// free to be false.
+//
+// 🔴 THE PRINTED LINE AND THE STORED REASON ARE DIFFERENT STRINGS AND ONLY ONE OF
+// THEM WAS TESTED. The two shadow tests above assert the printed output. The
+// Decision.Reason a caller stores was asserted nowhere, so when the shared guard
+// was widened to cover a done/+cancelled/ pair with no active twin, this call
+// site kept a hardcoded "an ACTIVE task of the same slug exists" — a correct line
+// printed beside a false structured cause. That is the class 930bde9 closed in
+// this same file, reopened underneath it by a change in another command.
+//
+// Break: replace the taskHeaderShadowReason call with the old literal. This test
+// fails; every other test in this file stays green, which is the point.
+func TestMigrateTaskSections_ArchivedPairReasonNamesTheRealWinner(t *testing.T) {
+	root := t.TempDir()
+	// done/ and cancelled/ hold the same slug and there is NO active twin, so the
+	// old active-only guard passed this through entirely.
+	seedArchivedTask(t, root, "p", "done", "shadowed", nineShaped(false))
+	seedArchivedTask(t, root, "p", "cancelled", "shadowed", nineShaped(true))
+
+	var out bytes.Buffer
+	sum, err := runTaskSectionsMigration(root, "", false, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got string
+	var found bool
+	for _, d := range sum.Decisions {
+		if d.Slug == "shadowed" && d.Sub == "cancelled" {
+			got, found = d.Reason, true
+		}
+	}
+	if !found {
+		t.Fatalf("no decision recorded for the cancelled/ copy; out:\n%s", out.String())
+	}
+	want := "the same slug also exists in tasks/done/; the writer resolves done before cancelled"
+	if got != want {
+		t.Errorf("structured reason is wrong.\n got: %q\nwant: %q", got, want)
+	}
+	// And the ACTIVE case must keep its own wording, not be flattened into one
+	// generic sentence — the two causes are different and the operator acts on
+	// them differently.
+	root2 := t.TempDir()
+	seedArchivedTask(t, root2, "p", "", "shadowed", nineShaped(false))
+	seedArchivedTask(t, root2, "p", "done", "shadowed", nineShaped(true))
+	var out2 bytes.Buffer
+	sum2, err := runTaskSectionsMigration(root2, "", false, &out2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range sum2.Decisions {
+		if d.Slug == "shadowed" && d.Sub == "done" {
+			if d.Reason != "an ACTIVE task of the same slug exists; the writer resolves active first" {
+				t.Errorf("the active-case reason changed: %q", d.Reason)
+			}
+		}
+	}
+}

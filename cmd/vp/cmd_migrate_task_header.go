@@ -475,8 +475,15 @@ func taskHeaderWhere(project, sub, slug string) string {
 // from anything but the resolver's own order is a guess.
 var taskHeaderShadowDirs = []string{"", "done", "cancelled"}
 
-// taskHeaderShadowed is the shadow guard, shared by every task-migrate repair
-// that reads a task by PATH and writes it back by SLUG.
+// taskHeaderShadowed is the shadow guard for the task-migrate repairs that CALL
+// it: task-header (three arms), task-sections and task-header-spacing.
+//
+// 🔴 IT IS NOT UNIVERSAL COVERAGE, AND SAYING SO WOULD STOP THE NEXT READER
+// LOOKING. task-status and task-board-fields read by path and write by slug
+// exactly as these do, and neither calls this — each open-codes its own check,
+// and at this revision both of those checks are the ACTIVE-ONLY shape this
+// function no longer has. Re-derive the callers rather than trusting this
+// sentence: grep -rn 'taskHeaderShadowed' --include=*.go .
 //
 // 🔴 Vault.resolveTaskFile searches active, then done/, then cancelled/, and
 // returns the FIRST hit. A command that read one path and writes by slug
@@ -496,26 +503,60 @@ var taskHeaderShadowDirs = []string{"", "done", "cancelled"}
 // first directory holding this slug; if it is the directory being repaired, the
 // write lands on the file that was read and there is nothing to refuse.
 func taskHeaderShadowed(out io.Writer, root, project, sub, slug, name string) bool {
+	winner, ok := taskHeaderShadowWinner(root, project, sub, name)
+	if !ok {
+		return false
+	}
+	// The wording of the active case is load-bearing and is kept verbatim: two
+	// tests in cmd_migrate_task_sections_test.go assert this exact sentence.
+	if winner == "" {
+		fmt.Fprintf(out, "  !!    %s: an ACTIVE task of the same slug exists; refusing (the writer resolves active first)\n",
+			taskHeaderWhere(project, sub, slug))
+		return true
+	}
+	fmt.Fprintf(out, "  !!    %s: the same slug also exists in tasks/%s/; refusing (the writer resolves %s before %s)\n",
+		taskHeaderWhere(project, sub, slug), winner, winner, sub)
+	return true
+}
+
+// taskHeaderShadowWinner reports the directory the slug-addressed writer resolves
+// FIRST for this slug, when that is not the directory being repaired. ok is false
+// when there is no shadow — either nothing else holds the slug, or the winner IS
+// sub and the write lands on the file that was read.
+//
+// 🔴 IT IS THE SINGLE WALK. Both the printed refusal above and the STRUCTURED
+// reason below derive from this one function, so the line an operator reads and
+// the reason a caller stores cannot disagree. They did: widening this guard to
+// cover archived pairs left cmd_migrate_task_sections.go hardcoding an
+// "an ACTIVE task..." reason that is false for a done/+cancelled/ pair, printing
+// a correct line beside a false structured cause — the exact class 930bde9 closed
+// in that same file.
+func taskHeaderShadowWinner(root, project, sub, name string) (winner string, ok bool) {
 	for _, dir := range taskHeaderShadowDirs {
 		if !fileExists(taskHeaderTaskPath(root, project, dir, name)) {
 			continue
 		}
 		if dir == sub {
 			// The resolver picks THIS file: the repair writes what it read.
-			return false
+			return "", false
 		}
-		// The wording of the active case is load-bearing and is kept verbatim:
-		// sibling commands' tests assert this exact sentence.
-		if dir == "" {
-			fmt.Fprintf(out, "  !!    %s: an ACTIVE task of the same slug exists; refusing (the writer resolves active first)\n",
-				taskHeaderWhere(project, sub, slug))
-			return true
-		}
-		fmt.Fprintf(out, "  !!    %s: the same slug also exists in tasks/%s/; refusing (the writer resolves %s before %s)\n",
-			taskHeaderWhere(project, sub, slug), dir, dir, sub)
-		return true
+		return dir, true
 	}
-	return false
+	return "", false
+}
+
+// taskHeaderShadowReason is the STRUCTURED form of the refusal above, for callers
+// that record a reason on a decision rather than only printing one. Empty means
+// no shadow. Never hardcode this string at a call site.
+func taskHeaderShadowReason(root, project, sub, name string) string {
+	winner, ok := taskHeaderShadowWinner(root, project, sub, name)
+	if !ok {
+		return ""
+	}
+	if winner == "" {
+		return "an ACTIVE task of the same slug exists; the writer resolves active first"
+	}
+	return fmt.Sprintf("the same slug also exists in tasks/%s/; the writer resolves %s before %s", winner, winner, sub)
 }
 
 // taskHeaderTaskPath joins the on-disk path of one task file, with "" meaning
