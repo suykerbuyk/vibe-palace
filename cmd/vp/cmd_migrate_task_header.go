@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -199,7 +200,12 @@ type taskHeaderSummary struct {
 	BareOnly   int
 	MultiTitle int
 	Inverted   int
-	Applied    int
+	// Declined counts Both files this command refuses to merge because the
+	// value it would write is non-terminal and the file is archived. Tracked
+	// APART from Failed deliberately: it is a class declined by design, like
+	// Inverted, not an attempt that went wrong.
+	Declined int
+	Applied  int
 	// AppliedBareOnly counts the constructed headers specifically, because they
 	// are the writes that make files newly visible to DimTaskStatusDirectory and
 	// so the ones that oblige the operator to run the paired command.
@@ -398,14 +404,40 @@ func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskH
 				}
 
 				sum.Both++
-				fmt.Fprintf(out, "  FIX   %s\n        drop bare %q, carry it onto **Status:** (was %q)\n",
-					taskHeaderWhere(project, sub, taskSlug), scan.BareValue, scan.BoldValue)
 
-				if !apply {
+				// 🔴 PLANNED BEFORE THE APPLY BRANCH, like the bare-only and
+				// multi-title arms, and for the reason their own comments give:
+				// the report must describe the same transform the write performs.
+				// This arm alone used to print FIX and then return on !apply
+				// WITHOUT running the transform or its validator oracle, so the
+				// FIX row was an unvalidated prediction derived from the
+				// classifier — a report promising an outcome apply might refuse.
+				after, rerr := storage.RepairLegacyBothHeader(before, sub != "")
+				switch {
+				case errors.Is(rerr, storage.ErrLegacyBothArchivedNonTerminal):
+					// Declined by design: reported, handed to a human, and NOT
+					// counted in Failed. Same disposition as Inverted.
+					sum.Declined++
+					fmt.Fprintf(out, "  HUMAN %s\n        %v\n",
+						taskHeaderWhere(project, sub, taskSlug), rerr)
+					sum.Plans = append(sum.Plans, plan)
+					continue
+				case rerr != nil:
+					fmt.Fprintf(out, "  !!    %s: %v\n", taskHeaderWhere(project, sub, taskSlug), rerr)
+					plan.Failed = true
+					sum.Failed++
 					sum.Plans = append(sum.Plans, plan)
 					continue
 				}
 
+				// 🔴 THE SHADOW GUARD RUNS IN BOTH MODES. The writer resolves
+				// ACTIVE first, so an archived slug that is also an active file
+				// would rewrite the wrong one; this file is refused under --apply,
+				// so a REPORT printing FIX and telling the operator to re-run with
+				// --apply would promise what apply categorically refuses. Hoisted
+				// here for the Both arm; the bare-only and multi-title arms still
+				// nest theirs inside `if apply` and are the shadow-slug unit's
+				// work, not this one's.
 				if taskHeaderShadowed(out, root, project, sub, taskSlug, name) {
 					plan.Failed = true
 					sum.Failed++
@@ -413,11 +445,10 @@ func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskH
 					continue
 				}
 
-				after, rerr := storage.RepairLegacyBothHeader(before)
-				if rerr != nil {
-					fmt.Fprintf(out, "  !!    %s: %v\n", taskHeaderWhere(project, sub, taskSlug), rerr)
-					plan.Failed = true
-					sum.Failed++
+				fmt.Fprintf(out, "  FIX   %s\n        drop bare %q, carry it onto **Status:** (was %q)\n",
+					taskHeaderWhere(project, sub, taskSlug), scan.BareValue, scan.BoldValue)
+
+				if !apply {
 					sum.Plans = append(sum.Plans, plan)
 					continue
 				}
@@ -439,6 +470,11 @@ func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskH
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Scanned %d file(s): %d clean, %d both, %d bare-only, %d multi-title, %d inverted.\n",
 		sum.Scanned, sum.Clean, sum.Both, sum.BareOnly, sum.MultiTitle, sum.Inverted)
+	if sum.Declined > 0 {
+		fmt.Fprintf(out, "  %d of the both file(s) DECLINED: the merge would write a non-terminal status onto an archived file.\n"+
+			"  Nothing was written for them. Which of the two values is true is a judgment this command does not make.\n",
+			sum.Declined)
+	}
 	if apply {
 		fmt.Fprintf(out, "Applied %d rewrite(s).\n", sum.Applied)
 	} else if sum.Both > 0 || sum.BareOnly > 0 || sum.MultiTitle > len(sum.SignOff) {
