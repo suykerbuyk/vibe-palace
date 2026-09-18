@@ -416,6 +416,18 @@ func runTaskHeaderBlockMigration(root, only string, apply bool, out io.Writer) (
 						d.Outcome = blockRefused
 						d.Reason = "an ACTIVE task of the same slug exists; the writer resolves active first"
 						d.Failed = true
+						// 🔴 BOTH COUNTERS, AND THAT IS NOT DOUBLE-COUNTING. This
+						// file is refused — the decision is blockRefused and a
+						// refusal row is printed — AND the run must exit non-zero,
+						// because a shadowed slug is an operator problem that a
+						// silent exit 0 would bury.
+						//
+						// It previously incremented Failed alone, so the summary
+						// printed "0 refused" on the same run that printed a
+						// refusal row and "1 file(s) FAILED". A counter that reads
+						// zero beside its own visible evidence is worse than no
+						// counter: the instrument is present and lying.
+						sum.Refused++
 						sum.Failed++
 						sum.Decisions = append(sum.Decisions, d)
 						continue

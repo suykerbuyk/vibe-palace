@@ -700,6 +700,26 @@ func TestMigrateTaskHeaderBlock_ShadowedSlugIsRefusedInBothModes(t *testing.T) {
 		if sum.Fix != 0 {
 			t.Errorf("apply=%v: Fix = %d, want 0 — a shadowed slug must never be printed as FIX", apply, sum.Fix)
 		}
+		// 🔴 THE REFUSAL MUST BE COUNTED WHERE THE SUMMARY READS IT. The run
+		// prints a refusal row and "%d refused" in the same output; incrementing
+		// only Failed made the summary say "0 refused" beside its own visible
+		// refusal. A counter reading zero next to its own evidence is the
+		// silent-instrument class with the instrument present and lying.
+		//
+		// Break: drop the sum.Refused++ at the shadow arm. This goes red.
+		if sum.Refused != 1 {
+			t.Errorf("apply=%v: Refused = %d, want 1 — the summary's refused count must include the "+
+				"shadow refusal it just printed; out:\n%s", apply, sum.Refused, out.String())
+		}
+		// And it must STILL fail the run: a shadowed slug is an operator problem
+		// that exit 0 would bury.
+		if sum.Failed != 1 {
+			t.Errorf("apply=%v: Failed = %d, want 1 — a shadowed slug must make the run exit non-zero",
+				apply, sum.Failed)
+		}
+		if !strings.Contains(out.String(), "refused") {
+			t.Errorf("apply=%v: the summary never uses the word the counter counts:\n%s", apply, out.String())
+		}
 		if !strings.Contains(out.String(), "an ACTIVE task of the same slug exists") {
 			t.Errorf("apply=%v: the report did not name the shadow:\n%s", apply, out.String())
 		}
