@@ -2160,7 +2160,7 @@ func TestScanLegacyHeaderIgnoresFencedSpecimens(t *testing.T) {
 // drops the bare line AND carries its value onto the bolded field. A result that
 // did only the first half would leave the file asserting the falsehood alone.
 func TestRepairLegacyBothHeaderCarriesTheTrueValueInOneWrite(t *testing.T) {
-	got, err := RepairLegacyBothHeader(legacyBoth)
+	got, err := RepairLegacyBothHeader(legacyBoth, true)
 	if err != nil {
 		t.Fatalf("RepairLegacyBothHeader: %v", err)
 	}
@@ -2203,7 +2203,7 @@ func TestRepairLegacyBothHeaderRefusesEveryOtherClass(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := RepairLegacyBothHeader(tc.content)
+			_, err := RepairLegacyBothHeader(tc.content, true)
 			if err == nil {
 				t.Fatalf("repair accepted a %s file; it must refuse every class but %s",
 					tc.want, LegacyHeaderBoth)
@@ -2219,14 +2219,14 @@ func TestRepairLegacyBothHeaderRefusesEveryOtherClass(t *testing.T) {
 // file finds nothing to do. The repaired file is Clean, so the repair refuses it
 // — which is how the command reports "nothing to do" rather than rewriting.
 func TestRepairLegacyBothHeaderIsIdempotent(t *testing.T) {
-	once, err := RepairLegacyBothHeader(legacyBoth)
+	once, err := RepairLegacyBothHeader(legacyBoth, true)
 	if err != nil {
 		t.Fatalf("first repair: %v", err)
 	}
 	if got := ScanLegacyHeader(once).Class; got != LegacyHeaderClean {
 		t.Fatalf("repaired file classifies as %s, want %s", got, LegacyHeaderClean)
 	}
-	if _, err := RepairLegacyBothHeader(once); err == nil {
+	if _, err := RepairLegacyBothHeader(once, true); err == nil {
 		t.Fatal("a second repair succeeded; a repaired file must have nothing left to repair")
 	}
 }
@@ -2298,7 +2298,7 @@ func TestScanLegacyHeaderSeparatesTheInvertedShape(t *testing.T) {
 // finding task-status-directory rule 1 exists to report, manufactured by the tool
 // meant to help clear it.
 func TestRepairLegacyBothHeaderRefusesTheInvertedShape(t *testing.T) {
-	repaired, err := RepairLegacyBothHeader(legacyInverted)
+	repaired, err := RepairLegacyBothHeader(legacyInverted, true)
 	if err == nil {
 		t.Fatalf("repair accepted an inverted file and produced:\n%s", repaired)
 	}
@@ -2321,11 +2321,94 @@ func TestInvertedRepairWouldReplaceATerminalStatus(t *testing.T) {
 	}
 	// Whatever the repair does with this file, it must not be "emit the bare
 	// value as the status" — that is the write this class exists to prevent.
-	if repaired, err := RepairLegacyBothHeader(legacyInverted); err == nil {
+	if repaired, err := RepairLegacyBothHeader(legacyInverted, true); err == nil {
 		got, ok := TaskStatusValue(statusLineOf(t, repaired))
 		if ok && !IsTerminalStatus(got) {
 			t.Fatalf("repair replaced terminal %q with non-terminal %q", scan.BoldValue, got)
 		}
+	}
+}
+
+// TestRepairLegacyBothHeaderDeclinesANonTerminalMergeOnAnArchivedFile is the
+// LAYER 2 acceptance test: the refusal keyed on the value the repair would
+// WRITE, independent of the class the file was sorted into.
+//
+// 🔴 IT MUST GO RED WHEN THE ARCHIVED+NON-TERMINAL CHECK IS DELETED, and that is
+// the whole point of it. Layer 1 (the Inverted arm) is a classifier predicate,
+// and a classifier predicate is exactly what a vocabulary rename silently
+// disarmed once already. This test does not go through the classifier's opinion.
+func TestRepairLegacyBothHeaderDeclinesANonTerminalMergeOnAnArchivedFile(t *testing.T) {
+	const nonTerminalBoth = "# Task 3.5: Portable Command Execution\n" +
+		"Status: Active\n" +
+		"\n" +
+		"**Status:** planning\n" +
+		"**Priority:** high\n\n" +
+		"## Summary\n\nBody.\n"
+
+	if got := ScanLegacyHeader(nonTerminalBoth).Class; got != LegacyHeaderBoth {
+		t.Fatalf("fixture must be Both for this test to mean anything, got %s", got)
+	}
+
+	repaired, err := RepairLegacyBothHeader(nonTerminalBoth, true)
+	if err == nil {
+		t.Fatalf("repair merged a non-terminal value onto an ARCHIVED file and produced:\n%s", repaired)
+	}
+	if !errors.Is(err, ErrLegacyBothArchivedNonTerminal) {
+		t.Errorf("refusal must be the declined sentinel so callers can tell it from a failure, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Active") {
+		t.Errorf("refusal must name the value it would have written, got: %v", err)
+	}
+}
+
+// TestRepairLegacyBothHeaderStillRepairsANonTerminalMergeOnAnACTIVEFile is the
+// other half, and it is a SEPARATE test rather than a branch of the one above
+// deliberately: an over-broad refusal is this design's one real risk, and a
+// branch inside the refusal test would be deleted along with it.
+//
+// A non-terminal status on an ACTIVE task is the normal case, not a defect.
+func TestRepairLegacyBothHeaderStillRepairsANonTerminalMergeOnAnACTIVEFile(t *testing.T) {
+	const nonTerminalBoth = "# Task 3.5: Portable Command Execution\n" +
+		"Status: Active\n" +
+		"\n" +
+		"**Status:** planning\n" +
+		"**Priority:** high\n\n" +
+		"## Summary\n\nBody.\n"
+
+	repaired, err := RepairLegacyBothHeader(nonTerminalBoth, false)
+	if err != nil {
+		t.Fatalf("repair refused an ACTIVE file whose non-terminal status is normal: %v", err)
+	}
+	if !strings.Contains(repaired, "**Status:** Active") {
+		t.Errorf("the true value was not carried onto the bolded field:\n%s", repaired)
+	}
+}
+
+// TestScanLegacyHeaderKeepsTheLegacyVocabularyInTheInvertedClass is the
+// regression test for the 47ac25d/af9c4e2 commit pair.
+//
+// 47ac25d dropped "retired" from IsTerminalStatus; the Inverted arm READ
+// IsTerminalStatus, so the one live specimen this class was carved out of left
+// the class and became a merge candidate again. af9c4e2, the very next commit,
+// swept the only fixture encoding that shape from "retired" to "done" as part of
+// a blanket vocabulary pass, so nothing went red.
+//
+// 🔴 THIS TEST MUST GO RED IF THE ARM IS REVERTED TO IsTerminalStatus. Its
+// sibling below covers the CURRENT vocabulary; the class must recognise both,
+// and one fixture can only pin one.
+func TestScanLegacyHeaderKeepsTheLegacyVocabularyInTheInvertedClass(t *testing.T) {
+	const legacyVocabInverted = "# Plan: Phase D — Parallel Operation\n" +
+		"Status: Closed — operator accepted retrospective 2026-06-06; advancing to Phase E\n" +
+		"**Status:** retired\n" +
+		"**Priority:** medium\n\n" +
+		"## Context\n\nBody.\n"
+
+	if got := ScanLegacyHeader(legacyVocabInverted).Class; got != LegacyHeaderInverted {
+		t.Fatalf("a bolded pre-rename %q classified %s, want %s — the merge is planned against it again",
+			StatusDoneLegacy, got, LegacyHeaderInverted)
+	}
+	if _, err := RepairLegacyBothHeader(legacyVocabInverted, true); err == nil {
+		t.Fatal("the repair accepted a file whose bolded value claims an archived state")
 	}
 }
 
@@ -3652,7 +3735,7 @@ func TestLegacyHeaderRepairsMoveOnlyTheFieldsTheyClaim(t *testing.T) {
 		}
 	}
 
-	repaired, err := RepairLegacyBothHeader(withEdges)
+	repaired, err := RepairLegacyBothHeader(withEdges, true)
 	if err != nil {
 		t.Fatalf("RepairLegacyBothHeader: %v", err)
 	}

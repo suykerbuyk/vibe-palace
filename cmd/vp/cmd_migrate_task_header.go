@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -46,8 +47,9 @@ import (
 //     repaired.
 //
 // MULTI-TITLE needs a per-file judgment call between two disagreeing headers.
-// INVERTED carries a bolded value that is already terminal, so the Both repair
-// would overwrite a correct "done"/"cancelled" with the legacy line —
+// INVERTED carries a bolded value that already CLAIMS an archived state, under
+// EITHER vocabulary, so the Both repair would overwrite a correct
+// "done"/"cancelled"/"retired" with the legacy line —
 // manufacturing the very finding `vaultaudit.DimTaskStatusDirectory` rule 1
 // exists to report. Both are separate tasks, and the refusals in
 // `storage.RepairLegacyBothHeader` / `storage.RepairLegacyBareOnlyHeader` are
@@ -128,8 +130,9 @@ func cmdMigrateTaskHeader() *cli.Command {
 			"legacy **Status:**/**Priority:** lines beneath it to **Legacy status:**/**Legacy " +
 			"priority:**, which preserves both values instead of choosing between them; a file whose " +
 			"later H1s are ordinary section headings, or whose transformed bytes the validator still " +
-			"refuses, is listed for SIGN-OFF instead of written. \"inverted\" (a bolded value that is already terminal " +
-			"beside a non-terminal bare line) would have a correct status overwritten and is " +
+			"refuses, is listed for SIGN-OFF instead of written. \"inverted\" (a bolded value that already claims " +
+			"an archived state, under either the current or the pre-rename vocabulary, beside a non-terminal " +
+			"bare line) would have a correct status overwritten and is " +
 			"reported, never written. \"clean\" files are left alone.\n\n" +
 			"🔴 PAIRED COMMAND: a bare-only repair makes files VISIBLE to the " +
 			"task-status-directory audit dimension for the first time — none of the legacy values " +
@@ -199,7 +202,12 @@ type taskHeaderSummary struct {
 	BareOnly   int
 	MultiTitle int
 	Inverted   int
-	Applied    int
+	// Declined counts Both files this command refuses to merge because the
+	// value it would write is non-terminal and the file is archived. Tracked
+	// APART from Failed deliberately: it is a class declined by design, like
+	// Inverted, not an attempt that went wrong.
+	Declined int
+	Applied  int
 	// AppliedBareOnly counts the constructed headers specifically, because they
 	// are the writes that make files newly visible to DimTaskStatusDirectory and
 	// so the ones that oblige the operator to run the paired command.
@@ -390,22 +398,48 @@ func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskH
 					// Printed with BOTH values because the whole point of the
 					// class is that a human has to decide which one is true.
 					sum.Inverted++
-					fmt.Fprintf(out, "  SKIP  %s\n        inverted: bolded %q is already terminal and bare %q is not; "+
-						"repairing would overwrite the terminal status — separate task.\n",
+					fmt.Fprintf(out, "  SKIP  %s\n        inverted: bolded %q already claims an archived state and bare %q does not; "+
+						"repairing would overwrite the archived status — separate task.\n",
 						taskHeaderWhere(project, sub, taskSlug), scan.BoldValue, scan.BareValue)
 					sum.Plans = append(sum.Plans, plan)
 					continue
 				}
 
 				sum.Both++
-				fmt.Fprintf(out, "  FIX   %s\n        drop bare %q, carry it onto **Status:** (was %q)\n",
-					taskHeaderWhere(project, sub, taskSlug), scan.BareValue, scan.BoldValue)
 
-				if !apply {
+				// 🔴 PLANNED BEFORE THE APPLY BRANCH, like the bare-only and
+				// multi-title arms, and for the reason their own comments give:
+				// the report must describe the same transform the write performs.
+				// This arm alone used to print FIX and then return on !apply
+				// WITHOUT running the transform or its validator oracle, so the
+				// FIX row was an unvalidated prediction derived from the
+				// classifier — a report promising an outcome apply might refuse.
+				after, rerr := storage.RepairLegacyBothHeader(before, sub != "")
+				switch {
+				case errors.Is(rerr, storage.ErrLegacyBothArchivedNonTerminal):
+					// Declined by design: reported, handed to a human, and NOT
+					// counted in Failed. Same disposition as Inverted.
+					sum.Declined++
+					fmt.Fprintf(out, "  HUMAN %s\n        %v\n",
+						taskHeaderWhere(project, sub, taskSlug), rerr)
+					sum.Plans = append(sum.Plans, plan)
+					continue
+				case rerr != nil:
+					fmt.Fprintf(out, "  !!    %s: %v\n", taskHeaderWhere(project, sub, taskSlug), rerr)
+					plan.Failed = true
+					sum.Failed++
 					sum.Plans = append(sum.Plans, plan)
 					continue
 				}
 
+				// 🔴 THE SHADOW GUARD RUNS IN BOTH MODES. The writer resolves
+				// ACTIVE first, so an archived slug that is also an active file
+				// would rewrite the wrong one; this file is refused under --apply,
+				// so a REPORT printing FIX and telling the operator to re-run with
+				// --apply would promise what apply categorically refuses. Hoisted
+				// here for the Both arm; the bare-only and multi-title arms still
+				// nest theirs inside `if apply` and are the shadow-slug unit's
+				// work, not this one's.
 				if taskHeaderShadowed(out, root, project, sub, taskSlug, name) {
 					plan.Failed = true
 					sum.Failed++
@@ -413,11 +447,10 @@ func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskH
 					continue
 				}
 
-				after, rerr := storage.RepairLegacyBothHeader(before)
-				if rerr != nil {
-					fmt.Fprintf(out, "  !!    %s: %v\n", taskHeaderWhere(project, sub, taskSlug), rerr)
-					plan.Failed = true
-					sum.Failed++
+				fmt.Fprintf(out, "  FIX   %s\n        drop bare %q, carry it onto **Status:** (was %q)\n",
+					taskHeaderWhere(project, sub, taskSlug), scan.BareValue, scan.BoldValue)
+
+				if !apply {
 					sum.Plans = append(sum.Plans, plan)
 					continue
 				}
@@ -439,15 +472,27 @@ func runTaskHeaderMigration(root, only string, apply bool, out io.Writer) (taskH
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Scanned %d file(s): %d clean, %d both, %d bare-only, %d multi-title, %d inverted.\n",
 		sum.Scanned, sum.Clean, sum.Both, sum.BareOnly, sum.MultiTitle, sum.Inverted)
+	if sum.Declined > 0 {
+		fmt.Fprintf(out, "  %d of the both file(s) DECLINED: the merge would write a non-terminal status onto an archived file.\n"+
+			"  Nothing was written for them. Which of the two values is true is a judgment this command does not make.\n",
+			sum.Declined)
+	}
+	// 🔴 EACH CLASS SUBTRACTS THE FILES IT DECLINED. sum.Both counts the whole
+	// class, including the archived non-terminal files Layer 2 refuses, so a bare
+	// `sum.Both > 0` tells the operator to "re-run with --apply" for a file this
+	// same run just declined — the false-cause shape this project named at 428.
+	// The multi-title term already subtracted its sign-offs; this follows the
+	// pattern that was established in this very expression and not extended to
+	// the new class.
 	if apply {
 		fmt.Fprintf(out, "Applied %d rewrite(s).\n", sum.Applied)
-	} else if sum.Both > 0 || sum.BareOnly > 0 || sum.MultiTitle > len(sum.SignOff) {
+	} else if sum.Both > sum.Declined || sum.BareOnly > 0 || sum.MultiTitle > len(sum.SignOff) {
 		fmt.Fprintln(out, "Re-run with --apply to write the \"both\", \"bare-only\" and repairable "+
 			"\"multi-title\" files.")
 	}
 	if sum.Inverted > 0 {
-		fmt.Fprintln(out, "inverted is reported by design: a bolded value that is already terminal cannot "+
-			"be adjudicated mechanically, and it is filed separately. This command will never write it.")
+		fmt.Fprintln(out, "inverted is reported by design: a bolded value that already claims an archived "+
+			"state cannot be adjudicated mechanically, and it is filed separately. This command will never write it.")
 	}
 	taskHeaderPrioritySourceTally(out, sum)
 	taskHeaderSignOffSection(out, sum)

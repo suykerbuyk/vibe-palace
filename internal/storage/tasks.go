@@ -3086,7 +3086,16 @@ const (
 
 	// LegacyHeaderBoth — a bare legacy line AND a bolded field. The bare line
 	// carries the surviving true value; the bolded field carries the stale one.
-	// This is the only class with a provably lossless mechanical repair.
+	//
+	// 🔴 ITS REPAIR IS LOSSLESS ONLY WHEN THE BARE VALUE IS TERMINAL, and the
+	// unqualified sentence that used to sit here ("the only class with a provably
+	// lossless mechanical repair") is what made the merge read as safe. Where the
+	// bare value is PROSE, the merge writes a non-terminal status onto a file in
+	// done/ or cancelled/, which drops it into the population `vp migrate
+	// task-status` and `vp migrate task-board-fields` rewrite by replacing the
+	// whole status line — so the prose is destroyed by a sibling tool one run
+	// later. Lossless at the moment of the write is not lossless end to end.
+	// RepairLegacyBothHeader refuses that case for archived files.
 	LegacyHeaderBoth
 
 	// LegacyHeaderBareOnly — a bare legacy line and NO bolded field, so the bare
@@ -3114,8 +3123,13 @@ const (
 	LegacyHeaderMultiTitle
 
 	// LegacyHeaderInverted — a bare legacy line AND a bolded field, exactly like
-	// Both, except that the BOLDED value is already a terminal status. That
-	// inverts the premise the Both repair rests on.
+	// Both, except that the BOLDED value already CLAIMS an archived state, under
+	// EITHER vocabulary. That inverts the premise the Both repair rests on.
+	//
+	// 🔴 "Either vocabulary" is load-bearing, not pedantry. The discriminator is
+	// IsArchivedStatusClaim; when it was IsTerminalStatus a rename dropped the
+	// pre-rename value and the live specimen silently left this class. See the
+	// arm in ScanLegacyHeader for the full account.
 	//
 	// 🔴 The Both repair carries the bare value onto the bolded field because the
 	// bare line is assumed authoritative and the bolded one stale. That direction
@@ -3223,11 +3237,28 @@ func ScanLegacyHeader(content string) LegacyHeaderScan {
 		scan.Class = LegacyHeaderClean
 	case scan.BoldLine == 0:
 		scan.Class = LegacyHeaderBareOnly
-	case IsTerminalStatus(scan.BoldValue):
-		// The bolded value is already terminal, so the Both repair's premise —
-		// bare is true, bolded is stale — is unproven for this file and the
-		// repair would overwrite a correct terminal status. Classified apart and
-		// never written; see LegacyHeaderInverted.
+	case IsArchivedStatusClaim(scan.BoldValue):
+		// The bolded value already CLAIMS an archived state, so the Both repair's
+		// premise — bare is true, bolded is stale — is unproven for this file and
+		// the repair would overwrite a correct terminal status. Classified apart
+		// and never written; see LegacyHeaderInverted.
+		//
+		// 🔴 THE PREDICATE IS IsArchivedStatusClaim, NOT IsTerminalStatus, AND THE
+		// DIFFERENCE IS THE WHOLE GUARD. This arm is a DETECTOR: it asks whether a
+		// value claims to be archived so the file can be REPORTED, which is
+		// IsArchivedStatusClaim's stated job. IsTerminalStatus is the AGREEMENT
+		// test the two migrations use, and it deliberately does not admit the
+		// pre-rename vocabulary.
+		//
+		// This arm READ IsTerminalStatus until this change, and a vocabulary
+		// rename exploited it: 47ac25d dropped "retired" from IsTerminalStatus, so
+		// the one live specimen this class was carved out of — bolded
+		// **Status:** retired — silently left Inverted, fell through to Both, and
+		// the destructive merge was planned against it again. The companion commit
+		// af9c4e2 swept the only fixture encoding that shape from "retired" to
+		// "done" as part of a blanket vocabulary pass, so no test went red.
+		// Widening IsTerminalStatus is NOT the fix and is forbidden — see its own
+		// doc comment and TestIsTerminalStatusDoesNotAdmitTheLegacyValue.
 		//
 		// The discriminator is deliberately just this one predicate. A file whose
 		// bare and bolded values are BOTH terminal would be trivially lossless to
@@ -3239,6 +3270,16 @@ func ScanLegacyHeader(content string) LegacyHeaderScan {
 	}
 	return scan
 }
+
+// ErrLegacyBothArchivedNonTerminal is returned by RepairLegacyBothHeader when
+// the merge it would perform writes a NON-TERMINAL status onto a file living in
+// an archive directory.
+//
+// 🔴 IT IS A DECLINED CLASS, NOT A FAILED ATTEMPT, and callers must tell the two
+// apart with errors.Is. Counting it as a failure makes every run of the command
+// exit non-zero forever for a file it correctly refused to touch — the exact
+// defect the Inverted class's acceptance test already pins.
+var ErrLegacyBothArchivedNonTerminal = errors.New("legacy header repair declined")
 
 // RepairLegacyBothHeader rewrites a LegacyHeaderBoth file into the current
 // contract: it DROPS the bare legacy line and carries that line's value onto the
@@ -3258,12 +3299,43 @@ func ScanLegacyHeader(content string) LegacyHeaderScan {
 //
 // Every other class is refused. BareOnly has no bolded field to carry a value
 // onto and is repaired by RepairLegacyBareOnlyHeader, MultiTitle needs a
-// per-file judgment call, and Inverted carries a terminal bolded value this
-// repair would destroy; refusing here is what keeps each repair to one class.
-func RepairLegacyBothHeader(content string) (string, error) {
+// per-file judgment call, and Inverted carries an archive-claiming bolded value
+// this repair would destroy; refusing here is what keeps each repair to one
+// class.
+//
+// 🔴 THE CLASS GATE IS NOT SUFFICIENT ON ITS OWN, which is why this function
+// also refuses on its own OUTPUT. The Inverted gate is a classifier predicate,
+// and a classifier predicate is exactly what a vocabulary rename silently
+// disarmed once already (47ac25d). The archived + non-terminal-output refusal
+// below does not ask what class the file was sorted into; it asks what this
+// write would produce. It fails SAFE rather than agnostic: a rename that drops a
+// value from IsTerminalStatus makes it refuse MORE files, never fewer.
+func RepairLegacyBothHeader(content string, archived bool) (string, error) {
 	scan := ScanLegacyHeader(content)
 	if scan.Class != LegacyHeaderBoth {
 		return "", fmt.Errorf("legacy header repair handles %s files only, got %s", LegacyHeaderBoth, scan.Class)
+	}
+
+	// 🔴 THE OUTPUT REFUSAL. Keyed on the value this repair is about to WRITE,
+	// not on the class the file was sorted into, and scoped to archived files.
+	//
+	// The scope is not a nicety: this command walks the ACTIVE directory too, and
+	// a non-terminal status on an active task is the normal case. An
+	// unconditional refusal would reject every legitimate repair.
+	//
+	// Refusing rather than transforming is deliberate. Merging destroys the prose
+	// downstream; relocating it DEMOTES the bare value the class's own premise
+	// calls authoritative, which is a judgment about which of two values is true
+	// made on shape alone — the judgment LegacyHeaderInverted exists to refuse.
+	// No shape-derivable option is correct, so this hands the file to a human the
+	// way BareOnly, MultiTitle and Inverted already do.
+	//
+	// Cost, accepted deliberately: a refused file is not repaired, so if it is
+	// also invalid it stays below data format 1 until a human resolves it. A
+	// blocked stamp is a reported cost; a destroyed record is an unreported one.
+	if archived && !IsTerminalStatus(scan.BareValue) {
+		return "", fmt.Errorf("%w: the bare line would set **%s:** to %q, which is not a terminal status",
+			ErrLegacyBothArchivedNonTerminal, fieldStatus, scan.BareValue)
 	}
 
 	lines := strings.Split(content, "\n")
