@@ -453,6 +453,15 @@ func boldPseudoHeadingLines(content string) []int {
 		if len(t) < 4 || !strings.HasPrefix(t, "**") || !strings.HasSuffix(t, "**") {
 			continue
 		}
+		// 🔴 A RUN OF ASTERISKS IS A THEMATIC BREAK, NEVER A HEADING, AT ANY
+		// LENGTH. This is a family, not the single case that motivated the length
+		// bound above: "***" panics, "****" yields an empty inner, and "*****"
+		// slips past BOTH of those and promotes to the heading "## *". Testing the
+		// whole line for non-asterisk content closes every member at once,
+		// including lengths nobody has enumerated.
+		if strings.Trim(t, "*") == "" {
+			continue
+		}
 		inner := strings.TrimSpace(t[2 : len(t)-2])
 		// The colon test runs on the TRIMMED inner text: "**Acceptance criteria: **"
 		// is the same label as "**Acceptance criteria:**", and testing the untrimmed

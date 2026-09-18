@@ -483,3 +483,120 @@ func TestPlanTaskHeaderShape_CleanDemotionStillRepairs(t *testing.T) {
 		t.Error("the demoted file does not validate")
 	}
 }
+
+// TestMigrateTaskHeaderShape_PartialRepairIsNeverWritten is the ALL-OR-NOTHING
+// proof, and it asserts on the BYTES ON DISK rather than on a planner outcome.
+//
+// 🔴 THE FAILURE IT GUARDS IS WORSE THAN EITHER ALTERNATIVE. `vault-write-concurrency`
+// needs two things: its extra title demoted, AND a prose wedge resolved. The wedge
+// half is REFUSED by rule, because nothing in the bytes distinguishes a wedge from
+// a wrapped value's continuation. If the command applied the demotion anyway, the
+// file would be half repaired by the command and half expected by hand — and
+// NEITHER list would own the whole file. The command's roster would show it
+// repaired; the hand-edit list would describe a file that no longer looks like the
+// one it describes.
+//
+// A clean refusal and a clean repair are both recoverable. A silent half is not.
+//
+// Break: in the two-title arm, return the demoted content instead of refusing when
+// a wedge remains. This test fails on the file's bytes.
+func TestMigrateTaskHeaderShape_PartialRepairIsNeverWritten(t *testing.T) {
+	// Both defects at once: two unfenced H1s, and prose wedged into the field run.
+	const bothDefects = "# T\n" +
+		"\n" +
+		"**Status:** retired\n" +
+		"Plan-reviewed 2026-06-06; design decisions below are locked.\n" +
+		"**Priority:** medium\n" +
+		"\n" +
+		"# T restated\n" +
+		"\n" +
+		"## Problem\n" +
+		"\n" +
+		"body\n"
+	if storage.ValidateWholeTaskFile(bothDefects) == nil {
+		t.Fatal("precondition: the fixture must FAIL the validator")
+	}
+
+	root := t.TempDir()
+	gitInitVault(t, root)
+	path := seedArchivedTask(t, root, "p", "done", "both", bothDefects)
+	gitCommitAll(t, root)
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderShapeMigration(root, "", true, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Applied != 0 {
+		t.Errorf("Applied = %d, want 0 — a file needing a refused half must not be partially repaired", sum.Applied)
+	}
+	got, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if string(got) != bothDefects {
+		t.Fatalf("🔴 THE FILE WAS PARTIALLY REPAIRED. It is now owned by neither the command's roster "+
+			"nor the hand-edit list:\n%s", got)
+	}
+	// And it must still be VISIBLE, on the other-defect roster, with the true cause.
+	if sum.OtherDefect != 1 {
+		t.Errorf("OtherDefect = %d, want 1 — a refused file that appears on no roster is invisible", sum.OtherDefect)
+	}
+	if !strings.Contains(out.String(), "prose wedged into the header field run") {
+		t.Errorf("the roster does not name the blocking cause:\n%s", out.String())
+	}
+}
+
+// TestTaskHeaderShapeSeamRefusesAPartialRepair pins ALL-OR-NOTHING where it
+// actually lives: in the locked writer, not in this command.
+//
+// 🔴 ESTABLISHED BY SUCCESSIVE REMOVAL, NOT BY READING. With the wedge refusal
+// removed, the file's bytes were still unchanged. With the wedge refusal AND the
+// planner's post-condition both removed, the write reached the seam and the seam
+// refused it: "write: malformed header block: the \"**Priority:**\" line is not
+// part of the contiguous header block after the title".
+//
+// So the three layers do different jobs, and only the last is a guarantee:
+//
+//	wedge refusal            names the TRUE CAUSE on the other-defect roster
+//	planner post-condition   keeps a known-bad transform away from the writer
+//	the locked writer        REFUSES the write — this is what makes it all-or-nothing
+//
+// That ordering matters for where future work may safely economise: the first two
+// are diagnostic quality and can be re-shaped; removing the third would be
+// removing the guarantee. A guard that lives in the layer every caller goes
+// through is the only kind that holds for callers nobody has written yet.
+func TestTaskHeaderShapeSeamRefusesAPartialRepair(t *testing.T) {
+	// A half-repaired file: the extra title demoted, the prose wedge left in place.
+	const halfRepaired = "# T\n" +
+		"\n" +
+		"**Status:** retired\n" +
+		"Plan-reviewed 2026-06-06; design decisions below are locked.\n" +
+		"**Priority:** medium\n" +
+		"\n" +
+		"## T restated\n" +
+		"\n" +
+		"## Problem\n" +
+		"\n" +
+		"body\n"
+	if storage.ValidateWholeTaskFile(halfRepaired) == nil {
+		t.Fatal("precondition: a half-repaired file must still FAIL the validator, or there is nothing to refuse")
+	}
+
+	root := t.TempDir()
+	gitInitVault(t, root)
+	const seeded = "# T\n\n**Status:** retired\n**Priority:** medium\n\n## Problem\n\nbody\n"
+	path := seedArchivedTask(t, root, "p", "done", "x", seeded)
+	gitCommitAll(t, root)
+
+	err := storage.NewVault(root).OverwriteTaskFile("p", "x", halfRepaired)
+	if err == nil {
+		t.Fatal("the locked writer ACCEPTED a half-repaired file; all-or-nothing rests on this refusal")
+	}
+	if !strings.Contains(err.Error(), "malformed header block") {
+		t.Errorf("the seam refused for the wrong reason: %v", err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != seeded {
+		t.Error("the file changed despite the refusal")
+	}
+}
