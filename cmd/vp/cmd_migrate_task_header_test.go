@@ -387,6 +387,46 @@ func TestMigrateTaskHeaderStillRepairsANonTerminalBothFileInTheACTIVEDirectory(t
 	}
 }
 
+// TestMigrateTaskHeaderReportTrailerSubtractsDeclinedFiles pins the trailer's
+// per-class subtraction.
+//
+// 🔴 A REPORT THAT SAYS "re-run with --apply to write the both files" FOR A FILE
+// IT JUST DECLINED IS THE FALSE-CAUSE SHAPE. sum.Both counts the whole class,
+// declined files included, so the bare `sum.Both > 0` this replaced promised a
+// write that --apply categorically refuses. The multi-title term in the same
+// expression already subtracted its sign-offs; the pattern simply was not
+// extended to the new class.
+//
+// The fixture is a vault whose ONLY candidate is a declined both file: no
+// bare-only, no multi-title, so no other term of the expression can hold the
+// trailer up and mask the defect.
+func TestMigrateTaskHeaderReportTrailerSubtractsDeclinedFiles(t *testing.T) {
+	root := setupTestVaultEnv(t)
+	tsWrite(t, root, "Projects/proj/tasks/done/declined.md", thBoth)
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderMigration(root, "proj", false, &out)
+	if err != nil {
+		t.Fatalf("runTaskHeaderMigration: %v", err)
+	}
+	if sum.Both != 1 || sum.Declined != 1 {
+		t.Fatalf("fixture must be exactly one declined both file, got Both=%d Declined=%d; out:\n%s",
+			sum.Both, sum.Declined, out.String())
+	}
+	if sum.BareOnly != 0 || sum.MultiTitle != 0 {
+		t.Fatalf("another class would hold the trailer up and mask the defect: BareOnly=%d MultiTitle=%d",
+			sum.BareOnly, sum.MultiTitle)
+	}
+	if strings.Contains(out.String(), "Re-run with --apply") {
+		t.Errorf("the report told the operator to re-run with --apply for a file it DECLINED; "+
+			"out:\n%s", out.String())
+	}
+	// The decline itself must still be reported — the fix is subtraction, not silence.
+	if !strings.Contains(out.String(), "DECLINED") {
+		t.Errorf("the decline was not reported at all; out:\n%s", out.String())
+	}
+}
+
 // TestMigrateTaskHeaderReportAndApplyAgree is acceptance criterion 7: a row
 // printed FIX in report mode is a row --apply actually writes, and a row --apply
 // refuses is reported as refused in report mode.
@@ -646,6 +686,18 @@ func TestMigrateTaskHeaderRefusesTheInvertedShapeAndMakesNoNewFinding(t *testing
 	if got := tsRead(t, paths["inverted"]); got != thInverted {
 		t.Fatalf("the inverted file was rewritten; this command must never write it:\n%s", got)
 	}
+	// 🔴 THE REPORT MUST NOT CALL THE LEGACY VALUE "terminal". The class is keyed
+	// on IsArchivedStatusClaim, which admits the pre-rename "retired";
+	// IsTerminalStatus deliberately does NOT, and a pinned invariant forbids
+	// widening it. Operator-facing prose saying a `retired` file is "already
+	// terminal" asserts the opposite of that invariant. Asserted as a NEGATIVE on
+	// the claim rather than a positive on the wording, so rephrasing stays free
+	// and only the falsehood is pinned.
+	if strings.Contains(out.String(), "already terminal") {
+		t.Errorf("the report describes a bolded value as \"already terminal\"; the legacy "+
+			"vocabulary this class admits is exactly what IsTerminalStatus rejects; out:\n%s", out.String())
+	}
+
 	// The report must name BOTH values: the whole reason the file is skipped is
 	// that a human has to decide which of the two is true.
 	for _, want := range []string{"inverted", "done", "Closed — operator accepted"} {
