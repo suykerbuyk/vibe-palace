@@ -1313,9 +1313,10 @@ func TestBoardFieldsReportRowDistinguishesTransitionFromNoChange(t *testing.T) {
 // file, and anyone diagnosing it was sent to the wrong place. Naming the shadow
 // in the planner puts the CAS back to catching what it is for.
 //
-// The planner takes no io.Writer and must not acquire one -- plannerNoWrite
-// exists to enforce that -- so it calls the PURE predicate and the renderer
-// prints the cause.
+// The planner has no io.Writer in its signature, so it calls the PURE predicate
+// and the renderer prints the cause. Keeping it print-free is a CONVENTION:
+// plannerNoWrite guards vault writes, not printing, and nothing goes red if the
+// signature is widened and a print added.
 func TestBoardFieldsNamesTheShadowedPairRatherThanAHashMismatch(t *testing.T) {
 	root := bfVault(t, "p")
 	bfWriteTask(t, root, "p", "done", "pair", "Pair", "done", "")

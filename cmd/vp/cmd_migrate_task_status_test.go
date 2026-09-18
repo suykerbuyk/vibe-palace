@@ -678,6 +678,17 @@ func TestMigrateTaskStatusRefusesAShadowedArchivedPairAndDestroysNothing(t *test
 	// naming only the status is how the weak form creeps back in.
 	doneBody := "# T\n\n**Status:** retired\n**Priority:** high\n\n## Context\n\nI am the DONE copy.\n"
 	cancBody := "# T\n\n**Status:** retired\n**Priority:** low\n\n## Context\n\nI am the CANCELLED copy.\n"
+	// 🔴 ANTI-VACUITY. The byte assertions below are only meaningful while the two
+	// fixtures are distinguishable. Give them the same body and the mis-resolved
+	// write still happens -- Applied = 2, done/ ends up **Status:** cancelled --
+	// but both halves of the byte check go inert, and the test then goes red only
+	// via Failed and the refusal message: passing for exactly the reason the
+	// comment above rejects, with the assertion it calls "the check" doing
+	// nothing.
+	if doneBody == cancBody {
+		t.Fatal("the two fixtures must differ in body: identical bodies make every byte " +
+			"assertion in this test vacuous while the defect still reproduces")
+	}
 	donePath := tsWrite(t, root, "Projects/proj/tasks/done/pair.md", doneBody)
 	cancPath := tsWrite(t, root, "Projects/proj/tasks/cancelled/pair.md", cancBody)
 	tsGitInit(t, root)
@@ -751,5 +762,53 @@ func TestMigrateTaskStatusStillRepairsAnUnshadowedArchivedFile(t *testing.T) {
 	}
 	if !strings.Contains(tsRead(t, p), "**Status:** done") {
 		t.Errorf("an unshadowed archived file was not repaired:\n%s", tsRead(t, p))
+	}
+}
+
+// TestMigrateTaskStatusReportDoesNotPromiseAFixItWillRefuse pins the FIX row's
+// position relative to the shadow guard.
+//
+// 🔴 A FIX ROW IS A PROMISE --apply WILL WRITE THAT FILE. This command used to
+// print it before the guard ran, so a shadowed slug produced a FIX row and a
+// refusal two lines apart and the operator had to reconcile them. Moving the
+// print below the guard was a deliberate change with no assertion behind it --
+// a reviewer moved it back and nothing went red -- which made it a preference
+// rather than a pinned behaviour. This is that assertion.
+//
+// Same class as TestMigrateTaskHeaderReportAndApplyAgree in the Both-merge unit.
+func TestMigrateTaskStatusReportDoesNotPromiseAFixItWillRefuse(t *testing.T) {
+	seed := func(t *testing.T) string {
+		root := tsVault(t)
+		// Shadowed pair: done/ is repairable, cancelled/ is refused.
+		tsWrite(t, root, "Projects/proj/tasks/done/pair.md",
+			"# T\n\n**Status:** retired\n**Priority:** high\n\n## Context\n\nDONE.\n")
+		tsWrite(t, root, "Projects/proj/tasks/cancelled/pair.md",
+			"# T\n\n**Status:** retired\n**Priority:** low\n\n## Context\n\nCANCELLED.\n")
+		tsGitInit(t, root)
+		return root
+	}
+
+	var report bytes.Buffer
+	if _, err := runTaskStatusMigration(seed(t), "proj", false, &report); err != nil {
+		t.Fatalf("report run: %v", err)
+	}
+	var applied bytes.Buffer
+	asum, err := runTaskStatusMigration(seed(t), "proj", true, &applied)
+	if err != nil {
+		t.Fatalf("apply run: %v", err)
+	}
+
+	// Every FIX row the report printed must be a file --apply actually wrote.
+	if got := strings.Count(report.String(), "  FIX   "); got != asum.Applied {
+		t.Errorf("report printed %d FIX row(s) but --apply wrote %d file(s); a FIX row is a "+
+			"promise the apply must honour\nreport:\n%s\napply:\n%s",
+			got, asum.Applied, report.String(), applied.String())
+	}
+	// And specifically: no FIX row for the file the guard refuses.
+	for _, line := range strings.Split(report.String(), "\n") {
+		if strings.Contains(line, "FIX") && strings.Contains(line, "cancelled/") {
+			t.Errorf("report promised a FIX for the shadowed cancelled/ copy, which --apply "+
+				"refuses:\n%s", report.String())
+		}
 	}
 }
