@@ -4085,3 +4085,137 @@ func RepairDuplicateHeaderField(content, field string) (string, error) {
 	}
 	return repaired, nil
 }
+
+// RepairExtraTitles demotes every H1 outside fences except the first to an H2.
+//
+// It is FLAT: existing H2s and everything below them are untouched, so a demoted
+// title becomes a sibling of its own former subsections rather than their parent.
+//
+// # WHY FLAT RATHER THAN CASCADING
+//
+// The validator has no hierarchy rule, so it cannot settle this. The argument
+// that does is mechanical: a section's range terminates at the next H1 OR H2, so
+// flat keeps every existing section range byte-identical while cascading would
+// shift every heading below the demoted title and destroy every section key. On
+// the live file the difference is 8 rewritten lines against 44.
+//
+// Blank-line spacing is NOT adjusted. The transform rewrites heading prefixes and
+// nothing else, so the file's byte-level diff is exactly the demoted lines.
+func RepairExtraTitles(content string) (string, error) {
+	var h1 []int // 1-indexed, outside fences, in file order
+	for _, l := range mdfence.OutsideFences(content) {
+		if isH1Line(l.Text) {
+			h1 = append(h1, l.Num)
+		}
+	}
+	if len(h1) < 2 {
+		return "", fmt.Errorf("extra-title repair wants at least 2 unfenced \"# \" H1 headings, found %d", len(h1))
+	}
+
+	lines := strings.Split(content, "\n")
+	for _, num := range h1[1:] {
+		idx := num - 1
+		// The line is H1-shaped by isH1Line, which trims before matching, so the
+		// '#' to double is the first one after any leading whitespace.
+		at := strings.Index(lines[idx], "#")
+		lines[idx] = lines[idx][:at] + "#" + lines[idx][at:]
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+// RepairInterleavedHeaderProse moves a wedge of non-field prose out of the
+// contiguous header-field run, so the fields on either side of it rejoin.
+//
+// # MINIMAL, NEVER GREEDY, AND THAT DISTINCTION IS LOAD-BEARING
+//
+// Only the lines INSIDE the run move. Adjacent provenance fields sitting BELOW the
+// run are left exactly where they are. A greedy rule that also hoisted them would
+// EXTEND headerBlock over names that were previously outside it, which changes
+// what extraHeaderFields reports and makes the strict writer refuse the repair —
+// measured on the one corpus file whose header carries four hard-wrapped values,
+// where a greedy unwrap gains two field names and is refused. That file is a hand
+// edit for exactly this reason; this function must not be pointed at it.
+//
+// The wedge is reinserted immediately BELOW the rejoined run rather than below the
+// following blank line, so the prose stays adjacent to the fields it was written
+// against and the run terminates on it. Bytes and order within the wedge are
+// preserved.
+//
+// 🔴 The wedge is NOT merged onto the preceding field line. Doing so would produce
+// a Status value the terminal-status predicate rejects, which drops the file into
+// the whole-line-replacing population of the status and board-fields migrations —
+// destroying the prose by way of the very migration this repair exists to unblock.
+func RepairInterleavedHeaderProse(content string) (string, error) {
+	lines := strings.Split(content, "\n")
+	start, end := headerBlock(lines)
+	if start == end {
+		return "", fmt.Errorf("interleaved-prose repair wants a non-empty header field run, found none")
+	}
+
+	// The wedge: the contiguous non-blank, non-field lines immediately after the
+	// run. A blank line here means the run simply ended, and there is nothing
+	// interleaved to move.
+	w := end
+	for w < len(lines) && strings.TrimSpace(lines[w]) != "" && !isHeaderFieldLine(lines[w]) {
+		w++
+	}
+	if w == end {
+		return "", fmt.Errorf("interleaved-prose repair found no prose wedge immediately after the header field run")
+	}
+	if w >= len(lines) || !isHeaderFieldLine(lines[w]) {
+		return "", fmt.Errorf("interleaved-prose repair found no header field line after the wedge, so moving it "+
+			"would rejoin nothing (wedge is lines %d-%d)", end+1, w)
+	}
+
+	// 🔴 ONE WEDGE ONLY, AND THIS REFUSAL IS THE WHOLE SAFETY OF THIS TRANSFORM.
+	//
+	// A header region that alternates field / prose / field / prose is not a run
+	// with something wedged into it — it is a run of HARD-WRAPPED FIELD VALUES,
+	// where each "prose" line is the continuation of the field above it. Moving
+	// those lines out severs every value from its own remainder and leaves the
+	// continuations stacked under whichever field happens to follow, so the text
+	// of one field is read as the value of another.
+	//
+	// That output PASSES ValidateWholeTaskFile. It was measured on the live corpus
+	// file with four wrapped values: the repair validates clean while shredding
+	// them, and no validator, audit dimension or test reports it. Validity is not
+	// correctness, and the only thing standing between this transform and that
+	// file is this count.
+	//
+	// Counting wedges rather than naming the file keeps this a rule instead of an
+	// exception: any future file whose header values wrap is refused for the same
+	// reason, and the refusal says which lines to look at.
+	wedges, at := 0, end
+	for at < len(lines) && strings.TrimSpace(lines[at]) != "" {
+		if isHeaderFieldLine(lines[at]) {
+			at++
+			continue
+		}
+		wedges++
+		for at < len(lines) && strings.TrimSpace(lines[at]) != "" && !isHeaderFieldLine(lines[at]) {
+			at++
+		}
+	}
+	if wedges > 1 {
+		return "", fmt.Errorf("interleaved-prose repair refuses a header region with %d prose wedges "+
+			"(lines %d-%d): more than one means the field VALUES wrap, and moving them would sever each "+
+			"value from its own continuation — a repair that still passes the validator", wedges, end+1, at)
+	}
+
+	wedge := append([]string(nil), lines[end:w]...)
+	rest := append([]string(nil), lines[w:]...)
+
+	// Where the rejoined run ends: the fields that follow the wedge, plus any
+	// further contiguous field lines.
+	tail := 0
+	for tail < len(rest) && isHeaderFieldLine(rest[tail]) {
+		tail++
+	}
+
+	out := make([]string, 0, len(lines))
+	out = append(out, lines[:end]...)
+	out = append(out, rest[:tail]...)
+	out = append(out, wedge...)
+	out = append(out, rest[tail:]...)
+	return strings.Join(out, "\n"), nil
+}
