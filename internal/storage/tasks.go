@@ -255,6 +255,32 @@ func TaskStatusValue(line string) (string, bool) {
 	return headerFieldValue(line, fieldStatus)
 }
 
+// TaskPriorityValue returns the value of a task **Priority:** line, and ok=false
+// for any other line.
+//
+// The symmetric narrow export of headerFieldValue beside TaskStatusValue, added
+// for the same reason and under the same restraint: a detector outside this
+// package that has to establish a file carries NO priority declaration must ask
+// the one definition rather than match a near-copy. It is deliberately a second
+// named field rather than the field-agnostic helper — exporting that would invite
+// exactly the drift TaskStatusValue's comment declines.
+func TaskPriorityValue(line string) (string, bool) {
+	return headerFieldValue(line, fieldPriority)
+}
+
+// IsHeaderFieldLine reports whether a line is header metadata under the OPEN
+// schema: any well-formed "**Field:** value" line, whatever its name.
+//
+// This is the boundary rule headerBlock itself uses, exported because a caller
+// outside this package cannot otherwise ask "does a header field run already
+// start here?" without re-deriving the rule — and the character class it rests on
+// (letters, digits and underscore only, so a name containing a SPACE is not a
+// field at all) is exactly the sort of detail a re-derivation gets wrong. One
+// definition, more callers; never a second copy.
+func IsHeaderFieldLine(line string) bool {
+	return isHeaderFieldLine(line)
+}
+
 // DropIcebox removes tasks that are known but deliberately unscheduled.
 //
 // ONE definition, reached by every reader that shows INTENT — vp tasks,
