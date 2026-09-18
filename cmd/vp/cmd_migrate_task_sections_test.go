@@ -207,6 +207,40 @@ func TestPlanTaskSections_Refusals(t *testing.T) {
 		want:    sectionsNoH3,
 		reason:  "no bold pseudo-heading to promote",
 	}, {
+		// 🔴 THE THEMATIC BREAK, AND THIS ROW GUARDS A PANIC RATHER THAN A
+		// MIS-PROMOTION. "***" satisfies both HasPrefix("**") and HasSuffix("**")
+		// because the two OVERLAP, so only the length bound stops inner from being
+		// sliced as t[2:1] — "slice bounds out of range [2:1]", demonstrated. A
+		// crash part-way through a vault-wide run leaves whatever was already
+		// written in place.
+		name:    "*** thematic break does not panic or promote",
+		content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n***\n\nbody\n",
+		want:    sectionsNoH3,
+		reason:  "no bold pseudo-heading to promote",
+	}, {
+		// "****" is length 4 — the first length the slice can express — and yields
+		// an EMPTY inner, which must be rejected rather than promoted to "## ".
+		name:    "**** yields an empty heading and is not promoted",
+		content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n****\n\nbody\n",
+		want:    sectionsNoH3,
+		reason:  "no bold pseudo-heading to promote",
+	}, {
+		// 🔴 TWO BOLD RUNS IN ONE SENTENCE IS PROSE, NOT A HEADING. Without the
+		// nested-marker guard this is promoted to the mangled heading
+		// "## Note** and **Warning".
+		name:    "a sentence with two bold runs is not a heading",
+		content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n**Note** and **Warning**\n\nbody\n",
+		want:    sectionsNoH3,
+		reason:  "no bold pseudo-heading to promote",
+	}, {
+		// 🔴 ONE TRAILING SPACE WALKED PAST THE COLON GUARD. The label test must
+		// run on the TRIMMED inner text: "**x: **" is the same label shape as
+		// "**x:**", and an untrimmed test promotes it to "## x: ".
+		name:    "a colon label with a trailing space is still not a heading",
+		content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n**Acceptance criteria: **\n\n- a\n",
+		want:    sectionsNoH3,
+		reason:  "no bold pseudo-heading to promote",
+	}, {
 		// 🔴 A trailing colon INSIDE the bold makes it a label for the list
 		// beneath it, not a section title. This shape occurs in the corpus, and a
 		// colon-tolerant predicate silently restructures a file nobody asked to

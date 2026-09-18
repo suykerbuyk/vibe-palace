@@ -393,7 +393,7 @@ func planTaskSections(content string) (after string, outcome taskSectionsOutcome
 		lines := strings.Split(content, "\n")
 		for _, num := range bold {
 			t := strings.TrimSpace(lines[num-1])
-			lines[num-1] = "## " + t[2:len(t)-2]
+			lines[num-1] = "## " + strings.TrimSpace(t[2:len(t)-2])
 		}
 		promoted := strings.Join(lines, "\n")
 		if verr := storage.ValidateWholeTaskFile(promoted); verr != nil {
@@ -442,10 +442,25 @@ func boldPseudoHeadingLines(content string) []int {
 	var out []int
 	for _, l := range mdfence.OutsideFences(content) {
 		t := strings.TrimSpace(l.Text)
-		if len(t) < 5 || !strings.HasPrefix(t, "**") || !strings.HasSuffix(t, "**") {
+		// 🔴 THE LENGTH BOUND IS SLICE ARITHMETIC, NOT A STYLE CHOICE. inner below
+		// is t[2:len(t)-2], so len(t) must be at least 4 or that slice is INVERTED
+		// and panics at runtime. "***" — the commonest markdown thematic break
+		// there is — has length 3 and satisfies BOTH HasPrefix("**") and
+		// HasSuffix("**"), because the prefix and the suffix OVERLAP. Weakening
+		// this bound does not mis-promote a heading; it crashes the command
+		// part-way through a vault-wide run, with whatever it had already written
+		// left in place.
+		if len(t) < 4 || !strings.HasPrefix(t, "**") || !strings.HasSuffix(t, "**") {
 			continue
 		}
-		inner := t[2 : len(t)-2]
+		inner := strings.TrimSpace(t[2 : len(t)-2])
+		// The colon test runs on the TRIMMED inner text: "**Acceptance criteria: **"
+		// is the same label as "**Acceptance criteria:**", and testing the untrimmed
+		// text lets one trailing space walk straight past the guard.
+		//
+		// The nested-marker test is what stops "**Note** and **Warning**" — a
+		// sentence with two bold runs, not a heading — from being promoted into the
+		// mangled heading "## Note** and **Warning".
 		if inner == "" || strings.Contains(inner, "**") || strings.HasSuffix(inner, ":") {
 			continue
 		}
