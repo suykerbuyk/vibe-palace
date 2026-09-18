@@ -339,12 +339,20 @@ func planBoardFieldsMigration(root, only string) (*boardFieldsPlanSet, error) {
 				// earlier directory also holds would send this write to the wrong
 				// file. Refuse rather than repair.
 				//
-				// 🔴 THE PURE PREDICATE, NOT THE PRINTING WRAPPER. This is a
-				// PLANNER: it takes no io.Writer and must not acquire one, which
-				// the plannerNoWrite ratchet exists to enforce. taskHeaderShadowed
-				// prints; taskHeaderShadowWinner is the same single walk without
-				// the printing, so the planner and the operator-facing line cannot
-				// disagree about which directory wins.
+				// 🔴 THE PURE PREDICATE, NOT THE PRINTING WRAPPER. This function
+				// has no io.Writer in its signature, so the printing wrapper is not
+				// callable here without widening it; taskHeaderShadowWinner is the
+				// same single walk without the printing, so the planner and the
+				// operator-facing line cannot disagree about which directory wins.
+				//
+				// 🔴 KEEPING THE PLANNER PRINT-FREE IS A CONVENTION, NOT AN
+				// ENFORCED PROPERTY, and an earlier version of this comment claimed
+				// otherwise. plannerNoWrite guards VAULT WRITES reachable from a
+				// planner — its table is atomicfile/os writes plus the storage
+				// writers — and nothing in the tree policies an io.Writer parameter
+				// or an fmt.Fprint from here. Widen this signature and add a print
+				// and the whole suite stays green. A real pin is its own unit; do
+				// not cite plannerNoWrite as if it were one.
 				//
 				// 🔴 THIS USED TO BE ACTIVE-ONLY, AND ITS OUTCOME WAS SAFE FOR THE
 				// WRONG REASON. A done/+cancelled/ pair with no active twin passed
