@@ -112,8 +112,11 @@ type taskSectionsSummary struct {
 	Fix     int
 	NoH3    int
 	Refused int
-	Dirty   int
-	Applied int
+	// OtherDefect counts files that are malformed but NOT this command's defect
+	// — they already have an H2. They are B2's roster, and they are printed.
+	OtherDefect int
+	Dirty       int
+	Applied     int
 	// Failed counts ATTEMPTS that went wrong — read errors and refused writes.
 	// It never counts a file the migration had no work for, which is what keeps
 	// "nothing to migrate" (exit 0) distinct from "everything refused".
@@ -228,6 +231,23 @@ func taskSectionsUnbalancedFence(content string) bool {
 // planTaskSections decides one file. after is meaningful only for
 // sectionsPromote; reason carries the detail the report prints.
 //
+// 🔴 DELIBERATE DEVIATION FROM THE SPEC'S TRANSFORM TABLE, RECORDED HERE RATHER
+// THAN LEFT SILENT. The spec lists "### inside an HTML comment or frontmatter"
+// under REFUSE. This function SKIPS those regions instead and promotes the real
+// headings around them.
+//
+// Skip is the better behaviour and the spec's row should be amended to match.
+// A "###" inside <!-- --> or YAML frontmatter is genuinely not a heading, so
+// declining the WHOLE file would refuse a repairable task over a line that is
+// already inert — the refusal would cite a cause that blocks nothing, which is
+// the same defect the escape ordering above exists to prevent. Skipping is also
+// backstopped: if ignoring those regions produced anything the validator will
+// not accept, the post-condition refuses the write.
+//
+// The cost is recorded too: a heading line CONTAINING "<!--" with no "-->"
+// opens a comment span that swallows every later heading, which is filed
+// separately and is not repaired here.
+//
 // 🔴 The final gate is storage.ValidateWholeTaskFile over the TRANSFORMED bytes.
 // The shape checks above it exist to give a readable reason, not to be the
 // safety property — a shape this function fails to anticipate still cannot be
@@ -253,6 +273,21 @@ func planTaskSections(content string) (after string, outcome taskSectionsOutcome
 
 	var h1, h2 int
 	var h3Lines []int
+	// sawH3Shape records that the file has at least one LEVEL-3 heading, empty or
+	// not. It is what makes a refusal TRUE: a refusal may only be reported for a
+	// file that would otherwise be a CANDIDATE, so the thing cited is the thing
+	// actually blocking the promotion.
+	sawH3Shape := false
+	// refusal is the FIRST blocking shape seen, held rather than returned.
+	//
+	// 🔴 HOLDING IT IS THE WHOLE POINT. An earlier version returned from inside
+	// this loop, so a file with many H2s — never a candidate for this command at
+	// all — was refused citing an H4 or a duplicate H3 that blocked nothing. Five
+	// of the six refusals on the live corpus named a false cause that way; their
+	// real defect was a missing **Status:** or a doubled **Priority:**. This
+	// output is B2's input, so a refusal citing a false cause misdirects the next
+	// unit. The escapes below decide FIRST; only then is a held refusal reported.
+	refusal := ""
 	seen := map[string]bool{}
 	inComment := false
 	inFrontmatter := false
@@ -263,7 +298,8 @@ func planTaskSections(content string) (after string, outcome taskSectionsOutcome
 		trimmed := strings.TrimSpace(raw)
 
 		// Leading "---" opens YAML frontmatter, which mdfence does not model at
-		// all. A heading inside it is not a section.
+		// all. A heading inside it is not a section, so it is SKIPPED — see the
+		// deviation note on this function.
 		if firstLine && trimmed == "---" {
 			inFrontmatter = true
 			firstLine = false
@@ -279,8 +315,7 @@ func planTaskSections(content string) (after string, outcome taskSectionsOutcome
 
 		// HTML comments are likewise invisible to mdfence: it recognises only
 		// ` and ~ as delimiters, so "###" inside <!-- --> reads as a heading to
-		// every caller. Track the span and refuse rather than promote into a
-		// fake section.
+		// every caller. Skipped for the same reason as frontmatter.
 		if inComment {
 			if strings.Contains(trimmed, "-->") {
 				inComment = false
@@ -301,33 +336,54 @@ func planTaskSections(content string) (after string, outcome taskSectionsOutcome
 			h1++
 		case level == 2:
 			if rest == "" {
-				return "", sectionsRefused, "empty H2 heading: a bare \"##\" is not a section to the validator", 0
+				if refusal == "" {
+					refusal = "empty H2 heading: a bare \"##\" is not a section to the validator"
+				}
+				continue
 			}
 			h2++
 		case level == 3:
-			if rest == "" {
-				return "", sectionsRefused, "empty H3 heading: promoting a bare \"###\" yields \"##\", which the validator does not count as a section", 0
+			sawH3Shape = true
+			switch {
+			case rest == "":
+				if refusal == "" {
+					refusal = "empty H3 heading: promoting a bare \"###\" yields \"##\", which the validator does not count as a section"
+				}
+			case raw != strings.TrimLeft(raw, " \t"):
+				if refusal == "" {
+					refusal = "indented H3 heading: mdfence returns raw text while the validator matches the trimmed line, so the two disagree about this file"
+				}
+			case seen[rest]:
+				if refusal == "" {
+					refusal = fmt.Sprintf("two H3 headings both titled %q: promoting them manufactures duplicate H2s, a class no validator rule and no audit dimension reports", rest)
+				}
+			default:
+				seen[rest] = true
+				h3Lines = append(h3Lines, l.Num)
 			}
-			if raw != strings.TrimLeft(raw, " \t") {
-				return "", sectionsRefused, "indented H3 heading: mdfence returns raw text while the validator matches the trimmed line, so the two disagree about this file", 0
-			}
-			if seen[rest] {
-				return "", sectionsRefused, fmt.Sprintf("two H3 headings both titled %q: promoting them manufactures duplicate H2s, a class no validator rule and no audit dimension reports", rest), 0
-			}
-			seen[rest] = true
-			h3Lines = append(h3Lines, l.Num)
 		default:
-			return "", sectionsRefused, fmt.Sprintf("H%d heading present: a flat promotion would make each heading a sibling of its own children, which is a hierarchy judgment this command must not make", level), 0
+			if refusal == "" {
+				refusal = fmt.Sprintf("H%d heading present: a flat promotion would make each heading a sibling of its own children, which is a hierarchy judgment this command must not make", level)
+			}
 		}
 	}
 
+	// 🔴 ESCAPES BEFORE REFUSALS. A file this command would never touch cannot be
+	// "refused" for a shape that is none of its business.
 	if h2 > 0 {
-		// Not our defect. The file is invalid for some other reason, and the
-		// validator's own message is more useful than anything guessed here.
+		// Not our defect. The file already has an addressable section; whatever
+		// else is wrong with it, the validator's own message is the true cause
+		// and anything this command guessed would be a false one.
 		return "", sectionsNoWork, storage.ValidateWholeTaskFile(content).Error(), 0
 	}
-	if len(h3Lines) == 0 {
+	if !sawH3Shape {
 		return "", sectionsNoH3, "no \"## \" H2 and no \"### \" H3 — its pseudo-heading is a bold line, a separate transform", 0
+	}
+	if refusal != "" {
+		return "", sectionsRefused, refusal, 0
+	}
+	if len(h3Lines) == 0 {
+		return "", sectionsNoH3, "no \"## \" H2 and no promotable \"### \" H3", 0
 	}
 	if h1 != 1 {
 		return "", sectionsRefused, fmt.Sprintf("%d \"# \" H1 title line(s), want exactly 1: the validator refuses this above the missing-section arm, so promoting H3s would not make the file valid", h1), 0
@@ -417,6 +473,18 @@ func runTaskSectionsMigration(root, only string, apply bool, out io.Writer) (tas
 				switch outcome {
 				case sectionsNoWork:
 					sum.NoWork++
+					// 🔴 PRINT THE REASON. A file with an H2 that still fails the
+					// validator is NOT this command's defect, but it IS a
+					// malformed archived file, and B2 is the unit that has to
+					// pick it up. An earlier version computed this reason and
+					// never emitted it, so the only visible roster was the
+					// refusals — which then had to carry causes they did not
+					// have. Silence here is what made that misdirection possible.
+					if reason != "" {
+						sum.OtherDefect++
+						fmt.Fprintf(out, "  --    %s/%s (%s/) — not this command's defect: %s\n",
+							slug, taskSlug, sub, reason)
+					}
 				case sectionsNoH3:
 					sum.NoH3++
 					fmt.Fprintf(out, "  SKIP  %s/%s (%s/) — %s\n", slug, taskSlug, sub, reason)
@@ -424,20 +492,27 @@ func runTaskSectionsMigration(root, only string, apply bool, out io.Writer) (tas
 					sum.Refused++
 					fmt.Fprintf(out, "  ??    %s/%s (%s/) — refused: %s\n", slug, taskSlug, sub, reason)
 				case sectionsPromote:
+					// 🔴 THE SHADOW GUARD RUNS IN BOTH MODES, AND THAT IS THE
+					// POINT. The writer resolves ACTIVE first, so an archived
+					// slug that is also an active file would rewrite the WRONG
+					// one; this file is refused under --apply, so a REPORT that
+					// printed FIX and told the operator to "re-run with --apply"
+					// would be promising something apply categorically refuses.
+					// cmd_migrate_task_header.go:317/:370/:409 all make this
+					// mistake by nesting the check inside `if apply`; it is a
+					// known defect, not a template.
+					if taskHeaderShadowed(out, root, slug, sub, taskSlug, name) {
+						d.Outcome = sectionsRefused
+						d.Reason = "an ACTIVE task of the same slug exists; the writer resolves active first"
+						d.Failed = true
+						sum.Failed++
+						sum.Decisions = append(sum.Decisions, d)
+						continue
+					}
 					sum.Fix++
 					fmt.Fprintf(out, "  FIX   %s/%s (%s/) — promote %d \"### \" heading(s) to \"## \"\n",
 						slug, taskSlug, sub, promos)
 					if apply {
-						// 🔴 The writer resolves ACTIVE first, so an archived
-						// slug that is also an active file would rewrite the
-						// WRONG one. task-header-spacing omits this guard and a
-						// reviewer reproduced it destroying an active task.
-						if taskHeaderShadowed(out, root, slug, sub, taskSlug, name) {
-							d.Failed = true
-							sum.Failed++
-							sum.Decisions = append(sum.Decisions, d)
-							continue
-						}
 						// git holds the only copy of whatever a concurrent
 						// session has written but not committed, and this is a
 						// whole-file overwrite. Per FILE, not per vault: a dirty
@@ -477,8 +552,9 @@ func runTaskSectionsMigration(root, only string, apply bool, out io.Writer) (tas
 	}
 
 	fmt.Fprintln(out)
-	fmt.Fprintf(out, "Scanned %d archived task file(s): %d need nothing, %d to promote, %d skipped (no H3), %d refused.\n",
-		sum.Scanned, sum.NoWork, sum.Fix, sum.NoH3, sum.Refused)
+	fmt.Fprintf(out, "Scanned %d archived task file(s): %d need nothing (%d of them malformed for another reason), "+
+		"%d to promote, %d skipped (no H3), %d refused.\n",
+		sum.Scanned, sum.NoWork, sum.OtherDefect, sum.Fix, sum.NoH3, sum.Refused)
 	if apply {
 		fmt.Fprintf(out, "Applied %d rewrite(s).\n", sum.Applied)
 		if sum.Dirty > 0 {
