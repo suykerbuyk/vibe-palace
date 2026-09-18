@@ -377,21 +377,34 @@ func runTaskStatusMigration(root, only string, apply bool, out io.Writer) (taskS
 					Project: slug, Slug: taskSlug, Dir: ad.dir,
 					Found: found, Want: ad.status,
 				}
-				fmt.Fprintf(out, "  FIX   %s/%s (%s/) — %q -> %q\n",
-					slug, taskSlug, ad.dir, found, ad.status)
-
 				// 🔴 OverwriteTaskFile resolves active -> done -> cancelled and
-				// returns the FIRST hit, so a slug that also exists in the
-				// active directory would send this write to the wrong file.
-				// Refuse rather than repair; a duplicated slug is its own defect.
-				if active := filepath.Join(root, "Projects", slug, "tasks", name); fileExists(active) {
-					fmt.Fprintf(out, "  !!    %s/%s: also present in tasks/ — refusing, the writer resolves active first\n",
-						slug, taskSlug)
+				// returns the FIRST hit, so a slug that an EARLIER directory also
+				// holds sends this write to the wrong file. Refuse rather than
+				// repair; a duplicated slug is its own defect.
+				//
+				// 🔴 THIS USED TO BE A HAND-INLINED ACTIVE-ONLY CHECK AND IT
+				// DESTROYED FILES. It tested only for an active twin, so a slug
+				// present in BOTH done/ and cancelled/ with no active twin passed
+				// it: repairing the cancelled/ copy resolved to the done/ one and
+				// replaced that file's ENTIRE BODY with the cancelled copy's,
+				// printing "Applied 2 rewrite(s)." and exiting 0. Reproduced on a
+				// scratch vault before this fix. The shared guard walks the
+				// resolver's own order and covers both shapes; calling it deletes
+				// the copy rather than adding one.
+				if taskHeaderShadowed(out, root, slug, ad.dir, taskSlug, name) {
 					plan.Failed = true
 					sum.Failed++
 					sum.Plans = append(sum.Plans, plan)
 					continue
 				}
+
+				// 🔴 PRINTED AFTER THE GUARD, NOT BEFORE. The FIX row is a promise
+				// that --apply will write this file, so it must not be printed for
+				// a file the very next check refuses. It used to print first, so a
+				// shadowed slug produced a FIX row and a refusal two lines apart
+				// and the operator had to reconcile them.
+				fmt.Fprintf(out, "  FIX   %s/%s (%s/) — %q -> %q\n",
+					slug, taskSlug, ad.dir, found, ad.status)
 
 				if apply {
 					// 🔴 THE PRECONDITION, AND IT IS ABOUT THIS ONE PATH. The repair

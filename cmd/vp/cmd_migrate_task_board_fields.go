@@ -175,6 +175,10 @@ type boardFieldsPlan struct {
 
 	NoWork        bool // the transform is a no-op: nothing to do for this file
 	ShadowRefused bool
+	// ShadowWinner is the directory the writer would resolve FIRST — "" for the
+	// active dir. Stored rather than re-derived so the rendered cause and the
+	// planner's decision come from one walk.
+	ShadowWinner  string
 	InvalidReason string // VALID before, INVALID after: a defect in this migration
 	BrokenReason  string // ALREADY invalid before this run touched it
 
@@ -331,11 +335,36 @@ func planBoardFieldsMigration(root, only string) (*boardFieldsPlanSet, error) {
 				plan := boardFieldsPlan{Project: proj, Slug: slug, Dir: sub, RelPath: rel}
 
 				// Shadow-slug guard: resolveTaskFile resolves active before done
-				// before cancelled, so an archived candidate whose slug also
-				// exists in the active directory would send this write to the
-				// wrong file. Refuse rather than repair.
-				if sub != "" && fileExists(filepath.Join(root, "Projects", proj, "tasks", name)) {
+				// before cancelled and returns the FIRST hit, so a candidate an
+				// earlier directory also holds would send this write to the wrong
+				// file. Refuse rather than repair.
+				//
+				// 🔴 THE PURE PREDICATE, NOT THE PRINTING WRAPPER. This function
+				// has no io.Writer in its signature, so the printing wrapper is not
+				// callable here without widening it; taskHeaderShadowWinner is the
+				// same single walk without the printing, so the planner and the
+				// operator-facing line cannot disagree about which directory wins.
+				//
+				// 🔴 KEEPING THE PLANNER PRINT-FREE IS A CONVENTION, NOT AN
+				// ENFORCED PROPERTY, and an earlier version of this comment claimed
+				// otherwise. plannerNoWrite guards VAULT WRITES reachable from a
+				// planner — its table is atomicfile/os writes plus the storage
+				// writers — and nothing in the tree policies an io.Writer parameter
+				// or an fmt.Fprint from here. Widen this signature and add a print
+				// and the whole suite stays green. A real pin is its own unit; do
+				// not cite plannerNoWrite as if it were one.
+				//
+				// 🔴 THIS USED TO BE ACTIVE-ONLY, AND ITS OUTCOME WAS SAFE FOR THE
+				// WRONG REASON. A done/+cancelled/ pair with no active twin passed
+				// planning, and the write was then refused downstream by
+				// ApplyTaskMigrationFields' WantSHA256 compare — which reports a
+				// HASH MISMATCH. The operator was told the file changed under the
+				// plan. It had not; the plan had resolved to a different file.
+				// Naming the shadow here puts the CAS back to catching what it is
+				// for.
+				if winner, shadowed := taskHeaderShadowWinner(root, proj, sub, name); shadowed {
 					plan.ShadowRefused = true
+					plan.ShadowWinner = winner
 					ps.Refusals++
 					ps.Plans = append(ps.Plans, plan)
 					continue
@@ -482,9 +511,14 @@ func printBoardFieldsPlan(out io.Writer, ps *boardFieldsPlanSet, apply bool) {
 
 	for _, p := range ps.Plans {
 		switch {
-		case p.ShadowRefused:
+		case p.ShadowRefused && p.ShadowWinner == "":
 			fmt.Fprintf(out, "  !!    %s/%s: also present in tasks/ (%s) — refusing, the writer resolves active first\n",
 				p.Project, p.Slug, boardFieldsRelPath(p.Project, "", p.Slug+".md"))
+		case p.ShadowRefused:
+			fmt.Fprintf(out, "  !!    %s/%s (%s/): the same slug also exists in tasks/%s/ (%s) — refusing, "+
+				"the writer resolves %s before %s\n",
+				p.Project, p.Slug, p.Dir, p.ShadowWinner,
+				boardFieldsRelPath(p.Project, p.ShadowWinner, p.Slug+".md"), p.ShadowWinner, p.Dir)
 		case p.InvalidReason != "":
 			fmt.Fprintf(out, "  !!    %s/%s (%s/): this migration would BREAK this file — %s\n",
 				p.Project, p.Slug, p.Dir, p.InvalidReason)

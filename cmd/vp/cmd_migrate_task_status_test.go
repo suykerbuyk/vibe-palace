@@ -636,3 +636,197 @@ func TestMigrateTaskStatusRollbackOmitsAnUntrackedStamp(t *testing.T) {
 		t.Errorf("the rollback did not restore the task file:\n%s", got)
 	}
 }
+
+// TestMigrateTaskStatusRefusesAShadowedArchivedPairAndDestroysNothing is this
+// unit's defining assertion, and it asserts BYTES.
+//
+// 🔴 THE SUITE ALREADY BUILT THIS SHAPE AND COULD NOT SEE IT, FOR TWO
+// INDEPENDENT REASONS, AND FIXING EITHER ALONE WOULD STILL LEAVE IT BLIND.
+// TestRepairPopulationMatchesTheDetector is the only test that seeds a shadowed
+// done/+cancelled/ pair (`oddcase`), and BOTH halves carry wantFix:false -- they
+// are the deliberately-CLEAN oddly-cased fixtures, so neither is ever written and
+// the mis-resolution never occurs. Meanwhile the file that IS repaired in that
+// table has no twin in that vault. And that test compares PLAN SETS, not bytes,
+// in report mode -- so even repositioned it could not observe a write landing on
+// the wrong file. The fixtures build the dangerous shape and the dangerous
+// condition in the same file, on the same two slug names, and never in the same
+// vault. Nobody erred; the halves were split across fixtures each correct for its
+// own purpose.
+//
+// 🔴 ASSERTING THE STATUS PROPERTY IS THE TRAP. Before the guard, this run
+// replaced done/pair.md's ENTIRE BODY with cancelled/pair.md's and printed
+// "Applied 2 rewrite(s)." at exit 0. Both variants were MEASURED against that
+// break, and they do not agree:
+//
+//   - asserting IsTerminalStatus(done/'s status)  -> PASSES on the destroyed file
+//   - asserting the literal "**Status:** done"    -> fails, and catches it
+//
+// The property assertion is the one a reviewer accepts as sufficient, and it is
+// the one that goes green: the mis-resolved write does set a valid terminal
+// status, just on the wrong file and after replacing its body.
+//
+// 🔴 DO NOT ADD THAT THE LITERAL "ONLY CATCHES IT BY LUCK". That sentence was
+// here and is DELETED, not softened: it is not constructible for this command.
+// archiveDirs is a fixed two-entry literal and a shadow requires two DIFFERENT
+// directories, so the two selected files always carry different targets and the
+// literal always catches it. The reversed-order route fails too -- after the
+// first mis-resolution the file already reads "cancelled", which IsTerminalStatus
+// accepts, so the scan skips it.
+//
+// This block exists to stop someone re-weakening the assertion below, which
+// makes it the one place a stale claim does real damage.
+//
+// The assertion is on BYTES because the PROPERTY form goes green. The bodies
+// below are distinguishable for exactly that reason.
+func TestMigrateTaskStatusRefusesAShadowedArchivedPairAndDestroysNothing(t *testing.T) {
+	root := tsVault(t)
+	// 🔴 THE TWO FILES DIFFER IN EVERY FIELD A WHOLE-FILE REPLACEMENT WOULD CARRY:
+	// body AND Priority, not just Status. The destroyed file gets the wrong
+	// Priority and the wrong body as well as the wrong status, and an assertion
+	// naming only the status is how the weak form creeps back in.
+	doneBody := "# T\n\n**Status:** retired\n**Priority:** high\n\n## Context\n\nI am the DONE copy.\n"
+	cancBody := "# T\n\n**Status:** retired\n**Priority:** low\n\n## Context\n\nI am the CANCELLED copy.\n"
+	// 🔴 ANTI-VACUITY. The byte assertions below are only meaningful while the two
+	// fixtures are distinguishable. Give them the same body and the mis-resolved
+	// write still happens -- Applied = 2, done/ ends up **Status:** cancelled --
+	// but both halves of the byte check go inert, and the test then goes red only
+	// via Failed and the refusal message: passing for exactly the reason the
+	// comment above rejects, with the assertion it calls "the check" doing
+	// nothing.
+	if doneBody == cancBody {
+		t.Fatal("the two fixtures must differ in body: identical bodies make every byte " +
+			"assertion in this test vacuous while the defect still reproduces")
+	}
+	donePath := tsWrite(t, root, "Projects/proj/tasks/done/pair.md", doneBody)
+	cancPath := tsWrite(t, root, "Projects/proj/tasks/cancelled/pair.md", cancBody)
+	tsGitInit(t, root)
+
+	var out bytes.Buffer
+	sum, err := runTaskStatusMigration(root, "proj", true, &out)
+	if err != nil {
+		t.Fatalf("runTaskStatusMigration: %v", err)
+	}
+
+	// --- the refusal names the real cause -----------------------------------
+	if sum.Failed != 1 {
+		t.Errorf("Failed = %d, want 1 (the shadowed cancelled/ copy); out:\n%s", sum.Failed, out.String())
+	}
+	if !strings.Contains(out.String(), "the same slug also exists in tasks/done/") {
+		t.Errorf("the refusal must name the shadowed pair and the resolver order; out:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "an ACTIVE task of the same slug exists") {
+		t.Errorf("the refusal blamed an ACTIVE twin that does not exist -- false cause; out:\n%s", out.String())
+	}
+
+	// --- leg 1: the SHADOWED file is refused, byte-identical ------------------
+	if got := tsRead(t, cancPath); got != cancBody {
+		t.Fatalf("the refused cancelled/ copy was written:\n%s", got)
+	}
+
+	// --- leg 2: the RESOLVER-WINNING file is REPAIRED, and keeps its OWN -----
+	// 🔴 done/ IS NAMED EXPLICITLY, AND SO ARE ITS FIELDS. It is the file the
+	// destruction lands on, and leg 1 alone is GREEN ON A DESTROYED VAULT --
+	// measured: with the guard removed, cancelled/pair.md is byte-identical to
+	// its seed while done/pair.md has been replaced wholesale.
+	done := tsRead(t, donePath)
+	if !strings.Contains(done, "**Status:** done") {
+		t.Errorf("done/ was not repaired to its own directory's terminal value:\n%s", done)
+	}
+	if !strings.Contains(done, "**Priority:** high") {
+		t.Errorf("done/ lost its OWN Priority -- a whole-file replacement carries the "+
+			"shadow's Priority too:\n%s", done)
+	}
+	if !strings.Contains(done, "I am the DONE copy.") {
+		t.Errorf("done/ lost its OWN body -- this is the destruction this unit exists to "+
+			"prevent:\n%s", done)
+	}
+
+	// --- leg 3: neither file received the OTHER's content --------------------
+	if strings.Contains(done, "I am the CANCELLED copy.") || strings.Contains(done, "**Priority:** low") {
+		t.Fatalf("done/ received the cancelled/ copy's content:\n%s", done)
+	}
+	if got := tsRead(t, cancPath); strings.Contains(got, "I am the DONE copy.") {
+		t.Fatalf("cancelled/ received the done/ copy's content:\n%s", got)
+	}
+}
+
+// TestMigrateTaskStatusStillRepairsAnUnshadowedArchivedFile is the over-refusal
+// check, and a SEPARATE test rather than a branch of the one above: an
+// over-broad guard would refuse the entire population and a branch inside the
+// refusal test would be deleted along with it.
+func TestMigrateTaskStatusStillRepairsAnUnshadowedArchivedFile(t *testing.T) {
+	root := tsVault(t)
+	p := tsWrite(t, root, "Projects/proj/tasks/done/lonely.md",
+		"# T\n\n**Status:** retired\n**Priority:** medium\n\n## Context\n\nBody.\n")
+	tsGitInit(t, root)
+
+	var out bytes.Buffer
+	sum, err := runTaskStatusMigration(root, "proj", true, &out)
+	if err != nil {
+		t.Fatalf("runTaskStatusMigration: %v", err)
+	}
+	if sum.Failed != 0 {
+		t.Fatalf("Failed = %d on a file with no twin anywhere; out:\n%s", sum.Failed, out.String())
+	}
+	if !strings.Contains(tsRead(t, p), "**Status:** done") {
+		t.Errorf("an unshadowed archived file was not repaired:\n%s", tsRead(t, p))
+	}
+}
+
+// TestMigrateTaskStatusReportDoesNotPromiseAFixItWillRefuse pins the FIX row's
+// position relative to the shadow guard.
+//
+// 🔴 A FIX ROW IS A PROMISE --apply WILL WRITE THAT FILE. This command used to
+// print it before the guard ran, so a shadowed slug produced a FIX row and a
+// refusal two lines apart and the operator had to reconcile them. Moving the
+// print below the guard was a deliberate change with no assertion behind it --
+// a reviewer moved it back and nothing went red -- which made it a preference
+// rather than a pinned behaviour. This is that assertion.
+//
+// Same class as TestMigrateTaskHeaderReportAndApplyAgree in the Both-merge unit.
+func TestMigrateTaskStatusReportDoesNotPromiseAFixItWillRefuse(t *testing.T) {
+	seed := func(t *testing.T) string {
+		root := tsVault(t)
+		// Shadowed pair: done/ is repairable, cancelled/ is refused.
+		tsWrite(t, root, "Projects/proj/tasks/done/pair.md",
+			"# T\n\n**Status:** retired\n**Priority:** high\n\n## Context\n\nDONE.\n")
+		tsWrite(t, root, "Projects/proj/tasks/cancelled/pair.md",
+			"# T\n\n**Status:** retired\n**Priority:** low\n\n## Context\n\nCANCELLED.\n")
+		tsGitInit(t, root)
+		return root
+	}
+
+	var report bytes.Buffer
+	if _, err := runTaskStatusMigration(seed(t), "proj", false, &report); err != nil {
+		t.Fatalf("report run: %v", err)
+	}
+	var applied bytes.Buffer
+	asum, err := runTaskStatusMigration(seed(t), "proj", true, &applied)
+	if err != nil {
+		t.Fatalf("apply run: %v", err)
+	}
+
+	// 🔴 FLOOR FIRST. "FIX count == Applied" is 0 == 0 for a command that selected
+	// NOTHING, so without this the test passes vacuously -- proven by making the
+	// guard refuse everything and watching it stay green. This unit exists because
+	// a defect hid behind tests that could not fail; its own tests must be able to.
+	// TestMigrateTaskHeaderReportAndApplyAgree carries the same precondition.
+	if asum.Applied != 1 {
+		t.Fatalf("Applied = %d, want 1 (the repairable done/ copy) -- without a nonzero floor "+
+			"the comparison below is 0 == 0 and cannot fail; out:\n%s", asum.Applied, applied.String())
+	}
+
+	// Every FIX row the report printed must be a file --apply actually wrote.
+	if got := strings.Count(report.String(), "  FIX   "); got != asum.Applied {
+		t.Errorf("report printed %d FIX row(s) but --apply wrote %d file(s); a FIX row is a "+
+			"promise the apply must honour\nreport:\n%s\napply:\n%s",
+			got, asum.Applied, report.String(), applied.String())
+	}
+	// And specifically: no FIX row for the file the guard refuses.
+	for _, line := range strings.Split(report.String(), "\n") {
+		if strings.Contains(line, "FIX") && strings.Contains(line, "cancelled/") {
+			t.Errorf("report promised a FIX for the shadowed cancelled/ copy, which --apply "+
+				"refuses:\n%s", report.String())
+		}
+	}
+}

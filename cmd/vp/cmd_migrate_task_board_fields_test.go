@@ -1302,3 +1302,45 @@ func TestBoardFieldsReportRowDistinguishesTransitionFromNoChange(t *testing.T) {
 		t.Errorf("a row with no Status change must carry no Status clause and no sentinel:\n%s", stays)
 	}
 }
+
+// TestBoardFieldsNamesTheShadowedPairRatherThanAHashMismatch is a TRUTH fix, not
+// a safety fix. The outcome was already safe; the reported cause was false.
+//
+// 🔴 THE OLD GUARD WAS ACTIVE-ONLY, SO A done/+cancelled/ PAIR PASSED PLANNING,
+// and the write was then refused downstream by ApplyTaskMigrationFields'
+// WantSHA256 compare -- which reports a HASH MISMATCH. The operator was told the
+// file changed under the plan. It had not; the plan had resolved to a different
+// file, and anyone diagnosing it was sent to the wrong place. Naming the shadow
+// in the planner puts the CAS back to catching what it is for.
+//
+// The planner has no io.Writer in its signature, so it calls the PURE predicate
+// and the renderer prints the cause. Keeping it print-free is a CONVENTION:
+// plannerNoWrite guards vault writes, not printing, and nothing goes red if the
+// signature is widened and a print added.
+func TestBoardFieldsNamesTheShadowedPairRatherThanAHashMismatch(t *testing.T) {
+	root := bfVault(t, "p")
+	bfWriteTask(t, root, "p", "done", "pair", "Pair", "done", "")
+	bfWriteTask(t, root, "p", "cancelled", "pair", "Pair", "cancelled", "")
+	bfCommit(t, root, "seed", time.Now())
+
+	var buf bytes.Buffer
+	ps, err := runTaskBoardFieldsMigration(root, "", false, &buf)
+	if err != nil {
+		t.Fatalf("runTaskBoardFieldsMigration: %v", err)
+	}
+	if ps.Refusals == 0 {
+		t.Fatalf("the shadowed cancelled/ copy was not refused at plan time; out:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "the same slug also exists in tasks/done/") {
+		t.Errorf("the refusal must NAME the shadowed pair; out:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "resolves active first") {
+		t.Errorf("blamed an ACTIVE twin that does not exist -- the false cause this test exists to "+
+			"prevent; out:\n%s", buf.String())
+	}
+	// And it must not be the hash that catches it: a SHA mismatch reported for a
+	// shadowed pair is a true refusal with a false reason.
+	if strings.Contains(strings.ToLower(buf.String()), "sha256") {
+		t.Errorf("a hash mismatch was reported for a shadowed pair; out:\n%s", buf.String())
+	}
+}
