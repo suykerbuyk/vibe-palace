@@ -82,12 +82,6 @@ const (
 	// shapeDupTitle: more than one unfenced "# " H1. The extras are body sections
 	// written at the wrong level; they demote FLAT.
 	shapeDupTitle
-	// shapeDupTitleRelocate: both defects in one file — extra titles AND prose
-	// wedged into the header field run. Neither half alone validates.
-	shapeDupTitleRelocate
-	// shapeRelocate: prose wedged into the header field run, marooning a field
-	// outside the contiguous block.
-	shapeRelocate
 	// shapeFence: a code-fence delimiter with prose glued onto it, which can
 	// neither open a fence nor close one.
 	shapeFence
@@ -104,10 +98,6 @@ func (c taskHeaderShapeClass) String() string {
 		return "relabel-status"
 	case shapeDupTitle:
 		return "demote-extra-titles"
-	case shapeDupTitleRelocate:
-		return "demote-extra-titles+relocate-prose"
-	case shapeRelocate:
-		return "relocate-prose"
 	case shapeFence:
 		return "split-glued-fence"
 	case shapeInsertRelocate:
@@ -143,12 +133,10 @@ const (
 // through the same resolveTaskFile; the archived refusal lives at the CLI and MCP
 // layers. `migrate task-header` writes into done/ through the strict seam today.
 var taskHeaderShapeSeamFor = map[taskHeaderShapeClass]taskHeaderShapeSeam{
-	shapeRelabelPriority:  seamStrict,
-	shapeRelabelStatus:    seamStrict,
-	shapeDupTitle:         seamStrict,
-	shapeDupTitleRelocate: seamStrict,
-	shapeRelocate:         seamStrict,
-	shapeFence:            seamStrict,
+	shapeRelabelPriority: seamStrict,
+	shapeRelabelStatus:   seamStrict,
+	shapeDupTitle:        seamStrict,
+	shapeFence:           seamStrict,
 	// 🔴 THE ONLY PERMISSIVE CLASS, and the reason the seam is a table rather than
 	// a constant. This repair moves meta.Priority from absent to present, which is
 	// exactly what refuseHeaderChange refuses — set_meta owns that field. Every
@@ -164,8 +152,6 @@ var taskHeaderShapeWritingClasses = []taskHeaderShapeClass{
 	shapeRelabelPriority,
 	shapeRelabelStatus,
 	shapeDupTitle,
-	shapeDupTitleRelocate,
-	shapeRelocate,
 	shapeFence,
 	shapeInsertRelocate,
 }
@@ -292,19 +278,41 @@ func planTaskHeaderShape(content string) (after string, class taskHeaderShapeCla
 		// prose also splits the header field run. Re-validate after the first
 		// transform rather than assuming one fix per file, and let the class name
 		// what was actually done.
+		// 🔴 FIRST FAILURE IS NOT ONLY FAILURE. Demoting the extra titles is the
+		// whole repair for one corpus file and only half of it for another, where
+		// prose also splits the header field run. The second half is a REFUSAL,
+		// not a transform — so when the demotion leaves the file invalid, name the
+		// wedge rather than reporting that the demotion "did not work". A refusal
+		// that cites the wrong cause misdirects whoever consumes the roster.
 		class = shapeDupTitle
 		repaired, rerr = storage.RepairExtraTitles(content)
 		if rerr == nil && storage.ValidateWholeTaskFile(repaired) != nil {
-			var second string
-			second, rerr = storage.RepairInterleavedHeaderProse(repaired)
-			if rerr == nil {
-				repaired, class = second, shapeDupTitleRelocate
+			if w := storage.HeaderRunProseWedges(repaired); len(w) > 0 {
+				return "", shapeNoWork, fmt.Sprintf("prose wedged into the header field run at line(s) %v "+
+					"(after demoting the extra titles) — indistinguishable from a wrapped field value's "+
+					"continuation, so relocating it could silently re-attribute that value; this file "+
+					"needs a reviewed hand edit", w)
 			}
 		}
 
 	case strings.Contains(verr.Error(), "malformed header block"):
-		class = shapeRelocate
-		repaired, rerr = storage.RepairInterleavedHeaderProse(content)
+		// 🔴 REFUSED DETERMINISTICALLY, AT ANY WEDGE COUNT. A non-field line inside
+		// the field run is either interleaved prose or the CONTINUATION of a
+		// wrapped field value, and nothing in the bytes tells them apart. Moving a
+		// continuation strands the remainder of one field's value directly beneath
+		// a different field, where it reads as that field's value — a file that
+		// PASSES the whole-file validator while mis-attributing a value, which no
+		// validator, audit dimension or test reports.
+		//
+		// The only available discriminator is semantic, and a capitalisation or
+		// punctuation heuristic for it would encode a reading as a rule. These
+		// files are hand-edited; this refusal is the repeatable, testable half.
+		if w := storage.HeaderRunProseWedges(content); len(w) > 0 {
+			return "", shapeNoWork, fmt.Sprintf("prose wedged into the header field run at line(s) %v — "+
+				"indistinguishable from a wrapped field value's continuation, so relocating it could "+
+				"silently re-attribute that value; this file needs a reviewed hand edit", w)
+		}
+		return "", shapeNoWork, verr.Error()
 
 	case strings.Contains(verr.Error(), "unterminated code fence"):
 		class = shapeFence

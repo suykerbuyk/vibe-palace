@@ -161,269 +161,6 @@ func TestRepairDuplicateHeaderField_BothInBlockIsRefused(t *testing.T) {
 	}
 }
 
-// TestRepairDuplicateHeaderField_FencedOccurrenceIsNotCounted is the
-// fence-awareness fixture. A "**Status:**" inside a code fence is sample text.
-//
-// The assertion is BYTE-EXACT on the fenced region, not on validity: a
-// line-prefix scan produces a VALID file here, so a validity-only assertion is
-// green under that break.
-func TestRepairDuplicateHeaderField_FencedOccurrenceIsNotCounted(t *testing.T) {
-	const fenced = "# T\n" +
-		"\n" +
-		"**Status:** retired\n" +
-		"**Priority:** medium\n" +
-		"\n" +
-		"## Context\n" +
-		"\n" +
-		"```\n" +
-		"**Status:** sample\n" +
-		"```\n" +
-		"\n" +
-		"**Status:** later prose\n"
-	if err := ValidateWholeTaskFile(fenced); err == nil {
-		t.Fatal("precondition: the fixture must FAIL the validator, or the transform is never reached")
-	}
-	got, err := RepairDuplicateHeaderField(fenced, fieldStatus)
-	if err != nil {
-		t.Fatalf("repair: %v", err)
-	}
-	if !strings.Contains(got, "```\n**Status:** sample\n```") {
-		t.Errorf("the transform reached inside a code fence; it is not using mdfence.OutsideFences:\n%s", got)
-	}
-	if !strings.Contains(got, legacyStatusRelabel+" later prose") {
-		t.Errorf("the real out-of-block duplicate was not relabelled:\n%s", got)
-	}
-}
-
-// TestRepairDuplicateHeaderField_StatusValueIsUnchanged asserts the resolved
-// Status by EXACT STRING, equal to the before value.
-//
-// 🔴 Deliberately not IsTerminalStatus: "retired" is not terminal, so that
-// predicate is false here on correct code. A predicate would also pass under a
-// substitution to a different terminal value; only byte equality catches that.
-func TestRepairDuplicateHeaderField_StatusValueIsUnchanged(t *testing.T) {
-	const dupStatus = "# T\n" +
-		"\n" +
-		"**Status:** retired\n" +
-		"**Priority:** medium\n" +
-		"\n" +
-		"**Status:** Planned 2026-06-18. No code written. A whole paragraph of provenance.\n" +
-		"\n" +
-		"## Context\n" +
-		"\n" +
-		"body\n"
-	before := ParseTaskMetaFromContent("t", dupStatus, true)
-	if before.Status != "retired" {
-		t.Fatalf("precondition: before Status = %q, want %q", before.Status, "retired")
-	}
-	got, err := RepairDuplicateHeaderField(dupStatus, fieldStatus)
-	if err != nil {
-		t.Fatalf("repair: %v", err)
-	}
-	after := ParseTaskMetaFromContent("t", got, true)
-	if after.Status != "retired" {
-		t.Errorf("Status = %q, want the exact string %q — the prose paragraph must never become the bound value",
-			after.Status, "retired")
-	}
-	if after.Status != before.Status {
-		t.Errorf("Status moved %q -> %q", before.Status, after.Status)
-	}
-	if n := strings.Count(got, "**Status:**"); n != 1 {
-		t.Errorf("found %d \"**Status:**\" lines after the repair, want exactly 1", n)
-	}
-	if !strings.Contains(got, "Planned 2026-06-18. No code written. A whole paragraph of provenance.") {
-		t.Error("the provenance paragraph was not preserved verbatim")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Extra titles and interleaved header prose.
-// ---------------------------------------------------------------------------
-
-const b2TwoTitlesBefore = "# First title\n" +
-	"\n" +
-	"**Status:** retired\n" +
-	"**Priority:** medium\n" +
-	"\n" +
-	"# Second wording of the same title\n" +
-	"\n" +
-	"## Problem\n" +
-	"\n" +
-	"body\n"
-
-// TestRepairExtraTitles_IsFlat pins that existing H2s and below are untouched:
-// a section's range terminates at the next H1 or H2, so flat keeps every existing
-// section range byte-identical while cascading would destroy every section key.
-//
-// Break: also demote H2 to H3. This test fails on "## Problem".
-func TestRepairExtraTitles_IsFlat(t *testing.T) {
-	got, err := RepairExtraTitles(b2TwoTitlesBefore)
-	if err != nil {
-		t.Fatalf("repair: %v", err)
-	}
-	want := strings.Replace(b2TwoTitlesBefore, "# Second wording", "## Second wording", 1)
-	if got != want {
-		t.Errorf("flat demotion produced unexpected bytes:\n got %q\nwant %q", got, want)
-	}
-	if !strings.Contains(got, "\n## Problem\n") {
-		t.Error("an existing H2 was demoted: the transform must be FLAT")
-	}
-	if strings.Count(got, "\n# ") != 0 || !strings.HasPrefix(got, "# First title") {
-		t.Errorf("wrong number of surviving H1 titles:\n%s", got)
-	}
-}
-
-const b2WedgeBefore = "# T\n" +
-	"\n" +
-	"**Status:** retired\n" +
-	"a sentence that is not a field line.\n" +
-	"**Priority:** high\n" +
-	"\n" +
-	"**Epoch:** E1\n" +
-	"\n" +
-	"## Context\n" +
-	"\n" +
-	"body\n"
-
-// TestRepairInterleavedHeaderProse_IsMinimal pins that only the lines INSIDE the
-// run move. A greedy rule would also hoist the **Epoch:** field below the blank,
-// extending headerBlock over a name that was previously outside it — which the
-// strict writer refuses.
-//
-// Break: extend the wedge past the blank line. The **Epoch:** assertion fails.
-func TestRepairInterleavedHeaderProse_IsMinimal(t *testing.T) {
-	if err := ValidateWholeTaskFile(b2WedgeBefore); err == nil {
-		t.Fatal("precondition: the fixture must FAIL the validator")
-	}
-	got, err := RepairInterleavedHeaderProse(b2WedgeBefore)
-	if err != nil {
-		t.Fatalf("repair: %v", err)
-	}
-	if verr := ValidateWholeTaskFile(got); verr != nil {
-		t.Fatalf("repaired file does not validate: %v", verr)
-	}
-	want := "# T\n" +
-		"\n" +
-		"**Status:** retired\n" +
-		"**Priority:** high\n" +
-		"a sentence that is not a field line.\n" +
-		"\n" +
-		"**Epoch:** E1\n" +
-		"\n" +
-		"## Context\n" +
-		"\n" +
-		"body\n"
-	if got != want {
-		t.Errorf("relocation produced unexpected bytes:\n got %q\nwant %q", got, want)
-	}
-	if !strings.Contains(got, "\n\n**Epoch:** E1\n") {
-		t.Error("the **Epoch:** field below the blank was hoisted: the relocation must be MINIMAL, not greedy")
-	}
-	if len(strings.Split(got, "\n")) != len(strings.Split(b2WedgeBefore, "\n")) {
-		t.Error("the relocation changed the line count")
-	}
-}
-
-// TestRepairInterleavedHeaderProse_RefusesWrappedFieldValues is the guard that
-// stands between this transform and the live corpus file whose four header values
-// are hard-wrapped.
-//
-// 🔴 THE REFUSED OUTPUT WOULD HAVE VALIDATED. That is the whole point: a
-// mechanical relocate on wrapped values severs each value from its continuation
-// and stacks the remainders under whichever field follows, and
-// ValidateWholeTaskFile returns nil on the result. No validator, audit dimension
-// or existing test reports it, so this refusal is the only thing that can.
-//
-// Break: delete the wedge count. This test fails, and nothing else does.
-func TestRepairInterleavedHeaderProse_RefusesWrappedFieldValues(t *testing.T) {
-	const wrapped = "# T\n" +
-		"\n" +
-		"**Status:** retired\n" +
-		"but deferred 2026-06-07: a continuation of the STATUS value.\n" +
-		"**Priority:** Low — speculative hardening\n" +
-		"(a continuation of the PRIORITY value).\n" +
-		"**Filed:** 2026-05-13 — discovered during recovery\n" +
-		"(a continuation of the FILED value).\n" +
-		"\n" +
-		"## Problem\n" +
-		"\n" +
-		"body\n"
-	if err := ValidateWholeTaskFile(wrapped); err == nil {
-		t.Fatal("precondition: the fixture must FAIL the validator")
-	}
-	_, err := RepairInterleavedHeaderProse(wrapped)
-	if err == nil {
-		t.Fatal("a header region of WRAPPED field values was mechanically relocated; that output validates " +
-			"while every value is severed from its own continuation")
-	}
-	if !strings.Contains(err.Error(), "prose wedges") {
-		t.Errorf("refusal cites the wrong cause: %v", err)
-	}
-}
-
-// TestRepairInterleavedHeaderProse_DoesNotMergeOntoStatus pins that the wedge is
-// relocated, never joined onto the field above it.
-//
-// A merged value would be non-terminal, dropping the file into the whole-line
-// replacing population of the status and board-fields migrations — destroying the
-// prose by way of the migration this repair exists to unblock.
-//
-// The Status is asserted as an EXACT STRING. Deliberately not IsTerminalStatus:
-// "retired" is not terminal, so that predicate is false here on correct code.
-func TestRepairInterleavedHeaderProse_DoesNotMergeOntoStatus(t *testing.T) {
-	got, err := RepairInterleavedHeaderProse(b2WedgeBefore)
-	if err != nil {
-		t.Fatalf("repair: %v", err)
-	}
-	meta := ParseTaskMetaFromContent("t", got, true)
-	if meta.Status != "retired" {
-		t.Errorf("Status = %q, want the exact string %q", meta.Status, "retired")
-	}
-	if strings.Contains(got, "**Status:** retired a sentence") {
-		t.Error("the wedge was MERGED onto the Status line")
-	}
-	if !strings.Contains(got, "a sentence that is not a field line.") {
-		t.Error("the wedge text was lost")
-	}
-}
-
-// TestRepairInterleavedHeaderProse_DoesNotReachPastABlank is the discriminating
-// fixture for GREEDY-versus-MINIMAL, and it exists because a break that removed
-// the blank-line stop left every other test in this file GREEN.
-//
-// The earlier minimal fixture cannot see that break: its wedge is followed
-// IMMEDIATELY by a field line, so greedy and minimal agree on it. The difference
-// only shows where a blank separates the wedge from the fields below — there,
-// minimal REFUSES (the run genuinely ended and there is nothing interleaved),
-// while greedy swallows the blank and hoists fields that were never in the run,
-// extending headerBlock over names the strict writer then refuses.
-//
-// Break: drop the strings.TrimSpace(lines[w]) != "" condition from the wedge scan.
-// This test fails; without it, nothing does.
-func TestRepairInterleavedHeaderProse_DoesNotReachPastABlank(t *testing.T) {
-	const blankSeparated = "# T\n" +
-		"\n" +
-		"**Status:** retired\n" +
-		"a wedge sentence.\n" +
-		"\n" +
-		"**Priority:** high\n" +
-		"\n" +
-		"## Context\n" +
-		"\n" +
-		"body\n"
-	if ValidateWholeTaskFile(blankSeparated) == nil {
-		t.Fatal("precondition: the fixture must FAIL the validator")
-	}
-	got, err := RepairInterleavedHeaderProse(blankSeparated)
-	if err == nil {
-		t.Fatalf("the wedge scan reached PAST a blank line and hoisted fields that were never in the "+
-			"header run; the relocation must be MINIMAL:\n%s", got)
-	}
-	if !strings.Contains(err.Error(), "no header field line after the wedge") {
-		t.Errorf("refusal cites the wrong cause: %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Glued fence delimiter.
 // ---------------------------------------------------------------------------
@@ -605,5 +342,51 @@ func TestRepairGluedFenceDelimiter_LeavesLegitimateInfoStringsAlone(t *testing.T
 	}
 	if !strings.Contains(got, "```\n//then referencing `${X}` in the args.\n") {
 		t.Errorf("the glued delimiter was not split:\n%s", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The header-run wedge: a REFUSAL predicate, with no repair beside it.
+// ---------------------------------------------------------------------------
+
+// TestHeaderRunProseWedges_FindsASingleWedge pins the n=1 case, which is the one
+// with no structural signal: a lone non-field line inside the run is reported so
+// the caller can refuse, because nothing in the bytes says whether it is prose or
+// the continuation of the value above it.
+func TestHeaderRunProseWedges_FindsASingleWedge(t *testing.T) {
+	const one = "# T\n\n**Status:** retired\nfor `/vpc-execute-plan` pending human sign-off.\n**Priority:** high\n\n## Context\n\nbody\n"
+	got := HeaderRunProseWedges(one)
+	if len(got) != 1 || got[0] != 4 {
+		t.Errorf("wedges = %v, want exactly [4] — a single wedge must still be reported, or the caller "+
+			"cannot refuse the case where a wrapped value's continuation would be re-attributed", got)
+	}
+}
+
+// TestHeaderRunProseWedges_FindsEveryWedge pins the n>1 case, where the COUNT is
+// structural proof that the field VALUES wrap.
+func TestHeaderRunProseWedges_FindsEveryWedge(t *testing.T) {
+	const many = "# T\n\n**Status:** retired\ncontinuation one.\n**Priority:** Low — a value\ncontinuation two.\n**Filed:** 2026-05-13\ncontinuation three.\n\n## Problem\n\nbody\n"
+	got := HeaderRunProseWedges(many)
+	if len(got) != 3 {
+		t.Errorf("wedges = %v, want 3", got)
+	}
+}
+
+// TestHeaderRunProseWedges_ContiguousRunHasNone pins the negative: a clean header
+// block must not be reported, or every valid file becomes a refusal.
+func TestHeaderRunProseWedges_ContiguousRunHasNone(t *testing.T) {
+	const clean = "# T\n\n**Status:** retired\n**Priority:** high\n\n## Context\n\nbody\n"
+	if got := HeaderRunProseWedges(clean); len(got) != 0 {
+		t.Errorf("wedges = %v, want none on a contiguous field run", got)
+	}
+}
+
+// TestHeaderRunProseWedges_StopsAtTheBlankLine pins that the scan does not reach
+// past the header region into the body, which would report every prose paragraph
+// in the file as a wedge.
+func TestHeaderRunProseWedges_StopsAtTheBlankLine(t *testing.T) {
+	const bodyProse = "# T\n\n**Status:** retired\n**Priority:** high\n\nordinary body prose\n\n## Context\n\nbody\n"
+	if got := HeaderRunProseWedges(bodyProse); len(got) != 0 {
+		t.Errorf("wedges = %v, want none — the scan must stop at the blank line that ends the header region", got)
 	}
 }

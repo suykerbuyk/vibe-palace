@@ -417,3 +417,69 @@ func TestMigrateTaskHeaderShape_InsertRelocateDisarmsTheLegacyHeaderRepair(t *te
 		t.Error("the bare line was merged onto the bold Status field")
 	}
 }
+
+// TestPlanTaskHeaderShape_WedgedHeaderRunIsRefused pins the deterministic refusal.
+//
+// 🔴 THE REFUSED OUTPUT WOULD HAVE VALIDATED. A relocation here produces a file
+// the whole-file validator accepts while the continuation of one field's value
+// sits directly beneath a DIFFERENT field, where it reads as that field's value.
+// No validator, audit dimension or existing test reports that, so this refusal is
+// the only thing that can.
+//
+// Break: relocate instead of refusing, at any wedge count. This test fails.
+func TestPlanTaskHeaderShape_WedgedHeaderRunIsRefused(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{{
+		// n = 1. No structural signal either way: this wedge is in fact the
+		// continuation of the Status value above it, and nothing in the bytes says so.
+		name:    "one wedge",
+		content: "# T\n\n**Status:** retired\nfor `/vpc-execute-plan` pending human sign-off.\n**Priority:** high\n\n## Context\n\nbody\n",
+	}, {
+		// n = 1, reached only after the extra titles are demoted. The refusal must
+		// cite the WEDGE, not report that the demotion "did not work".
+		name:    "one wedge behind two titles",
+		content: "# T\n\n**Status:** retired\nPlan-reviewed 2026-06-06; design decisions below are locked.\n**Priority:** medium\n\n# T restated\n\n## Problem\n\nbody\n",
+	}, {
+		// n > 1. Here the COUNT is structural proof that the field values wrap.
+		name:    "several wedges",
+		content: "# T\n\n**Status:** retired\ncontinuation one.\n**Priority:** Low — a value\ncontinuation two.\n**Filed:** 2026-05-13\ncontinuation three.\n\n## Problem\n\nbody\n",
+	}}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if storage.ValidateWholeTaskFile(tc.content) == nil {
+				t.Fatal("precondition: the fixture must FAIL the validator")
+			}
+			after, class, reason := planTaskHeaderShape(tc.content)
+			if class != shapeNoWork {
+				t.Fatalf("a wedged header run was TRANSFORMED (class %s); it must be refused:\n%s", class, after)
+			}
+			if after != "" {
+				t.Error("a refused file must yield no content")
+			}
+			if !strings.Contains(reason, "prose wedged into the header field run") {
+				t.Errorf("refusal cites the wrong cause: %q", reason)
+			}
+			if !strings.Contains(reason, "hand edit") {
+				t.Errorf("the refusal does not tell the operator what to do instead: %q", reason)
+			}
+		})
+	}
+}
+
+// TestPlanTaskHeaderShape_CleanDemotionStillRepairs is the negative that stops the
+// refusal above from swallowing the class it shares an arm with.
+//
+// Break: refuse every two-title file. This test fails.
+func TestPlanTaskHeaderShape_CleanDemotionStillRepairs(t *testing.T) {
+	const content = "# First title\n\n**Status:** retired\n**Priority:** medium\n\n# Second wording\n\n## Problem\n\nbody\n"
+	after, class, reason := planTaskHeaderShape(content)
+	if class != shapeDupTitle {
+		t.Fatalf("class = %s, want shapeDupTitle (reason %q)", class, reason)
+	}
+	if storage.ValidateWholeTaskFile(after) != nil {
+		t.Error("the demoted file does not validate")
+	}
+}
