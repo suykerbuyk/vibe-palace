@@ -985,3 +985,68 @@ func TestMigrateTaskHeaderBlock_PopulationDifferential(t *testing.T) {
 		}
 	}
 }
+
+// TestMigrateTaskHeaderBlock_ArchivedPairIsRefused closes a COVERAGE gap, not a
+// live defect: the behaviour below is already correct at this revision.
+//
+// 🔴 THE ARCHIVED-PAIR BRANCH OF THE SHARED GUARD WAS EXERCISED BY ONLY ONE
+// COMMAND'S TESTS. Narrowing taskHeaderShadowWinner back to active-only turned
+// exactly two tests red, both belonging to task-sections/task-header-spacing,
+// while this command and task-header BOTH reach that branch and BOTH stayed
+// green. The gap was structurally invisible per-branch: this command branched
+// before the guard was widened, so only the merged tree carries both halves and
+// only a test written after the merge can see the hole.
+func TestMigrateTaskHeaderBlock_ArchivedPairIsRefused(t *testing.T) {
+	for _, apply := range []bool{false, true} {
+		name := "report"
+		if apply {
+			name = "apply"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			// Same slug in done/ AND cancelled/, no active twin. The resolver
+			// picks done/, so repairing the cancelled/ copy writes the wrong file.
+			donePath := seedArchivedTask(t, root, "p", "done", "pair", preformatHeadingNext)
+			cancPath := seedArchivedTask(t, root, "p", "cancelled", "pair", preformatHeadingNext)
+			doneBefore, cancBefore := blockBytes(t, donePath), blockBytes(t, cancPath)
+			tsGitInit(t, root)
+
+			var out bytes.Buffer
+			sum, err := runTaskHeaderBlockMigration(root, "", apply, &out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.String(), "the same slug also exists in tasks/done/") {
+				t.Errorf("the archived-pair refusal is missing or reworded; out:\n%s", out.String())
+			}
+			if strings.Contains(out.String(), "an ACTIVE task of the same slug exists") {
+				t.Errorf("blamed an ACTIVE twin that does not exist -- false cause; out:\n%s", out.String())
+			}
+			// The done/ copy is the resolver's winner AND its own directory, so it
+			// is repairable; only the cancelled/ copy is refused.
+			if sum.Failed != 1 {
+				t.Errorf("Failed = %d, want 1 (the shadowed cancelled/ copy); out:\n%s", sum.Failed, out.String())
+			}
+			if got := blockBytes(t, cancPath); got != cancBefore {
+				t.Fatalf("the refused cancelled/ copy was written:\n%s", got)
+			}
+			if !apply {
+				if got := blockBytes(t, donePath); got != doneBefore {
+					t.Fatalf("a report-only run wrote done/:\n%s", got)
+				}
+			}
+		})
+	}
+}
+
+// blockBytes is a byte-exact read for the shadowed-pair assertions. Bytes, not
+// parsed fields: a mis-resolved write produces a file whose header parses
+// perfectly and whose BODY came from somewhere else.
+func blockBytes(t *testing.T, p string) string {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read %s: %v", p, err)
+	}
+	return string(b)
+}

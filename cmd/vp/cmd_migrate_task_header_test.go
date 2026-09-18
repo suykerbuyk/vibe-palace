@@ -1254,3 +1254,44 @@ func TestMigrateTaskHeaderSignOffStatesTheReasonItActuallyHas(t *testing.T) {
 		}
 	}
 }
+
+// TestMigrateTaskHeaderRefusesAnArchivedPair closes a COVERAGE gap, not a live
+// defect: this command already reaches the archived-pair branch of the shared
+// guard and already behaves correctly.
+//
+// 🔴 IT WAS EXERCISED BY ONLY ONE COMMAND'S TESTS. Narrowing the shared walk
+// back to active-only turned exactly two tests red, both belonging to
+// task-sections/task-header-spacing, while this command and task-header-block
+// BOTH reach that branch and BOTH stayed green. The gap was structurally
+// invisible per-branch: the widening and this command's own arms were on
+// different branches, so only the merged tree carries both halves.
+func TestMigrateTaskHeaderRefusesAnArchivedPair(t *testing.T) {
+	root := setupTestVaultEnv(t)
+	// thBothTerminal is repairable on its own, so the shadow guard is the ONLY
+	// thing that can refuse it -- seeding a Layer-2-declinable body here would
+	// leave this test green over a deleted guard.
+	donePath := tsWrite(t, root, "Projects/proj/tasks/done/pair.md", thBothTerminal)
+	cancPath := tsWrite(t, root, "Projects/proj/tasks/cancelled/pair.md", thBothTerminal)
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderMigration(root, "proj", true, &out)
+	if err != nil {
+		t.Fatalf("runTaskHeaderMigration: %v", err)
+	}
+	if !strings.Contains(out.String(), "the same slug also exists in tasks/done/") {
+		t.Errorf("the archived-pair refusal is missing or reworded; out:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "an ACTIVE task of the same slug exists") {
+		t.Errorf("blamed an ACTIVE twin that does not exist -- false cause; out:\n%s", out.String())
+	}
+	if sum.Failed != 1 {
+		t.Errorf("Failed = %d, want 1 (the shadowed cancelled/ copy); out:\n%s", sum.Failed, out.String())
+	}
+	// Bytes: the refused copy is untouched, and the repaired one kept its OWN body.
+	if got := tsRead(t, cancPath); got != thBothTerminal {
+		t.Fatalf("the refused cancelled/ copy was written:\n%s", got)
+	}
+	if got := tsRead(t, donePath); !strings.Contains(got, "## Summary") {
+		t.Fatalf("done/ lost its own body:\n%s", got)
+	}
+}
