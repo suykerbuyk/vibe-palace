@@ -3326,6 +3326,19 @@ const (
 	// is derivable — was put to the operator and declined in favour of full
 	// coverage. Re-derive the split with `vp migrate task-header`; never quote a
 	// count from a comment.
+	//
+	// 🔴 A SECOND POPULATION AND A SECOND OPERATOR RULING NOW REST ON THIS VALUE,
+	// and a reader who follows the pointer above lands on the wrong one.
+	// `vp migrate task-header-block` writes it into the archived task files that
+	// predate the header format and carry no field run at all — a class that
+	// overlaps the bare-only one not at all, since those files have no status
+	// declaration in ANY form. That is its own operator decision (2026-09-18),
+	// taken with the cost stated in front of the operator: the value is derived
+	// from nothing in any of those files, it is uniform across all of them, and
+	// it is NOT recoverable by inspection afterwards — once written, nothing
+	// distinguishes them from tasks genuinely assigned medium priority. The
+	// provenance lives in that unit's vault task and in its commit message, and
+	// nowhere in the bytes.
 	LegacyPriorityDefault = "medium"
 
 	// legacyHeaderSectionHeading is where a wrapped legacy value's remainder

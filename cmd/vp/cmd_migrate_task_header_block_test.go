@@ -421,25 +421,57 @@ func TestPlanTaskHeaderBlock_NoFileIsSpecialCased(t *testing.T) {
 	}
 }
 
-// TestPlanTaskHeaderBlock_PostConditionIsUnreachableDefenceInDepth records a
-// BREAK THAT STAYED GREEN, which is the finding rather than a gap to paper over.
+// TestPlanTaskHeaderBlock_PostConditionRefusesAnEmptyHeading is the fixture the
+// post-condition actually needs, and its absence is why an earlier version of
+// this file asserted the gate was unreachable. IT IS REACHABLE.
 //
-// Neutralising the in-transform post-condition (the ValidateWholeTaskFile call on
-// the rebuilt bytes) turns NO test red. That is not because the gate is untested
-// by oversight: given the detector's preconditions — balanced fences, exactly one
-// unfenced H1, at least one unfenced H2, zero Status lines, zero Priority lines,
-// and no field run at the insertion point — the construction validates for every
-// input that reaches it. Six adversarial shapes were tried, including a fenced
-// **Status:** sample, an H1 that is not on line 1, an H1 on the last line, a
-// fenced H1 before the real one, an H2 abutting the H1, and CRLF endings. All six
-// were selected and all six produced a VALID file.
+// 🔴 THE DETECTOR AND THE VALIDATOR COUNT HEADINGS WITH DIFFERENT PREDICATES.
+// This file's selection uses headingLevel, which accepts a '#' run followed by
+// nothing — an EMPTY heading is level 1 to it. storage's isH1Line and isH2Line
+// require the literal "# " / "## " prefix after trimming, so an empty heading is
+// not a heading to them at all. A file whose only H1-shaped line is a bare "#"
+// therefore passes the detector's "exactly one H1" precondition and produces a
+// construction the validator refuses at its missing-title arm. The same holds
+// one level down for a bare "##" and the missing-section arm.
 //
-// 🔴 SO THE POST-CONDITION IS DEFENCE IN DEPTH, NOT A TESTED GATE, and this test
-// says so instead of pretending otherwise. What it CAN pin is the property that
-// makes it unreachable: if a precondition is ever weakened, one of these shapes
-// starts producing an invalid file and this test goes red — at which point the
-// post-condition has become load-bearing and needs a real fixture.
-func TestPlanTaskHeaderBlock_PostConditionIsUnreachableDefenceInDepth(t *testing.T) {
+// So the post-condition is LOAD-BEARING, not defence in depth, and it is the
+// only thing standing between that disagreement and a written file. Break it
+// (replace the ValidateWholeTaskFile call on the rebuilt bytes with nil) and
+// this test fails.
+func TestPlanTaskHeaderBlock_PostConditionRefusesAnEmptyHeading(t *testing.T) {
+	for _, tc := range []struct{ name, src, wantIn string }{
+		{"empty H1, no text after the hash", "#\n\n## B\n\nx\n", "missing title"},
+		{"empty H1 with a trailing space", "# \n\n## B\n\nx\n", "missing title"},
+		{"empty H2, no text after the hashes", "# T\n\n##\n\nx\n", "missing section"},
+		{"empty H2 with a trailing space", "# T\n\n## \n\nx\n", "missing section"},
+	} {
+		after, outcome, reason := planTaskHeaderBlock(tc.src, storage.StatusDone)
+		if outcome != blockRefused {
+			t.Errorf("%s: outcome = %v, want blockRefused — the construction is invalid and only the "+
+				"post-condition catches it", tc.name, outcome)
+			continue
+		}
+		if after != "" {
+			t.Errorf("%s: a refusal must not return transformed content", tc.name)
+		}
+		if !strings.Contains(reason, "does not validate") || !strings.Contains(reason, tc.wantIn) {
+			t.Errorf("%s: reason = %q, want it to name the validator and %q", tc.name, reason, tc.wantIn)
+		}
+	}
+}
+
+// TestPlanTaskHeaderBlock_DetectorAndValidatorAgreeOnRealisticShapes is what the
+// unreachability test was reaching for, stated as a property that is actually
+// true: for every shape the live population contains or plausibly could, a
+// SELECTED file produces a construction the validator accepts and the fence-blind
+// reader parses the same way the fence-aware validator does.
+//
+// It is NOT a claim that the post-condition never fires — see the empty-heading
+// test above, which is the counterexample that broke the earlier claim. What this
+// pins is the boundary: these shapes are on the safe side of it, and if one of
+// them ever crosses over, the post-condition has started doing work nobody
+// predicted and the detector needs a look.
+func TestPlanTaskHeaderBlock_DetectorAndValidatorAgreeOnRealisticShapes(t *testing.T) {
 	shapes := map[string]string{
 		"fenced Status sample in the body":  "# T\n\n## Example\n\n```\n**Status:** done\n**Priority:** low\n```\n\n## B\n\nx\n",
 		"H1 not on line 1":                  "Intro prose.\n\n# T\n\n## B\n\nx\n",
@@ -447,6 +479,7 @@ func TestPlanTaskHeaderBlock_PostConditionIsUnreachableDefenceInDepth(t *testing
 		"fenced H1 before the real one":     "```\n# fake\n```\n\n# T\n\n## B\n\nx\n",
 		"H2 abutting the H1 with no blank":  "# T\n## B\n\nx\n",
 		"CRLF line endings":                 "# T\r\n\r\n## B\r\n\r\nx\r\n",
+		"indented H1":                       "   # T\n\n## B\n\nx\n",
 		"heading-following (the common 29)": preformatHeadingNext,
 		"prose-following (the one)":         preformatProseNext,
 		"fenced '#' comments":               preformatFencedHashes,
@@ -454,12 +487,12 @@ func TestPlanTaskHeaderBlock_PostConditionIsUnreachableDefenceInDepth(t *testing
 	for name, src := range shapes {
 		after, outcome, reason := planTaskHeaderBlock(src, storage.StatusDone)
 		if outcome != blockConstruct {
-			t.Fatalf("%s: outcome = %v, reason %q — this shape must be SELECTED, or the "+
-				"unreachability claim above is being tested against the wrong inputs", name, outcome, reason)
+			t.Fatalf("%s: outcome = %v, reason %q — this shape must be SELECTED, or the property "+
+				"below is being tested against the wrong inputs", name, outcome, reason)
 		}
 		if err := storage.ValidateWholeTaskFile(after); err != nil {
-			t.Errorf("%s: a SELECTED input produced an INVALID construction (%v). The post-condition "+
-				"has stopped being unreachable and now needs a fixture of its own.", name, err)
+			t.Errorf("%s: a SELECTED input produced an INVALID construction (%v). The detector and "+
+				"the validator have diverged on a shape that was on the safe side of the boundary.", name, err)
 		}
 		// 🔴 The fence-blind reader must agree with the fence-aware validator.
 		// parseTaskMeta scans the WHOLE file first-wins and does not know about
@@ -609,10 +642,16 @@ func TestMigrateTaskHeaderBlock_ApplyWritesAndIsIdempotent(t *testing.T) {
 		// 🔴 Fix == 0 && Applied == 0 IS NECESSARY AND NOT SUFFICIENT, and the
 		// break protocol is what showed it: with every convergence precondition
 		// removed, a repaired file falls through to the existing-field-run
-		// REFUSAL and the counters above stay at zero anyway. The run would look
-		// converged while printing a "??" row against a file it had just
+		// REFUSAL and BOTH of those counters stay at zero anyway. The run would
+		// look converged while printing a "??" row against a file it had just
 		// repaired correctly — a refusal citing a cause that should not apply.
 		// Convergence means the file is classified as needing nothing, silently.
+		//
+		// Measured, so the attribution is right: under that break BOTH assertions
+		// below fire. `Refused == 0` alone is sufficient to catch it; the
+		// per-decision check is what names WHICH file and WHY, which is the
+		// difference between a red test and a diagnosable one. Neither is
+		// redundant and neither is "the" discriminator.
 		if s.Refused != 0 {
 			t.Errorf("run %d: Refused = %d, want 0 — a correctly repaired file must be classified as "+
 				"needing nothing, not refused", run, s.Refused)
@@ -723,10 +762,18 @@ func TestMigrateTaskHeaderBlock_ApplyRequiresAGitRepo(t *testing.T) {
 // TestMigrateTaskHeaderBlock_RollbackBannerQuotesEachPath — a list joined into
 // one quoted value keeps the continuation indentation inside the argument, and
 // `git checkout --` then reverts nothing while looking like it worked.
-func TestMigrateTaskHeaderBlock_RollbackBannerQuotesEachPath(t *testing.T) {
+func TestMigrateTaskHeaderBlock_RollbackBannerListsEveryPathSeparately(t *testing.T) {
 	root := t.TempDir()
 	gitInitVault(t, root)
-	seedArchivedTask(t, root, "p", "done", "legacy", preformatHeadingNext)
+	seedArchivedTask(t, root, "p", "done", "alpha", preformatHeadingNext)
+	seedArchivedTask(t, root, "p", "done", "beta", preformatProseNext)
+	// Pre-create and COMMIT the stamp so GitPathIsTracked says true and it
+	// reaches the rollback list. Without this it is untracked, correctly
+	// dropped, and the population falls back to one path per task file — which
+	// is exactly why this fixture and not a one-file one.
+	if err := os.WriteFile(filepath.Join(root, "Projects", "p", ".surface"), []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	gitCommitAll(t, root)
 
 	var out bytes.Buffer
@@ -734,20 +781,141 @@ func TestMigrateTaskHeaderBlock_RollbackBannerQuotesEachPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sum.AppliedPaths) == 0 {
-		t.Fatal("no applied paths recorded")
+	if sum.Applied != 2 {
+		t.Fatalf("Applied = %d, want 2:\n%s", sum.Applied, out.String())
 	}
-	s := out.String()
-	for _, p := range sum.AppliedPaths {
-		if !strings.Contains(s, "\""+p+"\"") {
-			t.Errorf("path %q is not separately quoted in the banner:\n%s", p, s)
+
+	// 🔴 AN EXPLICIT want LIST, NOT A WALK OF sum.AppliedPaths. The earlier
+	// version of this test iterated AppliedPaths and asserted each member was
+	// quoted, which made it self-referential: whatever the code put in the slice
+	// was what got checked, so a stamp that never arrived and an untracked stamp
+	// that did BOTH passed. Two breaks survived that shape — the same defect
+	// task-sections had already closed, whose banner and doc comment were copied
+	// here without the fixture that makes them testable.
+	want := []string{
+		"Projects/p/tasks/done/alpha.md",
+		"Projects/p/tasks/done/beta.md",
+		"Projects/p/.surface",
+	}
+	for _, w := range want {
+		if !slicesContains(sum.AppliedPaths, w) {
+			t.Errorf("AppliedPaths %v is missing %q — the documented undo would omit a path the "+
+				"writer dirtied, so the operator runs it and the vault is still dirty", sum.AppliedPaths, w)
 		}
+	}
+	if len(sum.AppliedPaths) != 3 {
+		t.Errorf("AppliedPaths = %v, want exactly 3 (two task files and the tracked stamp)", sum.AppliedPaths)
+	}
+
+	s := out.String()
+	// EACH path separately quoted. A list joined into one quoted value keeps the
+	// continuation indentation inside the argument, and git receives one bogus
+	// pathspec instead of three real ones.
+	for _, w := range want {
+		if !strings.Contains(s, `"`+w+`"`) {
+			t.Errorf("banner does not quote %q on its own:\n%s", w, s)
+		}
+	}
+	if strings.Contains(s, `"Projects/p/tasks/done/alpha.md Projects/`) {
+		t.Errorf("banner joined several paths into ONE quoted argument:\n%s", s)
 	}
 	if !strings.Contains(s, "git -C "+root+" checkout --") {
 		t.Errorf("the banner must scope the undo to the vault root:\n%s", s)
 	}
 	if !strings.Contains(s, "Do NOT use `git checkout .`") {
-		t.Errorf("the banner must warn off a whole-tree checkout:\n%s", s)
+		t.Errorf("the scoped-rollback warning is missing:\n%s", s)
+	}
+}
+
+// TestMigrateTaskHeaderBlock_UntrackedStampIsNotInTheRollbackList is the other
+// half of the same guard, and it is the one the GitPathIsTracked gate exists for.
+//
+// A stamp git has never seen must be OMITTED: `git checkout -- <untracked>` is a
+// pathspec error, and git applies it to the WHOLE command — so one such path
+// makes the undo restore NONE of the task files either, while looking to the
+// operator like it worked. The doc comment on taskHeaderBlockRecordWrite says
+// exactly this and nothing pinned it until now.
+//
+// Break: delete the GitPathIsTracked check in taskHeaderBlockRecordWrite. This
+// test fails.
+func TestMigrateTaskHeaderBlock_UntrackedStampIsNotInTheRollbackList(t *testing.T) {
+	root := t.TempDir()
+	gitInitVault(t, root)
+	seedArchivedTask(t, root, "p", "done", "alpha", preformatHeadingNext)
+	gitCommitAll(t, root) // no .surface committed: the writer creates it untracked
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderBlockMigration(root, "", true, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Applied != 1 {
+		t.Fatalf("Applied = %d, want 1:\n%s", sum.Applied, out.String())
+	}
+	for _, p := range sum.AppliedPaths {
+		if strings.HasSuffix(p, ".surface") {
+			t.Errorf("an UNTRACKED stamp reached the rollback list (%q); `git checkout --` would "+
+				"fail for every path, restoring nothing", p)
+		}
+	}
+}
+
+// TestMigrateTaskHeaderBlock_ApplyReportsTheFabrication is where an operator
+// LEARNS the priority value is invented. The value is not recoverable from the
+// bytes afterwards, so the run output and the commit message are the only two
+// places it is ever stated — and nothing pinned the run output.
+//
+// Break: delete the fabrication notice from the apply summary. This test fails.
+func TestMigrateTaskHeaderBlock_ApplyReportsTheFabrication(t *testing.T) {
+	root := t.TempDir()
+	gitInitVault(t, root)
+	seedArchivedTask(t, root, "p", "done", "legacy", preformatHeadingNext)
+	gitCommitAll(t, root)
+
+	var out bytes.Buffer
+	if _, err := runTaskHeaderBlockMigration(root, "", true, &out); err != nil {
+		t.Fatal(err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "FABRICATION") {
+		t.Errorf("the apply summary never says the priority is a fabrication:\n%s", s)
+	}
+	if !strings.Contains(s, storage.LegacyPriorityDefault) {
+		t.Errorf("the apply summary does not name the fabricated value %q:\n%s",
+			storage.LegacyPriorityDefault, s)
+	}
+	if !strings.Contains(s, "commit message") {
+		t.Errorf("the apply summary does not tell the operator where the provenance must go:\n%s", s)
+	}
+}
+
+// TestMigrateTaskHeaderBlock_OtherDefectRowsArePrinted is the silent-instrument
+// guard: a file this command declines to repair because the defect is not ours
+// is COUNTED in OtherDefect and must also be PRINTED. A counter with no row is
+// the shape this project closed six times at iteration 427 — code that detects a
+// problem, discards the signal, and surfaces a plausible-looking number.
+//
+// Break: delete the Fprintf in the blockNoWork arm, keep sum.OtherDefect++.
+// This test fails.
+func TestMigrateTaskHeaderBlock_OtherDefectRowsArePrinted(t *testing.T) {
+	root := t.TempDir()
+	// Malformed, but the defect belongs to another unit: it already has a Status.
+	seedArchivedTask(t, root, "p", "done", "hasstatus", "# T\n\n**Status:** done\n\n## B\n\nx\n")
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderBlockMigration(root, "", false, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.OtherDefect != 1 {
+		t.Fatalf("OtherDefect = %d, want 1:\n%s", sum.OtherDefect, out.String())
+	}
+	s := out.String()
+	if !strings.Contains(s, "hasstatus") {
+		t.Errorf("the other-defect file is counted but never named in the report:\n%s", s)
+	}
+	if !strings.Contains(s, "not this command's defect") {
+		t.Errorf("the other-defect row does not say whose defect it is:\n%s", s)
 	}
 }
 
