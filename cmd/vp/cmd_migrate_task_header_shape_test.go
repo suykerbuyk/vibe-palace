@@ -319,3 +319,101 @@ func TestMigrateTaskHeaderShape_SelectionIsExactly(t *testing.T) {
 		}
 	}
 }
+
+// b2BareLegacyFixture is the INSERT+RELOCATE shape: a bare legacy status line
+// directly under the title, and no Priority field anywhere.
+const b2BareLegacyFixture = "# Plan: Phase D\n" +
+	"Status: Closed — operator accepted retrospective 2026-06-06; AC2 carried forward.\n" +
+	"\n" +
+	"**Status:** retired\n" +
+	"**Source:** doc/RESUMPTION-PLAN.md\n" +
+	"\n" +
+	"## Objective\n" +
+	"\n" +
+	"body\n"
+
+// TestTaskHeaderShapeSeamTableIsNotAConstant is the assertion that the table is
+// doing real work.
+//
+// A per-class seam map that only ever yields ONE value is an elaborate constant:
+// every test over it passes, the exhaustiveness check passes, and nothing would
+// notice if the switch collapsed to a single writer. This fails the moment that
+// becomes true, so the table has to keep earning its shape.
+func TestTaskHeaderShapeSeamTableIsNotAConstant(t *testing.T) {
+	seen := map[taskHeaderShapeSeam]int{}
+	for _, c := range taskHeaderShapeWritingClasses {
+		seen[taskHeaderShapeSeamFor[c]]++
+	}
+	if seen[seamStrict] == 0 {
+		t.Error("no class uses the STRICT seam: strict-wherever-it-suffices is the rule, not the exception")
+	}
+	if seen[seamPermissive] == 0 {
+		t.Error("no class uses the PERMISSIVE seam, so this table is a constant wearing a map's clothes — " +
+			"collapse it to a single writer or restore the class that needs the escape hatch")
+	}
+}
+
+// TestTaskHeaderShapePermissiveSeamIsRequired proves the permissive marking is
+// EARNED rather than chosen, the mirror of the strict-seam contract test.
+//
+// Without this, "seamPermissive" would be an assertion about itself: nothing else
+// in the suite distinguishes a class that genuinely needs the escape hatch from
+// one that was simply marked for it.
+func TestTaskHeaderShapePermissiveSeamIsRequired(t *testing.T) {
+	cases := []struct {
+		class   taskHeaderShapeClass
+		content string
+	}{
+		{shapeInsertRelocate, b2BareLegacyFixture},
+	}
+	for _, tc := range cases {
+		if taskHeaderShapeSeamFor[tc.class] != seamPermissive {
+			t.Fatalf("%s is no longer marked permissive; this test must be re-scoped", tc.class)
+		}
+		after, class, reason := planTaskHeaderShape(tc.content)
+		if class != tc.class {
+			t.Fatalf("%s: classified %s (reason %q)", tc.class, class, reason)
+		}
+
+		root := t.TempDir()
+		gitInitVault(t, root)
+		seedArchivedTask(t, root, "p", "done", "x", tc.content)
+		gitCommitAll(t, root)
+		v := storage.NewVault(root)
+
+		// The STRICT writer must REFUSE this output. If it accepts, the class does
+		// not need the escape hatch and must be moved to seamStrict, which is the
+		// stronger policy.
+		if err := v.OverwriteTaskFile("p", "x", after); err == nil {
+			t.Errorf("%s is marked seamPermissive but the STRICT writer ACCEPTED its output; "+
+				"move it to seamStrict rather than keeping the weaker policy", tc.class)
+		}
+		// And the permissive writer must accept it, or the marking is simply wrong.
+		if err := v.OverwriteTaskFileRewritingHeader("p", "x", after); err != nil {
+			t.Errorf("%s is marked seamPermissive but the PERMISSIVE writer refused its output: %v", tc.class, err)
+		}
+	}
+}
+
+// TestMigrateTaskHeaderShape_InsertRelocateDisarmsTheLegacyHeaderRepair pins the
+// cross-command property, which no assertion inside this command's own output can
+// see.
+//
+// Constructing the Priority alone would CLEAR the legacy-header repair's validator
+// oracle while leaving the bare line in place — converting a jammed trap into a
+// live one, where that repair merges the prose onto the status field and a later
+// whole-line rewrite destroys it. Relocating the line is what makes the file
+// classify Clean instead.
+func TestMigrateTaskHeaderShape_InsertRelocateDisarmsTheLegacyHeaderRepair(t *testing.T) {
+	after, class, reason := planTaskHeaderShape(b2BareLegacyFixture)
+	if class != shapeInsertRelocate {
+		t.Fatalf("classified %s (reason %q)", class, reason)
+	}
+	if scan := storage.ScanLegacyHeader(after); scan.Class != storage.LegacyHeaderClean {
+		t.Errorf("after the repair ScanLegacyHeader reports %s, want Clean — the legacy-header repair "+
+			"would still plan a merge on this file", scan.Class)
+	}
+	if strings.Contains(after, "**Status:** Closed") {
+		t.Error("the bare line was merged onto the bold Status field")
+	}
+}

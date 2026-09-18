@@ -6,6 +6,8 @@ package storage
 import (
 	"strings"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/mdfence"
 )
 
 // Unit B2 — duplicate header-field repair.
@@ -419,5 +421,189 @@ func TestRepairInterleavedHeaderProse_DoesNotReachPastABlank(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no header field line after the wedge") {
 		t.Errorf("refusal cites the wrong cause: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Glued fence delimiter.
+// ---------------------------------------------------------------------------
+
+// b2GluedFenceBefore reproduces the corpus shape: a fence opens, and the line
+// that LOOKS like its closing delimiter carries an info string containing a
+// backtick — so it can neither close that fence nor open a new one, and
+// everything below renders as code.
+const b2GluedFenceBefore = "# T\n" +
+	"\n" +
+	"**Status:** retired\n" +
+	"**Priority:** high\n" +
+	"\n" +
+	"## Context\n" +
+	"\n" +
+	"```\n" +
+	"some code\n" +
+	"```//then referencing `${BOOT0_SERIAL}` in the args.\n" +
+	"\n" +
+	"## Results\n" +
+	"\n" +
+	"body\n"
+
+// TestRepairGluedFenceDelimiter_SplitsAndRevealsStructure pins that the split
+// restores downstream pairing — the H2 below the glued delimiter is swallowed
+// before the repair and visible after it.
+func TestRepairGluedFenceDelimiter_SplitsAndRevealsStructure(t *testing.T) {
+	if err := ValidateWholeTaskFile(b2GluedFenceBefore); err == nil {
+		t.Fatal("precondition: the fixture must FAIL the validator on the unterminated fence")
+	}
+	got, err := RepairGluedFenceDelimiter(b2GluedFenceBefore)
+	if err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if verr := ValidateWholeTaskFile(got); verr != nil {
+		t.Fatalf("repaired file does not validate: %v", verr)
+	}
+	if !strings.Contains(got, "```\n//then referencing `${BOOT0_SERIAL}` in the args.\n") {
+		t.Errorf("the delimiter was not split into a bare delimiter plus its prose:\n%s", got)
+	}
+	// The whole point of the repair: structure below the bad delimiter re-emerges.
+	var h2 int
+	for _, l := range mdfence.OutsideFences(got) {
+		if isH2Line(l.Text) {
+			h2++
+		}
+	}
+	if h2 != 2 {
+		t.Errorf("found %d unfenced H2 headings after the repair, want 2 — the downstream pairing was not restored", h2)
+	}
+	// No byte of the info string is lost.
+	if !strings.Contains(got, "//then referencing `${BOOT0_SERIAL}` in the args.") {
+		t.Error("the glued prose was not preserved verbatim")
+	}
+}
+
+// TestRepairGluedFenceDelimiter_IsIdempotent pins the property the detector's
+// info-string keying buys. A second application must select nothing.
+//
+// 🔴 This matters more here than elsewhere: the second application would ALSO
+// validate, so the writer's post-condition cannot catch a non-idempotent detector
+// on this class.
+func TestRepairGluedFenceDelimiter_IsIdempotent(t *testing.T) {
+	once, err := RepairGluedFenceDelimiter(b2GluedFenceBefore)
+	if err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if _, err := RepairGluedFenceDelimiter(once); err == nil {
+		t.Fatal("a second application selected the file again: the detector is not keyed on the info string")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bare legacy status line: construct Priority AND relocate the prose.
+// ---------------------------------------------------------------------------
+
+const b2BareLegacyBefore = "# Plan: Phase D\n" +
+	"Status: Closed — operator accepted retrospective 2026-06-06; advancing to Phase E. AC2 carried forward.\n" +
+	"\n" +
+	"**Status:** retired\n" +
+	"**Source:** doc/RESUMPTION-PLAN.md\n" +
+	"\n" +
+	"## Objective\n" +
+	"\n" +
+	"body\n"
+
+// TestRepairBareLegacyStatusLine_NeitherHalfAloneValidates is the multi-transform
+// pin: the class exists because one fix per file is not enough here.
+func TestRepairBareLegacyStatusLine_NeitherHalfAloneValidates(t *testing.T) {
+	before := ValidateWholeTaskFile(b2BareLegacyBefore)
+	if before == nil {
+		t.Fatal("precondition: the fixture must FAIL the validator")
+	}
+	got, err := RepairBareLegacyStatusLine(b2BareLegacyBefore)
+	if err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if verr := ValidateWholeTaskFile(got); verr != nil {
+		t.Fatalf("repaired file does not validate: %v", verr)
+	}
+	if !strings.Contains(got, "**Priority:** "+LegacyPriorityDefault) {
+		t.Errorf("the constructed Priority is missing:\n%s", got)
+	}
+	if !strings.Contains(got, legacyHeaderSectionHeading) {
+		t.Errorf("the relocated prose did not land in the legacy-header body section:\n%s", got)
+	}
+	if !strings.Contains(got, "Status: Closed — operator accepted retrospective 2026-06-06; advancing to Phase E. AC2 carried forward.") {
+		t.Error("the bare legacy line was not preserved verbatim")
+	}
+}
+
+// TestRepairBareLegacyStatusLine_DoesNotMergeOntoTheBoldStatus is the assertion
+// that stands between this file and the destruction the whole unit sequences
+// around.
+//
+// The Status is asserted as an EXACT STRING. Deliberately NOT IsTerminalStatus:
+// "retired" is not terminal, so that predicate is false here on correct code, and
+// the obvious way to make it pass is to widen IsTerminalStatus.
+func TestRepairBareLegacyStatusLine_DoesNotMergeOntoTheBoldStatus(t *testing.T) {
+	got, err := RepairBareLegacyStatusLine(b2BareLegacyBefore)
+	if err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	meta := ParseTaskMetaFromContent("phase-d", got, true)
+	if meta.Status != "retired" {
+		t.Errorf("Status = %q, want the exact string %q — the prose must never become the bound value", meta.Status, "retired")
+	}
+	if strings.Count(got, "**Status:**") != 1 {
+		t.Errorf("found %d \"**Status:**\" lines, want exactly 1", strings.Count(got, "**Status:**"))
+	}
+	if strings.Contains(got, "**Status:** Closed") {
+		t.Error("the bare line was MERGED onto the bold Status field")
+	}
+	// Relocating DISARMS the sibling repair rather than merely avoiding it.
+	if scan := ScanLegacyHeader(got); scan.BareLine != 0 {
+		t.Errorf("a bare legacy line remains at %d: the legacy-header repair would still plan a "+
+			"destructive merge on this file", scan.BareLine)
+	}
+}
+
+// TestRepairGluedFenceDelimiter_LeavesLegitimateInfoStringsAlone is the fixture
+// that distinguishes "keyed on the info string" from "keyed on HAVING an info
+// string", and it exists because a break that dropped the OpensFence check left
+// every other test in this file GREEN.
+//
+// A fence opened with a language tag — ```go — has a non-empty info string and is
+// entirely correct. Splitting it would strip the tag onto its own line and turn a
+// working fence into two, changing how the block renders and, on a file whose
+// fences carry structure, what the validator counts.
+//
+// Break: drop the mdfence.OpensFence check from the detector. This test fails;
+// without it, nothing does.
+func TestRepairGluedFenceDelimiter_LeavesLegitimateInfoStringsAlone(t *testing.T) {
+	const withLangTag = "# T\n" +
+		"\n" +
+		"**Status:** retired\n" +
+		"**Priority:** high\n" +
+		"\n" +
+		"## Context\n" +
+		"\n" +
+		"```go\n" +
+		"func main() {}\n" +
+		"```\n" +
+		"\n" +
+		"```\n" +
+		"plain\n" +
+		"```//then referencing `${X}` in the args.\n" +
+		"\n" +
+		"## Results\n" +
+		"\n" +
+		"body\n"
+	got, err := RepairGluedFenceDelimiter(withLangTag)
+	if err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if !strings.Contains(got, "```go\nfunc main() {}\n```\n") {
+		t.Errorf("a LEGITIMATE ```go fence was split; the detector must key on whether the info string "+
+			"PREVENTS the delimiter from opening a fence, not merely on its presence:\n%s", got)
+	}
+	if !strings.Contains(got, "```\n//then referencing `${X}` in the args.\n") {
+		t.Errorf("the glued delimiter was not split:\n%s", got)
 	}
 }
