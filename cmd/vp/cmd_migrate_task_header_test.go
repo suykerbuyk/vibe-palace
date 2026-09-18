@@ -29,8 +29,30 @@ const (
 	// AGREEING with its done/ directory — flipping this fixture's
 	// vaultaudit.DimTaskStatusDirectory classification as an unplanned side effect
 	// of the rename, not of anything this fixture is testing.
+	// 🔴 IT IS ALSO THE LAYER 2 REFUSAL FIXTURE, and the non-terminal value that
+	// was chosen for the reason above is what makes it one. Archived (thSeed puts
+	// it in done/) plus a non-terminal carried value is exactly the condition
+	// RepairLegacyBothHeader now declines: merging would write "Active" onto a
+	// file in done/, which the status and board-fields migrations then rewrite by
+	// replacing the whole line, destroying the bare line's prose one run later.
+	// Tests assert this file is DECLINED and left byte-identical.
 	thBoth = "# Task 3.5: Portable Command Execution\n" +
 		"Status: Active\n" +
+		"\n" +
+		"**Status:** planning\n" +
+		"**Priority:** high\n\n" +
+		"## Summary\n\nBody.\n"
+
+	// thBothTerminal — the both shape whose carried value IS terminal, so the
+	// merge is genuinely lossless and Layer 2 permits it.
+	//
+	// 🔴 WITHOUT THIS FIXTURE, LAYER 2 SILENTLY DELETES THE LAST ARCHIVED
+	// COVERAGE OF THE ONLY TRANSFORM THIS COMMAND PERFORMS BY DEFAULT. thBoth is
+	// declined, so it can no longer prove the repair works — it can only prove
+	// the refusal does. The carried value agreeing with the done/ directory is
+	// the POINT here, and is the opposite of thBoth's requirement.
+	thBothTerminal = "# Task 3.6: Portable Command Dispatch\n" +
+		"Status: done\n" +
 		"\n" +
 		"**Status:** planning\n" +
 		"**Priority:** high\n\n" +
@@ -102,7 +124,24 @@ const (
 	// repaired bytes at the missing-Priority arm — an unrelated guard pointing
 	// the same way by luck. A fixture without it would pass for the wrong reason
 	// and keep passing if the class were deleted.
+	// 🔴 THE BOLDED VALUE IS THE PRE-RENAME "retired", AND THAT IS THE POINT.
+	// This fixture's job is to encode a LEGACY specimen, so the old vocabulary is
+	// its content, not a stale spelling. It read "retired" when the class was
+	// introduced; af9c4e2 swept it to "done" as part of a blanket
+	// retired->done pass across fourteen test files, one commit after 47ac25d
+	// dropped "retired" from IsTerminalStatus. The pair moved the live specimen
+	// out of this class and re-armed the destructive merge against it, and this
+	// fixture — the only one encoding the live shape — stopped being able to
+	// notice. Do not "modernise" this value in a future vocabulary sweep.
 	thInverted = "# Plan: Phase D — Parallel Operation\n" +
+		"Status: Closed — operator accepted retrospective 2026-06-06\n" +
+		"**Status:** retired\n" +
+		"**Priority:** medium\n\n" +
+		"## Context\n\nBody.\n"
+
+	// thInvertedCurrentVocab — the same shape under the CURRENT vocabulary. The
+	// class must recognise both, and a single fixture can only pin one.
+	thInvertedCurrentVocab = "# Plan: Phase C — Serial Operation\n" +
 		"Status: Closed — operator accepted retrospective 2026-06-06\n" +
 		"**Status:** done\n" +
 		"**Priority:** medium\n\n" +
@@ -115,14 +154,16 @@ func thSeed(t *testing.T) (root string, paths map[string]string) {
 	t.Helper()
 	root = setupTestVaultEnv(t)
 	paths = map[string]string{
-		"both":         tsWrite(t, root, "Projects/proj/tasks/done/both.md", thBoth),
-		"bare-only":    tsWrite(t, root, "Projects/proj/tasks/done/bareonly.md", thBareOnly),
-		"bare-wrapped": tsWrite(t, root, "Projects/proj/tasks/done/barewrapped.md", thBareOnlyWrapped),
-		"multi-title":  tsWrite(t, root, "Projects/proj/tasks/done/multi.md", thMultiTitle),
-		"mt-sections":  tsWrite(t, root, "Projects/proj/tasks/done/mtsections.md", thMultiTitleSections),
-		"mt-badheader": tsWrite(t, root, "Projects/proj/tasks/done/mtbadheader.md", thMultiTitleBadHeader),
-		"clean":        tsWrite(t, root, "Projects/proj/tasks/done/clean.md", thClean),
-		"inverted":     tsWrite(t, root, "Projects/proj/tasks/done/inverted.md", thInverted),
+		"both":          tsWrite(t, root, "Projects/proj/tasks/done/both.md", thBoth),
+		"both-terminal": tsWrite(t, root, "Projects/proj/tasks/done/bothterminal.md", thBothTerminal),
+		"bare-only":     tsWrite(t, root, "Projects/proj/tasks/done/bareonly.md", thBareOnly),
+		"bare-wrapped":  tsWrite(t, root, "Projects/proj/tasks/done/barewrapped.md", thBareOnlyWrapped),
+		"multi-title":   tsWrite(t, root, "Projects/proj/tasks/done/multi.md", thMultiTitle),
+		"mt-sections":   tsWrite(t, root, "Projects/proj/tasks/done/mtsections.md", thMultiTitleSections),
+		"mt-badheader":  tsWrite(t, root, "Projects/proj/tasks/done/mtbadheader.md", thMultiTitleBadHeader),
+		"clean":         tsWrite(t, root, "Projects/proj/tasks/done/clean.md", thClean),
+		"inverted":      tsWrite(t, root, "Projects/proj/tasks/done/inverted.md", thInverted),
+		"inverted-cur":  tsWrite(t, root, "Projects/proj/tasks/done/invertedcur.md", thInvertedCurrentVocab),
 	}
 	return root, paths
 }
@@ -149,7 +190,9 @@ func TestMigrateTaskHeaderRepairsTheWritableClassesAndLeavesTheRestAlone(t *test
 	// file it must have rewritten, and nothing else may be.
 	// Derived from the classifier's own report and the sign-off list: every file
 	// in a writable class is repaired EXCEPT the ones handed to a human.
-	wantApplied := sum.Both + sum.BareOnly + sum.MultiTitle - len(sum.SignOff)
+	// Declined subtracts alongside SignOff: both are files in a writable class
+	// that this command deliberately does not write.
+	wantApplied := sum.Both + sum.BareOnly + sum.MultiTitle - len(sum.SignOff) - sum.Declined
 	if sum.Applied != wantApplied {
 		t.Errorf("Applied = %d, want %d (Both=%d BareOnly=%d MultiTitle=%d SignOff=%d)",
 			sum.Applied, wantApplied, sum.Both, sum.BareOnly, sum.MultiTitle, len(sum.SignOff))
@@ -167,16 +210,28 @@ func TestMigrateTaskHeaderRepairsTheWritableClassesAndLeavesTheRestAlone(t *test
 			sum.AppliedBareOnly, sum.BareOnly)
 	}
 
-	got := tsRead(t, paths["both"])
-	if strings.Contains(got, "\nStatus: Active") {
+	// The repair is proved on the TERMINAL both file. thBoth is declined, so it
+	// can no longer carry this assertion — see its fixture comment.
+	got := tsRead(t, paths["both-terminal"])
+	if strings.Contains(got, "\nStatus: done") {
 		t.Errorf("the bare legacy line survived:\n%s", got)
 	}
 	if strings.Contains(got, "**Status:** planning") {
 		t.Errorf("the STALE value survived — dropping the bare line alone would leave "+
 			"the file asserting only the falsehood:\n%s", got)
 	}
-	if !strings.Contains(got, "**Status:** Active") {
+	if !strings.Contains(got, "**Status:** done") {
 		t.Errorf("the true value was not carried onto the bolded field:\n%s", got)
+	}
+
+	// And the non-terminal archived both file is DECLINED, not merged, and not
+	// counted as a failure.
+	if sum.Declined != 1 {
+		t.Errorf("Declined = %d, want 1 — the archived non-terminal both file; out:\n%s",
+			sum.Declined, out.String())
+	}
+	if got := tsRead(t, paths["both"]); got != thBoth {
+		t.Errorf("a declined file was rewritten:\n%s", got)
 	}
 
 	// The oracle. OverwriteTaskFile runs ValidateWholeTaskFile before it writes,
@@ -282,7 +337,11 @@ func TestMigrateTaskHeaderRefusesArchivedShadow(t *testing.T) {
 	root := setupTestVaultEnv(t)
 	activeBody := "# Active twin\n\n**Status:** planning\n**Priority:** medium\n\n## Context\n\nActive.\n"
 	activePath := tsWrite(t, root, "Projects/proj/tasks/dup.md", activeBody)
-	archivedPath := tsWrite(t, root, "Projects/proj/tasks/done/dup.md", thBoth)
+	// 🔴 thBothTerminal, NOT thBoth. Layer 2 declines an archived non-terminal
+	// both file independently, so seeding thBoth here would leave this test GREEN
+	// over a DELETED shadow guard — the defect B1 already shipped once, where a
+	// seam refused independently and the guard's own test never noticed.
+	archivedPath := tsWrite(t, root, "Projects/proj/tasks/done/dup.md", thBothTerminal)
 
 	var out bytes.Buffer
 	sum, err := runTaskHeaderMigration(root, "proj", true, &out)
@@ -295,8 +354,131 @@ func TestMigrateTaskHeaderRefusesArchivedShadow(t *testing.T) {
 	if got := tsRead(t, activePath); got != activeBody {
 		t.Errorf("the ACTIVE file was rewritten — this is the hazard the guard exists for\n got: %q", got)
 	}
-	if got := tsRead(t, archivedPath); got != thBoth {
+	if got := tsRead(t, archivedPath); got != thBothTerminal {
 		t.Errorf("archived file was rewritten despite the refusal\n got: %q", got)
+	}
+}
+
+// TestMigrateTaskHeaderStillRepairsANonTerminalBothFileInTheACTIVEDirectory is
+// acceptance criterion 6: the archived scoping of the Layer 2 refusal.
+//
+// 🔴 A SEPARATE TEST, NOT A BRANCH OF THE REFUSAL TEST, deliberately. An
+// over-broad refusal is this design's one real risk, and a branch living inside
+// the refusal's own test would be deleted along with it. A non-terminal status
+// on an ACTIVE task is the normal case.
+func TestMigrateTaskHeaderStillRepairsANonTerminalBothFileInTheACTIVEDirectory(t *testing.T) {
+	root := setupTestVaultEnv(t)
+	activePath := tsWrite(t, root, "Projects/proj/tasks/live.md", thBoth)
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderMigration(root, "proj", true, &out)
+	if err != nil {
+		t.Fatalf("runTaskHeaderMigration: %v", err)
+	}
+	if sum.Declined != 0 {
+		t.Fatalf("Declined = %d on an ACTIVE file; the refusal is archived-scoped and this is "+
+			"the over-broad-refusal check; out:\n%s", sum.Declined, out.String())
+	}
+	if sum.Applied != 1 {
+		t.Fatalf("Applied = %d, want 1; out:\n%s", sum.Applied, out.String())
+	}
+	if got := tsRead(t, activePath); !strings.Contains(got, "**Status:** Active") {
+		t.Errorf("the active file was not repaired:\n%s", got)
+	}
+}
+
+// TestMigrateTaskHeaderReportTrailerSubtractsDeclinedFiles pins the trailer's
+// per-class subtraction.
+//
+// 🔴 A REPORT THAT SAYS "re-run with --apply to write the both files" FOR A FILE
+// IT JUST DECLINED IS THE FALSE-CAUSE SHAPE. sum.Both counts the whole class,
+// declined files included, so the bare `sum.Both > 0` this replaced promised a
+// write that --apply categorically refuses. The multi-title term in the same
+// expression already subtracted its sign-offs; the pattern simply was not
+// extended to the new class.
+//
+// The fixture is a vault whose ONLY candidate is a declined both file: no
+// bare-only, no multi-title, so no other term of the expression can hold the
+// trailer up and mask the defect.
+func TestMigrateTaskHeaderReportTrailerSubtractsDeclinedFiles(t *testing.T) {
+	root := setupTestVaultEnv(t)
+	tsWrite(t, root, "Projects/proj/tasks/done/declined.md", thBoth)
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderMigration(root, "proj", false, &out)
+	if err != nil {
+		t.Fatalf("runTaskHeaderMigration: %v", err)
+	}
+	if sum.Both != 1 || sum.Declined != 1 {
+		t.Fatalf("fixture must be exactly one declined both file, got Both=%d Declined=%d; out:\n%s",
+			sum.Both, sum.Declined, out.String())
+	}
+	if sum.BareOnly != 0 || sum.MultiTitle != 0 {
+		t.Fatalf("another class would hold the trailer up and mask the defect: BareOnly=%d MultiTitle=%d",
+			sum.BareOnly, sum.MultiTitle)
+	}
+	if strings.Contains(out.String(), "Re-run with --apply") {
+		t.Errorf("the report told the operator to re-run with --apply for a file it DECLINED; "+
+			"out:\n%s", out.String())
+	}
+	// The decline itself must still be reported — the fix is subtraction, not silence.
+	if !strings.Contains(out.String(), "DECLINED") {
+		t.Errorf("the decline was not reported at all; out:\n%s", out.String())
+	}
+}
+
+// TestMigrateTaskHeaderReportAndApplyAgree is acceptance criterion 7: a row
+// printed FIX in report mode is a row --apply actually writes, and a row --apply
+// refuses is reported as refused in report mode.
+//
+// 🔴 THIS TEST DID NOT EXIST, AND ITS ABSENCE IS WHY BOTH SEAM DEFECTS SURVIVED.
+// The Both arm used to print FIX and then return on !apply WITHOUT running the
+// transform or its oracle, and nested its shadow guard inside `if apply` — so
+// report mode promised a FIX for a file apply categorically refuses, twice over,
+// and nothing in the suite could tell. Breaking either seam must turn this red.
+func TestMigrateTaskHeaderReportAndApplyAgree(t *testing.T) {
+	seed := func(t *testing.T) string {
+		root := setupTestVaultEnv(t)
+		// Refused by the SHADOW guard: an archived slug with an active twin.
+		tsWrite(t, root, "Projects/proj/tasks/dup.md",
+			"# Active twin\n\n**Status:** planning\n**Priority:** medium\n\n## Context\n\nActive.\n")
+		tsWrite(t, root, "Projects/proj/tasks/done/dup.md", thBothTerminal)
+		// Refused by LAYER 2: archived, non-terminal carried value.
+		tsWrite(t, root, "Projects/proj/tasks/done/declined.md", thBoth)
+		// Genuinely writable.
+		tsWrite(t, root, "Projects/proj/tasks/done/ok.md", thBothTerminal)
+		return root
+	}
+
+	var report bytes.Buffer
+	rsum, err := runTaskHeaderMigration(seed(t), "proj", false, &report)
+	if err != nil {
+		t.Fatalf("report run: %v", err)
+	}
+	var applied bytes.Buffer
+	asum, err := runTaskHeaderMigration(seed(t), "proj", true, &applied)
+	if err != nil {
+		t.Fatalf("apply run: %v", err)
+	}
+
+	if got := strings.Count(report.String(), "  FIX   "); got != asum.Applied {
+		t.Errorf("report printed %d FIX row(s) but --apply wrote %d file(s); a FIX row is a "+
+			"promise the apply must honour\nreport:\n%s\napply:\n%s", got, asum.Applied, report.String(), applied.String())
+	}
+	for _, refused := range []string{"proj/done/dup", "proj/done/declined"} {
+		for _, line := range strings.Split(report.String(), "\n") {
+			if strings.Contains(line, "FIX") && strings.Contains(line, refused) {
+				t.Errorf("report promised a FIX for %s, which --apply refuses:\n%s", refused, report.String())
+			}
+		}
+	}
+	if rsum.Declined != asum.Declined || rsum.Failed != asum.Failed || rsum.Both != asum.Both {
+		t.Errorf("the two modes disagree about the population: report{Both:%d Declined:%d Failed:%d} "+
+			"apply{Both:%d Declined:%d Failed:%d}",
+			rsum.Both, rsum.Declined, rsum.Failed, asum.Both, asum.Declined, asum.Failed)
+	}
+	if asum.Applied != 1 {
+		t.Fatalf("Applied = %d, want 1 (only the writable file); out:\n%s", asum.Applied, applied.String())
 	}
 }
 
@@ -309,7 +491,9 @@ func TestMigrateTaskHeaderExitsNonZeroWhenEveryWriteFailed(t *testing.T) {
 	for _, slug := range []string{"dup1", "dup2"} {
 		tsWrite(t, root, "Projects/proj/tasks/"+slug+".md",
 			"# T\n\n**Status:** planning\n**Priority:** medium\n\n## Context\n\nActive.\n")
-		tsWrite(t, root, "Projects/proj/tasks/done/"+slug+".md", thBoth)
+		// thBothTerminal so the SHADOW guard is what refuses these, not Layer 2 —
+		// this test is about the exit code after every WRITE failed.
+		tsWrite(t, root, "Projects/proj/tasks/done/"+slug+".md", thBothTerminal)
 	}
 
 	var code int
@@ -338,18 +522,21 @@ func TestMigrateTaskHeaderIsIdempotent(t *testing.T) {
 	if _, err := runTaskHeaderMigration(root, "proj", true, &first); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
-	afterFirst := tsRead(t, paths["both"])
+	afterFirst := tsRead(t, paths["both-terminal"])
 
 	var second bytes.Buffer
 	sum, err := runTaskHeaderMigration(root, "proj", true, &second)
 	if err != nil {
 		t.Fatalf("second run: %v", err)
 	}
-	if sum.Both != 0 || sum.Applied != 0 {
-		t.Errorf("second run found Both = %d and Applied = %d; want 0 and 0; out:\n%s",
-			sum.Both, sum.Applied, second.String())
+	// The declined file stays in the Both class by design — it is reported on
+	// every run and never converges, because converging would mean writing it.
+	// Applied is what must converge to zero.
+	if sum.Both != sum.Declined || sum.Applied != 0 {
+		t.Errorf("second run found Both = %d, Declined = %d and Applied = %d; want Both==Declined and Applied 0; out:\n%s",
+			sum.Both, sum.Declined, sum.Applied, second.String())
 	}
-	if got := tsRead(t, paths["both"]); got != afterFirst {
+	if got := tsRead(t, paths["both-terminal"]); got != afterFirst {
 		t.Errorf("a second run modified an already-repaired file\n was: %q\n now: %q", afterFirst, got)
 	}
 }
@@ -489,13 +676,28 @@ func TestMigrateTaskHeaderRefusesTheInvertedShapeAndMakesNoNewFinding(t *testing
 		t.Errorf("Failed = %d, want 0 — a class declined by design is not a failed attempt; out:\n%s",
 			sum.Failed, out.String())
 	}
-	if sum.Inverted != 1 {
-		t.Fatalf("Inverted = %d, want 1; out:\n%s", sum.Inverted, out.String())
+	// Two inverted specimens are seeded — the pre-rename vocabulary and the
+	// current one — because the class must recognise both and one fixture can
+	// only pin one.
+	if sum.Inverted != 2 {
+		t.Fatalf("Inverted = %d, want 2 (legacy and current vocabulary); out:\n%s", sum.Inverted, out.String())
 	}
 
 	if got := tsRead(t, paths["inverted"]); got != thInverted {
 		t.Fatalf("the inverted file was rewritten; this command must never write it:\n%s", got)
 	}
+	// 🔴 THE REPORT MUST NOT CALL THE LEGACY VALUE "terminal". The class is keyed
+	// on IsArchivedStatusClaim, which admits the pre-rename "retired";
+	// IsTerminalStatus deliberately does NOT, and a pinned invariant forbids
+	// widening it. Operator-facing prose saying a `retired` file is "already
+	// terminal" asserts the opposite of that invariant. Asserted as a NEGATIVE on
+	// the claim rather than a positive on the wording, so rephrasing stays free
+	// and only the falsehood is pinned.
+	if strings.Contains(out.String(), "already terminal") {
+		t.Errorf("the report describes a bolded value as \"already terminal\"; the legacy "+
+			"vocabulary this class admits is exactly what IsTerminalStatus rejects; out:\n%s", out.String())
+	}
+
 	// The report must name BOTH values: the whole reason the file is skipped is
 	// that a human has to decide which of the two is true.
 	for _, want := range []string{"inverted", "done", "Closed — operator accepted"} {
@@ -523,10 +725,34 @@ func TestMigrateTaskHeaderRefusesTheInvertedShapeAndMakesNoNewFinding(t *testing
 	// the first time — that is the pairing the report announces — so a blanket
 	// "must not rise" would now be measuring the wrong thing. What must still
 	// hold is that the INVERTED file contributed none of it.
-	if got, want := count(after), count(before)+sum.AppliedBareOnly; got != want {
-		t.Errorf("task-status-directory findings went %d -> %d with %d constructed header(s); "+
-			"want exactly %d — anything more means a repair manufactured a finding nobody planned",
-			count(before), got, sum.AppliedBareOnly, want)
+	//
+	// 🔴 THE BOTH REPAIR NOW SUBTRACTS, and the old equality did not model that.
+	// It held only because the both fixture carried a deliberately NON-terminal
+	// value, so merging it left the file still disagreeing with done/ and the
+	// repair was finding-neutral by accident. Layer 2 guarantees the opposite:
+	// an ARCHIVED both file is either declined or merged to a TERMINAL value, so
+	// every archived both write necessarily CLEARS exactly one finding. Every
+	// file in this fixture is archived. Derived, not hardcoded.
+	appliedBoth := sum.Applied - sum.AppliedBareOnly - sum.AppliedMultiTitle
+	if got, want := count(after), count(before)+sum.AppliedBareOnly-appliedBoth; got != want {
+		t.Errorf("task-status-directory findings went %d -> %d with %d constructed header(s) "+
+			"and %d converged both-repair(s); want exactly %d — anything more means a repair "+
+			"manufactured a finding nobody planned",
+			count(before), got, sum.AppliedBareOnly, appliedBoth, want)
+	}
+
+	// The declined file must KEEP its finding. A decline that silently cleared
+	// the finding would be indistinguishable from a repair, which is the whole
+	// reason this dimension is the oracle here rather than the bytes.
+	declinedStillFound := false
+	for _, f := range after.Findings() {
+		if f.Dimension == vaultaudit.DimTaskStatusDirectory && strings.Contains(f.Artifact, "both.md") {
+			declinedStillFound = true
+		}
+	}
+	if sum.Declined > 0 && !declinedStillFound {
+		t.Errorf("the DECLINED file lost its task-status-directory finding; a decline must leave " +
+			"the disagreement reported, not quietly resolved")
 	}
 	for _, f := range after.Findings() {
 		if f.Dimension == vaultaudit.DimTaskStatusDirectory && strings.Contains(f.Artifact, "inverted") {
