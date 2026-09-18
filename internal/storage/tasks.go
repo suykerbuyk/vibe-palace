@@ -3992,3 +3992,96 @@ func precedingSectionNote(unfenced []mdfence.Line, titleLine, firstH2 int) strin
 	return fmt.Sprintf("section heading %q at line %d already opened this document's body",
 		headingTextAt(unfenced, firstH2), firstH2)
 }
+
+// ---------------------------------------------------------------------------
+// Unit B2: duplicate header-field repair.
+//
+// Eleven archived files carry a well-formed header block AND a second occurrence
+// of the same field below it, outside the block. ValidateWholeTaskFile refuses
+// them ("two Status lines" / "two Priority lines") and that refusal is what
+// currently holds them out of the status and board-fields migrations' write
+// paths.
+// ---------------------------------------------------------------------------
+
+// RepairDuplicateHeaderField relabels the OUT-OF-BLOCK occurrence of a duplicated
+// Status or Priority field, leaving the in-block occurrence byte-identical.
+//
+// # RELABEL, NEVER DELETE, AND THE DIRECTION IS A CORRECTNESS PRECONDITION
+//
+// Deleting the duplicate is value-equivalent for every PARSED reader — parseTaskMeta
+// is whole-file first-wins and nothing consults a non-first occurrence — but it is
+// irreversible and it destroys a value that may be the only human-typed one in the
+// file. The task-read handler returns the RAW file, so an agent reading the task is
+// a byte-level reader. When two options are equivalent for every parsed consumer and
+// one is lossy, take the other.
+//
+// 🔴 The label carries a SPACE, and that is load-bearing rather than cosmetic.
+// headerFieldNameValue requires the name before ":**" to be letters, digits and
+// underscore only, so "**Legacy priority:**" is NOT a header field line at all — it
+// is plain bold prose. That is precisely what satisfies the validator. Spelling it
+// "**Legacy_priority:**" turns it back into a recognised field and reintroduces the
+// defect WHILE LEAVING THE FILE VALID, which is why the unit assertion on
+// isHeaderFieldLine is the only thing that can catch that mutation.
+//
+// The inverted consequence is why direction is a precondition and not a preference:
+// because a relabelled line TERMINATES the contiguous run, relabelling the IN-BLOCK
+// occurrence would truncate headerBlock and orphan every field below it.
+//
+// # FENCE-AWARE, BECAUSE A FENCED SAMPLE IS NOT A FIELD
+//
+// Occurrences are counted over mdfence.OutsideFences, matching what
+// ValidateWholeTaskFile itself counts. A "**Status:**" inside a code fence is sample
+// text; relabelling it would corrupt the sample and leave the real duplicate in
+// place, and the file would still be refused — but by then the sample is gone.
+func RepairDuplicateHeaderField(content, field string) (string, error) {
+	if field != fieldStatus && field != fieldPriority {
+		return "", fmt.Errorf("duplicate header-field repair handles %q and %q only, got %q",
+			fieldStatus, fieldPriority, field)
+	}
+	relabel := legacyStatusRelabel
+	if field == fieldPriority {
+		relabel = legacyPriorityRelabel
+	}
+
+	var occurrences []int // 1-indexed line numbers, outside fences, in file order
+	for _, l := range mdfence.OutsideFences(content) {
+		if _, ok := headerFieldValue(l.Text, field); ok {
+			occurrences = append(occurrences, l.Num)
+		}
+	}
+	if len(occurrences) != 2 {
+		return "", fmt.Errorf("duplicate header-field repair wants exactly 2 unfenced %q lines, found %d",
+			"**"+field+":**", len(occurrences))
+	}
+
+	lines := strings.Split(content, "\n")
+	start, end := headerBlock(lines)
+	inBlock := func(num int) bool { return num-1 >= start && num-1 < end }
+
+	first, second := occurrences[0], occurrences[1]
+	if !inBlock(first) {
+		return "", fmt.Errorf("duplicate header-field repair: the FIRST %q line (line %d) is not inside the "+
+			"contiguous header block, so relabelling the second would leave no field the readers can bind",
+			"**"+field+":**", first)
+	}
+	if inBlock(second) {
+		return "", fmt.Errorf("duplicate header-field repair: BOTH %q lines (lines %d and %d) are inside the "+
+			"contiguous header block; relabelling either one truncates the block and orphans the fields below it",
+			"**"+field+":**", first, second)
+	}
+
+	idx := second - 1
+	rest := strings.TrimPrefix(strings.TrimSpace(lines[idx]), "**"+field+":**")
+	lines[idx] = relabel + rest
+
+	if isHeaderFieldLine(lines[idx]) {
+		return "", fmt.Errorf("duplicate header-field repair produced a line the field reader still recognises (%q); "+
+			"the relabel constant must not be a bare word", lines[idx])
+	}
+
+	repaired := strings.Join(lines, "\n")
+	if err := ValidateWholeTaskFile(repaired); err != nil {
+		return "", fmt.Errorf("duplicate header-field repair produced an invalid task file: %w", err)
+	}
+	return repaired, nil
+}
