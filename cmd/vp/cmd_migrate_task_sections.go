@@ -81,9 +81,12 @@ const (
 	// sectionsPromote: zero H2, at least one promotable H3, and the promoted
 	// result validates. This is the only outcome that writes.
 	sectionsPromote
-	// sectionsNoH3: no H2 and no H3 — the BOLD pseudo-heading class, which is a
-	// separate unit's work and is reported rather than guessed at.
+	// sectionsNoH3: no H2, no H3 and no promotable bold pseudo-heading. Reported
+	// rather than guessed at.
 	sectionsNoH3
+	// sectionsPromoteBold: no H2 and no H3, but a whole-line BOLD pseudo-heading
+	// the author used as a section title. Promoting it is the file's repair.
+	sectionsPromoteBold
 	// sectionsRefused: a shape this command must not reason about.
 	sectionsRefused
 )
@@ -377,7 +380,26 @@ func planTaskSections(content string) (after string, outcome taskSectionsOutcome
 		return "", sectionsNoWork, storage.ValidateWholeTaskFile(content).Error(), 0
 	}
 	if !sawH3Shape {
-		return "", sectionsNoH3, "no \"## \" H2 and no \"### \" H3 — its pseudo-heading is a bold line, a separate transform", 0
+		// The BOLD pseudo-heading class. The file comment reserved this class by
+		// name; this is it, landing in the command that reserved it rather than
+		// spawning a second subcommand.
+		bold := boldPseudoHeadingLines(content)
+		if len(bold) == 0 {
+			return "", sectionsNoH3, "no \"## \" H2, no \"### \" H3 and no bold pseudo-heading to promote", 0
+		}
+		if h1 != 1 {
+			return "", sectionsRefused, fmt.Sprintf("%d \"# \" H1 title line(s), want exactly 1: the validator refuses this above the missing-section arm", h1), 0
+		}
+		lines := strings.Split(content, "\n")
+		for _, num := range bold {
+			t := strings.TrimSpace(lines[num-1])
+			lines[num-1] = "## " + t[2:len(t)-2]
+		}
+		promoted := strings.Join(lines, "\n")
+		if verr := storage.ValidateWholeTaskFile(promoted); verr != nil {
+			return "", sectionsRefused, "promoting the bold pseudo-heading would not make the file valid: " + verr.Error(), 0
+		}
+		return promoted, sectionsPromoteBold, "", len(bold)
 	}
 	if refusal != "" {
 		return "", sectionsRefused, refusal, 0
@@ -399,6 +421,37 @@ func planTaskSections(content string) (after string, outcome taskSectionsOutcome
 		return "", sectionsRefused, "promoting would not make the file valid: " + verr.Error(), 0
 	}
 	return after, sectionsPromote, "", len(h3Lines)
+}
+
+// boldPseudoHeadingLines returns the 1-indexed lines whose whole trimmed text is a
+// bold run and nothing else — the shape an author used as a section title before
+// the header contract existed.
+//
+// 🔴 THE PREDICATE IS STRICT, AND BOTH HALVES OF THAT ARE LOAD-BEARING.
+//
+// It requires the bold run to be the ENTIRE line, so "**Status:** retired" — bold
+// followed by a value — is not a heading. And it requires NO trailing colon inside
+// the bold, so "**Acceptance criteria:**" is not one either: that is a label for
+// the list beneath it, not a section title, and it occurs in this corpus. A
+// colon-tolerant predicate promotes it and silently restructures a file nobody
+// asked to restructure.
+//
+// Computed over mdfence.OutsideFences, so a bold line inside a code fence is
+// sample text.
+func boldPseudoHeadingLines(content string) []int {
+	var out []int
+	for _, l := range mdfence.OutsideFences(content) {
+		t := strings.TrimSpace(l.Text)
+		if len(t) < 5 || !strings.HasPrefix(t, "**") || !strings.HasSuffix(t, "**") {
+			continue
+		}
+		inner := t[2 : len(t)-2]
+		if inner == "" || strings.Contains(inner, "**") || strings.HasSuffix(inner, ":") {
+			continue
+		}
+		out = append(out, l.Num)
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -491,7 +544,7 @@ func runTaskSectionsMigration(root, only string, apply bool, out io.Writer) (tas
 				case sectionsRefused:
 					sum.Refused++
 					fmt.Fprintf(out, "  ??    %s/%s (%s/) — refused: %s\n", slug, taskSlug, sub, reason)
-				case sectionsPromote:
+				case sectionsPromote, sectionsPromoteBold:
 					// 🔴 THE SHADOW GUARD RUNS IN BOTH MODES, AND THAT IS THE
 					// POINT. The writer resolves ACTIVE first, so an archived
 					// slug that is also an active file would rewrite the WRONG
@@ -512,8 +565,13 @@ func runTaskSectionsMigration(root, only string, apply bool, out io.Writer) (tas
 						continue
 					}
 					sum.Fix++
-					fmt.Fprintf(out, "  FIX   %s/%s (%s/) — promote %d \"### \" heading(s) to \"## \"\n",
-						slug, taskSlug, sub, promos)
+					if outcome == sectionsPromoteBold {
+						fmt.Fprintf(out, "  FIX   %s/%s (%s/) — promote %d bold pseudo-heading(s) to \"## \"\n",
+							slug, taskSlug, sub, promos)
+					} else {
+						fmt.Fprintf(out, "  FIX   %s/%s (%s/) — promote %d \"### \" heading(s) to \"## \"\n",
+							slug, taskSlug, sub, promos)
+					}
 					if apply {
 						// git holds the only copy of whatever a concurrent
 						// session has written but not committed, and this is a
