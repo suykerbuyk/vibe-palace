@@ -218,6 +218,21 @@ func TestPlanTaskSections_Refusals(t *testing.T) {
 		want:    sectionsNoH3,
 		reason:  "no bold pseudo-heading to promote",
 	}, {
+		// 🔴 THE SIBLING THE LENGTH BOUND DOES NOT REACH. "*****" is length 5, so it
+		// clears len(t) >= 4; its inner is a single "*", so it clears the
+		// empty-inner guard AND the nested-marker guard — and it promotes to the
+		// heading "## *". Only "a line of nothing but asterisks is a thematic
+		// break" closes it, and that closes the whole family at once.
+		name:    "***** does not promote to a one-asterisk heading",
+		content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n*****\n\nbody\n",
+		want:    sectionsNoH3,
+		reason:  "no bold pseudo-heading to promote",
+	}, {
+		name:    "a longer asterisk run is still a thematic break",
+		content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n*******\n\nbody\n",
+		want:    sectionsNoH3,
+		reason:  "no bold pseudo-heading to promote",
+	}, {
 		// "****" is length 4 — the first length the slice can express — and yields
 		// an EMPTY inner, which must be rejected rather than promoted to "## ".
 		name:    "**** yields an empty heading and is not promoted",
