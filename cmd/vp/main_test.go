@@ -317,6 +317,12 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		// escape hatch — under --apply, promoting "### " H3 headings to "## ".
 		"migrate task-sections":     true,
 		"migrate task-board-fields": true,
+		// CONSTRUCTS a header field run on ARCHIVED (done/, cancelled/) task
+		// files that carry none, through the header-rewriting
+		// storage.OverwriteTaskFileRewritingHeader seam under --apply. The strict
+		// writer cannot express it: creating a Status field where none existed is
+		// the empty-to-value transition refuseHeaderChange refuses.
+		"migrate task-header-block": true,
 	}
 
 	reg, _, _ := testRegistry()

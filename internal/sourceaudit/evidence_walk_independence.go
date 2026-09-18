@@ -50,6 +50,12 @@ import (
 // disambiguate with.
 var evidenceReporterFuncs = map[string]bool{
 	"runTaskFileValidityReport": true,
+	// `vp migrate task-header-block` compares its own selected set against
+	// `vp audit task-files`' missing-Status class as its population
+	// differential. Both sides already share storage.ValidateWholeTaskFile, so
+	// the ENUMERATIONS are the only thing that differential can prove — which
+	// is exactly what a refactor to ListAllProjects would silently take away.
+	"runTaskHeaderBlockMigration": true,
 }
 
 // sharedEnumerationCalls names the calls that would make a reporter inherit the
