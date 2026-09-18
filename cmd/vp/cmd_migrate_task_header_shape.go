@@ -79,6 +79,15 @@ const (
 	// SECOND occurrence of the same field below it, outside the block.
 	shapeRelabelPriority
 	shapeRelabelStatus
+	// shapeDupTitle: more than one unfenced "# " H1. The extras are body sections
+	// written at the wrong level; they demote FLAT.
+	shapeDupTitle
+	// shapeDupTitleRelocate: both defects in one file — extra titles AND prose
+	// wedged into the header field run. Neither half alone validates.
+	shapeDupTitleRelocate
+	// shapeRelocate: prose wedged into the header field run, marooning a field
+	// outside the contiguous block.
+	shapeRelocate
 )
 
 func (c taskHeaderShapeClass) String() string {
@@ -87,6 +96,12 @@ func (c taskHeaderShapeClass) String() string {
 		return "relabel-priority"
 	case shapeRelabelStatus:
 		return "relabel-status"
+	case shapeDupTitle:
+		return "demote-extra-titles"
+	case shapeDupTitleRelocate:
+		return "demote-extra-titles+relocate-prose"
+	case shapeRelocate:
+		return "relocate-prose"
 	default:
 		return "no-work"
 	}
@@ -118,8 +133,11 @@ const (
 // through the same resolveTaskFile; the archived refusal lives at the CLI and MCP
 // layers. `migrate task-header` writes into done/ through the strict seam today.
 var taskHeaderShapeSeamFor = map[taskHeaderShapeClass]taskHeaderShapeSeam{
-	shapeRelabelPriority: seamStrict,
-	shapeRelabelStatus:   seamStrict,
+	shapeRelabelPriority:  seamStrict,
+	shapeRelabelStatus:    seamStrict,
+	shapeDupTitle:         seamStrict,
+	shapeDupTitleRelocate: seamStrict,
+	shapeRelocate:         seamStrict,
 }
 
 // taskHeaderShapeWritingClasses is the roster the exhaustiveness test compares
@@ -127,6 +145,9 @@ var taskHeaderShapeSeamFor = map[taskHeaderShapeClass]taskHeaderShapeSeam{
 var taskHeaderShapeWritingClasses = []taskHeaderShapeClass{
 	shapeRelabelPriority,
 	shapeRelabelStatus,
+	shapeDupTitle,
+	shapeDupTitleRelocate,
+	shapeRelocate,
 }
 
 type taskHeaderShapeDecision struct {
@@ -233,21 +254,54 @@ func planTaskHeaderShape(content string) (after string, class taskHeaderShapeCla
 		return "", shapeNoWork, ""
 	}
 
-	var field string
+	var repaired string
+	var rerr error
+
 	switch {
 	case strings.Contains(verr.Error(), "two Priority lines"):
-		field, class = "Priority", shapeRelabelPriority
+		class = shapeRelabelPriority
+		repaired, rerr = storage.RepairDuplicateHeaderField(content, "Priority")
+
 	case strings.Contains(verr.Error(), "two Status lines"):
-		field, class = "Status", shapeRelabelStatus
+		class = shapeRelabelStatus
+		repaired, rerr = storage.RepairDuplicateHeaderField(content, "Status")
+
+	case strings.Contains(verr.Error(), "two title lines"):
+		// 🔴 FIRST FAILURE IS NOT ONLY FAILURE. Demoting the extra titles is the
+		// whole repair for one corpus file and only half of it for another, where
+		// prose also splits the header field run. Re-validate after the first
+		// transform rather than assuming one fix per file, and let the class name
+		// what was actually done.
+		class = shapeDupTitle
+		repaired, rerr = storage.RepairExtraTitles(content)
+		if rerr == nil && storage.ValidateWholeTaskFile(repaired) != nil {
+			var second string
+			second, rerr = storage.RepairInterleavedHeaderProse(repaired)
+			if rerr == nil {
+				repaired, class = second, shapeDupTitleRelocate
+			}
+		}
+
+	case strings.Contains(verr.Error(), "malformed header block"):
+		class = shapeRelocate
+		repaired, rerr = storage.RepairInterleavedHeaderProse(content)
+
 	default:
 		// Malformed, but not this command's defect. Report the validator's own
 		// message rather than a shape this command inferred.
 		return "", shapeNoWork, verr.Error()
 	}
 
-	repaired, rerr := storage.RepairDuplicateHeaderField(content, field)
 	if rerr != nil {
 		return "", shapeNoWork, rerr.Error()
+	}
+
+	// 🔴 THE POST-CONDITION. Shape checks above can be wrong; this cannot. A file
+	// is a repair candidate only when the transformed bytes actually satisfy the
+	// whole-file validator, so a transform that would not fix the file is
+	// reported as someone else's defect rather than written.
+	if verr2 := storage.ValidateWholeTaskFile(repaired); verr2 != nil {
+		return "", shapeNoWork, fmt.Sprintf("%s would not make the file valid: %v", class, verr2)
 	}
 	return repaired, class, ""
 }
