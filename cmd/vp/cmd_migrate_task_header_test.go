@@ -1259,12 +1259,16 @@ func TestMigrateTaskHeaderSignOffStatesTheReasonItActuallyHas(t *testing.T) {
 // defect: this command already reaches the archived-pair branch of the shared
 // guard and already behaves correctly.
 //
-// 🔴 IT WAS EXERCISED BY ONLY ONE COMMAND'S TESTS. Narrowing the shared walk
-// back to active-only turned exactly two tests red, both belonging to
-// task-sections/task-header-spacing, while this command and task-header-block
-// BOTH reach that branch and BOTH stayed green. The gap was structurally
-// invisible per-branch: the widening and this command's own arms were on
-// different branches, so only the merged tree carries both halves.
+// 🔴 IT USED TO BE EXERCISED BY ONLY ONE COMMAND'S TESTS. Before this test
+// existed, narrowing the shared walk back to active-only reddened only the
+// task-sections and task-header-spacing tests; this command reached the branch
+// and stayed green. That is history, not a current fact -- with this test in
+// place the same break reds this command too, which is why it was added. Do not
+// read the old state as the present one.
+//
+// The gap was structurally invisible per-branch: the widening and this command's
+// own arms were on different branches, so only the merged tree carries both
+// halves.
 func TestMigrateTaskHeaderRefusesAnArchivedPair(t *testing.T) {
 	root := setupTestVaultEnv(t)
 	// thBothTerminal is repairable on its own, so the shadow guard is the ONLY
