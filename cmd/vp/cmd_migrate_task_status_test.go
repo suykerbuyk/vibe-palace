@@ -672,8 +672,12 @@ func TestMigrateTaskStatusRollbackOmitsAnUntrackedStamp(t *testing.T) {
 // is on BYTES, for exactly that reason.
 func TestMigrateTaskStatusRefusesAShadowedArchivedPairAndDestroysNothing(t *testing.T) {
 	root := tsVault(t)
-	doneBody := "# T\n\n**Status:** retired\n**Priority:** medium\n\n## Context\n\nI am the DONE copy.\n"
-	cancBody := "# T\n\n**Status:** retired\n**Priority:** medium\n\n## Context\n\nI am the CANCELLED copy.\n"
+	// 🔴 THE TWO FILES DIFFER IN EVERY FIELD A WHOLE-FILE REPLACEMENT WOULD CARRY:
+	// body AND Priority, not just Status. The destroyed file gets the wrong
+	// Priority and the wrong body as well as the wrong status, and an assertion
+	// naming only the status is how the weak form creeps back in.
+	doneBody := "# T\n\n**Status:** retired\n**Priority:** high\n\n## Context\n\nI am the DONE copy.\n"
+	cancBody := "# T\n\n**Status:** retired\n**Priority:** low\n\n## Context\n\nI am the CANCELLED copy.\n"
 	donePath := tsWrite(t, root, "Projects/proj/tasks/done/pair.md", doneBody)
 	cancPath := tsWrite(t, root, "Projects/proj/tasks/cancelled/pair.md", cancBody)
 	tsGitInit(t, root)
@@ -684,29 +688,46 @@ func TestMigrateTaskStatusRefusesAShadowedArchivedPairAndDestroysNothing(t *test
 		t.Fatalf("runTaskStatusMigration: %v", err)
 	}
 
-	// The cancelled/ copy is shadowed by done/ and must be refused.
+	// --- the refusal names the real cause -----------------------------------
 	if sum.Failed != 1 {
 		t.Errorf("Failed = %d, want 1 (the shadowed cancelled/ copy); out:\n%s", sum.Failed, out.String())
 	}
 	if !strings.Contains(out.String(), "the same slug also exists in tasks/done/") {
 		t.Errorf("the refusal must name the shadowed pair and the resolver order; out:\n%s", out.String())
 	}
-	// It must NOT blame an active task: there is no active twin in this vault.
 	if strings.Contains(out.String(), "an ACTIVE task of the same slug exists") {
 		t.Errorf("the refusal blamed an ACTIVE twin that does not exist -- false cause; out:\n%s", out.String())
 	}
 
-	// 🔴 BYTES. The cancelled/ copy must be untouched, and the done/ copy must
-	// still be its OWN body -- repaired in place, never replaced by its shadow's.
+	// --- leg 1: the SHADOWED file is refused, byte-identical ------------------
 	if got := tsRead(t, cancPath); got != cancBody {
 		t.Fatalf("the refused cancelled/ copy was written:\n%s", got)
 	}
-	if got := tsRead(t, donePath); !strings.Contains(got, "I am the DONE copy.") {
-		t.Fatalf("done/ no longer carries its own body -- this is the destruction this unit exists to "+
-			"prevent:\n%s", got)
+
+	// --- leg 2: the RESOLVER-WINNING file is REPAIRED, and keeps its OWN -----
+	// 🔴 done/ IS NAMED EXPLICITLY, AND SO ARE ITS FIELDS. It is the file the
+	// destruction lands on, and leg 1 alone is GREEN ON A DESTROYED VAULT --
+	// measured: with the guard removed, cancelled/pair.md is byte-identical to
+	// its seed while done/pair.md has been replaced wholesale.
+	done := tsRead(t, donePath)
+	if !strings.Contains(done, "**Status:** done") {
+		t.Errorf("done/ was not repaired to its own directory's terminal value:\n%s", done)
 	}
-	if got := tsRead(t, donePath); strings.Contains(got, "I am the CANCELLED copy.") {
-		t.Fatalf("done/ was overwritten with the CANCELLED copy's body:\n%s", got)
+	if !strings.Contains(done, "**Priority:** high") {
+		t.Errorf("done/ lost its OWN Priority -- a whole-file replacement carries the "+
+			"shadow's Priority too:\n%s", done)
+	}
+	if !strings.Contains(done, "I am the DONE copy.") {
+		t.Errorf("done/ lost its OWN body -- this is the destruction this unit exists to "+
+			"prevent:\n%s", done)
+	}
+
+	// --- leg 3: neither file received the OTHER's content --------------------
+	if strings.Contains(done, "I am the CANCELLED copy.") || strings.Contains(done, "**Priority:** low") {
+		t.Fatalf("done/ received the cancelled/ copy's content:\n%s", done)
+	}
+	if got := tsRead(t, cancPath); strings.Contains(got, "I am the DONE copy.") {
+		t.Fatalf("cancelled/ received the done/ copy's content:\n%s", got)
 	}
 }
 
