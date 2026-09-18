@@ -82,10 +82,14 @@ func cmdMigrateTaskHeaderSpacing() *cli.Command {
 			"before touching it and refuses rather than guesses on any disagreement; a file with no " +
 			"hazard is left byte-for-byte untouched.\n\n" +
 			"Scope is every project in the vault by default, matching every other `vp migrate` " +
-			"command — this repair is vault-schema-shaped, not project-scoped. Writes go through the " +
-			"migration-only OverwriteTaskFileRewritingHeader escape hatch, so ARCHIVED (done/, " +
-			"cancelled/) files are reached without tripping the normal overwrite-refused-on-archived " +
-			"rule. A run in which any file failed exits non-zero.",
+			"command — this repair is vault-schema-shaped, not project-scoped. Writes go through " +
+			"OverwriteTaskFileRewritingHeader because this repair MOVES a header line out of the " +
+			"header block, which the strict writer refuses; the storage writer has no archived rule " +
+			"for either seam to trip, and the archived refusal lives at the CLI and MCP layers " +
+			"instead. A slug that resolves to a DIFFERENT directory than the one being repaired is " +
+			"REFUSED in both modes — the writer searches active, then done/, then cancelled/, so " +
+			"repairing a shadowed copy would rewrite the wrong file. A run in which any file failed " +
+			"exits non-zero.",
 		Flags: migrateTaskHeaderSpacingFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp migrate task-header-spacing", Comment: "Report every hazard across every project; writes nothing"},
@@ -205,8 +209,34 @@ func runTaskHeaderSpacingMigration(root, only string, apply bool, out io.Writer)
 					continue
 				}
 
-				sum.Fix++
 				plan := taskHeaderSpacingPlan{Project: slug, Slug: taskSlug, Dir: sub, Line: line, Text: text}
+
+				// 🔴 THE SHADOW GUARD RUNS IN BOTH MODES, AHEAD OF THE FIX
+				// ACCOUNTING. This command reads by PATH and writes by SLUG, and
+				// the writer resolves active, then done/, then cancelled/ — so a
+				// slug living in an earlier directory than the one being repaired
+				// would have this file's repaired bytes written over a DIFFERENT
+				// file, destroying it while reporting success.
+				//
+				// It sits above sum.Fix++ and the FIX row deliberately: a report
+				// that printed FIX and told the operator to "re-run with --apply"
+				// for a file apply categorically refuses is the exact promise the
+				// plan-first shape exists to prevent. cmd_migrate_task_sections.go
+				// places it the same way; the three call sites in
+				// cmd_migrate_task_header.go nest it inside `if apply` and that is
+				// a known defect, not a template.
+				//
+				// NOTE the argument order: taskHeaderShadowed takes (project, sub,
+				// slug), and in this loop the variable named `slug` is the PROJECT
+				// while the task's own slug is `taskSlug`.
+				if taskHeaderShadowed(out, root, slug, sub, taskSlug, name) {
+					plan.Failed = true
+					sum.Failed++
+					sum.Plans = append(sum.Plans, plan)
+					continue
+				}
+
+				sum.Fix++
 				dirLabel := sub
 				if dirLabel == "" {
 					dirLabel = "tasks"

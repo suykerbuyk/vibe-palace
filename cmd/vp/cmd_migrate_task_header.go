@@ -468,18 +468,63 @@ func taskHeaderWhere(project, sub, slug string) string {
 	return project + "/" + sub + "/" + slug
 }
 
-// taskHeaderShadowed is the shadow guard, shared by both repairs.
+// taskHeaderShadowDirs mirrors Vault.resolveTaskFile's own search order —
+// active, then done/, then cancelled/. It is deliberately a copy of that order
+// rather than a second rule about it: the guard below exists only to predict
+// which file the slug-addressed writer will land on, and a prediction derived
+// from anything but the resolver's own order is a guess.
+var taskHeaderShadowDirs = []string{"", "done", "cancelled"}
+
+// taskHeaderShadowed is the shadow guard, shared by every task-migrate repair
+// that reads a task by PATH and writes it back by SLUG.
 //
-// 🔴 Vault.resolveTaskFile searches active FIRST, so overwriting an ARCHIVED
-// slug that also exists under tasks/ would silently rewrite the active file
-// instead. Refuse rather than guess which one the operator meant.
+// 🔴 Vault.resolveTaskFile searches active, then done/, then cancelled/, and
+// returns the FIRST hit. A command that read one path and writes by slug
+// therefore rewrites a DIFFERENT file whenever an earlier directory also holds
+// that slug. Refuse rather than guess which one the operator meant.
+//
+// 🔴 THIS COVERS TWO SHAPES, NOT ONE, AND THE SECOND WAS MISSED ONCE ALREADY.
+// The original guard asked only "does an ACTIVE file exist", which leaves a slug
+// present in BOTH done/ and cancelled/ — with no active twin — passing cleanly
+// while the write lands on the done/ copy. That is the same defect one directory
+// over, with a guard installed and reporting success. One machine cannot build
+// that state, but a MERGE can: machine A retires slug X, machine B cancels slug
+// X, and git merges two files at different paths with no conflict. Concurrent
+// multi-machine writes are a documented live condition for this vault.
+//
+// The rule is therefore stated once, against the resolver's own order: find the
+// first directory holding this slug; if it is the directory being repaired, the
+// write lands on the file that was read and there is nothing to refuse.
 func taskHeaderShadowed(out io.Writer, root, project, sub, slug, name string) bool {
-	if sub == "" || !fileExists(filepath.Join(root, "Projects", project, "tasks", name)) {
-		return false
+	for _, dir := range taskHeaderShadowDirs {
+		if !fileExists(taskHeaderTaskPath(root, project, dir, name)) {
+			continue
+		}
+		if dir == sub {
+			// The resolver picks THIS file: the repair writes what it read.
+			return false
+		}
+		// The wording of the active case is load-bearing and is kept verbatim:
+		// sibling commands' tests assert this exact sentence.
+		if dir == "" {
+			fmt.Fprintf(out, "  !!    %s: an ACTIVE task of the same slug exists; refusing (the writer resolves active first)\n",
+				taskHeaderWhere(project, sub, slug))
+			return true
+		}
+		fmt.Fprintf(out, "  !!    %s: the same slug also exists in tasks/%s/; refusing (the writer resolves %s before %s)\n",
+			taskHeaderWhere(project, sub, slug), dir, dir, sub)
+		return true
 	}
-	fmt.Fprintf(out, "  !!    %s: an ACTIVE task of the same slug exists; refusing (the writer resolves active first)\n",
-		taskHeaderWhere(project, sub, slug))
-	return true
+	return false
+}
+
+// taskHeaderTaskPath joins the on-disk path of one task file, with "" meaning
+// the active tasks/ directory.
+func taskHeaderTaskPath(root, project, sub, name string) string {
+	if sub == "" {
+		return filepath.Join(root, "Projects", project, "tasks", name)
+	}
+	return filepath.Join(root, "Projects", project, "tasks", sub, name)
 }
 
 // taskHeaderRelPath renders a task file's vault-relative path — what

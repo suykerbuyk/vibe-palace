@@ -397,3 +397,168 @@ func TestMigrateTaskHeaderSpacingCommandExitsNonZeroWithoutGit(t *testing.T) {
 		t.Errorf("exit code = %d (OK) for --apply against a non-git vault, want a failure; out:\n%s", code, out)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The shadow guard.
+//
+// This command reads a task by PATH and writes it back by SLUG, and
+// Vault.resolveTaskFile searches active, then done/, then cancelled/, returning
+// the FIRST hit. Without a guard, repairing a file in a LATER directory writes
+// the repaired bytes over the file in the EARLIER one — destroying it, leaving
+// the hazard unrepaired, and exiting 0.
+//
+// 🔴 EVERY FIXTURE BELOW GIVES THE PROJECT AND THE TASK SLUG DISTINCT NAMES, AND
+// EVERY TEST ASSERTS THE WHOLE REFUSAL LINE RATHER THAN A COUNTER. Both are
+// deliberate and both replace weaker checks:
+//
+//   - sum.Failed == 1 is NOT discriminating. A read error, a write error and a
+//     validator refusal each satisfy it with no guard involved, so a test that
+//     keys its refusal evidence on that counter cannot tell "the guard fired"
+//     from "something else broke". The rendered line is the primary evidence
+//     here and the counter is support.
+//   - taskHeaderShadowed takes (project, sub, slug) while THIS command's loop
+//     variable named `slug` is the PROJECT and the task's slug is `taskSlug`. A
+//     transposed call compiles. With project == slug the rendered location is
+//     symmetric and a string assertion cannot see the transposition; with
+//     distinct names it renders "beta-task/done/alpha" and the assertion fails.
+//
+// 🔴 THE PERMISSIVE SEAM IS WHY THESE FIXTURES MAY DIFFER FROM EACH OTHER, AND
+// THAT IS THE OPPOSITE OF THE SIBLING'S SITUATION. cmd_migrate_task_sections.go
+// uses the STRICT seam, so its shadow test must give the colliding files
+// byte-identical headers or refuseHeaderChange refuses the write on its own and
+// the test passes with the guard deleted. This command uses
+// OverwriteTaskFileRewritingHeader, so no header compare runs and mismatched
+// headers cannot stand in for the guard. If this command is ever switched to the
+// strict seam, every test below goes vacuous and the fixtures must be made
+// header-identical.
+// ---------------------------------------------------------------------------
+
+// shadowVictim is the file the resolver would WRONGLY write: hazard-free (so it
+// is counted Clean and is never itself a repair target) and different from
+// hazardFixture in title, status, priority and body, so the writer's
+// identical-content no-op cannot stand in for the guard either.
+const shadowVictim = "# The real file\n\n**Status:** in_progress\n**Priority:** low\n\n## Context\n\nMust not be overwritten.\n"
+
+func TestMigrateTaskHeaderSpacing_ShadowedSlugIsRefused(t *testing.T) {
+	root := tsVault(t)
+	active := tsWrite(t, root, "Projects/alpha/tasks/beta-task.md", shadowVictim)
+	archived := tsWrite(t, root, "Projects/alpha/tasks/done/beta-task.md", hazardFixture)
+	tsGitInit(t, root)
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderSpacingMigration(root, "alpha", true, &out)
+	if err != nil {
+		t.Fatalf("apply run: %v", err)
+	}
+
+	wantLine := "  !!    alpha/done/beta-task: an ACTIVE task of the same slug exists; " +
+		"refusing (the writer resolves active first)\n"
+	if !strings.Contains(out.String(), wantLine) {
+		t.Errorf("the refusal line is missing or reworded.\nwant: %q\nout:\n%s", wantLine, out.String())
+	}
+	if got := tsRead(t, active); got != shadowVictim {
+		t.Fatalf("🔴 THE ACTIVE FILE WAS REWRITTEN WITH THE ARCHIVED BODY:\n%s", got)
+	}
+	if got := tsRead(t, archived); got != hazardFixture {
+		t.Errorf("the archived file was modified despite the refusal; the run refused, it did not redirect:\n%s", got)
+	}
+	if sum.Applied != 0 {
+		t.Errorf("Applied = %d, want 0 — a shadowed slug must never be written", sum.Applied)
+	}
+	if sum.Failed != 1 {
+		t.Errorf("Failed = %d, want 1 — a shadowed slug is a vault defect needing a human", sum.Failed)
+	}
+}
+
+func TestMigrateTaskHeaderSpacing_ShadowedSlugIsRefusedInREPORTMode(t *testing.T) {
+	root := tsVault(t)
+	active := tsWrite(t, root, "Projects/alpha/tasks/beta-task.md", shadowVictim)
+	tsWrite(t, root, "Projects/alpha/tasks/done/beta-task.md", hazardFixture)
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderSpacingMigration(root, "alpha", false, &out)
+	if err != nil {
+		t.Fatalf("report run: %v", err)
+	}
+	s := out.String()
+
+	wantLine := "  !!    alpha/done/beta-task: an ACTIVE task of the same slug exists; " +
+		"refusing (the writer resolves active first)\n"
+	if !strings.Contains(s, wantLine) {
+		t.Errorf("report did not surface the refusal.\nwant: %q\nout:\n%s", wantLine, s)
+	}
+	if strings.Contains(s, "FIX   alpha/beta-task") {
+		t.Errorf("report printed FIX for a shadowed slug apply will refuse:\n%s", s)
+	}
+	if strings.Contains(s, "Re-run with --apply") {
+		t.Errorf("report told the operator to apply a run with nothing appliable:\n%s", s)
+	}
+	if sum.Fix != 0 {
+		t.Errorf("Fix = %d, want 0 — report counted a file apply refuses as fixable", sum.Fix)
+	}
+	if sum.Failed != 1 {
+		t.Errorf("Failed = %d, want 1 — a shadowed slug is a vault defect in either mode", sum.Failed)
+	}
+	if got := tsRead(t, active); got != shadowVictim {
+		t.Errorf("report mode wrote to the active file:\n%s", got)
+	}
+}
+
+// TestMigrateTaskHeaderSpacing_ArchivedPairIsRefused covers the shape the
+// original active-only guard missed entirely: a slug in BOTH done/ and
+// cancelled/ with NO active twin. resolveTaskFile returns the done/ copy, so
+// repairing the cancelled/ one writes over done/.
+//
+// 🔴 "THE ACTIVE FILE IS UNCHANGED" IS VACUOUS HERE — THERE IS NO ACTIVE FILE.
+// The bytes that must not change are the done/ copy's, because done/ is what the
+// resolver picks. Keying this test on the word "active" would assert nothing.
+//
+// The state is not constructible by one machine but is reachable by MERGE:
+// machine A retires the slug, machine B cancels it, git merges two files at
+// different paths with no conflict.
+//
+// Break: restore the old early-out `if sub == "" || !fileExists(<active>)` in
+// taskHeaderShadowed. This test fails; the two above stay green.
+func TestMigrateTaskHeaderSpacing_ArchivedPairIsRefused(t *testing.T) {
+	for _, apply := range []bool{false, true} {
+		name := "report"
+		if apply {
+			name = "apply"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := tsVault(t)
+			done := tsWrite(t, root, "Projects/alpha/tasks/done/beta-task.md", shadowVictim)
+			cancelled := tsWrite(t, root, "Projects/alpha/tasks/cancelled/beta-task.md", hazardFixture)
+			if apply {
+				tsGitInit(t, root)
+			}
+
+			var out bytes.Buffer
+			sum, err := runTaskHeaderSpacingMigration(root, "alpha", apply, &out)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+
+			wantLine := "  !!    alpha/cancelled/beta-task: the same slug also exists in tasks/done/; " +
+				"refusing (the writer resolves done before cancelled)\n"
+			if !strings.Contains(out.String(), wantLine) {
+				t.Errorf("the archived-pair refusal is missing or reworded.\nwant: %q\nout:\n%s",
+					wantLine, out.String())
+			}
+			// done/ is what resolveTaskFile picks, so done/ is the file an
+			// unguarded run destroys. This is the assertion that matters here.
+			if got := tsRead(t, done); got != shadowVictim {
+				t.Fatalf("🔴 THE done/ FILE WAS REWRITTEN WITH THE cancelled/ BODY:\n%s", got)
+			}
+			if got := tsRead(t, cancelled); got != hazardFixture {
+				t.Errorf("the cancelled/ file was modified despite the refusal:\n%s", got)
+			}
+			if sum.Applied != 0 || sum.Fix != 0 {
+				t.Errorf("Applied = %d, Fix = %d, want 0 and 0", sum.Applied, sum.Fix)
+			}
+			if sum.Failed != 1 {
+				t.Errorf("Failed = %d, want 1", sum.Failed)
+			}
+		})
+	}
+}
