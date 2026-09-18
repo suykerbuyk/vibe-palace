@@ -663,13 +663,21 @@ func TestMigrateTaskStatusRollbackOmitsAnUntrackedStamp(t *testing.T) {
 //
 // The property assertion is the one a reviewer accepts as sufficient, and it is
 // the one that goes green: the mis-resolved write does set a valid terminal
-// status, just on the wrong file and after replacing its body. The literal
-// variant only catches it here by luck -- the two fixtures happen to target
-// DIFFERENT terminal values, so the last write leaves a value the literal does
-// not match. Give the two files the same target status and it goes green too.
+// status, just on the wrong file and after replacing its body.
 //
-// Neither is the check. The bodies below are distinguishable, and the assertion
-// is on BYTES, for exactly that reason.
+// 🔴 DO NOT ADD THAT THE LITERAL "ONLY CATCHES IT BY LUCK". That sentence was
+// here and is DELETED, not softened: it is not constructible for this command.
+// archiveDirs is a fixed two-entry literal and a shadow requires two DIFFERENT
+// directories, so the two selected files always carry different targets and the
+// literal always catches it. The reversed-order route fails too -- after the
+// first mis-resolution the file already reads "cancelled", which IsTerminalStatus
+// accepts, so the scan skips it.
+//
+// This block exists to stop someone re-weakening the assertion below, which
+// makes it the one place a stale claim does real damage.
+//
+// The assertion is on BYTES because the PROPERTY form goes green. The bodies
+// below are distinguishable for exactly that reason.
 func TestMigrateTaskStatusRefusesAShadowedArchivedPairAndDestroysNothing(t *testing.T) {
 	root := tsVault(t)
 	// 🔴 THE TWO FILES DIFFER IN EVERY FIELD A WHOLE-FILE REPLACEMENT WOULD CARRY:
@@ -796,6 +804,16 @@ func TestMigrateTaskStatusReportDoesNotPromiseAFixItWillRefuse(t *testing.T) {
 	asum, err := runTaskStatusMigration(seed(t), "proj", true, &applied)
 	if err != nil {
 		t.Fatalf("apply run: %v", err)
+	}
+
+	// 🔴 FLOOR FIRST. "FIX count == Applied" is 0 == 0 for a command that selected
+	// NOTHING, so without this the test passes vacuously -- proven by making the
+	// guard refuse everything and watching it stay green. This unit exists because
+	// a defect hid behind tests that could not fail; its own tests must be able to.
+	// TestMigrateTaskHeaderReportAndApplyAgree carries the same precondition.
+	if asum.Applied != 1 {
+		t.Fatalf("Applied = %d, want 1 (the repairable done/ copy) -- without a nonzero floor "+
+			"the comparison below is 0 == 0 and cannot fail; out:\n%s", asum.Applied, applied.String())
 	}
 
 	// Every FIX row the report printed must be a file --apply actually wrote.

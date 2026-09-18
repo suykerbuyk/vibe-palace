@@ -989,13 +989,17 @@ func TestMigrateTaskHeaderBlock_PopulationDifferential(t *testing.T) {
 // TestMigrateTaskHeaderBlock_ArchivedPairIsRefused closes a COVERAGE gap, not a
 // live defect: the behaviour below is already correct at this revision.
 //
-// 🔴 THE ARCHIVED-PAIR BRANCH OF THE SHARED GUARD WAS EXERCISED BY ONLY ONE
-// COMMAND'S TESTS. Narrowing taskHeaderShadowWinner back to active-only turned
-// exactly two tests red, both belonging to task-sections/task-header-spacing,
-// while this command and task-header BOTH reach that branch and BOTH stayed
-// green. The gap was structurally invisible per-branch: this command branched
-// before the guard was widened, so only the merged tree carries both halves and
-// only a test written after the merge can see the hole.
+// 🔴 THE ARCHIVED-PAIR BRANCH OF THE SHARED GUARD USED TO BE EXERCISED BY ONLY
+// ONE COMMAND'S TESTS. Before this test existed, narrowing taskHeaderShadowWinner
+// back to active-only reddened only the task-sections and task-header-spacing
+// tests; this command reached the branch and stayed green. That is history, not
+// a current fact -- with this test in place the same break reds this command too,
+// which is the entire point of adding it. Do not read the old state as the
+// present one.
+//
+// The gap was structurally invisible per-branch: this command branched before the
+// guard was widened, so only the merged tree carries both halves and only a test
+// written after the merge can see the hole.
 func TestMigrateTaskHeaderBlock_ArchivedPairIsRefused(t *testing.T) {
 	for _, apply := range []bool{false, true} {
 		name := "report"
