@@ -668,3 +668,437 @@ func TestMigrateTaskSections_LiveArchivedCorpus(t *testing.T) {
 	}
 	t.Logf("live corpus: %d file(s) selected, %d repaired to validity", selected, promoted)
 }
+
+// ---------------------------------------------------------------------------
+// Send-back fixes. Each test below was added because a break against the
+// behaviour it describes previously left the suite GREEN.
+// ---------------------------------------------------------------------------
+
+// TestPlanTaskSections_RefusalsCiteATrueCause is the ORDERING test.
+//
+// 🔴 A refusal may only name a shape that actually blocks the promotion. An
+// earlier version returned from inside the scan loop, before the `h2 > 0`
+// escape, so a file with plenty of H2s — never a candidate for this command —
+// was refused citing an H4 or a duplicate H3 that blocked nothing. On the live
+// corpus five of six refusals named a false cause that way; their real defect
+// was a missing **Status:** or a doubled **Priority:**. This output is B2's
+// input, so a false cause misdirects the next unit.
+//
+// Break: move the `if h2 > 0` escape back below the scan loop, or return the
+// refusals from inside the loop again. This test fails.
+func TestPlanTaskSections_RefusalsCiteATrueCause(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{{
+		// Has H2s AND an H4. The H4 blocks nothing: the file was never a
+		// candidate, because it already has an addressable section.
+		name: "H2s present alongside an H4",
+		content: "# T\n\n**Priority:** medium\n\n## Context\n\nbody\n\n" +
+			"## Plan\n\n#### Deep\n\nmore\n",
+	}, {
+		// Has H2s AND two same-named H3s. Same reasoning.
+		name: "H2s present alongside duplicate H3s",
+		content: "# T\n\n**Priority:** medium\n\n## Context\n\n### Files\n\na\n\n" +
+			"## Plan\n\n### Files\n\nb\n",
+	}, {
+		// The live shape: two **Priority:** lines, plus an H4.
+		name: "two Priority lines alongside an H4",
+		content: "# T\n\n**Status:** retired\n**Priority:** medium\n**Priority:** high\n\n" +
+			"## Context\n\nbody\n\n#### Deep\n\nmore\n",
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			verr := storage.ValidateWholeTaskFile(tc.content)
+			if verr == nil {
+				t.Fatal("precondition: the fixture must FAIL the validator, or there is no cause to get right")
+			}
+			_, outcome, reason, _ := planTaskSections(tc.content)
+			if outcome != sectionsNoWork {
+				t.Fatalf("outcome = %v, want sectionsNoWork — this file already has an H2, so it is "+
+					"not this command's defect and must not be refused (reason given: %q)", outcome, reason)
+			}
+			// The reason must be the VALIDATOR's own first-failure message, not
+			// a shape this command guessed at.
+			if reason != verr.Error() {
+				t.Errorf("reason = %q, want the validator's true cause %q", reason, verr.Error())
+			}
+			for _, false_ := range []string{"heading present", "two H3 headings", "empty H", "indented"} {
+				if strings.Contains(reason, false_) {
+					t.Errorf("reason cites a shape that blocks nothing (%q): %q", false_, reason)
+				}
+			}
+		})
+	}
+}
+
+// TestMigrateTaskSections_OtherDefectRosterIsPrinted pins that a malformed file
+// which is NOT this command's defect still reaches the operator — and B2.
+//
+// Break: delete the `if reason != ""` print in the sectionsNoWork arm. This
+// test fails.
+func TestMigrateTaskSections_OtherDefectRosterIsPrinted(t *testing.T) {
+	root := t.TempDir()
+	// Has an H2, so not ours; missing **Status:**, so still malformed.
+	seedArchivedTask(t, root, "p", "done", "othersick",
+		"# T\n\n**Priority:** medium\n\n## Context\n\nbody\n")
+
+	var out bytes.Buffer
+	sum, err := runTaskSectionsMigration(root, "", false, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.OtherDefect != 1 {
+		t.Errorf("OtherDefect = %d, want 1", sum.OtherDefect)
+	}
+	s := out.String()
+	if !strings.Contains(s, "not this command's defect") {
+		t.Errorf("the other-defect roster was not printed:\n%s", s)
+	}
+	if !strings.Contains(s, "missing Status") {
+		t.Errorf("the printed reason is not the validator's true cause:\n%s", s)
+	}
+}
+
+// TestPlanTaskSections_FrontmatterHeadingIsSkipped pins the frontmatter span.
+//
+// 🔴 DELIBERATE DEVIATION FROM THE SPEC, ASSERTED SO IT CANNOT DRIFT SILENTLY.
+// The spec's transform table lists a heading inside frontmatter under REFUSE;
+// this command SKIPS the span and promotes the real headings around it. The
+// rationale is on planTaskSections. This test is what makes the deviation a
+// decision rather than an accident, and it is the only coverage the span had —
+// deleting the tracking left the suite green before.
+//
+// Break: delete the inFrontmatter block in planTaskSections. This test fails.
+func TestPlanTaskSections_FrontmatterHeadingIsSkipped(t *testing.T) {
+	before := "---\n### not a section\ntitle: x\n---\n\n# T\n\n**Status:** retired\n" +
+		"**Priority:** medium\n\n### Plan\n\nbody\n"
+
+	after, outcome, reason, promos := planTaskSections(before)
+	if outcome != sectionsPromote {
+		t.Fatalf("outcome = %v, want sectionsPromote (reason %q)", outcome, reason)
+	}
+	if promos != 1 {
+		t.Errorf("promos = %d, want 1 — the frontmatter heading must not be counted", promos)
+	}
+	if !strings.Contains(after, "\n### not a section\n") {
+		t.Errorf("a heading inside frontmatter was promoted into a fake section:\n%s", after)
+	}
+	if !strings.Contains(after, "\n## Plan\n") {
+		t.Errorf("the real H3 was not promoted:\n%s", after)
+	}
+}
+
+// TestMigrateTaskSections_ShadowedSlugIsRefusedInREPORTMode is the send-back's
+// first finding.
+//
+// 🔴 THE SHADOW GUARD MUST RUN IN BOTH MODES. Nesting it inside `if apply` — as
+// cmd_migrate_task_header.go:317/:370/:409 do — makes the report print FIX,
+// count the file as fixable and tell the operator to "re-run with --apply", for
+// a file apply categorically refuses. The report would be promising something
+// the write refuses, which is the exact lie the plan-first shape exists to
+// prevent. The pre-existing shadow test passes apply=true and cannot see this.
+//
+// Break: move the taskHeaderShadowed call back inside `if apply {`. This test
+// fails.
+func TestMigrateTaskSections_ShadowedSlugIsRefusedInREPORTMode(t *testing.T) {
+	root := t.TempDir()
+	activeBody := "# A legacy task\n\n**Status:** retired\n**Priority:** medium\n**Parent:** some-epic\n" +
+		"**Depends:** other-task\n\n## Context\n\nThe REAL active file.\n"
+	seedArchivedTask(t, root, "p", "", "shadowed", activeBody)
+	seedArchivedTask(t, root, "p", "done", "shadowed", nineShaped(true))
+
+	var out bytes.Buffer
+	sum, err := runTaskSectionsMigration(root, "", false, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := out.String()
+	if sum.Fix != 0 {
+		t.Errorf("Fix = %d, want 0 — report counted a file apply refuses as fixable", sum.Fix)
+	}
+	if strings.Contains(s, "FIX   p/shadowed") {
+		t.Errorf("report printed FIX for a shadowed slug apply will refuse:\n%s", s)
+	}
+	if sum.Failed != 1 {
+		t.Errorf("Failed = %d, want 1 — a shadowed slug is a vault defect in either mode", sum.Failed)
+	}
+	if !strings.Contains(s, "an ACTIVE task of the same slug exists") {
+		t.Errorf("report did not surface the shadow refusal:\n%s", s)
+	}
+	if strings.Contains(s, "Re-run with --apply") {
+		t.Errorf("report told the operator to apply a run with nothing appliable:\n%s", s)
+	}
+}
+
+// TestMigrateTaskSections_RollbackBannerListsEveryPathSeparately is the
+// send-back's fourth finding.
+//
+// 🔴 IT NEEDS MORE THAN ONE APPLIED PATH, AND A TRACKED .surface. The earlier
+// banner tests asserted over a population of size 1 — one task file, and a
+// stamp that GitPathIsTracked dropped because it had never been committed. Two
+// breaks survived that: joining every path into ONE quoted argument still
+// contained the asserted substring, and deleting the GitPathIsTracked gate
+// changed nothing. So the precise failure the banner exists to prevent — an
+// untracked path making `git checkout --` a pathspec error that restores
+// NOTHING — was unreachable from any test.
+//
+// Break: join the paths into one %q, or delete the GitPathIsTracked gate in
+// taskSectionsRecordWrite. This test fails either way.
+func TestMigrateTaskSections_RollbackBannerListsEveryPathSeparately(t *testing.T) {
+	root := t.TempDir()
+	gitInitVault(t, root)
+	seedArchivedTask(t, root, "p", "done", "alpha", nineShaped(true))
+	seedArchivedTask(t, root, "p", "done", "beta", nineShaped(false))
+	// Pre-create and COMMIT the stamp so GitPathIsTracked says true and the
+	// stamp reaches the rollback list. Without this it is untracked, correctly
+	// dropped, and the population falls back to one path per project.
+	if err := os.WriteFile(filepath.Join(root, "Projects", "p", ".surface"), []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCommitAll(t, root)
+
+	var out bytes.Buffer
+	sum, err := runTaskSectionsMigration(root, "", true, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Applied != 2 {
+		t.Fatalf("Applied = %d, want 2:\n%s", sum.Applied, out.String())
+	}
+	want := []string{
+		"Projects/p/tasks/done/alpha.md",
+		"Projects/p/tasks/done/beta.md",
+		"Projects/p/.surface",
+	}
+	for _, w := range want {
+		if !slicesContains(sum.AppliedPaths, w) {
+			t.Errorf("AppliedPaths %v is missing %q", sum.AppliedPaths, w)
+		}
+	}
+	if len(sum.AppliedPaths) != 3 {
+		t.Errorf("AppliedPaths = %v, want exactly 3 (two task files and the tracked stamp)", sum.AppliedPaths)
+	}
+
+	s := out.String()
+	// EACH path separately quoted. A list joined into one quoted value keeps the
+	// continuation indentation inside the argument and git receives one bogus
+	// pathspec instead of three real ones.
+	for _, w := range want {
+		if !strings.Contains(s, `"`+w+`"`) {
+			t.Errorf("banner does not quote %q on its own:\n%s", w, s)
+		}
+	}
+	if strings.Contains(s, `"Projects/p/tasks/done/alpha.md Projects/`) {
+		t.Errorf("banner joined several paths into ONE quoted argument:\n%s", s)
+	}
+	if !strings.Contains(s, "Do NOT use `git checkout .`") {
+		t.Errorf("the scoped-rollback warning is missing:\n%s", s)
+	}
+}
+
+// TestMigrateTaskSections_UntrackedStampIsNotInTheRollbackList is the other half
+// of the same guard: a stamp git has never seen must be OMITTED, because one
+// unknown pathspec makes `git checkout --` restore none of the task files
+// either, while looking to the operator like the undo worked.
+//
+// Break: delete the GitPathIsTracked check in taskSectionsRecordWrite. This
+// test fails.
+func TestMigrateTaskSections_UntrackedStampIsNotInTheRollbackList(t *testing.T) {
+	root := t.TempDir()
+	gitInitVault(t, root)
+	seedArchivedTask(t, root, "p", "done", "alpha", nineShaped(true))
+	gitCommitAll(t, root) // no .surface committed: the writer creates it untracked
+
+	var out bytes.Buffer
+	sum, err := runTaskSectionsMigration(root, "", true, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Applied != 1 {
+		t.Fatalf("Applied = %d, want 1", sum.Applied)
+	}
+	for _, p := range sum.AppliedPaths {
+		if strings.HasSuffix(p, ".surface") {
+			t.Errorf("an UNTRACKED stamp reached the rollback list (%q); "+
+				"`git checkout --` would fail for every path, restoring nothing", p)
+		}
+	}
+}
+
+func slicesContains(hay []string, needle string) bool {
+	for _, h := range hay {
+		if h == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// The write seam. Send-back finding three.
+//
+// 🔴 THE TWO SEAMS ARE INDISTINGUISHABLE FROM THIS COMMAND'S CALL SITE, AND
+// THAT IS A FINDING RATHER THAN A TEST GAP. planTaskSections rewrites heading
+// prefixes on lines the header block does not contain, so `after` carries a
+// BYTE-IDENTICAL header to the file it was derived from; refuseHeaderChange has
+// nothing to compare unequal. The one path where the writer could resolve to a
+// DIFFERENT file than the one read is the shadow case, and the shadow guard now
+// refuses that in both modes before any write. So no behavioural fixture can
+// separate OverwriteTaskFile from OverwriteTaskFileRewritingHeader here, and
+// swapping them leaves every behavioural test green — verified, not assumed.
+//
+// The decision is therefore pinned two ways instead: the DEPENDENCY it rests on
+// (that the strict seam really does refuse what the permissive one allows), and
+// the CALL ITSELF, by source shape. Neither is a behavioural test and neither
+// pretends to be.
+// ---------------------------------------------------------------------------
+
+// TestTaskSectionsStrictSeamContract pins the property the strict seam is chosen
+// FOR. If storage ever stopped refusing header changes through OverwriteTaskFile,
+// the rationale in this command's header comment would be false and nothing else
+// in this package would notice.
+func TestTaskSectionsStrictSeamContract(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "Projects", "p", "tasks", "done")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "# T\n\n**Status:** retired\n**Priority:** medium\n\n## Context\n\nbody\n"
+	write := func() {
+		if err := os.WriteFile(filepath.Join(dir, "x.md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	headerChanged := "# T\n\n**Status:** done\n**Priority:** medium\n\n## Context\n\nbody\n"
+	v := storage.NewVault(root)
+
+	write()
+	if err := v.OverwriteTaskFile("p", "x", headerChanged); err == nil {
+		t.Error("the STRICT seam accepted a header-changing body; this command's seam rationale is void")
+	}
+
+	write()
+	if err := v.OverwriteTaskFileRewritingHeader("p", "x", headerChanged); err != nil {
+		t.Errorf("the PERMISSIVE seam refused a header-changing body (%v); the two seams no longer "+
+			"differ, so choosing between them buys nothing", err)
+	}
+
+	// And the property this command actually relies on: a body that leaves the
+	// header alone passes the STRICT seam, which is why the strict policy is free.
+	write()
+	bodyOnly := "# T\n\n**Status:** retired\n**Priority:** medium\n\n## Context\n\nCHANGED body\n"
+	if err := v.OverwriteTaskFile("p", "x", bodyOnly); err != nil {
+		t.Errorf("the STRICT seam refused a body-only change (%v); this command could not use it", err)
+	}
+}
+
+// TestTaskSectionsUsesTheStrictSeam pins the CALL, by source shape, because no
+// behavioural fixture can — see the block comment above.
+//
+// Break: change vault.OverwriteTaskFile to vault.OverwriteTaskFileRewritingHeader
+// in the walk. This test fails; every behavioural test stays green.
+func TestTaskSectionsUsesTheStrictSeam(t *testing.T) {
+	src, err := os.ReadFile("cmd_migrate_task_sections.go")
+	if err != nil {
+		t.Fatalf("read own source: %v", err)
+	}
+	body := string(src)
+	// Strip the file's doc comment, which discusses the permissive wrapper by
+	// name, so this asserts over CODE rather than prose.
+	if i := strings.Index(body, "\nvar migrateTaskSectionsFlags"); i > 0 {
+		body = body[i:]
+	}
+	if !strings.Contains(body, "vault.OverwriteTaskFile(slug, taskSlug, after)") {
+		t.Error("the walk no longer calls the STRICT seam vault.OverwriteTaskFile")
+	}
+	if strings.Contains(body, "OverwriteTaskFileRewritingHeader(") {
+		t.Error("the walk calls the PERMISSIVE seam OverwriteTaskFileRewritingHeader; " +
+			"this command writes archived files through the strict writer deliberately, and no " +
+			"behavioural test can catch the swap because the transform never touches header bytes")
+	}
+}
+
+// TestTaskSectionsPopulationMatchesTheDetector is the population differential
+// the spec names.
+//
+// It cannot be written against the `vp audit task-files` SUBCOMMAND, which has
+// no --vault flag and would read the configured (live) vault. It is written
+// against the reporter that subcommand calls, runTaskFileValidityReport, which
+// does take a root — so the two enumerations are compared in-process over a
+// temp vault, with no live-vault access at all.
+//
+// 🔴 WHAT THIS PROVES AND DOES NOT. Both walks call the same predicate, so
+// agreement says nothing about the RULES. It says the two ENUMERATIONS agree:
+// which projects, which directories, which files. That is the divergence worth
+// catching, and it is what cmd_audit_task_files.go:40-50 says the differential
+// is for.
+//
+// Break: remove "cancelled" from taskSectionsDirs. This test fails.
+func TestTaskSectionsPopulationMatchesTheDetector(t *testing.T) {
+	root := t.TempDir()
+	// Two projects, both archive directories, and a mix of classes.
+	seedArchivedTask(t, root, "alpha", "done", "promote-me", nineShaped(true))
+	seedArchivedTask(t, root, "alpha", "cancelled", "promote-me-too", nineShaped(false))
+	seedArchivedTask(t, root, "beta", "done", "already-fine",
+		"# T\n\n**Status:** retired\n**Priority:** medium\n\n## Context\n\nbody\n")
+	seedArchivedTask(t, root, "beta", "cancelled", "other-defect",
+		"# T\n\n**Priority:** medium\n\n## Context\n\nbody\n")
+	// Active files must appear in NEITHER walk.
+	seedArchivedTask(t, root, "alpha", "", "active-legacy", nineShaped(false))
+
+	rep, err := runTaskFileValidityReport(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	detector := map[string]string{}
+	for _, f := range rep.Failures {
+		detector[f.Rel] = f.Reason
+	}
+
+	var out bytes.Buffer
+	sum, err := runTaskSectionsMigration(root, "", false, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(detector) == 0 || sum.Scanned == 0 {
+		t.Fatal("precondition: both walks must find files, or agreement is vacuous")
+	}
+	if sum.Scanned != rep.Scanned {
+		t.Errorf("this command scanned %d file(s), the detector scanned %d — the two ENUMERATIONS "+
+			"disagree about which files exist", sum.Scanned, rep.Scanned)
+	}
+
+	// Every file this command would promote must be one the detector calls
+	// invalid, with the missing-section reason specifically.
+	var promoted int
+	for _, d := range sum.Decisions {
+		rel := "Projects/" + d.Project + "/tasks/" + d.Sub + "/" + d.Slug + ".md"
+		switch d.Outcome {
+		case sectionsPromote:
+			promoted++
+			reason, ok := detector[rel]
+			if !ok {
+				t.Errorf("%s: this command would promote a file the detector calls VALID", rel)
+				continue
+			}
+			if !strings.Contains(reason, "missing section") {
+				t.Errorf("%s: selected a file whose defect is %q, not the missing section", rel, reason)
+			}
+		case sectionsNoWork:
+			if d.Reason == "" && detector[rel] != "" {
+				t.Errorf("%s: this command considers it clean, the detector reports %q", rel, detector[rel])
+			}
+		}
+	}
+	if promoted != 2 {
+		t.Errorf("promoted = %d, want 2 (one in done/, one in cancelled/)", promoted)
+	}
+	for rel := range detector {
+		if strings.Contains(rel, "/tasks/active-legacy.md") {
+			t.Errorf("the detector reported an ACTIVE file: %s", rel)
+		}
+	}
+}
