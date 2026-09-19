@@ -19,7 +19,7 @@ paths change `Templates/`, and each only removes a file:
   unversioned vault `applyMaterialize` re-reads the file, re-applies
   `reconcile.PruneAccepts`, and removes it through `vaultfs.Delete` —
   compare-and-set under the path's lock. On a git vault the prune is
-  `storage.PruneMirrorsVerified`, which removes through `vaultfs.Delete`
+  `storage.PruneMirrorsVerifiedWithDowngrade`, which removes through `vaultfs.Delete`
   only after the HEAD and remote-tip checks; a vault with no commits yet
   (unborn HEAD, e.g. right after `vp init`) is treated as absent from
   HEAD rather than deferred or erroring, and is still subject to the
@@ -48,7 +48,7 @@ pins its content hash.
 | Caller | Command surface | Effect on `Templates/` | Backup |
 |---|---|---|---|
 | `commands.Reset` | `vp commands reset`, `vp skills reset` | Removes each named file | `templates.PreserveBackup`: named by content, never overwritten; none for vp-shipped bytes (a mirror of the built-in or an earlier shipped version, line endings aside) |
-| `reconcile.TemplateTree.Apply` / `storage.PruneMirrorsVerified` | `vp config sync` | Prunes vp-shipped copies; keeps every override | None: the bytes are the binary's or in vibe-palace's history |
+| `reconcile.TemplateTree.Apply` / `storage.PruneMirrorsVerifiedWithDowngrade` | `vp config sync` | Prunes vp-shipped copies; keeps every override | None: the bytes are the binary's or in vibe-palace's history |
 | — | `vp commands upgrade`, `vp skills upgrade` | None: each override is reported as `[keep]`, each earlier shipped version as `[stale]` | Not applicable |
 
 `reconcile.TemplateTree.Apply` (`vp config sync`) never writes a

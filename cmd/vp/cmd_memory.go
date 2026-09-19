@@ -98,7 +98,11 @@ func cmdMemoryHarvest() *cli.Command {
 				DryRun:    fv.Bool("--dry-run"),
 				Push:      !fv.Bool("--no-push"),
 			})
-			if err != nil {
+			// An unreadable git_enabled is the one error Harvest returns WITH its
+			// Result: the memory files are routed, only the commit was not
+			// attempted. Report what was routed before the error.
+			unreadable := err != nil && res != nil && res.CommitState == "config_unreadable"
+			if err != nil && !unreadable {
 				fmt.Fprintf(os.Stderr, "vp memory harvest: %v\n", err)
 				return cli.ExitSystem
 			}
@@ -124,9 +128,18 @@ func cmdMemoryHarvest() *cli.Command {
 			}
 
 			printMemoryList("Deleted host-local", res.DeletedHostLocal)
-			if res.Committed {
+			switch {
+			case unreadable:
+				fmt.Fprintf(os.Stderr, "vp memory harvest: the memory files are routed; the commit was not attempted: %v\n", err)
+				return cli.ExitSystem
+			case res.CommitState == "skipped":
+				// git_enabled = false is the operator's setting, not a fault: the
+				// routed memory stays uncommitted by design, and nothing here
+				// commits it.
+				fmt.Println("commit skipped: git_enabled = false on this host, so the routed memory is written and not committed")
+			case res.Committed:
 				fmt.Printf("Committed %s\n", res.CommitSHA)
-			} else {
+			default:
 				fmt.Println("nothing to commit")
 			}
 			if res.PushDowngraded {

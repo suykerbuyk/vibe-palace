@@ -167,7 +167,7 @@ func TestPruneMirrorsVerified_ComparesCheckedOutContent(t *testing.T) {
 		t.Fatalf("fixture: HEAD should store the rot13 form, got %q", raw)
 	}
 	seen := map[string][]byte{}
-	res, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, false, acceptOnly(seen, "mirror\n"))
+	res, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, false, true, acceptOnly(seen, "mirror\n"))
 	if err != nil {
 		t.Fatalf("err=%v out=%+v", err, out)
 	}
@@ -201,7 +201,7 @@ func TestPruneMirrorsVerified_BrokenFilterNeverRestores(t *testing.T) {
 				touchStale(t, filepath.Join(dir, "T", "wrap.md"))
 			}
 			head := gitRun(t, dir, "rev-parse", "HEAD")
-			_, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, false, acceptOnly(nil, "mirror\n"))
+			_, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, false, true, acceptOnly(nil, "mirror\n"))
 			if err == nil {
 				t.Fatal("a filter that cannot run was not an error")
 			}
@@ -380,7 +380,7 @@ func TestPruneMirrorsVerified_MovedHeadRestoreForcesRequiredFilters(t *testing.T
 		gitRun(t, dir, "reset", "-q", "--", "T/wrap.md")
 		grant() // the re-check's read of the moved HEAD; the restore gets none
 	}
-	_, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, false, acceptOnly(nil, "mirror\n"))
+	_, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, false, true, acceptOnly(nil, "mirror\n"))
 	if err == nil {
 		t.Fatalf("a restore through a failing filter was not an error: %+v", out)
 	}

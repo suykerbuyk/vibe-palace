@@ -53,6 +53,7 @@ func TestIntegrationTemplateResetViaBinary(t *testing.T) {
 	// reset's backups (*.bak) out of `vp vault sync`'s way.
 	gitVault := func(t *testing.T, env *testEnv) string {
 		putFile(t, env.vaultPath, ".gitignore", strings.Join(storage.CanonicalGitignorePatterns, "\n")+"\n")
+		enableGit(t, env)
 		return gitifyVaultWithOrigin(t, env.vaultPath)
 	}
 

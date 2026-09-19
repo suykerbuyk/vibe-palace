@@ -1384,7 +1384,7 @@ file at the vault and every directory above it, then asks git):
 - **Git vault** (the top level of its own repository: an ordinary
   clone, a linked worktree or a submodule). The reconciler runs with
   `ExternalPrune`: Apply removes nothing, and `pruneOnGitVault` hands
-  the paths to `storage.PruneMirrorsVerified`. **Nothing is removed
+  the paths to `storage.PruneMirrorsVerifiedWithDowngrade`. **Nothing is removed
   until git has answered.** Under the vault commit lock, after the
   already-ahead reconcile may have moved HEAD, each path is checked: the
   worktree bytes; the index against HEAD (a staged change keeps the

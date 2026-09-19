@@ -313,7 +313,14 @@ type DirtJSON struct {
 // counts), and TidyScan dirt classification. It never commits, pushes, or mutates
 // the working tree; a fetch only updates .git tracking refs. A non-nil error from
 // any remote probe or the tidy scan is propagated.
+//
+// A host config with git_enabled = false (or an unreadable one) refuses
+// before any git runs, fetch or not: the CLI refused status before this
+// moved into storage, and parity forbids narrowing either surface.
 func BuildStatusReport(vaultPath string, fetch bool) (StatusReport, error) {
+	if err := RefuseIfGitDisabled(vaultPath, "report vault status"); err != nil {
+		return StatusReport{}, err
+	}
 	branch := currentBranch(vaultPath)
 
 	remotes, err := ListRemotes(vaultPath)

@@ -370,7 +370,18 @@ func TidyScanWithTimeout(vaultPath string, timeout time.Duration) (*TidyResult, 
 // An empty swept set is a no-op: CommitAndPushPaths errors on zero paths, so it
 // is never called; the returned TidyResult has Committed=false with Reported
 // populated.
+//
+// The git_enabled gate is the first statement, so an empty sweep refuses too.
 func TidyVault(vaultPath string, push bool) (*TidyResult, error) {
+	if err := RefuseIfGitDisabled(vaultPath, "tidy"); err != nil {
+		return nil, err
+	}
+	return tidyVaultCore(vaultPath, push)
+}
+
+// tidyVaultCore is TidyVault after its git_enabled gate, for storage-internal
+// composition (SyncVault).
+func tidyVaultCore(vaultPath string, push bool) (*TidyResult, error) {
 	result, err := TidyScan(vaultPath)
 	if err != nil {
 		return nil, err
@@ -388,7 +399,7 @@ func TidyVault(vaultPath string, push bool) (*TidyResult, error) {
 	// downgrades to a local commit instead and reports it.
 	msg := tidyCommitMessage(swept)
 
-	pushRes, downgraded, err := CommitAndPushPathsWithDowngrade(vaultPath, msg, swept, push)
+	pushRes, downgraded, err := commitAndPushPathsWithDowngradeCore(vaultPath, msg, swept, push)
 	if err != nil {
 		return nil, err
 	}

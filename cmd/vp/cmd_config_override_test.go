@@ -330,6 +330,7 @@ func TestConfigSyncVerifiesPruneOnLinkedWorktreeVault(t *testing.T) {
 		[]string{projDir, "--name", "ovr", "--vault-path", vaultPath, "--no-git"}); code != cli.ExitOK {
 		t.Fatalf("init exit code = %d", code)
 	}
+	enableGitInTestConfig(t)
 	cwd, _ := os.Getwd()
 	if err := os.Chdir(projDir); err != nil {
 		t.Fatal(err)
@@ -733,6 +734,7 @@ func TestConfigSyncNeverWritesAnEnclosingRepo(t *testing.T) {
 				[]string{projDir, "--name", "ovr", "--vault-path", vaultPath, "--no-git"}); code != cli.ExitOK {
 				t.Fatalf("init exit code = %d", code)
 			}
+			enableGitInTestConfig(t)
 			cwd, _ := os.Getwd()
 			if err := os.Chdir(projDir); err != nil {
 				t.Fatal(err)

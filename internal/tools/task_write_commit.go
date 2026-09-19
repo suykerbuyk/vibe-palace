@@ -4,6 +4,7 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"path"
 
@@ -27,6 +28,18 @@ const (
 	// taskCommitFailed: the write LANDED and the commit did not. See the
 	// contract note on commitTaskWrite for why this is not an error return.
 	taskCommitFailed = "failed"
+
+	// taskCommitSkipped: the host config says git_enabled = false, so no commit
+	// was attempted and no git process ran. The write landed. It is reported
+	// whether or not the write left the file dirty: the state follows the
+	// setting, never the tree.
+	taskCommitSkipped = "skipped"
+
+	// taskCommitConfigUnreadable: git_enabled could not be read, so it is not
+	// known whether the operator disabled git and no commit was attempted
+	// (fail closed). The write landed. Distinct from both skipped (an operator
+	// decision) and failed (a git failure).
+	taskCommitConfigUnreadable = "config_unreadable"
 )
 
 // commitTaskWrite commits the file a typed task write just produced.
@@ -125,6 +138,16 @@ func commitTaskWrite(vault *storage.Vault, project, taskSlug, action string) map
 		path.Join(base, "cancelled", taskSlug+".md"),
 	}
 
+	// git_enabled = false means "do not run git", not "do not write a task". The
+	// gate runs before the dirty probe below, so a disabled host spawns no git
+	// at all here, and the commit state follows the setting, not dirtiness.
+	if err := storage.RefuseIfGitDisabled(vault.Root, "commit the task write"); err != nil {
+		if skipped := taskCommitGitRefusal(err); skipped != nil {
+			return skipped
+		}
+		return taskCommitResult(taskCommitFailed, "", err.Error())
+	}
+
 	// Probe the task's own paths only. A non-git vault reports clean here rather
 	// than erroring, which is what makes this a silent no-op on the vaults that
 	// have no repo behind them.
@@ -141,6 +164,11 @@ func commitTaskWrite(vault *storage.Vault, project, taskSlug, action string) map
 	paths = append(paths, path.Join("Projects", project, ".surface"))
 
 	res, err := storage.CommitAndPushPaths(vault.Root, taskCommitMessage(action, project, taskSlug), paths, false)
+	if skipped := taskCommitGitRefusal(err); skipped != nil {
+		// The entry point's own gate is the backstop: the setting changed
+		// between the preflight above and the commit.
+		return skipped
+	}
 	if err != nil {
 		return taskCommitResult(taskCommitFailed, "", fmt.Sprintf(
 			"%v — THE TASK FILE IS WRITTEN AND IS SAFE ON DISK; only the commit failed. "+
@@ -153,6 +181,24 @@ func commitTaskWrite(vault *storage.Vault, project, taskSlug, action string) map
 		sha = res.CommitSHA
 	}
 	return taskCommitResult(taskCommitCommitted, sha, "")
+}
+
+// taskCommitGitRefusal maps the git_enabled refusal onto a commit state, while
+// the error is still an error (the failed branch flattens it with %v). It
+// returns nil for any other error, including nil.
+func taskCommitGitRefusal(err error) map[string]string {
+	switch {
+	case errors.Is(err, storage.ErrGitDisabled):
+		out := taskCommitResult(taskCommitSkipped, "", "")
+		out["commit_note"] = "git_enabled = false on this host: the task file is written and safe on disk, " +
+			"no commit was attempted, and no vp tool commits the vault here. That is the operator's setting, not a fault."
+		return out
+	case errors.Is(err, storage.ErrGitConfigUnreadable):
+		return taskCommitResult(taskCommitConfigUnreadable, "", fmt.Sprintf(
+			"THE TASK FILE IS WRITTEN AND IS SAFE ON DISK; no commit was attempted because %v. "+
+				"The remedy is to repair that host config file so it can be read.", err))
+	}
+	return nil
 }
 
 // taskCommitMessage renders the commit subject.
