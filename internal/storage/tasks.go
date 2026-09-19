@@ -1604,10 +1604,6 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 	if err != nil {
 		return err
 	}
-	if err := EnsureDir(destDir); err != nil {
-		return fmt.Errorf("ensure dest dir: %w", err)
-	}
-
 	destPath := filepath.Join(destDir, slug+".md")
 
 	// 🔴 REWRITE-THEN-RENAME. The status line is stamped IN PLACE at the active
@@ -1691,6 +1687,14 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 	}
 	if err := v.refuseTakenSlug(op, project, slug, true); err != nil {
 		return err
+	}
+
+	// Only now may the archive directory be created: a refusal above says
+	// "Nothing was changed", and must leave the project's tree as it found it.
+	// EnsureDir under the held lock is safe — the lock sidecar lives under
+	// <root>/.vp-locks/, independent of destDir.
+	if err := EnsureDir(destDir); err != nil {
+		return fmt.Errorf("ensure dest dir: %w", err)
 	}
 
 	data, err := os.ReadFile(srcPath)

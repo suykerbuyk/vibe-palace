@@ -93,6 +93,11 @@ func TestRetireRefusesWhenCancelledHoldsSlug(t *testing.T) {
 	if !taskFileAbsent(v, "Projects/p/tasks/done/x.md") {
 		t.Fatal("a refused retire created done/x.md: the done+cancelled pair")
 	}
+	// "Nothing was changed" covers the tree too: the refusal comes before the
+	// archive directory is created, not after.
+	if !taskFileAbsent(v, "Projects/p/tasks/done") {
+		t.Fatal("a refused retire created the done/ directory")
+	}
 }
 
 // The mirror: a cancel while done/ holds the slug.
@@ -107,6 +112,11 @@ func TestCancelRefusesWhenDoneHoldsSlug(t *testing.T) {
 	}
 	if !taskFileAbsent(v, "Projects/p/tasks/cancelled/x.md") {
 		t.Fatal("a refused cancel created cancelled/x.md: the done+cancelled pair")
+	}
+	// "Nothing was changed" covers the tree too: the refusal comes before the
+	// archive directory is created, not after.
+	if !taskFileAbsent(v, "Projects/p/tasks/cancelled") {
+		t.Fatal("a refused cancel created the cancelled/ directory")
 	}
 }
 
@@ -141,9 +151,7 @@ func TestMoveRetireCancelChainNeverReachesDoneCancelledPair(t *testing.T) {
 		t.Fatal("step 1: move into a project holding done/x succeeded: active+done created")
 	}
 	seedTaskRaw(t, v, "dst", "", "x", "MERGED-IN")
-	if err := v.RetireTask("dst", "x"); err == nil {
-		t.Fatal("step 2: retire over done/x succeeded")
-	}
+	assertSlugTaken(t, v.RetireTask("dst", "x"), "retire", "done")
 	assertSlugTaken(t, v.CancelTask("dst", "x", ""), "cancel", "done")
 	if !taskFileAbsent(v, "Projects/dst/tasks/cancelled/x.md") {
 		t.Fatal("step 3: cancel created cancelled/x.md: the pair task-status once destroyed a body on")
