@@ -628,7 +628,7 @@ func removeRetiredLock(vaultPath string, planned reconcile.Action) error {
 // in Apply and the HEAD check at commit time, so any git failure in between —
 // no identity, a corrupt index, a repository git refuses — left a committed
 // operator override deleted in the worktree with nothing telling anyone.
-// storage.PruneMirrorsVerified checks the worktree bytes, HEAD's copy and each
+// storage.PruneMirrorsVerifiedWithDowngrade checks the worktree bytes, HEAD's copy and each
 // remote tip's copy — each as git would check it out — with the one accept
 // rule (reconcile.PruneAccepts: vp-shipped bytes for that built-in) BEFORE it
 // removes a file, restores HEAD's copy where HEAD holds operator content, and

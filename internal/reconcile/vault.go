@@ -159,7 +159,7 @@ func (r *VaultReconciler) Plan(_ context.Context) (Plan, error) {
 		if _, statErr := os.Stat(gitPath); errors.Is(statErr, os.ErrNotExist) {
 			// No .git AT the vault. Before planning git init, ask whether git
 			// sees a .git ABOVE the vault (VaultGitNested) — the same
-			// predicate storage.PruneMirrorsVerified's caller in
+			// predicate storage.PruneMirrorsVerifiedWithDowngrade's caller in
 			// cmd_config.go uses for the Templates tier. Do not invent a
 			// second nesting check.
 			switch gitState, _ := storage.InspectVaultGit(vaultPath); gitState {

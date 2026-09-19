@@ -141,10 +141,6 @@ func TestVaultGitEntryPointsRefuseBeforeAnyGit(t *testing.T) {
 		"GitAdd":                     func() error { return GitAdd(dir, "Projects") },
 		"GitAddForce":                func() error { return GitAddForce(dir, "Projects") },
 		"GitStatusClean":             func() error { _, err := GitStatusClean(dir); return err },
-		"PruneMirrorsVerified": func() error {
-			_, _, err := PruneMirrorsVerified(dir, []string{"README.md"}, true, PruneVerifier{})
-			return err
-		},
 		"PruneMirrorsVerifiedWithDowngrade": func() error {
 			_, _, _, err := PruneMirrorsVerifiedWithDowngrade(dir, []string{"README.md"}, true, PruneVerifier{})
 			return err

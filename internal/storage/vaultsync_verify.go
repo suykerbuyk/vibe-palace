@@ -60,7 +60,7 @@ type PruneFailure struct {
 	Err  error
 }
 
-// PruneOutcome accounts for every path PruneMirrorsVerified was given. Each
+// PruneOutcome accounts for every path a prune was given. Each
 // path lands in exactly one list.
 type PruneOutcome struct {
 	// Removed paths were removed by this call and the removal is final:
@@ -108,7 +108,40 @@ func (o *PruneOutcome) err() error {
 		len(o.Errors), len(o.Failed))
 }
 
-// PruneMirrorsVerified removes vault mirrors that are provably vp's and commits
+// PruneMirrorsInEnclosingRepo is the prune for a vault nested inside another
+// repository's work tree — a project or dotfiles repo that happens to hold the
+// vault. That repository is not the vault's, and vp must never fetch, rebase,
+// stage into, commit or push it: doing so once rebased an operator's unpushed
+// commits and pushed them with a prune commit on top. Only what is read-only,
+// or a working-tree restore of a vault path, is allowed:
+//
+//   - HEAD and index are read to classify each path, exactly as for a vault
+//     that is its own repository;
+//   - a mirror over operator content in HEAD is restored in place;
+//   - an untracked mirror (nothing committed to protect) is removed;
+//   - a TRACKED mirror is kept, with a reason naming the enclosing
+//     repository: its removal could only be finished by a commit there.
+//
+// No remote is listed or fetched, no identity is needed, and nothing is
+// staged or committed.
+//
+// It never commits, but it reads HEAD and the index through git and deletes or
+// restores vault files on that verdict, so git_enabled = false refuses it too,
+// as its first statement.
+func PruneMirrorsInEnclosingRepo(vaultPath string, paths []string, v PruneVerifier) (PruneOutcome, error) {
+	if err := RefuseIfGitDisabled(vaultPath, "prune template mirrors"); err != nil {
+		return PruneOutcome{}, err
+	}
+	_, out, err := pruneMirrors(vaultPath, paths, false, false, v)
+	return out, err
+}
+
+// pruneMirrors is both prunes, and it is ungated: its callers,
+// PruneMirrorsVerifiedWithDowngrade and PruneMirrorsInEnclosingRepo, each
+// refuse git_enabled = false as their first statement.
+//
+// With commit=true, pruneMirrors is the verified prune: it removes vault
+// mirrors that are provably vp's and commits
 // the removal, pushing it when push is true. paths are vault-relative, with
 // forward slashes; the vault may be the root of its repository or nested in
 // one. Nothing is removed until every check has passed, and every git failure
@@ -150,45 +183,8 @@ func (o *PruneOutcome) err() error {
 // it; a concurrent merge fails on git's own index guards rather than losing
 // anything.
 //
-// The git_enabled gate is the first statement: PruneOutcome.err() aggregates
-// without %w, so a refusal raised inside the loop would lose errors.Is.
-func PruneMirrorsVerified(vaultPath string, paths []string, push bool, v PruneVerifier) (*PushResult, PruneOutcome, error) {
-	if err := RefuseIfGitDisabled(vaultPath, "prune template mirrors"); err != nil {
-		return nil, PruneOutcome{}, err
-	}
-	return pruneMirrors(vaultPath, paths, push, true, v)
-}
-
-// PruneMirrorsInEnclosingRepo is the prune for a vault nested inside another
-// repository's work tree — a project or dotfiles repo that happens to hold the
-// vault. That repository is not the vault's, and vp must never fetch, rebase,
-// stage into, commit or push it: doing so once rebased an operator's unpushed
-// commits and pushed them with a prune commit on top. Only what is read-only,
-// or a working-tree restore of a vault path, is allowed:
-//
-//   - HEAD and index are read to classify each path, exactly as for a vault
-//     that is its own repository;
-//   - a mirror over operator content in HEAD is restored in place;
-//   - an untracked mirror (nothing committed to protect) is removed;
-//   - a TRACKED mirror is kept, with a reason naming the enclosing
-//     repository: its removal could only be finished by a commit there.
-//
-// No remote is listed or fetched, no identity is needed, and nothing is
-// staged or committed.
-//
-// It never commits, but it reads HEAD and the index through git and deletes or
-// restores vault files on that verdict, so git_enabled = false refuses it too,
-// as its first statement.
-func PruneMirrorsInEnclosingRepo(vaultPath string, paths []string, v PruneVerifier) (PruneOutcome, error) {
-	if err := RefuseIfGitDisabled(vaultPath, "prune template mirrors"); err != nil {
-		return PruneOutcome{}, err
-	}
-	_, out, err := pruneMirrors(vaultPath, paths, false, false, v)
-	return out, err
-}
-
-// pruneMirrors is both prunes. commit=false is the enclosing-repo form: no
-// remote, no reconcile, no fetch, no identity check, no stage, no commit.
+// commit=false is the enclosing-repo form: no remote, no reconcile, no fetch,
+// no identity check, no stage, no commit.
 func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVerifier) (*PushResult, PruneOutcome, error) {
 	var out PruneOutcome
 	if v.Accept == nil || v.Message == nil {
@@ -587,14 +583,17 @@ func remoteAllows(vaultPath string, remotes []string, branch, rel string, driver
 	return true
 }
 
-// PruneMirrorsVerifiedWithDowngrade is PruneMirrorsVerified under
-// CommitAndPushPathsWithDowngrade's remote policy: a push requested against a
+// PruneMirrorsVerifiedWithDowngrade is the verified prune (pruneMirrors with
+// commit=true) under CommitAndPushPathsWithDowngrade's remote policy: a push
+// requested against a
 // vault with no remotes becomes a local-only commit, reported as downgraded.
 // A failure to list the remotes defers every path rather than failing open.
 //
 // Its git_enabled gate is the first statement, before downgradePush's `git
-// remote`. Past it, it calls the ungated pruneMirrors core rather than
-// PruneMirrorsVerified, so one prune reads the host config once.
+// remote` and before any git in the prune: PruneOutcome.err() aggregates
+// without %w, so a refusal raised inside the loop would lose errors.Is. It is
+// the verified prune's only entry point, so one prune reads the host config
+// once.
 func PruneMirrorsVerifiedWithDowngrade(vaultPath string, paths []string, push bool, v PruneVerifier) (res *PushResult, out PruneOutcome, downgraded bool, err error) {
 	if err := RefuseIfGitDisabled(vaultPath, "prune template mirrors"); err != nil {
 		return nil, PruneOutcome{}, false, err
