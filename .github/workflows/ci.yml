@@ -284,3 +284,39 @@ jobs:
           path: /tmp/vp-e2e-workflows-metrics.*/metrics.jsonl
           retention-days: 14
           if-no-files-found: ignore
+
+  # 🔴 TEMPORARY, AND IT HAS A REMOVAL CONDITION. Delete this job once the
+  # `ubuntu-latest` migration window has closed (upstream says the rollout runs
+  # "gradually between October 19 and November 19, 2026" —
+  # github.blog/changelog/2026-09-17-ubuntu-26-generally-available-and-latest-migration)
+  # AND the `Image:` line of a green run on ubuntu-latest reads ubuntu-26.04. At
+  # that point every job above is already on the new image and this one is a
+  # duplicate. If it goes red before then, the remedy is upstream's own: pin the
+  # affected jobs to `ubuntu-24.04` and fix the breakage on our clock rather than
+  # the rollout's.
+  #
+  # WHY THESE THREE COMMANDS AND NOT `make test`. The image can only reach this
+  # project in three ways, and each is exercised once here:
+  #   - `-race` needs cgo and the IMAGE's C toolchain. Every build we ship is
+  #     CGO_ENABLED=0, so this is the only place an image's compiler matters.
+  #   - `make model-test` downloads and runs the real ONNX model. The stack is
+  #     pure Go (hugot), so no system onnxruntime is involved, but the download
+  #     path and huggingface.co reachability are image-adjacent. There is
+  #     deliberately NO cache step: a cold download is the case worth proving.
+  #   - `make source-audit` type-checks the whole module; it is the one job
+  #     whose rule runs nowhere else.
+  # The Go toolchain is pinned by setup-go, so the image's own Go is irrelevant.
+  #
+  # timeout-minutes is larger than the `model` job's 15 because this one always
+  # downloads cold.
+  ubuntu26-canary:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+      - run: go test -short -race ./...
+      - run: make source-audit
+      - run: make model-test
