@@ -12,13 +12,13 @@ import "github.com/suykerbuyk/vibe-palace/internal/surface"
 //
 // This is the MIGRATOR SEAM, now live: the KG triple-filename migration flips it
 // on for its migration Vault so it can read format-0 (old-encoding) triples past
-// the armed gate (RequiredDataFormat == 1).
+// the armed gate (any vault below surface.RequiredDataFormat).
 func (v *Vault) SetMigratorExempt(exempt bool) { v.migratorExempt = exempt }
 
 // checkFormatGate enforces the vault data-format READ gate for KG storage reads
 // (QueryEntity / KGStats / ListTriples). It is a PURE READ — no write side
-// effect. With surface.RequiredDataFormat armed at 1, it fail-stops reads on any
-// vault still at format 0 (old triple encoding). The migration driver
+// effect. It fail-stops reads on any vault below surface.RequiredDataFormat
+// (format 0 held the old triple encoding). The migration driver
 // (SetMigratorExempt) bypasses it, and VP_FORMAT_GATE=warn downgrades a mismatch
 // to a logged warning.
 //
