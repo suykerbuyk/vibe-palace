@@ -197,6 +197,95 @@ func TestApply_RequiresProjectConfig(t *testing.T) {
 	}
 }
 
+// absorbRepo is a project repo holding one CLAUDE.md section to absorb.
+func absorbRepo(t *testing.T) (*Plan, string) {
+	t.Helper()
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "CLAUDE.md"), []byte("# x\n\n## Architecture\n\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPlan(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan, repo
+}
+
+// A project with real history but no config.toml is initialised: the live
+// shape of atlassian-vault, qa-metabuild-system, rusty-can and tools, which
+// the config.toml-must-exist predicate refused.
+func TestApply_AcceptsProjectWithHistoryButNoConfig(t *testing.T) {
+	vroot := t.TempDir()
+	v := storage.NewVault(vroot)
+	dir := filepath.Join(vroot, "Projects", "hist")
+	for _, rel := range []string{"resume.md", "iterations.md", "sessions/2026-01-01-01.md", "tasks/t.md"} {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan, repo := absorbRepo(t)
+	if _, err := Apply(plan, WriteOptions{Vault: v, Project: "hist", ProjectRoot: repo}); err != nil {
+		t.Fatalf("Apply refused a project with history and no config.toml: %v", err)
+	}
+}
+
+// A phantom directory — only memory/ — is not an initialised project.
+func TestApply_RefusesPhantomProject(t *testing.T) {
+	vroot := t.TempDir()
+	v := storage.NewVault(vroot)
+	if err := os.MkdirAll(filepath.Join(vroot, "Projects", "ghost", "memory"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vroot, "Projects", "ghost", "memory", "m.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, repo := absorbRepo(t)
+	_, err := Apply(plan, WriteOptions{Vault: v, Project: "ghost", ProjectRoot: repo})
+	if err == nil {
+		t.Fatal("Apply accepted a phantom project directory")
+	}
+	for _, want := range []string{"phantom", "vp init", "Projects/ghost/"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not say %q: %v", want, err)
+		}
+	}
+}
+
+// A symlinked Projects/<slug> is refused, by intent: ListAllProjects already
+// excludes symlinked projects, and absorb must not follow a link out of the
+// vault's tree. At 5a2d7bc this was accepted, because os.Stat followed it.
+func TestApply_RefusesSymlinkedProject(t *testing.T) {
+	vroot := t.TempDir()
+	v := storage.NewVault(vroot)
+	target := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"resume.md", "config.toml"} {
+		if err := os.WriteFile(filepath.Join(target, name), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(vroot, "Projects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(vroot, "Projects", "linked")); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	plan, repo := absorbRepo(t)
+	_, err := Apply(plan, WriteOptions{Vault: v, Project: "linked", ProjectRoot: repo})
+	if err == nil || !strings.Contains(err.Error(), "Projects/linked is not a directory") {
+		t.Fatalf("err = %v, want a symlinked project refused as not a directory", err)
+	}
+	if _, serr := os.Stat(filepath.Join(target, "knowledge.md")); !os.IsNotExist(serr) {
+		t.Errorf("absorb wrote through the symlink (knowledge.md stat err=%v)", serr)
+	}
+}
+
 func TestApply_WholeFileCursorrules(t *testing.T) {
 	v := seedVaultProject(t, "proj1")
 	repo := t.TempDir()
