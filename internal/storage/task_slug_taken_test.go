@@ -453,3 +453,33 @@ func TestCreateRacingMoveIntoSameSlugNeverBothSucceed(t *testing.T) {
 		}
 	}
 }
+
+// A directory that cannot be inspected is a fault, not the caller's mistake: the
+// fail-closed error must stay internal on MCP, never apperr.Caller.
+func TestInspectFailureIsNotCallerFault(t *testing.T) {
+	for _, op := range []string{"create", "cancel", "move"} {
+		t.Run(op, func(t *testing.T) {
+			v := testVault(t)
+			seedTaskRaw(t, v, "p", "", "keep", "K")
+			seedTaskRaw(t, v, "q", "", "m", "Q")
+			if err := os.WriteFile(filepath.Join(v.Root, "Projects/p/tasks/done"), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			switch op {
+			case "create":
+				err = v.CreateTask("p", TaskSpec{Slug: "n", Title: "N", Priority: "low"})
+			case "cancel":
+				err = v.CancelTask("p", "keep", "")
+			case "move":
+				err = v.MoveTaskToProject("q", "m", "p")
+			}
+			if err == nil {
+				t.Fatalf("%s proceeded although done/ could not be inspected", op)
+			}
+			if apperr.IsCaller(err) {
+				t.Errorf("%s: an uninspectable directory is classified as the caller's fault: %v", op, err)
+			}
+		})
+	}
+}
