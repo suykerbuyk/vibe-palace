@@ -882,8 +882,17 @@ func vaultRelOf(vaultPath, target string) string {
 // enumerateVaultProjectSlugs lists directory entries under
 // <vaultRoot>/Projects/ that look like project slugs. Entries that
 // aren't directories, and entries whose names start with "." or "_",
-// are skipped. Result is sorted alphabetically for deterministic
-// reconciler ordering.
+// are skipped. Of the rest, a name that is a valid slug is kept only
+// when storage.ClassifyProjectDir judges it Initialised() — so default-
+// scope sync never scaffolds commands/ and skills/ into a phantom
+// directory; a classify error is logged and the slug skipped.
+//
+// 🔴 A NAME THAT FAILS slug.Validate PASSES THROUGH UNCLASSIFIED. The
+// classifier would only reject it as an invalid slug, and the slug would
+// vanish into a log line; passed through, TemplateTree's own portability
+// check reports it as an operator-visible "not portable" Skip row, which
+// is the point of that earlier fix (TestConfigSyncSkipsNonPortableProjectDir).
+// Result is sorted alphabetically for deterministic reconciler ordering.
 func enumerateVaultProjectSlugs(vaultRoot string) []string {
 	projectsDir := filepath.Join(vaultRoot, "Projects")
 	entries, err := os.ReadDir(projectsDir)
@@ -902,6 +911,16 @@ func enumerateVaultProjectSlugs(vaultRoot string) []string {
 		name := e.Name()
 		if !e.IsDir() || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
 			continue
+		}
+		if slug.Validate(name) == nil {
+			state, err := storage.ClassifyProjectDir(vaultRoot, name)
+			if err != nil {
+				slog.Error("classify vault project", "slug", name, "err", err)
+				continue
+			}
+			if !state.Initialised() {
+				continue
+			}
 		}
 		slugs = append(slugs, name)
 	}

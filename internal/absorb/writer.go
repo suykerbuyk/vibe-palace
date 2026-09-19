@@ -197,20 +197,21 @@ func Apply(plan *Plan, opts WriteOptions) (*WriteReport, error) {
 	return report, nil
 }
 
-// requireVaultProject enforces the "Projects/{slug}/config.toml must
-// exist" predicate from the plan (§3A). Bare directory existence is not
-// sufficient because `vp init` also creates empty subdirs.
+// requireVaultProject refuses unless Projects/{slug}/ is an initialised
+// project — one carrying an init-scaffold marker or real history — as
+// storage.ClassifyProjectDir judges it. Bare directory existence is not
+// sufficient: a phantom directory (only .surface, memory/, transcripts/ or
+// empty subdirs) is refused. A project with history but no config.toml is
+// accepted; the earlier config.toml-must-exist predicate refused those.
+// A symlinked Projects/{slug} is refused too, by the classifier's own rule.
 func requireVaultProject(v *storage.Vault, project string) error {
-	cfg, err := v.ProjectConfigFile(project)
+	state, err := storage.ClassifyProjectDir(v.Root, project)
 	if err != nil {
-		return err
+		return fmt.Errorf("classify vault project %q: %w", project, err)
 	}
-	if _, err := os.Stat(cfg); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("vault project %q not initialized (%s missing) — run `vp init` first",
-				project, cfg)
-		}
-		return fmt.Errorf("stat %s: %w", cfg, err)
+	if !state.Initialised() {
+		return fmt.Errorf("vault project %q not initialized (Projects/%s/ is %s) — run `vp init` first",
+			project, project, state)
 	}
 	return nil
 }
