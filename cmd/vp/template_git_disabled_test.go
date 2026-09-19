@@ -6,8 +6,11 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -156,5 +159,111 @@ func TestConfigSyncSkipsTheNestedPruneWholeWhenGitIsDisabled(t *testing.T) {
 	assertFileBytes(t, filepath.Join(vaultPath, "Templates", "commands", "wrap.md"), wrapMirror)
 	if after := repoState(t, parent); after != before {
 		t.Errorf("the enclosing repository moved: %s -> %s", before, after)
+	}
+}
+
+// loggingGitPATH puts a `git` first on PATH that appends each invocation to
+// the returned log and then execs the real git, so a command's git use can be
+// read back exactly rather than inferred. It is the harness that found the
+// retired lock running git past every gate; the restore func puts PATH back so
+// the test's own assertions do not land in the log.
+func loggingGitPATH(t *testing.T) (logPath string, restore func()) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the git wrapper is a shell script")
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not in PATH")
+	}
+	bin := t.TempDir()
+	logPath = filepath.Join(t.TempDir(), "git-calls")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + logPath + "'\nexec '" + realGit + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := os.Getenv("PATH")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+old)
+	return logPath, func() { t.Setenv("PATH", old) }
+}
+
+// gitCallsNaming returns every logged git invocation whose arguments mention
+// substr.
+func gitCallsNaming(t *testing.T, logPath, substr string) []string {
+	t.Helper()
+	data, err := os.ReadFile(logPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hits []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line != "" && strings.Contains(line, substr) {
+			hits = append(hits, line)
+		}
+	}
+	return hits
+}
+
+// TestConfigSyncSkipsTheRetiredLockWholeWhenGitIsDisabled is the acceptance
+// test for the last vault-mutating git path `vp config sync` had left
+// ungated. The retired .vibe-palace/templates.lock is removed on a git verdict
+// — the index, HEAD and check-ignore — so under git_enabled = false it is
+// skipped WHOLE: no git process names the lock, the file is still there
+// byte-identical, one skip row says so, and neither HEAD nor the index moves.
+//
+// The assertion is on the logged git calls, not on the outcome alone: a lock
+// that survives because the check happened and said "keep" would pass a
+// file-only assertion while still having run git past the gate.
+func TestConfigSyncSkipsTheRetiredLockWholeWhenGitIsDisabled(t *testing.T) {
+	vaultPath, projDir, _ := canonicalGitVault(t, nil)
+	rel := storage.RetiredTemplatesLockRel
+	lock := putVaultFile(t, vaultPath, rel, "stale lock\n")
+	disableGitInTestConfig(t)
+	before := repoState(t, vaultPath)
+
+	gitLog, restore := loggingGitPATH(t)
+	out := syncVault(t, projDir, "", "--yes")
+	restore()
+
+	if hits := gitCallsNaming(t, gitLog, "templates.lock"); len(hits) > 0 {
+		t.Errorf("git ran against the retired lock on a git_enabled = false host:\n  %s", strings.Join(hits, "\n  "))
+	}
+	want := rel + " — skipped: git is disabled (git_enabled = false) — not checked or removed"
+	if !strings.Contains(out, want) {
+		t.Errorf("no skip row for the retired lock:\n%s", out)
+	}
+	assertFileBytes(t, lock, "stale lock\n")
+	if after := repoState(t, vaultPath); after != before {
+		t.Errorf("HEAD or the index moved: %s -> %s", before, after)
+	}
+}
+
+// TestConfigSyncRemovesTheRetiredLockWhenGitIsEnabled is the enabled control
+// for the skip above, and it is not optional: a gate that refused nothing
+// would pass the disabled case too. The same fixture with git enabled runs the
+// lock's git checks and removes it.
+func TestConfigSyncRemovesTheRetiredLockWhenGitIsEnabled(t *testing.T) {
+	vaultPath, projDir, _ := canonicalGitVault(t, nil)
+	rel := storage.RetiredTemplatesLockRel
+	lock := putVaultFile(t, vaultPath, rel, "stale lock\n")
+
+	gitLog, restore := loggingGitPATH(t)
+	out := syncVault(t, projDir, "", "--yes")
+	restore()
+
+	if hits := gitCallsNaming(t, gitLog, "templates.lock"); len(hits) == 0 {
+		t.Error("git never checked the retired lock with git enabled: the disabled case proves nothing")
+	}
+	if !strings.Contains(out, "removed the retired "+rel) {
+		t.Errorf("the retired lock was not removed with git enabled:\n%s", out)
+	}
+	if _, err := os.Stat(lock); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the retired lock is still on disk: %v", err)
+	}
+	if strings.Contains(out, "skipped: git is disabled") {
+		t.Errorf("an enabled run printed the disabled skip row:\n%s", out)
 	}
 }
