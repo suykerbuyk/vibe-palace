@@ -14,7 +14,12 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
+
+// TestMain runs this package hermetically: XDG_CONFIG_HOME points at the
+// checked-in host-config fixture, never the developer's real host config.
+func TestMain(m *testing.M) { os.Exit(testutil.RunHermetic(m)) }
 
 // TestIntegrationInitToCheckPipeline proves the full init→check flow:
 // fresh init creates a config that vp check accepts as valid.

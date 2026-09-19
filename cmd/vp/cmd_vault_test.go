@@ -13,7 +13,12 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
+
+// TestMain runs this package hermetically: XDG_CONFIG_HOME points at the
+// checked-in host-config fixture, never the developer's real host config.
+func TestMain(m *testing.M) { os.Exit(testutil.RunHermetic(m)) }
 
 // TestVaultRemoteCommandsRefuseZeroRemotes pins the empty-remote refusal at the
 // three CLI call sites. It replaces TestGitRemotes/TestGitRemotesNoRemotes,
