@@ -390,3 +390,96 @@ func TestHeaderRunProseWedges_StopsAtTheBlankLine(t *testing.T) {
 		t.Errorf("wedges = %v, want none — the scan must stop at the blank line that ends the header region", got)
 	}
 }
+
+// TestHeaderRunProseWedgesNeverFiresOnAValidFile is the invariant the whole
+// predicate hangs on: HeaderRunProseWedges is consumed as a REFUSAL CAUSE, so a
+// file it fires on is a file some caller declines to repair while naming a
+// reason. If it fires on a file that validates clean, that reason blocks
+// nothing — this project's twice-shipped defect class.
+//
+// Break: delete the `blockHas(...) && blockHas(...)` early return. This test
+// fails on the first case.
+func TestHeaderRunProseWedgesNeverFiresOnAValidFile(t *testing.T) {
+	valid := []struct{ name, content string }{
+		{
+			// The shape that defeated the unbounded scan: Status AND Priority are
+			// both inside the contiguous run, and ordinary body prose is glued
+			// directly beneath it with no blank line.
+			"prose glued under a complete run",
+			"# Alpha\n\n**Status:** open\n**Priority:** high\nThis is prose immediately after the field run.\n\n## Notes\n\nbody\n",
+		},
+		{
+			"prose glued under a complete run, extra fields",
+			"# Alpha\n\n**Status:** open\n**Priority:** high\n**Filed:** 2026-01-01\nglued prose\n\n## Notes\n\nbody\n",
+		},
+	}
+	for _, tc := range valid {
+		if err := ValidateWholeTaskFile(tc.content); err != nil {
+			t.Fatalf("%s: fixture does not validate, so the assertion below is vacuous: %v", tc.name, err)
+		}
+		if got := HeaderRunProseWedges(tc.content); len(got) != 0 {
+			t.Errorf("%s: wedges = %v on a file that validates CLEAN — the refusal cause blocks nothing", tc.name, got)
+		}
+	}
+}
+
+// TestHeaderRunProseWedgesReadsTheValidatorsProjection pins the scan to
+// mdfence.OutsideFences.
+//
+// A raw strings.Split disagrees with headerBlock — which runs on the projection
+// — about what a line is, so a ``` delimiter was reported as "prose wedged into
+// the header field run". The refusal named a fence as prose and sent the
+// operator to hand-edit a line that is not prose at all.
+//
+// Break: restore `lines := strings.Split(content, "\n")` in place of the
+// projection. This test fails.
+func TestHeaderRunProseWedgesReadsTheValidatorsProjection(t *testing.T) {
+	// Status is marooned below a fenced block, so the file IS malformed and the
+	// gate lets the scan run. The only non-field line abutting the run is the
+	// fence delimiter, which the projection removes.
+	const fenced = "# T\n\n**Priority:** high\n```\nx\n```\n\n## S\n\n**Status:** open\n"
+	if err := ValidateWholeTaskFile(fenced); err == nil {
+		t.Fatal("fixture validates clean, so this test cannot see the defect it exists for")
+	}
+	if got := HeaderRunProseWedges(fenced); len(got) != 0 {
+		t.Errorf("wedges = %v — a code-fence delimiter was reported as wedged PROSE", got)
+	}
+}
+
+// TestHeaderRunProseWedgesStillReportsEveryWrappedContinuation is the other
+// half, and it is why the gate is a gate rather than a bound on the scan.
+//
+// Bounding the scan to "prose with a field line after it" also removes the
+// TRAILING continuation of a wrapped field value, shortening the roster a human
+// hand-edits from. The fixture mirrors the live specimen
+// (Projects/vibe-palace/tasks/done/vp-migrate-source-dest-separation.md), whose
+// last field value wraps to the end of the run.
+//
+// Break: replace the gate with that bound. This test fails on the last line.
+func TestHeaderRunProseWedgesStillReportsEveryWrappedContinuation(t *testing.T) {
+	const wrapped = "# T\n" + // 1
+		"\n" + // 2
+		"**Status:** retired\n" + // 3
+		"but deferred; this value wraps.\n" + // 4  <- continuation
+		"**Priority:** Low — this value wraps too\n" + // 5
+		"onto a second line.\n" + // 6  <- continuation
+		"**Reviewed:** 2026-06-07 — and this last one\n" + // 7
+		"wraps to the end of the run.\n" + // 8  <- TRAILING continuation
+		"\n" +
+		"## Problem\n" +
+		"\n" +
+		"body\n"
+	if err := ValidateWholeTaskFile(wrapped); err == nil {
+		t.Fatal("fixture validates clean, so this test cannot see the defect it exists for")
+	}
+	got := HeaderRunProseWedges(wrapped)
+	want := []int{4, 6, 8}
+	if len(got) != len(want) {
+		t.Fatalf("wedges = %v, want %v — the roster a human hand-edits from is incomplete", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("wedges = %v, want %v", got, want)
+		}
+	}
+}

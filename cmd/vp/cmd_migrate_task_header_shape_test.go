@@ -600,3 +600,150 @@ func TestTaskHeaderShapeSeamRefusesAPartialRepair(t *testing.T) {
 		t.Error("the file changed despite the refusal")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The ARCHIVED pair. The two tests above seed an ACTIVE twin, which is the
+// shape taskHeaderShadowWinner covered BEFORE it was widened, so both stay green
+// on a guard narrowed back to active-only. The pair below is the shape the
+// widening exists for, and one machine cannot build it: machine A retires slug
+// X, machine B cancels slug X, and git merges two files at different paths with
+// no conflict.
+// ---------------------------------------------------------------------------
+
+// TestMigrateTaskHeaderShape_ArchivedPairIsRefused pins the done/+cancelled/
+// pair with NO active twin.
+//
+// done/ holds a file that needs nothing, so the ONLY thing that can refuse the
+// cancelled/ copy is the guard walking past the active directory into done/.
+//
+// Break: narrow taskHeaderShadowDirs to []string{""}. This test fails; the two
+// active-twin tests above stay green, which is exactly why it has to exist.
+func TestMigrateTaskHeaderShape_ArchivedPairIsRefused(t *testing.T) {
+	root := t.TempDir()
+	gitInitVault(t, root)
+	donePath := seedArchivedTask(t, root, "p", "done", "paired", cleanFixture)
+	cancelledPath := seedArchivedTask(t, root, "p", "cancelled", "paired", dupPriorityFixture)
+	gitCommitAll(t, root)
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderShapeMigration(root, "", true, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Positive first: an all-negative test passes over an empty corpus.
+	if sum.Scanned != 2 {
+		t.Fatalf("Scanned = %d, want 2 — the assertions below are vacuous over an empty corpus", sum.Scanned)
+	}
+	if sum.Applied != 0 {
+		t.Errorf("Applied = %d, want 0 — an archived pair must never be written", sum.Applied)
+	}
+	if sum.Fix != 0 {
+		t.Errorf("Fix = %d, want 0 — the cancelled/ copy was counted fixable", sum.Fix)
+	}
+	if sum.Failed != 1 {
+		t.Errorf("Failed = %d, want 1 — an archived pair is a vault defect needing a human", sum.Failed)
+	}
+	// The bytes, not only the counters: a guard that refused the wrong half would
+	// satisfy every count above while rewriting done/.
+	if got, _ := os.ReadFile(donePath); string(got) != cleanFixture {
+		t.Fatalf("🔴 THE done/ FILE WAS REWRITTEN — the writer resolved done/ while the command read cancelled/:\n%s", got)
+	}
+	if got, _ := os.ReadFile(cancelledPath); string(got) != dupPriorityFixture {
+		t.Errorf("the cancelled/ file changed; the guard must refuse, not redirect:\n%s", got)
+	}
+	// The winner is named, not merely "a conflict": an operator who is not told
+	// WHICH directory wins cannot tell this apart from an active twin, and the
+	// two need different repairs.
+	if !strings.Contains(out.String(), "the same slug also exists in tasks/done/") {
+		t.Errorf("the refusal does not name done/ as the winning directory:\n%s", out.String())
+	}
+}
+
+// TestMigrateTaskHeaderShape_ArchivedPairReasonNamesTheRealWinner pins the
+// STORED reason, not stdout.
+//
+// The main-resident sibling of this bug shipped precisely because only the
+// printed line was asserted: the line was correct and the Reason recorded on the
+// decision said "an ACTIVE task of the same slug exists", which is false for a
+// done/+cancelled/ pair. Whoever consumes the roster reads the Reason.
+//
+// Break: restore the literal at the call site
+// (`d.Reason = "a conflicting task of the same slug exists; the writer resolves by slug"`).
+// This test fails; the one above stays green.
+func TestMigrateTaskHeaderShape_ArchivedPairReasonNamesTheRealWinner(t *testing.T) {
+	root := t.TempDir()
+	seedArchivedTask(t, root, "p", "done", "paired", cleanFixture)
+	seedArchivedTask(t, root, "p", "cancelled", "paired", dupPriorityFixture)
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderShapeMigration(root, "", false, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refused []taskHeaderShapeDecision
+	for _, d := range sum.Decisions {
+		if d.Failed {
+			refused = append(refused, d)
+		}
+	}
+	if len(refused) != 1 {
+		t.Fatalf("refused decisions = %d, want 1", len(refused))
+	}
+	got := refused[0].Reason
+	if !strings.Contains(got, "tasks/done/") {
+		t.Errorf("stored Reason does not name the winning directory:\n  got %q", got)
+	}
+	if strings.Contains(got, "ACTIVE") {
+		t.Errorf("stored Reason claims an ACTIVE twin, and there is none:\n  got %q", got)
+	}
+	// The stored reason and the printed line come from one walk, so they must
+	// agree on the WINNER — the one fact a literal silently drops. They are not
+	// byte-identical (the printed form interpolates "refusing (...)"), so pin the
+	// winner clause they share rather than asserting containment of the whole.
+	const winnerClause = "the same slug also exists in tasks/done/;"
+	if !strings.Contains(got, winnerClause) || !strings.Contains(out.String(), winnerClause) {
+		t.Errorf("stored Reason and printed line disagree about the winning directory:\n  stored %q\n  printed %s",
+			got, out.String())
+	}
+}
+
+// TestMigrateTaskHeaderShape_CleanArchivedPairIsNotRefused pins the guard's
+// POSITION against the needs-nothing escape.
+//
+// The guard is correct only where it sits. Moved ahead of the `class ==
+// shapeNoWork` escape it refuses files that need nothing, citing a cause that
+// blocks nothing — the defect class this project has now shipped twice. Nothing
+// else in the tree fails on that move: `go vet ./...` and `go test ./...` both
+// stay green, which is what this test is for.
+//
+// Break: move the taskHeaderShadowed call above the `if class == shapeNoWork`
+// block. This test fails; every other test in the package stays green.
+func TestMigrateTaskHeaderShape_CleanArchivedPairIsNotRefused(t *testing.T) {
+	root := t.TempDir()
+	seedArchivedTask(t, root, "p", "done", "twinned", cleanFixture)
+	seedArchivedTask(t, root, "p", "cancelled", "twinned", cleanFixture)
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderShapeMigration(root, "", false, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Scanned != 2 {
+		t.Fatalf("Scanned = %d, want 2 — the assertions below are vacuous over an empty corpus", sum.Scanned)
+	}
+	if sum.NoWork != 2 {
+		t.Errorf("NoWork = %d, want 2 — both halves of the pair need nothing", sum.NoWork)
+	}
+	if sum.Failed != 0 {
+		t.Errorf("Failed = %d, want 0 — a file that needs nothing was refused", sum.Failed)
+	}
+	if strings.Contains(out.String(), "refusing") {
+		t.Errorf("a file that needs nothing was refused, with a cause that blocks nothing:\n%s", out.String())
+	}
+	for _, d := range sum.Decisions {
+		if d.Failed || d.Reason != "" {
+			t.Errorf("decision for %s/%s carries a reason for a file that needs nothing: %q",
+				d.Sub, d.Slug, d.Reason)
+		}
+	}
+}

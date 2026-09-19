@@ -272,7 +272,7 @@ func planTaskSections(content string) (after string, outcome taskSectionsOutcome
 			"so every heading after it is invisible to the scan", 0
 	}
 
-	outside := mdfence.OutsideFences(content)
+	outside := outsideInertRegions(content)
 
 	var h1, h2 int
 	var h3Lines []int
@@ -292,43 +292,10 @@ func planTaskSections(content string) (after string, outcome taskSectionsOutcome
 	// unit. The escapes below decide FIRST; only then is a held refusal reported.
 	refusal := ""
 	seen := map[string]bool{}
-	inComment := false
-	inFrontmatter := false
-	firstLine := true
 
 	for _, l := range outside {
 		raw := l.Text
 		trimmed := strings.TrimSpace(raw)
-
-		// Leading "---" opens YAML frontmatter, which mdfence does not model at
-		// all. A heading inside it is not a section, so it is SKIPPED — see the
-		// deviation note on this function.
-		if firstLine && trimmed == "---" {
-			inFrontmatter = true
-			firstLine = false
-			continue
-		}
-		firstLine = false
-		if inFrontmatter {
-			if trimmed == "---" {
-				inFrontmatter = false
-			}
-			continue
-		}
-
-		// HTML comments are likewise invisible to mdfence: it recognises only
-		// ` and ~ as delimiters, so "###" inside <!-- --> reads as a heading to
-		// every caller. Skipped for the same reason as frontmatter.
-		if inComment {
-			if strings.Contains(trimmed, "-->") {
-				inComment = false
-			}
-			continue
-		}
-		if strings.Contains(trimmed, "<!--") && !strings.Contains(trimmed, "-->") {
-			inComment = true
-			continue
-		}
 
 		level, rest, ok := headingLevel(trimmed)
 		if !ok {
@@ -423,6 +390,63 @@ func planTaskSections(content string) (after string, outcome taskSectionsOutcome
 	return after, sectionsPromote, "", len(h3Lines)
 }
 
+// outsideInertRegions is mdfence.OutsideFences minus the two regions mdfence
+// does not model: leading YAML frontmatter and HTML comment blocks. Line.Num is
+// carried through, so callers still address the ORIGINAL file.
+//
+// 🔴 ONE RULE, ONE PLACE, BECAUSE TWO COPIES DISAGREED. planTaskSections
+// open-coded this skipping inline while boldPseudoHeadingLines did not, so the
+// scan that DECIDES a file has no sections and the scan that picks what to
+// PROMOTE were reading different documents. The promotion therefore manufactured
+// a "## " heading inside an HTML comment or inside frontmatter — a region its own
+// sibling scan treats as non-existent. The result VALIDATES, because the
+// validator counts "## " lines the same way, so the file passes the very rule the
+// promotion exists to satisfy while remaining unaddressable by amend. Validity is
+// not correctness, and a test asserting "the validator now passes" goes green on
+// exactly that file.
+func outsideInertRegions(content string) []mdfence.Line {
+	var out []mdfence.Line
+	inComment := false
+	inFrontmatter := false
+	firstLine := true
+
+	for _, l := range mdfence.OutsideFences(content) {
+		trimmed := strings.TrimSpace(l.Text)
+
+		// Leading "---" opens YAML frontmatter, which mdfence does not model at
+		// all. A heading inside it is not a section.
+		if firstLine && trimmed == "---" {
+			inFrontmatter = true
+			firstLine = false
+			continue
+		}
+		firstLine = false
+		if inFrontmatter {
+			if trimmed == "---" {
+				inFrontmatter = false
+			}
+			continue
+		}
+
+		// HTML comments are likewise invisible to mdfence: it recognises only
+		// ` and ~ as delimiters, so "###" or "**Bold**" inside <!-- --> reads as
+		// live text to every caller. Skipped for the same reason as frontmatter.
+		if inComment {
+			if strings.Contains(trimmed, "-->") {
+				inComment = false
+			}
+			continue
+		}
+		if strings.Contains(trimmed, "<!--") && !strings.Contains(trimmed, "-->") {
+			inComment = true
+			continue
+		}
+
+		out = append(out, l)
+	}
+	return out
+}
+
 // boldPseudoHeadingLines returns the 1-indexed lines whose whole trimmed text is a
 // bold run and nothing else — the shape an author used as a section title before
 // the header contract existed.
@@ -440,7 +464,7 @@ func planTaskSections(content string) (after string, outcome taskSectionsOutcome
 // sample text.
 func boldPseudoHeadingLines(content string) []int {
 	var out []int
-	for _, l := range mdfence.OutsideFences(content) {
+	for _, l := range outsideInertRegions(content) {
 		t := strings.TrimSpace(l.Text)
 		// 🔴 THE LENGTH BOUND IS SLICE ARITHMETIC, NOT A STYLE CHOICE. inner below
 		// is t[2:len(t)-2], so len(t) must be at least 4 or that slice is INVERTED
