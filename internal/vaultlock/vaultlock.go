@@ -48,7 +48,12 @@ var ErrLockWaitTimeout = errors.New("vaultlock: timed out waiting for lock")
 // caller is about to read-modify-write. It returns a release function that
 // unlocks and closes the lock handle; release is idempotent and safe to defer.
 func Acquire(vaultRoot, targetAbsPath string) (release func() error, err error) {
-	f, err := openLockFile(vaultRoot, targetAbsPath)
+	return acquireByKey(vaultRoot, canonicalKey(targetAbsPath))
+}
+
+// acquireByKey is Acquire for a key already computed by canonicalKey.
+func acquireByKey(vaultRoot, key string) (release func() error, err error) {
+	f, err := openLockFileByKey(vaultRoot, key)
 	if err != nil {
 		return nil, err
 	}
@@ -57,6 +62,58 @@ func Acquire(vaultRoot, targetAbsPath string) (release func() error, err error) 
 		return nil, fmt.Errorf("vaultlock: acquire lock: %w", err)
 	}
 	return releaser(f), nil
+}
+
+// AcquirePair takes the exclusive locks guarding two paths, in ascending
+// canonical-key order, and returns one release for both.
+//
+// 🔴 THIS IS THE ONE SANCTIONED NESTED ACQUISITION (ADR-003, amendment
+// 2026-09-19), and its only caller is storage.MoveTaskToProject, which must
+// serialise against every writer of its source AND its destination. Every other
+// caller holds at most one vault lock at a time. The deadlock argument rests on
+// two facts: no holder of a task-file lock waits on another lock, and this
+// function waits only while holding its LOWER key, for its HIGHER key — so every
+// wait edge between task-file locks is strictly key-increasing and none can
+// close a cycle. The order is owned here: callers pass two paths and cannot
+// choose it.
+//
+// Each key is computed ONCE, and that same value both orders the pair and names
+// the sidecar, so the order and the lock identity cannot disagree. Two paths
+// with one key take one lock (a self-deadlock is impossible, not merely
+// unreachable). If the second acquire fails, the first is released before the
+// error returns. The returned release frees the higher key, then the lower; it
+// is idempotent and returns the first error.
+func AcquirePair(vaultRoot, pathA, pathB string) (release func() error, err error) {
+	lo, hi := canonicalKey(pathA), canonicalKey(pathB)
+	if lo == hi {
+		return acquireByKey(vaultRoot, lo)
+	}
+	if hi < lo {
+		lo, hi = hi, lo
+	}
+	releaseLo, err := acquireByKey(vaultRoot, lo)
+	if err != nil {
+		return nil, err
+	}
+	releaseHi, err := acquireByKey(vaultRoot, hi)
+	if err != nil {
+		_ = releaseLo()
+		return nil, err
+	}
+	var once sync.Once
+	return func() error {
+		var rerr error
+		once.Do(func() {
+			herr := releaseHi()
+			lerr := releaseLo()
+			if herr != nil {
+				rerr = herr
+			} else {
+				rerr = lerr
+			}
+		})
+		return rerr
+	}, nil
 }
 
 // TryAcquire is the NON-BLOCKING form of Acquire. It attempts an exclusive
@@ -125,14 +182,19 @@ func AcquireWithTimeout(vaultRoot, targetAbsPath string, timeout time.Duration) 
 // openLockFile validates the root, computes the sidecar path for targetAbsPath,
 // and opens (creating if needed) the sidecar lock file. It performs no locking.
 func openLockFile(vaultRoot, targetAbsPath string) (*os.File, error) {
+	return openLockFileByKey(vaultRoot, canonicalKey(targetAbsPath))
+}
+
+// openLockFileByKey is openLockFile for a key already computed by canonicalKey:
+// AcquirePair computes each key once and must open the sidecar that same value
+// names.
+func openLockFileByKey(vaultRoot, key string) (*os.File, error) {
 	if vaultRoot == "" {
 		return nil, fmt.Errorf("vaultlock: vaultRoot must not be empty")
 	}
 	if !filepath.IsAbs(vaultRoot) {
 		return nil, fmt.Errorf("vaultlock: vaultRoot must be absolute, got %q", vaultRoot)
 	}
-
-	key := canonicalKey(targetAbsPath)
 
 	lockDir := filepath.Join(vaultRoot, ".vp-locks")
 	if err := os.MkdirAll(lockDir, 0o755); err != nil {
