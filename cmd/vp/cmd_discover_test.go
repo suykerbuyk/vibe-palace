@@ -216,6 +216,10 @@ func TestRunDiscoverRooms_WithProposals(t *testing.T) {
 }
 
 func TestRunDiscoverRooms_Apply(t *testing.T) {
+	// 🔴 ISOLATE XDG: --apply now writes the HOST-LOCAL per-project file, which
+	// lives beside the host's real global config. Without this the test writes
+	// into the developer's own ~/.config/vibe-palace/projects/.
+	initTestEnv(t, false)
 	v := testVault(t)
 
 	// 3 general drawers with matching content.
@@ -261,8 +265,26 @@ func TestRunDiscoverRooms_Apply(t *testing.T) {
 		t.Errorf("expected 'Applied' or no-proposals message: %s", out)
 	}
 
-	// If applied, verify config was written.
+	// If applied, verify config was written — to the HOST-LOCAL file, whose
+	// path the command must print, and NOT into the vault.
 	if strings.Contains(out, "Applied") {
+		hostPath, err := storage.HostProjectConfigPath("proj")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, hostPath) {
+			t.Errorf("output does not name the host-local file %s:\n%s", hostPath, out)
+		}
+		if _, err := os.Stat(hostPath); err != nil {
+			t.Errorf("host-local config not written: %v", err)
+		}
+		vaultPath, err := v.ProjectConfigFile("proj")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(vaultPath); !os.IsNotExist(err) {
+			t.Errorf("--apply wrote the vault project config %s (stat err=%v)", vaultPath, err)
+		}
 		reloaded, err := v.LoadConfig("proj")
 		if err != nil {
 			t.Fatalf("LoadConfig: %v", err)
