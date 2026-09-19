@@ -17,6 +17,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -34,7 +35,16 @@ const (
 	MetaKindGlobal       = "global"
 	MetaKindCwdProject   = "cwd-project"
 	MetaKindVaultProject = "vault-project"
+	// MetaKindHostProject is the host-local per-project file written by
+	// WriteHostScoringConfig: the same shape as a vault project file, but
+	// outside every vault and never shared between machines.
+	MetaKindHostProject = "host-project"
 )
+
+// hostProjectKeyWarnOnce suppresses the "not a per-project key" warning to one
+// emission per process per (file, key), so a long-lived `vp mcp` does not
+// repeat itself on every LoadConfig.
+var hostProjectKeyWarnOnce sync.Map // map[string]*sync.Once, keyed path+"\x00"+key
 
 // missingMetaWarnOnce suppresses the "config has no [meta] block" warning
 // to one emission per process, keyed by file path.
@@ -217,6 +227,33 @@ type tomlScoringConfig struct {
 	Rooms    map[string]tomlRoomScoring `toml:"rooms"`
 }
 
+// hostProjectLayer is what the HOST-LOCAL per-project file may set, and it is
+// deliberately NOT tomlConfig.
+//
+// 🔴 THE TYPE IS THE ALLOW-LIST. A per-project file must not be able to move
+// vault_path, http_port, log_level, the embedder or anything else that is
+// vault-wide or machine-wide; decoding into tomlConfig would let every one of
+// them through silently. Everything this struct does not name lands in
+// MetaData.Undecoded() and is reported once per key as ignored, which is a
+// refusal the operator can see rather than a value that quietly wins.
+//
+// Meta is decoded and NOT acted on: the file carries a [meta] block so a later
+// release has a schema version to gate on, and decoding it here is what keeps
+// the version keys out of the ignored-key warning. checkConfigVersion is not
+// run on this layer (see LoadConfig's Layer 4).
+type hostProjectLayer struct {
+	Meta   tomlMeta `toml:"meta"`
+	Palace struct {
+		Scoring struct {
+			// MinScore is a POINTER so an absent key is distinguishable from an
+			// explicit 0. A plain float64 would let a file that never mentions
+			// min_score overwrite the vault's value with zero.
+			MinScore *float64                   `toml:"min_score"`
+			Rooms    map[string]tomlRoomScoring `toml:"rooms"`
+		} `toml:"scoring"`
+	} `toml:"palace"`
+}
+
 type tomlRoomScoring struct {
 	High   []string `toml:"high"`
 	Medium []string `toml:"medium"`
@@ -367,7 +404,76 @@ func (v *Vault) LoadConfig(project string) (Config, error) {
 		}
 	}
 
+	// Layer 4: the HOST-LOCAL per-project file, ranked above the vault's.
+	//
+	// 🔴 IT IS HOST-LOCAL, WHICH IS THE WHOLE POINT. The vault is shared across
+	// machines, so a tuning run on one host must not become every host's
+	// classifier (task move-per-project-config-out-of-the-shared-vault). Layer 3
+	// stays until R4 of that task deletes it, so no override that exists today
+	// stops applying before the delete command can print a transcript of what it
+	// is dropping.
+	//
+	// checkConfigVersion is NOT run here. The file carries a [meta] block so a
+	// later release has a version to gate on, but nothing gates on it yet: a
+	// gate added now would be a refusal with no schema change behind it.
+	if project != "" {
+		hostPath, err := HostProjectConfigPath(project)
+		if err != nil {
+			return Config{}, err
+		}
+		switch _, serr := os.Lstat(hostPath); {
+		case serr == nil:
+			var hl hostProjectLayer
+			md, derr := toml.DecodeFile(hostPath, &hl)
+			if derr != nil {
+				return Config{}, fmt.Errorf("decode host-local project config %s: %w", hostPath, derr)
+			}
+			warnIgnoredHostProjectKeys(hostPath, md.Undecoded())
+			applyHostProjectLayer(&tc, hl)
+		case os.IsNotExist(serr):
+			// An absent file is a no-op, not an error: most projects have none.
+		default:
+			return Config{}, fmt.Errorf("stat host-local project config %s: %w", hostPath, serr)
+		}
+	}
+
 	return tc.flatten(), nil
+}
+
+// applyHostProjectLayer merges the host-local layer over everything below it.
+//
+// Rooms merge by WHOLE-ROOM REPLACEMENT: a room the host-local file names
+// replaces that room's three tiers entirely, so a host-local room carrying only
+// `high` resolves with Medium and Low empty. That is how layers 2 and 3 already
+// compose — BurntSushi replaces the map entry for a key it decodes — and it is
+// what makes a host-local room a statement about the whole room rather than a
+// patch whose result depends on what the vault happened to say.
+func applyHostProjectLayer(tc *tomlConfig, hl hostProjectLayer) {
+	if v := hl.Palace.Scoring.MinScore; v != nil {
+		tc.Palace.Scoring.MinScore = *v
+	}
+	if len(hl.Palace.Scoring.Rooms) == 0 {
+		return
+	}
+	if tc.Palace.Scoring.Rooms == nil {
+		tc.Palace.Scoring.Rooms = make(map[string]tomlRoomScoring, len(hl.Palace.Scoring.Rooms))
+	}
+	for room, rs := range hl.Palace.Scoring.Rooms {
+		tc.Palace.Scoring.Rooms[room] = rs
+	}
+}
+
+// warnIgnoredHostProjectKeys reports every key the host-local file set that the
+// allow-list does not carry. It warns rather than failing: the key is already
+// ignored, and a hard error would turn a stale hand-edit into a broken vp.
+func warnIgnoredHostProjectKeys(path string, undecoded []toml.Key) {
+	for _, k := range undecoded {
+		key := k.String()
+		oncePtr, _ := hostProjectKeyWarnOnce.LoadOrStore(path+"\x00"+key, &sync.Once{})
+		oncePtr.(*sync.Once).Do(func() {
+			slog.Warn("not a per-project key; ignored", "key", key, "path", path)
+		})
+	}
 }
 
 // checkConfigVersion rejects configs from a future major version and warns
@@ -415,6 +521,24 @@ func VaultConfigFilePath() (string, error) {
 	// windows-lock CI failure of 2026-07-26. Join normalizes per-OS and is
 	// byte-identical to the old result on Unix.
 	return filepath.Join(configDir, "vibe-palace", "config.toml"), nil
+}
+
+// HostProjectConfigPath returns the host-local per-project config file for a
+// project: <UserConfigDir>/vibe-palace/projects/<slug>.toml.
+//
+// 🔴 IT IS DERIVED FROM VaultConfigFilePath, NOT FROM A SECOND os.UserConfigDir
+// CALL. One resolution means one directory: a test (or a host) that redirects
+// the global config through XDG_CONFIG_HOME redirects this file with it, and
+// the two tiers cannot come to disagree about where "the host's config" lives.
+func HostProjectConfigPath(project string) (string, error) {
+	if err := slug.Validate(project); err != nil {
+		return "", err
+	}
+	p, err := VaultConfigFilePath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(p), "projects", project+".toml"), nil
 }
 
 // WriteScoringConfig merges scoring overrides into the project config file.
