@@ -812,18 +812,61 @@ func TestCheckStrayScaffolds(t *testing.T) {
 	mk(".trash", "config.toml")
 	mk("_archive", "config.toml")
 
+	// recmeet-v1's live shape: both READMEs and .surface, NO config.toml.
+	// Scaffold-only, and missed while the check required config.toml.
+	mk("recmeet-v1", "commands", "README.md")
+	mk("recmeet-v1", "skills", "README.md")
+	mk("recmeet-v1", ".surface")
+
+	// phantom: memory/ only — no scaffold marker, so not a stray scaffold.
+	mk("phantom", "memory", "m.md")
+
 	r := CheckStrayScaffolds(v)
 	if r.Status != Info {
 		t.Fatalf("status = %v, want Info; summary=%q details=%v", r.Status, r.Summary, r.Details)
 	}
 	joined := strings.Join(append([]string{r.Summary}, r.Details...), "\n")
-	if !strings.Contains(joined, "stray") {
-		t.Errorf("expected 'stray' flagged, got:\n%s", joined)
+	for _, flagged := range []string{"stray", "recmeet-v1"} {
+		if !strings.Contains(joined, flagged) {
+			t.Errorf("expected %q flagged, got:\n%s", flagged, joined)
+		}
 	}
-	for _, notFlagged := range []string{"real", "busy", "trash", "archive"} {
+	if !strings.Contains(r.Summary, "2 scaffold-only") {
+		t.Errorf("summary = %q, want 2 scaffold-only projects", r.Summary)
+	}
+	for _, notFlagged := range []string{"real", "busy", "trash", "archive", "phantom"} {
 		if strings.Contains(joined, notFlagged) {
 			t.Errorf("%q should not be flagged, got:\n%s", notFlagged, joined)
 		}
+	}
+}
+
+// A directory the classifier cannot judge is reported as a detail line and
+// makes the row Info; it is neither silently dropped nor flagged as stray.
+func TestCheckStrayScaffolds_UnclassifiableIsReported(t *testing.T) {
+	vaultDir := t.TempDir()
+	v := storage.NewVault(vaultDir)
+	realDir := filepath.Join(vaultDir, "Projects", "real")
+	os.MkdirAll(realDir, 0o755)
+	os.WriteFile(filepath.Join(realDir, "resume.md"), []byte("x"), 0o644)
+	// Not a valid slug, so ClassifyProjectDir refuses it at rule 1.
+	os.MkdirAll(filepath.Join(vaultDir, "Projects", "a:b"), 0o755)
+
+	r := CheckStrayScaffolds(v)
+	if r.Status != Info {
+		t.Fatalf("status = %v, want Info (summary=%q details=%v)", r.Status, r.Summary, r.Details)
+	}
+	if !strings.Contains(r.Summary, "1 project(s) could not be classified") {
+		t.Errorf("summary = %q, want the unclassified count", r.Summary)
+	}
+	found := false
+	for _, d := range r.Details {
+		if strings.HasPrefix(d, "a:b: ") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no `a:b: <err>` detail line: %v", r.Details)
 	}
 }
 

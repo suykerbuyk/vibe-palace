@@ -62,8 +62,15 @@ func TestConfigSyncSkipsNonPortableProjectDir(t *testing.T) {
 	if strings.Contains(out, "error:") {
 		t.Errorf("sync output should carry no error line:\n%s", out)
 	}
-	if !strings.Contains(out, "skipped=") {
-		t.Errorf("summary missing a skipped count:\n%s", out)
+	// The operator-visible portability Skip row, and its count. The
+	// Initialised() filter must not swallow a name that fails slug.Validate
+	// before TemplateTree can report it: filtering first would drop a:b into
+	// a log line and print skipped=0, and this assertion would go red.
+	if !strings.Contains(out, "TemplateTree:Projects/a:b") || !strings.Contains(out, "not portable") {
+		t.Errorf("output lacks the not-portable Skip row for Projects/a:b:\n%s", out)
+	}
+	if !strings.Contains(out, "skipped=2") {
+		t.Errorf("summary does not report skipped=2 (commands/ and skills/ under a:b):\n%s", out)
 	}
 
 	// Nothing was created under the badly-named directory.
