@@ -469,7 +469,10 @@ func TestRunTaskBoardFieldsTombstoneTieBreakIsDeterministic(t *testing.T) {
 
 func TestRunTaskBoardFieldsAlreadyMigratedFileIsSkippedEntirely(t *testing.T) {
 	root := bfVault(t, "p")
-	rel := bfWriteTask(t, root, "p", "", "current", "Current", "planning", "**CreateTime:** 2025-01-01\n**ModTime:** 2025-01-01\n**DataFormat:** 1")
+	// The marker is the constant, never a literal: "already migrated" means at the
+	// CURRENT required format, and a literal here went false the moment the constant moved.
+	rel := bfWriteTask(t, root, "p", "", "current", "Current", "planning",
+		fmt.Sprintf("**CreateTime:** 2025-01-01\n**ModTime:** 2025-01-01\n**DataFormat:** %d", surface.RequiredDataFormat))
 	before := bfRead(t, root, rel)
 	bfCommit(t, root, "seed already-migrated file", time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
 
