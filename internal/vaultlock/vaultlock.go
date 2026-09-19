@@ -16,10 +16,12 @@
 // lingering .lock marker file left behind by a crash is harmless: the next
 // Acquire reopens it and locks cleanly.
 //
-// The canonicalization policy mirrors vaultfs.ResolveSafePath so a path supplied
-// by vaultfs (already EvalSymlinks-resolved) and the same file supplied by
-// storage (a lexical filepath.Join of root and a relative path) hash to the same
-// lock key and therefore contend on the same lock file.
+// The canonical key is the path with its deepest EXISTING ancestor resolved
+// through EvalSymlinks and the missing remainder rejoined, so a path supplied by
+// vaultfs (rooted in the EvalSymlinks-resolved vault) and the same file supplied
+// by storage (a lexical filepath.Join of a possibly symlinked root) hash to the
+// same lock key and contend on the same lock file — including for a file whose
+// directories do not exist yet, and before and after they are created.
 //
 // vaultlock is a near-leaf package: it imports only the standard library,
 // except on the windows build, whose flock_windows.go pulls in
@@ -46,7 +48,12 @@ var ErrLockWaitTimeout = errors.New("vaultlock: timed out waiting for lock")
 // caller is about to read-modify-write. It returns a release function that
 // unlocks and closes the lock handle; release is idempotent and safe to defer.
 func Acquire(vaultRoot, targetAbsPath string) (release func() error, err error) {
-	f, err := openLockFile(vaultRoot, targetAbsPath)
+	return acquireByKey(vaultRoot, canonicalKey(targetAbsPath))
+}
+
+// acquireByKey is Acquire for a key already computed by canonicalKey.
+func acquireByKey(vaultRoot, key string) (release func() error, err error) {
+	f, err := openLockFile(vaultRoot, key)
 	if err != nil {
 		return nil, err
 	}
@@ -55,6 +62,58 @@ func Acquire(vaultRoot, targetAbsPath string) (release func() error, err error) 
 		return nil, fmt.Errorf("vaultlock: acquire lock: %w", err)
 	}
 	return releaser(f), nil
+}
+
+// AcquirePair takes the exclusive locks guarding two paths, in ascending
+// canonical-key order, and returns one release for both.
+//
+// 🔴 THIS IS THE ONE SANCTIONED NESTED ACQUISITION (ADR-003, amendment
+// 2026-09-19), and its only caller is storage.MoveTaskToProject, which must
+// serialise against every writer of its source AND its destination. Every other
+// caller holds at most one vault lock at a time. The deadlock argument rests on
+// two facts: no holder of a task-file lock waits on another lock, and this
+// function waits only while holding its LOWER key, for its HIGHER key — so every
+// wait edge between task-file locks is strictly key-increasing and none can
+// close a cycle. The order is owned here: callers pass two paths and cannot
+// choose it.
+//
+// Each key is computed ONCE, and that same value both orders the pair and names
+// the sidecar, so the order and the lock identity cannot disagree. Two paths
+// with one key take one lock (a self-deadlock is impossible, not merely
+// unreachable). If the second acquire fails, the first is released before the
+// error returns. The returned release frees the higher key, then the lower; it
+// is idempotent and returns the first error.
+func AcquirePair(vaultRoot, pathA, pathB string) (release func() error, err error) {
+	lo, hi := canonicalKey(pathA), canonicalKey(pathB)
+	if lo == hi {
+		return acquireByKey(vaultRoot, lo)
+	}
+	if hi < lo {
+		lo, hi = hi, lo
+	}
+	releaseLo, err := acquireByKey(vaultRoot, lo)
+	if err != nil {
+		return nil, err
+	}
+	releaseHi, err := acquireByKey(vaultRoot, hi)
+	if err != nil {
+		_ = releaseLo()
+		return nil, err
+	}
+	var once sync.Once
+	return func() error {
+		var rerr error
+		once.Do(func() {
+			herr := releaseHi()
+			lerr := releaseLo()
+			if herr != nil {
+				rerr = herr
+			} else {
+				rerr = lerr
+			}
+		})
+		return rerr
+	}, nil
 }
 
 // TryAcquire is the NON-BLOCKING form of Acquire. It attempts an exclusive
@@ -73,7 +132,7 @@ func Acquire(vaultRoot, targetAbsPath string) (release func() error, err error) 
 // to ok=false exactly as unix EWOULDBLOCK does. A caller that refuses on
 // ok=false refuses for the same reason everywhere.
 func TryAcquire(vaultRoot, targetAbsPath string) (release func() error, ok bool, err error) {
-	f, err := openLockFile(vaultRoot, targetAbsPath)
+	f, err := openLockFile(vaultRoot, canonicalKey(targetAbsPath))
 	if err != nil {
 		return nil, false, err
 	}
@@ -97,7 +156,7 @@ func TryAcquire(vaultRoot, targetAbsPath string) (release func() error, ok bool,
 // be allowed to starve every other waiter for however long the holder itself
 // takes to time out or hang.
 func AcquireWithTimeout(vaultRoot, targetAbsPath string, timeout time.Duration) (release func() error, err error) {
-	f, err := openLockFile(vaultRoot, targetAbsPath)
+	f, err := openLockFile(vaultRoot, canonicalKey(targetAbsPath))
 	if err != nil {
 		return nil, err
 	}
@@ -120,17 +179,20 @@ func AcquireWithTimeout(vaultRoot, targetAbsPath string, timeout time.Duration) 
 	}
 }
 
-// openLockFile validates the root, computes the sidecar path for targetAbsPath,
-// and opens (creating if needed) the sidecar lock file. It performs no locking.
-func openLockFile(vaultRoot, targetAbsPath string) (*os.File, error) {
+// openLockFile validates the root and opens (creating if needed) the sidecar
+// lock file named by key, which every caller computes with canonicalKey. It
+// performs no locking.
+//
+// It takes the KEY, not the path, because AcquirePair must compute each key
+// once: the value that orders the pair has to be the value that names the
+// sidecar, or the order and the lock identity could disagree.
+func openLockFile(vaultRoot, key string) (*os.File, error) {
 	if vaultRoot == "" {
 		return nil, fmt.Errorf("vaultlock: vaultRoot must not be empty")
 	}
 	if !filepath.IsAbs(vaultRoot) {
 		return nil, fmt.Errorf("vaultlock: vaultRoot must be absolute, got %q", vaultRoot)
 	}
-
-	key := canonicalKey(targetAbsPath)
 
 	lockDir := filepath.Join(vaultRoot, ".vp-locks")
 	if err := os.MkdirAll(lockDir, 0o755); err != nil {
@@ -170,17 +232,46 @@ func releaser(f *os.File) func() error {
 }
 
 // canonicalKey reduces targetAbsPath to a stable identity shared by every
-// spelling of the same file. It mirrors the EvalSymlinks-with-parent-fallback
-// policy of vaultfs.ResolveSafePath: resolve the full path; if it does not exist
-// yet, resolve the parent directory and rejoin the leaf; if the parent is also
-// missing, fall back to a lexical clean.
+// spelling of the same file: EvalSymlinks the path; if that fails, walk up to
+// the deepest ancestor that EvalSymlinks can resolve and rejoin the missing
+// remainder lexically. The walk continues only past ancestors that do not exist;
+// any other error (EACCES, ENOTDIR) stops it at the lexical clean, as before,
+// because guessing past an unreadable ancestor could name a different
+// directory.
+//
+// So one file has one key whether or not its directories exist yet. The earlier
+// rule resolved only the parent and otherwise fell back to a lexical clean; with
+// the vault reached through a symlink and more than the leaf missing, that keyed
+// the file by its unresolved spelling until its directory was created and by
+// its resolved spelling afterwards — two sidecars for one file, so a holder of
+// one did not exclude a holder of the other (task
+// retire-racing-a-cross-project-move-duplicates-the-task).
+//
+// Keys are unchanged for every existing path and for every path whose parent
+// exists. Only a path with a missing parent, reached through a symlinked vault
+// root, gets a different key from the previous rule — and the previous rule
+// already keyed that path inconsistently, so an old process and a new one side
+// by side are no worse off than two old ones.
+//
+// RESIDUAL: a path component that is, or later becomes, a symlink — including
+// an existing DANGLING symlink whose target is created later — can still move
+// the key, because the walk passes over a component EvalSymlinks reports as
+// not existing. vp creates no symlinks inside the vault; this needs a hand-made
+// link.
 func canonicalKey(targetAbsPath string) string {
-	if real, err := filepath.EvalSymlinks(targetAbsPath); err == nil {
+	clean := filepath.Clean(targetAbsPath)
+	if real, err := filepath.EvalSymlinks(clean); err == nil {
 		return real
 	}
-	parent := filepath.Dir(targetAbsPath)
-	if realParent, err := filepath.EvalSymlinks(parent); err == nil {
-		return filepath.Join(realParent, filepath.Base(targetAbsPath))
+	tail := filepath.Base(clean)
+	for dir := filepath.Dir(clean); ; dir = filepath.Dir(dir) {
+		real, err := filepath.EvalSymlinks(dir)
+		if err == nil {
+			return filepath.Join(real, tail)
+		}
+		if !os.IsNotExist(err) || filepath.Dir(dir) == dir {
+			return clean
+		}
+		tail = filepath.Join(filepath.Base(dir), tail)
 	}
-	return filepath.Clean(targetAbsPath)
 }
