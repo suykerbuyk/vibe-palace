@@ -689,6 +689,20 @@ func pruneOnGitVault(vaultPath string, tt *reconcile.TemplateTreeReconciler, app
 	} else {
 		res, out, downgraded, perr = storage.PruneMirrorsVerifiedWithDowngrade(vaultPath, paths, true, verifier)
 	}
+	// git_enabled = false skips the prune WHOLE: verifying each mirror against
+	// HEAD, removing it and restoring an override from HEAD all need git, and
+	// both prunes refuse as their first statement, before any of it. One row
+	// per candidate path says so; nothing was verified, removed or restored.
+	if disabled, unreadable := errors.Is(perr, storage.ErrGitDisabled), errors.Is(perr, storage.ErrGitConfigUnreadable); disabled || unreadable {
+		reason := "git is disabled (git_enabled = false)"
+		if unreadable {
+			reason = "git_enabled could not be read from the host config"
+		}
+		for _, rel := range paths {
+			fmt.Fprintf(os.Stdout, "  [Skip] %s: %s — skipped: %s — not verified, removed or restored\n", tt.Name(), rel, reason)
+		}
+		return 0, len(paths), nil
+	}
 
 	for _, rel := range out.Restored {
 		fmt.Fprintf(os.Stdout, "restored %s from HEAD — the committed copy is operator content, not a vp mirror; it is kept\n", rel)
