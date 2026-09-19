@@ -123,6 +123,36 @@ func classifyProjectDirErrorRows(t *testing.T) {
 			t.Fatalf("err = %v, want a symlinked project refused as not a directory", err)
 		}
 	})
+	// Stat errors on the markers and on resume.md name the vault-relative path
+	// and drop the *PathError's absolute one. Both shapes need no permissions,
+	// so they run as root too: ENOTDIR from a regular FILE named commands (the
+	// only marker candidate, so the error is returned), and ELOOP from a
+	// resume.md symlink that points at itself.
+	statErrRow := func(t *testing.T, name string, setup func(dir string) error, wantRel string) {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := projectDirFixture(t, root, "proj")
+			if err := setup(dir); err != nil {
+				t.Skipf("setup: %v", err)
+			}
+			_, err := ClassifyProjectDir(root, "proj")
+			if err == nil {
+				t.Fatal("a failed stat classified without error")
+			}
+			if !strings.Contains(err.Error(), wantRel) {
+				t.Errorf("error does not name %s vault-relative: %v", wantRel, err)
+			}
+			if strings.Contains(err.Error(), root) {
+				t.Errorf("error carries the host's absolute vault path: %v", err)
+			}
+		})
+	}
+	statErrRow(t, "marker stat error: a lone regular FILE named commands", func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "commands"), []byte("x"), 0o644)
+	}, "Projects/proj/commands/README.md")
+	statErrRow(t, "resume.md stat error: a symlink loop", func(dir string) error {
+		return os.Symlink("resume.md", filepath.Join(dir, "resume.md"))
+	}, "Projects/proj/resume.md")
 }
 
 // Fail-closed, and the order that decides when the walk error surfaces:
