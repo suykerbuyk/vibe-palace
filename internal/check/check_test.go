@@ -327,7 +327,7 @@ func TestCheckVaultMissing_ActionableMessage(t *testing.T) {
 }
 
 func TestCheckGit_Disabled(t *testing.T) {
-	r := CheckGit(t.TempDir(), false)
+	r := CheckGit(t.TempDir(), false, nil)
 	if r.Status != Info {
 		t.Errorf("expected Info, got %v", r.Status)
 	}
@@ -373,7 +373,7 @@ func TestCheckGit_Disabled(t *testing.T) {
 }
 
 func TestCheckGit_NotARepo(t *testing.T) {
-	r := CheckGit(t.TempDir(), true)
+	r := CheckGit(t.TempDir(), true, nil)
 	if r.Status != Info {
 		t.Errorf("expected Info, got %v", r.Status)
 	}
@@ -388,7 +388,7 @@ func TestCheckGit_ValidRepo(t *testing.T) {
 		t.Fatalf("git init: %v", err)
 	}
 
-	r := CheckGit(dir, true)
+	r := CheckGit(dir, true, nil)
 	// No remotes → should be Info "no remotes configured"
 	if r.Status != Info {
 		t.Errorf("expected Info for repo with no remotes, got %v: %s", r.Status, r.Summary)
@@ -406,7 +406,7 @@ func TestCheckGit_WithRemotes(t *testing.T) {
 		t.Fatalf("git remote add: %v", err)
 	}
 
-	r := CheckGit(dir, true)
+	r := CheckGit(dir, true, nil)
 	if r.Status != Pass {
 		t.Errorf("expected Pass with remote, got %v: %s", r.Status, r.Summary)
 	}
@@ -912,5 +912,22 @@ func TestCheckGitPostCommitHook_ForeignHookIsReported(t *testing.T) {
 	}
 	if !strings.Contains(r.Summary, "refusing") {
 		t.Errorf("summary must say the hook was refused, got %q", r.Summary)
+	}
+}
+
+// TestCheckGit_ReadErrorIsFail: an unreadable git_enabled is a broken host
+// config every vault git operation refuses on, so the row is Fail and names
+// the error; it is never rendered as the operator's "disabled" choice.
+func TestCheckGit_ReadErrorIsFail(t *testing.T) {
+	readErr := errors.New("cannot read git_enabled from /h/config.toml: host config unreadable: boom")
+	r := CheckGit(t.TempDir(), false, readErr)
+	if r.Status != Fail {
+		t.Errorf("status = %v, want Fail", r.Status)
+	}
+	if strings.Contains(r.Summary, "disabled (") {
+		t.Errorf("summary %q renders a read error as disabled", r.Summary)
+	}
+	if len(r.Details) == 0 || !strings.Contains(r.Details[0], "/h/config.toml") {
+		t.Errorf("details %v do not carry the read error", r.Details)
 	}
 }

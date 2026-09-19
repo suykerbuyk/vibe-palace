@@ -233,10 +233,21 @@ func CheckEmbedder(newEmb func() (embedder.Embedder, error)) Result {
 	return r
 }
 
-// CheckGit checks git availability and vault repo status.
-// This always returns Info or Pass — git is optional, never Fail.
-func CheckGit(vaultPath string, gitEnabled bool) Result {
+// CheckGit checks git availability and vault repo status. gitEnabled and
+// readErr are storage.HostGitEnabled's result. Git itself is optional, so a
+// disabled or missing git is Info, never Fail. An unreadable git_enabled IS
+// Fail: every vault git operation refuses on it, and the row must say the file
+// is broken rather than claim the operator disabled git.
+func CheckGit(vaultPath string, gitEnabled bool, readErr error) Result {
 	r := Result{Name: "Git"}
+
+	if readErr != nil {
+		r.Status = Fail
+		r.Summary = "git_enabled is unreadable — every vault git operation refuses until the host config is readable"
+		r.Details = []string{readErr.Error()}
+		r.Err = readErr
+		return r
+	}
 
 	if !gitEnabled {
 		r.Status = Info

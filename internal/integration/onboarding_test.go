@@ -199,7 +199,7 @@ func TestIntegrationGitGuardBlocksVaultCommands(t *testing.T) {
 	}
 
 	// CheckGit should report "disabled".
-	r := check.CheckGit(vaultDir, cfg.GitEnabled)
+	r := check.CheckGit(vaultDir, cfg.GitEnabled, nil)
 	if r.Status != check.Info {
 		t.Errorf("CheckGit: expected Info, got %v: %s", r.Status, r.Summary)
 	}
@@ -250,7 +250,7 @@ func TestIntegrationGitInitInVault(t *testing.T) {
 	}
 
 	// CheckGit should report "no remotes configured" (not an error).
-	r := check.CheckGit(vaultDir, true)
+	r := check.CheckGit(vaultDir, true, nil)
 	if r.Status != check.Info {
 		t.Errorf("expected Info (no remotes), got %v: %s", r.Status, r.Summary)
 	}

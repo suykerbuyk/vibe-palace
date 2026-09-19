@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/BurntSushi/toml"
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
@@ -49,27 +48,17 @@ func (r *VaultReconciler) resolvedVaultPath() (string, error) {
 	return path, err
 }
 
-func (r *VaultReconciler) gitEnabled() bool {
+// gitEnabled reports the git_enabled decision this reconciler plans against.
+// `vp init` passes its own choice in the seed. In sync mode it is the host
+// config's git_enabled, read through storage.HostGitEnabled: the same reader
+// the vault git refusal uses, so `vp config sync`, `vp check` and every vault
+// git entry point cannot disagree about the value. A read error is returned,
+// never collapsed into "disabled".
+func (r *VaultReconciler) gitEnabled() (bool, error) {
 	if r.seed.seedSet {
-		return r.seed.GitEnabled
+		return r.seed.GitEnabled, nil
 	}
-	// Sync mode: read git_enabled directly from the global config TOML
-	// without opening a vault (the vault may not exist yet).
-	cfgPath, err := storage.VaultConfigFilePath()
-	if err != nil {
-		return false
-	}
-	data, err := os.ReadFile(cfgPath)
-	if err != nil {
-		return false
-	}
-	var raw struct {
-		GitEnabled bool `toml:"git_enabled"`
-	}
-	if _, err := toml.Decode(string(data), &raw); err != nil {
-		return false
-	}
-	return raw.GitEnabled
+	return storage.HostGitEnabled()
 }
 
 // Check returns CheckVault and (when the vault exists) CheckGit rows.
@@ -89,7 +78,8 @@ func (r *VaultReconciler) Check(_ context.Context) []check.Result {
 	}
 	results := []check.Result{check.CheckVault(vaultPath)}
 	if results[0].Status == check.Pass {
-		results = append(results, check.CheckGit(vaultPath, r.gitEnabled()))
+		enabled, gerr := r.gitEnabled()
+		results = append(results, check.CheckGit(vaultPath, enabled, gerr))
 	}
 	return results
 }
@@ -155,8 +145,16 @@ func (r *VaultReconciler) Plan(_ context.Context) (Plan, error) {
 	// .gitignore
 	actions = append(actions, planVaultGitignore(vaultPath))
 
-	// git init (only when enabled and not yet a repo)
-	if r.gitEnabled() {
+	// git init (only when enabled and not yet a repo). An unreadable
+	// git_enabled plans a Skip naming the read error, the idiom the .gitignore
+	// branch uses: a Plan error would abort every tier of `vp config sync`.
+	enabled, gerr := r.gitEnabled()
+	if gerr != nil {
+		actions = append(actions, Action{
+			Kind: ActionSkip, Target: filepath.Join(vaultPath, ".git"),
+			Summary: "git init skipped — " + gerr.Error(),
+		})
+	} else if enabled {
 		gitPath := filepath.Join(vaultPath, ".git")
 		if _, statErr := os.Stat(gitPath); errors.Is(statErr, os.ErrNotExist) {
 			// No .git AT the vault. Before planning git init, ask whether git
