@@ -61,6 +61,10 @@ git text (`[pull <remote>] …` lines, plus any `[heal] …` lines).
   user before proceeding.
 - If the call returns an error (no remote configured, network failure),
   warn and proceed — local state is still valid.
+- A `git is disabled` refusal is expected on a host whose operator set
+  `git_enabled = false`: proceed to the next step, do not retry, do not fall
+  back to the Bash `vp vault …` command (it refuses too), and do not edit
+  the config.
 
 ### Vault tidy (heal capture residue)
 
@@ -83,6 +87,11 @@ If the result lists any **Reported** paths, surface them to the user
 — they are unexpected vault dirt that needs human eyes (e.g. a stray
 `Projects/<slug>/` scaffold from an accidental `vp init`). Then
 run the hygiene checks below.
+
+A `git is disabled` refusal is expected on a host whose operator set
+`git_enabled = false`: proceed to the next step, do not retry, do not fall
+back to the Bash `vp vault …` command (it refuses too), and do not edit
+the config.
 
 ### Vault hygiene checks (advisory — reported, never a gate)
 

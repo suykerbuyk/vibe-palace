@@ -886,3 +886,58 @@ func shellFences(content string) []string {
 		rest = rest[end+len("```"):]
 	}
 }
+
+// TestEmbeddedCommands_GitDisabledRefusalIsExpected pins one line at each
+// restart and wrap step that calls a vault git tool. On a host whose operator
+// set git_enabled = false those tools refuse on every session; without the
+// line an agent retries, falls back to the Bash `vp vault …` (which refuses
+// too), or edits the operator's config to make the refusal go away.
+func TestEmbeddedCommands_GitDisabledRefusalIsExpected(t *testing.T) {
+	resources, err := WalkEmbedded()
+	if err != nil {
+		t.Fatalf("WalkEmbedded returned error: %v", err)
+	}
+	bodies := map[string]string{}
+	for _, r := range resources {
+		bodies[r.RelPath] = string(r.Bytes)
+	}
+	// section returns the text from the heading line up to the next heading of
+	// the same or a higher level, whitespace-collapsed so line wrapping and a
+	// bullet's continuation indent do not matter.
+	section := func(t *testing.T, rel, heading string) string {
+		t.Helper()
+		body, ok := bodies[rel]
+		if !ok {
+			t.Fatalf("%s not found among embedded resources", rel)
+		}
+		start := strings.Index(body, "\n"+heading+"\n")
+		if start < 0 {
+			t.Fatalf("%s has no heading %q", rel, heading)
+		}
+		level := strings.Index(heading, " ")
+		rest := body[start+len(heading)+2:]
+		end := len(rest)
+		for _, marker := range []string{"\n## ", "\n### "} {
+			if len(marker)-2 > level {
+				continue
+			}
+			if i := strings.Index(rest, marker); i >= 0 && i < end {
+				end = i
+			}
+		}
+		return strings.Join(strings.Fields(rest[:end]), " ")
+	}
+	const want = "A `git is disabled` refusal is expected on a host whose operator set `git_enabled = false`: " +
+		"proceed to the next step, do not retry, do not fall back to the Bash `vp vault …` command " +
+		"(it refuses too), and do not edit the config."
+	for _, step := range []struct{ rel, heading string }{
+		{"commands/restart.md", "### Vault sync (pull)"},
+		{"commands/restart.md", "### Vault tidy (heal capture residue)"},
+		{"commands/wrap.md", "## Step 9: Sync the Vault"},
+		{"commands/wrap.md", "## Step 10: Vault Tidy (sweep capture artifacts)"},
+	} {
+		if got := section(t, step.rel, step.heading); !strings.Contains(got, want) {
+			t.Errorf("%s %q lacks the git-disabled line", step.rel, step.heading)
+		}
+	}
+}
