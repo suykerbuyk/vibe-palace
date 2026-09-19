@@ -2589,6 +2589,9 @@ func unbalancedFence(content string) bool {
 	in := false
 	for line := range strings.SplitSeq(content, "\n") {
 		ch, run, info, ok := mdfence.Delim(line)
+		// info == "" is implied by OpensFence returning true for an empty info
+		// string; it is kept only so the candidate reads as "a delimiter that
+		// CARRIES something it cannot open with". Removing it changes nothing.
 		if !ok {
 			continue
 		}
@@ -3991,4 +3994,347 @@ func precedingSectionNote(unfenced []mdfence.Line, titleLine, firstH2 int) strin
 	}
 	return fmt.Sprintf("section heading %q at line %d already opened this document's body",
 		headingTextAt(unfenced, firstH2), firstH2)
+}
+
+// ---------------------------------------------------------------------------
+// Unit B2: duplicate header-field repair.
+//
+// Eleven archived files carry a well-formed header block AND a second occurrence
+// of the same field below it, outside the block. ValidateWholeTaskFile refuses
+// them ("two Status lines" / "two Priority lines") and that refusal is what
+// currently holds them out of the status and board-fields migrations' write
+// paths.
+// ---------------------------------------------------------------------------
+
+// RepairDuplicateHeaderField relabels the OUT-OF-BLOCK occurrence of a duplicated
+// Status or Priority field, leaving the in-block occurrence byte-identical.
+//
+// # RELABEL, NEVER DELETE, AND THE DIRECTION IS A CORRECTNESS PRECONDITION
+//
+// Deleting the duplicate is value-equivalent for every PARSED reader — parseTaskMeta
+// is whole-file first-wins and nothing consults a non-first occurrence — but it is
+// irreversible and it destroys a value that may be the only human-typed one in the
+// file. The task-read handler returns the RAW file, so an agent reading the task is
+// a byte-level reader. When two options are equivalent for every parsed consumer and
+// one is lossy, take the other.
+//
+// 🔴 The label carries a SPACE, and that is load-bearing rather than cosmetic.
+// headerFieldNameValue requires the name before ":**" to be letters, digits and
+// underscore only, so "**Legacy priority:**" is NOT a header field line at all — it
+// is plain bold prose. That is precisely what satisfies the validator. Spelling it
+// "**Legacy_priority:**" turns it back into a recognised field and reintroduces the
+// defect WHILE LEAVING THE FILE VALID, which is why the unit assertion on
+// isHeaderFieldLine is the only thing that can catch that mutation.
+//
+// The inverted consequence is why direction is a precondition and not a preference:
+// because a relabelled line TERMINATES the contiguous run, relabelling the IN-BLOCK
+// occurrence would truncate headerBlock and orphan every field below it.
+//
+// # FENCE-AWARE, BECAUSE A FENCED SAMPLE IS NOT A FIELD
+//
+// Occurrences are counted over mdfence.OutsideFences, matching what
+// ValidateWholeTaskFile itself counts. A "**Status:**" inside a code fence is sample
+// text; relabelling it would corrupt the sample and leave the real duplicate in
+// place, and the file would still be refused — but by then the sample is gone.
+func RepairDuplicateHeaderField(content, field string) (string, error) {
+	if field != fieldStatus && field != fieldPriority {
+		return "", fmt.Errorf("duplicate header-field repair handles %q and %q only, got %q",
+			fieldStatus, fieldPriority, field)
+	}
+	relabel := legacyStatusRelabel
+	if field == fieldPriority {
+		relabel = legacyPriorityRelabel
+	}
+
+	var occurrences []int // 1-indexed line numbers, outside fences, in file order
+	for _, l := range mdfence.OutsideFences(content) {
+		if _, ok := headerFieldValue(l.Text, field); ok {
+			occurrences = append(occurrences, l.Num)
+		}
+	}
+	if len(occurrences) != 2 {
+		return "", fmt.Errorf("duplicate header-field repair wants exactly 2 unfenced %q lines, found %d",
+			"**"+field+":**", len(occurrences))
+	}
+
+	lines := strings.Split(content, "\n")
+	start, end := headerBlock(lines)
+	inBlock := func(num int) bool { return num-1 >= start && num-1 < end }
+
+	first, second := occurrences[0], occurrences[1]
+	if !inBlock(first) {
+		return "", fmt.Errorf("duplicate header-field repair: the FIRST %q line (line %d) is not inside the "+
+			"contiguous header block, so relabelling the second would leave no field the readers can bind",
+			"**"+field+":**", first)
+	}
+	if inBlock(second) {
+		return "", fmt.Errorf("duplicate header-field repair: BOTH %q lines (lines %d and %d) are inside the "+
+			"contiguous header block; relabelling either one truncates the block and orphans the fields below it",
+			"**"+field+":**", first, second)
+	}
+
+	idx := second - 1
+	rest := strings.TrimPrefix(strings.TrimSpace(lines[idx]), "**"+field+":**")
+	lines[idx] = relabel + rest
+
+	if isHeaderFieldLine(lines[idx]) {
+		return "", fmt.Errorf("duplicate header-field repair produced a line the field reader still recognises (%q); "+
+			"the relabel constant must not be a bare word", lines[idx])
+	}
+
+	repaired := strings.Join(lines, "\n")
+	if err := ValidateWholeTaskFile(repaired); err != nil {
+		return "", fmt.Errorf("duplicate header-field repair produced an invalid task file: %w", err)
+	}
+	return repaired, nil
+}
+
+// RepairExtraTitles demotes every H1 outside fences except the first to an H2.
+//
+// It is FLAT: existing H2s and everything below them are untouched, so a demoted
+// title becomes a sibling of its own former subsections rather than their parent.
+//
+// # WHY FLAT RATHER THAN CASCADING
+//
+// The validator has no hierarchy rule, so it cannot settle this. The argument
+// that does is mechanical: a section's range terminates at the next H1 OR H2, so
+// flat keeps every existing section range byte-identical while cascading would
+// shift every heading below the demoted title and destroy every section key. On
+// the live file the difference is 8 rewritten lines against 44.
+//
+// Blank-line spacing is NOT adjusted. The transform rewrites heading prefixes and
+// nothing else, so the file's byte-level diff is exactly the demoted lines.
+func RepairExtraTitles(content string) (string, error) {
+	var h1 []int // 1-indexed, outside fences, in file order
+	for _, l := range mdfence.OutsideFences(content) {
+		if isH1Line(l.Text) {
+			h1 = append(h1, l.Num)
+		}
+	}
+	if len(h1) < 2 {
+		return "", fmt.Errorf("extra-title repair wants at least 2 unfenced \"# \" H1 headings, found %d", len(h1))
+	}
+
+	lines := strings.Split(content, "\n")
+	for _, num := range h1[1:] {
+		idx := num - 1
+		// The line is H1-shaped by isH1Line, which trims before matching, so the
+		// '#' to double is the first one after any leading whitespace.
+		at := strings.Index(lines[idx], "#")
+		lines[idx] = lines[idx][:at] + "#" + lines[idx][at:]
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+// HeaderRunProseWedges returns the 1-indexed lines of every contiguous non-blank,
+// non-field "wedge" inside the header-field region, stopping at the first blank
+// line. An empty result means the field run is contiguous.
+//
+// # THIS IS A REFUSAL PREDICATE. THERE IS DELIBERATELY NO REPAIR BESIDE IT.
+//
+// A wedge is either prose the author interleaved between two fields, or the
+// CONTINUATION of a hard-wrapped field value. Those two cases want opposite
+// treatments — the first should move out of the run, the second must never move,
+// because moving it strands the remainder of one field's value directly beneath a
+// different field, where it reads as that field's value.
+//
+// 🔴 NOTHING IN THE BYTES DISTINGUISHES THEM. Both are non-field lines inside the
+// run. At two or more wedges the COUNT is structural proof of wrapping — a region
+// that alternates field / prose / field / prose can only arise from values that
+// wrap — but at exactly one wedge there is no structural signal in either
+// direction, and the only available discriminator is semantic: whether the line
+// reads as a continuation of the sentence above it.
+//
+// A capitalisation or terminal-punctuation test for that is the fence-blind-grep
+// shape this project keeps rediscovering: it validates clean and is wrong on the
+// case nobody fixtured. It would also encode, as a production predicate, a
+// judgement that was a READING of two files rather than a measurement.
+//
+// So this reports and the caller REFUSES, at any count. The refusal is
+// deterministic, repeatable and testable — which is what a command arm was wanted
+// for — and the repair itself is a one-time reviewed hand edit. Both live corpus
+// files carrying the shape are on the hand-edit list for this reason.
+func HeaderRunProseWedges(content string) []int {
+	// 🔴 THE VALIDATOR'S OWN PROJECTION, NOT A RAW SPLIT. headerBlock and every
+	// field predicate this function leans on run on mdfence.OutsideFences, so a
+	// raw strings.Split disagreed with them about what a line even is: a ```
+	// delimiter was classified as prose, and the refusal named a "wedge" that is
+	// a fence. Line numbers come back from Line.Num, so they still address the
+	// ORIGINAL file.
+	outside := mdfence.OutsideFences(content)
+	lines := make([]string, len(outside))
+	for i, l := range outside {
+		lines[i] = l.Text
+	}
+	start, end := headerBlock(lines)
+	if start == end {
+		return nil
+	}
+	// 🔴 THE WEDGE MUST BE WHAT THE VALIDATOR OBJECTED TO. Without this gate the
+	// scan below also fires on the ordinary body prose that abuts a COMPLETE
+	// run — so a file that validates clean yielded wedges, and the caller refused
+	// it naming a cause that blocks nothing. A predicate that fires on a valid
+	// file is not a defect predicate.
+	//
+	// The condition is the validator's own, quoted from ValidateWholeTaskFile: a
+	// header block is malformed exactly when Status or Priority sits OUTSIDE the
+	// contiguous run. Gating here rather than bounding the scan to "prose with a
+	// field line after it" is deliberate — that bound also silently dropped the
+	// TRAILING continuation of a wrapped field value (live specimen:
+	// vp-migrate-source-dest-separation.md, whose **Reviewed:** value wraps across
+	// the last five lines of the run), shortening the roster a human hand-edits
+	// from. The false positive is the bug; the complete line list is the product.
+	if blockHas(lines, start, end, isStatusLine) && blockHas(lines, start, end, isPriorityLine) {
+		return nil
+	}
+	var wedges []int
+	for at := end; at < len(lines) && strings.TrimSpace(lines[at]) != ""; {
+		if isHeaderFieldLine(lines[at]) {
+			at++
+			continue
+		}
+		wedges = append(wedges, outside[at].Num)
+		for at < len(lines) && strings.TrimSpace(lines[at]) != "" && !isHeaderFieldLine(lines[at]) {
+			at++
+		}
+	}
+	return wedges
+}
+
+// RepairGluedFenceDelimiter splits a code-fence delimiter that has prose glued
+// onto it into a bare delimiter plus that prose on its own line.
+//
+// # THE DEFECT, AND WHY IT IS INVISIBLE
+//
+// A backtick delimiter whose INFO STRING contains a backtick can neither open a
+// fence nor close one: mdfence.OpensFence rejects it, and Scanner's in-fence
+// branch requires an empty info string to close. So a line that LOOKS like a
+// closing delimiter silently is not, the fence opened above it stays open, and
+// every later delimiter pairs shifted. The document is not truncated from that
+// point — it is MIRROR-IMAGED, with prose rendering as code and code as prose.
+//
+// A counting check reports such a file as balanced, because the delimiter-shaped
+// lines are still even. Only the real scanner sees it.
+//
+// # THE DETECTOR KEYS ON THE INFO STRING, AND THAT IS WHAT MAKES IT IDEMPOTENT
+//
+// The candidate is a delimiter-shaped line with a NON-EMPTY info string that
+// cannot open a fence. After the split, zero such lines remain, so a second
+// application selects nothing. A detector keyed on anything else — line number,
+// surrounding text, fence parity — loses that property on the one file where the
+// validator would not catch a second application, because the second application
+// also validates.
+func RepairGluedFenceDelimiter(content string) (string, error) {
+	lines := strings.Split(content, "\n")
+	var out []string
+	splits := 0
+	for _, line := range lines {
+		ch, run, info, ok := mdfence.Delim(line)
+		if !ok || info == "" || mdfence.OpensFence(ch, info) {
+			out = append(out, line)
+			continue
+		}
+		indent := line[:strings.IndexByte(line, ch)]
+		out = append(out, indent+strings.Repeat(string(ch), run))
+		out = append(out, info)
+		splits++
+	}
+	if splits == 0 {
+		return "", fmt.Errorf("glued-fence repair found no delimiter carrying an info string that cannot open a fence")
+	}
+	repaired := strings.Join(out, "\n")
+	if err := ValidateWholeTaskFile(repaired); err != nil {
+		return "", fmt.Errorf("glued-fence repair produced an invalid task file: %w", err)
+	}
+	return repaired, nil
+}
+
+// RepairBareLegacyStatusLine constructs the missing Priority field and relocates a
+// bare, non-bold legacy status line out of the header region into the shipped
+// "## Legacy header" body section.
+//
+// # NEITHER HALF ALONE VALIDATES, AND THEY MUST LAND TOGETHER
+//
+// The bare line sits directly under the title, where headerBlock skips only BLANK
+// lines — so a non-blank non-field line there makes the header block EMPTY.
+// Inserting a Priority without moving that line trades one failure for another;
+// moving the line without inserting a Priority leaves the original failure
+// byte-identical. Only both together produce a valid file.
+//
+// 🔴 THE BARE LINE IS RELOCATED, NEVER MERGED ONTO THE BOLD STATUS FIELD. The
+// merged value would be non-terminal, which drops the file into the population
+// that the status and board-fields migrations rewrite BY REPLACING THE WHOLE LINE
+// — destroying prose that exists nowhere else. A body section is where such prose
+// survives, and survives addressably, because amend reaches an H2 and nothing
+// above the first one. This is the same shape RepairLegacyBareOnlyHeader already
+// uses for the same reason.
+//
+// Relocating also disarms a live hazard rather than merely avoiding it:
+// ScanLegacyHeader recognises a bare status line ONLY directly under the title, so
+// once the line is in the body the file classifies Clean and the legacy-header
+// repair stops planning anything on it.
+//
+// The Priority value is a LABELLED FABRICATION. Nothing in the file implies one.
+// LegacyPriorityDefault is the operator-decided value for exactly this class, and
+// the provenance of the fabrication belongs in the plan and the commit message —
+// nothing in the bytes will distinguish it afterwards.
+func RepairBareLegacyStatusLine(content string) (string, error) {
+	lines := strings.Split(content, "\n")
+
+	titleAt := -1
+	for i, line := range lines {
+		if isH1Line(line) {
+			titleAt = i
+			break
+		}
+	}
+	if titleAt < 0 {
+		return "", fmt.Errorf("bare legacy status repair found no \"# \" title line")
+	}
+
+	// The bare line must sit directly under the title, which is the only place
+	// ScanLegacyHeader treats it as header material rather than prose.
+	bareAt := titleAt + 1
+	if bareAt >= len(lines) {
+		return "", fmt.Errorf("bare legacy status repair found nothing after the title")
+	}
+	bare := lines[bareAt]
+	if strings.TrimSpace(bare) == "" || isHeaderFieldLine(bare) {
+		return "", fmt.Errorf("bare legacy status repair wants a non-blank, non-field line directly under the "+
+			"title, found %q", bare)
+	}
+	if _, ok := legacyStatusValue(bare); !ok {
+		return "", fmt.Errorf("bare legacy status repair wants a bare legacy status line directly under the "+
+			"title, found %q", bare)
+	}
+
+	// Remove the bare line, then insert the constructed Priority into the field
+	// run that now follows the title.
+	rest := append([]string(nil), lines[:bareAt]...)
+	rest = append(rest, lines[bareAt+1:]...)
+
+	start, end := headerBlock(rest)
+	if start == end {
+		return "", fmt.Errorf("bare legacy status repair: removing the bare line left no header field run")
+	}
+	if _, ok := headerFieldValue(strings.Join(rest[start:end], "\n"), fieldPriority); ok {
+		return "", fmt.Errorf("bare legacy status repair: the file already carries a **Priority:** field")
+	}
+	withPriority := append([]string(nil), rest[:end]...)
+	withPriority = append(withPriority, "**"+fieldPriority+":** "+LegacyPriorityDefault)
+	withPriority = append(withPriority, rest[end:]...)
+
+	// The relocated prose goes into the shipped legacy-header body section, at the
+	// end of the document so it disturbs no existing section range.
+	section := []string{"", legacyHeaderSectionHeading, "", legacyHeaderSectionProvenance, "", bare}
+	repaired := strings.Join(append(withPriority, section...), "\n")
+
+	if err := ValidateWholeTaskFile(repaired); err != nil {
+		return "", fmt.Errorf("bare legacy status repair produced an invalid task file: %w", err)
+	}
+	if scan := ScanLegacyHeader(repaired); scan.BareLine != 0 {
+		return "", fmt.Errorf("bare legacy status repair left a bare legacy line at %d, so the legacy-header "+
+			"repair would still plan a destructive merge on this file", scan.BareLine)
+	}
+	return repaired, nil
 }

@@ -193,11 +193,77 @@ func TestPlanTaskSections_Refusals(t *testing.T) {
 		want:    sectionsRefused,
 		reason:  "two H3 headings both titled",
 	}, {
-		// No H2 and no H3 — the BOLD pseudo-heading class, a separate unit.
-		name:    "no H3 at all",
+		// No H2 and no H3, but a whole-line BOLD pseudo-heading. This fixture
+		// asserted sectionsNoH3 while the class was deferred to a separate unit;
+		// the file comment reserved the class by name and this command now
+		// implements it, so the expectation moves from "skipped" to "promoted".
+		name:    "bold pseudo-heading, no H3",
 		content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n**Plan Details**\n\nbody\n",
+		want:    sectionsPromoteBold,
+	}, {
+		// A bold line with a value after it is a FIELD, not a heading.
+		name:    "no H3 and no bold pseudo-heading",
+		content: "# T\n\n**Status:** retired\n**Priority:** medium\n\nplain prose only\n",
 		want:    sectionsNoH3,
-		reason:  "no \"## \" H2 and no \"### \" H3",
+		reason:  "no bold pseudo-heading to promote",
+	}, {
+		// 🔴 THE THEMATIC BREAK, AND THIS ROW GUARDS A PANIC RATHER THAN A
+		// MIS-PROMOTION. "***" satisfies both HasPrefix("**") and HasSuffix("**")
+		// because the two OVERLAP, so only the length bound stops inner from being
+		// sliced as t[2:1] — "slice bounds out of range [2:1]", demonstrated. A
+		// crash part-way through a vault-wide run leaves whatever was already
+		// written in place.
+		name:    "*** thematic break does not panic or promote",
+		content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n***\n\nbody\n",
+		want:    sectionsNoH3,
+		reason:  "no bold pseudo-heading to promote",
+	}, {
+		// 🔴 THE SIBLING THE LENGTH BOUND DOES NOT REACH. "*****" is length 5, so it
+		// clears len(t) >= 4; its inner is a single "*", so it clears the
+		// empty-inner guard AND the nested-marker guard — and it promotes to the
+		// heading "## *". Only "a line of nothing but asterisks is a thematic
+		// break" closes it, and that closes the whole family at once.
+		name:    "***** does not promote to a one-asterisk heading",
+		content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n*****\n\nbody\n",
+		want:    sectionsNoH3,
+		reason:  "no bold pseudo-heading to promote",
+	}, {
+		name:    "a longer asterisk run is still a thematic break",
+		content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n*******\n\nbody\n",
+		want:    sectionsNoH3,
+		reason:  "no bold pseudo-heading to promote",
+	}, {
+		// "****" is length 4 — the first length the slice can express — and yields
+		// an EMPTY inner, which must be rejected rather than promoted to "## ".
+		name:    "**** yields an empty heading and is not promoted",
+		content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n****\n\nbody\n",
+		want:    sectionsNoH3,
+		reason:  "no bold pseudo-heading to promote",
+	}, {
+		// 🔴 TWO BOLD RUNS IN ONE SENTENCE IS PROSE, NOT A HEADING. Without the
+		// nested-marker guard this is promoted to the mangled heading
+		// "## Note** and **Warning".
+		name:    "a sentence with two bold runs is not a heading",
+		content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n**Note** and **Warning**\n\nbody\n",
+		want:    sectionsNoH3,
+		reason:  "no bold pseudo-heading to promote",
+	}, {
+		// 🔴 ONE TRAILING SPACE WALKED PAST THE COLON GUARD. The label test must
+		// run on the TRIMMED inner text: "**x: **" is the same label shape as
+		// "**x:**", and an untrimmed test promotes it to "## x: ".
+		name:    "a colon label with a trailing space is still not a heading",
+		content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n**Acceptance criteria: **\n\n- a\n",
+		want:    sectionsNoH3,
+		reason:  "no bold pseudo-heading to promote",
+	}, {
+		// 🔴 A trailing colon INSIDE the bold makes it a label for the list
+		// beneath it, not a section title. This shape occurs in the corpus, and a
+		// colon-tolerant predicate silently restructures a file nobody asked to
+		// restructure.
+		name:    "bold label with a trailing colon is NOT a heading",
+		content: "# T\n\n**Status:** retired\n**Priority:** medium\n\n**Acceptance criteria:**\n\n- a\n- b\n",
+		want:    sectionsNoH3,
+		reason:  "no bold pseudo-heading to promote",
 	}}
 
 	for _, tc := range tests {
@@ -209,7 +275,16 @@ func TestPlanTaskSections_Refusals(t *testing.T) {
 			if !strings.Contains(reason, tc.reason) {
 				t.Errorf("reason = %q, want it to contain %q", reason, tc.reason)
 			}
-			if after != "" {
+			// A promoting outcome MUST carry content; every other outcome must
+			// carry none, so a refusal can never smuggle bytes toward the writer.
+			if tc.want == sectionsPromoteBold {
+				if after == "" {
+					t.Error("a promoting outcome must yield the transformed content")
+				}
+				if verr := storage.ValidateWholeTaskFile(after); verr != nil {
+					t.Errorf("the promoted content does not validate: %v", verr)
+				}
+			} else if after != "" {
 				t.Errorf("a refused/skipped file must yield no content, got %d bytes", len(after))
 			}
 		})
@@ -1161,5 +1236,160 @@ func TestMigrateTaskSections_ArchivedPairReasonNamesTheRealWinner(t *testing.T) 
 				t.Errorf("the active-case reason changed: %q", d.Reason)
 			}
 		}
+	}
+}
+
+// The three tests below exist because three breaks against the bold detector left
+// the whole suite GREEN. Each names the break it was written for.
+
+// TestPlanTaskSections_UnterminatedBoldIsNotPromoted.
+//
+// Break: drop the HasSuffix(t, "**") half of the predicate, so it matches a bold
+// PREFIX rather than a whole-line bold run.
+//
+// The other fixtures cannot see that break: "**Status:** retired" survives it
+// because the inner text still contains "**" and is excluded by the second guard.
+// A line that OPENS bold and never closes it has no second "**" to be caught by,
+// so under the break it is promoted — and because the inner text is computed by
+// slicing two characters off the end, the heading it produces is the line with its
+// last two characters SILENTLY TRUNCATED.
+func TestPlanTaskSections_UnterminatedBoldIsNotPromoted(t *testing.T) {
+	const content = "# T\n\n**Status:** retired\n**Priority:** medium\n\n**unterminated bold prose\n\nbody\n"
+	after, outcome, reason, _ := planTaskSections(content)
+	if outcome == sectionsPromoteBold {
+		t.Fatalf("an unterminated bold run was promoted into a heading, truncating the line:\n%s", after)
+	}
+	if outcome != sectionsNoH3 {
+		t.Errorf("outcome = %v, want sectionsNoH3 (reason %q)", outcome, reason)
+	}
+}
+
+// TestPlanTaskSections_FencedBoldIsNotPromoted.
+//
+// Break: scan raw lines instead of mdfence.OutsideFences.
+//
+// A bold line inside a code fence is SAMPLE TEXT. Promoting it rewrites the
+// sample, and — because the promoted line is no longer bold-shaped — the sample
+// silently stops demonstrating what it was written to demonstrate. No other
+// fixture carries a fenced bold line, so nothing else sees this break.
+func TestPlanTaskSections_FencedBoldIsNotPromoted(t *testing.T) {
+	const content = "# T\n\n**Status:** retired\n**Priority:** medium\n\n```\n**Plan Details**\n```\n\nbody\n"
+	after, outcome, reason, _ := planTaskSections(content)
+	if outcome == sectionsPromoteBold {
+		t.Fatalf("a bold line INSIDE a code fence was promoted; the scan is not fence-aware:\n%s", after)
+	}
+	if outcome != sectionsNoH3 {
+		t.Errorf("outcome = %v, want sectionsNoH3 (reason %q)", outcome, reason)
+	}
+}
+
+// TestPlanTaskSections_BoldPromotionThatDoesNotValidateIsRefused.
+//
+// Break: remove the ValidateWholeTaskFile post-condition from the bold arm.
+//
+// Every other bold fixture validates after promotion, so removing the gate changes
+// nothing for them. This file has a promotable bold pseudo-heading AND a second
+// defect the promotion does not touch, so promoting it does not make it valid. The
+// writer would refuse it later, but the REPORT would already have printed FIX and
+// told the operator to re-run with --apply — promising something apply refuses,
+// which is the exact lie plan-first exists to prevent.
+func TestPlanTaskSections_BoldPromotionThatDoesNotValidateIsRefused(t *testing.T) {
+	const content = "# T\n\n**Status:** retired\n**Priority:** medium\n**Priority:** high\n\n**Plan Details**\n\nbody\n"
+	if storage.ValidateWholeTaskFile(content) == nil {
+		t.Fatal("precondition: the fixture must FAIL the validator")
+	}
+	after, outcome, reason, _ := planTaskSections(content)
+	if outcome == sectionsPromoteBold {
+		t.Fatalf("a promotion that does not make the file valid was reported as a FIX:\n%s", after)
+	}
+	if outcome != sectionsRefused {
+		t.Errorf("outcome = %v, want sectionsRefused (reason %q)", outcome, reason)
+	}
+	if after != "" {
+		t.Error("a refused file must yield no content")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The bold promotion must not reach a region the scan beside it treats as
+// non-existent.
+// ---------------------------------------------------------------------------
+
+// TestBoldPromotionNeverReachesAnInertRegion is a WRITE-side pin, not a refusal
+// one. boldPseudoHeadingLines read mdfence.OutsideFences while the scan that
+// decides the file has no sections skipped YAML frontmatter and HTML comments,
+// so the promotion manufactured a "## " heading inside a region that scan treats
+// as invisible. The rewritten file then VALIDATES — the validator counts "## "
+// lines the same way — while remaining unaddressable by amend, which is the one
+// thing the missing-section rule exists to guarantee. Validity is not
+// correctness.
+//
+// Break: restore `for _, l := range mdfence.OutsideFences(content)` in
+// boldPseudoHeadingLines. Both subtests fail, and they fail on the WRITTEN
+// BYTES, not on a counter.
+func TestBoldPromotionNeverReachesAnInertRegion(t *testing.T) {
+	for _, tc := range []struct{ name, content string }{
+		{
+			"inside an HTML comment",
+			"# T\n\n**Status:** open\n**Priority:** high\n\n<!--\n**Design notes**\n-->\n\nbody\n",
+		},
+		{
+			"inside YAML frontmatter",
+			"---\n**Design notes**\n---\n# T\n\n**Status:** open\n**Priority:** high\n\nbody\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Positive first: the fixture must really be a missing-section file,
+			// or every assertion below is vacuous.
+			verr := storage.ValidateWholeTaskFile(tc.content)
+			if verr == nil {
+				t.Fatal("fixture validates clean, so this test cannot see the defect it exists for")
+			}
+			if !strings.Contains(verr.Error(), "missing section") {
+				t.Fatalf("fixture fails for the wrong reason, so it never reaches the bold arm: %v", verr)
+			}
+
+			if got := boldPseudoHeadingLines(tc.content); len(got) != 0 {
+				t.Errorf("boldPseudoHeadingLines = %v — a bold run inside an inert region was selected for promotion", got)
+			}
+			after, outcome, reason, promos := planTaskSections(tc.content)
+			if outcome == sectionsPromoteBold {
+				t.Fatalf("🔴 PROMOTED INSIDE AN INERT REGION — the file now validates while staying unaddressable:\n%q", after)
+			}
+			if after != "" {
+				t.Errorf("after = %q, want empty — nothing may be rewritten here", after)
+			}
+			if promos != 0 {
+				t.Errorf("promos = %d, want 0", promos)
+			}
+			if outcome != sectionsNoH3 {
+				t.Errorf("outcome = %v, want sectionsNoH3 (%v); reason = %q", outcome, sectionsNoH3, reason)
+			}
+		})
+	}
+}
+
+// TestBoldPromotionStillPromotesALiveBoldHeading is the over-correction guard.
+// The bound above must remove the inert regions and nothing else: the live
+// corpus specimen (Projects/vibe-palace/tasks/done/grok-vpc-skill.md, a plain
+// "**Plan Details**" line) must still promote.
+//
+// Break: make outsideInertRegions return nil. This test fails; the two above
+// pass, which is why a negative-only pair is not enough.
+func TestBoldPromotionStillPromotesALiveBoldHeading(t *testing.T) {
+	const content = "# T\n\n**Status:** open\n**Priority:** high\n\n**Plan Details**\n\nbody\n"
+	if got := boldPseudoHeadingLines(content); len(got) != 1 || got[0] != 6 {
+		t.Fatalf("boldPseudoHeadingLines = %v, want [6] — the bound removed a live bold heading", got)
+	}
+	after, outcome, reason, promos := planTaskSections(content)
+	if outcome != sectionsPromoteBold {
+		t.Fatalf("outcome = %v, want sectionsPromoteBold; reason = %q", outcome, reason)
+	}
+	if promos != 1 {
+		t.Errorf("promos = %d, want 1", promos)
+	}
+	const want = "# T\n\n**Status:** open\n**Priority:** high\n\n## Plan Details\n\nbody\n"
+	if after != want {
+		t.Errorf("after =\n%q\nwant\n%q", after, want)
 	}
 }
