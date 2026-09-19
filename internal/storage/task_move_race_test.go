@@ -18,6 +18,17 @@ import (
 // whether a broken lock is caught, never whether correct code passes. Measured
 // on 19fd24c, before the source lock, a retire racing a move duplicated the task
 // in 241–309 of 400 iterations with both calls returning nil.
+//
+// 🔴 THESE TESTS ARE NOT SELF-SUFFICIENT, AND DO NOT MAKE THEM SO. They assert
+// that the task ends in ONE place and that the loser is told the truth; a move
+// that never moves and always returns the loser's error satisfies both, and all
+// three pass. What catches that is the rest of the package —
+// TestMoveTaskToProjectRelocatesTheBytesUnchanged, …RefusesOccupiedDestination,
+// TestMoveTaskSourceIsLocked, TestMoveTaskDestinationIsTheLockedPath,
+// TestMoveTakenSlugCheckIsInsideTheLock and TestMoveTaskConcurrentSameSlugFromTwoProjects,
+// which went red together under exactly that break. Adding a "the move really
+// moved" assertion here instead would re-derive them and still not pin the
+// refusal paths they cover.
 
 // taskLocations reports which of the four places a task p/x can be in.
 func taskLocations(v *Vault) []string {
