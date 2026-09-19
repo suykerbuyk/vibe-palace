@@ -952,10 +952,11 @@ func TestConfigSync_VaultProjectFailsClosedOnResolutionError(t *testing.T) {
 func TestConfigSyncDefaultScopeScaffoldsAllProjects(t *testing.T) {
 	vaultDir, projDir := phase4ConfigSyncSetup(t)
 	// Pre-create two empty project dirs.
+	// Content, not a scaffold marker: default scope scaffolds only projects
+	// ClassifyProjectDir judges initialised, and content leaves the READMEs
+	// still to be created.
 	for _, slug := range []string{"beta", "alpha"} {
-		if err := os.MkdirAll(filepath.Join(vaultDir, "Projects", slug), 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", slug, err)
-		}
+		seedProjectSession(t, vaultDir, slug)
 	}
 
 	stdout := captureStdout(t, func() {
@@ -1024,12 +1025,17 @@ func TestConfigSyncProjectFlagRestrictsScope(t *testing.T) {
 // duplicate Create rows.
 func TestConfigSyncScaffoldIdempotent(t *testing.T) {
 	vaultDir, projDir := phase4ConfigSyncSetup(t)
-	if err := os.MkdirAll(filepath.Join(vaultDir, "Projects", "alpha"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	seedProjectSession(t, vaultDir, "alpha")
 
 	if code := runConfigSync([]string{"--project-root", projDir, "--yes"}); code != cli.ExitOK {
 		t.Fatalf("first sync exit = %d", code)
+	}
+	// The first sync must actually scaffold alpha, or "no Create on the
+	// second sync" below holds trivially and measures nothing.
+	for _, kind := range []string{"commands", "skills"} {
+		if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "alpha", kind, "README.md")); err != nil {
+			t.Fatalf("first sync did not scaffold alpha/%s: %v", kind, err)
+		}
 	}
 	// Second run: no Create actions for the scaffold reconciler.
 	stdout := captureStdout(t, func() {
@@ -1050,11 +1056,12 @@ func TestConfigSyncScaffoldIdempotent(t *testing.T) {
 // skipped by the enumerator.
 func TestConfigSyncSkipsDotAndUnderscoreProjects(t *testing.T) {
 	vaultDir, projDir := phase4ConfigSyncSetup(t)
-	for _, name := range []string{".hidden", "_wip", "real"} {
+	for _, name := range []string{".hidden", "_wip"} {
 		if err := os.MkdirAll(filepath.Join(vaultDir, "Projects", name), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
+	seedProjectSession(t, vaultDir, "real")
 
 	code := runConfigSync([]string{"--project-root", projDir, "--yes"})
 	if code != cli.ExitOK {
@@ -1079,10 +1086,20 @@ func TestConfigSyncSkipsDotAndUnderscoreProjects(t *testing.T) {
 // through the full runConfigSync path.
 func TestEnumerateVaultProjectSlugsSkipRules(t *testing.T) {
 	vaultDir := t.TempDir()
-	for _, name := range []string{"alpha", "beta", ".hidden", "_wip"} {
+	for _, name := range []string{".hidden", "_wip"} {
 		if err := os.MkdirAll(filepath.Join(vaultDir, "Projects", name), 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// Initialised through a scaffold marker each: kept.
+	writeVaultFile(t, vaultDir, "Projects/alpha/commands/README.md", "x")
+	writeVaultFile(t, vaultDir, "Projects/beta/config.toml", "x")
+	// A phantom (memory/ only): excluded.
+	writeVaultFile(t, vaultDir, "Projects/gamma/memory/m.md", "x")
+	// Not a valid slug: passes through unclassified, so TemplateTree's
+	// portability check can report it (TestConfigSyncSkipsNonPortableProjectDir).
+	if err := os.MkdirAll(filepath.Join(vaultDir, "Projects", "bad:name"), 0o755); err != nil {
+		t.Fatal(err)
 	}
 	// A regular file under Projects/ must also be skipped.
 	if err := os.WriteFile(filepath.Join(vaultDir, "Projects", "README.md"), []byte("x"), 0o644); err != nil {
@@ -1090,7 +1107,7 @@ func TestEnumerateVaultProjectSlugsSkipRules(t *testing.T) {
 	}
 
 	got := enumerateVaultProjectSlugs(vaultDir)
-	want := []string{"alpha", "beta"}
+	want := []string{"alpha", "bad:name", "beta"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("enumerate = %v, want %v", got, want)
 	}
@@ -1098,6 +1115,53 @@ func TestEnumerateVaultProjectSlugsSkipRules(t *testing.T) {
 	// Missing Projects/ dir → nil, not error.
 	if out := enumerateVaultProjectSlugs(t.TempDir()); out != nil {
 		t.Errorf("empty vault: want nil, got %v", out)
+	}
+}
+
+// seedProjectSession gives Projects/<slug>/ one session note: real content,
+// so ClassifyProjectDir judges it initialised, with no scaffold README yet.
+func seedProjectSession(t *testing.T, vaultDir, slug string) {
+	t.Helper()
+	writeVaultFile(t, vaultDir, "Projects/"+slug+"/sessions/2026-01-01-01.md", "x")
+}
+
+// A classify error is logged and the slug skipped, never scaffolded.
+func TestEnumerateVaultProjectSlugsSkipsUnclassifiable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	vaultDir := t.TempDir()
+	writeVaultFile(t, vaultDir, "Projects/ok/resume.md", "x")
+	writeVaultFile(t, vaultDir, "Projects/locked/config.toml", "x")
+	writeVaultFile(t, vaultDir, "Projects/locked/sessions/s.md", "x")
+	sd := filepath.Join(vaultDir, "Projects", "locked", "sessions")
+	if err := os.Chmod(sd, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sd, 0o755) })
+
+	if got := strings.Join(enumerateVaultProjectSlugs(vaultDir), ","); got != "ok" {
+		t.Errorf("enumerate = %q, want only \"ok\" (an unclassifiable project is skipped)", got)
+	}
+}
+
+// Default-scope sync must not scaffold commands/ and skills/ into a phantom
+// directory — one holding only memory/ — while it still scaffolds a real one.
+func TestConfigSyncDoesNotScaffoldPhantomProject(t *testing.T) {
+	vaultDir, projDir := phase4ConfigSyncSetup(t)
+	writeVaultFile(t, vaultDir, "Projects/ghost/memory/m.md", "x")
+	seedProjectSession(t, vaultDir, "real")
+
+	if code := runConfigSync([]string{"--project-root", projDir, "--yes"}); code != cli.ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	for _, kind := range []string{"commands", "skills"} {
+		if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "ghost", kind, "README.md")); !os.IsNotExist(err) {
+			t.Errorf("phantom ghost/ was scaffolded with %s/README.md (stat err=%v)", kind, err)
+		}
+		if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "real", kind, "README.md")); err != nil {
+			t.Errorf("real/ was not scaffolded with %s/README.md: %v", kind, err)
+		}
 	}
 }
 
