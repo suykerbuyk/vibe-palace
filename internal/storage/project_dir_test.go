@@ -161,6 +161,29 @@ func classifyProjectDirUnreadableSessionsRows(t *testing.T) {
 			t.Errorf("error carries the host's absolute vault path: %v", err)
 		}
 	})
+	// Fail-closed at ANY depth, not only at the walk root: an unreadable
+	// subdirectory of sessions/ may hold history too. With only config.toml
+	// otherwise, swallowing the error below the root would read this project
+	// as scaffold-only.
+	t.Run("config.toml only: an unreadable sessions/2026/ is an error at depth", func(t *testing.T) {
+		root := t.TempDir()
+		dir := projectDirFixture(t, root, "proj", "config.toml", "sessions/2026/s.md")
+		sub := filepath.Join(dir, "sessions", "2026")
+		if err := os.Chmod(sub, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
+		_, err := ClassifyProjectDir(root, "proj")
+		if err == nil {
+			t.Fatal("an unreadable sessions/2026/ classified without error: fail-open below the walk root")
+		}
+		if !strings.Contains(err.Error(), "Projects/proj/sessions/2026") {
+			t.Errorf("error does not name Projects/proj/sessions/2026 vault-relative: %v", err)
+		}
+		if strings.Contains(err.Error(), root) {
+			t.Errorf("error carries the host's absolute vault path: %v", err)
+		}
+	})
 }
 
 func TestProjectDirStateStringAndInitialised(t *testing.T) {
