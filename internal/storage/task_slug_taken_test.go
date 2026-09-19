@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // These tests pin refuseTakenSlug, the one rule every task-placing path shares.
@@ -301,5 +303,96 @@ func TestMoveBackOntoOwnTombstoneIsRefused(t *testing.T) {
 	}
 	if !taskFileAbsent(v, "Projects/p/tasks/x.md") {
 		t.Fatal("a refused move back landed an active x beside its own tombstone")
+	}
+}
+
+// A retire or cancel that loses the lock to a concurrent archive of the SAME
+// task must report "not found", never the slug-taken refusal: there is one task,
+// already archived, and a hand-rename remedy would be false.
+//
+// The timing is forced, not hoped for. The test holds the task's lock, so the
+// losing call passes its unlocked source stat and blocks in vaultlock.Acquire;
+// the test then archives the file exactly as the winning call would, under that
+// lock, and releases it. This cannot flake RED: with the under-lock re-check
+// every interleaving ends in "not found" — a call that is slow to reach its first
+// stat simply fails there instead. Timing only decides whether a BROKEN re-check
+// is caught, so each case runs three times with a 30 ms head start; a single
+// catch reds the test.
+func TestLostArchiveRaceIsNotReportedAsSharedSlug(t *testing.T) {
+	for _, c := range []struct {
+		name, winnerDir string
+		loser           func(v *Vault) error
+	}{
+		{"cancel-loses-to-retire", "done", func(v *Vault) error { return v.CancelTask("p", "x", "") }},
+		{"retire-loses-to-cancel", "cancelled", func(v *Vault) error { return v.RetireTask("p", "x") }},
+		{"retire-loses-to-retire", "done", func(v *Vault) error { return v.RetireTask("p", "x") }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for rep := 0; rep < 3; rep++ {
+				v := testVault(t)
+				src := seedTaskRaw(t, v, "p", "", "x", "TASK")
+				release, err := vaultlock.Acquire(v.Root, src)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := make(chan error, 1)
+				go func() { got <- c.loser(v) }()
+				time.Sleep(30 * time.Millisecond)
+				// The winner's effect, under the lock this test holds.
+				winner := filepath.Join(v.Root, "Projects/p/tasks", c.winnerDir, "x.md")
+				if err := os.MkdirAll(filepath.Dir(winner), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(src, winner); err != nil {
+					t.Fatal(err)
+				}
+				if err := release(); err != nil {
+					t.Fatal(err)
+				}
+				err = <-got
+				var te *taskSlugTakenError
+				if errors.As(err, &te) {
+					t.Fatalf("rep %d: the loser of an archive race was told two tasks share the slug: %v", rep, err)
+				}
+				if err == nil || !strings.Contains(err.Error(), "not found") {
+					t.Fatalf("rep %d: want a not-found error from the losing call, got %v", rep, err)
+				}
+			}
+		})
+	}
+}
+
+// The same property under real concurrency, and the one-winner invariant: a
+// retire and a cancel of one task, started together, archive it exactly once
+// and never produce a slug-taken refusal. Measured before the fix: 168 of 200
+// losing calls were misdiagnosed.
+func TestConcurrentRetireAndCancelArchiveOnceWithoutMisdiagnosis(t *testing.T) {
+	const iterations = 100
+	for i := 0; i < iterations; i++ {
+		v := testVault(t)
+		seedTaskRaw(t, v, "p", "", "x", "TASK")
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		go func() { <-start; errs <- v.RetireTask("p", "x") }()
+		go func() { <-start; errs <- v.CancelTask("p", "x", "") }()
+		close(start)
+		succeeded := 0
+		for j := 0; j < 2; j++ {
+			err := <-errs
+			var te *taskSlugTakenError
+			switch {
+			case err == nil:
+				succeeded++
+			case errors.As(err, &te):
+				t.Fatalf("iteration %d: a race loser was told two tasks share the slug: %v", i, err)
+			case !strings.Contains(err.Error(), "not found"):
+				t.Fatalf("iteration %d: unexpected error from the losing call: %v", i, err)
+			}
+		}
+		done := !taskFileAbsent(v, "Projects/p/tasks/done/x.md")
+		cancelled := !taskFileAbsent(v, "Projects/p/tasks/cancelled/x.md")
+		if succeeded != 1 || done == cancelled {
+			t.Fatalf("iteration %d: %d calls succeeded, done=%v cancelled=%v; want exactly one archive", i, succeeded, done, cancelled)
+		}
 	}
 }
