@@ -1,0 +1,22 @@
+# actionlint configuration.
+#
+# 🔴 THIS FILE EXISTS FOR ONE TEMPORARY LABEL, AND GOES WHEN THAT LABEL DOES.
+# actionlint validates `runs-on:` against a list of GitHub-hosted labels baked
+# into the actionlint release. v1.7.12's list predates Ubuntu 26.04's general
+# availability (2026-09-17,
+# github.blog/changelog/2026-09-17-ubuntu-26-generally-available-and-latest-migration),
+# so it reports:
+#
+#     label "ubuntu-26.04" is unknown. available labels are … "ubuntu-24.04" …
+#
+# The label is real — it is what the `ubuntu26-canary` job in ci.yml runs on,
+# ahead of the ubuntu-latest migration — so this is a stale built-in list, not a
+# workflow defect. The tool's own message names this file as the remedy.
+#
+# REMOVE THIS FILE together with the `ubuntu26-canary` job (see its own removal
+# condition in ci.yml), or sooner if a newer actionlint knows the label: the
+# entry then silently stops doing anything, which is the failure mode a
+# hand-maintained allow-list always has.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
