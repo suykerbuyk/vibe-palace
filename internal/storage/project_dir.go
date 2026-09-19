@@ -80,14 +80,18 @@ var projectScaffoldMarkers = []string{"commands/README.md", "skills/README.md", 
 //     resume.md, iterations.md (present and not a directory, via os.Stat), then
 //     any non-directory entry at any depth under sessions/, then under tasks/.
 //  4. ProjectScaffoldOnly when any of projectScaffoldMarkers is present and not
-//     a directory.
+//     a directory. The markers are an OR: the first one present decides, and
+//     a marker whose check errors does not hide a later one that is present.
 //  5. Otherwise ProjectPhantom.
 //
 // 🔴 FAIL-CLOSED. A missing file or a missing sessions/ or tasks/ is simply
 // absent. Any other stat or walk error is returned rather than read as "no
 // content": a tree that cannot be inspected may hold history. Because rule 3
 // stops at the first hit, a walk error surfaces only when nothing earlier
-// already decided ProjectWithContent. Every error names vault-relative paths.
+// already decided ProjectWithContent. The markers are consulted only after
+// content is ruled out, so an error there cannot hide history: it is returned
+// only when NO marker is present, never when a later marker decides
+// ProjectScaffoldOnly. Every error names vault-relative paths.
 //
 // When err != nil the returned state is meaningless (it is the zero value,
 // ProjectAbsent); callers must check err first.
@@ -128,14 +132,21 @@ func ClassifyProjectDir(vaultRoot, project string) (ProjectDirState, error) {
 		}
 	}
 
+	var markerErr error
 	for _, name := range projectScaffoldMarkers {
 		ok, err := nonDirPresent(dir, rel, name)
 		if err != nil {
-			return ProjectAbsent, err
+			if markerErr == nil {
+				markerErr = err
+			}
+			continue
 		}
 		if ok {
 			return ProjectScaffoldOnly, nil
 		}
+	}
+	if markerErr != nil {
+		return ProjectAbsent, markerErr
 	}
 	return ProjectPhantom, nil
 }
