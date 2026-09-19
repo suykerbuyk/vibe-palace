@@ -474,22 +474,28 @@ func TestMoveTaskDestinationIsTheLockedPath(t *testing.T) {
 	}
 }
 
-// TestMoveTaskSourceIsNotLocked is the OTHER half of the pin, and it exists to
-// keep this operation SINGLE-LOCKED. Holding the source path's lock must not
-// stop the move: if it ever does, someone has added a second Acquire (or
-// restored the old one), and this operation now holds two locks with an order
-// that can be inverted. vaultlock.Acquire is a blocking LOCK_EX with no timeout,
-// so an inversion is a PERMANENT HANG rather than a detectable error — the
-// cheapest defence is to have no second lock at all, which is what this test
-// keeps true.
-func TestMoveTaskSourceIsNotLocked(t *testing.T) {
+// TestMoveTaskSourceIsLocked is the OTHER half of the pin: the move holds the
+// SOURCE's lock too, through vaultlock.AcquirePair. Every writer of the source
+// path holds that lock and reads the file under it; a move that did not hold it
+// raced them, and a retire or an amend re-created the renamed file from memory,
+// duplicating the task with both calls reporting success
+// (retire-racing-a-cross-project-move-duplicates-the-task). This inverts the
+// earlier TestMoveTaskSourceIsNotLocked, which pinned the absence of that lock.
+// The pair's ordering, and the absence of a deadlock between opposing moves, are
+// pinned in internal/vaultlock and by TestOpposingMovesDoNotDeadlock.
+func TestMoveTaskSourceIsLocked(t *testing.T) {
 	v, srcPath, destPath := moveLockTestVault(t, "src-proj", "dst-proj", "wanderer")
 
 	release, err := vaultlock.Acquire(v.Root, srcPath)
 	if err != nil {
 		t.Fatalf("test could not take the source lock: %v", err)
 	}
-	defer func() { _ = release() }()
+	released := false
+	defer func() {
+		if !released {
+			_ = release()
+		}
+	}()
 
 	done := make(chan error, 1)
 	go func() {
@@ -498,15 +504,26 @@ func TestMoveTaskSourceIsNotLocked(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("move failed while the source lock was held: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatalf("MoveTaskToProject BLOCKED on a lock held over the SOURCE path %s. The operation is supposed "+
-			"to take exactly ONE lock, on the destination; a second lock here means there is now a lock ORDER, "+
-			"and vaultlock.Acquire has no timeout, so inverting it is a permanent hang", srcPath)
+		t.Fatalf("MoveTaskToProject COMPLETED (err=%v) while the test held the lock on the SOURCE path %s. "+
+			"Without the source lock a concurrent retire or amend re-creates the renamed file and the task "+
+			"is duplicated", err, srcPath)
+	case <-time.After(200 * time.Millisecond):
+		// Correct: still blocked on the source.
 	}
 
+	if err := release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	released = true
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("move failed once the source lock was released: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("MoveTaskToProject did not complete after the source lock was released")
+	}
 	if exists(srcPath) {
 		t.Errorf("source copy still present at %s", srcPath)
 	}
