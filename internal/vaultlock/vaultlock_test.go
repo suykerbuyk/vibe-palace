@@ -282,3 +282,59 @@ func TestAcquireWithTimeoutReturnsCleanErrorInsteadOfHanging(t *testing.T) {
 		t.Fatalf("AcquireWithTimeout took %s, want ~100ms (proves it does not hang)", elapsed)
 	}
 }
+
+// TestCanonicalKeyStableAcrossMissingDirectories is the EXCLUSION LOST probe from
+// task retire-racing-a-cross-project-move-duplicates-the-task, kept as a
+// regression test. With the vault reached through a symlink and a destination
+// whose directory does not exist yet, the earlier canonicalKey keyed the file by
+// its unresolved spelling, then by its resolved spelling once the directory was
+// created: a second holder took the lock on the same file.
+func TestCanonicalKeyStableAcrossMissingDirectories(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "vault-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel := filepath.Join("Projects", "q", "tasks", "x.md")
+	storageSpelling := filepath.Join(link, rel) // storage: a lexical join of the configured (symlinked) root
+	// vaultfs.ResolveSafePath roots a path in the EvalSymlinks-resolved vault
+	// (internal/vaultfs/safety.go: absVault := filepath.EvalSymlinks(vaultPath);
+	// joined := filepath.Join(absVault, relPath)). That formula is reproduced
+	// here because vaultfs imports vaultlock and an in-package test cannot
+	// import it back.
+	vaultfsSpelling := filepath.Join(resolvedRoot, rel)
+
+	before := canonicalKey(storageSpelling)
+	if got := canonicalKey(vaultfsSpelling); got != before {
+		t.Errorf("storage and vaultfs spellings of one missing-parent file get different keys:\n  storage %s\n  vaultfs %s", before, got)
+	}
+	// K1's companion: two different missing files must not share a key.
+	if canonicalKey(filepath.Join(link, "Projects", "q", "tasks", "y.md")) == before {
+		t.Errorf("two different missing files share one key %s", before)
+	}
+
+	release, err := Acquire(link, storageSpelling)
+	if err != nil {
+		t.Fatalf("Acquire with q/tasks missing: %v", err)
+	}
+	defer func() { _ = release() }()
+
+	if err := os.MkdirAll(filepath.Join(real, "Projects", "q", "tasks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if after := canonicalKey(storageSpelling); after != before {
+		t.Errorf("key moved when the directory was created:\n  before %s\n  after  %s", before, after)
+	}
+	rel2, ok, err := TryAcquire(link, storageSpelling)
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	if ok {
+		_ = rel2()
+		t.Fatal("EXCLUSION LOST: a second holder took the lock on the same destination file after its directory was created")
+	}
+}

@@ -16,10 +16,12 @@
 // lingering .lock marker file left behind by a crash is harmless: the next
 // Acquire reopens it and locks cleanly.
 //
-// The canonicalization policy mirrors vaultfs.ResolveSafePath so a path supplied
-// by vaultfs (already EvalSymlinks-resolved) and the same file supplied by
-// storage (a lexical filepath.Join of root and a relative path) hash to the same
-// lock key and therefore contend on the same lock file.
+// The canonical key is the path with its deepest EXISTING ancestor resolved
+// through EvalSymlinks and the missing remainder rejoined, so a path supplied by
+// vaultfs (rooted in the EvalSymlinks-resolved vault) and the same file supplied
+// by storage (a lexical filepath.Join of a possibly symlinked root) hash to the
+// same lock key and contend on the same lock file — including for a file whose
+// directories do not exist yet, and before and after they are created.
 //
 // vaultlock is a near-leaf package: it imports only the standard library,
 // except on the windows build, whose flock_windows.go pulls in
@@ -170,17 +172,46 @@ func releaser(f *os.File) func() error {
 }
 
 // canonicalKey reduces targetAbsPath to a stable identity shared by every
-// spelling of the same file. It mirrors the EvalSymlinks-with-parent-fallback
-// policy of vaultfs.ResolveSafePath: resolve the full path; if it does not exist
-// yet, resolve the parent directory and rejoin the leaf; if the parent is also
-// missing, fall back to a lexical clean.
+// spelling of the same file: EvalSymlinks the path; if that fails, walk up to
+// the deepest ancestor that EvalSymlinks can resolve and rejoin the missing
+// remainder lexically. The walk continues only past ancestors that do not exist;
+// any other error (EACCES, ENOTDIR) stops it at the lexical clean, as before,
+// because guessing past an unreadable ancestor could name a different
+// directory.
+//
+// So one file has one key whether or not its directories exist yet. The earlier
+// rule resolved only the parent and otherwise fell back to a lexical clean; with
+// the vault reached through a symlink and more than the leaf missing, that keyed
+// the file by its unresolved spelling until its directory was created and by
+// its resolved spelling afterwards — two sidecars for one file, so a holder of
+// one did not exclude a holder of the other (task
+// retire-racing-a-cross-project-move-duplicates-the-task).
+//
+// Keys are unchanged for every existing path and for every path whose parent
+// exists. Only a path with a missing parent, reached through a symlinked vault
+// root, gets a different key from the previous rule — and the previous rule
+// already keyed that path inconsistently, so an old process and a new one side
+// by side are no worse off than two old ones.
+//
+// RESIDUAL: a path component that is, or later becomes, a symlink — including
+// an existing DANGLING symlink whose target is created later — can still move
+// the key, because the walk passes over a component EvalSymlinks reports as
+// not existing. vp creates no symlinks inside the vault; this needs a hand-made
+// link.
 func canonicalKey(targetAbsPath string) string {
-	if real, err := filepath.EvalSymlinks(targetAbsPath); err == nil {
+	clean := filepath.Clean(targetAbsPath)
+	if real, err := filepath.EvalSymlinks(clean); err == nil {
 		return real
 	}
-	parent := filepath.Dir(targetAbsPath)
-	if realParent, err := filepath.EvalSymlinks(parent); err == nil {
-		return filepath.Join(realParent, filepath.Base(targetAbsPath))
+	tail := filepath.Base(clean)
+	for dir := filepath.Dir(clean); ; dir = filepath.Dir(dir) {
+		real, err := filepath.EvalSymlinks(dir)
+		if err == nil {
+			return filepath.Join(real, tail)
+		}
+		if !os.IsNotExist(err) || filepath.Dir(dir) == dir {
+			return clean
+		}
+		tail = filepath.Join(filepath.Base(dir), tail)
 	}
-	return filepath.Clean(targetAbsPath)
 }
