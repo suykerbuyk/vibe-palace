@@ -51,6 +51,10 @@ func TestClassifyProjectDir(t *testing.T) {
 		{"scaffold: commands/README.md alone", []string{"commands/README.md"}, ProjectScaffoldOnly},
 		{"scaffold: skills/README.md alone", []string{"skills/README.md"}, ProjectScaffoldOnly},
 		{"scaffold: config.toml alone (an interrupted init)", []string{"config.toml"}, ProjectScaffoldOnly},
+		// A marker whose check errors (commands/README.md under a regular FILE
+		// named commands is ENOTDIR) must not hide config.toml, a later marker
+		// that is present: main accepted this project on config.toml alone.
+		{"scaffold: config.toml beside a stray FILE named commands", []string{"config.toml", "commands"}, ProjectScaffoldOnly},
 		{"content: resume.md", []string{"resume.md"}, ProjectWithContent},
 		{"content: iterations.md", []string{"iterations.md"}, ProjectWithContent},
 		{"content: sessions/x.md", []string{"sessions/x.md"}, ProjectWithContent},
