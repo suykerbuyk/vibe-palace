@@ -414,7 +414,16 @@ func runTaskHeaderBlockMigration(root, only string, apply bool, out io.Writer) (
 					// known defect, not a template.
 					if taskHeaderShadowed(out, root, slug, sub, taskSlug, name) {
 						d.Outcome = blockRefused
-						d.Reason = "an ACTIVE task of the same slug exists; the writer resolves active first"
+						// 🔴 DERIVED, NEVER HARDCODED, AND THIS LINE HELD A
+						// LITERAL THAT WAS FALSE. The guard covers a done/ +
+						// cancelled/ pair with no active twin, so a fixed
+						// "an ACTIVE task..." sentence named a file that does
+						// not exist — a correct printed line beside a false
+						// stored cause, with nothing reporting the
+						// disagreement. Both halves now come from the single
+						// walk in taskHeaderShadowWinner, so they cannot
+						// diverge again.
+						d.Reason = taskHeaderShadowReason(root, slug, sub, name)
 						d.Failed = true
 						// 🔴 BOTH COUNTERS, AND THAT IS NOT DOUBLE-COUNTING. This
 						// file is refused — the decision is blockRefused and a
