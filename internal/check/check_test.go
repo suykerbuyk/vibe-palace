@@ -14,7 +14,14 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
+
+// This package reads the HOST config through CheckSettings and the
+// summarization-queue check, so without this it runs against the developer's
+// own ~/.config/vibe-palace/config.toml: a config from a newer vp turns
+// TestCheckSettings and the queue tests red on their machine and nowhere else.
+func TestMain(m *testing.M) { os.Exit(testutil.RunHermetic(m)) }
 
 func TestCheckConfig(t *testing.T) {
 	t.Run("valid config", func(t *testing.T) {
@@ -327,7 +334,7 @@ func TestCheckVaultMissing_ActionableMessage(t *testing.T) {
 }
 
 func TestCheckGit_Disabled(t *testing.T) {
-	r := CheckGit(t.TempDir(), false)
+	r := CheckGit(t.TempDir(), false, nil)
 	if r.Status != Info {
 		t.Errorf("expected Info, got %v", r.Status)
 	}
@@ -335,45 +342,29 @@ func TestCheckGit_Disabled(t *testing.T) {
 		t.Errorf("summary should mention disabled, got %q", r.Summary)
 	}
 
-	// Pin the scope-clarification Details entries: git_enabled governs only
-	// 'vp init' and the CLI 'vp vault *' subcommands. Three rounds of
-	// adversarial review each found this text under- or over-claiming scope
-	// (vp_vault_tidy and vp_manage_task's commit-only-never-push behavior
-	// missing in round 1; vp commands/skills reset missing and vp migrate
-	// kg-filenames wrongly lumped under "commits and pushes" in round 2) — this
-	// assertion is what would have caught every one of those regressions.
-	if len(r.Details) < 4 {
-		t.Fatalf("expected 4 Details entries (scope statement + 3 behavior groups), got %d: %v", len(r.Details), r.Details)
-	}
+	// The Details state the RULE, not a roster of callers: three rounds of
+	// adversarial review found the old roster under- or over-claiming scope,
+	// and it was still incomplete (split, merge, freshness) when the refusal
+	// moved into storage. Pin the rule's parts and its one exception.
 	all := strings.Join(r.Details, "\n")
 	for _, want := range []string{
-		"vp init", "vp vault", "vp_vault_tidy", "vp_manage_task",
-		"SessionEnd", "vp commands reset", "vp skills reset", "vp migrate kg-filenames",
+		"both CLI and MCP", "post-write commits are skipped", "template reset refuses",
+		"config prune is skipped", "read-only probes still run",
+		"vp_repo_freshness", "project_repo_path",
 	} {
 		if !strings.Contains(all, want) {
-			t.Errorf("Details should mention %q (part of git_enabled's real scope), got %v", want, r.Details)
+			t.Errorf("Details should state %q, got %v", want, r.Details)
 		}
 	}
-	// vp_manage_task must be grouped with the commit-only-never-push behavior,
-	// not the commit-and-push group (round 1's exact mistake).
-	commitOnlyLine := r.Details[2]
-	if !strings.Contains(commitOnlyLine, "vp_manage_task") || !strings.Contains(commitOnlyLine, "NEVER push") {
-		t.Errorf("commit-only-never-push group should name vp_manage_task, got %q", commitOnlyLine)
-	}
-	// vp migrate kg-filenames must be grouped with the stage-only behavior, and
-	// must NOT appear in the commit-and-push group (round 2's exact mistake).
-	stageOnlyLine := r.Details[3]
-	if !strings.Contains(stageOnlyLine, "kg-filenames") || !strings.Contains(stageOnlyLine, "Stage") {
-		t.Errorf("stage-only group should name vp migrate kg-filenames, got %q", stageOnlyLine)
-	}
-	commitAndPushLine := r.Details[1]
-	if strings.Contains(commitAndPushLine, "kg-filenames") {
-		t.Errorf("commit-and-push group must NOT include vp migrate kg-filenames (it only stages), got %q", commitAndPushLine)
+	// The old text claimed the setting governs ONLY init and the CLI; that is
+	// the gap this change closed, so it must not come back.
+	if strings.Contains(all, "governs ONLY") || strings.Contains(all, "regardless of this setting") {
+		t.Errorf("Details still describe the pre-parity scope: %v", r.Details)
 	}
 }
 
 func TestCheckGit_NotARepo(t *testing.T) {
-	r := CheckGit(t.TempDir(), true)
+	r := CheckGit(t.TempDir(), true, nil)
 	if r.Status != Info {
 		t.Errorf("expected Info, got %v", r.Status)
 	}
@@ -388,7 +379,7 @@ func TestCheckGit_ValidRepo(t *testing.T) {
 		t.Fatalf("git init: %v", err)
 	}
 
-	r := CheckGit(dir, true)
+	r := CheckGit(dir, true, nil)
 	// No remotes → should be Info "no remotes configured"
 	if r.Status != Info {
 		t.Errorf("expected Info for repo with no remotes, got %v: %s", r.Status, r.Summary)
@@ -406,7 +397,7 @@ func TestCheckGit_WithRemotes(t *testing.T) {
 		t.Fatalf("git remote add: %v", err)
 	}
 
-	r := CheckGit(dir, true)
+	r := CheckGit(dir, true, nil)
 	if r.Status != Pass {
 		t.Errorf("expected Pass with remote, got %v: %s", r.Status, r.Summary)
 	}
@@ -955,5 +946,22 @@ func TestCheckGitPostCommitHook_ForeignHookIsReported(t *testing.T) {
 	}
 	if !strings.Contains(r.Summary, "refusing") {
 		t.Errorf("summary must say the hook was refused, got %q", r.Summary)
+	}
+}
+
+// TestCheckGit_ReadErrorIsFail: an unreadable git_enabled is a broken host
+// config every vault git operation refuses on, so the row is Fail and names
+// the error; it is never rendered as the operator's "disabled" choice.
+func TestCheckGit_ReadErrorIsFail(t *testing.T) {
+	readErr := errors.New("cannot read git_enabled from /h/config.toml: host config unreadable: boom")
+	r := CheckGit(t.TempDir(), false, readErr)
+	if r.Status != Fail {
+		t.Errorf("status = %v, want Fail", r.Status)
+	}
+	if strings.Contains(r.Summary, "disabled (") {
+		t.Errorf("summary %q renders a read error as disabled", r.Summary)
+	}
+	if len(r.Details) == 0 || !strings.Contains(r.Details[0], "/h/config.toml") {
+		t.Errorf("details %v do not carry the read error", r.Details)
 	}
 }

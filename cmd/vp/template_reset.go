@@ -342,6 +342,16 @@ func preflightTemplateReset(vaultRoot, verb string, plan *resetPlan, errw io.Wri
 	}
 	plan.absent = stillAbsent
 	if needIdentity {
+		// A reset that would commit is refused here, before any file is
+		// removed, when the host config disables git: CommitRemovals' own gate
+		// runs only after the removal, which would strand a tracked deletion.
+		// This preflight runs ahead of the dry-run branch, so a dry run refuses
+		// exactly like the real run. The reads above only decide whether a
+		// commit would happen at all.
+		if err := storage.RefuseIfGitDisabled(vaultRoot, "commit the template reset"); err != nil {
+			fmt.Fprintf(errw, "%s: %v\nThe removal could not be committed, so nothing was changed.\n", verb, err)
+			return cli.ExitUser
+		}
 		if err := storage.CheckCommitIdentity(vaultRoot); err != nil {
 			fmt.Fprintf(errw, "%s: %v\nThe removal could not be committed, so nothing was changed.\n", verb, err)
 			return cli.ExitSystem

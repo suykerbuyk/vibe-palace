@@ -12,6 +12,7 @@ import (
 
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // TestBootstrapLiveVaultStillRestoresASession is the live gate on what a real
@@ -56,11 +57,20 @@ func TestBootstrapLiveVaultStillRestoresASession(t *testing.T) {
 	// skip is visually indistinguishable from a pass — a canary that quietly
 	// declines to measure is worth less than no canary, because it also supplies
 	// false confidence.
+	//
+	// This package runs hermetically (TestMain → testutil.RunHermetic), so the
+	// host's real config must be restored for THIS test before anything resolves
+	// the vault or reads config; t.Setenv undoes it when the test ends.
+	testutil.UseAmbientConfig(t)
 	root := os.Getenv("VP_LIVE_VAULT")
 	explicit := root != ""
 	if root == "" {
 		v, err := storage.OpenVaultGlobal()
 		if err != nil {
+			if testutil.XDGIsFixture() {
+				t.Fatalf("the canary is resolving the vault through the hermetic test fixture, not the host's "+
+					"config — the ambient restore was lost, so a skip here would hide a canary that never ran: %v", err)
+			}
 			t.Skipf("no vault configured on this host — the one legitimate skip: %v", err)
 		}
 		root = v.Root

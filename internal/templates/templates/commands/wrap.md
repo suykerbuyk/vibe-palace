@@ -639,6 +639,11 @@ the next and surfaces the error at the end. If all pushes fail
 (no remote, network error), warn and proceed — local state is still
 valid.
 
+A `git is disabled` refusal is expected on a host whose operator set
+`git_enabled = false`: proceed to the next step, do not retry, do not fall
+back to the Bash `vp vault …` command (it refuses too), and do not edit
+the config.
+
 Include `Projects/<slug>/commit.msg`, `Projects/<slug>/commit-log.md`,
 and `Projects/<slug>/commit-log.anchor` among the synced paths — the
 `commit.msg` mirror is written by Step 7, the append-log and its anchor
@@ -678,6 +683,11 @@ commits **only** classified capture artifacts and pushes, never
 
 If the result lists any **Reported** paths, surface them to the user
 before finishing — they need human eyes.
+
+A `git is disabled` refusal is expected on a host whose operator set
+`git_enabled = false`: proceed to the next step, do not retry, do not fall
+back to the Bash `vp vault …` command (it refuses too), and do not edit
+the config.
 
 ## Step 10b: Trigger Background Summarization Drain
 

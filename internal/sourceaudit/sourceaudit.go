@@ -158,6 +158,11 @@ const (
 	// hand-rolled isolation recipes test-infra-shared-env-isolation-fixture
 	// consolidated away. See envIsolationBypass.
 	KindEnvIsolationBypass = "env-isolation-bypass"
+
+	// KindGitEnabledOwner: git_enabled read, or its refusal forged, somewhere
+	// other than the one owner (storage.RefuseIfGitDisabled) and the reporting
+	// readers it allow-lists. See gitEnabledOwner.
+	KindGitEnabledOwner = "git-enabled-owner"
 )
 
 // ID is the finding's stable identity for baseline comparison. It deliberately
@@ -249,6 +254,7 @@ func Run(roots ...string) ([]Finding, error) {
 	findings = append(findings, envIsolationBypass(files)...)
 	findings = append(findings, plannerNoWrite(files)...)
 	findings = append(findings, evidenceWalkIndependence(files)...)
+	findings = append(findings, gitEnabledOwner(files)...)
 
 	sort.Slice(findings, func(i, j int) bool { return findings[i].ID() < findings[j].ID() })
 	return findings, nil

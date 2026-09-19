@@ -7,9 +7,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -342,6 +342,16 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 
 		root := vault.Root
 
+		// git_enabled refuses first, before the paths commit and before
+		// ListRemotes: the same storage decision, at the same point, as the CLI.
+		verb := p.Action
+		if len(p.Paths) > 0 {
+			verb = "commit"
+		}
+		if err := storage.RefuseIfGitDisabled(root, verb); err != nil {
+			return nil, err
+		}
+
 		// Explicit-path entry point: stage and commit ONLY the supplied
 		// paths (never git add -A), then push when the action calls for it.
 		// This is the ONLY way to mutate vault history through this tool; the
@@ -514,23 +524,17 @@ func gitPull(root string, remotes []string) (string, error) {
 }
 
 func gitPush(root string, remotes []string) (string, error) {
-	// Check for clean state.
-	cmd := exec.Command("git", "-C", root, "status", "--porcelain")
-	cmd.Env = storage.SafeGitEnv()
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("git status: %w", err)
-	}
-	if dirty := bytes.TrimSpace(out); len(dirty) > 0 {
+	// storage.PushPlain owns the refuse-on-dirty precheck (one implementation,
+	// shared with the CLI) and attempts every remote, returning structured
+	// per-remote results (mirroring storage.Pull).
+	res, err := storage.PushPlain(root, remotes)
+	var dirty *storage.DirtyTreeError
+	if errors.As(err, &dirty) {
 		// Caller friction: the refuse-on-dirty guard worked. Name dirty paths
 		// (capped — unbounded single-line MCP errors train agents to skim) and
 		// point at remedies an agent can take next turn.
-		return "", apperr.Caller(fmt.Errorf("%s", formatDirtyVaultPushError(porcelainDirtyPaths(string(dirty)))))
+		return "", apperr.Caller(fmt.Errorf("%s", formatDirtyVaultPushError(porcelainDirtyPaths(dirty.Porcelain))))
 	}
-
-	// Delegate the plain push loop to storage.PushPlain, which attempts every
-	// remote and returns structured per-remote results (mirroring storage.Pull).
-	res, err := storage.PushPlain(root, remotes)
 	if err != nil {
 		return "", err
 	}
@@ -653,6 +657,11 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 		defer vaultSyncMu.Unlock()
 
 		root := vault.Root
+
+		// git_enabled refuses first, so a dry run refuses too, as the CLI's does.
+		if err := storage.RefuseIfGitDisabled(root, "tidy"); err != nil {
+			return nil, err
+		}
 
 		if p.DryRun {
 			res, err := storage.TidyScan(root)
@@ -806,6 +815,9 @@ func vaultStatusHandler(vault *storage.Vault) mcp.HandlerFunc {
 		var p vaultStatusParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
+		}
+		if err := storage.RefuseIfGitDisabled(vault.Root, "report vault status"); err != nil {
+			return nil, err
 		}
 		report, err := storage.BuildStatusReport(vault.Root, p.Refresh)
 		if err != nil {

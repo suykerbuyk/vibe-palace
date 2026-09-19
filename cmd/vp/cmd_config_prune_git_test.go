@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/templates"
 )
 
@@ -53,6 +54,7 @@ func gitInVault(t *testing.T, dir string, args ...string) string {
 // the origin path, which a second clone can be made from.
 func gitifyVault(t *testing.T, vaultPath string) (origin string) {
 	t.Helper()
+	enableGitInTestConfig(t)
 	origin = filepath.Join(t.TempDir(), "origin.git")
 	if err := os.MkdirAll(origin, 0o755); err != nil {
 		t.Fatalf("mkdir origin: %v", err)
@@ -73,6 +75,31 @@ func gitifyVault(t *testing.T, vaultPath string) (origin string) {
 	gitInVault(t, vaultPath, "remote", "add", "origin", origin)
 	gitInVault(t, vaultPath, "push", "-u", "origin", "main")
 	return origin
+}
+
+// enableGitInTestConfig flips git_enabled to true in the test's own host config
+// (initTestEnv's isolated XDG). A --no-git init writes false there, and the
+// vault git entry points refuse on it; a fixture that turns the vault into a
+// repository by hand is asking for git, so it enables it too.
+func enableGitInTestConfig(t *testing.T) {
+	t.Helper()
+	p, err := storage.VaultConfigFilePath()
+	if err != nil {
+		t.Fatalf("VaultConfigFilePath: %v", err)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read test host config: %v", err)
+	}
+	s := string(data)
+	if strings.Contains(s, "git_enabled = false") {
+		s = strings.Replace(s, "git_enabled = false", "git_enabled = true", 1)
+	} else if !strings.Contains(s, "git_enabled = true") {
+		s = "git_enabled = true\n" + s
+	}
+	if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // cloneVault makes an independent clone of origin — "host B". Returns its
@@ -247,6 +274,7 @@ func TestConfigSyncPruneOfUntrackedMirrorDoesNotPoisonTheBatch(t *testing.T) {
 // this fixture must not have.
 func gitifyVaultUnborn(t *testing.T, vaultPath string) {
 	t.Helper()
+	enableGitInTestConfig(t)
 	gitInVault(t, vaultPath, "init", "-b", "main")
 	gitInVault(t, vaultPath, "config", "user.email", "test@test.com")
 	gitInVault(t, vaultPath, "config", "user.name", "Test")

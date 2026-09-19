@@ -1,0 +1,14 @@
+# Checked-in host-config fixture for testutil.RunHermetic. Every package whose
+# TestMain calls RunHermetic runs with XDG_CONFIG_HOME pointed at this
+# directory, so a test that does not isolate its own XDG reads THIS file, never
+# the developer's real host config. It is read-only: RunHermetic hashes the
+# whole tree before and after m.Run() and fails the package if anything under
+# it was added, removed or changed.
+#
+# vault_path is deliberately absent, so no test can reach a real vault through
+# the global config.
+git_enabled = true
+
+[meta]
+version_major = 1
+version_minor = 1

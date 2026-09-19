@@ -233,25 +233,34 @@ func CheckEmbedder(newEmb func() (embedder.Embedder, error)) Result {
 	return r
 }
 
-// CheckGit checks git availability and vault repo status.
-// This always returns Info or Pass — git is optional, never Fail.
-func CheckGit(vaultPath string, gitEnabled bool) Result {
+// CheckGit checks git availability and vault repo status. gitEnabled and
+// readErr are storage.HostGitEnabled's result. Git itself is optional, so a
+// disabled or missing git is Info, never Fail. An unreadable git_enabled IS
+// Fail: every vault git operation refuses on it, and the row must say the file
+// is broken rather than claim the operator disabled git.
+func CheckGit(vaultPath string, gitEnabled bool, readErr error) Result {
 	r := Result{Name: "Git"}
 
+	if readErr != nil {
+		r.Status = Fail
+		r.Summary = "git_enabled is unreadable — every vault git operation refuses until the host config is readable"
+		r.Details = []string{readErr.Error()}
+		r.Err = readErr
+		return r
+	}
+
 	if !gitEnabled {
+		// The rule, not a list of callers: a list of what honours or ignores
+		// the setting rotted every time a caller was added (it omitted split,
+		// merge and freshness by the time the rule moved into storage).
 		r.Status = Info
-		r.Summary = "disabled (git_enabled = false) — governs only vp init + CLI vault subcommands"
+		r.Summary = "disabled (git_enabled = false) — vp commits, pushes, pulls and fetches nothing in this vault"
 		r.Details = []string{
-			"git_enabled governs ONLY 'vp init's repo creation and the CLI 'vp vault " +
-				"pull/push/sync/commit/tidy/status' subcommands, which refuse with an error " +
-				"when it is false. Nothing else checks it.",
-			"Commit AND push regardless of this setting: the MCP tools vp_vault_sync, " +
-				"vp_vault_tidy, vp_memory_harvest; the CLI 'vp memory harvest'; the SessionEnd " +
-				"hook's memory harvest; and 'vp config sync's template-mirror commit.",
-			"Commit locally but NEVER push, regardless of this setting: the MCP tool " +
-				"vp_manage_task, and the CLI 'vp commands reset' / 'vp skills reset'.",
-			"Stage (git add) but never commit or push, regardless of this setting: the CLI " +
-				"'vp migrate kg-filenames'.",
+			"git_enabled = false stops vp committing, pushing, pulling or fetching this vault on both CLI and MCP; " +
+				"post-write commits are skipped, template reset refuses, config prune is skipped; " +
+				"local read-only probes still run.",
+			"Exception: the project-repo freshness check (vp_repo_freshness, and vp_bootstrap_context's " +
+				"project_repo_path) fetches whatever path it is given, including this vault's if a caller passes it.",
 		}
 		return r
 	}

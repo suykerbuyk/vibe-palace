@@ -47,6 +47,7 @@ func TestIntegrationTemplateProvenance(t *testing.T) {
 		for rel, body := range files {
 			putFile(t, env.vaultPath, rel, body)
 		}
+		enableGit(t, env)
 		return gitifyVaultWithOrigin(t, env.vaultPath)
 	}
 	fileBytes := func(t *testing.T, p string) string {
@@ -82,6 +83,7 @@ func TestIntegrationTemplateProvenance(t *testing.T) {
 		gitIn(t, b.vaultPath, "config", "user.name", "Host B")
 		runVP(t, bin, b, nil, "init", b.projectDir,
 			"--name", b.projectName, "--vault-path", b.vaultPath, "--no-git")
+		enableGit(t, b)
 		assertAbsent(t, filepath.Join(b.vaultPath, retiredLockRel))
 
 		out := runVP(t, bin, b, nil, "config", "sync", "--yes", "--project-root", b.projectDir)
