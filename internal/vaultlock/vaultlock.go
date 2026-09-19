@@ -53,7 +53,7 @@ func Acquire(vaultRoot, targetAbsPath string) (release func() error, err error) 
 
 // acquireByKey is Acquire for a key already computed by canonicalKey.
 func acquireByKey(vaultRoot, key string) (release func() error, err error) {
-	f, err := openLockFileByKey(vaultRoot, key)
+	f, err := openLockFile(vaultRoot, key)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +132,7 @@ func AcquirePair(vaultRoot, pathA, pathB string) (release func() error, err erro
 // to ok=false exactly as unix EWOULDBLOCK does. A caller that refuses on
 // ok=false refuses for the same reason everywhere.
 func TryAcquire(vaultRoot, targetAbsPath string) (release func() error, ok bool, err error) {
-	f, err := openLockFile(vaultRoot, targetAbsPath)
+	f, err := openLockFile(vaultRoot, canonicalKey(targetAbsPath))
 	if err != nil {
 		return nil, false, err
 	}
@@ -156,7 +156,7 @@ func TryAcquire(vaultRoot, targetAbsPath string) (release func() error, ok bool,
 // be allowed to starve every other waiter for however long the holder itself
 // takes to time out or hang.
 func AcquireWithTimeout(vaultRoot, targetAbsPath string, timeout time.Duration) (release func() error, err error) {
-	f, err := openLockFile(vaultRoot, targetAbsPath)
+	f, err := openLockFile(vaultRoot, canonicalKey(targetAbsPath))
 	if err != nil {
 		return nil, err
 	}
@@ -179,16 +179,14 @@ func AcquireWithTimeout(vaultRoot, targetAbsPath string, timeout time.Duration) 
 	}
 }
 
-// openLockFile validates the root, computes the sidecar path for targetAbsPath,
-// and opens (creating if needed) the sidecar lock file. It performs no locking.
-func openLockFile(vaultRoot, targetAbsPath string) (*os.File, error) {
-	return openLockFileByKey(vaultRoot, canonicalKey(targetAbsPath))
-}
-
-// openLockFileByKey is openLockFile for a key already computed by canonicalKey:
-// AcquirePair computes each key once and must open the sidecar that same value
-// names.
-func openLockFileByKey(vaultRoot, key string) (*os.File, error) {
+// openLockFile validates the root and opens (creating if needed) the sidecar
+// lock file named by key, which every caller computes with canonicalKey. It
+// performs no locking.
+//
+// It takes the KEY, not the path, because AcquirePair must compute each key
+// once: the value that orders the pair has to be the value that names the
+// sidecar, or the order and the lock identity could disagree.
+func openLockFile(vaultRoot, key string) (*os.File, error) {
 	if vaultRoot == "" {
 		return nil, fmt.Errorf("vaultlock: vaultRoot must not be empty")
 	}
