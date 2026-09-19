@@ -75,6 +75,13 @@ type Result struct {
 	// no commit). Surfacing it prevents a failed push from being reported as a
 	// silent success.
 	RemoteResults map[string]string `json:"remote_results,omitempty"`
+	// CommitState is set when the commit was not attempted because of the host
+	// config's git_enabled: "skipped" (git_enabled = false, an operator setting;
+	// the memory files are routed and nothing is committed or pushed) or
+	// "config_unreadable" (git_enabled could not be read; fail closed).
+	// CommitDetail carries the reason, naming the config path.
+	CommitState  string `json:"commit_state,omitempty"`
+	CommitDetail string `json:"commit_detail,omitempty"`
 }
 
 // NativeDirFromTranscript returns the native memory dir adjacent to a Claude
@@ -318,6 +325,11 @@ func Harvest(opts Options) (*Result, error) {
 	if _, statErr := os.Stat(filepath.Join(opts.VaultRoot, relMemDir)); statErr != nil {
 		return res, nil
 	}
+	// git_enabled = false means "do not run git", not "do not route memory". The
+	// gate runs before the dirty probe, so a disabled host spawns no git at all.
+	if err := storage.RefuseIfGitDisabled(opts.VaultRoot, "commit harvested memory"); err != nil {
+		return harvestGitRefusal(res, err)
+	}
 	commitPaths := []string{relMemDir}
 	relSurface := path.Join("Projects", opts.Project, ".surface")
 	if _, e := os.Stat(filepath.Join(opts.VaultRoot, relSurface)); e == nil {
@@ -333,6 +345,11 @@ func Harvest(opts Options) (*Result, error) {
 
 	msg := harvestCommitMessage(len(res.Routed), len(res.Conflicted))
 	pushRes, downgraded, cerr := storage.CommitAndPushPathsWithDowngrade(opts.VaultRoot, msg, commitPaths, opts.Push)
+	if errors.Is(cerr, storage.ErrGitDisabled) || errors.Is(cerr, storage.ErrGitConfigUnreadable) {
+		// The entry point's own gate is the backstop: the setting changed
+		// between the preflight above and the commit.
+		return harvestGitRefusal(res, cerr)
+	}
 	if cerr != nil {
 		return nil, fmt.Errorf("commit harvested memory: %w", cerr)
 	}
@@ -351,6 +368,20 @@ func Harvest(opts Options) (*Result, error) {
 			}
 		}
 	}
+	return res, nil
+}
+
+// harvestGitRefusal records a git_enabled refusal on the Result, which is
+// never thrown away: a disabled host reports the skip and returns no error,
+// and an unreadable setting returns the Result together with the wrapped
+// error (the SessionEnd hook logs it without failing exit).
+func harvestGitRefusal(res *Result, err error) (*Result, error) {
+	res.CommitDetail = err.Error()
+	if errors.Is(err, storage.ErrGitConfigUnreadable) {
+		res.CommitState = "config_unreadable"
+		return res, fmt.Errorf("commit harvested memory: %w", err)
+	}
+	res.CommitState = "skipped"
 	return res, nil
 }
 
