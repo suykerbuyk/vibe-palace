@@ -33,8 +33,8 @@ jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
       - run: make fmt-check
@@ -42,8 +42,8 @@ jobs:
   vet:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
       - run: go vet ./...
@@ -55,8 +55,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
       - run: go test -short -race -cover ./...
@@ -82,12 +82,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
       - name: Cache HuggingFace model downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/huggingface
           key: hf-cache-v1-${{ runner.os }}-sentence-transformers-all-MiniLM-L6-v2
@@ -108,8 +108,8 @@ jobs:
   source-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
       - run: make source-audit
@@ -126,8 +126,8 @@ jobs:
   windows-lock:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
       # TestSerialization: 50-goroutine in-process overlap detector. Fast, no
@@ -142,8 +142,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
       - run: CGO_ENABLED=0 go build -o vp ./cmd/vp
@@ -165,15 +165,15 @@ jobs:
   init-e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
       - name: Run init e2e (Go)
         run: go test -race -run '^TestIntegrationE2EInit' -v ./internal/integration/...
       - name: Upload retained tmpdir on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: init-e2e-tmpdir
           path: /tmp/vp-e2e-init.*
@@ -188,15 +188,15 @@ jobs:
   dispatch-e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
       - name: Run dispatch e2e (Go)
         run: go test -race -run '^TestIntegrationDispatch' -v ./internal/integration/...
       - name: Upload retained tmpdir on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dispatch-e2e-tmpdir
           path: /tmp/vp-e2e-dispatch.*
@@ -206,15 +206,15 @@ jobs:
   githook-e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
       - name: Run git post-commit hook e2e (Go)
         run: go test -race -run '^TestIntegrationE2EGithook' -v ./internal/integration/...
       - name: Upload retained tmpdir on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: githook-e2e-tmpdir
           path: /tmp/vp-e2e-githook.*
@@ -227,15 +227,15 @@ jobs:
     # step and therefore the identical latent hang, and merely got lucky.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
       - name: Run walkthrough e2e (Go)
         run: go test -race -run '^TestIntegrationE2EWalkthrough' -v ./internal/integration/...
       - name: Upload retained tmpdir on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: walkthrough-e2e-tmpdir
           path: /tmp/vp-e2e-walkthrough.*
@@ -252,15 +252,15 @@ jobs:
     # apt step deleted above, and the harness never started.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
       - name: Run workflows e2e (Go)
         run: go test -race -run '^TestIntegrationE2EWorkflows' -v ./internal/integration/...
       - name: Upload retained tmpdir on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: workflows-e2e-tmpdir
           path: /tmp/vp-e2e-workflows.*
@@ -278,9 +278,72 @@ jobs:
       - name: Upload workflows metrics on success
         if: success()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: workflows-metrics-${{ github.sha }}
           path: /tmp/vp-e2e-workflows-metrics.*/metrics.jsonl
           retention-days: 14
           if-no-files-found: ignore
+
+  # 🔴 TEMPORARY, AND IT HAS A REMOVAL CONDITION. Delete this job once the
+  # `ubuntu-latest` migration window has closed (upstream says the rollout runs
+  # "gradually between October 19 and November 19, 2026" —
+  # github.blog/changelog/2026-09-17-ubuntu-26-generally-available-and-latest-migration)
+  # AND the `Image:` line of a green run on ubuntu-latest reads ubuntu-26.04. At
+  # that point every job above is already on the new image and this one is a
+  # duplicate. If it goes red before then, the remedy is upstream's own: pin the
+  # affected jobs to `ubuntu-24.04` and fix the breakage on our clock rather than
+  # the rollout's.
+  #
+  # 🔴 PUSH-ONLY, AND THAT IS A DELIBERATE TRADE. This job rehearses an IMAGE,
+  # not a pull request's code, so running it once per merged commit buys the
+  # same warning as running it on every PR head. What it trades away: a change
+  # that breaks only on ubuntu-26.04 is caught on main after merge rather than
+  # in review, so the operator finds it in the merge run and fixes it on main.
+  # What it buys: `make model-test` below downloads the model COLD, with no
+  # cache by design, so on a pull_request trigger every PR in the repository
+  # would carry a huggingface.co download whose flake reds a review for a
+  # reason that has nothing to do with the change under review. A rehearsal
+  # that reds someone else's PR is a rehearsal people learn to ignore.
+  #
+  # WHY THESE FOUR COMMANDS AND NOT `make test`. The image can only reach this
+  # project in four ways, and each is exercised once here:
+  #   - `-race` needs cgo and the IMAGE's C toolchain. Every build we ship is
+  #     CGO_ENABLED=0, so this is the only place an image's compiler matters.
+  #   - `make model-test` downloads and runs the real ONNX model. The stack is
+  #     pure Go (hugot), so no system onnxruntime is involved, but the download
+  #     path and huggingface.co reachability are image-adjacent. There is
+  #     deliberately NO cache step: a cold download is the case worth proving.
+  #   - `make source-audit` type-checks the whole module; it is the one job
+  #     whose rule runs nowhere else.
+  #   - the walkthrough e2e BUILDS the vp binary and executes it, and drives
+  #     git, the hooks and the filesystem through it. Those are the most
+  #     image-sensitive paths in the repository, and `-short` above skips every
+  #     one of them (testing.Short() guards in internal/integration/e2e_*_test.go),
+  #     so without this step the first ubuntu-26.04 run of init-e2e,
+  #     dispatch-e2e, githook-e2e, walkthrough-e2e and workflows-e2e would BE
+  #     the migration. Walkthrough is the broadest single one; it stands in for
+  #     the other four rather than duplicating them.
+  # The Go toolchain is pinned by setup-go, so the image's own Go is irrelevant.
+  #
+  # BOUNDS. The sibling caps are the honest reference: `model` is 15 with a warm
+  # cache, and `walkthrough-e2e` is 10 on ubuntu-latest. This job pays a cold
+  # model download and adds the walkthrough on top, so 25 sits above the
+  # expected total and below the sum of those caps. It is a backstop against a
+  # wedged download, not a measurement: the first green run's duration is the
+  # real number, and if it lands near the cap, split the model download out
+  # rather than raising it.
+  ubuntu26-canary:
+    runs-on: ubuntu-26.04
+    if: github.event_name == 'push'
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+      - run: go test -short -race ./...
+      - run: make source-audit
+      - name: Run walkthrough e2e (Go)
+        run: go test -race -run '^TestIntegrationE2EWalkthrough' -v ./internal/integration/...
+      - run: make model-test
