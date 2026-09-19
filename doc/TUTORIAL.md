@@ -895,11 +895,15 @@ the vault, so two machines sharing one vault can differ. One refusal inside
 - **Commits after a write are skipped, not refused:** `vp_manage_task` still
   writes the task and reports its commit as `skipped`, and the memory
   harvest (`vp_memory_harvest`, `vp memory harvest`, the SessionEnd hook)
-  still routes the memory files. No git process runs for either.
+  still routes the memory files. No git process runs to commit either. (One
+  read-only probe survives on that path: `vp_manage_task action=move` reads
+  `HEAD` to stamp its provenance note before the commit step is skipped.)
 - **`vp commands reset` / `vp skills reset` refuse up front** when the reset
   would commit, before removing anything.
 - **`vp config sync` skips its template-mirror prune** and prints one skip
-  row per file; nothing is verified, removed or restored.
+  row per file; nothing is verified, removed or restored. It also skips the
+  removal of the retired `.vibe-palace/templates.lock`, which is decided by
+  the index, `HEAD` and `check-ignore`: the lock is left and one row says so.
 - **Migrations that use git as their rollback refuse.**
 - **Local read-only probes still run** (the dirt scan at session start, `vp
   check`), so uncommitted files on such a host are reported as expected.
