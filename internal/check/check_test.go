@@ -335,40 +335,24 @@ func TestCheckGit_Disabled(t *testing.T) {
 		t.Errorf("summary should mention disabled, got %q", r.Summary)
 	}
 
-	// Pin the scope-clarification Details entries: git_enabled governs only
-	// 'vp init' and the CLI 'vp vault *' subcommands. Three rounds of
-	// adversarial review each found this text under- or over-claiming scope
-	// (vp_vault_tidy and vp_manage_task's commit-only-never-push behavior
-	// missing in round 1; vp commands/skills reset missing and vp migrate
-	// kg-filenames wrongly lumped under "commits and pushes" in round 2) — this
-	// assertion is what would have caught every one of those regressions.
-	if len(r.Details) < 4 {
-		t.Fatalf("expected 4 Details entries (scope statement + 3 behavior groups), got %d: %v", len(r.Details), r.Details)
-	}
+	// The Details state the RULE, not a roster of callers: three rounds of
+	// adversarial review found the old roster under- or over-claiming scope,
+	// and it was still incomplete (split, merge, freshness) when the refusal
+	// moved into storage. Pin the rule's parts and its one exception.
 	all := strings.Join(r.Details, "\n")
 	for _, want := range []string{
-		"vp init", "vp vault", "vp_vault_tidy", "vp_manage_task",
-		"SessionEnd", "vp commands reset", "vp skills reset", "vp migrate kg-filenames",
+		"both CLI and MCP", "post-write commits are skipped", "template reset refuses",
+		"config prune is skipped", "read-only probes still run",
+		"vp_repo_freshness", "project_repo_path",
 	} {
 		if !strings.Contains(all, want) {
-			t.Errorf("Details should mention %q (part of git_enabled's real scope), got %v", want, r.Details)
+			t.Errorf("Details should state %q, got %v", want, r.Details)
 		}
 	}
-	// vp_manage_task must be grouped with the commit-only-never-push behavior,
-	// not the commit-and-push group (round 1's exact mistake).
-	commitOnlyLine := r.Details[2]
-	if !strings.Contains(commitOnlyLine, "vp_manage_task") || !strings.Contains(commitOnlyLine, "NEVER push") {
-		t.Errorf("commit-only-never-push group should name vp_manage_task, got %q", commitOnlyLine)
-	}
-	// vp migrate kg-filenames must be grouped with the stage-only behavior, and
-	// must NOT appear in the commit-and-push group (round 2's exact mistake).
-	stageOnlyLine := r.Details[3]
-	if !strings.Contains(stageOnlyLine, "kg-filenames") || !strings.Contains(stageOnlyLine, "Stage") {
-		t.Errorf("stage-only group should name vp migrate kg-filenames, got %q", stageOnlyLine)
-	}
-	commitAndPushLine := r.Details[1]
-	if strings.Contains(commitAndPushLine, "kg-filenames") {
-		t.Errorf("commit-and-push group must NOT include vp migrate kg-filenames (it only stages), got %q", commitAndPushLine)
+	// The old text claimed the setting governs ONLY init and the CLI; that is
+	// the gap this change closed, so it must not come back.
+	if strings.Contains(all, "governs ONLY") || strings.Contains(all, "regardless of this setting") {
+		t.Errorf("Details still describe the pre-parity scope: %v", r.Details)
 	}
 }
 

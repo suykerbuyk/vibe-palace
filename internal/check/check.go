@@ -250,19 +250,17 @@ func CheckGit(vaultPath string, gitEnabled bool, readErr error) Result {
 	}
 
 	if !gitEnabled {
+		// The rule, not a list of callers: a list of what honours or ignores
+		// the setting rotted every time a caller was added (it omitted split,
+		// merge and freshness by the time the rule moved into storage).
 		r.Status = Info
-		r.Summary = "disabled (git_enabled = false) — governs only vp init + CLI vault subcommands"
+		r.Summary = "disabled (git_enabled = false) — vp commits, pushes, pulls and fetches nothing in this vault"
 		r.Details = []string{
-			"git_enabled governs ONLY 'vp init's repo creation and the CLI 'vp vault " +
-				"pull/push/sync/commit/tidy/status' subcommands, which refuse with an error " +
-				"when it is false. Nothing else checks it.",
-			"Commit AND push regardless of this setting: the MCP tools vp_vault_sync, " +
-				"vp_vault_tidy, vp_memory_harvest; the CLI 'vp memory harvest'; the SessionEnd " +
-				"hook's memory harvest; and 'vp config sync's template-mirror commit.",
-			"Commit locally but NEVER push, regardless of this setting: the MCP tool " +
-				"vp_manage_task, and the CLI 'vp commands reset' / 'vp skills reset'.",
-			"Stage (git add) but never commit or push, regardless of this setting: the CLI " +
-				"'vp migrate kg-filenames'.",
+			"git_enabled = false stops vp committing, pushing, pulling or fetching this vault on both CLI and MCP; " +
+				"post-write commits are skipped, template reset refuses, config prune is skipped; " +
+				"local read-only probes still run.",
+			"Exception: the project-repo freshness check (vp_repo_freshness, and vp_bootstrap_context's " +
+				"project_repo_path) fetches whatever path it is given, including this vault's if a caller passes it.",
 		}
 		return r
 	}
