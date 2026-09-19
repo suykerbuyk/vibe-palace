@@ -62,7 +62,6 @@ type Config struct {
 	MetaVersionMinor       int                            `json:"meta_version_minor"`
 	MetaKind               string                         `json:"meta_kind"`
 	VaultPath              string                         `json:"vault_path"`
-	GitEnabled             bool                           `json:"git_enabled"`
 	HTTPPort               int                            `json:"http_port"`
 	LogLevel               string                         `json:"log_level"`
 	EmbedderModel          string                         `json:"embedder_model"`
@@ -152,12 +151,11 @@ type tomlMeta struct {
 
 // tomlConfig is the intermediate struct matching the TOML file structure.
 type tomlConfig struct {
-	Meta       tomlMeta `toml:"meta"`
-	VaultPath  string   `toml:"vault_path"`
-	GitEnabled bool     `toml:"git_enabled"`
-	HTTPPort   int      `toml:"http_port"`
-	LogLevel   string   `toml:"log_level"`
-	Embedder   struct {
+	Meta      tomlMeta `toml:"meta"`
+	VaultPath string   `toml:"vault_path"`
+	HTTPPort  int      `toml:"http_port"`
+	LogLevel  string   `toml:"log_level"`
+	Embedder  struct {
 		Model             string `toml:"model"`
 		MaxSequenceLength int    `toml:"max_sequence_length"`
 		BatchSize         int    `toml:"batch_size"`
@@ -239,7 +237,6 @@ func (tc *tomlConfig) flatten() Config {
 		MetaVersionMinor:       tc.Meta.VersionMinor,
 		MetaKind:               tc.Meta.Kind,
 		VaultPath:              tc.VaultPath,
-		GitEnabled:             tc.GitEnabled,
 		HTTPPort:               tc.HTTPPort,
 		LogLevel:               tc.LogLevel,
 		EmbedderModel:          tc.Embedder.Model,

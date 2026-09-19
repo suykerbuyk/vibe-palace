@@ -4,12 +4,11 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -53,7 +52,11 @@ func cmdVaultPull() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault pull: %v\n", err)
 				return cli.ExitUser
 			}
-			root, err := gitEnabledGuard()
+			// git_enabled refuses here, before the dry-run split and ListRemotes.
+			root, err := vaultRoot()
+			if err == nil {
+				err = storage.RefuseIfGitDisabled(root, "pull")
+			}
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault pull: %v\n", err)
 				return cli.ExitUser
@@ -90,7 +93,11 @@ func cmdVaultPush() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault push: %v\n", err)
 				return cli.ExitUser
 			}
-			root, err := gitEnabledGuard()
+			// git_enabled refuses here, before the dry-run split and ListRemotes.
+			root, err := vaultRoot()
+			if err == nil {
+				err = storage.RefuseIfGitDisabled(root, "push")
+			}
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault push: %v\n", err)
 				return cli.ExitUser
@@ -132,7 +139,11 @@ func cmdVaultSync() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault sync: %v\n", err)
 				return cli.ExitUser
 			}
-			root, err := gitEnabledGuard()
+			// git_enabled refuses here, before the dry-run split and ListRemotes.
+			root, err := vaultRoot()
+			if err == nil {
+				err = storage.RefuseIfGitDisabled(root, "sync")
+			}
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault sync: %v\n", err)
 				return cli.ExitUser
@@ -170,7 +181,7 @@ func cmdVaultSync() *cli.Command {
 					return cli.ExitSystem
 				}
 				// Above the dirt list, same contract as `vault tidy`. `root`
-				// is the value gitEnabledGuard bound at the top of this Run —
+				// is the value the git_enabled preflight bound at the top of this Run —
 				// not a re-resolution. Only the --dry-run tidy path prints a
 				// dirt list, so this is the only sync branch that needs it.
 				printVaultRoot(os.Stdout, root)
@@ -258,7 +269,11 @@ func cmdVaultCommit() *cli.Command {
 				fmt.Fprintln(os.Stderr, "vp vault commit: --message is required")
 				return cli.ExitUser
 			}
-			root, err := gitEnabledGuard()
+			// git_enabled refuses here, before the dry-run split and ListRemotes.
+			root, err := vaultRoot()
+			if err == nil {
+				err = storage.RefuseIfGitDisabled(root, "commit")
+			}
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault commit: %v\n", err)
 				return cli.ExitUser
@@ -390,7 +405,11 @@ func cmdVaultTidy() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault tidy: %v\n", err)
 				return cli.ExitUser
 			}
-			root, err := gitEnabledGuard()
+			// git_enabled refuses here, before the dry-run split and ListRemotes.
+			root, err := vaultRoot()
+			if err == nil {
+				err = storage.RefuseIfGitDisabled(root, "tidy")
+			}
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault tidy: %v\n", err)
 				return cli.ExitUser
@@ -400,7 +419,7 @@ func cmdVaultTidy() *cli.Command {
 			// line of output on either path and sits above every relative path
 			// the command goes on to print. A root rendered below the paths it
 			// qualifies does not close the reporting gap. This is the root
-			// gitEnabledGuard already bound — never a second resolution.
+			// git_enabled preflight already bound — never a second resolution.
 			printVaultRoot(os.Stdout, root)
 
 			// --dry-run: classify only, never commit.
@@ -568,7 +587,11 @@ func cmdVaultStatus() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp vault status: %v\n", err)
 				return cli.ExitUser
 			}
-			root, err := gitEnabledGuard()
+			// git_enabled refuses here, before the dry-run split and ListRemotes.
+			root, err := vaultRoot()
+			if err == nil {
+				err = storage.RefuseIfGitDisabled(root, "report vault status")
+			}
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp vault status: %v\n", err)
 				return cli.ExitUser
@@ -644,24 +667,6 @@ func reportVaultBinding(b vaultfs.VaultBinding) {
 	fmt.Fprintf(os.Stderr, "vault_path source = %s\n", b.VaultPathSource)
 }
 
-// gitEnabledGuard wraps vaultRoot and checks that git_enabled is true.
-// Returns the vault root path or an error if git is disabled.
-func gitEnabledGuard() (string, error) {
-	root, err := vaultRoot()
-	if err != nil {
-		return "", err
-	}
-	v := storage.NewVault(root)
-	cfg, err := v.LoadConfig("")
-	if err != nil {
-		return "", fmt.Errorf("load config: %w", err)
-	}
-	if !cfg.GitEnabled {
-		return "", fmt.Errorf("git is disabled (git_enabled = false in config)")
-	}
-	return root, nil
-}
-
 func pullAll(root string, remotes []string, dryRun bool) int {
 	if dryRun {
 		for _, remote := range remotes {
@@ -707,24 +712,19 @@ func pushAll(root string, remotes []string, dryRun bool) int {
 		return cli.ExitOK
 	}
 
-	// Check for clean state.
-	cmd := exec.Command("git", "-C", root, "status", "--porcelain")
-	cmd.Env = storage.SafeGitEnv()
-	out, err := cmd.Output()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "vp vault push: git status: %v\n", err)
-		return cli.ExitSystem
-	}
-	if len(bytes.TrimSpace(out)) > 0 {
-		fmt.Fprintf(os.Stderr, "vp vault push: vault has uncommitted changes:\n%s\nCommit or stash changes before pushing.\n", out)
-		return cli.ExitUser
-	}
-
 	// Delegate the plain push loop to storage.PushPlain, which attempts every
 	// remote and returns structured per-remote results. This trades live push
 	// streaming for shared structured results — the same tradeoff Pull/pullAll
 	// already made: the captured git output is re-printed to stderr below.
+	//
+	// PushPlain refuses a dirty tree itself (the refuse-on-dirty precheck lives
+	// in storage once, shared with MCP); this front-end only presents it.
 	res, err := storage.PushPlain(root, remotes)
+	var dirty *storage.DirtyTreeError
+	if errors.As(err, &dirty) {
+		fmt.Fprintf(os.Stderr, "vp vault push: vault has uncommitted changes:\n%s\nCommit or stash changes before pushing.\n", dirty.Porcelain)
+		return cli.ExitUser
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vp vault push: %v\n", err)
 		return cli.ExitSystem
