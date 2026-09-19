@@ -420,3 +420,36 @@ func TestCancelledTaskTitledMovedToIsNotCalledATombstone(t *testing.T) {
 		t.Errorf("want the ordinary taken-slug wording: %v", err)
 	}
 }
+
+// The slug check must sit under the destination lock. CreateTask(p, x) and a
+// move of x into p take the same key, so exactly one of them can win; with the
+// check hoisted out of the lock both succeeded in 87 of 300 iterations, and the
+// rename silently replaced the created task. This cannot flake RED: under the
+// lock, both succeeding is impossible in every interleaving.
+func TestCreateRacingMoveIntoSameSlugNeverBothSucceed(t *testing.T) {
+	const iterations = 200
+	for i := 0; i < iterations; i++ {
+		v := testVault(t)
+		seedTaskRaw(t, v, "q", "", "x", "FROM-Q")
+		seedTaskRaw(t, v, "p", "", "keep", "KEEP")
+		start := make(chan struct{})
+		created, moved := make(chan error, 1), make(chan error, 1)
+		go func() {
+			<-start
+			created <- v.CreateTask("p", TaskSpec{Slug: "x", Title: "Created in p", Priority: "low"})
+		}()
+		go func() { <-start; moved <- v.MoveTaskToProject("q", "x", "p") }()
+		close(start)
+		cerr, merr := <-created, <-moved
+		if cerr == nil && merr == nil {
+			t.Fatalf("iteration %d: create and move into the same slug both succeeded; one body was replaced", i)
+		}
+		if cerr != nil && merr != nil {
+			t.Fatalf("iteration %d: both refused (create: %v; move: %v)", i, cerr, merr)
+		}
+		body := readTaskBytes(t, filepath.Join(v.Root, "Projects/p/tasks/x.md"))
+		if (merr == nil) != strings.Contains(body, "FROM-Q") {
+			t.Fatalf("iteration %d: move err=%v but p/x.md body is %q", i, merr, body)
+		}
+	}
+}
