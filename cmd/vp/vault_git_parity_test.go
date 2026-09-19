@@ -164,8 +164,12 @@ func callParityTool(t *testing.T, op parityOp, vault string) error {
 // no remedy an agent could act on by editing the operator's config.
 func assertParityRefusal(t *testing.T, surface string, err error, cfgPath string) {
 	t.Helper()
+	// Errorf, never Fatalf: a missing refusal must not stop the caller before
+	// it compares the fingerprint, or a surface routed around storage (break
+	// B′) would red only on the error and hide that the vault moved.
 	if !errors.Is(err, storage.ErrGitDisabled) {
-		t.Fatalf("%s: err = %v, want ErrGitDisabled", surface, err)
+		t.Errorf("%s: err = %v, want ErrGitDisabled", surface, err)
+		return
 	}
 	if !apperr.IsCaller(err) {
 		t.Errorf("%s: refusal is not caller-class: %v", surface, err)
