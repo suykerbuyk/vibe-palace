@@ -1508,9 +1508,14 @@ func (v *Vault) refuseTakenSlug(op, project, slug string, skipActive bool) error
 		if err != nil {
 			return err
 		}
-		_, err = os.Stat(filepath.Join(dir, slug+".md"))
+		p := filepath.Join(dir, slug+".md")
+		_, err = os.Stat(p)
 		if err == nil {
-			return apperr.Caller(&taskSlugTakenError{Op: op, Project: project, Slug: slug, Holder: loc.holder})
+			te := &taskSlugTakenError{Op: op, Project: project, Slug: slug, Holder: loc.holder}
+			if op == "move" && loc.holder == "cancelled" {
+				te.MovedTo = moveOutTombstoneDestination(p, slug)
+			}
+			return apperr.Caller(te)
 		}
 		if os.IsNotExist(err) {
 			continue
@@ -1524,6 +1529,24 @@ func (v *Vault) refuseTakenSlug(op, project, slug string, skipActive bool) error
 			op, slug, taskSlugRelPath(project, loc.holder, slug), cause)
 	}
 	return nil
+}
+
+// moveOutTombstoneDestination reports the project a cancelled/ file says its
+// task was moved out to, when that file is the tombstone a cross-project move
+// files in its source — titled exactly "Moved to <project>", the string
+// MoveProvenance.TombstoneSpec renders and findTombstoneSource matches on. It
+// returns "" for any other file, and for one it cannot read: the answer only
+// chooses the refusal's wording, never whether to refuse.
+func moveOutTombstoneDestination(path, slug string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	dest, ok := strings.CutPrefix(parseTaskMeta(slug, string(data), true).Title, "Moved to ")
+	if !ok || validateSlugs(dest) != nil {
+		return ""
+	}
+	return dest
 }
 
 // taskSlugRelPath renders a task file's vault-relative path, never the host's
@@ -1544,6 +1567,9 @@ type taskSlugTakenError struct {
 	Project string
 	Slug    string
 	Holder  string // "" (active) | "done" | "cancelled"
+	// MovedTo is set only on a move refused by a cancelled/ tombstone that an
+	// earlier move-out of this slug left behind: the project it names.
+	MovedTo string
 }
 
 // taskSlugTakenRemedy is the stuck-state remedy for a refused retire or
@@ -1566,6 +1592,14 @@ func (e *taskSlugTakenError) Error() string {
 		return fmt.Sprintf("task %q already exists in tasks/%s/ (a retired task is still a task; choose a new slug, "+
 			"or reopen the existing one)", e.Slug, e.Holder)
 	case "move":
+		// A move back onto the tombstone its own slug left here. No hand rename
+		// is suggested: the tombstone is a correct record, not a stray twin.
+		if e.MovedTo != "" {
+			return fmt.Sprintf("cannot move task %q into project %q: %s is the tombstone project %q kept when "+
+				"a task of this slug was moved out of it to project %q, and that record keeps the slug taken "+
+				"here for good. Nothing was changed. Choose a new slug for this work in project %q; the "+
+				"tombstone must stay where it is.", e.Slug, e.Project, rel, e.Project, e.MovedTo, e.Project)
+		}
 		return fmt.Sprintf("cannot move task %q into project %q: %s already exists, so the slug is taken there. "+
 			"Nothing was changed. Leave the task where it is, or rename one of the two files by hand in a shell on "+
 			"the vault host (no vp action renames a slug).", e.Slug, e.Project, rel)
