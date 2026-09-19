@@ -1706,6 +1706,19 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 	}
 	defer release()
 
+	// Re-check the source now that the lock is held. The stat above ran
+	// unlocked, so a concurrent retire or cancel of this SAME task may have
+	// archived it since. refuseTakenSlug would then find that archive and report
+	// two tasks sharing one slug, with a hand-rename remedy, when there is one
+	// task and it is already archived. A vanished source is "not found" here,
+	// exactly as it is before the lock.
+	if _, err := os.Stat(srcPath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("task %q not found (may already be %s)", slug, status)
+		}
+		return err
+	}
+
 	// Never overwrite an existing destination, and never create a second
 	// archived record beside the other archive directory's. A re-retire of a
 	// duplicate slug would otherwise clobber the historical done/ (or
