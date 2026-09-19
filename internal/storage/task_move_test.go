@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -529,6 +530,172 @@ func TestMoveTaskSourceIsLocked(t *testing.T) {
 	}
 	if !exists(destPath) {
 		t.Errorf("destination %s is not there", destPath)
+	}
+}
+
+// parkThenAct holds lockPath's lock, starts call, gives it 200 ms to pass its
+// unlocked pre-checks and block on the lock, runs act while still holding the
+// lock, then releases and returns call's error. If call returned before the
+// test acted — it was not yet parked — the attempt is reported as unparked so
+// the caller can retry: that outcome says nothing about the code under test.
+func parkThenAct(t *testing.T, v *Vault, lockPath string, call func() error, act func()) (err error, parked bool) {
+	t.Helper()
+	release, lerr := vaultlock.Acquire(v.Root, lockPath)
+	if lerr != nil {
+		t.Fatalf("test could not take the lock on %s: %v", lockPath, lerr)
+	}
+	done := make(chan error, 1)
+	go func() { done <- call() }()
+	time.Sleep(200 * time.Millisecond)
+	select {
+	case err := <-done:
+		_ = release()
+		return err, false
+	default:
+	}
+	act()
+	if rerr := release(); rerr != nil {
+		t.Fatalf("release: %v", rerr)
+	}
+	select {
+	case err := <-done:
+		return err, true
+	case <-time.After(10 * time.Second):
+		t.Fatal("the call did not return after the lock was released")
+	}
+	return nil, false
+}
+
+// The move's slug check sits inside the pair: a twin that appears in the
+// destination while the move waits for its locks is refused, never silently
+// replaced by the rename.
+func TestMoveTakenSlugCheckIsInsideTheLock(t *testing.T) {
+	v := testVault(t)
+	seedTaskRaw(t, v, "p", "", "x", "SOURCE")
+	destPath, _ := v.TaskFile("q", "x")
+	srcPath, _ := v.TaskFile("p", "x")
+	err, parked := parkThenAct(t, v, destPath,
+		func() error { return v.MoveTaskToProject("p", "x", "q") },
+		func() { seedTaskRaw(t, v, "q", "", "x", "ARRIVED-WHILE-WAITING") })
+	if !parked {
+		t.Fatalf("the move returned before it blocked on the destination lock: %v", err)
+	}
+	assertSlugTaken(t, err, "move", "")
+	if body := readTaskBytes(t, destPath); !strings.Contains(body, "ARRIVED-WHILE-WAITING") {
+		t.Fatalf("the destination twin was replaced by the rename: %q", body)
+	}
+	if body := readTaskBytes(t, srcPath); !strings.Contains(body, "SOURCE") {
+		t.Fatalf("the source changed: %q", body)
+	}
+}
+
+// A move that loses its source to a concurrent archive while it waits for the
+// pair is told the truth, as the caller's friction, and moves nothing.
+func TestMoveLoserSaysConcurrent(t *testing.T) {
+	for attempt := 0; attempt < 5; attempt++ {
+		v := testVault(t)
+		src := seedTaskRaw(t, v, "p", "", "x", "TASK")
+		done := filepath.Join(v.Root, "Projects/p/tasks/done/x.md")
+		var archived string
+		err, parked := parkThenAct(t, v, src,
+			func() error { return v.MoveTaskToProject("p", "x", "q") },
+			func() {
+				if err := os.MkdirAll(filepath.Dir(done), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(src, done); err != nil {
+					t.Fatal(err)
+				}
+				archived = readTaskBytes(t, done)
+			})
+		if !parked {
+			continue
+		}
+		if !apperr.IsCaller(err) || !strings.Contains(err.Error(), "a concurrent operation") ||
+			!strings.Contains(err.Error(), `not found in project "p"`) {
+			t.Fatalf("the losing move was not told the truth as caller friction: %v", err)
+		}
+		if !taskFileAbsent(v, "Projects/q/tasks/x.md") {
+			t.Fatal("the losing move landed a file in the destination")
+		}
+		if readTaskBytes(t, done) != archived {
+			t.Fatal("the archived winner changed")
+		}
+		return
+	}
+	t.Fatal("the move never parked on the source lock in 5 attempts")
+}
+
+// A retire that loses its source to a concurrent cross-project move while it
+// waits for the source lock is told the truth, as the caller's friction, and
+// creates nothing — not even an empty done/.
+func TestRetireLoserSaysConcurrent(t *testing.T) {
+	for attempt := 0; attempt < 5; attempt++ {
+		v := testVault(t)
+		src := seedTaskRaw(t, v, "p", "", "x", "TASK")
+		moved := filepath.Join(v.Root, "Projects/q/tasks/x.md")
+		var body string
+		err, parked := parkThenAct(t, v, src,
+			func() error { return v.RetireTask("p", "x") },
+			func() {
+				if err := os.MkdirAll(filepath.Dir(moved), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(src, moved); err != nil {
+					t.Fatal(err)
+				}
+				body = readTaskBytes(t, moved)
+			})
+		if !parked {
+			continue
+		}
+		if !apperr.IsCaller(err) || !strings.Contains(err.Error(), "a concurrent operation") ||
+			!strings.Contains(err.Error(), "not found") {
+			t.Fatalf("the losing retire was not told the truth as caller friction: %v", err)
+		}
+		if !taskFileAbsent(v, "Projects/p/tasks/done") {
+			t.Fatal("the losing retire created p/tasks/done/")
+		}
+		if readTaskBytes(t, moved) != body {
+			t.Fatal("the moved task changed")
+		}
+		return
+	}
+	t.Fatal("the retire never parked on the source lock in 5 attempts")
+}
+
+// moveTask's slug check sits inside the SOURCE lock: a twin planted while the
+// retire or cancel waits — with the active file still present — is refused,
+// never archived beside. Deterministic, where the concurrent retire/cancel test
+// catches a hoisted check only probabilistically.
+func TestRetireTakenSlugCheckIsInsideTheSourceLock(t *testing.T) {
+	for _, c := range []struct {
+		name, op, twin, own string
+		call                func(v *Vault) error
+	}{
+		{"retire", "retire", "cancelled", "done", func(v *Vault) error { return v.RetireTask("p", "x") }},
+		{"cancel", "cancel", "done", "cancelled", func(v *Vault) error { return v.CancelTask("p", "x", "") }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			v := testVault(t)
+			src := seedTaskRaw(t, v, "p", "", "x", "TASK")
+			s0 := readTaskBytes(t, src)
+			var twin, w0 string
+			err, parked := parkThenAct(t, v, src, func() error { return c.call(v) }, func() {
+				twin = seedTaskRaw(t, v, "p", c.twin, "x", "PLANTED-TWIN")
+				w0 = readTaskBytes(t, twin)
+			})
+			if !parked {
+				t.Fatalf("the %s returned before it blocked on the source lock: %v", c.op, err)
+			}
+			assertSlugTaken(t, err, c.op, c.twin)
+			if !taskFileAbsent(v, "Projects/p/tasks/"+c.own+"/x.md") {
+				t.Fatalf("the %s archived beside the planted twin: the done+cancelled pair", c.op)
+			}
+			if readTaskBytes(t, src) != s0 || readTaskBytes(t, twin) != w0 {
+				t.Fatal("a refused call changed a file")
+			}
+		})
 	}
 }
 
