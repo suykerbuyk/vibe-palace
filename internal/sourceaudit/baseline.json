@@ -241,6 +241,10 @@
       "reason": "DELIBERATELY EXEMPT — the other half of the probe in CheckVaultFilesystem above. internal/check/vaultfs.go:94 removes vault-root entries matching the .vp-fs-probe- prefix that are older than 5 minutes, i.e. residue from a probe whose process died before its own cleanup at :172. It removes only files this package created. Same circularity rationale. Census row 23."
     },
     {
+      "id": "vault-write-outside-funnel storage.writeScoringConfigAt",
+      "reason": "INTENDED, and it is the point of the function. writeScoringConfigAt is the one splice core behind BOTH scoring destinations, and its stampRoot argument names which one it is writing to. The production caller, WriteHostScoringConfig, writes the HOST-LOCAL per-project file at <UserConfigDir>/vibe-palace/projects/<slug>.toml and passes \"\": that destination is outside every vault, so there is no vault whose surface version floor the write should raise — the same disposition internal/wrapstate has for project-root anchors, which the rule's own text sanctions (\"A genuinely non-vault destination may pass \\\"\\\"\"). The vault-path caller passes a real v.Root and is stamped exactly as before; after R2 of task move-per-project-config-out-of-the-shared-vault that caller is a test-only shim (internal/storage/write_scoring_vault_shim_test.go), and R4 deletes the vault destination outright. What keeps this honest is not this entry: TestWriteHostScoringConfigWritesNothingIntoTheVault asserts the vault tree gains no file, no lock sidecar and no .surface stamp from a host-local write."
+    },
+    {
       "id": "vault-write-outside-funnel vaultlock.openLockFile",
       "reason": "STRUCTURALLY EXEMPT — the lock primitive cannot take the lock. internal/vaultlock/vaultlock.go:99,107 creates <vault>/.vp-locks/<sha>.lock, which IS the advisory-lock file the whole discipline (ADR-003) is built on. Routing it through atomicfile.Write would require acquiring the lock in order to create the lock, and atomicfile does not lock anyway. Census row 20. Exempt with rationale, not deferred work."
     },

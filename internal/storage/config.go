@@ -523,6 +523,50 @@ func VaultConfigFilePath() (string, error) {
 	return filepath.Join(configDir, "vibe-palace", "config.toml"), nil
 }
 
+// WriteHostScoringConfig merges scoring overrides into the HOST-LOCAL
+// per-project file and returns the path it wrote, so a caller can print the
+// real destination rather than a path it assumed.
+//
+// It writes nothing into any vault: neither the file, nor its lock sidecar, nor
+// a surface stamp.
+func WriteHostScoringConfig(project string, rooms map[string]ScoringRoomOverride, minScore float64) (string, error) {
+	cfgPath, err := HostProjectConfigPath(project)
+	if err != nil {
+		return "", err
+	}
+	// <XDG>/vibe-palace/projects/<slug>.toml -> <XDG>/vibe-palace: the lock
+	// sidecar lands beside the host config, never in a vault.
+	lockRoot := filepath.Dir(filepath.Dir(cfgPath))
+	if err := writeScoringConfigAt(cfgPath, lockRoot, "", MetaKindHostProject, rooms, minScore); err != nil {
+		return "", err
+	}
+	return cfgPath, nil
+}
+
+// renderConfigMetaHeader is the [meta] block this writer seeds a file it
+// creates with. It mirrors the global config's own version fields so the two
+// tiers share one schema axis, and names the kind so a reader can tell which
+// schema the file follows.
+func renderConfigMetaHeader(kind string) string {
+	return fmt.Sprintf(`# Host-local per-project config for vibe-palace.
+#
+# It is NOT in the vault and is NOT shared between machines: it holds what this
+# host has learned about this project, and it outranks the vault's own
+# Projects/<slug>/config.toml.
+#
+# Only palace.scoring keys are read from this file. Anything else is reported
+# once as "not a per-project key; ignored" and has no effect.
+#
+# Machine-written by `+"`vp discover rooms --apply`"+` and `+"`vp tune rooms --apply`"+`;
+# hand edits outside the scoring sections are preserved.
+
+[meta]
+version_major = %d
+version_minor = %d
+kind = %q
+`, CurrentVersionMajor, CurrentVersionMinor, kind)
+}
+
 // HostProjectConfigPath returns the host-local per-project config file for a
 // project: <UserConfigDir>/vibe-palace/projects/<slug>.toml.
 //
@@ -541,7 +585,19 @@ func HostProjectConfigPath(project string) (string, error) {
 	return filepath.Join(filepath.Dir(p), "projects", project+".toml"), nil
 }
 
-// WriteScoringConfig merges scoring overrides into the project config file.
+// writeScoringConfigAt merges scoring overrides into a config file. It is the
+// one implementation behind both destinations: the vault project file (until
+// R4 of task move-per-project-config-out-of-the-shared-vault deletes it) and
+// the host-local per-project file.
+//
+// 🔴 THE THREE ROOTS ARE SEPARATE ARGUMENTS BECAUSE THEY ARE SEPARATE FACTS.
+// cfgPath is the file. lockRoot is where vaultlock puts its sidecar
+// (<lockRoot>/.vp-locks/), which for the host-local file is the config
+// directory and MUST NOT be a vault root — a lock file inside the vault for a
+// file outside it would be dirt a human then has to explain. stampRoot is the
+// surface-stamp root, and it is "" for a non-vault destination: there is no
+// vault whose version floor a host-local write should raise.
+//
 // Creates the file and parent directories if they don't exist. Uses atomic
 // temp-file + os.Rename. Idempotent: skips keywords already present at the
 // same weight tier.
@@ -555,7 +611,7 @@ func HostProjectConfigPath(project string) (string, error) {
 // value by this write, no matter how many other fields the schema grows.
 // Everything outside this function (tomlConfig, flatten, LoadConfig) is
 // unrelated to this guarantee and untouched by it.
-func (v *Vault) WriteScoringConfig(project string, rooms map[string]ScoringRoomOverride, minScore float64) error {
+func writeScoringConfigAt(cfgPath, lockRoot, stampRoot, metaKind string, rooms map[string]ScoringRoomOverride, minScore float64) error {
 	// A true no-op: nothing to merge and no min_score override to set. Bail
 	// out before any file I/O or table navigation so a call like this never
 	// creates a config file (or empty [palace]/[palace.scoring]/
@@ -565,11 +621,6 @@ func (v *Vault) WriteScoringConfig(project string, rooms map[string]ScoringRoomO
 		return nil
 	}
 
-	cfgPath, err := v.ProjectConfigFile(project)
-	if err != nil {
-		return fmt.Errorf("project config path: %w", err)
-	}
-
 	// Ensure parent directory exists.
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
@@ -577,7 +628,7 @@ func (v *Vault) WriteScoringConfig(project string, rooms map[string]ScoringRoomO
 
 	// This is a read→merge→write of the same file (RMW): hold the per-path
 	// lock across the whole sequence so concurrent merges never lose updates.
-	release, err := vaultlock.Acquire(v.Root, cfgPath)
+	release, err := vaultlock.Acquire(lockRoot, cfgPath)
 	if err != nil {
 		return fmt.Errorf("lock config: %w", err)
 	}
@@ -598,6 +649,15 @@ func (v *Vault) WriteScoringConfig(project string, rooms map[string]ScoringRoomO
 		}
 	} else if !os.IsNotExist(readErr) {
 		return fmt.Errorf("read existing config %s: %w", cfgPath, readErr)
+	}
+
+	// A file this writer CREATES is seeded with a [meta] block, so it carries a
+	// schema version a later release can gate on; one that already exists keeps
+	// its own text, because the splice below owns the scoring subtree and
+	// nothing else. metaKind is empty for the vault project file, whose [meta]
+	// comes from its template.
+	if len(existing) == 0 && metaKind != "" {
+		existing = []byte(renderConfigMetaHeader(metaKind))
 	}
 
 	// Navigate/create the palace.scoring.rooms path with checked type
@@ -655,7 +715,7 @@ func (v *Vault) WriteScoringConfig(project string, rooms map[string]ScoringRoomO
 		// tracked vault file is dirt a human then has to explain.
 		return nil
 	}
-	if err := atomicfile.Write(v.Root, cfgPath, []byte(merged)); err != nil {
+	if err := atomicfile.Write(stampRoot, cfgPath, []byte(merged)); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 

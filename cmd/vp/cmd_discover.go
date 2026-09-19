@@ -192,12 +192,16 @@ func runDiscoverRooms(vault *storage.Vault, proj string, cfg storage.Config,
 	// Handle --apply.
 	if apply {
 		rooms := discoveryProposalsToOverrides(report.Proposals)
-		if err := vault.WriteScoringConfig(proj, rooms, 0); err != nil {
+		// The HOST-LOCAL file, not the vault's: what this host learns about a
+		// project is not every other host's classifier. The writer returns the
+		// path it wrote, so this prints the real destination rather than one
+		// re-derived here (task move-per-project-config-out-of-the-shared-vault).
+		cfgPath, err := storage.WriteHostScoringConfig(proj, rooms, 0)
+		if err != nil {
 			fmt.Fprintf(out, "Error writing config: %v\n", err)
 			return cli.ExitSystem
 		}
 
-		cfgPath, _ := vault.ProjectConfigFile(proj)
 		fmt.Fprintf(out, "Applied %d new keywords to %s\n", len(report.Proposals), cfgPath)
 	}
 
