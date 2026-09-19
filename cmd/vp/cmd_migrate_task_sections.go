@@ -81,9 +81,12 @@ const (
 	// sectionsPromote: zero H2, at least one promotable H3, and the promoted
 	// result validates. This is the only outcome that writes.
 	sectionsPromote
-	// sectionsNoH3: no H2 and no H3 — the BOLD pseudo-heading class, which is a
-	// separate unit's work and is reported rather than guessed at.
+	// sectionsNoH3: no H2, no H3 and no promotable bold pseudo-heading. Reported
+	// rather than guessed at.
 	sectionsNoH3
+	// sectionsPromoteBold: no H2 and no H3, but a whole-line BOLD pseudo-heading
+	// the author used as a section title. Promoting it is the file's repair.
+	sectionsPromoteBold
 	// sectionsRefused: a shape this command must not reason about.
 	sectionsRefused
 )
@@ -269,7 +272,7 @@ func planTaskSections(content string) (after string, outcome taskSectionsOutcome
 			"so every heading after it is invisible to the scan", 0
 	}
 
-	outside := mdfence.OutsideFences(content)
+	outside := outsideInertRegions(content)
 
 	var h1, h2 int
 	var h3Lines []int
@@ -289,43 +292,10 @@ func planTaskSections(content string) (after string, outcome taskSectionsOutcome
 	// unit. The escapes below decide FIRST; only then is a held refusal reported.
 	refusal := ""
 	seen := map[string]bool{}
-	inComment := false
-	inFrontmatter := false
-	firstLine := true
 
 	for _, l := range outside {
 		raw := l.Text
 		trimmed := strings.TrimSpace(raw)
-
-		// Leading "---" opens YAML frontmatter, which mdfence does not model at
-		// all. A heading inside it is not a section, so it is SKIPPED — see the
-		// deviation note on this function.
-		if firstLine && trimmed == "---" {
-			inFrontmatter = true
-			firstLine = false
-			continue
-		}
-		firstLine = false
-		if inFrontmatter {
-			if trimmed == "---" {
-				inFrontmatter = false
-			}
-			continue
-		}
-
-		// HTML comments are likewise invisible to mdfence: it recognises only
-		// ` and ~ as delimiters, so "###" inside <!-- --> reads as a heading to
-		// every caller. Skipped for the same reason as frontmatter.
-		if inComment {
-			if strings.Contains(trimmed, "-->") {
-				inComment = false
-			}
-			continue
-		}
-		if strings.Contains(trimmed, "<!--") && !strings.Contains(trimmed, "-->") {
-			inComment = true
-			continue
-		}
 
 		level, rest, ok := headingLevel(trimmed)
 		if !ok {
@@ -377,7 +347,26 @@ func planTaskSections(content string) (after string, outcome taskSectionsOutcome
 		return "", sectionsNoWork, storage.ValidateWholeTaskFile(content).Error(), 0
 	}
 	if !sawH3Shape {
-		return "", sectionsNoH3, "no \"## \" H2 and no \"### \" H3 — its pseudo-heading is a bold line, a separate transform", 0
+		// The BOLD pseudo-heading class. The file comment reserved this class by
+		// name; this is it, landing in the command that reserved it rather than
+		// spawning a second subcommand.
+		bold := boldPseudoHeadingLines(content)
+		if len(bold) == 0 {
+			return "", sectionsNoH3, "no \"## \" H2, no \"### \" H3 and no bold pseudo-heading to promote", 0
+		}
+		if h1 != 1 {
+			return "", sectionsRefused, fmt.Sprintf("%d \"# \" H1 title line(s), want exactly 1: the validator refuses this above the missing-section arm", h1), 0
+		}
+		lines := strings.Split(content, "\n")
+		for _, num := range bold {
+			t := strings.TrimSpace(lines[num-1])
+			lines[num-1] = "## " + strings.TrimSpace(t[2:len(t)-2])
+		}
+		promoted := strings.Join(lines, "\n")
+		if verr := storage.ValidateWholeTaskFile(promoted); verr != nil {
+			return "", sectionsRefused, "promoting the bold pseudo-heading would not make the file valid: " + verr.Error(), 0
+		}
+		return promoted, sectionsPromoteBold, "", len(bold)
 	}
 	if refusal != "" {
 		return "", sectionsRefused, refusal, 0
@@ -399,6 +388,118 @@ func planTaskSections(content string) (after string, outcome taskSectionsOutcome
 		return "", sectionsRefused, "promoting would not make the file valid: " + verr.Error(), 0
 	}
 	return after, sectionsPromote, "", len(h3Lines)
+}
+
+// outsideInertRegions is mdfence.OutsideFences minus the two regions mdfence
+// does not model: leading YAML frontmatter and HTML comment blocks. Line.Num is
+// carried through, so callers still address the ORIGINAL file.
+//
+// 🔴 ONE RULE, ONE PLACE, BECAUSE TWO COPIES DISAGREED. planTaskSections
+// open-coded this skipping inline while boldPseudoHeadingLines did not, so the
+// scan that DECIDES a file has no sections and the scan that picks what to
+// PROMOTE were reading different documents. The promotion therefore manufactured
+// a "## " heading inside an HTML comment or inside frontmatter — a region its own
+// sibling scan treats as non-existent. The result VALIDATES, because the
+// validator counts "## " lines the same way, so the file passes the very rule the
+// promotion exists to satisfy while remaining unaddressable by amend. Validity is
+// not correctness, and a test asserting "the validator now passes" goes green on
+// exactly that file.
+func outsideInertRegions(content string) []mdfence.Line {
+	var out []mdfence.Line
+	inComment := false
+	inFrontmatter := false
+	firstLine := true
+
+	for _, l := range mdfence.OutsideFences(content) {
+		trimmed := strings.TrimSpace(l.Text)
+
+		// Leading "---" opens YAML frontmatter, which mdfence does not model at
+		// all. A heading inside it is not a section.
+		if firstLine && trimmed == "---" {
+			inFrontmatter = true
+			firstLine = false
+			continue
+		}
+		firstLine = false
+		if inFrontmatter {
+			if trimmed == "---" {
+				inFrontmatter = false
+			}
+			continue
+		}
+
+		// HTML comments are likewise invisible to mdfence: it recognises only
+		// ` and ~ as delimiters, so "###" or "**Bold**" inside <!-- --> reads as
+		// live text to every caller. Skipped for the same reason as frontmatter.
+		if inComment {
+			if strings.Contains(trimmed, "-->") {
+				inComment = false
+			}
+			continue
+		}
+		if strings.Contains(trimmed, "<!--") && !strings.Contains(trimmed, "-->") {
+			inComment = true
+			continue
+		}
+
+		out = append(out, l)
+	}
+	return out
+}
+
+// boldPseudoHeadingLines returns the 1-indexed lines whose whole trimmed text is a
+// bold run and nothing else — the shape an author used as a section title before
+// the header contract existed.
+//
+// 🔴 THE PREDICATE IS STRICT, AND BOTH HALVES OF THAT ARE LOAD-BEARING.
+//
+// It requires the bold run to be the ENTIRE line, so "**Status:** retired" — bold
+// followed by a value — is not a heading. And it requires NO trailing colon inside
+// the bold, so "**Acceptance criteria:**" is not one either: that is a label for
+// the list beneath it, not a section title, and it occurs in this corpus. A
+// colon-tolerant predicate promotes it and silently restructures a file nobody
+// asked to restructure.
+//
+// Computed over mdfence.OutsideFences, so a bold line inside a code fence is
+// sample text.
+func boldPseudoHeadingLines(content string) []int {
+	var out []int
+	for _, l := range outsideInertRegions(content) {
+		t := strings.TrimSpace(l.Text)
+		// 🔴 THE LENGTH BOUND IS SLICE ARITHMETIC, NOT A STYLE CHOICE. inner below
+		// is t[2:len(t)-2], so len(t) must be at least 4 or that slice is INVERTED
+		// and panics at runtime. "***" — the commonest markdown thematic break
+		// there is — has length 3 and satisfies BOTH HasPrefix("**") and
+		// HasSuffix("**"), because the prefix and the suffix OVERLAP. Weakening
+		// this bound does not mis-promote a heading; it crashes the command
+		// part-way through a vault-wide run, with whatever it had already written
+		// left in place.
+		if len(t) < 4 || !strings.HasPrefix(t, "**") || !strings.HasSuffix(t, "**") {
+			continue
+		}
+		// 🔴 A RUN OF ASTERISKS IS A THEMATIC BREAK, NEVER A HEADING, AT ANY
+		// LENGTH. This is a family, not the single case that motivated the length
+		// bound above: "***" panics, "****" yields an empty inner, and "*****"
+		// slips past BOTH of those and promotes to the heading "## *". Testing the
+		// whole line for non-asterisk content closes every member at once,
+		// including lengths nobody has enumerated.
+		if strings.Trim(t, "*") == "" {
+			continue
+		}
+		inner := strings.TrimSpace(t[2 : len(t)-2])
+		// The colon test runs on the TRIMMED inner text: "**Acceptance criteria: **"
+		// is the same label as "**Acceptance criteria:**", and testing the untrimmed
+		// text lets one trailing space walk straight past the guard.
+		//
+		// The nested-marker test is what stops "**Note** and **Warning**" — a
+		// sentence with two bold runs, not a heading — from being promoted into the
+		// mangled heading "## Note** and **Warning".
+		if inner == "" || strings.Contains(inner, "**") || strings.HasSuffix(inner, ":") {
+			continue
+		}
+		out = append(out, l.Num)
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -491,7 +592,7 @@ func runTaskSectionsMigration(root, only string, apply bool, out io.Writer) (tas
 				case sectionsRefused:
 					sum.Refused++
 					fmt.Fprintf(out, "  ??    %s/%s (%s/) — refused: %s\n", slug, taskSlug, sub, reason)
-				case sectionsPromote:
+				case sectionsPromote, sectionsPromoteBold:
 					// 🔴 THE SHADOW GUARD RUNS IN BOTH MODES, AND THAT IS THE
 					// POINT. The writer resolves ACTIVE first, so an archived
 					// slug that is also an active file would rewrite the WRONG
@@ -512,8 +613,13 @@ func runTaskSectionsMigration(root, only string, apply bool, out io.Writer) (tas
 						continue
 					}
 					sum.Fix++
-					fmt.Fprintf(out, "  FIX   %s/%s (%s/) — promote %d \"### \" heading(s) to \"## \"\n",
-						slug, taskSlug, sub, promos)
+					if outcome == sectionsPromoteBold {
+						fmt.Fprintf(out, "  FIX   %s/%s (%s/) — promote %d bold pseudo-heading(s) to \"## \"\n",
+							slug, taskSlug, sub, promos)
+					} else {
+						fmt.Fprintf(out, "  FIX   %s/%s (%s/) — promote %d \"### \" heading(s) to \"## \"\n",
+							slug, taskSlug, sub, promos)
+					}
 					if apply {
 						// git holds the only copy of whatever a concurrent
 						// session has written but not committed, and this is a

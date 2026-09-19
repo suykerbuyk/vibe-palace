@@ -316,6 +316,7 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		// storage.OverwriteTaskFile — headerMustMatch, not the header-rewriting
 		// escape hatch — under --apply, promoting "### " H3 headings to "## ".
 		"migrate task-sections":     true,
+		"migrate task-header-shape": true,
 		"migrate task-board-fields": true,
 		// CONSTRUCTS a header field run on ARCHIVED (done/, cancelled/) task
 		// files that carry none, through the header-rewriting
