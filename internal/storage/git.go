@@ -450,11 +450,17 @@ func RefuseIfNestedVaultGit(vaultPath, verb string) error {
 
 // RefuseIfGitDisabled is the one refusal for git_enabled = false, and the only
 // function in this package that reads the setting. Every vault git entry point
-// calls it as its first statement, before any git process starts; each
-// command and MCP handler also calls it where the CLI's old gitEnabledGuard
-// stood, so dry runs and remote discovery refuse too. Class-2 callers (the task
-// write, the memory harvest) call it before their dirty probe and map the
-// refusal to "skipped".
+// calls it BEFORE ITS FIRST GIT PROCESS — for all but one that is the first
+// statement; each command and MCP handler also calls it where the CLI's old
+// gitEnabledGuard stood, so dry runs and remote discovery refuse too. Class-2
+// callers (the task write, the memory harvest) call it before their dirty
+// probe and map the refusal to "skipped".
+//
+// THE ONE ENTRY POINT THAT DOES NOT GATE ON ITS FIRST STATEMENT is
+// RetiredTemplatesLock (vaultsync_verify.go), which reads a path and a file —
+// neither is git — and gates immediately before the index lookup. The reason
+// is written there: a vault with no retired lock is the normal case, and a
+// gate ahead of the read would report a skip row for a file that is not there.
 //
 // READ-ONLY PROBES STILL RUN, AND SOME RUN BEFORE A GATE. They spawn git and
 // write nothing, which is the line CheckGit's text states. Named so a reader

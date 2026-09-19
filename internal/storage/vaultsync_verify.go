@@ -909,6 +909,19 @@ const RetiredTemplatesLockRel = ".vibe-palace/templates.lock"
 // refuse. A tracked lock is shared state and an ignored one is the operator's
 // choice; both are left. content is the bytes read, for a compare-and-set
 // removal. Any git failure is an error, never "removable".
+//
+// It is a REMOVAL DECIDED BY GIT — the index, HEAD and check-ignore — and its
+// caller acts on that verdict by deleting a vault file, so git_enabled = false
+// refuses it, exactly as it refuses PruneMirrorsInEnclosingRepo for the same
+// reason. The caller maps the refusal to a skip row and leaves the lock.
+//
+// THE GATE IS NOT THE FIRST STATEMENT HERE, deliberately, and this is the one
+// entry point where that is right. The two statements above it are a path
+// check and a file read; neither is git. A vault with no retired lock is the
+// normal case, and gating ahead of the read would make every sync on a
+// disabled host report a skip row for a file that is not there. The gate sits
+// immediately before the first git process instead, which is the property the
+// rule actually asserts.
 func RetiredTemplatesLock(vaultPath string) (content []byte, removable bool, err error) {
 	rel := RetiredTemplatesLockRel
 	if derr := vaultfs.CheckDirectPath(vaultPath, rel); derr != nil {
@@ -923,6 +936,9 @@ func RetiredTemplatesLock(vaultPath string) (content []byte, removable bool, err
 	}
 	if err != nil {
 		return nil, false, err
+	}
+	if gerr := RefuseIfGitDisabled(vaultPath, "check the retired "+rel); gerr != nil {
+		return content, false, gerr
 	}
 	if _, inIndex, err := indexEntryOID(vaultPath, rel); err != nil || inIndex {
 		return content, false, err

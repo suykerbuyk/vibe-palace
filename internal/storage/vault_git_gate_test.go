@@ -186,3 +186,79 @@ func TestSyncVaultMovesTheFixtureWhenEnabled(t *testing.T) {
 		t.Error("an enabled sync left the fingerprint unchanged, so the refusal test proves nothing")
 	}
 }
+
+// TestRetiredTemplatesLockRefusesBeforeAnyGit is the gate on the one removal
+// `vp config sync` makes that is neither a prune nor a commit: the retired
+// .vibe-palace/templates.lock. Whether it may go is a git verdict — the index,
+// HEAD and check-ignore — and the caller deletes the file on that verdict, so
+// git_enabled = false must refuse before the first of those runs and leave the
+// lock exactly where it is.
+//
+// The gate is not this function's first statement (a path check and a file
+// read come first; neither is git), so this asserts the property that matters
+// instead: zero git processes, and the file still on disk.
+func TestRetiredTemplatesLockRefusesBeforeAnyGit(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		config  string
+		wantErr error
+	}{
+		{"disabled", "git_enabled = false\n", ErrGitDisabled},
+		{"unreadable", "git_enabled = \"no\"\n", ErrGitConfigUnreadable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := initTestRepo(t)
+			writeFile(t, dir, RetiredTemplatesLockRel, "stale lock\n")
+			lock := filepath.Join(dir, filepath.FromSlash(RetiredTemplatesLockRel))
+			cfg, err := VaultConfigFilePath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cfg, []byte(tc.config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			marker := gitStubPATH(t)
+
+			content, removable, err := RetiredTemplatesLock(dir)
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("RetiredTemplatesLock err = %v, want one wrapping %v", err, tc.wantErr)
+			}
+			if removable {
+				t.Error("removable = true on a host where no git may run: the caller would delete the lock")
+			}
+			if string(content) != "stale lock\n" {
+				t.Errorf("content = %q, want the bytes that were read before the gate", content)
+			}
+			if spawned, rerr := os.ReadFile(marker); rerr == nil {
+				t.Errorf("the retired-lock check started git on a disabled host:\n%s", spawned)
+			}
+			if _, serr := os.Stat(lock); serr != nil {
+				t.Errorf("the retired lock is gone: %v", serr)
+			}
+		})
+	}
+}
+
+// TestRetiredTemplatesLockIsRemovableWhenEnabled is the enabled control for the
+// gate above: the same untracked, un-ignored lock on the same vault is
+// removable when the host config permits git, so the refusal is holding back
+// an operation that would otherwise happen.
+func TestRetiredTemplatesLockIsRemovableWhenEnabled(t *testing.T) {
+	dir := initTestRepo(t)
+	writeFile(t, dir, RetiredTemplatesLockRel, "stale lock\n")
+	setHostGitEnabled(t, true)
+
+	content, removable, err := RetiredTemplatesLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !removable {
+		t.Error("an untracked, un-ignored retired lock is not removable with git enabled")
+	}
+	if string(content) != "stale lock\n" {
+		t.Errorf("content = %q", content)
+	}
+}
