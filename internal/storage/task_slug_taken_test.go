@@ -252,3 +252,35 @@ func TestUnreadableArchiveDirFailsClosed(t *testing.T) {
 		t.Fatal("a refused retire moved the source")
 	}
 }
+
+// The most ordinary route to the pair, through typed calls only: a task moved
+// out of p leaves a tombstone at p/cancelled/x (the vp_manage_task move arm
+// files it with CreateTask then CancelTask), so moving the task BACK used to
+// land an active x beside it, and retiring it there then created done/x
+// beside cancelled/x. The move back is now refused and changes nothing.
+func TestMoveBackOntoOwnTombstoneIsRefused(t *testing.T) {
+	v := testVault(t)
+	seedTaskRaw(t, v, "p", "", "x", "TASK")
+	if err := os.MkdirAll(filepath.Join(v.Root, "Projects/q/tasks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.MoveTaskToProject("p", "x", "q"); err != nil {
+		t.Fatalf("move out: %v", err)
+	}
+	if err := v.CreateTask("p", TaskSpec{Slug: "x", Title: "Tombstone", Priority: "low", Content: "moved to q"}); err != nil {
+		t.Fatalf("tombstone create: %v", err)
+	}
+	if err := v.CancelTask("p", "x", ""); err != nil {
+		t.Fatalf("tombstone cancel: %v", err)
+	}
+	moved := filepath.Join(v.Root, "Projects/q/tasks/x.md")
+	tomb := filepath.Join(v.Root, "Projects/p/tasks/cancelled/x.md")
+	m0, t0 := readTaskBytes(t, moved), readTaskBytes(t, tomb)
+	assertSlugTaken(t, v.MoveTaskToProject("q", "x", "p"), "move", "cancelled")
+	if readTaskBytes(t, moved) != m0 || readTaskBytes(t, tomb) != t0 {
+		t.Fatal("a refused move back changed a file")
+	}
+	if !taskFileAbsent(v, "Projects/p/tasks/x.md") {
+		t.Fatal("a refused move back landed an active x beside its own tombstone")
+	}
+}
