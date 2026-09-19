@@ -92,11 +92,14 @@ routes them all through `vaultlock.Acquire(v.Root, path)`:
   add a caller, and do not add an acquire to a wrapper: it would take the same
   path's lock twice, which is a permanent self-deadlock rather than an error.
 
-The `canonicalKey` policy mirrors `vaultfs.ResolveSafePath`'s
-`EvalSymlinks` → parent-fallback → lexical-clean cascade, so a path supplied by
-`vaultfs` (already symlink-resolved) and the same file supplied by `storage`
-(a lexical `filepath.Join` of root and relative path) hash to the same key and
-contend on the same sidecar.
+`canonicalKey` resolves the path's deepest *existing* ancestor through
+`EvalSymlinks` and rejoins the missing remainder, so a path supplied by `vaultfs`
+(rooted in the symlink-resolved vault) and the same file supplied by `storage`
+(a lexical `filepath.Join` of the configured root and relative path) hash to the
+same key and contend on the same sidecar — including a file whose directories do
+not exist yet, before and after they are created. (Until 2026-09-19 it resolved
+only the parent and otherwise fell back to a lexical clean; see the amendment of
+that date.)
 
 ### `expected_sha256` is kept as an orthogonal CAS guard
 
@@ -299,6 +302,10 @@ hoist the resume lock across the `CreateTask` call.
 
 The two-file operation is still not atomic across a crash (a task can exist
 while its bullet remains). Locking never claimed to fix that.
+
+**One exception exists, and only one:** `vaultlock.AcquirePair`, used by
+`MoveTaskToProject` alone. See *Amendment (2026-09-19): one ordered pair
+acquisition*.
 
 ### `CreateTask` TOCTOU
 
@@ -652,6 +659,97 @@ than being a claim only the Windows runner could check.
 sequential-locks rule and every call-site obligation are untouched. The rename
 retry is crash-atomicity plumbing, not mutual exclusion: it cannot substitute
 for a lock and no caller should treat it as one.
+
+## Amendment (2026-09-19): one ordered pair acquisition
+
+Approved by the operator on 2026-09-19 ("Amend ADR-003 to allow this one ordered
+pair of locks"). Task: `retire-racing-a-cross-project-move-duplicates-the-task`.
+
+### Why a second lock was needed
+
+`storage.MoveTaskToProject` moves `Projects/<p>/tasks/<slug>.md` to
+`Projects/<q>/tasks/<slug>.md` and needs both ends serialised:
+
+- **The destination**, because two moves of one slug out of two projects resolve
+  to the same `destPath`; unserialised, the second rename destroys the first
+  task.
+- **The source**, because every writer of the source path holds that path's lock
+  and reads the file under it. With only the destination locked, a retire or an
+  amend could read the source, lose it to the move's rename, and re-create it
+  from memory: the task ended up in both projects, and both calls reported
+  success.
+
+No single per-path key covers both, and re-keying every task writer to a
+per-slug key would change this ADR's idiom for a whole class of files at once.
+
+### What is allowed
+
+**Exactly one nested acquisition:** `vaultlock.AcquirePair(vaultRoot, pathA,
+pathB)`, whose only caller is `MoveTaskToProject`, taking its source and
+destination task-file locks. It reuses this ADR's idiom unchanged — the same
+per-path sidecars, keys, `flock`/`LockFileEx` and `releaser` — and adds only an
+order:
+
+- Each key is computed **once** by `canonicalKey`; that value both orders the
+  pair and names the sidecar.
+- The **lower key is acquired first**. The order is owned by `vaultlock`;
+  callers pass two paths and cannot choose it.
+- Equal keys take one lock. A failed second acquire releases the first. The
+  release frees both, higher first.
+
+Everything the move decides and does — the authoritative source read, the
+dangling-edge check, `EnsureDir`, the taken-slug check and the rename — runs
+inside the pair.
+
+**Nothing else may nest.** Every other caller keeps *Sequential locks, never
+nested*. In particular, **a holder of a task-file lock never acquires another
+lock** (premise P below); a new writer that does breaks the proof.
+
+### Why it cannot deadlock
+
+Model the locks as nodes, with an edge `L1 → L2` when a holder of `L1` is
+blocked acquiring `L2`; a deadlock is a cycle.
+
+- **Premise P:** no holder of a task-file lock waits on another lock, except
+  `AcquirePair` holding its lower key and waiting for its higher one. Audited
+  twice on 2026-09-19 (call graphs, and a package-qualified sweep): 13 task-file
+  lock holders, each taking exactly one lock, none reaching a second.
+- So every edge that leaves a task-file lock goes from a lower key to a strictly
+  higher task-file key, and no path can return to where it started. The
+  pre-existing directory → file nestings (session directories, `pruneMirrors`,
+  `vp drain`) take their outer lock first and never wait while holding a
+  task-file lock. ∎
+
+Opposing moves `p→q` and `q→p` take the same two keys, lower first; a retire or
+a create holds one key and waits on nothing.
+
+### The key had to become stable too
+
+The order is only as good as the key. Before this amendment `canonicalKey`
+resolved the path, then its parent, and otherwise fell back to a lexical clean.
+With the vault reached through a symlink and more than the leaf missing, a file
+was keyed by its unresolved spelling until its directory was created, and by its
+resolved spelling afterwards — two sidecars for one file. `canonicalKey` now
+walks up to the deepest existing ancestor, resolves it, and rejoins the missing
+remainder, continuing only past ancestors that do not exist.
+
+**Upgrade consequence: none that needs coordination.** Keys are unchanged for
+every existing path and every path whose parent exists. Only a path with a
+missing parent, reached through a symlinked vault root, gets a new key — and old
+binaries already keyed that path inconsistently, so an old process and a new one
+side by side are no worse off than two old ones.
+
+**Residual:** a path component that is, or later becomes, a symlink — including
+an existing dangling symlink whose target is created later — can still move the
+key. vp creates no symlinks inside the vault; this needs a hand-made link.
+
+### Pins
+
+`internal/vaultlock`: `TestAcquirePairTakesTheLowerKeyFirst`,
+`TestAcquirePairSameKeyIsOneLock`, `TestAcquirePairReleasesFirstOnSecondFailure`,
+`TestCanonicalKeyStableAcrossMissingDirectories`. `internal/storage`:
+`TestMoveTaskSourceIsLocked`, `TestMoveTaskDestinationIsTheLockedPath`, and the
+contended race and deadlock tests in `task_move_race_test.go`.
 
 ## References
 
