@@ -4155,9 +4155,36 @@ func RepairExtraTitles(content string) (string, error) {
 // for — and the repair itself is a one-time reviewed hand edit. Both live corpus
 // files carrying the shape are on the hand-edit list for this reason.
 func HeaderRunProseWedges(content string) []int {
-	lines := strings.Split(content, "\n")
+	// 🔴 THE VALIDATOR'S OWN PROJECTION, NOT A RAW SPLIT. headerBlock and every
+	// field predicate this function leans on run on mdfence.OutsideFences, so a
+	// raw strings.Split disagreed with them about what a line even is: a ```
+	// delimiter was classified as prose, and the refusal named a "wedge" that is
+	// a fence. Line numbers come back from Line.Num, so they still address the
+	// ORIGINAL file.
+	outside := mdfence.OutsideFences(content)
+	lines := make([]string, len(outside))
+	for i, l := range outside {
+		lines[i] = l.Text
+	}
 	start, end := headerBlock(lines)
 	if start == end {
+		return nil
+	}
+	// 🔴 THE WEDGE MUST BE WHAT THE VALIDATOR OBJECTED TO. Without this gate the
+	// scan below also fires on the ordinary body prose that abuts a COMPLETE
+	// run — so a file that validates clean yielded wedges, and the caller refused
+	// it naming a cause that blocks nothing. A predicate that fires on a valid
+	// file is not a defect predicate.
+	//
+	// The condition is the validator's own, quoted from ValidateWholeTaskFile: a
+	// header block is malformed exactly when Status or Priority sits OUTSIDE the
+	// contiguous run. Gating here rather than bounding the scan to "prose with a
+	// field line after it" is deliberate — that bound also silently dropped the
+	// TRAILING continuation of a wrapped field value (live specimen:
+	// vp-migrate-source-dest-separation.md, whose **Reviewed:** value wraps across
+	// the last five lines of the run), shortening the roster a human hand-edits
+	// from. The false positive is the bug; the complete line list is the product.
+	if blockHas(lines, start, end, isStatusLine) && blockHas(lines, start, end, isPriorityLine) {
 		return nil
 	}
 	var wedges []int
@@ -4166,7 +4193,7 @@ func HeaderRunProseWedges(content string) []int {
 			at++
 			continue
 		}
-		wedges = append(wedges, at+1)
+		wedges = append(wedges, outside[at].Num)
 		for at < len(lines) && strings.TrimSpace(lines[at]) != "" && !isHeaderFieldLine(lines[at]) {
 			at++
 		}

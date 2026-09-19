@@ -1309,3 +1309,87 @@ func TestPlanTaskSections_BoldPromotionThatDoesNotValidateIsRefused(t *testing.T
 		t.Error("a refused file must yield no content")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The bold promotion must not reach a region the scan beside it treats as
+// non-existent.
+// ---------------------------------------------------------------------------
+
+// TestBoldPromotionNeverReachesAnInertRegion is a WRITE-side pin, not a refusal
+// one. boldPseudoHeadingLines read mdfence.OutsideFences while the scan that
+// decides the file has no sections skipped YAML frontmatter and HTML comments,
+// so the promotion manufactured a "## " heading inside a region that scan treats
+// as invisible. The rewritten file then VALIDATES — the validator counts "## "
+// lines the same way — while remaining unaddressable by amend, which is the one
+// thing the missing-section rule exists to guarantee. Validity is not
+// correctness.
+//
+// Break: restore `for _, l := range mdfence.OutsideFences(content)` in
+// boldPseudoHeadingLines. Both subtests fail, and they fail on the WRITTEN
+// BYTES, not on a counter.
+func TestBoldPromotionNeverReachesAnInertRegion(t *testing.T) {
+	for _, tc := range []struct{ name, content string }{
+		{
+			"inside an HTML comment",
+			"# T\n\n**Status:** open\n**Priority:** high\n\n<!--\n**Design notes**\n-->\n\nbody\n",
+		},
+		{
+			"inside YAML frontmatter",
+			"---\n**Design notes**\n---\n# T\n\n**Status:** open\n**Priority:** high\n\nbody\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Positive first: the fixture must really be a missing-section file,
+			// or every assertion below is vacuous.
+			verr := storage.ValidateWholeTaskFile(tc.content)
+			if verr == nil {
+				t.Fatal("fixture validates clean, so this test cannot see the defect it exists for")
+			}
+			if !strings.Contains(verr.Error(), "missing section") {
+				t.Fatalf("fixture fails for the wrong reason, so it never reaches the bold arm: %v", verr)
+			}
+
+			if got := boldPseudoHeadingLines(tc.content); len(got) != 0 {
+				t.Errorf("boldPseudoHeadingLines = %v — a bold run inside an inert region was selected for promotion", got)
+			}
+			after, outcome, reason, promos := planTaskSections(tc.content)
+			if outcome == sectionsPromoteBold {
+				t.Fatalf("🔴 PROMOTED INSIDE AN INERT REGION — the file now validates while staying unaddressable:\n%q", after)
+			}
+			if after != "" {
+				t.Errorf("after = %q, want empty — nothing may be rewritten here", after)
+			}
+			if promos != 0 {
+				t.Errorf("promos = %d, want 0", promos)
+			}
+			if outcome != sectionsNoH3 {
+				t.Errorf("outcome = %v, want sectionsNoH3 (%v); reason = %q", outcome, sectionsNoH3, reason)
+			}
+		})
+	}
+}
+
+// TestBoldPromotionStillPromotesALiveBoldHeading is the over-correction guard.
+// The bound above must remove the inert regions and nothing else: the live
+// corpus specimen (Projects/vibe-palace/tasks/done/grok-vpc-skill.md, a plain
+// "**Plan Details**" line) must still promote.
+//
+// Break: make outsideInertRegions return nil. This test fails; the two above
+// pass, which is why a negative-only pair is not enough.
+func TestBoldPromotionStillPromotesALiveBoldHeading(t *testing.T) {
+	const content = "# T\n\n**Status:** open\n**Priority:** high\n\n**Plan Details**\n\nbody\n"
+	if got := boldPseudoHeadingLines(content); len(got) != 1 || got[0] != 6 {
+		t.Fatalf("boldPseudoHeadingLines = %v, want [6] — the bound removed a live bold heading", got)
+	}
+	after, outcome, reason, promos := planTaskSections(content)
+	if outcome != sectionsPromoteBold {
+		t.Fatalf("outcome = %v, want sectionsPromoteBold; reason = %q", outcome, reason)
+	}
+	if promos != 1 {
+		t.Errorf("promos = %d, want 1", promos)
+	}
+	const want = "# T\n\n**Status:** open\n**Priority:** high\n\n## Plan Details\n\nbody\n"
+	if after != want {
+		t.Errorf("after =\n%q\nwant\n%q", after, want)
+	}
+}

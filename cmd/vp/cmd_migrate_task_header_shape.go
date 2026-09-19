@@ -431,7 +431,13 @@ func runTaskHeaderShapeMigration(root, only string, apply bool, out io.Writer) (
 				// is still recorded in Decisions so a test can assert on the
 				// roll-up without re-parsing the printed report.
 				if taskHeaderShadowed(out, root, slug, sub, taskSlug, name) {
-					d.Reason = "a conflicting task of the same slug exists; the writer resolves by slug"
+					// 🔴 DERIVED, NEVER A LITERAL. taskHeaderShadowReason and the
+					// line printed one statement earlier come from the same walk,
+					// so the sentence the operator reads and the reason this
+					// decision stores cannot disagree about WHICH directory wins.
+					// A literal here reads as true and silently drops that — the
+					// shape the helper's own doc forbids by name.
+					d.Reason = taskHeaderShadowReason(root, slug, sub, name)
 					d.Failed = true
 					sum.Failed++
 					sum.Decisions = append(sum.Decisions, d)
