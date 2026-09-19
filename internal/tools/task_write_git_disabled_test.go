@@ -4,6 +4,7 @@
 package tools
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -119,5 +120,55 @@ func TestTaskWriteReportsAnUnreadableGitSetting(t *testing.T) {
 	}
 	if got := gitVaultRun(t, vault.Root, "rev-parse", "HEAD"); got != head {
 		t.Errorf("HEAD moved under an unreadable setting")
+	}
+}
+
+// TestBootstrapDirtAlertOnAGitDisabledHost pins the disabled branch the live
+// canary cannot reach on CI: the alert says the dirt is expected and that no
+// vp tool commits here, and never tells the session vp_vault_sync REFUSES —
+// a tool that refuses by design on this host. An unreadable setting says so,
+// never "disabled".
+func TestBootstrapDirtAlertOnAGitDisabledHost(t *testing.T) {
+	cases := []struct {
+		name, config string
+		want         []string
+	}{
+		{"disabled", "git_enabled = false\n", []string{"expected", "git_enabled = false", "no vp tool will commit"}},
+		{"unreadable", "git_enabled = \"no\"\n", []string{"could not be read", "refuses"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := newGitBackedTestVault(t)
+			dirtyFile(t, vault.Root, "Projects/test-proj/tasks/hand-edited.md", "# Hand edited\n\nbody\n")
+			hostGitConfig(t, tc.config)
+
+			vd := computeVaultDirt(vault.Root)
+			if vd == nil {
+				t.Fatal("no alert on a dirty vault")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(vd.Message, want) {
+					t.Errorf("alert %q lacks %q", vd.Message, want)
+				}
+			}
+			if strings.Contains(vd.Message, "vp_vault_sync REFUSES") || strings.Contains(vd.Message, "disabled (") {
+				t.Errorf("alert %q points at a refusing tool or misreports the setting", vd.Message)
+			}
+		})
+	}
+}
+
+// TestVaultDirtAlertVariantsStayWithinTheMeasuredCeiling: the bootstrap
+// payload ceiling is measured on the enabled line, so neither variant may be
+// longer, or the ceiling stops being the worst case.
+func TestVaultDirtAlertVariantsStayWithinTheMeasuredCeiling(t *testing.T) {
+	enabled := len(vaultDirtMessage(9999))
+	for name, msg := range map[string]string{
+		"disabled":   vaultDirtMessageFor(9999, false, nil),
+		"unreadable": vaultDirtMessageFor(9999, false, errors.New("x")),
+	} {
+		if len(msg) > enabled {
+			t.Errorf("%s alert is %d bytes, longer than the measured enabled line (%d)", name, len(msg), enabled)
+		}
 	}
 }
