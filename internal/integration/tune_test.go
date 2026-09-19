@@ -112,6 +112,10 @@ func TestIntegrationTuneDetectsAndProposes(t *testing.T) {
 }
 
 func TestIntegrationTuneApplyImproves(t *testing.T) {
+	// 🔴 ISOLATE XDG BEFORE ANYTHING RESOLVES A CONFIG PATH. The host-local
+	// file lives beside the host's real global config; without this the test
+	// would write into the developer's own config directory.
+	testinfra.IsolateEnv(t)
 	h := newHarness(t, false)
 
 	// 4 "general" drawers with devops content that has existing keywords
@@ -179,8 +183,11 @@ func TestIntegrationTuneApplyImproves(t *testing.T) {
 		rooms[p.Room] = ov
 	}
 
-	if err := h.Vault.WriteScoringConfig("proj", rooms, 0); err != nil {
-		t.Fatalf("WriteScoringConfig: %v", err)
+	// The HOST-LOCAL file, which is where --apply writes after R2 of task
+	// move-per-project-config-out-of-the-shared-vault, and which LoadConfig
+	// reads above the vault's. The round trip below is unchanged by the move.
+	if _, err := storage.WriteHostScoringConfig("proj", rooms, 0); err != nil {
+		t.Fatalf("WriteHostScoringConfig: %v", err)
 	}
 
 	// Reload config and build new classifier.

@@ -523,6 +523,35 @@ func VaultConfigFilePath() (string, error) {
 	return filepath.Join(configDir, "vibe-palace", "config.toml"), nil
 }
 
+// ProjectConfigSources lists the per-project config files that EXIST for a
+// project, highest-precedence first: the host-local file, then the vault's.
+//
+// It exists so a caller can report which files a LoadConfig actually read
+// without doing any path arithmetic of its own — the "resolve, don't recall"
+// rule applied to config sources. An empty result means neither file is there
+// and the project inherits the host global config alone.
+func (v *Vault) ProjectConfigSources(project string) ([]string, error) {
+	hostPath, err := HostProjectConfigPath(project)
+	if err != nil {
+		return nil, err
+	}
+	vaultPath, err := v.ProjectConfigFile(project)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, p := range []string{hostPath, vaultPath} {
+		switch _, serr := os.Stat(p); {
+		case serr == nil:
+			out = append(out, p)
+		case os.IsNotExist(serr):
+		default:
+			return nil, fmt.Errorf("stat project config %s: %w", p, serr)
+		}
+	}
+	return out, nil
+}
+
 // WriteHostScoringConfig merges scoring overrides into the HOST-LOCAL
 // per-project file and returns the path it wrote, so a caller can print the
 // real destination rather than a path it assumed.
