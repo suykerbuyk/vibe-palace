@@ -129,7 +129,13 @@ func TestMoveRefusesArchivedTwinInDestination(t *testing.T) {
 			src := seedTaskRaw(t, v, "src", "", "x", "SOURCE")
 			twin := seedTaskRaw(t, v, "dst", holder, "x", "TWIN")
 			s0, w0 := readTaskBytes(t, src), readTaskBytes(t, twin)
-			assertSlugTaken(t, v.MoveTaskToProject("src", "x", "dst"), "move", holder)
+			err := v.MoveTaskToProject("src", "x", "dst")
+			assertSlugTaken(t, err, "move", holder)
+			// A plain archived twin is not a move-out tombstone, and keeps the
+			// generic wording.
+			if strings.Contains(err.Error(), "tombstone") {
+				t.Errorf("an ordinary %s/ twin was described as a tombstone: %v", holder, err)
+			}
 			if readTaskBytes(t, src) != s0 || readTaskBytes(t, twin) != w0 {
 				t.Fatal("a refused move changed a file")
 			}
@@ -255,7 +261,7 @@ func TestUnreadableArchiveDirFailsClosed(t *testing.T) {
 
 // The most ordinary route to the pair, through typed calls only: a task moved
 // out of p leaves a tombstone at p/cancelled/x (the vp_manage_task move arm
-// files it with CreateTask then CancelTask), so moving the task BACK used to
+// files TombstoneSpec with CreateTask then CancelTask), so moving the task BACK used to
 // land an active x beside it, and retiring it there then created done/x
 // beside cancelled/x. The move back is now refused and changes nothing.
 func TestMoveBackOntoOwnTombstoneIsRefused(t *testing.T) {
@@ -267,7 +273,8 @@ func TestMoveBackOntoOwnTombstoneIsRefused(t *testing.T) {
 	if err := v.MoveTaskToProject("p", "x", "q"); err != nil {
 		t.Fatalf("move out: %v", err)
 	}
-	if err := v.CreateTask("p", TaskSpec{Slug: "x", Title: "Tombstone", Priority: "low", Content: "moved to q"}); err != nil {
+	prov := MoveProvenance{FromProject: "p", ToProject: "q", Slug: "x", Day: "2026-09-19"}
+	if err := v.CreateTask("p", prov.TombstoneSpec()); err != nil {
 		t.Fatalf("tombstone create: %v", err)
 	}
 	if err := v.CancelTask("p", "x", ""); err != nil {
@@ -276,7 +283,19 @@ func TestMoveBackOntoOwnTombstoneIsRefused(t *testing.T) {
 	moved := filepath.Join(v.Root, "Projects/q/tasks/x.md")
 	tomb := filepath.Join(v.Root, "Projects/p/tasks/cancelled/x.md")
 	m0, t0 := readTaskBytes(t, moved), readTaskBytes(t, tomb)
-	assertSlugTaken(t, v.MoveTaskToProject("q", "x", "p"), "move", "cancelled")
+	err := v.MoveTaskToProject("q", "x", "p")
+	assertSlugTaken(t, err, "move", "cancelled")
+	// The holder is the move's own tombstone, not a stray twin, so the message
+	// names it as such and points at a new slug, never at a hand rename.
+	msg := err.Error()
+	for _, want := range []string{"is the tombstone", `moved out of it to project "q"`, "Choose a new slug"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("move-back refusal does not say %q: %v", want, err)
+		}
+	}
+	if strings.Contains(msg, "rename") || strings.Contains(msg, "by hand") {
+		t.Errorf("move-back refusal suggests a hand rename of a correct tombstone: %v", err)
+	}
 	if readTaskBytes(t, moved) != m0 || readTaskBytes(t, tomb) != t0 {
 		t.Fatal("a refused move back changed a file")
 	}
