@@ -456,6 +456,19 @@ func RefuseIfNestedVaultGit(vaultPath, verb string) error {
 // write, the memory harvest) call it before their dirty probe and map the
 // refusal to "skipped".
 //
+// READ-ONLY PROBES STILL RUN, AND SOME RUN BEFORE A GATE. They spawn git and
+// write nothing, which is the line CheckGit's text states. Named so a reader
+// tracing "no git process before the refusal" is not surprised by them:
+//
+//   - `vp config sync`'s planning, before the prune's gate: the is-inside-
+//     work-tree and --show-toplevel checks, and UncommittedRemovals'
+//     `ls-files -v --deleted` (vaultsync_verify.go);
+//   - template reset's ReadCommittedBlob and tracked lookups, which compute
+//     whether the reset would commit at all;
+//   - requireCleanVaultTree's GitAvailable / GitIsRepo (cmd/vp);
+//   - the session-start instruments: the dirt scan, the fetch-age probe, the
+//     wrap dirt probe and vp_manage_task move's rev-parse HEAD.
+//
 // It returns a caller-class error wrapping ErrGitDisabled when the host config
 // disables git, or ErrGitConfigUnreadable when git_enabled cannot be read (fail
 // closed). The message names the config path and deliberately carries no
