@@ -1063,6 +1063,93 @@ func TestMigrateTaskHeaderBlock_ArchivedPairIsRefused(t *testing.T) {
 	}
 }
 
+// TestMigrateTaskHeaderBlock_ArchivedPairReasonNamesTheRealWinner pins the
+// STRUCTURED refusal reason. Nothing pinned it before, so it was free to be
+// false, and it was.
+//
+// 🔴 THE PRINTED LINE AND THE STORED REASON ARE DIFFERENT STRINGS, AND THE TEST
+// ABOVE PINS ONLY THE PRINTED ONE. TestMigrateTaskHeaderBlock_ArchivedPairIsRefused
+// asserts stdout — including that the false ACTIVE sentence is absent from it —
+// and never reads sum.Decisions[i].Reason. So on a done/ + cancelled/ pair with
+// no active twin this command printed the correct line and stored
+// "an ACTIVE task of the same slug exists", naming a file that does not exist,
+// while every test in this package stayed green.
+//
+// It arrived by composition, not by anyone writing a bug: this command was cut
+// from a branch on which the guard was still active-only, where the literal was
+// true for every case the guard could fire on, and the widening landed on a
+// sibling branch that had no such call site to sweep. Only the merged tree
+// carries both halves, and only a test written after the merge can see it.
+//
+// Break: restore the literal at the taskHeaderShadowReason call site in
+// cmd_migrate_task_header_block.go. This test fails; the rest of the package
+// stays green, which is exactly the hole it fills.
+func TestMigrateTaskHeaderBlock_ArchivedPairReasonNamesTheRealWinner(t *testing.T) {
+	// Leg 1: done/ and cancelled/ hold the same slug and there is NO active
+	// twin. The resolver picks done/, so the cancelled/ copy is refused and the
+	// cause must name done/ — the old literal named an active file instead.
+	root := t.TempDir()
+	seedArchivedTask(t, root, "p", "done", "shadowed", preformatHeadingNext)
+	seedArchivedTask(t, root, "p", "cancelled", "shadowed", preformatHeadingNext)
+	tsGitInit(t, root)
+
+	var out bytes.Buffer
+	sum, err := runTaskHeaderBlockMigration(root, "", false, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got string
+	var found bool
+	for _, d := range sum.Decisions {
+		if d.Slug == "shadowed" && d.Sub == "cancelled" {
+			got, found = d.Reason, true
+		}
+	}
+	// 🔴 FAIL RATHER THAN SKIP. A decision that is never recorded would make
+	// every assertion below vacuous, and a test that passes by finding nothing
+	// is the silent instrument this package keeps rediscovering.
+	if !found {
+		t.Fatalf("no decision recorded for the cancelled/ copy; out:\n%s", out.String())
+	}
+	want := "the same slug also exists in tasks/done/; the writer resolves done before cancelled"
+	if got != want {
+		t.Errorf("structured reason is wrong.\n got: %q\nwant: %q", got, want)
+	}
+
+	// Leg 2: the ACTIVE case must keep its own distinct wording rather than be
+	// flattened into one generic sentence. The two causes call for different
+	// operator action — completing a retire versus renaming a live task — so a
+	// single shared sentence would be a regression even though it is not false.
+	// This command walks done/ and cancelled/ only, so the done/ copy is the one
+	// processed and the active twin is what shadows it.
+	root2 := t.TempDir()
+	seedArchivedTask(t, root2, "p", "", "shadowed", preformatHeadingNext)
+	seedArchivedTask(t, root2, "p", "done", "shadowed", preformatHeadingNext)
+	tsGitInit(t, root2)
+
+	var out2 bytes.Buffer
+	sum2, err := runTaskHeaderBlockMigration(root2, "", false, &out2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got2 string
+	var found2 bool
+	for _, d := range sum2.Decisions {
+		if d.Slug == "shadowed" && d.Sub == "done" {
+			got2, found2 = d.Reason, true
+		}
+	}
+	if !found2 {
+		t.Fatalf("no decision recorded for the done/ copy; out:\n%s", out2.String())
+	}
+	want2 := "an ACTIVE task of the same slug exists; the writer resolves active first"
+	if got2 != want2 {
+		t.Errorf("the active-case reason changed.\n got: %q\nwant: %q", got2, want2)
+	}
+}
+
 // blockBytes is a byte-exact read for the shadowed-pair assertions. Bytes, not
 // parsed fields: a mis-resolved write produces a file whose header parses
 // perfectly and whose BODY came from somewhere else.
