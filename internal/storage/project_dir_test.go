@@ -79,9 +79,11 @@ func TestClassifyProjectDir(t *testing.T) {
 			}
 		})
 	}
+	t.Run("errors", classifyProjectDirErrorRows)
+	t.Run("unreadable sessions", classifyProjectDirUnreadableSessionsRows)
 }
 
-func TestClassifyProjectDirErrors(t *testing.T) {
+func classifyProjectDirErrorRows(t *testing.T) {
 	t.Run("invalid slug", func(t *testing.T) {
 		root := t.TempDir()
 		if _, err := ClassifyProjectDir(root, "a:b"); err == nil {
@@ -121,7 +123,7 @@ func TestClassifyProjectDirErrors(t *testing.T) {
 
 // Fail-closed, and the order that decides when the walk error surfaces:
 // resume.md, iterations.md, sessions/, tasks/, stopping at the first content.
-func TestClassifyProjectDirUnreadableSessions(t *testing.T) {
+func classifyProjectDirUnreadableSessionsRows(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions")
 	}
