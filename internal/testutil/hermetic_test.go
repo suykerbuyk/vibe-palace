@@ -4,11 +4,15 @@
 package testutil
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 // TestFixtureDirResolvesTheCheckedInConfig pins the fixture RunHermetic points
@@ -155,5 +159,30 @@ func TestHermeticHelpersAreInertWithoutRunHermetic(t *testing.T) {
 	})
 	if XDGIsFixture() {
 		t.Error("XDGIsFixture = true with no redirect in place")
+	}
+}
+
+// TestFixtureReadsEnabledWithoutAMetaWarning: every hermetic package reads the
+// fixture through storage.HostGitEnabled (and LoadConfig's host layer). Without
+// a current [meta] block, checkConfigVersion would log "config has no [meta]
+// block; run 'vp config upgrade'" against a checked-in test fixture on every
+// run.
+func TestFixtureReadsEnabledWithoutAMetaWarning(t *testing.T) {
+	dir, err := fixtureDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	enabled, err := storage.HostGitEnabled()
+	if err != nil || !enabled {
+		t.Fatalf("HostGitEnabled on the fixture = %v, %v; want true, nil", enabled, err)
+	}
+	if strings.Contains(buf.String(), "[meta]") {
+		t.Errorf("reading the fixture logged a [meta] warning:\n%s", buf.String())
 	}
 }
