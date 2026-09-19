@@ -883,19 +883,33 @@ vp vault sync               # tidy capture artifacts, then pull and push
 ```
 
 `git_enabled = false` (set with `--no-git` at init, or by hand in your
-config file) disables ONLY `vp init`'s repository creation and the CLI
-`vp vault pull/push/sync/commit/tidy/status` subcommands, which refuse
-with an error when it is false. Nothing else checks it:
+config file) stops `vp` committing, pushing, pulling or fetching the vault,
+on the CLI and over MCP alike. It is a setting of the HOST's config, not of
+the vault, so two machines sharing one vault can differ. One refusal inside
+`vp` enforces it, so every surface behaves the same:
 
-- **Commit AND push regardless of this setting:** the MCP tools
-  `vp_vault_sync`, `vp_vault_tidy`, `vp_memory_harvest`; the CLI
-  `vp memory harvest`; the SessionEnd hook's memory harvest; and
-  `vp config sync`'s template-mirror commit.
-- **Commit locally but NEVER push, regardless of this setting:** the MCP
-  tool `vp_manage_task`, and the CLI `vp commands reset` /
-  `vp skills reset`.
-- **Stage (`git add`) but never commit or push, regardless of this
-  setting:** the CLI `vp migrate kg-filenames`.
+- **Explicit git operations refuse, dry runs included:** `vp vault
+  pull/push/sync/commit/tidy/status` and the MCP tools `vp_vault_sync`,
+  `vp_vault_tidy` and `vp_vault_status`. The refusal reads `git is disabled
+  (git_enabled = false in config)` and names the config file.
+- **Commits after a write are skipped, not refused:** `vp_manage_task` still
+  writes the task and reports its commit as `skipped`, and the memory
+  harvest (`vp_memory_harvest`, `vp memory harvest`, the SessionEnd hook)
+  still routes the memory files. No git process runs for either.
+- **`vp commands reset` / `vp skills reset` refuse up front** when the reset
+  would commit, before removing anything.
+- **`vp config sync` skips its template-mirror prune** and prints one skip
+  row per file; nothing is verified, removed or restored.
+- **Migrations that use git as their rollback refuse.**
+- **Local read-only probes still run** (the dirt scan at session start, `vp
+  check`), so uncommitted files on such a host are reported as expected.
+
+One exception: the project-repo freshness check (`vp_repo_freshness`, and
+`vp_bootstrap_context`'s `project_repo_path`) fetches whatever path it is
+given, including this vault's if a caller passes it. If `git_enabled` cannot
+be read at all (a syntax error, a wrong type, a config from a newer `vp`),
+`vp` refuses vault git the same way and `vp check` reports the Git row as
+Fail.
 
 ### Zero manual git in the vault
 
