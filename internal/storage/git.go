@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
@@ -447,6 +448,33 @@ func RefuseIfNestedVaultGit(vaultPath, verb string) error {
 	return fmt.Errorf("refusing to %s: the vault is inside another repository (%s), and vp never stages into, commits, merges/pulls, or pushes a repository that is not the vault's own", verb, top)
 }
 
+// RefuseIfGitDisabled is the one refusal for git_enabled = false, and the only
+// function in this package that reads the setting. Every vault git entry point
+// calls it as its first statement, before any git process starts; each
+// command and MCP handler also calls it where the CLI's old gitEnabledGuard
+// stood, so dry runs and remote discovery refuse too. Class-2 callers (the task
+// write, the memory harvest) call it before their dirty probe and map the
+// refusal to "skipped".
+//
+// It returns a caller-class error wrapping ErrGitDisabled when the host config
+// disables git, or ErrGitConfigUnreadable when git_enabled cannot be read (fail
+// closed). The message names the config path and deliberately carries no
+// remedy: git_enabled = false is the operator's instruction, and an agent told
+// to "set git_enabled = true" would edit the operator's config to make the
+// error go away. verb names the operation ("pull", "commit the template
+// reset"); vaultPath is named for the reader of a multi-vault host.
+func RefuseIfGitDisabled(vaultPath, verb string) error {
+	enabled, err := HostGitEnabled()
+	if err != nil {
+		return apperr.Caller(fmt.Errorf("refusing to %s (vault %s): %w", verb, vaultPath, err))
+	}
+	if enabled {
+		return nil
+	}
+	cfgPath, _ := VaultConfigFilePath()
+	return apperr.Caller(fmt.Errorf("refusing to %s (vault %s): %w (config: %s)", verb, vaultPath, ErrGitDisabled, cfgPath))
+}
+
 // GitInit runs git init in the given directory.
 func GitInit(dir string) error {
 	cmd := exec.Command("git", "init", dir)
@@ -462,7 +490,13 @@ func GitInit(dir string) error {
 // `git status --porcelain`; any non-empty output means the tree is dirty. This
 // is the refuse-on-dirty precondition for the KG migration: a clean tree makes
 // `git checkout .` a guaranteed, complete rollback of the rename.
+//
+// A host config with git_enabled = false (or an unreadable one) refuses: the
+// migrations that call this use git as their rollback.
 func GitStatusClean(dir string) (bool, error) {
+	if err := RefuseIfGitDisabled(dir, "check the vault's git status"); err != nil {
+		return false, err
+	}
 	cmd := exec.Command("git", "-C", dir, "status", "--porcelain")
 	cmd.Env = SafeGitEnv()
 	out, err := cmd.CombinedOutput()
@@ -476,6 +510,9 @@ func GitStatusClean(dir string) (bool, error) {
 // Ignored paths are silently skipped by git; use GitAddForce to stage a path
 // that a .gitignore rule would otherwise exclude.
 func GitAdd(dir string, paths ...string) error {
+	if err := RefuseIfGitDisabled(dir, "stage"); err != nil {
+		return err
+	}
 	if len(paths) == 0 {
 		return nil
 	}
@@ -494,6 +531,9 @@ func GitAdd(dir string, paths ...string) error {
 // `.vibe-palace/` dir: once tracked, the stamp syncs to every other host with
 // the renamed data instead of being left behind (the gitignored-stamp bug).
 func GitAddForce(dir string, paths ...string) error {
+	if err := RefuseIfGitDisabled(dir, "stage"); err != nil {
+		return err
+	}
 	if len(paths) == 0 {
 		return nil
 	}

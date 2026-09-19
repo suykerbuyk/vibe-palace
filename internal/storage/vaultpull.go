@@ -134,7 +134,24 @@ func (r *PullResult) Stranded() bool {
 // about to bring in, so dropping them loses nothing. The heal pass is fail-open
 // — any error skips the path, never fatal — and a genuinely-edited template
 // (diff nonzero) is left untouched for the merge to handle.
+//
+// A host config with git_enabled = false (or an unreadable one) refuses
+// before any git runs: the returned *PullResult is non-nil and empty, and the
+// error wraps ErrGitDisabled (or ErrGitConfigUnreadable).
 func Pull(vaultPath string, remotes []string) (*PullResult, error) {
+	if err := RefuseIfGitDisabled(vaultPath, "pull"); err != nil {
+		return &PullResult{
+			RemoteResults: map[string]error{},
+			RemoteOutput:  map[string]string{},
+		}, err
+	}
+	return pullCore(vaultPath, remotes)
+}
+
+// pullCore is Pull after its git_enabled gate. Storage-internal composition
+// (SyncVault) calls it directly, so one outermost operation reads the host
+// config once.
+func pullCore(vaultPath string, remotes []string) (*PullResult, error) {
 	result := &PullResult{
 		RemoteResults: make(map[string]error, len(remotes)),
 		RemoteOutput:  make(map[string]string, len(remotes)),

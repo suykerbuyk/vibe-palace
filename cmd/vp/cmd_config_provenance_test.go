@@ -81,6 +81,7 @@ func canonicalGitVault(t *testing.T, before func(vaultPath string)) (vaultPath, 
 	if err := os.MkdirAll(origin, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	enableGitInTestConfig(t)
 	gitInVault(t, origin, "init", "-q", "--bare", "-b", "main")
 	gitInVault(t, vaultPath, "init", "-q", "-b", "main")
 	gitInVault(t, vaultPath, "config", "user.email", "test@test.com")
