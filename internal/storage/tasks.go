@@ -1233,31 +1233,10 @@ func (v *Vault) CreateTask(project string, spec TaskSpec) error {
 	}
 	defer release()
 
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("task %q already exists in project %q", slug, project)
-	}
-
-	// A retired task is still a task. Guard the done/ and cancelled/ directories
-	// too, mirroring GetTask's three-dir search idiom: creating a slug that was
-	// already retired or cancelled would otherwise silently write a duplicate
-	// active file, and the subsequent retire/cancel would clobber the historical
-	// completion record. Refuse loudly and name the state so the operator can
-	// choose a new slug (reopen is a deliberate, separate action — never folded
-	// into create).
-	for _, loc := range []struct {
-		dir   func(string) (string, error)
-		state string
-	}{
-		{v.TaskDoneDir, "done"},
-		{v.TaskCancelledDir, "cancelled"},
-	} {
-		dir, err := loc.dir(project)
-		if err != nil {
-			return err
-		}
-		if _, err := os.Stat(filepath.Join(dir, slug+".md")); err == nil {
-			return fmt.Errorf("task %q already exists in tasks/%s/ (a retired task is still a task; choose a new slug, or reopen the existing one)", slug, loc.state)
-		}
+	// The shared rule, under the lock just taken on the active path. See
+	// refuseTakenSlug for why a retired or cancelled slug is still taken.
+	if err := v.refuseTakenSlug("create", project, slug, false); err != nil {
+		return err
 	}
 
 	var buf strings.Builder
@@ -1484,6 +1463,169 @@ func (v *Vault) CancelTask(project, slug, supersededBy string) error {
 	return v.moveTask(project, slug, v.TaskCancelledDir, StatusCancelled, fieldSupersededBy, supersededBy)
 }
 
+// refuseTakenSlug refuses when slug is already held in project's active,
+// done or cancelled directory — resolveTaskFile's own three, in its order. It
+// is the ONE rule for every path that puts a task file somewhere: CreateTask,
+// moveTask (behind RetireTask and CancelTask) and MoveTaskToProject. Each of
+// those used to carry its own partial copy, and the copies disagreed: moveTask
+// checked only its own destination and MoveTaskToProject only the destination's
+// active path, so both could create a slug held twice in one project.
+//
+// A retired task is still a task. Creating a slug that was already retired or
+// cancelled would silently write a duplicate active file, and the subsequent
+// retire/cancel would clobber the historical completion record. Refuse loudly
+// and name the state so the operator can choose a new slug (reopen is a
+// deliberate, separate action — never folded into create).
+//
+// skipActive is for moveTask alone, whose active file IS the source being
+// archived.
+//
+// 🔴 CALL IT UNDER THE LOCK THE CALLER ALREADY HOLDS on the active path of
+// (project, slug). All three callers take that key, and moveTask is the only
+// permanent writer that creates an archived file, so within one project the
+// check and the act are serialised against every other vp writer of the slug.
+// That does NOT hold across projects: MoveTaskToProject locks only its
+// destination (task retire-racing-a-cross-project-move-duplicates-the-task).
+//
+// 🔴 FAIL-CLOSED. A stat error other than does-not-exist is an error, never a
+// pass: a directory that cannot be inspected might hold the twin. A MISSING
+// directory is does-not-exist, so a project with no done/ yet is simply empty.
+// The error names the vault-relative path once; the *PathError's own absolute
+// path is dropped by wrapping only its cause.
+func (v *Vault) refuseTakenSlug(op, project, slug string, skipActive bool) error {
+	for _, loc := range []struct {
+		dir    func(string) (string, error)
+		holder string
+	}{
+		{v.TasksDir, ""},
+		{v.TaskDoneDir, "done"},
+		{v.TaskCancelledDir, "cancelled"},
+	} {
+		if skipActive && loc.holder == "" {
+			continue
+		}
+		dir, err := loc.dir(project)
+		if err != nil {
+			return err
+		}
+		p := filepath.Join(dir, slug+".md")
+		_, err = os.Stat(p)
+		if err == nil {
+			te := &taskSlugTakenError{Op: op, Project: project, Slug: slug, Holder: loc.holder}
+			if op == "move" && loc.holder == "cancelled" {
+				te.MovedTo = moveOutTombstoneDestination(p, slug)
+			}
+			return apperr.Caller(te)
+		}
+		if os.IsNotExist(err) {
+			continue
+		}
+		cause := err
+		var pe *os.PathError
+		if errors.As(err, &pe) {
+			cause = pe.Err
+		}
+		return fmt.Errorf("refusing to %s task %q: cannot inspect %s: %w",
+			op, slug, taskSlugRelPath(project, loc.holder, slug), cause)
+	}
+	return nil
+}
+
+// tombstoneMarker is the sentence that opens the second paragraph of every
+// move-out tombstone MoveProvenance.TombstoneSpec writes. It is one constant so
+// the writer and moveOutTombstoneDestination cannot drift apart.
+const tombstoneMarker = "This file is a tombstone, not the task."
+
+// moveOutTombstoneDestination reports the project a cancelled/ file says its
+// task was moved out to, when that file is the tombstone a cross-project move
+// files in its source — titled exactly "Moved to <project>", the string
+// MoveProvenance.TombstoneSpec renders and findTombstoneSource matches on —
+// AND whose body carries tombstoneMarker, the sentence TombstoneSpec writes. The
+// title alone is not enough: a real task titled "Moved to redis" and later
+// cancelled would otherwise be described as a tombstone naming project "redis".
+// It returns "" for any other file, and for one it cannot read: the answer only
+// chooses the refusal's wording, never whether to refuse.
+func moveOutTombstoneDestination(path, slug string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	if !strings.Contains(string(data), tombstoneMarker) {
+		return ""
+	}
+	dest, ok := strings.CutPrefix(parseTaskMeta(slug, string(data), true).Title, "Moved to ")
+	if !ok || validateSlugs(dest) != nil {
+		return ""
+	}
+	return dest
+}
+
+// taskSlugRelPath renders a task file's vault-relative path, never the host's
+// absolute one: an error handed to an MCP caller must not carry a fact about
+// the serving host's filesystem.
+func taskSlugRelPath(project, holder, slug string) string {
+	if holder == "" {
+		return "Projects/" + project + "/tasks/" + slug + ".md"
+	}
+	return "Projects/" + project + "/tasks/" + holder + "/" + slug + ".md"
+}
+
+// taskSlugTakenError is refuseTakenSlug's refusal. Unexported on purpose:
+// nothing outside this package consumes the type — MCP classifies it through
+// apperr.IsCaller, which the source wrap supplies — so it earns no surface.
+type taskSlugTakenError struct {
+	Op      string // "create" | "retire" | "cancel" | "move"
+	Project string
+	Slug    string
+	Holder  string // "" (active) | "done" | "cancelled"
+	// MovedTo is set only on a move refused by a cancelled/ tombstone that an
+	// earlier move-out of this slug left behind: the project it names.
+	MovedTo string
+}
+
+// taskSlugTakenRemedy is the stuck-state remedy for a refused retire or
+// cancel. It is a real gap, stated as one: no vp action renames a slug, the
+// vp_vault_* tools refuse task paths, and moving the task elsewhere only
+// relocates the collision.
+const taskSlugTakenRemedy = "Two tasks share one slug and no vp action can rename either: the fix is a hand " +
+	"rename of one file in a shell on the vault host (the vp_vault_* tools refuse task paths), and a client " +
+	"without that access cannot fix it. Moving this task to another project does not resolve it."
+
+func (e *taskSlugTakenError) Error() string {
+	rel := taskSlugRelPath(e.Project, e.Holder, e.Slug)
+	switch e.Op {
+	case "create":
+		// Both create wordings predate the shared rule; the active one is pinned
+		// verbatim by a test.
+		if e.Holder == "" {
+			return fmt.Sprintf("task %q already exists in project %q", e.Slug, e.Project)
+		}
+		return fmt.Sprintf("task %q already exists in tasks/%s/ (a retired task is still a task; choose a new slug, "+
+			"or reopen the existing one)", e.Slug, e.Holder)
+	case "move":
+		// A move back onto the tombstone its own slug left here. No hand rename
+		// is suggested: the tombstone is a correct record, not a stray twin.
+		if e.MovedTo != "" {
+			return fmt.Sprintf("cannot move task %q into project %q: %s is the tombstone project %q kept when "+
+				"a task of this slug was moved out of it to project %q, and that record keeps the slug taken "+
+				"here for good. Nothing was changed. Choose a new slug for this work in project %q; the "+
+				"tombstone must stay where it is.", e.Slug, e.Project, rel, e.Project, e.MovedTo, e.Project)
+		}
+		return fmt.Sprintf("cannot move task %q into project %q: %s already exists, so the slug is taken there. "+
+			"Nothing was changed. Leave the task where it is, or rename one of the two files by hand in a shell on "+
+			"the vault host (no vp action renames a slug).", e.Slug, e.Project, rel)
+	}
+	// retire / cancel. A collision in the operation's OWN destination is the
+	// overwrite it would have been before this rule existed, and says so.
+	ownDestination := (e.Op == "retire" && e.Holder == "done") || (e.Op == "cancel" && e.Holder == "cancelled")
+	if ownDestination {
+		return fmt.Sprintf("cannot %s task %q: %s already exists — refusing to overwrite the existing record. "+
+			"Nothing was changed. %s", e.Op, e.Slug, rel, taskSlugTakenRemedy)
+	}
+	return fmt.Sprintf("cannot %s task %q: %s already exists, so this slug already has a record in project %q. "+
+		"Nothing was changed. %s", e.Op, e.Slug, rel, e.Project, taskSlugTakenRemedy)
+}
+
 // moveTask updates a task's status and moves it to a destination directory.
 // extraField/extraValue, when extraField is non-empty, are stamped in the
 // SAME critical section as the status line — under the one lock, before the
@@ -1507,10 +1649,6 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 	if err != nil {
 		return err
 	}
-	if err := EnsureDir(destDir); err != nil {
-		return fmt.Errorf("ensure dest dir: %w", err)
-	}
-
 	destPath := filepath.Join(destDir, slug+".md")
 
 	// 🔴 REWRITE-THEN-RENAME. The status line is stamped IN PLACE at the active
@@ -1579,15 +1717,42 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 	}
 	defer release()
 
-	// Never overwrite an existing destination. A re-retire of a duplicate slug
-	// would otherwise clobber the historical done/ (or cancelled/) record —
-	// os.Rename replaces its destination silently, so this stat is the only
-	// thing standing between a duplicate slug and a destroyed record. Surface it
-	// as a bug state rather than lose the prior record.
-	if _, err := os.Stat(destPath); err == nil {
-		return fmt.Errorf("cannot move task %q to %q: a task of that slug already exists there — refusing to overwrite the existing record", slug, destPath)
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat dest: %w", err)
+	// Re-check the source now that the lock is held. The stat above ran
+	// unlocked, so a concurrent retire or cancel of this SAME task may have
+	// archived it since. refuseTakenSlug would then find that archive and report
+	// two tasks sharing one slug, with a hand-rename remedy, when there is one
+	// task and it is already archived. A vanished source is "not found" here,
+	// exactly as it is before the lock.
+	if _, err := os.Stat(srcPath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("task %q not found (may already be %s)", slug, status)
+		}
+		return err
+	}
+
+	// Never overwrite an existing destination, and never create a second
+	// archived record beside the other archive directory's. A re-retire of a
+	// duplicate slug would otherwise clobber the historical done/ (or
+	// cancelled/) record — os.Rename replaces its destination silently — and
+	// checking ONLY the own destination let a retire land done/X beside an
+	// existing cancelled/X (or a cancel land cancelled/X beside done/X): the
+	// done+cancelled pair on which `vp migrate task-status` once replaced an
+	// archived body and exited 0. The source's own active file is skipped: it
+	// is the file being archived.
+	op := "retire"
+	if status == StatusCancelled {
+		op = "cancel"
+	}
+	if err := v.refuseTakenSlug(op, project, slug, true); err != nil {
+		return err
+	}
+
+	// Only now may the archive directory be created: a refusal above says
+	// "Nothing was changed", and must leave the project's tree as it found it.
+	// EnsureDir under the held lock is safe — the lock sidecar lives under
+	// <root>/.vp-locks/, independent of destDir.
+	if err := EnsureDir(destDir); err != nil {
+		return fmt.Errorf("ensure dest dir: %w", err)
 	}
 
 	data, err := os.ReadFile(srcPath)
@@ -1799,13 +1964,11 @@ func (v *Vault) MoveTaskToProject(fromProject, slug, toProject string) error {
 		return fmt.Errorf("ensure dest dir: %w", err)
 	}
 
-	if _, err := os.Stat(destPath); err == nil {
-		return fmt.Errorf(
-			"cannot move task %q into project %q: %s already exists — refusing to overwrite the task that is "+
-				"already there. Rename or archive one of the two, then re-run the move",
-			slug, toProject, destPath)
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat dest: %w", err)
+	// All three of the destination's directories, not only its active path: a
+	// slug archived in the destination is still taken there, and landing an
+	// active file beside it would create a shadow the resolver hides.
+	if err := v.refuseTakenSlug("move", toProject, slug, false); err != nil {
+		return err
 	}
 
 	// The commit point, under the destination lock taken above and in the same
@@ -1978,13 +2141,15 @@ func (p MoveProvenance) DestinationBody() string {
 // content floor — it names the destination project, the destination path, the
 // day, the commit, and what a reader should do instead of touching this file.
 func (p MoveProvenance) TombstoneSpec() TaskSpec {
+	// The second paragraph opens with tombstoneMarker, written from the one
+	// constant moveOutTombstoneDestination matches on.
 	var b strings.Builder
 	fmt.Fprintf(&b, "This task is no longer in `%s`. On %s it was moved to project `%s`%s, and its file "+
 		"now lives at `Projects/%s/tasks/%s.md`, which is where its plan, its status and its edges are "+
 		"maintained from now on.\n",
 		p.FromProject, p.Day, p.ToProject, p.commitClause(), p.ToProject, p.Slug)
 	b.WriteString("\n")
-	fmt.Fprintf(&b, "This file is a tombstone, not the task. It exists so that a reader who follows a slug, "+
+	fmt.Fprintf(&b, tombstoneMarker+" It exists so that a reader who follows a slug, "+
 		"a link or a stale reference into `%s` finds out WHERE the work went instead of finding nothing, and "+
 		"so that anything still naming `%s` as a parent or a dependency resolves to a record rather than "+
 		"dangling. Do not amend it and do not reopen it: amend, retire and cancel belong to the live task in "+
