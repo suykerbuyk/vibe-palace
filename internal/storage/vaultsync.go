@@ -92,7 +92,22 @@ type PlainPushResult struct {
 // capture, like Pull. The branch is main — matching what both front-ends push
 // today. The returned *PlainPushResult is always non-nil, even if a remote
 // failed; the error return is reserved for a failure to run git at all.
+//
+// A host config with git_enabled = false (or an unreadable one) refuses
+// before any git runs, with a non-nil empty result.
 func PushPlain(vaultPath string, remotes []string) (*PlainPushResult, error) {
+	if err := RefuseIfGitDisabled(vaultPath, "push"); err != nil {
+		return &PlainPushResult{
+			RemoteResults: map[string]error{},
+			RemoteOutput:  map[string]string{},
+		}, err
+	}
+	return pushPlainCore(vaultPath, remotes)
+}
+
+// pushPlainCore is PushPlain after its git_enabled gate, for storage-internal
+// composition (SyncVault).
+func pushPlainCore(vaultPath string, remotes []string) (*PlainPushResult, error) {
 	result := &PlainPushResult{
 		RemoteResults: make(map[string]error, len(remotes)),
 		RemoteOutput:  make(map[string]string, len(remotes)),
@@ -177,7 +192,20 @@ func PushPlain(vaultPath string, remotes []string) (*PlainPushResult, error) {
 //
 // PushResult.CommitSHA is refreshed to the post-loop HEAD if any rebase
 // happened, so the printed SHA always exists at the converged remotes.
+//
+// A host config with git_enabled = false (or an unreadable one) refuses
+// before any git runs; the task write and the memory harvest map that refusal
+// to a skipped commit.
 func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*PushResult, error) {
+	if err := RefuseIfGitDisabled(vaultPath, "commit"); err != nil {
+		return nil, err
+	}
+	return commitAndPushPathsCore(vaultPath, message, paths, push)
+}
+
+// commitAndPushPathsCore is CommitAndPushPaths after its git_enabled gate,
+// for storage-internal composition (the downgrade wrapper).
+func commitAndPushPathsCore(vaultPath, message string, paths []string, push bool) (*PushResult, error) {
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("no paths specified")
 	}
@@ -370,7 +398,14 @@ func (e *RemovalsLeftInHEADError) Error() string {
 //
 // vaultPath must be the root of its own repository. vp never commits into a
 // repository that merely encloses the vault; that caller must not call this.
+//
+// A host config with git_enabled = false (or an unreadable one) refuses
+// before any git runs. Template reset refuses up front at its own preflight,
+// before removing anything; this gate is the backstop.
 func CommitRemovals(vaultPath, message string, rels []string) (*PushResult, error) {
+	if err := RefuseIfGitDisabled(vaultPath, "commit the template removal"); err != nil {
+		return nil, err
+	}
 	if len(rels) == 0 {
 		return nil, fmt.Errorf("no paths specified")
 	}
@@ -624,12 +659,24 @@ func pushCommitted(vaultPath string, remotes []string, branch string, reconcileE
 // downgraded=true. When push is false it passes straight through and downgraded
 // is always false. The returned *PushResult and error are CommitAndPushPaths's
 // own (RemoteResults populated only when an effective push ran).
+//
+// Its git_enabled gate is its first statement, because downgradePush runs
+// `git remote` before CommitAndPushPaths would reach its own.
 func CommitAndPushPathsWithDowngrade(vaultPath, message string, paths []string, push bool) (res *PushResult, downgraded bool, err error) {
+	if err := RefuseIfGitDisabled(vaultPath, "commit"); err != nil {
+		return nil, false, err
+	}
+	return commitAndPushPathsWithDowngradeCore(vaultPath, message, paths, push)
+}
+
+// commitAndPushPathsWithDowngradeCore is CommitAndPushPathsWithDowngrade after
+// its git_enabled gate, for storage-internal composition (TidyVault).
+func commitAndPushPathsWithDowngradeCore(vaultPath, message string, paths []string, push bool) (res *PushResult, downgraded bool, err error) {
 	effectivePush, downgraded, err := downgradePush(vaultPath, push)
 	if err != nil {
 		return nil, false, err
 	}
-	res, err = CommitAndPushPaths(vaultPath, message, paths, effectivePush)
+	res, err = commitAndPushPathsCore(vaultPath, message, paths, effectivePush)
 	if err != nil {
 		return nil, downgraded, err
 	}

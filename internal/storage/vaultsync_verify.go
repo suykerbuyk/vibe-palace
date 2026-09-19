@@ -149,7 +149,13 @@ func (o *PruneOutcome) err() error {
 // The lock serialises against every vp committer. storage.Pull does not take
 // it; a concurrent merge fails on git's own index guards rather than losing
 // anything.
+//
+// The git_enabled gate is the first statement: PruneOutcome.err() aggregates
+// without %w, so a refusal raised inside the loop would lose errors.Is.
 func PruneMirrorsVerified(vaultPath string, paths []string, push bool, v PruneVerifier) (*PushResult, PruneOutcome, error) {
+	if err := RefuseIfGitDisabled(vaultPath, "prune template mirrors"); err != nil {
+		return nil, PruneOutcome{}, err
+	}
 	return pruneMirrors(vaultPath, paths, push, true, v)
 }
 
@@ -169,7 +175,14 @@ func PruneMirrorsVerified(vaultPath string, paths []string, push bool, v PruneVe
 //
 // No remote is listed or fetched, no identity is needed, and nothing is
 // staged or committed.
+//
+// It never commits, but it reads HEAD and the index through git and deletes or
+// restores vault files on that verdict, so git_enabled = false refuses it too,
+// as its first statement.
 func PruneMirrorsInEnclosingRepo(vaultPath string, paths []string, v PruneVerifier) (PruneOutcome, error) {
+	if err := RefuseIfGitDisabled(vaultPath, "prune template mirrors"); err != nil {
+		return PruneOutcome{}, err
+	}
 	_, out, err := pruneMirrors(vaultPath, paths, false, false, v)
 	return out, err
 }
@@ -578,7 +591,14 @@ func remoteAllows(vaultPath string, remotes []string, branch, rel string, driver
 // CommitAndPushPathsWithDowngrade's remote policy: a push requested against a
 // vault with no remotes becomes a local-only commit, reported as downgraded.
 // A failure to list the remotes defers every path rather than failing open.
+//
+// Its git_enabled gate is the first statement, before downgradePush's `git
+// remote`. Past it, it calls the ungated pruneMirrors core rather than
+// PruneMirrorsVerified, so one prune reads the host config once.
 func PruneMirrorsVerifiedWithDowngrade(vaultPath string, paths []string, push bool, v PruneVerifier) (res *PushResult, out PruneOutcome, downgraded bool, err error) {
+	if err := RefuseIfGitDisabled(vaultPath, "prune template mirrors"); err != nil {
+		return nil, PruneOutcome{}, false, err
+	}
 	effectivePush, downgraded, err := downgradePush(vaultPath, push)
 	if err != nil {
 		for _, rel := range paths {
@@ -587,7 +607,7 @@ func PruneMirrorsVerifiedWithDowngrade(vaultPath string, paths []string, push bo
 		out.Errors = append(out.Errors, err)
 		return nil, out, false, out.err()
 	}
-	res, out, err = PruneMirrorsVerified(vaultPath, paths, effectivePush, v)
+	res, out, err = pruneMirrors(vaultPath, paths, effectivePush, true, v)
 	return res, out, downgraded, err
 }
 
