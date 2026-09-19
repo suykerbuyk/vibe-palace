@@ -15,7 +15,13 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
+
+// NewVaultSettings reaches check.CheckSettings, which reads the HOST config,
+// so the settings tests ran against the developer's own config. The tests that
+// need their own host config still call xdgTempHome, which overrides this.
+func TestMain(m *testing.M) { os.Exit(testutil.RunHermetic(m)) }
 
 // xdgTempHome sets XDG_CONFIG_HOME to a tempdir and returns the resolved
 // config file path.

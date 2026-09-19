@@ -14,7 +14,14 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
+
+// This package reads the HOST config through CheckSettings and the
+// summarization-queue check, so without this it runs against the developer's
+// own ~/.config/vibe-palace/config.toml: a config from a newer vp turns
+// TestCheckSettings and the queue tests red on their machine and nowhere else.
+func TestMain(m *testing.M) { os.Exit(testutil.RunHermetic(m)) }
 
 func TestCheckConfig(t *testing.T) {
 	t.Run("valid config", func(t *testing.T) {
