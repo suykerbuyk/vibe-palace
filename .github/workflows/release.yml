@@ -4,6 +4,21 @@ on:
   push:
     tags:
       - "v*"
+  # 🔴 THE REHEARSAL TRIGGER, AND IT PUBLISHES NOTHING. A tag run is the only
+  # thing that has ever exercised this workflow, so every change to it — a new
+  # action major, a GoReleaser release, a config key — is first proven during a
+  # real release, which is when a failure costs the most. A manual dispatch
+  # runs the same job with `release --snapshot --clean`: GoReleaser builds
+  # every target and skips the publish entirely.
+  #
+  #     gh workflow run release.yml --ref <branch>
+  #     gh run list --workflow release.yml --limit 1
+  #
+  # What a green dispatch proves: goreleaser-action boots on its Node runtime,
+  # the pinned GoReleaser CLI accepts .goreleaser.yml, and every goos/goarch in
+  # it still builds. What it does NOT prove: the tag guard below (skipped, there
+  # being no tag) and the upload to the GitHub release.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -18,7 +33,11 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
+      # Tag runs only: a dispatch has no tag to guard, and github.ref_name is
+      # then a branch name, which would fail the parse and refuse a rehearsal
+      # for the wrong reason.
       - name: Guard tag major.minor against MCPSurfaceVersion.RequiredDataFormat
+        if: github.event_name == 'push'
         env:
           TAG: ${{ github.ref_name }}
         run: |
@@ -41,6 +60,8 @@ jobs:
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: latest
-          args: release --clean
+          # A dispatch is a rehearsal: --snapshot builds every target and
+          # publishes nothing. A tag run is the real release.
+          args: ${{ github.event_name == 'workflow_dispatch' && 'release --snapshot --clean' || 'release --clean' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
