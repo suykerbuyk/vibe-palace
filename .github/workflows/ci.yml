@@ -295,8 +295,19 @@ jobs:
   # affected jobs to `ubuntu-24.04` and fix the breakage on our clock rather than
   # the rollout's.
   #
-  # WHY THESE THREE COMMANDS AND NOT `make test`. The image can only reach this
-  # project in three ways, and each is exercised once here:
+  # 🔴 PUSH-ONLY, AND THAT IS A DELIBERATE TRADE. This job rehearses an IMAGE,
+  # not a pull request's code, so running it once per merged commit buys the
+  # same warning as running it on every PR head. What it trades away: a change
+  # that breaks only on ubuntu-26.04 is caught on main after merge rather than
+  # in review, so the operator finds it in the merge run and fixes it on main.
+  # What it buys: `make model-test` below downloads the model COLD, with no
+  # cache by design, so on a pull_request trigger every PR in the repository
+  # would carry a huggingface.co download whose flake reds a review for a
+  # reason that has nothing to do with the change under review. A rehearsal
+  # that reds someone else's PR is a rehearsal people learn to ignore.
+  #
+  # WHY THESE FOUR COMMANDS AND NOT `make test`. The image can only reach this
+  # project in four ways, and each is exercised once here:
   #   - `-race` needs cgo and the IMAGE's C toolchain. Every build we ship is
   #     CGO_ENABLED=0, so this is the only place an image's compiler matters.
   #   - `make model-test` downloads and runs the real ONNX model. The stack is
@@ -305,13 +316,27 @@ jobs:
   #     deliberately NO cache step: a cold download is the case worth proving.
   #   - `make source-audit` type-checks the whole module; it is the one job
   #     whose rule runs nowhere else.
+  #   - the walkthrough e2e BUILDS the vp binary and executes it, and drives
+  #     git, the hooks and the filesystem through it. Those are the most
+  #     image-sensitive paths in the repository, and `-short` above skips every
+  #     one of them (testing.Short() guards in internal/integration/e2e_*_test.go),
+  #     so without this step the first ubuntu-26.04 run of init-e2e,
+  #     dispatch-e2e, githook-e2e, walkthrough-e2e and workflows-e2e would BE
+  #     the migration. Walkthrough is the broadest single one; it stands in for
+  #     the other four rather than duplicating them.
   # The Go toolchain is pinned by setup-go, so the image's own Go is irrelevant.
   #
-  # timeout-minutes is larger than the `model` job's 15 because this one always
-  # downloads cold.
+  # BOUNDS. The sibling caps are the honest reference: `model` is 15 with a warm
+  # cache, and `walkthrough-e2e` is 10 on ubuntu-latest. This job pays a cold
+  # model download and adds the walkthrough on top, so 25 sits above the
+  # expected total and below the sum of those caps. It is a backstop against a
+  # wedged download, not a measurement: the first green run's duration is the
+  # real number, and if it lands near the cap, split the model download out
+  # rather than raising it.
   ubuntu26-canary:
     runs-on: ubuntu-26.04
-    timeout-minutes: 20
+    if: github.event_name == 'push'
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -319,4 +344,6 @@ jobs:
           go-version: "1.25"
       - run: go test -short -race ./...
       - run: make source-audit
+      - name: Run walkthrough e2e (Go)
+        run: go test -race -run '^TestIntegrationE2EWalkthrough' -v ./internal/integration/...
       - run: make model-test
