@@ -1531,15 +1531,26 @@ func (v *Vault) refuseTakenSlug(op, project, slug string, skipActive bool) error
 	return nil
 }
 
+// tombstoneMarker is the sentence that opens the second paragraph of every
+// move-out tombstone MoveProvenance.TombstoneSpec writes. It is one constant so
+// the writer and moveOutTombstoneDestination cannot drift apart.
+const tombstoneMarker = "This file is a tombstone, not the task."
+
 // moveOutTombstoneDestination reports the project a cancelled/ file says its
 // task was moved out to, when that file is the tombstone a cross-project move
 // files in its source — titled exactly "Moved to <project>", the string
-// MoveProvenance.TombstoneSpec renders and findTombstoneSource matches on. It
-// returns "" for any other file, and for one it cannot read: the answer only
+// MoveProvenance.TombstoneSpec renders and findTombstoneSource matches on —
+// AND whose body carries tombstoneMarker, the sentence TombstoneSpec writes. The
+// title alone is not enough: a real task titled "Moved to redis" and later
+// cancelled would otherwise be described as a tombstone naming project "redis".
+// It returns "" for any other file, and for one it cannot read: the answer only
 // chooses the refusal's wording, never whether to refuse.
 func moveOutTombstoneDestination(path, slug string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
+		return ""
+	}
+	if !strings.Contains(string(data), tombstoneMarker) {
 		return ""
 	}
 	dest, ok := strings.CutPrefix(parseTaskMeta(slug, string(data), true).Title, "Moved to ")
@@ -2130,13 +2141,15 @@ func (p MoveProvenance) DestinationBody() string {
 // content floor — it names the destination project, the destination path, the
 // day, the commit, and what a reader should do instead of touching this file.
 func (p MoveProvenance) TombstoneSpec() TaskSpec {
+	// The second paragraph opens with tombstoneMarker, written from the one
+	// constant moveOutTombstoneDestination matches on.
 	var b strings.Builder
 	fmt.Fprintf(&b, "This task is no longer in `%s`. On %s it was moved to project `%s`%s, and its file "+
 		"now lives at `Projects/%s/tasks/%s.md`, which is where its plan, its status and its edges are "+
 		"maintained from now on.\n",
 		p.FromProject, p.Day, p.ToProject, p.commitClause(), p.ToProject, p.Slug)
 	b.WriteString("\n")
-	fmt.Fprintf(&b, "This file is a tombstone, not the task. It exists so that a reader who follows a slug, "+
+	fmt.Fprintf(&b, tombstoneMarker+" It exists so that a reader who follows a slug, "+
 		"a link or a stale reference into `%s` finds out WHERE the work went instead of finding nothing, and "+
 		"so that anything still naming `%s` as a parent or a dependency resolves to a record rather than "+
 		"dangling. Do not amend it and do not reopen it: amend, retire and cancel belong to the live task in "+

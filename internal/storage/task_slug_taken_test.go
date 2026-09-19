@@ -396,3 +396,27 @@ func TestConcurrentRetireAndCancelArchiveOnceWithoutMisdiagnosis(t *testing.T) {
 		}
 	}
 }
+
+// A real task that happens to be titled "Moved to <word>" and was later
+// cancelled is not a move-out tombstone: the title alone would have described it
+// as one, naming a project called "redis". Only a file carrying tombstoneMarker,
+// the sentence TombstoneSpec writes, gets the tombstone wording.
+func TestCancelledTaskTitledMovedToIsNotCalledATombstone(t *testing.T) {
+	v := testVault(t)
+	if err := v.CreateTask("p", TaskSpec{Slug: "cache-layer", Title: "Moved to redis", Priority: "low",
+		Content: "Plan: move the cache layer to redis, measure, then retire memcached."}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.CancelTask("p", "cache-layer", ""); err != nil {
+		t.Fatal(err)
+	}
+	seedTaskRaw(t, v, "q", "", "cache-layer", "FROM-Q")
+	err := v.MoveTaskToProject("q", "cache-layer", "p")
+	assertSlugTaken(t, err, "move", "cancelled")
+	if strings.Contains(err.Error(), "is the tombstone") || strings.Contains(err.Error(), "redis") {
+		t.Fatalf("a real cancelled task titled \"Moved to redis\" was described as a move-out tombstone: %v", err)
+	}
+	if !strings.Contains(err.Error(), "so the slug is taken there") {
+		t.Errorf("want the ordinary taken-slug wording: %v", err)
+	}
+}
