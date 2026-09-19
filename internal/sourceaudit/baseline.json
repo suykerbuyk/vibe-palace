@@ -225,6 +225,18 @@
       "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Added by task test-infra-declarative-seeding-ephemeral-vault as the storage-direct lane (wrapping capture.WriteSession) alongside the MCP-lane WithCapturedSession, so a test declares which seeding lane it means instead of blurring the two — the task's own 'declare the seeding lane' requirement. Its only caller today is this package's own seed_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
     },
     {
+      "id": "uninvoked testutil.RunHermetic",
+      "reason": "The whole body of a TestMain; takes *testing.M, so by design its only callers are the one-line TestMain functions in internal/storage, internal/tools, internal/memory, cmd/vp, internal/hook, internal/testinfra and internal/integration. Added by task mcp-vault-tidy-and-sync-do-not-honour-git-enabled-false. TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go (the same shape as the testinfra.* entries): internal/testutil is the one leaf package every hermetic test package can import, because internal/storage and internal/tools cannot import testinfra, which imports them. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
+    },
+    {
+      "id": "uninvoked testutil.UseAmbientConfig",
+      "reason": "Takes *testing.T and restores the host's real XDG_CONFIG_HOME for one test; by design its only callers are the two live-vault canaries, internal/tools/bootstrap_live_vault_test.go and internal/storage/tasks_live_vault_test.go (liveTaskCorpus). Added by task mcp-vault-tidy-and-sync-do-not-honour-git-enabled-false. TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go (the same shape as the testinfra.* entries): internal/testutil is the one leaf package every hermetic test package can import, because internal/storage and internal/tools cannot import testinfra, which imports them. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
+    },
+    {
+      "id": "uninvoked testutil.XDGIsFixture",
+      "reason": "Reports whether XDG_CONFIG_HOME still points at the RunHermetic fixture; by design its only callers are the two live-vault canaries' skip branches, which fail instead of skipping when the ambient restore was lost. Added by task mcp-vault-tidy-and-sync-do-not-honour-git-enabled-false. TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go (the same shape as the testinfra.* entries): internal/testutil is the one leaf package every hermetic test package can import, because internal/storage and internal/tools cannot import testinfra, which imports them. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
+    },
+    {
       "id": "uninvoked zed.ListThreadIDs",
       "reason": "REAL FINDING, owned by the existing task zed-pane-capture-parity (Phase 1). This is the missing half of the documented Zed failure: zedAdapter.ResolveSource requires a Zed thread UUID, ListThreadIDs is the ONLY code in the tree that can enumerate one, and nothing calls it — so a thread cannot be found without hand-querying SQLite. Its doc comment cites a `--detect` smoke mode that DOES NOT EXIST anywhere in the tree. The gate rediscovered that task's root cause from source alone. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — the fix is deferred to the owning task named above; this reason is the DECLARE channel recording it."
     },

@@ -20,8 +20,13 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/memorytestutil"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
+
+// TestMain runs this package hermetically: XDG_CONFIG_HOME points at the
+// checked-in host-config fixture, never the developer's real host config.
+func TestMain(m *testing.M) { os.Exit(testutil.RunHermetic(m)) }
 
 // fakeTranscript is a minimal Claude Code JSONL transcript.
 const fakeTranscript = `{"type":"permission-mode","permissionMode":"default","sessionId":"test-session"}

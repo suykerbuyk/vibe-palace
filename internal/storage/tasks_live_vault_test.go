@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/mdfence"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // These tests run amend's splicer over the REAL task corpus and skip when the
@@ -34,8 +35,15 @@ import (
 func liveTaskCorpus(t *testing.T) map[string]string {
 	t.Helper()
 
+	// This package runs hermetically (TestMain → testutil.RunHermetic); restore
+	// the host's real config for this test so the corpus is the live vault's.
+	testutil.UseAmbientConfig(t)
 	v, err := OpenVaultGlobal()
 	if err != nil {
+		if testutil.XDGIsFixture() {
+			t.Fatalf("liveTaskCorpus is resolving the vault through the hermetic test fixture, not the "+
+				"host's config — the ambient restore was lost: %v", err)
+		}
 		t.Skipf("no vault configured on this host: %v", err)
 	}
 	if _, err := os.Stat(v.Root); err != nil {

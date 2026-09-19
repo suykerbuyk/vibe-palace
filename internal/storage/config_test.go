@@ -9,7 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
+
+// TestMain runs this package hermetically: XDG_CONFIG_HOME points at the
+// checked-in host-config fixture, never the developer's real host config.
+func TestMain(m *testing.M) { os.Exit(testutil.RunHermetic(m)) }
 
 func TestLoadConfigDefaults(t *testing.T) {
 	v := testVault(t)
