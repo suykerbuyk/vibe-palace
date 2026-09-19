@@ -182,3 +182,97 @@ func TestGitEnabledOwnerIsSilentOnTheLiveTree(t *testing.T) {
 		}
 	}
 }
+
+// Break U5: the refusal forged in a package-level var, with no function body
+// to walk. It wraps the real sentinel, so the parity test's errors.Is holds and
+// only this rule can catch it.
+func TestGitEnabledOwnerFlagsAForgedRefusalInAPackageVar(t *testing.T) {
+	src := strings.Replace(gitOwnerToolsClean, `import (
+	"errors"
+`, `import (
+	"errors"
+	"fmt"
+`, 1) + `
+var errForged = fmt.Errorf("nope: %w", storage.ErrGitDisabled)
+
+func forgedViaVar() error { return errForged }
+`
+	if got := gitOwnerFindings(t, gitOwnerTree(src)); !slices.Contains(got, "tools.errForged -> ErrGitDisabled") {
+		t.Errorf("a package var wrapping the sentinel was not flagged: %v", got)
+	}
+}
+
+// Break U5b: the sentinel aliased into a package var. The alias then reaches
+// fmt.Errorf or a return anywhere in the package, out of this rule's sight.
+func TestGitEnabledOwnerFlagsAnAliasedSentinel(t *testing.T) {
+	src := gitOwnerToolsClean + `
+var errOff = storage.ErrGitDisabled
+`
+	if got := gitOwnerFindings(t, gitOwnerTree(src)); !slices.Contains(got, "tools.errOff -> ErrGitDisabled") {
+		t.Errorf("a package var aliasing the sentinel was not flagged: %v", got)
+	}
+}
+
+// Break U6: HostGitEnabled taken as a value rather than called — through a
+// package var, and through a local :=. Neither is a call, so a rule that
+// matches callee names only sees nothing.
+func TestGitEnabledOwnerFlagsHostGitEnabledTakenAsAValue(t *testing.T) {
+	src := gitOwnerToolsClean + `
+var hge = storage.HostGitEnabled
+
+func readsViaPackageVar() bool { ok, _ := hge(); return ok }
+
+func readsViaLocalValue() bool {
+	f := storage.HostGitEnabled
+	ok, _ := f()
+	return ok
+}
+`
+	got := gitOwnerFindings(t, gitOwnerTree(src))
+	for _, want := range []string{"tools.hge -> HostGitEnabled", "tools.readsViaLocalValue -> HostGitEnabled"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("%s missing: a function value reading git_enabled was not flagged: %v", want, got)
+		}
+	}
+}
+
+// An import alias must not hide the owner: the reference is resolved through
+// the file's import of the storage package, not by the spelling "storage".
+func TestGitEnabledOwnerResolvesAnImportAlias(t *testing.T) {
+	src := `package tools
+
+import (
+	"fmt"
+
+	st "example.com/storage"
+)
+
+func aliased() error {
+	if ok, _ := st.HostGitEnabled(); ok {
+		return nil
+	}
+	return fmt.Errorf("nope: %w", st.ErrGitDisabled)
+}
+`
+	got := gitOwnerFindings(t, gitOwnerTree(src))
+	for _, want := range []string{"tools.aliased -> HostGitEnabled", "tools.aliased -> ErrGitDisabled"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("%s missing under an import alias: %v", want, got)
+		}
+	}
+}
+
+// CLEAN: a package's OWN unrelated error of the same name is not storage's.
+// The rule resolves by package identity, so this must not be flagged.
+func TestGitEnabledOwnerIsSilentOnAPackageLocalNameClash(t *testing.T) {
+	src := gitOwnerToolsClean + `
+var ErrGitDisabled = errors.New("this package's own, unrelated error")
+
+func returnsItsOwn() error { return ErrGitDisabled }
+`
+	for _, f := range gitOwnerFindings(t, gitOwnerTree(src)) {
+		if strings.HasPrefix(f, "tools.returnsItsOwn") || f == "tools.ErrGitDisabled -> ErrGitDisabled" {
+			t.Errorf("a package-local error of the same name was flagged as storage's: %v", f)
+		}
+	}
+}

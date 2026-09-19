@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"go/ast"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 // gitEnabledOwner keeps ONE owner of the git_enabled = false refusal.
@@ -24,15 +26,25 @@ import (
 //
 // It reports two things:
 //
-//  1. A call to HostGitEnabled from any function outside gitEnabledReaders.
-//     Inside internal/storage the allow-list is exactly RefuseIfGitDisabled,
-//     so an inner function re-reading the config is a finding too: that is
-//     the read-once-per-entry-call property. The other two entries are
-//     REPORTING readers that refuse nothing.
+//  1. Any reference to HostGitEnabled — a call, or the function taken as a
+//     value (`var f = storage.HostGitEnabled`, `f := storage.HostGitEnabled`)
+//     — from anywhere outside gitEnabledReaders. Inside internal/storage the
+//     allow-list is exactly RefuseIfGitDisabled, so an inner function
+//     re-reading the config is a finding too: that is the read-once-per-entry-
+//     call property. The other two entries are REPORTING readers that refuse
+//     nothing.
 //  2. Any reference to ErrGitDisabled or ErrGitConfigUnreadable in a package
 //     other than storage that is not the second argument of errors.Is.
-//     Mapping the refusal is allowed everywhere; constructing, wrapping or
-//     returning the sentinel outside storage is not.
+//     Mapping the refusal is allowed everywhere; constructing, wrapping,
+//     aliasing or returning the sentinel outside storage is not.
+//
+// Both are checked in every function body AND in every package-level var or
+// const initializer: `var errOff = fmt.Errorf("…%w", storage.ErrGitDisabled)`
+// forges the refusal without any function body at all. Names are resolved by
+// package identity, not spelling: outside storage a reference counts only as a
+// selector on the file's import of the storage package (under any alias, or a
+// dot import), so a package's own unrelated ErrGitDisabled is not mistaken for
+// storage's.
 //
 // # What it cannot see, stated
 //
@@ -41,8 +53,11 @@ import (
 // it; deleting Config.GitEnabled removed the easy path to that. A surface that
 // forges its own refusal WITHOUT the sentinel is caught by the parity test's
 // errors.Is assertion instead. The two together cover the forbidden shape;
-// neither does alone. "storage" is matched by package NAME, so a fixture or a
-// stray package of that name is treated as the owner.
+// neither does alone. The owner package is matched by NAME ("storage", and an
+// import path ending in "/storage"), so a fixture or a stray package of that
+// name is treated as the owner. Reading the config twice INSIDE an allow-listed
+// reader, or from a storage core that calls a gated entry point, is not pinned
+// here (recorded as a known unpinned property in the task's Code review).
 var gitEnabledReaders = map[string]string{
 	"storage.RefuseIfGitDisabled":          "the refusal's one reader",
 	"reconcile.VaultReconciler.gitEnabled": "decides whether `vp config sync` plans a git init (reporting)",
@@ -72,7 +87,24 @@ func gitEnabledOwner(files []file) []Finding {
 		}
 		pkg := f.ast.Name.Name
 		errPkgs := errorsPkgNames(f.ast)
-		for _, s := range bindingScopes(f) {
+		storageNames, dotStorage := storagePkgNames(f.ast)
+		// storageRef names the storage identifier an expression refers to:
+		// a selector on a storage import, or a bare identifier inside package
+		// storage itself (or under a dot import of it). "" for anything else.
+		storageRef := func(e ast.Expr) string {
+			switch v := e.(type) {
+			case *ast.SelectorExpr:
+				if x, ok := v.X.(*ast.Ident); ok && storageNames[x.Name] {
+					return v.Sel.Name
+				}
+			case *ast.Ident:
+				if pkg == "storage" || dotStorage {
+					return v.Name
+				}
+			}
+			return ""
+		}
+		for _, s := range gitOwnerScopes(f) {
 			scope := pkg + "." + s.name
 			if _, ok := gitEnabledReaders[scope]; ok {
 				found[scope] = true
@@ -97,55 +129,44 @@ func gitEnabledOwner(files []file) []Finding {
 			})
 
 			ast.Inspect(s.body, func(n ast.Node) bool {
-				switch v := n.(type) {
-				case *ast.CallExpr:
-					if calleeName(v) != "HostGitEnabled" {
-						return true
-					}
+				v, ok := n.(ast.Expr)
+				if !ok {
+					return true
+				}
+				if mapped[v] {
+					// Do not descend: the selector's own Sel ident would
+					// otherwise be seen as a bare reference.
+					return false
+				}
+				name := storageRef(v)
+				switch {
+				case name == "HostGitEnabled":
 					if _, ok := gitEnabledReaders[scope]; ok {
-						return true
+						return false
 					}
 					add(Finding{
 						Kind:   KindGitEnabledOwner,
 						Symbol: scope + " -> HostGitEnabled",
 						Pos:    posOf(f, v.Pos()),
 						Detail: fmt.Sprintf(
-							"%s reads git_enabled itself. The refusal has ONE reader, storage.RefuseIfGitDisabled; "+
-								"a second reader is how the CLI and MCP drift into two implementations that agree "+
-								"only today (and, inside storage, how one operation reads the config twice). Call "+
-								"storage.RefuseIfGitDisabled, or map its error with errors.Is. If this is a new "+
-								"REPORTING reader that refuses nothing, add it to gitEnabledReaders with its reason.",
+							"%s reads git_enabled itself (a call, or HostGitEnabled taken as a value). The refusal "+
+								"has ONE reader, storage.RefuseIfGitDisabled; a second reader is how the CLI and MCP "+
+								"drift into two implementations that agree only today (and, inside storage, how one "+
+								"operation reads the config twice). Call storage.RefuseIfGitDisabled, or map its error "+
+								"with errors.Is. If this is a new REPORTING reader that refuses nothing, add it to "+
+								"gitEnabledReaders with its reason.",
 							scope),
 					})
-				case ast.Expr:
-					if pkg == "storage" {
-						return true
-					}
-					if mapped[v] {
-						// Do not descend: the selector's own Sel ident would
-						// otherwise be seen as a bare reference.
-						return false
-					}
-					var name string
-					switch e := v.(type) {
-					case *ast.SelectorExpr:
-						name = e.Sel.Name
-					case *ast.Ident:
-						name = e.Name
-					default:
-						return true
-					}
-					if !gitEnabledSentinels[name] {
-						return true
-					}
+					return false
+				case gitEnabledSentinels[name] && pkg != "storage":
 					add(Finding{
 						Kind:   KindGitEnabledOwner,
 						Symbol: scope + " -> " + name,
 						Pos:    posOf(f, v.Pos()),
 						Detail: fmt.Sprintf(
 							"%s uses storage.%s outside errors.Is. Outside internal/storage the sentinel may only "+
-								"be MAPPED (errors.Is(err, storage.%s)); constructing, wrapping or returning it forges "+
-								"the refusal, which then passes every parity assertion while being a second "+
+								"be MAPPED (errors.Is(err, storage.%s)); constructing, wrapping, aliasing or returning "+
+								"it forges the refusal, which then passes every parity assertion while being a second "+
 								"implementation. Return the error storage.RefuseIfGitDisabled gave you.",
 							scope, name, name),
 					})
@@ -184,13 +205,66 @@ func gitEnabledOwner(files []file) []Finding {
 	return out
 }
 
-// calleeName is the bare name a call invokes: f(...) or x.f(...).
-func calleeName(call *ast.CallExpr) string {
-	switch fn := call.Fun.(type) {
-	case *ast.Ident:
-		return fn.Name
-	case *ast.SelectorExpr:
-		return fn.Sel.Name
+// gitOwnerScope is one region of a file the rule inspects, keyed by the name a
+// reader greps for.
+type gitOwnerScope struct {
+	name string
+	body ast.Node
+}
+
+// gitOwnerScopes is bindingScopes (function bodies and package-level func
+// literals) PLUS every package-level var or const initializer, keyed by the
+// var's name. A func literal inside an initializer is seen twice under the
+// same name; add() dedupes by Symbol, so it is reported once.
+func gitOwnerScopes(f file) []gitOwnerScope {
+	var out []gitOwnerScope
+	for _, s := range bindingScopes(f) {
+		out = append(out, gitOwnerScope{name: s.name, body: s.body})
 	}
-	return ""
+	for _, decl := range f.ast.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok || len(vs.Names) == 0 {
+				continue
+			}
+			for i, val := range vs.Values {
+				name := vs.Names[0].Name
+				if i < len(vs.Names) {
+					name = vs.Names[i].Name
+				}
+				out = append(out, gitOwnerScope{name: name, body: val})
+			}
+		}
+	}
+	return out
+}
+
+// storagePkgNames returns the names under which f imports the storage package
+// (an import path whose last element is "storage"), and whether any of those
+// imports is a dot import.
+func storagePkgNames(f *ast.File) (map[string]bool, bool) {
+	names := map[string]bool{}
+	dot := false
+	for _, imp := range f.Imports {
+		if imp.Path == nil {
+			continue
+		}
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil || (path != "storage" && !strings.HasSuffix(path, "/storage")) {
+			continue
+		}
+		switch {
+		case imp.Name == nil:
+			names["storage"] = true
+		case imp.Name.Name == ".":
+			dot = true
+		case imp.Name.Name != "_":
+			names[imp.Name.Name] = true
+		}
+	}
+	return names, dot
 }
