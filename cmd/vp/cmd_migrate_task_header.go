@@ -521,14 +521,22 @@ func taskHeaderWhere(project, sub, slug string) string {
 var taskHeaderShadowDirs = []string{"", "done", "cancelled"}
 
 // taskHeaderShadowed is the shadow guard for the task-migrate repairs that CALL
-// it: task-header (three arms), task-sections and task-header-spacing.
+// it.
+//
+// 🔴 THE CALLER LIST IS DELIBERATELY ABSENT, BECAUSE THE ONE THAT USED TO BE
+// HERE WENT FALSE WITHOUT A SINGLE EDIT TO THIS FILE. It named task-status and
+// task-board-fields as commands that open-code their own ACTIVE-ONLY check and
+// do not call this; both were pointed at this function on other branches, and
+// the sentence was left asserting the state of code it does not live beside.
+// Derive the callers, never read them off prose:
+//
+//	grep -rn 'taskHeaderShadowed(\|taskHeaderShadowWinner(' --include=*.go . | grep -v _test.go
 //
 // 🔴 IT IS NOT UNIVERSAL COVERAGE, AND SAYING SO WOULD STOP THE NEXT READER
-// LOOKING. task-status and task-board-fields read by path and write by slug
-// exactly as these do, and neither calls this — each open-codes its own check,
-// and at this revision both of those checks are the ACTIVE-ONLY shape this
-// function no longer has. Re-derive the callers rather than trusting this
-// sentence: grep -rn 'taskHeaderShadowed' --include=*.go .
+// LOOKING. Calling this is a convention each command opts into: nothing makes a
+// command that reads by path and writes by slug reach it, so a new one inherits
+// the hazard by default rather than the guard. Relocating the refusal into the
+// resolver is what would make that structural; it is not this function's job.
 //
 // 🔴 Vault.resolveTaskFile searches active, then done/, then cancelled/, and
 // returns the FIRST hit. A command that read one path and writes by slug
