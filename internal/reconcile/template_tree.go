@@ -60,7 +60,7 @@ type TemplateTreeSeed struct {
 	// ExternalPrune hands every Delete to the caller: materialize Apply does
 	// not remove the file. `vp config sync` sets it on a git vault, where a
 	// prune is only safe once HEAD (and each remote tip) has been checked —
-	// see storage.PruneMirrorsVerified.
+	// see storage.PruneMirrorsVerifiedWithDowngrade.
 	ExternalPrune bool
 	// PendingRemovals are tracked files under the tree that were removed from
 	// the worktree and whose removal is not committed, keyed by vault-relative
