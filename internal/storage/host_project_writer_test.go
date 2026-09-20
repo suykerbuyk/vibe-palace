@@ -355,6 +355,11 @@ func TestWriteHostScoringConfigTranscriptIsSilentOnARerun(t *testing.T) {
 // code so LoadConfig does not pay for attribution on every call. This is what
 // keeps the two walks from drifting: with no host-local file, the resolution
 // they produce must be the same one.
+//
+// It pins the RESOLUTION, on layers that can be read. The two walks diverge on
+// purpose when a layer cannot be read — LoadConfig skips it, the writer refuses
+// — and that half is pinned by
+// TestWriteHostScoringConfigRefusesAnUnreadableLowerLayer.
 func TestScoringRoomsBelowHostMatchesLoadConfig(t *testing.T) {
 	v, hostPath := hostLocalEnv(t, "proj",
 		"[palace.scoring.rooms.general]\nhigh = [\"g-high\"]\nmedium = [\"g-medium\"]\n"+
@@ -435,4 +440,132 @@ func TestWriteHostScoringConfigIsIdempotentOnBytes(t *testing.T) {
 			t.Fatalf("write %d changed the file; sha256 %s -> %s\n%s", i, first, got, body)
 		}
 	}
+}
+
+// 🔴 AN UNREADABLE LOWER LAYER MUST REFUSE THE WRITE, NOT PRODUCE A PARTIAL ROOM.
+//
+// The widening reads the layers below to complete each room. If that read
+// silently skips a layer it cannot stat, completeRoomsFromBelow finds no room
+// below, writes the proposal alone, and the host-local file — which outranks
+// the vault and replaces the room WHOLE — drops every tier that layer held.
+// That is the original data loss reached through an unreadable file instead of
+// an absent tier, and it is silent in all three channels at once: no error, no
+// transcript, no log.
+//
+// Both shapes here are the ones a bare `os.Stat(p) == nil` converts into
+// "absent": a search-permission failure on the parent directory, and a dangling
+// symlink.
+func TestWriteHostScoringConfigRefusesAnUnreadableLowerLayer(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: mode bits do not deny access")
+	}
+
+	// The control: with the layer readable, the room is widened and written.
+	t.Run("control, readable", func(t *testing.T) {
+		v, hostPath := hostLocalEnv(t, "proj", "")
+		writeVaultProjectConfig(t, v, "proj",
+			"[palace.scoring.rooms.general]\nhigh = [\"kubernetes\"]\n")
+		_, carried, err := v.WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
+			"general": {High: []string{"docker"}},
+		}, 0)
+		if err != nil {
+			t.Fatalf("control write failed: %v", err)
+		}
+		if len(carried) == 0 {
+			t.Error("control carried nothing; this test no longer probes what it claims")
+		}
+		body, rerr := os.ReadFile(hostPath)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		if !strings.Contains(string(body), "kubernetes") {
+			t.Errorf("control did not carry the vault tier:\n%s", body)
+		}
+	})
+
+	t.Run("vault project config unreadable (parent mode 000)", func(t *testing.T) {
+		v, hostPath := hostLocalEnv(t, "proj", "")
+		writeVaultProjectConfig(t, v, "proj",
+			"[palace.scoring.rooms.general]\nhigh = [\"kubernetes\"]\n")
+		projPath, err := v.ProjectConfigFile("proj")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := filepath.Dir(projPath)
+		if err := os.Chmod(dir, 0o000); err != nil {
+			t.Skipf("cannot chmod %s: %v", dir, err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+		// Confirm the shape really is unreadable, so a passing assertion below
+		// cannot be an artefact of a permissive filesystem.
+		if _, serr := os.Stat(projPath); serr == nil {
+			t.Skip("the filesystem still permits stat through a mode-000 directory")
+		}
+
+		_, _, werr := v.WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
+			"general": {High: []string{"docker"}},
+		}, 0)
+		if werr == nil {
+			body, _ := os.ReadFile(hostPath)
+			t.Fatalf("the write SUCCEEDED with an unreadable vault layer; host file is now:\n%s", body)
+		}
+		if !strings.Contains(werr.Error(), projPath) {
+			t.Errorf("error does not name the unreadable file %s: %v", projPath, werr)
+		}
+		// And it wrote nothing: a refusal that still left a partial room behind
+		// would be the same defect with an error message attached.
+		if _, serr := os.Stat(hostPath); !os.IsNotExist(serr) {
+			body, _ := os.ReadFile(hostPath)
+			t.Errorf("the refusal still wrote %s:\n%s", hostPath, body)
+		}
+	})
+
+	t.Run("vault project config is a dangling symlink", func(t *testing.T) {
+		v, hostPath := hostLocalEnv(t, "proj", "")
+		projPath, err := v.ProjectConfigFile("proj")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(projPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(t.TempDir(), "gone.toml"), projPath); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+
+		_, _, werr := v.WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
+			"general": {High: []string{"docker"}},
+		}, 0)
+		if werr == nil {
+			body, _ := os.ReadFile(hostPath)
+			t.Fatalf("the write SUCCEEDED with a dangling vault layer; host file is now:\n%s", body)
+		}
+		if _, serr := os.Stat(hostPath); !os.IsNotExist(serr) {
+			t.Errorf("the refusal still wrote %s", hostPath)
+		}
+	})
+
+	t.Run("host global config unreadable (dangling symlink)", func(t *testing.T) {
+		v, hostPath := hostLocalEnv(t, "proj", "")
+		globalPath, err := VaultConfigFilePath()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(globalPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(t.TempDir(), "gone.toml"), globalPath); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+
+		_, _, werr := v.WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
+			"general": {High: []string{"docker"}},
+		}, 0)
+		if werr == nil {
+			t.Fatalf("the write SUCCEEDED with an unreadable host global layer")
+		}
+		if _, serr := os.Stat(hostPath); !os.IsNotExist(serr) {
+			t.Errorf("the refusal still wrote %s", hostPath)
+		}
+	})
 }

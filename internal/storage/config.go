@@ -606,28 +606,38 @@ func HostGitEnabled() (bool, error) {
 	return enabled, nil
 }
 
-// hostProjectConfigPresent is the ONE presence test for the host-local
-// per-project file, shared by LoadConfig's Layer 4 and by ProjectConfigSources
-// so the reader and the reporter cannot drift apart.
+// configFilePresent is the ONE presence test for a config file this package
+// decides to read or skip, so no caller grows its own and drifts. what names
+// the file in the error, e.g. "host-local project config".
 //
-// 🔴 os.Lstat, NEVER os.Stat. Only an Lstat ENOENT means "no file". A dangling
-// symlink is a file that is there and cannot be read, so it must NOT report as
-// absent: Layer 4 would then be skipped while a later DecodeFile on the same
-// path fails, and `vp status` would print "none" for a config that in fact
-// breaks every command. That is the shape HostGitEnabled already refuses for
+// 🔴 os.Lstat, NEVER os.Stat, AND AN UNREADABLE FILE IS NOT AN ABSENT ONE.
+// Only an Lstat ENOENT means "no file". A dangling symlink, a parent directory
+// with no search permission, an I/O error — each is a file that is there and
+// cannot be read, and each must surface as an error rather than as absence.
+// A bare `os.Stat(p) == nil` test silently converts all three into "skip this
+// layer", which is how a reader prints "none" for a config that in fact breaks
+// every command, and how a WRITER produces a partial room (see
+// scoringRoomsBelowHost). It is the shape HostGitEnabled already refuses for
 // git_enabled, for the same reason.
 //
 // It reports presence, not readability: the decode that follows is what says
 // whether the bytes are good.
-func hostProjectConfigPresent(path string) (bool, error) {
+func configFilePresent(what, path string) (bool, error) {
 	switch _, err := os.Lstat(path); {
 	case err == nil:
 		return true, nil
 	case errors.Is(err, fs.ErrNotExist):
 		return false, nil
 	default:
-		return false, fmt.Errorf("stat host-local project config %s: %w", path, err)
+		return false, fmt.Errorf("stat %s %s: %w", what, path, err)
 	}
+}
+
+// hostProjectConfigPresent is configFilePresent for the host-local per-project
+// file, shared by LoadConfig's Layer 4 and by ProjectConfigSources so the
+// reader and the reporter cannot drift apart.
+func hostProjectConfigPresent(path string) (bool, error) {
+	return configFilePresent("host-local project config", path)
 }
 
 // ProjectConfigSources lists the per-project config files that EXIST for a
@@ -688,6 +698,21 @@ type scoringRoomsOnly struct {
 // TestScoringRoomsBelowHostMatchesLoadConfig pins the two together and reds if
 // they drift.
 //
+// 🔴 IT DIVERGES FROM LoadConfig IN ONE WAY, DELIBERATELY: AN UNREADABLE LAYER
+// FAILS. LoadConfig tests layers 2 and 3 with a bare `os.Stat(p) == nil` and so
+// fails OPEN — an unreadable file is skipped and the caller gets an answer
+// missing that layer. That is survivable for a read: one wrong answer, and the
+// file is still on disk. It is not survivable here. What this resolution feeds
+// is a WRITE of the host-local file, which outranks the vault and replaces the
+// room WHOLE, so a silently skipped layer means the room is written without the
+// tiers that layer held — the exact data loss the widening exists to prevent,
+// reached through an unreadable file instead of an absent tier. Losing a layer
+// on a read is recoverable; losing it on this write is not. So every layer here
+// goes through configFilePresent, and anything but ENOENT refuses the write.
+//
+// The parity the test pins is the RESOLUTION on layers that can be read, not
+// the disposition when one cannot.
+//
 // 🔴 DELETE WITH THE VAULT LAYER. This exists so the writer can carry the vault
 // project file's rooms forward before R4 removes that layer. After R4 the only
 // layer below the host-local file is the host global config, and what remains
@@ -712,24 +737,39 @@ func (v *Vault) scoringRoomsBelowHost(project string) (map[string]tomlRoomScorin
 	}
 	apply("the embedded defaults", l1.Palace.Scoring.Rooms)
 
-	// Layer 2: the host global config.
-	if globalPath, err := VaultConfigFilePath(); err == nil {
-		if _, serr := os.Stat(globalPath); serr == nil {
-			var l2 scoringRoomsOnly
-			if _, derr := toml.DecodeFile(globalPath, &l2); derr != nil {
-				return nil, nil, fmt.Errorf("decode vault config %s: %w", globalPath, derr)
-			}
-			apply(globalPath, l2.Palace.Scoring.Rooms)
+	// Layer 2: the host global config. Its path error is RETURNED, not
+	// swallowed as LoadConfig swallows it: a writer that cannot resolve the
+	// layer cannot know what it is about to drop. (Unreachable through the one
+	// caller today — WriteHostScoringConfig resolves the same path first, via
+	// HostProjectConfigPath — but the swallow is the defect, not its current
+	// reachability.)
+	globalPath, err := VaultConfigFilePath()
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve host config path: %w", err)
+	}
+	present, err := configFilePresent("host config", globalPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if present {
+		var l2 scoringRoomsOnly
+		if _, derr := toml.DecodeFile(globalPath, &l2); derr != nil {
+			return nil, nil, fmt.Errorf("decode vault config %s: %w", globalPath, derr)
 		}
+		apply(globalPath, l2.Palace.Scoring.Rooms)
 	}
 
 	// Layer 3: the vault project file.
 	if project != "" {
-		projPath, err := v.ProjectConfigFile(project)
-		if err != nil {
-			return nil, nil, err
+		projPath, perr := v.ProjectConfigFile(project)
+		if perr != nil {
+			return nil, nil, perr
 		}
-		if _, serr := os.Stat(projPath); serr == nil {
+		present, serr := configFilePresent("project config", projPath)
+		if serr != nil {
+			return nil, nil, serr
+		}
+		if present {
 			var l3 scoringRoomsOnly
 			if _, derr := toml.DecodeFile(projPath, &l3); derr != nil {
 				return nil, nil, fmt.Errorf("decode project config %s: %w", projPath, derr)
