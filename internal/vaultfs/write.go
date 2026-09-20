@@ -47,6 +47,13 @@ func Write(vaultPath, relPath, content, expectedSha256 string) (WriteResult, err
 	if IsTaskFilePath(relPath) {
 		return WriteResult{}, taskPathRefusal(relPath)
 	}
+	// The vault's per-project config is being retired and has moved host-local.
+	// Gated HERE for the same reason as task files: the CLI and the MCP tools
+	// are two call sites of this one function, and a guard only an agent can
+	// trip is not a guard.
+	if IsVaultProjectConfigPath(relPath) {
+		return WriteResult{}, vaultProjectConfigRefusal(relPath)
+	}
 	abs, err := ResolveSafePath(vaultPath, relPath)
 	if err != nil {
 		return WriteResult{}, err
@@ -125,6 +132,22 @@ func Create(vaultPath, relPath, content string) (WriteResult, error) {
 	if IsTaskFilePath(relPath) {
 		return WriteResult{}, taskPathRefusal(relPath)
 	}
+	// 🔴 DEFENCE IN DEPTH, AND A TRAP IF YOU REMOVE IT THE OTHER WAY ROUND.
+	// No surface reaches Create — neither vp_vault_* nor `vp vault` has a
+	// create verb — so today this gate refuses nothing a user can ask for. It
+	// is here because Create is the only NO-CLOBBER creator in this file, which
+	// makes it the one unguarded way to materialise the retired config if the
+	// removal slips.
+	//
+	// The trap: ADR-003 pushes writers toward this funnel, so a later cleanup
+	// is tempted to route WriteVaultProjectConfig through Create "to comply".
+	// That would break `vp init` against this line. WriteVaultProjectConfig
+	// takes its own vaultlock and calls atomicfile.Write directly, and it must
+	// keep doing so until the file is retired outright.
+	// TestVaultProjectConfigWriterIsNotStrandedByTheRefusal pins that.
+	if IsVaultProjectConfigPath(relPath) {
+		return WriteResult{}, vaultProjectConfigRefusal(relPath)
+	}
 	abs, err := ResolveSafePath(vaultPath, relPath)
 	if err != nil {
 		return WriteResult{}, err
@@ -168,6 +191,10 @@ func Edit(vaultPath, relPath, oldString, newString string, replaceAll bool, expe
 	// covered too.
 	if IsTaskFilePath(relPath) {
 		return EditResult{}, taskPathRefusal(relPath)
+	}
+	// See Write: the vault's per-project config has moved host-local.
+	if IsVaultProjectConfigPath(relPath) {
+		return EditResult{}, vaultProjectConfigRefusal(relPath)
 	}
 	abs, err := ResolveSafePath(vaultPath, relPath)
 	if err != nil {
@@ -329,6 +356,28 @@ func Move(vaultPath, fromPath, toPath string) (MoveResult, error) {
 	}
 	if IsTaskFilePath(toPath) {
 		return MoveResult{}, taskPathRefusal(toPath)
+	}
+	// 🔴 THE PER-PROJECT CONFIG GATE IS DESTINATION-ONLY, AND THE ASYMMETRY
+	// WITH THE TASK GATE DIRECTLY ABOVE IS DELIBERATE. Do not "fix" it.
+	//
+	// The task gate holds BOTH ends because moving a task OUT of tasks/ leaves
+	// the file freely writable by Write while it is still a task — the subtree
+	// is what the predicate matches, so leaving the subtree escapes the rule
+	// with the object intact.
+	//
+	// That reason does not transfer. IsVaultProjectConfigPath matches ONE EXACT
+	// PATH, and LoadConfig reads exactly that path, so a config moved anywhere
+	// else is read by nothing: moving it out is observationally a delete. And
+	// Delete is already allowed here, on purpose (see the note above) — so
+	// refusing the move source while permitting the delete would forbid the
+	// weaker operation and permit the stronger one.
+	//
+	// The destination IS gated: a move ONTO the path is a write of that file by
+	// another name, which is exactly the smuggling route Write now refuses.
+	// TestMoveAllowsMovingTheVaultProjectConfigOut reds if a source check is
+	// added.
+	if IsVaultProjectConfigPath(toPath) {
+		return MoveResult{}, vaultProjectConfigRefusal(toPath)
 	}
 	if filepath.Clean(fromPath) == filepath.Clean(toPath) {
 		return MoveResult{}, fmt.Errorf("vaultfs: move source and destination are the same path: %s", fromPath)
