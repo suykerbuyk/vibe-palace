@@ -11,7 +11,12 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
+
+// TestMain runs this package hermetically: XDG_CONFIG_HOME points at the
+// checked-in host-config fixture, never the developer's real host config.
+func TestMain(m *testing.M) { os.Exit(testutil.RunHermetic(m)) }
 
 // TestIsolateEnvCannotResolveOutsideFixture is the negative control the
 // task's Verification section asks for: a test that sets no environment of

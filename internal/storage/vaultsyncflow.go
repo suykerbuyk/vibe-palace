@@ -98,9 +98,17 @@ func (r *TidyResult) GenuineDirt() []string {
 //     so they land in Swept on the re-scan and are absent from the re-scanned
 //     GenuineDirt — they must not trip this gate, and the set math above
 //     guarantees they don't.
+//
+// The git_enabled gate comes first and keeps the non-nil contract: both
+// front-ends read res.Committed before err, so a refused sync returns an empty
+// *SyncResult, never nil. Past the gate every inner step calls a core, so one
+// sync reads the host config once.
 func SyncVault(vaultPath string, remotes []string) (*SyncResult, error) {
 	result := &SyncResult{}
 
+	if err := RefuseIfGitDisabled(vaultPath, "sync"); err != nil {
+		return result, err
+	}
 	if err := RefuseIfNestedVaultGit(vaultPath, "sync"); err != nil {
 		return result, err
 	}
@@ -131,7 +139,7 @@ func SyncVault(vaultPath string, remotes []string) (*SyncResult, error) {
 	// all network). An empty swept set is a no-op — TidyVault does not commit and
 	// leaves Committed=false; a lone deferred transcript half is fine here.
 	if len(scan.Swept) > 0 {
-		tidy, err := TidyVault(vaultPath, false)
+		tidy, err := tidyVaultCore(vaultPath, false)
 		if err != nil {
 			return result, err
 		}
@@ -142,7 +150,7 @@ func SyncVault(vaultPath string, remotes []string) (*SyncResult, error) {
 	// 4. Pull each remote. Pull ALWAYS returns err == nil; the real verdict lives
 	// in RemoteResults (FINDING A). Gate on RemoteVerdict — a non-empty verdict
 	// (a failed fetch/merge or a conflict) aborts before we push over it.
-	pull, _ := Pull(vaultPath, remotes)
+	pull, _ := pullCore(vaultPath, remotes)
 	result.Pull = pull
 	if v := RemoteVerdict(OpPull, pull.RemoteResults, ""); v != "" {
 		return result, errors.New(v)
@@ -166,7 +174,7 @@ func SyncVault(vaultPath string, remotes []string) (*SyncResult, error) {
 	}
 
 	// 6. Push the committed HEAD. Same verdict gate as the pull.
-	push, _ := PushPlain(vaultPath, remotes)
+	push, _ := pushPlainCore(vaultPath, remotes)
 	result.Push = push
 	if v := RemoteVerdict(OpPush, push.RemoteResults, "HEAD"); v != "" {
 		return result, errors.New(v)

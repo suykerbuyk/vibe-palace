@@ -152,8 +152,8 @@ max_tokens = 2048
 	if after.PalaceLLM.MaxTokens != 2048 {
 		t.Errorf("PalaceLLM.MaxTokens = %d, want 2048 (global tier, post-apply)", after.PalaceLLM.MaxTokens)
 	}
-	if after.GitEnabled {
-		t.Errorf("GitEnabled = true, want false (global tier, post-apply)")
+	if enabled, err := storage.HostGitEnabled(); err != nil || enabled {
+		t.Errorf("HostGitEnabled = %v, %v; want false (global tier, post-apply)", enabled, err)
 	}
 	if after.HTTPPort != 9001 {
 		t.Errorf("HTTPPort = %d, want 9001 (global tier, post-apply)", after.HTTPPort)

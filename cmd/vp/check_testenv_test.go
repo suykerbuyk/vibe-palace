@@ -61,11 +61,13 @@ type checkEnv struct {
 // cwd whose .vibe-palace.toml names project "checktest". The embedder seam is
 // then stubbed with a 384-dimension mock and the host registry with e.Hosts.
 //
-// setupTestVaultEnv writes no git_enabled. The Git row reads the raw key
-// through VaultReconciler.gitEnabled (internal/reconcile/vault.go), where an
-// absent key is false — LoadConfig's defaults.toml layering does not apply to
-// that decode — so the row reads "disabled", as the hand-written
-// `git_enabled = false` these tests used to carry produced.
+// setupTestVaultEnv writes no git_enabled, and the vault it names is a bare
+// temp directory. VaultReconciler.gitEnabled reads the setting through
+// storage.HostGitEnabled (internal/reconcile/vault.go), where an ABSENT key
+// means ENABLED, so the Git row falls past the disabled branch to
+// check.CheckGit's repository test and reads "vault is not a git repository".
+// It used to read "disabled", from a raw decode that treated the absent key as
+// false; that reader is gone.
 func healthyCheckEnv(t *testing.T) *checkEnv {
 	t.Helper()
 	e := &checkEnv{Vault: setupTestVaultEnv(t)}

@@ -66,7 +66,7 @@ func cleanT(t *testing.T, dir string) {
 
 func TestPruneMirrorsVerified_RemovesAndCommitsAMirror(t *testing.T) {
 	dir := committedRepo(t, map[string]string{"T/wrap.md": "mirror\n"})
-	res, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, false, acceptOnly(nil, "mirror\n"))
+	res, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, false, true, acceptOnly(nil, "mirror\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestPruneMirrorsVerified_RestoresInsteadOfRemoving(t *testing.T) {
 	dir := committedRepo(t, map[string]string{"T/wrap.md": "operator\n"})
 	head := gitRun(t, dir, "rev-parse", "HEAD")
 	writeFile(t, dir, "T/wrap.md", "mirror\n")
-	res, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, false, acceptOnly(nil, "mirror\n"))
+	res, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, false, true, acceptOnly(nil, "mirror\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestPruneMirrorsVerified_RestoresInsteadOfRemoving(t *testing.T) {
 func TestPruneMirrorsVerified_CommitsOnlyAccepted(t *testing.T) {
 	dir := committedRepo(t, map[string]string{"T/a.md": "mirror\n", "T/b.md": "operator\n"})
 	writeFile(t, dir, "T/b.md", "mirror\n")
-	res, out, err := PruneMirrorsVerified(dir, []string{"T/a.md", "T/b.md"}, false, acceptOnly(nil, "mirror\n"))
+	res, out, err := pruneMirrors(dir, []string{"T/a.md", "T/b.md"}, false, true, acceptOnly(nil, "mirror\n"))
 	if err != nil || res.CommitSHA == "" {
 		t.Fatalf("%v %+v", err, res)
 	}
@@ -125,7 +125,7 @@ func TestPruneMirrorsVerified_UntrackedMirrorRemovedWithoutCommit(t *testing.T) 
 	dir := initTestRepo(t)
 	head := gitRun(t, dir, "rev-parse", "HEAD")
 	writeFile(t, dir, "T/new.md", "mirror\n")
-	res, out, err := PruneMirrorsVerified(dir, []string{"T/new.md"}, false, acceptOnly(nil, "mirror\n"))
+	res, out, err := pruneMirrors(dir, []string{"T/new.md"}, false, true, acceptOnly(nil, "mirror\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestPruneMirrorsVerified_UntrackedMirrorRemovedWithoutCommit(t *testing.T) 
 func TestPruneMirrorsVerified_ChangedWorktreeIsKept(t *testing.T) {
 	dir := committedRepo(t, map[string]string{"T/wrap.md": "mirror\n"})
 	writeFile(t, dir, "T/wrap.md", "a fresh edit\n")
-	_, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, false, acceptOnly(nil, "mirror\n"))
+	_, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, false, true, acceptOnly(nil, "mirror\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestPruneMirrorsVerified_ExactBytes(t *testing.T) {
 	body := "  leading\ntrailing spaces   \n\n\n"
 	dir := committedRepo(t, map[string]string{"T/ws.md": body})
 	seen := map[string][]byte{}
-	if _, _, err := PruneMirrorsVerified(dir, []string{"T/ws.md"}, false, acceptOnly(seen, body)); err != nil {
+	if _, _, err := pruneMirrors(dir, []string{"T/ws.md"}, false, true, acceptOnly(seen, body)); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(seen["T/ws.md"], []byte(body)) {
@@ -195,7 +195,7 @@ func TestPruneMirrorsVerified_ChecksTheHeadAfterReconcile(t *testing.T) {
 		headHadRemote = headHadRemote || exec.Command("git", "-C", dir, "cat-file", "-e", "HEAD:remote.txt").Run() == nil
 		return inner(rel, b)
 	}
-	res, _, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, true, v)
+	res, _, err := pruneMirrors(dir, []string{"T/wrap.md"}, true, true, v)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestPruneMirrorsVerified_StagedChangeRemovesNothing(t *testing.T) {
 	dir := committedRepo(t, map[string]string{"T/wrap.md": "operator\n"})
 	writeFile(t, dir, "T/wrap.md", "mirror\n")
 	gitRun(t, dir, "add", "T/wrap.md")
-	_, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, false, acceptOnly(nil, "mirror\n"))
+	_, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, false, true, acceptOnly(nil, "mirror\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func isolateIdentity(t *testing.T, dir string) {
 func TestPruneMirrorsVerified_NoIdentityRemovesNothing(t *testing.T) {
 	dir := committedRepo(t, map[string]string{"T/wrap.md": "mirror\n"})
 	isolateIdentity(t, dir)
-	_, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, false, acceptOnly(nil, "mirror\n"))
+	_, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, false, true, acceptOnly(nil, "mirror\n"))
 	if err == nil {
 		t.Fatal("no error for a host without an identity")
 	}
@@ -267,7 +267,7 @@ func TestPruneMirrorsVerified_CorruptIndexRemovesNothing(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ".git", "index"), []byte("not an index"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, false, acceptOnly(nil, "mirror\n"))
+	_, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, false, true, acceptOnly(nil, "mirror\n"))
 	if err == nil {
 		t.Fatal("no error for a corrupt index")
 	}
@@ -295,7 +295,7 @@ func TestPruneMirrorsVerified_RemoteOperatorContentIsKept(t *testing.T) {
 	gitRun(t, other, "push", "origin", "main")
 	head := gitRun(t, dir, "rev-parse", "HEAD")
 
-	res, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, true, acceptOnly(nil, "mirror\n"))
+	res, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, true, true, acceptOnly(nil, "mirror\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +322,7 @@ func TestPruneMirrorsVerified_RejectedPushIsVisible(t *testing.T) {
 	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho refused >&2\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	res, _, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, true, acceptOnly(nil, "mirror\n"))
+	res, _, err := pruneMirrors(dir, []string{"T/wrap.md"}, true, true, acceptOnly(nil, "mirror\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +341,7 @@ func TestPruneMirrorsVerified_AlreadyGone(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	_, out, err := PruneMirrorsVerified(dir, []string{"T/mirror.md", "T/theirs.md"}, false, acceptOnly(nil, "mirror\n"))
+	_, out, err := pruneMirrors(dir, []string{"T/mirror.md", "T/theirs.md"}, false, true, acceptOnly(nil, "mirror\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +375,7 @@ func TestPruneMirrorsVerified_SecondGuardOnMovedHead(t *testing.T) {
 		gitRun(t, dir, "update-ref", "HEAD", sha)
 		gitRun(t, dir, "reset", "-q", "--", "T/wrap.md")
 	}
-	res, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, false, acceptOnly(nil, "mirror\n"))
+	res, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, false, true, acceptOnly(nil, "mirror\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +392,7 @@ func TestPruneMirrorsVerified_GitFaultsFailClosed(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(dir, "T", "sub")); err != nil {
 		t.Fatal(err)
 	}
-	_, out, err := PruneMirrorsVerified(dir, []string{"T/sub"}, false, acceptOnly(nil, "mirror\n"))
+	_, out, err := pruneMirrors(dir, []string{"T/sub"}, false, true, acceptOnly(nil, "mirror\n"))
 	if err == nil {
 		t.Fatal("a tree at the path was not an error")
 	}
@@ -405,10 +405,10 @@ func TestPruneMirrorsVerified_GitFaultsFailClosed(t *testing.T) {
 }
 
 func TestPruneMirrorsVerified_GuardsItsInputs(t *testing.T) {
-	if _, _, err := PruneMirrorsVerified(t.TempDir(), []string{"x"}, false, PruneVerifier{}); err == nil {
+	if _, _, err := pruneMirrors(t.TempDir(), []string{"x"}, false, true, PruneVerifier{}); err == nil {
 		t.Error("an empty verifier was accepted")
 	}
-	if _, _, err := PruneMirrorsVerified(t.TempDir(), nil, false, acceptOnly(nil)); err == nil {
+	if _, _, err := pruneMirrors(t.TempDir(), nil, false, true, acceptOnly(nil)); err == nil {
 		t.Error("no paths was accepted")
 	}
 }
@@ -515,7 +515,7 @@ func TestPruneMirrorsVerified_RemoteWithoutThePathAllows(t *testing.T) {
 	gitRun(t, other, "commit", "-qm", "pruned elsewhere")
 	gitRun(t, other, "push", "origin", "main")
 
-	res, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, true, acceptOnly(nil, "mirror\n"))
+	res, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, true, true, acceptOnly(nil, "mirror\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +536,7 @@ func TestPruneMirrorsVerified_UnreachableRemoteDefers(t *testing.T) {
 	gitRun(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
 	head := gitRun(t, dir, "rev-parse", "HEAD")
 
-	res, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, true, acceptOnly(nil, "mirror\n"))
+	res, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, true, true, acceptOnly(nil, "mirror\n"))
 	if err == nil {
 		t.Error("no error although the remote could not be verified")
 	}
@@ -560,7 +560,7 @@ func TestPruneMirrorsVerified_CommitFailureUnstages(t *testing.T) {
 	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, false, acceptOnly(nil, "mirror\n"))
+	_, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, false, true, acceptOnly(nil, "mirror\n"))
 	if err == nil || len(out.Failed) != 1 {
 		t.Fatalf("err=%v out=%+v", err, out)
 	}
@@ -570,7 +570,7 @@ func TestPruneMirrorsVerified_CommitFailureUnstages(t *testing.T) {
 	if err := os.Remove(hook); err != nil {
 		t.Fatal(err)
 	}
-	_, out, err = PruneMirrorsVerified(dir, []string{"T/wrap.md"}, false, acceptOnly(nil, "mirror\n"))
+	_, out, err = pruneMirrors(dir, []string{"T/wrap.md"}, false, true, acceptOnly(nil, "mirror\n"))
 	if err != nil || len(out.Committed) != 1 {
 		t.Fatalf("the retry did not commit: err=%v out=%+v", err, out)
 	}
@@ -603,7 +603,7 @@ func assertStillUnborn(t *testing.T, dir string) {
 func TestPruneMirrorsVerified_UnbornHeadUntrackedMirrorPruned(t *testing.T) {
 	dir := initUnbornTestRepo(t)
 	writeFile(t, dir, "T/wrap.md", "mirror\n")
-	res, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, false, acceptOnly(nil, "mirror\n"))
+	res, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, false, true, acceptOnly(nil, "mirror\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -645,7 +645,7 @@ func TestPruneMirrorsVerified_UnbornHeadRemoteHoldsMirrorKeepsIt(t *testing.T) {
 
 	writeFile(t, dir, "T/wrap.md", "mirror\n")
 
-	res, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, true, acceptOnly(nil, "mirror\n"))
+	res, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, true, true, acceptOnly(nil, "mirror\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -673,7 +673,7 @@ func TestPruneMirrorsVerified_UnbornHeadUnreachableRemoteDefers(t *testing.T) {
 	gitRun(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
 	writeFile(t, dir, "T/wrap.md", "mirror\n")
 
-	res, out, err := PruneMirrorsVerified(dir, []string{"T/wrap.md"}, true, acceptOnly(nil, "mirror\n"))
+	res, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, true, true, acceptOnly(nil, "mirror\n"))
 	if err == nil {
 		t.Error("no error although the remote could not be verified")
 	}
