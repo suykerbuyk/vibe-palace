@@ -569,3 +569,93 @@ func TestWriteHostScoringConfigRefusesAnUnreadableLowerLayer(t *testing.T) {
 		}
 	})
 }
+
+// roomTiersOf reads the host-local file's tiers for one room, or zero if the
+// file or the room is absent. It decodes the real bytes rather than trusting a
+// return value: what the transcript is checked against below has to be what the
+// file actually holds.
+func roomTiersOf(t *testing.T, path, room string) tomlRoomScoring {
+	t.Helper()
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return tomlRoomScoring{}
+	}
+	var hl hostProjectLayer
+	if _, err := toml.DecodeFile(path, &hl); err != nil {
+		t.Fatalf("decode %s: %v", path, err)
+	}
+	return hl.Palace.Scoring.Rooms[room]
+}
+
+// 🔴 THE TRANSCRIPT MUST NAME EVERY KEYWORD THE FILE ACTUALLY GAINED FROM BELOW.
+//
+// This pins containsKeyword against mergeKeywordTier — the agreement that makes
+// the transcript truthful — WITHOUT restating either comparison. The oracle
+// below diffs the file's real bytes before and after with a plain `==`, so it
+// cannot be blinded by a sabotage of the comparison under test: if
+// containsKeyword is loosened to strings.EqualFold, the merge still adds the
+// case-differing keyword, the oracle still sees it arrive, and the transcript's
+// silence becomes a lie this test can see.
+//
+// The production code now derives both sides from keywordKey so no second copy
+// exists to disagree. This is the belt for that pair of braces: it catches a
+// future edit that stops going through keywordKey at all.
+//
+// The input is the shape that separates the two comparisons: a keyword below
+// that differs from the proposed one ONLY in case.
+func TestTranscriptNamesEveryKeywordTheFileGainedFromBelow(t *testing.T) {
+	v, hostPath := hostLocalEnv(t, "proj", "")
+	writeVaultProjectConfig(t, v, "proj",
+		"[palace.scoring.rooms.general]\nhigh = [\"Kubernetes\"]\n")
+
+	below := roomTiersOf(t, mustVaultProjectPath(t, v, "proj"), "general")
+	before := roomTiersOf(t, hostPath, "general")
+
+	_, carried, err := v.WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
+		"general": {High: []string{"kubernetes"}}, // differs from below ONLY in case
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := roomTiersOf(t, hostPath, "general")
+	transcript := strings.Join(carried, "\n")
+
+	// The oracle: plain ==, over the bytes. What did high actually gain?
+	gained := map[string]bool{}
+	for _, kw := range after.High {
+		had := false
+		for _, old := range before.High {
+			if old == kw { // deliberately NOT containsKeyword: that is the code under test
+				had = true
+				break
+			}
+		}
+		if !had {
+			gained[kw] = true
+		}
+	}
+	if !gained["Kubernetes"] {
+		t.Fatalf("the file did not gain %q, so this test no longer probes what it claims; high=%v",
+			"Kubernetes", after.High)
+	}
+
+	// Every gained keyword that came from BELOW must be named by the transcript.
+	for _, kw := range below.High {
+		if !gained[kw] {
+			continue
+		}
+		if !strings.Contains(transcript, kw) {
+			t.Errorf("the file gained %q from the layer below and the transcript did not say so.\n"+
+				"  high before: %v\n  high after:  %v\n  transcript:  %q",
+				kw, before.High, after.High, transcript)
+		}
+	}
+}
+
+func mustVaultProjectPath(t *testing.T, v *Vault, project string) string {
+	t.Helper()
+	p, err := v.ProjectConfigFile(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
