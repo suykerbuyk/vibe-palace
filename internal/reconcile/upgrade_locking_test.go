@@ -5,6 +5,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
 // seedVaultProject creates a vault root with Projects/<slug>/config.toml holding
@@ -224,5 +226,43 @@ func TestApplyUpgrade_HostLocalBranchUnchanged(t *testing.T) {
 	// And no leftover temp.
 	if _, err := os.Stat(cfgPath + ".tmp"); !os.IsNotExist(err) {
 		t.Errorf("host-local upgrade left config.toml.tmp behind (err=%v)", err)
+	}
+}
+
+// TestApplyUpgrade_VaultBranchIsNotStrandedByTheWriteRefusal is the second
+// stranding pin for the vaultfs refuse-gate on Projects/<slug>/config.toml.
+//
+// applyUpgradeVault is the writer the original plan's safety argument missed:
+// it rewrites that exact path on `vp config upgrade --project` and
+// `vp config sync --tier project`. It survives the refusal because it writes
+// through storage.LockedUpdate, which reaches atomicfile.Write and never enters
+// vaultfs — the same route WriteVaultProjectConfig takes, for the same reason.
+//
+// Sabotage that reds it: route this branch's write through vaultfs instead of
+// LockedUpdate. The guard-the-guard half below is what stops the test passing
+// if the gate is deleted outright.
+func TestApplyUpgrade_VaultBranchIsNotStrandedByTheWriteRefusal(t *testing.T) {
+	const slug = "demo"
+	root, cfgPath := seedVaultProject(t, slug, "# project overrides\n")
+
+	added, err := applyUpgrade(root, cfgPath, vaultProjectTarget())
+	if err != nil {
+		t.Fatalf("vault config upgrade must still work after the refusal lands: %v", err)
+	}
+	if added == 0 {
+		t.Fatal("expected the vault upgrade to add missing keys, added 0")
+	}
+	if _, err := toml.DecodeFile(cfgPath, &struct{}{}); err != nil {
+		t.Fatalf("upgraded config does not parse: %v", err)
+	}
+
+	// Guard the guard: the path just rewritten is the one the generic tools
+	// refuse.
+	rel := filepath.Join("Projects", slug, "config.toml")
+	if !vaultfs.IsVaultProjectConfigPath(rel) {
+		t.Fatalf("vaultfs does not classify %q as the vault project config", rel)
+	}
+	if _, werr := vaultfs.Write(root, rel, "clobbered", ""); !errors.Is(werr, vaultfs.ErrRefusedPath) {
+		t.Errorf("vaultfs.Write(%q) = %v, want ErrRefusedPath", rel, werr)
 	}
 }
