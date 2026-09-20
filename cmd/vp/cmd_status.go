@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
@@ -80,6 +81,12 @@ type statusResult struct {
 	Tasks           int                 `json:"active_tasks"`
 	Sessions        int                 `json:"recent_sessions"`
 	KG              *storage.KGStats    `json:"knowledge_graph,omitempty"`
+	// ProjectConfigSources are the per-project config files that exist for
+	// this project, highest-precedence first: the host-local file, then the
+	// vault's. Empty means the project inherits the host global config alone.
+	// Which file a tuning run wrote is otherwise invisible, and after task
+	// move-per-project-config-out-of-the-shared-vault there are two candidates.
+	ProjectConfigSources []string `json:"project_config_sources,omitempty"`
 }
 
 // runStatus renders the status report. vaultSource is the resolution source for
@@ -112,6 +119,12 @@ func runStatus(vault *storage.Vault, proj string, vaultSource string, asJSON boo
 	// No not-exist exemption, because absence does not come back as an error:
 	// KGStats returns nil for a project with no graph (measured). Any error
 	// here is genuine unreadability. stderr, so JSON output stays parseable.
+	if srcs, err := vault.ProjectConfigSources(proj); err == nil {
+		result.ProjectConfigSources = srcs
+	} else {
+		fmt.Fprintf(os.Stderr, "vp status: project config sources unreadable: %v\n", err)
+	}
+
 	if stats, err := vault.KGStats(proj); err == nil {
 		result.KG = &stats
 	} else {
@@ -134,6 +147,11 @@ func runStatus(vault *storage.Vault, proj string, vaultSource string, asJSON boo
 	if result.Palace != nil {
 		fmt.Fprintf(out, "Palace:  %d wings, %d rooms, %d drawers\n",
 			result.Palace.Wings, result.Palace.Rooms, result.Palace.Drawers)
+	}
+	if len(result.ProjectConfigSources) == 0 {
+		fmt.Fprintf(out, "project config = none (host global config only)\n")
+	} else {
+		fmt.Fprintf(out, "project config = %s\n", strings.Join(result.ProjectConfigSources, ", "))
 	}
 	fmt.Fprintf(out, "Tasks:   %d active\n", result.Tasks)
 	fmt.Fprintf(out, "Sessions: %d total\n", result.Sessions)

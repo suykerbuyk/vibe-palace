@@ -18,13 +18,18 @@ package integration
 // seedDrawer, tomlStructEqual, and newMockLLMServer below.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -130,6 +135,28 @@ func requireFileNotContains(t *testing.T, path, substr string) {
 // goes through the real storage.Vault.ProjectConfigFile accessor instead of
 // re-deriving the "{vault}/Projects/{project}/config.toml" layout by hand —
 // a Go test can just call the production code that owns that path.
+// hostProjectConfigPath is the HOST-LOCAL per-project config file, which is
+// where `tune rooms --apply` and `discover rooms --apply` write after R2 of
+// task move-per-project-config-out-of-the-shared-vault.
+//
+// 🔴 NOT projectConfigPath. That one resolves the VAULT's
+// Projects/<slug>/config.toml, which no production code writes any more
+// (`grep -rn '\.WriteScoringConfig(' --include=*.go . | grep -v _test.go` is
+// empty). An apply assertion pointed there compares an untouched file to
+// itself and passes no matter what the writer does.
+//
+// It resolves through the process environment, which testinfra.IsolateEnv has
+// already pointed at the same XDG_CONFIG_HOME the CLI subprocess gets, so this
+// is the very file the subprocess wrote.
+func hostProjectConfigPath(t *testing.T, project string) string {
+	t.Helper()
+	p, err := storage.HostProjectConfigPath(project)
+	if err != nil {
+		t.Fatalf("HostProjectConfigPath(%q): %v", project, err)
+	}
+	return p
+}
+
 func projectConfigPath(t *testing.T, vaultRoot, project string) string {
 	t.Helper()
 	p, err := storage.NewVault(vaultRoot).ProjectConfigFile(project)
@@ -162,9 +189,20 @@ func seedDrawer(t *testing.T, homeDir, project, room, content string) {
 }
 
 // tomlStructEqual inlines test/e2e/internal/tomleq/main.go: decode both TOML
-// files into map[string]any and compare by reflect.DeepEqual. sha256 is not
-// safe here — toml.NewEncoder is not byte-stable across round-trips — so
-// idempotency assertions need structural, not textual, equality.
+// files into map[string]any and compare by reflect.DeepEqual.
+//
+// 🔴 IT IS THE WEAKER CHECK, AND IT IS NO LONGER THE ONLY ONE AVAILABLE. The
+// note that stood here said "sha256 is not safe here — toml.NewEncoder is not
+// byte-stable across round-trips". That predates the splice rewrite: the
+// scoring writer no longer re-encodes the parsed map, it splices rendered
+// sections into the original bytes and skips the write entirely when the result
+// is unchanged, so its output IS byte-stable. Both idempotency pins rely on
+// that — sha256File here, and TestWriteHostScoringConfigIsIdempotentOnBytes in
+// internal/storage.
+//
+// Prefer sha256File for a file this writer produces: structural equality cannot
+// see a duplicate the decoder normalises away. Keep this for a comparison that
+// must tolerate re-encoding, or that spans writers with different formatting.
 func tomlStructEqual(t *testing.T, pathA, pathB string) bool {
 	t.Helper()
 	var a, b map[string]any
@@ -188,6 +226,9 @@ func tomlStructEqual(t *testing.T, pathA, pathB string) bool {
 type mockLLMServer struct {
 	*httptest.Server
 	content string
+	// responder, when set, builds the assistant message from the request body
+	// instead of replaying content. See reflectAllTo.
+	responder func(reqBody string) string
 }
 
 // setResponse changes the JSON content of the next /chat/completions
@@ -196,6 +237,48 @@ func (m *mockLLMServer) setResponse(content string) { m.content = content }
 
 // newMockLLMServer starts a mock LLM server with an initial response body.
 // The caller must not close it; t.Cleanup already arranges that.
+// drawerIDInPrompt matches the `drawer_id: <id>` lines BuildClassificationPrompt
+// writes into the user message.
+var drawerIDInPrompt = regexp.MustCompile(`(?m)^drawer_id: (.+)$`)
+
+// reflectAllTo returns a responder that classifies EVERY drawer the prompt
+// names into room, echoing back the real drawer_ids.
+//
+// 🔴 A STATIC RESPONSE CANNOT DRIVE THIS PATH. Judgments are matched to samples
+// by drawer_id, and the ids are generated at seed time, so a canned list of
+// placeholder ids is silently skipped by ParseJudgments and every run comes
+// back with zero judgments and zero proposals — which means `--apply` writes
+// nothing and any assertion downstream of it proves nothing.
+//
+// It decodes the request rather than regexing the raw body: the prompt arrives
+// as a JSON string, so its newlines are two-character escapes and a line-
+// anchored match against the wire bytes silently finds nothing.
+func reflectAllTo(room string) func(string) string {
+	return func(reqBody string) string {
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal([]byte(reqBody), &req); err != nil {
+			return "[]"
+		}
+		var out []string
+		for _, msg := range req.Messages {
+			for _, m := range drawerIDInPrompt.FindAllStringSubmatch(msg.Content, -1) {
+				id := strings.TrimSpace(m[1])
+				if id == "" {
+					continue
+				}
+				out = append(out, fmt.Sprintf(
+					`{"drawer_id": %q, "room": %q, "confidence": 0.9, "reasoning": "reflected by the mock"}`, id, room))
+			}
+		}
+		return "[" + strings.Join(out, ",\n") + "]"
+	}
+}
+
 func newMockLLMServer(t *testing.T, initialContent string) *mockLLMServer {
 	t.Helper()
 	m := &mockLLMServer{content: initialContent}
@@ -205,12 +288,21 @@ func newMockLLMServer(t *testing.T, initialContent string) *mockLLMServer {
 			http.NotFound(w, r)
 			return
 		}
+		content := m.content
+		if m.responder != nil {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			content = m.responder(string(body))
+		}
 		resp := map[string]any{
 			"choices": []any{
 				map[string]any{
 					"message": map[string]any{
 						"role":    "assistant",
-						"content": m.content,
+						"content": content,
 					},
 				},
 			},
@@ -251,4 +343,21 @@ func writeProjectLLMConfig(t *testing.T, vaultRoot, project, url string) string 
 		t.Fatalf("append llm config to %s: %v", cfg, err)
 	}
 	return "VP_MOCK_KEY=mock-key"
+}
+
+// sha256File is the byte-level counterpart of tomlStructEqual: it sees a change
+// a structural compare normalises away, and it treats an absent file as a
+// stable empty rather than failing, so it can bracket a file that may or may
+// not be created by the run under test.
+func sha256File(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "<absent>"
+		}
+		t.Fatalf("sha256File %s: %v", path, err)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }

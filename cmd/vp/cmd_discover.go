@@ -192,13 +192,18 @@ func runDiscoverRooms(vault *storage.Vault, proj string, cfg storage.Config,
 	// Handle --apply.
 	if apply {
 		rooms := discoveryProposalsToOverrides(report.Proposals)
-		if err := vault.WriteScoringConfig(proj, rooms, 0); err != nil {
+		// The HOST-LOCAL file, not the vault's: what this host learns about a
+		// project is not every other host's classifier. The writer returns the
+		// path it wrote, so this prints the real destination rather than one
+		// re-derived here (task move-per-project-config-out-of-the-shared-vault).
+		cfgPath, carried, err := vault.WriteHostScoringConfig(proj, rooms, 0)
+		if err != nil {
 			fmt.Fprintf(out, "Error writing config: %v\n", err)
 			return cli.ExitSystem
 		}
 
-		cfgPath, _ := vault.ProjectConfigFile(proj)
 		fmt.Fprintf(out, "Applied %d new keywords to %s\n", len(report.Proposals), cfgPath)
+		printCarriedOverrides(out, carried)
 	}
 
 	return cli.ExitOK
@@ -220,4 +225,23 @@ func discoveryProposalsToOverrides(proposals []palace.KeywordProposal) map[strin
 		rooms[p.Room] = ov
 	}
 	return rooms
+}
+
+// printCarriedOverrides reports scoring the writer copied into the host-local
+// file from a lower layer, because the host-local file replaces a scoring room
+// WHOLE and must therefore carry every tier of it.
+//
+// Silent data movement between config files is what made this a defect in the
+// first place; a one-time copy the operator can see is not. Shared by
+// `discover rooms --apply` and `tune rooms --apply`.
+//
+// 🔴 DELETE WITH THE VAULT LAYER at R4, with the storage-side transcript.
+func printCarriedOverrides(out io.Writer, carried []string) {
+	if len(carried) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "Carried existing overrides into the host-local file (it replaces a room whole):\n")
+	for _, line := range carried {
+		fmt.Fprintf(out, "  %s\n", line)
+	}
 }
