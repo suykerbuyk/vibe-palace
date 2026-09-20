@@ -881,13 +881,27 @@ func completeRoomsFromBelow(
 	return out, transcript
 }
 
-// containsKeyword reports whether list holds s under EXACTLY the comparison
-// mergeKeywordTier dedups with, which is case-SENSITIVE (`seen[kw]`, not
-// EqualFold). Matching it matters in the direction this whole change is about:
-// a case-insensitive test here would stay silent about a keyword the merge is
-// in fact going to add.
+// keywordKey is THE definition of when two keywords are the same keyword.
+//
+// 🔴 ONE DEFINITION, NOT TWO THAT AGREE TODAY. mergeKeywordTier dedups by this
+// key and containsKeyword asks by this key, so the merge and the transcript
+// cannot come to disagree about what counts as "already there". They did not
+// agree by construction before: the transcript's test was written with
+// strings.EqualFold while the merge deduped with `seen[kw]`, and the whole
+// storage suite passed with the mismatch in place. A transcript that is wrong
+// in that direction stays SILENT about a keyword the merge does add — the file
+// gains a value and nothing says so, which is the defect class the transcript
+// exists to close.
+//
+// Today it is the identity: dedup is case-SENSITIVE, so "Kubernetes" and
+// "kubernetes" are two keywords and a merge that adds the second must report
+// it. Change this one function to change both sides together.
+func keywordKey(kw string) string { return kw }
+
+// containsKeyword reports whether list already holds s, under keywordKey.
 func containsKeyword(list []string, s string) bool {
-	return slices.Contains(list, s)
+	want := keywordKey(s)
+	return slices.ContainsFunc(list, func(v string) bool { return keywordKey(v) == want })
 }
 
 // WriteHostScoringConfig merges scoring overrides into the HOST-LOCAL
@@ -1198,18 +1212,22 @@ func stringsToTier(ss []string) []any {
 }
 
 // mergeKeywordTier adds new keywords to an existing tier, skipping duplicates.
+//
+// Duplicate means equal under keywordKey, which is also what the host-local
+// writer's transcript asks by, so what this function silently drops and what
+// the transcript declines to announce are the same set by construction.
 func mergeKeywordTier(existing, additions []string) []string {
 	if len(additions) == 0 {
 		return existing
 	}
 	seen := make(map[string]bool, len(existing))
 	for _, kw := range existing {
-		seen[kw] = true
+		seen[keywordKey(kw)] = true
 	}
 	for _, kw := range additions {
-		if !seen[kw] {
+		if k := keywordKey(kw); !seen[k] {
 			existing = append(existing, kw)
-			seen[kw] = true
+			seen[k] = true
 		}
 	}
 	return existing
