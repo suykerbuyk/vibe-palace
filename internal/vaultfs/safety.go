@@ -288,3 +288,73 @@ func taskPathRefusal(relPath string) error {
 		"set_relations for header fields, retire / cancel to archive it",
 		ErrRefusedPath, relPath)
 }
+
+// IsVaultProjectConfigPath reports whether p addresses exactly
+// Projects/<slug>/config.toml — the vault's per-project config file.
+//
+// That file is being retired. Per-project config is HOST-local: it describes
+// one machine's scoring of one checkout, and the vault is shared across
+// machines, so a per-project override written on one host arrives on every
+// other host that syncs. Worse, rewriting it is a vault-history rewrite, which
+// blocks history sync for everything else in the vault. The replacement is
+// <config-dir>/vibe-palace/projects/<slug>.toml, which no vault ever sees.
+//
+// Until the file is removed outright, it is still READ (LoadConfig layer 3,
+// below the host-local layer) and still CREATED by `vp init` and
+// `vp config sync`. Both of those writers reach atomicfile.Write directly and
+// never enter vaultfs, so this refusal cannot strand them — re-derive with
+// `grep -rn 'ProjectConfigFile(' --include=*.go . | grep -v _test.go`, whose
+// write sites are WriteVaultProjectConfig (storage/config_writer.go) and
+// applyUpgradeVault via LockedUpdate (reconcile/vault_project.go). What this
+// refusal closes is the GENERIC route: vp_vault_write / vp vault write and
+// their siblings, the one way an agent or an operator can still put settings
+// into the shared vault by hand.
+//
+// Scope, and why this is a THIRD predicate rather than a case in either
+// existing one:
+//
+//   - It cannot fold into IsRefusedWritePath. That predicate gates Delete
+//     (write.go's Delete call site), and gating Delete on this path would leave
+//     vaultSplitPurge — which walks regular files through vaultfs.Delete —
+//     unable to finish a verified purge.
+//   - It is not IsTaskFilePath's kind of match. That one matches a DIRECTORY
+//     SUBTREE (Projects/<slug>/tasks/, any depth); this matches ONE EXACT FILE,
+//     three segments. The difference is what makes the placement differ too:
+//     see the Move call site.
+//
+// Exactly three segments, so Projects/p/doc/config.toml and
+// Projects/p/config.toml.bak — the name templates.PreserveBackup writes — are
+// not matched, and neither is a two-segment Projects/config.toml. Matching is
+// case-insensitive on the fixed segments for the same cross-filesystem reason
+// IsRefusedWritePath gives.
+func IsVaultProjectConfigPath(p string) bool {
+	cleaned := filepath.Clean(p)
+	segs := strings.Split(cleaned, string(filepath.Separator))
+	// Exactly Projects/<slug>/config.toml — no more, no less.
+	if len(segs) != 3 {
+		return false
+	}
+	if !strings.EqualFold(segs[0], "Projects") {
+		return false
+	}
+	return strings.EqualFold(segs[2], "config.toml")
+}
+
+// vaultProjectConfigRefusal is the curated refusal for a generic write aimed at
+// the vault's per-project config. Like taskPathRefusal it names the sanctioned
+// route rather than only saying no, and for the same reason: a refusal that
+// does not say what to do instead gets worked around.
+//
+// It deliberately does NOT say the file is dead. It is still read and still
+// created, and a message claiming otherwise would be false until the file is
+// retired — at which point the reader would have learned to distrust the next
+// refusal too.
+func vaultProjectConfigRefusal(relPath string) error {
+	return fmt.Errorf("%w: %s is the vault's per-project config, which is being retired — "+
+		"the generic vault file tools no longer write it. Per-project config is host-local: "+
+		"edit <config-dir>/vibe-palace/projects/<slug>.toml, which `vp tune rooms --apply` and "+
+		"`vp discover rooms --apply` write. This file is not dead yet — it is still read, below "+
+		"the host-local one, and `vp init` still creates it — so an override here still applies "+
+		"until it is removed. `vp status` names every per-project config file this project reads",
+		ErrRefusedPath, relPath)
+}

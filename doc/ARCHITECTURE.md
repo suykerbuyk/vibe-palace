@@ -373,15 +373,23 @@ itself keeps it distinct from the per-path keys the content writers take, so a
 committer that already holds a per-path lock cannot self-deadlock (the paths
 hash to different sidecar files).
 
-### Configuration: 3-Tier TOML Precedence
+### Configuration: 4-Tier TOML Precedence
 
-Configuration follows a 3-tier override chain:
+Configuration follows a 4-tier override chain:
 
 1. **Embedded defaults** — compiled into the binary via `//go:embed config/defaults.toml`
-2. **Vault-level** — `~/.config/vibe-palace/config.toml`
-3. **Project-level** — `{vault}/Projects/{project}/config.toml`
+2. **Host-level** — `~/.config/vibe-palace/config.toml`
+3. **Project-level, in the vault** — `{vault}/Projects/{project}/config.toml`
+   — **being retired.** Still read, but `vaultfs` refuses to write it; edit
+   tier 4 instead.
+4. **Project-level, host-local** — `~/.config/vibe-palace/projects/{project}.toml`
+   — **where per-project settings belong.** Per-project config is machine-local
+   and does not belong in a vault shared across machines. Only the
+   `palace.scoring` subtree is honoured at this tier; it is written by
+   `vp tune rooms --apply` and `vp discover rooms --apply`.
 
-Each level overlays the previous. Key sections:
+Each level overlays the previous. `vp status` reports which per-project files a
+project actually reads. Key sections:
 
 ```toml
 vault_path = "/path/to/vault"

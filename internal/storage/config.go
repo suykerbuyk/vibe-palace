@@ -371,9 +371,43 @@ func (v *Vault) LoadConfig(project string) (Config, error) {
 		return Config{}, fmt.Errorf("decode embedded defaults: %w", err)
 	}
 
-	// Layer 2: vault-level config (~/.config/vibe-palace/config.toml).
+	// Layer 2: the host global config (~/.config/vibe-palace/config.toml).
 	// Meta is file-local, not inherited: zero it before each on-disk decode
 	// so Config.Meta* reflects the actual on-disk file (or zero if absent).
+	//
+	// 🔴 THE BARE os.Stat GATE HERE AND AT LAYER 3 IS TWO DIFFERENT THINGS AT
+	// ONCE, AND NEITHER MAY BE COPIED INTO ANYTHING THAT WRITES.
+	//
+	// Its ENOENT half is deliberate: an absent config file is an answer, and
+	// skipping the layer is the right one.
+	//
+	// Everything else it swallows is a KNOWN DEFECT, not a design choice, and
+	// there are two of them. This gate reads `err == nil`, so EACCES and EIO —
+	// a file that IS there and cannot be read — become "skip this layer". And
+	// os.Stat's own ENOENT is not proof of absence either: it FOLLOWS symlinks,
+	// so a dangling link reports as no file at all. Only an Lstat ENOENT means
+	// "no file". Nobody chose either of those. configFilePresent below names
+	// this exact shape as the hazard and is the fix; it is not applied here
+	// only because doing so is a whole-binary behaviour change, for the reason
+	// at the end of this comment.
+	//
+	// What a reader survives, a writer does not. A skipped layer costs a read
+	// one wrong answer with every file still on disk. A writer cannot survive
+	// the same shape, because what it silently drops it then overwrites. Use
+	// configFilePresent (Lstat, refuses on anything but ENOENT) there;
+	// scoringRoomsBelowHost's doc comment has the long form.
+	//
+	// This warning is here, next to the gate, because the shape has already
+	// propagated once: the host-local scoring resolution was written beside
+	// this code and inherited the bare os.Stat, which produced a partial room
+	// on a write and cost a review round. The next person adding a layer will
+	// be reading THIS function, not the one that got it wrong.
+	//
+	// Note the other two readers of this same file already refuse: VaultRoot
+	// (vault.go) decodes with no stat gate at all, and HostGitEnabled goes
+	// through configFilePresent. LoadConfig is the odd one out, and making it
+	// uniform is a whole-binary behaviour change that wants its own unit --
+	// every caller would start hard-erroring where it now gets defaults.
 	vaultConfigPath, err := VaultConfigFilePath()
 	if err == nil {
 		if _, err := os.Stat(vaultConfigPath); err == nil {
@@ -387,7 +421,12 @@ func (v *Vault) LoadConfig(project string) (Config, error) {
 		}
 	}
 
-	// Layer 3: project-level config.
+	// Layer 3: the per-project config in the vault. Being retired: vaultfs
+	// refuses to write this path (IsVaultProjectConfigPath), and R4 deletes
+	// this decode. Layer 4 below is where per-project settings are written.
+	//
+	// Same os.Stat gate as Layer 2 — same deliberate ENOENT half, same
+	// defective remainder, same prohibition on copying it. See there.
 	if project != "" {
 		projPath, err := v.ProjectConfigFile(project)
 		if err != nil {
