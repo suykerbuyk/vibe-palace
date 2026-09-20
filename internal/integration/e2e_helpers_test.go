@@ -189,9 +189,20 @@ func seedDrawer(t *testing.T, homeDir, project, room, content string) {
 }
 
 // tomlStructEqual inlines test/e2e/internal/tomleq/main.go: decode both TOML
-// files into map[string]any and compare by reflect.DeepEqual. sha256 is not
-// safe here — toml.NewEncoder is not byte-stable across round-trips — so
-// idempotency assertions need structural, not textual, equality.
+// files into map[string]any and compare by reflect.DeepEqual.
+//
+// 🔴 IT IS THE WEAKER CHECK, AND IT IS NO LONGER THE ONLY ONE AVAILABLE. The
+// note that stood here said "sha256 is not safe here — toml.NewEncoder is not
+// byte-stable across round-trips". That predates the splice rewrite: the
+// scoring writer no longer re-encodes the parsed map, it splices rendered
+// sections into the original bytes and skips the write entirely when the result
+// is unchanged, so its output IS byte-stable. Both idempotency pins rely on
+// that — sha256File here, and TestWriteHostScoringConfigIsIdempotentOnBytes in
+// internal/storage.
+//
+// Prefer sha256File for a file this writer produces: structural equality cannot
+// see a duplicate the decoder normalises away. Keep this for a comparison that
+// must tolerate re-encoding, or that spans writers with different formatting.
 func tomlStructEqual(t *testing.T, pathA, pathB string) bool {
 	t.Helper()
 	var a, b map[string]any
