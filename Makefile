@@ -252,8 +252,10 @@ uninstall: ## Remove installed binary and man pages from PREFIX
 
 # GORELEASER_CONTROL is .goreleaser.yml as it stood at v5.0.0, preserved so the
 # validator can be proven still capable of rejecting the deprecated archive keys.
-# It is NOT hand-written: restore it with
-#   git show v5.0.0:.goreleaser.yml > $(GORELEASER_CONTROL)
+# It is NOT hand-written. Restore it from the committed file:
+#   git checkout HEAD -- $(GORELEASER_CONTROL)
+# NOT with `git show v5.0.0:...`: CI's checkout is shallow and carries no tags,
+# so that form fails there with "invalid object name".
 GORELEASER_CONTROL := .github/testdata/goreleaser/deprecated-keys.yml
 
 .PHONY: goreleaser-check
@@ -262,7 +264,11 @@ goreleaser-check: ## Validate .goreleaser.yml, and prove the validator can still
 		echo "goreleaser-check: goreleaser is not on PATH." >&2; exit 1; }
 	@test -f $(GORELEASER_CONTROL) || { \
 		echo "goreleaser-check: CONTROL FIXTURE MISSING at $(GORELEASER_CONTROL)." >&2; \
-		echo "  Restore it: git show v5.0.0:.goreleaser.yml > $(GORELEASER_CONTROL)" >&2; \
+		echo "  Restore it: git checkout HEAD -- $(GORELEASER_CONTROL)" >&2; \
+		echo "  (The fixture is .goreleaser.yml as it stood at v5.0.0, but do NOT" >&2; \
+		echo "   restore it with 'git show v5.0.0:...' — CI checks out shallow and" >&2; \
+		echo "   tagless, so that fails with 'invalid object name' exactly where this" >&2; \
+		echo "   message is first read. The committed file is the source of truth.)" >&2; \
 		exit 1; }
 	@out="$$(goreleaser check $(GORELEASER_CONTROL) 2>&1)"; rc=$$?; \
 	clean="$$(printf '%s' "$$out" | sed "s/$$(printf '\033')\[[0-9;]*m//g")"; \

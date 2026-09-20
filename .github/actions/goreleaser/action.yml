@@ -3,15 +3,27 @@ description: Put the one GoReleaser version this project uses on PATH.
 runs:
   using: composite
   steps:
-    # 🔴 THE SINGLE SOURCE OF TRUTH for which GoReleaser this project uses.
-    # Every caller — release.yml and ci.yml's goreleaser-check — installs
-    # through here, so no gate can validate a binary the release does not run.
+    # 🔴 THE ONE PLACE THIS PROJECT STATES ITS GoReleaser VERSION. Every caller
+    # — release.yml and ci.yml's goreleaser-check — installs through here, so no
+    # gate can validate a binary the release does not run.
     #
-    # `~> v2` is also the action's own default for this input, but it is stated
-    # explicitly: a silent dependence on an action's default is a float of a
-    # different shape. release.yml used to pass `version: latest`, which adopts
-    # a future GoReleaser v3 — and its removal of the archives.format keys —
-    # on the day someone cuts a tag.
+    # It is NOT the only input the action will take a version from. `version-file:`
+    # reads `.tool-versions` and, in this action's own manifest, "takes precedence
+    # over `version`". Nothing in this repo sets it and nothing checks for it, so
+    # adding one here or at a call site would silently override the line below.
+    # That needs a deliberate edit; it is named so the edit is not made casually.
+    #
+    # `~> v2` is also the action's default for this input, and that coincidence
+    # has a consequence worth stating: a MISSPELLED `version:` key here is today
+    # indistinguishable from a correct one, because the action falls back to the
+    # same value. Even a post-install `goreleaser --version` assertion would pass.
+    # 🔴 THE DAY THIS PROJECT PINS AWAY FROM `~> v2`, that typo becomes silently
+    # live — the pin would read as applied while the default was installed. Revisit
+    # this comment at that moment; it is the trigger.
+    #
+    # release.yml used to pass `version: latest`, which adopts a future GoReleaser
+    # v3 — and its removal of the archives.format keys — on the day someone cuts
+    # a tag.
     - uses: goreleaser/goreleaser-action@v7
       with:
         version: "~> v2"
