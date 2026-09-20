@@ -186,7 +186,7 @@ func TestIntegrationTuneApplyImproves(t *testing.T) {
 	// The HOST-LOCAL file, which is where --apply writes after R2 of task
 	// move-per-project-config-out-of-the-shared-vault, and which LoadConfig
 	// reads above the vault's. The round trip below is unchanged by the move.
-	if _, err := storage.WriteHostScoringConfig("proj", rooms, 0); err != nil {
+	if _, _, err := h.Vault.WriteHostScoringConfig("proj", rooms, 0); err != nil {
 		t.Fatalf("WriteHostScoringConfig: %v", err)
 	}
 

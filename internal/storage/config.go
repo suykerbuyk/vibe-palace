@@ -668,24 +668,235 @@ func (v *Vault) ProjectConfigSources(project string) ([]string, error) {
 	return out, nil
 }
 
+// scoringRoomsOnly is the narrow view used to attribute a scoring room to the
+// file that set it. It decodes nothing else.
+type scoringRoomsOnly struct {
+	Palace struct {
+		Scoring struct {
+			Rooms map[string]tomlRoomScoring `toml:"rooms"`
+		} `toml:"scoring"`
+	} `toml:"palace"`
+}
+
+// scoringRoomsBelowHost resolves a project's scoring rooms through every layer
+// BELOW the host-local file, and reports which file set each room.
+//
+// It walks the same three sources as LoadConfig's layers 1-3, in the same
+// order, applying the same whole-room replacement. It is a separate walk
+// because attribution costs a second decode per layer and LoadConfig is hot;
+// TestScoringRoomsBelowHostMatchesLoadConfig pins the two together and reds if
+// they drift.
+//
+// 🔴 DELETE WITH THE VAULT LAYER. This exists so the writer can carry the vault
+// project file's rooms forward before R4 removes that layer. After R4 the only
+// layer below the host-local file is the host global config, and what remains
+// of this can shrink to match.
+func (v *Vault) scoringRoomsBelowHost(project string) (map[string]tomlRoomScoring, map[string]string, error) {
+	rooms := map[string]tomlRoomScoring{}
+	source := map[string]string{}
+
+	apply := func(path string, rs map[string]tomlRoomScoring) {
+		for name, r := range rs {
+			rooms[name] = r
+			source[name] = path
+		}
+	}
+
+	// Layer 1: embedded defaults. It ships every scoring room commented out, so
+	// this contributes nothing today — but it is walked rather than assumed,
+	// because the day someone uncomments one is the day an assumption rots.
+	var l1 scoringRoomsOnly
+	if _, err := toml.Decode(defaultsToml, &l1); err != nil {
+		return nil, nil, fmt.Errorf("decode embedded defaults: %w", err)
+	}
+	apply("the embedded defaults", l1.Palace.Scoring.Rooms)
+
+	// Layer 2: the host global config.
+	if globalPath, err := VaultConfigFilePath(); err == nil {
+		if _, serr := os.Stat(globalPath); serr == nil {
+			var l2 scoringRoomsOnly
+			if _, derr := toml.DecodeFile(globalPath, &l2); derr != nil {
+				return nil, nil, fmt.Errorf("decode vault config %s: %w", globalPath, derr)
+			}
+			apply(globalPath, l2.Palace.Scoring.Rooms)
+		}
+	}
+
+	// Layer 3: the vault project file.
+	if project != "" {
+		projPath, err := v.ProjectConfigFile(project)
+		if err != nil {
+			return nil, nil, err
+		}
+		if _, serr := os.Stat(projPath); serr == nil {
+			var l3 scoringRoomsOnly
+			if _, derr := toml.DecodeFile(projPath, &l3); derr != nil {
+				return nil, nil, fmt.Errorf("decode project config %s: %w", projPath, derr)
+			}
+			apply(projPath, l3.Palace.Scoring.Rooms)
+		}
+	}
+
+	return rooms, source, nil
+}
+
+// hostRoomsAlreadyWritten returns the scoring rooms the host-local file already
+// carries, so the transcript reports only what THIS write carries in for the
+// first time rather than re-announcing a copy made on an earlier run.
+//
+// It is advisory. The authoritative merge happens under the lock inside
+// writeScoringConfigAt, whose mergeTierInto dedups; a file that changed between
+// this read and that merge costs at most a stale transcript line, never a wrong
+// write.
+func hostRoomsAlreadyWritten(hostPath string) (map[string]tomlRoomScoring, error) {
+	present, err := hostProjectConfigPresent(hostPath)
+	if err != nil || !present {
+		return nil, err
+	}
+	var hl hostProjectLayer
+	if _, derr := toml.DecodeFile(hostPath, &hl); derr != nil {
+		return nil, fmt.Errorf("decode host-local project config %s: %w", hostPath, derr)
+	}
+	return hl.Palace.Scoring.Rooms, nil
+}
+
+// completeRoomsFromBelow widens each proposed room so the host-local file
+// carries the WHOLE room, and returns a transcript of what it carried in.
+//
+// 🔴 THIS IS WHAT KEEPS A TUNING RUN FROM DELETING THE VAULT'S OVERRIDES.
+// Every layer in this stack replaces a scoring room WHOLE — layer 3 nils out a
+// tier layer 2 set, and layer 4 does the same to layer 3 (measured; it is the
+// idiom, not an accident). A proposal names only the tiers it changed, so
+// writing it verbatim into the host-local file would publish a partial room
+// that then erases every tier the vault file held for that room. Completing the
+// room from the layers below restores the invariant the stack depends on: no
+// layer ever holds a partial room for a room a lower layer also has.
+//
+// The copy is real data movement between files, so it is not silent: each room
+// whose values are carried in for the first time gets a transcript line naming
+// the tiers, the keywords and the file they came from.
+//
+// 🔴 DELETE WITH THE VAULT LAYER at R4, along with its transcript.
+func completeRoomsFromBelow(
+	proposed map[string]ScoringRoomOverride,
+	below map[string]tomlRoomScoring,
+	source map[string]string,
+	alreadyHost map[string]tomlRoomScoring,
+) (map[string]ScoringRoomOverride, []string) {
+	out := make(map[string]ScoringRoomOverride, len(proposed))
+	names := make([]string, 0, len(proposed))
+	for name := range proposed {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var transcript []string
+	for _, name := range names {
+		prop := proposed[name]
+		b, ok := below[name]
+		if !ok {
+			out[name] = prop
+			continue
+		}
+		have := alreadyHost[name]
+
+		var carried []string
+		tiers := []struct {
+			label   string
+			fromBel []string
+			inProp  []string
+			inHost  []string
+			into    *[]string
+		}{
+			{"high", b.High, prop.High, have.High, &prop.High},
+			{"medium", b.Medium, prop.Medium, have.Medium, &prop.Medium},
+			{"low", b.Low, prop.Low, have.Low, &prop.Low},
+		}
+		for _, t := range tiers {
+			if len(t.fromBel) == 0 {
+				continue
+			}
+			// Report only what is not already accounted for, so a re-run that
+			// changes nothing prints nothing.
+			var newly []string
+			for _, kw := range t.fromBel {
+				if !containsKeyword(t.inProp, kw) && !containsKeyword(t.inHost, kw) {
+					newly = append(newly, kw)
+				}
+			}
+			if len(newly) > 0 {
+				carried = append(carried, fmt.Sprintf("%s=%v", t.label, newly))
+			}
+			// The below-layer keywords go FIRST so the tier reads oldest-first
+			// and a re-run is byte-stable; mergeTierInto dedups on the way in.
+			*t.into = append(append([]string{}, t.fromBel...), *t.into...)
+		}
+		out[name] = prop
+		if len(carried) > 0 {
+			transcript = append(transcript,
+				fmt.Sprintf("%s: carried %s from %s", name, strings.Join(carried, " "), source[name]))
+		}
+	}
+	return out, transcript
+}
+
+// containsKeyword reports whether list holds s under EXACTLY the comparison
+// mergeKeywordTier dedups with, which is case-SENSITIVE (`seen[kw]`, not
+// EqualFold). Matching it matters in the direction this whole change is about:
+// a case-insensitive test here would stay silent about a keyword the merge is
+// in fact going to add.
+func containsKeyword(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 // WriteHostScoringConfig merges scoring overrides into the HOST-LOCAL
-// per-project file and returns the path it wrote, so a caller can print the
-// real destination rather than a path it assumed.
+// per-project file. It returns the path it wrote, so a caller can print the
+// real destination rather than a path it assumed, and a transcript of any
+// overrides it carried forward from a lower layer.
 //
 // It writes nothing into any vault: neither the file, nor its lock sidecar, nor
 // a surface stamp.
-func WriteHostScoringConfig(project string, rooms map[string]ScoringRoomOverride, minScore float64) (string, error) {
+//
+// 🔴 IT WRITES THE WHOLE ROOM, NOT THE PROPOSAL. Every layer of this config
+// stack replaces a scoring room whole, so a host-local room that names only the
+// tiers a tuning run changed would erase every other tier the vault file held
+// for that room. Each room is therefore completed from the layers below before
+// it is written, and what that copies is reported rather than done silently.
+// See completeRoomsFromBelow.
+//
+// It is a method because completing a room needs the vault: the layer directly
+// below the host-local file is the vault's own Projects/<slug>/config.toml.
+func (v *Vault) WriteHostScoringConfig(project string, rooms map[string]ScoringRoomOverride, minScore float64) (string, []string, error) {
 	cfgPath, err := HostProjectConfigPath(project)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
+
+	var transcript []string
+	if len(rooms) > 0 {
+		below, source, berr := v.scoringRoomsBelowHost(project)
+		if berr != nil {
+			return "", nil, berr
+		}
+		alreadyHost, herr := hostRoomsAlreadyWritten(cfgPath)
+		if herr != nil {
+			return "", nil, herr
+		}
+		rooms, transcript = completeRoomsFromBelow(rooms, below, source, alreadyHost)
+	}
+
 	// <XDG>/vibe-palace/projects/<slug>.toml -> <XDG>/vibe-palace: the lock
 	// sidecar lands beside the host config, never in a vault.
 	lockRoot := filepath.Dir(filepath.Dir(cfgPath))
 	if err := writeScoringConfigAt(cfgPath, lockRoot, "", MetaKindHostProject, rooms, minScore); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return cfgPath, nil
+	return cfgPath, transcript, nil
 }
 
 // renderConfigMetaHeader is the [meta] block this writer seeds a file it

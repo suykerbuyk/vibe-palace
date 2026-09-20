@@ -68,7 +68,7 @@ func TestWriteHostScoringConfigWritesNothingIntoTheVault(t *testing.T) {
 	beforeTree := treeFiles(t, v.Root)
 	beforeHash := sha256Of(t, vaultProjPath)
 
-	path, err := WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
+	path, _, err := v.WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
 		"general": {High: []string{"host-high"}},
 	}, 0)
 	if err != nil {
@@ -101,8 +101,9 @@ func TestWriteHostScoringConfigWritesNothingIntoTheVault(t *testing.T) {
 // config's version fields, so a later release has a schema version to gate on.
 func TestWriteHostScoringConfigSeedsMeta(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	v := testVault(t)
 
-	path, err := WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
+	path, _, err := v.WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
 		"general": {High: []string{"host-high"}},
 	}, 0)
 	if err != nil {
@@ -148,8 +149,9 @@ func TestWriteHostScoringConfigSeedsMeta(t *testing.T) {
 // section for the other case.
 func TestWriteHostScoringConfigPreservesTextAcrossWrites(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	v := testVault(t)
 
-	path, err := WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
+	path, _, err := v.WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
 		"general": {High: []string{"first"}},
 	}, 0)
 	if err != nil {
@@ -173,7 +175,7 @@ func TestWriteHostScoringConfigPreservesTextAcrossWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
+	if _, _, err := v.WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
 		"general": {High: []string{"second"}},
 	}, 0); err != nil {
 		t.Fatalf("second write: %v", err)
@@ -202,8 +204,9 @@ func TestWriteHostScoringConfigPreservesTextAcrossWrites(t *testing.T) {
 func TestWriteHostScoringConfigNoOpCreatesNothing(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
+	v := testVault(t)
 
-	path, err := WriteHostScoringConfig("proj", nil, 0)
+	path, _, err := v.WriteHostScoringConfig("proj", nil, 0)
 	if err != nil {
 		t.Fatalf("WriteHostScoringConfig: %v", err)
 	}
@@ -212,5 +215,224 @@ func TestWriteHostScoringConfigNoOpCreatesNothing(t *testing.T) {
 	}
 	if files := treeFiles(t, xdg); len(files) != 0 {
 		t.Errorf("a no-op write created %v", files)
+	}
+}
+
+// 🔴 THE BLOCKER THIS RELEASE WAS SENT BACK FOR.
+//
+// Every layer of this config stack replaces a scoring room WHOLE. A tuning run
+// proposes only the tier it changed, so writing that proposal verbatim into the
+// host-local file published a partial room that erased every other tier the
+// vault file held. Measured before the fix: a vault room of
+// high=[kubernetes] medium=[deploy] low=[ops] resolved to
+// high=[] medium=[terraform] low=[] after one apply.
+func TestWriteHostScoringConfigCarriesTheWholeRoomFromTheVault(t *testing.T) {
+	v, hostPath := hostLocalEnv(t, "proj", "")
+	writeVaultProjectConfig(t, v, "proj",
+		"[palace.scoring.rooms.devops]\nhigh = [\"kubernetes\"]\nmedium = [\"deploy\"]\nlow = [\"ops\"]\n")
+
+	before, err := v.LoadConfig("proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := before.PalaceScoringOverrides["devops"]
+
+	// Exactly the shape proposalsToOverrides / discoveryProposalsToOverrides
+	// build: one room, one tier, the others nil.
+	_, carried, err := v.WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
+		"devops": {Medium: []string{"terraform"}},
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := v.LoadConfig("proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := after.PalaceScoringOverrides["devops"]
+
+	for _, tc := range []struct {
+		tier         string
+		was, now     []string
+		wantKeywords []string
+	}{
+		{"high", b.High, a.High, []string{"kubernetes"}},
+		{"medium", b.Medium, a.Medium, []string{"deploy", "terraform"}},
+		{"low", b.Low, a.Low, []string{"ops"}},
+	} {
+		for _, kw := range tc.wantKeywords {
+			if !containsKeyword(tc.now, kw) {
+				t.Errorf("%s: %v -> %v, lost %q", tc.tier, tc.was, tc.now, kw)
+			}
+		}
+	}
+
+	// The copy is real data movement between files, so it must be reported.
+	vaultPath, err := v.ProjectConfigFile("proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(carried, "\n")
+	for _, want := range []string{"devops:", "high=[kubernetes]", "low=[ops]", vaultPath} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("transcript does not name %q:\n%s", want, joined)
+		}
+	}
+	// It carried "deploy" into medium too, but the proposal already named that
+	// tier, so the line reports the tier's carried keyword, not the new one.
+	if strings.Contains(joined, "terraform") {
+		t.Errorf("transcript reports a keyword the run PROPOSED as carried:\n%s", joined)
+	}
+	_ = hostPath
+}
+
+// The same completion protects the host GLOBAL config's rooms, which layer 3
+// could already erase before R2 existed.
+func TestWriteHostScoringConfigCarriesTheWholeRoomFromTheGlobalConfig(t *testing.T) {
+	v, _ := hostLocalEnv(t, "proj",
+		"[palace.scoring.rooms.general]\nhigh = [\"g-high\"]\nlow = [\"g-low\"]\n")
+
+	if _, _, err := v.WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
+		"general": {Medium: []string{"new"}},
+	}, 0); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := v.LoadConfig("proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := cfg.PalaceScoringOverrides["general"]
+	if !containsKeyword(r.High, "g-high") || !containsKeyword(r.Low, "g-low") || !containsKeyword(r.Medium, "new") {
+		t.Errorf("high=%v medium=%v low=%v, want the global config's tiers carried plus the proposal",
+			r.High, r.Medium, r.Low)
+	}
+}
+
+// A room no lower layer names is written exactly as proposed, and reports
+// nothing: there is nothing to carry.
+func TestWriteHostScoringConfigCarriesNothingForANewRoom(t *testing.T) {
+	v, _ := hostLocalEnv(t, "proj", "")
+	_, carried, err := v.WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
+		"brandnew": {Medium: []string{"kw"}},
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(carried) != 0 {
+		t.Errorf("transcript = %v, want empty: no lower layer names this room", carried)
+	}
+}
+
+// The transcript reports a copy ONCE. A second identical run has nothing left
+// to carry, so it must say nothing rather than re-announce the same move.
+func TestWriteHostScoringConfigTranscriptIsSilentOnARerun(t *testing.T) {
+	v, _ := hostLocalEnv(t, "proj", "")
+	writeVaultProjectConfig(t, v, "proj",
+		"[palace.scoring.rooms.devops]\nhigh = [\"kubernetes\"]\nlow = [\"ops\"]\n")
+
+	_, first, err := v.WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
+		"devops": {Medium: []string{"terraform"}},
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) == 0 {
+		t.Fatal("the first write carried the vault's tiers but reported nothing")
+	}
+	_, second, err := v.WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
+		"devops": {Medium: []string{"terraform"}},
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 0 {
+		t.Errorf("the second write re-announced a copy it did not make: %v", second)
+	}
+}
+
+// 🔴 ANTI-DIVERGENCE PIN. scoringRoomsBelowHost walks layers 1-3 in its own
+// code so LoadConfig does not pay for attribution on every call. This is what
+// keeps the two walks from drifting: with no host-local file, the resolution
+// they produce must be the same one.
+func TestScoringRoomsBelowHostMatchesLoadConfig(t *testing.T) {
+	v, hostPath := hostLocalEnv(t, "proj",
+		"[palace.scoring.rooms.general]\nhigh = [\"g-high\"]\nmedium = [\"g-medium\"]\n"+
+			"\n[palace.scoring.rooms.onlyglobal]\nlow = [\"g-low\"]\n")
+	writeVaultProjectConfig(t, v, "proj",
+		"[palace.scoring.rooms.general]\nmedium = [\"v-medium\"]\n"+
+			"\n[palace.scoring.rooms.onlyvault]\nhigh = [\"v-high\"]\n")
+	if _, err := os.Stat(hostPath); !os.IsNotExist(err) {
+		t.Fatalf("this test requires no host-local file (stat err=%v)", err)
+	}
+
+	below, source, err := v.scoringRoomsBelowHost("proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := v.LoadConfig("proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(below) != len(cfg.PalaceScoringOverrides) {
+		t.Fatalf("below-host rooms %v, LoadConfig rooms %v", below, cfg.PalaceScoringOverrides)
+	}
+	for name, want := range cfg.PalaceScoringOverrides {
+		got := below[name]
+		if strings.Join(got.High, ",") != strings.Join(want.High, ",") ||
+			strings.Join(got.Medium, ",") != strings.Join(want.Medium, ",") ||
+			strings.Join(got.Low, ",") != strings.Join(want.Low, ",") {
+			t.Errorf("room %q: below-host %+v, LoadConfig %+v", name, got, want)
+		}
+	}
+
+	// Attribution names the file that actually set each room.
+	globalPath, err := VaultConfigFilePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	vaultPath, err := v.ProjectConfigFile("proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source["onlyglobal"] != globalPath {
+		t.Errorf("onlyglobal attributed to %q, want %q", source["onlyglobal"], globalPath)
+	}
+	if source["general"] != vaultPath || source["onlyvault"] != vaultPath {
+		t.Errorf("general=%q onlyvault=%q, want both %q", source["general"], source["onlyvault"], vaultPath)
+	}
+}
+
+// 🔴 A REAL IDEMPOTENCY PIN, ON BYTES.
+//
+// TestWriteHostScoringConfigPreservesTextAcrossWrites is strings.Contains-only
+// and stays green under a writer that appends a duplicate on every run. This
+// compares the sha256 of the whole file, so a non-idempotent merge reds. It
+// matters because R4 deletes the vault shim, which is the only other place the
+// splice core's idempotency is pinned.
+func TestWriteHostScoringConfigIsIdempotentOnBytes(t *testing.T) {
+	v, _ := hostLocalEnv(t, "proj", "")
+	writeVaultProjectConfig(t, v, "proj",
+		"[palace.scoring.rooms.devops]\nhigh = [\"kubernetes\"]\nlow = [\"ops\"]\n")
+	rooms := map[string]ScoringRoomOverride{
+		"devops":  {Medium: []string{"terraform"}, High: []string{"helm"}},
+		"testing": {Low: []string{"smoke"}},
+	}
+
+	path, _, err := v.WriteHostScoringConfig("proj", rooms, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := sha256Of(t, path)
+
+	for i := 2; i <= 3; i++ {
+		if _, _, err := v.WriteHostScoringConfig("proj", rooms, 0); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+		if got := sha256Of(t, path); got != first {
+			body, _ := os.ReadFile(path)
+			t.Fatalf("write %d changed the file; sha256 %s -> %s\n%s", i, first, got, body)
+		}
 	}
 }
