@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -846,12 +847,7 @@ func completeRoomsFromBelow(
 // a case-insensitive test here would stay silent about a keyword the merge is
 // in fact going to add.
 func containsKeyword(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, s)
 }
 
 // WriteHostScoringConfig merges scoring overrides into the HOST-LOCAL
