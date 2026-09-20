@@ -1976,8 +1976,15 @@ provider key alone does not install hooks; durability stays on the MCP path.
 ## Part 8: Advanced Configuration
 
 All configuration is optional — defaults work out of the box. Override in
-`~/.config/vibe-palace/config.toml` (vault-level) or
-`{vault}/Projects/{project}/config.toml` (project-level).
+`~/.config/vibe-palace/config.toml` (host-level, everything below) or
+`~/.config/vibe-palace/projects/{project}.toml` (per-project; the
+`palace.scoring` subtree only).
+
+> Per-project config used to be edited at `{vault}/Projects/{project}/config.toml`.
+> That file is being retired — it is still read, and it still applies below the
+> host-local one, but `vp` now refuses to write it through the vault file tools,
+> because per-project settings are machine-local and a shared vault is not.
+> `vp status` names both files.
 
 ### Embedder Settings
 
