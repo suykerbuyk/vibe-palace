@@ -420,8 +420,10 @@ func (v *Vault) LoadConfig(project string) (Config, error) {
 		if err != nil {
 			return Config{}, err
 		}
-		switch _, serr := os.Lstat(hostPath); {
-		case serr == nil:
+		switch present, serr := hostProjectConfigPresent(hostPath); {
+		case serr != nil:
+			return Config{}, serr
+		case present:
 			var hl hostProjectLayer
 			md, derr := toml.DecodeFile(hostPath, &hl)
 			if derr != nil {
@@ -429,10 +431,6 @@ func (v *Vault) LoadConfig(project string) (Config, error) {
 			}
 			warnIgnoredHostProjectKeys(hostPath, md.Undecoded())
 			applyHostProjectLayer(&tc, hl)
-		case os.IsNotExist(serr):
-			// An absent file is a no-op, not an error: most projects have none.
-		default:
-			return Config{}, fmt.Errorf("stat host-local project config %s: %w", hostPath, serr)
 		}
 	}
 
@@ -607,6 +605,30 @@ func HostGitEnabled() (bool, error) {
 	return enabled, nil
 }
 
+// hostProjectConfigPresent is the ONE presence test for the host-local
+// per-project file, shared by LoadConfig's Layer 4 and by ProjectConfigSources
+// so the reader and the reporter cannot drift apart.
+//
+// 🔴 os.Lstat, NEVER os.Stat. Only an Lstat ENOENT means "no file". A dangling
+// symlink is a file that is there and cannot be read, so it must NOT report as
+// absent: Layer 4 would then be skipped while a later DecodeFile on the same
+// path fails, and `vp status` would print "none" for a config that in fact
+// breaks every command. That is the shape HostGitEnabled already refuses for
+// git_enabled, for the same reason.
+//
+// It reports presence, not readability: the decode that follows is what says
+// whether the bytes are good.
+func hostProjectConfigPresent(path string) (bool, error) {
+	switch _, err := os.Lstat(path); {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	default:
+		return false, fmt.Errorf("stat host-local project config %s: %w", path, err)
+	}
+}
+
 // ProjectConfigSources lists the per-project config files that EXIST for a
 // project, highest-precedence first: the host-local file, then the vault's.
 //
@@ -623,15 +645,25 @@ func (v *Vault) ProjectConfigSources(project string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 🔴 EACH ENTRY USES THE PREDICATE OF THE LAYER THAT READS IT, so this
+	// function reports exactly the files LoadConfig would decode — no more, no
+	// less. Layer 4 tests the host-local file with Lstat (a dangling symlink is
+	// present-and-broken); Layer 3 tests the vault file with os.Stat. Using one
+	// predicate for both would re-create the divergence in the other direction.
 	var out []string
-	for _, p := range []string{hostPath, vaultPath} {
-		switch _, serr := os.Stat(p); {
-		case serr == nil:
-			out = append(out, p)
-		case os.IsNotExist(serr):
-		default:
-			return nil, fmt.Errorf("stat project config %s: %w", p, serr)
-		}
+	present, err := hostProjectConfigPresent(hostPath)
+	if err != nil {
+		return nil, err
+	}
+	if present {
+		out = append(out, hostPath)
+	}
+	switch _, serr := os.Stat(vaultPath); {
+	case serr == nil:
+		out = append(out, vaultPath)
+	case os.IsNotExist(serr):
+	default:
+		return nil, fmt.Errorf("stat project config %s: %w", vaultPath, serr)
 	}
 	return out, nil
 }
