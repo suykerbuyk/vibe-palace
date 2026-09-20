@@ -1041,8 +1041,11 @@ No change from current VibeVault format.
 Configuration continues to use TOML files in the existing precedence chain:
 
 - **Embedded defaults:** compiled into the binary
-- **Vault-level:** `~/.config/vibe-palace/config.toml`
-- **Project-level:** `Projects/{project}/config.toml`
+- **Host-level:** `~/.config/vibe-palace/config.toml`
+- **Project-level, in the vault:** `Projects/{project}/config.toml` — being
+  retired; still read, but no longer writable through `vaultfs`
+- **Project-level, host-local:** `~/.config/vibe-palace/projects/{project}.toml`
+  — where per-project settings are edited (`palace.scoring` subtree)
 
 No database table needed.
 
@@ -1181,7 +1184,7 @@ func (r *PrecedenceResolver) Resolve(resource string, project string) string {
 | resume.md template | Yes | Templates/resume.md | Projects/{p}/resume.md |
 | commands/* | Yes | Templates/commands/* | Projects/{p}/commands/* |
 | skills/* | Yes | Templates/skills/* | Projects/{p}/skills/* |
-| config values | Yes (code defaults) | Global config.toml | Projects/{p}/config.toml |
+| config values | Yes (code defaults) | Global config.toml | `~/.config/vibe-palace/projects/{p}.toml` (host-local; Projects/{p}/config.toml is the retiring tier below it) |
 
 ### 8.3 Precedence for First-Time Projects
 

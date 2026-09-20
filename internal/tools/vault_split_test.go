@@ -41,6 +41,14 @@ func splitFixtureVault(t *testing.T, slugs ...string) string {
 		writeSplitFile(t, root, "palace/"+s+"/.local/embed-cache/d1.vec", "cache")
 
 		writeSplitFile(t, root, "Projects/"+s+"/resume.md", "# resume\n")
+		// The per-project config. It is here because vaultfs.Delete is
+		// deliberately NOT gated on IsVaultProjectConfigPath, and THIS is the
+		// committed reason: purge walks regular files through vaultfs.Delete,
+		// so gating the delete would leave a verified purge unable to finish
+		// with no sanctioned alternative. Without a config.toml in the
+		// fixture, that reason was documented and tested by nothing — gating
+		// Delete left every purge test green.
+		writeSplitFile(t, root, "Projects/"+s+"/config.toml", "[palace.scoring]\n")
 		writeSplitFile(t, root, "Projects/"+s+"/iterations.md", "# iterations\n")
 		writeSplitFile(t, root, "Projects/"+s+"/commit-log.md", "landed commits\n")
 		// Subtract-set specimens on the history side. commit-log.anchor is the
