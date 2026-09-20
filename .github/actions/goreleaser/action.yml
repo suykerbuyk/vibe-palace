@@ -1,0 +1,18 @@
+name: GoReleaser
+description: Put the one GoReleaser version this project uses on PATH.
+runs:
+  using: composite
+  steps:
+    # 🔴 THE SINGLE SOURCE OF TRUTH for which GoReleaser this project uses.
+    # Every caller — release.yml and ci.yml's goreleaser-check — installs
+    # through here, so no gate can validate a binary the release does not run.
+    #
+    # `~> v2` is also the action's own default for this input, but it is stated
+    # explicitly: a silent dependence on an action's default is a float of a
+    # different shape. release.yml used to pass `version: latest`, which adopts
+    # a future GoReleaser v3 — and its removal of the archives.format keys —
+    # on the day someone cuts a tag.
+    - uses: goreleaser/goreleaser-action@v7
+      with:
+        version: "~> v2"
+        install-only: true
