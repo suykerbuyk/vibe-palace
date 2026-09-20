@@ -211,13 +211,14 @@ func runTuneRooms(vault *storage.Vault, proj string, cfg storage.Config,
 
 		rooms := proposalsToOverrides(report.Proposals)
 		// The HOST-LOCAL file; see the same call in cmd_discover.go.
-		cfgPath, err := storage.WriteHostScoringConfig(proj, rooms, 0)
+		cfgPath, carried, err := vault.WriteHostScoringConfig(proj, rooms, 0)
 		if err != nil {
 			fmt.Fprintf(out, "Error writing config: %v\n", err)
 			return cli.ExitSystem
 		}
 
 		fmt.Fprintf(out, "Applied %d weight changes to %s\n", len(report.Proposals), cfgPath)
+		printCarriedOverrides(out, carried)
 		// The "TOML comments are not preserved" note that stood here is DELETED
 		// rather than copied to `vp discover rooms --apply`, which never carried
 		// it. The asymmetry was real — two writers of one fact, one of them
