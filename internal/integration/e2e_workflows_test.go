@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,10 +29,14 @@ import (
 
 // allTestingMockResponse inlines test/e2e/workflows/mockllm/responses/all-testing.json
 // verbatim: five placeholder judgments whose drawer_ids never match the
-// freshly-seeded IDs, so ParseJudgments silently skips them and
-// judgments_total/proposals come back 0. That is fine — these are metrics
-// here, not assertions — the loop still verifies vp tune's CLI contract
-// end-to-end (export shape, apply idempotency).
+// freshly-seeded IDs, so ParseJudgments silently skips them.
+//
+// 🔴 IT IS THE INITIAL CONTENT ONLY, AND THE LOOP OVERRIDES IT. The comment
+// that stood here said the resulting zero judgments were "fine ... the loop
+// still verifies vp tune's CLI contract end-to-end (export shape, apply
+// idempotency)". The export shape, yes. The apply half, no: with zero proposals
+// `--apply` writes nothing, so every assertion downstream of it passed on a
+// file the run never touched. See reflectAllTo.
 const allTestingMockResponse = `[
   {"drawer_id": "unknown-1", "room": "testing", "confidence": 0.9, "reasoning": "test content"},
   {"drawer_id": "unknown-2", "room": "testing", "confidence": 0.9, "reasoning": "test content"},
@@ -121,6 +126,11 @@ func TestIntegrationE2EWorkflowsTuneRoomsLoop(t *testing.T) {
 	testinfra.RunCLI(t, env.Environ(), projDir, nil, "init").Must(t)
 
 	mock := newMockLLMServer(t, allTestingMockResponse)
+	// 🔴 REFLECT THE REAL DRAWER IDS, or the apply half of this loop is inert.
+	// "testing" is the room the canned response always named; reflecting it
+	// against ids that actually match is what makes the run disagree with the
+	// classifier and propose the weight changes `--apply` then writes.
+	mock.responder = reflectAllTo("testing")
 	mockKeyEnv := writeProjectLLMConfig(t, filepath.Join(env.Home, "vibe-palace-vault"), "proj", mock.URL)
 	tuneEnv := env.Environ(mockKeyEnv)
 
@@ -134,7 +144,12 @@ func TestIntegrationE2EWorkflowsTuneRoomsLoop(t *testing.T) {
 		// --- seed drawers ---
 		capStart := time.Now()
 		for i := 1; i <= 5; i++ {
-			seedDrawer(t, env.Home, "proj", "facts",
+			// "general" and not "facts": ComputeProposals acts on drawers the
+			// classifier filed under "general" (promotion) or under a room whose
+			// keywords fire (demotion). "facts" is neither — it has no keyword
+			// definitions at all, so no rule could ever fire and no proposal
+			// could ever be produced.
+			seedDrawer(t, env.Home, "proj", "general",
 				fmt.Sprintf("iter-%d drawer %d: testing batch subsystem regression coverage", iter, i))
 		}
 		metrics.emit(map[string]any{"cmd": "seed-drawers", "ms": time.Since(capStart).Milliseconds(), "count": 5})
@@ -179,22 +194,85 @@ func TestIntegrationE2EWorkflowsTuneRoomsLoop(t *testing.T) {
 			"judgments_total": report.JudgmentsTotal,
 		})
 
-		// --- tune --apply idempotency (HARD struct-equal assert) ---
-		cfg := projectConfigPath(t, vaultRoot, "proj")
+		// --- tune --apply reaches a fixed point (HARD assert) ---
+		//
+		// 🔴 THIS ASSERT USED TO PROVE NOTHING, TWICE OVER, AND BOTH HOLES ARE
+		// GUARDED BELOW RATHER THAN JUST FIXED.
+		//  1. It read the VAULT's project config, which no production code writes
+		//     any more, so it compared an untouched file to itself.
+		//  2. The canned mock named drawer_ids that never match, so every run
+		//     produced zero proposals and `--apply` wrote nothing at all.
+		// Measured: with writeScoringConfigAt deliberately made non-idempotent,
+		// the old assert stayed green.
+		//
+		// It is CONVERGENCE, not per-run idempotency. Each apply promotes a
+		// keyword one weight tier, so two consecutive applies legitimately differ
+		// until every keyword tops out and promoteWeight stops moving. What the
+		// writer's idempotency buys is that the loop then STOPS: a writer that
+		// rewrites the file on every call never settles, exhausts the budget and
+		// reds.
+		cfg := hostProjectConfigPath(t, "proj")
+		vaultCfg := projectConfigPath(t, vaultRoot, "proj")
+		vaultBefore := sha256File(t, vaultCfg)
 
-		testinfra.RunCLI(t, tuneEnv, projDir, nil, "tune", "rooms", "--apply").Must(t)
-		requireFileExists(t, cfg)
-		apply1 := filepath.Join(caseDir, fmt.Sprintf("config-%d-apply1.toml", iter))
-		copyFile(t, cfg, apply1)
-
-		testinfra.RunCLI(t, tuneEnv, projDir, nil, "tune", "rooms", "--apply").Must(t)
-		apply2 := filepath.Join(caseDir, fmt.Sprintf("config-%d-apply2.toml", iter))
-		copyFile(t, cfg, apply2)
-
-		if !tomlStructEqual(t, apply1, apply2) {
-			t.Fatalf("iter %d: tune rooms --apply is not idempotent: %s vs %s differ structurally", iter, apply1, apply2)
+		// GUARD 1, against hole 2: a run with no proposals writes nothing, and
+		// everything below it would pass on an untouched file.
+		if len(report.Proposals) == 0 {
+			t.Fatalf("iter %d: tune proposed nothing, so --apply writes nothing and this whole block is vacuous; report:\n%s",
+				iter, reportData)
 		}
-		metrics.emit(map[string]any{"cmd": "tune --apply(idemp)", "struct_stable": 1})
+		// GUARD 2, against hole 1: assert the target is the host-local file and
+		// not something inside the vault, whatever a future edit points it at.
+		if strings.HasPrefix(cfg, vaultRoot+string(filepath.Separator)) {
+			t.Fatalf("iter %d: the apply target %s is inside the vault %s; production writes host-local", iter, cfg, vaultRoot)
+		}
+
+		const maxApplies = 6
+		var applies int
+		settled := false
+		prev := sha256File(t, cfg)
+		for applies = 1; applies <= maxApplies; applies++ {
+			testinfra.RunCLI(t, tuneEnv, projDir, nil, "tune", "rooms", "--apply").Must(t)
+			if applies == 1 {
+				requireFileExists(t, cfg)
+				// Only on the first iteration: by iter 2 the weights are
+				// already topped out, so an apply that writes nothing is the
+				// fixed point holding, not a dead run.
+				if h := sha256File(t, cfg); iter == 1 && h == prev {
+					t.Fatalf("iter %d: the first --apply did not create or change %s, so it wrote nothing", iter, cfg)
+				}
+			}
+			cur := sha256File(t, cfg)
+			if cur == prev {
+				settled = true
+				break
+			}
+			prev = cur
+		}
+		if !settled {
+			body, _ := os.ReadFile(cfg)
+			t.Fatalf("iter %d: tune rooms --apply never reached a fixed point in %d runs; %s still changing:\n%s",
+				iter, maxApplies, cfg, body)
+		}
+
+		// At the fixed point a further apply must not touch the file at all.
+		settledHash := sha256File(t, cfg)
+		apply1 := filepath.Join(caseDir, fmt.Sprintf("config-%d-settled.toml", iter))
+		copyFile(t, cfg, apply1)
+		testinfra.RunCLI(t, tuneEnv, projDir, nil, "tune", "rooms", "--apply").Must(t)
+		apply2 := filepath.Join(caseDir, fmt.Sprintf("config-%d-after-settled.toml", iter))
+		copyFile(t, cfg, apply2)
+		if after := sha256File(t, cfg); after != settledHash {
+			t.Fatalf("iter %d: an apply at the fixed point rewrote %s: %s -> %s", iter, cfg, settledHash, after)
+		}
+		if !tomlStructEqual(t, apply1, apply2) {
+			t.Fatalf("iter %d: tune rooms --apply is not idempotent at the fixed point: %s vs %s", iter, apply1, apply2)
+		}
+		// And the vault project config is still not a scoring destination.
+		if after := sha256File(t, vaultCfg); after != vaultBefore {
+			t.Fatalf("iter %d: tune rooms --apply wrote the vault project config %s", iter, vaultCfg)
+		}
+		metrics.emit(map[string]any{"cmd": "tune --apply(converge)", "applies_to_settle": applies, "struct_stable": 1})
 
 		// Disagreements as reclassification proxy — TRACKED, not asserted.
 		metrics.emit(map[string]any{

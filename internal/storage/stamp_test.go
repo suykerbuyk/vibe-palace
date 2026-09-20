@@ -143,14 +143,14 @@ func TestEveryVaultWriterStamps(t *testing.T) {
 			}
 			return projectsRoot(vault)
 		}},
-		{"WriteScoringConfig", func(t *testing.T, v *Vault, vault string) string {
-			if err := v.WriteScoringConfig(proj, map[string]ScoringRoomOverride{
-				room: {High: []string{"kw"}},
-			}, 0); err != nil {
-				t.Fatal(err)
-			}
-			return projectsRoot(vault)
-		}},
+		// WriteScoringConfig's row is GONE, and deliberately. After R2 of task
+		// move-per-project-config-out-of-the-shared-vault the production
+		// scoring writer is WriteHostScoringConfig, which writes OUTSIDE every
+		// vault and must therefore NOT stamp: a row here would assert the
+		// opposite. What remains of the vault path is a test-only shim
+		// (write_scoring_vault_shim_test.go), and a table of vault writers is
+		// no place to pin test code. That the host writer leaves the vault
+		// untouched is pinned in host_project_writer_test.go.
 		{"AppendDrawer", func(t *testing.T, v *Vault, vault string) string {
 			if err := v.AppendDrawer(proj, wing, room, Drawer{Content: "hello"}); err != nil {
 				t.Fatal(err)

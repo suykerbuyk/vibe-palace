@@ -211,3 +211,91 @@ func TestStatusCommandWiresTheResolvedVaultPath(t *testing.T) {
 		t.Errorf("source %q must cite the marker file that bound the vault (%q)", result.VaultPathSource, marker)
 	}
 }
+
+// `vp status` names which per-project config files exist, so a tuning run's
+// destination is visible rather than assumed. After task
+// move-per-project-config-out-of-the-shared-vault there are two candidates: the
+// host-local file and the vault's, and the host-local one outranks it.
+func TestRunStatusNamesProjectConfigSources(t *testing.T) {
+	writeHost := func(t *testing.T) string {
+		t.Helper()
+		p, err := storage.HostProjectConfigPath("proj")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("[palace.scoring.rooms.general]\nhigh = [\"h\"]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	writeVault := func(t *testing.T, v *storage.Vault) string {
+		t.Helper()
+		p, err := v.ProjectConfigFile("proj")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("[palace.scoring.rooms.general]\nhigh = [\"v\"]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	t.Run("neither", func(t *testing.T) {
+		initTestEnv(t, false)
+		v := testVault(t)
+		var buf bytes.Buffer
+		if code := runStatus(v, "proj", testVaultSource, false, &buf); code != cli.ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+		if !strings.Contains(buf.String(), "project config = none") {
+			t.Errorf("want the none line:\n%s", buf.String())
+		}
+	})
+
+	t.Run("host-local only", func(t *testing.T) {
+		initTestEnv(t, false)
+		v := testVault(t)
+		hostPath := writeHost(t)
+		var buf bytes.Buffer
+		if code := runStatus(v, "proj", testVaultSource, false, &buf); code != cli.ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+		out := buf.String()
+		if !strings.Contains(out, hostPath) {
+			t.Errorf("does not name the host-local file %s:\n%s", hostPath, out)
+		}
+		vaultPath, err := v.ProjectConfigFile("proj")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(out, vaultPath) {
+			t.Errorf("names the vault file %s, which does not exist:\n%s", vaultPath, out)
+		}
+	})
+
+	t.Run("both, host-local first", func(t *testing.T) {
+		initTestEnv(t, false)
+		v := testVault(t)
+		hostPath := writeHost(t)
+		vaultPath := writeVault(t, v)
+		var buf bytes.Buffer
+		if code := runStatus(v, "proj", testVaultSource, true, &buf); code != cli.ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+		var got statusResult
+		if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+			t.Fatalf("decode JSON: %v\n%s", err, buf.String())
+		}
+		if len(got.ProjectConfigSources) != 2 ||
+			got.ProjectConfigSources[0] != hostPath || got.ProjectConfigSources[1] != vaultPath {
+			t.Errorf("project_config_sources = %v, want [%s %s] (highest precedence first)",
+				got.ProjectConfigSources, hostPath, vaultPath)
+		}
+	})
+}
