@@ -112,6 +112,35 @@ func vaultDirtMessage(count int) string {
 		count)
 }
 
+// vaultDirtMessageFor picks the alert line for the host's git_enabled, read
+// through storage.HostGitEnabled (this is a reporting reader the gitEnabledOwner
+// rule allow-lists; it refuses nothing).
+//
+// On a git-disabled host the task-write and harvest commits are skipped by
+// design, so their files stay uncommitted permanently. Telling that session
+// "vp_vault_sync REFUSES" would point it at a tool that refuses by design, and
+// invite it to edit the operator's config to make the alert go away. It says
+// instead that the dirt is expected and that no vp tool commits here. An
+// unreadable setting says so, never "disabled".
+//
+// Both lines are static and no longer than vaultDirtMessage's, so the bootstrap
+// payload ceiling, measured on the enabled line, stays the worst case.
+func vaultDirtMessageFor(count int, gitEnabled bool, readErr error) string {
+	switch {
+	case readErr != nil:
+		return fmt.Sprintf(
+			"🔴 VAULT DIRT: %d uncommitted non-artifact file(s), and git_enabled could not be read from the "+
+				"host config, so every vp vault git operation refuses until it can. vp check names the cause.",
+			count)
+	case !gitEnabled:
+		return fmt.Sprintf(
+			"VAULT DIRT (expected): %d uncommitted file(s). git_enabled = false on this host, so vp commits "+
+				"nothing here and no vp tool will commit them. See vault_dirt.paths.",
+			count)
+	}
+	return vaultDirtMessage(count)
+}
+
 // computeVaultDirt scans the whole vault worktree and returns the alert, or nil
 // when the vault is clean.
 //
@@ -142,9 +171,10 @@ func computeVaultDirt(vaultRoot string) *VaultDirt {
 	if len(sample) > vaultDirtSampleN {
 		sample = sample[:vaultDirtSampleN]
 	}
+	enabled, readErr := storage.HostGitEnabled()
 	return &VaultDirt{
 		Count:       len(dirt),
 		SamplePaths: append([]string(nil), sample...),
-		Message:     vaultDirtMessage(len(dirt)),
+		Message:     vaultDirtMessageFor(len(dirt), enabled, readErr),
 	}
 }

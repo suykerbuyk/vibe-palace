@@ -6,7 +6,9 @@ package storage
 import (
 	"bytes"
 	_ "embed"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -70,7 +72,6 @@ type Config struct {
 	MetaVersionMinor       int                            `json:"meta_version_minor"`
 	MetaKind               string                         `json:"meta_kind"`
 	VaultPath              string                         `json:"vault_path"`
-	GitEnabled             bool                           `json:"git_enabled"`
 	HTTPPort               int                            `json:"http_port"`
 	LogLevel               string                         `json:"log_level"`
 	EmbedderModel          string                         `json:"embedder_model"`
@@ -160,12 +161,11 @@ type tomlMeta struct {
 
 // tomlConfig is the intermediate struct matching the TOML file structure.
 type tomlConfig struct {
-	Meta       tomlMeta `toml:"meta"`
-	VaultPath  string   `toml:"vault_path"`
-	GitEnabled bool     `toml:"git_enabled"`
-	HTTPPort   int      `toml:"http_port"`
-	LogLevel   string   `toml:"log_level"`
-	Embedder   struct {
+	Meta      tomlMeta `toml:"meta"`
+	VaultPath string   `toml:"vault_path"`
+	HTTPPort  int      `toml:"http_port"`
+	LogLevel  string   `toml:"log_level"`
+	Embedder  struct {
 		Model             string `toml:"model"`
 		MaxSequenceLength int    `toml:"max_sequence_length"`
 		BatchSize         int    `toml:"batch_size"`
@@ -274,7 +274,6 @@ func (tc *tomlConfig) flatten() Config {
 		MetaVersionMinor:       tc.Meta.VersionMinor,
 		MetaKind:               tc.Meta.Kind,
 		VaultPath:              tc.VaultPath,
-		GitEnabled:             tc.GitEnabled,
 		HTTPPort:               tc.HTTPPort,
 		LogLevel:               tc.LogLevel,
 		EmbedderModel:          tc.Embedder.Model,
@@ -521,6 +520,91 @@ func VaultConfigFilePath() (string, error) {
 	// windows-lock CI failure of 2026-07-26. Join normalizes per-OS and is
 	// byte-identical to the old result on Unix.
 	return filepath.Join(configDir, "vibe-palace", "config.toml"), nil
+}
+
+// ErrGitDisabled is the refusal every vault git entry point returns when the
+// host config says git_enabled = false. The text is the one the CLI printed
+// before the refusal moved into storage. Map it with errors.Is; never
+// construct or wrap it outside this package (the gitEnabledOwner source-audit
+// rule enforces that).
+var ErrGitDisabled = errors.New("git is disabled (git_enabled = false in config)")
+
+// ErrGitConfigUnreadable is returned when git_enabled cannot be read, so it is
+// unknown whether the operator disabled git. It never wraps ErrGitDisabled: an
+// unreadable config is a broken file, not an operator decision, and it is never
+// presented as "disabled". Vault git refuses on it all the same (fail closed).
+var ErrGitConfigUnreadable = errors.New("host config unreadable")
+
+// HostGitEnabled reports whether the HOST config (VaultConfigFilePath, not a
+// vault file: two hosts sharing one vault can differ) permits vp to run git
+// against the vault. It is the one reader of git_enabled. Inside this package
+// only RefuseIfGitDisabled calls it; outside, only the reporting readers the
+// gitEnabledOwner rule allow-lists do.
+//
+// It is deliberately NOT LoadConfig: LoadConfig fails open (a config it cannot
+// stat reads as the embedded git_enabled = true), returns a Config whose
+// GitEnabled is false on error, and lets an unrelated wrong-typed key block
+// everything. The semantics, exactly:
+//
+//   - VaultConfigFilePath errors (no HOME, no XDG_CONFIG_HOME) → unreadable.
+//   - os.Lstat, never os.Stat, decides "missing": only an Lstat ENOENT means
+//     no config, which means enabled. A dangling symlink is unreadable.
+//   - The top level is decoded into a map, never a struct, because BurntSushi
+//     matches struct fields case-insensitively: a lone GIT_ENABLED would read as
+//     the setting, and GIT_ENABLED beside git_enabled decodes to either value
+//     depending on map iteration order. Any key other than the exact spelling
+//     that equals git_enabled under strings.EqualFold is therefore unreadable.
+//   - A decode error anywhere in the file, or a config from a newer vp
+//     (checkConfigVersion, the same check LoadConfig applies), is unreadable and
+//     is returned before any value is inspected.
+//   - The exact key holding a bool → that value; holding anything else →
+//     unreadable; absent (including nested under a table) → enabled.
+func HostGitEnabled() (bool, error) {
+	cfgPath, err := VaultConfigFilePath()
+	if err != nil {
+		return false, fmt.Errorf("cannot read git_enabled from the host config (path unresolved): %w: %w",
+			ErrGitConfigUnreadable, err)
+	}
+	unreadable := func(cause error) (bool, error) {
+		return false, fmt.Errorf("cannot read git_enabled from %s: %w: %w", cfgPath, ErrGitConfigUnreadable, cause)
+	}
+	if _, err := os.Lstat(cfgPath); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return true, nil
+		}
+		return unreadable(err)
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return unreadable(err)
+	}
+	var top map[string]any
+	if _, err := toml.Decode(string(data), &top); err != nil {
+		return unreadable(err)
+	}
+	var meta struct {
+		Meta tomlMeta `toml:"meta"`
+	}
+	if _, err := toml.Decode(string(data), &meta); err != nil {
+		return unreadable(err)
+	}
+	if err := checkConfigVersion(cfgPath, meta.Meta); err != nil {
+		return unreadable(err)
+	}
+	for key := range top {
+		if key != "git_enabled" && strings.EqualFold(key, "git_enabled") {
+			return unreadable(fmt.Errorf("key %q is not git_enabled but differs from it only in case", key))
+		}
+	}
+	value, ok := top["git_enabled"]
+	if !ok {
+		return true, nil
+	}
+	enabled, ok := value.(bool)
+	if !ok {
+		return unreadable(fmt.Errorf("git_enabled = %v is a %T, not a bool", value, value))
+	}
+	return enabled, nil
 }
 
 // ProjectConfigSources lists the per-project config files that EXIST for a

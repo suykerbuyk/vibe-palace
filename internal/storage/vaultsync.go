@@ -86,13 +86,59 @@ type PlainPushResult struct {
 // from RemoteVerdict, so PushPlain returns data and leaves policy to the callers.
 // It NEVER writes to os.Stderr.
 //
-// PushPlain does NOT guard the working tree (the porcelain check stays in the
-// front-ends), does NOT commit, does NOT converge/rebase (that is
-// CommitAndPushPaths's job), and does NOT call RemoteVerdict. Pure execution +
-// capture, like Pull. The branch is main — matching what both front-ends push
-// today. The returned *PlainPushResult is always non-nil, even if a remote
-// failed; the error return is reserved for a failure to run git at all.
+// PushPlain refuses a dirty working tree: a plain push would publish a HEAD
+// that leaves the uncommitted work behind. That refuse-on-dirty precheck used
+// to exist twice, as a raw `git status --porcelain` in each front-end (CLI
+// pushAll, MCP gitPush) — two implementations that agreed only by being kept
+// in step. It lives here once now, after the git_enabled gate, and returns a
+// *DirtyTreeError each front-end presents its own way. It does NOT commit, does
+// NOT converge/rebase (that is CommitAndPushPaths's job), and does NOT call
+// RemoteVerdict. The branch is main — matching what both front-ends push today.
+// The returned *PlainPushResult is always non-nil, even if a remote failed;
+// the error return is reserved for a refusal or a failure to run git at all.
+//
+// A host config with git_enabled = false (or an unreadable one) refuses
+// before any git runs, with a non-nil empty result.
 func PushPlain(vaultPath string, remotes []string) (*PlainPushResult, error) {
+	empty := &PlainPushResult{
+		RemoteResults: map[string]error{},
+		RemoteOutput:  map[string]string{},
+	}
+	if err := RefuseIfGitDisabled(vaultPath, "push"); err != nil {
+		return empty, err
+	}
+	porcelain, err := porcelainStatus(vaultPath)
+	if err != nil {
+		return empty, fmt.Errorf("git status: %w", err)
+	}
+	if strings.TrimSpace(porcelain) != "" {
+		return empty, &DirtyTreeError{Porcelain: porcelain}
+	}
+	return pushPlainCore(vaultPath, remotes)
+}
+
+// DirtyTreeError is PushPlain's refuse-on-dirty verdict. Porcelain is git's
+// untrimmed `status --porcelain` output, so a front-end can print it verbatim
+// (the CLI) or parse the paths out of it (MCP) without re-running git.
+type DirtyTreeError struct {
+	Porcelain string
+}
+
+func (e *DirtyTreeError) Error() string { return "vault has uncommitted changes" }
+
+// porcelainStatus returns `git status --porcelain` for vaultPath, untrimmed:
+// gitCmd trims its output, which would strip the leading status column of the
+// first line (" M path") that a front-end parses.
+func porcelainStatus(vaultPath string) (string, error) {
+	cmd := exec.Command("git", "-C", vaultPath, "status", "--porcelain")
+	cmd.Env = SafeGitEnv()
+	out, err := cmd.Output()
+	return string(out), err
+}
+
+// pushPlainCore is PushPlain after its git_enabled gate, for storage-internal
+// composition (SyncVault).
+func pushPlainCore(vaultPath string, remotes []string) (*PlainPushResult, error) {
 	result := &PlainPushResult{
 		RemoteResults: make(map[string]error, len(remotes)),
 		RemoteOutput:  make(map[string]string, len(remotes)),
@@ -177,7 +223,20 @@ func PushPlain(vaultPath string, remotes []string) (*PlainPushResult, error) {
 //
 // PushResult.CommitSHA is refreshed to the post-loop HEAD if any rebase
 // happened, so the printed SHA always exists at the converged remotes.
+//
+// A host config with git_enabled = false (or an unreadable one) refuses
+// before any git runs; the task write and the memory harvest map that refusal
+// to a skipped commit.
 func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*PushResult, error) {
+	if err := RefuseIfGitDisabled(vaultPath, "commit"); err != nil {
+		return nil, err
+	}
+	return commitAndPushPathsCore(vaultPath, message, paths, push)
+}
+
+// commitAndPushPathsCore is CommitAndPushPaths after its git_enabled gate,
+// for storage-internal composition (the downgrade wrapper).
+func commitAndPushPathsCore(vaultPath, message string, paths []string, push bool) (*PushResult, error) {
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("no paths specified")
 	}
@@ -370,7 +429,14 @@ func (e *RemovalsLeftInHEADError) Error() string {
 //
 // vaultPath must be the root of its own repository. vp never commits into a
 // repository that merely encloses the vault; that caller must not call this.
+//
+// A host config with git_enabled = false (or an unreadable one) refuses
+// before any git runs. Template reset refuses up front at its own preflight,
+// before removing anything; this gate is the backstop.
 func CommitRemovals(vaultPath, message string, rels []string) (*PushResult, error) {
+	if err := RefuseIfGitDisabled(vaultPath, "commit the template removal"); err != nil {
+		return nil, err
+	}
 	if len(rels) == 0 {
 		return nil, fmt.Errorf("no paths specified")
 	}
@@ -624,12 +690,24 @@ func pushCommitted(vaultPath string, remotes []string, branch string, reconcileE
 // downgraded=true. When push is false it passes straight through and downgraded
 // is always false. The returned *PushResult and error are CommitAndPushPaths's
 // own (RemoteResults populated only when an effective push ran).
+//
+// Its git_enabled gate is its first statement, because downgradePush runs
+// `git remote` before CommitAndPushPaths would reach its own.
 func CommitAndPushPathsWithDowngrade(vaultPath, message string, paths []string, push bool) (res *PushResult, downgraded bool, err error) {
+	if err := RefuseIfGitDisabled(vaultPath, "commit"); err != nil {
+		return nil, false, err
+	}
+	return commitAndPushPathsWithDowngradeCore(vaultPath, message, paths, push)
+}
+
+// commitAndPushPathsWithDowngradeCore is CommitAndPushPathsWithDowngrade after
+// its git_enabled gate, for storage-internal composition (TidyVault).
+func commitAndPushPathsWithDowngradeCore(vaultPath, message string, paths []string, push bool) (res *PushResult, downgraded bool, err error) {
 	effectivePush, downgraded, err := downgradePush(vaultPath, push)
 	if err != nil {
 		return nil, false, err
 	}
-	res, err = CommitAndPushPaths(vaultPath, message, paths, effectivePush)
+	res, err = commitAndPushPathsCore(vaultPath, message, paths, effectivePush)
 	if err != nil {
 		return nil, downgraded, err
 	}

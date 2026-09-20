@@ -44,6 +44,7 @@ func TestIntegrationTemplateOverrideSurvivesSync(t *testing.T) {
 		for rel, body := range overrides {
 			putFile(t, env.vaultPath, rel, body)
 		}
+		enableGit(t, env)
 		origin := gitifyVaultWithOrigin(t, env.vaultPath)
 		head := gitIn(t, env.vaultPath, "rev-parse", "HEAD")
 
@@ -80,6 +81,7 @@ func TestIntegrationTemplateOverrideSurvivesSync(t *testing.T) {
 		runVP(t, bin, a, nil, "init", a.projectDir,
 			"--name", a.projectName, "--vault-path", a.vaultPath, "--no-git")
 		putFile(t, a.vaultPath, "Templates/commands/wrap.md", mine)
+		enableGit(t, a)
 		origin := gitifyVaultWithOrigin(t, a.vaultPath)
 		tip := gitIn(t, origin, "rev-parse", "main")
 		runVP(t, bin, a, nil, "config", "sync", "--yes", "--project-root", a.projectDir)
@@ -97,6 +99,7 @@ func TestIntegrationTemplateOverrideSurvivesSync(t *testing.T) {
 		gitIn(t, b.vaultPath, "config", "user.name", "Host B")
 		runVP(t, bin, b, nil, "init", b.projectDir,
 			"--name", b.projectName, "--vault-path", b.vaultPath, "--no-git")
+		enableGit(t, b)
 		if _, err := os.Stat(filepath.Join(b.vaultPath, retiredLockRel)); !os.IsNotExist(err) {
 			t.Fatalf("fixture: host B must start without a templates.lock (err=%v)", err)
 		}
@@ -128,6 +131,7 @@ func TestIntegrationTemplateOverrideSurvivesSync(t *testing.T) {
 		runVP(t, bin, env, nil, "init", env.projectDir,
 			"--name", env.projectName, "--vault-path", env.vaultPath, "--no-git")
 		putFile(t, env.vaultPath, "Templates/commands/wrap.md", mine)
+		enableGit(t, env)
 		origin := gitifyVaultWithOrigin(t, env.vaultPath)
 		head := gitIn(t, env.vaultPath, "rev-parse", "HEAD")
 
@@ -174,6 +178,7 @@ func TestIntegrationTemplatePruneFailsSafe(t *testing.T) {
 		runVP(t, bin, env, nil, "init", env.projectDir,
 			"--name", env.projectName, "--vault-path", env.vaultPath, "--no-git")
 		putFile(t, env.vaultPath, "Templates/commands/wrap.md", string(emb))
+		enableGit(t, env)
 		origin := gitifyVaultWithOrigin(t, env.vaultPath)
 		return env, origin
 	}

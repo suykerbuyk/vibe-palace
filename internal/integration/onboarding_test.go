@@ -14,7 +14,12 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
+
+// TestMain runs this package hermetically: XDG_CONFIG_HOME points at the
+// checked-in host-config fixture, never the developer's real host config.
+func TestMain(m *testing.M) { os.Exit(testutil.RunHermetic(m)) }
 
 // TestIntegrationInitToCheckPipeline proves the full init→check flow:
 // fresh init creates a config that vp check accepts as valid.
@@ -41,8 +46,8 @@ func TestIntegrationInitToCheckPipeline(t *testing.T) {
 	if cfg.VaultPath != vaultDir {
 		t.Errorf("VaultPath = %q, want %q", cfg.VaultPath, vaultDir)
 	}
-	if !cfg.GitEnabled {
-		t.Error("GitEnabled should be true by default")
+	if enabled, err := storage.HostGitEnabled(); err != nil || !enabled {
+		t.Errorf("HostGitEnabled = %v, %v; want true by default", enabled, err)
 	}
 	if cfg.HTTPPort != 7423 {
 		t.Errorf("HTTPPort = %d, want 7423 (default)", cfg.HTTPPort)
@@ -178,23 +183,37 @@ func TestIntegrationGitGuardBlocksVaultCommands(t *testing.T) {
 	vaultDir := filepath.Join(tmp, "vault")
 	os.MkdirAll(configDir, 0o755)
 	os.MkdirAll(vaultDir, 0o755)
+	gitInit(t, vaultDir)
 
 	// Write config with git_enabled = false.
 	content := `vault_path = "` + vaultDir + `"` + "\ngit_enabled = false\n"
 	os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(content), 0o644)
 
-	// Verify LoadConfig reads git_enabled = false.
-	v := storage.NewVault(vaultDir)
-	cfg, err := v.LoadConfig("")
+	// The one reader sees the operator's choice.
+	enabled, err := storage.HostGitEnabled()
 	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
+		t.Fatalf("HostGitEnabled: %v", err)
 	}
-	if cfg.GitEnabled {
-		t.Fatal("GitEnabled should be false")
+	if enabled {
+		t.Fatal("HostGitEnabled should be false")
+	}
+
+	// The real vault commands refuse, through the built binary: this test used
+	// to assert only config text, so it could not fail if the refusal was
+	// deleted. A dry run refuses too.
+	for _, args := range [][]string{
+		{"vault", "tidy"},
+		{"vault", "tidy", "--dry-run"},
+		{"vault", "status", "--no-fetch"},
+	} {
+		r := testinfra.RunCLI(t, env.Environ(), tmp, nil, args...)
+		if r.ExitCode != 1 || !strings.Contains(r.Stderr, "git is disabled") {
+			t.Errorf("vp %v: exit %d, want 1 with the refusal\nstderr: %s", args, r.ExitCode, r.Stderr)
+		}
 	}
 
 	// CheckGit should report "disabled".
-	r := check.CheckGit(vaultDir, cfg.GitEnabled)
+	r := check.CheckGit(vaultDir, enabled, nil)
 	if r.Status != check.Info {
 		t.Errorf("CheckGit: expected Info, got %v: %s", r.Status, r.Summary)
 	}
@@ -202,16 +221,11 @@ func TestIntegrationGitGuardBlocksVaultCommands(t *testing.T) {
 		t.Errorf("CheckGit summary should mention disabled, got %q", r.Summary)
 	}
 
-	// The Details entries must actually name the real scope: 'vp init' + the
-	// CLI 'vp vault *' subcommands, and NOT overclaim coverage of the MCP
-	// tools or other CLI commands that bypass this setting (vp_vault_tidy and
-	// vp commands/skills reset were both found missing by adversarial review
-	// across two prior rounds of this exact text).
+	// The Details state the rule, parity on both surfaces, not the old roster
+	// of paths the setting did NOT cover.
 	all := strings.Join(r.Details, "\n")
-	for _, want := range []string{"vp_vault_tidy", "vp commands reset", "vp migrate kg-filenames"} {
-		if !strings.Contains(all, want) {
-			t.Errorf("CheckGit Details should name %q among the paths this setting does NOT cover, got %v", want, r.Details)
-		}
+	if !strings.Contains(all, "both CLI and MCP") {
+		t.Errorf("CheckGit Details should state the rule, got %v", r.Details)
 	}
 }
 
@@ -245,7 +259,7 @@ func TestIntegrationGitInitInVault(t *testing.T) {
 	}
 
 	// CheckGit should report "no remotes configured" (not an error).
-	r := check.CheckGit(vaultDir, true)
+	r := check.CheckGit(vaultDir, true, nil)
 	if r.Status != check.Info {
 		t.Errorf("expected Info (no remotes), got %v: %s", r.Status, r.Summary)
 	}

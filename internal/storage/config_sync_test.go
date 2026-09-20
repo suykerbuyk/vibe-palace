@@ -35,13 +35,13 @@ func TestTemplateSyncWithDefaults(t *testing.T) {
 }
 
 func TestConfigGitEnabledDefault(t *testing.T) {
-	v := testVault(t)
-	cfg, err := v.LoadConfig("")
+	testVault(t)
+	enabled, err := HostGitEnabled()
 	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
+		t.Fatalf("HostGitEnabled: %v", err)
 	}
-	if !cfg.GitEnabled {
-		t.Error("GitEnabled = false, want true from defaults")
+	if !enabled {
+		t.Error("HostGitEnabled = false, want true by default")
 	}
 }
 
@@ -60,12 +60,11 @@ func TestConfigGitEnabledFalse(t *testing.T) {
 
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 
-	v := NewVault(tmp)
-	cfg, err := v.LoadConfig("")
+	enabled, err := HostGitEnabled()
 	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
+		t.Fatalf("HostGitEnabled: %v", err)
 	}
-	if cfg.GitEnabled {
-		t.Error("GitEnabled = true, want false after override")
+	if enabled {
+		t.Error("HostGitEnabled = true, want false after override")
 	}
 }

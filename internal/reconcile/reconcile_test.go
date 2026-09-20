@@ -15,7 +15,13 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
+
+// NewVaultSettings reaches check.CheckSettings, which reads the HOST config,
+// so the settings tests ran against the developer's own config. The tests that
+// need their own host config still call xdgTempHome, which overrides this.
+func TestMain(m *testing.M) { os.Exit(testutil.RunHermetic(m)) }
 
 // xdgTempHome sets XDG_CONFIG_HOME to a tempdir and returns the resolved
 // config file path.
@@ -417,8 +423,8 @@ func TestVault_GitEnabledReadsGlobalConfig(t *testing.T) {
 	}
 
 	r := NewVault(t.TempDir(), VaultSeed{})
-	if !r.gitEnabled() {
-		t.Errorf("expected gitEnabled()=true from global config")
+	if enabled, err := r.gitEnabled(); err != nil || !enabled {
+		t.Errorf("gitEnabled() = %v, %v; want true from global config", enabled, err)
 	}
 }
 
@@ -1063,4 +1069,98 @@ func TestVaultPlan_GitMarkerUnverifiable_SkipsGitInit(t *testing.T) {
 			t.Errorf("Skip summary = %q misattributes a dangling .git symlink AT the vault as being above it", a.Summary)
 		}
 	})
+}
+
+// TestVault_PlanReadsGitEnabledThroughTheOneReader pins the reader unification:
+// the reconcile reader used to read a missing key, a missing file, an empty
+// file and a nested git_enabled as false. Through storage.HostGitEnabled they
+// all read as enabled, so `vp config sync` plans a git init for a vault that is
+// not a repo. An unreadable git_enabled plans a Skip naming the read error and
+// never fails the Plan.
+func TestVault_PlanReadsGitEnabledThroughTheOneReader(t *testing.T) {
+	cases := []struct {
+		name     string
+		cfgExtra string
+		wantInit bool
+		wantSkip string
+	}{
+		{"key absent", "", true, ""},
+		{"nested under a table", "[palace]\ngit_enabled = false\n", true, ""},
+		{"explicit false", "git_enabled = false\n", false, ""},
+		{"unreadable", "git_enabled = \"no\"\n", false, "cannot read git_enabled"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfgPath := xdgTempHome(t)
+			if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			vaultPath := filepath.Join(t.TempDir(), "vault")
+			if err := os.MkdirAll(vaultPath, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			body := "vault_path = \"" + vaultPath + "\"\n" + tc.cfgExtra
+			if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			p, err := NewVault(t.TempDir(), VaultSeed{}).Plan(context.Background())
+			if err != nil {
+				t.Fatalf("Plan returned an error, which would abort every tier of config sync: %v", err)
+			}
+			var gotInit bool
+			var gotSkip string
+			for _, a := range p.Actions {
+				if a.Kind == ActionCreate && a.Summary == "git init vault" {
+					gotInit = true
+				}
+				if a.Kind == ActionSkip && strings.HasPrefix(a.Summary, "git init skipped") {
+					gotSkip = a.Summary
+				}
+			}
+			if gotInit != tc.wantInit {
+				t.Errorf("git init planned = %v, want %v (actions %+v)", gotInit, tc.wantInit, p.Actions)
+			}
+			if tc.wantSkip != "" && !strings.Contains(gotSkip, tc.wantSkip) {
+				t.Errorf("Skip summary = %q, want it to contain %q", gotSkip, tc.wantSkip)
+			}
+			if tc.wantSkip == "" && gotSkip != "" {
+				t.Errorf("unexpected Skip %q", gotSkip)
+			}
+		})
+	}
+}
+
+// TestVault_CheckGitRowFailsOnAnUnreadableSetting: the Git row names the read
+// error as Fail, never the "disabled" row.
+func TestVault_CheckGitRowFailsOnAnUnreadableSetting(t *testing.T) {
+	cfgPath := xdgTempHome(t)
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	vaultPath := filepath.Join(t.TempDir(), "vault")
+	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("vault_path = \""+vaultPath+"\"\nGIT_ENABLED = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rows := NewVault(t.TempDir(), VaultSeed{}).Check(context.Background())
+	var git *check.Result
+	for i := range rows {
+		if rows[i].Name == "Git" {
+			git = &rows[i]
+		}
+	}
+	if git == nil {
+		t.Fatalf("no Git row in %+v", rows)
+	}
+	if git.Status != check.Fail {
+		t.Errorf("Git row status = %v, want Fail", git.Status)
+	}
+	if strings.Contains(git.Summary, "disabled (") {
+		t.Errorf("an unreadable setting must not render as disabled: %q", git.Summary)
+	}
+	if !strings.Contains(strings.Join(git.Details, "\n"), cfgPath) {
+		t.Errorf("Git row details %v do not name the config path %s", git.Details, cfgPath)
+	}
 }

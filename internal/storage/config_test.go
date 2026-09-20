@@ -9,7 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
+
+// TestMain runs this package hermetically: XDG_CONFIG_HOME points at the
+// checked-in host-config fixture, never the developer's real host config.
+func TestMain(m *testing.M) { os.Exit(testutil.RunHermetic(m)) }
 
 func TestLoadConfigDefaults(t *testing.T) {
 	v := testVault(t)
@@ -684,9 +690,6 @@ max_tokens = 2048
 
 func assertVaultTierInherited(t *testing.T, cfg Config) {
 	t.Helper()
-	if !cfg.GitEnabled {
-		t.Errorf("GitEnabled = false, want true (vault tier)")
-	}
 	if cfg.HTTPPort != 9001 {
 		t.Errorf("HTTPPort = %d, want 9001 (vault tier)", cfg.HTTPPort)
 	}
@@ -991,9 +994,6 @@ batch_size = 64
 	// Absent fields inherit from the vault tier, not the project's own zero value.
 	if cfg.VaultPath != "/vault-tier-path" {
 		t.Errorf("VaultPath = %q, want vault-tier value (absent in project)", cfg.VaultPath)
-	}
-	if !cfg.GitEnabled {
-		t.Errorf("GitEnabled = false, want true (absent, vault tier)")
 	}
 	if cfg.PalaceLLM.Endpoint != "https://vault-tier-llm.example" {
 		t.Errorf("PalaceLLM.Endpoint = %q, want vault-tier value (absent in project)", cfg.PalaceLLM.Endpoint)

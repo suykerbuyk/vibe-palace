@@ -282,7 +282,16 @@ func runConfigSync(args []string) int {
 				pending = nil
 			}
 			retiredLock, perr = planRetiredLockRemoval(vaultPathForTemplates)
-			if perr != nil {
+			// git_enabled = false skips the retired lock WHOLE, the same way
+			// and for the same reason as the Templates prune below: deciding
+			// whether the lock may go is a git verdict (the index, HEAD and
+			// check-ignore) and removing it acts on that verdict. One row says
+			// so, the lock is left exactly as it is, and the run is not an
+			// error — the operator's setting is not a fault.
+			if reason, skipped := gitDisabledSkipReason(perr); skipped {
+				fmt.Fprintf(os.Stdout, "  [Skip] Templates: %s — skipped: %s — not checked or removed\n",
+					storage.RetiredTemplatesLockRel, reason)
+			} else if perr != nil {
 				fmt.Fprintf(os.Stderr, "could not check the retired %s (%v); it is left\n", storage.RetiredTemplatesLockRel, perr)
 				preErrors = append(preErrors, fmt.Errorf("check the retired %s: %w", storage.RetiredTemplatesLockRel, perr))
 			}
@@ -541,6 +550,22 @@ func isBuiltinTemplateKey(rel string) bool {
 	return builtin
 }
 
+// gitDisabledSkipReason maps a storage refusal onto the words a skip row uses,
+// and reports whether it was one. Two `vp config sync` paths skip whole on
+// these two errors — the Templates prune and the retired lock — and one
+// mapping is what keeps them saying the same thing to the operator. Neither is
+// a fault: git_enabled = false is the operator's instruction, and an
+// unreadable setting fails closed the same way.
+func gitDisabledSkipReason(err error) (string, bool) {
+	switch {
+	case errors.Is(err, storage.ErrGitDisabled):
+		return "git is disabled (git_enabled = false)", true
+	case errors.Is(err, storage.ErrGitConfigUnreadable):
+		return "git_enabled could not be read from the host config", true
+	}
+	return "", false
+}
+
 // planRetiredLockRemoval plans the removal of the retired
 // .vibe-palace/templates.lock when storage.RetiredTemplatesLock says it may
 // go: untracked, not ignored, on a vault that is its own repository (the
@@ -583,6 +608,14 @@ func splitRetiredLock(actions []reconcile.Action) (rest []reconcile.Action, lock
 func removeRetiredLock(vaultPath string, planned reconcile.Action) error {
 	rel := storage.RetiredTemplatesLockRel
 	_, removable, err := storage.RetiredTemplatesLock(vaultPath)
+	// The backstop for a setting that changed between the plan and here: the
+	// plan would not have named the lock on a disabled host, so reaching this
+	// with a refusal means the config moved mid-run. Leave the lock, say so,
+	// and do not make the operator's setting an error.
+	if reason, skipped := gitDisabledSkipReason(err); skipped {
+		fmt.Fprintf(os.Stdout, "  left %s: %s — not checked or removed\n", rel, reason)
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("check the retired %s: %w", rel, err)
 	}
@@ -628,7 +661,7 @@ func removeRetiredLock(vaultPath string, planned reconcile.Action) error {
 // in Apply and the HEAD check at commit time, so any git failure in between —
 // no identity, a corrupt index, a repository git refuses — left a committed
 // operator override deleted in the worktree with nothing telling anyone.
-// storage.PruneMirrorsVerified checks the worktree bytes, HEAD's copy and each
+// storage.PruneMirrorsVerifiedWithDowngrade checks the worktree bytes, HEAD's copy and each
 // remote tip's copy — each as git would check it out — with the one accept
 // rule (reconcile.PruneAccepts: vp-shipped bytes for that built-in) BEFORE it
 // removes a file, restores HEAD's copy where HEAD holds operator content, and
@@ -688,6 +721,16 @@ func pruneOnGitVault(vaultPath string, tt *reconcile.TemplateTreeReconciler, app
 		out, perr = storage.PruneMirrorsInEnclosingRepo(vaultPath, paths, verifier)
 	} else {
 		res, out, downgraded, perr = storage.PruneMirrorsVerifiedWithDowngrade(vaultPath, paths, true, verifier)
+	}
+	// git_enabled = false skips the prune WHOLE: verifying each mirror against
+	// HEAD, removing it and restoring an override from HEAD all need git, and
+	// both prunes refuse as their first statement, before any of it. One row
+	// per candidate path says so; nothing was verified, removed or restored.
+	if reason, skipped := gitDisabledSkipReason(perr); skipped {
+		for _, rel := range paths {
+			fmt.Fprintf(os.Stdout, "  [Skip] %s: %s — skipped: %s — not verified, removed or restored\n", tt.Name(), rel, reason)
+		}
+		return 0, len(paths), nil
 	}
 
 	for _, rel := range out.Restored {

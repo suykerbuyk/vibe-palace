@@ -1379,9 +1379,11 @@ Every full-suite test runs in one of two helpers (`check_testenv_test.go`):
 - `healthyCheckEnv(t)` — `setupTestVaultEnv` (sandboxed `HOME`, config and
   cache dirs), a `Projects/` dir, a temp cwd whose `.vibe-palace.toml` names
   project `checktest` under `[project]`, `stubVaultEmbedder(t,
-  embedder.NewMock(384))`, and the host stub. The Git row reads "disabled":
-  `VaultReconciler.gitEnabled`'s raw decode treats the absent `git_enabled` as
-  false.
+  embedder.NewMock(384))`, and the host stub. The config names no
+  `git_enabled`, and `VaultReconciler.gitEnabled` reads it through
+  `storage.HostGitEnabled`, where an absent key means enabled, so the Git row
+  checks the vault's repository (the fixture vault is not one: "vault is not a
+  git repository").
 - `unconfiguredCheckEnv(t)` — `initTestEnv(t, false)` (no global config),
   `forbidVaultEmbedder`, a temp cwd, and the host stub.
 
