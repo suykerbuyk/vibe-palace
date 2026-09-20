@@ -15,7 +15,8 @@ on:
   #     gh run list --workflow release.yml --limit 1
   #
   # What a green dispatch proves: goreleaser-action boots on its Node runtime,
-  # the pinned GoReleaser CLI accepts .goreleaser.yml, and every goos/goarch in
+  # the GoReleaser CLI pinned by .github/actions/goreleaser accepts
+  # .goreleaser.yml, and every goos/goarch in
   # it still builds. What it does NOT prove: the tag guard below (skipped, there
   # being no tag) and the upload to the GitHub release.
   workflow_dispatch:
@@ -57,11 +58,14 @@ jobs:
             echo "refusing release: tag $TAG has minor $tag_minor, but RequiredDataFormat is $format_minor — cut v${surface_major}.${format_minor}.y instead" >&2
             exit 1
           fi
-      - uses: goreleaser/goreleaser-action@v7
-        with:
-          version: latest
-          # A dispatch is a rehearsal: --snapshot builds every target and
-          # publishes nothing. A tag run is the real release.
-          args: ${{ github.event_name == 'workflow_dispatch' && 'release --snapshot --clean' || 'release --clean' }}
+      # The CLI version lives in the composite and nowhere else, so the binary
+      # CI validates against is the binary the release runs.
+      - uses: ./.github/actions/goreleaser
+      # A dispatch is a rehearsal: --snapshot builds every target and publishes
+      # nothing. A tag run is the real release.
+      - if: github.event_name == 'workflow_dispatch'
+        run: make snapshot
+      - if: github.event_name == 'push'
+        run: goreleaser release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

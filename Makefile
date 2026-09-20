@@ -249,6 +249,34 @@ uninstall: ## Remove installed binary and man pages from PREFIX
 	rm -f $(PREFIX)/share/man/man1/vp*.1
 
 ##@ Release
+
+# GORELEASER_CONTROL is .goreleaser.yml as it stood at v5.0.0, preserved so the
+# validator can be proven still capable of rejecting the deprecated archive keys.
+# It is NOT hand-written: restore it with
+#   git show v5.0.0:.goreleaser.yml > $(GORELEASER_CONTROL)
+GORELEASER_CONTROL := .github/testdata/goreleaser/deprecated-keys.yml
+
+.PHONY: goreleaser-check
+goreleaser-check: ## Validate .goreleaser.yml, and prove the validator can still fail
+	@command -v goreleaser >/dev/null 2>&1 || { \
+		echo "goreleaser-check: goreleaser is not on PATH." >&2; exit 1; }
+	@test -f $(GORELEASER_CONTROL) || { \
+		echo "goreleaser-check: CONTROL FIXTURE MISSING at $(GORELEASER_CONTROL)." >&2; \
+		echo "  Restore it: git show v5.0.0:.goreleaser.yml > $(GORELEASER_CONTROL)" >&2; \
+		exit 1; }
+	@out="$$(goreleaser check $(GORELEASER_CONTROL) 2>&1)"; rc=$$?; \
+	clean="$$(printf '%s' "$$out" | sed "s/$$(printf '\033')\[[0-9;]*m//g")"; \
+	if [ $$rc -eq 0 ] || ! printf '%s' "$$clean" | grep -qE 'DEPRECATED:[[:space:]]+archives\.format([^[:alnum:]_]|$$)'; then \
+		echo "goreleaser-check: NEGATIVE CONTROL DID NOT REJECT THE FIXTURE FOR ITS DEPRECATED KEYS." >&2; \
+		echo "  exit=$$rc (want non-zero) and the output must carry a DEPRECATED line for archives.format." >&2; \
+		echo "  Either GoReleaser stopped failing on this deprecation, or the fixture changed." >&2; \
+		echo "  Do NOT silence this: the check below is no longer trustworthy. If GoReleaser v3" >&2; \
+		echo "  has REMOVED the keys, update the fixture to something v3 rejects and say so here." >&2; \
+		printf '%s\n' "$$clean" | sed 's/^/  /' >&2; \
+		exit 1; \
+	fi
+	goreleaser check
+
 .PHONY: release
 release: ## Tag-based release — build and publish to GitHub Releases
 	@case "$(VERSION)" in \
