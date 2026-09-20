@@ -7,8 +7,9 @@
 # Only 'vault_path' is honored as an override at this layer. All other
 # settings (search, chunker, palace, embedder, etc.) come from the
 # global config (~/.config/vibe-palace/config.toml) or the per-project
-# vault config ({vault}/Projects/{slug}/config.toml). Edit those to
-# customize.
+# host-local config (~/.config/vibe-palace/projects/{slug}.toml). Edit
+# those to customize; run 'vp status' to see which per-project config
+# files this project actually reads.
 
 # Override the palace vault for this source-dir and descendants. The
 # walk stops at $HOME; a file at $HOME/.vibe-palace.toml is ignored.
