@@ -284,3 +284,49 @@ func TestLoadConfigHostLocalMalformedIsAnError(t *testing.T) {
 		t.Fatal("a malformed host-local file decoded without error")
 	}
 }
+
+// 🔴 LoadConfig AND ProjectConfigSources MUST AGREE ABOUT WHAT EXISTS.
+//
+// A dangling symlink at the host-local path is a file that is there and cannot
+// be read. If the reporter used os.Stat it would follow the link, get ENOENT,
+// and report "no per-project config" for a project whose every command fails on
+// that same file — the diagnostic denying the problem it exists to explain.
+func TestProjectConfigSourcesAgreesWithLoadConfigOnADanglingSymlink(t *testing.T) {
+	v, hostPath := hostLocalEnv(t, "proj", "")
+	if err := os.MkdirAll(filepath.Dir(hostPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "gone.toml"), hostPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	_, loadErr := v.LoadConfig("proj")
+	srcs, srcErr := v.ProjectConfigSources("proj")
+	if srcErr != nil {
+		t.Fatalf("ProjectConfigSources: %v", srcErr)
+	}
+
+	// LoadConfig cannot read it, so the reporter must not call it absent.
+	if loadErr == nil {
+		t.Fatal("LoadConfig read a dangling symlink without error; this test no longer probes what it claims")
+	}
+	if len(srcs) != 1 || srcs[0] != hostPath {
+		t.Errorf("ProjectConfigSources = %v, want [%s]: LoadConfig fails on this file (%v), so the reporter must name it, not report none",
+			srcs, hostPath, loadErr)
+	}
+}
+
+// The vault entry keeps Layer 3's own predicate, so the reporter still mirrors
+// the reader on that side too: a vault file that is simply absent is omitted.
+func TestProjectConfigSourcesOmitsAnAbsentVaultFile(t *testing.T) {
+	v, hostPath := hostLocalEnv(t, "proj", "")
+	writeFileAt(t, hostPath, "[palace.scoring.rooms.general]\nhigh = [\"h\"]\n")
+
+	srcs, err := v.ProjectConfigSources("proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(srcs) != 1 || srcs[0] != hostPath {
+		t.Errorf("ProjectConfigSources = %v, want [%s] only", srcs, hostPath)
+	}
+}
