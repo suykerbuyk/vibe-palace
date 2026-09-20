@@ -586,32 +586,41 @@ func roomTiersOf(t *testing.T, path, room string) tomlRoomScoring {
 	return hl.Palace.Scoring.Rooms[room]
 }
 
-// 🔴 THE TRANSCRIPT MUST NAME EVERY KEYWORD THE FILE ACTUALLY GAINED FROM BELOW.
+// 🔴 THE TRANSCRIPT MUST NAME EVERY KEYWORD THE FILE GAINED THAT THE RUN DID
+// NOT ASK FOR.
 //
 // This pins containsKeyword against mergeKeywordTier — the agreement that makes
-// the transcript truthful — WITHOUT restating either comparison. The oracle
-// below diffs the file's real bytes before and after with a plain `==`, so it
-// cannot be blinded by a sabotage of the comparison under test: if
-// containsKeyword is loosened to strings.EqualFold, the merge still adds the
-// case-differing keyword, the oracle still sees it arrive, and the transcript's
-// silence becomes a lie this test can see.
+// the transcript truthful — without calling containsKeyword. The oracle diffs
+// the host file's real bytes before and after, so a loosened containsKeyword
+// cannot blind it: the merge still adds the keyword, the oracle still sees it
+// arrive, and the transcript's silence becomes a lie this test can see.
 //
-// The production code now derives both sides from keywordKey so no second copy
-// exists to disagree. This is the belt for that pair of braces: it catches a
-// future edit that stops going through keywordKey at all.
+// Production now derives both sides from keywordKey, so no second copy exists
+// to disagree. This is the belt for that pair of braces: it catches an edit
+// that stops going through keywordKey at all.
 //
-// The input is the shape that separates the two comparisons: a keyword below
-// that differs from the proposed one ONLY in case.
+// 🔴 IT JUDGES BY keywordKey, NOT BY BYTE EQUALITY, AND THAT IS THE POINT.
+// keywordKey is the identity, and a keyword the run already asked for under
+// that identity is not news. A byte-strict oracle would red on a legitimate
+// future move to case-insensitive dedup — blocking the very change keywordKey
+// exists to make easy — while still passing today. Measured: the first version
+// of this test did exactly that.
+//
+// The input separates the two comparisons. "Kubernetes" differs from the
+// proposed "kubernetes" only in case, so whether it must be reported depends
+// entirely on the identity in force. "terraform" is unambiguously carried under
+// any identity, so the test never goes vacuous when the first case is excused.
 func TestTranscriptNamesEveryKeywordTheFileGainedFromBelow(t *testing.T) {
 	v, hostPath := hostLocalEnv(t, "proj", "")
 	writeVaultProjectConfig(t, v, "proj",
-		"[palace.scoring.rooms.general]\nhigh = [\"Kubernetes\"]\n")
+		"[palace.scoring.rooms.general]\nhigh = [\"Kubernetes\", \"terraform\"]\n")
 
 	below := roomTiersOf(t, mustVaultProjectPath(t, v, "proj"), "general")
 	before := roomTiersOf(t, hostPath, "general")
 
+	proposed := []string{"kubernetes"} // differs from below's "Kubernetes" only in case
 	_, carried, err := v.WriteHostScoringConfig("proj", map[string]ScoringRoomOverride{
-		"general": {High: []string{"kubernetes"}}, // differs from below ONLY in case
+		"general": {High: proposed},
 	}, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -619,32 +628,47 @@ func TestTranscriptNamesEveryKeywordTheFileGainedFromBelow(t *testing.T) {
 	after := roomTiersOf(t, hostPath, "general")
 	transcript := strings.Join(carried, "\n")
 
-	// The oracle: plain ==, over the bytes. What did high actually gain?
-	gained := map[string]bool{}
+	// The oracle. It uses keywordKey — the identity — and never containsKeyword,
+	// which is the function under test.
+	key := func(kw string) string { return keywordKey(kw) }
+	had := map[string]bool{}
+	for _, kw := range before.High {
+		had[key(kw)] = true
+	}
+	askedFor := map[string]bool{}
+	for _, kw := range proposed {
+		askedFor[key(kw)] = true
+	}
+
+	var mustReport []string
+	gainedAny := false
 	for _, kw := range after.High {
-		had := false
-		for _, old := range before.High {
-			if old == kw { // deliberately NOT containsKeyword: that is the code under test
-				had = true
+		if had[key(kw)] {
+			continue
+		}
+		gainedAny = true
+		// Only what came from BELOW and was not asked for is news.
+		fromBelow := false
+		for _, b := range below.High {
+			if key(b) == key(kw) {
+				fromBelow = true
 				break
 			}
 		}
-		if !had {
-			gained[kw] = true
+		if fromBelow && !askedFor[key(kw)] {
+			mustReport = append(mustReport, kw)
 		}
 	}
-	if !gained["Kubernetes"] {
-		t.Fatalf("the file did not gain %q, so this test no longer probes what it claims; high=%v",
-			"Kubernetes", after.High)
+	if !gainedAny {
+		t.Fatalf("the file gained nothing, so this test no longer probes what it claims; high=%v", after.High)
 	}
-
-	// Every gained keyword that came from BELOW must be named by the transcript.
-	for _, kw := range below.High {
-		if !gained[kw] {
-			continue
-		}
+	if len(mustReport) == 0 {
+		t.Fatalf("nothing was carried unasked-for, so this test is vacuous; below=%v proposed=%v after=%v",
+			below.High, proposed, after.High)
+	}
+	for _, kw := range mustReport {
 		if !strings.Contains(transcript, kw) {
-			t.Errorf("the file gained %q from the layer below and the transcript did not say so.\n"+
+			t.Errorf("the file gained %q from the layer below, unasked for, and the transcript did not say so.\n"+
 				"  high before: %v\n  high after:  %v\n  transcript:  %q",
 				kw, before.High, after.High, transcript)
 		}
