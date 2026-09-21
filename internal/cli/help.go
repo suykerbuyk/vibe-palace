@@ -14,6 +14,7 @@ func FormatHelp(cmd *Command) string {
 	} else {
 		fmt.Fprintf(&b, "Usage: vp %s\n", cmd.Name)
 	}
+	writeAliases(&b, cmd)
 
 	if cmd.Description != "" {
 		b.WriteString("\n")
@@ -41,6 +42,18 @@ func FormatHelp(cmd *Command) string {
 	}
 
 	return b.String()
+}
+
+// writeAliases lists a command's alternative spellings under its usage line.
+func writeAliases(b *strings.Builder, cmd *Command) {
+	if len(cmd.Aliases) == 0 {
+		return
+	}
+	names := make([]string, len(cmd.Aliases))
+	for i, a := range cmd.Aliases {
+		names[i] = "vp " + a
+	}
+	fmt.Fprintf(b, "Alias: %s (every subcommand works under either spelling)\n", strings.Join(names, ", "))
 }
 
 func formatFlag(f FlagDef) string {
@@ -84,6 +97,7 @@ func FormatHelpWithSubs(cmd *Command, resolver func(string) *Command) string {
 	} else {
 		fmt.Fprintf(&b, "Usage: vp %s\n", cmd.Name)
 	}
+	writeAliases(&b, cmd)
 
 	if cmd.Description != "" {
 		b.WriteString("\n")

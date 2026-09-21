@@ -1385,3 +1385,65 @@ func TestRunTasksReadReadOnlyCopyRefusesAPlainEditorWrite(t *testing.T) {
 		t.Errorf("the vault changed during a read")
 	}
 }
+
+// TestTaskIsAnExactAliasOfTasks drives `vp task read <slug>` through the real
+// command table (registerAll + Dispatch), not through the handler: an alias is
+// a dispatch property, so only dispatch can prove it. The singular spelling
+// must reach the same subcommand and hand the editor the same bytes as the
+// plural one.
+func TestTaskIsAnExactAliasOfTasks(t *testing.T) {
+	vaultDir := setupTestVaultEnv(t)
+	projDir := t.TempDir()
+	marker := filepath.Join(projDir, ".vibe-palace.toml")
+	body := "vault_path = \"" + vaultDir + "\"\n\n[project]\nname = \"test-proj\"\n"
+	if err := os.WriteFile(marker, []byte(body), 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	t.Chdir(projDir)
+
+	v := storage.NewVault(vaultDir)
+	mkTask(t, v, "test-proj", "alias-target", "")
+	_, want, err := v.GetTask("test-proj", "alias-target")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+
+	for _, word := range []string{"tasks", "task"} {
+		t.Run(word, func(t *testing.T) {
+			dir := t.TempDir()
+			argvFile := filepath.Join(dir, "argv.txt")
+			copyFile := filepath.Join(dir, "handed-copy.md")
+			t.Setenv("VISUAL", "")
+			t.Setenv("EDITOR", readStub(t, dir, argvFile, "cat \"$1\" > \""+copyFile+"\"\n"))
+
+			reg, _, errOut := testRegistry()
+			if code := reg.Dispatch([]string{word, "read", "alias-target"}); code != cli.ExitOK {
+				t.Fatalf("vp %s read: exit = %d, want ExitOK; stderr=%q", word, code, errOut.String())
+			}
+			handedPath(t, argvFile)
+			got, err := os.ReadFile(copyFile)
+			if err != nil {
+				t.Fatalf("stub did not copy the handed file: %v", err)
+			}
+			if string(got) != want {
+				t.Errorf("vp %s read handed different bytes than the vault holds:\n%s", word, got)
+			}
+		})
+	}
+
+	// Help and typo detection resolve through the alias too.
+	reg, out, _ := testRegistry()
+	if code := reg.Dispatch([]string{"help", "task", "read"}); code != cli.ExitOK {
+		t.Fatalf("vp help task read: exit = %d", code)
+	}
+	if !strings.Contains(out.String(), "Usage: vp tasks read") {
+		t.Errorf("vp help task read rendered %q, want the tasks read help", out.String())
+	}
+	reg, _, errOut := testRegistry()
+	if code := reg.Dispatch([]string{"task", "bogus"}); code != cli.ExitUser {
+		t.Errorf("vp task bogus: exit = %d, want ExitUser", code)
+	}
+	if !strings.Contains(errOut.String(), `vp tasks: unknown subcommand "bogus"`) {
+		t.Errorf("vp task bogus stderr = %q", errOut.String())
+	}
+}

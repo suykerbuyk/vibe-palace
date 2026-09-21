@@ -12,6 +12,7 @@ import (
 // Registry holds registered commands and dispatches to them.
 type Registry struct {
 	commands map[string]*Command
+	aliases  map[string]string // alias -> canonical single-word command name
 	order    []string
 	info     BuildInfo
 	out      io.Writer
@@ -23,6 +24,7 @@ type Registry struct {
 func NewRegistry(info BuildInfo) *Registry {
 	return &Registry{
 		commands: make(map[string]*Command),
+		aliases:  make(map[string]string),
 		info:     info,
 		out:      os.Stdout,
 		errOut:   os.Stderr,
@@ -56,11 +58,41 @@ func (r *Registry) runCmd(cmd *Command, args []string) int {
 }
 
 // Register adds a command to the registry and maintains the parent/child link
-// that Command.Subcommands expresses.
+// that Command.Subcommands expresses. It panics on an alias that is malformed
+// or collides with a command name or another alias: both are programming
+// errors in the static command table, and a silent shadow would route a user
+// to the wrong command.
 func (r *Registry) Register(cmd *Command) {
+	// Compare FIRST words, not whole names: resolveAlias rewrites the first
+	// word before any lookup, so "task foo" is as unreachable behind the alias
+	// "task" as "task" itself is.
+	if first := firstWord(cmd.Name); r.aliases[first] != "" {
+		panic(fmt.Sprintf("cli: command %q collides with an alias of %q", cmd.Name, r.aliases[first]))
+	}
+	for _, alias := range cmd.Aliases {
+		if strings.Contains(cmd.Name, " ") || alias == "" || strings.Contains(alias, " ") {
+			panic(fmt.Sprintf("cli: alias %q on %q: only a single-word command may carry single-word aliases", alias, cmd.Name))
+		}
+		for _, name := range r.order {
+			if firstWord(name) == alias {
+				panic(fmt.Sprintf("cli: alias %q of %q collides with registered command %q", alias, cmd.Name, name))
+			}
+		}
+		if target, ok := r.aliases[alias]; ok {
+			panic(fmt.Sprintf("cli: alias %q of %q is already an alias of %q", alias, cmd.Name, target))
+		}
+		r.aliases[alias] = cmd.Name
+	}
 	r.commands[cmd.Name] = cmd
 	r.order = append(r.order, cmd.Name)
 	r.linkSubcommands(cmd)
+}
+
+// firstWord returns the leading word of a command name ("vault" for
+// "vault sync"), the unit resolveAlias rewrites.
+func firstWord(name string) string {
+	first, _, _ := strings.Cut(name, " ")
+	return first
 }
 
 // linkSubcommands makes Command.Subcommands a DERIVED view of what is registered
@@ -123,6 +155,19 @@ func appendUnique(list []string, name string) []string {
 	return append(list, name)
 }
 
+// resolveAlias returns args with a leading alias replaced by the command it
+// names. The caller's slice is never modified.
+func (r *Registry) resolveAlias(args []string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	target, ok := r.aliases[args[0]]
+	if !ok {
+		return args
+	}
+	return append([]string{target}, args[1:]...)
+}
+
 // Lookup finds a command by name.
 func (r *Registry) Lookup(name string) (*Command, bool) {
 	cmd, ok := r.commands[name]
@@ -181,6 +226,8 @@ func (r *Registry) Dispatch(args []string) int {
 		fmt.Fprintln(r.out, r.info)
 		return ExitOK
 	}
+
+	args = r.resolveAlias(args)
 
 	// Try two-word lookup first (e.g. "vault sync").
 	if len(args) >= 2 {
@@ -259,6 +306,7 @@ func (r *Registry) RegisterHelp() {
 				fmt.Fprint(r.out, FormatUsage(r.All(), r.info))
 				return ExitOK
 			}
+			args = r.resolveAlias(args)
 			// Try two-word lookup first.
 			if len(args) >= 2 {
 				twoWord := args[0] + " " + args[1]

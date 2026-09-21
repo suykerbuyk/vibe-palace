@@ -30,6 +30,7 @@ var tasksFlags = []cli.FlagDef{
 func cmdTasks() *cli.Command {
 	return &cli.Command{
 		Name:     "tasks",
+		Aliases:  []string{"task"},
 		Synopsis: "vp tasks [--project P] [--done] [--all] [--flat] [--json]",
 		Description: "List tasks for a project, grouped by epic and ordered so that a dependency " +
 			"always appears above the task it blocks. An epic is any task something names as its " +
