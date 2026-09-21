@@ -56,4 +56,10 @@ type Command struct {
 	// non-mutating commands are warn-only. The framework itself stays
 	// app-agnostic — cmd/vp injects the actual surface policy via SetPreRun.
 	MutatesVault bool
+	// Aliases are alternative spellings of Name's first word. An alias is an
+	// exact synonym: it resolves to Name before any lookup, so it reaches the
+	// command AND every "Name <sub>" child, including help. Only a single-word
+	// command may carry aliases, and Registry.Register refuses one that
+	// collides with a command name or another alias.
+	Aliases []string
 }

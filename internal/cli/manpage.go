@@ -46,6 +46,15 @@ func FormatManPage(cmd *Command, children []*Command, section int, date, version
 	b.WriteString(".SH DESCRIPTION\n")
 	fmt.Fprintf(&b, "%s\n", troffEscape(cmd.Description))
 
+	// ALIASES
+	if len(cmd.Aliases) > 0 {
+		b.WriteString(".SH ALIASES\n")
+		for _, a := range cmd.Aliases {
+			fmt.Fprintf(&b, ".B %s\n", troffEscape("vp "+a))
+		}
+		fmt.Fprintf(&b, "is an exact synonym for\n.BR %s ;\nevery subcommand works under either spelling.\n", troffEscape("vp "+cmd.Name))
+	}
+
 	// OPTIONS (from Flags)
 	if len(cmd.Flags) > 0 {
 		b.WriteString(".SH OPTIONS\n")
