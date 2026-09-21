@@ -54,6 +54,10 @@ import (
 var plannerFuncs = map[string]bool{
 	"planBoardFieldsMigration": true,
 	"predictFormatStamp":       true,
+	// ONE-SHOT: remove this entry in the same commit that deletes
+	// cmd/vp/cmd_migrate_project_configs.go, or the anchor check below reports
+	// it absent. The Delete/CommitRemovals rows in plannerWriteCalls stay.
+	"planProjectConfigRetirement": true,
 }
 
 // plannerWriteCalls names the calls that write, or that hand back something that
@@ -77,6 +81,8 @@ var plannerWriteCalls = map[string]string{
 	"Rename":                           "os.Rename",
 	"Remove":                           "os.Remove",
 	"RemoveAll":                        "os.RemoveAll",
+	"Delete":                           "vaultfs.Delete",
+	"CommitRemovals":                   "storage.CommitRemovals",
 }
 
 // plannerNoWrite reports a write call reachable directly from a planner.
@@ -175,7 +181,7 @@ func plannerNoWrite(files []file) []Finding {
 	// the name found. So this catches a rename or a deletion, not a rename that
 	// happens to collide with an unrelated symbol. Re-derive the live anchors:
 	//
-	//	grep -rn "func planBoardFieldsMigration\|func predictFormatStamp" --include='*.go' cmd/ internal/
+	//	grep -rn "func planBoardFieldsMigration\|func predictFormatStamp\|func planProjectConfigRetirement" --include='*.go' cmd/ internal/
 	//
 	// A tiny fixture tree legitimately trips this, exactly as every sibling's
 	// /VACUOUS sentinel does; the tests filter it by symbol rather than by count.

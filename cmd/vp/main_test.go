@@ -318,6 +318,7 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		"migrate task-sections":     true,
 		"migrate task-header-shape": true,
 		"migrate task-board-fields": true,
+		"migrate project-configs":   true,
 		// CONSTRUCTS a header field run on ARCHIVED (done/, cancelled/) task
 		// files that carry none, through the header-rewriting
 		// storage.OverwriteTaskFileRewritingHeader seam under --apply. The strict

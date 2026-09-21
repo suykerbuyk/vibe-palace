@@ -233,9 +233,9 @@ func discoveryProposalsToOverrides(proposals []palace.KeywordProposal) map[strin
 //
 // Silent data movement between config files is what made this a defect in the
 // first place; a one-time copy the operator can see is not. Shared by
-// `discover rooms --apply` and `tune rooms --apply`.
-//
-// 🔴 DELETE WITH THE VAULT LAYER at R4, with the storage-side transcript.
+// `discover rooms --apply` and `tune rooms --apply`. The lower layer is the
+// host global config; the vault per-project layer it also reported from is no
+// longer read.
 func printCarriedOverrides(out io.Writer, carried []string) {
 	if len(carried) == 0 {
 		return

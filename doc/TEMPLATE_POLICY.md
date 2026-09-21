@@ -67,13 +67,19 @@ answer and the policy were removed together
 was never part of the template write path (it never routed through the
 since-deleted `templates.Executor`). It does not materialize
 template bytes onto disk; it merges the *missing canonical keys* from a template
-into a config the user already owns. It therefore has its own `.bak` rule, and
-the two halves are deliberately asymmetric:
+into a config the user already owns. It therefore has its own `.bak` rule.
 
-| Branch | Target | `.bak`? | Rationale |
-|---|---|---|---|
-| vault (`vaultRoot != ""`) | `{vault}/Projects/<slug>/config.toml` | **No** | `*.bak` is in `storage.CanonicalGitignorePatterns`, so a `.bak` written inside the vault is never committed and never synced — it is host-local litter, not a durable backup. The recoverable pre-image is the committed `config.toml` itself. The write goes through `storage.LockedUpdate` → `atomicfile.Write`, which owns the temp file and the rename; the old fixed-name `config.toml.tmp` is gone too, because a shared sidecar name is exactly what two concurrent upgraders collide on. |
-| host-local (`vaultRoot == ""`) | CWD project config, global config | **Yes** | These files live outside the vault. Nothing commits them and nothing syncs them, so the `.bak` is the only pre-image they have. This branch keeps its raw `backup` + temp + rename verbatim and is deliberately **not** routed through `atomicfile` — it must not inherit atomicfile's permission/fsync semantics or the vault surface stamp. |
+Every config it upgrades is host-local — the CWD project config
+(`.vibe-palace.toml`) and the global config — and lives outside the vault.
+Nothing commits these files and nothing syncs them, so the `.bak` is the only
+pre-image they have. The write keeps its raw `backup` + temp + rename and is
+deliberately **not** routed through `atomicfile`: it must not inherit
+atomicfile's permission/fsync semantics or the vault surface stamp.
+
+Until v7.2.0 it had a second, vault-side branch for
+`{vault}/Projects/<slug>/config.toml`, which wrote no `.bak` and went through
+`storage.LockedUpdate` → `atomicfile.Write`. That per-project vault config is
+retired and the branch went with it.
 
 ## What gets materialized at all (override-only, iter 319)
 

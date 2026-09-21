@@ -1,5 +1,5 @@
 {
-  "surface_version": 6,
+  "surface_version": 7,
   "tools": [
     {
       "name": "vp_append_iteration",
@@ -34,7 +34,7 @@
     {
       "name": "vp_check",
       "mutating": false,
-      "schema_sha256": "8ea6d9b6ce9d907029fab02f94728b6dc77ea8bb3860d53d505b897a50dc757e"
+      "schema_sha256": "e8835881b3b7a199ed5648cad9248db1dc2a5aaa045169fc59c5f13735f3ce29"
     },
     {
       "name": "vp_check_summarization_queue",

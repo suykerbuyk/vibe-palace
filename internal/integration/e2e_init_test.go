@@ -207,7 +207,10 @@ func TestIntegrationE2EInitReinitIdempotent(t *testing.T) {
 	vaultRoot := filepath.Join(env.Home, "vibe-palace-vault")
 	assertVaultArtifacts := func() {
 		t.Helper()
-		requireFileExists(t, projectConfigPath(t, vaultRoot, "reinit-case"))
+		// Not the retired per-project vault config: vp init no longer writes it.
+		if p := projectConfigPath(t, vaultRoot, "reinit-case"); fileExistsLstat(p) {
+			t.Errorf("vp init wrote the retired %s", p)
+		}
 		requireFileExists(t, filepath.Join(vaultRoot, "Projects", "reinit-case", "commands", "README.md"))
 		requireFileExists(t, filepath.Join(vaultRoot, "Projects", "reinit-case", "skills", "README.md"))
 	}

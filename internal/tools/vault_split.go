@@ -46,7 +46,8 @@ import (
 // writer.
 
 // splitSubtractSet names the paths that are hashed by NOBODY and copied by
-// NOBODY: {.surface, **/.local, .vp-locks, commit-log.anchor}.
+// NOBODY: {.surface, **/.local, .vp-locks, commit-log.anchor,
+// Projects/*/config.toml}.
 //
 // 🔴 THE MINUS-SET AND THE DO-NOT-COPY LIST ARE THE SAME SET, and that identity
 // is the invariant. Leaving a path in the manifest while skipping its copy
@@ -69,7 +70,12 @@ import (
 //   - commit-log.anchor — the SHA of a source-vault commit. A fresh destination
 //     has no such commit, so the value is a dangling reference on arrival.
 //     commit-log.md itself DOES travel; only the anchor is false there.
-var splitSubtractSet = []string{".surface", "**/.local", ".vp-locks", "commit-log.anchor"}
+//   - Projects/*/config.toml — the retired per-project vault config. Nothing
+//     reads it as input, so carrying it would only plant a survivor in the
+//     destination for the vault-project-config check to report. Matched by
+//     path DEPTH (vaultfs.IsVaultProjectConfigPath: exactly three segments),
+//     never by base name, so Projects/<slug>/doc/config.toml still travels.
+var splitSubtractSet = []string{".surface", "**/.local", ".vp-locks", "commit-log.anchor", "Projects/*/config.toml"}
 
 // splitPrunedDirs are the subtract-set entries that are DIRECTORIES, and are
 // pruned rather than merely skipped.
@@ -87,6 +93,13 @@ var splitPrunedDirs = map[string]bool{".local": true, ".vp-locks": true}
 func splitSubtracted(rel string) bool {
 	base := splitPathBase(rel)
 	if base == ".surface" || base == "commit-log.anchor" {
+		return true
+	}
+	// The one depth-anchored entry. The predicate is the same one vaultfs uses
+	// to refuse writes to this path, so the two cannot disagree about which
+	// file is meant; it cleans to the OS separator before splitting, so the
+	// slash-separated rel is safe on every platform.
+	if vaultfs.IsVaultProjectConfigPath(rel) {
 		return true
 	}
 	for _, comp := range strings.Split(rel, "/") {
@@ -226,7 +239,7 @@ func VaultSplitTool(vault *storage.Vault) mcp.Tool {
 			"palace/<slug> and Projects/<slug> trees, refuses any non-regular " +
 			"file it finds there rather than skipping or following it, hashes " +
 			"what would travel minus {.surface, **/.local, .vp-locks, " +
-			"commit-log.anchor}, reports every vault-global artifact left behind " +
+			"commit-log.anchor, Projects/*/config.toml}, reports every vault-global artifact left behind " +
 			"and every slug present in only one of the two trees, and returns a " +
 			"manifest_sha256; it writes nothing and creates no destination. " +
 			"\"apply\" re-hashes the source against that digest, scaffolds the " +

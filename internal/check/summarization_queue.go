@@ -152,11 +152,11 @@ func CheckSummarizationQueue(vault *storage.Vault, projectPath, slug string) Res
 		// Advisory only, per this function's own never-Fail contract: a
 		// config load error here means the probe below cannot run, not that
 		// the queue itself is broken.
-		clause = fmt.Sprintf("%d pending — could not resolve project config to diagnose further: %v", len(pending), cfgErr)
+		clause = fmt.Sprintf("%d pending — could not load the config to diagnose further: %v", len(pending), cfgErr)
 	case !cfg.Summarization.Enabled:
 		// Mutually exclusive wording clause (a): distinguishable from (b) and
 		// (c) by the substring "not configured".
-		clause = fmt.Sprintf("%d pending — [summarization] is not configured for this project; this is an expected backlog, not a stuck queue", len(pending))
+		clause = fmt.Sprintf("%d pending — [summarization] is not configured in the host config (%s); this is an expected backlog, not a stuck queue", len(pending), hostConfigPathForMessage())
 	default:
 		// [summarization] is enabled — probe-construct both summarizers
 		// exactly as `vp drain summaries` (cmd/vp/cmd_drain.go) does,
@@ -198,4 +198,15 @@ func CheckSummarizationQueue(vault *storage.Vault, projectPath, slug string) Res
 	}
 
 	return r
+}
+
+// hostConfigPathForMessage names the host config file [summarization] is read
+// from, for an operator-facing message. It is the only tier that can set it:
+// the per-project tier carries palace.scoring alone. A path that cannot be
+// resolved is named generically rather than guessed.
+func hostConfigPathForMessage() string {
+	if p, err := storage.VaultConfigFilePath(); err == nil {
+		return p
+	}
+	return "<config dir>/vibe-palace/config.toml"
 }

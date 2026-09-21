@@ -50,11 +50,12 @@ func TestClassifyProjectDir(t *testing.T) {
 		{"phantom: markers and history names that are DIRECTORIES", []string{"config.toml/", "commands/README.md/", "resume.md/", "iterations.md/"}, ProjectPhantom},
 		{"scaffold: commands/README.md alone", []string{"commands/README.md"}, ProjectScaffoldOnly},
 		{"scaffold: skills/README.md alone", []string{"skills/README.md"}, ProjectScaffoldOnly},
-		{"scaffold: config.toml alone (an interrupted init)", []string{"config.toml"}, ProjectScaffoldOnly},
-		// A marker whose check errors (commands/README.md under a regular FILE
-		// named commands is ENOTDIR) must not hide config.toml, a later marker
-		// that is present: main accepted this project on config.toml alone.
-		{"scaffold: config.toml beside a stray FILE named commands", []string{"config.toml", "commands"}, ProjectScaffoldOnly},
+		// config.toml stopped being a scaffold marker when its writer retired:
+		// alone it is a survivor of the retired per-project vault config, not
+		// an initialised project. (The row that paired it with a stray FILE
+		// named commands went with it: with no marker left present, that
+		// ENOTDIR is now returned, which the error rows below already pin.)
+		{"phantom: config.toml alone (a survivor of the retired vault config)", []string{"config.toml"}, ProjectPhantom},
 		{"content: resume.md", []string{"resume.md"}, ProjectWithContent},
 		{"content: iterations.md", []string{"iterations.md"}, ProjectWithContent},
 		{"content: sessions/x.md", []string{"sessions/x.md"}, ProjectWithContent},

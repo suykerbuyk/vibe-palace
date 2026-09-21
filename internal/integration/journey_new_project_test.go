@@ -96,9 +96,6 @@ func TestJourney_NewProject_Bootstrap_Capture_Search(t *testing.T) {
 	// two-line marker and two task directories, claimed "initialized", and
 	// left the vault side of the project permanently missing.
 	for _, rel := range []string{
-		"config.toml",
-		filepath.Join("tasks", "done"),
-		filepath.Join("tasks", "cancelled"),
 		filepath.Join("commands", "README.md"),
 		filepath.Join("skills", "README.md"),
 	} {
@@ -106,6 +103,10 @@ func TestJourney_NewProject_Bootstrap_Capture_Search(t *testing.T) {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("vp_init left the vault scaffold incomplete: %s missing (%v)", p, err)
 		}
+	}
+	// And not the retired per-project vault config, which nothing writes now.
+	if p := filepath.Join(h.Vault.Root, "Projects", projectName, "config.toml"); fileExistsLstat(p) {
+		t.Errorf("vp_init wrote the retired %s", p)
 	}
 
 	// 2. vp_bootstrap_context: fetch baseline context for the new project.
@@ -193,4 +194,10 @@ func TestJourney_NewProject_Bootstrap_Capture_Search(t *testing.T) {
 		// check — but for now require the round-trip.
 		t.Errorf("search results do not contain unique marker %q from captured transcript (raw=%s)", uniqueMarker, raw)
 	}
+}
+
+// fileExistsLstat reports whether anything is at p, without following a link.
+func fileExistsLstat(p string) bool {
+	_, err := os.Lstat(p)
+	return err == nil
 }

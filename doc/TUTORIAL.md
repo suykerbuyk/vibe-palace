@@ -84,8 +84,6 @@ vp init — vibe-palace 0.1.0-dev
        git repository initialized
 [pass] Project config:
        created /home/you/code/myapp/.vibe-palace.toml (myapp, go.mod detected)
-[pass] Vault project:
-       /home/you/vibe-palace-vault/Projects/myapp/config.toml
 [pass] Project templates:
        scaffolded Projects/myapp/{commands,skills}/
 [pass] Agent wiring:
@@ -112,12 +110,16 @@ vp init — vibe-palace 0.1.0-dev
        - Skill overrides (vault Templates/skills/): nothing resets one unless
          you name it. `vp skills reset NAME` removes it, and a backup is kept.
 
-Summary: 10 ok, 2 skip. Re-run `vp init` anytime — it is idempotent.
+Summary: 9 ok, 2 skip. Re-run `vp init` anytime — it is idempotent.
 ```
 
 Every onboarding step gets its own row, including the ones that had none
-before: the vault-side `Vault project` and `Project templates` writes, the
-project `.gitignore`, and the `commit.msg` git hook. A row is never omitted
+before: the vault-side `Project templates` write, the project `.gitignore`,
+and the `commit.msg` git hook. `Project templates` is the only vault-side
+row: the `Projects/<slug>/{commands,skills}/` scaffold is what marks a
+project as initialised in the vault. (Before v7.2.0 a `Vault project` row
+wrote `Projects/<slug>/config.toml` ahead of it; that per-project vault
+config is retired.) A row is never omitted
 because a step succeeded quietly — a missing row would be indistinguishable
 from a step that never ran.
 
@@ -164,8 +166,6 @@ vp init — vibe-palace 0.1.0-dev
 [pass] Project config:
        /home/you/code/myapp/.vibe-palace.toml (myapp, .vibe-palace.toml
          detected)
-[pass] Vault project:
-       /home/you/vibe-palace-vault/Projects/myapp/config.toml
 [info] Project templates:
        Projects/myapp/{commands,skills}/ already present — nothing to scaffold
 [info] Agent wiring:
@@ -182,7 +182,7 @@ vp init — vibe-palace 0.1.0-dev
 [skip] Git commit.msg hook:
        /home/you/code/myapp is not a git repository — no hook to install
 
-Summary: 10 ok, 2 skip. Re-run `vp init` anytime — it is idempotent.
+Summary: 9 ok, 2 skip. Re-run `vp init` anytime — it is idempotent.
 ```
 
 (The `Upgrade policy` advisory prints on this run too; it is elided above.)
@@ -996,8 +996,9 @@ vp config sync --tier global # reconcile a single tier
 
 `vp config sync` is the canonical reconcile entry point. It:
 - Never changes your existing values (drift fills come in as commented defaults)
-- Walks all five reconcilers (global config, vault dir, vault settings, cwd
-  project config, vault-project config) by default
+- Walks every reconciler (global config, vault dir, vault settings, cwd
+  project config, and each initialised project's `commands/`/`skills/`
+  scaffold) by default
 - Tops up the vault `.gitignore` with any canonical line it lacks, shown
   as `[Update] Vault: top up vault .gitignore (+N canonical line(s))`
 - Reconciles vault `Templates/` override-only — prunes byte-identical
@@ -1009,8 +1010,11 @@ vp config sync --tier global # reconcile a single tier
   those are owned by `vp commands upgrade`
 
 > `vp config upgrade` is now a thin alias for `vp config sync` — it
-> translates `--cwd` / `--project` into the equivalent `--tier` flag and
-> delegates. The legacy pre-reconciler TOML-parsing path has been
+> translates `--cwd` into the equivalent `--tier` flag and delegates.
+> `vp config upgrade --project SLUG` is retired as of v7.2.0 and refuses: the
+> per-project vault config it upgraded is no longer read or written. To
+> scaffold a project in the vault, run
+> `vp config sync --tier project --project SLUG`. The legacy pre-reconciler TOML-parsing path has been
 > removed (byte-identical parity with the reconciler was verified before
 > deletion; see `TestUpgradeAliasParity`). Prefer `vp config sync`
 > directly for new scripts.
@@ -1990,10 +1994,13 @@ All configuration is optional — defaults work out of the box. Override in
 `palace.scoring` subtree only).
 
 > Per-project config used to be edited at `{vault}/Projects/{project}/config.toml`.
-> That file is being retired — it is still read, and it still applies below the
-> host-local one, but `vp` now refuses to write it through the vault file tools,
-> because per-project settings are machine-local and a shared vault is not.
-> `vp status` names both files.
+> That file is retired as of v7.2.0: nothing reads it, nothing writes it, and
+> the vault file tools refuse to create it, because per-project settings are
+> machine-local and a shared vault is not. The per-project tier that remains is
+> the host-local file above, and it carries `palace.scoring` only — the other
+> sections below are host-level. `vp status` names the per-project file a
+> project reads, and `vp check --check vault-project-config` lists any retired
+> file still in the vault.
 
 ### Embedder Settings
 

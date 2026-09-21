@@ -1,6 +1,5 @@
 cwd-project	working-tree	-	-
-vault-project	vault	-	-
-project-scaffold	vault	-	vault-project
+project-scaffold	vault	-	-
 agent-wiring	working-tree	-	-
 command-shims	working-tree	reads-host-global	-
 hook-wiring	host-global	reads-host-global	-

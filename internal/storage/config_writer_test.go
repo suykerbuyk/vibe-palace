@@ -185,69 +185,11 @@ func TestWriteCwdProjectConfig_WritesThenRefusesOverwrite(t *testing.T) {
 	}
 }
 
-func TestVaultProjectTemplate_ParsesAsTOML(t *testing.T) {
-	var raw map[string]any
-	if _, err := toml.Decode(VaultProjectTemplateContent(), &raw); err != nil {
-		t.Fatalf("vault-project template is not valid TOML: %v", err)
-	}
-	meta, _ := raw["meta"].(map[string]any)
-	if meta["version_major"] != int64(1) {
-		t.Errorf("meta.version_major = %v, want 1", meta["version_major"])
-	}
-}
-
 func TestCwdProjectTemplate_SentinelUnused(t *testing.T) {
 	// The __VP_NAME__ sentinel must not leak into generated output
 	// when a name is provided.
 	out := GenerateCwdProjectTOML("real-name", "", nil, "")
 	if strings.Contains(out, "__VP_NAME__") {
 		t.Error("sentinel __VP_NAME__ was not replaced")
-	}
-}
-
-func TestWriteVaultProjectConfig_WritesThenIdempotent(t *testing.T) {
-	vaultRoot := t.TempDir()
-	v := NewVault(vaultRoot)
-
-	path, wrote, err := v.WriteVaultProjectConfig("alpha")
-	if err != nil {
-		t.Fatalf("first WriteVaultProjectConfig: %v", err)
-	}
-	if !wrote {
-		t.Error("wrote = false on first call")
-	}
-	want := filepath.Join(vaultRoot, "Projects", "alpha", "config.toml")
-	if path != want {
-		t.Errorf("path = %s, want %s", path, want)
-	}
-
-	// Capture first-run modtime for unchanged check.
-	info1, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Second call must not rewrite.
-	path2, wrote2, err := v.WriteVaultProjectConfig("alpha")
-	if err != nil {
-		t.Fatalf("second WriteVaultProjectConfig: %v", err)
-	}
-	if wrote2 {
-		t.Error("wrote = true on second call (should be idempotent)")
-	}
-	if path2 != want {
-		t.Errorf("path2 = %s, want %s", path2, want)
-	}
-
-	info2, _ := os.Stat(path)
-	if info1.ModTime() != info2.ModTime() {
-		t.Error("file was rewritten on idempotent call")
-	}
-}
-
-func TestWriteVaultProjectConfig_InvalidSlug(t *testing.T) {
-	v := NewVault(t.TempDir())
-	if _, _, err := v.WriteVaultProjectConfig("Bad Slug"); err == nil {
-		t.Error("expected error for invalid slug")
 	}
 }

@@ -4,22 +4,23 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/migrate"
 	"github.com/suykerbuyk/vibe-palace/internal/reconcile"
 )
 
-// TestIntegrationMigrateUsesVaultProjectReconciler verifies end-to-end
-// that `vp migrate`-equivalent flow routes vault-project config.toml
-// creation through reconcile.VaultProject (Check → Plan → Apply) and
-// that a subsequent Plan() returns a clean (drift-free) set of
-// Unchanged actions — i.e. the reconciler path is the sole orchestrator.
-func TestIntegrationMigrateUsesVaultProjectReconciler(t *testing.T) {
+// TestIntegrationMigrateScaffoldsTheProjectAndWritesNoVaultConfig verifies end
+// to end that `vp migrate` initialises each destination project the way `vp
+// init` does — the Projects/<slug>/{commands,skills}/ README scaffold — and
+// writes no Projects/<slug>/config.toml. The retired vault-project reconciler
+// used to write that file here; nothing does now, so a migrate that re-created
+// it would undo the delete pass.
+func TestIntegrationMigrateScaffoldsTheProjectAndWritesNoVaultConfig(t *testing.T) {
 	h := newHarness(t, false)
 
 	// Stand up a VibeVault-style project tree.
@@ -33,12 +34,12 @@ session_id: "2026-04-14-01"
 project: demo-project
 date: "2026-04-14"
 title: "Reconciler integration"
-summary: "routes through reconcile.VaultProject"
+summary: "scaffolds the destination project"
 tag: implementation
 ---
 ## Transcript
 
-Verify migrate uses the reconciler.
+Verify migrate scaffolds the project.
 `
 	if err := os.WriteFile(filepath.Join(sessDir, "s1.md"), []byte(session), 0o644); err != nil {
 		t.Fatal(err)
@@ -57,38 +58,28 @@ Verify migrate uses the reconciler.
 		t.Errorf("SessionsImported = %d, want 1", res.SessionsImported)
 	}
 
-	// Assertion 1: config.toml exists, and matches the canonical template
-	// the reconciler would have rendered.
+	// Assertion 1: no per-project vault config.
 	cfgPath := filepath.Join(projDir, "config.toml")
-	got, err := os.ReadFile(cfgPath)
-	if err != nil {
-		t.Fatalf("read config.toml: %v", err)
-	}
-	// Sanity: contains a template-shaped TOML comment header.
-	if !strings.Contains(string(got), "[") {
-		t.Errorf("config.toml missing TOML table marker; got:\n%s", got)
+	if _, err := os.Lstat(cfgPath); !os.IsNotExist(err) {
+		t.Errorf("migrate created %s (lstat err: %v); nothing may write the retired vault config", cfgPath, err)
 	}
 
-	// Assertion 2: tasks/done and tasks/cancelled exist — these are
-	// created ONLY by reconcile.VaultProject.Apply, never by the old
-	// direct storage.WriteVaultProjectConfig call. Their presence
-	// proves migrate now goes through the reconciler.
-	for _, sub := range []string{"done", "cancelled"} {
-		p := filepath.Join(projDir, "tasks", sub)
-		fi, err := os.Stat(p)
+	// Assertion 2: the init scaffold is in place.
+	readmes := map[string][]byte{}
+	for _, rel := range []string{"commands/README.md", "skills/README.md"} {
+		b, err := os.ReadFile(filepath.Join(projDir, filepath.FromSlash(rel)))
 		if err != nil {
-			t.Errorf("expected tasks/%s created by reconciler: %v", sub, err)
+			t.Errorf("expected %s scaffolded by migrate: %v", rel, err)
 			continue
 		}
-		if !fi.IsDir() {
-			t.Errorf("tasks/%s should be a directory", sub)
-		}
+		readmes[rel] = b
 	}
 
-	// Assertion 3: drift re-detect is clean — running Plan again
-	// yields only Unchanged actions (no Create/Update).
-	r := reconcile.NewVaultProject(h.Vault, "demo-project")
-	plan, err := r.Plan(context.Background())
+	// Assertion 3: the scaffold is drift-free — planning it again yields only
+	// Unchanged actions.
+	tt := reconcile.NewTemplateTree(h.Vault.Root, "Projects/demo-project",
+		reconcile.TemplateTreeSeed{Mode: reconcile.TemplateModeScaffold})
+	plan, err := tt.Plan(context.Background())
 	if err != nil {
 		t.Fatalf("post-migrate Plan: %v", err)
 	}
@@ -98,8 +89,8 @@ Verify migrate uses the reconciler.
 		}
 	}
 
-	// Assertion 4: re-running migrate is idempotent — config.toml
-	// bytes unchanged.
+	// Assertion 4: re-running migrate is idempotent — the READMEs are
+	// byte-unchanged and still no config.toml appears.
 	if _, err := migrate.ImportVibeVault(
 		context.Background(),
 		h.Vault, h.Vault, h.Engine, h.Embedder, h.Config,
@@ -107,11 +98,13 @@ Verify migrate uses the reconciler.
 	); err != nil {
 		t.Fatalf("second ImportVibeVault: %v", err)
 	}
-	after, err := os.ReadFile(cfgPath)
-	if err != nil {
-		t.Fatalf("read config.toml (second run): %v", err)
+	for rel, before := range readmes {
+		after, err := os.ReadFile(filepath.Join(projDir, filepath.FromSlash(rel)))
+		if err != nil || !bytes.Equal(before, after) {
+			t.Errorf("%s mutated across idempotent migrate runs (err=%v)", rel, err)
+		}
 	}
-	if string(got) != string(after) {
-		t.Error("config.toml mutated across idempotent migrate runs")
+	if _, err := os.Lstat(cfgPath); !os.IsNotExist(err) {
+		t.Errorf("second migrate created %s (lstat err: %v)", cfgPath, err)
 	}
 }

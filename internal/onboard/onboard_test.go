@@ -277,16 +277,23 @@ func TestOnboardRun_AccountsForEveryStep(t *testing.T) {
 // it", not "it did not get to run". A prerequisite failure is the second, so it
 // is a Skip row and the step must NOT appear in Omitted — a caller that treated
 // it as an omission would tell the operator to go run it on another machine.
+//
+// The shipped table has no Needs edge since the vault-project step retired, so
+// the edge is added here: project-scaffold needs cwd-project, and cwd-project is
+// forced to fail. The mechanism under test is the edge, not which step owns it.
 func TestOnboardRun_SkipsStepWhosePrerequisiteFailed(t *testing.T) {
 	sandboxHost(t)
 	req, vaultDir := newRequest(t, true)
 
 	swapStepTable(t, func(steps []Step) {
 		for i := range steps {
-			if steps[i].Name == "vault-project" {
+			switch steps[i].Name {
+			case "cwd-project":
 				steps[i].Run = func(context.Context, Request) []Outcome {
-					return []Outcome{{Status: Fail, Summary: "forced: vault-project config write failed"}}
+					return []Outcome{{Status: Fail, Summary: "forced: project config write failed"}}
 				}
+			case "project-scaffold":
+				steps[i].Needs = []string{"cwd-project"}
 			}
 		}
 	})
@@ -308,7 +315,7 @@ func TestOnboardRun_SkipsStepWhosePrerequisiteFailed(t *testing.T) {
 	if scaffold[0].Status != Skip {
 		t.Errorf("project-scaffold status = %v, want Skip", scaffold[0].Status)
 	}
-	if !strings.Contains(scaffold[0].Summary, "vault-project") {
+	if !strings.Contains(scaffold[0].Summary, "cwd-project") {
 		t.Errorf("skip row does not name the failed prerequisite: %q", scaffold[0].Summary)
 	}
 	for _, om := range res.Omitted {
@@ -325,11 +332,11 @@ func TestOnboardRun_SkipsStepWhosePrerequisiteFailed(t *testing.T) {
 	if res.OK() {
 		t.Error("OK() = true with a failed step")
 	}
-	if got := res.Failed; !slices.Equal(got, []string{"vault-project"}) {
-		t.Errorf("Failed = %v, want [vault-project]", got)
+	if got := res.Failed; !slices.Equal(got, []string{"cwd-project"}) {
+		t.Errorf("Failed = %v, want [cwd-project]", got)
 	}
 
-	// Nothing was scaffolded into a project whose config write just failed.
+	// Nothing was scaffolded behind the failed prerequisite.
 	if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "alpha")); !os.IsNotExist(err) {
 		t.Errorf("scaffold ran anyway: stat Projects/alpha = %v", err)
 	}
@@ -372,7 +379,7 @@ func TestOnboardRun_OpenVaultFailureIsARow(t *testing.T) {
 	if !strings.Contains(fails[0].Summary, boom) {
 		t.Errorf("Fail row does not name the resolution error: %q", fails[0].Summary)
 	}
-	if fails[0].Step != "vault-project" {
+	if fails[0].Step != "project-scaffold" {
 		t.Errorf("Fail row attributed to %q, want the first SideVault step", fails[0].Step)
 	}
 
@@ -612,7 +619,7 @@ func TestOnboardRun_SameBinaryTwiceConverges(t *testing.T) {
 // Run 1 must MUTATE. A test asserting "a stale project is left alone" would be
 // asserting the bug: the marker gate saw the two-line file, declared the
 // project onboarded, and made `vp init` a permanent no-op over a vault subtree
-// that had no config.toml and no commands/skills scaffold at all.
+// that had no commands/skills scaffold at all.
 func TestOnboardRun_ConvergesStaleProject(t *testing.T) {
 	sandboxHost(t)
 	req, vaultDir := newRequest(t, true)
@@ -644,9 +651,8 @@ func TestOnboardRun_ConvergesStaleProject(t *testing.T) {
 		}
 	}
 
-	// The three artifacts the stale shape is missing.
+	// The two artifacts the stale shape is missing.
 	for _, want := range []string{
-		filepath.Join(vaultDir, "Projects", "alpha", "config.toml"),
 		filepath.Join(vaultDir, "Projects", "alpha", "commands", "README.md"),
 		filepath.Join(vaultDir, "Projects", "alpha", "skills", "README.md"),
 	} {
@@ -654,8 +660,12 @@ func TestOnboardRun_ConvergesStaleProject(t *testing.T) {
 			t.Errorf("run 1 left the stale project unrepaired: %s missing (%v)", want, err)
 		}
 	}
-	if got := createdSteps(res1); !slices.Contains(got, "vault-project") {
-		t.Errorf("run 1 Created steps = %v, want vault-project among them", got)
+	if got := createdSteps(res1); !slices.Contains(got, "project-scaffold") {
+		t.Errorf("run 1 Created steps = %v, want project-scaffold among them", got)
+	}
+	// And not the retired per-project vault config: nothing writes it now.
+	if _, err := os.Lstat(cfgVault); !os.IsNotExist(err) {
+		t.Errorf("run 1 created %s (lstat err: %v); vp init must not write the retired vault config", cfgVault, err)
 	}
 
 	vault1 := treeSnapshot(t, vaultDir)

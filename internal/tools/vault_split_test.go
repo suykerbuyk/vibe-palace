@@ -240,6 +240,7 @@ func TestVaultSplitPlan_SubtractSetIsAbsentFromInventory(t *testing.T) {
 		"Projects/alpha/.surface",
 		"palace/alpha/.surface",
 		"palace/alpha/.local/embed-cache/d1.vec",
+		"Projects/alpha/config.toml",
 	} {
 		if got[subtracted] {
 			t.Errorf("%s is in the hashed inventory; the subtract set must remove it", subtracted)

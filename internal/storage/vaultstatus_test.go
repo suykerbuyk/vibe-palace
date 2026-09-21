@@ -350,7 +350,10 @@ func TestGetRemoteStatus_EmptyBranchResolvesCurrent(t *testing.T) {
 func TestCurrentBranch_UnbornHead(t *testing.T) {
 	dir := initUnbornTestRepo(t)
 
-	got := currentBranch(dir)
+	got, err := currentBranch(dir)
+	if err != nil {
+		t.Fatalf("currentBranch on unborn HEAD: %v — an unborn HEAD is still on a named branch", err)
+	}
 	if got != "main" {
 		t.Errorf("currentBranch on unborn HEAD = %q, want %q", got, "main")
 	}
@@ -362,12 +365,11 @@ func TestCurrentBranch_UnbornHead(t *testing.T) {
 	}
 }
 
-// TestCurrentBranch_DetachedHead is a characterization test, not a bug
-// report: it pins the ACCEPTED, deliberate behavior change from switching
-// rev-parse --abbrev-ref HEAD (which succeeds on a detached HEAD and returns
-// the literal string "HEAD") to symbolic-ref --short HEAD (which fails on a
-// detached HEAD, since it names a commit directly rather than a branch) —
-// falling back to "main" there instead. See currentBranch's own doc comment.
+// TestCurrentBranch_DetachedHead pins that a detached HEAD is an ERROR, not a
+// guessed branch. currentBranch used to fall back to "main" internally, so a
+// caller building a precondition on it read the wrong remote ref without
+// knowing a default had been applied. The default now lives only in
+// branchOrMain, which each caller that wants it calls by name.
 func TestCurrentBranch_DetachedHead(t *testing.T) {
 	dir := initTestRepo(t)
 	writeFile(t, dir, "second.txt", "second commit\n")
@@ -376,9 +378,11 @@ func TestCurrentBranch_DetachedHead(t *testing.T) {
 	firstSHA := gitRun(t, dir, "rev-list", "--max-parents=0", "HEAD")
 	gitRun(t, dir, "checkout", "-q", firstSHA)
 
-	got := currentBranch(dir)
-	if got != "main" {
-		t.Errorf("currentBranch on detached HEAD = %q, want the accepted fallback %q", got, "main")
+	if got, err := currentBranch(dir); err == nil {
+		t.Errorf("currentBranch on detached HEAD = %q with no error; want an error, never a guessed branch", got)
+	}
+	if got := branchOrMain(dir); got != "main" {
+		t.Errorf("branchOrMain on detached HEAD = %q, want the callers' explicit default %q", got, "main")
 	}
 }
 
@@ -389,7 +393,10 @@ func TestCurrentBranch_NormalBranch(t *testing.T) {
 	dir := initTestRepo(t)
 	gitRun(t, dir, "checkout", "-b", "feature-x")
 
-	got := currentBranch(dir)
+	got, err := currentBranch(dir)
+	if err != nil {
+		t.Fatalf("currentBranch: %v", err)
+	}
 	if got != "feature-x" {
 		t.Errorf("currentBranch = %q, want %q", got, "feature-x")
 	}

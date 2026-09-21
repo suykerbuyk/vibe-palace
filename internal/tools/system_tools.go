@@ -128,8 +128,8 @@ func InitProjectTool(vault *storage.Vault) mcp.Tool {
 		Name:     "vp_init",
 		Mutating: true,
 		Description: "Onboard a project into THIS server's vault. Vault-side onboarding " +
-			"(Projects/<slug>/config.toml, tasks/{done,cancelled}, and the " +
-			"commands/ + skills/ scaffold) always runs. Working-tree steps — " +
+			"(the Projects/<slug>/commands/ + skills/ scaffold) always runs. " +
+			"Working-tree steps — " +
 			".vibe-palace.toml, the AGENTS.md/CLAUDE.md managed block, the project " +
 			".gitignore and the commit.msg git hook — run ONLY when `path` names a " +
 			"directory that is already a project on the SERVER's filesystem; this " +

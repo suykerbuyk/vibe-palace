@@ -157,9 +157,10 @@ gitignore says so: the canonical patterns cover `palace/.local/` but not
 `palace/*/.local/`, so a vault can have committed such a file, and then it is
 synced. The row claims "not tracked" only when git was asked and agreed.
 
-**Projects/** stores workflow artifacts — session markdown files, task
-plans, and per-project configuration overrides. This is the collaboration
-layer between human and AI.
+**Projects/** stores workflow artifacts — session markdown files and task
+plans. This is the collaboration layer between human and AI. It holds no
+configuration: per-project config is host-local (see Configuration below),
+and the retired `Projects/<slug>/config.toml` is read by nothing.
 
 ### Storage Formats
 
@@ -373,22 +374,25 @@ itself keeps it distinct from the per-path keys the content writers take, so a
 committer that already holds a per-path lock cannot self-deadlock (the paths
 hash to different sidecar files).
 
-### Configuration: 4-Tier TOML Precedence
+### Configuration: 3-Tier TOML Precedence
 
-Configuration follows a 4-tier override chain:
+Configuration follows a 3-tier override chain:
 
 1. **Embedded defaults** — compiled into the binary via `//go:embed config/defaults.toml`
 2. **Host-level** — `~/.config/vibe-palace/config.toml`
-3. **Project-level, in the vault** — `{vault}/Projects/{project}/config.toml`
-   — **being retired.** Still read, but `vaultfs` refuses to write it; edit
-   tier 4 instead.
-4. **Project-level, host-local** — `~/.config/vibe-palace/projects/{project}.toml`
+3. **Project-level, host-local** — `~/.config/vibe-palace/projects/{project}.toml`
    — **where per-project settings belong.** Per-project config is machine-local
    and does not belong in a vault shared across machines. Only the
    `palace.scoring` subtree is honoured at this tier; it is written by
    `vp tune rooms --apply` and `vp discover rooms --apply`.
 
-Each level overlays the previous. `vp status` reports which per-project files a
+Until v7.2.0 there was a vault tier between 2 and 3,
+`{vault}/Projects/{project}/config.toml`, which could override any section. It
+is retired: nothing reads or writes it, `vaultfs` refuses to create it, and
+`vp check --check vault-project-config` lists any that survive. Every section
+except `palace.scoring` is now host-level only.
+
+Each level overlays the previous. `vp status` reports which per-project file a
 project actually reads. Key sections:
 
 ```toml
@@ -411,7 +415,7 @@ structural_boost_room = 0.34
 max_chars = 800
 overlap = 100
 
-[palace.rooms.custom]          # project-level only (Tier 1, unweighted)
+[palace.rooms.custom]          # host-level (Tier 1, unweighted)
 keywords = ["keyword1", "keyword2"]
 
 [palace.scoring]               # weighted scoring overrides (Phase 12)
@@ -438,16 +442,17 @@ decodes tier N into the same `tomlConfig` used for tier N-1, so a key **absent**
 from tier N's TOML source leaves the prior tier's decoded value untouched, while a
 key **present** — even at the type's zero value (`git_enabled = false`,
 `http_port = 0`, an empty `[palace.llm]` block) — overwrites it. This is why
-`vault_project_template.toml`'s per-project overrides ship entirely commented
-out: an uncommented `# vault_path = ""` would pin every project to an empty
-vault path rather than leaving it to inherit.
+the shipped config templates keep their optional overrides commented out: an
+uncommented `# vault_path = ""` would pin an empty vault path rather than
+leaving it to inherit.
 
-Any writer that reads a project's `config.toml`, needs to change only one
-section of it, and re-encodes the result must preserve this distinction — a
+Any writer that reads a config file, needs to change only one section of it,
+and re-encodes the result must preserve this distinction — a
 full decode into `tomlConfig` (a plain, non-pointer struct) followed by a
 full re-encode turns every field the file never mentioned into an explicit,
 present zero value, silently breaking inheritance for that project from then
-on. `WriteScoringConfig` (`internal/storage/config.go`) is the one writer of
+on. The scoring writer, `writeScoringConfigAt` behind `WriteHostScoringConfig`
+(`internal/storage/config.go`), is the one writer of
 this shape; it sidesteps the problem structurally by decoding into
 `map[string]any` instead of `tomlConfig` — a Go map decoded from TOML only
 ever contains the keys the source text actually had, so a key this function
