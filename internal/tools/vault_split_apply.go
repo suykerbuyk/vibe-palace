@@ -871,7 +871,8 @@ func splitPurgeTree(root, treeRel string, hashes map[string]string) (int, int, i
 	for _, rel := range fileRels {
 		// hashes[rel] is the compare-and-set guard for a file that travelled,
 		// and "" — no guard — for one the subtract set removed from the
-		// manifest (.surface, .local/**, commit-log.anchor). Those were never
+		// manifest (.surface, .local/**, commit-log.anchor,
+		// Projects/<slug>/config.toml). Those were never
 		// copied, so there is no destination hash to compare against; they are
 		// removed because the tree they live in is going away.
 		if _, derr := vaultfs.Delete(root, rel, hashes[rel]); derr != nil {
