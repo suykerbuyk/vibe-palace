@@ -583,7 +583,7 @@ making `git add` exit 128 and aborting the whole commit.
 | Layer | Entry point | Role |
 |-------|-------------|------|
 | Core | `storage.TidyVault(vaultPath, push)` / `storage.TidyScan(vaultPath)` | Scan → parse → classify → (commit). `TidyScan` is the read-only classification path (never commits, never probes remotes) that backs `--dry-run` and is shared with `TidyVault` so there is one classification code path. |
-| CLI | `vp vault tidy [--dry-run] [--no-push]` | The human / cron-able escape hatch. `--dry-run` prints the swept/reported split without committing; `--no-push` commits locally only; bare invocation commits and pushes. |
+| CLI | `vp vault tidy [--dry-run] [--no-push] [--vault PATH]` | The human / cron-able escape hatch. `--dry-run` prints the swept/reported split without committing; `--no-push` commits locally only; bare invocation commits and pushes. `--vault PATH` acts on a named vault (it must be the top level of its own git repository) instead of the configured one, so a throwaway copy can be tidied without redirecting config; the same flag is on `vault pull/push/sync/commit/status`. |
 | MCP | `vp_vault_tidy` (mutating; params `dry_run`, `push`) | What the workflow templates call. Returns the `TidyResult` (swept, reported, commit info, per-remote results) as structured content plus a concise human summary. |
 
 ### Workflow wiring
