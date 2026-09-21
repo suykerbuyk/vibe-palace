@@ -477,3 +477,102 @@ func TestProjectConfigRetirementGatesTheResolvedRoot(t *testing.T) {
 		t.Errorf("refusal is not the surface gate's; stderr:\n%s", stderr)
 	}
 }
+
+// twoRemoteVault is retirementVault with a second remote, "zeta", which sorts
+// after "origin" so a loop that stops early never reaches it. Both remotes
+// receive the surface-(v-1) fixture commit; then a surface-v stamp is committed
+// and pushed to origin ONLY, so origin carries the floor and zeta does not.
+func twoRemoteVault(t *testing.T) (root, zeta string) {
+	t.Helper()
+	root, _ = retirementVault(t, true, surface.MCPSurfaceVersion-1)
+	zeta = t.TempDir()
+	gitRun(t, zeta, "init", "-q", "--bare", "-b", "main")
+	gitRun(t, root, "remote", "add", "zeta", zeta)
+	gitRun(t, root, "push", "-q", "zeta", "main")
+	mkfile(t, root, "palace/alpha/.surface", fmt.Sprintf("surface = %d\n", surface.MCPSurfaceVersion))
+	gitRun(t, root, "commit", "-qam", "floor stamp")
+	gitRun(t, root, "push", "-q", "origin", "main")
+	return root, zeta
+}
+
+// TestProjectConfigRetirementEveryRemoteIsChecked (RC1): the floor and the
+// ancestry are required at EVERY remote's tip. origin passes both; zeta fails
+// one, and the refusal must name zeta.
+func TestProjectConfigRetirementEveryRemoteIsChecked(t *testing.T) {
+	t.Run("second remote lacks the stamp", func(t *testing.T) {
+		root, _ := twoRemoteVault(t)
+		head := gitHead(t, root)
+		code, _, errs := runRetirement(t, root, true)
+		requireRefusedUntouched(t, root, head, code, errs, "committed at refs/remotes/zeta/main")
+	})
+	t.Run("second remote carries the stamp but has diverged", func(t *testing.T) {
+		root, zeta := twoRemoteVault(t)
+		gitRun(t, root, "push", "-q", "zeta", "main")
+		other := t.TempDir()
+		gitRun(t, other, "clone", "-q", zeta, ".")
+		gitRun(t, other, "config", "user.email", "o@test.com")
+		gitRun(t, other, "config", "user.name", "Other")
+		mkfile(t, other, "elsewhere.txt", "another host\n")
+		gitRun(t, other, "add", "elsewhere.txt")
+		gitRun(t, other, "commit", "-qm", "another host's commit")
+		gitRun(t, other, "push", "-q", "origin", "main")
+		head := gitHead(t, root)
+		code, _, errs := runRetirement(t, root, true)
+		requireRefusedUntouched(t, root, head, code, errs, "zeta/main is not an ancestor of HEAD")
+	})
+}
+
+// TestProjectConfigRetirementRefusesAConfigItCannotRead (RC2): a tracked config
+// that does not decode, or is not a regular file, is reported CANNOT RETIRE and
+// refuses the whole apply — it is never deleted along with the rest.
+func TestProjectConfigRetirementRefusesAConfigItCannotRead(t *testing.T) {
+	for _, tc := range []struct {
+		name, rel string
+		arrange   func(t *testing.T, root, rel string)
+	}{
+		{"malformed TOML", "Projects/gamma/config.toml", func(t *testing.T, root, rel string) {
+			mkfile(t, root, rel, "[palace.scoring\nmin_score = 0.4\n")
+		}},
+		{"symlink", "Projects/delta/config.toml", func(t *testing.T, root, rel string) {
+			abs := filepath.Join(root, filepath.FromSlash(rel))
+			if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("../alpha/commands/README.md", abs); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _ := retirementVault(t, false, surface.MCPSurfaceVersion)
+			tc.arrange(t, root, tc.rel)
+			gitRun(t, root, "add", "-A")
+			gitRun(t, root, "commit", "-qm", "unreadable config")
+			head := gitHead(t, root)
+
+			code, out, errs := runRetirement(t, root, true)
+			if !strings.Contains(out, tc.rel+"\n  CANNOT RETIRE:") {
+				t.Errorf("transcript does not mark %s CANNOT RETIRE:\n%s", tc.rel, out)
+			}
+			requireRefusedUntouched(t, root, head, code, errs, tc.rel+" cannot be retired as found")
+			if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(tc.rel))); err != nil {
+				t.Errorf("%s was deleted: %v", tc.rel, err)
+			}
+		})
+	}
+}
+
+// TestProjectConfigRetirementMalformedStampRefuses (RC3): maxSurfaceAt's
+// promise — an unreadable floor is not a low one. A tip carrying a valid
+// surface-v stamp AND a malformed one refuses; skipping the malformed stamp
+// would let the valid one satisfy the floor.
+func TestProjectConfigRetirementMalformedStampRefuses(t *testing.T) {
+	root, _ := retirementVault(t, true, surface.MCPSurfaceVersion)
+	mkfile(t, root, "Templates/.surface", "surface = \n")
+	gitRun(t, root, "add", "-A")
+	gitRun(t, root, "commit", "-qm", "malformed stamp")
+	gitRun(t, root, "push", "-q", "origin", "main")
+	head := gitHead(t, root)
+	code, _, errs := runRetirement(t, root, true)
+	requireRefusedUntouched(t, root, head, code, errs, "Templates/.surface at refs/remotes/origin/main is malformed")
+}
