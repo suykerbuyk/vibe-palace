@@ -281,7 +281,11 @@ type RetiringConfig struct {
 // RetireProjectConfigs deletes every config, then commits the removals as ONE
 // commit through CommitRemovals. On any failure after the first deletion it
 // restores every file from HEAD (`git checkout HEAD -- <paths>`) and returns the
-// error, so a failed run leaves no deletion and no " D" dirt behind. Only
+// error, so a failed run leaves no deletion and no " D" dirt behind — with one
+// exception. If the commit lands but CommitRemovals reports paths it left in
+// HEAD (*RemovalsLeftInHEADError), part of the retirement IS committed: those
+// paths are restored, the error names what landed and what was restored, and a
+// re-run retires the rest. Only
 // tracked files are ever passed here; the command refuses while any untracked
 // config exists, so HEAD holds every byte a restore needs.
 //
@@ -318,8 +322,25 @@ func RetireProjectConfigs(root, message string, configs []RetiringConfig, afterD
 	if err != nil {
 		var left *RemovalsLeftInHEADError
 		if errors.As(err, &left) {
-			// The commit landed without some paths; restore exactly those.
+			// The ONE outcome that is not all-or-nothing: the commit landed,
+			// but without some paths. It cannot be undone here — it is a
+			// commit — so restore exactly the paths it left in HEAD, and say
+			// plainly what landed, what was restored, and that a re-run
+			// finishes the job (it finds only the restored files).
+			stillThere := map[string]bool{}
+			for _, p := range left.Paths {
+				stillThere[p] = true
+			}
+			var landed []string
+			for _, p := range deleted {
+				if !stillThere[p] {
+					landed = append(landed, p)
+				}
+			}
 			deleted = left.Paths
+			return restore(fmt.Errorf("PARTIAL RETIREMENT: commit %s landed and removes %s. It left in HEAD, "+
+				"and this run restored from HEAD: %s. Re-run `vp migrate project-configs --apply` to retire the rest: %w",
+				left.SHA, strings.Join(landed, ", "), strings.Join(left.Paths, ", "), err))
 		}
 		return restore(err)
 	}

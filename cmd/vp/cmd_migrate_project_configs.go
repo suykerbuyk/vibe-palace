@@ -68,7 +68,9 @@ func cmdMigrateProjectConfigs() *cli.Command {
 			"repository; git is enabled and a commit identity is set; no merge, cherry-pick, revert or rebase " +
 			"is in progress; Projects/ is clean; HEAD is on a named branch; and a surface stamp at this " +
 			"binary's version is committed in HEAD (no remotes) or at every remote's tip, each tip an ancestor " +
-			"of HEAD. A failure after the first deletion restores every file from HEAD.",
+			"of HEAD. A failure after the first deletion restores every file from HEAD, with one exception: " +
+			"if the commit lands but git leaves some paths in it, that commit holds PART of the retirement, the " +
+			"rest is restored, the command exits 2 naming both, and re-running --apply finishes it.",
 		Flags: migrateProjectConfigsFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp migrate project-configs", Comment: "Report what would be retired; deletes nothing"},
